@@ -1,0 +1,62 @@
+-- "dao.cabal" The metafile for building the Dao System using Cabal.
+-- 
+-- Copyright (C) 2008-2012  Ramin Honary.
+-- This file is part of the Dao System.
+--
+-- The Dao System is free software: you can redistribute it and/or
+-- modify it under the terms of the GNU General Public License as
+-- published by the Free Software Foundation, either version 3 of the
+-- License, or (at your option) any later version.
+-- 
+-- The Dao System is distributed in the hope that it will be useful,
+-- but WITHOUT ANY WARRANTY; without even the implied warranty of
+-- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+-- GNU General Public License for more details.
+-- 
+-- You should have received a copy of the GNU General Public License
+-- along with this program (see the file called "LICENSE"). If not, see
+-- <http://www.gnu.org/licenses/agpl.html>.
+
+
+Name:             dao
+Version:          0.1.0.0
+Cabal-Version:    >= 1.10
+License:          GPL-3
+Copyright:	  (C) 2008-2012 Ramin Honary, all rights reserved.
+Author:           Ramin Honary
+Maintainer:	  ramin.honary@gmail.com
+Build-Type:       Simple
+Synopsis:         Dao is an expert system with its own built-in
+				  interpreted language built with artificial
+				  intelligence applications in mind.
+Description:
+	 The Dao modules and interactive program is an expert system
+	 intended for artificial intelligence uses. Dao has it's own,
+	 built-in interpreted scripting language designed with artificial
+	 intelligence and natural language understanding applications in
+	 mind. It is very much like the classic UNIX "AWK" scripting
+	 language, but instead of using POSIX-style regular epxressions, the
+	 patterns used in Dao are designed to more easily match natural
+	 language input. Several improvements are made over the classic
+	 "AWK" execution algrotihm, in particular, Dao uses Haskell's
+	 "forkIO" to execute every action in a separate thread. Many
+	 improvements are made to the scripting language as well, including
+	 exception handling and a rich set of built-in data types.
+
+Library
+  Default-Language: Haskell2010
+  GHC-options:	    -threaded
+  Build-Depends:
+    base         >= 4.3.1.0,  mtl        >= 2.0.1.0,  random     >= 1.0.0.1,
+    old-time     >= 1.0.0.2,  directory  >= 1.1.0.0,  filepath   >= 1.2.0.0,
+    process      >= 1.0.1.2,  array      >= 0.3.0.2,  bytestring >= 0.9.1.2,
+    utf8-string  >= 0.3.2  ,  binary     >= 0.5.0.2,
+    transformers >= 0.2.2.0,  containers >= 0.4.0.0
+  Exposed-Modules:
+   Dao/Builtins.hs   ,  Dao/Evaluator.hs    , Dao/Object/Monad.hs  , Dao/Runtime.hs
+   Dao/Combination.hs,  Dao/Files.hs        , Dao/Object/Parsers.hs, Dao/String.hs
+   Dao/Debug.hs      ,  Dao.hs              , Dao/Object/Show.hs   , Dao/Tree.hs
+   Dao/Debug/OFF.hs  ,  Dao/Object/Binary.hs, Dao/Parser.hs        , Dao/Types.hs
+   Dao/Debug/ON.hs   ,  Dao/Object/Data.hs  , Dao/Pattern.hs       , Dao/Tasks.hs
+   Dao/Document.hs   ,  Dao/Object.hs       , Dao/Predicate.hs
+

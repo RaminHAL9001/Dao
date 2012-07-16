@@ -1,0 +1,32 @@
+# "dao-project-files.list"
+# used by the GNU-Make script "dao-ghc-build-opts.mk" to specify which
+# files are to be compiled by GHC.
+# 
+# Copyright (C) 2008-2012  Ramin Honary.
+# 
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program (see the file called "LICENSE"). If not, see
+# <http://www.gnu.org/licenses/agpl.html>.
+# 
+# ------------------------------------------------------------------------
+# List the files you are working on. Prefix the file with an asterisk (*)
+# character so the ".ghci" file will be updated with the files you wish
+# to debug.
+
+   Dao/Builtins.hs      Dao/Evaluator.hs      Dao/Object/Monad.hs    
+   Dao/Combination.hs   Dao/Files.hs          Dao/Object/Parsers.hs  Dao/String.hs
+   Dao/Debug.hs         Dao.hs                Dao/Object/Show.hs     Dao/Tree.hs
+   Dao/Debug/OFF.hs     Dao/Object/Binary.hs  Dao/Parser.hs          Dao/Types.hs
+   Dao/Debug/ON.hs      Dao/Object/Data.hs    Dao/Pattern.hs         Dao/Tasks.hs
+   Dao/Document.hs      Dao/Object.hs         Dao/Predicate.hs      *dao-main.hs
+

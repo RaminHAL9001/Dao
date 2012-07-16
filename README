@@ -1,0 +1,44 @@
+The Dao System
+Copyright (C) 2008-2012, Ramin Honary, all rights reserved.
+
+THIS PROJECT IS NOT YET COMPLETE. It builds and runs, but it is still
+full of bugs, and it outputs considerable debugging information.
+
+The Dao System is a Haskell package (library), and an interactive
+command line interface to this library, designed for constructing very
+simple artificial intelligence programs that can understand natural
+(human) languages, and is licensed under the GNU Affero General Public
+License:
+	http://www.gnu.org/licenses/agpl.html
+
+The Dao package provide an interpreted scripting language inspired by
+the old UNIX "AWK" language, however, the Dao language provides a much
+more feature-rich set of built-in data types and functions than AWK,
+notably the ability to execute rules recursively in the same process.
+Further, the Dao language makes use of "Patterns" rather than POSIX
+regular expressions. Patterns are inspired by UNIX "glob" expressions,
+and are intended to be used more for matching against natural language
+input.
+
+The intention of the Dao System is to create knowledge bases that can
+respond to natural language input queries. Dao programs are loaded by
+the Dao system and can respond to textual input in a way similar to how
+AWK responds to lines of input, but every rule in the Dao script is
+executed in a separate thread.
+
+As the program executes input queries, the state of the program's
+working memory is changed. The working memory is modeled after a
+filesystem, with objects stored in a tree structure. This tree can be
+serialized and stored to the filesystem, and re-loaded back into memory
+at any time. These document files are informally called "idea" files
+because they allow the Dao system to store knowledge, and transmit it to
+other Dao installations.
+
+The Dao System is the result of my masters thesis, "Natural Language
+Understanding Systems using the Dao Programming Environment" published
+at the Tokyo Institute of Technology in 2007. The first public release
+of the Dao System was made available at <http://hackage.haskell.org> in
+March of 2008, although it was mostly incomplete. The latest code is now
+available at <https://github.com> . Releases will be made available at
+Hackage as further progress is made.
+

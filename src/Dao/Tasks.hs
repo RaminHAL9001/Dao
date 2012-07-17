@@ -28,7 +28,7 @@ module Dao.Tasks where
 -- defined here. So are 'Dao.Types.Job' and 'Dao.Types.Task' management functions, and a simple
 -- interactive run loop 'interactiveRuntimeLoop' is also provided.
 
-import           Dao.Debug.ON
+import           Dao.Debug.OFF
 
 import           Dao.Types
 import qualified Dao.Tree as T
@@ -209,14 +209,12 @@ removeJobFromTable job = ask >>= \runtime ->
 -- the input string and matching the tokens to the program using 'Dao.Pattern.matchTree'.
 matchStringToProgram :: UStr -> CachedProgram -> Run [(Pattern, Match, CachedAction)]
 matchStringToProgram instr program = dStack $loc "matchStringToProgram" $ do
-  tree <- trace "(ruleSet program)" $ dReadMVar $loc (ruleSet program)
+  tree <- dReadMVar $loc (ruleSet program)
   let eq = (==) -- TODO: the matching predicate needs to be retrieved from a declaration in the program.
       tox = tokens (uchars instr) -- TODO: tokenizing needs to be retrieved from a declaration in the program.
-      matched = trace "(matchTree...)" $ matchTree eq (trace "(matchTree (ruleSet program))" $ tree) tox
-  lift (traceIO ("(matched "++show (length matched)++" rules)"))
-  fmap concat $ forM (trace "(forM matchTree (ruleSet program))" matched) $ \ (patn, mtch, cxrefx) -> do
+  fmap concat $ forM (matchTree eq tree tox) $ \ (patn, mtch, cxrefx) -> do
     forM cxrefx $ \cxref -> do
-      trace "(take ExecScript from CXRef)" $ dModifyMVar_ $loc cxref $ \cx -> return $ case cx of
+      dModifyMVar_ $loc cxref $ \cx -> return $ case cx of
         OnlyCache m -> cx
         HasBoth _ m -> cx
         OnlyAST ast ->

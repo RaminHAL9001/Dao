@@ -21,8 +21,6 @@
 
 {-# LANGUAGE TemplateHaskell #-}
 
-module Main where
-
 -- | "dao-main.hs" provides a basic interactive program that can interact with
 -- the functions provided in the "Dao" module.
 -- 
@@ -41,6 +39,8 @@ module Main where
 -- You should have received a copy of the GNU General Public License
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/>.
+
+module Main where
 
 import           Dao
 
@@ -75,13 +75,11 @@ main = do
   argv <- getArgs
   let (q, _) = partition (\a -> a=="-q" || a=="--dont-show-license") argv
   --initialize
-  traceIO "(init debugger)"
   debug   <- debugToFile $loc "main" debugLog "./dao-debug.log" WriteMode
-  when (null q) (putStrLn disclaimer)
-  traceIO "(init runtime with files)"
-  runtime <- newRuntimeWithFiles debug (Just 8000000) argv
-  traceIO "(begin interactive loop)"
-  interactiveRuntimeLoop debug runtime $
+  hSetBuffering stderr LineBuffering
+  when (null q) (putStr disclaimer)
+  runtime <- newRuntime debug >>= initRuntimeFiles debug argv
+  inputQueryLoop debug runtime $
     (\ _ -> handle (\ (SomeException e) -> seq e (print e >> return Nothing)) $ do
       let loop = do
             putStr "dao> " >> hFlush stdout

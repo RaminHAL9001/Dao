@@ -22,20 +22,28 @@
 
 {-# LANGUAGE TemplateHaskell #-}
 
+-- | This module is pretty much where everything begins. It is the smallest interface that can be
+-- imported by any Haskell program making use of the Dao System. You can use the functions in this
+-- module to initialize a 'Dao.Types.Runtime' data structure, then use it to start an input query
+-- loop with 'inputQueryLoop'. The query loop requires you pass a callback function that, on each
+-- evaluation, returns the next string to be used the query to the 'Dao.Types.Runtime'.
+--
+-- To have more control over execution of string queries, you will need to import the "Dao.Tasks"
+-- module and make use of those functions to create 'Dao.Types.Job's from string queries, then wait
+-- for those 'Dao.Types.Job's to complete.
+
 module Dao
-  ( module Dao.Debug.ON
+  ( module Dao.Debug.OFF
   , module Dao.String
   , module Dao.Object
   , module Dao.Types
   , module Dao
   ) where
 
--- | This module is pretty much where everything begins. I am considering renaming this module to
--- just "Dao", because it is the trunk of the dao package.
-
-import           Dao.Debug.ON
+import           Dao.Debug.OFF
 
 import           Dao.String
+import           Dao.Pattern
 import           Dao.Object
 import           Dao.Types
 import           Dao.Tasks
@@ -65,32 +73,46 @@ min_exec_time = 200000
 -- | Create a new 'Runtime' with nothing in it except for the 'userData' you pass to it. This
 -- takes an optional 'Dao.Debug.Debugger', which will be installed into the resulting
 -- 'Dao.Types.Runtime' and used for debugging.
-newRuntime :: Maybe Debugger -> Maybe Int -> M.Map Name CheckFunc -> IO Runtime
-newRuntime debug timeout builtins = flip runReaderT debug $ dStack $loc "newRuntime" $ do
+newRuntime :: Maybe Debugger -> IO Runtime
+newRuntime debug = flip runReaderT debug $ dStack $loc "newRuntime" $ do
   paths <- dNewMVar $loc "Runtime.pathIndex"        (M.empty)
   names <- dNewMVar $loc "Runtime.logicalNameIndex" (M.empty)
   jtab  <- dNewMVar $loc "Runtime.jobTable"         (M.empty)
   dlist <- newDocList
   return $
     Runtime
-    { documentList     = dlist
-    , pathIndex        = paths
-    , logicalNameIndex = names
-    , jobTable         = jtab
-    , defaultTimeout   = timeout
-    , initialBuiltins  = builtins
-    , runtimeDebugger  = debug
+    { documentList        = dlist
+    , pathIndex           = paths
+    , logicalNameIndex    = names
+    , jobTable            = jtab
+    , defaultTimeout      = Just 8000000
+    , initialBuiltins     = basicScriptOperations
+    , functionSets        = M.empty
+    , functionCheckList   = M.empty
+    , availableTokenizers = M.empty -- specifying no tokenizer will cause the default to be used
+    , availableMatchers   = M.fromList $
+        [ (ustr "exact"      , (\a b -> return (exact  a b)))
+        , (ustr "approximate", (\a b -> return (approx a b)))
+        ]
+    , runtimeDebugger     = debug
     }
 
--- | Initialize a new 'Runtime' data structure using a list of files and an initial user data item.
--- Each file will be parsed in turn (order is important) by the 'registerFile' function, which can
--- detect the kind of file and load it accordingly. The kinds of files that can be loaded are Dao
--- source files, Dao data files, and Dao compiled programs.
-newRuntimeWithFiles :: DebugHandle -> Maybe Int -> [FilePath] -> IO Runtime
-newRuntimeWithFiles debug timeout fx = do
-  runtime <- newRuntime debug timeout basicScriptOperations
+-- | Provide a labeled set of built-in functions for this runtime. Each label indicates a set of
+-- functionality which is checked by the "required" directive of any Dao program that is loaded into
+-- this runtime. If all "required" function sets are not available, loading of that Dao program
+-- fails.
+initRuntimeFunctions :: [(Name, M.Map Name CheckFunc)] -> Runtime -> Runtime
+initRuntimeFunctions funcs runtime =
+  runtime{ functionSets = M.union (M.fromList funcs) (functionSets runtime) }
+
+-- | Initialize files into the 'Runtime' data structure using a list of files. Each file will be
+-- parsed in turn (order is important) by the 'registerFile' function, which can detect the kind of
+-- file and load it accordingly. The kinds of files that can be loaded are Dao source files, Dao
+-- data files, and Dao compiled programs.
+initRuntimeFiles :: DebugHandle -> [FilePath] -> Runtime -> IO Runtime
+initRuntimeFiles debug fx runtime =
   fmap (fromMaybe (error "FAILED to initalized runtime with files")) $
-    debugIO $loc "newRuntimeWithFiles" debug runtime $ do
+    debugIO $loc "initRuntimeFiles" debug runtime $ do
       forM_ fx $ \f -> lift (catches (void $ runIO runtime $ loadFile True f) handlers)
       problems <- checkAllImports
       if null problems
@@ -120,25 +142,22 @@ newRuntimeWithFiles debug timeout fx = do
 -- 'Data.Maybe.Nothing'). If the input function returns 'Data.Maybe.Nothing', then the interactive
 -- session is ended gracefully. The loop that waits on the input function runs in an exception
 -- handler that catches all exceptions and runs every @TAKEDOWN@ script in every loaded Dao module.
-interactiveRuntimeLoop
+inputQueryLoop
   :: DebugHandle
   -> Runtime
   -> (DMVar Runtime -> IO (Maybe String))
   -> IO ()
-interactiveRuntimeLoop debug runtime getNextInput = do
+inputQueryLoop debug runtime getNextInput = do
   let ifException (SomeException e) = do
         hSetBuffering stderr LineBuffering
         hPutStrLn stderr ("ERROR: "++show e)
         return True
-  traceIO ("(debugger is"++(if isNothing debug then "not" else "")++" defined)")
-  void $ debugIO $loc "interactiveRuntimeLoop" debug runtime $ do
+  void $ debugIO $loc "inputQueryLoop" debug runtime $ do
     runtimeMVar <- dNewMVar $loc "Runtime" runtime
-    lift (traceIO "(init temporary ExecUnit)")
     intrcvXUnit <- initExecUnit runtime
     let runString input = selectModules Nothing [] >>= execInputString True input
         iterateInput = do
-          input <- lift (traceIO "(get input)" >> getNextInput runtimeMVar)
-          lift (traceIO "(execute input)")
+          input <- lift (getNextInput runtimeMVar)
           dModifyMVar $loc runtimeMVar $ \runtime -> do
             continue <- case input of
               Just ('\\':input) -> runString (ustr input) >> return True

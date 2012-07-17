@@ -1,3 +1,7 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 -- "src/Dao/Types.hs"  provides data types that are used throughout
 -- the Dao System to facilitate execution of Dao programs, but are not
 -- used directly by the Dao scripting language as Objects are.
@@ -18,11 +22,6 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
-
-
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 
 module Dao.Types
@@ -154,6 +153,8 @@ data Directive
   | BeginExpr      (Com [Com ScriptExpr])
   | EndExpr        (Com [Com ScriptExpr])
   | TakedownExpr   (Com [Com ScriptExpr])
+  | Requires       (Com Name) (Com Name)
+  | ToplevelFunc   (Com ()) (Com Name) (Com [Com Name]) (Com [Com ScriptExpr])
   deriving (Eq, Ord, Show, Typeable)
 
 -- | This is the executable form of the 'SourceCode', which cannot be serialized, but is structured
@@ -380,22 +381,43 @@ isProgramFile file = case file of
   ProgramFile _ _ _ _ -> True
   DataFile    _ _     -> False
 
+-- | A type of function that can split an input query string into 'Dao.Pattern.Tokens'. The default
+-- splits up strings on white-spaces, numbers, and punctuation marks.
+type Tokenizer = String -> IO Tokens
+
+-- | A type of function that can match 'Dao.Pattern.Single' patterns to 'Dao.Pattern.Tokens', the
+-- default is the 'Dao.Pattern.exact' function. An alternative is 'Dao.Pattern.approx', which
+-- matches strings approximately, ignoring transposed letters and accidental double letters in words.
+type TokenEquality = UStr -> UStr -> IO Bool
+
 data Runtime
   = Runtime
-    { documentList     :: DocListHandle
-    , pathIndex        :: DMVar (M.Map UPath File)
+    { documentList        :: DocListHandle
+    , pathIndex           :: DMVar (M.Map UPath File)
       -- ^ every file opened, whether it is a data file or a program file, is registered here under
       -- it's file path (file paths map to 'File's).
-    , logicalNameIndex :: DMVar (M.Map Name File)
+    , logicalNameIndex    :: DMVar (M.Map Name File)
       -- ^ program files have logical names. This index allows for easily looking up 'File's by
       -- their logical name.
-    , jobTable         :: DMVar (M.Map ThreadId Job)
+    , jobTable            :: DMVar (M.Map ThreadId Job)
       -- ^ A job is any string that has caused execution across loaded dao scripts. This table keeps
       -- track of any jobs started by this runtime.
-    , defaultTimeout   :: Maybe Int
+    , defaultTimeout      :: Maybe Int
       -- ^ the default time-out value to use when evaluating 'execInputString'
-    , initialBuiltins  :: M.Map Name CheckFunc
-    , runtimeDebugger  :: DebugHandle
+    , initialBuiltins     :: M.Map Name CheckFunc
+      -- ^ fundamental built-in functions common to all programs.
+    , functionSets        :: M.Map Name (M.Map Name CheckFunc)
+      -- ^ every labeled set of built-in functions provided by this runtime is listed here. This
+      -- table is checked when a Dao program is loaded that has "requires" directives.
+    , functionCheckList   :: M.Map Name (S.Set Name)
+      -- ^ if a Dao program "requires" a set of functions, but that program's logical name is NOT in
+      -- this check list, or if it is in this checklist but the required functionality is not
+      -- included in the set of functionality allowed to that Program, loading the Program fails.
+    , availableTokenizers :: M.Map Name Tokenizer
+      -- ^ a table of available string tokenizers.
+    , availableMatchers   :: M.Map Name TokenEquality
+      -- ^ a table of available string matching functions.
+    , runtimeDebugger     :: DebugHandle
     }
 
 -- | This is the monad used for most all methods that operate on the 'Runtime' state.

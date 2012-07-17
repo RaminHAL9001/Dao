@@ -18,6 +18,7 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
+
 {-# LANGUAGE DeriveDataTypeable #-}
 
 module Dao.Object

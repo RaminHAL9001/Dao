@@ -55,7 +55,6 @@ all:  dao
 dao: $(DAO_DEPENDS_SRC)
 	@echo 'Building project...'
 	$(DAO_COMPILE) $(DAO_DEPENDS_SRC) -o ./dao;
-	$(MAKE) .ghci
 
 calc: src/Dao/Calc.hs src/Dao/Object/Parsers.hs src/Dao/Combination.hs src/Dao/Combination/Parser.hs
 	$(DAO_COMPILE) src/Dao/Calc.hs -o ./calc

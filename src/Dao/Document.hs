@@ -18,24 +18,15 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
+
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE FlexibleContexts #-}
-
--- | Please import this module qualified, for example:
--- @import qualified Dao.DocReader as DocReader@
--- it makes things much easier.
---
--- "Dao.DocReader" is a very simple API for persistent storage of objects provided that Dao modules may
--- use. This database makes use of the "binary" package to 'Data.Binary.encode' and
--- 'Data.Binary.decode' values. These values are stored in a 'Data.Map.Map' from the "containers"
--- package. To write the database to disk, the entire map is encoded with 'Data.Binary.encode' and
--- written to a file.
 
 module Dao.Document where
 
 import           Prelude hiding (lookup)
 
-import           Dao.Debug.ON
+import           Dao.Debug.OFF
 import           Dao.Types
 import           Dao.Object.Binary
 

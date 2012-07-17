@@ -1,11 +1,17 @@
 UNSOLVED:
 
-* Parser needs to return better error messages.
+* REGRESSION: global variables are not being defined properly.
 
-* REGRESSSION: When I wrote a rule into my Dao test program that contained many "else if"
-	expressions, this one rule seems to cause the Dao system to freeze on any rule, not just the
-	rule with all the "else if" statements. Any rule causes Dao to freeze up entirely as long as
-	this one rule exists.
+* Built-in functions need to return more helpful error message on type-check failure. At present the
+	error reported is the error given by the Haskell language, related to lambda functions or case
+	expression not having exauhustive pattern matching, which tells users nothing about why which
+	type causd it to fail.
+
+* Parser needs to return better error messages.
+	--
+	In progress. Implemented a "labelParse" function which essentially replaces all failed parses
+	with a single message indicating why the parse failed. But I have not done enough to
+	pretty-print these messages.
 
 * Modify the 'ExecUnit' to contain built-in functions decalred in the top-level of a Dao program.
 	Presently, these objects are stored in the 'staticHeap', which are not cached, and are required
@@ -27,24 +33,42 @@ UNSOLVED:
 	programmer can can hard-code a "My Voice Patterns" property into their version of the Dao runtime
 	that they have constructed using the Dao library. Programs can then declare:
 		require "My Voice Patterns"
-	If they then sends their Dao code to some friends using the standard version of Dao those
+	If they then send their Dao code to some friends using the standard version of Dao those
 	friends try to load the program, the Dao interpreter will report an error at loading time.
 
-* Place GPL license on all source files.
+* Once you are sure the Dao language isn't going to change much more, make a more efficient parser
+	from the "Text.ParserCombinators.Parsec" library.
 
-* Experiment with using Dao.Combination to check function input arguments.
-	--
-	Done, it works perfectly, although I don't know how efficient it is. It could be as bad as the
-	parser. I would like to do an analysis of this, so this issue is not yet "SOLVED".
+* We need more built-in functions to do cool stuff!
 
 * Document everything, and I mean everything.
+
+* Create some awesome example programs.
 
 ----------------------------------------------------------------------------------------------------
 SOLVED:
 
+* REGRESSSION: When I wrote a rule into my Dao test program that contained many "else if"
+	expressions, this one rule seems to cause the Dao system to freeze on any rule, not just the
+	rule with all the "else if" statements. Any rule causes Dao to freeze up entirely as long as
+	this one rule exists.
+	--
+	It had nothing to do with "else if" statements, it had to do with a bad Pattern expression.
+	Before now I had never tested a malformed pattern with the pattern parser. It turns out the
+	parser went into an infinite loop when it saw a "$" preceeding a non-special character. Now,
+	these characters are ignored and parsed as ordinary characters. Only the "$?", "$*", and "$$"
+	constructs are parsed as special units of the patterns.
+
+* Experiment with using Dao.Combination to check function input arguments.
+	--
+	Done, we now have a "PredicateIO" monad that extends "Dao.Combination", and catches IO errors
+	caused by non-exhaustive Haskell-language patterns or case statements. It works perfectly,
+	although I don't know how efficient it is. It could be as bad as the parser.
+
 * REGRESSION: global lookups are not working as expected.
+	--
 	Solved: I stupidly copy-pasted the 'Dao.Object.Evaluator.staticDataLookup' function as, then
-	re-named it to 'currentDocumentLookup', probably because it has the same signature as
+	re-named it to, 'currentDocumentLookup'. Probably because it has the same signature as
 	'staticDataLookup', and probably with the intent of re-writing it to lookup information in the
 	current document. But then I stupidly forgot to implement the currentDocumentLookup, that or I
 	implemented but accidentally erased the implementation after copy-pasting. So staticDataLookup
@@ -52,6 +76,7 @@ SOLVED:
 
 * REGRESSION: the local variable stack is not replaced with an empty stack on a function call, so
 	sub-functions can alter the values of local variables.
+	--
 	Re-named "pushExecStack" to "nestedExecStack", and created a new "pushExecStack" which creates a
 	new MVar containing an empty stack, and uses Control.Monad.Reader.local to replace the existing
 	"execStack" with the new MVar, then calls the inner function inside of "catchCEReturn" to behave
@@ -61,6 +86,7 @@ SOLVED:
 	is the first in the program, is not exeuting anymore. It might be being over-written by a later
 	"hello" rule. Correction: the regression seems to be somewhere in the global/local variable
 	lookup.
+	--
 	I had removed the "let" language construct, and I had not created a suitable replacement
 	parse. The solution was to create a new parser "localAssignExpr" that was placed in objectExpr
 	in this order: [unaryOperator, localAssignExpr, equationExpr]
@@ -70,21 +96,36 @@ SOLVED:
 	parse equals expressions, but they are handeled slightly differently
 
 * REGRESSION: printing 'AssignExpr's does not work as expected.
+	-- Solved.
 
 * Make an "Cached" script type, that caches the (ExecScript ()) by storing the function along
 	side it's abstract syntax tree. This will take up more memory, but useful thunks will not be
 	de-allocated by the Haskell runtime as long as there is a reference to that function. That is
 	the general idea, anyway. I am still not sure if that is what is really happening under the
 	hood.
+	--
+	Done, created the 'CachedExec' and 'CXRef' types. CXRef is an MVar containing 'CachedExec' such
+	that once the Abstract Syntax Tree (AST) value is evaluated to an "ExecScript" monadic type,
+	this evaluation can be stored into the MVar, hopefully indicating to the Haskell Run-Time System
+	that thunks associated with this monadic value should not be garbage collected.
 
 * Modify ScriptExpr parser so 'AssignExpr's have a higher prescedence than 'Equation's to prevent
 	all local assignment operations from being evaluated by the Equation function.
+	-- Done. 
 
 * Modify "with" statement to work on references, and references in other files.
+	--
+	Done. Now the "with" keyword can be followed by the following: (1) Object of type "ORef" to
+	indicate modifications to a specific branch of working memory, (2), an Object of type "OString",
+	where the string points to a file path indexed in the "documentList" of the Dao Runtime. If this
+	path points to a "File" of type "DataFile", then the "with" block will modify the contents of
+	that idea file. (3) An Object of type OPair (OString, ORef) which points to both a file and a
+	branch in the tree of that file which the "with" block should modify.
 
 * Go through Dao.Object.Evaluate and try to make updates to the ExecUnit state as few as possible,
 	replacing the (ContErrT (ReaderT (MVar ExecUnit) IO) a) with (ContErrT (ReaderT ExecUnit IO) a)
 	and moving the individual updatable fields of the ExecUnit structure into their own MVars.
+	--
 	Done. And I am still not sure if I want to have the 'ProgramTable' elemnts contain the
 	'ExecUnit' values themselves, or have 'MVar's elemnts that containing 'ExecUnit's. Right now,
 	the elements are 'MVar's, so there is some ability to modify the 'ExecUnit's at the
@@ -128,10 +169,12 @@ SOLVED:
 * Need a better pretty-printer for 'Dao.Object's.
 	"Dao.Object.Show" module now has very simple pretty-printing functions that prints objects
 	using the same syntax as how they are parsed. 
+	-- Done.
 
 * Pattern matching algorithm is returning actions for only the shortest pattern matches. So a
 	pattern like "aaa bbb" will mask patterns like "aaa bbb ccc", such that typing "aaa bbb ccc"
 	will not return the associated actions, even if that pattern is explicitly defined.
+	--
 	Solved by add just one more case matching statement to the loop, the case where a LeafBranch is
 	encountered and the list of remaining unmatched tokens is NOT empty will return the Leaf part as
 	a result, and will loop again over the branch part using the remaining tokens. If only all my
@@ -174,8 +217,7 @@ SOLVED:
 * Modify the 'DocList doc' data type to contain a (Map Name (MVar (Document doc))) type. Then,
 	modify the "with" statement to operate directly on the MVar, rather than looking up the document
 	each time, and the modifying it in the table.
-	--
-	This is now done.
+	-- Done.
 
 * When loading files, try parsing an idea file expressed as Dao code, rather than binary. First try
 	binary, then try parsing a tree expression.
@@ -185,8 +227,7 @@ SOLVED:
 	programs that have imported them.
 
 * Need to fill in remaining binary operators.
-	--
-	Done.
+	-- Done.
 
 * Modify the Runtime system to allow loading "import" files. Imports will be shared by programs that
 	import them, and executing a string against a program will execute that string against any rules
@@ -220,6 +261,9 @@ SOLVED:
 
 ----------------------------------------------------------------------------------------------------
 FEATURE REQUESTS
+
+* Insert a new "OParser" constructor to the Object data type. OParser objects will be able to make
+	use of the same facilities Dao uses to parse code to create complex text-matching functions.
 
 * There may be a need to be "sub rules" in a program, or to perhaps have a new "private" keyword,
 	such that these rules that can only have strings executed against them when requested to by some
@@ -280,9 +324,9 @@ FEATURE REQUESTS
 	just way too complicated for the purposes of the Dao system.
 
 * Modify the language definition to type check function calls.
+	--
 	I don't really want to do this. The type system may be OK for simple types, and you could even
 	have a "TypeSet" type, like "string|int" to represent a value that can be a string or integer.
-	--
 	This can get complicated quickly. If we are using types to check function call graphs, then
 	functions need to have complex type definitions, like (int->int->pair), and they need to be
 	included in the binary specification, and in the function table. Then, should list types be

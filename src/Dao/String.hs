@@ -61,6 +61,12 @@ uchars = U.toString . toUTF8ByteString
 ustr :: String -> UStr
 ustr = UStr . U.fromString
 
+uwords :: UStr -> [Word8]
+uwords str = UTF8.encode (uchars str)
+
+upack :: [Word8] -> UStr
+upack ax = ustr (UTF8.decode ax)
+
 nil :: UStr
 nil = ustr ""
 

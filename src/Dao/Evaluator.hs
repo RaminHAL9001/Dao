@@ -27,7 +27,7 @@
 
 module Dao.Evaluator where
 
-import           Dao.Debug.ON
+import           Dao.Debug.OFF
 import           Dao.Types
 import qualified Dao.Tree as T
 import           Dao.Pattern
@@ -332,8 +332,8 @@ execScriptExpr script = uncom script >>= \script -> case script of
   NO_OP                        -> return ()
   EvalObject   o               -> unless (isNO_OP (unComment o)) (void (evalObject o))
   IfThenElse   ifn  thn  els   -> nestedExecStack M.empty $ do
-    ifn <- fmap ((\b -> trace ("(evaluated object to "++show b++" value)") b) . objToBool . trace "(evaluate object as boolean)") (evalObjectDeref ifn)
-    execScriptBlock (if ifn then thn else trace "(evaluate else)" $ els)
+    ifn <- fmap objToBool (evalObjectDeref ifn)
+    execScriptBlock (if ifn then thn else els)
   TryCatch     try  name catch -> do
     ce <- withContErrSt (nestedExecStack M.empty (execScriptBlock try)) return
     case ce of
@@ -658,11 +658,13 @@ programFromSource sc = do
           rule    <- return (unComment rule)
           rulePat <- return (map unComment (unComment (rulePattern rule)))
           cxref   <- execRun $
-            dNewMVar $loc "CXRef(ruleAction)" (OnlyAST{sourceScript = trace "(evaluate AST)" $ ruleAction rule})
+            dNewMVar $loc "CXRef(ruleAction)" (OnlyAST{sourceScript = ruleAction rule})
           let fol tre pat = T.merge T.union (++) tre (toTree pat [cxref])
           return (prog, foldl fol pat rulePat, dat, pre, post)
         SetupExpr    scrp -> p $ prog{constructScript = constructScript prog ++ [unComment scrp]}
         TakedownExpr scrp -> p $ prog{destructScript = destructScript prog ++ [unComment scrp]}
         BeginExpr    scrp -> beginEnd scrp >>= \scrp -> return (prog, pat, dat, pre++[scrp], post)
         EndExpr      scrp -> beginEnd scrp >>= \scrp -> return (prog, pat, dat, pre, post++[scrp])
+        Requires   req nm -> undefined
+        ToplevelFunc f nm args scrp -> undefined
 

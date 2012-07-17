@@ -18,6 +18,7 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
+
 module Dao.Object.Parsers where
 
 import           Dao.Types
@@ -28,6 +29,7 @@ import           Dao.Object
 import           Dao.Object.Show
 
 import           Data.Char
+import           Data.List
 
 import qualified Data.ByteString.Lazy as B
 
@@ -46,12 +48,15 @@ whitespace c = c==' ' || isControl c
 nonNLSpace :: Char -> Bool
 nonNLSpace c = whitespace c && c/='\n'
 
-wordToken :: Parser UStr
+wordToken :: Parser String
 wordToken = do
   ubar <- munch (=='_')
   alph <- munch1 isAlpha
   txt  <- munch underbarAlphaNum
-  return (ustr (ubar++alph++txt))
+  return (ubar++alph++txt)
+
+wordTokenUStr :: Parser UStr
+wordTokenUStr = fmap ustr wordToken
 
 numeralToken :: Parser UStr
 numeralToken = do
@@ -65,7 +70,7 @@ idenToken = do
   between (char '{') (char '}') $
     flip sepBy (char '.') $ first $
       [ char '$' >> reusedParser "string literal to be used as part of a Reference literal"
-      , wordToken
+      , wordTokenUStr
       ]
 
 ------------------------------------------------------------------------------------------------------
@@ -186,7 +191,7 @@ litBytes = string "Bytes" >> munch whitespace >> char '\'' >> base where
 
 keyword :: String -> Parser String
 keyword k = do
-  w <- munch whitespace >> wordToken
+  w <- munch whitespace >> wordTokenUStr
   if w == ustr k then return k else fail ("expecting keyword "++k)
 
 -- | Objects that can be parsed without needing more complex constructs, like comma-separated items
@@ -246,7 +251,7 @@ lambdaExpr :: Parser ObjectExpr
 lambdaExpr = do
   con   <- withComments (void (string "func"))
   labelParse "anonymous function" $ do
-    args  <- withComments (listingExpr "argument list for function" '(' ',' ')' (withComments wordToken))
+    args  <- withComments (listingExpr "argument list for function" '(' ',' ')' (withComments wordTokenUStr))
     block <- withComments (blockExpr "anonymous function expression block")
     return (LambdaExpr con args block)
 
@@ -268,10 +273,10 @@ funcArgsList =
 
 funcCallExpr :: Parser ObjectExpr
 funcCallExpr = first $
-  [do name <- withComments wordToken
+  [do name <- withComments wordTokenUStr
       argv <- withComments funcArgsList
       return (FuncCall name argv)
-  ,do name <- withComments wordToken
+  ,do name <- withComments wordTokenUStr
       arg1 <- withComments unitObjectExpr
       return (FuncCall name (Com [arg1]))
   ]
@@ -284,7 +289,7 @@ lambdaCallExpr = do
   return (LambdaCall con names argv)
 
 localRefExpr :: Parser ObjectExpr
-localRefExpr = fmap LocalRef (withComments wordToken)
+localRefExpr = fmap LocalRef (withComments wordTokenUStr)
 
 intRefExpr :: Parser ObjectExpr
 intRefExpr = fmap IntRef (withComments (char '$' >> reusedParser "match index reference"))
@@ -372,11 +377,11 @@ ifThenExpr = do
     thn  <- withComments (blockExpr "conditional expression of an if")
     first $
       [ do  keyword "else"
-            trace "(parsed else keyword)" $ labelParse "else" $ first $
+            labelParse "else" $ first $
               [ do  els <- withComments ifThenExpr
-                    trace "(parsed else-if block)" $ return (IfThenElse cndn thn (Com [els]))
+                    return (IfThenElse cndn thn (Com [els]))
               , do  els <- withComments (blockExpr "else")
-                    trace "(parsed else block)" $ return (IfThenElse cndn thn els)
+                    return (IfThenElse cndn thn els)
               ]
       , return (IfThenElse cndn thn (Com []))
       ]
@@ -388,7 +393,7 @@ tryCatchExpr = do
     try <- withComments (blockExpr "try")
     keyword "catch"
     labelParse "catch" $ do
-      var <- withComments wordToken
+      var <- withComments wordTokenUStr
       catch <- withComments (blockExpr "catch")
       return (TryCatch try var catch)
 
@@ -396,7 +401,7 @@ forLoopExpr :: Parser ScriptExpr
 forLoopExpr = do
   keyword "foreach"
   labelParse "foreach loop" $ do
-    var <- withComments wordToken
+    var <- withComments wordTokenUStr
     keyword "in"
     labelParse "at the \"in\" portion of a foreach loop" $ do
       obj <- withComments objectExpr
@@ -470,6 +475,14 @@ ruleDirectiveParser = fmap RuleExpr $ withComments $ do
 eventDirective :: String -> (Com [Com ScriptExpr] -> Directive) -> Parser Directive
 eventDirective str con = string str >> fmap con (withComments (blockExpr (str++" directive")))
 
+-- | A parser that parses "requires", "string.tokenizer = ...;" and "string.equality = ...;"
+-- directives.
+optionDirective :: String -> Parser Directive
+optionDirective req = do
+  req   <- withComments (fmap ustr (string req))
+  label <- withComments (fmap (ustr . intercalate ".") (sepBy wordToken (char '.')))
+  char ';' >> return (Requires req label)
+
 -- | A 'source' program is composed of concatenated directives.
 directive :: Parser Directive
 directive = first $
@@ -482,6 +495,9 @@ directive = first $
   , eventDirective "BEGIN"    BeginExpr
   , eventDirective "END"      EndExpr
   , eventDirective "TAKEDOWN" TakedownExpr
+  , optionDirective "string.tokenizer"
+  , optionDirective "string.equality"
+  , optionDirective "requires"
   ]
 
 -- | Parses a program string from source code, but does not construct a

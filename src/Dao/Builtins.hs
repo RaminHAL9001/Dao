@@ -18,6 +18,7 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
+
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -29,7 +30,7 @@ module Dao.Builtins where
 -- particularly the unary and binary operators, like arithmetic @(+) (-) (*) (/) (%)@, and other
 -- essentials like @print@, @join@, and @do@.
 
-import           Dao.Debug.ON
+import           Dao.Debug.OFF
 import           Dao.Types
 import qualified Dao.Tree as T
 import           Dao.Pattern
@@ -296,7 +297,7 @@ basicScriptOperations = M.fromList funcList where
         fmap (OList . map (\ (a, b) -> OPair (OString a, OString (filePath b))) . M.assocs) $
           ask >>= dReadMVar $loc . logicalNameIndex
     , func "do" $ \ ax -> do
-        ax <- mapM objectValue ax >>= (\t -> return $ trace "do: got args" t)
+        ax <- mapM objectValue ax
         let run sel ax = do
               strs  <- fmap (concatMap extractStringElems) (mapM objectValue ax)
               xunit <- execScriptToCheck undefined ask :: Check ExecUnit

@@ -102,8 +102,12 @@ parsePattern ax = Pattern{ getPatUnits = patrn, getPatternLength = foldl (+) 0 l
       '$':'*':ax -> (0, Wildcard) : loop ax
       '$':'?':ax -> (1, AnyOne) : loop ax
       '$':'$':ax -> (1, Single (ustr "$")) : loop ax
-      ax -> let (got, ax') = span(/='$') ax
-            in  map (\a -> (1, Single a)) (tokens got) ++ loop ax'
+      '$':ax     -> next "$" ax
+      ax         -> next "" ax
+      where
+        next pfx ax =
+          let (got, ax') = span(/='$') ax
+          in  map (\a -> (1, Single a)) (tokens (pfx++got)) ++ loop ax'
   nub = nubBy n
   n Nothing Nothing = True
   n _       _       = False
@@ -197,7 +201,7 @@ matchTree eq matchTree tokx = loop 0 [] 0 [] matchTree tokx where
   skip gap sz stk p path bx tokx =
        loop (sz+1) (stk++[gap]) p path bx tokx
     ++ if null tokx then [] else skip (gap++[head tokx]) sz stk p path bx (tail tokx)
-  done sz stk p path a = trace ("(matched pattern "++show path++")") $
+  done sz stk p path a =
     [(Pattern{ getPatUnits = path, getPatternLength = p }, matchFromList tokx sz stk, a)]
 
 -- | Calls 'matchPattern', returns the result. This is just a convenience function that is more

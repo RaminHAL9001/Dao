@@ -335,6 +335,13 @@ instance Binary Pattern where
 
 ----------------------------------------------------------------------------------------------------
 
+putNullTermStr :: Name -> Put
+putNullTermStr nm = mapM_ putWord8 (uwords nm) >> putWord8 0
+
+getNullTermStr :: Get UStr
+getNullTermStr = loop [] where
+  loop wx = getWord8 >>= \w -> if w==0 then return (upack wx) else loop (wx++[w])
+
 putCommentList :: [Comment] -> Put
 putCommentList comx = putListWith comx $ \com ->
   case com of
@@ -470,11 +477,18 @@ instance Binary Script where
 
 instance Binary Directive where
   put d = case d of
-    ImportExpr     name     -> x 0x61 (putCom name)
-    ToplevelDefine name obj -> x 0x62 (putComWith putList name >> putCom obj)
-    RuleExpr       rule     -> x 0x63 (putCom rule)
-    BeginExpr      scrp     -> x 0x64 (putComList scrp)
-    EndExpr        scrp     -> x 0x65 (putComList scrp)
+    ImportExpr     name           -> x 0x61 (putCom name)
+    ToplevelDefine name obj       -> x 0x62 (putComWith putList name >> putCom obj)
+    RuleExpr       rule           -> x 0x63 (putCom rule)
+    BeginExpr      scrp           -> x 0x64 (putComList scrp)
+    EndExpr        scrp           -> x 0x65 (putComList scrp)
+    Requires       req nm         -> x 0x66 $
+      putComWith putNullTermStr req >> putComWith putNullTermStr nm
+    ToplevelFunc   f nm args scrp -> x 0x67 $ do
+      putComWith     return         f
+      putComWith     putNullTermStr nm
+      putComListWith putNullTermStr args
+      putComList     scrp
     where { x i putx = putWord8 i >> putx }
   get = do
     w <- getWord8
@@ -484,6 +498,13 @@ instance Binary Directive where
       0x63 -> liftM  RuleExpr       getCom
       0x64 -> liftM  BeginExpr      getComList
       0x65 -> liftM  EndExpr        getComList
+      0x66 -> liftM  EndExpr        getComList
+      0x67 -> do
+        f    <- getComWith (return ())
+        nm   <- getComWith getNullTermStr
+        args <- getComListWith getNullTermStr
+        scrp <- getComList
+        return (ToplevelFunc f nm args scrp)
 
 instance Binary SourceCode where
   put sc = do

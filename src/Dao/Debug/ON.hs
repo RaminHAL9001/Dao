@@ -19,6 +19,7 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
+
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE Rank2Types #-}
 
@@ -146,15 +147,13 @@ debugIO loc msg debug r testTarget = case debug of
             DFork         _ _ t name -> modifyIORef ttab (M.insert t (ustr name)) >> return True
             DThreadDied     _ t      -> modifyIORef ttab (M.delete t) >> return True
             DThreadKilled   _ t _    -> modifyIORef ttab (M.delete t) >> return True
-            DHalt                    -> traceIO "(received halt)" >> return False
-            _            | M.null t  -> traceIO "(thread table is null)" >> return False
+            DHalt                    -> return False
+            _            | M.null t  -> return False
                          | otherwise -> return True
           empty <- isEmptyMVar retvar
           when (continue && empty) loop
     handle loopException loop
-    traceIO "DEBUG HOST, debug loop exited, shutting down debugger"
     a <- takeMVar retvar
-    traceIO "DEBUG HOST thread exited normally"
     hPutStrLn file "DEBUG HOST thread exited normally"
     return a
 

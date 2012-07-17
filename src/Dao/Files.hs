@@ -18,13 +18,14 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
-{-# LANGUAGE TemplateHaskell #-}
 
-module Dao.Files where
+{-# LANGUAGE TemplateHaskell #-}
 
 -- | This module takes care of loading Dao 'Dao.Types.SourceCode' and Dao 'Dao.Types.Document's.
 
-import           Dao.Debug.ON
+module Dao.Files where
+
+import           Dao.Debug.OFF
 import           Dao.Types
 import           Dao.Document
 import           Dao.Evaluator
@@ -66,6 +67,7 @@ loadFile public path = ask >>= \runtime -> do
   let ok msg = dPutStrErr $loc (msg++' ':show path)
       upath = ustr path
   -- First try to load the file as a binary program file, and then try it as a binary data file.
+  lift $ putStrLn ("Loading file "++show upath)
   h    <- lift (openFile path ReadMode)
   zero <- lift (hGetPosn h)
   enc  <- lift (hGetEncoding h)

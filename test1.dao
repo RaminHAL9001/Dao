@@ -42,9 +42,18 @@ rule "use nothing" {
 	print("No longer using file "+${use.file});
 }
 
+rule "test ref" {
+	a = $${test.ref};
+	print(a);
+	@a = "hello";
+	print(@a);
+}
+
 rule "$* is a kind of $*" {
 	try {
-		with(@${use.file}) { ref($1) = $2; print("OK"); }
+		a = ${use.file};
+		print("use file "+a);
+		with a { ref($1) = $2; print("OK"); }
 	}
 	catch err {
 		try { ref($1) = $2; print("I guess so."); }
@@ -54,7 +63,7 @@ rule "$* is a kind of $*" {
 
 rule "file $*." {
 	try {
-		with "/home/ramin/main/hs/test1.idea" {
+		with "/home/ramin/main/dao/test1.idea" {
 			${const.ref} = $1;
 			print("I understand the fact that "+ join($1) +".");
 		}
@@ -67,8 +76,8 @@ TAKEDOWN {
 }
 
 rule "list files" { print(listDBs()); }
-rule "load test file" { loadDB("/home/ramin/main/hs/test1.idea"); print("Loaded database."); }
-rule "save test file" { saveDB("/home/ramin/main/hs/test1.idea"); print("Saved database."); }
+rule "load test file" { loadDB("/home/ramin/main/dao/test1.idea"); print("Loaded database."); }
+rule "save test file" { saveDB("/home/ramin/main/dao/test1.idea"); print("Saved database."); }
 
 rule "recall again" {
 	print("I recall again.");
@@ -77,7 +86,7 @@ rule "recall again" {
 rule "contents of file" {
 	print("Recall file...");
 	try {
-		with "/home/ramin/main/hs/test1.idea" {
+		with "/home/ramin/main/dao/test1.idea" {
 			print("I recall the fact that "+ join(${const.ref}) +".");
 		}
 	}
@@ -145,5 +154,22 @@ rule "test list" {
 
 BEGIN {
 	print("start processing");
+}
+
+rule "$? file $*" {
+	op = join("", $1);
+	a  = join("", $2);
+	try {	 if(op=="new")   { newDB(a);   print("Created new file "+a); }
+		else if(op=="save")  { saveDB(a);  print("Save file "+a); }
+		else if(op=="open")  { openDB(a);  print("Open file "+a); }
+		else if(op=="close") { closeDB(a); print("Close file "+a); }
+		else if(op=="use")   { ${use.file} = a; print("Use file "+a); }
+		else { print("I don't understand what \""+op+"\" file means."); }
+	}
+	catch err { print(err); }
+}
+
+rule "$bad dollar sign" {
+	print("matched pattern with bad dollar sign.");
 }
 

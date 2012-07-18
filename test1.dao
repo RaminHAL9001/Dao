@@ -1,7 +1,7 @@
 module "test module"
 
 END {
-	print("end processing2");
+	print("(-1)");
 }
 
 rule "hello" {
@@ -27,6 +27,7 @@ rule "fact $*." {
 
 rule "recall" {
 	print("I recall the fact that "+ join(${const.ref}));
+	try { print("${test.ref} = "+${test.ref}); } catch err {}
 }
 
 SETUP {
@@ -38,14 +39,15 @@ rule "recall another" {
 }
 
 rule "use nothing" {
-	delete(${use.file});
-	print("No longer using file "+${use.file});
+	a = $${use.file};
+	delete(a);
+	print("No longer using file "+a);
 }
 
 rule "test ref" {
 	a = $${test.ref};
 	print(a);
-	@a = "hello";
+	ref(a) = "hello";
 	print(@a);
 }
 
@@ -129,7 +131,7 @@ rule "test arith" {
 }
 
 END {
-	print("end processing1");
+	print("(-0)");
 }
 
 rule "test index $*" {
@@ -153,12 +155,13 @@ rule "test list" {
 }
 
 BEGIN {
-	print("start processing");
+	print("(+1)");
 }
 
 rule "$? file $*" {
 	op = join("", $1);
 	a  = join("", $2);
+	print(op+" file "+a);
 	try {	 if(op=="new")   { newDB(a);   print("Created new file "+a); }
 		else if(op=="save")  { saveDB(a);  print("Save file "+a); }
 		else if(op=="open")  { openDB(a);  print("Open file "+a); }

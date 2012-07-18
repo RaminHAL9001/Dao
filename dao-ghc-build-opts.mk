@@ -35,6 +35,13 @@ LOAD_PROJECT_FILES = \
 
 DAO_PROJECT_FILES := $(shell $(LOAD_PROJECT_FILES))
 
+EDIT_FILES_LIST := dao-edit-files.list
+
+LOAD_EDIT_FILES = \
+	if test -r '$(EDIT_FILES_LIST)'; then cat '$(EDIT_FILES_LIST)'; fi
+
+DAO_EDIT_FILES = $(shell $(LOAD_EDIT_FILES))
+
 ifndef DAO_PROJECT_FILES
 $(error $(DAO_PROJECT_FILES) list is empty)
 endif
@@ -60,5 +67,8 @@ calc: src/Dao/Calc.hs src/Dao/Object/Parsers.hs src/Dao/Combination.hs src/Dao/C
 	$(DAO_COMPILE) src/Dao/Calc.hs -o ./calc
 
 edit:
-	vim -p4 scratch.hs -c ':set autowrite autoread' dao-ghc-build-opts.mk dao-project-files.list $(DAO_DEPENDS_SRC)
+	vim -p4 scratch.hs -c ':set autowrite autoread' \
+		dao-ghc-build-opts.mk dao-project-files.list \
+		$(DAO_DEPENDS_SRC) \
+		$(DAO_EDIT_FILES)
 

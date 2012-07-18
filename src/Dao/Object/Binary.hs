@@ -322,14 +322,21 @@ instance (Binary a, RealFloat a) => Binary (Complex a) where
 --    get = get >>= \i -> get >>= \px -> return (Pattern{getPatternLength = i, getPatUnits = px })
 
 instance Binary PatUnit where
-  put p = put (patUnitToObj p)
-  get = fmap objToPatUnit get
+  put p = case p of
+    Wildcard -> putWord8 1
+    AnyOne   -> putWord8 2
+    Single o -> putWord8 3 >> put o
+  get = getWord8 >>= \w -> case w of
+    1 -> return Wildcard
+    2 -> return AnyOne
+    3 -> fmap Single get
+    _ -> error "corrupted Pattern object in binary file"
 
 instance Binary Pattern where
   put p = putList (getPatUnits p)
   get   = getList >>= \px -> return $
     Pattern
-    { getPatUnits = map objToPatUnit px
+    { getPatUnits = px
     , getPatternLength = length px
     }
 
@@ -398,15 +405,16 @@ instance Binary ObjectExpr where
     Literal      a     -> x 0x41 $ putCom a
     IntRef       a     -> x 0x42 $ putCom a
     LocalRef     a     -> x 0x43 $ putCom a
-    AssignExpr   a b   -> x 0x44 $ putCom a >> putCom b
-    FuncCall     a b   -> x 0x45 $ putCom a >> putComList b
-    LambdaCall   a b c -> x 0x46 $ putComWith return a >> putCom b >> putComList c
-    ParenExpr    a     -> x 0x47 $ putCom a
-    Equation     a b c -> x 0x48 $ putCom a >> putCom b >> putCom c
-    DictExpr     a b   -> x 0x49 $ putCom a >> putComList b
-    ArrayExpr    a b c -> x 0x4A $ putComWith return a >> putComList b >> putComList c
-    ArraySubExpr a b   -> x 0x4B $ putCom a >> putCom b
-    LambdaExpr   a b c -> x 0x4C $ putComWith return a >> putComList b >> putComList c
+    GlobalRef    a     -> x 0x44 $ putComWith putList a
+    AssignExpr   a b   -> x 0x45 $ putCom a >> putCom b
+    FuncCall     a b   -> x 0x46 $ putCom a >> putComList b
+    LambdaCall   a b c -> x 0x47 $ putComWith return a >> putCom b >> putComList c
+    ParenExpr    a     -> x 0x48 $ putCom a
+    Equation     a b c -> x 0x49 $ putCom a >> putCom b >> putCom c
+    DictExpr     a b   -> x 0x4A $ putCom a >> putComList b
+    ArrayExpr    a b c -> x 0x4B $ putComWith return a >> putComList b >> putComList c
+    ArraySubExpr a b   -> x 0x4C $ putCom a >> putCom b
+    LambdaExpr   a b c -> x 0x4D $ putComWith return a >> putComList b >> putComList c
     where
       x i putx  = putWord8 i >> putx
       char3 str = mapM_ (putWord8 . fromIntegral) (take 3 (map ord (uchars str) ++ repeat 0))
@@ -416,15 +424,16 @@ instance Binary ObjectExpr where
       0x41 -> liftM  Literal      getCom
       0x42 -> liftM  IntRef       getCom
       0x43 -> liftM  LocalRef     getCom
-      0x44 -> liftM2 AssignExpr   getCom getCom
-      0x45 -> liftM2 FuncCall     getCom getComList
-      0x46 -> liftM3 LambdaCall   (getComWith (return ())) getCom getComList
-      0x47 -> liftM  ParenExpr    getCom
-      0x48 -> liftM3 Equation     getCom getCom getCom
-      0x49 -> liftM2 DictExpr     getCom getComList
-      0x4A -> liftM3 ArrayExpr    (getComWith (return ())) getComList getComList
-      0x4B -> liftM2 ArraySubExpr getCom getCom
-      0x4C -> liftM3 LambdaExpr   (getComWith (return ())) getComList getComList
+      0x44 -> liftM  GlobalRef    (getComWith getList)
+      0x45 -> liftM2 AssignExpr   getCom getCom
+      0x46 -> liftM2 FuncCall     getCom getComList
+      0x47 -> liftM3 LambdaCall   (getComWith (return ())) getCom getComList
+      0x48 -> liftM  ParenExpr    getCom
+      0x49 -> liftM3 Equation     getCom getCom getCom
+      0x4A -> liftM2 DictExpr     getCom getComList
+      0x4B -> liftM3 ArrayExpr    (getComWith (return ())) getComList getComList
+      0x4C -> liftM2 ArraySubExpr getCom getCom
+      0x4D -> liftM3 LambdaExpr   (getComWith (return ())) getComList getComList
       _    -> error "could not load, corrupted data in object expression"
       where
         { char3 = do

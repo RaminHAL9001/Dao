@@ -19,7 +19,7 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
-{-# LANGUAGE TemplateHaskell #-}
+-- {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE FlexibleContexts #-}
 
 module Dao.Document where
@@ -90,7 +90,7 @@ instance Binary Document where
 -- | This function can be evaluated in a 'Dao.Types.Run' monad. It simply creates a new
 -- 'Dao.Types.DocListHandle'.
 newDocList :: Bugged r => ReaderT r IO DocListHandle
-newDocList = dNewMVar $loc "DocListHandle" M.empty
+newDocList = dNewMVar xloc "DocListHandle" M.empty
 
 -- | This function can be evaluated in a 'Dao.Types.Run' monad. It takes debugging information as
 -- well, so pass 'Prelude.Nothing' and an empty string as the first two parameters if you are at a
@@ -103,20 +103,20 @@ newDocHandle loc msg doc = dNewMVar loc msg doc
 -- indicates whether or not the 'Dao.Types.Document' in this 'Dao.Types.DocHandle' has been
 -- modified.
 setModified :: Bugged r => DocHandle -> ReaderT r IO ()
-setModified doc = dModifyMVar_ $loc doc $ \doc ->
+setModified doc = dModifyMVar_ xloc doc $ \doc ->
   return (doc{docModified = 1 + docModified doc})
 
 withDocList :: (DocList -> Run (DocList, a)) -> Run a
-withDocList fn = ask >>= \runtime -> dModifyMVar $loc (documentList runtime) fn
+withDocList fn = ask >>= \runtime -> dModifyMVar xloc (documentList runtime) fn
 
 withDocList_ :: (DocList -> Run DocList) -> Run ()
-withDocList_ fn = ask >>= \runtime -> dModifyMVar_ $loc (documentList runtime) fn
+withDocList_ fn = ask >>= \runtime -> dModifyMVar_ xloc (documentList runtime) fn
 
 withUPath :: UPath -> (Document -> Run (Document, a)) -> Run a
 withUPath docref docUpd = do
-  doc <- ask >>= fmap (M.lookup docref) . dReadMVar $loc . documentList
+  doc <- ask >>= fmap (M.lookup docref) . dReadMVar xloc . documentList
   case doc of
-    Just doc -> dModifyMVar $loc doc docUpd
+    Just doc -> dModifyMVar xloc doc docUpd
     Nothing  ->
       error ("document reference "++show docref++" has not been loaded from persistent storage")
 
@@ -146,7 +146,7 @@ newDoc docref doc = do
   withDocList_ $ \docs -> case M.lookup docref docs of
     Just _  -> error ("document reference "++show docref++" is already loaded")
     Nothing -> do
-      doc <- dNewMVar $loc ("DocHandle("++show docref++")") doc
+      doc <- dNewMVar xloc ("DocHandle("++show docref++")") doc
       return (M.insert docref doc docs)
 
 -- | Open a 'Document', do not create it if it does not exist.
@@ -155,12 +155,12 @@ openDoc docref = do
   docref <- fullPath docref
   withDocList $ \docs -> case M.lookup docref docs of
     Just doc -> do
-      dModifyMVar_ $loc doc (\doc -> return (doc{docRefCount = 1 + docRefCount doc}))
+      dModifyMVar_ xloc doc (\doc -> return (doc{docRefCount = 1 + docRefCount doc}))
       return (docs, doc)
     Nothing  -> do
       bytes <- lift (B.readFile (docRefToFilePath docref))
       let doc = seq bytes $ decode bytes
-      doc <- seq doc $ dNewMVar $loc ("DocHandle("++show docref++")") doc
+      doc <- seq doc $ dNewMVar xloc ("DocHandle("++show docref++")") doc
       return (M.insert docref doc docs, doc)
 
 -- | Save a persistent data store to a specified file path referring to, or changing, the
@@ -185,7 +185,7 @@ saveDoc docref = saveDocAs docref docref
 -- | Save to file every document that has a non-'Data.Maybe.Nothing' name for 'docFilePath'.
 saveAll :: Run ()
 saveAll = withDocList_ $ \docs -> do
-  forM_ (M.assocs docs) $ \ (docref, doc) -> dReadMVar $loc doc >>= \doc ->
+  forM_ (M.assocs docs) $ \ (docref, doc) -> dReadMVar xloc doc >>= \doc ->
     lift (B.writeFile (docRefToFilePath docref) $! encode (docRootObject doc))
   return docs
 
@@ -197,7 +197,7 @@ closeDoc docref = do
   docref <- fullPath docref
   withDocList_ $ \docs -> case M.lookup docref docs of
     Nothing  -> return docs
-    Just doc -> dModifyMVar $loc doc $ \doc ->
+    Just doc -> dModifyMVar xloc doc $ \doc ->
       if docRefCount doc == 0
         then return (doc, M.delete docref docs)
         else return (doc{docRefCount = docRefCount doc - 1}, docs)

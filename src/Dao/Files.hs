@@ -19,7 +19,7 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
-{-# LANGUAGE TemplateHaskell #-}
+-- {-# LANGUAGE TemplateHaskell #-}
 
 -- | This module takes care of loading Dao 'Dao.Types.SourceCode' and Dao 'Dao.Types.Document's.
 
@@ -64,7 +64,7 @@ putStrErr msg = hSetBuffering stderr LineBuffering >> hPutStrLn stderr msg
 -- 'asPublic' to force the type to be a 'PublicType'd file.
 loadFile :: Bool -> FilePath -> Run File
 loadFile public path = ask >>= \runtime -> do
-  let ok msg = dPutStrErr $loc (msg++' ':show path)
+  let ok msg = dPutStrErr xloc (msg++' ':show path)
       upath = ustr path
   -- First try to load the file as a binary program file, and then try it as a binary data file.
   lift $ putStrLn ("Loading file "++show upath)
@@ -75,10 +75,10 @@ loadFile public path = ask >>= \runtime -> do
   dat  <- catchErrorCall $ lift $ fmap (B.decode$!) (B.hGetContents h) >>= evaluate
   case dat of
     Right doc    -> do -- The file is a document.
-      docHandle <- newDocHandle $loc ("DocHandle("++show path++")") doc
+      docHandle <- newDocHandle xloc ("DocHandle("++show path++")") doc
       let file = DataFile{filePath = upath, fileData = docHandle}
-      dModifyMVar_ $loc (documentList runtime) (\docTab -> return (M.insert upath docHandle docTab))
-      dModifyMVar_ $loc (pathIndex runtime) (\pathTab -> return (M.insert upath file pathTab))
+      dModifyMVar_ xloc (documentList runtime) (\docTab -> return (M.insert upath docHandle docTab))
+      dModifyMVar_ xloc (pathIndex runtime) (\pathTab -> return (M.insert upath file pathTab))
       ok "loaded data file"
       return file
     Left  docErr -> do -- The file does not seem to be a document, try parsing it as a script.
@@ -113,7 +113,7 @@ registerSourceCode public upath sourceCode = ask >>= \runtime -> do
   let modName  = unComment (sourceModuleName sourceCode)
       pathTab  = pathIndex runtime
       modTab   = logicalNameIndex runtime
-  alreadyLoaded <- fmap (M.lookup upath) (dReadMVar $loc pathTab)
+  alreadyLoaded <- fmap (M.lookup upath) (dReadMVar xloc pathTab)
   case alreadyLoaded of
     Just file -> case file of
       ProgramFile _ upath' _        _     | upath' /= upath     -> error $
@@ -128,7 +128,7 @@ registerSourceCode public upath sourceCode = ask >>= \runtime -> do
           "INTERNAL ERROR: "++show upath
         ++" has been loaded as both a data file and as an executable script."
     Nothing   -> do
-      moduleNameConflict <- fmap (M.lookup modName) (dReadMVar $loc modTab)
+      moduleNameConflict <- fmap (M.lookup modName) (dReadMVar xloc modTab)
       case moduleNameConflict of
         Just file -> error $
             "ERROR: cannot load source file "++show upath++"\n"
@@ -141,7 +141,7 @@ registerSourceCode public upath sourceCode = ask >>= \runtime -> do
           xunit     <- initSourceCode sourceCode >>= lift . evaluate
           -- Check to make sure the logical name in the loaded program does not conflict with that
           -- of another loaded previously.
-          xunitMVar <- dNewMVar $loc ("ExecUnit("++show upath++")") xunit
+          xunitMVar <- dNewMVar xloc ("ExecUnit("++show upath++")") xunit
           let file =
                 ProgramFile
                 { publicFile  = public
@@ -149,8 +149,8 @@ registerSourceCode public upath sourceCode = ask >>= \runtime -> do
                 , logicalName = unComment (sourceModuleName sourceCode)
                 , execUnit   = xunitMVar
                 }
-          dModifyMVar_ $loc pathTab $ return . M.insert upath file
-          dModifyMVar_ $loc modTab  $ return . M.insert modName file
+          dModifyMVar_ xloc pathTab $ return . M.insert upath file
+          dModifyMVar_ xloc modTab  $ return . M.insert modName file
           return file
 
 -- | You should not normally need to call evaluate this function, you should use
@@ -197,10 +197,10 @@ setupTakedown select xunit = ask >>= \runtime ->
 checkImports :: File -> Run [(Name, [Name])]
 checkImports file = ask >>= \runtime -> case file of
   ProgramFile _ _ modName xunit -> do
-    pathTab <- dReadMVar $loc (pathIndex runtime)
-    modTab  <- dReadMVar $loc (logicalNameIndex runtime)
-    dStack $loc "checkImports" $ do
-      dModifyMVar $loc xunit $ \xunit -> case currentProgram xunit of
+    pathTab <- dReadMVar xloc (pathIndex runtime)
+    modTab  <- dReadMVar xloc (logicalNameIndex runtime)
+    dStack xloc "checkImports" $ do
+      dModifyMVar xloc xunit $ \xunit -> case currentProgram xunit of
         Nothing   -> return (xunit, [(modName, [])])
         Just prog -> case programImports prog of
           []      -> return (xunit, [])
@@ -216,5 +216,5 @@ checkImports file = ask >>= \runtime -> case file of
 -- | Like 'checkImports' but checks every file that has been loaded by the Runtime.
 checkAllImports :: Run [(Name, [Name])]
 checkAllImports = ask >>= \runtime -> fmap (filter (not . null . snd) . concat) $
-  dReadMVar $loc (pathIndex runtime) >>= mapM checkImports . M.elems
+  dReadMVar xloc (pathIndex runtime) >>= mapM checkImports . M.elems
 

@@ -20,7 +20,7 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
-{-# LANGUAGE TemplateHaskell #-}
+-- {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE Rank2Types #-}
@@ -66,10 +66,10 @@ import Debug.Trace
 
 initExecUnit :: Runtime -> Run ExecUnit
 initExecUnit runtime = do
-  unctErrs <- dNewMVar $loc "ExecUnit.uncaughtErrors" []
-  recurInp <- dNewMVar $loc "ExecUnit.recursiveInput" []
-  xheap    <- dNewMVar $loc "ExecUnit.execHeap" T.Void
-  xstack   <- dNewMVar $loc "ExecUnit.execStack" []
+  unctErrs <- dNewMVar xloc "ExecUnit.uncaughtErrors" []
+  recurInp <- dNewMVar xloc "ExecUnit.recursiveInput" []
+  xheap    <- dNewMVar xloc "ExecUnit.execHeap" T.Void
+  xstack   <- dNewMVar xloc "ExecUnit.execStack" []
   return $
     ExecUnit
     { parentRuntime      = runtime
@@ -109,19 +109,19 @@ mvarContext
   -> ExecScript a
 mvarContext getMVar push pop fn = do
   mvar <- fmap getMVar ask
-  execRun (dModifyMVar_ $loc mvar (lift . push))
+  execRun (dModifyMVar_ xloc mvar (lift . push))
   ce <- withContErrSt fn return
-  execRun (dModifyMVar_ $loc mvar (lift . pop))
+  execRun (dModifyMVar_ xloc mvar (lift . pop))
   returnContErr ce
 
 modifyXUnit :: (ExecUnit -> DMVar a) -> (a -> IO (a, b)) -> ExecScript b
 modifyXUnit getMVar updMVar = fmap getMVar ask >>= \mvar ->
-  execRun (dModifyMVar $loc mvar (lift . updMVar))
+  execRun (dModifyMVar xloc mvar (lift . updMVar))
 
 -- | Modify an 'Control.Concurrent.DMVar.DMVar' value in the 'ExecUnit' atomically.
 modifyXUnit_ :: (ExecUnit -> DMVar a) -> (a -> IO a) -> ExecScript ()
 modifyXUnit_ getMVar updMVar = fmap getMVar ask >>= \mvar ->
-  execRun (dModifyMVar_ $loc mvar (lift . updMVar))
+  execRun (dModifyMVar_ xloc mvar (lift . updMVar))
 
 ----------------------------------------------------------------------------------------------------
 -- $StackOperations
@@ -143,13 +143,13 @@ nestedExecStack dict fn = mvarContext execStack (return . (dict:)) pop fn where
 -- function. This is what you should use to perform a Dao function call within a Dao function call.
 pushExecStack :: T_dict -> ExecScript Object -> ExecScript Object
 pushExecStack dict fn = do
-  stackMVar <- execRun (dNewMVar $loc "pushExecStack/ExecUnit.execStack" [dict])
+  stackMVar <- execRun (dNewMVar xloc "pushExecStack/ExecUnit.execStack" [dict])
   local (\xunit -> xunit{execStack = stackMVar}) (catchCEReturn fn)
 
 -- | Lookup a value in the 'execStack'.
 execLocalLookup :: Name -> ExecScript (Maybe Object)
 execLocalLookup sym =
-  fmap execStack ask >>= execRun . dReadMVar $loc >>= return . msum . map (M.lookup sym)
+  fmap execStack ask >>= execRun . dReadMVar xloc >>= return . msum . map (M.lookup sym)
 
 -- | Try to assign to an already-delcared local variable. If the assignment is successful, the
 -- 'execStack' is updated.
@@ -173,25 +173,25 @@ putLocalVar name obj = modifyXUnit_ execStack $ \ax -> case ax of
 -- | To define a global variable, first the 'currentDocument' is checked. If it is set, the variable
 -- is assigned to the document at the reference location prepending 'currentBranch' reference.
 -- Otherwise, the variable is assigned to the 'execHeap'.
-modifyGlobalVar :: [Name] -> (Maybe Object -> Maybe Object) -> ExecScript ()
+modifyGlobalVar :: [Name] -> ([Name] -> T_tree -> T_tree) -> ExecScript ()
 modifyGlobalVar name alt = do
   xunit <- ask
   let prefixName = currentBranch xunit ++ name
   case currentDocument xunit of
-    Nothing  -> modifyXUnit_ execHeap (return . T.alter alt id prefixName)
-    Just doc -> execRun $ dModifyMVar_ $loc doc $ \doc -> return $
-      doc{docRootObject = T.alter alt id prefixName (docRootObject doc)}
+    Nothing  -> modifyXUnit_ execHeap (return . alt prefixName)
+    Just doc -> execRun $ dModifyMVar_ xloc doc $ \doc -> return $
+      doc{docRootObject = alt prefixName (docRootObject doc)}
 
 -- | To delete a global variable, the same process of searching for the address of the object is
 -- followed for 'defineGlobalVar', except of course the variable is deleted.
 deleteGlobalVar :: [Name] -> ExecScript ()
-deleteGlobalVar name = modifyGlobalVar name (const Nothing)
+deleteGlobalVar name = modifyGlobalVar name (\name -> T.delete name)
 
 -- | To define a global variable, first the 'currentDocument' is checked. If it is set, the variable
 -- is assigned to the document at the reference location prepending 'currentBranch' reference.
 -- Otherwise, the variable is assigned to the 'execHeap'.
 defineGlobalVar :: [Name] -> Object -> ExecScript ()
-defineGlobalVar name obj = modifyGlobalVar name (const (Just obj))
+defineGlobalVar name obj = modifyGlobalVar name (\name -> T.insert name obj)
 
 --  defineGlobalVar :: [Name] -> Object -> ExecScript ()
 --  defineGlobalVar name obj = do
@@ -199,7 +199,7 @@ defineGlobalVar name obj = modifyGlobalVar name (const (Just obj))
 --    let prefixName = currentBranch xunit ++ name
 --    case currentDocument xunit of
 --      Nothing  -> modifyXUnit_ execHeap (return . T.insert prefixName obj)
---      Just doc -> execRun $ dModifyMVar_ $loc doc $ \doc -> return $
+--      Just doc -> execRun $ dModifyMVar_ xloc doc $ \doc -> return $
 --        doc{docRootObject = T.insert prefixName obj (docRootObject doc)}
 
 -- | Lookup a reference value in the static object table of the currently loaded program. Static
@@ -209,13 +209,13 @@ staticDataLookup name = do
   xunit <- ask
   case currentProgram xunit of
     Nothing   -> return Nothing
-    Just prog -> execRun $ dReadMVar $loc (staticData prog) >>=
+    Just prog -> execRun $ dReadMVar xloc (staticData prog) >>=
       return . (T.lookup (currentBranch xunit ++ name))
 
 -- | Lookup an object in the 'execHeap' for this 'ExecUnit'.
 lookupExecHeap :: [Name] -> ExecScript (Maybe Object)
 lookupExecHeap name = ask >>= \xunit -> execRun $
-  dReadMVar $loc (execHeap xunit) >>= return . (T.lookup (currentBranch xunit ++ name))
+  dReadMVar xloc (execHeap xunit) >>= return . (T.lookup (currentBranch xunit ++ name))
 
 -- | Lookup a reference value in the durrent document, if the current document has been set with a
 -- "with" statement.
@@ -224,7 +224,7 @@ currentDocumentLookup name = do
   xunit <- ask
   case currentDocument xunit of
     Nothing  -> return Nothing
-    Just doc -> execRun $ dReadMVar $loc doc >>=
+    Just doc -> execRun $ dReadMVar xloc doc >>=
       return . (T.lookup (currentBranch xunit ++ name)) . docRootObject
 
 -- | Lookup an object, first looking in the current document, then in the 'execHeap'.
@@ -332,7 +332,7 @@ execScriptExpr script = uncom script >>= \script -> case script of
   NO_OP                        -> return ()
   EvalObject   o               -> unless (isNO_OP (unComment o)) (void (evalObject o))
   IfThenElse   ifn  thn  els   -> nestedExecStack M.empty $ do
-    ifn <- fmap objToBool (evalObjectDeref ifn)
+    ifn <- fmap objToBool (evalObject ifn)
     execScriptBlock (if ifn then thn else els)
   TryCatch     try  name catch -> do
     ce <- withContErrSt (nestedExecStack M.empty (execScriptBlock try)) return
@@ -343,24 +343,25 @@ execScriptExpr script = uncom script >>= \script -> case script of
       ce        -> returnContErr ce
   ForLoop    varName inObj thn -> nestedExecStack M.empty $ do
     varName <- uncom varName
-    inObj   <- evalObjectDeref inObj 
-    objToList inObj >>= loop thn varName where
-      block thn = if null thn then return True else scrpExpr (head thn) >> block (tail thn)
-      ctrlfn ifn com thn = do
-        ifn <- evalObjectDeref ifn
-        uncom com
-        case ifn of
-          ONull -> return (not thn)
-          _     -> return thn
-      scrpExpr expr = case unComment expr of
-        ContinueExpr a ifn com -> uncom a >>= ctrlfn ifn com
-        _                      -> execScriptExpr expr >> return True
-      loop thn name ix = case ix of
-        []   -> return ()
-        i:ix -> putLocalVar name i >> uncom thn >>= block >>= flip when (loop thn name ix)
+    inObj   <- evalObject inObj 
+    let block thn = if null thn then return True else scrpExpr (head thn) >> block (tail thn)
+        ctrlfn ifn com thn = do
+          ifn <- evalObject ifn
+          uncom com
+          case ifn of
+            ONull -> return (not thn)
+            _     -> return thn
+        scrpExpr expr = case unComment expr of
+          ContinueExpr a ifn com -> uncom a >>= ctrlfn ifn com
+          _                      -> execScriptExpr expr >> return True
+        loop thn name ix = case ix of
+          []   -> return ()
+          i:ix -> putLocalVar name i >> uncom thn >>= block >>= flip when (loop thn name ix)
+        inObjType = OType (objType inObj)
+    checkToExecScript (ustr "for") inObjType (objToList inObj >>= checkOK) >>= loop thn varName
   ContinueExpr a    _    _     -> uncom a >>= \a -> simpleError $
     '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" loop"
-  ReturnExpr   a    obj  com   -> uncom a >>= \a -> evalObjectDeref obj >>= \obj ->
+  ReturnExpr   a    obj  com   -> uncom a >>= \a -> evalObject obj >>= \obj ->
     uncom com >> (if a then ceReturn else ceError) obj
   WithDoc      lval thn        -> nestedExecStack (M.empty) $ do
     lval <- evalObject lval
@@ -404,16 +405,6 @@ called_nonfunction_object op obj =
   typeError obj (show op++" was called as a function but is not a function type, ") $
     show ScriptType++" or "++show RuleType
 
--- | Evaluate an 'ObjectExpr' to an 'Dao.Types.Object' value, and does if it evaluates to a
--- reference type 'Dao.Types.ORef', then return the de-referenced value, or an throw an error if it
--- cannot be dereferenced.
-evalObjectDeref :: Com ObjectExpr -> ExecScript Object
-evalObjectDeref obj = evalObject obj >>= \obj -> case obj of
-  ORef ref -> execGlobalLookup ref >>= \obj -> case obj of
-    Nothing  -> derefError ref
-    Just obj -> return obj
-  obj      -> return obj
-
 -- | Evaluate an 'ObjectExpr' to an 'Dao.Types.Object' value, and does not de-reference objects of
 -- type 'Dao.Types.ORef'
 evalObject :: Com ObjectExpr -> ExecScript Object
@@ -426,17 +417,25 @@ evalObject obj = uncom obj >>= \obj -> case obj of
     case o of
       Nothing -> objectError (OString n) ("local variable "++show n++" is undefined in current context")
       Just o  -> return o
+  GlobalRef     nm              -> do
+    nm <- uncom nm
+    o  <- execGlobalLookup nm
+    case o of
+      Nothing -> derefError nm
+      Just o  -> return o
   AssignExpr    nm  val         -> do
-    val <- evalObjectDeref val
-    case unComment nm of -- First check if it is a local reference. If so, don't evaluate it.
-      LocalRef nm -> do
-        uncom nm >>= \nm -> assignLocalVar nm val >> return val
-      _ -> do -- Otherwise, evaluate the expression and check if it is a reference.
-        nm <- evalObject nm
-        case nm of -- If it is a reference, we can assign a value to it.
-          ORef nm -> do
-            defineGlobalVar nm val >> return val
-          _ -> typeError nm  "the left-hand side of the assignment expression" (show RefType)
+    nm  <- uncom nm
+    val <- evalObject val
+    case nm of -- First check if it is a local reference. If so, don't evaluate it.
+      LocalRef  nm -> uncom nm >>= \nm -> assignLocalVar nm val
+      GlobalRef nm -> uncom nm >>= \nm -> defineGlobalVar nm val
+      nm -> do
+        nm <- evalObject (Com nm)
+        case nm of
+          ORef nm -> defineGlobalVar nm val
+          o -> objectError o $
+            "left-hand side of the assignment expression is not a local or global reference"
+    return val
   FuncCall      op   args       -> do -- a built-in function call
     op   <- uncom op
     func <- execLocalLookup op
@@ -447,7 +446,9 @@ evalObject obj = uncom obj >>= \obj -> case obj of
         -- NOTE: Built-in function calls do not get their own new stack, 'pushExecStack' is not
         -- used, only 'catchCEREturn'.
         fn <- lookupFunction "function call" op
-        mapM evalObject args >>= checkToExecScript . checkFunc fn
+        args <- mapM evalObject args
+        let argTypes = OList (map (OType . objType) args)
+        checkToExecScript op argTypes (checkFunc fn args)
       Just fn -> case fn of
         OScript o -> execScriptCall args o 
         ORule   o -> execRuleCall   args o
@@ -457,32 +458,27 @@ evalObject obj = uncom obj >>= \obj -> case obj of
     fn   <- evalObject ref
     args <- uncom args
     fn <- case fn of
-      ORef ref -> execGlobalLookup ref >>= \fn -> case fn of
-        Just (OScript o) -> return (OScript o)
-        Just (ORule   o) -> return (ORule   o)
-        Just          o  -> called_nonfunction_object (showRef ref) o
-        Nothing          -> derefError ref
       OScript _ -> return fn
       ORule   _ -> return fn
       _ -> called_nonfunction_object (showObjectExpr 0 ref) fn
     case fn of
       OScript o -> execScriptCall args o
       ORule   o -> execRuleCall   args o
-  ParenExpr     o               -> evalObject o -- when in doubt, do not use 'evalObjectDeref'
+  ParenExpr     o               -> evalObject o -- when in doubt, do not use 'evalObject'
   ArraySubExpr  o    i          -> evalArraySubscript o i
   Equation      left op   right -> do
     left  <- evalObject left
     op    <- uncom op
     right <- evalObject right
     bi    <- lookupFunction "operator" op
-    checkToExecScript (checkFunc bi [left, right])
+    checkToExecScript op (OPair (right, left)) (checkFunc bi [left, right])
   DictExpr      cons args       -> do
     cons <- uncom cons
     args <- uncom args
     let loop fn = forM args $ \arg -> do
             arg  <- uncom arg
             case arg of
-              AssignExpr a b -> evalObjectDeref a >>= \a -> evalObjectDeref b >>= \b -> fn a b
+              AssignExpr a b -> evalObject a >>= \a -> evalObject b >>= \b -> fn a b
               _ -> simpleError $ show cons ++
                      " must be constructed from a comma-separated list of assignment expressions"
         intmap o x = do
@@ -500,7 +496,7 @@ evalObject obj = uncom obj >>= \obj -> case obj of
             typeError o ("assigning to a value in a "++show DictType++" constructor") $
               show StringType
     case () of
-      () | cons == ustr "list"   -> fmap OList (mapM evalObjectDeref args)
+      () | cons == ustr "list"   -> fmap OList (mapM evalObject args)
       () | cons == ustr "dict"   -> fmap (ODict   . M.fromList) (loop dict)
       () | cons == ustr "intmap" -> fmap (OIntMap . I.fromList) (loop intmap)
       _ -> error ("INTERNAL ERROR: unknown dictionary declaration "++show cons)
@@ -510,8 +506,8 @@ evalObject obj = uncom obj >>= \obj -> case obj of
       (_ : _ : _ : _) ->
         simpleError "internal error: array range expression has more than 2 arguments"
       [lo, hi] -> do
-        lo <- evalObjectDeref lo
-        hi <- evalObjectDeref hi
+        lo <- evalObject lo
+        hi <- evalObject hi
         case (lo, hi) of
           (OInt lo, OInt hi) -> do
             (lo, hi) <- return (if lo<hi then (lo,hi) else (hi,lo))
@@ -571,10 +567,10 @@ evalArraySubscript o i = uncom o >>= \o -> case o of
           OList i -> fmap OList (mapM ilkup i)
           OSet  i -> fmap OList (mapM ilkup (S.elems i))
           _ -> indexTypeError "pattern match reference" i
-    evalObjectDeref i >>= ilkup
+    evalObject i >>= ilkup
   _ -> do
-    o <- evalObjectDeref (Com o)
-    i <- evalObjectDeref i
+    o <- evalObject (Com o)
+    i <- evalObject i
     let ck i x fn = checkIntMapBounds i x >> fn (fromIntegral x)
         ilkup t i fn = case i of
           OInt  x -> ck i x fn
@@ -636,16 +632,16 @@ programFromSource sc = do
         , staticData        = error "INTERNAL ERROR: Program.staticData not defined"
         }
   (prog, pat, dat, pre, post) <- foldM siv (init, T.Void, T.Void, [], []) uncomDirectives
-  pat  <- execRun (dNewMVar $loc "Program.ruleSet" pat)
-  dat  <- execRun (dNewMVar $loc "Program.staticData" dat)
-  --pre  <- execRun (dNewMVar $loc "Program.constructScript" pre)
-  --post <- execRun (dNewMVar $loc "Program.destructScript" post)
+  pat  <- execRun (dNewMVar xloc "Program.ruleSet" pat)
+  dat  <- execRun (dNewMVar xloc "Program.staticData" dat)
+  --pre  <- execRun (dNewMVar xloc "Program.constructScript" pre)
+  --post <- execRun (dNewMVar xloc "Program.destructScript" post)
   return (prog{ruleSet = pat, staticData = dat, preExecScript = pre, postExecScript = post})
   where
     uncomDirectives = map unComment (unComment (directives sc))
     beginEnd scrp = execRun $ do
       let scrp' = unComment scrp
-      dNewMVar $loc "CXRef(guardScript)" $
+      dNewMVar xloc "CXRef(guardScript)" $
         HasBoth{sourceScript = scrp', cachedScript = execGuardBlock scrp'}
     siv (prog, pat, dat, pre, post) d = do
       let p prog = return (prog, pat, dat, pre, post)
@@ -658,7 +654,7 @@ programFromSource sc = do
           rule    <- return (unComment rule)
           rulePat <- return (map unComment (unComment (rulePattern rule)))
           cxref   <- execRun $
-            dNewMVar $loc "CXRef(ruleAction)" (OnlyAST{sourceScript = ruleAction rule})
+            dNewMVar xloc "CXRef(ruleAction)" (OnlyAST{sourceScript = ruleAction rule})
           let fol tre pat = T.merge T.union (++) tre (toTree pat [cxref])
           return (prog, foldl fol pat rulePat, dat, pre, post)
         SetupExpr    scrp -> p $ prog{constructScript = constructScript prog ++ [unComment scrp]}

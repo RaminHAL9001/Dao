@@ -246,6 +246,10 @@ runExecScript fn xunit = ReaderT $ \runtime ->
 execScriptRun :: Run a -> ExecScript a
 execScriptRun fn = ask >>= \xunit -> execIO (runReaderT fn (parentRuntime xunit))
 
+-- | Pair an error message with an object that can help to describe what went wrong.
+objectError :: Monad m => Object -> String -> ContErrT m err
+objectError o msg = ceError (OPair (OString (ustr msg), o))
+
 ----------------------------------------------------------------------------------------------------
 
 -- | All functions that are built-in to the Dao language, or built-in to a library extending the Dao
@@ -271,17 +275,20 @@ newtype Func = Func { evalBuiltin :: [Object] -> ExecScript Object }
 -- 'Control.Monad.return'ing a @'ExecScript' 'Dao.Types.Object'@ function. The first matching
 -- predicate that executes without throwing a 'Dao.Object.Monad.ceError' will determine the value of
 -- the 'Dao.Types.Object' returned by this function.
-checkToExecScript :: Check (ContErr a) -> ExecScript a
-checkToExecScript ckfn =
+checkToExecScript :: UStr -> Object -> Check (ContErr a) -> ExecScript a
+checkToExecScript exprType inType ckfn =
   do  xunit <- ask
-      execIO (runCombinationT (runPredicateIO ckfn) xunit) >>= loop xunit []
+      execIO (runCombinationT (runPredicateIO ckfn) xunit) >>= loop xunit
   where
-    loop :: ExecUnit -> [Object] -> [(Either Object (ContErr a), ExecUnit)] -> ExecScript a
-    loop xunit errx optx = case optx of
-      []                    -> returnContErr $ CEError $ OPair $
-        (OString (ustr "function parameter typecheck failed"), OList errx)
-      (Left  o, _    ):optx -> loop xunit (errx++[o]) optx
-      (Right o, xunit):_    -> returnContErr o
+    loop :: ExecUnit -> [(Either Object (ContErr a), ExecUnit)] -> ExecScript a
+    loop xunit optx = case optx of
+      (Left  o, _):optx -> loop xunit optx
+      (Right o, _):_    -> returnContErr o
+      [] -> returnContErr $ CEError $ OList $
+              [ OString exprType
+              , OString (ustr "cannot operate with given parameter types")
+              , inType
+              ]
 
 -- | Run an 'ExecScript' monad inside the 'Check'. This has the further effect of halting all
 -- 'CEReturn's, so function call evaluation does not collapse the entire expression. 'CEError's are
@@ -311,12 +318,12 @@ runToCheck_ run = runToCheck run >> return (CENext OTrue)
 -- | A 'CheckFunc' returns a 'Dao.Object.Monad.ContErr', which means you need to use an equation
 -- like: @('Control.Monad.return' ('Dao.Object.Monad.CENext' a))@. But since this combinator is used
 -- so often, it is provided here as an easy-to-remember function.
-checkOK :: a -> Check (ContErr a)
+checkOK :: a -> PredicateIO st (ContErr a)
 checkOK = return . CENext
 
 -- | Use 'falseIO' at the point in the equation where the predicate can be declared as false, but
 -- take a string and an object so an appropriate error message can be constructed.
-checkFail :: String -> Object -> Check ignored
+checkFail :: String -> Object -> PredicateIO st ignored
 checkFail msg obj = falseIO (OPair (OString (ustr msg), obj))
 
 ----------------------------------------------------------------------------------------------------

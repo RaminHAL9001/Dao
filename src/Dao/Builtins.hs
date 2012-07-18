@@ -19,9 +19,9 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
+-- {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE Rank2Types #-}
 
 module Dao.Builtins where
@@ -70,75 +70,34 @@ import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
--- | When constructing 'CheckFunc' built-in functions, arguments are passed by reference. To
--- de-reference arugments while simply returning constants, evaluate this equation.
-objectValue :: Object -> Check Object
-objectValue obj = case obj of
-  ORef ref -> do
-    obj <- execScriptToCheck (const Nothing) (execGlobalLookup ref)
-    case obj of
-      Nothing  -> checkFail "undefined reference" (ORef ref)
-      Just obj -> return obj
-  obj      -> return obj
-
-checkNumericOp :: String -> (forall a . Num a => a -> a -> a) -> Object -> Object -> Check (ContErr Object)
-checkNumericOp op fn a b =
-  execScriptToCheck id (promoteNum op a b >>= uncurry (withNum fn)) >>= checkOK
-
--- | Performs 'objectValue' on a pair of objects; arithmetic operators are built-in functions, most
--- built-in functions take two arguments.
-objectValue2 :: Object -> Object -> Check (Object, Object)
-objectValue2 a b = objectValue a >>= \a -> objectValue b >>= \b -> return (a, b)
-
--- | Used to create a built-in operator (like divide @(/)@ or modulus @(%)@) where, these operators
--- have two separate functions in Haskell. Provide the operator, the two Haskell functions, and two
--- Objects which will be "promoted" using 'Dao.Object.Data.promoteNum' and then the correct Haskell
--- function will be selected and applied.
-checkBinumericOp
-  :: String
-  -> (forall a . Integral a => a -> a -> a)
-  -> (forall b . Floating b => b -> b -> b)
-  -> Object
-  -> Object
-  -> Check (ContErr Object)
-checkBinumericOp op fnInt fnFrac a b = do
-  (OPair (a, b)) <- execScriptToCheck id (fmap OPair (promoteNum op a b))
-  checkOK $ case (a, b) of
-    (OInt     a, OInt     b) -> OInt      (fnInt  a b)
-    (OWord    a, OWord    b) -> OWord     (fnInt  a b)
-    (OLong    a, OLong    b) -> OLong     (fnInt  a b)
-    (OFloat   a, OFloat   b) -> OFloat    (fnFrac a b)
-    (OComplex a, OComplex b) -> OComplex  (fnFrac a b)
-
--- | Bitwise logical operations which work on 'Dao.Types.OInt's and 'Dao.Object.OWord's, which also
--- work on 'Dao.Types.OSet's, 'Dao.Object.OIntMap's, and 'Dao.Types.ODict's.
-checkBitwiseOp
-  :: String
-  -> (forall a . Bits a => a -> a -> a)
-  -> (T_set  -> T_set  -> T_set)
-  -> (T_dict -> T_dict -> T_dict)
-  -> (T_intMap -> T_intMap -> T_intMap)
-  -> Object
-  -> Object
-  -> Check (ContErr Object)
-checkBitwiseOp op fnBit fnSet fnDict fnIntMap a b = do
-  (OPair (a, b)) <- execScriptToCheck id (fmap OPair (promoteNum op a b))
-  checkOK $ case (a, b) of
-    (OWord   a, OWord   b) -> OWord   (fnBit    a b)
-    (OInt    a, OInt    b) -> OInt    (fnBit    a b)
-    (OSet    a, OSet    b) -> OSet    (fnSet    a b)
-    (ODict   a, ODict   b) -> ODict   (fnDict   a b)
-    (OIntMap a, OIntMap b) -> OIntMap (fnIntMap a b)
+listBreakup :: Eq a => [a] -> [a] -> [Either [a] [a]]
+listBreakup str substr = if null substr then [Left str] else loop [] [] (length str) str where
+  min = length substr
+  loop got rx remlen str =
+    if remlen < min
+      then got++[Left str]
+      else
+        case stripPrefix substr str of
+          Nothing  -> loop got (rx++[head str]) (remlen-1) (tail str)
+          Just str -> loop (got++[Left rx, Right substr]) [] (remlen-min) str
 
 -- | Is simply @diff (union a b) b@ is a set/dict/intmap, pass the relevant @diff@ and @union@
 -- function.
 setwiseXOR :: (a -> a -> a) -> (a -> a -> a) -> a -> a -> a
 setwiseXOR diff union a b = diff (union a b) b
 
--- | Used for implementing the @&&@ and @||@ operators, evaluate a pair of items, each as a boolean
--- value.
-objectBoolValue2 :: Object -> Object -> Check (Bool, Bool)
-objectBoolValue2 a b = let fn = fmap objToBool . objectValue in liftM2 (,) (fn a) (fn b)
+----------------------------------------------------------------------------------------------------
+
+-- | When constructing 'CheckFunc' built-in functions, arguments are passed by reference. To
+-- de-reference arugments while simply returning constants, evaluate this equation.
+derefRefLiteral :: Object -> Check Object
+derefRefLiteral obj = case obj of
+  ORef ref -> do
+    obj <- execScriptToCheck (const Nothing) (execGlobalLookup ref)
+    case obj of
+      Nothing  -> checkFail "undefined reference" (ORef ref)
+      Just obj -> return obj
+  obj      -> return obj
 
 ----------------------------------------------------------------------------------------------------
 
@@ -148,7 +107,6 @@ basicScriptOperations = M.fromList funcList where
   func nm a = (ustr nm, CheckFunc{checkFunc = \argv -> return argv >>= a})
   funcList =
     [ func "+" $ \ [a, b] -> do
-        (a, b) <- objectValue2 a b
         let stringOK = checkOK . OString . ustr
         case (a, b) of
           (OString a, OString b) -> stringOK (uchars a++uchars b)
@@ -159,15 +117,13 @@ basicScriptOperations = M.fromList funcList where
           (OArray  a, OList   b) -> checkOK (OList (elems a++b))
           (a        , b        ) -> checkNumericOp "+" (+) a b
     , func "-" $ \ [a, b] -> do
-        (a, b) <- objectValue2 a b
         case (a, b) of
           (OSet    a, OSet    b) -> checkOK (OSet (S.difference a b))
           (ODict   a, ODict   b) -> checkOK (ODict (M.difference a b))
           (OIntMap a, OIntMap b) -> checkOK (OIntMap (I.difference a b))
           (a        , b        ) -> checkNumericOp "-" (-) a b
     , func "*" $ \ [a, b] -> do
-        (a, b) <- objectValue2 a b
-        (OPair (a, b)) <- execScriptToCheck id (fmap OPair (promoteNum "/" a b))
+        (a, b) <- promoteNum "/" a b
         let listInt    lst x = concat  (take (fromIntegral x) (repeat lst))
             oListInt   lst x = checkOK (OList (listInt lst x))
             oStringInt lst x = checkOK (OString (ustr (listInt (uchars lst) x)))
@@ -182,24 +138,21 @@ basicScriptOperations = M.fromList funcList where
           (OWord   a, OString b) -> oStringInt b a
           _ -> checkNumericOp "*" (*) a b
     , func "/" $ \ [a, b] -> do
-        (a, b) <- objectValue2 a b
         case (a, b) of
           (OString a, OString b) -> checkOK $ OList $ map OString $
             map (either ustr ustr) $ listBreakup (uchars a) (uchars b)
           (OList   a, OList   b) -> checkOK $ OList $ map (either OList OList) $ listBreakup a b
           _ -> checkBinumericOp "/" div (/) a b
     , func "%" $ \ [a, b] -> do
-        (a, b) <- objectValue2 a b
         let done fn = checkOK . OList . concatMap (either fn (const []))
         case (a, b) of
           (OString a, OString b) ->
             done (\a -> [OString (ustr a)]) (listBreakup (uchars a) (uchars b))
           _ -> do
-            (a, b) <- objectValue2 a b
             checkOK $ case (a, b) of
               (OWord a, OWord b) -> OWord (mod a b)
               (OInt  a, OInt  b) -> OInt  (mod a b)
-    , func "**" $ \ [a, b] -> objectValue2 a b >>= uncurry (checkBinumericOp "^" (^) (**))
+    , func "**" $ \ [a, b] -> checkBinumericOp "^" (^) (**) a b
     , func "|"  $ \ [a, b] -> checkBitwiseOp "|" (.|.) (S.union) (M.union) (I.union) a b
     , func "&"  $ \ [a, b] -> checkBitwiseOp "&" (.&.) (S.intersection) (M.intersection) (I.intersection) a b
     , func "^"  $ \ [a, b] ->
@@ -210,13 +163,16 @@ basicScriptOperations = M.fromList funcList where
     , func "~"  $ \ [a] -> checkOK $ case a of
         (OInt  a) -> OInt  (complement a)
         (OWord a) -> OWord (complement a)
-    , func "!" $ \ [a] -> objectValue a >>= checkOK . boolToObj . not . objToBool
-    , func "&&" $ \ [a, b] -> objectBoolValue2 a b >>= checkOK . boolToObj . uncurry (&&)
-    , func "||" $ \ [a, b] -> objectBoolValue2 a b >>= checkOK . boolToObj . uncurry (||)
-    , func "==" $ \ [a, b] -> objectValue2 a b >>= checkOK . boolToObj . uncurry (==)
-    , func "!=" $ \ [a, b] -> objectValue2 a b >>= checkOK . boolToObj . uncurry (/=)
+    , func "!" $ \ [a] -> checkOK $ boolToObj $ not $ objToBool a
+    , func "&&" $ \ [a, b] -> checkLogicalOp (&&) a b
+    , func "||" $ \ [a, b] -> checkLogicalOp (||) a b
+    , func "==" $ \ [a, b] -> checkCompareOp "==" (==) a b
+    , func "!=" $ \ [a, b] -> checkCompareOp "!=" (/=) a b
+    , func "<=" $ \ [a, b] -> checkCompareOp "<=" (<=) a b
+    , func ">=" $ \ [a, b] -> checkCompareOp ">=" (>=) a b
+    , func ">"  $ \ [a, b] -> checkCompareOp ">"  (>=) a b
+    , func "<"  $ \ [a, b] -> checkCompareOp "<"  (>=) a b
     , func "<<" $ \ [a, b] -> do
-        (a, b) <- objectValue2 a b
         let shift a b = shiftL a (fromIntegral b)
         checkOK $ case (a, b) of
           (OWord   a, OWord   b) -> OWord (shift a b)
@@ -230,24 +186,25 @@ basicScriptOperations = M.fromList funcList where
           (OIntMap a, OPair (OWord   i , b)) -> OIntMap (I.insert (fromIntegral i) b a)
           (OTree   a, OPair (ORef   ref, b)) -> OTree (T.insert ref b a)
     , func ">>" $ \ [a, b] -> do
-        (a, b) <- objectValue2 a b
         let shift a b = shiftR a (fromIntegral b)
         checkOK $ case (a, b) of
-          (OWord   a, OWord b) -> OWord (shift a b)
-          (OInt    a, OInt  b) -> OInt  (shift a b)
-          (OWord   a, OInt  b) -> OWord (shift a b)
-          (OInt    a, OWord b) -> OInt  (shift a b)
-          (OList   a, b      ) -> OList (delete b a)
+          (OWord   a, OWord   b) -> OWord (shift a b)
+          (OInt    a, OInt    b) -> OInt  (shift a b)
+          (OWord   a, OInt    b) -> OWord (shift a b)
+          (OInt    a, OWord   b) -> OInt  (shift a b)
+          (OList   a, b        ) -> OList (delete b a)
           (OSet    a, b        ) -> OSet  (S.delete b a)
           (ODict   a, OString b) -> ODict (M.delete b a)
           (OIntMap a, OInt    b) -> OIntMap (I.delete (fromIntegral b) a)
           (OIntMap a, OWord   b) -> OIntMap (I.delete (fromIntegral b) a)
           (OTree   a, ORef    b) -> OTree (T.delete b a)
-    , func "@"  $ \ [a] -> objectValue a >>= objectValue >>= checkOK
-    , func "$"  $ \ [a] -> checkOK a
+    , func "@"  $ \ [a] -> derefRefLiteral a >>= checkOK
     , func "."  $ \ [ORef a, ORef b] -> checkOK (ORef (a++b))
-    , func "ref" $ \ ax ->
-        fmap (CENext . ORef) (mapM (objectValue >=> \ (OString o) -> return o) ax)
+    , func "ref" $ \ ax -> case ax of
+        [ORef a] -> checkOK (ORef a)
+        ax -> fmap (CENext . ORef . concat) $ forM ax $ \o -> case o of
+          (OString o) -> return [o]
+          (ORef    o) -> return o
     , func "delete" $ \ ax -> do
         forM_ ax $ \ (ORef o) -> execScriptToCheck id (deleteGlobalVar o >> return OTrue)
         checkOK OTrue
@@ -255,7 +212,6 @@ basicScriptOperations = M.fromList funcList where
     , func "snd" $ \ [OPair (_, a)] -> checkOK a
     , func "join" $ \ax -> case ax of
         [a, b] -> do
-          (a, b) <- objectValue2 a b
           checkOK $ case (a, b) of
             (OString a, OList b) -> OString $ ustr $
               intercalate (uchars a) $ flip map b $ \b -> case b of
@@ -264,20 +220,16 @@ basicScriptOperations = M.fromList funcList where
             (OList   a, OList b) -> OList $ intercalate a $ flip map b $ \b -> case b of
               (OList b) -> b
               b         -> [b]
-        [a] -> do
-          a <- objectValue a
-          checkOK $ case a of
-            OList (ax@(OString _:_)) -> OString $ ustr $ flip concatMap ax $ \a -> case a of
-              OString a -> uchars a
-              a         -> showObj 0 a
-            OList (ax@(OList   _:_)) -> OList $ flip concatMap ax $ \a -> case a of
-              OList a -> a
-              a       -> [a]
-    , func "listArray" $ \ [a] -> do
-        (OList a) <- objectValue a
-        checkOK (OArray (listArray (0, fromIntegral (length a)) a))
+        [a] -> checkOK $ case a of
+          OList (ax@(OString _:_)) -> OString $ ustr $ flip concatMap ax $ \a -> case a of
+            OString a -> uchars a
+            a         -> showObj 0 a
+          OList (ax@(OList   _:_)) -> OList $ flip concatMap ax $ \a -> case a of
+            OList a -> a
+            a       -> [a]
+    , func "listArray" $ \ [OList a] -> checkOK (OArray (listArray (0, fromIntegral (length a)) a))
     , func "print"  $ \ ax -> do
-        forM ax $ \a -> objectValue a >>= \a -> liftIO $ case a of
+        forM ax $ \a -> liftIO $ case a of
           OString a -> putStrLn (uchars a)
           a         -> putStrLn (showObj 0 a)
         checkOK ONull
@@ -289,17 +241,15 @@ basicScriptOperations = M.fromList funcList where
         [] -> runToCheck_ saveAll
         [OString path] -> runToCheck_ (saveDoc path)
         [OString path, OString newPath] -> runToCheck_ (saveDocAs path newPath)
-    , func "closeDB" $ \ [a] ->
-        objectValue a >>= \ (OString path) -> runToCheck_ (closeDoc path)
+    , func "closeDB" $ \ [OString path] -> runToCheck_ (closeDoc path)
     , func "listDBs" $ \ [] -> runToCheck $
         fmap (OList . map OString . M.keys) (ask >>= dReadMVar xloc . documentList)
     , func "listMods" $ \ [] -> runToCheck $ do
         fmap (OList . map (\ (a, b) -> OPair (OString a, OString (filePath b))) . M.assocs) $
-          ask >>= dReadMVar $loc . logicalNameIndex
+          ask >>= dReadMVar xloc . logicalNameIndex
     , func "do" $ \ ax -> do
-        ax <- mapM objectValue ax
         let run sel ax = do
-              strs  <- fmap (concatMap extractStringElems) (mapM objectValue ax)
+              let strs = concatMap extractStringElems ax
               xunit <- execScriptToCheck undefined ask :: Check ExecUnit
               runToCheck_ $ do
                 files <- selectModules (Just xunit) sel
@@ -307,7 +257,7 @@ basicScriptOperations = M.fromList funcList where
                 case job of
                   Nothing  -> forM_ strs (flip (execInputString False) files)
                   Just job -> do
-                    xunits <- mapM (dReadMVar $loc . execUnit) files
+                    xunits <- mapM (dReadMVar xloc . execUnit) files
                     forM strs (makeTasksForInput xunits) >>= startTasksForJob job . concat
               checkOK OTrue
         case ax of

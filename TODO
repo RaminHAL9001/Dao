@@ -1,11 +1,27 @@
 UNSOLVED:
 
-* REGRESSION: global variables are not being defined properly.
+* REGRESSION: Creating, opening, and saving idea files no longer seems to work when using the
+	built-in functions "newDB", "openDB", and "saveDB". However, the "test1.idea" file is loaded
+	when it is sepcified in the command line arguments, so the problem is not with
+	'initRuntimeFiles'.
 
-* Built-in functions need to return more helpful error message on type-check failure. At present the
-	error reported is the error given by the Haskell language, related to lambda functions or case
-	expression not having exauhustive pattern matching, which tells users nothing about why which
-	type causd it to fail.
+* Change the instantiation of UStr into the Binary monad to use a minimum number of bytes to
+	indicate the length of the string. Right now, every UStr is preceeded a 64-bit (8 byte) number.
+	However, the vast majority of all strings saved to "idea" files will most certainly be less than
+	128 characters long. Especially the UStr's used for the paths in Tree objects. I would like
+	UStr's to now be stored using an adaptive length prefix. The bits preceeding a UStr's contents
+	will have a format like so:
+		7 6543210
+		---------
+		1 XXXXXXX
+		1 XXXXXXX
+		1 XXXXXXX
+		...
+		0 XXXXXXX
+	If the highest-order bit is a one, it indicates there are more bytes to follow. If the highest
+	order bit is 0, then there are no more bytes. There will be a maximum of 9 bytes. The 7
+	lower-order bits will be concatenated in big-endian order to form the length value for the
+	string. By this method, most all strings will have a length prefix of only one or two bytes.
 
 * Parser needs to return better error messages.
 	--
@@ -36,6 +52,8 @@ UNSOLVED:
 	If they then send their Dao code to some friends using the standard version of Dao those
 	friends try to load the program, the Dao interpreter will report an error at loading time.
 
+* Consider making all errors caused during script evaluation into "OTree" values.
+
 * Once you are sure the Dao language isn't going to change much more, make a more efficient parser
 	from the "Text.ParserCombinators.Parsec" library.
 
@@ -47,6 +65,44 @@ UNSOLVED:
 
 ----------------------------------------------------------------------------------------------------
 SOLVED:
+
+* REGRESSION: global variables are not being defined properly.
+	--
+	Solved: the solution was elegant, and lead to a host of simplifications to the code:
+	(1) Added a new data value called 'GlobalRef' to the 'ObjectExpr' data type.
+	(2) Changed the parser for 'ORef' literal expressions to require two dollar signs, for example:
+		${this.is.a.globalRef} = $${this.is.a.reference.literal};
+	(3) Changed the parser to return 'GlobalRef's or 'Literal (ORef val)'s depending on the number
+		of dollar signs occuring before the expression.
+	(4) Modified the pretty pritner to reflect these changes.
+	(5) Modified the "Dao.Object.Binary" serialization for the 'ObjectExpr' data type.
+	Now, references with two dollar-signs are literal references, and references with one
+	dollar-sign is triggers a global lookup. This allowed me to make the following simplifications:
+	(1) Eliminated the 'evalObjectDeref' function, now whether an object expression is dereferenced
+		during it's evaluation depends simply on whether it is a Literal or a GlobalRef.
+	(2) Eliminated 'Check' functions that used 'evalObjectDeref', they are no longer necessary.
+	(3) Changed any built-in functions using the 'Check' functions that were using 'evalObjectDefef'
+		such that they now check parameter arguments using ordinary Haskell pattern matching and
+		"case" statements.
+	(4) Simplified the 'Dao.Object.Data' module to make use of the PredicateIO monad, rather than
+		the ContErrT monad. Now, Haskell pattern matching is used exclusively for type checking all
+		function calls during evaluation of Dao programs.
+
+* Built-in functions need to return more helpful error message on type-check failure. At present the
+	error reported is the error given by the Haskell language, related to lambda functions or case
+	expression not having exauhustive pattern matching, which tells users nothing about why which
+	type causd it to fail.
+	--
+	Solved: one of the solutions that resulted naturally from the simplification of the evalObject
+	function thanks to the new GlobalRef ObjectExpr. Now, all type checking is done in the
+	PredicateIO monad using only Haskell pattern matching and "case" statements. I can now create
+	error messages at the boundary between the "PredicateIO" and "ExecScript" monads. This boundary
+	is the "checkToExecScript" function. I modified this function to require a function name and an
+	Object indicating the parameter arugments passed to this function. If a PredicateIO fails due to
+	bad pattern matching or a non-exhuastive "case" statement, then "checkToExecScript" will create
+	an error indicating the name of the function that failed, and the argument parameters that
+	caused the failure. This error is then propagated upwards by the ContErrT continuation
+	mechanism.
 
 * REGRESSSION: When I wrote a rule into my Dao test program that contained many "else if"
 	expressions, this one rule seems to cause the Dao system to freeze on any rule, not just the

@@ -74,7 +74,7 @@ showObj idnc o = case o of
   ODiffTime o -> "difftime ("++show o++")"
   OChar     o -> show o
   OString   o -> show o
-  ORef      o -> showRef o
+  ORef      o -> '$':showRef o
   OPair (a,b) -> let i = idnc+1 in "pair ("++showObj i a++", "++showObj i b++")"
   OList     o -> simplelist idnc o
   OSet      o -> "set "++simplelist idnc (S.elems o)
@@ -174,6 +174,7 @@ showObjectExpr idnc obj = showCom loop idnc obj where
     Literal      obj            -> showCom showObj idnc obj
     IntRef       ref            -> showCom (\_ -> ('$':) . show) idnc ref
     LocalRef     ref            -> showCom (\_ -> uchars) idnc ref
+    GlobalRef    ref            -> showCom (\_ -> showRef) idnc ref
     AssignExpr   ref      obj   ->
       showObjectExpr idnc ref ++ " = " ++ showObjectExpr (idnc+1) obj
     FuncCall     name args      ->

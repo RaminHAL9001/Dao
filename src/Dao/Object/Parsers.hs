@@ -163,7 +163,7 @@ litDiffTime = do
   case ax of
     a:ax | isAlpha a -> fail "improper difftime token"
     _ -> return (ODiffTime (fromRational (toRational d)))
-litRef      = fmap ORef idenToken
+litRef      = char '$' >> fmap ORef idenToken
 litString   = fmap OString (reusedParser "String")
 
 litBytes = string "Bytes" >> munch whitespace >> char '\'' >> base where
@@ -294,6 +294,9 @@ localRefExpr = fmap LocalRef (withComments wordTokenUStr)
 intRefExpr :: Parser ObjectExpr
 intRefExpr = fmap IntRef (withComments (char '$' >> reusedParser "match index reference"))
 
+globalRefExpr :: Parser ObjectExpr
+globalRefExpr = fmap GlobalRef (withComments idenToken)
+
 literalExpr :: Parser ObjectExpr
 literalExpr = fmap Literal (withComments atomicObj)
 
@@ -309,7 +312,7 @@ parenExpr open clos = do
 unitObjectExpr :: Parser ObjectExpr
 unitObjectExpr = do
   a <- first $
-    [ parenExpr '(' ')', arrayExpr, intRefExpr, dictExpr, setExpr, lambdaExpr
+    [ parenExpr '(' ')', arrayExpr, intRefExpr, globalRefExpr, dictExpr, setExpr, lambdaExpr
     , listConsExpr, literalExpr, lambdaCallExpr, funcCallExpr, localRefExpr
     ]
   option a (withComments (parenExpr '[' ']') >>= \subscript ->
@@ -320,7 +323,7 @@ unitObjectExpr = do
 -- factored into the 'unitObjectExpr' parser.
 unaryOperator :: Parser ObjectExpr
 unaryOperator = do
-  op <- withComments (fmap (ustr . (:"")) (first (map char "$@~!-+")))
+  op <- withComments (fmap (ustr . (:"")) (first (map char "@~!-+")))
   labelParse ("unary operator "++uchars (unComment op)) $ do
     ex <- withComments unitObjectExpr
     return (FuncCall op (Com [ex]))

@@ -294,6 +294,7 @@ data ObjectExpr
   = Literal      (Com Object)
   | IntRef       (Com Int)
   | LocalRef     (Com Name)
+  | GlobalRef    (Com [Name])
   | AssignExpr   (Com ObjectExpr) (Com ObjectExpr)
   | FuncCall     (Com Name)       (Com [Com ObjectExpr])
   | LambdaCall   (Com ())         (Com ObjectExpr)       (Com [Com ObjectExpr])

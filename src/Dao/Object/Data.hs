@@ -28,6 +28,7 @@ module Dao.Object.Data where
 import           Dao.Types
 import qualified Dao.Tree as T
 import           Dao.Pattern
+import           Dao.Predicate
 import           Dao.Object
 import           Dao.Object.Monad
 
@@ -38,6 +39,7 @@ import           Data.Dynamic
 import           Data.Maybe (fromMaybe, maybeToList)
 import           Data.Either
 import           Data.List
+import           Data.Bits
 import           Data.Complex
 import qualified Data.Map as M
 import qualified Data.IntMap as I
@@ -53,122 +55,109 @@ import           Data.Time hiding (parseTime)
 
 class Objectify a where
   toObject   :: a -> Object
-  fromObject :: Monad m => Object -> ContErrT m a
-
--- | Pair an error message with an object that can help to describe what went wrong.
-objectError :: Monad m => Object -> String -> ContErrT m err
-objectError o msg = ceError (OPair (OString (ustr msg), o))
-
-typeCheck :: Monad m => TypeID -> Object -> (Object -> ContErrT m a) -> ContErrT m a
-typeCheck t o fn =
-  let ot = objType o
-      er = ustr ("expecting evaluation to objet of type "++show t++", actual type is "++show ot)
-  in  if ot==t then fn o else ceError (OPair (OString er, OType ot))
+  fromObject :: Object -> PredicateIO st a
 
 instance Objectify ()      where
   toObject () = ONull
-  fromObject o = typeCheck NullType o (\ ONull -> return ())
+  fromObject ONull = return ()
 
 instance Objectify Bool    where
   toObject tf = if tf then OTrue else ONull
-  fromObject o = case o of
-    OTrue -> return True
-    ONull -> return False
-    o ->  let ot = objType o
-              er = ustr ("expecting a true or false evaluation, actual type is "++show ot)
-          in  ceError (OPair (OString er, OType ot))
+  fromObject o = return $ case o of
+    OTrue -> True
+    ONull -> False
 
 instance Objectify TypeID  where
   toObject = OType
-  fromObject o = typeCheck TypeType o (\ (OType o) -> return o)
+  fromObject (OType o) = return o
 
 instance Objectify Int64   where
   toObject = OInt  
-  fromObject o = typeCheck IntType o (\ (OInt o) -> return o)
+  fromObject (OInt o) = return o
 
 instance Objectify Word64  where
   toObject = OWord 
-  fromObject o = typeCheck WordType o (\ (OWord  o) -> return o)
+  fromObject (OWord o) = return o
 
 instance Objectify Integer where
   toObject = OLong 
-  fromObject o = typeCheck LongType o (\ (OLong  o) -> return o)
+  fromObject (OLong o) = return o
 
 instance Objectify (Ratio Integer) where
   toObject = ORatio
-  fromObject o = typeCheck RatioType o (\ (ORatio o) -> return o)
+  fromObject (ORatio o) = return o
 
 instance Objectify (Complex Double) where
   toObject = OComplex
-  fromObject o = typeCheck ComplexType o (\ (OComplex o) -> return o)
+  fromObject (OComplex o) = return o
 
 instance Objectify Double  where
   toObject = OFloat
-  fromObject o = typeCheck FloatType o (\ (OFloat o) -> return o)
+  fromObject (OFloat o) = return o
 
 instance Objectify UTCTime where
   toObject = OTime  
-  fromObject o = typeCheck TimeType o (\ (OTime   o) -> return o)
+  fromObject (OTime o) = return o
 
 instance Objectify NominalDiffTime where
   toObject = ODiffTime
-  fromObject o = typeCheck DiffTimeType o (\ (ODiffTime o) -> return o)
+  fromObject (ODiffTime o) = return o
 
 instance Objectify Char where
   toObject = OChar
-  fromObject o = typeCheck CharType o (\ (OChar o) -> return o)
+  fromObject (OChar o) = return o
 
 instance Objectify UStr where
   toObject = OString
-  fromObject o = typeCheck StringType o (\ (OString o) -> return o)
+  fromObject (OString o) = return o
 
 instance Objectify [Char] where
   toObject = OString . ustr
-  fromObject o = typeCheck StringType o (\ (OString o) -> return (uchars o))
+  fromObject (OString o) = return (uchars o)
 
 instance Objectify [UStr] where
   toObject = ORef
-  fromObject o = typeCheck StringType o (\ (ORef  o) -> return o)
+  fromObject (ORef o) = return o
 
 instance Objectify (Object, Object) where
   toObject = OPair
-  fromObject o = typeCheck PairType o (\ (OPair o) -> return o)
+  fromObject (OPair o) = return o
 
 instance Objectify [Object] where
   toObject = OList
-  fromObject o = typeCheck ListType o (\ (OList o) -> return o)
+  fromObject (OList o) = return o
 
 instance Objectify (S.Set Object) where
   toObject = OSet
-  fromObject o = typeCheck SetType o (\ (OSet o) -> return o)
+  fromObject (OSet o) = return o
 
 instance Objectify (M.Map Name Object) where
   toObject = ODict
-  fromObject o = typeCheck DictType o (\ (ODict o) -> return o)
+  fromObject (ODict o) = return o
 
 instance Objectify (I.IntMap Object) where
   toObject = OIntMap
-  fromObject o = typeCheck IntMapType o (\ (OIntMap o) -> return o)
+  fromObject (OIntMap o) = return o
 
 instance Objectify (T.Tree Name Object) where
   toObject = OTree
-  fromObject o = typeCheck TreeType o (\ (OTree o) -> return o)
+  fromObject (OTree o) = return o
 
 instance Objectify Pattern where
   toObject = OPattern
-  fromObject o = typeCheck PatternType o (\ (OPattern o) -> return o)
+  fromObject (OPattern o) = return o
 
 instance Objectify Rule where
   toObject = ORule
-  fromObject o = typeCheck RuleType o (\ (ORule o) -> return o)
+  fromObject (ORule o) = return o
 
 instance Objectify B.ByteString where
   toObject = OBytes
-  fromObject o = typeCheck BytesType o (\ (OBytes o) -> return o)
+  fromObject (OBytes o) = return o
 
 instance Objectify Script where
   toObject = OScript
-  fromObject o = typeCheck ScriptType o (\ (OScript o) -> return o)
+  fromObject (OScript o) = return o
 
 instance Objectify Object where { toObject = id ; fromObject = return }
 
@@ -246,38 +235,32 @@ objToBool obj = case obj of
 
 ----------------------------------------------------------------------------------------------------
 
-objSize :: Monad m => Object -> ContErrT m T_word
-objSize o = case o of
-  OString   o -> return (fromIntegral (U.length (toUTF8ByteString o)))
-  ORef      o -> return (fromIntegral (length o))
-  OPair     _ -> return 2
-  OList     o -> return (fromIntegral (length o))
-  OSet      o -> return (fromIntegral (S.size o))
-  OArray    o -> return (fromIntegral (let (lo, hi) = bounds o in lo - hi))
-  OIntMap   o -> return (fromIntegral (I.size o))
-  ODict     o -> return (fromIntegral (M.size o))
-  OTree     o -> return (T.size o)
-  OPattern  o -> return (fromIntegral (length (getPatUnits o)))
-  ORule     o -> return (fromIntegral (length (unComment (ruleAction  o))))
-  OBytes    o -> return (fromIntegral (B.length o))
-  _           ->
-    let ot = objType o
-    in  objectError (OType ot) (show ot++" type does not have \"size\" attribute")
+objSize :: Object -> PredicateIO st T_word
+objSize o = return $ case o of
+  OString   o -> fromIntegral $ U.length (toUTF8ByteString o)
+  ORef      o -> fromIntegral $ length o
+  OPair     _ -> fromIntegral $ 2
+  OList     o -> fromIntegral $ length o
+  OSet      o -> fromIntegral $ S.size o
+  OArray    o -> fromIntegral $ let (lo, hi) = bounds o in (lo - hi)
+  OIntMap   o -> fromIntegral $ I.size o
+  ODict     o -> fromIntegral $ M.size o
+  OTree     o -> fromIntegral $ T.size o
+  OPattern  o -> fromIntegral $ length (getPatUnits o)
+  ORule     o -> fromIntegral $ length (unComment (ruleAction  o))
+  OBytes    o -> fromIntegral $ B.length o
 
-objToList :: Monad m => Object -> ContErrT m [Object]
-objToList o = case o of
-  OPair (a, b) -> return [a, b]
-  OString  o   -> return (map OChar (uchars o))
-  OList    o   -> return o
-  OSet     o   -> return (S.elems o)
-  OArray   o   -> return (elems o)
-  ODict    o   -> return (map (\ (a, b) -> OPair (OString a, b))             (M.assocs o))
-  OIntMap  o   -> return (map (\ (a, b) -> OPair (OInt (fromIntegral a), b)) (I.assocs o))
-  OTree    o   -> return (map (\ (a, b) -> OPair (OList (map OString a), b)) (T.assocs o))
-  OPattern o   -> return (patternComponents o)
-  _ ->
-    let ot = objType o
-    in  objectError (OType ot) (show ot++" type does not have \"asList\" attribute")
+objToList :: Object -> PredicateIO st [Object]
+objToList o = return $ case o of
+  OPair (a, b) -> [a, b]
+  OString  o   -> map OChar (uchars o)
+  OList    o   -> o
+  OSet     o   -> S.elems o
+  OArray   o   -> elems o
+  ODict    o   -> map (\ (a, b) -> OPair (OString a, b))             (M.assocs o)
+  OIntMap  o   -> map (\ (a, b) -> OPair (OInt (fromIntegral a), b)) (I.assocs o)
+  OTree    o   -> map (\ (a, b) -> OPair (OList (map OString a), b)) (T.assocs o)
+  OPattern o   -> patternComponents o
 
 -- | Traverse the entire object, returning a list of all 'Dao.Object.OString' elements.
 extractStringElems :: Object -> [UStr]
@@ -298,18 +281,17 @@ patUnitToObj p = case p of
   AnyOne   -> OType StringType
   Single o -> OString o
 
-objToPatUnit :: Object -> PatUnit
-objToPatUnit o = case o of
+objToPatUnit :: Object -> PredicateIO st PatUnit
+objToPatUnit o = return $ case o of
   OType StringType -> Wildcard
   OType ListType   -> AnyOne
   OString str      -> Single str
-  _                -> error ("pattern contains object of invalid type: "++show (objType o))
 
-objListToPattern :: [Object] -> Pattern
+objListToPattern :: [Object] -> PredicateIO st Pattern
 objListToPattern ox = loop 0 ox [] where
   loop i ox px = case ox of
-    []   -> Pattern{getPatternLength = i, getPatUnits = px}
-    o:ox -> loop (i+1) ox (px++[objToPatUnit o])
+    []   -> return $ Pattern{getPatternLength = i, getPatUnits = px}
+    o:ox -> objToPatUnit o >>= \o -> loop (i+1) ox (px++[o])
 
 -- | Break a pattern into a list of it's component parts. 'Dao.Pattern.Wildcard's (the Kleene star
 -- operation) translates to a 'ListType' object because wildcards may match a whole list of
@@ -336,24 +318,21 @@ in_int_range a =
   let a' = toInteger a
   in  toInteger (minBound::T_int) <= a' && a' <= toInteger (maxBound::T_int)
 
-checkBounds :: (Monad m, Integral a, Integral b, Objectify a) => TypeID -> (a -> Bool) -> a -> ContErrT m b
+checkBounds
+  :: (Integral a, Integral b, Objectify a)
+  => TypeID
+  -> (a -> Bool)
+  -> a
+  -> PredicateIO st b
 checkBounds t check a =
   if check a
     then return (fromIntegral a)
-    else ceError $ OPair $
+    else falseIO $ OPair $
            ( OPair (toObject a, OType t)
            , OString (ustr ("value out of range, cannot convert to "++show t++" type"))
            )
 
-convertError :: Monad m => Object -> TypeID -> ContErrT m err
-convertError o t = 
-  let ot = objType o
-  in  ceError $ OPair $
-        ( OPair (OType ot, OType t)
-        , OString (ustr (show ot++" types cannot be implicitly converted to "++show t++" types"))
-        )
-
-class ToWord a where { toWord :: Monad m => a -> ContErrT m T_word }
+class ToWord a where { toWord :: a -> PredicateIO st T_word }
 instance ToWord Word64  where { toWord = return }
 instance ToWord Int64   where { toWord = checkBounds LongType in_word_range }
 instance ToWord Integer where { toWord = checkBounds LongType in_word_range }
@@ -362,20 +341,18 @@ instance ToWord Object where
     OWord o -> return o
     OInt  o -> toWord o
     OLong o -> toWord o
-    o -> convertError o WordType
 
-class ToInt  a where { toInt :: Monad m => a -> ContErrT m T_int }
+class ToInt  a where { toInt :: a -> PredicateIO st T_int }
 instance ToInt Word64  where { toInt = checkBounds IntType in_int_range }
 instance ToInt Int64   where { toInt = return }
 instance ToInt Integer where { toInt = checkBounds IntType in_int_range }
 instance ToInt Object where
   toInt o = case o of
-    OWord o -> toInt o
+    OWord o -> toInt  o
     OInt  o -> return o
-    OLong o -> toInt o
-    o -> convertError o IntType
+    OLong o -> toInt  o
 
-class ToLong a where { toLong :: Monad m => a -> ContErrT m T_long }
+class ToLong a where { toLong :: a -> PredicateIO st T_long }
 instance ToLong Word64  where { toLong = return . fromIntegral }
 instance ToLong Int64   where { toLong = return . fromIntegral }
 instance ToLong Integer where { toLong = return . fromIntegral }
@@ -384,9 +361,8 @@ instance ToLong Object  where
     OWord o -> toLong o
     OInt  o -> toLong o
     OLong o -> return o
-    o -> convertError o LongType
 
-class ToFloat a where { toFloat :: Monad m => a -> ContErrT m T_float }
+class ToFloat a where { toFloat :: a -> PredicateIO st T_float }
 instance ToFloat Word64  where { toFloat = return . fromIntegral }
 instance ToFloat Int64   where { toFloat = return . fromIntegral }
 instance ToFloat Integer where { toFloat = return . fromIntegral }
@@ -401,9 +377,8 @@ instance ToFloat Object where
     OFloat    o -> toFloat o
     ORatio    o -> toFloat o
     ODiffTime o -> toFloat o
-    o -> convertError o FloatType
 
-class ToRatio a where { toRatio :: Monad m => a -> ContErrT m T_ratio }
+class ToRatio a where { toRatio :: a -> PredicateIO st T_ratio }
 instance ToRatio Word64  where { toRatio = return . fromIntegral }
 instance ToRatio Int64   where { toRatio = return . fromIntegral }
 instance ToRatio Integer where { toRatio = return . fromIntegral }
@@ -418,9 +393,8 @@ instance ToRatio Object where
     OFloat    o -> toRatio o
     ORatio    o -> toRatio o
     ODiffTime o -> toRatio o
-    o -> convertError o RatioType
 
-class ToDiffTime a where { toDiffTime :: Monad m => a -> ContErrT m T_diffTime }
+class ToDiffTime a where { toDiffTime :: a -> PredicateIO st T_diffTime }
 instance ToDiffTime Word64  where { toDiffTime = return . fromIntegral }
 instance ToDiffTime Int64   where { toDiffTime = return . fromIntegral }
 instance ToDiffTime Integer where { toDiffTime = return . fromIntegral }
@@ -435,9 +409,8 @@ instance ToDiffTime Object where
     OFloat    o -> toDiffTime o
     ORatio    o -> toDiffTime o
     ODiffTime o -> toDiffTime o
-    o -> convertError o DiffTimeType
 
-class ToComplex a where { toComplex :: Monad m => a -> ContErrT m T_complex }
+class ToComplex a where { toComplex :: a -> PredicateIO st T_complex }
 instance ToComplex Word64  where { toComplex i = return (fromIntegral i :+ 0) }
 instance ToComplex Int64   where { toComplex i = return (fromIntegral i :+ 0) }
 instance ToComplex Integer where { toComplex i = return (fromIntegral i :+ 0) }
@@ -455,15 +428,8 @@ instance ToComplex Object where
     ORatio    o -> toComplex o
     ODiffTime o -> toComplex o
     OComplex  o -> return o
-    o -> convertError o ComplexType
 
-dissimilarTypes :: Monad m => String -> Object -> Object -> ContErrT m err
-dissimilarTypes msg a b =
-  let at = objType a
-      bt = objType b
-  in  objectError (OPair (OType at, OType bt)) $
-          (if null msg then "" else show msg++" operator ")
-        ++("cannot operate on dissimilar types "++show at++" and "++show bt)
+----------------------------------------------------------------------------------------------------
 
 -- | A table lookup that takes two numerical objects, and decides which object contains less
 -- information, then converts the lesser object to the same type of object as the greater object.
@@ -471,11 +437,8 @@ dissimilarTypes msg a b =
 -- The types that can be converted are as follows in lesser-to-greater order:
 --     'Object.OWord', 'Object.OInt', 'Object.OLong', 'Object.OFloat',
 --     'Object.ORatio', 'Object.ODiffTime', 'Object.OComplex'
-promoteNum :: Monad m => String -> Object -> Object -> ContErrT m (Object, Object)
-promoteNum msg a b = msum [conv a b, dissimilarTypes msg a b] where
-  rFst fn b = fmap (\a -> (toObject a, b)) fn
-  rSnd a fn = fmap (\b -> (a, toObject b)) fn
-  conv a b = case a of
+promoteNum :: String -> Object -> Object -> PredicateIO st (Object, Object)
+promoteNum msg a b = case a of
     OWord      _ -> case b of
       OWord     _ -> return (           a,            b)
       OInt      _ -> rFst   (toInt      a)            b
@@ -484,7 +447,6 @@ promoteNum msg a b = msum [conv a b, dissimilarTypes msg a b] where
       ORatio    _ -> rFst   (toRatio    a)            b
       ODiffTime _ -> rFst   (toDiffTime a)            b
       OComplex  _ -> rFst   (toComplex  a)            b
-      _           -> ceError ONull
     OInt       _ -> case b of
       OWord     _ -> rSnd               a (toInt      b)
       OInt      _ -> return (           a,            b)
@@ -493,7 +455,6 @@ promoteNum msg a b = msum [conv a b, dissimilarTypes msg a b] where
       ORatio    _ -> rFst   (toRatio    a)            b
       ODiffTime _ -> rFst   (toDiffTime a)            b
       OComplex  _ -> rFst   (toComplex  a)            b
-      _           -> ceError ONull
     OLong      _ -> case b of
       OWord     _ -> rSnd               a (toLong     b)
       OInt      _ -> rSnd               a (toLong     b)
@@ -502,7 +463,6 @@ promoteNum msg a b = msum [conv a b, dissimilarTypes msg a b] where
       ORatio    _ -> rFst   (toRatio    a)            b
       ODiffTime _ -> rFst   (toDiffTime a)            b
       OComplex  _ -> rFst   (toComplex  a)            b
-      _           -> ceError ONull
     OFloat     _ -> case b of
       OWord     _ -> rSnd               a (toFloat    b)
       OInt      _ -> rSnd               a (toFloat    b)
@@ -511,7 +471,6 @@ promoteNum msg a b = msum [conv a b, dissimilarTypes msg a b] where
       ORatio    _ -> rFst   (toRatio    a)            b
       ODiffTime _ -> rFst   (toDiffTime a)            b
       OComplex  _ -> rFst   (toComplex  a)            b
-      _           -> ceError ONull
     ORatio     _ -> case b of
       OWord     _ -> rSnd               a (toRatio    b)
       OInt      _ -> rSnd               a (toRatio    b)
@@ -520,7 +479,6 @@ promoteNum msg a b = msum [conv a b, dissimilarTypes msg a b] where
       ORatio    _ -> return (           a,            b)
       ODiffTime _ -> rFst   (toDiffTime a)            b
       OComplex  _ -> rFst   (toComplex  a)            b
-      _           -> ceError ONull
     ODiffTime  _ -> case b of
       OWord     _ -> rSnd               a (toDiffTime b)
       OInt      _ -> rSnd               a (toDiffTime b)
@@ -529,7 +487,6 @@ promoteNum msg a b = msum [conv a b, dissimilarTypes msg a b] where
       ORatio    _ -> rSnd               a (toDiffTime b)
       ODiffTime _ -> return (           a,            b)
       OComplex  _ -> rFst   (toComplex  a)            b
-      _           -> ceError ONull
     OComplex   _ -> case b of
       OWord     _ -> rSnd               a (toComplex  b)
       OInt      _ -> rSnd               a (toComplex  b)
@@ -538,57 +495,135 @@ promoteNum msg a b = msum [conv a b, dissimilarTypes msg a b] where
       ORatio    _ -> rSnd               a (toComplex  b)
       ODiffTime _ -> rSnd               a (toComplex  b)
       OComplex  _ -> return (           a,            b)
-      _           -> ceError ONull
-    _            -> ceError ONull
+  where
+    rFst fn b = fmap (\a -> (toObject a, b)) fn
+    rSnd a fn = fmap (\b -> (a, toObject b)) fn
 
 -- | Execute a function that is a member of the class 'Prelude.Num' over two objects. These
 -- functions include @Prelude.(+)@, @Prelude.(-)@, and @Prelude.(*)@.
 withNum
-  :: Monad m
-  => (forall a . (Num a, Objectify a) => a -> a -> a)
-  -> Object -> Object -> ContErrT m Object
-withNum fn a b = case (a, b) of
-  (OWord     a, OWord     b) -> return (toObject (fn a b))
-  (OInt      a, OInt      b) -> return (toObject (fn a b))
-  (OLong     a, OLong     b) -> return (toObject (fn a b))
-  (OFloat    a, OFloat    b) -> return (toObject (fn a b))
-  (ORatio    a, ORatio    b) -> return (toObject (fn a b))
-  (ODiffTime a, ODiffTime b) -> return (toObject (fn a b))
-  (OComplex  a, OComplex  b) -> return (toObject (fn a b))
+  :: (forall a . (Num a, Objectify a) => a -> a -> a)
+  -> Object
+  -> Object
+  -> PredicateIO st Object
+withNum fn a b = return $ case (a, b) of
+  (OWord     a, OWord     b) -> toObject (fn a b)
+  (OInt      a, OInt      b) -> toObject (fn a b)
+  (OLong     a, OLong     b) -> toObject (fn a b)
+  (OFloat    a, OFloat    b) -> toObject (fn a b)
+  (ORatio    a, ORatio    b) -> toObject (fn a b)
+  (ODiffTime a, ODiffTime b) -> toObject (fn a b)
+  (OComplex  a, OComplex  b) -> toObject (fn a b)
 
 -- | Execute a function that is a member of the class 'Prelude.Integral' over two objects. These
 -- functions include 'Prelude.div', 'Prelude.mod', and 'Prelude.(^)'.
 withIntegral
-  :: Monad m
-  => (forall a . (Objectify a, Integral a) => a -> a -> a)
-  -> Object -> Object -> ContErrT m Object
-withIntegral fn a b = case (a, b) of
-  (OWord a, OWord b) -> return (toObject (fn a b))
-  (OInt  a, OInt  b) -> return (toObject (fn a b))
-  (OLong a, OLong b) -> return (toObject (fn a b))
+  :: (forall a . (Objectify a, Integral a) => a -> a -> a)
+  -> Object
+  -> Object
+  -> PredicateIO st Object
+withIntegral fn a b = return $ case (a, b) of
+  (OWord a, OWord b) -> toObject (fn a b)
+  (OInt  a, OInt  b) -> toObject (fn a b)
+  (OLong a, OLong b) -> toObject (fn a b)
 
 -- | Execute a function that is a member of the class 'Prelude.Fractional' over two objects. These
 -- functions include @Prelude.(/)@, @Prelude.(**)@, and 'Prelude.logBase'.
 withFractional
-  :: Monad m
-  => (forall a . (Fractional a, Objectify a) => a -> a -> a)
-  -> Object -> Object -> ContErrT m Object
-withFractional fn a b = case (a, b) of
-  (OFloat    a, OFloat    b) -> return (toObject (fn a b))
-  (ORatio    a, ORatio    b) -> return (toObject (fn a b))
-  (ODiffTime a, ODiffTime b) -> return (toObject (fn a b))
-  (OComplex  a, OComplex  b) -> return (toObject (fn a b))
+  :: (forall a . (Fractional a, Objectify a) => a -> a -> a)
+  -> Object
+  -> Object
+  -> PredicateIO st Object
+withFractional fn a b = return $ case (a, b) of
+  (OFloat    a, OFloat    b) -> toObject (fn a b)
+  (ORatio    a, ORatio    b) -> toObject (fn a b)
+  (ODiffTime a, ODiffTime b) -> toObject (fn a b)
+  (OComplex  a, OComplex  b) -> toObject (fn a b)
 
-----------------------------------------------------------------------------------------------------
+checkNumericOp
+  :: String
+  -> (forall a . Num a => a -> a -> a)
+  -> Object
+  -> Object
+  -> PredicateIO st (ContErr Object)
+checkNumericOp op fn a b = promoteNum op a b >>= uncurry (withNum fn) >>= checkOK
 
-listBreakup :: Eq a => [a] -> [a] -> [Either [a] [a]]
-listBreakup str substr = if null substr then [Left str] else loop [] [] (length str) str where
-  min = length substr
-  loop got rx remlen str =
-    if remlen < min
-      then got++[Left str]
-      else
-        case stripPrefix substr str of
-          Nothing  -> loop got (rx++[head str]) (remlen-1) (tail str)
-          Just str -> loop (got++[Left rx, Right substr]) [] (remlen-min) str
+-- | Used to create a built-in operator (like divide @(/)@ or modulus @(%)@) where, these operators
+-- have two separate functions in Haskell. Provide the operator, the two Haskell functions, and two
+-- Objects which will be "promoted" using 'Dao.Object.Data.promoteNum' and then the correct Haskell
+-- function will be selected and applied.
+checkBinumericOp
+  :: String
+  -> (forall a . Integral a => a -> a -> a)
+  -> (forall b . Floating b => b -> b -> b)
+  -> Object
+  -> Object
+  -> PredicateIO st (ContErr Object)
+checkBinumericOp op fnInt fnFrac a b = do
+  (a, b) <- promoteNum op a b
+  checkOK $ case (a, b) of
+    (OInt     a, OInt     b) -> OInt      (fnInt  a b)
+    (OWord    a, OWord    b) -> OWord     (fnInt  a b)
+    (OLong    a, OLong    b) -> OLong     (fnInt  a b)
+    (OFloat   a, OFloat   b) -> OFloat    (fnFrac a b)
+    (OComplex a, OComplex b) -> OComplex  (fnFrac a b)
+
+-- | Bitwise logical operations which work on 'Dao.Types.OInt's and 'Dao.Object.OWord's, which also
+-- work on 'Dao.Types.OSet's, 'Dao.Object.OIntMap's, and 'Dao.Types.ODict's.
+checkBitwiseOp
+  :: String
+  -> (forall a . Bits a => a -> a -> a)
+  -> (T_set  -> T_set  -> T_set)
+  -> (T_dict -> T_dict -> T_dict)
+  -> (T_intMap -> T_intMap -> T_intMap)
+  -> Object
+  -> Object
+  -> Check (ContErr Object)
+checkBitwiseOp op fnBit fnSet fnDict fnIntMap a b = do
+  (a, b) <- promoteNum op a b
+  checkOK $ case (a, b) of
+    (OWord   a, OWord   b) -> OWord   (fnBit    a b)
+    (OInt    a, OInt    b) -> OInt    (fnBit    a b)
+    (OSet    a, OSet    b) -> OSet    (fnSet    a b)
+    (ODict   a, ODict   b) -> ODict   (fnDict   a b)
+    (OIntMap a, OIntMap b) -> OIntMap (fnIntMap a b)
+
+-- | Logical operators include @&&@, and @||@.
+checkLogicalOp :: (Bool -> Bool -> Bool) -> Object -> Object -> Check (ContErr Object)
+checkLogicalOp fn a b = checkOK (boolToObj (fn (objToBool a) (objToBool b)))
+
+-- | Comparator operators include @<@, @>@ @<=@, and @>=@.
+checkCompareOp
+  :: String
+  -> (forall a . Ord a => a -> a -> Bool)
+  -> Object
+  -> Object
+  -> Check (ContErr Object)
+checkCompareOp op fn a b = case (a, b) of
+  (ONull      , ONull      ) -> done $ fn False False
+  (OTrue      , OTrue      ) -> done $ fn True  True
+  (ONull      , OTrue      ) -> done $ fn False True
+  (OTrue      , ONull      ) -> done $ fn True  False
+  (OString   a, OString   b) -> done $ fn a b
+  (OTime     a, OTime     b) -> done $ fn a b
+  (OChar     a, OChar     b) -> done $ fn a b
+  (OPair     a, OPair     b) -> done $ fn a b
+  (OList     a, OList     b) -> done $ fn a b
+  (OSet      a, OSet      b) -> done $ fn a b
+  (ODict     a, ODict     b) -> done $ fn a b
+  (OIntMap   a, OIntMap   b) -> done $ fn a b
+  (OTree     a, OTree     b) -> done $ fn a b
+  (OPattern  a, OPattern  b) -> done $ fn a b
+  (OScript   a, OScript   b) -> done $ fn a b
+  (ORule     a, ORule     b) -> done $ fn a b
+  (OBytes    a, OBytes    b) -> done $ fn a b
+  _ -> promoteNum op a b >>= \ (a, b) -> done $ case (a, b) of
+    (OInt      a, OInt      b) -> fn a b
+    (OWord     a, OWord     b) -> fn a b
+    (OLong     a, OLong     b) -> fn a b
+    (OFloat    a, OFloat    b) -> fn a b
+    (ORatio    a, ORatio    b) -> fn a b
+    (OComplex  a, OComplex  b) -> fn a b
+    (ODiffTime a, ODiffTime b) -> fn a b
+  where { done = checkOK . boolToObj }
 

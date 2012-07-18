@@ -57,12 +57,15 @@ newtype PredicateIO st a = PredicateIO { runPredicateIO :: CombinationT st IO a 
 -- these exceptions.
 noBadPatternsIO :: IO a -> IO (Either Object a)
 noBadPatternsIO fn = catches (fn >>= \e -> seq e (return (Right e))) $
-  [ Handler $ \ (PatternMatchFail msg) -> err msg
-  , Handler $ \ (AssertionFailed  msg) -> err msg
-  , Handler $ \ (RecSelError      msg) -> err msg
-  , Handler $ \ (RecUpdError      msg) -> err msg
-  ]
-  where { err msg = return (Left (OString (ustr msg))) }
+    [ Handler $ \ (PatternMatchFail msg) -> err ONull
+    , Handler $ \ (AssertionFailed  msg) -> err (ostr msg)
+    , Handler $ \ (RecSelError      msg) -> err (ostr msg)
+    , Handler $ \ (RecUpdError      msg) -> err (ostr msg)
+    ]
+  where
+    ostr msg = OString (ustr msg)
+    err  msg = return (Left msg)
+
 
 -- | The false predicate, uses 'Dao.Combination.failWith' to pass an 'Dao.Types.Object' that
 -- signifies why the predicate failed.

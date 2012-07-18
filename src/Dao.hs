@@ -20,7 +20,7 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
-{-# LANGUAGE TemplateHaskell #-}
+-- {-# LANGUAGE TemplateHaskell #-}
 
 -- | This module is pretty much where everything begins. It is the smallest interface that can be
 -- imported by any Haskell program making use of the Dao System. You can use the functions in this
@@ -74,10 +74,10 @@ min_exec_time = 200000
 -- takes an optional 'Dao.Debug.Debugger', which will be installed into the resulting
 -- 'Dao.Types.Runtime' and used for debugging.
 newRuntime :: Maybe Debugger -> IO Runtime
-newRuntime debug = flip runReaderT debug $ dStack $loc "newRuntime" $ do
-  paths <- dNewMVar $loc "Runtime.pathIndex"        (M.empty)
-  names <- dNewMVar $loc "Runtime.logicalNameIndex" (M.empty)
-  jtab  <- dNewMVar $loc "Runtime.jobTable"         (M.empty)
+newRuntime debug = flip runReaderT debug $ dStack xloc "newRuntime" $ do
+  paths <- dNewMVar xloc "Runtime.pathIndex"        (M.empty)
+  names <- dNewMVar xloc "Runtime.logicalNameIndex" (M.empty)
+  jtab  <- dNewMVar xloc "Runtime.jobTable"         (M.empty)
   dlist <- newDocList
   return $
     Runtime
@@ -112,7 +112,7 @@ initRuntimeFunctions funcs runtime =
 initRuntimeFiles :: DebugHandle -> [FilePath] -> Runtime -> IO Runtime
 initRuntimeFiles debug fx runtime =
   fmap (fromMaybe (error "FAILED to initalized runtime with files")) $
-    debugIO $loc "initRuntimeFiles" debug runtime $ do
+    debugIO xloc "initRuntimeFiles" debug runtime $ do
       forM_ fx $ \f -> lift (catches (void $ runIO runtime $ loadFile True f) handlers)
       problems <- checkAllImports
       if null problems
@@ -152,27 +152,27 @@ inputQueryLoop debug runtime getNextInput = do
         hSetBuffering stderr LineBuffering
         hPutStrLn stderr ("ERROR: "++show e)
         return True
-  void $ debugIO $loc "inputQueryLoop" debug runtime $ do
-    runtimeMVar <- dNewMVar $loc "Runtime" runtime
+  void $ debugIO xloc "inputQueryLoop" debug runtime $ do
+    runtimeMVar <- dNewMVar xloc "Runtime" runtime
     intrcvXUnit <- initExecUnit runtime
     let runString input = selectModules Nothing [] >>= execInputString True input
         iterateInput = do
           input <- lift (getNextInput runtimeMVar)
-          dModifyMVar $loc runtimeMVar $ \runtime -> do
+          dModifyMVar xloc runtimeMVar $ \runtime -> do
             continue <- case input of
               Just ('\\':input) -> runString (ustr input) >> return True
               Just (':':input)  -> evalScriptString intrcvXUnit input >> return True
               Just input        -> runString (ustr input) >> return True
-              Nothing           -> dPutStrErr $loc ":quit" >> return False
+              Nothing           -> dPutStrErr xloc ":quit" >> return False
             return (runtime, continue)
         -- 'catchLoop' iterates input and processing, catching exceptions and deciding whether to
         -- continue looping based on the return value of the exception handler or 'iterateInput'
         -- function.
         catchLoop = do
-          continue <- dHandle $loc (lift . ifException) iterateInput
+          continue <- dHandle xloc (lift . ifException) iterateInput
           when continue (dYield >> catchLoop)
     catchLoop -- here we start the 'catchLoop'.
     -- Now, takedown all loaded modules.
-    dReadMVar $loc (pathIndex runtime) >>= mapM_ (dReadMVar $loc >=> setupTakedown destructScript) .
+    dReadMVar xloc (pathIndex runtime) >>= mapM_ (dReadMVar xloc >=> setupTakedown destructScript) .
       (map execUnit . filter isProgramFile . M.elems)
 

@@ -278,17 +278,18 @@ newtype Func = Func { evalBuiltin :: [Object] -> ExecScript Object }
 checkToExecScript :: UStr -> Object -> Check (ContErr a) -> ExecScript a
 checkToExecScript exprType inType ckfn =
   do  xunit <- ask
-      execIO (runCombinationT (runPredicateIO ckfn) xunit) >>= loop xunit
+      execIO (runCombinationT (runPredicateIO ckfn) xunit) >>= loop xunit []
   where
-    loop :: ExecUnit -> [(Either Object (ContErr a), ExecUnit)] -> ExecScript a
-    loop xunit optx = case optx of
-      (Left  o, _):optx -> loop xunit optx
-      (Right o, _):_    -> returnContErr o
+    loop :: ExecUnit -> [Object] -> [(Either Object (ContErr a), ExecUnit)] -> ExecScript a
+    loop xunit errs optx = case optx of
+      (Left  ONull, _):optx -> loop xunit errs optx
+      (Left  err  , _):optx -> loop xunit (err:errs) optx
+      (Right o    , _):_    -> returnContErr o
       [] -> returnContErr $ CEError $ OList $
               [ OString exprType
               , OString (ustr "cannot operate with given parameter types")
               , inType
-              ]
+              ] ++ errs
 
 -- | Run an 'ExecScript' monad inside the 'Check'. This has the further effect of halting all
 -- 'CEReturn's, so function call evaluation does not collapse the entire expression. 'CEError's are

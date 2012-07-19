@@ -113,7 +113,7 @@ initRuntimeFiles :: DebugHandle -> [FilePath] -> Runtime -> IO Runtime
 initRuntimeFiles debug fx runtime =
   fmap (fromMaybe (error "FAILED to initalized runtime with files")) $
     debugIO xloc "initRuntimeFiles" debug runtime $ do
-      forM_ fx $ \f -> lift (catches (void $ runIO runtime $ loadFile True f) handlers)
+      forM_ fx $ \f -> lift (catches (void $ runIO runtime $ loadFilePath True f) handlers)
       problems <- checkAllImports
       if null problems
         then return runtime

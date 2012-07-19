@@ -367,8 +367,11 @@ execScriptExpr script = uncom script >>= \script -> case script of
     lval <- evalObject lval
     let setBranch ref xunit = return (xunit{currentBranch = ref})
         setFile file xunit = do
-          doc <- execScriptRun (openDoc file)
-          return (xunit{currentDocument = Just doc})
+          doc <- execScriptRun (getDocHandle file)
+          case doc of
+            Nothing  -> ceError $ OList $ map OString $
+              [ustr "with file path", file, ustr "file has not been loaded"]
+            Just doc -> return (xunit{currentDocument = Just doc})
         close file = execScriptRun (closeDoc file)
         run upd = ask >>= upd >>= \r -> local (const r) (execScriptBlock thn)
     case lval of

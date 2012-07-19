@@ -49,10 +49,30 @@ import qualified Data.ByteString.Lazy as B
 
 import           System.IO
 
+import Debug.Trace
+
+----------------------------------------------------------------------------------------------------
+
 putStrErr :: String -> IO ()
 putStrErr msg = hSetBuffering stderr LineBuffering >> hPutStrLn stderr msg
 
 ----------------------------------------------------------------------------------------------------
+
+-- | Parse Dao program from a 'Prelude.String' containing valid Dao source code, creating a
+-- 'Dao.Types.SourceCode' object. This is a pure function called by 'loadFilePath'.
+loadSourceCode :: UPath -> String -> SourceCode
+loadSourceCode upath sourceString = getFirstCompleteParse parseCode where
+  path = uchars upath
+  parseCode = runCombination source (parserState{inputString = sourceString})
+  getFirstCompleteParse =
+    loop ("FILE TYPE: "++show path++" does not appear to be a Dao script.")
+  loop msg px = case px of -- take the first parse that consumes all input.
+    [] -> error msg
+    (Right sc, st):px -> if null (inputString st) then sc else loop err2 px
+    (Left msg, st):px -> loop (err1 msg st) px
+  err1 msg st = "PARSE ERROR: "++show path
+    ++':':show (rowNumber st)++':':show (colNumber st)++": "++printParseError path msg
+  err2 = "INTERNAL ERROR: parse succeeded without consuming all source code"
 
 -- | Updates the 'Runtime' to include the Dao source code loaded from the given 'FilePath'. This
 -- function tries to load a file in three different attempts: (1) try to load the file as a binary
@@ -62,46 +82,55 @@ putStrErr msg = hSetBuffering stderr LineBuffering >> hPutStrLn stderr msg
 -- 'Dao.Object.Parsers.source'. If all three methods fail, an error is thrown. Returns
 -- the 'TypedFile', although all source code files are returned as 'PrivateType's. Use
 -- 'asPublic' to force the type to be a 'PublicType'd file.
-loadFile :: Bool -> FilePath -> Run File
-loadFile public path = ask >>= \runtime -> do
-  let ok msg = dPutStrErr xloc (msg++' ':show path)
-      upath = ustr path
-  -- First try to load the file as a binary program file, and then try it as a binary data file.
-  lift $ putStrLn ("Loading file "++show upath)
+loadFilePath :: Bool -> FilePath -> Run File
+loadFilePath public path = do
+  let upath = ustr path
+  dPutStrErr xloc ("Lookup file path "++show upath)
   h    <- lift (openFile path ReadMode)
   zero <- lift (hGetPosn h)
   enc  <- lift (hGetEncoding h)
-  lift (hSetBinaryMode h True)
-  dat  <- catchErrorCall $ lift $ fmap (B.decode$!) (B.hGetContents h) >>= evaluate
-  case dat of
-    Right doc    -> do -- The file is a document.
-      docHandle <- newDocHandle xloc ("DocHandle("++show path++")") doc
-      let file = DataFile{filePath = upath, fileData = docHandle}
-      dModifyMVar_ xloc (documentList runtime) (\docTab -> return (M.insert upath docHandle docTab))
-      dModifyMVar_ xloc (pathIndex runtime) (\pathTab -> return (M.insert upath file pathTab))
-      ok "loaded data file"
-      return file
-    Left  docErr -> do -- The file does not seem to be a document, try parsing it as a script.
-      sourceCode <- lift $ do
-        hSetPosn zero
-        hSetEncoding h (fromMaybe localeEncoding enc)
-        fmap (loadSourceCode path) (hGetContents h) >>= evaluate
-      file <- registerSourceCode public upath sourceCode
-      ok "loaded source code" >> return file
+  -- First try to load the file as a binary program file, and then try it as a binary data file.
+  file <- catchErrorCall (ideaLoadHandle upath h)
+  case file of
+    Right file -> return file
+    Left  err  -> do -- The file does not seem to be a document, try parsing it as a script.
+      lift (hSetPosn zero >> hSetEncoding h (fromMaybe localeEncoding enc))
+      dPutStrErr xloc (show err)
+      scriptLoadHandle public upath h
 
--- | Parse Dao program from a 'Prelude.String' containing valid Dao source code, creating a
--- 'Dao.Types.SourceCode' object. This is a pure function called by 'loadFile'.
-loadSourceCode :: FilePath -> String -> SourceCode
-loadSourceCode file sourceString = getFirstCompleteParse parseCode where
-  parseCode = runCombination source (parserState{inputString = sourceString})
-  getFirstCompleteParse = loop ("FILE TYPE: "++show file++" does not appear to be a Dao script.")
-  loop msg px = case px of -- take the first parse that consumes all input.
-    [] -> error msg
-    (Right sc, st):px -> if null (inputString st) then sc else loop err2 px
-    (Left msg, st):px -> loop (err1 msg st) px
-  err1 msg st = "PARSE ERROR: "++file
-    ++':':show (rowNumber st)++':':show (colNumber st)++": "++printParseError file msg
-  err2 = "INTERNAL ERROR: parse succeeded without consuming all source code"
+-- | Load a Dao script program from the given file handle. You must pass the path name to store the
+-- resulting 'File' into the 'Dao.Types.pathIndex' table. The handle must be set to the proper
+-- encoding using 'System.IO.hSetEncoding'.
+scriptLoadHandle :: Bool -> UPath -> Handle -> Run File
+scriptLoadHandle public upath h = do
+  sourceCode <- lift $ do
+    hSetBinaryMode h False
+    fmap (loadSourceCode upath) (hGetContents h) >>= evaluate
+  file <- registerSourceCode public upath sourceCode
+  dPutStrErr xloc ("Loaded source code "++show upath) >> return file
+  return file
+
+-- | Load idea data from the given file handle. You must pass the path name to store the resulting
+-- 'File' into the 'Dao.Types.pathIndex' table.
+ideaLoadHandle :: UPath -> Handle -> Run File
+ideaLoadHandle upath h = ask >>= \runtime -> do
+  lift (hSetBinaryMode h True)
+  doc <- lift (fmap (B.decode$!) (B.hGetContents h) >>= evaluate)
+  docHandle <- newDocHandle xloc ("DocHandle("++show upath++")") $! doc
+  let file = DataFile{filePath = upath, fileData = docHandle}
+  --  dModifyMVar_ xloc (documentList runtime) $ \docTab ->
+  --    seq docTab $! seq docHandle $! lift $! return $! M.insert upath docHandle docTab
+  dModifyMVar_ xloc (pathIndex runtime) $ \pathTab ->
+    seq pathTab $! seq file $! return $! M.insert upath file pathTab
+  dPutStrErr xloc ("Loaded data file "++show upath)
+  return file
+
+-- | Where 'loadFilePath' keeps trying to load a given file by guessing it's type,
+-- 'loadFilePathWith' allows you to specify how to load the file by passing a function, like
+-- 'ideaLoadHandle' for parsing ideas or 'scriptLoadHandle' for parsing scripts, and only files of
+-- that type will be loaded, or else this function will fail.
+loadFilePathWith :: UPath -> (UPath -> Handle -> Run File) -> Run File
+loadFilePathWith upath fn = lift (openFile (uchars upath) ReadMode) >>= fn upath
 
 -- | Initialize a source code file into the given 'Runtime'. This function checks that the
 -- 'Dao.Types.sourceFullPath' is unique in the 'programs' table of the 'Runtime', then evaluates

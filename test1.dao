@@ -51,18 +51,6 @@ rule "test ref" {
 	print(@a);
 }
 
-rule "$* is a kind of $*" {
-	try {
-		a = ${use.file};
-		print("use file "+a);
-		with a { ref($1) = $2; print("OK"); }
-	}
-	catch err {
-		try { ref($1) = $2; print("I guess so."); }
-		catch err { print(err); }
-	}
-}
-
 rule "file $*." {
 	try {
 		with "/home/ramin/main/dao/test1.idea" {
@@ -162,14 +150,33 @@ rule "$? file $*" {
 	op = join("", $1);
 	a  = join("", $2);
 	print(op+" file "+a);
-	try {	 if(op=="new")   { newDB(a);   print("Created new file "+a); }
+	try {	 if(op=="new")   { newDB(a);   print("Created new file "+a); ${use.file} = a; }
 		else if(op=="save")  { saveDB(a);  print("Save file "+a); }
-		else if(op=="open")  { openDB(a);  print("Open file "+a); }
+		else if(op=="open")  { openDB(a);  print("Open file "+a); ${use.file} = a; }
 		else if(op=="close") { closeDB(a); print("Close file "+a); }
-		else if(op=="use")   { ${use.file} = a; print("Use file "+a); }
+		else if(op=="use")   { ${use.file} = a; }
 		else { print("I don't understand what \""+op+"\" file means."); }
+		if(${use.file}) { print("Using file "+a); }
+		else { print("Please specify which file to use."); }
 	}
-	catch err { print(err); }
+	catch err { print("ERROR: "+err); }
+}
+
+rule "$* is a kind of $*" {
+	try {
+		a = ${use.file};
+		print("use file "+a);
+		with a { ref($1) = $2; print("OK"); }
+	}
+	catch err {
+		try { ref($1) = $2; print("I guess so."); }
+		catch err { print(err); }
+	}
+}
+
+rule("listDBs", "list DB", "list db", "list dbs") {
+	print("Listing loaded idea files");
+	listDBs();
 }
 
 rule "$bad dollar sign" {

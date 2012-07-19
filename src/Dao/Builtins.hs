@@ -242,8 +242,7 @@ basicScriptOperations = M.fromList funcList where
         [OString path] -> runToCheck_ (saveDoc path)
         [OString path, OString newPath] -> runToCheck_ (saveDocAs path newPath)
     , func "closeDB" $ \ [OString path] -> runToCheck_ (closeDoc path)
-    , func "listDBs" $ \ [] -> runToCheck $
-        fmap (OList . map OString . M.keys) (ask >>= dReadMVar xloc . documentList)
+    , func "listDBs" $ \ [] -> runToCheck (fmap (OList . map OString) listDocList)
     , func "listMods" $ \ [] -> runToCheck $ do
         fmap (OList . map (\ (a, b) -> OPair (OString a, OString (filePath b))) . M.assocs) $
           ask >>= dReadMVar xloc . logicalNameIndex

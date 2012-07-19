@@ -46,6 +46,8 @@ import           System.Directory
 import           System.FilePath
 import           System.IO
 
+import Debug.Trace
+
 -- | Converts a 'System.IO.FilePath' to a 'Dao.Types.UPath' that can be used by many of the
 -- functions. in this module.
 docRefToFilePath :: UPath -> FilePath
@@ -107,16 +109,18 @@ setModified doc = dModifyMVar_ xloc doc $ \doc ->
   return (doc{docModified = 1 + docModified doc})
 
 withDocList :: (DocList -> Run (DocList, a)) -> Run a
-withDocList fn = ask >>= \runtime -> dModifyMVar xloc (documentList runtime) fn
+withDocList fn = ask >>= \runtime -> dModifyMVar xloc (documentList runtime) $ \docList ->
+  seq docList $! fn $! docList
 
 withDocList_ :: (DocList -> Run DocList) -> Run ()
-withDocList_ fn = ask >>= \runtime -> dModifyMVar_ xloc (documentList runtime) fn
+withDocList_ fn = ask >>= \runtime -> dModifyMVar_ xloc (documentList runtime) $ \docList ->
+  seq docList $! fn $! docList
 
 withUPath :: UPath -> (Document -> Run (Document, a)) -> Run a
 withUPath docref docUpd = do
   doc <- ask >>= fmap (M.lookup docref) . dReadMVar xloc . documentList
-  case doc of
-    Just doc -> dModifyMVar xloc doc docUpd
+  case seq doc doc of
+    Just doc -> seq doc $! dModifyMVar xloc doc (\doc -> seq doc $! docUpd $! doc)
     Nothing  ->
       error ("document reference "++show docref++" has not been loaded from persistent storage")
 
@@ -132,7 +136,7 @@ fullPath :: UPath -> Run UPath
 fullPath docref = lift $ fmap ustr (canonicalizePath (uchars docref))
 
 listDocList :: Run [Name]
-listDocList = withDocList $ \docs -> return (docs, M.keys docs)
+listDocList = withDocList $ \docs -> seq docs $! return $! (docs, M.keys docs)
 
 docIsOpen :: UPath -> FilePath -> Run Bool
 docIsOpen ref path = withDocList $ \docs -> return (docs, M.member (ustr path) docs)
@@ -143,17 +147,17 @@ docIsOpen ref path = withDocList $ \docs -> return (docs, M.member (ustr path) d
 newDoc :: UPath -> Document -> Run ()
 newDoc docref doc = do
   docref <- fullPath docref
-  withDocList_ $ \docs -> case M.lookup docref docs of
+  withDocList_ $ \docs -> case seq docs $! M.lookup docref docs of
     Just _  -> error ("document reference "++show docref++" is already loaded")
     Nothing -> do
       doc <- dNewMVar xloc ("DocHandle("++show docref++")") doc
-      return (M.insert docref doc docs)
+      lift (return (M.insert docref doc docs) >>= evaluate)
 
 -- | Open a 'Document', do not create it if it does not exist.
 openDoc :: UPath -> Run DocHandle
 openDoc docref = do
   docref <- fullPath docref
-  withDocList $ \docs -> case M.lookup docref docs of
+  withDocList $ \docs -> case seq docs $! M.lookup docref docs of
     Just doc -> do
       dModifyMVar_ xloc doc (\doc -> return (doc{docRefCount = 1 + docRefCount doc}))
       return (docs, doc)
@@ -161,7 +165,12 @@ openDoc docref = do
       bytes <- lift (B.readFile (docRefToFilePath docref))
       let doc = seq bytes $ decode bytes
       doc <- seq doc $ dNewMVar xloc ("DocHandle("++show docref++")") doc
-      return (M.insert docref doc docs, doc)
+      seq docref $! seq doc $! seq docs $! return $! (M.insert docref doc docs, doc)
+
+-- | Once a document has been opened with 'openDoc' or created with 'newDoc', 
+getDocHandle :: UPath -> Run (Maybe DocHandle)
+getDocHandle upath = withDocList $ \docs ->
+  seq docs $! return $! (docs, M.lookup upath docs)
 
 -- | Save a persistent data store to a specified file path referring to, or changing, the
 -- 'Document's 'docFilePath'.
@@ -170,24 +179,24 @@ saveDocAs docref path = withUPath_ docref $ \doc -> do
   docref <- fullPath docref
   path   <- fullPath docref
   lift $ do
-    h      <- openFile (docRefToFilePath path) WriteMode
+    h <- openFile (docRefToFilePath path) WriteMode >>= evaluate
     let encoded = encode doc
-    B.hPutStr h encoded
-    hFlush h >> hClose h
-    return (doc{docModified = 0}) >>= evaluate
+    seq h $! seq encoded $! B.hPutStr h encoded
+    hFlush h >> hClose h >>= evaluate
+    return $! doc{docModified = 0}
 
 -- | Save a persistent data store to the same file path from which it was loaded. Returns an error
 -- message if the document reference is not defined, or if there is no file path associated with the
 -- given document reference.
 saveDoc :: UPath -> Run ()
-saveDoc docref = saveDocAs docref docref
+saveDoc docref = seq docref $! saveDocAs docref docref
 
 -- | Save to file every document that has a non-'Data.Maybe.Nothing' name for 'docFilePath'.
 saveAll :: Run ()
 saveAll = withDocList_ $ \docs -> do
-  forM_ (M.assocs docs) $ \ (docref, doc) -> dReadMVar xloc doc >>= \doc ->
-    lift (B.writeFile (docRefToFilePath docref) $! encode (docRootObject doc))
-  return docs
+  forM_ (M.assocs docs) $ \ (docref, doc) -> seq doc $! dReadMVar xloc doc >>= \doc -> seq doc $!
+    lift (B.writeFile (docRefToFilePath docref) $! encode $! docRootObject doc)
+  return $! docs
 
 -- | Remove a 'Document' from the list of open 'Document's. After this, the 'Document' reference can
 -- no longer be used until it is re-opened with 'openDoc', possibly under a different name. If the

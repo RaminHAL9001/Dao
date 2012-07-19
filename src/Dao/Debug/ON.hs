@@ -54,8 +54,6 @@ import           System.Time
 
 import qualified Language.Haskell.TH as Q
 
-import Debug.Trace
-
 ----------------------------------------------------------------------------------------------------
 
 -- | A template-Haskell splice to get the file location. The splice @$'loc'@ appears as an

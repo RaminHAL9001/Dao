@@ -1,5 +1,5 @@
-# "dao-project-files.list"
-# used by the GNU-Make script "dao-ghc-build-opts.mk" to specify which
+# "project-files.list"
+# used by the GNU-Make script "ghc-build-opts.mk" to specify which
 # files are to be compiled by GHC.
 # 
 # Copyright (C) 2008-2012  Ramin Honary.

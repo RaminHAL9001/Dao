@@ -1,4 +1,4 @@
-# "dao-ghc-build-opts.mk": a GNU-Make script to build the "Dao" modules
+# "ghc-build-opts.mk": a GNU-Make script to build the "Dao" modules
 # and interactive program.
 # 
 # Copyright (C) 2008-2012  Ramin Honary.
@@ -26,7 +26,7 @@ star:=*
 DAO_BUILD_OPTS = -threaded
 DAO_COMPILE = ghc $(DAO_BUILD_OPTS) --make
 
-DAO_PROJECT_FILES_LIST = dao-project-files.list
+DAO_PROJECT_FILES_LIST = project-files.list
 
 LOAD_PROJECT_FILES = \
 		grep -v '^[[:space:]]*\#' $(DAO_PROJECT_FILES_LIST) \
@@ -35,7 +35,7 @@ LOAD_PROJECT_FILES = \
 
 DAO_PROJECT_FILES := $(shell $(LOAD_PROJECT_FILES))
 
-EDIT_FILES_LIST := dao-edit-files.list
+EDIT_FILES_LIST := edit-files.list
 
 LOAD_EDIT_FILES = \
 	if test -r '$(EDIT_FILES_LIST)'; then cat '$(EDIT_FILES_LIST)'; fi
@@ -68,7 +68,7 @@ calc: src/Dao/Calc.hs src/Dao/Object/Parsers.hs src/Dao/Combination.hs src/Dao/C
 
 edit:
 	vim -p4 scratch.hs -c ':set autowrite autoread' \
-		dao-ghc-build-opts.mk dao-project-files.list \
+		ghc-build-opts.mk project-files.list \
 		$(DAO_DEPENDS_SRC) \
 		$(DAO_EDIT_FILES)
 

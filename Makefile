@@ -1,1 +1,1 @@
-include dao-ghc-build-opts.mk
+include ghc-build-opts.mk

@@ -215,6 +215,13 @@ listingExpr msg open comma close pars =  labelParse msg $ do
   munch whitespace >> char close
   return objs
 
+parseArgVarList :: Parser [Com Name]
+parseArgVarList = listingExpr "argument list for function" '(' ',' ')' (withComments wordTokenUStr)
+
+funcArgsList :: Parser [Com ObjectExpr]
+funcArgsList =
+  listingExpr "arguments list to function call" '(' ',' ')' (withComments objectExpr)
+
 listExpr :: Parser [Com ObjectExpr]
 listExpr = listingExpr "list expression" '[' ',' ']' (withComments objectExpr)
 
@@ -251,7 +258,7 @@ lambdaExpr :: Parser ObjectExpr
 lambdaExpr = do
   con   <- withComments (void (string "func"))
   labelParse "anonymous function" $ do
-    args  <- withComments (listingExpr "argument list for function" '(' ',' ')' (withComments wordTokenUStr))
+    args  <- withComments parseArgVarList
     block <- withComments (blockExpr "anonymous function expression block")
     return (LambdaExpr con args block)
 
@@ -266,10 +273,6 @@ arrayExpr = do
     ,do items <- withComments listExpr
         return (ArrayExpr con (Com []) items)
     ]
-
-funcArgsList :: Parser [Com ObjectExpr]
-funcArgsList =
-  listingExpr "arguments list to function call" '(' ',' ')' (withComments objectExpr)
 
 funcCallExpr :: Parser ObjectExpr
 funcCallExpr = first $
@@ -474,33 +477,46 @@ ruleDirectiveParser = fmap RuleExpr $ withComments $ do
     block <- withComments (blockExpr "rule action commands")
     return (Rule pats block)
 
+funcDirectiveParser :: Parser Directive
+funcDirectiveParser = do
+  f     <- withComments (fmap (const ()) (string "func"))
+  nm    <- withComments (fmap ustr wordToken)
+  argv  <- withComments parseArgVarList
+  block <- withComments (blockExpr "top-level function")
+  return (ToplevelFunc f nm argv block)
+
 -- | A parser that parses @SETUP@, @TAKEDOWN@, @BEGIN@, @END@, directives.
 eventDirective :: String -> (Com [Com ScriptExpr] -> Directive) -> Parser Directive
 eventDirective str con = string str >> fmap con (withComments (blockExpr (str++" directive")))
+
+dottedLabel :: Parser Name
+dottedLabel = fmap (ustr . intercalate ".") (sepBy wordToken (char '.'))
 
 -- | A parser that parses "requires", "string.tokenizer = ...;" and "string.equality = ...;"
 -- directives.
 optionDirective :: String -> Parser Directive
 optionDirective req = do
   req   <- withComments (fmap ustr (string req))
-  label <- withComments (fmap (ustr . intercalate ".") (sepBy wordToken (char '.')))
-  char ';' >> return (Requires req label)
+  label <- withComents (first [litString, dottedLabel])
+  char ';' >> return (Attribute req label)
+
+parseAttribute :: Parser Directive
+parseAttribute = liftM2 Attribute (withComments dottedLabel) (withComments dottedLabel)
 
 -- | A 'source' program is composed of concatenated directives.
 directive :: Parser Directive
 directive = first $
   [ defExpr '=' idenToken ToplevelDefine endLine
   , ruleDirectiveParser
-  , do  munch whitespace >> string "import" >> munch whitespace
-        im <- fmap ImportExpr (withComments (reusedParser "quoted string for import file path"))
-        endLine >> return im
+  , funcDirectiveParser
   , eventDirective "SETUP"    SetupExpr
   , eventDirective "BEGIN"    BeginExpr
   , eventDirective "END"      EndExpr
   , eventDirective "TAKEDOWN" TakedownExpr
   , optionDirective "string.tokenizer"
-  , optionDirective "string.equality"
+  , optionDirective "string.compare"
   , optionDirective "requires"
+  , optionDirective "import"
   ]
 
 -- | Parses a program string from source code, but does not construct a

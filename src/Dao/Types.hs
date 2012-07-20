@@ -146,16 +146,17 @@ freeAST ca = case ca of
 -- | A 'Directive' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
 data Directive
-  = ImportExpr     (Com Name)
+  = Attribute      (Com Name) (Com Name)
   | ToplevelDefine (Com [Name]) (Com ObjectExpr) 
   | RuleExpr       (Com Rule)
   | SetupExpr      (Com [Com ScriptExpr])
   | BeginExpr      (Com [Com ScriptExpr])
   | EndExpr        (Com [Com ScriptExpr])
   | TakedownExpr   (Com [Com ScriptExpr])
-  | Requires       (Com Name) (Com Name)
   | ToplevelFunc   (Com ()) (Com Name) (Com [Com Name]) (Com [Com ScriptExpr])
   deriving (Eq, Ord, Show, Typeable)
+
+type TopLevelFunc = DMVar ([Object] -> ExecScript Object)
 
 -- | This is the executable form of the 'SourceCode', which cannot be serialized, but is structured
 -- in such a way as to make execution more efficient. It caches computed 'ScriptExpr'ns as some type
@@ -166,12 +167,41 @@ data Program m
     , programImports    :: [UStr]
     , constructScript   :: [[Com ScriptExpr]]
     , destructScript    :: [[Com ScriptExpr]]
+    , requiredBuiltins  :: [Name]
+    , programAttributes :: M.Map Name Name
     , preExecScript     :: [CXRef [Com ScriptExpr] m]
       -- ^ the "guard scripts" that are executed before every string execution.
     , postExecScript    :: [CXRef [Com ScriptExpr] m]
       -- ^ the "guard scripts" that are executed after every string execution.
+    , programTokenizer  :: Tokenizer
+      -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
+      -- module associated with this runtime.
+    , programComparator :: CompareToken
+      -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
     , ruleSet           :: DMVar (PatternTree [CXRef (Com [Com ScriptExpr]) m])
     , staticData        :: DMVar (T.Tree Name Object)
+    }
+
+initProgram :: Name -> Run CachedProgram
+initProgram modName = do
+  pat  <- dNewMVar xloc "Program.ruleSet" T.Void
+  dat  <- dNewMVar xloc "Program.staticData" T.Void
+  -- pre  <- dNewMVar xloc "Program.preExecScript" []
+  -- post <- dNewMVar xloc "Program.postExecScript" []
+  return $
+    Program
+    { programModuleName = modName
+    , programImports    = []
+    , constructScript   = []
+    , destructScript    = []
+    , requiredBuiltins  = []
+    , programAttributes = M.empty
+    , preExecScript     = []
+    , programTokenizer  = return . tokens . uchars
+    , programComparator = (==)
+    , postExecScript    = []
+    , ruleSet           = pat
+    , staticData        = dat
     }
 
 ----------------------------------------------------------------------------------------------------
@@ -291,6 +321,11 @@ checkToExecScript exprType inType ckfn =
               , inType
               ] ++ errs
 
+-- | Convert a 'TopLevelFunc' to a 'CheckFunc'.
+toplevelToCheckFunc :: TopLevelFunc -> ExecScript CheckFunc
+toplevelToCheckFunc top = execScriptRun (dReadMVar xloc top) >>= \top ->
+  return $ CheckFunc $ \args -> execScriptToCheck id (top args) >>= checkOK
+
 -- | Run an 'ExecScript' monad inside the 'Check'. This has the further effect of halting all
 -- 'CEReturn's, so function call evaluation does not collapse the entire expression. 'CEError's are
 -- converted to failed predicates.
@@ -355,11 +390,16 @@ data ExecUnit
       -- not be defined (set to 'ONull') in the case that execution was not triggered by a pattern
       -- match.
     , currentBranch      :: [Name]
-      -- ^ Set by the @with@ statement during execution of a Dao script. It is used to prefix this
+      -- ^ set by the @with@ statement during execution of a Dao script. It is used to prefix this
       -- to all global references before reading from or writing to those references.
     , importsTable       :: [DMVar ExecUnit]
       -- ^ a pointer to the ExecUnit of every Dao program imported with the @import@ keyword.
+    , execAccessRules    :: FileAccessRules
+      -- ^ restricting which files can be loaded by the program associated with this ExecUnit, these
+      -- are the rules assigned this program by the 'ProgramRule' which allowed it to be loaded.
     , builtinFuncs       :: M.Map Name CheckFunc
+      -- ^ a pointer to the builtin function table provided by the runtime.
+    , toplevelFuncs      :: DMVar (M.Map Name TopLevelFunc)
     , execHeap           :: DMVar T_tree
     , execStack          :: DMVar [T_dict]
     , recursiveInput     :: DMVar [UStr]
@@ -372,60 +412,82 @@ instance Bugged ExecUnit where
 
 ----------------------------------------------------------------------------------------------------
 
+-- | Rules dictating which files a particular 'ExecUnit' can load at runtime.
+data FileAccessRules
+  = RestrictFiles  Pattern
+    -- ^ files matching this pattern will never be loaded
+  | AllowFiles     Pattern
+    -- ^ files matching this pattern can be loaded
+  | ProgramRule    Pattern [FileAccessRules] [FileAccessRules]
+    -- ^ programs matching this pattern can be loaded and will be able to load files by other rules.
+    -- Also has a list of rules dictating which built-in function sets are allowed for use, but
+    -- these rules are not matched to files, they are matched to the function sets provided by the
+    -- 'Runtime'.
+  | DirectoryRule  UPath   [FileAccessRules]
+    -- ^ access rules will apply to every file in the path of this directory, but other rules
+    -- specific to certain files will override these rules.
+
+-- | Anything that can be loaded from the filesystem and used by the Dao 'Runtime' is a type of
+-- this.
 data File
-  = ProgramFile
+  = ProgramFile -- ^ a program loaded and executable
     { publicFile  :: Bool
     , filePath    :: Name
     , logicalName :: Name
     , execUnit    :: DMVar ExecUnit
     }
-  | DataFile
+  | ProgramEdit -- ^ a program executable and editable.
+    { filePath   :: Name
+    , sourceCode :: SourceCode
+    , execUnit   :: DMVar ExecUnit
+    }
+  | IdeaFile -- ^ a file containing a 'Dao.Tree.Tree' of serialized 'Dao.Object.Object's.
     { filePath :: Name
     , fileData :: DocHandle
     }
 
+-- | Used to select programs from the 'pathIndex' that are currently available for recursive
+-- execution.
 isProgramFile :: File -> Bool
 isProgramFile file = case file of
   ProgramFile _ _ _ _ -> True
-  DataFile    _ _     -> False
+  _                   -> False
 
 -- | A type of function that can split an input query string into 'Dao.Pattern.Tokens'. The default
 -- splits up strings on white-spaces, numbers, and punctuation marks.
-type Tokenizer = String -> IO Tokens
+type Tokenizer = UStr -> ExecScript Tokens
 
 -- | A type of function that can match 'Dao.Pattern.Single' patterns to 'Dao.Pattern.Tokens', the
 -- default is the 'Dao.Pattern.exact' function. An alternative is 'Dao.Pattern.approx', which
 -- matches strings approximately, ignoring transposed letters and accidental double letters in words.
-type TokenEquality = UStr -> UStr -> IO Bool
+type CompareToken = UStr -> UStr -> Bool
 
 data Runtime
   = Runtime
-    { documentList        :: DocListHandle
-    , pathIndex           :: DMVar (M.Map UPath File)
+    { pathIndex            :: DMVar (M.Map UPath File)
       -- ^ every file opened, whether it is a data file or a program file, is registered here under
       -- it's file path (file paths map to 'File's).
-    , logicalNameIndex    :: DMVar (M.Map Name File)
+    , logicalNameIndex     :: DMVar (M.Map Name File)
       -- ^ program files have logical names. This index allows for easily looking up 'File's by
       -- their logical name.
-    , jobTable            :: DMVar (M.Map ThreadId Job)
+    , jobTable             :: DMVar (M.Map ThreadId Job)
       -- ^ A job is any string that has caused execution across loaded dao scripts. This table keeps
       -- track of any jobs started by this runtime.
-    , defaultTimeout      :: Maybe Int
+    , defaultTimeout       :: Maybe Int
       -- ^ the default time-out value to use when evaluating 'execInputString'
-    , initialBuiltins     :: M.Map Name CheckFunc
+    , initialBuiltins      :: M.Map Name CheckFunc
       -- ^ fundamental built-in functions common to all programs.
-    , functionSets        :: M.Map Name (M.Map Name CheckFunc)
+    , functionSets         :: M.Map Name (M.Map Name CheckFunc)
       -- ^ every labeled set of built-in functions provided by this runtime is listed here. This
       -- table is checked when a Dao program is loaded that has "requires" directives.
-    , functionCheckList   :: M.Map Name (S.Set Name)
-      -- ^ if a Dao program "requires" a set of functions, but that program's logical name is NOT in
-      -- this check list, or if it is in this checklist but the required functionality is not
-      -- included in the set of functionality allowed to that Program, loading the Program fails.
-    , availableTokenizers :: M.Map Name Tokenizer
+    , availableTokenizers  :: M.Map Name Tokenizer
       -- ^ a table of available string tokenizers.
-    , availableMatchers   :: M.Map Name TokenEquality
+    , availableComparators :: M.Map Name CompareToken
       -- ^ a table of available string matching functions.
-    , runtimeDebugger     :: DebugHandle
+    , fileAccessRules      :: [FileAccessRules]
+      -- ^ rules loaded by config file dicating programs and ideas can be loaded by Dao, and also,
+      -- which programs can load which programs and ideas.
+    , runtimeDebugger      :: DebugHandle
     }
 
 -- | This is the monad used for most all methods that operate on the 'Runtime' state.

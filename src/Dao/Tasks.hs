@@ -41,6 +41,7 @@ import           Dao.Files
 import           Dao.Object.Monad
 import           Dao.Object.Parsers
 import           Dao.Object.Show
+import           Dao.Object.Data
 
 import           Control.Exception
 import           Control.Concurrent (forkIO, newMVar, modifyMVar)
@@ -207,22 +208,35 @@ removeJobFromTable job = ask >>= \runtime ->
 -- | Given an input string, and a program, return all patterns and associated match results and
 -- actions that matched the input string, but do not execute the actions. This is done by tokenizing
 -- the input string and matching the tokens to the program using 'Dao.Pattern.matchTree'.
-matchStringToProgram :: UStr -> CachedProgram -> Run [(Pattern, Match, CachedAction)]
-matchStringToProgram instr program = dStack xloc "matchStringToProgram" $ do
-  tree <- dReadMVar xloc (ruleSet program)
-  let eq = (==) -- TODO: the matching predicate needs to be retrieved from a declaration in the program.
-      tox = tokens (uchars instr) -- TODO: tokenizing needs to be retrieved from a declaration in the program.
-  fmap concat $ forM (matchTree eq tree tox) $ \ (patn, mtch, cxrefx) -> do
-    forM cxrefx $ \cxref -> do
-      dModifyMVar_ xloc cxref $ \cx -> return $ case cx of
-        OnlyCache m -> cx
-        HasBoth _ m -> cx
-        OnlyAST ast ->
-          HasBoth
-          { sourceScript = ast
-          , cachedScript = nestedExecStack M.empty (execScriptBlock ast)
-          } -- This may be unnecessary, the cached function is stored in 'execInputString' as well.
-      return (patn, mtch, cxref)
+matchStringToProgram :: UStr -> CachedProgram -> ExecUnit -> Run [(Pattern, Match, CachedAction)]
+matchStringToProgram instr program xunit = dStack xloc "matchStringToProgram" $ do
+  let eq = programComparator program
+      match tox = do
+        tree <- dReadMVar xloc (ruleSet program)
+        fmap concat $ forM (matchTree eq tree tox) $ \ (patn, mtch, cxrefx) -> do
+          forM cxrefx $ \cxref -> do
+            dModifyMVar_ xloc cxref $ \cx -> return $ case cx of
+              OnlyCache m -> cx
+              HasBoth _ m -> cx
+              OnlyAST ast ->
+                HasBoth
+                { sourceScript = ast
+                , cachedScript = nestedExecStack M.empty (execScriptBlock ast)
+                }
+            return (patn, mtch, cxref)
+  tox <- runExecScript (programTokenizer program instr) xunit
+  case tox of
+    CEError obj -> do
+      dModifyMVar_ xloc (uncaughtErrors xunit) $ \objx -> return $ (objx++) $
+        [ OList $
+            [ obj, OString (ustr "error occured while tokenizing input string")
+            , OString instr, OString (ustr "in the program")
+            , OString (programModuleName program)
+            ]
+        ]
+      return []
+    CEReturn tox -> match (extractStringElems tox)
+    CENext   tox -> match tox
 
 -- | Given a list of 'Program's and an input string, generate a set of 'Task's to be executed in a
 -- 'Job'. The 'Task's are selected according to the input string, which is tokenized and matched
@@ -233,7 +247,7 @@ makeTasksForInput xunits instr = dStack xloc "makeTasksForInput" $ fmap concat $
       program = flip fromMaybe (currentProgram xunit) $
         error "execInputString: currentProgram of execution unit is not defined"
   dMessage xloc ("(match string to "++show (length xunits)++" running programs)")
-  matched <- matchStringToProgram instr program
+  matched <- matchStringToProgram instr program xunit
   dMessage xloc ("(construct RuleTasks with "++show (length matched)++" matched rules)")
   forM matched $ \ (patn, mtch, action) -> return $
     RuleTask

@@ -70,6 +70,7 @@ initExecUnit runtime = do
   recurInp <- dNewMVar xloc "ExecUnit.recursiveInput" []
   xheap    <- dNewMVar xloc "ExecUnit.execHeap" T.Void
   xstack   <- dNewMVar xloc "ExecUnit.execStack" []
+  toplev   <- dNewMVar xloc "ExecUnit.toplevelFuncs" M.empty
   return $
     ExecUnit
     { parentRuntime      = runtime
@@ -82,8 +83,10 @@ initExecUnit runtime = do
     , currentMatch       = Nothing
     , currentBranch      = []
     , importsTable       = []
+    , execAccessRules    = RestrictFiles (Pattern{getPatUnits = [Wildcard], getPatternLength = 1})
     , builtinFuncs       = initialBuiltins runtime
     , execHeap           = xheap
+    , toplevelFuncs      = toplev
     , execStack          = xstack
     , recursiveInput     = recurInp
     , uncaughtErrors     = unctErrs
@@ -139,7 +142,7 @@ nestedExecStack dict fn = mvarContext execStack (return . (dict:)) pop fn where
     _:ax -> return ax
 
 -- | Keep the current 'execStack', but replace it with a new empty stack before executing the given
--- function. Users 'catchCEReturn' to prevent return calls from halting execution beyond this
+-- function. Use 'catchCEReturn' to prevent return calls from halting execution beyond this
 -- function. This is what you should use to perform a Dao function call within a Dao function call.
 pushExecStack :: T_dict -> ExecScript Object -> ExecScript Object
 pushExecStack dict fn = do
@@ -235,11 +238,22 @@ execGlobalLookup ref =
 -- | Retrieve a 'CheckFunc' function from one of many possible places in the 'Dao.Types.ExecUnit'.
 -- Every function call that occurs during execution of the Dao script will use this Haskell function
 -- to seek the correct Dao function to use. Pass an error message to be reported if the lookup
--- fails.
+-- fails. The order of lookup is: this module's 'Dao.Types.TopLevelFunc's, the
+-- 'Dao.Types.TopLevelFunc's of each imported module (from first to last listed import), and finally
+-- the built-in functions provided by the 'Dao.Types.Runtime'
 lookupFunction :: String -> Name -> ExecScript CheckFunc
-lookupFunction msg op = fmap (M.lookup op . builtinFuncs) ask >>= \func -> case func of
-  Nothing   -> objectError (OString op) $ "undefined "++msg++" ("++uchars op++")"
-  Just func -> return func
+lookupFunction msg op = do
+  xunit <- ask
+  let toplevs xunit = do
+        top <- execScriptRun (fmap (M.lookup op) (dReadMVar xloc (toplevelFuncs xunit)))
+        case top of
+          Nothing  -> return Nothing
+          Just top -> fmap Just (toplevelToCheckFunc top)
+      lkup xunitMVar = execScriptRun (dReadMVar xloc xunitMVar) >>= toplevs
+  funcs <- sequence (toplevs xunit : map lkup (importsTable xunit))
+  case msum $ funcs++[M.lookup op (builtinFuncs xunit)] of
+    Nothing   -> objectError (OString op) $ "undefined "++msg++" ("++uchars op++")"
+    Just func -> return func
 
 ----------------------------------------------------------------------------------------------------
 
@@ -619,51 +633,99 @@ checkIntMapBounds o i = do
 
 ----------------------------------------------------------------------------------------------------
 
--- | To parse a program, use 'Dao.Object.Parsers.source' and pass the resulting pair to this
--- funtion.
-programFromSource :: SourceCode -> ExecScript CachedProgram
-programFromSource sc = do
-  let init =
-        Program
-        { programModuleName = unComment (sourceModuleName sc)
-        , programImports    = []
-        , constructScript   = []
-        , destructScript    = []
-        , preExecScript     = error "INTERNAL ERROR: Program.preExecScript not defined"
-        , postExecScript    = error "INTERNAL ERROR: Program.postExecScript not defined"
-        , ruleSet           = error "INTERNAL ERROR: Program.ruleSet not defined"
-        , staticData        = error "INTERNAL ERROR: Program.staticData not defined"
-        }
-  (prog, pat, dat, pre, post) <- foldM siv (init, T.Void, T.Void, [], []) uncomDirectives
-  pat  <- execRun (dNewMVar xloc "Program.ruleSet" pat)
-  dat  <- execRun (dNewMVar xloc "Program.staticData" dat)
-  --pre  <- execRun (dNewMVar xloc "Program.constructScript" pre)
-  --post <- execRun (dNewMVar xloc "Program.destructScript" post)
-  return (prog{ruleSet = pat, staticData = dat, preExecScript = pre, postExecScript = post})
+-- | Checks if this ExecUnit is allowed to use a set of built-in rules requested by an "require"
+-- attribute. Returns any value you pass as the second parameter, throws a
+-- 'Dao.Object.Monad.ceError' if it access is prohibited.
+verifyRequirement :: Name -> a -> ExecScript a
+verifyRequirement nm a = return a -- TODO: the rest of this function.
+
+-- | Checks if this ExecUnit is allowed to import the file requested by an "import" statement
+-- attribute. Returns any value you pass as the second parameter, throws a
+-- 'Dao.Object.Monad.ceError'
+verifyImport :: Name -> a -> ExecScript a
+verifyImport nm a = return a -- TODO: the rest of this function.
+
+-- | To parse a program, use 'Dao.Object.Parsers.source' and pass the resulting
+-- 'Dao.Object.SourceCode' object to this funtion. It is in the 'ExecScript' monad because it needs
+-- to evaluate 'Dao.ObjectObject's defined in the top-level of the source code, which requires
+-- 'evalObject'.
+-- Attributes in Dao scripts are of the form:
+--   a.b.C.like.name  dot.separated.value;
+-- The three built-in attributes are "requires", "string.tokenizer" and "string.compare". The
+-- allowed attrubites can be extended by passing a call-back predicate which modifies the given
+-- program, or returns Nothing to reject the program. If you are not sure what to pass, just pass
+-- @(\ _ _ _ -> return Nothing)@ which always rejects the program. This predicate will only be
+-- called if the attribute is not allowed by the minimal Dao system.
+programFromSource
+  :: (Name -> UStr -> CachedProgram -> ExecScript (Maybe CachedProgram))
+      -- ^ check attributes written into the script.
+  -> SourceCode
+      -- ^ the script file to use
+  -> ExecScript CachedProgram
+programFromSource checkAttribute script = do
+  program <- execScriptRun (initProgram (unComment (sourceModuleName script)))
+  foldM foldDirectives program (map unComment (unComment (directives script)))
   where
-    uncomDirectives = map unComment (unComment (directives sc))
-    beginEnd scrp = execRun $ do
+    err lst = ceError $ OList $ map OString $ (sourceFullPath script : lst)
+    upd select program fn = execScriptRun $
+      dModifyMVar xloc (select program) (\a -> return (fn a, program))
+    mkCachedFunc scrp = execScriptRun $ do
       let scrp' = unComment scrp
       dNewMVar xloc "CXRef(guardScript)" $
         HasBoth{sourceScript = scrp', cachedScript = execGuardBlock scrp'}
-    siv (prog, pat, dat, pre, post) d = do
-      let p prog = return (prog, pat, dat, pre, post)
-      case d of
-        ToplevelDefine name obj -> do
-          obj <- evalObject obj
-          return (prog, pat, T.insert (unComment name) obj dat, pre, post)
-        ImportExpr imp    -> p $ prog{programImports = programImports prog ++ [unComment imp]}
-        RuleExpr rule     -> do
-          rule    <- return (unComment rule)
-          rulePat <- return (map unComment (unComment (rulePattern rule)))
-          cxref   <- execRun $
-            dNewMVar xloc "CXRef(ruleAction)" (OnlyAST{sourceScript = ruleAction rule})
-          let fol tre pat = T.merge T.union (++) tre (toTree pat [cxref])
-          return (prog, foldl fol pat rulePat, dat, pre, post)
-        SetupExpr    scrp -> p $ prog{constructScript = constructScript prog ++ [unComment scrp]}
-        TakedownExpr scrp -> p $ prog{destructScript = destructScript prog ++ [unComment scrp]}
-        BeginExpr    scrp -> beginEnd scrp >>= \scrp -> return (prog, pat, dat, pre++[scrp], post)
-        EndExpr      scrp -> beginEnd scrp >>= \scrp -> return (prog, pat, dat, pre, post++[scrp])
-        Requires   req nm -> undefined
-        ToplevelFunc f nm args scrp -> undefined
+    attrib req nm getRuntime putProg = do
+      runtime <- fmap parentRuntime ask
+      let item = M.lookup nm (getRuntime runtime)
+      case item of
+        Just item -> return (putProg item)
+        Nothing   -> err [req, ustr "attribute", nm, ustr "is not available"]
+    foldDirectives p directive = case directive of
+      Attribute  req nm -> ask >>= \xunit -> do
+        let setName = unComment nm
+            runtime = parentRuntime xunit
+            builtins = M.lookup setName $ functionSets runtime
+        case unComment req of
+          req | req==ustr "import"           -> verifyImport setName $
+            p{programImports = programImports p ++ [setName]}
+          req | req==ustr "require"          -> case builtins of
+            Just  _ -> verifyRequirement setName $
+              p{requiredBuiltins = requiredBuiltins p++[setName]}
+            Nothing -> err $
+              [ustr "requires", setName, ustr "not provided by this version of the Dao system"]
+          req | req==ustr "string.tokenizer" ->
+            attrib req setName availableTokenizers (\item -> p{programTokenizer = item})
+          req | req==ustr "string.compare"   ->
+            attrib req setName availableComparators (\item -> p{programComparator = item})
+          req -> do
+            p <- checkAttribute req setName p
+            case p of
+              Just p  -> return p
+              Nothing -> err [ustr "script contains unknown attribute declaration", req]
+      ToplevelDefine name obj -> do
+        obj <- evalObject obj
+        upd staticData p (\objectTree -> T.insert (unComment name) obj objectTree)
+      RuleExpr    rule' -> do
+        let rule    = unComment rule'
+            rulePat = map unComment (unComment (rulePattern rule))
+        cxref <- execScriptRun $
+          dNewMVar xloc "CXRef(ruleAction)" $ OnlyAST{sourceScript = ruleAction rule}
+        let fol tre pat = T.merge T.union (++) tre (toTree pat [cxref])
+        upd ruleSet p (\patternTree -> foldl fol patternTree rulePat)
+      SetupExpr    scrp -> return $ p{constructScript = constructScript p ++ [unComment scrp]}
+      TakedownExpr scrp -> return $ p{destructScript  = destructScript  p ++ [unComment scrp]}
+      BeginExpr    scrp -> do
+        scrp <- mkCachedFunc scrp
+        return $ p{preExecScript = preExecScript p++[scrp]}
+      EndExpr      scrp -> do
+        scrp <- mkCachedFunc scrp
+        return $ p{postExecScript = postExecScript p++[scrp]}
+      ToplevelFunc _ nm argv code -> do
+        xunit <- ask
+        let func objx = execScriptCall (map (Com . Literal . Com) objx) $
+              Script{scriptArgv = argv, scriptCode = code}
+        execScriptRun $ do
+          let name = unComment nm
+          func <- dNewMVar xloc ("Program.topLevelFunc("++uchars name++")") func :: Run TopLevelFunc
+          dModifyMVar_ xloc (toplevelFuncs xunit) (return . M.insert name func)
+        return p
 

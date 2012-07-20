@@ -486,14 +486,13 @@ instance Binary Script where
 
 instance Binary Directive where
   put d = case d of
-    ImportExpr     name           -> x 0x61 (putCom name)
+    Attribute      req nm         -> x 0x61 $
+      putComWith putNullTermStr req >> putComWith putNullTermStr nm
     ToplevelDefine name obj       -> x 0x62 (putComWith putList name >> putCom obj)
     RuleExpr       rule           -> x 0x63 (putCom rule)
     BeginExpr      scrp           -> x 0x64 (putComList scrp)
     EndExpr        scrp           -> x 0x65 (putComList scrp)
-    Requires       req nm         -> x 0x66 $
-      putComWith putNullTermStr req >> putComWith putNullTermStr nm
-    ToplevelFunc   f nm args scrp -> x 0x67 $ do
+    ToplevelFunc   f nm args scrp -> x 0x66 $ do
       putComWith     return         f
       putComWith     putNullTermStr nm
       putComListWith putNullTermStr args
@@ -502,13 +501,12 @@ instance Binary Directive where
   get = do
     w <- getWord8
     case w of
-      0x61 -> liftM  ImportExpr     getCom
-      0x62 -> liftM2 ToplevelDefine (getComWith getList) (getCom)
+      0x61 -> liftM2 Attribute      (getComWith getNullTermStr) (getComWith getNullTermStr)
+      0x62 -> liftM2 ToplevelDefine (getComWith getList) getCom
       0x63 -> liftM  RuleExpr       getCom
       0x64 -> liftM  BeginExpr      getComList
       0x65 -> liftM  EndExpr        getComList
-      0x66 -> liftM  EndExpr        getComList
-      0x67 -> do
+      0x66 -> do
         f    <- getComWith (return ())
         nm   <- getComWith getNullTermStr
         args <- getComListWith getNullTermStr

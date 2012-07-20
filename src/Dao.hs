@@ -81,20 +81,19 @@ newRuntime debug = flip runReaderT debug $ dStack xloc "newRuntime" $ do
   dlist <- newDocList
   return $
     Runtime
-    { documentList        = dlist
-    , pathIndex           = paths
-    , logicalNameIndex    = names
-    , jobTable            = jtab
-    , defaultTimeout      = Just 8000000
-    , initialBuiltins     = basicScriptOperations
-    , functionSets        = M.empty
-    , functionCheckList   = M.empty
-    , availableTokenizers = M.empty -- specifying no tokenizer will cause the default to be used
-    , availableMatchers   = M.fromList $
-        [ (ustr "exact"      , (\a b -> return (exact  a b)))
-        , (ustr "approximate", (\a b -> return (approx a b)))
+    { pathIndex            = paths
+    , logicalNameIndex     = names
+    , jobTable             = jtab
+    , defaultTimeout       = Just 8000000
+    , initialBuiltins      = basicScriptOperations
+    , functionSets         = M.empty
+    , availableTokenizers  = M.empty -- specifying no tokenizer will cause the default to be used
+    , availableComparators = M.fromList $
+        [ (ustr "exact"      , exact)
+        , (ustr "approximate", approx)
         ]
-    , runtimeDebugger     = debug
+    , fileAccessRules      = []
+    , runtimeDebugger      = debug
     }
 
 -- | Provide a labeled set of built-in functions for this runtime. Each label indicates a set of

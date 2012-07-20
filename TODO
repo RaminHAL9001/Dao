@@ -4,6 +4,21 @@ UNSOLVED:
 	built-in functions "newDB", "openDB", and "saveDB". However, the "test1.idea" file is loaded
 	when it is sepcified in the command line arguments, so the problem is not with
 	'initRuntimeFiles'.
+	--
+	I am transitioning away from using the "Dao.Document" functions to using the "Dao.Files"
+	functions. "Dao.Document" was one of the earliest code I wrote in this iteration of the Dao
+	system, it is no longer useful given all the new features I have added over the past year. The
+	new method of loading and saving files will be more transparent. Files are loaded on demand
+	(this is kind of a given, since Haskell tends to read files lazily), and written when explicitly
+	told to be written. Any file loaded is loaded only once, and reference counting is used to keep
+	track of when it is OK to remove a loaded file from the table (close it).
+
+* Create a parser to load a configuration file with rules dictating which files and programs in
+	which directories are permitted to be loaded by running Dao programs. These rules must be
+	consulted every time a file is to be loaded, whether it is imported or loaded with the
+	"openDB()" built-in function. The configuration must also have the ability dictate which
+	built-in function sets are permitted to be used by each Dao program. I have already marked
+	several places in the source code that will use this a feature once it has has been implemented.
 
 * Change the instantiation of UStr into the Binary monad to use a minimum number of bytes to
 	indicate the length of the string. Right now, every UStr is preceeded a 64-bit (8 byte) number.
@@ -29,29 +44,6 @@ UNSOLVED:
 	with a single message indicating why the parse failed. But I have not done enough to
 	pretty-print these messages.
 
-* Modify the 'ExecUnit' to contain built-in functions decalred in the top-level of a Dao program.
-	Presently, these objects are stored in the 'staticHeap', which are not cached, and are required
-	to be called by the "call" keyword using the reference "${topLevelFunction}".
-
-* The matching predicate needs to be retrieved from a declaration in the program. Right now, the
-	matching predicate is hard-wired to use the (==) operator.
-
-* Tokenizing input strings needs to be done by a function retrieved from a declaration in the
-	program, or by a function written in the program itself. Right now, the tokenizing function is
-	hard-wired to use the 'Dao.Pattern.tokens' function.
-
-* Modify the runtime and language specification to have a "require" directive. The "require"
-	directive will ask the Dao.Runtime about the properties of the Runtime itself. This will make it
-	easier to automatically reject programs that are using a version of the Dao library with which
-	that program is incompatible. So, for example, if a programmer has used the Dao library to write
-	their own Dao system that has Voice Pattern objects marshalled and stored into a OBinary
-	objects, and these Voice Pattern objects can be manipulated by Dao rules at runtime, then the
-	programmer can can hard-code a "My Voice Patterns" property into their version of the Dao runtime
-	that they have constructed using the Dao library. Programs can then declare:
-		require "My Voice Patterns"
-	If they then send their Dao code to some friends using the standard version of Dao those
-	friends try to load the program, the Dao interpreter will report an error at loading time.
-
 * Consider making all errors caused during script evaluation into "OTree" values.
 
 * Once you are sure the Dao language isn't going to change much more, make a more efficient parser
@@ -65,6 +57,38 @@ UNSOLVED:
 
 ----------------------------------------------------------------------------------------------------
 SOLVED:
+
+* Modify the 'ExecUnit' to contain built-in functions decalred in the top-level of a Dao program.
+	Presently, these objects are stored in the 'staticHeap', which are not cached, and are required
+	to be called by the "call" keyword using the reference "${topLevelFunction}".
+	-- Done.
+
+* The matching predicate needs to be retrieved from a declaration in the program. Right now, the
+	matching predicate is hard-wired to use the (==) operator.
+	-- Done.
+
+* Tokenizing input strings needs to be done by a function retrieved from a declaration in the
+	program, or by a function written in the program itself. Right now, the tokenizing function is
+	hard-wired to use the 'Dao.Pattern.tokens' function.
+	-- Done.
+
+* Modify the runtime and language specification to have a "require" directive. The "require"
+	directive will ask the Dao.Runtime about the properties of the Runtime itself. This will make it
+	easier to automatically reject programs that are using a version of the Dao library with which
+	that program is incompatible. So, for example, if a programmer has used the Dao library to write
+	their own Dao system that has Voice Pattern objects marshalled and stored into a OBinary
+	objects, and these Voice Pattern objects can be manipulated by Dao rules at runtime, then the
+	programmer can can hard-code a "My Voice Patterns" property into their version of the Dao runtime
+	that they have constructed using the Dao library. Programs can then declare:
+		require "My Voice Patterns"
+	If they then send their Dao code to some friends using the standard version of Dao those
+	friends try to load the program, the Dao interpreter will report an error at loading time.
+	--
+	Done. Actually, I eliminated the "import" directive. Now there is simply an 'Attribute'
+	directive, and "import" and "require" statements, as well as the directives for specifying a
+	tokenizing function ("string.tokenizer") and a matching predicate ("string.compare"). I had to
+	overhaul the 'Dao.Evaluator.programFromSource' function, but now the code for that function is
+	cleaner and will be much easier to make changes to in the future, if necessary.
 
 * REGRESSION: global variables are not being defined properly.
 	--

@@ -57,10 +57,6 @@ tokens ax = map ustr (loop ax) where
   check a ax fn = if fn a then let (got, ax') = span fn ax in Just (a:got, ax') else Nothing
   kinds = [isSpace, isAlpha, isNumber, isPunctuation, isAscii, not . isAscii]
 
--- | This tokenizer is suitable for use as a parameter to 'Dao.Runtime.execRuleSet'.
-tokenizer :: UStr -> ReaderT env IO (Maybe Tokens)
-tokenizer = return . Just . tokens . uchars
-
 -- | Contains information related to how a 'Pattern' was matched to input 'Tokens' during the
 -- 'runMatchPattern' function evaluation.
 data Match
@@ -204,15 +200,25 @@ matchTree eq matchTree tokx = loop 0 [] 0 [] matchTree tokx where
   done sz stk p path a =
     [(Pattern{ getPatUnits = path, getPatternLength = p }, matchFromList tokx sz stk, a)]
 
--- | Calls 'matchPattern', returns the result. This is just a convenience function that is more
--- well-suited to define 'Dao.Runtime.Pattern' objects, specifically the 'rulePattern'.
-runMatchPattern :: (UStr -> UStr -> Bool) -> Pattern -> Tokens -> ReaderT env IO [Match]
-runMatchPattern eq pat ax = return (matchPattern eq pat ax)
-
--- | This is a syntactically simple way to declare match rules from a the string representation of a
--- pattern, so you do not need to call 'parsePattern' or 'Prelude.read'.
-runMatchString :: (UStr -> UStr -> Bool) -> String -> Tokens -> ReaderT env IO [Match]
-runMatchString eq inStr toks = runMatchPattern eq (parsePattern inStr) toks
+-- | Match a pattern to a simple 'Prelude.String' without tokenizing the string, but returning each
+-- part that matched individually.
+stringMatch :: Pattern -> String -> Maybe [UStr]
+stringMatch pat cx = loop [] (getPatUnits pat) cx where
+  loop retrn px cx = case cx of
+    ""    -> case px of
+      []          -> Just retrn
+      [Wildcard]  -> Just retrn
+      _           -> Nothing
+    c:cx  -> case px of
+      AnyOne      : px -> loop (retrn++[ustr [c]]) px cx
+      Single ustr : px -> stripPrefix (uchars ustr) (c:cx) >>= loop (retrn++[ustr]) px
+      Wildcard    : px -> scan "" (c:cx) where
+        scan skipped cx = case cx of
+          ""   -> loop [] px cx
+          c:cx -> msum $
+            [ loop [] px (c:cx) >>= \match -> Just (retrn++[ustr skipped]++match)
+            , scan (skipped++[c]) cx
+            ]
 
 ----------------------------------------------------------------------------------------------------
 --import System.IO

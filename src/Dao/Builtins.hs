@@ -233,11 +233,8 @@ basicScriptOperations = M.fromList funcList where
           OString a -> putStrLn (uchars a)
           a         -> putStrLn (showObj 0 a)
         checkOK ONull
-    , func "newDB"  $ \ ax -> case ax of
-        [OString path] -> runToCheck_ $ newDoc path (initDoc T.Void)
-        [OString path, OTree init] -> runToCheck_ $ newDoc path (initDoc init)
     , func "openDB" $ \ [OString path] -> runToCheck_ (openDoc path)
-    , func "saveDB" $ \ ax -> case ax of
+    , func "writeDB" $ \ ax -> case ax of
         [] -> runToCheck_ saveAll
         [OString path] -> runToCheck_ (saveDoc path)
         [OString path, OString newPath] -> runToCheck_ (saveDocAs path newPath)

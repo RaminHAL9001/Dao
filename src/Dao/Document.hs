@@ -108,6 +108,9 @@ setModified :: Bugged r => DocHandle -> ReaderT r IO ()
 setModified doc = dModifyMVar_ xloc doc $ \doc ->
   return (doc{docModified = 1 + docModified doc})
 
+documentList :: Runtime -> DocListHandle
+documentList = undefined
+
 withDocList :: (DocList -> Run (DocList, a)) -> Run a
 withDocList fn = ask >>= \runtime -> dModifyMVar xloc (documentList runtime) $ \docList ->
   seq docList $! fn $! docList

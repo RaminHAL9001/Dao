@@ -1,5 +1,7 @@
 module "test module"
 
+string.compare  approximate;
+
 END {
 	print("(-1)");
 }
@@ -10,7 +12,15 @@ rule "hello" {
 }
 
 rule "my name is $*." {
-	print("Hi, "+ join("", $1) +", nice to meet you.");
+	sayHello($1);
+}
+
+func testFunc(a, b) {
+	print("I am a "+a+" "+b+"!!!");
+}
+
+rule "test toplevel $*" {
+	testFunc($1[0], $1[2]);
 }
 
 rule "test recurse" {
@@ -177,6 +187,10 @@ rule "$* is a kind of $*" {
 rule("listDBs", "list DB", "list db", "list dbs") {
 	print("Listing loaded idea files");
 	listDBs();
+}
+
+func sayHello(a) {
+	print("Hi, "+ join("", a) +", nice to meet you.");
 }
 
 rule "$bad dollar sign" {

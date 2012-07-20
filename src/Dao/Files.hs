@@ -74,6 +74,16 @@ loadSourceCode upath sourceString = getFirstCompleteParse parseCode where
     ++':':show (rowNumber st)++':':show (colNumber st)++": "++printParseError path msg
   err2 = "INTERNAL ERROR: parse succeeded without consuming all source code"
 
+-- | This function will take any file path and return a file associated with it if it has been
+-- loaded once before. If not, it runs the function you provide to load the file.
+dontLoadFileTwice :: UPath -> (UPath -> Run File) -> Run File
+dontLoadFileTwice upath getFile = do
+  runtime <- ask
+  ptab <- fmap (M.lookup upath) (dReadMVar xloc (pathIndex runtime))
+  case ptab of
+    Just file -> return file
+    Nothing   -> getFile upath
+
 -- | Updates the 'Runtime' to include the Dao source code loaded from the given 'FilePath'. This
 -- function tries to load a file in three different attempts: (1) try to load the file as a binary
 -- @('Dao.Document.Document' 'Dao.Evaluator.DocData')@ object. (2) Try to load the file as a
@@ -83,8 +93,7 @@ loadSourceCode upath sourceString = getFirstCompleteParse parseCode where
 -- the 'TypedFile', although all source code files are returned as 'PrivateType's. Use
 -- 'asPublic' to force the type to be a 'PublicType'd file.
 loadFilePath :: Bool -> FilePath -> Run File
-loadFilePath public path = do
-  let upath = ustr path
+loadFilePath public path = dontLoadFileTwice (ustr path) $ \upath -> do
   dPutStrErr xloc ("Lookup file path "++show upath)
   h    <- lift (openFile path ReadMode)
   zero <- lift (hGetPosn h)
@@ -93,9 +102,8 @@ loadFilePath public path = do
   file <- catchErrorCall (ideaLoadHandle upath h)
   case file of
     Right file -> return file
-    Left  err  -> do -- The file does not seem to be a document, try parsing it as a script.
+    Left  _    -> do -- The file does not seem to be a document, try parsing it as a script.
       lift (hSetPosn zero >> hSetEncoding h (fromMaybe localeEncoding enc))
-      dPutStrErr xloc (show err)
       scriptLoadHandle public upath h
 
 -- | Load a Dao script program from the given file handle. You must pass the path name to store the
@@ -103,10 +111,10 @@ loadFilePath public path = do
 -- encoding using 'System.IO.hSetEncoding'.
 scriptLoadHandle :: Bool -> UPath -> Handle -> Run File
 scriptLoadHandle public upath h = do
-  sourceCode <- lift $ do
+  script <- lift $ do
     hSetBinaryMode h False
     fmap (loadSourceCode upath) (hGetContents h) >>= evaluate
-  file <- registerSourceCode public upath sourceCode
+  file <- registerSourceCode public upath script
   dPutStrErr xloc ("Loaded source code "++show upath) >> return file
   return file
 
@@ -117,7 +125,7 @@ ideaLoadHandle upath h = ask >>= \runtime -> do
   lift (hSetBinaryMode h True)
   doc <- lift (fmap (B.decode$!) (B.hGetContents h) >>= evaluate)
   docHandle <- newDocHandle xloc ("DocHandle("++show upath++")") $! doc
-  let file = DataFile{filePath = upath, fileData = docHandle}
+  let file = IdeaFile{filePath = upath, fileData = docHandle}
   --  dModifyMVar_ xloc (documentList runtime) $ \docTab ->
   --    seq docTab $! seq docHandle $! lift $! return $! M.insert upath docHandle docTab
   dModifyMVar_ xloc (pathIndex runtime) $ \pathTab ->
@@ -129,8 +137,17 @@ ideaLoadHandle upath h = ask >>= \runtime -> do
 -- 'loadFilePathWith' allows you to specify how to load the file by passing a function, like
 -- 'ideaLoadHandle' for parsing ideas or 'scriptLoadHandle' for parsing scripts, and only files of
 -- that type will be loaded, or else this function will fail.
-loadFilePathWith :: UPath -> (UPath -> Handle -> Run File) -> Run File
-loadFilePathWith upath fn = lift (openFile (uchars upath) ReadMode) >>= fn upath
+loadFilePathWith :: (UPath -> Handle -> Run File) -> UPath -> Run File
+loadFilePathWith fn upath = lift (openFile (uchars upath) ReadMode) >>= fn upath
+
+-- | Checks that the file path is OK to use for the given 'Dao.Types.ExecUnit', executes the file
+-- loading function if it is OK to load, returns a CEError if not.
+checkOpenPathWith :: UPath -> (UPath -> Handle -> Run File) -> ExecScript File
+checkOpenPathWith upath fn = do
+  xunit <- ask
+  -- TODO: check if the path is really OK to load.
+  execScriptRun $ dontLoadFileTwice upath $ \upath -> do
+    loadFilePathWith fn upath
 
 -- | Initialize a source code file into the given 'Runtime'. This function checks that the
 -- 'Dao.Types.sourceFullPath' is unique in the 'programs' table of the 'Runtime', then evaluates
@@ -138,8 +155,8 @@ loadFilePathWith upath fn = lift (openFile (uchars upath) ReadMode) >>= fn upath
 -- 'sourceFullPath' in the 'programs' table. Returns the logical "module" name of the script along
 -- with an initialized 'Dao.Types.ExecUnit'.
 registerSourceCode :: Bool -> UPath -> SourceCode -> Run File
-registerSourceCode public upath sourceCode = ask >>= \runtime -> do
-  let modName  = unComment (sourceModuleName sourceCode)
+registerSourceCode public upath script = ask >>= \runtime -> do
+  let modName  = unComment (sourceModuleName script)
       pathTab  = pathIndex runtime
       modTab   = logicalNameIndex runtime
   alreadyLoaded <- fmap (M.lookup upath) (dReadMVar xloc pathTab)
@@ -153,7 +170,7 @@ registerSourceCode public upath sourceCode = ask >>= \runtime -> do
           "\t"++show upath++" has been loaded by a different module name.\n"
         ++"\tmodule name "++show modName++"\n"
         ++"\tattempted to load as module name "++show modName
-      DataFile    _ _                                           -> error $
+      IdeaFile    _ _                                           -> error $
           "INTERNAL ERROR: "++show upath
         ++" has been loaded as both a data file and as an executable script."
     Nothing   -> do
@@ -167,7 +184,7 @@ registerSourceCode public upath sourceCode = ask >>= \runtime -> do
         Nothing -> do
           -- Call 'initSourceCode' which creates the 'ExecUnit', then place it in an 'MVar'.
           -- 'initSourceCode' calls 'Dao.Evaluator.programFromSource'.
-          xunit     <- initSourceCode sourceCode >>= lift . evaluate
+          xunit     <- initSourceCode script >>= lift . evaluate
           -- Check to make sure the logical name in the loaded program does not conflict with that
           -- of another loaded previously.
           xunitMVar <- dNewMVar xloc ("ExecUnit("++show upath++")") xunit
@@ -175,7 +192,7 @@ registerSourceCode public upath sourceCode = ask >>= \runtime -> do
                 ProgramFile
                 { publicFile  = public
                 , filePath    = upath
-                , logicalName = unComment (sourceModuleName sourceCode)
+                , logicalName = unComment (sourceModuleName script)
                 , execUnit   = xunitMVar
                 }
           dModifyMVar_ xloc pathTab $ return . M.insert upath file
@@ -194,11 +211,11 @@ registerSourceCode public upath sourceCode = ask >>= \runtime -> do
 -- 'Dao.Evaluator.ExecUnit' with the 'programs' and 'runtimeDocList' but these values are not
 -- modified.
 initSourceCode :: SourceCode -> Run ExecUnit
-initSourceCode sourceCode = ask >>= \runtime -> do
+initSourceCode script = ask >>= \runtime -> do
   xunit <- initExecUnit runtime
   -- An execution unit is required to load a program, so of course, while a program is being
   -- loaded, the program is not in the program table, and is it's 'currentProgram' is 'Nothing'.
-  cachedProg <- runExecScript (programFromSource sourceCode) xunit
+  cachedProg <- runExecScript (programFromSource (\_ _ _ -> return Nothing) script) xunit
   case cachedProg of
     CEError  obj        -> error ("script err: "++showObj 0 obj)
     CENext   cachedProg -> do
@@ -240,7 +257,7 @@ checkImports file = ask >>= \runtime -> case file of
               if null badImports
                 then (xunit{importsTable = map execUnit (concatMap snd goodImports)}, [])
                 else (xunit, [(modName, map fst badImports)])
-  DataFile _ _ -> return []
+  IdeaFile _ _ -> return []
 
 -- | Like 'checkImports' but checks every file that has been loaded by the Runtime.
 checkAllImports :: Run [(Name, [Name])]

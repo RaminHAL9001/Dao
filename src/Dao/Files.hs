@@ -142,12 +142,33 @@ loadFilePathWith fn upath = lift (openFile (uchars upath) ReadMode) >>= fn upath
 
 -- | Checks that the file path is OK to use for the given 'Dao.Types.ExecUnit', executes the file
 -- loading function if it is OK to load, returns a CEError if not.
-checkOpenPathWith :: UPath -> (UPath -> Handle -> Run File) -> ExecScript File
-checkOpenPathWith upath fn = do
+execReadDB :: UPath -> (UPath -> Handle -> Run File) -> ExecScript File
+execReadDB upath fn = do
   xunit <- ask
   -- TODO: check if the path is really OK to load.
   execScriptRun $ dontLoadFileTwice upath $ \upath -> do
     loadFilePathWith fn upath
+
+-- | If a file has been read, it can be written.
+execWriteDB :: UPath -> ExecScript File
+execWriteDB upath = do
+  xunit <- ask
+  -- TODO: check if the path is OK to write.
+  file <- execScriptRun $ do
+    runtime <- ask
+    fmap (M.lookup upath) (dReadMVar xloc (pathIndex runtime))
+  case file of
+    Nothing   -> ceError $ OList $ map OString $
+      [ustr "writeDB", upath, ustr "file is not currently loaded"]
+    Just file | isIdeaFile file -> do
+      let doc = fileData file
+      execRun $ dModifyMVar xloc doc $ \doc -> do
+        when (docModified doc > 0) $ lift $ do
+          h <- openFile (docRefToFilePath upath) WriteMode >>= evaluate
+          let encoded = B.encode doc
+          seq h $! seq encoded $! B.hPutStr h encoded
+          hFlush h >> hClose h >>= evaluate
+        return (doc{docModified = 0}, file)
 
 -- | Initialize a source code file into the given 'Runtime'. This function checks that the
 -- 'Dao.Types.sourceFullPath' is unique in the 'programs' table of the 'Runtime', then evaluates

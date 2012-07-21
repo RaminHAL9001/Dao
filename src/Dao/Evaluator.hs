@@ -71,6 +71,7 @@ initExecUnit runtime = do
   xheap    <- dNewMVar xloc "ExecUnit.execHeap" T.Void
   xstack   <- dNewMVar xloc "ExecUnit.execStack" []
   toplev   <- dNewMVar xloc "ExecUnit.toplevelFuncs" M.empty
+  files    <- dNewMVar xloc "ExecUnit.execOpenFiles" M.empty
   return $
     ExecUnit
     { parentRuntime      = runtime
@@ -88,6 +89,7 @@ initExecUnit runtime = do
     , execHeap           = xheap
     , toplevelFuncs      = toplev
     , execStack          = xstack
+    , execOpenFiles      = files
     , recursiveInput     = recurInp
     , uncaughtErrors     = unctErrs
     }
@@ -181,9 +183,11 @@ modifyGlobalVar name alt = do
   xunit <- ask
   let prefixName = currentBranch xunit ++ name
   case currentDocument xunit of
-    Nothing  -> modifyXUnit_ execHeap (return . alt prefixName)
-    Just doc -> execRun $ dModifyMVar_ xloc doc $ \doc -> return $
+    Nothing                     -> modifyXUnit_ execHeap (return . alt prefixName)
+    Just file | isIdeaFile file -> execRun $ dModifyMVar_ xloc (fileData file) $ \doc -> return $
       doc{docRootObject = alt prefixName (docRootObject doc)}
+    Just file                   -> ceError $ OList $ map OString $
+      [ustr "current document is not a database", filePath file]
 
 -- | To delete a global variable, the same process of searching for the address of the object is
 -- followed for 'defineGlobalVar', except of course the variable is deleted.
@@ -226,8 +230,8 @@ currentDocumentLookup :: [Name] -> ExecScript (Maybe Object)
 currentDocumentLookup name = do
   xunit <- ask
   case currentDocument xunit of
-    Nothing  -> return Nothing
-    Just doc -> execRun $ dReadMVar xloc doc >>=
+    Nothing   -> return Nothing
+    Just file -> execRun $ dReadMVar xloc (fileData file) >>=
       return . (T.lookup (currentBranch xunit ++ name)) . docRootObject
 
 -- | Lookup an object, first looking in the current document, then in the 'execHeap'.
@@ -380,19 +384,19 @@ execScriptExpr script = uncom script >>= \script -> case script of
   WithDoc      lval thn        -> nestedExecStack (M.empty) $ do
     lval <- evalObject lval
     let setBranch ref xunit = return (xunit{currentBranch = ref})
-        setFile file xunit = do
-          doc <- execScriptRun (getDocHandle file)
-          case doc of
+        setFile path xunit = do
+          file <- execScriptRun (fmap (M.lookup path) (dReadMVar xloc (execOpenFiles xunit)))
+          case file of
             Nothing  -> ceError $ OList $ map OString $
-              [ustr "with file path", file, ustr "file has not been loaded"]
-            Just doc -> return (xunit{currentDocument = Just doc})
+              [ustr "with file path", path, ustr "file has not been loaded"]
+            Just file -> return (xunit{currentDocument = Just file})
         close file = execScriptRun (closeDoc file)
         run upd = ask >>= upd >>= \r -> local (const r) (execScriptBlock thn)
     case lval of
       ORef prefix                       -> run (setBranch prefix)
-      OString file                      -> ceFinal (run (setFile file) >> close file) (close file)
-      OPair (OString file, ORef prefix) ->
-        ceFinal (run (setFile file >=> setBranch prefix)) (close file)
+      OString path                      -> ceFinal (run (setFile path) >> close path) (close path)
+      OPair (OString path, ORef prefix) ->
+        ceFinal (run (setFile path >=> setBranch prefix)) (close path)
       _ -> typeError lval "operand to \"with\" statement" $
              "file path (String type), or a Ref type, or a Pair of the two"
 

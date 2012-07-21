@@ -529,7 +529,7 @@ instance Binary SourceCode where
         program_magic_number
       chk "this program was compiled with an incompatible version of the Dao binary protocal" $
         program_data_version
-      liftM2 (SourceCode nil) getCom getComList
+      liftM2 (SourceCode 0 nil) getCom getComList
     theirCksum <- getWord64be
     if myCksum == theirCksum
       then return sc

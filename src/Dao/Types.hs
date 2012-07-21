@@ -73,7 +73,8 @@ catchErrorCall fn = ReaderT $ \r -> try (runReaderT fn r)
 -- 'SourceCode', and can be serialized to a binary format.
 data SourceCode
   = SourceCode
-    { sourceFullPath   :: UStr
+    { sourceModified   :: Int
+    , sourceFullPath   :: UStr
       -- ^ the URL (full file path) from where this source code was received.
     , sourceModuleName :: Com UStr
       -- ^ the logical name of this program defined by the "module" keyword in the Dao script.
@@ -348,6 +349,7 @@ runToCheck run = do
           , Handler $ \ (e::ArrayException) -> err e
           ]
 
+-- TODO: this function should no longer be used.
 runToCheck_ :: Run a -> Check (ContErr Object)
 runToCheck_ run = runToCheck run >> return (CENext OTrue)
 
@@ -377,7 +379,7 @@ data ExecUnit
     , currentExecJob     :: Maybe Job
       -- ^ a reference to the 'Job' that is currently running the 'ExecScript' that is using this
       -- 'ExecUnit' state.
-    , currentDocument    :: Maybe DocHandle
+    , currentDocument    :: Maybe File
       -- ^ the current document is set by the @with@ statement during execution of a Dao script.
     , currentProgram     :: Maybe CachedProgram
       -- ^ the program that is running in this execution unit, this may not be defined in the case
@@ -402,6 +404,7 @@ data ExecUnit
     , toplevelFuncs      :: DMVar (M.Map Name TopLevelFunc)
     , execHeap           :: DMVar T_tree
     , execStack          :: DMVar [T_dict]
+    , execOpenFiles      :: DMVar (M.Map UPath File)
     , recursiveInput     :: DMVar [UStr]
     , uncaughtErrors     :: DMVar [Object]
     }
@@ -438,7 +441,7 @@ data File
     }
   | ProgramEdit -- ^ a program executable and editable.
     { filePath   :: Name
-    , sourceCode :: SourceCode
+    , sourceCode :: DMVar SourceCode
     , execUnit   :: DMVar ExecUnit
     }
   | IdeaFile -- ^ a file containing a 'Dao.Tree.Tree' of serialized 'Dao.Object.Object's.
@@ -452,6 +455,13 @@ isProgramFile :: File -> Bool
 isProgramFile file = case file of
   ProgramFile _ _ _ _ -> True
   _                   -> False
+
+-- | Used to select programs from the 'pathIndex' that are currently available for recursive
+-- execution.
+isIdeaFile :: File -> Bool
+isIdeaFile file = case file of
+  IdeaFile _ _ -> True
+  _            -> False
 
 -- | A type of function that can split an input query string into 'Dao.Pattern.Tokens'. The default
 -- splits up strings on white-spaces, numbers, and punctuation marks.

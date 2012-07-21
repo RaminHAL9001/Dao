@@ -76,8 +76,9 @@ TAKEDOWN {
 }
 
 rule "list files" { print(listDBs()); }
-rule "load test file" { loadDB("/home/ramin/main/dao/test1.idea"); print("Loaded database."); }
-rule "save test file" { saveDB("/home/ramin/main/dao/test1.idea"); print("Saved database."); }
+rule "load test file" { readDB("/home/ramin/main/dao/test1.idea"); print("Loaded database."); }
+rule "save test file" { writeDB("/home/ramin/main/dao/test1.idea"); print("Saved database."); }
+rule "close test file" { closeDB("/home/ramin/main/dao/test1.idea"); print("Closed database."); }
 
 rule "recall again" {
 	print("I recall again.");

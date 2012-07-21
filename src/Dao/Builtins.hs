@@ -36,6 +36,7 @@ import qualified Dao.Tree as T
 import           Dao.Pattern
 import           Dao.Predicate
 import           Dao.Document
+import           Dao.Files
 import           Dao.Combination
 import           Dao.Parser
 import           Dao.Evaluator
@@ -233,13 +234,27 @@ basicScriptOperations = M.fromList funcList where
           OString a -> putStrLn (uchars a)
           a         -> putStrLn (showObj 0 a)
         checkOK ONull
-    , func "openDB" $ \ [OString path] -> runToCheck_ (openDoc path)
+    , func "readDB" $ \ [OString path] -> execScriptToCheck (error "file not returned") $ do
+        file <- execReadDB path ideaLoadHandle
+        xunit <- ask
+        let fp = filePath file
+        execRun (dModifyMVar_ xloc (execOpenFiles xunit) (return . M.insert fp file))
+        return (CENext $ OString fp)
     , func "writeDB" $ \ ax -> case ax of
-        [] -> runToCheck_ saveAll
-        [OString path] -> runToCheck_ (saveDoc path)
+        [OString path] ->
+          (execScriptToCheck (error "file not returned") $
+            (fmap (OString . filePath) (execWriteDB path))
+          ) >>= checkOK
         [OString path, OString newPath] -> runToCheck_ (saveDocAs path newPath)
-    , func "closeDB" $ \ [OString path] -> runToCheck_ (closeDoc path)
-    , func "listDBs" $ \ [] -> runToCheck (fmap (OList . map OString) listDocList)
+    , func "closeDB" $ \ [OString path] -> execScriptToCheck CENext $ do
+        xunit <- ask
+        execRun $ dModifyMVar xloc (execOpenFiles xunit) $ \ftab -> do
+          let file = M.lookup path ftab
+          case file of
+            Nothing   -> return (ftab, CENext ONull)
+            Just file -> return (M.delete path ftab, CENext (OString (filePath file)))
+    , func "listDBs" $ \ [] -> execScriptToCheck CENext $ ask >>= \xunit -> execRun $
+        fmap (CENext . OList . map OString . M.keys) (dReadMVar xloc (execOpenFiles xunit))
     , func "listMods" $ \ [] -> runToCheck $ do
         fmap (OList . map (\ (a, b) -> OPair (OString a, OString (filePath b))) . M.assocs) $
           ask >>= dReadMVar xloc . logicalNameIndex

@@ -497,7 +497,7 @@ dottedLabel = fmap (ustr . intercalate ".") (sepBy wordToken (char '.'))
 optionDirective :: String -> Parser Directive
 optionDirective req = do
   req   <- withComments (fmap ustr (string req))
-  label <- withComents (first [litString, dottedLabel])
+  label <- withComments (first [reusedParser "string (attribute value)", dottedLabel])
   char ';' >> return (Attribute req label)
 
 parseAttribute :: Parser Directive
@@ -527,7 +527,13 @@ source = do
   handl <- withComments (string "module" >> munch whitespace >> reusedParser "module name string")
   drcvs <- withComments (many (withComments directive))
   munch whitespace >> eof
-  return (SourceCode{sourceFullPath = nil, sourceModuleName = handl, directives = drcvs})
+  return $
+    SourceCode
+    { sourceModified = 0
+    , sourceFullPath = nil
+    , sourceModuleName = handl
+    , directives = drcvs
+    }
 
 ----------------------------------------------------------------------------------------------------
 -- Testing parsers.

@@ -56,11 +56,15 @@ main = do
   argv <- getArgs
   let (q, _) = partition (\a -> a=="-q" || a=="--dont-show-license") argv
   --initialize
+  traceIO "(new debugger...)"
   debug   <- debugToFile xloc "main" debugLog "./dao-debug.log" WriteMode
   -- debug   <- debugToHandle $loc "main" debugLog stderr
+  traceIO "(new debugger...OK)"
   hSetBuffering stderr LineBuffering
   when (null q) (putStr disclaimer)
+  traceIO "(new runtime...)"
   runtime <- newRuntime debug >>= initRuntimeFiles debug argv
+  traceIO "(new runtime...OK)"
   inputQueryLoop debug runtime $
     (\ _ -> handle (\ (SomeException e) -> seq e (print e >> return Nothing)) $ do
       let loop = do

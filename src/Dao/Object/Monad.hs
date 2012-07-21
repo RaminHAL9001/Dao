@@ -138,8 +138,8 @@ catchCEError :: Monad m => ContErrT m Object -> ContErrT m Object
 catchCEError exe = ceMonad (returnContErr . CEReturn) return exe
 
 -- | Execute a final operation regardless of the resulting 'ContErr' value.
-ceFinal :: Monad m => ContErrT m a -> ContErrT m ignored -> ContErrT m a
-ceFinal exe final = ceMonad (\o -> final >> ceReturn o) (\o -> final >> ceError o) exe
+-- ceFinal :: Monad m => ContErrT m a -> ContErrT m ignored -> ContErrT m a
+-- ceFinal exe final = ceMonad (\o -> final >> ceReturn o) (\o -> final >> ceError o) exe
 
 ----------------------------------------------------------------------------------------------------
 

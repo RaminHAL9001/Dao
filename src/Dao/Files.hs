@@ -29,7 +29,7 @@ import           Dao.Debug.OFF
 import           Dao.Types
 import           Dao.Document
 import           Dao.Evaluator
-import           Dao.Combination
+import           Dao.Combination (runCombination)
 import           Dao.Parser
 import           Dao.Object.Parsers
 import           Dao.Object.Show
@@ -43,8 +43,9 @@ import           Data.Maybe
 import           Data.List (partition)
 import qualified Data.Map    as M
 
-import qualified Data.ByteString.Lazy as B
-import qualified Data.Binary as B
+import           Data.Binary
+import           Data.Binary.Get
+import           Data.Binary.Put
 import qualified Data.ByteString.Lazy as B
 
 import           System.IO
@@ -55,6 +56,57 @@ import Debug.Trace
 
 putStrErr :: String -> IO ()
 putStrErr msg = hSetBuffering stderr LineBuffering >> hPutStrLn stderr msg
+
+-- | Converts a 'System.IO.FilePath' to a 'Dao.Types.UPath' that can be used by many of the
+-- functions. in this module.
+docRefToFilePath :: UPath -> FilePath
+docRefToFilePath = uchars
+
+instance Show Document where
+  show doc =
+    "document("++show (docRefCount doc)++","++show (docModified doc)++") = "++show (docInfo doc)
+
+instance Binary Document where
+  put doc = do
+    putWord64be document_magic_number
+    putWord64be document_data_version
+    put (docInfo doc)
+    putWord64be (docVersion doc)
+    put (docRootObject doc)
+  get = do
+    n <- bytesRead
+    dat <- lookAhead (mapM (\_ -> getWord8) [0..n])
+    magic_number <- getWord64be -- why does getWord64be return zero?
+    n <- bytesRead
+    data_version <- getWord64be
+    let chk a b msg = if a==b then return () else error msg
+    chk magic_number document_magic_number "This does not appear to be a Dao data file."
+    chk data_version document_data_version "This file Dao data appears to of the wrong version."
+    info <- get
+    ver  <- getWord64be
+    root <- get
+    seq root $ return $
+      Document
+      { docRefCount   = 1
+      , docModified   = 0
+      , docInfo       = info
+      , docVersion    = ver
+      , docRootObject = root
+      }
+
+-- | This function can be evaluated in a 'Dao.Types.Run' monad. It takes debugging information as
+-- well, so pass 'Prelude.Nothing' and an empty string as the first two parameters if you are at a
+-- loss. It simply creates a new 'Dao.Types.DocHandle' from a given document (presumably created by
+-- 'Data.Binary.decodeFile').
+newDocHandle :: Bugged r => MLoc -> String -> Document -> ReaderT r IO DocHandle
+newDocHandle loc msg doc = dNewMVar loc msg doc
+
+-- | This function can be evaluated in a 'Dao.Types.Run' monad. Increments the counter that
+-- indicates whether or not the 'Dao.Types.Document' in this 'Dao.Types.DocHandle' has been
+-- modified.
+setModified :: Bugged r => DocHandle -> ReaderT r IO ()
+setModified doc = dModifyMVar_ xloc doc $ \doc ->
+  return (doc{docModified = 1 + docModified doc})
 
 ----------------------------------------------------------------------------------------------------
 
@@ -123,7 +175,7 @@ scriptLoadHandle public upath h = do
 ideaLoadHandle :: UPath -> Handle -> Run File
 ideaLoadHandle upath h = ask >>= \runtime -> do
   lift (hSetBinaryMode h True)
-  doc <- lift (fmap (B.decode$!) (B.hGetContents h) >>= evaluate)
+  doc <- lift (fmap (decode$!) (B.hGetContents h) >>= evaluate)
   docHandle <- newDocHandle xloc ("DocHandle("++show upath++")") $! doc
   let file = IdeaFile{filePath = upath, fileData = docHandle}
   --  dModifyMVar_ xloc (documentList runtime) $ \docTab ->
@@ -165,7 +217,7 @@ execWriteDB upath = do
       execRun $ dModifyMVar xloc doc $ \doc -> do
         when (docModified doc > 0) $ lift $ do
           h <- openFile (docRefToFilePath upath) WriteMode >>= evaluate
-          let encoded = B.encode doc
+          let encoded = encode doc
           seq h $! seq encoded $! B.hPutStr h encoded
           hFlush h >> hClose h >>= evaluate
         return (doc{docModified = 0}, file)

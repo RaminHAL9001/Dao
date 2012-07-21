@@ -245,7 +245,7 @@ basicScriptOperations = M.fromList funcList where
           (execScriptToCheck (error "file not returned") $
             (fmap (OString . filePath) (execWriteDB path))
           ) >>= checkOK
-        [OString path, OString newPath] -> runToCheck_ (saveDocAs path newPath)
+        [OString path, OString newPath] -> error "(write to new path is not yet defined)" -- TODO: define it
     , func "closeDB" $ \ [OString path] -> execScriptToCheck CENext $ do
         xunit <- ask
         execRun $ dModifyMVar xloc (execOpenFiles xunit) $ \ftab -> do

@@ -390,13 +390,11 @@ execScriptExpr script = uncom script >>= \script -> case script of
             Nothing  -> ceError $ OList $ map OString $
               [ustr "with file path", path, ustr "file has not been loaded"]
             Just file -> return (xunit{currentDocument = Just file})
-        close file = execScriptRun (closeDoc file)
         run upd = ask >>= upd >>= \r -> local (const r) (execScriptBlock thn)
     case lval of
       ORef prefix                       -> run (setBranch prefix)
-      OString path                      -> ceFinal (run (setFile path) >> close path) (close path)
-      OPair (OString path, ORef prefix) ->
-        ceFinal (run (setFile path >=> setBranch prefix)) (close path)
+      OString path                      -> run (setFile path)
+      OPair (OString path, ORef prefix) -> run (setFile path >=> setBranch prefix)
       _ -> typeError lval "operand to \"with\" statement" $
              "file path (String type), or a Ref type, or a Pair of the two"
 
@@ -671,6 +669,7 @@ programFromSource checkAttribute script = do
   foldM foldDirectives program (map unComment (unComment (directives script)))
   where
     err lst = ceError $ OList $ map OString $ (sourceFullPath script : lst)
+    upd :: (CachedProgram -> DMVar a) -> CachedProgram -> (a -> a) -> ExecScript CachedProgram
     upd select program fn = execScriptRun $
       dModifyMVar xloc (select program) (\a -> return (fn a, program))
     mkCachedFunc scrp = execScriptRun $ do

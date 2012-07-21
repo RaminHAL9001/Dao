@@ -1,7 +1,3 @@
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-
 -- "src/Dao/Types.hs"  provides data types that are used throughout
 -- the Dao System to facilitate execution of Dao programs, but are not
 -- used directly by the Dao scripting language as Objects are.
@@ -22,6 +18,11 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
+
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+-- {-# LANGUAGE TemplateHaskell #-}
 
 
 module Dao.Types
@@ -245,9 +246,7 @@ type DocData = T.Tree Name Object
 -- | A document stored in an 'Control.Concurrent.DMVar.DMVar'.
 type DocHandle = DMVar Document
 
--- | Keeps track of the documents that are currently being used.
-type DocList = M.Map UPath DocHandle
-type DocListHandle = DMVar DocList
+----------------------------------------------------------------------------------------------------
 
 -- | A program table is an 'Control.Concurrent.DMVar.DMVar' associating 'programModuleName's to
 -- 'ExecUnit's. The 'ExecUnit's themselves are also stored in an 'Control.Concurrent.DMVar.DMVar',

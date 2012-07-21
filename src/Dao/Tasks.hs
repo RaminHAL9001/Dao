@@ -291,13 +291,13 @@ selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> ca
     (return . filter (\file -> isProgramFile file && publicFile file) . M.elems) ax
   names -> do
     pathTab <- dReadMVar xloc (pathIndex runtime)
-    let set               = M.fromList . map (\mod -> (mod, undefined))
-        request           = set names
+    let set msg           = M.fromList . map (\mod -> (mod, error msg))
+        request           = set "(selectModules: request files)" names
         (public, private) = M.partition publicFile (M.filter isProgramFile pathTab)
     imports <- case xunit of
       Nothing    -> return M.empty
       Just xunit -> return $
-        set $ concat $ maybeToList $ fmap programImports $ currentProgram xunit
+        set "(selectModules: imported files)" $ concat $ maybeToList $ fmap programImports $ currentProgram xunit
     ax <- return $ M.union (M.intersection public request) $
       M.intersection private (M.intersection imports request)
     dMessage xloc ("selected modules:\n"++unlines (map show (M.keys ax)))

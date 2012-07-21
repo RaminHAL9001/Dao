@@ -78,7 +78,6 @@ newRuntime debug = flip runReaderT debug $ dStack xloc "newRuntime" $ do
   paths <- dNewMVar xloc "Runtime.pathIndex"        (M.empty)
   names <- dNewMVar xloc "Runtime.logicalNameIndex" (M.empty)
   jtab  <- dNewMVar xloc "Runtime.jobTable"         (M.empty)
-  dlist <- newDocList
   return $
     Runtime
     { pathIndex            = paths

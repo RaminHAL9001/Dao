@@ -27,7 +27,6 @@ module Dao.Files where
 
 import           Dao.Debug.OFF
 import           Dao.Types
-import           Dao.Document
 import           Dao.Evaluator
 import           Dao.Combination (runCombination)
 import           Dao.Parser

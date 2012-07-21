@@ -28,5 +28,5 @@
    Dao/Debug.hs         Dao.hs                Dao/Object/Show.hs     Dao/Tree.hs
    Dao/Debug/OFF.hs     Dao/Object/Binary.hs  Dao/Parser.hs          Dao/Types.hs
    Dao/Debug/ON.hs      Dao/Object/Data.hs    Dao/Pattern.hs         Dao/Tasks.hs
-   Dao/Document.hs      Dao/Object.hs         Dao/Predicate.hs      *dao-main.hs
+                        Dao/Object.hs         Dao/Predicate.hs      *dao-main.hs
 

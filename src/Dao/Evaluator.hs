@@ -32,7 +32,6 @@ import           Dao.Types
 import qualified Dao.Tree as T
 import           Dao.Pattern
 import           Dao.Predicate
-import           Dao.Document
 import           Dao.Combination
 import           Dao.Parser
 

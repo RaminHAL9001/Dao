@@ -48,7 +48,6 @@ import           Dao.Object
 import           Dao.Types
 import           Dao.Tasks
 import           Dao.Files
-import           Dao.Document
 import           Dao.Evaluator
 import           Dao.Builtins
 

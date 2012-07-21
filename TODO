@@ -12,6 +12,8 @@ UNSOLVED:
 	(this is kind of a given, since Haskell tends to read files lazily), and written when explicitly
 	told to be written. Any file loaded is loaded only once, and reference counting is used to keep
 	track of when it is OK to remove a loaded file from the table (close it).
+	--
+	"writeDB()" still doesn't work.
 
 * Create a parser to load a configuration file with rules dictating which files and programs in
 	which directories are permitted to be loaded by running Dao programs. These rules must be

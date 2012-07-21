@@ -35,7 +35,6 @@ import qualified Dao.Tree as T
 import           Dao.Pattern
 import           Dao.Combination
 import           Dao.Parser
-import           Dao.Document
 import           Dao.Evaluator
 import           Dao.Files
 import           Dao.Object.Monad

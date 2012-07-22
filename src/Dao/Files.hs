@@ -20,6 +20,7 @@
 
 
 -- {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | This module takes care of loading Dao 'Dao.Types.SourceCode' and Dao 'Dao.Types.Document's.
 
@@ -30,6 +31,7 @@ import           Dao.Types
 import           Dao.Evaluator
 import           Dao.Combination (runCombination)
 import           Dao.Parser
+import qualified Dao.Tree    as T
 import           Dao.Object.Parsers
 import           Dao.Object.Show
 import           Dao.Object.Monad
@@ -48,6 +50,7 @@ import           Data.Binary.Put
 import qualified Data.ByteString.Lazy as B
 
 import           System.IO
+import           System.Directory
 
 import Debug.Trace
 
@@ -188,17 +191,27 @@ ideaLoadHandle upath h = ask >>= \runtime -> do
 -- 'loadFilePathWith' allows you to specify how to load the file by passing a function, like
 -- 'ideaLoadHandle' for parsing ideas or 'scriptLoadHandle' for parsing scripts, and only files of
 -- that type will be loaded, or else this function will fail.
-loadFilePathWith :: (UPath -> Handle -> Run File) -> UPath -> Run File
-loadFilePathWith fn upath = lift (openFile (uchars upath) ReadMode) >>= fn upath
+loadFilePathWith :: (UPath -> Handle -> Run File) -> UPath -> Maybe File -> Run File
+loadFilePathWith fn upath alternateFile = do
+  let load = lift (openFile (uchars upath) ReadMode) >>= fn upath
+  case alternateFile of
+    Nothing   -> load
+    Just file -> flip (dHandle xloc) load $ \ (err::IOException) -> return file
 
 -- | Checks that the file path is OK to use for the given 'Dao.Types.ExecUnit', executes the file
 -- loading function if it is OK to load, returns a CEError if not.
-execReadDB :: UPath -> (UPath -> Handle -> Run File) -> ExecScript File
-execReadDB upath fn = do
+execReadFile :: UPath -> (UPath -> Handle -> Run File) -> ExecScript File
+execReadFile upath fn = do
   xunit <- ask
+  (doOpen, upath) <- execIO $ handle (\ (err::IOException) -> return (False, upath)) $
+    fmap ((,)True . ustr) (canonicalizePath (uchars upath))
   -- TODO: check if the path is really OK to load.
-  execScriptRun $ dontLoadFileTwice upath $ \upath -> do
-    loadFilePathWith fn upath
+  execScriptRun $ do
+    ~altDoc <- dNewMVar xloc ("DocHandle("++show upath++")") (initDoc T.Void)
+    let altFile = IdeaFile{filePath = upath, fileData = altDoc}
+    if doOpen 
+      then dontLoadFileTwice upath (\upath -> loadFilePathWith fn upath (Just altFile))
+      else return altFile
 
 -- | If a file has been read, it can be written.
 execWriteDB :: UPath -> ExecScript File

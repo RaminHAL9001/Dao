@@ -234,7 +234,7 @@ basicScriptOperations = M.fromList funcList where
           a         -> putStrLn (showObj 0 a)
         checkOK ONull
     , func "readDB" $ \ [OString path] -> execScriptToCheck (error "file not returned") $ do
-        file <- execReadDB path ideaLoadHandle
+        file <- execReadFile path ideaLoadHandle
         xunit <- ask
         let fp = filePath file
         execRun (dModifyMVar_ xloc (execOpenFiles xunit) (return . M.insert fp file))

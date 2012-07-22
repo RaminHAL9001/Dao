@@ -161,12 +161,22 @@ rule "$? file $*" {
 	op = join("", $1);
 	a  = join("", $2);
 	print(op+" file "+a);
-	try {	 if(op=="new")   { newDB(a);   print("Created new file "+a); ${use.file} = a; }
-		else if(op=="save")  { saveDB(a);  print("Save file "+a); }
-		else if(op=="open")  { openDB(a);  print("Open file "+a); ${use.file} = a; }
-		else if(op=="close") { closeDB(a); print("Close file "+a); }
-		else if(op=="use")   { ${use.file} = a; }
-		else { print("I don't understand what \""+op+"\" file means."); }
+	try {
+		if(op=="save")  {
+			writeDB(a);  print("Save file "+a);
+		}
+		else if(op=="open" || op=="read")  {
+			readDB(a);  print("Read file "+a); ${use.file} = a;
+		}
+		else if(op=="close") {
+			closeDB(a); print("Close file "+a);
+		}
+		else if(op=="use")   {
+			${use.file} = a;
+		}
+		else {
+			print("I don't understand what \""+op+"\" file means.");
+		}
 		if(${use.file}) { print("Using file "+a); }
 		else { print("Please specify which file to use."); }
 	}

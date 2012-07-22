@@ -1,20 +1,5 @@
 UNSOLVED:
 
-* REGRESSION: Creating, opening, and saving idea files no longer seems to work when using the
-	built-in functions "newDB", "openDB", and "saveDB". However, the "test1.idea" file is loaded
-	when it is sepcified in the command line arguments, so the problem is not with
-	'initRuntimeFiles'.
-	--
-	I am transitioning away from using the "Dao.Document" functions to using the "Dao.Files"
-	functions. "Dao.Document" was one of the earliest code I wrote in this iteration of the Dao
-	system, it is no longer useful given all the new features I have added over the past year. The
-	new method of loading and saving files will be more transparent. Files are loaded on demand
-	(this is kind of a given, since Haskell tends to read files lazily), and written when explicitly
-	told to be written. Any file loaded is loaded only once, and reference counting is used to keep
-	track of when it is OK to remove a loaded file from the table (close it).
-	--
-	"writeDB()" still doesn't work.
-
 * Create a parser to load a configuration file with rules dictating which files and programs in
 	which directories are permitted to be loaded by running Dao programs. These rules must be
 	consulted every time a file is to be loaded, whether it is imported or loaded with the
@@ -59,6 +44,27 @@ UNSOLVED:
 
 ----------------------------------------------------------------------------------------------------
 SOLVED:
+
+* REGRESSION: Creating, opening, and saving idea files no longer seems to work when using the
+	built-in functions "newDB", "openDB", and "saveDB". However, the "test1.idea" file is loaded
+	when it is sepcified in the command line arguments, so the problem is not with
+	'initRuntimeFiles'.
+	--
+	I am transitioning away from using the "Dao.Document" functions to using the "Dao.Files"
+	functions. "Dao.Document" was one of the earliest code I wrote in this iteration of the Dao
+	system, it is no longer useful given all the new features I have added over the past year. The
+	new method of loading and saving files will be more transparent. Files are loaded on demand
+	(this is kind of a given, since Haskell tends to read files lazily), and written when explicitly
+	told to be written. Any file loaded is loaded only once, and reference counting is used to keep
+	track of when it is OK to remove a loaded file from the table (close it).
+	--
+	"writeDB()" still doesn't work.
+	--
+	OK, I forgot about the Document.docModified counter, "Dao.Files.execWriteDB" is defined such
+	that if the file has not been modified, it will not write anything to the filesystem. However
+	until now, the Dao.Evaluator.modifyGlobalVar function, which managed global variable assignment
+	expressions within "WithExpr" statements, was not defined to increment the "docModified"
+	counter. This is now fixed, and documents are written to the filesystem.
 
 * Modify the 'ExecUnit' to contain built-in functions decalred in the top-level of a Dao program.
 	Presently, these objects are stored in the 'staticHeap', which are not cached, and are required

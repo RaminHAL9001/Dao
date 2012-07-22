@@ -59,7 +59,7 @@ import qualified Data.IntMap as I
 import qualified Data.ByteString.Lazy.UTF8 as U
 
 --debug: for use with "trace"
-import Debug.Trace
+-- import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -184,7 +184,7 @@ modifyGlobalVar name alt = do
   case currentDocument xunit of
     Nothing                     -> modifyXUnit_ execHeap (return . alt prefixName)
     Just file | isIdeaFile file -> execRun $ dModifyMVar_ xloc (fileData file) $ \doc -> return $
-      doc{docRootObject = alt prefixName (docRootObject doc)}
+      doc{docRootObject = alt prefixName (docRootObject doc), docModified = 1 + docModified doc}
     Just file                   -> ceError $ OList $ map OString $
       [ustr "current document is not a database", filePath file]
 

@@ -36,7 +36,7 @@ import           Control.Monad
 
 import           Data.Typeable
 import           Data.Dynamic
-import           Data.Maybe (fromMaybe, maybeToList)
+import           Data.Maybe
 import           Data.Either
 import           Data.List
 import           Data.Bits
@@ -221,7 +221,7 @@ objToBool obj = case obj of
   OChar      o -> testNull o
   OString    o -> testNull o
   ORef       o -> testNull o
-  OPair      _ -> True
+  OPair (a, b) -> objToBool a && objToBool b
   OList      o -> testNull o
   OSet       o -> testNull o
   OArray     o -> True
@@ -588,9 +588,10 @@ checkBitwiseOp op fnBit fnSet fnDict fnIntMap a b = do
     (ODict   a, ODict   b) -> ODict   (fnDict   a b)
     (OIntMap a, OIntMap b) -> OIntMap (fnIntMap a b)
 
--- | Logical operators include @&&@, and @||@.
-checkLogicalOp :: (Bool -> Bool -> Bool) -> Object -> Object -> Check (ContErr Object)
-checkLogicalOp fn a b = checkOK (boolToObj (fn (objToBool a) (objToBool b)))
+-- | If the object is not null (as determined by the 'objToBool' function), then this object is
+-- returned wrapped in the 'Data.Maybe.Just' data type. Otherwise, 'Data.Maybe.Nothing' is returned.
+objToMaybe :: Object -> Maybe Object
+objToMaybe o = if objToBool o then Just o else Nothing
 
 -- | Comparator operators include @<@, @>@ @<=@, and @>=@.
 checkCompareOp

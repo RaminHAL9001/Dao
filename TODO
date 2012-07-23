@@ -7,24 +7,6 @@ UNSOLVED:
 	built-in function sets are permitted to be used by each Dao program. I have already marked
 	several places in the source code that will use this a feature once it has has been implemented.
 
-* Change the instantiation of UStr into the Binary monad to use a minimum number of bytes to
-	indicate the length of the string. Right now, every UStr is preceeded a 64-bit (8 byte) number.
-	However, the vast majority of all strings saved to "idea" files will most certainly be less than
-	128 characters long. Especially the UStr's used for the paths in Tree objects. I would like
-	UStr's to now be stored using an adaptive length prefix. The bits preceeding a UStr's contents
-	will have a format like so:
-		7 6543210
-		---------
-		1 XXXXXXX
-		1 XXXXXXX
-		1 XXXXXXX
-		...
-		0 XXXXXXX
-	If the highest-order bit is a one, it indicates there are more bytes to follow. If the highest
-	order bit is 0, then there are no more bytes. There will be a maximum of 9 bytes. The 7
-	lower-order bits will be concatenated in big-endian order to form the length value for the
-	string. By this method, most all strings will have a length prefix of only one or two bytes.
-
 * Parser needs to return better error messages.
 	--
 	In progress. Implemented a "labelParse" function which essentially replaces all failed parses
@@ -44,6 +26,25 @@ UNSOLVED:
 
 ----------------------------------------------------------------------------------------------------
 SOLVED:
+
+* Change the instantiation of UStr into the Binary monad to use a minimum number of bytes to
+	indicate the length of the string. Right now, every UStr is preceeded a 64-bit (8 byte) number.
+	However, the vast majority of all strings saved to "idea" files will most certainly be less than
+	128 characters long. Especially the UStr's used for the paths in Tree objects. I would like
+	UStr's to now be stored using a variable-length integer prefix. The bits of the variable-length
+	integer will have a format like so:
+		7 6543210
+		---------
+		1 XXXXXXX
+		1 XXXXXXX
+		1 XXXXXXX
+		...
+		0 XXXXXXX
+	If the highest-order bit is a one, it indicates there are more bytes to follow. If the highest
+	order bit is 0, then there are no more bytes. There will be a maximum of 9 bytes. The 7
+	lower-order bits will be concatenated in big-endian order to form the length value for the
+	string. By this method, most all strings will have a length prefix of only one or two bytes.
+	-- Done.
 
 * REGRESSION: Creating, opening, and saving idea files no longer seems to work when using the
 	built-in functions "newDB", "openDB", and "saveDB". However, the "test1.idea" file is loaded

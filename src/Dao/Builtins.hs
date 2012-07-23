@@ -86,8 +86,6 @@ listBreakup str substr = if null substr then [Left str] else loop [] [] (length 
 setwiseXOR :: (a -> a -> a) -> (a -> a -> a) -> a -> a -> a
 setwiseXOR diff union a b = diff (union a b) b
 
-----------------------------------------------------------------------------------------------------
-
 -- | When constructing 'CheckFunc' built-in functions, arguments are passed by reference. To
 -- de-reference arugments while simply returning constants, evaluate this equation.
 derefRefLiteral :: Object -> Check Object
@@ -98,6 +96,12 @@ derefRefLiteral obj = case obj of
       Nothing  -> checkFail "undefined reference" (ORef ref)
       Just obj -> return obj
   obj      -> return obj
+
+-- | Logical operators include @&&@, and @||@.
+checkLogicalOp :: (Bool -> Bool -> Bool) -> Object -> Object -> Check (ContErr Object)
+checkLogicalOp fn a b = do
+  (a, b) <- liftM2 (,) (checkObjToBool a) (checkObjToBool b)
+  checkOK (boolToObj (fn a b))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -203,8 +207,9 @@ basicScriptOperations = M.fromList funcList where
     , func "ref" $ \ ax -> case ax of
         [ORef a] -> checkOK (ORef a)
         ax -> fmap (CENext . ORef . concat) $ forM ax $ \o -> case o of
-          (OString o) -> return [o]
-          (ORef    o) -> return o
+          (OString  o) -> return [o]
+          (OList   ox) -> return (map (\ (OString o) -> o) ox)
+          (ORef     o) -> return o
     , func "delete" $ \ ax -> do
         forM_ ax $ \ (ORef o) -> execScriptToCheck id (deleteGlobalVar o >> return OTrue)
         checkOK OTrue

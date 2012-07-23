@@ -45,7 +45,7 @@ import           Control.Exception
 import           Control.Monad.Trans
 import           Control.Monad.Reader
 
-import           Data.Maybe (fromMaybe)
+import           Data.Maybe
 import           Data.Either
 import           Data.Array.IArray
 import           Data.Int
@@ -238,6 +238,14 @@ execGlobalLookup :: [Name] -> ExecScript (Maybe Object)
 execGlobalLookup ref =
   sequence [currentDocumentLookup ref, lookupExecHeap ref, staticDataLookup ref] >>= return . msum
 
+-- | A 'Dao.Types.Check' monad computation to run 'execGlobalLookup' and return whether or not a
+-- reference is defined. If the given object is not of data type 'Dao.Object.ORef', then the
+-- ordinary 'Dao.Object.Data.objToBool' function is used to evaluate the given object.
+checkObjToBool :: Object -> Check Bool
+checkObjToBool o = case o of
+  ORef o -> fmap isJust $ execScriptToCheck objToMaybe (fmap (>>=objToMaybe) (execGlobalLookup o))
+  o      -> return (objToBool o)
+
 -- | Retrieve a 'CheckFunc' function from one of many possible places in the 'Dao.Types.ExecUnit'.
 -- Every function call that occurs during execution of the Dao script will use this Haskell function
 -- to seek the correct Dao function to use. Pass an error message to be reported if the lookup
@@ -349,8 +357,12 @@ execScriptExpr script = uncom script >>= \script -> case script of
   NO_OP                        -> return ()
   EvalObject   o               -> unless (isNO_OP (unComment o)) (void (evalObject o))
   IfThenElse   ifn  thn  els   -> nestedExecStack M.empty $ do
-    ifn <- fmap objToBool (evalObject ifn)
-    execScriptBlock (if ifn then thn else els)
+    ifn <- evalObject ifn
+    case ifn of
+      ORef o -> do
+        true <- fmap isJust (execGlobalLookup o)
+        execScriptBlock (if true then thn else els)
+      o      -> execScriptBlock (if objToBool o then thn else els)
   TryCatch     try  name catch -> do
     ce <- withContErrSt (nestedExecStack M.empty (execScriptBlock try)) return
     case ce of

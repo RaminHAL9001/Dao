@@ -191,38 +191,46 @@ ideaLoadHandle upath h = ask >>= \runtime -> do
 -- 'loadFilePathWith' allows you to specify how to load the file by passing a function, like
 -- 'ideaLoadHandle' for parsing ideas or 'scriptLoadHandle' for parsing scripts, and only files of
 -- that type will be loaded, or else this function will fail.
-loadFilePathWith :: (UPath -> Handle -> Run File) -> UPath -> Maybe File -> Run File
-loadFilePathWith fn upath alternateFile = do
-  let load = lift (openFile (uchars upath) ReadMode) >>= fn upath
-  case alternateFile of
-    Nothing   -> load
-    Just file -> flip (dHandle xloc) load $ \ (err::IOException) -> return file
+loadFilePathWith :: (UPath -> Handle -> Run File) -> UPath -> Run File
+loadFilePathWith fn upath = lift (openFile (uchars upath) ReadMode) >>= fn upath
+
+-- | Tries to convert the given 'Dao.String.UPath' to it's full path using
+-- 'System.Directory.canonicalizePath', returning a pair @(True, fullPath)@ if successful. It does not
+-- throw an 'Control.Exception.IOException' if the lookup fails, it returns the pair
+-- @(False, originalPath)@.
+getFullPath :: UPath -> IO (Bool, UPath)
+getFullPath upath = handle (\ (err::IOException) -> return (False, upath)) $
+  fmap ((,)True . ustr) (canonicalizePath (uchars upath))
 
 -- | Checks that the file path is OK to use for the given 'Dao.Types.ExecUnit', executes the file
 -- loading function if it is OK to load, returns a CEError if not.
 execReadFile :: UPath -> (UPath -> Handle -> Run File) -> ExecScript File
 execReadFile upath fn = do
   xunit <- ask
-  (doOpen, upath) <- execIO $ handle (\ (err::IOException) -> return (False, upath)) $
-    fmap ((,)True . ustr) (canonicalizePath (uchars upath))
+  (exists, upath) <- execIO (getFullPath upath)
   -- TODO: check if the path is really OK to load.
   execScriptRun $ do
     ~altDoc <- dNewMVar xloc ("DocHandle("++show upath++")") (initDoc T.Void)
-    let altFile = IdeaFile{filePath = upath, fileData = altDoc}
-    if doOpen 
-      then dontLoadFileTwice upath (\upath -> loadFilePathWith fn upath (Just altFile))
-      else return altFile
+    let file = IdeaFile{filePath = upath, fileData = altDoc}
+    dontLoadFileTwice upath $ \upath ->
+      if exists
+        then loadFilePathWith fn upath
+        else do
+          runtime <- ask
+          dModifyMVar xloc (pathIndex runtime) $ \ptab ->
+            return (M.insert (filePath file) file ptab, file)
 
 -- | If a file has been read, it can be written.
 execWriteDB :: UPath -> ExecScript File
 execWriteDB upath = do
+  (_, upath) <- execIO (getFullPath upath)
   xunit <- ask
   -- TODO: check if the path is OK to write.
   file <- execScriptRun $ do
     runtime <- ask
     fmap (M.lookup upath) (dReadMVar xloc (pathIndex runtime))
   case file of
-    Nothing   -> ceError $ OList $ map OString $
+    Nothing -> ceError $ OList $ map OString $
       [ustr "writeDB", upath, ustr "file is not currently loaded"]
     Just file | isIdeaFile file -> do
       let doc = fileData file

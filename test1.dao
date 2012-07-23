@@ -160,27 +160,30 @@ BEGIN {
 rule "$? file $*" {
 	op = join("", $1);
 	a  = join("", $2);
-	print(op+" file "+a);
 	try {
-		if(op=="save")  {
+		if(op=="save" || op=="write")  {
 			writeDB(a);  print("Save file "+a);
 		}
 		else if(op=="open" || op=="read")  {
 			readDB(a);  print("Read file "+a); ${use.file} = a;
 		}
 		else if(op=="close") {
-			closeDB(a); print("Close file "+a);
+			closeDB(a); print("Close file "+a); delete($${use.file});
 		}
 		else if(op=="use")   {
 			${use.file} = a;
 		}
 		else {
-			print("I don't understand what \""+op+"\" file means.");
+			print("I don't understand what \""+op+" file\" means.");
 		}
-		if(${use.file}) { print("Using file "+a); }
+		if($${use.file}) { print("Using file "+a); }
 		else { print("Please specify which file to use."); }
 	}
 	catch err { print("ERROR: "+err); }
+}
+
+rule "which file" {
+	print(${use.file});
 }
 
 rule "$* is a kind of $*" {

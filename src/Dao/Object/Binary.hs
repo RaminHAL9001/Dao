@@ -240,7 +240,7 @@ instance Binary Object where
       OTime         a -> x o a
       ODiffTime     a -> x o a
       OChar         a -> x o a
-      OString       a -> x o a
+      OString       a -> px o (encodeUStr a)
       ORef         rx -> px o (putList rx)
       OPair     (a,b) -> px o (put a >> put b)
       OList         a -> px o (putList a)
@@ -270,7 +270,7 @@ instance Binary Object where
       TimeType     -> x OTime
       DiffTimeType -> x ODiffTime
       CharType     -> x OChar
-      StringType   -> x OString
+      StringType   -> fmap OString decodeUStr
       RefType      -> fmap ORef getList
       PairType     -> get >>= \a -> get >>= \b -> return (OPair (a, b))
       ListType     -> fmap OList getList

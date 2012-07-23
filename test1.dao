@@ -198,6 +198,16 @@ rule "$* is a kind of $*" {
 	}
 }
 
+rule "what is a $*?" {
+	try {
+		with ${use.file} {
+			a = join(" ", $1);
+			print(a+" is a kind of "+@ref($1));
+		}
+	}
+	catch err { print("I don't know."); }
+}
+
 rule("listDBs", "list DB", "list db", "list dbs") {
 	print("Listing loaded idea files");
 	listDBs();

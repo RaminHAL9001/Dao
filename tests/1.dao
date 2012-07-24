@@ -198,19 +198,26 @@ rule "$* is a kind of $*" {
 	}
 }
 
-rule ("what is a $*?", "what is an $*?") {
+${what.is.count} = 0;
+rule ("what is an $*?") {
+	unanswered = false;
 	try {
-		with ${use.file} {
-			a = join("", $1);
-			b = ref($1); b = join("", @b);
-			print(a+" is a kind of "+@b);
+		if(${what.is.count} == 0) {
+			with ${use.file} {
+				a = join("", $1);
+				b = ref($1); b = join("", @b);
+				print(a+" is a kind of "+@b);
+			}
 		}
+		${what.is.count} = ${what.is.count} + 1;
 	}
 	catch err {
 		print("I don't know.");
 		print(err);
 	}
+	print("what-is counter = "+${what.is.count});
 }
+END { ${what.is.count} = 0; }
 
 rule("list db", "list dbs") {
 	print("Listing loaded idea files");
@@ -223,5 +230,11 @@ func sayHello(a) {
 
 rule "$bad dollar sign" {
 	print("matched pattern with bad dollar sign.");
+}
+
+rule "infinite recursion" {
+	do( [ "my name is Dao."
+		, "infinite recursion"
+		]);
 }
 

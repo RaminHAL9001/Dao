@@ -1,0 +1,26 @@
+module "test2"
+
+string.compare  approximate;
+
+BEGIN {
+	${comma} = [];
+	${comma.count} = 0;
+}
+rule "$*, $*" {
+	a = join("", $1);
+	b = join("", $2);
+	${comma} = ${comma} + [a];
+	${comma.count} = ${comma.count} + 1;
+	print(${comma.count} + ": " + ${comma} + " -> " + b);
+	if(b) { do(b); } else { print("done"); }
+}
+END {
+	a = 1;
+	foreach x in ${comma} {
+		${comma.item} = a;
+		print(a+": "+x);
+		do(x);
+		a = a + 1;
+	}
+}
+

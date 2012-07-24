@@ -207,6 +207,10 @@ removeJobFromTable job = ask >>= \runtime ->
 -- | Given an input string, and a program, return all patterns and associated match results and
 -- actions that matched the input string, but do not execute the actions. This is done by tokenizing
 -- the input string and matching the tokens to the program using 'Dao.Pattern.matchTree'.
+-- NOTE: Rules that have multiple patterns may execute more than once if the input matches more than
+-- one of the patterns associated with the rule. *This is not a bug.* Each pattern may produce a
+-- different set of match results, it is up to the programmer of the rule to handle situations where
+-- the action may execute many times for a single input.
 matchStringToProgram :: UStr -> CachedProgram -> ExecUnit -> Run [(Pattern, Match, CachedAction)]
 matchStringToProgram instr program xunit = dStack xloc "matchStringToProgram" $ do
   let eq = programComparator program

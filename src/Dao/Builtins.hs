@@ -93,7 +93,7 @@ derefRefLiteral obj = case obj of
   ORef ref -> do
     obj <- execScriptToCheck (const Nothing) (execGlobalLookup ref)
     case obj of
-      Nothing  -> checkFail "undefined reference" (ORef ref)
+      Nothing  -> return ONull
       Just obj -> return obj
   obj      -> return obj
 

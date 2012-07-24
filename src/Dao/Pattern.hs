@@ -173,6 +173,10 @@ matchPattern eq pat tokx = matchTree eq (toTree pat ()) tokx >>= (\ (_,m,_) -> [
 -- composed from every path to every leaf in the given 'Dao.Tree' object. Evaluates every possible
 -- match. This is actually the the more general algorithm, and the 'matchPattern' token is a special
 -- condition of this algorithm where the 'matchTree' contains only one path to one Leaf.
+-- NOTE: Rules that have multiple patterns may execute more than once if the input matches more than
+-- one of the patterns associated with the rule. *This is not a bug.* Each pattern may produce a
+-- different set of match results, it is up to the programmer of the rule to handle situations where
+-- the action may execute many times for a single input.
 matchTree :: (UStr -> UStr -> Bool) -> PatternTree a -> Tokens -> [(Pattern, Match, a)]
 matchTree eq matchTree tokx = loop 0 [] 0 [] matchTree tokx where
   loop sz stk p path bx tokx =

@@ -1,5 +1,25 @@
 UNSOLVED:
 
+* More practical programs need to be created now, to really test the system.
+
+* Test the "import" mechanism.
+
+* Need a separate set of functions that can create a new ".dao" file with new rules.
+
+* List addition does not work correctly.
+
+* Consider making the "@" operator part of the language, rather than a built-in function, so you can
+	assign values in expressions where the left hand side contains an "@" operator, for example:
+		a = ref($1);
+		@a = true;
+	The above example should create a reference from "$1", so if "$1" is ["a", "b", "c"], then "a"
+	will be the reference value "${a.b.c}". Then "@a = true;" will evaluate to "${a.b.c} = true;".
+	Currently, neither "ref()" nor the "@" operator behave in a way that allows this to work.
+
+* Extend Patterns to include the ability to match a null-string, the ability to match choice lists,
+	with the form "$(one$|two and$|three$)" will match either, "one", "two and", or "three", no
+	nested choices allowed.
+
 * Create a parser to load a configuration file with rules dictating which files and programs in
 	which directories are permitted to be loaded by running Dao programs. These rules must be
 	consulted every time a file is to be loaded, whether it is imported or loaded with the

@@ -41,7 +41,7 @@ import           Control.Concurrent
 import           Control.Monad.Reader
 
 import           Data.Maybe
-import           Data.List (partition)
+import           Data.List (partition, isSuffixOf)
 import qualified Data.Map    as M
 
 import           Data.Binary
@@ -201,6 +201,14 @@ loadFilePathWith fn upath = lift (openFile (uchars upath) ReadMode) >>= fn upath
 getFullPath :: UPath -> IO (Bool, UPath)
 getFullPath upath = handle (\ (err::IOException) -> return (False, upath)) $
   fmap ((,)True . ustr) (canonicalizePath (uchars upath))
+
+-- | Return all files that have been loaded that match the given file name.
+findIndexedFile :: UPath -> Run [UPath]
+findIndexedFile upath = do
+  runtime <- ask
+  ptab    <- dReadMVar xloc (pathIndex runtime)
+  return $ flip concatMap (M.assocs ptab) $ \ (ipath, file) ->
+    if isSuffixOf (uchars upath) (uchars ipath) then [filePath file] else []
 
 -- | Checks that the file path is OK to use for the given 'Dao.Types.ExecUnit', executes the file
 -- loading function if it is OK to load, returns a CEError if not.

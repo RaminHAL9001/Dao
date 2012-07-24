@@ -161,11 +161,11 @@ rule "$? file $*" {
 	op = join("", $1);
 	a  = join("", $2);
 	try {
-		if(op=="save" || op=="write")  {
-			writeDB(a);  print("Save file "+a);
+		if(op=="open" || op=="read")  {
+			a = readDB(a);  print("Read file "+a); ${use.file} = a;
 		}
-		else if(op=="open" || op=="read")  {
-			readDB(a);  print("Read file "+a); ${use.file} = a;
+		else if(op=="save" || op=="write")  {
+			writeDB(a);  print("Save file "+a);
 		}
 		else if(op=="close") {
 			closeDB(a); print("Close file "+a); delete($${use.file});
@@ -198,17 +198,21 @@ rule "$* is a kind of $*" {
 	}
 }
 
-rule "what is a $*?" {
+rule ("what is a $*?", "what is an $*?") {
 	try {
 		with ${use.file} {
-			a = join(" ", $1);
-			print(a+" is a kind of "+@ref($1));
+			a = join("", $1);
+			b = ref($1); b = join("", @b);
+			print(a+" is a kind of "+@b);
 		}
 	}
-	catch err { print("I don't know."); }
+	catch err {
+		print("I don't know.");
+		print(err);
+	}
 }
 
-rule("listDBs", "list DB", "list db", "list dbs") {
+rule("list db", "list dbs") {
 	print("Listing loaded idea files");
 	listDBs();
 }

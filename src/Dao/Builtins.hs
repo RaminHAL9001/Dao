@@ -262,6 +262,14 @@ basicScriptOperations = M.fromList funcList where
     , func "listMods" $ \ [] -> runToCheck $ do
         fmap (OList . map (\ (a, b) -> OPair (OString a, OString (filePath b))) . M.assocs) $
           ask >>= dReadMVar xloc . logicalNameIndex
+    , func "fullPath" $ \ [OString o] -> do
+        runToCheck (findIndexedFile o) >>= \ (CENext fx) -> case fx of
+          [] -> do
+            (found, path) <- liftIO (getFullPath o)
+            if found
+              then checkOK (OList [OString path])
+              else falseIO $ OList $ map OString $ [ustr "path does not exist in filesystem", o]
+          fx -> checkOK (OList (map OString fx))
     , func "do" $ \ ax -> do
         let run sel ax = do
               let strs = concatMap extractStringElems ax

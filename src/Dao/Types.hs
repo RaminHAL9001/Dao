@@ -271,7 +271,7 @@ runExecScript :: ExecScript a -> ExecUnit -> Run (ContErr a)
 runExecScript fn xunit = ReaderT $ \runtime ->
   runReaderT (runContErrT fn) (xunit{parentRuntime = runtime})
 
--- | Execute a 'Run' monad within an 'ExecScript' monad. Every 'ExecUnit' contains a pointer to the
+-- Execute a 'Run' monad within an 'ExecScript' monad. Every 'ExecUnit' contains a pointer to the
 -- 'Runtime' object that manages it, 
 execScriptRun :: Run a -> ExecScript a
 execScriptRun fn = ask >>= \xunit -> execIO (runReaderT fn (parentRuntime xunit))
@@ -284,7 +284,7 @@ objectError o msg = ceError (OPair (OString (ustr msg), o))
 
 -- | All functions that are built-in to the Dao language, or built-in to a library extending the Dao
 -- language, are stored in 'Data.Map.Map's from the functions name to an object of this type.
--- Functinos of this type are called by 'evalObject' to evaluate expressions written in the Dao
+-- Functions of this type are called by 'evalObject' to evaluate expressions written in the Dao
 -- language.
 newtype CheckFunc = CheckFunc { checkFunc :: [Object] -> Check (ContErr Object) }
 
@@ -323,7 +323,7 @@ checkToExecScript exprType inType ckfn =
 
 -- | Convert a 'TopLevelFunc' to a 'CheckFunc'.
 toplevelToCheckFunc :: TopLevelFunc -> ExecScript CheckFunc
-toplevelToCheckFunc top = execScriptRun (dReadMVar xloc top) >>= \top ->
+toplevelToCheckFunc top = execRun (dReadMVar xloc top) >>= \top ->
   return $ CheckFunc $ \args -> execScriptToCheck id (top args) >>= checkOK
 
 -- | Run an 'ExecScript' monad inside the 'Check'. This has the further effect of halting all
@@ -403,6 +403,7 @@ data ExecUnit
     , toplevelFuncs      :: DMVar (M.Map Name TopLevelFunc)
     , execHeap           :: DMVar T_tree
     , execStack          :: DMVar [T_dict]
+    , queryTimeHeap      :: DMVar T_tree
     , execOpenFiles      :: DMVar (M.Map UPath File)
     , recursiveInput     :: DMVar [UStr]
     , uncaughtErrors     :: DMVar [Object]
@@ -411,6 +412,7 @@ data ExecUnit
 instance Bugged ExecUnit where
   askDebug           = fmap (runtimeDebugger . parentRuntime) ask
   setDebug dbg xunit = xunit{parentRuntime = (parentRuntime xunit){runtimeDebugger = dbg}}
+
 
 ----------------------------------------------------------------------------------------------------
 

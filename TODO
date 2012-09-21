@@ -1,5 +1,42 @@
 UNSOLVED:
 
+* DEADLOCK WARNING!!!
+	Nearly all Dao programs will almost certainly deadlock when executing any assignment expression,
+	even something simple like "a = 1;". This bug was predicted, and fixing it is simply a matter of
+	completing revisions that have already been planned. The Dao system is undergoing a fairly major
+	architectural revision in order to introduce a more eloquent system of handling references, with
+	the introduction of the 'Dao.Object.Reference' type. The motivation for this architectural
+	revision is to solve the next two items in this document: the need for "static" and "temp"
+	vairables, and the need for atomic updates of global variables.
+
+* Need "static" and "temp" variables. Static variables will allocate an MVar for every rule action,
+	and allow local variables to be declared as static and stored to this MVar. Temp variables are
+	like static variables, but are deleted after every input query. This is necessary for rules that
+	may match a single input query in one of several different ways. There needs to be some
+	mechanism to allow for these rules to record information about itself that persists across
+	executions of the rule. It may be necessary to change the contents of 'CachedExec' data type so
+	that not only is the ExecScript function stored, but so are a pair of 'Data.Map's, one static,
+	one temp, that can be updated in the ExecScript monad, which means the ExecScript monad may need
+	another item containing a refernce to the 'CXRef' (which contains the 'CachedExec') that is
+	currently being executed.
+
+* Need atomic updates of global variables. To resolve this problem, two things will be done.
+	(1) 'Dao.Debug.DMVar's containing variables that can be updated during evaluation of Dao scripts
+	will be converted to a new (currently not-yet-implemented) data type called 'Resource', which
+	will allow any thread to lock a reference to a given value. This locking will guarantee that any
+	other thread can read the locked value without being blocked. But any thread wanting to modify
+	that variable must wait in a queue for that value to be unblocked. Locks occur at the Reference
+	level, not at the MVar level, so locking is a matter of simply marking that particular value.
+	The locking api will take a Run or ExecScript monad, and a reference. Evaluating the lock
+	function will first lock the Reference, then evaluate the ExecScript within an exception
+	handler, then it will unlock the reference, all in a single, seemingly atomic action.
+	(2) Evaluating the 'Dao.Evaluator.evalObject' function will now create a cache inside of it's
+	'Dao.Types.ExecUnit', to ensure that throughout the evaluation, every identical reference will
+	return an identical value. Since reading resources does not block the reading thread, it is
+	possible that a locked reference will become unlocked in between two successive reads of that
+	reference, and hence each read of that reference will have two different values. Caching will
+	solve this problem. Once 'evalObject' completes, the cache is cleared.
+
 * More practical programs need to be created now, to really test the system.
 
 * Test the "import" mechanism.

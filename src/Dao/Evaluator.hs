@@ -68,6 +68,7 @@ initExecUnit runtime = do
   unctErrs <- dNewMVar xloc "ExecUnit.uncaughtErrors" []
   recurInp <- dNewMVar xloc "ExecUnit.recursiveInput" []
   xheap    <- dNewMVar xloc "ExecUnit.execHeap" T.Void
+  qheap    <- dNewMVar xloc "ExecUnit.queryTimeHeap" T.Void
   xstack   <- dNewMVar xloc "ExecUnit.execStack" []
   toplev   <- dNewMVar xloc "ExecUnit.toplevelFuncs" M.empty
   files    <- dNewMVar xloc "ExecUnit.execOpenFiles" M.empty
@@ -86,6 +87,7 @@ initExecUnit runtime = do
     , execAccessRules    = RestrictFiles (Pattern{getPatUnits = [Wildcard], getPatternLength = 1})
     , builtinFuncs       = initialBuiltins runtime
     , execHeap           = xheap
+    , queryTimeHeap      = qheap
     , toplevelFuncs      = toplev
     , execStack          = xstack
     , execOpenFiles      = files
@@ -174,6 +176,32 @@ putLocalVar name obj = modifyXUnit_ execStack $ \ax -> case ax of
   []   -> stack_underflow
   a:ax -> return (M.insert name obj a : ax)
 
+-- | Used to evaluate an expression like @$1@, retrieves the matched pattern associated with an
+-- integer. Specifically, it returns a list of 'Dao.ObjectObject's where each object is an
+-- 'Dao.Types.OString' contained at the integer index of the 'Dao.Pattern.matchGaps' of a
+-- 'Dao.Pattern.Pattern'.
+evalIntRef :: Int -> ExecScript Object
+evalIntRef i = do
+  match <- fmap currentMatch ask
+  let oi = OInt (fromIntegral i)
+  case match of
+    Nothing -> do
+      objectError oi ("not in pattern match context, cannot evaluate $"++show i)
+    Just ma -> case matchGaps ma of
+      Nothing -> do
+        objectError oi ("currently matching pattern has no variables, cannot evaluate $"++show i)
+      Just ma | i==0 -> return $ OArray $
+        listArray (let (a, b) = bounds ma in (fromIntegral a, fromIntegral b)) $
+          map (OList . map OString) (elems ma)
+      Just ma | inRange (bounds ma) i -> return (OList (map OString (ma!i)))
+      Just ma -> do
+        objectError oi $ concat $
+          [ "pattern match variable $"
+          , show i ++ " is out of range "
+          , show (bounds ma)
+          , " in the current pattern match context"
+          ]
+
 -- | To define a global variable, first the 'currentDocument' is checked. If it is set, the variable
 -- is assigned to the document at the reference location prepending 'currentBranch' reference.
 -- Otherwise, the variable is assigned to the 'execHeap'.
@@ -187,6 +215,82 @@ modifyGlobalVar name alt = do
       doc{docRootObject = alt prefixName (docRootObject doc), docModified = 1 + docModified doc}
     Just file                   -> ceError $ OList $ map OString $
       [ustr "current document is not a database", filePath file]
+
+-- | TODO: needs to cache all lookups to make sure the same reference produces the same value across
+-- all lookups. The cache will be cleared at the start of every run of 'evalObject'.
+readReference :: Reference -> ExecScript (Maybe Object)
+readReference ref = case ref of
+  IntRef     i     -> do
+    match <- fmap currentMatch ask
+    let oi = OInt (fromIntegral i)
+    case match of
+      Nothing -> do
+        objectError oi ("not in pattern match context, cannot evaluate $"++show i)
+      Just ma -> case matchGaps ma of
+        Nothing -> do
+          objectError oi ("currently matching pattern has no variables, cannot evaluate $"++show i)
+        Just ma | i==0 -> return $ Just $ OArray $
+          listArray (let (a, b) = bounds ma in (fromIntegral a, fromIntegral b)) $
+            map (OList . map OString) (elems ma)
+        Just ma | inRange (bounds ma) i -> return $ Just $ OList $ map OString (ma!i)
+        Just ma -> do
+          objectError oi $ concat $
+            [ "pattern match variable $"
+            , show i ++ " is out of range "
+            , show (bounds ma)
+            , " in the current pattern match context"
+            ]
+  LocalRef   nm    ->
+    fmap execStack ask >>= execRun . dReadMVar xloc >>= return . msum . map (M.lookup nm)
+  QTimeRef   nm    -> error "TODO: you haven't yet defined lookup behavior for Query-Time references"
+  StaticRef  nm    -> error "TODO: you haven't yet defined lookup behavior for Static references"
+  GlobalRef  ref   ->
+    sequence [currentDocumentLookup ref, lookupExecHeap ref, staticDataLookup ref] >>= return . msum
+  ProgramRef p ref -> error "TODO: you haven't yet defined lookup behavior for Program references"
+  FileRef    f ref -> error "TODO: you haven't yet defined lookup behavior for Query-Time references"
+  MetaRef    _     -> error "cannot dereference a reference-to-a-reference"
+
+-- | All assignment operations are executed with this function. To modify any variable at all, you
+-- need a reference value and a function used to update the value. This function will select the
+-- correct value to modify based on the reference type and value, and modify it according to this
+-- function. TODO: the use of "dModifyMVar" to update variables is just a temporary fix, and will
+-- almost certainly cause a deadlock. But I need this to compile before I begin adding on the
+-- deadlock-free code.
+updateReferenceWith :: Reference -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript Object
+updateReferenceWith ref modf = do
+  xunit <- ask
+  let updateRef :: DMVar a -> (a -> Run (a, ContErr Object)) -> ExecScript Object
+      updateRef dmvar runUpdate = execScriptRun (dModifyMVar xloc dmvar runUpdate) >>= returnContErr
+      execUpdate :: ref -> a -> Maybe Object -> ((Maybe Object -> Maybe Object) -> a) -> Run (a, ContErr Object)
+      execUpdate ref store lkup upd = do
+        err <- flip runExecScript xunit $ modf lkup
+        case err of
+          CENext   val -> return (upd (const val), CENext (fromMaybe ONull val))
+          CEReturn val -> return (upd (const (Just val)), CEReturn val)
+          CEError  err -> return (store, CEError err)
+  case ref of
+    IntRef     i          -> error "cannot assign values to a pattern-matched reference"
+    LocalRef   ref        -> updateRef (execStack xunit) $ \stkx -> case stkx of
+      []       -> error "cannot assign/update local variable, stack is not initialized"
+      stk:stkx -> execUpdate ref (stk:stkx) (M.lookup ref stk) (\upd -> M.alter upd ref stk : stkx)
+    GlobalRef  ref'       -> do
+      let ref = currentBranch xunit ++ ref'
+      case currentDocument xunit of
+        Nothing                     -> updateRef (execHeap xunit) $ \heap ->
+          execUpdate ref heap (T.lookup ref heap) (\upd -> T.update ref upd heap)
+        Just file | isIdeaFile file -> updateRef (fileData file) $ \doc ->
+          let tree = docRootObject doc
+          in  execUpdate ref doc (T.lookup ref tree) $ \upd ->
+                doc{ docRootObject = T.update ref upd (docRootObject doc)
+                   , docModified   = 1 + docModified doc
+                   }
+        Just file                   -> ceError $ OList $ map OString $
+          [ustr "current document is not a database", filePath file] 
+    QTimeRef   ref        -> error "TODO: you haven't yet defined update behavior for Query-Time references"
+    StaticRef  ref        -> error "TODO: you haven't yet defined update behavior for Static references"
+    ProgramRef progID ref -> error "TODO: you haven't yet defined update behavior for Program references"
+    FileRef    path   ref -> error "TODO: you haven't yet defined update behavior for File references"
+    MetaRef    _          -> error "cannot assign values to a meta-reference"
 
 -- | To delete a global variable, the same process of searching for the address of the object is
 -- followed for 'defineGlobalVar', except of course the variable is deleted.
@@ -243,24 +347,24 @@ execGlobalLookup ref =
 -- ordinary 'Dao.Object.Data.objToBool' function is used to evaluate the given object.
 checkObjToBool :: Object -> Check Bool
 checkObjToBool o = case o of
-  ORef o -> fmap isJust $ execScriptToCheck objToMaybe (fmap (>>=objToMaybe) (execGlobalLookup o))
+  ORef o -> fmap isJust $ execScriptToCheck objToMaybe (fmap (>>=objToMaybe) (readReference o))
   o      -> return (objToBool o)
 
--- | Retrieve a 'CheckFunc' function from one of many possible places in the 'Dao.Types.ExecUnit'.
--- Every function call that occurs during execution of the Dao script will use this Haskell function
--- to seek the correct Dao function to use. Pass an error message to be reported if the lookup
--- fails. The order of lookup is: this module's 'Dao.Types.TopLevelFunc's, the
--- 'Dao.Types.TopLevelFunc's of each imported module (from first to last listed import), and finally
--- the built-in functions provided by the 'Dao.Types.Runtime'
+-- | Retrieve a 'Dao.Types.CheckFunc' function from one of many possible places in the
+-- 'Dao.Types.ExecUnit'. Every function call that occurs during execution of the Dao script will
+-- use this Haskell function to seek the correct Dao function to use. Pass an error message to be
+-- reported if the lookup fails. The order of lookup is: this module's 'Dao.Types.TopLevelFunc's,
+-- the 'Dao.Types.TopLevelFunc's of each imported module (from first to last listed import), and
+-- finally the built-in functions provided by the 'Dao.Types.Runtime'
 lookupFunction :: String -> Name -> ExecScript CheckFunc
 lookupFunction msg op = do
   xunit <- ask
   let toplevs xunit = do
-        top <- execScriptRun (fmap (M.lookup op) (dReadMVar xloc (toplevelFuncs xunit)))
+        top <- execRun (fmap (M.lookup op) (dReadMVar xloc (toplevelFuncs xunit)))
         case top of
           Nothing  -> return Nothing
           Just top -> fmap Just (toplevelToCheckFunc top)
-      lkup xunitMVar = execScriptRun (dReadMVar xloc xunitMVar) >>= toplevs
+      lkup xunitMVar = execRun (dReadMVar xloc xunitMVar) >>= toplevs
   funcs <- sequence (toplevs xunit : map lkup (importsTable xunit))
   case msum $ funcs++[M.lookup op (builtinFuncs xunit)] of
     Nothing   -> objectError (OString op) $ "undefined "++msg++" ("++uchars op++")"
@@ -285,7 +389,7 @@ objectErrorCE obj msg = CEError (OPair (OString (ustr msg), obj))
 typeError :: Object -> String -> String -> ExecScript a
 typeError o cons expect = objectError (OType (objType o)) (cons++" must be of type "++expect)
 
-derefError :: [Name] -> ExecScript a
+derefError :: Reference -> ExecScript a
 derefError ref = objectError (ORef ref) "undefined reference"
 
 ----------------------------------------------------------------------------------------------------
@@ -360,7 +464,7 @@ execScriptExpr script = uncom script >>= \script -> case script of
     ifn <- evalObject ifn
     case ifn of
       ORef o -> do
-        true <- fmap isJust (execGlobalLookup o)
+        true <- fmap isJust (readReference o)
         execScriptBlock (if true then thn else els)
       o      -> execScriptBlock (if objToBool o then thn else els)
   TryCatch     try  name catch -> do
@@ -396,16 +500,16 @@ execScriptExpr script = uncom script >>= \script -> case script of
     lval <- evalObject lval
     let setBranch ref xunit = return (xunit{currentBranch = ref})
         setFile path xunit = do
-          file <- execScriptRun (fmap (M.lookup path) (dReadMVar xloc (execOpenFiles xunit)))
+          file <- execRun (fmap (M.lookup path) (dReadMVar xloc (execOpenFiles xunit)))
           case file of
             Nothing  -> ceError $ OList $ map OString $
               [ustr "with file path", path, ustr "file has not been loaded"]
             Just file -> return (xunit{currentDocument = Just file})
         run upd = ask >>= upd >>= \r -> local (const r) (execScriptBlock thn)
-    case lval of
-      ORef prefix                       -> run (setBranch prefix)
-      OString path                      -> run (setFile path)
-      OPair (OString path, ORef prefix) -> run (setFile path >=> setBranch prefix)
+    case lval of -- TODO: change the type definition and parser for WithDoc such that it takes ONLY a Reference, not an Literal.
+      ORef (GlobalRef ref)              -> run (setBranch ref)
+      ORef (FileRef path [])            -> run (setFile path)
+      ORef (FileRef path ref)           -> run (setFile path >=> setBranch ref)
       _ -> typeError lval "operand to \"with\" statement" $
              "file path (String type), or a Ref type, or a Pair of the two"
 
@@ -421,8 +525,6 @@ showObjType obj = showObj 0 (OType (objType obj))
 isNO_OP :: ObjectExpr -> Bool
 isNO_OP o = case o of
   Literal      _     -> True
-  IntRef       _     -> True
-  LocalRef     _     -> True
   ParenExpr    o     -> isNO_OP (unComment o)
   ArraySubExpr _ _   -> True
   DictExpr     _ _   -> True
@@ -439,33 +541,15 @@ called_nonfunction_object op obj =
 -- type 'Dao.Types.ORef'
 evalObject :: Com ObjectExpr -> ExecScript Object
 evalObject obj = uncom obj >>= \obj -> case obj of
-  Literal       o               -> uncom o
-  IntRef        i               -> uncom i >>= evalIntRef . fromIntegral
-  LocalRef      n               -> do
-    n <- uncom n
-    o <- execLocalLookup n
-    case o of
-      Nothing -> objectError (OString n) ("local variable "++show n++" is undefined in current context")
-      Just o  -> return o
-  GlobalRef     nm              -> do
-    nm <- uncom nm
-    o  <- execGlobalLookup nm
-    case o of
-      Nothing -> derefError nm
-      Just o  -> return o
-  AssignExpr    nm  val         -> do
-    nm  <- uncom nm
-    val <- evalObject val
-    case nm of -- First check if it is a local reference. If so, don't evaluate it.
-      LocalRef  nm -> uncom nm >>= \nm -> assignLocalVar nm val
-      GlobalRef nm -> uncom nm >>= \nm -> defineGlobalVar nm val
-      nm -> do
-        nm <- evalObject (Com nm)
-        case nm of
-          ORef nm -> defineGlobalVar nm val
-          o -> objectError o $
-            "left-hand side of the assignment expression is not a local or global reference"
-    return val
+  Literal         o              -> uncom o
+  AssignExpr    nm  expr        -> do
+    nm   <- evalObject nm
+    -- TODO: Assignment expressions are NOT atomic. This needs to be fixed.
+    -- See 'updateReferenceWith'
+    case nm of
+      ORef (MetaRef _) -> error "cannot assign to a reference-to-a-reference"
+      ORef r           -> updateReferenceWith r (const $ fmap Just (evalObject expr))
+      _                -> objectError nm "left hand side of assignment does not evaluate to a reference value."
   FuncCall      op   args       -> do -- a built-in function call
     op   <- uncom op
     func <- execLocalLookup op
@@ -550,36 +634,9 @@ evalObject obj = uncom obj >>= \obj -> case obj of
   LambdaExpr    com  argv code  -> uncom com >>
     return (OScript (Script{scriptArgv = argv, scriptCode = code}))
 
--- | Used to evaluate an expression like @$1@, retrieves the matched pattern associated with an
--- integer. Specifically, it returns a list of 'Dao.ObjectObject's where each object is an
--- 'Dao.Types.OString' contained at the integer index of the 'Dao.Pattern.matchGaps' of a
--- 'Dao.Pattern.Pattern'.
-evalIntRef :: Int -> ExecScript Object
-evalIntRef i = do
-  match <- fmap currentMatch ask
-  let oi = OInt (fromIntegral i)
-  case match of
-    Nothing -> do
-      objectError oi ("not in pattern match context, cannot evaluate $"++show i)
-    Just ma -> case matchGaps ma of
-      Nothing -> do
-        objectError oi ("currently matching pattern has no variables, cannot evaluate $"++show i)
-      Just ma | i==0 -> return $ OArray $
-        listArray (let (a, b) = bounds ma in (fromIntegral a, fromIntegral b)) $
-          map (OList . map OString) (elems ma)
-      Just ma | inRange (bounds ma) i -> return (OList (map OString (ma!i)))
-      Just ma -> do
-        objectError oi $ concat $
-          [ "pattern match variable $"
-          , show i ++ " is out of range "
-          , show (bounds ma)
-          , " in the current pattern match context"
-          ]
-
 evalArraySubscript :: Com ObjectExpr -> Com ObjectExpr -> ExecScript Object
-evalArraySubscript o i = uncom o >>= \o -> case o of
-  IntRef o -> do
-    o <- uncom o
+evalArraySubscript o i = evalObject o >>= \o -> case o of
+  ORef (IntRef o) -> do
     let fn i =
           if o==0
             then evalIntRef (fromIntegral i)
@@ -598,8 +655,7 @@ evalArraySubscript o i = uncom o >>= \o -> case o of
           OSet  i -> fmap OList (mapM ilkup (S.elems i))
           _ -> indexTypeError "pattern match reference" i
     evalObject i >>= ilkup
-  _ -> do
-    o <- evalObject (Com o)
+  o -> do
     i <- evalObject i
     let ck i x fn = checkIntMapBounds i x >> fn (fromIntegral x)
         ilkup t i fn = case i of
@@ -627,7 +683,7 @@ evalArraySubscript o i = uncom o >>= \o -> case o of
         OString x -> return (fromMaybe ONull (M.lookup x o))
         _ -> mxmsg DictType StringType i
       OTree   o -> mlkup o i $ \i -> case i of
-        ORef    x -> return (fromMaybe ONull (T.lookup x o))
+        ORef (GlobalRef x) -> return (fromMaybe ONull (T.lookup x o))
         _ -> mxmsg TreeType RefType i
       _ -> objectError o $
         "objects of type "++show (objType o)++" cannot be accessed by an index subscript"
@@ -681,9 +737,9 @@ programFromSource checkAttribute script = do
   where
     err lst = ceError $ OList $ map OString $ (sourceFullPath script : lst)
     upd :: (CachedProgram -> DMVar a) -> CachedProgram -> (a -> a) -> ExecScript CachedProgram
-    upd select program fn = execScriptRun $
+    upd select program fn = execRun $
       dModifyMVar xloc (select program) (\a -> return (fn a, program))
-    mkCachedFunc scrp = execScriptRun $ do
+    mkCachedFunc scrp = execRun $ do
       let scrp' = unComment scrp
       dNewMVar xloc "CXRef(guardScript)" $
         HasBoth{sourceScript = scrp', cachedScript = execGuardBlock scrp'}
@@ -721,7 +777,7 @@ programFromSource checkAttribute script = do
       RuleExpr    rule' -> do
         let rule    = unComment rule'
             rulePat = map unComment (unComment (rulePattern rule))
-        cxref <- execScriptRun $
+        cxref <- execRun $
           dNewMVar xloc "CXRef(ruleAction)" $ OnlyAST{sourceScript = ruleAction rule}
         let fol tre pat = T.merge T.union (++) tre (toTree pat [cxref])
         upd ruleSet p (\patternTree -> foldl fol patternTree rulePat)

@@ -67,7 +67,7 @@ type T_time     = UTCTime
 type T_diffTime = NominalDiffTime
 type T_char     = Char
 type T_string   = UStr
-type T_ref      = [Name]
+type T_ref      = Reference
 type T_pair     = (Object, Object)
 type T_list     = [Object]
 type T_set      = S.Set Object
@@ -109,7 +109,32 @@ data TypeID
   | BytesType
   deriving (Eq, Ord, Show, Enum, Typeable)
 
-instance Exception Object
+-- | References used throughout the executable script refer to differer places in the Runtime where
+-- values can be stored. Because each store is accessed slightly differently, it is necessary to
+-- declare, in the abstract syntax tree (AST) representation of the script exactly why types of
+-- variables are being accessed so the appropriate read, write, or update action can be planned.
+data Reference
+  = IntRef     { intRef    :: Int }  -- ^ reference to a read-only pattern-match variable.
+  | LocalRef   { localRef  :: Name } -- ^ reference to a local variable.
+  | QTimeRef   { localRef  :: Name } -- ^ reference to a query-time static variable.
+  | StaticRef  { localRef  :: Name } -- ^ reference to a permanent static variable (stored per rule/function).
+  | GlobalRef  { globalRef :: [Name] } -- ^ reference to in-memory data stored per 'Dao.Types.ExecUnit'.
+  | ProgramRef { progID    :: Name , subRef    :: Name   } -- ^ reference to a portion of a 'Dao.Types.Program'.
+  | FileRef    { fileID    :: UPath, globalRef :: [Name] } -- ^ reference to a variable in a 'Dao.Types.File'
+  | MetaRef    { dereference :: Reference } -- ^ wraps up a 'Reference' as a value that cannot be used as a reference.
+  deriving (Eq, Ord, Show, Typeable)
+
+refSameClass :: Reference -> Reference -> Bool
+refSameClass a b = case (a, b) of
+  (IntRef       _, IntRef        _) -> True
+  (LocalRef     _, LocalRef      _) -> True
+  (QTimeRef     _, QTimeRef      _) -> True
+  (StaticRef    _, StaticRef     _) -> True
+  (GlobalRef    _, GlobalRef     _) -> True
+  (ProgramRef _ _, ProgramRef  _ _) -> True
+  (FileRef    _ _, FileRef     _ _) -> True
+  (MetaRef      _, MetaRef       _) -> True
+  _                                 -> False
 
 -- | The 'Object' type is clumps together all of Haskell's most convenient data structures into a
 -- single data type so they can be used in a non-functional, object-oriented way in the Dao runtime.
@@ -140,6 +165,8 @@ data Object
   | ORule      T_rule
   | OBytes     T_bytes
   deriving (Eq, Ord, Show, Typeable)
+
+instance Exception Object
 
 -- | Since 'Object' requires all of it's types instantiate 'Prelude.Ord', I have defined
 -- 'Prelude.Ord' of 'Data.Complex.Complex' numbers to be the distance from 0, that is, the radius of
@@ -264,9 +291,9 @@ instance Functor Com where
 
 ----------------------------------------------------------------------------------------------------
 
--- | A 'Script' is really more of an executable function, it has a list of input arguments and an
--- executable block of code of type @['ScriptExrp']@. But the word @Function@ has other meanings in
--- Haskell, so the word 'Script' is used instead.
+-- | A 'Script' is really more of an executable function or subroutine, it has a list of input
+-- arguments and an executable block of code of type @['ScriptExrp']@. But the word @Function@ has
+-- other meanings in Haskell, so the word 'Script' is used instead.
 data Script
   = Script
     { scriptArgv :: Com [Com Name]
@@ -292,9 +319,6 @@ data Rule
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
   = Literal      (Com Object)
-  | IntRef       (Com Int)
-  | LocalRef     (Com Name)
-  | GlobalRef    (Com [Name])
   | AssignExpr   (Com ObjectExpr) (Com ObjectExpr)
   | FuncCall     (Com Name)       (Com [Com ObjectExpr])
   | LambdaCall   (Com ())         (Com ObjectExpr)       (Com [Com ObjectExpr])

@@ -7,19 +7,18 @@ BEGIN {
 	${comma.count} = 0;
 }
 rule "$*, $*" {
-	a = join("", $1);
-	b = join("", $2);
-	${comma} = ${comma} + [a];
-	${comma.count} = ${comma.count} + 1;
-	print(${comma.count} + ": " + ${comma} + " -> " + b);
-	if(b) { do(b); } else { print("done"); }
+	a = ${comma.count};
+	if(a != 0) { return null; }
+	${comma.count} = a+1;
+	a = [ "1 = "+join("", $1)
+		, "2 = "+join("", $2)+"\n"
+		];
+	${comma} = ${comma} + a;
 }
 END {
 	a = 1;
 	foreach x in ${comma} {
-		${comma.item} = a;
 		print(a+": "+x);
-		do(x);
 		a = a + 1;
 	}
 }

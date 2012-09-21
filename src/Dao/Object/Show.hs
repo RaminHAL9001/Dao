@@ -74,7 +74,7 @@ showObj idnc o = case o of
   ODiffTime o -> "difftime ("++show o++")"
   OChar     o -> show o
   OString   o -> show o
-  ORef      o -> '$':showRef o
+  ORef      o -> '$':showReference o
   OPair (a,b) -> let i = idnc+1 in "pair ("++showObj i a++", "++showObj i b++")"
   OList     o -> simplelist idnc o
   OSet      o -> "set "++simplelist idnc (S.elems o)
@@ -162,6 +162,17 @@ contBrkRetnThrow :: Int -> Com Bool -> Com ObjectExpr -> Com () -> String -> Str
 contBrkRetnThrow idnc fn obj com cont brk = showCom (\_ fn -> if fn then cont else brk) 0 fn
   ++ " (" ++ showObjectExpr idnc obj ++ ")" ++ showCom (\_ _ -> ";") 0 com
 
+showReference :: Reference -> String
+showReference o = case o of
+  IntRef       o -> '$':show o
+  LocalRef     o -> uchars o
+  QTimeRef     o -> "qtime "++uchars o
+  StaticRef    o -> "static "++uchars o
+  GlobalRef    o -> showRef o
+  ProgramRef p o -> "program("++uchars p++", "++uchars o++")"
+  FileRef    f o -> "file("++uchars f++", "++showRef o++")"
+  MetaRef      o -> '$':showReference o
+
 showObjectExpr :: Int -> Com ObjectExpr -> String
 showObjectExpr idnc obj = showCom loop idnc obj where
   tuple sh idnc args = 
@@ -172,9 +183,6 @@ showObjectExpr idnc obj = showCom loop idnc obj where
   dictExpr idnc objx = intercalate (",\n"++indent idnc) (map (showCom assignExpr (idnc+1)) objx)
   loop idnc obj = case obj of
     Literal      obj            -> showCom showObj idnc obj
-    IntRef       ref            -> showCom (\_ -> ('$':) . show) idnc ref
-    LocalRef     ref            -> showCom (\_ -> uchars) idnc ref
-    GlobalRef    ref            -> showCom (\_ -> showRef) idnc ref
     AssignExpr   ref      obj   ->
       showObjectExpr idnc ref ++ " = " ++ showObjectExpr (idnc+1) obj
     FuncCall     name args      ->

@@ -163,7 +163,7 @@ litDiffTime = do
   case ax of
     a:ax | isAlpha a -> fail "improper difftime token"
     _ -> return (ODiffTime (fromRational (toRational d)))
-litRef      = char '$' >> fmap ORef idenToken
+litRef      = char '$' >> fmap (ORef . GlobalRef) idenToken
 litString   = fmap OString (reusedParser "String")
 
 litBytes = string "Bytes" >> munch whitespace >> char '\'' >> base where
@@ -292,13 +292,13 @@ lambdaCallExpr = do
   return (LambdaCall con names argv)
 
 localRefExpr :: Parser ObjectExpr
-localRefExpr = fmap LocalRef (withComments wordTokenUStr)
+localRefExpr = fmap Literal (fmap (fmap (ORef . LocalRef)) (withComments wordTokenUStr))
 
 intRefExpr :: Parser ObjectExpr
-intRefExpr = fmap IntRef (withComments (char '$' >> reusedParser "match index reference"))
+intRefExpr = fmap Literal (fmap (fmap (ORef . IntRef)) (withComments (char '$' >> reusedParser "match index reference")))
 
 globalRefExpr :: Parser ObjectExpr
-globalRefExpr = fmap GlobalRef (withComments idenToken)
+globalRefExpr = fmap Literal (fmap (fmap (ORef . GlobalRef)) (withComments idenToken))
 
 literalExpr :: Parser ObjectExpr
 literalExpr = fmap Literal (withComments atomicObj)

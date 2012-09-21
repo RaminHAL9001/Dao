@@ -91,7 +91,7 @@ setwiseXOR diff union a b = diff (union a b) b
 derefRefLiteral :: Object -> Check Object
 derefRefLiteral obj = case obj of
   ORef ref -> do
-    obj <- execScriptToCheck (const Nothing) (execGlobalLookup ref)
+    obj <- execScriptToCheck (const Nothing) (readReference ref)
     case obj of
       Nothing  -> return ONull
       Just obj -> return obj
@@ -188,7 +188,7 @@ basicScriptOperations = M.fromList funcList where
           (ODict   a, OPair (OString nm, b)) -> ODict (M.insert nm b a)
           (OIntMap a, OPair (OInt    i , b)) -> OIntMap (I.insert (fromIntegral i) b a)
           (OIntMap a, OPair (OWord   i , b)) -> OIntMap (I.insert (fromIntegral i) b a)
-          (OTree   a, OPair (ORef   ref, b)) -> OTree (T.insert ref b a)
+          (OTree   a, OPair (ORef (GlobalRef ref), b)) -> OTree (T.insert ref b a)
     , func ">>" $ \ [a, b] -> do
         let shift a b = shiftR a (fromIntegral b)
         checkOK $ case (a, b) of
@@ -201,17 +201,21 @@ basicScriptOperations = M.fromList funcList where
           (ODict   a, OString b) -> ODict (M.delete b a)
           (OIntMap a, OInt    b) -> OIntMap (I.delete (fromIntegral b) a)
           (OIntMap a, OWord   b) -> OIntMap (I.delete (fromIntegral b) a)
-          (OTree   a, ORef    b) -> OTree (T.delete b a)
+          (OTree   a, ORef (GlobalRef b)) -> OTree (T.delete b a)
     , func "@"  $ \ [a] -> derefRefLiteral a >>= checkOK
-    , func "."  $ \ [ORef a, ORef b] -> checkOK (ORef (a++b))
+    , func "."  $ \ [ORef a, ORef b] -> case (a, b) of
+        (GlobalRef a, GlobalRef b) -> checkOK (ORef (GlobalRef (a++b)))
+        (GlobalRef a, LocalRef  b) -> checkOK (ORef (GlobalRef (a++[b])))
+        (LocalRef  a, GlobalRef b) -> checkOK (ORef (GlobalRef (a:b)))
+        (LocalRef  a, LocalRef  b) -> checkOK (ORef (GlobalRef [a, b]))
     , func "ref" $ \ ax -> case ax of
-        [ORef a] -> checkOK (ORef a)
-        ax -> fmap (CENext . ORef . concat) $ forM ax $ \o -> case o of
+        [ORef (GlobalRef a)] -> checkOK (ORef (GlobalRef a))
+        ax -> fmap (CENext . ORef . GlobalRef . concat) $ forM ax $ \o -> case o of
           (OString  o) -> return [o]
           (OList   ox) -> return (map (\ (OString o) -> o) ox)
-          (ORef     o) -> return o
+          (ORef (GlobalRef o)) -> return o
     , func "delete" $ \ ax -> do
-        forM_ ax $ \ (ORef o) -> execScriptToCheck id (deleteGlobalVar o >> return OTrue)
+        forM_ ax $ \ (ORef (GlobalRef o)) -> execScriptToCheck id (deleteGlobalVar o >> return OTrue)
         checkOK OTrue
     , func "fst" $ \ [OPair (a, _)] -> checkOK a
     , func "snd" $ \ [OPair (_, a)] -> checkOK a

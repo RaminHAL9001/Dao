@@ -241,7 +241,7 @@ instance Binary Object where
       ODiffTime     a -> x o a
       OChar         a -> x o a
       OString       a -> px o (encodeUStr a)
-      ORef         rx -> px o (putList rx)
+      ORef          a -> x o a
       OPair     (a,b) -> px o (put a >> put b)
       OList         a -> px o (putList a)
       OSet          a -> px o (putList (S.elems a))
@@ -271,7 +271,7 @@ instance Binary Object where
       DiffTimeType -> x ODiffTime
       CharType     -> x OChar
       StringType   -> fmap OString decodeUStr
-      RefType      -> fmap ORef getList
+      RefType      -> x ORef
       PairType     -> get >>= \a -> get >>= \b -> return (OPair (a, b))
       ListType     -> fmap OList getList
       SetType      -> fmap (OSet . S.fromList) getList
@@ -285,6 +285,26 @@ instance Binary Object where
       ScriptType   -> x OScript
       RuleType     -> x ORule
       BytesType    -> x OBytes
+
+instance Binary Reference where
+  put o = case o of
+    LocalRef   o   -> x 0x71 o
+    QTimeRef   o   -> x 0x72 o
+    StaticRef  o   -> x 0x73 o
+    GlobalRef  o   -> putWord8 0x74 >> putList o
+    ProgramRef o r -> x 0x75 o >> put r
+    FileRef    p o -> x 0x76 p >> putList o
+    MetaRef    r   -> putWord8 0x77 >> put r
+    where { x a b = putWord8 a >> encodeUStr b }
+  get = getWord8 >>= \w -> case w of
+    0x71 -> liftM  LocalRef   decodeUStr
+    0x72 -> liftM  QTimeRef   decodeUStr
+    0x73 -> liftM  StaticRef  decodeUStr
+    0x74 -> liftM  GlobalRef  getList
+    0x75 -> liftM2 ProgramRef decodeUStr get
+    0x76 -> liftM2 FileRef    decodeUStr getList
+    0x77 -> liftM  MetaRef    get
+    _ -> error "corrupted pattern in Reference value"
 
 instance Binary UTCTime where
   put t = do
@@ -403,18 +423,15 @@ getComList = getComListWith get
 instance Binary ObjectExpr where
   put o = case o of
     Literal      a     -> x 0x41 $ putCom a
-    IntRef       a     -> x 0x42 $ putCom a
-    LocalRef     a     -> x 0x43 $ putCom a
-    GlobalRef    a     -> x 0x44 $ putComWith putList a
-    AssignExpr   a b   -> x 0x45 $ putCom a >> putCom b
-    FuncCall     a b   -> x 0x46 $ putCom a >> putComList b
-    LambdaCall   a b c -> x 0x47 $ putComWith return a >> putCom b >> putComList c
-    ParenExpr    a     -> x 0x48 $ putCom a
-    Equation     a b c -> x 0x49 $ putCom a >> putCom b >> putCom c
-    DictExpr     a b   -> x 0x4A $ putCom a >> putComList b
-    ArrayExpr    a b c -> x 0x4B $ putComWith return a >> putComList b >> putComList c
-    ArraySubExpr a b   -> x 0x4C $ putCom a >> putCom b
-    LambdaExpr   a b c -> x 0x4D $ putComWith return a >> putComList b >> putComList c
+    AssignExpr   a b   -> x 0x42 $ putCom a
+    FuncCall     a b   -> x 0x43 $ putCom a >> putComList b
+    LambdaCall   a b c -> x 0x44 $ putComWith return a >> putCom b >> putComList c
+    ParenExpr    a     -> x 0x45 $ putCom a
+    Equation     a b c -> x 0x46 $ putCom a >> putCom b >> putCom c
+    DictExpr     a b   -> x 0x47 $ putCom a >> putComList b
+    ArrayExpr    a b c -> x 0x48 $ putComWith return a >> putComList b >> putComList c
+    ArraySubExpr a b   -> x 0x49 $ putCom a >> putCom b
+    LambdaExpr   a b c -> x 0x4A $ putComWith return a >> putComList b >> putComList c
     where
       x i putx  = putWord8 i >> putx
       char3 str = mapM_ (putWord8 . fromIntegral) (take 3 (map ord (uchars str) ++ repeat 0))
@@ -422,18 +439,15 @@ instance Binary ObjectExpr where
     w <- getWord8
     case w of
       0x41 -> liftM  Literal      getCom
-      0x42 -> liftM  IntRef       getCom
-      0x43 -> liftM  LocalRef     getCom
-      0x44 -> liftM  GlobalRef    (getComWith getList)
-      0x45 -> liftM2 AssignExpr   getCom getCom
-      0x46 -> liftM2 FuncCall     getCom getComList
-      0x47 -> liftM3 LambdaCall   (getComWith (return ())) getCom getComList
-      0x48 -> liftM  ParenExpr    getCom
-      0x49 -> liftM3 Equation     getCom getCom getCom
-      0x4A -> liftM2 DictExpr     getCom getComList
-      0x4B -> liftM3 ArrayExpr    (getComWith (return ())) getComList getComList
-      0x4C -> liftM2 ArraySubExpr getCom getCom
-      0x4D -> liftM3 LambdaExpr   (getComWith (return ())) getComList getComList
+      0x42 -> liftM2 AssignExpr   getCom getCom
+      0x43 -> liftM2 FuncCall     getCom getComList
+      0x44 -> liftM3 LambdaCall   (getComWith (return ())) getCom getComList
+      0x45 -> liftM  ParenExpr    getCom
+      0x46 -> liftM3 Equation     getCom getCom getCom
+      0x47 -> liftM2 DictExpr     getCom getComList
+      0x48 -> liftM3 ArrayExpr    (getComWith (return ())) getComList getComList
+      0x49 -> liftM2 ArraySubExpr getCom getCom
+      0x4A -> liftM3 LambdaExpr   (getComWith (return ())) getComList getComList
       _    -> error "could not load, corrupted data in object expression"
       where
         { char3 = do

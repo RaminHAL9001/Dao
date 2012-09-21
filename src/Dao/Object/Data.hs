@@ -115,7 +115,7 @@ instance Objectify [Char] where
   toObject = OString . ustr
   fromObject (OString o) = return (uchars o)
 
-instance Objectify [UStr] where
+instance Objectify Reference where
   toObject = ORef
   fromObject (ORef o) = return o
 
@@ -220,7 +220,7 @@ objToBool obj = case obj of
   ODiffTime  o -> testNull o
   OChar      o -> testNull o
   OString    o -> testNull o
-  ORef       o -> testNull o
+  ORef       o -> True
   OPair (a, b) -> objToBool a && objToBool b
   OList      o -> testNull o
   OSet       o -> testNull o
@@ -238,7 +238,10 @@ objToBool obj = case obj of
 objSize :: Object -> PredicateIO st T_word
 objSize o = return $ case o of
   OString   o -> fromIntegral $ U.length (toUTF8ByteString o)
-  ORef      o -> fromIntegral $ length o
+  ORef      o -> loop 0 o where
+    loop i o = case o of
+      MetaRef o -> loop (i+1) o
+      _         -> i
   OPair     _ -> fromIntegral $ 2
   OList     o -> fromIntegral $ length o
   OSet      o -> fromIntegral $ S.size o

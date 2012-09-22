@@ -22,6 +22,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE Rank2Types #-}
 -- {-# LANGUAGE TemplateHaskell #-}
 
 
@@ -41,6 +42,7 @@ import           Dao.Tree as T
 
 import           Numeric
 
+import           Data.IORef
 import           Data.Typeable
 import           Data.Dynamic
 import           Data.Maybe
@@ -67,6 +69,144 @@ import           Control.Monad.Reader
 
 catchErrorCall :: Run a -> Run (Either ErrorCall a)
 catchErrorCall fn = ReaderT $ \r -> try (runReaderT fn r)
+
+newtype Stack key val = Stack { mapList :: [M.Map key val] }
+
+stackLookup :: Ord key => key -> Stack key val -> Maybe val
+stackLookup key stack = case mapList stack of
+  []        -> Nothing
+  (stack:_) -> M.lookup key stack
+
+stackUpdate :: Ord key => key -> Maybe val -> Stack key val -> Stack key val
+stackUpdate key val stack =
+  Stack
+  { mapList = case mapList stack of
+      []   -> []
+      m:mx -> M.update (const val) key m : mx
+  }
+
+stackPush :: Ord key => Stack key val -> Stack key val
+stackPush stack = stack{ mapList = M.empty : mapList stack }
+
+stackPop :: Ord key => Stack key val -> Stack key val
+stackPop stack = stack{ mapList = let mx = mapList stack in if null mx then [] else tail mx }
+
+----------------------------------------------------------------------------------------------------
+
+-- | In several sections of the Dao System internals, a mutext containing some map or tree object is
+-- used to store values, for example @'Dao.Debug.DMVar' ('Data.Map.Map' a)@. It is a race condition
+-- if multiple threads try to update and read these values without providing some kind of locking.
+-- The 'Resource' type provides this locking mechanism. Threads can read without blocking, threads
+-- must wait their turn to write/update/delete values if they don't have the lock. All exceptions
+-- are handled appropriately. However, caching must be performed by each thread to make sure an
+-- update does not produce two different values across two separate read operations, the 'Resource'
+-- mechanism does *NOT* provide this caching.
+data Resource stor ref =
+  Resource
+  { unlockedItems :: DMVar (stor Object)
+  , lockedItems   :: DMVar (stor (DQSem, Maybe Object))
+  , updateItem    :: forall a . ref -> Maybe a -> stor a -> stor a
+  , lookupItem    :: forall a . ref -> stor a -> Maybe a
+  } -- NOTE: this data type needs to be opaque.
+    -- Do not export the constructor or any of the accessor functions.
+
+type StackResource = Resource (Stack  Name) Name
+type TreeResource  = Resource (T.Tree Name) [Name]
+type MapResource   = Resource (M.Map  Name) Name
+
+newStackResource :: Bugged r => String -> ReaderT r IO StackResource
+newStackResource dbg = do
+  unlocked <- dNewMVar xloc (dbg++"(StackResource.unlockedItems)") (Stack [])
+  locked   <- dNewMVar xloc (dbg++"(StackResource.lockedItems)"  ) (Stack [])
+  return $
+    Resource
+    { unlockedItems = unlocked
+    , lockedItems   = locked
+    , updateItem    = stackUpdate
+    , lookupItem    = stackLookup
+    }
+
+newTreeResource :: Bugged r => String -> ReaderT r IO TreeResource
+newTreeResource dbg = do
+  unlocked <- dNewMVar xloc (dbg++"(TreeResource.unlockedItems)") T.Void
+  locked   <- dNewMVar xloc (dbg++"(TreeResource.lockedItems)"  ) T.Void
+  return $
+    Resource
+    { unlockedItems = unlocked
+    , lockedItems   = locked
+    , updateItem    = \ref obj t -> T.update ref (const obj) t
+    , lookupItem    = T.lookup
+    }
+
+newMapResource :: Bugged r => String -> ReaderT r IO MapResource
+newMapResource dbg = do
+  unlocked <- dNewMVar xloc (dbg++"(MapResource.unlockedItems)") M.empty
+  locked   <- dNewMVar xloc (dbg++"(MapResource.lockedItems)"  ) M.empty
+  return $
+    Resource
+    { unlockedItems = unlocked
+    , lockedItems   = locked
+    , updateItem    = \ref obj m -> M.update (const obj) ref m
+    , lookupItem    = M.lookup
+    }
+
+-- not for export -- modifies the "locked" and "unlocked" DMVars in rapid succession, lets you
+-- modify the contents of both at the same time. This function is used by both updateResource and
+-- readResource.
+modifyResource
+  :: Bugged r
+  => Resource stor ref
+  -> ref
+  -> (stor Object -> stor (DQSem, Maybe Object) -> ReaderT r IO (stor Object, stor (DQSem, Maybe Object), a))
+  -> ReaderT r IO a
+modifyResource rsrc ref fn = dModifyMVar xloc (lockedItems rsrc) $ \locked ->
+  dModifyMVar xloc (unlockedItems rsrc) $ \unlocked ->
+    fmap (\ (unlocked, locked, a) -> (unlocked, (locked, a))) (fn unlocked locked)
+
+-- | This function inserts, modifies, or deletes some 'Dao.Object.Object' stored at a given
+-- 'Dao.Object.Reference' within this 'Resource'. Evaluating this function will locks the
+-- 'Resource', evaluate the updating function, then unlocks the 'Resource', and it will take care of
+-- unlocking if an exception occurs. When the 'Resource' is locked, any other thread that needs to
+-- use 'updateResource' will be made to wait on a 'Dao.Debug.DQSem' until the thread that is
+-- currently evaluating 'updateResource' completes.
+updateResource
+  :: Bugged r
+  => Resource stor ref -- ^ the resource to access
+  -> ref -- ^ the address ('Dao.Object.Reference') of the 'Dao.Object.Object' to update
+  -> (Maybe Object -> ReaderT r IO (Maybe Object)) -- ^ a function for updating the 'Dao.Object.Object'
+  -> ReaderT r IO (Maybe Object)
+updateResource rsrc ref runUpdate = do
+  let modify fn = modifyResource rsrc ref fn
+      release sem = do -- remove the item from the "locked" store, signal the semaphore
+        modify (\unlocked locked -> return (unlocked, updateItem rsrc ref Nothing locked, ()))
+        dSignalQSem xloc sem -- even if no threads are waiting, the semaphore is signaled.
+      errHandler sem (SomeException e) = release sem >> dThrow xloc e
+      updateAndRelease sem item = dHandle xloc (errHandler sem) $ do
+        item <- runUpdate item
+        dModifyMVar xloc (unlockedItems rsrc) $ \unlocked ->
+          return (updateItem rsrc ref item unlocked, item)
+      waitTryAgain sem = dWaitQSem xloc sem >> updateResource rsrc ref runUpdate
+  join $ modify $ \unlocked locked -> case lookupItem rsrc ref locked of
+    Just (sem, _) -> return (unlocked, locked, waitTryAgain sem)
+    Nothing       -> do
+      sem <- dNewQSem xloc "updateResource" 0
+      let item = lookupItem rsrc ref unlocked
+      return (unlocked, updateItem rsrc ref (Just (sem, item)) locked, updateAndRelease sem item)
+
+-- | This function will return an 'Dao.Object.Object' at a given address ('Dao.Object.Reference')
+-- without blocking, and will return values even if they are locked by another thread with the
+-- 'updateResource' function. If a value that is locked is accessed, the value returned is the value
+-- that was set before it was locked. NOTE: this means it is possible that two subsequent reads of
+-- the same 'Dao.Object.Reference' will return two different values if another thread completes
+-- updating that value in between each evaluation of this function. The thread calling
+-- 'readResource' is charged with the responsibility of determining whether or not this will cause
+-- an inconsistent result, and caching of values looked-up by 'readResource' should be done to
+-- guarantee consistency where multiple reads need to return the same value.
+readResource :: Bugged r => Resource stor ref -> ref -> ReaderT r IO (Maybe Object)
+readResource rsrc ref = modifyResource rsrc ref $ \unlocked locked ->
+  (\maybeObj -> return (unlocked, locked, maybeObj)) $ case lookupItem rsrc ref locked of
+    Nothing       -> lookupItem rsrc ref unlocked
+    Just (_, obj) -> obj
 
 ----------------------------------------------------------------------------------------------------
 

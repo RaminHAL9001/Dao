@@ -114,7 +114,7 @@ dMyThreadId = lift myThreadId
 dYield :: ReaderT r IO ()
 dYield = lift yield
 
-dThrowIO :: Exception e => e -> ReaderT r IO ()
+dThrowIO :: Exception e => e -> ReaderT r IO any
 dThrowIO e = lift (throwIO e)
 
 dThreadDelay :: Bugged r => MLoc -> Int -> ReaderT r IO ()

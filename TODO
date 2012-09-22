@@ -37,6 +37,11 @@ UNSOLVED:
 	reference, and hence each read of that reference will have two different values. Caching will
 	solve this problem. Once 'evalObject' completes, the cache is cleared.
 
+* There is a redundant function in Dao.Debug.{ON,OFF}.hs:
+	dThrowIO and dThrow have different API's, dThrow takes an MLoc, dThrowIO does not. However both
+	functions are identical in how they work. You need to fix this so only dThrowIO exists, and that
+	it takes an MLoc and reports to the debugger that it is about to throw.
+
 * More practical programs need to be created now, to really test the system.
 
 * Test the "import" mechanism.

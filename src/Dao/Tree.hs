@@ -273,10 +273,18 @@ instance (Eq p, Ord p) => Functor (Tree p) where { fmap fn t = mapNodes id fn t 
 
 -- | Transform every branch, ignoring leaves.
 mapBranches :: (Eq p, Ord p, Eq q, Ord q) => (p -> q) -> Tree p a -> Tree q a
-mapBranches bnf t = runIdentity (mapNodesM (Identity . bnf) (Identity . id) t)
+mapBranches bnf t = runIdentity (mapNodesM (Identity . bnf) Identity t)
 
 -- | Transform every branch using a monadic function, ignoring leaves.
 mapBranchesM
   :: (Functor m, Monad m, Eq p, Ord p, Eq q, Ord q) => (p -> m q) -> Tree p a -> m (Tree q a)
 mapBranchesM bnf t = mapNodesM bnf return t
+
+-- | Transform every leaf using a monadic function, ignoring branches.
+mapLeavesM :: (Functor m, Monad m, Eq p, Ord p) => (a -> m b) -> Tree p a -> m (Tree p b)
+mapLeavesM lef t = mapNodesM return lef t
+
+-- | Transform every leaf, ignoraing branches.
+mapLeaves :: (Eq p, Ord p) => (a -> b) -> Tree p a -> Tree p b
+mapLeaves lef t = runIdentity (mapNodesM Identity (Identity . lef) t)
 

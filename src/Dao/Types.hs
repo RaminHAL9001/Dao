@@ -311,23 +311,23 @@ data Program m
     , destructScript    :: [[Com ScriptExpr]]
     , requiredBuiltins  :: [Name]
     , programAttributes :: M.Map Name Name
-    , preExecScript     :: [CXRef [Com ScriptExpr] m]
+    , preExecScript     :: [CachedGuardAction]
       -- ^ the "guard scripts" that are executed before every string execution.
-    , postExecScript    :: [CXRef [Com ScriptExpr] m]
+    , postExecScript    :: [CachedGuardAction]
       -- ^ the "guard scripts" that are executed after every string execution.
     , programTokenizer  :: Tokenizer
       -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
       -- module associated with this runtime.
     , programComparator :: CompareToken
       -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
-    , ruleSet           :: DMVar (PatternTree [CXRef (Com [Com ScriptExpr]) m])
+    , ruleSet           :: DMVar (PatternTree [CachedAction])
     , staticData        :: DMVar (T.Tree Name Object)
     }
 
-initProgram :: Name -> Run CachedProgram
-initProgram modName = do
-  pat  <- dNewMVar xloc "Program.ruleSet" T.Void
-  dat  <- dNewMVar xloc "Program.staticData" T.Void
+initProgram :: Name -> PatternTree [CXRef (Com [Com ScriptExpr]) (ExecScript ())] -> T.Tree Name Object -> Run CachedProgram
+initProgram modName initRuleSet initStaticData = do
+  pat <- dNewMVar xloc "Program.ruleSet" initRuleSet
+  dat <- dNewMVar xloc "Program.staticData" initStaticData
   -- pre  <- dNewMVar xloc "Program.preExecScript" []
   -- post <- dNewMVar xloc "Program.postExecScript" []
   return $

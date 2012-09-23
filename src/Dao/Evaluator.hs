@@ -44,6 +44,7 @@ import           Dao.Object.Parsers
 import           Control.Exception
 import           Control.Monad.Trans
 import           Control.Monad.Reader
+import           Control.Monad.State -- for constructing 'Program's from 'SourceCode's.
 
 import           Data.Maybe
 import           Data.Either
@@ -319,8 +320,9 @@ staticDataLookup name = do
   xunit <- ask
   case currentProgram xunit of
     Nothing   -> return Nothing
-    Just prog -> execRun $ dReadMVar xloc (staticData prog) >>=
-      return . (T.lookup (currentBranch xunit ++ name))
+    Just prog -> -- execRun $ readResource (staticData prog) name
+      execRun $ dReadMVar xloc (staticData prog) >>=
+        return . (T.lookup (currentBranch xunit ++ name))
 
 -- | Lookup an object in the 'execHeap' for this 'ExecUnit'.
 lookupExecHeap :: [Name] -> ExecScript (Maybe Object)
@@ -714,6 +716,43 @@ verifyRequirement nm a = return a -- TODO: the rest of this function.
 verifyImport :: Name -> a -> ExecScript a
 verifyImport nm a = return a -- TODO: the rest of this function.
 
+-- | When the 'programFromSource' is scanning through a 'Dao.Types.SourceCode' object, it first
+-- constructs an 'IntermediateProgram', which contains no 'Dao.Debug.DMVar's. Once all the data
+-- structures are in place, a 'Dao.Types.CachedProgram' is constructed from this intermediate
+-- representation.
+data IntermediateProgram
+  = IntermediateProgram
+    { inmpg_programModuleName :: Name
+    , inmpg_programImports    :: [UStr]
+    , inmpg_constructScript   :: [[Com ScriptExpr]]
+    , inmpg_destructScript    :: [[Com ScriptExpr]]
+    , inmpg_requiredBuiltins  :: [Name]
+    , inmpg_programAttributes :: M.Map Name Name
+    , inmpg_preExecScript     :: [CachedExec [Com ScriptExpr] (ExecScript ())]
+    , inmpg_postExecScript    :: [CachedExec [Com ScriptExpr] (ExecScript ())]
+    , inmpg_programTokenizer  :: Tokenizer
+    , inmpg_programComparator :: CompareToken
+    , inmpg_ruleSet           :: PatternTree [CachedExec (Com [Com ScriptExpr]) (ExecScript ())]
+    , inmpg_staticData        :: T.Tree Name Object
+    }
+
+initIntermediateProgram =
+  IntermediateProgram
+  { inmpg_programModuleName = nil
+  , inmpg_programImports    = []
+  , inmpg_constructScript   = []
+  , inmpg_destructScript    = []
+  , inmpg_requiredBuiltins  = []
+  , inmpg_programAttributes = M.empty
+  , inmpg_preExecScript     = []
+  , inmpg_postExecScript    = []
+  , inmpg_programTokenizer  = return . tokens . uchars
+  , inmpg_programComparator = (==)
+  , inmpg_ruleSet           = T.Void
+  , inmpg_staticData        = T.Void
+  }
+
+
 -- | To parse a program, use 'Dao.Object.Parsers.source' and pass the resulting
 -- 'Dao.Object.SourceCode' object to this funtion. It is in the 'ExecScript' monad because it needs
 -- to evaluate 'Dao.ObjectObject's defined in the top-level of the source code, which requires
@@ -726,70 +765,64 @@ verifyImport nm a = return a -- TODO: the rest of this function.
 -- @(\ _ _ _ -> return Nothing)@ which always rejects the program. This predicate will only be
 -- called if the attribute is not allowed by the minimal Dao system.
 programFromSource
-  :: (Name -> UStr -> CachedProgram -> ExecScript (Maybe CachedProgram))
-      -- ^ check attributes written into the script.
+  :: (Name -> UStr -> IntermediateProgram -> ExecScript Bool)
+      -- ^ a callback to check attributes written into the script. If the attribute is bogus, Return
+      -- False to throw a generic error, or throw your own CEError. Otherwise, return True.
   -> SourceCode
       -- ^ the script file to use
   -> ExecScript CachedProgram
 programFromSource checkAttribute script = do
-  program <- execScriptRun (initProgram (unComment (sourceModuleName script)))
-  foldM foldDirectives program (map unComment (unComment (directives script)))
+  interm <- execStateT (mapM_ foldDirectives (unComment (directives script))) initIntermediateProgram
+  rules  <- execRun $ T.mapLeavesM (mapM (dNewMVar xloc "CXRef(ruleAction)")) (inmpg_ruleSet interm)
+  execScriptRun $ initProgram (inmpg_programModuleName interm) rules (inmpg_staticData interm)
   where
-    err lst = ceError $ OList $ map OString $ (sourceFullPath script : lst)
-    upd :: (CachedProgram -> DMVar a) -> CachedProgram -> (a -> a) -> ExecScript CachedProgram
-    upd select program fn = execRun $
-      dModifyMVar xloc (select program) (\a -> return (fn a, program))
-    mkCachedFunc scrp = execRun $ do
-      let scrp' = unComment scrp
-      dNewMVar xloc "CXRef(guardScript)" $
-        HasBoth{sourceScript = scrp', cachedScript = execGuardBlock scrp'}
+    err lst = lift $ ceError $ OList $ map OString $ (sourceFullPath script : lst)
     attrib req nm getRuntime putProg = do
-      runtime <- fmap parentRuntime ask
+      runtime <- lift $ fmap parentRuntime ask
       let item = M.lookup nm (getRuntime runtime)
       case item of
-        Just item -> return (putProg item)
+        Just item -> modify (putProg item)
         Nothing   -> err [req, ustr "attribute", nm, ustr "is not available"]
-    foldDirectives p directive = case directive of
+    mkCachedFunc scrp = HasBoth{sourceScript = scrp, cachedScript = execGuardBlock scrp}
+    foldDirectives directive = case unComment directive of
       Attribute  req nm -> ask >>= \xunit -> do
         let setName = unComment nm
             runtime = parentRuntime xunit
             builtins = M.lookup setName $ functionSets runtime
         case unComment req of
-          req | req==ustr "import"           -> verifyImport setName $
-            p{programImports = programImports p ++ [setName]}
+          req | req==ustr "import"           -> do
+            lift $ verifyImport setName () -- TODO: verifyImport will evaluate to a CEError if the import fails.
+            modify (\p -> p{inmpg_programImports = inmpg_programImports p ++ [setName]})
           req | req==ustr "require"          -> case builtins of
-            Just  _ -> verifyRequirement setName $
-              p{requiredBuiltins = requiredBuiltins p++[setName]}
+            Just  _ -> do
+              lift $ verifyRequirement setName ()
+              modify (\p -> p{inmpg_requiredBuiltins = inmpg_requiredBuiltins p++[setName]})
             Nothing -> err $
               [ustr "requires", setName, ustr "not provided by this version of the Dao system"]
           req | req==ustr "string.tokenizer" ->
-            attrib req setName availableTokenizers (\item -> p{programTokenizer = item})
+            attrib req setName availableTokenizers (\item p -> p{inmpg_programTokenizer = item})
           req | req==ustr "string.compare"   ->
-            attrib req setName availableComparators (\item -> p{programComparator = item})
+            attrib req setName availableComparators (\item p -> p{inmpg_programComparator = item})
           req -> do
-            p <- checkAttribute req setName p
-            case p of
-              Just p  -> return p
-              Nothing -> err [ustr "script contains unknown attribute declaration", req]
+            p  <- get
+            ok <- lift (checkAttribute req setName p)
+            if ok
+              then return ()
+              else err [ustr "script contains unknown attribute declaration", req]
       ToplevelDefine name obj -> do
-        obj <- evalObject obj
-        upd staticData p (\objectTree -> T.insert (unComment name) obj objectTree)
-      RuleExpr    rule' -> do
-        let rule    = unComment rule'
-            rulePat = map unComment (unComment (rulePattern rule))
-        cxref <- execRun $
-          dNewMVar xloc "CXRef(ruleAction)" $ OnlyAST{sourceScript = ruleAction rule}
-        let fol tre pat = T.merge T.union (++) tre (toTree pat [cxref])
-        upd ruleSet p (\patternTree -> foldl fol patternTree rulePat)
-      SetupExpr    scrp -> return $ p{constructScript = constructScript p ++ [unComment scrp]}
-      TakedownExpr scrp -> return $ p{destructScript  = destructScript  p ++ [unComment scrp]}
-      BeginExpr    scrp -> do
-        scrp <- mkCachedFunc scrp
-        return $ p{preExecScript = preExecScript p++[scrp]}
-      EndExpr      scrp -> do
-        scrp <- mkCachedFunc scrp
-        return $ p{postExecScript = postExecScript p++[scrp]}
-      ToplevelFunc _ nm argv code -> do
+        obj <- lift $ evalObject obj
+        -- execRun $ updateResource (inmpg_staticData p) name (return . const (Just obj))
+        modify (\p -> p{inmpg_staticData = T.insert (unComment name) obj (inmpg_staticData p)})
+      RuleExpr    rule' -> modify (\p -> p{inmpg_ruleSet = foldl fol (inmpg_ruleSet p) rulePat}) where
+        rule    = unComment rule'
+        rulePat = map unComment (unComment (rulePattern rule))
+        cxref   = OnlyAST{sourceScript = ruleAction rule}
+        fol tre pat = T.merge T.union (++) tre (toTree pat [cxref])
+      SetupExpr    scrp -> modify (\p -> p{inmpg_constructScript = inmpg_constructScript p ++ [unComment scrp]})
+      TakedownExpr scrp -> modify (\p -> p{inmpg_destructScript  = inmpg_destructScript  p ++ [unComment scrp]})
+      BeginExpr    scrp -> modify (\p -> p{inmpg_preExecScript   = inmpg_preExecScript   p ++ [mkCachedFunc (unComment scrp)]})
+      EndExpr      scrp -> modify (\p -> p{inmpg_postExecScript  = inmpg_postExecScript  p ++ [mkCachedFunc (unComment scrp)]})
+      ToplevelFunc _ nm argv code -> lift $ do
         xunit <- ask
         let func objx = execScriptCall (map (Com . Literal . Com) objx) $
               Script{scriptArgv = argv, scriptCode = code}
@@ -797,5 +830,4 @@ programFromSource checkAttribute script = do
           let name = unComment nm
           func <- dNewMVar xloc ("Program.topLevelFunc("++uchars name++")") func :: Run TopLevelFunc
           dModifyMVar_ xloc (toplevelFuncs xunit) (return . M.insert name func)
-        return p
 

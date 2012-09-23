@@ -316,7 +316,7 @@ initSourceCode script = ask >>= \runtime -> do
   xunit <- initExecUnit runtime
   -- An execution unit is required to load a program, so of course, while a program is being
   -- loaded, the program is not in the program table, and is it's 'currentProgram' is 'Nothing'.
-  cachedProg <- runExecScript (programFromSource (\_ _ _ -> return Nothing) script) xunit
+  cachedProg <- runExecScript (programFromSource (\_ _ _ -> return False) script) xunit
   case cachedProg of
     CEError  obj        -> error ("script err: "++showObj 0 obj)
     CENext   cachedProg -> do

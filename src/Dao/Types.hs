@@ -114,41 +114,38 @@ type StackResource = Resource (Stack  Name) Name
 type TreeResource  = Resource (T.Tree Name) [Name]
 type MapResource   = Resource (M.Map  Name) Name
 
-newStackResource :: Bugged r => String -> [M.Map Name Object] -> ReaderT r IO StackResource
-newStackResource dbg initStack = do
-  unlocked <- dNewMVar xloc (dbg++"(StackResource.unlockedItems)") (Stack initStack)
-  locked   <- dNewMVar xloc (dbg++"(StackResource.lockedItems)"  ) (Stack [])
+newDMVarsForResource
+  :: Bugged r
+  => String
+  -> String
+  -> stor Object
+  -> stor (DQSem, Maybe Object)
+  -> ReaderT r IO (Resource stor ref)
+newDMVarsForResource dbg objname unlocked locked = do
+  unlocked <- dNewMVar xloc (dbg++'(':objname++".unlockedItems)") unlocked
+  locked   <- dNewMVar xloc (dbg++'(':objname++".lockedItems)"  ) locked
   return $
     Resource
     { unlockedItems = unlocked
     , lockedItems   = locked
-    , updateItem    = stackUpdate
-    , lookupItem    = stackLookup
+    , updateItem    = error "Resource.updateItem is not defined"
+    , lookupItem    = error "Resource.lookupItem is not defined"
     }
+
+newStackResource :: Bugged r => String -> [M.Map Name Object] -> ReaderT r IO StackResource
+newStackResource dbg initStack = do
+  resource <- newDMVarsForResource dbg "StackResource" (Stack initStack) (Stack [])
+  return (resource{updateItem = stackUpdate, lookupItem = stackLookup})
 
 newTreeResource :: Bugged r => String -> T.Tree Name Object -> ReaderT r IO TreeResource
 newTreeResource dbg initTree = do
-  unlocked <- dNewMVar xloc (dbg++"(TreeResource.unlockedItems)") initTree
-  locked   <- dNewMVar xloc (dbg++"(TreeResource.lockedItems)"  ) T.Void
-  return $
-    Resource
-    { unlockedItems = unlocked
-    , lockedItems   = locked
-    , updateItem    = \ref obj t -> T.update ref (const obj) t
-    , lookupItem    = T.lookup
-    }
+  resource <- newDMVarsForResource dbg "TreeResource" initTree T.Void
+  return (resource{updateItem = (\ref obj t -> T.update ref (const obj) t), lookupItem = T.lookup})
 
 newMapResource :: Bugged r => String -> M.Map Name Object -> ReaderT r IO MapResource
 newMapResource dbg initMap = do
-  unlocked <- dNewMVar xloc (dbg++"(MapResource.unlockedItems)") initMap
-  locked   <- dNewMVar xloc (dbg++"(MapResource.lockedItems)"  ) M.empty
-  return $
-    Resource
-    { unlockedItems = unlocked
-    , lockedItems   = locked
-    , updateItem    = \ref obj m -> M.update (const obj) ref m
-    , lookupItem    = M.lookup
-    }
+  resource <- newDMVarsForResource dbg "MapResource" initMap M.empty
+  return (resource{updateItem = (\ref obj m -> M.update (const obj) ref m), lookupItem = M.lookup})
 
 -- not for export -- modifies the "locked" and "unlocked" DMVars in rapid succession, lets you
 -- modify the contents of both at the same time. This function is used by both updateResource and
@@ -394,18 +391,20 @@ data Document
     , docModified   :: Word64
     , docInfo       :: UStr
     , docVersion    :: Word64
-    , docRootObject :: DocData
+    , docRootObject :: TreeResource
     }
 
-initDoc :: DocData -> Document
-initDoc docdata =
-  Document
-  { docRefCount = 0
-  , docModified = 0
-  , docInfo = nil
-  , docVersion = document_data_version
-  , docRootObject = docdata
-  }
+initDoc :: Bugged r => T.Tree Name Object -> ReaderT r IO Document
+initDoc docdata = do
+  docdata <- newTreeResource "initDoc" docdata
+  return $
+    Document
+    { docRefCount = 0
+    , docModified = 0
+    , docInfo = nil
+    , docVersion = document_data_version
+    , docRootObject = docdata
+    }
 
 -- | The data stored in a 'Document' is a 'Dao.Tree.Tree' that maps @['UStr']@ addresses to objects.
 -- These addresses are much like filesystem paths, but are lists of 'Name's. Every node in the tree
@@ -572,8 +571,13 @@ data ExecUnit
       -- ^ a pointer to the builtin function table provided by the runtime.
     , toplevelFuncs      :: DMVar (M.Map Name TopLevelFunc)
     , execHeap           :: TreeResource
-    , execStack          :: DMVar [T_dict]
-    , queryTimeHeap      :: DMVar T_tree
+    , execStack          :: StackResource
+    , queryTimeHeap      :: TreeResource
+    , referenceCache     :: DMVar (M.Map Reference Object)
+      -- ^ Caches lookups. A single 'Dao.Object.ObjectExpr' is not evaluated atomically, it may
+      -- require several lookups. If a value at a reference is updated between lookups by a separate
+      -- thread, the same reference may evaluate to two different values. Caching prevents this from
+      -- happening.
     , execOpenFiles      :: DMVar (M.Map UPath File)
     , recursiveInput     :: DMVar [UStr]
     , uncaughtErrors     :: DMVar [Object]

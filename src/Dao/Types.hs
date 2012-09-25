@@ -114,9 +114,9 @@ type StackResource = Resource (Stack  Name) Name
 type TreeResource  = Resource (T.Tree Name) [Name]
 type MapResource   = Resource (M.Map  Name) Name
 
-newStackResource :: Bugged r => String -> ReaderT r IO StackResource
-newStackResource dbg = do
-  unlocked <- dNewMVar xloc (dbg++"(StackResource.unlockedItems)") (Stack [])
+newStackResource :: Bugged r => String -> [M.Map Name Object] -> ReaderT r IO StackResource
+newStackResource dbg initStack = do
+  unlocked <- dNewMVar xloc (dbg++"(StackResource.unlockedItems)") (Stack initStack)
   locked   <- dNewMVar xloc (dbg++"(StackResource.lockedItems)"  ) (Stack [])
   return $
     Resource
@@ -126,9 +126,9 @@ newStackResource dbg = do
     , lookupItem    = stackLookup
     }
 
-newTreeResource :: Bugged r => String -> ReaderT r IO TreeResource
-newTreeResource dbg = do
-  unlocked <- dNewMVar xloc (dbg++"(TreeResource.unlockedItems)") T.Void
+newTreeResource :: Bugged r => String -> T.Tree Name Object -> ReaderT r IO TreeResource
+newTreeResource dbg initTree = do
+  unlocked <- dNewMVar xloc (dbg++"(TreeResource.unlockedItems)") initTree
   locked   <- dNewMVar xloc (dbg++"(TreeResource.lockedItems)"  ) T.Void
   return $
     Resource
@@ -138,9 +138,9 @@ newTreeResource dbg = do
     , lookupItem    = T.lookup
     }
 
-newMapResource :: Bugged r => String -> ReaderT r IO MapResource
-newMapResource dbg = do
-  unlocked <- dNewMVar xloc (dbg++"(MapResource.unlockedItems)") M.empty
+newMapResource :: Bugged r => String -> M.Map Name Object -> ReaderT r IO MapResource
+newMapResource dbg initMap = do
+  unlocked <- dNewMVar xloc (dbg++"(MapResource.unlockedItems)") initMap
   locked   <- dNewMVar xloc (dbg++"(MapResource.lockedItems)"  ) M.empty
   return $
     Resource
@@ -163,6 +163,32 @@ modifyResource rsrc ref fn = dModifyMVar xloc (lockedItems rsrc) $ \locked ->
   dModifyMVar xloc (unlockedItems rsrc) $ \unlocked ->
     fmap (\ (unlocked, locked, a) -> (unlocked, (locked, a))) (fn unlocked locked)
 
+updateResource_
+  :: Bugged r
+  => Resource stor ref -- ^ the resource to access
+  -> ref -- ^ the address ('Dao.Object.Reference') of the 'Dao.Object.Object' to update
+  -> (m Object -> Maybe Object) -- ^ checks the value returned by the above function, if it returns true, the update is executed.
+  -> (Maybe Object -> m Object) -- ^ converts a value returned by the 'lookupItem' function to the type returned by this function.
+  -> (m Object -> ReaderT r IO (m Object)) -- ^ a function for updating the 'Dao.Object.Object'
+  -> ReaderT r IO (m Object)
+updateResource_ rsrc ref toMaybe fromMaybe runUpdate = do
+  let modify fn = modifyResource rsrc ref fn
+      release sem = do -- remove the item from the "locked" store, signal the semaphore
+        modify (\unlocked locked -> return (unlocked, updateItem rsrc ref Nothing locked, ()))
+        dSignalQSem xloc sem -- even if no threads are waiting, the semaphore is signaled.
+      errHandler sem (SomeException e) = release sem >> dThrow xloc e
+      updateAndRelease sem item = dHandle xloc (errHandler sem) $ do
+        item <- runUpdate item
+        dModifyMVar xloc (unlockedItems rsrc) $ \unlocked ->
+          return (updateItem rsrc ref (toMaybe item) unlocked, item)
+      waitTryAgain sem = dWaitQSem xloc sem >> updateResource_ rsrc ref toMaybe fromMaybe runUpdate
+  join $ modify $ \unlocked locked -> case lookupItem rsrc ref locked of
+    Just (sem, _) -> return (unlocked, locked, waitTryAgain sem)
+    Nothing       -> do
+      sem <- dNewQSem xloc "updateResource" 0
+      let item = lookupItem rsrc ref unlocked
+      return (unlocked, updateItem rsrc ref (Just (sem, item)) locked, updateAndRelease sem (fromMaybe item))
+
 -- | This function inserts, modifies, or deletes some 'Dao.Object.Object' stored at a given
 -- 'Dao.Object.Reference' within this 'Resource'. Evaluating this function will locks the
 -- 'Resource', evaluate the updating function, then unlocks the 'Resource', and it will take care of
@@ -175,23 +201,27 @@ updateResource
   -> ref -- ^ the address ('Dao.Object.Reference') of the 'Dao.Object.Object' to update
   -> (Maybe Object -> ReaderT r IO (Maybe Object)) -- ^ a function for updating the 'Dao.Object.Object'
   -> ReaderT r IO (Maybe Object)
-updateResource rsrc ref runUpdate = do
-  let modify fn = modifyResource rsrc ref fn
-      release sem = do -- remove the item from the "locked" store, signal the semaphore
-        modify (\unlocked locked -> return (unlocked, updateItem rsrc ref Nothing locked, ()))
-        dSignalQSem xloc sem -- even if no threads are waiting, the semaphore is signaled.
-      errHandler sem (SomeException e) = release sem >> dThrow xloc e
-      updateAndRelease sem item = dHandle xloc (errHandler sem) $ do
-        item <- runUpdate item
-        dModifyMVar xloc (unlockedItems rsrc) $ \unlocked ->
-          return (updateItem rsrc ref item unlocked, item)
-      waitTryAgain sem = dWaitQSem xloc sem >> updateResource rsrc ref runUpdate
-  join $ modify $ \unlocked locked -> case lookupItem rsrc ref locked of
-    Just (sem, _) -> return (unlocked, locked, waitTryAgain sem)
-    Nothing       -> do
-      sem <- dNewQSem xloc "updateResource" 0
-      let item = lookupItem rsrc ref unlocked
-      return (unlocked, updateItem rsrc ref (Just (sem, item)) locked, updateAndRelease sem item)
+updateResource rsrc ref runUpdate = updateResource_ rsrc ref id id runUpdate
+
+newtype ContErrMaybe a = ContErrMaybe { contErrMaybe :: ContErr (Maybe a) }
+
+-- | Same function as 'updateResource', but is of the 'ExecScript' monad type.
+inEvalDoUpdateResource
+  :: Resource stor ref -- ^ the resource to access
+  -> ref -- ^ the address ('Dao.Object.Reference') of the 'Dao.Object.Object' to update
+  -> (Maybe Object -> ExecScript (Maybe Object)) -- ^ a function for updating the 'Dao.Object.Object'
+  -> ExecScript (Maybe Object)
+inEvalDoUpdateResource rsrc ref runUpdate = do
+  xunit <- ask
+  let toMaybe ce = case contErrMaybe ce of
+        CENext Nothing  -> Nothing
+        CENext (Just a) -> Just a
+        CEReturn a      -> Just a
+        CEError  _      -> Nothing
+      fromMaybe item = ContErrMaybe{contErrMaybe = CENext item}
+  execScriptRun >=> returnContErr $
+    fmap contErrMaybe $ updateResource_ rsrc ref toMaybe fromMaybe $ \item ->
+      fmap ContErrMaybe (runExecScript (runUpdate (toMaybe item)) xunit)
 
 -- | This function will return an 'Dao.Object.Object' at a given address ('Dao.Object.Reference')
 -- without blocking, and will return values even if they are locked by another thread with the
@@ -321,13 +351,13 @@ data Program m
     , programComparator :: CompareToken
       -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
     , ruleSet           :: DMVar (PatternTree [CachedAction])
-    , staticData        :: DMVar (T.Tree Name Object)
+    , staticData        :: TreeResource
     }
 
 initProgram :: Name -> PatternTree [CXRef (Com [Com ScriptExpr]) (ExecScript ())] -> T.Tree Name Object -> Run CachedProgram
 initProgram modName initRuleSet initStaticData = do
   pat <- dNewMVar xloc "Program.ruleSet" initRuleSet
-  dat <- dNewMVar xloc "Program.staticData" initStaticData
+  dat <- newTreeResource "Program.staticData" initStaticData
   -- pre  <- dNewMVar xloc "Program.preExecScript" []
   -- post <- dNewMVar xloc "Program.postExecScript" []
   return $
@@ -541,7 +571,7 @@ data ExecUnit
     , builtinFuncs       :: M.Map Name CheckFunc
       -- ^ a pointer to the builtin function table provided by the runtime.
     , toplevelFuncs      :: DMVar (M.Map Name TopLevelFunc)
-    , execHeap           :: DMVar T_tree
+    , execHeap           :: TreeResource
     , execStack          :: DMVar [T_dict]
     , queryTimeHeap      :: DMVar T_tree
     , execOpenFiles      :: DMVar (M.Map UPath File)

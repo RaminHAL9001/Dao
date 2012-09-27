@@ -30,6 +30,7 @@ module Dao.Files where
 import           Dao.Debug.OFF
 import           Dao.Types
 import           Dao.Evaluator
+import           Dao.Resource
 import           Dao.Combination (runCombination)
 import           Dao.Parser
 import qualified Dao.Tree    as T

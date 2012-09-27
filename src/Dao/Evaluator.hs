@@ -31,6 +31,7 @@ import           Dao.Debug.OFF
 import           Dao.Types
 import qualified Dao.Tree as T
 import           Dao.Pattern
+import           Dao.Resource
 import           Dao.Predicate
 import           Dao.Combination
 import           Dao.Parser
@@ -753,7 +754,6 @@ initIntermediateProgram =
   , inmpg_ruleSet           = T.Void
   , inmpg_globalData        = T.Void
   }
-
 
 -- | To parse a program, use 'Dao.Object.Parsers.source' and pass the resulting
 -- 'Dao.Object.SourceCode' object to this funtion. It is in the 'ExecScript' monad because it needs

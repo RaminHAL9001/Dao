@@ -45,6 +45,7 @@ import           Dao.Debug.OFF
 import           Dao.String
 import           Dao.Pattern
 import           Dao.Object
+import           Dao.Resource
 import qualified Dao.Tree as T
 import           Dao.Types
 import           Dao.Tasks

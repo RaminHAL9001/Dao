@@ -115,31 +115,30 @@ withContErrSt exe fn = ContErrT $ ReaderT $ \r -> do
   b <- runReaderT (runContErrT exe) r
   runReaderT (runContErrT (fn b)) r
 
-ceMonad :: Monad m => (Object -> ContErrT m a) -> (Object -> ContErrT m a) -> ContErrT m a -> ContErrT m a
-ceMonad onReturn onError exe = lift (runContErrT exe) >>= \ce -> case ce of
-  CEReturn a -> onReturn a
-  CEError  a -> onError  a
-  CENext   a -> return   a
+-- | Run an inner function, return its result as a 'ContErr' regardless of the vaue of 'ContErr', in
+-- other words, 'ceReturn' and 'ceError' executed by this function will not collapse the
+-- continuation beyond this point, you will see the result of the continuation returned by the
+-- evaluation of this monadic function. The inner function will evaluate to a 'Dao.Object.Object'
+-- wrapped in a 'CENext', 'CEError', or 'CEReturn'. You can "rethrow" the 'ContErr' evaluated by
+-- this function by calling 'returnContErr'
+catchContErr :: Monad m => ContErrT m a -> ContErrT m (ContErr a)
+catchContErr exe = lift (runContErrT exe)
 
--- | Return statements are break the continuation completely, and NO computation will occur after a
--- return statement. So, in a function that calls two subroutines in succession, calling the first
--- subroutine will evaluate to a CEReturn, and when this value is received by the calling function,
--- the calling function will not evaluate the next subroutine call, it will simply assume the
--- CEReturn value from the first subroutine. However this is not the behavior we expect when calling
--- two subroutines in a row, we expect both to be called, and to explicitly decalre the return value
--- after both calls have completed. To achieve this expected behavior, you need to "catch" the
--- CEReturn value and convert it to a CENext value, while leaving CEError values alone.
+-- | Takes an inner 'ContErrT' monad. If this inner monad evaluates to a 'CEReturn', it will not
+-- collapse the continuation monad, and the outer monad will continue evaluation as if a
+-- @('CENext' 'Dao.Object.Object')@ value were evaluated.
 catchCEReturn :: Monad m => ContErrT m Object -> ContErrT m Object
-catchCEReturn exe = ceMonad return (returnContErr . CEError) exe
+catchCEReturn exe = catchContErr exe >>= \ce -> case ce of
+  CEReturn obj -> return obj
+  _            -> returnContErr ce
 
--- | When an error is thrown, the continuation is collapsed all the way back to the point where this
--- function was used to evaluate the continuation monad.
+-- | Takes an inner 'ContErrT' monad. If this inner monad evaluates to a 'CEError', it will not
+-- collapse the continuation monad, and the outer monad will continue evaluation as if a
+-- @('CENext' 'Dao.Object.Object')@ value were evaluated.
 catchCEError :: Monad m => ContErrT m Object -> ContErrT m Object
-catchCEError exe = ceMonad (returnContErr . CEReturn) return exe
-
--- | Execute a final operation regardless of the resulting 'ContErr' value.
--- ceFinal :: Monad m => ContErrT m a -> ContErrT m ignored -> ContErrT m a
--- ceFinal exe final = ceMonad (\o -> final >> ceReturn o) (\o -> final >> ceError o) exe
+catchCEError exe = catchContErr exe >>= \ce -> case ce of
+  CEError obj -> return obj
+  _           -> returnContErr ce
 
 ----------------------------------------------------------------------------------------------------
 

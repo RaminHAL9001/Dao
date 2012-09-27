@@ -22,7 +22,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE Rank2Types #-}
+-- {-# LANGUAGE Rank2Types #-}
 -- {-# LANGUAGE TemplateHaskell #-}
 
 
@@ -72,6 +72,9 @@ catchErrorCall fn = ReaderT $ \r -> try (runReaderT fn r)
 
 newtype Stack key val = Stack { mapList :: [M.Map key val] }
 
+emptyStack :: Stack key val
+emptyStack = Stack []
+
 stackLookup :: Ord key => key -> Stack key val -> Maybe val
 stackLookup key stack = case mapList stack of
   []        -> Nothing
@@ -85,8 +88,8 @@ stackUpdate key val stack =
       m:mx -> M.update (const val) key m : mx
   }
 
-stackPush :: Ord key => Stack key val -> Stack key val
-stackPush stack = stack{ mapList = M.empty : mapList stack }
+stackPush :: Ord key => M.Map key val -> Stack key val -> Stack key val
+stackPush init stack = stack{ mapList = init : mapList stack }
 
 stackPop :: Ord key => Stack key val -> Stack key val
 stackPop stack = stack{ mapList = let mx = mapList stack in if null mx then [] else tail mx }
@@ -103,16 +106,19 @@ stackPop stack = stack{ mapList = let mx = mapList stack in if null mx then [] e
 -- mechanism does *NOT* provide this caching.
 data Resource stor ref =
   Resource
-  { unlockedItems :: DMVar (stor Object)
-  , lockedItems   :: DMVar (stor (DQSem, Maybe Object))
-  , updateItem    :: forall a . ref -> Maybe a -> stor a -> stor a
-  , lookupItem    :: forall a . ref -> stor a -> Maybe a
+  { unlockedItems  :: DMVar (stor Object)
+  , lockedItems    :: DMVar (stor (DQSem, Maybe Object))
+  , updateUnlocked :: ref -> Maybe Object -> stor Object -> stor Object
+  , lookupUnlocked :: ref -> stor Object -> Maybe Object
+  , updateLocked   :: ref -> Maybe (DQSem, Maybe Object) -> stor (DQSem, Maybe Object) -> stor (DQSem, Maybe Object)
+  , lookupLocked   :: ref -> stor (DQSem, Maybe Object) -> Maybe (DQSem, Maybe Object)
   } -- NOTE: this data type needs to be opaque.
     -- Do not export the constructor or any of the accessor functions.
 
-type StackResource = Resource (Stack  Name) Name
-type TreeResource  = Resource (T.Tree Name) [Name]
-type MapResource   = Resource (M.Map  Name) Name
+type StackResource = Resource (Stack             Name) Name
+type TreeResource  = Resource (T.Tree            Name) [Name]
+type MapResource   = Resource (M.Map             Name) Name
+type DocResource   = Resource (StoredFile T.Tree Name) [Name]
 
 newDMVarsForResource
   :: Bugged r
@@ -126,39 +132,87 @@ newDMVarsForResource dbg objname unlocked locked = do
   locked   <- dNewMVar xloc (dbg++'(':objname++".lockedItems)"  ) locked
   return $
     Resource
-    { unlockedItems = unlocked
-    , lockedItems   = locked
-    , updateItem    = error "Resource.updateItem is not defined"
-    , lookupItem    = error "Resource.lookupItem is not defined"
+    { unlockedItems  = unlocked
+    , lockedItems    = locked
+    , updateUnlocked = error "Resource.updateUnlocked is not defined"
+    , lookupUnlocked = error "Resource.lookupUnlocked is not defined"
+    , updateLocked   = error "Resource.updateLocked is not defined"
+    , lookupLocked   = error "Resource.lookupLocked is not defined"
     }
 
 newStackResource :: Bugged r => String -> [M.Map Name Object] -> ReaderT r IO StackResource
 newStackResource dbg initStack = do
   resource <- newDMVarsForResource dbg "StackResource" (Stack initStack) (Stack [])
-  return (resource{updateItem = stackUpdate, lookupItem = stackLookup})
+  return $
+    resource
+      { updateUnlocked = stackUpdate
+      , lookupUnlocked = stackLookup
+      , updateLocked   = stackUpdate
+      , lookupLocked   = stackLookup
+      }
 
 newTreeResource :: Bugged r => String -> T.Tree Name Object -> ReaderT r IO TreeResource
 newTreeResource dbg initTree = do
   resource <- newDMVarsForResource dbg "TreeResource" initTree T.Void
-  return (resource{updateItem = (\ref obj t -> T.update ref (const obj) t), lookupItem = T.lookup})
+  let updater ref obj t = T.update ref (const obj) t
+  return $
+    resource
+    { updateUnlocked = updater
+    , lookupUnlocked = T.lookup
+    , updateLocked   = updater
+    , lookupLocked   = T.lookup
+    }
 
 newMapResource :: Bugged r => String -> M.Map Name Object -> ReaderT r IO MapResource
 newMapResource dbg initMap = do
   resource <- newDMVarsForResource dbg "MapResource" initMap M.empty
-  return (resource{updateItem = (\ref obj m -> M.update (const obj) ref m), lookupItem = M.lookup})
+  let updater ref obj m = M.update (const obj) ref m
+  return $
+    resource
+    { updateUnlocked = updater
+    , lookupUnlocked = M.lookup
+    , updateLocked   = updater
+    , lookupLocked   = M.lookup
+    }
 
--- not for export -- modifies the "locked" and "unlocked" DMVars in rapid succession, lets you
--- modify the contents of both at the same time. This function is used by both updateResource and
--- readResource.
+-- | Not intended for general use, this function modifies the "locked" and "unlocked" DMVars in
+-- rapid succession, lets you modify the contents of both at the same time. This function is used by
+-- both updateResource and readResource.
 modifyResource
   :: Bugged r
   => Resource stor ref
-  -> ref
   -> (stor Object -> stor (DQSem, Maybe Object) -> ReaderT r IO (stor Object, stor (DQSem, Maybe Object), a))
   -> ReaderT r IO a
-modifyResource rsrc ref fn = dModifyMVar xloc (lockedItems rsrc) $ \locked ->
+modifyResource rsrc fn = dModifyMVar xloc (lockedItems rsrc) $ \locked ->
   dModifyMVar xloc (unlockedItems rsrc) $ \unlocked ->
     fmap (\ (unlocked, locked, a) -> (unlocked, (locked, a))) (fn unlocked locked)
+
+-- | Modify the contents of a 'Dao.Types.Resource' /without/ locking it. Usually, it is better to
+-- use 'Dao.Types.updateResource' or 'Dao.Types.updateResource_', but there are situations where
+-- atomic updates are not necessary and you can skip the overhead necessary to lock a reference, or
+-- you simply need to dump a lot of values directly into the unlocked store in a single, atomic
+-- mutex operation.  Using 'Dao.Types.dModifyUnlocked' will not effect any of the currently locked
+-- items, and once the items have been unlocked, they may overwrite the values that were set by the
+-- evaluation of this function.
+modifyUnlocked
+  :: Bugged r
+  => Resource stor ref
+  -> (stor Object -> ReaderT r IO (stor Object, a))
+  -> ReaderT r IO a
+modifyUnlocked rsrc runUpdate = modifyResource rsrc $ \unlocked locked -> do
+  (unlocked, a) <- runUpdate unlocked
+  return (unlocked, locked, a)
+
+-- | Is to 'Dao.Types.modifyUnlocked', what to 'Dao.Debug.dModifyMVar_' is to
+-- 'Dao.Debug.dModifyMVar'.
+modifyUnlocked_
+  :: Bugged r
+  => Resource stor ref
+  -> (stor Object -> ReaderT r IO (stor Object))
+  -> ReaderT r IO ()
+modifyUnlocked_ rsrc runUpdate = modifyResource rsrc $ \unlocked locked -> do
+  unlocked <- runUpdate unlocked
+  return (unlocked, locked, ())
 
 updateResource_
   :: Bugged r
@@ -169,22 +223,22 @@ updateResource_
   -> (m Object -> ReaderT r IO (m Object)) -- ^ a function for updating the 'Dao.Object.Object'
   -> ReaderT r IO (m Object)
 updateResource_ rsrc ref toMaybe fromMaybe runUpdate = do
-  let modify fn = modifyResource rsrc ref fn
+  let modify fn = modifyResource rsrc fn
       release sem = do -- remove the item from the "locked" store, signal the semaphore
-        modify (\unlocked locked -> return (unlocked, updateItem rsrc ref Nothing locked, ()))
+        modify (\unlocked locked -> return (unlocked, updateLocked rsrc ref Nothing locked, ()))
         dSignalQSem xloc sem -- even if no threads are waiting, the semaphore is signaled.
       errHandler sem (SomeException e) = release sem >> dThrow xloc e
       updateAndRelease sem item = dHandle xloc (errHandler sem) $ do
         item <- runUpdate item
         dModifyMVar xloc (unlockedItems rsrc) $ \unlocked ->
-          return (updateItem rsrc ref (toMaybe item) unlocked, item)
+          return (updateUnlocked rsrc ref (toMaybe item) unlocked, item)
       waitTryAgain sem = dWaitQSem xloc sem >> updateResource_ rsrc ref toMaybe fromMaybe runUpdate
-  join $ modify $ \unlocked locked -> case lookupItem rsrc ref locked of
+  join $ modify $ \unlocked locked -> case lookupLocked rsrc ref locked of
     Just (sem, _) -> return (unlocked, locked, waitTryAgain sem)
     Nothing       -> do
       sem <- dNewQSem xloc "updateResource" 0
-      let item = lookupItem rsrc ref unlocked
-      return (unlocked, updateItem rsrc ref (Just (sem, item)) locked, updateAndRelease sem (fromMaybe item))
+      let item = lookupUnlocked rsrc ref unlocked
+      return (unlocked, updateLocked rsrc ref (Just (sem, item)) locked, updateAndRelease sem (fromMaybe item))
 
 -- | This function inserts, modifies, or deletes some 'Dao.Object.Object' stored at a given
 -- 'Dao.Object.Reference' within this 'Resource'. Evaluating this function will locks the
@@ -230,10 +284,20 @@ inEvalDoUpdateResource rsrc ref runUpdate = do
 -- an inconsistent result, and caching of values looked-up by 'readResource' should be done to
 -- guarantee consistency where multiple reads need to return the same value.
 readResource :: Bugged r => Resource stor ref -> ref -> ReaderT r IO (Maybe Object)
-readResource rsrc ref = modifyResource rsrc ref $ \unlocked locked ->
-  (\maybeObj -> return (unlocked, locked, maybeObj)) $ case lookupItem rsrc ref locked of
-    Nothing       -> lookupItem rsrc ref unlocked
+readResource rsrc ref = modifyResource rsrc $ \unlocked locked ->
+  (\maybeObj -> return (unlocked, locked, maybeObj)) $ case lookupLocked rsrc ref locked of
+    Nothing       -> lookupUnlocked rsrc ref unlocked
     Just (_, obj) -> obj
+
+-- | Operating on a 'StackResource', push an item onto the stack.
+pushStackResource :: Bugged r => StackResource -> ReaderT r IO ()
+pushStackResource rsrc = modifyResource rsrc $ \unlocked locked ->
+  return (stackPush M.empty unlocked, stackPush M.empty locked, ())
+
+-- | Operating on a 'StackResource', push an item onto the stack.
+popStackResource :: Bugged r => StackResource -> Stack Name Object -> ReaderT r IO ()
+popStackResource rsrc stor = modifyResource rsrc $ \unlocked locked ->
+  return (stackPop unlocked, stackPop locked, ())
 
 ----------------------------------------------------------------------------------------------------
 
@@ -384,26 +448,19 @@ document_magic_number = 0x44616F4461746100
 document_data_version :: Word64
 document_data_version = 0
 
--- | A 'Document' is a simple binary protocol for storing 'Objects' to disk.
-data Document
-  = Document
+-- | This data type keeps track of information loaded from a file. It allows you to keep track of
+-- how many times the object has been updated since it was loaded from disk, and how many times the
+-- file has been requested to be opened (so it doesn't have to load the file twice). The real reason
+-- this type exists is to make it easier to fit into the 'Dao.Types.Resource' data type, so I never
+-- really intended this type to be used for anything other than that.
+data StoredFile stor ref dat
+  = NotStored { docRootObject :: stor ref dat }
+  | StoredFile
     { docRefCount   :: Word
     , docModified   :: Word64
     , docInfo       :: UStr
     , docVersion    :: Word64
-    , docRootObject :: TreeResource
-    }
-
-initDoc :: Bugged r => T.Tree Name Object -> ReaderT r IO Document
-initDoc docdata = do
-  docdata <- newTreeResource "initDoc" docdata
-  return $
-    Document
-    { docRefCount = 0
-    , docModified = 0
-    , docInfo = nil
-    , docVersion = document_data_version
-    , docRootObject = docdata
+    , docRootObject :: stor ref dat
     }
 
 -- | The data stored in a 'Document' is a 'Dao.Tree.Tree' that maps @['UStr']@ addresses to objects.
@@ -411,9 +468,17 @@ initDoc docdata = do
 -- can contain one 'Object' and/or another tree containing more objects (like a filesystem
 -- directory).
 type DocData = T.Tree Name Object
+type Document = StoredFile T.Tree Name Object
 
--- | A document stored in an 'Control.Concurrent.DMVar.DMVar'.
-type DocHandle = DMVar Document
+initDoc :: T_tree -> Document
+initDoc docdata =
+  StoredFile
+  { docRefCount = 0
+  , docModified = 0
+  , docInfo = nil
+  , docVersion = document_data_version
+  , docRootObject = docdata
+  }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -571,7 +636,7 @@ data ExecUnit
       -- ^ a pointer to the builtin function table provided by the runtime.
     , toplevelFuncs      :: DMVar (M.Map Name TopLevelFunc)
     , execHeap           :: TreeResource
-    , execStack          :: StackResource
+    , execStack          :: DMVar (Stack Name Object)
     , queryTimeHeap      :: TreeResource
     , referenceCache     :: DMVar (M.Map Reference Object)
       -- ^ Caches lookups. A single 'Dao.Object.ObjectExpr' is not evaluated atomically, it may
@@ -621,7 +686,7 @@ data File
     }
   | IdeaFile -- ^ a file containing a 'Dao.Tree.Tree' of serialized 'Dao.Object.Object's.
     { filePath :: Name
-    , fileData :: DocHandle
+    , fileData :: DocResource
     }
 
 -- | Used to select programs from the 'pathIndex' that are currently available for recursive

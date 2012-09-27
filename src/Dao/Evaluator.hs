@@ -69,10 +69,11 @@ initExecUnit runtime = do
   unctErrs <- dNewMVar xloc "ExecUnit.uncaughtErrors" []
   recurInp <- dNewMVar xloc "ExecUnit.recursiveInput" []
   xheap    <- newTreeResource  "ExecUnit.execHeap" T.Void
-  qheap    <- dNewMVar xloc "ExecUnit.queryTimeHeap" T.Void
-  xstack   <- dNewMVar xloc "ExecUnit.execStack" []
+  qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
+  xstack   <- dNewMVar xloc "ExecUnit.execStack" emptyStack
   toplev   <- dNewMVar xloc "ExecUnit.toplevelFuncs" M.empty
   files    <- dNewMVar xloc "ExecUnit.execOpenFiles" M.empty
+  cache    <- dNewMVar xloc "ExecUnit.referenceCache" M.empty
   return $
     ExecUnit
     { parentRuntime      = runtime
@@ -87,9 +88,10 @@ initExecUnit runtime = do
     , importsTable       = []
     , execAccessRules    = RestrictFiles (Pattern{getPatUnits = [Wildcard], getPatternLength = 1})
     , builtinFuncs       = initialBuiltins runtime
+    , toplevelFuncs      = toplev
     , execHeap           = xheap
     , queryTimeHeap      = qheap
-    , toplevelFuncs      = toplev
+    , referenceCache     = cache
     , execStack          = xstack
     , execOpenFiles      = files
     , recursiveInput     = recurInp
@@ -132,30 +134,6 @@ evalIntRef i = do
           , " in the current pattern match context"
           ]
 
--- | Execute two transformation, "push" and "pop", on the contents of one of the
--- 'Control.Concurrent.DMVar.DMVar's in the 'ExecUnit'.
-mvarContext
-  :: (ExecUnit -> DMVar stack) -- ^ select the 'Control.Concurrent.DMVar.DMVar' from the 'ExecUnit'
-  -> (stack -> IO stack) -- ^ the "push" computation to evaluate before the inner computation.
-  -> (stack -> IO stack) -- ^ the "pop" computation to evaluate after the inner computation.
-  -> ExecScript a -- ^ the "inner" computation, evaluation is @push >> inner >> pop@
-  -> ExecScript a
-mvarContext getMVar push pop fn = do
-  mvar <- fmap getMVar ask
-  execRun (dModifyMVar_ xloc mvar (lift . push))
-  ce <- withContErrSt fn return
-  execRun (dModifyMVar_ xloc mvar (lift . pop))
-  returnContErr ce
-
-modifyXUnit :: (ExecUnit -> DMVar a) -> (a -> IO (a, b)) -> ExecScript b
-modifyXUnit getMVar updMVar = fmap getMVar ask >>= \mvar ->
-  execRun (dModifyMVar xloc mvar (lift . updMVar))
-
--- | Modify an 'Control.Concurrent.DMVar.DMVar' value in the 'ExecUnit' atomically.
-modifyXUnit_ :: (ExecUnit -> DMVar a) -> (a -> IO a) -> ExecScript ()
-modifyXUnit_ getMVar updMVar = fmap getMVar ask >>= \mvar ->
-  execRun (dModifyMVar_ xloc mvar (lift . updMVar))
-
 ----------------------------------------------------------------------------------------------------
 -- $StackOperations
 -- Operating on the local stack.
@@ -166,55 +144,67 @@ stack_underflow = error "INTERNAL ERROR: stack underflow"
 -- used to push a new context for every level of nested if/else/for/try/catch statement. Use
 -- 'pushExecStack' to perform a function call within a function call.
 nestedExecStack :: T_dict -> ExecScript a -> ExecScript a
-nestedExecStack dict fn = mvarContext execStack (return . (dict:)) pop fn where
-  pop ax = case ax of
-    []   -> stack_underflow
-    _:ax -> return ax
+nestedExecStack init exe = do
+  stack <- fmap execStack ask
+  execRun (dModifyMVar_ xloc stack (return . stackPush init))
+  ce <- catchContErr exe
+  execRun (dModifyMVar_ xloc stack (return . stackPop))
+  returnContErr ce
 
 -- | Keep the current 'execStack', but replace it with a new empty stack before executing the given
 -- function. Use 'catchCEReturn' to prevent return calls from halting execution beyond this
 -- function. This is what you should use to perform a Dao function call within a Dao function call.
 pushExecStack :: T_dict -> ExecScript Object -> ExecScript Object
-pushExecStack dict fn = do
-  stackMVar <- execRun (dNewMVar xloc "pushExecStack/ExecUnit.execStack" [dict])
-  local (\xunit -> xunit{execStack = stackMVar}) (catchCEReturn fn)
+pushExecStack dict exe = do
+  stackMVar <- execRun (dNewMVar xloc "pushExecStack/ExecUnit.execStack" (Stack [dict]))
+  ce <- catchContErr (local (\xunit -> xunit{execStack = stackMVar}) exe)
+  case ce of
+    CEReturn obj -> return obj
+    _            -> returnContErr ce
 
 -- | Lookup a value in the 'execStack'.
 execLocalLookup :: Name -> ExecScript (Maybe Object)
 execLocalLookup sym =
-  fmap execStack ask >>= execRun . dReadMVar xloc >>= return . msum . map (M.lookup sym)
+  fmap execStack ask >>= execRun . dReadMVar xloc >>= return . msum . map (M.lookup sym) . mapList
+
+-- | Apply an altering function to the map at the top of the local variable stack.
+updateLocalVar :: Name -> (Maybe Object -> Maybe Object) -> ExecScript (Maybe Object)
+updateLocalVar name alt = ask >>= \xunit -> execRun $
+  dModifyMVar xloc (execStack xunit) $ \ax -> case mapList ax of
+    []   -> stack_underflow
+    a:ax ->
+      let obj = alt (M.lookup name a)
+      in  return (Stack (M.alter (const obj) name a : ax), obj)
 
 -- | Force the local variable to be defined in the top level 'execStack' context, do not over-write
 -- a variable that has already been defined in lower in the context stack.
-assignLocalVar :: Name -> Object -> ExecScript ()
-assignLocalVar name obj = modifyXUnit_ execStack $ \ax -> case ax of
-  []   -> stack_underflow
-  a:ax -> return (M.insert name obj a : ax)
+assignLocalVar :: Name -> Object -> ExecScript (Maybe Object)
+assignLocalVar name obj = updateLocalVar name (const (Just obj))
 
 -- | To define a global variable, first the 'currentDocument' is checked. If it is set, the variable
 -- is assigned to the document at the reference location prepending 'currentBranch' reference.
 -- Otherwise, the variable is assigned to the 'execHeap'.
-modifyGlobalVar :: [Name] -> (Maybe Object -> Maybe Object) -> ExecScript ()
+modifyGlobalVar :: [Name] -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript (Maybe Object)
 modifyGlobalVar name alt = do
   xunit <- ask
   let prefixName = currentBranch xunit ++ name
   case currentDocument xunit of
-    Nothing                     -> void $ inEvalDoUpdateResource (execHeap xunit) name (return . alt)
-    Just file | isIdeaFile file -> execRun $ dModifyMVar_ xloc (fileData file) $ \doc -> return $
-      doc{docRootObject = T.update prefixName alt (docRootObject doc), docModified = 1 + docModified doc}
+    Nothing                     -> inEvalDoUpdateResource (execHeap xunit) name alt
+    Just file | isIdeaFile file -> error "TODO" -- execRun $ dModifyMVar_ xloc (fileData file) $ \doc -> return $
+      -- doc{docRootObject = T.update prefixName alt (docRootObject doc), docModified = 1 + docModified doc}
     Just file                   -> ceError $ OList $ map OString $
       [ustr "current document is not a database", filePath file]
 
 -- | To delete a global variable, the same process of searching for the address of the object is
 -- followed for 'defineGlobalVar', except of course the variable is deleted.
-deleteGlobalVar :: [Name] -> ExecScript ()
-deleteGlobalVar name = modifyGlobalVar name (const Nothing)
+deleteGlobalVar :: [Name] -> ExecScript (Maybe Object)
+deleteGlobalVar name = modifyGlobalVar name (return . const Nothing)
 
 -- | To define a global variable, first the 'currentDocument' is checked. If it is set, the variable
 -- is assigned to the document at the reference location prepending 'currentBranch' reference.
 -- Otherwise, the variable is assigned to the 'execHeap'.
-defineGlobalVar :: [Name] -> Object -> ExecScript ()
-defineGlobalVar name obj = modifyGlobalVar name (const (Just obj))
+defineGlobalVar :: [Name] -> Object -> ExecScript (Maybe Object)
+defineGlobalVar name obj = modifyGlobalVar name (return . const (Just obj))
 
 -- | TODO: needs to cache all lookups to make sure the same reference produces the same value across
 -- all lookups. The cache will be cleared at the start of every run of 'evalObject'.
@@ -240,8 +230,7 @@ readReference ref = case ref of
             , show (bounds ma)
             , " in the current pattern match context"
             ]
-  LocalRef   nm    ->
-    fmap execStack ask >>= execRun . dReadMVar xloc >>= return . msum . map (M.lookup nm)
+  LocalRef   nm    -> execLocalLookup nm
   QTimeRef   nm    -> error "TODO: you haven't yet defined lookup behavior for Query-Time references"
   StaticRef  nm    -> error "TODO: you haven't yet defined lookup behavior for Static references"
   GlobalRef  ref   ->
@@ -270,21 +259,20 @@ updateReferenceWith ref modf = do
           CEError  err -> return (store, CEError err)
   case ref of
     IntRef     i          -> error "cannot assign values to a pattern-matched reference"
-    LocalRef   ref        -> updateRef (execStack xunit) $ \stkx -> case stkx of
-      []       -> error "cannot assign/update local variable, stack is not initialized"
-      stk:stkx -> execUpdate ref (stk:stkx) (M.lookup ref stk) (\upd -> M.alter upd ref stk : stkx)
-    GlobalRef  ref'       -> do
-      let ref = currentBranch xunit ++ ref'
-      case currentDocument xunit of
-        Nothing                     -> inEvalDoUpdateResource (execHeap xunit) ref modf
-        Just file | isIdeaFile file -> updateRef (fileData file) $ \doc ->
-          let tree = docRootObject doc
-          in  execUpdate ref doc (T.lookup ref tree) $ \upd ->
-                doc{ docRootObject = T.update ref upd (docRootObject doc)
-                   , docModified   = 1 + docModified doc
-                   }
-        Just file                   -> ceError $ OList $ map OString $
-          [ustr "current document is not a database", filePath file] 
+    LocalRef   ref        -> execLocalLookup ref >>= \obj -> updateLocalVar ref (const obj)
+    GlobalRef  ref        -> modifyGlobalVar ref modf
+ -- GlobalRef  ref'       -> do
+ --   let ref = currentBranch xunit ++ ref'
+ --   case currentDocument xunit of
+ --     Nothing                     -> inEvalDoUpdateResource (execHeap xunit) ref modf
+ --     Just file | isIdeaFile file -> updateRef (fileData file) $ \doc ->
+ --       let tree = docRootObject doc
+ --       in  execUpdate ref doc (T.lookup ref tree) $ \upd ->
+ --             doc{ docRootObject = T.update ref upd (docRootObject doc)
+ --                , docModified   = 1 + docModified doc
+ --                }
+ --     Just file                   -> ceError $ OList $ map OString $
+ --       [ustr "current document is not a database", filePath file] 
     QTimeRef   ref        -> error "TODO: you haven't yet defined update behavior for Query-Time references"
     StaticRef  ref        -> error "TODO: you haven't yet defined update behavior for Static references"
     ProgramRef progID ref -> error "TODO: you haven't yet defined update behavior for Program references"
@@ -321,9 +309,9 @@ currentDocumentLookup :: [Name] -> ExecScript (Maybe Object)
 currentDocumentLookup name = do
   xunit <- ask
   case currentDocument xunit of
-    Nothing   -> return Nothing
-    Just file -> execRun $ dReadMVar xloc (fileData file) >>=
-      return . (T.lookup (currentBranch xunit ++ name)) . docRootObject
+    Nothing                  -> return Nothing
+    Just file@(IdeaFile _ _) -> execRun $ readResource (fileData file) (currentBranch xunit ++ name)
+    _ -> error ("current document is not an idea file, cannot lookup reference "++showRef name)
 
 -- | Lookup an object, first looking in the current document, then in the 'execHeap'.
 execGlobalLookup :: [Name] -> ExecScript (Maybe Object)
@@ -457,7 +445,7 @@ execScriptExpr script = uncom script >>= \script -> case script of
       o      -> execScriptBlock (if objToBool o then thn else els)
   TryCatch     try  name catch -> do
     ce <- withContErrSt (nestedExecStack M.empty (execScriptBlock try)) return
-    case ce of
+    void $ case ce of
       CEError o -> do
         name <- uncom name
         nestedExecStack (M.singleton name o) (execScriptBlock catch)
@@ -526,11 +514,13 @@ called_nonfunction_object op obj =
     show ScriptType++" or "++show RuleType
 
 -- | Cache a single value so that multiple lookups of the given reference will always return the
--- same value.
+-- same value, even if that value is modified by another thread between separate lookups of the same
+-- reference value during evaluation of an 'Dao.Object.ObjectExpr'.
 cacheReference :: Reference -> Maybe Object -> ExecScript ()
 cacheReference r obj = case obj of
   Nothing  -> return ()
-  Just obj -> error "TODO: create a lookup cache in the ExecUnit."
+  Just obj -> ask >>= \xunit -> execRun $ dModifyMVar_ xloc (referenceCache xunit) $ \cache ->
+    return (M.insert r obj cache)
 
 -- | Evaluate an 'ObjectExpr' to an 'Dao.Types.Object' value, and does not de-reference objects of
 -- type 'Dao.Types.ORef'

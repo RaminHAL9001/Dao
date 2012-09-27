@@ -21,6 +21,7 @@
 
 -- {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 -- | This module takes care of loading Dao 'Dao.Types.SourceCode' and Dao 'Dao.Types.Document's.
 
@@ -64,11 +65,11 @@ putStrErr msg = hSetBuffering stderr LineBuffering >> hPutStrLn stderr msg
 docRefToFilePath :: UPath -> FilePath
 docRefToFilePath = uchars
 
-instance Show Document where
+instance Show (StoredFile T.Tree Name Object) where
   show doc =
     "document("++show (docRefCount doc)++","++show (docModified doc)++") = "++show (docInfo doc)
 
-instance Binary Document where
+instance Binary (StoredFile T.Tree Name Object) where
   put doc = do
     putWord64be document_magic_number
     putWord64be document_data_version
@@ -88,7 +89,7 @@ instance Binary Document where
     ver  <- getWord64be
     root <- get
     seq root $ return $
-      Document
+      StoredFile
       { docRefCount   = 1
       , docModified   = 0
       , docInfo       = info
@@ -96,19 +97,18 @@ instance Binary Document where
       , docRootObject = root
       }
 
--- | This function can be evaluated in a 'Dao.Types.Run' monad. It takes debugging information as
--- well, so pass 'Prelude.Nothing' and an empty string as the first two parameters if you are at a
--- loss. It simply creates a new 'Dao.Types.DocHandle' from a given document (presumably created by
--- 'Data.Binary.decodeFile').
-newDocHandle :: Bugged r => MLoc -> String -> Document -> ReaderT r IO DocHandle
-newDocHandle loc msg doc = dNewMVar loc msg doc
-
--- | This function can be evaluated in a 'Dao.Types.Run' monad. Increments the counter that
--- indicates whether or not the 'Dao.Types.Document' in this 'Dao.Types.DocHandle' has been
--- modified.
-setModified :: Bugged r => DocHandle -> ReaderT r IO ()
-setModified doc = dModifyMVar_ xloc doc $ \doc ->
-  return (doc{docModified = 1 + docModified doc})
+newDocResource :: Bugged r => String -> T_tree -> ReaderT r IO DocResource
+newDocResource dbg docdata = do
+  resource <- newDMVarsForResource dbg "DocResource" (initDoc docdata) (NotStored T.Void)
+  let lookup ref d = T.lookup ref (docRootObject d)
+      updater ref obj d = d{ docRootObject = T.update ref (const obj) (docRootObject d) }
+  return $
+    resource
+    { updateUnlocked = \ref obj d -> (updater ref obj d){ docModified = 1 + docModified d }
+    , updateLocked   = updater
+    , lookupUnlocked = lookup
+    , lookupLocked   = lookup
+    }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -178,7 +178,7 @@ ideaLoadHandle :: UPath -> Handle -> Run File
 ideaLoadHandle upath h = ask >>= \runtime -> do
   lift (hSetBinaryMode h True)
   doc <- lift (fmap (decode$!) (B.hGetContents h) >>= evaluate)
-  docHandle <- newDocHandle xloc ("DocHandle("++show upath++")") $! doc
+  docHandle <- newDocResource ("DocHandle("++show upath++")") $! doc
   let file = IdeaFile{filePath = upath, fileData = docHandle}
   --  dModifyMVar_ xloc (documentList runtime) $ \docTab ->
   --    seq docTab $! seq docHandle $! lift $! return $! M.insert upath docHandle docTab
@@ -218,7 +218,7 @@ execReadFile upath fn = do
   (exists, upath) <- execIO (getFullPath upath)
   -- TODO: check if the path is really OK to load.
   execScriptRun $ do
-    ~altDoc <- dNewMVar xloc ("DocHandle("++show upath++")") (initDoc T.Void)
+    ~altDoc <- newDocResource ("DocHandle("++show upath++")") T.Void
     let file = IdeaFile{filePath = upath, fileData = altDoc}
     dontLoadFileTwice upath $ \upath ->
       if exists
@@ -242,7 +242,7 @@ execWriteDB upath = do
       [ustr "writeDB", upath, ustr "file is not currently loaded"]
     Just file | isIdeaFile file -> do
       let doc = fileData file
-      execRun $ dModifyMVar xloc doc $ \doc -> do
+      execRun $ modifyUnlocked doc $ \doc -> do
         when (docModified doc > 0) $ lift $ do
           h <- openFile (docRefToFilePath upath) WriteMode >>= evaluate
           let encoded = encode doc

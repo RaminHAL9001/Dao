@@ -274,6 +274,13 @@ inEvalDoUpdateResource rsrc ref runUpdate = do
     fmap contErrMaybe $ updateResource_ rsrc ref toMaybe fromMaybe $ \item ->
       fmap ContErrMaybe (runExecScript (runUpdate (toMaybe item)) xunit)
 
+-- | Same function as 'readResource', but is of the 'ExecScript' monad type. Really, this is simply
+-- @\resource reference -> 'Dao.Types.execRun' ('Dao.Types.readResource' resource reference)@
+-- but it is included for the sake of completion -- to have a read-only counterpart to
+-- 'Dao.Types.inEvalDoUpdateResource'.
+inEvalDoReadResource :: Resource stor ref -> ref -> ExecScript (Maybe Object)
+inEvalDoReadResource rsrc ref = execRun (readResource rsrc ref)
+
 -- | This function will return an 'Dao.Object.Object' at a given address ('Dao.Object.Reference')
 -- without blocking, and will return values even if they are locked by another thread with the
 -- 'updateResource' function. If a value that is locked is accessed, the value returned is the value
@@ -412,13 +419,12 @@ data Program m
     , programComparator :: CompareToken
       -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
     , ruleSet           :: DMVar (PatternTree [CachedAction])
-    , staticData        :: TreeResource
     }
 
 initProgram :: Name -> PatternTree [CXRef (Com [Com ScriptExpr]) (ExecScript ())] -> T.Tree Name Object -> Run CachedProgram
 initProgram modName initRuleSet initStaticData = do
   pat <- dNewMVar xloc "Program.ruleSet" initRuleSet
-  dat <- newTreeResource "Program.staticData" initStaticData
+  -- dat <- newTreeResource "Program.staticData" initStaticData
   -- pre  <- dNewMVar xloc "Program.preExecScript" []
   -- post <- dNewMVar xloc "Program.postExecScript" []
   return $
@@ -434,7 +440,6 @@ initProgram modName initRuleSet initStaticData = do
     , programComparator = (==)
     , postExecScript    = []
     , ruleSet           = pat
-    , staticData        = dat
     }
 
 ----------------------------------------------------------------------------------------------------

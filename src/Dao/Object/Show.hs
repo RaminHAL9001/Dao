@@ -166,7 +166,7 @@ showReference :: Reference -> String
 showReference o = case o of
   IntRef       o -> '$':show o
   LocalRef     o -> uchars o
-  QTimeRef     o -> "qtime "++uchars o
+  QTimeRef     o -> "qtime "++showRef o
   StaticRef    o -> "static "++uchars o
   GlobalRef    o -> showRef o
   ProgramRef p o -> "program("++uchars p++", "++uchars o++")"

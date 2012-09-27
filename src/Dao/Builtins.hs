@@ -215,7 +215,7 @@ basicScriptOperations = M.fromList funcList where
           (OList   ox) -> return (map (\ (OString o) -> o) ox)
           (ORef (GlobalRef o)) -> return o
     , func "delete" $ \ ax -> do
-        forM_ ax $ \ (ORef (GlobalRef o)) -> execScriptToCheck id (deleteGlobalVar o >> return OTrue)
+        forM_ ax $ \ (ORef (GlobalRef o)) -> execScriptToCheck id (globalVarDelete o >> return OTrue)
         checkOK OTrue
     , func "fst" $ \ [OPair (a, _)] -> checkOK a
     , func "snd" $ \ [OPair (_, a)] -> checkOK a

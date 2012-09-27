@@ -289,7 +289,7 @@ instance Binary Object where
 instance Binary Reference where
   put o = case o of
     LocalRef   o   -> x 0x71 o
-    QTimeRef   o   -> x 0x72 o
+    QTimeRef   o   -> putWord8 0x72 >> putList o
     StaticRef  o   -> x 0x73 o
     GlobalRef  o   -> putWord8 0x74 >> putList o
     ProgramRef o r -> x 0x75 o >> put r
@@ -298,7 +298,7 @@ instance Binary Reference where
     where { x a b = putWord8 a >> encodeUStr b }
   get = getWord8 >>= \w -> case w of
     0x71 -> liftM  LocalRef   decodeUStr
-    0x72 -> liftM  QTimeRef   decodeUStr
+    0x72 -> liftM  QTimeRef   getList
     0x73 -> liftM  StaticRef  decodeUStr
     0x74 -> liftM  GlobalRef  getList
     0x75 -> liftM2 ProgramRef decodeUStr get

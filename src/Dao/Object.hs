@@ -116,8 +116,8 @@ data TypeID
 data Reference
   = IntRef     { intRef    :: Int }  -- ^ reference to a read-only pattern-match variable.
   | LocalRef   { localRef  :: Name } -- ^ reference to a local variable.
-  | QTimeRef   { localRef  :: Name } -- ^ reference to a query-time static variable.
   | StaticRef  { localRef  :: Name } -- ^ reference to a permanent static variable (stored per rule/function).
+  | QTimeRef   { globalRef :: [Name] } -- ^ reference to a query-time static variable.
   | GlobalRef  { globalRef :: [Name] } -- ^ reference to in-memory data stored per 'Dao.Types.ExecUnit'.
   | ProgramRef { progID    :: Name , subRef    :: Name   } -- ^ reference to a portion of a 'Dao.Types.Program'.
   | FileRef    { fileID    :: UPath, globalRef :: [Name] } -- ^ reference to a variable in a 'Dao.Types.File'

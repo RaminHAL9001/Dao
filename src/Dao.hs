@@ -45,6 +45,7 @@ import           Dao.Debug.OFF
 import           Dao.String
 import           Dao.Pattern
 import           Dao.Object
+import qualified Dao.Tree as T
 import           Dao.Types
 import           Dao.Tasks
 import           Dao.Files
@@ -151,7 +152,8 @@ inputQueryLoop debug runtime getNextInput = do
         return True
   void $ debugIO xloc "inputQueryLoop" debug runtime $ do
     runtimeMVar <- dNewMVar xloc "Runtime" runtime
-    intrcvXUnit <- initExecUnit runtime
+    intrcvGRsrc <- newTreeResource "ExecUnit.globalData{-for interactive evaluation-}" T.Void
+    intrcvXUnit <- initExecUnit runtime intrcvGRsrc
     let runString input = selectModules Nothing [] >>= execInputString True input
         iterateInput = do
           input <- lift (getNextInput runtimeMVar)

@@ -64,11 +64,10 @@ import qualified Data.ByteString.Lazy.UTF8 as U
 
 ----------------------------------------------------------------------------------------------------
 
-initExecUnit :: Runtime -> Run ExecUnit
-initExecUnit runtime = do
+initExecUnit :: Runtime -> TreeResource -> Run ExecUnit
+initExecUnit runtime initGlobalData = do
   unctErrs <- dNewMVar xloc "ExecUnit.uncaughtErrors" []
   recurInp <- dNewMVar xloc "ExecUnit.recursiveInput" []
-  xheap    <- newTreeResource  "ExecUnit.execHeap" T.Void
   qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
   xstack   <- dNewMVar xloc "ExecUnit.execStack" emptyStack
   toplev   <- dNewMVar xloc "ExecUnit.toplevelFuncs" M.empty
@@ -89,7 +88,7 @@ initExecUnit runtime = do
     , execAccessRules    = RestrictFiles (Pattern{getPatUnits = [Wildcard], getPatternLength = 1})
     , builtinFuncs       = initialBuiltins runtime
     , toplevelFuncs      = toplev
-    , execHeap           = xheap
+    , execHeap           = initGlobalData
     , queryTimeHeap      = qheap
     , referenceCache     = cache
     , execStack          = xstack
@@ -736,7 +735,7 @@ data IntermediateProgram
     , inmpg_programTokenizer  :: Tokenizer
     , inmpg_programComparator :: CompareToken
     , inmpg_ruleSet           :: PatternTree [CachedExec (Com [Com ScriptExpr]) (ExecScript ())]
-    , inmpg_staticData        :: T.Tree Name Object
+    , inmpg_globalData        :: T.Tree Name Object
     }
 
 initIntermediateProgram =
@@ -752,7 +751,7 @@ initIntermediateProgram =
   , inmpg_programTokenizer  = return . tokens . uchars
   , inmpg_programComparator = (==)
   , inmpg_ruleSet           = T.Void
-  , inmpg_staticData        = T.Void
+  , inmpg_globalData        = T.Void
   }
 
 
@@ -768,16 +767,18 @@ initIntermediateProgram =
 -- @(\ _ _ _ -> return Nothing)@ which always rejects the program. This predicate will only be
 -- called if the attribute is not allowed by the minimal Dao system.
 programFromSource
-  :: (Name -> UStr -> IntermediateProgram -> ExecScript Bool)
+  :: TreeResource
+  -> (Name -> UStr -> IntermediateProgram -> ExecScript Bool)
       -- ^ a callback to check attributes written into the script. If the attribute is bogus, Return
       -- False to throw a generic error, or throw your own CEError. Otherwise, return True.
   -> SourceCode
       -- ^ the script file to use
   -> ExecScript CachedProgram
-programFromSource checkAttribute script = do
+programFromSource globalResource checkAttribute script = do
   interm <- execStateT (mapM_ foldDirectives (unComment (directives script))) initIntermediateProgram
-  rules  <- execRun $ T.mapLeavesM (mapM (dNewMVar xloc "CXRef(ruleAction)")) (inmpg_ruleSet interm)
-  execScriptRun $ initProgram (inmpg_programModuleName interm) rules (inmpg_staticData interm)
+  rules  <- execRun (T.mapLeavesM (mapM (dNewMVar xloc "CXRef(ruleAction)")) (inmpg_ruleSet interm))
+  inEvalDoModifyUnlocked_ globalResource (return . const (inmpg_globalData interm))
+  execScriptRun $ initProgram (inmpg_programModuleName interm) rules globalResource
   where
     err lst = lift $ ceError $ OList $ map OString $ (sourceFullPath script : lst)
     attrib req nm getRuntime putProg = do
@@ -814,8 +815,7 @@ programFromSource checkAttribute script = do
               else err [ustr "script contains unknown attribute declaration", req]
       ToplevelDefine name obj -> do
         obj <- lift $ evalObject obj
-        -- execRun $ updateResource (inmpg_staticData p) name (return . const (Just obj))
-        modify (\p -> p{inmpg_staticData = T.insert (unComment name) obj (inmpg_staticData p)})
+        modify (\p -> p{inmpg_globalData = T.insert (unComment name) obj (inmpg_globalData p)})
       RuleExpr    rule' -> modify (\p -> p{inmpg_ruleSet = foldl fol (inmpg_ruleSet p) rulePat}) where
         rule    = unComment rule'
         rulePat = map unComment (unComment (rulePattern rule))

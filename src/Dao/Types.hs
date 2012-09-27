@@ -214,6 +214,21 @@ modifyUnlocked_ rsrc runUpdate = modifyResource rsrc $ \unlocked locked -> do
   unlocked <- runUpdate unlocked
   return (unlocked, locked, ())
 
+inEvalDoModifyUnlocked :: Resource stor ref -> (stor Object -> ExecScript (stor Object, a)) -> ExecScript a
+inEvalDoModifyUnlocked rsrc runUpdate = do
+  xunit <- ask
+  ce <- execScriptRun $ modifyUnlocked rsrc $ \stor -> do
+    ce <- runExecScript (runUpdate stor) xunit
+    case ce of
+      CENext (stor, a) -> return (stor, CENext   a  )
+      CEReturn obj     -> return (stor, CEReturn obj)
+      CEError  obj     -> return (stor, CEError  obj)
+  returnContErr ce
+
+inEvalDoModifyUnlocked_ :: Resource stor ref -> (stor Object -> ExecScript (stor Object)) -> ExecScript ()
+inEvalDoModifyUnlocked_ rsrc runUpdate =
+  inEvalDoModifyUnlocked rsrc $ \stor -> runUpdate stor >>= \a -> return (a, ())
+
 updateResource_
   :: Bugged r
   => Resource stor ref -- ^ the resource to access
@@ -419,12 +434,13 @@ data Program m
     , programComparator :: CompareToken
       -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
     , ruleSet           :: DMVar (PatternTree [CachedAction])
+    , globalData        :: TreeResource
     }
 
-initProgram :: Name -> PatternTree [CXRef (Com [Com ScriptExpr]) (ExecScript ())] -> T.Tree Name Object -> Run CachedProgram
-initProgram modName initRuleSet initStaticData = do
+initProgram :: Name -> PatternTree [CXRef (Com [Com ScriptExpr]) (ExecScript ())] -> TreeResource -> Run CachedProgram
+initProgram modName initRuleSet initGlobalData = do
   pat <- dNewMVar xloc "Program.ruleSet" initRuleSet
-  -- dat <- newTreeResource "Program.staticData" initStaticData
+  -- dat <- newTreeResource "Program.globalData" initGlobalData
   -- pre  <- dNewMVar xloc "Program.preExecScript" []
   -- post <- dNewMVar xloc "Program.postExecScript" []
   return $
@@ -440,6 +456,7 @@ initProgram modName initRuleSet initStaticData = do
     , programComparator = (==)
     , postExecScript    = []
     , ruleSet           = pat
+    , globalData        = initGlobalData
     }
 
 ----------------------------------------------------------------------------------------------------
@@ -641,6 +658,7 @@ data ExecUnit
       -- ^ a pointer to the builtin function table provided by the runtime.
     , toplevelFuncs      :: DMVar (M.Map Name TopLevelFunc)
     , execHeap           :: TreeResource
+      -- ^ referes to the same resource as 'Dao.Types.globalData' in 'Dao.Types.Program'
     , execStack          :: DMVar (Stack Name Object)
     , queryTimeHeap      :: TreeResource
     , referenceCache     :: DMVar (M.Map Reference Object)

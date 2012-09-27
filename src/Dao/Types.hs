@@ -474,7 +474,6 @@ instance Bugged ExecUnit where
   askDebug           = fmap (runtimeDebugger . parentRuntime) ask
   setDebug dbg xunit = xunit{parentRuntime = (parentRuntime xunit){runtimeDebugger = dbg}}
 
-
 ----------------------------------------------------------------------------------------------------
 
 -- | Rules dictating which files a particular 'ExecUnit' can load at runtime.

@@ -344,6 +344,8 @@ execInputString guarded instr select = dStack xloc "execInputString" $ ask >>= \
       when guarded $ do
         dMessage xloc "post-string-execution"
         run $ makeTasksForGuardScript postExecScript xunits
+      -- (4) clear the Query-Time variables that were set during this past run in each ExecUnit.
+      mapM_ clearAllQTimeVars xunits
     removeJobFromTable job
 
 -- | In the current thread, and using the given 'Runtime' environment, parse an input string as

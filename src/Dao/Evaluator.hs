@@ -182,8 +182,8 @@ execHeapDelete name obj = execHeapUpdate name (return . const Nothing)
 
 -- | Lookup a reference value in the durrent document, if the current document has been set with a
 -- "with" statement.
-currentDocumentLookup :: [Name] -> ExecScript (Maybe Object)
-currentDocumentLookup name = do
+curDocVarLookup :: [Name] -> ExecScript (Maybe Object)
+curDocVarLookup name = do
   xunit <- ask
   case currentDocument xunit of
     Nothing                  -> return Nothing
@@ -192,14 +192,20 @@ currentDocumentLookup name = do
 
 -- | Update a reference value in the durrent document, if the current document has been set with a
 -- "with" statement.
-currentDocumentUpdate :: [Name] -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript (Maybe Object)
-currentDocumentUpdate name runUpdate = do
+curDocVarUpdate :: [Name] -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript (Maybe Object)
+curDocVarUpdate name runUpdate = do
   xunit <- ask
   case currentDocument xunit of
     Nothing                  -> return Nothing
     Just file@(IdeaFile _ _) ->
       inEvalDoUpdateResource (fileData file) (currentBranch xunit ++ name) runUpdate
     _ -> error ("current document is not an idea file, cannot update reference "++showRef name)
+
+curDocVarDefine :: [Name] -> Object -> ExecScript (Maybe Object)
+curDocVarDefine ref obj = curDocVarUpdate ref (return . const (Just obj))
+
+curDocVarDelete :: [Name] -> Object -> ExecScript (Maybe Object)
+curDocVarDelete ref obj = curDocVarUpdate ref (return . const Nothing)
 
 -- | Lookup a value in the 'execStack'.
 localVarLookup :: Name -> ExecScript (Maybe Object)
@@ -239,11 +245,12 @@ localVarDelete nm = localVarUpdate nm (const Nothing)
 
 -- | Lookup an object, first looking in the current document, then in the 'execHeap'.
 globalVarLookup :: [Name] -> ExecScript (Maybe Object)
-globalVarLookup ref =
-  sequence [currentDocumentLookup ref, execHeapLookup ref] >>= return . msum
+globalVarLookup ref = ask >>= \xunit ->
+  (if isJust (currentDocument xunit) then curDocVarLookup else execHeapLookup) ref
 
 globalVarUpdate :: [Name] -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript (Maybe Object)
-globalVarUpdate = execHeapUpdate
+globalVarUpdate ref runUpdate = ask >>= \xunit ->
+  (if isJust (currentDocument xunit) then curDocVarUpdate else execHeapUpdate) ref runUpdate
 
 -- | To define a global variable, first the 'currentDocument' is checked. If it is set, the variable
 -- is assigned to the document at the reference location prepending 'currentBranch' reference.
@@ -255,6 +262,22 @@ globalVarDefine name obj = globalVarUpdate name (return . const (Just obj))
 -- followed for 'globalVarDefine', except of course the variable is deleted.
 globalVarDelete :: [Name] -> ExecScript (Maybe Object)
 globalVarDelete name = globalVarUpdate name (return . const Nothing)
+
+qTimeVarLookup :: [Name] -> ExecScript (Maybe Object)
+qTimeVarLookup ref = ask >>= \xunit -> inEvalDoReadResource (queryTimeHeap xunit) ref
+
+qTimeVarUpdate :: [Name] -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript (Maybe Object)
+qTimeVarUpdate ref runUpdate = ask >>= \xunit ->
+  inEvalDoUpdateResource (queryTimeHeap xunit) ref runUpdate
+
+qTimeVarDefine :: [Name] -> Object -> ExecScript (Maybe Object)
+qTimeVarDefine name obj = qTimeVarUpdate name (return . const (Just obj))
+
+qTimeVarDelete :: [Name] -> ExecScript (Maybe Object)
+qTimeVarDelete name = qTimeVarUpdate name (return . const Nothing)
+
+clearAllQTimeVars :: ExecUnit -> Run ()
+clearAllQTimeVars xunit = modifyUnlocked_ (queryTimeHeap xunit) (return . const T.Void)
 
 -- | Lookup a reference value in the static object table of the currently loaded program. Static
 -- objects are objects defined in the top level of the program's source code.
@@ -280,11 +303,11 @@ readReference :: Reference -> ExecScript (Maybe Object)
 readReference ref = case ref of
   IntRef     i     -> fmap Just (evalIntRef i)
   LocalRef   nm    -> localVarLookup nm
-  QTimeRef   nm    -> error "TODO: you haven't yet defined lookup behavior for Query-Time references"
-  StaticRef  ref   -> error "TODO: you haven't yet defined lookup behavior for static references"
+  QTimeRef   ref   -> qTimeVarLookup ref
+  StaticRef  ref   -> error "TODO: haven't yet defined lookup behavior for static references"
   GlobalRef  ref   -> globalVarLookup ref
-  ProgramRef p ref -> error "TODO: you haven't yet defined lookup behavior for Program references"
-  FileRef    f ref -> error "TODO: you haven't yet defined lookup behavior for Query-Time references"
+  ProgramRef p ref -> error "TODO: haven't yet defined lookup behavior for Program references"
+  FileRef    f ref -> error "TODO: haven't yet defined lookup behavior for file references"
   MetaRef    _     -> error "cannot dereference a reference-to-a-reference"
 
 -- | All assignment operations are executed with this function. To modify any variable at all, you
@@ -309,32 +332,11 @@ updateReference ref modf = do
     IntRef     i          -> error "cannot assign values to a pattern-matched reference"
     LocalRef   ref        -> localVarLookup ref >>= \obj -> localVarUpdate ref (const obj)
     GlobalRef  ref        -> globalVarUpdate ref modf
- -- GlobalRef  ref'       -> do
- --   let ref = currentBranch xunit ++ ref'
- --   case currentDocument xunit of
- --     Nothing                     -> inEvalDoUpdateResource (execHeap xunit) ref modf
- --     Just file | isIdeaFile file -> updateRef (fileData file) $ \doc ->
- --       let tree = docRootObject doc
- --       in  execUpdate ref doc (T.lookup ref tree) $ \upd ->
- --             doc{ docRootObject = T.update ref upd (docRootObject doc)
- --                , docModified   = 1 + docModified doc
- --                }
- --     Just file                   -> ceError $ OList $ map OString $
- --       [ustr "current document is not a database", filePath file] 
-    QTimeRef   ref        -> error "TODO: you haven't yet defined update behavior for Query-Time references"
+    QTimeRef   ref        -> qTimeVarUpdate ref modf
     StaticRef  ref        -> error "TODO: you haven't yet defined update behavior for Static references"
     ProgramRef progID ref -> error "TODO: you haven't yet defined update behavior for Program references"
     FileRef    path   ref -> error "TODO: you haven't yet defined update behavior for File references"
     MetaRef    _          -> error "cannot assign values to a meta-reference"
-
---  globalVarDefine :: [Name] -> Object -> ExecScript ()
---  globalVarDefine name obj = do
---    xunit <- ask
---    let prefixName = currentBranch xunit ++ name
---    case currentDocument xunit of
---      Nothing  -> modifyXUnit_ execHeap (return . T.insert prefixName obj)
---      Just doc -> execRun $ dModifyMVar_ xloc doc $ \doc -> return $
---        doc{docRootObject = T.insert prefixName obj (docRootObject doc)}
 
 -- | A 'Dao.Types.Check' monad computation to run 'globalVarLookup' and return whether or not a
 -- reference is defined. If the given object is not of data type 'Dao.Object.ORef', then the

@@ -70,9 +70,8 @@ taskProgramName task = case task of
 execTask :: Job -> Task -> Run ()
 execTask job task = dStack xloc "execTask" $ ask >>= \runtime -> do
   let run patn mtch action xunit fn = do
-        exec   <- getCachedExec (nestedExecStack M.empty . fn) action
         result <- dStack xloc "execTask/runExecScript" $ lift $ try $ runIO runtime $
-          runExecScript exec $
+          runExecScript (runExecutable action) $
             xunit{currentPattern = patn, currentMatch = mtch, currentExecJob = Just job}
         let putErr err = dModifyMVar_ xloc (uncaughtErrors xunit) (return . (++[err]))
         case seq result result of
@@ -211,22 +210,23 @@ removeJobFromTable job = ask >>= \runtime ->
 -- one of the patterns associated with the rule. *This is not a bug.* Each pattern may produce a
 -- different set of match results, it is up to the programmer of the rule to handle situations where
 -- the action may execute many times for a single input.
-matchStringToProgram :: UStr -> CachedProgram -> ExecUnit -> Run [(Pattern, Match, CachedAction)]
+matchStringToProgram :: UStr -> Program -> ExecUnit -> Run [(Pattern, Match, Executable)]
 matchStringToProgram instr program xunit = dStack xloc "matchStringToProgram" $ do
   let eq = programComparator program
       match tox = do
         tree <- dReadMVar xloc (ruleSet program)
-        fmap concat $ forM (matchTree eq tree tox) $ \ (patn, mtch, cxrefx) -> do
-          forM cxrefx $ \cxref -> do
-            dModifyMVar_ xloc cxref $ \cx -> return $ case cx of
-              OnlyCache m -> cx
-              HasBoth _ m -> cx
-              OnlyAST ast ->
-                HasBoth
-                { sourceScript = ast
-                , cachedScript = nestedExecStack M.empty (execScriptBlock ast)
-                }
-            return (patn, mtch, cxref)
+        fmap concat $ forM (matchTree eq tree tox) $ \ (patn, mtch, execs) ->
+          return (concatMap (\exec -> [(patn, mtch, exec)]) execs)
+--           forM cxrefx $ \cxref -> do
+--             dModifyMVar_ xloc cxref $ \cx -> return $ case cx of
+--               OnlyCache m -> cx
+--               HasBoth _ m -> cx
+--               OnlyAST ast ->
+--                 HasBoth
+--                 { sourceScript = ast
+--                 , cachedScript = nestedExecStack M.empty (execScriptBlock ast)
+--                 }
+--             return (patn, mtch, cxref)
   tox <- runExecScript (programTokenizer program instr) xunit
   case tox of
     CEError obj -> do
@@ -266,7 +266,7 @@ makeTasksForInput xunits instr = dStack xloc "makeTasksForInput" $ fmap concat $
 -- This function creates the 'Task's that for any given guard script: 'Dao.Types.preExecScript',
 -- 'Dao.Types.postExecScript'.
 makeTasksForGuardScript
-  :: (CachedProgram -> [CXRef [Com ScriptExpr] (ExecScript ())])
+  :: (Program -> [Executable])
   -> [ExecUnit]
   -> Run [Task]
 makeTasksForGuardScript select xunits = dStack xloc "makeTasksForGuardScript" $ lift $ fmap concat $ forM xunits $ \xunit -> do

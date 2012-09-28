@@ -333,7 +333,7 @@ initSourceCode script = ask >>= \runtime -> do
 -- | When a program is loaded, and when it is released, any block of Dao code in the source script
 -- that is denoted with the @SETUP@ or @TAKEDOWN@ rules will be executed. This function performs
 -- that execution in the current thread.
-setupTakedown :: (CachedProgram -> [[Com ScriptExpr]]) -> ExecUnit -> Run ()
+setupTakedown :: (Program -> [[Com ScriptExpr]]) -> ExecUnit -> Run ()
 setupTakedown select xunit = ask >>= \runtime ->
   forM_ (concat $ maybeToList $ currentProgram xunit >>= Just . select) $ \block ->
     runExecScript (execGuardBlock block) xunit >>= lift . evaluate

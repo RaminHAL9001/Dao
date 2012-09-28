@@ -92,13 +92,14 @@ initExecUnit runtime initGlobalData = do
     , execHeap           = initGlobalData
     , queryTimeHeap      = qheap
     , referenceCache     = cache
+    , execStaticVars     = Nothing
     , execStack          = xstack
     , execOpenFiles      = files
     , recursiveInput     = recurInp
     , uncaughtErrors     = unctErrs
     }
 
-setupExecutable :: Com [Com ScriptExpr] -> Run Executable
+setupExecutable :: Bugged r => Com [Com ScriptExpr] -> ReaderT r IO Executable
 setupExecutable scrp = do
   staticRsrc <- newMapResource "Executable.staticVars" M.empty
   return $
@@ -106,6 +107,50 @@ setupExecutable scrp = do
     { staticVars = staticRsrc
     , executable = map (stripComments . unComment) (unComment scrp)
     }
+
+runExecutable :: Executable -> ExecScript ()
+runExecutable exe = localCE (\xunit -> return (xunit{execStaticVars = Just (staticVars exe)})) $ do
+  ce <- catchContErr (execGuardBlock (map Com (executable exe)))
+  returnContErr $ case ce of
+    CEReturn _ -> CENext ()
+    CENext   _ -> CENext ()
+    CEError  e -> CEError e
+
+-- | Execute a 'Dao.Types.Script' with paramters passed as a list of 
+-- @'Dao.Types.Com' 'Dao.Object.ObjectExpr'@. This essentially treats the application of
+-- paramaters to a script as a static abstract syntax tree, and converts this tree to an
+-- @'ExecScript' 'Dao.Types.Object'@ function.
+execScriptCall :: [Com ObjectExpr] -> Script -> ExecScript Object
+execScriptCall args scrp = bindArgsExpr (unComment (scriptArgv scrp)) args $
+  catchCEReturn (execScriptBlock (scriptCode scrp) >> ceReturn ONull)
+
+-- | Execute a 'Dao.Types.Rule' object as though it were a script that could be called. The
+-- parameters passed will be stored into the 'currentMatch' slot durring execution, but all
+-- parameters passed must be of type 'Dao.Types.OString', or an error is thrown.
+execRuleCall :: [Com ObjectExpr] -> Rule -> ExecScript Object
+execRuleCall ax rule = do
+  let typeErr o =
+        typeError o "when calling a Rule object as though it were a function, all parameters" $
+          show ListType++", where each list contains only objects of type "++show StringType
+  ax <- forM ax $ \a -> evalObject a >>= \a -> case a of
+    OList ax -> forM ax $ \a -> case a of
+      OString a -> return a
+      _ -> typeErr a
+    _ -> typeErr a
+  flip local (pushExecStack M.empty (execScriptBlock (ruleAction rule) >> ceReturn ONull)) $
+    \xunit -> xunit{currentMatch = Just (matchFromList [] (length ax) ax)}
+
+-- | Very simply executes every given script item. Does not use catchCEReturn, does not use
+-- 'nestedExecStack'. CAUTION: you cannot assign to local variables unless you call this method
+-- within the 'nestedExecStack' or 'pushExecStack' functions. Failure to do so will cause a stack
+-- underflow exception.
+execScriptBlock :: Com [Com ScriptExpr] -> ExecScript ()
+execScriptBlock block = mapM_ execScriptExpr (unComment block)
+
+-- | A guard script is some Dao script that is executed before or after some event, for example, the
+-- code founf in the @BEGIN@ and @END@ blocks.
+execGuardBlock :: [Com ScriptExpr] -> ExecScript ()
+execGuardBlock block = void (pushExecStack M.empty (execScriptBlock (Com block) >> return ONull))
 
 -- $BasicCombinators
 -- These are the most basic combinators for converting working with the 'ExecUnit' of an
@@ -416,43 +461,6 @@ bindArgsExpr = bindArgs_internal (\n o -> evalObject o >>= \o -> return (unComme
 
 ----------------------------------------------------------------------------------------------------
 
--- | Execute a 'Dao.Types.Script' with paramters passed as a list of 
--- @'Dao.Types.Com' 'Dao.Object.ObjectExpr'@. This essentially treats the application of
--- paramaters to a script as a static abstract syntax tree, and converts this tree to an
--- @'ExecScript' 'Dao.Types.Object'@ function.
-execScriptCall :: [Com ObjectExpr] -> Script -> ExecScript Object
-execScriptCall args scrp = bindArgsExpr (unComment (scriptArgv scrp)) args $
-  catchCEReturn (execScriptBlock (scriptCode scrp) >> ceReturn ONull)
-
--- | Execute a 'Dao.Types.Rule' object as though it were a script that could be called. The
--- parameters passed will be stored into the 'currentMatch' slot durring execution, but all
--- parameters passed must be of type 'Dao.Types.OString', or an error is thrown.
-execRuleCall :: [Com ObjectExpr] -> Rule -> ExecScript Object
-execRuleCall ax rule = do
-  let typeErr o =
-        typeError o "when calling a Rule object as though it were a function, all parameters" $
-          show ListType++", where each list contains only objects of type "++show StringType
-  ax <- forM ax $ \a -> evalObject a >>= \a -> case a of
-    OList ax -> forM ax $ \a -> case a of
-      OString a -> return a
-      _ -> typeErr a
-    _ -> typeErr a
-  flip local (pushExecStack M.empty (execScriptBlock (ruleAction rule) >> ceReturn ONull)) $
-    \xunit -> xunit{currentMatch = Just (matchFromList [] (length ax) ax)}
-
--- | Very simply executes every given script item. Does not use catchCEReturn, does not use
--- 'nestedExecStack'. CAUTION: you cannot assign to local variables unless you call this method
--- within the 'nestedExecStack' or 'pushExecStack' functions. Failure to do so will cause a stack
--- underflow exception. It is better to use the 'execGuardBlock' function when evaluating a lone
--- block of code with no context.
-execScriptBlock :: Com [Com ScriptExpr] -> ExecScript ()
-execScriptBlock block = mapM_ execScriptExpr (unComment block)
-
--- | A guard script is some Dao script that is executed before or after some event, for example, the
--- code founf in the @BEGIN@ and @END@ blocks.
-execGuardBlock :: [Com ScriptExpr] -> ExecScript ()
-execGuardBlock block = void (pushExecStack M.empty (execScriptBlock (Com block) >> return ONull))
-
 -- | Convert a single 'ScriptExpr' into a function of value @'ExecScript' 'Dao.Types.Object'@.
 execScriptExpr :: Com ScriptExpr -> ExecScript ()
 execScriptExpr script = case unComment script of
@@ -722,15 +730,15 @@ data IntermediateProgram
   = IntermediateProgram
     { inmpg_programModuleName :: Name
     , inmpg_programImports    :: [UStr]
-    , inmpg_constructScript   :: [[Com ScriptExpr]]
-    , inmpg_destructScript    :: [[Com ScriptExpr]]
+    , inmpg_constructScript   :: [Com [Com ScriptExpr]]
+    , inmpg_destructScript    :: [Com [Com ScriptExpr]]
     , inmpg_requiredBuiltins  :: [Name]
     , inmpg_programAttributes :: M.Map Name Name
-    , inmpg_preExecScript     :: [CachedExec [Com ScriptExpr] (ExecScript ())]
-    , inmpg_postExecScript    :: [CachedExec [Com ScriptExpr] (ExecScript ())]
+    , inmpg_preExecScript     :: [Com [Com ScriptExpr]]
+    , inmpg_postExecScript    :: [Com [Com ScriptExpr]]
     , inmpg_programTokenizer  :: Tokenizer
     , inmpg_programComparator :: CompareToken
-    , inmpg_ruleSet           :: PatternTree [CachedExec (Com [Com ScriptExpr]) (ExecScript ())]
+    , inmpg_ruleSet           :: PatternTree [Com [Com ScriptExpr]]
     , inmpg_globalData        :: T.Tree Name Object
     }
 
@@ -768,10 +776,10 @@ programFromSource
       -- False to throw a generic error, or throw your own CEError. Otherwise, return True.
   -> SourceCode
       -- ^ the script file to use
-  -> ExecScript CachedProgram
+  -> ExecScript Program
 programFromSource globalResource checkAttribute script = do
   interm <- execStateT (mapM_ foldDirectives (unComment (directives script))) initIntermediateProgram
-  rules  <- execRun (T.mapLeavesM (mapM (dNewMVar xloc "CXRef(ruleAction)")) (inmpg_ruleSet interm))
+  rules  <- execRun (T.mapLeavesM (mapM setupExecutable) (inmpg_ruleSet interm))
   inEvalDoModifyUnlocked_ globalResource (return . const (inmpg_globalData interm))
   execScriptRun $ initProgram (inmpg_programModuleName interm) rules globalResource
   where
@@ -782,7 +790,6 @@ programFromSource globalResource checkAttribute script = do
       case item of
         Just item -> modify (putProg item)
         Nothing   -> err [req, ustr "attribute", nm, ustr "is not available"]
-    mkCachedFunc scrp = HasBoth{sourceScript = scrp, cachedScript = execGuardBlock scrp}
     foldDirectives directive = case unComment directive of
       Attribute  req nm -> ask >>= \xunit -> do
         let setName = unComment nm
@@ -814,12 +821,11 @@ programFromSource globalResource checkAttribute script = do
       RuleExpr    rule' -> modify (\p -> p{inmpg_ruleSet = foldl fol (inmpg_ruleSet p) rulePat}) where
         rule    = unComment rule'
         rulePat = map unComment (unComment (rulePattern rule))
-        cxref   = OnlyAST{sourceScript = ruleAction rule}
-        fol tre pat = T.merge T.union (++) tre (toTree pat [cxref])
-      SetupExpr    scrp -> modify (\p -> p{inmpg_constructScript = inmpg_constructScript p ++ [unComment scrp]})
-      TakedownExpr scrp -> modify (\p -> p{inmpg_destructScript  = inmpg_destructScript  p ++ [unComment scrp]})
-      BeginExpr    scrp -> modify (\p -> p{inmpg_preExecScript   = inmpg_preExecScript   p ++ [mkCachedFunc (unComment scrp)]})
-      EndExpr      scrp -> modify (\p -> p{inmpg_postExecScript  = inmpg_postExecScript  p ++ [mkCachedFunc (unComment scrp)]})
+        fol tre pat = T.merge T.union (++) tre (toTree pat [ruleAction rule])
+      SetupExpr    scrp -> modify (\p -> p{inmpg_constructScript = inmpg_constructScript p ++ [scrp]})
+      TakedownExpr scrp -> modify (\p -> p{inmpg_destructScript  = inmpg_destructScript  p ++ [scrp]})
+      BeginExpr    scrp -> modify (\p -> p{inmpg_preExecScript   = inmpg_preExecScript   p ++ [scrp]})
+      EndExpr      scrp -> modify (\p -> p{inmpg_postExecScript  = inmpg_postExecScript  p ++ [scrp]})
       ToplevelFunc _ nm argv code -> lift $ do
         xunit <- ask
         let func objx = execScriptCall (map (Com . Literal . Com) objx) $

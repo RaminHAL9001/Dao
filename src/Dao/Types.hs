@@ -136,68 +136,69 @@ data SourceCode
   deriving (Eq, Ord, Show, Typeable)
 
 data Executable = Executable{ staticVars :: MapResource, executable :: [ScriptExpr] }
+data Subroutine = Subroutine{ argsList   :: [Name],   getScriptExpr :: Executable }
 
 -- | When a script is executed, it's abstract syntax tree is converted into a monadic computation.
 -- When this happens, the Haskell runtime system evaluates many "thunks" in memory to collapse the
 -- computation to a simpler form. To improve efficiency, these thunks can be saved by keeping a
 -- reference to the monadic computation, preventing it from being garbage coellcted and allowing it
 -- to execute faster the next time.
-data CachedExec ast m
-  = OnlyAST   { sourceScript :: ast }
-  | OnlyCache { cachedScript :: m }
-  | HasBoth
-    { sourceScript :: ast
-    , cachedScript :: m
-    }
+-- data CachedExec ast m
+--   = OnlyAST   { sourceScript :: ast }
+--   | OnlyCache { cachedScript :: m }
+--   | HasBoth
+--     { sourceScript :: ast
+--     , cachedScript :: m
+--     }
 
 -- | A 'CachedExec' stored in an 'Dao.Debug.DMVar'.
-type CXRef ast m = DMVar (CachedExec ast m)
+-- type CXRef ast m = DMVar (CachedExec ast m)
 
 -- | Similar to 'Data.Maybe.fromMaybe', retrieve the 'cachedScript' item, or a given default.
-getCached ::  m -> CachedExec ast m -> m
-getCached deflt ce = case ce of
-  OnlyAST   _   -> deflt
-  OnlyCache   m -> m
-  HasBoth   _ m -> m
+-- getCached ::  m -> CachedExec ast m -> m
+-- getCached deflt ce = case ce of
+--   OnlyAST   _   -> deflt
+--   OnlyCache   m -> m
+--   HasBoth   _ m -> m
 
 -- | Similar to 'Data.Maybe.fromMaybe', retrieve the 'sourceScript' item, or a given default.
-getSource ::  ast -> CachedExec ast m -> ast
-getSource deflt ce = case ce of
-  OnlyAST   ast   -> ast
-  OnlyCache     _ -> deflt
-  HasBoth   ast _ -> ast
+-- getSource ::  ast -> CachedExec ast m -> ast
+-- getSource deflt ce = case ce of
+--   OnlyAST   ast   -> ast
+--   OnlyCache     _ -> deflt
+--   HasBoth   ast _ -> ast
 
-modifyCXRef :: MLoc -> CXRef ast m -> (CachedExec ast m -> Run (CachedExec ast m, a)) -> Run a
-modifyCXRef loc cxref = dModifyMVar loc cxref 
+-- modifyCXRef :: MLoc -> CXRef ast m -> (CachedExec ast m -> Run (CachedExec ast m, a)) -> Run a
+-- modifyCXRef loc cxref = dModifyMVar loc cxref 
 
-modifyCXRef_ :: MLoc -> CXRef ast m -> (CachedExec ast m -> Run (CachedExec ast m)) -> Run ()
-modifyCXRef_ loc cxref = dModifyMVar_ loc cxref
+-- modifyCXRef_ :: MLoc -> CXRef ast m -> (CachedExec ast m -> Run (CachedExec ast m)) -> Run ()
+-- modifyCXRef_ loc cxref = dModifyMVar_ loc cxref
 
 -- | Cache the execution of the abstract syntax tree.
-cacheExec :: (ast -> m) -> CachedExec ast m -> CachedExec ast m
-cacheExec conv ca = case ca of
-  OnlyAST ast -> HasBoth{sourceScript = ast, cachedScript = conv ast}
-  ca          -> ca
+-- cacheExec :: (ast -> m) -> CachedExec ast m -> CachedExec ast m
+-- cacheExec conv ca = case ca of
+--   OnlyAST ast -> HasBoth{sourceScript = ast, cachedScript = conv ast}
+--   ca          -> ca
 
 -- | Cache execution of the abstract syntax tree inside of the 'Control.Concurrent.DMVar.DMVar' while
 -- returning the cached method.
-getCachedExec :: (ast -> m) -> CXRef ast m -> Run m
-getCachedExec conv mvar = dModifyMVar xloc mvar $ \cc ->
-  let cc' = cacheExec conv cc in return (cc', getCached undefined cc')
+-- getCachedExec :: (ast -> m) -> CXRef ast m -> Run m
+-- getCachedExec conv mvar = dModifyMVar xloc mvar $ \cc ->
+--   let cc' = cacheExec conv cc in return (cc', getCached undefined cc')
 
 -- | De-reference (and hence free) the cached computation, unless the value of this 'CachedExec' is
 -- 'OnlyCache', in which case no change is made.
-freeCached :: CachedExec ast m -> CachedExec ast m
-freeCached ca = case ca of
-  HasBoth ast _ -> OnlyAST{sourceScript = ast}
-  ca            -> ca
+-- freeCached :: CachedExec ast m -> CachedExec ast m
+-- freeCached ca = case ca of
+--   HasBoth ast _ -> OnlyAST{sourceScript = ast}
+--   ca            -> ca
 
 -- | De-reference (and hence free) the abstract syntax tree, unless the value of this 'CachedExec'
 -- is 'OnlyAST', in which case no change is made.
-freeAST :: CachedExec ast m -> CachedExec ast m
-freeAST ca = case ca of
-  HasBoth _ m -> OnlyCache{cachedScript = m}
-  ca          -> ca
+-- freeAST :: CachedExec ast m -> CachedExec ast m
+-- freeAST ca = case ca of
+--   HasBoth _ m -> OnlyCache{cachedScript = m}
+--   ca          -> ca
 
 -- | A 'Directive' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
@@ -217,7 +218,7 @@ type TopLevelFunc = DMVar ([Object] -> ExecScript Object)
 -- | This is the executable form of the 'SourceCode', which cannot be serialized, but is structured
 -- in such a way as to make execution more efficient. It caches computed 'ScriptExpr'ns as some type
 -- of monadic computation 'm'.
-data Program m
+data Program
   = Program
     { programModuleName :: Name
     , programImports    :: [UStr]
@@ -225,20 +226,20 @@ data Program m
     , destructScript    :: [[Com ScriptExpr]]
     , requiredBuiltins  :: [Name]
     , programAttributes :: M.Map Name Name
-    , preExecScript     :: [CachedGuardAction]
+    , preExecScript     :: [Executable]
       -- ^ the "guard scripts" that are executed before every string execution.
-    , postExecScript    :: [CachedGuardAction]
+    , postExecScript    :: [Executable]
       -- ^ the "guard scripts" that are executed after every string execution.
     , programTokenizer  :: Tokenizer
       -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
       -- module associated with this runtime.
     , programComparator :: CompareToken
       -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
-    , ruleSet           :: DMVar (PatternTree [CachedAction])
+    , ruleSet           :: DMVar (PatternTree [Executable])
     , globalData        :: TreeResource
     }
 
-initProgram :: Name -> PatternTree [CXRef (Com [Com ScriptExpr]) (ExecScript ())] -> TreeResource -> Run CachedProgram
+initProgram :: Name -> PatternTree [Executable] -> TreeResource -> Run Program
 initProgram modName initRuleSet initGlobalData = do
   pat <- dNewMVar xloc "Program.ruleSet" initRuleSet
   -- dat <- newTreeResource "Program.globalData" initGlobalData
@@ -313,9 +314,9 @@ initDoc docdata =
 -- 'ExecUnit' properties.
 type ProgramTable  = DMVar (M.Map Name (DMVar ExecUnit))
 
-type CachedAction      = CXRef (Com [Com ScriptExpr]) (ExecScript ())
-type CachedGuardAction = CXRef [Com ScriptExpr] (ExecScript ())
-type CachedProgram     = Program (ExecScript ())
+-- type CachedAction      = CXRef (Com [Com ScriptExpr]) (ExecScript ())
+-- type CachedGuardAction = CXRef [Com ScriptExpr] (ExecScript ())
+-- type CachedProgram     = Program (ExecScript ())
 
 -- | All evaluation of the Dao language takes place in the 'ExecScript' monad. It allows @IO@
 -- functions to be lifeted into it so functions from "Control.Concurrent", "Dao.Document",
@@ -443,7 +444,7 @@ data ExecUnit
       -- 'ExecUnit' state.
     , currentDocument    :: Maybe File
       -- ^ the current document is set by the @with@ statement during execution of a Dao script.
-    , currentProgram     :: Maybe CachedProgram
+    , currentProgram     :: Maybe Program
       -- ^ the program that is running in this execution unit, this may not be defined in the case
       -- that strings are being executed in an interactive session.
     , currentPattern     :: Object
@@ -473,6 +474,7 @@ data ExecUnit
       -- require several lookups. If a value at a reference is updated between lookups by a separate
       -- thread, the same reference may evaluate to two different values. Caching prevents this from
       -- happening.
+    , execStaticVars     :: Maybe MapResource
     , execOpenFiles      :: DMVar (M.Map UPath File)
     , recursiveInput     :: DMVar [UStr]
     , uncaughtErrors     :: DMVar [Object]
@@ -588,11 +590,11 @@ data Task
   = RuleTask
     { taskPattern     :: Object -- ^ Either 'OPattern' or 'ONull'.
     , taskMatch       :: Match
-    , taskAction      :: CachedAction
+    , taskAction      :: Executable
     , taskExecUnit    :: ExecUnit
     }
   | GuardTask -- ^ Tasks that are created from @BEGIN@ and @END@ blocks in a Dao script.
-    { taskGuardAction :: CachedGuardAction
+    { taskGuardAction :: Executable
     , taskExecUnit    :: ExecUnit
     }
 
@@ -624,7 +626,7 @@ data Job
     , taskExecTable  :: DMVar (M.Map ThreadId Task)
       -- ^ all running 'Task's associated with this job are stored in this table. It contains a list
       -- of 'Task's, each task is mapped to a 'Control.Concurrent.ThreadId', and each group of
-      -- threads is mapped to the 'CachedProgram' from where the executing tasks originated.
+      -- threads is mapped to the 'Program' from where the executing tasks originated.
     , taskFailures   :: DMVar (M.Map Name [(Task, SomeException)])
       -- ^ if a task dies due to an exception raised, then the exception is caught and mapped to the
       -- task. This is different from an error thrown from a script, these are uncaught Haskell

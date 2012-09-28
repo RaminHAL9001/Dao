@@ -169,7 +169,7 @@ execRun run = ContErrT (fmap CENext run)
 -- | Catch an exception from "Control.Exception" in the 'CEReader' monad. Uses
 -- 'Control.Exception.hander', which is an IO function, so the CEReader must have the IO monad
 -- lifted into it.
-catchCE :: Exception err => CEReader r IO a -> (err -> CEReader r IO a) -> CEReader r IO a
-catchCE exe ifError = ContErrT $ ReaderT $ \r ->
-  handle (\e -> runReaderT (runContErrT (ifError e)) r) (runReaderT (runContErrT exe) r)
+-- catchCE :: Exception err => CEReader r IO a -> (err -> CEReader r IO a) -> CEReader r IO a
+-- catchCE exe ifError = ContErrT $ ReaderT $ \r ->
+--   handle (\e -> runReaderT (runContErrT (ifError e)) r) (runReaderT (runContErrT exe) r)
 

@@ -135,6 +135,8 @@ data SourceCode
     }
   deriving (Eq, Ord, Show, Typeable)
 
+data Executable = Executable{ staticVars :: MapResource, executable :: [ScriptExpr] }
+
 -- | When a script is executed, it's abstract syntax tree is converted into a monadic computation.
 -- When this happens, the Haskell runtime system evaluates many "thunks" in memory to collapse the
 -- computation to a simpler form. To improve efficiency, these thunks can be saved by keeping a
@@ -420,7 +422,13 @@ checkFail msg obj = falseIO (OPair (OString (ustr msg), obj))
 
 ----------------------------------------------------------------------------------------------------
 
--- | This is the state that is used to run the evaluation algorithm.
+-- | This is the state that is used to run the evaluation algorithm. Every Dao program file that has
+-- been loaded will have a single 'ExecUnit' assigned to it. Parameters that are stored in
+-- 'Dao.Debug.DMVar's or 'Dao.Type.Resource's will be shared across all rules which are executed in
+-- parallel, so for example 'execHeap' contains the variables global to all rules in a given
+-- program. The remainder of the parameters, those not stored in 'Dao.Debug.DMVar's or
+-- 'Dao.Type.Resource's, will have a unique copy of those values assigned to each rule as it
+-- executes.
 data ExecUnit
   = ExecUnit
     { parentRuntime      :: Runtime

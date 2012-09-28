@@ -20,6 +20,8 @@
 
 
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE Rank2Types #-}
 
 module Dao.Object
   ( module Dao.String
@@ -289,6 +291,10 @@ instance Functor Com where
     ComAfter     a c2 -> ComAfter     (fn a) c2
     ComAround c1 a c2 -> ComAround c1 (fn a) c2
 
+class Commented a where { stripComments :: a -> a }
+instance Commented (Com a) where { stripComments = Com . unComment }
+instance Commented a => Commented [a] where { stripComments = map stripComments }
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A 'Script' is really more of an executable function or subroutine, it has a list of input
@@ -304,8 +310,13 @@ data Script
 simpleScript :: [Com ScriptExpr] -> Script
 simpleScript exprs = Script{scriptArgv = Com [], scriptCode = Com exprs}
 
-instance Eq  Script where { _ == _ = False }
+instance Eq  Script where { _ == _ = False } -- | TODO: there ought to be a bisimilarity test here
 instance Ord Script where { compare _ _ = LT }
+instance Commented Script where
+  stripComments sc =
+    sc{ scriptArgv = stripComments (scriptArgv sc)
+      , scriptCode = stripComments (scriptCode sc)
+      }
 
 -- | This is the data structure used to store rules as serialized data, although when a bytecode
 -- program is loaded, rules do not exist, the 'ORule' object constructor contains this structure.
@@ -315,6 +326,12 @@ data Rule
     , ruleAction  :: Com [Com ScriptExpr]
     }
     deriving (Eq, Ord, Show, Typeable)
+
+instance Commented Rule where
+  stripComments ru =
+    ru{ rulePattern = stripComments (rulePattern ru)
+      , ruleAction  = stripComments (ruleAction  ru)
+      }
 
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
@@ -344,4 +361,34 @@ data ScriptExpr
     -- ^ The boolean parameter is True foe a "return" statement, False for a "throw" statement.
   | WithDoc      (Com ObjectExpr)       (Com [Com ScriptExpr])
   deriving (Eq, Ord, Show, Typeable)
+
+instance Commented ObjectExpr where
+  stripComments o = case o of
+    Literal       a     -> Literal      (u a)
+    AssignExpr    a b   -> AssignExpr   (u a) (u b)
+    FuncCall      a b   -> FuncCall     (u a) (u b)
+    LambdaCall    a b c -> LambdaCall   (u a) (u b) (u c)
+    ParenExpr     a     -> ParenExpr    (u a)
+    Equation      a b c -> Equation     (u a) (u b) (u c)
+    DictExpr      a b   -> DictExpr     (u a) (u b)
+    ArrayExpr     a b c -> ArrayExpr    (u a) (u b) (u c)
+    ArraySubExpr  a b   -> ArraySubExpr (u a) (u b)
+    LambdaExpr    a b c -> LambdaExpr   (u a) (u b) (u c)
+    where
+      u :: Commented a => a -> a
+      u = stripComments
+
+instance Commented ScriptExpr where
+  stripComments s = case s of
+    NO_OP               -> NO_OP
+    EvalObject    a     -> EvalObject   (u a)
+    IfThenElse    a b c -> IfThenElse   (u a) (u b) (u c)
+    TryCatch      a b c -> TryCatch     (u a) (u b) (u c)
+    ForLoop       a b c -> ForLoop      (u a) (u b) (u c)
+    ContinueExpr  a b c -> ContinueExpr (u a) (u b) (u c)
+    ReturnExpr    a b c -> ReturnExpr   (u a) (u b) (u c)
+    WithDoc       a b   -> WithDoc      (u a) (u b)
+    where
+      u :: Commented a => a -> a
+      u = stripComments
 

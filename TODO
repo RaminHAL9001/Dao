@@ -7,7 +7,9 @@ UNSOLVED:
 	architectural revision in order to introduce a more eloquent system of handling references, with
 	the introduction of the 'Dao.Object.Reference' type. The motivation for this architectural
 	revision is to solve the next two items in this document: the need for "static" and "temp"
-	vairables, and the need for atomic updates of global variables.
+	variables, and the need for atomic updates of global variables.
+	-- This is mostly solved now. I still have not fully implemented caching during lookups. As soon
+	as I complete implementation of static variables, discussed in the next TODO item...
 
 * Need "static" and "temp" variables. Static variables will allocate an MVar for every rule action,
 	and allow local variables to be declared as static and stored to this MVar. Temp variables are
@@ -17,8 +19,45 @@ UNSOLVED:
 	executions of the rule. It may be necessary to change the contents of 'CachedExec' data type so
 	that not only is the ExecScript function stored, but so are a pair of 'Data.Map's, one static,
 	one temp, that can be updated in the ExecScript monad, which means the ExecScript monad may need
-	another item containing a refernce to the 'CXRef' (which contains the 'CachedExec') that is
+	another item containing a reference to the 'CXRef' (which contains the 'CachedExec') that is
 	currently being executed.
+	--
+	This is nearly complete. I have implemented the necessary changes to data structures throughout
+	the program to allow for this behavior. I simply need to complete the suite of dereferencing
+	functions and implement a consisting caching scheme across all lookup operations.
+
+* Re-define the parser, remove the "Assign" structure, assignments are no longer part of the
+	abstract syntax tree, they are now operators which can be looked up and applied like any other
+	operator, and all variable references are first-class objects of type 'Dao.Types.Reference'.
+	However, most built-in functions do not treat references this way. The tedious task of
+	correcting all built-in functions to dereference local variables immediately, while not
+	dereferencing any other kind of variable, has yet to be done. Incidentally, this makes the Dao
+	language much closer to C and C++, with pointers and references. It may be wise to re-think the
+	use of the (*) and (&) operators, as opposed to ($) and (@).
+
+* Allow passing of local variable references as references to functions.
+	--
+	NO, This would require making local variables first-class values at some point in the execution.
+	The easiest way to do this is to define a new Object value 'Local::Object'. But these types are
+	only used at runtime, and this would add bulk to the marshaled binary representation of the
+	Object data type. I want to avoid complicating the 'Object' data type, however this seems to be
+	the easiest way to implement this feature. The alternative implementation is to modify the
+	'Dao.Object.Evaluator.evalObject' function to NOT work with Objects, but to work with some type
+	like this:
+		data Symbol = Local Name | Global [Name] | Const Object
+	So for example, thinking of the "+=" operator as a function, the left-hand-side of the operator
+	must be a variable, either Local or Global, and the right hand side must be a Const. This would
+	change how argument passing is done for functions calls: it would require some kind of re-naming
+	of references if a reference were passed as an argument, which requires re-thinking how the
+	ExecUnit{execStack :: MVar [T_dict]} is implemented, for example, changing the container from a
+	T_dict (Map Name Object) to a (Map Name (MVar Object)), and copying MVars of re-named variables
+	to the contexts of function calls taking Local or Global references as parameters. This is all
+	just way too complicated for the purposes of the Dao system.
+	--
+	YES! actually with the changes made to the language definition, providing assignment operations
+	as operators that can be looked-up in the operator table. Before hand, assignments were actually
+	part of the abstract syntax tree. This design implementation has been replaced
+	with 'Dao.Types.Reference's which treat all variable references as first-class objects.
 
 * Need atomic updates of global variables. To resolve this problem, two things will be done.
 	(1) 'Dao.Debug.DMVar's containing variables that can be updated during evaluation of Dao scripts
@@ -27,7 +66,7 @@ UNSOLVED:
 	other thread can read the locked value without being blocked. But any thread wanting to modify
 	that variable must wait in a queue for that value to be unblocked. Locks occur at the Reference
 	level, not at the MVar level, so locking is a matter of simply marking that particular value.
-	The locking api will take a Run or ExecScript monad, and a reference. Evaluating the lock
+	The locking API will take a Run or ExecScript monad, and a reference. Evaluating the lock
 	function will first lock the Reference, then evaluate the ExecScript within an exception
 	handler, then it will unlock the reference, all in a single, seemingly atomic action.
 	(2) Evaluating the 'Dao.Evaluator.evalObject' function will now create a cache inside of it's
@@ -90,7 +129,7 @@ UNSOLVED:
 SOLVED:
 
 * Change the instantiation of UStr into the Binary monad to use a minimum number of bytes to
-	indicate the length of the string. Right now, every UStr is preceeded a 64-bit (8 byte) number.
+	indicate the length of the string. Right now, every UStr is preceded a 64-bit (8 byte) number.
 	However, the vast majority of all strings saved to "idea" files will most certainly be less than
 	128 characters long. Especially the UStr's used for the paths in Tree objects. I would like
 	UStr's to now be stored using a variable-length integer prefix. The bits of the variable-length
@@ -110,7 +149,7 @@ SOLVED:
 
 * REGRESSION: Creating, opening, and saving idea files no longer seems to work when using the
 	built-in functions "newDB", "openDB", and "saveDB". However, the "test1.idea" file is loaded
-	when it is sepcified in the command line arguments, so the problem is not with
+	when it is specified in the command line arguments, so the problem is not with
 	'initRuntimeFiles'.
 	--
 	I am transitioning away from using the "Dao.Document" functions to using the "Dao.Files"
@@ -129,7 +168,7 @@ SOLVED:
 	expressions within "WithExpr" statements, was not defined to increment the "docModified"
 	counter. This is now fixed, and documents are written to the filesystem.
 
-* Modify the 'ExecUnit' to contain built-in functions decalred in the top-level of a Dao program.
+* Modify the 'ExecUnit' to contain built-in functions declared in the top-level of a Dao program.
 	Presently, these objects are stored in the 'staticHeap', which are not cached, and are required
 	to be called by the "call" keyword using the reference "${topLevelFunction}".
 	-- Done.
@@ -147,7 +186,7 @@ SOLVED:
 	directive will ask the Dao.Runtime about the properties of the Runtime itself. This will make it
 	easier to automatically reject programs that are using a version of the Dao library with which
 	that program is incompatible. So, for example, if a programmer has used the Dao library to write
-	their own Dao system that has Voice Pattern objects marshalled and stored into a OBinary
+	their own Dao system that has Voice Pattern objects marshaled and stored into a OBinary
 	objects, and these Voice Pattern objects can be manipulated by Dao rules at runtime, then the
 	programmer can can hard-code a "My Voice Patterns" property into their version of the Dao runtime
 	that they have constructed using the Dao library. Programs can then declare:
@@ -168,8 +207,8 @@ SOLVED:
 	(2) Changed the parser for 'ORef' literal expressions to require two dollar signs, for example:
 		${this.is.a.globalRef} = $${this.is.a.reference.literal};
 	(3) Changed the parser to return 'GlobalRef's or 'Literal (ORef val)'s depending on the number
-		of dollar signs occuring before the expression.
-	(4) Modified the pretty pritner to reflect these changes.
+		of dollar signs occurring before the expression.
+	(4) Modified the pretty printer to reflect these changes.
 	(5) Modified the "Dao.Object.Binary" serialization for the 'ObjectExpr' data type.
 	Now, references with two dollar-signs are literal references, and references with one
 	dollar-sign is triggers a global lookup. This allowed me to make the following simplifications:
@@ -185,28 +224,28 @@ SOLVED:
 
 * Built-in functions need to return more helpful error message on type-check failure. At present the
 	error reported is the error given by the Haskell language, related to lambda functions or case
-	expression not having exauhustive pattern matching, which tells users nothing about why which
-	type causd it to fail.
+	expression not having exhaustive pattern matching, which tells users nothing about why which
+	type caused it to fail.
 	--
 	Solved: one of the solutions that resulted naturally from the simplification of the evalObject
 	function thanks to the new GlobalRef ObjectExpr. Now, all type checking is done in the
 	PredicateIO monad using only Haskell pattern matching and "case" statements. I can now create
 	error messages at the boundary between the "PredicateIO" and "ExecScript" monads. This boundary
 	is the "checkToExecScript" function. I modified this function to require a function name and an
-	Object indicating the parameter arugments passed to this function. If a PredicateIO fails due to
-	bad pattern matching or a non-exhuastive "case" statement, then "checkToExecScript" will create
+	Object indicating the parameter arguments passed to this function. If a PredicateIO fails due to
+	bad pattern matching or a non-exhaustive "case" statement, then "checkToExecScript" will create
 	an error indicating the name of the function that failed, and the argument parameters that
 	caused the failure. This error is then propagated upwards by the ContErrT continuation
 	mechanism.
 
-* REGRESSSION: When I wrote a rule into my Dao test program that contained many "else if"
+* REGRESSION: When I wrote a rule into my Dao test program that contained many "else if"
 	expressions, this one rule seems to cause the Dao system to freeze on any rule, not just the
 	rule with all the "else if" statements. Any rule causes Dao to freeze up entirely as long as
 	this one rule exists.
 	--
 	It had nothing to do with "else if" statements, it had to do with a bad Pattern expression.
 	Before now I had never tested a malformed pattern with the pattern parser. It turns out the
-	parser went into an infinite loop when it saw a "$" preceeding a non-special character. Now,
+	parser went into an infinite loop when it saw a "$" preceding a non-special character. Now,
 	these characters are ignored and parsed as ordinary characters. Only the "$?", "$*", and "$$"
 	constructs are parsed as special units of the patterns.
 
@@ -234,7 +273,7 @@ SOLVED:
 	like a C-style function call.
 
 * REGRESSION: not all rules are executing after my last major code overhaul. The "hello" rule, which
-	is the first in the program, is not exeuting anymore. It might be being over-written by a later
+	is the first in the program, is not executing anymore. It might be being over-written by a later
 	"hello" rule. Correction: the regression seems to be somewhere in the global/local variable
 	lookup.
 	--
@@ -243,8 +282,8 @@ SOLVED:
 	in this order: [unaryOperator, localAssignExpr, equationExpr]
 	The localAssignExpr returns a value of (AssignExpr LocalRef ObjectExpr).
 	Local assignment expressions are parsed before equation expressions to give them higher
-	prescedence, even though the equals operator is of a very low prescedence. Equations can still
-	parse equals expressions, but they are handeled slightly differently
+	precedence, even though the equals operator is of a very low precedence. Equations can still
+	parse equals expressions, but they are handled slightly differently
 
 * REGRESSION: printing 'AssignExpr's does not work as expected.
 	-- Solved.
@@ -260,7 +299,7 @@ SOLVED:
 	this evaluation can be stored into the MVar, hopefully indicating to the Haskell Run-Time System
 	that thunks associated with this monadic value should not be garbage collected.
 
-* Modify ScriptExpr parser so 'AssignExpr's have a higher prescedence than 'Equation's to prevent
+* Modify ScriptExpr parser so 'AssignExpr's have a higher precedence than 'Equation's to prevent
 	all local assignment operations from being evaluated by the Equation function.
 	-- Done. 
 
@@ -277,16 +316,16 @@ SOLVED:
 	replacing the (ContErrT (ReaderT (MVar ExecUnit) IO) a) with (ContErrT (ReaderT ExecUnit IO) a)
 	and moving the individual updatable fields of the ExecUnit structure into their own MVars.
 	--
-	Done. And I am still not sure if I want to have the 'ProgramTable' elemnts contain the
-	'ExecUnit' values themselves, or have 'MVar's elemnts that containing 'ExecUnit's. Right now,
+	Done. And I am still not sure if I want to have the 'ProgramTable' elements contain the
+	'ExecUnit' values themselves, or have 'MVar's elements that containing 'ExecUnit's. Right now,
 	the elements are 'MVar's, so there is some ability to modify the 'ExecUnit's at the
 	"Dao.Runtime" level (where the 'programs::ProgramTable' data exists) without having to update
 	the whole ProgramTable Data.Map.Map object every time you want to change the ExecUnit. But I am
 	not sure if this is necessary, and the additional MVar's may just be creating an extraneous
 	unboxing step.
 
-* Modify the "dumpRules()" builtin function to return rules instead of OPair(OPattern p, OScript q).
-	Break-up the Dao.Runtime.loadSource function into indivudual loading steps, that succede and
+* Modify the "dumpRules()" built-in function to return rules instead of OPair(OPattern p, OScript q).
+	Break-up the Dao.Runtime.loadSource function into individual loading steps, that succeed and
 	return a value, or fail and return Nothing. Then compose the loadSource function with
 	(sequence [step1, step2, step3] >>= return . msum)
 	I did this, but I could not really compose 'loadSource' into three steps that could be executed
@@ -302,9 +341,9 @@ SOLVED:
 	Actually, it already existed in Dao.Object.Data as 'simpleError1', so I changed it's name to
 	'objectError'.
 
-* Make sure evaluation is fully completed before signalling the jobCompletion semaphore.
+* Make sure evaluation is fully completed before signaling the jobCompletion semaphore.
 	As long as there are no deadlocks in any other threads, or errors halting threads leaving MVars
-	emptied, then the threads should pause and resume in the order I intented without printing
+	emptied, then the threads should pause and resume in the order I intended without printing
 	information after the prompt is printed. This problem went away without me doing much more than
 	simply working out the other bugs. However, for good measure I placed a 'yield' statement just
 	after the command which waits for the JobQueue to empty in the 'startRuntimeLoop' function of
@@ -455,25 +494,6 @@ FEATURE REQUESTS
 	reference. But I am not going to do that, just write the updating code out by hand, like in the
 	Python language.
 
-* Allow passing of local variable references as references to functions.
-	--
-	NO, This would require making local variables first-class values at some point in the execution.
-	The easiest way to do this is to define a new Object value 'Local::Object'. But these types are
-	only used at runtime, and this would add bulk to the marshalled binary representation of the
-	Object data type. I want to avoid complicating the 'Object' data type, however this seems to be
-	the easiest way to implement this feature. The alternative implementation is to modify the
-	'Dao.Object.Evaluator.evalObject' function to NOT work with Objects, but to work with some type
-	like this:
-		data Symbol = Local Name | Global [Name] | Const Object
-	So for example, thinking of the "+=" operator as a function, the left-hand-side of the operator
-	must be a variable, either Local or Global, and the right hand side must be a Const. This would
-	change how argument passing is done for functions calls: it would require some kind of re-naming
-	of references if a reference were passed as an argument, which requires re-thinking how the
-	ExecUnit{execStack :: MVar [T_dict]} is implemented, for example, changing the container from a
-	T_dict (Map Name Object) to a (Map Name (MVar Object)), and copying MVars of re-named variables
-	to the contexts of function calls taking Local or Global references as parameters. This is all
-	just way too complicated for the purposes of the Dao system.
-
 * Modify the language definition to type check function calls.
 	--
 	I don't really want to do this. The type system may be OK for simple types, and you could even
@@ -490,14 +510,14 @@ FEATURE REQUESTS
 	increase the complexity of the language by a very large degree. Will all that added complexity
 	really help improve the quality of the Dao code, or will it just thrown in mandatory type
 	checking everywhere instead of allowing a Dao programmer to just write their own checks where
-	they needed them? Are we really releaving the burden of type-checking off the programmer when
+	they needed them? Are we really relieving the burden of type-checking off the programmer when
 	the language is interpreted and not compiled, why not just let the program run and fail and
 	then catch the errors? Isn't this good enough type checking for an interpreted language? Isn't
 	having no compile time type-checking better for a light-weight language like Dao?
 
 * Create a "pre-execution" phase of program loading, which essentially executes every 'ScriptExpr'
 	without applying state changes simply to determine if any of the 'ScriptExpr's evaluate to a
-	CEError type. This pre-execution phase may want to substitue a pure State monad for the IO
+	CEError type. This pre-execution phase may want to substitute a pure State monad for the IO
 	monad, and operate only obj object types, rather than actual objects.
 	--
 	At present, this would only create more work for the compiling phase. If I can determine that

@@ -239,28 +239,6 @@ data Program
     , globalData        :: TreeResource
     }
 
-initProgram :: Name -> PatternTree [Executable] -> TreeResource -> Run Program
-initProgram modName initRuleSet initGlobalData = do
-  pat <- dNewMVar xloc "Program.ruleSet" initRuleSet
-  -- dat <- newTreeResource "Program.globalData" initGlobalData
-  -- pre  <- dNewMVar xloc "Program.preExecScript" []
-  -- post <- dNewMVar xloc "Program.postExecScript" []
-  return $
-    Program
-    { programModuleName = modName
-    , programImports    = []
-    , constructScript   = []
-    , destructScript    = []
-    , requiredBuiltins  = []
-    , programAttributes = M.empty
-    , preExecScript     = []
-    , programTokenizer  = return . tokens . uchars
-    , programComparator = (==)
-    , postExecScript    = []
-    , ruleSet           = pat
-    , globalData        = initGlobalData
-    }
-
 ----------------------------------------------------------------------------------------------------
 
 -- | The magic number is the first 8 bytes to every 'Document'. It is the ASCII value of the string

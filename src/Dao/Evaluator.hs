@@ -758,6 +758,29 @@ initIntermediateProgram =
   , inmpg_globalData        = T.Void
   }
 
+initProgram :: IntermediateProgram -> TreeResource -> ExecScript Program
+initProgram inmpg initGlobalData = do
+  rules <- execScriptRun $
+    T.mapLeavesM (mapM setupExecutable) (inmpg_ruleSet inmpg) >>= dNewMVar xloc "Program.ruleSet"
+  pre   <- execRun (mapM setupExecutable (inmpg_preExecScript  inmpg))
+  post  <- execRun (mapM setupExecutable (inmpg_postExecScript inmpg))
+  inEvalDoModifyUnlocked_ initGlobalData (return . const (inmpg_globalData inmpg))
+  return $
+    Program
+    { programModuleName = inmpg_programModuleName inmpg
+    , programImports    = inmpg_programImports    inmpg
+    , constructScript   = map unComment (inmpg_constructScript inmpg)
+    , destructScript    = map unComment (inmpg_destructScript  inmpg)
+    , requiredBuiltins  = inmpg_requiredBuiltins  inmpg
+    , programAttributes = M.empty
+    , preExecScript     = pre
+    , programTokenizer  = return . tokens . uchars
+    , programComparator = (==)
+    , postExecScript    = post
+    , ruleSet           = rules
+    , globalData        = initGlobalData
+    }
+
 -- | To parse a program, use 'Dao.Object.Parsers.source' and pass the resulting
 -- 'Dao.Object.SourceCode' object to this funtion. It is in the 'ExecScript' monad because it needs
 -- to evaluate 'Dao.ObjectObject's defined in the top-level of the source code, which requires
@@ -771,6 +794,7 @@ initIntermediateProgram =
 -- called if the attribute is not allowed by the minimal Dao system.
 programFromSource
   :: TreeResource
+      -- ^ the global variables initialized at the top level of the program file are stored here.
   -> (Name -> UStr -> IntermediateProgram -> ExecScript Bool)
       -- ^ a callback to check attributes written into the script. If the attribute is bogus, Return
       -- False to throw a generic error, or throw your own CEError. Otherwise, return True.
@@ -779,9 +803,7 @@ programFromSource
   -> ExecScript Program
 programFromSource globalResource checkAttribute script = do
   interm <- execStateT (mapM_ foldDirectives (unComment (directives script))) initIntermediateProgram
-  rules  <- execRun (T.mapLeavesM (mapM setupExecutable) (inmpg_ruleSet interm))
-  inEvalDoModifyUnlocked_ globalResource (return . const (inmpg_globalData interm))
-  execScriptRun $ initProgram (inmpg_programModuleName interm) rules globalResource
+  initProgram interm globalResource
   where
     err lst = lift $ ceError $ OList $ map OString $ (sourceFullPath script : lst)
     attrib req nm getRuntime putProg = do

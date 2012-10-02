@@ -86,10 +86,12 @@ execTask job task = dStack xloc "execTask" $ ask >>= \runtime -> do
 
 ----------------------------------------------------------------------------------------------------
 
--- | Creates zero or one 'Job's, but returns a list of 'Job's because it works better with the rest
--- of the functions in this module if it returns a list. Creating a job with 'newJob' automatically
--- sets-up the threads to handle exceptions, and the job will place itself into, and remove itself
--- from, the given 'Runtime's 'jobTable'.
+-- | Creates a 'Job' which is an object that manages a number of tasks. Creating a job with 'newJob'
+-- automatically sets-up the threads to execute any number of tasks while handling exceptions. Once
+-- you have a 'Job', you create tasks inside of it. With the 'Job' object, you can control whether
+-- you want to wait for all tasks to finish, or have control returned to the evaluating context
+-- immediately after the tasks have been created. You can also set how long the 'Job' will wait
+-- before forcefully terminating all tasks.
 newJob :: Maybe Int -> UStr -> Run Job
 newJob timed instr = dStack xloc "newJob" $ ask >>= \runtime -> do
   jobQSem <- dNewQSem xloc "Job.jobCompletion" 0 -- is singaled when all tasks have completed
@@ -100,7 +102,7 @@ newJob timed instr = dStack xloc "newJob" $ ask >>= \runtime -> do
   taskTab <- dNewMVar xloc "Job.taskExecTable" (M.empty) -- this DMVar contains the table of running task threads
   jobMVar <- dNewEmptyMVar xloc "Job/jobMVar" -- every task created needs to set it's 'ExecUnit's 'currentExecJob'.
   let
-      taskWaitLoop = dStack xloc "taskWaitLoop" $ do
+      taskWaitLoop = do
         -- This loop waits for tasks to end, and signals the 'jobQSem' when the last job has
         -- completed. This loop is actually called by the 'manager' loop, so it executes in the same
         -- thread as the manager loop. Exception handling does not occur here.
@@ -143,7 +145,7 @@ newJob timed instr = dStack xloc "newJob" $ ask >>= \runtime -> do
         dSwapMVar xloc timeVar Nothing >>= \timer -> case timer of
           Nothing     -> return ()
           Just thread -> dThrowTo xloc thread e
-      manager = dStack xloc "Job/manager" $ do
+      manager = do
         -- This is the main loop for the 'Job' controlling thread. It takes 'Task's from the
         -- 'readyTasks' table, waiting for the DMVar if necessary.
         tasks <- dTakeMVar xloc ready
@@ -165,10 +167,10 @@ newJob timed instr = dStack xloc "newJob" $ ask >>= \runtime -> do
               Nothing   -> void $ dSwapMVar xloc timeVar Nothing
               Just time -> dFork forkIO xloc ("timer("++show instr++")") (timeKeeper time) >>=
                 void . dSwapMVar xloc timeVar . Just
-            taskWaitLoop >> manager -- wait for the all tasks to stop, then loop to the next batch.
+            (dStack xloc "taskWaitLoop" taskWaitLoop) >> manager -- wait for the all tasks to stop, then loop to the next batch.
   -- Finally, start the thread manager loop, wrapped up in it's exception handler.
   jobManager <- dFork forkIO xloc ("jobManager("++show instr++")") $
-    dHandle xloc managerException manager
+    dHandle xloc managerException (dStack xloc "Job/manager" manager)
   let job = Job
             { jobTaskThread  = jobManager
             , jobInputString = instr
@@ -269,15 +271,15 @@ makeTasksForGuardScript
   :: (Program -> [Executable])
   -> [ExecUnit]
   -> Run [Task]
-makeTasksForGuardScript select xunits = dStack xloc "makeTasksForGuardScript" $ lift $ fmap concat $ forM xunits $ \xunit -> do
-  let cachedProg = currentProgram xunit
-  case fmap select cachedProg of
-    Nothing    -> return []
-    Just progx -> return $ flip map progx $ \prog ->
-      GuardTask
-      { taskGuardAction = prog
-      , taskExecUnit    = xunit
-      }
+makeTasksForGuardScript select xunits =
+  dStack xloc "makeTasksForGuardScript" $ lift $ fmap concat $ forM xunits $ \xunit ->
+    case fmap select (currentProgram xunit) of
+      Nothing    -> return []
+      Just progx -> return $ flip map progx $ \prog ->
+        GuardTask
+        { taskGuardAction = prog
+        , taskExecUnit    = xunit
+        }
 
 -- | When executing strings against Dao programs (e.g. using 'execInputString'), you often want to
 -- execute the string against only a subset of the number of total programs. Pass the logical names
@@ -290,7 +292,7 @@ selectModules :: Maybe ExecUnit -> [Name] -> Run [File]
 selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> case names of
   []    -> do
     ax <- dReadMVar xloc (logicalNameIndex runtime)
-    dMessage xloc ("selected modules:\n"++unlines (map show (M.keys ax)))
+    dMessage xloc ("selected modules: "++intercalate ", " (map show (M.keys ax)))
     (return . filter (\file -> isProgramFile file && publicFile file) . M.elems) ax
   names -> do
     pathTab <- dReadMVar xloc (pathIndex runtime)

@@ -33,8 +33,7 @@
 -- for those 'Dao.Types.Job's to complete.
 
 module Dao
-  ( module Dao.Debug.OFF
-  , module Dao.String
+  ( module Dao.String
   , module Dao.Object
   , module Dao.Types
   , module Dao

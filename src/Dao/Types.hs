@@ -106,8 +106,7 @@ stackPop stack = stack{ mapList = let mx = mapList stack in if null mx then [] e
 -- mechanism does *NOT* provide this caching.
 data Resource stor ref =
   Resource
-  { unlockedItems  :: DMVar (stor Object)
-  , lockedItems    :: DMVar (stor (DQSem, Maybe Object))
+  { resource       :: DMVar (stor Object, stor (DQSem, Maybe Object))
   , updateUnlocked :: ref -> Maybe Object -> stor Object -> stor Object
   , lookupUnlocked :: ref -> stor Object -> Maybe Object
   , updateLocked   :: ref -> Maybe (DQSem, Maybe Object) -> stor (DQSem, Maybe Object) -> stor (DQSem, Maybe Object)

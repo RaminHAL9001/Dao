@@ -19,11 +19,12 @@
 -- please see <http://www.gnu.org/licenses/agpl.html>.
 
 
-{-# LANGUAGE TemplateHaskell #-}
+-- {-# LANGUAGE TemplateHaskell #-}
 
 module Main where
 
 import           Dao
+import           Dao.Debug.OFF
 
 import           Data.List
 
@@ -57,7 +58,7 @@ main = do
   let (q, _) = partition (\a -> a=="-q" || a=="--dont-show-license") argv
   --initialize
   debug   <- debugToFile xloc "main" debugLog "./dao-debug.log" WriteMode
-  -- debug   <- debugToHandle $loc "main" debugLog stderr
+  -- debug   <- debugToHandle xloc "main" debugLog stderr
   hSetBuffering stderr LineBuffering
   when (null q) (putStr disclaimer)
   runtime <- newRuntime debug >>= initRuntimeFiles debug argv

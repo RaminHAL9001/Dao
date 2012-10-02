@@ -20,7 +20,7 @@
 
 module Dao.Resource where
 
-import           Dao.Debug.OFF
+import           Dao.Debug.ON
 import           Dao.String
 import           Dao.Object
 import           Dao.Object.Monad
@@ -39,12 +39,10 @@ newDMVarsForResource
   -> stor (DQSem, Maybe Object)
   -> ReaderT r IO (Resource stor ref)
 newDMVarsForResource dbg objname unlocked locked = do
-  unlocked <- dNewMVar xloc (dbg++'(':objname++".unlockedItems)") unlocked
-  locked   <- dNewMVar xloc (dbg++'(':objname++".lockedItems)"  ) locked
+  content <- dNewMVar $loc (dbg++'(':objname++".resource)") (unlocked, locked)
   return $
     Resource
-    { unlockedItems  = unlocked
-    , lockedItems    = locked
+    { resource       = content
     , updateUnlocked = error "Resource.updateUnlocked is not defined"
     , lookupUnlocked = error "Resource.lookupUnlocked is not defined"
     , updateLocked   = error "Resource.updateLocked is not defined"
@@ -94,9 +92,8 @@ modifyResource
   => Resource stor ref
   -> (stor Object -> stor (DQSem, Maybe Object) -> ReaderT r IO (stor Object, stor (DQSem, Maybe Object), a))
   -> ReaderT r IO a
-modifyResource rsrc fn = dModifyMVar xloc (lockedItems rsrc) $ \locked ->
-  dModifyMVar xloc (unlockedItems rsrc) $ \unlocked ->
-    fmap (\ (unlocked, locked, a) -> (unlocked, (locked, a))) (fn unlocked locked)
+modifyResource rsrc fn = dModifyMVar $loc (resource rsrc) $ \ (unlocked, locked) ->
+  fn unlocked locked >>= \ (unlocked, locked, a) -> return ((unlocked, locked), a)
 
 -- | Modify the contents of a 'Dao.Types.Resource' /without/ locking it. Usually, it is better to
 -- use 'Dao.Types.updateResource' or 'Dao.Types.updateResource_', but there are situations where
@@ -110,9 +107,8 @@ modifyUnlocked
   => Resource stor ref
   -> (stor Object -> ReaderT r IO (stor Object, a))
   -> ReaderT r IO a
-modifyUnlocked rsrc runUpdate = modifyResource rsrc $ \unlocked locked -> do
-  (unlocked, a) <- runUpdate unlocked
-  return (unlocked, locked, a)
+modifyUnlocked rsrc runUpdate = modifyResource rsrc $ \unlocked locked ->
+  runUpdate unlocked >>= \ (unlocked, a) -> return (unlocked, locked, a)
 
 -- | Is to 'Dao.Types.modifyUnlocked', what to 'Dao.Debug.dModifyMVar_' is to
 -- 'Dao.Debug.dModifyMVar'.
@@ -121,9 +117,8 @@ modifyUnlocked_
   => Resource stor ref
   -> (stor Object -> ReaderT r IO (stor Object))
   -> ReaderT r IO ()
-modifyUnlocked_ rsrc runUpdate = modifyResource rsrc $ \unlocked locked -> do
-  unlocked <- runUpdate unlocked
-  return (unlocked, locked, ())
+modifyUnlocked_ rsrc runUpdate = modifyResource rsrc $ \unlocked locked ->
+  runUpdate unlocked >>= \unlocked -> return (unlocked, locked, ())
 
 inEvalDoModifyUnlocked :: Resource stor ref -> (stor Object -> ExecScript (stor Object, a)) -> ExecScript a
 inEvalDoModifyUnlocked rsrc runUpdate = do
@@ -152,17 +147,19 @@ updateResource_ rsrc ref toMaybe fromMaybe runUpdate = do
   let modify fn = modifyResource rsrc fn
       release sem = do -- remove the item from the "locked" store, signal the semaphore
         modify (\unlocked locked -> return (unlocked, updateLocked rsrc ref Nothing locked, ()))
-        dSignalQSem xloc sem -- even if no threads are waiting, the semaphore is signaled.
-      errHandler sem (SomeException e) = release sem >> dThrow xloc e
-      updateAndRelease sem item = dHandle xloc (errHandler sem) $ do
+        dSignalQSem $loc sem -- even if no threads are waiting, the semaphore is signaled.
+      errHandler sem (SomeException e) = release sem >> dThrow $loc e
+      updateAndRelease sem item = dHandle $loc (errHandler sem) $ do
         item <- runUpdate item
-        dModifyMVar xloc (unlockedItems rsrc) $ \unlocked ->
-          return (updateUnlocked rsrc ref (toMaybe item) unlocked, item)
-      waitTryAgain sem = dWaitQSem xloc sem >> updateResource_ rsrc ref toMaybe fromMaybe runUpdate
+        modify $ \unlocked locked -> return $
+          (updateUnlocked rsrc ref (toMaybe item) unlocked, updateLocked rsrc ref Nothing locked, ())
+        dSignalQSem $loc sem
+        return item
+      waitTryAgain sem = dWaitQSem $loc sem >> updateResource_ rsrc ref toMaybe fromMaybe runUpdate
   join $ modify $ \unlocked locked -> case lookupLocked rsrc ref locked of
     Just (sem, _) -> return (unlocked, locked, waitTryAgain sem)
     Nothing       -> do
-      sem <- dNewQSem xloc "updateResource" 0
+      sem <- dNewQSem $loc "updateResource" 0
       let item = lookupUnlocked rsrc ref unlocked
       return (unlocked, updateLocked rsrc ref (Just (sem, item)) locked, updateAndRelease sem (fromMaybe item))
 

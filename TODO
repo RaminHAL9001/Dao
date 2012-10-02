@@ -8,8 +8,20 @@ UNSOLVED:
 	the introduction of the 'Dao.Object.Reference' type. The motivation for this architectural
 	revision is to solve the next two items in this document: the need for "static" and "temp"
 	variables, and the need for atomic updates of global variables.
-	-- This is mostly solved now. I still have not fully implemented caching during lookups. As soon
-	as I complete implementation of static variables, discussed in the next TODO item...
+	--
+	This is mostly solved now. I still have not fully implemented caching during lookups. As soon as
+	I complete implementation of static variables, discussed in the next TODO item...
+	--
+	I discovered a new deadlock due to a bug in the implementation of 'Dao.Resource.updateResource'.
+	A resource is never released once it is updated. I would also like to put more debugging
+	messages into the Resource.hs source file. Also, I am questioning the logic of having two
+	DMVar's to hold information in the 'Resource'. Since both resources are locked and released at
+	the same time for all updates and reads, it seems a Resource object can be implemented with a
+	single DMVar. Originally, I was thinking that reads and updates will be able to occur at the
+	same time if the unlocked DMVar can be read separately while the locked DMVar can be updated.
+	But since both unlocking and locking always takes one atomic update to each of the DMVars, and
+	value in a Resource can be read while it is locked (in between lock and unlock operations), I
+	don't think two DMVars are necessary.
 
 * Need "static" and "temp" variables. Static variables will allocate an MVar for every rule action,
 	and allow local variables to be declared as static and stored to this MVar. Temp variables are

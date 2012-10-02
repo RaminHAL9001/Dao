@@ -53,7 +53,7 @@ DAO_GHCI_MODULES := $(subst $(slash),$(dot),$(patsubst %.hs,%,$(patsubst $(star)
 
 DAO_DEPENDS_SRC := $(addprefix src/,$(DAO_DEPENDS))
 
-.PHONEY:  edit  all
+.PHONEY:  edit  all  debug  clean
 
 ####################################################################################################
 
@@ -62,6 +62,13 @@ all:  dao
 dao: $(DAO_DEPENDS_SRC)
 	@echo 'Building project...'
 	$(DAO_COMPILE) $(DAO_DEPENDS_SRC) -o ./dao;
+
+debug: $(DAO_DEPENDS_SRC)
+	@echo 'Building debug project...'
+	$(DAO_COMPILE) -XTemplateHaskell $(DAO_DEPENDS_SRC) -o ./dao;
+
+clean:
+	rm dao; find . \( -name '*.o' -o -name '*.hi' \)  -delete -print
 
 calc: src/Dao/Calc.hs src/Dao/Object/Parsers.hs src/Dao/Combination.hs src/Dao/Combination/Parser.hs
 	$(DAO_COMPILE) src/Dao/Calc.hs -o ./calc

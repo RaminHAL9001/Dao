@@ -22,42 +22,53 @@ shell:=bash
 slash:=/
 dot:=.
 star:=*
+hash:=\#
 
-DAO_BUILD_OPTS = -threaded
-DAO_COMPILE = ghc $(DAO_BUILD_OPTS) --make
+listfile = grep -v '^[[:space:]]*$(hash).*$$' $1
 
-DAO_PROJECT_FILES_LIST = project-files.list
+.PHONEY:  edit  default  debug  clean
 
-LOAD_PROJECT_FILES = \
-		grep -v '^[[:space:]]*\#' $(DAO_PROJECT_FILES_LIST) \
-	|	sed -e 's,[[:space:]]*\#.*$$,,' -e 's,[[:space:]]\+,\n,g' \
-	|	sort -u
+####################################################################################################
+# The default target
 
-DAO_PROJECT_FILES := $(shell $(LOAD_PROJECT_FILES))
+default:  parser-test
+
+####################################################################################################
+# The 'edit' target conveniently opens all the files you want to edit in the vim editor.
 
 EDIT_FILES_LIST := edit-files.list
+EDIT_SCRATCH    := scratch.hs -c ':set autowrite autoread'
+NUMBER_OF_TABS  := -p4
 
-LOAD_EDIT_FILES = \
-	if test -r '$(EDIT_FILES_LIST)'; then cat '$(EDIT_FILES_LIST)'; fi
+edit: $(EDIT_FILES_LIST)
+	vim $(NUMBER_OF_TABS) \
+		$(EDIT_FILES_LIST) \
+		$(shell $(call listfile,$(EDIT_FILES_LIST)))
 
-DAO_EDIT_FILES = $(shell $(LOAD_EDIT_FILES))
+$(EDIT_FILES_LIST):
+	@echo 'Create edit-files.list'
+	@(	echo '# A list of files you want to edit with Vim.'
+		echo '# They will appear in the order specified.'
+		echo 'ghc-build-opts.mk';
+		find ./ -name '*.hs' | sed -e 's,^[.]/,,'; \
+	) >edit-files.list
+
+####################################################################################################
+# Building the actual Dao intepreter program.
+
+DAO_BUILD_OPTS = -threaded
+DAO_COMPILE    = ghc -i'./src' $(DAO_BUILD_OPTS) --make
+
+DAO_PROJECT_FILES_LIST := project-files.list
+DAO_PROJECT_FILES      := $(shell $(call listfile,$(DAO_PROJECT_FILES_LIST)))
 
 ifndef DAO_PROJECT_FILES
 $(error $(DAO_PROJECT_FILES) list is empty)
 endif
 
-DAO_DEPENDS := $(patsubst $(star)%,%,$(DAO_PROJECT_FILES))
-DAO_MODULES := $(subst $(slash),$(dot),$(patsubst %.hs,%,$(DAO_DEPENDS)))
-DAO_GHCI_ADD_FILES := $(filter $(star)%,$(DAO_PROJECT_FILES))
-DAO_GHCI_MODULES := $(subst $(slash),$(dot),$(patsubst %.hs,%,$(patsubst $(star)%,%,$(DAO_GHCI_ADD_FILES))))
-
+DAO_DEPENDS     := $(patsubst $(star)%,%,$(DAO_PROJECT_FILES))
+DAO_MODULES     := $(subst $(slash),$(dot),$(patsubst %.hs,%,$(DAO_DEPENDS)))
 DAO_DEPENDS_SRC := $(addprefix src/,$(DAO_DEPENDS))
-
-.PHONEY:  edit  all  debug  clean
-
-####################################################################################################
-
-all:  dao
 
 dao: $(DAO_DEPENDS_SRC)
 	@echo 'Building project...'
@@ -70,12 +81,22 @@ debug: $(DAO_DEPENDS_SRC)
 clean:
 	rm dao; find . \( -name '*.o' -o -name '*.hi' \)  -delete -print
 
-calc: src/Dao/Calc.hs src/Dao/Object/Parsers.hs src/Dao/Combination.hs src/Dao/Combination/Parser.hs
-	$(DAO_COMPILE) src/Dao/Calc.hs -o ./calc
+####################################################################################################
+# Testing modules
 
-edit:
-	vim -p4 scratch.hs -c ':set autowrite autoread' \
-		ghc-build-opts.mk project-files.list \
-		$(DAO_DEPENDS_SRC) \
-		$(DAO_EDIT_FILES)
+PARSER_TEST_FILES := src/tests/Parser.hs
+parser-test: $(PARSER_TEST_FILES)
+	ghc --make -i'./src' $(PARSER_TEST_FILES) -o ./parser-test
+
+ENUM_SET_TEST_FILES := src/Dao/EnumSet.hs tests/I.hs tests/EQN.hs tests/TestEnumSet.hs
+enum-set-test: $(ENUM_SET_TEST_FILES)
+	ghc --make $(ENUM_SET_TEST_FILES) -o enum-set-test
+
+####################################################################################################
+# Other modules. These are mostly for experimenting with new ideas. If you have a new algorithm to
+# try, just start writing a new source file, make a target for it here, and modify the 'default'
+# target above to point to these targets.
+
+src/Dao/Regex.o: src/Dao/Regex.hs
+	ghc --make -i'./src' Dao.Regex
 

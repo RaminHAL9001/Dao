@@ -1,8 +1,7 @@
 # "project-files.list"
 # used by the GNU-Make script "ghc-build-opts.mk" to specify which
 # files are to be compiled by GHC.
-# 
-# Copyright (C) 2008-2012  Ramin Honary.
+# # Copyright (C) 2008-2012  Ramin Honary.
 # 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -23,10 +22,10 @@
 # character so the ".ghci" file will be updated with the files you wish
 # to debug.
 
-   Dao/Builtins.hs      Dao/Evaluator.hs      Dao/Object/Monad.hs    
+   Dao/Builtins.hs      Dao/Evaluator.hs      Dao/Object/Monad.hs    Dao/EnumSet.hs
    Dao/Combination.hs   Dao/Files.hs          Dao/Object/Parsers.hs  Dao/String.hs
    Dao/Debug.hs         Dao.hs                Dao/Object/Show.hs     Dao/Tree.hs
    Dao/Debug/OFF.hs     Dao/Object/Binary.hs  Dao/Parser.hs          Dao/Types.hs
    Dao/Debug/ON.hs      Dao/Object/Data.hs    Dao/Pattern.hs         Dao/Tasks.hs
-   Dao/Resource.hs      Dao/Object.hs         Dao/Predicate.hs      *dao-main.hs
+   Dao/Resource.hs      Dao/Object.hs         Dao/Predicate.hs       dao-main.hs
 

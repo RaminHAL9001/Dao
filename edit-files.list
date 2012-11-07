@@ -1,7 +1,7 @@
 # A list of files you want to edit with Vim.
 # They will appear in the order specified.
 ghc-build-opts.mk
-src/tests/Parser.hs
+tests/Parser.hs
 src/Dao/Regex.hs
 src/Dao/EnumSet.hs
 src/Dao/Tree.hs

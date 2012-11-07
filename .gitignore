@@ -1,5 +1,6 @@
 dao
 dao-debug.log
+scratch.hs
 .*.sw*
 *.hi
 *.o

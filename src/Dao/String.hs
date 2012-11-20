@@ -71,6 +71,10 @@ gatherVLInt = loop [] where
 -- | A type synonym for 'Data.ByteString.Lazy.UTF8.ByteString'
 newtype UStr = UStr { toUTF8ByteString :: U.ByteString } deriving (Eq, Ord, Typeable)
 
+-- | Return the length of the 'UStr'.
+ulength :: UStr -> Int
+ulength = U.length . toUTF8ByteString
+
 -- | Used to encode a 'UStr' data type without any prefix at all. The instantiation of 'UStr' into
 -- the 'Data.Binary.Binary' class places a prefix before every 'UStr' as it is serialized, allowing
 -- it to be used more safely in more complex data types.

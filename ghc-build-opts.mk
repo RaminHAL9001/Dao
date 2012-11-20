@@ -31,7 +31,7 @@ listfile = grep -v '^[[:space:]]*$(hash).*$$' $1
 ####################################################################################################
 # The default target
 
-default:  parser-test
+default: src/Dao/Object/NewParser.o
 
 ####################################################################################################
 # The 'edit' target conveniently opens all the files you want to edit in the vim editor.
@@ -84,12 +84,12 @@ clean:
 ####################################################################################################
 # Testing modules
 
-PARSER_TEST_FILES := src/tests/Parser.hs
+PARSER_TEST_FILES := tests/Parser.hs src/Dao/EnumSet.hs src/Dao/Regex.hs
 parser-test: $(PARSER_TEST_FILES)
 	ghc --make -i'./src' $(PARSER_TEST_FILES) -o ./parser-test
 
 ENUM_SET_TEST_FILES := src/Dao/EnumSet.hs tests/I.hs tests/EQN.hs tests/TestEnumSet.hs
-enum-set-test: $(ENUM_SET_TEST_FILES)
+enum-set-test:
 	ghc --make $(ENUM_SET_TEST_FILES) -o enum-set-test
 
 ####################################################################################################
@@ -97,6 +97,9 @@ enum-set-test: $(ENUM_SET_TEST_FILES)
 # try, just start writing a new source file, make a target for it here, and modify the 'default'
 # target above to point to these targets.
 
-src/Dao/Regex.o: src/Dao/Regex.hs
+src/Dao/Regex.o: src/Dao/Regex.hs src/Dao/String.hs src/Dao/EnumSet.hs
 	ghc --make -i'./src' Dao.Regex
+
+src/Dao/Object/NewParser.o: src/Dao/Object/NewParser.hs src/Dao/Regex.hs src/Dao/EnumSet.hs src/Dao/Object.hs
+	ghc --make -i'./src' Dao.Object.NewParser
 

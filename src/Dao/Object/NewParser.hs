@@ -137,17 +137,18 @@ parseString = do
     stops = foldl1 setUnion $ map point "\"\\\n"
     loop zx = do
       str <- regexMany (rxCharSet (setInvert stops))
-      if null str
-        then mplus (char '"' >> ok zx) (wrong zx "unterminated string constant")
-        else do
-          stop <- charSet stops
-          let got = zx++str++stop
-          case stop of
-            "\n" -> wrong got "string runs past end of line"
-            "\\" -> mplus (regex rxTrue >>= \c -> loop (got++c)) $ do
-              regexMany (rxUnion hspace (rxChar '\r')) >> regex (rxChar '\n')
-              wrong got "cannot use '\\' token to continue string to next line"
-            "\"" -> mplus (readsAll reads got >>= ok) (wrong got "invalid string constant")
+      let errmsg got = wrong got "string literal runs past end of input"
+          got = zx++str
+      flip mplus (errmsg got) $ do
+        stop <- charSet stops
+        got  <- return (got++stop)
+        case stop of
+          "\n" -> wrong got "string runs past end of line"
+          "\\" -> mplus (regex rxTrue >>= \c -> loop (got++c)) $ do
+            regexMany (rxUnion hspace (rxChar '\r')) >> regex (rxChar '\n')
+            wrong got "cannot use '\\' token to continue string to next line"
+          "\"" -> mplus (readsAll reads got >>= ok) (wrong got "invalid string constant")
+          _    -> errmsg got
 
 object :: Parser Object
 object = do

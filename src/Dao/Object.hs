@@ -123,6 +123,7 @@ data Reference
   | GlobalRef  { globalRef :: [Name] } -- ^ reference to in-memory data stored per 'Dao.Types.ExecUnit'.
   | ProgramRef { progID    :: Name , subRef    :: Name   } -- ^ reference to a portion of a 'Dao.Types.Program'.
   | FileRef    { fileID    :: UPath, globalRef :: [Name] } -- ^ reference to a variable in a 'Dao.Types.File'
+  | Subscript  { dereference :: Reference, subscriptValue :: Object } -- ^ reference to value at a subscripted slot in a container object
   | MetaRef    { dereference :: Reference } -- ^ wraps up a 'Reference' as a value that cannot be used as a reference.
   deriving (Eq, Ord, Show, Typeable)
 
@@ -269,6 +270,29 @@ commentString com = case com of
 -- comments that can be ignored without disgarding them.
 data Com a = Com a | ComBefore [Comment] a | ComAfter a [Comment] | ComAround [Comment] a [Comment]
   deriving (Eq, Ord, Show, Typeable)
+
+com :: [Comment] -> a -> [Comment] -> Com a
+com before a after = case before of
+  [] -> case after of
+    [] -> Com a
+    dx -> ComAfter a dx
+  cx -> case after of
+    [] -> ComBefore cx a
+    dx -> ComAround cx a dx
+
+setCommentBefore :: [Comment] -> Com a -> Com a
+setCommentBefore cx com = case com of
+  Com         a    -> ComBefore cx a
+  ComBefore _ a    -> ComBefore cx a
+  ComAfter    a dx -> ComAround cx a dx
+  ComAround _ a dx -> ComAround cx a dx
+
+setCommentAfter :: [Comment] -> Com a -> Com a
+setCommentAfter cx com = case com of
+  Com          a   -> ComAfter     a cx
+  ComBefore dx a   -> ComAround dx a cx
+  ComAfter     a _ -> ComAfter     a cx
+  ComAround dx a _ -> ComAround dx a cx
 
 unComment :: Com a -> a
 unComment com = case com of

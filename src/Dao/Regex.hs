@@ -27,7 +27,7 @@ module Dao.Regex
     -- * Primitive 'Regex's
     -- $Primitive_regexs
   , rxNull, rxEmpty, rxTrue, rxFalse, rxSequence, rxChoice
-  , rxChar, rxString, rxUStr, rxCharSet, rxUnion
+  , rxChar, rxString, rxUStr, rxCharSet, rxNotCharSet, rxUnion
     -- * Essential 'Regex's
     -- $Essential_Regexs
   , space, hspace, upper, lower, alpha, alpha_, digit
@@ -223,6 +223,10 @@ rxCharSet set = case set of
   set | set==infiniteSet -> RTrue
   set                    ->
     fromMaybe (RCharSet set) (setIsSingleton set >>= Just . RChar)
+
+-- | Like 'rxCharSet' but uses 'Dao.EnumSet.setInvert' to invert the set of characters.
+rxNotCharSet :: EnumSet Char -> Regex
+rxNotCharSet = rxCharSet . setInvert
 
 -- | This 'Regex' matches a string if every 'Regex' in the given list matches in order.
 rxSequence :: [Regex] -> Regex
@@ -766,8 +770,8 @@ regex = parseRegex matchRegex
 -- 'readsAll' to 'Backtrack', and instead evaluate to the equation
 -- @'Control.Monad.return' ('Data.Either.Right' selected)@ which returns the parsed string as a
 -- string rather than an integer.
-readsAll :: ReadS a -> String -> String -> Parser a
-readsAll reads str errmsg = case reads str of
+readsAll :: String -> ReadS a -> String -> Parser a
+readsAll errmsg reads str = case reads str of
   (success, ""):_ -> return success
   _               -> fail errmsg
 

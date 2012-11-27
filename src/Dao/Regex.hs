@@ -29,20 +29,25 @@ module Dao.Regex
   , rxNull, rxEmpty, rxTrue, rxFalse, rxSequence, rxChoice
   , rxChar, rxString, rxUStr, rxCharSet, rxUnion
     -- * Essential 'Regex's
-    -- $Essential_regexs
-  , space, hspace, upper, lower, alpha, digit
-  , alnum, alnum_, xdigit, spaceCtrl, ctrl, punct, printable, ascii
+    -- $Essential_Regexs
+  , space, hspace, upper, lower, alpha, alpha_, digit
+  , alnum, alnum_, xdigit, spaceCtrl, cntrl, punct, printable, ascii
+  , -- * The 'Parser' Monad
+    PValue(OK, Backtrack, PFail)
+  , Parser, runParser, ParseState, tokenStack
+    -- * Working With 'Tokens'
+    -- $Working_With_Tokens
+  , Token, startingLine, startingChar, startingColumn
+  , endingLine, endingChar, endingColumn, tokenChars, appendTokens
+  , backtrack, backtrackAll, getToken, getCombinedTokens
+  , beginToken, beginTokenIf, endToken, clearTokenStack, endAllTokens, stackIsEmpty, ok
     -- * 'Parser' Combinators
-    -- $Parser_combinators
-  , Parser, runParser, endOfInput, pfail, pcatch, regex, fromReadS, readsAll
+    -- $Parser_Combinators
+  , endOfInput, regex, readsAll
   , char, string, ustring, charSet, notCharSet, repeating
   , repeatRegex, zeroOrOne, regexMany, regexMany1, many, many1
-  , -- * Handling Undefined Values
-    Token, startingLine, startingChar, startingColumn
-  , endingLine, endingChar, endingColumn, tokenChars, newToken, append
-  , PValue(OK, Backtrack, PFail)
     -- * Miscelaneous
-  , spanAtWord
+  , fromReadS, choice, spanAtWord
   )
   where
 
@@ -250,8 +255,15 @@ rxChoice rx = case rx of
 
 ----------------------------------------------------------------------------------------------------
 
--- $Essential_regexs
--- These 'Regex's are not primitive, but they are essential to most applications.
+-- $Essential_Regexs
+-- These 'Regex's are not primitive, but they are essential to most applications. The names of these
+-- 'Regex's are similar or identical to the "character classes" provided by POSIX regular
+-- expressions. Please be careful not to confuse these with 'Parser' combinators provided below.
+-- Remember that a 'Parser' is a monadic type that uses 'Regex's to gather characters, 'Regex's
+-- alone do nothing. These are the only 'Regex's that do not start with @rx@, so do not confuse
+-- these with parser combinators, for example:
+-- @myParser = space >>= regexMany1 (rxChar '.') -- *TYPE ERROR!* @
+-- @myParser = regexMany space >> regexMany1 (rxChar '.') -- correct@
 
 -- | ASCII space, tab, carriage return, newline, and vertical tab.
 space :: Regex
@@ -299,8 +311,8 @@ spaceCtrl :: Regex
 spaceCtrl = RCharSet $ enumSet [segment '\x00' '\x1F', single '\x7F']
 
 -- | ASCII control characters, *excluding* 'whitespace's.
-ctrl :: Regex
-ctrl = RCharSet $ setDelete (rxToEnumSet ctrl) (rxToEnumSet space)
+cntrl :: Regex
+cntrl = RCharSet $ setDelete (rxToEnumSet cntrl) (rxToEnumSet space)
 
 -- | ASCII punctuation marks.
 punct :: Regex
@@ -389,46 +401,101 @@ rxUnion a b  = loop 0 a b where
 
 ----------------------------------------------------------------------------------------------------
 
--- not for export
+-- | Used internally by 'Parser's 'Control.Monad.State.State' monad.
 data ParseState
   = ParseState
     { parsedCharCount :: Word64
     , lineNumber      :: Word64
     , charColumn      :: Word
-    , parseInfoStack  :: [ParseInfo]
     , parseString     :: String
+    , tokenStack      :: [Token]
     }
 
--- | Error messages are reported by way of this data structure.
-data ParseInfo
-  = ParseInfo
-    { onLine   :: Word64
-    , onColumn :: Word
-    , message  :: UStr
-    }
+-- | 'PValue' is a "parsed value" or "predicate value" data type allows a parser to fail without
+-- causing backtracking. These values are used internally to the 'Parser's
+-- 'Control.Monad.State.State' monad, so you do not need to actually use these constructors in your
+-- parser.
+data PValue a
+  = Backtrack
+    -- ^ 'Backtrack' is a value used internally to the 'Parser's 'Control.Monad.State.State' monad
+    -- to signal a temporary parse failure, which indicates to the 'Parser' monad to stop parsing
+    -- and try another choice. Choices are specified by 'Control.Monad.mplus', for example
+    -- @'Control.Monad.mplus' a b@, where @a@ and @b@ are 'Parser's, will first try to evaluate @a@,
+    -- but if @b@ evaluates to 'mzero', this will internally return the 'Backtrack' value to the
+    -- 'Parser's 'Control.Monad.State.State' monad, which will cause @b@ to be evaluated. If the
+    -- entire parser evaluates to a 'Backtrack' this means the 'Parser' did not fail, but it did not
+    -- match the input string either, at which point you can have your 'Parser' evaluate 'PFail'
+    -- using the 'pfail' or 'Control.Monad.fail' functions.
+    --
+    -- Note that 'Backtrack'ing does not put back the characters that were taken from the input.
+    -- Those characters are still gone, parsing simply continues from the next alternative in the
+    -- branch. For example, the parser:
+    -- @'Control.Monad.mplus' (a >> b) c where@
+    -- @      a = 'manyRegex1' ('rxChar' \'A\')@
+    -- @      b = 'manyRegex1' ('rxChar' \'B\')@
+    -- @      c = 'manyRegex1' ('rxChar' \'C\')@
+    -- can evaluate against the string "AAACCC", and the whole string will be parsed and will return
+    -- a 'Token' with the characters "CCC". What happens is this: @a@ parses "AAA" and succeeds, the
+    -- remaining input string is now "CCC", @b@ tries to parse some "B" characters but fails and
+    -- 'Backtrack's. @c@ is the first choice after 'Backtrack'ing and successfully parses "CCC".
+    -- 
+    -- If you want to "undo" what was parsed by forcing characters back onto the input string, you
+    -- can use the 'backtrack' function. But this is inefficient and you should design your parser
+    -- to avoid this.
+  | PFail { failedToken :: Token, failedBecause :: UStr }
+    -- ^ If any 'Parser' function in your 'Parser' computation evaluates 'PFail', the whole parser
+    -- evaluates to 'PFail' so no characters will be parsed after that, unless the failure is caught
+    -- by 'Control.Monad.Error.catchError' or 'pcatch'.
+  | OK a -- ^ A parser evaluates to 'OK' when it evaluates 'Control.Monad.return'.
+  deriving (Eq, Ord, Show)
+
+instance Functor PValue where
+  fmap fn (OK    a  ) = OK (fn a)
+  fmap _  (PFail u v) = PFail u v
+  fmap _  Backtrack   = Backtrack
+
+instance Monad PValue where
+  return = OK
+  ma >>= mfn = case ma of
+    OK    a   -> mfn a
+    PFail u v -> PFail u v
+    Backtrack -> Backtrack
+
+instance MonadPlus PValue where
+  mzero = Backtrack
+  mplus ma mb = case ma of
+    Backtrack -> mb
+    PFail u v -> PFail u v
+    OK    a   -> OK    a
+
+----------------------------------------------------------------------------------------------------
+
+-- | 'Parser' instantiates 'Control.Monad.Monad', 'Control.Monad.MonadPlus', 'Data.Functor.Functor',
+-- 'Control.Monad.State.Class.MonadState', and 'Control.Monad.Error.MonadError'. Use
+-- 'Control.Monad.msum' to takes a list of parsers and try each one in turn, evaluating to the first
+-- parser that succeeds. Use ordinary monadic bind (@>>=@ and @>>@) to parse sequences. Use
+-- 'Control.Monad.mzero' to indicate non-matching, which will result in evaluating the next
+-- alternative parsers in a list of 'Control.Monad.msum' parsers, if any. Use 'pfail' to halt
+-- parsing with a descriptive error message. Use 'pcatch' to catch failed parsers, mark the error,
+-- and continue parsing.
+newtype Parser a = Parser{ parserStateMonad :: State ParseState (PValue a) }
 
 -- | Evaluate a 'Parser' with an input string. The evaluation yields a pair from the internal
 -- 'Control.Monad.State.Lazy.State' monad: the 'Prelude.fst' value of the pair is the result of the
 -- parse, or 'Data.Maybe.Nothing' if it failed, the 'Prelude.snd' value of the pair contains
 -- information about where a parse failed.
-runParser :: Parser a -> String -> (PValue a, [ParseInfo])
-runParser parser str = (result, info) where
+runParser :: Parser a -> String -> (PValue a, String)
+runParser parser str = (result, remainder) where
   init =
     ParseState
     { parsedCharCount = 0
     , lineNumber      = 1
     , charColumn      = 0
-    , parseInfoStack  = []
     , parseString     = str
+    , tokenStack      = []
     }
   (result, st) = runState (parserStateMonad parser) init
-  info = parseInfoStack st
-
--- | Instantiates 'Control.Monad.Monad', 'Control.Monad.MonadPlus', 'Data.Functor.Functor', and
--- 'Control.Monad.State.Class.MonadState'. Use 'Control.Monad.msum' to takes a list of parsers and
--- try each one in turn, evaluating to the first parser that succeeds. Use ordinary monadic bind
--- (@>>=@ and @>>@) to parse sequences.
-newtype Parser a = Parser{ parserStateMonad :: State ParseState (PValue a) }
+  remainder = parseString st
 
 instance Monad Parser where
   return a = Parser (return (OK a))
@@ -444,7 +511,9 @@ instance Monad Parser where
       Backtrack -> return Backtrack
       PFail u v -> return (PFail u v)
       OK    _   -> mb
-  fail msg = newToken >>= \token -> Parser{ parserStateMonad = return (PFail token (ustr msg)) }
+  fail msg = do
+    token <- getCombinedTokens
+    Parser{ parserStateMonad = return (PFail token (ustr msg)) }
 
 instance Functor Parser where
   fmap f (Parser ma) = Parser (fmap (fmap f) ma)
@@ -459,63 +528,224 @@ instance MonadPlus Parser where
       PFail u v -> return (PFail u v)
       OK    o   -> return (OK o)
 
+-- | For the most inefficient but most correct form of backtracking, you can
+-- 'Control.Monad.State.get' a parser state (which is an opaque type), then try a branch, then
+-- restore the parser state with 'Control.Monad.State.put'. Refer to the 'choice' function for more
+-- information about using the 'ParseState'.
 instance MonadState ParseState Parser where
   get = Parser (get >>= \st -> return (OK st))
   put st = Parser (put st >> return (OK ()))
   state f = Parser (state f >>= \a -> return (OK a))
 
+-- | 'throwError' is identical to 'Parser's instantiation of 'Control.Monad.fail'.
+--
+-- It is a good idea to evaluate 'clearTokenStack' before trying an operation which might throw an
+-- error, after an error is caught, and after evaluating 'catchError'. Remember, it is convienient
+-- to use 'ok' instead of 'Control.Monad.return' because 'ok' automatically calls
+-- 'clearTokenStack'.
+instance MonadError String Parser where
+  throwError = fail
+  catchError parser catcher = Parser $ do
+    value <- parserStateMonad parser
+    case value of
+      Backtrack -> return Backtrack
+      PFail u v -> parserStateMonad (catcher (uchars v))
+      OK    a   -> return (OK a)
+
+----------------------------------------------------------------------------------------------------
+
+-- $Working_With_Tokens
+-- The 'Parser' state has a place to save characters that have been parsed called the 'tokenStack'.
+-- It is modeled on the idea of a highlighting pen. As you scan through text, you can place the pen
+-- down, collecting characters to form a token. The 'beginToken' function starts collecting. You can
+-- call 'beginToken' multiple times in a row, each time a new token is created, like lifting the pen
+-- and then putting it back down at the same spot to create a visible break in the highlight. You
+-- can retrieve a copy of all characters highlighted by the current token with 'getToken' or you can
+-- un-highlight back to the most recent 'beginToken' with 'endToken'. You can end all highlighting
+-- with 'endAllTokens'.
+--
+-- Tokens are also used internally by the 'Parser' monad. The 'Control.Monad.fail' function will
+-- cause the token stack to be cleared, and an error message is created using the cleared tokens.
+--
+-- The token stack can also provide slightly more efficient 'backtrack'ing, although there is still
+-- a performance penalty.  You can 'backtrack' to the most recent 'beginToken' break, or you can
+-- 'backtrackAll' back to the very first 'beginToken'. 
+
+-- | 'Token's are created by 'Parser's like 'regex' or 'regexMany1'. You can combine tokens using
+-- 'append', 'appendTokens' and 'parseAppend'. There is no restriction on the order in which you
+-- combine tokens, but it is less confusing if you append tokens in the order in which they were
+-- parsed.  You can then use the 'tokenChars' function to retrieve the characters stored in the
+-- 'Token' to create data structures that can be returned by your 'Parser' function. You can also
+-- "undo" a parse by passing a 'Token' to the 'backtrack' function, which pushes the 'Token's
+-- characters back onto the head of the input string, however this is inefficient and should be
+-- avoided.
+data Token
+  = Token
+    { startingLine   :: Word64
+    , startingChar   :: Word64
+    , startingColumn :: Word
+    , endingLine     :: Word64
+    , endingChar     :: Word64
+    , endingColumn   :: Word
+    , tokenChars     :: String
+    }
+  deriving (Eq, Ord)
+
+instance Show Token where
+  show t = show (startingLine t) ++ ':' : show (startingColumn t) ++ ' ' : show (tokenChars t)
+
+-- | Append two 'Token's together. You can append tokens in the order in which they were parsed and
+-- pass them to 'backtrack' to "undo" a parse.
+appendTokens :: Token -> Token -> Token
+appendTokens token a =
+  token
+  { startingLine   = min (startingLine   token) (startingLine   a)
+  , startingChar   = min (startingChar   token) (startingChar   a)
+  , startingColumn = min (startingColumn token) (startingColumn a)
+  , endingLine     = max (endingLine     token) (endingLine     a)
+  , endingChar     = max (endingChar     token) (endingChar     a)
+  , endingColumn   = max (endingColumn   token) (endingColumn   a)
+  , tokenChars     = tokenChars token ++ tokenChars a
+  } 
+
+-- not for export --
+new_token :: Parser Token
+new_token = get >>= \st -> return $
+  Token
+  { startingLine = lineNumber st
+  , startingChar = parsedCharCount st
+  , startingColumn = charColumn st
+  , endingLine = lineNumber st
+  , endingChar = parsedCharCount st
+  , endingColumn = charColumn st
+  , tokenChars = ""
+  }
+
+
+-- | Push a new 'Token' onto the 'tokenStack' with the current line number and character count
+-- information.
+beginToken :: Parser ()
+beginToken = new_token >>= \t -> modify $ \st -> st{tokenStack = t : tokenStack st}
+
+-- | Push a new 'Token' onto the stack, but immediately pop it off and disgard it if the given
+-- parser 'Backtrack's.
+beginTokenIf :: Parser a -> Parser a
+beginTokenIf parser = beginToken >> mplus parser (endToken >> mzero)
+
+-- not for export --
+put_back :: Token -> [Token] -> Parser ()
+put_back t tx = modify $ \st ->
+  st{ parsedCharCount = startingChar t
+    , lineNumber = startingLine t
+    , charColumn = startingColumn t
+    , parseString = tokenChars t ++ parseString st
+    , tokenStack = tx
+    }
+
+-- not for export --
+token_stack :: Parser a -> ([Token] -> ParseState -> Parser a) -> Parser a
+token_stack onEmpty onFull = get >>= \st -> case tokenStack st of
+  [] -> onEmpty
+  tx -> onFull tx st
+
+-- not for export --
+concat_tokens :: [Token] -> Token
+concat_tokens = foldl1 appendTokens . reverse
+
+-- | This will "undo" all parsing to the most recent 'beginToken' call, taking the top 'Token' off
+-- of the 'tokenStack'. Once 'backtrack' modifies the internal 'Control.Monad.State.State', it
+-- evaluates to 'Control.Monad.mzero' which will trigger 'Backtrack'ing. If the 'tokenStack' is
+-- empty, the internal 'Control.Monad.State.State' is not modified, but it still evaluates to
+-- 'Control.Monad.mzero'.
+backtrack :: Parser ig
+backtrack = token_stack mzero $ \ (t:tx) _ -> put_back t tx >> mzero
+
+-- | This will "undo" all parsing all the way back to the very first 'beginToken' call in the
+-- 'parseStack', just like 'backtrack', except it always leaves the 'parseStack' empty.
+backtrackAll :: Parser ig
+backtrackAll = token_stack mzero $ \tx _ -> put_back (concat_tokens tx) [] >> mzero
+
+-- | Get a copy of the 'Token' at the top of the 'tokenStack', which was created by the most recent
+-- evaluation of the 'beginToken' function. Returns an empty 'Token' at the current position in the
+-- input string if the 'tokenStack' is empty.
+getToken :: Parser Token
+getToken = token_stack new_token (\ (t:tx) _ -> return t)
+
+-- | Get a copy of the whole 'tokenStack', but with every 'Token' combined together into a single
+-- 'Token'. Returns an empty 'Token' at the current position in the input string if the 'tokenStack'
+-- is empty.
+getCombinedTokens :: Parser Token
+getCombinedTokens = token_stack new_token $ \tx _ -> return (concat_tokens tx)
+
+-- | Take the 'Token' at the top of the 'tokenStack' off the stack and return it. Returns an empty
+-- 'Token' at the current position in the input string if the 'tokenStack' is empty.
+endToken :: Parser Token
+endToken = token_stack new_token (\ (t:tx) st -> put (st{tokenStack = tx}) >> return t)
+
+-- | Clear all 'Token's off of the 'tokenStack', returning them. Returns an empty 'Token' at the
+-- current position in the input string if the 'tokenStack' is empty.
+clearTokenStack :: Parser [Token]
+clearTokenStack = token_stack (return []) $ \tx st ->
+  put (st{tokenStack = tx}) >> return (reverse tx)
+
+-- | Clears all 'Token's off of the 'tokenStack', combines them together and returns a single token.
+-- Returns an empty 'Token' at the current position in the input string if the 'tokenStack' is
+-- empty.
+endAllTokens :: Parser Token
+endAllTokens = clearTokenStack >>= \tx ->
+  if null tx then new_token else return (foldl1 appendTokens tx)
+
+-- | Evaluates to 'Prelude.True' if the 'tokenStack' is empty.
+stackIsEmpty :: Parser Bool
+stackIsEmpty = token_stack (return True) (\ _ _ -> return False)
+
+-- | Calls 'endToken', poping the top 'Token' off the stack and disgards it, then returns the given
+-- value.
+ok :: a -> Parser a
+ok a = endToken >> return a
+
+----------------------------------------------------------------------------------------------------
+
+-- $Parser_Combinators
+-- Parsers create 'Token's by matching 'Regex's to the input string. Since 'Parser' is a monadic
+-- type, you can build very complex parsers from these basic combinators using the comfortable
+-- monadic notation.
+
 -- | Returns 'Prelude.True' if the parser is at the end of the input string (end-of-file).
 endOfInput :: Parser Bool
 endOfInput = get >>= \st -> return (null (parseString st))
 
-updateParseState :: String -> String -> ParseState -> ParseState
-updateParseState result remainder st = 
-  let ax = lines result
-  in  st{ parsedCharCount = parsedCharCount st + iLength result
-        , lineNumber = lineNumber st + iLength ax
-        , charColumn = case ax of
-            []  -> charColumn st
-            [a] -> charColumn st + iLength a
-            ax  -> iLength (head (reverse ax))
-        , parseString = remainder
-        }
-
 -- | Match the head of the input string to a 'Regex'. If it matches, evaluate to the resulting
 -- 'Prelude.String' that matched, or fail if the 'Regex' does not match.
-parseRegex :: (Regex -> String -> Maybe (String, String)) -> Regex -> Parser Token
+parseRegex :: (Regex -> String -> Maybe (String, String)) -> Regex -> Parser String
 parseRegex matchFunc r = do
-  token <- newToken
   match <- fmap (matchFunc r) (gets parseString)
   case match of
     Nothing              -> mzero
     Just (result, instr) -> do
       let ax = lines result
-      Parser $ state $ \st ->
-        let st' = updateParseState result instr st
-            token' =
-              token
-              { endingLine = lineNumber st'
-              , endingChar = parsedCharCount st'
-              , endingColumn = charColumn st'
-              , tokenChars = result
-              }
-        in  (OK token', st')
+      modify $ \st -> 
+        st{ parsedCharCount = parsedCharCount st + iLength result
+          , lineNumber      = lineNumber st + iLength ax
+          , charColumn      = case ax of
+              []  -> charColumn st
+              [a] -> charColumn st + iLength a
+              ax  -> iLength (head (reverse ax))
+          , parseString     = instr
+          , tokenStack      = case tokenStack st of
+              []   -> []
+              t:tx -> (:tx) $
+                t { endingLine   = lineNumber st
+                  , endingChar   = parsedCharCount st
+                  , endingColumn = charColumn st
+                  , tokenChars   = result ++ tokenChars t
+                  }
+          }
+      return result
 
 -- | Parse a 'Regex' exactly one time, or else fail, shorthand for @'parseRegex' 'matchRegex'@.
-regex :: Regex -> Parser Token
+regex :: Regex -> Parser String
 regex = parseRegex matchRegex
-
--- | Parse some object of a type that is an instance of 'Text.Read.Read' class using the
--- 'Text.Read.readsPrec' function. *WARNING:* there is no way to retrieve the exact characters
--- parsed by the 'Text.Read.ReadS' parser, so the line and column numbers, and the character count,
--- is not updated, which will really throw off these numbers. Try to avoid using this function.
-fromReadS :: Read a => String -> Int -> Parser a
-fromReadS errmsg prec = do
-  token <- newToken
-  str <- gets parseString
-  case readsPrec prec str of
-    (a, str):_ -> modify (\st -> st{parseString = str}) >> return a
-    []         -> pfail token errmsg
 
 -- | Often you may want to use a 'Text.Read.ReadS' parser that is already available for a data type
 -- that is an instance of the 'Text.Read.Read' class, or in the case of number parsing functions
@@ -526,59 +756,59 @@ fromReadS errmsg prec = do
 -- order to catch mistakes. For example say, if your language allows for variables starting with
 -- digits, like "1x, 2x" but you also can parse integer constants "1, 2". In this situation you
 -- could write an equation like this:
--- @do  selected <- 'many1' 'alnum'@
+-- @do  selected <- 'regexMany1' 'alnum' -- parse a string of numbers and letters@
 -- @    Control.Monad.msum $@
--- @        [ fmap Left ('readsAll' 'Text.Read.reads' selected)@
+-- @        [ fmap Left ('readsAll' 'Text.Read.reads' selected)@ -- backtracks if any letters were selected
 -- @        , return (Right selected)
 -- @        ]@
--- If 'readsAll' fails, the string is probably "1x" because the 'Prelude.Integer' parser will not
+-- If 'readsAll' backtracks, the string is probably "1x" because the 'Prelude.Integer' parser will not
 -- parse the whole string, rather than just "1" because "x" will be ignored. This will cause
--- 'readsAll' to fail, and instead evaluate to the equation
+-- 'readsAll' to 'Backtrack', and instead evaluate to the equation
 -- @'Control.Monad.return' ('Data.Either.Right' selected)@ which returns the parsed string as a
 -- string rather than an integer.
 readsAll :: ReadS a -> String -> String -> Parser a
-readsAll reads str errmsg = newToken >>= \token -> case reads str of
+readsAll reads str errmsg = case reads str of
   (success, ""):_ -> return success
-  _               -> pfail token errmsg
+  _               -> fail errmsg
 
 -- | Parse a single character, shorthand for @'parseRegex' . 'rxChar'@.
-char :: Char -> Parser Token
-char = parseRegex matchRegex . rxChar
+char :: Char -> Parser Char
+char = parseRegex matchRegex . rxChar >=> \ [c] -> return c
 
 -- | Parse a 'Dao.String.UStr', shorthand for @'parseRegex' . 'rxUStr'@.
-ustring :: UStr -> Parser Token
-ustring = parseRegex matchRegex . rxUStr
+ustring :: UStr -> Parser UStr
+ustring = parseRegex matchRegex . rxUStr >=> return . ustr
 
 -- | Parse a 'Prelude.String', shorthand for @'parseRegex' . 'rxString'@.
-string :: String -> Parser Token
+string :: String -> Parser String
 string = parseRegex matchRegex . rxString
 
 -- | Parse a @'Dao.EnumSet.EnumSet' 'Data.Char.Char'@, shorthand for @'parseRegex' . 'rxCharSet'@.
-charSet :: EnumSet Char -> Parser Token
+charSet :: EnumSet Char -> Parser String
 charSet = parseRegex matchRegex . rxCharSet
 
 -- | Parse a @'Dao.EnumSet.EnumSet' 'Data.Char.Char'@ but invert the set.
-notCharSet :: EnumSet Char -> Parser Token
+notCharSet :: EnumSet Char -> Parser String
 notCharSet = parseRegex matchRegex . rxCharSet . setInvert
 
 -- | Parse a 'Regex' repeatedly, but failing if the lower-limit number of matches does not match,
 -- and then succeding only an upper-limit number of times. The maximum number of times that a parseRegex
 -- will be matched is @lo + hi@ times, where @lo@ is the lower limit and @hi@ is the upper limit.
-repeatRegex :: Word -> Word -> Regex -> Parser Token
+repeatRegex :: Word -> Word -> Regex -> Parser String
 repeatRegex lo hi reg = parseRegex (matchRepeat lo hi) reg
 
 -- | Parse one or zero 'Regex's. Since this parser never fails, be careful when using it in
 -- recursive parsers.
-zeroOrOne :: Regex -> Parser Token
+zeroOrOne :: Regex -> Parser String
 zeroOrOne reg = repeatRegex 0 1 reg
 
 -- | Parse a regular expression as many times as possible, possibly zero times, and returning what
 -- was parsed. This parser never fails, so be careful when using it in recursive parsers.
-regexMany :: Regex -> Parser Token
-regexMany reg = mplus (regexMany1 reg) newToken
+regexMany :: Regex -> Parser String
+regexMany reg = mplus (regexMany1 reg) (return "")
 
 -- | Like 'regexMany' but fails if the parseRegex does not match at least one time.
-regexMany1 :: Regex -> Parser Token
+regexMany1 :: Regex -> Parser String
 regexMany1 reg = parseRegex (\reg str -> run str >>= loop) reg where
   run str = matchRepeat 1 maxBound reg str
   loop (a, str) =
@@ -616,105 +846,35 @@ many1 par = par >>= \a -> many par >>= \ax -> return (a:ax)
 
 ----------------------------------------------------------------------------------------------------
 
--- | Contains information about tokens that were parsed. This information is set by the 'newToken'
--- and 'append' functions, and can be used to report errors using the function called 'wrong'.
-data Token
-  = Token
-    { startingLine   :: Word64
-    , startingChar   :: Word64
-    , startingColumn :: Word
-    , endingLine     :: Word64
-    , endingChar     :: Word64
-    , endingColumn   :: Word
-    , tokenChars     :: String
-    }
-  deriving (Eq, Ord)
+-- | Parse some object of a type that is an instance of 'Text.Read.Read' class using the
+-- 'Text.Read.readsPrec' function. *WARNING:* there is no way to retrieve the exact characters
+-- parsed by the 'Text.Read.ReadS' parser, so the line and column numbers, and the character count,
+-- is not updated, which will really throw off these numbers. Try to avoid using this function,
+-- unless you do not care about reporting line/column numbers of where parsing failures occur. It is
+-- better to parse a token @t@ first, then use @'readsAll' ('tokenChars' t)@ instead.
+fromReadS :: Read a => String -> Int -> Parser a
+fromReadS errmsg prec = do
+  str <- gets parseString
+  case readsPrec prec str of
+    (a, str):_ -> modify (\st -> st{parseString = str}) >> return a
+    []         -> fail errmsg
 
-instance Show Token where
-  show t = show (startingLine t) ++ ':' : show (startingColumn t) ++ ' ' : show (tokenChars t)
-
--- | Create a new 'Token' with the current line number and character count information.
-newToken :: Parser Token
-newToken = get >>= \st -> return $
-  Token
-  { startingLine = lineNumber st
-  , startingChar = parsedCharCount st
-  , startingColumn = charColumn st
-  , endingLine = lineNumber st
-  , endingChar = parsedCharCount st
-  , endingColumn = charColumn st
-  , tokenChars = ""
-  }
-
--- | Append characters to a 'Token' with the result of another parser.
-append :: Token -> Parser Token -> Parser Token
-append token parser = parser >>= \b -> get >>= \st -> return $
-  token
-  { endingLine = endingLine b
-  , endingChar = endingChar b
-  , endingColumn = endingColumn b
-  , tokenChars = tokenChars token ++ tokenChars b
-  }
-
--- | This will "undo" what has been parsed. This is the most inefficient operation for any parser,
--- so it must be done explicitly. 'Token's created by a 'Parser' will not be placed back onto the
--- input string when a parser 'Backtrack's on 'Control.Monad.mzero'. You must plan your parser to do
--- 'backtrack'ing when it is necessary. Hopefully, your parser will be well-designed such that this
--- function will never be needed. *WARNING:* if you invoke backtracking with multiple tokens, there
--- is no way to guarantee that the line numbering, column counts, and character counts will be
--- accurate unless you bactrack every token you parsed in opposite of the order in which you parsed
--- them.
-backtrack :: Token -> Parser ()
-backtrack token = modify $ \st ->
-  st{ parsedCharCount = startingChar token
-    , lineNumber = startingLine token
-    , charColumn = startingColumn token
-    , parseString = tokenChars token ++ parseString st
-    }
-
--- | A "parsed value" or "predicate value" data type allows a parser to fail without causing
--- backtracking. How it works is simple: it allows a parse to succeede but the string it parsed to
--- be "undefined" in a descriptive way using the 'PFail' constructor. Values of this data type can
--- be 'Control.Monad.return'ed normally in a parser but returning an error message instead of a
--- value, it only returns the string that caused the failure and a decription of why. Parsing can
--- then continue normally, allowing for more errors to be caught.
-data PValue a
-  = Backtrack
-  | PFail { failedToken :: Token, failedBecause :: UStr }
-  | OK a
-  deriving (Eq, Ord, Show)
-
-instance Functor PValue where
-  fmap fn (OK    a  ) = OK (fn a)
-  fmap _  (PFail u v) = PFail u v
-  fmap _  Backtrack   = Backtrack
-
-instance Monad PValue where
-  return = OK
-  ma >>= mfn = case ma of
-    OK    a   -> mfn a
-    PFail u v -> PFail u v
-    Backtrack -> Backtrack
-
-instance MonadPlus PValue where
-  mzero = Backtrack
-  mplus ma mb = case ma of
-    Backtrack -> mb
-    PFail u v -> PFail u v
-    OK    a   -> OK    a
-
-instance MonadError (Token, String) Parser where
-  throwError (token, msg) = Parser{ parserStateMonad = return (PFail token (ustr msg)) }
-  catchError parser catcher = Parser $ do
-    value <- parserStateMonad parser
-    case value of
-      Backtrack -> return Backtrack
-      PFail u v -> parserStateMonad (catcher (u, uchars v))
-      OK    a   -> return (OK a)
-
-pfail :: Token -> String -> Parser ig
-pfail = curry throwError
-
-pcatch :: Parser a -> (Token -> String -> Parser a) -> Parser a
-pcatch parser catcher = catchError parser (uncurry catcher)
+-- | *WARNING:* never ever use the 'choice' function. If you need to use this function, it means
+-- your parser is very poorly designed. It is only here to educate programmers.
+--
+-- This function creates a copy of the entire parse state (including the input string), then tries
+-- each choice in the list of 'Parser's provided. If the first 'Parser' 'Backtrack's, the state is
+-- destroyed, and the copy of the state taken before the first 'Parser' was evaluated is restored.
+-- Then the next 'Parser' in the list is tried, as if the first parser never happened. Since Haskell
+-- uses lazy evaluation, the entire input string may not be copied when the state is, but then again
+-- it might be, incurring a tremendous performance penalty.
+--
+-- Efficient choice is provided by 'Control.Monad.msum' and 'Control.Monad.mplus', because
+-- 'Backtrack'ing does not require the entire state be copied.
+--
+-- The equation for this function is as follows:
+-- @\parsers -> get >>= \copyOfState -> msum (map (\nextParser -> put copyOfState >> nextParser) parsers)@
+choice :: [Parser a] -> Parser a
+choice parsers = get >>= \copyOfState ->
+  msum (map (\nextParser -> put copyOfState >> nextParser) parsers)
 

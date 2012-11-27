@@ -59,45 +59,43 @@ readBinaryInt str = if null str then [] else [loop 0 str] where
 
 -- | Parses 'Prelude.Integer's, 'Prelude.Double's, 'Complex.Complex's, and 'Data.Time.DiffTime's,
 -- and returns them as 'Dao.Object.Object's.
-numericObj :: Parser (PValue Object)
+numericObj :: Parser Object
 numericObj = do
-  sign <- zeroOrOne plusMinus
+  beginToken
+  sign <- plusMinus
   dgt  <- regexMany1 digit
-  let got = sign++dgt
-      errmsg got = wrong got "invalid integer expression"
+  let errmsg = fail "invalid integer expression"
   case dgt of
     "0"     -> do
       base <- zeroOrOne alpha
-      got  <- return (got++base)
-      let alt take base = regexMany1 take >>= parsePoint base take got sign
-      flip mplus (errmsg got) $ case base of
+      let alt take base = regexMany1 take >>= parsePoint base take sign
+      flip mplus errmsg $ case base of
         "b" -> alt digit  2
         "x" -> alt xdigit 16
-        ""  -> parsePoint 10 digit got sign ""
-        _   -> errmsg got
-    '0':dgt -> parsePoint 8  digit got sign dgt
-    dgt     -> parsePoint 10 digit got sign dgt
+        ""  -> parsePoint 10 digit sign ""
+        _   -> errmsg
+    '0':dgt -> parsePoint 8  digit sign dgt
+    dgt     -> parsePoint 10 digit sign dgt
   where
-    plusMinus = rxUnion (rxChar '+') (rxChar '-')
-    parsePoint base take got sign dgt = flip mplus (makeRational base got sign dgt "" "" "") $ do
+    plusMinus = zeroOrOne (rxUnion (rxChar '+') (rxChar '-'))
+    parsePoint base take sign dgt = flip mplus (makeRational base sign dgt "" "" "") $ do
       char '.'
-      rdx <- regexMany take
-      got <- return (got++'.':rdx)
-      let done = makeRational base got sign dgt rdx "" ""
+      rdx   <- regexMany take
+      let done = makeRational base sign dgt rdx "" ""
       if null rdx
-        then wrong got "expecting digits after point"
-        else if base==10 then mplus (parseExponent got sign dgt rdx) done else done
-    parseExponent got sign dgt rdx = do
+        then fail "expecting digits after point"
+        else if base==10 then mplus (parseExponent sign dgt rdx) done else done
+    parseExponent sign dgt rdx = do
       e       <- regex (rxUnion (rxChar 'e') (rxChar 'E'))
-      expSign <- zeroOrOne plusMinus
+      expSign <- plusMinus
       expDgt  <- regexMany digit
-      got     <- return (got++e++expSign++expDgt)
       if null expDgt
-        then  wrong got ("expecting numerical exponent after \""++e++expSign++"\" symbol")
-        else  if null (drop 5 expDgt) -- make sure the exponent is 5 digits or less.
-                then  makeRational 10 got sign dgt rdx expSign expDgt
-                else  wrong got "exponent is too large"
-    makeRational base got sign dgt rdx expSign expDgt = do
+        then  fail ("expecting numerical exponent after \""++e++expSign++"\" symbol")
+        else
+          if null (drop 5 expDgt) -- make sure the exponent is 5 digits or less.
+            then  makeRational 10 sign dgt rdx expSign expDgt
+            else  fail "exponent is too large"
+    makeRational base sign dgt rdx expSign expDgt = do
       let b = toInteger base % 1
           r = do
             x   <- rationalFromString base b dgt
@@ -107,50 +105,125 @@ numericObj = do
                 result = (if sign=="-" then negate else id) ((x+y)*(ibase^^exp))
             return (round result % 1 == result, result)
       case r of
-        Nothing -> wrong got ("incorrect digits used to form a base-"++show base++" number")
+        Nothing -> fail ("incorrect digits used to form a base-"++show base++" number")
         Just (r_is_an_integer, r) -> do
           typ <- zeroOrOne alpha
           case typ of
-            "U" -> ok $ OWord $ fromIntegral $ round r
-            "I" -> ok $ OInt $ round r
-            "L" -> ok $ OLong $ round r
+            "U" -> ok $ OWord (fromIntegral (round r))
+            "I" -> ok $ OInt  (round r)
+            "L" -> ok $ OLong (round r)
             "R" -> ok $ ORatio r
             "F" -> ok $ OFloat (fromRational r)
             "f" -> ok $ OFloat (fromRational r)
             "i" -> ok $ OComplex (0 :+ fromRational r)
             "j" -> ok $ OComplex (0 :+ fromRational r)
-            "s" -> ok $ ODiffTime $ fromRational r
+            "s" -> ok $ ODiffTime (fromRational r)
             ""  ->
               if r_is_an_integer
                 then
                   let i = round r
                   in  if fromIntegral (minBound::T_int) <= i && i <= fromIntegral (maxBound::T_int)
-                        then  ok $ OInt $ fromIntegral i
-                        else  ok $ OLong i
-                else ok (ORatio r)
-            typ -> wrong (got++typ) ("unknown numeric type "++show typ)
+                        then  return $ OInt $ fromIntegral i
+                        else  return $ OLong i
+                else return (ORatio r)
+            typ -> fail ("unknown numeric type "++show typ)
 
-parseString :: Parser (PValue String)
-parseString = do
-  char '"'
-  loop "\"" where
-    stops = foldl1 setUnion $ map point "\"\\\n"
-    loop zx = do
-      str <- regexMany (rxCharSet (setInvert stops))
-      let errmsg got = wrong got "string literal runs past end of input"
-          got = zx++str
-      flip mplus (errmsg got) $ do
-        stop <- charSet stops
-        got  <- return (got++stop)
-        case stop of
-          "\n" -> wrong got "string runs past end of line"
-          "\\" -> mplus (regex rxTrue >>= \c -> loop (got++c)) $ do
-            regexMany (rxUnion hspace (rxChar '\r')) >> regex (rxChar '\n')
-            wrong got "cannot use '\\' token to continue string to next line"
-          "\"" -> mplus (readsAll reads got >>= ok) (wrong got "invalid string constant")
-          _    -> errmsg got
+parseString :: Parser String
+parseString = beginTokenIf (char '"') >> loop where
+  stops = foldl1 setUnion $ map point "\"\\\n"
+  loop = do
+    regexMany (rxCharSet (setInvert stops))
+    let errmsg = fail "string literal runs past end of input"
+    flip mplus errmsg $ do
+      stop <- charSet stops
+      case stop of
+        "\n" -> fail "string runs past end of line"
+        "\\" -> mplus (regex rxTrue >> loop) $ do
+          regexMany (rxUnion hspace (rxChar '\r')) >> regex (rxChar '\n')
+          fail "cannot use '\\' token to continue string to next line"
+        "\"" -> getToken >>= readsAll "invalid string constant" reads . tokenChars >>= ok
+        _    -> errmsg
 
-object :: Parser Object
-object = do
-  return ONull
+parseComment :: Parser [Comment]
+parseComment = many comment where
+  comment = do
+    regexMany space -- ignore whitespace
+    beginTokenIf (char '/')
+    msum [endline, inline, backtrack]
+  endline = do
+    char '/'
+    ax <- regexMany (rxNotCharSet (point '\n'))
+    zeroOrOne (rxChar '\n')
+    t <- endToken
+    return (EndlineComment (ustr (tokenChars t)))
+  inline = do
+    regexMany1 (rxChar '*')
+    mplus (char '/' >> endToken >>= \t -> return (InlineComment (ustr (tokenChars t)))) $ do
+      regexMany (rxCharSet (setInvert (point '*')))
+      we_hit_the_end <- endOfInput
+      if we_hit_the_end
+        then fail "comment runs past end of input"
+        else inline
+
+parseListable :: Char -> Char -> Char -> Parser a -> Parser [Com a]
+parseListable open delim close getValue = char open >> loop [] where
+  loop zx = do
+    before <- parseComment
+    value  <- getValue
+    after  <- parseComment
+    let next = zx++[com before value after]
+    mplus (char delim >> loop next) (char close >> return next)
+
+parseKeywordOrName :: Parser String
+parseKeywordOrName = liftM2 (++) (regex alpha_) (regexMany alnum_)
+
+isKeyword :: String -> Bool
+isKeyword str = elem str $ words $ concat $
+  [ " if else try catch for in break continue return throw call function"
+  , " pattern regex import require"
+  , " static qtime const global"
+  ]
+
+isTypeword ::String -> Bool
+isTypeword str = elem str $ words $ concat $
+  [ " null true false type ref int word float long ratio complex"
+  , " string list set map tree intmap difftime date"
+  , " range regex pattern parser script"
+  ]
+
+isReservedWord :: String -> Bool
+isReservedWord str = isTypeword str || isKeyword str
+
+parseName :: String -> Parser Name
+parseName msg = do
+  beginToken
+  name <- parseKeywordOrName
+  if isReservedWord name
+    then fail msg
+    else ok (ustr name)
+
+expect :: String -> ([Comment] -> Parser a) -> Parser a
+expect msg withComment =
+  parseComment >>= \com -> regexMany space >> mplus (withComment com) (fail msg)
+
+----------------------------------------------------------------------------------------------------
+
+parseBracketedScript :: Parser [Com ScriptExpr]
+parseBracketedScript = beginTokenIf (char '{') >>= \com1 -> loop [] where
+  loop zx = mplus (regexMany space >> char '}' >> endToken >> return zx) $ do
+    com1 <- parseComment
+    expr <- regexMany space >> parseScriptExpr
+    com2 <- parseComment
+    loop (zx++[com com1 expr com2])
+
+parseScriptExpr :: Parser ScriptExpr
+parseScriptExpr = do
+  key <- parseKeywordOrName
+  msum $ map ($key) $ undefined -- TODO
+    -- [ ifStatement, tryStatement, forStatement, withStatement, continueStatement, returnStatement
+    -- , elseStatement, catchStatement, objectExprStatement
+    -- ]
+
+guardKeyword :: String -> Parser a -> String -> Parser a
+guardKeyword str par key = guard (key==str) >> par
 

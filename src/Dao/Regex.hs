@@ -682,9 +682,14 @@ getCombinedTokens :: Parser Token
 getCombinedTokens = token_stack new_token $ \tx _ -> return (concat_tokens tx)
 
 -- | Take the 'Token' at the top of the 'tokenStack' off the stack and return it. Returns an empty
--- 'Token' at the current position in the input string if the 'tokenStack' is empty.
+-- 'Token' at the current position in the input string if the 'tokenStack' is empty. If there are
+-- more 'Token's on the stack above the current 'Token', the current 'Token' is merged up into the
+-- next 'Token' in the stack before being returned.
 endToken :: Parser Token
-endToken = token_stack new_token (\ (t:tx) st -> put (st{tokenStack = tx}) >> return t)
+endToken = get >>= \st -> case tokenStack st of
+  []       -> new_token
+  [t]      -> return t
+  t1:t2:tx -> modify (\st -> st{tokenStack = appendTokens t2 t1 : tx}) >> return t1
 
 -- | Clear all 'Token's off of the 'tokenStack', returning them. Returns an empty 'Token' at the
 -- current position in the input string if the 'tokenStack' is empty.

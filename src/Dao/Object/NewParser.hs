@@ -165,12 +165,12 @@ parseComment = many comment where
         then fail "comment runs past end of input"
         else inline
 
-parseListable :: Char -> Char -> Char -> Parser a -> Parser [Com a]
-parseListable open delim close getValue = char open >> loop [] where
-  loop zx = do
-    before <- parseComment
-    value  <- getValue
-    after  <- parseComment
+parseListable :: String -> Char -> Char -> Char -> Parser a -> Parser [Com a]
+parseListable msg open delim close getValue = char open >> loop [] where
+  loop zx = mplus (char close >> return zx) $ expect msg $ \before -> do
+    value <- getValue
+    after <- parseComment
+    regexMany space
     let next = zx++[com before value after]
     mplus (char delim >> loop next) (char close >> return next)
 
@@ -199,8 +199,14 @@ parseName msg = do
   beginToken
   name <- parseKeywordOrName
   if isReservedWord name
-    then fail msg
+    then fail ("cannot use keyword as "++msg)
     else ok (ustr name)
+
+parseDotName :: Parser [Name]
+parseDotName = loop [] where
+  loop zx = flip mplus (return zx) $ do
+    beginTokenIf (char '.')
+    mplus (endToken >> parseName "global reference" >>= \z -> loop (zx++[z])) backtrack
 
 expect :: String -> ([Comment] -> Parser a) -> Parser a
 expect msg withComment =
@@ -216,14 +222,139 @@ parseBracketedScript = beginTokenIf (char '{') >>= \com1 -> loop [] where
     com2 <- parseComment
     loop (zx++[com com1 expr com2])
 
+-- | A 'KeywordComment' parser is a parser that immediately follows a keyword and an optional
+-- comment. The 'parseScriptExpr' will parse one keyword or label (it doesn't check which) and one
+-- comment, then pass both of these values in turn to a selection of parsers of this type.
+type NameComParser a = String -> [Comment] -> Parser a
+
+-- | This is the "entry point" for parsing a 'Dao.ObjectScriptExpr'.
 parseScriptExpr :: Parser ScriptExpr
 parseScriptExpr = do
   key <- parseKeywordOrName
-  msum $ map ($key) $ undefined -- TODO
-    -- [ ifStatement, tryStatement, forStatement, withStatement, continueStatement, returnStatement
-    -- , elseStatement, catchStatement, objectExprStatement
-    -- ]
+  com <- parseComment
+  let nameComParsers =
+        [ ifStatement, tryStatement, forStatement, withStatement
+        , continueStatement, returnStatement
+        , elseStatement, catchStatement, objectExprStatement
+        ]
+      otherParsers = [fmap (EvalObject . Com) parseObjectExpr]
+  msum ((map (\parser -> parser key com) nameComParsers) ++ otherParsers)
 
-guardKeyword :: String -> Parser a -> String -> Parser a
-guardKeyword str par key = guard (key==str) >> par
+guardKeyword :: String -> ([Comment] -> Parser a) -> NameComParser a
+guardKeyword requireKey par key com = guard (key==requireKey) >> par com
+
+expected_sub_for msg = fail $
+  "expecting bracketed sub-script expression for body of \""++msg++"\" statement"
+
+ifStatement :: NameComParser ScriptExpr
+ifStatement = guardKeyword "if" loop where
+  loop com1 = do
+    beginToken
+    objExpr <- mplus parseObjectExpr $
+      fail "expecting object expression for condition of \"if\" statement"
+    case objExpr of
+      ParenExpr objExpr -> do
+        endToken
+        expect (expected_sub_for "if") $ \com2 -> do
+          thenStmt <- parseBracketedScript
+          let done com3 com4 elseStmt = return $
+                IfThenElse (com com1 (unComment objExpr) com2) (com [] thenStmt com3) (com com4 elseStmt [])
+          com3 <- parseComment
+          flip mplus (done com3 [] []) $ do
+            string "else"
+            com4 <- parseComment
+            regexMany space 
+            msum $
+              [ string "if" >> parseComment >>= loop >>= done com3 com4 . (:[]) . Com
+              , parseBracketedScript >>= done com3 com4
+              , fail (expected_sub_for "else")
+              ]
+      _ -> fail "conditional expression must be in parentheses"
+
+tryStatement ::NameComParser ScriptExpr
+tryStatement = guardKeyword "try" $ \com1 -> do
+  tryStmt <- mplus parseBracketedScript (fail (expected_sub_for "try"))
+  let done com2 com3 name com4 catchStmt = return $
+        TryCatch (com com1 tryStmt []) (com com2 name com3) (com com4 catchStmt [])
+  mplus (done [] [] nil [] []) $ do
+    com2 <- parseComment
+    string "catch"
+    regexMany space
+    expect "\"catch\" statement must be followed by a variable name" $ \com3 -> do
+      name <- parseName "the name of the \"catch\" variable"
+      expect (expected_sub_for "catch") $ \com4 -> do
+        catchStmt <- parseBracketedScript
+        done com2 com3 name com4 catchStmt
+
+forStatement :: NameComParser ScriptExpr
+forStatement = guardKeyword "for" $ \com1 -> do
+  name <- mplus (parseName "the name of the \"for\" variable") $
+    fail "\"for\" statement must be followed by a variable name"
+  expect "expecting \"in\" statement" $ \com2 -> do
+    string "in"
+    expect "expecting object expression over which to iterate in \"for\" statement" $ \com3 -> do
+      iterExpr <- parseObjectExpr
+      expect "expecting bracketed sub-script expression for body of \"for\" statement" $ \com4 -> do
+        forStmt <- parseBracketedScript
+        return (ForLoop (com com1 name com2) (com com3 iterExpr []) (com com4 forStmt []))
+
+withStatement :: NameComParser ScriptExpr
+withStatement = guardKeyword "with" $ \com1 -> do
+  withObjExpr <- mplus parseObjectExpr $
+    fail "expecting object expression after \"with\" statement"
+  expect (expected_sub_for "with") $ \com2 -> do
+    with <- parseBracketedScript
+    return (WithDoc (com com1 withObjExpr []) (com com2 with []))
+
+returnStatement :: NameComParser ScriptExpr
+returnStatement key com1 = mplus retur thro where
+  retur = fn "return" key com1
+  thro  = fn "throw"  key com1
+  fn key = guardKeyword key $ \com1 -> do
+    objExpr <- mplus parseObjectExpr $
+      fail ("expecting object expression for \""++key++"\" statement")
+    expect ("\""++key++"\" statement must be terminated with a simicolon \";\" character") $ \com2 ->
+      char ';' >> return (ReturnExpr (Com (key=="return")) (com com1 objExpr com2) (Com ()))
+
+continueStatement :: NameComParser ScriptExpr
+continueStatement key com1 = mplus break continue where
+  break    = fn "break"    key com1
+  continue = fn "continue" key com1
+  fn str = guardKeyword str $ \com1 -> do
+    expect ("expecting \";\" or \"if(expression)\" after \""++str++"\" statement") $ \com1 -> do
+      let done com2 expr com3 =
+            return (ContinueExpr (com [] (str=="continue") com1) (com com2 expr com3) (Com ()))
+      mplus (char ';' >> done [] (Literal (Com ONull)) []) $ do
+        string "if"
+        expect ("expecting object expression after \""++str++"\" statement") $ \com2 -> do
+          objExpr <- parseObjectExpr
+          expect ("\""++str++"\" statement must be terminated with a simicolon \";\" character") $ \com3 ->
+            char ';' >> done com2 objExpr com3
+
+-- fails immediately, else and catch statements are parsed only after if and try statements.
+badStatement :: String -> String -> NameComParser ScriptExpr
+badStatement str msg key = flip (guardKeyword str) key $ do
+  fail ("\""++str++"\" statement must be preceeded by a valid \""++msg++"\" statement")
+
+elseStatement  = badStatement "else" "if"
+catchStatement = badStatement "catch" "try"
+
+objectExprStatement :: NameComParser ScriptExpr
+objectExprStatement name com = do
+  expr  <- parseWordObjectExpr name com
+  let done = return (EvalObject (Com expr))
+  case expr of
+    AssignExpr _ _   -> done
+    FuncCall   _ _   -> done
+    LambdaCall _ _ _ -> done
+    ParenExpr  _     -> done
+    _ -> fail "cannot use an object expression as a statement"
+
+----------------------------------------------------------------------------------------------------
+
+parseObjectExpr :: Parser ObjectExpr
+parseObjectExpr = undefined
+
+parseWordObjectExpr :: NameComParser ObjectExpr
+parseWordObjectExpr = undefined
 

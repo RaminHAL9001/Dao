@@ -208,11 +208,65 @@ parseDotName = loop [] where
     beginTokenIf (char '.')
     mplus (endToken >> parseName "global reference" >>= \z -> loop (zx++[z])) backtrack
 
-expect :: String -> ([Comment] -> Parser a) -> Parser a
-expect msg withComment =
-  parseComment >>= \com -> regexMany space >> mplus (withComment com) (fail msg)
+parseLocalGlobal :: Parser Reference
+parseLocalGlobal = mplus (fmap GlobalRef parseDotName) (fmap LocalRef (parseName "variable name"))
 
 ----------------------------------------------------------------------------------------------------
+
+-- | A 'KeywordComment' parser is a parser that starts by looking for a keyword, then parses an
+-- expression based on that keyword. It is left-factored, so before calling a function of this type,
+-- the keyword and first comment after the keyword must both be parsed by the calling context and
+-- passed to this function. The result is, many parsers of this type can be placed together in a
+-- single 'Control.Monad.msum' list, and each parser will be tried in turn but will not need to
+-- backtrack to the initial keyword, because the initial keyword and comment was parsed for it by
+-- the calling context.
+type NameComParser a = String -> [Comment] -> Parser a
+
+-- | Construct a 'NameComParser' by passing it a keyword and the function used to act on the
+-- keyword. For example:
+-- @'endStatement = 'guardKeyword' "end" (\comment -> return (EndStmt comment))@
+-- The 'NameComParser' takes a second 'Prelude.String' and @['Dao.Object.Comment']@ which are
+-- expected to be passed by the calling context. The string given will be checked against the
+-- keyword, if it matches, the comment received by the calling context is passed to the given
+-- parser, otherwise, it evaluates to 'Control.Monad.mzero', hence it is a guard function.
+guardKeyword :: String -> ([Comment] -> Parser a) -> NameComParser a
+guardKeyword requireKey par key com = guard (key==requireKey) >> par com
+
+-- | Create a new 'NameComParser' by applying it's own input arguments to a list of other
+-- 'NameComParser's and then passing this list to 'Control.Monad.msum', which will evaluate each
+-- parser in turn and evaluate to the first parser to succeed, hence the name "choice".
+nameComParserChoice :: [NameComParser a] -> NameComParser a
+nameComParserChoice choices initString comment = msum $
+  map (\choice -> choice initString comment) choices
+
+-- | A parser that fails completely if it does not meet the given "expectation" parser. This
+-- function takes an error message, and a parser function which takes a [Comment] as it's parameter.
+-- This function parses the comment, ignores trailing whitespace, then evaluates the "expectation"
+-- parser with the comment. If the "expectation" parser fails, the error message is used to
+-- 'Control.Monad.fail' the whole parser. This parsing pattern is so common that it warrants it's
+-- own function.
+expect :: String -> ([Comment] -> Parser a) -> Parser a
+expect msg expectation =
+  parseComment >>= \com -> regexMany space >> mplus (expectation com) (fail msg)
+
+----------------------------------------------------------------------------------------------------
+
+-- | This is the "entry point" for parsing a 'Dao.Object.ScriptExpr'.
+parseScriptExpr :: Parser ScriptExpr
+parseScriptExpr = do
+  key  <- parseKeywordOrName
+  com1 <- parseComment
+  mplus (nameComParserChoice choices key com1) $ do
+    beginToken
+    objExpr <- keywordObjectExpr key com1
+    expect "does not evaluate to a valid command" $ \com2 -> 
+      endToken >> objectExprStatement objExpr com2
+  where
+    choices =
+      [ ifStatement, tryStatement, forStatement, withStatement
+      , continueStatement, returnStatement
+      , elseStatement, catchStatement
+      ]
 
 parseBracketedScript :: Parser [Com ScriptExpr]
 parseBracketedScript = beginTokenIf (char '{') >>= \com1 -> loop [] where
@@ -221,27 +275,6 @@ parseBracketedScript = beginTokenIf (char '{') >>= \com1 -> loop [] where
     expr <- regexMany space >> parseScriptExpr
     com2 <- parseComment
     loop (zx++[com com1 expr com2])
-
--- | A 'KeywordComment' parser is a parser that immediately follows a keyword and an optional
--- comment. The 'parseScriptExpr' will parse one keyword or label (it doesn't check which) and one
--- comment, then pass both of these values in turn to a selection of parsers of this type.
-type NameComParser a = String -> [Comment] -> Parser a
-
--- | This is the "entry point" for parsing a 'Dao.ObjectScriptExpr'.
-parseScriptExpr :: Parser ScriptExpr
-parseScriptExpr = do
-  key <- parseKeywordOrName
-  com <- parseComment
-  let nameComParsers =
-        [ ifStatement, tryStatement, forStatement, withStatement
-        , continueStatement, returnStatement
-        , elseStatement, catchStatement, objectExprStatement
-        ]
-      otherParsers = [fmap (EvalObject . Com) parseObjectExpr]
-  msum ((map (\parser -> parser key com) nameComParsers) ++ otherParsers)
-
-guardKeyword :: String -> ([Comment] -> Parser a) -> NameComParser a
-guardKeyword requireKey par key com = guard (key==requireKey) >> par com
 
 expected_sub_for msg = fail $
   "expecting bracketed sub-script expression for body of \""++msg++"\" statement"
@@ -339,22 +372,98 @@ badStatement str msg key = flip (guardKeyword str) key $ do
 elseStatement  = badStatement "else" "if"
 catchStatement = badStatement "catch" "try"
 
-objectExprStatement :: NameComParser ScriptExpr
-objectExprStatement name com = do
-  expr  <- parseWordObjectExpr name com
-  let done = return (EvalObject (Com expr))
-  case expr of
+-- | This function takes an 'Dao.Object.ObjectExpr' and checks if it can be used as a statement. It
+-- then checks for a trailing simicolon or newline. Function calls with side-effects and assignment
+-- expressions can be used as stand-alone script expressions and will evaluate to a
+-- 'Dao.Object.ScriptExpr', whereas equations and literal expressions cannot, and will evaluate to a
+-- syntax error.
+objectExprStatement :: ObjectExpr -> [Comment] -> Parser ScriptExpr
+objectExprStatement initExpr com1 = loop (Com initExpr) where
+  done = do -- parse required terminating semicolon.
+    regexMany space
+    endline <- zeroOrOne (rxChar ';')
+    if null endline
+      then parseEquation initExpr com1 >>= flip objectExprStatement []
+      else return (EvalObject (com [] initExpr com1))
+  loop expr = case unComment expr of
     AssignExpr _ _   -> done
     FuncCall   _ _   -> done
     LambdaCall _ _ _ -> done
-    ParenExpr  _     -> done
+    ParenExpr  expr  -> loop expr
     _ -> fail "cannot use an object expression as a statement"
 
 ----------------------------------------------------------------------------------------------------
 
+-- This is the "entry point" for parsing 'Dao.Object.ObjectExpr's.
 parseObjectExpr :: Parser ObjectExpr
-parseObjectExpr = undefined
+parseObjectExpr = msum $
+  [ do -- parse an expression enclosed in parentheses
+        char '('
+        com1 <- parseComment
+        expr <- regexMany space >> parseObjectExpr
+        expect "missing close parenthases" $ \com2 ->
+          char ')' >> return (ParenExpr (com com1 expr com2))
+  , do -- low-prescedence unary operators, these are interpreted as 'FuncCall's.
+        op   <- regex (rxCharSetFromStr "@$")
+        expect ("\""++op++"\" operator must be followed by an object expression") $ \com1 -> do
+          expr <- parseObjectExpr
+          return (FuncCall (Com (ustr op)) (com com1 [Com expr] []))
+  , do -- parse an object expression that starts with a keyword or name.
+        key  <- parseKeywordOrName
+        com1 <- parseComment
+        regexMany space 
+        mplus (keywordObjectExpr key com1) $ -- if "key" isn't a keyword, treat it as a LocalRef
+          parseEquation (Literal (com com1 (ORef (LocalRef (ustr key))) [])) []
+  ]
 
-parseWordObjectExpr :: NameComParser ObjectExpr
-parseWordObjectExpr = undefined
+-- Here we collect all of the ObjectExpr parsers that start by looking for a keyword
+keywordObjectExpr :: NameComParser ObjectExpr
+keywordObjectExpr key com1 = msum $ map (\parser -> parser key com1) choices where
+  choices = [parseReference, parseLambdaCall, parseContainerObject]
+
+-- This need to be the last parser in a list of choices that parse an initial keyword because 
+parseReference :: NameComParser ObjectExpr
+parseReference key com1 = case key of
+  "local"  -> makeref True  LocalRef  e "local variable name"
+  "static" -> makeref True  StaticRef e "local variable name for static reference"
+  "global" -> makeref False e GlobalRef "global variable name"
+  "qtime"  -> makeref False e QTimeRef  "global variable name for query-time reference"
+  _        -> mzero
+  where
+    e = undefined
+    makeref typ nameCo namexCo msg = do -- 'typ'=True for LocalRef, 'typ'=False for GlobalRef
+      beginToken
+      ref <- parseLocalGlobal
+      let done co r = endToken >> parseEquation (Literal (com com1 (ORef (co r)) [])) []
+      case ref of
+        LocalRef  r | typ     -> done nameCo r
+        GlobalRef r | not typ -> done namexCo r
+        _                     -> fail ("expecting "++msg)
+
+parseLambdaCall :: NameComParser ObjectExpr
+parseLambdaCall = guardKeyword "call" $ \com1 ->
+  expect "expecting an expression after \"call\" statement" $ \com2 -> do
+    objExpr <- parseObjectExpr
+    expect "expecting a tuple containing arguments to be passed to the \"call\" statement" $ \com3 -> do
+      argv <- parseListable "argument for function call" '(' ',' ')' parseObjectExpr
+      return (LambdaCall (Com ()) (com com1 objExpr com2) (com com3 argv []))
+
+-- Parses objects that are complex expressions, like sets, lists, dicts, intmaps, and arrays.
+parseContainerObject :: NameComParser ObjectExpr
+parseContainerObject = nameComParserChoice [parseLambdaDef]
+
+parseLambdaDef :: NameComParser ObjectExpr
+parseLambdaDef key com1 = do
+  guard (key=="func" || key=="function")
+  expect "list of parameter variables after \"function\" statement" $ \com2 -> do
+    let msg = "function parameter variable"
+    params <- parseListable msg '(' ',' ')' (parseName msg)
+    expect (expected_sub_for "lambda function definition") $ \com3 -> do
+      script <- parseBracketedScript
+      return (LambdaExpr (Com ()) (com com1 params com2) (com com3 script []))
+
+-- Parses equations and assignment operations (which are similar). It takes an initial object, then
+-- begins scanning for operators.
+parseEquation :: ObjectExpr -> [Comment] -> Parser ObjectExpr
+parseEquation obj com1 = undefined -- TODO
 

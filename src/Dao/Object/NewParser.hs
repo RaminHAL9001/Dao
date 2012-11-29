@@ -222,6 +222,9 @@ parseLocalGlobal = mplus (fmap GlobalRef parseDotName) (fmap LocalRef (parseName
 -- the calling context.
 type NameComParser a = String -> [Comment] -> Parser a
 
+-- | Like NameComParser but takes an initial 'Dao.Object.ObjectExpr' and comment as it's parameters.
+type ObjComParser a = ObjectExpr -> [Comment] -> Parser a
+
 -- | Construct a 'NameComParser' by passing it a keyword and the function used to act on the
 -- keyword. For example:
 -- @'endStatement = 'guardKeyword' "end" (\comment -> return (EndStmt comment))@
@@ -377,7 +380,7 @@ catchStatement = badStatement "catch" "try"
 -- expressions can be used as stand-alone script expressions and will evaluate to a
 -- 'Dao.Object.ScriptExpr', whereas equations and literal expressions cannot, and will evaluate to a
 -- syntax error.
-objectExprStatement :: ObjectExpr -> [Comment] -> Parser ScriptExpr
+objectExprStatement :: ObjComParser ScriptExpr
 objectExprStatement initExpr com1 = loop (Com initExpr) where
   done = do -- parse required terminating semicolon.
     regexMany space
@@ -462,8 +465,32 @@ parseLambdaDef key com1 = do
       script <- parseBracketedScript
       return (LambdaExpr (Com ()) (com com1 params com2) (com com3 script []))
 
+parseArrayDef :: NameComParser ObjectExpr
+parseArrayDef = guardKeyword "array" $ \com1 -> do
+  beginToken
+  expect "(first,last) index bounds for array definition" $ \com2 -> do
+    bounds <- parseListable "array definition index bound value" '(' ',' ')' parseObjectExpr
+    let bad_bounds = fail "array defintion must have exactly two index bounds given"
+    case bounds of
+      [lo, hi] -> do
+        endToken
+        expect "initializing values for array defition" $ \com3 -> do
+          initValues <- parseListable "array initialing element" '{' ',' '}' parseObjectExpr
+          com4 <- parseComment
+          parseEquation (ArrayExpr (Com ()) (com com1 bounds com2) (com com3 initValues [])) com4
+      _       -> bad_bounds
+
+parseDictDef :: NameComParser ObjectExpr
+parseDictDef key com1 = do
+  guard (key=="dict" || key=="intmap")
+  let getItem = beginToken >> parseObjectExpr >>= \item -> case item of
+        AssignExpr _ _ -> endToken >> return item
+        _ -> fail ("each entry to "++key++" definition must assign a value to a key")
+  items <- parseListable ("items for "++key++" definition") '{' ',' '}' getItem
+  parseComment >>= parseEquation (DictExpr (Com (ustr key)) (com com1 items []))
+
 -- Parses equations and assignment operations (which are similar). It takes an initial object, then
 -- begins scanning for operators.
-parseEquation :: ObjectExpr -> [Comment] -> Parser ObjectExpr
+parseEquation :: ObjComParser ObjectExpr
 parseEquation obj com1 = undefined -- TODO
 

@@ -28,6 +28,7 @@ module Dao.Regex
     -- $Primitive_regexs
   , rxNull, rxEmpty, rxTrue, rxFalse, rxSequence, rxChoice
   , rxChar, rxString, rxUStr, rxCharSet, rxNotCharSet, rxUnion
+  , rxCharSetFromStr, rxNotCharSetFromStr
     -- * Essential 'Regex's
     -- $Essential_Regexs
   , space, hspace, upper, lower, alpha, alpha_, digit
@@ -224,9 +225,17 @@ rxCharSet set = case set of
   set                    ->
     fromMaybe (RCharSet set) (setIsSingleton set >>= Just . RChar)
 
+-- | Like 'rxCharSet' but creates a set from a given string of characters.
+rxCharSetFromStr :: String -> Regex
+rxCharSetFromStr str = rxCharSet (foldl setUnion emptySet (map point str))
+
 -- | Like 'rxCharSet' but uses 'Dao.EnumSet.setInvert' to invert the set of characters.
 rxNotCharSet :: EnumSet Char -> Regex
 rxNotCharSet = rxCharSet . setInvert
+
+-- | Like 'rxNotCharSet' but creates an inveted set from a given string of characters.
+rxNotCharSetFromStr :: String -> Regex
+rxNotCharSetFromStr str = rxNotCharSet (foldl setUnion emptySet (map point str))
 
 -- | This 'Regex' matches a string if every 'Regex' in the given list matches in order.
 rxSequence :: [Regex] -> Regex

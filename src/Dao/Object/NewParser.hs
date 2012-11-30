@@ -202,16 +202,19 @@ parseName msg = do
     then fail ("cannot use keyword as "++msg)
     else ok (ustr name)
 
-parseDotName :: Parser [Name]
-parseDotName = loop [] where
-  loop zx = flip mplus (return zx) $ do
+parseDotName :: Parser (Bool, [Name])
+parseDotName = mplus (parname >>= loop False . (:[])) (loop True []) where
+  parname = parseName "variable name"
+  loop leadingDot zx = flip mplus (if null zx then mzero else return (leadingDot, zx)) $ do
     beginTokenIf (char '.')
-    mplus (endToken >> parseName "global reference" >>= \z -> loop (zx++[z])) backtrack
+    mplus (endToken >> parname >>= \z -> loop leadingDot (zx++[z])) backtrack
 
 parseLocalGlobal :: Parser Reference
 parseLocalGlobal = msum $
-  [ fmap GlobalRef parseDotName
-  , fmap LocalRef (parseName "variable name")
+  [ parseDotName >>= \ (leadingDot, nx) -> case nx of
+      []  -> mzero
+      [n] -> return (if leadingDot then GlobalRef [n] else LocalRef n)
+      nx  -> return (GlobalRef nx)
   , do  beginToken -- a string reference
         char '$'
         flip mplus backtrack $ do
@@ -266,28 +269,32 @@ expect msg expectation =
 
 -- | This is the "entry point" for parsing a 'Dao.Object.ScriptExpr'.
 parseScriptExpr :: Parser ScriptExpr
-parseScriptExpr = do
-  key  <- parseKeywordOrName
-  com1 <- parseComment
-  mplus (nameComParserChoice choices key com1) $ do
-    beginToken
-    objExpr <- keywordObjectExpr key com1
-    expect "does not evaluate to a valid command" $ \com2 -> 
-      endToken >> objectExprStatement objExpr com2
-  where
-    choices =
-      [ ifStatement, tryStatement, forStatement, withStatement
-      , continueStatement, returnStatement
-      , elseStatement, catchStatement
-      ]
+parseScriptExpr = mplus keywordExpr objectExpr where
+  keywordExpr = do -- parse an expression that starts with a keyword
+    key  <- parseKeywordOrName
+    com1 <- parseComment
+    mplus (nameComParserChoice choices key com1) $ do
+      beginToken
+      objExpr <- keywordObjectExpr key com1
+      objExpr <- parseEquation objExpr []
+      expect "does not evaluate to a valid command" $ \com2 -> 
+        endToken >> objectExprStatement objExpr com2
+  choices = -- these are all the kinds of expressions that start with a keyword
+    [ ifStatement, tryStatement, forStatement, withStatement
+    , continueStatement, returnStatement
+    , elseStatement, catchStatement
+    ]
+  objectExpr = do
+    objExpr <- parseObjectExpr
+    com1    <- parseComment
+    objectExprStatement objExpr com1
 
 parseBracketedScript :: Parser [Com ScriptExpr]
 parseBracketedScript = beginTokenIf (char '{') >>= \com1 -> loop [] where
-  loop zx = mplus (regexMany space >> char '}' >> endToken >> return zx) $ do
-    com1 <- parseComment
-    expr <- regexMany space >> parseScriptExpr
-    com2 <- parseComment
-    loop (zx++[com com1 expr com2])
+  loop zx = mplus (regexMany space >> char '}' >> endToken >> return zx) $
+    expect "expecting script expression" $ \com1 -> do
+      expr <- parseScriptExpr
+      loop (zx++[com com1 expr []])
 
 expected_sub_for msg = fail $
   "expecting bracketed sub-script expression for body of \""++msg++"\" statement"
@@ -320,17 +327,17 @@ ifStatement = guardKeyword "if" loop where
 tryStatement ::NameComParser ScriptExpr
 tryStatement = guardKeyword "try" $ \com1 -> do
   tryStmt <- mplus parseBracketedScript (fail (expected_sub_for "try"))
-  let done com2 com3 name com4 catchStmt = return $
+  com2 <- parseComment
+  let done com3 name com4 catchStmt = return $
         TryCatch (com com1 tryStmt []) (com com2 name com3) (com com4 catchStmt [])
-  mplus (done [] [] nil [] []) $ do
-    com2 <- parseComment
+  flip mplus (done [] nil [] []) $ do
     string "catch"
     regexMany space
     expect "\"catch\" statement must be followed by a variable name" $ \com3 -> do
       name <- parseName "the name of the \"catch\" variable"
       expect (expected_sub_for "catch") $ \com4 -> do
         catchStmt <- parseBracketedScript
-        done com2 com3 name com4 catchStmt
+        done com3 name com4 catchStmt
 
 forStatement :: NameComParser ScriptExpr
 forStatement = guardKeyword "for" $ \com1 -> do
@@ -353,33 +360,35 @@ withStatement = guardKeyword "with" $ \com1 -> do
     return (WithDoc (com com1 withObjExpr []) (com com2 with []))
 
 returnStatement :: NameComParser ScriptExpr
-returnStatement key com1 = mplus retur thro where
-  retur = fn "return" key com1
-  thro  = fn "throw"  key com1
-  fn key = guardKeyword key $ \com1 -> do
-    objExpr <- mplus parseObjectExpr $
-      fail ("expecting object expression for \""++key++"\" statement")
-    expect ("\""++key++"\" statement must be terminated with a simicolon \";\" character") $ \com2 ->
-      char ';' >> return (ReturnExpr (Com (key=="return")) (com com1 objExpr com2) (Com ()))
+returnStatement key com1 = do
+  guard (key=="return" || key=="throw")
+  regexMany space
+  let nullExpr = com com1 (Literal (Com ONull)) []
+      semicolon = "expecting terminating semicolon \";\" after return statement"
+      done comObjExpr = return (ReturnExpr (Com (key=="return")) comObjExpr (Com ()))
+  msum $
+    [ do  objExpr <- parseObjectExpr
+          expect semicolon (\com2 -> char ';' >> done (com com1 objExpr com2))
+    , char ';' >> done nullExpr
+    , fail semicolon
+    ]
 
 continueStatement :: NameComParser ScriptExpr
-continueStatement key com1 = mplus break continue where
-  break    = fn "break"    key com1
-  continue = fn "continue" key com1
-  fn str = guardKeyword str $ \com1 -> do
-    expect ("expecting \";\" or \"if(expression)\" after \""++str++"\" statement") $ \com1 -> do
-      let done com2 expr com3 =
-            return (ContinueExpr (com [] (str=="continue") com1) (com com2 expr com3) (Com ()))
-      mplus (char ';' >> done [] (Literal (Com ONull)) []) $ do
-        string "if"
-        expect ("expecting object expression after \""++str++"\" statement") $ \com2 -> do
-          objExpr <- parseObjectExpr
-          expect ("\""++str++"\" statement must be terminated with a simicolon \";\" character") $ \com3 ->
-            char ';' >> done com2 objExpr com3
+continueStatement key com1 = do
+  guard (key=="break" || key=="continue")
+  let done com2 expr com3 =
+        return (ContinueExpr (com [] (key=="continue") com1) (com com2 expr com3) (Com ()))
+  mplus (char ';' >> done [] (Literal (Com ONull)) []) $ do
+    string "if"
+    expect ("expecting object expression after "++key++"-if statement") $ \com2 -> do
+      objExpr <- parseObjectExpr
+      expect ("\""++key++"\" statement must be terminated with a simicolon \";\" character") $ \com3 ->
+        char ';' >> done com2 objExpr com3
 
 -- fails immediately, else and catch statements are parsed only after if and try statements.
 badStatement :: String -> String -> NameComParser ScriptExpr
-badStatement str msg key = flip (guardKeyword str) key $ do
+badStatement str msg key com1 = do
+  guard (str==key)
   fail ("\""++str++"\" statement must be preceeded by a valid \""++msg++"\" statement")
 
 elseStatement  = badStatement "else" "if"
@@ -392,9 +401,10 @@ catchStatement = badStatement "catch" "try"
 -- syntax error.
 objectExprStatement :: ObjComParser ScriptExpr
 objectExprStatement initExpr com1 = loop (Com initExpr) where
-  done = return (EvalObject (com [] initExpr com1))
+  done = expect "terminating semicolon \";\" after statement" $ \com2 -> 
+    char ';' >> return (EvalObject (appendComments (com [] initExpr com1) com2))
   loop expr = case unComment expr of
-    AssignExpr _ _   -> done
+    AssignExpr _ _ _ -> done
     FuncCall   _ _   -> done
     LambdaCall _ _ _ -> done
     ParenExpr  expr  -> loop expr
@@ -407,32 +417,37 @@ parseObjectExpr :: Parser ObjectExpr
 parseObjectExpr = do
   obj  <- parseNonEquation
   com1 <- parseComment
-  loop [] obj com1
-  where
-    loop objx obj com1 = msum $
-      [ do -- high-prescedence unary operators, these are interpreted as 'FuncCall's.
-            op   <- regex (rxCharSetFromStr "@$!~")
-            expect ("\""++op++"\" operator must be followed by an object expression") $ \com1 -> do
-              expr <- parseNonEquation
-              return (FuncCall (Com (ustr op)) (com com1 [Com expr] []))
-      , do -- Parse binary operator and create an equation
-            op <- msum $ map string $ words $ concat $
-              [ "<<= >>= != == <= >= += -= && || *= /= %= &= |= ^= << >> "
-              , "= + - * / % & | < > ^"
-              ]
-            expect ("some object expression after the \""++op++"\" operator") $ \com2 -> do
-              next <- parseNonEquation
-              com3 <- parseComment
-              regexMany space
-              loop (objx++[Right (com com1 obj com2), Left (ustr op)]) next com3
-      , return $ makeEqn (objx++[Right (Com obj)]) com1
-      ]
-    makeEqn objx com1 = case applyPrescedence objx of
-      [Right obj] -> ParenExpr (appendComments obj com1)
-      _ ->  error $ ("unknown prescedence for operators:"++) $ concat $
-              flip concatMap objx $ \obj -> case obj of
-                Left obj -> [' ':uchars obj]
-                _        -> []
+  parseEquation obj com1
+
+-- This basically parses any type of 'Dao.Object.ObjectExpr', but it is left-factored so it can be
+-- called from functions that have already parsed an 'ObjectExpr' but don't want to backtrack.
+parseEquation :: ObjComParser ObjectExpr
+parseEquation obj com1 = loop [] obj com1 where
+  loop objx obj com1 = msum $
+    [ do -- high-prescedence unary operators, these are interpreted as 'FuncCall's.
+          op <- regex (rxCharSetFromStr "@$!~")
+          expect ("\""++op++"\" operator must be followed by an object expression") $ \com1 -> do
+            expr <- parseNonEquation
+            com2 <- parseComment
+            regexMany space
+            loop objx (FuncCall (Com (ustr op)) (com com1 [Com expr] [])) com2
+    , do -- Parse binary operator and create an equation
+          op <- msum $ map string $ words $ concat $
+            [ " <<= >>= != == <= >= += -= && || *= /= %= &= |= ^= << >> -> "
+            , " = + - * / % & | < > ^ "
+            ]
+          expect ("some object expression after the \""++op++"\" operator") $ \com2 -> do
+            next <- parseNonEquation
+            com3 <- parseComment
+            regexMany space
+            loop (objx++[Right (com com1 obj com2), Left (ustr op)]) next com3
+    , return $ case applyPrescedence (objx++[Right (com [] obj com1)]) of
+        [Right obj] -> ParenExpr (appendComments obj com1)
+        _ ->  error $ ("unknown prescedence for operators:"++) $ concat $
+                flip concatMap objx $ \obj -> case obj of
+                  Left obj -> [' ':uchars obj]
+                  _        -> []
+    ]
 
 -- Operator prescedence mimics the C and C++ family of languages.
 -- 'applyPrescedence' scans from highest to lowest prescedence, essentially creating a function
@@ -442,23 +457,32 @@ parseObjectExpr = do
 -- 'scanBind' first. Therefore, listing the operators by prescedence (from left to right) means
 -- listing them from lowest to highest prescedence.
 applyPrescedence :: [Either Name (Com ObjectExpr)] -> [Either Name (Com ObjectExpr)]
-applyPrescedence = foldl (.) id $ map (scanBind . words) $
-  [ "= += -= *= /= %= &= |= <<= >>= ^=" -- operators listed from lowest to highest prescedence
-  , "||", "&&", "|", "^", "&", "!= =="
-  , "<= >= < >", "<< >>", "+ -", "* / %"
-  ]
+applyPrescedence = foldl (.) assignOp $ map (scanBind Equation . words) $ opPrecTable where
+  assignOp = scanBind AssignExpr $ -- lowest prescedence, used as initial value to fold
+    words "= += -= *= /= %= &= |= <<= >>= ^="
+  opPrecTable = -- operators listed from lowest to highest prescedence
+    [ "||", "&&", "|", "^", "&", "!= =="
+    , "<= >= < >", "<< >>", "+ -", "* / %", "->"
+    ]
 
 -- Given a list of operators, scans through an equation of the form
 -- (Right exprA : Left op : Right exprB : ...) 
 -- and if the 'op' is in the list of operators, the 'exprA' and 'exprB' are bound together into an
 -- 'Dao.Object.Equation' data structure. If 'op' is not in the list of operators, it is passed over.
-scanBind :: [String] -> [Either Name (Com ObjectExpr)] -> [Either Name (Com ObjectExpr)]
-scanBind ops objx = case objx of
+scanBind
+  :: (Com ObjectExpr -> Com Name -> Com ObjectExpr -> ObjectExpr)
+  -> [String]
+  -> [Either Name (Com ObjectExpr)]
+  -> [Either Name (Com ObjectExpr)]
+scanBind constructor ops objx = case objx of
   [Right o] -> [Right o]
   Right a : Left op : Right b : objx ->
     if elem (uchars op) ops -- if this operator is of the prescedence we are looking for
-      then scanBind ops (Right (Com $ Equation a (Com op) b) : objx) -- "bind" the operands to it
-      else Right a : Left op : scanBind ops objx -- otherwise ignore this operator
+      then scanBind constructor ops $ -- "bind" the operands to it
+              (Right (Com $ constructor a (Com op) b) : objx)
+      else Right a : Left op : -- otherwise ignore this operator
+             scanBind constructor ops (Right b : objx)
+  objx -> error ("scanBind failed:\n"++show objx)
 
 -- Parse every kind of 'Dao.Object.ObjectExpr' except for recursive 'Dao.Object.Equation'
 -- expressions. This includes string and integer literals, parenthetical expressions, function calls
@@ -558,7 +582,7 @@ parseListSetDictIntmap :: NameComParser ObjectExpr
 parseListSetDictIntmap key com1 = do
   guard (key=="dict" || key=="intmap" || key=="set" || key=="list")
   let getDictItem = beginToken >> parseObjectExpr >>= \item -> case item of
-        AssignExpr _ _ -> endToken >> return item
+        AssignExpr _ _ _ -> endToken >> return item
         _ -> fail ("each entry to "++key++" definition must assign a value to a key")
       getItem = if key=="dict" || key=="intmap" then getDictItem else parseObjectExpr
   items <- parseListable ("items for "++key++" definition") '{' ',' '}' getItem
@@ -569,9 +593,4 @@ parseNonKeyword :: NameComParser ObjectExpr
 parseNonKeyword name com1 = flip mplus (return (Literal $ Com $ ORef $ LocalRef $ ustr name)) $ do
   argv <- parseListable ("parameters to call function \""++name++"\"") '(' ',' ')' parseObjectExpr
   return (FuncCall (Com (ustr name)) (com com1 argv []))
-
--- Parses equations and assignment operations (which are similar). It takes an initial object, then
--- begins scanning for operators.
-parseEquation :: ObjComParser ObjectExpr
-parseEquation obj com1 = undefined -- TODO
 

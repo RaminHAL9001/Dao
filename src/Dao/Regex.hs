@@ -756,7 +756,7 @@ parseRegex matchFunc r = do
                 t { endingLine   = lineNumber st
                   , endingChar   = parsedCharCount st
                   , endingColumn = charColumn st
-                  , tokenChars   = result ++ tokenChars t
+                  , tokenChars   = tokenChars t ++ result
                   }
           }
       return result

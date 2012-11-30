@@ -209,6 +209,13 @@ parseDotName = mplus (parname >>= loop False . (:[])) (loop True []) where
     beginTokenIf (char '.')
     mplus (endToken >> parname >>= \z -> loop leadingDot (zx++[z])) backtrack
 
+parseIntRef :: Parser Reference
+parseIntRef = do
+  beginToken
+  char '$'
+  int <- regexMany alnum_
+  fmap IntRef (readsAll "integer reference" reads int) >>= ok
+
 parseLocalGlobal :: Parser Reference
 parseLocalGlobal = msum $
   [ parseDotName >>= \ (leadingDot, nx) -> case nx of
@@ -492,7 +499,8 @@ scanBind constructor ops objx = case objx of
 -- therefore the highest prescedence of binding parsed tokens is this function.
 parseNonEquation :: Parser ObjectExpr
 parseNonEquation = msum $
-  [ do -- parse an expression enclosed in parentheses
+  [ fmap (Literal . Com . ORef) parseIntRef
+  , do -- parse an expression enclosed in parentheses
         char '('
         com1 <- parseComment
         expr <- regexMany space >> parseObjectExpr

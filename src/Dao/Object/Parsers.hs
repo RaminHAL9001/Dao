@@ -247,7 +247,7 @@ defExpr c iden cons term = do
 
 -- | Used to construct @dict@ and @intmap@ types.
 objAssignExpr :: Parser ObjectExpr
-objAssignExpr = defExpr ':' objectExpr AssignExpr (return ())
+objAssignExpr = defExpr '=' objectExpr (\a -> AssignExpr a (Com $ ustr "=")) (return ())
 
 dictExpr :: Parser ObjectExpr
 dictExpr = first [fn "dict" "dictionary expression", fn "intmap" "intmap expression"] where
@@ -363,7 +363,7 @@ objectExpr = first $ -- first check for an assignment expression has the lowest 
   [ do  left <- withComments equationExpr
         munch whitespace >> string "=" >> munch whitespace
         right <- withComments objectExpr
-        return (AssignExpr left right)
+        return (AssignExpr left (Com $ ustr "=") right)
   , equationExpr
   ]
 

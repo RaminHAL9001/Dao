@@ -553,7 +553,7 @@ cacheReference r obj = case obj of
 evalObject :: Com ObjectExpr -> ExecScript Object
 evalObject obj = case unComment obj of
   Literal         o              -> return (unComment o)
-  AssignExpr    nm  expr        -> do
+  AssignExpr    nm  op  expr    -> do -- TODO, needs to be redefined to execute assigments or updates according to the 'op' param
     nm   <- evalObject nm
     case nm of
       ORef (MetaRef _) -> error "cannot assign to a reference-to-a-reference"
@@ -602,7 +602,7 @@ evalObject obj = case unComment obj of
         args = unComment args'
         loop fn = forM args $ \arg -> do
             case unComment arg of
-              AssignExpr a b -> evalObject a >>= \a -> evalObject b >>= \b -> fn a b
+              AssignExpr a op b -> evalObject a >>= \a -> evalObject b >>= \b -> fn a b -- TODO: needs to update the dict expression according to the 'op' parameter
               _ -> simpleError $ show cons ++
                      " must be constructed from a comma-separated list of assignment expressions"
         intmap o x = do

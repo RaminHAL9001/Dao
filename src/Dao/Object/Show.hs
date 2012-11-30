@@ -178,13 +178,14 @@ showObjectExpr idnc obj = showCom loop idnc obj where
   tuple sh idnc args = 
     '(':showCom (\idnc args -> intercalate ", " (map (sh idnc) args)) (idnc+1) args++")"
   assignExpr idnc expr = case expr of
-    AssignExpr   ref  obj       -> showObjectExpr idnc ref ++ ": " ++ showObjectExpr (idnc+1) obj
+    AssignExpr   ref  op  obj   ->
+      showObjectExpr idnc ref ++ showCom (\_ -> uchars) idnc op ++ showObjectExpr (idnc+1) obj
     _ -> loop idnc expr
   dictExpr idnc objx = intercalate (",\n"++indent idnc) (map (showCom assignExpr (idnc+1)) objx)
   loop idnc obj = case obj of
     Literal      obj            -> showCom showObj idnc obj
-    AssignExpr   ref      obj   ->
-      showObjectExpr idnc ref ++ " = " ++ showObjectExpr (idnc+1) obj
+    AssignExpr   ref op   obj   ->
+      showObjectExpr idnc ref ++ showCom (\_ -> uchars) idnc op ++ showObjectExpr (idnc+1) obj
     FuncCall     name args      ->
       showCom (\_ -> uchars) idnc name ++ tuple showObjectExpr idnc args
     LambdaCall   call obj  args ->

@@ -423,7 +423,7 @@ getComList = getComListWith get
 instance Binary ObjectExpr where
   put o = case o of
     Literal      a     -> x 0x41 $ putCom a
-    AssignExpr   a b   -> x 0x42 $ putCom a
+    AssignExpr   a b c -> x 0x42 $ putCom a >> putCom b >> putCom c
     FuncCall     a b   -> x 0x43 $ putCom a >> putComList b
     LambdaCall   a b c -> x 0x44 $ putComWith return a >> putCom b >> putComList c
     ParenExpr    a     -> x 0x45 $ putCom a
@@ -439,7 +439,7 @@ instance Binary ObjectExpr where
     w <- getWord8
     case w of
       0x41 -> liftM  Literal      getCom
-      0x42 -> liftM2 AssignExpr   getCom getCom
+      0x42 -> liftM3 AssignExpr   getCom getCom getCom
       0x43 -> liftM2 FuncCall     getCom getComList
       0x44 -> liftM3 LambdaCall   (getComWith (return ())) getCom getComList
       0x45 -> liftM  ParenExpr    getCom

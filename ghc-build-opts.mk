@@ -31,7 +31,7 @@ listfile = grep -v '^[[:space:]]*$(hash).*$$' $1
 ####################################################################################################
 # The default target
 
-default: src/Dao/Object/NewParser.o
+default: dao
 
 ####################################################################################################
 # The 'edit' target conveniently opens all the files you want to edit in the vim editor.
@@ -84,7 +84,7 @@ clean:
 ####################################################################################################
 # Testing modules
 
-PARSER_TEST_FILES := tests/Parser.hs src/Dao/EnumSet.hs src/Dao/Regex.hs
+PARSER_TEST_FILES := src/Dao/EnumSet.hs src/Dao/Regex.hs src/Dao/Object/NewParser.hs
 parser-test: $(PARSER_TEST_FILES)
 	ghc --make -i'./src' $(PARSER_TEST_FILES) -o ./parser-test
 

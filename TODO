@@ -1,5 +1,12 @@
 UNSOLVED:
 
+* When writing the new parser, I discovered that maybe using the 'Dao.Object.Com' data structure to
+	store comments in 'Dao.Object.ObjectExpr's may not be the best idea. It might be better to
+	re-define 'Dao.Object.ObjectExpr' and 'Dao.Object.ScriptExpr' to intersperse [Dao.Object.Comment]s
+	between slots for tokens in the data structures. This will require a lot of small modifications to
+	the functions that evaluate object expressions, and to functions that evaluate the binary
+	serialization of these data types.
+
 * DEADLOCK WARNING!!!
 	Nearly all Dao programs will almost certainly deadlock when executing any assignment expression,
 	even something simple like "a = 1;". This bug was predicted, and fixing it is simply a matter of

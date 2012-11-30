@@ -271,6 +271,13 @@ commentString com = case com of
 data Com a = Com a | ComBefore [Comment] a | ComAfter a [Comment] | ComAround [Comment] a [Comment]
   deriving (Eq, Ord, Show, Typeable)
 
+appendComments :: Com a -> [Comment] -> Com a
+appendComments com cx = case com of
+  Com          a    -> ComAfter     a cx
+  ComAfter     a ax -> ComAfter     a (ax++cx)
+  ComBefore ax a    -> ComAround ax a cx
+  ComAround ax a bx -> ComAround ax a (bx++cx)
+
 com :: [Comment] -> a -> [Comment] -> Com a
 com before a after = case before of
   [] -> case after of

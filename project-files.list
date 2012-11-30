@@ -22,10 +22,29 @@
 # character so the ".ghci" file will be updated with the files you wish
 # to debug.
 
-   Dao/Builtins.hs      Dao/Evaluator.hs      Dao/Object/Monad.hs    Dao/EnumSet.hs
-   Dao/Combination.hs   Dao/Files.hs          Dao/Object/Parsers.hs  Dao/String.hs
-   Dao/Debug.hs         Dao.hs                Dao/Object/Show.hs     Dao/Tree.hs
-   Dao/Debug/OFF.hs     Dao/Object/Binary.hs  Dao/Parser.hs          Dao/Types.hs
-   Dao/Debug/ON.hs      Dao/Object/Data.hs    Dao/Pattern.hs         Dao/Tasks.hs
-   Dao/Resource.hs      Dao/Object.hs         Dao/Predicate.hs       dao-main.hs
-
+Dao/Builtins.hs
+Dao/Combination.hs
+Dao/Debug.hs
+Dao/Debug/OFF.hs
+Dao/Debug/ON.hs
+Dao/EnumSet.hs
+Dao/Evaluator.hs
+Dao/Files.hs
+Dao.hs
+dao-main.hs
+Dao/Object/Binary.hs
+Dao/Object/Data.hs
+Dao/Object.hs
+Dao/Object/Monad.hs
+Dao/Object/NewParser.hs
+Dao/Object/Parsers.hs
+Dao/Object/Show.hs
+Dao/Parser.hs
+Dao/Pattern.hs
+Dao/Predicate.hs
+Dao/Regex.hs
+Dao/Resource.hs
+Dao/String.hs
+Dao/Tasks.hs
+Dao/Tree.hs
+Dao/Types.hs

@@ -30,21 +30,6 @@ UNSOLVED:
 	value in a Resource can be read while it is locked (in between lock and unlock operations), I
 	don't think two DMVars are necessary.
 
-* Need "static" and "temp" variables. Static variables will allocate an MVar for every rule action,
-	and allow local variables to be declared as static and stored to this MVar. Temp variables are
-	like static variables, but are deleted after every input query. This is necessary for rules that
-	may match a single input query in one of several different ways. There needs to be some
-	mechanism to allow for these rules to record information about itself that persists across
-	executions of the rule. It may be necessary to change the contents of 'CachedExec' data type so
-	that not only is the ExecScript function stored, but so are a pair of 'Data.Map's, one static,
-	one temp, that can be updated in the ExecScript monad, which means the ExecScript monad may need
-	another item containing a reference to the 'CXRef' (which contains the 'CachedExec') that is
-	currently being executed.
-	--
-	This is nearly complete. I have implemented the necessary changes to data structures throughout
-	the program to allow for this behavior. I simply need to complete the suite of dereferencing
-	functions and implement a consisting caching scheme across all lookup operations.
-
 * Re-define the parser, remove the "Assign" structure, assignments are no longer part of the
 	abstract syntax tree, they are now operators which can be looked up and applied like any other
 	operator, and all variable references are first-class objects of type 'Dao.Types.Reference'.
@@ -53,30 +38,6 @@ UNSOLVED:
 	dereferencing any other kind of variable, has yet to be done. Incidentally, this makes the Dao
 	language much closer to C and C++, with pointers and references. It may be wise to re-think the
 	use of the (*) and (&) operators, as opposed to ($) and (@).
-
-* Allow passing of local variable references as references to functions.
-	--
-	NO, This would require making local variables first-class values at some point in the execution.
-	The easiest way to do this is to define a new Object value 'Local::Object'. But these types are
-	only used at runtime, and this would add bulk to the marshaled binary representation of the
-	Object data type. I want to avoid complicating the 'Object' data type, however this seems to be
-	the easiest way to implement this feature. The alternative implementation is to modify the
-	'Dao.Object.Evaluator.evalObject' function to NOT work with Objects, but to work with some type
-	like this:
-		data Symbol = Local Name | Global [Name] | Const Object
-	So for example, thinking of the "+=" operator as a function, the left-hand-side of the operator
-	must be a variable, either Local or Global, and the right hand side must be a Const. This would
-	change how argument passing is done for functions calls: it would require some kind of re-naming
-	of references if a reference were passed as an argument, which requires re-thinking how the
-	ExecUnit{execStack :: MVar [T_dict]} is implemented, for example, changing the container from a
-	T_dict (Map Name Object) to a (Map Name (MVar Object)), and copying MVars of re-named variables
-	to the contexts of function calls taking Local or Global references as parameters. This is all
-	just way too complicated for the purposes of the Dao system.
-	--
-	YES! actually with the changes made to the language definition, providing assignment operations
-	as operators that can be looked-up in the operator table. Before hand, assignments were actually
-	part of the abstract syntax tree. This design implementation has been replaced
-	with 'Dao.Types.Reference's which treat all variable references as first-class objects.
 
 * Need atomic updates of global variables. To resolve this problem, two things will be done.
 	(1) 'Dao.Debug.DMVar's containing variables that can be updated during evaluation of Dao scripts
@@ -146,6 +107,65 @@ UNSOLVED:
 
 ----------------------------------------------------------------------------------------------------
 SOLVED:
+
+* Need "static" and "temp" variables. Static variables will allocate an MVar for every rule action,
+	and allow local variables to be declared as static and stored to this MVar. Temp variables are
+	like static variables, but are deleted after every input query. This is necessary for rules that
+	may match a single input query in one of several different ways. There needs to be some
+	mechanism to allow for these rules to record information about itself that persists across
+	executions of the rule. It may be necessary to change the contents of 'CachedExec' data type so
+	that not only is the ExecScript function stored, but so are a pair of 'Data.Map's, one static,
+	one temp, that can be updated in the ExecScript monad, which means the ExecScript monad may need
+	another item containing a reference to the 'CXRef' (which contains the 'CachedExec') that is
+	currently being executed.
+	--
+	This is nearly complete. I have implemented the necessary changes to data structures throughout
+	the program to allow for this behavior. I simply need to complete the suite of dereferencing
+	functions and implement a consisting caching scheme across all lookup operations.
+
+* Allow passing of local variable references as references to functions.
+	--
+	NO, This would require making local variables first-class values at some point in the execution.
+	The easiest way to do this is to define a new Object value 'Local::Object'. But these types are
+	only used at runtime, and this would add bulk to the marshaled binary representation of the
+	Object data type. I want to avoid complicating the 'Object' data type, however this seems to be
+	the easiest way to implement this feature. The alternative implementation is to modify the
+	'Dao.Object.Evaluator.evalObject' function to NOT work with Objects, but to work with some type
+	like this:
+		data Symbol = Local Name | Global [Name] | Const Object
+	So for example, thinking of the "+=" operator as a function, the left-hand-side of the operator
+	must be a variable, either Local or Global, and the right hand side must be a Const. This would
+	change how argument passing is done for functions calls: it would require some kind of re-naming
+	of references if a reference were passed as an argument, which requires re-thinking how the
+	ExecUnit{execStack :: MVar [T_dict]} is implemented, for example, changing the container from a
+	T_dict (Map Name Object) to a (Map Name (MVar Object)), and copying MVars of re-named variables
+	to the contexts of function calls taking Local or Global references as parameters. This is all
+	just way too complicated for the purposes of the Dao system.
+	--
+	YES! (Ignore the above "NO"). Actually with the changes made to the language definition,
+	providing assignment operations as operators that can be looked-up in the operator table. Before
+	hand, assignments were actually part of the abstract syntax tree. This design implementation has
+	been replaced with 'Dao.Types.Reference's which treat all variable references as first-class
+	objects.
+
+* Modify the language definition to include the "+=", "-=", "*=", etc. (the update in-place
+	operators).
+	--
+	NO, this needlessly complicates things. It is requesting that I create a separate set of
+	assignment functions for updating local variables and global variables. The type-overloading
+	casting operations need to know what assignment operator was used, I need a separate set of
+	function apart from the ordinary "+", "-", "*", etc (equation binary operators) that can do a
+	lookup-and-update rather than simply returning the computed value. I could modify the language
+	definition such that the expression:
+		a += 1*b;
+	is automatically translated to
+		a = a + (1*b);
+	but then the expression will show-up different from how it was parsed when it is
+	pretty-printed, which is something I am trying to avoid. If I were to implement the feature of
+	passing local variable references to functions, then the update in-place operators could be
+	implemented as built-in functions, where the left-hand side is always a Local or Global variable
+	reference. But I am not going to do that, just write the updating code out by hand, like in the
+	Python language.
 
 * Change the instantiation of UStr into the Binary monad to use a minimum number of bytes to
 	indicate the length of the string. Right now, every UStr is preceded a 64-bit (8 byte) number.
@@ -493,25 +513,6 @@ FEATURE REQUESTS
 	that effect. If there is a way to do it without breaking referential transparency, like creating
 	one big super-Exception that can construct all possible exceptions in the program, then we can
 	consider implementing this change.
-
-* Modify the language definition to include the "+=", "-=", "*=", etc. (the update in-place
-	operators).
-	--
-	NO, this needlessly complicates things. It is requesting that I create a separate set of
-	assignment functions for updating local variables and global variables. The type-overloading
-	casting operations need to know what assignment operator was used, I need a separate set of
-	function apart from the ordinary "+", "-", "*", etc (equation binary operators) that can do a
-	lookup-and-update rather than simply returning the computed value. I could modify the language
-	definition such that the expression:
-		a += 1*b;
-	is automatically translated to
-		a = a + (1*b);
-	but then the expression will show-up different from how it was parsed when it is
-	pretty-printed, which is something I am trying to avoid. If I were to implement the feature of
-	passing local variable references to functions, then the update in-place operators could be
-	implemented as built-in functions, where the left-hand side is always a Local or Global variable
-	reference. But I am not going to do that, just write the updating code out by hand, like in the
-	Python language.
 
 * Modify the language definition to type check function calls.
 	--

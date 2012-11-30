@@ -367,15 +367,15 @@ instance Commented Rule where
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
   = Literal      (Com Object)
-  | AssignExpr   (Com ObjectExpr) (Com ObjectExpr)
-  | FuncCall     (Com Name)       (Com [Com ObjectExpr])
-  | LambdaCall   (Com ())         (Com ObjectExpr)       (Com [Com ObjectExpr])
-  | ParenExpr    (Com ObjectExpr)
+  | AssignExpr   (Com ObjectExpr) (Com UStr)             (Com ObjectExpr)
   | Equation     (Com ObjectExpr) (Com UStr)             (Com ObjectExpr)
+  | ArraySubExpr (Com ObjectExpr) (Com ObjectExpr)
+  | FuncCall     (Com Name)       (Com [Com ObjectExpr])
   | DictExpr     (Com UStr)       (Com [Com ObjectExpr])
   | ArrayExpr    (Com ())         (Com [Com ObjectExpr]) (Com ([Com ObjectExpr]))
-  | ArraySubExpr (Com ObjectExpr) (Com ObjectExpr)
+  | LambdaCall   (Com ())         (Com ObjectExpr)       (Com [Com ObjectExpr])
   | LambdaExpr   (Com ())         (Com [Com UStr])       (Com [Com ScriptExpr])
+  | ParenExpr    (Com ObjectExpr)
   deriving (Eq, Ord, Show, Typeable)
 
 -- | Part of the Dao language abstract syntax tree: any expression that controls the flow of script
@@ -396,15 +396,15 @@ data ScriptExpr
 instance Commented ObjectExpr where
   stripComments o = case o of
     Literal       a     -> Literal      (u a)
-    AssignExpr    a b   -> AssignExpr   (u a) (u b)
-    FuncCall      a b   -> FuncCall     (u a) (u b)
-    LambdaCall    a b c -> LambdaCall   (u a) (u b) (u c)
-    ParenExpr     a     -> ParenExpr    (u a)
+    AssignExpr    a b c -> AssignExpr   (u a) (u b) (u c)
     Equation      a b c -> Equation     (u a) (u b) (u c)
+    ArraySubExpr  a b   -> ArraySubExpr (u a) (u b)
+    FuncCall      a b   -> FuncCall     (u a) (u b)
     DictExpr      a b   -> DictExpr     (u a) (u b)
     ArrayExpr     a b c -> ArrayExpr    (u a) (u b) (u c)
-    ArraySubExpr  a b   -> ArraySubExpr (u a) (u b)
+    LambdaCall    a b c -> LambdaCall   (u a) (u b) (u c)
     LambdaExpr    a b c -> LambdaExpr   (u a) (u b) (u c)
+    ParenExpr     a     -> ParenExpr    (u a)
     where
       u :: Commented a => a -> a
       u = stripComments

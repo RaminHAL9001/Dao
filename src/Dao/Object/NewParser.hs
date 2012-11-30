@@ -24,6 +24,7 @@ import           Dao.String
 import           Dao.Object
 import           Dao.EnumSet
 import           Dao.Regex
+import           Dao.Types
 
 import           Control.Monad
 
@@ -562,12 +563,16 @@ parseReference key com1 = case key of
         GlobalRef r | not typ -> done namexCo r
         _                     -> fail ("expecting "++msg)
 
+parseFuncParamVars :: Parser [Com Name]
+parseFuncParamVars =
+  let msg = "function parameter variable"
+  in  parseListable msg '(' ',' ')' (parseName msg)
+
 parseLambdaDef :: NameComParser ObjectExpr
 parseLambdaDef key com1 = do
   guard (key=="func" || key=="function")
   expect "list of parameter variables after \"function\" statement" $ \com2 -> do
-    let msg = "function parameter variable"
-    params <- parseListable msg '(' ',' ')' (parseName msg)
+    params <- parseFuncParamVars
     expect (expected_sub_for "lambda function definition") $ \com3 -> do
       script <- parseBracketedScript
       return (LambdaExpr (Com ()) (com com1 params com2) (com com3 script []))
@@ -601,4 +606,70 @@ parseNonKeyword :: NameComParser ObjectExpr
 parseNonKeyword name com1 = flip mplus (return (Literal $ Com $ ORef $ LocalRef $ ustr name)) $ do
   argv <- parseListable ("parameters to call function \""++name++"\"") '(' ',' ')' parseObjectExpr
   return (FuncCall (Com (ustr name)) (com com1 argv []))
+
+----------------------------------------------------------------------------------------------------
+
+-- | Parse a source file. Takes a list of options, which are treated as directives, for example
+-- "string.tokenizer" or "string.compare", which allows global options to be set for this module.
+-- Pass an empty list to have all the defaults.
+parseSoruceFile :: Parser SourceCode
+parseSoruceFile = do
+  parseComment >> string "module" >> regexMany space
+  flip mplus (fail "keyword \"module\" must be followed by a module name string") $ do
+    handl <- fmap ustr parseString
+    zeroOrOne (rxChar ';')
+    drcvs <- many $ do
+      com1 <- parseComment
+      regexMany space
+      directive <- parseDirective
+      return (com com1 directive [])
+    regexMany space >> parseComment
+    return $
+      SourceCode
+      { sourceModified = 0
+      , sourceFullPath = nil
+      , sourceModuleName = Com handl
+      , directives = Com drcvs
+      }
+
+parseDirective :: Parser Directive
+parseDirective = msum $
+  [ do  opt <- fmap ustr (mplus (string "requires") (string "import"))
+        req <- regexMany space >> fmap ustr parseString
+        regexMany space >> zeroOrOne (rxChar ';')
+        return (Attribute (Com opt) (Com req))
+  , do  event <- msum $ map string ["BEGIN", "END", "SETUP", "TAKEDOWN"]
+        expect ("bracketed list of commands after "++event++" statement") $ \com1 -> do
+          scrpt <- parseBracketedScript
+          let block = com com1 scrpt []
+          return $ case event of
+            "TAKEDOWN" -> TakedownExpr block
+            "SETUP"    -> SetupExpr    block
+            "BEGIN"    -> BeginExpr    block
+            "END"      -> EndExpr      block
+  , do  string "rule"
+        let msg = "rule pattern string expression"
+            pat = parseString >>= readsAll msg reads
+        expect msg $ \com1 -> do
+          pattern <- mplus (parseListable msg '(' ',' ')' pat) $
+            (pat >>= \pattern -> return [com com1 pattern []])
+          expect "script expression for rule definition" $ \com2 -> do
+            scrpt <- parseBracketedScript
+            return $ RuleExpr $ Com $
+              Rule{ rulePattern = com com1 pattern [], ruleAction = com com2 scrpt [] }
+  , do  let msg = "top-level declaration"
+        (_, name) <- parseDotName
+        let done com1 expr com2 = return (ToplevelDefine (com [] name com1) (com [] expr com2))
+        expect msg $ \com1 -> msum $
+          [ do  params <- parseFuncParamVars
+                expect "top-level function declaration, function body" $ \com2 -> do
+                  scrpt <- parseBracketedScript
+                  done com1 (LambdaExpr (Com ()) (com [] params com2) (Com scrpt)) []
+          , do  char '='
+                expect "top-level object declaration" $ \com1 -> do
+                  objExpr <- parseObjectExpr
+                  expect "top-level object declaration must be terminated with a semicolon \";\"" $ \com2 ->
+                    char ';' >> done com1 objExpr com2
+          ]
+  ]
 

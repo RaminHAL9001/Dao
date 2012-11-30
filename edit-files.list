@@ -1,14 +1,13 @@
 # A list of files you want to edit with Vim.
 # They will appear in the order specified.
-ghc-build-opts.mk
-tests/Parser.hs
+src/Dao/Files.hs
+src/Dao/Object/Parsers.hs
+src/Dao/Object/NewParser.hs
+src/Dao/Evaluator.hs
+src/Dao/Parser.hs
 src/Dao/Regex.hs
 src/Dao/EnumSet.hs
 src/Dao/Tree.hs
-src/Dao/Parser.hs
-src/Dao/Files.hs
-src/Dao/Tasks.hs
-src/Dao/Evaluator.hs
 src/Dao/Resource.hs
 src/Dao/Builtins.hs
 src/Dao/String.hs
@@ -17,11 +16,11 @@ src/Dao/Pattern.hs
 src/Dao/Predicate.hs
 src/Dao/Combination.hs
 src/Dao/Object.hs
-src/Dao/Object/Parsers.hs
 src/Dao/Object/Binary.hs
 src/Dao/Object/Show.hs
 src/Dao/Object/Monad.hs
 src/Dao/Object/Data.hs
+src/Dao/Tasks.hs
 src/Dao.hs
 src/dao-main.hs
 src/Dao/Debug.hs
@@ -31,3 +30,4 @@ tests/TestEnumSet.hs
 tests/I.hs
 tests/EQN.hs
 Setup.hs
+ghc-build-opts.mk

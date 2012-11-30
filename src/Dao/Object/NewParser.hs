@@ -419,17 +419,49 @@ parseObjectExpr = do
                 expect "closeing square bracket for subscript expression" $ \com3 -> do
                   endToken
                   parseComment >>= loop objx (ArraySubExpr (com com1 obj []) (com com2 index com3))
-      , do -- Parse an operator and create an equation
-            op <- msum $ map string $ words $
-                    " <<= >>= += -= *= /= %= &= |= ^= != == && || + - * / % & | ! ~ ^ $ @ ="
+      , do -- Parse binary operator and create an equation
+            op <- msum $ map string $ words $ concat $
+              [ "<<= >>= != == <= >= += -= && || *= /= %= &= |= ^= << >> "
+              , "= + - * / % & | < > ^"
+              ]
             expect ("some object expression after the \""++op++"\" operator") $ \com2 -> do
               next <- parseNonEquation
               com3 <- parseComment
               regexMany space
               loop (objx++[Right (com com1 obj com2), Left (ustr op)]) next com3
-      , prescedence objx com1
+      , return $ makeEqn (objx++[Right (Com obj)]) com1
       ]
-    prescedence objx com1 = undefined -- TODO
+    makeEqn objx com1 = case applyPrescedence objx of
+      [Right obj] -> ParenExpr (appendComments obj com1)
+      _ ->  error $ ("unknown prescedence for operators:"++) $ concat $
+              flip concatMap objx $ \obj -> case obj of
+                Left obj -> [' ':uchars obj]
+                _        -> []
+
+-- 'applyPrescedence' scans from highest to lowest prescedence, essentially creating a function
+-- that looks like this: (scanBind (words p3) . scanBind (words p2) . scanBind (words p1) . ...)
+-- The apply (.) operator has the right-hand functions evaluated first before the left-hand
+-- function, so the right-most operators have the highest prescedence because they get bound by
+-- 'scanBind' first. Therefore, listing the operators by prescedence (from left to right) means
+-- listing them from lowest to highest prescedence.
+applyPrescedence :: [Either Name (Com ObjectExpr)] -> [Either Name (Com ObjectExpr)]
+applyPrescedence = foldl (.) id $ map (scanBind . words) $
+  [ "= += -= *= /= %= &= |= <<= >>= ^=" -- operators listed from lowest to highest prescedence
+  , "||", "&&", "|", "^", "&", "!= =="
+  , "<= >= < >", "<< >>", "+ -", "* / %"
+  ]
+
+-- Given a list of operators, scans through an equation of the form
+-- (Right exprA : Left op : Right exprB : ...) 
+-- and if the 'op' is in the list of operators, the 'exprA' and 'exprB' are bound together into an
+-- 'Dao.Object.Equation' data structure. If 'op' is not in the list of operators, it is passed over.
+scanBind :: [String] -> [Either Name (Com ObjectExpr)] -> [Either Name (Com ObjectExpr)]
+scanBind ops objx = case objx of
+  [Right o] -> [Right o]
+  Right a : Left op : Right b : objx ->
+    if elem (uchars op) ops -- if this operator is of the prescedence we are looking for
+      then scanBind ops (Right (Com $ Equation a (Com op) b) : objx) -- "bind" the operands to it
+      else Right a : Left op : scanBind ops objx -- otherwise ignore this operator
 
 -- Parse every kind of 'Dao.Object.ObjectExpr' except for recursive 'Dao.Object.Equation'
 -- expressions.

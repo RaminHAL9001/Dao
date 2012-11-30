@@ -410,15 +410,11 @@ parseObjectExpr = do
   loop [] obj com1
   where
     loop objx obj com1 = msum $
-      [ do -- Parse a square bracketed expression
-            beginToken
-            flip mplus backtrack $ do
-              char '['
-              expect "index value inside square brackets for subscript expression" $ \com2 -> do
-                index <- parseObjectExpr
-                expect "closeing square bracket for subscript expression" $ \com3 -> do
-                  endToken
-                  parseComment >>= loop objx (ArraySubExpr (com com1 obj []) (com com2 index com3))
+      [ do -- high-prescedence unary operators, these are interpreted as 'FuncCall's.
+            op   <- regex (rxCharSetFromStr "@$!~")
+            expect ("\""++op++"\" operator must be followed by an object expression") $ \com1 -> do
+              expr <- parseNonEquation
+              return (FuncCall (Com (ustr op)) (com com1 [Com expr] []))
       , do -- Parse binary operator and create an equation
             op <- msum $ map string $ words $ concat $
               [ "<<= >>= != == <= >= += -= && || *= /= %= &= |= ^= << >> "
@@ -438,9 +434,10 @@ parseObjectExpr = do
                 Left obj -> [' ':uchars obj]
                 _        -> []
 
+-- Operator prescedence mimics the C and C++ family of languages.
 -- 'applyPrescedence' scans from highest to lowest prescedence, essentially creating a function
 -- that looks like this: (scanBind (words p3) . scanBind (words p2) . scanBind (words p1) . ...)
--- The apply (.) operator has the right-hand functions evaluated first before the left-hand
+-- The apply (.) operator has the right-hand function evaluated first before the left-hand
 -- function, so the right-most operators have the highest prescedence because they get bound by
 -- 'scanBind' first. Therefore, listing the operators by prescedence (from left to right) means
 -- listing them from lowest to highest prescedence.
@@ -464,7 +461,11 @@ scanBind ops objx = case objx of
       else Right a : Left op : scanBind ops objx -- otherwise ignore this operator
 
 -- Parse every kind of 'Dao.Object.ObjectExpr' except for recursive 'Dao.Object.Equation'
--- expressions.
+-- expressions. This includes string and integer literals, parenthetical expressions, function calls
+-- (parsed by keywordObjectExpr, which parses parseNonKeyword, which parses 'FuncCall's), and
+-- square-bracket indexing expressions (which are lower-prescedence than function calls, but higher
+-- than all unary operators). These are all expressions that can be treated as a single "unit",
+-- therefore the highest prescedence of binding parsed tokens is this function.
 parseNonEquation :: Parser ObjectExpr
 parseNonEquation = msum $
   [ do -- parse an expression enclosed in parentheses
@@ -476,17 +477,25 @@ parseNonEquation = msum $
   -- literal strings or integers
   , fmap (Literal . Com . OString . ustr) parseString 
   , fmap (Literal . Com) numericObj
-  , do -- low-prescedence unary operators, these are interpreted as 'FuncCall's.
-        op   <- regex (rxCharSetFromStr "@$")
-        expect ("\""++op++"\" operator must be followed by an object expression") $ \com1 -> do
-          expr <- parseObjectExpr
-          return (FuncCall (Com (ustr op)) (com com1 [Com expr] []))
   , do -- parse an object expression that starts with a keyword or name.
         key  <- parseKeywordOrName
         com1 <- parseComment
         regexMany space 
-        mplus (keywordObjectExpr key com1) $ -- if "key" isn't a keyword, treat it as a LocalRef
-          return (Literal (com com1 (ORef (LocalRef (ustr key))) []))
+        let literal = Literal $ Com $ ORef $ LocalRef (ustr key)
+        msum $
+          [ keywordObjectExpr key com1
+          -- if "key" isn't a keyword, treat it as a LocalRef
+          , do -- Parse a square bracketed expression, 
+                beginToken
+                flip mplus backtrack $ do
+                  char '['
+                  expect "index value inside square brackets for subscript expression" $ \com2 -> do
+                    index <- parseObjectExpr
+                    expect "closeing square bracket for subscript expression" $ \com3 ->
+                      endToken >> return (ArraySubExpr (com com1 literal []) (com com2 index com3))
+          -- or else just return a literal local-variable reference.
+          , return literal
+          ]
   ]
 
 -- Here we collect all of the ObjectExpr parsers that start by looking for a keyword

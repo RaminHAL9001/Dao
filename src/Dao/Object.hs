@@ -374,6 +374,7 @@ data ObjectExpr
   | DictExpr     (Com UStr)       (Com [Com ObjectExpr])
   | ArrayExpr    (Com ())         (Com [Com ObjectExpr]) (Com ([Com ObjectExpr]))
   | LambdaCall   (Com ())         (Com ObjectExpr)       (Com [Com ObjectExpr])
+  | StructExpr   (Com ())         (Com ObjectExpr)       (Com [Com ObjectExpr])
   | LambdaExpr   (Com ())         (Com [Com UStr])       (Com [Com ScriptExpr])
   | ParenExpr    (Com ObjectExpr)
   deriving (Eq, Ord, Show, Typeable)
@@ -403,6 +404,7 @@ instance Commented ObjectExpr where
     DictExpr      a b   -> DictExpr     (u a) (u b)
     ArrayExpr     a b c -> ArrayExpr    (u a) (u b) (u c)
     LambdaCall    a b c -> LambdaCall   (u a) (u b) (u c)
+    StructExpr    a b c -> StructExpr   (u a) (u b) (u c)
     LambdaExpr    a b c -> LambdaExpr   (u a) (u b) (u c)
     ParenExpr     a     -> ParenExpr    (u a)
     where

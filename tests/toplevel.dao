@@ -1,0 +1,23 @@
+module "mod name";
+
+/* comments */
+
+require "req something";
+
+// Comment
+
+import "imp something";
+
+BEGIN {
+	a = 1;
+	b = 2;
+}
+
+func hello(a, b) {
+	print("Hello, ", a, ", ", b);
+}
+
+rule("hi, $*, how are you?", "how are you?") {
+	print($1+"? Who's name?");
+}
+

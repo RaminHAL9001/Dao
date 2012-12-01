@@ -34,6 +34,8 @@ import           Data.Ratio
 import           Data.Complex
 import           Numeric
 
+import Debug.Trace
+
 rationalFromString :: Int -> Rational -> String -> Maybe Rational
 rationalFromString maxValue base str =
   if b<1 then fmap (b*) (fol (reverse str)) else fol str where
@@ -205,16 +207,19 @@ parseName msg = do
 
 parseDotName :: Parser (Bool, [Name])
 parseDotName = mplus (parname >>= loop False . (:[])) (loop True []) where
-  parname = parseName "variable name"
-  loop leadingDot zx = flip mplus (if null zx then mzero else return (leadingDot, zx)) $ do
+  parname = fmap ustr parseKeywordOrName
+  loop leadingDot zx = flip mplus (if null zx then mzero else done leadingDot zx) $ do
     beginTokenIf (char '.')
     mplus (endToken >> parname >>= \z -> loop leadingDot (zx++[z])) backtrack
+  done leadingDot zx = case zx of
+    [z] | not leadingDot && isReservedWord (uchars z) -> fail "cannot use keyword as variable name"
+    _ -> return (leadingDot, zx)
 
 parseIntRef :: Parser Reference
 parseIntRef = do
   beginToken
   char '$'
-  int <- regexMany alnum_
+  int <- regexMany1 digit
   fmap IntRef (readsAll "integer reference" reads int) >>= ok
 
 parseLocalGlobal :: Parser Reference
@@ -300,11 +305,17 @@ parseScriptExpr = mplus keywordExpr objectExpr where
     [ ifStatement, tryStatement, forStatement, withStatement
     , continueStatement, returnStatement
     , elseStatement, catchStatement
+    , \objExpr com1 -> do
+          objExpr <- keywordObjectExpr objExpr com1
+          com2    <- parseComment
+          objExpr <- parseEquation objExpr com2
+          objectExprStatement objExpr []
     ]
   objectExpr = do
     objExpr <- parseObjectExpr
     com1    <- parseComment
-    objectExprStatement objExpr com1
+    -- objectExprStatement objExpr com1 -- what it was before, I believe this is wrong.
+    parseEquation objExpr com1 >>= flip objectExprStatement []
 
 parseBracketedScript :: Parser [Com ScriptExpr]
 parseBracketedScript = beginTokenIf (char '{') >>= \com1 -> loop [] where
@@ -425,7 +436,7 @@ objectExprStatement initExpr com1 = loop (Com initExpr) where
     FuncCall   _ _   -> done
     LambdaCall _ _ _ -> done
     ParenExpr  expr  -> loop expr
-    _ -> fail "cannot use an object expression as a statement"
+    _ -> fail $ "cannot use an object expression as a statement\n" ++ show expr
 
 ----------------------------------------------------------------------------------------------------
 
@@ -543,7 +554,7 @@ parseNonEquation = msum $
 -- Here we collect all of the ObjectExpr parsers that start by looking for a keyword
 keywordObjectExpr :: NameComParser ObjectExpr
 keywordObjectExpr key com1 = msum $ map (\parser -> parser key com1) $
-  [parseLambdaCall, parseArrayDef, parseListSetDictIntmap, parseReference, parseNonKeyword]
+  [parseLambdaCall, parseArrayDef, parseListSetDictIntmap, parseClassedRef, parseNonKeyword]
 
 parseLambdaCall :: NameComParser ObjectExpr
 parseLambdaCall = guardKeyword "call" $ \com1 ->
@@ -553,9 +564,8 @@ parseLambdaCall = guardKeyword "call" $ \com1 ->
       argv <- parseListable "argument for function call" '(' ',' ')' parseObjectExpr
       return (LambdaCall (Com ()) (com com1 objExpr com2) (com com3 argv []))
 
--- This need to be the last parser in a list of choices that parse an initial keyword because 
-parseReference :: NameComParser ObjectExpr
-parseReference key com1 = case key of
+parseClassedRef :: NameComParser ObjectExpr
+parseClassedRef key com1 = case key of
   "local"  -> makeref True  LocalRef  e "local variable name"
   "static" -> makeref True  StaticRef e "local variable name for static reference"
   "global" -> makeref False e GlobalRef "global variable name"
@@ -628,11 +638,18 @@ parseStruct = guardKeyword "struct" $ \com1 ->
           return $
             AssignExpr (com com1 (Literal (Com $ ORef $ LocalRef $ name)) com2) (Com nil) (com com3 obj [])
 
--- If your 'parseKeywordOrName' function returned a non-keyword, this function will handle it.
+-- This needs to be the last parser in a list of choices that parse an initial keyword because 
+-- if your 'parseKeywordOrName' function returned a keyword, this function will treat it as a
+-- non-keyword and probably return a literal local vairable reference.
 parseNonKeyword :: NameComParser ObjectExpr
-parseNonKeyword name com1 = flip mplus (return (Literal $ Com $ ORef $ LocalRef $ ustr name)) $ do
-  argv <- parseListable ("parameters to call function \""++name++"\"") '(' ',' ')' parseObjectExpr
-  return (FuncCall (Com (ustr name)) (com com1 argv []))
+parseNonKeyword name com1 = msum $
+  [ do  argv <- parseListable ("parameters to call function \""++name++"\"") '(' ',' ')' parseObjectExpr
+        return (FuncCall (Com (ustr name)) (com com1 argv []))
+  , do  char '.'
+        (_, more) <- parseDotName
+        return (Literal $ Com $ ORef $ GlobalRef $ ustr name : more)
+  , return (Literal $ Com $ ORef $ LocalRef $ ustr name)
+  ]
 
 ----------------------------------------------------------------------------------------------------
 

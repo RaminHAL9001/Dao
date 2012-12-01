@@ -35,8 +35,8 @@ import qualified Dao.Tree as T
 import           Dao.Pattern
 import           Dao.Evaluator
 import           Dao.Files
-import           Dao.Regex
-import           Dao.Object.NewParser
+import           Dao.Parser
+import           Dao.Object.Parser
 import           Dao.Object.Monad
 import           Dao.Object.Show
 import           Dao.Object.Data

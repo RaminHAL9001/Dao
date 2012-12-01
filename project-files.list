@@ -36,13 +36,11 @@ Dao/Object/Binary.hs
 Dao/Object/Data.hs
 Dao/Object.hs
 Dao/Object/Monad.hs
-Dao/Object/NewParser.hs
-Dao/Object/Parsers.hs
+Dao/Object/Parser.hs
 Dao/Object/Show.hs
 Dao/Parser.hs
 Dao/Pattern.hs
 Dao/Predicate.hs
-Dao/Regex.hs
 Dao/Resource.hs
 Dao/String.hs
 Dao/Tasks.hs

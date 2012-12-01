@@ -1,4 +1,4 @@
--- "src/Dao/Object/NewParser.hs" makes use of 'Dao.Regex' to parse
+-- "src/Dao/Object/Parser.hs" makes use of 'Dao.Parser' to parse
 -- 'Dao.Object.Object's and 'Dao.Object.ObjectExpr'essions.
 -- 
 -- Copyright (C) 2008-2012  Ramin Honary.
@@ -18,12 +18,12 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
-module Dao.Object.NewParser where
+module Dao.Object.Parser where
 
 import           Dao.String
 import           Dao.Object
 import           Dao.EnumSet
-import           Dao.Regex
+import           Dao.Parser
 import           Dao.Types
 
 import           Control.Monad

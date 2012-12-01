@@ -33,8 +33,8 @@ import           Dao.Evaluator
 import           Dao.Resource
 import           Dao.Combination (runCombination)
 import qualified Dao.Tree    as T
-import           Dao.Regex
-import           Dao.Object.NewParser
+import           Dao.Parser
+import           Dao.Object.Parser
 import           Dao.Object.Show
 import           Dao.Object.Monad
 

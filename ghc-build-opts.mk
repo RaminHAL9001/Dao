@@ -84,7 +84,7 @@ clean:
 ####################################################################################################
 # Testing modules
 
-PARSER_TEST_FILES := src/Dao/EnumSet.hs src/Dao/Regex.hs src/Dao/Object/NewParser.hs
+PARSER_TEST_FILES := src/Dao/EnumSet.hs src/Dao/Parser.hs src/Dao/Object/Parser.hs
 parser-test: $(PARSER_TEST_FILES)
 	ghc --make -i'./src' $(PARSER_TEST_FILES) -o ./parser-test
 
@@ -97,9 +97,9 @@ enum-set-test:
 # try, just start writing a new source file, make a target for it here, and modify the 'default'
 # target above to point to these targets.
 
-src/Dao/Regex.o: src/Dao/Regex.hs src/Dao/String.hs src/Dao/EnumSet.hs
+src/Dao/Parser.o: src/Dao/Parser.hs src/Dao/String.hs src/Dao/EnumSet.hs
 	ghc --make -i'./src' Dao.Regex
 
-src/Dao/Object/NewParser.o: src/Dao/Object/NewParser.hs src/Dao/Regex.hs src/Dao/EnumSet.hs src/Dao/Object.hs
-	ghc --make -i'./src' Dao.Object.NewParser
+src/Dao/Object/Parser.o: src/Dao/Object/Parser.hs src/Dao/Parser.hs src/Dao/EnumSet.hs src/Dao/Object.hs
+	ghc --make -i'./src' Dao.Object.Parser
 

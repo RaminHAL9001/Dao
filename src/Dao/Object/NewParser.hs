@@ -601,6 +601,24 @@ parseListSetDictIntmap key com1 = do
   items <- parseListable ("items for "++key++" definition") '{' ',' '}' getItem
   return (DictExpr (Com (ustr key)) (com com1 items []))
 
+parseStruct :: NameComParser ObjectExpr
+parseStruct = guardKeyword "struct" $ \com1 ->
+  expect "" $ \com1 -> mplus (parseObjectExpr >>= objData com1) (objData com1 (Literal (Com ONull)))
+  where
+    objData com1 obj =
+      expect "data structure needs bracketed list of field declarations" $ \com2 -> do
+        items <- parseListable "field declaration for data structure" '{' ',' '}' parseItem
+        return (StructExpr (Com ()) (com com1 obj com2) (Com items))
+    msg = "field label"
+    parseItem = expect msg $ \com1 -> do
+      name <- parseName msg
+      expect ("equals-sign \"=\" after "++msg) $ \com2 -> do
+        char '='
+        expect "object experssion to assign to field" $ \com3 -> do
+          obj <- parseObjectExpr
+          return $
+            AssignExpr (com com1 (Literal (Com $ ORef $ LocalRef $ name)) com2) (Com nil) (com com3 obj [])
+
 -- If your 'parseKeywordOrName' function returned a non-keyword, this function will handle it.
 parseNonKeyword :: NameComParser ObjectExpr
 parseNonKeyword name com1 = flip mplus (return (Literal $ Com $ ORef $ LocalRef $ ustr name)) $ do
@@ -614,6 +632,7 @@ parseNonKeyword name com1 = flip mplus (return (Literal $ Com $ ORef $ LocalRef 
 -- Pass an empty list to have all the defaults.
 parseSoruceFile :: Parser SourceCode
 parseSoruceFile = do
+  clearTokenStack
   parseComment >> string "module" >> regexMany space
   flip mplus (fail "keyword \"module\" must be followed by a module name string") $ do
     handl <- fmap ustr parseString
@@ -634,11 +653,13 @@ parseSoruceFile = do
 
 parseDirective :: Parser Directive
 parseDirective = msum $
-  [ do  opt <- fmap ustr (mplus (string "requires") (string "import"))
+  [ do -- Parse an "import" or "require" directive.
+        opt <- fmap ustr (mplus (string "require" >> zeroOrOne (rxChar 's')) (string "import"))
         req <- regexMany space >> fmap ustr parseString
         regexMany space >> zeroOrOne (rxChar ';')
         return (Attribute (Com opt) (Com req))
-  , do  event <- msum $ map string ["BEGIN", "END", "SETUP", "TAKEDOWN"]
+  , do -- Parse an event action.
+        event <- msum $ map string ["BEGIN", "END", "SETUP", "TAKEDOWN"]
         expect ("bracketed list of commands after "++event++" statement") $ \com1 -> do
           scrpt <- parseBracketedScript
           let block = com com1 scrpt []
@@ -647,7 +668,8 @@ parseDirective = msum $
             "SETUP"    -> SetupExpr    block
             "BEGIN"    -> BeginExpr    block
             "END"      -> EndExpr      block
-  , do  string "rule"
+  , do -- Parse a top-level rule.
+        string "rule"
         let msg = "rule pattern string expression"
             pat = parseString >>= readsAll msg reads
         expect msg $ \com1 -> do
@@ -657,19 +679,25 @@ parseDirective = msum $
             scrpt <- parseBracketedScript
             return $ RuleExpr $ Com $
               Rule{ rulePattern = com com1 pattern [], ruleAction = com com2 scrpt [] }
-  , do  let msg = "top-level declaration"
+  , do -- Parse a top-level function declaration.
+        mplus (string "function") (string "func")
+        let msg = "top-level function declaration"
+        expect ("expecting name for "++msg) $ \com1 -> do
+          (_, name) <- parseDotName
+          expect ("list of parameter variables for "++msg) $ \com2 -> do
+            params <- parseFuncParamVars
+            expect "top-level function declaration, function body" $ \com3 -> do
+              scrpt <- parseBracketedScript
+              return $ ToplevelDefine (com [] name com1) $
+                com [] (LambdaExpr (Com ()) (com [] params com2) (Com scrpt)) com2
+  , do -- Parse a top-level global variable declaration.
+        let msg = "top-level global variable declaration"
         (_, name) <- parseDotName
-        let done com1 expr com2 = return (ToplevelDefine (com [] name com1) (com [] expr com2))
-        expect msg $ \com1 -> msum $
-          [ do  params <- parseFuncParamVars
-                expect "top-level function declaration, function body" $ \com2 -> do
-                  scrpt <- parseBracketedScript
-                  done com1 (LambdaExpr (Com ()) (com [] params com2) (Com scrpt)) []
-          , do  char '='
-                expect "top-level object declaration" $ \com1 -> do
-                  objExpr <- parseObjectExpr
-                  expect "top-level object declaration must be terminated with a semicolon \";\"" $ \com2 ->
-                    char ';' >> done com1 objExpr com2
-          ]
+        expect ("expecting equals-sign \"=\" for "++msg) $ \com1 -> do
+          char '='
+          expect ("expecting object expression for "++msg) $ \com2 -> do
+            objExpr <- parseObjectExpr
+            expect (msg++" must be terminated with a semicolon \";\"") $ \com3 ->
+              char ';' >> return (ToplevelDefine (com [] name com1) (com com2 objExpr com3))
   ]
 

@@ -275,6 +275,15 @@ expect msg expectation =
 
 ----------------------------------------------------------------------------------------------------
 
+-- | Parses a sequence of 'Dao.Object.ScriptExpr's which can be used for interactive evaluation.
+parseInteractiveScript :: Parser [Com ScriptExpr]
+parseInteractiveScript = many commented where
+  commented = do
+    com1 <- parseComment
+    expr <- parseScriptExpr
+    com2 <- parseComment
+    return (com com1 expr com2)
+
 -- | This is the "entry point" for parsing a 'Dao.Object.ScriptExpr'.
 parseScriptExpr :: Parser ScriptExpr
 parseScriptExpr = mplus keywordExpr objectExpr where
@@ -630,8 +639,8 @@ parseNonKeyword name com1 = flip mplus (return (Literal $ Com $ ORef $ LocalRef 
 -- | Parse a source file. Takes a list of options, which are treated as directives, for example
 -- "string.tokenizer" or "string.compare", which allows global options to be set for this module.
 -- Pass an empty list to have all the defaults.
-parseSoruceFile :: Parser SourceCode
-parseSoruceFile = do
+parseSourceFile :: Parser SourceCode
+parseSourceFile = do
   clearTokenStack
   parseComment >> string "module" >> regexMany space
   flip mplus (fail "keyword \"module\" must be followed by a module name string") $ do

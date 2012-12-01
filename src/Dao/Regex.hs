@@ -1,4 +1,4 @@
--- "src/Dao/MatchString.hs"  Construct a tokenizer from
+-- "src/Dao/Regex.hs"  Construct a tokenizer from
 -- 'Dao.EnumSet.EnumSet's, and parsers from tokenizers. 
 -- 
 -- Copyright (C) 2008-2012  Ramin Honary.
@@ -34,7 +34,7 @@ module Dao.Regex
   , space, hspace, upper, lower, alpha, alpha_, digit
   , alnum, alnum_, xdigit, spaceCtrl, cntrl, punct, printable, ascii
   , -- * The 'Parser' Monad
-    PValue(OK, Backtrack, PFail)
+    PValue(OK, Backtrack, PFail), failedToken, failedBecause
   , Parser, runParser, ParseState, tokenStack
     -- * Working With 'Tokens'
     -- $Working_With_Tokens
@@ -744,7 +744,7 @@ parseRegex matchFunc r = do
       let ax = lines result
       modify $ \st -> 
         st{ parsedCharCount = parsedCharCount st + iLength result
-          , lineNumber      = lineNumber st + iLength ax
+          , lineNumber      = lineNumber st + iLength (filter ('\n'==) result)
           , charColumn      = case ax of
               []  -> charColumn st
               [a] -> charColumn st + iLength a

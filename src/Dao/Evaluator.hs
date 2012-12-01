@@ -34,13 +34,11 @@ import           Dao.Pattern
 import           Dao.Resource
 import           Dao.Predicate
 import           Dao.Combination
-import           Dao.Parser
 
 import           Dao.Object.Monad
 import           Dao.Object.Data
 import           Dao.Object.Show
 import           Dao.Object.Binary
-import           Dao.Object.Parsers
 
 import           Control.Exception
 import           Control.Monad.Trans

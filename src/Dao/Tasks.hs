@@ -33,12 +33,11 @@ import           Dao.Debug.OFF
 import           Dao.Types
 import qualified Dao.Tree as T
 import           Dao.Pattern
-import           Dao.Combination
-import           Dao.Parser
 import           Dao.Evaluator
 import           Dao.Files
+import           Dao.Regex
+import           Dao.Object.NewParser
 import           Dao.Object.Monad
-import           Dao.Object.Parsers
 import           Dao.Object.Show
 import           Dao.Object.Data
 
@@ -358,9 +357,8 @@ execInputString guarded instr select = dStack xloc "execInputString" $ ask >>= \
 evalScriptString :: ExecUnit -> String -> Run ()
 evalScriptString xunit instr = dStack xloc "evalScriptString" $
   void $ flip runExecScript xunit $ nestedExecStack M.empty $ execScriptBlock $
-    case map fst $ filter (null . inputString . snd) $
-      runCombination interactiveScript (parserState{inputString=instr}) of
-        []               -> error "cannot parse expression"
-        (Left  msg  : _) -> error (showObj 0 msg)
-        (Right expr : _) -> Com expr
+    case fst (runParser parseInteractiveScript instr) of
+        Backtrack     -> error "cannot parse expression"
+        PFail tok msg -> error ("error: "++uchars msg++show tok)
+        OK expr       -> Com expr
 

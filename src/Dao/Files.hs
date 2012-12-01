@@ -32,9 +32,9 @@ import           Dao.Types
 import           Dao.Evaluator
 import           Dao.Resource
 import           Dao.Combination (runCombination)
-import           Dao.Parser
 import qualified Dao.Tree    as T
-import           Dao.Object.Parsers
+import           Dao.Regex
+import           Dao.Object.NewParser
 import           Dao.Object.Show
 import           Dao.Object.Monad
 
@@ -116,18 +116,11 @@ newDocResource dbg docdata = do
 -- | Parse Dao program from a 'Prelude.String' containing valid Dao source code, creating a
 -- 'Dao.Types.SourceCode' object. This is a pure function called by 'loadFilePath'.
 loadSourceCode :: UPath -> String -> SourceCode
-loadSourceCode upath sourceString = getFirstCompleteParse parseCode where
-  path = uchars upath
-  parseCode = runCombination source (parserState{inputString = sourceString})
-  getFirstCompleteParse =
-    loop ("FILE TYPE: "++show path++" does not appear to be a Dao script.")
-  loop msg px = case px of -- take the first parse that consumes all input.
-    [] -> error msg
-    (Right sc, st):px -> if null (inputString st) then sc else loop err2 px
-    (Left msg, st):px -> loop (err1 msg st) px
-  err1 msg st = "PARSE ERROR: "++show path
-    ++':':show (rowNumber st)++':':show (colNumber st)++": "++printParseError path msg
-  err2 = "INTERNAL ERROR: parse succeeded without consuming all source code"
+loadSourceCode upath sourceString = case fst (runParser parseSourceFile sourceString) of
+  Backtrack     -> error ("FILE TYPE: "++show path++" does not appear to be a Dao script.")
+  PFail tok msg -> error (path++':':show tok++"\n\t"++uchars msg)
+  OK src        -> src
+  where { path = uchars upath }
 
 -- | This function will take any file path and return a file associated with it if it has been
 -- loaded once before. If not, it runs the function you provide to load the file.

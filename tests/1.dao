@@ -1,6 +1,8 @@
 module "test module"
 
-string.compare  approximate;
+SETUP {
+	dao.string.compare = $approximate;
+}
 
 END {
 	print("(-1)");
@@ -31,13 +33,13 @@ rule "test recurse" {
 }
 
 rule "fact $*." {
-	${const.ref} = $1;
+	const.ref = $1;
 	print("I understand the fact that "+join($1)+".");
 }
 
 rule "recall" {
-	print("I recall the fact that "+ join(${const.ref}));
-	try { print("${test.ref} = "+${test.ref}); } catch err {}
+	print("I recall the fact that "+ join(const.ref));
+	try { print("test.ref = "+test.ref); } catch err {}
 }
 
 SETUP {
@@ -49,13 +51,13 @@ rule "recall another" {
 }
 
 rule "use nothing" {
-	a = $${use.file};
+	a = $use.file;
 	delete(a);
 	print("No longer using file "+a);
 }
 
 rule "test ref" {
-	a = $${test.ref};
+	a = $test.ref;
 	print(a);
 	ref(a) = "hello";
 	print(@a);
@@ -64,7 +66,7 @@ rule "test ref" {
 rule "file $*." {
 	try {
 		with "/home/ramin/main/dao/test1.idea" {
-			${const.ref} = $1;
+			const.ref = $1;
 			print("I understand the fact that "+ join($1) +".");
 		}
 	}
@@ -88,7 +90,7 @@ rule "contents of file" {
 	print("Recall file...");
 	try {
 		with "/home/ramin/main/dao/test1.idea" {
-			print("I recall the fact that "+ join(${const.ref}) +".");
+			print("I recall the fact that "+ join(const.ref) +".");
 		}
 	}
 	catch err { print(err); }
@@ -162,33 +164,33 @@ rule "$? file $*" {
 	a  = join("", $2);
 	try {
 		if(op=="open" || op=="read")  {
-			a = readDB(a);  print("Read file "+a); ${use.file} = a;
+			a = readDB(a);  print("Read file "+a); use.file = a;
 		}
 		else if(op=="save" || op=="write")  {
 			writeDB(a);  print("Save file "+a);
 		}
 		else if(op=="close") {
-			closeDB(a); print("Close file "+a); delete($${use.file});
+			closeDB(a); print("Close file "+a); delete($use.file);
 		}
 		else if(op=="use")   {
-			${use.file} = a;
+			use.file = a;
 		}
 		else {
 			print("I don't understand what \""+op+" file\" means.");
 		}
-		if($${use.file}) { print("Using file "+a); }
+		if($use.file) { print("Using file "+a); }
 		else { print("Please specify which file to use."); }
 	}
 	catch err { print("ERROR: "+err); }
 }
 
 rule "which file" {
-	print(${use.file});
+	print(use.file);
 }
 
 rule "$* is a kind of $*" {
 	try {
-		a = ${use.file};
+		a = use.file;
 		print("use file "+a);
 		with a { ref($1) = $2; print("OK"); }
 	}
@@ -198,26 +200,26 @@ rule "$* is a kind of $*" {
 	}
 }
 
-${what.is.count} = 0;
+what.is.count = 0;
 rule ("what is an $*?") {
 	unanswered = false;
 	try {
-		if(${what.is.count} == 0) {
-			with ${use.file} {
+		if(what.is.count == 0) {
+			with use.file {
 				a = join("", $1);
 				b = ref($1); b = join("", @b);
 				print(a+" is a kind of "+@b);
 			}
 		}
-		${what.is.count} = ${what.is.count} + 1;
+		what.is.count = what.is.count + 1;
 	}
 	catch err {
 		print("I don't know.");
 		print(err);
 	}
-	print("what-is counter = "+${what.is.count});
+	print("what-is counter = "+what.is.count);
 }
-END { ${what.is.count} = 0; }
+END { what.is.count = 0; }
 
 rule("list db", "list dbs") {
 	print("Listing loaded idea files");

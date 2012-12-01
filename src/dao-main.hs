@@ -28,9 +28,6 @@ import           Dao.Debug.OFF
 
 import           Data.List
 
-import Dao.Object.Parsers -- for testing
-import Dao.Parser -- for testing
-
 import           Control.Monad
 import           Control.Exception
 

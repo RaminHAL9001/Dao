@@ -697,14 +697,14 @@ getCombinedTokens = token_stack new_token $ \tx _ -> return (concat_tokens tx)
 endToken :: Parser Token
 endToken = get >>= \st -> case tokenStack st of
   []       -> new_token
-  [t]      -> return t
-  t1:t2:tx -> modify (\st -> st{tokenStack = appendTokens t2 t1 : tx}) >> return t1
+  [t]      -> put (st{tokenStack = []}) >> return t
+  t1:t2:tx -> put (st{tokenStack = appendTokens t2 t1 : tx}) >> return t1
 
 -- | Clear all 'Token's off of the 'tokenStack', returning them. Returns an empty 'Token' at the
 -- current position in the input string if the 'tokenStack' is empty.
 clearTokenStack :: Parser [Token]
 clearTokenStack = token_stack (return []) $ \tx st ->
-  put (st{tokenStack = tx}) >> return (reverse tx)
+  put (st{tokenStack = []}) >> return (reverse tx)
 
 -- | Clears all 'Token's off of the 'tokenStack', combines them together and returns a single token.
 -- Returns an empty 'Token' at the current position in the input string if the 'tokenStack' is

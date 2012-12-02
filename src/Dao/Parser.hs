@@ -45,7 +45,7 @@ module Dao.Parser
     -- * 'Parser' Combinators
     -- $Parser_Combinators
   , endOfInput, regex, readsAll
-  , char, string, ustring, charSet, notCharSet, repeating
+  , lookAhead, char, string, ustring, charSet, notCharSet, repeating
   , repeatRegex, zeroOrOne, regexMany, regexMany1, many, many1
     -- * Miscelaneous
   , fromReadS, choice, spanAtWord
@@ -788,6 +788,11 @@ readsAll :: String -> ReadS a -> String -> Parser a
 readsAll errmsg reads str = case reads str of
   (success, ""):_ -> return success
   _               -> fail errmsg
+
+-- | Return some of the yet-unparsed characters without consuming them. Pass a positive integer
+-- value of how many characters you want to look ahead.
+lookAhead :: Int -> Parser String
+lookAhead i = get >>= \st -> return (take i (parseString st))
 
 -- | Parse a single character, shorthand for @'parseRegex' . 'rxChar'@.
 char :: Char -> Parser Char

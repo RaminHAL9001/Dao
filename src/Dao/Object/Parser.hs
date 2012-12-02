@@ -219,8 +219,9 @@ parseIntRef :: Parser Reference
 parseIntRef = do
   beginToken
   char '$'
-  int <- regexMany1 digit
-  fmap IntRef (readsAll "integer reference" reads int) >>= ok
+  flip mplus backtrack $ do
+    int <- regexMany1 digit
+    fmap IntRef (readsAll "integer reference" reads int) >>= ok
 
 parseLocalGlobal :: Parser Reference
 parseLocalGlobal = msum $
@@ -276,7 +277,7 @@ nameComParserChoice choices initString comment = msum $
 -- own function.
 expect :: String -> ([Comment] -> Parser a) -> Parser a
 expect msg expectation =
-  parseComment >>= \com -> regexMany space >> mplus (expectation com) (fail msg)
+  parseComment >>= \com -> regexMany space >> mplus (expectation com) (fail ("expecting "++msg))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -319,8 +320,8 @@ parseScriptExpr = mplus keywordExpr objectExpr where
 
 parseBracketedScript :: Parser [Com ScriptExpr]
 parseBracketedScript = beginTokenIf (char '{') >>= \com1 -> loop [] where
-  loop zx = mplus (regexMany space >> char '}' >> endToken >> return zx) $
-    expect "expecting script expression" $ \com1 -> do
+  loop zx = mplus (regexMany space >> char '}' >> ok zx) $
+    expect "script expression" $ \com1 -> do
       expr <- parseScriptExpr
       loop (zx++[com com1 expr []])
 
@@ -443,29 +444,31 @@ objectExprStatement initExpr com1 = loop (Com initExpr) where
 -- | This is the "entry point" for parsing 'Dao.Object.ObjectExpr's.
 parseObjectExpr :: Parser ObjectExpr
 parseObjectExpr = do
-  obj  <- parseNonEquation
+  obj  <- mplus parseNonEquation parseUnaryOperatorExpr
   com1 <- parseComment
+  regexMany space
   parseEquation obj com1
+
+-- Parses an equation starting with a unary operator.
+parseUnaryOperatorExpr :: Parser ObjectExpr
+parseUnaryOperatorExpr = do -- high-prescedence unary operators, these are interpreted as 'FuncCall's.
+  op <- regex (rxCharSetFromStr "@$!~")
+  expect ("\""++op++"\" operator must be followed by an object expression") $ \com1 -> do
+    expr <- parseObjectExpr
+    return (FuncCall (Com (ustr op)) (com com1 [Com expr] []))
 
 -- This basically parses any type of 'Dao.Object.ObjectExpr', but it is left-factored so it can be
 -- called from functions that have already parsed an 'ObjectExpr' but don't want to backtrack.
 parseEquation :: ObjComParser ObjectExpr
 parseEquation obj com1 = loop [] obj com1 where
   loop objx obj com1 = msum $
-    [ do -- high-prescedence unary operators, these are interpreted as 'FuncCall's.
-          op <- regex (rxCharSetFromStr "@$!~")
-          expect ("\""++op++"\" operator must be followed by an object expression") $ \com1 -> do
-            expr <- parseNonEquation
-            com2 <- parseComment
-            regexMany space
-            loop objx (FuncCall (Com (ustr op)) (com com1 [Com expr] [])) com2
-    , do -- Parse binary operator and create an equation
+    [ do -- Parse binary operator and create an equation
           op <- msum $ map string $ words $ concat $
             [ " <<= >>= != == <= >= += -= && || *= /= %= &= |= ^= << >> -> "
             , " = + - * / % & | < > ^ "
             ]
           expect ("some object expression after the \""++op++"\" operator") $ \com2 -> do
-            next <- parseNonEquation
+            next <- parseObjectExpr
             com3 <- parseComment
             regexMany space
             loop (objx++[Right (com com1 obj com2), Left (ustr op)]) next com3
@@ -523,10 +526,10 @@ parseNonEquation = msum $
   [ fmap (Literal . Com . ORef) parseIntRef
   , do -- parse an expression enclosed in parentheses
         char '('
-        com1 <- parseComment
-        expr <- regexMany space >> parseObjectExpr
-        expect "missing close parenthases" $ \com2 ->
-          char ')' >> return (ParenExpr (com com1 expr com2))
+        expect "object expression in parentheses" $ \com1 -> do
+          expr <- parseObjectExpr
+          expect "missing close parenthases" $ \com2 ->
+            char ')' >> return (ParenExpr (com com1 expr com2))
   -- literal strings or integers
   , fmap (Literal . Com . OString . ustr) parseString 
   , fmap (Literal . Com) numericObj

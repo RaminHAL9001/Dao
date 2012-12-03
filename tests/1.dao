@@ -26,10 +26,11 @@ rule "test toplevel $*" {
 }
 
 rule "test recurse" {
-	do([ "fact I am a Banana."
+	do(list
+	   { "fact I am a Banana."
 	   , "recall"
 	   , "recall again"
-	   ]);
+	   });
 }
 
 rule "fact $*." {
@@ -150,7 +151,7 @@ rule "test index $*" {
 
 rule "test list" {
 	print("list test...");
-	a = [1, 2, 3.56, "DERP!!!"];
+	a = list { 1, 2, 3.56, "DERP!!!" };
 	print(a);
 	print("list test done.");
 }
@@ -235,8 +236,9 @@ rule "$bad dollar sign" {
 }
 
 rule "infinite recursion" {
-	do( [ "my name is Dao."
+	do(list
+		{ "my name is Dao."
 		, "infinite recursion"
-		]);
+		});
 }
 

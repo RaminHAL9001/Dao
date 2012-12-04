@@ -63,8 +63,7 @@ readBinaryInt str = if null str then [] else [loop 0 str] where
 -- | Parses 'Prelude.Integer's, 'Prelude.Double's, 'Complex.Complex's, and 'Data.Time.DiffTime's,
 -- and returns them as 'Dao.Object.Object's.
 numericObj :: Parser Object
-numericObj = do
-  beginToken
+numericObj = token $ do
   sign <- plusMinus
   dgt  <- regexMany1 digit
   let errmsg = fail "invalid integer expression"
@@ -112,15 +111,15 @@ numericObj = do
         Just (r_is_an_integer, r) -> do
           typ <- zeroOrOne alpha
           case typ of
-            "U" -> ok $ OWord (fromIntegral (round r))
-            "I" -> ok $ OInt  (round r)
-            "L" -> ok $ OLong (round r)
-            "R" -> ok $ ORatio r
-            "F" -> ok $ OFloat (fromRational r)
-            "f" -> ok $ OFloat (fromRational r)
-            "i" -> ok $ OComplex (0 :+ fromRational r)
-            "j" -> ok $ OComplex (0 :+ fromRational r)
-            "s" -> ok $ ODiffTime (fromRational r)
+            "U" -> return $ OWord (fromIntegral (round r))
+            "I" -> return $ OInt  (round r)
+            "L" -> return $ OLong (round r)
+            "R" -> return $ ORatio r
+            "F" -> return $ OFloat (fromRational r)
+            "f" -> return $ OFloat (fromRational r)
+            "i" -> return $ OComplex (0 :+ fromRational r)
+            "j" -> return $ OComplex (0 :+ fromRational r)
+            "s" -> return $ ODiffTime (fromRational r)
             ""  ->
               if r_is_an_integer
                 then
@@ -132,7 +131,7 @@ numericObj = do
             typ -> fail ("unknown numeric type "++show typ)
 
 parseString :: Parser String
-parseString = beginTokenIf (char '"') >> loop where
+parseString = token (char '"' >> loop) where
   stops = foldl1 setUnion $ map point "\"\\\n"
   loop = do
     regexMany (rxCharSet (setInvert stops))
@@ -144,24 +143,25 @@ parseString = beginTokenIf (char '"') >> loop where
         "\\" -> mplus (regex rxTrue >> loop) $ do
           regexMany (rxUnion hspace (rxChar '\r')) >> regex (rxChar '\n')
           fail "cannot use '\\' token to continue string to next line"
-        "\"" -> getToken >>= readsAll "invalid string constant" reads . tokenChars >>= ok
+        "\"" -> getToken >>= readsAll "invalid string constant" reads . tokenChars
         _    -> errmsg
 
 parseComment :: Parser [Comment]
 parseComment = many comment where
   comment = do
     regexMany space -- ignore whitespace
-    beginTokenIf (char '/')
-    msum [endline, inline, backtrack]
+    token $ do
+      char '/'
+      msum [endline, inline, backtrack]
   endline = do
     char '/'
     ax <- regexMany (rxNotCharSet (point '\n'))
     zeroOrOne (rxChar '\n')
-    t <- endToken
+    t <- getToken
     return (EndlineComment (ustr (tokenChars t)))
   inline = do
     regexMany1 (rxChar '*')
-    mplus (char '/' >> endToken >>= \t -> return (InlineComment (ustr (tokenChars t)))) $ do
+    mplus (char '/' >> getToken >>= \t -> return (InlineComment (ustr (tokenChars t)))) $ do
       regexMany (rxCharSet (setInvert (point '*')))
       we_hit_the_end <- endOfInput
       if we_hit_the_end
@@ -198,30 +198,28 @@ isReservedWord :: String -> Bool
 isReservedWord str = isTypeword str || isKeyword str
 
 parseName :: String -> Parser Name
-parseName msg = do
-  beginToken
+parseName msg = token $ do
   name <- parseKeywordOrName
   if isReservedWord name
     then fail ("cannot use keyword as "++msg)
-    else ok (ustr name)
+    else return (ustr name)
 
 parseDotName :: Parser (Bool, [Name])
 parseDotName = mplus (parname >>= loop False . (:[])) (loop True []) where
   parname = fmap ustr parseKeywordOrName
-  loop leadingDot zx = flip mplus (if null zx then mzero else done leadingDot zx) $ do
-    beginTokenIf (char '.')
-    mplus (endToken >> parname >>= \z -> loop leadingDot (zx++[z])) backtrack
+  loop leadingDot zx = flip mplus (if null zx then mzero else done leadingDot zx) $ token $ do
+    char '.'
+    mplus (parname >>= \z -> loop leadingDot (zx++[z])) backtrack
   done leadingDot zx = case zx of
     [z] | not leadingDot && isReservedWord (uchars z) -> fail "cannot use keyword as variable name"
     _ -> return (leadingDot, zx)
 
 parseIntRef :: Parser Reference
-parseIntRef = do
-  beginToken
+parseIntRef = token $ do
   char '$'
   flip mplus backtrack $ do
     int <- regexMany1 digit
-    fmap IntRef (readsAll "integer reference" reads int) >>= ok
+    fmap IntRef (readsAll "integer reference" reads int)
 
 parseLocalGlobal :: Parser Reference
 parseLocalGlobal = msum $
@@ -229,13 +227,13 @@ parseLocalGlobal = msum $
       []  -> mzero
       [n] -> return (if leadingDot then GlobalRef [n] else LocalRef n)
       nx  -> return (GlobalRef nx)
-  , do  beginToken -- a string reference
-        char '$'
-        flip mplus backtrack $ do
-          str <- parseString
-          if null str
-            then fail "cannot use null string as reference"
-            else ok (GlobalRef $ map ustr $ words str)
+  , token $ do -- a string reference
+      char '$'
+      flip mplus backtrack $ do
+        str <- parseString
+        if null str
+          then fail "cannot use null string as reference"
+          else return (GlobalRef $ map ustr $ words str)
   ]
 
 ----------------------------------------------------------------------------------------------------
@@ -309,8 +307,8 @@ parseScriptExpr = mplus keywordExpr objectExpr where
     ]
 
 parseBracketedScript :: Parser [Com ScriptExpr]
-parseBracketedScript = beginTokenIf (char '{') >>= \com1 -> loop [] where
-  loop zx = mplus (regexMany space >> char '}' >> ok zx) $
+parseBracketedScript = token (char '{' >>= \com1 -> loop []) where
+  loop zx = mplus (regexMany space >> char '}' >> return zx) $
     expect "script expression" $ \com1 -> do
       expr <- parseScriptExpr
       loop (zx++[com com1 expr []])
@@ -320,13 +318,11 @@ expected_sub_for msg = fail $
 
 ifStatement :: NameComParser ScriptExpr
 ifStatement = guardKeyword "if" loop where
-  loop com1 = do
-    beginToken
+  loop com1 = token $ do
     (objExpr, com2) <- mplus parseObjectExpr $
       fail "expecting object expression for condition of \"if\" statement"
     case objExpr of
-      ParenExpr objExpr -> do
-        endToken
+      ParenExpr objExpr -> token $
         expect (expected_sub_for "if") $ \com3 -> do
           thenStmt <- parseBracketedScript
           let done com4 com5 elseStmt = return $
@@ -574,10 +570,9 @@ parseClassedRef key com1 = case key of
   _        -> mzero
   where
     e = undefined
-    makeref typ nameCo namexCo msg = do -- 'typ'=True for LocalRef, 'typ'=False for GlobalRef
-      beginToken
+    makeref typ nameCo namexCo msg = token $ do -- 'typ'=True for LocalRef, 'typ'=False for GlobalRef
       ref <- parseLocalGlobal
-      let done co r = endToken >> return (Literal (com com1 (ORef (co r)) []))
+      let done co r = return (Literal (com com1 (ORef (co r)) []))
       case ref of
         LocalRef  r | typ     -> done nameCo r
         GlobalRef r | not typ -> done namexCo r
@@ -598,14 +593,12 @@ parseLambdaDef key com1 = do
       return (LambdaExpr (Com ()) (com com1 params com2) (com com3 script []))
 
 parseArrayDef :: NameComParser ObjectExpr
-parseArrayDef = guardKeyword "array" $ \com1 -> do
-  beginToken
+parseArrayDef = guardKeyword "array" $ \com1 -> token $ do
   expect "(first,last) index bounds for array definition" $ \com2 -> do
     bounds <- parseFunctionParameters "upper/lower bound for array declaration"
     let bad_bounds = fail "array defintion must have exactly two index bounds given"
     case bounds of
-      [lo, hi] -> do
-        endToken
+      [lo, hi] -> token $ do
         flip mplus (fail "expecting initializing values for array defition") $ do
           initValues <- adjustComListableObjExpr $
             parseListable "array initialing element" '{' ',' '}' parseObjectExpr
@@ -615,8 +608,8 @@ parseArrayDef = guardKeyword "array" $ \com1 -> do
 parseListSetDictIntmap :: NameComParser ObjectExpr
 parseListSetDictIntmap key com1 = do
   guard (key=="dict" || key=="intmap" || key=="set" || key=="list")
-  let getDictItem = beginToken >> parseObjectExpr >>= \ (item, com2) -> case item of
-        AssignExpr _ _ _ -> endToken >> return (item, com2)
+  let getDictItem = token $ parseObjectExpr >>= \ (item, com2) -> case item of
+        AssignExpr _ _ _ -> return (item, com2)
         _ -> fail ("each entry to "++key++" definition must assign a value to a key")
       getItem = if key=="dict" || key=="intmap" then getDictItem else parseObjectExpr
   items <- adjustComListableObjExpr $
@@ -663,7 +656,6 @@ constructWithNonKeyword key com1 = mplus funcCall localRef where
 -- Pass an empty list to have all the defaults.
 parseSourceFile :: Parser SourceCode
 parseSourceFile = do
-  clearTokenStack
   parseComment >> string "module" >> regexMany space
   flip mplus (fail "keyword \"module\" must be followed by a module name string") $ do
     handl <- fmap ustr parseString

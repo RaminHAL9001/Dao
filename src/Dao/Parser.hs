@@ -40,8 +40,7 @@ module Dao.Parser
     -- $Working_With_Tokens
   , Token, startingLine, startingChar, startingColumn
   , endingLine, endingChar, endingColumn, tokenChars, appendTokens
-  , backtrack, backtrackAll, getToken, getCombinedTokens
-  , beginToken, beginTokenIf, endToken, clearTokenStack, endAllTokens, stackIsEmpty, ok
+  , backtrack, getToken, getCombinedTokens, token
     -- * 'Parser' Combinators
     -- $Parser_Combinators
   , endOfInput, regex, readsAll
@@ -525,7 +524,7 @@ instance Monad Parser where
       PFail u v -> return (PFail u v)
       OK    _   -> mb
   fail msg = do
-    token <- getCombinedTokens
+    token <- getToken
     Parser{ parserStateMonad = return (PFail token (ustr msg)) }
 
 instance Functor Parser where
@@ -570,19 +569,17 @@ instance MonadError String Parser where
 -- $Working_With_Tokens
 -- The 'Parser' state has a place to save characters that have been parsed called the 'tokenStack'.
 -- It is modeled on the idea of a highlighting pen. As you scan through text, you can place the pen
--- down, collecting characters to form a token. The 'beginToken' function starts collecting. You can
--- call 'beginToken' multiple times in a row, each time a new token is created, like lifting the pen
+-- down, collecting characters to form a token. The 'token' function starts collecting. You can
+-- call 'token' multiple times in a row, each time a new token is created, like lifting the pen
 -- and then putting it back down at the same spot to create a visible break in the highlight. You
--- can retrieve a copy of all characters highlighted by the current token with 'getToken' or you can
--- un-highlight back to the most recent 'beginToken' with 'endToken'. You can end all highlighting
--- with 'endAllTokens'.
+-- can retrieve a copy of all characters highlighted by the current token with 'getToken'.
 --
 -- Tokens are also used internally by the 'Parser' monad. The 'Control.Monad.fail' function will
 -- cause the token stack to be cleared, and an error message is created using the cleared tokens.
 --
 -- The token stack can also provide slightly more efficient 'backtrack'ing, although there is still
--- a performance penalty.  You can 'backtrack' to the most recent 'beginToken' break, or you can
--- 'backtrackAll' back to the very first 'beginToken'. 
+-- a performance penalty.  You can 'backtrack' to the most recent 'token' break, or you can
+-- 'backtrackAll' back to the very first 'token'. 
 
 -- | 'Token's are created by 'Parser's like 'regex' or 'regexMany1'. You can combine tokens using
 -- 'append', 'appendTokens' and 'parseAppend'. There is no restriction on the order in which you
@@ -634,16 +631,9 @@ new_token = get >>= \st -> return $
   , tokenChars = ""
   }
 
-
--- | Push a new 'Token' onto the 'tokenStack' with the current line number and character count
--- information.
-beginToken :: Parser ()
-beginToken = new_token >>= \t -> modify $ \st -> st{tokenStack = t : tokenStack st}
-
--- | Push a new 'Token' onto the stack, but immediately pop it off and disgard it if the given
--- parser 'Backtrack's.
-beginTokenIf :: Parser a -> Parser a
-beginTokenIf parser = beginToken >> mplus parser (endToken >> mzero)
+-- not for export --
+begin_token :: Parser ()
+begin_token = new_token >>= \t -> modify $ \st -> st{tokenStack = t : tokenStack st}
 
 -- not for export --
 put_back :: Token -> [Token] -> Parser ()
@@ -656,71 +646,48 @@ put_back t tx = modify $ \st ->
     }
 
 -- not for export --
+end_token :: Parser ()
+end_token = get >>= \st -> case tokenStack st of
+  []       -> return ()
+  [t]      -> put (st{tokenStack = []})
+  t1:t2:tx -> put (st{tokenStack = appendTokens t2 t1 : tx})
+
+-- not for export --
 token_stack :: Parser a -> ([Token] -> ParseState -> Parser a) -> Parser a
 token_stack onEmpty onFull = get >>= \st -> case tokenStack st of
   [] -> onEmpty
   tx -> onFull tx st
 
--- not for export --
-concat_tokens :: [Token] -> Token
-concat_tokens = foldl1 appendTokens . reverse
+-- | Run a given parser, collecting every character it matches. You can use 'getToken' to get a
+-- 'Token' containing these characters. When the given parser has been evaluated, regardless of
+-- whether it evaluates to a 'Backtrack' or 'OK', the token is deleted. If the given parser
+-- evaluates to 'PFail', the token is used for error reporting.
+token :: Parser a -> Parser a
+token parser = begin_token >> mplus (parser >>= \a -> end_token >> return a) (end_token >> mzero)
 
--- | This will "undo" all parsing to the most recent 'beginToken' call, taking the top 'Token' off
--- of the 'tokenStack'. Once 'backtrack' modifies the internal 'Control.Monad.State.State', it
--- evaluates to 'Control.Monad.mzero' which will trigger 'Backtrack'ing. If the 'tokenStack' is
--- empty, the internal 'Control.Monad.State.State' is not modified, but it still evaluates to
+-- | This will "undo" all parsing to the most recent 'token' call, taking the top 'Token' off of the
+-- 'tokenStack'. Once 'backtrack' modifies the internal 'Control.Monad.State.State', it evaluates to
+-- 'Control.Monad.mzero' which will trigger 'Backtrack'ing. If the 'tokenStack' is empty, the
+-- internal 'Control.Monad.State.State' is not modified, but it still evaluates to
 -- 'Control.Monad.mzero'.
 backtrack :: Parser ig
 backtrack = token_stack mzero $ \ (t:tx) _ -> put_back t tx >> mzero
 
--- | This will "undo" all parsing all the way back to the very first 'beginToken' call in the
--- 'parseStack', just like 'backtrack', except it always leaves the 'parseStack' empty.
-backtrackAll :: Parser ig
-backtrackAll = token_stack mzero $ \tx _ -> put_back (concat_tokens tx) [] >> mzero
-
 -- | Get a copy of the 'Token' at the top of the 'tokenStack', which was created by the most recent
--- evaluation of the 'beginToken' function. Returns an empty 'Token' at the current position in the
+-- evaluation of the 'token' function. Returns an empty 'Token' at the current position in the
 -- input string if the 'tokenStack' is empty.
 getToken :: Parser Token
 getToken = token_stack new_token (\ (t:tx) _ -> return t)
+
+-- not for export --
+concat_tokens :: [Token] -> Token
+concat_tokens = foldl1 appendTokens . reverse
 
 -- | Get a copy of the whole 'tokenStack', but with every 'Token' combined together into a single
 -- 'Token'. Returns an empty 'Token' at the current position in the input string if the 'tokenStack'
 -- is empty.
 getCombinedTokens :: Parser Token
 getCombinedTokens = token_stack new_token $ \tx _ -> return (concat_tokens tx)
-
--- | Take the 'Token' at the top of the 'tokenStack' off the stack and return it. Returns an empty
--- 'Token' at the current position in the input string if the 'tokenStack' is empty. If there are
--- more 'Token's on the stack above the current 'Token', the current 'Token' is merged up into the
--- next 'Token' in the stack before being returned.
-endToken :: Parser Token
-endToken = get >>= \st -> case tokenStack st of
-  []       -> new_token
-  [t]      -> put (st{tokenStack = []}) >> return t
-  t1:t2:tx -> put (st{tokenStack = appendTokens t2 t1 : tx}) >> return t1
-
--- | Clear all 'Token's off of the 'tokenStack', returning them. Returns an empty 'Token' at the
--- current position in the input string if the 'tokenStack' is empty.
-clearTokenStack :: Parser [Token]
-clearTokenStack = token_stack (return []) $ \tx st ->
-  put (st{tokenStack = []}) >> return (reverse tx)
-
--- | Clears all 'Token's off of the 'tokenStack', combines them together and returns a single token.
--- Returns an empty 'Token' at the current position in the input string if the 'tokenStack' is
--- empty.
-endAllTokens :: Parser Token
-endAllTokens = clearTokenStack >>= \tx ->
-  if null tx then new_token else return (foldl1 appendTokens tx)
-
--- | Evaluates to 'Prelude.True' if the 'tokenStack' is empty.
-stackIsEmpty :: Parser Bool
-stackIsEmpty = token_stack (return True) (\ _ _ -> return False)
-
--- | Calls 'endToken', poping the top 'Token' off the stack and disgards it, then returns the given
--- value.
-ok :: a -> Parser a
-ok a = endToken >> return a
 
 ----------------------------------------------------------------------------------------------------
 

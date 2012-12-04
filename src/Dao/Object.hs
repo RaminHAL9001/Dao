@@ -89,12 +89,12 @@ data TypeID
   | TypeType
   | IntType
   | WordType
-  | LongType
+  | DiffTimeType
   | FloatType
+  | LongType
   | RatioType
   | ComplexType
   | TimeType
-  | DiffTimeType
   | CharType
   | StringType
   | PairType
@@ -110,6 +110,167 @@ data TypeID
   | RuleType
   | BytesType
   deriving (Eq, Ord, Show, Enum, Typeable)
+
+----------------------------------------------------------------------------------------------------
+
+oBool :: Bool -> Object
+oBool a = if a then OTrue else OFalse
+
+isNumeric :: Object -> Bool
+isNumeric o = case o of
+  OWord     _ -> True
+  OInt      _ -> True
+  OLong     _ -> True
+  ODiffTime _ -> True
+  OFloat    _ -> True
+  ORatio    _ -> True
+  OComplex  _ -> True
+  _           -> False
+
+isIntegral :: Object -> Bool
+isIntegral o = case o of
+  OWord _ -> True
+  OInt  _ -> True
+  OLong _ -> True
+  _       -> False
+
+isRational :: Object -> Bool
+isRational o = case o of
+  OWord     _ -> True
+  OInt      _ -> True
+  OLong     _ -> True
+  ODiffTime _ -> True
+  OFloat    _ -> True
+  ORatio    _ -> True
+  _           -> False
+
+isFloating :: Object -> Bool
+isFloating o = case o of
+  OFloat   _ -> True
+  OComplex _ -> True
+  _          -> False
+
+objToIntegral :: Object -> Maybe T_long
+objToIntegral o = case o of
+  OWord o -> return $ toIntegral o
+  OInt  o -> return $ toIntegral o
+  OLong o -> return o
+  _       -> mzero
+
+objToRational :: Object -> Maybe T_rational
+objToRational o = case o of
+  OWord     o -> return $ toRational o
+  OInt      o -> return $ toRational o
+  ODiffTime o -> return $ toRational o
+  OFloat    o -> return $ toRational o
+  OLong     o -> return $ toRational o
+  ORatio    o -> return o
+  _           -> mzero
+
+instance Real Object where
+  toRational o = fromMaybe ONull (objToRational o)
+
+objToComplex :: Object -> Maybe T_complex
+objToComplex o = case o of
+  T_complex o -> return o
+  o           -> objToRational o >>= \o -> return (fromRational o :+ 0)
+
+fitIntToBounds :: Bounded a => a -> a -> (a -> Object) -> T_long -> Maybe Object
+fitIntToBounds minb maxb construct a =
+  if fromIntegral minb <= a && a <= fromIntegral maxb
+    then return (construct (fromIntegral a))
+    else mzero
+
+objToFloat :: Object -> Maybe T_float
+objToFloat = OFloat . fromRational . objToRational
+
+instance Num Object where
+  a + b = fromMaybe ONull $ msum $
+    [ objToIntegral a >>= \a -> objToIntegral b -> fitIntBounds (a+b)
+    , objToRational a >>= \a -> objToRational b -> ORational (a+b)
+    , objToComplex  a >>= \a -> objToComplex  b -> OComplex (a+b)
+    ]
+  a - b = fromMaybe ONull $ msum $
+    [ objToIntegral a >>= \a -> objToIntegral b -> fitIntBounds (a-b)
+    , objToRational a >>= \a -> objToRational b -> ORational (a-b)
+    , objToComplex  a >>= \a -> objToComplex  b -> OComplex (a-b)
+    ]
+  a * b = fromMaybe ONull $ msum $
+    [ objToIntegral a >>= \a -> objToIntegral b -> fitIntBounds (a*b)
+    , objToRational a >>= \a -> objToRational b -> ORational (a*b)
+    , objToComplex  a >>= \a -> objToComplex  b -> OComplex (a*b)
+    ]
+  signum a = fromMaybe ONull $
+    objToRational a >>= \a ->
+      return (if a==0 then OInt 0 else if a>0 then OInt 1 else OInt (0-1))
+  abs a = case a of
+    OWord     a -> OWord a
+    OInt      a -> OInt (abs a)
+    OLong     a -> OLong (abs a)
+    ODiffTime a -> ODiffTime (abs a)
+    OFloat    a -> OFloat (abs a)
+    ORatio    a -> ORatio (abs a)
+    OComplex  a -> OFloat (magnitude a)
+    _           -> ONull
+  fromInteger = OLong
+
+instance Fractional Object where
+  a / b = fromMaybe ONull $ msum $
+    [ case (a, b) of
+        (OFloat a, OFloat b) -> OFloat (a/b)
+        _                    -> mzero
+    , objToRational a >>= \a -> objToRational b >>= \b -> return (a/b)
+    , objToComplex  a >>= \a -> objToComplex  b >>= \b -> return (a/b)
+    ]
+  recip a = fromMaybe ONull $ msum $
+    [ case a of
+        OFloat   a -> return (OFloat   (recip a))
+        OComplex a -> return (OComplex (recip a))
+        _          -> mzero
+    , fmap (ORatio . recip) (objToRational a)
+    ]
+
+instance Floating Object where
+  pi = OFloat pi
+  exp a = fromMaybe ONull (mplus (fmap (OFloat . exp) (objToFloat a)) (fmap (OComplex . exp) (objToComplex a)))
+  sqrt a = fromMaybe ONull (mplus (fmap (OFloat . sqrt) (objToFloat a)) (fmap (OComplex . sqrt) (objToComplex a)))
+  log a = fromMaybe ONull (mplus (fmap (OFloat . log) (objToFloat a)) (fmap (OComplex . log) (objToComplex a)))
+  sin a = fromMaybe ONull (mplus (fmap (OFloat . sin) (objToFloat a)) (fmap (OComplex . sin) (objToComplex a)))
+  cos a = fromMaybe ONull (mplus (fmap (OFloat . cos) (objToFloat a)) (fmap (OComplex . cos) (objToComplex a)))
+  tan a = fromMaybe ONull (mplus (fmap (OFloat . tan) (objToFloat a)) (fmap (OComplex . tan) (objToComplex a)))
+  asin a = fromMaybe ONull (mplus (fmap (OFloat . asin) (objToFloat a)) (fmap (OComplex . asin) (objToComplex a)))
+  acos a = fromMaybe ONull (mplus (fmap (OFloat . acos) (objToFloat a)) (fmap (OComplex . acos) (objToComplex a)))
+  atan a = fromMaybe ONull (mplus (fmap (OFloat . atan) (objToFloat a)) (fmap (OComplex . atan) (objToComplex a)))
+  sinh a = fromMaybe ONull (mplus (fmap (OFloat . sinh) (objToFloat a)) (fmap (OComplex . sinh) (objToComplex a)))
+  cosh a = fromMaybe ONull (mplus (fmap (OFloat . cosh) (objToFloat a)) (fmap (OComplex . cosh) (objToComplex a)))
+  tanh a = fromMaybe ONull (mplus (fmap (OFloat . tanh) (objToFloat a)) (fmap (OComplex . tanh) (objToComplex a)))
+  asinh a = fromMaybe ONull (mplus (fmap (OFloat . asinh) (objToFloat a)) (fmap (OComplex . asinh) (objToComplex a)))
+  acosh a = fromMaybe ONull (mplus (fmap (OFloat . acosh) (objToFloat a)) (fmap (OComplex . acosh) (objToComplex a)))
+  atanh a = fromMaybe ONull (mplus (fmap (OFloat . atanh) (objToFloat a)) (fmap (OComplex . atanh) (objToComplex a)))
+  a ** b = fromMaybe ONull $ msum $
+    [ objToFloat a >>= \a -> objToFloat b >>= \b -> return (OFloat (a**b))
+    , objToComplex a >>= \a -> objToComplex b >>= \b -> return (OComplex (a**b))
+    ]
+  logBase a b = fromMaybe ONull $ msum $
+    [ objToFloat a >>= \a -> objToFloat b >>= \b -> return (OFloat (logBase a b)
+    , objToComplex a >>= \a -> objToComplex b >>= \b -> return (OComplex (logBase a b))
+    ]
+
+instance Integral Object where
+  toInteger o = case o of
+    OInt  o -> toInteger o
+    OWord o -> toInteger o
+    OLong o -> o
+  quotRem a b = fromMaybe ONull $
+    objToIntegral a >>= \a -> objToIntegral >>= \b -> return (quotRem a b)
+
+instance RealFrac Object where
+  properFraction a = fromMaybe ONull $ msum $
+    [ objToIntegral a >>= \a -> return (a, OWord 0)
+    , objToRational a >>= \a -> let (i, f) = properFraction a in (i, ORatio f)
+    ]
+
+----------------------------------------------------------------------------------------------------
 
 -- | References used throughout the executable script refer to differer places in the Runtime where
 -- values can be stored. Because each store is accessed slightly differently, it is necessary to

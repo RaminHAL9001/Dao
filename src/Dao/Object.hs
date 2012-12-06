@@ -563,61 +563,63 @@ instance Commented Rule where
 
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
-  = Literal      (Com Object)
-  | AssignExpr   (Com ObjectExpr) (Com UStr)             (Com ObjectExpr)
-  | Equation     (Com ObjectExpr) (Com UStr)             (Com ObjectExpr)
-  | ArraySubExpr (Com ObjectExpr) (Com ObjectExpr)
-  | FuncCall     (Com Name)       (Com [Com ObjectExpr])
-  | DictExpr     (Com UStr)       (Com [Com ObjectExpr])
-  | ArrayExpr    (Com ())         (Com [Com ObjectExpr]) (Com ([Com ObjectExpr]))
-  | LambdaCall   (Com ())         (Com ObjectExpr)       (Com [Com ObjectExpr])
-  | StructExpr   (Com ())         (Com ObjectExpr)       (Com [Com ObjectExpr])
-  | LambdaExpr   (Com ())         (Com [Com UStr])       (Com [Com ScriptExpr])
-  | ParenExpr    (Com ObjectExpr)
+  = Literal       Object
+  | AssignExpr    ObjectExpr  (Com Name)  ObjectExpr
+  | Equation      ObjectExpr  (Com Name)  ObjectExpr
+  | ArraySubExpr  ObjectExpr  [Comment]   (Com ObjectExpr)
+  | FuncCall      Name        [Comment]   [Com ObjectExpr]
+  | DictExpr      Name        [Comment]   [Com ObjectExpr]
+  | ArrayExpr     (Com [Com ObjectExpr])  [Com ObjectExpr]
+  | LambdaCall    (Com ObjectExpr)        [Com ObjectExpr]
+  | StructExpr    (Com ObjectExpr)        [Com ObjectExpr]
+  | LambdaExpr    (Com [Com Name])        [Com ScriptExpr]
+  | ParenExpr     Bool                    (Com ObjectExpr)
+    -- ^ Bool is True if the parenthases really exist.
   deriving (Eq, Ord, Show, Typeable)
 
 -- | Part of the Dao language abstract syntax tree: any expression that controls the flow of script
 -- exectuion.
 data ScriptExpr
   = NO_OP
-  | EvalObject   (Com ObjectExpr)
-  | IfThenElse   (Com ObjectExpr)       (Com [Com ScriptExpr]) (Com [Com ScriptExpr])
-  | TryCatch     (Com [Com ScriptExpr]) (Com UStr)             (Com [Com ScriptExpr])
-  | ForLoop      (Com UStr)             (Com ObjectExpr)       (Com [Com ScriptExpr])
-  | ContinueExpr (Com Bool)             (Com ObjectExpr)       (Com ())
+  | EvalObject   ObjectExpr
+  | IfThenElse   [Comment]  ObjectExpr  (Com [Com ScriptExpr])  (Com [Com ScriptExpr])
+    -- ^ if /**/ objExpr /**/ { ... } /**/ else /**/ if /**/ { ... } /**/ else /**/ { ... } /**/
+  | TryCatch     (Com [Com ScriptExpr]) (Com UStr)                 [Com ScriptExpr]
+  | ForLoop      (Com Name)             (Com ObjectExpr)           [Com ScriptExpr]
+  | ContinueExpr Bool                   (Com ObjectExpr)
     -- ^ The boolean parameter is True for a "continue" statement, False for a "break" statement.
-  | ReturnExpr   (Com Bool)             (Com ObjectExpr)       (Com ())
+  | ReturnExpr   Bool                   (Com ObjectExpr)
     -- ^ The boolean parameter is True foe a "return" statement, False for a "throw" statement.
-  | WithDoc      (Com ObjectExpr)       (Com [Com ScriptExpr])
+  | WithDoc      (Com ObjectExpr)       [Com ScriptExpr]
   deriving (Eq, Ord, Show, Typeable)
 
 instance Commented ObjectExpr where
   stripComments o = case o of
-    Literal       a     -> Literal      (u a)
-    AssignExpr    a b c -> AssignExpr   (u a) (u b) (u c)
-    Equation      a b c -> Equation     (u a) (u b) (u c)
-    ArraySubExpr  a b   -> ArraySubExpr (u a) (u b)
-    FuncCall      a b   -> FuncCall     (u a) (u b)
-    DictExpr      a b   -> DictExpr     (u a) (u b)
-    ArrayExpr     a b c -> ArrayExpr    (u a) (u b) (u c)
-    LambdaCall    a b c -> LambdaCall   (u a) (u b) (u c)
-    StructExpr    a b c -> StructExpr   (u a) (u b) (u c)
-    LambdaExpr    a b c -> LambdaExpr   (u a) (u b) (u c)
-    ParenExpr     a     -> ParenExpr    (u a)
+    Literal       a     -> Literal         a
+    AssignExpr    a b c -> AssignExpr      a  (u b)    c
+    Equation      a b c -> Equation        a  (u b)    c
+    ArraySubExpr  a _ c -> ArraySubExpr    a  []    (u c)
+    FuncCall      a _ c -> FuncCall        a  []    (u c)
+    DictExpr      a _ c -> DictExpr        a  []    (u c)
+    ArrayExpr     a b   -> ArrayExpr    (u a) (u b)
+    LambdaCall    a b   -> LambdaCall   (u a) (u b)
+    StructExpr    a b   -> StructExpr   (u a) (u b)
+    LambdaExpr    a b   -> LambdaExpr   (u a) (u b)
+    ParenExpr     a b   -> ParenExpr       a  (u b)
     where
       u :: Commented a => a -> a
       u = stripComments
 
 instance Commented ScriptExpr where
   stripComments s = case s of
-    NO_OP               -> NO_OP
-    EvalObject    a     -> EvalObject   (u a)
-    IfThenElse    a b c -> IfThenElse   (u a) (u b) (u c)
-    TryCatch      a b c -> TryCatch     (u a) (u b) (u c)
-    ForLoop       a b c -> ForLoop      (u a) (u b) (u c)
-    ContinueExpr  a b c -> ContinueExpr (u a) (u b) (u c)
-    ReturnExpr    a b c -> ReturnExpr   (u a) (u b) (u c)
-    WithDoc       a b   -> WithDoc      (u a) (u b)
+    NO_OP                 -> NO_OP
+    EvalObject    a       -> EvalObject      a
+    IfThenElse    _ b c d -> IfThenElse   []       b  (u c) (u d)
+    TryCatch      a b c   -> TryCatch     (u a) (u b) (u c)
+    ForLoop       a b c   -> ForLoop      (u a) (u b) (u c)
+    ContinueExpr  a b     -> ContinueExpr    a  (u b)
+    ReturnExpr    a b     -> ReturnExpr      a  (u b)
+    WithDoc       a b     -> WithDoc      (u a) (u b)
     where
       u :: Commented a => a -> a
       u = stripComments

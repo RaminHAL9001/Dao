@@ -105,6 +105,11 @@ showObj idnc o = case o of
             ++ intercalate (itemsep++"\n") (map (showObj (idnc+1)) items)
             ++ ('\n':indent idnc++close)
 
+showComments :: [Comment] -> String
+showComments comx = flip concatMap comx $ \com -> case com of
+  InlineComment  com -> " /*"++uchars com++"*/ "
+  EndlineComment com -> " //"++uchars com++"\n"
+
 showCom :: (Int -> a -> String) -> Int -> Com a -> String
 showCom showItem idnc com = case com of
   Com         b   ->         showItem idnc b
@@ -113,9 +118,7 @@ showCom showItem idnc com = case com of
   ComAround a b c -> sh a ++ showItem idnc b ++ sh c
   where
     idnc' = idnc+1
-    sh comx = flip concatMap comx $ \com -> case com of
-      InlineComment  com -> " /*"++uchars com++"*/ "
-      EndlineComment com -> " //"++uchars com++"\n"++indent idnc'
+    sh c = showComments c ++ indent idnc'
 
 showScript :: Int -> Maybe Name -> Script -> String
 showScript idnc maybeName scrp =
@@ -137,30 +140,30 @@ showScriptBlock idnc linex = " {" ++ showCom loop (idnc+1) linex ++ '\n':indent 
 showScriptExpr :: Int -> Com ScriptExpr -> String
 showScriptExpr idnc line = showCom expr idnc line where
   expr idnc line = case line of
-    NO_OP                    -> ""
-    EvalObject   obj         -> showObjectExpr idnc obj ++ ";"
-    IfThenElse   ifx thx elx -> ifloop ifx thx elx where
+    NO_OP                      -> ""
+    EvalObject   obj           -> showObjectExpr idnc (Com obj) ++ ";"
+    IfThenElse   c ifx thx elx -> showComments c ++ ifloop (Com ifx) thx elx where
       ifloop ifx thx elx =
            "if(" ++ showObjectExpr idnc ifx ++ ')' : showScriptBlock idnc thx
         ++ let showElse = "else " ++ showScriptBlock idnc elx
            in case unComment elx of
                 [] -> ""
                 [elexpr] -> case unComment elexpr of
-                  IfThenElse ifx thx elx -> "else " ++ ifloop ifx thx elx
+                  IfThenElse c ifx thx elx -> showComments c ++ "else " ++ ifloop (Com ifx) thx elx
                   _ -> showElse
                 _ -> showElse
     TryCatch     try nm ctch -> "try " ++ showScriptBlock idnc try
-      ++ '\n':indent idnc ++ "catch " ++ showCom (\_ -> uchars) (idnc+1) nm ++ showScriptBlock idnc ctch
+      ++ '\n':indent idnc ++ "catch " ++ showCom (\_ -> uchars) (idnc+1) nm ++ showScriptBlock idnc (Com ctch)
     ForLoop      nm obj scrp -> "foreach " ++ showCom (\_ -> uchars) idnc nm
-      ++ " in (" ++ showObjectExpr idnc obj ++ ")" ++ showScriptBlock idnc scrp
-    ContinueExpr fn  obj com -> contBrkRetnThrow idnc fn obj com "continue" "break"
-    ReturnExpr   fn  obj com -> contBrkRetnThrow idnc fn obj com "return"   "throw"
-    WithDoc      obj with    -> "with " ++ showObjectExpr idnc obj ++ showScriptBlock idnc with
+      ++ " in (" ++ showObjectExpr idnc obj ++ ")" ++ showScriptBlock idnc (Com scrp)
+    ContinueExpr fn  obj     -> contBrkRetnThrow idnc fn obj "continue" "break"
+    ReturnExpr   fn  obj     -> contBrkRetnThrow idnc fn obj "return"   "throw"
+    WithDoc      obj with    -> "with " ++ showObjectExpr idnc obj ++ showScriptBlock idnc (Com with)
 
 -- | Used to show 'Dao.Types.ContinueExpr' and 'Dao.Object.ReturnExpr'.
-contBrkRetnThrow :: Int -> Com Bool -> Com ObjectExpr -> Com () -> String -> String -> String
-contBrkRetnThrow idnc fn obj com cont brk = showCom (\_ fn -> if fn then cont else brk) 0 fn
-  ++ " (" ++ showObjectExpr idnc obj ++ ")" ++ showCom (\_ _ -> ";") 0 com
+contBrkRetnThrow :: Int -> Bool -> Com ObjectExpr -> String -> String -> String
+contBrkRetnThrow idnc fn obj cont brk =
+  (if fn then cont else brk) ++ " (" ++ showObjectExpr idnc obj ++ ")"
 
 showReference :: Reference -> String
 showReference o = case o of
@@ -178,36 +181,34 @@ showObjectExpr idnc obj = showCom loop idnc obj where
   tuple sh idnc args = 
     '(':showCom (\idnc args -> intercalate ", " (map (sh idnc) args)) (idnc+1) args++")"
   assignExpr idnc expr = case expr of
-    AssignExpr   ref  op  obj   ->
-      showObjectExpr idnc ref ++ showCom (\_ -> uchars) idnc op ++ showObjectExpr (idnc+1) obj
+    AssignExpr   ref  op  obj   -> showObjectExpr idnc (Com ref)
+      ++ showCom (\_ -> uchars) idnc op ++ showObjectExpr (idnc+1) (Com obj)
     _ -> loop idnc expr
   dictExpr idnc objx = intercalate (",\n"++indent idnc) (map (showCom assignExpr (idnc+1)) objx)
   loop idnc obj = case obj of
-    Literal      obj            -> showCom showObj idnc obj
+    Literal      obj            -> showObj idnc obj
     AssignExpr   ref op   obj   ->
-      showObjectExpr idnc ref ++ showCom (\_ -> uchars) idnc op ++ showObjectExpr (idnc+1) obj
-    FuncCall     name args      ->
-      showCom (\_ -> uchars) idnc name ++ tuple showObjectExpr idnc args
-    LambdaCall   call obj  args ->
-         showCom (\_ _ -> "call") idnc call
+      showObjectExpr idnc (Com ref) ++ showCom (\_ -> uchars) idnc op ++ showObjectExpr (idnc+1) (Com obj)
+    FuncCall     name c    args -> uchars name ++ showComments c ++ tuple showObjectExpr idnc (Com args)
+    LambdaCall   obj       args -> "call "
       ++ showObjectExpr (idnc+1) obj
-      ++ tuple showObjectExpr idnc args
-    ParenExpr    sub            -> '(' : showObjectExpr (idnc+1) sub ++ ")"
-    Equation     left op  right -> showObjectExpr idnc left
+      ++ tuple showObjectExpr idnc (Com args)
+    ParenExpr    grp  sub       ->
+      let str = showObjectExpr (idnc+1) sub in if grp then '(' : str ++ ")" else str
+    Equation     left op  right -> showObjectExpr idnc (Com left)
       ++ showCom (\_ -> uchars) idnc op
-      ++ case unComment right of
-           Equation _ _ _ -> '(':showObjectExpr idnc right++")"
-           _ -> showObjectExpr idnc right
-    DictExpr     dict objx      -> showCom (\_ -> uchars) idnc dict
-      ++ "{\n" ++ indent (idnc+1) ++ showCom dictExpr idnc objx ++ "}"
-    ArrayExpr    com  bnds elms -> showCom (\_ _ -> "array") idnc com
+      ++ showObjectExpr idnc (Com right)
+    DictExpr     dict c objx    -> uchars dict ++ ' ' : showComments c
+      ++ "{\n" ++ indent (idnc+1) ++ showCom dictExpr idnc (Com objx) ++ "}"
+    ArrayExpr    bnds   elms    -> "array "
       ++ tuple showObjectExpr (idnc+1) bnds ++ '['
-      :  showCom (\idnc elms -> intercalate ", " (map (showObjectExpr (idnc+1)) elms)) idnc elms
+      :  showCom (\idnc elms -> intercalate ", " (map (showObjectExpr (idnc+1)) elms)) idnc (Com elms)
       ++ "]"
-    ArraySubExpr obj  sub       -> showObjectExpr idnc obj ++ '[':showObjectExpr (idnc+1) sub++"]"
-    LambdaExpr   com  argv scrp ->
-         showCom (\_ _ -> "func") idnc com ++ tuple (showCom (\_ -> uchars)) (idnc+1) argv
-      ++ "{\n" ++ indent (idnc+1) ++ showScriptBlock (idnc+1) scrp ++ '\n':indent idnc++"}"
+    ArraySubExpr obj  com  sub  -> showObjectExpr idnc (Com obj)
+      ++ showComments com
+      ++ '[':showObjectExpr (idnc+1) sub++"]"
+    LambdaExpr   argv  scrp     -> tuple (showCom (\_ -> uchars)) (idnc+1) argv
+      ++ "{\n" ++ indent (idnc+1) ++ showScriptBlock (idnc+1) (Com scrp) ++ '\n':indent idnc++"}"
 
 showRule :: Int -> Rule -> String
 showRule idnc rule = "rule "

@@ -52,6 +52,7 @@ import qualified Data.IntMap               as I
 import qualified Data.Set                  as S
 import qualified Data.ByteString.Lazy      as B
 
+import           Control.Monad
 import           Control.Exception
 
 ----------------------------------------------------------------------------------------------------
@@ -114,7 +115,7 @@ data TypeID
 ----------------------------------------------------------------------------------------------------
 
 oBool :: Bool -> Object
-oBool a = if a then OTrue else OFalse
+oBool a = if a then OTrue else ONull
 
 isNumeric :: Object -> Bool
 isNumeric o = case o of
@@ -152,12 +153,12 @@ isFloating o = case o of
 
 objToIntegral :: Object -> Maybe T_long
 objToIntegral o = case o of
-  OWord o -> return $ toIntegral o
-  OInt  o -> return $ toIntegral o
+  OWord o -> return $ toInteger o
+  OInt  o -> return $ toInteger o
   OLong o -> return o
   _       -> mzero
 
-objToRational :: Object -> Maybe T_rational
+objToRational :: Object -> Maybe T_ratio
 objToRational o = case o of
   OWord     o -> return $ toRational o
   OInt      o -> return $ toRational o
@@ -168,37 +169,57 @@ objToRational o = case o of
   _           -> mzero
 
 instance Real Object where
-  toRational o = fromMaybe ONull (objToRational o)
+  toRational o = fromMaybe (error "Object value is not a rational number") (objToRational o)
 
 objToComplex :: Object -> Maybe T_complex
 objToComplex o = case o of
-  T_complex o -> return o
-  o           -> objToRational o >>= \o -> return (fromRational o :+ 0)
+  OComplex o -> return o
+  o          -> objToRational o >>= \o -> return (fromRational o :+ 0)
 
-fitIntToBounds :: Bounded a => a -> a -> (a -> Object) -> T_long -> Maybe Object
+fitIntToBounds :: (Integral a, Bounded a) => a -> a -> (a -> Object) -> T_long -> Maybe Object
 fitIntToBounds minb maxb construct a =
   if fromIntegral minb <= a && a <= fromIntegral maxb
     then return (construct (fromIntegral a))
     else mzero
 
+smallestIntContainer :: T_long -> Object
+smallestIntContainer a = fromMaybe ONull $ msum $
+  [ fitIntToBounds minBound maxBound OWord a
+  , fitIntToBounds minBound maxBound OInt  a
+  , return (OLong a)
+  ]
+
 objToFloat :: Object -> Maybe T_float
-objToFloat = OFloat . fromRational . objToRational
+objToFloat o = case o of
+  OFloat    f -> return f
+  _           -> mzero
+
+objToDiffTime :: Object -> Maybe T_diffTime
+objToDiffTime o = case o of
+  ODiffTime f -> return f
+  _           -> mzero
 
 instance Num Object where
   a + b = fromMaybe ONull $ msum $
-    [ objToIntegral a >>= \a -> objToIntegral b -> fitIntBounds (a+b)
-    , objToRational a >>= \a -> objToRational b -> ORational (a+b)
-    , objToComplex  a >>= \a -> objToComplex  b -> OComplex (a+b)
+    [ objToIntegral a >>= \a -> objToIntegral b >>= \b -> return $ smallestIntContainer (a+b)
+    , objToFloat    a >>= \a -> objToFloat    b >>= \b -> return $ OFloat (a+b)
+    , objToDiffTime a >>= \a -> objToDiffTime b >>= \b -> return $ ODiffTime (a+b)
+    , objToRational a >>= \a -> objToRational b >>= \b -> return $ ORatio (a+b)
+    , objToComplex  a >>= \a -> objToComplex  b >>= \b -> return $ OComplex (a+b)
     ]
   a - b = fromMaybe ONull $ msum $
-    [ objToIntegral a >>= \a -> objToIntegral b -> fitIntBounds (a-b)
-    , objToRational a >>= \a -> objToRational b -> ORational (a-b)
-    , objToComplex  a >>= \a -> objToComplex  b -> OComplex (a-b)
+    [ objToIntegral a >>= \a -> objToIntegral b >>= \b -> return $ smallestIntContainer (a-b)
+    , objToFloat    a >>= \a -> objToFloat    b >>= \b -> return $ OFloat (a-b)
+    , objToDiffTime a >>= \a -> objToDiffTime b >>= \b -> return $ ODiffTime (a-b)
+    , objToRational a >>= \a -> objToRational b >>= \b -> return $ ORatio (a-b)
+    , objToComplex  a >>= \a -> objToComplex  b >>= \b -> return $ OComplex (a-b)
     ]
   a * b = fromMaybe ONull $ msum $
-    [ objToIntegral a >>= \a -> objToIntegral b -> fitIntBounds (a*b)
-    , objToRational a >>= \a -> objToRational b -> ORational (a*b)
-    , objToComplex  a >>= \a -> objToComplex  b -> OComplex (a*b)
+    [ objToIntegral a >>= \a -> objToIntegral b >>= \b -> return $ smallestIntContainer (a*b)
+    , objToFloat    a >>= \a -> objToFloat    b >>= \b -> return $ OFloat (a*b)
+    , objToDiffTime a >>= \a -> objToDiffTime b >>= \b -> return $ ODiffTime (a*b)
+    , objToRational a >>= \a -> objToRational b >>= \b -> return $ ORatio (a*b)
+    , objToComplex  a >>= \a -> objToComplex  b >>= \b -> return $ OComplex (a*b)
     ]
   signum a = fromMaybe ONull $
     objToRational a >>= \a ->
@@ -217,10 +238,10 @@ instance Num Object where
 instance Fractional Object where
   a / b = fromMaybe ONull $ msum $
     [ case (a, b) of
-        (OFloat a, OFloat b) -> OFloat (a/b)
+        (OFloat a, OFloat b) -> return $ OFloat (a/b)
         _                    -> mzero
-    , objToRational a >>= \a -> objToRational b >>= \b -> return (a/b)
-    , objToComplex  a >>= \a -> objToComplex  b >>= \b -> return (a/b)
+    , objToRational a >>= \a -> objToRational b >>= \b -> return (ORatio (a/b))
+    , objToComplex  a >>= \a -> objToComplex  b >>= \b -> return (OComplex (a/b))
     ]
   recip a = fromMaybe ONull $ msum $
     [ case a of
@@ -229,6 +250,7 @@ instance Fractional Object where
         _          -> mzero
     , fmap (ORatio . recip) (objToRational a)
     ]
+  fromRational = ORatio
 
 instance Floating Object where
   pi = OFloat pi
@@ -252,22 +274,22 @@ instance Floating Object where
     , objToComplex a >>= \a -> objToComplex b >>= \b -> return (OComplex (a**b))
     ]
   logBase a b = fromMaybe ONull $ msum $
-    [ objToFloat a >>= \a -> objToFloat b >>= \b -> return (OFloat (logBase a b)
+    [ objToFloat a >>= \a -> objToFloat b >>= \b -> return (OFloat (logBase a b))
     , objToComplex a >>= \a -> objToComplex b >>= \b -> return (OComplex (logBase a b))
     ]
 
+non_int_value = error "Object value is not an integer"
+
 instance Integral Object where
-  toInteger o = case o of
-    OInt  o -> toInteger o
-    OWord o -> toInteger o
-    OLong o -> o
-  quotRem a b = fromMaybe ONull $
-    objToIntegral a >>= \a -> objToIntegral >>= \b -> return (quotRem a b)
+  toInteger o = fromMaybe non_int_value (objToIntegral o)
+  quotRem a b = fromMaybe non_int_value $
+    objToIntegral a >>= \a -> objToIntegral b >>= \b ->
+      return (let (x,y) = quotRem a b in (smallestIntContainer x, smallestIntContainer y))
 
 instance RealFrac Object where
-  properFraction a = fromMaybe ONull $ msum $
-    [ objToIntegral a >>= \a -> return (a, OWord 0)
-    , objToRational a >>= \a -> let (i, f) = properFraction a in (i, ORatio f)
+  properFraction a = fromMaybe (error "Object value is not a real number") $ msum $
+    [ objToIntegral a >>= \a -> return (fromIntegral a, OWord 0)
+    , objToRational a >>= \a -> let (x, y) = properFraction a in return (fromIntegral x, ORatio y)
     ]
 
 ----------------------------------------------------------------------------------------------------
@@ -367,6 +389,20 @@ objType o = case o of
   OScript   _ -> ScriptType
   ORule     _ -> RuleType
   OBytes    _ -> BytesType
+
+instance Enum Object where
+  toEnum   i = OType (toEnum i)
+  fromEnum o = fromEnum (objType o)
+  pred o = case o of
+    OInt  i -> OInt  (pred i)
+    OWord i -> OWord (pred i)
+    OLong i -> OLong (pred i)
+    OType i -> OType (pred i)
+  succ o = case o of
+    OInt  i -> OInt  (succ i)
+    OWord i -> OWord (succ i)
+    OLong i -> OLong (succ i)
+    OType i -> OType (succ i)
 
 ----------------------------------------------------------------------------------------------------
 

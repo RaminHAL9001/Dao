@@ -26,6 +26,7 @@ module Dao.Prelude
 
 import           Dao.String
 import           Dao.Object
+import           Dao.Pattern
 
 import           Data.Binary
 import qualified Data.ByteString.Lazy      as B
@@ -80,9 +81,46 @@ instance ToPattern [String] where { toPattern = map read }
 rule :: ToPattern pat => pat -> Action ig -> Builder ()
 rule pat act = if null pat then return () else AddRule (toPattern pat) (act >> return ())
 
+-- A 'DaoFunc' is defined so that you can basically gather your variables from input arguments, and
+-- then define an action for it like so:
+-- @function $
+-- @  [do  ORef a <- arg "a" -- gets the first argument, calls it "a" in error messages.@
+-- @       OInt b <- arg "b" -- gets the second argument, calls it "b" in error messages.@
+-- @       begin $ do@
+-- @           action :: Action a@
+-- @  ]@
+data GetArgs a
+  = GetArgs
+    { daoFuncToIO :: IO (PValue a) -- ^ is in the IO monad to catch pattern matching exceptions.
+    }
+  | TryAction
+    { getArgsAction :: Action a
+    } -- ^ If 'TryAction' can be evaluated without an exception, further monadic evaluation will not
+      -- continue beyond it,
+  | GotException SomeException
+      -- ^ Semantically equivalent to 'Control.Monad.mzero'.
+
+function :: [GetArgs ig] -> Builder ()
+function funcs = AddFunc (msum funcs >> return ()) ()
+
+-- | Begin the 'Action' part of a 'DaoFunc' after retrieving the arguments. Specify multiple
+begin :: Action a -> GetArgs a
+begin = TryAction
+
 ----------------------------------------------------------------------------------------------------
 
-data IOEvent
+-- Each ExecUnit runs in it's own thread, but it is up to the execution dispatcher to launch threads
+-- and execute programs in ExecUnit's.
+data NewExecUnit
+  = NewExecUnit
+    { xuA        :: Object -- the A register, accumlates results
+    , xuB        :: Object -- the B register, righ-hand value of an eqution
+    , xuRef      :: Reference -- the Reference register, points to where a result can be stored
+    , globalVars :: TreeResource
+    , qtimeVars  :: TreeResource
+    }
+
+data ByteCode
   = LockGlobal   Reference
   | UnlockGlobal Reference
   | ReadGlobal   Reference

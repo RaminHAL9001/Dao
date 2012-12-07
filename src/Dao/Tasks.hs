@@ -360,5 +360,5 @@ evalScriptString xunit instr = dStack xloc "evalScriptString" $
     case fst (runParser parseInteractiveScript instr) of
         Backtrack     -> error "cannot parse expression"
         PFail tok msg -> error ("error: "++uchars msg++show tok)
-        OK expr       -> Com expr
+        OK expr       -> expr
 

@@ -95,8 +95,16 @@ getWithChecksum checkSum geta = do
 
 ----------------------------------------------------------------------------------------------------
 
-putListWith :: [a] -> (a -> Put) -> Put
-putListWith ax p = mapM_ p ax >> putWord8 0x00
+putObjBool :: Bool -> Put
+putObjBool a = if a then put OTrue else put ONull
+
+getObjBool :: Get Bool
+getObjBool = lookAhead get >>= \a -> case a of
+  a | a==OTrue || a==ONull -> fmap (==OTrue) get
+  _ -> fail "expecting boolean object value"
+
+putListWith :: (a -> Put) -> [a] -> Put
+putListWith p ax = mapM_ p ax >> putWord8 0x00
 
 getListWith :: Get a -> Get [a]
 getListWith getx = loop [] where
@@ -107,7 +115,7 @@ getListWith getx = loop [] where
       _    -> getx >>= \a -> loop (ax++[a])
 
 putList :: Binary a => [a] -> Put
-putList ax = putListWith ax put
+putList = putListWith put
 
 getList :: Binary a => Get [a]
 getList = getListWith get
@@ -115,7 +123,7 @@ getList = getListWith get
 ----------------------------------------------------------------------------------------------------
 
 putMapWith :: (Eq k, Ord k) => (k -> Put) -> (v -> Put) -> M.Map k v -> Put
-putMapWith putk putv m = putListWith (M.assocs m) (\ (a, b) -> putk a >> putv b)
+putMapWith putk putv m = putListWith (\ (a, b) -> putk a >> putv b) (M.assocs m)
 
 getMapWith :: (Eq k, Ord k) => Get k -> Get v -> Get (M.Map k v)
 getMapWith getk getv = fmap M.fromList (getListWith (liftM2 (,) getk getv))
@@ -127,7 +135,7 @@ getMap :: (Eq k, Ord k, Binary k, Binary v) => Get (M.Map k v)
 getMap = getMapWith get get
 
 putObjMap :: Binary a => (m -> [(a, Object)]) -> m -> Put
-putObjMap asocs o = putListWith (asocs o) (\ (i, o) -> put i >> put o)
+putObjMap asocs o = putListWith (\ (i, o) -> put i >> put o) (asocs o)
 
 getObjMap :: Binary a => ([(a, Object)] -> m) -> Get m
 getObjMap fromList = fmap fromList (getListWith (get >>= \i -> get >>= \o -> return (i, o)))
@@ -370,7 +378,7 @@ getNullTermStr = loop [] where
   loop wx = getWord8 >>= \w -> if w==0 then return (upack wx) else loop (wx++[w])
 
 putCommentList :: [Comment] -> Put
-putCommentList comx = putListWith comx $ \com ->
+putCommentList comx = flip putListWith comx $ \com ->
   case com of
     InlineComment  com -> putWord8 0x31 >> put com
     EndlineComment com -> putWord8 0x32 >> put com
@@ -406,48 +414,54 @@ putCom c = putComWith put c
 getCom :: Binary a => Get (Com a)
 getCom = getComWith get
 
-putComListWith :: (a -> Put) -> Com [Com a] -> Put
-putComListWith fn rx = putComWith (flip putListWith (putComWith fn)) rx
+putComListWith :: (a -> Put) -> [Com a] -> Put
+putComListWith fn = putListWith (putComWith fn)
 
-getComListWith :: Binary a => Get a -> Get (Com [Com a])
-getComListWith fn = getComWith (getListWith (getComWith fn))
+getComListWith :: Binary a => Get a -> Get [Com a]
+getComListWith fn = getListWith (getComWith fn)
 
-putComList :: Binary a => Com [Com a] -> Put
+putComList :: Binary a => [Com a] -> Put
 putComList ax = putComListWith put ax
 
-getComList :: Binary a => Get (Com [Com a])
+getComList :: Binary a => Get [Com a]
 getComList = getComListWith get
+
+getComComList :: Binary a => Get (Com [Com a])
+getComComList = getComWith getComList
+
+putComComList :: Binary a => Com [Com a] -> Put
+putComComList = putComWith putComList
 
 ----------------------------------------------------------------------------------------------------
 
 instance Binary ObjectExpr where
   put o = case o of
-    Literal      a     -> x 0x41 $ putCom a
-    AssignExpr   a b c -> x 0x42 $ putCom a >> putCom b >> putCom c
-    FuncCall     a b   -> x 0x43 $ putCom a >> putComList b
-    LambdaCall   a b c -> x 0x44 $ putComWith return a >> putCom b >> putComList c
-    ParenExpr    a     -> x 0x45 $ putCom a
-    Equation     a b c -> x 0x46 $ putCom a >> putCom b >> putCom c
-    DictExpr     a b   -> x 0x47 $ putCom a >> putComList b
-    ArrayExpr    a b c -> x 0x48 $ putComWith return a >> putComList b >> putComList c
-    ArraySubExpr a b   -> x 0x49 $ putCom a >> putCom b
-    LambdaExpr   a b c -> x 0x4A $ putComWith return a >> putComList b >> putComList c
+    Literal      a     -> x 0x41 $ put a
+    AssignExpr   a b c -> x 0x42 $ put a           >> putCom b         >> put c
+    FuncCall     a b c -> x 0x43 $ put a           >> putCommentList b >> putComList c
+    LambdaCall   a b   -> x 0x44 $ putCom a        >> putComList b
+    ParenExpr    a b   -> x 0x45 $ putObjBool a    >> putCom b
+    Equation     a b c -> x 0x46 $ put a           >> putCom b         >> put c
+    DictExpr     a b c -> x 0x47 $ put a           >> putCommentList b >> putComList c
+    ArrayExpr    a b   -> x 0x48 $ putComComList a >> putComList b
+    ArraySubExpr a b c -> x 0x49 $ put a           >> putCommentList b >> putCom c
+    LambdaExpr   a b   -> x 0x4A $ putComComList a >> putComList b
     where
       x i putx  = putWord8 i >> putx
       char3 str = mapM_ (putWord8 . fromIntegral) (take 3 (map ord (uchars str) ++ repeat 0))
   get = do
     w <- getWord8
     case w of
-      0x41 -> liftM  Literal      getCom
-      0x42 -> liftM3 AssignExpr   getCom getCom getCom
-      0x43 -> liftM2 FuncCall     getCom getComList
-      0x44 -> liftM3 LambdaCall   (getComWith (return ())) getCom getComList
-      0x45 -> liftM  ParenExpr    getCom
-      0x46 -> liftM3 Equation     getCom getCom getCom
-      0x47 -> liftM2 DictExpr     getCom getComList
-      0x48 -> liftM3 ArrayExpr    (getComWith (return ())) getComList getComList
-      0x49 -> liftM2 ArraySubExpr getCom getCom
-      0x4A -> liftM3 LambdaExpr   (getComWith (return ())) getComList getComList
+      0x41 -> liftM  Literal      get
+      0x42 -> liftM3 AssignExpr   get           getCom          get
+      0x43 -> liftM3 FuncCall     get           getCommentList  getComList
+      0x44 -> liftM2 LambdaCall   getCom        getComList
+      0x45 -> liftM2 ParenExpr    getObjBool    getCom
+      0x46 -> liftM3 Equation     get           getCom          get
+      0x47 -> liftM3 DictExpr     get           getCommentList  getComList
+      0x48 -> liftM2 ArrayExpr    getComComList getComList
+      0x49 -> liftM3 ArraySubExpr get           getCommentList  getCom
+      0x4A -> liftM2 LambdaExpr   getComComList getComList
       _    -> error "could not load, corrupted data in object expression"
       where
         { char3 = do
@@ -457,14 +471,14 @@ instance Binary ObjectExpr where
 
 instance Binary ScriptExpr where
   put s = case s of
-    NO_OP              -> putWord8 0x51
-    EvalObject   a     -> x 0x52 $ putCom a
-    IfThenElse   a b c -> x 0x53 $ putCom a            >> putComList b >> putComList c
-    TryCatch     a b c -> x 0x54 $ putComList a        >> putCom b     >> putComList c
-    ForLoop      a b c -> x 0x55 $ putCom a            >> putCom b     >> putComList c
-    ContinueExpr a b c -> x 0x56 $ putComWith bool a   >> putCom b     >> putComWith return c
-    ReturnExpr   a b c -> x 0x57 $ putComWith bool a   >> putCom b     >> putComWith return c
-    WithDoc      a b   -> x 0x58 $ putCom a            >> putComList b
+    NO_OP                -> putWord8 0x51
+    EvalObject   a b     -> x 0x52 $ put a              >> putCommentList b
+    IfThenElse   a b c d -> x 0x53 $ putCommentList a   >> put b    >> putComWith putComList c >> putComWith putComList d
+    TryCatch     a b c   -> x 0x54 $ putComWith putComList a        >> putCom b                >> putComList c
+    ForLoop      a b c   -> x 0x55 $ putCom a           >> putCom b >> putComList c
+    ContinueExpr a b c   -> x 0x56 $ putObjBool a       >> putCommentList b                    >> putCom c
+    ReturnExpr   a b     -> x 0x57 $ putObjBool a       >> putCom b
+    WithDoc      a b     -> x 0x58 $ putCom a           >> putComList b
     where
       x i putx = putWord8 i >> putx
       bool a = putWord8 (if a then 0x82 else 0x81)
@@ -472,31 +486,24 @@ instance Binary ScriptExpr where
     w <- getWord8
     case w of
       0x51 -> return NO_OP
-      0x52 -> liftM  EvalObject   getCom
-      0x53 -> liftM3 IfThenElse   getCom     getComList getComList
-      0x54 -> liftM3 TryCatch     getComList getCom     getComList
+      0x52 -> liftM2 EvalObject   get        getCommentList
+      0x53 -> liftM4 IfThenElse   getCommentList get (getComWith getComList) (getComWith getComList)
+      0x54 -> liftM3 TryCatch     (getComWith getComList) getCom     getComList
       0x55 -> liftM3 ForLoop      getCom     getCom     getComList
-      0x56 -> liftM3 ContinueExpr getComBool getCom     getBlank
-      0x57 -> liftM3 ReturnExpr   getComBool getCom     getBlank
+      0x56 -> liftM3 ContinueExpr getObjBool getCommentList getCom
+      0x57 -> liftM2 ReturnExpr   getObjBool getCom
       0x58 -> liftM2 WithDoc      getCom     getComList
       _    -> error "could not load, script data is corrupted"
-      where
-        bool = getWord8 >>= \w -> case w of
-          0x82 -> return True
-          0x81 -> return False
-          _    -> error "expecting boolean for continue/return expression, script data is corrupted"
-        getComBool = getComWith bool
-        getBlank = getComWith (return ())
 
 ----------------------------------------------------------------------------------------------------
 
 instance Binary Rule where
-  put r = putComListWith put (rulePattern r) >> putComListWith put (ruleAction r)
-  get   = liftM2 Rule (getComListWith get) (getComListWith get)
+  put r = putComComList (rulePattern r) >> putComComList (ruleAction r)
+  get   = liftM2 Rule getComComList getComComList
 
 instance Binary Script where
-  put s = putComList (scriptArgv s) >> putComList (scriptCode s)
-  get   = liftM2 Script getComList getComList
+  put s = putComComList (scriptArgv s) >> putComComList (scriptCode s)
+  get   = liftM2 Script getComComList getComComList
 
 instance Binary Directive where
   put d = case d of
@@ -504,13 +511,13 @@ instance Binary Directive where
       putComWith putNullTermStr req >> putComWith putNullTermStr nm
     ToplevelDefine name obj       -> x 0x62 (putComWith putList name >> putCom obj)
     RuleExpr       rule           -> x 0x63 (putCom rule)
-    BeginExpr      scrp           -> x 0x64 (putComList scrp)
-    EndExpr        scrp           -> x 0x65 (putComList scrp)
+    BeginExpr      scrp           -> x 0x64 (putComComList scrp)
+    EndExpr        scrp           -> x 0x65 (putComComList scrp)
     ToplevelFunc   f nm args scrp -> x 0x66 $ do
       putComWith     return         f
-      putComWith     putNullTermStr nm
-      putComListWith putNullTermStr args
-      putComList     scrp
+      putCom         nm
+      putComComList  args
+      putComComList  scrp
     where { x i putx = putWord8 i >> putx }
   get = do
     w <- getWord8
@@ -518,14 +525,9 @@ instance Binary Directive where
       0x61 -> liftM2 Attribute      (getComWith getNullTermStr) (getComWith getNullTermStr)
       0x62 -> liftM2 ToplevelDefine (getComWith getList) getCom
       0x63 -> liftM  RuleExpr       getCom
-      0x64 -> liftM  BeginExpr      getComList
-      0x65 -> liftM  EndExpr        getComList
-      0x66 -> do
-        f    <- getComWith (return ())
-        nm   <- getComWith getNullTermStr
-        args <- getComListWith getNullTermStr
-        scrp <- getComList
-        return (ToplevelFunc f nm args scrp)
+      0x64 -> liftM  BeginExpr      getComComList
+      0x65 -> liftM  EndExpr        getComComList
+      0x66 -> liftM4 ToplevelFunc   (getComWith (return ())) getCom getComComList getComComList
 
 instance Binary SourceCode where
   put sc = do
@@ -533,7 +535,7 @@ instance Binary SourceCode where
       putWord64be program_magic_number
       putWord64be program_data_version
       putCom (sourceModuleName sc)
-      putComList (directives sc)
+      putComComList (directives sc)
     putLazyByteString bx
     putWord64be cksum
   get = do
@@ -543,7 +545,7 @@ instance Binary SourceCode where
         program_magic_number
       chk "this program was compiled with an incompatible version of the Dao binary protocal" $
         program_data_version
-      liftM2 (SourceCode 0 nil) getCom getComList
+      liftM2 (SourceCode 0 nil) getCom getComComList
     theirCksum <- getWord64be
     if myCksum == theirCksum
       then return sc

@@ -141,7 +141,7 @@ showScriptExpr :: Int -> Com ScriptExpr -> String
 showScriptExpr idnc line = showCom expr idnc line where
   expr idnc line = case line of
     NO_OP                      -> ""
-    EvalObject   obj           -> showObjectExpr idnc (Com obj) ++ ";"
+    EvalObject   obj c         -> showObjectExpr idnc (ComAfter obj c) ++ ";"
     IfThenElse   c ifx thx elx -> showComments c ++ ifloop (Com ifx) thx elx where
       ifloop ifx thx elx =
            "if(" ++ showObjectExpr idnc ifx ++ ')' : showScriptBlock idnc thx
@@ -156,14 +156,14 @@ showScriptExpr idnc line = showCom expr idnc line where
       ++ '\n':indent idnc ++ "catch " ++ showCom (\_ -> uchars) (idnc+1) nm ++ showScriptBlock idnc (Com ctch)
     ForLoop      nm obj scrp -> "foreach " ++ showCom (\_ -> uchars) idnc nm
       ++ " in (" ++ showObjectExpr idnc obj ++ ")" ++ showScriptBlock idnc (Com scrp)
-    ContinueExpr fn  obj     -> contBrkRetnThrow idnc fn obj "continue" "break"
-    ReturnExpr   fn  obj     -> contBrkRetnThrow idnc fn obj "return"   "throw"
+    ContinueExpr fn  com obj -> contBrkRetnThrow idnc fn com obj "continue" "break"
+    ReturnExpr   fn  obj     -> contBrkRetnThrow idnc fn []  obj "return"   "throw"
     WithDoc      obj with    -> "with " ++ showObjectExpr idnc obj ++ showScriptBlock idnc (Com with)
 
 -- | Used to show 'Dao.Types.ContinueExpr' and 'Dao.Object.ReturnExpr'.
-contBrkRetnThrow :: Int -> Bool -> Com ObjectExpr -> String -> String -> String
-contBrkRetnThrow idnc fn obj cont brk =
-  (if fn then cont else brk) ++ " (" ++ showObjectExpr idnc obj ++ ")"
+contBrkRetnThrow :: Int -> Bool -> [Comment] -> Com ObjectExpr -> String -> String -> String
+contBrkRetnThrow idnc fn com obj cont brk =
+  (if fn then cont else brk) ++ showComments com ++ " (" ++ showObjectExpr idnc obj ++ ")"
 
 showReference :: Reference -> String
 showReference o = case o of
@@ -207,7 +207,7 @@ showObjectExpr idnc obj = showCom loop idnc obj where
     ArraySubExpr obj  com  sub  -> showObjectExpr idnc (Com obj)
       ++ showComments com
       ++ '[':showObjectExpr (idnc+1) sub++"]"
-    LambdaExpr   argv  scrp     -> tuple (showCom (\_ -> uchars)) (idnc+1) argv
+    LambdaExpr  argv  scrp      -> tuple (showCom (\_ -> uchars)) (idnc+1) argv
       ++ "{\n" ++ indent (idnc+1) ++ showScriptBlock (idnc+1) (Com scrp) ++ '\n':indent idnc++"}"
 
 showRule :: Int -> Rule -> String

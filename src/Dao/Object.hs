@@ -564,16 +564,16 @@ instance Commented Rule where
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
   = Literal       Object
-  | AssignExpr    ObjectExpr  (Com Name)  ObjectExpr
-  | Equation      ObjectExpr  (Com Name)  ObjectExpr
-  | ArraySubExpr  ObjectExpr  [Comment]   (Com ObjectExpr)
-  | FuncCall      Name        [Comment]   [Com ObjectExpr]
-  | DictExpr      Name        [Comment]   [Com ObjectExpr]
-  | ArrayExpr     (Com [Com ObjectExpr])  [Com ObjectExpr]
-  | LambdaCall    (Com ObjectExpr)        [Com ObjectExpr]
-  | StructExpr    (Com ObjectExpr)        [Com ObjectExpr]
-  | LambdaExpr    (Com [Com Name])        [Com ScriptExpr]
-  | ParenExpr     Bool                    (Com ObjectExpr)
+  | AssignExpr    ObjectExpr  (Com Name) ObjectExpr
+  | Equation      ObjectExpr  (Com Name) ObjectExpr
+  | ArraySubExpr  ObjectExpr  [Comment]  (Com ObjectExpr)
+  | FuncCall      Name        [Comment]  [Com ObjectExpr]
+  | DictExpr      Name        [Comment]  [Com ObjectExpr]
+  | ArrayExpr     (Com [Com ObjectExpr]) [Com ObjectExpr]
+  | LambdaCall    (Com ObjectExpr)       [Com ObjectExpr]
+  | StructExpr    (Com ObjectExpr)       [Com ObjectExpr]
+  | LambdaExpr    (Com [Com Name])       [Com ScriptExpr]
+  | ParenExpr     Bool                   (Com ObjectExpr)
     -- ^ Bool is True if the parenthases really exist.
   deriving (Eq, Ord, Show, Typeable)
 
@@ -581,16 +581,21 @@ data ObjectExpr
 -- exectuion.
 data ScriptExpr
   = NO_OP
-  | EvalObject   ObjectExpr
+  | EvalObject   ObjectExpr [Comment]
   | IfThenElse   [Comment]  ObjectExpr  (Com [Com ScriptExpr])  (Com [Com ScriptExpr])
-    -- ^ if /**/ objExpr /**/ { ... } /**/ else /**/ if /**/ { ... } /**/ else /**/ { ... } /**/
+    -- ^ @if /**/ objExpr /**/ {} /**/ else /**/ if /**/ {} /**/ else /**/ {} /**/@
   | TryCatch     (Com [Com ScriptExpr]) (Com UStr)                 [Com ScriptExpr]
+    -- ^ @try /**/ {} /**/ catch /**/ errVar /**/ {}@
   | ForLoop      (Com Name)             (Com ObjectExpr)           [Com ScriptExpr]
-  | ContinueExpr Bool                   (Com ObjectExpr)
+    -- ^ @for /**/ var /**/ in /**/ objExpr /**/ {}@
+  | ContinueExpr Bool  [Comment]        (Com ObjectExpr)
     -- ^ The boolean parameter is True for a "continue" statement, False for a "break" statement.
+    -- @continue /**/ ;@ or @continue /**/ if /**/ objExpr /**/ ;@
   | ReturnExpr   Bool                   (Com ObjectExpr)
     -- ^ The boolean parameter is True foe a "return" statement, False for a "throw" statement.
+    -- @return /**/ ;@ or @return /**/ objExpr /**/ ;@
   | WithDoc      (Com ObjectExpr)       [Com ScriptExpr]
+    -- ^ @with /**/ objExpr /**/ {}@
   deriving (Eq, Ord, Show, Typeable)
 
 instance Commented ObjectExpr where
@@ -613,11 +618,11 @@ instance Commented ObjectExpr where
 instance Commented ScriptExpr where
   stripComments s = case s of
     NO_OP                 -> NO_OP
-    EvalObject    a       -> EvalObject      a
+    EvalObject    a _     -> EvalObject      a  []
     IfThenElse    _ b c d -> IfThenElse   []       b  (u c) (u d)
     TryCatch      a b c   -> TryCatch     (u a) (u b) (u c)
     ForLoop       a b c   -> ForLoop      (u a) (u b) (u c)
-    ContinueExpr  a b     -> ContinueExpr    a  (u b)
+    ContinueExpr  a _ c   -> ContinueExpr    a  []    (u c)
     ReturnExpr    a b     -> ReturnExpr      a  (u b)
     WithDoc       a b     -> WithDoc      (u a) (u b)
     where

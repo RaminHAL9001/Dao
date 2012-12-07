@@ -120,7 +120,7 @@ runExecutable exe = localCE (\xunit -> return (xunit{execStaticVars = Just (stat
 -- @'ExecScript' 'Dao.Types.Object'@ function.
 execScriptCall :: [Com ObjectExpr] -> Script -> ExecScript Object
 execScriptCall args scrp = bindArgsExpr (unComment (scriptArgv scrp)) args $
-  catchCEReturn (execScriptBlock (scriptCode scrp) >> ceReturn ONull)
+  catchCEReturn (execScriptBlock (unComment (scriptCode scrp)) >> ceReturn ONull)
 
 -- | Execute a 'Dao.Types.Rule' object as though it were a script that could be called. The
 -- parameters passed will be stored into the 'currentMatch' slot durring execution, but all
@@ -130,25 +130,25 @@ execRuleCall ax rule = do
   let typeErr o =
         typeError o "when calling a Rule object as though it were a function, all parameters" $
           show ListType++", where each list contains only objects of type "++show StringType
-  ax <- forM ax $ \a -> evalObject a >>= \a -> case a of
+  ax <- forM ax $ \a -> evalObject (unComment a) >>= \a -> case a of
     OList ax -> forM ax $ \a -> case a of
       OString a -> return a
       _ -> typeErr a
     _ -> typeErr a
-  flip local (pushExecStack M.empty (execScriptBlock (ruleAction rule) >> ceReturn ONull)) $
+  flip local (pushExecStack M.empty (execScriptBlock (unComment (ruleAction rule)) >> ceReturn ONull)) $
     \xunit -> xunit{currentMatch = Just (matchFromList [] (length ax) ax)}
 
 -- | Very simply executes every given script item. Does not use catchCEReturn, does not use
 -- 'nestedExecStack'. CAUTION: you cannot assign to local variables unless you call this method
 -- within the 'nestedExecStack' or 'pushExecStack' functions. Failure to do so will cause a stack
 -- underflow exception.
-execScriptBlock :: Com [Com ScriptExpr] -> ExecScript ()
-execScriptBlock block = mapM_ execScriptExpr (unComment block)
+execScriptBlock :: [Com ScriptExpr] -> ExecScript ()
+execScriptBlock block = mapM_ execScriptExpr block
 
 -- | A guard script is some Dao script that is executed before or after some event, for example, the
 -- code founf in the @BEGIN@ and @END@ blocks.
 execGuardBlock :: [Com ScriptExpr] -> ExecScript ()
-execGuardBlock block = void (pushExecStack M.empty (execScriptBlock (Com block) >> return ONull))
+execGuardBlock block = void (pushExecStack M.empty (execScriptBlock block >> return ONull))
 
 -- $BasicCombinators
 -- These are the most basic combinators for converting working with the 'ExecUnit' of an
@@ -455,7 +455,8 @@ bindArgs = bindArgs_internal (\n o -> return (n, o))
 
 -- | Like 'bindArgs', but evaluates every parameter.
 bindArgsExpr :: [Com Name] -> [Com ObjectExpr] -> ExecScript Object -> ExecScript Object
-bindArgsExpr = bindArgs_internal (\n o -> evalObject o >>= \o -> return (unComment n, o))
+bindArgsExpr = bindArgs_internal $ \n o ->
+  evalObject (unComment o) >>= \o -> return (unComment n, o)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -463,41 +464,40 @@ bindArgsExpr = bindArgs_internal (\n o -> evalObject o >>= \o -> return (unComme
 execScriptExpr :: Com ScriptExpr -> ExecScript ()
 execScriptExpr script = case unComment script of
   NO_OP                        -> return ()
-  EvalObject   o               -> unless (isNO_OP (unComment o)) (void (evalObject o))
-  IfThenElse   ifn  thn  els   -> nestedExecStack M.empty $ do
+  EvalObject   o    _          -> unless (isNO_OP o) (void (evalObject o))
+  IfThenElse  _  ifn  thn  els -> nestedExecStack M.empty $ do
     ifn <- evalObject ifn
     case ifn of
       ORef o -> do
         true <- fmap isJust (readReference o)
-        execScriptBlock (if true then thn else els)
-      o      -> execScriptBlock (if objToBool o then thn else els)
+        execScriptBlock (unComment (if true then thn else els))
+      o      -> execScriptBlock (unComment (if objToBool o then thn else els))
   TryCatch     try  name catch -> do
-    ce <- withContErrSt (nestedExecStack M.empty (execScriptBlock try)) return
+    ce <- withContErrSt (nestedExecStack M.empty (execScriptBlock (unComment try))) return
     void $ case ce of
       CEError o -> nestedExecStack (M.singleton (unComment name) o) (execScriptBlock catch)
       ce        -> returnContErr ce
   ForLoop    varName inObj thn -> nestedExecStack M.empty $ do
-    inObj   <- evalObject inObj 
+    inObj   <- evalObject (unComment inObj)
     let block thn = if null thn then return True else scrpExpr (head thn) >> block (tail thn)
-        ctrlfn ifn com thn = do
+        ctrlfn ifn thn = do
           ifn <- evalObject ifn
           case ifn of
             ONull -> return (not thn)
             _     -> return thn
         scrpExpr expr = case unComment expr of
-          ContinueExpr a ifn com -> ctrlfn ifn com (unComment a)
-          _                      -> execScriptExpr expr >> return True
+          ContinueExpr a _  ifn -> ctrlfn (unComment ifn) a
+          _                     -> execScriptExpr expr >> return True
         loop thn name ix = case ix of
           []   -> return ()
-          i:ix -> localVarDefine name i >> block (unComment thn) >>= flip when (loop thn name ix)
+          i:ix -> localVarDefine name i >> block thn >>= flip when (loop thn name ix)
         inObjType = OType (objType inObj)
     checkToExecScript (ustr "for") inObjType (objToList inObj >>= checkOK) >>= loop thn (unComment varName)
   ContinueExpr a    _    _     -> simpleError $
-    '"':(if unComment a then "continue" else "break")++"\" expression is not within a \"for\" loop"
-  ReturnExpr   a    obj  com   -> evalObject obj >>= \obj ->
-    (if unComment a then ceReturn else ceError) obj
+    '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" loop"
+  ReturnExpr   a    obj        -> evalObject (unComment obj) >>= \obj -> (if a then ceReturn else ceError) obj
   WithDoc      lval thn        -> nestedExecStack (M.empty) $ do
-    lval <- evalObject lval
+    lval <- evalObject (unComment lval)
     let setBranch ref xunit = return (xunit{currentBranch = ref})
         setFile path xunit = do
           file <- execRun (fmap (M.lookup path) (dReadMVar xloc (execOpenFiles xunit)))
@@ -525,11 +525,11 @@ showObjType obj = showObj 0 (OType (objType obj))
 isNO_OP :: ObjectExpr -> Bool
 isNO_OP o = case o of
   Literal      _     -> True
-  ParenExpr    o     -> isNO_OP (unComment o)
-  ArraySubExpr _ _   -> True
-  DictExpr     _ _   -> True
-  ArrayExpr    _ _ _ -> True
-  LambdaExpr   _ _ _ -> True
+  ParenExpr    _ o   -> isNO_OP (unComment o)
+  ArraySubExpr _ _ _ -> True
+  DictExpr     _ _ _ -> True
+  ArrayExpr    _ _   -> True
+  LambdaExpr   _ _   -> True
   _                  -> False
 
 called_nonfunction_object :: String -> Object -> ExecScript e
@@ -548,9 +548,9 @@ cacheReference r obj = case obj of
 
 -- | Evaluate an 'ObjectExpr' to an 'Dao.Types.Object' value, and does not de-reference objects of
 -- type 'Dao.Types.ORef'
-evalObject :: Com ObjectExpr -> ExecScript Object
-evalObject obj = case unComment obj of
-  Literal         o              -> return (unComment o)
+evalObject :: ObjectExpr -> ExecScript Object
+evalObject obj = case obj of
+  Literal         o              -> return o
   AssignExpr    nm  op  expr    -> do -- TODO, needs to be redefined to execute assigments or updates according to the 'op' param
     nm   <- evalObject nm
     case nm of
@@ -561,9 +561,7 @@ evalObject obj = case unComment obj of
           Nothing  -> return ONull
           Just obj -> return obj
       _                -> objectError nm "left hand side of assignment does not evaluate to a reference value."
-  FuncCall      op'  args'      -> do -- a built-in function call
-    let op   = unComment op'
-        args = unComment args'
+  FuncCall   op  _  args        -> do -- a built-in function call
     func <- localVarLookup op
     case func of
       Nothing -> do
@@ -571,16 +569,15 @@ evalObject obj = case unComment obj of
         -- NOTE: Built-in function calls do not get their own new stack, 'pushExecStack' is not
         -- used, only 'catchCEREturn'.
         fn <- lookupFunction "function call" op
-        args <- mapM evalObject args
+        args <- mapM (evalObject . unComment) args
         let argTypes = OList (map (OType . objType) args)
         checkToExecScript op argTypes (checkFunc fn args)
       Just fn -> case fn of
         OScript o -> execScriptCall args o
         ORule   o -> execRuleCall   args o
         _ -> called_nonfunction_object (show op) fn
-  LambdaCall    _    ref  args' -> do
-    fn <- evalObject ref
-    let args = unComment args'
+  LambdaCall         ref  args  -> do
+    fn <- evalObject (unComment ref)
     fn <- case fn of
       OScript _ -> return fn
       ORule   _ -> return fn
@@ -588,17 +585,15 @@ evalObject obj = case unComment obj of
     case fn of
       OScript o -> execScriptCall args o
       ORule   o -> execRuleCall   args o
-  ParenExpr     o               -> evalObject o -- when in doubt, do not use 'evalObject'
-  ArraySubExpr  o    i          -> evalArraySubscript o i
+  ParenExpr     _     o         -> evalObject (unComment o)
+  ArraySubExpr  o  _  i         -> evalArraySubscript o i
   Equation      left op   right -> do
     left  <- evalObject left
     right <- evalObject right
     bi    <- lookupFunction "operator" (unComment op)
     checkToExecScript (unComment op) (OPair (right, left)) (checkFunc bi [left, right])
-  DictExpr      cons' args'     -> do
-    let cons = unComment cons'
-        args = unComment args'
-        loop fn = forM args $ \arg -> do
+  DictExpr   cons  _  args      -> do
+    let loop fn = forM args $ \arg -> do
             case unComment arg of
               AssignExpr a op b -> evalObject a >>= \a -> evalObject b >>= \b -> fn a b -- TODO: needs to update the dict expression according to the 'op' parameter
               _ -> simpleError $ show cons ++
@@ -618,29 +613,29 @@ evalObject obj = case unComment obj of
             typeError o ("assigning to a value in a "++show DictType++" constructor") $
               show StringType
     case () of
-      () | cons == ustr "list"   -> fmap OList (mapM evalObject args)
+      () | cons == ustr "list"   -> fmap OList (mapM (evalObject . unComment) args)
       () | cons == ustr "dict"   -> fmap (ODict   . M.fromList) (loop dict)
       () | cons == ustr "intmap" -> fmap (OIntMap . I.fromList) (loop intmap)
       _ -> error ("INTERNAL ERROR: unknown dictionary declaration "++show cons)
-  ArrayExpr     _    rang ox    -> do
+  ArrayExpr     rang      ox    -> do
     case unComment rang of
       (_ : _ : _ : _) ->
         simpleError "internal error: array range expression has more than 2 arguments"
       [lo, hi] -> do
-        lo <- evalObject lo
-        hi <- evalObject hi
+        lo <- evalObject (unComment lo)
+        hi <- evalObject (unComment hi)
         case (lo, hi) of
           (OInt lo, OInt hi) -> do
             (lo, hi) <- return (if lo<hi then (lo,hi) else (hi,lo))
-            ox <- mapM evalObject (unComment ox)
+            ox <- mapM (evalObject . unComment) ox
             return (OArray (listArray (lo, hi) ox))
           _ -> objectError (OPair (OType (objType lo), OType (objType hi))) $
                    "range specified to an "++show ArrayType
                  ++" constructor must evaluate to two "++show IntType++"s"
       _ -> simpleError "internal error: array range expression has fewer than 2 arguments"
-  LambdaExpr    _    argv code  -> return (OScript (Script{scriptArgv = argv, scriptCode = code}))
+  LambdaExpr    argv      code  -> return (OScript (Script{scriptArgv = argv, scriptCode = Com code}))
 
-evalArraySubscript :: Com ObjectExpr -> Com ObjectExpr -> ExecScript Object
+evalArraySubscript :: ObjectExpr -> Com ObjectExpr -> ExecScript Object
 evalArraySubscript o i = evalObject o >>= \o -> case o of
   ORef (IntRef o) -> do
     let fn i =
@@ -660,9 +655,9 @@ evalArraySubscript o i = evalObject o >>= \o -> case o of
           OList i -> fmap OList (mapM ilkup i)
           OSet  i -> fmap OList (mapM ilkup (S.elems i))
           _ -> indexTypeError "pattern match reference" i
-    evalObject i >>= ilkup
+    evalObject (unComment i) >>= ilkup
   o -> do
-    i <- evalObject i
+    i <- evalObject (unComment i)
     let ck i x fn = checkIntMapBounds i x >> fn (fromIntegral x)
         ilkup t i fn = case i of
           OInt  x -> ck i x fn
@@ -836,7 +831,7 @@ programFromSource globalResource checkAttribute script = do
               then return ()
               else err [ustr "script contains unknown attribute declaration", req]
       ToplevelDefine name obj -> do
-        obj <- lift $ evalObject obj
+        obj <- lift $ evalObject (unComment obj)
         modify (\p -> p{inmpg_globalData = T.insert (unComment name) obj (inmpg_globalData p)})
       RuleExpr    rule' -> modify (\p -> p{inmpg_ruleSet = foldl fol (inmpg_ruleSet p) rulePat}) where
         rule    = unComment rule'
@@ -848,7 +843,7 @@ programFromSource globalResource checkAttribute script = do
       EndExpr      scrp -> modify (\p -> p{inmpg_postExecScript  = inmpg_postExecScript  p ++ [scrp]})
       ToplevelFunc _ nm argv code -> lift $ do
         xunit <- ask
-        let func objx = execScriptCall (map (Com . Literal . Com) objx) $
+        let func objx = execScriptCall (map (Com . Literal) objx) $
               Script{scriptArgv = argv, scriptCode = code}
         execScriptRun $ do
           let name = unComment nm

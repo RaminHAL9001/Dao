@@ -545,22 +545,23 @@ cacheReference r obj = case obj of
     return (M.insert r obj cache)
 
 lookupUpdatingOp :: Reference -> Name -> Object -> Maybe Object -> ExecScript (Maybe Object)
-lookupUpdatingOp ref op b a = case a of
-  Nothing -> objectError (OPair (ORef ref, OString op)) "updating undefined variable"
-  Just a -> case uchars op of
-    "="  -> return (if b==ONull then Nothing else Just b)
-    "+=" -> f (a+b)
-    "-=" -> f (a-b)
-    "*=" -> f (a*b)
-    "/=" -> f (a/b)
-    "%=" -> f (mod a b)
-    where
-      f o = case o of
-        ONull -> ceError $ OList
-          [ OList [ORef ref, a, OString op, b]
-          , OString (ustr "updating assignment to object of incompatible type")
-          ]
-        o     -> return (Just o)
+lookupUpdatingOp ref uop b a = case uchars uop of
+  "=" -> return (if b==ONull then Nothing else Just b)
+  op  -> case a of
+    Nothing -> objectError (OPair (ORef ref, OString uop)) "updating undefined variable"
+    Just a -> case op of
+      "+=" -> f (a+b)
+      "-=" -> f (a-b)
+      "*=" -> f (a*b)
+      "/=" -> f (a/b)
+      "%=" -> f (mod a b)
+      where
+        f o = case o of
+          ONull -> ceError $ OList
+            [ ORef ref, a, OString uop, b
+            , OString (ustr "updating assignment to object of incompatible type")
+            ]
+          o     -> return (Just o)
 
 -- | Evaluate an 'ObjectExpr' to an 'Dao.Types.Object' value, and does not de-reference objects of
 -- type 'Dao.Types.ORef'

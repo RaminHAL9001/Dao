@@ -134,7 +134,7 @@ data SourceCode
     }
   deriving (Eq, Ord, Show, Typeable)
 
-data Executable = Executable{ staticVars :: MapResource, executable :: [ScriptExpr] }
+data Executable = Executable{ staticVars :: IORef (M.Map Name Object), executable :: [ScriptExpr] }
 data Subroutine = Subroutine{ argsList   :: [Name],   getScriptExpr :: Executable }
 
 -- | When a script is executed, it's abstract syntax tree is converted into a monadic computation.
@@ -424,13 +424,9 @@ data ExecUnit
     , currentProgram     :: Maybe Program
       -- ^ the program that is running in this execution unit, this may not be defined in the case
       -- that strings are being executed in an interactive session.
-    , currentPattern     :: Object
-      -- ^ the 'OPattern' that resulted in execution of this script, which may not be defined (set
-      -- to 'ONull') in the case that execution was not triggered by a pattern match.
-    , currentMatch       :: Maybe Match
-      -- ^ the 'Dao.Pattern.Match' structure that resulted in execution of this script, which may
-      -- not be defined (set to 'ONull') in the case that execution was not triggered by a pattern
-      -- match.
+    , currentTask        :: Task
+      -- ^ the 'Task' that is currently running. This item includes the 'Executable' and (if
+      -- applicable) the current 'Pattern' and 'Match'
     , currentBranch      :: [Name]
       -- ^ set by the @with@ statement during execution of a Dao script. It is used to prefix this
       -- to all global references before reading from or writing to those references.
@@ -451,7 +447,6 @@ data ExecUnit
       -- require several lookups. If a value at a reference is updated between lookups by a separate
       -- thread, the same reference may evaluate to two different values. Caching prevents this from
       -- happening.
-    , execStaticVars     :: Maybe MapResource
     , execOpenFiles      :: DMVar (M.Map UPath File)
     , recursiveInput     :: DMVar [UStr]
     , uncaughtErrors     :: DMVar [Object]

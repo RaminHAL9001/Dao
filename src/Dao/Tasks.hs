@@ -71,7 +71,7 @@ execTask job task = dStack xloc "execTask" $ ask >>= \runtime -> do
   let run patn mtch action xunit fn = do
         result <- dStack xloc "execTask/runExecScript" $ lift $ try $ runIO runtime $
           runExecScript (runExecutable action) $
-            xunit{currentPattern = patn, currentMatch = mtch, currentExecJob = Just job}
+            xunit{currentTask = task, currentExecJob = Just job}
         let putErr err = dModifyMVar_ xloc (uncaughtErrors xunit) (return . (++[err]))
         case seq result result of
           Right (CEError       err) -> dPutStrErr xloc (showObj 0 err) >> putErr err

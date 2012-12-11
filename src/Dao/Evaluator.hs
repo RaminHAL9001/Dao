@@ -53,6 +53,7 @@ import           Data.Word
 import           Data.Bits
 import           Data.List
 import           Data.Complex
+import           Data.IORef
 import qualified Data.Set    as S
 import qualified Data.Map    as M
 import qualified Data.IntMap as I
@@ -80,8 +81,7 @@ initExecUnit runtime initGlobalData = do
     , currentExecJob     = Nothing
     , currentDocument    = Nothing
     , currentProgram     = Nothing
-    , currentPattern     = ONull
-    , currentMatch       = Nothing
+    , currentTask        = error "ExecUnit.currentTask is undefined"
     , currentBranch      = []
     , importsTable       = []
     , execAccessRules    = RestrictFiles (Pattern{getPatUnits = [Wildcard], getPatternLength = 1})
@@ -90,7 +90,6 @@ initExecUnit runtime initGlobalData = do
     , execHeap           = initGlobalData
     , queryTimeHeap      = qheap
     , referenceCache     = cache
-    , execStaticVars     = Nothing
     , execStack          = xstack
     , execOpenFiles      = files
     , recursiveInput     = recurInp
@@ -99,7 +98,7 @@ initExecUnit runtime initGlobalData = do
 
 setupExecutable :: Bugged r => Com [Com ScriptExpr] -> ReaderT r IO Executable
 setupExecutable scrp = do
-  staticRsrc <- newMapResource "Executable.staticVars" M.empty
+  staticRsrc <- lift (newIORef M.empty)
   return $
     Executable
     { staticVars = staticRsrc
@@ -107,7 +106,7 @@ setupExecutable scrp = do
     }
 
 runExecutable :: Executable -> ExecScript ()
-runExecutable exe = localCE (\xunit -> return (xunit{execStaticVars = Just (staticVars exe)})) $ do
+runExecutable exe = localCE (\xunit -> return (xunit{currentTask = (currentTask xunit){taskAction = exe}})) $ do
   ce <- catchContErr (execGuardBlock (map Com (executable exe)))
   returnContErr $ case ce of
     CEReturn _ -> CENext ()
@@ -136,7 +135,7 @@ execRuleCall ax rule = do
       _ -> typeErr a
     _ -> typeErr a
   flip local (pushExecStack M.empty (execScriptBlock (unComment (ruleAction rule)) >> ceReturn ONull)) $
-    \xunit -> xunit{currentMatch = Just (matchFromList [] (length ax) ax)}
+    \xunit -> xunit{currentTask = (currentTask xunit){taskMatch = matchFromList [] (length ax) ax}}
 
 -- | Very simply executes every given script item. Does not use catchCEReturn, does not use
 -- 'nestedExecStack'. CAUTION: you cannot assign to local variables unless you call this method
@@ -191,12 +190,12 @@ pushExecStack dict exe = do
 -- 'Dao.Pattern.Pattern'.
 evalIntRef :: Int -> ExecScript Object
 evalIntRef i = do
-  match <- fmap currentMatch ask
+  task <- fmap currentTask ask
   let oi = OInt (fromIntegral i)
-  case match of
-    Nothing -> do
+  case task of
+    GuardTask _ _ -> do
       objectError oi ("not in pattern match context, cannot evaluate $"++show i)
-    Just ma -> case matchGaps ma of
+    RuleTask pat ma act exec -> case matchGaps ma of
       Nothing -> do
         objectError oi ("currently matching pattern has no variables, cannot evaluate $"++show i)
       Just ma | i==0 -> return $ OArray $
@@ -289,6 +288,21 @@ localVarModify name alt = do
 localVarDelete :: Name -> ExecScript (Maybe Object)
 localVarDelete nm = localVarUpdate nm (const Nothing)
 
+staticVarLookup :: Name -> ExecScript (Maybe Object)
+staticVarLookup nm =
+  fmap (staticVars . taskAction . currentTask) ask >>= lift . lift . readIORef >>= return . M.lookup nm
+
+staticVarUpdate :: Name -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript (Maybe Object)
+staticVarUpdate nm upd = fmap (staticVars . taskAction . currentTask) ask >>= \ref ->
+  lift (lift (readIORef ref)) >>= return . (M.lookup nm) >>= upd >>= \val ->
+    lift (lift (modifyIORef ref (M.update (const val) nm))) >> return val
+
+staticVarDefine :: Name -> Object -> ExecScript (Maybe Object)
+staticVarDefine nm obj = localVarUpdate nm (const (Just obj))
+
+staticVarDelete :: Name -> ExecScript (Maybe Object)
+staticVarDelete nm = localVarUpdate nm (const Nothing)
+
 -- | Lookup an object, first looking in the current document, then in the 'execHeap'.
 globalVarLookup :: [Name] -> ExecScript (Maybe Object)
 globalVarLookup ref = ask >>= \xunit ->
@@ -325,22 +339,6 @@ qTimeVarDelete name = qTimeVarUpdate name (return . const Nothing)
 clearAllQTimeVars :: ExecUnit -> Run ()
 clearAllQTimeVars xunit = modifyUnlocked_ (queryTimeHeap xunit) (return . const T.Void)
 
--- | Lookup a reference value in the static object table of the currently loaded program. Static
--- objects are objects defined in the top level of the program's source code.
-staticVarLookup :: [Name] -> ExecScript (Maybe Object)
-staticVarLookup name = error "Dao.Evaluator.staticVarLookup not yet defined"
-
--- | Lookup a reference value in the static object table of the currently loaded program. Static
--- objects are objects defined in the top level of the program's source code.
-staticVarUpdate :: [Name] -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript (Maybe Object)
-staticVarUpdate name runUpdate = error "Dao.Evaluator.staticVarUpdate not yet defined"
-
-staticVarDefine :: [Name] -> Object -> ExecScript (Maybe Object)
-staticVarDefine name obj = error "Dao.Evaluator.staticVarDefine not yet defined"
-
-staticVarDelete :: [Name] -> Object -> ExecScript (Maybe Object)
-staticVarDelete name obj = error "Dao.Evaluator.staticVarDelete not yet defined"
-
 ----------------------------------------------------------------------------------------------------
 
 -- | TODO: needs to cache all lookups to make sure the same reference produces the same value across
@@ -350,7 +348,7 @@ readReference ref = case ref of
   IntRef     i     -> fmap Just (evalIntRef i)
   LocalRef   nm    -> localVarLookup nm
   QTimeRef   ref   -> qTimeVarLookup ref
-  StaticRef  ref   -> error "TODO: haven't yet defined lookup behavior for static references"
+  StaticRef  ref   -> staticVarLookup ref
   GlobalRef  ref   -> globalVarLookup ref
   ProgramRef p ref -> error "TODO: haven't yet defined lookup behavior for Program references"
   FileRef    f ref -> error "TODO: haven't yet defined lookup behavior for file references"
@@ -379,7 +377,7 @@ updateReference ref modf = do
     LocalRef   ref        -> localVarLookup ref >>= \obj -> localVarUpdate ref (const obj)
     GlobalRef  ref        -> globalVarUpdate ref modf
     QTimeRef   ref        -> qTimeVarUpdate ref modf
-    StaticRef  ref        -> error "TODO: you haven't yet defined update behavior for Static references"
+    StaticRef  ref        -> staticVarUpdate ref modf
     ProgramRef progID ref -> error "TODO: you haven't yet defined update behavior for Program references"
     FileRef    path   ref -> error "TODO: you haven't yet defined update behavior for File references"
     MetaRef    _          -> error "cannot assign values to a meta-reference"

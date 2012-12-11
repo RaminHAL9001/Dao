@@ -107,24 +107,3 @@ function funcs = AddFunc (msum funcs >> return ()) ()
 begin :: Action a -> GetArgs a
 begin = TryAction
 
-----------------------------------------------------------------------------------------------------
-
--- Each ExecUnit runs in it's own thread, but it is up to the execution dispatcher to launch threads
--- and execute programs in ExecUnit's.
-data NewExecUnit
-  = NewExecUnit
-    { xuA        :: Object -- the A register, accumlates results
-    , xuB        :: Object -- the B register, righ-hand value of an eqution
-    , xuRef      :: Reference -- the Reference register, points to where a result can be stored
-    , globalVars :: TreeResource
-    , qtimeVars  :: TreeResource
-    }
-
-data ByteCode
-  = LockGlobal   Reference
-  | UnlockGlobal Reference
-  | ReadGlobal   Reference
-  | WriteGlobal  Reference Object
-
-
-

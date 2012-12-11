@@ -544,6 +544,24 @@ cacheReference r obj = case obj of
   Just obj -> ask >>= \xunit -> execRun $ dModifyMVar_ xloc (referenceCache xunit) $ \cache ->
     return (M.insert r obj cache)
 
+lookupUpdatingOp :: Reference -> Name -> Object -> Maybe Object -> ExecScript (Maybe Object)
+lookupUpdatingOp ref op b a = case a of
+  Nothing -> objectError (OPair (ORef ref, OString op)) "updating undefined variable"
+  Just a -> case uchars op of
+    "="  -> return (if b==ONull then Nothing else Just b)
+    "+=" -> f (a+b)
+    "-=" -> f (a-b)
+    "*=" -> f (a*b)
+    "/=" -> f (a/b)
+    "%=" -> f (mod a b)
+    where
+      f o = case o of
+        ONull -> ceError $ OList
+          [ OList [ORef ref, a, OString op, b]
+          , OString (ustr "updating assignment to object of incompatible type")
+          ]
+        o     -> return (Just o)
+
 -- | Evaluate an 'ObjectExpr' to an 'Dao.Types.Object' value, and does not de-reference objects of
 -- type 'Dao.Types.ORef'
 evalObject :: ObjectExpr -> ExecScript Object
@@ -551,14 +569,15 @@ evalObject obj = case obj of
   Literal         o              -> return o
   AssignExpr    nm  op  expr    -> do -- TODO, needs to be redefined to execute assigments or updates according to the 'op' param
     nm   <- evalObject nm
+    expr <- evalObject expr
     case nm of
-      ORef (MetaRef _) -> error "cannot assign to a reference-to-a-reference"
-      ORef r           -> do
-        obj <- updateReference r (\obj -> cacheReference r obj >> fmap Just (evalObject expr))
-        case obj of
-          Nothing  -> return ONull
-          Just obj -> return obj
-      _                -> objectError nm "left hand side of assignment does not evaluate to a reference value."
+      ORef nm -> do
+        expr <- updateReference nm (lookupUpdatingOp nm (unComment op) expr)
+        case expr of
+          Nothing   -> return ONull
+          Just expr -> return expr
+      nm     -> ceError $ OList $
+        [nm, OString (ustr "left-hand side of assignment is not a reference type")]
   FuncCall   op  _  args        -> do -- a built-in function call
     func <- localVarLookup op
     case func of

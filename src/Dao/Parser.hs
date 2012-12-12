@@ -33,9 +33,8 @@ module Dao.Parser
     -- $Essential_Regexs
   , space, hspace, upper, lower, alpha, alpha_, digit
   , alnum, alnum_, xdigit, spaceCtrl, cntrl, punct, printable, ascii
-  , -- * The 'Parser' Monad
-    PValue(OK, Backtrack, PFail), failedToken, failedBecause
-  , Parser, runParser, ParseState, tokenStack
+    -- * The 'Parser' Monad
+  , Parser, runParser, ParseValue, ParseState, tokenStack
     -- * Working With 'Tokens'
     -- $Working_With_Tokens
   , Token, startingLine, startingChar, startingColumn
@@ -54,6 +53,7 @@ module Dao.Parser
 import           Dao.String
 import           Dao.EnumSet
 import qualified Dao.Tree as T
+import           Dao.Predicate
 
 import           Control.Monad
 import           Control.Monad.State
@@ -423,65 +423,6 @@ data ParseState
     , tokenStack      :: [Token]
     }
 
--- | 'PValue' is a "parsed value" or "predicate value" data type allows a parser to fail without
--- causing backtracking. These values are used internally to the 'Parser's
--- 'Control.Monad.State.State' monad, so you do not need to actually use these constructors in your
--- parser.
-data PValue a
-  = Backtrack
-    -- ^ 'Backtrack' is a value used internally to the 'Parser's 'Control.Monad.State.State' monad
-    -- to signal a temporary parse failure, which indicates to the 'Parser' monad to stop parsing
-    -- and try another choice. Choices are specified by 'Control.Monad.mplus', for example
-    -- @'Control.Monad.mplus' a b@, where @a@ and @b@ are 'Parser's, will first try to evaluate @a@,
-    -- but if @b@ evaluates to 'mzero', this will internally return the 'Backtrack' value to the
-    -- 'Parser's 'Control.Monad.State.State' monad, which will cause @b@ to be evaluated. If the
-    -- entire parser evaluates to a 'Backtrack' this means the 'Parser' did not fail, but it did not
-    -- match the input string either, at which point you can have your 'Parser' evaluate 'PFail'
-    -- using the 'pfail' or 'Control.Monad.fail' functions.
-    --
-    -- Note that 'Backtrack'ing does not put back the characters that were taken from the input.
-    -- Those characters are still gone, parsing simply continues from the next alternative in the
-    -- branch. For example, the parser:
-    -- @'Control.Monad.mplus' (a >> b) c where@
-    -- @      a = 'manyRegex1' ('rxChar' \'A\')@
-    -- @      b = 'manyRegex1' ('rxChar' \'B\')@
-    -- @      c = 'manyRegex1' ('rxChar' \'C\')@
-    -- can evaluate against the string "AAACCC", and the whole string will be parsed and will return
-    -- a 'Token' with the characters "CCC". What happens is this: @a@ parses "AAA" and succeeds, the
-    -- remaining input string is now "CCC", @b@ tries to parse some "B" characters but fails and
-    -- 'Backtrack's. @c@ is the first choice after 'Backtrack'ing and successfully parses "CCC".
-    -- 
-    -- If you want to "undo" what was parsed by forcing characters back onto the input string, you
-    -- can use the 'backtrack' function. But this is inefficient and you should design your parser
-    -- to avoid this.
-  | PFail { failedToken :: Token, failedBecause :: UStr }
-    -- ^ If any 'Parser' function in your 'Parser' computation evaluates 'PFail', the whole parser
-    -- evaluates to 'PFail' so no characters will be parsed after that, unless the failure is caught
-    -- by 'Control.Monad.Error.catchError' or 'pcatch'.
-  | OK a -- ^ A parser evaluates to 'OK' when it evaluates 'Control.Monad.return'.
-  deriving (Eq, Ord, Show)
-
-instance Functor PValue where
-  fmap fn (OK    a  ) = OK (fn a)
-  fmap _  (PFail u v) = PFail u v
-  fmap _  Backtrack   = Backtrack
-
-instance Monad PValue where
-  return = OK
-  ma >>= mfn = case ma of
-    OK    a   -> mfn a
-    PFail u v -> PFail u v
-    Backtrack -> Backtrack
-
-instance MonadPlus PValue where
-  mzero = Backtrack
-  mplus ma mb = case ma of
-    Backtrack -> mb
-    PFail u v -> PFail u v
-    OK    a   -> OK    a
-
-----------------------------------------------------------------------------------------------------
-
 -- | 'Parser' instantiates 'Control.Monad.Monad', 'Control.Monad.MonadPlus', 'Data.Functor.Functor',
 -- 'Control.Monad.State.Class.MonadState', and 'Control.Monad.Error.MonadError'. Use
 -- 'Control.Monad.msum' to takes a list of parsers and try each one in turn, evaluating to the first
@@ -490,13 +431,15 @@ instance MonadPlus PValue where
 -- alternative parsers in a list of 'Control.Monad.msum' parsers, if any. Use 'pfail' to halt
 -- parsing with a descriptive error message. Use 'pcatch' to catch failed parsers, mark the error,
 -- and continue parsing.
-newtype Parser a = Parser{ parserStateMonad :: State ParseState (PValue a) }
+newtype Parser a = Parser{ parserStateMonad :: State ParseState (ParseValue a) }
+
+type ParseValue a = PValue Token a
 
 -- | Evaluate a 'Parser' with an input string. The evaluation yields a pair from the internal
 -- 'Control.Monad.State.Lazy.State' monad: the 'Prelude.fst' value of the pair is the result of the
 -- parse, or 'Data.Maybe.Nothing' if it failed, the 'Prelude.snd' value of the pair contains
 -- information about where a parse failed.
-runParser :: Parser a -> String -> (PValue a, String)
+runParser :: Parser a -> String -> (ParseValue a, String)
 runParser parser str = (result, remainder) where
   init =
     ParseState

@@ -103,3 +103,62 @@ instance MonadState st (PredicateIO st) where
 instance MonadIO (PredicateIO st) where
   liftIO fn = PredicateIO (lift fn)
 
+----------------------------------------------------------------------------------------------------
+
+-- | 'PValue' is a "parsed value" or "predicate value" data type allows a parser to fail without
+-- causing backtracking. These values are used internally to the 'Parser's
+-- 'Control.Monad.State.State' monad, so you do not need to actually use these constructors in your
+-- parser.
+data PValue item a
+  = Backtrack
+    -- ^ 'Backtrack' is a value used internally to the 'Parser's 'Control.Monad.State.State' monad
+    -- to signal a temporary parse failure, which indicates to the 'Parser' monad to stop parsing
+    -- and try another choice. Choices are specified by 'Control.Monad.mplus', for example
+    -- @'Control.Monad.mplus' a b@, where @a@ and @b@ are 'Parser's, will first try to evaluate @a@,
+    -- but if @b@ evaluates to 'mzero', this will internally return the 'Backtrack' value to the
+    -- 'Parser's 'Control.Monad.State.State' monad, which will cause @b@ to be evaluated. If the
+    -- entire parser evaluates to a 'Backtrack' this means the 'Parser' did not fail, but it did not
+    -- match the input string either, at which point you can have your 'Parser' evaluate 'PFail'
+    -- using the 'pfail' or 'Control.Monad.fail' functions.
+    --
+    -- Note that 'Backtrack'ing does not put back the characters that were taken from the input.
+    -- Those characters are still gone, parsing simply continues from the next alternative in the
+    -- branch. For example, the parser:
+    -- @'Control.Monad.mplus' (a >> b) c where@
+    -- @      a = 'manyRegex1' ('rxChar' \'A\')@
+    -- @      b = 'manyRegex1' ('rxChar' \'B\')@
+    -- @      c = 'manyRegex1' ('rxChar' \'C\')@
+    -- can evaluate against the string "AAACCC", and the whole string will be parsed and will return
+    -- a 'Token' with the characters "CCC". What happens is this: @a@ parses "AAA" and succeeds, the
+    -- remaining input string is now "CCC", @b@ tries to parse some "B" characters but fails and
+    -- 'Backtrack's. @c@ is the first choice after 'Backtrack'ing and successfully parses "CCC".
+    -- 
+    -- If you want to "undo" what was parsed by forcing characters back onto the input string, you
+    -- can use the 'backtrack' function. But this is inefficient and you should design your parser
+    -- to avoid this.
+  | PFail { failedItem :: item, failedBecause :: UStr }
+    -- ^ If any 'Parser' function in your 'Parser' computation evaluates 'PFail', the whole parser
+    -- evaluates to 'PFail' so no characters will be parsed after that, unless the failure is caught
+    -- by 'Control.Monad.Error.catchError' or 'pcatch'.
+  | OK a -- ^ A parser evaluates to 'OK' when it evaluates 'Control.Monad.return'.
+  deriving (Eq, Ord, Show)
+
+instance Functor (PValue a) where
+  fmap fn (OK    a  ) = OK (fn a)
+  fmap _  (PFail u v) = PFail u v
+  fmap _  Backtrack   = Backtrack
+
+instance Monad (PValue a) where
+  return = OK
+  ma >>= mfn = case ma of
+    OK    a   -> mfn a
+    PFail u v -> PFail u v
+    Backtrack -> Backtrack
+
+instance MonadPlus (PValue a) where
+  mzero = Backtrack
+  mplus ma mb = case ma of
+    Backtrack -> mb
+    PFail u v -> PFail u v
+    OK    a   -> OK    a
+

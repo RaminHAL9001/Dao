@@ -36,6 +36,7 @@ import           Dao.Pattern
 import           Dao.Evaluator
 import           Dao.Files
 import           Dao.Parser
+import           Dao.Predicate
 import           Dao.Object.Parser
 import           Dao.Object.Monad
 import           Dao.Object.Show

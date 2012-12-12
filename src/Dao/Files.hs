@@ -34,6 +34,7 @@ import           Dao.Resource
 import           Dao.Combination (runCombination)
 import qualified Dao.Tree    as T
 import           Dao.Parser hiding (lookAhead)
+import           Dao.Predicate
 import           Dao.Object.Parser
 import           Dao.Object.Show
 import           Dao.Object.Monad

@@ -36,6 +36,7 @@ import           Dao.Predicate
 import           Dao.Combination
 
 import           Dao.Object.Monad
+import           Dao.Object.Math
 import           Dao.Object.Data
 import           Dao.Object.Show
 import           Dao.Object.Binary
@@ -341,8 +342,19 @@ clearAllQTimeVars xunit = modifyUnlocked_ (queryTimeHeap xunit) (return . const 
 
 ----------------------------------------------------------------------------------------------------
 
--- | TODO: needs to cache all lookups to make sure the same reference produces the same value across
--- all lookups. The cache will be cleared at the start of every run of 'evalObject'.
+-- | If an 'Dao.Object.Object' value is a 'Dao.Object.Reference' (constructed with
+-- 'Dao.Object.ORef'), then the reference is looked up using 'readReference'. Otherwise, the object
+-- value is returned. This is used to evaluate every reference in an 'Dao.Object.ObjectExpr'.
+evalObjectRef :: Object -> ExecScript Object
+evalObjectRef obj = case obj of
+  ORef (MetaRef o) -> return (ORef o)
+  ORef ref         -> readReference ref >>= \o -> case o of
+    Nothing  -> ceError $ OList [obj, OString (ustr "undefined reference")]
+    Just obj -> return obj
+  obj              -> return obj
+
+-- | Will return any value from the 'Dao.Types.ExecUnit' environment associated with a
+-- 'Dao.Object.Reference'.
 readReference :: Reference -> ExecScript (Maybe Object)
 readReference ref = case ref of
   IntRef     i     -> fmap Just (evalIntRef i)
@@ -555,6 +567,11 @@ lookupUpdatingOp ref uop b a = case uchars uop of
       "*=" -> f (a*b)
       "/=" -> f (a/b)
       "%=" -> f (mod a b)
+      "|=" -> f (a .|. b)
+      "&=" -> f (a .&. b)
+      "^=" -> f (xor a b)
+      ">>=" -> f (fromMaybe ONull (bitsMove shift a (negate b)))
+      "<<=" -> f (fromMaybe ONull (bitsMove shift a b))
       where
         f o = case o of
           ONull -> ceError $ OList
@@ -568,9 +585,9 @@ lookupUpdatingOp ref uop b a = case uchars uop of
 evalObject :: ObjectExpr -> ExecScript Object
 evalObject obj = case obj of
   Literal         o              -> return o
-  AssignExpr    nm  op  expr    -> do -- TODO, needs to be redefined to execute assigments or updates according to the 'op' param
+  AssignExpr    nm  op  expr    -> do
     nm   <- evalObject nm
-    expr <- evalObject expr
+    expr <- evalObject expr >>= evalObjectRef
     case nm of
       ORef nm -> do
         expr <- updateReference nm (lookupUpdatingOp nm (unComment op) expr)
@@ -587,7 +604,7 @@ evalObject obj = case obj of
         -- NOTE: Built-in function calls do not get their own new stack, 'pushExecStack' is not
         -- used, only 'catchCEREturn'.
         fn <- lookupFunction "function call" op
-        args <- mapM (evalObject . unComment) args
+        args <- mapM ((evalObject >=> evalObjectRef) . unComment) args
         let argTypes = OList (map (OType . objType) args)
         checkToExecScript op argTypes (checkFunc fn args)
       Just fn -> case fn of

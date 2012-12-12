@@ -28,7 +28,7 @@ module Dao.EnumSet
   , BoundedInf, minBoundInf, maxBoundInf
     -- * the 'Segment' data type
   , Segment, segment, single, negInfTo, toPosInf, infinite, enumInfSeg
-  , canonicalSegment, toBounded, toBoundedPair
+  , canonicalSegment, toBounded, toBoundedPair, segmentMember
     -- * Predicates on 'Segment's
   , containingSet, numElems, isWithin, segmentHasEnumInf, segmentIsInfinite
     -- * Set Operators for 'Segment's
@@ -47,6 +47,7 @@ module Dao.EnumSet
 import           Data.Monoid
 import           Data.Bits
 import           Data.List
+import           Data.Ratio
 import           Control.Monad
 
 -- | Like 'Prelude.Bounded', except the bounds might be infinite, and return 'EnumNegInf' or
@@ -61,6 +62,10 @@ instance Bounded c => BoundedInf c where
   maxBoundInf = EnumPoint maxBound
 
 instance BoundedInf Integer where
+  minBoundInf = EnumNegInf
+  maxBoundInf = EnumPosInf
+
+instance BoundedInf (Ratio Integer) where
   minBoundInf = EnumNegInf
   maxBoundInf = EnumPosInf
 

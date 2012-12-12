@@ -39,9 +39,10 @@ import           Dao.Combination
 
 import           Control.Exception
 import           Control.Monad
+import           Control.Monad.Error
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Class
-import           Control.Monad.State.Class
+import           Control.Monad.State
 
 import           System.IO.Unsafe
 
@@ -105,10 +106,9 @@ instance MonadIO (PredicateIO st) where
 
 ----------------------------------------------------------------------------------------------------
 
--- | 'PValue' is a "parsed value" or "predicate value" data type allows a parser to fail without
--- causing backtracking. These values are used internally to the 'Parser's
--- 'Control.Monad.State.State' monad, so you do not need to actually use these constructors in your
--- parser.
+-- | 'PValue' is a "predicate value" data type allows a monadic computation to backtrack and try
+-- another branch of computation, or to fail without causing backtracking.  These values are used
+-- internally to the 'Dao.Parser.Parser's.
 data PValue item a
   = Backtrack
     -- ^ 'Backtrack' is a value used internally to the 'Parser's 'Control.Monad.State.State' monad
@@ -143,22 +143,86 @@ data PValue item a
   | OK a -- ^ A parser evaluates to 'OK' when it evaluates 'Control.Monad.return'.
   deriving (Eq, Ord, Show)
 
-instance Functor (PValue a) where
+instance Functor (PValue tok) where
   fmap fn (OK    a  ) = OK (fn a)
   fmap _  (PFail u v) = PFail u v
   fmap _  Backtrack   = Backtrack
 
-instance Monad (PValue a) where
+instance Monad (PValue tok) where
   return = OK
   ma >>= mfn = case ma of
     OK    a   -> mfn a
     PFail u v -> PFail u v
     Backtrack -> Backtrack
 
-instance MonadPlus (PValue a) where
+instance MonadPlus (PValue tok) where
   mzero = Backtrack
   mplus ma mb = case ma of
-    Backtrack -> mb
-    PFail u v -> PFail u v
-    OK    a   -> OK    a
+    Backtrack  -> mb
+    PFail ~u v -> PFail u v
+    OK     a   -> OK    a
+
+fromPValue :: a -> PValue tok a -> a
+fromPValue a pval = case pval of { OK a -> a ; _ -> a }
+
+----------------------------------------------------------------------------------------------------
+
+-- | A monad transformer for 'PValue', this is especially handy with a 'Control.Monad.State.State'
+-- monad. For example 'Dao.Parser.Parser' is a 'Control.Monad.State.State' monad lifted into the
+-- 'PTrans' monad.
+newtype PTrans tok m a = PTrans { runPTrans :: m (PValue tok a) }
+
+pvalue :: Monad m => PValue tok a -> PTrans tok m a
+pvalue pval = PTrans (return pval)
+
+instance Monad m => Monad (PTrans tok m) where
+  return a = PTrans (return (OK a))
+  PTrans ma >>= fma = PTrans $ do
+    a <- ma
+    case a of
+      Backtrack -> return Backtrack
+      PFail u v -> return (PFail u v)
+      OK    o   -> runPTrans (fma o)
+  PTrans ma >> PTrans mb = PTrans $ do
+    a <- ma
+    case a of
+      Backtrack -> return Backtrack
+      PFail u v -> return (PFail u v)
+      OK    _   -> mb
+  fail msg = PTrans{ runPTrans = return (PFail undefined (ustr msg)) }
+
+tokenFail :: Monad m => tok -> String -> PTrans tok m ig
+tokenFail tok msg = PTrans{ runPTrans = return (PFail tok (ustr msg)) }
+
+instance Functor m => Functor (PTrans tok m) where
+  fmap f (PTrans ma) = PTrans (fmap (fmap f) ma)
+
+-- | 'mzero' introduces backtracking, 'mplus' introduces a choice.
+instance Monad m => MonadPlus (PTrans tok m) where
+  mzero = PTrans (return Backtrack)
+  mplus (PTrans a) (PTrans b) = PTrans $ do
+    result <- a
+    case result of
+      Backtrack  -> b
+      PFail ~u v -> return (PFail u v)
+      OK     o   -> return (OK o)
+
+instance MonadTrans (PTrans tok) where
+  lift m = PTrans{ runPTrans = m >>= return . OK }
+
+-- | 'throwError' is like to 'Parser's instantiation of 'Control.Monad.fail', except it takes a
+-- 'Dao.String.UStr'. The @tok@ type is undefeind, so it makes sense to define it once you have
+-- caught it, or to override the 'Control.Monad.Error.Class.throwError' function with your own
+-- instantiation of a newtype of 'PTrans'.
+instance Monad m => MonadError UStr (PTrans tok m) where
+  throwError msg = PTrans{ runPTrans = return (PFail undefined msg) }
+  catchError ptrans catcher = PTrans $ do
+    value <- runPTrans ptrans
+    case value of
+      Backtrack -> return Backtrack
+      PFail u v -> runPTrans (catcher v)
+      OK    a   -> return (OK a)
+
+tokenThrowError :: Monad m => tok -> UStr -> PTrans tok m ig
+tokenThrowError tok msg = PTrans{ runPTrans = return (PFail tok msg) }
 

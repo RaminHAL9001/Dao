@@ -235,35 +235,40 @@ objToBool obj = case obj of
 
 ----------------------------------------------------------------------------------------------------
 
-objSize :: Object -> PredicateIO st T_word
-objSize o = return $ case o of
+okInt :: Integral i => i -> PValue tok i
+okInt = return . fromIntegral
+
+objSize :: Object -> PValue tok T_word
+objSize o = case o of
   OString   o -> fromIntegral $ U.length (toUTF8ByteString o)
   ORef      o -> loop 0 o where
     loop i o = case o of
       MetaRef o -> loop (i+1) o
       _         -> i
-  OPair     _ -> fromIntegral $ 2
-  OList     o -> fromIntegral $ length o
-  OSet      o -> fromIntegral $ S.size o
-  OArray    o -> fromIntegral $ let (lo, hi) = bounds o in (lo - hi)
-  OIntMap   o -> fromIntegral $ I.size o
-  ODict     o -> fromIntegral $ M.size o
-  OTree     o -> fromIntegral $ T.size o
-  OPattern  o -> fromIntegral $ length (getPatUnits o)
-  ORule     o -> fromIntegral $ length (unComment (ruleAction  o))
-  OBytes    o -> fromIntegral $ B.length o
+  OPair     _ -> okInt $ 2
+  OList     o -> okInt $ length o
+  OSet      o -> okInt $ S.size o
+  OArray    o -> okInt $ let (lo, hi) = bounds o in (lo - hi)
+  OIntMap   o -> okInt $ I.size o
+  ODict     o -> okInt $ M.size o
+  OTree     o -> okInt $ T.size o
+  OPattern  o -> okInt $ length (getPatUnits o)
+  ORule     o -> okInt $ length (unComment (ruleAction  o))
+  OBytes    o -> okInt $ B.length o
+  _           -> mzero
 
-objToList :: Object -> PredicateIO st [Object]
-objToList o = return $ case o of
-  OPair (a, b) -> [a, b]
-  OString  o   -> map OChar (uchars o)
-  OList    o   -> o
-  OSet     o   -> S.elems o
-  OArray   o   -> elems o
-  ODict    o   -> map (\ (a, b) -> OPair (OString a, b))             (M.assocs o)
-  OIntMap  o   -> map (\ (a, b) -> OPair (OInt (fromIntegral a), b)) (I.assocs o)
-  OTree    o   -> map (\ (a, b) -> OPair (OList (map OString a), b)) (T.assocs o)
-  OPattern o   -> patternComponents o
+objToList :: Object -> PValue tok [Object]
+objToList o = case o of
+  OPair (a, b) -> return $ [a, b]
+  OString  o   -> return $ map OChar (uchars o)
+  OList    o   -> return o
+  OSet     o   -> return $ S.elems o
+  OArray   o   -> return $ elems o
+  ODict    o   -> return $ map (\ (a, b) -> OPair (OString a, b))             (M.assocs o)
+  OIntMap  o   -> return $ map (\ (a, b) -> OPair (OInt (fromIntegral a), b)) (I.assocs o)
+  OTree    o   -> return $ map (\ (a, b) -> OPair (OList (map OString a), b)) (T.assocs o)
+  OPattern o   -> return $ patternComponents o
+  _            -> mzero
 
 -- | Traverse the entire object, returning a list of all 'Dao.Object.OString' elements.
 extractStringElems :: Object -> [UStr]
@@ -284,13 +289,14 @@ patUnitToObj p = case p of
   AnyOne   -> OType StringType
   Single o -> OString o
 
-objToPatUnit :: Object -> PredicateIO st PatUnit
-objToPatUnit o = return $ case o of
-  OType StringType -> Wildcard
-  OType ListType   -> AnyOne
-  OString str      -> Single str
+objToPatUnit :: Object -> PValue tok PatUnit
+objToPatUnit o = case o of
+  OType StringType -> return Wildcard
+  OType ListType   -> return AnyOne
+  OString str      -> return $ Single str
+  _                -> mzero
 
-objListToPattern :: [Object] -> PredicateIO st Pattern
+objListToPattern :: [Object] -> PValue tok Pattern
 objListToPattern ox = loop 0 ox [] where
   loop i ox px = case ox of
     []   -> return $ Pattern{getPatternLength = i, getPatUnits = px}
@@ -326,14 +332,12 @@ checkBounds
   => TypeID
   -> (a -> Bool)
   -> a
-  -> PredicateIO st b
+  -> PValue Object b
 checkBounds t check a =
   if check a
     then return (fromIntegral a)
-    else falseIO $ OPair $
-           ( OPair (toObject a, OType t)
-           , OString (ustr ("value out of range, cannot convert to "++show t++" type"))
-           )
+    else tokenFail (OPair (toObject a, OType t)) $
+            ("value out of range, cannot convert to "++show t++" type")
 
 class ToWord a where { toWord :: a -> PredicateIO st T_word }
 instance ToWord Word64  where { toWord = return }

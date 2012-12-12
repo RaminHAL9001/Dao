@@ -431,7 +431,7 @@ data ParseState
 -- alternative parsers in a list of 'Control.Monad.msum' parsers, if any. Use 'pfail' to halt
 -- parsing with a descriptive error message. Use 'pcatch' to catch failed parsers, mark the error,
 -- and continue parsing.
-newtype Parser a = Parser{ parserStateMonad :: State ParseState (ParseValue a) }
+newtype Parser a = Parser{ parserPTransState :: PTrans Token (State ParseState) a }
 
 type ParseValue a = PValue Token a
 
@@ -449,48 +449,33 @@ runParser parser str = (result, remainder) where
     , parseString     = str
     , tokenStack      = []
     }
-  (result, st) = runState (parserStateMonad parser) init
+  (result, st) = runState (runPTrans (parserPTransState parser)) init
   remainder = parseString st
 
 instance Monad Parser where
-  return a = Parser (return (OK a))
-  Parser ma >>= fma = Parser $ do
-    a <- ma
-    case a of
-      Backtrack -> return Backtrack
-      PFail u v -> return (PFail u v)
-      OK    o   -> parserStateMonad (fma o)
-  Parser ma >> Parser mb = Parser $ do
-    a <- ma
-    case a of
-      Backtrack -> return Backtrack
-      PFail u v -> return (PFail u v)
-      OK    _   -> mb
+  return a = Parser (return a)
+  Parser ma >>= fma = Parser $ ma >>= parserPTransState . fma
+  Parser ma >> Parser mb = Parser $ ma >> mb
   fail msg = do
     token <- getToken
-    Parser{ parserStateMonad = return (PFail token (ustr msg)) }
+    Parser (tokenFail token msg)
 
 instance Functor Parser where
-  fmap f (Parser ma) = Parser (fmap (fmap f) ma)
+  fmap f (Parser ma) = Parser $ fmap f ma
 
 -- | 'mzero' introduces backtracking, 'mplus' introduces a choice.
 instance MonadPlus Parser where
-  mzero = Parser (return Backtrack)
-  mplus (Parser a) (Parser b) = Parser $ do
-    result <- a
-    case result of
-      Backtrack -> b
-      PFail u v -> return (PFail u v)
-      OK    o   -> return (OK o)
+  mzero = Parser mzero
+  mplus (Parser a) (Parser b) = Parser $ mplus a b
 
 -- | For the most inefficient but most correct form of backtracking, you can
 -- 'Control.Monad.State.get' a parser state (which is an opaque type), then try a branch, then
 -- restore the parser state with 'Control.Monad.State.put'. Refer to the 'choice' function for more
 -- information about using the 'ParseState'.
 instance MonadState ParseState Parser where
-  get = Parser (get >>= \st -> return (OK st))
-  put st = Parser (put st >> return (OK ()))
-  state f = Parser (state f >>= \a -> return (OK a))
+  get = Parser $ lift get
+  put = Parser . lift . put
+  state = Parser . lift . state
 
 -- | 'throwError' is identical to 'Parser's instantiation of 'Control.Monad.fail'.
 --
@@ -498,14 +483,9 @@ instance MonadState ParseState Parser where
 -- error, after an error is caught, and after evaluating 'catchError'. Remember, it is convienient
 -- to use 'ok' instead of 'Control.Monad.return' because 'ok' automatically calls
 -- 'clearTokenStack'.
-instance MonadError String Parser where
-  throwError = fail
-  catchError parser catcher = Parser $ do
-    value <- parserStateMonad parser
-    case value of
-      Backtrack -> return Backtrack
-      PFail u v -> parserStateMonad (catcher (uchars v))
-      OK    a   -> return (OK a)
+instance MonadError UStr Parser where
+  throwError msg = getToken >>= \tok -> Parser (tokenThrowError tok msg)
+  catchError (Parser parser) catcher = Parser (catchError parser (parserPTransState . catcher))
 
 ----------------------------------------------------------------------------------------------------
 

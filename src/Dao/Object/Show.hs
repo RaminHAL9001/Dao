@@ -172,7 +172,7 @@ showReference o = case o of
   QTimeRef     o -> "qtime "++showRef o
   StaticRef    o -> "static "++uchars o
   GlobalRef    o -> showRef o
-  ProgramRef p o -> "program("++uchars p++", "++uchars o++")"
+  ProgramRef p o -> "program("++uchars p++", "++showReference o++")"
   FileRef    f o -> "file("++uchars f++", "++showRef o++")"
   MetaRef      o -> '$':showReference o
 

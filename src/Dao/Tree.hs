@@ -134,6 +134,11 @@ update path updfn = alter updfn (flip mplus (Just Void)) path
 delete :: Ord p => [p] -> Tree p a -> Tree p a
 delete px = alter (const Nothing) id px
 
+-- | Create a 'Tree' from a list of associationes, the 'Prelude.fst' element containing the branch,
+-- the 'Prelude.snd' element containing the leaf value. This is the inverse operation of 'assocs'.
+fromList :: Ord p => [([p], a)] -> Tree p a
+fromList = foldl (\ tree (px, a) -> insert px a tree) Void
+
 -- | Lookup a 'Tree' value (the whole node, not just the data stored in the node) at given address.
 -- NOTE: this may not be what you want. If you want return the data that is stored in a 'Leaf' or
 -- 'LeafBranch', use 'lookup', or just do @'lookup' atBranch inTree >>= 'getLeaf'@.

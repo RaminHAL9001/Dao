@@ -21,6 +21,7 @@
 
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
 
 -- | Provides a special monad for building complex predicates that can check the structure of
 -- complex data types, but in a way that I find to be much simpler than "Data.Data". The 'Predicate'
@@ -225,4 +226,21 @@ instance Monad m => MonadError UStr (PTrans tok m) where
 
 tokenThrowError :: Monad m => tok -> UStr -> PTrans tok m ig
 tokenThrowError tok msg = PTrans{ runPTrans = return (PFail tok msg) }
+
+-- | Like 'Control.Monad.MonadPlus', but supplies 'mplusCatch' instead of 'Control.Monad.mplus',
+-- which behaves very similarly. 'mplusCatch' takes two alternative monadic computations, evaluates
+-- the first, but will evaluate the second only if the first does not succeed, that is, if the first
+-- evaluates to either mzero or an error value, the error is ignored and the second alternative
+-- monadic computation is evaluated. This class provides a default implementation for both
+-- 'mplusCatch' and 'msumCatch', so the minimal complete definition is already satisfied. As long as
+-- your monad instantiates 'Control.Monad.Error.Class.MonadError' and 'Control.Monad.MonadPlus', you
+-- can instantiate your monad into 'ErrorMonadPlus' simply by writing
+-- @instance 'ErrorMonadPlus' MyErrType MyMonad@
+-- where @MyErrType@ is the same type you used to instantiate
+-- 'Control.Monad.Error.Class.MonadError'.
+class (MonadError e m, MonadPlus m) => ErrorMonadPlus e m | m -> e where
+  mplusCatch :: m a -> m a -> m a
+  mplusCatch ma mb = mplus (catchError ma (\ _ -> mzero)) mb
+  msumCatch :: [m a] -> m a
+  msumCatch = foldl mplusCatch mzero
 

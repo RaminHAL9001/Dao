@@ -52,9 +52,27 @@ type MatchValue a = PValue Reference a
 
 data MatcherState
   = MatcherState
-    { matcherRef :: Reference
+    { matcherRef  :: [Name]
+    , matcherIdx  :: [T_word]
     , matcherTree :: T.Tree Name Object
     }
+
+initMatcherState :: MatcherState
+initMatcherState = MatcherState{ matcherRef = [], matcherIdx = [], matcherTree = T.Void }
+
+withRef :: Name -> Matcher a -> Matcher a
+withRef n fn = modify (\st -> st{matcherRef = n : matcherRef st}) >>
+  mplusFinal fn (modify (\st -> st{matcherRef = tail (matcherRef st)}))
+
+withIdx :: T_word -> Matcher a -> Matcher a
+withIdx i fn = modify (\st -> st{matcherIdx = i : matcherIdx st}) >>
+  mplusFinal fn (modify (\st -> st{matcherIdx = tail (matcherIdx st)}))
+
+getCurrentRef :: Matcher Reference
+getCurrentRef = do
+  idx <- flip fmap (gets matcherIdx) $
+    foldl (\fn i -> fn . flip Subscript i) id . map OWord . reverse -- <-- reverse this?
+  fmap (idx . GlobalRef . reverse) (gets matcherRef)
 
 -- | A 'Control.Monad.State.State' monad used to execute matches
 newtype Matcher a = Matcher { matcherPTransState :: PTrans Reference (State MatcherState) a }
@@ -63,7 +81,7 @@ instance Monad Matcher where
   return = Matcher . return
   (Matcher f) >>= mfa = Matcher (f >>= matcherPTransState . mfa)
   (Matcher fa) >> (Matcher fb) = Matcher (fa >> fb)
-  fail msg = gets matcherRef >>= \ref -> Matcher (tokenFail ref msg)
+  fail msg = getCurrentRef >>= \ref -> Matcher (tokenFail ref msg)
 
 instance Functor Matcher where
   fmap f (Matcher a) = Matcher (fmap f a)
@@ -81,7 +99,9 @@ instance MonadError UStr Matcher where
   throwError = Matcher . throwError
   catchError (Matcher m) em = Matcher (catchError m (matcherPTransState . em))
 
-instance ErrorMonadPlus UStr Matcher
+instance ErrorMonadPlus Reference Matcher where
+  tokenThrowError tok msg  = Matcher (tokenThrowError tok msg)
+  catchPValue (Matcher fn) = Matcher (catchPValue fn)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -170,6 +190,8 @@ matchObject pat o = let otype = objType o in case pat of
     return o
   ObjElemSet op set -> matchObjectElemSet op set o >> return o
   ObjChoice  op set -> matchObjectChoice  op set o >> return o
+  ObjLabel  lbl pat -> modify (\st -> st{matcherRef = matcherRef st ++ [lbl]}) >> matchObject pat o
+  ObjFailIf lbl pat -> mplus (matchObject pat o) (throwError lbl)
 
 justOnce :: [Bool] -> Bool
 justOnce checks = 1 == foldl (\i check -> if check then i+1 else i) 0 checks

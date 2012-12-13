@@ -21,6 +21,7 @@
 
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FunctionalDependencies #-}
 
 -- | Provides a special monad for building complex predicates that can check the structure of
@@ -163,6 +164,12 @@ instance MonadPlus (PValue tok) where
     PFail ~u v -> PFail u v
     OK     a   -> OK    a
 
+instance MonadError UStr (PValue tok) where
+  throwError = PFail undefined
+  catchError try catch = case try of
+    PFail _ v -> catch v
+    try       -> try
+
 fromPValue :: a -> PValue tok a -> a
 fromPValue a pval = case pval of { OK a -> a ; _ -> a }
 
@@ -224,23 +231,50 @@ instance Monad m => MonadError UStr (PTrans tok m) where
       PFail u v -> runPTrans (catcher v)
       OK    a   -> return (OK a)
 
-tokenThrowError :: Monad m => tok -> UStr -> PTrans tok m ig
-tokenThrowError tok msg = PTrans{ runPTrans = return (PFail tok msg) }
+----------------------------------------------------------------------------------------------------
 
--- | Like 'Control.Monad.MonadPlus', but supplies 'mplusCatch' instead of 'Control.Monad.mplus',
+-- | Monadic computations which have lifted the 'PValue' into them can instantiate this class. It is
+-- similar to 'Control.Monad.MonadPlus', but supplies 'mplusCatch' instead of 'Control.Monad.mplus',
 -- which behaves very similarly. 'mplusCatch' takes two alternative monadic computations, evaluates
 -- the first, but will evaluate the second only if the first does not succeed, that is, if the first
--- evaluates to either mzero or an error value, the error is ignored and the second alternative
--- monadic computation is evaluated. This class provides a default implementation for both
--- 'mplusCatch' and 'msumCatch', so the minimal complete definition is already satisfied. As long as
--- your monad instantiates 'Control.Monad.Error.Class.MonadError' and 'Control.Monad.MonadPlus', you
--- can instantiate your monad into 'ErrorMonadPlus' simply by writing
--- @instance 'ErrorMonadPlus' MyErrType MyMonad@
--- where @MyErrType@ is the same type you used to instantiate
--- 'Control.Monad.Error.Class.MonadError'.
-class (MonadError e m, MonadPlus m) => ErrorMonadPlus e m | m -> e where
+-- evaluates to either 'Control.Monad.mzero' or to 'Control.Monad.Error.Class.throwError'.  Minimal
+-- complete definition is 'catchPValue' and 'tokenThrowError'.
+class (MonadError UStr m, MonadPlus m) => ErrorMonadPlus tok m | m -> tok where
+  -- | Unlifts the 'PValue' resulting from evaluating the given monadic computation, returning the
+  -- 'PValue' as 'Backtrack' if the given monad evaluates to 'Control.Monad.mzero' and as
+  -- 'PFail' if the given monad evaluates to 'Control.Monad.Error.Class.throwError'.
+  catchPValue :: m a -> m (PValue tok a)
+  -- | Lift a 'PFail' value into the monad with the given token and error values.
+  tokenThrowError :: tok -> UStr -> m ig
+  -- | Like 'Comtrol.Monad.mplus', except the second function is tried even if the first monadic
+  -- function evaluates to 'Control.Monad.Error.Class.throwError'. This is different from ordinary
+  -- 'Control.Monad.mplus' which always evaluates to 'throwError' if one of it's given monadic
+  -- computations evaluates as such. Said another way, this function "catches" errors and ignores
+  -- them, instead trying the alternative function when an error or 'Control.Monad.mzero' occurs.
   mplusCatch :: m a -> m a -> m a
   mplusCatch ma mb = mplus (catchError ma (\ _ -> mzero)) mb
+  -- | Like 'Control.Monad.msum' in except it uses 'mplusCatch' to fold the list of given monadic
+  -- computations. Evaluates to 'Control.Monad.mzero' if none of the monadic computations in the
+  -- list evaluate to 'Control.Monad.return'.
   msumCatch :: [m a] -> m a
   msumCatch = foldl mplusCatch mzero
+  -- | Given a "try" function and a "final" function, this monadic computation evaluates the
+  -- "try" function, keeping "try's" value, Then it evaluates the "final" function, ignoring
+  -- "final's" value, then it evaluates to "try's" value. So the "final" function is evaluated
+  -- regardless of what "try's" value is, and this function always evalautes to the value of "try's"
+  -- evaluation. Said another way, the "final" function is always executed, before returning or
+  -- re-throwing the result of "try".
+  mplusFinal :: m a -> m () -> m a
+  mplusFinal fn done = catchPValue fn >>= \a -> mplusCatch (done >> mzero) $ case a of
+    OK a       -> return a
+    Backtrack  -> mzero
+    PFail ~u v -> tokenThrowError u v
+
+instance ErrorMonadPlus tok (PValue tok) where
+  tokenThrowError = PFail
+  catchPValue = OK
+
+instance Monad m => ErrorMonadPlus tok (PTrans tok m) where
+  tokenThrowError tok msg = PTrans{ runPTrans = return (PFail tok msg) }
+  catchPValue (PTrans fn) = PTrans{ runPTrans = fn >>= \a -> return (OK a) }
 

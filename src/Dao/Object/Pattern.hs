@@ -53,7 +53,7 @@ type MatchValue a = PValue Reference a
 data MatcherState
   = MatcherState
     { matcherRef  :: [Name]
-    , matcherIdx  :: [T_word]
+    , matcherIdx  :: [Object]
     , matcherTree :: T.Tree Name Object
     }
 
@@ -64,14 +64,14 @@ withRef :: Name -> Matcher a -> Matcher a
 withRef n fn = modify (\st -> st{matcherRef = n : matcherRef st}) >>
   mplusFinal fn (modify (\st -> st{matcherRef = tail (matcherRef st)}))
 
-withIdx :: T_word -> Matcher a -> Matcher a
+withIdx :: Object -> Matcher a -> Matcher a
 withIdx i fn = modify (\st -> st{matcherIdx = i : matcherIdx st}) >>
   mplusFinal fn (modify (\st -> st{matcherIdx = tail (matcherIdx st)}))
 
 getCurrentRef :: Matcher Reference
 getCurrentRef = do
   idx <- flip fmap (gets matcherIdx) $
-    foldl (\fn i -> fn . flip Subscript i) id . map OWord . reverse -- <-- reverse this?
+    foldl (\fn i -> fn . flip Subscript i) id . reverse -- <-- reverse this?
   fmap (idx . GlobalRef . reverse) (gets matcherRef)
 
 -- | A 'Control.Monad.State.State' monad used to execute matches
@@ -171,9 +171,9 @@ matchObject pat o = let otype = objType o in case pat of
         _          -> mzero
     ]
   ObjList t patx | t==otype || t==TrueType -> fmap OList $ case o of
-    OArray a    -> matchObjectList patx (elems a)
-    OList  a    -> matchObjectList patx a
-    OPair (a,b) -> matchObjectList patx [a,b]
+    OArray a    -> matchObjectList patx (zipIndecies (elems a))
+    OList  a    -> matchObjectList patx (zipIndecies a)
+    OPair (a,b) -> matchObjectList patx [(OWord 0, a), (OWord 1, b)]
     _           -> mzero
   ObjNameSet op set -> do
     case o of
@@ -193,13 +193,35 @@ matchObject pat o = let otype = objType o in case pat of
   ObjLabel  lbl pat -> modify (\st -> st{matcherRef = matcherRef st ++ [lbl]}) >> matchObject pat o
   ObjFailIf lbl pat -> mplus (matchObject pat o) (throwError lbl)
 
+zipIndecies :: [a] -> [(Object, a)]
+zipIndecies = zip (map OWord (iterate (+1) 0))
+
 justOnce :: [Bool] -> Bool
 justOnce checks = 1 == foldl (\i check -> if check then i+1 else i) 0 checks
 
--- | Match a list of object patterns to a list of objects.
-matchObjectList :: [ObjPat] -> [Object] -> Matcher [Object]
-matchObjectList patx ax = loop [] patx ax >>= \ (matched, ax) ->
-  if null ax then return matched else mzero where
+-- | Match a list of object patterns to a list of objects, more specifically a list of objects
+-- assoicated with another object that can be used to identify it. The identifier should be an
+-- object value used to construct a 'Dao.Object.Reference' that can retrieve the object to which it
+-- refers.
+matchObjectList :: [ObjPat] -> [(Object, Object)] -> Matcher [Object]
+matchObjectList patx ax = fmap (map snd) (matchObjectListWith withIdx patx ax)
+
+-- | Like 'matchObjectList', except each object is associated with a 'Dao.String.Name' that will be
+-- used to construct a 'Dao.Object.LocalRef' to store the match result. This should be used to match
+-- a list of function parameters where each parameter is a name associated with a type that can be
+-- checked with a 'ObjPat' pattern.
+matchParamList :: [ObjPat] -> [(Name, Object)] -> Matcher T_tree
+matchParamList patx ax =
+  fmap (foldl (\ tree (i, o) -> T.insert [i] o tree) T.Void) (matchObjectListWith withRef patx ax)
+
+-- The algorithm used by 'matchObjectList' and 'matchParamList'.
+matchObjectListWith
+  :: (i -> Matcher ([(i, Object)], [(i, Object)]) -> Matcher ([(i, Object)], [(i, Object)]))
+  -> [ObjPat] -> [(i, Object)] -> Matcher [(i, Object)]
+matchObjectListWith withFn patx ax = do
+  (matched, ax) <- loop [] patx ax
+  if null ax then return matched else mzero
+  where
     loop matched patx ax = case patx of
       [] -> return (matched, ax)
       (ObjAnyX:ObjMany:patx) -> loop matched (ObjMany:patx) ax
@@ -208,10 +230,10 @@ matchObjectList patx ax = loop [] patx ax >>= \ (matched, ax) ->
         ObjAnyX -> try1 matched [] id               patx           ax
         ObjMany -> try1 matched [] reverse (reverse patx) (reverse ax)
         pat     -> case ax of
-          []   -> mzero
-          a:ax -> do
-            matched' <- matchObject pat a
-            loop (matched++[matched']) patx ax
+          []        -> mzero
+          (i, a):ax -> withFn i $ do
+            a <- matchObject pat a
+            loop (matched++[(i, a)]) patx ax
     try1 matched skipped rvrsIfRvrsd patx ax =
       flip mplusCatch (skip matched skipped rvrsIfRvrsd patx ax) $ do
         (ax, matched') <- loop [] patx ax
@@ -244,25 +266,30 @@ makeTree :: Ord a => S.Set [a] -> T.Tree a Object
 makeTree branches = (T.fromList (map (\b -> (b, OTrue)) (S.elems branches)))
 
 -- | Recurse into a set object and match a set of 'ObjPat's to the elements, matching as many (or as
--- few) as possible to satisfy the given 'ObjSetOp'.
-matchObjectElemSet :: ObjSetOp -> (S.Set ObjPat) -> Object -> Matcher ()
+-- few) as possible to satisfy the given 'ObjSetOp'. Returns the subset of the object that matched
+-- the pattern.
+matchObjectElemSet :: ObjSetOp -> (S.Set ObjPat) -> Object -> Matcher Object
 matchObjectElemSet op set o = do
-  let foldSet o set patx = case patx of
-        []       -> return (False, set)
-        pat:patx -> flip mplusCatch (foldSet o (S.insert pat set) patx) $
-          matchObject pat o >> return (True, S.union set (S.fromList patx))
-      checkLoop checks set ax = case ax of
-        []              -> return (checks, set)
-        ax | S.null set -> return (checks ++ map (const False) ax, set)
+  let foldSet insert matched (i, ref, a) set patx = case patx of
+        []       -> return (False, set, matched)
+        pat:patx -> flip mplusCatch (foldSet insert matched (i, ref, a) (S.insert pat set) patx) $ do
+          a <- withIdx ref (matchObject pat a)
+          return (True, S.union set (S.fromList patx), insert i a matched)
+      checkLoop construct insert matched checks set ax = case ax of
+        []              -> return (checks, set, construct matched)
+        ax | S.null set -> return (checks ++ map (const False) ax, set, construct matched)
         a:ax            -> do
-          (check, set) <- foldSet a (S.empty) (S.elems set)
-          checkLoop (checks++[check]) set ax
-      checkEach ax = checkLoop [] set ax
-  (checks, remainder) <- case o of
-    OSet    o -> checkEach $ S.elems o
-    ODict   o -> checkEach $ M.elems o
-    OTree   o -> checkEach $ T.elems o
-    OIntMap o -> checkEach $ IM.elems o
+          (check, set, matched) <- foldSet insert matched a (S.empty) (S.elems set)
+          checkLoop construct insert matched (checks++[check]) set ax
+      run construct insert null ax = checkLoop construct insert null [] set ax
+      setInsert _  = S.insert
+      setAssocs    = zip (iterate (+1) 0) . S.elems
+      ixRefObj fn = map (\ (i, a) -> (i, fn i, a))
+  (checks, remainder, o) <- case o of
+    OSet    a -> run OSet    setInsert S.empty  $ ixRefObj  OWord                $ setAssocs a
+    ODict   a -> run ODict   M.insert  M.empty  $ ixRefObj (ORef . LocalRef    ) $ M.assocs a
+    OTree   a -> run OTree   T.insert  T.Void   $ ixRefObj (ORef . GlobalRef   ) $ T.assocs a
+    OIntMap a -> run OIntMap IM.insert IM.empty $ ixRefObj (OInt . fromIntegral) $ IM.assocs a
     _         -> mzero
   guard $ case op of
     ExactSet  -> S.null remainder && and checks
@@ -270,6 +297,7 @@ matchObjectElemSet op set o = do
     AllOfSet  -> S.null remainder
     OnlyOneOf -> justOnce checks
     NoneOfSet -> not (or checks)
+  return o
 
 matchObjectChoice :: ObjSetOp -> S.Set ObjPat -> Object -> Matcher ()
 matchObjectChoice op set o = do

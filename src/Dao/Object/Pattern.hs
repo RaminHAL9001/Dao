@@ -21,7 +21,26 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Dao.Object.Pattern where
+module Dao.Object.Pattern
+  ( MatchValue, Matcher, MatcherState, initMatcherState, matcherTree, getCurrentRef
+  , matchObject, matchObjectList, matchParamList, matchObjectSet, matchObjectElemSet
+  , matchObjectChoice
+  )
+  where
+
+-- | One of the most important functions of the Dao system is to be able to efficiently analyze data
+-- structures. The "Dao.Object" module provides a rich set of fundamental data types from which more
+-- complicated data structures can be constructed. However, there needs to be a way to query
+-- portions of these complicated structures without resorting to dereferencing and if-else
+-- statements everywhere.
+--
+-- The solution is to provide a predicate data-type, the "object pattern" or 'Dao.Object.ObjPat',
+-- which can match objects and construct structures containing portions of data structures that
+-- match patterns associated with labels for those patterns.
+-- 
+-- The 'Dao.Object.ObjPat' type is used throughout the Dao system, so it is defined in the
+-- "Dao.Object" module. This module defines the algorithm for matching 'Dao.Object.Object's to
+-- 'Dao.Object.ObjPat' patterns.
 
 import           Dao.String
 import           Dao.Object
@@ -105,55 +124,6 @@ instance ErrorMonadPlus Reference Matcher where
 
 ----------------------------------------------------------------------------------------------------
 
-data ObjSetOp = ExactSet | AnyOfSet | AllOfSet | OnlyOneOf | NoneOfSet
-  deriving (Eq, Ord, Typeable, Show, Read)
-
--- | An object pattern, a data type that can be matched against objects,
--- assigning portions of that object to variables stored in a
--- 'Dao.Tree.Tree' structure.
-data ObjPat 
-  = ObjAnyX -- ^ matches any number of objects, matches lazily (not greedily).
-  | ObjMany -- ^ like ObjAnyX but matches greedily.
-  | ObjAny1 -- ^ matches any one object
-  | ObjEQ Object -- ^ simply checks if the object is exactly equivalent
-  | ObjType (EnumSet TypeID) -- ^ checks if the object type is any of the given types.
-  | ObjBounded (EnumInf T_ratio) (EnumInf T_ratio) -- ^ checks that numeric types are in a certain range.
-  | ObjList TypeID [ObjPat]
-    -- ^ recurse into a list-like object given by TypeID (TrueType for any list-like object)
-  | ObjNameSet ObjSetOp (S.Set [Name]) -- ^ checks if a map object contains every name
-  | ObjIntSet  ObjSetOp IS.IntSet
-    -- ^ checks if an intmap or array object contains every index
-  | ObjElemSet ObjSetOp (S.Set ObjPat)
-    -- ^ recurse into a set-like object given by TypeID, match elements in the set according to
-    -- ObjSetOp.
-  | ObjChoice  ObjSetOp (S.Set ObjPat)
-    -- ^ execute a series of tests on a single object
-  | ObjLabel Name ObjPat
-    -- ^ if the object matching matches this portion of the 'ObjPat', then save the object into the
-    -- resulting 'Dao.Tree.Tree' under this name.
-  | ObjFailIf UStr ObjPat -- ^ fail with a message if the pattern does not match
-  deriving (Eq, Show, Typeable)
-
-instance Ord ObjPat where
-  compare a b
-    | a==b      = EQ
-    | otherwise = compare (toInt a) (toInt b) where
-        f s = foldl max 0 (map toInt (S.elems s))
-        toInt a = case a of
-          ObjAnyX   -> 1
-          ObjMany   -> 2
-          ObjAny1   -> 3
-          ObjEQ   _ -> 4
-          ObjType _ -> 5
-          ObjBounded _ _ -> 6
-          ObjList    _ _ -> 7
-          ObjNameSet _ _ -> 8
-          ObjIntSet  _ _ -> 9
-          ObjElemSet _ s -> f s
-          ObjChoice  _ s -> f s
-          ObjLabel   _ a -> toInt a
-          ObjFailIf  _ w -> toInt a
-
 -- | Match a single object pattern to a single object.
 matchObject :: ObjPat -> Object -> Matcher Object
 matchObject pat o = let otype = objType o in case pat of
@@ -188,10 +158,14 @@ matchObject pat o = let otype = objType o in case pat of
           T.Branch $ M.fromList $ map (\ (i, o) -> (i, T.Leaf o)) $ IM.assocs dict
       _            -> mzero
     return o
-  ObjElemSet op set -> matchObjectElemSet op set o >> return o
+  ObjElemSet op set -> matchObjectElemSet op set o
   ObjChoice  op set -> matchObjectChoice  op set o >> return o
   ObjLabel  lbl pat -> modify (\st -> st{matcherRef = matcherRef st ++ [lbl]}) >> matchObject pat o
   ObjFailIf lbl pat -> mplus (matchObject pat o) (throwError lbl)
+  ObjNot        pat -> catchPValue (matchObject pat o) >>= \p -> case p of
+    Backtrack  -> return o
+    OK       _ -> mzero
+    PFail ~u v -> tokenThrowError u v
 
 zipIndecies :: [a] -> [(Object, a)]
 zipIndecies = zip (map OWord (iterate (+1) 0))

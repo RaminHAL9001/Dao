@@ -30,6 +30,7 @@ module Dao.Object
 
 import           Dao.String
 import           Dao.Pattern
+import           Dao.EnumSet
 import           Dao.Tree as T
 
 import           Data.Typeable
@@ -48,8 +49,9 @@ import           Data.Time hiding (parseTime)
 import           Numeric
 
 import qualified Data.Map                  as M
-import qualified Data.IntMap               as I
+import qualified Data.IntMap               as IM
 import qualified Data.Set                  as S
+import qualified Data.IntSet               as IS
 import qualified Data.ByteString.Lazy      as B
 
 import           Control.Monad
@@ -76,7 +78,7 @@ type T_list     = [Object]
 type T_set      = S.Set Object
 type T_array_ix = T_int
 type T_array    = Array T_array_ix Object
-type T_intMap   = I.IntMap Object
+type T_intMap   = IM.IntMap Object
 type T_dict     = M.Map Name Object
 type T_tree     = T.Tree Name Object
 type T_pattern  = Pattern
@@ -473,4 +475,67 @@ instance Commented ScriptExpr where
     where
       u :: Commented a => a -> a
       u = stripComments
+
+----------------------------------------------------------------------------------------------------
+
+-- | Some matching operations can operate on objects with set-like properties ('Dao.Object.OSet',
+-- 'Dao.Object.ODict', 'Dao.Object.OIntMap', 'Dao.Object.OTree'). This data type represents the
+-- set operation for a set-like matching pattern. See also: 'ObjNameSet', 'ObjIntSet', 'ObjElemSet',
+-- 'ObjChoice'.
+data ObjSetOp
+  = ExactSet -- ^ every pattern must match every item, no missing items, no spare items.
+  | AnyOfSet -- ^ any of the patterns match any of the items in the set
+  | AllOfSet -- ^ all of the patterns match, but it doesn't matter if not all items were matched.
+  | OnlyOneOf -- ^ only one of the patterns in the set matches only one of the items.
+  | NoneOfSet -- ^ all of the patterns do not match any of the items in the set.
+  deriving (Eq, Ord, Enum, Typeable, Show, Read)
+
+-- | An object pattern, a data type that can be matched against objects,
+-- assigning portions of that object to variables stored in a
+-- 'Dao.Tree.Tree' structure.
+data ObjPat 
+  = ObjAnyX -- ^ matches any number of objects, matches lazily (not greedily).
+  | ObjMany -- ^ like ObjAnyX but matches greedily.
+  | ObjAny1 -- ^ matches any one object
+  | ObjEQ      Object -- ^ simply checks if the object is exactly equivalent
+  | ObjType    (EnumSet TypeID) -- ^ checks if the object type is any of the given types.
+  | ObjBounded (EnumInf T_ratio) (EnumInf T_ratio)
+    -- ^ checks that numeric types are in a certain range.
+  | ObjList    TypeID            [ObjPat]
+    -- ^ recurse into a list-like object given by TypeID (TrueType for any list-like object)
+  | ObjNameSet ObjSetOp          (S.Set [Name])
+    -- ^ checks if a map object contains every name
+  | ObjIntSet  ObjSetOp          IS.IntSet
+    -- ^ checks if an intmap or array object contains every index
+  | ObjElemSet ObjSetOp          (S.Set ObjPat)
+    -- ^ recurse into a set-like object given by TypeID, match elements in the set according to
+    -- ObjSetOp.
+  | ObjChoice  ObjSetOp          (S.Set ObjPat) -- ^ execute a series of tests on a single object
+  | ObjLabel   Name  ObjPat
+    -- ^ if the object matching matches this portion of the 'ObjPat', then save the object into the
+    -- resulting 'Dao.Tree.Tree' under this name.
+  | ObjFailIf  UStr  ObjPat -- ^ fail with a message if the pattern does not match
+  | ObjNot           ObjPat -- ^ succedes if the given pattern fails to match.
+  deriving (Eq, Show, Typeable)
+
+instance Ord ObjPat where
+  compare a b
+    | a==b      = EQ
+    | otherwise = compare (toInt a) (toInt b) where
+        f s = foldl max 0 (map toInt (S.elems s))
+        toInt a = case a of
+          ObjAnyX   -> 1
+          ObjMany   -> 2
+          ObjAny1   -> 3
+          ObjEQ   _ -> 4
+          ObjType _ -> 5
+          ObjBounded _ _ -> 6
+          ObjList    _ _ -> 7
+          ObjNameSet _ _ -> 8
+          ObjIntSet  _ _ -> 9
+          ObjElemSet _ s -> f s
+          ObjChoice  _ s -> f s
+          ObjNot       a -> toInt a
+          ObjLabel   _ a -> toInt a
+          ObjFailIf  _ w -> toInt a
 

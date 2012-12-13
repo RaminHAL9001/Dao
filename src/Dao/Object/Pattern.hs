@@ -50,7 +50,6 @@ import           Dao.Predicate
 import           Dao.EnumSet
 
 import           Data.Maybe
-import           Data.Typeable
 import           Data.Array.IArray
 import qualified Data.Map    as M
 import qualified Data.IntMap as IM

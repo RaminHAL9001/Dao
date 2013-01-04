@@ -19,13 +19,15 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
+{-# LANGUAGE Rank2Types #-}
+
 module Dao.Object.Binary where
 
+import           Dao.Token
 import           Dao.Types
 import qualified Dao.Tree as T
 import           Dao.Pattern
 import           Dao.Object
-import           Dao.Object.Data
 
 import           Control.Monad
 
@@ -434,34 +436,88 @@ putComComList = putComWith putComList
 
 ----------------------------------------------------------------------------------------------------
 
+instance Binary UpdateOp where
+  put a = putWord8 $ case a of
+    UCONST -> 0x61
+    UADD   -> 0x62
+    USUB   -> 0x63
+    UMULT  -> 0x64
+    UDIV   -> 0x65
+    UMOD   -> 0x66
+    UORB   -> 0x67
+    UANDB  -> 0x68
+    UXORB  -> 0x69
+    USHL   -> 0x6A
+    USHR   -> 0x6B
+  get = do
+    w <- getWord8
+    let x = return
+    case w of
+      0x61 -> x UCONST
+      0x62 -> x UADD
+      0x63 -> x USUB
+      0x64 -> x UMULT
+      0x65 -> x UDIV
+      0x66 -> x UMOD
+      0x67 -> x UORB
+      0x68 -> x UANDB
+      0x69 -> x UXORB
+      0x6A -> x USHL
+      0x6B -> x USHR
+      _    -> fail "expecting update/assignment operator symbol"
+
+instance Binary ArithOp where
+  put a = putWord8 $ case a of
+    { ADD  -> 0x6D; SUB  -> 0x6E; MULT  -> 0x6F; DIV   -> 0x70; MOD   -> 0x71; ORB   -> 0x72
+    ; NOT  -> 0x73; OR   -> 0x74; AND   -> 0x75; ANDB  -> 0x76; XORB  -> 0x77; INVB  -> 0x78
+    ; SHL  -> 0x79; SHR  -> 0x7A; ABS   -> 0x7B; NEG   -> 0x7C
+    ; SQRT -> 0x7D; EXP  -> 0x7E; LOG   -> 0x7F; ROUND -> 0x80; TRUNC -> 0x81
+    ; SIN  -> 0x82; COS  -> 0x83; TAN   -> 0x84; ASIN  -> 0x85; ACOS  -> 0x86; ATAN  -> 0x87
+    ; SINH -> 0x88; COSH -> 0x89; TANH  -> 0x8A; ASINH -> 0x8B; ACOSH -> 0x8C; ATANH -> 0x8D
+    ; DOT  -> 0x8E; REF  -> 0x8F; DEREF -> 0x90; POINT -> 0x91
+    }
+  get = do
+    w <- getWord8
+    let x = return
+    case w of
+      { 0x6D -> x  ADD; 0x6E -> x  SUB; 0x6F -> x  MULT; 0x70 -> x   DIV; 0x71 -> x   MOD; 0x72 -> x   ORB
+      ; 0x73 -> x  NOT; 0x74 -> x   OR; 0x75 -> x   AND; 0x76 -> x  ANDB; 0x77 -> x  XORB; 0x78 -> x  INVB
+      ; 0x79 -> x  SHL; 0x7A -> x  SHR; 0x7B -> x   ABS; 0x7C -> x   NEG
+      ; 0x7D -> x SQRT; 0x7E -> x  EXP; 0x7F -> x   LOG; 0x80 -> x ROUND; 0x81 -> x TRUNC
+      ; 0x82 -> x  SIN; 0x83 -> x  COS; 0x84 -> x   TAN; 0x85 -> x  ASIN; 0x86 -> x  ACOS; 0x87 -> x  ATAN
+      ; 0x88 -> x SINH; 0x89 -> x COSH; 0x8A -> x  TANH; 0x8B -> x ASINH; 0x8C -> x ACOSH; 0x8D -> x ATANH
+      ; 0x8E -> x  DOT; 0x8F -> x  REF; 0x90 -> x DEREF; 0x91 -> x POINT
+      ; _    -> fail "expecting arithmetic operator symbol"
+      }
+
 instance Binary ObjectExpr where
   put o = case o of
-    Literal      a     -> x 0x41 $ put a
-    AssignExpr   a b c -> x 0x42 $ put a           >> putCom b         >> put c
-    FuncCall     a b c -> x 0x43 $ put a           >> putCommentList b >> putComList c
-    LambdaCall   a b   -> x 0x44 $ putCom a        >> putComList b
-    ParenExpr    a b   -> x 0x45 $ putObjBool a    >> putCom b
-    Equation     a b c -> x 0x46 $ put a           >> putCom b         >> put c
-    DictExpr     a b c -> x 0x47 $ put a           >> putCommentList b >> putComList c
-    ArrayExpr    a b   -> x 0x48 $ putComComList a >> putComList b
-    ArraySubExpr a b c -> x 0x49 $ put a           >> putCommentList b >> putCom c
-    LambdaExpr   a b   -> x 0x4A $ putComComList a >> putComList b
+    Literal      a     z -> x z 0x41 $ put a
+    AssignExpr   a b c z -> x z 0x42 $ put a           >> putCom b         >> put c
+    FuncCall     a b c z -> x z 0x43 $ put a           >> putCommentList b >> putComList c
+    LambdaCall   a b   z -> x z 0x44 $ putCom a        >> putComList b
+    ParenExpr    a b   z -> x z 0x45 $ putObjBool a    >> putCom b
+    Equation     a b c z -> x z 0x46 $ put a           >> putCom b         >> put c
+    DictExpr     a b c z -> x z 0x47 $ put a           >> putCommentList b >> putComList c
+    ArrayExpr    a b   z -> x z 0x48 $ putComComList a >> putComList b
+    ArraySubExpr a b c z -> x z 0x49 $ put a           >> putCommentList b >> putCom c
+    LambdaExpr   a b   z -> x z 0x4A $ putComComList a >> putComList b
     where
-      x i putx  = putWord8 i >> putx
+      x z i putx  = putWord8 i >> put z >> putx
       char3 str = mapM_ (putWord8 . fromIntegral) (take 3 (map ord (uchars str) ++ repeat 0))
   get = do
     w <- getWord8
     case w of
-      0x41 -> liftM  Literal      get
-      0x42 -> liftM3 AssignExpr   get           getCom          get
-      0x43 -> liftM3 FuncCall     get           getCommentList  getComList
-      0x44 -> liftM2 LambdaCall   getCom        getComList
-      0x45 -> liftM2 ParenExpr    getObjBool    getCom
-      0x46 -> liftM3 Equation     get           getCom          get
-      0x47 -> liftM3 DictExpr     get           getCommentList  getComList
-      0x48 -> liftM2 ArrayExpr    getComComList getComList
-      0x49 -> liftM3 ArraySubExpr get           getCommentList  getCom
-      0x4A -> liftM2 LambdaExpr   getComComList getComList
+      0x41 -> liftM2 Literal      get                                      get
+      0x42 -> liftM4 AssignExpr   get           getCom          get        get
+      0x43 -> liftM4 FuncCall     get           getCommentList  getComList get
+      0x44 -> liftM3 LambdaCall   getCom        getComList                 get
+      0x45 -> liftM3 ParenExpr    getObjBool    getCom                     get
+      0x46 -> liftM4 Equation     get           getCom          get        get
+      0x47 -> liftM4 DictExpr     get           getCommentList  getComList get
+      0x48 -> liftM3 ArrayExpr    getComComList getComList                 get
+      0x49 -> liftM4 ArraySubExpr get           getCommentList  getCom     get
+      0x4A -> liftM3 LambdaExpr   getComComList getComList                 get
       _    -> error "could not load, corrupted data in object expression"
       where
         { char3 = do
@@ -471,63 +527,82 @@ instance Binary ObjectExpr where
 
 instance Binary ScriptExpr where
   put s = case s of
-    NO_OP                -> putWord8 0x51
-    EvalObject   a b     -> x 0x52 $ put a              >> putCommentList b
-    IfThenElse   a b c d -> x 0x53 $ putCommentList a   >> put b    >> putComWith putComList c >> putComWith putComList d
-    TryCatch     a b c   -> x 0x54 $ putComWith putComList a        >> putCom b                >> putComList c
-    ForLoop      a b c   -> x 0x55 $ putCom a           >> putCom b >> putComList c
-    ContinueExpr a b c   -> x 0x56 $ putObjBool a       >> putCommentList b                    >> putCom c
-    ReturnExpr   a b     -> x 0x57 $ putObjBool a       >> putCom b
-    WithDoc      a b     -> x 0x58 $ putCom a           >> putComList b
+    EvalObject   a b     z -> x z 0x51 $ put a              >> putCommentList b
+    IfThenElse   a b c d z -> x z 0x52 $ putCommentList a   >> put b    >> putComWith putComList c >> putComWith putComList d
+    TryCatch     a b c   z -> x z 0x53 $ putComWith putComList a        >> putCom b                >> putComList c
+    ForLoop      a b c   z -> x z 0x54 $ putCom a           >> putCom b >> putComList c
+    ContinueExpr a b c   z -> x z 0x55 $ putObjBool a       >> putCommentList b                    >> putCom c
+    ReturnExpr   a b     z -> x z 0x56 $ putObjBool a       >> putCom b
+    WithDoc      a b     z -> x z 0x57 $ putCom a           >> putComList b
     where
-      x i putx = putWord8 i >> putx
+      x z i putx = putWord8 i >> putx >> put z
       bool a = putWord8 (if a then 0x82 else 0x81)
   get = do
     w <- getWord8
     case w of
-      0x51 -> return NO_OP
-      0x52 -> liftM2 EvalObject   get        getCommentList
-      0x53 -> liftM4 IfThenElse   getCommentList get (getComWith getComList) (getComWith getComList)
-      0x54 -> liftM3 TryCatch     (getComWith getComList) getCom     getComList
-      0x55 -> liftM3 ForLoop      getCom     getCom     getComList
-      0x56 -> liftM3 ContinueExpr getObjBool getCommentList getCom
-      0x57 -> liftM2 ReturnExpr   getObjBool getCom
-      0x58 -> liftM2 WithDoc      getCom     getComList
+      0x51 -> liftM3 EvalObject   get         getCommentList            get
+      0x52 -> liftM5 IfThenElse   getCommentList get (getComWith getComList) (getComWith getComList)  get
+      0x53 -> liftM4 TryCatch     (getComWith getComList)    getCom     getComList  get
+      0x54 -> liftM4 ForLoop      getCom      getCom         getComList get
+      0x55 -> liftM4 ContinueExpr getObjBool  getCommentList getCom     get
+      0x56 -> liftM3 ReturnExpr   getObjBool  getCom                    get
+      0x57 -> liftM3 WithDoc      getCom      getComList                get
       _    -> error "could not load, script data is corrupted"
+
+instance Binary Location where
+  put loc = case loc of
+    LocationUnknown -> putWord8 0x4C
+    loc             -> do
+      putWord8 0x4D
+      fn startingLine loc >> fn startingChar loc >> fn startingColumn loc
+      fn endingLine   loc >> fn endingChar   loc >> fn endingColumn   loc
+      where { fn acc a = mapM_ putWord8 (bitsToVLInt (acc a)) }
+  get = getWord8 >>= \w -> case w of
+    0x4C -> return LocationUnknown
+    0x4D -> do
+      a <- getFromVLInt
+      b <- getFromVLInt
+      c <- getFromVLInt
+      d <- getFromVLInt
+      e <- getFromVLInt
+      f <- getFromVLInt
+      return (Location a b c d e f)
+    _    -> error "could not load, location data is corrupted"
 
 ----------------------------------------------------------------------------------------------------
 
-instance Binary Rule where
+instance Binary RuleExpr where
   put r = putComComList (rulePattern r) >> putComComList (ruleAction r)
-  get   = liftM2 Rule getComComList getComComList
+  get   = liftM2 RuleExpr getComComList getComComList
 
-instance Binary Script where
+instance Binary FuncExpr where
   put s = putComComList (scriptArgv s) >> putComComList (scriptCode s)
-  get   = liftM2 Script getComComList getComComList
+  get   = liftM2 FuncExpr getComComList getComComList
 
-instance Binary Directive where
+instance Binary TopLevelExpr where
   put d = case d of
-    Attribute      req nm         -> x 0x61 $
-      putComWith putNullTermStr req >> putComWith putNullTermStr nm
-    ToplevelDefine name obj       -> x 0x62 (putComWith putList name >> putCom obj)
-    RuleExpr       rule           -> x 0x63 (putCom rule)
-    BeginExpr      scrp           -> x 0x64 (putComComList scrp)
-    EndExpr        scrp           -> x 0x65 (putComComList scrp)
-    ToplevelFunc   f nm args scrp -> x 0x66 $ do
+    Attribute      req nm         lc -> x 0x59 $
+      putComWith putNullTermStr req >> putComWith putNullTermStr nm >> put lc
+    ToplevelDefine name obj       lc -> x 0x5A (putComWith putList name >> putCom obj >> put lc)
+    TopRuleExpr    rule           lc -> x 0x5B (putCom rule >> put lc)
+    BeginExpr      scrp           lc -> x 0x5C (putComComList scrp >> put lc)
+    EndExpr        scrp           lc -> x 0x5D (putComComList scrp >> put lc)
+    ToplevelFunc   f nm args scrp lc -> x 0x5E $ do
       putComWith     return         f
       putCom         nm
       putComComList  args
       putComComList  scrp
+      put            lc
     where { x i putx = putWord8 i >> putx }
   get = do
     w <- getWord8
     case w of
-      0x61 -> liftM2 Attribute      (getComWith getNullTermStr) (getComWith getNullTermStr)
-      0x62 -> liftM2 ToplevelDefine (getComWith getList) getCom
-      0x63 -> liftM  RuleExpr       getCom
-      0x64 -> liftM  BeginExpr      getComComList
-      0x65 -> liftM  EndExpr        getComComList
-      0x66 -> liftM4 ToplevelFunc   (getComWith (return ())) getCom getComComList getComComList
+      0x59 -> liftM3 Attribute      (getComWith getNullTermStr) (getComWith getNullTermStr) get
+      0x5A -> liftM3 ToplevelDefine (getComWith getList) getCom get
+      0x5B -> liftM2 TopRuleExpr    getCom get
+      0x5C -> liftM2 BeginExpr      getComComList get
+      0x5D -> liftM2 EndExpr        getComComList get
+      0x5E -> liftM5 ToplevelFunc   (getComWith (return ())) getCom getComComList getComComList get
 
 instance Binary SourceCode where
   put sc = do

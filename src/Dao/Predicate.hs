@@ -145,6 +145,14 @@ data PValue item a
   | OK a -- ^ A parser evaluates to 'OK' when it evaluates 'Control.Monad.return'.
   deriving (Eq, Ord, Show)
 
+-- | If a 'PValue' is 'PFail', you can alter the polymorphic parameter with this function in the
+-- manner of 'Control.Monad.fmap'.
+fmapFailed :: (a -> b) -> PValue a ig -> PValue b ig
+fmapFailed fn pval = case pval of
+  Backtrack   -> Backtrack
+  OK        a -> OK a
+  PFail   u v -> PFail (fn u) v
+
 instance Functor (PValue tok) where
   fmap fn (OK    a  ) = OK (fn a)
   fmap _  (PFail u v) = PFail u v

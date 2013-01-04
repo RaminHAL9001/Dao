@@ -36,12 +36,14 @@ default: dao
 ####################################################################################################
 # The 'edit' target conveniently opens all the files you want to edit in the vim editor.
 
+GHC_MAKE_SRC := ghc --make -i'./src'
+
 EDIT_FILES_LIST := edit-files.list
 EDIT_SCRATCH    := scratch.hs -c ':set autowrite autoread'
-NUMBER_OF_TABS  := -p4
+NUMBER_OF_TABS  := 6
 
 edit: $(EDIT_FILES_LIST)
-	vim $(NUMBER_OF_TABS) \
+	vim -p$(NUMBER_OF_TABS) \
 		$(EDIT_FILES_LIST) \
 		$(shell $(call listfile,$(EDIT_FILES_LIST)))
 
@@ -86,7 +88,7 @@ clean:
 
 PARSER_TEST_FILES := src/Dao/EnumSet.hs src/Dao/Parser.hs src/Dao/Object/Parser.hs
 parser-test: $(PARSER_TEST_FILES)
-	ghc --make -i'./src' $(PARSER_TEST_FILES) -o ./parser-test
+	$(GHC_MAKE_SRC) $(PARSER_TEST_FILES) -o ./parser-test
 
 ENUM_SET_TEST_FILES := src/Dao/EnumSet.hs tests/I.hs tests/EQN.hs tests/TestEnumSet.hs
 enum-set-test:
@@ -98,5 +100,11 @@ enum-set-test:
 # target above to point to these targets.
 
 src/Dao/Object/Pattern.o: src/Dao/Object/Pattern.hs src/Dao/Predicate.hs src/Dao/Object.hs
-	ghc --make -i'./src' Dao.Object.Pattern
+	$(GHC_MAKE_SRC) Dao.Object.Pattern
+
+src/Dao/Object/Parser.o: src/Dao/Object.hs src/Dao/Parser.hs src/Dao/Object/Parser.hs
+	$(GHC_MAKE_SRC) Dao.Object.Parser
+
+src/Dao/Evaluator.o: src/Dao/Object.hs src/Dao/Evaluator.hs src/Dao/Builtins.hs
+	$(GHC_MAKE_SRC) Dao.Evaluator
 

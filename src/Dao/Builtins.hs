@@ -41,7 +41,6 @@ import           Dao.Evaluator
 import           Dao.Tasks
 
 import           Dao.Object.Monad
-import           Dao.Object.Data
 import           Dao.Object.Show
 import           Dao.Object.Binary
 

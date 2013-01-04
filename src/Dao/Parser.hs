@@ -37,9 +37,8 @@ module Dao.Parser
   , Parser, runParser, ParseValue, ParseState, tokenStack
     -- * Working With 'Tokens'
     -- $Working_With_Tokens
-  , Token, startingLine, startingChar, startingColumn
-  , endingLine, endingChar, endingColumn, tokenChars, appendTokens
   , backtrack, getToken, getCombinedTokens, token
+  , currentLocation, withLocation, applyLocation
     -- * 'Parser' Combinators
     -- $Parser_Combinators
   , endOfInput, regex, readsAll
@@ -51,6 +50,7 @@ module Dao.Parser
   where
 
 import           Dao.String
+import           Dao.Token
 import           Dao.EnumSet
 import qualified Dao.Tree as T
 import           Dao.Predicate
@@ -59,6 +59,7 @@ import           Control.Monad
 import           Control.Monad.State
 import           Control.Monad.Error
 
+import           Data.Monoid
 import           Data.Maybe
 import           Data.Word
 import           Data.Char
@@ -504,53 +505,30 @@ instance MonadError UStr Parser where
 -- a performance penalty.  You can 'backtrack' to the most recent 'token' break, or you can
 -- 'backtrackAll' back to the very first 'token'. 
 
--- | 'Token's are created by 'Parser's like 'regex' or 'regexMany1'. You can combine tokens using
--- 'append', 'appendTokens' and 'parseAppend'. There is no restriction on the order in which you
--- combine tokens, but it is less confusing if you append tokens in the order in which they were
--- parsed.  You can then use the 'tokenChars' function to retrieve the characters stored in the
--- 'Token' to create data structures that can be returned by your 'Parser' function. You can also
--- "undo" a parse by passing a 'Token' to the 'backtrack' function, which pushes the 'Token's
--- characters back onto the head of the input string, however this is inefficient and should be
--- avoided.
-data Token
-  = Token
-    { startingLine   :: Word64
-    , startingChar   :: Word64
-    , startingColumn :: Word
-    , endingLine     :: Word64
-    , endingChar     :: Word64
-    , endingColumn   :: Word
-    , tokenChars     :: String
-    }
-  deriving (Eq, Ord)
+-- | Given a value of any type, and a function that can apply a location to that type, parse 
+withLocation :: Parser a -> (a -> Location -> b) -> Parser b
+withLocation parse construct = do
+  a <- currentLocation
+  result <- parse
+  b <- currentLocation
+  return (construct result (mappend a b))
 
-instance Show Token where
-  show t = show (startingLine t) ++ ':' : show (startingColumn t) ++ ' ' : show (tokenChars t)
-
--- | Append two 'Token's together. You can append tokens in the order in which they were parsed and
--- pass them to 'backtrack' to "undo" a parse.
-appendTokens :: Token -> Token -> Token
-appendTokens token a =
-  token
-  { startingLine   = min (startingLine   token) (startingLine   a)
-  , startingChar   = min (startingChar   token) (startingChar   a)
-  , startingColumn = min (startingColumn token) (startingColumn a)
-  , endingLine     = max (endingLine     token) (endingLine     a)
-  , endingChar     = max (endingChar     token) (endingChar     a)
-  , endingColumn   = max (endingColumn   token) (endingColumn   a)
-  , tokenChars     = tokenChars token ++ tokenChars a
-  } 
+applyLocation :: HasLocation a => Parser a -> Parser a
+applyLocation parse = withLocation parse setLocation
 
 -- not for export --
 new_token :: Parser Token
 new_token = get >>= \st -> return $
   Token
-  { startingLine = lineNumber st
-  , startingChar = parsedCharCount st
-  , startingColumn = charColumn st
-  , endingLine = lineNumber st
-  , endingChar = parsedCharCount st
-  , endingColumn = charColumn st
+  { tokenLocation =
+      Location
+      {startingLine    = lineNumber st
+      , startingChar   = parsedCharCount st
+      , startingColumn = charColumn st
+      , endingLine     = lineNumber st
+      , endingChar     = parsedCharCount st
+      , endingColumn   = charColumn st
+      }
   , tokenChars = ""
   }
 
@@ -561,9 +539,9 @@ begin_token = new_token >>= \t -> modify $ \st -> st{tokenStack = t : tokenStack
 -- not for export --
 put_back :: Token -> [Token] -> Parser ()
 put_back t tx = modify $ \st ->
-  st{ parsedCharCount = startingChar t
-    , lineNumber = startingLine t
-    , charColumn = startingColumn t
+  st{ parsedCharCount = startingChar (tokenLocation t)
+    , lineNumber = startingLine (tokenLocation t)
+    , charColumn = startingColumn (tokenLocation t)
     , parseString = tokenChars t ++ parseString st
     , tokenStack = tx
     }
@@ -573,7 +551,7 @@ end_token :: Parser ()
 end_token = get >>= \st -> case tokenStack st of
   []       -> return ()
   [t]      -> put (st{tokenStack = []})
-  t1:t2:tx -> put (st{tokenStack = appendTokens t2 t1 : tx})
+  t1:t2:tx -> put (st{tokenStack = mappend t2 t1 : tx})
 
 -- not for export --
 token_stack :: Parser a -> ([Token] -> ParseState -> Parser a) -> Parser a
@@ -587,6 +565,10 @@ token_stack onEmpty onFull = get >>= \st -> case tokenStack st of
 -- evaluates to 'PFail', the token is used for error reporting.
 token :: Parser a -> Parser a
 token parser = begin_token >> mplus (parser >>= \a -> end_token >> return a) (end_token >> mzero)
+
+-- | return the location information for the current token.
+currentLocation :: Parser Location
+currentLocation = token_stack (fmap tokenLocation new_token) $ \ (t:_) _ -> return (tokenLocation t)
 
 -- | This will "undo" all parsing to the most recent 'token' call, taking the top 'Token' off of the
 -- 'tokenStack'. Once 'backtrack' modifies the internal 'Control.Monad.State.State', it evaluates to
@@ -604,7 +586,7 @@ getToken = token_stack new_token (\ (t:tx) _ -> return t)
 
 -- not for export --
 concat_tokens :: [Token] -> Token
-concat_tokens = foldl1 appendTokens . reverse
+concat_tokens = foldl1 mappend . reverse
 
 -- | Get a copy of the whole 'tokenStack', but with every 'Token' combined together into a single
 -- 'Token'. Returns an empty 'Token' at the current position in the input string if the 'tokenStack'
@@ -643,9 +625,12 @@ parseRegex matchFunc r = do
           , tokenStack      = case tokenStack st of
               []   -> []
               t:tx -> (:tx) $
-                t { endingLine   = lineNumber st
-                  , endingChar   = parsedCharCount st
-                  , endingColumn = charColumn st
+                t { tokenLocation =
+                      (tokenLocation t)
+                      { endingLine   = lineNumber st
+                      , endingChar   = parsedCharCount st
+                      , endingColumn = charColumn st
+                      }
                   , tokenChars   = tokenChars t ++ result
                   }
           }

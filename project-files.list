@@ -22,7 +22,6 @@
 # character so the ".ghci" file will be updated with the files you wish
 # to debug.
 
-Dao/Builtins.hs
 Dao/Combination.hs
 Dao/Debug.hs
 Dao/Debug/OFF.hs
@@ -33,7 +32,6 @@ Dao/Files.hs
 Dao.hs
 dao-main.hs
 Dao/Object/Binary.hs
-Dao/Object/Data.hs
 Dao/Object.hs
 Dao/Object/Monad.hs
 Dao/Object/Parser.hs

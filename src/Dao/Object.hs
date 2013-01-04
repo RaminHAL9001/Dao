@@ -29,6 +29,7 @@ module Dao.Object
   ) where
 
 import           Dao.String
+import           Dao.Token
 import           Dao.Pattern
 import           Dao.EnumSet
 import           Dao.Tree as T
@@ -39,6 +40,7 @@ import           Data.Maybe
 import           Data.Either
 import           Data.List
 import           Data.Complex
+import           Data.Ix
 import           Data.Int
 import           Data.Char
 import           Data.Word
@@ -82,8 +84,8 @@ type T_intMap   = IM.IntMap Object
 type T_dict     = M.Map Name Object
 type T_tree     = T.Tree Name Object
 type T_pattern  = Pattern
-type T_rule     = Rule
-type T_script   = Script
+type T_rule     = RuleExpr
+type T_script   = FuncExpr
 type T_bytes    = B.ByteString
 
 data TypeID
@@ -304,6 +306,10 @@ data Comment
   | EndlineComment UStr
   deriving (Eq, Ord, Show, Typeable)
 
+instance HasLocation a => HasLocation (Com a) where
+  getLocation = getLocation . unComment
+  setLocation com loc = fmap (\a -> setLocation a loc) com
+
 commentString :: Comment -> UStr
 commentString com = case com of
   InlineComment  a -> a
@@ -366,115 +372,222 @@ instance Functor Com where
     ComAfter     a c2 -> ComAfter     (fn a) c2
     ComAround c1 a c2 -> ComAround c1 (fn a) c2
 
-class Commented a where { stripComments :: a -> a }
-instance Commented (Com a) where { stripComments = Com . unComment }
-instance Commented a => Commented [a] where { stripComments = map stripComments }
-
 ----------------------------------------------------------------------------------------------------
 
--- | A 'Script' is really more of an executable function or subroutine, it has a list of input
+-- | A 'FuncExpr' is really more of an executable function or subroutine, it has a list of input
 -- arguments and an executable block of code of type @['ScriptExrp']@. But the word @Function@ has
--- other meanings in Haskell, so the word 'Script' is used instead.
-data Script
-  = Script
+-- other meanings in Haskell, so the word 'FuncExpr' is used instead.
+data FuncExpr
+  = FuncExpr
     { scriptArgv :: Com [Com Name]
     , scriptCode :: Com [Com ScriptExpr]
     }
   deriving (Show, Typeable)
 
-simpleScript :: [Com ScriptExpr] -> Script
-simpleScript exprs = Script{scriptArgv = Com [], scriptCode = Com exprs}
+simpleScript :: [Com ScriptExpr] -> FuncExpr
+simpleScript exprs = FuncExpr{scriptArgv = Com [], scriptCode = Com exprs}
 
-instance Eq  Script where { _ == _ = False } -- | TODO: there ought to be a bisimilarity test here
-instance Ord Script where { compare _ _ = LT }
-instance Commented Script where
-  stripComments sc =
-    sc{ scriptArgv = stripComments (scriptArgv sc)
-      , scriptCode = stripComments (scriptCode sc)
-      }
+instance Eq  FuncExpr where { _ == _ = False } -- | TODO: there ought to be a bisimilarity test here
+instance Ord FuncExpr where { compare _ _ = LT }
 
 -- | This is the data structure used to store rules as serialized data, although when a bytecode
 -- program is loaded, rules do not exist, the 'ORule' object constructor contains this structure.
-data Rule
-  = Rule
+data RuleExpr
+  = RuleExpr
     { rulePattern :: Com [Com Pattern]
     , ruleAction  :: Com [Com ScriptExpr]
     }
     deriving (Eq, Ord, Show, Typeable)
 
-instance Commented Rule where
-  stripComments ru =
-    ru{ rulePattern = stripComments (rulePattern ru)
-      , ruleAction  = stripComments (ruleAction  ru)
-      }
+----------------------------------------------------------------------------------------------------
+
+data UpdateOp = UCONST | UADD | USUB | UMULT | UDIV | UMOD | UORB | UANDB | UXORB | USHL | USHR
+  deriving (Eq, Ord, Enum, Ix, Typeable)
+
+instance Show UpdateOp where
+  show a = case a of
+    UCONST -> "="
+    UADD   -> "+="
+    USUB   -> "-="
+    UMULT  -> "*="
+    UDIV   -> "/="
+    UMOD   -> "%="
+    UORB   -> "|="
+    UANDB  -> "&="
+    UXORB  -> "^="
+    USHL   -> "<<="
+    USHR   -> ">>="
+
+instance Read UpdateOp where
+  readsPrec _ str = case str of
+    "="   -> [(UCONST, "")]
+    "+="  -> [(UADD  , "")]
+    "-="  -> [(USUB  , "")]
+    "*="  -> [(UMULT , "")]
+    "/="  -> [(UDIV  , "")]
+    "%="  -> [(UMOD  , "")]
+    "|="  -> [(UORB  , "")]
+    "&="  -> [(UANDB , "")]
+    "^="  -> [(UXORB , "")]
+    "<<=" -> [(USHL  , "")]
+    ">>=" -> [(USHR  , "")]
+    _     -> []
+
+instance Bounded UpdateOp where {minBound = UCONST; maxBound = USHR}
+
+data ArithOp
+  = REF   | DEREF | INVB  | NOT  | NEG
+  | ADD   | SUB   | MULT  | DIV  | OR    | AND
+  | ANDB  | XORB  | SHL   | SHR  | ABS
+  | MOD   | ORB   | SQRT  | EXP  | LOG
+  | ROUND | TRUNC | SIN   | COS  | TAN
+  | ASIN  | ACOS  | ATAN  | SINH | COSH  | TANH
+  | ASINH | ACOSH | ATANH | DOT  | POINT
+  deriving (Eq, Ord, Enum, Ix, Typeable)
+
+instance Show ArithOp where
+  show a = case a of
+    { ADD  -> "+";    SUB  -> "-";    MULT  -> "*";    DIV   -> "/";     MOD   -> "%"; ORB  -> "|"
+    ; NOT  -> "!";    OR   -> "||";   AND   -> "&&";   ANDB  -> "&";     XORB  -> "^"; INVB -> "~"
+    ; SHL  -> "<<";   SHR  -> ">>";   ABS   -> "abs";  NEG   -> "-";    
+    ; SQRT -> "sqrt"; EXP  -> "exp";  LOG   -> "log";  ROUND -> "round"; TRUNC -> "trunc"
+    ; SIN  -> "sin";  COS  -> "cos";  TAN   -> "tan";  ASIN  -> "asin";  ACOS  -> "acos";  ATAN  -> "atan"
+    ; SINH -> "sinh"; COSH -> "cosh"; TANH  -> "tanh"; ASINH -> "asinh"; ACOSH -> "acosh"; ATANH -> "atanh"
+    ; DOT  -> ".";    REF  -> "$";    DEREF -> "@";    POINT -> "->"
+    }
+
+instance Read ArithOp where
+  readsPrec _ str = case str of
+    { "+"    -> [(ADD  , "")]; "-"     -> [(SUB  , "")]; "*"     -> [(MULT , "")]
+    ; "/"    -> [(DIV  , "")]; "%"     -> [(MOD  , "")]; "|"     -> [(ORB  , "")]
+    ; "!"    -> [(NOT  , "")]; "||"    -> [(OR   , "")]; "&&"    -> [(AND  , "")]
+    ; "&"    -> [(ANDB , "")]; "^"     -> [(XORB , "")]; "~"     -> [(INVB , "")]
+    ; "<<"   -> [(SHL  , "")]; ">>"    -> [(SHR  , "")]; "."     -> [(DOT  , "")]
+    ; "$"    -> [(REF  , "")]; "@"     -> [(DEREF, "")]; "->"    -> [(POINT, "")]
+    ; "sin"  -> [(SIN  , "")]; "cos"   -> [(COS  , "")]; "tan"   -> [(TAN  , "")]
+    ; "asin" -> [(ASIN , "")]; "acos"  -> [(ACOS , "")]; "atan"  -> [(ATAN , "")]
+    ; "sinh" -> [(SINH , "")]; "cosh"  -> [(COSH , "")]; "tanh"  -> [(TANH , "")]
+    ; "asinh"-> [(ASINH, "")]; "acosh" -> [(ACOSH, "")]; "atanh" -> [(ATANH, "")]
+    ; _      -> []
+    }
+
+instance Bounded ArithOp where {minBound = REF; maxBound = POINT}
 
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
-  = Literal       Object
-  | AssignExpr    ObjectExpr  (Com Name) ObjectExpr
-  | Equation      ObjectExpr  (Com Name) ObjectExpr
-  | ArraySubExpr  ObjectExpr  [Comment]  (Com ObjectExpr)
-  | FuncCall      Name        [Comment]  [Com ObjectExpr]
-  | DictExpr      Name        [Comment]  [Com ObjectExpr]
-  | ArrayExpr     (Com [Com ObjectExpr]) [Com ObjectExpr]
-  | LambdaCall    (Com ObjectExpr)       [Com ObjectExpr]
-  | StructExpr    (Com ObjectExpr)       [Com ObjectExpr]
-  | LambdaExpr    (Com [Com Name])       [Com ScriptExpr]
-  | ParenExpr     Bool                   (Com ObjectExpr)
+  = VoidExpr -- ^ Not a language construct, but used where an object expression is optional.
+  | Literal      Object                                   Location
+  | AssignExpr   ObjectExpr  (Com UpdateOp)  ObjectExpr   Location
+  | Equation     ObjectExpr  (Com ArithOp)   ObjectExpr   Location
+  | ParenExpr    Bool                   (Com ObjectExpr)  Location
+  | ArraySubExpr ObjectExpr  [Comment]  (Com ObjectExpr)  Location
+  | FuncCall     Name        [Comment]  [Com ObjectExpr]  Location
+  | DictExpr     Name        [Comment]  [Com ObjectExpr]  Location
+  | ArrayExpr    (Com [Com ObjectExpr]) [Com ObjectExpr]  Location
+  | StructExpr   (Com ObjectExpr)       [Com ObjectExpr]  Location
+  | LambdaCall   (Com ObjectExpr)       [Com ObjectExpr]  Location
+  | LambdaExpr   (Com [Com Name])       [Com ScriptExpr]  Location
     -- ^ Bool is True if the parenthases really exist.
   deriving (Eq, Ord, Show, Typeable)
+
+instance HasLocation ObjectExpr where
+  getLocation o = case o of
+    VoidExpr -> LocationUnknown
+    Literal      _     o -> o
+    AssignExpr   _ _ _ o -> o
+    Equation     _ _ _ o -> o
+    ParenExpr    _ _   o -> o
+    ArraySubExpr _ _ _ o -> o
+    FuncCall     _ _ _ o -> o
+    DictExpr     _ _ _ o -> o
+    ArrayExpr    _ _   o -> o
+    StructExpr   _ _   o -> o
+    LambdaCall   _ _   o -> o
+    LambdaExpr   _ _   o -> o
+  setLocation o loc = case o of
+    VoidExpr             -> VoidExpr
+    Literal      a     _ -> Literal      a     loc
+    AssignExpr   a b c _ -> AssignExpr   a b c loc
+    Equation     a b c _ -> Equation     a b c loc
+    ParenExpr    a b   _ -> ParenExpr    a b   loc
+    ArraySubExpr a b c _ -> ArraySubExpr a b c loc
+    FuncCall     a b c _ -> FuncCall     a b c loc
+    DictExpr     a b c _ -> DictExpr     a b c loc
+    ArrayExpr    a b   _ -> ArrayExpr    a b   loc
+    StructExpr   a b   _ -> StructExpr   a b   loc
+    LambdaCall   a b   _ -> LambdaCall   a b   loc
+    LambdaExpr   a b   _ -> LambdaExpr   a b   loc
 
 -- | Part of the Dao language abstract syntax tree: any expression that controls the flow of script
 -- exectuion.
 data ScriptExpr
-  = NO_OP
-  | EvalObject   ObjectExpr [Comment]
-  | IfThenElse   [Comment]  ObjectExpr  (Com [Com ScriptExpr])  (Com [Com ScriptExpr])
+  = EvalObject   ObjectExpr   [Comment]                                                  Location
+  | IfThenElse   [Comment]    ObjectExpr  (Com [Com ScriptExpr])  (Com [Com ScriptExpr]) Location
     -- ^ @if /**/ objExpr /**/ {} /**/ else /**/ if /**/ {} /**/ else /**/ {} /**/@
-  | TryCatch     (Com [Com ScriptExpr]) (Com UStr)                 [Com ScriptExpr]
-    -- ^ @try /**/ {} /**/ catch /**/ errVar /**/ {}@
-  | ForLoop      (Com Name)             (Com ObjectExpr)           [Com ScriptExpr]
+  | TryCatch     (Com [Com ScriptExpr])   (Com UStr)                   [Com ScriptExpr]  Location
+    -- ^ @try /**/ {} /**/ catch /**/ errVar /**/ {}@              
+  | ForLoop      (Com Name)               (Com ObjectExpr)             [Com ScriptExpr]  Location
     -- ^ @for /**/ var /**/ in /**/ objExpr /**/ {}@
-  | ContinueExpr Bool  [Comment]        (Com ObjectExpr)
+  | ContinueExpr Bool  [Comment]          (Com ObjectExpr)                               Location
     -- ^ The boolean parameter is True for a "continue" statement, False for a "break" statement.
     -- @continue /**/ ;@ or @continue /**/ if /**/ objExpr /**/ ;@
-  | ReturnExpr   Bool                   (Com ObjectExpr)
+  | ReturnExpr   Bool                     (Com ObjectExpr)                               Location
     -- ^ The boolean parameter is True foe a "return" statement, False for a "throw" statement.
-    -- @return /**/ ;@ or @return /**/ objExpr /**/ ;@
-  | WithDoc      (Com ObjectExpr)       [Com ScriptExpr]
+    -- ^ @return /**/ ;@ or @return /**/ objExpr /**/ ;@
+  | WithDoc      (Com ObjectExpr)         [Com ScriptExpr]                               Location
     -- ^ @with /**/ objExpr /**/ {}@
   deriving (Eq, Ord, Show, Typeable)
 
-instance Commented ObjectExpr where
-  stripComments o = case o of
-    Literal       a     -> Literal         a
-    AssignExpr    a b c -> AssignExpr      a  (u b)    c
-    Equation      a b c -> Equation        a  (u b)    c
-    ArraySubExpr  a _ c -> ArraySubExpr    a  []    (u c)
-    FuncCall      a _ c -> FuncCall        a  []    (u c)
-    DictExpr      a _ c -> DictExpr        a  []    (u c)
-    ArrayExpr     a b   -> ArrayExpr    (u a) (u b)
-    LambdaCall    a b   -> LambdaCall   (u a) (u b)
-    StructExpr    a b   -> StructExpr   (u a) (u b)
-    LambdaExpr    a b   -> LambdaExpr   (u a) (u b)
-    ParenExpr     a b   -> ParenExpr       a  (u b)
-    where
-      u :: Commented a => a -> a
-      u = stripComments
+instance HasLocation ScriptExpr where
+  getLocation o = case o of
+    EvalObject   _ _     o -> o
+    IfThenElse   _ _ _ _ o -> o
+    TryCatch     _ _ _   o -> o
+    ForLoop      _ _ _   o -> o
+    ContinueExpr _ _ _   o -> o
+    ReturnExpr   _ _     o -> o
+    WithDoc      _ _     o -> o
+  setLocation o loc = case o of
+    EvalObject   a b   _   -> EvalObject   a b     loc
+    IfThenElse   a b c d _ -> IfThenElse   a b c d loc
+    TryCatch     a b c _   -> TryCatch     a b c   loc
+    ForLoop      a b c _   -> ForLoop      a b c   loc
+    ContinueExpr a b c _   -> ContinueExpr a b c   loc
+    ReturnExpr   a b   _   -> ReturnExpr   a b     loc
+    WithDoc      a b   _   -> WithDoc      a b     loc
 
-instance Commented ScriptExpr where
-  stripComments s = case s of
-    NO_OP                 -> NO_OP
-    EvalObject    a _     -> EvalObject      a  []
-    IfThenElse    _ b c d -> IfThenElse   []       b  (u c) (u d)
-    TryCatch      a b c   -> TryCatch     (u a) (u b) (u c)
-    ForLoop       a b c   -> ForLoop      (u a) (u b) (u c)
-    ContinueExpr  a _ c   -> ContinueExpr    a  []    (u c)
-    ReturnExpr    a b     -> ReturnExpr      a  (u b)
-    WithDoc       a b     -> WithDoc      (u a) (u b)
-    where
-      u :: Commented a => a -> a
-      u = stripComments
+-- | A 'TopLevelExpr' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
+-- is a list of these directives.
+data TopLevelExpr
+  = Attribute      (Com Name) (Com Name)          Location
+  | ToplevelDefine (Com [Name]) (Com ObjectExpr)  Location
+  | TopRuleExpr    (Com RuleExpr)                 Location
+  | SetupExpr      (Com [Com ScriptExpr])         Location
+  | BeginExpr      (Com [Com ScriptExpr])         Location
+  | EndExpr        (Com [Com ScriptExpr])         Location
+  | TakedownExpr   (Com [Com ScriptExpr])         Location
+  | ToplevelFunc   (Com ()) (Com Name) (Com [Com Name]) (Com [Com ScriptExpr]) Location
+  deriving (Eq, Ord, Show, Typeable)
+
+instance HasLocation TopLevelExpr where
+  getLocation o = case o of
+    Attribute      _ _     o -> o
+    ToplevelDefine _ _     o -> o
+    TopRuleExpr    _       o -> o
+    SetupExpr      _       o -> o
+    BeginExpr      _       o -> o
+    EndExpr        _       o -> o
+    TakedownExpr   _       o -> o
+    ToplevelFunc   _ _ _ _ o -> o
+  setLocation o loc = case o of
+    Attribute      a b     _ -> Attribute      a b     loc
+    ToplevelDefine a b     _ -> ToplevelDefine a b     loc
+    TopRuleExpr    a       _ -> TopRuleExpr    a       loc
+    SetupExpr      a       _ -> SetupExpr      a       loc
+    BeginExpr      a       _ -> BeginExpr      a       loc
+    EndExpr        a       _ -> EndExpr        a       loc
+    TakedownExpr   a       _ -> TakedownExpr   a       loc
+    ToplevelFunc   a b c d _ -> ToplevelFunc   a b c d loc
 
 ----------------------------------------------------------------------------------------------------
 

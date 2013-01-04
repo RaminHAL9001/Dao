@@ -40,7 +40,6 @@ import           Dao.Predicate
 import           Dao.Object.Parser
 import           Dao.Object.Monad
 import           Dao.Object.Show
-import           Dao.Object.Data
 
 import           Control.Exception
 import           Control.Concurrent (forkIO, newMVar, modifyMVar)

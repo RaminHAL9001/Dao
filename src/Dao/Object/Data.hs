@@ -147,7 +147,7 @@ instance Objectify Pattern where
   toObject = OPattern
   fromObject (OPattern o) = return o
 
-instance Objectify Rule where
+instance Objectify RuleExpr where
   toObject = ORule
   fromObject (ORule o) = return o
 
@@ -155,7 +155,7 @@ instance Objectify B.ByteString where
   toObject = OBytes
   fromObject (OBytes o) = return o
 
-instance Objectify Script where
+instance Objectify FuncExpr where
   toObject = OScript
   fromObject (OScript o) = return o
 
@@ -195,9 +195,8 @@ instance HasNull (B.ByteString) where { nullValue = B.empty ; testNull = B.null 
 instance HasNull Pattern where
   nullValue = Pattern{getPatUnits = [], getPatternLength = 0}
   testNull o = getPatUnits o == []
-instance HasNull ScriptExpr where { nullValue = NO_OP; testNull = (nullValue==) }
-instance HasNull Script where
-  nullValue = Script{scriptArgv = Com [], scriptCode = Com []}
+instance HasNull FuncExpr where
+  nullValue = FuncExpr{scriptArgv = Com [], scriptCode = Com []}
   testNull o = unComment (scriptCode o) == []
 
 ----------------------------------------------------------------------------------------------------
@@ -235,13 +234,13 @@ objToBool obj = case obj of
 
 ----------------------------------------------------------------------------------------------------
 
-okInt :: Integral i => i -> PValue tok i
+okInt :: Integral i => i -> PValue tok T_word
 okInt = return . fromIntegral
 
 objSize :: Object -> PValue tok T_word
 objSize o = case o of
-  OString   o -> fromIntegral $ U.length (toUTF8ByteString o)
-  ORef      o -> loop 0 o where
+  OString   o -> return $ fromIntegral $ U.length (toUTF8ByteString o)
+  ORef      o -> return $ loop 0 o where
     loop i o = case o of
       MetaRef o -> loop (i+1) o
       _         -> i
@@ -270,19 +269,6 @@ objToList o = case o of
   OPattern o   -> return $ patternComponents o
   _            -> mzero
 
--- | Traverse the entire object, returning a list of all 'Dao.Object.OString' elements.
-extractStringElems :: Object -> [UStr]
-extractStringElems o = case o of
-  OString  o   -> [o]
-  OList    o   -> concatMap extractStringElems o
-  OSet     o   -> concatMap extractStringElems (S.elems o)
-  OArray   o   -> concatMap extractStringElems (elems o)
-  ODict    o   -> concatMap extractStringElems (M.elems o)
-  OIntMap  o   -> concatMap extractStringElems (I.elems o)
-  OTree    o   -> concatMap extractStringElems (T.elems o)
-  OPair (a, b) -> concatMap extractStringElems [a, b]
-  _            -> []
-
 patUnitToObj :: PatUnit -> Object
 patUnitToObj p = case p of
   Wildcard -> OType ListType
@@ -309,10 +295,10 @@ objListToPattern ox = loop 0 ox [] where
 patternComponents :: Pattern -> [Object]
 patternComponents p = map patUnitToObj (getPatUnits p)
 
-ruleComponents :: Rule -> Object
+ruleComponents :: RuleExpr -> Object
 ruleComponents r =
   OPair ( OList (map (OList . patternComponents) (map unComment (unComment (rulePattern r))))
-        , OScript (Script (Com []) (ruleAction r))
+        , OScript (FuncExpr (Com []) (ruleAction r))
         )
 
 ----------------------------------------------------------------------------------------------------

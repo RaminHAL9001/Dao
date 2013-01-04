@@ -50,7 +50,6 @@ import           Dao.Types
 import           Dao.Tasks
 import           Dao.Files
 import           Dao.Evaluator
-import           Dao.Builtins
 
 import           Control.Exception
 import           Control.Monad.Reader
@@ -84,7 +83,6 @@ newRuntime debug = flip runReaderT debug $ dStack xloc "newRuntime" $ do
     , logicalNameIndex     = names
     , jobTable             = jtab
     , defaultTimeout       = Just 8000000
-    , initialBuiltins      = basicScriptOperations
     , functionSets         = M.empty
     , availableTokenizers  = M.empty -- specifying no tokenizer will cause the default to be used
     , availableComparators = M.fromList $

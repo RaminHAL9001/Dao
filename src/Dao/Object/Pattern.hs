@@ -50,6 +50,7 @@ import           Dao.Predicate
 import           Dao.EnumSet
 
 import           Data.Maybe
+import           Data.List
 import           Data.Array.IArray
 import qualified Data.Map    as M
 import qualified Data.IntMap as IM
@@ -94,6 +95,14 @@ getCurrentRef = do
 
 -- | A 'Control.Monad.State.State' monad used to execute matches
 newtype Matcher a = Matcher { matcherPTransState :: PTrans Reference (State MatcherState) a }
+
+-- | Like 'Control.Monad.State.evalState', but returns a 'Dao.Predicate.PValue' based on how the
+-- matcher evaluates. 'Control.Monad.mzero' evaluates to 'Dao.Predicate.Backtrack',
+-- 'Control.Monad.fail' or 'Control.Monad.Error.Class.throwError' evaluates to
+-- 'Dao.Predicate.PFail'. 'Control.Monad.return' evaluates to 'Dao.Predicate.OK'. Evaluate this
+-- function in a case statement to take the appropriate action.
+evalMatcher :: Matcher a -> PValue Reference a
+evalMatcher m = evalState (runPTrans (matcherPTransState m)) initMatcherState
 
 instance Monad Matcher where
   return = Matcher . return
@@ -159,7 +168,10 @@ matchObject pat o = let otype = objType o in case pat of
     return o
   ObjElemSet op set -> matchObjectElemSet op set o
   ObjChoice  op set -> matchObjectChoice  op set o >> return o
-  ObjLabel  lbl pat -> modify (\st -> st{matcherRef = matcherRef st ++ [lbl]}) >> matchObject pat o
+  ObjLabel  lbl pat -> withRef lbl $ do
+    o <- matchObject pat o
+    modify (\st -> st{ matcherTree = T.insert (reverse (matcherRef st)) o (matcherTree st) })
+    return o
   ObjFailIf lbl pat -> mplus (matchObject pat o) (throwError lbl)
   ObjNot        pat -> catchPValue (matchObject pat o) >>= \p -> case p of
     Backtrack  -> return o
@@ -172,17 +184,21 @@ zipIndecies = zip (map OWord (iterate (+1) 0))
 justOnce :: [Bool] -> Bool
 justOnce checks = 1 == foldl (\i check -> if check then i+1 else i) 0 checks
 
--- | Match a list of object patterns to a list of objects, more specifically a list of objects
--- assoicated with another object that can be used to identify it. The identifier should be an
--- object value used to construct a 'Dao.Object.Reference' that can retrieve the object to which it
--- refers.
+-- | Use a list of @['ObjPat']@s to check a list of @['Dao.Object.Object']@s. The list of
+-- 'Dao.Object.Object's to be matched is actually a list of pairs, but only the second item is
+-- checked. The first item in each pair is ignored, unless matchign against the second item
+-- evaluates to 'Dao.Predicate.PFail', in which case, the first item is used as an index to indicate
+-- which list item caused the match to result in 'Dao.Predicate.PFail', so you can identify which
+-- 'Dao.Object.Object' in the list did not match.
 matchObjectList :: [ObjPat] -> [(Object, Object)] -> Matcher [Object]
 matchObjectList patx ax = fmap (map snd) (matchObjectListWith withIdx patx ax)
 
--- | Like 'matchObjectList', except each object is associated with a 'Dao.String.Name' that will be
--- used to construct a 'Dao.Object.LocalRef' to store the match result. This should be used to match
--- a list of function parameters where each parameter is a name associated with a type that can be
--- checked with a 'ObjPat' pattern.
+-- | See 'matchObjectList': this function evaluation is similar, an @['ObjPat']@ list will be used
+-- to check a list of 'Dao.Object.Objects's. However, the index value (the 'Dao.String.Name'
+-- assocaited with each item in the list to be checked) is used to construct a 'Dao.Object.T_tree'
+-- (the type used to construct 'Dao.Object.OTree') if the match evaluates successfully. Otherwise,
+-- the index value can be used to determine which object in the list did not match the list of
+-- patterns.
 matchParamList :: [ObjPat] -> [(Name, Object)] -> Matcher T_tree
 matchParamList patx ax =
   fmap (foldl (\ tree (i, o) -> T.insert [i] o tree) T.Void) (matchObjectListWith withRef patx ax)
@@ -282,4 +298,25 @@ matchObjectChoice op set o = do
     AllOfSet  -> and checks
     OnlyOneOf -> justOnce checks
     NoneOfSet -> not (or checks)
+
+----------------------------------------------------------------------------------------------------
+
+-- | This function is used for constructing built-in Dao-language functions and mathematical
+-- operators. Two patterns are given, then a list of objects. If the list contains two objects and
+-- each matches the given patterns, the match succeeds. This is more efficient than using the
+-- general 'matchParamList', which stores each matched pattern into a tree which would require
+-- operators like "+" to have to retrieve two values "fst" and "snd" from a tree once the match is
+-- confirmed, hence it is better to use this function. We intended it to be used in this way:
+-- @case 'evalMatcher' (matchFst, matchSnd) inputList of@
+-- @    'Dao.Predicate.OK' (a, b)     -> evalMyFunc a b@
+-- @    'Dao.Predicate.Backtrack'     -> tryMyAlternative@
+-- @    'Dao.Predicate.PFail' ref msg -> 'Prelude.error' ('ustr' msg)
+-- Be ware of 'ObjPat's that evaluate to 'Control.Monad.Error.State.throwError', this will not
+-- evaluate to a 'Dao.Predicate.Backtrack'ing value, so the first pattern to throw an error will
+-- prevent further patterns from matching, which may or may not be what you expected.
+matchPair :: (ObjPat, ObjPat) -> (Object, Object) -> Matcher (Object, Object)
+matchPair (fstPat, sndPat) (fstObj, sndObj) = do
+  fstObj <- matchObject fstPat fstObj
+  sndObj <- matchObject fstPat sndObj
+  return (fstObj, sndObj)
 

@@ -21,6 +21,7 @@
 module Dao.Object.Parser where
 
 import           Dao.String
+import           Dao.Token
 import           Dao.Object
 import           Dao.EnumSet
 import           Dao.Parser
@@ -279,6 +280,8 @@ expect msg expectation =
 
 ----------------------------------------------------------------------------------------------------
 
+unloc = LocationUnknown
+
 -- | Parses a sequence of 'Dao.Object.ScriptExpr's which can be used for interactive evaluation.
 parseInteractiveScript :: Parser [Com ScriptExpr]
 parseInteractiveScript = many commented where
@@ -290,7 +293,7 @@ parseInteractiveScript = many commented where
 
 -- | This is the "entry point" for parsing a 'Dao.Object.ScriptExpr'.
 parseScriptExpr :: Parser ScriptExpr
-parseScriptExpr = mplus keywordExpr objectExpr where
+parseScriptExpr = applyLocation $ mplus keywordExpr objectExpr where
   objectExpr = parseObjectExpr >>= uncurry objectExprStatement
   keywordExpr = do -- parse an expression that starts with a keyword
     key  <- parseKeywordOrName
@@ -324,11 +327,11 @@ ifStatement = guardKeyword "if" loop where
     (objExpr, com2) <- mplus parseObjectExpr $
       fail "expecting object expression for condition of \"if\" statement"
     case objExpr of
-      ParenExpr _ _ -> token $
+      ParenExpr _ _ _ -> token $
         expect (expected_sub_for "if") $ \com3 -> do
           thenStmt <- parseBracketedScript
           let done com4 com5 elseStmt = return $
-                IfThenElse com1 objExpr (com com2 thenStmt com3) (com com4 elseStmt com5)
+                IfThenElse com1 objExpr (com com2 thenStmt com3) (com com4 elseStmt com5) unloc
           com4 <- parseComment
           flip mplus (done com4 [] []) $ do
             string "else"
@@ -346,7 +349,7 @@ tryStatement = guardKeyword "try" $ \com1 -> do
   tryStmt <- mplus parseBracketedScript (fail (expected_sub_for "try"))
   com2 <- parseComment
   let done com3 name com4 catchStmt = return $
-        TryCatch (com com1 tryStmt com2) (com com3 name com4) catchStmt
+        TryCatch (com com1 tryStmt com2) (com com3 name com4) catchStmt unloc
   flip mplus (done [] nil [] []) $ do
     string "catch"
     regexMany space
@@ -366,26 +369,26 @@ forStatement = guardKeyword "for" $ \com1 -> do
       (iterExpr, com4) <- parseObjectExpr
       forStmt <- mplus parseBracketedScript $ fail $
         "expecting bracketed sub-script expression for body of \"for\" statement"
-      return (ForLoop (com com1 name com2) (com com3 iterExpr com4) forStmt)
+      return (ForLoop (com com1 name com2) (com com3 iterExpr com4) forStmt unloc)
 
 withStatement :: NameComParser ScriptExpr
 withStatement = guardKeyword "with" $ \com1 -> do
   (withObjExpr, com2) <- mplus parseObjectExpr $
     fail "expecting object expression after \"with\" statement"
   with <- mplus parseBracketedScript (fail (expected_sub_for "with"))
-  return (WithDoc (com com1 withObjExpr com2) with)
+  return (WithDoc (com com1 withObjExpr com2) with unloc)
 
 returnStatement :: NameComParser ScriptExpr
 returnStatement key com1 = do
   guard (key=="return" || key=="throw")
   regexMany space
   let semicolon = "expecting terminating semicolon \";\" after return statement"
-      done objExpr com2 = return (ReturnExpr (key=="return") (com com1 objExpr com2))
+      done objExpr com2 = return (ReturnExpr (key=="return") (com com1 objExpr com2) unloc)
   msum $
     [ do  (objExpr, com2) <- parseObjectExpr
           mplus (char ';' >> done objExpr com2) $
             fail "return statement must be terminated with a semicolon \";\""
-    , char ';' >> done (Literal ONull) []
+    , char ';' >> done VoidExpr []
     , fail semicolon
     ]
 
@@ -393,8 +396,8 @@ continueStatement :: NameComParser ScriptExpr
 continueStatement key com1 = do
   guard (key=="break" || key=="continue")
   let done com2 expr com3 =
-        return (ContinueExpr (key=="continue") com1 (com com2 expr com3))
-  mplus (char ';' >> done [] (Literal ONull) []) $ do
+        return (ContinueExpr (key=="continue") com1 (com com2 expr com3) unloc)
+  mplus (char ';' >> done [] VoidExpr []) $ do
     string "if"
     expect ("expecting object expression after "++key++"-if statement") $ \com2 -> do
       (objExpr, com3) <- parseObjectExpr
@@ -419,12 +422,12 @@ catchStatement = badStatement "catch" "try"
 objectExprStatement :: ObjComParser ScriptExpr
 objectExprStatement initExpr com1 = loop initExpr where
   loop expr = case expr of
-    AssignExpr _ _ _  -> done
-    FuncCall   _ _ _  -> done
-    LambdaCall _ _    -> done
-    ParenExpr  _ expr -> loop (unComment expr)
+    AssignExpr _ _ _  _ -> done
+    FuncCall   _ _ _  _ -> done
+    LambdaCall _ _    _ -> done
+    ParenExpr  _ expr _ -> loop (unComment expr)
     _ -> fail ("cannot use an object expression as a statement\n" ++ show expr)
-  done = mplus (char ';' >> return (EvalObject initExpr com1)) $
+  done = mplus (char ';' >> return (EvalObject initExpr com1 unloc)) $
     fail "expecting terminating semicolon \";\" after statement"
 
 ----------------------------------------------------------------------------------------------------
@@ -432,7 +435,7 @@ objectExprStatement initExpr com1 = loop initExpr where
 -- | This is the "entry point" for parsing 'Dao.Object.ObjectExpr's.
 parseObjectExpr :: Parser (ObjectExpr, [Comment])
 parseObjectExpr = do
-  obj <- parseNonEquation
+  obj <- applyLocation parseNonEquation
   com1 <- parseComment
   regexMany space
   parseEquation obj com1
@@ -451,7 +454,7 @@ parseEquation obj com1 = loop [] obj com1 where
               char ']'
               com1 <- parseComment
               regexMany space
-              loop objx (ArraySubExpr obj com1 (com com2 idx com3)) com1
+              loop objx (ArraySubExpr obj com1 (com com2 idx com3) unloc) com1
     , do -- Parse an infix operator.
           op <- parseInfixOp
           expect ("expecting object expression after infix operator \""++uchars op++"\"") $ \com2 -> do
@@ -484,11 +487,11 @@ nonKeywordObjectExpr = msum $
         expect "object expression in parentheses" $ \com1 -> do
           (expr, com2) <- parseObjectExpr
           flip mplus (fail "expecting close parethases") $
-            char ')' >> return (ParenExpr True (com com1 expr com2))
+            char ')' >> return (ParenExpr True (com com1 expr com2) unloc)
   -- literal strings or integers
-  , fmap (Literal . ORef) parseIntRef
-  , fmap (Literal . OString . ustr) parseString 
-  , fmap (Literal) numericObj
+  , fmap (flip Literal unloc . ORef) parseIntRef
+  , fmap (flip Literal unloc . OString . ustr) parseString 
+  , fmap (flip Literal unloc) numericObj
   -- unary operators, like dereference (@name) or reference ($name)
   , parseUnaryOperatorExpr
   ]
@@ -496,13 +499,13 @@ nonKeywordObjectExpr = msum $
 -- Parses an equation starting with a unary operator.
 parseUnaryOperatorExpr :: Parser ObjectExpr
 parseUnaryOperatorExpr = do -- high-prescedence unary operators, these are interpreted as 'FuncCall's.
-  op <- regex (rxCharSetFromStr "@$!~.")
+  op <- regex (rxCharSetFromStr "@$!~")
   expect ("\""++op++"\" operator must be followed by an object expression") $ \com1 -> do
     expr <- parseNonEquation
-    return (FuncCall (ustr op) com1 [Com expr])
+    return (Equation VoidExpr (com [] (read op) com1) expr unloc)
 
 parseInfixOp :: Parser Name
-parseInfixOp = fmap ustr $ msum $ map string $ words $ concat $
+parseInfixOp = fmap ustr $ regex $ rxChoice $ map rxString $ words $ concat $
   [ " <<= >>= += -= *= /= %= &= |= ^= .= "
   , " != == <= >= && || << >> ** -> "
   , " . = + - * / % & | < > ^ "
@@ -529,7 +532,8 @@ applyPrescedence = foldl (.) assignOp $ map (scanBind Equation . words) $ opPrec
 -- and if the 'op' is in the list of operators, the 'exprA' and 'exprB' are bound together into an
 -- 'Dao.Object.Equation' data structure. If 'op' is not in the list of operators, it is passed over.
 scanBind
-  :: (ObjectExpr -> Com Name -> ObjectExpr -> ObjectExpr)
+  :: Read a
+  => (ObjectExpr -> Com a -> ObjectExpr -> Location -> ObjectExpr)
   -> [String]
   -> [Either (Com Name) ObjectExpr]
   -> [Either (Com Name) ObjectExpr]
@@ -537,7 +541,7 @@ scanBind constructor ops objx = case objx of
   [Right o] -> [Right o]
   Right a : Left op : Right b : objx ->
     if elem (uchars (unComment op)) ops -- if this operator is of the prescedence we are looking for
-      then scanBind constructor ops (Right (constructor a op b) : objx) -- "bind" the operands to it
+      then scanBind constructor ops (Right (constructor a (fmap (read . uchars) op) b unloc) : objx) -- "bind" the operands to it
       else Right a : Left op : -- otherwise ignore this operator
              scanBind constructor ops (Right b : objx)
   objx -> error ("scanBind failed:\n"++show objx)
@@ -565,7 +569,7 @@ parseLambdaCall = guardKeyword "call" $ \com1 ->
     (objExpr, com3) <- parseObjectExpr
     flip mplus (fail "expecting a tuple containing arguments to be passed to the \"call\" statement") $ do
       argv <- parseFunctionParameters "function parameter variable"
-      return (LambdaCall (com com1 objExpr com2) argv)
+      return (LambdaCall (com com1 objExpr com2) argv unloc)
 
 parseClassedRef :: NameComParser ObjectExpr
 parseClassedRef key com1 = case key of
@@ -578,7 +582,7 @@ parseClassedRef key com1 = case key of
     e = undefined
     makeref typ nameCo namexCo msg = token $ do -- 'typ'=True for LocalRef, 'typ'=False for GlobalRef
       ref <- parseLocalGlobal
-      let done co r = return (Literal (ORef (co r)))
+      let done co r = return (Literal (ORef (co r)) unloc)
       case ref of
         LocalRef  r | typ     -> done nameCo r
         GlobalRef r | not typ -> done namexCo r
@@ -596,7 +600,7 @@ parseLambdaDef key com1 = do
     params <- mplus parseFuncParamVars (fmap ((:[]) . Com) (parseName func_param_var))
     flip mplus (fail (expected_sub_for "lambda function definition")) $ do
       script <- parseBracketedScript
-      return (LambdaExpr (com com1 params com2) script)
+      return (LambdaExpr (com com1 params com2) script unloc)
 
 parseArrayDef :: NameComParser ObjectExpr
 parseArrayDef = guardKeyword "array" $ \com1 -> token $ do
@@ -608,32 +612,32 @@ parseArrayDef = guardKeyword "array" $ \com1 -> token $ do
         flip mplus (fail "expecting initializing values for array defition") $ do
           initValues <- adjustComListableObjExpr $
             parseListable "array initialing element" '{' ',' '}' parseObjectExpr
-          return (ArrayExpr (com com1 bounds com2) initValues)
+          return (ArrayExpr (com com1 bounds com2) initValues unloc)
       _       -> bad_bounds
 
 parseListSetDictIntmap :: NameComParser ObjectExpr
 parseListSetDictIntmap key com1 = do
   guard (key=="dict" || key=="intmap" || key=="set" || key=="list")
   let getDictItem = token $ parseObjectExpr >>= \ (item, com2) -> case item of
-        AssignExpr _ _ _ -> return (item, com2)
+        AssignExpr _ _ _ _ -> return (item, com2)
         _ -> fail ("each entry to "++key++" definition must assign a value to a key")
       getItem = if key=="dict" || key=="intmap" then getDictItem else parseObjectExpr
   items <- adjustComListableObjExpr $
     parseListable ("items for "++key++" definition") '{' ',' '}' getItem
-  return (DictExpr (ustr key) com1 items)
+  return (DictExpr (ustr key) com1 items unloc)
 
 parseStruct :: NameComParser ObjectExpr
 parseStruct = guardKeyword "struct" $ \com1 ->
   msum $
     [ parseObjectExpr >>= objData com1
-    , objData com1 (Literal ONull, [])
+    , objData com1 (VoidExpr, [])
     , fail "expecting data structure definition after keyword \"struct\""
     ]
   where
     objData com1 (obj, obj2) =
       expect "data structure needs bracketed list of field declarations" $ \com2 -> do
         items <- itemList []
-        return (StructExpr (com com1 obj com2) items)
+        return (StructExpr (com com1 obj com2) items unloc)
     msg = "field label"
     parseItem = expect msg $ \com1 -> do
       (name, com2) <- parseObjectExpr
@@ -641,7 +645,7 @@ parseStruct = guardKeyword "struct" $ \com1 ->
         op <- msum (map string (words " <<= >>= += -= *= /= %= &= |= ^= .= := : = "))
         expect "object experssion to assign to field" $ \com3 -> do
           (obj, com4) <- parseObjectExpr
-          return (com com1 (AssignExpr name (com com2 (ustr op) com3) obj) com4)
+          return (com com1 (AssignExpr name (com com2 (read op) com3) obj unloc) com4)
     itemList zx = do
       item <- parseItem
       msum $
@@ -655,11 +659,11 @@ parseStruct = guardKeyword "struct" $ \com1 ->
 -- variable name, a simple function call, or a part of a global variable name.
 constructWithNonKeyword :: NameComParser ObjectExpr
 constructWithNonKeyword key com1 = mplus funcCall localRef where
-  localRef = return (Literal (ORef $ LocalRef $ ustr key))
+  localRef = return (Literal (ORef $ LocalRef $ ustr key) unloc)
   funcCall = do
     argv <- adjustComListableObjExpr $
       parseListable ("arguments to function \""++key++"\"") '(' ',' ')' parseObjectExpr
-    return (FuncCall (ustr key) com1 argv)
+    return (FuncCall (ustr key) com1 argv unloc)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -686,23 +690,23 @@ parseSourceFile = do
       , directives = Com drcvs
       }
 
-parseDirective :: Parser Directive
+parseDirective :: Parser TopLevelExpr
 parseDirective = msum $
   [ do -- Parse an "import" or "require" directive.
         opt <- fmap ustr (mplus (string "require" >> zeroOrOne (rxChar 's')) (string "import"))
         req <- regexMany space >> fmap ustr parseString
         regexMany space >> zeroOrOne (rxChar ';')
-        return (Attribute (Com opt) (Com req))
+        return (Attribute (Com opt) (Com req) unloc)
   , do -- Parse an event action.
         event <- msum $ map string ["BEGIN", "END", "SETUP", "TAKEDOWN"]
         expect ("bracketed list of commands after "++event++" statement") $ \com1 -> do
           scrpt <- parseBracketedScript
           let block = com com1 scrpt []
           return $ case event of
-            "TAKEDOWN" -> TakedownExpr block
-            "SETUP"    -> SetupExpr    block
-            "BEGIN"    -> BeginExpr    block
-            "END"      -> EndExpr      block
+            "TAKEDOWN" -> TakedownExpr block unloc
+            "SETUP"    -> SetupExpr    block unloc
+            "BEGIN"    -> BeginExpr    block unloc
+            "END"      -> EndExpr      block unloc
   , do -- Parse a top-level rule.
         string "rule"
         let msg = "rule pattern string expression"
@@ -712,8 +716,8 @@ parseDirective = msum $
             (pat >>= \pattern -> return [com com1 pattern []])
           expect "script expression for rule definition" $ \com2 -> do
             scrpt <- parseBracketedScript
-            return $ RuleExpr $ Com $
-              Rule{ rulePattern = com com1 pattern [], ruleAction = com com2 scrpt [] }
+            return $ flip TopRuleExpr unloc $ Com $
+              RuleExpr{ rulePattern = com com1 pattern [], ruleAction = com com2 scrpt [] }
   , do -- Parse a top-level function declaration.
         mplus (string "function") (string "func")
         let msg = "top-level function declaration"
@@ -723,8 +727,8 @@ parseDirective = msum $
             params <- parseFuncParamVars
             expect "top-level function declaration, function body" $ \com3 -> do
               scrpt <- parseBracketedScript
-              return $ ToplevelDefine (Com name) $
-                com com1 (LambdaExpr (com com2 params com3) scrpt) []
+              return $ flip (ToplevelDefine (Com name)) unloc $
+                com com1 (LambdaExpr (com com2 params com3) scrpt unloc) []
   , do -- Parse a top-level global variable declaration.
         let msg = "top-level global variable declaration"
         (_, name) <- parseDotName
@@ -733,6 +737,6 @@ parseDirective = msum $
           expect ("expecting object expression for "++msg) $ \com2 -> do
             (objExpr, com3) <- parseObjectExpr
             flip mplus (fail (msg++" must be terminated with a semicolon \";\"")) $
-              char ';' >> return (ToplevelDefine (com [] name com1) (com com2 objExpr com3))
+              char ';' >> return (ToplevelDefine (com [] name com1) (com com2 objExpr com3) unloc)
   ]
 

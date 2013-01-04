@@ -122,7 +122,7 @@ type DocResource   = Resource (StoredFile T.Tree Name) [Name]
 ----------------------------------------------------------------------------------------------------
 
 -- | A 'SourceCode' is the structure loaded from source code. A 'Program' object is constructed from
--- 'SourceCode', and can be serialized to a binary format.
+-- 'SourceCode'.
 data SourceCode
   = SourceCode
     { sourceModified   :: Int
@@ -130,87 +130,16 @@ data SourceCode
       -- ^ the URL (full file path) from where this source code was received.
     , sourceModuleName :: Com UStr
       -- ^ the logical name of this program defined by the "module" keyword in the Dao script.
-    , directives       :: Com [Com Directive]
+    , directives       :: Com [Com TopLevelExpr]
     }
   deriving (Eq, Ord, Show, Typeable)
 
+-- | An executable is either a rule action, or a function.
 data Executable = Executable{ staticVars :: IORef (M.Map Name Object), executable :: [ScriptExpr] }
+
+-- | A subroutine is specifically a callable function (but we don't use the name Function to avoid
+-- confusion with Haskell's "Data.Function"). 
 data Subroutine = Subroutine{ argsList   :: [Name],   getScriptExpr :: Executable }
-
--- | When a script is executed, it's abstract syntax tree is converted into a monadic computation.
--- When this happens, the Haskell runtime system evaluates many "thunks" in memory to collapse the
--- computation to a simpler form. To improve efficiency, these thunks can be saved by keeping a
--- reference to the monadic computation, preventing it from being garbage coellcted and allowing it
--- to execute faster the next time.
--- data CachedExec ast m
---   = OnlyAST   { sourceScript :: ast }
---   | OnlyCache { cachedScript :: m }
---   | HasBoth
---     { sourceScript :: ast
---     , cachedScript :: m
---     }
-
--- | A 'CachedExec' stored in an 'Dao.Debug.DMVar'.
--- type CXRef ast m = DMVar (CachedExec ast m)
-
--- | Similar to 'Data.Maybe.fromMaybe', retrieve the 'cachedScript' item, or a given default.
--- getCached ::  m -> CachedExec ast m -> m
--- getCached deflt ce = case ce of
---   OnlyAST   _   -> deflt
---   OnlyCache   m -> m
---   HasBoth   _ m -> m
-
--- | Similar to 'Data.Maybe.fromMaybe', retrieve the 'sourceScript' item, or a given default.
--- getSource ::  ast -> CachedExec ast m -> ast
--- getSource deflt ce = case ce of
---   OnlyAST   ast   -> ast
---   OnlyCache     _ -> deflt
---   HasBoth   ast _ -> ast
-
--- modifyCXRef :: MLoc -> CXRef ast m -> (CachedExec ast m -> Run (CachedExec ast m, a)) -> Run a
--- modifyCXRef loc cxref = dModifyMVar loc cxref 
-
--- modifyCXRef_ :: MLoc -> CXRef ast m -> (CachedExec ast m -> Run (CachedExec ast m)) -> Run ()
--- modifyCXRef_ loc cxref = dModifyMVar_ loc cxref
-
--- | Cache the execution of the abstract syntax tree.
--- cacheExec :: (ast -> m) -> CachedExec ast m -> CachedExec ast m
--- cacheExec conv ca = case ca of
---   OnlyAST ast -> HasBoth{sourceScript = ast, cachedScript = conv ast}
---   ca          -> ca
-
--- | Cache execution of the abstract syntax tree inside of the 'Control.Concurrent.DMVar.DMVar' while
--- returning the cached method.
--- getCachedExec :: (ast -> m) -> CXRef ast m -> Run m
--- getCachedExec conv mvar = dModifyMVar xloc mvar $ \cc ->
---   let cc' = cacheExec conv cc in return (cc', getCached undefined cc')
-
--- | De-reference (and hence free) the cached computation, unless the value of this 'CachedExec' is
--- 'OnlyCache', in which case no change is made.
--- freeCached :: CachedExec ast m -> CachedExec ast m
--- freeCached ca = case ca of
---   HasBoth ast _ -> OnlyAST{sourceScript = ast}
---   ca            -> ca
-
--- | De-reference (and hence free) the abstract syntax tree, unless the value of this 'CachedExec'
--- is 'OnlyAST', in which case no change is made.
--- freeAST :: CachedExec ast m -> CachedExec ast m
--- freeAST ca = case ca of
---   HasBoth _ m -> OnlyCache{cachedScript = m}
---   ca          -> ca
-
--- | A 'Directive' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
--- is a list of these directives.
-data Directive
-  = Attribute      (Com Name) (Com Name)
-  | ToplevelDefine (Com [Name]) (Com ObjectExpr) 
-  | RuleExpr       (Com Rule)
-  | SetupExpr      (Com [Com ScriptExpr])
-  | BeginExpr      (Com [Com ScriptExpr])
-  | EndExpr        (Com [Com ScriptExpr])
-  | TakedownExpr   (Com [Com ScriptExpr])
-  | ToplevelFunc   (Com ()) (Com Name) (Com [Com Name]) (Com [Com ScriptExpr])
-  deriving (Eq, Ord, Show, Typeable)
 
 type TopLevelFunc = DMVar ([Object] -> ExecScript Object)
 
@@ -528,8 +457,6 @@ data Runtime
       -- track of any jobs started by this runtime.
     , defaultTimeout       :: Maybe Int
       -- ^ the default time-out value to use when evaluating 'execInputString'
-    , initialBuiltins      :: M.Map Name CheckFunc
-      -- ^ fundamental built-in functions common to all programs.
     , functionSets         :: M.Map Name (M.Map Name CheckFunc)
       -- ^ every labeled set of built-in functions provided by this runtime is listed here. This
       -- table is checked when a Dao program is loaded that has "requires" directives.

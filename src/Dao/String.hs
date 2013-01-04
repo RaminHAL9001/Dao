@@ -68,6 +68,9 @@ gatherVLInt :: Get [Word8]
 gatherVLInt = loop [] where
   loop wx = getWord8 >>= \w -> if w .&. 0x80 == 0 then return (wx++[w]) else loop (wx++[w])
 
+getFromVLInt :: (Integral a, Bits a) => Get a
+getFromVLInt = fmap (fst . vlIntToBits) gatherVLInt
+
 -- | A type synonym for 'Data.ByteString.Lazy.UTF8.ByteString'
 newtype UStr = UStr { toUTF8ByteString :: U.ByteString } deriving (Eq, Ord, Typeable)
 

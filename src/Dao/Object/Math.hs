@@ -25,19 +25,90 @@
 module Dao.Object.Math where
 
 import           Dao.Object
+import           Dao.Pattern
 import           Dao.Predicate
+import qualified Dao.Tree as T
 
 import           Numeric
 
 import           Data.Maybe
 import           Data.Int
 import           Data.Word
+import           Data.Char
 import           Data.Bits
 import           Data.Ratio
 import           Data.Complex
+import           Data.Array.IArray
 import           Data.Time hiding (parseTime)
+import qualified Data.Set                  as S
+import qualified Data.Map                  as M
+import qualified Data.IntMap               as IM
+import qualified Data.ByteString.Lazy.UTF8 as U
+import qualified Data.ByteString.Lazy      as B
+import qualified Codec.Binary.UTF8.String  as UTF8
 
 import           Control.Monad
+
+----------------------------------------------------------------------------------------------------
+
+boolToObj :: Bool -> Object
+boolToObj b = if b then OTrue else ONull
+
+objToBool :: Object -> Bool
+objToBool obj = not (testNull obj)
+
+testNull :: Object -> Bool
+testNull o = case o of
+  ONull             -> True
+  OInt      0       -> True
+  OWord     0       -> True
+  OLong     0       -> True
+  OFloat    0.0     -> True
+  ORatio    o | o==(0%1)      -> True
+  OComplex  o | o==(0:+0)     -> True
+  ODiffTime o | toRational o == 0%1 -> True
+  OChar     o | ord o == 0          -> True
+  OString   o | o==nil              -> True
+  ORef (GlobalRef [])          -> True
+  ORef (QTimeRef  [])          -> True
+  ORef (LocalRef  s)  | s==nil -> True
+  ORef (StaticRef s)  | s==nil -> True
+  OList        []        -> True
+  OSet     o | S.null  o -> True
+  ODict    o | M.null  o -> True
+  OIntMap  o | IM.null o -> True
+  OTree    o | o==T.Void -> True
+  OPattern o | null (getPatUnits o) -> True
+  OScript  o | null (unComment (scriptCode  o)) -> True
+  ORule    o | null (unComment (rulePattern o)) && null (unComment (ruleAction o)) -> True
+  OBytes   o | B.null o  -> True
+  _ -> False
+
+objToList :: Object -> PValue tok [Object]
+objToList o = case o of
+  OPair (a, b) -> return $ [a, b]
+  OString  o   -> return $ map OChar (uchars o)
+  OList    o   -> return o
+  OSet     o   -> return $ S.elems o
+  OArray   o   -> return $ elems o
+  ODict    o   -> return $ map (\ (a, b) -> OPair (OString a, b))             (M.assocs o)
+  OIntMap  o   -> return $ map (\ (a, b) -> OPair (OInt (fromIntegral a), b)) (IM.assocs o)
+  OTree    o   -> return $ map (\ (a, b) -> OPair (OList (map OString a), b)) (T.assocs o)
+  OPattern o   -> return $ patternComponents o
+  _            -> mzero
+
+-- | Break a pattern into a list of it's component parts. 'Dao.Pattern.Wildcard's (the Kleene star
+-- operation) translates to a 'ListType' object because wildcards may match a whole list of
+-- strings and 'Dao.Pattern.AnyOne's translate to a StringType object because they can only match
+-- one single string. Everything else translates to an 'OString' object.
+patternComponents :: Pattern -> [Object]
+patternComponents p = map patUnitToObj (getPatUnits p)
+
+patUnitToObj :: PatUnit -> Object
+patUnitToObj p = case p of
+  Wildcard -> OType ListType
+  AnyOne   -> OType StringType
+  Single o -> OString o
 
 ----------------------------------------------------------------------------------------------------
 

@@ -55,6 +55,8 @@ import           Data.Int
 import           Data.Word
 import           Data.Bits
 import           Data.List
+import           Data.Time.Clock
+import           Data.Ratio
 import           Data.Complex
 import           Data.IORef
 import qualified Data.Set    as S
@@ -80,7 +82,6 @@ initExecUnit runtime initGlobalData = do
     ExecUnit
     { parentRuntime      = runtime
     , verbosePrint       = \_ _ -> return ()
-    , commentPrint       = \_   -> return ()
     , currentExecJob     = Nothing
     , currentDocument    = Nothing
     , currentProgram     = Nothing
@@ -88,6 +89,7 @@ initExecUnit runtime initGlobalData = do
     , currentBranch      = []
     , importsTable       = []
     , execAccessRules    = RestrictFiles (Pattern{getPatUnits = [Wildcard], getPatternLength = 1})
+    , builtinFuncs       = mempty
     , toplevelFuncs      = toplev
     , execHeap           = initGlobalData
     , queryTimeHeap      = qheap
@@ -391,25 +393,38 @@ asList o = case o of
   OTree   o -> return (map (\ (i, o) -> OPair (OList (map OString i), o)) (T.assocs o))
   _         -> mzero
 
+-- | Combines two lists of objects, then removes one "layer of lists", that is, if the combined
+-- lists are of the form:
+-- @list {a, b, ... , list {c, d, ... , list {e, f, ...}, ...} }@ 
+-- the resulting list will be @list {a, b, ... , c, d, ... , list {e, f, ... }, ...}@
+objListAppend :: [Object] -> [Object] -> Object
+objListAppend ax bx = OList $ flip concatMap (ax++bx) $ \a -> case a of
+  OList ax -> ax
+  a        -> [a]
+
 asIntMapIndex :: Object -> PValue Location Int
 asIntMapIndex o = asInteger o >>= \o ->
   if (toInteger (minBound::Int)) <= o && o <= (toInteger (maxBound::Int))
     then return (fromIntegral o)
     else mzero
 
+evalInt :: (Integer -> Integer -> Integer) -> Object -> Object -> CheckVal
+evalInt ifunc a b = do
+  ia <- asInteger a
+  ib <- asInteger b
+  let x = ia+ib
+  return $ case (max (fromEnum (objType a)) (fromEnum (objType b))) of
+    t | t == fromEnum WordType -> OWord (fromIntegral x)
+    t | t == fromEnum IntType  -> OInt  (fromIntegral x)
+    t | t == fromEnum LongType -> OLong (fromIntegral x)
+    _ -> error "asInteger returned a value for an object of an unexpected type"
+
 evalNum
   :: (Integer -> Integer -> Integer)
   -> (Rational -> Rational -> Rational)
   -> Object -> Object -> CheckVal
 evalNum ifunc rfunc a b = msum
-  [ do  ia <- asInteger a
-        ib <- asInteger b
-        let x = ia+ib
-        return $ case (max (fromEnum (objType a)) (fromEnum (objType b))) of
-          t | t == fromEnum WordType -> OWord (fromIntegral x)
-          t | t == fromEnum IntType  -> OInt  (fromIntegral x)
-          t | t == fromEnum LongType -> OLong (fromIntegral x)
-          _ -> error "asInteger returned a value for an object of an unexpected type"
+  [ evalInt ifunc a b
   , do  ia <- asRational a
         ib <- asRational b
         let x = ia+ib
@@ -421,29 +436,163 @@ evalNum ifunc rfunc a b = msum
           _ -> error "asRational returned a value for an object of an unexpected type"
   ]
 
+setToMapFrom :: (Object -> PValue Location i) -> ([(i, [Object])] -> m [Object]) -> S.Set Object -> m [Object]
+setToMapFrom convert construct o = construct (zip (concatMap (okToList . convert) (S.elems o)) (repeat []))
+
+evalSets
+  ::  ([Object] -> Object)
+  -> (([Object] -> [Object] -> [Object]) -> M.Map Name [Object] -> M.Map Name [Object] -> M.Map Name [Object])
+  -> (([Object] -> [Object] -> [Object]) -> I.IntMap   [Object] -> I.IntMap   [Object] -> I.IntMap   [Object])
+  -> (T_set -> T_set  -> T_set)
+  -> Object -> Object -> CheckVal
+evalSets combine dict intmap set a b = msum $
+  [ do  a <- case a of
+                ODict a -> return (fmap (:[]) a)
+                _       -> mzero
+        b <- case b of
+                OSet  b -> return $ setToMapFrom asStringNoConvert M.fromList b
+                ODict b -> return (fmap (:[]) b)
+                _       -> mzero
+        return (ODict (fmap combine (dict (++) a b)))
+  , do  a <- case a of
+                OIntMap a -> return (fmap (:[]) a)
+                _         -> mzero
+        b <- case b of
+                OSet    b -> return $ setToMapFrom asIntMapIndex I.fromList b
+                OIntMap b -> return (fmap (:[]) b)
+                _         -> mzero
+        return (OIntMap (fmap combine (intmap (++) a b)))
+  , do  let toSet s = case s of 
+                        OSet s -> return s
+                        _      -> mzero
+        a <- toSet a
+        b <- toSet b
+        return (OSet (set a b))
+  ]
+
 eval_ADD :: CheckVal -> CheckVal -> CheckVal
 eval_ADD a b = a >>= \a -> b >>= \b -> msum
-  [ do  a <- asStringNoConvert a
+  [ evalNum (+) (+) a b
+  , timeAdd a b, timeAdd b a
+  , do  a <- asStringNoConvert a
         b <- asStringNoConvert b
         return (OString (ustr (uchars a ++ uchars b)))
-  , do  a <- asListNoConvert a
-        b <- asListNoConvert b
-        return (OList (a++b))
-  , evalNum (+) (+) a b
+  , listAdd a b, listAdd b a
   ]
+  where
+    timeAdd a b = case (a, b) of
+      (OTime a, ODiffTime b) -> return (OTime (addUTCTime b a))
+      (OTime a, ORatio    b) -> return (OTime (addUTCTime (fromRational (toRational b)) a))
+      (OTime a, OFloat    b) -> return (OTime (addUTCTime (fromRational (toRational b)) a))
+      _                      -> mzero
+    listAdd a b = do
+      ax <- asListNoConvert a
+      bx <- case b of
+        OList  bx -> return bx
+        OSet   b  -> return (S.elems b)
+        OArray b  -> return (elems b)
+        _         -> mzero
+      return (objListAppend ax bx)
+
+eval_SUB :: CheckVal -> CheckVal -> CheckVal
+eval_SUB a b = a >>= \a -> b >>= \b -> msum $
+  [ evalNum (-) (-) a b
+  , evalSets (\a -> head a) (\ _ a b -> M.difference a b) (\ _ a b -> I.difference a b) S.difference a b
+  , case (a, b) of
+      (OTime a, OTime     b) -> return (ODiffTime (diffUTCTime a b))
+      (OTime a, ODiffTime b) -> return (OTime (addUTCTime (negate b) a))
+      (OTime a, ORatio    b) -> return (OTime (addUTCTime (fromRational (toRational (negate b))) a))
+      (OTime a, OFloat    b) -> return (OTime (addUTCTime (fromRational (toRational (negate b))) a))
+      _                  -> mzero
+  , do  ax <- asListNoConvert a
+        case b of
+          OList bx -> return $
+            let lenA = length ax
+                lenB = length bx
+                loop lenA zx ax = case ax of
+                  ax'@(a:ax) | lenA>=lenB ->
+                    if isPrefixOf bx ax' then  zx++a:ax else  loop (lenA-1) (zx++[a]) ax
+                  _                       -> [a]
+            in  if lenA <= lenB
+                  then  if isInfixOf bx ax then OList [] else a
+                  else  OList (loop lenA [] ax)
+          OSet  b -> return (OList (filter (flip S.notMember b) ax))
+          _       -> mzero
+  ]
+
+-- Distributed property of operators is defined. Pass a function to be mapped across containers.
+evalDist :: (Object -> Object -> CheckVal) -> Object -> Object -> CheckVal
+evalDist fn a b = multContainer a b where
+  mapDist        = concatMap (okToList . fn a)
+  mapDistSnd alt = concatMap $ okToList . \ (i, b) ->
+    mplus (fn a b >>= \b -> return (i, b)) (if alt then return (i, ONull) else mzero)
+  multContainer a b = case a of
+    OList   bx -> return $ OList   (mapDist bx)
+    OSet    b  -> return $ OSet    (S.fromList (mapDist (S.elems b)))
+    OArray  b  -> return $ OArray  $ array (bounds b) $ mapDistSnd True $ assocs b
+    ODict   b  -> return $ ODict   $ M.fromList $ mapDistSnd False $ M.assocs b
+    OIntMap b  -> return $ OIntMap $ I.fromList $ mapDistSnd False $ I.assocs b
+    _          -> mzero
+
+evalDistNum
+  :: (Integer  -> Integer  -> Integer )
+  -> (Rational -> Rational -> Rational) 
+  -> Object -> Object -> CheckVal
+evalDistNum intFn rnlFn a b = msum $
+  [ evalNum intFn rnlFn a b
+  , if isNumeric a
+      then  evalDist (evalDistNum intFn rnlFn) a b
+      else  if isNumeric b then evalDist (flip (evalDistNum intFn rnlFn)) b a else mzero
+  ]
+
+eval_MULT :: CheckVal -> CheckVal -> CheckVal
+eval_MULT a b = a >>= \a -> b >>= \b -> evalDistNum (*) (*) a b
+
+eval_DIV :: CheckVal -> CheckVal -> CheckVal
+eval_DIV a b = a >>= \a -> b >>= \b -> evalDistNum div (/) a b
+
+eval_MOD :: CheckVal -> CheckVal -> CheckVal
+eval_MOD a b = a >>= \a -> b >>= \b -> evalDistNum mod (\a b -> let r = a/b in (abs r - abs (floor r % 1)) * signum r) a b
+
+evalBitsOrSets
+  :: ([Object]  -> Object)
+  -> (([Object] -> [Object] -> [Object]) -> M.Map Name [Object] -> M.Map Name [Object] -> M.Map Name [Object])
+  -> (([Object] -> [Object] -> [Object]) -> I.IntMap   [Object] -> I.IntMap   [Object] -> I.IntMap   [Object])
+  -> (T_set -> T_set  -> T_set)
+  -> (Integer -> Integer -> Integer)
+  -> CheckVal -> CheckVal -> CheckVal
+evalBitsOrSets combine dict intmap set num a b = a >>= \a -> b >>= \b ->
+  mplus (evalSets combine dict intmap set a b) (evalInt num a b)
+
+eval_ORB :: CheckVal -> CheckVal -> CheckVal
+eval_ORB  a b = evalBitsOrSets OList M.unionWith        I.unionWith        S.union        (.|.) a b
+
+eval_ANDB :: CheckVal -> CheckVal -> CheckVal
+eval_ANDB a b = evalBitsOrSets OList M.intersectionWith I.intersectionWith S.intersection (.&.) a b
+
+eval_XORB :: CheckVal -> CheckVal -> CheckVal
+eval_XORB a b = evalBitsOrSets (\a -> head a) mfn ifn sfn xor a b where
+  sfn = fn S.union S.intersection S.difference head
+  mfn = fn M.union M.intersection M.difference
+  ifn = fn I.union I.intersection I.difference
+  fn u n del _ a b = (a `u` b) `del` (a `n` b)
+
+evalBooleans :: (Bool -> Bool -> Bool) -> CheckVal -> CheckVal -> CheckVal
+evalBooleans fn a b = a >>= \a -> b >>= \b ->
+  return (if fn (objToBool a) (objToBool b) then OTrue else ONull)
 
 infixOps :: Array ArithOp (CheckVal -> CheckVal -> CheckVal)
 infixOps = let o = (,) in array (SUB, POINT) $
   [ o ADD   eval_ADD
-  , o SUB   undefined
-  , o MULT  undefined
-  , o DIV   undefined
-  , o MOD   undefined
-  , o OR    undefined
-  , o AND   undefined
-  , o ORB   undefined
-  , o ANDB  undefined
-  , o XORB  undefined
+  , o SUB   eval_SUB
+  , o MULT  eval_MULT
+  , o DIV   eval_DIV
+  , o MOD   eval_MOD
+  , o OR    (evalBooleans (||))
+  , o AND   (evalBooleans (&&))
+  , o ORB   eval_ORB
+  , o ANDB  eval_ANDB
+  , o XORB  eval_XORB
   ]
 
 updatingOps :: Array UpdateOp (CheckVal -> CheckVal -> CheckVal)
@@ -461,18 +610,41 @@ updatingOps = let o = (,) in array (UCONST, USHR) $
   , o USHR   $! infixOps!SHR
   ]
 
+eval_NEG :: Object -> CheckVal
+eval_NEG o = case o of
+  OWord     o -> return $
+    let n = negate (toInteger o)
+    in  if n < toInteger (minBound::T_int)
+           then  OLong n
+           else  OInt (fromIntegral n)
+  OInt      o -> return $ OInt      (negate o)
+  OLong     o -> return $ OLong     (negate o)
+  ODiffTime o -> return $ ODiffTime (negate o)
+  OFloat    o -> return $ OFloat    (negate o)
+  ORatio    o -> return $ ORatio    (negate o)
+  OComplex  o -> return $ OComplex  (negate o)
+  _           -> mzero
+
+eval_INVB :: Object -> CheckVal
+eval_INVB o = case o of
+  OWord o -> return $ OWord (complement o)
+  OInt  o -> return $ OInt  (complement o)
+  OLong o -> return $ OLong (complement o)
+  _       -> mzero
+
 prefixOps :: Array ArithOp (CheckVal -> CheckVal)
 prefixOps = let o = (,) in array (REF, SUB) $
   [ o REF   $ \r -> r >>= \r -> case r of
-                      ORef r -> return (ORef (MetaRef r))
-                      _      -> mzero
+                      ORef    r -> return (ORef (MetaRef r))
+                      OString s -> return (ORef (LocalRef s))
+                      _         -> mzero
   , o DEREF $ \r -> r >>= \r -> case r of
                       ORef (MetaRef r) -> return (ORef r)
                       ORef r           -> return (ORef r)
                       _                -> mzero
-  , o INVB  undefined
-  , o NOT   undefined
-  , o NEG   undefined
+  , o INVB  (>>=eval_INVB)
+  , o NOT   (fmap (boolToObj . testNull))
+  , o NEG   (>>=eval_NEG)
   ]
 
 subscriptOp :: CheckVal -> CheckVal -> CheckVal

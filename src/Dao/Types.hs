@@ -343,8 +343,6 @@ data ExecUnit
       -- Dao scripting language may make calls that modify the state of the Runtime.
     , verbosePrint       :: Int -> UStr -> ExecScript ()
       -- ^ a hook to be used to print un-caught error messages.
-    , commentPrint       :: [UStr] -> ExecScript ()
-      -- ^ a hook to be used to print comments as the Dao script is executed.
     , currentExecJob     :: Maybe Job
       -- ^ a reference to the 'Job' that is currently running the 'ExecScript' that is using this
       -- 'ExecUnit' state.

@@ -286,3 +286,19 @@ instance Monad m => ErrorMonadPlus tok (PTrans tok m) where
   tokenThrowError tok msg = PTrans{ runPTrans = return (PFail tok msg) }
   catchPValue (PTrans fn) = PTrans{ runPTrans = fn >>= \a -> return (OK a) }
 
+-- | Evaluates to an empty list if the given 'PValue' is 'Backtrack' or 'PFail', otherwise returns a
+-- list containing the value in the 'OK' value.
+okToList :: PValue err a -> [a]
+okToList pval = case pval of
+  OK      a -> [a]
+  Backtrack -> []
+  PFail _ _ -> []
+
+-- | Like 'okToList', but evaluates to 'Data.Maybe.Nothing' if the given 'PValue' is 'Backtrack' or
+-- 'PFail', or 'Data.Maybe.Just' containing the value in the 'OK' value.
+okToMaybe :: PValue err a -> Maybe a
+okToMaybe pval = case pval of
+  OK      a -> Just a
+  Backtrack -> Nothing
+  PFail _ _ -> Nothing
+

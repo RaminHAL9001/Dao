@@ -402,8 +402,8 @@ objListAppend ax bx = OList $ flip concatMap (ax++bx) $ \a -> case a of
   OList ax -> ax
   a        -> [a]
 
-asIntMapIndex :: Object -> PValue Location Int
-asIntMapIndex o = asInteger o >>= \o ->
+asHaskellInt :: Object -> PValue Location Int
+asHaskellInt o = asInteger o >>= \o ->
   if (toInteger (minBound::Int)) <= o && o <= (toInteger (maxBound::Int))
     then return (fromIntegral o)
     else mzero
@@ -458,7 +458,7 @@ evalSets combine dict intmap set a b = msum $
                 OIntMap a -> return (fmap (:[]) a)
                 _         -> mzero
         b <- case b of
-                OSet    b -> return $ setToMapFrom asIntMapIndex I.fromList b
+                OSet    b -> return $ setToMapFrom asHaskellInt I.fromList b
                 OIntMap b -> return (fmap (:[]) b)
                 _         -> mzero
         return (OIntMap (fmap combine (intmap (++) a b)))
@@ -581,22 +581,77 @@ evalBooleans :: (Bool -> Bool -> Bool) -> CheckVal -> CheckVal -> CheckVal
 evalBooleans fn a b = a >>= \a -> b >>= \b ->
   return (if fn (objToBool a) (objToBool b) then OTrue else ONull)
 
+evalShift :: (Int -> Int) -> CheckVal -> CheckVal -> CheckVal
+evalShift fn a b = a >>= \a -> b >>= asHaskellInt >>= \b -> case a of
+  OInt  a -> return (OInt  (shift a (fn b)))
+  OWord a -> return (OWord (shift a (fn b)))
+  OLong a -> return (OLong (shift a (fn b)))
+  _       -> mzero
+
+evalSubscript :: CheckVal -> CheckVal -> CheckVal
+evalSubscript a b = a >>= \a -> case a of
+  OArray  a -> b >>= fmap fromIntegral . asInteger >>= \b ->
+    if inRange (bounds a) b then return (a!b) else pfail (ustr "array index out of bounds")
+  OList   a -> b >>= asHaskellInt >>= \b ->
+    let err = pfail (ustr "list index out of bounds")
+        ax  = drop b a
+    in  if b<0 then err else if null ax then err else return (OList ax)
+  OIntMap a -> b >>= asHaskellInt >>= \b -> case I.lookup b a of
+    Nothing -> pfail (ustr "no item at index requested of intmap")
+    Just  b -> return b
+  ODict   a -> msum $
+    [ do  b >>= asStringNoConvert >>= \b -> case M.lookup b a of
+            Nothing -> pfail (ustr (show b++" is not defined in dict"))
+            Just  b -> return b
+    , do  b >>= asReference >>= \b -> case b of
+            LocalRef  b -> case M.lookup b a of
+              Nothing -> pfail (ustr (show b++" is not defined in dict"))
+              Just  b -> return b
+            GlobalRef bx -> loop [] a bx where
+              err = pfail (ustr (show b++" is not defined in dict"))
+              loop zx a bx = case bx of
+                []   -> return (ODict a)
+                b:bx -> case M.lookup b a of
+                  Nothing -> err
+                  Just  a -> case a of
+                    ODict a -> loop (zx++[b]) a bx
+                    _       ->
+                      if null bx
+                        then return a
+                        else pfail (ustr (show (GlobalRef zx)++" does not point to dict object"))
+    ]
+  OTree   a -> msum $ 
+    [ b >>= asStringNoConvert >>= \b -> done (T.lookup [b] a)
+    , b >>= asReference >>= \b -> case b of
+        LocalRef  b  -> done (T.lookup [b] a)
+        GlobalRef bx -> done (T.lookup bx  a)
+    ] where
+        done a = case a of
+          Nothing -> pfail (ustr (show b++" is not defined in struct"))
+          Just  a -> return a
+
 infixOps :: Array ArithOp (CheckVal -> CheckVal -> CheckVal)
-infixOps = let o = (,) in array (SUB, POINT) $
-  [ o ADD   eval_ADD
-  , o SUB   eval_SUB
-  , o MULT  eval_MULT
-  , o DIV   eval_DIV
-  , o MOD   eval_MOD
+infixOps = let o = (,) in array (OR, MOD) $
+  [ o POINT evalSubscript
+  , o DOT   $ \a b -> a >>= asReference >>= \a -> b >>= asReference >>= \b -> case appendReferences a b of
+                  Nothing -> pfail (ustr (show b++" cannot be appended to "++show a))
+                  Just  a -> return (ORef a)
   , o OR    (evalBooleans (||))
   , o AND   (evalBooleans (&&))
   , o ORB   eval_ORB
   , o ANDB  eval_ANDB
   , o XORB  eval_XORB
+  , o SHL   (evalShift id)
+  , o SHR   (evalShift negate)
+  , o ADD   eval_ADD
+  , o SUB   eval_SUB
+  , o MULT  eval_MULT
+  , o DIV   eval_DIV
+  , o MOD   eval_MOD
   ]
 
 updatingOps :: Array UpdateOp (CheckVal -> CheckVal -> CheckVal)
-updatingOps = let o = (,) in array (UCONST, USHR) $
+updatingOps = let o = (,) in array (minBound, maxBound) $
   [ o UCONST $ \_ b -> b
   , o UADD   $! infixOps!ADD
   , o USUB   $! infixOps!SUB
@@ -935,6 +990,10 @@ evalObject obj = case obj of
     let op = unComment op_
     left  <- evalObject left
     right <- evalObject right
+    (left, right) <- case op of
+      DOT   -> return (left, right)
+      POINT -> liftM2 (,) (evalObjectRef left) (return right)
+      _     -> liftM2 (,) (evalObjectRef left) (evalObjectRef right)
     case (infixOps!op) (return left) (return right) of
       OK result    -> return result
       Backtrack    -> ceError $ OList $
@@ -967,7 +1026,7 @@ evalObject obj = case obj of
     case () of
       () | cons == ustr "list"   -> fmap OList (mapM (evalObject . unComment) args)
       () | cons == ustr "dict"   -> fmap ODict   (loop dict   asStringNoConvert M.empty args)
-      () | cons == ustr "intmap" -> fmap OIntMap (loop intmap asIntMapIndex     I.empty args)
+      () | cons == ustr "intmap" -> fmap OIntMap (loop intmap asHaskellInt      I.empty args)
       _ -> error ("INTERNAL ERROR: unknown dictionary declaration "++show cons)
   ArrayExpr  rang  ox        lc -> do
     case unComment rang of

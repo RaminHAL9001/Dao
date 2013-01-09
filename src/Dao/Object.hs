@@ -436,13 +436,15 @@ instance Read UpdateOp where
 instance Bounded UpdateOp where {minBound = UCONST; maxBound = USHR}
 
 data ArithOp
-  = REF   | DEREF | INVB  | NOT  | NEG
-  | ADD   | SUB   | MULT  | DIV  | OR    | AND
-  | ANDB  | XORB  | SHL   | SHR  | ABS
-  | MOD   | ORB   | SQRT  | EXP  | LOG
-  | ROUND | TRUNC | SIN   | COS  | TAN
-  | ASIN  | ACOS  | ATAN  | SINH | COSH  | TANH
-  | ASINH | ACOSH | ATANH | DOT  | POINT
+  = REF   | DEREF | INVB  | NOT   | NEG -- ^ unary
+  | POINT | DOT                         -- ^ special reference
+  | OR    | AND                         -- ^ boolean logical
+  | ORB   | ANDB  | XORB  | SHL   | SHR -- ^ bitwise
+  | ADD   | SUB   | MULT  | DIV   | MOD -- ^ basic arithmetic
+  | ABS   | ROUND | TRUNC               -- ^ special arithmetic
+  | SQRT  | EXP   | LOG                 -- ^ root and exponents
+  | SIN   | COS   | TAN   | ASIN  | ACOS  | ATAN  -- ^ trigonometric
+  | SINH  | COSH  | TANH  | ASINH | ACOSH | ATANH -- ^ hyperbolic
   deriving (Eq, Ord, Enum, Ix, Typeable)
 
 instance Show ArithOp where

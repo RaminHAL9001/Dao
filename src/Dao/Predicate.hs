@@ -46,6 +46,8 @@ import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Class
 import           Control.Monad.State
 
+import           Data.Monoid
+
 import           System.IO.Unsafe
 
 import           Debug.Trace
@@ -121,7 +123,7 @@ data PValue item a
     -- 'Parser's 'Control.Monad.State.State' monad, which will cause @b@ to be evaluated. If the
     -- entire parser evaluates to a 'Backtrack' this means the 'Parser' did not fail, but it did not
     -- match the input string either, at which point you can have your 'Parser' evaluate 'PFail'
-    -- using the 'pfail' or 'Control.Monad.fail' functions.
+    -- using the 'PFail' or 'Control.Monad.fail' functions.
     --
     -- Note that 'Backtrack'ing does not put back the characters that were taken from the input.
     -- Those characters are still gone, parsing simply continues from the next alternative in the
@@ -301,4 +303,23 @@ okToMaybe pval = case pval of
   OK      a -> Just a
   Backtrack -> Nothing
   PFail _ _ -> Nothing
+
+-- | Constructs a 'PFail' value with 'Data.Monoid.mempty'. Useful in functions that need to evaluate
+-- to an error, but cannot (or doesn't need to) set more detailed information about the error. The
+-- 'PFail' value can be caught elsewhere, and more detailed information can be constructed there.
+pfail :: Monoid err => UStr -> PValue err ig
+pfail msg = PFail mempty msg
+
+-- | If given 'Data.Maybe.Nothing', evaluates to 'Backtrack', otherwise evaluates to 'OK'.
+maybeToBacktrack :: Maybe a -> PValue err a
+maybeToBacktrack a = case a of
+  Nothing -> Backtrack
+  Just  a -> OK a
+
+-- | If given 'Data.Maybe.Nothing', evaluates to 'PFail' with the given error information.
+-- Otherwise, evaluates to 'OK'.
+maybeToPFail :: err -> UStr -> Maybe a -> PValue err a
+maybeToPFail err msg a = case a of
+  Nothing -> PFail err msg
+  Just  a -> OK a
 

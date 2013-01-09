@@ -42,7 +42,7 @@ import Control.Concurrent
 
 disclaimer :: String
 disclaimer = unlines $
-  [ "\"Dao\"  Copyright (C) 2008-2012  Ramin Honary."
+  [ "\"Dao\"  Copyright (C) 2008-2013  Ramin Honary."
   , "This program comes with ABSOLUTELY NO WARRANTY."
   , "This is free software, and you are welcome to redistribute it under"
   , "the terms and conditions of the GNU Affero General Public License."

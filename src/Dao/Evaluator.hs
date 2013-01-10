@@ -65,7 +65,7 @@ import qualified Data.IntMap as I
 import qualified Data.ByteString.Lazy.UTF8 as U
 
 --debug: for use with "trace"
--- import Debug.Trace
+--import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -631,7 +631,7 @@ evalSubscript a b = a >>= \a -> case a of
           Just  a -> return a
 
 infixOps :: Array ArithOp (CheckVal -> CheckVal -> CheckVal)
-infixOps = let o = (,) in array (OR, MOD) $
+infixOps = let o = (,) in array (POINT, MOD) $
   [ o POINT evalSubscript
   , o DOT   $ \a b -> a >>= asReference >>= \a -> b >>= asReference >>= \b -> case appendReferences a b of
                   Nothing -> pfail (ustr (show b++" cannot be appended to "++show a))

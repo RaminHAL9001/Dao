@@ -985,7 +985,13 @@ evalObject obj = case obj of
       OScript o -> execScriptCall args o
       ORule   o -> execRuleCall   args o
   ParenExpr     _     o      lc -> evalObject (unComment o)
-  ArraySubExpr  o  _  i      lc -> evalArraySubscript o i
+  ArraySubExpr  o  _  i      lc -> do
+    o <- evalObject o
+    i <- evalObject (unComment i)
+    case evalSubscript (return o) (return i) of
+      OK          a -> return a
+      PFail loc msg -> ceError (OString msg)
+      Backtrack     -> ceError (OList [i, OString (ustr "cannot be used as index of"), o])
   Equation   left  op_ right lc -> do
     let op = unComment op_
     left  <- evalObject left
@@ -1045,64 +1051,6 @@ evalObject obj = case obj of
                  ++" constructor must evaluate to two "++show IntType++"s"
       _ -> simpleError "internal error: array range expression has fewer than 2 arguments"
   LambdaExpr argv  code      lc -> return (OScript (FuncExpr{scriptArgv = argv, scriptCode = Com code}))
-
-evalArraySubscript :: ObjectExpr -> Com ObjectExpr -> ExecScript Object
-evalArraySubscript o i = evalObject o >>= \o -> case o of
-  ORef (IntRef o) -> do
-    let fn i =
-          if o==0
-            then evalIntRef (fromIntegral i)
-            else do
-              (OList mx) <- evalIntRef (fromIntegral o)
-              ContErrT $ lift $ Control.Exception.catch (return . CENext $! mx!!fromIntegral i) $
-                \ (ErrorCall _) -> return $ CEError $ OPair $
-                    ( OPair (OInt (fromIntegral o), OInt (fromIntegral i))
-                    , OString $ ustr $
-                      "pattern match reference was indexed with a value out of bounds")
-        ilkup i = case i of
-          OInt  i -> fn i
-          OWord i -> fn i
-          OLong i -> fn i
-          OList i -> fmap OList (mapM ilkup i)
-          OSet  i -> fmap OList (mapM ilkup (S.elems i))
-          _ -> indexTypeError "pattern match reference" i
-    evalObject (unComment i) >>= ilkup
-  o -> do
-    i <- evalObject (unComment i)
-    let ck i x fn = checkIntMapBounds i x >> fn (fromIntegral x)
-        ilkup t i fn = case i of
-          OInt  x -> ck i x fn
-          OWord x -> ck i x fn
-          OLong x -> ck i x fn
-          OList x -> fmap OList (mapM (\i -> ilkup t i fn) x)
-          OSet  x -> fmap OList (mapM (\i -> fmap (OPair . (,) i) (ilkup t i fn)) (S.elems x))
-          _ -> indexTypeError (show t) i
-        ixmsg t = objectError i ((show t)++" was accessed at an index that is out of bounds")
-        mlkup o i lk = case i of
-          OList   x -> fmap OList (mapM (\i -> mlkup o i lk) x)
-          OSet    x -> fmap OList (mapM (\i -> fmap (OPair . ((,) i)) (mlkup o i lk)) (S.elems x))
-          o         -> lk o
-        mxmsg t u i = objectError i (show t++" must be indexed with items of type "++show u)
-    case o of
-      OList   o -> ilkup ListType i $ \x ->
-        execIO (handle (\ (ErrorCall _) -> return ONull) (return $! (o!!x)))
-      OArray  o -> ilkup ArrayType i $ \x ->
-        if inRange (bounds o) x then return (o!x) else ixmsg ArrayType
-      OIntMap m -> ilkup IntMapType i $ \x -> do
-        checkIntMapBounds o x
-        return (fromMaybe ONull (I.lookup (fromIntegral x) m))
-      ODict   o -> mlkup o i $ \i -> case i of
-        OString x -> return (fromMaybe ONull (M.lookup x o))
-        _ -> mxmsg DictType StringType i
-      OTree   o -> mlkup o i $ \i -> case i of
-        ORef (GlobalRef x) -> return (fromMaybe ONull (T.lookup x o))
-        _ -> mxmsg TreeType RefType i
-      _ -> objectError o $
-        "objects of type "++show (objType o)++" cannot be accessed by an index subscript"
-  where
-    indexTypeError t o = objectError (OType (objType o)) $
-      t++" index must be a value of type "++show IntType++", "
-        ++show WordType++", or "++show LongType
 
 -- | Simply checks if an 'Prelude.Integer' is within the maximum bounds allowed by 'Data.Int.Int'
 -- for 'Data.IntMap.IntMap'.

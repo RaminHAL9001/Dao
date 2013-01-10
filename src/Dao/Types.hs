@@ -70,7 +70,7 @@ import           Control.Monad.Reader
 catchErrorCall :: Run a -> Run (Either ErrorCall a)
 catchErrorCall fn = ReaderT $ \r -> try (runReaderT fn r)
 
-newtype Stack key val = Stack { mapList :: [M.Map key val] }
+newtype Stack key val = Stack { mapList :: [T.Tree key val] }
 
 emptyStack :: Stack key val
 emptyStack = Stack []
@@ -139,9 +139,7 @@ data Executable = Executable{ staticVars :: IORef (M.Map Name Object), executabl
 
 -- | A subroutine is specifically a callable function (but we don't use the name Function to avoid
 -- confusion with Haskell's "Data.Function"). 
-data Subroutine = Subroutine{ argsList   :: [Name],   getScriptExpr :: Executable }
-
-type TopLevelFunc = DMVar ([Object] -> ExecScript Object)
+data Subroutine = Subroutine{ argsPattern :: ObjPat,   getScriptExpr :: Executable }
 
 -- | This is the executable form of the 'SourceCode', which cannot be serialized, but is structured
 -- in such a way as to make execution more efficient. It caches computed 'ScriptExpr'ns as some type
@@ -250,84 +248,7 @@ objectError o msg = ceError (OPair (OString (ustr msg), o))
 -- language, are stored in 'Data.Map.Map's from the functions name to an object of this type.
 -- Functions of this type are called by 'evalObject' to evaluate expressions written in the Dao
 -- language.
-newtype CheckFunc = CheckFunc { checkFunc :: [Object] -> Check (ContErr Object) }
-
--- | The 'Check' monad (which is a type of 'Dao.Predicate.PredicateIO' and lets you check types of
--- objects, particularly the argument statements passed to a built-in Dao function, to determine
--- which 'ExecScript' action to perform. 'Dao.Predicate.PredicateIO's safely handle
--- Haskell-language-level pattern match and case failures, so you don't need to write swathes of
--- Haskell case statements for every possible combination of input arguments.
-type Check a = PredicateIO ExecUnit a
-
--- | Supply a 'Data.Map.Map' of 'Func's by placing them into the 'ExecUnit' before
--- calling 'execScriptCall'. This defines which functions are enabled by default to the evaluation
--- algorithm.
-newtype Func = Func { evalBuiltin :: [Object] -> ExecScript Object }
-
--- | This function lets you run a 'Check' monad within a 'ExecScript' monad. The purpose is to check
--- the input arguments to built-in Dao functions. Express the fact that a predicate matches by
--- 'Control.Monad.return'ing a @'ExecScript' 'Dao.Types.Object'@ function. The first matching
--- predicate that executes without throwing a 'Dao.Object.Monad.ceError' will determine the value of
--- the 'Dao.Types.Object' returned by this function.
-checkToExecScript :: UStr -> Object -> Check (ContErr a) -> ExecScript a
-checkToExecScript exprType inType ckfn =
-  do  xunit <- ask
-      execIO (runCombinationT (runPredicateIO ckfn) xunit) >>= loop xunit []
-  where
-    loop :: ExecUnit -> [Object] -> [(Either Object (ContErr a), ExecUnit)] -> ExecScript a
-    loop xunit errs optx = case optx of
-      (Left  ONull, _):optx -> loop xunit errs optx
-      (Left  err  , _):optx -> loop xunit (err:errs) optx
-      (Right o    , _):_    -> returnContErr o
-      [] -> returnContErr $ CEError $ OList $
-              [ OString exprType
-              , OString (ustr "cannot operate with given parameter types")
-              , inType
-              ] ++ errs
-
--- | Convert a 'TopLevelFunc' to a 'CheckFunc'.
-toplevelToCheckFunc :: TopLevelFunc -> ExecScript CheckFunc
-toplevelToCheckFunc top = execRun (dReadMVar xloc top) >>= \top ->
-  return $ CheckFunc $ \args -> execScriptToCheck id (top args) >>= checkOK
-
--- | Run an 'ExecScript' monad inside the 'Check'. This has the further effect of halting all
--- 'CEReturn's, so function call evaluation does not collapse the entire expression. 'CEError's are
--- converted to failed predicates.
-execScriptToCheck :: (Object -> a) -> ExecScript a -> Check a
-execScriptToCheck onCEReturn esfn = get >>= \xunit -> do
-  ce <- liftIO (runReaderT (runExecScript esfn xunit) (parentRuntime xunit))
-  case ce of
-    CENext   ce -> return ce
-    CEReturn ce -> return (onCEReturn ce)
-    CEError  ce -> falseIO ce
-
-runToCheck :: Run a -> Check (ContErr a)
-runToCheck run = do
-  PredicateIO $ CombinationT $ \xunit ->
-    catches (runReaderT run (parentRuntime xunit) >>= \a -> return [(Right (CENext a), xunit)]) $
-      let err e = return [(Right (CEError (OString (ustr (show e)))), xunit)]
-      in  [ Handler $ \ (e::IOException   ) -> err e
-          , Handler $ \ (e::ErrorCall     ) -> err e
-          , Handler $ \ (e::ArithException) -> err e
-          , Handler $ \ (e::ArrayException) -> err e
-          ]
-
--- TODO: this function should no longer be used.
-runToCheck_ :: Run a -> Check (ContErr Object)
-runToCheck_ run = runToCheck run >> return (CENext OTrue)
-
--- | A 'CheckFunc' returns a 'Dao.Object.Monad.ContErr', which means you need to use an equation
--- like: @('Control.Monad.return' ('Dao.Object.Monad.CENext' a))@. But since this combinator is used
--- so often, it is provided here as an easy-to-remember function.
-checkOK :: a -> PredicateIO st (ContErr a)
-checkOK = return . CENext
-
--- | Use 'falseIO' at the point in the equation where the predicate can be declared as false, but
--- take a string and an object so an appropriate error message can be constructed.
-checkFail :: String -> Object -> PredicateIO st ignored
-checkFail msg obj = falseIO (OPair (OString (ustr msg), obj))
-
-----------------------------------------------------------------------------------------------------
+newtype DaoFunc = DaoFunc { daoForeignCall :: [Object] -> ExecScript Object }
 
 -- | This is the state that is used to run the evaluation algorithm. Every Dao program file that has
 -- been loaded will have a single 'ExecUnit' assigned to it. Parameters that are stored in
@@ -362,9 +283,9 @@ data ExecUnit
     , execAccessRules    :: FileAccessRules
       -- ^ restricting which files can be loaded by the program associated with this ExecUnit, these
       -- are the rules assigned this program by the 'ProgramRule' which allowed it to be loaded.
-    , builtinFuncs       :: M.Map Name CheckFunc
+    , builtinFuncs       :: M.Map Name DaoFunc
       -- ^ a pointer to the builtin function table provided by the runtime.
-    , toplevelFuncs      :: DMVar (M.Map Name TopLevelFunc)
+    , toplevelFuncs      :: DMVar (M.Map Name Subroutine)
     , execHeap           :: TreeResource
       -- ^ referes to the same resource as 'Dao.Types.globalData' in 'Dao.Types.Program'
     , execStack          :: DMVar (Stack Name Object)
@@ -455,7 +376,7 @@ data Runtime
       -- track of any jobs started by this runtime.
     , defaultTimeout       :: Maybe Int
       -- ^ the default time-out value to use when evaluating 'execInputString'
-    , functionSets         :: M.Map Name (M.Map Name CheckFunc)
+    , functionSets         :: M.Map Name (M.Map Name DaoFunc)
       -- ^ every labeled set of built-in functions provided by this runtime is listed here. This
       -- table is checked when a Dao program is loaded that has "requires" directives.
     , availableTokenizers  :: M.Map Name Tokenizer

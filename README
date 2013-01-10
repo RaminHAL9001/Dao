@@ -10,11 +10,13 @@ artificial intelligence programs that can understand natural (human)
 languages, and is licensed under the GNU Affero General Public License:
 	http://www.gnu.org/licenses/agpl.html
 
-I chose to develop the Dao language for many reasons, rather than make
+I chose to develop the Dao language for many reasons. I could have made
 use of Haskell, Python, Scheme, JavaScript, or any of the other fine
-programming languages already available. But my reasoning can be
-summarized as the following three principles which have guided my
-implementation of the Dao language and interpreter:
+programming languages already available, but after much consideration
+and experimentation, it seems that what I have in mind for Dao is rather
+specific to this problem domain. My reasons for developing a new
+computer language can be summarized as the following three principles
+which have guided my implementation of the Dao language and interpreter:
 
 1.	Dao is a language to build ontologies, define axioms on those
 ontologies, and provides a means to map natural human language patterns
@@ -29,12 +31,12 @@ data structures and executable script code.
 
 2.	Dao is a scripting language extension for Haskell applications,
 analogous to what Lua is for C/C++. Dao is NOT a general purpose
-language. APIs are not implemented in Dao language, nor are
-applications. You write applications in Haskell and extend your
-application with the modules in the Dao package. You extend Dao's API
-with Haskell, and use Dao's foreign function interface to execute
+language. Dao is not inteded to be used for the development of APIs or
+applications. You write APIs and applications in Haskell. You extend
+your application with the modules in the Dao package. You extend Dao's
+API with Haskell, and use Dao's foreign function interface to execute
 Haskell code. Programmers can script portions of their applications in
-Dao. Ordinary users can use Dao's natural language features to issue
+Dao. End users can use Dao's natural language features to issue
 instructions to your application, or to construct their own scripts in
 an intuitive way using language that anyone understands.
 
@@ -46,13 +48,13 @@ interfaces.
 
         HOW IT WORKS
 
-The Dao runtime is comparable to the UNIX "AWK" language. However, the
-Dao language provides a much more feature-rich set of built-in data
+The Dao runtime is vaguely similar to the UNIX "AWK" language. However,
+the Dao language provides a much more feature-rich set of built-in data
 types and functions as compared to AWK, notably the ability to execute
-rules recursively in the same process. Also the Dao language makes use
-of "Patterns" rather than POSIX regular expressions. Patterns are
-inspired by UNIX "glob" expressions, and are intended to be used more
-for matching against natural language input.
+rules recursively in the same process. The Dao language makes use of
+"Patterns" rather than POSIX regular expressions. Patterns are inspired
+by UNIX "glob" expressions, and are intended to be used more for
+matching against natural language input.
 
 Patterns are optimized for faster matching of input text. Every action
 associated with a matching pattern is executed in its own thread, and
@@ -61,34 +63,41 @@ a simple heuristic: any thread executing for more than the configured
 time limit is forcibly halted.
 
 When an input string is matched against every pattern in a Dao program,
-that string is referred to as a "query." All patterns that match the
-query will queue their associated subroutine which is called an
-"action." Every queued "action" is executed in a separate thread, which
-is a process called "executing the query against the program" or
+that input string is referred to as a "query." All patterns that match
+the query will queue their associated subroutine which is called an
+"action." Every queued "action" is executed in a separate thread. I
+refer to this procedure as "executing the query against the program" or
 "executing the input string."
 
 Dao programs may import other programs as companions and execute input
 queries against companion programs, as well as recursively executing
-queries against itself.
+queries against itself. Imported companion programs are referred to as
+modules.
 
 As the Dao program executes input queries, the state of the program's
 working memory is changed. The working memory is similar to an
-HTML/JavaScript DOM tree. This tree can be serialized and stored to the
-actual filesystem of the host computer, and re-loaded back into memory
-at any time. These document files are informally called "idea" files
-because they allow the Dao system to store knowledge, and transmit it to
-other Dao installations.
+HTML/JavaScript DOM tree, but there are many more primitive types than
+what JavaScript provides. This tree can be serialized and stored to the
+filesystem of the host computer, and re-loaded back into memory at any
+time. These document files are informally called "idea" files because
+they allow the Dao system to store knowledge, and transmit it to other
+Dao installations.
 
-The working memory of a Dao program forms an ontology. Functions can be
-defined to manipulate the working memory in object-oriented fashion.
-The patterns that can match input queries formulate the axioms of the
-system. When an input query is executed, the Dao system can use these
-axioms to perform logical reasoning on these ontological objects.
+How this relates to artificial intelligence is that the working memory
+of a Dao program forms an ontology. Functions can be defined to
+manipulate the working memory in object-oriented fashion. The patterns
+that can match input queries formulate the axioms of the system. When an
+input query is executed, the Dao system can use these axioms to perform
+logical reasoning on the ontological objects in its working memory.
 
         A SIMPLE EXAMPLE, DAO COMPARED TO AWK
 
-To write an AWK program that could perform some action in response to an
-input string entered into it's standard input, you could write:
+To be clear, the purpose of Dao is completely different than the purpose
+of AWK. However, the Dao runtime uses a similar pattern matching and
+execution algorithm to that of AWK, so comparing Dao to AWK can be
+instructive.
+
+Observe the following AWK program:
 	# example.awk
 	/^ *put.*in/ {
 		match($0, /^put *(.*) *in *(.*) *$/, matched);
@@ -103,16 +112,6 @@ input string entered into it's standard input, you could write:
 		print("> Hello, " user_name "!");
 	}
 
-There are several problems with AWK that make it ill-suited to natural
-language systems. You need to place a Kleene-star after every space, and
-capture "wildcards" in parentheses because regular expressions are not
-designed to match natural language input. It is necessary to build the
-"matched" array with a separate call to the "match()" built-in function.
-All variables are global. Every rule is matched and executed in the
-order they are given in the script. There is no facility to serialize
-the state of the program and store it to, or reload it from, the file
-system.
-
 You can then interact with the AWK program like so:
 	% awk -f example.awk
 	my name is Dave
@@ -121,9 +120,26 @@ You can then interact with the AWK program like so:
 	> what to put: the data
 	> where to put it: the spreadsheet
 
-Typing mistakes, like writing "naem" instead of "name" would fail to
-behave as expected.
+AWK was not designed with natural language in mind, so it is ill-suited
+to natural language systems:
+1.  POSIX regular expressions are not designed to match
+natural language input.
+    *	You need to place a Kleene-star after every space, and and
+	capture "wildcards" in parentheses.
+    *	Typing mistakes, like writing "naem" instead of "name" would
+	fail to behave as expected.
+2.  It is necessary to build the "matched" array with a separate call to
+the "match()" built-in function.
+3.  Every rule is matched and executed in the order they are given in the
+script. There is no concurrency.
+4.  All variables are global.
+5.  There is no facility to serialize the state of the program and store
+it to, or reload it from, the file system.
+6.  There is no function to force a string into the standard input, so
+recursive pattern matching is not possible.
 
+The Dao language and interpreter is designed for natural language
+understanding, and addresses all of the above mentioned shortcomings.
 The same program written in the Dao language would look like this:
 	rule "put $* in $*" {
 		what.to.put = $1;
@@ -136,19 +152,16 @@ The same program written in the Dao language would look like this:
 		print("> Hello, " + $1);
 	}
 
-However Dao's language is a bit more concise, both for patterns and for
-the scripted actions. Dao provides ways to make pattern matching more
+Dao's language is a bit more concise, both for patterns and for the
+scripted actions. Dao provides ways to make pattern matching more
 permissive, so that typing mistakes may also match the patterns. The
 matching algorithm can be specified within the program. Future
 implementations may allow for a pattern matching algorithm to take into
-account contextual clues to make more accurate guesses on how to correct
+account contextual clues to make more accurate guesses on how to rectify
 typing mistakes, and to facilitate gathering of statistical information
 on input strings to better predict what an end user will type.
 
-Also unlike AWK, actions associated with rules may recursively generate
-more input strings to be matched against every rule in the program. A
-Dao program may import other companion programs called "modules" and
-match input queries against any or all of these companions.
+------------------------------------------------------------------------
 
 The Dao System is the result of my masters thesis, "Natural Language
 Understanding Systems using the Dao Programming Environment" published

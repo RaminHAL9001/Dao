@@ -353,6 +353,15 @@ clearAllQTimeVars xunit = modifyUnlocked_ (queryTimeHeap xunit) (return . const 
 
 type CheckVal = PValue Location Object
 
+evalBooleans :: (Bool -> Bool -> Bool) -> Object -> Object -> CheckVal
+evalBooleans fn a b = return (if fn (objToBool a) (objToBool b) then OTrue else ONull)
+
+eval_OR :: Object -> Object -> CheckVal
+eval_OR = evalBooleans (||)
+
+eval_AND :: Object -> Object -> CheckVal
+eval_AND = evalBooleans (&&)
+
 asReference :: Object -> PValue Location Reference
 asReference o = case o of
   ORef o -> return o
@@ -470,8 +479,8 @@ evalSets combine dict intmap set a b = msum $
         return (OSet (set a b))
   ]
 
-eval_ADD :: CheckVal -> CheckVal -> CheckVal
-eval_ADD a b = a >>= \a -> b >>= \b -> msum
+eval_ADD :: Object -> Object -> CheckVal
+eval_ADD a b = msum
   [ evalNum (+) (+) a b
   , timeAdd a b, timeAdd b a
   , do  a <- asStringNoConvert a
@@ -494,8 +503,8 @@ eval_ADD a b = a >>= \a -> b >>= \b -> msum
         _         -> mzero
       return (objListAppend ax bx)
 
-eval_SUB :: CheckVal -> CheckVal -> CheckVal
-eval_SUB a b = a >>= \a -> b >>= \b -> msum $
+eval_SUB :: Object -> Object -> CheckVal
+eval_SUB a b = msum $
   [ evalNum (-) (-) a b
   , evalSets (\a -> head a) (\ _ a b -> M.difference a b) (\ _ a b -> I.difference a b) S.difference a b
   , case (a, b) of
@@ -545,14 +554,14 @@ evalDistNum intFn rnlFn a b = msum $
       else  if isNumeric b then evalDist (flip (evalDistNum intFn rnlFn)) b a else mzero
   ]
 
-eval_MULT :: CheckVal -> CheckVal -> CheckVal
-eval_MULT a b = a >>= \a -> b >>= \b -> evalDistNum (*) (*) a b
+eval_MULT :: Object -> Object -> CheckVal
+eval_MULT a b = evalDistNum (*) (*) a b
 
-eval_DIV :: CheckVal -> CheckVal -> CheckVal
-eval_DIV a b = a >>= \a -> b >>= \b -> evalDistNum div (/) a b
+eval_DIV :: Object -> Object -> CheckVal
+eval_DIV a b = evalDistNum div (/) a b
 
-eval_MOD :: CheckVal -> CheckVal -> CheckVal
-eval_MOD a b = a >>= \a -> b >>= \b -> evalDistNum mod (\a b -> let r = a/b in (abs r - abs (floor r % 1)) * signum r) a b
+eval_MOD :: Object -> Object -> CheckVal
+eval_MOD a b = evalDistNum mod (\a b -> let r = a/b in (abs r - abs (floor r % 1)) * signum r) a b
 
 evalBitsOrSets
   :: ([Object]  -> Object)
@@ -560,50 +569,46 @@ evalBitsOrSets
   -> (([Object] -> [Object] -> [Object]) -> I.IntMap   [Object] -> I.IntMap   [Object] -> I.IntMap   [Object])
   -> (T_set -> T_set  -> T_set)
   -> (Integer -> Integer -> Integer)
-  -> CheckVal -> CheckVal -> CheckVal
-evalBitsOrSets combine dict intmap set num a b = a >>= \a -> b >>= \b ->
+  -> Object -> Object -> CheckVal
+evalBitsOrSets combine dict intmap set num a b =
   mplus (evalSets combine dict intmap set a b) (evalInt num a b)
 
-eval_ORB :: CheckVal -> CheckVal -> CheckVal
+eval_ORB :: Object -> Object -> CheckVal
 eval_ORB  a b = evalBitsOrSets OList M.unionWith        I.unionWith        S.union        (.|.) a b
 
-eval_ANDB :: CheckVal -> CheckVal -> CheckVal
+eval_ANDB :: Object -> Object -> CheckVal
 eval_ANDB a b = evalBitsOrSets OList M.intersectionWith I.intersectionWith S.intersection (.&.) a b
 
-eval_XORB :: CheckVal -> CheckVal -> CheckVal
+eval_XORB :: Object -> Object -> CheckVal
 eval_XORB a b = evalBitsOrSets (\a -> head a) mfn ifn sfn xor a b where
   sfn = fn S.union S.intersection S.difference head
   mfn = fn M.union M.intersection M.difference
   ifn = fn I.union I.intersection I.difference
   fn u n del _ a b = (a `u` b) `del` (a `n` b)
 
-evalBooleans :: (Bool -> Bool -> Bool) -> CheckVal -> CheckVal -> CheckVal
-evalBooleans fn a b = a >>= \a -> b >>= \b ->
-  return (if fn (objToBool a) (objToBool b) then OTrue else ONull)
-
-evalShift :: (Int -> Int) -> CheckVal -> CheckVal -> CheckVal
-evalShift fn a b = a >>= \a -> b >>= asHaskellInt >>= \b -> case a of
+evalShift :: (Int -> Int) -> Object -> Object -> CheckVal
+evalShift fn a b = asHaskellInt b >>= \b -> case a of
   OInt  a -> return (OInt  (shift a (fn b)))
   OWord a -> return (OWord (shift a (fn b)))
   OLong a -> return (OLong (shift a (fn b)))
   _       -> mzero
 
-evalSubscript :: CheckVal -> CheckVal -> CheckVal
-evalSubscript a b = a >>= \a -> case a of
-  OArray  a -> b >>= fmap fromIntegral . asInteger >>= \b ->
+evalSubscript :: Object -> Object -> CheckVal
+evalSubscript a b = case a of
+  OArray  a -> fmap fromIntegral (asInteger b) >>= \b ->
     if inRange (bounds a) b then return (a!b) else pfail (ustr "array index out of bounds")
-  OList   a -> b >>= asHaskellInt >>= \b ->
+  OList   a -> asHaskellInt b >>= \b ->
     let err = pfail (ustr "list index out of bounds")
         ax  = drop b a
     in  if b<0 then err else if null ax then err else return (OList ax)
-  OIntMap a -> b >>= asHaskellInt >>= \b -> case I.lookup b a of
+  OIntMap a -> asHaskellInt b >>= \b -> case I.lookup b a of
     Nothing -> pfail (ustr "no item at index requested of intmap")
     Just  b -> return b
   ODict   a -> msum $
-    [ do  b >>= asStringNoConvert >>= \b -> case M.lookup b a of
+    [ do  asStringNoConvert b >>= \b -> case M.lookup b a of
             Nothing -> pfail (ustr (show b++" is not defined in dict"))
             Just  b -> return b
-    , do  b >>= asReference >>= \b -> case b of
+    , do  asReference b >>= \b -> case b of
             LocalRef  b -> case M.lookup b a of
               Nothing -> pfail (ustr (show b++" is not defined in dict"))
               Just  b -> return b
@@ -621,8 +626,8 @@ evalSubscript a b = a >>= \a -> case a of
                         else pfail (ustr (show (GlobalRef zx)++" does not point to dict object"))
     ]
   OTree   a -> msum $ 
-    [ b >>= asStringNoConvert >>= \b -> done (T.lookup [b] a)
-    , b >>= asReference >>= \b -> case b of
+    [ asStringNoConvert b >>= \b -> done (T.lookup [b] a)
+    , asReference b >>= \b -> case b of
         LocalRef  b  -> done (T.lookup [b] a)
         GlobalRef bx -> done (T.lookup bx  a)
     ] where
@@ -630,19 +635,28 @@ evalSubscript a b = a >>= \a -> case a of
           Nothing -> pfail (ustr (show b++" is not defined in struct"))
           Just  a -> return a
 
-infixOps :: Array ArithOp (CheckVal -> CheckVal -> CheckVal)
+eval_SHR :: Object -> Object -> CheckVal
+eval_SHR = evalShift negate
+
+eval_SHL :: Object -> Object -> CheckVal
+eval_SHL = evalShift id
+
+eval_DOT :: Object -> Object -> CheckVal
+eval_DOT a b = asReference a >>= \a -> asReference b >>= \b -> case appendReferences a b of
+  Nothing -> pfail (ustr (show b++" cannot be appended to "++show a))
+  Just  a -> return (ORef a)
+
+infixOps :: Array ArithOp (Object -> Object -> CheckVal)
 infixOps = let o = (,) in array (POINT, MOD) $
   [ o POINT evalSubscript
-  , o DOT   $ \a b -> a >>= asReference >>= \a -> b >>= asReference >>= \b -> case appendReferences a b of
-                  Nothing -> pfail (ustr (show b++" cannot be appended to "++show a))
-                  Just  a -> return (ORef a)
+  , o DOT   eval_DOT
   , o OR    (evalBooleans (||))
   , o AND   (evalBooleans (&&))
   , o ORB   eval_ORB
   , o ANDB  eval_ANDB
   , o XORB  eval_XORB
-  , o SHL   (evalShift id)
-  , o SHR   (evalShift negate)
+  , o SHL   eval_SHL
+  , o SHR   eval_SHR
   , o ADD   eval_ADD
   , o SUB   eval_SUB
   , o MULT  eval_MULT
@@ -650,19 +664,19 @@ infixOps = let o = (,) in array (POINT, MOD) $
   , o MOD   eval_MOD
   ]
 
-updatingOps :: Array UpdateOp (CheckVal -> CheckVal -> CheckVal)
+updatingOps :: Array UpdateOp (Object -> Object -> CheckVal)
 updatingOps = let o = (,) in array (minBound, maxBound) $
-  [ o UCONST $ \_ b -> b
-  , o UADD   $! infixOps!ADD
-  , o USUB   $! infixOps!SUB
-  , o UMULT  $! infixOps!MULT
-  , o UDIV   $! infixOps!DIV
-  , o UMOD   $! infixOps!MOD
-  , o UORB   $! infixOps!ORB
-  , o UANDB  $! infixOps!ANDB
-  , o UXORB  $! infixOps!XORB
-  , o USHL   $! infixOps!SHL
-  , o USHR   $! infixOps!SHR
+  [ o UCONST (\_ b -> return b)
+  , o UADD   eval_ADD
+  , o USUB   eval_SUB
+  , o UMULT  eval_MULT
+  , o UDIV   eval_DIV
+  , o UMOD   eval_MOD
+  , o UORB   eval_ORB
+  , o UANDB  eval_ANDB
+  , o UXORB  eval_XORB
+  , o USHL   eval_SHL
+  , o USHR   eval_SHR
   ]
 
 eval_NEG :: Object -> CheckVal
@@ -687,23 +701,29 @@ eval_INVB o = case o of
   OLong o -> return $ OLong (complement o)
   _       -> mzero
 
-prefixOps :: Array ArithOp (CheckVal -> CheckVal)
-prefixOps = let o = (,) in array (REF, SUB) $
-  [ o REF   $ \r -> r >>= \r -> case r of
-                      ORef    r -> return (ORef (MetaRef r))
-                      OString s -> return (ORef (LocalRef s))
-                      _         -> mzero
-  , o DEREF $ \r -> r >>= \r -> case r of
-                      ORef (MetaRef r) -> return (ORef r)
-                      ORef r           -> return (ORef r)
-                      _                -> mzero
-  , o INVB  (>>=eval_INVB)
-  , o NOT   (fmap (boolToObj . testNull))
-  , o NEG   (>>=eval_NEG)
-  ]
+eval_REF :: Object -> CheckVal
+eval_REF r = case r of
+  ORef    r -> return (ORef (MetaRef r))
+  OString s -> return (ORef (LocalRef s))
+  _         -> mzero
 
-subscriptOp :: CheckVal -> CheckVal -> CheckVal
-subscriptOp obj sub = error "TODO: define subscriptOp"
+eval_DEREF :: Object -> CheckVal
+eval_DEREF r = case r of
+  ORef (MetaRef r) -> return (ORef r)
+  ORef r           -> return (ORef r)
+  _                -> mzero
+
+eval_NOT :: Object -> CheckVal
+eval_NOT = return . boolToObj . testNull
+
+prefixOps :: Array ArithOp (Object -> CheckVal)
+prefixOps = let o = (,) in array (REF, SUB) $
+  [ o REF   eval_REF
+  , o DEREF eval_DEREF
+  , o INVB  eval_INVB
+  , o NOT   eval_NOT
+  , o NEG   eval_NEG
+  ]
 
 -- | Traverse the entire object, returning a list of all 'Dao.Object.OString' elements.
 extractStringElems :: Object -> [UStr]
@@ -958,8 +978,7 @@ evalObject obj = case obj of
     expr <- evalObject expr >>= evalObjectRef
     fmap (fromMaybe ONull) $ updateReference nm $ \maybeObj -> case maybeObj of
       Nothing  -> ceError $ OList $ [OString $ ustr "undefined refence", ORef nm]
-      Just obj -> fmap Just $ checkPValue "assignment expression" [obj, expr] $
-        (updatingOps!op) (return obj) (return expr)
+      Just obj -> fmap Just $ checkPValue "assignment expression" [obj, expr] $ (updatingOps!op) obj expr
   FuncCall   op  _  args     lc -> do -- a built-in function call
     func <- localVarLookup op
     case func of
@@ -988,7 +1007,7 @@ evalObject obj = case obj of
   ArraySubExpr  o  _  i      lc -> do
     o <- evalObject o
     i <- evalObject (unComment i)
-    case evalSubscript (return o) (return i) of
+    case evalSubscript o i of
       OK          a -> return a
       PFail loc msg -> ceError (OString msg)
       Backtrack     -> ceError (OList [i, OString (ustr "cannot be used as index of"), o])
@@ -1000,7 +1019,7 @@ evalObject obj = case obj of
       DOT   -> return (left, right)
       POINT -> liftM2 (,) (evalObjectRef left) (return right)
       _     -> liftM2 (,) (evalObjectRef left) (evalObjectRef right)
-    case (infixOps!op) (return left) (return right) of
+    case (infixOps!op) left right of
       OK result    -> return result
       Backtrack    -> ceError $ OList $
         [OString $ ustr (show op), OString $ ustr "cannot operate on objects of type", left, right]
@@ -1024,8 +1043,7 @@ evalObject obj = case obj of
           Just old -> case op of
             UCONST -> ceError $ OList [OString (ustr ("twice defined left-hand side "++show op)), ixObj]
             op     -> do
-              new <- checkPValue (show cons++" assignment expression "++show op) [ixObj, old, new] $
-                      (updatingOps!op) (return old) (return new)
+              new <- checkPValue (show cons++" assignment expression "++show op) [ixObj, old, new] $ (updatingOps!op) old new
               return (insert ixVal new map)
         intmap = assign I.lookup I.insert
         dict   = assign M.lookup M.insert

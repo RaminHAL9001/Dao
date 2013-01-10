@@ -186,7 +186,7 @@ justOnce checks = 1 == foldl (\i check -> if check then i+1 else i) 0 checks
 
 -- | Use a list of @['ObjPat']@s to check a list of @['Dao.Object.Object']@s. The list of
 -- 'Dao.Object.Object's to be matched is actually a list of pairs, but only the second item is
--- checked. The first item in each pair is ignored, unless matchign against the second item
+-- checked. The first item in each pair is ignored, unless matching against the second item
 -- evaluates to 'Dao.Predicate.PFail', in which case, the first item is used as an index to indicate
 -- which list item caused the match to result in 'Dao.Predicate.PFail', so you can identify which
 -- 'Dao.Object.Object' in the list did not match.

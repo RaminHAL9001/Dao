@@ -81,7 +81,6 @@ initExecUnit runtime initGlobalData = do
   return $
     ExecUnit
     { parentRuntime      = runtime
-    , verbosePrint       = \_ _ -> return ()
     , currentExecJob     = Nothing
     , currentDocument    = Nothing
     , currentProgram     = Nothing
@@ -89,7 +88,7 @@ initExecUnit runtime initGlobalData = do
     , currentBranch      = []
     , importsTable       = []
     , execAccessRules    = RestrictFiles (Pattern{getPatUnits = [Wildcard], getPatternLength = 1})
-    , builtinFuncs       = mempty
+    , builtinFuncs       = initBuiltinFuncs
     , toplevelFuncs      = toplev
     , execHeap           = initGlobalData
     , queryTimeHeap      = qheap
@@ -109,13 +108,22 @@ setupExecutable scrp = do
     , executable = map unComment (unComment scrp)
     }
 
-runExecutable :: Executable -> ExecScript ()
-runExecutable exe = localCE (\xunit -> return (xunit{currentTask = (currentTask xunit){taskAction = exe}})) $ do
-  ce <- catchContErr (execGuardBlock (map Com (executable exe)))
-  returnContErr $ case ce of
-    CEReturn _ -> CENext ()
-    CENext   _ -> CENext ()
-    CEError  e -> CEError e
+runExecutable :: T_tree -> Executable -> ExecScript Object
+runExecutable initStack exe =
+  localCE (\xunit -> return (xunit{currentTask = (currentTask xunit){taskAction = exe}})) $
+    execFuncPushStack initStack (executable exe >> return ONull)
+
+-- | Given a list of arguments, matches these arguments toe the given subroutine's
+-- 'Dao.Object.ObjPat'. If it matches, the 'Dao.Types.getScriptExpr' of the 'Dao.Types.Executable'
+-- is evaluated with 'runExecutable'. If the pattern does not match, 'Nothing' is returned to the
+-- 'Dao.Types.ExecScript' monad, which allows multiple 'Dao.Types.Subroutine's to be tried before
+-- evaluating to an error in the calling context.
+runSubroutine :: [Object] -> Subroutine -> ExecScript (Maybe Object)
+runSubroutine args sub =
+  case evalMatcher (matchObjectList (argsPattern sub) args >> gets matcherTree) of
+    OK       tree -> fmap Just (runExecutable tree (getScriptExpr sub))
+    Backtrack     -> return Nothing
+    PFail ref msg -> ceError (OPair (OString msg, ORef ref))
 
 -- | Execute a 'Dao.Types.Script' with paramters passed as a list of 
 -- @'Dao.Types.Com' 'Dao.Object.ObjectExpr'@. This essentially treats the application of
@@ -138,20 +146,20 @@ execRuleCall ax rule = do
       OString a -> return a
       _ -> typeErr a
     _ -> typeErr a
-  flip local (pushExecStack M.empty (execScriptBlock (unComment (ruleAction rule)) >> ceReturn ONull)) $
-    \xunit -> xunit{currentTask = (currentTask xunit){taskMatch = matchFromList [] (length ax) ax}}
+  flip local (execFuncPushStack T.Void (execScriptBlock (unComment (ruleAction rule)) >> ceReturn ONull)) $
+    \xunit -> xunit{currentTask = (currentTask xunit){taskMatch = matchFromList [] (iLength ax) ax}}
 
 -- | Very simply executes every given script item. Does not use catchCEReturn, does not use
 -- 'nestedExecStack'. CAUTION: you cannot assign to local variables unless you call this method
--- within the 'nestedExecStack' or 'pushExecStack' functions. Failure to do so will cause a stack
+-- within the 'nestedExecStack' or 'execFuncPushStack' functions. Failure to do so will cause a stack
 -- underflow exception.
 execScriptBlock :: [Com ScriptExpr] -> ExecScript ()
 execScriptBlock block = mapM_ execScriptExpr block
 
 -- | A guard script is some Dao script that is executed before or after some event, for example, the
--- code founf in the @BEGIN@ and @END@ blocks.
+-- code found in the @BEGIN@ and @END@ blocks.
 execGuardBlock :: [Com ScriptExpr] -> ExecScript ()
-execGuardBlock block = void (pushExecStack M.empty (execScriptBlock block >> return ONull))
+execGuardBlock block = void (execFuncPushStack T.Void (execScriptBlock block >> return ONull))
 
 -- $BasicCombinators
 -- These are the most basic combinators for converting working with the 'ExecUnit' of an
@@ -165,9 +173,9 @@ stack_underflow = error "INTERNAL ERROR: stack underflow"
 
 -- | Push a new empty local-variable context onto the stack. Does NOT 'catchCEReturn', so it can be
 -- used to push a new context for every level of nested if/else/for/try/catch statement, or to
--- evaluate a macro, but not a function call. Use 'pushExecStack' to perform a function call within
+-- evaluate a macro, but not a function call. Use 'execFuncPushStack' to perform a function call within
 -- a function call.
-nestedExecStack :: T_dict -> ExecScript a -> ExecScript a
+nestedExecStack :: T_tree -> ExecScript a -> ExecScript a
 nestedExecStack init exe = do
   stack <- fmap execStack ask
   execRun (dModifyMVar_ xloc stack (return . stackPush init))
@@ -178,9 +186,9 @@ nestedExecStack init exe = do
 -- | Keep the current 'execStack', but replace it with a new empty stack before executing the given
 -- function. Use 'catchCEReturn' to prevent return calls from halting execution beyond this
 -- function. This is what you should use to perform a Dao function call within a Dao function call.
-pushExecStack :: T_dict -> ExecScript Object -> ExecScript Object
-pushExecStack dict exe = do
-  stackMVar <- execRun (dNewMVar xloc "pushExecStack/ExecUnit.execStack" (Stack [dict]))
+execFuncPushStack :: T_tree -> ExecScript Object -> ExecScript Object
+execFuncPushStack dict exe = do
+  stackMVar <- execRun (dNewMVar xloc "execFuncPushStack/ExecUnit.execStack" (Stack [dict]))
   ce <- catchContErr (local (\xunit -> xunit{execStack = stackMVar}) exe)
   case ce of
     CEReturn obj -> return obj
@@ -192,7 +200,7 @@ pushExecStack dict exe = do
 -- integer. Specifically, it returns a list of 'Dao.ObjectObject's where each object is an
 -- 'Dao.Types.OString' contained at the integer index of the 'Dao.Pattern.matchGaps' of a
 -- 'Dao.Pattern.Pattern'.
-evalIntRef :: Int -> ExecScript Object
+evalIntRef :: Word -> ExecScript Object
 evalIntRef i = do
   task <- fmap currentTask ask
   let oi = OInt (fromIntegral i)
@@ -259,7 +267,7 @@ curDocVarDelete ref obj = curDocVarUpdate ref (return . const Nothing)
 -- | Lookup a value in the 'execStack'.
 localVarLookup :: Name -> ExecScript (Maybe Object)
 localVarLookup sym =
-  fmap execStack ask >>= execRun . dReadMVar xloc >>= return . msum . map (M.lookup sym) . mapList
+  fmap execStack ask >>= execRun . dReadMVar xloc >>= return . msum . map (T.lookup [sym]) . mapList
 
 -- | Apply an altering function to the map at the top of the local variable stack.
 localVarUpdate :: Name -> (Maybe Object -> Maybe Object) -> ExecScript (Maybe Object)
@@ -267,8 +275,8 @@ localVarUpdate name alt = ask >>= \xunit -> execRun $
   dModifyMVar xloc (execStack xunit) $ \ax -> case mapList ax of
     []   -> stack_underflow
     a:ax ->
-      let obj = alt (M.lookup name a)
-      in  return (Stack (M.alter (const obj) name a : ax), obj)
+      let obj = alt (T.lookup [name] a)
+      in  return (Stack (T.update [name] (const obj) a : ax), obj)
 
 -- | Force the local variable to be defined in the top level 'execStack' context, do not over-write
 -- a variable that has already been defined in lower in the context stack.
@@ -348,18 +356,18 @@ clearAllQTimeVars xunit = modifyUnlocked_ (queryTimeHeap xunit) (return . const 
 -- $Built_in_functions
 -- Built-in functions, retrieved from an array 'infixOps' or 'prefixOps' by a 'Dao.Object.ArithOp'
 -- value, or from 'updateOps' by a 'Dao.Object.UpdateOp' value. Built-in functions check object
--- parameters passed to them with the 'CheckVal' monad, which is a fully lazy monad based on
+-- parameters passed to them with the 'BuiltinOp' monad, which is a fully lazy monad based on
 -- 'Dao.Predicate.PValue'.
 
-type CheckVal = PValue Location Object
+type BuiltinOp = PValue Location Object
 
-evalBooleans :: (Bool -> Bool -> Bool) -> Object -> Object -> CheckVal
+evalBooleans :: (Bool -> Bool -> Bool) -> Object -> Object -> BuiltinOp
 evalBooleans fn a b = return (if fn (objToBool a) (objToBool b) then OTrue else ONull)
 
-eval_OR :: Object -> Object -> CheckVal
+eval_OR :: Object -> Object -> BuiltinOp
 eval_OR = evalBooleans (||)
 
-eval_AND :: Object -> Object -> CheckVal
+eval_AND :: Object -> Object -> BuiltinOp
 eval_AND = evalBooleans (&&)
 
 asReference :: Object -> PValue Location Reference
@@ -417,7 +425,7 @@ asHaskellInt o = asInteger o >>= \o ->
     then return (fromIntegral o)
     else mzero
 
-evalInt :: (Integer -> Integer -> Integer) -> Object -> Object -> CheckVal
+evalInt :: (Integer -> Integer -> Integer) -> Object -> Object -> BuiltinOp
 evalInt ifunc a b = do
   ia <- asInteger a
   ib <- asInteger b
@@ -431,7 +439,7 @@ evalInt ifunc a b = do
 evalNum
   :: (Integer -> Integer -> Integer)
   -> (Rational -> Rational -> Rational)
-  -> Object -> Object -> CheckVal
+  -> Object -> Object -> BuiltinOp
 evalNum ifunc rfunc a b = msum
   [ evalInt ifunc a b
   , do  ia <- asRational a
@@ -453,7 +461,7 @@ evalSets
   -> (([Object] -> [Object] -> [Object]) -> M.Map Name [Object] -> M.Map Name [Object] -> M.Map Name [Object])
   -> (([Object] -> [Object] -> [Object]) -> I.IntMap   [Object] -> I.IntMap   [Object] -> I.IntMap   [Object])
   -> (T_set -> T_set  -> T_set)
-  -> Object -> Object -> CheckVal
+  -> Object -> Object -> BuiltinOp
 evalSets combine dict intmap set a b = msum $
   [ do  a <- case a of
                 ODict a -> return (fmap (:[]) a)
@@ -479,7 +487,7 @@ evalSets combine dict intmap set a b = msum $
         return (OSet (set a b))
   ]
 
-eval_ADD :: Object -> Object -> CheckVal
+eval_ADD :: Object -> Object -> BuiltinOp
 eval_ADD a b = msum
   [ evalNum (+) (+) a b
   , timeAdd a b, timeAdd b a
@@ -503,7 +511,7 @@ eval_ADD a b = msum
         _         -> mzero
       return (objListAppend ax bx)
 
-eval_SUB :: Object -> Object -> CheckVal
+eval_SUB :: Object -> Object -> BuiltinOp
 eval_SUB a b = msum $
   [ evalNum (-) (-) a b
   , evalSets (\a -> head a) (\ _ a b -> M.difference a b) (\ _ a b -> I.difference a b) S.difference a b
@@ -530,7 +538,7 @@ eval_SUB a b = msum $
   ]
 
 -- Distributed property of operators is defined. Pass a function to be mapped across containers.
-evalDist :: (Object -> Object -> CheckVal) -> Object -> Object -> CheckVal
+evalDist :: (Object -> Object -> BuiltinOp) -> Object -> Object -> BuiltinOp
 evalDist fn a b = multContainer a b where
   mapDist        = concatMap (okToList . fn a)
   mapDistSnd alt = concatMap $ okToList . \ (i, b) ->
@@ -546,7 +554,7 @@ evalDist fn a b = multContainer a b where
 evalDistNum
   :: (Integer  -> Integer  -> Integer )
   -> (Rational -> Rational -> Rational) 
-  -> Object -> Object -> CheckVal
+  -> Object -> Object -> BuiltinOp
 evalDistNum intFn rnlFn a b = msum $
   [ evalNum intFn rnlFn a b
   , if isNumeric a
@@ -554,13 +562,13 @@ evalDistNum intFn rnlFn a b = msum $
       else  if isNumeric b then evalDist (flip (evalDistNum intFn rnlFn)) b a else mzero
   ]
 
-eval_MULT :: Object -> Object -> CheckVal
+eval_MULT :: Object -> Object -> BuiltinOp
 eval_MULT a b = evalDistNum (*) (*) a b
 
-eval_DIV :: Object -> Object -> CheckVal
+eval_DIV :: Object -> Object -> BuiltinOp
 eval_DIV a b = evalDistNum div (/) a b
 
-eval_MOD :: Object -> Object -> CheckVal
+eval_MOD :: Object -> Object -> BuiltinOp
 eval_MOD a b = evalDistNum mod (\a b -> let r = a/b in (abs r - abs (floor r % 1)) * signum r) a b
 
 evalBitsOrSets
@@ -569,31 +577,31 @@ evalBitsOrSets
   -> (([Object] -> [Object] -> [Object]) -> I.IntMap   [Object] -> I.IntMap   [Object] -> I.IntMap   [Object])
   -> (T_set -> T_set  -> T_set)
   -> (Integer -> Integer -> Integer)
-  -> Object -> Object -> CheckVal
+  -> Object -> Object -> BuiltinOp
 evalBitsOrSets combine dict intmap set num a b =
   mplus (evalSets combine dict intmap set a b) (evalInt num a b)
 
-eval_ORB :: Object -> Object -> CheckVal
+eval_ORB :: Object -> Object -> BuiltinOp
 eval_ORB  a b = evalBitsOrSets OList M.unionWith        I.unionWith        S.union        (.|.) a b
 
-eval_ANDB :: Object -> Object -> CheckVal
+eval_ANDB :: Object -> Object -> BuiltinOp
 eval_ANDB a b = evalBitsOrSets OList M.intersectionWith I.intersectionWith S.intersection (.&.) a b
 
-eval_XORB :: Object -> Object -> CheckVal
+eval_XORB :: Object -> Object -> BuiltinOp
 eval_XORB a b = evalBitsOrSets (\a -> head a) mfn ifn sfn xor a b where
   sfn = fn S.union S.intersection S.difference head
   mfn = fn M.union M.intersection M.difference
   ifn = fn I.union I.intersection I.difference
   fn u n del _ a b = (a `u` b) `del` (a `n` b)
 
-evalShift :: (Int -> Int) -> Object -> Object -> CheckVal
+evalShift :: (Int -> Int) -> Object -> Object -> BuiltinOp
 evalShift fn a b = asHaskellInt b >>= \b -> case a of
   OInt  a -> return (OInt  (shift a (fn b)))
   OWord a -> return (OWord (shift a (fn b)))
   OLong a -> return (OLong (shift a (fn b)))
   _       -> mzero
 
-evalSubscript :: Object -> Object -> CheckVal
+evalSubscript :: Object -> Object -> BuiltinOp
 evalSubscript a b = case a of
   OArray  a -> fmap fromIntegral (asInteger b) >>= \b ->
     if inRange (bounds a) b then return (a!b) else pfail (ustr "array index out of bounds")
@@ -635,18 +643,77 @@ evalSubscript a b = case a of
           Nothing -> pfail (ustr (show b++" is not defined in struct"))
           Just  a -> return a
 
-eval_SHR :: Object -> Object -> CheckVal
+eval_SHR :: Object -> Object -> BuiltinOp
 eval_SHR = evalShift negate
 
-eval_SHL :: Object -> Object -> CheckVal
+eval_SHL :: Object -> Object -> BuiltinOp
 eval_SHL = evalShift id
 
-eval_DOT :: Object -> Object -> CheckVal
+eval_DOT :: Object -> Object -> BuiltinOp
 eval_DOT a b = asReference a >>= \a -> asReference b >>= \b -> case appendReferences a b of
   Nothing -> pfail (ustr (show b++" cannot be appended to "++show a))
   Just  a -> return (ORef a)
 
-infixOps :: Array ArithOp (Object -> Object -> CheckVal)
+eval_NEG :: Object -> BuiltinOp
+eval_NEG o = case o of
+  OWord     o -> return $
+    let n = negate (toInteger o)
+    in  if n < toInteger (minBound::T_int)
+           then  OLong n
+           else  OInt (fromIntegral n)
+  OInt      o -> return $ OInt      (negate o)
+  OLong     o -> return $ OLong     (negate o)
+  ODiffTime o -> return $ ODiffTime (negate o)
+  OFloat    o -> return $ OFloat    (negate o)
+  ORatio    o -> return $ ORatio    (negate o)
+  OComplex  o -> return $ OComplex  (negate o)
+  _           -> mzero
+
+eval_INVB :: Object -> BuiltinOp
+eval_INVB o = case o of
+  OWord o -> return $ OWord (complement o)
+  OInt  o -> return $ OInt  (complement o)
+  OLong o -> return $ OLong (complement o)
+  _       -> mzero
+
+eval_REF :: Object -> BuiltinOp
+eval_REF r = case r of
+  ORef    r -> return (ORef (MetaRef r))
+  OString s -> return (ORef (LocalRef s))
+  _         -> mzero
+
+eval_DEREF :: Object -> BuiltinOp
+eval_DEREF r = case r of
+  ORef (MetaRef r) -> return (ORef r)
+  ORef r           -> return (ORef r)
+  _                -> mzero
+
+eval_NOT :: Object -> BuiltinOp
+eval_NOT = return . boolToObj . testNull
+
+-- | Traverse the entire object, returning a list of all 'Dao.Object.OString' elements.
+extractStringElems :: Object -> [UStr]
+extractStringElems o = case o of
+  OString  o   -> [o]
+  OList    o   -> concatMap extractStringElems o
+  OSet     o   -> concatMap extractStringElems (S.elems o)
+  OArray   o   -> concatMap extractStringElems (elems o)
+  ODict    o   -> concatMap extractStringElems (M.elems o)
+  OIntMap  o   -> concatMap extractStringElems (I.elems o)
+  OTree    o   -> concatMap extractStringElems (T.elems o)
+  OPair (a, b) -> concatMap extractStringElems [a, b]
+  _            -> []
+
+prefixOps :: Array ArithOp (Object -> BuiltinOp)
+prefixOps = let o = (,) in array (REF, SUB) $
+  [ o REF   eval_REF
+  , o DEREF eval_DEREF
+  , o INVB  eval_INVB
+  , o NOT   eval_NOT
+  , o NEG   eval_NEG
+  ]
+
+infixOps :: Array ArithOp (Object -> Object -> BuiltinOp)
 infixOps = let o = (,) in array (POINT, MOD) $
   [ o POINT evalSubscript
   , o DOT   eval_DOT
@@ -664,7 +731,7 @@ infixOps = let o = (,) in array (POINT, MOD) $
   , o MOD   eval_MOD
   ]
 
-updatingOps :: Array UpdateOp (Object -> Object -> CheckVal)
+updatingOps :: Array UpdateOp (Object -> Object -> BuiltinOp)
 updatingOps = let o = (,) in array (minBound, maxBound) $
   [ o UCONST (\_ b -> return b)
   , o UADD   eval_ADD
@@ -679,64 +746,40 @@ updatingOps = let o = (,) in array (minBound, maxBound) $
   , o USHR   eval_SHR
   ]
 
-eval_NEG :: Object -> CheckVal
-eval_NEG o = case o of
-  OWord     o -> return $
-    let n = negate (toInteger o)
-    in  if n < toInteger (minBound::T_int)
-           then  OLong n
-           else  OInt (fromIntegral n)
-  OInt      o -> return $ OInt      (negate o)
-  OLong     o -> return $ OLong     (negate o)
-  ODiffTime o -> return $ ODiffTime (negate o)
-  OFloat    o -> return $ OFloat    (negate o)
-  ORatio    o -> return $ ORatio    (negate o)
-  OComplex  o -> return $ OComplex  (negate o)
-  _           -> mzero
+----------------------------------------------------------------------------------------------------
 
-eval_INVB :: Object -> CheckVal
-eval_INVB o = case o of
-  OWord o -> return $ OWord (complement o)
-  OInt  o -> return $ OInt  (complement o)
-  OLong o -> return $ OLong (complement o)
-  _       -> mzero
+getAllStringArgs :: Bool -> [Object] -> ExecScript [UStr]
+getAllStringArgs fail_if_not_string ox = catch (loop 0 [] ox) where
+  loop i zx ox = case ox of
+    []             -> return zx
+    OString o : ox -> loop (i+1) (zx++[o]) ox
+    _              ->
+      if fail_if_not_string then PFail i (ustr "is not a string value") else loop (i+1) zx ox
+  catch ox = case ox of
+    PFail i msg -> ceError $ OList $ [OString (ustr "function parameter"), OWord i, OString msg]
+    Backtrack   -> return []
+    OK       ox -> return ox
 
-eval_REF :: Object -> CheckVal
-eval_REF r = case r of
-  ORef    r -> return (ORef (MetaRef r))
-  OString s -> return (ORef (LocalRef s))
-  _         -> mzero
+builtin_print :: DaoFunc
+builtin_print = DaoFunc $ \ox -> do
+  ox <- getAllStringArgs False ox
+  lift (lift (mapM_ (putStrLn . uchars) ox))
+  return (OList (map OString ox))
 
-eval_DEREF :: Object -> CheckVal
-eval_DEREF r = case r of
-  ORef (MetaRef r) -> return (ORef r)
-  ORef r           -> return (ORef r)
-  _                -> mzero
+builtin_do :: DaoFunc
+builtin_do = DaoFunc $ \ox -> do
+  xunit <- ask
+  ox    <- getAllStringArgs True ox
+  execScriptRun (dModifyMVar_ xloc (recursiveInput xunit) (return . (++ox)))
+  return (OList (map OString ox))
 
-eval_NOT :: Object -> CheckVal
-eval_NOT = return . boolToObj . testNull
-
-prefixOps :: Array ArithOp (Object -> CheckVal)
-prefixOps = let o = (,) in array (REF, SUB) $
-  [ o REF   eval_REF
-  , o DEREF eval_DEREF
-  , o INVB  eval_INVB
-  , o NOT   eval_NOT
-  , o NEG   eval_NEG
+-- | The map that contains the built-in functions that are used to initialize every
+-- 'Dao.Types.ExecUnit'.
+initBuiltinFuncs :: M.Map Name DaoFunc
+initBuiltinFuncs = let o a b = (ustr a, b) in M.fromList $
+  [ o "print" builtin_print
+  , o "do"    builtin_do
   ]
-
--- | Traverse the entire object, returning a list of all 'Dao.Object.OString' elements.
-extractStringElems :: Object -> [UStr]
-extractStringElems o = case o of
-  OString  o   -> [o]
-  OList    o   -> concatMap extractStringElems o
-  OSet     o   -> concatMap extractStringElems (S.elems o)
-  OArray   o   -> concatMap extractStringElems (elems o)
-  ODict    o   -> concatMap extractStringElems (M.elems o)
-  OIntMap  o   -> concatMap extractStringElems (I.elems o)
-  OTree    o   -> concatMap extractStringElems (T.elems o)
-  OPair (a, b) -> concatMap extractStringElems [a, b]
-  _            -> []
 
 ----------------------------------------------------------------------------------------------------
 
@@ -795,20 +838,16 @@ updateReference ref modf = do
 -- | Retrieve a 'Dao.Types.CheckFunc' function from one of many possible places in the
 -- 'Dao.Types.ExecUnit'. Every function call that occurs during execution of the Dao script will
 -- use this Haskell function to seek the correct Dao function to use. Pass an error message to be
--- reported if the lookup fails. The order of lookup is: this module's 'Dao.Types.TopLevelFunc's,
--- the 'Dao.Types.TopLevelFunc's of each imported module (from first to last listed import), and
+-- reported if the lookup fails. The order of lookup is: this module's 'Dao.Types.Subroutine's,
+-- the 'Dao.Types.Subroutine's of each imported module (from first to last listed import), and
 -- finally the built-in functions provided by the 'Dao.Types.Runtime'
-lookupFunction :: String -> Name -> ExecScript CheckFunc
+lookupFunction :: String -> Name -> ExecScript Subroutine
 lookupFunction msg op = do
   xunit <- ask
-  let toplevs xunit = do
-        top <- execRun (fmap (M.lookup op) (dReadMVar xloc (toplevelFuncs xunit)))
-        case top of
-          Nothing  -> return Nothing
-          Just top -> fmap Just (toplevelToCheckFunc top)
+  let toplevs xunit = execRun (fmap (M.lookup op) (dReadMVar xloc (toplevelFuncs xunit)))
       lkup xunitMVar = execRun (dReadMVar xloc xunitMVar) >>= toplevs
   funcs <- sequence (toplevs xunit : map lkup (importsTable xunit))
-  case msum $ funcs++[M.lookup op (builtinFuncs xunit)] of -- TODO: builtinFuncs should not be used anymore
+  case msum funcs of -- TODO: builtinFuncs should not be used anymore
     Nothing   -> objectError (OString op) $ "undefined "++msg++" ("++uchars op++")"
     Just func -> return func
 
@@ -853,35 +892,11 @@ checkPValue altmsg tried pval = case pval of
 
 ----------------------------------------------------------------------------------------------------
 
-bindArgs_internal
-  :: (n -> o -> ExecScript (Name, Object))
-  -> [n] -> [o]
-  -> ExecScript Object
-  -> ExecScript Object
-bindArgs_internal binder nx ox fn = loop (M.empty) nx ox >>= flip pushExecStack fn where
-  loop ctx nx ox = case (nx, ox) of
-    (n:nx, o:ox) -> binder n o >>= \ (n,o) -> loop (M.insert n o ctx) nx ox
-    ([]  , []  ) -> return ctx
-    ([]  , ox  ) -> simpleError "too many parameters passed to function"
-    (nx  , []  ) -> simpleError $
-      "not enough parameters, some function arguments could not be uninitialized"
-
--- | Set the current local variable context using a list of bindings and a list of parameters.
-bindArgs :: [Name] -> [Object] -> ExecScript Object -> ExecScript Object
-bindArgs = bindArgs_internal (\n o -> return (n, o))
-
--- | Like 'bindArgs', but evaluates every parameter.
-bindArgsExpr :: [Com Name] -> [Com ObjectExpr] -> ExecScript Object -> ExecScript Object
-bindArgsExpr = bindArgs_internal $ \n o ->
-  evalObject (unComment o) >>= \o -> return (unComment n, o)
-
-----------------------------------------------------------------------------------------------------
-
 -- | Convert a single 'ScriptExpr' into a function of value @'ExecScript' 'Dao.Types.Object'@.
 execScriptExpr :: Com ScriptExpr -> ExecScript ()
 execScriptExpr script = case unComment script of
   EvalObject  o  _             lc  -> unless (isNO_OP o) (void (evalObject o))
-  IfThenElse  _  ifn  thn  els lc  -> nestedExecStack M.empty $ do
+  IfThenElse  _  ifn  thn  els lc  -> nestedExecStack T.Void $ do
     ifn <- evalObject ifn
     case ifn of
       ORef o -> do
@@ -889,11 +904,11 @@ execScriptExpr script = case unComment script of
         execScriptBlock (unComment (if true then thn else els))
       o      -> execScriptBlock (unComment (if objToBool o then thn else els))
   TryCatch    try  name catch  lc  -> do
-    ce <- withContErrSt (nestedExecStack M.empty (execScriptBlock (unComment try))) return
+    ce <- withContErrSt (nestedExecStack T.Void (execScriptBlock (unComment try))) return
     void $ case ce of
-      CEError o -> nestedExecStack (M.singleton (unComment name) o) (execScriptBlock catch)
+      CEError o -> nestedExecStack (T.Leaf (unComment name) o) (execScriptBlock catch)
       ce        -> returnContErr ce
-  ForLoop    varName inObj thn lc  -> nestedExecStack M.empty $ do
+  ForLoop    varName inObj thn lc  -> nestedExecStack T.Void $ do
     inObj   <- evalObject (unComment inObj)
     let block thn = if null thn then return True else scrpExpr (head thn) >> block (tail thn)
         ctrlfn ifn thn = do
@@ -915,7 +930,7 @@ execScriptExpr script = case unComment script of
   ContinueExpr a    _    _     lc  -> simpleError $
     '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" loop"
   ReturnExpr   a    obj        lc  -> evalObject (unComment obj) >>= \obj -> (if a then ceReturn else ceError) obj
-  WithDoc      lval thn        lc  -> nestedExecStack (M.empty) $ do
+  WithDoc      lval thn        lc  -> nestedExecStack T.Void $ do
     lval <- evalObject (unComment lval)
     let setBranch ref xunit = return (xunit{currentBranch = ref})
         setFile path xunit = do
@@ -980,29 +995,23 @@ evalObject obj = case obj of
       Nothing  -> ceError $ OList $ [OString $ ustr "undefined refence", ORef nm]
       Just obj -> fmap Just $ checkPValue "assignment expression" [obj, expr] $ (updatingOps!op) obj expr
   FuncCall   op  _  args     lc -> do -- a built-in function call
-    func <- localVarLookup op
-    case func of
+    bif  <- fmap builtinFuncs ask
+    case M.lookup op bif of
       Nothing -> do
         -- Find the name of the function in the built-in table and execute that one if it exists.
-        -- NOTE: Built-in function calls do not get their own new stack, 'pushExecStack' is not
+        -- NOTE: Built-in function calls do not get their own new stack, 'execFuncPushStack' is not
         -- used, only 'catchCEREturn'.
         fn <- lookupFunction "function call" op
         args <- mapM ((evalObject >=> evalObjectRef) . unComment) args
         let argTypes = OList (map (OType . objType) args)
-        checkToExecScript op argTypes (checkFunc fn args)
-      Just fn -> case fn of
-        OScript o -> execScriptCall args o
-        ORule   o -> execRuleCall   args o
-        _ -> called_nonfunction_object (show op) fn
+        runSubroutine args fn
+      Just fn -> daoForeignCall fn args
   LambdaCall ref  args       lc -> do
-    fn <- evalObject (unComment ref)
-    fn <- case fn of
-      OScript _ -> return fn
-      ORule   _ -> return fn
-      _ -> called_nonfunction_object (showObjectExpr 0 ref) fn
+    fn <- evalObject (unComment ref) >>= evalObjectRef
     case fn of
-      OScript o -> execScriptCall args o
-      ORule   o -> execRuleCall   args o
+      OScript fn -> execScriptCall args fn
+      ORule   fn -> execRuleCall   args fn
+      _          -> called_nonfunction_object (showObjectExpr 0 ref) fn
   ParenExpr     _     o      lc -> evalObject (unComment o)
   ArraySubExpr  o  _  i      lc -> do
     o <- evalObject o
@@ -1224,6 +1233,6 @@ programFromSource globalResource checkAttribute script = do
               FuncExpr{scriptArgv = argv, scriptCode = code}
         execScriptRun $ do
           let name = unComment nm
-          func <- dNewMVar xloc ("Program.topLevelFunc("++uchars name++")") func :: Run TopLevelFunc
+          func <- dNewMVar xloc ("Program.topLevelFunc("++uchars name++")") func :: Run Subroutine
           dModifyMVar_ xloc (toplevelFuncs xunit) (return . M.insert name func)
 

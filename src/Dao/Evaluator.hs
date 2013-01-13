@@ -34,7 +34,6 @@ import qualified Dao.Tree as T
 import           Dao.Pattern
 import           Dao.Resource
 import           Dao.Predicate
-import           Dao.Combination
 
 import           Dao.Object.Monad
 import           Dao.Object.Math

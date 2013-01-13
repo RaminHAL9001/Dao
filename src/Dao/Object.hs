@@ -35,7 +35,6 @@ import           Dao.Pattern
 import           Dao.EnumSet
 import           Dao.Tree as T
 import           Dao.Predicate
-import           Dao.Combination
 
 import           Data.Typeable
 import           Data.Dynamic

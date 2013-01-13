@@ -31,7 +31,6 @@ import           Dao.Debug.OFF
 import           Dao.Object
 import           Dao.Evaluator
 import           Dao.Resource
-import           Dao.Combination (runCombination)
 import qualified Dao.Tree    as T
 import           Dao.Parser hiding (lookAhead)
 import           Dao.Predicate

@@ -14,7 +14,6 @@ src/Dao/EnumSet.hs
 src/Dao/Tree.hs
 src/Dao/Resource.hs
 src/Dao/String.hs
-src/Dao/Types.hs
 src/Dao/Pattern.hs
 src/Dao/Predicate.hs
 src/Dao/Combination.hs

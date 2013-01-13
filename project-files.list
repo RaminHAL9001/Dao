@@ -44,4 +44,3 @@ Dao/String.hs
 Dao/Tasks.hs
 Dao/Token.hs
 Dao/Tree.hs
-Dao/Types.hs

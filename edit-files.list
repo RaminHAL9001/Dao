@@ -8,7 +8,6 @@ src/Dao/Object/Math.hs
 src/Dao/Object/Pattern.hs
 src/Dao/Object/Binary.hs
 src/Dao/Object/Show.hs
-src/Dao/Object/Monad.hs
 src/Dao/Files.hs
 src/Dao/EnumSet.hs
 src/Dao/Tree.hs

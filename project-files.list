@@ -33,7 +33,6 @@ Dao.hs
 dao-main.hs
 Dao/Object/Binary.hs
 Dao/Object.hs
-Dao/Object/Monad.hs
 Dao/Object/Parser.hs
 Dao/Object/Show.hs
 Dao/Parser.hs

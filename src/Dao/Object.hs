@@ -18,7 +18,8 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
-
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE Rank2Types #-}
@@ -33,6 +34,8 @@ import           Dao.Token
 import           Dao.Pattern
 import           Dao.EnumSet
 import           Dao.Tree as T
+import           Dao.Predicate
+import           Dao.Combination
 
 import           Data.Typeable
 import           Data.Dynamic
@@ -47,17 +50,22 @@ import           Data.Word
 import           Data.Ratio
 import           Data.Array.IArray
 import           Data.Time hiding (parseTime)
+import           Data.IORef
 
 import           Numeric
 
 import qualified Data.Map                  as M
 import qualified Data.IntMap               as IM
 import qualified Data.Set                  as S
-import qualified Data.IntSet               as IS
+-- import qualified Data.IntSet               as IS
 import qualified Data.ByteString.Lazy      as B
 
 import           Control.Monad
 import           Control.Exception
+import           Control.Concurrent
+import           Control.Monad.Trans
+import           Control.Monad.Reader
+import           Control.Monad.State
 
 ----------------------------------------------------------------------------------------------------
 
@@ -85,7 +93,7 @@ type T_dict     = M.Map Name Object
 type T_tree     = T.Tree Name Object
 type T_pattern  = Pattern
 type T_rule     = RuleExpr
-type T_script   = FuncExpr
+type T_script   = Subroutine
 type T_bytes    = B.ByteString
 
 data TypeID
@@ -124,7 +132,7 @@ oBool a = if a then OTrue else ONull
 -- declare, in the abstract syntax tree (AST) representation of the script exactly why types of
 -- variables are being accessed so the appropriate read, write, or update action can be planned.
 data Reference
-  = IntRef     { intRef    :: Int }  -- ^ reference to a read-only pattern-match variable.
+  = IntRef     { intRef    :: Word }  -- ^ reference to a read-only pattern-match variable.
   | LocalRef   { localRef  :: Name } -- ^ reference to a local variable.
   | StaticRef  { localRef  :: Name } -- ^ reference to a permanent static variable (stored per rule/function).
   | QTimeRef   { globalRef :: [Name] } -- ^ reference to a query-time static variable.
@@ -399,6 +407,27 @@ data RuleExpr
     }
     deriving (Eq, Ord, Show, Typeable)
 
+-- | An executable is either a rule action, or a function.
+data Executable
+  = Executable
+    { staticVars :: IORef (M.Map Name Object)
+    , executable :: ExecScript ()
+    }
+
+-- | A subroutine is specifically a callable function (but we don't use the name Function to avoid
+-- confusion with Haskell's "Data.Function"). 
+data Subroutine
+  = Subroutine
+    { getFuncExpr   :: FuncExpr
+    , argsPattern   :: [ObjPat]
+    , getScriptExpr :: Executable
+    }
+
+-- | All evaluation of the Dao language takes place in the 'ExecScript' monad. It allows @IO@
+-- functions to be lifeted into it so functions from "Control.Concurrent", "Dao.Document",
+-- "System.IO", and other modules, can be evaluated.
+type ExecScript a  = CEReader ExecUnit IO a
+
 ----------------------------------------------------------------------------------------------------
 
 data UpdateOp = UCONST | UADD | USUB | UMULT | UDIV | UMOD | UORB | UANDB | UXORB | USHL | USHR
@@ -653,4 +682,557 @@ instance Ord ObjPat where
           ObjNot       a -> toInt a
           ObjLabel   _ a -> toInt a
           ObjFailIf  _ w -> toInt a
+
+----------------------------------------------------------------------------------------------------
+
+-- "src/Dao/Types.hs"  provides data types that are used throughout
+-- the Dao System to facilitate execution of Dao programs, but are not
+-- used directly by the Dao scripting language as Objects are.
+-- 
+-- Copyright (C) 2008-2012  Ramin Honary.
+-- This file is part of the Dao System.
+--
+-- The Dao System is free software: you can redistribute it and/or
+-- modify it under the terms of the GNU General Public License as
+-- published by the Free Software Foundation, either version 3 of the
+-- License, or (at your option) any later version.
+-- 
+-- The Dao System is distributed in the hope that it will be useful,
+-- but WITHOUT ANY WARRANTY; without even the implied warranty of
+-- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+-- GNU General Public License for more details.
+-- 
+-- You should have received a copy of the GNU General Public License
+-- along with this program (see the file called "LICENSE"). If not, see
+-- <http://www.gnu.org/licenses/agpl.html>.
+
+catchErrorCall :: Run a -> Run (Either ErrorCall a)
+catchErrorCall fn = ReaderT $ \r -> try (runReaderT fn r)
+
+newtype Stack key val = Stack { mapList :: [T.Tree key val] }
+
+emptyStack :: Stack key val
+emptyStack = Stack []
+
+stackLookup :: Ord key => [key] -> Stack key val -> Maybe val
+stackLookup key stack = case mapList stack of
+  []        -> Nothing
+  (stack:_) -> T.lookup key stack
+
+stackUpdate :: Ord key => [key] -> (Maybe val -> Maybe val) -> Stack key val -> Stack key val
+stackUpdate key updVal stack =
+  Stack
+  { mapList = case mapList stack of
+      []   -> []
+      m:mx -> T.update key updVal m : mx
+  }
+
+-- | Define or undefine a value at an address on the top tree in the stack.
+stackDefine :: Ord key => [key] -> Maybe val -> Stack key val -> Stack key val
+stackDefine key val = stackUpdate key (const val)
+
+stackPush :: Ord key => T.Tree key val -> Stack key val -> Stack key val
+stackPush init stack = stack{ mapList = init : mapList stack }
+
+stackPop :: Ord key => Stack key val -> Stack key val
+stackPop stack = stack{ mapList = let mx = mapList stack in if null mx then [] else tail mx }
+
+----------------------------------------------------------------------------------------------------
+
+-- | In several sections of the Dao System internals, a mutext containing some map or tree object is
+-- used to store values, for example @'Dao.Debug.DMVar' ('Data.Map.Map' a)@. It is a race condition
+-- if multiple threads try to update and read these values without providing some kind of locking.
+-- The 'Resource' type provides this locking mechanism. Threads can read without blocking, threads
+-- must wait their turn to write/update/delete values if they don't have the lock. All exceptions
+-- are handled appropriately. However, caching must be performed by each thread to make sure an
+-- update does not produce two different values across two separate read operations, the 'Resource'
+-- mechanism does *NOT* provide this caching.
+data Resource stor ref =
+  Resource
+  { resource       :: DMVar (stor Object, stor (DQSem, Maybe Object))
+  , updateUnlocked :: ref -> Maybe Object -> stor Object -> stor Object
+  , lookupUnlocked :: ref -> stor Object -> Maybe Object
+  , updateLocked   :: ref -> Maybe (DQSem, Maybe Object) -> stor (DQSem, Maybe Object) -> stor (DQSem, Maybe Object)
+  , lookupLocked   :: ref -> stor (DQSem, Maybe Object) -> Maybe (DQSem, Maybe Object)
+  } -- NOTE: this data type needs to be opaque.
+    -- Do not export the constructor or any of the accessor functions.
+
+type StackResource = Resource (Stack             Name) [Name]
+type TreeResource  = Resource (T.Tree            Name) [Name]
+type MapResource   = Resource (M.Map             Name) Name
+type DocResource   = Resource (StoredFile T.Tree Name) [Name]
+
+----------------------------------------------------------------------------------------------------
+
+-- | A 'SourceCode' is the structure loaded from source code. A 'Program' object is constructed from
+-- 'SourceCode'.
+data SourceCode
+  = SourceCode
+    { sourceModified   :: Int
+    , sourceFullPath   :: UStr
+      -- ^ the URL (full file path) from where this source code was received.
+    , sourceModuleName :: Com UStr
+      -- ^ the logical name of this program defined by the "module" keyword in the Dao script.
+    , directives       :: Com [Com TopLevelExpr]
+    }
+  deriving (Eq, Ord, Show, Typeable)
+
+-- | This is the executable form of the 'SourceCode', which cannot be serialized, but is structured
+-- in such a way as to make execution more efficient. It caches computed 'ScriptExpr'ns as some type
+-- of monadic computation 'm'.
+data Program
+  = Program
+    { programModuleName :: Name
+    , programImports    :: [UStr]
+    , constructScript   :: [[Com ScriptExpr]]
+    , destructScript    :: [[Com ScriptExpr]]
+    , requiredBuiltins  :: [Name]
+    , programAttributes :: M.Map Name Name
+    , preExecScript     :: [Executable]
+      -- ^ the "guard scripts" that are executed before every string execution.
+    , postExecScript    :: [Executable]
+      -- ^ the "guard scripts" that are executed after every string execution.
+    , programTokenizer  :: Tokenizer
+      -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
+      -- module associated with this runtime.
+    , programComparator :: CompareToken
+      -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
+    , ruleSet           :: DMVar (PatternTree [Executable])
+    , globalData        :: TreeResource
+    }
+
+----------------------------------------------------------------------------------------------------
+
+-- | The magic number is the first 8 bytes to every 'Document'. It is the ASCII value of the string
+-- "DaoData\0".
+document_magic_number :: Word64
+document_magic_number = 0x44616F4461746100
+
+-- | This is the version number of the line protocol for transmitting document objects.
+document_data_version :: Word64
+document_data_version = 0
+
+-- | This data type keeps track of information loaded from a file. It allows you to keep track of
+-- how many times the object has been updated since it was loaded from disk, and how many times the
+-- file has been requested to be opened (so it doesn't have to load the file twice). The real reason
+-- this type exists is to make it easier to fit into the 'Dao.Types.Resource' data type, so I never
+-- really intended this type to be used for anything other than that.
+data StoredFile stor ref dat
+  = NotStored { docRootObject :: stor ref dat }
+  | StoredFile
+    { docRefCount   :: Word
+    , docModified   :: Word64
+    , docInfo       :: UStr
+    , docVersion    :: Word64
+    , docRootObject :: stor ref dat
+    }
+
+-- | The data stored in a 'Document' is a 'Dao.Tree.Tree' that maps @['UStr']@ addresses to objects.
+-- These addresses are much like filesystem paths, but are lists of 'Name's. Every node in the tree
+-- can contain one 'Object' and/or another tree containing more objects (like a filesystem
+-- directory).
+type DocData = T.Tree Name Object
+type Document = StoredFile T.Tree Name Object
+
+initDoc :: T_tree -> Document
+initDoc docdata =
+  StoredFile
+  { docRefCount = 0
+  , docModified = 0
+  , docInfo = nil
+  , docVersion = document_data_version
+  , docRootObject = docdata
+  }
+
+----------------------------------------------------------------------------------------------------
+
+-- | A program table is an 'Control.Concurrent.DMVar.DMVar' associating 'programModuleName's to
+-- 'ExecUnit's. The 'ExecUnit's themselves are also stored in an 'Control.Concurrent.DMVar.DMVar',
+-- which must be extracted from in order to evaluate any of the 'ExecScript' functions in the IO
+-- monad, that way the 'ExecScript' monad itself does not need to constantly extract the 'ExecUnit'
+-- from it's containing 'Control.Concurrent.DMVar.DMVar' every time it needs to refer to one of the
+-- 'ExecUnit' properties.
+type ProgramTable  = DMVar (M.Map Name (DMVar ExecUnit))
+
+-- | Like 'Control.Monad.Reader.runReaderT' but specific to the 'Dao.Object.Evaluator.ExecScript'
+-- monad, and is lifted into the 'Run' monad for convenience.
+runExecScript :: ExecScript a -> ExecUnit -> Run (ContErr a)
+runExecScript fn xunit = ReaderT $ \runtime ->
+  runReaderT (runContErrT fn) (xunit{parentRuntime = runtime})
+
+-- Execute a 'Run' monad within an 'ExecScript' monad. Every 'ExecUnit' contains a pointer to the
+-- 'Runtime' object that manages it, 
+execScriptRun :: Run a -> ExecScript a
+execScriptRun fn = ask >>= \xunit -> execIO (runReaderT fn (parentRuntime xunit))
+
+-- | Pair an error message with an object that can help to describe what went wrong.
+objectError :: Monad m => Object -> String -> ContErrT m err
+objectError o msg = ceError (OPair (OString (ustr msg), o))
+
+----------------------------------------------------------------------------------------------------
+
+-- | All functions that are built-in to the Dao language, or built-in to a library extending the Dao
+-- language, are stored in 'Data.Map.Map's from the functions name to an object of this type.
+-- Functions of this type are called by 'evalObject' to evaluate expressions written in the Dao
+-- language.
+newtype DaoFunc = DaoFunc { daoForeignCall :: [Object] -> ExecScript Object }
+
+-- | This is the state that is used to run the evaluation algorithm. Every Dao program file that has
+-- been loaded will have a single 'ExecUnit' assigned to it. Parameters that are stored in
+-- 'Dao.Debug.DMVar's or 'Dao.Type.Resource's will be shared across all rules which are executed in
+-- parallel, so for example 'execHeap' contains the variables global to all rules in a given
+-- program. The remainder of the parameters, those not stored in 'Dao.Debug.DMVar's or
+-- 'Dao.Type.Resource's, will have a unique copy of those values assigned to each rule as it
+-- executes.
+data ExecUnit
+  = ExecUnit
+    { parentRuntime      :: Runtime
+      -- ^ a reference to the 'Runtime' that spawned this 'ExecUnit'. Some built-in functions in the
+      -- Dao scripting language may make calls that modify the state of the Runtime.
+    , currentExecJob     :: Maybe Job
+      -- ^ a reference to the 'Job' that is currently running the 'ExecScript' that is using this
+      -- 'ExecUnit' state.
+    , currentDocument    :: Maybe File
+      -- ^ the current document is set by the @with@ statement during execution of a Dao script.
+    , currentProgram     :: Maybe Program
+      -- ^ the program that is running in this execution unit, this may not be defined in the case
+      -- that strings are being executed in an interactive session.
+    , currentTask        :: Task
+      -- ^ the 'Task' that is currently running. This item includes the 'Executable' and (if
+      -- applicable) the current 'Pattern' and 'Match'
+    , currentBranch      :: [Name]
+      -- ^ set by the @with@ statement during execution of a Dao script. It is used to prefix this
+      -- to all global references before reading from or writing to those references.
+    , importsTable       :: [DMVar ExecUnit]
+      -- ^ a pointer to the ExecUnit of every Dao program imported with the @import@ keyword.
+    , execAccessRules    :: FileAccessRules
+      -- ^ restricting which files can be loaded by the program associated with this ExecUnit, these
+      -- are the rules assigned this program by the 'ProgramRule' which allowed it to be loaded.
+    , builtinFuncs       :: M.Map Name DaoFunc
+      -- ^ a pointer to the builtin function table provided by the runtime.
+    , toplevelFuncs      :: DMVar (M.Map Name Subroutine)
+    , execHeap           :: TreeResource
+      -- ^ referes to the same resource as 'Dao.Types.globalData' in 'Dao.Types.Program'
+    , execStack          :: DMVar (Stack Name Object)
+      -- ^ stack of local variables used during evaluation
+    , queryTimeHeap      :: TreeResource
+      -- ^ global variables cleared after every string execution
+    , referenceCache     :: DMVar (M.Map Reference Object)
+      -- ^ Caches lookups. A single 'Dao.Object.ObjectExpr' is not evaluated atomically, it may
+      -- require several lookups. If a value at a reference is updated between lookups by a separate
+      -- thread, the same reference may evaluate to two different values. Caching prevents this from
+      -- happening.
+    , execOpenFiles      :: DMVar (M.Map UPath File)
+    , recursiveInput     :: DMVar [UStr]
+    , uncaughtErrors     :: DMVar [Object]
+    }
+
+instance Bugged ExecUnit where
+  askDebug           = fmap (runtimeDebugger . parentRuntime) ask
+  setDebug dbg xunit = xunit{parentRuntime = (parentRuntime xunit){runtimeDebugger = dbg}}
+
+----------------------------------------------------------------------------------------------------
+
+-- | Rules dictating which files a particular 'ExecUnit' can load at runtime.
+data FileAccessRules
+  = RestrictFiles  Pattern
+    -- ^ files matching this pattern will never be loaded
+  | AllowFiles     Pattern
+    -- ^ files matching this pattern can be loaded
+  | ProgramRule    Pattern [FileAccessRules] [FileAccessRules]
+    -- ^ programs matching this pattern can be loaded and will be able to load files by other rules.
+    -- Also has a list of rules dictating which built-in function sets are allowed for use, but
+    -- these rules are not matched to files, they are matched to the function sets provided by the
+    -- 'Runtime'.
+  | DirectoryRule  UPath   [FileAccessRules]
+    -- ^ access rules will apply to every file in the path of this directory, but other rules
+    -- specific to certain files will override these rules.
+
+-- | Anything that can be loaded from the filesystem and used by the Dao 'Runtime' is a type of
+-- this.
+data File
+  = ProgramFile -- ^ a program loaded and executable
+    { publicFile  :: Bool
+    , filePath    :: Name
+    , logicalName :: Name
+    , execUnit    :: DMVar ExecUnit
+    }
+  | ProgramEdit -- ^ a program executable and editable.
+    { filePath   :: Name
+    , sourceCode :: DMVar SourceCode
+    , execUnit   :: DMVar ExecUnit
+    }
+  | IdeaFile -- ^ a file containing a 'Dao.Tree.Tree' of serialized 'Dao.Object.Object's.
+    { filePath :: Name
+    , fileData :: DocResource
+    }
+
+-- | Used to select programs from the 'pathIndex' that are currently available for recursive
+-- execution.
+isProgramFile :: File -> Bool
+isProgramFile file = case file of
+  ProgramFile _ _ _ _ -> True
+  _                   -> False
+
+-- | Used to select programs from the 'pathIndex' that are currently available for recursive
+-- execution.
+isIdeaFile :: File -> Bool
+isIdeaFile file = case file of
+  IdeaFile _ _ -> True
+  _            -> False
+
+-- | A type of function that can split an input query string into 'Dao.Pattern.Tokens'. The default
+-- splits up strings on white-spaces, numbers, and punctuation marks.
+type Tokenizer = UStr -> ExecScript Tokens
+
+-- | A type of function that can match 'Dao.Pattern.Single' patterns to 'Dao.Pattern.Tokens', the
+-- default is the 'Dao.Pattern.exact' function. An alternative is 'Dao.Pattern.approx', which
+-- matches strings approximately, ignoring transposed letters and accidental double letters in words.
+type CompareToken = UStr -> UStr -> Bool
+
+data Runtime
+  = Runtime
+    { pathIndex            :: DMVar (M.Map UPath File)
+      -- ^ every file opened, whether it is a data file or a program file, is registered here under
+      -- it's file path (file paths map to 'File's).
+    , logicalNameIndex     :: DMVar (M.Map Name File)
+      -- ^ program files have logical names. This index allows for easily looking up 'File's by
+      -- their logical name.
+    , jobTable             :: DMVar (M.Map ThreadId Job)
+      -- ^ A job is any string that has caused execution across loaded dao scripts. This table keeps
+      -- track of any jobs started by this runtime.
+    , defaultTimeout       :: Maybe Int
+      -- ^ the default time-out value to use when evaluating 'execInputString'
+    , functionSets         :: M.Map Name (M.Map Name DaoFunc)
+      -- ^ every labeled set of built-in functions provided by this runtime is listed here. This
+      -- table is checked when a Dao program is loaded that has "requires" directives.
+    , availableTokenizers  :: M.Map Name Tokenizer
+      -- ^ a table of available string tokenizers.
+    , availableComparators :: M.Map Name CompareToken
+      -- ^ a table of available string matching functions.
+    , fileAccessRules      :: [FileAccessRules]
+      -- ^ rules loaded by config file dicating programs and ideas can be loaded by Dao, and also,
+      -- which programs can load which programs and ideas.
+    , runtimeDebugger      :: DebugHandle
+    }
+
+-- | This is the monad used for most all methods that operate on the 'Runtime' state.
+type Run a = ReaderT Runtime IO a
+
+-- | Unlift a 'Run' monad.
+runIO :: Runtime -> Run a -> IO a
+runIO runtime runFunc = runReaderT runFunc runtime
+
+instance Bugged Runtime where
+  askDebug             = fmap runtimeDebugger ask
+  setDebug dbg runtime = runtime{runtimeDebugger = dbg}
+
+----------------------------------------------------------------------------------------------------
+
+-- | A 'Task' represents a single thread running a single 'ScriptExpr' in response to a
+-- pattern matching its associated rule.
+data Task
+  = RuleTask
+    { taskPattern     :: Object -- ^ Either 'OPattern' or 'ONull'.
+    , taskMatch       :: Match
+    , taskAction      :: Executable
+    , taskExecUnit    :: ExecUnit
+    }
+  | GuardTask -- ^ Tasks that are created from @BEGIN@ and @END@ blocks in a Dao script.
+    { taskGuardAction :: Executable
+    , taskExecUnit    :: ExecUnit
+    }
+
+-- | A 'Job' keeps track of all threads that are executing in response to an input string.  You can
+-- signal the Job to signal all associated threads, you can wait on the 'Job's
+-- 'Dao.Runtime.jobTaskCompletion' semaphore to wait for the job to complete, and you can set a
+-- timer to time-out this 'Job'.
+data Job
+  = Job
+    { jobTaskThread  :: ThreadId
+      -- ^ The thread that loops, waiting for tasks in the queue to complete.
+    , jobInputString :: UStr
+      -- ^ the input string that triggered this job.
+    , jobTimerThread :: DMVar (Maybe ThreadId)
+      -- ^ If there is a time limit on this job, the thread sleeping until the timeout occurs is
+      -- identified here and can be killed if the last 'Task' finishes before the timeout event.
+    , jobCompletion  :: DQSem
+      -- ^ This semaphore is signaled when the last 'Task' in the 'Dao.Runtime.taskExecTable' below
+      -- completes, and just before the 'jobTaskThread' reads the 'readyTasks'
+      -- 'Control.Concurrent.DMVar.DMVar' to launch the next set of waiting tasks.
+    , taskCompletion :: DMVar ThreadId
+      -- ^ whenever one thread completes, it signals this 'Control.Concurrent.DMVar.DMVar' with it's
+      -- own 'Control.Concurrent.ThreadId' so it can be removed from the 'taskExecTable' below.
+    , readyTasks     :: DMVar [Task]
+      -- ^ used as a channel to launch new task threads. Use 'Control.Concurrent.DMVar.putMVar' to
+      -- place 'Task's into this 'Control.Concurrent.DMVar.DMVar'. The task manager algorithm running
+      -- in the 'jobTaskThread' above will take these tasks and execute each one in a separate
+      -- thread, mapping each task to a 'Control.Concurrent.ThreadId' in the 'taskExecTable'.
+    , taskExecTable  :: DMVar (M.Map ThreadId Task)
+      -- ^ all running 'Task's associated with this job are stored in this table. It contains a list
+      -- of 'Task's, each task is mapped to a 'Control.Concurrent.ThreadId', and each group of
+      -- threads is mapped to the 'Program' from where the executing tasks originated.
+    , taskFailures   :: DMVar (M.Map Name [(Task, SomeException)])
+      -- ^ if a task dies due to an exception raised, then the exception is caught and mapped to the
+      -- task. This is different from an error thrown from a script, these are uncaught Haskell
+      -- exceptions from "Control.Exception" resulting in a thread being terminated.
+    }
+
+----------------------------------------------------------------------------------------------------
+
+-- "src/Dao/Object/Monad.hs"  defines the monad that is used to evaluate
+-- expressions written in the Dao scripting lanugage.
+-- 
+-- Copyright (C) 2008-2012  Ramin Honary.
+-- This file is part of the Dao System.
+--
+-- The Dao System is free software: you can redistribute it and/or
+-- modify it under the terms of the GNU General Public License as
+-- published by the Free Software Foundation, either version 3 of the
+-- License, or (at your option) any later version.
+-- 
+-- The Dao System is distributed in the hope that it will be useful,
+-- but WITHOUT ANY WARRANTY; without even the implied warranty of
+-- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+-- GNU General Public License for more details.
+-- 
+-- You should have received a copy of the GNU General Public License
+-- along with this program (see the file called "LICENSE"). If not, see
+-- <http://www.gnu.org/licenses/agpl.html>.
+
+-- | Used to play the role of an error-handling monad and a continuation monad together. It is
+-- basically an identity monad, but can evaluate to 'CEError's instead of relying on
+-- 'Control.Exception.throwIO' or 'Prelude.error', and can also work like a continuation by
+-- evaluating to 'CEReturn' which signals the execution function finish evaluation immediately. The
+-- "Control.Monad" 'Control.Monad.return' function evaluates to 'CENext', which is the identity
+-- monad simply returning a value to be passed to the next monad. 'CEError' and 'CEReturn' must
+-- contain a value of type 'Dao.Types.Object'.
+data ContErr a
+  = CENext   a
+  | CEError  Object
+  | CEReturn Object
+  deriving Show
+
+instance Monad ContErr where
+  return = CENext
+  ma >>= mfa = case ma of
+    CENext   a -> mfa a
+    CEError  a -> CEError a
+    CEReturn a -> CEReturn a
+
+instance Functor ContErr where
+  fmap fn mfn = case mfn of
+    CENext   a -> CENext (fn a)
+    CEError  a -> CEError a
+    CEReturn a -> CEReturn a
+
+instance MonadPlus ContErr where
+  mzero = CEError ONull
+  mplus (CEError _) b = b
+  mplus a           _ = a
+
+newtype ContErrT m a = ContErrT { runContErrT :: m (ContErr a) }
+
+instance Monad m => Monad (ContErrT m) where
+  return = ContErrT . return . CENext
+  (ContErrT ma) >>= mfa = ContErrT $ do
+    a <- ma
+    case a of
+      CENext   a -> runContErrT (mfa a)
+      CEError  a -> return (CEError  a)
+      CEReturn a -> return (CEReturn a)
+
+instance Monad m => Functor (ContErrT m) where
+  fmap fn mfn = mfn >>= return . fn
+
+instance Monad m => MonadPlus (ContErrT m) where
+  mzero = ContErrT (return mzero)
+  mplus (ContErrT fa) (ContErrT fb) = ContErrT $ do
+    a <- fa
+    case a of
+      CENext   a -> return (CENext   a)
+      CEError  _ -> fb
+      CEReturn a -> return (CEReturn a)
+
+instance MonadTrans ContErrT where
+  lift ma = ContErrT (ma >>= return . CENext)
+
+-- | Force the computation to assume the value of a given 'Dao.Object.Monad.ContErr'. This function
+-- can be used to re-throw a 'Dao.Object.Monad.ContErr' value captured by the 'withContErrSt'
+-- function.
+returnContErr :: Monad m => ContErr a -> ContErrT m a
+returnContErr ce = ContErrT (return ce)
+
+ceReturn :: Monad m => Object -> ContErrT m a
+ceReturn a = returnContErr (CEReturn a)
+
+ceError :: Monad m => Object -> ContErrT m a
+ceError  a = returnContErr (CEError a)
+
+-- | Evaluate a 'ContErrT' function and capture the resultant 'Dao.Object.Monad.ContErr' value,
+-- then apply some transformation to that 'ContErr value. For example, you can decide whether or not
+-- to evaluate 'Dao.Object.Monad.ceError', 'Dao.Object.Monad.ceReturn', or ordinary
+-- 'Control.Monad.return', or just ignore the 'Dao.Object.Monad.ContErr' value entirely.
+withContErrSt :: Monad m => CEReader r m a -> (ContErr a -> CEReader r m b) -> CEReader r m b
+withContErrSt exe fn = ContErrT $ ReaderT $ \r -> do
+  b <- runReaderT (runContErrT exe) r
+  runReaderT (runContErrT (fn b)) r
+
+-- | Run an inner function, return its result as a 'ContErr' regardless of the vaue of 'ContErr', in
+-- other words, 'ceReturn' and 'ceError' executed by this function will not collapse the
+-- continuation beyond this point, you will see the result of the continuation returned by the
+-- evaluation of this monadic function. The inner function will evaluate to a 'Dao.Object.Object'
+-- wrapped in a 'CENext', 'CEError', or 'CEReturn'. You can "rethrow" the 'ContErr' evaluated by
+-- this function by calling 'returnContErr'
+catchContErr :: Monad m => ContErrT m a -> ContErrT m (ContErr a)
+catchContErr exe = lift (runContErrT exe)
+
+-- | Takes an inner 'ContErrT' monad. If this inner monad evaluates to a 'CEReturn', it will not
+-- collapse the continuation monad, and the outer monad will continue evaluation as if a
+-- @('CENext' 'Dao.Object.Object')@ value were evaluated.
+catchCEReturn :: Monad m => ContErrT m Object -> ContErrT m Object
+catchCEReturn exe = catchContErr exe >>= \ce -> case ce of
+  CEReturn obj -> return obj
+  _            -> returnContErr ce
+
+-- | Takes an inner 'ContErrT' monad. If this inner monad evaluates to a 'CEError', it will not
+-- collapse the continuation monad, and the outer monad will continue evaluation as if a
+-- @('CENext' 'Dao.Object.Object')@ value were evaluated.
+catchCEError :: Monad m => ContErrT m Object -> ContErrT m Object
+catchCEError exe = catchContErr exe >>= \ce -> case ce of
+  CEError obj -> return obj
+  _           -> returnContErr ce
+
+----------------------------------------------------------------------------------------------------
+
+-- $MonadReader
+-- Since 'ContErrT' will be used often with a lifted 'Control.Monad.Reader.ReaderT', useful
+-- combinators for manipulating the reader value are provided here.
+
+type CEReader r m a = ContErrT (ReaderT r m) a
+
+-- | It is useful to lift 'Control.Monad.Reader.ReaderT' into 'ContErrT' and instantiate the
+-- combined monad into the 'Control.Monad.Reader.Class.MonadReader' class.
+instance Monad m => MonadReader r (ContErrT (ReaderT r m)) where
+  ask = ContErrT (ReaderT (\r -> return (CENext r)))
+  local fn next = ContErrT (ReaderT (\r -> runReaderT (runContErrT next) (fn r)))
+
+-- Like 'Control.Monad.Reader.local', but the local function is in the @m@ monad.
+localCE :: Monad m => (r -> m r) -> CEReader r m a -> CEReader r m a
+localCE fn next = ContErrT (ReaderT (\r -> fn r >>= runReaderT (runContErrT next)))
+
+-- | Execute an IO operation inside of the 'CEReader' monad, assuming IO is lifted into the
+-- CEReader.
+execIO :: IO a -> CEReader r IO a
+execIO fn = lift (lift fn)
+
+execRun :: ReaderT r IO a -> CEReader r IO a
+execRun run = ContErrT (fmap CENext run)
+
+-- | Catch an exception from "Control.Exception" in the 'CEReader' monad. Uses
+-- 'Control.Exception.hander', which is an IO function, so the CEReader must have the IO monad
+-- lifted into it.
+-- catchCE :: Exception err => CEReader r IO a -> (err -> CEReader r IO a) -> CEReader r IO a
+-- catchCE exe ifError = ContErrT $ ReaderT $ \r ->
+--   handle (\e -> runReaderT (runContErrT (ifError e)) r) (runReaderT (runContErrT exe) r)
 

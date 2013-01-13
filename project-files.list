@@ -22,7 +22,6 @@
 # character so the ".ghci" file will be updated with the files you wish
 # to debug.
 
-Dao/Combination.hs
 Dao/Debug.hs
 Dao/Debug/OFF.hs
 Dao/Debug/ON.hs

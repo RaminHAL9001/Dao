@@ -24,10 +24,9 @@
 module Dao.Object.Binary where
 
 import           Dao.Token
-import           Dao.Types
+import           Dao.Object
 import qualified Dao.Tree as T
 import           Dao.Pattern
-import           Dao.Object
 
 import           Control.Monad
 

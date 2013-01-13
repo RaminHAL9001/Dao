@@ -21,10 +21,9 @@
 
 module Dao.Object.Show where
 
-import           Dao.Types
+import           Dao.Object
 import           Dao.Pattern
 import qualified Dao.Tree as T
-import           Dao.Object
 
 import           Control.Monad
 
@@ -159,7 +158,7 @@ showScriptExpr idnc line = showCom expr idnc line where
     ReturnExpr   fn  obj     _    -> contBrkRetnThrow idnc fn []  obj "return"   "throw"
     WithDoc      obj with    _    -> "with " ++ showObjectExpr idnc obj ++ showScriptBlock idnc (Com with)
 
--- | Used to show 'Dao.Types.ContinueExpr' and 'Dao.Object.ReturnExpr'.
+-- | Used to show 'Dao.Object.ContinueExpr' and 'Dao.Object.ReturnExpr'.
 contBrkRetnThrow :: Int -> Bool -> [Comment] -> Com ObjectExpr -> String -> String -> String
 contBrkRetnThrow idnc fn com obj cont brk =
   (if fn then cont else brk) ++ showComments com ++ " (" ++ showObjectExpr idnc obj ++ ")"

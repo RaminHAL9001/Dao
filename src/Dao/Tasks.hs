@@ -25,12 +25,12 @@ module Dao.Tasks where
 
 -- | This module is pretty much where everything happens. The pattern matching and action execution
 -- algorithm that defines the unique nature of the Dao system, the 'execInputString' function, is
--- defined here. So are 'Dao.Types.Job' and 'Dao.Types.Task' management functions, and a simple
+-- defined here. So are 'Dao.Object.Job' and 'Dao.Object.Task' management functions, and a simple
 -- interactive run loop 'interactiveRuntimeLoop' is also provided.
 
 import           Dao.Debug.OFF
 
-import           Dao.Types
+import           Dao.Object
 import qualified Dao.Tree as T
 import           Dao.Pattern
 import           Dao.Evaluator
@@ -194,9 +194,9 @@ startTasksForJob job tasks = dStack xloc "startTasksForJob" $ dPutMVar xloc (rea
 waitForJobs :: [Job] -> Run ()
 waitForJobs jobx = dStack xloc "waitForJobs" $ forM_ jobx (dWaitQSem xloc . jobCompletion)
 
--- If you created a 'Dao.Types.Job' using 'newJob', that 'Dao.Types.Job' is automatically inserted
--- into the 'Dao.Types.jobTable' of the 'Dao.Types.Runtime' of this 'Run' monad. To remove it, from
--- the table, use this function. The 'Job' is uniqely identified by it's 'Dao.Types.jobTaskThread'
+-- If you created a 'Dao.Object.Job' using 'newJob', that 'Dao.Object.Job' is automatically inserted
+-- into the 'Dao.Object.jobTable' of the 'Dao.Object.Runtime' of this 'Run' monad. To remove it, from
+-- the table, use this function. The 'Job' is uniqely identified by it's 'Dao.Object.jobTaskThread'
 -- 'Control.Concurrent.ThreadId'.
 removeJobFromTable :: Job -> Run ()
 removeJobFromTable job = ask >>= \runtime ->
@@ -264,8 +264,8 @@ makeTasksForInput xunits instr = dStack xloc "makeTasksForInput" $ fmap concat $
 -- | A "guard script" is any block of code in the source script denoted by the @BEGIN@, @END@,
 -- @SETUP@ and @TAKEDOWN@ keywords. These scripts must be run in separate phases, that is, every
 -- guard script must be fully executed or be timed-out before any other scripts are executed.
--- This function creates the 'Task's that for any given guard script: 'Dao.Types.preExecScript',
--- 'Dao.Types.postExecScript'.
+-- This function creates the 'Task's that for any given guard script: 'Dao.Object.preExecScript',
+-- 'Dao.Object.postExecScript'.
 makeTasksForGuardScript
   :: (Program -> [Executable])
   -> [ExecUnit]
@@ -308,7 +308,7 @@ selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> ca
     return $ M.elems ax
 
 -- | This is the "heart" of the Dao system; it is the algorithm you wanted to use when you decided
--- to install the Dao system. Select from the 'Dao.Types.Runtime's 'modules' table a list of Dao
+-- to install the Dao system. Select from the 'Dao.Object.Runtime's 'modules' table a list of Dao
 -- programs using 'selectModules'. Once the list of modules is selected, for each module tokenize
 -- the input string, then select all rules in the module matching the input. Create a list of
 -- 'Task's to run using 'makeTasksForInput' and execute them in a new 'Job' created by 'newJob'.
@@ -350,7 +350,7 @@ execInputString guarded instr select = dStack xloc "execInputString" $ ask >>= \
     removeJobFromTable job
 
 -- | In the current thread, and using the given 'Runtime' environment, parse an input string as
--- 'Dao.Types.Script' and then evaluate it. This is used for interactive evaluation. The parser
+-- 'Dao.Object.Script' and then evaluate it. This is used for interactive evaluation. The parser
 -- used in this function will parse a block of Dao source code, the opening and closing curly-braces
 -- are not necessary. Therefore you may enter a semi-colon separated list of commands and all will
 -- be executed.

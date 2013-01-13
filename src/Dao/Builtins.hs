@@ -31,7 +31,7 @@ module Dao.Builtins where
 -- essentials like @print@, @join@, and @do@.
 
 import           Dao.Debug.OFF
-import           Dao.Types
+import           Dao.Object
 import qualified Dao.Tree as T
 import           Dao.Pattern
 import           Dao.Predicate

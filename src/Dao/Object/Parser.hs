@@ -25,7 +25,6 @@ import           Dao.Token
 import           Dao.Object
 import           Dao.EnumSet
 import           Dao.Parser
-import           Dao.Types
 
 import           Control.Monad
 

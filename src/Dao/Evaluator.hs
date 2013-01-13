@@ -29,7 +29,7 @@ module Dao.Evaluator where
 
 import           Dao.Debug.OFF
 import           Dao.Token
-import           Dao.Types
+import           Dao.Object
 import qualified Dao.Tree as T
 import           Dao.Pattern
 import           Dao.Resource
@@ -114,9 +114,9 @@ runExecutable initStack exe =
     execFuncPushStack initStack (executable exe >> return ONull)
 
 -- | Given a list of arguments, matches these arguments toe the given subroutine's
--- 'Dao.Object.ObjPat'. If it matches, the 'Dao.Types.getScriptExpr' of the 'Dao.Types.Executable'
+-- 'Dao.Object.ObjPat'. If it matches, the 'Dao.Object.getScriptExpr' of the 'Dao.Object.Executable'
 -- is evaluated with 'runExecutable'. If the pattern does not match, 'Nothing' is returned to the
--- 'Dao.Types.ExecScript' monad, which allows multiple 'Dao.Types.Subroutine's to be tried before
+-- 'Dao.Object.ExecScript' monad, which allows multiple 'Dao.Object.Subroutine's to be tried before
 -- evaluating to an error in the calling context.
 runSubroutine :: [Object] -> Subroutine -> ExecScript (Maybe Object)
 runSubroutine args sub =
@@ -125,17 +125,17 @@ runSubroutine args sub =
     Backtrack     -> return Nothing
     PFail ref msg -> ceError (OPair (OString msg, ORef ref))
 
--- | Execute a 'Dao.Types.Script' with paramters passed as a list of 
--- @'Dao.Types.Com' 'Dao.Object.ObjectExpr'@. This essentially treats the application of
+-- | Execute a 'Dao.Object.Script' with paramters passed as a list of 
+-- @'Dao.Object.Com' 'Dao.Object.ObjectExpr'@. This essentially treats the application of
 -- paramaters to a script as a static abstract syntax tree, and converts this tree to an
--- @'ExecScript' 'Dao.Types.Object'@ function.
+-- @'ExecScript' 'Dao.Object.Object'@ function.
 execScriptCall :: [Com ObjectExpr] -> FuncExpr -> ExecScript Object
 execScriptCall args scrp = bindArgsExpr (unComment (scriptArgv scrp)) args $
   catchCEReturn (execScriptBlock (unComment (scriptCode scrp)) >> ceReturn ONull)
 
--- | Execute a 'Dao.Types.Rule' object as though it were a script that could be called. The
+-- | Execute a 'Dao.Object.Rule' object as though it were a script that could be called. The
 -- parameters passed will be stored into the 'currentMatch' slot durring execution, but all
--- parameters passed must be of type 'Dao.Types.OString', or an error is thrown.
+-- parameters passed must be of type 'Dao.Object.OString', or an error is thrown.
 execRuleCall :: [Com ObjectExpr] -> RuleExpr -> ExecScript Object
 execRuleCall ax rule = do
   let typeErr o =
@@ -198,7 +198,7 @@ execFuncPushStack dict exe = do
 
 -- | Used to evaluate an expression like @$1@, retrieves the matched pattern associated with an
 -- integer. Specifically, it returns a list of 'Dao.ObjectObject's where each object is an
--- 'Dao.Types.OString' contained at the integer index of the 'Dao.Pattern.matchGaps' of a
+-- 'Dao.Object.OString' contained at the integer index of the 'Dao.Pattern.matchGaps' of a
 -- 'Dao.Pattern.Pattern'.
 evalIntRef :: Word -> ExecScript Object
 evalIntRef i = do
@@ -774,7 +774,7 @@ builtin_do = DaoFunc $ \ox -> do
   return (OList (map OString ox))
 
 -- | The map that contains the built-in functions that are used to initialize every
--- 'Dao.Types.ExecUnit'.
+-- 'Dao.Object.ExecUnit'.
 initBuiltinFuncs :: M.Map Name DaoFunc
 initBuiltinFuncs = let o a b = (ustr a, b) in M.fromList $
   [ o "print" builtin_print
@@ -794,7 +794,7 @@ evalObjectRef obj = case obj of
     Just obj -> return obj
   obj              -> return obj
 
--- | Will return any value from the 'Dao.Types.ExecUnit' environment associated with a
+-- | Will return any value from the 'Dao.Object.ExecUnit' environment associated with a
 -- 'Dao.Object.Reference'.
 readReference :: Reference -> ExecScript (Maybe Object)
 readReference ref = case ref of
@@ -835,12 +835,12 @@ updateReference ref modf = do
     FileRef    path   ref -> error "TODO: you haven't yet defined update behavior for File references"
     MetaRef    _          -> error "cannot assign values to a meta-reference"
 
--- | Retrieve a 'Dao.Types.CheckFunc' function from one of many possible places in the
--- 'Dao.Types.ExecUnit'. Every function call that occurs during execution of the Dao script will
+-- | Retrieve a 'Dao.Object.CheckFunc' function from one of many possible places in the
+-- 'Dao.Object.ExecUnit'. Every function call that occurs during execution of the Dao script will
 -- use this Haskell function to seek the correct Dao function to use. Pass an error message to be
--- reported if the lookup fails. The order of lookup is: this module's 'Dao.Types.Subroutine's,
--- the 'Dao.Types.Subroutine's of each imported module (from first to last listed import), and
--- finally the built-in functions provided by the 'Dao.Types.Runtime'
+-- reported if the lookup fails. The order of lookup is: this module's 'Dao.Object.Subroutine's,
+-- the 'Dao.Object.Subroutine's of each imported module (from first to last listed import), and
+-- finally the built-in functions provided by the 'Dao.Object.Runtime'
 lookupFunction :: String -> Name -> ExecScript Subroutine
 lookupFunction msg op = do
   xunit <- ask
@@ -855,8 +855,8 @@ lookupFunction msg op = do
 
 -- $ErrorReporting
 -- The 'ContErrT' is a continuation monad that can evaluate to an error message without evaluating
--- to "bottom". The error message is any value of type 'Dao.Types.Object'. These functions provide
--- a simplified method for constructing error 'Dao.Types.Object's.
+-- to "bottom". The error message is any value of type 'Dao.Object.Object'. These functions provide
+-- a simplified method for constructing error 'Dao.Object.Object's.
 
 simpleError :: String -> ExecScript a
 simpleError msg = ceError (OString (ustr msg))
@@ -892,7 +892,7 @@ checkPValue altmsg tried pval = case pval of
 
 ----------------------------------------------------------------------------------------------------
 
--- | Convert a single 'ScriptExpr' into a function of value @'ExecScript' 'Dao.Types.Object'@.
+-- | Convert a single 'ScriptExpr' into a function of value @'ExecScript' 'Dao.Object.Object'@.
 execScriptExpr :: Com ScriptExpr -> ExecScript ()
 execScriptExpr script = case unComment script of
   EvalObject  o  _             lc  -> unless (isNO_OP o) (void (evalObject o))
@@ -950,10 +950,10 @@ execScriptExpr script = case unComment script of
 showObjType :: Object -> String
 showObjType obj = showObj 0 (OType (objType obj))
 
--- | 'Dao.Types.ObjectExpr's can be evaluated anywhere in a 'Dao.Object.Script'. However, a
--- 'Dao.Types.ObjectExpr' is evaluated as a lone command expression, and not assigned to any
+-- | 'Dao.Object.ObjectExpr's can be evaluated anywhere in a 'Dao.Object.Script'. However, a
+-- 'Dao.Object.ObjectExpr' is evaluated as a lone command expression, and not assigned to any
 -- variables, and do not have any other side-effects, then evaluating an object is a no-op. This
--- function checks the kind of 'Dao.Types.ObjectExpr' and evaluates to 'True' if it is impossible
+-- function checks the kind of 'Dao.Object.ObjectExpr' and evaluates to 'True' if it is impossible
 -- for an expression of this kind to produce any side effects. Otherwise, this function evaluates to
 -- 'False', which indicates it is OK to evaluate the expression and disgard the resultant 'Object'.
 isNO_OP :: ObjectExpr -> Bool
@@ -980,8 +980,8 @@ cacheReference r obj = case obj of
   Just obj -> ask >>= \xunit -> execRun $ dModifyMVar_ xloc (referenceCache xunit) $ \cache ->
     return (M.insert r obj cache)
 
--- | Evaluate an 'ObjectExpr' to an 'Dao.Types.Object' value, and does not de-reference objects of
--- type 'Dao.Types.ORef'
+-- | Evaluate an 'ObjectExpr' to an 'Dao.Object.Object' value, and does not de-reference objects of
+-- type 'Dao.Object.ORef'
 evalObject :: ObjectExpr -> ExecScript Object
 evalObject obj = case obj of
   VoidExpr                      -> return ONull
@@ -1101,9 +1101,9 @@ verifyRequirement nm a = return a -- TODO: the rest of this function.
 verifyImport :: Name -> a -> ExecScript a
 verifyImport nm a = return a -- TODO: the rest of this function.
 
--- | When the 'programFromSource' is scanning through a 'Dao.Types.SourceCode' object, it first
+-- | When the 'programFromSource' is scanning through a 'Dao.Object.SourceCode' object, it first
 -- constructs an 'IntermediateProgram', which contains no 'Dao.Debug.DMVar's. Once all the data
--- structures are in place, a 'Dao.Types.CachedProgram' is constructed from this intermediate
+-- structures are in place, a 'Dao.Object.CachedProgram' is constructed from this intermediate
 -- representation.
 data IntermediateProgram
   = IntermediateProgram

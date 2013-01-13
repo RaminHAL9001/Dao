@@ -24,7 +24,6 @@ import           Dao.Debug.OFF
 import           Dao.String
 import           Dao.Object
 import           Dao.Object.Monad
-import           Dao.Types
 import qualified Dao.Tree as T
 
 import qualified Data.Map as M
@@ -95,11 +94,11 @@ modifyResource
 modifyResource rsrc fn = dModifyMVar xloc (resource rsrc) $ \ (unlocked, locked) ->
   fn unlocked locked >>= \ (unlocked, locked, a) -> return ((unlocked, locked), a)
 
--- | Modify the contents of a 'Dao.Types.Resource' /without/ locking it. Usually, it is better to
--- use 'Dao.Types.updateResource' or 'Dao.Types.updateResource_', but there are situations where
+-- | Modify the contents of a 'Dao.Object.Resource' /without/ locking it. Usually, it is better to
+-- use 'Dao.Object.updateResource' or 'Dao.Object.updateResource_', but there are situations where
 -- atomic updates are not necessary and you can skip the overhead necessary to lock a reference, or
 -- you simply need to dump a lot of values directly into the unlocked store in a single, atomic
--- mutex operation.  Using 'Dao.Types.dModifyUnlocked' will not effect any of the currently locked
+-- mutex operation.  Using 'Dao.Object.dModifyUnlocked' will not effect any of the currently locked
 -- items, and once the items have been unlocked, they may overwrite the values that were set by the
 -- evaluation of this function.
 modifyUnlocked
@@ -110,7 +109,7 @@ modifyUnlocked
 modifyUnlocked rsrc runUpdate = modifyResource rsrc $ \unlocked locked ->
   runUpdate unlocked >>= \ (unlocked, a) -> return (unlocked, locked, a)
 
--- | Is to 'Dao.Types.modifyUnlocked', what to 'Dao.Debug.dModifyMVar_' is to
+-- | Is to 'Dao.Object.modifyUnlocked', what to 'Dao.Debug.dModifyMVar_' is to
 -- 'Dao.Debug.dModifyMVar'.
 modifyUnlocked_
   :: Bugged r
@@ -198,9 +197,9 @@ inEvalDoUpdateResource rsrc ref runUpdate = do
       fmap ContErrMaybe (runExecScript (runUpdate (toMaybe item)) xunit)
 
 -- | Same function as 'readResource', but is of the 'ExecScript' monad type. Really, this is simply
--- @\resource reference -> 'Dao.Types.execRun' ('Dao.Types.readResource' resource reference)@
+-- @\resource reference -> 'Dao.Object.execRun' ('Dao.Object.readResource' resource reference)@
 -- but it is included for the sake of completion -- to have a read-only counterpart to
--- 'Dao.Types.inEvalDoUpdateResource'.
+-- 'Dao.Object.inEvalDoUpdateResource'.
 inEvalDoReadResource :: Resource stor ref -> ref -> ExecScript (Maybe Object)
 inEvalDoReadResource rsrc ref = execRun (readResource rsrc ref)
 

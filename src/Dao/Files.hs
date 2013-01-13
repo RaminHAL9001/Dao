@@ -23,12 +23,12 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleInstances #-}
 
--- | This module takes care of loading Dao 'Dao.Types.SourceCode' and Dao 'Dao.Types.Document's.
+-- | This module takes care of loading Dao 'Dao.Object.SourceCode' and Dao 'Dao.Object.Document's.
 
 module Dao.Files where
 
 import           Dao.Debug.OFF
-import           Dao.Types
+import           Dao.Object
 import           Dao.Evaluator
 import           Dao.Resource
 import           Dao.Combination (runCombination)
@@ -62,7 +62,7 @@ import Debug.Trace
 putStrErr :: String -> IO ()
 putStrErr msg = hSetBuffering stderr LineBuffering >> hPutStrLn stderr msg
 
--- | Converts a 'System.IO.FilePath' to a 'Dao.Types.UPath' that can be used by many of the
+-- | Converts a 'System.IO.FilePath' to a 'Dao.Object.UPath' that can be used by many of the
 -- functions. in this module.
 docRefToFilePath :: UPath -> FilePath
 docRefToFilePath = uchars
@@ -115,7 +115,7 @@ newDocResource dbg docdata = do
 ----------------------------------------------------------------------------------------------------
 
 -- | Parse Dao program from a 'Prelude.String' containing valid Dao source code, creating a
--- 'Dao.Types.SourceCode' object. This is a pure function called by 'loadFilePath'.
+-- 'Dao.Object.SourceCode' object. This is a pure function called by 'loadFilePath'.
 loadSourceCode :: UPath -> String -> SourceCode
 loadSourceCode upath sourceString = case fst (runParser parseSourceFile sourceString) of
   Backtrack     -> error ("FILE TYPE: "++show path++" does not appear to be a Dao script.")
@@ -136,8 +136,8 @@ dontLoadFileTwice upath getFile = do
 -- | Updates the 'Runtime' to include the Dao source code loaded from the given 'FilePath'. This
 -- function tries to load a file in three different attempts: (1) try to load the file as a binary
 -- @('Dao.Document.Document' 'Dao.Evaluator.DocData')@ object. (2) Try to load the file as a
--- binary @'Dao.Types.SourceCode'@ object. (3) Treat the file as text (using the current locale set
--- by the system, e.g. @en.UTF-8@) and parse a 'Dao.Types.SourceCode' object using
+-- binary @'Dao.Object.SourceCode'@ object. (3) Treat the file as text (using the current locale set
+-- by the system, e.g. @en.UTF-8@) and parse a 'Dao.Object.SourceCode' object using
 -- 'Dao.Object.Parsers.source'. If all three methods fail, an error is thrown. Returns
 -- the 'TypedFile', although all source code files are returned as 'PrivateType's. Use
 -- 'asPublic' to force the type to be a 'PublicType'd file.
@@ -156,7 +156,7 @@ loadFilePath public path = dontLoadFileTwice (ustr path) $ \upath -> do
       scriptLoadHandle public upath h
 
 -- | Load a Dao script program from the given file handle. You must pass the path name to store the
--- resulting 'File' into the 'Dao.Types.pathIndex' table. The handle must be set to the proper
+-- resulting 'File' into the 'Dao.Object.pathIndex' table. The handle must be set to the proper
 -- encoding using 'System.IO.hSetEncoding'.
 scriptLoadHandle :: Bool -> UPath -> Handle -> Run File
 scriptLoadHandle public upath h = do
@@ -168,7 +168,7 @@ scriptLoadHandle public upath h = do
   return file
 
 -- | Load idea data from the given file handle. You must pass the path name to store the resulting
--- 'File' into the 'Dao.Types.pathIndex' table.
+-- 'File' into the 'Dao.Object.pathIndex' table.
 ideaLoadHandle :: UPath -> Handle -> Run File
 ideaLoadHandle upath h = ask >>= \runtime -> do
   lift (hSetBinaryMode h True)
@@ -205,7 +205,7 @@ findIndexedFile upath = do
   return $ flip concatMap (M.assocs ptab) $ \ (ipath, file) ->
     if isSuffixOf (uchars upath) (uchars ipath) then [filePath file] else []
 
--- | Checks that the file path is OK to use for the given 'Dao.Types.ExecUnit', executes the file
+-- | Checks that the file path is OK to use for the given 'Dao.Object.ExecUnit', executes the file
 -- loading function if it is OK to load, returns a CEError if not.
 execReadFile :: UPath -> (UPath -> Handle -> Run File) -> ExecScript File
 execReadFile upath fn = do
@@ -246,10 +246,10 @@ execWriteDB upath = do
         return (doc{docModified = 0}, file)
 
 -- | Initialize a source code file into the given 'Runtime'. This function checks that the
--- 'Dao.Types.sourceFullPath' is unique in the 'programs' table of the 'Runtime', then evaluates
+-- 'Dao.Object.sourceFullPath' is unique in the 'programs' table of the 'Runtime', then evaluates
 -- 'initSourceCode' and associates the resulting 'Dao.Evaluator.ExecUnit' with the
 -- 'sourceFullPath' in the 'programs' table. Returns the logical "module" name of the script along
--- with an initialized 'Dao.Types.ExecUnit'.
+-- with an initialized 'Dao.Object.ExecUnit'.
 registerSourceCode :: Bool -> UPath -> SourceCode -> Run File
 registerSourceCode public upath script = ask >>= \runtime -> do
   let modName  = unComment (sourceModuleName script)
@@ -297,11 +297,11 @@ registerSourceCode public upath script = ask >>= \runtime -> do
 
 -- | You should not normally need to call evaluate this function, you should use
 -- 'registerSourceCode' which will evaluate this function and also place the
--- 'Dao.Types.SourceCode' into the 'programs' table. This function will use
+-- 'Dao.Object.SourceCode' into the 'programs' table. This function will use
 -- 'Dao.Evaluator.programFromSource' to construct a 'Dao.Evaluator.CachedProgram'
 -- and then execute the initialization code for that program, that is, use
--- 'Dao.Evaluator.execScriptExpr' to evaluate every 'Dao.Types.ExecScript' in the
--- 'Dao.Types.constructScript'. Returns the 'Dao.Evaluator.ExecUnit' used to initialize the
+-- 'Dao.Evaluator.execScriptExpr' to evaluate every 'Dao.Object.ExecScript' in the
+-- 'Dao.Object.constructScript'. Returns the 'Dao.Evaluator.ExecUnit' used to initialize the
 -- program, and the logical name of the program (determined by the "module" keyword in the source
 -- code). You need to pass the 'Runtime' to this function because it needs to initialize a new
 -- 'Dao.Evaluator.ExecUnit' with the 'programs' and 'runtimeDocList' but these values are not
@@ -334,8 +334,8 @@ setupTakedown select xunit = ask >>= \runtime ->
 
 -- | Once all the files have been loaded, it is possible to check if the @import@ directives of a
 -- given Dao script indicate a module name that properly maps to a file that has been loaded. This
--- function preforms that check, and also fills-in the 'Dao.Types.importsTable' of the
--- 'Dao.Types.ExecUnit'. Returns 'Data.Maybe.Nothing' on success. If there is a problem, it returns
+-- function preforms that check, and also fills-in the 'Dao.Object.importsTable' of the
+-- 'Dao.Object.ExecUnit'. Returns 'Data.Maybe.Nothing' on success. If there is a problem, it returns
 -- the name of the module that could not be found.
 checkImports :: File -> Run [(Name, [Name])]
 checkImports file = ask >>= \runtime -> case file of

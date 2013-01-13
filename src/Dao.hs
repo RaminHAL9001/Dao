@@ -24,18 +24,17 @@
 
 -- | This module is pretty much where everything begins. It is the smallest interface that can be
 -- imported by any Haskell program making use of the Dao System. You can use the functions in this
--- module to initialize a 'Dao.Types.Runtime' data structure, then use it to start an input query
+-- module to initialize a 'Dao.Object.Runtime' data structure, then use it to start an input query
 -- loop with 'inputQueryLoop'. The query loop requires you pass a callback function that, on each
--- evaluation, returns the next string to be used the query to the 'Dao.Types.Runtime'.
+-- evaluation, returns the next string to be used the query to the 'Dao.Object.Runtime'.
 --
 -- To have more control over execution of string queries, you will need to import the "Dao.Tasks"
--- module and make use of those functions to create 'Dao.Types.Job's from string queries, then wait
--- for those 'Dao.Types.Job's to complete.
+-- module and make use of those functions to create 'Dao.Object.Job's from string queries, then wait
+-- for those 'Dao.Object.Job's to complete.
 
 module Dao
   ( module Dao.String
   , module Dao.Object
-  , module Dao.Types
   , module Dao
   ) where
 
@@ -46,7 +45,6 @@ import           Dao.Pattern
 import           Dao.Object
 import           Dao.Resource
 import qualified Dao.Tree as T
-import           Dao.Types
 import           Dao.Tasks
 import           Dao.Files
 import           Dao.Evaluator
@@ -71,7 +69,7 @@ min_exec_time = 200000
 
 -- | Create a new 'Runtime' with nothing in it except for the 'userData' you pass to it. This
 -- takes an optional 'Dao.Debug.Debugger', which will be installed into the resulting
--- 'Dao.Types.Runtime' and used for debugging.
+-- 'Dao.Object.Runtime' and used for debugging.
 newRuntime :: Maybe Debugger -> IO Runtime
 newRuntime debug = flip runReaderT debug $ dStack xloc "newRuntime" $ do
   paths <- dNewMVar xloc "Runtime.pathIndex"        (M.empty)

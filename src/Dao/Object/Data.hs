@@ -25,11 +25,10 @@
 
 module Dao.Object.Data where
 
-import           Dao.Types
+import           Dao.Object
 import qualified Dao.Tree as T
 import           Dao.Pattern
 import           Dao.Predicate
-import           Dao.Object
 import           Dao.Object.Monad
 
 import           Control.Monad
@@ -561,8 +560,8 @@ checkBinumericOp op fnInt fnFrac a b = do
     (OFloat   a, OFloat   b) -> OFloat    (fnFrac a b)
     (OComplex a, OComplex b) -> OComplex  (fnFrac a b)
 
--- | Bitwise logical operations which work on 'Dao.Types.OInt's and 'Dao.Object.OWord's, which also
--- work on 'Dao.Types.OSet's, 'Dao.Object.OIntMap's, and 'Dao.Types.ODict's.
+-- | Bitwise logical operations which work on 'Dao.Object.OInt's and 'Dao.Object.OWord's, which also
+-- work on 'Dao.Object.OSet's, 'Dao.Object.OIntMap's, and 'Dao.Object.ODict's.
 checkBitwiseOp
   :: String
   -> (forall a . Bits a => a -> a -> a)

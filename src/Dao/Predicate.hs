@@ -37,7 +37,6 @@
 module Dao.Predicate where
 
 import           Dao.Object
-import           Dao.Combination
 
 import           Control.Exception
 import           Control.Monad
@@ -51,64 +50,6 @@ import           Data.Monoid
 import           System.IO.Unsafe
 
 import           Debug.Trace
-
--- | This monad must contain the IO monad because we can only catch exceptions in the IO monad.
-newtype PredicateIO st a = PredicateIO { runPredicateIO :: CombinationT st IO a }
-
--- Will catch exceptions of the types:
--- 'Control.Exception.PatternMatchFail', 'Control.Exception.RecConError',
--- 'Control.Exception.RecUpdError', and 'Control.Exception.AssertionFailed'. This function evaluates
--- to a failed 'Dao.Combination.CombinationT' monad rather than evaluating to "bottom" on catching
--- these exceptions.
-noBadPatternsIO :: IO a -> IO (Either Object a)
-noBadPatternsIO fn = catches (fn >>= \e -> seq e (return (Right e))) $
-    [ Handler $ \ (PatternMatchFail msg) -> err ONull
-    , Handler $ \ (AssertionFailed  msg) -> err (ostr msg)
-    , Handler $ \ (RecSelError      msg) -> err (ostr msg)
-    , Handler $ \ (RecUpdError      msg) -> err (ostr msg)
-    ]
-  where
-    ostr msg = OString (ustr msg)
-    err  msg = return (Left msg)
-
-
--- | The false predicate, uses 'Dao.Combination.failWith' to pass an 'Dao.Types.Object' that
--- signifies why the predicate failed.
-falseIO :: Object -> PredicateIO st ignored
-falseIO = PredicateIO . failWith
-
--- | Labeling your predicate means to attach an object that will be used as an error message if the
--- predicate fails. It is a bit like the 'Text.ParserCombinators.Parsec.<?>' operator in the
--- "Text.ParserCombinators.Parsec" library. This function makes use of the 'Dao.Combination.failMsg'
--- equation.
-labelIO :: Object -> PredicateIO st a -> PredicateIO st a
-labelIO obj fn = PredicateIO (failMsg obj (runPredicateIO fn))
-
-instance Monad (PredicateIO st) where
-  PredicateIO fn >>= mfn = PredicateIO $ CombinationT $ \st -> do
-    e <- noBadPatternsIO (runCombinationT (fn >>= runPredicateIO . mfn) st >>= evaluate)
-    case e of
-      Left err -> return [(Left err, st)]
-      Right ma -> return ma
-  return a = PredicateIO (return a)
-  fail msg = PredicateIO (fail msg)
-
-instance Functor (PredicateIO st) where
-  fmap f ma = ma >>= return . f
-
-instance MonadPlus (PredicateIO st) where
-  mzero = PredicateIO mzero
-  mplus (PredicateIO a) (PredicateIO b) = PredicateIO $
-    mplus (CombinationT $ \st -> runCombinationT a st >>= evaluate) b
-
-instance MonadState st (PredicateIO st) where
-  get = PredicateIO get
-  put a = PredicateIO (put a)
-
-instance MonadIO (PredicateIO st) where
-  liftIO fn = PredicateIO (lift fn)
-
-----------------------------------------------------------------------------------------------------
 
 -- | 'PValue' is a "predicate value" data type allows a monadic computation to backtrack and try
 -- another branch of computation, or to fail without causing backtracking.  These values are used

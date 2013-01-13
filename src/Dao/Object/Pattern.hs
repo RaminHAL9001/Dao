@@ -22,8 +22,8 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 
 module Dao.Object.Pattern
-  ( MatchValue, Matcher, MatcherState, initMatcherState, matcherTree, getCurrentRef
-  , matchObject, matchObjectList, matchParamList, matchObjectSet, matchObjectElemSet
+  ( MatchValue, Matcher, evalMatcher, MatcherState, initMatcherState, matcherTree, getCurrentRef
+  , matchObject, matchObjectList, matchWholeObjectList, matchObjectSet, matchObjectElemSet
   , matchObjectChoice
   )
   where
@@ -72,7 +72,12 @@ type MatchValue a = PValue Reference a
 data MatcherState
   = MatcherState
     { matcherRef  :: [Name]
+      -- ^ contains labels taken from 'Dao.Object.ObjLabel' used to construct 'matcherTree' entries
+      -- when refering to labeled matched objects.
     , matcherIdx  :: [Object]
+      -- ^ when delving into container objects like 'Dao.Object.OList's and 'Dao.Object.ODict's, we
+      -- can construct a lits of indicies to describe the location of the object we are currently
+      -- looking at. This list contains that index value.
     , matcherTree :: T.Tree Name Object
     }
 
@@ -135,24 +140,27 @@ instance ErrorMonadPlus Reference Matcher where
 -- | Match a single object pattern to a single object.
 matchObject :: ObjPat -> Object -> Matcher Object
 matchObject pat o = let otype = objType o in case pat of
-  ObjAnyX       -> return o
-  ObjMany       -> return o
-  ObjAny1       -> return o
+  ObjAnyX -> return o
+  ObjMany -> return o
+  ObjAny1 -> return o
   ObjEQ q   | q == o            -> return o
   ObjType t | setMember t otype -> return o
   ObjBounded  lo hi             -> Matcher $ pvalue $ msum $
     [ fmap EnumPoint (objToRational o) >>= \r -> guard (lo <= r && r <= hi) >> return o
     , case o of
-        OArray arr ->
+        OArray arr -> do
           let (a, b) = bounds arr
-          in  guard (lo <= EnumPoint (toRational a) && EnumPoint (toRational b) <= hi) >> return o
+          guard (lo <= EnumPoint (toRational a) && EnumPoint (toRational b) <= hi)
+          return o
         _          -> mzero
     ]
-  ObjList t patx | t==otype || t==TrueType -> fmap OList $ case o of
-    OArray a    -> matchObjectList patx (zipIndecies (elems a))
-    OList  a    -> matchObjectList patx (zipIndecies a)
-    OPair (a,b) -> matchObjectList patx [(OWord 0, a), (OWord 1, b)]
-    _           -> mzero
+  ObjList t patx | t==otype || t==TrueType -> do
+    case o of
+      OArray a    -> matchWholeObjectList patx (elems a)
+      OList  a    -> matchWholeObjectList patx a
+      OPair (a,b) -> matchWholeObjectList patx [a, b]
+      _           -> mzero
+    return o
   ObjNameSet op set -> do
     case o of
       ODict dict -> matchObjectSet op set (T.Branch (M.map T.Leaf dict))
@@ -178,38 +186,14 @@ matchObject pat o = let otype = objType o in case pat of
     OK       _ -> mzero
     PFail ~u v -> tokenThrowError u v
 
-zipIndecies :: [a] -> [(Object, a)]
-zipIndecies = zip (map OWord (iterate (+1) 0))
-
 justOnce :: [Bool] -> Bool
 justOnce checks = 1 == foldl (\i check -> if check then i+1 else i) 0 checks
 
--- | Use a list of @['ObjPat']@s to check a list of @['Dao.Object.Object']@s. The list of
--- 'Dao.Object.Object's to be matched is actually a list of pairs, but only the second item is
--- checked. The first item in each pair is ignored, unless matching against the second item
--- evaluates to 'Dao.Predicate.PFail', in which case, the first item is used as an index to indicate
--- which list item caused the match to result in 'Dao.Predicate.PFail', so you can identify which
--- 'Dao.Object.Object' in the list did not match.
-matchObjectList :: [ObjPat] -> [(Object, Object)] -> Matcher [Object]
-matchObjectList patx ax = fmap (map snd) (matchObjectListWith withIdx patx ax)
-
--- | See 'matchObjectList': this function evaluation is similar, an @['ObjPat']@ list will be used
--- to check a list of 'Dao.Object.Objects's. However, the index value (the 'Dao.String.Name'
--- assocaited with each item in the list to be checked) is used to construct a 'Dao.Object.T_tree'
--- (the type used to construct 'Dao.Object.OTree') if the match evaluates successfully. Otherwise,
--- the index value can be used to determine which object in the list did not match the list of
--- patterns.
-matchParamList :: [ObjPat] -> [(Name, Object)] -> Matcher T_tree
-matchParamList patx ax =
-  fmap (foldl (\ tree (i, o) -> T.insert [i] o tree) T.Void) (matchObjectListWith withRef patx ax)
-
--- The algorithm used by 'matchObjectList' and 'matchParamList'.
-matchObjectListWith
-  :: (i -> Matcher ([(i, Object)], [(i, Object)]) -> Matcher ([(i, Object)], [(i, Object)]))
-  -> [ObjPat] -> [(i, Object)] -> Matcher [(i, Object)]
-matchObjectListWith withFn patx ax = do
-  (matched, ax) <- loop [] patx ax
-  if null ax then return matched else mzero
+-- | Returns the objects that did match the given patterns, and the remaining objects.
+matchObjectList :: [ObjPat] -> [Object] -> Matcher ([Object], [Object])
+matchObjectList patx ax = do
+  (matched, ax) <- loop [] patx (zipIndicies ax)
+  return (map snd matched, map snd ax)
   where
     loop matched patx ax = case patx of
       [] -> return (matched, ax)
@@ -220,7 +204,7 @@ matchObjectListWith withFn patx ax = do
         ObjMany -> try1 matched [] reverse (reverse patx) (reverse ax)
         pat     -> case ax of
           []        -> mzero
-          (i, a):ax -> withFn i $ do
+          (i, a):ax -> withIdx i $ do
             a <- matchObject pat a
             loop (matched++[(i, a)]) patx ax
     try1 matched skipped rvrsIfRvrsd patx ax =
@@ -230,6 +214,11 @@ matchObjectListWith withFn patx ax = do
     skip matched skipped rvrsIfRvrsd patx ax = case ax of
       []   -> mzero
       a:ax -> try1 matched (skipped++[a]) rvrsIfRvrsd patx ax
+    zipIndicies = zip (map OWord (iterate (+1) 0))
+
+matchWholeObjectList :: [ObjPat] -> [Object] -> Matcher ()
+matchWholeObjectList patx ax =
+  matchObjectList patx ax >>= \ (_, ax) -> if null ax then return () else mzero
 
 -- | Match a set of indecies in an 'ObjPat' to an object with indecies, for example, matching a
 -- @['Dao.String.Name']@ to a 'Dao.Tree.Tree' will check if a branch of the given

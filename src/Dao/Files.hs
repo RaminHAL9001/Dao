@@ -36,7 +36,6 @@ import           Dao.Parser hiding (lookAhead)
 import           Dao.Predicate
 import           Dao.Object.Parser
 import           Dao.Object.Show
-import           Dao.Object.Monad
 
 import           Control.Exception
 import           Control.Concurrent

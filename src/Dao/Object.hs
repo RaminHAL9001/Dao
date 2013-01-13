@@ -29,6 +29,7 @@ module Dao.Object
   , module Dao.Object
   ) where
 
+import           Dao.Debug.OFF
 import           Dao.String
 import           Dao.Token
 import           Dao.Pattern
@@ -38,6 +39,7 @@ import           Dao.Predicate
 
 import           Data.Typeable
 import           Data.Dynamic
+import           Data.Unique
 import           Data.Maybe
 import           Data.Either
 import           Data.List
@@ -56,7 +58,7 @@ import           Numeric
 import qualified Data.Map                  as M
 import qualified Data.IntMap               as IM
 import qualified Data.Set                  as S
--- import qualified Data.IntSet               as IS
+import qualified Data.IntSet               as IS
 import qualified Data.ByteString.Lazy      as B
 
 import           Control.Monad
@@ -381,22 +383,6 @@ instance Functor Com where
 
 ----------------------------------------------------------------------------------------------------
 
--- | A 'FuncExpr' is really more of an executable function or subroutine, it has a list of input
--- arguments and an executable block of code of type @['ScriptExrp']@. But the word @Function@ has
--- other meanings in Haskell, so the word 'FuncExpr' is used instead.
-data FuncExpr
-  = FuncExpr
-    { scriptArgv :: Com [Com Name]
-    , scriptCode :: Com [Com ScriptExpr]
-    }
-  deriving (Show, Typeable)
-
-simpleScript :: [Com ScriptExpr] -> FuncExpr
-simpleScript exprs = FuncExpr{scriptArgv = Com [], scriptCode = Com exprs}
-
-instance Eq  FuncExpr where { _ == _ = False } -- | TODO: there ought to be a bisimilarity test here
-instance Ord FuncExpr where { compare _ _ = LT }
-
 -- | This is the data structure used to store rules as serialized data, although when a bytecode
 -- program is loaded, rules do not exist, the 'ORule' object constructor contains this structure.
 data RuleExpr
@@ -417,10 +403,24 @@ data Executable
 -- confusion with Haskell's "Data.Function"). 
 data Subroutine
   = Subroutine
-    { getFuncExpr   :: FuncExpr
-    , argsPattern   :: [ObjPat]
-    , getScriptExpr :: Executable
+    { argsPattern   :: [ObjPat]
+    , subSourceCode :: [Com ScriptExpr]
+    , getSubExecutable :: Executable
     }
+    deriving Typeable
+
+instance Eq Subroutine where
+  a == b = argsPattern a == argsPattern b && subSourceCode a == subSourceCode b
+instance Ord Subroutine where
+  compare a b =
+    if subSourceCode a == subSourceCode b
+      then  if argsPattern a == argsPattern b then EQ else compare (argsPattern a) (argsPattern b)
+      else  compare (subSourceCode a) (subSourceCode b)
+instance Show Subroutine where
+  show a = concat $
+    [ "func(", intercalate ", " (map show (argsPattern a))
+    , ") { " , concatMap (\a -> show a++"; ") (subSourceCode a), "}"
+    ]
 
 -- | All evaluation of the Dao language takes place in the 'ExecScript' monad. It allows @IO@
 -- functions to be lifeted into it so functions from "Control.Concurrent", "Dao.Document",
@@ -909,7 +909,7 @@ data ExecUnit
       -- are the rules assigned this program by the 'ProgramRule' which allowed it to be loaded.
     , builtinFuncs       :: M.Map Name DaoFunc
       -- ^ a pointer to the builtin function table provided by the runtime.
-    , toplevelFuncs      :: DMVar (M.Map Name Subroutine)
+    , toplevelFuncs      :: DMVar (M.Map Name [Subroutine])
     , execHeap           :: TreeResource
       -- ^ referes to the same resource as 'Dao.Types.globalData' in 'Dao.Types.Program'
     , execStack          :: DMVar (Stack Name Object)

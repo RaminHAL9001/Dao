@@ -38,7 +38,6 @@ import           Dao.Files
 import           Dao.Parser
 import           Dao.Predicate
 import           Dao.Object.Parser
-import           Dao.Object.Monad
 import           Dao.Object.Show
 
 import           Control.Exception
@@ -70,7 +69,7 @@ execTask :: Job -> Task -> Run ()
 execTask job task = dStack xloc "execTask" $ ask >>= \runtime -> do
   let run patn mtch action xunit fn = do
         result <- dStack xloc "execTask/runExecScript" $ lift $ try $ runIO runtime $
-          runExecScript (runExecutable action) $
+          runExecScript (runExecutable T.Void action) $
             xunit{currentTask = task, currentExecJob = Just job}
         let putErr err = dModifyMVar_ xloc (uncaughtErrors xunit) (return . (++[err]))
         case seq result result of
@@ -356,7 +355,7 @@ execInputString guarded instr select = dStack xloc "execInputString" $ ask >>= \
 -- be executed.
 evalScriptString :: ExecUnit -> String -> Run ()
 evalScriptString xunit instr = dStack xloc "evalScriptString" $
-  void $ flip runExecScript xunit $ nestedExecStack M.empty $ execScriptBlock $
+  void $ flip runExecScript xunit $ nestedExecStack T.Void $ execScriptBlock $
     case fst (runParser parseInteractiveScript instr) of
         Backtrack     -> error "cannot parse expression"
         PFail tok msg -> error ("error: "++uchars msg++show tok)

@@ -574,9 +574,13 @@ instance Binary RuleExpr where
   put r = putComComList (rulePattern r) >> putComComList (ruleAction r)
   get   = liftM2 RuleExpr getComComList getComComList
 
-instance Binary FuncExpr where
-  put s = putComComList (scriptArgv s) >> putComComList (scriptCode s)
-  get   = liftM2 FuncExpr getComComList getComComList
+instance Binary Subroutine where
+  put s = putList (argsPattern s) >> putComList (subSourceCode s)
+  get   = liftM3 Subroutine getList getComList (return (Executable undefined (return ())))
+
+instance Binary ObjPat where
+  put s = error "TODO: define binary serializer for ObjPat"
+  get   = error "TODO: define binary serializer for ObjPat"
 
 instance Binary TopLevelExpr where
   put d = case d of

@@ -23,12 +23,12 @@ module Dao.Resource where
 import           Dao.Debug.OFF
 import           Dao.String
 import           Dao.Object
-import           Dao.Object.Monad
 import qualified Dao.Tree as T
 
 import qualified Data.Map as M
 
 import           Control.Exception
+import           Control.Monad.Reader
 
 newDMVarsForResource
   :: Bugged r

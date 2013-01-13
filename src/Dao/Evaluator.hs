@@ -35,7 +35,6 @@ import           Dao.Pattern
 import           Dao.Resource
 import           Dao.Predicate
 
-import           Dao.Object.Monad
 import           Dao.Object.Math
 import           Dao.Object.Show
 import           Dao.Object.Binary
@@ -64,7 +63,7 @@ import qualified Data.IntMap as I
 import qualified Data.ByteString.Lazy.UTF8 as U
 
 --debug: for use with "trace"
---import Debug.Trace
+import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -104,7 +103,7 @@ setupExecutable scrp = do
   return $
     Executable
     { staticVars = staticRsrc
-    , executable = map unComment (unComment scrp)
+    , executable = execScriptBlock (unComment scrp)
     }
 
 runExecutable :: T_tree -> Executable -> ExecScript Object
@@ -113,24 +112,16 @@ runExecutable initStack exe =
     execFuncPushStack initStack (executable exe >> return ONull)
 
 -- | Given a list of arguments, matches these arguments toe the given subroutine's
--- 'Dao.Object.ObjPat'. If it matches, the 'Dao.Object.getScriptExpr' of the 'Dao.Object.Executable'
+-- 'Dao.Object.ObjPat'. If it matches, the 'Dao.Object.getSubExecutable' of the 'Dao.Object.Executable'
 -- is evaluated with 'runExecutable'. If the pattern does not match, 'Nothing' is returned to the
 -- 'Dao.Object.ExecScript' monad, which allows multiple 'Dao.Object.Subroutine's to be tried before
 -- evaluating to an error in the calling context.
 runSubroutine :: [Object] -> Subroutine -> ExecScript (Maybe Object)
 runSubroutine args sub =
   case evalMatcher (matchObjectList (argsPattern sub) args >> gets matcherTree) of
-    OK       tree -> fmap Just (runExecutable tree (getScriptExpr sub))
+    OK       tree -> fmap Just (runExecutable tree (getSubExecutable sub))
     Backtrack     -> return Nothing
     PFail ref msg -> ceError (OPair (OString msg, ORef ref))
-
--- | Execute a 'Dao.Object.Script' with paramters passed as a list of 
--- @'Dao.Object.Com' 'Dao.Object.ObjectExpr'@. This essentially treats the application of
--- paramaters to a script as a static abstract syntax tree, and converts this tree to an
--- @'ExecScript' 'Dao.Object.Object'@ function.
-execScriptCall :: [Com ObjectExpr] -> FuncExpr -> ExecScript Object
-execScriptCall args scrp = bindArgsExpr (unComment (scriptArgv scrp)) args $
-  catchCEReturn (execScriptBlock (unComment (scriptCode scrp)) >> ceReturn ONull)
 
 -- | Execute a 'Dao.Object.Rule' object as though it were a script that could be called. The
 -- parameters passed will be stored into the 'currentMatch' slot durring execution, but all
@@ -840,15 +831,15 @@ updateReference ref modf = do
 -- reported if the lookup fails. The order of lookup is: this module's 'Dao.Object.Subroutine's,
 -- the 'Dao.Object.Subroutine's of each imported module (from first to last listed import), and
 -- finally the built-in functions provided by the 'Dao.Object.Runtime'
-lookupFunction :: String -> Name -> ExecScript Subroutine
+lookupFunction :: String -> Name -> ExecScript [Subroutine]
 lookupFunction msg op = do
   xunit <- ask
   let toplevs xunit = execRun (fmap (M.lookup op) (dReadMVar xloc (toplevelFuncs xunit)))
       lkup xunitMVar = execRun (dReadMVar xloc xunitMVar) >>= toplevs
-  funcs <- sequence (toplevs xunit : map lkup (importsTable xunit))
-  case msum funcs of -- TODO: builtinFuncs should not be used anymore
-    Nothing   -> objectError (OString op) $ "undefined "++msg++" ("++uchars op++")"
-    Just func -> return func
+  funcs <- fmap (concatMap maybeToList) (sequence (toplevs xunit : map lkup (importsTable xunit)))
+  if null funcs
+    then  objectError (OString op) $ "undefined "++msg++" ("++uchars op++")"
+    else  return (concat funcs)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -905,7 +896,7 @@ execScriptExpr script = case unComment script of
   TryCatch    try  name catch  lc  -> do
     ce <- withContErrSt (nestedExecStack T.Void (execScriptBlock (unComment try))) return
     void $ case ce of
-      CEError o -> nestedExecStack (T.Leaf (unComment name) o) (execScriptBlock catch)
+      CEError o -> nestedExecStack (T.insert [unComment name] o T.Void) (execScriptBlock catch)
       ce        -> returnContErr ce
   ForLoop    varName inObj thn lc  -> nestedExecStack T.Void $ do
     inObj   <- evalObject (unComment inObj)
@@ -995,21 +986,28 @@ evalObject obj = case obj of
       Just obj -> fmap Just $ checkPValue "assignment expression" [obj, expr] $ (updatingOps!op) obj expr
   FuncCall   op  _  args     lc -> do -- a built-in function call
     bif  <- fmap builtinFuncs ask
+    args <- evalArgsList args
     case M.lookup op bif of
       Nothing -> do
-        -- Find the name of the function in the built-in table and execute that one if it exists.
-        -- NOTE: Built-in function calls do not get their own new stack, 'execFuncPushStack' is not
-        -- used, only 'catchCEREturn'.
-        fn <- lookupFunction "function call" op
-        args <- mapM ((evalObject >=> evalObjectRef) . unComment) args
+        fn   <- lookupFunction "function call" op
         let argTypes = OList (map (OType . objType) args)
-        runSubroutine args fn
+        ~obj <- mapM (runSubroutine args) fn
+        case msum obj of
+          Just obj -> return obj
+          Nothing  -> ceError $ OList $
+            [OString (ustr "incorrect parameters passed to function") , OString op, OList args]
       Just fn -> daoForeignCall fn args
   LambdaCall ref  args       lc -> do
-    fn <- evalObject (unComment ref) >>= evalObjectRef
+    fn   <- evalObject (unComment ref) >>= evalObjectRef
     case fn of
-      OScript fn -> execScriptCall args fn
-      ORule   fn -> execRuleCall   args fn
+      OScript fn -> do
+        args <- evalArgsList args
+        obj <- runSubroutine args fn
+        case obj of
+          Just obj -> return obj
+          Nothing  -> ceError $ OList $
+            [OString (ustr "incorrect parameters passed to lambda call"), OScript fn, OList args]
+      ORule   fn -> execRuleCall  args fn
       _          -> called_nonfunction_object (showObjectExpr 0 ref) fn
   ParenExpr     _     o      lc -> evalObject (unComment o)
   ArraySubExpr  o  _  i      lc -> do
@@ -1076,7 +1074,14 @@ evalObject obj = case obj of
                    "range specified to an "++show ArrayType
                  ++" constructor must evaluate to two "++show IntType++"s"
       _ -> simpleError "internal error: array range expression has fewer than 2 arguments"
-  LambdaExpr argv  code      lc -> return (OScript (FuncExpr{scriptArgv = argv, scriptCode = Com code}))
+  LambdaExpr argv  code      lc -> do
+    let argv' = map (flip ObjLabel ObjAny1 . unComment) (unComment argv)
+    exe <- execRun (setupExecutable (Com code))
+    return $ OScript $
+      Subroutine{argsPattern = argv', subSourceCode = code, getSubExecutable = exe}
+
+evalArgsList :: [Com ObjectExpr] -> ExecScript [Object]
+evalArgsList = mapM ((evalObject >=> evalObjectRef) . unComment)
 
 -- | Simply checks if an 'Prelude.Integer' is within the maximum bounds allowed by 'Data.Int.Int'
 -- for 'Data.IntMap.IntMap'.
@@ -1226,12 +1231,17 @@ programFromSource globalResource checkAttribute script = do
       TakedownExpr scrp lc -> modify (\p -> p{inmpg_destructScript  = inmpg_destructScript  p ++ [scrp]})
       BeginExpr    scrp lc -> modify (\p -> p{inmpg_preExecScript   = inmpg_preExecScript   p ++ [scrp]})
       EndExpr      scrp lc -> modify (\p -> p{inmpg_postExecScript  = inmpg_postExecScript  p ++ [scrp]})
-      ToplevelFunc _ nm argv code lc -> lift $ do
+      ToplevelFunc _ nm argv code lc -> trace ("define function: "++show (unComment nm)) $ lift $ do
         xunit <- ask
-        let func objx = execScriptCall (map (Com . flip Literal lc) objx) $
-              FuncExpr{scriptArgv = argv, scriptCode = code}
+        exe <- execScriptRun (setupExecutable code)
+        let sub =
+              Subroutine
+              { argsPattern  = map (flip ObjLabel ObjAny1 . unComment) (unComment argv)
+              , subSourceCode  = unComment code
+              , getSubExecutable = exe
+              }
         execScriptRun $ do
           let name = unComment nm
-          func <- dNewMVar xloc ("Program.topLevelFunc("++uchars name++")") func :: Run Subroutine
-          dModifyMVar_ xloc (toplevelFuncs xunit) (return . M.insert name func)
+          dModifyMVar_ xloc (toplevelFuncs xunit) $ return .
+            M.alter (\funcs -> mplus (fmap (++[sub]) funcs) (return [sub])) name
 

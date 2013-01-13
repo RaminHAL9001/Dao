@@ -119,11 +119,11 @@ showCom showItem idnc com = case com of
     idnc' = idnc+1
     sh c = showComments c ++ indent idnc'
 
-showScript :: Int -> Maybe Name -> FuncExpr -> String
+showScript :: Int -> Maybe Name -> Subroutine -> String
 showScript idnc maybeName scrp =
      "func"++ fromMaybe "" (maybeName >>= Just . (" "++) . uchars)
-  ++ showCom argv idnc (scriptArgv scrp) ++ " {"
-  ++ showScriptBlock (idnc+1) (scriptCode scrp)
+  ++ showCom argv idnc (Com $ map Com $ argsPattern scrp) ++ " {"
+  ++ showScriptBlock (idnc+1) (Com $ subSourceCode scrp)
   ++ '\n':indent idnc ++ "}"
   where
     argv idnc ax = "("

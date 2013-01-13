@@ -15,8 +15,8 @@ src/Dao/Resource.hs
 src/Dao/String.hs
 src/Dao/Pattern.hs
 src/Dao/Predicate.hs
-src/Dao/Tasks.hs
 src/Dao/Token.hs
+src/Dao/Tasks.hs
 src/Dao.hs
 src/dao-main.hs
 src/Dao/Debug.hs

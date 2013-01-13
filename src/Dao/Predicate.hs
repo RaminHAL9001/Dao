@@ -36,7 +36,7 @@
 
 module Dao.Predicate where
 
-import           Dao.Object
+import           Dao.String
 
 import           Control.Exception
 import           Control.Monad

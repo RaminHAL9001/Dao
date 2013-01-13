@@ -45,8 +45,8 @@ import           Dao.Pattern
 import           Dao.Object
 import           Dao.Resource
 import qualified Dao.Tree as T
-import           Dao.Tasks
 import           Dao.Files
+import           Dao.Tasks
 import           Dao.Evaluator
 
 import           Control.Exception
@@ -95,7 +95,7 @@ newRuntime debug = flip runReaderT debug $ dStack xloc "newRuntime" $ do
 -- functionality which is checked by the "required" directive of any Dao program that is loaded into
 -- this runtime. If all "required" function sets are not available, loading of that Dao program
 -- fails.
-initRuntimeFunctions :: [(Name, M.Map Name CheckFunc)] -> Runtime -> Runtime
+initRuntimeFunctions :: [(Name, M.Map Name DaoFunc)] -> Runtime -> Runtime
 initRuntimeFunctions funcs runtime =
   runtime{ functionSets = M.union (M.fromList funcs) (functionSets runtime) }
 

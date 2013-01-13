@@ -33,7 +33,7 @@ import           Data.Typeable
 import           Data.List
 import           Data.Maybe
 import           Data.Char
-import           Data.Word (Word8)
+import           Data.Word
 import           Data.Ratio
 import           Data.Array.IArray
 import qualified Data.Set as S
@@ -62,16 +62,16 @@ tokens ax = map ustr (loop ax) where
 data Match
   = Match
     { originalInput :: Tokens
-    , matchGaps :: Maybe (Array Int Tokens)
+    , matchGaps :: Maybe (Array Word Tokens)
     }
     deriving Show
 
-matchFromList :: Tokens -> Int -> [Tokens] -> Match
+matchFromList :: Tokens -> Word -> [Tokens] -> Match
 matchFromList orig sz stk =
   let arr = if sz==0 then Nothing else Just (listArray (1, sz) stk)
   in  Match{ originalInput = orig, matchGaps = arr }
 
-getMatch :: Int -> Match -> Tokens
+getMatch :: Word -> Match -> Tokens
 getMatch i ma =
   (fromMaybe (error "match retrieved from pattern which contained no wild-card symbols") $
     (matchGaps ma)) ! i

@@ -49,14 +49,14 @@ newDMVarsForResource dbg objname unlocked locked = do
     , lookupLocked   = error "Resource.lookupLocked is not defined"
     }
 
-newStackResource :: Bugged r => String -> [M.Map Name Object] -> ReaderT r IO StackResource
+newStackResource :: Bugged r => String -> [T.Tree Name Object] -> ReaderT r IO StackResource
 newStackResource dbg initStack = do
   resource <- newDMVarsForResource dbg "StackResource" (Stack initStack) (Stack [])
   return $
     resource
-      { updateUnlocked = stackUpdate
+      { updateUnlocked = stackDefine
       , lookupUnlocked = stackLookup
-      , updateLocked   = stackUpdate
+      , updateLocked   = stackDefine
       , lookupLocked   = stackLookup
       }
 
@@ -222,7 +222,7 @@ readResource rsrc ref = modifyResource rsrc $ \unlocked locked ->
 -- | Operating on a 'StackResource', push an item onto the stack.
 pushStackResource :: Bugged r => StackResource -> ReaderT r IO ()
 pushStackResource rsrc = modifyResource rsrc $ \unlocked locked ->
-  return (stackPush M.empty unlocked, stackPush M.empty locked, ())
+  return (stackPush T.Void unlocked, stackPush T.Void locked, ())
 
 -- | Operating on a 'StackResource', push an item onto the stack.
 popStackResource :: Bugged r => StackResource -> Stack Name Object -> ReaderT r IO ()

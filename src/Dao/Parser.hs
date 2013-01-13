@@ -76,10 +76,6 @@ spanAtWord chk w ax = loop w [] ax where
     ax                  -> (rx, ax)
 
 -- not for export
-iLength :: Num len => [a] -> len
-iLength = foldl (+) 0 . map (const 1)
-
--- not for export
 wordReplicateM :: (Ord w, Num w, Monad m) => w -> m a -> m [a]
 wordReplicateM w fn = loop w [] where
   loop w ax = if w >= 0 then fn >>= \a -> loop (w-1) (ax++[a]) else return ax

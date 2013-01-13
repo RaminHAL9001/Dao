@@ -78,6 +78,10 @@ newtype UStr = UStr { toUTF8ByteString :: U.ByteString } deriving (Eq, Ord, Type
 ulength :: UStr -> Int
 ulength = U.length . toUTF8ByteString
 
+-- | Length of a list, but unlike 'Data.List.length', allows a polymorphic length type.
+iLength :: Num len => [a] -> len
+iLength = foldl (+) 0 . map (const 1)
+
 -- | Used to encode a 'UStr' data type without any prefix at all. The instantiation of 'UStr' into
 -- the 'Data.Binary.Binary' class places a prefix before every 'UStr' as it is serialized, allowing
 -- it to be used more safely in more complex data types.

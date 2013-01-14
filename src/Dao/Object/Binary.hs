@@ -586,14 +586,13 @@ instance Binary TopLevelExpr where
   put d = case d of
     Attribute      req nm         lc -> x 0x59 $
       putComWith putNullTermStr req >> putComWith putNullTermStr nm >> put lc
-    ToplevelDefine name obj       lc -> x 0x5A (putComWith putList name >> putCom obj >> put lc)
-    TopRuleExpr    rule           lc -> x 0x5B (putCom rule >> put lc)
-    BeginExpr      scrp           lc -> x 0x5C (putComComList scrp >> put lc)
-    EndExpr        scrp           lc -> x 0x5D (putComComList scrp >> put lc)
-    ToplevelFunc   f nm args scrp lc -> x 0x5E $ do
-      putComWith     return         f
+    ToplevelDefine name obj     lc -> x 0x5A (putComWith putList name >> putCom obj >> put lc)
+    TopRuleExpr    rule         lc -> x 0x5B (putCom rule >> put lc)
+    BeginExpr      scrp         lc -> x 0x5C (putComComList scrp >> put lc)
+    EndExpr        scrp         lc -> x 0x5D (putComComList scrp >> put lc)
+    ToplevelFunc   nm args scrp lc -> x 0x5E $ do
       putCom         nm
-      putComComList  args
+      putComList     args
       putComComList  scrp
       put            lc
     where { x i putx = putWord8 i >> putx }
@@ -605,7 +604,7 @@ instance Binary TopLevelExpr where
       0x5B -> liftM2 TopRuleExpr    getCom get
       0x5C -> liftM2 BeginExpr      getComComList get
       0x5D -> liftM2 EndExpr        getComComList get
-      0x5E -> liftM5 ToplevelFunc   (getComWith (return ())) getCom getComComList getComComList get
+      0x5E -> liftM4 ToplevelFunc   getCom getComList getComComList get
 
 instance Binary SourceCode where
   put sc = do

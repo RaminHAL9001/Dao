@@ -721,13 +721,12 @@ parseDirective = msum $
         mplus (string "function") (string "func")
         let msg = "top-level function declaration"
         expect ("expecting name for "++msg) $ \com1 -> do
-          (_, name) <- parseDotName
+          name <- parseName "name of function"
           expect ("list of parameter variables for "++msg) $ \com2 -> do
             params <- parseFuncParamVars
             expect "top-level function declaration, function body" $ \com3 -> do
               scrpt <- parseBracketedScript
-              return $ flip (ToplevelDefine (Com name)) unloc $
-                com com1 (LambdaExpr (com com2 params com3) scrpt unloc) []
+              return (ToplevelFunc (com com1 name com2) params (com com2 scrpt com3) unloc)
   , do -- Parse a top-level global variable declaration.
         let msg = "top-level global variable declaration"
         (_, name) <- parseDotName

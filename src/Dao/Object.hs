@@ -589,35 +589,35 @@ instance HasLocation ScriptExpr where
 -- | A 'TopLevelExpr' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
 data TopLevelExpr
-  = Attribute      (Com Name) (Com Name)          Location
-  | ToplevelDefine (Com [Name]) (Com ObjectExpr)  Location
-  | TopRuleExpr    (Com RuleExpr)                 Location
-  | SetupExpr      (Com [Com ScriptExpr])         Location
-  | BeginExpr      (Com [Com ScriptExpr])         Location
-  | EndExpr        (Com [Com ScriptExpr])         Location
-  | TakedownExpr   (Com [Com ScriptExpr])         Location
-  | ToplevelFunc   (Com ()) (Com Name) (Com [Com Name]) (Com [Com ScriptExpr]) Location
+  = Attribute      (Com Name)    (Com Name)        Location
+  | ToplevelDefine (Com [Name])  (Com ObjectExpr)  Location
+  | TopRuleExpr    (Com RuleExpr)                  Location
+  | SetupExpr      (Com [Com ScriptExpr])          Location
+  | BeginExpr      (Com [Com ScriptExpr])          Location
+  | EndExpr        (Com [Com ScriptExpr])          Location
+  | TakedownExpr   (Com [Com ScriptExpr])          Location
+  | ToplevelFunc   (Com Name) [Com Name] (Com [Com ScriptExpr]) Location
   deriving (Eq, Ord, Show, Typeable)
 
 instance HasLocation TopLevelExpr where
   getLocation o = case o of
-    Attribute      _ _     o -> o
-    ToplevelDefine _ _     o -> o
-    TopRuleExpr    _       o -> o
-    SetupExpr      _       o -> o
-    BeginExpr      _       o -> o
-    EndExpr        _       o -> o
-    TakedownExpr   _       o -> o
-    ToplevelFunc   _ _ _ _ o -> o
+    Attribute      _ _   o -> o
+    ToplevelDefine _ _   o -> o
+    TopRuleExpr    _     o -> o
+    SetupExpr      _     o -> o
+    BeginExpr      _     o -> o
+    EndExpr        _     o -> o
+    TakedownExpr   _     o -> o
+    ToplevelFunc   _ _ _ o -> o
   setLocation o loc = case o of
-    Attribute      a b     _ -> Attribute      a b     loc
-    ToplevelDefine a b     _ -> ToplevelDefine a b     loc
-    TopRuleExpr    a       _ -> TopRuleExpr    a       loc
-    SetupExpr      a       _ -> SetupExpr      a       loc
-    BeginExpr      a       _ -> BeginExpr      a       loc
-    EndExpr        a       _ -> EndExpr        a       loc
-    TakedownExpr   a       _ -> TakedownExpr   a       loc
-    ToplevelFunc   a b c d _ -> ToplevelFunc   a b c d loc
+    Attribute      a b   _ -> Attribute      a b   loc
+    ToplevelDefine a b   _ -> ToplevelDefine a b   loc
+    TopRuleExpr    a     _ -> TopRuleExpr    a     loc
+    SetupExpr      a     _ -> SetupExpr      a     loc
+    BeginExpr      a     _ -> BeginExpr      a     loc
+    EndExpr        a     _ -> EndExpr        a     loc
+    TakedownExpr   a     _ -> TakedownExpr   a     loc
+    ToplevelFunc   a b c _ -> ToplevelFunc   a b c loc
 
 ----------------------------------------------------------------------------------------------------
 

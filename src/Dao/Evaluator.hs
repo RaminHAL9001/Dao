@@ -1231,12 +1231,12 @@ programFromSource globalResource checkAttribute script = do
       TakedownExpr scrp lc -> modify (\p -> p{inmpg_destructScript  = inmpg_destructScript  p ++ [scrp]})
       BeginExpr    scrp lc -> modify (\p -> p{inmpg_preExecScript   = inmpg_preExecScript   p ++ [scrp]})
       EndExpr      scrp lc -> modify (\p -> p{inmpg_postExecScript  = inmpg_postExecScript  p ++ [scrp]})
-      ToplevelFunc _ nm argv code lc -> trace ("define function: "++show (unComment nm)) $ lift $ do
+      ToplevelFunc nm argv code lc -> trace ("define function: "++show (unComment nm)) $ lift $ do
         xunit <- ask
         exe <- execScriptRun (setupExecutable code)
         let sub =
               Subroutine
-              { argsPattern  = map (flip ObjLabel ObjAny1 . unComment) (unComment argv)
+              { argsPattern  = map (flip ObjLabel ObjAny1 . unComment) argv
               , subSourceCode  = unComment code
               , getSubExecutable = exe
               }

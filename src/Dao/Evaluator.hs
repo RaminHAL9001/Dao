@@ -273,20 +273,6 @@ localVarUpdate name alt = ask >>= \xunit -> execRun $
 localVarDefine :: Name -> Object -> ExecScript (Maybe Object)
 localVarDefine name obj = localVarUpdate name (const (Just obj))
 
--- | To define a global variable, first the 'currentDocument' is checked. If it is set, the variable
--- is assigned to the document at the reference location prepending 'currentBranch' reference.
--- Otherwise, the variable is assigned to the 'execHeap'.
-localVarModify :: [Name] -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript (Maybe Object)
-localVarModify name alt = do
-  xunit <- ask
-  let prefixName = currentBranch xunit ++ name
-  case currentDocument xunit of
-    Nothing                     -> inEvalDoUpdateResource (execHeap xunit) name alt
-    Just file | isIdeaFile file -> error "TODO" -- execRun $ dModifyMVar_ xloc (fileData file) $ \doc -> return $
-      -- doc{docRootObject = T.update prefixName alt (docRootObject doc), docModified = 1 + docModified doc}
-    Just file                   -> ceError $ OList $ map OString $
-      [ustr "current document is not a database", filePath file]
-
 localVarDelete :: Name -> ExecScript (Maybe Object)
 localVarDelete nm = localVarUpdate nm (const Nothing)
 
@@ -300,10 +286,10 @@ staticVarUpdate nm upd = fmap (staticVars . taskAction . currentTask) ask >>= \r
     lift (lift (modifyIORef ref (M.update (const val) nm))) >> return val
 
 staticVarDefine :: Name -> Object -> ExecScript (Maybe Object)
-staticVarDefine nm obj = localVarUpdate nm (const (Just obj))
+staticVarDefine nm obj = staticVarUpdate nm (return . const (Just obj))
 
 staticVarDelete :: Name -> ExecScript (Maybe Object)
-staticVarDelete nm = localVarUpdate nm (const Nothing)
+staticVarDelete nm = staticVarUpdate nm (return . const Nothing)
 
 -- | Lookup an object, first looking in the current document, then in the 'execHeap'.
 globalVarLookup :: [Name] -> ExecScript (Maybe Object)
@@ -817,7 +803,7 @@ updateReference ref modf = do
           CEError  err -> return (store, CEError err)
   case ref of
     IntRef     i          -> error "cannot assign values to a pattern-matched reference"
-    LocalRef   ref        -> localVarLookup ref >>= \obj -> localVarUpdate ref (const obj)
+    LocalRef   ref        -> localVarLookup ref >>= modf >>= localVarUpdate ref . const
     GlobalRef  ref        -> globalVarUpdate ref modf
     QTimeRef   ref        -> qTimeVarUpdate ref modf
     StaticRef  ref        -> staticVarUpdate ref modf
@@ -982,7 +968,9 @@ evalObject obj = case obj of
     nm   <- checkPValue ("left-hand side of "++show op) [nm] (asReference nm)
     expr <- evalObject expr >>= evalObjectRef
     fmap (fromMaybe ONull) $ updateReference nm $ \maybeObj -> case maybeObj of
-      Nothing  -> ceError $ OList $ [OString $ ustr "undefined refence", ORef nm]
+      Nothing  -> case op of
+        UCONST -> return (Just expr)
+        _      -> ceError $ OList $ [OString $ ustr "undefined refence", ORef nm]
       Just obj -> fmap Just $ checkPValue "assignment expression" [obj, expr] $ (updatingOps!op) obj expr
   FuncCall   op  _  args     lc -> do -- a built-in function call
     bif  <- fmap builtinFuncs ask
@@ -1231,7 +1219,7 @@ programFromSource globalResource checkAttribute script = do
       TakedownExpr scrp lc -> modify (\p -> p{inmpg_destructScript  = inmpg_destructScript  p ++ [scrp]})
       BeginExpr    scrp lc -> modify (\p -> p{inmpg_preExecScript   = inmpg_preExecScript   p ++ [scrp]})
       EndExpr      scrp lc -> modify (\p -> p{inmpg_postExecScript  = inmpg_postExecScript  p ++ [scrp]})
-      ToplevelFunc nm argv code lc -> trace ("define function: "++show (unComment nm)) $ lift $ do
+      ToplevelFunc nm argv code lc -> lift $ do
         xunit <- ask
         exe <- execScriptRun (setupExecutable code)
         let sub =

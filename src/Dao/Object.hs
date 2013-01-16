@@ -469,8 +469,8 @@ data ArithOp
   | OR    | AND                         -- ^ boolean logical
   | ORB   | ANDB  | XORB  | SHL   | SHR -- ^ bitwise
   | ADD   | SUB   | MULT  | DIV   | MOD -- ^ basic arithmetic
+  | POW   | EXP   | SQRT  | LOG         -- ^ root and exponents
   | ABS   | ROUND | TRUNC               -- ^ special arithmetic
-  | SQRT  | EXP   | LOG                 -- ^ root and exponents
   | SIN   | COS   | TAN   | ASIN  | ACOS  | ATAN  -- ^ trigonometric
   | SINH  | COSH  | TANH  | ASINH | ACOSH | ATANH -- ^ hyperbolic
   deriving (Eq, Ord, Enum, Ix, Typeable)
@@ -479,7 +479,7 @@ instance Show ArithOp where
   show a = case a of
     { ADD  -> "+";    SUB  -> "-";    MULT  -> "*";    DIV   -> "/";     MOD   -> "%"; ORB  -> "|"
     ; NOT  -> "!";    OR   -> "||";   AND   -> "&&";   ANDB  -> "&";     XORB  -> "^"; INVB -> "~"
-    ; SHL  -> "<<";   SHR  -> ">>";   ABS   -> "abs";  NEG   -> "-";    
+    ; SHL  -> "<<";   SHR  -> ">>";   ABS   -> "abs";  NEG   -> "-";     POW   -> "**"
     ; SQRT -> "sqrt"; EXP  -> "exp";  LOG   -> "log";  ROUND -> "round"; TRUNC -> "trunc"
     ; SIN  -> "sin";  COS  -> "cos";  TAN   -> "tan";  ASIN  -> "asin";  ACOS  -> "acos";  ATAN  -> "atan"
     ; SINH -> "sinh"; COSH -> "cosh"; TANH  -> "tanh"; ASINH -> "asinh"; ACOSH -> "acosh"; ATANH -> "atanh"
@@ -489,8 +489,9 @@ instance Show ArithOp where
 instance Read ArithOp where
   readsPrec _ str = case str of
     { "+"    -> [(ADD  , "")]; "-"     -> [(SUB  , "")]; "*"     -> [(MULT , "")]
-    ; "/"    -> [(DIV  , "")]; "%"     -> [(MOD  , "")]; "|"     -> [(ORB  , "")]
-    ; "!"    -> [(NOT  , "")]; "||"    -> [(OR   , "")]; "&&"    -> [(AND  , "")]
+    ; "/"    -> [(DIV  , "")]; "%"     -> [(MOD  , "")]; "**"    -> [(POW  , "")]
+    ; "exp"  -> [(EXP  , "")]; "|"     -> [(ORB  , "")]; "!"     -> [(NOT  , "")]
+    ; "||"   -> [(OR   , "")]; "&&"    -> [(AND  , "")]
     ; "&"    -> [(ANDB , "")]; "^"     -> [(XORB , "")]; "~"     -> [(INVB , "")]
     ; "<<"   -> [(SHL  , "")]; ">>"    -> [(SHR  , "")]; "."     -> [(DOT  , "")]
     ; "$"    -> [(REF  , "")]; "@"     -> [(DEREF, "")]; "->"    -> [(POINT, "")]

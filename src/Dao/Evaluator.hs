@@ -371,6 +371,11 @@ asStringNoConvert o = case o of
   OString o -> return o
   _         -> mzero
 
+asString :: Object -> PValue Location UStr
+asString o = case o of
+  OString o -> return o
+  o         -> return (ustr (showObj 0 o))
+
 asListNoConvert :: Object -> PValue Location [Object]
 asListNoConvert o = case o of
   OList o -> return o
@@ -405,8 +410,8 @@ evalInt :: (Integer -> Integer -> Integer) -> Object -> Object -> BuiltinOp
 evalInt ifunc a b = do
   ia <- asInteger a
   ib <- asInteger b
-  let x = ia+ib
-  return $ case (max (fromEnum (objType a)) (fromEnum (objType b))) of
+  let x = ifunc ia ib
+  return $ case max (fromEnum (objType a)) (fromEnum (objType b)) of
     t | t == fromEnum WordType -> OWord (fromIntegral x)
     t | t == fromEnum IntType  -> OInt  (fromIntegral x)
     t | t == fromEnum LongType -> OLong (fromIntegral x)
@@ -416,11 +421,11 @@ evalNum
   :: (Integer -> Integer -> Integer)
   -> (Rational -> Rational -> Rational)
   -> Object -> Object -> BuiltinOp
-evalNum ifunc rfunc a b = msum
+evalNum ifunc rfunc a b = msum $
   [ evalInt ifunc a b
   , do  ia <- asRational a
         ib <- asRational b
-        let x = ia+ib
+        let x = rfunc ia ib
         return $ case (max (fromEnum (objType a)) (fromEnum (objType b))) of
           t | t == fromEnum FloatType    -> OFloat    (fromRational x)
           t | t == fromEnum DiffTimeType -> ODiffTime (fromRational x)
@@ -467,10 +472,8 @@ eval_ADD :: Object -> Object -> BuiltinOp
 eval_ADD a b = msum
   [ evalNum (+) (+) a b
   , timeAdd a b, timeAdd b a
-  , do  a <- asStringNoConvert a
-        b <- asStringNoConvert b
-        return (OString (ustr (uchars a ++ uchars b)))
   , listAdd a b, listAdd b a
+  , stringAdd (++) a b, stringAdd (flip (++)) b a
   ]
   where
     timeAdd a b = case (a, b) of
@@ -486,6 +489,11 @@ eval_ADD a b = msum
         OArray b  -> return (elems b)
         _         -> mzero
       return (objListAppend ax bx)
+    stringAdd add a b = case a of
+      OString a -> do
+        b <- asString b
+        return (OString (ustr (add (uchars a) (uchars b))))
+      _         -> mzero
 
 eval_SUB :: Object -> Object -> BuiltinOp
 eval_SUB a b = msum $
@@ -542,10 +550,13 @@ eval_MULT :: Object -> Object -> BuiltinOp
 eval_MULT a b = evalDistNum (*) (*) a b
 
 eval_DIV :: Object -> Object -> BuiltinOp
-eval_DIV a b = evalDistNum div (/) a b
+eval_DIV a b = trace ("eval_DIV: "++show a++", "++show b) $ evalDistNum div (/) a b
 
 eval_MOD :: Object -> Object -> BuiltinOp
 eval_MOD a b = evalDistNum mod (\a b -> let r = a/b in (abs r - abs (floor r % 1)) * signum r) a b
+
+eval_POW :: Object -> Object -> BuiltinOp
+eval_POW = evalNum (^) (\a b -> toRational ((fromRational a :: Double) ** (fromRational b :: Double)))
 
 evalBitsOrSets
   :: ([Object]  -> Object)
@@ -690,7 +701,7 @@ prefixOps = let o = (,) in array (REF, SUB) $
   ]
 
 infixOps :: Array ArithOp (Object -> Object -> BuiltinOp)
-infixOps = let o = (,) in array (POINT, MOD) $
+infixOps = let o = (,) in array (POINT, POW) $
   [ o POINT evalSubscript
   , o DOT   eval_DOT
   , o OR    (evalBooleans (||))
@@ -705,6 +716,7 @@ infixOps = let o = (,) in array (POINT, MOD) $
   , o MULT  eval_MULT
   , o DIV   eval_DIV
   , o MOD   eval_MOD
+  , o POW   eval_POW
   ]
 
 updatingOps :: Array UpdateOp (Object -> Object -> BuiltinOp)
@@ -729,8 +741,10 @@ getAllStringArgs fail_if_not_string ox = catch (loop 0 [] ox) where
   loop i zx ox = case ox of
     []             -> return zx
     OString o : ox -> loop (i+1) (zx++[o]) ox
-    _              ->
-      if fail_if_not_string then PFail i (ustr "is not a string value") else loop (i+1) zx ox
+    o:ox           ->
+      if fail_if_not_string
+        then  PFail i (ustr "is not a string value")
+        else  fmap ((ustr (showObj 0 o)):) $ loop (i+1) zx ox
   catch ox = case ox of
     PFail i msg -> ceError $ OList $ [OString (ustr "function parameter"), OWord i, OString msg]
     Backtrack   -> return []
@@ -978,7 +992,6 @@ evalObject obj = case obj of
     case M.lookup op bif of
       Nothing -> do
         fn   <- lookupFunction "function call" op
-        let argTypes = OList (map (OType . objType) args)
         ~obj <- mapM (runSubroutine args) fn
         case msum obj of
           Just obj -> return obj
@@ -1014,8 +1027,8 @@ evalObject obj = case obj of
       POINT -> liftM2 (,) (evalObjectRef left) (return right)
       _     -> liftM2 (,) (evalObjectRef left) (evalObjectRef right)
     case (infixOps!op) left right of
-      OK result    -> return result
-      Backtrack    -> ceError $ OList $
+      OK result -> return result
+      Backtrack -> ceError $ OList $
         [OString $ ustr (show op), OString $ ustr "cannot operate on objects of type", left, right]
       PFail lc msg -> ceError $ OList [OString msg]
   DictExpr   cons  _  args   lc -> do

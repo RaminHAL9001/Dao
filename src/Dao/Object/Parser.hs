@@ -82,7 +82,7 @@ numericObj = token $ do
     plusMinus = zeroOrOne (rxUnion (rxChar '+') (rxChar '-'))
     parsePoint base take sign dgt = flip mplus (makeRational base sign dgt "" "" "") $ do
       char '.'
-      rdx   <- regexMany take
+      rdx <- regexMany take
       let done = makeRational base sign dgt rdx "" ""
       if null rdx
         then fail "expecting digits after point"
@@ -121,7 +121,7 @@ numericObj = token $ do
             "j" -> return $ OComplex (0 :+ fromRational r)
             "s" -> return $ ODiffTime (fromRational r)
             ""  ->
-              if r_is_an_integer
+              if r_is_an_integer && null rdx
                 then
                   let i = round r
                   in  if fromIntegral (minBound::T_int) <= i && i <= fromIntegral (maxBound::T_int)

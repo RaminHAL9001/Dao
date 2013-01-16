@@ -63,7 +63,7 @@ import qualified Data.IntMap as I
 import qualified Data.ByteString.Lazy.UTF8 as U
 
 --debug: for use with "trace"
-import Debug.Trace
+--import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -550,7 +550,7 @@ eval_MULT :: Object -> Object -> BuiltinOp
 eval_MULT a b = evalDistNum (*) (*) a b
 
 eval_DIV :: Object -> Object -> BuiltinOp
-eval_DIV a b = trace ("eval_DIV: "++show a++", "++show b) $ evalDistNum div (/) a b
+eval_DIV a b = evalDistNum div (/) a b
 
 eval_MOD :: Object -> Object -> BuiltinOp
 eval_MOD a b = evalDistNum mod (\a b -> let r = a/b in (abs r - abs (floor r % 1)) * signum r) a b

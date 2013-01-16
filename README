@@ -54,11 +54,11 @@ time of this writing).
 
 The Dao runtime is vaguely similar to the UNIX "AWK" language. However,
 the Dao language provides a much more feature-rich set of built-in data
-types and functions as compared to AWK, notably the ability to execute
-rules recursively in the same process. The Dao language makes use of
-"Patterns" rather than POSIX regular expressions. Patterns are inspired
-by UNIX "glob" expressions, and are intended to be used more for
-matching against natural language input.
+types and functionality as compared to AWK, notably the ability to
+execute rules recursively in the same process. The Dao language makes
+use of "Patterns" rather than POSIX regular expressions. Patterns are
+inspired by UNIX "glob" expressions, and are intended to be used more
+for matching against natural language input.
 
 Patterns are optimized for faster matching of input text. Every action
 associated with a matching pattern is executed in its own thread, and
@@ -76,7 +76,7 @@ refer to this procedure as "executing the query against the program" or
 Dao programs may import other programs as companions and execute input
 queries against companion programs, as well as recursively executing
 queries against itself. Imported companion programs are referred to as
-modules.
+"modules."
 
 As the Dao program executes input queries, the state of the program's
 working memory is changed. The working memory is similar to an

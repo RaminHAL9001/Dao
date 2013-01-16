@@ -23,7 +23,7 @@ ontologies, and provides a means to map natural human language patterns
 to these ontologies and the related axioms. Dao is much more concise
 than XML which should make it easy to quickly write words, phrases, and
 grammar as patterns, and describe the semantics of these constructs
-using the Dao language.  Axioms are expressed as functions (similar to
+using the Dao language. Axioms are expressed as functions (similar to
 JavaScript functions) and can describe how to transform ontological data
 structures to perform logic and reasoning. In a way, Dao is here to let
 you write a dictionary, where the definition of words are written as a
@@ -47,6 +47,10 @@ ground for a new wave of effective, practical, natural language user
 interfaces.
 
         HOW IT WORKS
+
+The Dao scripting language is designed to be similar to JavaScript,
+which is probably the most popular language in common use today (at the
+time of this writing).
 
 The Dao runtime is vaguely similar to the UNIX "AWK" language. However,
 the Dao language provides a much more feature-rich set of built-in data
@@ -79,9 +83,10 @@ working memory is changed. The working memory is similar to an
 HTML/JavaScript DOM tree, but there are many more primitive types than
 what JavaScript provides. This tree can be serialized and stored to the
 filesystem of the host computer, and re-loaded back into memory at any
-time. These document files are informally called "idea" files because
-they allow the Dao system to store knowledge, and transmit it to other
-Dao installations.
+time, although Dao's own built-in binary seralization format is used
+for this, not JSON. These document files are informally called "idea"
+files because they allow the Dao system to store knowledge, and
+transmit it to other Dao installations.
 
 How this relates to artificial intelligence is that the working memory
 of a Dao program forms an ontology. Functions can be defined to

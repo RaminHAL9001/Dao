@@ -67,7 +67,7 @@ showObj idnc o = case o of
   OWord     o -> sh "word" o
   OLong     o -> sh "long" o
   OFloat    o -> show o
-  ORatio    o -> "ratio ("++show o++")"
+  ORatio    o -> "ratio ("++(map (\c -> if c=='%' then '/' else c) (show o))++")"
   OComplex  o -> show o
   OTime     o -> "date ("++show o++")"
   ODiffTime o -> "difftime ("++show o++")"

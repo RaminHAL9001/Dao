@@ -629,6 +629,7 @@ evalSubscript a b = case a of
         done a = case a of
           Nothing -> pfail (ustr (show b++" is not defined in struct"))
           Just  a -> return a
+  _         -> mzero
 
 eval_SHR :: Object -> Object -> BuiltinOp
 eval_SHR = evalShift negate
@@ -736,32 +737,54 @@ updatingOps = let o = (,) in array (minBound, maxBound) $
 
 ----------------------------------------------------------------------------------------------------
 
-getAllStringArgs :: Bool -> [Object] -> ExecScript [UStr]
-getAllStringArgs fail_if_not_string ox = catch (loop 0 [] ox) where
-  loop i zx ox = case ox of
-    []             -> return zx
-    OString o : ox -> loop (i+1) (zx++[o]) ox
-    o:ox           ->
-      if fail_if_not_string
-        then  PFail i (ustr "is not a string value")
-        else  fmap ((ustr (showObj 0 o)):) $ loop (i+1) zx ox
+requireAllStringArgs :: [Object] -> ExecScript [UStr]
+requireAllStringArgs ox = case mapM check (zip (iterate (+1) 0) ox) of
+  OK      obj -> return obj
+  Backtrack   -> ceError $ OList [OString (ustr "all input parameters must be strings")]
+  PFail i msg -> ceError $ OList [OString msg, OWord i, OString (ustr "is not a string")]
+  where
+    check (i, o) = case o of
+      OString o -> return o
+      _         -> PFail i (ustr "requires string parameter, param number")
+
+recurseAllStringArgs :: [Object] -> ExecScript [UStr]
+recurseAllStringArgs ox = catch (loop [0] [] ox) where
+  loop ixs@(i:ix) zx ox = case ox of
+    []                -> return zx
+    OString    o : ox -> loop (i+1:ix) (zx++[o]) ox
+    OList      o : ox -> next ixs zx          o  ox
+    OSet       o : ox -> next ixs zx (S.elems o) ox
+    OArray     o : ox -> next ixs zx   (elems o) ox
+    ODict      o : ox -> next ixs zx (M.elems o) ox
+    OIntMap    o : ox -> next ixs zx (I.elems o) ox
+    OPair  (a,b) : ox -> next ixs zx      [a, b] ox
+    _                 -> PFail ix (ustr "is not a string value")
+  next (i:ix) zx nx ox = loop (0:i:ix) zx nx >>= \zx -> loop (i+1:ix) zx ox
   catch ox = case ox of
-    PFail i msg -> ceError $ OList $ [OString (ustr "function parameter"), OWord i, OString msg]
+    PFail ix msg -> ceError $ OList $
+      [OString (ustr "function parameter"), OList (map OWord (reverse ix)), OString msg]
     Backtrack   -> return []
     OK       ox -> return ox
 
 builtin_print :: DaoFunc
-builtin_print = DaoFunc $ \ox -> do
-  ox <- getAllStringArgs False ox
+builtin_print = DaoFunc $ \ox_ -> do
+  let ox = flip map ox_ $ \o -> case o of
+        OString o -> o
+        o         -> ustr (showObj 0 o)
   lift (lift (mapM_ (putStrLn . uchars) ox))
   return (OList (map OString ox))
 
 builtin_do :: DaoFunc
 builtin_do = DaoFunc $ \ox -> do
   xunit <- ask
-  ox    <- getAllStringArgs True ox
+  ox    <- recurseAllStringArgs ox
   execScriptRun (dModifyMVar_ xloc (recursiveInput xunit) (return . (++ox)))
   return (OList (map OString ox))
+
+builtin_join :: DaoFunc
+builtin_join = DaoFunc $ \ox -> do
+  ox <- recurseAllStringArgs ox
+  return (OString (ustr (concatMap uchars ox)))
 
 -- | The map that contains the built-in functions that are used to initialize every
 -- 'Dao.Object.ExecUnit'.
@@ -769,6 +792,7 @@ initBuiltinFuncs :: M.Map Name DaoFunc
 initBuiltinFuncs = let o a b = (ustr a, b) in M.fromList $
   [ o "print" builtin_print
   , o "do"    builtin_do
+  , o "join"  builtin_join
   ]
 
 ----------------------------------------------------------------------------------------------------

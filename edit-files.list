@@ -9,7 +9,6 @@ src/Dao/Object/Pattern.hs
 src/Dao/Object/Binary.hs
 src/Dao/Object/Show.hs
 src/Dao/Parser.hs
-src/Dao/Tasks.hs
 src/Dao/Files.hs
 src/Dao.hs
 src/Dao/Predicate.hs

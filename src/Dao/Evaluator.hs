@@ -34,13 +34,17 @@ import qualified Dao.Tree as T
 import           Dao.Pattern
 import           Dao.Resource
 import           Dao.Predicate
+import           Dao.Files
+import           Dao.Parser
 
 import           Dao.Object.Math
 import           Dao.Object.Show
 import           Dao.Object.Binary
 import           Dao.Object.Pattern
+import           Dao.Object.Parser
 
 import           Control.Exception
+import           Control.Concurrent
 import           Control.Monad.Trans
 import           Control.Monad.Reader
 import           Control.Monad.State -- for constructing 'Program's from 'SourceCode's.
@@ -61,6 +65,8 @@ import qualified Data.Set    as S
 import qualified Data.Map    as M
 import qualified Data.IntMap as I
 import qualified Data.ByteString.Lazy.UTF8 as U
+
+import           System.IO
 
 --debug: for use with "trace"
 --import Debug.Trace
@@ -747,8 +753,8 @@ requireAllStringArgs ox = case mapM check (zip (iterate (+1) 0) ox) of
       OString o -> return o
       _         -> PFail i (ustr "requires string parameter, param number")
 
-recurseAllStringArgs :: [Object] -> ExecScript [UStr]
-recurseAllStringArgs ox = catch (loop [0] [] ox) where
+recurseGetAllStringArgs :: [Object] -> ExecScript [UStr]
+recurseGetAllStringArgs ox = catch (loop [0] [] ox) where
   loop ixs@(i:ix) zx ox = case ox of
     []                -> return zx
     OString    o : ox -> loop (i+1:ix) (zx++[o]) ox
@@ -774,16 +780,44 @@ builtin_print = DaoFunc $ \ox_ -> do
   lift (lift (mapM_ (putStrLn . uchars) ox))
   return (OList (map OString ox))
 
+execInputString_ = error "TODO: somehow make it so Dao.Files does not depend on Dao.Evaluator"
+
+recursiveExecQuery :: [UStr] -> [UStr] -> ExecScript ()
+recursiveExecQuery selectFiles execStrings = case selectFiles of
+  [] -> ceError $ OList $
+    [OString (ustr "cannot execute \"do\" without specific modules, no default module defined")]
+  selectFiles -> do
+    xunit <- ask
+    execScriptRun $ do
+      -- dModifyMVar_ xloc (recursiveInput xunit) (return . (++ox)) -- is this necessary?
+      files <- selectModules (Just xunit) selectFiles
+      let job = currentExecJob xunit
+      case job of
+        Nothing  -> forM_ execStrings (flip (execInputString_ False) files)
+        Just job -> do
+          xunits <- mapM (dReadMVar xloc . execUnit) files
+          forM execStrings (makeTasksForInput xunits) >>= startTasksForJob job . concat
+
 builtin_do :: DaoFunc
 builtin_do = DaoFunc $ \ox -> do
   xunit <- ask
-  ox    <- recurseAllStringArgs ox
-  execScriptRun (dModifyMVar_ xloc (recursiveInput xunit) (return . (++ox)))
-  return (OList (map OString ox))
+  let currentProg = maybeToList (fmap programModuleName (currentProgram xunit))
+  (selectFiles, execStrings) <- case ox of
+    [OString file , OList strs] -> return ([file], strs )
+    [OList   files, OList strs] -> requireAllStringArgs files >>= \files -> return (files , strs )
+    [OString file , str       ] -> return ([file], [str])
+    [OList   files, str       ] -> requireAllStringArgs files >>= \files -> return (files , [str])
+    [OString str ] -> return (currentProg, [OString str])
+    [OList   strs] -> return (currentProg, strs)
+    _              -> ceError $ OList $
+      OString (ustr "require query strings as parameters to \"do\" function, but received") : ox
+  execStrings <- requireAllStringArgs execStrings
+  recursiveExecQuery selectFiles execStrings
+  return (OList (map OString execStrings))
 
 builtin_join :: DaoFunc
 builtin_join = DaoFunc $ \ox -> do
-  ox <- recurseAllStringArgs ox
+  ox <- recurseGetAllStringArgs ox
   return (OString (ustr (concatMap uchars ox)))
 
 -- | The map that contains the built-in functions that are used to initialize every
@@ -1269,4 +1303,440 @@ programFromSource globalResource checkAttribute script = do
           let name = unComment nm
           dModifyMVar_ xloc (toplevelFuncs xunit) $ return .
             M.alter (\funcs -> mplus (fmap (++[sub]) funcs) (return [sub])) name
+
+----------------------------------------------------------------------------------------------------
+-- src/Dao/Tasks.hs
+
+-- | This module is pretty much where everything happens. The pattern matching and action execution
+-- algorithm that defines the unique nature of the Dao system, the 'execInputString' function, is
+-- defined here. So are 'Dao.Object.Job' and 'Dao.Object.Task' management functions, and a simple
+-- interactive run loop 'interactiveRuntimeLoop' is also provided.
+
+-- | Get the name 'Dao.Evaluator. of 
+taskProgramName :: Task -> Maybe Name
+taskProgramName task = case task of
+  RuleTask  _ _ _ xunit -> fn xunit
+  GuardTask     _ xunit -> fn xunit
+  where { fn xunit = fmap programModuleName (currentProgram xunit) }
+
+-- | Creates a 'Job' which is an object that manages a number of tasks. Creating a job with 'newJob'
+-- automatically sets-up the threads to execute any number of tasks while handling exceptions. Once
+-- you have a 'Job', you create tasks inside of it. With the 'Job' object, you can control whether
+-- you want to wait for all tasks to finish, or have control returned to the evaluating context
+-- immediately after the tasks have been created. You can also set how long the 'Job' will wait
+-- before forcefully terminating all tasks.
+newJob :: Maybe Int -> UStr -> Run Job
+newJob timed instr = dStack xloc "newJob" $ ask >>= \runtime -> do
+  jobQSem <- dNewQSem xloc "Job.jobCompletion" 0 -- is singaled when all tasks have completed
+  taskEnd <- dNewEmptyMVar xloc "Job.taskCompletion" -- is used as to block the manager loop until tasks complete
+  ready   <- dNewEmptyMVar xloc "Job.readyTasks" -- tasks to be executed will be queued here
+  timeVar <- dNewMVar xloc "Job.jobTimerThread" Nothing -- contains the timer value, will be filled after defining 'timeKeeper'
+  failed  <- dNewMVar xloc "Job.taskFailures" (M.empty) -- contains the table of any exceptions that killed a worker thread
+  taskTab <- dNewMVar xloc "Job.taskExecTable" (M.empty) -- this DMVar contains the table of running task threads
+  jobMVar <- dNewEmptyMVar xloc "Job/jobMVar" -- every task created needs to set it's 'ExecUnit's 'currentExecJob'.
+  let
+      taskWaitLoop = do
+        -- This loop waits for tasks to end, and signals the 'jobQSem' when the last job has
+        -- completed. This loop is actually called by the 'manager' loop, so it executes in the same
+        -- thread as the manager loop. Exception handling does not occur here.
+        thread  <- dTakeMVar xloc taskEnd -- wait for a task to end.
+        allDone <- dModifyMVar xloc taskTab $ \taskTab -> do
+          let taskTab' = M.delete thread taskTab -- remove the completed task from the taskTab.
+          return (taskTab', M.null taskTab') -- returns whether or not the taskTab is empty.
+        if allDone
+          then do -- when the taskTab is empty...
+            timer <- dSwapMVar xloc timeVar Nothing -- empty the timeVar DMVar.
+            case timer of -- and kill the timer thread (if it is waiting)
+              Nothing    -> return ()
+              Just timer -> dKillThread xloc timer
+            dSignalQSem xloc jobQSem -- then signal 'jobCompletion'.
+          else taskWaitLoop -- loop if the taskTab is not empty.
+      workerException task err@(SomeException e) =
+        -- If a worker is flagged, it needs to place this flag into the 'failed' table.
+        dModifyMVar_ xloc failed $ \ftab -> case taskProgramName task of
+          Nothing   -> dPutStrErr xloc (show e) >> return ftab
+          Just name -> return (M.update (Just . (++[(task, err)])) name ftab)
+      worker task = dStack xloc "Job/worker" $ do
+        -- A worker runs the 'task', catching exceptions with 'workerException', and it always
+        -- signals the manager loop when this thread completes by way of the 'taskEnd' DMVar, even
+        -- when an exception occurs.
+        job <- dReadMVar xloc jobMVar
+        dHandle xloc (workerException task) (execTask job task)
+        dMyThreadId >>= dPutMVar xloc taskEnd
+      timeKeeper time = do
+        -- This function evaluates in a separate thread and delays itself then kills all running
+        -- tasks in the taskTab. When a task is killed, it signals the manager loop via the
+        -- 'taskEnd' DMVar, which will signal 'jobQSem' when the taskTab goes empty, thus timeKeeper
+        -- does not kill the manager loop, it lets the manager clean-up and wait on the next batch
+        -- of tasks.
+        dThreadDelay xloc time
+        dSwapMVar xloc timeVar Nothing
+        dSwapMVar xloc taskTab (M.empty) >>= mapM_ (dKillThread xloc) . (M.keys)
+      managerException (SomeException e) = do
+        -- if the manager loop is flagged, it needs to delegate the flag to all of its workers.
+        dSwapMVar xloc taskTab (M.empty) >>= mapM_ (\th -> dThrowTo xloc th e) . (M.keys)
+        dSwapMVar xloc timeVar Nothing >>= \timer -> case timer of
+          Nothing     -> return ()
+          Just thread -> dThrowTo xloc thread e
+      manager = do
+        -- This is the main loop for the 'Job' controlling thread. It takes 'Task's from the
+        -- 'readyTasks' table, waiting for the DMVar if necessary.
+        tasks <- dTakeMVar xloc ready
+        dMessage xloc ("received "++show (length tasks)++" tasks")
+        case tasks of
+          []    -> manager
+          tasks -> do
+            dModifyMVar_ xloc taskTab $ \taskExecTable -> do
+              -- Launch all threads, filling the 'taskTab' DMVar atomically so that if a worker loop
+              -- fails due to an exception and signals the manager that it is ready to be removed
+              -- from the taskTab, the manager loop will not be able to modify this taskTab until
+              -- the taskTab is completely filled-in.
+              taskIDs <- forM tasks $ \task -> do
+                this <- dFork forkIO xloc ("worker("++showTask task++")") (worker task)
+                return (this, task)
+              return (M.union (M.fromList taskIDs) taskExecTable)
+            -- Launch a timekeeper thread if necessary.
+            case timed of
+              Nothing   -> void $ dSwapMVar xloc timeVar Nothing
+              Just time -> dFork forkIO xloc ("timer("++show instr++")") (timeKeeper time) >>=
+                void . dSwapMVar xloc timeVar . Just
+            (dStack xloc "taskWaitLoop" taskWaitLoop) >> manager -- wait for the all tasks to stop, then loop to the next batch.
+  -- Finally, start the thread manager loop, wrapped up in it's exception handler.
+  jobManager <- dFork forkIO xloc ("jobManager("++show instr++")") $
+    dHandle xloc managerException (dStack xloc "Job/manager" manager)
+  let job = Job
+            { jobTaskThread  = jobManager
+            , jobInputString = instr
+            , jobTimerThread = timeVar
+            , jobCompletion  = jobQSem
+            , taskCompletion = taskEnd
+            , readyTasks     = ready
+            , taskExecTable  = taskTab
+            , taskFailures   = failed
+            }
+  dPutMVar xloc jobMVar job -- as soon as this happens, all tasks will be able to run.
+  return job
+
+-- | Waits for every job in the list to complete, that is, it waits until every 'jobCompletion'
+-- 'Control.Concurrent.DQSem.DQSem' has been signalled.
+waitForJobs :: [Job] -> Run ()
+waitForJobs jobx = dStack xloc "waitForJobs" $ forM_ jobx (dWaitQSem xloc . jobCompletion)
+
+-- If you created a 'Dao.Object.Job' using 'newJob', that 'Dao.Object.Job' is automatically inserted
+-- into the 'Dao.Object.jobTable' of the 'Dao.Object.Runtime' of this 'Run' monad. To remove it, from
+-- the table, use this function. The 'Job' is uniqely identified by it's 'Dao.Object.jobTaskThread'
+-- 'Control.Concurrent.ThreadId'.
+removeJobFromTable :: Job -> Run ()
+removeJobFromTable job = ask >>= \runtime ->
+  dModifyMVar_ xloc (jobTable runtime) $ \jtab -> return (M.delete (jobTaskThread job) jtab)
+
+
+-- | When executing strings against Dao programs (e.g. using 'Dao.Tasks.execInputString'), you often
+-- want to execute the string against only a subset of the number of total programs. Pass the
+-- logical names of every module you want to execute strings against, and this function will return
+-- them. If you pass an empty list, all 'PublicType' modules (in the 'programs' table of the
+-- 'Runtime') will be returned. Pass @'Data.Maybe.Just' 'Dao.Evaluator.ExecUnit'@ to allow
+-- 'PrivateType' functions to also be selected, however only modules imported by the program
+-- associated with that 'ExecUnit' are allowed to be selected.
+selectModules :: Maybe ExecUnit -> [Name] -> Run [File]
+selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> case names of
+  []    -> do
+    ax <- dReadMVar xloc (logicalNameIndex runtime)
+    dMessage xloc ("selected modules: "++intercalate ", " (map show (M.keys ax)))
+    (return . filter (\file -> isProgramFile file && publicFile file) . M.elems) ax
+  names -> do
+    pathTab <- dReadMVar xloc (pathIndex runtime)
+    let set msg           = M.fromList . map (\mod -> (mod, error msg))
+        request           = set "(selectModules: request files)" names
+        (public, private) = M.partition publicFile (M.filter isProgramFile pathTab)
+    imports <- case xunit of
+      Nothing    -> return M.empty
+      Just xunit -> return $
+        set "(selectModules: imported files)" $ concat $ maybeToList $ fmap programImports $ currentProgram xunit
+    ax <- return $ M.union (M.intersection public request) $
+      M.intersection private (M.intersection imports request)
+    dMessage xloc ("selected modules:\n"++unlines (map show (M.keys ax)))
+    return $ M.elems ax
+
+-- | Given an input string, and a program, return all patterns and associated match results and
+-- actions that matched the input string, but do not execute the actions. This is done by tokenizing
+-- the input string and matching the tokens to the program using 'Dao.Pattern.matchTree'.
+-- NOTE: Rules that have multiple patterns may execute more than once if the input matches more than
+-- one of the patterns associated with the rule. *This is not a bug.* Each pattern may produce a
+-- different set of match results, it is up to the programmer of the rule to handle situations where
+-- the action may execute many times for a single input.
+matchStringToProgram :: UStr -> Program -> ExecUnit -> Run [(Pattern, Match, Executable)]
+matchStringToProgram instr program xunit = dStack xloc "matchStringToProgram" $ do
+  let eq = programComparator program
+      match tox = do
+        tree <- dReadMVar xloc (ruleSet program)
+        fmap concat $ forM (matchTree eq tree tox) $ \ (patn, mtch, execs) ->
+          return (concatMap (\exec -> [(patn, mtch, exec)]) execs)
+--           forM cxrefx $ \cxref -> do
+--             dModifyMVar_ xloc cxref $ \cx -> return $ case cx of
+--               OnlyCache m -> cx
+--               HasBoth _ m -> cx
+--               OnlyAST ast ->
+--                 HasBoth
+--                 { sourceScript = ast
+--                 , cachedScript = nestedExecStack M.empty (execScriptBlock ast)
+--                 }
+--             return (patn, mtch, cxref)
+  tox <- runExecScript (programTokenizer program instr) xunit
+  case tox of
+    CEError obj -> do
+      dModifyMVar_ xloc (uncaughtErrors xunit) $ \objx -> return $ (objx++) $
+        [ OList $
+            [ obj, OString (ustr "error occured while tokenizing input string")
+            , OString instr, OString (ustr "in the program")
+            , OString (programModuleName program)
+            ]
+        ]
+      return []
+    CEReturn tox -> match (extractStringElems tox)
+    CENext   tox -> match tox
+
+-- | Given a list of 'Program's and an input string, generate a set of 'Task's to be executed in a
+-- 'Job'. The 'Task's are selected according to the input string, which is tokenized and matched
+-- against every rule in the 'Program' according to the 'Dao.Pattern.matchTree' equation.
+makeTasksForInput :: [ExecUnit] -> UStr -> Run [Task]
+makeTasksForInput xunits instr = dStack xloc "makeTasksForInput" $ fmap concat $ forM xunits $ \xunit -> do
+  let name    = currentProgram xunit >>= Just . programModuleName
+      program = flip fromMaybe (currentProgram xunit) $
+        error "execInputString: currentProgram of execution unit is not defined"
+  dMessage xloc ("(match string to "++show (length xunits)++" running programs)")
+  matched <- matchStringToProgram instr program xunit
+  dMessage xloc ("(construct RuleTasks with "++show (length matched)++" matched rules)")
+  forM matched $ \ (patn, mtch, action) -> return $
+    RuleTask
+    { taskPattern     = OPattern patn
+    , taskMatch       = mtch
+    , taskAction      = action
+    , taskExecUnit    = xunit
+    }
+
+-- | A "guard script" is any block of code in the source script denoted by the @BEGIN@, @END@,
+-- @SETUP@ and @TAKEDOWN@ keywords. These scripts must be run in separate phases, that is, every
+-- guard script must be fully executed or be timed-out before any other scripts are executed.
+-- This function creates the 'Task's that for any given guard script: 'Dao.Object.preExecScript',
+-- 'Dao.Object.postExecScript'.
+makeTasksForGuardScript
+  :: (Program -> [Executable])
+  -> [ExecUnit]
+  -> Run [Task]
+makeTasksForGuardScript select xunits =
+  dStack xloc "makeTasksForGuardScript" $ lift $ fmap concat $ forM xunits $ \xunit ->
+    case fmap select (currentProgram xunit) of
+      Nothing    -> return []
+      Just progx -> return $ flip map progx $ \prog ->
+        GuardTask
+        { taskGuardAction = prog
+        , taskExecUnit    = xunit
+        }
+
+-- | This function simple places a list of 'Task's into the 'Job's 'readyTasks' table. This function
+-- will block if another thread has already evaluated this function, but those tasks have not yet
+-- completed or timed-out.
+startTasksForJob :: Job -> [Task] -> Run ()
+startTasksForJob job tasks = dStack xloc "startTasksForJob" $ dPutMVar xloc (readyTasks job) tasks
+
+-- | This is the "heart" of the Dao system; it is the algorithm you wanted to use when you decided
+-- to install the Dao system. Select from the 'Dao.Object.Runtime's 'modules' table a list of Dao
+-- programs using 'selectModules'. Once the list of modules is selected, for each module tokenize
+-- the input string, then select all rules in the module matching the input. Create a list of
+-- 'Task's to run using 'makeTasksForInput' and execute them in a new 'Job' created by 'newJob'.
+-- Before and after this happens, the "guard scripts" (@BEGIN@ and @END@ rules written into each
+-- module) will be executed as a separate set of tasks. This function must wait for all tasks to
+-- finish, each phase of execution (run @BEGIN@, run matching rules, run @END@) must be executed to
+-- completion before the next phase can be run. Waiting for the 'Job' to complete (using
+-- 'waitForJobs') is performed in the same thread that evaluates this function, so this function
+-- will block until execution is completed.
+execInputString :: Bool -> UStr -> [File] -> Run ()
+execInputString guarded instr select = dStack xloc "execInputString" $ ask >>= \runtime -> do
+  xunits <- forM (filter isProgramFile select) (dReadMVar xloc . execUnit)
+  unless (null xunits) $ do
+    dMessage xloc ("selected "++show (length xunits)++" modules")
+    -- Create a new 'Job' for this input string, 'newJob' will automatically place it into the
+    -- 'Runtime's job table.
+    job <- newJob (defaultTimeout runtime) instr
+    let run fn = fn >>= \tasks -> case tasks of
+          []    -> return ()
+          tasks -> do
+            dMessage xloc (show (length tasks)++" tasks created")
+            startTasksForJob job tasks >> waitForJobs [job]
+        exception (SomeException e) = removeJobFromTable job >> dThrowIO e
+    -- here begins the three phases of executing a string:
+    dHandle xloc exception $ do
+      -- (1) run all 'preExecScript' actions as a task, wait for all tasks to complete
+      when guarded $ do
+        dMessage xloc "pre-string-execution"
+        run $ makeTasksForGuardScript preExecScript xunits
+      -- (2) run each actions for each rules that matches the input, wait for all tasks to complete
+      dMessage xloc "execute string"
+      run $ makeTasksForInput xunits instr
+      -- (3) run all 'postExecScript' actions as a task, wait for all tasks to complete.
+      when guarded $ do
+        dMessage xloc "post-string-execution"
+        run $ makeTasksForGuardScript postExecScript xunits
+      -- (4) clear the Query-Time variables that were set during this past run in each ExecUnit.
+      mapM_ clearAllQTimeVars xunits
+    removeJobFromTable job
+
+-- | In the current thread, and using the given 'Runtime' environment, parse an input string as
+-- 'Dao.Object.Script' and then evaluate it. This is used for interactive evaluation. The parser
+-- used in this function will parse a block of Dao source code, the opening and closing curly-braces
+-- are not necessary. Therefore you may enter a semi-colon separated list of commands and all will
+-- be executed.
+evalScriptString :: ExecUnit -> String -> Run ()
+evalScriptString xunit instr = dStack xloc "evalScriptString" $
+  void $ flip runExecScript xunit $ nestedExecStack T.Void $ execScriptBlock $
+  case fst (runParser parseInteractiveScript instr) of
+    Backtrack     -> error "cannot parse expression"
+    PFail tok msg -> error ("error: "++uchars msg++show tok)
+    OK expr       -> expr
+
+-- | This actually executes the 'Task', essentially converting it into @IO@ function. The resulting
+-- @IO@ function can be evlauted in a separate thread to create an entry in the 'jobTable' of a
+-- 'Job'; this is what 'newJob' does with each 'Task' passed to it, it calls 'execTask' within
+-- 'Control.Concurrent.forkIO'.
+execTask :: Job -> Task -> Run ()
+execTask job task = dStack xloc "execTask" $ ask >>= \runtime -> do
+  let run patn mtch action xunit fn = do
+        result <- dStack xloc "execTask/runExecScript" $ lift $ try $ runIO runtime $
+          runExecScript (runExecutable T.Void action) $
+            xunit{currentTask = task, currentExecJob = Just job}
+        let putErr err = dModifyMVar_ xloc (uncaughtErrors xunit) (return . (++[err]))
+        case seq result result of
+          Right (CEError       err) -> dPutStrErr xloc (showObj 0 err) >> putErr err
+          Left  (SomeException err) -> do
+            dPutStrErr xloc (show err)
+            putErr (OString (ustr (show err)))
+          _                         -> return ()
+  case task of
+    RuleTask  patn mtch action xunit -> run patn  (Just mtch) action xunit execScriptBlock
+    GuardTask           action xunit -> run ONull Nothing     action xunit execGuardBlock
+
+----------------------------------------------------------------------------------------------------
+-- src/Dao/Files.hs
+
+-- | Initialize a source code file into the given 'Runtime'. This function checks that the
+-- 'Dao.Object.sourceFullPath' is unique in the 'programs' table of the 'Runtime', then evaluates
+-- 'initSourceCode' and associates the resulting 'Dao.Evaluator.ExecUnit' with the
+-- 'sourceFullPath' in the 'programs' table. Returns the logical "module" name of the script along
+-- with an initialized 'Dao.Object.ExecUnit'.
+registerSourceCode :: Bool -> UPath -> SourceCode -> Run File
+registerSourceCode public upath script = ask >>= \runtime -> do
+  let modName  = unComment (sourceModuleName script)
+      pathTab  = pathIndex runtime
+      modTab   = logicalNameIndex runtime
+  alreadyLoaded <- fmap (M.lookup upath) (dReadMVar xloc pathTab)
+  case alreadyLoaded of
+    Just file -> case file of
+      ProgramFile _ upath' _        _     | upath' /= upath     -> error $
+          "INTERNAL ERROR: runtime file table is corrupted\n\ta file indexed as "++show upath
+        ++"\n\tis recored as having a filePath of "++show upath'
+      ProgramFile _ _      modName' xunit | modName' == modName -> return file
+      ProgramFile _ _      modName' _     | modName' /= modName -> error $
+          "\t"++show upath++" has been loaded by a different module name.\n"
+        ++"\tmodule name "++show modName++"\n"
+        ++"\tattempted to load as module name "++show modName
+      IdeaFile    _ _                                           -> error $
+          "INTERNAL ERROR: "++show upath
+        ++" has been loaded as both a data file and as an executable script."
+    Nothing   -> do
+      moduleNameConflict <- fmap (M.lookup modName) (dReadMVar xloc modTab)
+      case moduleNameConflict of
+        Just file -> error $
+            "ERROR: cannot load source file "++show upath++"\n"
+          ++"\tthe module name "++show (logicalName file)
+          ++"is identical to that of another Dao script that has been\n"
+          ++"\tloaded from the path "++show (filePath file)
+        Nothing -> do
+          -- Call 'initSourceCode' which creates the 'ExecUnit', then place it in an 'MVar'.
+          -- 'initSourceCode' calls 'Dao.Evaluator.programFromSource'.
+          xunit     <- initSourceCode script >>= lift . evaluate
+          -- Check to make sure the logical name in the loaded program does not conflict with that
+          -- of another loaded previously.
+          xunitMVar <- dNewMVar xloc ("ExecUnit("++show upath++")") xunit
+          let file =
+                ProgramFile
+                { publicFile  = public
+                , filePath    = upath
+                , logicalName = unComment (sourceModuleName script)
+                , execUnit   = xunitMVar
+                }
+          dModifyMVar_ xloc pathTab $ return . M.insert upath file
+          dModifyMVar_ xloc modTab  $ return . M.insert modName file
+          return file
+
+-- | You should not normally need to call evaluate this function, you should use
+-- 'registerSourceCode' which will evaluate this function and also place the
+-- 'Dao.Object.SourceCode' into the 'programs' table. This function will use
+-- 'Dao.Evaluator.programFromSource' to construct a 'Dao.Evaluator.CachedProgram'
+-- and then execute the initialization code for that program, that is, use
+-- 'Dao.Evaluator.execScriptExpr' to evaluate every 'Dao.Object.ExecScript' in the
+-- 'Dao.Object.constructScript'. Returns the 'Dao.Evaluator.ExecUnit' used to initialize the
+-- program, and the logical name of the program (determined by the "module" keyword in the source
+-- code). You need to pass the 'Runtime' to this function because it needs to initialize a new
+-- 'Dao.Evaluator.ExecUnit' with the 'programs' and 'runtimeDocList' but these values are not
+-- modified.
+initSourceCode :: SourceCode -> Run ExecUnit
+initSourceCode script = ask >>= \runtime -> do
+  grsrc <- newTreeResource "Program.globalData" T.Void
+  xunit <- initExecUnit runtime grsrc
+  -- An execution unit is required to load a program, so of course, while a program is being
+  -- loaded, the program is not in the program table, and is it's 'currentProgram' is 'Nothing'.
+  cachedProg <- runExecScript (programFromSource grsrc (\_ _ _ -> return False) script) xunit
+  case cachedProg of
+    CEError  obj        -> error ("script err: "++showObj 0 obj)
+    CENext   cachedProg -> do
+      -- Run all initializer scripts (denoted with the @SETUP@ rule in the Dao language).
+      let xunit' = xunit{currentProgram = Just cachedProg}
+      setupTakedown constructScript xunit'
+      -- Place the initialized module into the 'Runtime', mapping to the module's handle.
+      return xunit'
+    CEReturn _          ->
+      error "INTERNAL ERROR: source code evaluation returned before completion"
+
+-- | Load a Dao script program from the given file handle. You must pass the path name to store the
+-- resulting 'File' into the 'Dao.Object.pathIndex' table. The handle must be set to the proper
+-- encoding using 'System.IO.hSetEncoding'.
+scriptLoadHandle :: Bool -> UPath -> Handle -> Run File
+scriptLoadHandle public upath h = do
+  script <- lift $ do
+    hSetBinaryMode h False
+    fmap (loadSourceCode upath) (hGetContents h) >>= evaluate
+  file <- registerSourceCode public upath script
+  dPutStrErr xloc ("Loaded source code "++show upath) >> return file
+  return file
+
+-- | Updates the 'Runtime' to include the Dao source code loaded from the given 'FilePath'. This
+-- function tries to load a file in three different attempts: (1) try to load the file as a binary
+-- @('Dao.Document.Document' 'Dao.Evaluator.DocData')@ object. (2) Try to load the file as a
+-- binary @'Dao.Object.SourceCode'@ object. (3) Treat the file as text (using the current locale set
+-- by the system, e.g. @en.UTF-8@) and parse a 'Dao.Object.SourceCode' object using
+-- 'Dao.Object.Parsers.source'. If all three methods fail, an error is thrown. Returns
+-- the 'TypedFile', although all source code files are returned as 'PrivateType's. Use
+-- 'asPublic' to force the type to be a 'PublicType'd file.
+loadFilePath :: Bool -> FilePath -> Run File
+loadFilePath public path = dontLoadFileTwice (ustr path) $ \upath -> do
+  dPutStrErr xloc ("Lookup file path "++show upath)
+  h    <- lift (openFile path ReadMode)
+  zero <- lift (hGetPosn h)
+  enc  <- lift (hGetEncoding h)
+  -- First try to load the file as a binary program file, and then try it as a binary data file.
+  file <- catchErrorCall (ideaLoadHandle upath h)
+  case file of
+    Right file -> return file
+    Left  _    -> do -- The file does not seem to be a document, try parsing it as a script.
+      lift (hSetPosn zero >> hSetEncoding h (fromMaybe localeEncoding enc))
+      scriptLoadHandle public upath h
+
+-- | When a program is loaded, and when it is released, any block of Dao code in the source script
+-- that is denoted with the @SETUP@ or @TAKEDOWN@ rules will be executed. This function performs
+-- that execution in the current thread.
+setupTakedown :: (Program -> [[Com ScriptExpr]]) -> ExecUnit -> Run ()
+setupTakedown select xunit = ask >>= \runtime ->
+  forM_ (concat $ maybeToList $ currentProgram xunit >>= Just . select) $ \block ->
+    runExecScript (execGuardBlock block) xunit >>= lift . evaluate
 

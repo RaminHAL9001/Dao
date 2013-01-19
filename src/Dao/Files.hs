@@ -29,13 +29,14 @@ module Dao.Files where
 
 import           Dao.Debug.OFF
 import           Dao.Object
-import           Dao.Evaluator
+-- import           Dao.Evaluator
 import           Dao.Resource
 import qualified Dao.Tree    as T
 import           Dao.Parser hiding (lookAhead)
 import           Dao.Predicate
 import           Dao.Object.Parser
 import           Dao.Object.Show
+import           Dao.Object.Binary
 
 import           Control.Exception
 import           Control.Concurrent
@@ -131,40 +132,6 @@ dontLoadFileTwice upath getFile = do
     Just file -> return file
     Nothing   -> getFile upath
 
--- | Updates the 'Runtime' to include the Dao source code loaded from the given 'FilePath'. This
--- function tries to load a file in three different attempts: (1) try to load the file as a binary
--- @('Dao.Document.Document' 'Dao.Evaluator.DocData')@ object. (2) Try to load the file as a
--- binary @'Dao.Object.SourceCode'@ object. (3) Treat the file as text (using the current locale set
--- by the system, e.g. @en.UTF-8@) and parse a 'Dao.Object.SourceCode' object using
--- 'Dao.Object.Parsers.source'. If all three methods fail, an error is thrown. Returns
--- the 'TypedFile', although all source code files are returned as 'PrivateType's. Use
--- 'asPublic' to force the type to be a 'PublicType'd file.
-loadFilePath :: Bool -> FilePath -> Run File
-loadFilePath public path = dontLoadFileTwice (ustr path) $ \upath -> do
-  dPutStrErr xloc ("Lookup file path "++show upath)
-  h    <- lift (openFile path ReadMode)
-  zero <- lift (hGetPosn h)
-  enc  <- lift (hGetEncoding h)
-  -- First try to load the file as a binary program file, and then try it as a binary data file.
-  file <- catchErrorCall (ideaLoadHandle upath h)
-  case file of
-    Right file -> return file
-    Left  _    -> do -- The file does not seem to be a document, try parsing it as a script.
-      lift (hSetPosn zero >> hSetEncoding h (fromMaybe localeEncoding enc))
-      scriptLoadHandle public upath h
-
--- | Load a Dao script program from the given file handle. You must pass the path name to store the
--- resulting 'File' into the 'Dao.Object.pathIndex' table. The handle must be set to the proper
--- encoding using 'System.IO.hSetEncoding'.
-scriptLoadHandle :: Bool -> UPath -> Handle -> Run File
-scriptLoadHandle public upath h = do
-  script <- lift $ do
-    hSetBinaryMode h False
-    fmap (loadSourceCode upath) (hGetContents h) >>= evaluate
-  file <- registerSourceCode public upath script
-  dPutStrErr xloc ("Loaded source code "++show upath) >> return file
-  return file
-
 -- | Load idea data from the given file handle. You must pass the path name to store the resulting
 -- 'File' into the 'Dao.Object.pathIndex' table.
 ideaLoadHandle :: UPath -> Handle -> Run File
@@ -242,93 +209,6 @@ execWriteDB upath = do
           seq h $! seq encoded $! B.hPutStr h encoded
           hFlush h >> hClose h >>= evaluate
         return (doc{docModified = 0}, file)
-
--- | Initialize a source code file into the given 'Runtime'. This function checks that the
--- 'Dao.Object.sourceFullPath' is unique in the 'programs' table of the 'Runtime', then evaluates
--- 'initSourceCode' and associates the resulting 'Dao.Evaluator.ExecUnit' with the
--- 'sourceFullPath' in the 'programs' table. Returns the logical "module" name of the script along
--- with an initialized 'Dao.Object.ExecUnit'.
-registerSourceCode :: Bool -> UPath -> SourceCode -> Run File
-registerSourceCode public upath script = ask >>= \runtime -> do
-  let modName  = unComment (sourceModuleName script)
-      pathTab  = pathIndex runtime
-      modTab   = logicalNameIndex runtime
-  alreadyLoaded <- fmap (M.lookup upath) (dReadMVar xloc pathTab)
-  case alreadyLoaded of
-    Just file -> case file of
-      ProgramFile _ upath' _        _     | upath' /= upath     -> error $
-          "INTERNAL ERROR: runtime file table is corrupted\n\ta file indexed as "++show upath
-        ++"\n\tis recored as having a filePath of "++show upath'
-      ProgramFile _ _      modName' xunit | modName' == modName -> return file
-      ProgramFile _ _      modName' _     | modName' /= modName -> error $
-          "\t"++show upath++" has been loaded by a different module name.\n"
-        ++"\tmodule name "++show modName++"\n"
-        ++"\tattempted to load as module name "++show modName
-      IdeaFile    _ _                                           -> error $
-          "INTERNAL ERROR: "++show upath
-        ++" has been loaded as both a data file and as an executable script."
-    Nothing   -> do
-      moduleNameConflict <- fmap (M.lookup modName) (dReadMVar xloc modTab)
-      case moduleNameConflict of
-        Just file -> error $
-            "ERROR: cannot load source file "++show upath++"\n"
-          ++"\tthe module name "++show (logicalName file)
-          ++"is identical to that of another Dao script that has been\n"
-          ++"\tloaded from the path "++show (filePath file)
-        Nothing -> do
-          -- Call 'initSourceCode' which creates the 'ExecUnit', then place it in an 'MVar'.
-          -- 'initSourceCode' calls 'Dao.Evaluator.programFromSource'.
-          xunit     <- initSourceCode script >>= lift . evaluate
-          -- Check to make sure the logical name in the loaded program does not conflict with that
-          -- of another loaded previously.
-          xunitMVar <- dNewMVar xloc ("ExecUnit("++show upath++")") xunit
-          let file =
-                ProgramFile
-                { publicFile  = public
-                , filePath    = upath
-                , logicalName = unComment (sourceModuleName script)
-                , execUnit   = xunitMVar
-                }
-          dModifyMVar_ xloc pathTab $ return . M.insert upath file
-          dModifyMVar_ xloc modTab  $ return . M.insert modName file
-          return file
-
--- | You should not normally need to call evaluate this function, you should use
--- 'registerSourceCode' which will evaluate this function and also place the
--- 'Dao.Object.SourceCode' into the 'programs' table. This function will use
--- 'Dao.Evaluator.programFromSource' to construct a 'Dao.Evaluator.CachedProgram'
--- and then execute the initialization code for that program, that is, use
--- 'Dao.Evaluator.execScriptExpr' to evaluate every 'Dao.Object.ExecScript' in the
--- 'Dao.Object.constructScript'. Returns the 'Dao.Evaluator.ExecUnit' used to initialize the
--- program, and the logical name of the program (determined by the "module" keyword in the source
--- code). You need to pass the 'Runtime' to this function because it needs to initialize a new
--- 'Dao.Evaluator.ExecUnit' with the 'programs' and 'runtimeDocList' but these values are not
--- modified.
-initSourceCode :: SourceCode -> Run ExecUnit
-initSourceCode script = ask >>= \runtime -> do
-  grsrc <- newTreeResource "Program.globalData" T.Void
-  xunit <- initExecUnit runtime grsrc
-  -- An execution unit is required to load a program, so of course, while a program is being
-  -- loaded, the program is not in the program table, and is it's 'currentProgram' is 'Nothing'.
-  cachedProg <- runExecScript (programFromSource grsrc (\_ _ _ -> return False) script) xunit
-  case cachedProg of
-    CEError  obj        -> error ("script err: "++showObj 0 obj)
-    CENext   cachedProg -> do
-      -- Run all initializer scripts (denoted with the @SETUP@ rule in the Dao language).
-      let xunit' = xunit{currentProgram = Just cachedProg}
-      setupTakedown constructScript xunit'
-      -- Place the initialized module into the 'Runtime', mapping to the module's handle.
-      return xunit'
-    CEReturn _          ->
-      error "INTERNAL ERROR: source code evaluation returned before completion"
-
--- | When a program is loaded, and when it is released, any block of Dao code in the source script
--- that is denoted with the @SETUP@ or @TAKEDOWN@ rules will be executed. This function performs
--- that execution in the current thread.
-setupTakedown :: (Program -> [[Com ScriptExpr]]) -> ExecUnit -> Run ()
-setupTakedown select xunit = ask >>= \runtime ->
-  forM_ (concat $ maybeToList $ currentProgram xunit >>= Just . select) $ \block ->
-    runExecScript (execGuardBlock block) xunit >>= lift . evaluate
 
 -- | Once all the files have been loaded, it is possible to check if the @import@ directives of a
 -- given Dao script indicate a module name that properly maps to a file that has been loaded. This

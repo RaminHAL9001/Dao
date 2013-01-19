@@ -46,7 +46,6 @@ import           Dao.Object
 import           Dao.Resource
 import qualified Dao.Tree as T
 import           Dao.Files
-import           Dao.Tasks
 import           Dao.Evaluator
 
 import           Control.Exception

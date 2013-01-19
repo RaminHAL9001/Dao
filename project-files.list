@@ -40,5 +40,4 @@ Dao/Predicate.hs
 Dao/Resource.hs
 Dao/String.hs
 Dao/Token.hs
-Dao/Tasks.hs
 Dao/Tree.hs

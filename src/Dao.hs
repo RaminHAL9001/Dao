@@ -71,13 +71,11 @@ min_exec_time = 200000
 -- 'Dao.Object.Runtime' and used for debugging.
 newRuntime :: Maybe Debugger -> IO Runtime
 newRuntime debug = flip runReaderT debug $ dStack xloc "newRuntime" $ do
-  paths <- dNewMVar xloc "Runtime.pathIndex"        (M.empty)
-  names <- dNewMVar xloc "Runtime.logicalNameIndex" (M.empty)
-  jtab  <- dNewMVar xloc "Runtime.jobTable"         (M.empty)
+  paths <- dNewMVar xloc "Runtime.pathIndex" (M.empty)
+  jtab  <- dNewMVar xloc "Runtime.jobTable"  (M.empty)
   return $
     Runtime
     { pathIndex            = paths
-    , logicalNameIndex     = names
     , jobTable             = jtab
     , defaultTimeout       = Just 8000000
     , functionSets         = M.empty
@@ -167,6 +165,6 @@ inputQueryLoop debug runtime getNextInput = do
           when continue (dYield >> catchLoop)
     catchLoop -- here we start the 'catchLoop'.
     -- Now, takedown all loaded modules.
-    dReadMVar xloc (pathIndex runtime) >>= mapM_ (dReadMVar xloc >=> setupTakedown destructScript) .
-      (map execUnit . filter isProgramFile . M.elems)
+    dReadMVar xloc (pathIndex runtime) >>= mapM_ (setupTakedown destructScript) .
+      (map programExecUnit . concatMap isProgramFile . M.elems)
 

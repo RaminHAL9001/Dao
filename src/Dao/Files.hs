@@ -98,19 +98,6 @@ instance Binary (StoredFile T.Tree Name Object) where
       , docRootObject = root
       }
 
-newDocResource :: Bugged r => String -> T_tree -> ReaderT r IO DocResource
-newDocResource dbg docdata = do
-  resource <- newDMVarsForResource dbg "DocResource" (initDoc docdata) (NotStored T.Void)
-  let lookup ref d = T.lookup ref (docRootObject d)
-      updater ref obj d = d{ docRootObject = T.update ref (const obj) (docRootObject d) }
-  return $
-    resource
-    { updateUnlocked = \ref obj d -> (updater ref obj d){ docModified = 1 + docModified d }
-    , updateLocked   = updater
-    , lookupUnlocked = lookup
-    , lookupLocked   = lookup
-    }
-
 ----------------------------------------------------------------------------------------------------
 
 -- | Parse Dao program from a 'Prelude.String' containing valid Dao source code, creating a
@@ -124,28 +111,25 @@ loadSourceCode upath sourceString = case fst (runParser parseSourceFile sourceSt
 
 -- | This function will take any file path and return a file associated with it if it has been
 -- loaded once before. If not, it runs the function you provide to load the file.
-dontLoadFileTwice :: UPath -> (UPath -> Run File) -> Run File
+dontLoadFileTwice :: UPath -> (UPath -> Run (ContErr File)) -> Run (ContErr File)
 dontLoadFileTwice upath getFile = do
   runtime <- ask
   ptab <- fmap (M.lookup upath) (dReadMVar xloc (pathIndex runtime))
   case ptab of
-    Just file -> return file
+    Just file -> return (CENext file)
     Nothing   -> getFile upath
 
 -- | Load idea data from the given file handle. You must pass the path name to store the resulting
 -- 'File' into the 'Dao.Object.pathIndex' table.
-ideaLoadHandle :: UPath -> Handle -> Run File
+ideaLoadHandle :: UPath -> Handle -> Run DocResource
 ideaLoadHandle upath h = ask >>= \runtime -> do
   lift (hSetBinaryMode h True)
   doc <- lift (fmap (decode$!) (B.hGetContents h) >>= evaluate)
   docHandle <- newDocResource ("DocHandle("++show upath++")") $! doc
-  let file = IdeaFile{filePath = upath, fileData = docHandle}
-  --  dModifyMVar_ xloc (documentList runtime) $ \docTab ->
-  --    seq docTab $! seq docHandle $! lift $! return $! M.insert upath docHandle docTab
   dModifyMVar_ xloc (pathIndex runtime) $ \pathTab ->
-    seq pathTab $! seq file $! return $! M.insert upath file pathTab
+    seq pathTab $! seq docHandle $! return $! M.insert upath (DocumentFile docHandle) pathTab
   dPutStrErr xloc ("Loaded data file "++show upath)
-  return file
+  return docHandle
 
 -- | Where 'loadFilePath' keeps trying to load a given file by guessing it's type,
 -- 'loadFilePathWith' allows you to specify how to load the file by passing a function, like
@@ -163,52 +147,12 @@ getFullPath upath = handle (\ (err::IOException) -> return (False, upath)) $
   fmap ((,)True . ustr) (canonicalizePath (uchars upath))
 
 -- | Return all files that have been loaded that match the given file name.
-findIndexedFile :: UPath -> Run [UPath]
+findIndexedFile :: UPath -> Run [File]
 findIndexedFile upath = do
   runtime <- ask
   ptab    <- dReadMVar xloc (pathIndex runtime)
   return $ flip concatMap (M.assocs ptab) $ \ (ipath, file) ->
-    if isSuffixOf (uchars upath) (uchars ipath) then [filePath file] else []
-
--- | Checks that the file path is OK to use for the given 'Dao.Object.ExecUnit', executes the file
--- loading function if it is OK to load, returns a CEError if not.
-execReadFile :: UPath -> (UPath -> Handle -> Run File) -> ExecScript File
-execReadFile upath fn = do
-  xunit <- ask
-  (exists, upath) <- execIO (getFullPath upath)
-  -- TODO: check if the path is really OK to load.
-  execScriptRun $ do
-    ~altDoc <- newDocResource ("DocHandle("++show upath++")") T.Void
-    let file = IdeaFile{filePath = upath, fileData = altDoc}
-    dontLoadFileTwice upath $ \upath ->
-      if exists
-        then loadFilePathWith fn upath
-        else do
-          runtime <- ask
-          dModifyMVar xloc (pathIndex runtime) $ \ptab ->
-            return (M.insert (filePath file) file ptab, file)
-
--- | If a file has been read, it can be written.
-execWriteDB :: UPath -> ExecScript File
-execWriteDB upath = do
-  (_, upath) <- execIO (getFullPath upath)
-  xunit <- ask
-  -- TODO: check if the path is OK to write.
-  file <- execScriptRun $ do
-    runtime <- ask
-    fmap (M.lookup upath) (dReadMVar xloc (pathIndex runtime))
-  case file of
-    Nothing -> ceError $ OList $ map OString $
-      [ustr "writeDB", upath, ustr "file is not currently loaded"]
-    Just file | isIdeaFile file -> do
-      let doc = fileData file
-      execRun $ modifyUnlocked doc $ \doc -> do
-        when (docModified doc > 0) $ lift $ do
-          h <- openFile (docRefToFilePath upath) WriteMode >>= evaluate
-          let encoded = encode doc
-          seq h $! seq encoded $! B.hPutStr h encoded
-          hFlush h >> hClose h >>= evaluate
-        return (doc{docModified = 0}, file)
+    if isSuffixOf (uchars upath) (uchars ipath) then [file] else []
 
 -- | Once all the files have been loaded, it is possible to check if the @import@ directives of a
 -- given Dao script indicate a module name that properly maps to a file that has been loaded. This
@@ -217,22 +161,20 @@ execWriteDB upath = do
 -- the name of the module that could not be found.
 checkImports :: File -> Run [(Name, [Name])]
 checkImports file = ask >>= \runtime -> case file of
-  ProgramFile _ _ modName xunit -> do
+  ProgramFile prog -> do
+    let xunit   = programExecUnit prog
+        modName = programModuleName prog
     pathTab <- dReadMVar xloc (pathIndex runtime)
-    modTab  <- dReadMVar xloc (logicalNameIndex runtime)
-    dStack xloc "checkImports" $ do
-      dModifyMVar xloc xunit $ \xunit -> case currentProgram xunit of
-        Nothing   -> return (xunit, [(modName, [])])
-        Just prog -> case programImports prog of
-          []      -> return (xunit, [])
-          imports -> do
-            let xunits = map (\mod -> (mod, maybeToList (M.lookup mod modTab))) imports
-                (badImports, goodImports) = partition (null . snd) xunits
-            return $
-              if null badImports
-                then (xunit{importsTable = map execUnit (concatMap snd goodImports)}, [])
-                else (xunit, [(modName, map fst badImports)])
-  IdeaFile _ _ -> return []
+    dStack xloc "checkImports" $ case currentProgram xunit of
+      Nothing   -> return [(modName, [])]
+      Just prog -> case programImports prog of
+        []      -> return []
+        imports -> do
+          let xunits = map (\mod -> (mod, maybeToList (M.lookup mod pathTab))) imports
+              (badImports, goodImports) = partition (null . snd) xunits
+          return (if null badImports then [] else [(modName, map fst badImports)])
+  DocumentFile   _ -> return []
+  SourceCodeFile _ -> return []
 
 -- | Like 'checkImports' but checks every file that has been loaded by the Runtime.
 checkAllImports :: Run [(Name, [Name])]

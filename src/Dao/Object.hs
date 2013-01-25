@@ -139,7 +139,7 @@ data Reference
   | QTimeRef   { globalRef :: [Name] } -- ^ reference to a query-time static variable.
   | GlobalRef  { globalRef :: [Name] } -- ^ reference to in-memory data stored per 'Dao.Types.ExecUnit'.
   | ProgramRef { progID    :: Name , subRef    :: Reference } -- ^ reference to a portion of a 'Dao.Types.Program'.
-  | FileRef    { fileID    :: UPath, globalRef :: [Name] } -- ^ reference to a variable in a 'Dao.Types.File'
+  | FileRef    { filePath  :: UPath, globalRef :: [Name] } -- ^ reference to a variable in a 'Dao.Types.File'
   | Subscript  { dereference :: Reference, subscriptValue :: Object } -- ^ reference to value at a subscripted slot in a container object
   | MetaRef    { dereference :: Reference } -- ^ wraps up a 'Reference' as a value that cannot be used as a reference.
   deriving (Eq, Ord, Show, Typeable)
@@ -154,6 +154,7 @@ refSameClass a b = case (a, b) of
   (ProgramRef _ _, ProgramRef  _ _) -> True
   (FileRef    _ _, FileRef     _ _) -> True
   (MetaRef      _, MetaRef       _) -> True
+  (Subscript  _ _, Subscript   _ _) -> True
   _                                 -> False
 
 appendReferences :: Reference -> Reference -> Maybe Reference
@@ -749,11 +750,11 @@ stackPop stack = stack{ mapList = let mx = mapList stack in if null mx then [] e
 -- mechanism does *NOT* provide this caching.
 data Resource stor ref =
   Resource
-  { resource       :: DMVar (stor Object, stor (DQSem, Maybe Object))
-  , updateUnlocked :: ref -> Maybe Object -> stor Object -> stor Object
-  , lookupUnlocked :: ref -> stor Object -> Maybe Object
-  , updateLocked   :: ref -> Maybe (DQSem, Maybe Object) -> stor (DQSem, Maybe Object) -> stor (DQSem, Maybe Object)
-  , lookupLocked   :: ref -> stor (DQSem, Maybe Object) -> Maybe (DQSem, Maybe Object)
+  { resource        :: DMVar (stor Object, stor (DQSem, Maybe Object))
+  , updateUnlocked  :: ref -> Maybe Object -> stor Object -> stor Object
+  , lookupUnlocked  :: ref -> stor Object -> Maybe Object
+  , updateLocked    :: ref -> Maybe (DQSem, Maybe Object) -> stor (DQSem, Maybe Object) -> stor (DQSem, Maybe Object)
+  , lookupLocked    :: ref -> stor (DQSem, Maybe Object) -> Maybe (DQSem, Maybe Object)
   } -- NOTE: this data type needs to be opaque.
     -- Do not export the constructor or any of the accessor functions.
 
@@ -798,6 +799,10 @@ data Program
     , programComparator :: CompareToken
       -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
     , ruleSet           :: DMVar (PatternTree [Executable])
+      -- ^ the rules of this program
+    , programExecUnit   :: ExecUnit
+      -- ^ the 'ExecUnit' used to run this program. The 'ExecUnit' will have a reference to this
+      -- 'Program' object as well.
     , globalData        :: TreeResource
     }
 
@@ -903,7 +908,7 @@ data ExecUnit
     , currentBranch      :: [Name]
       -- ^ set by the @with@ statement during execution of a Dao script. It is used to prefix this
       -- to all global references before reading from or writing to those references.
-    , importsTable       :: [DMVar ExecUnit]
+    , importsTable       :: [File]
       -- ^ a pointer to the ExecUnit of every Dao program imported with the @import@ keyword.
     , execAccessRules    :: FileAccessRules
       -- ^ restricting which files can be loaded by the program associated with this ExecUnit, these
@@ -948,38 +953,41 @@ data FileAccessRules
     -- ^ access rules will apply to every file in the path of this directory, but other rules
     -- specific to certain files will override these rules.
 
--- | Anything that can be loaded from the filesystem and used by the Dao 'Runtime' is a type of
--- this.
 data File
-  = ProgramFile -- ^ a program loaded and executable
-    { publicFile  :: Bool
-    , filePath    :: Name
-    , logicalName :: Name
-    , execUnit    :: DMVar ExecUnit
-    }
-  | ProgramEdit -- ^ a program executable and editable.
-    { filePath   :: Name
-    , sourceCode :: DMVar SourceCode
-    , execUnit   :: DMVar ExecUnit
-    }
-  | IdeaFile -- ^ a file containing a 'Dao.Tree.Tree' of serialized 'Dao.Object.Object's.
-    { filePath :: Name
-    , fileData :: DocResource
-    }
+  = ProgramFile     Program
+  | SourceCodeFile  SourceCode
+  | DocumentFile    DocResource
+
+-- data File
+-- = ProgramFile -- ^ a program loaded and executable
+--   { publicFile  :: Bool
+--   , filePath    :: Name
+--   , logicalName :: Name
+--   , execUnit    :: DMVar ExecUnit
+--   }
+-- | ProgramEdit -- ^ a program executable and editable.
+--   { filePath   :: Name
+--   , sourceCode :: DMVar SourceCode
+--   , execUnit   :: DMVar ExecUnit
+--   }
+-- | DocumentFile -- ^ a file containing a 'Dao.Tree.Tree' of serialized 'Dao.Object.Object's.
+--   { filePath :: Name
+--   , fileData :: DocResource
+--   }
 
 -- | Used to select programs from the 'pathIndex' that are currently available for recursive
 -- execution.
-isProgramFile :: File -> Bool
+isProgramFile :: File -> [Program]
 isProgramFile file = case file of
-  ProgramFile _ _ _ _ -> True
-  _                   -> False
+  ProgramFile p -> [p]
+  _             -> []
 
 -- | Used to select programs from the 'pathIndex' that are currently available for recursive
 -- execution.
-isIdeaFile :: File -> Bool
-isIdeaFile file = case file of
-  IdeaFile _ _ -> True
-  _            -> False
+isDocumentFile :: File -> [DocResource]
+isDocumentFile file = case file of
+  DocumentFile d -> [d]
+  _              -> []
 
 -- | A type of function that can split an input query string into 'Dao.Pattern.Tokens'. The default
 -- splits up strings on white-spaces, numbers, and punctuation marks.
@@ -995,9 +1003,6 @@ data Runtime
     { pathIndex            :: DMVar (M.Map UPath File)
       -- ^ every file opened, whether it is a data file or a program file, is registered here under
       -- it's file path (file paths map to 'File's).
-    , logicalNameIndex     :: DMVar (M.Map Name File)
-      -- ^ program files have logical names. This index allows for easily looking up 'File's by
-      -- their logical name.
     , jobTable             :: DMVar (M.Map ThreadId Job)
       -- ^ A job is any string that has caused execution across loaded dao scripts. This table keeps
       -- track of any jobs started by this runtime.

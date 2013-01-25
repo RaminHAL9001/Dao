@@ -41,12 +41,17 @@ newDMVarsForResource dbg objname unlocked locked = do
   content <- dNewMVar xloc (dbg++'(':objname++".resource)") (unlocked, locked)
   return $
     Resource
-    { resource       = content
-    , updateUnlocked = error "Resource.updateUnlocked is not defined"
-    , lookupUnlocked = error "Resource.lookupUnlocked is not defined"
-    , updateLocked   = error "Resource.updateLocked is not defined"
-    , lookupLocked   = error "Resource.lookupLocked is not defined"
+    { resource        = content
+    , updateUnlocked  = error "Resource.updateUnlocked is not defined"
+    , lookupUnlocked  = error "Resource.lookupUnlocked is not defined"
+    , updateLocked    = error "Resource.updateLocked is not defined"
+    , lookupLocked    = error "Resource.lookupLocked is not defined"
     }
+
+-- | Returns the unlocked portion of the resource. Locked resources are still being modified, so
+-- their not-yet-updated values are returned.
+getUnlockedResource :: Bugged r => Resource stor ref -> ReaderT r IO (stor Object)
+getUnlockedResource r = fmap fst (dReadMVar xloc (resource r))
 
 newStackResource :: Bugged r => String -> [T.Tree Name Object] -> ReaderT r IO StackResource
 newStackResource dbg initStack = do
@@ -81,6 +86,19 @@ newMapResource dbg initMap = do
     , lookupUnlocked = M.lookup
     , updateLocked   = updater
     , lookupLocked   = M.lookup
+    }
+
+newDocResource :: Bugged r => String -> T_tree -> ReaderT r IO DocResource
+newDocResource dbg docdata = do
+  resource <- newDMVarsForResource dbg "DocResource" (initDoc docdata) (NotStored T.Void)
+  let lookup ref d = T.lookup ref (docRootObject d)
+      updater ref obj d = d{ docRootObject = T.update ref (const obj) (docRootObject d) }
+  return $
+    resource
+    { updateUnlocked = \ref obj d -> (updater ref obj d){ docModified = 1 + docModified d }
+    , updateLocked   = updater
+    , lookupUnlocked = lookup
+    , lookupLocked   = lookup
     }
 
 -- | Not intended for general use, this function modifies the "locked" and "unlocked" DMVars in

@@ -68,8 +68,7 @@ import qualified Data.ByteString.Lazy.UTF8 as U
 
 import           System.IO
 
---debug: for use with "trace"
---import Debug.Trace
+import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -240,7 +239,7 @@ curDocVarLookup name = do
   xunit <- ask
   case currentDocument xunit of
     Nothing                  -> return Nothing
-    Just file@(IdeaFile _ _) -> inEvalDoReadResource (fileData file) (currentBranch xunit ++ name)
+    Just file@(DocumentFile res) -> inEvalDoReadResource res (currentBranch xunit ++ name)
     _ -> error ("current document is not an idea file, cannot lookup reference "++showRef name)
 
 -- | Update a reference value in the durrent document, if the current document has been set with a
@@ -250,8 +249,8 @@ curDocVarUpdate name runUpdate = do
   xunit <- ask
   case currentDocument xunit of
     Nothing                  -> return Nothing
-    Just file@(IdeaFile _ _) ->
-      inEvalDoUpdateResource (fileData file) (currentBranch xunit ++ name) runUpdate
+    Just file@(DocumentFile res) ->
+      inEvalDoUpdateResource res (currentBranch xunit ++ name) runUpdate
     _ -> error ("current document is not an idea file, cannot update reference "++showRef name)
 
 curDocVarDefine :: [Name] -> Object -> ExecScript (Maybe Object)
@@ -786,17 +785,17 @@ recursiveExecQuery :: [UStr] -> [UStr] -> ExecScript ()
 recursiveExecQuery selectFiles execStrings = case selectFiles of
   [] -> ceError $ OList $
     [OString (ustr "cannot execute \"do\" without specific modules, no default module defined")]
-  selectFiles -> do
-    xunit <- ask
+  selectFiles -> trace ("selectFiles: "++show selectFiles++"\nexecStrings: "++show execStrings) $ do
+    xunit <- ask :: ExecScript ExecUnit
     execScriptRun $ do
       -- dModifyMVar_ xloc (recursiveInput xunit) (return . (++ox)) -- is this necessary?
       files <- selectModules (Just xunit) selectFiles
       let job = currentExecJob xunit
       case job of
         Nothing  -> forM_ execStrings (flip (execInputString_ False) files)
-        Just job -> do
-          xunits <- mapM (dReadMVar xloc . execUnit) files
-          forM execStrings (makeTasksForInput xunits) >>= startTasksForJob job . concat
+        Just job ->
+          forM execStrings (makeTasksForInput (map programExecUnit (concatMap isProgramFile files))) >>=
+            startTasksForJob job . concat
 
 builtin_do :: DaoFunc
 builtin_do = DaoFunc $ \ox -> do
@@ -893,7 +892,9 @@ lookupFunction :: String -> Name -> ExecScript [Subroutine]
 lookupFunction msg op = do
   xunit <- ask
   let toplevs xunit = execRun (fmap (M.lookup op) (dReadMVar xloc (toplevelFuncs xunit)))
-      lkup xunitMVar = execRun (dReadMVar xloc xunitMVar) >>= toplevs
+      lkup p = case p of
+        ProgramFile p -> toplevs (programExecUnit p)
+        _             -> return Nothing
   funcs <- fmap (concatMap maybeToList) (sequence (toplevs xunit : map lkup (importsTable xunit)))
   if null funcs
     then  objectError (OString op) $ "undefined "++msg++" ("++uchars op++")"
@@ -1221,6 +1222,7 @@ initProgram inmpg initGlobalData = do
     , postExecScript    = post
     , ruleSet           = rules
     , globalData        = initGlobalData
+    , programExecUnit   = undefined
     }
 
 -- | To parse a program, use 'Dao.Object.Parsers.source' and pass the resulting
@@ -1441,20 +1443,18 @@ removeJobFromTable job = ask >>= \runtime ->
 selectModules :: Maybe ExecUnit -> [Name] -> Run [File]
 selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> case names of
   []    -> do
-    ax <- dReadMVar xloc (logicalNameIndex runtime)
+    ax <- dReadMVar xloc (pathIndex runtime)
     dMessage xloc ("selected modules: "++intercalate ", " (map show (M.keys ax)))
-    (return . filter (\file -> isProgramFile file && publicFile file) . M.elems) ax
+    return (filter (not . null . isProgramFile) (M.elems ax))
   names -> do
     pathTab <- dReadMVar xloc (pathIndex runtime)
     let set msg           = M.fromList . map (\mod -> (mod, error msg))
         request           = set "(selectModules: request files)" names
-        (public, private) = M.partition publicFile (M.filter isProgramFile pathTab)
     imports <- case xunit of
       Nothing    -> return M.empty
       Just xunit -> return $
         set "(selectModules: imported files)" $ concat $ maybeToList $ fmap programImports $ currentProgram xunit
-    ax <- return $ M.union (M.intersection public request) $
-      M.intersection private (M.intersection imports request)
+    ax <- return $ M.intersection pathTab request
     dMessage xloc ("selected modules:\n"++unlines (map show (M.keys ax)))
     return $ M.elems ax
 
@@ -1553,7 +1553,7 @@ startTasksForJob job tasks = dStack xloc "startTasksForJob" $ dPutMVar xloc (rea
 -- will block until execution is completed.
 execInputString :: Bool -> UStr -> [File] -> Run ()
 execInputString guarded instr select = dStack xloc "execInputString" $ ask >>= \runtime -> do
-  xunits <- forM (filter isProgramFile select) (dReadMVar xloc . execUnit)
+  let xunits = map programExecUnit (concatMap isProgramFile select)
   unless (null xunits) $ do
     dMessage xloc ("selected "++show (length xunits)++" modules")
     -- Create a new 'Job' for this input string, 'newJob' will automatically place it into the
@@ -1624,50 +1624,28 @@ execTask job task = dStack xloc "execTask" $ ask >>= \runtime -> do
 -- 'initSourceCode' and associates the resulting 'Dao.Evaluator.ExecUnit' with the
 -- 'sourceFullPath' in the 'programs' table. Returns the logical "module" name of the script along
 -- with an initialized 'Dao.Object.ExecUnit'.
-registerSourceCode :: Bool -> UPath -> SourceCode -> Run File
+registerSourceCode :: Bool -> UPath -> SourceCode -> Run (ContErr Program)
 registerSourceCode public upath script = ask >>= \runtime -> do
   let modName  = unComment (sourceModuleName script)
       pathTab  = pathIndex runtime
-      modTab   = logicalNameIndex runtime
   alreadyLoaded <- fmap (M.lookup upath) (dReadMVar xloc pathTab)
+  -- Check to make sure the logical name in the loaded program does not conflict with that
+  -- of another loaded previously.
   case alreadyLoaded of
-    Just file -> case file of
-      ProgramFile _ upath' _        _     | upath' /= upath     -> error $
-          "INTERNAL ERROR: runtime file table is corrupted\n\ta file indexed as "++show upath
-        ++"\n\tis recored as having a filePath of "++show upath'
-      ProgramFile _ _      modName' xunit | modName' == modName -> return file
-      ProgramFile _ _      modName' _     | modName' /= modName -> error $
-          "\t"++show upath++" has been loaded by a different module name.\n"
-        ++"\tmodule name "++show modName++"\n"
-        ++"\tattempted to load as module name "++show modName
-      IdeaFile    _ _                                           -> error $
-          "INTERNAL ERROR: "++show upath
-        ++" has been loaded as both a data file and as an executable script."
-    Nothing   -> do
-      moduleNameConflict <- fmap (M.lookup modName) (dReadMVar xloc modTab)
-      case moduleNameConflict of
-        Just file -> error $
-            "ERROR: cannot load source file "++show upath++"\n"
-          ++"\tthe module name "++show (logicalName file)
-          ++"is identical to that of another Dao script that has been\n"
-          ++"\tloaded from the path "++show (filePath file)
-        Nothing -> do
-          -- Call 'initSourceCode' which creates the 'ExecUnit', then place it in an 'MVar'.
-          -- 'initSourceCode' calls 'Dao.Evaluator.programFromSource'.
-          xunit     <- initSourceCode script >>= lift . evaluate
-          -- Check to make sure the logical name in the loaded program does not conflict with that
-          -- of another loaded previously.
-          xunitMVar <- dNewMVar xloc ("ExecUnit("++show upath++")") xunit
-          let file =
-                ProgramFile
-                { publicFile  = public
-                , filePath    = upath
-                , logicalName = unComment (sourceModuleName script)
-                , execUnit   = xunitMVar
-                }
-          dModifyMVar_ xloc pathTab $ return . M.insert upath file
-          dModifyMVar_ xloc modTab  $ return . M.insert modName file
-          return file
+    Just (ProgramFile  f) -> return (CENext f)
+    Just (DocumentFile f) -> return $ CEError $ OList $
+      [ OString upath
+      , OString (ustr "is already loaded as an idea file, cannot be loaded as a dao file")
+      ]
+    Nothing -> do
+      -- Call 'initSourceCode' which creates the 'ExecUnit', then place it in an 'MVar'.
+      -- 'initSourceCode' calls 'Dao.Evaluator.programFromSource'.
+      xunit <- initSourceCode script >>= lift . evaluate
+      let (Just prog) = currentProgram xunit
+          file = ProgramFile prog
+      xunitMVar <- seq file $ dNewMVar xloc ("ExecUnit("++show upath++")") xunit
+      dModifyMVar_ xloc pathTab $ return . M.insert upath file
+      return (CENext prog)
 
 -- | You should not normally need to call evaluate this function, you should use
 -- 'registerSourceCode' which will evaluate this function and also place the
@@ -1701,14 +1679,12 @@ initSourceCode script = ask >>= \runtime -> do
 -- | Load a Dao script program from the given file handle. You must pass the path name to store the
 -- resulting 'File' into the 'Dao.Object.pathIndex' table. The handle must be set to the proper
 -- encoding using 'System.IO.hSetEncoding'.
-scriptLoadHandle :: Bool -> UPath -> Handle -> Run File
+scriptLoadHandle :: Bool -> UPath -> Handle -> Run (ContErr Program)
 scriptLoadHandle public upath h = do
   script <- lift $ do
     hSetBinaryMode h False
     fmap (loadSourceCode upath) (hGetContents h) >>= evaluate
-  file <- registerSourceCode public upath script
-  dPutStrErr xloc ("Loaded source code "++show upath) >> return file
-  return file
+  registerSourceCode public upath script
 
 -- | Updates the 'Runtime' to include the Dao source code loaded from the given 'FilePath'. This
 -- function tries to load a file in three different attempts: (1) try to load the file as a binary
@@ -1718,19 +1694,19 @@ scriptLoadHandle public upath h = do
 -- 'Dao.Object.Parsers.source'. If all three methods fail, an error is thrown. Returns
 -- the 'TypedFile', although all source code files are returned as 'PrivateType's. Use
 -- 'asPublic' to force the type to be a 'PublicType'd file.
-loadFilePath :: Bool -> FilePath -> Run File
+loadFilePath :: Bool -> FilePath -> Run (ContErr File)
 loadFilePath public path = dontLoadFileTwice (ustr path) $ \upath -> do
   dPutStrErr xloc ("Lookup file path "++show upath)
   h    <- lift (openFile path ReadMode)
   zero <- lift (hGetPosn h)
   enc  <- lift (hGetEncoding h)
   -- First try to load the file as a binary program file, and then try it as a binary data file.
-  file <- catchErrorCall (ideaLoadHandle upath h)
-  case file of
-    Right file -> return file
-    Left  _    -> do -- The file does not seem to be a document, try parsing it as a script.
+  doc <- catchErrorCall (ideaLoadHandle upath h) :: Run (Either ErrorCall DocResource)
+  case doc of
+    Right doc -> return (CENext (DocumentFile doc))
+    Left  _   -> do -- The file does not seem to be a document, try parsing it as a script.
       lift (hSetPosn zero >> hSetEncoding h (fromMaybe localeEncoding enc))
-      scriptLoadHandle public upath h
+      fmap (fmap ProgramFile) (scriptLoadHandle public upath h)
 
 -- | When a program is loaded, and when it is released, any block of Dao code in the source script
 -- that is denoted with the @SETUP@ or @TAKEDOWN@ rules will be executed. This function performs

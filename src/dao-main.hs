@@ -19,12 +19,12 @@
 -- please see <http://www.gnu.org/licenses/agpl.html>.
 
 
--- {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Main where
 
 import           Dao
-import           Dao.Debug.OFF
+import           Dao.Debug.ON
 
 import           Data.List
 

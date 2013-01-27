@@ -20,14 +20,14 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
--- {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE Rank2Types #-}
 
 module Dao.Evaluator where
 
-import           Dao.Debug.OFF
+import           Dao.Debug.ON
 import           Dao.Token
 import           Dao.Object
 import qualified Dao.Tree as T
@@ -74,13 +74,13 @@ import Debug.Trace
 
 initExecUnit :: Runtime -> TreeResource -> Run ExecUnit
 initExecUnit runtime initGlobalData = do
-  unctErrs <- dNewMVar xloc "ExecUnit.uncaughtErrors" []
-  recurInp <- dNewMVar xloc "ExecUnit.recursiveInput" []
+  unctErrs <- dNewMVar $loc "ExecUnit.uncaughtErrors" []
+  recurInp <- dNewMVar $loc "ExecUnit.recursiveInput" []
   qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
-  xstack   <- dNewMVar xloc "ExecUnit.execStack" emptyStack
-  toplev   <- dNewMVar xloc "ExecUnit.toplevelFuncs" M.empty
-  files    <- dNewMVar xloc "ExecUnit.execOpenFiles" M.empty
-  cache    <- dNewMVar xloc "ExecUnit.referenceCache" M.empty
+  xstack   <- dNewMVar $loc "ExecUnit.execStack" emptyStack
+  toplev   <- dNewMVar $loc "ExecUnit.toplevelFuncs" M.empty
+  files    <- dNewMVar $loc "ExecUnit.execOpenFiles" M.empty
+  cache    <- dNewMVar $loc "ExecUnit.referenceCache" M.empty
   return $
     ExecUnit
     { parentRuntime      = runtime
@@ -173,9 +173,9 @@ stack_underflow = error "INTERNAL ERROR: stack underflow"
 nestedExecStack :: T_tree -> ExecScript a -> ExecScript a
 nestedExecStack init exe = do
   stack <- fmap execStack ask
-  execRun (dModifyMVar_ xloc stack (return . stackPush init))
+  execRun (dModifyMVar_ $loc stack (return . stackPush init))
   ce <- catchContErr exe
-  execRun (dModifyMVar_ xloc stack (return . stackPop))
+  execRun (dModifyMVar_ $loc stack (return . stackPop))
   returnContErr ce
 
 -- | Keep the current 'execStack', but replace it with a new empty stack before executing the given
@@ -183,7 +183,7 @@ nestedExecStack init exe = do
 -- function. This is what you should use to perform a Dao function call within a Dao function call.
 execFuncPushStack :: T_tree -> ExecScript Object -> ExecScript Object
 execFuncPushStack dict exe = do
-  stackMVar <- execRun (dNewMVar xloc "execFuncPushStack/ExecUnit.execStack" (Stack [dict]))
+  stackMVar <- execRun (dNewMVar $loc "execFuncPushStack/ExecUnit.execStack" (Stack [dict]))
   ce <- catchContErr (local (\xunit -> xunit{execStack = stackMVar}) exe)
   case ce of
     CEReturn obj -> return obj
@@ -262,12 +262,12 @@ curDocVarDelete ref obj = curDocVarUpdate ref (return . const Nothing)
 -- | Lookup a value in the 'execStack'.
 localVarLookup :: Name -> ExecScript (Maybe Object)
 localVarLookup sym =
-  fmap execStack ask >>= execRun . dReadMVar xloc >>= return . msum . map (T.lookup [sym]) . mapList
+  fmap execStack ask >>= execRun . dReadMVar $loc >>= return . msum . map (T.lookup [sym]) . mapList
 
 -- | Apply an altering function to the map at the top of the local variable stack.
 localVarUpdate :: Name -> (Maybe Object -> Maybe Object) -> ExecScript (Maybe Object)
 localVarUpdate name alt = ask >>= \xunit -> execRun $
-  dModifyMVar xloc (execStack xunit) $ \ax -> case mapList ax of
+  dModifyMVar $loc (execStack xunit) $ \ax -> case mapList ax of
     []   -> stack_underflow
     a:ax ->
       let obj = alt (T.lookup [name] a)
@@ -788,7 +788,7 @@ recursiveExecQuery selectFiles execStrings = case selectFiles of
   selectFiles -> trace ("selectFiles: "++show selectFiles++"\nexecStrings: "++show execStrings) $ do
     xunit <- ask :: ExecScript ExecUnit
     execScriptRun $ do
-      -- dModifyMVar_ xloc (recursiveInput xunit) (return . (++ox)) -- is this necessary?
+      -- dModifyMVar_ $loc (recursiveInput xunit) (return . (++ox)) -- is this necessary?
       files <- selectModules (Just xunit) selectFiles
       let job = currentExecJob xunit
       case job of
@@ -864,7 +864,7 @@ updateReference :: Reference -> (Maybe Object -> ExecScript (Maybe Object)) -> E
 updateReference ref modf = do
   xunit <- ask
   let updateRef :: DMVar a -> (a -> Run (a, ContErr Object)) -> ExecScript (Maybe Object)
-      updateRef dmvar runUpdate = fmap Just (execScriptRun (dModifyMVar xloc dmvar runUpdate) >>= returnContErr)
+      updateRef dmvar runUpdate = fmap Just (execScriptRun (dModifyMVar $loc dmvar runUpdate) >>= returnContErr)
       execUpdate :: ref -> a -> Maybe Object -> ((Maybe Object -> Maybe Object) -> a) -> Run (a, ContErr Object)
       execUpdate ref store lkup upd = do
         err <- flip runExecScript xunit $ modf lkup
@@ -891,7 +891,7 @@ updateReference ref modf = do
 lookupFunction :: String -> Name -> ExecScript [Subroutine]
 lookupFunction msg op = do
   xunit <- ask
-  let toplevs xunit = execRun (fmap (M.lookup op) (dReadMVar xloc (toplevelFuncs xunit)))
+  let toplevs xunit = execRun (fmap (M.lookup op) (dReadMVar $loc (toplevelFuncs xunit)))
       lkup p = case p of
         ProgramFile p -> toplevs (programExecUnit p)
         _             -> return Nothing
@@ -983,7 +983,7 @@ execScriptExpr script = case unComment script of
     lval <- evalObject (unComment lval)
     let setBranch ref xunit = return (xunit{currentBranch = ref})
         setFile path xunit = do
-          file <- execRun (fmap (M.lookup path) (dReadMVar xloc (execOpenFiles xunit)))
+          file <- execRun (fmap (M.lookup path) (dReadMVar $loc (execOpenFiles xunit)))
           case file of
             Nothing  -> ceError $ OList $ map OString $
               [ustr "with file path", path, ustr "file has not been loaded"]
@@ -1026,7 +1026,7 @@ called_nonfunction_object op obj =
 cacheReference :: Reference -> Maybe Object -> ExecScript ()
 cacheReference r obj = case obj of
   Nothing  -> return ()
-  Just obj -> ask >>= \xunit -> execRun $ dModifyMVar_ xloc (referenceCache xunit) $ \cache ->
+  Just obj -> ask >>= \xunit -> execRun $ dModifyMVar_ $loc (referenceCache xunit) $ \cache ->
     return (M.insert r obj cache)
 
 -- | Evaluate an 'ObjectExpr' to an 'Dao.Object.Object' value, and does not de-reference objects of
@@ -1204,7 +1204,7 @@ initIntermediateProgram =
 initProgram :: IntermediateProgram -> TreeResource -> ExecScript Program
 initProgram inmpg initGlobalData = do
   rules <- execScriptRun $
-    T.mapLeavesM (mapM setupExecutable) (inmpg_ruleSet inmpg) >>= dNewMVar xloc "Program.ruleSet"
+    T.mapLeavesM (mapM setupExecutable) (inmpg_ruleSet inmpg) >>= dNewMVar $loc "Program.ruleSet"
   pre   <- execRun (mapM setupExecutable (inmpg_preExecScript  inmpg))
   post  <- execRun (mapM setupExecutable (inmpg_postExecScript inmpg))
   inEvalDoModifyUnlocked_ initGlobalData (return . const (inmpg_globalData inmpg))
@@ -1303,7 +1303,7 @@ programFromSource globalResource checkAttribute script = do
               }
         execScriptRun $ do
           let name = unComment nm
-          dModifyMVar_ xloc (toplevelFuncs xunit) $ return .
+          dModifyMVar_ $loc (toplevelFuncs xunit) $ return .
             M.alter (\funcs -> mplus (fmap (++[sub]) funcs) (return [sub])) name
 
 ----------------------------------------------------------------------------------------------------
@@ -1328,84 +1328,84 @@ taskProgramName task = case task of
 -- immediately after the tasks have been created. You can also set how long the 'Job' will wait
 -- before forcefully terminating all tasks.
 newJob :: Maybe Int -> UStr -> Run Job
-newJob timed instr = dStack xloc "newJob" $ ask >>= \runtime -> do
-  jobQSem <- dNewQSem xloc "Job.jobCompletion" 0 -- is singaled when all tasks have completed
-  taskEnd <- dNewEmptyMVar xloc "Job.taskCompletion" -- is used as to block the manager loop until tasks complete
-  ready   <- dNewEmptyMVar xloc "Job.readyTasks" -- tasks to be executed will be queued here
-  timeVar <- dNewMVar xloc "Job.jobTimerThread" Nothing -- contains the timer value, will be filled after defining 'timeKeeper'
-  failed  <- dNewMVar xloc "Job.taskFailures" (M.empty) -- contains the table of any exceptions that killed a worker thread
-  taskTab <- dNewMVar xloc "Job.taskExecTable" (M.empty) -- this DMVar contains the table of running task threads
-  jobMVar <- dNewEmptyMVar xloc "Job/jobMVar" -- every task created needs to set it's 'ExecUnit's 'currentExecJob'.
+newJob timed instr = dStack $loc "newJob" $ ask >>= \runtime -> do
+  jobQSem <- dNewQSem $loc "Job.jobCompletion" 0 -- is singaled when all tasks have completed
+  taskEnd <- dNewEmptyMVar $loc "Job.taskCompletion" -- is used as to block the manager loop until tasks complete
+  ready   <- dNewEmptyMVar $loc "Job.readyTasks" -- tasks to be executed will be queued here
+  timeVar <- dNewMVar $loc "Job.jobTimerThread" Nothing -- contains the timer value, will be filled after defining 'timeKeeper'
+  failed  <- dNewMVar $loc "Job.taskFailures" (M.empty) -- contains the table of any exceptions that killed a worker thread
+  taskTab <- dNewMVar $loc "Job.taskExecTable" (M.empty) -- this DMVar contains the table of running task threads
+  jobMVar <- dNewEmptyMVar $loc "Job/jobMVar" -- every task created needs to set it's 'ExecUnit's 'currentExecJob'.
   let
       taskWaitLoop = do
         -- This loop waits for tasks to end, and signals the 'jobQSem' when the last job has
         -- completed. This loop is actually called by the 'manager' loop, so it executes in the same
         -- thread as the manager loop. Exception handling does not occur here.
-        thread  <- dTakeMVar xloc taskEnd -- wait for a task to end.
-        allDone <- dModifyMVar xloc taskTab $ \taskTab -> do
+        thread  <- dTakeMVar $loc taskEnd -- wait for a task to end.
+        allDone <- dModifyMVar $loc taskTab $ \taskTab -> do
           let taskTab' = M.delete thread taskTab -- remove the completed task from the taskTab.
           return (taskTab', M.null taskTab') -- returns whether or not the taskTab is empty.
         if allDone
           then do -- when the taskTab is empty...
-            timer <- dSwapMVar xloc timeVar Nothing -- empty the timeVar DMVar.
+            timer <- dSwapMVar $loc timeVar Nothing -- empty the timeVar DMVar.
             case timer of -- and kill the timer thread (if it is waiting)
               Nothing    -> return ()
-              Just timer -> dKillThread xloc timer
-            dSignalQSem xloc jobQSem -- then signal 'jobCompletion'.
+              Just timer -> dKillThread $loc timer
+            dSignalQSem $loc jobQSem -- then signal 'jobCompletion'.
           else taskWaitLoop -- loop if the taskTab is not empty.
       workerException task err@(SomeException e) =
         -- If a worker is flagged, it needs to place this flag into the 'failed' table.
-        dModifyMVar_ xloc failed $ \ftab -> case taskProgramName task of
-          Nothing   -> dPutStrErr xloc (show e) >> return ftab
+        dModifyMVar_ $loc failed $ \ftab -> case taskProgramName task of
+          Nothing   -> dPutStrErr $loc (show e) >> return ftab
           Just name -> return (M.update (Just . (++[(task, err)])) name ftab)
-      worker task = dStack xloc "Job/worker" $ do
+      worker task = dStack $loc "Job/worker" $ do
         -- A worker runs the 'task', catching exceptions with 'workerException', and it always
         -- signals the manager loop when this thread completes by way of the 'taskEnd' DMVar, even
         -- when an exception occurs.
-        job <- dReadMVar xloc jobMVar
-        dHandle xloc (workerException task) (execTask job task)
-        dMyThreadId >>= dPutMVar xloc taskEnd
+        job <- dReadMVar $loc jobMVar
+        dHandle $loc (workerException task) (execTask job task)
+        dMyThreadId >>= dPutMVar $loc taskEnd
       timeKeeper time = do
         -- This function evaluates in a separate thread and delays itself then kills all running
         -- tasks in the taskTab. When a task is killed, it signals the manager loop via the
         -- 'taskEnd' DMVar, which will signal 'jobQSem' when the taskTab goes empty, thus timeKeeper
         -- does not kill the manager loop, it lets the manager clean-up and wait on the next batch
         -- of tasks.
-        dThreadDelay xloc time
-        dSwapMVar xloc timeVar Nothing
-        dSwapMVar xloc taskTab (M.empty) >>= mapM_ (dKillThread xloc) . (M.keys)
+        dThreadDelay $loc time
+        dSwapMVar $loc timeVar Nothing
+        dSwapMVar $loc taskTab (M.empty) >>= mapM_ (dKillThread $loc) . (M.keys)
       managerException (SomeException e) = do
         -- if the manager loop is flagged, it needs to delegate the flag to all of its workers.
-        dSwapMVar xloc taskTab (M.empty) >>= mapM_ (\th -> dThrowTo xloc th e) . (M.keys)
-        dSwapMVar xloc timeVar Nothing >>= \timer -> case timer of
+        dSwapMVar $loc taskTab (M.empty) >>= mapM_ (\th -> dThrowTo $loc th e) . (M.keys)
+        dSwapMVar $loc timeVar Nothing >>= \timer -> case timer of
           Nothing     -> return ()
-          Just thread -> dThrowTo xloc thread e
+          Just thread -> dThrowTo $loc thread e
       manager = do
         -- This is the main loop for the 'Job' controlling thread. It takes 'Task's from the
         -- 'readyTasks' table, waiting for the DMVar if necessary.
-        tasks <- dTakeMVar xloc ready
-        dMessage xloc ("received "++show (length tasks)++" tasks")
+        tasks <- dTakeMVar $loc ready
+        dMessage $loc ("received "++show (length tasks)++" tasks")
         case tasks of
           []    -> manager
           tasks -> do
-            dModifyMVar_ xloc taskTab $ \taskExecTable -> do
+            dModifyMVar_ $loc taskTab $ \taskExecTable -> do
               -- Launch all threads, filling the 'taskTab' DMVar atomically so that if a worker loop
               -- fails due to an exception and signals the manager that it is ready to be removed
               -- from the taskTab, the manager loop will not be able to modify this taskTab until
               -- the taskTab is completely filled-in.
               taskIDs <- forM tasks $ \task -> do
-                this <- dFork forkIO xloc ("worker("++showTask task++")") (worker task)
+                this <- dFork forkIO $loc ("worker("++showTask task++")") (worker task)
                 return (this, task)
               return (M.union (M.fromList taskIDs) taskExecTable)
             -- Launch a timekeeper thread if necessary.
             case timed of
-              Nothing   -> void $ dSwapMVar xloc timeVar Nothing
-              Just time -> dFork forkIO xloc ("timer("++show instr++")") (timeKeeper time) >>=
-                void . dSwapMVar xloc timeVar . Just
-            (dStack xloc "taskWaitLoop" taskWaitLoop) >> manager -- wait for the all tasks to stop, then loop to the next batch.
+              Nothing   -> void $ dSwapMVar $loc timeVar Nothing
+              Just time -> dFork forkIO $loc ("timer("++show instr++")") (timeKeeper time) >>=
+                void . dSwapMVar $loc timeVar . Just
+            (dStack $loc "taskWaitLoop" taskWaitLoop) >> manager -- wait for the all tasks to stop, then loop to the next batch.
   -- Finally, start the thread manager loop, wrapped up in it's exception handler.
-  jobManager <- dFork forkIO xloc ("jobManager("++show instr++")") $
-    dHandle xloc managerException (dStack xloc "Job/manager" manager)
+  jobManager <- dFork forkIO $loc ("jobManager("++show instr++")") $
+    dHandle $loc managerException (dStack $loc "Job/manager" manager)
   let job = Job
             { jobTaskThread  = jobManager
             , jobInputString = instr
@@ -1416,13 +1416,13 @@ newJob timed instr = dStack xloc "newJob" $ ask >>= \runtime -> do
             , taskExecTable  = taskTab
             , taskFailures   = failed
             }
-  dPutMVar xloc jobMVar job -- as soon as this happens, all tasks will be able to run.
+  dPutMVar $loc jobMVar job -- as soon as this happens, all tasks will be able to run.
   return job
 
 -- | Waits for every job in the list to complete, that is, it waits until every 'jobCompletion'
 -- 'Control.Concurrent.DQSem.DQSem' has been signalled.
 waitForJobs :: [Job] -> Run ()
-waitForJobs jobx = dStack xloc "waitForJobs" $ forM_ jobx (dWaitQSem xloc . jobCompletion)
+waitForJobs jobx = dStack $loc "waitForJobs" $ forM_ jobx (dWaitQSem $loc . jobCompletion)
 
 -- If you created a 'Dao.Object.Job' using 'newJob', that 'Dao.Object.Job' is automatically inserted
 -- into the 'Dao.Object.jobTable' of the 'Dao.Object.Runtime' of this 'Run' monad. To remove it, from
@@ -1430,7 +1430,7 @@ waitForJobs jobx = dStack xloc "waitForJobs" $ forM_ jobx (dWaitQSem xloc . jobC
 -- 'Control.Concurrent.ThreadId'.
 removeJobFromTable :: Job -> Run ()
 removeJobFromTable job = ask >>= \runtime ->
-  dModifyMVar_ xloc (jobTable runtime) $ \jtab -> return (M.delete (jobTaskThread job) jtab)
+  dModifyMVar_ $loc (jobTable runtime) $ \jtab -> return (M.delete (jobTaskThread job) jtab)
 
 
 -- | When executing strings against Dao programs (e.g. using 'Dao.Tasks.execInputString'), you often
@@ -1441,13 +1441,13 @@ removeJobFromTable job = ask >>= \runtime ->
 -- 'PrivateType' functions to also be selected, however only modules imported by the program
 -- associated with that 'ExecUnit' are allowed to be selected.
 selectModules :: Maybe ExecUnit -> [Name] -> Run [File]
-selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> case names of
+selectModules xunit names = dStack $loc "selectModules" $ ask >>= \runtime -> case names of
   []    -> do
-    ax <- dReadMVar xloc (pathIndex runtime)
-    dMessage xloc ("selected modules: "++intercalate ", " (map show (M.keys ax)))
+    ax <- dReadMVar $loc (pathIndex runtime)
+    dMessage $loc ("selected modules: "++intercalate ", " (map show (M.keys ax)))
     return (filter (not . null . isProgramFile) (M.elems ax))
   names -> do
-    pathTab <- dReadMVar xloc (pathIndex runtime)
+    pathTab <- dReadMVar $loc (pathIndex runtime)
     let set msg           = M.fromList . map (\mod -> (mod, error msg))
         request           = set "(selectModules: request files)" names
     imports <- case xunit of
@@ -1455,7 +1455,7 @@ selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> ca
       Just xunit -> return $
         set "(selectModules: imported files)" $ concat $ maybeToList $ fmap programImports $ currentProgram xunit
     ax <- return $ M.intersection pathTab request
-    dMessage xloc ("selected modules:\n"++unlines (map show (M.keys ax)))
+    dMessage $loc ("selected modules:\n"++unlines (map show (M.keys ax)))
     return $ M.elems ax
 
 -- | Given an input string, and a program, return all patterns and associated match results and
@@ -1466,14 +1466,14 @@ selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> ca
 -- different set of match results, it is up to the programmer of the rule to handle situations where
 -- the action may execute many times for a single input.
 matchStringToProgram :: UStr -> Program -> ExecUnit -> Run [(Pattern, Match, Executable)]
-matchStringToProgram instr program xunit = dStack xloc "matchStringToProgram" $ do
+matchStringToProgram instr program xunit = dStack $loc "matchStringToProgram" $ do
   let eq = programComparator program
       match tox = do
-        tree <- dReadMVar xloc (ruleSet program)
+        tree <- dReadMVar $loc (ruleSet program)
         fmap concat $ forM (matchTree eq tree tox) $ \ (patn, mtch, execs) ->
           return (concatMap (\exec -> [(patn, mtch, exec)]) execs)
 --           forM cxrefx $ \cxref -> do
---             dModifyMVar_ xloc cxref $ \cx -> return $ case cx of
+--             dModifyMVar_ $loc cxref $ \cx -> return $ case cx of
 --               OnlyCache m -> cx
 --               HasBoth _ m -> cx
 --               OnlyAST ast ->
@@ -1485,7 +1485,7 @@ matchStringToProgram instr program xunit = dStack xloc "matchStringToProgram" $ 
   tox <- runExecScript (programTokenizer program instr) xunit
   case tox of
     CEError obj -> do
-      dModifyMVar_ xloc (uncaughtErrors xunit) $ \objx -> return $ (objx++) $
+      dModifyMVar_ $loc (uncaughtErrors xunit) $ \objx -> return $ (objx++) $
         [ OList $
             [ obj, OString (ustr "error occured while tokenizing input string")
             , OString instr, OString (ustr "in the program")
@@ -1500,13 +1500,13 @@ matchStringToProgram instr program xunit = dStack xloc "matchStringToProgram" $ 
 -- 'Job'. The 'Task's are selected according to the input string, which is tokenized and matched
 -- against every rule in the 'Program' according to the 'Dao.Pattern.matchTree' equation.
 makeTasksForInput :: [ExecUnit] -> UStr -> Run [Task]
-makeTasksForInput xunits instr = dStack xloc "makeTasksForInput" $ fmap concat $ forM xunits $ \xunit -> do
+makeTasksForInput xunits instr = dStack $loc "makeTasksForInput" $ fmap concat $ forM xunits $ \xunit -> do
   let name    = currentProgram xunit >>= Just . programModuleName
       program = flip fromMaybe (currentProgram xunit) $
         error "execInputString: currentProgram of execution unit is not defined"
-  dMessage xloc ("(match string to "++show (length xunits)++" running programs)")
+  dMessage $loc ("(match string to "++show (length xunits)++" running programs)")
   matched <- matchStringToProgram instr program xunit
-  dMessage xloc ("(construct RuleTasks with "++show (length matched)++" matched rules)")
+  dMessage $loc ("(construct RuleTasks with "++show (length matched)++" matched rules)")
   forM matched $ \ (patn, mtch, action) -> return $
     RuleTask
     { taskPattern     = OPattern patn
@@ -1525,7 +1525,7 @@ makeTasksForGuardScript
   -> [ExecUnit]
   -> Run [Task]
 makeTasksForGuardScript select xunits =
-  dStack xloc "makeTasksForGuardScript" $ lift $ fmap concat $ forM xunits $ \xunit ->
+  dStack $loc "makeTasksForGuardScript" $ lift $ fmap concat $ forM xunits $ \xunit ->
     case fmap select (currentProgram xunit) of
       Nothing    -> return []
       Just progx -> return $ flip map progx $ \prog ->
@@ -1538,7 +1538,7 @@ makeTasksForGuardScript select xunits =
 -- will block if another thread has already evaluated this function, but those tasks have not yet
 -- completed or timed-out.
 startTasksForJob :: Job -> [Task] -> Run ()
-startTasksForJob job tasks = dStack xloc "startTasksForJob" $ dPutMVar xloc (readyTasks job) tasks
+startTasksForJob job tasks = dStack $loc "startTasksForJob" $ dPutMVar $loc (readyTasks job) tasks
 
 -- | This is the "heart" of the Dao system; it is the algorithm you wanted to use when you decided
 -- to install the Dao system. Select from the 'Dao.Object.Runtime's 'modules' table a list of Dao
@@ -1552,31 +1552,31 @@ startTasksForJob job tasks = dStack xloc "startTasksForJob" $ dPutMVar xloc (rea
 -- 'waitForJobs') is performed in the same thread that evaluates this function, so this function
 -- will block until execution is completed.
 execInputString :: Bool -> UStr -> [File] -> Run ()
-execInputString guarded instr select = dStack xloc "execInputString" $ ask >>= \runtime -> do
+execInputString guarded instr select = dStack $loc "execInputString" $ ask >>= \runtime -> do
   let xunits = map programExecUnit (concatMap isProgramFile select)
   unless (null xunits) $ do
-    dMessage xloc ("selected "++show (length xunits)++" modules")
+    dMessage $loc ("selected "++show (length xunits)++" modules")
     -- Create a new 'Job' for this input string, 'newJob' will automatically place it into the
     -- 'Runtime's job table.
     job <- newJob (defaultTimeout runtime) instr
     let run fn = fn >>= \tasks -> case tasks of
           []    -> return ()
           tasks -> do
-            dMessage xloc (show (length tasks)++" tasks created")
+            dMessage $loc (show (length tasks)++" tasks created")
             startTasksForJob job tasks >> waitForJobs [job]
         exception (SomeException e) = removeJobFromTable job >> dThrowIO e
     -- here begins the three phases of executing a string:
-    dHandle xloc exception $ do
+    dHandle $loc exception $ do
       -- (1) run all 'preExecScript' actions as a task, wait for all tasks to complete
       when guarded $ do
-        dMessage xloc "pre-string-execution"
+        dMessage $loc "pre-string-execution"
         run $ makeTasksForGuardScript preExecScript xunits
       -- (2) run each actions for each rules that matches the input, wait for all tasks to complete
-      dMessage xloc "execute string"
+      dMessage $loc "execute string"
       run $ makeTasksForInput xunits instr
       -- (3) run all 'postExecScript' actions as a task, wait for all tasks to complete.
       when guarded $ do
-        dMessage xloc "post-string-execution"
+        dMessage $loc "post-string-execution"
         run $ makeTasksForGuardScript postExecScript xunits
       -- (4) clear the Query-Time variables that were set during this past run in each ExecUnit.
       mapM_ clearAllQTimeVars xunits
@@ -1588,7 +1588,7 @@ execInputString guarded instr select = dStack xloc "execInputString" $ ask >>= \
 -- are not necessary. Therefore you may enter a semi-colon separated list of commands and all will
 -- be executed.
 evalScriptString :: ExecUnit -> String -> Run ()
-evalScriptString xunit instr = dStack xloc "evalScriptString" $
+evalScriptString xunit instr = dStack $loc "evalScriptString" $
   void $ flip runExecScript xunit $ nestedExecStack T.Void $ execScriptBlock $
   case fst (runParser parseInteractiveScript instr) of
     Backtrack     -> error "cannot parse expression"
@@ -1600,16 +1600,16 @@ evalScriptString xunit instr = dStack xloc "evalScriptString" $
 -- 'Job'; this is what 'newJob' does with each 'Task' passed to it, it calls 'execTask' within
 -- 'Control.Concurrent.forkIO'.
 execTask :: Job -> Task -> Run ()
-execTask job task = dStack xloc "execTask" $ ask >>= \runtime -> do
+execTask job task = dStack $loc "execTask" $ ask >>= \runtime -> do
   let run patn mtch action xunit fn = do
-        result <- dStack xloc "execTask/runExecScript" $ lift $ try $ runIO runtime $
+        result <- dStack $loc "execTask/runExecScript" $ lift $ try $ runIO runtime $
           runExecScript (runExecutable T.Void action) $
             xunit{currentTask = task, currentExecJob = Just job}
-        let putErr err = dModifyMVar_ xloc (uncaughtErrors xunit) (return . (++[err]))
+        let putErr err = dModifyMVar_ $loc (uncaughtErrors xunit) (return . (++[err]))
         case seq result result of
-          Right (CEError       err) -> dPutStrErr xloc (showObj 0 err) >> putErr err
+          Right (CEError       err) -> dPutStrErr $loc (showObj 0 err) >> putErr err
           Left  (SomeException err) -> do
-            dPutStrErr xloc (show err)
+            dPutStrErr $loc (show err)
             putErr (OString (ustr (show err)))
           _                         -> return ()
   case task of
@@ -1625,10 +1625,10 @@ execTask job task = dStack xloc "execTask" $ ask >>= \runtime -> do
 -- 'sourceFullPath' in the 'programs' table. Returns the logical "module" name of the script along
 -- with an initialized 'Dao.Object.ExecUnit'.
 registerSourceCode :: Bool -> UPath -> SourceCode -> Run (ContErr Program)
-registerSourceCode public upath script = ask >>= \runtime -> do
+registerSourceCode public upath script = dStack $loc "registerSourceCode" $ ask >>= \runtime -> do
   let modName  = unComment (sourceModuleName script)
       pathTab  = pathIndex runtime
-  alreadyLoaded <- fmap (M.lookup upath) (dReadMVar xloc pathTab)
+  alreadyLoaded <- fmap (M.lookup upath) (dReadMVar $loc pathTab)
   -- Check to make sure the logical name in the loaded program does not conflict with that
   -- of another loaded previously.
   case alreadyLoaded of
@@ -1643,8 +1643,8 @@ registerSourceCode public upath script = ask >>= \runtime -> do
       xunit <- initSourceCode script >>= lift . evaluate
       let (Just prog) = currentProgram xunit
           file = ProgramFile prog
-      xunitMVar <- seq file $ dNewMVar xloc ("ExecUnit("++show upath++")") xunit
-      dModifyMVar_ xloc pathTab $ return . M.insert upath file
+      xunitMVar <- seq file $ dNewMVar $loc ("ExecUnit("++show upath++")") xunit
+      dModifyMVar_ $loc pathTab $ return . M.insert upath file
       return (CENext prog)
 
 -- | You should not normally need to call evaluate this function, you should use
@@ -1696,7 +1696,7 @@ scriptLoadHandle public upath h = do
 -- 'asPublic' to force the type to be a 'PublicType'd file.
 loadFilePath :: Bool -> FilePath -> Run (ContErr File)
 loadFilePath public path = dontLoadFileTwice (ustr path) $ \upath -> do
-  dPutStrErr xloc ("Lookup file path "++show upath)
+  dPutStrErr $loc ("Lookup file path "++show upath)
   h    <- lift (openFile path ReadMode)
   zero <- lift (hGetPosn h)
   enc  <- lift (hGetEncoding h)

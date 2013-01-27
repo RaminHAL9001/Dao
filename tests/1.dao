@@ -66,7 +66,7 @@ rule "test ref" {
 
 rule "file $*." {
 	try {
-		with "/home/ramin/main/dao/test1.idea" {
+		with "/home/ramin/main/dao/tests/1.idea" {
 			const.ref = $1;
 			print("I understand the fact that "+ join($1) +".");
 		}
@@ -79,9 +79,9 @@ TAKEDOWN {
 }
 
 rule "list files" { print(listDBs()); }
-rule "load test file" { readDB("/home/ramin/main/dao/test1.idea"); print("Loaded database."); }
-rule "save test file" { writeDB("/home/ramin/main/dao/test1.idea"); print("Saved database."); }
-rule "close test file" { closeDB("/home/ramin/main/dao/test1.idea"); print("Closed database."); }
+rule "load test file" { readDB("/home/ramin/main/dao/tests/1.idea"); print("Loaded database."); }
+rule "save test file" { writeDB("/home/ramin/main/dao/tests/1.idea"); print("Saved database."); }
+rule "close test file" { closeDB("/home/ramin/main/dao/tests/1.idea"); print("Closed database."); }
 
 rule "recall again" {
 	print("I recall again.");
@@ -90,7 +90,7 @@ rule "recall again" {
 rule "contents of file" {
 	print("Recall file...");
 	try {
-		with "/home/ramin/main/dao/test1.idea" {
+		with "/home/ramin/main/dao/tests/1.idea" {
 			print("I recall the fact that "+ join(const.ref) +".");
 		}
 	}

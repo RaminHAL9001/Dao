@@ -18,6 +18,8 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
+-- {-# LANGUAGE TemplateHaskell #-}
+
 module Dao.Resource where
 
 import           Dao.Debug.OFF

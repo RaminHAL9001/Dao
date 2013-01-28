@@ -19,7 +19,7 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
-{-# LANGUAGE TemplateHaskell #-}
+-- {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleInstances #-}
 
@@ -27,7 +27,7 @@
 
 module Dao.Files where
 
-import           Dao.Debug.ON
+import           Dao.Debug.OFF
 import           Dao.Object
 import           Dao.Resource
 import qualified Dao.Tree    as T
@@ -52,8 +52,6 @@ import qualified Data.ByteString.Lazy as B
 
 import           System.IO
 import           System.Directory
-
-import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -159,12 +157,12 @@ findIndexedFile upath = do
 -- 'Dao.Object.ExecUnit'. Returns 'Data.Maybe.Nothing' on success. If there is a problem, it returns
 -- the name of the module that could not be found.
 checkImports :: File -> Run [(Name, [Name])]
-checkImports file = dStack $loc "checkImports" $ ask >>= \runtime -> case file of
+checkImports file = dStack xloc "checkImports[1]" $ ask >>= \runtime -> case file of
   ProgramFile prog -> do
     let xunit   = programExecUnit prog
         modName = programModuleName prog
     pathTab <- dReadMVar xloc (pathIndex runtime)
-    dStack xloc "checkImports" $ case currentProgram xunit of
+    dStack xloc "checkImports[2]" $ case currentProgram xunit of
       Nothing   -> return [(modName, [])]
       Just prog -> case programImports prog of
         []      -> return []

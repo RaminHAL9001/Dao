@@ -20,7 +20,7 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
-{-# LANGUAGE TemplateHaskell #-}
+-- {-# LANGUAGE TemplateHaskell #-}
 
 -- | This module is pretty much where everything begins. It is the smallest interface that can be
 -- imported by any Haskell program making use of the Dao System. You can use the functions in this
@@ -38,7 +38,7 @@ module Dao
   , module Dao
   ) where
 
-import           Dao.Debug.ON
+import           Dao.Debug.OFF
 
 import           Dao.String
 import           Dao.Pattern

@@ -92,6 +92,7 @@ data DEvent
   | DStderr         MLoc ThreadId           String
   | DFork           MLoc ThreadId ThreadId  String
   | DCatch          MLoc ThreadId           SomeException
+  | DUncaught       MLoc ThreadId           SomeException
   | DThrowTo        MLoc ThreadId ThreadId  SomeException
   | DThrow          MLoc ThreadId           SomeException
   | DThreadDelay    MLoc ThreadId Int

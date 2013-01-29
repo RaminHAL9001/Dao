@@ -777,39 +777,54 @@ builtin_print = DaoFunc $ \ox_ -> do
   lift (lift (mapM_ (putStrLn . uchars) ox))
   return (OList (map OString ox))
 
-execInputString_ = error "TODO: somehow make it so Dao.Files does not depend on Dao.Evaluator"
-
-recursiveExecQuery :: [UStr] -> [UStr] -> ExecScript ()
-recursiveExecQuery selectFiles execStrings = case selectFiles of
-  [] -> ceError $ OList $
-    [OString (ustr "cannot execute \"do\" without specific modules, no default module defined")]
-  selectFiles -> do
-    xunit <- ask :: ExecScript ExecUnit
-    execScriptRun $ do
-      -- dModifyMVar_ xloc (recursiveInput xunit) (return . (++ox)) -- is this necessary?
-      files <- selectModules (Just xunit) selectFiles
-      let job = currentExecJob xunit
-      case job of
-        Nothing  -> forM_ execStrings (flip (execInputString_ False) files)
-        Just job ->
-          forM execStrings (makeTasksForInput (map programExecUnit (concatMap isProgramFile files))) >>=
-            startTasksForJob job . concat
+sendStringsToPrograms :: Bool -> [Name] -> [UStr] -> ExecScript ()
+sendStringsToPrograms permissive names strings = do
+  xunit <- ask
+  index <- execScriptRun (dReadMVar xloc (pathIndex (parentRuntime xunit)))
+  let lookup notFound nonPrograms ok namex = case namex of
+        []         -> (notFound, nonPrograms, ok)
+        name:namex -> case M.lookup name index of
+          Nothing                 -> lookup (notFound++[name]) nonPrograms ok namex
+          Just (ProgramFile prog) -> lookup notFound  nonPrograms (ok++[(name, prog)]) namex
+          Just  _                 -> lookup notFound (nonPrograms++[name]) ok namex
+      (notFound, nonPrograms, found) = lookup [] [] [] names
+      errMsg = OList $
+          if null notFound
+            then []
+            else [OString (ustr "could not find program files:"), OList (map OString notFound)]
+       ++ if null nonPrograms
+            then []
+            else [OString (ustr "not program files:"), OList (map OString nonPrograms)]
+       ++ if null found
+            then [OString (ustr "no files found"), OList (map OString names)]
+            else []
+       ++ [ OString (ustr "cannot execute strings"), OList (map OString strings) ]
+  if null found || not permissive && not (null notFound && null nonPrograms)
+    then  ceError errMsg
+    else  forM_ found $ \ (name, prog) -> execScriptRun $
+            dModifyMVar_ xloc (recursiveInput (programExecUnit prog)) (return . (++strings))
 
 builtin_do :: DaoFunc
 builtin_do = DaoFunc $ \ox -> do
   xunit <- ask
   let currentProg = maybeToList (fmap programModuleName (currentProgram xunit))
+      isProgRef r = case r of
+        ORef (ProgramRef a _) -> return a
+        _ -> ceError $ OList $
+          [ OString $ ustr $
+              "first argument to \"do\" function must be all strings, or all file references"
+          , r
+          ]
   (selectFiles, execStrings) <- case ox of
     [OString file , OList strs] -> return ([file], strs )
-    [OList   files, OList strs] -> requireAllStringArgs files >>= \files -> return (files , strs )
+    [OList   files, OList strs] -> mapM isProgRef files >>= \files -> return (files , strs )
     [OString file , str       ] -> return ([file], [str])
-    [OList   files, str       ] -> requireAllStringArgs files >>= \files -> return (files , [str])
+    [OList   files, str       ] -> mapM isProgRef files >>= \files -> return (files , [str])
     [OString str ] -> return (currentProg, [OString str])
     [OList   strs] -> return (currentProg, strs)
     _              -> ceError $ OList $
       OString (ustr "require query strings as parameters to \"do\" function, but received") : ox
   execStrings <- requireAllStringArgs execStrings
-  recursiveExecQuery selectFiles execStrings
   return (OList (map OString execStrings))
 
 builtin_join :: DaoFunc

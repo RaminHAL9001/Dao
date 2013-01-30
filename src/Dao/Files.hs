@@ -156,25 +156,27 @@ findIndexedFile upath = do
 -- function preforms that check, and also fills-in the 'Dao.Object.importsTable' of the
 -- 'Dao.Object.ExecUnit'. Returns 'Data.Maybe.Nothing' on success. If there is a problem, it returns
 -- the name of the module that could not be found.
-checkImports :: File -> Run [(Name, [Name])]
+checkImports :: File -> Run [UPath]
 checkImports file = dStack xloc "checkImports[1]" $ ask >>= \runtime -> case file of
   ProgramFile prog -> do
     let xunit   = programExecUnit prog
-        modName = programModuleName prog
     pathTab <- dReadMVar xloc (pathIndex runtime)
     dStack xloc "checkImports[2]" $ case currentProgram xunit of
-      Nothing   -> return [(modName, [])]
+      Nothing   -> return []
       Just prog -> case programImports prog of
         []      -> return []
         imports -> do
           let xunits = map (\mod -> (mod, maybeToList (M.lookup mod pathTab))) imports
               (badImports, goodImports) = partition (null . snd) xunits
-          return (if null badImports then [] else [(modName, map fst badImports)])
+          return (if null badImports then [] else map fst badImports)
   DocumentFile   _ -> return []
   SourceCodeFile _ -> return []
 
 -- | Like 'checkImports' but checks every file that has been loaded by the Runtime.
-checkAllImports :: Run [(Name, [Name])]
-checkAllImports = ask >>= \runtime -> fmap (filter (not . null . snd) . concat) $
-  dReadMVar xloc (pathIndex runtime) >>= mapM checkImports . M.elems
+checkAllImports :: Run [(UPath, [UPath])]
+checkAllImports = ask >>= \runtime -> fmap (filter (not . null . snd) . concat) $ do
+  pathTab  <- dReadMVar xloc (pathIndex runtime)
+  forM (M.assocs pathTab) $ \ (modName, file) -> do
+    notFound <- checkImports file
+    return (if null notFound then [] else [(modName, notFound)])
 

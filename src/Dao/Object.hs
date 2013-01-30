@@ -779,34 +779,6 @@ data SourceCode
     }
   deriving (Eq, Ord, Show, Typeable)
 
--- | This is the executable form of the 'SourceCode', which cannot be serialized, but is structured
--- in such a way as to make execution more efficient. It caches computed 'ScriptExpr'ns as some type
--- of monadic computation 'm'.
-data Program
-  = Program
-    { programModuleName :: Name
-    , programImports    :: [UStr]
-    , constructScript   :: [[Com ScriptExpr]]
-    , destructScript    :: [[Com ScriptExpr]]
-    , requiredBuiltins  :: [Name]
-    , programAttributes :: M.Map Name Name
-    , preExecScript     :: [Executable]
-      -- ^ the "guard scripts" that are executed before every string execution.
-    , postExecScript    :: [Executable]
-      -- ^ the "guard scripts" that are executed after every string execution.
-    , programTokenizer  :: Tokenizer
-      -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
-      -- module associated with this runtime.
-    , programComparator :: CompareToken
-      -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
-    , ruleSet           :: DMVar (PatternTree [Executable])
-      -- ^ the rules of this program
-    , programExecUnit   :: ExecUnit
-      -- ^ the 'ExecUnit' used to run this program. The 'ExecUnit' will have a reference to this
-      -- 'Program' object as well.
-    , globalData        :: TreeResource
-    }
-
 ----------------------------------------------------------------------------------------------------
 
 -- | The magic number is the first 8 bytes to every 'Document'. It is the ASCII value of the string
@@ -882,6 +854,35 @@ objectError o msg = ceError (OPair (OString (ustr msg), o))
 -- Functions of this type are called by 'evalObject' to evaluate expressions written in the Dao
 -- language.
 newtype DaoFunc = DaoFunc { daoForeignCall :: [Object] -> ExecScript Object }
+
+-- | This is the executable form of the 'SourceCode', which cannot be serialized, but is structured
+-- in such a way as to make execution more efficient. It caches computed 'ScriptExpr'ns as some type
+-- of monadic computation 'm'.
+data Program
+  = Program
+    { programModuleName :: UPath
+    , controlThread     :: ThreadId
+    , programImports    :: [UStr]
+    , constructScript   :: [[Com ScriptExpr]]
+    , destructScript    :: [[Com ScriptExpr]]
+    , requiredBuiltins  :: [Name]
+    , programAttributes :: M.Map Name Name
+    , preExecScript     :: [Executable]
+      -- ^ the "guard scripts" that are executed before every string execution.
+    , postExecScript    :: [Executable]
+      -- ^ the "guard scripts" that are executed after every string execution.
+    , programTokenizer  :: Tokenizer
+      -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
+      -- module associated with this runtime.
+    , programComparator :: CompareToken
+      -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
+    , ruleSet           :: DMVar (PatternTree [Executable])
+      -- ^ the rules of this program
+    , programExecUnit   :: ExecUnit
+      -- ^ the 'ExecUnit' used to run this program. The 'ExecUnit' will have a reference to this
+      -- 'Program' object as well.
+    , globalData        :: TreeResource
+    }
 
 -- | This is the state that is used to run the evaluation algorithm. Every Dao program file that has
 -- been loaded will have a single 'ExecUnit' assigned to it. Parameters that are stored in

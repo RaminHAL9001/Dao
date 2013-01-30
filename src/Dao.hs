@@ -133,11 +133,7 @@ initRuntimeFiles debug fx runtime =
 -- 'Data.Maybe.Nothing'). If the input function returns 'Data.Maybe.Nothing', then the interactive
 -- session is ended gracefully. The loop that waits on the input function runs in an exception
 -- handler that catches all exceptions and runs every @TAKEDOWN@ script in every loaded Dao module.
-inputQueryLoop
-  :: DebugHandle
-  -> Runtime
-  -> (DMVar Runtime -> IO (Maybe String))
-  -> IO ()
+inputQueryLoop :: DebugHandle -> Runtime -> (DMVar Runtime -> IO (Maybe String)) -> IO ()
 inputQueryLoop debug runtime getNextInput = do
   let ifException (SomeException e) = do
         hSetBuffering stderr LineBuffering
@@ -146,7 +142,7 @@ inputQueryLoop debug runtime getNextInput = do
   void $ debugIO xloc "inputQueryLoop" debug runtime $ do
     runtimeMVar <- dNewMVar xloc "Runtime" runtime
     intrcvGRsrc <- newTreeResource "ExecUnit.globalData{-for interactive evaluation-}" T.Void
-    intrcvXUnit <- initExecUnit runtime intrcvGRsrc
+    intrcvXUnit <- initExecUnit runtime nil intrcvGRsrc -- interactive exec unit is labeled by the 'nil' string
     let runString input = selectModules Nothing [] >>= execInputString True input
         iterateInput = do
           input <- lift (getNextInput runtimeMVar)
@@ -165,6 +161,6 @@ inputQueryLoop debug runtime getNextInput = do
           when continue (dYield >> catchLoop)
     catchLoop -- here we start the 'catchLoop'.
     -- Now, takedown all loaded modules.
-    dReadMVar xloc (pathIndex runtime) >>= mapM_ (setupTakedown destructScript) .
-      (map programExecUnit . concatMap isProgramFile . M.elems)
+    fileTab <- dReadMVar xloc (pathIndex runtime)
+    mapM_ (setupTakedown destructScript) (concatMap isProgramFile (M.elems fileTab))
 

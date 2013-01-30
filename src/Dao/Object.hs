@@ -139,8 +139,8 @@ data Reference
   | StaticRef  { localRef  :: Name } -- ^ reference to a permanent static variable (stored per rule/function).
   | QTimeRef   { globalRef :: [Name] } -- ^ reference to a query-time static variable.
   | GlobalRef  { globalRef :: [Name] } -- ^ reference to in-memory data stored per 'Dao.Types.ExecUnit'.
-  | ProgramRef { progID    :: Name , subRef    :: Reference } -- ^ reference to a portion of a 'Dao.Types.Program'.
-  | FileRef    { filePath  :: UPath, globalRef :: [Name] } -- ^ reference to a variable in a 'Dao.Types.File'
+  | ProgramRef { progID    :: Name , subRef    :: Reference } -- ^ reference to a portion of a 'ExecUnit'.
+  | FileRef    { filePath  :: UPath, globalRef :: [Name] } -- ^ reference to a variable in a 'File'
   | Subscript  { dereference :: Reference, subscriptValue :: Object } -- ^ reference to value at a subscripted slot in a container object
   | MetaRef    { dereference :: Reference } -- ^ wraps up a 'Reference' as a value that cannot be used as a reference.
   deriving (Eq, Ord, Show, Typeable)
@@ -766,7 +766,7 @@ type DocResource   = Resource (StoredFile T.Tree Name) [Name]
 
 ----------------------------------------------------------------------------------------------------
 
--- | A 'SourceCode' is the structure loaded from source code. A 'Program' object is constructed from
+-- | A 'SourceCode' is the structure loaded from source code. An 'ExecUnit' object is constructed from
 -- 'SourceCode'.
 data SourceCode
   = SourceCode
@@ -855,35 +855,6 @@ objectError o msg = ceError (OPair (OString (ustr msg), o))
 -- language.
 newtype DaoFunc = DaoFunc { daoForeignCall :: [Object] -> ExecScript Object }
 
--- | This is the executable form of the 'SourceCode', which cannot be serialized, but is structured
--- in such a way as to make execution more efficient. It caches computed 'ScriptExpr'ns as some type
--- of monadic computation 'm'.
-data Program
-  = Program
-    { programModuleName :: UPath
-    , controlThread     :: ThreadId
-    , programImports    :: [UStr]
-    , constructScript   :: [[Com ScriptExpr]]
-    , destructScript    :: [[Com ScriptExpr]]
-    , requiredBuiltins  :: [Name]
-    , programAttributes :: M.Map Name Name
-    , preExecScript     :: [Executable]
-      -- ^ the "guard scripts" that are executed before every string execution.
-    , postExecScript    :: [Executable]
-      -- ^ the "guard scripts" that are executed after every string execution.
-    , programTokenizer  :: Tokenizer
-      -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
-      -- module associated with this runtime.
-    , programComparator :: CompareToken
-      -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
-    , ruleSet           :: DMVar (PatternTree [Executable])
-      -- ^ the rules of this program
-    , programExecUnit   :: ExecUnit
-      -- ^ the 'ExecUnit' used to run this program. The 'ExecUnit' will have a reference to this
-      -- 'Program' object as well.
-    , globalData        :: TreeResource
-    }
-
 -- | This is the state that is used to run the evaluation algorithm. Every Dao program file that has
 -- been loaded will have a single 'ExecUnit' assigned to it. Parameters that are stored in
 -- 'Dao.Debug.DMVar's or 'Dao.Type.Resource's will be shared across all rules which are executed in
@@ -901,9 +872,6 @@ data ExecUnit
       -- 'ExecUnit' state.
     , currentDocument    :: Maybe File
       -- ^ the current document is set by the @with@ statement during execution of a Dao script.
-    , currentProgram     :: Maybe Program
-      -- ^ the program that is running in this execution unit, this may not be defined in the case
-      -- that strings are being executed in an interactive session.
     , currentTask        :: Task
       -- ^ the 'Task' that is currently running. This item includes the 'Executable' and (if
       -- applicable) the current 'Pattern' and 'Match'
@@ -918,11 +886,11 @@ data ExecUnit
     , builtinFuncs       :: M.Map Name DaoFunc
       -- ^ a pointer to the builtin function table provided by the runtime.
     , toplevelFuncs      :: DMVar (M.Map Name [Subroutine])
-    , execHeap           :: TreeResource
-      -- ^ referes to the same resource as 'Dao.Types.globalData' in 'Dao.Types.Program'
     , execStack          :: DMVar (Stack Name Object)
       -- ^ stack of local variables used during evaluation
     , queryTimeHeap      :: TreeResource
+      -- ^ the rules of this program
+    , globalData        :: TreeResource
       -- ^ global variables cleared after every string execution
     , referenceCache     :: DMVar (M.Map Reference Object)
       -- ^ Caches lookups. A single 'Dao.Object.ObjectExpr' is not evaluated atomically, it may
@@ -932,6 +900,24 @@ data ExecUnit
     , execOpenFiles      :: DMVar (M.Map UPath File)
     , recursiveInput     :: DMVar [UStr]
     , uncaughtErrors     :: DMVar [Object]
+    ---- used to be elements of Program ----
+    , programModuleName :: UPath
+    , controlThread     :: ThreadId
+    , programImports    :: [UPath]
+    , constructScript   :: [[Com ScriptExpr]]
+    , destructScript    :: [[Com ScriptExpr]]
+    , requiredBuiltins  :: [Name]
+    , programAttributes :: M.Map Name Name
+    , preExecScript     :: [Executable]
+      -- ^ the "guard scripts" that are executed before every string execution.
+    , postExecScript    :: [Executable]
+      -- ^ the "guard scripts" that are executed after every string execution.
+    , programTokenizer  :: Tokenizer
+      -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
+      -- module associated with this runtime.
+    , programComparator :: CompareToken
+      -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
+    , ruleSet           :: DMVar (PatternTree [Executable])
     }
 
 instance Bugged ExecUnit where
@@ -956,30 +942,13 @@ data FileAccessRules
     -- specific to certain files will override these rules.
 
 data File
-  = ProgramFile     Program
+  = ProgramFile     ExecUnit
   | SourceCodeFile  SourceCode
   | DocumentFile    DocResource
 
--- data File
--- = ProgramFile -- ^ a program loaded and executable
---   { publicFile  :: Bool
---   , filePath    :: Name
---   , logicalName :: Name
---   , execUnit    :: DMVar ExecUnit
---   }
--- | ProgramEdit -- ^ a program executable and editable.
---   { filePath   :: Name
---   , sourceCode :: DMVar SourceCode
---   , execUnit   :: DMVar ExecUnit
---   }
--- | DocumentFile -- ^ a file containing a 'Dao.Tree.Tree' of serialized 'Dao.Object.Object's.
---   { filePath :: Name
---   , fileData :: DocResource
---   }
-
 -- | Used to select programs from the 'pathIndex' that are currently available for recursive
 -- execution.
-isProgramFile :: File -> [Program]
+isProgramFile :: File -> [ExecUnit]
 isProgramFile file = case file of
   ProgramFile p -> [p]
   _             -> []
@@ -1078,7 +1047,7 @@ data Job
     , taskExecTable  :: DMVar (M.Map ThreadId Task)
       -- ^ all running 'Task's associated with this job are stored in this table. It contains a list
       -- of 'Task's, each task is mapped to a 'Control.Concurrent.ThreadId', and each group of
-      -- threads is mapped to the 'Program' from where the executing tasks originated.
+      -- threads is mapped to the 'ExecUnit' from where the executing tasks originated.
     , taskFailures   :: DMVar (M.Map Name [(Task, SomeException)])
       -- ^ if a task dies due to an exception raised, then the exception is caught and mapped to the
       -- task. This is different from an error thrown from a script, these are uncaught Haskell

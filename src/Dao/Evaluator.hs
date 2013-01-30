@@ -70,8 +70,8 @@ import           System.IO
 
 ----------------------------------------------------------------------------------------------------
 
-initExecUnit :: Runtime -> TreeResource -> Run ExecUnit
-initExecUnit runtime initGlobalData = do
+initExecUnit :: Runtime -> UPath -> TreeResource -> Run ExecUnit
+initExecUnit runtime modName initGlobalData = do
   unctErrs <- dNewMVar xloc "ExecUnit.uncaughtErrors" []
   recurInp <- dNewMVar xloc "ExecUnit.recursiveInput" []
   qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
@@ -79,25 +79,37 @@ initExecUnit runtime initGlobalData = do
   toplev   <- dNewMVar xloc "ExecUnit.toplevelFuncs" M.empty
   files    <- dNewMVar xloc "ExecUnit.execOpenFiles" M.empty
   cache    <- dNewMVar xloc "ExecUnit.referenceCache" M.empty
+  rules    <- dNewMVar xloc "ExecUnit.ruleSet" T.Void
   return $
     ExecUnit
     { parentRuntime      = runtime
     , currentExecJob     = Nothing
     , currentDocument    = Nothing
-    , currentProgram     = Nothing
     , currentTask        = error "ExecUnit.currentTask is undefined"
     , currentBranch      = []
     , importsTable       = []
     , execAccessRules    = RestrictFiles (Pattern{getPatUnits = [Wildcard], getPatternLength = 1})
     , builtinFuncs       = initBuiltinFuncs
     , toplevelFuncs      = toplev
-    , execHeap           = initGlobalData
     , queryTimeHeap      = qheap
     , referenceCache     = cache
     , execStack          = xstack
     , execOpenFiles      = files
     , recursiveInput     = recurInp
     , uncaughtErrors     = unctErrs
+      ---- items that were in the Program data structure ----
+    , programModuleName = modName
+    , programImports    = []
+    , constructScript   = []
+    , destructScript    = []
+    , requiredBuiltins  = []
+    , programAttributes = M.empty
+    , preExecScript     = []
+    , programTokenizer  = return . tokens . uchars
+    , programComparator = (==)
+    , postExecScript    = []
+    , ruleSet           = rules
+    , globalData        = initGlobalData
     }
 
 setupExecutable :: Bugged r => Com [Com ScriptExpr] -> ReaderT r IO Executable
@@ -215,14 +227,14 @@ evalIntRef i = do
           , " in the current pattern match context"
           ]
 
--- | Lookup an object in the 'execHeap' for this 'ExecUnit'.
+-- | Lookup an object in the 'globalData' for this 'ExecUnit'.
 execHeapLookup :: [Name] -> ExecScript (Maybe Object)
-execHeapLookup name = ask >>= \xunit -> inEvalDoReadResource (execHeap xunit) name
+execHeapLookup name = ask >>= \xunit -> inEvalDoReadResource (globalData xunit) name
 
--- | Lookup an object in the 'execHeap' for this 'ExecUnit'.
+-- | Lookup an object in the 'globalData' for this 'ExecUnit'.
 execHeapUpdate :: [Name] -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript (Maybe Object)
 execHeapUpdate name runUpdate = ask >>= \xunit ->
-  inEvalDoUpdateResource (execHeap xunit) name runUpdate
+  inEvalDoUpdateResource (globalData xunit) name runUpdate
 
 execHeapDefine :: [Name] -> Object -> ExecScript (Maybe Object)
 execHeapDefine name obj = execHeapUpdate name (return . const (Just obj))
@@ -294,7 +306,7 @@ staticVarDefine nm obj = staticVarUpdate nm (return . const (Just obj))
 staticVarDelete :: Name -> ExecScript (Maybe Object)
 staticVarDelete nm = staticVarUpdate nm (return . const Nothing)
 
--- | Lookup an object, first looking in the current document, then in the 'execHeap'.
+-- | Lookup an object, first looking in the current document, then in the 'globalData'.
 globalVarLookup :: [Name] -> ExecScript (Maybe Object)
 globalVarLookup ref = ask >>= \xunit ->
   (if isJust (currentDocument xunit) then curDocVarLookup else execHeapLookup) ref
@@ -305,7 +317,7 @@ globalVarUpdate ref runUpdate = ask >>= \xunit ->
 
 -- | To define a global variable, first the 'currentDocument' is checked. If it is set, the variable
 -- is assigned to the document at the reference location prepending 'currentBranch' reference.
--- Otherwise, the variable is assigned to the 'execHeap'.
+-- Otherwise, the variable is assigned to the 'globalData'.
 globalVarDefine :: [Name] -> Object -> ExecScript (Maybe Object)
 globalVarDefine name obj = globalVarUpdate name (return . const (Just obj))
 
@@ -785,7 +797,7 @@ sendStringsToPrograms permissive names strings = do
         []         -> (notFound, nonPrograms, ok)
         name:namex -> case M.lookup name index of
           Nothing                 -> lookup (notFound++[name]) nonPrograms ok namex
-          Just (ProgramFile prog) -> lookup notFound  nonPrograms (ok++[(name, prog)]) namex
+          Just (ProgramFile xunit) -> lookup notFound  nonPrograms (ok++[(name, xunit)]) namex
           Just  _                 -> lookup notFound (nonPrograms++[name]) ok namex
       (notFound, nonPrograms, found) = lookup [] [] [] names
       errMsg = OList $
@@ -801,13 +813,13 @@ sendStringsToPrograms permissive names strings = do
        ++ [ OString (ustr "cannot execute strings"), OList (map OString strings) ]
   if null found || not permissive && not (null notFound && null nonPrograms)
     then  ceError errMsg
-    else  forM_ found $ \ (name, prog) -> execScriptRun $
-            dModifyMVar_ xloc (recursiveInput (programExecUnit prog)) (return . (++strings))
+    else  forM_ found $ \ (name, xunit) -> execScriptRun $
+            dModifyMVar_ xloc (recursiveInput xunit) (return . (++strings))
 
 builtin_do :: DaoFunc
 builtin_do = DaoFunc $ \ox -> do
   xunit <- ask
-  let currentProg = maybeToList (fmap programModuleName (currentProgram xunit))
+  let currentProg = [programModuleName xunit]
       isProgRef r = case r of
         ORef (ProgramRef a _) -> return a
         _ -> ceError $ OList $
@@ -906,8 +918,8 @@ lookupFunction msg op = do
   xunit <- ask
   let toplevs xunit = execRun (fmap (M.lookup op) (dReadMVar xloc (toplevelFuncs xunit)))
       lkup p = case p of
-        ProgramFile p -> toplevs (programExecUnit p)
-        _             -> return Nothing
+        ProgramFile xunit -> toplevs xunit
+        _                 -> return Nothing
   funcs <- fmap (concatMap maybeToList) (sequence (toplevs xunit : map lkup (importsTable xunit)))
   if null funcs
     then  objectError (OString op) $ "undefined "++msg++" ("++uchars op++")"
@@ -1184,8 +1196,7 @@ verifyImport nm a = return a -- TODO: the rest of this function.
 -- representation.
 data IntermediateProgram
   = IntermediateProgram
-    { inmpg_programModuleName :: Name
-    , inmpg_programImports    :: [UStr]
+    { inmpg_programImports    :: [UStr]
     , inmpg_constructScript   :: [Com [Com ScriptExpr]]
     , inmpg_destructScript    :: [Com [Com ScriptExpr]]
     , inmpg_requiredBuiltins  :: [Name]
@@ -1200,8 +1211,7 @@ data IntermediateProgram
 
 initIntermediateProgram =
   IntermediateProgram
-  { inmpg_programModuleName = nil
-  , inmpg_programImports    = []
+  { inmpg_programImports    = []
   , inmpg_constructScript   = []
   , inmpg_destructScript    = []
   , inmpg_requiredBuiltins  = []
@@ -1214,17 +1224,16 @@ initIntermediateProgram =
   , inmpg_globalData        = T.Void
   }
 
-initProgram :: IntermediateProgram -> TreeResource -> ExecScript Program
-initProgram inmpg initGlobalData = do
-  rules <- execScriptRun $
-    T.mapLeavesM (mapM setupExecutable) (inmpg_ruleSet inmpg) >>= dNewMVar xloc "Program.ruleSet"
+initProgram :: IntermediateProgram -> ExecScript ExecUnit
+initProgram inmpg = do
+  xunit <- ask
+  let rules = ruleSet xunit
   pre   <- execRun (mapM setupExecutable (inmpg_preExecScript  inmpg))
   post  <- execRun (mapM setupExecutable (inmpg_postExecScript inmpg))
-  inEvalDoModifyUnlocked_ initGlobalData (return . const (inmpg_globalData inmpg))
+  inEvalDoModifyUnlocked_ (globalData xunit) (return . const (inmpg_globalData inmpg))
   return $
-    Program
-    { programModuleName = inmpg_programModuleName inmpg
-    , programImports    = inmpg_programImports    inmpg
+    xunit
+    { programImports    = inmpg_programImports    inmpg
     , constructScript   = map unComment (inmpg_constructScript inmpg)
     , destructScript    = map unComment (inmpg_destructScript  inmpg)
     , requiredBuiltins  = inmpg_requiredBuiltins  inmpg
@@ -1234,8 +1243,6 @@ initProgram inmpg initGlobalData = do
     , programComparator = (==)
     , postExecScript    = post
     , ruleSet           = rules
-    , globalData        = initGlobalData
-    , programExecUnit   = error "Program.programExecUnit not defined before use"
     }
 
 -- | To parse a program, use 'Dao.Object.Parsers.source' and pass the resulting
@@ -1243,12 +1250,18 @@ initProgram inmpg initGlobalData = do
 -- to evaluate 'Dao.ObjectObject's defined in the top-level of the source code, which requires
 -- 'evalObject'.
 -- Attributes in Dao scripts are of the form:
---   a.b.C.like.name  dot.separated.value;
+--     a.b.C.like.name  dot.separated.value;
 -- The three built-in attributes are "requires", "string.tokenizer" and "string.compare". The
 -- allowed attrubites can be extended by passing a call-back predicate which modifies the given
 -- program, or returns Nothing to reject the program. If you are not sure what to pass, just pass
 -- @(\ _ _ _ -> return Nothing)@ which always rejects the program. This predicate will only be
 -- called if the attribute is not allowed by the minimal Dao system.
+--     This is a 'Control.Monad.Reader.ReaderT' monad with an 'ExecUnit' state. This 'ExecUnit'
+-- state cannot be updated (otherwise it would be a 'Control.Monad.State.StateT') so this function
+-- evaluates to an 'Dao.Object.ExecUnit' that is the 'Control.Monad.Reader.ReaderT' state which has
+-- been updated by evaluating the intermediate program. The function which evaluated this function
+-- must then update the 'Dao.Object.ExecUnit' it used to evaluate this
+-- 'Control.Monad.Reader.ReaderT' monad.
 programFromSource
   :: TreeResource
       -- ^ the global variables initialized at the top level of the program file are stored here.
@@ -1257,12 +1270,9 @@ programFromSource
       -- False to throw a generic error, or throw your own CEError. Otherwise, return True.
   -> SourceCode
       -- ^ the script file to use
-  -> ExecScript Program
-programFromSource globalResource checkAttribute script = do
-  interm <- execStateT (mapM_ foldDirectives (unComment (directives script))) initIntermediateProgram
-  program <- initProgram interm globalResource
-  xunit <- ask
-  return (program{programExecUnit = xunit{currentProgram = Just program}})
+  -> ExecScript ExecUnit
+programFromSource globalResource checkAttribute script =
+  execStateT (mapM_ foldDirectives (unComment (directives script))) initIntermediateProgram >>= initProgram
   where
     err lst = lift $ ceError $ OList $ map OString $ (sourceFullPath script : lst)
     attrib req nm getRuntime putProg = do
@@ -1330,11 +1340,8 @@ programFromSource globalResource checkAttribute script = do
 -- interactive run loop 'interactiveRuntimeLoop' is also provided.
 
 -- | Get the name 'Dao.Evaluator. of 
-taskProgramName :: Task -> Maybe Name
-taskProgramName task = case task of
-  RuleTask  _ _ _ xunit -> fn xunit
-  GuardTask     _ xunit -> fn xunit
-  where { fn xunit = fmap programModuleName (currentProgram xunit) }
+taskProgramName :: Task -> Name
+taskProgramName = programModuleName . taskExecUnit
 
 -- | Creates a 'Job' which is an object that manages a number of tasks. Creating a job with 'newJob'
 -- automatically sets-up the threads to execute any number of tasks while handling exceptions. Once
@@ -1370,9 +1377,8 @@ newJob timed instr = dStack xloc "newJob" $ ask >>= \runtime -> do
           else taskWaitLoop -- loop if the taskTab is not empty.
       workerException task err@(SomeException e) =
         -- If a worker is flagged, it needs to place this flag into the 'failed' table.
-        dModifyMVar_ xloc failed $ \ftab -> case taskProgramName task of
-          Nothing   -> dPutStrErr xloc (show e) >> return ftab
-          Just name -> return (M.update (Just . (++[(task, err)])) name ftab)
+        dModifyMVar_ xloc failed $ \ftab ->
+          return (M.update (Just . (++[(task, err)])) (taskProgramName task) ftab)
       worker task = dStack xloc "Job/worker" $ do
         -- A worker runs the 'task', catching exceptions with 'workerException', and it always
         -- signals the manager loop when this thread completes by way of the 'taskEnd' DMVar, even
@@ -1467,8 +1473,7 @@ selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> ca
         request           = set "(selectModules: request files)" names
     imports <- case xunit of
       Nothing    -> return M.empty
-      Just xunit -> return $
-        set "(selectModules: imported files)" $ concat $ maybeToList $ fmap programImports $ currentProgram xunit
+      Just xunit -> return $ set "(selectModules: imported files)" $ programImports xunit
     ax <- return $ M.intersection pathTab request
     dMessage xloc ("selected modules:\n"++unlines (map show (M.keys ax)))
     return $ M.elems ax
@@ -1480,31 +1485,21 @@ selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> ca
 -- one of the patterns associated with the rule. *This is not a bug.* Each pattern may produce a
 -- different set of match results, it is up to the programmer of the rule to handle situations where
 -- the action may execute many times for a single input.
-matchStringToProgram :: UStr -> Program -> ExecUnit -> Run [(Pattern, Match, Executable)]
-matchStringToProgram instr program xunit = dStack xloc "matchStringToProgram" $ do
-  let eq = programComparator program
+matchStringToProgram :: UStr -> ExecUnit -> Run [(Pattern, Match, Executable)]
+matchStringToProgram instr xunit = dStack xloc "matchStringToProgram" $ do
+  let eq = programComparator xunit
       match tox = do
-        tree <- dReadMVar xloc (ruleSet program)
+        tree <- dReadMVar xloc (ruleSet xunit)
         fmap concat $ forM (matchTree eq tree tox) $ \ (patn, mtch, execs) ->
           return (concatMap (\exec -> [(patn, mtch, exec)]) execs)
---           forM cxrefx $ \cxref -> do
---             dModifyMVar_ xloc cxref $ \cx -> return $ case cx of
---               OnlyCache m -> cx
---               HasBoth _ m -> cx
---               OnlyAST ast ->
---                 HasBoth
---                 { sourceScript = ast
---                 , cachedScript = nestedExecStack M.empty (execScriptBlock ast)
---                 }
---             return (patn, mtch, cxref)
-  tox <- runExecScript (programTokenizer program instr) xunit
+  tox <- runExecScript (programTokenizer xunit instr) xunit
   case tox of
     CEError obj -> do
       dModifyMVar_ xloc (uncaughtErrors xunit) $ \objx -> return $ (objx++) $
         [ OList $
             [ obj, OString (ustr "error occured while tokenizing input string")
             , OString instr, OString (ustr "in the program")
-            , OString (programModuleName program)
+            , OString (programModuleName xunit)
             ]
         ]
       return []
@@ -1516,11 +1511,8 @@ matchStringToProgram instr program xunit = dStack xloc "matchStringToProgram" $ 
 -- against every rule in the 'Program' according to the 'Dao.Pattern.matchTree' equation.
 makeTasksForInput :: [ExecUnit] -> UStr -> Run [Task]
 makeTasksForInput xunits instr = dStack xloc "makeTasksForInput" $ fmap concat $ forM xunits $ \xunit -> do
-  let name    = currentProgram xunit >>= Just . programModuleName
-      program = flip fromMaybe (currentProgram xunit) $
-        error "execInputString: currentProgram of execution unit is not defined"
   dMessage xloc ("(match string to "++show (length xunits)++" running programs)")
-  matched <- matchStringToProgram instr program xunit
+  matched <- matchStringToProgram instr xunit
   dMessage xloc ("(construct RuleTasks with "++show (length matched)++" matched rules)")
   forM matched $ \ (patn, mtch, action) -> return $
     RuleTask
@@ -1535,19 +1527,9 @@ makeTasksForInput xunits instr = dStack xloc "makeTasksForInput" $ fmap concat $
 -- guard script must be fully executed or be timed-out before any other scripts are executed.
 -- This function creates the 'Task's that for any given guard script: 'Dao.Object.preExecScript',
 -- 'Dao.Object.postExecScript'.
-makeTasksForGuardScript
-  :: (Program -> [Executable])
-  -> [ExecUnit]
-  -> Run [Task]
-makeTasksForGuardScript select xunits =
-  dStack xloc "makeTasksForGuardScript" $ lift $ fmap concat $ forM xunits $ \xunit ->
-    case fmap select (currentProgram xunit) of
-      Nothing    -> return []
-      Just progx -> return $ flip map progx $ \prog ->
-        GuardTask
-        { taskGuardAction = prog
-        , taskExecUnit    = xunit
-        }
+makeTasksForGuardScript :: (ExecUnit -> [Executable]) -> [ExecUnit] -> [Task]
+makeTasksForGuardScript select xunits = flip concatMap xunits $ \xunit ->
+  flip map (select xunit) $ \prog -> GuardTask{taskGuardAction = prog, taskExecUnit = xunit }
 
 -- | This function simple places a list of 'Task's into the 'Job's 'readyTasks' table. This function
 -- will block if another thread has already evaluated this function, but those tasks have not yet
@@ -1568,7 +1550,7 @@ startTasksForJob job tasks = dStack xloc "startTasksForJob" $ dPutMVar xloc (rea
 -- will block until execution is completed.
 execInputString :: Bool -> UStr -> [File] -> Run ()
 execInputString guarded instr select = dStack xloc "execInputString" $ ask >>= \runtime -> do
-  let xunits = map programExecUnit (concatMap isProgramFile select)
+  let xunits = concatMap isProgramFile select
   unless (null xunits) $ do
     dMessage xloc ("selected "++show (length xunits)++" modules")
     -- Create a new 'Job' for this input string, 'newJob' will automatically place it into the
@@ -1585,14 +1567,14 @@ execInputString guarded instr select = dStack xloc "execInputString" $ ask >>= \
       -- (1) run all 'preExecScript' actions as a task, wait for all tasks to complete
       when guarded $ do
         dMessage xloc "pre-string-execution"
-        run $ makeTasksForGuardScript preExecScript xunits
+        run $ return $ makeTasksForGuardScript preExecScript xunits
       -- (2) run each actions for each rules that matches the input, wait for all tasks to complete
       dMessage xloc "execute string"
       run $ makeTasksForInput xunits instr
       -- (3) run all 'postExecScript' actions as a task, wait for all tasks to complete.
       when guarded $ do
         dMessage xloc "post-string-execution"
-        run $ makeTasksForGuardScript postExecScript xunits
+        run $ return $ makeTasksForGuardScript postExecScript xunits
       -- (4) clear the Query-Time variables that were set during this past run in each ExecUnit.
       mapM_ clearAllQTimeVars xunits
     removeJobFromTable job
@@ -1639,10 +1621,10 @@ execTask job task = dStack xloc "execTask" $ ask >>= \runtime -> do
 -- 'initSourceCode' and associates the resulting 'Dao.Evaluator.ExecUnit' with the
 -- 'sourceFullPath' in the 'programs' table. Returns the logical "module" name of the script along
 -- with an initialized 'Dao.Object.ExecUnit'.
-registerSourceCode :: Bool -> UPath -> SourceCode -> Run (ContErr Program)
+registerSourceCode :: Bool -> UPath -> SourceCode -> Run (ContErr ExecUnit)
 registerSourceCode public upath script = dStack xloc "registerSourceCode" $ ask >>= \runtime -> do
-  let modName  = unComment (sourceModuleName script)
-      pathTab  = pathIndex runtime
+  let modName = unComment (sourceModuleName script)
+      pathTab = pathIndex runtime
   alreadyLoaded <- fmap (M.lookup upath) (dReadMVar xloc pathTab)
   -- Check to make sure the logical name in the loaded program does not conflict with that
   -- of another loaded previously.
@@ -1655,12 +1637,10 @@ registerSourceCode public upath script = dStack xloc "registerSourceCode" $ ask 
     Nothing -> do
       -- Call 'initSourceCode' which creates the 'ExecUnit', then place it in an 'MVar'.
       -- 'initSourceCode' calls 'Dao.Evaluator.programFromSource'.
-      xunit <- initSourceCode script >>= lift . evaluate
-      let (Just prog) = currentProgram xunit
-          file = ProgramFile prog
-      xunitMVar <- seq file $ dNewMVar xloc ("ExecUnit("++show upath++")") xunit
-      dModifyMVar_ xloc pathTab $ return . M.insert upath file
-      return (CENext prog)
+      xunit <- initSourceCode upath script >>= lift . evaluate
+      xunitMVar <- dNewMVar xloc ("ExecUnit("++show upath++")") xunit
+      dModifyMVar_ xloc pathTab $ return . M.insert upath (ProgramFile xunit)
+      return (CENext xunit)
 
 -- | You should not normally need to call evaluate this function, you should use
 -- 'registerSourceCode' which will evaluate this function and also place the
@@ -1673,10 +1653,10 @@ registerSourceCode public upath script = dStack xloc "registerSourceCode" $ ask 
 -- code). You need to pass the 'Runtime' to this function because it needs to initialize a new
 -- 'Dao.Evaluator.ExecUnit' with the 'programs' and 'runtimeDocList' but these values are not
 -- modified.
-initSourceCode :: SourceCode -> Run ExecUnit
-initSourceCode script = ask >>= \runtime -> do
+initSourceCode :: UPath -> SourceCode -> Run ExecUnit
+initSourceCode modName script = ask >>= \runtime -> do
   grsrc <- newTreeResource "Program.globalData" T.Void
-  xunit <- initExecUnit runtime grsrc
+  xunit <- initExecUnit runtime modName grsrc
   -- An execution unit is required to load a program, so of course, while a program is being
   -- loaded, the program is not in the program table, and is it's 'currentProgram' is 'Nothing'.
   cachedProg <- runExecScript (programFromSource grsrc (\_ _ _ -> return False) script) xunit
@@ -1684,17 +1664,16 @@ initSourceCode script = ask >>= \runtime -> do
     CEError  obj        -> error ("script err: "++showObj 0 obj)
     CENext   cachedProg -> do
       -- Run all initializer scripts (denoted with the @SETUP@ rule in the Dao language).
-      let xunit' = xunit{ currentProgram = Just (cachedProg{programExecUnit = xunit'}) }
-      setupTakedown constructScript xunit'
+      setupTakedown constructScript xunit
       -- Place the initialized module into the 'Runtime', mapping to the module's handle.
-      return xunit'
+      return xunit
     CEReturn _          ->
       error "INTERNAL ERROR: source code evaluation returned before completion"
 
 -- | Load a Dao script program from the given file handle. You must pass the path name to store the
 -- resulting 'File' into the 'Dao.Object.pathIndex' table. The handle must be set to the proper
 -- encoding using 'System.IO.hSetEncoding'.
-scriptLoadHandle :: Bool -> UPath -> Handle -> Run (ContErr Program)
+scriptLoadHandle :: Bool -> UPath -> Handle -> Run (ContErr ExecUnit)
 scriptLoadHandle public upath h = do
   script <- lift $ do
     hSetBinaryMode h False
@@ -1726,8 +1705,7 @@ loadFilePath public path = dontLoadFileTwice (ustr path) $ \upath -> do
 -- | When a program is loaded, and when it is released, any block of Dao code in the source script
 -- that is denoted with the @SETUP@ or @TAKEDOWN@ rules will be executed. This function performs
 -- that execution in the current thread.
-setupTakedown :: (Program -> [[Com ScriptExpr]]) -> ExecUnit -> Run ()
+setupTakedown :: (ExecUnit -> [[Com ScriptExpr]]) -> ExecUnit -> Run ()
 setupTakedown select xunit = ask >>= \runtime ->
-  forM_ (concat $ maybeToList $ currentProgram xunit >>= Just . select) $ \block ->
-    runExecScript (execGuardBlock block) xunit >>= lift . evaluate
+  forM_ (select xunit) $ \block -> runExecScript (execGuardBlock block) xunit >>= lift . evaluate
 

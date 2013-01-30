@@ -158,17 +158,14 @@ findIndexedFile upath = do
 -- the name of the module that could not be found.
 checkImports :: File -> Run [UPath]
 checkImports file = dStack xloc "checkImports[1]" $ ask >>= \runtime -> case file of
-  ProgramFile prog -> do
-    let xunit   = programExecUnit prog
+  ProgramFile xunit -> do
     pathTab <- dReadMVar xloc (pathIndex runtime)
-    dStack xloc "checkImports[2]" $ case currentProgram xunit of
-      Nothing   -> return []
-      Just prog -> case programImports prog of
-        []      -> return []
-        imports -> do
-          let xunits = map (\mod -> (mod, maybeToList (M.lookup mod pathTab))) imports
-              (badImports, goodImports) = partition (null . snd) xunits
-          return (if null badImports then [] else map fst badImports)
+    dStack xloc "checkImports[2]" $ case programImports xunit of
+      []      -> return []
+      imports -> do
+        let xunits = map (\mod -> (mod, maybeToList (M.lookup mod pathTab))) imports
+            (badImports, goodImports) = partition (null . snd) xunits
+        return (if null badImports then [] else map fst badImports)
   DocumentFile   _ -> return []
   SourceCodeFile _ -> return []
 

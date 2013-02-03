@@ -1045,15 +1045,6 @@ called_nonfunction_object op obj =
   typeError obj (show op++" was called as a function but is not a function type, ") $
     show ScriptType++" or "++show RuleType
 
--- | Cache a single value so that multiple lookups of the given reference will always return the
--- same value, even if that value is modified by another thread between separate lookups of the same
--- reference value during evaluation of an 'Dao.Object.ObjectExpr'.
-cacheReference :: Reference -> Maybe Object -> ExecScript ()
-cacheReference r obj = case obj of
-  Nothing  -> return ()
-  Just obj -> ask >>= \xunit -> execRun $ dModifyMVar_ xloc (referenceCache xunit) $ \cache ->
-    return (M.insert r obj cache)
-
 -- | Evaluate an 'ObjectExpr' to an 'Dao.Object.Object' value, and does not de-reference objects of
 -- type 'Dao.Object.ORef'
 evalObject :: ObjectExpr -> ExecScript Object
@@ -1338,6 +1329,15 @@ programFromSource globalResource checkAttribute script =
 -- algorithm that defines the unique nature of the Dao system, the 'execInputString' function, is
 -- defined here. So are 'Dao.Object.Job' and 'Dao.Object.Task' management functions, and a simple
 -- interactive run loop 'interactiveRuntimeLoop' is also provided.
+
+-- | This is the function that runs in the thread which manages all the other threads that are
+-- launched in response to a matching input string.
+execInputStringsLoop :: ExecUnit -> IO ()
+execInputStringsLoop xunit = runReaderT (dCatch xloc loop handler) (xunit{}) where
+  loop = void $ do
+    
+  handler :: SomeException -> IO ()
+  handler (SomeException e) = 
 
 -- | Get the name 'Dao.Evaluator. of 
 taskProgramName :: Task -> Name

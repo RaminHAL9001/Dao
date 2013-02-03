@@ -890,13 +890,8 @@ data ExecUnit
       -- ^ stack of local variables used during evaluation
     , queryTimeHeap      :: TreeResource
       -- ^ the rules of this program
-    , globalData        :: TreeResource
+    , globalData         :: TreeResource
       -- ^ global variables cleared after every string execution
-    , referenceCache     :: DMVar (M.Map Reference Object)
-      -- ^ Caches lookups. A single 'Dao.Object.ObjectExpr' is not evaluated atomically, it may
-      -- require several lookups. If a value at a reference is updated between lookups by a separate
-      -- thread, the same reference may evaluate to two different values. Caching prevents this from
-      -- happening.
     , execOpenFiles      :: DMVar (M.Map UPath File)
     , recursiveInput     :: DMVar [UStr]
     , uncaughtErrors     :: DMVar [Object]

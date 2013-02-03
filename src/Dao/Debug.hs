@@ -20,6 +20,7 @@
 
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Dao.Debug where
 
@@ -119,6 +120,20 @@ data Debugger
     , debugLogWriter   :: LogWriter
     , debugShutdown    :: IO ()
     }
+
+data DHandler r a =
+  DHandler
+  { getHandlerMLoc :: MLoc
+  , getHandler :: r -> (SomeException -> IO ()) -> Handler a
+  }
+
+dHandler :: (Exception e, Bugged r) => MLoc -> (e -> ReaderT r IO a) -> DHandler r a
+dHandler loc catchfn =
+  DHandler
+  { getHandlerMLoc = loc
+  , getHandler = \r sendEvent -> Handler $ \e ->
+      sendEvent (SomeException e) >> runReaderT (askDebug >>= \debug -> catchfn e) r
+  }
 
 -- | This function is called by 'Dao.Debug.ON.debugToFile', you should not need to call it yourself.
 initDebugger :: String -> LogWriter -> Handle -> IO Debugger

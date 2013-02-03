@@ -165,6 +165,15 @@ dCatch _ tryFunc catchFunc = ReaderT $ \r ->
 dHandle :: (Exception e, Bugged r) => MLoc -> (e -> ReaderT r IO a) -> ReaderT r IO a -> ReaderT r IO a
 dHandle _ catchFunc tryFunc = dCatch undefined tryFunc catchFunc
 
+dCatches :: Bugged r => ReaderT r IO a -> [DHandler r a] -> ReaderT r IO a
+dCatches tryfn dhands = do
+  r <- ask
+  lift $ catches (runReaderT tryfn r) $
+    map (\dhandl -> (getHandler dhandl) r (\_ -> return ())) dhands
+
+dHandles :: Bugged r => [DHandler r a] -> ReaderT r IO a -> ReaderT r IO a
+dHandles = flip dCatches
+
 dThrow :: (Exception e, Bugged r) => MLoc -> e -> ReaderT r IO ignored
 dThrow _ err = lift (throwIO err)
 

@@ -309,6 +309,23 @@ dCatch loc tryFunc catchFunc = askDebug >>= \debug -> case debug of
 dHandle :: (Exception e, Bugged r) => MLoc -> (e -> ReaderT r IO a) -> ReaderT r IO a -> ReaderT r IO a
 dHandle loc catchFunc tryFunc = dCatch loc tryFunc catchFunc
 
+-- | Behaves just like 'Control.Exception.catches', but takes a list of 'Dao.Debug.DHandler's which
+-- are converted to 'Control.Exception.Handlers' as necessary.
+dCatches :: Bugged r => ReaderT r IO a -> [DHandler r a] -> ReaderT r IO a
+dCatches tryfn dhands = do
+  r <- ask
+  debug <- askDebug
+  lift (catches (runReaderT tryfn r) (map (mkh r debug) dhands)) where
+    mkh r debug dhandl = case debug of
+      Nothing    -> (getHandler dhandl) r (\_ -> return ())
+      Just debug -> (getHandler dhandl) r $ \err -> do
+        this <- myThreadId
+        event debug (DCatch (getHandlerMLoc dhandl) this err)
+
+-- | Same as 'dCatches' but with arguments reversed
+dHandles :: Bugged r => [DHandler r a] -> ReaderT r IO a -> ReaderT r IO a
+dHandles = flip dCatches
+
 -- | Emits a 'DThrow' signal, calls 'Control.Exception.throwIO'.
 dThrow :: (Exception e, Bugged r) => MLoc -> e -> ReaderT r IO ignored
 dThrow loc err = dDebug (throwIO err) $ \this -> DThrow loc this (SomeException err)

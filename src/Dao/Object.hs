@@ -875,6 +875,8 @@ data ExecUnit
     , currentTask        :: Task
       -- ^ the 'Task' that is currently running. This item includes the 'Executable' and (if
       -- applicable) the current 'Pattern' and 'Match'
+    , currentPattern     :: Maybe Pattern
+    , currentMatch       :: Maybe Match
     , currentBranch      :: [Name]
       -- ^ set by the @with@ statement during execution of a Dao script. It is used to prefix this
       -- to all global references before reading from or writing to those references.
@@ -892,12 +894,12 @@ data ExecUnit
       -- ^ the rules of this program
     , globalData         :: TreeResource
       -- ^ global variables cleared after every string execution
+    , execRunningThreads :: DMVar (S.Set ThreadId)
     , execOpenFiles      :: DMVar (M.Map UPath File)
     , recursiveInput     :: DMVar [UStr]
     , uncaughtErrors     :: DMVar [Object]
     ---- used to be elements of Program ----
     , programModuleName :: UPath
-    , controlThread     :: ThreadId
     , programImports    :: [UPath]
     , constructScript   :: [[Com ScriptExpr]]
     , destructScript    :: [[Com ScriptExpr]]

@@ -78,7 +78,6 @@ initExecUnit runtime modName initGlobalData = do
   xstack   <- dNewMVar xloc "ExecUnit.execStack" emptyStack
   toplev   <- dNewMVar xloc "ExecUnit.toplevelFuncs" M.empty
   files    <- dNewMVar xloc "ExecUnit.execOpenFiles" M.empty
-  cache    <- dNewMVar xloc "ExecUnit.referenceCache" M.empty
   rules    <- dNewMVar xloc "ExecUnit.ruleSet" T.Void
   return $
     ExecUnit
@@ -86,13 +85,15 @@ initExecUnit runtime modName initGlobalData = do
     , currentExecJob     = Nothing
     , currentDocument    = Nothing
     , currentTask        = error "ExecUnit.currentTask is undefined"
+    , currentPattern     = Nothing
+    , currentMatch       = Nothing
     , currentBranch      = []
     , importsTable       = []
     , execAccessRules    = RestrictFiles (Pattern{getPatUnits = [Wildcard], getPatternLength = 1})
     , builtinFuncs       = initBuiltinFuncs
     , toplevelFuncs      = toplev
     , queryTimeHeap      = qheap
-    , referenceCache     = cache
+    , execRunningThreads = error "ExecUnit.execRunningThreads is undefined"
     , execStack          = xstack
     , execOpenFiles      = files
     , recursiveInput     = recurInp
@@ -1330,14 +1331,68 @@ programFromSource globalResource checkAttribute script =
 -- defined here. So are 'Dao.Object.Job' and 'Dao.Object.Task' management functions, and a simple
 -- interactive run loop 'interactiveRuntimeLoop' is also provided.
 
+execWaitThreadLoop :: MLoc -> String -> DMVar (S.Set ThreadId) -> DMVar ThreadId -> Run ()
+execWaitThreadLoop loc msg running wait = dStack loc msg loop where 
+  loop = do
+    thread <- dTakeMVar xloc wait
+    isDone <- dModifyMVar xloc running $ \threads_ -> do
+      let threads = S.delete thread threads
+      return (threads, S.null threads)
+    if isDone then return () else loop
+
+execPatternMatchExecutable :: ExecUnit -> Pattern -> Match -> Executable -> Run ()
+execPatternMatchExecutable xunit pat mat exec = void $ runExecScript (runExecutable T.Void exec) $
+  xunit{currentPattern = Just pat, currentMatch = Just mat}
+
 -- | This is the function that runs in the thread which manages all the other threads that are
--- launched in response to a matching input string.
-execInputStringsLoop :: ExecUnit -> IO ()
-execInputStringsLoop xunit = runReaderT (dCatch xloc loop handler) (xunit{}) where
-  loop = void $ do
-    
-  handler :: SomeException -> IO ()
-  handler (SomeException e) = 
+-- launched in response to a matching input string. This is also the most important algorithm of
+-- the Dao system, in that it matches strings to all rule-patterns in the program that is associated
+-- with the 'Dao.Object.ExecUnit', and it dispatches execution of the rule-actions associated with
+-- matched patterns.
+execInputStringsLoop :: DMVar ThreadId -> ExecUnit -> Run ()
+execInputStringsLoop wait xunit = dCatch xloc start handler where
+  running = execRunningThreads xunit
+  start = do
+    dNewEmptyMVar xloc "execInputStringsLoop.waitChild" >>= loop
+    lift myThreadId >>= dPutMVar xloc wait
+  loop waitChild = do
+    -- (1) Get the next input string. Also nub the list of queued input strings.
+    instr <- dModifyMVar xloc (recursiveInput xunit) $ \ax -> return $ case nub ax of
+      []   -> ([], Nothing)
+      a:ax -> (ax, Just a)
+    case instr of
+      Nothing    -> return ()
+      Just instr -> do
+        -- (2) Run "BEGIN" scripts.
+        runExecs xloc "preExecScript" preExecScript waitChild
+        -- (3) Match input string to all patterns, get resulting actions.
+        matched <- matchStringToProgram instr xunit
+        -- (4) Run 'execPatternMatchExecutable' for every matching item.
+        putThreads $ forM matched $ \ (pat, mat, exec) ->
+          dFork forkIO xloc "execInputStringsLoop.loop" $ void $
+            execPatternMatchExecutable xunit pat mat exec
+        let msg = "execInputStringLoop.loop.(execWaitThreadLoop execPatternMatchExecutable)"
+        execWaitThreadLoop xloc msg running waitChild
+        -- (5) Run "END" scripts.
+        runExecs xloc "postExecScript" postExecScript waitChild
+        -- (6) Run the next string.
+        loop waitChild
+  putThreads mkThreads = dModifyMVar_ xloc (execRunningThreads xunit) $ \threads -> do
+    -- lock the 'execRunningThreads' mvar when creating threads so if the parent thread tries to
+    -- kill all running threads, it won't be able to get a list of running threads until this mvar
+    -- is released, which will be after all threads have already been started.
+    newThreads <- mkThreads
+    return (S.union (S.fromList newThreads) threads)
+  runExecs loc msg_ select waitChild = do
+    putThreads $ forM (select xunit) $ \exec ->
+      dFork forkIO xloc "execInputStringsLoop.runExecs" $
+        void $ flip runExecScript xunit $ runExecutable T.Void exec
+    let msg = "execInputStringLoop.runExecs.(execWaitThreadLoop "++msg_++")"
+    execWaitThreadLoop loc msg running waitChild
+  handler :: SomeException -> Run ()
+  handler (SomeException e) = dModifyMVar_ xloc running $ \threads -> do
+    mapM_ (\thread -> dThrowTo xloc thread e) (S.elems threads)
+    return S.empty
 
 -- | Get the name 'Dao.Evaluator. of 
 taskProgramName :: Task -> Name

@@ -73,12 +73,14 @@ newRuntime :: Maybe Debugger -> IO Runtime
 newRuntime debug = flip runReaderT debug $ dStack xloc "newRuntime" $ do
   paths <- dNewMVar xloc "Runtime.pathIndex" (M.empty)
   jtab  <- dNewMVar xloc "Runtime.jobTable"  (M.empty)
+  wait  <- dNewEmptyMVar xloc "Runtime.waitExecUnitsMVar"
   return $
     Runtime
     { pathIndex            = paths
     , jobTable             = jtab
     , defaultTimeout       = Just 8000000
     , functionSets         = M.empty
+    , waitExecUnitsMVar    = wait
     , availableTokenizers  = M.empty -- specifying no tokenizer will cause the default to be used
     , availableComparators = M.fromList $
         [ (ustr "exact"      , exact)

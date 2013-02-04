@@ -1345,16 +1345,18 @@ execPatternMatchExecutable xunit pat mat exec = void $ runExecScript (runExecuta
   xunit{currentPattern = Just pat, currentMatch = Just mat}
 
 -- | This is the function that runs in the thread which manages all the other threads that are
--- launched in response to a matching input string. This is also the most important algorithm of
--- the Dao system, in that it matches strings to all rule-patterns in the program that is associated
--- with the 'Dao.Object.ExecUnit', and it dispatches execution of the rule-actions associated with
+-- launched in response to a matching input string. You could just run this loop in the current
+-- thread, if you only have one 'ExecUnit'. This is also the most important algorithm of the Dao
+-- system, in that it matches strings to all rule-patterns in the program that is associated with
+-- the 'Dao.Object.ExecUnit', and it dispatches execution of the rule-actions associated with
 -- matched patterns.
-execInputStringsLoop :: DMVar ThreadId -> ExecUnit -> Run ()
-execInputStringsLoop wait xunit = dCatch xloc start handler where
+execInputStringsLoop :: ExecUnit -> Run ()
+execInputStringsLoop xunit = dCatch xloc start handler where
   running = runningThreads xunit
   start = do
+    runtime <- ask
     dNewEmptyMVar xloc "execInputStringsLoop.waitChild" >>= loop
-    lift myThreadId >>= dPutMVar xloc wait
+    lift myThreadId >>= dPutMVar xloc (waitExecUnitsMVar runtime)
   loop waitChild = do
     -- (1) Get the next input string. Also nub the list of queued input strings.
     instr <- dModifyMVar xloc (recursiveInput xunit) $ \ax -> return $ case nub ax of
@@ -1393,6 +1395,13 @@ execInputStringsLoop wait xunit = dCatch xloc start handler where
   handler (SomeException e) = dModifyMVar_ xloc running $ \threads -> do
     mapM_ (\thread -> dThrowTo xloc thread e) (S.elems threads)
     return S.empty
+
+-- | Launch a new thread for an 'Dao.Object.ExecUnit'. You can launch several threads for a single
+-- 'Dao.Object.ExecUnit', but the threads will only share the work, there is no particular advantage
+-- to calling this function more than once per 'Dao.Object.ExecUnit'. Returns the
+-- 'Control.Concurrent.ThreadId' of the thread created.
+startExecUnitThread :: ExecUnit -> Run ThreadId
+startExecUnitThread xunit = dFork forkIO xloc "startExecUnitThread" (execInputStringsLoop xunit)
 
 -- | Get the name 'Dao.Evaluator. of 
 taskProgramName :: Task -> Name

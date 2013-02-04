@@ -93,7 +93,7 @@ initExecUnit runtime modName initGlobalData = do
     , builtinFuncs       = initBuiltinFuncs
     , toplevelFuncs      = toplev
     , queryTimeHeap      = qheap
-    , execRunningThreads = error "ExecUnit.execRunningThreads is undefined"
+    , runningThreads     = error "ExecUnit.runningThreads is undefined"
     , execStack          = xstack
     , execOpenFiles      = files
     , recursiveInput     = recurInp
@@ -1351,7 +1351,7 @@ execPatternMatchExecutable xunit pat mat exec = void $ runExecScript (runExecuta
 -- matched patterns.
 execInputStringsLoop :: DMVar ThreadId -> ExecUnit -> Run ()
 execInputStringsLoop wait xunit = dCatch xloc start handler where
-  running = execRunningThreads xunit
+  running = runningThreads xunit
   start = do
     dNewEmptyMVar xloc "execInputStringsLoop.waitChild" >>= loop
     lift myThreadId >>= dPutMVar xloc wait
@@ -1377,8 +1377,8 @@ execInputStringsLoop wait xunit = dCatch xloc start handler where
         runExecs xloc "postExecScript" postExecScript waitChild
         -- (6) Run the next string.
         loop waitChild
-  putThreads mkThreads = dModifyMVar_ xloc (execRunningThreads xunit) $ \threads -> do
-    -- lock the 'execRunningThreads' mvar when creating threads so if the parent thread tries to
+  putThreads mkThreads = dModifyMVar_ xloc (runningThreads xunit) $ \threads -> do
+    -- lock the 'runningThreads' mvar when creating threads so if the parent thread tries to
     -- kill all running threads, it won't be able to get a list of running threads until this mvar
     -- is released, which will be after all threads have already been started.
     newThreads <- mkThreads

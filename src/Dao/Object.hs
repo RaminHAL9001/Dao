@@ -894,7 +894,7 @@ data ExecUnit
       -- ^ the rules of this program
     , globalData         :: TreeResource
       -- ^ global variables cleared after every string execution
-    , execRunningThreads :: DMVar (S.Set ThreadId)
+    , runningThreads     :: DMVar (S.Set ThreadId)
     , execOpenFiles      :: DMVar (M.Map UPath File)
     , recursiveInput     :: DMVar [UStr]
     , uncaughtErrors     :: DMVar [Object]

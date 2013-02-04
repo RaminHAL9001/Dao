@@ -982,6 +982,9 @@ data Runtime
     , waitExecUnitsMVar    :: DMVar ThreadId
       -- ^ when an 'ExecUnit' completes it's execution cycle, it signals it's completion by placing
       -- it's own 'Control.Concurrent.ThreadId' into this 'Dao.Debug.DMVar'.
+    , runningExecUnits     :: DMVar (S.Set ThreadId)
+      -- ^ a list of currently running 'ExecUnit's, which will go empty once every 'ExecUnit' has
+      -- completed executing a string.
     , availableTokenizers  :: M.Map Name Tokenizer
       -- ^ a table of available string tokenizers.
     , availableComparators :: M.Map Name CompareToken

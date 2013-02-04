@@ -1403,7 +1403,40 @@ execInputStringsLoop xunit = dCatch xloc start handler where
 startExecUnitThread :: ExecUnit -> Run ThreadId
 startExecUnitThread xunit = dFork forkIO xloc "startExecUnitThread" (execInputStringsLoop xunit)
 
--- | Get the name 'Dao.Evaluator. of 
+-- | Place a string into the queues and then start one thread for each of the 'Dao.Object.ExecUnit's
+-- specified. The threads are created but not registered into the 'Dao.Object.Runtime'
+-- 'Dao.Object.runningExecThreads' field. To do this, evaluate this function as a parameter to
+-- 'daoRegisterThreads'.
+runStringAgainstExecUnits :: UStr -> [ExecUnit] -> Run (S.Set ThreadId)
+runStringAgainstExecUnits inputString xunits = do
+  runtime <- ask
+  forM_ xunits $ \xunit ->
+    dModifyMVar_ xloc (recursiveInput xunit) (return . (++[inputString]))
+  fmap (S.fromList) (mapM startExecUnitThread xunits)
+
+-- | Registers the threads created by 'runStringAgainstExecUnits' into the
+-- 'Dao.Object.runningExecThreads' field of the 'Dao.Object.Runtime'.
+daoRegisterThreads :: Run (S.Set ThreadId) -> Run ()
+daoRegisterThreads makeThreads = do
+  runtime <- ask
+  dModifyMVar_ xloc (runningExecUnits runtime) $ \threads -> do
+    newThreads <- makeThreads
+    return (S.union newThreads threads)
+
+-- | This is the main input loop. Pass an input function callback to be called on every loop.
+daoInputLoop :: (Run (Maybe UStr)) -> Run ()
+daoInputLoop getString = ask >>= loop where
+  loop runtime = do
+    inputString <- getString
+    case inputString of
+      Nothing          -> return ()
+      Just inputString -> do
+        xunits <- fmap (concatMap isProgramFile . M.elems) (dReadMVar xloc (pathIndex runtime))
+        runStringAgainstExecUnits inputString xunits
+        let msg = "daoInputLoop.(wait for ExecUnits to finish)"
+        execWaitThreadLoop xloc msg (runningExecUnits runtime) (waitExecUnitsMVar runtime)
+        loop runtime
+
 taskProgramName :: Task -> Name
 taskProgramName = programModuleName . taskExecUnit
 
@@ -1685,8 +1718,8 @@ execTask job task = dStack xloc "execTask" $ ask >>= \runtime -> do
 -- 'initSourceCode' and associates the resulting 'Dao.Evaluator.ExecUnit' with the
 -- 'sourceFullPath' in the 'programs' table. Returns the logical "module" name of the script along
 -- with an initialized 'Dao.Object.ExecUnit'.
-registerSourceCode :: Bool -> UPath -> SourceCode -> Run (ContErr ExecUnit)
-registerSourceCode public upath script = dStack xloc "registerSourceCode" $ ask >>= \runtime -> do
+registerSourceCode :: UPath -> SourceCode -> Run (ContErr ExecUnit)
+registerSourceCode upath script = dStack xloc "registerSourceCode" $ ask >>= \runtime -> do
   let modName = unComment (sourceModuleName script)
       pathTab = pathIndex runtime
   alreadyLoaded <- fmap (M.lookup upath) (dReadMVar xloc pathTab)
@@ -1734,15 +1767,23 @@ initSourceCode modName script = ask >>= \runtime -> do
     CEReturn _          ->
       error "INTERNAL ERROR: source code evaluation returned before completion"
 
--- | Load a Dao script program from the given file handle. You must pass the path name to store the
--- resulting 'File' into the 'Dao.Object.pathIndex' table. The handle must be set to the proper
--- encoding using 'System.IO.hSetEncoding'.
-scriptLoadHandle :: Bool -> UPath -> Handle -> Run (ContErr ExecUnit)
-scriptLoadHandle public upath h = do
-  script <- lift $ do
-    hSetBinaryMode h False
-    fmap (loadSourceCode upath) (hGetContents h) >>= evaluate
-  registerSourceCode public upath script
+-- | Load a Dao script program from the given file handle, return a 'Dao.Object.SourceCode' object.
+-- Specify a path to be used when reporting parsing errors. Does not register the source code into
+-- the given runtime.
+sourceFromHandle :: UPath -> Handle -> Run (ContErr SourceCode)
+sourceFromHandle upath h = lift $ do
+  hSetBinaryMode h False
+  fmap (CENext . loadSourceCode upath) (hGetContents h) >>= evaluate
+
+-- | Load a Dao script program from the given file handle (calls 'sourceFromHandle') and then
+-- register it into the 'Dao.Object.Runtime' as with the given 'Dao.String.UPath'.
+registerSourceFromHandle :: UPath -> Handle -> Run (ContErr ExecUnit)
+registerSourceFromHandle upath h = do
+  source <- sourceFromHandle upath h
+  case source of
+    CENext source -> registerSourceCode upath source
+    CEReturn    _ -> error "registerSourceFromHandle: sourceFromHandle evaluated to CEReturn"
+    CEError   err -> error ("registerSourceFromHandle: "++show err)
 
 -- | Updates the 'Runtime' to include the Dao source code loaded from the given 'FilePath'. This
 -- function tries to load a file in three different attempts: (1) try to load the file as a binary
@@ -1752,8 +1793,8 @@ scriptLoadHandle public upath h = do
 -- 'Dao.Object.Parsers.source'. If all three methods fail, an error is thrown. Returns
 -- the 'TypedFile', although all source code files are returned as 'PrivateType's. Use
 -- 'asPublic' to force the type to be a 'PublicType'd file.
-loadFilePath :: Bool -> FilePath -> Run (ContErr File)
-loadFilePath public path = dontLoadFileTwice (ustr path) $ \upath -> do
+loadFilePath :: FilePath -> Run (ContErr File)
+loadFilePath path = dontLoadFileTwice (ustr path) $ \upath -> do
   dPutStrErr xloc ("Lookup file path "++show upath)
   h    <- lift (openFile path ReadMode)
   zero <- lift (hGetPosn h)
@@ -1764,7 +1805,7 @@ loadFilePath public path = dontLoadFileTwice (ustr path) $ \upath -> do
     Right doc -> return (CENext (DocumentFile doc))
     Left  _   -> do -- The file does not seem to be a document, try parsing it as a script.
       lift (hSetPosn zero >> hSetEncoding h (fromMaybe localeEncoding enc))
-      fmap (fmap ProgramFile) (scriptLoadHandle public upath h)
+      fmap (fmap ProgramFile) (registerSourceFromHandle upath h)
 
 -- | When a program is loaded, and when it is released, any block of Dao code in the source script
 -- that is denoted with the @SETUP@ or @TAKEDOWN@ rules will be executed. This function performs

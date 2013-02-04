@@ -54,6 +54,7 @@ import           Control.Monad.Reader
 import           Data.Maybe
 import           Data.List
 import qualified Data.Map    as M
+import qualified Data.Set    as S
 
 import           System.IO
 
@@ -73,6 +74,7 @@ newRuntime :: Maybe Debugger -> IO Runtime
 newRuntime debug = flip runReaderT debug $ dStack xloc "newRuntime" $ do
   paths <- dNewMVar xloc "Runtime.pathIndex" (M.empty)
   jtab  <- dNewMVar xloc "Runtime.jobTable"  (M.empty)
+  running  <- dNewMVar xloc "Runtime.runningExecUnits"  (S.empty)
   wait  <- dNewEmptyMVar xloc "Runtime.waitExecUnitsMVar"
   return $
     Runtime
@@ -80,6 +82,7 @@ newRuntime debug = flip runReaderT debug $ dStack xloc "newRuntime" $ do
     , jobTable             = jtab
     , defaultTimeout       = Just 8000000
     , functionSets         = M.empty
+    , runningExecUnits     = running
     , waitExecUnitsMVar    = wait
     , availableTokenizers  = M.empty -- specifying no tokenizer will cause the default to be used
     , availableComparators = M.fromList $
@@ -106,7 +109,7 @@ initRuntimeFiles :: DebugHandle -> [FilePath] -> Runtime -> IO Runtime
 initRuntimeFiles debug fx runtime =
   fmap (fromMaybe (error "FAILED to initalized runtime with files")) $
     debugIO xloc "initRuntimeFiles" debug runtime $ do
-      forM_ fx $ \f -> lift (catches (void $ runIO runtime $ loadFilePath True f) handlers)
+      forM_ fx $ \f -> lift (catches (void $ runIO runtime $ loadFilePath f) handlers)
       problems <- checkAllImports
       if null problems
         then return runtime

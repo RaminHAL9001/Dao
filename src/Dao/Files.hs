@@ -130,7 +130,7 @@ ideaLoadHandle upath h = ask >>= \runtime -> do
 
 -- | Where 'loadFilePath' keeps trying to load a given file by guessing it's type,
 -- 'loadFilePathWith' allows you to specify how to load the file by passing a function, like
--- 'ideaLoadHandle' for parsing ideas or 'scriptLoadHandle' for parsing scripts, and only files of
+-- 'ideaLoadHandle' for parsing ideas or 'registerSourceFromHandle' for parsing scripts, and only files of
 -- that type will be loaded, or else this function will fail.
 loadFilePathWith :: (UPath -> Handle -> Run File) -> UPath -> Run File
 loadFilePathWith fn upath = lift (openFile (uchars upath) ReadMode) >>= fn upath

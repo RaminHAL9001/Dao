@@ -38,6 +38,8 @@ default: dao
 
 GHC_MAKE_SRC := ghc --make -i'./src'
 
+export GHCRTS := '-M3G' #Allow 3GB of heap space to GHC when compiling.
+
 EDIT_FILES_LIST := edit-files.list
 EDIT_SCRATCH    := scratch.hs -c ':set autowrite autoread'
 NUMBER_OF_TABS  := 6

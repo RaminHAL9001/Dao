@@ -9,3 +9,16 @@ runtime does not seem to do anything with these input strings. I probably took o
 because it relied too heavily on PredicateIO or something I deleted, and I need to completely
 rewrite it. This needs to be investigated, and finally implemented.
 
+*	'Dao.Object.Subroutine' is a data structure representing a function that takes a list of
+'Dao.Object.ObjPat's, and when it is executed, it will resolve all Reference parameters passed to
+them to create a list of parameters, match this list of parameter arguments to this list of
+'Dao.Object.ObjPat's, then run the associated 'Dao.Object.Executable'.
+	It might be a good idea to allow other kinds of 'Subroutine's, including "pure" subroutines that
+simply evaluate to (CEError Object), functions take a list of Objects that are not automatically
+resolve references passed to them. Since built-in operators are pure subroutines, an API for
+evaluating these operator functions could be constructed to evaluate both built-in operators and
+custom native functions. Also, right now the evaluator checks if an operator is an assignment or
+update operator, and treats these as special cases. However, if there is a "pure" subroutine that
+takes parameters that are not resolved automatically, the update operators can be defined as
+object instances of this type of "pure" subroutine.
+

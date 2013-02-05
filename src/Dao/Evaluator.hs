@@ -1329,13 +1329,16 @@ programFromSource globalResource checkAttribute script =
 ----------------------------------------------------------------------------------------------------
 
 execWaitThreadLoop :: MLoc -> String -> DMVar (S.Set DThread) -> DMVar DThread -> Run ()
-execWaitThreadLoop lc msg running wait = dStack lc msg loop where 
-  loop = do
-    thread <- dTakeMVar $loc wait
-    isDone <- dModifyMVar $loc running $ \threads_ -> do
-      let threads = S.delete thread threads
-      return (threads, S.null threads)
-    if isDone then return () else loop
+execWaitThreadLoop lc msg running wait = dStack lc msg $ do
+  threads <- dReadMVar $loc running
+  if S.null threads then return () else loop
+  where 
+    loop = do
+      thread <- dTakeMVar $loc wait
+      isDone <- dModifyMVar $loc running $ \threads_ -> do
+        let threads = S.delete thread threads_
+        return (threads, S.null threads)
+      if isDone then return () else loop
 
 execPatternMatchExecutable :: ExecUnit -> Pattern -> Match -> Executable -> Run ()
 execPatternMatchExecutable xunit pat mat exec = void $ runExecScript (runExecutable T.Void exec) $

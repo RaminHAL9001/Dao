@@ -19,7 +19,9 @@
 
 
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RankNTypes #-}
 
 module Dao.Debug where
@@ -35,10 +37,13 @@ import           Dao.String
 import           Control.Exception
 import           Control.Concurrent
 import           Control.Monad.Reader
+import           Control.Monad.State
+import           Control.Monad.IO.Class
 
 import           Data.Maybe
 import           Data.Word
 import           Data.IORef
+import           Data.Time.Clock
 import qualified Data.Map as M
 
 import           System.IO
@@ -49,13 +54,15 @@ import           System.IO
 -- 'nonloc' instead.
 type MLoc = Maybe (String, Int, Int)
 
+data DUnique = DUnique{ dElapsedTime :: !Float, dUniqueWord :: !Word } deriving (Eq, Ord)
+
 -- | The most fundamental types in "Control.Concurrent" are 'Control.Concurrent.MVar',
 -- 'Control.Concurrent.Chan' and 'Control.Concurrent.QSem'. These types are wrapped in a data type
 -- that provides more useful information about the variable, particularly a comment string
 -- describing the nature of the variable, and a unique identifier.
 data DVar v
   = DVar { dbgVar :: v }
-  | IDVar { dbgVar :: v, varID :: Word64, dbgTypeName :: String, dbgVarComment :: String }
+  | IDVar { dbgVar :: v, varID :: !DUnique, dbgTypeName :: String }
 
 -- | To avoid dealing with Haskell "forall"ed types, I have here a type which contains the same
 -- information found in a 'IDVar' but without the type specific 'dbgVar'. Use 'dVarInfo' to
@@ -63,19 +70,18 @@ data DVar v
 data DVarInfo
   = DNoInfo { varFunction :: String }
   | DVarInfo
-    { varFunction :: String
-    , infoVarID :: Word64
+    { varFunction  :: String
+    , infoVarID    :: DUnique
     , infoTypeName :: String
-    , infoVarComment :: String
     }
 
 -- | Takes the interesting information from 'IDVar' so it can be stored in a 'DEvent' data
 -- structure.
 dVarInfo :: String -> DVar v -> DVarInfo
 dVarInfo func dvar = case dvar of
-  DVar  _          -> DNoInfo func
-  IDVar _ i nm com ->
-    DVarInfo{varFunction = func, infoVarID = i, infoTypeName = nm, infoVarComment = com}
+  DVar  _      -> DNoInfo func
+  IDVar _ i nm ->
+    DVarInfo{varFunction = func, infoVarID = i, infoTypeName = nm}
 
 type DQSem = DVar QSem
 type DMVar v = DVar (MVar v)
@@ -85,7 +91,8 @@ type DChan v = DVar (Chan v)
 -- library are used in a debugging context. The neme of each constructor closely matches the name of
 -- the "Control.Concurrent" function that signals it.
 data DEvent
-  = DMsg            MLoc ThreadId           String
+  = DStarted        MLoc ThreadId           String  UTCTime
+  | DMsg            MLoc ThreadId           String
     -- ^ does nothing more than send a 'Prelude.String' message to the debugger.
   | DVarAction      MLoc ThreadId           DVarInfo
     -- ^ Some 'DVar' was updated somewhere.
@@ -93,7 +100,6 @@ data DEvent
   | DStderr         MLoc ThreadId           String
   | DFork           MLoc ThreadId ThreadId  String
   | DCatch          MLoc ThreadId           SomeException
-  | DUncaught       MLoc ThreadId           SomeException
   | DThrowTo        MLoc ThreadId ThreadId  SomeException
   | DThrow          MLoc ThreadId           SomeException
   | DThreadDelay    MLoc ThreadId Int
@@ -101,7 +107,7 @@ data DEvent
   | DThreadDied     MLoc ThreadId
     -- ^ a signal sent when a thread dies (assuming the thread must have been created with
     -- 'Dao.Debug.ON.dFork')
-  | DThreadKilled   MLoc ThreadId           SomeException
+  | DUncaught       MLoc ThreadId           SomeException
     -- ^ a signal sent when a thread is killed (assuming the thread must have been created with
     -- 'Dao.Debug.ON.dFork').
   | DHalt -- ^ Sent when the thread being debugged is done.
@@ -110,16 +116,33 @@ data DEvent
 -- If you have a state data type @R@ that you pass around your program via the
 -- 'Control.Monad.Reader.ReaderT' monad, instantiate @R@ into the 'Bugged' class, and your monad
 -- will be able to use any of the functions in the "Dao.Debug.ON" module.
-data Debugger
-  = Debugger
-    { debugChan        :: Chan DEvent
-    , uniqueIDGen      :: MVar Word64
+data DebugData
+  = DebugData
+    { debugChan        :: MVar DEvent
+    , debugStartTime   :: UTCTime
     , debugThreadTable :: ThreadTable
-    , debugFileHandle  :: Handle
-    , debugComments    :: String
-    , debugLogWriter   :: LogWriter
-    , debugShutdown    :: IO ()
+    , debugUniqueCount :: MVar Word
+    , debugPrint       :: DEvent -> IO ()
+    , debugClose       :: IO ()
     }
+
+initDebugData :: IO DebugData
+initDebugData = do
+  chan <- newEmptyMVar
+  time <- getCurrentTime
+  tabl <- newIORef (M.empty)
+  uniq <- newMVar 0
+  return $
+    DebugData
+    { debugChan        = chan
+    , debugStartTime   = time
+    , debugThreadTable = tabl
+    , debugUniqueCount = uniq
+    , debugPrint       = \_ -> return ()
+    , debugClose       = return ()
+    }
+
+type DebugRef = Maybe DebugData
 
 data DHandler r a =
   DHandler
@@ -127,32 +150,13 @@ data DHandler r a =
   , getHandler :: r -> (SomeException -> IO ()) -> Handler a
   }
 
-dHandler :: (Exception e, Bugged r) => MLoc -> (e -> ReaderT r IO a) -> DHandler r a
+dHandler :: (Exception e, Bugged r m) => MLoc -> (e -> m a) -> DHandler r a
 dHandler loc catchfn =
   DHandler
   { getHandlerMLoc = loc
   , getHandler = \r sendEvent -> Handler $ \e ->
-      sendEvent (SomeException e) >> runReaderT (askDebug >>= \debug -> catchfn e) r
+      sendEvent (SomeException e) >> debugUnliftIO (askDebug >>= \debug -> catchfn e) r
   }
-
--- | This function is called by 'Dao.Debug.ON.debugToFile', you should not need to call it yourself.
-initDebugger :: String -> LogWriter -> Handle -> IO Debugger
-initDebugger com log file = do
-  idgen <- newMVar 0
-  chan  <- newChan
-  ttab  <- newIORef M.empty
-  return $
-    Debugger
-    { debugChan = chan
-    , uniqueIDGen = idgen
-    , debugThreadTable = ttab
-    , debugFileHandle = file
-    , debugComments = com
-    , debugLogWriter = log
-    , debugShutdown = return ()
-    }
-
-type LogWriter = Debugger -> DEvent -> IO ()
 
 -- | This is the type for the table that maps 'Control.Concurrent.ThreadId's to 'Dao.String.Name's
 -- which allows the debug logger to produce more descriptive reports regarding threads.
@@ -168,50 +172,71 @@ type LogWriter = Debugger -> DEvent -> IO ()
 -- defining a debugging version of 'Control.Concurrent.myThreadId'.
 type ThreadTable = IORef (M.Map ThreadId Name)
 
--- | The 'Bugged' class uses 'DebugHandle's instead of just plain 'Debugger's. This allows you to
--- more finely tune which portions of the program are debugged. You can disable debugging by simply
--- having the 'askDebug' function return 'Data.Maybe.Nothing'.
-type DebugHandle = Maybe Debugger
+data DebugOutputTo
+  = DebugOutputToDefault
+  | DebugOutputToHandle  Handle
+  | DebugOutputToFile    FilePath
+  | DebugOutputToChannel (Chan DEvent)
+
+data SetupDebugger r m
+  = SetupDebugger
+    { debugEnabled      :: Bool
+      -- ^ explicitly enable or disable debugging
+    , debugComment      :: String
+      -- ^ a comment to write at the beggining of the debug output stream
+    , debugOutputTo     :: DebugOutputTo
+      -- ^ if the 'debugHandle' is not specified, it can be created by specifying a file path here.
+    , initializeRuntime :: IO r
+      -- ^ the function to initialize the state that will be used for the 'beginProgram' function.
+    , beginProgram      :: m ()
+      -- ^ the program to run in the debug thread.
+    }
+
+setupDebugger :: Bugged r m => SetupDebugger r m
+setupDebugger =
+  SetupDebugger
+  { debugEnabled      = True
+  , debugComment      = ""
+  , debugOutputTo     = DebugOutputToDefault
+  , initializeRuntime = error "main program does not define \"Dao.Debug.initializeRuntime\""
+  , beginProgram      = return ()
+  }
 
 ----------------------------------------------------------------------------------------------------
 
--- | Debuggers run in the 'Control.Monad.Reader.ReaderT' monad. If you have a Reader state @R@, and
--- @R@ contains a 'DebugHandle', then instantiate @R@ into the 'Bugged' class, and any monad of the
--- type @'Control.Monad.Reader.ReaderT' R IO@ will be able to run any of the debugging functions in
--- the "Dao.Debug.ON" module.
--- 
--- The @()@ type instantiates this class, but it *always* returns 'Data.Maybe.Nothing', so if @()@
--- is the data you are using for your 'Control.Monad.Reader.ReaderT' state, debugging will always be
--- disabled, no matter what you do. This allows you to create a monad like this:
--- @type My a = ReaderT Debugger IO a -- enable debugging everywhere in My monad.@
--- ...now your debugger is enabled...
--- @type My a = ReaderT () IO a -- disable debugging everywhere in My monad.@
--- ...now your debugger is disabled, your monad is equivalent to @IO@, but you can still use all of
--- the functions in "Dao.Debug.ON" without rewriting any code!
---
--- You can enable/disable portions of your program by declaring your monad to be of the type:
--- @type My a = ReaderT DebugHandle IO a@
--- and execute the monad with
--- @'Control.Monad.Reader.runReaderT myMonad ('Data.Maybe.Just' myDebuggerState)@
--- but you can disable debugging in portions of the program by using 'Control.Monad.ReaderT.local'
--- like so:
--- @do  'Control.Monad.Reader.local' ('Prelude.const' 'Data.Maybe.Nothing') myMonad@
-class Bugged r where
-  askDebug :: ReaderT r IO DebugHandle
-  -- ^ retrieve the 'DebugHandle' from the 'Control.Monad.Reader.ReaderT' state @run@. Return
-  -- 'Data.Maybe.Nothing' to disable debugging for a portion of the program.
-  setDebug :: DebugHandle -> r -> r
-  -- ^ places the 'DebugHandle' into your 'Control.Monad.Reader.ReaderT' state.
+class HasDebugData st where
+  getDebugRef :: st -> DebugRef
+  setDebugRef :: DebugRef -> st -> st
 
-instance Bugged Debugger where
-  askDebug = fmap Just ask
-  setDebug dbg r = fromMaybe r dbg
+instance HasDebugData (Maybe DebugData) where { getDebugRef = id ; setDebugRef = const }
 
-instance Bugged (Maybe Debugger) where
-  askDebug = ask
-  setDebug dbg _ = dbg
+-- | Any monad that evaluates with stateful data in the IO monad, including
+-- @('Control.Monad.Reader.ReaderT' r IO)@ or @('Control.Monad.State.Lazy.StateT' st IO)@, can be
+-- made into a 'Bugged' monad, so long as the stateful data type contains a 'DebugData' that has
+-- been initialized only once. Instantiating 'askDebug' with
+-- @('Control.Monad.Trans.Class.lift' 'Dao.Debug.ON.initDebugger')@ will deadlock the debugger
+-- thread and most likely result in a 'Control.Exception.BlockedIndefinitelyOnMVar' exception.
+class (MonadIO m, Monad m, HasDebugData r) => Bugged r m | m -> r where
+  askDebug :: m DebugRef
+  askState :: m r
+  setState :: (r -> r) -> m a -> m a
+  debugUnliftIO :: m a -> r -> IO a
 
-instance Bugged () where
-  askDebug = return Nothing
-  setDebug _ () = ()
+instance HasDebugData r => Bugged r (ReaderT r IO) where
+  askDebug = fmap getDebugRef ask
+  askState = ask
+  setState = local
+  debugUnliftIO = runReaderT
+
+instance HasDebugData st => Bugged st (StateT st IO) where
+  askDebug = fmap getDebugRef get
+  askState = get
+  setState = withStateT
+  debugUnliftIO = evalStateT
+
+withDebugger :: Bugged r m => DebugRef -> m a -> m a
+withDebugger d = setState (setDebugRef d)
+
+inheritDebugger :: Bugged r m => m a -> m a
+inheritDebugger fn = askDebug >>= \d -> setState (setDebugRef d) fn
 

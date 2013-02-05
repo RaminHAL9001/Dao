@@ -40,7 +40,7 @@ module Dao.Debug.OFF
 -- "Dao.Debug.OFF", you cannot use both. To debug portions of your program while ignoring others,
 -- import "Dao.Debug.ON" and enable or disable debugging explicitly by either using a @ReaderT () IO
 -- a@ in place of the IO monad at the portions of your code that you do NOT want to debug, and using
--- a @ReaderT Debugger IO a@ monad in place of the @IO@ monad in places that you DO want to debug. You
+-- a @ReaderT DebugData IO a@ monad in place of the @IO@ monad in places that you DO want to debug. You
 -- could also compose separate @'debugIO' =<< 'enableDebug' ...@ and
 -- @'debugIO' =<< 'disableDebug' ...@ statements at the relevant locations in your code instead of
 -- changing the types of your monadic computations.
@@ -71,25 +71,9 @@ xloc = Nothing
 
 ----------------------------------------------------------------------------------------------------
 
-debugToHandle :: MLoc -> String -> LogWriter -> Handle -> IO DebugHandle
-debugToHandle _ _ _ _ = return Nothing
-
-debugToFile :: MLoc -> String -> LogWriter -> FilePath -> IOMode -> IO DebugHandle
-debugToFile _ _ _ _ _ = return Nothing
-
-disableDebugFile :: MLoc -> String -> LogWriter -> FilePath -> IOMode -> IO DebugHandle
-disableDebugFile _ _ _ _ _ = return Nothing
-
-debugTimestamp :: MLoc -> String -> Handle -> IO ()
-debugTimestamp _ _ _ = return ()
-
-debugIO :: Bugged r => MLoc -> String -> DebugHandle -> r -> (ReaderT r IO a) -> IO (Maybe a)
-debugIO _ _ _ r testFunc = fmap Just (runReaderT testFunc r)
-
-haltDebugger :: DebugHandle -> IO ()
-haltDebugger _ = return ()
-
-----------------------------------------------------------------------------------------------------
+debuggableProgram :: Bugged r m => MLoc -> SetupDebugger r m -> IO ()
+debuggableProgram _ setup =
+  initializeRuntime setup >>= debugUnliftIO (withDebugger Nothing (beginProgram setup))
 
 showThID :: ThreadId -> String -> String
 showThID tid msg = "(#"
@@ -97,159 +81,156 @@ showThID tid msg = "(#"
   ++ (if null msg then "" else ' ':msg)
   ++ ")"
 
-dSimple :: Bugged r => IO a -> IO ignored -> ReaderT r IO a
-dSimple doSomething _ = lift doSomething
-
-uniqueID :: Debugger -> IO Word64
+uniqueID :: DebugData -> IO Word64
 uniqueID _ = return 0
 
-event :: Debugger -> DEvent -> IO ()
+event :: DebugData -> DEvent -> IO ()
 event _ _ = return ()
 
 ----------------------------------------------------------------------------------------------------
 
-dMyThreadId :: ReaderT r IO ThreadId
-dMyThreadId = lift myThreadId
+dMyThreadId :: MonadIO m => m ThreadId
+dMyThreadId = liftIO myThreadId
 
-dYield :: ReaderT r IO ()
-dYield = lift yield
+dYield :: MonadIO m => m ()
+dYield = liftIO yield
 
-dThrowIO :: Exception e => e -> ReaderT r IO any
-dThrowIO e = lift (throwIO e)
+dThrowIO :: (MonadIO m, Exception e) => e -> m any
+dThrowIO e = liftIO (throwIO e)
 
-dThreadDelay :: Bugged r => MLoc -> Int -> ReaderT r IO ()
-dThreadDelay _ i = lift (threadDelay i)
+dThreadDelay :: Bugged r m => MLoc -> Int -> m ()
+dThreadDelay _ i = liftIO (threadDelay i)
 
-dMyThreadLabel :: ThreadId -> ReaderT r IO (Maybe Name)
+dMyThreadLabel :: Bugged r m => ThreadId -> m (Maybe Name)
 dMyThreadLabel _ = return Nothing
 
-dMessage :: Bugged r => MLoc -> String -> ReaderT r IO ()
+dMessage :: Bugged r m => MLoc -> String -> m ()
 dMessage _ _ = return ()
 
-dStack :: Bugged r => MLoc -> String -> ReaderT r IO a -> ReaderT r IO a
+dStack :: Bugged r m => MLoc -> String -> m a -> m a
 dStack _ _ func = func
 
 dPutString
-  :: Bugged r
+  :: Bugged r m
   => (MLoc -> ThreadId -> String -> DEvent)
   -> (String -> IO ())
   -> MLoc
   -> String
-  -> ReaderT r IO ()
-dPutString _ io _ msg = lift (io msg)
+  -> m ()
+dPutString _ io _ msg = liftIO (io msg)
 
-dPutStrLn :: Bugged r => MLoc -> String -> ReaderT r IO ()
+dPutStrLn :: Bugged r m => MLoc -> String -> m ()
 dPutStrLn = dPutString undefined putStrLn
 
-dPutStr :: Bugged r => MLoc -> String -> ReaderT r IO ()
+dPutStr :: Bugged r m => MLoc -> String -> m ()
 dPutStr = dPutString undefined putStr
 
-dPutStrErr :: Bugged r => MLoc -> String -> ReaderT r IO ()
+dPutStrErr :: Bugged r m => MLoc -> String -> m ()
 dPutStrErr _ msg = dPutString undefined (hPutStrLn stderr) undefined msg
 
 ----------------------------------------------------------------------------------------------------
 
-dFork :: Bugged r => (IO () -> IO ThreadId) -> MLoc -> String -> ReaderT r IO () -> ReaderT r IO ThreadId
-dFork fork _ _ ioFunc = ReaderT $ \r -> fork (runReaderT ioFunc r)
+dFork :: Bugged r m => (IO () -> IO ThreadId) -> MLoc -> String -> m () -> m ThreadId
+dFork fork _ _ ioFunc = askState >>= \r -> liftIO (fork (debugUnliftIO ioFunc r))
 
-dThrowTo :: (Exception e, Bugged r) => MLoc -> ThreadId -> e -> ReaderT r IO ()
-dThrowTo _ target err = lift (throwTo target err)
+dThrowTo :: (Exception e, Bugged r m) => MLoc -> ThreadId -> e -> m ()
+dThrowTo _ target err = liftIO (throwTo target err)
 
-dKillThread :: Bugged r => MLoc -> ThreadId -> ReaderT r IO ()
-dKillThread _ target = lift (killThread target)
+dKillThread :: Bugged r m => MLoc -> ThreadId -> m ()
+dKillThread _ target = liftIO (killThread target)
 
-dCatch :: (Exception e, Bugged r) => MLoc -> ReaderT r IO a -> (e -> ReaderT r IO a) -> ReaderT r IO a
-dCatch _ tryFunc catchFunc = ReaderT $ \r ->
-  handle (\e -> runReaderT (catchFunc e) r) (runReaderT tryFunc r)
+dCatch :: (Exception e, Bugged r m) => MLoc -> m a -> (e -> m a) -> m a
+dCatch _ tryFunc catchFunc = askState >>= \r ->
+  liftIO (handle (\e -> debugUnliftIO (catchFunc e) r) (debugUnliftIO tryFunc r))
 
-dHandle :: (Exception e, Bugged r) => MLoc -> (e -> ReaderT r IO a) -> ReaderT r IO a -> ReaderT r IO a
+dHandle :: (Exception e, Bugged r m) => MLoc -> (e -> m a) -> m a -> m a
 dHandle _ catchFunc tryFunc = dCatch undefined tryFunc catchFunc
 
-dCatches :: Bugged r => ReaderT r IO a -> [DHandler r a] -> ReaderT r IO a
+dCatches :: Bugged r m => m a -> [DHandler r a] -> m a
 dCatches tryfn dhands = do
-  r <- ask
-  lift $ catches (runReaderT tryfn r) $
+  r <- askState
+  liftIO $ catches (debugUnliftIO tryfn r) $
     map (\dhandl -> (getHandler dhandl) r (\_ -> return ())) dhands
 
-dHandles :: Bugged r => [DHandler r a] -> ReaderT r IO a -> ReaderT r IO a
+dHandles :: Bugged r m => [DHandler r a] -> m a -> m a
 dHandles = flip dCatches
 
-dThrow :: (Exception e, Bugged r) => MLoc -> e -> ReaderT r IO ignored
-dThrow _ err = lift (throwIO err)
+dThrow :: (Exception e, Bugged r m) => MLoc -> e -> m ignored
+dThrow _ err = liftIO (throwIO err)
 
 ----------------------------------------------------------------------------------------------------
 
 dMakeVar
-  :: Bugged r
+  :: Bugged r m
   => IO v
   -> (MLoc -> ThreadId -> DVar v -> DEvent)
   -> String
   -> MLoc
   -> String
-  -> ReaderT r IO (DVar v)
-dMakeVar newIO _ _ _ _ = lift (fmap DVar newIO)
+  -> m (DVar v)
+dMakeVar newIO _ _ _ _ = liftIO (fmap DVar newIO)
 
 dVar ::
-  Bugged r
+  Bugged r m
   => (v -> IO a)
   -> (MLoc -> ThreadId -> DVar v)
   -> MLoc
   -> DVar v
-  -> ReaderT r IO a
-dVar withVar _ _ dvar = lift (withVar (dbgVar dvar))
+  -> m a
+dVar withVar _ _ dvar = liftIO (withVar (dbgVar dvar))
 
 ----------------------------------------------------------------------------------------------------
 
-dNewChan :: Bugged r => MLoc -> String -> ReaderT r IO (DChan v)
+dNewChan :: Bugged r m => MLoc -> String -> m (DChan v)
 dNewChan _ _ = dMakeVar newChan undefined undefined undefined undefined
 
-dWriteChan :: Bugged r => MLoc -> DChan v -> v -> ReaderT r IO ()
+dWriteChan :: Bugged r m => MLoc -> DChan v -> v -> m ()
 dWriteChan _ var v = dVar (flip writeChan v) undefined undefined var
 
-dReadChan :: Bugged r => MLoc -> DChan v -> ReaderT r IO v
+dReadChan :: Bugged r m => MLoc -> DChan v -> m v
 dReadChan _ var = dVar readChan undefined undefined var
 
 ----------------------------------------------------------------------------------------------------
 
-dNewQSem :: Bugged r => MLoc -> String -> Int -> ReaderT r IO DQSem
+dNewQSem :: Bugged r m => MLoc -> String -> Int -> m DQSem
 dNewQSem _ _ i = dMakeVar (newQSem i) undefined undefined undefined undefined
 
-dSignalQSem :: Bugged r => MLoc -> DQSem -> ReaderT r IO ()
+dSignalQSem :: Bugged r m => MLoc -> DQSem -> m ()
 dSignalQSem _ var = dVar signalQSem undefined undefined var
 
-dWaitQSem :: Bugged r => MLoc -> DQSem -> ReaderT r IO ()
+dWaitQSem :: Bugged r m => MLoc -> DQSem -> m ()
 dWaitQSem _ var = dVar waitQSem undefined undefined var
 
 ----------------------------------------------------------------------------------------------------
 
-dNewMVar :: Bugged r => MLoc -> String -> v -> ReaderT r IO (DMVar v)
+dNewMVar :: Bugged r m => MLoc -> String -> v -> m (DMVar v)
 dNewMVar _ _ v = dMakeVar (newMVar v) undefined undefined undefined undefined
 
-dNewEmptyMVar :: Bugged r => MLoc -> String -> ReaderT r IO (DMVar v)
+dNewEmptyMVar :: Bugged r m => MLoc -> String -> m (DMVar v)
 dNewEmptyMVar _ _ = dMakeVar newEmptyMVar undefined undefined undefined undefined
 
-dPutMVar :: Bugged r => MLoc -> DMVar v -> v -> ReaderT r IO ()
+dPutMVar :: Bugged r m => MLoc -> DMVar v -> v -> m ()
 dPutMVar _ var v = dVar (flip putMVar v) undefined undefined var
 
-dTakeMVar :: Bugged r => MLoc -> DMVar v -> ReaderT r IO v
+dTakeMVar :: Bugged r m => MLoc -> DMVar v -> m v
 dTakeMVar _ var = dVar takeMVar undefined undefined var
 
-dReadMVar :: Bugged r => MLoc -> DMVar v -> ReaderT r IO v
+dReadMVar :: Bugged r m => MLoc -> DMVar v -> m v
 dReadMVar _ var = dVar readMVar undefined undefined var
 
-dSwapMVar :: Bugged r => MLoc -> DMVar v -> v -> ReaderT r IO v
+dSwapMVar :: Bugged r m => MLoc -> DMVar v -> v -> m v
 dSwapMVar _ var v = dVar (flip swapMVar v) undefined undefined var
 
-dModifyMVar :: Bugged r => MLoc -> DMVar v -> (v -> ReaderT r IO (v, a)) -> ReaderT r IO a
-dModifyMVar _ var updFunc = ask >>= \r ->
-  dVar (\v -> modifyMVar v (\v -> runReaderT (updFunc v) r)) undefined undefined var
+dModifyMVar :: Bugged r m => MLoc -> DMVar v -> (v -> m (v, a)) -> m a
+dModifyMVar _ var updFunc = askState >>= \r ->
+  dVar (\v -> modifyMVar v (\v -> debugUnliftIO (updFunc v) r)) undefined undefined var
 
-dModifyMVar_ :: Bugged r => MLoc -> DMVar v -> (v -> ReaderT r IO v) -> ReaderT r IO ()
-dModifyMVar_ _ var updFunc = ask >>= \r ->
-  dVar (\v -> modifyMVar_ v (\v -> runReaderT (updFunc v) r)) undefined undefined var
+dModifyMVar_ :: Bugged r m => MLoc -> DMVar v -> (v -> m v) -> m ()
+dModifyMVar_ _ var updFunc = askState >>= \r ->
+  dVar (\v -> modifyMVar_ v (\v -> debugUnliftIO (updFunc v) r)) undefined undefined var
 
 ----------------------------------------------------------------------------------------------------
 
-debugLog :: LogWriter
-debugLog _ _ = return ()
+instance Show DUnique where { show _ = "" }
+instance Show DEvent  where { show _ = "" }
 

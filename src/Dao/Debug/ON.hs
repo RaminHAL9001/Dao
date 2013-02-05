@@ -36,6 +36,8 @@ module Dao.Debug.ON
 -- at the same time as "Dao.Debug.OFF" becuase it provides the excat same API, the only difference
 -- being that the debugging operations are "enabled" with this module.
 
+import           Prelude  hiding (catch)
+
 import           Dao.Debug
 import           Dao.String
 
@@ -47,6 +49,7 @@ import           Data.Maybe
 import           Data.List hiding (lookup)
 import           Data.Word
 import           Data.IORef
+import           Data.Time.Clock
 import qualified Data.Map as M
 
 import           System.IO
@@ -74,94 +77,45 @@ xloc = Nothing
 
 ----------------------------------------------------------------------------------------------------
 
--- | Initializes a 'Dao.Debug.Debugger' to use a 'System.IO.Handle'. You should call this instead of
--- calling 'Dao.Debug.initDebugger' directly.
--- and begins debugging a given function using 'debugIO', closing the file when 'debugIO' completes
--- evluation.
-debugToHandle :: MLoc -> String -> LogWriter -> Handle -> IO DebugHandle
-debugToHandle loc logmsg log file = fmap Just (initDebugger logmsg log file)
-
--- | Initializes a 'Dao.Debug.Debugger', and opens a 'System.IO.Handle' with the given 'FilePath'
--- and begins debugging a given function using 'debugIO', closing the file when 'debugIO' completes
--- evluation.
-debugToFile :: MLoc -> String -> LogWriter -> FilePath -> IOMode -> IO DebugHandle
-debugToFile loc logmsg log path mode = do
-  debug <- (if null path then return stderr else openFile path mode) >>= initDebugger logmsg log
-  return $ Just $
-    debug
-    { debugShutdown = do
-        let file = debugFileHandle debug
-        closed <- hIsClosed file
-        debugShutdown debug
-        unless (file==stderr || closed) (hClose file)
-    }
-
--- | This function provides an easy way to disable debugging when modifying your Haskell code.
--- Simply replace one of the above '
--- All parameters passed to this function are ignored as debugging is disabled, so it is safe to
--- pass 'Prelude.undefined' if you are at a loss for types to fill in here.
-disableDebugFile :: MLoc -> String -> LogWriter -> FilePath -> IOMode -> IO DebugHandle
-disableDebugFile _ _ _ _ _ = return Nothing
-
-debugTimestamp :: MLoc -> String -> Handle -> IO ()
-debugTimestamp loc msg file = hIsClosed file >>= \closed -> unless closed $ do
-  let here = case loc of
-        Nothing               -> msg
-        Just (path, row, col) ->
-          path++':':show row++':':show col++(if null msg then msg else ": "++msg)
-  msg <- fmap ((here++) . (' ':) . show) getClockTime >>= evaluate
-  hPutStrLn file msg
-  putStrLn msg
-
--- | This is how you "startup" the debugger. Pass a function you wish to debug, 'debugIO' will fork
--- a thread and setup the facilities to debug execution of that function. The supplied 'DebugHandle'
--- is used to execute all debug functions, so you need to modify the code of the @IO@ function
--- passed to the 'debugIO' function such that it sends debug messages using that 'DebugHandle'.
-debugIO :: Bugged r => MLoc -> String -> DebugHandle -> r -> (ReaderT r IO a) -> IO (Maybe a)
-debugIO loc msg debug r testTarget = case debug of
-  Nothing    -> fmap Just $ runReaderT testTarget r
-  Just debug -> do
-    let file = debugFileHandle debug
-        log = debugLog debug
-    hSetBuffering file LineBuffering
-    hPutStrLn file ("DEBUG HOST started: "++debugComments debug)
-    retvar <- newEmptyMVar
-    child  <- flip runReaderT (setDebug (Just debug) r) $
-      dFork forkIO loc msg (testTarget >>= lift . putMVar retvar . Just)
-    let ttab = debugThreadTable debug
-    modifyIORef ttab (M.insert child (ustr msg))
-    let chan = debugChan debug
-        file = debugFileHandle debug
-        loopException (SomeException e) = do
-          let msg = "DEBUG HOST killed, "++show e
-          debugTimestamp loc msg file
-          readIORef ttab >>= mapM_ killThread . M.keys
-          putMVar retvar Nothing
-        loop = do
-          event <- readChan chan
-          log event >>= evaluate
-          t <- readIORef ttab
-          continue <- case event of
-            DFork         _ _ t name -> modifyIORef ttab (M.insert t (ustr name)) >> return True
-            DThreadDied     _ t      -> modifyIORef ttab (M.delete t) >> return True
-            DThreadKilled   _ t _    -> modifyIORef ttab (M.delete t) >> return True
-            DHalt                    -> return False
-            _            | M.null t  -> return False
-                         | otherwise -> return True
-          empty <- isEmptyMVar retvar
-          when (continue && empty) loop
-    handle loopException loop
-    a <- takeMVar retvar
-    hPutStrLn file "DEBUG HOST thread exited normally"
-    return a
-
--- | When you are done with debugging all together, evaluate this function.
-haltDebugger :: DebugHandle -> IO ()
-haltDebugger debug = case debug of
-  Nothing -> return ()
-  Just debug -> debugShutdown debug
-
-----------------------------------------------------------------------------------------------------
+debuggableProgram :: Bugged r m => MLoc -> SetupDebugger r m -> IO ()
+debuggableProgram mloc setup =
+  if debugEnabled setup
+    then do
+      debug <- initDebugData
+      let debugRef = Just debug
+      debug <- case debugOutputTo setup of
+        DebugOutputToDefault   -> return (debug{debugPrint = dEventToString debug >=> hPutStrLn stderr})
+        DebugOutputToHandle  h -> return (debug{debugPrint = dEventToString debug >=> hPutStrLn h, debugClose = hClose h})
+        DebugOutputToChannel c -> return (debug{debugPrint = writeChan c})
+        DebugOutputToFile path -> do
+          h <- openFile path ReadWriteMode
+          return (debug{debugPrint = dEventToString debug >=> hPutStrLn h, debugClose = hClose h})
+      runtime    <- initializeRuntime setup
+      mainThread <- forkIO (catch (yield >> init debugRef runtime) (uncaught debug))
+      event debug (DStarted mloc mainThread (debugComment setup) (debugStartTime debug))
+      loop debug
+      debugClose debug
+    else initializeRuntime setup >>= init Nothing
+  where
+    init debugRef = debugUnliftIO (withDebugger debugRef (beginProgram setup))
+    uncaught debug e = do
+      this <- myThreadId
+      event debug (DUncaught mloc this e)
+      event debug DHalt
+      debugClose debug
+    loop debug = do
+      let debugRef = Just debug
+          ttab = debugThreadTable debug
+      evt <- takeMVar (debugChan debug)
+      debugPrint debug evt >>= evaluate
+      t <- readIORef ttab
+      case evt of
+        DFork         _ _ t name -> modifyIORef ttab (M.insert t (ustr name)) >> loop debug
+        DThreadDied     _ t      -> modifyIORef ttab (M.delete t) >> loop debug
+        DUncaught     _ t _      -> modifyIORef ttab (M.delete t) >> loop debug
+        DHalt                    -> return False
+        _            | M.null t  -> return False
+                     | otherwise -> loop debug
 
 showThID :: ThreadId -> String -> String
 showThID tid msg = "(#"
@@ -174,39 +128,47 @@ showThID tid msg = "(#"
 -- message to it. This function does exactly that given the two functions you pass to it: the
 -- "Control.Concurrent" function (in the @IO@ monad) and a pure function that creates the
 -- 'Dao.Debug.DEvent' from the 'Control.Concurrent.ThreadId' of the current thread passed to it.
-dDebug :: Bugged r => IO a -> (ThreadId -> DEvent) -> ReaderT r IO a
-dDebug doSomething sendMessage = askDebug >>= \debug -> lift $ case debug of
+dDebug :: Bugged r m => IO a -> (ThreadId -> DEvent) -> m a
+dDebug doSomething sendMessage = askDebug >>= \debugRef -> liftIO $ case debugRef of
   Nothing    -> doSomething
   Just debug -> myThreadId >>= event debug . sendMessage >> doSomething
 
 -- | Generates a unique identifier that can be attached to 'Dao.Debug.DMVar's, and
 -- 'Dao.Debug.DQSem's.
-uniqueID :: Debugger -> IO Word64
-uniqueID debug = modifyMVar (uniqueIDGen debug) (\a -> let b=a+1 in return (b,b))
+uniqueID :: DebugData -> IO DUnique
+uniqueID debug = do
+  next <- modifyMVar (debugUniqueCount debug) $ \a ->
+    let b = if a==maxBound then 0 else a+1 in return (b,b)
+  now  <- getCurrentTime
+  return $
+    DUnique
+    { dElapsedTime = fromRational (toRational (diffUTCTime now (debugStartTime debug)))
+    , dUniqueWord = next
+    }
 
-event :: Debugger -> DEvent -> IO ()
-event debug evt = writeChan (debugChan debug) evt >>= evaluate
+event :: DebugData -> DEvent -> IO ()
+event debug evt = putMVar (debugChan debug) evt >>= evaluate
 
 ----------------------------------------------------------------------------------------------------
 
 -- | Does not emit any debuggign information. This function is provided for convenience. It simply
 -- lifts the 'Control.Concurrent.myThreadId' function into the 'Control.Monad.Reader.ReaderT' monad.
-dMyThreadId :: ReaderT r IO ThreadId
-dMyThreadId = lift myThreadId
+dMyThreadId :: MonadIO m => m ThreadId
+dMyThreadId = liftIO myThreadId
 
 -- | Does not emit any debuggign information. This function is provided for convenience. It simply
 -- lifts the 'Control.Concurrent.yield' function into the 'Control.Monad.Reader.ReaderT' monad.
-dYield :: ReaderT r IO ()
-dYield = lift yield
+dYield :: MonadIO m => m ()
+dYield = liftIO yield
 
-dThrowIO :: Exception e => e -> ReaderT r IO any
-dThrowIO e = lift (throwIO e)
+dThrowIO :: (MonadIO m, Exception e) => e -> m any
+dThrowIO e = liftIO (throwIO e)
 
 -- | Emits a 'Dao.Debug.DThreadDelay' signal and called 'Control.Concurrent.threadDelay'.
-dThreadDelay :: Bugged r => MLoc -> Int -> ReaderT r IO ()
-dThreadDelay loc i = askDebug >>= \debug -> case debug of
-  Nothing    -> lift (threadDelay i)
-  Just debug -> lift $ do
+dThreadDelay :: Bugged r m => MLoc -> Int -> m ()
+dThreadDelay loc i = askDebug >>= \debugRef -> case debugRef of
+  Nothing    -> liftIO (threadDelay i)
+  Just debug -> liftIO $ do
     this <- myThreadId
     event debug (DThreadDelay loc this i)
     threadDelay i
@@ -214,52 +176,52 @@ dThreadDelay loc i = askDebug >>= \debug -> case debug of
 
 -- | Does not emit any debugging information. This function will lookup the 'Dao.String.Name'
 -- that was associated with a given 'Control.Concurrent.ThreadId' when it was created by 'dFork'.
-dMyThreadLabel :: Bugged r => ThreadId -> ReaderT r IO (Maybe Name)
-dMyThreadLabel thread = askDebug >>= \debug -> lift $ case debug of
+dMyThreadLabel :: Bugged r m => ThreadId -> m (Maybe Name)
+dMyThreadLabel thread = askDebug >>= \debug -> liftIO $ case debug of
   Nothing    -> return Nothing
   Just debug -> fmap (M.lookup thread) (readIORef (debugThreadTable debug))
 
 -- | Emits a 'Dao.Debug.DMsg' signal to the debugger.
-dMessage :: Bugged r => MLoc -> String -> ReaderT r IO ()
+dMessage :: Bugged r m => MLoc -> String -> m ()
 dMessage loc msg = dDebug (return ()) (\this -> DMsg loc this msg)
 
 -- | Given a function to execute, emit a 'Dao.Debug.DMsg' once before and once after the function
 -- has been evaluated.
-dStack :: Bugged r => MLoc -> String -> ReaderT r IO a -> ReaderT r IO a
+dStack :: Bugged r m => MLoc -> String -> m a -> m a
 dStack loc fname func = askDebug >>= \debug -> case debug of
   Nothing    -> func
-  Just debug -> ask >>= \r -> lift $ do
-    let ch = debugChan debug
+  Just debug -> askState >>= \r -> liftIO $ do
+    let ch  = debugChan debug
         msg = show fname
     this <- myThreadId
-    writeChan (debugChan debug) (DMsg loc this ("begin "++msg)) >>= evaluate
-    a <- flip handle (runReaderT func r) $ \ (SomeException e) -> do
-      writeChan ch (DMsg loc this (msg++" terminated by exception: "++show e)) >>= evaluate
+    putMVar (debugChan debug) (DMsg loc this ("begin "++msg)) >>= evaluate
+    a <- flip handle (debugUnliftIO func r) $ \ (SomeException e) -> do
+      putMVar ch (DMsg loc this (msg++" terminated by exception: "++show e)) >>= evaluate
       throwIO e
-    writeChan ch (DMsg loc this ("end   "++msg)) >>= evaluate
+    putMVar ch (DMsg loc this ("end   "++msg)) >>= evaluate
     return a
 
 -- | Used to derive 'dPutStrLn', 'dPutStr', and 'dPutStrErr'.
 dPutString
-  :: Bugged r
+  :: Bugged r m
   => (MLoc -> ThreadId -> String -> DEvent)
   -> (String -> IO ())
   -> MLoc
   -> String
-  -> ReaderT r IO ()
+  -> m ()
 dPutString cons io loc msg = dDebug (io msg) $ \this -> cons loc this msg
 
 -- | Emits a 'Dao.Debug.DStdout' signal to the debugger and calls 'System.IO.putStrLn'.
-dPutStrLn :: Bugged r => MLoc -> String -> ReaderT r IO ()
+dPutStrLn :: Bugged r m => MLoc -> String -> m ()
 dPutStrLn = dPutString DStdout putStrLn
 
 -- | Emits a 'Dao.Debug.DStdout' signal to the debugger and calls 'System.IO.putStr'.
-dPutStr :: Bugged r => MLoc -> String -> ReaderT r IO ()
+dPutStr :: Bugged r m => MLoc -> String -> m ()
 dPutStr = dPutString DStdout putStr
 
 -- | Emits a 'Dao.Debug.DStderr' signal to the debugger and calls
 -- @'System.IO.hPutStrLn' 'System.IO.stderr'@.
-dPutStrErr :: Bugged r => MLoc -> String -> ReaderT r IO ()
+dPutStrErr :: Bugged r m => MLoc -> String -> m ()
 dPutStrErr = dPutString DStderr (hPutStrLn stderr)
 
 ----------------------------------------------------------------------------------------------------
@@ -267,55 +229,60 @@ dPutStrErr = dPutString DStderr (hPutStrLn stderr)
 -- | Emits a 'Dao.Debug.DFork' signal and calls whichever fork function you tell it to: either
 -- 'Control.Concurrent.forkIO' or 'Control.Concurrent.forkOS'.
 dFork
-  :: Bugged r
+  :: Bugged r m
   => (IO () -> IO ThreadId)
   -> MLoc
   -> String
-  -> ReaderT r IO ()
-  -> ReaderT r IO ThreadId
-dFork fork loc name ioFunc = ask >>= \r -> askDebug >>= \debug -> lift $ case debug of
-  Nothing    -> fork (runReaderT ioFunc r)
+  -> m ()
+  -> m ThreadId
+dFork fork loc name ioFunc = askState >>= \r -> askDebug >>= \debug -> liftIO $ case debug of
+  Nothing    -> fork (debugUnliftIO ioFunc r)
   Just debug -> do
     let end = myThreadId >>= \child -> event debug $ DThreadDied loc child
         h err@(SomeException e) = myThreadId >>= \child ->
-          event debug (DThreadKilled loc child (SomeException e)) >> throwIO e
-    child  <- fork (handle h (runReaderT ioFunc r >> end))
+          event debug (DUncaught loc child (SomeException e)) >> throwIO e
+    child  <- fork (handle h (debugUnliftIO ioFunc r >> end))
     parent <- myThreadId
     event debug $ DFork loc parent child name
     return child
 
 -- | Emits a 'Dao.Debug.DThrowTo' signal to the debugger and calls 'Control.Concurrent.throwTo'.
-dThrowTo :: (Exception e, Bugged r) => MLoc -> ThreadId -> e -> ReaderT r IO ()
+dThrowTo :: (Exception e, Bugged r m) => MLoc -> ThreadId -> e -> m ()
 dThrowTo loc target err = dDebug (throwTo target err) $ \this ->
   DThrowTo loc this target (SomeException err)
 
 -- | Emits a 'Dao.Debug.DThrowTo' signal to the debugger and calls
 -- 'Control.Concurrent.killThread'.
-dKillThread :: Bugged r => MLoc -> ThreadId -> ReaderT r IO ()
+dKillThread :: Bugged r m => MLoc -> ThreadId -> m ()
 dKillThread loc target = dDebug (killThread target) $ \this ->
   DThrowTo loc this target (SomeException ThreadKilled)
 
 -- | Behaves just like 'Control.Exception.catch', but makes sure to send a 'DCatch'
 -- signal.
-dCatch :: (Exception e, Bugged r) => MLoc -> ReaderT r IO a -> (e -> ReaderT r IO a) -> ReaderT r IO a
+dCatch :: (Exception e, Bugged r m) => MLoc -> m a -> (e -> m a) -> m a
 dCatch loc tryFunc catchFunc = askDebug >>= \debug -> case debug of
-  Nothing    -> ReaderT $ \r -> handle (\e -> runReaderT (catchFunc e) r) (runReaderT tryFunc r)
-  Just debug -> ReaderT $ \r -> do
-    this <- myThreadId
-    flip handle (runReaderT tryFunc r) $ \e ->
-      event debug (DCatch loc this (SomeException e)) >> runReaderT (catchFunc e) r
+  Nothing    -> do
+    r <- askState
+    liftIO (handle (\e -> debugUnliftIO (catchFunc e) r) (debugUnliftIO tryFunc r))
+  Just debug -> do
+    r <- askState
+    liftIO $ do
+      this <- myThreadId
+      catch (debugUnliftIO tryFunc r) $ \e -> do
+        event debug (DCatch loc this (SomeException e))
+        debugUnliftIO (catchFunc e) r
 
 -- | Like 'dCatch' but with it's final two parameters flipped.
-dHandle :: (Exception e, Bugged r) => MLoc -> (e -> ReaderT r IO a) -> ReaderT r IO a -> ReaderT r IO a
+dHandle :: (Exception e, Bugged r m) => MLoc -> (e -> m a) -> m a -> m a
 dHandle loc catchFunc tryFunc = dCatch loc tryFunc catchFunc
 
 -- | Behaves just like 'Control.Exception.catches', but takes a list of 'Dao.Debug.DHandler's which
 -- are converted to 'Control.Exception.Handlers' as necessary.
-dCatches :: Bugged r => ReaderT r IO a -> [DHandler r a] -> ReaderT r IO a
+dCatches :: Bugged r m => m a -> [DHandler r a] -> m a
 dCatches tryfn dhands = do
-  r <- ask
+  r <- askState
   debug <- askDebug
-  lift (catches (runReaderT tryfn r) (map (mkh r debug) dhands)) where
+  liftIO (catches (debugUnliftIO tryfn r) (map (mkh r debug) dhands)) where
     mkh r debug dhandl = case debug of
       Nothing    -> (getHandler dhandl) r (\_ -> return ())
       Just debug -> (getHandler dhandl) r $ \err -> do
@@ -323,120 +290,121 @@ dCatches tryfn dhands = do
         event debug (DCatch (getHandlerMLoc dhandl) this err)
 
 -- | Same as 'dCatches' but with arguments reversed
-dHandles :: Bugged r => [DHandler r a] -> ReaderT r IO a -> ReaderT r IO a
+dHandles :: Bugged r m => [DHandler r a] -> m a -> m a
 dHandles = flip dCatches
 
 -- | Emits a 'DThrow' signal, calls 'Control.Exception.throwIO'.
-dThrow :: (Exception e, Bugged r) => MLoc -> e -> ReaderT r IO ignored
+dThrow :: (Exception e, Bugged r m) => MLoc -> e -> m ignored
 dThrow loc err = dDebug (throwIO err) $ \this -> DThrow loc this (SomeException err)
 
 ----------------------------------------------------------------------------------------------------
 
 -- | Used to derive the 'dNewChan', 'dNewQSem', and 'dNewMVar' functions.
 dMakeVar
-  :: Bugged r
+  :: Bugged r m
   => String
   -> String
   -> IO v
   -> MLoc
   -> String
-  -> ReaderT r IO (DVar v)
-dMakeVar typeName funcName newIO loc msg = askDebug >>= \debug -> lift $ case debug of
+  -> m (DVar v)
+dMakeVar typeName funcName newIO loc msg = askDebug >>= \debug -> liftIO $ case debug of
   Nothing    -> fmap DVar newIO
   Just debug -> do
     this <- myThreadId
     i    <- uniqueID debug
     var  <- newIO
-    let dvar = IDVar{dbgVar = var, varID = i, dbgTypeName = typeName, dbgVarComment = msg}
+    let dvar = IDVar{dbgVar = var, varID = i, dbgTypeName = typeName}
     event debug (DVarAction loc this (dVarInfo funcName dvar))
     return dvar
 
 -- | Used to derive 'dReadMVar', 'dSwapMVar', and 'dTakeMVar'. Emits a 'DTakeMVar' signal.
 dVar ::
-  Bugged r
+  Bugged r m
   => (v -> IO a)
   -> String
   -> MLoc
   -> DVar v
-  -> ReaderT r IO a
+  -> m a
 dVar withVar funcName loc var =
   dDebug (withVar (dbgVar var)) $ \this -> DVarAction loc this (dVarInfo funcName var)
 
 ----------------------------------------------------------------------------------------------------
 
 -- | Emits a 'DNewChan' signal and calls 'Control.Concurrent.Chan.newChan'.
-dNewChan :: Bugged r => MLoc -> String -> ReaderT r IO (DChan v)
+dNewChan :: Bugged r m => MLoc -> String -> m (DChan v)
 dNewChan = dMakeVar "Chan" "newChan" newChan
 
 -- | Emits a 'DWriteChan' signal and calls 'Control.Concurrent.Chan.writeChan'.
-dWriteChan :: Bugged r => MLoc -> DChan v -> v -> ReaderT r IO ()
+dWriteChan :: Bugged r m => MLoc -> DChan v -> v -> m ()
 dWriteChan loc var v = dVar (flip writeChan v) "writeChan" loc var
 
 -- | Emits a 'DWriteChan' signal and calls 'Control.Concurrent.Chan.writehan'.
-dReadChan :: Bugged r => MLoc -> DChan v -> ReaderT r IO v
+dReadChan :: Bugged r m => MLoc -> DChan v -> m v
 dReadChan = dVar readChan "readChan"
 
 ----------------------------------------------------------------------------------------------------
 
 -- | Emits a 'DNewQSem' signal and calls 'Control.Concurrent.Chan.newChan'.
-dNewQSem :: Bugged r => MLoc -> String -> Int -> ReaderT r IO DQSem
+dNewQSem :: Bugged r m => MLoc -> String -> Int -> m DQSem
 dNewQSem loc msg i = dMakeVar "QSem" ("newQSem "++show i) (newQSem i) loc msg
 
 -- | Emits a 'DSignqlQSem' signal and calls 'Control.Concurrent.QSem.signalQSem'.
-dSignalQSem :: Bugged r => MLoc -> DQSem -> ReaderT r IO ()
+dSignalQSem :: Bugged r m => MLoc -> DQSem -> m ()
 dSignalQSem = dVar signalQSem "signalQSem"
 
 -- | Emits a 'DSignalQSem' signal and calls 'Control.Concurrent.QSem.signalQSem'.
-dWaitQSem :: Bugged r => MLoc -> DQSem -> ReaderT r IO ()
+dWaitQSem :: Bugged r m => MLoc -> DQSem -> m ()
 dWaitQSem = dVar waitQSem "waitQSem"
 
 ----------------------------------------------------------------------------------------------------
 
 -- | Emits a 'DNewMVar' signal and calls 'Control.Concurrent.MVar.newMVar'.
-dNewMVar :: Bugged r => MLoc -> String -> v -> ReaderT r IO (DMVar v)
+dNewMVar :: Bugged r m => MLoc -> String -> v -> m (DMVar v)
 dNewMVar loc msg v = dMakeVar "MVar" "newMVar" (newMVar v) loc msg
 
 -- | Emits a 'DNewEmptyMVar' signal and calls 'Control.Concurrent.MVar.newEmptyMVar'.
-dNewEmptyMVar :: Bugged r => MLoc -> String -> ReaderT r IO (DMVar v)
+dNewEmptyMVar :: Bugged r m => MLoc -> String -> m (DMVar v)
 dNewEmptyMVar = dMakeVar "MVar" "newEmptyMVar" newEmptyMVar
 
 -- | Emits a 'DPutMVar' signal and calls 'Control.Concurrent.MVar.putMVar'.
-dPutMVar :: Bugged r => MLoc -> DMVar v -> v -> ReaderT r IO ()
+dPutMVar :: Bugged r m => MLoc -> DMVar v -> v -> m ()
 dPutMVar loc var v = dVar (flip putMVar v) "putMVar" loc var
 
 -- | Emits a 'DTakeMVar' signal and calls 'Control.Concurrent.MVar.takeMVar'.
-dTakeMVar :: Bugged r => MLoc -> DMVar v -> ReaderT r IO v
+dTakeMVar :: Bugged r m => MLoc -> DMVar v -> m v
 dTakeMVar = dVar takeMVar "takeMVar"
 
 -- | Emits a 'DReadMVar' signal and calls 'Control.Concurrent.MVar.readMVar'.
-dReadMVar :: Bugged r => MLoc -> DMVar v -> ReaderT r IO v
+dReadMVar :: Bugged r m => MLoc -> DMVar v -> m v
 dReadMVar = dVar readMVar "readMVar"
 
 -- | Emits a 'DReadMVar' signal and calls 'Control.Concurrent.MVar.swapMVar'.
-dSwapMVar :: Bugged r => MLoc -> DMVar v -> v -> ReaderT r IO v
+dSwapMVar :: Bugged r m => MLoc -> DMVar v -> v -> m v
 dSwapMVar loc var v = dVar (flip swapMVar v) "swapMVar" loc var
 
 -- | Emits a 'DModifyMVar' signal and calls 'Control.Concurrent.MVar.modifyMVar'.
-dModifyMVar :: Bugged r => MLoc -> DMVar v -> (v -> ReaderT r IO (v, a)) -> ReaderT r IO a
-dModifyMVar loc var updFunc = ask >>= \r ->
-  dVar (flip modifyMVar (\v -> runReaderT (updFunc v) r)) "modifyMVar" loc var
+dModifyMVar :: Bugged r m => MLoc -> DMVar v -> (v -> m (v, a)) -> m a
+dModifyMVar loc var updFunc = askState >>= \r ->
+  dVar (flip modifyMVar (\v -> debugUnliftIO (updFunc v) r)) "modifyMVar" loc var
 
 -- | Emits a 'DModifyMVar' signal and calls 'Control.Concurrent.MVar.modifyMVar_'.
-dModifyMVar_ :: Bugged r => MLoc -> DMVar v -> (v -> ReaderT r IO v) -> ReaderT r IO ()
-dModifyMVar_ loc var updFunc = ask >>= \r ->
-  dVar (flip modifyMVar_ (\v -> runReaderT (updFunc v) r)) "modifyMVar" loc var
+dModifyMVar_ :: Bugged r m => MLoc -> DMVar v -> (v -> m v) -> m ()
+dModifyMVar_ loc var updFunc = askState >>= \r ->
+  dVar (flip modifyMVar_ (\v -> debugUnliftIO (updFunc v) r)) "modifyMVar" loc var
 
 ----------------------------------------------------------------------------------------------------
 
--- | This is the basic event log writing function. Every event it receives will be translated into a
--- descriptive string and written to the 'System.IO.Handle'. Alternate log writters may be used, but
--- this is the simplest one.
-debugLog :: LogWriter
-debugLog debug evt = case evt of
+instance Show DUnique where
+  show d = concat [show (dElapsedTime d), ".", show (dUniqueWord d)]
+
+-- | Looks up information stored in the 'Dao.Debug.DebugRef', generates a report as a single string.
+dEventToString :: DebugData -> DEvent -> IO String
+dEventToString debug evt = case evt of
   DMsg            loc th      msg -> p loc th $ msg
   DVarAction      loc th      var -> p loc th $ case var of
-    DNoInfo  fn          -> fn
-    DVarInfo fn i ty com -> fn++" ("++ty++'#':show i++(if null com then "" else ' ':com)++")"
+    DNoInfo  fn      -> fn
+    DVarInfo fn i ty -> fn++" ("++ty++'#':show i++")"
   DStdout         loc th      msg -> p loc th $ prin "stdout" msg
   DStderr         loc th      msg -> p loc th $ prin "stderr" msg
   DFork           loc th chld nm  -> p loc th $ "NEW THREAD "++showThID chld nm
@@ -447,11 +415,10 @@ debugLog debug evt = case evt of
   DThrow          loc th      (SomeException err) -> p loc th $ "throwIO ("++show err++")"
   DThrowTo        loc th targ (SomeException err) ->
     p loc th . (\nm -> "throwTo "++showThID targ nm++" ("++show err++")") =<< lkup targ
-  DThreadKilled   loc th      (SomeException err) ->
+  DUncaught       loc th      (SomeException err) ->
     p loc th $ "THREAD TERMINATED, uncaught exception "++show err
-  DHalt -> hPutStrLn file "DEBUG HOST debug target thread execution halted."
+  DHalt -> return "DEBUG HOST debug target thread execution halted."
   where
-    file = debugFileHandle debug
     ttab = debugThreadTable debug
     here loc = case loc of
       Nothing            -> ""
@@ -467,5 +434,5 @@ debugLog debug evt = case evt of
         else show msg
     p loc th msg = do
       th <- lkup th
-      hPutStrLn file (here loc++th++(if null msg then "" else ' ':msg))
+      return (here loc++th++(if null msg then "" else ' ':msg))
 

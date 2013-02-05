@@ -1,5 +1,7 @@
 dao
 dao-debug.log
+debug.log
+commit.txt
 scratch.hs
 .*.sw*
 *.hi

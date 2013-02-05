@@ -91,7 +91,8 @@ debuggableProgram :: Bugged r m => MLoc -> SetupDebugger r m -> IO ()
 debuggableProgram mloc setup =
   if debugEnabled setup
     then do
-      debug <- initDebugData
+      debug <- flip fmap initDebugData $ \debug ->
+        debug{debugGetThreadId = (debugGetThreadId debug){dThreadName = ustr "MAIN THREAD"}}
       let debugRef = Just debug
       debug <- case debugOutputTo setup of
         DebugOutputToDefault   -> return (debug{debugPrint = hPrint stderr})
@@ -100,13 +101,17 @@ debuggableProgram mloc setup =
         DebugOutputToFile path -> do
           h <- openFile path ReadWriteMode
           return (debug{debugPrint = hPrint h, debugClose = hClose h})
-      runtime    <- initializeRuntime setup debugRef
-      mainThread <- forkIO (catch (yield >> init debugRef runtime) (uncaught debug))
-      threadUniq <- uniqueID debug
-      mainThread <- return $
-        DebugThread{dThreadGetId = mainThread, dThreadUnique = threadUniq, dThreadName = ustr "MAIN THREAD"}
-      debug <- return (debug{debugGetThreadId = mainThread})
-      event debug (DStarted mloc mainThread (debugComment setup) (debugStartTime debug))
+      runtime     <- initializeRuntime setup debugRef
+      debugThread <- forkIO (catch (yield >> init debugRef runtime) (uncaught debug))
+      threadUniq  <- uniqueID debug
+      debugThread <- return $
+        DebugThread
+        { dThreadGetId  = debugThread
+        , dThreadUnique = threadUniq
+        , dThreadName   = ustr "DEBUG THREAD"
+        }
+      debug <- return (debug{debugGetThreadId = debugThread})
+      event debug (DStarted mloc debugThread (debugComment setup) (debugStartTime debug))
       loop debug
       debugClose debug
     else initializeRuntime setup Nothing >>= init Nothing
@@ -307,32 +312,19 @@ dThrow loc err = dDebug (throwIO err) $ \this -> DThrow loc this (SomeException 
 ----------------------------------------------------------------------------------------------------
 
 -- | Used to derive the 'dNewChan', 'dNewQSem', and 'dNewMVar' functions.
-dMakeVar
-  :: Bugged r m
-  => String
-  -> String
-  -> IO v
-  -> MLoc
-  -> String
-  -> m (DVar v)
+dMakeVar :: Bugged r m => String -> String -> IO v -> MLoc -> String -> m (DVar v)
 dMakeVar typeName funcName newIO loc msg = askDebug >>= \debug -> liftIO $ case debug of
   Nothing    -> fmap DVar newIO
   Just debug -> do
     i    <- uniqueID debug
     var  <- newIO
     let this = debugGetThreadId debug
-        dvar = IDVar{dbgVar = var, varID = i, dbgTypeName = typeName}
+        dvar = IDVar{dbgVar = var, varID = i, dbgTypeName = ustr typeName, dbgVarLabel = ustr msg}
     event debug (DVarAction loc this (dVarInfo funcName dvar))
     return dvar
 
 -- | Used to derive 'dReadMVar', 'dSwapMVar', and 'dTakeMVar'. Emits a 'DTakeMVar' signal.
-dVar ::
-  Bugged r m
-  => (v -> IO a)
-  -> String
-  -> MLoc
-  -> DVar v
-  -> m a
+dVar :: Bugged r m => (v -> IO a) -> String -> MLoc -> DVar v -> m a
 dVar withVar funcName loc var =
   dDebug (withVar (dbgVar var)) $ \this -> DVarAction loc this (dVarInfo funcName var)
 
@@ -408,8 +400,9 @@ instance Show DEvent where
     DStarted        loc th msg time -> p loc th $ (show time++(if null msg then "" else ' ':show msg))
     DMsg            loc th      msg -> p loc th $ msg
     DVarAction      loc th      var -> p loc th $ case var of
-      DNoInfo  fn      -> fn
-      DVarInfo fn i ty -> fn++" ("++ty++'#':show i++")"
+      DNoInfo  fn          -> uchars fn
+      DVarInfo fn i ty lbl -> concat $
+        [uchars fn, " (", uchars ty, '#':show i, (if nil==lbl then "" else ' ':uchars lbl), ")"]
     DStdout         loc th      msg -> p loc th $ prin "stdout" msg
     DStderr         loc th      msg -> p loc th $ prin "stderr" msg
     DFork           loc th chld nm  -> p loc th $ "NEW THREAD "++show chld
@@ -431,5 +424,5 @@ instance Show DEvent where
         if not (length msg < 80 && isJust (findIndex (\c -> c=='\n' || c=='\r') msg))
           then concatMap ("\n\t"++) (lines msg)
           else show msg
-      p loc th msg = here loc++uchars (dThreadName th)++(if null msg then "" else ' ':msg)
+      p loc th msg = concat [here loc, show th, if null msg then "" else ' ':msg]
 

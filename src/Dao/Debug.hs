@@ -71,26 +71,27 @@ showThID tid = let th = show tid in fromMaybe th (stripPrefix "ThreadId " th)
 -- describing the nature of the variable, and a unique identifier.
 data DVar v
   = DVar { dbgVar :: v }
-  | IDVar { dbgVar :: v, varID :: !DUnique, dbgTypeName :: String }
+  | IDVar { dbgVar :: v, varID :: !DUnique, dbgTypeName :: UStr, dbgVarLabel :: UStr }
 
 -- | To avoid dealing with Haskell "forall"ed types, I have here a type which contains the same
 -- information found in a 'IDVar' but without the type specific 'dbgVar'. Use 'dVarInfo' to
 -- construct this data.
 data DVarInfo
-  = DNoInfo { varFunction :: String }
+  = DNoInfo { varFunction :: UStr }
   | DVarInfo
-    { varFunction  :: String
+    { varFunction  :: UStr
     , infoVarID    :: DUnique
-    , infoTypeName :: String
+    , infoTypeName :: UStr
+    , infoVarLabel :: UStr
     }
 
 -- | Takes the interesting information from 'IDVar' so it can be stored in a 'DEvent' data
 -- structure.
 dVarInfo :: String -> DVar v -> DVarInfo
 dVarInfo func dvar = case dvar of
-  DVar  _      -> DNoInfo func
-  IDVar _ i nm ->
-    DVarInfo{varFunction = func, infoVarID = i, infoTypeName = nm}
+  DVar  _         -> DNoInfo (ustr func)
+  IDVar _ i ty nm ->
+    DVarInfo{varFunction = ustr func, infoVarID = i, infoTypeName = ty, infoVarLabel = nm}
 
 type DQSem = DVar QSem
 type DMVar v = DVar (MVar v)
@@ -145,9 +146,9 @@ initDebugData = do
     DebugData
     { debugGetThreadId =
         DebugThread
-        { dThreadGetId = this
+        { dThreadGetId  = this
         , dThreadUnique = DUnique 0 0
-        , dThreadName = ustr "DEBUG THREAD"
+        , dThreadName   = nil
         }
     , debugChan        = chan
     , debugStartTime   = time

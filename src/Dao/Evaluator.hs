@@ -1331,8 +1331,8 @@ programFromSource globalResource checkAttribute script =
 execWaitThreadLoop :: MLoc -> String -> DMVar (S.Set DThread) -> DMVar DThread -> Run ()
 execWaitThreadLoop lc msg running wait = dStack lc msg loop where 
   loop = do
-    thread <- dTakeMVar lc wait
-    isDone <- dModifyMVar lc running $ \threads_ -> do
+    thread <- dTakeMVar $loc wait
+    isDone <- dModifyMVar $loc running $ \threads_ -> do
       let threads = S.delete thread threads
       return (threads, S.null threads)
     if isDone then return () else loop

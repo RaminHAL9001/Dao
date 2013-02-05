@@ -19,16 +19,18 @@
 -- please see <http://www.gnu.org/licenses/agpl.html>.
 
 
--- {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Main where
 
 import           Dao
-import           Dao.Debug.OFF
+import           Dao.Evaluator
+import           Dao.Debug.ON
 
 import           Data.List
 
 import           Control.Monad
+import           Control.Monad.Reader
 import           Control.Exception
 
 import           System.Environment
@@ -51,40 +53,43 @@ disclaimer = unlines $
   ]
 
 main = do
+  hSetBuffering stderr LineBuffering
+  hSetBuffering stdout LineBuffering
   argv <- getArgs
   let (q, _) = partition (\a -> a=="-q" || a=="--dont-show-license") argv
-  --initialize
-  debug   <- debugToFile xloc "main" debugLog "./dao-debug.log" WriteMode
-  -- debug   <- debugToHandle xloc "main" debugLog stderr
-  hSetBuffering stderr LineBuffering
+      loop = do
+        putStr "dao> " >> hFlush stdout
+        closed <- hIsClosed stdin
+        eof    <- isEOF
+        if closed || eof
+          then return Nothing
+          else do
+            -- hSetEcho stdin True
+            str <- getLine
+            ---------------------------------------------------
+            --readline "dao> " >>= \str -> case str of
+            --  Nothing  -> return Nothing
+            --  Just str -> addHistory str >> return (Just str)
+            case str of
+              str | str==":quit"    || str==":quit\n" -> return Nothing
+                  | str==":license" || str==":license\n" -> putStrLn license_text >> loop
+                  | otherwise -> return (Just (ustr str))
   when (null q) (putStr disclaimer)
-  runtime <- newRuntime debug >>= initRuntimeFiles debug argv
-  inputQueryLoop debug runtime $
-    (\ _ -> handle (\ (SomeException e) -> seq e (print e >> return Nothing)) $ do
-      let loop = do
-            putStr "dao> " >> hFlush stdout
-            closed <- hIsClosed stdin
-            eof    <- isEOF
-            if closed || eof
-              then return Nothing
-              else do
-                -- hSetEcho stdin True
-                str <- getLine
-                case str of
-                  str | str==":quit"    || str==":quit\n" -> return Nothing
-                      | str==":license" || str==":license\n" -> putStrLn license_text >> loop
-                      | otherwise -> return (Just str)
-      loop
-          --readline "dao> " >>= \str -> case str of
-          --  Nothing  -> return Nothing
-          --  Just str -> addHistory str >> return (Just str)
-    )
-  --restorePrompt
-  haltDebugger debug
+  --initialize -- initialize the ReadLine library
+  -- let debug = Nothing
+  -- debug <- debugToFile $loc "main" debugLog "./dao-debug.log" WriteMode
+  debuggableProgram $loc  $
+    (setupDebugger :: SetupDebugger Runtime (ReaderT Runtime IO))
+    { debugEnabled = True
+    , debugOutputTo = DebugOutputToFile "./debug.log"
+    , initializeRuntime = newRuntime
+    , beginProgram = daoInputLoop (liftIO loop)
+    }
+  --restorePrompt -- shut-down the ReadLine library
   hPutStrLn stderr "Dao has exited."
 
 license_text = unlines $
-  [ "Copyright (C) 2008-2012  Ramin Honary"
+  [ "Copyright (C) 2008-2013  Ramin Honary"
   , ""
   , "This program is free software: you can redistribute it and/or modify"
   , "it under the terms of the GNU General Public License as published by"

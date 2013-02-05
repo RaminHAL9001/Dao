@@ -186,7 +186,7 @@ data SetupDebugger r m
       -- ^ a comment to write at the beggining of the debug output stream
     , debugOutputTo     :: DebugOutputTo
       -- ^ if the 'debugHandle' is not specified, it can be created by specifying a file path here.
-    , initializeRuntime :: IO r
+    , initializeRuntime :: DebugRef -> IO r
       -- ^ the function to initialize the state that will be used for the 'beginProgram' function.
     , beginProgram      :: m ()
       -- ^ the program to run in the debug thread.
@@ -204,11 +204,11 @@ setupDebugger =
 
 ----------------------------------------------------------------------------------------------------
 
-class HasDebugData st where
+class HasDebugRef st where
   getDebugRef :: st -> DebugRef
   setDebugRef :: DebugRef -> st -> st
 
-instance HasDebugData (Maybe DebugData) where { getDebugRef = id ; setDebugRef = const }
+instance HasDebugRef (Maybe DebugData) where { getDebugRef = id ; setDebugRef = const }
 
 -- | Any monad that evaluates with stateful data in the IO monad, including
 -- @('Control.Monad.Reader.ReaderT' r IO)@ or @('Control.Monad.State.Lazy.StateT' st IO)@, can be
@@ -216,19 +216,19 @@ instance HasDebugData (Maybe DebugData) where { getDebugRef = id ; setDebugRef =
 -- been initialized only once. Instantiating 'askDebug' with
 -- @('Control.Monad.Trans.Class.lift' 'Dao.Debug.ON.initDebugger')@ will deadlock the debugger
 -- thread and most likely result in a 'Control.Exception.BlockedIndefinitelyOnMVar' exception.
-class (MonadIO m, Monad m, HasDebugData r) => Bugged r m | m -> r where
+class (MonadIO m, Monad m, HasDebugRef r) => Bugged r m | m -> r where
   askDebug :: m DebugRef
   askState :: m r
   setState :: (r -> r) -> m a -> m a
   debugUnliftIO :: m a -> r -> IO a
 
-instance HasDebugData r => Bugged r (ReaderT r IO) where
+instance HasDebugRef r => Bugged r (ReaderT r IO) where
   askDebug = fmap getDebugRef ask
   askState = ask
   setState = local
   debugUnliftIO = runReaderT
 
-instance HasDebugData st => Bugged st (StateT st IO) where
+instance HasDebugRef st => Bugged st (StateT st IO) where
   askDebug = fmap getDebugRef get
   askState = get
   setState = withStateT

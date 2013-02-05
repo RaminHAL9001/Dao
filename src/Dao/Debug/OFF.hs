@@ -73,7 +73,7 @@ xloc = Nothing
 
 debuggableProgram :: Bugged r m => MLoc -> SetupDebugger r m -> IO ()
 debuggableProgram _ setup =
-  initializeRuntime setup >>= debugUnliftIO (withDebugger Nothing (beginProgram setup))
+  initializeRuntime setup Nothing >>= debugUnliftIO (withDebugger Nothing (beginProgram setup))
 
 showThID :: ThreadId -> String -> String
 showThID tid msg = "(#"

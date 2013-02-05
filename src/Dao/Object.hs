@@ -18,7 +18,7 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
--- {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveDataTypeable #-}
@@ -30,7 +30,7 @@ module Dao.Object
   , module Dao.Object
   ) where
 
-import           Dao.Debug.OFF
+import           Dao.Debug.ON
 import           Dao.String
 import           Dao.Token
 import           Dao.Pattern
@@ -867,16 +867,11 @@ data ExecUnit
     { parentRuntime      :: Runtime
       -- ^ a reference to the 'Runtime' that spawned this 'ExecUnit'. Some built-in functions in the
       -- Dao scripting language may make calls that modify the state of the Runtime.
-    , currentExecJob     :: Maybe Job
-      -- ^ a reference to the 'Job' that is currently running the 'ExecScript' that is using this
-      -- 'ExecUnit' state.
     , currentDocument    :: Maybe File
       -- ^ the current document is set by the @with@ statement during execution of a Dao script.
-    , currentTask        :: Task
-      -- ^ the 'Task' that is currently running. This item includes the 'Executable' and (if
-      -- applicable) the current 'Pattern' and 'Match'
     , currentPattern     :: Maybe Pattern
     , currentMatch       :: Maybe Match
+    , currentExecutable  :: Maybe Executable
     , currentBranch      :: [Name]
       -- ^ set by the @with@ statement during execution of a Dao script. It is used to prefix this
       -- to all global references before reading from or writing to those references.
@@ -917,9 +912,9 @@ data ExecUnit
     , ruleSet           :: DMVar (PatternTree [Executable])
     }
 
-instance Bugged ExecUnit where
-  askDebug           = fmap (runtimeDebugger . parentRuntime) ask
-  setDebug dbg xunit = xunit{parentRuntime = (parentRuntime xunit){runtimeDebugger = dbg}}
+instance HasDebugRef ExecUnit where
+  getDebugRef = runtimeDebugger . parentRuntime
+  setDebugRef dbg xunit = xunit{parentRuntime = (parentRuntime xunit){runtimeDebugger = dbg}}
 
 ----------------------------------------------------------------------------------------------------
 
@@ -971,9 +966,6 @@ data Runtime
     { pathIndex            :: DMVar (M.Map UPath File)
       -- ^ every file opened, whether it is a data file or a program file, is registered here under
       -- it's file path (file paths map to 'File's).
-    , jobTable             :: DMVar (M.Map ThreadId Job)
-      -- ^ A job is any string that has caused execution across loaded dao scripts. This table keeps
-      -- track of any jobs started by this runtime.
     , defaultTimeout       :: Maybe Int
       -- ^ the default time-out value to use when evaluating 'execInputString'
     , functionSets         :: M.Map Name (M.Map Name DaoFunc)
@@ -992,7 +984,7 @@ data Runtime
     , fileAccessRules      :: [FileAccessRules]
       -- ^ rules loaded by config file dicating programs and ideas can be loaded by Dao, and also,
       -- which programs can load which programs and ideas.
-    , runtimeDebugger      :: DebugHandle
+    , runtimeDebugger      :: DebugRef
     }
 
 -- | This is the monad used for most all methods that operate on the 'Runtime' state.
@@ -1002,60 +994,9 @@ type Run a = ReaderT Runtime IO a
 runIO :: Runtime -> Run a -> IO a
 runIO runtime runFunc = runReaderT runFunc runtime
 
-instance Bugged Runtime where
-  askDebug             = fmap runtimeDebugger ask
-  setDebug dbg runtime = runtime{runtimeDebugger = dbg}
-
-----------------------------------------------------------------------------------------------------
-
--- | A 'Task' represents a single thread running a single 'ScriptExpr' in response to a
--- pattern matching its associated rule.
-data Task
-  = RuleTask
-    { taskPattern     :: Object -- ^ Either 'OPattern' or 'ONull'.
-    , taskMatch       :: Match
-    , taskAction      :: Executable
-    , taskExecUnit    :: ExecUnit
-    }
-  | GuardTask -- ^ Tasks that are created from @BEGIN@ and @END@ blocks in a Dao script.
-    { taskGuardAction :: Executable
-    , taskExecUnit    :: ExecUnit
-    }
-
--- | A 'Job' keeps track of all threads that are executing in response to an input string.  You can
--- signal the Job to signal all associated threads, you can wait on the 'Job's
--- 'Dao.Runtime.jobTaskCompletion' semaphore to wait for the job to complete, and you can set a
--- timer to time-out this 'Job'.
-data Job
-  = Job
-    { jobTaskThread  :: ThreadId
-      -- ^ The thread that loops, waiting for tasks in the queue to complete.
-    , jobInputString :: UStr
-      -- ^ the input string that triggered this job.
-    , jobTimerThread :: DMVar (Maybe ThreadId)
-      -- ^ If there is a time limit on this job, the thread sleeping until the timeout occurs is
-      -- identified here and can be killed if the last 'Task' finishes before the timeout event.
-    , jobCompletion  :: DQSem
-      -- ^ This semaphore is signaled when the last 'Task' in the 'Dao.Runtime.taskExecTable' below
-      -- completes, and just before the 'jobTaskThread' reads the 'readyTasks'
-      -- 'Control.Concurrent.DMVar.DMVar' to launch the next set of waiting tasks.
-    , taskCompletion :: DMVar ThreadId
-      -- ^ whenever one thread completes, it signals this 'Control.Concurrent.DMVar.DMVar' with it's
-      -- own 'Control.Concurrent.ThreadId' so it can be removed from the 'taskExecTable' below.
-    , readyTasks     :: DMVar [Task]
-      -- ^ used as a channel to launch new task threads. Use 'Control.Concurrent.DMVar.putMVar' to
-      -- place 'Task's into this 'Control.Concurrent.DMVar.DMVar'. The task manager algorithm running
-      -- in the 'jobTaskThread' above will take these tasks and execute each one in a separate
-      -- thread, mapping each task to a 'Control.Concurrent.ThreadId' in the 'taskExecTable'.
-    , taskExecTable  :: DMVar (M.Map ThreadId Task)
-      -- ^ all running 'Task's associated with this job are stored in this table. It contains a list
-      -- of 'Task's, each task is mapped to a 'Control.Concurrent.ThreadId', and each group of
-      -- threads is mapped to the 'ExecUnit' from where the executing tasks originated.
-    , taskFailures   :: DMVar (M.Map Name [(Task, SomeException)])
-      -- ^ if a task dies due to an exception raised, then the exception is caught and mapped to the
-      -- task. This is different from an error thrown from a script, these are uncaught Haskell
-      -- exceptions from "Control.Exception" resulting in a thread being terminated.
-    }
+instance HasDebugRef Runtime where
+  getDebugRef             = runtimeDebugger
+  setDebugRef dbg runtime = runtime{runtimeDebugger = dbg}
 
 ----------------------------------------------------------------------------------------------------
 

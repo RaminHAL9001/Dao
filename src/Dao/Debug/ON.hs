@@ -90,12 +90,12 @@ debuggableProgram mloc setup =
         DebugOutputToFile path -> do
           h <- openFile path ReadWriteMode
           return (debug{debugPrint = dEventToString debug >=> hPutStrLn h, debugClose = hClose h})
-      runtime    <- initializeRuntime setup
+      runtime    <- initializeRuntime setup debugRef
       mainThread <- forkIO (catch (yield >> init debugRef runtime) (uncaught debug))
       event debug (DStarted mloc mainThread (debugComment setup) (debugStartTime debug))
       loop debug
       debugClose debug
-    else initializeRuntime setup >>= init Nothing
+    else initializeRuntime setup Nothing >>= init Nothing
   where
     init debugRef = debugUnliftIO (withDebugger debugRef (beginProgram setup))
     uncaught debug e = do

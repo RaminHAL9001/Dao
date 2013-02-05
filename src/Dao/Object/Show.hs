@@ -221,8 +221,3 @@ showRuleSet idnc rules = unlines $ map mkpat $ T.assocs $ rules where
                 ++ show (Pattern{getPatUnits = pat, getPatternLength = length pat})
     in  unlines (map (showScrp rule) scrpx)
 
-showTask :: Task -> String
-showTask task = case task of
-  RuleTask pat _ _ _ -> "RuleTask: "++showObj 0 pat
-  GuardTask _ _ -> "GuardTask"
-

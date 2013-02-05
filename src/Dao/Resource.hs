@@ -18,11 +18,11 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
--- {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Dao.Resource where
 
-import           Dao.Debug.OFF
+import           Dao.Debug.ON
 import           Dao.String
 import           Dao.Object
 import qualified Dao.Tree as T
@@ -33,14 +33,14 @@ import           Control.Exception
 import           Control.Monad.Reader
 
 newDMVarsForResource
-  :: Bugged r
+  :: HasDebugRef r
   => String
   -> String
   -> stor Object
   -> stor (DQSem, Maybe Object)
   -> ReaderT r IO (Resource stor ref)
 newDMVarsForResource dbg objname unlocked locked = do
-  content <- dNewMVar xloc (dbg++'(':objname++".resource)") (unlocked, locked)
+  content <- dNewMVar $loc (dbg++'(':objname++".resource)") (unlocked, locked)
   return $
     Resource
     { resource        = content
@@ -52,10 +52,10 @@ newDMVarsForResource dbg objname unlocked locked = do
 
 -- | Returns the unlocked portion of the resource. Locked resources are still being modified, so
 -- their not-yet-updated values are returned.
-getUnlockedResource :: Bugged r => Resource stor ref -> ReaderT r IO (stor Object)
-getUnlockedResource r = fmap fst (dReadMVar xloc (resource r))
+getUnlockedResource :: HasDebugRef r => Resource stor ref -> ReaderT r IO (stor Object)
+getUnlockedResource r = fmap fst (dReadMVar $loc (resource r))
 
-newStackResource :: Bugged r => String -> [T.Tree Name Object] -> ReaderT r IO StackResource
+newStackResource :: HasDebugRef r => String -> [T.Tree Name Object] -> ReaderT r IO StackResource
 newStackResource dbg initStack = do
   resource <- newDMVarsForResource dbg "StackResource" (Stack initStack) (Stack [])
   return $
@@ -66,7 +66,7 @@ newStackResource dbg initStack = do
       , lookupLocked   = stackLookup
       }
 
-newTreeResource :: Bugged r => String -> T.Tree Name Object -> ReaderT r IO TreeResource
+newTreeResource :: HasDebugRef r => String -> T.Tree Name Object -> ReaderT r IO TreeResource
 newTreeResource dbg initTree = do
   resource <- newDMVarsForResource dbg "TreeResource" initTree T.Void
   let updater ref obj t = T.update ref (const obj) t
@@ -78,7 +78,7 @@ newTreeResource dbg initTree = do
     , lookupLocked   = T.lookup
     }
 
-newMapResource :: Bugged r => String -> M.Map Name Object -> ReaderT r IO MapResource
+newMapResource :: HasDebugRef r => String -> M.Map Name Object -> ReaderT r IO MapResource
 newMapResource dbg initMap = do
   resource <- newDMVarsForResource dbg "MapResource" initMap M.empty
   let updater ref obj m = M.update (const obj) ref m
@@ -90,7 +90,7 @@ newMapResource dbg initMap = do
     , lookupLocked   = M.lookup
     }
 
-newDocResource :: Bugged r => String -> T_tree -> ReaderT r IO DocResource
+newDocResource :: HasDebugRef r => String -> T_tree -> ReaderT r IO DocResource
 newDocResource dbg docdata = do
   resource <- newDMVarsForResource dbg "DocResource" (initDoc docdata) (NotStored T.Void)
   let lookup ref d = T.lookup ref (docRootObject d)
@@ -107,11 +107,11 @@ newDocResource dbg docdata = do
 -- rapid succession, lets you modify the contents of both at the same time. This function is used by
 -- both updateResource and readResource.
 modifyResource
-  :: Bugged r
+  :: HasDebugRef r
   => Resource stor ref
   -> (stor Object -> stor (DQSem, Maybe Object) -> ReaderT r IO (stor Object, stor (DQSem, Maybe Object), a))
   -> ReaderT r IO a
-modifyResource rsrc fn = dModifyMVar xloc (resource rsrc) $ \ (unlocked, locked) ->
+modifyResource rsrc fn = dModifyMVar $loc (resource rsrc) $ \ (unlocked, locked) ->
   fn unlocked locked >>= \ (unlocked, locked, a) -> return ((unlocked, locked), a)
 
 -- | Modify the contents of a 'Dao.Object.Resource' /without/ locking it. Usually, it is better to
@@ -122,7 +122,7 @@ modifyResource rsrc fn = dModifyMVar xloc (resource rsrc) $ \ (unlocked, locked)
 -- items, and once the items have been unlocked, they may overwrite the values that were set by the
 -- evaluation of this function.
 modifyUnlocked
-  :: Bugged r
+  :: HasDebugRef r
   => Resource stor ref
   -> (stor Object -> ReaderT r IO (stor Object, a))
   -> ReaderT r IO a
@@ -132,7 +132,7 @@ modifyUnlocked rsrc runUpdate = modifyResource rsrc $ \unlocked locked ->
 -- | Is to 'Dao.Object.modifyUnlocked', what to 'Dao.Debug.dModifyMVar_' is to
 -- 'Dao.Debug.dModifyMVar'.
 modifyUnlocked_
-  :: Bugged r
+  :: HasDebugRef r
   => Resource stor ref
   -> (stor Object -> ReaderT r IO (stor Object))
   -> ReaderT r IO ()
@@ -155,7 +155,7 @@ inEvalDoModifyUnlocked_ rsrc runUpdate =
   inEvalDoModifyUnlocked rsrc $ \stor -> runUpdate stor >>= \a -> return (a, ())
 
 updateResource_
-  :: Bugged r
+  :: HasDebugRef r
   => Resource stor ref -- ^ the resource to access
   -> ref -- ^ the address ('Dao.Object.Reference') of the 'Dao.Object.Object' to update
   -> (m Object -> Maybe Object) -- ^ checks the value returned by the above function, if it returns true, the update is executed.
@@ -166,19 +166,19 @@ updateResource_ rsrc ref toMaybe fromMaybe runUpdate = do
   let modify fn = modifyResource rsrc fn
       release sem = do -- remove the item from the "locked" store, signal the semaphore
         modify (\unlocked locked -> return (unlocked, updateLocked rsrc ref Nothing locked, ()))
-        dSignalQSem xloc sem -- even if no threads are waiting, the semaphore is signaled.
-      errHandler sem (SomeException e) = release sem >> dThrow xloc e
-      updateAndRelease sem item = dHandle xloc (errHandler sem) $ do
+        dSignalQSem $loc sem -- even if no threads are waiting, the semaphore is signaled.
+      errHandler sem (SomeException e) = release sem >> dThrow $loc e
+      updateAndRelease sem item = dHandle $loc (errHandler sem) $ do
         item <- runUpdate item
         modify $ \unlocked locked -> return $
           (updateUnlocked rsrc ref (toMaybe item) unlocked, updateLocked rsrc ref Nothing locked, ())
-        dSignalQSem xloc sem
+        dSignalQSem $loc sem
         return item
-      waitTryAgain sem = dWaitQSem xloc sem >> updateResource_ rsrc ref toMaybe fromMaybe runUpdate
+      waitTryAgain sem = dWaitQSem $loc sem >> updateResource_ rsrc ref toMaybe fromMaybe runUpdate
   join $ modify $ \unlocked locked -> case lookupLocked rsrc ref locked of
     Just (sem, _) -> return (unlocked, locked, waitTryAgain sem)
     Nothing       -> do
-      sem <- dNewQSem xloc "updateResource" 0
+      sem <- dNewQSem $loc "updateResource" 0
       let item = lookupUnlocked rsrc ref unlocked
       return (unlocked, updateLocked rsrc ref (Just (sem, item)) locked, updateAndRelease sem (fromMaybe item))
 
@@ -189,7 +189,7 @@ updateResource_ rsrc ref toMaybe fromMaybe runUpdate = do
 -- use 'updateResource' will be made to wait on a 'Dao.Debug.DQSem' until the thread that is
 -- currently evaluating 'updateResource' completes.
 updateResource
-  :: Bugged r
+  :: HasDebugRef r
   => Resource stor ref -- ^ the resource to access
   -> ref -- ^ the address ('Dao.Object.Reference') of the 'Dao.Object.Object' to update
   -> (Maybe Object -> ReaderT r IO (Maybe Object)) -- ^ a function for updating the 'Dao.Object.Object'
@@ -232,19 +232,19 @@ inEvalDoReadResource rsrc ref = execRun (readResource rsrc ref)
 -- 'readResource' is charged with the responsibility of determining whether or not this will cause
 -- an inconsistent result, and caching of values looked-up by 'readResource' should be done to
 -- guarantee consistency where multiple reads need to return the same value.
-readResource :: Bugged r => Resource stor ref -> ref -> ReaderT r IO (Maybe Object)
+readResource :: HasDebugRef r => Resource stor ref -> ref -> ReaderT r IO (Maybe Object)
 readResource rsrc ref = modifyResource rsrc $ \unlocked locked ->
   (\maybeObj -> return (unlocked, locked, maybeObj)) $ case lookupLocked rsrc ref locked of
     Nothing       -> lookupUnlocked rsrc ref unlocked
     Just (_, obj) -> obj
 
 -- | Operating on a 'StackResource', push an item onto the stack.
-pushStackResource :: Bugged r => StackResource -> ReaderT r IO ()
+pushStackResource :: HasDebugRef r => StackResource -> ReaderT r IO ()
 pushStackResource rsrc = modifyResource rsrc $ \unlocked locked ->
   return (stackPush T.Void unlocked, stackPush T.Void locked, ())
 
 -- | Operating on a 'StackResource', push an item onto the stack.
-popStackResource :: Bugged r => StackResource -> Stack Name Object -> ReaderT r IO ()
+popStackResource :: HasDebugRef r => StackResource -> Stack Name Object -> ReaderT r IO ()
 popStackResource rsrc stor = modifyResource rsrc $ \unlocked locked ->
   return (stackPop unlocked, stackPop locked, ())
 

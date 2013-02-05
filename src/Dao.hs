@@ -20,7 +20,7 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
--- {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 -- | This module is pretty much where everything begins. It is the smallest interface that can be
 -- imported by any Haskell program making use of the Dao System. You can use the functions in this
@@ -38,7 +38,7 @@ module Dao
   , module Dao
   ) where
 
-import           Dao.Debug.OFF
+import           Dao.Debug.ON
 
 import           Dao.String
 import           Dao.Pattern
@@ -67,19 +67,15 @@ import Debug.Trace
 min_exec_time :: Int
 min_exec_time = 200000
 
--- | Create a new 'Runtime' with nothing in it except for the 'userData' you pass to it. This
--- takes an optional 'Dao.Debug.Debugger', which will be installed into the resulting
--- 'Dao.Object.Runtime' and used for debugging.
-newRuntime :: Maybe Debugger -> IO Runtime
-newRuntime debug = flip runReaderT debug $ dStack xloc "newRuntime" $ do
-  paths <- dNewMVar xloc "Runtime.pathIndex" (M.empty)
-  jtab  <- dNewMVar xloc "Runtime.jobTable"  (M.empty)
-  running  <- dNewMVar xloc "Runtime.runningExecUnits"  (S.empty)
-  wait  <- dNewEmptyMVar xloc "Runtime.waitExecUnitsMVar"
+-- | Create a new 'Runtime' with nothing in it except for the 'userData' you pass to it.
+newRuntime :: DebugRef -> IO Runtime
+newRuntime debugRef = flip runReaderT debugRef $ dStack $loc "newRuntime" $ do
+  paths <- dNewMVar $loc "Runtime.pathIndex" (M.empty)
+  running  <- dNewMVar $loc "Runtime.runningExecUnits"  (S.empty)
+  wait  <- dNewEmptyMVar $loc "Runtime.waitExecUnitsMVar"
   return $
     Runtime
     { pathIndex            = paths
-    , jobTable             = jtab
     , defaultTimeout       = Just 8000000
     , functionSets         = M.empty
     , runningExecUnits     = running
@@ -90,7 +86,7 @@ newRuntime debug = flip runReaderT debug $ dStack xloc "newRuntime" $ do
         , (ustr "approximate", approx)
         ]
     , fileAccessRules      = []
-    , runtimeDebugger      = debug
+    , runtimeDebugger      = Nothing
     }
 
 -- | Provide a labeled set of built-in functions for this runtime. Each label indicates a set of
@@ -105,67 +101,20 @@ initRuntimeFunctions funcs runtime =
 -- parsed in turn (order is important) by the 'registerFile' function, which can detect the kind of
 -- file and load it accordingly. The kinds of files that can be loaded are Dao source files, Dao
 -- data files, and Dao compiled programs.
-initRuntimeFiles :: DebugHandle -> [FilePath] -> Runtime -> IO Runtime
-initRuntimeFiles debug fx runtime =
-  fmap (fromMaybe (error "FAILED to initalized runtime with files")) $
-    debugIO xloc "initRuntimeFiles" debug runtime $ do
-      forM_ fx $ \f -> lift (catches (void $ runIO runtime $ loadFilePath f) handlers)
-      problems <- checkAllImports
-      if null problems
-        then return runtime
-        else error $ "ERROR: some Dao programs have imported modules which were not loaded.\n"
-              ++(flip concatMap problems $ \ (mod, imprts) ->
-                    "\tmodule "++show mod++" could not satisfy the import requirements for:\n\t\t"
-                  ++intercalate ", " (map show imprts)++"\n")
+initRuntimeFiles :: [FilePath] -> Run ()
+initRuntimeFiles filePaths = dStack $loc "initRuntimeFiles" $ do
+  forM_ filePaths (\filePath -> void (loadFilePath filePath))
+  problems <- checkAllImports
+  if null problems
+    then return ()
+    else error $ "ERROR: some Dao programs have imported modules which were not loaded.\n"
+          ++(flip concatMap problems $ \ (mod, imprts) ->
+                "\tmodule "++show mod++" could not satisfy the import requirements for:\n\t\t"
+              ++intercalate ", " (map show imprts)++"\n")
   where
     handlers = [Handler ioerr, Handler errcall]
     ioerr :: IOException -> IO ()
     ioerr = print
     errcall :: ErrorCall -> IO ()
     errcall = print
-
--- | This is a basic runtime loop you can use in your @main@ function. It takes just two parameters:
--- (1) an initializer equation that returns a 'Runtime' value which will be used for the duration of
--- this interactive session, and (2) an input function which is evaluated repeatedly, passing an
--- DMVar containing the 'Runtime' that was evaluated from the initializer equation so that it may be
--- modified by the input function. The input function must return a
--- @Data.Maybe.Just 'Prelude.String'@ which will be passed as the input string to 'execInputString'.
--- Once 'execInputString' completes, the input function will be evaluated again. All exceptions are
--- caught. Input strings returned from the given input function will also be checked for a leading
--- @(:)@ character. If so, the input will be evaluated by 'evalScriptString' in an empty
--- 'Dao.Evaluator.ExecUnit' ("empty" meaning not associated with any source code file, so
--- 'Dao.Evaluator.currentProgram' and 'Dao.Evaluator.sourceFile' are
--- 'Data.Maybe.Nothing'). If the input function returns 'Data.Maybe.Nothing', then the interactive
--- session is ended gracefully. The loop that waits on the input function runs in an exception
--- handler that catches all exceptions and runs every @TAKEDOWN@ script in every loaded Dao module.
-inputQueryLoop :: DebugHandle -> Runtime -> (DMVar Runtime -> IO (Maybe String)) -> IO ()
-inputQueryLoop debug runtime getNextInput = do
-  let ifException (SomeException e) = do
-        hSetBuffering stderr LineBuffering
-        hPutStrLn stderr ("ERROR: "++show e)
-        return True
-  void $ debugIO xloc "inputQueryLoop" debug runtime $ do
-    runtimeMVar <- dNewMVar xloc "Runtime" runtime
-    intrcvGRsrc <- newTreeResource "ExecUnit.globalData{-for interactive evaluation-}" T.Void
-    intrcvXUnit <- initExecUnit runtime nil intrcvGRsrc -- interactive exec unit is labeled by the 'nil' string
-    let runString input = selectModules Nothing [] >>= execInputString True input
-        iterateInput = do
-          input <- lift (getNextInput runtimeMVar)
-          dModifyMVar xloc runtimeMVar $ \runtime -> do
-            continue <- case input of
-              Just ('\\':input) -> runString (ustr input) >> return True
-              Just (':':input)  -> evalScriptString intrcvXUnit input >> return True
-              Just input        -> runString (ustr input) >> return True
-              Nothing           -> dPutStrErr xloc ":quit" >> return False
-            return (runtime, continue)
-        -- 'catchLoop' iterates input and processing, catching exceptions and deciding whether to
-        -- continue looping based on the return value of the exception handler or 'iterateInput'
-        -- function.
-        catchLoop = do
-          continue <- dHandle xloc (lift . ifException) iterateInput
-          when continue (dYield >> catchLoop)
-    catchLoop -- here we start the 'catchLoop'.
-    -- Now, takedown all loaded modules.
-    fileTab <- dReadMVar xloc (pathIndex runtime)
-    mapM_ (setupTakedown destructScript) (concatMap isProgramFile (M.elems fileTab))
 

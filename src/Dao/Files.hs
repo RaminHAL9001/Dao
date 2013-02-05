@@ -19,7 +19,7 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
--- {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleInstances #-}
 
@@ -27,7 +27,7 @@
 
 module Dao.Files where
 
-import           Dao.Debug.OFF
+import           Dao.Debug.ON
 import           Dao.Object
 import           Dao.Resource
 import qualified Dao.Tree    as T
@@ -111,7 +111,7 @@ loadSourceCode upath sourceString = case fst (runParser parseSourceFile sourceSt
 dontLoadFileTwice :: UPath -> (UPath -> Run (ContErr File)) -> Run (ContErr File)
 dontLoadFileTwice upath getFile = do
   runtime <- ask
-  ptab <- fmap (M.lookup upath) (dReadMVar xloc (pathIndex runtime))
+  ptab <- fmap (M.lookup upath) (dReadMVar $loc (pathIndex runtime))
   case ptab of
     Just file -> return (CENext file)
     Nothing   -> getFile upath
@@ -123,9 +123,9 @@ ideaLoadHandle upath h = ask >>= \runtime -> do
   lift (hSetBinaryMode h True)
   doc <- lift (fmap (decode$!) (B.hGetContents h) >>= evaluate)
   docHandle <- newDocResource ("DocHandle("++show upath++")") $! doc
-  dModifyMVar_ xloc (pathIndex runtime) $ \pathTab ->
+  dModifyMVar_ $loc (pathIndex runtime) $ \pathTab ->
     seq pathTab $! seq docHandle $! return $! M.insert upath (DocumentFile docHandle) pathTab
-  dPutStrErr xloc ("Loaded data file "++show upath)
+  dPutStrErr $loc ("Loaded data file "++show upath)
   return docHandle
 
 -- | Where 'loadFilePath' keeps trying to load a given file by guessing it's type,
@@ -147,7 +147,7 @@ getFullPath upath = handle (\ (err::IOException) -> return (False, upath)) $
 findIndexedFile :: UPath -> Run [File]
 findIndexedFile upath = do
   runtime <- ask
-  ptab    <- dReadMVar xloc (pathIndex runtime)
+  ptab    <- dReadMVar $loc (pathIndex runtime)
   return $ flip concatMap (M.assocs ptab) $ \ (ipath, file) ->
     if isSuffixOf (uchars upath) (uchars ipath) then [file] else []
 
@@ -157,10 +157,10 @@ findIndexedFile upath = do
 -- 'Dao.Object.ExecUnit'. Returns 'Data.Maybe.Nothing' on success. If there is a problem, it returns
 -- the name of the module that could not be found.
 checkImports :: File -> Run [UPath]
-checkImports file = dStack xloc "checkImports[1]" $ ask >>= \runtime -> case file of
+checkImports file = dStack $loc "checkImports[1]" $ ask >>= \runtime -> case file of
   ProgramFile xunit -> do
-    pathTab <- dReadMVar xloc (pathIndex runtime)
-    dStack xloc "checkImports[2]" $ case programImports xunit of
+    pathTab <- dReadMVar $loc (pathIndex runtime)
+    dStack $loc "checkImports[2]" $ case programImports xunit of
       []      -> return []
       imports -> do
         let xunits = map (\mod -> (mod, maybeToList (M.lookup mod pathTab))) imports
@@ -172,7 +172,7 @@ checkImports file = dStack xloc "checkImports[1]" $ ask >>= \runtime -> case fil
 -- | Like 'checkImports' but checks every file that has been loaded by the Runtime.
 checkAllImports :: Run [(UPath, [UPath])]
 checkAllImports = ask >>= \runtime -> fmap (filter (not . null . snd) . concat) $ do
-  pathTab  <- dReadMVar xloc (pathIndex runtime)
+  pathTab  <- dReadMVar $loc (pathIndex runtime)
   forM (M.assocs pathTab) $ \ (modName, file) -> do
     notFound <- checkImports file
     return (if null notFound then [] else [(modName, notFound)])

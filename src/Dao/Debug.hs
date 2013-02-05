@@ -41,6 +41,7 @@ import           Control.Monad.State
 import           Control.Monad.IO.Class
 
 import           Data.Maybe
+import           Data.List hiding (lookup)
 import           Data.Word
 import           Data.IORef
 import           Data.Time.Clock
@@ -55,6 +56,13 @@ import           System.IO
 type MLoc = Maybe (String, Int, Int)
 
 data DUnique = DUnique{ dElapsedTime :: !Float, dUniqueWord :: !Word } deriving (Eq, Ord)
+
+data DThread
+  = DThread{ dThreadGetId :: !ThreadId }
+  | DebugThread{ dThreadGetId :: !ThreadId, dThreadUnique :: !DUnique, dThreadName :: Name }
+
+showThID :: ThreadId -> String
+showThID tid = let th = show tid in fromMaybe th (stripPrefix "ThreadId " th)
 
 -- | The most fundamental types in "Control.Concurrent" are 'Control.Concurrent.MVar',
 -- 'Control.Concurrent.Chan' and 'Control.Concurrent.QSem'. These types are wrapped in a data type
@@ -91,23 +99,23 @@ type DChan v = DVar (Chan v)
 -- library are used in a debugging context. The neme of each constructor closely matches the name of
 -- the "Control.Concurrent" function that signals it.
 data DEvent
-  = DStarted        MLoc ThreadId           String  UTCTime
-  | DMsg            MLoc ThreadId           String
+  = DStarted        MLoc DThread          String  UTCTime
+  | DMsg            MLoc DThread          String
     -- ^ does nothing more than send a 'Prelude.String' message to the debugger.
-  | DVarAction      MLoc ThreadId           DVarInfo
+  | DVarAction      MLoc DThread          DVarInfo
     -- ^ Some 'DVar' was updated somewhere.
-  | DStdout         MLoc ThreadId           String
-  | DStderr         MLoc ThreadId           String
-  | DFork           MLoc ThreadId ThreadId  String
-  | DCatch          MLoc ThreadId           SomeException
-  | DThrowTo        MLoc ThreadId ThreadId  SomeException
-  | DThrow          MLoc ThreadId           SomeException
-  | DThreadDelay    MLoc ThreadId Int
-  | DThreadUndelay  MLoc ThreadId Int
-  | DThreadDied     MLoc ThreadId
+  | DStdout         MLoc DThread          String
+  | DStderr         MLoc DThread          String
+  | DFork           MLoc DThread DThread  String
+  | DCatch          MLoc DThread          SomeException
+  | DThrowTo        MLoc DThread DThread  SomeException
+  | DThrow          MLoc DThread          SomeException
+  | DThreadDelay    MLoc DThread Int
+  | DThreadUndelay  MLoc DThread Int
+  | DThreadDied     MLoc DThread
     -- ^ a signal sent when a thread dies (assuming the thread must have been created with
     -- 'Dao.Debug.ON.dFork')
-  | DUncaught       MLoc ThreadId           SomeException
+  | DUncaught       MLoc DThread          SomeException
     -- ^ a signal sent when a thread is killed (assuming the thread must have been created with
     -- 'Dao.Debug.ON.dFork').
   | DHalt -- ^ Sent when the thread being debugged is done.
@@ -118,9 +126,9 @@ data DEvent
 -- will be able to use any of the functions in the "Dao.Debug.ON" module.
 data DebugData
   = DebugData
-    { debugChan        :: MVar DEvent
+    { debugGetThreadId :: DThread
+    , debugChan        :: Chan DEvent
     , debugStartTime   :: UTCTime
-    , debugThreadTable :: ThreadTable
     , debugUniqueCount :: MVar Word
     , debugPrint       :: DEvent -> IO ()
     , debugClose       :: IO ()
@@ -128,15 +136,20 @@ data DebugData
 
 initDebugData :: IO DebugData
 initDebugData = do
-  chan <- newEmptyMVar
+  this <- myThreadId
+  chan <- newChan
   time <- getCurrentTime
-  tabl <- newIORef (M.empty)
-  uniq <- newMVar 0
+  uniq <- newMVar 1
   return $
     DebugData
-    { debugChan        = chan
+    { debugGetThreadId =
+        DebugThread
+        { dThreadGetId = this
+        , dThreadUnique = DUnique 0 0
+        , dThreadName = ustr "DEBUG THREAD"
+        }
+    , debugChan        = chan
     , debugStartTime   = time
-    , debugThreadTable = tabl
     , debugUniqueCount = uniq
     , debugPrint       = \_ -> return ()
     , debugClose       = return ()
@@ -157,20 +170,6 @@ dHandler loc catchfn =
   , getHandler = \r sendEvent -> Handler $ \e ->
       sendEvent (SomeException e) >> debugUnliftIO (askDebug >>= \debug -> catchfn e) r
   }
-
--- | This is the type for the table that maps 'Control.Concurrent.ThreadId's to 'Dao.String.Name's
--- which allows the debug logger to produce more descriptive reports regarding threads.
---
--- 'Control.Concurrent.ThreadId's are not wrapped up into a debugging data type the way
--- 'Control.Concurrent.MVar.MVar's, 'Control.Concurrent.Chan.Chan's, and
--- 'Control.Concurrent.QSem.QSem's are. Instead, whenever a thread is created using
--- 'Dao.Debug.ON.dFork' it is mapped to a 'Dao.String.Name', and the debug log writer looks up the
--- name mapped to that 'Control.Concurrent.ThreadId' only when it is necessary to produce a log
--- message. If there were some wrapped @DThreadId@ type, it may need to perform this lookup more
--- often (although Haskell's lazy evaluation might prevent that).  It seemed to be the simpler
--- option to leave 'Control.Concurrent.ThreadId's as they were, rather than wrapping them and
--- defining a debugging version of 'Control.Concurrent.myThreadId'.
-type ThreadTable = IORef (M.Map ThreadId Name)
 
 data DebugOutputTo
   = DebugOutputToDefault
@@ -216,7 +215,7 @@ instance HasDebugRef (Maybe DebugData) where { getDebugRef = id ; setDebugRef = 
 -- been initialized only once. Instantiating 'askDebug' with
 -- @('Control.Monad.Trans.Class.lift' 'Dao.Debug.ON.initDebugger')@ will deadlock the debugger
 -- thread and most likely result in a 'Control.Exception.BlockedIndefinitelyOnMVar' exception.
-class (MonadIO m, Monad m, HasDebugRef r) => Bugged r m | m -> r where
+class (Functor m, MonadIO m, Monad m, HasDebugRef r) => Bugged r m | m -> r where
   askDebug :: m DebugRef
   askState :: m r
   setState :: (r -> r) -> m a -> m a

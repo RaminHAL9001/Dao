@@ -75,12 +75,6 @@ debuggableProgram :: Bugged r m => MLoc -> SetupDebugger r m -> IO ()
 debuggableProgram _ setup =
   initializeRuntime setup Nothing >>= debugUnliftIO (withDebugger Nothing (beginProgram setup))
 
-showThID :: ThreadId -> String -> String
-showThID tid msg = "(#"
-  ++ let th = show tid in fromMaybe th (stripPrefix "ThreadId " th)
-  ++ (if null msg then "" else ' ':msg)
-  ++ ")"
-
 uniqueID :: DebugData -> IO Word64
 uniqueID _ = return 0
 
@@ -89,8 +83,8 @@ event _ _ = return ()
 
 ----------------------------------------------------------------------------------------------------
 
-dMyThreadId :: MonadIO m => m ThreadId
-dMyThreadId = liftIO myThreadId
+dMyThreadId :: Bugged r m => m DThread
+dMyThreadId = liftIO myThreadId >>= return . DThread
 
 dYield :: MonadIO m => m ()
 dYield = liftIO yield
@@ -101,9 +95,6 @@ dThrowIO e = liftIO (throwIO e)
 dThreadDelay :: Bugged r m => MLoc -> Int -> m ()
 dThreadDelay _ i = liftIO (threadDelay i)
 
-dMyThreadLabel :: Bugged r m => ThreadId -> m (Maybe Name)
-dMyThreadLabel _ = return Nothing
-
 dMessage :: Bugged r m => MLoc -> String -> m ()
 dMessage _ _ = return ()
 
@@ -112,7 +103,7 @@ dStack _ _ func = func
 
 dPutString
   :: Bugged r m
-  => (MLoc -> ThreadId -> String -> DEvent)
+  => (MLoc -> DThread -> String -> DEvent)
   -> (String -> IO ())
   -> MLoc
   -> String
@@ -130,14 +121,16 @@ dPutStrErr _ msg = dPutString undefined (hPutStrLn stderr) undefined msg
 
 ----------------------------------------------------------------------------------------------------
 
-dFork :: Bugged r m => (IO () -> IO ThreadId) -> MLoc -> String -> m () -> m ThreadId
-dFork fork _ _ ioFunc = askState >>= \r -> liftIO (fork (debugUnliftIO ioFunc r))
+dFork :: Bugged r m => (IO () -> IO ThreadId) -> MLoc -> String -> m () -> m DThread
+dFork fork _ _ ioFunc = do
+  r <- askState
+  liftIO (fork (debugUnliftIO ioFunc r) >>= return . DThread)
 
-dThrowTo :: (Exception e, Bugged r m) => MLoc -> ThreadId -> e -> m ()
-dThrowTo _ target err = liftIO (throwTo target err)
+dThrowTo :: (Exception e, Bugged r m) => MLoc -> DThread -> e -> m ()
+dThrowTo _ target err = liftIO (throwTo (dThreadGetId target) err)
 
-dKillThread :: Bugged r m => MLoc -> ThreadId -> m ()
-dKillThread _ target = liftIO (killThread target)
+dKillThread :: Bugged r m => MLoc -> DThread -> m ()
+dKillThread _ target = liftIO (killThread (dThreadGetId target))
 
 dCatch :: (Exception e, Bugged r m) => MLoc -> m a -> (e -> m a) -> m a
 dCatch _ tryFunc catchFunc = askState >>= \r ->
@@ -163,7 +156,7 @@ dThrow _ err = liftIO (throwIO err)
 dMakeVar
   :: Bugged r m
   => IO v
-  -> (MLoc -> ThreadId -> DVar v -> DEvent)
+  -> (MLoc -> DThread -> DVar v -> DEvent)
   -> String
   -> MLoc
   -> String
@@ -173,7 +166,7 @@ dMakeVar newIO _ _ _ _ = liftIO (fmap DVar newIO)
 dVar ::
   Bugged r m
   => (v -> IO a)
-  -> (MLoc -> ThreadId -> DVar v)
+  -> (MLoc -> DThread -> DVar v)
   -> MLoc
   -> DVar v
   -> m a

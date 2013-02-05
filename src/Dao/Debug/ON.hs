@@ -49,7 +49,7 @@ import           Data.Maybe
 import           Data.List hiding (lookup)
 import           Data.Word
 import           Data.IORef
-import           Data.Time.Clock
+import           Data.Time
 import qualified Data.Map as M
 
 import           System.IO
@@ -405,6 +405,7 @@ dModifyMVar_ loc var updFunc = askState >>= \r ->
 -- | Looks up information stored in the 'Dao.Debug.DebugRef', generates a report as a single string.
 instance Show DEvent where
   show evt = case evt of
+    DStarted        loc th msg time -> p loc th $ (show time++(if null msg then "" else ' ':show msg))
     DMsg            loc th      msg -> p loc th $ msg
     DVarAction      loc th      var -> p loc th $ case var of
       DNoInfo  fn      -> fn

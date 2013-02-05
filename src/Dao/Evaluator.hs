@@ -1328,7 +1328,7 @@ programFromSource globalResource checkAttribute script =
 
 ----------------------------------------------------------------------------------------------------
 
-execWaitThreadLoop :: MLoc -> String -> DMVar (S.Set ThreadId) -> DMVar ThreadId -> Run ()
+execWaitThreadLoop :: MLoc -> String -> DMVar (S.Set DThread) -> DMVar DThread -> Run ()
 execWaitThreadLoop lc msg running wait = dStack lc msg loop where 
   loop = do
     thread <- dTakeMVar lc wait
@@ -1353,7 +1353,7 @@ execInputStringsLoop xunit = dCatch $loc start handler where
   start = do
     runtime <- ask
     dNewEmptyMVar $loc "execInputStringsLoop.waitChild" >>= loop
-    lift myThreadId >>= dPutMVar $loc (waitExecUnitsMVar runtime)
+    dMyThreadId >>= dPutMVar $loc (waitExecUnitsMVar runtime)
   loop waitChild = do
     -- (1) Get the next input string. Also nub the list of queued input strings.
     instr <- dModifyMVar $loc (recursiveInput xunit) $ \ax -> return $ case nub ax of
@@ -1396,15 +1396,15 @@ execInputStringsLoop xunit = dCatch $loc start handler where
 -- | Launch a new thread for an 'Dao.Object.ExecUnit'. You can launch several threads for a single
 -- 'Dao.Object.ExecUnit', but the threads will only share the work, there is no particular advantage
 -- to calling this function more than once per 'Dao.Object.ExecUnit'. Returns the
--- 'Control.Concurrent.ThreadId' of the thread created.
-startExecUnitThread :: ExecUnit -> Run ThreadId
+-- 'Dao.Debug.DThread' of the thread created.
+startExecUnitThread :: ExecUnit -> Run DThread
 startExecUnitThread xunit = dFork forkIO $loc "startExecUnitThread" (execInputStringsLoop xunit)
 
 -- | Place a string into the queues and then start one thread for each of the 'Dao.Object.ExecUnit's
 -- specified. The threads are created but not registered into the 'Dao.Object.Runtime'
 -- 'Dao.Object.runningExecThreads' field. To do this, evaluate this function as a parameter to
 -- 'daoRegisterThreads'.
-runStringAgainstExecUnits :: UStr -> [ExecUnit] -> Run (S.Set ThreadId)
+runStringAgainstExecUnits :: UStr -> [ExecUnit] -> Run (S.Set DThread)
 runStringAgainstExecUnits inputString xunits = do
   runtime <- ask
   forM_ xunits $ \xunit ->
@@ -1413,7 +1413,7 @@ runStringAgainstExecUnits inputString xunits = do
 
 -- | Registers the threads created by 'runStringAgainstExecUnits' into the
 -- 'Dao.Object.runningExecThreads' field of the 'Dao.Object.Runtime'.
-daoRegisterThreads :: Run (S.Set ThreadId) -> Run ()
+daoRegisterThreads :: Run (S.Set DThread) -> Run ()
 daoRegisterThreads makeThreads = do
   runtime <- ask
   dModifyMVar_ $loc (runningExecUnits runtime) $ \threads -> do

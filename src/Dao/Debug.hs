@@ -60,6 +60,7 @@ data DUnique = DUnique{ dElapsedTime :: !Float, dUniqueWord :: !Word } deriving 
 data DThread
   = DThread{ dThreadGetId :: !ThreadId }
   | DebugThread{ dThreadGetId :: !ThreadId, dThreadUnique :: !DUnique, dThreadName :: Name }
+  deriving (Eq, Ord)
 
 showThID :: ThreadId -> String
 showThID tid = let th = show tid in fromMaybe th (stripPrefix "ThreadId " th)

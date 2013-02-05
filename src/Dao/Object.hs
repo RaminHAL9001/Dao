@@ -889,7 +889,7 @@ data ExecUnit
       -- ^ the rules of this program
     , globalData         :: TreeResource
       -- ^ global variables cleared after every string execution
-    , runningThreads     :: DMVar (S.Set ThreadId)
+    , runningThreads     :: DMVar (S.Set DThread)
     , execOpenFiles      :: DMVar (M.Map UPath File)
     , recursiveInput     :: DMVar [UStr]
     , uncaughtErrors     :: DMVar [Object]
@@ -971,10 +971,10 @@ data Runtime
     , functionSets         :: M.Map Name (M.Map Name DaoFunc)
       -- ^ every labeled set of built-in functions provided by this runtime is listed here. This
       -- table is checked when a Dao program is loaded that has "requires" directives.
-    , waitExecUnitsMVar    :: DMVar ThreadId
+    , waitExecUnitsMVar    :: DMVar DThread
       -- ^ when an 'ExecUnit' completes it's execution cycle, it signals it's completion by placing
-      -- it's own 'Control.Concurrent.ThreadId' into this 'Dao.Debug.DMVar'.
-    , runningExecUnits     :: DMVar (S.Set ThreadId)
+      -- it's own 'Dao.Debug.DThread' into this 'Dao.Debug.DMVar'.
+    , runningExecUnits     :: DMVar (S.Set DThread)
       -- ^ a list of currently running 'ExecUnit's, which will go empty once every 'ExecUnit' has
       -- completed executing a string.
     , availableTokenizers  :: M.Map Name Tokenizer

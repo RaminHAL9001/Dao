@@ -93,6 +93,7 @@ debuggableProgram mloc setup =
     then do
       debug <- flip fmap initDebugData $ \debug ->
         debug{debugGetThreadId = (debugGetThreadId debug){dThreadName = ustr "DEBUG THREAD"}}
+      event debug (DStarted mloc (debugGetThreadId debug) (debugComment setup) (debugStartTime debug))
       let debugRef = Just debug
       debug <- case debugOutputTo setup of
         DebugOutputToDefault   -> return (debug{debugPrint = hPrint stderr})
@@ -103,8 +104,12 @@ debuggableProgram mloc setup =
           return (debug{debugPrint = hPrint h, debugClose = hClose h})
       runtime    <- initializeRuntime setup debugRef
       mvar       <- newEmptyMVar
-      mainThread <- forkIO $
-        catch (takeMVar mvar >>= \debug -> init (Just debug) runtime) (uncaught debug)
+      mainThread <- forkIO $ do
+        debug <- takeMVar mvar
+        handle (uncaught debug) $ do
+          init (Just debug) runtime
+          event debug (DThreadDied mloc (debugGetThreadId debug))
+        event debug DHalt
       threadUniq <- uniqueID debug
       mainThread <- return $
         DebugThread
@@ -113,16 +118,12 @@ debuggableProgram mloc setup =
         , dThreadName   = ustr "MAIN THREAD"
         }
       putMVar mvar (debug{debugGetThreadId = mainThread})
-      event debug (DStarted mloc mainThread (debugComment setup) (debugStartTime debug))
       loop debug
       debugClose debug
     else initializeRuntime setup Nothing >>= init Nothing
   where
     init debugRef = debugUnliftIO (withDebugger debugRef (beginProgram setup))
-    uncaught debug e = do
-      event debug (DUncaught mloc (debugGetThreadId debug) e)
-      event debug DHalt
-      debugClose debug
+    uncaught debug e = event debug (DUncaught mloc (debugGetThreadId debug) e)
     loop debug = do
       let debugRef = Just debug
       evt <- readChan (debugChan debug)

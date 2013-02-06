@@ -52,28 +52,29 @@ disclaimer = unlines $
   , "-----------------------------------------------"
   ]
 
+inputLoop = do
+  putStr "dao> " >> hFlush stdout
+  closed <- hIsClosed stdin
+  eof    <- isEOF
+  if closed || eof
+    then return Nothing
+    else do
+      -- hSetEcho stdin True
+      str <- getLine
+      ---------------------------------------------------
+      --readline "dao> " >>= \str -> case str of
+      --  Nothing  -> return Nothing
+      --  Just str -> addHistory str >> return (Just str)
+      case str of
+        str | str==":quit"    || str==":quit\n" -> return Nothing
+            | str==":license" || str==":license\n" -> putStrLn license_text >> inputLoop
+            | otherwise -> return (Just (ustr str))
+
 main = do
   hSetBuffering stderr LineBuffering
   hSetBuffering stdout LineBuffering
   argv <- getArgs
   let (q, _) = partition (\a -> a=="-q" || a=="--dont-show-license") argv
-      loop = do
-        putStr "dao> " >> hFlush stdout
-        closed <- hIsClosed stdin
-        eof    <- isEOF
-        if closed || eof
-          then return Nothing
-          else do
-            -- hSetEcho stdin True
-            str <- getLine
-            ---------------------------------------------------
-            --readline "dao> " >>= \str -> case str of
-            --  Nothing  -> return Nothing
-            --  Just str -> addHistory str >> return (Just str)
-            case str of
-              str | str==":quit"    || str==":quit\n" -> return Nothing
-                  | str==":license" || str==":license\n" -> putStrLn license_text >> loop
-                  | otherwise -> return (Just (ustr str))
   when (null q) (putStr disclaimer)
   --initialize -- initialize the ReadLine library
   -- let debug = Nothing
@@ -83,7 +84,9 @@ main = do
     { debugEnabled = True
     , debugOutputTo = DebugOutputToFile "./debug.log"
     , initializeRuntime = newRuntime
-    , beginProgram = daoInputLoop (liftIO loop)
+    , beginProgram = do
+        initRuntimeFiles argv
+        daoInputLoop (liftIO inputLoop)
     }
   --restorePrompt -- shut-down the ReadLine library
   hPutStrLn stderr "Dao has exited."

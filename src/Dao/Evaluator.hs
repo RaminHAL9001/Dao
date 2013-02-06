@@ -75,6 +75,7 @@ initExecUnit runtime modName initGlobalData = do
   unctErrs <- dNewMVar $loc "ExecUnit.uncaughtErrors" []
   recurInp <- dNewMVar $loc "ExecUnit.recursiveInput" []
   qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
+  running  <- dNewMVar $loc "ExecUnit.runningThreads" S.empty
   xstack   <- dNewMVar $loc "ExecUnit.execStack" emptyStack
   toplev   <- dNewMVar $loc "ExecUnit.toplevelFuncs" M.empty
   files    <- dNewMVar $loc "ExecUnit.execOpenFiles" M.empty
@@ -92,7 +93,7 @@ initExecUnit runtime modName initGlobalData = do
     , builtinFuncs       = initBuiltinFuncs
     , toplevelFuncs      = toplev
     , queryTimeHeap      = qheap
-    , runningThreads     = error "ExecUnit.runningThreads is undefined"
+    , runningThreads     = running
     , execStack          = xstack
     , execOpenFiles      = files
     , recursiveInput     = recurInp
@@ -1341,15 +1342,16 @@ execWaitThreadLoop lc msg running wait = dStack lc msg $ do
       if isDone then return () else loop
 
 execPatternMatchExecutable :: ExecUnit -> Pattern -> Match -> Executable -> Run ()
-execPatternMatchExecutable xunit pat mat exec = void $ runExecScript (runExecutable T.Void exec) $
-  xunit{currentPattern = Just pat, currentMatch = Just mat}
+execPatternMatchExecutable xunit pat mat exec =
+  dStack $loc ("execPatternMatchExecutable for ("++show pat++")") $
+    void $ runExecScript (runExecutable T.Void exec) $
+      xunit{currentPattern = Just pat, currentMatch = Just mat}
 
--- | This is the function that runs in the thread which manages all the other threads that are
--- launched in response to a matching input string. You could just run this loop in the current
--- thread, if you only have one 'ExecUnit'. This is also the most important algorithm of the Dao
--- system, in that it matches strings to all rule-patterns in the program that is associated with
--- the 'Dao.Object.ExecUnit', and it dispatches execution of the rule-actions associated with
--- matched patterns.
+-- | This is the most important algorithm of the Dao system, in that it matches strings to all
+-- rule-patterns in the program that is associated with the 'Dao.Object.ExecUnit', and it dispatches
+-- execution of the rule-actions associated with matched patterns. This is the function that runs in
+-- the thread which manages all the other threads that are launched in response to a matching input
+-- string. You could just run this loop in the current thread, if you only have one 'ExecUnit'.
 execInputStringsLoop :: ExecUnit -> Run ()
 execInputStringsLoop xunit = dCatch $loc start handler where
   running = runningThreads xunit
@@ -1364,11 +1366,12 @@ execInputStringsLoop xunit = dCatch $loc start handler where
       a:ax -> (ax, Just a)
     case instr of
       Nothing    -> return ()
-      Just instr -> do
+      Just instr -> dStack $loc ("execInputString "++show instr) $ do
         -- (2) Run "BEGIN" scripts.
         runExecs $loc "preExecScript" preExecScript waitChild
         -- (3) Match input string to all patterns, get resulting actions.
         matched <- matchStringToProgram instr xunit
+        dMessage $loc ("matched "++show (length matched)++" rules")
         -- (4) Run 'execPatternMatchExecutable' for every matching item.
         putThreads $ forM matched $ \ (pat, mat, exec) ->
           dFork forkIO $loc "execInputStringsLoop.loop" $ void $
@@ -1408,7 +1411,7 @@ startExecUnitThread xunit = dFork forkIO $loc "startExecUnitThread" (execInputSt
 -- 'Dao.Object.runningExecThreads' field. To do this, evaluate this function as a parameter to
 -- 'daoRegisterThreads'.
 runStringAgainstExecUnits :: UStr -> [ExecUnit] -> Run (S.Set DThread)
-runStringAgainstExecUnits inputString xunits = do
+runStringAgainstExecUnits inputString xunits = dStack $loc "runStringsAgainstExecUnits" $ do
   runtime <- ask
   forM_ xunits $ \xunit ->
     dModifyMVar_ $loc (recursiveInput xunit) (return . (++[inputString]))
@@ -1430,7 +1433,7 @@ daoInputLoop getString = ask >>= loop where
     inputString <- getString
     case inputString of
       Nothing          -> return ()
-      Just inputString -> do
+      Just inputString -> dStack $loc ("(daoInputLoop "++show inputString++")") $ do
         xunits <- fmap (concatMap isProgramFile . M.elems) (dReadMVar $loc (pathIndex runtime))
         daoRegisterThreads (runStringAgainstExecUnits inputString xunits)
         let msg = "daoInputLoop.(wait for ExecUnits to finish)"
@@ -1521,7 +1524,7 @@ registerSourceCode upath script = dStack $loc "registerSourceCode" $ ask >>= \ru
     Just (ProgramFile  f) -> return (CENext f)
     Just (DocumentFile f) -> return $ CEError $ OList $
       [ OString upath
-      , OString (ustr "is already loaded as an idea file, cannot be loaded as a dao file")
+      , OString (ustr "is already loaded as an \"idea\" file, cannot be loaded as a \"dao\" file")
       ]
     Nothing -> do
       -- Call 'initSourceCode' which creates the 'ExecUnit', then place it in an 'MVar'.

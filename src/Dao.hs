@@ -106,7 +106,7 @@ initRuntimeFiles filePaths = dStack $loc "initRuntimeFiles" $ do
   forM_ filePaths (\filePath -> void (loadFilePath filePath))
   problems <- checkAllImports
   if null problems
-    then return ()
+    then ask >>= \runtime -> dReadMVar $loc (pathIndex runtime) >>= return . M.keys >>= dMessage $loc . ("list of loaded files updated: "++) . intercalate ", " . map show >> return ()
     else error $ "ERROR: some Dao programs have imported modules which were not loaded.\n"
           ++(flip concatMap problems $ \ (mod, imprts) ->
                 "\tmodule "++show mod++" could not satisfy the import requirements for:\n\t\t"

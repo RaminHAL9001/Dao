@@ -139,18 +139,18 @@ modifyUnlocked_
 modifyUnlocked_ rsrc runUpdate = modifyResource rsrc $ \unlocked locked ->
   runUpdate unlocked >>= \unlocked -> return (unlocked, locked, ())
 
-inEvalDoModifyUnlocked :: Resource stor ref -> (stor Object -> ExecScript (stor Object, a)) -> ExecScript a
+inEvalDoModifyUnlocked :: Resource stor ref -> (stor Object -> Exec (stor Object, a)) -> Exec a
 inEvalDoModifyUnlocked rsrc runUpdate = do
   xunit <- ask
-  ce <- execScriptRun $ modifyUnlocked rsrc $ \stor -> do
-    ce <- runExecScript (runUpdate stor) xunit
+  ce <- inExecEvalRun $ modifyUnlocked rsrc $ \stor -> do
+    ce <- runExec (runUpdate stor) xunit
     case ce of
       FlowOK (stor, a) -> return (stor, FlowOK   a  )
       FlowReturn obj     -> return (stor, FlowReturn obj)
       FlowErr  obj     -> return (stor, FlowErr  obj)
   joinFlowCtrl ce
 
-inEvalDoModifyUnlocked_ :: Resource stor ref -> (stor Object -> ExecScript (stor Object)) -> ExecScript ()
+inEvalDoModifyUnlocked_ :: Resource stor ref -> (stor Object -> Exec (stor Object)) -> Exec ()
 inEvalDoModifyUnlocked_ rsrc runUpdate =
   inEvalDoModifyUnlocked rsrc $ \stor -> runUpdate stor >>= \a -> return (a, ())
 
@@ -198,12 +198,12 @@ updateResource rsrc ref runUpdate = updateResource_ rsrc ref id id runUpdate
 
 newtype ContErrMaybe a = ContErrMaybe { contErrMaybe :: FlowCtrl (Maybe a) }
 
--- | Same function as 'updateResource', but is of the 'ExecScript' monad type.
+-- | Same function as 'updateResource', but is of the 'Exec' monad type.
 inEvalDoUpdateResource
   :: Resource stor ref -- ^ the resource to access
   -> ref -- ^ the address ('Dao.Object.Reference') of the 'Dao.Object.Object' to update
-  -> (Maybe Object -> ExecScript (Maybe Object)) -- ^ a function for updating the 'Dao.Object.Object'
-  -> ExecScript (Maybe Object)
+  -> (Maybe Object -> Exec (Maybe Object)) -- ^ a function for updating the 'Dao.Object.Object'
+  -> Exec (Maybe Object)
 inEvalDoUpdateResource rsrc ref runUpdate = do
   xunit <- ask
   let toMaybe ce = case contErrMaybe ce of
@@ -212,9 +212,9 @@ inEvalDoUpdateResource rsrc ref runUpdate = do
         FlowReturn a      -> Just a
         FlowErr  _      -> Nothing
       fromMaybe item = ContErrMaybe{contErrMaybe = FlowOK item}
-  execScriptRun >=> joinFlowCtrl $
+  inExecEvalRun >=> joinFlowCtrl $
     fmap contErrMaybe $ updateResource_ rsrc ref toMaybe fromMaybe $ \item ->
-      fmap ContErrMaybe (runExecScript (runUpdate (toMaybe item)) xunit)
+      fmap ContErrMaybe (runExec (runUpdate (toMaybe item)) xunit)
 
 -- | This function will return an 'Dao.Object.Object' at a given address ('Dao.Object.Reference')
 -- without blocking, and will return values even if they are locked by another thread with the

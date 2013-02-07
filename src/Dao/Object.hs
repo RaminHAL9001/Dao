@@ -400,7 +400,7 @@ data RuleExpr
 data Executable
   = Executable
     { staticVars :: IORef (M.Map Name Object)
-    , executable :: ExecScript ()
+    , executable :: Exec ()
     }
 
 -- | A subroutine is specifically a callable function (but we don't use the name Function to avoid
@@ -426,10 +426,10 @@ instance Show Subroutine where
     , ") { " , concatMap (\a -> show a++"; ") (subSourceCode a), "}"
     ]
 
--- | All evaluation of the Dao language takes place in the 'ExecScript' monad. It allows @IO@
+-- | All evaluation of the Dao language takes place in the 'Exec' monad. It allows @IO@
 -- functions to be lifeted into it so functions from "Control.Concurrent", "Dao.Document",
 -- "System.IO", and other modules, can be evaluated.
-type ExecScript a  = ProcReader ExecUnit IO a
+type Exec a  = ProcReader ExecUnit IO a
 
 ----------------------------------------------------------------------------------------------------
 
@@ -826,21 +826,21 @@ initDoc docdata =
 
 ----------------------------------------------------------------------------------------------------
 
--- $Relating_ExecScript_and_Run
--- The 'ExecScript' monad is what evaluates Dao code, and keeps the state of an individual Dao
+-- $Relating_Exec_and_Run
+-- The 'Exec' monad is what evaluates Dao code, and keeps the state of an individual Dao
 -- module. The 'Run' monad keeps the state of the the Dao runtime, including every Dao module
 -- currently ready for execution. Functions in the 'Run' monad evaluate functions in the
--- 'ExecScript' monad. Functions in the 'ExecScript' monad have a reference to the 'Run' monad state
+-- 'Exec' monad. Functions in the 'Exec' monad have a reference to the 'Run' monad state
 -- which evaluated them, and so can use this reference to evaluate 'Run' monadic functions.
 
--- | Evaluate an 'ExecScript' monadic function within the 'Run' monad.
-runExecScript :: ExecScript a -> ExecUnit -> Run (FlowCtrl a)
-runExecScript fn xunit = ReaderT $ \runtime ->
+-- | Evaluate an 'Exec' monadic function within the 'Run' monad.
+runExec :: Exec a -> ExecUnit -> Run (FlowCtrl a)
+runExec fn xunit = ReaderT $ \runtime ->
   runReaderT (runProcedural fn) (xunit{parentRuntime = runtime})
 
--- Evaluate a 'Run' monadic function within an 'ExecScript' monad.
-execScriptRun :: Run a -> ExecScript a
-execScriptRun fn = ask >>= \xunit -> liftIO (runReaderT fn (parentRuntime xunit))
+-- Evaluate a 'Run' monadic function within an 'Exec' monad.
+inExecEvalRun :: Run a -> Exec a
+inExecEvalRun fn = ask >>= \xunit -> liftIO (runReaderT fn (parentRuntime xunit))
 
 -- | Pair an error message with an object that can help to describe what went wrong.
 objectError :: Monad m => Object -> String -> Procedural m err
@@ -852,7 +852,7 @@ objectError o msg = procErr (OPair (OString (ustr msg), o))
 -- language, are stored in 'Data.Map.Map's from the functions name to an object of this type.
 -- Functions of this type are called by 'evalObject' to evaluate expressions written in the Dao
 -- language.
-newtype DaoFunc = DaoFunc { daoForeignCall :: [Object] -> ExecScript Object }
+newtype DaoFunc = DaoFunc { daoForeignCall :: [Object] -> Exec Object }
 
 -- | This is the state that is used to run the evaluation algorithm. Every Dao program file that has
 -- been loaded will have a single 'ExecUnit' assigned to it. Parameters that are stored in
@@ -902,9 +902,9 @@ data ExecUnit
     , destructScript    :: [[Com ScriptExpr]]
     , requiredBuiltins  :: [Name]
     , programAttributes :: M.Map Name Name
-    , preExecScript     :: [Executable]
+    , preExec     :: [Executable]
       -- ^ the "guard scripts" that are executed before every string execution.
-    , postExecScript    :: [Executable]
+    , postExec    :: [Executable]
       -- ^ the "guard scripts" that are executed after every string execution.
     , programTokenizer  :: Tokenizer
       -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
@@ -969,7 +969,7 @@ isDocumentFile file = case file of
 
 -- | A type of function that can split an input query string into 'Dao.Pattern.Tokens'. The default
 -- splits up strings on white-spaces, numbers, and punctuation marks.
-type Tokenizer = UStr -> ExecScript Tokens
+type Tokenizer = UStr -> Exec Tokens
 
 -- | A type of function that can match 'Dao.Pattern.Single' patterns to 'Dao.Pattern.Tokens', the
 -- default is the 'Dao.Pattern.exact' function. An alternative is 'Dao.Pattern.approx', which

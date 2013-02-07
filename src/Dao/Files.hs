@@ -167,7 +167,6 @@ checkImports file = dStack $loc "checkImports[1]" $ ask >>= \runtime -> case fil
             (badImports, goodImports) = partition (null . snd) xunits
         return (if null badImports then [] else map fst badImports)
   DocumentFile   _ -> return []
-  SourceCodeFile _ -> return []
 
 -- | Like 'checkImports' but checks every file that has been loaded by the Runtime.
 checkAllImports :: Run [(UPath, [UPath])]

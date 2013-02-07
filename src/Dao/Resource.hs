@@ -148,7 +148,7 @@ inEvalDoModifyUnlocked rsrc runUpdate = do
       CENext (stor, a) -> return (stor, CENext   a  )
       CEReturn obj     -> return (stor, CEReturn obj)
       CEError  obj     -> return (stor, CEError  obj)
-  returnContErr ce
+  joinFlowCtrl ce
 
 inEvalDoModifyUnlocked_ :: Resource stor ref -> (stor Object -> ExecScript (stor Object)) -> ExecScript ()
 inEvalDoModifyUnlocked_ rsrc runUpdate =
@@ -212,16 +212,9 @@ inEvalDoUpdateResource rsrc ref runUpdate = do
         CEReturn a      -> Just a
         CEError  _      -> Nothing
       fromMaybe item = ContErrMaybe{contErrMaybe = CENext item}
-  execScriptRun >=> returnContErr $
+  execScriptRun >=> joinFlowCtrl $
     fmap contErrMaybe $ updateResource_ rsrc ref toMaybe fromMaybe $ \item ->
       fmap ContErrMaybe (runExecScript (runUpdate (toMaybe item)) xunit)
-
--- | Same function as 'readResource', but is of the 'ExecScript' monad type. Really, this is simply
--- @\resource reference -> 'Dao.Object.execRun' ('Dao.Object.readResource' resource reference)@
--- but it is included for the sake of completion -- to have a read-only counterpart to
--- 'Dao.Object.inEvalDoUpdateResource'.
-inEvalDoReadResource :: Resource stor ref -> ref -> ExecScript (Maybe Object)
-inEvalDoReadResource rsrc ref = execRun (readResource rsrc ref)
 
 -- | This function will return an 'Dao.Object.Object' at a given address ('Dao.Object.Reference')
 -- without blocking, and will return values even if they are locked by another thread with the

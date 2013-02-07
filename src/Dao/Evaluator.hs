@@ -84,9 +84,10 @@ initExecUnit runtime modName initGlobalData = do
     ExecUnit
     { parentRuntime      = runtime
     , currentDocument    = Nothing
+    , currentQuery       = Nothing
     , currentPattern     = Nothing
     , currentMatch       = Nothing
-    , currentExecutable  = Nothing
+    , currentExecutable  = error "ExecUnit.currentExecutable is undefined"
     , currentBranch      = []
     , importsTable       = []
     , execAccessRules    = RestrictFiles (Pattern{getPatUnits = [Wildcard], getPatternLength = 1})
@@ -123,8 +124,8 @@ setupExecutable scrp = do
     }
 
 runExecutable :: T_tree -> Executable -> ExecScript Object
-runExecutable initStack exe = localCE (\xunit -> return (xunit{currentExecutable = Just exe})) $
-  execFuncPushStack initStack (executable exe >> return ONull)
+runExecutable initStack exe = local (\xunit -> xunit{currentExecutable = exe}) $!
+  execFuncPushStack initStack (executable exe >>= liftIO . evaluate >> return ONull)
 
 -- | Given a list of arguments, matches these arguments toe the given subroutine's
 -- 'Dao.Object.ObjPat'. If it matches, the 'Dao.Object.getSubExecutable' of the 'Dao.Object.Executable'
@@ -151,8 +152,8 @@ execRuleCall ax rule = do
       OString a -> return a
       _ -> typeErr a
     _ -> typeErr a
-  flip local (execFuncPushStack T.Void (execScriptBlock (unComment (ruleAction rule)) >> ceReturn ONull)) $
-    \xunit -> xunit{currentMatch = Just (matchFromList [] (iLength ax) ax)}
+  local (\xunit -> xunit{currentMatch = Just (matchFromList [] (iLength ax) ax)}) $
+    execFuncPushStack T.Void (execScriptBlock (unComment (ruleAction rule)) >> ceReturn ONull)
 
 -- | Very simply executes every given script item. Does not use catchCEReturn, does not use
 -- 'nestedExecStack'. CAUTION: you cannot assign to local variables unless you call this method
@@ -183,21 +184,21 @@ stack_underflow = error "INTERNAL ERROR: stack underflow"
 nestedExecStack :: T_tree -> ExecScript a -> ExecScript a
 nestedExecStack init exe = do
   stack <- fmap execStack ask
-  execRun (dModifyMVar_ $loc stack (return . stackPush init))
-  ce <- catchContErr exe
-  execRun (dModifyMVar_ $loc stack (return . stackPop))
-  returnContErr ce
+  lift (dModifyMVar_ $loc stack (return . stackPush init))
+  ce <- ceCatch exe
+  lift (dModifyMVar_ $loc stack (return . stackPop))
+  joinFlowCtrl ce
 
 -- | Keep the current 'execStack', but replace it with a new empty stack before executing the given
 -- function. Use 'catchCEReturn' to prevent return calls from halting execution beyond this
 -- function. This is what you should use to perform a Dao function call within a Dao function call.
 execFuncPushStack :: T_tree -> ExecScript Object -> ExecScript Object
 execFuncPushStack dict exe = do
-  stackMVar <- execRun (dNewMVar $loc "execFuncPushStack/ExecUnit.execStack" (Stack [dict]))
-  ce <- catchContErr (local (\xunit -> xunit{execStack = stackMVar}) exe)
+  stackMVar <- lift (dNewMVar $loc "execFuncPushStack/ExecUnit.execStack" (Stack [dict]))
+  ce <- ceCatch (local (\xunit -> xunit{execStack = stackMVar}) exe)
   case ce of
     CEReturn obj -> return obj
-    _            -> returnContErr ce
+    _            -> joinFlowCtrl ce
 
 ----------------------------------------------------------------------------------------------------
 
@@ -226,7 +227,7 @@ evalIntRef i = do
 
 -- | Lookup an object in the 'globalData' for this 'ExecUnit'.
 execHeapLookup :: [Name] -> ExecScript (Maybe Object)
-execHeapLookup name = ask >>= \xunit -> inEvalDoReadResource (globalData xunit) name
+execHeapLookup name = ask >>= \xunit -> lift (readResource (globalData xunit) name)
 
 -- | Lookup an object in the 'globalData' for this 'ExecUnit'.
 execHeapUpdate :: [Name] -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript (Maybe Object)
@@ -245,8 +246,8 @@ curDocVarLookup :: [Name] -> ExecScript (Maybe Object)
 curDocVarLookup name = do
   xunit <- ask
   case currentDocument xunit of
-    Nothing                  -> return Nothing
-    Just file@(DocumentFile res) -> inEvalDoReadResource res (currentBranch xunit ++ name)
+    Nothing                      -> return Nothing
+    Just file@(DocumentFile res) -> lift (readResource res (currentBranch xunit ++ name))
     _ -> error ("current document is not an idea file, cannot lookup reference "++showRef name)
 
 -- | Update a reference value in the durrent document, if the current document has been set with a
@@ -269,11 +270,11 @@ curDocVarDelete ref obj = curDocVarUpdate ref (return . const Nothing)
 -- | Lookup a value in the 'execStack'.
 localVarLookup :: Name -> ExecScript (Maybe Object)
 localVarLookup sym =
-  fmap execStack ask >>= execRun . dReadMVar $loc >>= return . msum . map (T.lookup [sym]) . mapList
+  fmap execStack ask >>= lift . dReadMVar $loc >>= return . msum . map (T.lookup [sym]) . mapList
 
 -- | Apply an altering function to the map at the top of the local variable stack.
 localVarUpdate :: Name -> (Maybe Object -> Maybe Object) -> ExecScript (Maybe Object)
-localVarUpdate name alt = ask >>= \xunit -> execRun $
+localVarUpdate name alt = ask >>= \xunit -> lift $
   dModifyMVar $loc (execStack xunit) $ \ax -> case mapList ax of
     []   -> stack_underflow
     a:ax ->
@@ -290,20 +291,15 @@ localVarDelete nm = localVarUpdate nm (const Nothing)
 
 staticVarLookup :: Name -> ExecScript (Maybe Object)
 staticVarLookup nm = do
-  exe <- fmap (fmap staticVars . currentExecutable) ask
-  case exe of
-    Nothing  -> return Nothing
-    Just exe -> lift (lift (readIORef exe)) >>= return . M.lookup nm
+  exe <- fmap (staticVars . currentExecutable) ask
+  liftIO (readIORef exe) >>= return . M.lookup nm
 
 staticVarUpdate :: Name -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript (Maybe Object)
 staticVarUpdate nm upd = do
-  ref <- fmap (fmap staticVars . currentExecutable) ask
-  case ref of
-    Nothing  -> return Nothing
-    Just ref -> do
-      val <- lift (lift (readIORef ref)) >>= return . (M.lookup nm) >>= upd
-      lift (lift (modifyIORef ref (M.update (const val) nm)))
-      return val
+  ref <- fmap (staticVars . currentExecutable) ask
+  val <- lift (lift (readIORef ref)) >>= return . (M.lookup nm) >>= upd
+  lift (lift (modifyIORef ref (M.update (const val) nm)))
+  return val
 
 staticVarDefine :: Name -> Object -> ExecScript (Maybe Object)
 staticVarDefine nm obj = staticVarUpdate nm (return . const (Just obj))
@@ -332,7 +328,7 @@ globalVarDelete :: [Name] -> ExecScript (Maybe Object)
 globalVarDelete name = globalVarUpdate name (return . const Nothing)
 
 qTimeVarLookup :: [Name] -> ExecScript (Maybe Object)
-qTimeVarLookup ref = ask >>= \xunit -> inEvalDoReadResource (queryTimeHeap xunit) ref
+qTimeVarLookup ref = ask >>= \xunit -> lift (readResource (queryTimeHeap xunit) ref)
 
 qTimeVarUpdate :: [Name] -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript (Maybe Object)
 qTimeVarUpdate ref runUpdate = ask >>= \xunit ->
@@ -894,7 +890,7 @@ updateReference :: Reference -> (Maybe Object -> ExecScript (Maybe Object)) -> E
 updateReference ref modf = do
   xunit <- ask
   let updateRef :: DMVar a -> (a -> Run (a, ContErr Object)) -> ExecScript (Maybe Object)
-      updateRef dmvar runUpdate = fmap Just (execScriptRun (dModifyMVar $loc dmvar runUpdate) >>= returnContErr)
+      updateRef dmvar runUpdate = fmap Just (execScriptRun (dModifyMVar $loc dmvar runUpdate) >>= joinFlowCtrl)
       execUpdate :: ref -> a -> Maybe Object -> ((Maybe Object -> Maybe Object) -> a) -> Run (a, ContErr Object)
       execUpdate ref store lkup upd = do
         err <- flip runExecScript xunit $ modf lkup
@@ -921,7 +917,7 @@ updateReference ref modf = do
 lookupFunction :: String -> Name -> ExecScript [Subroutine]
 lookupFunction msg op = do
   xunit <- ask
-  let toplevs xunit = execRun (fmap (M.lookup op) (dReadMVar $loc (toplevelFuncs xunit)))
+  let toplevs xunit = lift (fmap (M.lookup op) (dReadMVar $loc (toplevelFuncs xunit)))
       lkup p = case p of
         ProgramFile xunit -> toplevs xunit
         _                 -> return Nothing
@@ -983,12 +979,12 @@ execScriptExpr script = case unComment script of
         execScriptBlock (unComment (if true then thn else els))
       o      -> execScriptBlock (unComment (if objToBool o then thn else els))
   TryCatch    try  name catch  lc  -> do
-    ce <- withContErrSt (nestedExecStack T.Void (execScriptBlock (unComment try))) return
+    ce <- ceCatch (nestedExecStack T.Void (execScriptBlock (unComment try)))
     void $ case ce of
       CEError o -> nestedExecStack (T.insert [unComment name] o T.Void) (execScriptBlock catch)
-      ce        -> returnContErr ce
+      ce        -> joinFlowCtrl ce
   ForLoop    varName inObj thn lc  -> nestedExecStack T.Void $ do
-    inObj   <- evalObject (unComment inObj)
+    inObj <- evalObject (unComment inObj)
     let block thn = if null thn then return True else scrpExpr (head thn) >> block (tail thn)
         ctrlfn ifn thn = do
           ifn <- evalObject ifn
@@ -1013,7 +1009,7 @@ execScriptExpr script = case unComment script of
     lval <- evalObject (unComment lval)
     let setBranch ref xunit = return (xunit{currentBranch = ref})
         setFile path xunit = do
-          file <- execRun (fmap (M.lookup path) (dReadMVar $loc (execOpenFiles xunit)))
+          file <- lift (fmap (M.lookup path) (dReadMVar $loc (execOpenFiles xunit)))
           case file of
             Nothing  -> ceError $ OList $ map OString $
               [ustr "with file path", path, ustr "file has not been loaded"]
@@ -1157,7 +1153,7 @@ evalObject obj = case obj of
       _ -> simpleError "internal error: array range expression has fewer than 2 arguments"
   LambdaExpr argv  code      lc -> do
     let argv' = map (flip ObjLabel ObjAny1 . unComment) (unComment argv)
-    exe <- execRun (setupExecutable (Com code))
+    exe <- lift (setupExecutable (Com code))
     return $ OScript $
       Subroutine{argsPattern = argv', subSourceCode = code, getSubExecutable = exe}
 
@@ -1224,8 +1220,8 @@ initProgram :: IntermediateProgram -> ExecScript ExecUnit
 initProgram inmpg = do
   xunit <- ask
   let rules = ruleSet xunit
-  pre   <- execRun (mapM setupExecutable (inmpg_preExecScript  inmpg))
-  post  <- execRun (mapM setupExecutable (inmpg_postExecScript inmpg))
+  pre   <- lift (mapM setupExecutable (inmpg_preExecScript  inmpg))
+  post  <- lift (mapM setupExecutable (inmpg_postExecScript inmpg))
   inEvalDoModifyUnlocked_ (globalData xunit) (return . const (inmpg_globalData inmpg))
   return $
     xunit
@@ -1329,6 +1325,8 @@ programFromSource globalResource checkAttribute script =
 
 ----------------------------------------------------------------------------------------------------
 
+-- | Blocks until every thread in the guven@'DMVar' ('Data.Set.Set' 'Dao.Debug.DThread')@ has
+-- completed evaluation.
 execWaitThreadLoop :: MLoc -> String -> DMVar (S.Set DThread) -> DMVar DThread -> Run ()
 execWaitThreadLoop lc msg running wait = dStack lc msg $ do
   threads <- dReadMVar $loc running
@@ -1341,11 +1339,18 @@ execWaitThreadLoop lc msg running wait = dStack lc msg $ do
         return (threads, S.null threads)
       if isDone then return () else loop
 
-execPatternMatchExecutable :: ExecUnit -> Pattern -> Match -> Executable -> Run ()
-execPatternMatchExecutable xunit pat mat exec =
-  dStack $loc ("execPatternMatchExecutable for ("++show pat++")") $
-    void $ runExecScript (runExecutable T.Void exec) $
-      xunit{currentPattern = Just pat, currentMatch = Just mat}
+-- | Evaluate an 'Dao.Object.Action' in the current thread.
+execAction :: Action -> Run ()
+execAction action = dStack $loc ("execAction for ("++show (actionPattern action)++")") $!
+  void (runExecScript (runExecutable T.Void (currentExecutable xunit)) xunit >>= liftIO . evaluate)
+  where
+    xunit =
+      (actionExecUnit action)
+      { currentQuery      = Just (actionQuery   action)
+      , currentPattern    = Just (actionPattern action)
+      , currentMatch      = Just (actionMatch   action)
+      , currentExecutable = actionExecutable action
+      }
 
 -- | This is the most important algorithm of the Dao system, in that it matches strings to all
 -- rule-patterns in the program that is associated with the 'Dao.Object.ExecUnit', and it dispatches
@@ -1373,9 +1378,8 @@ execInputStringsLoop xunit = dCatch $loc start handler where
         matched <- matchStringToProgram instr xunit
         dMessage $loc ("matched "++show (length matched)++" rules")
         -- (4) Run 'execPatternMatchExecutable' for every matching item.
-        putThreads $ forM matched $ \ (pat, mat, exec) ->
-          dFork forkIO $loc "execInputStringsLoop.loop" $ void $
-            execPatternMatchExecutable xunit pat mat exec
+        putThreads $ forM matched $ \act -> do
+          dFork forkIO $loc "execInputStringsLoop.loop" (execAction act)
         let msg = "execInputStringLoop.loop.(execWaitThreadLoop execPatternMatchExecutable)"
         execWaitThreadLoop $loc msg running waitChild
         -- (5) Run "END" scripts.
@@ -1471,13 +1475,21 @@ selectModules xunit names = dStack $loc "selectModules" $ ask >>= \runtime -> ca
 -- one of the patterns associated with the rule. *This is not a bug.* Each pattern may produce a
 -- different set of match results, it is up to the programmer of the rule to handle situations where
 -- the action may execute many times for a single input.
-matchStringToProgram :: UStr -> ExecUnit -> Run [(Pattern, Match, Executable)]
+matchStringToProgram :: UStr -> ExecUnit -> Run [Action]
 matchStringToProgram instr xunit = dStack $loc "matchStringToProgram" $ do
   let eq = programComparator xunit
       match tox = do
         tree <- dReadMVar $loc (ruleSet xunit)
+        dMessage $loc ("match to pattern tree: "++show (map fst (T.assocs tree)))
         fmap concat $ forM (matchTree eq tree tox) $ \ (patn, mtch, execs) ->
-          return (concatMap (\exec -> [(patn, mtch, exec)]) execs)
+          return $ flip map execs $ \exec ->
+            Action
+            { actionExecUnit   = xunit
+            , actionQuery      = instr
+            , actionPattern    = patn
+            , actionMatch      = mtch
+            , actionExecutable = exec
+            }
   tox <- runExecScript (programTokenizer xunit instr) xunit
   case tox of
     CEError obj -> do

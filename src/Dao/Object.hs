@@ -65,9 +65,11 @@ import qualified Data.ByteString.Lazy      as B
 import           Control.Monad
 import           Control.Exception
 import           Control.Concurrent
+
 import           Control.Monad.Trans
 import           Control.Monad.Reader
-import           Control.Monad.State
+--import           Control.Monad.State.Class
+import           Control.Monad.Error.Class
 
 ----------------------------------------------------------------------------------------------------
 
@@ -824,24 +826,21 @@ initDoc docdata =
 
 ----------------------------------------------------------------------------------------------------
 
--- | A program table is an 'Control.Concurrent.DMVar.DMVar' associating 'programModuleName's to
--- 'ExecUnit's. The 'ExecUnit's themselves are also stored in an 'Control.Concurrent.DMVar.DMVar',
--- which must be extracted from in order to evaluate any of the 'ExecScript' functions in the IO
--- monad, that way the 'ExecScript' monad itself does not need to constantly extract the 'ExecUnit'
--- from it's containing 'Control.Concurrent.DMVar.DMVar' every time it needs to refer to one of the
--- 'ExecUnit' properties.
-type ProgramTable  = DMVar (M.Map Name (DMVar ExecUnit))
+-- $Relating_ExecScript_and_Run
+-- The 'ExecScript' monad is what evaluates Dao code, and keeps the state of an individual Dao
+-- module. The 'Run' monad keeps the state of the the Dao runtime, including every Dao module
+-- currently ready for execution. Functions in the 'Run' monad evaluate functions in the
+-- 'ExecScript' monad. Functions in the 'ExecScript' monad have a reference to the 'Run' monad state
+-- which evaluated them, and so can use this reference to evaluate 'Run' monadic functions.
 
--- | Like 'Control.Monad.Reader.runReaderT' but specific to the 'Dao.Object.Evaluator.ExecScript'
--- monad, and is lifted into the 'Run' monad for convenience.
+-- | Evaluate an 'ExecScript' monadic function within the 'Run' monad.
 runExecScript :: ExecScript a -> ExecUnit -> Run (ContErr a)
 runExecScript fn xunit = ReaderT $ \runtime ->
   runReaderT (runContErrT fn) (xunit{parentRuntime = runtime})
 
--- Execute a 'Run' monad within an 'ExecScript' monad. Every 'ExecUnit' contains a pointer to the
--- 'Runtime' object that manages it, 
+-- Evaluate a 'Run' monadic function within an 'ExecScript' monad.
 execScriptRun :: Run a -> ExecScript a
-execScriptRun fn = ask >>= \xunit -> execIO (runReaderT fn (parentRuntime xunit))
+execScriptRun fn = ask >>= \xunit -> liftIO (runReaderT fn (parentRuntime xunit))
 
 -- | Pair an error message with an object that can help to describe what went wrong.
 objectError :: Monad m => Object -> String -> ContErrT m err
@@ -869,9 +868,12 @@ data ExecUnit
       -- Dao scripting language may make calls that modify the state of the Runtime.
     , currentDocument    :: Maybe File
       -- ^ the current document is set by the @with@ statement during execution of a Dao script.
+    , currentQuery       :: Maybe UStr
     , currentPattern     :: Maybe Pattern
     , currentMatch       :: Maybe Match
-    , currentExecutable  :: Maybe Executable
+    , currentExecutable  :: Executable
+      -- ^ when evaluating an 'Executable' selected by a string query, the 'Action' resulting from
+      -- that query is defnied here.
     , currentBranch      :: [Name]
       -- ^ set by the @with@ statement during execution of a Dao script. It is used to prefix this
       -- to all global references before reading from or writing to those references.
@@ -911,10 +913,22 @@ data ExecUnit
       -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
     , ruleSet           :: DMVar (PatternTree [Executable])
     }
-
 instance HasDebugRef ExecUnit where
   getDebugRef = runtimeDebugger . parentRuntime
   setDebugRef dbg xunit = xunit{parentRuntime = (parentRuntime xunit){runtimeDebugger = dbg}}
+
+-- | An 'Action' is the result of a pattern match that occurs during an input string query. It is a
+-- data structure that contains all the information necessary to run an 'Executable' assocaited with
+-- a 'Pattern', including the parent 'ExecUnit', the 'Dao.Pattern.Pattern' and the
+-- 'Dao.Pattern.Match' objects, and the 'Executables'.
+data Action
+  = Action
+    { actionQuery      :: UStr -- ^ the string query
+    , actionExecUnit   :: ExecUnit
+    , actionPattern    :: Pattern
+    , actionMatch      :: Match
+    , actionExecutable :: Executable
+    }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -933,10 +947,11 @@ data FileAccessRules
     -- ^ access rules will apply to every file in the path of this directory, but other rules
     -- specific to certain files will override these rules.
 
+-- | The Dao 'Runtime' keeps track of all files loaded into memory in a 'Data.Map.Map' that
+-- associates 'Dao.String.UPath's to this items of this data type.
 data File
-  = ProgramFile     ExecUnit
-  | SourceCodeFile  SourceCode
-  | DocumentFile    DocResource
+  = ProgramFile     ExecUnit    -- ^ "*.dao" files, a module loaded from the file system.
+  | DocumentFile    DocResource -- ^ "*.idea" files, 'Object' data loaded from the file system.
 
 -- | Used to select programs from the 'pathIndex' that are currently available for recursive
 -- execution.
@@ -1051,7 +1066,23 @@ instance MonadPlus ContErr where
   mplus (CEError _) b = b
   mplus a           _ = a
 
+instance MonadError Object ContErr where
+  throwError = CEError
+  catchError ce catch = case ce of
+    CENext   ce  -> CENext ce
+    CEReturn obj -> CEReturn obj
+    CEError  obj -> catch obj
+
+-- | Since the Dao language is a procedural language, there must exist a monad that mimics the
+-- behavior of a procedural program. A procedure may throw errors and return from any point. Thus,
+-- 'Control.Monad.Monad' is extended with 'ContErr'.
 newtype ContErrT m a = ContErrT { runContErrT :: m (ContErr a) }
+
+-- | Procedural languages can modify the state of the program anywhere. To mimic this behavior,
+-- 'ContErrT' is extended with the 'Control.Monad.Reader.ReaderT' monad, where the
+-- 'Control.Monad.Reader.ReaderT' can contain the program state in an 'Data.IORef.IORef' or
+-- 'Control.Concurrent.MVar.MVar'.
+type CEReader r m a = ContErrT (ReaderT r m) a
 
 instance Monad m => Monad (ContErrT m) where
   return = ContErrT . return . CENext
@@ -1077,82 +1108,55 @@ instance Monad m => MonadPlus (ContErrT m) where
 instance MonadTrans ContErrT where
   lift ma = ContErrT (ma >>= return . CENext)
 
+instance MonadIO m => MonadIO (ContErrT m) where
+  liftIO ma = ContErrT (liftIO ma >>= return . CENext)
+
+instance Monad m => MonadReader r (ContErrT (ReaderT r m)) where
+  local upd mfn = ContErrT (local upd (runContErrT mfn))
+  ask = ContErrT (ask >>= return . CENext)
+
+instance Monad m => MonadError Object (ContErrT m) where
+  throwError = ContErrT . return . CEError
+  catchError mce catch = ContErrT $ runContErrT mce >>= \ce -> case ce of
+    CENext   a   -> return (CENext a)
+    CEReturn obj -> return (CEReturn obj)
+    CEError  obj -> runContErrT (catch obj)
+
+catchReturn :: Monad m => ContErrT m a -> (Object -> ContErrT m a) -> ContErrT m a
+catchReturn fn catch = ContErrT $ runContErrT fn >>= \ce -> case ce of
+  CEReturn obj -> runContErrT (catch obj)
+  CENext   a   -> return (CENext a)
+  CEError  obj -> return (CEError obj)
+
 -- | Force the computation to assume the value of a given 'Dao.Object.Monad.ContErr'. This function
 -- can be used to re-throw a 'Dao.Object.Monad.ContErr' value captured by the 'withContErrSt'
 -- function.
-returnContErr :: Monad m => ContErr a -> ContErrT m a
-returnContErr ce = ContErrT (return ce)
+joinFlowCtrl :: Monad m => ContErr a -> ContErrT m a
+joinFlowCtrl ce = ContErrT (return ce)
 
+-- | Evaluate this function when the proceudre must return.
 ceReturn :: Monad m => Object -> ContErrT m a
-ceReturn a = returnContErr (CEReturn a)
+ceReturn a = joinFlowCtrl (CEReturn a)
 
+-- | Evaluate this function when procedure must throw an error.
 ceError :: Monad m => Object -> ContErrT m a
-ceError  a = returnContErr (CEError a)
+ceError  a = joinFlowCtrl (CEError a)
 
--- | Evaluate a 'ContErrT' function and capture the resultant 'Dao.Object.Monad.ContErr' value,
--- then apply some transformation to that 'ContErr value. For example, you can decide whether or not
--- to evaluate 'Dao.Object.Monad.ceError', 'Dao.Object.Monad.ceReturn', or ordinary
--- 'Control.Monad.return', or just ignore the 'Dao.Object.Monad.ContErr' value entirely.
-withContErrSt :: Monad m => CEReader r m a -> (ContErr a -> CEReader r m b) -> CEReader r m b
-withContErrSt exe fn = ContErrT $ ReaderT $ \r -> do
-  b <- runReaderT (runContErrT exe) r
-  runReaderT (runContErrT (fn b)) r
+-- | The inverse operation of 'ceJoin', catches the result of the given 'ContErrT' evaluation,
+-- regardless of whether or not this function evaluates to 'ceReturn' or 'ceError'.
+ceCatch :: Monad m => ContErrT m a -> ContErrT m (ContErr a)
+ceCatch fn = ContErrT (runContErrT fn >>= \ce -> return (CENext ce))
 
--- | Run an inner function, return its result as a 'ContErr' regardless of the vaue of 'ContErr', in
--- other words, 'ceReturn' and 'ceError' executed by this function will not collapse the
--- continuation beyond this point, you will see the result of the continuation returned by the
--- evaluation of this monadic function. The inner function will evaluate to a 'Dao.Object.Object'
--- wrapped in a 'CENext', 'CEError', or 'CEReturn'. You can "rethrow" the 'ContErr' evaluated by
--- this function by calling 'returnContErr'
-catchContErr :: Monad m => ContErrT m a -> ContErrT m (ContErr a)
-catchContErr exe = lift (runContErrT exe)
+-- | The inverse operation of 'ceCatch', this function evaluates to a 'ContErrT' behaving according
+-- to the 'ContErr' evaluated from the given function.
+ceJoin :: Monad m => ContErrT m (ContErr a) -> ContErrT m a
+ceJoin mfn = mfn >>= \a -> ContErrT (return a)
 
 -- | Takes an inner 'ContErrT' monad. If this inner monad evaluates to a 'CEReturn', it will not
 -- collapse the continuation monad, and the outer monad will continue evaluation as if a
 -- @('CENext' 'Dao.Object.Object')@ value were evaluated.
 catchCEReturn :: Monad m => ContErrT m Object -> ContErrT m Object
-catchCEReturn exe = catchContErr exe >>= \ce -> case ce of
+catchCEReturn exe = ceCatch exe >>= \ce -> case ce of
   CEReturn obj -> return obj
-  _            -> returnContErr ce
-
--- | Takes an inner 'ContErrT' monad. If this inner monad evaluates to a 'CEError', it will not
--- collapse the continuation monad, and the outer monad will continue evaluation as if a
--- @('CENext' 'Dao.Object.Object')@ value were evaluated.
-catchCEError :: Monad m => ContErrT m Object -> ContErrT m Object
-catchCEError exe = catchContErr exe >>= \ce -> case ce of
-  CEError obj -> return obj
-  _           -> returnContErr ce
-
-----------------------------------------------------------------------------------------------------
-
--- $MonadReader
--- Since 'ContErrT' will be used often with a lifted 'Control.Monad.Reader.ReaderT', useful
--- combinators for manipulating the reader value are provided here.
-
-type CEReader r m a = ContErrT (ReaderT r m) a
-
--- | It is useful to lift 'Control.Monad.Reader.ReaderT' into 'ContErrT' and instantiate the
--- combined monad into the 'Control.Monad.Reader.Class.MonadReader' class.
-instance Monad m => MonadReader r (ContErrT (ReaderT r m)) where
-  ask = ContErrT (ReaderT (\r -> return (CENext r)))
-  local fn next = ContErrT (ReaderT (\r -> runReaderT (runContErrT next) (fn r)))
-
--- Like 'Control.Monad.Reader.local', but the local function is in the @m@ monad.
-localCE :: Monad m => (r -> m r) -> CEReader r m a -> CEReader r m a
-localCE fn next = ContErrT (ReaderT (\r -> fn r >>= runReaderT (runContErrT next)))
-
--- | Execute an IO operation inside of the 'CEReader' monad, assuming IO is lifted into the
--- CEReader.
-execIO :: IO a -> CEReader r IO a
-execIO fn = lift (lift fn)
-
-execRun :: ReaderT r IO a -> CEReader r IO a
-execRun run = ContErrT (fmap CENext run)
-
--- | Catch an exception from "Control.Exception" in the 'CEReader' monad. Uses
--- 'Control.Exception.hander', which is an IO function, so the CEReader must have the IO monad
--- lifted into it.
--- catchCE :: Exception err => CEReader r IO a -> (err -> CEReader r IO a) -> CEReader r IO a
--- catchCE exe ifError = ContErrT $ ReaderT $ \r ->
---   handle (\e -> runReaderT (runContErrT (ifError e)) r) (runReaderT (runContErrT exe) r)
+  _            -> joinFlowCtrl ce
 

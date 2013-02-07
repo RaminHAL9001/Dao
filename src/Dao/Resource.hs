@@ -145,9 +145,9 @@ inEvalDoModifyUnlocked rsrc runUpdate = do
   ce <- execScriptRun $ modifyUnlocked rsrc $ \stor -> do
     ce <- runExecScript (runUpdate stor) xunit
     case ce of
-      CENext (stor, a) -> return (stor, CENext   a  )
-      CEReturn obj     -> return (stor, CEReturn obj)
-      CEError  obj     -> return (stor, CEError  obj)
+      FlowOK (stor, a) -> return (stor, FlowOK   a  )
+      FlowReturn obj     -> return (stor, FlowReturn obj)
+      FlowErr  obj     -> return (stor, FlowErr  obj)
   joinFlowCtrl ce
 
 inEvalDoModifyUnlocked_ :: Resource stor ref -> (stor Object -> ExecScript (stor Object)) -> ExecScript ()
@@ -196,7 +196,7 @@ updateResource
   -> ReaderT r IO (Maybe Object)
 updateResource rsrc ref runUpdate = updateResource_ rsrc ref id id runUpdate
 
-newtype ContErrMaybe a = ContErrMaybe { contErrMaybe :: ContErr (Maybe a) }
+newtype ContErrMaybe a = ContErrMaybe { contErrMaybe :: FlowCtrl (Maybe a) }
 
 -- | Same function as 'updateResource', but is of the 'ExecScript' monad type.
 inEvalDoUpdateResource
@@ -207,11 +207,11 @@ inEvalDoUpdateResource
 inEvalDoUpdateResource rsrc ref runUpdate = do
   xunit <- ask
   let toMaybe ce = case contErrMaybe ce of
-        CENext Nothing  -> Nothing
-        CENext (Just a) -> Just a
-        CEReturn a      -> Just a
-        CEError  _      -> Nothing
-      fromMaybe item = ContErrMaybe{contErrMaybe = CENext item}
+        FlowOK Nothing  -> Nothing
+        FlowOK (Just a) -> Just a
+        FlowReturn a      -> Just a
+        FlowErr  _      -> Nothing
+      fromMaybe item = ContErrMaybe{contErrMaybe = FlowOK item}
   execScriptRun >=> joinFlowCtrl $
     fmap contErrMaybe $ updateResource_ rsrc ref toMaybe fromMaybe $ \item ->
       fmap ContErrMaybe (runExecScript (runUpdate (toMaybe item)) xunit)

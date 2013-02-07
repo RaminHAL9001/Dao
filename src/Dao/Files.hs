@@ -108,12 +108,12 @@ loadSourceCode upath sourceString = case fst (runParser parseSourceFile sourceSt
 
 -- | This function will take any file path and return a file associated with it if it has been
 -- loaded once before. If not, it runs the function you provide to load the file.
-dontLoadFileTwice :: UPath -> (UPath -> Run (ContErr File)) -> Run (ContErr File)
+dontLoadFileTwice :: UPath -> (UPath -> Run (FlowCtrl File)) -> Run (FlowCtrl File)
 dontLoadFileTwice upath getFile = do
   runtime <- ask
   ptab <- fmap (M.lookup upath) (dReadMVar $loc (pathIndex runtime))
   case ptab of
-    Just file -> return (CENext file)
+    Just file -> return (FlowOK file)
     Nothing   -> getFile upath
 
 -- | Load idea data from the given file handle. You must pass the path name to store the resulting

@@ -429,7 +429,7 @@ instance Show Subroutine where
 -- | All evaluation of the Dao language takes place in the 'ExecScript' monad. It allows @IO@
 -- functions to be lifeted into it so functions from "Control.Concurrent", "Dao.Document",
 -- "System.IO", and other modules, can be evaluated.
-type ExecScript a  = CEReader ExecUnit IO a
+type ExecScript a  = ProcReader ExecUnit IO a
 
 ----------------------------------------------------------------------------------------------------
 
@@ -834,17 +834,17 @@ initDoc docdata =
 -- which evaluated them, and so can use this reference to evaluate 'Run' monadic functions.
 
 -- | Evaluate an 'ExecScript' monadic function within the 'Run' monad.
-runExecScript :: ExecScript a -> ExecUnit -> Run (ContErr a)
+runExecScript :: ExecScript a -> ExecUnit -> Run (FlowCtrl a)
 runExecScript fn xunit = ReaderT $ \runtime ->
-  runReaderT (runContErrT fn) (xunit{parentRuntime = runtime})
+  runReaderT (runProcedural fn) (xunit{parentRuntime = runtime})
 
 -- Evaluate a 'Run' monadic function within an 'ExecScript' monad.
 execScriptRun :: Run a -> ExecScript a
 execScriptRun fn = ask >>= \xunit -> liftIO (runReaderT fn (parentRuntime xunit))
 
 -- | Pair an error message with an object that can help to describe what went wrong.
-objectError :: Monad m => Object -> String -> ContErrT m err
-objectError o msg = ceError (OPair (OString (ustr msg), o))
+objectError :: Monad m => Object -> String -> Procedural m err
+objectError o msg = procErr (OPair (OString (ustr msg), o))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1005,10 +1005,6 @@ data Runtime
 -- | This is the monad used for most all methods that operate on the 'Runtime' state.
 type Run a = ReaderT Runtime IO a
 
--- | Unlift a 'Run' monad.
-runIO :: Runtime -> Run a -> IO a
-runIO runtime runFunc = runReaderT runFunc runtime
-
 instance HasDebugRef Runtime where
   getDebugRef             = runtimeDebugger
   setDebugRef dbg runtime = runtime{runtimeDebugger = dbg}
@@ -1036,127 +1032,127 @@ instance HasDebugRef Runtime where
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 -- | Used to play the role of an error-handling monad and a continuation monad together. It is
--- basically an identity monad, but can evaluate to 'CEError's instead of relying on
+-- basically an identity monad, but can evaluate to 'FlowErr's instead of relying on
 -- 'Control.Exception.throwIO' or 'Prelude.error', and can also work like a continuation by
--- evaluating to 'CEReturn' which signals the execution function finish evaluation immediately. The
--- "Control.Monad" 'Control.Monad.return' function evaluates to 'CENext', which is the identity
--- monad simply returning a value to be passed to the next monad. 'CEError' and 'CEReturn' must
+-- evaluating to 'FlowReturn' which signals the execution function finish evaluation immediately. The
+-- "Control.Monad" 'Control.Monad.return' function evaluates to 'FlowOK', which is the identity
+-- monad simply returning a value to be passed to the next monad. 'FlowErr' and 'FlowReturn' must
 -- contain a value of type 'Dao.Types.Object'.
-data ContErr a
-  = CENext   a
-  | CEError  Object
-  | CEReturn Object
+data FlowCtrl a
+  = FlowOK     a
+  | FlowErr    Object
+  | FlowReturn Object
   deriving Show
 
-instance Monad ContErr where
-  return = CENext
+instance Monad FlowCtrl where
+  return = FlowOK
   ma >>= mfa = case ma of
-    CENext   a -> mfa a
-    CEError  a -> CEError a
-    CEReturn a -> CEReturn a
+    FlowOK     a -> mfa a
+    FlowErr    a -> FlowErr a
+    FlowReturn a -> FlowReturn a
 
-instance Functor ContErr where
+instance Functor FlowCtrl where
   fmap fn mfn = case mfn of
-    CENext   a -> CENext (fn a)
-    CEError  a -> CEError a
-    CEReturn a -> CEReturn a
+    FlowOK     a -> FlowOK (fn a)
+    FlowErr    a -> FlowErr a
+    FlowReturn a -> FlowReturn a
 
-instance MonadPlus ContErr where
-  mzero = CEError ONull
-  mplus (CEError _) b = b
+instance MonadPlus FlowCtrl where
+  mzero = FlowErr ONull
+  mplus (FlowErr _) b = b
   mplus a           _ = a
 
-instance MonadError Object ContErr where
-  throwError = CEError
+instance MonadError Object FlowCtrl where
+  throwError = FlowErr
   catchError ce catch = case ce of
-    CENext   ce  -> CENext ce
-    CEReturn obj -> CEReturn obj
-    CEError  obj -> catch obj
+    FlowOK     ce  -> FlowOK     ce
+    FlowReturn obj -> FlowReturn obj
+    FlowErr    obj -> catch      obj
 
 -- | Since the Dao language is a procedural language, there must exist a monad that mimics the
 -- behavior of a procedural program. A procedure may throw errors and return from any point. Thus,
--- 'Control.Monad.Monad' is extended with 'ContErr'.
-newtype ContErrT m a = ContErrT { runContErrT :: m (ContErr a) }
+-- 'Control.Monad.Monad' is extended with 'FlowCtrl'.
+newtype Procedural m a = Procedural { runProcedural :: m (FlowCtrl a) }
 
 -- | Procedural languages can modify the state of the program anywhere. To mimic this behavior,
--- 'ContErrT' is extended with the 'Control.Monad.Reader.ReaderT' monad, where the
+-- 'Procedural' is extended with the 'Control.Monad.Reader.ReaderT' monad, where the
 -- 'Control.Monad.Reader.ReaderT' can contain the program state in an 'Data.IORef.IORef' or
 -- 'Control.Concurrent.MVar.MVar'.
-type CEReader r m a = ContErrT (ReaderT r m) a
+type ProcReader r m a = Procedural (ReaderT r m) a
 
-instance Monad m => Monad (ContErrT m) where
-  return = ContErrT . return . CENext
-  (ContErrT ma) >>= mfa = ContErrT $ do
+instance Monad m => Monad (Procedural m) where
+  return = Procedural . return . FlowOK
+  (Procedural ma) >>= mfa = Procedural $ do
     a <- ma
     case a of
-      CENext   a -> runContErrT (mfa a)
-      CEError  a -> return (CEError  a)
-      CEReturn a -> return (CEReturn a)
+      FlowOK   a -> runProcedural (mfa a)
+      FlowErr  a -> return (FlowErr  a)
+      FlowReturn a -> return (FlowReturn a)
 
-instance Monad m => Functor (ContErrT m) where
+instance Monad m => Functor (Procedural m) where
   fmap fn mfn = mfn >>= return . fn
 
-instance Monad m => MonadPlus (ContErrT m) where
-  mzero = ContErrT (return mzero)
-  mplus (ContErrT fa) (ContErrT fb) = ContErrT $ do
+instance Monad m => MonadPlus (Procedural m) where
+  mzero = Procedural (return mzero)
+  mplus (Procedural fa) (Procedural fb) = Procedural $ do
     a <- fa
     case a of
-      CENext   a -> return (CENext   a)
-      CEError  _ -> fb
-      CEReturn a -> return (CEReturn a)
+      FlowOK     a -> return (FlowOK   a)
+      FlowErr    _ -> fb
+      FlowReturn a -> return (FlowReturn a)
 
-instance MonadTrans ContErrT where
-  lift ma = ContErrT (ma >>= return . CENext)
+instance MonadTrans Procedural where
+  lift ma = Procedural (ma >>= return . FlowOK)
 
-instance MonadIO m => MonadIO (ContErrT m) where
-  liftIO ma = ContErrT (liftIO ma >>= return . CENext)
+instance MonadIO m => MonadIO (Procedural m) where
+  liftIO ma = Procedural (liftIO ma >>= return . FlowOK)
 
-instance Monad m => MonadReader r (ContErrT (ReaderT r m)) where
-  local upd mfn = ContErrT (local upd (runContErrT mfn))
-  ask = ContErrT (ask >>= return . CENext)
+instance Monad m => MonadReader r (Procedural (ReaderT r m)) where
+  local upd mfn = Procedural (local upd (runProcedural mfn))
+  ask = Procedural (ask >>= return . FlowOK)
 
-instance Monad m => MonadError Object (ContErrT m) where
-  throwError = ContErrT . return . CEError
-  catchError mce catch = ContErrT $ runContErrT mce >>= \ce -> case ce of
-    CENext   a   -> return (CENext a)
-    CEReturn obj -> return (CEReturn obj)
-    CEError  obj -> runContErrT (catch obj)
+instance Monad m => MonadError Object (Procedural m) where
+  throwError = Procedural . return . FlowErr
+  catchError mce catch = Procedural $ runProcedural mce >>= \ce -> case ce of
+    FlowOK   a   -> return (FlowOK a)
+    FlowReturn obj -> return (FlowReturn obj)
+    FlowErr  obj -> runProcedural (catch obj)
 
-catchReturn :: Monad m => ContErrT m a -> (Object -> ContErrT m a) -> ContErrT m a
-catchReturn fn catch = ContErrT $ runContErrT fn >>= \ce -> case ce of
-  CEReturn obj -> runContErrT (catch obj)
-  CENext   a   -> return (CENext a)
-  CEError  obj -> return (CEError obj)
+catchReturn :: Monad m => Procedural m a -> (Object -> Procedural m a) -> Procedural m a
+catchReturn fn catch = Procedural $ runProcedural fn >>= \ce -> case ce of
+  FlowReturn obj -> runProcedural (catch obj)
+  FlowOK   a   -> return (FlowOK a)
+  FlowErr  obj -> return (FlowErr obj)
 
--- | Force the computation to assume the value of a given 'Dao.Object.Monad.ContErr'. This function
--- can be used to re-throw a 'Dao.Object.Monad.ContErr' value captured by the 'withContErrSt'
+-- | Force the computation to assume the value of a given 'Dao.Object.Monad.FlowCtrl'. This function
+-- can be used to re-throw a 'Dao.Object.Monad.FlowCtrl' value captured by the 'withContErrSt'
 -- function.
-joinFlowCtrl :: Monad m => ContErr a -> ContErrT m a
-joinFlowCtrl ce = ContErrT (return ce)
+joinFlowCtrl :: Monad m => FlowCtrl a -> Procedural m a
+joinFlowCtrl ce = Procedural (return ce)
 
 -- | Evaluate this function when the proceudre must return.
-ceReturn :: Monad m => Object -> ContErrT m a
-ceReturn a = joinFlowCtrl (CEReturn a)
+procReturn :: Monad m => Object -> Procedural m a
+procReturn a = joinFlowCtrl (FlowReturn a)
 
 -- | Evaluate this function when procedure must throw an error.
-ceError :: Monad m => Object -> ContErrT m a
-ceError  a = joinFlowCtrl (CEError a)
+procErr :: Monad m => Object -> Procedural m a
+procErr  a = joinFlowCtrl (FlowErr a)
 
--- | The inverse operation of 'ceJoin', catches the result of the given 'ContErrT' evaluation,
--- regardless of whether or not this function evaluates to 'ceReturn' or 'ceError'.
-ceCatch :: Monad m => ContErrT m a -> ContErrT m (ContErr a)
-ceCatch fn = ContErrT (runContErrT fn >>= \ce -> return (CENext ce))
+-- | The inverse operation of 'procJoin', catches the result of the given 'Procedural' evaluation,
+-- regardless of whether or not this function evaluates to 'procReturn' or 'procErr'.
+procCatch :: Monad m => Procedural m a -> Procedural m (FlowCtrl a)
+procCatch fn = Procedural (runProcedural fn >>= \ce -> return (FlowOK ce))
 
--- | The inverse operation of 'ceCatch', this function evaluates to a 'ContErrT' behaving according
--- to the 'ContErr' evaluated from the given function.
-ceJoin :: Monad m => ContErrT m (ContErr a) -> ContErrT m a
-ceJoin mfn = mfn >>= \a -> ContErrT (return a)
+-- | The inverse operation of 'procCatch', this function evaluates to a 'Procedural' behaving according
+-- to the 'FlowCtrl' evaluated from the given function.
+procJoin :: Monad m => Procedural m (FlowCtrl a) -> Procedural m a
+procJoin mfn = mfn >>= \a -> Procedural (return a)
 
--- | Takes an inner 'ContErrT' monad. If this inner monad evaluates to a 'CEReturn', it will not
+-- | Takes an inner 'Procedural' monad. If this inner monad evaluates to a 'FlowReturn', it will not
 -- collapse the continuation monad, and the outer monad will continue evaluation as if a
--- @('CENext' 'Dao.Object.Object')@ value were evaluated.
-catchCEReturn :: Monad m => ContErrT m Object -> ContErrT m Object
-catchCEReturn exe = ceCatch exe >>= \ce -> case ce of
-  CEReturn obj -> return obj
+-- @('FlowOK' 'Dao.Object.Object')@ value were evaluated.
+catchReturnObj :: Monad m => Procedural m Object -> Procedural m Object
+catchReturnObj exe = procCatch exe >>= \ce -> case ce of
+  FlowReturn obj -> return obj
   _            -> joinFlowCtrl ce
 

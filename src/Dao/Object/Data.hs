@@ -537,7 +537,7 @@ checkNumericOp
   -> (forall a . Num a => a -> a -> a)
   -> Object
   -> Object
-  -> PredicateIO st (ContErr Object)
+  -> PredicateIO st (FlowCtrl Object)
 checkNumericOp op fn a b = promoteNum op a b >>= uncurry (withNum fn) >>= checkOK
 
 -- | Used to create a built-in operator (like divide @(/)@ or modulus @(%)@) where, these operators
@@ -550,7 +550,7 @@ checkBinumericOp
   -> (forall b . Floating b => b -> b -> b)
   -> Object
   -> Object
-  -> PredicateIO st (ContErr Object)
+  -> PredicateIO st (FlowCtrl Object)
 checkBinumericOp op fnInt fnFrac a b = do
   (a, b) <- promoteNum op a b
   checkOK $ case (a, b) of
@@ -570,7 +570,7 @@ checkBitwiseOp
   -> (T_intMap -> T_intMap -> T_intMap)
   -> Object
   -> Object
-  -> Check (ContErr Object)
+  -> Check (FlowCtrl Object)
 checkBitwiseOp op fnBit fnSet fnDict fnIntMap a b = do
   (a, b) <- promoteNum op a b
   checkOK $ case (a, b) of
@@ -591,7 +591,7 @@ checkCompareOp
   -> (forall a . Ord a => a -> a -> Bool)
   -> Object
   -> Object
-  -> Check (ContErr Object)
+  -> Check (FlowCtrl Object)
 checkCompareOp op fn a b = case (a, b) of
   (ONull      , ONull      ) -> done $ fn False False
   (OTrue      , OTrue      ) -> done $ fn True  True

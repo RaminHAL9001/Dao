@@ -137,7 +137,7 @@ runSubroutine args sub =
   case evalMatcher (matchObjectList (argsPattern sub) args >> gets matcherTree) of
     OK       tree -> fmap Just (runExecutable tree (getSubExecutable sub))
     Backtrack     -> return Nothing
-    PFail ref msg -> ceError (OPair (OString msg, ORef ref))
+    PFail ref msg -> procErr (OPair (OString msg, ORef ref))
 
 -- | Execute a 'Dao.Object.Rule' object as though it were a script that could be called. The
 -- parameters passed will be stored into the 'currentMatch' slot durring execution, but all
@@ -153,9 +153,9 @@ execRuleCall ax rule = do
       _ -> typeErr a
     _ -> typeErr a
   local (\xunit -> xunit{currentMatch = Just (matchFromList [] (iLength ax) ax)}) $
-    execFuncPushStack T.Void (execScriptBlock (unComment (ruleAction rule)) >> ceReturn ONull)
+    execFuncPushStack T.Void (execScriptBlock (unComment (ruleAction rule)) >> procReturn ONull)
 
--- | Very simply executes every given script item. Does not use catchCEReturn, does not use
+-- | Very simply executes every given script item. Does not use catchReturnObj, does not use
 -- 'nestedExecStack'. CAUTION: you cannot assign to local variables unless you call this method
 -- within the 'nestedExecStack' or 'execFuncPushStack' functions. Failure to do so will cause a stack
 -- underflow exception.
@@ -177,7 +177,7 @@ execGuardBlock block = void (execFuncPushStack T.Void (execScriptBlock block >> 
 
 stack_underflow = error "INTERNAL ERROR: stack underflow"
 
--- | Push a new empty local-variable context onto the stack. Does NOT 'catchCEReturn', so it can be
+-- | Push a new empty local-variable context onto the stack. Does NOT 'catchReturnObj', so it can be
 -- used to push a new context for every level of nested if/else/for/try/catch statement, or to
 -- evaluate a macro, but not a function call. Use 'execFuncPushStack' to perform a function call within
 -- a function call.
@@ -185,19 +185,19 @@ nestedExecStack :: T_tree -> ExecScript a -> ExecScript a
 nestedExecStack init exe = do
   stack <- fmap execStack ask
   lift (dModifyMVar_ $loc stack (return . stackPush init))
-  ce <- ceCatch exe
+  ce <- procCatch exe
   lift (dModifyMVar_ $loc stack (return . stackPop))
   joinFlowCtrl ce
 
 -- | Keep the current 'execStack', but replace it with a new empty stack before executing the given
--- function. Use 'catchCEReturn' to prevent return calls from halting execution beyond this
+-- function. Use 'catchReturnObj' to prevent return calls from halting execution beyond this
 -- function. This is what you should use to perform a Dao function call within a Dao function call.
 execFuncPushStack :: T_tree -> ExecScript Object -> ExecScript Object
 execFuncPushStack dict exe = do
   stackMVar <- lift (dNewMVar $loc "execFuncPushStack/ExecUnit.execStack" (Stack [dict]))
-  ce <- ceCatch (local (\xunit -> xunit{execStack = stackMVar}) exe)
+  ce <- procCatch (local (\xunit -> xunit{execStack = stackMVar}) exe)
   case ce of
-    CEReturn obj -> return obj
+    FlowReturn obj -> return obj
     _            -> joinFlowCtrl ce
 
 ----------------------------------------------------------------------------------------------------
@@ -756,8 +756,8 @@ updatingOps = let o = (,) in array (minBound, maxBound) $
 requireAllStringArgs :: [Object] -> ExecScript [UStr]
 requireAllStringArgs ox = case mapM check (zip (iterate (+1) 0) ox) of
   OK      obj -> return obj
-  Backtrack   -> ceError $ OList [OString (ustr "all input parameters must be strings")]
-  PFail i msg -> ceError $ OList [OString msg, OWord i, OString (ustr "is not a string")]
+  Backtrack   -> procErr $ OList [OString (ustr "all input parameters must be strings")]
+  PFail i msg -> procErr $ OList [OString msg, OWord i, OString (ustr "is not a string")]
   where
     check (i, o) = case o of
       OString o -> return o
@@ -777,7 +777,7 @@ recurseGetAllStringArgs ox = catch (loop [0] [] ox) where
     _                 -> PFail ix (ustr "is not a string value")
   next (i:ix) zx nx ox = loop (0:i:ix) zx nx >>= \zx -> loop (i+1:ix) zx ox
   catch ox = case ox of
-    PFail ix msg -> ceError $ OList $
+    PFail ix msg -> procErr $ OList $
       [OString (ustr "function parameter"), OList (map OWord (reverse ix)), OString msg]
     Backtrack   -> return []
     OK       ox -> return ox
@@ -813,7 +813,7 @@ sendStringsToPrograms permissive names strings = do
             else []
        ++ [ OString (ustr "cannot execute strings"), OList (map OString strings) ]
   if null found || not permissive && not (null notFound && null nonPrograms)
-    then  ceError errMsg
+    then  procErr errMsg
     else  forM_ found $ \ (name, xunit) -> execScriptRun $
             dModifyMVar_ $loc (recursiveInput xunit) (return . (++strings))
 
@@ -823,7 +823,7 @@ builtin_do = DaoFunc $ \ox -> do
   let currentProg = [programModuleName xunit]
       isProgRef r = case r of
         ORef (ProgramRef a _) -> return a
-        _ -> ceError $ OList $
+        _ -> procErr $ OList $
           [ OString $ ustr $
               "first argument to \"do\" function must be all strings, or all file references"
           , r
@@ -835,7 +835,7 @@ builtin_do = DaoFunc $ \ox -> do
     [OList   files, str       ] -> mapM isProgRef files >>= \files -> return (files , [str])
     [OString str ] -> return (currentProg, [OString str])
     [OList   strs] -> return (currentProg, strs)
-    _              -> ceError $ OList $
+    _              -> procErr $ OList $
       OString (ustr "require query strings as parameters to \"do\" function, but received") : ox
   execStrings <- requireAllStringArgs execStrings
   return (OList (map OString execStrings))
@@ -863,7 +863,7 @@ evalObjectRef :: Object -> ExecScript Object
 evalObjectRef obj = case obj of
   ORef (MetaRef o) -> return (ORef o)
   ORef ref         -> readReference ref >>= \o -> case o of
-    Nothing  -> ceError $ OList [obj, OString (ustr "undefined reference")]
+    Nothing  -> procErr $ OList [obj, OString (ustr "undefined reference")]
     Just obj -> return obj
   obj              -> return obj
 
@@ -889,15 +889,15 @@ readReference ref = case ref of
 updateReference :: Reference -> (Maybe Object -> ExecScript (Maybe Object)) -> ExecScript (Maybe Object)
 updateReference ref modf = do
   xunit <- ask
-  let updateRef :: DMVar a -> (a -> Run (a, ContErr Object)) -> ExecScript (Maybe Object)
+  let updateRef :: DMVar a -> (a -> Run (a, FlowCtrl Object)) -> ExecScript (Maybe Object)
       updateRef dmvar runUpdate = fmap Just (execScriptRun (dModifyMVar $loc dmvar runUpdate) >>= joinFlowCtrl)
-      execUpdate :: ref -> a -> Maybe Object -> ((Maybe Object -> Maybe Object) -> a) -> Run (a, ContErr Object)
+      execUpdate :: ref -> a -> Maybe Object -> ((Maybe Object -> Maybe Object) -> a) -> Run (a, FlowCtrl Object)
       execUpdate ref store lkup upd = do
         err <- flip runExecScript xunit $ modf lkup
         case err of
-          CENext   val -> return (upd (const val), CENext (fromMaybe ONull val))
-          CEReturn val -> return (upd (const (Just val)), CEReturn val)
-          CEError  err -> return (store, CEError err)
+          FlowOK   val -> return (upd (const val), FlowOK (fromMaybe ONull val))
+          FlowReturn val -> return (upd (const (Just val)), FlowReturn val)
+          FlowErr  err -> return (store, FlowErr err)
   case ref of
     IntRef     i          -> error "cannot assign values to a pattern-matched reference"
     LocalRef   ref        -> localVarLookup ref >>= modf >>= localVarUpdate ref . const
@@ -929,18 +929,18 @@ lookupFunction msg op = do
 ----------------------------------------------------------------------------------------------------
 
 -- $ErrorReporting
--- The 'ContErrT' is a continuation monad that can evaluate to an error message without evaluating
+-- The 'Procedural' is a continuation monad that can evaluate to an error message without evaluating
 -- to "bottom". The error message is any value of type 'Dao.Object.Object'. These functions provide
 -- a simplified method for constructing error 'Dao.Object.Object's.
 
 simpleError :: String -> ExecScript a
-simpleError msg = ceError (OString (ustr msg))
+simpleError msg = procErr (OString (ustr msg))
 
--- | Like 'Dao.Object.Data.objectError', but simply constructs a 'Dao.Object.Monad.CEError' value
--- that can be returned in an inner monad that has been lifted into a 'Dao.Object.Monad.ContErrT'
+-- | Like 'Dao.Object.Data.objectError', but simply constructs a 'Dao.Object.Monad.FlowErr' value
+-- that can be returned in an inner monad that has been lifted into a 'Dao.Object.Monad.Procedural'
 -- monad.
-objectErrorCE :: Object -> String -> ContErr a
-objectErrorCE obj msg = CEError (OPair (OString (ustr msg), obj))
+objectErrorCE :: Object -> String -> FlowCtrl a
+objectErrorCE obj msg = FlowErr (OPair (OString (ustr msg), obj))
 
 typeError :: Object -> String -> String -> ExecScript a
 typeError o cons expect = objectError (OType (objType o)) (cons++" must be of type "++expect)
@@ -948,20 +948,20 @@ typeError o cons expect = objectError (OType (objType o)) (cons++" must be of ty
 derefError :: Reference -> ExecScript a
 derefError ref = objectError (ORef ref) "undefined reference"
 
--- | Evaluate to 'ceError' if the given 'PValue' is 'Backtrack' or 'PFail'. You must pass a
+-- | Evaluate to 'procErr' if the given 'PValue' is 'Backtrack' or 'PFail'. You must pass a
 -- 'Prelude.String' as the message to be used when the given 'PValue' is 'Backtrack'. You can also
 -- pass a list of 'Dao.Object.Object's that you are checking, these objects will be included in the
--- 'ceError' value.
+-- 'procErr' value.
 --     This function should be used for cases when you have converted 'Dao.Object.Object' to a
 -- Haskell value, because 'Backtrack' values indicate type exceptions, and 'PFail' values indicate a
 -- value error (e.g. out of bounds, or some kind of assert exception), and the messages passed to
--- 'ceError' will indicate this.
+-- 'procErr' will indicate this.
 checkPValue :: String -> [Object] -> PValue Location a -> ExecScript a
 checkPValue altmsg tried pval = case pval of
   OK a         -> return a
-  Backtrack    -> ceError $ OList $
+  Backtrack    -> procErr $ OList $
     OString (ustr "bad data type") : (if null altmsg then [] else [OString (ustr altmsg)]) ++ tried
-  PFail lc msg -> ceError $ OList $
+  PFail lc msg -> procErr $ OList $
     OString (ustr "bad data value") :
       (if null altmsg then [] else [OString (ustr altmsg)]) ++ OString msg : tried
 
@@ -979,9 +979,9 @@ execScriptExpr script = case unComment script of
         execScriptBlock (unComment (if true then thn else els))
       o      -> execScriptBlock (unComment (if objToBool o then thn else els))
   TryCatch    try  name catch  lc  -> do
-    ce <- ceCatch (nestedExecStack T.Void (execScriptBlock (unComment try)))
+    ce <- procCatch (nestedExecStack T.Void (execScriptBlock (unComment try)))
     void $ case ce of
-      CEError o -> nestedExecStack (T.insert [unComment name] o T.Void) (execScriptBlock catch)
+      FlowErr o -> nestedExecStack (T.insert [unComment name] o T.Void) (execScriptBlock catch)
       ce        -> joinFlowCtrl ce
   ForLoop    varName inObj thn lc  -> nestedExecStack T.Void $ do
     inObj <- evalObject (unComment inObj)
@@ -1004,14 +1004,14 @@ execScriptExpr script = case unComment script of
       PFail loc msg -> objectError inObj (uchars msg) -- TODO: also report the location of the failure.
   ContinueExpr a    _    _     lc  -> simpleError $
     '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" loop"
-  ReturnExpr   a    obj        lc  -> evalObject (unComment obj) >>= \obj -> (if a then ceReturn else ceError) obj
+  ReturnExpr   a    obj        lc  -> evalObject (unComment obj) >>= \obj -> (if a then procReturn else procErr) obj
   WithDoc      lval thn        lc  -> nestedExecStack T.Void $ do
     lval <- evalObject (unComment lval)
     let setBranch ref xunit = return (xunit{currentBranch = ref})
         setFile path xunit = do
           file <- lift (fmap (M.lookup path) (dReadMVar $loc (execOpenFiles xunit)))
           case file of
-            Nothing  -> ceError $ OList $ map OString $
+            Nothing  -> procErr $ OList $ map OString $
               [ustr "with file path", path, ustr "file has not been loaded"]
             Just file -> return (xunit{currentDocument = Just file})
         run upd = ask >>= upd >>= \r -> local (const r) (execScriptBlock thn)
@@ -1060,7 +1060,7 @@ evalObject obj = case obj of
     fmap (fromMaybe ONull) $ updateReference nm $ \maybeObj -> case maybeObj of
       Nothing  -> case op of
         UCONST -> return (Just expr)
-        _      -> ceError $ OList $ [OString $ ustr "undefined refence", ORef nm]
+        _      -> procErr $ OList $ [OString $ ustr "undefined refence", ORef nm]
       Just obj -> fmap Just $ checkPValue "assignment expression" [obj, expr] $ (updatingOps!op) obj expr
   FuncCall   op  _  args     lc -> do -- a built-in function call
     bif  <- fmap builtinFuncs ask
@@ -1071,7 +1071,7 @@ evalObject obj = case obj of
         ~obj <- mapM (runSubroutine args) fn
         case msum obj of
           Just obj -> return obj
-          Nothing  -> ceError $ OList $
+          Nothing  -> procErr $ OList $
             [OString (ustr "incorrect parameters passed to function") , OString op, OList args]
       Just fn -> daoForeignCall fn args
   LambdaCall ref  args       lc -> do
@@ -1082,7 +1082,7 @@ evalObject obj = case obj of
         obj <- runSubroutine args fn
         case obj of
           Just obj -> return obj
-          Nothing  -> ceError $ OList $
+          Nothing  -> procErr $ OList $
             [OString (ustr "incorrect parameters passed to lambda call"), OScript fn, OList args]
       ORule   fn -> execRuleCall  args fn
       _          -> called_nonfunction_object (showObjectExpr 0 ref) fn
@@ -1092,8 +1092,8 @@ evalObject obj = case obj of
     i <- evalObject (unComment i)
     case evalSubscript o i of
       OK          a -> return a
-      PFail loc msg -> ceError (OString msg)
-      Backtrack     -> ceError (OList [i, OString (ustr "cannot be used as index of"), o])
+      PFail loc msg -> procErr (OString msg)
+      Backtrack     -> procErr (OList [i, OString (ustr "cannot be used as index of"), o])
   Equation   left  op_ right lc -> do
     let op = unComment op_
     left  <- evalObject left
@@ -1104,9 +1104,9 @@ evalObject obj = case obj of
       _     -> liftM2 (,) (evalObjectRef left) (evalObjectRef right)
     case (infixOps!op) left right of
       OK result -> return result
-      Backtrack -> ceError $ OList $
+      Backtrack -> procErr $ OList $
         [OString $ ustr (show op), OString $ ustr "cannot operate on objects of type", left, right]
-      PFail lc msg -> ceError $ OList [OString msg]
+      PFail lc msg -> procErr $ OList [OString msg]
   DictExpr   cons  _  args   lc -> do
     let loop insfn getObjVal map argx = case argx of
           []       -> return map
@@ -1122,9 +1122,9 @@ evalObject obj = case obj of
         assign lookup insert map ixObj ixVal op new = case lookup ixVal map of
           Nothing  -> case op of
             UCONST -> return (insert ixVal new map)
-            op     -> ceError $ OList [OString (ustr ("undefined left-hand side of "++show op)), ixObj]
+            op     -> procErr $ OList [OString (ustr ("undefined left-hand side of "++show op)), ixObj]
           Just old -> case op of
-            UCONST -> ceError $ OList [OString (ustr ("twice defined left-hand side "++show op)), ixObj]
+            UCONST -> procErr $ OList [OString (ustr ("twice defined left-hand side "++show op)), ixObj]
             op     -> do
               new <- checkPValue (show cons++" assignment expression "++show op) [ixObj, old, new] $ (updatingOps!op) old new
               return (insert ixVal new map)
@@ -1172,13 +1172,13 @@ checkIntMapBounds o i = do
 
 -- | Checks if this ExecUnit is allowed to use a set of built-in rules requested by an "require"
 -- attribute. Returns any value you pass as the second parameter, throws a
--- 'Dao.Object.Monad.ceError' if it access is prohibited.
+-- 'Dao.Object.Monad.procErr' if it access is prohibited.
 verifyRequirement :: Name -> a -> ExecScript a
 verifyRequirement nm a = return a -- TODO: the rest of this function.
 
 -- | Checks if this ExecUnit is allowed to import the file requested by an "import" statement
 -- attribute. Returns any value you pass as the second parameter, throws a
--- 'Dao.Object.Monad.ceError'
+-- 'Dao.Object.Monad.procErr'
 verifyImport :: Name -> a -> ExecScript a
 verifyImport nm a = return a -- TODO: the rest of this function.
 
@@ -1259,14 +1259,14 @@ programFromSource
       -- ^ the global variables initialized at the top level of the program file are stored here.
   -> (Name -> UStr -> IntermediateProgram -> ExecScript Bool)
       -- ^ a callback to check attributes written into the script. If the attribute is bogus, Return
-      -- False to throw a generic error, or throw your own CEError. Otherwise, return True.
+      -- False to throw a generic error, or throw your own FlowErr. Otherwise, return True.
   -> SourceCode
       -- ^ the script file to use
   -> ExecScript ExecUnit
 programFromSource globalResource checkAttribute script =
   execStateT (mapM_ foldDirectives (unComment (directives script))) initIntermediateProgram >>= initProgram
   where
-    err lst = lift $ ceError $ OList $ map OString $ (sourceFullPath script : lst)
+    err lst = lift $ procErr $ OList $ map OString $ (sourceFullPath script : lst)
     attrib req nm getRuntime putProg = do
       runtime <- lift $ fmap parentRuntime ask
       let item = M.lookup nm (getRuntime runtime)
@@ -1280,7 +1280,7 @@ programFromSource globalResource checkAttribute script =
             builtins = M.lookup setName $ functionSets runtime
         case unComment req of
           req | req==ustr "import"           -> do
-            lift $ verifyImport setName () -- TODO: verifyImport will evaluate to a CEError if the import fails.
+            lift $ verifyImport setName () -- TODO: verifyImport will evaluate to a FlowErr if the import fails.
             modify (\p -> p{inmpg_programImports = inmpg_programImports p ++ [setName]})
           req | req==ustr "require"          -> case builtins of
             Just  _ -> do
@@ -1492,7 +1492,7 @@ matchStringToProgram instr xunit = dStack $loc "matchStringToProgram" $ do
             }
   tox <- runExecScript (programTokenizer xunit instr) xunit
   case tox of
-    CEError obj -> do
+    FlowErr obj -> do
       dModifyMVar_ $loc (uncaughtErrors xunit) $ \objx -> return $ (objx++) $
         [ OList $
             [ obj, OString (ustr "error occured while tokenizing input string")
@@ -1501,8 +1501,8 @@ matchStringToProgram instr xunit = dStack $loc "matchStringToProgram" $ do
             ]
         ]
       return []
-    CEReturn tox -> match (extractStringElems tox)
-    CENext   tox -> match tox
+    FlowReturn tox -> match (extractStringElems tox)
+    FlowOK   tox -> match tox
 
 -- | In the current thread, and using the given 'Runtime' environment, parse an input string as
 -- 'Dao.Object.Script' and then evaluate it. This is used for interactive evaluation. The parser
@@ -1525,7 +1525,7 @@ evalScriptString xunit instr = dStack $loc "evalScriptString" $
 -- 'initSourceCode' and associates the resulting 'Dao.Evaluator.ExecUnit' with the
 -- 'sourceFullPath' in the 'programs' table. Returns the logical "module" name of the script along
 -- with an initialized 'Dao.Object.ExecUnit'.
-registerSourceCode :: UPath -> SourceCode -> Run (ContErr ExecUnit)
+registerSourceCode :: UPath -> SourceCode -> Run (FlowCtrl ExecUnit)
 registerSourceCode upath script = dStack $loc "registerSourceCode" $ ask >>= \runtime -> do
   let modName = unComment (sourceModuleName script)
       pathTab = pathIndex runtime
@@ -1533,8 +1533,8 @@ registerSourceCode upath script = dStack $loc "registerSourceCode" $ ask >>= \ru
   -- Check to make sure the logical name in the loaded program does not conflict with that
   -- of another loaded previously.
   case alreadyLoaded of
-    Just (ProgramFile  f) -> return (CENext f)
-    Just (DocumentFile f) -> return $ CEError $ OList $
+    Just (ProgramFile  f) -> return (FlowOK f)
+    Just (DocumentFile f) -> return $ FlowErr $ OList $
       [ OString upath
       , OString (ustr "is already loaded as an \"idea\" file, cannot be loaded as a \"dao\" file")
       ]
@@ -1544,7 +1544,7 @@ registerSourceCode upath script = dStack $loc "registerSourceCode" $ ask >>= \ru
       xunit <- initSourceCode upath script >>= lift . evaluate
       xunitMVar <- dNewMVar $loc ("ExecUnit("++show upath++")") xunit
       dModifyMVar_ $loc pathTab $ return . M.insert upath (ProgramFile xunit)
-      return (CENext xunit)
+      return (FlowOK xunit)
 
 -- | You should not normally need to call evaluate this function, you should use
 -- 'registerSourceCode' which will evaluate this function and also place the
@@ -1565,32 +1565,32 @@ initSourceCode modName script = ask >>= \runtime -> do
   -- loaded, the program is not in the program table, and is it's 'currentProgram' is 'Nothing'.
   cachedProg <- runExecScript (programFromSource grsrc (\_ _ _ -> return False) script) xunit
   case cachedProg of
-    CEError  obj        -> error ("script err: "++showObj 0 obj)
-    CENext   cachedProg -> do
+    FlowErr  obj        -> error ("script err: "++showObj 0 obj)
+    FlowOK   cachedProg -> do
       -- Run all initializer scripts (denoted with the @SETUP@ rule in the Dao language).
       setupTakedown constructScript xunit
       -- Place the initialized module into the 'Runtime', mapping to the module's handle.
       return xunit
-    CEReturn _          ->
+    FlowReturn _          ->
       error "INTERNAL ERROR: source code evaluation returned before completion"
 
 -- | Load a Dao script program from the given file handle, return a 'Dao.Object.SourceCode' object.
 -- Specify a path to be used when reporting parsing errors. Does not register the source code into
 -- the given runtime.
-sourceFromHandle :: UPath -> Handle -> Run (ContErr SourceCode)
+sourceFromHandle :: UPath -> Handle -> Run (FlowCtrl SourceCode)
 sourceFromHandle upath h = lift $ do
   hSetBinaryMode h False
-  fmap (CENext . loadSourceCode upath) (hGetContents h) >>= evaluate
+  fmap (FlowOK . loadSourceCode upath) (hGetContents h) >>= evaluate
 
 -- | Load a Dao script program from the given file handle (calls 'sourceFromHandle') and then
 -- register it into the 'Dao.Object.Runtime' as with the given 'Dao.String.UPath'.
-registerSourceFromHandle :: UPath -> Handle -> Run (ContErr ExecUnit)
+registerSourceFromHandle :: UPath -> Handle -> Run (FlowCtrl ExecUnit)
 registerSourceFromHandle upath h = do
   source <- sourceFromHandle upath h
   case source of
-    CENext source -> registerSourceCode upath source
-    CEReturn    _ -> error "registerSourceFromHandle: sourceFromHandle evaluated to CEReturn"
-    CEError   err -> error ("registerSourceFromHandle: "++show err)
+    FlowOK source -> registerSourceCode upath source
+    FlowReturn    _ -> error "registerSourceFromHandle: sourceFromHandle evaluated to FlowReturn"
+    FlowErr   err -> error ("registerSourceFromHandle: "++show err)
 
 -- | Updates the 'Runtime' to include the Dao source code loaded from the given 'FilePath'. This
 -- function tries to load a file in three different attempts: (1) try to load the file as a binary
@@ -1600,7 +1600,7 @@ registerSourceFromHandle upath h = do
 -- 'Dao.Object.Parsers.source'. If all three methods fail, an error is thrown. Returns
 -- the 'TypedFile', although all source code files are returned as 'PrivateType's. Use
 -- 'asPublic' to force the type to be a 'PublicType'd file.
-loadFilePath :: FilePath -> Run (ContErr File)
+loadFilePath :: FilePath -> Run (FlowCtrl File)
 loadFilePath path = dontLoadFileTwice (ustr path) $ \upath -> do
   dPutStrErr $loc ("Lookup file path "++show upath)
   h    <- lift (openFile path ReadMode)
@@ -1609,7 +1609,7 @@ loadFilePath path = dontLoadFileTwice (ustr path) $ \upath -> do
   -- First try to load the file as a binary program file, and then try it as a binary data file.
   doc <- catchErrorCall (ideaLoadHandle upath h) :: Run (Either ErrorCall DocResource)
   case doc of
-    Right doc -> return (CENext (DocumentFile doc))
+    Right doc -> return (FlowOK (DocumentFile doc))
     Left  _   -> do -- The file does not seem to be a document, try parsing it as a script.
       lift (hSetPosn zero >> hSetEncoding h (fromMaybe localeEncoding enc))
       fmap (fmap ProgramFile) (registerSourceFromHandle upath h)

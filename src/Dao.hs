@@ -71,15 +71,13 @@ min_exec_time = 200000
 newRuntime :: DebugRef -> IO Runtime
 newRuntime debugRef = flip runReaderT debugRef $ dStack $loc "newRuntime" $ do
   paths <- dNewMVar $loc "Runtime.pathIndex" (M.empty)
-  running  <- dNewMVar $loc "Runtime.runningExecUnits"  (S.empty)
-  wait  <- dNewEmptyMVar $loc "Runtime.waitExecUnitsMVar"
+  task  <- initTask
   return $
     Runtime
     { pathIndex            = paths
     , defaultTimeout       = Just 8000000
     , functionSets         = M.empty
-    , runningExecUnits     = running
-    , waitForExecUnits     = wait
+    , taskForExecUnits     = task
     , availableTokenizers  = M.empty -- specifying no tokenizer will cause the default to be used
     , availableComparators = M.fromList $
         [ (ustr "exact"      , exact)

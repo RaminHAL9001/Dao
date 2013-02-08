@@ -23,6 +23,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE Rank2Types #-}
 
 module Dao.Object
@@ -891,8 +892,7 @@ data ExecUnit
       -- ^ the rules of this program
     , globalData         :: TreeResource
       -- ^ global variables cleared after every string execution
-    , runningActions     :: DMVar (S.Set DThread)
-    , waitForActions     :: DMVar DThread
+    , taskForActions     :: Task
     , execOpenFiles      :: DMVar (M.Map UPath File)
     , recursiveInput     :: DMVar [UStr]
     , uncaughtErrors     :: DMVar [Object]
@@ -924,8 +924,7 @@ instance HasDebugRef ExecUnit where
 -- 'Dao.Pattern.Match' objects, and the 'Executables'.
 data Action
   = Action
-    { actionExecUnit   :: ExecUnit
-    , actionQuery      :: Maybe UStr -- ^ the string query
+    { actionQuery      :: Maybe UStr
     , actionPattern    :: Maybe Pattern
     , actionMatch      :: Maybe Match
     , actionExecutable :: Executable
@@ -936,19 +935,25 @@ data Action
 -- 'Action's within the group will all be evaluated inside of the 'ExecUnit'.
 data ActionGroup
   = ActionGroup
-    { actionExecUnit___ :: ExecUnit
+    { actionExecUnit :: ExecUnit
     , getActionList  :: [Action]
     }
 
 -- | When an 'ActionGroup' is being executed, each 'Action' in the group is evaluated in it's own
 -- thread. The 'Task' keeps track of which threads are running, and provides a 'Dao.Debug.DMVar' for
--- threads to register their completion. 'Dao.Evaluator.execWaitThreadLoop' can be used to wait for
+-- threads to register their completion. 'Dao.Evaluator.taskWaitThreadLoop' can be used to wait for
 -- every thread associated with a 'Task' to complete before returning.
 data Task
   = Task
     { taskWaitMVar       :: DMVar DThread
     , taskRunningThreads :: DMVar (S.Set DThread)
     }
+
+initTask :: Bugged r (ReaderT r IO) => ReaderT r IO Task
+initTask = do
+  wait <- dNewEmptyMVar $loc "Task.taskWaitMVar"
+  running <- dNewMVar $loc "Task.taskRunningThreads" S.empty
+  return (Task{ taskWaitMVar = wait, taskRunningThreads = running })
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1006,12 +1011,7 @@ data Runtime
     , functionSets         :: M.Map Name (M.Map Name DaoFunc)
       -- ^ every labeled set of built-in functions provided by this runtime is listed here. This
       -- table is checked when a Dao program is loaded that has "requires" directives.
-    , waitForExecUnits     :: DMVar DThread
-      -- ^ when an 'ExecUnit' completes it's execution cycle, it signals it's completion by placing
-      -- it's own 'Dao.Debug.DThread' into this 'Dao.Debug.DMVar'.
-    , runningExecUnits     :: DMVar (S.Set DThread)
-      -- ^ a list of currently running 'ExecUnit's, which will go empty once every 'ExecUnit' has
-      -- completed executing a string.
+    , taskForExecUnits     :: Task
     , availableTokenizers  :: M.Map Name Tokenizer
       -- ^ a table of available string tokenizers.
     , availableComparators :: M.Map Name CompareToken

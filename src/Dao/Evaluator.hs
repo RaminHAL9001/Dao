@@ -75,7 +75,8 @@ initExecUnit runtime modName initGlobalData = do
   unctErrs <- dNewMVar $loc "ExecUnit.uncaughtErrors" []
   recurInp <- dNewMVar $loc "ExecUnit.recursiveInput" []
   qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
-  running  <- dNewMVar $loc "ExecUnit.runningThreads" S.empty
+  running  <- dNewMVar $loc "ExecUnit.runningActions" S.empty
+  wait     <- dNewEmptyMVar $loc "ExecUnit.waitForActions"
   xstack   <- dNewMVar $loc "ExecUnit.execStack" emptyStack
   toplev   <- dNewMVar $loc "ExecUnit.toplevelFuncs" M.empty
   files    <- dNewMVar $loc "ExecUnit.execOpenFiles" M.empty
@@ -94,7 +95,8 @@ initExecUnit runtime modName initGlobalData = do
     , builtinFuncs       = initBuiltinFuncs
     , toplevelFuncs      = toplev
     , queryTimeHeap      = qheap
-    , runningThreads     = running
+    , runningActions     = running
+    , waitForActions     = wait
     , execStack          = xstack
     , execOpenFiles      = files
     , recursiveInput     = recurInp
@@ -1193,11 +1195,11 @@ data IntermediateProgram
     , inmpg_destructScript    :: [Com [Com ScriptExpr]]
     , inmpg_requiredBuiltins  :: [Name]
     , inmpg_programAttributes :: M.Map Name Name
-    , inmpg_preExec     :: [Com [Com ScriptExpr]]
-    , inmpg_postExec    :: [Com [Com ScriptExpr]]
+    , inmpg_preExec           :: [Com [Com ScriptExpr]]
+    , inmpg_postExec          :: [Com [Com ScriptExpr]]
     , inmpg_programTokenizer  :: Tokenizer
     , inmpg_programComparator :: CompareToken
-    , inmpg_ruleSet           :: PatternTree [Com [Com ScriptExpr]]
+    , inmpg_ruleSet           :: PatternTree [Executable]
     , inmpg_globalData        :: T.Tree Name Object
     }
 
@@ -1208,8 +1210,8 @@ initIntermediateProgram =
   , inmpg_destructScript    = []
   , inmpg_requiredBuiltins  = []
   , inmpg_programAttributes = M.empty
-  , inmpg_preExec     = []
-  , inmpg_postExec    = []
+  , inmpg_preExec           = []
+  , inmpg_postExec          = []
   , inmpg_programTokenizer  = return . tokens . uchars
   , inmpg_programComparator = (==)
   , inmpg_ruleSet           = T.Void
@@ -1219,22 +1221,22 @@ initIntermediateProgram =
 initProgram :: IntermediateProgram -> Exec ExecUnit
 initProgram inmpg = do
   xunit <- ask
-  let rules = ruleSet xunit
   pre   <- lift (mapM setupExecutable (inmpg_preExec  inmpg))
+  let rules = ruleSet xunit
+  lift $ dModifyMVar_ $loc rules (return . T.merge T.union (++) (inmpg_ruleSet inmpg))
   post  <- lift (mapM setupExecutable (inmpg_postExec inmpg))
   inEvalDoModifyUnlocked_ (globalData xunit) (return . const (inmpg_globalData inmpg))
   return $
     xunit
-    { programImports    = inmpg_programImports    inmpg
+    { programImports    = inmpg_programImports inmpg
     , constructScript   = map unComment (inmpg_constructScript inmpg)
     , destructScript    = map unComment (inmpg_destructScript  inmpg)
     , requiredBuiltins  = inmpg_requiredBuiltins  inmpg
     , programAttributes = M.empty
-    , preExec     = pre
+    , preExec           = pre
     , programTokenizer  = return . tokens . uchars
     , programComparator = (==)
-    , postExec    = post
-    , ruleSet           = rules
+    , postExec          = post
     }
 
 -- | To parse a program, use 'Dao.Object.Parsers.source' and pass the resulting
@@ -1263,8 +1265,9 @@ programFromSource
   -> SourceCode
       -- ^ the script file to use
   -> Exec ExecUnit
-programFromSource globalResource checkAttribute script =
-  execStateT (mapM_ foldDirectives (unComment (directives script))) initIntermediateProgram >>= initProgram
+programFromSource globalResource checkAttribute script = do
+  intermProgSt <- execStateT (mapM_ foldDirectives (unComment (directives script))) initIntermediateProgram
+  initProgram intermProgSt >>= liftIO . evaluate
   where
     err lst = lift $ procErr $ OList $ map OString $ (sourceFullPath script : lst)
     attrib req nm getRuntime putProg = do
@@ -1301,14 +1304,16 @@ programFromSource globalResource checkAttribute script =
       ToplevelDefine name obj lc -> do
         obj <- lift $ evalObject (unComment obj)
         modify (\p -> p{inmpg_globalData = T.insert (unComment name) obj (inmpg_globalData p)})
-      TopRuleExpr rule' lc -> modify (\p -> p{inmpg_ruleSet = foldl fol (inmpg_ruleSet p) rulePat}) where
-        rule    = unComment rule'
-        rulePat = map unComment (unComment (rulePattern rule))
-        fol tre pat = T.merge T.union (++) tre (toTree pat [ruleAction rule])
+      TopRuleExpr rule_ lc -> do
+        let rule = unComment rule_
+        exe <- lift $ lift $ setupExecutable (ruleAction rule)
+        let rulePat = map unComment (unComment (rulePattern rule))
+            fol tre pat = T.merge T.union (++) tre (toTree pat [exe])
+        modify (\p -> p{ inmpg_ruleSet = foldl fol (inmpg_ruleSet p) rulePat })
       SetupExpr    scrp lc -> modify (\p -> p{inmpg_constructScript = inmpg_constructScript p ++ [scrp]})
       TakedownExpr scrp lc -> modify (\p -> p{inmpg_destructScript  = inmpg_destructScript  p ++ [scrp]})
-      BeginExpr    scrp lc -> modify (\p -> p{inmpg_preExec   = inmpg_preExec   p ++ [scrp]})
-      EndExpr      scrp lc -> modify (\p -> p{inmpg_postExec  = inmpg_postExec  p ++ [scrp]})
+      BeginExpr    scrp lc -> modify (\p -> p{inmpg_preExec         = inmpg_preExec   p ++ [scrp]})
+      EndExpr      scrp lc -> modify (\p -> p{inmpg_postExec        = inmpg_postExec  p ++ [scrp]})
       ToplevelFunc nm argv code lc -> lift $ do
         xunit <- ask
         exe <- inExecEvalRun (setupExecutable code)
@@ -1327,8 +1332,8 @@ programFromSource globalResource checkAttribute script =
 
 -- | Blocks until every thread in the guven@'DMVar' ('Data.Set.Set' 'Dao.Debug.DThread')@ has
 -- completed evaluation.
-execWaitThreadLoop :: MLoc -> String -> DMVar (S.Set DThread) -> DMVar DThread -> Run ()
-execWaitThreadLoop lc msg running wait = dStack lc msg $ do
+execWaitThreadLoop :: DMVar (S.Set DThread) -> DMVar DThread -> Run ()
+execWaitThreadLoop running wait = dStack $loc "execWaitThreadLoop" $ do
   threads <- dReadMVar $loc running
   if S.null threads then return () else loop
   where 
@@ -1346,11 +1351,20 @@ execAction action = dStack $loc ("execAction for ("++show (actionPattern action)
   where
     xunit =
       (actionExecUnit action)
-      { currentQuery      = Just (actionQuery   action)
-      , currentPattern    = Just (actionPattern action)
-      , currentMatch      = Just (actionMatch   action)
+      { currentQuery      = actionQuery   action
+      , currentPattern    = actionPattern action
+      , currentMatch      = actionMatch   action
       , currentExecutable = actionExecutable action
       }
+
+-- | Create a new thread and evaluate an 'Dao.Object.Action' in that thread. This thread is defined
+-- such that when it completes, regardless of whether or not an exception occurred, it signals
+-- completion to the 'Dao.Object.waitForActions' 'Dao.Debug.DMVar' of the 'Dao.Object.ExecUnit'
+-- associated with this 'Dao.Object.Action'.
+forkExecAction :: Action -> Run DThread
+forkExecAction act = dFork forkIO $loc "forkExecAction" $ do
+  dCatch $loc (execAction act) (\ (SomeException _) -> return ())
+  dMyThreadId >>= dPutMVar $loc (waitForActions (actionExecUnit act))
 
 -- | This is the most important algorithm of the Dao system, in that it matches strings to all
 -- rule-patterns in the program that is associated with the 'Dao.Object.ExecUnit', and it dispatches
@@ -1358,68 +1372,62 @@ execAction action = dStack $loc ("execAction for ("++show (actionPattern action)
 -- the thread which manages all the other threads that are launched in response to a matching input
 -- string. You could just run this loop in the current thread, if you only have one 'ExecUnit'.
 execInputStringsLoop :: ExecUnit -> Run ()
-execInputStringsLoop xunit = dCatch $loc start handler where
-  running = runningThreads xunit
-  start = do
-    runtime <- ask
-    dNewEmptyMVar $loc "execInputStringsLoop.waitChild" >>= loop
-    dMyThreadId >>= dPutMVar $loc (waitExecUnitsMVar runtime)
-  loop waitChild = do
-    -- (1) Get the next input string. Also nub the list of queued input strings.
-    instr <- dModifyMVar $loc (recursiveInput xunit) $ \ax -> return $ case nub ax of
-      []   -> ([], Nothing)
-      a:ax -> (ax, Just a)
-    case instr of
-      Nothing    -> return ()
-      Just instr -> dStack $loc ("execInputString "++show instr) $ do
-        -- (2) Run "BEGIN" scripts.
-        runExecs $loc "preExec" preExec waitChild
-        -- (3) Match input string to all patterns, get resulting actions.
-        matched <- matchStringToProgram instr xunit
-        dMessage $loc ("matched "++show (length matched)++" rules")
-        -- (4) Run 'execPatternMatchExecutable' for every matching item.
-        putThreads $ forM matched $ \act -> do
-          dFork forkIO $loc "execInputStringsLoop.loop" (execAction act)
-        let msg = "execInputStringLoop.loop.(execWaitThreadLoop execPatternMatchExecutable)"
-        execWaitThreadLoop $loc msg running waitChild
-        -- (5) Run "END" scripts.
-        runExecs $loc "postExec" postExec waitChild
-        -- (6) Run the next string.
-        loop waitChild
-  putThreads mkThreads = dModifyMVar_ $loc (runningThreads xunit) $ \threads -> do
-    -- lock the 'runningThreads' mvar when creating threads so if the parent thread tries to
-    -- kill all running threads, it won't be able to get a list of running threads until this mvar
-    -- is released, which will be after all threads have already been started.
-    newThreads <- mkThreads
-    return (S.union (S.fromList newThreads) threads)
-  runExecs lc msg_ select waitChild = do
-    putThreads $ forM (select xunit) $ \exec ->
-      dFork forkIO $loc "execInputStringsLoop.runExecs" $
-        void $ flip runExec xunit $ runExecutable T.Void exec
-    let msg = "execInputStringLoop.runExecs.(execWaitThreadLoop "++msg_++")"
-    execWaitThreadLoop lc msg running waitChild
-  handler :: SomeException -> Run ()
-  handler (SomeException e) = dModifyMVar_ $loc running $ \threads -> do
-    mapM_ (\thread -> dThrowTo $loc thread e) (S.elems threads)
-    return S.empty
+execInputStringsLoop xunit = do
+  runtime <- ask
+  dCatch $loc loop (\ (SomeException _) -> return ())
+  dMyThreadId >>= dPutMVar $loc (waitForExecUnits runtime)
+  where
+    running = runningActions xunit
+    loop = do
+      -- (1) Get the next input string. Also nub the list of queued input strings.
+      instr <- dModifyMVar $loc (recursiveInput xunit) $ \ax -> return $ case nub ax of
+        []   -> ([], Nothing)
+        a:ax -> (ax, Just a)
+      case instr of
+        Nothing    -> return ()
+        Just instr -> dStack $loc ("execInputString "++show instr) $ do
+          -- (2) Run "BEGIN" scripts.
+          waitAll (return (getBeginEndScripts preExec xunit))
+          -- (3) Run 'execPatternMatchExecutable' for every matching item.
+          waitAll (matchStringToProgram instr xunit)
+          -- (4) Run "END" scripts.
+          waitAll (return (getBeginEndScripts postExec xunit))
+          -- (5) Run the next string.
+          loop
+    waitAll getActions = do
+      actions <- getActions
+      dModifyMVar_ $loc running $ \running -> do
+        newThreads <- forM actions forkExecAction
+        return (S.union running (S.fromList newThreads))
+      execWaitThreadLoop (runningActions xunit) (waitForActions xunit)
+    --  putThreads mkThreads = dModifyMVar_ $loc running $ \threads -> do
+    --    -- lock the 'runningActions' mvar when creating threads so if the parent thread tries to
+    --    -- kill all running threads, it won't be able to get a list of running threads until this mvar
+    --    -- is released, which will be after all threads have already been started.
+    --    newThreads <- mkThreads
+    --    return (S.union (S.fromList newThreads) threads)
+    --  runExecs lc msg_ select waitChild = do
+    --    putThreads $ forM (select xunit) $ \exec ->
+    --      dFork forkIO $loc "execInputStringsLoop.runExecs" $
+    --        void $ flip runExec xunit $ runExecutable T.Void exec
+    --    let msg = "execInputStringLoop.runExecs.(execWaitThreadLoop "++msg_++")"
+    --    execWaitThreadLoop lc msg running waitChild
+    --  handler :: SomeException -> Run ()
+    --  handler (SomeException e) = dModifyMVar_ $loc running $ \threads -> do
+    --    mapM_ (\thread -> dThrowTo $loc thread e) (S.elems threads)
+    --    return S.empty
 
--- | Launch a new thread for an 'Dao.Object.ExecUnit'. You can launch several threads for a single
--- 'Dao.Object.ExecUnit', but the threads will only share the work, there is no particular advantage
--- to calling this function more than once per 'Dao.Object.ExecUnit'. Returns the
--- 'Dao.Debug.DThread' of the thread created.
-startExecUnitThread :: ExecUnit -> Run DThread
-startExecUnitThread xunit = dFork forkIO $loc "startExecUnitThread" (execInputStringsLoop xunit)
-
--- | Place a string into the queues and then start one thread for each of the 'Dao.Object.ExecUnit's
--- specified. The threads are created but not registered into the 'Dao.Object.Runtime'
--- 'Dao.Object.runningExecThreads' field. To do this, evaluate this function as a parameter to
--- 'daoRegisterThreads'.
+-- | For each given execution unit, place the input string into the 'Dao.Object.recursiveInput'
+-- queue of that 'Dao.Object.ExecUnit' and then start a thread running 'execInputStrinsLoop' for
+-- that 'Dao.Object.ExecUnit'. The threads are created but not registered into the
+-- 'Dao.Object.Runtime' 'Dao.Object.runningExecThreads' field. To do this, evaluate this function as
+-- a parameter to 'daoRegisterThreads'.
 runStringAgainstExecUnits :: UStr -> [ExecUnit] -> Run (S.Set DThread)
 runStringAgainstExecUnits inputString xunits = dStack $loc "runStringsAgainstExecUnits" $ do
   runtime <- ask
-  forM_ xunits $ \xunit ->
+  fmap (S.fromList) $ forM xunits $ \xunit -> do
     dModifyMVar_ $loc (recursiveInput xunit) (return . (++[inputString]))
-  fmap (S.fromList) (mapM startExecUnitThread xunits)
+    dFork forkIO $loc "runStringsAgainstExecUnits.execInputStringsLoop" (execInputStringsLoop xunit)
 
 -- | Registers the threads created by 'runStringAgainstExecUnits' into the
 -- 'Dao.Object.runningExecThreads' field of the 'Dao.Object.Runtime'.
@@ -1441,7 +1449,7 @@ daoInputLoop getString = ask >>= loop where
         xunits <- fmap (concatMap isProgramFile . M.elems) (dReadMVar $loc (pathIndex runtime))
         daoRegisterThreads (runStringAgainstExecUnits inputString xunits)
         let msg = "daoInputLoop.(wait for ExecUnits to finish)"
-        execWaitThreadLoop $loc msg (runningExecUnits runtime) (waitExecUnitsMVar runtime)
+        execWaitThreadLoop (runningExecUnits runtime) (waitForExecUnits runtime)
         loop runtime
 
 -- | When executing strings against Dao programs (e.g. using 'Dao.Tasks.execInputString'), you often
@@ -1481,13 +1489,13 @@ matchStringToProgram instr xunit = dStack $loc "matchStringToProgram" $ do
       match tox = do
         tree <- dReadMVar $loc (ruleSet xunit)
         dMessage $loc ("match to pattern tree: "++show (map fst (T.assocs tree)))
-        fmap concat $ forM (matchTree eq tree tox) $ \ (patn, mtch, execs) ->
-          return $ flip map execs $ \exec ->
+        return $ flip concatMap (matchTree eq tree tox) $ \ (patn, mtch, execs) ->
+          flip map execs $ \exec ->
             Action
             { actionExecUnit   = xunit
-            , actionQuery      = instr
-            , actionPattern    = patn
-            , actionMatch      = mtch
+            , actionQuery      = Just instr
+            , actionPattern    = Just patn
+            , actionMatch      = Just mtch
             , actionExecutable = exec
             }
   tox <- runExec (programTokenizer xunit instr) xunit
@@ -1503,6 +1511,20 @@ matchStringToProgram instr xunit = dStack $loc "matchStringToProgram" $ do
       return []
     FlowReturn tox -> match (extractStringElems tox)
     FlowOK   tox -> match tox
+
+-- | Create a list of 'Dao.Object.Action's for every BEGIN or END statement in the Dao program. Pass
+-- 'Dao.Object.preExec' as the first parameter to get the BEGIN scrpits, pass 'Dao.Object.postExec'
+-- to get the END scripts.
+getBeginEndScripts :: (ExecUnit -> [Executable]) -> ExecUnit -> [Action]
+getBeginEndScripts select xunit = map mkAct (select xunit) where
+  mkAct exe =
+    Action
+    { actionExecUnit   = xunit
+    , actionQuery      = Nothing
+    , actionPattern    = Nothing
+    , actionMatch      = Nothing
+    , actionExecutable = exe
+    }
 
 -- | In the current thread, and using the given 'Runtime' environment, parse an input string as
 -- 'Dao.Object.Script' and then evaluate it. This is used for interactive evaluation. The parser
@@ -1542,7 +1564,6 @@ registerSourceCode upath script = dStack $loc "registerSourceCode" $ ask >>= \ru
       -- Call 'initSourceCode' which creates the 'ExecUnit', then place it in an 'MVar'.
       -- 'initSourceCode' calls 'Dao.Evaluator.programFromSource'.
       xunit <- initSourceCode upath script >>= lift . evaluate
-      xunitMVar <- dNewMVar $loc ("ExecUnit("++show upath++")") xunit
       dModifyMVar_ $loc pathTab $ return . M.insert upath (ProgramFile xunit)
       return (FlowOK xunit)
 

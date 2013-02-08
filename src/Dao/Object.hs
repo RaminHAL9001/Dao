@@ -891,7 +891,8 @@ data ExecUnit
       -- ^ the rules of this program
     , globalData         :: TreeResource
       -- ^ global variables cleared after every string execution
-    , runningThreads     :: DMVar (S.Set DThread)
+    , runningActions     :: DMVar (S.Set DThread)
+    , waitForActions     :: DMVar DThread
     , execOpenFiles      :: DMVar (M.Map UPath File)
     , recursiveInput     :: DMVar [UStr]
     , uncaughtErrors     :: DMVar [Object]
@@ -923,11 +924,30 @@ instance HasDebugRef ExecUnit where
 -- 'Dao.Pattern.Match' objects, and the 'Executables'.
 data Action
   = Action
-    { actionQuery      :: UStr -- ^ the string query
-    , actionExecUnit   :: ExecUnit
-    , actionPattern    :: Pattern
-    , actionMatch      :: Match
+    { actionExecUnit   :: ExecUnit
+    , actionQuery      :: Maybe UStr -- ^ the string query
+    , actionPattern    :: Maybe Pattern
+    , actionMatch      :: Maybe Match
     , actionExecutable :: Executable
+    }
+
+-- | An 'ActionGroup' is a group of 'Action's created within a given 'ExecUnit', this data structure
+-- contains both the list of 'Action's and the 'ExecUnit' from which the actions were generated. The
+-- 'Action's within the group will all be evaluated inside of the 'ExecUnit'.
+data ActionGroup
+  = ActionGroup
+    { actionExecUnit___ :: ExecUnit
+    , getActionList  :: [Action]
+    }
+
+-- | When an 'ActionGroup' is being executed, each 'Action' in the group is evaluated in it's own
+-- thread. The 'Task' keeps track of which threads are running, and provides a 'Dao.Debug.DMVar' for
+-- threads to register their completion. 'Dao.Evaluator.execWaitThreadLoop' can be used to wait for
+-- every thread associated with a 'Task' to complete before returning.
+data Task
+  = Task
+    { taskWaitMVar       :: DMVar DThread
+    , taskRunningThreads :: DMVar (S.Set DThread)
     }
 
 ----------------------------------------------------------------------------------------------------
@@ -986,7 +1006,7 @@ data Runtime
     , functionSets         :: M.Map Name (M.Map Name DaoFunc)
       -- ^ every labeled set of built-in functions provided by this runtime is listed here. This
       -- table is checked when a Dao program is loaded that has "requires" directives.
-    , waitExecUnitsMVar    :: DMVar DThread
+    , waitForExecUnits     :: DMVar DThread
       -- ^ when an 'ExecUnit' completes it's execution cycle, it signals it's completion by placing
       -- it's own 'Dao.Debug.DThread' into this 'Dao.Debug.DMVar'.
     , runningExecUnits     :: DMVar (S.Set DThread)
@@ -1124,9 +1144,8 @@ catchReturn fn catch = Procedural $ runProcedural fn >>= \ce -> case ce of
   FlowOK   a   -> return (FlowOK a)
   FlowErr  obj -> return (FlowErr obj)
 
--- | Force the computation to assume the value of a given 'Dao.Object.Monad.FlowCtrl'. This function
--- can be used to re-throw a 'Dao.Object.Monad.FlowCtrl' value captured by the 'withContErrSt'
--- function.
+-- | Force the computation to assume the value of a given 'FlowCtrl'. This function can be used to
+-- re-throw a 'Dao.Object.Monad.FlowCtrl' value captured by the 'procCatch' function.
 joinFlowCtrl :: Monad m => FlowCtrl a -> Procedural m a
 joinFlowCtrl ce = Procedural (return ce)
 
@@ -1138,8 +1157,9 @@ procReturn a = joinFlowCtrl (FlowReturn a)
 procErr :: Monad m => Object -> Procedural m a
 procErr  a = joinFlowCtrl (FlowErr a)
 
--- | The inverse operation of 'procJoin', catches the result of the given 'Procedural' evaluation,
--- regardless of whether or not this function evaluates to 'procReturn' or 'procErr'.
+-- | The inverse operation of 'procJoin', catches the inner 'FlowCtrl' of the given 'Procedural'
+-- evaluation, regardless of whether or not this function evaluates to 'procReturn' or 'procErr',
+-- whereas ordinarily, if the inner 'FlowCtrl' is 'FlowErr' or 'FlowReturn'.
 procCatch :: Monad m => Procedural m a -> Procedural m (FlowCtrl a)
 procCatch fn = Procedural (runProcedural fn >>= \ce -> return (FlowOK ce))
 

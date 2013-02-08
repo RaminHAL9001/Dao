@@ -79,7 +79,7 @@ newRuntime debugRef = flip runReaderT debugRef $ dStack $loc "newRuntime" $ do
     , defaultTimeout       = Just 8000000
     , functionSets         = M.empty
     , runningExecUnits     = running
-    , waitExecUnitsMVar    = wait
+    , waitForExecUnits     = wait
     , availableTokenizers  = M.empty -- specifying no tokenizer will cause the default to be used
     , availableComparators = M.fromList $
         [ (ustr "exact"      , exact)

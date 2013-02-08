@@ -1443,7 +1443,6 @@ makeActionsForQuery instr xunit = dStack $loc "makeActionsForQuery" $ do
     eq = programComparator xunit
     match tox = do
       tree <- dReadMVar $loc (ruleSet xunit)
-      dMessage $loc ("match to pattern tree: "++show (map fst (T.assocs tree)))
       return $
         ActionGroup
         { actionExecUnit = xunit
@@ -1593,15 +1592,15 @@ initSourceCode modName script = ask >>= \runtime -> do
   xunit <- initExecUnit runtime modName grsrc
   -- An execution unit is required to load a program, so of course, while a program is being
   -- loaded, the program is not in the program table, and is it's 'currentProgram' is 'Nothing'.
-  cachedProg <- runExec (programFromSource grsrc (\_ _ _ -> return False) script) xunit
-  case cachedProg of
-    FlowErr  obj        -> error ("script err: "++showObj 0 obj)
-    FlowOK   cachedProg -> do
+  xunit <- runExec (programFromSource grsrc (\_ _ _ -> return False) script) xunit
+  case xunit of
+    FlowErr  obj   -> error ("script err: "++showObj 0 obj)
+    FlowOK   xunit -> do
       -- Run all initializer scripts (denoted with the @SETUP@ rule in the Dao language).
-      setupTakedown constructScript xunit
+      setupOrTakedown constructScript xunit
       -- Place the initialized module into the 'Runtime', mapping to the module's handle.
       return xunit
-    FlowReturn _          ->
+    FlowReturn _   ->
       error "INTERNAL ERROR: source code evaluation returned before completion"
 
 -- | Load a Dao script program from the given file handle, return a 'Dao.Object.SourceCode' object.
@@ -1647,7 +1646,7 @@ loadFilePath path = dontLoadFileTwice (ustr path) $ \upath -> do
 -- | When a program is loaded, and when it is released, any block of Dao code in the source script
 -- that is denoted with the @SETUP@ or @TAKEDOWN@ rules will be executed. This function performs
 -- that execution in the current thread.
-setupTakedown :: (ExecUnit -> [[Com ScriptExpr]]) -> ExecUnit -> Run ()
-setupTakedown select xunit = ask >>= \runtime ->
+setupOrTakedown :: (ExecUnit -> [[Com ScriptExpr]]) -> ExecUnit -> Run ()
+setupOrTakedown select xunit = ask >>= \runtime ->
   forM_ (select xunit) $ \block -> runExec (execGuardBlock block) xunit >>= lift . evaluate
 

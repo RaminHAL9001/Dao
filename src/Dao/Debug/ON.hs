@@ -118,7 +118,7 @@ debuggableProgram mloc setup =
         , dThreadName   = ustr "MAIN THREAD"
         }
       putMVar mvar (debug{debugGetThreadId = mainThread})
-      loop debug
+      handle (\ (SomeException _) -> return ()) (loop debug)
       debugClose debug
     else initializeRuntime setup Nothing >>= init Nothing
   where

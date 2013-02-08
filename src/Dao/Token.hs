@@ -58,12 +58,21 @@ data Location
     }
     deriving (Eq, Ord, Typeable)
 
+-- | The the coordinates from a 'Location':
+-- @(('startingLine', 'startingColumn'), ('endingLine', 'endingColumn'))@
+locationCoords :: Location -> Maybe ((Word64, Word), (Word64, Word))
+locationCoords loc = case loc of
+  LocationUnknown -> Nothing
+  _ -> Just ((startingLine loc, startingColumn loc), (endingLine loc, endingColumn loc))
+
 class HasLocation a where
   getLocation :: a -> Location
   setLocation :: a -> Location -> a
 
 instance Show Location where
-  show t = show (startingLine t) ++ ':' : show (startingColumn t)
+  show t = case t of
+    LocationUnknown -> ""
+    _ -> show (startingLine t) ++ ':' : show (startingColumn t)
 
 instance Monoid Location where
   mempty =

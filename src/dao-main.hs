@@ -19,13 +19,13 @@
 -- please see <http://www.gnu.org/licenses/agpl.html>.
 
 
-{-# LANGUAGE TemplateHaskell #-}
+-- {-# LANGUAGE TemplateHaskell #-}
 
 module Main where
 
 import           Dao
 import           Dao.Evaluator
-import           Dao.Debug.ON
+import           Dao.Debug.OFF
 
 import           Data.List
 
@@ -78,8 +78,8 @@ main = do
   when (null q) (putStr disclaimer)
   --initialize -- initialize the ReadLine library
   -- let debug = Nothing
-  -- debug <- debugToFile $loc "main" debugLog "./dao-debug.log" WriteMode
-  debuggableProgram $loc  $
+  -- debug <- debugToFile xloc "main" debugLog "./dao-debug.log" WriteMode
+  debuggableProgram xloc  $
     (setupDebugger :: SetupDebugger Runtime (ReaderT Runtime IO))
     { debugEnabled = True
     , debugOutputTo = DebugOutputToFile "./debug.log"

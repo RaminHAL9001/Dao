@@ -20,14 +20,14 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
-{-# LANGUAGE TemplateHaskell #-}
+-- {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE Rank2Types #-}
 
 module Dao.Evaluator where
 
-import           Dao.Debug.ON
+import           Dao.Debug.OFF
 import           Dao.Token
 import           Dao.Object
 import qualified Dao.Tree as T
@@ -72,14 +72,14 @@ import           System.IO
 
 initExecUnit :: Runtime -> UPath -> TreeResource -> Run ExecUnit
 initExecUnit runtime modName initGlobalData = do
-  unctErrs <- dNewMVar $loc "ExecUnit.uncaughtErrors" []
-  recurInp <- dNewMVar $loc "ExecUnit.recursiveInput" []
+  unctErrs <- dNewMVar xloc "ExecUnit.uncaughtErrors" []
+  recurInp <- dNewMVar xloc "ExecUnit.recursiveInput" []
   qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
   task     <- initTask
-  xstack   <- dNewMVar $loc "ExecUnit.execStack" emptyStack
-  toplev   <- dNewMVar $loc "ExecUnit.toplevelFuncs" M.empty
-  files    <- dNewMVar $loc "ExecUnit.execOpenFiles" M.empty
-  rules    <- dNewMVar $loc "ExecUnit.ruleSet" T.Void
+  xstack   <- dNewMVar xloc "ExecUnit.execStack" emptyStack
+  toplev   <- dNewMVar xloc "ExecUnit.toplevelFuncs" M.empty
+  files    <- dNewMVar xloc "ExecUnit.execOpenFiles" M.empty
+  rules    <- dNewMVar xloc "ExecUnit.ruleSet" T.Void
   return $
     ExecUnit
     { parentRuntime      = runtime
@@ -184,9 +184,9 @@ stack_underflow = error "INTERNAL ERROR: stack underflow"
 nestedExecStack :: T_tree -> Exec a -> Exec a
 nestedExecStack init exe = do
   stack <- fmap execStack ask
-  lift (dModifyMVar_ $loc stack (return . stackPush init))
+  lift (dModifyMVar_ xloc stack (return . stackPush init))
   ce <- procCatch exe
-  lift (dModifyMVar_ $loc stack (return . stackPop))
+  lift (dModifyMVar_ xloc stack (return . stackPop))
   joinFlowCtrl ce
 
 -- | Keep the current 'execStack', but replace it with a new empty stack before executing the given
@@ -194,7 +194,7 @@ nestedExecStack init exe = do
 -- function. This is what you should use to perform a Dao function call within a Dao function call.
 execFuncPushStack :: T_tree -> Exec Object -> Exec Object
 execFuncPushStack dict exe = do
-  stackMVar <- lift (dNewMVar $loc "execFuncPushStack/ExecUnit.execStack" (Stack [dict]))
+  stackMVar <- lift (dNewMVar xloc "execFuncPushStack/ExecUnit.execStack" (Stack [dict]))
   ce <- procCatch (local (\xunit -> xunit{execStack = stackMVar}) exe)
   case ce of
     FlowReturn obj -> return obj
@@ -270,12 +270,12 @@ curDocVarDelete ref obj = curDocVarUpdate ref (return . const Nothing)
 -- | Lookup a value in the 'execStack'.
 localVarLookup :: Name -> Exec (Maybe Object)
 localVarLookup sym =
-  fmap execStack ask >>= lift . dReadMVar $loc >>= return . msum . map (T.lookup [sym]) . mapList
+  fmap execStack ask >>= lift . dReadMVar xloc >>= return . msum . map (T.lookup [sym]) . mapList
 
 -- | Apply an altering function to the map at the top of the local variable stack.
 localVarUpdate :: Name -> (Maybe Object -> Maybe Object) -> Exec (Maybe Object)
 localVarUpdate name alt = ask >>= \xunit -> lift $
-  dModifyMVar $loc (execStack xunit) $ \ax -> case mapList ax of
+  dModifyMVar xloc (execStack xunit) $ \ax -> case mapList ax of
     []   -> stack_underflow
     a:ax ->
       let obj = alt (T.lookup [name] a)
@@ -793,7 +793,7 @@ builtin_print = DaoFunc $ \ox_ -> do
 sendStringsToPrograms :: Bool -> [Name] -> [UStr] -> Exec ()
 sendStringsToPrograms permissive names strings = do
   xunit <- ask
-  index <- inExecEvalRun (dReadMVar $loc (pathIndex (parentRuntime xunit)))
+  index <- inExecEvalRun (dReadMVar xloc (pathIndex (parentRuntime xunit)))
   let lookup notFound nonPrograms ok namex = case namex of
         []         -> (notFound, nonPrograms, ok)
         name:namex -> case M.lookup name index of
@@ -815,7 +815,7 @@ sendStringsToPrograms permissive names strings = do
   if null found || not permissive && not (null notFound && null nonPrograms)
     then  procErr errMsg
     else  forM_ found $ \ (name, xunit) -> inExecEvalRun $
-            dModifyMVar_ $loc (recursiveInput xunit) (return . (++strings))
+            dModifyMVar_ xloc (recursiveInput xunit) (return . (++strings))
 
 builtin_do :: DaoFunc
 builtin_do = DaoFunc $ \ox -> do
@@ -890,7 +890,7 @@ updateReference :: Reference -> (Maybe Object -> Exec (Maybe Object)) -> Exec (M
 updateReference ref modf = do
   xunit <- ask
   let updateRef :: DMVar a -> (a -> Run (a, FlowCtrl Object)) -> Exec (Maybe Object)
-      updateRef dmvar runUpdate = fmap Just (inExecEvalRun (dModifyMVar $loc dmvar runUpdate) >>= joinFlowCtrl)
+      updateRef dmvar runUpdate = fmap Just (inExecEvalRun (dModifyMVar xloc dmvar runUpdate) >>= joinFlowCtrl)
       execUpdate :: ref -> a -> Maybe Object -> ((Maybe Object -> Maybe Object) -> a) -> Run (a, FlowCtrl Object)
       execUpdate ref store lkup upd = do
         err <- flip runExec xunit $ modf lkup
@@ -917,7 +917,7 @@ updateReference ref modf = do
 lookupFunction :: String -> Name -> Exec [Subroutine]
 lookupFunction msg op = do
   xunit <- ask
-  let toplevs xunit = lift (fmap (M.lookup op) (dReadMVar $loc (toplevelFuncs xunit)))
+  let toplevs xunit = lift (fmap (M.lookup op) (dReadMVar xloc (toplevelFuncs xunit)))
       lkup p = case p of
         ProgramFile xunit -> toplevs xunit
         _                 -> return Nothing
@@ -1009,7 +1009,7 @@ execScriptExpr script = case unComment script of
     lval <- evalObject (unComment lval)
     let setBranch ref xunit = return (xunit{currentBranch = ref})
         setFile path xunit = do
-          file <- lift (fmap (M.lookup path) (dReadMVar $loc (execOpenFiles xunit)))
+          file <- lift (fmap (M.lookup path) (dReadMVar xloc (execOpenFiles xunit)))
           case file of
             Nothing  -> procErr $ OList $ map OString $
               [ustr "with file path", path, ustr "file has not been loaded"]
@@ -1220,7 +1220,7 @@ initProgram :: IntermediateProgram -> Exec ExecUnit
 initProgram inmpg = do
   xunit <- ask
   inEvalDoModifyUnlocked_ (globalData xunit) (return . const (inmpg_globalData inmpg))
-  lift $ dModifyMVar_ $loc (ruleSet  xunit) (return . T.merge T.union (++) (inmpg_ruleSet inmpg))
+  lift $ dModifyMVar_ xloc (ruleSet  xunit) (return . T.merge T.union (++) (inmpg_ruleSet inmpg))
   return $
     xunit
     { programImports    = inmpg_programImports inmpg
@@ -1324,20 +1324,20 @@ programFromSource globalResource checkAttribute script = do
               }
         inExecEvalRun $ do
           let name = unComment nm
-          dModifyMVar_ $loc (toplevelFuncs xunit) $ return .
+          dModifyMVar_ xloc (toplevelFuncs xunit) $ return .
             M.alter (\funcs -> mplus (fmap (++[sub]) funcs) (return [sub])) name
 
 ----------------------------------------------------------------------------------------------------
 
 -- | Blocks until every thread in the given 'Dao.Object.Task' completes evaluation.
 taskWaitThreadLoop :: Task -> Run ()
-taskWaitThreadLoop task = dStack $loc "taskWaitThreadLoop" $ do
-  threads <- dReadMVar $loc (taskRunningThreads task)
+taskWaitThreadLoop task = dStack xloc "taskWaitThreadLoop" $ do
+  threads <- dReadMVar xloc (taskRunningThreads task)
   if S.null threads then return () else loop
   where 
     loop = do
-      thread <- dTakeMVar $loc (taskWaitMVar task)
-      isDone <- dModifyMVar $loc (taskRunningThreads task) $ \threads_ -> do
+      thread <- dTakeMVar xloc (taskWaitMVar task)
+      isDone <- dModifyMVar xloc (taskRunningThreads task) $ \threads_ -> do
         let threads = S.delete thread threads_
         return (threads, S.null threads)
       if isDone then return () else loop
@@ -1347,18 +1347,18 @@ taskWaitThreadLoop task = dStack $loc "taskWaitThreadLoop" $ do
 taskRegisterThreads :: Task -> Run [DThread] -> Run ()
 taskRegisterThreads task makeThreads = do
   runtime <- ask
-  dModifyMVar_ $loc (taskRunningThreads task) $ \threads -> do
+  dModifyMVar_ xloc (taskRunningThreads task) $ \threads -> do
     newThreads <- makeThreads
     return (S.union (S.fromList newThreads) threads)
 
 -- | Signal to the 'Dao.Object.Task' that the task has completed. This must be the last thing a
 -- thread does if it is registered into a 'Dao.Object.Task' using 'taskRegisterThreads'.
 completedThreadInTask :: Task -> Run ()
-completedThreadInTask task = dMyThreadId >>= dPutMVar $loc (taskWaitMVar task)
+completedThreadInTask task = dMyThreadId >>= dPutMVar xloc (taskWaitMVar task)
 
 -- | Evaluate an 'Dao.Object.Action' in the current thread.
 execAction :: ExecUnit -> Action -> Run ()
-execAction xunit_ action = dStack $loc ("execAction for ("++show (actionPattern action)++")") $!
+execAction xunit_ action = dStack xloc ("execAction for ("++show (actionPattern action)++")") $!
   void (runExec (runExecutable T.Void (currentExecutable xunit)) xunit >>= liftIO . evaluate)
   where
     xunit =
@@ -1374,15 +1374,15 @@ execAction xunit_ action = dStack $loc ("execAction for ("++show (actionPattern 
 -- completion to the 'Dao.Object.waitForActions' 'Dao.Debug.DMVar' of the 'Dao.Object.ExecUnit'
 -- associated with this 'Dao.Object.Action'.
 forkExecAction :: ExecUnit -> Action -> Run DThread
-forkExecAction xunit act = dFork forkIO $loc "forkExecAction" $ do
-  dCatch $loc (execAction xunit act) (\ (SomeException _) -> return ())
+forkExecAction xunit act = dFork forkIO xloc "forkExecAction" $ do
+  dCatch xloc (execAction xunit act) (\ (SomeException _) -> return ())
   completedThreadInTask (taskForActions xunit)
 
 -- | For every 'Dao.Object.Action' in the 'Dao.Object.ActionGroup', evaluate that
 -- 'Dao.Object.Action' in a new thread in the 'Task' associated with the 'Dao.Object.ExecUnit' of
 -- the 'Dao.Object.ActionGroup'.
 execActionGroup :: ActionGroup -> Run ()
-execActionGroup actgrp = dStack $loc ("execActionGroup ("++show (length (getActionList actgrp))++" items)") $ do
+execActionGroup actgrp = dStack xloc ("execActionGroup ("++show (length (getActionList actgrp))++" items)") $ do
   let xunit = actionExecUnit actgrp
       task  = taskForActions xunit
   taskRegisterThreads task (forM (getActionList actgrp) (forkExecAction (actionExecUnit actgrp)))
@@ -1394,26 +1394,26 @@ execActionGroup actgrp = dStack $loc ("execActionGroup ("++show (length (getActi
 -- the thread which manages all the other threads that are launched in response to a matching input
 -- string. You could just run this loop in the current thread, if you only have one 'ExecUnit'.
 execInputStringsLoop :: ExecUnit -> Run ()
-execInputStringsLoop xunit = dStack $loc "execInputStringsLoop" $ do
+execInputStringsLoop xunit = dStack xloc "execInputStringsLoop" $ do
   runtime <- ask
-  dCatch $loc loop (\ (SomeException _) -> return ())
+  dCatch xloc loop (\ (SomeException _) -> return ())
   completedThreadInTask (taskForActions xunit)
   where
     loop = do
-      dMessage $loc "(1) Get the next input string. Also nub the list of queued input strings."
-      instr <- dModifyMVar $loc (recursiveInput xunit) $ \ax -> return $ case nub ax of
+      dMessage xloc "(1) Get the next input string. Also nub the list of queued input strings."
+      instr <- dModifyMVar xloc (recursiveInput xunit) $ \ax -> return $ case nub ax of
         []   -> ([], Nothing)
         a:ax -> (ax, Just a)
       case instr of
         Nothing    -> return ()
-        Just instr -> dStack $loc ("execInputString "++show instr) $ do
-          dStack $loc "(2) Run \"BEGIN\" scripts." $
+        Just instr -> dStack xloc ("execInputString "++show instr) $ do
+          dStack xloc "(2) Run \"BEGIN\" scripts." $
             waitAll (return (getBeginEndScripts preExec xunit))
-          dStack $loc "(3) Run 'execPatternMatchExecutable' for every matching item." $
+          dStack xloc "(3) Run 'execPatternMatchExecutable' for every matching item." $
             waitAll (makeActionsForQuery instr xunit)
-          dStack $loc "(4) Run \"END\" scripts." $
+          dStack xloc "(4) Run \"END\" scripts." $
             waitAll (return (getBeginEndScripts postExec xunit))
-          dMessage $loc "(5) Run the next string."
+          dMessage xloc "(5) Run the next string."
           loop
     waitAll getActionGroup = getActionGroup >>= execActionGroup
 
@@ -1425,11 +1425,11 @@ execInputStringsLoop xunit = dStack $loc "execInputStringsLoop" $ do
 -- different set of match results, it is up to the programmer of the rule to handle situations where
 -- the action may execute many times for a single input.
 makeActionsForQuery :: UStr -> ExecUnit -> Run ActionGroup
-makeActionsForQuery instr xunit = dStack $loc "makeActionsForQuery" $ do
+makeActionsForQuery instr xunit = dStack xloc "makeActionsForQuery" $ do
   tox <- runExec (programTokenizer xunit instr) xunit
   case tox of
     FlowErr    obj -> do
-      dModifyMVar_ $loc (uncaughtErrors xunit) $ \objx -> return $ (objx++) $
+      dModifyMVar_ xloc (uncaughtErrors xunit) $ \objx -> return $ (objx++) $
         [ OList $
             [ obj, OString (ustr "error occured while tokenizing input string")
             , OString instr, OString (ustr "in the program")
@@ -1442,7 +1442,7 @@ makeActionsForQuery instr xunit = dStack $loc "makeActionsForQuery" $ do
   where
     eq = programComparator xunit
     match tox = do
-      tree <- dReadMVar $loc (ruleSet xunit)
+      tree <- dReadMVar xloc (ruleSet xunit)
       return $
         ActionGroup
         { actionExecUnit = xunit
@@ -1480,21 +1480,21 @@ getBeginEndScripts select xunit =
 -- 'Dao.Object.Runtime' using 'taskRegisterThreads'. Then, 'taskWaitThreadLoop' is called to wait
 -- for the string execution to complete.
 runStringQuery :: UStr -> [ExecUnit] -> Run ()
-runStringQuery inputString xunits = dStack $loc "runStringsQuery" $ do
+runStringQuery inputString xunits = dStack xloc "runStringsQuery" $ do
   task <- fmap taskForExecUnits ask
   taskRegisterThreads task $ do
     runtime <- ask
     forM xunits $ \xunit -> do
-      dModifyMVar_ $loc (recursiveInput xunit) (return . (++[inputString]))
-      dFork forkIO $loc "runStringQuery.execInputStringsLoop" $ do
-        dCatch $loc (execInputStringsLoop xunit) (\ (SomeException _) -> return ())
+      dModifyMVar_ xloc (recursiveInput xunit) (return . (++[inputString]))
+      dFork forkIO xloc "runStringQuery.execInputStringsLoop" $ do
+        dCatch xloc (execInputStringsLoop xunit) (\ (SomeException _) -> return ())
         completedThreadInTask task
   taskWaitThreadLoop task
 
 -- | Clears any string queries waiting in the 'Dao.Object.recurisveInput' of an
 -- 'Dao.Object.ExecUnit'.
 clearStringQueries :: ExecUnit -> Run ()
-clearStringQueries xunit = dModifyMVar_ $loc (recursiveInput xunit) (\_ -> return [])
+clearStringQueries xunit = dModifyMVar_ xloc (recursiveInput xunit) (\_ -> return [])
 
 -- | This is the main input loop. Pass an input function callback to be called on every loop.
 daoInputLoop :: (Run (Maybe UStr)) -> Run ()
@@ -1503,8 +1503,8 @@ daoInputLoop getString = ask >>= loop where
     inputString <- getString
     case inputString of
       Nothing          -> return ()
-      Just inputString -> dStack $loc ("(daoInputLoop "++show inputString++")") $ do
-        xunits <- fmap (concatMap isProgramFile . M.elems) (dReadMVar $loc (pathIndex runtime))
+      Just inputString -> dStack xloc ("(daoInputLoop "++show inputString++")") $ do
+        xunits <- fmap (concatMap isProgramFile . M.elems) (dReadMVar xloc (pathIndex runtime))
         mapM_ clearStringQueries xunits
         let task = taskForExecUnits runtime
         runStringQuery inputString xunits
@@ -1518,20 +1518,20 @@ daoInputLoop getString = ask >>= loop where
 -- 'PrivateType' functions to also be selected, however only modules imported by the program
 -- associated with that 'ExecUnit' are allowed to be selected.
 selectModules :: Maybe ExecUnit -> [Name] -> Run [File]
-selectModules xunit names = dStack $loc "selectModules" $ ask >>= \runtime -> case names of
+selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> case names of
   []    -> do
-    ax <- dReadMVar $loc (pathIndex runtime)
-    dMessage $loc ("selected modules: "++intercalate ", " (map show (M.keys ax)))
+    ax <- dReadMVar xloc (pathIndex runtime)
+    dMessage xloc ("selected modules: "++intercalate ", " (map show (M.keys ax)))
     return (filter (not . null . isProgramFile) (M.elems ax))
   names -> do
-    pathTab <- dReadMVar $loc (pathIndex runtime)
+    pathTab <- dReadMVar xloc (pathIndex runtime)
     let set msg           = M.fromList . map (\mod -> (mod, error msg))
         request           = set "(selectModules: request files)" names
     imports <- case xunit of
       Nothing    -> return M.empty
       Just xunit -> return $ set "(selectModules: imported files)" $ programImports xunit
     ax <- return $ M.intersection pathTab request
-    dMessage $loc ("selected modules:\n"++unlines (map show (M.keys ax)))
+    dMessage xloc ("selected modules:\n"++unlines (map show (M.keys ax)))
     return $ M.elems ax
 
 -- | In the current thread, and using the given 'Runtime' environment, parse an input string as
@@ -1540,7 +1540,7 @@ selectModules xunit names = dStack $loc "selectModules" $ ask >>= \runtime -> ca
 -- are not necessary. Therefore you may enter a semi-colon separated list of commands and all will
 -- be executed.
 evalScriptString :: ExecUnit -> String -> Run ()
-evalScriptString xunit instr = dStack $loc "evalScriptString" $
+evalScriptString xunit instr = dStack xloc "evalScriptString" $
   void $ flip runExec xunit $ nestedExecStack T.Void $ execScriptBlock $
   case fst (runParser parseInteractiveScript instr) of
     Backtrack     -> error "cannot parse expression"
@@ -1556,10 +1556,10 @@ evalScriptString xunit instr = dStack $loc "evalScriptString" $
 -- 'sourceFullPath' in the 'programs' table. Returns the logical "module" name of the script along
 -- with an initialized 'Dao.Object.ExecUnit'.
 registerSourceCode :: UPath -> SourceCode -> Run (FlowCtrl ExecUnit)
-registerSourceCode upath script = dStack $loc "registerSourceCode" $ ask >>= \runtime -> do
+registerSourceCode upath script = dStack xloc "registerSourceCode" $ ask >>= \runtime -> do
   let modName = unComment (sourceModuleName script)
       pathTab = pathIndex runtime
-  alreadyLoaded <- fmap (M.lookup upath) (dReadMVar $loc pathTab)
+  alreadyLoaded <- fmap (M.lookup upath) (dReadMVar xloc pathTab)
   -- Check to make sure the logical name in the loaded program does not conflict with that
   -- of another loaded previously.
   case alreadyLoaded of
@@ -1572,7 +1572,7 @@ registerSourceCode upath script = dStack $loc "registerSourceCode" $ ask >>= \ru
       -- Call 'initSourceCode' which creates the 'ExecUnit', then place it in an 'MVar'.
       -- 'initSourceCode' calls 'Dao.Evaluator.programFromSource'.
       xunit <- initSourceCode upath script >>= lift . evaluate
-      dModifyMVar_ $loc pathTab $ return . M.insert upath (ProgramFile xunit)
+      dModifyMVar_ xloc pathTab $ return . M.insert upath (ProgramFile xunit)
       return (FlowOK xunit)
 
 -- | You should not normally need to call evaluate this function, you should use
@@ -1631,7 +1631,7 @@ registerSourceFromHandle upath h = do
 -- 'asPublic' to force the type to be a 'PublicType'd file.
 loadFilePath :: FilePath -> Run (FlowCtrl File)
 loadFilePath path = dontLoadFileTwice (ustr path) $ \upath -> do
-  dPutStrErr $loc ("Lookup file path "++show upath)
+  dPutStrErr xloc ("Lookup file path "++show upath)
   h    <- lift (openFile path ReadMode)
   zero <- lift (hGetPosn h)
   enc  <- lift (hGetEncoding h)

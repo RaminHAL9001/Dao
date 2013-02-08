@@ -20,7 +20,7 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
-{-# LANGUAGE TemplateHaskell #-}
+-- {-# LANGUAGE TemplateHaskell #-}
 
 -- | This module is pretty much where everything begins. It is the smallest interface that can be
 -- imported by any Haskell program making use of the Dao System. You can use the functions in this
@@ -38,7 +38,7 @@ module Dao
   , module Dao
   ) where
 
-import           Dao.Debug.ON
+import           Dao.Debug.OFF
 
 import           Dao.String
 import           Dao.Pattern
@@ -69,8 +69,8 @@ min_exec_time = 200000
 
 -- | Create a new 'Runtime' with nothing in it except for the 'userData' you pass to it.
 newRuntime :: DebugRef -> IO Runtime
-newRuntime debugRef = flip runReaderT debugRef $ dStack $loc "newRuntime" $ do
-  paths <- dNewMVar $loc "Runtime.pathIndex" (M.empty)
+newRuntime debugRef = flip runReaderT debugRef $ dStack xloc "newRuntime" $ do
+  paths <- dNewMVar xloc "Runtime.pathIndex" (M.empty)
   task  <- initTask
   return $
     Runtime
@@ -100,11 +100,11 @@ initRuntimeFunctions funcs runtime =
 -- file and load it accordingly. The kinds of files that can be loaded are Dao source files, Dao
 -- data files, and Dao compiled programs.
 initRuntimeFiles :: [FilePath] -> Run ()
-initRuntimeFiles filePaths = dStack $loc "initRuntimeFiles" $ do
+initRuntimeFiles filePaths = dStack xloc "initRuntimeFiles" $ do
   forM_ filePaths (\filePath -> void (loadFilePath filePath))
   problems <- checkAllImports
   if null problems
-    then ask >>= \runtime -> dReadMVar $loc (pathIndex runtime) >>= return . M.keys >>= dMessage $loc . ("list of loaded files updated: "++) . intercalate ", " . map show >> return ()
+    then ask >>= \runtime -> dReadMVar xloc (pathIndex runtime) >>= return . M.keys >>= dMessage xloc . ("list of loaded files updated: "++) . intercalate ", " . map show >> return ()
     else error $ "ERROR: some Dao programs have imported modules which were not loaded.\n"
           ++(flip concatMap problems $ \ (mod, imprts) ->
                 "\tmodule "++show mod++" could not satisfy the import requirements for:\n\t\t"

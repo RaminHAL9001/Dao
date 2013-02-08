@@ -18,7 +18,7 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
-{-# LANGUAGE TemplateHaskell #-}
+-- {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveDataTypeable #-}
@@ -31,7 +31,7 @@ module Dao.Object
   , module Dao.Object
   ) where
 
-import           Dao.Debug.ON
+import           Dao.Debug.OFF
 import           Dao.String
 import           Dao.Token
 import           Dao.Pattern
@@ -951,8 +951,8 @@ data Task
 
 initTask :: Bugged r (ReaderT r IO) => ReaderT r IO Task
 initTask = do
-  wait <- dNewEmptyMVar $loc "Task.taskWaitMVar"
-  running <- dNewMVar $loc "Task.taskRunningThreads" S.empty
+  wait <- dNewEmptyMVar xloc "Task.taskWaitMVar"
+  running <- dNewMVar xloc "Task.taskRunningThreads" S.empty
   return (Task{ taskWaitMVar = wait, taskRunningThreads = running })
 
 ----------------------------------------------------------------------------------------------------

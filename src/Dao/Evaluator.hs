@@ -79,7 +79,6 @@ initExecUnit runtime modName initGlobalData = do
   qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
   task     <- initTask
   xstack   <- dNewMVar xloc "ExecUnit.execStack" emptyStack
-  toplev   <- dNewMVar xloc "ExecUnit.topLevelFuncs" M.empty
   files    <- dNewMVar xloc "ExecUnit.execOpenFiles" M.empty
   rules    <- dNewMVar xloc "ExecUnit.ruleSet" T.Void
   return $
@@ -94,7 +93,7 @@ initExecUnit runtime modName initGlobalData = do
     , importsTable       = []
     , execAccessRules    = RestrictFiles (Pattern{getPatUnits = [Wildcard], getPatternLength = 1})
     , builtinFuncs       = initBuiltinFuncs
-    , topLevelFuncs      = toplev
+    , topLevelFuncs      = M.empty
     , queryTimeHeap      = qheap
     , taskForActions     = task
     , execStack          = xstack
@@ -918,9 +917,9 @@ updateReference ref modf = do
 -- the 'Dao.Object.Subroutine's of each imported module (from first to last listed import), and
 -- finally the built-in functions provided by the 'Dao.Object.Runtime'
 lookupFunction :: String -> Name -> Exec [Subroutine]
-lookupFunction msg op = do
+lookupFunction msg op = trace ("(lookupFunction "++uchars op++")") $ do
   xunit <- ask
-  let toplevs xunit = lift (fmap (M.lookup op) (dReadMVar xloc (topLevelFuncs xunit)))
+  let toplevs xunit = return (M.lookup op ((\m -> trace ("toplevel funcs: "++intercalate ", " (map uchars (M.keys m))) m) $ topLevelFuncs xunit))
       lkup p = case p of
         ProgramFile xunit -> toplevs xunit
         _                 -> return Nothing
@@ -1237,6 +1236,7 @@ initProgram inmpg = do
     , programTokenizer  = return . tokens . uchars
     , programComparator = (==)
     , postExec          = inmpg_postExec inmpg
+    , topLevelFuncs     = inmpg_topLevelFuncs inmpg
     }
 
 -- | To parse a program, use 'Dao.Object.Parsers.source' and pass the resulting
@@ -1318,19 +1318,18 @@ programFromSource globalResource checkAttribute script = do
       EndExpr      scrp lc -> do
         exe <- lift $ lift $ setupExecutable scrp
         modify (\p -> p{inmpg_postExec = inmpg_postExec p ++ [exe]})
-      ToplevelFunc nm argv code lc -> lift $ do
+      ToplevelFunc nm argv code lc -> do
         xunit <- ask
-        exe <- inExecEvalRun (setupExecutable code)
+        exe <- lift (inExecEvalRun (setupExecutable code))
         let sub =
               Subroutine
               { argsPattern  = map (flip ObjLabel ObjAny1 . unComment) argv
               , subSourceCode  = unComment code
               , getSubExecutable = exe
               }
-        inExecEvalRun $ do
-          let name = unComment nm
-              alt funcs = mplus (fmap (++[sub]) funcs) (return [sub])
-          modify (\p -> p{inmpg_topLevelFuncs = M.alter alt name (inmpg_topLevelFuncs p)})
+            name = unComment nm
+            alt funcs = mplus (fmap (++[sub]) funcs) (return [sub])
+        modify (\p -> p{inmpg_topLevelFuncs = M.alter alt name (inmpg_topLevelFuncs p)})
 
 ----------------------------------------------------------------------------------------------------
 

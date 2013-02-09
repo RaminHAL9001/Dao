@@ -838,6 +838,7 @@ builtin_do = DaoFunc $ \ox -> do
     _              -> procErr $ OList $
       OString (ustr "require query strings as parameters to \"do\" function, but received") : ox
   execStrings <- requireAllStringArgs execStrings
+  sendStringsToPrograms False selectFiles execStrings
   return (OList (map OString execStrings))
 
 builtin_join :: DaoFunc

@@ -68,6 +68,8 @@ import qualified Data.ByteString.Lazy.UTF8 as U
 
 import           System.IO
 
+import Debug.Trace
+
 ----------------------------------------------------------------------------------------------------
 
 initExecUnit :: Runtime -> UPath -> TreeResource -> Run ExecUnit
@@ -77,7 +79,7 @@ initExecUnit runtime modName initGlobalData = do
   qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
   task     <- initTask
   xstack   <- dNewMVar xloc "ExecUnit.execStack" emptyStack
-  toplev   <- dNewMVar xloc "ExecUnit.toplevelFuncs" M.empty
+  toplev   <- dNewMVar xloc "ExecUnit.topLevelFuncs" M.empty
   files    <- dNewMVar xloc "ExecUnit.execOpenFiles" M.empty
   rules    <- dNewMVar xloc "ExecUnit.ruleSet" T.Void
   return $
@@ -92,7 +94,7 @@ initExecUnit runtime modName initGlobalData = do
     , importsTable       = []
     , execAccessRules    = RestrictFiles (Pattern{getPatUnits = [Wildcard], getPatternLength = 1})
     , builtinFuncs       = initBuiltinFuncs
-    , toplevelFuncs      = toplev
+    , topLevelFuncs      = toplev
     , queryTimeHeap      = qheap
     , taskForActions     = task
     , execStack          = xstack
@@ -918,7 +920,7 @@ updateReference ref modf = do
 lookupFunction :: String -> Name -> Exec [Subroutine]
 lookupFunction msg op = do
   xunit <- ask
-  let toplevs xunit = lift (fmap (M.lookup op) (dReadMVar xloc (toplevelFuncs xunit)))
+  let toplevs xunit = lift (fmap (M.lookup op) (dReadMVar xloc (topLevelFuncs xunit)))
       lkup p = case p of
         ProgramFile xunit -> toplevs xunit
         _                 -> return Nothing
@@ -1200,6 +1202,7 @@ data IntermediateProgram
     , inmpg_programComparator :: CompareToken
     , inmpg_ruleSet           :: PatternTree [Executable]
     , inmpg_globalData        :: T.Tree Name Object
+    , inmpg_topLevelFuncs     :: M.Map Name [Subroutine]
     }
 
 initIntermediateProgram =
@@ -1215,6 +1218,7 @@ initIntermediateProgram =
   , inmpg_programComparator = (==)
   , inmpg_ruleSet           = T.Void
   , inmpg_globalData        = T.Void
+  , inmpg_topLevelFuncs     = M.empty
   }
 
 initProgram :: IntermediateProgram -> Exec ExecUnit
@@ -1325,8 +1329,8 @@ programFromSource globalResource checkAttribute script = do
               }
         inExecEvalRun $ do
           let name = unComment nm
-          dModifyMVar_ xloc (toplevelFuncs xunit) $ return .
-            M.alter (\funcs -> mplus (fmap (++[sub]) funcs) (return [sub])) name
+              alt funcs = mplus (fmap (++[sub]) funcs) (return [sub])
+          modify (\p -> p{inmpg_topLevelFuncs = M.alter alt name (inmpg_topLevelFuncs p)})
 
 ----------------------------------------------------------------------------------------------------
 

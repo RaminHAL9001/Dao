@@ -885,7 +885,7 @@ data ExecUnit
       -- are the rules assigned this program by the 'ProgramRule' which allowed it to be loaded.
     , builtinFuncs       :: M.Map Name DaoFunc
       -- ^ a pointer to the builtin function table provided by the runtime.
-    , topLevelFuncs      :: DMVar (M.Map Name [Subroutine])
+    , topLevelFuncs      :: M.Map Name [Subroutine]
     , execStack          :: DMVar (Stack Name Object)
       -- ^ stack of local variables used during evaluation
     , queryTimeHeap      :: TreeResource

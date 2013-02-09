@@ -75,7 +75,7 @@ showObj idnc o = case o of
   OString   o -> show o
   ORef      o -> '$':showReference o
   OPair (a,b) -> let i = idnc+1 in "pair ("++showObj i a++", "++showObj i b++")"
-  OList     o -> simplelist idnc o
+  OList     o -> "list "++simplelist idnc o
   OSet      o -> "set "++simplelist idnc (S.elems o)
   OArray    o ->
     let (a,b) = bounds o
@@ -93,7 +93,7 @@ showObj idnc o = case o of
       ++ '\n':block (Byt.drop 72 o)
   where
     sh lbl o = lbl++" "++show o
-    simplelist idnc o = '[':intercalate ", " (map (showObj (idnc+1)) o)++"]" 
+    simplelist idnc o = '{':intercalate ", " (map (showObj (idnc+1)) o)++"}" 
     pairlist prefix showKey items =
       let tabs = indent (idnc+1)
           line (key, o) = tabs ++ showKey key ++ ": " ++ showObj (idnc+1) o ++ ",\n"

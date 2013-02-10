@@ -4,10 +4,9 @@ scheme of checking function parameters to foreign functions, the old TODO file h
 to the development currently underway, so I deleted it and I am starting anew.
 
 TODO:
-*	Recursive input is placed into the "recursiveInput" MVar of the ExecUnit data type, however the
-runtime does not seem to do anything with these input strings. I probably took out that feature
-because it relied too heavily on PredicateIO or something I deleted, and I need to completely
-rewrite it. This needs to be investigated, and finally implemented.
+*	There is a bug in the indexing operator, and also possibly the dereferencing operator.
+Indexing an item in a list or array (for example: a[0]) throws an exception, indexing an item
+in a list that has first been dereferenced (for example: @a[0]) seems to return nothing.
 
 *	'Dao.Object.Subroutine' is a data structure representing a function that takes a list of
 'Dao.Object.ObjPat's, and when it is executed, it will resolve all Reference parameters passed to

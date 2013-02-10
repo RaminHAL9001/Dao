@@ -39,7 +39,7 @@ import           Data.Array.IArray
 import qualified Data.Set as S
 import qualified Data.Map as M
 
-import Debug.Trace
+-- import Debug.Trace
 
 type Tokens = [UStr]
 

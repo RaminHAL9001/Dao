@@ -68,8 +68,6 @@ import qualified Data.ByteString.Lazy.UTF8 as U
 
 import           System.IO
 
-import Debug.Trace
-
 ----------------------------------------------------------------------------------------------------
 
 initExecUnit :: Runtime -> UPath -> TreeResource -> Run ExecUnit
@@ -917,9 +915,9 @@ updateReference ref modf = do
 -- the 'Dao.Object.Subroutine's of each imported module (from first to last listed import), and
 -- finally the built-in functions provided by the 'Dao.Object.Runtime'
 lookupFunction :: String -> Name -> Exec [Subroutine]
-lookupFunction msg op = trace ("(lookupFunction "++uchars op++")") $ do
+lookupFunction msg op = do
   xunit <- ask
-  let toplevs xunit = return (M.lookup op ((\m -> trace ("toplevel funcs: "++intercalate ", " (map uchars (M.keys m))) m) $ topLevelFuncs xunit))
+  let toplevs xunit = return (M.lookup op (topLevelFuncs xunit))
       lkup p = case p of
         ProgramFile xunit -> toplevs xunit
         _                 -> return Nothing

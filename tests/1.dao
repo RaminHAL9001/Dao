@@ -11,6 +11,11 @@ END {
 rule "hello" {
 	a = "Hi, how are you.";
 	print(a);
+	try {
+		b = list {"zero", "one", "two"};
+		print(b[0]);
+	}
+	catch err { print(err); }
 }
 
 rule "my name is $*." {
@@ -18,11 +23,12 @@ rule "my name is $*." {
 }
 
 func testFunc(a, b) {
+	print("testFunc:");
 	print("I am a "+a+" "+b+"!!!");
 }
 
 rule "test toplevel $*" {
-	testFunc($1[0], $1[2]);
+	testFunc(join($0), "person");
 }
 
 rule "test recurse" {

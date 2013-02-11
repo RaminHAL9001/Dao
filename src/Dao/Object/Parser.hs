@@ -501,7 +501,7 @@ parseUnaryOperatorExpr = do -- high-prescedence unary operators, these are inter
   op <- regex (rxCharSetFromStr "@$!~")
   expect ("\""++op++"\" operator must be followed by an object expression") $ \com1 -> do
     expr <- parseNonEquation
-    return (Equation VoidExpr (com [] (read op) com1) expr unloc)
+    return (PrefixExpr (read op) (com com1 expr []) unloc)
 
 parseInfixOp :: Parser Name
 parseInfixOp = fmap ustr $ regex $ rxChoice $ map rxString $ words $ concat $

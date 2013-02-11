@@ -469,11 +469,11 @@ instance Binary ArithOp where
   put a = putWord8 $ case a of
     { ADD  -> 0x6D; SUB  -> 0x6E; MULT  -> 0x6F; DIV   -> 0x70; MOD   -> 0x71; ORB   -> 0x72
     ; NOT  -> 0x73; OR   -> 0x74; AND   -> 0x75; ANDB  -> 0x76; XORB  -> 0x77; INVB  -> 0x78
-    ; SHL  -> 0x79; SHR  -> 0x7A; ABS   -> 0x7B; NEG   -> 0x7C
-    ; SQRT -> 0x7D; EXP  -> 0x7E; LOG   -> 0x7F; ROUND -> 0x80; TRUNC -> 0x81
-    ; SIN  -> 0x82; COS  -> 0x83; TAN   -> 0x84; ASIN  -> 0x85; ACOS  -> 0x86; ATAN  -> 0x87
-    ; SINH -> 0x88; COSH -> 0x89; TANH  -> 0x8A; ASINH -> 0x8B; ACOSH -> 0x8C; ATANH -> 0x8D
-    ; DOT  -> 0x8E; REF  -> 0x8F; DEREF -> 0x90; POINT -> 0x91
+    ; SHL  -> 0x79; SHR  -> 0x7A; ABS   -> 0x7B; NEG   -> 0x7C;  EQUL -> 0x7D; NEQUL -> 0x7E
+    ; SQRT -> 0x7F; EXP  -> 0x80; LOG   -> 0x81; ROUND -> 0x82; TRUNC -> 0x83
+    ; SIN  -> 0x84; COS  -> 0x85; TAN   -> 0x86; ASIN  -> 0x87; ACOS  -> 0x88; ATAN  -> 0x89
+    ; SINH -> 0x8A; COSH -> 0x8B; TANH  -> 0x8C; ASINH -> 0x8D; ACOSH -> 0x8E; ATANH -> 0x8F
+    ; DOT  -> 0x90; REF  -> 0x91; DEREF -> 0x92; POINT -> 0x93
     }
   get = do
     w <- getWord8
@@ -481,11 +481,11 @@ instance Binary ArithOp where
     case w of
       { 0x6D -> x  ADD; 0x6E -> x  SUB; 0x6F -> x  MULT; 0x70 -> x   DIV; 0x71 -> x   MOD; 0x72 -> x   ORB
       ; 0x73 -> x  NOT; 0x74 -> x   OR; 0x75 -> x   AND; 0x76 -> x  ANDB; 0x77 -> x  XORB; 0x78 -> x  INVB
-      ; 0x79 -> x  SHL; 0x7A -> x  SHR; 0x7B -> x   ABS; 0x7C -> x   NEG
-      ; 0x7D -> x SQRT; 0x7E -> x  EXP; 0x7F -> x   LOG; 0x80 -> x ROUND; 0x81 -> x TRUNC
-      ; 0x82 -> x  SIN; 0x83 -> x  COS; 0x84 -> x   TAN; 0x85 -> x  ASIN; 0x86 -> x  ACOS; 0x87 -> x  ATAN
-      ; 0x88 -> x SINH; 0x89 -> x COSH; 0x8A -> x  TANH; 0x8B -> x ASINH; 0x8C -> x ACOSH; 0x8D -> x ATANH
-      ; 0x8E -> x  DOT; 0x8F -> x  REF; 0x90 -> x DEREF; 0x91 -> x POINT
+      ; 0x79 -> x  SHL; 0x7A -> x  SHR; 0x7B -> x   ABS; 0x7C -> x   NEG; 0x7D -> x  EQUL; 0x7E -> x NEQUL
+      ; 0x7F -> x SQRT; 0x80 -> x  EXP; 0x81 -> x   LOG; 0x82 -> x ROUND; 0x83 -> x TRUNC
+      ; 0x84 -> x  SIN; 0x85 -> x  COS; 0x86 -> x   TAN; 0x87 -> x  ASIN; 0x88 -> x  ACOS; 0x89 -> x  ATAN
+      ; 0x8A -> x SINH; 0x8B -> x COSH; 0x8C -> x  TANH; 0x8D -> x ASINH; 0x8E -> x ACOSH; 0x8F -> x ATANH
+      ; 0x90 -> x  DOT; 0x91 -> x  REF; 0x92 -> x DEREF; 0x93 -> x POINT
       ; _    -> fail "expecting arithmetic operator symbol"
       }
 
@@ -497,10 +497,11 @@ instance Binary ObjectExpr where
     LambdaCall   a b   z -> x z 0x44 $ putCom a        >> putComList b
     ParenExpr    a b   z -> x z 0x45 $ putObjBool a    >> putCom b
     Equation     a b c z -> x z 0x46 $ put a           >> putCom b         >> put c
-    DictExpr     a b c z -> x z 0x47 $ put a           >> putCommentList b >> putComList c
-    ArrayExpr    a b   z -> x z 0x48 $ putComComList a >> putComList b
-    ArraySubExpr a b c z -> x z 0x49 $ put a           >> putCommentList b >> putCom c
-    LambdaExpr   a b   z -> x z 0x4A $ putComComList a >> putComList b
+    PrefixExpr   a b   z -> x z 0x47 $ put a           >> putCom b
+    DictExpr     a b c z -> x z 0x48 $ put a           >> putCommentList b >> putComList c
+    ArrayExpr    a b   z -> x z 0x49 $ putComComList a >> putComList b
+    ArraySubExpr a b c z -> x z 0x4A $ put a           >> putCommentList b >> putCom c
+    LambdaExpr   a b   z -> x z 0x4B $ putComComList a >> putComList b
     where
       x z i putx  = putWord8 i >> put z >> putx
       char3 str = mapM_ (putWord8 . fromIntegral) (take 3 (map ord (uchars str) ++ repeat 0))
@@ -513,10 +514,11 @@ instance Binary ObjectExpr where
       0x44 -> liftM3 LambdaCall   getCom        getComList                 get
       0x45 -> liftM3 ParenExpr    getObjBool    getCom                     get
       0x46 -> liftM4 Equation     get           getCom          get        get
-      0x47 -> liftM4 DictExpr     get           getCommentList  getComList get
-      0x48 -> liftM3 ArrayExpr    getComComList getComList                 get
-      0x49 -> liftM4 ArraySubExpr get           getCommentList  getCom     get
-      0x4A -> liftM3 LambdaExpr   getComComList getComList                 get
+      0x47 -> liftM3 PrefixExpr   get           getCom                     get
+      0x48 -> liftM4 DictExpr     get           getCommentList  getComList get
+      0x49 -> liftM3 ArrayExpr    getComComList getComList                 get
+      0x4A -> liftM4 ArraySubExpr get           getCommentList  getCom     get
+      0x4B -> liftM3 LambdaExpr   getComComList getComList                 get
       _    -> error "could not load, corrupted data in object expression"
       where
         { char3 = do

@@ -471,7 +471,7 @@ instance Bounded UpdateOp where {minBound = UCONST; maxBound = USHR}
 data ArithOp
   = REF   | DEREF | INVB  | NOT   | NEG -- ^ unary
   | POINT | DOT                         -- ^ special reference
-  | OR    | AND                         -- ^ boolean logical
+  | OR    | AND   | EQUL  | NEQUL       -- ^ boolean logical
   | ORB   | ANDB  | XORB  | SHL   | SHR -- ^ bitwise
   | ADD   | SUB   | MULT  | DIV   | MOD -- ^ basic arithmetic
   | POW   | EXP   | SQRT  | LOG         -- ^ root and exponents
@@ -483,8 +483,9 @@ data ArithOp
 instance Show ArithOp where
   show a = case a of
     { ADD  -> "+";    SUB  -> "-";    MULT  -> "*";    DIV   -> "/";     MOD   -> "%"; ORB  -> "|"
-    ; NOT  -> "!";    OR   -> "||";   AND   -> "&&";   ANDB  -> "&";     XORB  -> "^"; INVB -> "~"
-    ; SHL  -> "<<";   SHR  -> ">>";   ABS   -> "abs";  NEG   -> "-";     POW   -> "**"
+    ; NOT  -> "!";    OR   -> "||";   AND   -> "&&";   EQUL  -> "==";    NEQUL -> "!="
+    ; ANDB -> "&";    XORB -> "^";    INVB  -> "~";    SHL   -> "<<";    SHR   -> ">>"
+    ; ABS  -> "abs";  NEG  -> "-";    POW   -> "**"
     ; SQRT -> "sqrt"; EXP  -> "exp";  LOG   -> "log";  ROUND -> "round"; TRUNC -> "trunc"
     ; SIN  -> "sin";  COS  -> "cos";  TAN   -> "tan";  ASIN  -> "asin";  ACOS  -> "acos";  ATAN  -> "atan"
     ; SINH -> "sinh"; COSH -> "cosh"; TANH  -> "tanh"; ASINH -> "asinh"; ACOSH -> "acosh"; ATANH -> "atanh"
@@ -496,7 +497,7 @@ instance Read ArithOp where
     { "+"    -> [(ADD  , "")]; "-"     -> [(SUB  , "")]; "*"     -> [(MULT , "")]
     ; "/"    -> [(DIV  , "")]; "%"     -> [(MOD  , "")]; "**"    -> [(POW  , "")]
     ; "exp"  -> [(EXP  , "")]; "|"     -> [(ORB  , "")]; "!"     -> [(NOT  , "")]
-    ; "||"   -> [(OR   , "")]; "&&"    -> [(AND  , "")]
+    ; "||"   -> [(OR   , "")]; "&&"    -> [(AND  , "")]; "=="    -> [(EQUL , "")]; "!="    -> [(NEQUL , "")]
     ; "&"    -> [(ANDB , "")]; "^"     -> [(XORB , "")]; "~"     -> [(INVB , "")]
     ; "<<"   -> [(SHL  , "")]; ">>"    -> [(SHR  , "")]; "."     -> [(DOT  , "")]
     ; "$"    -> [(REF  , "")]; "@"     -> [(DEREF, "")]; "->"    -> [(POINT, "")]
@@ -515,6 +516,7 @@ data ObjectExpr
   | Literal      Object                                   Location
   | AssignExpr   ObjectExpr  (Com UpdateOp)  ObjectExpr   Location
   | Equation     ObjectExpr  (Com ArithOp)   ObjectExpr   Location
+  | PrefixExpr   ArithOp     (Com ObjectExpr)             Location
   | ParenExpr    Bool                   (Com ObjectExpr)  Location
   | ArraySubExpr ObjectExpr  [Comment]  (Com ObjectExpr)  Location
   | FuncCall     Name        [Comment]  [Com ObjectExpr]  Location

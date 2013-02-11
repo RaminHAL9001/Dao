@@ -68,6 +68,8 @@ import qualified Data.ByteString.Lazy.UTF8 as U
 
 import           System.IO
 
+import Debug.Trace
+
 ----------------------------------------------------------------------------------------------------
 
 initExecUnit :: Runtime -> UPath -> TreeResource -> Run ExecUnit
@@ -610,7 +612,7 @@ evalSubscript a b = case a of
   OList   a -> asHaskellInt b >>= \b ->
     let err = pfail (ustr "list index out of bounds")
         ax  = take 1 (drop b a)
-    in  if b<0 then err else if null ax then err else return (OList ax)
+    in  if b<0 then err else if null ax then err else return (head ax)
   OIntMap a -> asHaskellInt b >>= \b -> case I.lookup b a of
     Nothing -> pfail (ustr "no item at index requested of intmap")
     Just  b -> return b
@@ -645,6 +647,12 @@ evalSubscript a b = case a of
           Nothing -> pfail (ustr (show b++" is not defined in struct"))
           Just  a -> return a
   _         -> mzero
+
+eval_EQUL :: Object -> Object -> BuiltinOp
+eval_EQUL a b = return (if a==b then OTrue else ONull)
+
+eval_NEQUL :: Object -> Object -> BuiltinOp
+eval_NEQUL a b = return (if a==b then ONull else OTrue)
 
 eval_SHR :: Object -> Object -> BuiltinOp
 eval_SHR = evalShift negate
@@ -722,6 +730,8 @@ infixOps = let o = (,) in array (POINT, POW) $
   , o DOT   eval_DOT
   , o OR    (evalBooleans (||))
   , o AND   (evalBooleans (&&))
+  , o EQUL  eval_EQUL
+  , o NEQUL eval_NEQUL
   , o ORB   eval_ORB
   , o ANDB  eval_ANDB
   , o XORB  eval_XORB
@@ -1106,6 +1116,13 @@ evalObject obj = case obj of
       OK result -> return result
       Backtrack -> procErr $ OList $
         [OString $ ustr (show op), OString $ ustr "cannot operate on objects of type", left, right]
+      PFail lc msg -> procErr $ OList [OString msg]
+  PrefixExpr op       expr   lc -> do
+    expr <- evalObject (unComment expr)
+    case (prefixOps!op) expr of
+      OK result -> return result
+      Backtrack -> procErr $ OList $
+        [OString $ ustr (show op), OString $ ustr "cannot operate on objects of type", expr]
       PFail lc msg -> procErr $ OList [OString msg]
   DictExpr   cons  _  args   lc -> do
     let loop insfn getObjVal map argx = case argx of

@@ -23,12 +23,13 @@ rule "my name is $*." {
 }
 
 func testFunc(a, b) {
-	print("testFunc:");
-	print("I am a "+a+" "+b+"!!!");
+	print("testFunc:", "a = "+a, "b = "+b);
+	print("I am a "+join(a)+" "+join(b)+"!!!");
 }
 
 rule "test toplevel $*" {
-	testFunc(join($0), "person");
+	print("$0 = "+$0, "$1 = "+$1);
+	testFunc($1[0], $1[2]);
 }
 
 rule "test recurse" {

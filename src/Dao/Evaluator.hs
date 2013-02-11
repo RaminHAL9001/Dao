@@ -609,7 +609,7 @@ evalSubscript a b = case a of
     if inRange (bounds a) b then return (a!b) else pfail (ustr "array index out of bounds")
   OList   a -> asHaskellInt b >>= \b ->
     let err = pfail (ustr "list index out of bounds")
-        ax  = drop b a
+        ax  = take 1 (drop b a)
     in  if b<0 then err else if null ax then err else return (OList ax)
   OIntMap a -> asHaskellInt b >>= \b -> case I.lookup b a of
     Nothing -> pfail (ustr "no item at index requested of intmap")
@@ -1088,7 +1088,7 @@ evalObject obj = case obj of
       _          -> called_nonfunction_object (showObjectExpr 0 ref) fn
   ParenExpr     _     o      lc -> evalObject (unComment o)
   ArraySubExpr  o  _  i      lc -> do
-    o <- evalObject o
+    o <- evalObject o >>= evalObjectRef
     i <- evalObject (unComment i)
     case evalSubscript o i of
       OK          a -> return a

@@ -1500,7 +1500,7 @@ clearStringQueries xunit = dModifyMVar_ xloc (recursiveInput xunit) (\_ -> retur
 
 -- | This is the main input loop. Pass an input function callback to be called on every loop.
 daoInputLoop :: (Run (Maybe UStr)) -> Run ()
-daoInputLoop getString = ask >>= loop where
+daoInputLoop getString = ask >>= loop >> daoShutdown where
   loop runtime = do
     inputString <- getString
     case inputString of
@@ -1511,6 +1511,16 @@ daoInputLoop getString = ask >>= loop where
         let task = taskForExecUnits runtime
         runStringQuery inputString xunits
         loop runtime
+
+-- | Evaluates the @TAKEDOWN@ scripts for every presently loaded dao program, and then clears the
+-- 'Dao.Object.pathIndex', effectively removing every loaded dao program and idea file from memory.
+daoShutdown :: Run ()
+daoShutdown = do
+  runtime <- ask
+  let idx = pathIndex runtime
+  xunits <- fmap (concatMap isProgramFile . M.elems) (dReadMVar xloc idx)
+  forM_ xunits (setupOrTakedown destructScript)
+  dModifyMVar_ xloc idx $ (\_ -> return (M.empty))
 
 -- | When executing strings against Dao programs (e.g. using 'Dao.Tasks.execInputString'), you often
 -- want to execute the string against only a subset of the number of total programs. Pass the
@@ -1524,7 +1534,7 @@ selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> ca
   []    -> do
     ax <- dReadMVar xloc (pathIndex runtime)
     dMessage xloc ("selected modules: "++intercalate ", " (map show (M.keys ax)))
-    return (filter (not . null . isProgramFile) (M.elems ax))
+    return (map ProgramFile (concatMap isProgramFile (M.elems ax)))
   names -> do
     pathTab <- dReadMVar xloc (pathIndex runtime)
     let set msg           = M.fromList . map (\mod -> (mod, error msg))

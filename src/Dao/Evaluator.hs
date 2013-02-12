@@ -121,7 +121,7 @@ setupExecutable scrp = do
   return $
     Executable
     { staticVars = staticRsrc
-    , executable = execScriptBlock (unComment scrp)
+    , executable = execScriptBlock (unComment scrp) >>= liftIO . evaluate
     }
 
 runExecutable :: T_tree -> Executable -> Exec Object
@@ -1377,8 +1377,12 @@ completedThreadInTask task = dMyThreadId >>= dPutMVar xloc (taskWaitMVar task)
 
 -- | Evaluate an 'Dao.Object.Action' in the current thread.
 execAction :: ExecUnit -> Action -> Run ()
-execAction xunit_ action = dStack xloc ("execAction for ("++show (actionPattern action)++")") $!
-  void (runExec (runExecutable T.Void (currentExecutable xunit)) xunit >>= liftIO . evaluate)
+execAction xunit_ action = dStack xloc ("execAction for ("++show (actionPattern action)++")") $ do
+  result <- runExec (runExecutable T.Void (currentExecutable xunit)) xunit >>= liftIO . evaluate
+  case seq result result of
+    FlowOK     _ -> return ()
+    FlowReturn _ -> return ()
+    FlowErr    o -> liftIO (hPutStrLn stderr ("ERROR: "++show o))
   where
     xunit =
       xunit_
@@ -1394,7 +1398,7 @@ execAction xunit_ action = dStack xloc ("execAction for ("++show (actionPattern 
 -- associated with this 'Dao.Object.Action'.
 forkExecAction :: ExecUnit -> Action -> Run DThread
 forkExecAction xunit act = dFork forkIO xloc "forkExecAction" $ do
-  dCatch xloc (execAction xunit act) (\ (SomeException _) -> return ())
+  dCatch xloc (execAction xunit act >>= liftIO . evaluate) (\ (SomeException _) -> return ())
   completedThreadInTask (taskForActions xunit)
 
 -- | For every 'Dao.Object.Action' in the 'Dao.Object.ActionGroup', evaluate that
@@ -1405,7 +1409,7 @@ execActionGroup actgrp = dStack xloc ("execActionGroup ("++show (length (getActi
   let xunit = actionExecUnit actgrp
       task  = taskForActions xunit
   taskRegisterThreads task (forM (getActionList actgrp) (forkExecAction (actionExecUnit actgrp)))
-  taskWaitThreadLoop task
+  taskWaitThreadLoop task >>= liftIO . evaluate
 
 -- | This is the most important algorithm of the Dao system, in that it matches strings to all
 -- rule-patterns in the program that is associated with the 'Dao.Object.ExecUnit', and it dispatches
@@ -1427,11 +1431,11 @@ execInputStringsLoop xunit = dStack xloc "execInputStringsLoop" $ do
         Nothing    -> return ()
         Just instr -> dStack xloc ("execInputString "++show instr) $ do
           dStack xloc "(2) Run \"BEGIN\" scripts." $
-            waitAll (return (getBeginEndScripts preExec xunit))
+            waitAll (return (getBeginEndScripts preExec xunit)) >>= liftIO . evaluate
           dStack xloc "(3) Run 'execPatternMatchExecutable' for every matching item." $
-            waitAll (makeActionsForQuery instr xunit)
+            waitAll (makeActionsForQuery instr xunit) >>= liftIO . evaluate
           dStack xloc "(4) Run \"END\" scripts." $
-            waitAll (return (getBeginEndScripts postExec xunit))
+            waitAll (return (getBeginEndScripts postExec xunit)) >>= liftIO . evaluate
           dMessage xloc "(5) Run the next string."
           loop
     waitAll getActionGroup = getActionGroup >>= execActionGroup
@@ -1466,7 +1470,7 @@ makeActionsForQuery instr xunit = dStack xloc "makeActionsForQuery" $ do
         ActionGroup
         { actionExecUnit = xunit
         , getActionList = flip concatMap (matchTree eq tree tox) $ \ (patn, mtch, execs) ->
-            flip map execs $ \exec ->
+            flip map execs $ \exec -> seq exec $! seq instr $! seq patn $! seq mtch $!
               Action
               { actionQuery      = Just instr
               , actionPattern    = Just patn
@@ -1571,10 +1575,10 @@ selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> ca
 evalScriptString :: ExecUnit -> String -> Run ()
 evalScriptString xunit instr = dStack xloc "evalScriptString" $
   void $ flip runExec xunit $ nestedExecStack T.Void $ execScriptBlock $
-  case fst (runParser parseInteractiveScript instr) of
-    Backtrack     -> error "cannot parse expression"
-    PFail tok msg -> error ("error: "++uchars msg++show tok)
-    OK expr       -> expr
+    case fst (runParser parseInteractiveScript instr) of
+      Backtrack     -> error "cannot parse expression"
+      PFail tok msg -> error ("error: "++uchars msg++show tok)
+      OK expr       -> expr
 
 ----------------------------------------------------------------------------------------------------
 -- src/Dao/Files.hs

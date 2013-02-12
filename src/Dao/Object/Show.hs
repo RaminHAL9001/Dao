@@ -196,6 +196,7 @@ showObjectExpr idnc obj = showCom loop idnc obj where
     Equation     left op  right  _ -> showObjectExpr idnc (Com left)
       ++ showCom (\_ -> show) idnc op
       ++ showObjectExpr idnc (Com right)
+    PrefixExpr   op       expr   _ -> show op ++ showObjectExpr idnc expr
     DictExpr     dict c objx     _ -> uchars dict ++ ' ' : showComments c
       ++ "{\n" ++ indent (idnc+1) ++ showCom dictExpr idnc (Com objx) ++ "}"
     ArrayExpr    bnds   elms     _ -> "array "

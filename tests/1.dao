@@ -149,10 +149,13 @@ rule "test index $*" {
 		a = $1[0];
 		b = $1[2];
 		c = $1[4];
-		print("a = "+a, "b = "+b, "c = "+c);
+		print("test index (1)");
 		if(a == "one" && b != "two" && c == "three") { print("(a == \"one\" && b != \"two\" && c == \"three\")"); }
+		print("test index (2)");
 		if(!(a != "one" || b != "two") && c == "three") { print("(!(a != \"one\" || b != \"two\") && c == \"three\")"); }
+		print("test index (3)");
 		if(a == "one" && b == "two" || c != "three") { print("(a == \"one\" && b == \"two\" || c != \"three\")"); }
+		print("a = "+a, "b = "+b, "c = "+c);
 	}
 	catch err { print(err); }
 }

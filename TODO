@@ -1,12 +1,9 @@
-Since I have completely gutted the Dao interpreter, implementing an entirely new scheme for
-referencing objects by making references first-class values, and also eliminated the PredicateIO
-scheme of checking function parameters to foreign functions, the old TODO file has had no relevance
-to the development currently underway, so I deleted it and I am starting anew.
-
 TODO:
-*	There is a bug in the indexing operator, and also possibly the dereferencing operator.
-Indexing an item in a list or array (for example: a[0]) throws an exception, indexing an item
-in a list that has first been dereferenced (for example: @a[0]) seems to return nothing.
+*	The "Dao.Object.Show" module is dreadfully out of data, it needs to be cleaned up for all the
+changes made to the abstract syntax tree.
+
+*	There seems to be a bug with the 'Dao.Objcet.IfThenElse' branch of the abstract syntax tree. I
+am having difficulty getting if expressions to evaluate correctly.
 
 *	'Dao.Object.Subroutine' is a data structure representing a function that takes a list of
 'Dao.Object.ObjPat's, and when it is executed, it will resolve all Reference parameters passed to

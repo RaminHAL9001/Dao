@@ -21,11 +21,13 @@
 
 module Dao.Object.Show where
 
+import           Dao.PPrint
 import           Dao.Object
 import           Dao.Pattern
 import qualified Dao.Tree as T
 
 import           Control.Monad
+import           Control.Monad.State
 
 import           Numeric
 
@@ -167,12 +169,13 @@ showReference :: Reference -> String
 showReference o = case o of
   IntRef       o -> '$':show o
   LocalRef     o -> uchars o
-  QTimeRef     o -> "qtime "++showRef o
+  QTimeRef     o -> "qtime "++sh o
   StaticRef    o -> "static "++uchars o
   GlobalRef    o -> showRef o
   ProgramRef p o -> "program("++uchars p++", "++showReference o++")"
   FileRef    f o -> "file("++uchars f++", "++showRef o++")"
-  MetaRef      o -> '$':showReference o
+  MetaRef      o -> "$("++showReference o++")"
+  where { sh = intercalate "." . map uchars }
 
 showObjectExpr :: Int -> Com ObjectExpr -> String
 showObjectExpr idnc obj = showCom loop idnc obj where

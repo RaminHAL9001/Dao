@@ -35,6 +35,7 @@ Dao/Object.hs
 Dao/Object/Parser.hs
 Dao/Object/Pattern.hs
 Dao/Object/Show.hs
+Dao/PPrint.hs
 Dao/Parser.hs
 Dao/Pattern.hs
 Dao/Predicate.hs

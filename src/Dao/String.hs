@@ -139,3 +139,57 @@ upack ax = ustr (UTF8.decode ax)
 nil :: UStr
 nil = ustr ""
 
+----------------------------------------------------------------------------------------------------
+
+-- | Breaks a long list into a list of lists no longer than the specified length.
+breakInto :: Int -> [a] -> [[a]]
+breakInto i bx = if null bx then [] else let (grp, bx') = splitAt i bx in grp : breakInto i bx'
+
+-- | An array mapping 6-bit values to base-64 character symbols
+base64Symbols :: UArray Word Char
+base64Symbols = listArray (0,63) (['A'..'Z']++['a'..'z']++['0'..'9']++"+/")
+
+-- | Encoding arbitrary bytes in a 'Data.ByteString.Lazy.ByteString' to base-64 character symbols
+-- according to RFC 3548.
+b64Encode :: B.ByteString -> [[Char]]
+b64Encode = breakInto 76 . concatMap enc . breakInto 3 . B.unpack where
+  windows = [(0xFC0000, 18), (0x03F000, 12), (0x000FC0, 6), (0x00003F, 0)]
+  enc [] = []
+  enc bx =
+    let len = length bx
+        buf = foldl (\buf b -> shiftL buf 8 .|. fromIntegral b) 0 (take 3 (bx++replicate (3-len) 0))
+    in  take 4 $ (++"==") $ take (len+1) $ flip map windows $ \ (mask, shft) ->
+          base64Symbols ! shiftR (mask.&.buf) shft
+
+-- | An array mapping base-64 character symbols to their 6-bit values.
+base64Values :: UArray Char Int
+base64Values = array ('0', 'z') $ concat $
+  [ zip ['0', 'z'] (repeat 0xAA) -- 0xAA is the undefined value
+  , zip ['A'..'Z']  [0..25]
+  , zip ['a'..'z'] [26..51]
+  , zip ['0'..'9'] [52..61]
+  , [('+', 62), ('/', 63), ('=', 0xFF)] -- 0xFF is the end-of-input value
+  ]
+
+-- | Decoding base-64 character symbols according to RFC 3548 into a string of bytes stored in a
+-- 'Data.ByteString.Lazy.ByteString'. If decoding fails, the invalid character and it's position in
+-- the input string are returned as a pair in a 'Data.Either.Left' value, otherwise the
+-- 'Data.ByteString.Lazy.ByteString' is returned as the 'Data.Either.Right' value.
+b64Decode :: [Char] -> Either (Char, Word64) B.ByteString
+b64Decode = loop 0 [] . breakInto 4 . map (base64Values!) where
+  loop i bx cxx = case cx of
+    []     -> Right (B.pack bx)
+    cx:cxx -> case sum 0 0 i cx of
+      Left  (c, i)   -> Left (c, i)
+      Right (i, bx') -> loop i (bx++bx') cxx
+  sum tk b i cx = case cx of
+    []   -> Right (i, take tk (splitup b))
+    c:cx -> if inRange (bounds base64Values) c
+              then  case base64Values!c of
+                      0xAA -> Left (i, c)
+                      0xFF -> sum  tk    (shiftL b 6)       (i+1) cx
+                      c    -> sum (tk+1) (shiftL b 6 .|. c) (i+1) cx
+              else Left (c, i)
+  splitup b :: Int -> [Word8]
+  splitup b = map fromIntegral [shiftR (b.&.0xFF0000) 16, shiftR (b.&.0xFF00) 8, b.&.0xFF]
+

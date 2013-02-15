@@ -19,8 +19,12 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+
 module Dao.Object.Show where
 
+import           Dao.String
 import           Dao.PPrint
 import           Dao.Object
 import           Dao.Pattern
@@ -47,6 +51,113 @@ import           Data.Word
 import           Data.Ratio
 import           Data.Array.IArray
 import           Data.Time hiding (parseTime)
+
+----------------------------------------------------------------------------------------------------
+
+pObjContainer :: String -> (o -> PPrint ()) -> [o] -> PPrint ()
+pObjContainer label prin ox = pHeader (pString label) "{" "}" (pIndent (pList "," (mapM_ prin ox)))
+
+pMapAssoc :: Show a => (a, Object) -> PPrint ()
+pMapAssoc (a, obj) = pInline (pShow a >> pString " = ") >> pPrint obj
+
+instance PPrintable T_tree where
+  pPrint t = case t of
+    T.Void            -> pString "struct{}"
+    T.Leaf       o    -> pClosure "struct (" ")" (pPrint o)
+    T.Branch       ox -> pClosure "struct {" "}" (branch ox)
+    T.LeafBranch o ox ->
+      pInline (pString "struct (" >> pPrint o >> pString ")" >> pClosure "{" "}" (branch ox))
+    where
+      branch = mapM_ (\ (lbl, obj) -> pMapAssoc (lbl, OTree obj)) . M.assocs
+
+instance PPrintable Pattern where { pPrint = pShow }
+
+instance PPrintable Object where
+  pPrint obj = case obj of
+    ONull            -> pString "null"
+    OTrue            -> pString "true"
+    OInt       o     -> pShow o
+    OWord      o     -> pString (show o++"U")
+    OLong      o     -> pString (show o++"L")
+    OFloat     o     -> pString (show o++"f")
+    ORatio     o     -> pString ("ratio("++show o++")")
+    OComplex  (r:+i) -> pString (show r++'+':show i++"j")
+    ODiffTime  o     -> pShow o
+    OChar      o     -> pShow o
+    OString    o     -> pShow o
+    ORef       o     -> pPrint o
+    OPair     (a, b) -> pClosure "(" ")" (pList "," (pPrint a >> pPrint b))
+    OList      ox    -> pObjContainer "list" pPrint ox
+    OSet       o     -> pObjContainer "set"  pPrint (S.elems o)
+    OArray     o     -> do
+      let (lo, hi) = bounds o
+          showBounds = pClosure "(" ")" (pShow lo >> pString "," >> pShow hi)
+      pHeader (pString "array" >> showBounds) "{" "}" (elems o)
+    ODict      o     -> pObjContainer "dict"   pMapAssoc (M.assocs o)
+    OIntMap    o     -> pObjContainer "intmap" pMapAssoc (I.assocs o)
+    OTree      o     -> pPrint o
+    OPattern   o     -> pPrint o
+    ORule      o     -> pPrint o
+    OScript    o     -> pPrint o
+    OBytes     o     -> pObjContainer "data" "{" "}" pString (b64Encode o)
+
+----------------------------------------------------------------------------------------------------
+
+instance PPrintable Reference where
+  pPrint ref = error "TODO: define PPrintable instance for Reference"
+
+instance PPrintable Comment where
+  pPrint com = do
+    case com of
+      InlineComment  c -> pInline (pString "/* " >> pUStr c >> pString " */")
+      EndlineComment c -> pInline (pString "// " >> pUStr c)
+    pNewLine
+
+pPrintComWith :: (a -> PPrint ()) -> Com a -> PPrint ()
+pPrintComWith prin com = case com of
+  Com          c    -> prin c
+  ComBefore ax c    -> pcom ax >> prin c
+  ComAfter     c bx -> prin c  >> pcom bx
+  ComAround ax c bx -> pcom ax >> prin c >> pcom bx
+  where { pcom = mapM_ pPrint }
+
+instance PPrintable a => PPrintable (Com a) where { pPrint = pPrintComWith pPrint }
+
+instance PPrintable Rule where
+  pPrint rule = do
+    let r = rulePattern rule
+    case unComment r of
+      []  -> pString "rule()" 
+      [a] -> pInline (pString "rule " >> pPrint a)
+      ax  -> pPrintComWith (pClosure "rule (" ")" . pIndent . pList "," . mapM_ pPrint)
+    pPrint (ruleAction rule)
+
+instance PPrintable Subroutine where
+  pPrint s = error "TODO: define PPrintable instance for Subroutine"
+
+instance PPrintable ScriptExpr where
+  EvalObject   objXp coms                    _ -> undefined
+  IfThenElse   com objXp cxcScrpXp cxcScrpXp _ -> undefined
+  TryCatch     cxcScrpXp cUStr     xcScrpXp  _ -> undefined
+  ForLoop      cNm       cObjXp    xcScrpXp  _ -> undefined
+  ContinueExpr bool      coms      cObjXp    _ -> undefined
+  ReturnExpr   bool                cObjXp    _ -> undefined
+  WithDoc      cObjXp              xcScrpXp  _ -> undefined
+
+instance PPrintable ObjectExpr where
+  VoidExpr -- ^ Not a language construct, but used where an object expression is optional.
+  Literal      o                         _ -> undefined
+  AssignExpr   objXp    comUpdOp objXp   _ -> undefined
+  Equation     objXp    comAriOp objXp   _ -> undefined
+  PrefixExpr   ariOp    c_ObjXp          _ -> undefined
+  ParenExpr    bool     c_ObjXp          _ -> undefined
+  ArraySubExpr objXp    coms     c_ObjXp _ -> undefined
+  FuncCall     nm       coms     xcObjXp _ -> undefined
+  DictExpr     dict     coms     xcObjXp _ -> undefined
+  ArrayExpr    cxcObjXp xcObjXp          _ -> undefined
+  StructExpr   cObjXp   xcObjXp          _ -> undefined
+  LambdaCall   cObjXp   xcObjXp          _ -> undefined
+  LambdaExpr   ccNm     xcObjXp          _ -> undefined
 
 ----------------------------------------------------------------------------------------------------
 

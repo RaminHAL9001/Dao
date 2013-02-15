@@ -87,10 +87,12 @@ pEvalState fn = execState fn initPPrintState
 instance Show PPrintState where { show = showPPrintState 80 "    " }
 instance Show (PPrint ()) where { show p = show (execState p initPPrintState) }
 
--- | A 'Control.Monad.State.State'ful pretty printer monad.
-type PPrint a = State PPrintState a
+----------------------------------------------------------------------------------------------------
 
 class PPrintable a where { pPrint :: a -> PPrint () }
+
+-- | A 'Control.Monad.State.State'ful pretty printer monad.
+type PPrint a = State PPrintState a
 
 -- not for export. Places a 'PPrintItem' onto the stack within the 'PPrintState'.
 pPush :: PPrintItem -> PPrint ()
@@ -119,6 +121,10 @@ pUStr = pPush . PPrintString
 pString :: String -> PPrint ()
 pString = pUStr . ustr
 
+-- | Print any value that instantiates 'Prelude.Show'.
+pShow :: Show a => a -> PPrint ()
+pShow = pString . show
+
 -- | Shortcut for @('pPrint' . 'Data.List.concat')@
 pConcat :: [String] -> PPrint ()
 pConcat = pString . concat
@@ -139,20 +145,13 @@ pList sep = pSubList (PPrintList (ustr sep))
 pClosure :: String -> String -> PPrint () -> PPrint ()
 pClosure open close = pSubList (PPrintClosure (ustr open) (ustr close))
 
+-- | A commonly used pattern, for example "list {a, b, c}", could be constructed by passing to this
+-- function @('pString' "list")@, then the open and close brackets, then @('pList' "," items)@.
+pHeader :: PPrint () -> String -> String -> PPrint () -> PPrint ()
+pHeader header opn clo middle =
+  pInline (header >> pString opn) >> pIndent middle >> pNewLine >> pString clo
+
 ----------------------------------------------------------------------------------------------------
-
--- | Given a list of strings, each prefixed with an indentation count, and an indentation string,
--- concatenate all strings into a one big string, with each string being indented and on it's own
--- line.
-linesToString :: String -> [(Int, String)] -> String
-linesToString indentStr = concatMap $ \ (indentCount, string) ->
-  concat (replicate indentCount indentStr) ++ string ++ "\n"
-
--- Given an indentation string and a maximum width value, construct a string from the 'PPrintState'.
--- The maximum width value is used to call 'linesFromPPrintState', and the indentation string is
--- used to call 'linesToString'.
-showPPrintState :: Int -> String -> PPrintState -> String
-showPPrintState maxWidth indentStr ps = linesToString indentStr (linesFromPPrintState maxWidth ps)
 
 -- not for export
 data Printer
@@ -241,4 +240,17 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintBlock ps)) 
       , printerOut = printerOut st ++ [(printerTab st, printerCol st, printerBuf st)]
       }
   end = map (\ (a, _, b) -> (a, chomp b)) . printerOut
+
+-- | Given a list of strings, each prefixed with an indentation count, and an indentation string,
+-- concatenate all strings into a one big string, with each string being indented and on it's own
+-- line.
+linesToString :: String -> [(Int, String)] -> String
+linesToString indentStr = concatMap $ \ (indentCount, string) ->
+  concat (replicate indentCount indentStr) ++ string ++ "\n"
+
+-- Given an indentation string and a maximum width value, construct a string from the 'PPrintState'.
+-- The maximum width value is used to call 'linesFromPPrintState', and the indentation string is
+-- used to call 'linesToString'.
+showPPrintState :: Int -> String -> PPrintState -> String
+showPPrintState maxWidth indentStr ps = linesToString indentStr (linesFromPPrintState maxWidth ps)
 

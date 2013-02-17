@@ -28,6 +28,7 @@ import           Control.Monad
 import           Data.Typeable
 import           Data.Binary
 import           Data.Bits
+import           Data.Array.Unboxed
 import qualified Data.ByteString.Lazy.UTF8 as U
 import qualified Data.ByteString.Lazy      as B
 import qualified Codec.Binary.UTF8.String  as UTF8
@@ -176,8 +177,8 @@ base64Values = array ('0', 'z') $ concat $
 -- the input string are returned as a pair in a 'Data.Either.Left' value, otherwise the
 -- 'Data.ByteString.Lazy.ByteString' is returned as the 'Data.Either.Right' value.
 b64Decode :: [Char] -> Either (Char, Word64) B.ByteString
-b64Decode = loop 0 [] . breakInto 4 . map (base64Values!) where
-  loop i bx cxx = case cx of
+b64Decode = loop 0 [] . breakInto 4 where
+  loop i bx cxx = case cxx of
     []     -> Right (B.pack bx)
     cx:cxx -> case sum 0 0 i cx of
       Left  (c, i)   -> Left (c, i)
@@ -186,10 +187,9 @@ b64Decode = loop 0 [] . breakInto 4 . map (base64Values!) where
     []   -> Right (i, take tk (splitup b))
     c:cx -> if inRange (bounds base64Values) c
               then  case base64Values!c of
-                      0xAA -> Left (i, c)
+                      0xAA -> Left (c, i)
                       0xFF -> sum  tk    (shiftL b 6)       (i+1) cx
                       c    -> sum (tk+1) (shiftL b 6 .|. c) (i+1) cx
               else Left (c, i)
-  splitup b :: Int -> [Word8]
   splitup b = map fromIntegral [shiftR (b.&.0xFF0000) 16, shiftR (b.&.0xFF00) 8, b.&.0xFF]
 

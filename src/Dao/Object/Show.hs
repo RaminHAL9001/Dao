@@ -54,8 +54,10 @@ import           Data.Time hiding (parseTime)
 
 ----------------------------------------------------------------------------------------------------
 
-pObjContainer :: String -> (o -> PPrint ()) -> [o] -> PPrint ()
-pObjContainer label prin ox = pHeader (pString label) "{" "}" (pIndent (pList "," (mapM_ prin ox)))
+-- | A commonly used pattern, like 'pHeader' but the contents of it is always a list of items which
+-- can be pretty-printed by the given @(o -> 'PPrint' ())@ function.
+pContainer :: String -> (o -> PPrint ()) -> [o] -> PPrint ()
+pContainer label prin ox = pHeader (pString label) "{" "}" (pIndent (pList "," (mapM_ prin ox)))
 
 pMapAssoc :: Show a => (a, Object) -> PPrint ()
 pMapAssoc (a, obj) = pInline (pShow a >> pString " = ") >> pPrint obj
@@ -87,31 +89,45 @@ instance PPrintable Object where
     OString    o     -> pShow o
     ORef       o     -> pPrint o
     OPair     (a, b) -> pClosure "(" ")" (pList "," (pPrint a >> pPrint b))
-    OList      ox    -> pObjContainer "list" pPrint ox
-    OSet       o     -> pObjContainer "set"  pPrint (S.elems o)
+    OList      ox    -> pContainer "list" pPrint ox
+    OSet       o     -> pContainer "set"  pPrint (S.elems o)
     OArray     o     -> do
-      let (lo, hi) = bounds o
+      let (lo, hi)   = bounds o
           showBounds = pClosure "(" ")" (pShow lo >> pString "," >> pShow hi)
-      pHeader (pString "array" >> showBounds) "{" "}" (elems o)
-    ODict      o     -> pObjContainer "dict"   pMapAssoc (M.assocs o)
-    OIntMap    o     -> pObjContainer "intmap" pMapAssoc (I.assocs o)
+      pHeader (pString "array" >> showBounds) "{" "}" (pList ", " (mapM_ pPrint (elems o)))
+    ODict      o     -> pContainer "dict"   pMapAssoc (M.assocs o)
+    OIntMap    o     -> pContainer "intmap" pMapAssoc (I.assocs o)
     OTree      o     -> pPrint o
     OPattern   o     -> pPrint o
     ORule      o     -> pPrint o
     OScript    o     -> pPrint o
-    OBytes     o     -> pObjContainer "data" "{" "}" pString (b64Encode o)
+    OBytes     o     -> pString "data {" >> pIndent (mapM_ pString (b64Encode o)) >> pString "}"
 
 ----------------------------------------------------------------------------------------------------
 
 instance PPrintable Reference where
-  pPrint ref = error "TODO: define PPrintable instance for Reference"
+  pPrint ref = case ref of
+    IntRef     w      -> pString ('$' : show w)
+    LocalRef   nm     -> pUStr nm
+    StaticRef  nm     -> pInline (pString "static " >> pRef [nm])
+    QTimeRef   rx     -> pInline (pString "qtime " >> pRef rx)
+    GlobalRef  rx     -> pRef rx
+    ProgramRef nm ref -> pInline (pString ("program("++show nm++", ") >> pPrint ref >> pString ")")
+    FileRef    p   rx -> pInline (pString ("file("++show p++", ") >> pRef rx >> pString ")")
+    Subscript  rx   o -> pInline (pPrint rx >> pString "[" >> pPrint o >> pString "]")
+    MetaRef    ref    -> pInline (pString "$(" >> pPrint ref >> pString ")")
+    where
+      pRef rx = pString (intercalate "." (map prin rx))
+      prin r  = case uchars r of
+        []                                                      -> "$\"\""
+        r:rx | isAlpha r && (null rx || or (map isAlphaNum rx)) -> r:rx
+        rx                                                      -> '$' : show rx
 
 instance PPrintable Comment where
   pPrint com = do
     case com of
       InlineComment  c -> pInline (pString "/* " >> pUStr c >> pString " */")
-      EndlineComment c -> pInline (pString "// " >> pUStr c)
-    pNewLine
+      EndlineComment c -> pInline (pString "// " >> pUStr c >> pNewLine)
 
 pPrintComWith :: (a -> PPrint ()) -> Com a -> PPrint ()
 pPrintComWith prin com = case com of
@@ -121,43 +137,81 @@ pPrintComWith prin com = case com of
   ComAround ax c bx -> pcom ax >> prin c >> pcom bx
   where { pcom = mapM_ pPrint }
 
+pListOfComs :: PPrintable a => [Com a] -> PPrint ()
+pListOfComs = mapM_ pPrint
+
 instance PPrintable a => PPrintable (Com a) where { pPrint = pPrintComWith pPrint }
 
-instance PPrintable Rule where
+pPrintSubBlock :: [Com ScriptExpr] -> PPrint ()
+pPrintSubBlock = pClosure "{" "}" . pIndent . mapM_ (pPrintComWith (\s -> pPrint s >> pString ";"))
+
+instance PPrintable RuleExpr where
   pPrint rule = do
-    let r = rulePattern rule
-    case unComment r of
+    let pat = rulePattern rule
+    case unComment pat of
       []  -> pString "rule()" 
-      [a] -> pInline (pString "rule " >> pPrint a)
-      ax  -> pPrintComWith (pClosure "rule (" ")" . pIndent . pList "," . mapM_ pPrint)
-    pPrint (ruleAction rule)
+      [_] -> pPrintComWith (\pat -> pInline (pString "rule " >> mapM_ pPrint pat)) pat
+      _   -> pPrintComWith (pClosure "rule (" ")" . pIndent . pList "," . mapM_ pPrint) pat
+    pPrintComWith pPrintSubBlock (ruleAction rule)
 
 instance PPrintable Subroutine where
-  pPrint s = error "TODO: define PPrintable instance for Subroutine"
+  pPrint sub = do
+    pClosure "(" ")" $ pList "," (mapM_ pPrint (argsPattern sub))
+    pPrintSubBlock (subSourceCode sub)
 
 instance PPrintable ScriptExpr where
-  EvalObject   objXp coms                    _ -> undefined
-  IfThenElse   com objXp cxcScrpXp cxcScrpXp _ -> undefined
-  TryCatch     cxcScrpXp cUStr     xcScrpXp  _ -> undefined
-  ForLoop      cNm       cObjXp    xcScrpXp  _ -> undefined
-  ContinueExpr bool      coms      cObjXp    _ -> undefined
-  ReturnExpr   bool                cObjXp    _ -> undefined
-  WithDoc      cObjXp              xcScrpXp  _ -> undefined
+  pPrint expr = case expr of
+    EvalObject   objXp  coms                    _ -> pPrint objXp >> mapM_ pPrint coms
+    IfThenElse   coms   objXp  thenXp  elseXp   _ -> do
+      pString "if"
+      pClosure "(" ")" (pPrint objXp)
+      pClosure "{" "}" (pPrintComWith pListOfComs thenXp)
+      pNewLine
+      case unComment elseXp of
+        []                   -> return ()
+        [p] -> case unComment p of
+          (IfThenElse _ _ _ _ _) -> pString "else " >> pPrintComWith pListOfComs elseXp
+          _                      -> done
+        px                   -> done
+        where { done = pString "else " >> pClosure "{" "}" (pPrintComWith (mapM_ pPrint) elseXp) }
+    TryCatch     cxcScrpXp  cUStr     xcScrpXp  _ -> undefined
+    ForLoop      cNm        cObjXp    xcScrpXp  _ -> undefined
+    ContinueExpr bool       coms      cObjXp    _ -> undefined
+    ReturnExpr   bool                 cObjXp    _ -> undefined
+    WithDoc      cObjXp               xcScrpXp  _ -> undefined
 
 instance PPrintable ObjectExpr where
-  VoidExpr -- ^ Not a language construct, but used where an object expression is optional.
-  Literal      o                         _ -> undefined
-  AssignExpr   objXp    comUpdOp objXp   _ -> undefined
-  Equation     objXp    comAriOp objXp   _ -> undefined
-  PrefixExpr   ariOp    c_ObjXp          _ -> undefined
-  ParenExpr    bool     c_ObjXp          _ -> undefined
-  ArraySubExpr objXp    coms     c_ObjXp _ -> undefined
-  FuncCall     nm       coms     xcObjXp _ -> undefined
-  DictExpr     dict     coms     xcObjXp _ -> undefined
-  ArrayExpr    cxcObjXp xcObjXp          _ -> undefined
-  StructExpr   cObjXp   xcObjXp          _ -> undefined
-  LambdaCall   cObjXp   xcObjXp          _ -> undefined
-  LambdaExpr   ccNm     xcObjXp          _ -> undefined
+  pPrint expr = case expr of
+    VoidExpr                                 -> return ()
+    Literal      o                         _ -> undefined
+    AssignExpr   objXp1   comUpdOp objXp2  _ -> undefined
+    Equation     objXp1   comAriOp objXp2  _ -> undefined
+    PrefixExpr   ariOp    c_ObjXp          _ -> undefined
+    ParenExpr    bool     c_ObjXp          _ -> undefined
+    ArraySubExpr objXp    coms     c_ObjXp _ -> undefined
+    FuncCall     nm       coms     xcObjXp _ -> undefined
+    DictExpr     dict     coms     xcObjXp _ -> undefined
+    ArrayExpr    cxcObjXp xcObjXp          _ -> undefined
+    StructExpr   cObjXp   xcObjXp          _ -> undefined
+    LambdaCall   cObjXp   xcObjXp          _ -> undefined
+    LambdaExpr   ccNm     xcObjXp          _ -> undefined
+
+instance PPrintable ObjPat where
+  pPrint pat = case pat of
+    ObjAnyX                             -> undefined
+    ObjMany                             -> undefined
+    ObjAny1                             -> undefined
+    ObjEQ       o                       -> undefined
+    ObjType     enumSet_TypeID          -> undefined
+    ObjBounded  loRatio        hiRatio  -> undefined
+    ObjList     typeID         oPatx    -> undefined
+    ObjNameSet  objSetOp       sSetName -> undefined
+    ObjIntSet   objSetOp       isIntSet -> undefined
+    ObjElemSet  objSetOp       sSetOPat -> undefined
+    ObjChoice   objSetOp       sSetOPat -> undefined
+    ObjLabel    name           oPat     -> undefined
+    ObjFailIf   ustr           oPat     -> undefined
+    ObjNot                     oPat     -> undefined
 
 ----------------------------------------------------------------------------------------------------
 

@@ -28,6 +28,7 @@ import           Dao.String
 import           Dao.PPrint
 import           Dao.Object
 import           Dao.Pattern
+import           Dao.EnumSet
 import qualified Dao.Tree as T
 
 import           Control.Monad
@@ -57,18 +58,18 @@ import           Data.Time hiding (parseTime)
 -- | A commonly used pattern, like 'pHeader' but the contents of it is always a list of items which
 -- can be pretty-printed by the given @(o -> 'PPrint' ())@ function.
 pContainer :: String -> (o -> PPrint ()) -> [o] -> PPrint ()
-pContainer label prin ox = pHeader (pString label) "{" "}" (pIndent (pList "," (mapM_ prin ox)))
+pContainer label prin ox = pList (pString label) "{ " ", " "}" (mapM_ prin ox)
 
 pMapAssoc :: Show a => (a, Object) -> PPrint ()
-pMapAssoc (a, obj) = pInline (pShow a >> pString " = ") >> pPrint obj
+pMapAssoc (a, obj) = pInline (pShow a >> pString " = " >> pPrint obj)
 
 instance PPrintable T_tree where
   pPrint t = case t of
     T.Void            -> pString "struct{}"
-    T.Leaf       o    -> pClosure "struct (" ")" (pPrint o)
-    T.Branch       ox -> pClosure "struct {" "}" (branch ox)
+    T.Leaf       o    -> pClosure (pString "struct") "(" ")" (pPrint o)
+    T.Branch       ox -> pClosure (pString "struct") "{ " "}" (branch ox)
     T.LeafBranch o ox ->
-      pInline (pString "struct (" >> pPrint o >> pString ")" >> pClosure "{" "}" (branch ox))
+      pClosure (pList (pString "struct") "(" "" ")" (pPrint o)) "{ " "}" (branch ox)
     where
       branch = mapM_ (\ (lbl, obj) -> pMapAssoc (lbl, OTree obj)) . M.assocs
 
@@ -88,27 +89,27 @@ instance PPrintable Object where
     OChar      o     -> pShow o
     OString    o     -> pShow o
     ORef       o     -> pPrint o
-    OPair     (a, b) -> pClosure "(" ")" (pList "," (pPrint a >> pPrint b))
-    OList      ox    -> pContainer "list" pPrint ox
-    OSet       o     -> pContainer "set"  pPrint (S.elems o)
+    OPair     (a, b) -> pList_ "(" ", " ")" (pPrint a >> pPrint b)
+    OList      ox    -> pContainer "list " pPrint ox
+    OSet       o     -> pContainer "set "  pPrint (S.elems o)
     OArray     o     -> do
       let (lo, hi)   = bounds o
-          showBounds = pClosure "(" ")" (pShow lo >> pString "," >> pShow hi)
-      pHeader (pString "array" >> showBounds) "{" "}" (pList ", " (mapM_ pPrint (elems o)))
-    ODict      o     -> pContainer "dict"   pMapAssoc (M.assocs o)
-    OIntMap    o     -> pContainer "intmap" pMapAssoc (I.assocs o)
+          showBounds = pList (pString "array ") "(" ", " ")" (pShow lo >> pShow hi)
+      pList showBounds "{" ", " "}" (mapM_ pPrint (elems o))
+    ODict      o     -> pContainer "dict "   pMapAssoc (M.assocs o)
+    OIntMap    o     -> pContainer "intmap " pMapAssoc (I.assocs o)
     OTree      o     -> pPrint o
     OPattern   o     -> pPrint o
     ORule      o     -> pPrint o
     OScript    o     -> pPrint o
-    OBytes     o     -> pString "data {" >> pIndent (mapM_ pString (b64Encode o)) >> pString "}"
+    OBytes     o     -> pClosure (pString "data ") "{ " "}" (mapM_ pString (b64Encode o))
 
 ----------------------------------------------------------------------------------------------------
 
 instance PPrintable Reference where
   pPrint ref = case ref of
     IntRef     w      -> pString ('$' : show w)
-    LocalRef   nm     -> pUStr nm
+    LocalRef   nm     -> pPrint nm
     StaticRef  nm     -> pInline (pString "static " >> pRef [nm])
     QTimeRef   rx     -> pInline (pString "qtime " >> pRef rx)
     GlobalRef  rx     -> pRef rx
@@ -126,8 +127,8 @@ instance PPrintable Reference where
 instance PPrintable Comment where
   pPrint com = do
     case com of
-      InlineComment  c -> pInline (pString "/* " >> pUStr c >> pString " */")
-      EndlineComment c -> pInline (pString "// " >> pUStr c >> pNewLine)
+      InlineComment  c -> pInline (pString "/* " >> pPrint c >> pString " */")
+      EndlineComment c -> pInline (pString "// " >> pPrint c >> pNewLine)
 
 pPrintComWith :: (a -> PPrint ()) -> Com a -> PPrint ()
 pPrintComWith prin com = case com of
@@ -142,67 +143,105 @@ pListOfComs = mapM_ pPrint
 
 instance PPrintable a => PPrintable (Com a) where { pPrint = pPrintComWith pPrint }
 
-pPrintSubBlock :: [Com ScriptExpr] -> PPrint ()
-pPrintSubBlock = pClosure "{" "}" . pIndent . mapM_ (pPrintComWith (\s -> pPrint s >> pString ";"))
+pPrintSubBlock :: PPrint () -> [Com ScriptExpr] -> PPrint ()
+pPrintSubBlock hdr = pClosure hdr "{" "}" .  mapM_ (pPrintComWith (\s -> pPrint s >> pString ";"))
 
 instance PPrintable RuleExpr where
   pPrint rule = do
     let pat = rulePattern rule
-    case unComment pat of
+    flip pPrintComWith (ruleAction rule) $ pPrintSubBlock $ case unComment pat of
       []  -> pString "rule()" 
       [_] -> pPrintComWith (\pat -> pInline (pString "rule " >> mapM_ pPrint pat)) pat
-      _   -> pPrintComWith (pClosure "rule (" ")" . pIndent . pList "," . mapM_ pPrint) pat
-    pPrintComWith pPrintSubBlock (ruleAction rule)
+      _   -> pPrintComWith (pList (pString "rule") "(" "," ")" . mapM_ pPrint) pat
 
 instance PPrintable Subroutine where
-  pPrint sub = do
-    pClosure "(" ")" $ pList "," (mapM_ pPrint (argsPattern sub))
-    pPrintSubBlock (subSourceCode sub)
+  pPrint sub = flip pPrintSubBlock (subSourceCode sub) $
+    pList_ "(" "," ")" (mapM_ pPrint (argsPattern sub))
 
 instance PPrintable ScriptExpr where
   pPrint expr = case expr of
     EvalObject   objXp  coms                    _ -> pPrint objXp >> mapM_ pPrint coms
     IfThenElse   coms   objXp  thenXp  elseXp   _ -> do
-      pString "if"
-      pClosure "(" ")" (pPrint objXp)
-      pClosure "{" "}" (pPrintComWith pListOfComs thenXp)
-      pNewLine
+      pClosure (pList (pString "if") "(" "" ")" (pPrint objXp)) "{" "}" $
+        pPrintComWith pListOfComs thenXp
       case unComment elseXp of
         []                   -> return ()
         [p] -> case unComment p of
           (IfThenElse _ _ _ _ _) -> pString "else " >> pPrintComWith pListOfComs elseXp
           _                      -> done
         px                   -> done
-        where { done = pString "else " >> pClosure "{" "}" (pPrintComWith (mapM_ pPrint) elseXp) }
-    TryCatch     cxcScrpXp  cUStr     xcScrpXp  _ -> undefined
-    ForLoop      cNm        cObjXp    xcScrpXp  _ -> undefined
-    ContinueExpr bool       coms      cObjXp    _ -> undefined
-    ReturnExpr   bool                 cObjXp    _ -> undefined
-    WithDoc      cObjXp               xcScrpXp  _ -> undefined
+        where { done = pClosure (pString "else ") "{" "}" (pPrintComWith (mapM_ pPrint) elseXp) }
+    TryCatch     cxcScrpXp  cUStr     xcScrpXp  _ -> do
+      pClosure (pString "try ") "{" "}" $
+        pPrintComWith (mapM_ (\p -> pPrint p  >> pString ";")) cxcScrpXp
+      if null xcScrpXp
+        then  return ()
+        else  pPrintSubBlock (pString "catch " >> pPrint cUStr) xcScrpXp
+    ForLoop      cNm        cObjXp    xcScrpXp  _ -> do
+      let hdr = do
+            pString "for "
+            pPrint cNm
+            pString " in "
+            pList_ "(" "" ")" (pPrint cObjXp)
+      pPrintSubBlock hdr xcScrpXp
+    ContinueExpr contin     coms      cObjXp    _ -> pInline $ do
+      pString (if contin then "continue" else "break")
+      mapM_ pPrint coms 
+      case unComment cObjXp of
+        VoidExpr -> return ()
+        _        -> do
+          pString " if "
+          pList_ " (" "" ")" (pPrint cObjXp)
+      pString ";"
+    ReturnExpr   retrn                cObjXp    _ -> do
+      pString (if retrn then "return" else "throw")
+      case unComment cObjXp of
+        VoidExpr -> return ()
+        _        -> pPrint cObjXp
+      pString ";"
+    WithDoc      cObjXp               xcScrpXp  _ ->
+      pPrintSubBlock (pString "with " >> pPrint cObjXp) xcScrpXp
 
 instance PPrintable ObjectExpr where
   pPrint expr = case expr of
     VoidExpr                                 -> return ()
-    Literal      o                         _ -> undefined
-    AssignExpr   objXp1   comUpdOp objXp2  _ -> undefined
-    Equation     objXp1   comAriOp objXp2  _ -> undefined
-    PrefixExpr   ariOp    c_ObjXp          _ -> undefined
-    ParenExpr    bool     c_ObjXp          _ -> undefined
-    ArraySubExpr objXp    coms     c_ObjXp _ -> undefined
-    FuncCall     nm       coms     xcObjXp _ -> undefined
-    DictExpr     dict     coms     xcObjXp _ -> undefined
-    ArrayExpr    cxcObjXp xcObjXp          _ -> undefined
-    StructExpr   cObjXp   xcObjXp          _ -> undefined
-    LambdaCall   cObjXp   xcObjXp          _ -> undefined
-    LambdaExpr   ccNm     xcObjXp          _ -> undefined
+    Literal      o                         _ -> pPrint o
+    AssignExpr   objXp1   comUpdOp objXp2  _ -> pInline $
+      pPrint objXp1 >> pShow comUpdOp >> pPrint objXp2
+    Equation     objXp1   comAriOp objXp2  _ -> pInline $
+      pPrint objXp1 >> pShow comAriOp >> pPrint objXp2
+    PrefixExpr   ariOp    c_ObjXp          _ -> pInline $
+      pShow ariOp >> pList_ "(" "" ")" (pPrint c_ObjXp)
+    ParenExpr    bool     c_ObjXp          _ -> pInline $
+      if bool then  pList_ "(" "" ")" (pPrint c_ObjXp)
+              else  pPrint c_ObjXp
+    ArraySubExpr objXp    coms     c_ObjXp _ -> pInline $
+      pPrint objXp >> mapM_ pPrint coms >> pList_ "[" "" "]" (pPrint c_ObjXp)
+    FuncCall     nm       coms     xcObjXp _ ->
+      pList (pPrint nm >> mapM_ pPrint coms) "(" "," ")" (mapM_ pPrint xcObjXp)
+    DictExpr     dict     coms     xcObjXp _ ->
+      pList (pPrint dict >> mapM_ pPrint coms) " {" "," "}" (mapM_ pPrint xcObjXp)
+    ArrayExpr    cxcObjXp xcObjXp          _ -> do
+      let hdr = do
+            pString "array"
+            pPrintComWith (pList_ "(" ", " ")" . mapM_ pPrint) cxcObjXp
+      pList hdr  "{" ", " "}" (mapM_ pPrint xcObjXp)
+    StructExpr   cObjXp   xcObjXp          _ ->
+      pList (pString "struct " >> pPrint cObjXp) "{" ", " "}" (mapM_ pPrint xcObjXp)
+    LambdaCall   cObjXp   xcObjXp          _ ->
+      pList (pString "call " >> pPrint cObjXp) "(" ", " ")" (mapM_ pPrint xcObjXp)
+    LambdaExpr   ccNmx    xcObjXp          _ -> do
+      let hdr = pString "call " >> pPrintComWith (pList_ "(" ", " ")" . mapM_ pPrint) ccNmx
+      pPrintSubBlock hdr xcObjXp
 
 instance PPrintable ObjPat where
   pPrint pat = case pat of
-    ObjAnyX                             -> undefined
-    ObjMany                             -> undefined
-    ObjAny1                             -> undefined
-    ObjEQ       o                       -> undefined
-    ObjType     enumSet_TypeID          -> undefined
+    ObjAnyX                             -> pString "some"
+    ObjMany                             -> pString "all"
+    ObjAny1                             -> pString "any1"
+    ObjEQ       o                       -> pList (pString "eq") "(" "" ")" (pPrint o)
+    ObjType     enumSet_TypeID          ->
+      pList_ "(" "|" ")" (mapM_ pPrint (filter (setMember enumSet_TypeID) [NullType .. BytesType]))
     ObjBounded  loRatio        hiRatio  -> undefined
     ObjList     typeID         oPatx    -> undefined
     ObjNameSet  objSetOp       sSetName -> undefined
@@ -212,6 +251,34 @@ instance PPrintable ObjPat where
     ObjLabel    name           oPat     -> undefined
     ObjFailIf   ustr           oPat     -> undefined
     ObjNot                     oPat     -> undefined
+
+instance PPrintable TypeID where
+  pPrint t = pString $ case t of
+    NullType     -> "null"
+    TrueType     -> "true"
+    TypeType     -> "type"
+    IntType      -> "int"
+    WordType     -> "word"
+    DiffTimeType -> "difftime"
+    FloatType    -> "float"
+    LongType     -> "long"
+    RatioType    -> "ratio"
+    ComplexType  -> "complex"
+    TimeType     -> "time"
+    CharType     -> "char"
+    StringType   -> "string"
+    PairType     -> "pair"
+    RefType      -> "ref"
+    ListType     -> "list"
+    SetType      -> "set"
+    ArrayType    -> "array"
+    IntMapType   -> "intmap"
+    DictType     -> "dict"
+    TreeType     -> "struct"
+    PatternType  -> "strpat"
+    ScriptType   -> "script"
+    RuleType     -> "rule"
+    BytesType    -> "data"
 
 ----------------------------------------------------------------------------------------------------
 

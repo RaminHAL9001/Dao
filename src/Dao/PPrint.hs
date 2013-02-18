@@ -155,6 +155,11 @@ pList header open sep close items = pPush $
   , pPrintItems  = pEval items
   }
 
+-- | Like 'pList' but there is no need to pass the first @'PPrint' ()@ header parameter, this
+-- parameter is set to @'Prelude.return' ()@.
+pList_ :: String -> String -> String -> PPrint () -> PPrint ()
+pList_ = pList (return ())
+
 pClosure :: PPrint () -> String -> String -> PPrint () -> PPrint ()
 pClosure header open close items = pPush $
   PPrintClosure

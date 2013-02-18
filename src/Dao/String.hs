@@ -164,12 +164,12 @@ b64Encode = breakInto 76 . concatMap enc . breakInto 3 . B.unpack where
 
 -- | An array mapping base-64 character symbols to their 6-bit values.
 base64Values :: UArray Char Int
-base64Values = array ('0', 'z') $ concat $
-  [ zip ['0', 'z'] (repeat 0xAA) -- 0xAA is the undefined value
+base64Values = array ('+', 'z') $ concat $
+  [ zip ['+', 'z'] (repeat 0xAAAAAAA) -- 0xAAAAAAA is the undefined value
   , zip ['A'..'Z']  [0..25]
   , zip ['a'..'z'] [26..51]
   , zip ['0'..'9'] [52..61]
-  , [('+', 62), ('/', 63), ('=', 0xFF)] -- 0xFF is the end-of-input value
+  , [('+', 62), ('/', 63), ('=', 0xFFFFFFF)] -- 0xFFFFFFF is the end-of-input value
   ]
 
 -- | Decoding base-64 character symbols according to RFC 3548 into a string of bytes stored in a
@@ -177,19 +177,19 @@ base64Values = array ('0', 'z') $ concat $
 -- the input string are returned as a pair in a 'Data.Either.Left' value, otherwise the
 -- 'Data.ByteString.Lazy.ByteString' is returned as the 'Data.Either.Right' value.
 b64Decode :: [Char] -> Either (Char, Word64) B.ByteString
-b64Decode = loop 0 [] . breakInto 4 where
+b64Decode = loop 0 [] . breakInto 4 . filter (flip notElem " \t\r\n\v\f\0") where
   loop i bx cxx = case cxx of
     []     -> Right (B.pack bx)
     cx:cxx -> case sum 0 0 i cx of
       Left  (c, i)   -> Left (c, i)
       Right (i, bx') -> loop i (bx++bx') cxx
   sum tk b i cx = case cx of
-    []   -> Right (i, take tk (splitup b))
+    []   -> Right (i, take (3-tk) (splitup b))
     c:cx -> if inRange (bounds base64Values) c
               then  case base64Values!c of
-                      0xAA -> Left (c, i)
-                      0xFF -> sum  tk    (shiftL b 6)       (i+1) cx
-                      c    -> sum (tk+1) (shiftL b 6 .|. c) (i+1) cx
+                      0xAAAAAAA -> Left (c, i)
+                      0xFFFFFFF -> sum (tk+1) (shiftL b 6)       (i+1) cx
+                      c         -> sum  tk    (shiftL b 6 .|. c) (i+1) cx
               else Left (c, i)
   splitup b = map fromIntegral [shiftR (b.&.0xFF0000) 16, shiftR (b.&.0xFF00) 8, b.&.0xFF]
 

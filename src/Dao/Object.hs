@@ -517,7 +517,7 @@ data ObjectExpr
   | AssignExpr   ObjectExpr  (Com UpdateOp)  ObjectExpr   Location
   | Equation     ObjectExpr  (Com ArithOp)   ObjectExpr   Location
   | PrefixExpr   ArithOp     (Com ObjectExpr)             Location
-  | ParenExpr    Bool                   (Com ObjectExpr)  Location
+  | ParenExpr    Bool                   (Com ObjectExpr)  Location -- ^ Bool is True if the parenthases really exist.
   | ArraySubExpr ObjectExpr  [Comment]  (Com ObjectExpr)  Location
   | FuncCall     Name        [Comment]  [Com ObjectExpr]  Location
   | DictExpr     Name        [Comment]  [Com ObjectExpr]  Location
@@ -525,7 +525,6 @@ data ObjectExpr
   | StructExpr   (Com ObjectExpr)       [Com ObjectExpr]  Location
   | LambdaCall   (Com ObjectExpr)       [Com ObjectExpr]  Location
   | LambdaExpr   (Com [Com Name])       [Com ScriptExpr]  Location
-    -- ^ Bool is True if the parenthases really exist.
   deriving (Eq, Ord, Show, Typeable)
 
 instance HasLocation ObjectExpr where

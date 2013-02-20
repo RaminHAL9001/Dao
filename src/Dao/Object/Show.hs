@@ -43,7 +43,7 @@ import qualified Data.Map as M
 import qualified Data.IntMap as I
 import qualified Data.Set as S
 import qualified Data.ByteString           as Byt (pack, unpack, take, drop, null)
-import qualified Data.ByteString.Base64    as B64 (encode)
+-- import qualified Data.ByteString.Base64    as B64 (encode)
 import qualified Data.ByteString.Lazy      as B
 import qualified Data.ByteString.Lazy.UTF8 as U
 import           Data.Int
@@ -283,7 +283,7 @@ instance PPrintable TypeID where
 ----------------------------------------------------------------------------------------------------
 
 indent :: Int -> String
-indent idnc = take idnc (repeat '\t')
+indent = flip replicate '\t'
 
 showRef :: [Name] -> String
 showRef nmx = "${" ++ intercalate "." (map str nmx) ++ "}" where
@@ -320,11 +320,8 @@ showObj idnc o = case o of
   OPattern  o -> "pattern "++show o
   ORule     o -> showRule idnc o
   OScript   o -> showScript idnc Nothing o
-  OBytes    o -> "base64 " ++ if B.null o then "{}" else "{\n"++base64++indent idnc++"}" where
-    base64 = block (B64.encode (Byt.pack (B.unpack o)))
-    block o = if Byt.null o then "\n" else indent (idnc+1)
-      ++ map (chr . fromIntegral) (Byt.unpack (Byt.take 72 o))
-      ++ '\n':block (Byt.drop 72 o)
+  OBytes    o -> "data " ++
+    '{' : unlines (map ((indent (idnc+1))++) (b64Encode o)) ++ '\n' : indent idnc ++ "}"
   where
     sh lbl o = lbl++" "++show o
     simplelist idnc o = '{':intercalate ", " (map (showObj (idnc+1)) o)++"}" 

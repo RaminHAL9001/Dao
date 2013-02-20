@@ -31,7 +31,7 @@ listfile = grep -v '^[[:space:]]*$(hash).*$$' $1
 ####################################################################################################
 # The default target
 
-default: dao
+default: test
 
 ####################################################################################################
 # The 'edit' target conveniently opens all the files you want to edit in the vim editor.
@@ -101,12 +101,7 @@ enum-set-test:
 # try, just start writing a new source file, make a target for it here, and modify the 'default'
 # target above to point to these targets.
 
-src/Dao/Object/Pattern.o: src/Dao/Object/Pattern.hs src/Dao/Predicate.hs src/Dao/Object.hs
-	$(GHC_MAKE_SRC) Dao.Object.Pattern
-
-src/Dao/Object/Parser.o: src/Dao/Object.hs src/Dao/Parser.hs src/Dao/Object/Parser.hs
-	$(GHC_MAKE_SRC) Dao.Object.Parser
-
-src/Dao/Evaluator.o: src/Dao/Object.hs src/Dao/Evaluator.hs src/Dao/Builtins.hs
-	$(GHC_MAKE_SRC) Dao.Evaluator
+test: src/Dao/String.hs src/Dao/Token.hs \
+  src/Dao/Object.hs src/Dao/Object/Show.hs src/Dao/PPrint.hs tests/pprint.hs
+	$(GHC_MAKE_SRC) tests/pprint.hs -o ./test
 

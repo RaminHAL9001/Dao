@@ -41,8 +41,8 @@ chomp = foldl (\ out (spc, str) -> if null str then "" else out++spc++str) "" . 
     | null   cx = []
     | otherwise = 
          let (spc, more) = span  isSpace cx
-             (str, cx  ) = break isSpace more
-         in  (spc, str ) : spcstr cx
+             (str, cx' ) = break isSpace more
+         in  (spc, str ) : spcstr cx'
 
 ----------------------------------------------------------------------------------------------------
 
@@ -92,7 +92,7 @@ initPPrintState = PPrintState{ pPrintStack = [] }
 
 instance Monoid PPrintState where
   mempty      = initPPrintState
-  mappend a b = PPrintState{ pPrintStack = mappend (pPrintStack a) (pPrintStack b) }
+  mappend a b = PPrintState{ pPrintStack = pPrintStack a ++ pPrintStack b }
 
 -- | Evaluate a 'PPrint' monadic function to it's intermediate 'PPrintState'.
 pEvalState :: PPrint () -> PPrintState
@@ -225,14 +225,10 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) 
               ok <- tryInline (mapM_ prin hdr >> ustring opn)
               if not ok
                 then return False
-                else do
-                  newline >> setIndent (+1) >> contents
-                  setIndent (+(0-1)) >> newline >> ustring clo
-                  return True
-        , do  printAcross (hdr++[PPrintString opn]) >> newline
-              setIndent (+1)
-              printAcross (intercalate [PPrintString sep] (map return px))
-              setIndent (+(0-1))
+                else newline >> indent contents >> newline >> ustring clo >> return True
+        , do  printAcross (hdr++[PPrintString opn])
+              newline
+              indent (printAcross (intercalate [PPrintString sep] (map return px)))
               ustring clo
               return True
         ]
@@ -245,10 +241,7 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) 
                   newSt = mappend origSt st
               if null (printerOut st) && printerCol newSt <= maxWidth
                 then put newSt >> loop px
-                else do
-                  newline >> setIndent (+1)
-                  printAcross (p:px) >> setIndent (+(0-1))
-                  newline >> return True
+                else newline >> indent (printAcross (p:px)) >> newline >> return True
       tryEach [tryInline (mapM_ prin px), newline >> tryInline (mapM_ prin px), newline >> loop px]
     PPrintClosure hdr opn clo px -> do
       let gt3 = case px of
@@ -256,9 +249,9 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) 
             _           -> False
           content = do
             printAcross (hdr++[PPrintString opn])
-            newline >> setIndent (+1)
-            mapM_ (\p -> prin p >> newline) px
-            setIndent (+(0-1)) >> ustring clo
+            newline
+            indent (mapM_ (\p -> prin p >> newline) px)
+            ustring clo
       if gt3
         then  content
         else  tryEach $
@@ -267,7 +260,11 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) 
                 ]
   ustring p = modify $ \st ->
     st{ printerCol = printerCol st + ulength p, printerBuf = printerBuf st ++ uchars p }
-  setIndent f = modify $ \st -> st{ printerTab = f (printerTab st) }
+  indent indentedPrinter = do
+    tab <- gets printerTab
+    modify (\st -> st{printerTab = tab+1})
+    indentedPrinter
+    modify (\st -> st{printerTab = tab})
   printAcross px = case px of
     []   -> return ()
     p:px -> do
@@ -289,9 +286,9 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) 
   newline = modify $ \st ->
     st{ printerCol = 0
       , printerBuf = ""
-      , printerOut = printerOut st ++ [(printerTab st, printerCol st, printerBuf st)]
+      , printerOut = printerOut st ++ [printerOutputTripple st]
       }
-  end = map (\ (a, _, b) -> (a, chomp b)) . printerOut
+  end st = map (\ (a, _, b) -> (a, chomp b)) (printerOut st ++ [printerOutputTripple st])
 
 -- | Given a list of strings, each prefixed with an indentation count, and an indentation string,
 -- concatenate all strings into a one big string, with each string being indented and on it's own

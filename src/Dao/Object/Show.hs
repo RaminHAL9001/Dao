@@ -202,14 +202,17 @@ instance PPrintable ScriptExpr where
     WithDoc      cObjXp               xcScrpXp  _ ->
       pPrintSubBlock (pString "with " >> pPrint cObjXp) xcScrpXp
 
+instance PPrintable ArithOp  where { pPrint = pShow }
+instance PPrintable UpdateOp where { pPrint = pShow }
+
 instance PPrintable ObjectExpr where
   pPrint expr = case expr of
     VoidExpr                                 -> return ()
     Literal      o                         _ -> pPrint o
     AssignExpr   objXp1   comUpdOp objXp2  _ -> pInline $
-      pPrint objXp1 >> pShow comUpdOp >> pPrint objXp2
+      pPrint objXp1 >> pPrint comUpdOp >> pPrint objXp2
     Equation     objXp1   comAriOp objXp2  _ -> pInline $
-      pPrint objXp1 >> pShow comAriOp >> pPrint objXp2
+      pPrint objXp1 >> pPrint comAriOp >> pPrint objXp2
     PrefixExpr   ariOp    c_ObjXp          _ -> pInline $
       pShow ariOp >> pList_ "(" "" ")" (pPrint c_ObjXp)
     ParenExpr    bool     c_ObjXp          _ -> pInline $

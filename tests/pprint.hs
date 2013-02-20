@@ -57,5 +57,5 @@ ifExpr i =
     )
     LocationUnknown
 
-main = print $ pEvalState $ pPrint (ustr "Hello, world!")
+main = print $ pEvalState $ pPrint (ifExpr 3)
 

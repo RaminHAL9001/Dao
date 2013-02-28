@@ -178,6 +178,8 @@ data Printer
     , printerCol :: Int -- how many non-indentation characters are in the buffer
     , printerOut :: [(Int, Int, String)] -- all lines before the current line in the buffer
     , printerBuf :: String -- buffers the current line
+    , forcedNewLine :: Bool -- set if a newline is forced, like if an end-line comment was printed.
+    , inliningNow :: Bool -- set if we are inside of a 'PPrintInline' block.
     }
 
 initPrinter :: Printer
@@ -187,6 +189,8 @@ initPrinter =
   , printerCol = 0
   , printerOut = []
   , printerBuf = ""
+  , inliningNow = False
+  , forcedNewLine = False
   }
 
 printerOutputTripple :: Printer -> (Int, Int, String)
@@ -201,13 +205,9 @@ instance Monoid Printer where
       , printerCol = printerCol origSt +  printerCol st
       }
     (_, col, buf):out ->
-      Printer
-      { printerBuf = printerBuf st
-      , printerCol = printerCol st
-      , printerTab = printerTab st
-      , printerOut = printerOut origSt ++
-          (printerTab origSt, printerCol origSt + col, printerBuf origSt ++ buf) : out
-      }
+      st{ printerOut = printerOut origSt ++
+            (printerTab origSt, printerCol origSt + col, printerBuf origSt ++ buf) : out
+        }
 
 -- | A kind of pre-conversion, the 'PPrintState' is broken into a list of strings, each string
 -- preceeded by it's indentation factor.
@@ -215,79 +215,134 @@ linesFromPPrintState :: Int -> PPrintState -> [(Int, String)]
 linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) mempty) where
   prin :: PPrintItem -> State Printer ()
   prin p = case p of
-    PNewLine        -> newline
+    PNewLine        -> newline >> modify (\st -> st{forcedNewLine=True})
     PPrintString p  -> ustring p
     PPrintList   hdr opn sep clo px -> do
-      let contents = sequence_ (intercalate [ustring sep] (map (return . prin) px))
-      tryEach $
-        [ tryInline (mapM_ prin hdr >> ustring opn >> contents >> ustring clo)
-        , do  noDupNewline
-              ok <- tryInline (mapM_ prin hdr >> ustring opn)
-              if not ok
-                then return False
-                else newline >> indent contents >> newline >> ustring clo >> return True
-        , do  printAcross (hdr++[PPrintString opn])
-              newline
-              indent (printAcross (intercalate [PPrintString sep] (map return px)))
-              ustring clo
-              return True
-        ]
+      st <- get
+      let curLen  = printerCol st
+          curBuf  = printerBuf st
+          hdrSt   = execState (mapM_ prin (hdr++[PPrintString opn])) $
+            st{printerBuf="", printerCol=0, printerOut=[]}
+          hdrLen  = printerCol hdrSt
+          hdrBuf  = printerBuf hdrSt
+          content = printAcross (intercalate [PPrintString sep] (map return px))
+          lstSt   = execState (ustring opn >> content >> ustring clo) (subprint st)
+          lstLen  = printerCol lstSt
+          lstBuf  = printerBuf lstSt
+          toolong = newline >> mapM_ prin (hdr++[PPrintString opn]) >>
+            newline >> indent content >> newline >> ustring clo
+      if null (printerOut hdrSt)
+        then  let hdrLen = printerCol st
+              in  if null (printerOut lstSt)
+                    then  if curLen + hdrLen + lstLen < maxWidth
+                            then  put $ st{ printerBuf = curBuf ++ hdrBuf ++ lstBuf
+                                          , printerCol = curLen + hdrLen + lstLen
+                                          }
+                            else  if hdrLen + lstLen < maxWidth
+                                    then do
+                                      newline
+                                      put $ st{ printerBuf = hdrBuf ++ lstBuf
+                                              , printerCol = hdrLen + lstLen
+                                              }
+                                    else  toolong
+                    else  toolong
+        else  toolong
     PPrintInline px -> do
-      let loop px = case px of
-            []   -> return True
-            p:px -> do
-              origSt <- get
-              let st = execState (prin p) mempty
-                  newSt = mappend origSt st
-              if null (printerOut st) && printerCol newSt <= maxWidth
-                then put newSt >> loop px
-                else newline >> indent (printAcross (p:px)) >> newline >> return True
-      tryEach [tryInline (mapM_ prin px), newline >> tryInline (mapM_ prin px), newline >> loop px]
+      st <- get
+      let trySt = execState (printAcross px) (subprint st)
+      if null (printerOut trySt)
+        then  if printerCol trySt + printerCol st <= maxWidth
+                then  put $ st{ printerCol = printerCol st + printerCol trySt
+                              , printerBuf = printerBuf st ++ printerBuf trySt
+                              }
+                else  put $ st{ printerOut = printerOut st ++
+                                  [printerOutputTripple st, printerOutputTripple trySt]
+                              , printerCol = 0
+                              , printerBuf = ""
+                              }
+        else do
+          let out = printerOut trySt
+              line@(ind, strlen, str) = head out
+              combined =
+                ( printerTab st
+                , printerCol st + printerCol trySt
+                , printerBuf st ++ printerBuf trySt
+                )
+          if strlen + printerCol st < maxWidth
+            then  put $ st{ printerOut = printerOut st ++
+                              combined : tabAll True (tail out) ++
+                                [printerOutputTripple trySt]
+                          }
+            else  put $ st{ printerOut = printerOut st ++ line : tabAll True out }
+          noDupNewLine
     PPrintClosure hdr opn clo px -> do
-      let gt3 = case px of
-            (_:_:_:_:_) -> True
-            _           -> False
-          content = do
+      st <- get
+      let content = do
             printAcross (hdr++[PPrintString opn])
             newline
             indent (mapM_ (\p -> prin p >> newline) px)
             ustring clo
-      if gt3
-        then  content
-        else  tryEach $
-                [ tryInline (mapM_ prin hdr >> ustring opn >> mapM_ prin px >> ustring clo)
-                , content >> return True
-                ]
+          trySt = execState content (subprint st)
+          loop col buf ax = case ax of
+            _  | col>maxWidth   -> noDupNewLine >> content
+            (_, strlen, str):ax -> loop (col+strlen) (buf++str) ax
+            []                  -> do
+              noDupNewLine
+              modify (\st -> st{ printerOut = printerOut st ++ [(printerTab st, col, buf)] })
+      loop 0 "" (printerOut st)
+      noDupNewLine
   ustring p = modify $ \st ->
-    st{ printerCol = printerCol st + ulength p, printerBuf = printerBuf st ++ uchars p }
-  indent indentedPrinter = do
-    tab <- gets printerTab
-    modify (\st -> st{printerTab = tab+1})
-    indentedPrinter
-    modify (\st -> st{printerTab = tab})
-  printAcross px = case px of
-    []   -> return ()
-    p:px -> do
-      let trySt = execState (prin p) mempty
-      st <- get
-      if sumRunsOver st trySt
-        then put (mappend st trySt)
-        else newline >> modify (\st -> mappend st trySt)
-      printAcross px
-  tryInline fn = do
-    let trySt = execState fn mempty
-    st <- get
-    if sumRunsOver st trySt then return False else put (mappend st trySt) >> return True
-  tryEach fnx = case fnx of
-    []     -> return ()
-    fn:fnx -> get >>= \st -> fn >>= \ok -> if ok then return () else put st >> tryEach fnx
-  sumRunsOver st trySt = null (printerOut trySt) && printerCol st + printerCol trySt <= maxWidth
-  noDupNewline = gets printerBuf >>= \buf -> if null buf then return () else newline
+    st{ printerCol = printerCol st + ulength p
+      , printerBuf = printerBuf st ++ uchars p
+      }
+  line fn = fn >> newline
   newline = modify $ \st ->
     st{ printerCol = 0
       , printerBuf = ""
       , printerOut = printerOut st ++ [printerOutputTripple st]
       }
+  indent indentedPrinter = do
+    tab <- gets printerTab
+    modify (\st -> st{printerTab = tab+1})
+    indentedPrinter
+    modify (\st -> st{printerTab = tab})
+  subprint st = st{printerBuf="", printerCol=0, printerOut=[]}
+  printAcross px = case px of
+    []   -> return ()
+    p:px -> do
+      st <- get
+      let trySt = execState (prin p) (subprint st)
+      if sumRunsOver st trySt
+        then put (mappend st trySt)
+        else newline >> modify (\st -> mappend st trySt)
+      printAcross px
+  tryInline fn = do
+    st <- get
+    let trySt = execState fn (st{printerOut=[]})
+        done = put $
+          st{ printerBuf = ""
+            , printerCol = 0
+            , printerOut = printerOut st ++
+                printerOutputTripple st : printerOut trySt ++
+                  [printerOutputTripple trySt]
+            }
+        loop len buf ax = case ax of
+          _  | len > maxWidth -> done
+          []                  -> do
+            put $ st{ printerBuf = ""
+                    , printerCol = 0
+                    , printerOut = printerOut st ++
+                        [(printerTab st, printerCol st + len, printerBuf st ++ buf)]
+                    }
+          (i, strlen, str):ax -> loop (len+strlen) (buf++str) ax
+    if forcedNewLine st then done else loop (printerCol st) (printerBuf st) (printerOut trySt)
+  tabAll alsoTabFinalLine ax = case ax of
+    []                 -> []
+    [(tab, len, str)]  -> if alsoTabFinalLine then [(tab+1, len, str)] else [(tab, len, str)]
+    (tab, len, str):ax -> (tab+1, len, str) : tabAll alsoTabFinalLine ax
+  sumRunsOver st trySt = null (printerOut trySt) && printerCol st + printerCol trySt <= maxWidth
+  noDupNewLine = gets printerBuf >>= \buf -> if null buf then return () else newline
+  dbg str = modify (\st -> st{printerBuf = printerBuf st++" /*(DBG:"++str++")*/ "})
   end st = map (\ (a, _, b) -> (a, chomp b)) (printerOut st ++ [printerOutputTripple st])
 
 -- | Given a list of strings, each prefixed with an indentation count, and an indentation string,

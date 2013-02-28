@@ -209,10 +209,10 @@ instance PPrintable ObjectExpr where
   pPrint expr = case expr of
     VoidExpr                                 -> return ()
     Literal      o                         _ -> pPrint o
-    AssignExpr   objXp1   comUpdOp objXp2  _ -> pInline $
-      pPrint objXp1 >> pPrint comUpdOp >> pPrint objXp2
-    Equation     objXp1   comAriOp objXp2  _ -> pInline $
-      pPrint objXp1 >> pPrint comAriOp >> pPrint objXp2
+    AssignExpr   objXp1  comUpdOp  objXp2  _ -> pInline $
+      pPrint objXp1 >> pPrint comUpdOp >> pPrint objXp2 >> pString "; "
+    Equation     objXp1  comAriOp  objXp2  _ -> pInline $
+      pPrint objXp1 >> pPrint comAriOp >> (seq objXp2 (pPrint objXp2))
     PrefixExpr   ariOp    c_ObjXp          _ -> pInline $
       pShow ariOp >> pList_ "(" "" ")" (pPrint c_ObjXp)
     ParenExpr    bool     c_ObjXp          _ -> pInline $
@@ -220,10 +220,12 @@ instance PPrintable ObjectExpr where
               else  pPrint c_ObjXp
     ArraySubExpr objXp    coms     c_ObjXp _ -> pInline $
       pPrint objXp >> mapM_ pPrint coms >> pList_ "[" "" "]" (pPrint c_ObjXp)
-    FuncCall     nm       coms     xcObjXp _ ->
+    FuncCall     nm       coms     xcObjXp _ -> do
       pList (pPrint nm >> mapM_ pPrint coms) "(" "," ")" (mapM_ pPrint xcObjXp)
-    DictExpr     dict     coms     xcObjXp _ ->
+      pString "; "
+    DictExpr     dict     coms     xcObjXp _ -> do
       pList (pPrint dict >> mapM_ pPrint coms) " {" "," "}" (mapM_ pPrint xcObjXp)
+      pString "; "
     ArrayExpr    cxcObjXp xcObjXp          _ -> do
       let hdr = do
             pString "array"
@@ -231,8 +233,9 @@ instance PPrintable ObjectExpr where
       pList hdr  "{" ", " "}" (mapM_ pPrint xcObjXp)
     StructExpr   cObjXp   xcObjXp          _ ->
       pList (pString "struct " >> pPrint cObjXp) "{" ", " "}" (mapM_ pPrint xcObjXp)
-    LambdaCall   cObjXp   xcObjXp          _ ->
+    LambdaCall   cObjXp   xcObjXp          _ -> do
       pList (pString "call " >> pPrint cObjXp) "(" ", " ")" (mapM_ pPrint xcObjXp)
+      pString "; "
     LambdaExpr   ccNmx    xcObjXp          _ -> do
       let hdr = pString "call " >> pPrintComWith (pList_ "(" ", " ")" . mapM_ pPrint) ccNmx
       pPrintSubBlock hdr xcObjXp

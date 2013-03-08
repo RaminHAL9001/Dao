@@ -53,6 +53,8 @@ import           Data.Ratio
 import           Data.Array.IArray
 import           Data.Time hiding (parseTime)
 
+import Debug.Trace
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A commonly used pattern, like 'pHeader' but the contents of it is always a list of items which

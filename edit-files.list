@@ -3,13 +3,13 @@
 src/Dao/Object.hs
 tests/pprint.hs
 src/Dao/PPrint.hs
-src/Dao/Evaluator.hs
 src/Dao/Object/Parser.hs
 src/Dao/Object/Show.hs
+src/Dao/Parser.hs
+src/Dao/Evaluator.hs
 src/Dao/Object/Math.hs
 src/Dao/Object/Pattern.hs
 src/Dao/Object/Binary.hs
-src/Dao/Parser.hs
 src/Dao/Files.hs
 src/Dao.hs
 src/Dao/Predicate.hs

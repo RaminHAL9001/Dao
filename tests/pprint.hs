@@ -25,6 +25,11 @@ import           Dao.Object.Show
 import           Dao.PPrint
 import           Dao.Token
 
+import           Control.Monad.State
+
+import           Data.List
+import           Data.Monoid
+
 el = EndlineComment . ustr
 il = InlineComment  . ustr
 lu = LocationUnknown
@@ -57,5 +62,37 @@ ifExpr i =
     )
     LocationUnknown
 
-main = print $ pEvalState $ pPrint (ifExpr 3)
+mainIfExpr = print $ pEvalState $ pPrint (ifExpr 3)
+
+testPrinterMAppend = print $
+    mempty
+    { printerOut = [(0, 25, "Spitting out the daemons.")]
+    , printerBuf = "Good times."
+    , printerCol = 11
+    }
+  `mappend`
+    mempty
+    { printerOut = [(0, 13, "Hello, world!")]
+    , printerBuf = "Popping out of holes."
+    , printerCol = 21
+    }
+
+testPrinter item = mapM_ fn [20, 80, 120] where
+  fn maxWidth = putStrLn $ showPPrintState maxWidth "    " $ pEvalState item
+
+samples = pString "Hello, world! " >> pString "Spitting out the daemons. " >> pString "Good times. "
+
+testClosure = testPrinter $ pClosure (pString "begin ") "{ " "}" $ samples
+    
+
+testList = testPrinter $ pList (pString "list ") "{ " ", " " }" $
+  mapM_ pString (words "this is something to test the pList function each word in this list is treated as a list item")
+
+testInline = testPrinter $ pInline $ sequence_ $ intercalate [pString " + "] $ map return $ concat $
+  [ map pString (words "testing the pInline function")
+  , [pClosure (pString "innerClosure() ") "{" "}" samples]
+  , map pString (words "after the closure more words exist")
+  ]
+
+main = testList >> testInline >> testClosure
 

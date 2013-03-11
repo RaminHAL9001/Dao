@@ -50,15 +50,15 @@ ifExpr :: Int -> ScriptExpr
 ifExpr i =
   IfThenElse
     []
-    (Equation (Equation a modu i2 lu) eqeq i0 lu)
+    (ParenExpr True (Com (Equation (Equation a modu i2 lu) eqeq i0 lu)) lu)
     (Com $
       [ ComBefore [el " if the number is even, divide by two"] $
           evalObj (AssignExpr a diveq i2 lu)
       ])
     (Com $
-      [ ComBefore [el "if the number is odd, multiply by three and add one"] $
+      [ ComBefore [el " if the number is odd, multiply by three and add one"] $
           evalObj (AssignExpr a eq (Equation (Equation a mult i3 lu) add i1 lu) lu)
-      ] ++ if i<=0 then [] else [ComBefore [el "then test it again"] (ifExpr (i-1))]
+      ] ++ if i<=0 then [] else [ComBefore [el " then test it again"] (ifExpr (i-1))]
     )
     LocationUnknown
 
@@ -90,9 +90,9 @@ testList = testPrinter $ pList (pString "list ") "{ " ", " " }" $
 
 testInline = testPrinter $ pInline $ sequence_ $ intercalate [pString " + "] $ map return $ concat $
   [ map pString (words "testing the pInline function")
-  , [pClosure (pString "innerClosure() ") "{" "}" samples]
+  , [pClosure (pString "innerClosure() ") "{ " "}" samples]
   , map pString (words "after the closure more words exist")
   ]
 
-main = testList >> testInline >> testClosure
+main = testList >> testInline >> testClosure >> mainIfExpr
 

@@ -31,7 +31,7 @@ listfile = grep -v '^[[:space:]]*$(hash).*$$' $1
 ####################################################################################################
 # The default target
 
-default: test
+default: dao
 
 ####################################################################################################
 # The 'edit' target conveniently opens all the files you want to edit in the vim editor.

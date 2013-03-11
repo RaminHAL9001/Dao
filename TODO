@@ -2,19 +2,29 @@ TODO:
 *	The "Dao.Object.Show" module is dreadfully out of data, it needs to be cleaned up for all the
 changes made to the abstract syntax tree.
 
-*	There seems to be a bug with the 'Dao.Objcet.IfThenElse' branch of the abstract syntax tree. I
-am having difficulty getting if expressions to evaluate correctly.
-
 *	'Dao.Object.Subroutine' is a data structure representing a function that takes a list of
 'Dao.Object.ObjPat's, and when it is executed, it will resolve all Reference parameters passed to
 them to create a list of parameters, match this list of parameter arguments to this list of
 'Dao.Object.ObjPat's, then run the associated 'Dao.Object.Executable'.
 	It might be a good idea to allow other kinds of 'Subroutine's, including "pure" subroutines that
-simply evaluate to (CEError Object), functions take a list of Objects that are not automatically
+simply evaluate to (CEError Object), functions take a list of Objects that do not automatically
 resolve references passed to them. Since built-in operators are pure subroutines, an API for
 evaluating these operator functions could be constructed to evaluate both built-in operators and
 custom native functions. Also, right now the evaluator checks if an operator is an assignment or
 update operator, and treats these as special cases. However, if there is a "pure" subroutine that
 takes parameters that are not resolved automatically, the update operators can be defined as
 object instances of this type of "pure" subroutine.
+
+SOLVED:
+
+*	There seems to be a bug with the 'Dao.Objcet.IfThenElse' branch of the abstract syntax tree. I
+am having difficulty getting if expressions to evaluate correctly.
+	For the 'Dao.Object.ObjectExpr' instantiation of 'HasLocation', I forgot to write a pattern for
+	the 'Dao.Object.PrefixExpr' data constructor in the case statement, and Haskell found a way to
+	evaluate the 'Dao.Object.ObjectExpr' without evaluating that case statement which involved
+	entirely ignoring the evaluation of the Dao script "if" statement, which is not what I expected
+	to happen. The correct behavior (what I was expecting) was evaluation of any
+	'Dao.Object.ObjectExpr' would necessarily evaluate the entire expression, however it seems I
+	have not defined my progam in such a way that this will happen. I might need to make the
+	evaluator a bit more strict.
 

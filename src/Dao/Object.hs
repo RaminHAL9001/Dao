@@ -533,6 +533,7 @@ instance HasLocation ObjectExpr where
     Literal      _     o -> o
     AssignExpr   _ _ _ o -> o
     Equation     _ _ _ o -> o
+    PrefixExpr   _ _   o -> o
     ParenExpr    _ _   o -> o
     ArraySubExpr _ _ _ o -> o
     FuncCall     _ _ _ o -> o
@@ -546,6 +547,7 @@ instance HasLocation ObjectExpr where
     Literal      a     _ -> Literal      a     loc
     AssignExpr   a b c _ -> AssignExpr   a b c loc
     Equation     a b c _ -> Equation     a b c loc
+    PrefixExpr   a b   _ -> PrefixExpr   a b   loc
     ParenExpr    a b   _ -> ParenExpr    a b   loc
     ArraySubExpr a b c _ -> ArraySubExpr a b c loc
     FuncCall     a b c _ -> FuncCall     a b c loc

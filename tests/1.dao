@@ -85,10 +85,10 @@ TAKEDOWN {
 	print("test module takedown 1");
 }
 
-rule "list files" { print(listDBs()); }
-rule "load test file" { readDB("/home/ramin/main/dao/tests/1.idea"); print("Loaded database."); }
-rule "save test file" { writeDB("/home/ramin/main/dao/tests/1.idea"); print("Saved database."); }
-rule "close test file" { closeDB("/home/ramin/main/dao/tests/1.idea"); print("Closed database."); }
+rule "list files" { print(listOpenFiles()); }
+rule "load test file"  { read("./tests/1.idea");  print("Loaded database."); }
+rule "save test file"  { write("./tests/1.idea"); print("Saved database.");  }
+rule "close test file" { close("./tests/1.idea"); print("Closed database."); }
 
 rule "recall again" {
 	print("I recall again.");
@@ -176,13 +176,13 @@ rule "$? file $*" {
 	a  = join("", $2);
 	try {
 		if(op=="open" || op=="read")  {
-			a = readDB(a);  print("Read file "+a); use.file = a;
+			a = read(a);  print("Read file "+a); use.file = a;
 		}
 		else if(op=="save" || op=="write")  {
-			writeDB(a);  print("Save file "+a);
+			write(a);  print("Save file "+a);
 		}
 		else if(op=="close") {
-			closeDB(a); print("Close file "+a); delete($use.file);
+			close(a); print("Close file "+a); delete($use.file);
 		}
 		else if(op=="use")   {
 			use.file = a;
@@ -235,7 +235,7 @@ END { what.is.count = 0; }
 
 rule("list db", "list dbs") {
 	print("Listing loaded idea files");
-	listDBs();
+	listOpenFiles();
 }
 
 func sayHello(a) {

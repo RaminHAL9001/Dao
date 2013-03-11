@@ -129,8 +129,8 @@ instance PPrintable Reference where
 instance PPrintable Comment where
   pPrint com = do
     case com of
-      InlineComment  c -> pInline (pString "/* " >> pPrint c >> pString " */")
-      EndlineComment c -> pInline (pString "// " >> pPrint c >> pNewLine)
+      InlineComment  c -> pString ("/*"++uchars c++"*/")
+      EndlineComment c -> pString ("//"++uchars c) >> pEndLine
 
 pPrintComWith :: (a -> PPrint ()) -> Com a -> PPrint ()
 pPrintComWith prin com = case com of
@@ -164,7 +164,7 @@ instance PPrintable ScriptExpr where
   pPrint expr = case expr of
     EvalObject   objXp  coms                    _ -> pPrint objXp >> mapM_ pPrint coms
     IfThenElse   coms   objXp  thenXp  elseXp   _ -> do
-      pClosure (pList (pString "if") "(" "" ")" (pPrint objXp)) "{" "}" $
+      pClosure (pInline (pString "if " >> pPrint objXp)) " {" "}" $
         pPrintComWith pListOfComs thenXp
       case unComment elseXp of
         []                   -> return ()
@@ -205,7 +205,7 @@ instance PPrintable ScriptExpr where
       pPrintSubBlock (pString "with " >> pPrint cObjXp) xcScrpXp
 
 instance PPrintable ArithOp  where { pPrint = pShow }
-instance PPrintable UpdateOp where { pPrint = pShow }
+instance PPrintable UpdateOp where { pPrint op = pString (' ':show op++" ") }
 
 instance PPrintable ObjectExpr where
   pPrint expr = case expr of

@@ -34,8 +34,6 @@ import           Data.Ratio
 import           Data.Complex
 import           Numeric
 
-import Debug.Trace
-
 rationalFromString :: Int -> Rational -> String -> Maybe Rational
 rationalFromString maxValue base str =
   if b<1 then fmap (b*) (fol (reverse str)) else fol str where

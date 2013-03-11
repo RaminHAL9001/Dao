@@ -32,8 +32,6 @@ import           Data.List
 import           Data.Char
 import           Data.Monoid
 
-import Debug.Trace
-
 ----------------------------------------------------------------------------------------------------
 
 -- | Remove trailing whitespace, I stole the idea from the Perl language.
@@ -66,6 +64,7 @@ mapTail fn ax = case ax of
 -- lines of code in a block.
 data PPrintItem
   = PNewLine -- ^ force a new line
+  | PEndLine -- ^ place a new line unless we are already on a new line.
   | PPrintString { pPrintString :: UStr } -- ^ a single string of output
   | PPrintInline { pPrintItems :: [PPrintItem] }
     -- ^ print items all on a single line of output, wrap if necessary, wrapping forces indentation.
@@ -143,6 +142,10 @@ pEval fn = pPrintStack (execState fn initPPrintState)
 -- | Force a new line
 pNewLine :: PPrint ()
 pNewLine = pPush PNewLine
+
+-- | Place a new line unless we are already on a new line.
+pEndLine :: PPrint ()
+pEndLine = pPush PEndLine
 
 instance PPrintable UStr where { pPrint = pPush . PPrintString }
 
@@ -237,10 +240,14 @@ instance Monoid Printer where
       origSt
       { printerBuf = printerBuf origSt ++ printerBuf st
       , printerCol = printerCol origSt +  printerCol st
+      , inliningNow = inliningNow origSt || inliningNow st
+      , forcedNewLine = forcedNewLine origSt || forcedNewLine st
       }
     (_, col, buf):out ->
       st{ printerOut = printerOut origSt ++
             (printerTab origSt, printerCol origSt + col, printerBuf origSt ++ buf) : out
+        , inliningNow = inliningNow origSt || inliningNow st
+        , forcedNewLine = forcedNewLine origSt || forcedNewLine st
         }
 
 -- | A kind of pre-conversion, the 'PPrintState' is broken into a list of strings, each string
@@ -250,6 +257,7 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) 
   prin :: PPrintItem -> State Printer ()
   prin p = case p of
     PNewLine        -> newline >> modify (\st -> st{forcedNewLine=True})
+    PEndLine        -> noDupNewLine >> modify (\st -> st{forcedNewLine=True})
     PPrintString p  -> ustring p
     PPrintList   hdr opn sep clo px -> do
       st <- get
@@ -263,8 +271,8 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) 
           lstSt   = execState (content >> ustring clo) (subprint st)
           lstLen  = printerCol lstSt
           lstBuf  = printerBuf lstSt
-          toolong = newline >> mapM_ prin (hdr++[PPrintString opn]) >>
-            newline >> indent (content >> noDupNewLine) >> ustring clo
+          toolong = noDupNewLine >> mapM_ prin (hdr++[PPrintString opn]) >>
+            noDupNewLine >> indent (content >> noDupNewLine) >> ustring clo
       if null (printerOut hdrSt)
         then  let hdrLen = printerCol st
               in  if null (printerOut lstSt)
@@ -274,7 +282,7 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) 
                                           }
                             else  if hdrLen + lstLen < maxWidth
                                     then do
-                                      newline
+                                      noDupNewLine
                                       put $ st{ printerBuf = hdrBuf ++ lstBuf
                                               , printerCol = hdrLen + lstLen
                                               }
@@ -282,59 +290,52 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) 
                     else  toolong
         else  toolong
       st <- get
-      if inliningNow st then return () else newline
+      if inliningNow st then return () else noDupNewLine
     PPrintInline px -> do
       st <- get
-      let trySt = execState (printAcross px) (subprint st)
-      if null (printerOut trySt)
+      let trySt = execState (printAcross px) ((subprint st){inliningNow = True})
+          out = filter (\ (_, _, str) -> not (null str)) (printerOut trySt)
+      put (st{ forcedNewLine = forcedNewLine st || forcedNewLine trySt})
+      st <- get
+      if null out
         then  if printerCol trySt + printerCol st <= maxWidth
                 then  put $ st{ printerCol = printerCol st + printerCol trySt
                               , printerBuf = printerBuf st ++ printerBuf trySt
                               }
-                else  put $ st{ printerOut = printerOut st
-                                  ++ [printerOutputTripple st, printerOutputTripple trySt]
-                              , printerCol = 0
-                              , printerBuf = ""
+                else  put $ st{ printerOut = printerOut st ++ [printerOutputTripple st]
+                              , printerCol = printerCol trySt
+                              , printerBuf = printerBuf trySt
                               }
         else do
-          let out = printerOut trySt
-              line@(ind, strlen, str) = head out
-              combined =
-                ( printerTab st
-                , printerCol st + printerCol trySt
-                , printerBuf st ++ printerBuf trySt
-                )
+          let line@(ind, strlen, str) = head out
+              combined = (printerTab st, printerCol st + strlen, printerBuf st ++ str)
           if strlen + printerCol st < maxWidth
             then  put $ st{ printerOut = printerOut st
-                              ++ combined : tabAll True (tail out)
-                              ++ [printerOutputTripple trySt]
+                              ++ combined : tabAll True (tail out ++ [printerOutputTripple trySt])
                           }
             else  put $ st{ printerOut = printerOut st ++ line : tabAll True out }
           noDupNewLine
-      get >>= \st -> trace ("prin/inline "++show st) (return ())
     PPrintClosure hdr opn clo px -> do
       st <- get
       noDupNewLine
       let content = do
             printAcross (hdr++[PPrintString opn])
-            newline
-            indent (mapM_ (\p -> prin p >> newline) px)
             noDupNewLine
+            indent (mapM_ (\p -> prin p >> noDupNewLine) px)
             ustring clo
-            newline
+            noDupNewLine
           trySt = execState content (subprint st)
           loop col buf ax = case ax of
             _  | col>maxWidth   -> content
             (_, strlen, str):ax -> loop (col+strlen) (buf++str) ax
             []                  -> do
               modify (\st -> st{ printerOut = printerOut st ++ [(printerTab st, col, buf)] })
-              newline
-      loop 0 "" (printerOut (execState content (subprint st)))
+              noDupNewLine
+      if forcedNewLine trySt then modify (flip mappend trySt) else loop 0 "" (printerOut trySt)
   ustring p = modify $ \st ->
     st{ printerCol = printerCol st + ulength p
       , printerBuf = printerBuf st ++ uchars p
       }
-  line fn = fn >> newline
   newline = modify $ \st ->
     st{ printerCol = 0
       , printerBuf = ""
@@ -353,7 +354,7 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) 
       let trySt = execState (prin p) (subprint st)
       if sumRunsOver st trySt
         then put (mappend st trySt)
-        else newline >> modify (\st -> mappend st trySt)
+        else noDupNewLine >> modify (\st -> mappend st trySt)
       printAcross px
   tryInline fn = do
     st <- get
@@ -380,8 +381,7 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) 
     [(tab, len, str)]  -> if alsoTabFinalLine then [(tab+1, len, str)] else [(tab, len, str)]
     (tab, len, str):ax -> (tab+1, len, str) : tabAll alsoTabFinalLine ax
   sumRunsOver st trySt = null (printerOut trySt) && printerCol st + printerCol trySt <= maxWidth
-  noDupNewLine = gets printerBuf >>= \buf -> if null buf then return () else newline
-  dbg str = modify (\st -> st{printerBuf = printerBuf st++" /*(DBG:"++str++")*/ "})
+  noDupNewLine = gets printerBuf >>= \buf -> if and (map isSpace buf) then return () else newline
   end st = flip map (printerOut st ++ [printerOutputTripple st]) $ \ (a, _, b) ->
     (a, dropWhile isSpace (chomp b))
 

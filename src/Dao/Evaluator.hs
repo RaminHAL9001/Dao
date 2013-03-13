@@ -2,7 +2,7 @@
 -- scripting language, i.e. functions evaluating the parsed abstract
 -- syntax tree.
 -- 
--- Copyright (C) 2008-2012  Ramin Honary.
+-- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or
@@ -855,6 +855,22 @@ builtin_join = DaoFunc $ \ox -> do
   ox <- recurseGetAllStringArgs ox
   return (OString (ustr (concatMap uchars ox)))
 
+builtin_open :: DaoFunc
+builtin_open = DaoFunc $ \ox -> case ox of
+  [OString path] -> do
+    file <- inExecEvalRun (loadFilePath (uchars path)) >>= joinFlowCtrl
+    return $ ORef $ case file of
+      ProgramFile  _ -> ProgramRef{progID=path, subRef=GlobalRef{globalRef=[]}}
+      DocumentFile _ -> FileRef{filePath=path, globalRef=[]}
+  _ -> procErr $ OList $
+    [OString (ustr "Argument provided to \"open()\" function must be a single file path"), OList ox]
+
+builtin_close :: DaoFunc
+builtin_close = undefined
+
+builtin_write :: DaoFunc
+builtin_write = undefined
+
 -- | The map that contains the built-in functions that are used to initialize every
 -- 'Dao.Object.ExecUnit'.
 initBuiltinFuncs :: M.Map Name DaoFunc
@@ -862,6 +878,9 @@ initBuiltinFuncs = let o a b = (ustr a, b) in M.fromList $
   [ o "print" builtin_print
   , o "do"    builtin_do
   , o "join"  builtin_join
+  , o "open"  builtin_open
+  , o "close" builtin_close
+  , o "write" builtin_write
   ]
 
 ----------------------------------------------------------------------------------------------------
@@ -1651,7 +1670,7 @@ registerSourceFromHandle upath h = do
   source <- sourceFromHandle upath h
   case source of
     FlowOK source -> registerSourceCode upath source
-    FlowReturn    _ -> error "registerSourceFromHandle: sourceFromHandle evaluated to FlowReturn"
+    FlowReturn  _ -> error "registerSourceFromHandle: sourceFromHandle evaluated to FlowReturn"
     FlowErr   err -> error ("registerSourceFromHandle: "++show err)
 
 -- | Updates the 'Runtime' to include the Dao source code loaded from the given 'FilePath'. This

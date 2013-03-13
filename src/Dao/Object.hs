@@ -127,6 +127,7 @@ data TypeID
   | ScriptType
   | RuleType
   | BytesType
+  | AnyType
   deriving (Eq, Ord, Show, Enum, Typeable)
 
 oBool :: Bool -> Object

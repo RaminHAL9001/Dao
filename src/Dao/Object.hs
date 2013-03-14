@@ -789,7 +789,7 @@ data SourceCode
 ----------------------------------------------------------------------------------------------------
 
 -- | The magic number is the first 8 bytes to every 'Document'. It is the ASCII value of the string
--- "DaoData\0".
+-- @"DaoData\0"@.
 document_magic_number :: Word64
 document_magic_number = 0x44616F4461746100
 
@@ -805,8 +805,7 @@ document_data_version = 0
 data StoredFile stor ref dat
   = NotStored { docRootObject :: stor ref dat }
   | StoredFile
-    { docRefCount   :: Word
-    , docModified   :: Word64
+    { docModified   :: Word64
     , docInfo       :: UStr
     , docVersion    :: Word64
     , docRootObject :: stor ref dat
@@ -822,8 +821,7 @@ type Document = StoredFile T.Tree Name Object
 initDoc :: T_tree -> Document
 initDoc docdata =
   StoredFile
-  { docRefCount = 0
-  , docModified = 0
+  { docModified = 0
   , docInfo = nil
   , docVersion = document_data_version
   , docRootObject = docdata

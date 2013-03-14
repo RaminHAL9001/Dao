@@ -65,7 +65,7 @@ docRefToFilePath = uchars
 
 instance Show (StoredFile T.Tree Name Object) where
   show doc =
-    "document("++show (docRefCount doc)++","++show (docModified doc)++") = "++show (docInfo doc)
+    "document("++show (docModified doc)++") = "++show (docInfo doc)
 
 instance Binary (StoredFile T.Tree Name Object) where
   put doc = do
@@ -88,8 +88,7 @@ instance Binary (StoredFile T.Tree Name Object) where
     root <- get
     seq root $ return $
       StoredFile
-      { docRefCount   = 1
-      , docModified   = 0
+      { docModified   = 0
       , docInfo       = info
       , docVersion    = ver
       , docRootObject = root

@@ -65,6 +65,7 @@ import qualified Data.Set    as S
 import qualified Data.Map    as M
 import qualified Data.IntMap as I
 import qualified Data.ByteString.Lazy.UTF8 as U
+import qualified Data.Binary as B
 
 import           System.IO
 
@@ -865,11 +866,30 @@ builtin_open = DaoFunc $ \ox -> case ox of
   _ -> procErr $ OList $
     [OString (ustr "Argument provided to \"open()\" function must be a single file path"), OList ox]
 
+builtin_close_write :: String -> (FilePath -> Run a) -> (a -> Exec b) -> DaoFunc
+builtin_close_write funcName runFunc joinFunc = DaoFunc $ \ox -> case ox of
+  [OString path] -> unload path
+  [ORef    path] -> case path of
+    FileRef    path _ -> unload path
+    ProgramRef path _ -> unload path
+    _                 -> err (ORef path)
+  [o]                 -> err o
+  ox                  -> err (OList ox)
+  where
+    unload path = inExecEvalRun (runFunc (uchars path)) >>= joinFunc >> return OTrue
+    err obj = procErr $ OList $
+      [ OString $ ustr $ concat $
+          [ "Argument provided to \"", funcName
+          , "()\" must be a single file path or file reference"
+          ]
+      , obj
+      ]
+
 builtin_close :: DaoFunc
-builtin_close = undefined
+builtin_close = builtin_close_write "close" unloadFilePath return
 
 builtin_write :: DaoFunc
-builtin_write = undefined
+builtin_write = builtin_close_write "write" writeFilePath joinFlowCtrl
 
 -- | The map that contains the built-in functions that are used to initialize every
 -- 'Dao.Object.ExecUnit'.
@@ -1680,20 +1700,65 @@ registerSourceFromHandle upath h = do
 -- by the system, e.g. @en.UTF-8@) and parse a 'Dao.Object.SourceCode' object using
 -- 'Dao.Object.Parsers.source'. If all three methods fail, an error is thrown. Returns
 -- the 'TypedFile', although all source code files are returned as 'PrivateType's. Use
--- 'asPublic' to force the type to be a 'PublicType'd file.
+-- 'asPublic' to force the type to be a 'PublicType'd file. If the nothing exists at the file path,
+-- the file is marked to be created and an empty document is created in memory.
 loadFilePath :: FilePath -> Run (FlowCtrl File)
 loadFilePath path = dontLoadFileTwice (ustr path) $ \upath -> do
   dPutStrErr xloc ("Lookup file path "++show upath)
-  h    <- lift (openFile path ReadMode)
-  zero <- lift (hGetPosn h)
-  enc  <- lift (hGetEncoding h)
-  -- First try to load the file as a binary program file, and then try it as a binary data file.
-  doc <- catchErrorCall (ideaLoadHandle upath h) :: Run (Either ErrorCall DocResource)
-  case doc of
-    Right doc -> return (FlowOK (DocumentFile doc))
-    Left  _   -> do -- The file does not seem to be a document, try parsing it as a script.
-      lift (hSetPosn zero >> hSetEncoding h (fromMaybe localeEncoding enc))
-      fmap (fmap ProgramFile) (registerSourceFromHandle upath h)
+  h <- liftIO (try (openFile path ReadMode)) :: Run (Either IOException Handle)
+  case h of
+    Left  _ -> do -- create a new file if it does not exist
+      idx  <- fmap pathIndex ask
+      rsrc <- newDocResource ("open file: "++show path) T.Void
+      let file = DocumentFile rsrc
+      dModifyMVar_ xloc idx (return . M.insert upath file)
+      return (FlowOK file)
+    Right h -> do
+      zero <- lift (hGetPosn h)
+      enc  <- lift (hGetEncoding h)
+      -- First try to load the file as a binary program file, and then try it as a binary data file.
+      doc  <- catchErrorCall (ideaLoadHandle upath h) :: Run (Either ErrorCall DocResource)
+      file <- case doc of
+        Right doc -> return (FlowOK (DocumentFile doc))
+        Left  _   -> do -- The file does not seem to be a document, try parsing it as a script.
+          lift (hSetPosn zero >> hSetEncoding h (fromMaybe localeEncoding enc))
+          fmap (fmap ProgramFile) (registerSourceFromHandle upath h)
+      liftIO $! (evaluate file >> hClose h >> return file)
+
+-- | If any changes have been made to the file, write these files to persistent storage.
+writeFilePath :: FilePath -> Run (FlowCtrl ())
+writeFilePath path = do
+  let upath = ustr path
+  idx  <- fmap pathIndex ask
+  file <- fmap (M.lookup upath) (dReadMVar xloc idx)
+  case file of
+    Nothing -> return $ FlowErr $ OList $
+      [OString (ustr "cannot write, file path has not been opened"), OString upath]
+    Just file -> case file of
+      ProgramFile  _   -> return $ FlowErr $ OList $
+        [OString (ustr "cannot write, file path is opened as a module"), OString upath]
+      DocumentFile doc -> do
+        let res = resource doc
+        doc <- fmap fst (dReadMVar xloc res)
+        case doc of
+          NotStored tree -> do
+            let doc = initDoc tree
+            liftIO (B.encodeFile path tree >>= evaluate)
+            dModifyMVar_ xloc res (\ (_, locked) -> return (doc, locked))
+            return (FlowOK ())
+          _ -> do -- StoredFile
+           liftIO (B.encodeFile path doc >>= evaluate) 
+           dModifyMVar_ xloc res (\ (_, locked) -> return (doc{docModified=0}, locked))
+           return (FlowOK ())
+
+unloadFilePath :: FilePath -> Run ()
+unloadFilePath path = do
+  let upath = ustr path
+  idx  <- fmap pathIndex ask
+  file <- fmap (M.lookup upath) (dReadMVar xloc idx)
+  case file of
+    Nothing   -> return ()
+    Just file -> dModifyMVar_ xloc idx (return . M.delete upath)
 
 -- | When a program is loaded, and when it is released, any block of Dao code in the source script
 -- that is denoted with the @SETUP@ or @TAKEDOWN@ rules will be executed. This function performs

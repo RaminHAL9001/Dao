@@ -34,6 +34,14 @@ import           Data.Monoid
 
 ----------------------------------------------------------------------------------------------------
 
+-- | This is the function you will probably care about most: take a value of any data type that
+-- instantiates 'PPrintable', and a maximum width value, and a tab string, and will convert that
+-- value to a 'Prelude.String'.
+prettyPrint :: PPrintable a => Int -> String -> a -> String
+prettyPrint maxWidth tab = showPPrintState maxWidth tab . pEvalState . pPrint
+
+----------------------------------------------------------------------------------------------------
+
 -- | Remove trailing whitespace, I stole the idea from the Perl language.
 chomp :: String -> String
 chomp = foldl (\ out (spc, str) -> if null str then out else out++spc++str) "" . spcstr where

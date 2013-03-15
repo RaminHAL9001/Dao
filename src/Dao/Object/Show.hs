@@ -81,6 +81,7 @@ instance PPrintable Object where
   pPrint obj = case obj of
     ONull            -> pString "null"
     OTrue            -> pString "true"
+    OType      o     -> pPrint o
     OInt       o     -> pShow o
     OWord      o     -> pString (show o++"U")
     OLong      o     -> pString (show o++"L")
@@ -88,6 +89,7 @@ instance PPrintable Object where
     ORatio     o     -> pString ("ratio("++show o++")")
     OComplex  (r:+i) -> pString (show r++'+':show i++"j")
     ODiffTime  o     -> pShow o
+    OTime      o     -> pString ("time("++show o++")")
     OChar      o     -> pShow o
     OString    o     -> pShow o
     ORef       o     -> pPrint o

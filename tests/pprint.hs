@@ -19,6 +19,8 @@
 
 module Main where
 
+import           RandObj
+
 import           Dao.String
 import           Dao.Object
 import           Dao.Object.Show
@@ -83,7 +85,6 @@ testPrinter item = mapM_ fn [20, 80, 120] where
 samples = pString "Hello, world! " >> pString "Spitting out the daemons. " >> pString "Good times. "
 
 testClosure = testPrinter $ pClosure (pString "begin ") "{ " "}" $ samples
-    
 
 testList = testPrinter $ pList (pString "list ") "{ " ", " " }" $
   mapM_ pString (words "this is something to test the pList function each word in this list is treated as a list item")
@@ -94,5 +95,10 @@ testInline = testPrinter $ pInline $ sequence_ $ intercalate [pString " + "] $ m
   , map pString (words "after the closure more words exist")
   ]
 
-main = testList >> testInline >> testClosure >> mainIfExpr
+-- main = testList >> testInline >> testClosure >> mainIfExpr
+
+randObj :: Int -> Object
+randObj = genRand 6
+
+main = mapM (putStr . prettyPrint 80 "    " . randObj) [0..1000]
 

@@ -76,12 +76,17 @@ initRandOState maxDepth seed =
 -- numbers using the 'RandO' monad.
 class HasRandGen o where { randO :: RandO o }
 
+-- | Generate a random object given a maximum recursion limit, a seed value, and a 'RandO' generator
+-- function.
+genRandWith :: RandO a -> Int -> Int -> a
+genRandWith gen maxDepth seed = evalState gen (initRandOState maxDepth seed)
+
 -- | This function you probably will care most about. does the work of evaluating the
 -- 'Control.Monad.State.evalState' function with a 'RandOState' defined by the same two parameters
 -- you would pass to 'initRandOState'. In other words, arbitrary random values for any data type @a@
 -- that instantates 'HasRandGen' can be generated using two integer values passed to this function.
 genRand :: HasRandGen a => Int -> Int -> a
-genRand maxDepth seed = evalState randO (initRandOState maxDepth seed)
+genRand maxDepth seed = genRandWith randO maxDepth seed
 
 -- | Take another integer from the seed value. Provide a maximum value, the pseudo-random integer
 -- returned will be the seed value modulo this maximum value (so passing 0 will result in a
@@ -227,7 +232,7 @@ randComments = do
     fmap (com typ . ustr . unwords . map (B.unpack . getRandomWord)) (replicateM len randInt)
 
 getRandomWord :: Int -> B.ByteString
-getRandomWord i = randomWords ! (mod i $ rangeSize $ bounds randomWords)
+getRandomWord i = randomWords ! (mod i (rangeSize (bounds randomWords) - 1))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -472,7 +477,7 @@ randomWords = listArray (0, length list) (map B.pack list) where
     [ "a academia accomplished added also an analysis and application applications apply are arent"
     , "argument arguments as at avoids be because been behavior between book both by calculus"
     , "calling can change changes code commercial computability computation computer concepts"
-    , "constructs contrast Conversely data declarative definition depending depends describing"
+    , "constructs contrast conversely data declarative definition depending depends describing"
     , "designed developed development difference different domains domainspecific easier effects"
     , "elaborations elements eliminating emphasized emphasizes entscheidungsproblem eschewing"
     , "especially evaluation example executing expression facilitate financial for formal from"

@@ -36,8 +36,6 @@ default: test
 ####################################################################################################
 # The 'edit' target conveniently opens all the files you want to edit in the vim editor.
 
-GHC_MAKE_SRC := ghc --make -i'./src'
-
 export GHCRTS := -M3G #Allow 3GB of heap space to GHC when compiling.
 
 EDIT_FILES_LIST := edit-files.list
@@ -60,11 +58,12 @@ $(EDIT_FILES_LIST):
 ####################################################################################################
 # Building the actual Dao intepreter program.
 
-DAO_BUILD_OPTS = -threaded
-DAO_COMPILE    = ghc -i'./src' $(DAO_BUILD_OPTS) --make
-
 DAO_PROJECT_FILES_LIST := project-files.list
 DAO_PROJECT_FILES      := $(shell $(call listfile,$(DAO_PROJECT_FILES_LIST)))
+DAO_INCLUDES   = -i'./src' -i'./tests'
+
+GHC_BUILD_OPTS = -threaded
+GHC_COMPILE    = ghc $(DAO_INCLUDES) $(GHC_BUILD_OPTS) --make
 
 ifndef DAO_PROJECT_FILES
 $(error $(DAO_PROJECT_FILES) list is empty)
@@ -76,11 +75,11 @@ DAO_DEPENDS_SRC := $(addprefix src/,$(DAO_DEPENDS))
 
 dao: $(DAO_DEPENDS_SRC)
 	@echo 'Building project...'
-	$(DAO_COMPILE) $(DAO_DEPENDS_SRC) -o ./dao;
+	$(GHC_COMPILE) $(DAO_DEPENDS_SRC) -o ./dao;
 
 debug: $(DAO_DEPENDS_SRC)
 	@echo 'Building debug project...'
-	$(DAO_COMPILE) -XTemplateHaskell $(DAO_DEPENDS_SRC) -o ./dao;
+	$(GHC_COMPILE) -XTemplateHaskell $(DAO_DEPENDS_SRC) -o ./dao;
 
 clean:
 	rm dao; find . \( -name '*.o' -o -name '*.hi' \)  -delete -print
@@ -90,7 +89,7 @@ clean:
 
 PARSER_TEST_FILES := src/Dao/EnumSet.hs src/Dao/Parser.hs src/Dao/Object/Parser.hs
 parser-test: $(PARSER_TEST_FILES)
-	$(GHC_MAKE_SRC) $(PARSER_TEST_FILES) -o ./parser-test
+	$(GHC_COMPILE) $(PARSER_TEST_FILES) -o ./parser-test
 
 ENUM_SET_TEST_FILES := src/Dao/EnumSet.hs tests/I.hs tests/EQN.hs tests/TestEnumSet.hs
 enum-set-test:
@@ -102,6 +101,6 @@ enum-set-test:
 # target above to point to these targets.
 
 test: tests/RandObj.hs src/Dao/String.hs src/Dao/Token.hs \
-  src/Dao/Object.hs src/Dao/Object/Show.hs src/Dao/PPrint.hs tests/pprint.hs
-	$(GHC_MAKE_SRC) tests/RandObj.hs tests/pprint.hs -o ./test
+  src/Dao/Object.hs src/Dao/Object/Show.hs src/Dao/PPrint.hs tests/main.hs
+	$(GHC_COMPILE) tests/RandObj.hs tests/main.hs -o ./test
 

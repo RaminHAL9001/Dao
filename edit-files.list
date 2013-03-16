@@ -28,7 +28,7 @@ tests/EQN.hs
 tests/1.dao
 tests/2.dao
 tests/RandObj.hs
-tests/pprint.hs
+tests/main.hs
 Setup.hs
 ghc-build-opts.mk
 project-files.list

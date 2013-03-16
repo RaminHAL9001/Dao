@@ -1,0 +1,191 @@
+-- "tests/pprint.hs"  tests the 'Dao.PPrint' module.
+-- 
+-- Copyright (C) 2008-2013  Ramin Honary.
+-- This file is part of the Dao System.
+--
+-- The Dao System is free software: you can redistribute it and/or
+-- modify it under the terms of the GNU General Public License as
+-- published by the Free Software Foundation, either version 3 of the
+-- License, or (at your option) any later version.
+-- 
+-- The Dao System is distributed in the hope that it will be useful,
+-- but WITHOUT ANY WARRANTY; without even the implied warranty of
+-- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+-- GNU General Public License for more details.
+-- 
+-- You should have received a copy of the GNU General Public License
+-- along with this program (see the file called "LICENSE"). If not, see
+-- <http://www.gnu.org/licenses/agpl.html>.
+
+module Main where
+
+import           RandObj
+
+import           Dao.String
+import           Dao.Predicate
+import           Dao.PPrint
+import           Dao.Token
+import           Dao.Parser
+import           Dao.Object
+import           Dao.Object.Parser
+import           Dao.Object.Show
+
+import           Control.Concurrent
+import           Control.Exception
+import           Control.Monad.State
+
+import           Data.List
+import           Data.Monoid
+
+import           System.IO
+
+----------------------------------------------------------------------------------------------------
+
+el = EndlineComment . ustr
+il = InlineComment  . ustr
+lu = LocationUnknown
+a  = Literal (ORef (LocalRef (ustr "a"))) lu
+i0 = Literal (OInt 0) lu
+i1 = Literal (OInt 1) lu
+i2 = Literal (OInt 2) lu
+i3 = Literal (OInt 3) lu
+add   = Com ADD
+eqeq  = Com EQUL
+modu  = Com MOD
+mult  = Com MULT
+diveq = Com UDIV
+eq    = Com UCONST
+evalObj expr = EvalObject expr [] lu
+
+ifExpr :: Int -> ScriptExpr
+ifExpr i =
+  IfThenElse
+    []
+    (ParenExpr True (Com (Equation (Equation a modu i2 lu) eqeq i0 lu)) lu)
+    (Com $
+      [ ComBefore [el " if the number is even, divide by two"] $
+          evalObj (AssignExpr a diveq i2 lu)
+      ])
+    (Com $
+      [ ComBefore [el " if the number is odd, multiply by three and add one"] $
+          evalObj (AssignExpr a eq (Equation (Equation a mult i3 lu) add i1 lu) lu)
+      ] ++ if i<=0 then [] else [ComBefore [el " then test it again"] (ifExpr (i-1))]
+    )
+    LocationUnknown
+
+mainIfExpr = print $ pEvalState $ pPrint (ifExpr 3)
+
+testPrinterMAppend = print $
+    mempty
+    { printerOut = [(0, 25, "Spitting out the daemons.")]
+    , printerBuf = "Good times."
+    , printerCol = 11
+    }
+  `mappend`
+    mempty
+    { printerOut = [(0, 13, "Hello, world!")]
+    , printerBuf = "Popping out of holes."
+    , printerCol = 21
+    }
+
+testPrinter item = mapM_ fn [20, 80, 120] where
+  fn maxWidth = putStrLn $ showPPrintState maxWidth "    " $ pEvalState item
+
+samples = pString "Hello, world! " >> pString "Spitting out the daemons. " >> pString "Good times. "
+
+testClosure = testPrinter $ pClosure (pString "begin ") "{ " "}" $ samples
+
+testList = testPrinter $ pList (pString "list ") "{ " ", " " }" $
+  mapM_ pString (words "this is something to test the pList function each word in this list is treated as a list item")
+
+testInline = testPrinter $ pInline $ sequence_ $ intercalate [pString " + "] $ map return $ concat $
+  [ map pString (words "testing the pInline function")
+  , [pClosure (pString "innerClosure() ") "{ " "}" samples]
+  , map pString (words "after the closure more words exist")
+  ]
+
+-- test the pretty printer
+-- main = testList >> testInline >> testClosure >> mainIfExpr
+
+----------------------------------------------------------------------------------------------------
+
+maxRecurseDepth = 6
+
+randObj :: Int -> Object
+randObj = genRand maxRecurseDepth
+
+-- | Generate a single random item from a seed value and print this item to stdout. Also returns the
+-- item generated so if you run this from GHCI, you can make use of the derived "Show" function to
+-- see what the object looks like as a data Haskell structure.
+runItem i = do
+  putStrLn ("//"++show i)
+  let obj = randObj i
+  putStr (prettyPrint 80 "    " obj)
+  return obj
+
+specify = Nothing
+testAllItems = [0..1000]
+
+-- | Simply generate several random objects using 'randObj'
+randTest = case specify of
+  Nothing -> mapM_ runItem testAllItems
+  Just  i -> void $ runItem i
+
+----------------------------------------------------------------------------------------------------
+
+pPrintComScriptExpr :: [Com ScriptExpr] -> PPrint ()
+pPrintComScriptExpr = mapM_ (pPrintComWith pPrint)
+
+-- | Test the pretty printer and the parser. If a randomly generated object can be pretty printed,
+-- and the parser can parse the pretty-printed string and create the exact same object, then the
+-- test pases.
+testEveryParsePPrint :: MVar Handle -> MVar Int -> Chan (Maybe Int) -> IO ()
+testEveryParsePPrint hlock counter ch = loop where
+  loop = do
+    i <- readChan ch
+    case i of
+      Nothing -> return ()
+      Just  i -> do
+        let scrp = genRandWith randScriptExpr maxRecurseDepth i
+            str  = seq scrp $! showPPrintState 80 "    " (pEvalState (pPrintComScriptExpr scrp))
+            (par, msg) = seq str $! runParser parseInteractiveScript str 
+            err reason = do
+              modifyMVar_ hlock $ \h -> do
+                hPutStrLn h $! concat $!
+                  [ "ITEM #", show i, "\n", reason
+                  , if null msg then "." else ": "++msg
+                  , "\n", str
+                  , "\n--------------------------------------------------------------------------"
+                  ]
+                return h
+              putMVar counter 1 >>= evaluate
+        case seq par $! seq msg $! par of
+          OK      _ -> loop
+          Backtrack -> err "Ambiguous parse" >>= evaluate
+          PFail _ _ -> err "Parse failed" >>= evaluate
+
+----------------------------------------------------------------------------------------------------
+
+threadCount = 8
+
+main = do
+  ch      <- newChan
+  counter <- newEmptyMVar
+  h       <- openFile "./debug.log" ReadWriteMode
+  hlock   <- newMVar h
+  hwait   <- newMVar True
+  let ctrlLoop count = do
+        c <- takeMVar counter
+        let nextCount = count-c
+        if nextCount>0 then ctrlLoop nextCount else modifyMVar_ hwait (return . const False)
+      iterLoop i = do
+        continue <- readMVar hwait
+        if continue then writeChan ch (Just i) else writeChan ch Nothing
+        iterLoop (i+1)
+  workThreads <- replicateM threadCount $ forkOS $ do
+    testEveryParsePPrint hlock counter ch
+  iterThread <- forkIO (iterLoop 0)
+  ctrlLoop threadCount
+  mapM_ killThread (iterThread:workThreads)
+  hClose h
+

@@ -205,31 +205,35 @@ randRational i0 = do
   return (a%b)
 
 randCom :: a -> RandO (Com a)
-randCom a = do
-  typ <- fmap (flip mod 24 . unsign) randInt
-  case typ of
-    0 -> do
-      before <- randComments
-      after  <- randComments
-      return (ComAround before a after)
-    1 -> do
-      before <- randComments
-      return (ComBefore before a)
-    2 -> do
-      after <- randComments
-      return (ComAfter a after)
-    _ -> return (Com a)
-    
+randCom = return . Com
+--  randCom :: a -> RandO (Com a)
+--  randCom a = do
+--    typ <- fmap (flip mod 24 . unsign) randInt
+--    case typ of
+--      0 -> do
+--        before <- randComments
+--        after  <- randComments
+--        return (ComAround before a after)
+--      1 -> do
+--        before <- randComments
+--        return (ComBefore before a)
+--      2 -> do
+--        after <- randComments
+--        return (ComAfter a after)
+--      _ -> return (Com a)
+
 randComments :: RandO [Comment]
-randComments = do
-  i0 <- randInt
-  let (i1, many) = divMod i0 4
-      (i2, typn) = divMod i1 16
-      typx = take many (randToBase 2 typn ++ replicate 4 0)
-      lenx = map (+1) (randToBase 29 i2)
-      com typ = if typ==0 then EndlineComment else InlineComment
-  forM (zip typx lenx) $ \ (typ, len) ->
-    fmap (com typ . ustr . unwords . map (B.unpack . getRandomWord)) (replicateM len randInt)
+randComments = return []
+--  randComments :: RandO [Comment]
+--  randComments = do
+--    i0 <- randInt
+--    let (i1, many) = divMod i0 4
+--        (i2, typn) = divMod i1 16
+--        typx = take many (randToBase 2 typn ++ replicate 4 0)
+--        lenx = map (+1) (randToBase 29 i2)
+--        com typ = if typ==0 then EndlineComment else InlineComment
+--    forM (zip typx lenx) $ \ (typ, len) ->
+--      fmap (com typ . ustr . unwords . map (B.unpack . getRandomWord)) (replicateM len randInt)
 
 getRandomWord :: Int -> B.ByteString
 getRandomWord i = randomWords ! (mod i (rangeSize (bounds randomWords) - 1))
@@ -285,7 +289,7 @@ instance HasRandGen Object where
     ]
 
 instance HasRandGen TypeID where
-  randO = fmap toEnum (nextInt (fromEnum AnyType))
+  randO = fmap toEnum (nextInt (fromEnum (maxBound::TypeID)))
 
 instance HasRandGen Reference where
   randO = randOFromList $
@@ -477,16 +481,16 @@ randomWords = listArray (0, length list) (map B.pack list) where
     [ "a academia accomplished added also an analysis and application applications apply are arent"
     , "argument arguments as at avoids be because been behavior between book both by calculus"
     , "calling can change changes code commercial computability computation computer concepts"
-    , "constructs contrast conversely data declarative definition depending depends describing"
+    , "constructs contrast conversely declarative definition depending depends describing"
     , "designed developed development difference different domains domainspecific easier effects"
     , "elaborations elements eliminating emphasized emphasizes entscheidungsproblem eschewing"
-    , "especially evaluation example executing expression facilitate financial for formal from"
-    , "function functional has have hope how however imperative in industrial input investigate is"
-    , "it key lack lambda language languages largely like make many math mathematical may with"
+    , "especially evaluation example executing expression facilitate financial formal"
+    , "function functional has have hope how however imperative industrial input investigate is"
+    , "it key lack lambda language languages largely like make many math mathematical may"
     , "motivations much mutable notion numeric of on one ones only organizations output paradigm"
     , "pecific pioneering practice predict produce program programming prominent purely rather"
     , "recursion referential result roots same science side so software some specifically state"
-    , "statistics style subject such supported symbolic system than that the they this times to"
+    , "statistics style subject such supported symbolic system than that the they this times"
     , "transparency treats twice understand use used value values variety viewed which wide will"
     ]
 

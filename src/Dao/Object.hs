@@ -127,8 +127,7 @@ data TypeID
   | ScriptType
   | RuleType
   | BytesType
-  | AnyType
-  deriving (Eq, Ord, Show, Enum, Typeable)
+  deriving (Eq, Ord, Show, Enum, Typeable, Bounded)
 
 oBool :: Bool -> Object
 oBool a = if a then OTrue else ONull

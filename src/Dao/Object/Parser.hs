@@ -32,6 +32,7 @@ import           Data.Char
 import           Data.Word
 import           Data.Ratio
 import           Data.Complex
+import           Data.Time.Clock
 import           Numeric
 
 rationalFromString :: Int -> Rational -> String -> Maybe Rational
@@ -73,7 +74,7 @@ numericObj = token $ do
         "b" -> alt digit  2
         "x" -> alt xdigit 16
         ""  -> parsePoint 10 digit sign ""
-        _   -> errmsg
+        _   -> typeSuffix True 0 "" base
     '0':dgt -> parsePoint 8  digit sign dgt
     dgt     -> parsePoint 10 digit sign dgt
   where
@@ -106,27 +107,26 @@ numericObj = token $ do
             return (round result % 1 == result, result)
       case r of
         Nothing -> fail ("incorrect digits used to form a base-"++show base++" number")
-        Just (r_is_an_integer, r) -> do
-          typ <- zeroOrOne alpha
-          case typ of
-            "U" -> return $ OWord (fromIntegral (round r))
-            "I" -> return $ OInt  (round r)
-            "L" -> return $ OLong (round r)
-            "R" -> return $ ORatio r
-            "F" -> return $ OFloat (fromRational r)
-            "f" -> return $ OFloat (fromRational r)
-            "i" -> return $ OComplex (0 :+ fromRational r)
-            "j" -> return $ OComplex (0 :+ fromRational r)
-            "s" -> return $ ODiffTime (fromRational r)
-            ""  ->
-              if r_is_an_integer && null rdx
-                then
-                  let i = round r
-                  in  if fromIntegral (minBound::T_int) <= i && i <= fromIntegral (maxBound::T_int)
-                        then  return $ OInt $ fromIntegral i
-                        else  return $ OLong i
-                else return (ORatio r)
-            typ -> fail ("unknown numeric type "++show typ)
+        Just (r_is_an_integer, r) -> zeroOrOne alpha >>= typeSuffix r_is_an_integer r rdx
+    typeSuffix r_is_an_integer r rdx typ = case typ of
+      "U" -> return $ OWord (fromIntegral (round r))
+      "I" -> return $ OInt  (round r)
+      "L" -> return $ OLong (round r)
+      "R" -> return $ ORatio r
+      "F" -> return $ OFloat (fromRational r)
+      "f" -> return $ OFloat (fromRational r)
+      "i" -> return $ OComplex (0 :+ fromRational r)
+      "j" -> return $ OComplex (0 :+ fromRational r)
+      "s" -> return $ ODiffTime (fromRational r)
+      ""  ->
+        if r_is_an_integer && null rdx
+          then
+            let i = round r
+            in  if fromIntegral (minBound::T_int) <= i && i <= fromIntegral (maxBound::T_int)
+                  then  return $ OInt $ fromIntegral i
+                  else  return $ OLong i
+          else return (ORatio r)
+      typ -> fail ("unknown numeric type "++show typ)
 
 parseString :: Parser String
 parseString = token (char '"' >> loop) where
@@ -143,6 +143,34 @@ parseString = token (char '"' >> loop) where
           fail "cannot use '\\' token to continue string to next line"
         "\"" -> getToken >>= readsAll "invalid string constant" reads . tokenChars
         _    -> errmsg
+
+parseDiffTime :: Parser T_diffTime
+parseDiffTime = token $ do
+  hours   <- regexMany1 digit
+  minutes <- char ':' >> regexMany1 digit
+  seconds <- char ':' >> regexMany1 digit
+  if length minutes > 2 || length seconds > 2
+    then fail ("invalid time literal expression")
+    else do
+      milisec <- mplus (char '.' >> regexMany1 digit) (return "")
+      let rint = read :: String -> Integer
+          rr s = rint s % 1
+      return $ fromRational $ toRational $
+        60*60 * rr hours + 60 * rr minutes + rr seconds +
+          if null milisec then 0 else rr milisec / 10 ^ length milisec
+
+parseDate :: Parser T_time
+parseDate = token $ do
+  year  <- regexMany1 digit
+  month <- char '-' >> regexMany1 digit
+  day   <- char '-' >> regexMany1 digit
+  diffTime <- flip mplus (return (fromRational 0)) $ do
+    comma <- mplus (char ',' >> return True) (return False)
+    (if comma then regexMany else regexMany1) space
+    parseDiffTime
+  zone <- flip mplus (return "") $
+    mplus (char ',') (return ',') >> regexMany space >> fmap (' ':) (regexMany1 alpha)
+  return (addUTCTime diffTime (read (year ++ '-':month ++ '-':day ++ " 00:00:00" ++ zone)))
 
 parseComment :: Parser [Comment]
 parseComment = many comment where
@@ -432,7 +460,7 @@ objectExprStatement initExpr com1 = loop initExpr where
 -- | This is the "entry point" for parsing 'Dao.Object.ObjectExpr's.
 parseObjectExpr :: Parser (ObjectExpr, [Comment])
 parseObjectExpr = do
-  obj <- applyLocation parseNonEquation
+  obj  <- applyLocation parseNonEquation
   com1 <- parseComment
   regexMany space
   parseEquation obj com1
@@ -546,7 +574,7 @@ scanBind constructor ops objx = case objx of
 -- Here we collect all of the ObjectExpr parsers that start by looking for a keyword
 keywordObjectExpr :: NameComParser ObjectExpr
 keywordObjectExpr key com1 = msum $ map (\parser -> parser key com1) $
-  [ parseLambdaCall, parseArrayDef, parseListSetDictIntmap
+  [ parseDateTime, parseLambdaCall, parseArrayDef, parseListSetDictIntmap
   , parseClassedRef, parseStruct, constructWithNonKeyword
   ]
 
@@ -622,6 +650,16 @@ parseListSetDictIntmap key com1 = do
   items <- adjustComListableObjExpr $
     parseListable ("items for "++key++" definition") '{' ',' '}' getItem
   return (DictExpr (ustr key) com1 items unloc)
+
+parseDateTime :: NameComParser ObjectExpr
+parseDateTime = guardKeyword "time" $ \com1 -> do
+  needsParen <- mplus (char '(' >> return True) (return False)
+  expect "date-time literal expression" $ \com2 -> do
+    date <- parseDate
+    let msg       = "require close-parenthesis after date literal expression"
+        done com3 = return $
+          FuncCall (ustr "time") com1 [com com2 (Literal (OTime date) unloc) com3] unloc
+    if needsParen then expect msg (\com3 -> char ')' >> done com3) else done []
 
 parseStruct :: NameComParser ObjectExpr
 parseStruct = guardKeyword "struct" $ \com1 ->

@@ -38,6 +38,7 @@ import           Numeric
 
 import           Data.Maybe (fromMaybe, maybeToList)
 import           Data.List
+import           Data.Ratio
 import           Data.Complex
 import qualified Data.Map as M
 import qualified Data.IntMap as I
@@ -86,27 +87,29 @@ instance PPrintable Object where
     OWord      o     -> pString (show o++"U")
     OLong      o     -> pString (show o++"L")
     OFloat     o     -> pString (show o++"f")
-    ORatio     o     -> pString ("ratio("++show o++")")
+    ORatio     o     -> pString ("ratio("++show (numerator o)++"/"++show (denominator o)++")")
     OComplex  (r:+i) -> pString (show r++'+':show i++"j")
     ODiffTime  o     -> pShow o
     OTime      o     -> pString ("time("++show o++")")
     OChar      o     -> pShow o
     OString    o     -> pShow o
     ORef       o     -> pPrint o
-    OPair     (a, b) -> pList_ "(" ", " ")" (pPrint a >> pPrint b)
-    OList      ox    -> pContainer "list " pPrint ox
-    OSet       o     -> pContainer "set "  pPrint (S.elems o)
+    OPair     (a, b) -> pList (pString "pair") "(" ", " ")" (pPrint a >> pPrint b)
+    OList      ox    -> if null ox then pString "list{}" else pContainer "list " pPrint ox
+    OSet       o     -> if S.null o then pString "set{}" else pContainer "set "  pPrint (S.elems o)
     OArray     o     -> do
       let (lo, hi)   = bounds o
-          showBounds = pList (pString "array ") "(" ", " ")" (pShow lo >> pShow hi)
-      pList showBounds "{" ", " "}" (mapM_ pPrint (elems o))
-    ODict      o     -> pContainer "dict "   pMapAssoc (M.assocs o)
-    OIntMap    o     -> pContainer "intmap " pMapAssoc (I.assocs o)
+          showBounds = pInline (pList (pString "array") "(" ", " ")" (pShow lo >> pShow hi))
+      pList showBounds " { " ", " " }" (mapM_ pPrint (elems o))
+    ODict      o     ->
+      if M.null o then pString "dict{}" else pContainer "dict " pMapAssoc (M.assocs o)
+    OIntMap    o     ->
+      if I.null o then pString "intmap{}" else pContainer "intmap " pMapAssoc (I.assocs o)
     OTree      o     -> pPrint o
     OPattern   o     -> pPrint o
     ORule      o     -> pPrint o
     OScript    o     -> pPrint o
-    OBytes     o     -> pClosure (pString "data ") "{ " "}" (mapM_ pString (b64Encode o))
+    OBytes     o     -> pClosure (pString "data ") "{ " " }" (mapM_ pString (b64Encode o))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -148,7 +151,7 @@ pListOfComs = mapM_ pPrint
 instance PPrintable a => PPrintable (Com a) where { pPrint = pPrintComWith pPrint }
 
 pPrintSubBlock :: PPrint () -> [Com ScriptExpr] -> PPrint ()
-pPrintSubBlock hdr = pClosure hdr "{" "}" .  mapM_ (pPrintComWith (\s -> pPrint s >> pString ";"))
+pPrintSubBlock hdr = pClosure hdr "{" "}" .  mapM_ (pPrintComWith pPrint)
 
 instance PPrintable RuleExpr where
   pPrint rule = do
@@ -164,7 +167,8 @@ instance PPrintable Subroutine where
 
 instance PPrintable ScriptExpr where
   pPrint expr = case expr of
-    EvalObject   objXp  coms                    _ -> pPrint objXp >> mapM_ pPrint coms
+    EvalObject   objXp  coms                    _ ->
+      pPrint objXp >> mapM_ pPrint coms >> pString ";"
     IfThenElse   coms   objXp  thenXp  elseXp   _ -> do
       pClosure (pInline (pString "if " >> pPrint objXp)) " {" "}" $
         pPrintComWith pListOfComs thenXp
@@ -177,9 +181,9 @@ instance PPrintable ScriptExpr where
         where { done = pClosure (pString "else ") "{" "}" (pPrintComWith (mapM_ pPrint) elseXp) }
     TryCatch     cxcScrpXp  cUStr     xcScrpXp  _ -> do
       pClosure (pString "try ") "{" "}" $
-        pPrintComWith (mapM_ (\p -> pPrint p  >> pString ";")) cxcScrpXp
+        pPrintComWith (mapM_ pPrint) cxcScrpXp
       if null xcScrpXp
-        then  return ()
+        then  pString ";"
         else  pPrintSubBlock (pString "catch " >> pPrint cUStr) xcScrpXp
     ForLoop      cNm        cObjXp    xcScrpXp  _ -> do
       let hdr = do
@@ -197,7 +201,7 @@ instance PPrintable ScriptExpr where
           pString " if "
           pList_ " (" "" ")" (pPrint cObjXp)
       pString ";"
-    ReturnExpr   retrn                cObjXp    _ -> do
+    ReturnExpr   retrn                cObjXp    _ -> pInline $ do
       pString (if retrn then "return" else "throw")
       case unComment cObjXp of
         VoidExpr -> return ()
@@ -214,7 +218,7 @@ instance PPrintable ObjectExpr where
     VoidExpr                                 -> return ()
     Literal      o                         _ -> pPrint o
     AssignExpr   objXp1  comUpdOp  objXp2  _ -> pInline $
-      pPrint objXp1 >> pPrint comUpdOp >> pPrint objXp2 >> pString "; "
+      pPrint objXp1 >> pPrint comUpdOp >> pPrint objXp2
     Equation     objXp1  comAriOp  objXp2  _ -> pInline $
       pPrint objXp1 >> pPrint comAriOp >> (seq objXp2 (pPrint objXp2))
     PrefixExpr   ariOp    c_ObjXp          _ -> pInline $
@@ -223,13 +227,11 @@ instance PPrintable ObjectExpr where
       if bool then  pList_ "(" "" ")" (pPrint c_ObjXp)
               else  pPrint c_ObjXp
     ArraySubExpr objXp    coms     c_ObjXp _ -> pInline $
-      pPrint objXp >> mapM_ pPrint coms >> pList_ "[" "" "]" (pPrint c_ObjXp)
+      pPrint objXp >> mapM_ pPrint coms >> pList_ "{" "" "}" (pPrint c_ObjXp)
     FuncCall     nm       coms     xcObjXp _ -> do
       pList (pPrint nm >> mapM_ pPrint coms) "(" "," ")" (mapM_ pPrint xcObjXp)
-      pString "; "
     DictExpr     dict     coms     xcObjXp _ -> do
       pList (pPrint dict >> mapM_ pPrint coms) " {" "," "}" (mapM_ pPrint xcObjXp)
-      pString "; "
     ArrayExpr    cxcObjXp xcObjXp          _ -> do
       let hdr = do
             pString "array"
@@ -239,9 +241,8 @@ instance PPrintable ObjectExpr where
       pList (pString "struct " >> pPrint cObjXp) "{" ", " "}" (mapM_ pPrint xcObjXp)
     LambdaCall   cObjXp   xcObjXp          _ -> do
       pList (pString "call " >> pPrint cObjXp) "(" ", " ")" (mapM_ pPrint xcObjXp)
-      pString "; "
     LambdaExpr   ccNmx    xcObjXp          _ -> do
-      let hdr = pString "call " >> pPrintComWith (pList_ "(" ", " ")" . mapM_ pPrint) ccNmx
+      let hdr = pString "function" >> pPrintComWith (pList_ "(" ", " ")" . mapM_ pPrint) ccNmx
       pPrintSubBlock hdr xcObjXp
 
 instance PPrintable ObjPat where
@@ -318,7 +319,7 @@ showObj idnc o = case o of
   OChar     o -> show o
   OString   o -> show o
   ORef      o -> '$':showReference o
-  OPair (a,b) -> let i = idnc+1 in "pair ("++showObj i a++", "++showObj i b++")"
+  OPair (a,b) -> let i = idnc+1 in "pair("++showObj i a++", "++showObj i b++")"
   OList     o -> "list "++simplelist idnc o
   OSet      o -> "set "++simplelist idnc (S.elems o)
   OArray    o ->

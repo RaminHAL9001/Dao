@@ -28,6 +28,7 @@ import           Dao.Token
 import           Dao.Parser
 import           Dao.Object
 import           Dao.Object.Parser
+import           Dao.Object.Binary
 import           Dao.Object.Show
 
 import           Control.Concurrent
@@ -36,6 +37,9 @@ import           Control.Monad.State
 
 import           Data.List
 import           Data.Monoid
+import           Data.Binary
+import qualified Data.Binary          as B
+import qualified Data.ByteString.Lazy as B
 
 import           System.IO
 
@@ -133,36 +137,45 @@ randTest = case specify of
 
 ----------------------------------------------------------------------------------------------------
 
-pPrintComScriptExpr :: [Com ScriptExpr] -> PPrint ()
+pPrintComScriptExpr :: [Com ObjectExpr] -> PPrint ()
 pPrintComScriptExpr = mapM_ (pPrintComWith pPrint)
 
 -- | Test the pretty printer and the parser. If a randomly generated object can be pretty printed,
 -- and the parser can parse the pretty-printed string and create the exact same object, then the
 -- test pases.
 testEveryParsePPrint :: MVar Handle -> MVar Int -> Chan (Maybe Int) -> IO ()
-testEveryParsePPrint hlock counter ch = loop where
+testEveryParsePPrint hlock counter ch = handle h loop where
+  h (SomeException e) = do
+    putMVar counter 1 >>= evaluate
+    print e
   loop = do
     i <- readChan ch
     case i of
       Nothing -> return ()
       Just  i -> do
-        let scrp = genRandWith randScriptExpr maxRecurseDepth i
-            str  = seq scrp $! showPPrintState 80 "    " (pEvalState (pPrintComScriptExpr scrp))
-            (par, msg) = seq str $! runParser parseInteractiveScript str 
+        let obexp = genRandWith randO maxRecurseDepth i :: ObjectExpr
+            -- bytes = B.encode obexp
+            -- obj   = B.decode bytes
+            str   = seq obexp $! showPPrintState 80 "    " (pEvalState (pPrint obexp))
+            (par, msg) = seq str $! runParser (fmap fst parseObjectExpr) str 
             err reason = do
               modifyMVar_ hlock $ \h -> do
                 hPutStrLn h $! concat $!
-                  [ "ITEM #", show i, "\n", reason
-                  , if null msg then "." else ": "++msg
+                  [ "ITEM #", show i, " ", reason
+                  , if null msg then "." else '\n':msg
                   , "\n", str
-                  , "\n--------------------------------------------------------------------------"
+                  , "\n", show obexp
+                  , "\n--------------------------------------------------------------------------\n"
                   ]
                 return h
               putMVar counter 1 >>= evaluate
+        -- if seq obexp $! seq bytes $! obj/=obexp
+          -- then  err "Binary deserialization does not match source object >>= evaluate"
+          -- else
         case seq par $! seq msg $! par of
-          OK      _ -> loop
-          Backtrack -> err "Ambiguous parse" >>= evaluate
-          PFail _ _ -> err "Parse failed" >>= evaluate
+                  OK      _ -> loop
+                  Backtrack -> err "Ambiguous parse" >>= evaluate
+                  PFail _ b -> err ("Parse failed, "++uchars b) >>= evaluate
 
 ----------------------------------------------------------------------------------------------------
 

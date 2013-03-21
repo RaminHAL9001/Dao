@@ -31,7 +31,7 @@ listfile = grep -v '^[[:space:]]*$(hash).*$$' $1
 ####################################################################################################
 # The default target
 
-default: test
+default: debug.log
 
 ####################################################################################################
 # The 'edit' target conveniently opens all the files you want to edit in the vim editor.
@@ -98,9 +98,15 @@ enum-set-test:
 ####################################################################################################
 # Other modules. These are mostly for experimenting with new ideas. If you have a new algorithm to
 # try, just start writing a new source file, make a target for it here, and modify the 'default'
-# target above to point to these targets.
+# target above to use these targets as prerequisites.
 
-test: tests/RandObj.hs src/Dao/String.hs src/Dao/Token.hs \
-  src/Dao/Object.hs src/Dao/Object/Show.hs src/Dao/PPrint.hs tests/main.hs
-	$(GHC_COMPILE) tests/RandObj.hs tests/main.hs -o ./test
+test: tests/RandObj.hs \
+  src/Dao/String.hs src/Dao/Token.hs src/Dao/Predicate.hs \
+  src/Dao/Parser.hs src/Dao/Object/Parser.hs \
+  src/Dao/Object.hs src/Dao/Object/Show.hs \
+  src/Dao/PPrint.hs tests/main.hs
+	$(GHC_COMPILE) -rtsopts tests/RandObj.hs tests/main.hs -o ./test
+
+debug.log: ./test
+	rm -f ./debug.log ; ./test
 

@@ -1,4 +1,9 @@
 TODO:
+*	I need to change how the 'Dao.PPrint.PPrintList' construct is printed so long list items that
+wrap or have a closure have their terminating mark followed by a comma on the same line, then the
+next list item begins on the next line. Right now, items continue to be inlined after a closure, and
+commas are always placed on the next line following a 'Dao.PPrint.PPrintWrapIndent' construct.
+
 *	The "Dao.Object.Show" module is dreadfully out of data, it needs to be cleaned up for all the
 changes made to the abstract syntax tree.
 

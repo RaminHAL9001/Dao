@@ -64,7 +64,7 @@ pContainer :: String -> (o -> PPrint ()) -> [o] -> PPrint ()
 pContainer label prin ox = pList (pString label) "{ " ", " "}" (mapM_ prin ox)
 
 pMapAssoc :: Show a => (a, Object) -> PPrint ()
-pMapAssoc (a, obj) = pInline (pShow a >> pString " = " >> pPrint obj)
+pMapAssoc (a, obj) = pWrapIndent (pShow a >> pString " = " >> pPrint obj)
 
 instance PPrintable T_tree where
   pPrint t = case t of
@@ -99,7 +99,7 @@ instance PPrintable Object where
     OSet       o     -> if S.null o then pString "set{}" else pContainer "set "  pPrint (S.elems o)
     OArray     o     -> do
       let (lo, hi)   = bounds o
-          showBounds = pInline (pList (pString "array") "(" ", " ")" (pShow lo >> pShow hi))
+          showBounds = pList (pString "array") "(" ", " ")" (pShow lo >> pShow hi)
       pList showBounds " { " ", " " }" (mapM_ pPrint (elems o))
     ODict      o     ->
       if M.null o then pString "dict{}" else pContainer "dict " pMapAssoc (M.assocs o)
@@ -219,7 +219,7 @@ instance PPrintable ObjectExpr where
     Literal      o                         _ -> pPrint o
     AssignExpr   objXp1  comUpdOp  objXp2  _ -> pInline $
       pPrint objXp1 >> pPrint comUpdOp >> pPrint objXp2
-    Equation     objXp1  comAriOp  objXp2  _ -> pInline $
+    Equation     objXp1  comAriOp  objXp2  _ -> pWrapIndent $
       pPrint objXp1 >> pPrint comAriOp >> (seq objXp2 (pPrint objXp2))
     PrefixExpr   ariOp    c_ObjXp          _ -> pInline $
       pShow ariOp >> pList_ "(" "" ")" (pPrint c_ObjXp)

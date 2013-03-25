@@ -629,8 +629,8 @@ parseLambdaDef key com1 = do
 
 parseArrayDef :: NameComParser ObjectExpr
 parseArrayDef = guardKeyword "array" $ \com1 -> token $ do
+  bounds <- parseFunctionParameters "upper/lower bound for array declaration"
   expect "(first,last) index bounds for array definition" $ \com2 -> do
-    bounds <- parseFunctionParameters "upper/lower bound for array declaration"
     let bad_bounds = fail "array defintion must have exactly two index bounds given"
     case bounds of
       [lo, hi] -> token $ do

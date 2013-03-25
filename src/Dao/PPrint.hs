@@ -79,6 +79,9 @@ data PPrintItem
   | PPrintInline { pPrintItems :: [PPrintItem] }
     -- ^ print items all on a single line of output, wrap if necessary, wrapping forces indentation.
     -- This should be used for outputting equations.
+  | PPrintNoWrap { pPrintItems :: [PPrintItem] } -- ^ like 'PPrintInline' but never wraps.
+  | PPrintWrapIndent { pPrintItems :: [PPrintItem] }
+    -- ^ like 'PPrintInline' but indents lines following the current line if items must wrap.
   | PPrintList
     { pPrintHeader :: [PPrintItem]
     , pPrintOpen   :: UStr
@@ -175,10 +178,19 @@ pShow = pString . show
 pConcat :: [String] -> PPrint ()
 pConcat = pString . concat
 
--- | Evaluate the 'PPrint' printer, and every line of output will be used as an item in a list, and
--- every item is separated by a given separator string.
+-- | Evaluate the 'PPrint' printer, and every line of output will be used as an item in a list and
+-- printed across a line, wrapping on to the next line if the line goes past the width limit.
 pInline :: PPrint () -> PPrint ()
 pInline fn = pPush (PPrintInline (pEval fn))
+
+-- | Like 'pInline' but if the line wraps, every line after the first will be indented.
+pWrapIndent :: PPrint () -> PPrint ()
+pWrapIndent fn = pPush (PPrintWrapIndent (pEval fn))
+
+-- | Inlines items without wrapping, newlines are always ignored. Only to be used if you must NOT
+-- have a line break between multiple items.
+pNoWrap :: PPrint () -> PPrint ()
+pNoWrap fn = pPush (PPrintNoWrap (pEval fn))
 
 -- | Like 'pInline' but places a separator string between each item.
 pList :: PPrint () -> String -> String -> String -> PPrint () -> PPrint ()
@@ -302,32 +314,11 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) 
         else  toolong
       st <- get
       if inliningNow st then return () else noDupNewLine
-    PPrintInline px -> do
-      st <- get
-      let trySt = execState (printAcross px) ((subprint st){inliningNow=True})
-          out = filter (\ (_, _, str) -> not (null str)) (printerOut trySt)
-      put (st{ forcedNewLine = forcedNewLine st || forcedNewLine trySt})
-      st <- get
-      if null out
-        then  if printerCol trySt + printerCol st <= maxWidth
-                then  put $ st{ printerCol = printerCol st + printerCol trySt
-                              , printerBuf = printerBuf st ++ printerBuf trySt
-                              }
-                else  put $ st{ printerOut = printerOut st ++ [printerOutputTripple st]
-                              , printerCol = printerCol trySt
-                              , printerBuf = printerBuf trySt
-                              }
-        else do
-          let line@(ind, strlen, str) = head out
-              combined = (printerTab st, printerCol st + strlen, printerBuf st ++ str)
-          if strlen + printerCol st < maxWidth
-            then  put $ st{ printerOut = printerOut st
-                              ++ combined : tail out ++ [printerOutputTripple trySt]
-                          }
-            else  put $ st{ printerOut = printerOut st ++ line : tail out
-                          , printerBuf = printerBuf trySt
-                          }
-          noDupNewLine
+    PPrintInline     px -> inline False px
+    PPrintWrapIndent px -> inline True px
+    PPrintNoWrap     px -> do
+      let s = concatMap extractStrs px
+      modify (\st -> st{printerBuf = printerBuf st ++ s, printerCol = printerCol st + length s })
     PPrintClosure hdr opn clo px -> do
       st <- get
       noDupNewLine
@@ -360,6 +351,51 @@ linesFromPPrintState maxWidth ps = end (execState (mapM_ prin (pPrintStack ps)) 
     indentedPrinter
     modify (\st -> st{printerTab = tab})
   subprint st = st{printerBuf="", printerCol=0, printerOut=[]}
+  inline indent px =  do
+    st <- get
+    let trySt = execState (printAcross px) ((subprint st){inliningNow=True})
+        out = filter (\ (_, _, str) -> not (null str)) (printerOut trySt)
+    put (st{ forcedNewLine = forcedNewLine st || forcedNewLine trySt})
+    st <- get
+    if null out
+      then  if printerCol trySt + printerCol st <= maxWidth
+              then  put $ st{ printerCol = printerCol st + printerCol trySt
+                            , printerBuf = printerBuf st ++ printerBuf trySt
+                            }
+              else  put $ st{ printerOut = printerOut st ++ [printerOutputTripple st]
+                            , printerCol = printerCol trySt
+                            , printerBuf = printerBuf trySt
+                            }
+      else do
+        let line@(ind, strlen, str) = head out
+            combined = (printerTab st, printerCol st + strlen, printerBuf st ++ str)
+        if strlen + printerCol st < maxWidth
+          then  put $ st{ printerOut = printerOut st
+                            ++ combined : tabAll True (tail out ++ [printerOutputTripple trySt])
+                        }
+          else  put $ st{ printerOut = printerOut st ++ line : tabAll True (tail out)
+                        , printerBuf = printerBuf trySt
+                        }
+        noDupNewLine
+  extractStrs p = case p of
+    PNewLine            -> ""
+    PEndLine            -> ""
+    PPrintString     p  -> uchars p
+    PPrintNoWrap     px -> concatMap extractStrs px
+    PPrintWrapIndent px -> concatMap extractStrs px
+    PPrintInline     px -> concatMap extractStrs px
+    PPrintList    hdr opn sep clo itms -> concat $
+      [ concatMap extractStrs hdr
+      , uchars opn
+      , intercalate (uchars sep) (map extractStrs itms)
+      , uchars clo
+      ]
+    PPrintClosure hdr opn     clo itms -> concat $
+      [ concatMap extractStrs hdr
+      , uchars opn
+      , concatMap extractStrs itms
+      , uchars clo
+      ]
   printAcross px = case px of
     []   -> return ()
     p:px -> do

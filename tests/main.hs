@@ -77,7 +77,7 @@ ifExpr i =
     )
     LocationUnknown
 
-mainIfExpr = print $ pEvalState $ pPrint (ifExpr 3)
+mainIfExpr = showPPrintState 80 "    " (pPrint (ifExpr 3))
 
 testPrinterMAppend = print $
     mempty
@@ -93,16 +93,16 @@ testPrinterMAppend = print $
     }
 
 testPrinter item = mapM_ fn [20, 80, 120] where
-  fn maxWidth = putStrLn $ showPPrintState maxWidth "    " $ pEvalState item
+  fn maxWidth = putStrLn $ showPPrintState maxWidth "    " item
 
-samples = pString "Hello, world! " >> pString "Spitting out the daemons. " >> pString "Good times. "
+samples = [pString "Hello, world! ", pString "Spitting out the daemons. ", pString "Good times. "]
 
 testClosure = testPrinter $ pClosure (pString "begin ") "{ " "}" $ samples
 
 testList = testPrinter $ pList (pString "list ") "{ " ", " " }" $
-  mapM_ pString (words "this is something to test the pList function each word in this list is treated as a list item")
+  map pString (words "this is something to test the pList function each word in this list is treated as a list item")
 
-testInline = testPrinter $ pInline $ sequence_ $ intercalate [pString " + "] $ map return $ concat $
+testInline = testPrinter $ pInline $ intercalate [pString " + "] $ map return $ concat $
   [ map pString (words "testing the pInline function")
   , [pClosure (pString "innerClosure() ") "{ " "}" samples]
   , map pString (words "after the closure more words exist")
@@ -138,7 +138,7 @@ randTest = case specify of
 ----------------------------------------------------------------------------------------------------
 
 pPrintComScriptExpr :: [Com ObjectExpr] -> PPrint ()
-pPrintComScriptExpr = mapM_ (pPrintComWith pPrint)
+pPrintComScriptExpr = pInline . concatMap (pPrintComWith pPrint)
 
 -- | Test the pretty printer and the parser. If a randomly generated object can be pretty printed,
 -- and the parser can parse the pretty-printed string and create the exact same object, then the
@@ -156,7 +156,7 @@ testEveryParsePPrint hlock counter ch = handle h loop where
         let obexp = genRandWith randO maxRecurseDepth i :: ObjectExpr
             -- bytes = B.encode obexp
             -- obj   = B.decode bytes
-            str   = seq obexp $! showPPrintState 80 "    " (pEvalState (pPrint obexp))
+            str   = seq obexp $! showPPrintState 80 "    " (pPrint obexp)
             (par, msg) = seq str $! runParser (fmap fst parseObjectExpr) str 
             err reason = do
               modifyMVar_ hlock $ \h -> do

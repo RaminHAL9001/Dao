@@ -30,6 +30,7 @@ import           Control.Monad.State
 
 import           Data.List
 import           Data.Char
+import           Data.Word
 import           Data.Monoid
 
 import Debug.Trace
@@ -68,87 +69,48 @@ mapTail fn ax = case ax of
 
 ----------------------------------------------------------------------------------------------------
 
--- | The intermediate printer structure, the 'PPrint' monad generates a structure using this data
--- type, the pretty printer uses these types to make decisions on how to output information. This
--- structure contains the basic printing strategies involving how to wrap lines, indent, and place
--- lines of code in a block.
-data PPrintItem
-  = PNewLine -- ^ force a new line
-  | PEndLine -- ^ place a new line unless we are already on a new line.
-  | PPrintString { pPrintString :: UStr } -- ^ a single string of output
-  | PPrintInline { pPrintItems :: [PPrintItem] }
-    -- ^ print items all on a single line of output, wrap if necessary, wrapping forces indentation.
-    -- This should be used for outputting equations.
-  | PPrintNoWrap { pPrintItems :: [PPrintItem] } -- ^ like 'PPrintInline' but never wraps.
-  | PPrintWrapIndent { pPrintItems :: [PPrintItem] }
-    -- ^ like 'PPrintInline' but indents lines following the current line if items must wrap.
-  | PPrintList
-    { pPrintHeader :: [PPrintItem]
-    , pPrintOpen   :: UStr
-    , pPrintSep    :: UStr
-    , pPrintClose  :: UStr
-    , pPrintItems  :: [PPrintItem]
-    }
-    -- ^ a list of items separated by a separator string, as many items are written per line as
-    -- possible, items wrap on the next line if they exceed the line limit, if a wrap occurs, the
-    -- header is written on its own line, the items are written
-  | PPrintClosure
-    { pPrintHeader :: [PPrintItem]
-    , pPrintOpen   :: UStr
-    , pPrintClose  :: UStr
-    , pPrintItems  :: [PPrintItem]
-    }
-    -- ^ used for things like functions and if statements. If possible, the header and closure are
-    -- all written on one line, unless there are more than three items. If they cannot be written
-    -- all on one line, or there are more than three items, then the items are printed one on each
-    -- line and indented within the open and close strings.
-
-instance Show PPrintItem where
-  show p = case p of
-    PNewLine                         -> "newline"
-    PPrintString  p                  -> show p
-    PPrintInline  px                 -> "inline "++show px
-    PPrintClosure hdr opn     clo px -> concat ["closure ", show opn, show clo, " ", show hdr]
-    PPrintList    hdr opn sep clo px -> concat $
-      ["list ", show opn, " ", show sep, " ", show clo, " ", show hdr, " ", show px]
-
--- | The state used by the 'PPrint' monad.
-newtype PPrintState
-  = PPrintState
-    { pPrintStack :: [PPrintItem]
-      -- ^ retrieves the stack of 'PPrintItem's generated during evaluation of 'PPrint' monadic
-      -- functions.
-    }
-
--- | Initialize the pretty printer monad, can be passed as the second argument to
--- 'Control.Monad.State.runState' and 'Control.Monad.State.execState'.
-initPPrintState :: PPrintState
-initPPrintState = PPrintState{ pPrintStack = [] }
-
-----------------------------------------------------------------------------------------------------
-
 class PPrintable a where { pPrint :: a -> PPrint () }
-
--- | A 'Control.Monad.State.State'ful pretty printer monad.
-type PPrint a = PPri a
 
 -- | Force a new line
 pNewLine :: PPrint ()
-pNewLine = xpNewLine
+pNewLine = modify $ \st ->
+  st{ printerCol = 0
+    , printerBuf = ""
+    , printerOut = printerOut st ++ [printerOutputTripple st]
+    , forcedNewLine = True
+    , lineCount = lineCount st + 1
+    }
 
 -- | Place a new line unless we are already on a new line.
 pEndLine :: PPrint ()
-pEndLine = xpEndLine
+pEndLine = do
+  gets printerCol >>= \col -> if col==0 then return () else pNewLine
+  modify (\st -> st{forcedNewLine=True})
 
-instance PPrintable UStr where { pPrint = ustring }
+pIndent :: PPrint () -> PPrint ()
+pIndent indentedPrinter = do
+  tab <- gets printerTab
+  modify (\st -> st{printerTab = tab+1})
+  indentedPrinter
+  modify (\st -> st{printerTab = tab})
+
+instance PPrintable UStr where { pPrint = pUStr }
+
+-- not for export
+appendString :: Int -> String -> PPrint ()
+appendString len str = modify $ \st ->
+  st{ printerCol = printerCol st + len
+    , printerBuf = printerBuf st ++ str
+    , charCount  = charCount  st + fromIntegral len
+    }
 
 -- | Print a 'Dao.String.UStr' as a single line.
 pUStr :: UStr -> PPrint ()
-pUStr u = if nil==u then return () else ustring u
+pUStr u = if nil==u then return () else appendString (ulength u) (uchars u)
 
 -- | Print a 'Prelude.String' as a single line.
 pString :: String -> PPrint ()
-pString = pPrint . ustr
+pString s = if null s then return () else appendString (length s) s
 
 -- | Print any value that instantiates 'Prelude.Show'.
 pShow :: Show a => a -> PPrint ()
@@ -158,122 +120,67 @@ pShow = pString . show
 pConcat :: [String] -> PPrint ()
 pConcat = pString . concat
 
+-- not for export
+printInline :: Bool -> [PPrint ()] -> PPrint ()
+printInline doIndent px = do
+  st <- get
+  let nonewline = inliningNow st
+      trySt = execState (printAcross px) ((subprint st){inliningNow=True})
+      out = filter (\ (_, _, str) -> not (null str)) (printerOut trySt)
+  put (st{forcedNewLine = forcedNewLine st || forcedNewLine trySt})
+  st <- get
+  if null out
+    then  if printerCol trySt + printerCol st <= maxWidth st
+            then  put (mappend st trySt)
+            else  pEndLine >> modify (flip mappend trySt)
+    else do
+      let line@(ind, strlen, str) = head out
+          combined = (printerTab st, printerCol st + strlen, printerBuf st ++ str)
+          pIndent = if doIndent then tabAll True else id
+      if strlen + printerCol st < maxWidth st
+        then  put $ st{ printerOut = printerOut st ++
+                          combined : pIndent (tail out ++ [printerOutputTripple trySt])
+                      }
+        else  put $ st{ printerOut = printerOut st ++ line : pIndent (tail out)
+                      , printerBuf = printerBuf trySt
+                      }
+
 -- | Evaluate the 'PPrint' printer, and every line of output will be used as an item in a list and
 -- printed across a line, wrapping on to the next line if the line goes past the width limit.
 pInline :: [PPrint ()] -> PPrint ()
-pInline fn = xpPrintInline fn
+pInline = printInline False
 
 -- | Like 'pInline' but if the line wraps, every line after the first will be indented.
 pWrapIndent :: [PPrint ()] -> PPrint ()
-pWrapIndent fn = xpPrintWrapIndent fn
+pWrapIndent = printInline True
 
 -- | Inlines items without wrapping, newlines are always ignored. Only to be used if you must NOT
 -- have a line break between multiple items.
 pNoWrap :: [PPrint ()] -> PPrint ()
-pNoWrap fn = xpPrintNoWrap fn
+pNoWrap px = do
+  modify (\st -> st{inliningNow=True})
+  sequence_ px
+  modify (\st -> st{inliningNow=False})
 
 -- | Like 'pInline' but places a separator string between each item.
 pList :: PPrint () -> String -> String -> String -> [PPrint ()] -> PPrint ()
-pList header open sep close items = xpPrintList header (ustr open) (ustr sep) (ustr close) items
-
--- | Like 'pList' but there is no need to pass the first @'PPrint' ()@ header parameter, this
--- parameter is set to @'Prelude.return' ()@.
-pList_ :: String -> String -> String -> [PPrint ()] -> PPrint ()
-pList_ = pList (return ())
-
-pClosure :: PPrint () -> String -> String -> [PPrint ()] -> PPrint ()
-pClosure header open close items = xpPrintClosure header (ustr open) (ustr close) items
-
-----------------------------------------------------------------------------------------------------
-
-type PPri a = State Printer a
-type POutput = (Int, Int, String)
-
--- not for export
-data Printer
-  = Printer
-    { printerTab :: Int -- how many indentation marks should preceed this line
-    , printerCol :: Int -- how many non-indentation characters are in the buffer
-    , printerOut :: [POutput] -- all lines before the current line in the buffer
-    , maxWidth :: Int
-    , printerBuf :: String -- buffers the current line
-    , forcedNewLine :: Bool -- set if a newline is forced, like if an end-line comment was printed.
-    , inliningNow :: Bool -- set if we are inside of a 'PPrintInline' block.
-    }
-
-instance Show Printer where
-  show p = concat $
-    [ "Printer:\n  tab=", show (printerTab p)
-    , ", col=", show (printerCol p)
-    , ", buf=", show (printerBuf p)
-    , ", flags=", intercalate "|" $
-        concat [if forcedNewLine p then ["forcenl"] else [], if inliningNow p then ["inline"] else []]
-    , "\n"
-    ] ++ (map (\ (num, (tab, _, str)) -> "    "++show num++':':show tab++": "++show str++"\n") $
-            take 10 $ reverse $ zip (iterate (+1) 0) (printerOut p))
-
-initPrinter :: Int -> Printer
-initPrinter width =
-  Printer
-  { printerTab = 0
-  , printerCol = 0
-  , printerOut = []
-  , printerBuf = ""
-  , maxWidth   = width
-  , inliningNow = False
-  , forcedNewLine = False
-  }
-
-printerOutputTripple :: Printer -> (Int, Int, String)
-printerOutputTripple st = (printerTab st, printerCol st, printerBuf st)
-
-instance Monoid Printer where
-  mempty = initPrinter 80
-  mappend origSt st = case printerOut st of
-    []                -> 
-      origSt
-      { printerBuf    = printerBuf origSt ++ printerBuf st
-      , printerCol    = printerCol origSt +  printerCol st
-      , inliningNow   = inliningNow   origSt || inliningNow st
-      , forcedNewLine = forcedNewLine origSt || forcedNewLine st
-      }
-    (_, col, buf):out ->
-      st{ printerOut = printerOut origSt ++
-            (printerTab origSt, printerCol origSt + col, printerBuf origSt ++ buf) : out
-        , printerBuf    = printerBuf st
-        , inliningNow   = inliningNow   origSt || inliningNow st
-        , forcedNewLine = forcedNewLine origSt || forcedNewLine st
-        , maxWidth      = maxWidth origSt
-        }
-
--- | A kind of pre-conversion, the 'PPrintState' is broken into a list of strings, each string
--- preceeded by it's indentation factor.
-linesFromPPrintState :: Int -> PPri () -> [(Int, String)]
-linesFromPPrintState maxWidth ps = end (execState ps mempty) where
-  end st = flip map (printerOut st ++ [printerOutputTripple st]) $ \ (a, _, b) ->
-    (a, dropWhile isSpace (chomp b))
-
-xpPrintInline :: [PPri ()] -> PPri ()
-xpPrintInline = xpInline False
-
-xpPrintWrapIndent :: [PPri ()] -> PPri ()
-xpPrintWrapIndent = xpInline True
-
-xpPrintList :: PPri () -> UStr -> UStr -> UStr -> [PPri ()] -> PPri ()
-xpPrintList   hdr opn sep clo px = do
+pList hdr open separator close px = do
   st <- get
-  let noNewline = inliningNow st
+  let opn      = ustr open
+      clo      = ustr close
+      sep      = ustr separator
+      noNewline = inliningNow st
       curLen  = printerCol st
       curBuf  = printerBuf st
-      hdrSt   = execState (hdr >> ustring opn) ((subprint st){inliningNow=True})
+      hdrSt   = execState (hdr >> pUStr opn) ((subprint st){inliningNow=True})
       hdrLen  = printerCol hdrSt
       hdrBuf  = printerBuf hdrSt
-      content = printAcross (mapAlmost (\p -> p >> ustring sep) px)
-      lstSt   = execState (content >> ustring clo) (subprint st)
+      content = printAcross (mapAlmost (\p -> p >> pUStr sep) px)
+      lstSt   = execState (content >> pUStr clo) (subprint st)
       lstLen  = printerCol lstSt
       lstBuf  = printerBuf lstSt
-      toolong = noDupNewLine >> hdr >> ustring opn >>
-        noDupNewLine >> pIndent (content >> noDupNewLine) >> ustring clo
+      toolong = pEndLine >> hdr >> pUStr opn >>
+        pEndLine >> pIndent (content >> pEndLine) >> pUStr clo
   if null (printerOut hdrSt)
     then  let hdrLen = printerCol st
           in  if null (printerOut lstSt)
@@ -283,30 +190,31 @@ xpPrintList   hdr opn sep clo px = do
                                       }
                         else  if hdrLen + lstLen < (maxWidth st)
                                 then do
-                                  noDupNewLine
+                                  pEndLine
                                   put $ st{ printerBuf = hdrBuf ++ lstBuf
                                           , printerCol = hdrLen + lstLen
                                           }
                                 else  toolong
                 else  toolong
     else  toolong
-  if noNewline then return () else noDupNewLine
+  if noNewline then return () else pEndLine
 
-xpPrintNoWrap :: [PPri ()] -> PPri ()
-xpPrintNoWrap px = do
-  modify (\st -> st{inliningNow=True})
-  sequence_ px
-  modify (\st -> st{inliningNow=False})
+-- | Like 'pList' but there is no need to pass the first @'PPrint' ()@ header parameter, this
+-- parameter is set to @'Prelude.return' ()@.
+pList_ :: String -> String -> String -> [PPrint ()] -> PPrint ()
+pList_ = pList (return ())
 
-xpPrintClosure :: PPri () -> UStr -> UStr -> [PPri ()] -> PPri ()
-xpPrintClosure hdr opn clo px = do
+pClosure :: PPrint () -> String -> String -> [PPrint ()] -> PPrint ()
+pClosure hdr open close px = do
   st <- get
-  let nonewline = inliningNow st
+  let opn = ustr open
+      clo = ustr close
+      nonewline = inliningNow st
       content = do
-        printAcross [hdr, ustring opn]
-        noDupNewLine
-        pIndent (mapM_ (\p -> p >> noDupNewLine) px)
-        ustring clo
+        printAcross [hdr, pUStr opn]
+        pEndLine
+        pIndent (mapM_ (\p -> p >> pEndLine) px)
+        pUStr clo
       trySt = execState content ((subprint st){inliningNow=False})
       loop col buf ax = case ax of
         _  | col>maxWidth st -> content
@@ -326,9 +234,84 @@ xpPrintClosure hdr opn clo px = do
   if forcedNewLine trySt
     then modify (flip mappend trySt)
     else loop (printerCol st) (printerBuf st) (printerOut trySt)
-  if nonewline then return () else noDupNewLine
+  if nonewline then return () else pEndLine
 
-printAcross :: [PPri ()] -> PPri ()
+----------------------------------------------------------------------------------------------------
+
+type PPrint a = State Printer a
+type POutput = (Int, Int, String)
+
+-- not for export
+data Printer
+  = Printer
+    { printerTab    :: Int -- how many indentation marks should preceed this line
+    , printerCol    :: Int -- how many non-indentation characters are in the buffer
+    , printerOut    :: [POutput] -- all lines before the current line in the buffer
+    , maxWidth      :: Int
+    , printerBuf    :: String -- buffers the current line
+    , forcedNewLine :: Bool -- set if a pNewLine is forced, like if an end-line comment was printed.
+    , inliningNow   :: Bool -- set if we are inside of a 'PPrintInline' block.
+    , lineCount     :: Word -- how many lines have been printed
+    , charCount     :: Word64 -- how many characters have been printed
+    }
+
+instance Show Printer where
+  show p = concat $
+    [ "Printer:\n  tab=", show (printerTab p)
+    , ", col=", show (printerCol p)
+    , ", buf=", show (printerBuf p)
+    , ", flags=", intercalate "|" $
+        concat [if forcedNewLine p then ["forcenl"] else [], if inliningNow p then ["inline"] else []]
+    , "\n"
+    ] ++ (map (\ (num, (tab, _, str)) -> "    "++show num++':':show tab++": "++show str++"\n") $
+            take 10 $ reverse $ zip (iterate (+1) 0) (printerOut p))
+
+initPrinter :: Int -> Printer
+initPrinter width =
+  Printer
+  { printerTab    = 0
+  , printerCol    = 0
+  , printerOut    = []
+  , printerBuf    = ""
+  , maxWidth      = width
+  , inliningNow   = False
+  , forcedNewLine = False
+  , lineCount     = 0
+  , charCount     = 0
+  }
+
+printerOutputTripple :: Printer -> (Int, Int, String)
+printerOutputTripple st = (printerTab st, printerCol st, printerBuf st)
+
+instance Monoid Printer where
+  mempty = initPrinter 80
+  mappend origSt st = case printerOut st of
+    []                -> (combine origSt st){printerBuf = printerBuf origSt ++ printerBuf st}
+    (_, col, buf):out ->
+      (combine origSt st)
+      { printerOut = printerOut origSt ++
+          (printerTab origSt, printerCol origSt + col, printerBuf origSt ++ buf) : out
+      , printerBuf    = printerBuf st
+      }
+    where
+      combine origSt st = 
+        origSt
+        { printerCol    = printerCol origSt +  printerCol st
+        , inliningNow   = inliningNow   origSt || inliningNow st
+        , forcedNewLine = forcedNewLine origSt || forcedNewLine st
+        , charCount     = charCount  origSt +  charCount st
+        , lineCount     = lineCount  origSt +  lineCount st
+        , maxWidth      = maxWidth origSt
+        }
+
+-- | A kind of pre-conversion, the 'PPrintState' is broken into a list of strings, each string
+-- preceeded by it's indentation factor.
+linesFromPPrintState :: Int -> PPrint () -> [(Int, String)]
+linesFromPPrintState maxWidth ps = end (execState ps mempty) where
+  end st = flip map (printerOut st ++ [printerOutputTripple st]) $ \ (a, _, b) ->
+    (a, dropWhile isSpace (chomp b))
+
+printAcross :: [PPrint ()] -> PPrint ()
 printAcross px = case px of
   []   -> return ()
   p:px -> do
@@ -337,73 +320,14 @@ printAcross px = case px of
     let trySt = execState p (subprint st)
     if withinMaxWidth st trySt
       then put (mappend st trySt)
-      else noDupNewLine >> modify (\st -> mappend st trySt)
+      else pEndLine >> modify (\st -> mappend st trySt)
     printAcross px
-
-xpInline :: Bool -> [PPri ()] -> PPri ()
-xpInline doIndent px = do
-  st <- get
-  let nonewline = inliningNow st
-      trySt = execState (printAcross px) ((subprint st){inliningNow=True})
-      out = filter (\ (_, _, str) -> not (null str)) (printerOut trySt)
-  put (st{forcedNewLine = forcedNewLine st || forcedNewLine trySt})
-  st <- get
-  if null out
-    then  if printerCol trySt + printerCol st <= maxWidth st
-            then  put $ st{ printerCol = printerCol st + printerCol trySt
-                          , printerBuf = printerBuf st ++ printerBuf trySt
-                          }
-            else  put $ st{ printerOut = printerOut st ++ [printerOutputTripple st]
-                          , printerCol = printerCol trySt
-                          , printerBuf = printerBuf trySt
-                          }
-    else do
-      let line@(ind, strlen, str) = head out
-          combined = (printerTab st, printerCol st + strlen, printerBuf st ++ str)
-          pIndent = if doIndent then tabAll True else id
-      if strlen + printerCol st < maxWidth st
-        then  put $ st{ printerOut = printerOut st ++
-                          combined : pIndent (tail out ++ [printerOutputTripple trySt])
-                      }
-        else  put $ st{ printerOut = printerOut st ++ line : pIndent (tail out)
-                      , printerBuf = printerBuf trySt
-                      }
-      --if nonewline then return () else noDupNewLine
-
-xpEndLine :: PPri ()
-xpEndLine = noDupNewLine >> modify (\st -> st{forcedNewLine=True})
-
-newline :: PPri ()
-newline = modify $ \st ->
-  st{ printerCol = 0
-    , printerBuf = ""
-    , printerOut = printerOut st ++ [printerOutputTripple st]
-    }
-
-noDupNewLine :: PPri ()
-noDupNewLine = gets printerCol >>= \col -> if col==0 then return () else newline
-
-xpNewLine :: PPri ()
-xpNewLine = newline >> modify (\st -> st{forcedNewLine=True})
-
-ustring :: UStr -> PPri ()
-ustring p = modify $ \st ->
-  st{ printerCol = printerCol st + ulength p
-    , printerBuf = printerBuf st ++ uchars p
-    }
-
-pIndent :: PPri () -> PPri ()
-pIndent indentedPrinter = do
-  tab <- gets printerTab
-  modify (\st -> st{printerTab = tab+1})
-  indentedPrinter
-  modify (\st -> st{printerTab = tab})
 
 withinMaxWidth :: Printer -> Printer -> Bool
 withinMaxWidth st trySt = null (printerOut trySt) && printerCol st + printerCol trySt <= maxWidth st
 
 subprint :: Printer -> Printer
-subprint st = st{printerBuf="", printerCol=0, printerOut=[]}
+subprint st = st{printerBuf="", printerCol=0, printerOut=[], charCount=0, lineCount=0}
 
 tabAll :: Bool -> [POutput] -> [POutput]
 tabAll alsoTabFinalLine ax = case ax of
@@ -421,6 +345,6 @@ linesToString indentStr = concatMap $ \ (indentCount, string) ->
 -- Given an indentation string and a maximum width value, construct a string from the 'PPrintState'.
 -- The maximum width value is used to call 'linesFromPPrintState', and the indentation string is
 -- used to call 'linesToString'.
-showPPrintState :: Int -> String -> PPri () -> String
+showPPrintState :: Int -> String -> PPrint () -> String
 showPPrintState maxWidth indentStr ps = linesToString indentStr (linesFromPPrintState maxWidth ps)
 

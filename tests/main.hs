@@ -79,19 +79,6 @@ ifExpr i =
 
 mainIfExpr = showPPrintState 80 "    " (pPrint (ifExpr 3))
 
-testPrinterMAppend = print $
-    mempty
-    { printerOut = [(0, 25, "Spitting out the daemons.")]
-    , printerBuf = "Good times."
-    , printerCol = 11
-    }
-  `mappend`
-    mempty
-    { printerOut = [(0, 13, "Hello, world!")]
-    , printerBuf = "Popping out of holes."
-    , printerCol = 21
-    }
-
 testPrinter item = mapM_ fn [20, 80, 120] where
   fn maxWidth = putStrLn $ showPPrintState maxWidth "    " item
 
@@ -109,7 +96,7 @@ testInline = testPrinter $ pInline $ intercalate [pString " + "] $ map return $ 
   ]
 
 -- test the pretty printer
--- main = testList >> testInline >> testClosure >> mainIfExpr
+simpleTest = testList >> testInline >> testClosure >> putStrLn mainIfExpr
 
 ----------------------------------------------------------------------------------------------------
 

@@ -196,7 +196,7 @@ instance PPrintable ScriptExpr where
             pList_ "(" "" ")" [pPrint cObjXp]
       pPrintSubBlock hdr xcScrpXp
     ContinueExpr contin     coms      cObjXp    _ -> pWrapIndent $
-      [ pString (if contin then "continue " else "break")
+      [ pString (if contin then "continue" else "break")
       , pInline (map pPrint coms)
       , case unComment cObjXp of
           VoidExpr -> return ()

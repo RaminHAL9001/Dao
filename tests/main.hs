@@ -124,8 +124,8 @@ randTest = case specify of
 
 ----------------------------------------------------------------------------------------------------
 
-pPrintComScriptExpr :: [Com ObjectExpr] -> PPrint ()
-pPrintComScriptExpr = pInline . concatMap (pPrintComWith pPrint)
+pPrintComScriptExpr :: [Com ScriptExpr] -> PPrint ()
+pPrintComScriptExpr = pPrintSubBlock (return ())
 
 -- | Test the pretty printer and the parser. If a randomly generated object can be pretty printed,
 -- and the parser can parse the pretty-printed string and create the exact same object, then the

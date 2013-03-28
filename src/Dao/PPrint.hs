@@ -71,7 +71,7 @@ mapTail fn ax = case ax of
 
 class PPrintable a where { pPrint :: a -> PPrint () }
 
--- | Force a new line
+-- | Put a new line regardless of whether or not we are aleady on a new line.
 pNewLine :: PPrint ()
 pNewLine = modify $ \st ->
   st{ printerCol = 0
@@ -80,6 +80,11 @@ pNewLine = modify $ \st ->
     , lineCount  = lineCount st + 1
     , printerTab = nextTab st
     }
+
+-- | Like 'pNewLine' but also indicates that there *must* be a new line here (like after a comment)
+-- to prevent lines from being joined.
+pForceNewLine :: PPrint ()
+pForceNewLine = modify (\st -> st{forcedNewLine=True})
 
 -- | Place a new line unless we are already on a new line.
 pEndLine :: PPrint ()
@@ -162,7 +167,7 @@ pGroup :: Bool -> PPrint () -> PPrint ()
 pGroup after fn = do
   st <- get
   let trySt = execState (pEndLine >> fn) (subprint st)
-  if charCount trySt > maxWidth st
+  if charCount trySt > maxWidth st || forcedNewLine trySt
     then  pEndLine >> appendState trySt >> (if after then pEndLine else return ())
     else  appendState (stateJoinLines trySt)
 
@@ -185,8 +190,10 @@ pList_ = pList (return ())
 pClosure :: PPrint () -> String -> String -> [PPrint ()] -> PPrint ()
 pClosure header open close px = do
   st <- get
-  let content =
-        header >> pString open >> pIndent (sequence_ $ mapAlmost (>>pEndLine) px) >> pString close
+  let content = do
+        header >> pString open >> pEndLine
+        pIndent (sequence_ $ mapAlmost (>>pEndLine) px)
+        pEndLine >> pString close
       trySt = execState content (subprint st)
   if charCount trySt + printerCol st > maxWidth st then pEndLine else return ()
   appendState trySt

@@ -41,7 +41,7 @@ import Debug.Trace
 -- instantiates 'PPrintable', and a maximum width value, and a tab string, and will convert that
 -- value to a 'Prelude.String'.
 prettyPrint :: PPrintable a => Int -> String -> a -> String
-prettyPrint maxWidth tab = showPPrintState maxWidth tab . pPrint
+prettyPrint maxWidth tab = showPPrint maxWidth tab . pPrint
 
 ----------------------------------------------------------------------------------------------------
 
@@ -85,6 +85,7 @@ pNewLine = modify $ \st ->
 pEndLine :: PPrint ()
 pEndLine = gets printerCol >>= \col ->
   if col==0 then modify (\st -> st{printerTab=nextTab st}) else pNewLine
+    
 
 pIndent :: PPrint () -> PPrint ()
 pIndent indentedPrinter = do
@@ -147,8 +148,7 @@ pWrapIndent px = do
   case printerOut trySt of
     []   -> appendState trySt
     p:px ->
-      let tab = printerTab st
-          ind (tab, len, str) = (tab+1, len, str)
+      let ind (tab, len, str) = (tab+1, len, str)
       in  appendState (trySt{printerOut = p : map ind px, printerTab = printerTab trySt + 1})
 
 -- | Will evaluate a 'PPrint' function to create a block of text, and if the block of text can be
@@ -161,7 +161,7 @@ pWrapIndent px = do
 pGroup :: Bool -> PPrint () -> PPrint ()
 pGroup after fn = do
   st <- get
-  let trySt = execState fn (subprint st)
+  let trySt = execState (pEndLine >> fn) (subprint st)
   if charCount trySt > maxWidth st
     then  pEndLine >> appendState trySt >> (if after then pEndLine else return ())
     else  appendState (stateJoinLines trySt)
@@ -207,6 +207,7 @@ data Printer
     , lineCount     :: Int -- how many lines have been printed
     , charCount     :: Int -- how many characters have been printed
     , maxWidth      :: Int
+    , forcedNewLine :: Bool
     }
 
 initPrinter :: Int -> Printer
@@ -220,6 +221,7 @@ initPrinter width =
   , lineCount     = 0
   , charCount     = 0
   , nextTab       = 0
+  , forcedNewLine = False
   }
 
 printerOutputTripple :: Printer -> (Int, Int, String)
@@ -243,12 +245,22 @@ instance Monoid Printer where
     where
       combine origSt st = 
         origSt
-        { charCount  = charCount origSt + charCount st
-        , lineCount  = lineCount origSt + lineCount st
-        , maxWidth   = maxWidth  origSt
-        , printerTab = printerTab st
-        , nextTab    = nextTab st
+        { charCount     = charCount origSt + charCount st
+        , lineCount     = lineCount origSt + lineCount st
+        , maxWidth      = maxWidth  origSt
+        , printerTab    = printerTab st
+        , nextTab       = nextTab st
+        , forcedNewLine = forcedNewLine origSt || forcedNewLine st
         }
+
+-- | Force a string into the 'printerBuf' buffer without modifying anything else. This should allow
+-- you to put markers into the output without effecting any of the metrics used to control how the
+-- output is indented or wrapped.
+pDebug :: (Printer -> String) -> PPrint ()
+pDebug fn = do
+  st <- get
+  let msg = "["++fn st++"]"
+  put (st{printerBuf=printerBuf st ++ seq msg msg})
 
 stateJoinLines :: Printer -> Printer
 stateJoinLines st =
@@ -300,6 +312,6 @@ linesToString indentStr = concatMap $ \ (indentCount, string) ->
 -- Given an indentation string and a maximum width value, construct a string from the 'PPrintState'.
 -- The maximum width value is used to call 'linesFromPPrintState', and the indentation string is
 -- used to call 'linesToString'.
-showPPrintState :: Int -> String -> PPrint () -> String
-showPPrintState maxWidth indentStr ps = linesToString indentStr (linesFromPPrintState maxWidth ps)
+showPPrint :: Int -> String -> PPrint () -> String
+showPPrint maxWidth indentStr ps = linesToString indentStr (linesFromPPrintState maxWidth ps)
 

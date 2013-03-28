@@ -77,10 +77,10 @@ ifExpr i =
     )
     LocationUnknown
 
-mainIfExpr = showPPrintState 80 "    " (pPrint (ifExpr 3))
+mainIfExpr = showPPrint 80 "    " (pPrint (ifExpr 3))
 
 testPrinter item = mapM_ fn [20, 80, 120] where
-  fn maxWidth = putStrLn $ showPPrintState maxWidth "    " item
+  fn maxWidth = putStrLn $ showPPrint maxWidth "    " item
 
 samples = [pString "Hello, world! ", pString "Spitting out the daemons. ", pString "Good times. "]
 
@@ -143,7 +143,7 @@ testEveryParsePPrint hlock counter ch = handle h loop where
         let obexp = genRandWith randO maxRecurseDepth i :: ObjectExpr
             -- bytes = B.encode obexp
             -- obj   = B.decode bytes
-            str   = seq obexp $! showPPrintState 80 "    " (pPrint obexp)
+            str   = seq obexp $! showPPrint 80 "    " (pPrint obexp)
             (par, msg) = seq str $! runParser (fmap fst parseObjectExpr) str 
             err reason = do
               modifyMVar_ hlock $ \h -> do

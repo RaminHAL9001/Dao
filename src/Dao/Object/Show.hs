@@ -154,7 +154,7 @@ pListOfComs = pInline . pListOfComsWith pPrint
 instance PPrintable a => PPrintable (Com a) where { pPrint = pInline . pPrintComWith pPrint }
 
 pPrintSubBlock :: PPrint () -> [Com ScriptExpr] -> PPrint ()
-pPrintSubBlock hdr = pClosure hdr "{" "}" .  concatMap (pPrintComWith pPrint)
+pPrintSubBlock hdr = pClosure hdr " {" " }" .  concatMap (pPrintComWith pPrint)
 
 instance PPrintable RuleExpr where
   pPrint rule = do
@@ -169,7 +169,7 @@ instance PPrintable Subroutine where
     pList_ "(" "," ")" (map pPrint (argsPattern sub))
 
 instance PPrintable ScriptExpr where
-  pPrint expr = case expr of
+  pPrint expr = pGroup True $ case expr of
     EvalObject   objXp  coms                    _ ->
       pPrint objXp >> mapM_ pPrint coms >> pString ";"
     IfThenElse   coms   objXp  thenXp  elseXp   _ -> do

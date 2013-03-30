@@ -146,7 +146,7 @@ instance Objectify Pattern where
   toObject = OPattern
   fromObject (OPattern o) = return o
 
-instance Objectify RuleExpr where
+instance Objectify Rule where
   toObject = ORule
   fromObject (ORule o) = return o
 
@@ -294,7 +294,7 @@ objListToPattern ox = loop 0 ox [] where
 patternComponents :: Pattern -> [Object]
 patternComponents p = map patUnitToObj (getPatUnits p)
 
-ruleComponents :: RuleExpr -> Object
+ruleComponents :: Rule -> Object
 ruleComponents r =
   OPair ( OList (map (OList . patternComponents) (map unComment (unComment (rulePattern r))))
         , OScript (FuncExpr (Com []) (ruleAction r))

@@ -40,7 +40,7 @@ data OpCode
   | Return
 
 -- | Used to represent a block of instructions in an program in memory. Each 'FuncExpr' and
--- 'RuleExpr' translates into a 'CodeBlock'.
+-- 'Rule' translates into a 'CodeBlock'.
 newtype CodeBlock = CodeBlock { codeBlockToArray :: Maybe (Array Int CtrlExpr) }
 
 -- | State for translating a 'Dao.Object.CtrlExpr' to an intermediate representation

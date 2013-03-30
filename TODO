@@ -1,4 +1,8 @@
 TODO:
+*	Need to left-factor the 'Dao.Object.Parser.parseDirective' parsers.
+
+*	Need to define a second rule table for rules that respond to 'Dao.Object.ObjPat's.
+
 *	I need to change how the 'Dao.PPrint.PPrintList' construct is printed so long list items that
 wrap or have a closure have their terminating mark followed by a comma on the same line, then the
 next list item begins on the next line. Right now, items continue to be inlined after a closure, and

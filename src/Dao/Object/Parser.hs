@@ -264,13 +264,13 @@ parseLocalGlobal = msum $
 
 ----------------------------------------------------------------------------------------------------
 
--- | A 'KeywordComment' parser is a parser that starts by looking for a keyword, then parses an
--- expression based on that keyword. It is left-factored, so before calling a function of this type,
--- the keyword and first comment after the keyword must both be parsed by the calling context and
--- passed to this function. The result is, many parsers of this type can be placed together in a
--- single 'Control.Monad.msum' list, and each parser will be tried in turn but will not need to
--- backtrack to the initial keyword, because the initial keyword and comment was parsed for it by
--- the calling context.
+-- | A 'NameComParser' is a parser that starts by looking for a keyword, then parses an expression
+-- based on that keyword. It is left-factored, so before calling a function of this type, the
+-- keyword and first comment after the keyword must both be parsed by the calling context and passed
+-- to this function. The result is, many parsers of this type can be placed together in a single
+-- 'Control.Monad.msum' list, and each parser will be tried in turn but will not need to backtrack
+-- to the initial keyword, because the initial keyword and comment was parsed for it by the calling
+-- context.
 type NameComParser a = String -> [Comment] -> Parser a
 
 -- | Like NameComParser but takes an initial 'Dao.Object.ObjectExpr' and comment as it's parameters.
@@ -580,12 +580,12 @@ keywordObjectExpr key com1 = msum $ map (\parser -> parser key com1) $
 
 -- Until I fix how the comments are stored in object and script expressions, I will have to make do
 -- with hacks like this one.
-adjustComListableObjExpr :: Parser [Com (ObjectExpr, [Comment])] -> Parser [Com ObjectExpr]
-adjustComListableObjExpr =
+adjustComListable :: Parser [Com (a, [Comment])] -> Parser [Com a]
+adjustComListable =
   fmap (map (\a -> let (o, c) = unComment a in appendComments (fmap (const o) a) c))
 
 parseFunctionParameters :: String -> Parser [Com ObjectExpr]
-parseFunctionParameters msg = adjustComListableObjExpr $
+parseFunctionParameters msg = adjustComListable $
   parseListable msg '(' ',' ')' parseObjectExpr
 
 parseLambdaCall :: NameComParser ObjectExpr
@@ -620,12 +620,12 @@ parseFuncParamVars = parseListable func_param_var '(' ',' ')' (parseName func_pa
 
 parseLambdaDef :: NameComParser ObjectExpr
 parseLambdaDef key com1 = do
-  guard (key=="func" || key=="function")
+  guard (key=="func" || key=="function" || key=="pattern" || key=="pat" || key=="rule")
   expect "list of parameter variables after \"function\" statement" $ \com2 -> do
-    params <- mplus parseFuncParamVars (fmap ((:[]) . Com) (parseName func_param_var))
+    params <- parseFunctionParameters ("parameters to \""++key++"\" expression")
     flip mplus (fail (expected_sub_for "lambda function definition")) $ do
       script <- parseBracketedScript
-      return (LambdaExpr (com com1 params com2) script unloc)
+      return (LambdaExpr (read key) (com com1 params com2) script unloc)
 
 parseArrayDef :: NameComParser ObjectExpr
 parseArrayDef = guardKeyword "array" $ \com1 -> token $ do
@@ -635,8 +635,8 @@ parseArrayDef = guardKeyword "array" $ \com1 -> token $ do
     case bounds of
       [lo, hi] -> token $ do
         flip mplus (fail "expecting initializing values for array defition") $ do
-          initValues <- adjustComListableObjExpr $
-            parseListable "array initialing element" '{' ',' '}' parseObjectExpr
+          initValues <- adjustComListable $
+            parseListable "array initializing element" '{' ',' '}' parseObjectExpr
           return (ArrayExpr (com com1 bounds com2) initValues unloc)
       _       -> bad_bounds
 
@@ -647,7 +647,7 @@ parseListSetDictIntmap key com1 = do
         AssignExpr _ _ _ _ -> return (item, com2)
         _ -> fail ("each entry to "++key++" definition must assign a value to a key")
       getItem = if key=="dict" || key=="intmap" then getDictItem else parseObjectExpr
-  items <- adjustComListableObjExpr $
+  items <- adjustComListable $
     parseListable ("items for "++key++" definition") '{' ',' '}' getItem
   return (DictExpr (ustr key) com1 items unloc)
 
@@ -696,7 +696,7 @@ constructWithNonKeyword :: NameComParser ObjectExpr
 constructWithNonKeyword key com1 = mplus funcCall localRef where
   localRef = return (Literal (ORef $ LocalRef $ ustr key) unloc)
   funcCall = do
-    argv <- adjustComListableObjExpr $
+    argv <- adjustComListable $
       parseListable ("arguments to function \""++key++"\"") '(' ',' ')' parseObjectExpr
     return (FuncCall (ustr key) com1 argv unloc)
 
@@ -743,17 +743,14 @@ parseDirective = msum $
             "BEGIN"    -> BeginExpr    block unloc
             "END"      -> EndExpr      block unloc
   , do -- Parse a top-level rule.
-        string "rule"
+        typ <- msum [string "rule", string "pat", string "pattern"]
         let msg = "rule pattern string expression"
-            pat = parseString >>= readsAll msg reads
         expect msg $ \com1 -> do
-          pattern <- mplus (parseListable msg '(' ',' ')' pat) $
-            (pat >>= \pattern -> return [com com1 pattern []])
+          pattern <- parseFunctionParameters ("patterns to \""++typ++"\" expression")
           expect "script expression for rule definition" $ \com2 -> do
             scrpt <- parseBracketedScript
-            return $ flip TopRuleExpr unloc $ Com $
-              RuleExpr{ rulePattern = com com1 pattern [], ruleAction = com com2 scrpt [] }
-  , do -- Parse a top-level function declaration.
+            return (TopLambdaExpr (read typ) (com com1 pattern com2) scrpt unloc)
+  , do -- Parse a top-level function declaration, which has it's name stated before the arguments.
         mplus (string "function") (string "func")
         let msg = "top-level function declaration"
         expect ("expecting name for "++msg) $ \com1 -> do

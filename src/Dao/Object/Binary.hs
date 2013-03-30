@@ -501,7 +501,7 @@ instance Binary ObjectExpr where
     DictExpr     a b c z -> x z 0x48 $ put a           >> putCommentList b >> putComList c
     ArrayExpr    a b   z -> x z 0x49 $ putComComList a >> putComList b
     ArraySubExpr a b c z -> x z 0x4A $ put a           >> putCommentList b >> putCom c
-    LambdaExpr   a b   z -> x z 0x4B $ putComComList a >> putComList b
+    LambdaExpr   a b c z -> put a >> putComComList b >> putComList c >> put z
     where
       x z i putx  = putWord8 i >> put z >> putx
       char3 str = mapM_ (putWord8 . fromIntegral) (take 3 (map ord (uchars str) ++ repeat 0))
@@ -518,36 +518,37 @@ instance Binary ObjectExpr where
       0x48 -> liftM4 DictExpr     get           getCommentList  getComList get
       0x49 -> liftM3 ArrayExpr    getComComList getComList                 get
       0x4A -> liftM4 ArraySubExpr get           getCommentList  getCom     get
-      0x4B -> liftM3 LambdaExpr   getComComList getComList                 get
-      _    -> error "could not load, corrupted data in object expression"
+      _    -> get >>= \t ->
+        case lambdaExprTypeFromWord8 t of
+          Just  t -> liftM3 (LambdaExpr t) getComComList   getComList          get
+          Nothing -> error "could not load, corrupted data in object expression"
       where
-        { char3 = do
-            (a, b, c) <- liftM3 (,,) getWord8 getWord8 getWord8
-            return (ustr (map (chr . fromIntegral) [a, b, c]))
-        }
+        char3 = do
+          (a, b, c) <- liftM3 (,,) getWord8 getWord8 getWord8
+          return (ustr (map (chr . fromIntegral) [a, b, c]))
 
 instance Binary ScriptExpr where
   put s = case s of
-    EvalObject   a b     z -> x z 0x51 $ put a              >> putCommentList b
-    IfThenElse   a b c d z -> x z 0x52 $ putCommentList a   >> put b    >> putComWith putComList c >> putComWith putComList d
-    TryCatch     a b c   z -> x z 0x53 $ putComWith putComList a        >> putCom b                >> putComList c
-    ForLoop      a b c   z -> x z 0x54 $ putCom a           >> putCom b >> putComList c
-    ContinueExpr a b c   z -> x z 0x55 $ putObjBool a       >> putCommentList b                    >> putCom c
-    ReturnExpr   a b     z -> x z 0x56 $ putObjBool a       >> putCom b
-    WithDoc      a b     z -> x z 0x57 $ putCom a           >> putComList b
+    EvalObject   a b     z -> x z 0x50 $ put a              >> putCommentList b
+    IfThenElse   a b c d z -> x z 0x51 $ putCommentList a   >> put b    >> putComWith putComList c >> putComWith putComList d
+    TryCatch     a b c   z -> x z 0x52 $ putComWith putComList a        >> putCom b                >> putComList c
+    ForLoop      a b c   z -> x z 0x53 $ putCom a           >> putCom b >> putComList c
+    ContinueExpr a b c   z -> x z 0x54 $ putObjBool a       >> putCommentList b                    >> putCom c
+    ReturnExpr   a b     z -> x z 0x55 $ putObjBool a       >> putCom b
+    WithDoc      a b     z -> x z 0x56 $ putCom a           >> putComList b
     where
       x z i putx = putWord8 i >> putx >> put z
       bool a = putWord8 (if a then 0x82 else 0x81)
   get = do
     w <- getWord8
     case w of
-      0x51 -> liftM3 EvalObject   get         getCommentList            get
-      0x52 -> liftM5 IfThenElse   getCommentList get (getComWith getComList) (getComWith getComList)  get
-      0x53 -> liftM4 TryCatch     (getComWith getComList)    getCom     getComList  get
-      0x54 -> liftM4 ForLoop      getCom      getCom         getComList get
-      0x55 -> liftM4 ContinueExpr getObjBool  getCommentList getCom     get
-      0x56 -> liftM3 ReturnExpr   getObjBool  getCom                    get
-      0x57 -> liftM3 WithDoc      getCom      getComList                get
+      0x50 -> liftM3 EvalObject   get         getCommentList            get
+      0x51 -> liftM5 IfThenElse   getCommentList get (getComWith getComList) (getComWith getComList)  get
+      0x52 -> liftM4 TryCatch     (getComWith getComList)    getCom     getComList  get
+      0x53 -> liftM4 ForLoop      getCom      getCom         getComList get
+      0x54 -> liftM4 ContinueExpr getObjBool  getCommentList getCom     get
+      0x55 -> liftM3 ReturnExpr   getObjBool  getCom                    get
+      0x56 -> liftM3 WithDoc      getCom      getComList                get
       _    -> error "could not load, script data is corrupted"
 
 instance Binary Location where
@@ -572,9 +573,10 @@ instance Binary Location where
 
 ----------------------------------------------------------------------------------------------------
 
-instance Binary RuleExpr where
-  put r = putComComList (rulePattern r) >> putComComList (ruleAction r)
-  get   = liftM2 RuleExpr getComComList getComComList
+instance Binary Rule where
+  put r = putList (rulePattern r) >> putComList (ruleAction r)
+  get   = liftM2 (\a b -> Rule VoidExpr a b err) getList getComList where
+    err = error "rule loaded from binary file is used before being converted to an executable"
 
 instance Binary Subroutine where
   put s = putList (argsPattern s) >> putComList (subSourceCode s)
@@ -584,15 +586,34 @@ instance Binary ObjPat where
   put s = error "TODO: define binary serializer for ObjPat"
   get   = error "TODO: define binary serializer for ObjPat"
 
+lambdaExprTypeToWord8 :: LambdaExprType -> Word8
+lambdaExprTypeToWord8 t = case t of
+  FuncExprType -> 0x59
+  RuleExprType -> 0x5A
+  PatExprType  -> 0x5B
+
+lambdaExprTypeFromWord8 :: Word8 -> Maybe LambdaExprType
+lambdaExprTypeFromWord8 t = case t of
+  0x59 -> Just FuncExprType
+  0x5A -> Just RuleExprType
+  0x5B -> Just PatExprType
+  _    -> Nothing
+
+instance Binary LambdaExprType where
+  get = getWord8 >>= \t -> case lambdaExprTypeFromWord8 t of
+    Nothing -> error "object expression, lambda expression type"
+    Just  t -> return t
+  put = putWord8 . lambdaExprTypeToWord8
+
 instance Binary TopLevelExpr where
   put d = case d of
-    Attribute      req nm         lc -> x 0x59 $
+    Attribute      req nm        lc -> x 0x57 $
       putComWith putNullTermStr req >> putComWith putNullTermStr nm >> put lc
-    ToplevelDefine name obj     lc -> x 0x5A (putComWith putList name >> putCom obj >> put lc)
-    TopRuleExpr    rule         lc -> x 0x5B (putCom rule >> put lc)
-    BeginExpr      scrp         lc -> x 0x5C (putComComList scrp >> put lc)
-    EndExpr        scrp         lc -> x 0x5D (putComComList scrp >> put lc)
-    ToplevelFunc   nm args scrp lc -> x 0x5E $ do
+    ToplevelDefine name obj      lc -> x 0x58 (putComWith putList name >> putCom obj >> put lc)
+    TopLambdaExpr  typ  pat scrp lc -> put typ >> putComComList pat >> putComList scrp >> put lc
+    BeginExpr      scrp          lc -> x 0x5D (putComComList scrp >> put lc)
+    EndExpr        scrp          lc -> x 0x5E (putComComList scrp >> put lc)
+    ToplevelFunc   nm args scrp  lc -> x 0x5F $ do
       putCom         nm
       putComList     args
       putComComList  scrp
@@ -601,12 +622,14 @@ instance Binary TopLevelExpr where
   get = do
     w <- getWord8
     case w of
-      0x59 -> liftM3 Attribute      (getComWith getNullTermStr) (getComWith getNullTermStr) get
-      0x5A -> liftM3 ToplevelDefine (getComWith getList) getCom get
-      0x5B -> liftM2 TopRuleExpr    getCom get
+      0x57 -> liftM3 Attribute      (getComWith getNullTermStr) (getComWith getNullTermStr) get
+      0x58 -> liftM3 ToplevelDefine (getComWith getList) getCom get
       0x5C -> liftM2 BeginExpr      getComComList get
       0x5D -> liftM2 EndExpr        getComComList get
       0x5E -> liftM4 ToplevelFunc   getCom getComList getComComList get
+      _    -> case lambdaExprTypeFromWord8 w of
+        Nothing -> error "top-level expression"
+        Just  t -> liftM3 (TopLambdaExpr t) getComComList getComList get
 
 instance Binary SourceCode where
   put sc = do

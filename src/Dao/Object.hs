@@ -97,7 +97,7 @@ type T_intMap   = IM.IntMap Object
 type T_dict     = M.Map Name Object
 type T_tree     = T.Tree Name Object
 type T_pattern  = Pattern
-type T_rule     = RuleExpr
+type T_rule     = Rule
 type T_script   = Subroutine
 type T_bytes    = B.ByteString
 
@@ -390,12 +390,25 @@ instance Functor Com where
 
 -- | This is the data structure used to store rules as serialized data, although when a bytecode
 -- program is loaded, rules do not exist, the 'ORule' object constructor contains this structure.
-data RuleExpr
-  = RuleExpr
-    { rulePattern :: Com [Com Pattern]
-    , ruleAction  :: Com [Com ScriptExpr]
+data Rule
+  = Rule
+    { ruleMetaExpr   :: ObjectExpr -- ^ the source code that generated this object
+    , rulePattern    :: [Pattern]  -- ^ the patterns generated from the meta expression
+    , ruleAction     :: [Com ScriptExpr] -- ^ the executable script created from the 'ruleMetaExpr'
+    , ruleExecutable :: Executable -- ^ the executable in memory
     }
-    deriving (Eq, Ord, Show, Typeable)
+    deriving Typeable
+
+instance Eq Rule where
+  a == b = rulePattern a == rulePattern b && ruleAction a == ruleAction b
+
+instance Ord Rule where
+  compare a b = case compare (rulePattern a) (rulePattern b) of
+    EQ -> compare (ruleAction a) (ruleAction b)
+    ne -> ne
+
+instance Show Rule where
+  show r = "Rule{rulePattern="++show (rulePattern r)++",ruleAction="++show (ruleAction r)
 
 -- | An executable is either a rule action, or a function.
 data Executable
@@ -510,6 +523,21 @@ instance Read ArithOp where
 
 instance Bounded ArithOp where {minBound = REF; maxBound = POINT}
 
+data LambdaExprType = FuncExprType | RuleExprType | PatExprType deriving (Eq, Ord, Enum, Typeable)
+instance Show LambdaExprType where
+  show a = case a of
+    FuncExprType -> "function"
+    RuleExprType -> "rule"
+    PatExprType  -> "pattern"
+instance Read LambdaExprType where
+  readsPrec _ str = map (\a->(a,"")) $ case str of
+    "func"     -> [FuncExprType]
+    "function" -> [FuncExprType]
+    "rule"     -> [RuleExprType]
+    "pattern"  -> [PatExprType]
+    "pat"      -> [PatExprType]
+    _          -> []
+
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
   = VoidExpr -- ^ Not a language construct, but used where an object expression is optional.
@@ -524,24 +552,24 @@ data ObjectExpr
   | ArrayExpr    (Com [Com ObjectExpr]) [Com ObjectExpr]  Location
   | StructExpr   (Com ObjectExpr)       [Com ObjectExpr]  Location
   | LambdaCall   (Com ObjectExpr)       [Com ObjectExpr]  Location
-  | LambdaExpr   (Com [Com Name])       [Com ScriptExpr]  Location
+  | LambdaExpr   LambdaExprType  (Com [Com ObjectExpr]) [Com ScriptExpr]  Location
   deriving (Eq, Ord, Show, Typeable)
 
 instance HasLocation ObjectExpr where
   getLocation o = case o of
     VoidExpr -> LocationUnknown
-    Literal      _     o -> o
-    AssignExpr   _ _ _ o -> o
-    Equation     _ _ _ o -> o
-    PrefixExpr   _ _   o -> o
-    ParenExpr    _ _   o -> o
-    ArraySubExpr _ _ _ o -> o
-    FuncCall     _ _ _ o -> o
-    DictExpr     _ _ _ o -> o
-    ArrayExpr    _ _   o -> o
-    StructExpr   _ _   o -> o
-    LambdaCall   _ _   o -> o
-    LambdaExpr   _ _   o -> o
+    Literal        _     o -> o
+    AssignExpr     _ _ _ o -> o
+    Equation       _ _ _ o -> o
+    PrefixExpr     _ _   o -> o
+    ParenExpr      _ _   o -> o
+    ArraySubExpr   _ _ _ o -> o
+    FuncCall       _ _ _ o -> o
+    DictExpr       _ _ _ o -> o
+    ArrayExpr      _ _   o -> o
+    StructExpr     _ _   o -> o
+    LambdaCall     _ _   o -> o
+    LambdaExpr   _ _ _   o -> o
   setLocation o loc = case o of
     VoidExpr             -> VoidExpr
     Literal      a     _ -> Literal      a     loc
@@ -555,7 +583,7 @@ instance HasLocation ObjectExpr where
     ArrayExpr    a b   _ -> ArrayExpr    a b   loc
     StructExpr   a b   _ -> StructExpr   a b   loc
     LambdaCall   a b   _ -> LambdaCall   a b   loc
-    LambdaExpr   a b   _ -> LambdaExpr   a b   loc
+    LambdaExpr   a b c _ -> LambdaExpr   a b c loc
 
 -- | Part of the Dao language abstract syntax tree: any expression that controls the flow of script
 -- exectuion.
@@ -598,13 +626,13 @@ instance HasLocation ScriptExpr where
 -- | A 'TopLevelExpr' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
 data TopLevelExpr
-  = Attribute      (Com Name)    (Com Name)        Location
-  | ToplevelDefine (Com [Name])  (Com ObjectExpr)  Location
-  | TopRuleExpr    (Com RuleExpr)                  Location
-  | SetupExpr      (Com [Com ScriptExpr])          Location
-  | BeginExpr      (Com [Com ScriptExpr])          Location
-  | EndExpr        (Com [Com ScriptExpr])          Location
-  | TakedownExpr   (Com [Com ScriptExpr])          Location
+  = Attribute      (Com Name)   (Com Name)       Location
+  | ToplevelDefine (Com [Name]) (Com ObjectExpr) Location
+  | TopLambdaExpr  LambdaExprType (Com [Com ObjectExpr]) [Com ScriptExpr] Location
+  | SetupExpr      (Com [Com ScriptExpr]) Location
+  | BeginExpr      (Com [Com ScriptExpr]) Location
+  | EndExpr        (Com [Com ScriptExpr]) Location
+  | TakedownExpr   (Com [Com ScriptExpr]) Location
   | ToplevelFunc   (Com Name) [Com Name] (Com [Com ScriptExpr]) Location
   deriving (Eq, Ord, Show, Typeable)
 
@@ -612,7 +640,7 @@ instance HasLocation TopLevelExpr where
   getLocation o = case o of
     Attribute      _ _   o -> o
     ToplevelDefine _ _   o -> o
-    TopRuleExpr    _     o -> o
+    TopLambdaExpr  _ _ _ o -> o
     SetupExpr      _     o -> o
     BeginExpr      _     o -> o
     EndExpr        _     o -> o
@@ -621,7 +649,7 @@ instance HasLocation TopLevelExpr where
   setLocation o loc = case o of
     Attribute      a b   _ -> Attribute      a b   loc
     ToplevelDefine a b   _ -> ToplevelDefine a b   loc
-    TopRuleExpr    a     _ -> TopRuleExpr    a     loc
+    TopLambdaExpr  a b c _ -> TopLambdaExpr  a b c loc
     SetupExpr      a     _ -> SetupExpr      a     loc
     BeginExpr      a     _ -> BeginExpr      a     loc
     EndExpr        a     _ -> EndExpr        a     loc

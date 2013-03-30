@@ -144,7 +144,7 @@ runSubroutine args sub =
 -- | Execute a 'Dao.Object.Rule' object as though it were a script that could be called. The
 -- parameters passed will be stored into the 'currentMatch' slot durring execution, but all
 -- parameters passed must be of type 'Dao.Object.OString', or an error is thrown.
-execRuleCall :: [Com ObjectExpr] -> RuleExpr -> Exec Object
+execRuleCall :: [Com ObjectExpr] -> Rule -> Exec Object
 execRuleCall ax rule = do
   let typeErr o =
         typeError o "when calling a Rule object as though it were a function, all parameters" $
@@ -155,7 +155,7 @@ execRuleCall ax rule = do
       _ -> typeErr a
     _ -> typeErr a
   local (\xunit -> xunit{currentMatch = Just (matchFromList [] (iLength ax) ax)}) $
-    execFuncPushStack T.Void (execScriptBlock (unComment (ruleAction rule)) >> procReturn ONull)
+    execFuncPushStack T.Void (execScriptBlock (ruleAction rule) >> procReturn ONull)
 
 -- | Very simply executes every given script item. Does not use catchReturnObj, does not use
 -- 'nestedExecStack'. CAUTION: you cannot assign to local variables unless you call this method
@@ -1087,7 +1087,7 @@ isNO_OP o = case o of
   ArraySubExpr _ _ _ _ -> True
   DictExpr     _ _ _ _ -> True
   ArrayExpr    _ _   _ -> True
-  LambdaExpr   _ _   _ -> True
+  LambdaExpr   _ _ _ _ -> True
   _                    -> False
 
 called_nonfunction_object :: String -> Object -> Exec e
@@ -1207,11 +1207,35 @@ evalObject obj = case obj of
                    "range specified to an "++show ArrayType
                  ++" constructor must evaluate to two "++show IntType++"s"
       _ -> simpleError "internal error: array range expression has fewer than 2 arguments"
-  LambdaExpr argv  code      lc -> do
-    let argv' = map (flip ObjLabel ObjAny1 . unComment) (unComment argv)
-    exe <- lift (setupExecutable (Com code))
-    return $ OScript $
-      Subroutine{argsPattern = argv', subSourceCode = code, getSubExecutable = exe}
+  LambdaExpr typ  argv  code  lc -> do
+    result <- evalLambdaExpr typ argv code
+    case result of
+      ORule r -> return (ORule (r{ruleMetaExpr=obj}))
+      result  -> return result
+
+evalLambdaExpr :: LambdaExprType -> Com [Com ObjectExpr] -> [Com ScriptExpr] -> Exec Object
+evalLambdaExpr typ argv code = do
+  exe  <- lift (setupExecutable (Com code))
+  let convArgv fn = mapM (evalObject . unComment >=> fn) (unComment argv)
+  case typ of
+    FuncExprType -> do
+      argv <- convArgv argsToObjPat
+      return $ OScript $
+        Subroutine{argsPattern=argv, subSourceCode=code, getSubExecutable=exe}
+    RuleExprType -> do
+      argv <- convArgv argsToGlobExpr
+      return $ ORule $
+        Rule{rulePattern=argv, ruleMetaExpr=VoidExpr, ruleAction=code, ruleExecutable=exe}
+    PatExprType -> do
+      argv <- convArgv argsToObjPat
+      return $
+        error "TODO: evalObject:LambdaExpr is not defined for LambdaExprType:PatExprType"
+
+argsToObjPat :: Object -> Exec ObjPat
+argsToObjPat = error "TODO: define \"argsToObjPat\", the function that creates an ObjPat from [ObjectExpr]"
+
+argsToGlobExpr :: Object -> Exec Pattern
+argsToGlobExpr = error "TODO: define \"argsToGlobExpr\", the function that creates a Pattern from [ObjectExpr]"
 
 evalArgsList :: [Com ObjectExpr] -> Exec [Object]
 evalArgsList = mapM ((evalObject >=> evalObjectRef) . unComment)
@@ -1358,12 +1382,15 @@ programFromSource globalResource checkAttribute script = do
       ToplevelDefine name obj lc -> do
         obj <- lift $ evalObject (unComment obj)
         modify (\p -> p{inmpg_globalData = T.insert (unComment name) obj (inmpg_globalData p)})
-      TopRuleExpr rule_ lc -> do
-        let rule = unComment rule_
-        exe <- lift $ lift $ setupExecutable (ruleAction rule)
-        let rulePat = map unComment (unComment (rulePattern rule))
-            fol tre pat = T.merge T.union (++) tre (toTree pat [exe])
-        modify (\p -> p{ inmpg_ruleSet = foldl fol (inmpg_ruleSet p) rulePat })
+      TopLambdaExpr typ rule scrp lc -> do
+        result <- lift (evalLambdaExpr typ rule scrp)
+        exe <- lift (lift (setupExecutable (Com scrp)))
+        case result of
+          ORule rule -> do
+            let rulePat = rulePattern rule
+                fol tre pat = T.merge T.union (++) tre (toTree pat [exe])
+            modify (\p -> p{ inmpg_ruleSet = foldl fol (inmpg_ruleSet p) rulePat })
+          OScript fn -> error "TODO: Need to define a second rule table for rules that respond to 'Dao.Object.ObjPat's."
       SetupExpr    scrp lc -> modify (\p -> p{inmpg_constructScript = inmpg_constructScript p ++ [scrp]})
       TakedownExpr scrp lc -> modify (\p -> p{inmpg_destructScript  = inmpg_destructScript  p ++ [scrp]})
       BeginExpr    scrp lc -> do

@@ -173,13 +173,13 @@ pPrintComSubBlock header c = case c of
 pPrintSubBlock :: PPrint () -> [Com ScriptExpr] -> PPrint ()
 pPrintSubBlock header px = pPrintComSubBlock header (Com px)
 
-instance PPrintable RuleExpr where
+instance PPrintable Rule where
   pPrint rule = do
     let pat = rulePattern rule
-    flip pPrintComWith (ruleAction rule) $ pPrintSubBlock $ case unComment pat of
+    flip pPrintSubBlock (ruleAction rule) $ case pat of
       []  -> pString "rule()" 
-      [p] -> pInline [pString "rule ", pPrint (fmap (const p) pat)]
-      _   -> pPrintComWith (pList (pString "rule") "(" ", " ")" . map pPrint) pat
+      [p] -> pInline [pString "rule ", pPrint p]
+      _   -> pList (pString "rule") "(" ", " ")" (map pPrint pat)
 
 instance PPrintable Subroutine where
   pPrint sub = flip pPrintSubBlock (subSourceCode sub) $
@@ -268,8 +268,8 @@ instance PPrintable ObjectExpr where
       pList (pString "struct " >> pPrint cObjXp) "{" ", " "}" (map pPrint xcObjXp)
     LambdaCall   cObjXp   xcObjXp          _ -> do
       pList (pString "call " >> pPrint cObjXp) "(" ", " ")" (map pPrint xcObjXp)
-    LambdaExpr   ccNmx    xcObjXp          _ -> do
-      let hdr = pPrintComWith (pList_ "function(" ", " ")" . map (pPrintComWith pUStr)) ccNmx
+    LambdaExpr   typ   ccNmx   xcObjXp     _ -> do
+      let hdr = pPrintComWith (pList_ (show typ++"(") ", " ")" . map (pPrintComWith pPrint)) ccNmx
       pPrintSubBlock hdr xcObjXp
 
 instance PPrintable ObjPat where
@@ -444,10 +444,11 @@ showReference o = case o of
   MetaRef      o -> "$("++showReference o++")"
   where { sh = intercalate "." . map uchars }
 
+showTuple sh idnc args = 
+  '(':showCom (\idnc args -> intercalate ", " (map (sh idnc) args)) (idnc+1) args++")"
+
 showObjectExpr :: Int -> Com ObjectExpr -> String
 showObjectExpr idnc obj = showCom loop idnc obj where
-  tuple sh idnc args = 
-    '(':showCom (\idnc args -> intercalate ", " (map (sh idnc) args)) (idnc+1) args++")"
   assignExpr idnc expr = case expr of
     AssignExpr   ref  op  obj    _ -> showObjectExpr idnc (Com ref)
       ++ showCom (\_ -> show) idnc op ++ showObjectExpr (idnc+1) (Com obj)
@@ -457,10 +458,10 @@ showObjectExpr idnc obj = showCom loop idnc obj where
     Literal      obj             _ -> showObj idnc obj
     AssignExpr   ref op   obj    _ ->
       showObjectExpr idnc (Com ref) ++ showCom (\_ -> show) idnc op ++ showObjectExpr (idnc+1) (Com obj)
-    FuncCall     name c    args  _ -> uchars name ++ showComments c ++ tuple showObjectExpr idnc (Com args)
+    FuncCall     name c    args  _ -> uchars name ++ showComments c ++ showTuple showObjectExpr idnc (Com args)
     LambdaCall   obj       args  _ -> "call "
       ++ showObjectExpr (idnc+1) obj
-      ++ tuple showObjectExpr idnc (Com args)
+      ++ showTuple showObjectExpr idnc (Com args)
     ParenExpr    grp  sub        _ ->
       let str = showObjectExpr (idnc+1) sub in if grp then '(' : str ++ ")" else str
     Equation     left op  right  _ -> showObjectExpr idnc (Com left)
@@ -470,19 +471,19 @@ showObjectExpr idnc obj = showCom loop idnc obj where
     DictExpr     dict c objx     _ -> uchars dict ++ ' ' : showComments c
       ++ "{\n" ++ indent (idnc+1) ++ showCom dictExpr idnc (Com objx) ++ "}"
     ArrayExpr    bnds   elms     _ -> "array "
-      ++ tuple showObjectExpr (idnc+1) bnds ++ '['
+      ++ showTuple showObjectExpr (idnc+1) bnds ++ '['
       :  showCom (\idnc elms -> intercalate ", " (map (showObjectExpr (idnc+1)) elms)) idnc (Com elms)
       ++ "]"
     ArraySubExpr obj  com  sub   _ -> showObjectExpr idnc (Com obj)
       ++ showComments com
       ++ '[':showObjectExpr (idnc+1) sub++"]"
-    LambdaExpr  argv  scrp       _ -> tuple (showCom (\_ -> uchars)) (idnc+1) argv
+    LambdaExpr  typ argv  scrp   _ -> show typ ++ showTuple showObjectExpr (idnc+1) argv
       ++ "{\n" ++ indent (idnc+1) ++ showScriptBlock (idnc+1) (Com scrp) ++ '\n':indent idnc++"}"
 
-showRule :: Int -> RuleExpr -> String
+showRule :: Int -> Rule -> String
 showRule idnc rule = "rule "
-  ++ showCom (\ _ pat -> show pat) idnc (rulePattern rule)
-  ++ showScriptBlock idnc (ruleAction rule)
+  ++ showTuple (\_ -> show) idnc (Com $ rulePattern rule)
+  ++ showScriptBlock idnc (Com $ ruleAction rule)
 
 showRuleSet :: Int -> PatternTree [Com [Com ScriptExpr]] -> String
 showRuleSet idnc rules = unlines $ map mkpat $ T.assocs $ rules where

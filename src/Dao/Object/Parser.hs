@@ -575,7 +575,7 @@ scanBind constructor ops objx = case objx of
 keywordObjectExpr :: NameComParser ObjectExpr
 keywordObjectExpr key com1 = msum $ map (\parser -> parser key com1) $
   [ parseDateTime, parseLambdaCall, parseArrayDef, parseListSetDictIntmap
-  , parseClassedRef, parseStruct, constructWithNonKeyword
+  , parseClassedRef, parseStruct, parseLambdaDef, constructWithNonKeyword
   ]
 
 -- Until I fix how the comments are stored in object and script expressions, I will have to make do
@@ -620,12 +620,15 @@ parseFuncParamVars = parseListable func_param_var '(' ',' ')' (parseName func_pa
 
 parseLambdaDef :: NameComParser ObjectExpr
 parseLambdaDef key com1 = do
-  guard (key=="func" || key=="function" || key=="pattern" || key=="pat" || key=="rule")
-  expect "list of parameter variables after \"function\" statement" $ \com2 -> do
-    params <- parseFunctionParameters ("parameters to \""++key++"\" expression")
-    flip mplus (fail (expected_sub_for "lambda function definition")) $ do
-      script <- parseBracketedScript
-      return (LambdaExpr (read key) (com com1 params com2) script unloc)
+  guard (key=="func" || key=="function" || key=="rule")
+  expect "list of parameter variables after \"function\" statement" $ \com2 -> msum $
+    [ do  scrpt <- parseBracketedScript
+          return (LambdaExpr (read key) (ComAfter [] (com1++com2)) scrpt unloc)
+    , do  params <- parseFunctionParameters ("parameters to \""++key++"\" expression")
+          expect (expected_sub_for "lambda function definition") $ \com2 -> do
+            script <- parseBracketedScript
+            return (LambdaExpr (read key) (com com1 params com2) script unloc)
+    ]
 
 parseArrayDef :: NameComParser ObjectExpr
 parseArrayDef = guardKeyword "array" $ \com1 -> token $ do
@@ -726,32 +729,37 @@ parseSourceFile = do
       }
 
 parseDirective :: Parser TopLevelExpr
-parseDirective = msum $
+parseDirective = parseKeywordOrName >>= \key -> msum $
   [ do -- Parse an "import" or "require" directive.
-        opt <- fmap ustr (mplus (string "require" >> zeroOrOne (rxChar 's')) (string "import"))
+        guard (key=="requires" || key=="require" || key=="import")
         req <- regexMany space >> fmap ustr parseString
         regexMany space >> zeroOrOne (rxChar ';')
-        return (Attribute (Com opt) (Com req) unloc)
+        return (Attribute (Com (ustr key)) (Com req) unloc)
   , do -- Parse an event action.
-        event <- msum $ map string ["BEGIN", "END", "SETUP", "TAKEDOWN"]
-        expect ("bracketed list of commands after "++event++" statement") $ \com1 -> do
+        guard (key=="TAKEDOWN" || key=="SETUP" || key=="BEGIN" || key=="END")
+        expect ("bracketed list of commands after "++key++" statement") $ \com1 -> do
           scrpt <- parseBracketedScript
           let block = com com1 scrpt []
-          return $ case event of
+          return $ case key of
             "TAKEDOWN" -> TakedownExpr block unloc
             "SETUP"    -> SetupExpr    block unloc
             "BEGIN"    -> BeginExpr    block unloc
             "END"      -> EndExpr      block unloc
   , do -- Parse a top-level rule.
-        typ <- msum [string "rule", string "pat", string "pattern"]
-        let msg = "rule pattern string expression"
-        expect msg $ \com1 -> do
-          pattern <- parseFunctionParameters ("patterns to \""++typ++"\" expression")
-          expect "script expression for rule definition" $ \com2 -> do
-            scrpt <- parseBracketedScript
-            return (TopLambdaExpr (read typ) (com com1 pattern com2) scrpt unloc)
+        guard (key=="rule" || key=="pat" || key=="pattern")
+        let msg = "script expression for rule definition"
+        expect "rule pattern string expression" $ \com1 -> msum $
+          [ do  pattern <- parseFunctionParameters ("patterns to \""++key++"\" expression")
+                expect msg $ \com2 -> do
+                  scrpt <- parseBracketedScript
+                  return (TopLambdaExpr (read key) (com com1 pattern com2) scrpt unloc)
+           , do (pattern, com2) <- parseObjectExpr
+                expect msg $ \com3 -> do
+                  scrpt <- parseBracketedScript
+                  return (TopLambdaExpr (read key) (com com1 [Com pattern] (com2++com3)) scrpt unloc)
+           ]
   , do -- Parse a top-level function declaration, which has it's name stated before the arguments.
-        mplus (string "function") (string "func")
+        guard (key=="function" || key=="func")
         let msg = "top-level function declaration"
         expect ("expecting name for "++msg) $ \com1 -> do
           name <- parseName "name of function"
@@ -761,8 +769,9 @@ parseDirective = msum $
               scrpt <- parseBracketedScript
               return (ToplevelFunc (com com1 name com2) params (com com2 scrpt com3) unloc)
   , do -- Parse a top-level global variable declaration.
+        (_, name_) <- parseDotName
         let msg = "top-level global variable declaration"
-        (_, name) <- parseDotName
+            name = ustr key : name_
         expect ("expecting equals-sign \"=\" for "++msg) $ \com1 -> do
           char '='
           expect ("expecting object expression for "++msg) $ \com2 -> do

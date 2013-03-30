@@ -8,7 +8,7 @@ END {
 	print("(-1)");
 }
 
-rule "hello" {
+rule("hello") {
 	a = "Hi, how are you.";
 	print(a);
 	try {

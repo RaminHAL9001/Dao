@@ -932,9 +932,7 @@ readReference ref = case ref of
 -- | All assignment operations are executed with this function. To modify any variable at all, you
 -- need a reference value and a function used to update the value. This function will select the
 -- correct value to modify based on the reference type and value, and modify it according to this
--- function. TODO: the use of "dModifyMVar" to update variables is just a temporary fix, and will
--- almost certainly cause a deadlock. But I need this to compile before I begin adding on the
--- deadlock-free code.
+-- function.
 updateReference :: Reference -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe Object)
 updateReference ref modf = do
   xunit <- ask
@@ -1064,10 +1062,10 @@ execScriptExpr script = case unComment script of
               [ustr "with file path", path, ustr "file has not been loaded"]
             Just file -> return (xunit{currentDocument = Just file})
         run upd = ask >>= upd >>= \r -> local (const r) (execScriptBlock thn)
-    case lval of -- TODO: change the type definition and parser for WithDoc such that it takes ONLY a Reference, not an Literal.
-      ORef (GlobalRef ref)              -> run (setBranch ref)
-      ORef (FileRef path [])            -> run (setFile path)
-      ORef (FileRef path ref)           -> run (setFile path >=> setBranch ref)
+    case lval of
+      ORef (GlobalRef ref)    -> run (setBranch ref)
+      ORef (FileRef path [])  -> run (setFile path)
+      ORef (FileRef path ref) -> run (setFile path >=> setBranch ref)
       _ -> typeError lval "operand to \"with\" statement" $
              "file path (String type), or a Ref type, or a Pair of the two"
 
@@ -1215,8 +1213,8 @@ evalObject obj = case obj of
 
 evalLambdaExpr :: LambdaExprType -> Com [Com ObjectExpr] -> [Com ScriptExpr] -> Exec Object
 evalLambdaExpr typ argv code = do
-  exe  <- lift (setupExecutable (Com code))
-  let convArgv fn = mapM (evalObject . unComment >=> fn) (unComment argv)
+  exe <- lift (setupExecutable (Com code))
+  let convArgv fn = mapM (fn . unComment) (unComment argv)
   case typ of
     FuncExprType -> do
       argv <- convArgv argsToObjPat
@@ -1226,16 +1224,19 @@ evalLambdaExpr typ argv code = do
       argv <- convArgv argsToGlobExpr
       return $ ORule $
         Rule{rulePattern=argv, ruleMetaExpr=VoidExpr, ruleAction=code, ruleExecutable=exe}
-    PatExprType -> do
-      argv <- convArgv argsToObjPat
-      return $
-        error "TODO: evalObject:LambdaExpr is not defined for LambdaExprType:PatExprType"
 
-argsToObjPat :: Object -> Exec ObjPat
-argsToObjPat = error "TODO: define \"argsToObjPat\", the function that creates an ObjPat from [ObjectExpr]"
+-- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Object.ObjPat'.
+argsToObjPat :: ObjectExpr -> Exec ObjPat
+argsToObjPat o = case o of
+  Literal (ORef (LocalRef r)) _ -> return (ObjLabel r ObjAny1)
+  _ -> simpleError "does not evaluate to an object pattern"
+  -- TODO: provide a more expressive way to create object patterns from 'Dao.Object.ObjectExpr's
 
-argsToGlobExpr :: Object -> Exec Pattern
-argsToGlobExpr = error "TODO: define \"argsToGlobExpr\", the function that creates a Pattern from [ObjectExpr]"
+-- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Pattern.Pattern'.
+argsToGlobExpr :: ObjectExpr -> Exec Pattern
+argsToGlobExpr o = case o of
+  Literal (OString str) _ -> return (read (uchars str))
+  _ -> simpleError "does not evaluate to a \"glob\" pattern"
 
 evalArgsList :: [Com ObjectExpr] -> Exec [Object]
 evalArgsList = mapM ((evalObject >=> evalObjectRef) . unComment)

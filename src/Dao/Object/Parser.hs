@@ -172,6 +172,24 @@ parseDate = token $ do
     mplus (char ',') (return ',') >> regexMany space >> fmap (' ':) (regexMany1 alpha)
   return (addUTCTime diffTime (read (year ++ '-':month ++ '-':day ++ " 00:00:00" ++ zone)))
 
+parseCharLiteral :: Parser Char
+parseCharLiteral = token $ do
+  char '\''
+  flip mplus (fail "expecting character literal") $ do
+    let loop cx = do
+          cx1 <- many (notCharSet (setUnion (point '\\') (point '\'')))
+          (more, cx2) <- msum $
+            [ char '\'' >> return (False, "'")
+            , char '\\' >> return (True , "\\")
+            , fail "end of input in the middle of a character literal expression"
+            ]
+          let cx' = cx ++ concat cx1 ++ cx2
+          if more then loop cx' else return cx'
+    cx <- loop "'"
+    case readsPrec 0 cx of
+      [(c, "")] -> return c
+      _         -> fail ("cannot create char literal from expression "++cx)
+
 parseComment :: Parser [Comment]
 parseComment = many comment where
   comment = do
@@ -516,6 +534,7 @@ nonKeywordObjectExpr = msum $
   -- literal strings or integers
   , fmap (flip Literal unloc . ORef) parseIntRef
   , fmap (flip Literal unloc . OString . ustr) parseString 
+  , fmap (flip Literal unloc . OChar) parseCharLiteral
   , fmap (flip Literal unloc) numericObj
   -- unary operators, like dereference (@name) or reference ($name)
   , parseUnaryOperatorExpr

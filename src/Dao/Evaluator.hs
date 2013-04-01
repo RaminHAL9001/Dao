@@ -144,12 +144,12 @@ runSubroutine args sub =
 -- | Execute a 'Dao.Object.Rule' object as though it were a script that could be called. The
 -- parameters passed will be stored into the 'currentMatch' slot durring execution, but all
 -- parameters passed must be of type 'Dao.Object.OString', or an error is thrown.
-execRuleCall :: [Com ObjectExpr] -> Rule -> Exec Object
+execRuleCall :: [Object] -> Rule -> Exec Object
 execRuleCall ax rule = do
   let typeErr o =
         typeError o "when calling a Rule object as though it were a function, all parameters" $
           show ListType++", where each list contains only objects of type "++show StringType
-  ax <- forM ax $ \a -> evalObject (unComment a) >>= \a -> case a of
+  ax <- forM ax $ \a -> case a of
     OList ax -> forM ax $ \a -> case a of
       OString a -> return a
       _ -> typeErr a
@@ -891,11 +891,28 @@ builtin_close = builtin_close_write "close" unloadFilePath return
 builtin_write :: DaoFunc
 builtin_write = builtin_close_write "write" writeFilePath joinFlowCtrl
 
+builtin_call :: DaoFunc
+builtin_call = DaoFunc $ \args -> 
+  if null args
+    then  simpleError "call function must have at least one argument"
+    else  case args of
+            OScript fn : args -> do
+              obj <- runSubroutine args fn
+              case obj of
+                Just obj -> return obj
+                Nothing  -> procErr $ OList $
+                  [ OString (ustr "incorrect parameters passed to lambda call")
+                  , OScript fn, OList args
+                  ]
+            ORule   fn : args -> execRuleCall  args fn
+            obj:args          -> called_nonfunction_object obj args
+
 -- | The map that contains the built-in functions that are used to initialize every
 -- 'Dao.Object.ExecUnit'.
 initBuiltinFuncs :: M.Map Name DaoFunc
 initBuiltinFuncs = let o a b = (ustr a, b) in M.fromList $
   [ o "print" builtin_print
+  , o "call"  builtin_call
   , o "do"    builtin_do
   , o "join"  builtin_join
   , o "open"  builtin_open
@@ -1088,10 +1105,11 @@ isNO_OP o = case o of
   LambdaExpr   _ _ _ _ -> True
   _                    -> False
 
-called_nonfunction_object :: String -> Object -> Exec e
-called_nonfunction_object op obj =
-  typeError obj (show op++" was called as a function but is not a function type, ") $
-    show ScriptType++" or "++show RuleType
+called_nonfunction_object :: Object -> [Object] -> Exec e
+called_nonfunction_object ref args = procErr $ OList $
+  [ OString (ustr "first argument to \"call\" function must evaluate to a callable object")
+  , ref, OList args
+  ]
 
 -- | Evaluate an 'ObjectExpr' to an 'Dao.Object.Object' value, and does not de-reference objects of
 -- type 'Dao.Object.ORef'
@@ -1121,18 +1139,6 @@ evalObject obj = case obj of
           Nothing  -> procErr $ OList $
             [OString (ustr "incorrect parameters passed to function") , OString op, OList args]
       Just fn -> daoForeignCall fn args
-  LambdaCall ref  args       lc -> do
-    fn   <- evalObject (unComment ref) >>= evalObjectRef
-    case fn of
-      OScript fn -> do
-        args <- evalArgsList args
-        obj <- runSubroutine args fn
-        case obj of
-          Just obj -> return obj
-          Nothing  -> procErr $ OList $
-            [OString (ustr "incorrect parameters passed to lambda call"), OScript fn, OList args]
-      ORule   fn -> execRuleCall  args fn
-      _          -> called_nonfunction_object (showObjectExpr 0 ref) fn
   ParenExpr     _     o      lc -> evalObject (unComment o)
   ArraySubExpr  o  _  i      lc -> do
     o <- evalObject o >>= evalObjectRef

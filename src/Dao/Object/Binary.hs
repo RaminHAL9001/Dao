@@ -494,7 +494,6 @@ instance Binary ObjectExpr where
     Literal      a     z -> x z 0x41 $ put a
     AssignExpr   a b c z -> x z 0x42 $ put a           >> putCom b         >> put c
     FuncCall     a b c z -> x z 0x43 $ put a           >> putCommentList b >> putComList c
-    LambdaCall   a b   z -> x z 0x44 $ putCom a        >> putComList b
     ParenExpr    a b   z -> x z 0x45 $ putObjBool a    >> putCom b
     Equation     a b c z -> x z 0x46 $ put a           >> putCom b         >> put c
     PrefixExpr   a b   z -> x z 0x47 $ put a           >> putCom b
@@ -511,7 +510,6 @@ instance Binary ObjectExpr where
       0x41 -> liftM2 Literal      get                                      get
       0x42 -> liftM4 AssignExpr   get           getCom          get        get
       0x43 -> liftM4 FuncCall     get           getCommentList  getComList get
-      0x44 -> liftM3 LambdaCall   getCom        getComList                 get
       0x45 -> liftM3 ParenExpr    getObjBool    getCom                     get
       0x46 -> liftM4 Equation     get           getCom          get        get
       0x47 -> liftM3 PrefixExpr   get           getCom                     get

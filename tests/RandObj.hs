@@ -455,7 +455,6 @@ randObjExprList =
         items <- randList >>= mapM randCom
         return (ArrayExpr idxExpr items LocationUnknown)
   , liftM3 StructExpr comRandObjExpr (randList >>= comAssignExprList >>= mapM randCom) no
-  , liftM3 LambdaCall (mostlyRefExprs >>= randCom) comRandObjExprList no
   , liftM4 LambdaExpr randO (randArgsDef >>= randCom) randScriptExpr no
   ]
 

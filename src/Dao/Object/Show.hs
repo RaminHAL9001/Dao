@@ -266,8 +266,6 @@ instance PPrintable ObjectExpr where
         _  -> pList hdr  " { " ", " " }" (map pPrint xcObjXp)
     StructExpr   cObjXp   xcObjXp          _ ->
       pList (pString "struct " >> pPrint cObjXp) "{" ", " "}" (map pPrint xcObjXp)
-    LambdaCall   cObjXp   xcObjXp          _ -> do
-      pList (pString "call " >> pPrint cObjXp) "(" ", " ")" (map pPrint xcObjXp)
     LambdaExpr   typ   ccNmx   xcObjXp     _ -> do
       let hdr = pPrintComWith (pList_ (show typ++"(") ", " ")" . map (pPrintComWith pPrint)) ccNmx
       pPrintSubBlock hdr xcObjXp
@@ -459,9 +457,6 @@ showObjectExpr idnc obj = showCom loop idnc obj where
     AssignExpr   ref op   obj    _ ->
       showObjectExpr idnc (Com ref) ++ showCom (\_ -> show) idnc op ++ showObjectExpr (idnc+1) (Com obj)
     FuncCall     name c    args  _ -> uchars name ++ showComments c ++ showTuple showObjectExpr idnc (Com args)
-    LambdaCall   obj       args  _ -> "call "
-      ++ showObjectExpr (idnc+1) obj
-      ++ showTuple showObjectExpr idnc (Com args)
     ParenExpr    grp  sub        _ ->
       let str = showObjectExpr (idnc+1) sub in if grp then '(' : str ++ ")" else str
     Equation     left op  right  _ -> showObjectExpr idnc (Com left)

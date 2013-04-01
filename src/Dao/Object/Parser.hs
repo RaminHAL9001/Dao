@@ -467,7 +467,6 @@ objectExprStatement initExpr com1 = loop initExpr where
   loop expr = case expr of
     AssignExpr _ _ _  _ -> done
     FuncCall   _ _ _  _ -> done
-    LambdaCall _ _    _ -> done
     ParenExpr  _ expr _ -> loop (unComment expr)
     _ -> fail ("cannot use an object expression as a statement\n" ++ show expr)
   done = mplus (char ';' >> return (EvalObject initExpr com1 unloc)) $
@@ -481,7 +480,7 @@ parseObjectExpr = do
   obj  <- applyLocation parseNonEquation
   com1 <- parseComment
   regexMany space
-  parseEquation obj com1
+  mplus (parseEquation obj com1) (return (obj, com1))
 
 parseEquation :: ObjectExpr -> [Comment] -> Parser (ObjectExpr, [Comment])
 parseEquation obj com1 = loop [] obj com1 where
@@ -522,15 +521,18 @@ parseNonEquation = mplus nonKeywordObjectExpr $ do
   name <- parseKeywordOrName
   expect "some object expression" (\com1 -> keywordObjectExpr name com1)
 
+parseParenObjectExpr :: Parser ObjectExpr
+parseParenObjectExpr = do
+  char '('
+  expect "object expression in parentheses" $ \com1 -> do
+    (expr, com2) <- parseObjectExpr
+    flip mplus (fail "expecting close parethases") $
+      char ')' >> return (ParenExpr True (com com1 expr com2) unloc)
+
 -- Object expressions that don't begin with a keyword.
 nonKeywordObjectExpr :: Parser ObjectExpr
 nonKeywordObjectExpr = msum $
-  [ do -- parse an expression enclosed in parentheses
-        char '('
-        expect "object expression in parentheses" $ \com1 -> do
-          (expr, com2) <- parseObjectExpr
-          flip mplus (fail "expecting close parethases") $
-            char ')' >> return (ParenExpr True (com com1 expr com2) unloc)
+  [ parseParenObjectExpr
   -- literal strings or integers
   , fmap (flip Literal unloc . ORef) parseIntRef
   , fmap (flip Literal unloc . OString . ustr) parseString 
@@ -593,8 +595,8 @@ scanBind constructor ops objx = case objx of
 -- Here we collect all of the ObjectExpr parsers that start by looking for a keyword
 keywordObjectExpr :: NameComParser ObjectExpr
 keywordObjectExpr key com1 = msum $ map (\parser -> parser key com1) $
-  [ parseDateTime, parseLambdaCall, parseArrayDef, parseListSetDictIntmap
-  , parseClassedRef, parseStruct, parseLambdaDef, constructWithNonKeyword
+  [ parseDateTime, parseArrayDef, parseListSetDictIntmap, parseClassedRef
+  , parseStruct, parseLambdaDef, constructWithNonKeyword
   ]
 
 -- Until I fix how the comments are stored in object and script expressions, I will have to make do
@@ -606,14 +608,6 @@ adjustComListable =
 parseFunctionParameters :: String -> Parser [Com ObjectExpr]
 parseFunctionParameters msg = adjustComListable $
   parseListable msg '(' ',' ')' parseObjectExpr
-
-parseLambdaCall :: NameComParser ObjectExpr
-parseLambdaCall = guardKeyword "call" $ \com1 ->
-  expect "expecting an expression after \"call\" statement" $ \com2 -> do
-    (objExpr, com3) <- parseObjectExpr
-    flip mplus (fail "expecting a tuple containing arguments to be passed to the \"call\" statement") $ do
-      argv <- parseFunctionParameters "function parameter variable"
-      return (LambdaCall (com com1 objExpr com2) argv unloc)
 
 parseClassedRef :: NameComParser ObjectExpr
 parseClassedRef key com1 = case key of

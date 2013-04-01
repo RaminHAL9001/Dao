@@ -551,7 +551,6 @@ data ObjectExpr
   | DictExpr     Name        [Comment]  [Com ObjectExpr]  Location
   | ArrayExpr    (Com [Com ObjectExpr]) [Com ObjectExpr]  Location
   | StructExpr   (Com ObjectExpr)       [Com ObjectExpr]  Location
-  | LambdaCall   (Com ObjectExpr)       [Com ObjectExpr]  Location
   | LambdaExpr   LambdaExprType  (Com [Com ObjectExpr]) [Com ScriptExpr]  Location
   deriving (Eq, Ord, Show, Typeable)
 
@@ -568,7 +567,6 @@ instance HasLocation ObjectExpr where
     DictExpr       _ _ _ o -> o
     ArrayExpr      _ _   o -> o
     StructExpr     _ _   o -> o
-    LambdaCall     _ _   o -> o
     LambdaExpr   _ _ _   o -> o
   setLocation o loc = case o of
     VoidExpr             -> VoidExpr
@@ -582,7 +580,6 @@ instance HasLocation ObjectExpr where
     DictExpr     a b c _ -> DictExpr     a b c loc
     ArrayExpr    a b   _ -> ArrayExpr    a b   loc
     StructExpr   a b   _ -> StructExpr   a b   loc
-    LambdaCall   a b   _ -> LambdaCall   a b   loc
     LambdaExpr   a b c _ -> LambdaExpr   a b c loc
 
 -- | Part of the Dao language abstract syntax tree: any expression that controls the flow of script

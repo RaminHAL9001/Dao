@@ -199,12 +199,6 @@ transObjExpr expr = case expr of
   ArrayExpr    lc bnds   args   -> makeObj MakeNewArray (OList mempty) args $ do
     pi ReadyCallStack
     pushArgs bnds
-  LambdaCall   lc  ref   args   -> do
-    evalObjExpr (unComment ref)
-    pi PushStack
-    pushArgs args
-    pi PopStack
-    pi CallGlobal
   StructExpr   lc  init  args   -> makebj MakeNewStruct T.Void args $ do
     transObjExpr (unComment init)
     pi PushStack 

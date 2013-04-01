@@ -596,7 +596,7 @@ scanBind constructor ops objx = case objx of
 keywordObjectExpr :: NameComParser ObjectExpr
 keywordObjectExpr key com1 = msum $ map (\parser -> parser key com1) $
   [ parseDateTime, parseArrayDef, parseListSetDictIntmap, parseClassedRef
-  , parseStruct, parseLambdaDef, constructWithNonKeyword
+  , parseHexData, parseStruct, parseLambdaDef, constructWithNonKeyword
   ]
 
 -- Until I fix how the comments are stored in object and script expressions, I will have to make do
@@ -704,6 +704,38 @@ parseStruct = guardKeyword "struct" $ \com1 ->
         , char '}' >> return zx
         , fail "expecting a comma \",\" and the next item in the struct, or closing bracket \"}\""
         ]
+
+parseHexData :: NameComParser ObjectExpr
+parseHexData key _ = do
+  guard (key=="data")
+  expect "bracketed base-64-encoded data expression" $ \ _ -> (char '{' >> loop "")
+  where
+    b64ch = enumSet [segment 'A' 'Z', segment 'a' 'z', segment '0' '9', single '/', single '+']
+    loop str_ = do
+      parseComment >> regexMany space
+      mplus (char '}' >> encode str_) $ do
+        hex <- fmap concat $ many $ charSet $ b64ch
+        parseComment >> regexMany space
+        eq <- regexMany (rxChar '=')
+        let hexeq = hex++eq
+            str = str_ ++ hexeq
+        case eq of
+          ('=':'=':_) -> fail "too many equals signs at in the data literal expression"
+          _           ->
+            if null hexeq
+              then do
+                c <- zeroOrOne (rxCharSet b64ch)
+                if null c
+                  then  done str
+                  else  fail ("invalid character in base-64 data literal: '"++c++"'")
+              else  if null eq then loop str else done str
+    done str = do
+      expect "expecting closing brace for base-64 data literal" $ \ _ -> do
+        parseComment >> regexMany space >> char '}'
+        encode str
+    encode str = case b64Decode str of
+      Left  _ -> fail "could not decode base64 data literal expression"
+      Right o -> return (Literal (OBytes o) unloc)
 
 -- If 'parseKeywordOrName' was used to parse a symbol, and all of the above keyword parsers
 -- backtrack, this function takes the symbol and treats it as a name, which could be a local

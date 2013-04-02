@@ -478,7 +478,7 @@ objectExprStatement initExpr com1 = loop initExpr where
 -- | This is the "entry point" for parsing 'Dao.Object.ObjectExpr's.
 parseObjectExpr :: Parser (ObjectExpr, [Comment])
 parseObjectExpr = do
-  obj  <- applyLocation parseNonEquation
+  obj  <- applyLocation $ msum [parseNonEquation, parseParenObjectExpr, parseUnaryOperatorExpr]
   com1 <- parseComment
   regexMany space
   mplus (parseEquation obj com1) (return (obj, com1))
@@ -546,9 +546,9 @@ nonKeywordObjectExpr = msum $
 -- Parses an equation starting with a unary operator.
 parseUnaryOperatorExpr :: Parser ObjectExpr
 parseUnaryOperatorExpr = do -- high-prescedence unary operators, these are interpreted as 'FuncCall's.
-  op <- regex (rxCharSetFromStr "@$!~")
+  op <- regex (rxCharSetFromStr "-@$!~")
   expect ("\""++op++"\" operator must be followed by an object expression") $ \com1 -> do
-    expr <- parseNonEquation
+    expr <- mplus parseParenObjectExpr parseNonEquation
     return (PrefixExpr (read op) (com com1 expr []) unloc)
 
 parseInfixOp :: Parser Name

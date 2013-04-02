@@ -26,6 +26,7 @@ module Dao.Object.Show where
 
 import           Dao.String
 import           Dao.PPrint
+import           Dao.Token
 import           Dao.Object
 import           Dao.Pattern
 import           Dao.EnumSet
@@ -238,6 +239,28 @@ instance PPrintable ArithOp1  where { pPrint = pShow }
 instance PPrintable ArithOp2  where { pPrint = pShow }
 instance PPrintable UpdateOp where { pPrint op = pString (' ':show op++" ") }
 
+complicated :: ObjectExpr -> Bool
+complicated obj = case obj of
+  Literal (OScript _) _ -> True
+  Literal (OTree   _) _ -> True
+  Literal (ORule   _) _ -> True
+  StructExpr _ _      _ -> True
+  Equation   _ _ _    _ -> True
+  AssignExpr _ _ _    _ -> True
+  ArrayExpr  _ _      _ -> True
+  LambdaExpr _ _ _    _ -> True
+  ParenExpr  _ _      _ -> True
+  _                     -> False
+
+forceParen :: ObjectExpr -> ObjectExpr
+forceParen o =
+  if complicated o
+    then  case o of
+            ParenExpr True  _ _   -> o
+            ParenExpr False o loc -> ParenExpr True o loc
+            _                     -> ParenExpr True (Com o) (getLocation o)
+    else  o
+
 instance PPrintable ObjectExpr where
   pPrint expr = case expr of
     VoidExpr                                 -> return ()
@@ -246,18 +269,8 @@ instance PPrintable ObjectExpr where
       [pPrint objXp1, pPrint comUpdOp, pPrint objXp2]
     Equation     objXp1  comAriOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comAriOp, pPrint objXp2]
-    PrefixExpr   ariOp    c_ObjXp          _ -> case c_ObjXp of
-      Com      (Literal o _)        -> pPrint ariOp >> pPrint o
-      ComAfter (Literal o _)     ax -> pInline [pPrint ariOp, pInline (map pPrint ax)]
-      Com      (ParenExpr _ o _)    -> paren o []
-      ComAfter (ParenExpr _ o _) ax -> paren o ax
-      _                             -> pPrint ariOp >> pPrint c_ObjXp
-      where
-        paren :: Com ObjectExpr -> [Comment] -> PPrint ()
-        paren o ax = pInline ([pPrint ariOp >> pString "(", pPrint o, pString ")"]++map pPrint ax)
-    ParenExpr    bool     c_ObjXp          _ -> pWrapIndent $
-      if bool then  [pString "(", pPrint c_ObjXp, pString ")"]
-              else  [pPrint c_ObjXp]
+    PrefixExpr   ariOp    c_ObjXp          _ -> pPrint ariOp >> pPrint c_ObjXp
+    ParenExpr    bool     c_ObjXp          _ -> pWrapIndent [pPrint c_ObjXp]
     ArraySubExpr objXp    coms     c_ObjXp _ -> pWrapIndent $
       [pPrint objXp, mapM_ pPrint coms, pString "[", pGroup True (pPrint c_ObjXp), pString "]"]
     FuncCall     nm       coms     xcObjXp _ -> do
@@ -271,7 +284,11 @@ instance PPrintable ObjectExpr where
         [] -> hdr >> pString "{}"
         _  -> pList hdr  " { " ", " " }" (map pPrint xcObjXp)
     StructExpr   cObjXp   xcObjXp          _ ->
-      pList (pString "struct " >> pPrint cObjXp) "{" ", " "}" (map pPrint xcObjXp)
+      pList (pString "struct " >> printObj cObjXp) "{" ", " "}" (map pPrint xcObjXp) where
+        printObj obj =
+          if complicated (unComment obj)
+            then  pInline [pString "(", pPrint cObjXp, pString ")"]
+            else  pPrint cObjXp
     LambdaExpr   typ   ccNmx   xcObjXp     _ -> do
       let hdr = pPrintComWith (pList_ (show typ++"(") ", " ")" . map (pPrintComWith pPrint)) ccNmx
       pPrintSubBlock hdr xcObjXp

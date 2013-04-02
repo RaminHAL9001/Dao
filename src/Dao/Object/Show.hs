@@ -183,22 +183,27 @@ instance PPrintable Rule where
 
 instance PPrintable Subroutine where
   pPrint sub = flip pPrintSubBlock (subSourceCode sub) $
-    pList_ "(" ", " ")" (map pPrint (argsPattern sub))
+    pList (pString "function") "(" ", " ")" (map pPrint (argsPattern sub))
 
 instance PPrintable ScriptExpr where
   pPrint expr = pGroup True $ case expr of
     EvalObject   objXp  coms                    _ ->
       pPrint objXp >> mapM_ pPrint coms >> pString ";"
-    IfThenElse   coms   objXp  thenXp  elseXp   _ -> do
-      pInline (map pPrint coms)
-      pPrintComSubBlock (pWrapIndent [pString "if ", pPrint objXp]) thenXp
+    IfThenElse   coms   ifXp  thenXp  elseXp    _ -> do
+      case ifXp of
+        ParenExpr _ obXp _ -> printIfXp obXp
+        _                  -> printIfXp ifXp
       case unComment elseXp of
         []                   -> return ()
         [p] -> case unComment p of
           (IfThenElse _ _ _ _ _) -> pEndLine >> pString "else " >> pPrint p
           _                      -> done
-        px                   -> done
-        where { done = pEndLine >> pPrintComSubBlock (pString "else") elseXp }
+        px                       -> done
+        where
+          printIfXp ifXp = do
+            pInline (map pPrint coms)
+            pPrintComSubBlock (pWrapIndent [pString "if(", pPrint ifXp, pString ")"]) thenXp
+          done = pEndLine >> pPrintComSubBlock (pString "else") elseXp
     TryCatch     cxcScrpXp  cUStr     xcScrpXp  _ -> do
       pPrintComSubBlock (pString "try ") cxcScrpXp
       if null xcScrpXp
@@ -229,7 +234,8 @@ instance PPrintable ScriptExpr where
     WithDoc      cObjXp               xcScrpXp  _ ->
       pPrintSubBlock (pString "with " >> pPrint cObjXp) xcScrpXp
 
-instance PPrintable ArithOp  where { pPrint = pShow }
+instance PPrintable ArithOp1  where { pPrint = pShow }
+instance PPrintable ArithOp2  where { pPrint = pShow }
 instance PPrintable UpdateOp where { pPrint op = pString (' ':show op++" ") }
 
 instance PPrintable ObjectExpr where

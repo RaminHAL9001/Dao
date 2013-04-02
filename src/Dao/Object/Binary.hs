@@ -465,29 +465,13 @@ instance Binary UpdateOp where
       0x6B -> x USHR
       _    -> fail "expecting update/assignment operator symbol"
 
-instance Binary ArithOp where
-  put a = putWord8 $ case a of
-    { ADD  -> 0x6D; SUB  -> 0x6E; MULT  -> 0x6F; DIV   -> 0x70; MOD   -> 0x71; ORB   -> 0x72
-    ; NOT  -> 0x73; OR   -> 0x74; AND   -> 0x75; ANDB  -> 0x76; XORB  -> 0x77; INVB  -> 0x78
-    ; SHL  -> 0x79; SHR  -> 0x7A; ABS   -> 0x7B; NEG   -> 0x7C;  EQUL -> 0x7D; NEQUL -> 0x7E
-    ; SQRT -> 0x7F; EXP  -> 0x80; LOG   -> 0x81; ROUND -> 0x82; TRUNC -> 0x83
-    ; SIN  -> 0x84; COS  -> 0x85; TAN   -> 0x86; ASIN  -> 0x87; ACOS  -> 0x88; ATAN  -> 0x89
-    ; SINH -> 0x8A; COSH -> 0x8B; TANH  -> 0x8C; ASINH -> 0x8D; ACOSH -> 0x8E; ATANH -> 0x8F
-    ; DOT  -> 0x90; REF  -> 0x91; DEREF -> 0x92; POINT -> 0x93
-    }
-  get = do
-    w <- getWord8
-    let x = return
-    case w of
-      { 0x6D -> x  ADD; 0x6E -> x  SUB; 0x6F -> x  MULT; 0x70 -> x   DIV; 0x71 -> x   MOD; 0x72 -> x   ORB
-      ; 0x73 -> x  NOT; 0x74 -> x   OR; 0x75 -> x   AND; 0x76 -> x  ANDB; 0x77 -> x  XORB; 0x78 -> x  INVB
-      ; 0x79 -> x  SHL; 0x7A -> x  SHR; 0x7B -> x   ABS; 0x7C -> x   NEG; 0x7D -> x  EQUL; 0x7E -> x NEQUL
-      ; 0x7F -> x SQRT; 0x80 -> x  EXP; 0x81 -> x   LOG; 0x82 -> x ROUND; 0x83 -> x TRUNC
-      ; 0x84 -> x  SIN; 0x85 -> x  COS; 0x86 -> x   TAN; 0x87 -> x  ASIN; 0x88 -> x  ACOS; 0x89 -> x  ATAN
-      ; 0x8A -> x SINH; 0x8B -> x COSH; 0x8C -> x  TANH; 0x8D -> x ASINH; 0x8E -> x ACOSH; 0x8F -> x ATANH
-      ; 0x90 -> x  DOT; 0x91 -> x  REF; 0x92 -> x DEREF; 0x93 -> x POINT
-      ; _    -> fail "expecting arithmetic operator symbol"
-      }
+instance Binary ArithOp1 where
+  put a = error "Binary instantiation of ArithOp1 not yet implemented"
+  get   = error "Binary instantiation of ArithOp1 not yet implemented"
+
+instance Binary ArithOp2 where
+  put a = error "Binary instantiation of ArithOp2 not yet implemented"
+  get   = error "Binary instantiation of ArithOp2 not yet implemented"
 
 instance Binary ObjectExpr where
   put o = case o of

@@ -450,6 +450,8 @@ type Exec a  = ProcReader ExecUnit IO a
 data UpdateOp = UCONST | UADD | USUB | UMULT | UDIV | UMOD | UORB | UANDB | UXORB | USHL | USHR
   deriving (Eq, Ord, Enum, Ix, Typeable)
 
+instance Bounded UpdateOp where {minBound = UCONST; maxBound = USHR}
+
 instance Show UpdateOp where
   show a = case a of
     UCONST -> "="
@@ -465,63 +467,66 @@ instance Show UpdateOp where
     USHR   -> ">>="
 
 instance Read UpdateOp where
-  readsPrec _ str = case str of
-    "="   -> [(UCONST, "")]
-    "+="  -> [(UADD  , "")]
-    "-="  -> [(USUB  , "")]
-    "*="  -> [(UMULT , "")]
-    "/="  -> [(UDIV  , "")]
-    "%="  -> [(UMOD  , "")]
-    "|="  -> [(UORB  , "")]
-    "&="  -> [(UANDB , "")]
-    "^="  -> [(UXORB , "")]
-    "<<=" -> [(USHL  , "")]
-    ">>=" -> [(USHR  , "")]
+  readsPrec _ str = map (\a -> (a, "")) $ case str of
+    "="   -> [UCONST]
+    "+="  -> [UADD  ]
+    "-="  -> [USUB  ]
+    "*="  -> [UMULT ]
+    "/="  -> [UDIV  ]
+    "%="  -> [UMOD  ]
+    "|="  -> [UORB  ]
+    "&="  -> [UANDB ]
+    "^="  -> [UXORB ]
+    "<<=" -> [USHL  ]
+    ">>=" -> [USHR  ]
     _     -> []
 
-instance Bounded UpdateOp where {minBound = UCONST; maxBound = USHR}
-
-data ArithOp
+-- | Unary operators.
+data ArithOp1
   = REF   | DEREF | INVB  | NOT   | NEG -- ^ unary
-  | POINT | DOT                         -- ^ special reference
-  | OR    | AND   | EQUL  | NEQUL       -- ^ boolean logical
-  | ORB   | ANDB  | XORB  | SHL   | SHR -- ^ bitwise
-  | ADD   | SUB   | MULT  | DIV   | MOD -- ^ basic arithmetic
-  | POW   | EXP   | SQRT  | LOG         -- ^ root and exponents
-  | ABS   | ROUND | TRUNC               -- ^ special arithmetic
-  | SIN   | COS   | TAN   | ASIN  | ACOS  | ATAN  -- ^ trigonometric
-  | SINH  | COSH  | TANH  | ASINH | ACOSH | ATANH -- ^ hyperbolic
   deriving (Eq, Ord, Enum, Ix, Typeable)
 
-instance Show ArithOp where
+instance Bounded ArithOp1 where {minBound = REF; maxBound = NEG}
+
+instance Show ArithOp1 where
+  show op = case op of
+    { REF -> "$"; DEREF -> "@"; INVB -> "~"; NOT -> "!"; NEG -> "-" }
+
+instance Read ArithOp1 where
+  readsPrec _ str = map (\a -> (a, "")) $ case str of
+    { "$" -> [REF]; "@" -> [DEREF]; "~" -> [INVB]; "!" -> [NOT]; "-" -> [NEG]; _ -> [] }
+
+-- | Binary operators.
+data ArithOp2
+  = ADD   | SUB   | MULT
+  | DIV   | MOD   | POW
+  | POINT | DOT   | OR
+  | AND   | EQUL  | NEQUL      
+  | ORB   | ANDB  | XORB
+  | SHL   | SHR
+  deriving (Eq, Ord, Enum, Ix, Typeable)
+
+instance Show ArithOp2 where
   show a = case a of
-    { ADD  -> "+";    SUB  -> "-";    MULT  -> "*";    DIV   -> "/";     MOD   -> "%"; ORB  -> "|"
-    ; NOT  -> "!";    OR   -> "||";   AND   -> "&&";   EQUL  -> "==";    NEQUL -> "!="
-    ; ANDB -> "&";    XORB -> "^";    INVB  -> "~";    SHL   -> "<<";    SHR   -> ">>"
-    ; ABS  -> "abs";  NEG  -> "-";    POW   -> "**"
-    ; SQRT -> "sqrt"; EXP  -> "exp";  LOG   -> "log";  ROUND -> "round"; TRUNC -> "trunc"
-    ; SIN  -> "sin";  COS  -> "cos";  TAN   -> "tan";  ASIN  -> "asin";  ACOS  -> "acos";  ATAN  -> "atan"
-    ; SINH -> "sinh"; COSH -> "cosh"; TANH  -> "tanh"; ASINH -> "asinh"; ACOSH -> "acosh"; ATANH -> "atanh"
-    ; DOT  -> ".";    REF  -> "$";    DEREF -> "@";    POINT -> "->"
+    { ADD   -> "+" ; SUB  -> "-" ; MULT  -> "*"
+    ; DIV   -> "/" ; MOD  -> "%" ; POW   -> "**"
+    ; POINT -> "->"; DOT  -> "." ; OR    -> "||"
+    ; AND   -> "&&"; EQUL -> "=="; NEQUL -> "!="
+    ; ORB   -> "|" ; ANDB -> "&" ; XORB  -> "^"
+    ; SHL   -> "<<"; SHR  -> ">>"
     }
 
-instance Read ArithOp where
-  readsPrec _ str = case str of
-    { "+"    -> [(ADD  , "")]; "-"     -> [(SUB  , "")]; "*"     -> [(MULT , "")]
-    ; "/"    -> [(DIV  , "")]; "%"     -> [(MOD  , "")]; "**"    -> [(POW  , "")]
-    ; "exp"  -> [(EXP  , "")]; "|"     -> [(ORB  , "")]; "!"     -> [(NOT  , "")]
-    ; "||"   -> [(OR   , "")]; "&&"    -> [(AND  , "")]; "=="    -> [(EQUL , "")]; "!="    -> [(NEQUL , "")]
-    ; "&"    -> [(ANDB , "")]; "^"     -> [(XORB , "")]; "~"     -> [(INVB , "")]
-    ; "<<"   -> [(SHL  , "")]; ">>"    -> [(SHR  , "")]; "."     -> [(DOT  , "")]
-    ; "$"    -> [(REF  , "")]; "@"     -> [(DEREF, "")]; "->"    -> [(POINT, "")]
-    ; "sin"  -> [(SIN  , "")]; "cos"   -> [(COS  , "")]; "tan"   -> [(TAN  , "")]
-    ; "asin" -> [(ASIN , "")]; "acos"  -> [(ACOS , "")]; "atan"  -> [(ATAN , "")]
-    ; "sinh" -> [(SINH , "")]; "cosh"  -> [(COSH , "")]; "tanh"  -> [(TANH , "")]
-    ; "asinh"-> [(ASINH, "")]; "acosh" -> [(ACOSH, "")]; "atanh" -> [(ATANH, "")]
-    ; _      -> []
+instance Read ArithOp2 where
+  readsPrec _ str = map (\a -> (a, "")) $ case str of
+    { "+"  -> [ADD  ]; "-"  -> [SUB  ]; "*"  -> [MULT ]
+    ; "/"  -> [DIV  ]; "%"  -> [MOD  ]; "**" -> [POW  ]
+    ; "->" -> [POINT]; "."  -> [DOT  ]; "||" -> [OR   ]
+    ; "&&" -> [AND  ]; "==" -> [EQUL ]; "!=" -> [NEQUL]
+    ; "|"  -> [ORB  ]; "&"  -> [ANDB ]; "^"  -> [XORB ]
+    ; "<<" -> [SHL  ]; ">>" -> [SHR  ]; _    -> []
     }
 
-instance Bounded ArithOp where {minBound = REF; maxBound = POINT}
+instance Bounded ArithOp2 where {minBound = ADD; maxBound = SHR}
 
 data LambdaExprType = FuncExprType | RuleExprType | PatExprType deriving (Eq, Ord, Enum, Typeable)
 instance Show LambdaExprType where
@@ -543,8 +548,8 @@ data ObjectExpr
   = VoidExpr -- ^ Not a language construct, but used where an object expression is optional.
   | Literal      Object                                   Location
   | AssignExpr   ObjectExpr  (Com UpdateOp)  ObjectExpr   Location
-  | Equation     ObjectExpr  (Com ArithOp)   ObjectExpr   Location
-  | PrefixExpr   ArithOp     (Com ObjectExpr)             Location
+  | Equation     ObjectExpr  (Com ArithOp2)  ObjectExpr   Location
+  | PrefixExpr   ArithOp1    (Com ObjectExpr)             Location
   | ParenExpr    Bool                   (Com ObjectExpr)  Location -- ^ Bool is True if the parenthases really exist.
   | ArraySubExpr ObjectExpr  [Comment]  (Com ObjectExpr)  Location
   | FuncCall     Name        [Comment]  [Com ObjectExpr]  Location

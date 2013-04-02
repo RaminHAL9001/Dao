@@ -399,12 +399,15 @@ limRandObj = limSubRandO (OInt 0)
 instance HasRandGen UpdateOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::UpdateOp)))
 
-instance HasRandGen ArithOp where
-  randO = fmap toEnum (nextInt (1+fromEnum (maxBound::ArithOp)))
+instance HasRandGen ArithOp1 where
+  randO = fmap toEnum (nextInt (1+fromEnum (maxBound::ArithOp1)))
+
+instance HasRandGen ArithOp2 where
+  randO = fmap toEnum (nextInt (1+fromEnum (maxBound::ArithOp2)))
 
 instance HasRandGen ScriptExpr where
   randO = randOFromList $
-    [ liftM3 EvalObject   randObjExpr randComments no
+    [ liftM3 EvalObject   randAssignExpr randComments no
     , liftM5 IfThenElse   randComments randO comRandScriptExpr comRandScriptExpr no
     , liftM4 TryCatch     comRandScriptExpr comRandName randScriptExpr no
     , liftM4 ForLoop      comRandName comRandObjExpr randScriptExpr no
@@ -416,53 +419,53 @@ instance HasRandGen ScriptExpr where
 instance HasRandGen LambdaExprType where
   randO = fmap toEnum (nextInt 3)
 
--- | Will create a random 'Dao.Object.ObjectExpr' of any type except for 'Dao.Object.Literal'.
-randObjExpr :: RandO ObjectExpr
-randObjExpr = randOFromList randObjExprList
-randObjExprList :: [RandO ObjectExpr]
-randObjExprList =
-  [ liftM4 AssignExpr   randO (randO >>= randCom) randO no
-  , liftM4 Equation     randO (randO >>= randCom) randO no
-  , liftM3 PrefixExpr   randO    comRandObjExpr no
-  , liftM3 ParenExpr    randBool comRandObjExpr no
-  , liftM4 ArraySubExpr mostlyRefExprs randComments comRandObjExpr no
-  , liftM4 FuncCall     (fmap randUStr randInt) randComments comRandObjExprList no
-  , do -- DictExpr
-        typ   <- nextInt 4
-        dict  <- return $ ustr $ case typ of
-          0 -> "dict"
-          1 -> "intmap"
-          2 -> "list"
-          3 -> "set"
-        let rndlist = randListOf (fmap lit limRandObj)
-        exprs <- mapM randCom =<< case typ of
-          0 -> randListOf (fmap (lit . OString . randUStr ) randInt) >>= comAssignExprList
-          1 -> randListOf (fmap (lit . OInt . fromIntegral) randInt) >>= comAssignExprList
-          2 -> rndlist
-          3 -> rndlist
-        coms  <- randComments
-        return (DictExpr dict coms exprs LocationUnknown)
-  , do -- ArrayExpr
-        i <- nextInt 4
-        let int = fmap (OInt . fromIntegral) randInt
-            ref = fmap ORef subRandO
-            f x = liftM2 x int ref
-        idxExpr <- randCom =<< mapM (randCom . lit) =<< case i of
-          0 -> replicateM 2 int
-          1 -> f (\a b -> [a,b]) 
-          2 -> replicateM 2 ref
-          3 -> f (\a b -> [b,a])
-        items <- randList >>= mapM randCom
-        return (ArrayExpr idxExpr items LocationUnknown)
-  , liftM3 StructExpr comRandObjExpr (randList >>= comAssignExprList >>= mapM randCom) no
-  , liftM4 LambdaExpr randO (randArgsDef >>= randCom) randScriptExpr no
-  ]
+-- | Will create a random 'Dao.Object.ObjectExpr' of a type suitable for use as a stand-alone script
+-- expression, which is only 'AssignExpr'.
+randAssignExpr :: RandO ObjectExpr
+randAssignExpr = liftM4 AssignExpr   randO (randO >>= randCom) randO no
 
 instance HasRandGen ObjectExpr where
-  -- | Differs from 'randObjExpr' in that this 'randO' can generate 'Dao.Object.Literal' expressions
-  -- whereas 'randObjExpr' will not so it does not generate stand-alone constant expressions within
+  -- | Differs from 'randAssignExpr' in that this 'randO' can generate 'Dao.Object.Literal' expressions
+  -- whereas 'randAssignExpr' will not so it does not generate stand-alone constant expressions within
   -- 'Dao.Object.ScriptExpr's.
-  randO = randOFromList (liftM2 Literal limRandObj no : randObjExprList)
+  randO = randOFromList $
+    [ liftM2 Literal      limRandObj no
+    , randAssignExpr
+    , liftM4 Equation     randO (randO >>= randCom) randO no
+    , liftM3 PrefixExpr   randO    comRandObjExpr no
+    , liftM3 ParenExpr    randBool comRandObjExpr no
+    , liftM4 ArraySubExpr mostlyRefExprs randComments comRandObjExpr no
+    , liftM4 FuncCall     (fmap randUStr randInt) randComments comRandObjExprList no
+    , do -- DictExpr
+          typ   <- nextInt 4
+          dict  <- return $ ustr $ case typ of
+            0 -> "dict"
+            1 -> "intmap"
+            2 -> "list"
+            3 -> "set"
+          let rndlist = randListOf (fmap lit limRandObj)
+          exprs <- mapM randCom =<< case typ of
+            0 -> randListOf (fmap (lit . OString . randUStr ) randInt) >>= comAssignExprList
+            1 -> randListOf (fmap (lit . OInt . fromIntegral) randInt) >>= comAssignExprList
+            2 -> rndlist
+            3 -> rndlist
+          coms  <- randComments
+          return (DictExpr dict coms exprs LocationUnknown)
+    , do -- ArrayExpr
+          i <- nextInt 4
+          let int = fmap (OInt . fromIntegral) randInt
+              ref = fmap ORef subRandO
+              f x = liftM2 x int ref
+          idxExpr <- randCom =<< mapM (randCom . lit) =<< case i of
+            0 -> replicateM 2 int
+            1 -> f (\a b -> [a,b]) 
+            2 -> replicateM 2 ref
+            3 -> f (\a b -> [b,a])
+          items <- randList >>= mapM randCom
+          return (ArrayExpr idxExpr items LocationUnknown)
+    , liftM3 StructExpr comRandObjExpr (randList >>= comAssignExprList >>= mapM randCom) no
+    , liftM4 LambdaExpr randO (randArgsDef >>= randCom) randScriptExpr no
+    ]
 
 randArgsDef :: RandO [Com ObjectExpr]
 randArgsDef = randList >>= mapM randCom

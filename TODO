@@ -1,15 +1,45 @@
 TODO:
-*	Need to left-factor the 'Dao.Object.Parser.parseDirective' parsers.
+*	Need to change "Dao.Parser", eliminate the 'Dao.Parser.Regex' data type and make the parser
+comibators themselves a datatype. There needs to be a metric for sorting how strict a regular
+expression is, with /.*/ being the least strict (matches anything), and long strings of characters
+being most strict (the longer, the more strict they are), and when parsers choices are summed using
+'Control.Monad.mplus', the choices are sorted from greatest to least strict and applied in that
+order.
+
+*	Some inlining pretty-printers are still messing up the indentation.
+
+*	Re-write most of "Dao.Object.Binary". There needs to be a way to define the byte-prefix of
+important object nodes using Haskell. Right now I am doing it by hand with case statements, and I
+need to go and change everything by hand (introducing many errors) every time I modify the abstract
+syntax tree. Once Dao version 1.0 is released, I can freeze the instantiation of "Dao.Object" into
+the Binary class, but until then there is too much flux in the code.
+
+*	Need to implement the "while" statement.
+
+*	Need a parser for "Dao.Object.ObjPat". Rename 'Dao.Pattern.Pattern' to "Dao.Glob.Glob' and
+rename 'Dao.Object.ObjPat' to 'Dao.Object.Pattern'.
 
 *	Need to define a second rule table for rules that respond to 'Dao.Object.ObjPat's.
 
-*	I need to change how the 'Dao.PPrint.PPrintList' construct is printed so long list items that
-wrap or have a closure have their terminating mark followed by a comma on the same line, then the
-next list item begins on the next line. Right now, items continue to be inlined after a closure, and
-commas are always placed on the next line following a 'Dao.PPrint.PPrintWrapIndent' construct.
-
-*	The "Dao.Object.Show" module is dreadfully out of data, it needs to be cleaned up for all the
+*	The "Dao.Object.Show" module is dreadfully out of date, it needs to be cleaned up for all the
 changes made to the abstract syntax tree.
+
+*	Need to create a means to track which modules have "open()"-ed and "close()"-ed which files. Like
+reference counting with sets, each file will have a set of module references with an element for
+every module that has "open()"-ed it without yet "close()"-ing it. Files loaded from the command
+line might be represented by "Nothing" where files loaded by a module migh be represented by
+"Just moduleName".
+
+*	Need to modify the parser test program to generate entire source files, not just individual
+object expressions, so the whole parser can be tested.
+
+*	Need to provide a "meta-dereference" operator (kind of like macros in the C preprocessor) for
+constant script and rule object declarations in code. These objects treat all references as unbound.
+Binding values are only resolved when the script code is evaluated, even if the context of variables
+is completely different from the time it was defined at the time it is evaluated. It might be handy
+to programmers if they had a means to tell Dao to "replace the variable name in this line of code
+with the value the variable has right now, and construct the script or rule object with that value
+instead of a reference in that point in the abstract syntax tree."
 
 *	'Dao.Object.Subroutine' is a data structure representing a function that takes a list of
 'Dao.Object.ObjPat's, and when it is executed, it will resolve all Reference parameters passed to
@@ -24,6 +54,13 @@ update operator, and treats these as special cases. However, if there is a "pure
 takes parameters that are not resolved automatically, the update operators can be defined as
 object instances of this type of "pure" subroutine.
 
+*	Implement the "editSource()" built-in function for loading Dao scripts into memory and allowing
+the abstract syntax tree to be modified. There need to be editor functions, like "updateWith()",
+which takes a source function and a lambda that traverses the AST and replaces matching nodes with a
+returned value. There should also be a "testSource()" built-in function for evaluating an edited
+source code into a working module object, and executing strings against that, all done so
+programmatically within the running Dao program.
+
 SOLVED:
 
 *	There seems to be a bug with the 'Dao.Objcet.IfThenElse' branch of the abstract syntax tree. I
@@ -36,4 +73,6 @@ am having difficulty getting if expressions to evaluate correctly.
 	'Dao.Object.ObjectExpr' would necessarily evaluate the entire expression, however it seems I
 	have not defined my progam in such a way that this will happen. I might need to make the
 	evaluator a bit more strict.
+
+*	Need to left-factor the 'Dao.Object.Parser.parseDirective' parsers.
 

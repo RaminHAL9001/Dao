@@ -686,16 +686,22 @@ parseStruct = guardKeyword "struct" $ \com1 ->
     ]
   where
     objData com1 (obj, obj2) =
-      expect "data structure needs bracketed list of field declarations" $ \com2 -> do
-        items <- itemList []
-        return (StructExpr (com com1 obj com2) items unloc)
+      expect "bracketed list of field declarations" $ \com2 -> do
+        char '{'
+        let done inits = StructExpr (com com1 obj com2) inits unloc
+        expect "struct initializing expression" $ \com3 -> msum $
+          [ char '}' >> return (if null com3 then done [] else done [com com3 VoidExpr []])
+          , do  items <- itemList []
+                return (done items)
+          ]
     msg = "field label"
-    parseItem = expect msg $ \com1 -> do
+    parseItem = expect "assignment expression for struct initilizing list" $ \com1 -> do
       (name, com2) <- parseObjectExpr
       flip mplus (fail ("equals-sign \"=\" after "++msg)) $ do
         op <- msum (map string (words " <<= >>= += -= *= /= %= &= |= ^= .= := : = "))
         expect "object experssion to assign to field" $ \com3 -> do
           (obj, com4) <- parseObjectExpr
+          regexMany space
           return (com com1 (AssignExpr name (com com2 (read op) com3) obj unloc) com4)
     itemList zx = do
       item <- parseItem

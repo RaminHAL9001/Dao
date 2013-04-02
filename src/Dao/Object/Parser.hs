@@ -25,6 +25,7 @@ import           Dao.Token
 import           Dao.Object
 import           Dao.EnumSet
 import           Dao.Parser
+import qualified Dao.Tree as T
 
 import           Control.Monad
 
@@ -680,13 +681,13 @@ parseDateTime = guardKeyword "time" $ \com1 -> do
 parseStruct :: NameComParser ObjectExpr
 parseStruct = guardKeyword "struct" $ \com1 ->
   msum $
-    [ parseObjectExpr >>= objData com1
-    , objData com1 (VoidExpr, [])
+    [ do  (obj, com2) <- parseObjectExpr
+          mplus (objData com1 obj com2) (return (StructExpr (com com1 obj com2) [] unloc))
+    , objData com1 VoidExpr []
     , fail "expecting data structure definition after keyword \"struct\""
     ]
   where
-    objData com1 (obj, obj2) =
-      expect "bracketed list of field declarations" $ \com2 -> do
+    objData com1 obj com2 = do
         char '{'
         let done inits = StructExpr (com com1 obj com2) inits unloc
         expect "struct initializing expression" $ \com3 -> msum $
@@ -694,10 +695,15 @@ parseStruct = guardKeyword "struct" $ \com1 ->
           , do  items <- itemList []
                 return (done items)
           ]
-    msg = "field label"
     parseItem = expect "assignment expression for struct initilizing list" $ \com1 -> do
-      (name, com2) <- parseObjectExpr
-      flip mplus (fail ("equals-sign \"=\" after "++msg)) $ do
+      name <- msum $
+        [ parseNonEquation
+        , parseParenObjectExpr
+        , fail "expecting initializing element for struct initializing list"
+        ]
+      com1 <- parseComment
+      regexMany space
+      expect "equals-sign \"=\" after field label" $ \com2 -> do
         op <- msum (map string (words " <<= >>= += -= *= /= %= &= |= ^= .= := : = "))
         expect "object experssion to assign to field" $ \com3 -> do
           (obj, com4) <- parseObjectExpr

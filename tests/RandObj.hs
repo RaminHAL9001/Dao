@@ -431,8 +431,20 @@ instance HasRandGen ObjectExpr where
   randO = randOFromList $
     [ liftM2 Literal      limRandObj no
     , randAssignExpr
-    , liftM4 Equation     randO (randO >>= randCom) randO no
-    , liftM3 PrefixExpr   randO    comRandObjExpr no
+    , let check a = case a of
+            Equation a op b no | DOT == unComment op  -> Equation (check a) op (check b) no
+            Literal (ORef (LocalRef _))           _   -> a
+            Literal (OString _)                   _   -> a
+            FuncCall _ _ _                        _   -> a
+            ParenExpr _ a                         loc -> ParenExpr True a loc
+            a                                         -> ParenExpr True (Com a) LocationUnknown
+      in  fmap check (liftM4 Equation randO (randO >>= randCom) randO no)
+    , do  o@(PrefixExpr fn cObjXp no)  <- liftM3 PrefixExpr randO comRandObjExpr no
+          return $ case fn of
+            REF -> case unComment cObjXp of
+              Literal (ORef (LocalRef _)) _ -> o
+              _ -> PrefixExpr fn (fmap (flip ((ParenExpr True) . Com) no) cObjXp) no
+            _ -> o
     , liftM3 ParenExpr    randBool comRandObjExpr no
     , liftM4 ArraySubExpr mostlyRefExprs randComments comRandObjExpr no
     , liftM4 FuncCall     (fmap randUStr randInt) randComments comRandObjExprList no

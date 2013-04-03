@@ -41,6 +41,8 @@ import           Data.Binary
 import qualified Data.Binary          as B
 import qualified Data.ByteString.Lazy as B
 
+import           Text.Printf
+
 import           System.IO
 
 ----------------------------------------------------------------------------------------------------
@@ -130,10 +132,10 @@ pPrintComScriptExpr = pPrintSubBlock (return ())
 -- | Test the pretty printer and the parser. If a randomly generated object can be pretty printed,
 -- and the parser can parse the pretty-printed string and create the exact same object, then the
 -- test pases.
-testEveryParsePPrint :: MVar Handle -> MVar Int -> Chan (Maybe Int) -> IO ()
-testEveryParsePPrint hlock counter ch = handle h loop where
+testEveryParsePPrint :: MVar Handle -> MVar Bool -> Chan (Maybe Int) -> IO ()
+testEveryParsePPrint hlock notify ch = handle h loop where
   h (SomeException e) = do
-    putMVar counter 1 >>= evaluate
+    putMVar notify False >>= evaluate
     print e
   loop = do
     i <- readChan ch
@@ -155,37 +157,60 @@ testEveryParsePPrint hlock counter ch = handle h loop where
                   , "\n--------------------------------------------------------------------------\n"
                   ]
                 return h
-              putMVar counter 1 >>= evaluate
         -- if seq obexp $! seq bytes $! obj/=obexp
           -- then  err "Binary deserialization does not match source object >>= evaluate"
           -- else
-        case seq par $! seq msg $! par of
-                  OK      _ -> loop
-                  Backtrack -> err "Ambiguous parse" >>= evaluate
-                  PFail _ b -> err ("Parse failed, "++uchars b) >>= evaluate
+        status <- case seq par $! seq msg $! par of
+          OK      _ -> return True
+          Backtrack -> err "Ambiguous parse" >>= evaluate >> return False
+          PFail _ b -> err ("Parse failed, "++uchars b) >>= evaluate >> return False
+        putMVar notify status
+        loop
 
 ----------------------------------------------------------------------------------------------------
 
-threadCount = 8
+threadCount :: Int
+threadCount = 16
+
+maxErrors :: Int
+maxErrors = 8
+
+displayInterval :: Int
+displayInterval = 4000000
 
 main = do
   ch      <- newChan
-  counter <- newEmptyMVar
+  notify  <- newEmptyMVar
+  counter <- newMVar (0, 0)
   h       <- openFile "./debug.log" ReadWriteMode
   hlock   <- newMVar h
   hwait   <- newMVar True
-  let ctrlLoop count = do
-        c <- takeMVar counter
-        let nextCount = count-c
-        if nextCount>0 then ctrlLoop nextCount else modifyMVar_ hwait (return . const False)
+  let ctrlLoop count threads = do
+        passed <- takeMVar notify
+        let nextCount = if not passed then count-1 else count
+        modifyMVar_ counter (\ (total, count) -> return (total+1, count+1))
+        if nextCount>0
+          then  ctrlLoop nextCount threads
+          else do
+            modifyMVar_ hwait (return . const False)
+            mapM_ killThread threads
       iterLoop i = do
         continue <- readMVar hwait
         if continue then writeChan ch (Just i) else writeChan ch Nothing
         iterLoop (i+1)
+      displayInfo = do
+        (total, count) <- modifyMVar counter $ \ (total, count) -> return ((total,0), (total,count))
+        putStrLn $ concat $
+          [ show total, " tests completed at the rate of "
+          , printf "%.2f tests per second"
+              (fromRational (toRational count / (toRational displayInterval / 1000000)) :: Float)
+          ]
+      infoLoop = threadDelay displayInterval >> displayInfo >> infoLoop
   workThreads <- replicateM threadCount $ forkOS $ do
-    testEveryParsePPrint hlock counter ch
+    testEveryParsePPrint hlock notify ch
   iterThread <- forkIO (iterLoop 0)
-  ctrlLoop threadCount
-  mapM_ killThread (iterThread:workThreads)
+  dispThread <- forkIO infoLoop
+  ctrlLoop maxErrors (iterThread:dispThread:workThreads)
   hClose h
+  displayInfo
 

@@ -144,7 +144,7 @@ testEveryParsePPrint hlock counter ch = handle h loop where
             -- bytes = B.encode obexp
             -- obj   = B.decode bytes
             str   = seq obexp $! showPPrint 80 "    " (pPrint obexp)
-            (par, msg) = seq str $! runParser (fmap fst parseObjectExpr) str 
+            (par, msg) = seq str $! runParser (fmap fst (regexMany space >> parseObjectExpr)) str 
             err reason = do
               modifyMVar_ hlock $ \h -> do
                 hPutStrLn h $! concat $!

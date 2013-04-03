@@ -110,7 +110,10 @@ instance PPrintable Object where
     OPattern   o     -> pPrint o
     ORule      o     -> pPrint o
     OScript    o     -> pPrint o
-    OBytes     o     -> pClosure (pString "data ") "{ " " }" (map pString (b64Encode o))
+    OBytes     o     ->
+      if B.null o
+        then  pString "data{}"
+        else  pClosure (pString "data ") "{ " " }" (map pString (b64Encode o))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -206,9 +209,9 @@ instance PPrintable ScriptExpr where
             pPrintComSubBlock (pWrapIndent [pString "if(", pPrint ifXp, pString ")"]) thenXp
           done = pEndLine >> pPrintComSubBlock (pString "else") elseXp
     TryCatch     cxcScrpXp  cUStr     xcScrpXp  _ -> do
-      pPrintComSubBlock (pString "try ") cxcScrpXp
+      pPrintComSubBlock (pString "try") cxcScrpXp
       if null xcScrpXp
-        then  pString ";"
+        then  return ()
         else  pPrintSubBlock (pString "catch " >> pPrint cUStr) xcScrpXp
     ForLoop      cNm        cObjXp    xcScrpXp  _ -> do
       let hdr = do
@@ -270,13 +273,17 @@ instance PPrintable ObjectExpr where
     Equation     objXp1  comAriOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comAriOp, pPrint objXp2]
     PrefixExpr   ariOp    c_ObjXp          _ -> pPrint ariOp >> pPrint c_ObjXp
-    ParenExpr    bool     c_ObjXp          _ -> pWrapIndent [pPrint c_ObjXp]
+    ParenExpr    bool     c_ObjXp          _ ->
+      if bool then pWrapIndent [pString "(", pPrint c_ObjXp, pString ")"]
+              else pWrapIndent [pPrint c_ObjXp]
     ArraySubExpr objXp    coms     c_ObjXp _ -> pWrapIndent $
       [pPrint objXp, mapM_ pPrint coms, pString "[", pGroup True (pPrint c_ObjXp), pString "]"]
     FuncCall     nm       coms     xcObjXp _ -> do
       pList (pPrint nm >> mapM_ pPrint coms) "(" ", " ")" (map pPrint xcObjXp)
-    DictExpr     dict     coms     xcObjXp _ -> do
-      pList (pPrint dict >> mapM_ pPrint coms) " {" ", " " }" (map pPrint xcObjXp)
+    DictExpr     dict     coms     xcObjXp _ ->
+      if null xcObjXp
+        then  pString (uchars dict++"{}")
+        else  pList (pPrint dict >> mapM_ pPrint coms) " {" ", " " }" (map pPrint xcObjXp)
     ArrayExpr    cxcObjXp xcObjXp          _ -> do
       let tag = pString "array"
           hdr = pPrintComWith (pList tag "(" ", " ")" . map (pGroup True . pPrint)) cxcObjXp
@@ -289,6 +296,10 @@ instance PPrintable ObjectExpr where
           if complicated (unComment obj)
             then  pInline [pString "(", pPrint cObjXp, pString ")"]
             else  pPrint cObjXp
+    DataExpr     com   xcStr               _ ->
+      if null xcStr
+        then  pString "data{}"
+        else  pClosure (pString "data" >> mapM_ pPrint com) "{" "}" (map pPrint xcStr)
     LambdaExpr   typ   ccNmx   xcObjXp     _ -> do
       let hdr = pPrintComWith (pList_ (show typ++"(") ", " ")" . map (pPrintComWith pPrint)) ccNmx
       pPrintSubBlock hdr xcObjXp

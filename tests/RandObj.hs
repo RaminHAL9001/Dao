@@ -482,7 +482,7 @@ instance HasRandGen TopLevelExpr where
     , liftM2 EndExpr        comRandScriptExpr no
     , liftM2 TakedownExpr   comRandScriptExpr no
     , do  name <- comRandName
-          args <- randListOf (fmap randUStr randInt) >>= mapM randCom
+          args <- randList >>= mapM randCom
           scrp <- comRandScriptExpr
           return (ToplevelFunc name args scrp LocationUnknown)
     ]

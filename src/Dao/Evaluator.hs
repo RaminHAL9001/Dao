@@ -1066,6 +1066,24 @@ execScriptExpr script = case unComment script of
       OK        ox  -> loop thn (unComment varName) ox
       Backtrack     -> objectError inObj "cannot be represented as list"
       PFail loc msg -> objectError inObj (uchars msg) -- TODO: also report the location of the failure.
+  WhileLoop    co   scrp       lc  -> outerLoop where
+    outerLoop = do
+      condition <- evalObject (unComment co)
+      if objToBool condition
+        then  innerLoop scrp >>= \contin -> if contin then outerLoop else return ()
+        else  return ()
+    innerLoop ax = case ax of
+      []     -> return True
+      a : ax -> case unComment a of
+        ContinueExpr  contin _ condition lc ->
+          case unComment condition of
+            VoidExpr -> if contin then return True else return False
+            _        -> do
+              condition <- evalObject (unComment condition)
+              if objToBool condition
+                then  if contin then return True else return False
+                else  innerLoop ax
+        _                                        -> execScriptExpr a >> innerLoop ax
   ContinueExpr a    _    _     lc  -> simpleError $
     '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" loop"
   ReturnExpr   a    obj        lc  -> evalObject (unComment obj) >>= \obj -> (if a then procReturn else procErr) obj
@@ -1211,6 +1229,12 @@ evalObject obj = case obj of
                    "range specified to an "++show ArrayType
                  ++" constructor must evaluate to two "++show IntType++"s"
       _ -> simpleError "internal error: array range expression has fewer than 2 arguments"
+  DataExpr   _    strs        _  -> case b64Decode (concatMap (uchars . unComment) strs) of
+    Right dat -> return (OBytes dat)
+    Left  (ch, loc) -> procErr $ OList $
+      [ OString (ustr "invalid character in base-64 data expression"), OChar ch
+      , OString (ustr "at position"), OWord loc
+      ]
   LambdaExpr typ  argv  code  lc -> do
     result <- evalLambdaExpr typ argv code
     case result of
@@ -1408,11 +1432,12 @@ programFromSource globalResource checkAttribute script = do
         modify (\p -> p{inmpg_postExec = inmpg_postExec p ++ [exe]})
       ToplevelFunc nm argv code lc -> do
         xunit <- ask
+        argv <- lift (mapM argsToObjPat (map unComment argv))
         exe <- lift (inExecEvalRun (setupExecutable code))
         let sub =
               Subroutine
-              { argsPattern  = map (flip ObjLabel ObjAny1 . unComment) argv
-              , subSourceCode  = unComment code
+              { argsPattern      = argv
+              , subSourceCode    = unComment code
               , getSubExecutable = exe
               }
             name = unComment nm

@@ -1,4 +1,7 @@
 TODO:
+*	Listable parsers that end in a comma on their last item, with the comma followed by a closing
+brace instead of another item, will return a null list. This should not happen.
+
 *	Need to change "Dao.Parser", eliminate the 'Dao.Parser.Regex' data type and make the parser
 comibators themselves a datatype. There needs to be a metric for sorting how strict a regular
 expression is, with /.*/ being the least strict (matches anything), and long strings of characters
@@ -13,8 +16,6 @@ important object nodes using Haskell. Right now I am doing it by hand with case 
 need to go and change everything by hand (introducing many errors) every time I modify the abstract
 syntax tree. Once Dao version 1.0 is released, I can freeze the instantiation of "Dao.Object" into
 the Binary class, but until then there is too much flux in the code.
-
-*	Need to implement the "while" statement.
 
 *	Need a parser for "Dao.Object.ObjPat". Rename 'Dao.Pattern.Pattern' to "Dao.Glob.Glob' and
 rename 'Dao.Object.ObjPat' to 'Dao.Object.Pattern'.
@@ -63,8 +64,12 @@ programmatically within the running Dao program.
 
 SOLVED:
 
+*	Need to implement the "while" statement.
+
+*	Need to left-factor the 'Dao.Object.Parser.parseDirective' parsers.
+
 *	There seems to be a bug with the 'Dao.Objcet.IfThenElse' branch of the abstract syntax tree. I
-am having difficulty getting if expressions to evaluate correctly.
+	am having difficulty getting if expressions to evaluate correctly.
 	For the 'Dao.Object.ObjectExpr' instantiation of 'HasLocation', I forgot to write a pattern for
 	the 'Dao.Object.PrefixExpr' data constructor in the case statement, and Haskell found a way to
 	evaluate the 'Dao.Object.ObjectExpr' without evaluating that case statement which involved
@@ -73,6 +78,4 @@ am having difficulty getting if expressions to evaluate correctly.
 	'Dao.Object.ObjectExpr' would necessarily evaluate the entire expression, however it seems I
 	have not defined my progam in such a way that this will happen. I might need to make the
 	evaluator a bit more strict.
-
-*	Need to left-factor the 'Dao.Object.Parser.parseDirective' parsers.
 

@@ -613,7 +613,7 @@ scanBind constructor ops objx = case objx of
 -- Here we collect all of the ObjectExpr parsers that start by looking for a keyword
 keywordObjectExpr :: NameComParser ObjectExpr
 keywordObjectExpr key com1 = msum $ map (\parser -> parser key com1) $
-  [ parseDateTime, parseArrayDef, parseListSetDictIntmap, parseClassedRef
+  [ parseDateTime, parseArrayDef, parseListSetDictIntmap
   , parseHexData, parseStruct, parseLambdaDef, constructWithNonKeyword
   ]
 
@@ -627,22 +627,16 @@ parseFunctionParameters :: String -> Parser [Com ObjectExpr]
 parseFunctionParameters msg = adjustComListable $
   parseListable msg '(' ',' ')' parseObjectExpr
 
-parseClassedRef :: NameComParser ObjectExpr
-parseClassedRef key com1 = case key of
-  "local"  -> makeref True  LocalRef  e "local variable name"
-  "static" -> makeref True  StaticRef e "local variable name for static reference"
-  "global" -> makeref False e GlobalRef "global variable name"
-  "qtime"  -> makeref False e QTimeRef  "global variable name for query-time reference"
-  _        -> mzero
-  where
-    e = undefined
-    makeref typ nameCo namexCo msg = token $ do -- 'typ'=True for LocalRef, 'typ'=False for GlobalRef
-      ref <- parseLocalGlobal
-      let done co r = return (Literal (ORef (co r)) unloc)
-      case ref of
-        LocalRef  r | typ     -> done nameCo r
-        GlobalRef r | not typ -> done namexCo r
-        _                     -> fail ("expecting "++msg)
+-- | Function calls with a single argument that are so common that, as convenience, you can call
+-- them without putting the argument in parenthases.
+parseBuiltinFuncCall :: NameComParser ObjectExpr
+parseBuiltinFuncCall key com1 = do
+  guard $ elem key $ words $ concat $
+    [ " sin cos tan asin acos atan sinh cosh tanh asinh acosh atanh exp log log10 "
+    , " throw static qtime global local do query print file open save close edit test "
+    ]
+  (arg, com2) <- parseObjectExpr
+  return (FuncCall (ustr key) com1 [com [] arg com2] unloc)
 
 func_param_var = "function parameter variable"
 
@@ -671,15 +665,18 @@ parseArrayDef = guardKeyword "array" $ \com1 -> token $ do
           return (ArrayExpr (com com1 bounds com2) initValues unloc)
       _       -> bad_bounds
 
-parseListSetDictIntmap :: NameComParser ObjectExpr
-parseListSetDictIntmap key com1 = do
-  guard (key=="dict" || key=="intmap" || key=="set" || key=="list")
+parseListItems :: String -> Bool -> Parser [Com ObjectExpr]
+parseListItems key requireAssign = do
   let getDictItem = token $ parseObjectExpr >>= \ (item, com2) -> case item of
         AssignExpr _ _ _ _ -> return (item, com2)
         _ -> fail ("each entry to "++key++" definition must assign a value to a key")
-      getItem = if key=="dict" || key=="intmap" then getDictItem else parseObjectExpr
-  items <- adjustComListable $
-    parseListable ("items for "++key++" definition") '{' ',' '}' getItem
+      getItem = if requireAssign then getDictItem else parseObjectExpr
+  adjustComListable (parseListable ("items for "++key++" definition") '{' ',' '}' getItem)
+
+parseListSetDictIntmap :: NameComParser ObjectExpr
+parseListSetDictIntmap key com1 = do
+  guard (key=="dict" || key=="intmap" || key=="set" || key=="list")
+  items <- parseListItems key (key=="dict" || key=="intmap")
   return (DictExpr (ustr key) com1 items unloc)
 
 parseDateTime :: NameComParser ObjectExpr
@@ -702,34 +699,8 @@ parseStruct = guardKeyword "struct" $ \com1 ->
     ]
   where
     objData com1 obj com2 = do
-        char '{'
-        let done inits = StructExpr (com com1 obj com2) inits unloc
-        expect "struct initializing expression" $ \com3 -> msum $
-          [ char '}' >> return (if null com3 then done [] else done [com com3 VoidExpr []])
-          , do  items <- itemList []
-                return (done items)
-          ]
-    parseItem = expect "assignment expression for struct initilizing list" $ \com1 -> do
-      name <- msum $
-        [ parseNonEquation
-        , parseParenObjectExpr
-        , fail "expecting initializing element for struct initializing list"
-        ]
-      com1 <- parseComment
-      regexMany space
-      expect "assignment operator after field label" $ \com2 -> do
-        op <- msum (map string (words " <<= >>= += -= *= /= %= &= |= ^= .= := : = "))
-        expect "object experssion to assign to field" $ \com3 -> do
-          (obj, com4) <- parseObjectExpr
-          regexMany space
-          return (com com1 (AssignExpr name (com com2 (read op) com3) obj unloc) com4)
-    itemList zx = do
-      item <- parseItem
-      msum $
-        [ char ',' >> itemList (zx++[item])
-        , char '}' >> return zx
-        , fail "expecting a comma \",\" and the next item in the struct, or closing bracket \"}\""
-        ]
+      items <- parseListItems "struct" True
+      return (StructExpr (com com1 obj com2) items unloc)
 
 parseHexData :: NameComParser ObjectExpr
 parseHexData key _ = do
@@ -764,7 +735,7 @@ parseHexData key _ = do
 -- backtrack, this function takes the symbol and treats it as a name, which could be a local
 -- variable name, a simple function call, or a part of a global variable name.
 constructWithNonKeyword :: NameComParser ObjectExpr
-constructWithNonKeyword key com1 = mplus funcCall localRef where
+constructWithNonKeyword key com1 = msum [funcCall, parseBuiltinFuncCall key com1, localRef] where
   localRef = return (Literal (ORef $ LocalRef $ ustr key) unloc)
   funcCall = do
     argv <- adjustComListable $

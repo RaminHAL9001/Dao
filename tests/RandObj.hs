@@ -504,7 +504,7 @@ randomWords = listArray (0, length list) (map B.pack list) where
     , "designed developed development difference different domains domainspecific easier effects"
     , "elaborations elements eliminating emphasized emphasizes entscheidungsproblem eschewing"
     , "especially evaluation example executing expression facilitate financial formal"
-    , "function functional has have hope how however imperative industrial input investigate is"
+    , "functional has have hope how however imperative industrial input investigate is"
     , "it key lack lambda language languages largely like make many math mathematical may"
     , "motivations much mutable notion numeric of on one ones only organizations output paradigm"
     , "pecific pioneering practice predict produce program programming prominent purely rather"

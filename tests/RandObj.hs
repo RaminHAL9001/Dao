@@ -244,7 +244,7 @@ instance HasRandGen Object where
   randO = randOFromList $
     [ return ONull
     , return OTrue
-    , fmap OType randO
+    -- , fmap OType randO
     , randInteger (OInt  0) $ \i -> randInt >>= \j -> return (OInt$fromIntegral$ i*j)
     , randInteger (OWord 0) $ \i -> randInt >>= \j -> return (OWord$fromIntegral$abs$ i*j)
     , randInteger (OLong 0) $ \i ->

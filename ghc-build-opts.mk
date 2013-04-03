@@ -108,7 +108,6 @@ test: tests/RandObj.hs \
 	$(GHC_COMPILE) -rtsopts tests/RandObj.hs tests/main.hs -o ./test
 
 debug.log: ./test
-	rm -f ./debug.log ; \
-	@echo 'Dont forget to run the "test" by hand to see the result.' ;\
-	@echo 
+	rm -f ./debug.log ;
+	@echo 'Please run the test program by hand.'
 

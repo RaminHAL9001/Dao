@@ -556,6 +556,7 @@ data ObjectExpr
   | DictExpr     Name        [Comment]  [Com ObjectExpr]  Location
   | ArrayExpr    (Com [Com ObjectExpr]) [Com ObjectExpr]  Location
   | StructExpr   (Com ObjectExpr)       [Com ObjectExpr]  Location
+  | DataExpr     [Comment]   [Com UStr]                   Location
   | LambdaExpr   LambdaExprType  (Com [Com ObjectExpr]) [Com ScriptExpr]  Location
   deriving (Eq, Ord, Show, Typeable)
 
@@ -572,6 +573,7 @@ instance HasLocation ObjectExpr where
     DictExpr       _ _ _ o -> o
     ArrayExpr      _ _   o -> o
     StructExpr     _ _   o -> o
+    DataExpr       _ _   o -> o
     LambdaExpr   _ _ _   o -> o
   setLocation o loc = case o of
     VoidExpr             -> VoidExpr
@@ -585,6 +587,7 @@ instance HasLocation ObjectExpr where
     DictExpr     a b c _ -> DictExpr     a b c loc
     ArrayExpr    a b   _ -> ArrayExpr    a b   loc
     StructExpr   a b   _ -> StructExpr   a b   loc
+    DataExpr     a b   _ -> DataExpr     a b   loc
     LambdaExpr   a b c _ -> LambdaExpr   a b c loc
 
 -- | Part of the Dao language abstract syntax tree: any expression that controls the flow of script
@@ -597,6 +600,8 @@ data ScriptExpr
     -- ^ @try /**/ {} /**/ catch /**/ errVar /**/ {}@              
   | ForLoop      (Com Name)               (Com ObjectExpr)             [Com ScriptExpr]  Location
     -- ^ @for /**/ var /**/ in /**/ objExpr /**/ {}@
+  | WhileLoop    (Com ObjectExpr)                                      [Com ScriptExpr]  Location
+    -- ^ @while objExpr {}@
   | ContinueExpr Bool  [Comment]          (Com ObjectExpr)                               Location
     -- ^ The boolean parameter is True for a "continue" statement, False for a "break" statement.
     -- @continue /**/ ;@ or @continue /**/ if /**/ objExpr /**/ ;@
@@ -613,17 +618,19 @@ instance HasLocation ScriptExpr where
     IfThenElse   _ _ _ _ o -> o
     TryCatch     _ _ _   o -> o
     ForLoop      _ _ _   o -> o
+    WhileLoop    _ _     o -> o
     ContinueExpr _ _ _   o -> o
     ReturnExpr   _ _     o -> o
     WithDoc      _ _     o -> o
   setLocation o loc = case o of
-    EvalObject   a b   _   -> EvalObject   a b     loc
+    EvalObject   a b     _ -> EvalObject   a b     loc
     IfThenElse   a b c d _ -> IfThenElse   a b c d loc
-    TryCatch     a b c _   -> TryCatch     a b c   loc
-    ForLoop      a b c _   -> ForLoop      a b c   loc
-    ContinueExpr a b c _   -> ContinueExpr a b c   loc
-    ReturnExpr   a b   _   -> ReturnExpr   a b     loc
-    WithDoc      a b   _   -> WithDoc      a b     loc
+    WhileLoop    a b     _ -> WhileLoop    a b     loc
+    TryCatch     a b c   _ -> TryCatch     a b c   loc
+    ForLoop      a b c   _ -> ForLoop      a b c   loc
+    ContinueExpr a b c   _ -> ContinueExpr a b c   loc
+    ReturnExpr   a b     _ -> ReturnExpr   a b     loc
+    WithDoc      a b     _ -> WithDoc      a b     loc
 
 -- | A 'TopLevelExpr' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
@@ -635,7 +642,7 @@ data TopLevelExpr
   | BeginExpr      (Com [Com ScriptExpr]) Location
   | EndExpr        (Com [Com ScriptExpr]) Location
   | TakedownExpr   (Com [Com ScriptExpr]) Location
-  | ToplevelFunc   (Com Name) [Com Name] (Com [Com ScriptExpr]) Location
+  | ToplevelFunc   (Com Name) [Com ObjectExpr] (Com [Com ScriptExpr]) Location
   deriving (Eq, Ord, Show, Typeable)
 
 instance HasLocation TopLevelExpr where

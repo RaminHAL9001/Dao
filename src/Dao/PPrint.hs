@@ -201,7 +201,7 @@ pClosure header open close px = do
 ----------------------------------------------------------------------------------------------------
 
 type PPrint a = State Printer a
-type POutput = (Int, Int, String)
+type POutput = (Int, Int, UStr)
 
 -- not for export
 data Printer
@@ -231,8 +231,8 @@ initPrinter width =
   , forcedNewLine = False
   }
 
-printerOutputTripple :: Printer -> (Int, Int, String)
-printerOutputTripple st = (printerTab st, printerCol st, printerBuf st)
+printerOutputTripple :: Printer -> (Int, Int, UStr)
+printerOutputTripple st = (printerTab st, printerCol st, ustr (printerBuf st))
 
 instance Monoid Printer where
   mempty = initPrinter 80
@@ -245,7 +245,7 @@ instance Monoid Printer where
     (_, col, buf):out ->
       (combine origSt st)
       { printerOut = printerOut origSt ++
-          (printerTab origSt, printerCol origSt + col, printerBuf origSt ++ buf) : out
+          (printerTab origSt, printerCol origSt + col, ustr (printerBuf origSt ++ uchars buf)) : out
       , printerBuf = printerBuf st
       , printerCol = printerCol st
       }
@@ -273,7 +273,7 @@ stateJoinLines :: Printer -> Printer
 stateJoinLines st =
   st{printerBuf = str ++ printerBuf st, printerCol = len + printerCol st, printerOut=[]} where
     (len, str) = foldl joinln (0, "") (printerOut st)
-    joinln (len0, str0) (_, len1, str1) = (len0+len1, str0++str1)
+    joinln (len0, str0) (_, len1, str1) = (len0+len1, str0 ++ uchars str1)
 
 appendState :: Printer -> PPrint ()
 appendState = modify . flip mappend
@@ -283,7 +283,7 @@ appendState = modify . flip mappend
 linesFromPPrintState :: Int -> PPrint () -> [(Int, String)]
 linesFromPPrintState maxWidth ps = end (execState ps mempty) where
   end st = flip map (printerOut st ++ [printerOutputTripple st]) $ \ (a, _, b) ->
-    (a, dropWhile isSpace (chomp b))
+    (a, dropWhile isSpace (chomp (uchars b)))
 
 printAcross :: [PPrint ()] -> PPrint ()
 printAcross px = case px of

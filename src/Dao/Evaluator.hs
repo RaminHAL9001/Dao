@@ -30,6 +30,7 @@ module Dao.Evaluator where
 import           Dao.Debug.OFF
 import           Dao.Token
 import           Dao.Object
+import           Dao.PPrint
 import qualified Dao.Tree as T
 import           Dao.Pattern
 import           Dao.Resource
@@ -72,6 +73,9 @@ import           System.IO
 import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
+
+showObj :: PPrintable a => a -> String
+showObj = prettyPrint 80 "    "
 
 initExecUnit :: Runtime -> UPath -> TreeResource -> Run ExecUnit
 initExecUnit runtime modName initGlobalData = do
@@ -250,7 +254,10 @@ curDocVarLookup name = do
   case currentDocument xunit of
     Nothing                      -> return Nothing
     Just file@(DocumentFile res) -> lift (readResource res (currentBranch xunit ++ name))
-    _ -> error ("current document is not an idea file, cannot lookup reference "++showRef name)
+    _ -> error $ concat $
+           [ "current document is not an idea file, cannot lookup reference "
+           , intercalate "." (map uchars name)
+           ]
 
 -- | Update a reference value in the durrent document, if the current document has been set with a
 -- "with" statement.
@@ -261,7 +268,10 @@ curDocVarUpdate name runUpdate = do
     Nothing                  -> return Nothing
     Just file@(DocumentFile res) ->
       inEvalDoUpdateResource res (currentBranch xunit ++ name) runUpdate
-    _ -> error ("current document is not an idea file, cannot update reference "++showRef name)
+    _ -> error $ concat $
+           [ "current document is not an idea file, cannot update reference "
+           , intercalate "." (map uchars name)
+           ]
 
 curDocVarDefine :: [Name] -> Object -> Exec (Maybe Object)
 curDocVarDefine ref obj = curDocVarUpdate ref (return . const (Just obj))
@@ -392,7 +402,7 @@ asStringNoConvert o = case o of
 asString :: Object -> PValue Location UStr
 asString o = case o of
   OString o -> return o
-  o         -> return (ustr (showObj 0 o))
+  o         -> return (ustr (showObj o))
 
 asListNoConvert :: Object -> PValue Location [Object]
 asListNoConvert o = case o of
@@ -796,7 +806,7 @@ builtin_print :: DaoFunc
 builtin_print = DaoFunc $ \ox_ -> do
   let ox = flip map ox_ $ \o -> case o of
         OString o -> o
-        o         -> ustr (showObj 0 o)
+        o         -> ustr (showObj o)
   lift (lift (mapM_ (putStrLn . uchars) ox))
   return (OList (map OString ox))
 
@@ -1105,7 +1115,7 @@ execScriptExpr script = case unComment script of
              "file path (String type), or a Ref type, or a Pair of the two"
 
 showObjType :: Object -> String
-showObjType obj = showObj 0 (OType (objType obj))
+showObjType obj = showObj (OType (objType obj))
 
 -- | 'Dao.Object.ObjectExpr's can be evaluated anywhere in a 'Dao.Object.Script'. However, a
 -- 'Dao.Object.ObjectExpr' is evaluated as a lone command expression, and not assigned to any
@@ -1725,7 +1735,7 @@ initSourceCode modName script = ask >>= \runtime -> do
   -- loaded, the program is not in the program table, and is it's 'currentProgram' is 'Nothing'.
   xunit <- runExec (programFromSource grsrc (\_ _ _ -> return False) script) xunit
   case xunit of
-    FlowErr  obj   -> error ("script err: "++showObj 0 obj)
+    FlowErr  obj   -> error ("script err: "++showObj obj)
     FlowOK   xunit -> do
       -- Run all initializer scripts (denoted with the @SETUP@ rule in the Dao language).
       setupOrTakedown constructScript xunit

@@ -65,7 +65,7 @@ readBinaryInt str = if null str then [] else [loop 0 str] where
 numericObj :: Parser Object
 numericObj = token $ do
   sign <- plusMinus
-  dgt  <- regexMany1 digit
+  dgt  <- mplus (regexMany1 digit) backtrack
   let errmsg = fail "invalid integer expression"
   case dgt of
     "0"     -> do
@@ -213,14 +213,25 @@ parseComment = many comment where
         then fail "comment runs past end of input"
         else inline
 
-parseListable :: String -> Char -> Char -> Char -> Parser a -> Parser [Com a]
-parseListable msg open delim close getValue = char open >> loop [] where
-  loop zx = mplus (char close >> return zx) $ expect msg $ \before -> do
-    value <- getValue
-    after <- parseComment
+parseListable
+  :: String
+  -> Char -> Char -> Char
+  -> Parser (ObjectExpr, [Comment])
+  -> Parser [Com (ObjectExpr, [Comment])]
+parseListable msg open delim close getValue = begin where
+  begin = do
+    char open
+    com1 <- parseComment
     regexMany space
-    let next = zx++[com before value after]
-    mplus (char delim >> loop next) (char close >> return next)
+    mplus (char close >> return [Com (VoidExpr, com1)]) (loop com1 [])
+  loop com1 zx = do
+    (value, com2) <- getValue
+    regexMany space
+    mplus (char close >> return (zx++[Com (value, com2)])) $ do
+      char delim
+      com3 <- parseComment
+      regexMany space
+      loop com3 (zx++[com com1 (value, []) com2])
 
 parseKeywordOrName :: Parser String
 parseKeywordOrName = liftM2 (++) (regex alpha_) (regexMany alnum_)
@@ -478,7 +489,7 @@ objectExprStatement initExpr com1 = loop initExpr where
 -- | This is the "entry point" for parsing 'Dao.Object.ObjectExpr's.
 parseObjectExpr :: Parser (ObjectExpr, [Comment])
 parseObjectExpr = do
-  obj  <- applyLocation $ msum [parseNonEquation, parseParenObjectExpr, parseUnaryOperatorExpr]
+  obj  <- applyLocation parseNonEquation
   com1 <- parseComment
   regexMany space
   mplus (parseEquation obj com1) (return (obj, com1))
@@ -534,13 +545,19 @@ parseParenObjectExpr = do
 nonKeywordObjectExpr :: Parser ObjectExpr
 nonKeywordObjectExpr = msum $
   [ parseParenObjectExpr
-  -- literal strings or integers
+    -- ^ anything with an open-parenthasis.
   , fmap (flip Literal unloc . ORef) parseIntRef
+    -- ^ literal integer references, parsed out as a single value, rather than the reference unary
+    -- operator operating on an integer value.
   , fmap (flip Literal unloc . OString . ustr) parseString 
+    -- ^ literal string
   , fmap (flip Literal unloc . OChar) parseCharLiteral
+    -- ^ literal character
   , fmap (flip Literal unloc) numericObj
-  -- unary operators, like dereference (@name) or reference ($name)
+    -- ^ if a numeric object starts with an minus-sign, it will parse to a single negative value
+    -- rather than parsing to a unary negation operator that operates on a positive integer value.
   , parseUnaryOperatorExpr
+    -- ^ unary operators, like dereference (@name) or reference ($name)
   ]
 
 -- Parses an equation starting with a unary operator.
@@ -629,12 +646,9 @@ parseClassedRef key com1 = case key of
 
 func_param_var = "function parameter variable"
 
-parseFuncParamVars :: Parser [Com Name]
-parseFuncParamVars = parseListable func_param_var '(' ',' ')' (parseName func_param_var)
-
 parseLambdaDef :: NameComParser ObjectExpr
 parseLambdaDef key com1 = do
-  guard (key=="func" || key=="function" || key=="rule")
+  guard (key=="func" || key=="function" || key=="rule" || key=="pat" || key=="pattern")
   expect "list of parameter variables after \"function\" statement" $ \com2 -> msum $
     [ do  scrpt <- parseBracketedScript
           return (LambdaExpr (read key) (ComAfter [] (com1++com2)) scrpt unloc)
@@ -703,7 +717,7 @@ parseStruct = guardKeyword "struct" $ \com1 ->
         ]
       com1 <- parseComment
       regexMany space
-      expect "equals-sign \"=\" after field label" $ \com2 -> do
+      expect "assignment operator after field label" $ \com2 -> do
         op <- msum (map string (words " <<= >>= += -= *= /= %= &= |= ^= .= := : = "))
         expect "object experssion to assign to field" $ \com3 -> do
           (obj, com4) <- parseObjectExpr
@@ -720,34 +734,31 @@ parseStruct = guardKeyword "struct" $ \com1 ->
 parseHexData :: NameComParser ObjectExpr
 parseHexData key _ = do
   guard (key=="data")
-  expect "bracketed base-64-encoded data expression" $ \ _ -> (char '{' >> loop "")
+  expect "bracketed base-64-encoded data expression" $ \com1 -> do
+    char '{'
+    ax <- loop []
+    return (DataExpr com1 ax unloc)
   where
     b64ch = enumSet [segment 'A' 'Z', segment 'a' 'z', segment '0' '9', single '/', single '+']
-    loop str_ = do
-      parseComment >> regexMany space
-      mplus (char '}' >> encode str_) $ do
-        hex <- fmap concat $ many $ charSet $ b64ch
-        parseComment >> regexMany space
-        eq <- regexMany (rxChar '=')
-        let hexeq = hex++eq
-            str = str_ ++ hexeq
+    loop zx = do
+      com1 <- parseComment
+      regexMany space
+      mplus (char '}' >> return (zx++[com com1 nil []])) $ do
+        hex  <- fmap concat $ many $ charSet $ b64ch
+        com2 <- parseComment
+        sp   <- regexMany space
+        eq   <- regexMany (rxChar '=')
+        com3 <- parseComment
+        regexMany space
         case eq of
-          ('=':'=':_) -> fail "too many equals signs at in the data literal expression"
-          _           ->
-            if null hexeq
-              then do
-                c <- zeroOrOne (rxCharSet b64ch)
-                if null c
-                  then  done str
-                  else  fail ("invalid character in base-64 data literal: '"++c++"'")
-              else  if null eq then loop str else done str
-    done str = do
-      expect "expecting closing brace for base-64 data literal" $ \ _ -> do
-        parseComment >> regexMany space >> char '}'
-        encode str
-    encode str = case b64Decode str of
-      Left  _ -> fail "could not decode base64 data literal expression"
-      Right o -> return (Literal (OBytes o) unloc)
+          ('=':'=':'=':_) -> fail "too many equals signs at in the data literal expression"
+          ""              -> loop (zx++[com com1 (ustr hex) (com2++com3)])
+          _               -> do
+            mplus (char '}') $
+              fail "expecting closing brace character after equals signs in base-64 expression"
+            if null sp && null com2
+              then  return (zx++[com com1 (ustr (hex++eq)) (com2++com3)])
+              else  return (zx++[com com1 (ustr hex) com2, com [] (ustr eq) com3])
 
 -- If 'parseKeywordOrName' was used to parse a symbol, and all of the above keyword parsers
 -- backtrack, this function takes the symbol and treats it as a name, which could be a local
@@ -813,7 +824,7 @@ parseDirective = parseKeywordOrName >>= \key -> msum $
            , do (pattern, com2) <- parseObjectExpr
                 expect msg $ \com3 -> do
                   scrpt <- parseBracketedScript
-                  return (TopLambdaExpr (read key) (com com1 [Com pattern] (com2++com3)) scrpt unloc)
+                  return (TopLambdaExpr (read key) (Com [com com1 pattern (com2++com3)]) scrpt unloc)
            ]
   , do -- Parse a top-level function declaration, which has it's name stated before the arguments.
         guard (key=="function" || key=="func")
@@ -821,7 +832,7 @@ parseDirective = parseKeywordOrName >>= \key -> msum $
         expect ("expecting name for "++msg) $ \com1 -> do
           name <- parseName "name of function"
           expect ("list of parameter variables for "++msg) $ \com2 -> do
-            params <- parseFuncParamVars
+            params <- parseFunctionParameters "function parameters"
             expect "top-level function declaration, function body" $ \com3 -> do
               scrpt <- parseBracketedScript
               return (ToplevelFunc (com com1 name com2) params (com com2 scrpt com3) unloc)

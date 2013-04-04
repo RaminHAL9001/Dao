@@ -152,8 +152,8 @@ refSameClass :: Reference -> Reference -> Bool
 refSameClass a b = case (a, b) of
   (IntRef       _, IntRef        _) -> True
   (LocalRef     _, LocalRef      _) -> True
-  (QTimeRef     _, QTimeRef      _) -> True
   (StaticRef    _, StaticRef     _) -> True
+  (QTimeRef     _, QTimeRef      _) -> True
   (GlobalRef    _, GlobalRef     _) -> True
   (ProgramRef _ _, ProgramRef  _ _) -> True
   (FileRef    _ _, FileRef     _ _) -> True
@@ -558,6 +558,7 @@ data ObjectExpr
   | StructExpr   (Com ObjectExpr)       [Com ObjectExpr]  Location
   | DataExpr     [Comment]   [Com UStr]                   Location
   | LambdaExpr   LambdaExprType  (Com [Com ObjectExpr]) [Com ScriptExpr]  Location
+  | MetaEvalExpr (Com ObjectExpr)                         Location
   deriving (Eq, Ord, Show, Typeable)
 
 instance HasLocation ObjectExpr where
@@ -574,7 +575,8 @@ instance HasLocation ObjectExpr where
     ArrayExpr      _ _   o -> o
     StructExpr     _ _   o -> o
     DataExpr       _ _   o -> o
-    LambdaExpr   _ _ _   o -> o
+    LambdaExpr     _ _ _ o -> o
+    MetaEvalExpr   _     o -> o
   setLocation o loc = case o of
     VoidExpr             -> VoidExpr
     Literal      a     _ -> Literal      a     loc
@@ -589,6 +591,7 @@ instance HasLocation ObjectExpr where
     StructExpr   a b   _ -> StructExpr   a b   loc
     DataExpr     a b   _ -> DataExpr     a b   loc
     LambdaExpr   a b c _ -> LambdaExpr   a b c loc
+    MetaEvalExpr a     _ -> MetaEvalExpr a     loc
 
 -- | Part of the Dao language abstract syntax tree: any expression that controls the flow of script
 -- exectuion.
@@ -632,38 +635,41 @@ instance HasLocation ScriptExpr where
     ReturnExpr   a b     _ -> ReturnExpr   a b     loc
     WithDoc      a b     _ -> WithDoc      a b     loc
 
+data TopLevelEventType
+  = BeginExprType | EndExprType | ExitExprType
+  deriving (Eq, Ord, Enum, Typeable)
+instance Show TopLevelEventType where
+  show t = case t of
+    BeginExprType -> "BEGIN"
+    EndExprType   -> "END"
+    ExitExprType  -> "EXIT"
+
 -- | A 'TopLevelExpr' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
 data TopLevelExpr
-  = Attribute      (Com Name)   (Com Name)       Location
-  | ToplevelDefine (Com [Name]) (Com ObjectExpr) Location
-  | TopLambdaExpr  LambdaExprType (Com [Com ObjectExpr]) [Com ScriptExpr] Location
-  | SetupExpr      (Com [Com ScriptExpr]) Location
-  | BeginExpr      (Com [Com ScriptExpr]) Location
-  | EndExpr        (Com [Com ScriptExpr]) Location
-  | TakedownExpr   (Com [Com ScriptExpr]) Location
-  | ToplevelFunc   (Com Name) [Com ObjectExpr] (Com [Com ScriptExpr]) Location
+  = Attribute      (Com Name)        (Com Name)                                    Location
+  | ToplevelDefine (Com [Name])      (Com ObjectExpr)                              Location
+  | ToplevelFunc   (Com Name)        [Com ObjectExpr]       (Com [Com ScriptExpr]) Location
+  | ToplevelScript ScriptExpr                                                      Location
+  | TopLambdaExpr  LambdaExprType    (Com [Com ObjectExpr]) [Com ScriptExpr]       Location
+  | EventExpr      TopLevelEventType (Com [Com ScriptExpr])                        Location
   deriving (Eq, Ord, Show, Typeable)
 
 instance HasLocation TopLevelExpr where
   getLocation o = case o of
     Attribute      _ _   o -> o
     ToplevelDefine _ _   o -> o
-    TopLambdaExpr  _ _ _ o -> o
-    SetupExpr      _     o -> o
-    BeginExpr      _     o -> o
-    EndExpr        _     o -> o
-    TakedownExpr   _     o -> o
     ToplevelFunc   _ _ _ o -> o
+    ToplevelScript _     o -> o
+    TopLambdaExpr  _ _ _ o -> o
+    EventExpr      _ _   o -> o
   setLocation o loc = case o of
     Attribute      a b   _ -> Attribute      a b   loc
     ToplevelDefine a b   _ -> ToplevelDefine a b   loc
-    TopLambdaExpr  a b c _ -> TopLambdaExpr  a b c loc
-    SetupExpr      a     _ -> SetupExpr      a     loc
-    BeginExpr      a     _ -> BeginExpr      a     loc
-    EndExpr        a     _ -> EndExpr        a     loc
-    TakedownExpr   a     _ -> TakedownExpr   a     loc
     ToplevelFunc   a b c _ -> ToplevelFunc   a b c loc
+    ToplevelScript a     _ -> ToplevelScript a     loc
+    TopLambdaExpr  a b c _ -> TopLambdaExpr  a b c loc
+    EventExpr      a b   _ -> EventExpr      a b   loc
 
 ----------------------------------------------------------------------------------------------------
 

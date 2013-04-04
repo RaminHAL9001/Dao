@@ -775,15 +775,14 @@ parseDirective = parseKeywordOrName >>= \key -> msum $
         regexMany space >> zeroOrOne (rxChar ';')
         return (Attribute (Com (ustr key)) (Com req) unloc)
   , do -- Parse an event action.
-        guard (key=="TAKEDOWN" || key=="SETUP" || key=="BEGIN" || key=="END")
+        guard (key=="QUIT" || key=="BEGIN" || key=="END")
         expect ("bracketed list of commands after "++key++" statement") $ \com1 -> do
           scrpt <- parseBracketedScript
           let block = com com1 scrpt []
           return $ case key of
-            "TAKEDOWN" -> TakedownExpr block unloc
-            "SETUP"    -> SetupExpr    block unloc
-            "BEGIN"    -> BeginExpr    block unloc
-            "END"      -> EndExpr      block unloc
+            "QUIT"     -> EventExpr ExitExprType  block unloc
+            "BEGIN"    -> EventExpr BeginExprType block unloc
+            "END"      -> EventExpr EndExprType   block unloc
   , do -- Parse a top-level rule.
         guard (key=="rule" || key=="pat" || key=="pattern")
         let msg = "script expression for rule definition"

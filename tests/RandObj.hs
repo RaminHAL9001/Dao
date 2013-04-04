@@ -482,21 +482,22 @@ instance HasRandGen ObjectExpr where
 randArgsDef :: RandO [Com ObjectExpr]
 randArgsDef = randList >>= mapM randCom
 
+instance HasRandGen TopLevelEventType where
+  randO = fmap toEnum (nextInt 3)
+
 instance HasRandGen TopLevelExpr where
   randO = randOFromList $
     [ liftM3 Attribute      comRandName comRandName no
     , do  len <- nextInt 4
           name <- fmap (Com . map randUStr) (replicateM len randInt)
           liftM2 (ToplevelDefine name) comRandObjExpr no
-    , liftM4 TopLambdaExpr  randO (randArgsDef >>= randCom) randScriptExpr no
-    , liftM2 SetupExpr      comRandScriptExpr no
-    , liftM2 BeginExpr      comRandScriptExpr no
-    , liftM2 EndExpr        comRandScriptExpr no
-    , liftM2 TakedownExpr   comRandScriptExpr no
     , do  name <- comRandName
           args <- randList >>= mapM randCom
           scrp <- comRandScriptExpr
           return (ToplevelFunc name args scrp LocationUnknown)
+    , liftM2 ToplevelScript randO no
+    , liftM4 TopLambdaExpr  randO (randArgsDef >>= randCom) randScriptExpr no
+    , liftM3 EventExpr      randO comRandScriptExpr no
     ]
 
 ----------------------------------------------------------------------------------------------------

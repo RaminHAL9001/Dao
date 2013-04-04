@@ -304,6 +304,16 @@ instance PPrintable ObjectExpr where
       let hdr = pPrintComWith (pList_ (show typ++"(") ", " ")" . map (pPrintComWith pPrint)) ccNmx
       pPrintSubBlock hdr xcObjXp
 
+instance PPrintable TopLevelExpr where
+  pPrint o = case o of
+    Attribute      a b   _ -> pInline [pPrint a, pPrint b, pString ";"]
+    ToplevelFunc   a b c _ -> pPrintComWith (pClosure header " { " " }" . map pPrint) c where
+      header = pString "function " >> pPrint a >> pList_ "(" ", " ")" (map pPrint b)
+    ToplevelScript a     _ -> pPrint a
+    TopLambdaExpr  a b c _ -> pClosure header " { " " }" (map pPrint c) where
+      header = pShow a >> pPrintComWith (pList_ "(" ", " ")" . map pPrint) b
+    EventExpr      a b   _ -> pPrintComWith (pClosure (pShow a) " { " " }" . map pPrint) b
+
 instance PPrintable ObjPat where
   pPrint pat = case pat of
     ObjAnyX                             -> pString "some"

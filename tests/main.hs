@@ -142,9 +142,9 @@ testEveryParsePPrint hlock notify ch = handle h loop where
     case i of
       Nothing -> return ()
       Just  i -> do
-        let obexp = genRandWith randO maxRecurseDepth i :: ObjectExpr
-            -- bytes = B.encode obexp
-            -- obj   = B.decode bytes
+        let obexp = genRandWith randO maxRecurseDepth i :: TopLevelExpr
+            bytes = B.encode obexp
+            obj   = B.decode bytes
             str   = showPPrint 80 "    " (pPrint obexp)
             (par, msg) = runParser (fmap fst (regexMany space >> parseObjectExpr)) str 
             err reason = do
@@ -157,9 +157,9 @@ testEveryParsePPrint hlock notify ch = handle h loop where
                   , "\n--------------------------------------------------------------------------\n"
                   ]
                 return h
-        -- if seq obexp $! seq bytes $! obj/=obexp
-          -- then  err "Binary deserialization does not match source object >>= evaluate"
-          -- else
+        if seq obexp $! seq bytes $! obj/=obexp
+          then  err "Binary deserialization does not match source object >>= evaluate"
+          else  return ()
         status <- case par of
           OK      _ -> return True
           Backtrack -> err "Ambiguous parse" >> return False

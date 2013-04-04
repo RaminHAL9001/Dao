@@ -1319,7 +1319,7 @@ data IntermediateProgram
     , inmpg_programTokenizer  :: Tokenizer
     , inmpg_programComparator :: CompareToken
     , inmpg_ruleSet           :: PatternTree [Executable]
-    , inmpg_globalData        :: T.Tree Name Object
+    -- , inmpg_globalData        :: T.Tree Name Object
     , inmpg_topLevelFuncs     :: M.Map Name [Subroutine]
     }
 
@@ -1335,14 +1335,14 @@ initIntermediateProgram =
   , inmpg_programTokenizer  = return . tokens . uchars
   , inmpg_programComparator = (==)
   , inmpg_ruleSet           = T.Void
-  , inmpg_globalData        = T.Void
+  -- , inmpg_globalData        = T.Void
   , inmpg_topLevelFuncs     = M.empty
   }
 
 initProgram :: IntermediateProgram -> Exec ExecUnit
 initProgram inmpg = do
   xunit <- ask
-  inEvalDoModifyUnlocked_ (globalData xunit) (return . const (inmpg_globalData inmpg))
+  -- inEvalDoModifyUnlocked_ (globalData xunit) (return . const (inmpg_globalData inmpg))
   lift $ dModifyMVar_ xloc (ruleSet  xunit) (return . T.merge T.union (++) (inmpg_ruleSet inmpg))
   return $
     xunit
@@ -1420,9 +1420,8 @@ programFromSource globalResource checkAttribute script = do
             if ok
               then return ()
               else err [ustr "script contains unknown attribute declaration", req]
-      ToplevelDefine name obj lc -> do
-        obj <- lift $ evalObject (unComment obj)
-        modify (\p -> p{inmpg_globalData = T.insert (unComment name) obj (inmpg_globalData p)})
+      ToplevelScript scrp     lc -> 
+        modify (\p -> p{inmpg_constructScript = inmpg_constructScript p ++ [Com [Com scrp]]})
       TopLambdaExpr typ rule scrp lc -> do
         result <- lift (evalLambdaExpr typ rule scrp)
         exe <- lift (lift (setupExecutable (Com scrp)))
@@ -1432,14 +1431,14 @@ programFromSource globalResource checkAttribute script = do
                 fol tre pat = T.merge T.union (++) tre (toTree pat [exe])
             modify (\p -> p{ inmpg_ruleSet = foldl fol (inmpg_ruleSet p) rulePat })
           OScript fn -> error "TODO: Need to define a second rule table for rules that respond to 'Dao.Object.ObjPat's."
-      SetupExpr    scrp lc -> modify (\p -> p{inmpg_constructScript = inmpg_constructScript p ++ [scrp]})
-      TakedownExpr scrp lc -> modify (\p -> p{inmpg_destructScript  = inmpg_destructScript  p ++ [scrp]})
-      BeginExpr    scrp lc -> do
-        exe <- lift $ lift $ setupExecutable scrp
-        modify (\p -> p{inmpg_preExec = inmpg_preExec p ++ [exe]})
-      EndExpr      scrp lc -> do
-        exe <- lift $ lift $ setupExecutable scrp
-        modify (\p -> p{inmpg_postExec = inmpg_postExec p ++ [exe]})
+      EventExpr    typ scrp lc -> case typ of
+        ExitExprType  -> modify (\p -> p{inmpg_destructScript  = inmpg_destructScript  p ++ [scrp]})
+        BeginExprType -> do
+          exe <- lift $ lift $ setupExecutable scrp
+          modify (\p -> p{inmpg_preExec = inmpg_preExec p ++ [exe]})
+        EndExprType -> do
+          exe <- lift $ lift $ setupExecutable scrp
+          modify (\p -> p{inmpg_postExec = inmpg_postExec p ++ [exe]})
       ToplevelFunc nm argv code lc -> do
         xunit <- ask
         argv <- lift (mapM argsToObjPat (map unComment argv))

@@ -13,19 +13,10 @@ order.
 
 *	Some inlining pretty-printers are still messing up the indentation.
 
-*	Re-write most of "Dao.Object.Binary". There needs to be a way to define the byte-prefix of
-important object nodes using Haskell. Right now I am doing it by hand with case statements, and I
-need to go and change everything by hand (introducing many errors) every time I modify the abstract
-syntax tree. Once Dao version 1.0 is released, I can freeze the instantiation of "Dao.Object" into
-the Binary class, but until then there is too much flux in the code.
-
 *	Need a parser for "Dao.Object.ObjPat". Rename 'Dao.Pattern.Pattern' to "Dao.Glob.Glob' and
 rename 'Dao.Object.ObjPat' to 'Dao.Object.Pattern'.
 
 *	Need to define a second rule table for rules that respond to 'Dao.Object.ObjPat's.
-
-*	The "Dao.Object.Show" module is dreadfully out of date, it needs to be cleaned up for all the
-changes made to the abstract syntax tree.
 
 *	Need to create a means to track which modules have "open()"-ed and "close()"-ed which files. Like
 reference counting with sets, each file will have a set of module references with an element for
@@ -65,6 +56,19 @@ source code into a working module object, and executing strings against that, al
 programmatically within the running Dao program.
 
 SOLVED:
+
+*	The "Dao.Object.Show" module is dreadfully out of date, it needs to be cleaned up for all the
+changes made to the abstract syntax tree.
+
+*	Re-write most of "Dao.Object.Binary". There needs to be a way to define the byte-prefix of
+important object nodes using Haskell. Right now I am doing it by hand with case statements, and I
+need to go and change everything by hand (introducing many errors) every time I modify the abstract
+syntax tree. Once Dao version 1.0 is released, I can freeze the instantiation of "Dao.Object" into
+the Binary class, but until then there is too much flux in the code.
+	COMPLETION NOTE: turns out I didn't need to completely rewrite it, but it did need a lot of
+cleaning up. I would like to, someday, instantiate the entire abstract syntax tree into the
+'Data.Data.Data' class, and make use of generic functions like "gfoldl" and "gmapM" to define the
+serialization coder/decoders, parsers, and pretty printers, but that may never happen.
 
 *	Need to implement the "while" statement.
 

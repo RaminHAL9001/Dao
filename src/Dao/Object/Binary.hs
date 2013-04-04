@@ -444,14 +444,6 @@ instance Binary UpdateOp where
       0x7B -> x USHR
       _    -> fail "expecting update/assignment operator symbol"
 
-instance Binary ArithOp1 where
-  put a = error "Binary instantiation of ArithOp1 not yet implemented"
-  get   = error "Binary instantiation of ArithOp1 not yet implemented"
-
-instance Binary ArithOp2 where
-  put a = error "Binary instantiation of ArithOp2 not yet implemented"
-  get   = error "Binary instantiation of ArithOp2 not yet implemented"
-
 instance Binary ObjectExpr where
   put o = case o of
     VoidExpr             -> putWord8 0x40
@@ -596,6 +588,60 @@ instance Binary TopLevelExpr where
       where
         toplam typ = liftM3 (TopLambdaExpr typ) getComComList getComList get
         evtexp typ = liftM2 (EventExpr     typ) getComComList            get
+
+instance Binary ArithOp1 where
+  put o = putWord8 $ case o of
+    REF   -> 0x91
+    DEREF -> 0x92
+    INVB  -> 0x93
+    NOT   -> 0x94
+    NEG   -> 0x95
+  get = getWord8 >>= \w -> return $ case w of
+    0x91 -> REF
+    0x92 -> DEREF
+    0x93 -> INVB
+    0x94 -> NOT
+    0x95 -> NEG
+    _ -> error "binary serialization failed on equation prefix operator"
+
+instance Binary ArithOp2 where
+  put o = putWord8 $ case o of
+    ADD   -> 0x9A
+    SUB   -> 0x9B
+    MULT  -> 0x9C
+    DIV   -> 0x9D
+    MOD   -> 0x9E
+    POW   -> 0x9F
+    POINT -> 0xA1
+    DOT   -> 0xA2
+    OR    -> 0xA3
+    AND   -> 0xA4
+    EQUL  -> 0xA5
+    NEQUL -> 0xA6
+    ORB   -> 0xA7
+    ANDB  -> 0xA8
+    XORB  -> 0xA9
+    SHL   -> 0xAA
+    SHR   -> 0xAB
+  get = getWord8 >>= \w -> return $ case w of
+    0x9A -> ADD
+    0x9B -> SUB
+    0x9C -> MULT
+    0x9D -> DIV
+    0x9E -> MOD
+    0x9F -> POW
+    0xA1 -> POINT
+    0xA2 -> DOT
+    0xA3 -> OR
+    0xA4 -> AND
+    0xA5 -> EQUL
+    0xA6 -> NEQUL
+    0xA7 -> ORB
+    0xA8 -> ANDB
+    0xA9 -> XORB
+    0xAA -> SHL
+    0xAB -> SHR
+    _ -> error "binary serialization failed on equation infix operator"
 
 instance Binary SourceCode where
   put sc = do

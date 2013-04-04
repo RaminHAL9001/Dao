@@ -1,4 +1,6 @@
 TODO:
+*	Investigate the pathalogical memory usage of the random test generator and parser.
+
 *	Listable parsers that end in a comma on their last item, with the comma followed by a closing
 brace instead of another item, will return a null list. This should not happen.
 

@@ -102,7 +102,7 @@ simpleTest = testList >> testInline >> testClosure >> putStrLn mainIfExpr
 
 ----------------------------------------------------------------------------------------------------
 
-maxRecurseDepth = 6
+maxRecurseDepth = 5
 
 randObj :: Int -> Object
 randObj = genRand maxRecurseDepth
@@ -145,8 +145,8 @@ testEveryParsePPrint hlock notify ch = handle h loop where
         let obexp = genRandWith randO maxRecurseDepth i :: ObjectExpr
             -- bytes = B.encode obexp
             -- obj   = B.decode bytes
-            str   = seq obexp $! showPPrint 80 "    " (pPrint obexp)
-            (par, msg) = seq str $! runParser (fmap fst (regexMany space >> parseObjectExpr)) str 
+            str   = showPPrint 80 "    " (pPrint obexp)
+            (par, msg) = runParser (fmap fst (regexMany space >> parseObjectExpr)) str 
             err reason = do
               modifyMVar_ hlock $ \h -> do
                 hPutStrLn h $! concat $!
@@ -160,17 +160,17 @@ testEveryParsePPrint hlock notify ch = handle h loop where
         -- if seq obexp $! seq bytes $! obj/=obexp
           -- then  err "Binary deserialization does not match source object >>= evaluate"
           -- else
-        status <- case seq par $! seq msg $! par of
+        status <- case par of
           OK      _ -> return True
-          Backtrack -> err "Ambiguous parse" >>= evaluate >> return False
-          PFail _ b -> err ("Parse failed, "++uchars b) >>= evaluate >> return False
+          Backtrack -> err "Ambiguous parse" >> return False
+          PFail _ b -> err ("Parse failed, "++uchars b) >> return False
         putMVar notify status
         loop
 
 ----------------------------------------------------------------------------------------------------
 
 threadCount :: Int
-threadCount = 16
+threadCount = 3
 
 maxErrors :: Int
 maxErrors = 8
@@ -206,7 +206,7 @@ main = do
               (fromRational (toRational count / (toRational displayInterval / 1000000)) :: Float)
           ]
       infoLoop = threadDelay displayInterval >> displayInfo >> infoLoop
-  workThreads <- replicateM threadCount $ forkOS $ do
+  workThreads <- replicateM threadCount $ forkIO $ do
     testEveryParsePPrint hlock notify ch
   iterThread <- forkIO (iterLoop 0)
   dispThread <- forkIO infoLoop

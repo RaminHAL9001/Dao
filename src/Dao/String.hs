@@ -24,10 +24,13 @@
 module Dao.String where
 
 import           Control.Monad
+import           Control.Monad.State
 
+import           Data.Function
 import           Data.Typeable
-import           Data.Binary
+import qualified Data.Binary               as B
 import           Data.Bits
+import           Data.Word
 import           Data.Array.Unboxed
 import qualified Data.ByteString.Lazy.UTF8 as U
 import qualified Data.ByteString.Lazy      as B
@@ -65,11 +68,11 @@ vlIntToBits wx = loop 0 wx where
     w:wx -> if w .&. 0x80 == 0 then (fn a w, wx) else loop (fn a w) wx
 
 -- | When reading from a binary file, gather the bits of a Variable-Length Integer.
-gatherVLInt :: Get [Word8]
+gatherVLInt :: B.Get [Word8]
 gatherVLInt = loop [] where
-  loop wx = getWord8 >>= \w -> if w .&. 0x80 == 0 then return (wx++[w]) else loop (wx++[w])
+  loop wx = B.getWord8 >>= \w -> if w .&. 0x80 == 0 then return (wx++[w]) else loop (wx++[w])
 
-getFromVLInt :: (Integral a, Bits a) => Get a
+getFromVLInt :: (Integral a, Bits a) => B.Get a
 getFromVLInt = fmap (fst . vlIntToBits) gatherVLInt
 
 -- | A type synonym for 'Data.ByteString.Lazy.UTF8.ByteString'
@@ -86,18 +89,18 @@ iLength = foldl (+) 0 . map (const 1)
 -- | Used to encode a 'UStr' data type without any prefix at all. The instantiation of 'UStr' into
 -- the 'Data.Binary.Binary' class places a prefix before every 'UStr' as it is serialized, allowing
 -- it to be used more safely in more complex data types.
-encodeUStr :: UStr -> Put
-encodeUStr u = mapM_ putWord8 $
+encodeUStr :: UStr -> B.Put
+encodeUStr u = mapM_ B.putWord8 $
   bitsToVLInt (U.length (toUTF8ByteString u)) ++ (UTF8.encode (uchars u))
 
 -- | Used to decode a 'UStr' data type without any prefix. The instantiation of 'UStr' into the
 -- 'Data.Binary.Binary' class places a prefix before every 'UStr' as it is serialized, allowing it
 -- to be used more safely in more complex data types.
-decodeUStr :: Get UStr
+decodeUStr :: B.Get UStr
 decodeUStr = do
   (strlen, undecoded) <- fmap vlIntToBits gatherVLInt
   if null undecoded
-    then fmap (ustr . (UTF8.decode)) (replicateM strlen getWord8)
+    then fmap (ustr . (UTF8.decode)) (replicateM strlen B.getWord8)
     else
       error $ concat $
         ["binary data decoder failed, "
@@ -106,10 +109,10 @@ decodeUStr = do
 
 instance Read UStr where { readsPrec n str = map (\ (s, rem) -> (ustr s, rem)) $ readsPrec n str }
 instance Show UStr where { show u = show (uchars u) }
-instance Binary UStr where
-  put u = putWord8 uStrBinaryPrefix >> encodeUStr u
+instance B.Binary UStr where
+  put u = B.putWord8 uStrBinaryPrefix >> encodeUStr u
   get = do
-    w <- getWord8
+    w <- B.getWord8
     if w==uStrBinaryPrefix
       then decodeUStr
       else error "binary data decoder failed while on expecting U-String"

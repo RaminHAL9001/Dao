@@ -806,15 +806,7 @@ parseDirective = parseKeywordOrName >>= \key -> msum $
             expect "top-level function declaration, function body" $ \com3 -> do
               scrpt <- parseBracketedScript
               return (ToplevelFunc (com com1 name com2) params (com com2 scrpt com3) unloc)
-  , do -- Parse a top-level global variable declaration.
-        (_, name_) <- parseDotName
-        let msg = "top-level global variable declaration"
-            name = ustr key : name_
-        expect ("expecting equals-sign \"=\" for "++msg) $ \com1 -> do
-          char '='
-          expect ("expecting object expression for "++msg) $ \com2 -> do
-            (objExpr, com3) <- parseObjectExpr
-            flip mplus (fail (msg++" must be terminated with a semicolon \";\"")) $
-              char ';' >> return (ToplevelDefine (com [] name com1) (com com2 objExpr com3) unloc)
+  , -- Parse a top-level script expression.
+    fmap (flip ToplevelScript LocationUnknown) (applyLocation parseScriptExpr)
   ]
 

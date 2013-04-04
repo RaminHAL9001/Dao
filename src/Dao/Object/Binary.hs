@@ -566,34 +566,32 @@ getObjPat = error "TODO: define binary decoder for ObjPat"
 instance Binary TopLevelExpr where
   put d = case d of
     Attribute      a b   lc -> x 0x61 (putCom               a >> putCom     b                    >> put lc)
-    ToplevelDefine a b   lc -> x 0x62 ((putComWith putList) a >> putCom     b                    >> put lc)
-    ToplevelFunc   a b c lc -> x 0x63 (putCom               a >> putComList b >> putComComList c >> put lc)
-    ToplevelScript a     lc -> x 0x64 (put                  a                                    >> put lc)
+    ToplevelFunc   a b c lc -> x 0x62 (putCom               a >> putComList b >> putComComList c >> put lc)
+    ToplevelScript a     lc -> x 0x63 (put                  a                                    >> put lc)
     TopLambdaExpr  a b c lc -> x (top a) (putComComList     b >> putComList c                    >> put lc)
     EventExpr      a b   lc -> x (evt a) (putComComList     b                                    >> put lc)
     where
       x i putx = putWord8 i >> putx
       top typ = case typ of
-        FuncExprType  -> 0x65
-        RuleExprType  -> 0x66
-        PatExprType   -> 0x67
+        FuncExprType  -> 0x64
+        RuleExprType  -> 0x65
+        PatExprType   -> 0x66
       evt typ = case typ of
-        BeginExprType -> 0x68
-        EndExprType   -> 0x69
-        ExitExprType  -> 0x6A
+        BeginExprType -> 0x67
+        EndExprType   -> 0x68
+        ExitExprType  -> 0x69
   get = do
     w <- getWord8
     case w of
       0x61 -> liftM3 Attribute      getCom               getCom                   get
-      0x62 -> liftM3 ToplevelDefine (getComWith getList) getCom                   get
-      0x63 -> liftM4 ToplevelFunc   getCom               getComList getComComList get
-      0x64 -> liftM2 ToplevelScript get                                           get
-      0x65 -> toplam FuncExprType
-      0x66 -> toplam RuleExprType
-      0x67 -> toplam PatExprType
-      0x68 -> evtexp BeginExprType
-      0x69 -> evtexp EndExprType
-      0x6A -> evtexp ExitExprType
+      0x62 -> liftM4 ToplevelFunc   getCom               getComList getComComList get
+      0x63 -> liftM2 ToplevelScript get                                           get
+      0x64 -> toplam FuncExprType
+      0x65 -> toplam RuleExprType
+      0x66 -> toplam PatExprType
+      0x67 -> evtexp BeginExprType
+      0x68 -> evtexp EndExprType
+      0x69 -> evtexp ExitExprType
       _    -> error "failed decoding binary data for top-level expression"
       where
         toplam typ = liftM3 (TopLambdaExpr typ) getComComList getComList get

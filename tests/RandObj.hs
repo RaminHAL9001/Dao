@@ -488,9 +488,7 @@ instance HasRandGen TopLevelEventType where
 instance HasRandGen TopLevelExpr where
   randO = randOFromList $
     [ liftM3 Attribute      comRandName comRandName no
-    , do  len <- nextInt 4
-          name <- fmap (Com . map randUStr) (replicateM len randInt)
-          liftM2 (ToplevelDefine name) comRandObjExpr no
+    , liftM2 ToplevelScript randO no
     , do  name <- comRandName
           args <- randList >>= mapM randCom
           scrp <- comRandScriptExpr

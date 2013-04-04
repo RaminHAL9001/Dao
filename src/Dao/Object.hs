@@ -648,7 +648,6 @@ instance Show TopLevelEventType where
 -- is a list of these directives.
 data TopLevelExpr
   = Attribute      (Com Name)        (Com Name)                                    Location
-  | ToplevelDefine (Com [Name])      (Com ObjectExpr)                              Location
   | ToplevelFunc   (Com Name)        [Com ObjectExpr]       (Com [Com ScriptExpr]) Location
   | ToplevelScript ScriptExpr                                                      Location
   | TopLambdaExpr  LambdaExprType    (Com [Com ObjectExpr]) [Com ScriptExpr]       Location
@@ -658,14 +657,12 @@ data TopLevelExpr
 instance HasLocation TopLevelExpr where
   getLocation o = case o of
     Attribute      _ _   o -> o
-    ToplevelDefine _ _   o -> o
     ToplevelFunc   _ _ _ o -> o
     ToplevelScript _     o -> o
     TopLambdaExpr  _ _ _ o -> o
     EventExpr      _ _   o -> o
   setLocation o loc = case o of
     Attribute      a b   _ -> Attribute      a b   loc
-    ToplevelDefine a b   _ -> ToplevelDefine a b   loc
     ToplevelFunc   a b c _ -> ToplevelFunc   a b c loc
     ToplevelScript a     _ -> ToplevelScript a     loc
     TopLambdaExpr  a b c _ -> TopLambdaExpr  a b c loc

@@ -30,6 +30,7 @@ import           Dao.Pattern
 
 import           Control.Monad
 
+import           Data.Function
 import           Data.Typeable
 import           Data.Dynamic
 import           Data.Word
@@ -40,6 +41,7 @@ import qualified Data.ByteString.Lazy   as B
 import qualified Data.Set               as S
 import qualified Data.Map               as M
 import qualified Data.IntMap            as I
+import           Data.Digest.SHA1       as SHA1
 import           Data.Array.IArray
 import           Data.Time hiding (parseTime)
 
@@ -52,9 +54,9 @@ import Debug.Trace
 ----------------------------------------------------------------------------------------------------
 
 -- | The magic number is the first 8 bytes to every bytecode compiled object program. It is the
--- ASCII value of the string "DaoExec\0".
+-- ASCII value of the string "DaoData\n".
 program_magic_number :: Word64
-program_magic_number = 0x44616F4578656300
+program_magic_number = 0x44616f44617461A
 
 -- | This is the version number of the line protocol for transmitting bytecode compiled program
 -- objects.
@@ -67,22 +69,11 @@ program_data_version = 0
 char4code :: String -> Word32
 char4code = foldl (\a b -> shift a 8 .|. fromIntegral (ord b)) 0
 
--- | This is a simple 64-bit checksum I wrote myself because I don't currently have a better one.
-simpleChecksum :: Word64 -> B.ByteString -> Word64
-simpleChecksum init b = foldl f init (B.unpack b) where
-  f sum b =
-    let lo  = 0x0000000000FFFFFF
-        mid = 0x0000FFFFFF000000
-        s3 = fromIntegral (0x07 .&. sum) -- get a rotation value from the bottom 3 bits of the sum
-        r1 = shift (fromIntegral b) (s3+48)
-        r2 = xor r1 ((sum .&. lo)*0x0A + fromIntegral b) -- on the lower 24 bits, x*10+y
-        r3 = shift (r2 .&. mid) 1
-        r4 = (r3 .&. mid) .|. if testBit r3 48 then shift 1 24 else 0
-        r5 = xor 0x00000FFF $ -- gather bits from various locations into a 24-bit number
-               f [ 63, 62, 59, 50, 56, 54, 3, 6, 6,  2, 12, 23
-                 , 61, 48, 53, 48, 51, 59, 2, 5, 7, 14, 17,  1]
-        f = foldl (\x d -> shift x 1 .|. if testBit r2 d then 1 else 0) 0
-    in  r2 .|. (xor r4 (shift r5 24))
+byteStringSHA1Sum :: B.ByteString -> B.ByteString
+byteStringSHA1Sum bytes =
+  let (SHA1.Word160 a b c d e) = SHA1.hash (B.unpack bytes)
+      tobytes = reverse . map fromIntegral . take 4 . fix (\f w -> (w.&.0xFF) : f (shift w (0-8)))
+  in  B.pack $ concatMap tobytes [a,b,c,d,e]
 
 -- | Returns the string of bytes created by 'Data.Binary.Put.Put' and the checksum of those bytes.
 putWithChecksum :: (B.ByteString -> s) -> Put -> PutM (B.ByteString, s)
@@ -297,22 +288,26 @@ instance Binary Object where
 
 instance Binary Reference where
   put o = case o of
-    LocalRef   o   -> x 0x71 o
-    QTimeRef   o   -> putWord8 0x72 >> putList o
-    StaticRef  o   -> x 0x73 o
-    GlobalRef  o   -> putWord8 0x74 >> putList o
-    ProgramRef o r -> x 0x75 o >> put r
-    FileRef    p o -> x 0x76 p >> putList o
-    MetaRef    r   -> putWord8 0x77 >> put r
+    IntRef     o   -> putWord8 0x81 >> put (bitsToVLInt o)
+    LocalRef   o   -> x 0x82 o
+    QTimeRef   o   -> putWord8 0x83 >> putList o
+    StaticRef  o   -> x 0x84 o
+    GlobalRef  o   -> putWord8 0x85 >> putList o
+    ProgramRef o r -> x 0x86 o >> put r
+    FileRef    p o -> x 0x87 p >> putList o
+    MetaRef    r   -> putWord8 0x88 >> put r
+    Subscript  r s -> putWord8 0x89 >> put r >> put s
     where { x a b = putWord8 a >> encodeUStr b }
   get = getWord8 >>= \w -> case w of
-    0x71 -> liftM  LocalRef   decodeUStr
-    0x72 -> liftM  QTimeRef   getList
-    0x73 -> liftM  StaticRef  decodeUStr
-    0x74 -> liftM  GlobalRef  getList
-    0x75 -> liftM2 ProgramRef decodeUStr get
-    0x76 -> liftM2 FileRef    decodeUStr getList
-    0x77 -> liftM  MetaRef    get
+    0x81 -> liftM  IntRef     getFromVLInt
+    0x82 -> liftM  LocalRef   decodeUStr
+    0x83 -> liftM  QTimeRef   getList
+    0x84 -> liftM  StaticRef  decodeUStr
+    0x85 -> liftM  GlobalRef  getList
+    0x86 -> liftM2 ProgramRef decodeUStr get
+    0x87 -> liftM2 FileRef    decodeUStr getList
+    0x88 -> liftM  MetaRef    get
+    0x89 -> liftM2 Subscript  get get
     _ -> error "corrupted pattern in Reference value"
 
 instance Binary UTCTime where
@@ -334,32 +329,16 @@ instance (Binary a, RealFloat a) => Binary (Complex a) where
 
 ----------------------------------------------------------------------------------------------------
 
---  instance Binary PatUnit where
---    put p = case objToList (OPattern p) of
---      Nothing -> error "internal error: failed to convert Pattern to OPattern"
---      Just ox -> putObjList ox
---    get = do
---      p <- getWord8 :: Get Word8
---      case p of
---        0x29 -> return Wildcard
---        0x2A -> return AnyOne
---        0x2B -> fmap Single get
---        _    -> fail "failed while decoding pattern object from binary data"
---  
---  instance Binary Pattern where
---    put p = put (getPatternLength p) >> put (getPatUnits p)
---    get = get >>= \i -> get >>= \px -> return (Pattern{getPatternLength = i, getPatUnits = px })
-
 instance Binary PatUnit where
   put p = case p of
-    Wildcard -> putWord8 1
-    AnyOne   -> putWord8 2
-    Single o -> putWord8 3 >> put o
+    Wildcard -> putWord8 0x29
+    AnyOne   -> putWord8 0x2A
+    Single o -> putWord8 0x2B >> put o
   get = getWord8 >>= \w -> case w of
-    1 -> return Wildcard
-    2 -> return AnyOne
-    3 -> fmap Single get
-    _ -> error "corrupted Pattern object in binary file"
+    0x29 -> return Wildcard
+    0x2A -> return AnyOne
+    0x2B -> fmap Single get
+    _    -> error "corrupted Pattern object in binary file"
 
 instance Binary Pattern where
   put p = putList (getPatUnits p)
@@ -437,32 +416,32 @@ putComComList = putComWith putComList
 
 instance Binary UpdateOp where
   put a = putWord8 $ case a of
-    UCONST -> 0x61
-    UADD   -> 0x62
-    USUB   -> 0x63
-    UMULT  -> 0x64
-    UDIV   -> 0x65
-    UMOD   -> 0x66
-    UORB   -> 0x67
-    UANDB  -> 0x68
-    UXORB  -> 0x69
-    USHL   -> 0x6A
-    USHR   -> 0x6B
+    UCONST -> 0x71
+    UADD   -> 0x72
+    USUB   -> 0x73
+    UMULT  -> 0x74
+    UDIV   -> 0x75
+    UMOD   -> 0x76
+    UORB   -> 0x77
+    UANDB  -> 0x78
+    UXORB  -> 0x79
+    USHL   -> 0x7A
+    USHR   -> 0x7B
   get = do
     w <- getWord8
     let x = return
     case w of
-      0x61 -> x UCONST
-      0x62 -> x UADD
-      0x63 -> x USUB
-      0x64 -> x UMULT
-      0x65 -> x UDIV
-      0x66 -> x UMOD
-      0x67 -> x UORB
-      0x68 -> x UANDB
-      0x69 -> x UXORB
-      0x6A -> x USHL
-      0x6B -> x USHR
+      0x71 -> x UCONST
+      0x72 -> x UADD
+      0x73 -> x USUB
+      0x74 -> x UMULT
+      0x75 -> x UDIV
+      0x76 -> x UMOD
+      0x77 -> x UORB
+      0x78 -> x UANDB
+      0x79 -> x UXORB
+      0x7A -> x USHL
+      0x7B -> x USHR
       _    -> fail "expecting update/assignment operator symbol"
 
 instance Binary ArithOp1 where
@@ -475,75 +454,85 @@ instance Binary ArithOp2 where
 
 instance Binary ObjectExpr where
   put o = case o of
-    Literal      a     z -> x z 0x41 $ put a
-    AssignExpr   a b c z -> x z 0x42 $ put a           >> putCom b         >> put c
-    FuncCall     a b c z -> x z 0x43 $ put a           >> putCommentList b >> putComList c
-    ParenExpr    a b   z -> x z 0x45 $ putObjBool a    >> putCom b
-    Equation     a b c z -> x z 0x46 $ put a           >> putCom b         >> put c
-    PrefixExpr   a b   z -> x z 0x47 $ put a           >> putCom b
-    DictExpr     a b c z -> x z 0x48 $ put a           >> putCommentList b >> putComList c
-    ArrayExpr    a b   z -> x z 0x49 $ putComComList a >> putComList b
-    ArraySubExpr a b c z -> x z 0x4A $ put a           >> putCommentList b >> putCom c
-    LambdaExpr   a b c z -> put a >> putComComList b >> putComList c >> put z
+    VoidExpr             -> putWord8 0x40
+    Literal      a     z -> x z 0x41 $ put            a
+    AssignExpr   a b c z -> x z 0x42 $ put            a >> putCom         b >> put        c
+    Equation     a b c z -> x z 0x43 $ put            a >> putCom         b >> put        c
+    PrefixExpr   a b   z -> x z 0x44 $ put            a >> putCom         b
+    ParenExpr    a b   z -> x z 0x45 $ putObjBool     a >> putCom         b
+    ArraySubExpr a b c z -> x z 0x46 $ put            a >> putCommentList b >> putCom     c
+    FuncCall     a b c z -> x z 0x47 $ put            a >> putCommentList b >> putComList c
+    DictExpr     a b c z -> x z 0x48 $ put            a >> putCommentList b >> putComList c
+    ArrayExpr    a b   z -> x z 0x49 $ putComComList  a >> putComList     b
+    StructExpr   a b   z -> x z 0x4A $ putCom         a >> putComList     b
+    DataExpr     a b   z -> x z 0x4B $ putCommentList a >> putComList     b
+    LambdaExpr   a b c z -> x z (lamexp a) $               putComComList  b >> putComList c
+    MetaEvalExpr a     z -> x z 0x4F $ putCom a
     where
       x z i putx  = putWord8 i >> put z >> putx
-      char3 str = mapM_ (putWord8 . fromIntegral) (take 3 (map ord (uchars str) ++ repeat 0))
+      lamexp t = case t of
+        FuncExprType -> 0x4C
+        RuleExprType -> 0x4D
+        PatExprType  -> 0x4E
   get = do
     w <- getWord8
     case w of
-      0x41 -> liftM2 Literal      get                                      get
-      0x42 -> liftM4 AssignExpr   get           getCom          get        get
-      0x43 -> liftM4 FuncCall     get           getCommentList  getComList get
-      0x45 -> liftM3 ParenExpr    getObjBool    getCom                     get
-      0x46 -> liftM4 Equation     get           getCom          get        get
-      0x47 -> liftM3 PrefixExpr   get           getCom                     get
-      0x48 -> liftM4 DictExpr     get           getCommentList  getComList get
-      0x49 -> liftM3 ArrayExpr    getComComList getComList                 get
-      0x4A -> liftM4 ArraySubExpr get           getCommentList  getCom     get
-      _    -> get >>= \t ->
-        case lambdaExprTypeFromWord8 t of
-          Just  t -> liftM3 (LambdaExpr t) getComComList   getComList          get
-          Nothing -> error "could not load, corrupted data in object expression"
+      0x40 -> return  VoidExpr
+      0x41 -> liftM2 Literal      get                                       get
+      0x42 -> liftM4 AssignExpr   get            getCom          get        get
+      0x43 -> liftM4 Equation     get            getCom          get        get
+      0x44 -> liftM3 PrefixExpr   get            getCom                     get
+      0x45 -> liftM3 ParenExpr    getObjBool     getCom                     get
+      0x46 -> liftM4 ArraySubExpr get            getCommentList  getCom     get
+      0x47 -> liftM4 FuncCall     get            getCommentList  getComList get
+      0x48 -> liftM4 DictExpr     get            getCommentList  getComList get
+      0x49 -> liftM3 ArrayExpr    getComComList  getComList                 get
+      0x4A -> liftM3 StructExpr   getCom         getComList                 get
+      0x4B -> liftM3 DataExpr     getCommentList getComList                 get
+      0x4C -> lamexp FuncExprType
+      0x4D -> lamexp RuleExprType
+      0x4E -> lamexp PatExprType
+      0x4F -> liftM2 MetaEvalExpr getCom                                    get
+      _    -> error "could not load, corrupted data in object expression"
       where
-        char3 = do
-          (a, b, c) <- liftM3 (,,) getWord8 getWord8 getWord8
-          return (ustr (map (chr . fromIntegral) [a, b, c]))
+        lamexp typ = liftM3 (LambdaExpr typ) getComComList getComList get
 
 instance Binary ScriptExpr where
   put s = case s of
-    EvalObject   a b     z -> x z 0x50 $ put a              >> putCommentList b
-    IfThenElse   a b c d z -> x z 0x51 $ putCommentList a   >> put b    >> putComWith putComList c >> putComWith putComList d
-    TryCatch     a b c   z -> x z 0x52 $ putComWith putComList a        >> putCom b                >> putComList c
-    ForLoop      a b c   z -> x z 0x53 $ putCom a           >> putCom b >> putComList c
-    ContinueExpr a b c   z -> x z 0x54 $ putObjBool a       >> putCommentList b                    >> putCom c
-    ReturnExpr   a b     z -> x z 0x55 $ putObjBool a       >> putCom b
-    WithDoc      a b     z -> x z 0x56 $ putCom a           >> putComList b
+    EvalObject   a b     z -> x z 0x51 $ put            a >> putCommentList b
+    IfThenElse   a b c d z -> x z 0x52 $ putCommentList a >> put            b >> putComComList c >> putComComList d
+    TryCatch     a b c   z -> x z 0x53 $ putComComList  a >> putCom         b >> putComList    c
+    ForLoop      a b c   z -> x z 0x54 $ putCom         a >> putCom         b >> putComList    c
+    WhileLoop    a b     z -> x z 0x55 $ putCom         a >> putComList     b                 
+    ContinueExpr a b c   z -> x z 0x56 $ putObjBool     a >> putCommentList b >> putCom        c
+    ReturnExpr   a b     z -> x z 0x57 $ putObjBool     a >> putCom         b
+    WithDoc      a b     z -> x z 0x58 $ putCom         a >> putComList     b
     where
       x z i putx = putWord8 i >> putx >> put z
-      bool a = putWord8 (if a then 0x82 else 0x81)
   get = do
     w <- getWord8
     case w of
-      0x50 -> liftM3 EvalObject   get         getCommentList            get
-      0x51 -> liftM5 IfThenElse   getCommentList get (getComWith getComList) (getComWith getComList)  get
-      0x52 -> liftM4 TryCatch     (getComWith getComList)    getCom     getComList  get
-      0x53 -> liftM4 ForLoop      getCom      getCom         getComList get
-      0x54 -> liftM4 ContinueExpr getObjBool  getCommentList getCom     get
-      0x55 -> liftM3 ReturnExpr   getObjBool  getCom                    get
-      0x56 -> liftM3 WithDoc      getCom      getComList                get
+      0x51 -> liftM3 EvalObject   get            getCommentList                              get
+      0x52 -> liftM5 IfThenElse   getCommentList get            getComComList getComComList  get
+      0x53 -> liftM4 TryCatch     getComComList  getCom         getComList                   get
+      0x54 -> liftM4 ForLoop      getCom         getCom         getComList                   get
+      0x55 -> liftM3 WhileLoop    getCom         getComList                                  get
+      0x56 -> liftM4 ContinueExpr getObjBool     getCommentList getCom                       get
+      0x57 -> liftM3 ReturnExpr   getObjBool     getCom                                      get
+      0x58 -> liftM3 WithDoc      getCom         getComList                                  get
       _    -> error "could not load, script data is corrupted"
 
 instance Binary Location where
   put loc = case loc of
-    LocationUnknown -> putWord8 0x4C
+    LocationUnknown -> putWord8 0x5E
     loc             -> do
-      putWord8 0x4D
+      putWord8 0x5F
       fn startingLine loc >> fn startingChar loc >> fn startingColumn loc
       fn endingLine   loc >> fn endingChar   loc >> fn endingColumn   loc
       where { fn acc a = mapM_ putWord8 (bitsToVLInt (acc a)) }
   get = getWord8 >>= \w -> case w of
-    0x4C -> return LocationUnknown
-    0x4D -> do
+    0x5E -> return LocationUnknown
+    0x5F -> do
       a <- getFromVLInt
       b <- getFromVLInt
       c <- getFromVLInt
@@ -562,85 +551,73 @@ instance Binary Rule where
 
 instance Binary Subroutine where
   put s = putList (argsPattern s) >> putComList (subSourceCode s)
-  get   = liftM3 Subroutine getList getComList (return (Executable undefined (return ())))
+  get   = liftM3 Subroutine getList getComList (return (Executable err (return ()))) where
+    err = error "subroutine loaded from binary file is used before being converted to an executable"
 
 instance Binary ObjPat where
   put s = error "TODO: define binary serializer for ObjPat"
-  get   = error "TODO: define binary serializer for ObjPat"
+  get   = getWord8 >>= getObjPat
 
-lambdaExprTypeToWord8 :: LambdaExprType -> Word8
-lambdaExprTypeToWord8 t = case t of
-  FuncExprType -> 0x59
-  RuleExprType -> 0x5A
-  PatExprType  -> 0x5B
-
-lambdaExprTypeFromWord8 :: Word8 -> Maybe LambdaExprType
-lambdaExprTypeFromWord8 t = case t of
-  0x59 -> Just FuncExprType
-  0x5A -> Just RuleExprType
-  0x5B -> Just PatExprType
-  _    -> Nothing
-
-instance Binary LambdaExprType where
-  get = getWord8 >>= \t -> case lambdaExprTypeFromWord8 t of
-    Nothing -> error "object expression, lambda expression type"
-    Just  t -> return t
-  put = putWord8 . lambdaExprTypeToWord8
+-- This function is external to the instantation of Binary ObjPat because it is used by the
+-- instantiation of Object as well.
+getObjPat :: Word8 -> Get ObjPat
+getObjPat = error "TODO: define binary decoder for ObjPat"
 
 instance Binary TopLevelExpr where
   put d = case d of
-    Attribute      req nm        lc -> x 0x57 $
-      putComWith putNullTermStr req >> putComWith putNullTermStr nm >> put lc
-    ToplevelDefine name obj      lc -> x 0x58 (putComWith putList name >> putCom obj >> put lc)
-    TopLambdaExpr  typ  pat scrp lc -> put typ >> putComComList pat >> putComList scrp >> put lc
-    BeginExpr      scrp          lc -> x 0x5D (putComComList scrp >> put lc)
-    EndExpr        scrp          lc -> x 0x5E (putComComList scrp >> put lc)
-    ToplevelFunc   nm args scrp  lc -> x 0x5F $ do
-      putCom         nm
-      putComList     args
-      putComComList  scrp
-      put            lc
-    where { x i putx = putWord8 i >> putx }
+    Attribute      a b   lc -> x 0x61 (putCom               a >> putCom     b                    >> put lc)
+    ToplevelDefine a b   lc -> x 0x62 ((putComWith putList) a >> putCom     b                    >> put lc)
+    ToplevelFunc   a b c lc -> x 0x63 (putCom               a >> putComList b >> putComComList c >> put lc)
+    ToplevelScript a     lc -> x 0x64 (put                  a                                    >> put lc)
+    TopLambdaExpr  a b c lc -> x (top a) (putComComList     b >> putComList c                    >> put lc)
+    EventExpr      a b   lc -> x (evt a) (putComComList     b                                    >> put lc)
+    where
+      x i putx = putWord8 i >> putx
+      top typ = case typ of
+        FuncExprType  -> 0x65
+        RuleExprType  -> 0x66
+        PatExprType   -> 0x67
+      evt typ = case typ of
+        BeginExprType -> 0x68
+        EndExprType   -> 0x69
+        ExitExprType  -> 0x6A
   get = do
     w <- getWord8
     case w of
-      0x57 -> liftM3 Attribute      (getComWith getNullTermStr) (getComWith getNullTermStr) get
-      0x58 -> liftM3 ToplevelDefine (getComWith getList) getCom get
-      0x5C -> liftM2 BeginExpr      getComComList get
-      0x5D -> liftM2 EndExpr        getComComList get
-      0x5E -> liftM4 ToplevelFunc   getCom getComList getComComList get
-      _    -> case lambdaExprTypeFromWord8 w of
-        Nothing -> error "top-level expression"
-        Just  t -> liftM3 (TopLambdaExpr t) getComComList getComList get
+      0x61 -> liftM3 Attribute      getCom               getCom                   get
+      0x62 -> liftM3 ToplevelDefine (getComWith getList) getCom                   get
+      0x63 -> liftM4 ToplevelFunc   getCom               getComList getComComList get
+      0x64 -> liftM2 ToplevelScript get                                           get
+      0x65 -> toplam FuncExprType
+      0x66 -> toplam RuleExprType
+      0x67 -> toplam PatExprType
+      0x68 -> evtexp BeginExprType
+      0x69 -> evtexp EndExprType
+      0x6A -> evtexp ExitExprType
+      _    -> error "failed decoding binary data for top-level expression"
+      where
+        toplam typ = liftM3 (TopLambdaExpr typ) getComComList getComList get
+        evtexp typ = liftM2 (EventExpr     typ) getComComList            get
 
 instance Binary SourceCode where
   put sc = do
-    (bx, cksum) <- putWithChecksum (simpleChecksum 0) $ do
+    (bx, cksum) <- putWithChecksum byteStringSHA1Sum $ do
       putWord64be program_magic_number
       putWord64be program_data_version
       putCom (sourceModuleName sc)
       putComComList (directives sc)
     putLazyByteString bx
-    putWord64be cksum
+    put cksum
   get = do
     let chk msg a = get >>= \b -> if b==a then return () else error ("failed reading binary, "++msg)
-    (sc, myCksum) <- getWithChecksum (simpleChecksum 0) $ do
+    (sc, myCksum) <- getWithChecksum byteStringSHA1Sum $ do
       chk "wrong \"magic\" number, this may not be a Dao compiled program" $
         program_magic_number
       chk "this program was compiled with an incompatible version of the Dao binary protocal" $
         program_data_version
       liftM2 (SourceCode 0 nil) getCom getComComList
-    theirCksum <- getWord64be
+    theirCksum <- fmap B.pack (replicateM 160 getWord8)
     if myCksum == theirCksum
       then return sc
       else error "the checksum test for the compiled source code failed"
-
-----------------------------------------------------------------------------------------------------
-
-testBinary :: (Binary o, Show o) => o -> IO o
-testBinary o = do
-  putStrLn ("Original:\n\t"++show o)
-  let b = B.unpack (runPut (put o))
-  seq b $ putStrLn ("Binary:\n\t"++showEncoded b++"\n")
-  return $! (runGet get (B.pack b))
 

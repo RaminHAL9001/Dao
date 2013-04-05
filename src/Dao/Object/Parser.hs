@@ -232,7 +232,8 @@ parseListable msg open delim close getValue = begin where
       char delim
       com3 <- parseComment
       regexMany space
-      loop com3 (zx++[com com1 (value, []) com2])
+      mplus (char close >> return zx) $
+        loop com3 (zx++[com com1 (value, []) com2])
 
 parseKeywordOrName :: Parser String
 parseKeywordOrName = liftM2 (++) (regex alpha_) (regexMany alnum_)
@@ -547,11 +548,21 @@ parseParenObjectExpr = do
     flip mplus (fail "expecting close parethases") $
       char ')' >> return (ParenExpr True (com com1 expr com2) unloc)
 
+parseMetaEvalObjectExpr :: Parser ObjectExpr
+parseMetaEvalObjectExpr = do
+  string "#{"
+  expect "object expression in parentheses" $ \com1 -> do
+    (expr, com2) <- parseObjectExpr
+    flip mplus (fail "expecting closing \"}#\" token") $ do
+      string "}#" >> return (MetaEvalExpr (com com1 expr com2) unloc)
+
 -- Object expressions that don't begin with a keyword.
 nonKeywordObjectExpr :: Parser ObjectExpr
 nonKeywordObjectExpr = msum $
   [ parseParenObjectExpr
     -- ^ anything with an open-parenthasis.
+  , parseMetaEvalObjectExpr
+    -- ^ anything that begins with the meta-eval parens.
   , fmap (flip Literal unloc . ORef) parseIntRef
     -- ^ literal integer references, parsed out as a single value, rather than the reference unary
     -- operator operating on an integer value.
@@ -647,16 +658,23 @@ parseBuiltinFuncCall key com1 = do
 func_param_var = "function parameter variable"
 
 parseLambdaDef :: NameComParser ObjectExpr
-parseLambdaDef key com1 = do
-  guard (key=="func" || key=="function" || key=="rule" || key=="pat" || key=="pattern")
-  expect "list of parameter variables after \"function\" statement" $ \com2 -> msum $
-    [ do  scrpt <- parseBracketedScript
-          return (LambdaExpr (read key) (ComAfter [] (com1++com2)) scrpt unloc)
-    , do  params <- parseFunctionParameters ("parameters to \""++key++"\" expression")
-          expect (expected_sub_for "lambda function definition") $ \com2 -> do
-            script <- parseBracketedScript
-            return (LambdaExpr (read key) (com com1 params com2) script unloc)
-    ]
+parseLambdaDef key com1 = msum $
+  [ do  guard (key=="rule") -- parse a rule with only one string parameter not in parenthases
+        param <- fmap (OPattern . read) parseString
+        expect "bracketed subroutine after \"rule\" statement" $ \com2 -> do
+          scrpt <- parseBracketedScript
+          return (LambdaExpr RuleExprType (com com1 [Com (Literal param unloc)] com2) scrpt unloc)
+  , do  guard (key=="func" || key=="function" || key=="rule" || key=="pat" || key=="pattern")
+        let msg a = a++" \""++key++"\" statement"
+        expect (msg "parameter variables immediately after") $ \com2 -> msum $
+          [ do  scrpt <- parseBracketedScript -- parse a rule/function without a list of arguments
+                return (LambdaExpr (read key) (ComAfter [] (com1++com2)) scrpt unloc)
+          , do  params <- parseFunctionParameters (msg "parameters to")
+                expect (expected_sub_for "lambda function definition") $ \com2 -> do
+                  script <- parseBracketedScript
+                  return (LambdaExpr (read key) (com com1 params com2) script unloc)
+          ]
+  ]
 
 parseArrayDef :: NameComParser ObjectExpr
 parseArrayDef = guardKeyword "array" $ \com1 -> token $ do

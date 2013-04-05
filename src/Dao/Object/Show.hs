@@ -303,6 +303,7 @@ instance PPrintable ObjectExpr where
     LambdaExpr   typ   ccNmx   xcObjXp     _ -> do
       let hdr = pPrintComWith (pList_ (show typ++"(") ", " ")" . map (pPrintComWith pPrint)) ccNmx
       pPrintSubBlock hdr xcObjXp
+    MetaEvalExpr cObjXp                    _ -> pInline [pString "#{", pPrint cObjXp, pString "}#"]
 
 instance PPrintable TopLevelExpr where
   pPrint o = case o of

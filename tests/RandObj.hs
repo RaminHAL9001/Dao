@@ -484,6 +484,7 @@ instance HasRandGen ObjectExpr where
           return (ArrayExpr idxExpr items LocationUnknown)
     , liftM3 StructExpr comRandObjExpr (randList 0 30 >>= comAssignExprList >>= mapM randCom) no
     , liftM4 LambdaExpr randO (randArgsDef >>= randCom) randScriptExpr no
+    , liftM2 MetaEvalExpr comRandObjExpr no
     ]
 
 randArgsDef :: RandO [Com ObjectExpr]

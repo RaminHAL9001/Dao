@@ -384,12 +384,16 @@ putComWith p com = case com of
 getComWith :: Get a -> Get (Com a)
 getComWith getx = do
   let g = getWord8
-  w <- lookAhead g
-  case w of
-    0x39 -> g >> liftM2 ComBefore getCommentList getx
-    0x3A -> g >> liftM2 ComAfter                 getx getCommentList
-    0x3B -> g >> liftM3 ComAround getCommentList getx getCommentList
-    _    ->      liftM  Com                      getx
+  is_empty <- isEmpty
+  if is_empty
+    then fmap Com getx
+    else do
+      w <- lookAhead g
+      case w of
+        0x39 -> g >> liftM2 ComBefore getCommentList getx
+        0x3A -> g >> liftM2 ComAfter                 getx getCommentList
+        0x3B -> g >> liftM3 ComAround getCommentList getx getCommentList
+        _    ->      liftM  Com                      getx
 
 putCom :: Binary a => Com a -> Put
 putCom c = putComWith put c
@@ -519,23 +523,29 @@ instance Binary ScriptExpr where
 
 instance Binary Location where
   put loc = case loc of
-    LocationUnknown -> putWord8 0x5E
+    LocationUnknown -> return ()
     loc             -> do
       putWord8 0x5F
-      fn startingLine loc >> fn startingChar loc >> fn startingColumn loc
-      fn endingLine   loc >> fn endingChar   loc >> fn endingColumn   loc
-      where { fn acc a = mapM_ putWord8 (bitsToVLInt (acc a)) }
-  get = getWord8 >>= \w -> case w of
-    0x5E -> return LocationUnknown
-    0x5F -> do
-      a <- getFromVLInt
-      b <- getFromVLInt
-      c <- getFromVLInt
-      d <- getFromVLInt
-      e <- getFromVLInt
-      f <- getFromVLInt
-      return (Location a b c d e f)
-    _    -> fail "expecting parse-time location for AST node"
+      let fn acc = mapM_ putWord8 (bitsToVLInt (acc loc))
+      fn startingLine >> fn startingChar >> fn startingColumn
+      fn endingLine   >> fn endingChar   >> fn endingColumn
+  get = do
+    is_empty <- isEmpty
+    if is_empty
+      then return LocationUnknown
+      else do
+        w <- lookAhead getWord8
+        if w==0x5F
+          then do
+            getWord8
+            a <- getFromVLInt
+            b <- getFromVLInt
+            c <- getFromVLInt
+            d <- getFromVLInt
+            e <- getFromVLInt
+            f <- getFromVLInt
+            return (Location a b c d e f)
+          else return LocationUnknown
 
 ----------------------------------------------------------------------------------------------------
 

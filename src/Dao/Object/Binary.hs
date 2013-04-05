@@ -126,11 +126,11 @@ putMap m = putMapWith put put m
 getMap :: (Eq k, Ord k, Binary k, Binary v) => Get (M.Map k v)
 getMap = getMapWith get get
 
-putObjMap :: Binary a => (m -> [(a, Object)]) -> m -> Put
-putObjMap asocs o = putListWith (\ (i, o) -> put i >> put o) (asocs o)
+putObjMap :: Binary a => (m -> [(a, Object)]) -> (a -> Put) -> m -> Put
+putObjMap asocs putIndex o = putListWith (\ (i, o) -> putIndex i >> put o) (asocs o)
 
-getObjMap :: Binary a => ([(a, Object)] -> m) -> Get m
-getObjMap fromList = fmap fromList (getListWith (get >>= \i -> get >>= \o -> return (i, o)))
+getObjMap :: Binary a => ([(a, Object)] -> m) -> Get a -> Get m
+getObjMap fromList getIndex = fmap fromList (getListWith (getIndex >>= \i -> get >>= \o -> return (i, o)))
 
 putTreeWith :: (Eq p, Ord p) => (p -> Put) -> (a -> Put) -> T.Tree p a -> Put
 putTreeWith putp puta t =
@@ -248,8 +248,8 @@ instance Binary Object where
       OSet          a -> px o (putList (S.elems a))
       OArray        a -> px o $
         let (lo, hi) = bounds a in put lo >> put hi >> putList (elems a)
-      OIntMap       a -> px o (putObjMap I.assocs a)
-      ODict         a -> px o (putObjMap M.assocs a)
+      OIntMap       a -> px o (putObjMap I.assocs putVLInt a)
+      ODict         a -> px o (putObjMap M.assocs put a)
       OTree         a -> x o a
       OPattern      a -> px o (put a)
       OScript       a -> px o (put a)
@@ -281,8 +281,8 @@ instance Binary Object where
         ArrayType    -> do
           get >>= \lo -> get >>= \hi -> getList >>= \ax ->
             return (OArray (listArray (lo, hi) ax))
-        IntMapType   -> fmap OIntMap (getObjMap (I.fromList))
-        DictType     -> fmap ODict   (getObjMap (M.fromList))
+        IntMapType   -> fmap OIntMap (getObjMap (I.fromList) getFromVLInt)
+        DictType     -> fmap ODict   (getObjMap (M.fromList) get)
         TreeType     -> x OTree
         PatternType  -> x OPattern
         ScriptType   -> x OScript
@@ -291,7 +291,7 @@ instance Binary Object where
 
 instance Binary Reference where
   put o = case o of
-    IntRef     o   -> putWord8 0x81 >> put (bitsToVLInt o)
+    IntRef     o   -> putWord8 0x81 >> mapM_ put (bitsToVLInt o)
     LocalRef   o   -> x 0x82 o
     QTimeRef   o   -> putWord8 0x83 >> putList o
     StaticRef  o   -> x 0x84 o

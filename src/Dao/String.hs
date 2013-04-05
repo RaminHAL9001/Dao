@@ -75,6 +75,9 @@ gatherVLInt = loop [] where
 getFromVLInt :: (Integral a, Bits a) => B.Get a
 getFromVLInt = fmap (fst . vlIntToBits) gatherVLInt
 
+putVLInt :: (Integral a, Bits a) => a -> B.Put
+putVLInt = mapM_ B.put . bitsToVLInt
+
 -- | A type synonym for 'Data.ByteString.Lazy.UTF8.ByteString'
 newtype UStr = UStr { toUTF8ByteString :: U.ByteString } deriving (Eq, Ord, Typeable)
 

@@ -151,7 +151,7 @@ getTreeWith getp geta = do
       a <- geta
       t <- getMapWith getp (getTreeWith getp geta)
       return (T.LeafBranch{T.branchData=a, T.branchMap=t})
-    _    -> error "corrupted T.Tree data"
+    _    -> fail "corrupted T.Tree data"
 
 instance (Eq p, Ord p, Binary p, Binary a, Show p, Show a) => Binary (T.Tree p a) where
   put t = putTreeWith put put t
@@ -166,8 +166,8 @@ typeIDBytePrefix t = case t of
   TypeType     -> 0x07
   IntType      -> 0x08
   WordType     -> 0x09
-  LongType     -> 0x0a
-  FloatType    -> 0x0b
+  LongType     -> 0x0A
+  FloatType    -> 0x0B
   RatioType    -> 0x0C
   ComplexType  -> 0x0D
   TimeType     -> 0x0E
@@ -187,41 +187,42 @@ typeIDBytePrefix t = case t of
   RuleType     -> 0x1C
   BytesType    -> 0x1D
 
-bytePrefixToTypeID :: Word8 -> TypeID
+bytePrefixToTypeID :: Word8 -> Maybe TypeID
 bytePrefixToTypeID t = case t of
-  0x05 ->     NullType
-  0x06 ->     TrueType
-  0x07 ->     TypeType
-  0x08 ->      IntType
-  0x09 ->     WordType
-  0x0a ->     LongType
-  0x0b ->    FloatType
-  0x0C ->    RatioType
-  0x0D ->  ComplexType
-  0x0E ->     TimeType
-  0x0F -> DiffTimeType
-  0x10 ->     CharType
-  0x11 ->   StringType
-  0x12 ->      RefType
-  0x13 ->     PairType
-  0x14 ->     ListType
-  0x15 ->      SetType
-  0x16 ->    ArrayType
-  0x17 ->   IntMapType
-  0x18 ->     DictType
-  0x19 ->     TreeType
-  0x1A ->  PatternType
-  0x1B ->   ScriptType
-  0x1C ->     RuleType
-  0x1D ->    BytesType
+  0x05 -> Just NullType
+  0x06 -> Just TrueType
+  0x07 -> Just TypeType
+  0x08 -> Just IntType
+  0x09 -> Just WordType
+  0x0A -> Just LongType
+  0x0B -> Just FloatType
+  0x0C -> Just RatioType
+  0x0D -> Just ComplexType
+  0x0E -> Just TimeType
+  0x0F -> Just DiffTimeType
+  0x10 -> Just CharType
+  0x11 -> Just StringType
+  0x12 -> Just RefType
+  0x13 -> Just PairType
+  0x14 -> Just ListType
+  0x15 -> Just SetType
+  0x16 -> Just ArrayType
+  0x17 -> Just IntMapType
+  0x18 -> Just DictType
+  0x19 -> Just TreeType
+  0x1A -> Just PatternType
+  0x1B -> Just ScriptType
+  0x1C -> Just RuleType
+  0x1D -> Just BytesType
+  _    -> Nothing
 
 instance Binary TypeID where
   put t = putWord8 (typeIDBytePrefix t)
   get = do
     w <- getWord8
-    if 0x05<=w && w<=0x1D
-      then return (bytePrefixToTypeID w)
-      else fail "was expecting type data"
+    case bytePrefixToTypeID w of
+      Nothing -> fail "was expecting type data"
+      Just  w -> return w
 
 instance Binary Object where
   put o = do
@@ -258,33 +259,35 @@ instance Binary Object where
     ty <- getWord8
     let x fn = fmap fn get
     case bytePrefixToTypeID ty of
-      NullType     -> return ONull
-      TrueType     -> return OTrue
-      TypeType     -> x OType
-      IntType      -> x OInt
-      WordType     -> x OWord
-      LongType     -> x OLong
-      FloatType    -> x OFloat
-      RatioType    -> x ORatio
-      ComplexType  -> x OComplex
-      TimeType     -> x OTime
-      DiffTimeType -> x ODiffTime
-      CharType     -> x OChar
-      StringType   -> fmap OString decodeUStr
-      RefType      -> x ORef
-      PairType     -> get >>= \a -> get >>= \b -> return (OPair (a, b))
-      ListType     -> fmap OList getList
-      SetType      -> fmap (OSet . S.fromList) getList
-      ArrayType    -> do
-        get >>= \lo -> get >>= \hi -> getList >>= \ax ->
-          return (OArray (listArray (lo, hi) ax))
-      IntMapType   -> fmap OIntMap (getObjMap (I.fromList))
-      DictType     -> fmap ODict   (getObjMap (M.fromList))
-      TreeType     -> x OTree
-      PatternType  -> x OPattern
-      ScriptType   -> x OScript
-      RuleType     -> x ORule
-      BytesType    -> x OBytes
+      Nothing -> fail "expecting object, invalid object type prefix"
+      Just ty -> case ty of
+        NullType     -> return ONull
+        TrueType     -> return OTrue
+        TypeType     -> x OType
+        IntType      -> x OInt
+        WordType     -> x OWord
+        LongType     -> x OLong
+        FloatType    -> x OFloat
+        RatioType    -> x ORatio
+        ComplexType  -> x OComplex
+        TimeType     -> x OTime
+        DiffTimeType -> x ODiffTime
+        CharType     -> x OChar
+        StringType   -> fmap OString decodeUStr
+        RefType      -> x ORef
+        PairType     -> get >>= \a -> get >>= \b -> return (OPair (a, b))
+        ListType     -> fmap OList getList
+        SetType      -> fmap (OSet . S.fromList) getList
+        ArrayType    -> do
+          get >>= \lo -> get >>= \hi -> getList >>= \ax ->
+            return (OArray (listArray (lo, hi) ax))
+        IntMapType   -> fmap OIntMap (getObjMap (I.fromList))
+        DictType     -> fmap ODict   (getObjMap (M.fromList))
+        TreeType     -> x OTree
+        PatternType  -> x OPattern
+        ScriptType   -> x OScript
+        RuleType     -> x ORule
+        BytesType    -> x OBytes
 
 instance Binary Reference where
   put o = case o of
@@ -308,7 +311,7 @@ instance Binary Reference where
     0x87 -> liftM2 FileRef    decodeUStr getList
     0x88 -> liftM  MetaRef    get
     0x89 -> liftM2 Subscript  get get
-    _ -> error "corrupted pattern in Reference value"
+    _ -> fail "expecting reference expression"
 
 instance Binary UTCTime where
   put t = do
@@ -338,7 +341,7 @@ instance Binary PatUnit where
     0x29 -> return Wildcard
     0x2A -> return AnyOne
     0x2B -> fmap Single get
-    _    -> error "corrupted Pattern object in binary file"
+    _    -> fail "expecting pattern unit object"
 
 instance Binary Pattern where
   put p = putList (getPatUnits p)
@@ -369,7 +372,7 @@ getCommentList = getListWith $ do
   case w of
     0x31 -> fmap InlineComment  get
     0x32 -> fmap EndlineComment get
-    _    -> error "expecting comment string"
+    _    -> fail "indicated encoded comment, but could not find properly prefixed comment"
 
 putComWith :: (a -> Put) -> Com a -> Put
 putComWith p com = case com of
@@ -461,7 +464,7 @@ instance Binary ObjectExpr where
     LambdaExpr   a b c z -> x z (lamexp a) $               putComComList  b >> putComList c
     MetaEvalExpr a     z -> x z 0x4F $ putCom a
     where
-      x z i putx  = putWord8 i >> put z >> putx
+      x z i putx  = putWord8 i >> putx >> put z
       lamexp t = case t of
         FuncExprType -> 0x4C
         RuleExprType -> 0x4D
@@ -485,7 +488,7 @@ instance Binary ObjectExpr where
       0x4D -> lamexp RuleExprType
       0x4E -> lamexp PatExprType
       0x4F -> liftM2 MetaEvalExpr getCom                                    get
-      _    -> error "could not load, corrupted data in object expression"
+      _    -> fail "expecting object expression"
       where
         lamexp typ = liftM3 (LambdaExpr typ) getComComList getComList get
 
@@ -512,7 +515,7 @@ instance Binary ScriptExpr where
       0x56 -> liftM4 ContinueExpr getObjBool     getCommentList getCom                       get
       0x57 -> liftM3 ReturnExpr   getObjBool     getCom                                      get
       0x58 -> liftM3 WithDoc      getCom         getComList                                  get
-      _    -> error "could not load, script data is corrupted"
+      _    -> fail "expecting script expression"
 
 instance Binary Location where
   put loc = case loc of
@@ -532,7 +535,7 @@ instance Binary Location where
       e <- getFromVLInt
       f <- getFromVLInt
       return (Location a b c d e f)
-    _    -> error "could not load, location data is corrupted"
+    _    -> fail "expecting parse-time location for AST node"
 
 ----------------------------------------------------------------------------------------------------
 
@@ -547,21 +550,21 @@ instance Binary Subroutine where
     err = error "subroutine loaded from binary file is used before being converted to an executable"
 
 instance Binary ObjPat where
-  put s = error "TODO: define binary serializer for ObjPat"
+  put s = fail "TODO: define binary serializer for ObjPat"
   get   = getWord8 >>= getObjPat
 
 -- This function is external to the instantation of Binary ObjPat because it is used by the
 -- instantiation of Object as well.
 getObjPat :: Word8 -> Get ObjPat
-getObjPat = error "TODO: define binary decoder for ObjPat"
+getObjPat w = fail "TODO: define binary decoder for ObjPat"
 
 instance Binary TopLevelExpr where
   put d = case d of
-    Attribute      a b   lc -> x 0x61 (putCom               a >> putCom     b                    >> put lc)
-    ToplevelFunc   a b c lc -> x 0x62 (putCom               a >> putComList b >> putComComList c >> put lc)
-    ToplevelScript a     lc -> x 0x63 (put                  a                                    >> put lc)
-    TopLambdaExpr  a b c lc -> x (top a) (putComComList     b >> putComList c                    >> put lc)
-    EventExpr      a b   lc -> x (evt a) (putComComList     b                                    >> put lc)
+    Attribute      a b   lc -> x 0x61    (putCom        a >> putCom     b                    >> put lc)
+    ToplevelFunc   a b c lc -> x 0x62    (putCom        a >> putComList b >> putComComList c >> put lc)
+    ToplevelScript a     lc -> x 0x63    (put           a                                    >> put lc)
+    TopLambdaExpr  a b c lc -> x (top a) (putComComList b >> putComList c                    >> put lc)
+    EventExpr      a b   lc -> x (evt a) (putComComList b                                    >> put lc)
     where
       x i putx = putWord8 i >> putx
       top typ = case typ of
@@ -575,16 +578,16 @@ instance Binary TopLevelExpr where
   get = do
     w <- getWord8
     case w of
-      0x61 -> liftM3 Attribute      getCom               getCom                   get
-      0x62 -> liftM4 ToplevelFunc   getCom               getComList getComComList get
-      0x63 -> liftM2 ToplevelScript get                                           get
+      0x61 -> liftM3 Attribute      getCom getCom                   get
+      0x62 -> liftM4 ToplevelFunc   getCom getComList getComComList get
+      0x63 -> liftM2 ToplevelScript get                             get
       0x64 -> toplam FuncExprType
       0x65 -> toplam RuleExprType
       0x66 -> toplam PatExprType
       0x67 -> evtexp BeginExprType
       0x68 -> evtexp EndExprType
       0x69 -> evtexp ExitExprType
-      _    -> error "failed decoding binary data for top-level expression"
+      _    -> fail "expecting top-level expression"
       where
         toplam typ = liftM3 (TopLambdaExpr typ) getComComList getComList get
         evtexp typ = liftM2 (EventExpr     typ) getComComList            get
@@ -596,13 +599,13 @@ instance Binary ArithOp1 where
     INVB  -> 0x93
     NOT   -> 0x94
     NEG   -> 0x95
-  get = getWord8 >>= \w -> return $ case w of
-    0x91 -> REF
-    0x92 -> DEREF
-    0x93 -> INVB
-    0x94 -> NOT
-    0x95 -> NEG
-    _ -> error "binary serialization failed on equation prefix operator"
+  get = getWord8 >>= \w -> case w of
+    0x91 -> return REF
+    0x92 -> return DEREF
+    0x93 -> return INVB
+    0x94 -> return NOT
+    0x95 -> return NEG
+    _    -> fail "expecting prefix operator"
 
 instance Binary ArithOp2 where
   put o = putWord8 $ case o of
@@ -623,25 +626,25 @@ instance Binary ArithOp2 where
     XORB  -> 0xA9
     SHL   -> 0xAA
     SHR   -> 0xAB
-  get = getWord8 >>= \w -> return $ case w of
-    0x9A -> ADD
-    0x9B -> SUB
-    0x9C -> MULT
-    0x9D -> DIV
-    0x9E -> MOD
-    0x9F -> POW
-    0xA1 -> POINT
-    0xA2 -> DOT
-    0xA3 -> OR
-    0xA4 -> AND
-    0xA5 -> EQUL
-    0xA6 -> NEQUL
-    0xA7 -> ORB
-    0xA8 -> ANDB
-    0xA9 -> XORB
-    0xAA -> SHL
-    0xAB -> SHR
-    _ -> error "binary serialization failed on equation infix operator"
+  get = getWord8 >>= \w -> case w of
+    0x9A -> return ADD
+    0x9B -> return SUB
+    0x9C -> return MULT
+    0x9D -> return DIV
+    0x9E -> return MOD
+    0x9F -> return POW
+    0xA1 -> return POINT
+    0xA2 -> return DOT
+    0xA3 -> return OR
+    0xA4 -> return AND
+    0xA5 -> return EQUL
+    0xA6 -> return NEQUL
+    0xA7 -> return ORB
+    0xA8 -> return ANDB
+    0xA9 -> return XORB
+    0xAA -> return SHL
+    0xAB -> return SHR
+    _ -> fail "expecting infix operator"
 
 instance Binary SourceCode where
   put sc = do
@@ -653,7 +656,7 @@ instance Binary SourceCode where
     putLazyByteString bx
     put cksum
   get = do
-    let chk msg a = get >>= \b -> if b==a then return () else error ("failed reading binary, "++msg)
+    let chk msg a = get >>= \b -> if b==a then return () else fail ("failed reading binary program, "++msg)
     (sc, myCksum) <- getWithChecksum byteStringSHA1Sum $ do
       chk "wrong \"magic\" number, this may not be a Dao compiled program" $
         program_magic_number
@@ -663,5 +666,5 @@ instance Binary SourceCode where
     theirCksum <- fmap B.pack (replicateM 160 getWord8)
     if myCksum == theirCksum
       then return sc
-      else error "the checksum test for the compiled source code failed"
+      else fail "the checksum test for the compiled source code failed"
 

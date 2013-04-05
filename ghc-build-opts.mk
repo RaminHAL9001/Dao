@@ -101,13 +101,14 @@ enum-set-test:
 # target above to use these targets as prerequisites.
 
 test: tests/RandObj.hs \
-  src/Dao/String.hs src/Dao/Token.hs src/Dao/Predicate.hs \
-  src/Dao/Parser.hs src/Dao/Object/Parser.hs \
-  src/Dao/Object.hs src/Dao/Object/Show.hs \
-  src/Dao/PPrint.hs tests/main.hs
+  src/Dao/String.hs      src/Dao/Token.hs         src/Dao/Predicate.hs \
+  src/Dao/Parser.hs      src/Dao/Object.hs        src/Dao/PPrint.hs \
+  src/Dao/Object/Show.hs src/Dao/Object/Parser.hs src/Dao/Object/Binary.hs \
+  tests/main.hs
 	$(GHC_COMPILE) -rtsopts tests/RandObj.hs tests/main.hs -o ./test
 
 debug.log: ./test
 	rm -f ./debug.log ;
-	@echo 'Please run the test program by hand.'
+	./test
+#	@echo 'Please run the test program by hand.'
 

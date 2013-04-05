@@ -306,7 +306,7 @@ instance PPrintable ObjectExpr where
 
 instance PPrintable TopLevelExpr where
   pPrint o = case o of
-    Attribute      a b   _ -> pInline [pPrint a, pPrint b, pString ";"]
+    Attribute      a b   _ -> pInline [pPrint a, pString "  ", pPrint b, pString ";"]
     ToplevelFunc   a b c _ -> pPrintComWith (pClosure header " { " " }" . map pPrint) c where
       header = pString "function " >> pPrint a >> pList_ "(" ", " ")" (map pPrint b)
     ToplevelScript a     _ -> pPrint a

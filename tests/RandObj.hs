@@ -150,7 +150,11 @@ unsign :: Int -> Integer
 unsign i = if i<0 then intBase + fromIntegral i else fromIntegral i
 
 -- | Creates a string of digits from 0 to the given @base@ value by converting a random unsigned
--- integer to the list of digits that represents the random integer in that @base@.
+-- integer to the list of digits that represents the random integer in that @base@. For example, if
+-- you want a list of digits from 0 to 4 to be produced from a number 54, pass 4 as the base, then
+-- the number 54. Each digit of the base-4 number representation of 54 will be returned as a
+-- separate integer: @[2,1,3]@ (from lowest to highest place value, where 123 in base 10 would
+-- return the list @[3,2,1]@).
 randToBase :: Int -> Int -> [Int]
 randToBase base i = loop (unsign i)  where
   loop i = if i==0 then [] else let (i' , sym) = divMod i b in fromIntegral sym : loop i'
@@ -176,18 +180,21 @@ randOFromList items = join (fmap (arr!) (nextInt len)) where
 randUStr :: Int -> UStr
 randUStr = ustr . B.unpack . getRandomWord
 
-randListOf :: RandO a -> RandO [a]
-randListOf rando = do
-  i0 <- nextInt 40
-  limSubRandOWith [] $ do
-    let (i1, nonNull) = divMod i0 2
-    if nonNull==0 then return [] else replicateM i1 rando
+randListOf :: Int -> Int -> RandO a -> RandO [a]
+randListOf minlen maxlen rando = do
+  -- half of all lists will be null, unless the 'minlen' parameter is greater than 0
+  empt <- if minlen==0 then nextInt 2 else return 0
+  if empt==1
+    then return []
+    else do
+      ln <- nextInt (maxlen-minlen)
+      limSubRandOWith [] (replicateM (minlen+ln) rando)
 
-randList :: HasRandGen a => RandO [a]
-randList = randListOf subRandO
+randList :: HasRandGen a => Int -> Int -> RandO [a]
+randList lo hi = randListOf lo hi subRandO
 
 randObjMap :: (map Object -> Object) -> ([(key, Object)] -> map Object) -> RandO key -> RandO Object
-randObjMap objConstruct mapConstruct keygen = randList >>= \ox ->
+randObjMap objConstruct mapConstruct keygen = (randList 0 7) >>= \ox ->
   fmap (objConstruct . mapConstruct) (forM ox (\obj -> keygen >>= \key -> return (key, obj)))
 
 randInteger :: Object -> (Int -> RandO Object) -> RandO Object
@@ -270,8 +277,8 @@ instance HasRandGen Object where
           OString . ustr . unwords . map (B.unpack . getRandomWord)
     , fmap ORef randO
     , fmap OPair (liftM2 (,) randO randO)
-    , fmap OList randList
-    , fmap (OSet . S.fromList) randList
+    , fmap OList (randList 0 40)
+    , fmap (OSet . S.fromList) (randList 0 40)
     , do -- OArray
           hi <- nextInt 12
           lo <- nextInt 8
@@ -341,14 +348,14 @@ instance HasRandGen (T.Tree Name Object) where
 
 instance HasRandGen Subroutine where
   randO = do
-    pats <- randList
+    pats <- randList 0 30
     scrp <- randScriptExpr
     return (Subroutine{argsPattern = pats, subSourceCode = scrp, getSubExecutable = undefined})
 
 instance HasRandGen Rule where
   randO = do
-    pat <- randList
-    act <- randList >>= mapM randCom
+    pat <- randList 0 7
+    act <- randList 0 30 >>= mapM randCom
     return $
       Rule
       { ruleMetaExpr   = VoidExpr
@@ -367,7 +374,7 @@ lit :: Object -> ObjectExpr
 lit = flip Literal LocationUnknown
 
 randScriptExpr :: RandO [Com ScriptExpr]
-randScriptExpr = randList >>= mapM randCom
+randScriptExpr = randList 0 30 >>= mapM randCom
 
 comRandScriptExpr :: RandO (Com [Com ScriptExpr])
 comRandScriptExpr = randScriptExpr >>= randCom
@@ -379,7 +386,7 @@ comRandObjExpr :: RandO (Com ObjectExpr)
 comRandObjExpr = randO >>= randCom
 
 comRandObjExprList :: RandO [Com ObjectExpr]
-comRandObjExprList = randList >>= mapM randCom
+comRandObjExprList = randList 1 20 >>= mapM randCom
 
 comAssignExprList :: [ObjectExpr] -> RandO [ObjectExpr]
 comAssignExprList = mapM $ \item ->
@@ -455,10 +462,10 @@ instance HasRandGen ObjectExpr where
             1 -> "intmap"
             2 -> "list"
             3 -> "set"
-          let rndlist = randListOf (fmap lit limRandObj)
+          let rndlist = randListOf 0 30 (fmap lit limRandObj)
           exprs <- mapM randCom =<< case typ of
-            0 -> randListOf (fmap (lit . OString . randUStr ) randInt) >>= comAssignExprList
-            1 -> randListOf (fmap (lit . OInt . fromIntegral) randInt) >>= comAssignExprList
+            0 -> randListOf 0 30 (fmap (lit . OString . randUStr ) randInt) >>= comAssignExprList
+            1 -> randListOf 0 30 (fmap (lit . OInt . fromIntegral) randInt) >>= comAssignExprList
             2 -> rndlist
             3 -> rndlist
           coms  <- randComments
@@ -473,24 +480,31 @@ instance HasRandGen ObjectExpr where
             1 -> f (\a b -> [a,b]) 
             2 -> replicateM 2 ref
             3 -> f (\a b -> [b,a])
-          items <- randList >>= mapM randCom
+          items <- randList 0 30 >>= mapM randCom
           return (ArrayExpr idxExpr items LocationUnknown)
-    , liftM3 StructExpr comRandObjExpr (randList >>= comAssignExprList >>= mapM randCom) no
+    , liftM3 StructExpr comRandObjExpr (randList 0 30 >>= comAssignExprList >>= mapM randCom) no
     , liftM4 LambdaExpr randO (randArgsDef >>= randCom) randScriptExpr no
     ]
 
 randArgsDef :: RandO [Com ObjectExpr]
-randArgsDef = randList >>= mapM randCom
+randArgsDef = randList 0 7 >>= mapM randCom
 
 instance HasRandGen TopLevelEventType where
   randO = fmap toEnum (nextInt 3)
 
 instance HasRandGen TopLevelExpr where
   randO = randOFromList $
-    [ liftM3 Attribute      comRandName comRandName no
+    [ do  req_ <- nextInt 2
+          let req = Com $ ustr $ if req_ == 0 then "require" else "import"
+          typ <- nextInt 2
+          words <- fmap (map uchars) (randListOf 1 6 (fmap randUStr randInt))
+          str <- randCom $ case typ of
+            0 -> ustr $ show $ intercalate " " $ words
+            1 -> ustr $ intercalate "." $ words
+          return (Attribute req str LocationUnknown)
     , liftM2 ToplevelScript randO no
     , do  name <- comRandName
-          args <- randList >>= mapM randCom
+          args <- randList 0 7 >>= mapM randCom
           scrp <- comRandScriptExpr
           return (ToplevelFunc name args scrp LocationUnknown)
     , liftM2 ToplevelScript randO no
@@ -512,13 +526,13 @@ randomWords = listArray (0, length list) (map B.pack list) where
     , "argument arguments as at avoids be because been behavior between book both by calculus"
     , "calling can change changes code commercial computability computation computer concepts"
     , "constructs contrast conversely declarative definition depending depends describing"
-    , "designed developed development difference different domains domainspecific easier effects"
+    , "designed developed development difference different domains domain easier effects"
     , "elaborations elements eliminating emphasized emphasizes entscheidungsproblem eschewing"
     , "especially evaluation example executing expression facilitate financial formal"
     , "functional has have hope how however imperative industrial input investigate is"
     , "it key lack lambda language languages largely like make many math mathematical may"
     , "motivations much mutable notion numeric of on one ones only organizations output paradigm"
-    , "pecific pioneering practice predict produce program programming prominent purely rather"
+    , "specific pioneering practice predict produce program programming prominent purely rather"
     , "recursion referential result roots same science side so software some specifically state"
     , "statistics style subject such supported symbolic system than that the they this times"
     , "transparency treats twice understand use used value values variety viewed which wide will"

@@ -37,11 +37,14 @@ import           Control.Monad.State
 
 import           Data.List
 import           Data.Monoid
+import           Data.IORef
 import           Data.Binary
 import qualified Data.Binary          as B
 import qualified Data.ByteString.Lazy as B
 
 import           Text.Printf
+
+import           Numeric
 
 import           System.IO
 
@@ -102,6 +105,10 @@ simpleTest = testList >> testInline >> testClosure >> putStrLn mainIfExpr
 
 ----------------------------------------------------------------------------------------------------
 
+showBinary :: B.ByteString -> String
+showBinary b =
+  intercalate " " $ map (\b -> (if b<0x10 then ('0':) else id) (flip showHex "" b)) $ B.unpack b
+
 maxRecurseDepth = 5
 
 randObj :: Int -> Object
@@ -132,40 +139,51 @@ pPrintComScriptExpr = pPrintSubBlock (return ())
 -- | Test the pretty printer and the parser. If a randomly generated object can be pretty printed,
 -- and the parser can parse the pretty-printed string and create the exact same object, then the
 -- test pases.
-testEveryParsePPrint :: MVar Handle -> MVar Bool -> Chan (Maybe Int) -> IO ()
-testEveryParsePPrint hlock notify ch = handle h loop where
-  h (SomeException e) = do
+testEveryParsePPrint :: MVar Bool -> MVar Handle -> MVar Bool -> Chan (Maybe Int) -> IO ()
+testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLoop where
+  topLoop ref = do
+    handle (h ref) (loop ref)
+    contin <- readMVar hwait
+    if contin then topLoop ref else return ()
+  h ref (SomeException e) = do
     putMVar notify False >>= evaluate
-    print e
-  loop = do
+    modifyMVar_ hlock $ \handl -> do -- using an mvar to prevent race conditions on output to this file
+      (i, obj) <- readIORef ref
+      hPutStrLn handl ("ITEM #"++show i++"\n"++show e)
+      hPutStrLn handl $ concat $
+        [prettyPrint 80 "    " obj, "\n", sep]
+      return handl
+  loop ref = do
     i <- readChan ch
     case i of
       Nothing -> return ()
       Just  i -> do
         let obexp = genRandWith randO maxRecurseDepth i :: TopLevelExpr
-            bytes = B.encode obexp
+        writeIORef ref (i, obexp)
+        let bytes = B.encode obexp
             obj   = B.decode bytes
             str   = showPPrint 80 "    " (pPrint obexp)
-            (par, msg) = runParser (fmap fst (regexMany space >> parseObjectExpr)) str 
+            (par, msg) = runParser (regexMany space >> parseDirective) str 
             err reason = do
-              modifyMVar_ hlock $ \h -> do
-                hPutStrLn h $! concat $!
+              modifyMVar_ hlock $ \handl -> do
+                hPutStrLn handl $! concat $!
                   [ "ITEM #", show i, " ", reason
                   , if null msg then "." else '\n':msg
-                  , "\n", str
-                  , "\n", show obexp
-                  , "\n--------------------------------------------------------------------------\n"
+                  , "\n", str, "\n", show obexp, "\n"
+                  , showBinary bytes, "\n", sep
                   ]
-                return h
-        if seq obexp $! seq bytes $! obj/=obexp
-          then  err "Binary deserialization does not match source object >>= evaluate"
-          else  return ()
-        status <- case par of
+                return handl
+        status1 <- handle (\ (ErrorCall e) -> err ("Binary decoding failed: "++show e) >> return False) $ do
+          if seq obexp $! seq bytes $! obj/=obexp
+            then  err "Binary deserialization does not match source object" >> return False
+            else  return True
+        status2 <- case par of
           OK      _ -> return True
           Backtrack -> err "Ambiguous parse" >> return False
           PFail _ b -> err ("Parse failed, "++uchars b) >> return False
-        putMVar notify status
-        loop
+        putMVar notify (status1&&status2)
+        loop ref
+  sep = "--------------------------------------------------------------------------"
 
 ----------------------------------------------------------------------------------------------------
 
@@ -207,7 +225,7 @@ main = do
           ]
       infoLoop = threadDelay displayInterval >> displayInfo >> infoLoop
   workThreads <- replicateM threadCount $ forkIO $ do
-    testEveryParsePPrint hlock notify ch
+    testEveryParsePPrint hwait hlock notify ch
   iterThread <- forkIO (iterLoop 0)
   dispThread <- forkIO infoLoop
   ctrlLoop maxErrors (iterThread:dispThread:workThreads)

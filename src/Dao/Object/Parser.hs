@@ -29,6 +29,7 @@ import qualified Dao.Tree as T
 
 import           Control.Monad
 
+import           Data.List
 import           Data.Char
 import           Data.Word
 import           Data.Ratio
@@ -346,14 +347,18 @@ parseInteractiveScript = many commented where
     com2 <- parseComment
     return (com com1 expr com2)
 
--- | This is the "entry point" for parsing a 'Dao.Object.ScriptExpr'.
+-- | This is the entry point for parsing a 'Dao.Object.ScriptExpr'.
 parseScriptExpr :: Parser ScriptExpr
 parseScriptExpr = applyLocation $ mplus keywordExpr objectExpr where
   objectExpr = parseObjectExpr >>= uncurry objectExprStatement
-  keywordExpr = do -- parse an expression that starts with a keyword
-    key  <- parseKeywordOrName
+  keywordExpr = do
+    key <- parseKeywordOrName
     com1 <- parseComment
-    nameComParserChoice choices key com1
+    parseKeywordScriptExpr key com1
+
+-- | Parse a script expression that starts with a keyword, like "if", "for", "while", or "try".
+parseKeywordScriptExpr :: NameComParser ScriptExpr
+parseKeywordScriptExpr key com1 = nameComParserChoice choices key com1 where
   choices = -- these are all the kinds of expressions that start with a keyword
     [ ifStatement, tryStatement, forStatement, withStatement
     , continueStatement, returnStatement
@@ -524,10 +529,11 @@ parseEquation obj com1 = loop [] obj com1 where
                   _        -> []
     ]
 
--- Parses anything that is not an equation. This is mostly for prescedence, as this function calls
--- 'nonKeywordObjectExpr' which calls 'parseUnaryOperatorExpr'. The unary operator parser calls this
--- function to get its operand, rather than 'parseObjectExpr', which ensures that the unary
--- operators have a prescedence higher than any other operator.
+-- | Parses anything that can be used as a single 'ObjectExpr', which includes equations which are
+-- enclosed in parentheses, so the name is a bit misleading. This function exists mostly for
+-- prescedence, as this function calls 'nonKeywordObjectExpr' which calls 'parseUnaryOperatorExpr'.
+-- The unary operator parser calls this function to get its operand, rather than 'parseObjectExpr',
+-- which ensures that the unary operators have a prescedence higher than any other operator.
 parseNonEquation :: Parser ObjectExpr
 parseNonEquation = mplus nonKeywordObjectExpr $ do
   name <- parseKeywordOrName
@@ -744,9 +750,7 @@ constructWithNonKeyword key com1 = msum [funcCall, parseBuiltinFuncCall key com1
 
 ----------------------------------------------------------------------------------------------------
 
--- | Parse a source file. Takes a list of options, which are treated as directives, for example
--- "string.tokenizer" or "string.compare", which allows global options to be set for this module.
--- Pass an empty list to have all the defaults.
+-- | Parse a source file: this is the entry point for the Dao parser when it parses @*.dao@ files.
 parseSourceFile :: Parser SourceCode
 parseSourceFile = do
   parseComment >> string "module" >> regexMany space
@@ -756,7 +760,7 @@ parseSourceFile = do
     drcvs <- many $ do
       com1 <- parseComment
       regexMany space
-      directive <- parseDirective
+      directive <- applyLocation parseDirective
       return (com com1 directive [])
     regexMany space >> parseComment
     return $
@@ -768,12 +772,21 @@ parseSourceFile = do
       }
 
 parseDirective :: Parser TopLevelExpr
-parseDirective = parseKeywordOrName >>= \key -> msum $
+parseDirective = applyLocation $ mplus (parseKeywordOrName >>= parseKeywordDirective) $ do
+  (objExpr, com1) <- parseObjectExpr
+  return (ToplevelScript (EvalObject objExpr com1 LocationUnknown) LocationUnknown)
+
+parseKeywordDirective :: String -> Parser TopLevelExpr
+parseKeywordDirective key = msum $
   [ do -- Parse an "import" or "require" directive.
         guard (key=="requires" || key=="require" || key=="import")
-        req <- regexMany space >> fmap ustr parseString
-        regexMany space >> zeroOrOne (rxChar ';')
-        return (Attribute (Com (ustr key)) (Com req) unloc)
+        regexMany space
+        expect ("string or bareword for "++key++" directive") $ \com1 -> do
+          req <- mplus (fmap ustr parseString) $ do
+            fmap (ustr . intercalate "." . map uchars . snd) parseDotName
+          expect ("semicolon terminating "++key++" expression") $ \com2 -> do
+            regexMany space >> char ';'
+            return (Attribute (Com (ustr key)) (com com1 req com2) unloc)
   , do -- Parse an event action.
         guard (key=="QUIT" || key=="BEGIN" || key=="END")
         expect ("bracketed list of commands after "++key++" statement") $ \com1 -> do
@@ -796,17 +809,32 @@ parseDirective = parseKeywordOrName >>= \key -> msum $
                   scrpt <- parseBracketedScript
                   return (TopLambdaExpr (read key) (Com [com com1 pattern (com2++com3)]) scrpt unloc)
            ]
+  , do -- Parse a top-level rule that is actually an object pattern, but was declared with the keyword "function".
+        guard (key=="function" || key=="func")
+        com1 <- parseComment
+        regexMany space
+        pattern <- parseFunctionParameters ("for top-level \""++key++"\" object pattern")
+        expect "function body for top-level " $ \com2 -> do
+          scrpt <- parseBracketedScript
+          return (TopLambdaExpr (read key) (com com1 pattern com2) scrpt unloc)
   , do -- Parse a top-level function declaration, which has it's name stated before the arguments.
         guard (key=="function" || key=="func")
-        let msg = "top-level function declaration"
-        expect ("expecting name for "++msg) $ \com1 -> do
+        let msg = "name for top-level function declaration"
+        expect msg $ \com1 -> do
           name <- parseName "name of function"
           expect ("list of parameter variables for "++msg) $ \com2 -> do
             params <- parseFunctionParameters "function parameters"
             expect "top-level function declaration, function body" $ \com3 -> do
               scrpt <- parseBracketedScript
               return (ToplevelFunc (com com1 name com2) params (com com2 scrpt com3) unloc)
-  , -- Parse a top-level script expression.
-    fmap (flip ToplevelScript LocationUnknown) (applyLocation parseScriptExpr)
+  , do -- Parse a top-level script expression.
+        guard (elem key (words "if else while try catch break continue return with"))
+        expect "top-level script expression" $ \com1 -> do
+          scrpt <- parseKeywordScriptExpr key com1
+          return (ToplevelScript scrpt LocationUnknown)
+  , do -- Parse a top-level object expression.
+        expect "top-level variable assignment or function call" $ \com1 -> do
+          objExpr <- keywordObjectExpr key com1
+          return (ToplevelScript (EvalObject objExpr [] LocationUnknown) LocationUnknown)
   ]
 

@@ -35,6 +35,7 @@ import           Control.Concurrent
 import           Control.Exception
 import           Control.Monad.State
 
+import           Data.Maybe
 import           Data.List
 import           Data.Monoid
 import           Data.IORef
@@ -47,6 +48,7 @@ import           Text.Printf
 import           Numeric
 
 import           System.IO
+import           System.Environment
 
 ----------------------------------------------------------------------------------------------------
 
@@ -139,7 +141,7 @@ pPrintComScriptExpr = pPrintSubBlock (return ())
 -- | Test the pretty printer and the parser. If a randomly generated object can be pretty printed,
 -- and the parser can parse the pretty-printed string and create the exact same object, then the
 -- test pases.
-testEveryParsePPrint :: MVar Bool -> MVar Handle -> MVar Bool -> Chan (Maybe Int) -> IO ()
+testEveryParsePPrint :: MVar Bool -> MVar (Handle, HandlePosn) -> MVar Bool -> Chan (Maybe Int) -> IO ()
 testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLoop where
   topLoop ref = do
     handle (h ref) (loop ref)
@@ -147,17 +149,20 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
     if contin then topLoop ref else return ()
   h ref (SomeException e) = do
     putMVar notify False >>= evaluate
-    modifyMVar_ hlock $ \handl -> do -- using an mvar to prevent race conditions on output to this file
-      (i, obj) <- readIORef ref
-      hPutStrLn handl ("ITEM #"++show i++"\n"++show e)
-      hPutStrLn handl $ concat $
-        [prettyPrint 80 "    " obj, "\n", sep]
-      return handl
+    (i, obj) <- readIORef ref
+    handl <- openFile (show i++".log") AppendMode
+    hPutStrLn handl ("ITEM #"++show i++"\n"++show e)
+    hPutStrLn handl (concat [prettyPrint 80 "    " obj, "\n", sep]) >>= evaluate
+    hClose handl
   loop ref = do
     i <- readChan ch
     case i of
       Nothing -> return ()
       Just  i -> do
+        modifyMVar_ hlock $ \ (handl, pos) -> do -- using an mvar to prevent race conditions on output to this file
+          hSetPosn pos
+          hPutStrLn handl (show i++"               ") >>= evaluate
+          return (handl, pos)
         let obexp = genRandWith randO maxRecurseDepth i :: TopLevelExpr
         writeIORef ref (i, obexp)
         let bytes = B.encode obexp
@@ -165,14 +170,14 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
             str   = showPPrint 80 "    " (pPrint obexp)
             (par, msg) = runParser (regexMany space >> parseDirective) str 
             err reason = do
-              modifyMVar_ hlock $ \handl -> do
-                hPutStrLn handl $! concat $!
-                  [ "ITEM #", show i, " ", reason
-                  , if null msg then "." else '\n':msg
-                  , "\n", str, "\n", show obexp, "\n"
-                  , showBinary bytes, "\n", sep
-                  ]
-                return handl
+              handl <- openFile (show i++".log") AppendMode
+              (hPutStrLn handl $! concat $!
+                [ "ITEM #", show i, " ", reason
+                , if null msg then "." else '\n':msg
+                , "\n", str, "\n", show obexp, "\n"
+                , showBinary bytes, "\n", sep
+                ]) >>= evaluate
+              hClose handl
         status1 <- handle (\ (ErrorCall e) -> err ("Binary decoding failed: "++show e) >> return False) $ do
           if seq obexp $! seq bytes $! obj/=obexp
             then  err "Binary deserialization does not match source object" >> return False
@@ -182,13 +187,13 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
           Backtrack -> err "Ambiguous parse" >> return False
           PFail _ b -> err ("Parse failed, "++uchars b) >> return False
         putMVar notify (status1&&status2)
-        loop ref
+        yield >> loop ref
   sep = "--------------------------------------------------------------------------"
 
 ----------------------------------------------------------------------------------------------------
 
 threadCount :: Int
-threadCount = 3
+threadCount = 2
 
 maxErrors :: Int
 maxErrors = 8
@@ -197,11 +202,16 @@ displayInterval :: Int
 displayInterval = 4000000
 
 main = do
+  args    <- getArgs
+  i <- return $ case args of
+    i:_ -> read i
+    []  -> 0
   ch      <- newChan
   notify  <- newEmptyMVar
   counter <- newMVar (0, 0)
   h       <- openFile "./debug.log" ReadWriteMode
-  hlock   <- newMVar h
+  pos     <- hGetPosn h
+  hlock   <- newMVar (h, pos)
   hwait   <- newMVar True
   let ctrlLoop count threads = do
         passed <- takeMVar notify
@@ -226,7 +236,7 @@ main = do
       infoLoop = threadDelay displayInterval >> displayInfo >> infoLoop
   workThreads <- replicateM threadCount $ forkIO $ do
     testEveryParsePPrint hwait hlock notify ch
-  iterThread <- forkIO (iterLoop 0)
+  iterThread <- forkOS (iterLoop i)
   dispThread <- forkIO infoLoop
   ctrlLoop maxErrors (iterThread:dispThread:workThreads)
   hClose h

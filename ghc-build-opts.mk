@@ -31,7 +31,7 @@ listfile = grep -v '^[[:space:]]*$(hash).*$$' $1
 ####################################################################################################
 # The default target
 
-default: debug.log
+default: test
 
 ####################################################################################################
 # The 'edit' target conveniently opens all the files you want to edit in the vim editor.
@@ -110,5 +110,4 @@ test: tests/RandObj.hs \
 debug.log: ./test
 	rm -f ./debug.log ;
 	./test
-#	@echo 'Please run the test program by hand.'
 

@@ -1,9 +1,8 @@
 dao
 test
-dao-debug.log
-debug.log
 commit.txt
 scratch.hs
+*.log
 .*.sw*
 *.hi
 *.o

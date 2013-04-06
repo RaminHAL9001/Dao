@@ -28,7 +28,7 @@ module Dao.EnumSet
   , BoundedInf, minBoundInf, maxBoundInf
     -- * the 'Segment' data type
   , Segment, segment, single, negInfTo, toPosInf, infinite, enumInfSeg
-  , canonicalSegment, toBounded, toBoundedPair, segmentMember
+  , canonicalSegment, toBounded, toBoundedPair, segmentMember, singular, plural
     -- * Predicates on 'Segment's
   , containingSet, numElems, isWithin, segmentHasEnumInf, segmentIsInfinite
     -- * Set Operators for 'Segment's
@@ -48,6 +48,7 @@ import           Data.Monoid
 import           Data.Bits
 import           Data.List
 import           Data.Ratio
+import           Data.Binary
 import           Control.Monad
 
 -- | Like 'Prelude.Bounded', except the bounds might be infinite, and return 'EnumNegInf' or
@@ -139,6 +140,20 @@ mkSegment :: Eq c => EnumInf c -> EnumInf c -> Segment c
 mkSegment a b
   | a==b      = Single a
   | otherwise = Segment a b
+
+-- | If the 'Segment' was constructed with 'single', return the point (possibly 'EnumPosInf' or
+-- 'EnumNegInf') value used to construct it, otherwise return 'Data.Maybe.Nothing'.
+singular :: Segment a -> Maybe (EnumInf a)
+singular seg = case seg of
+  Segment _ _ -> mzero
+  Single  a   -> return a
+
+-- | If the 'Segment' was constructed with 'segment', return a pair of points (possibly 'EnumPosInf'
+-- or 'EnumNegInf') value used to construct it, otherwise return 'Data.Maybe.Nothing'.
+plural :: Segment a -> Maybe (EnumInf a, EnumInf a)
+plural a = case a of
+  Segment a b -> return (a, b)
+  Single  _   -> mzero
 
 -- | 'Prelude.Ord'ering is defined for 'Segment's to make certain 'EnumSet' operations more
 -- efficient, not for the sake of intuition. 'Segment's are ordered firstly by their position, and

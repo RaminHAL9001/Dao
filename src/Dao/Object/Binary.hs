@@ -27,6 +27,7 @@ import           Dao.Token
 import           Dao.Object
 import qualified Dao.Tree as T
 import           Dao.Pattern
+import           Dao.EnumSet
 
 import           Control.Monad
 
@@ -41,6 +42,7 @@ import qualified Data.ByteString.Lazy   as B
 import qualified Data.Set               as S
 import qualified Data.Map               as M
 import qualified Data.IntMap            as I
+import qualified Data.IntSet            as IS
 import           Data.Digest.SHA1       as SHA1
 import           Data.Array.IArray
 import           Data.Time hiding (parseTime)
@@ -560,13 +562,105 @@ instance Binary Subroutine where
     err = error "subroutine loaded from binary file is used before being converted to an executable"
 
 instance Binary ObjPat where
-  put s = fail "TODO: define binary serializer for ObjPat"
-  get   = getWord8 >>= getObjPat
+  put a = case a of
+    ObjAnyX        -> x 0xB1
+    ObjMany        -> x 0xB2
+    ObjAny1        -> x 0xB3
+    ObjEQ      a   -> x 0xB4 >> put                a
+    ObjType    a   -> x 0xB5 >> putEnumSetWith put a
+    ObjBounded a b -> x 0xB6 >> putEnumInfWith put a >> putEnumInfWith put             b
+    ObjList    a b -> x 0xB7 >> put                a >> putList                        b
+    ObjNameSet a b -> x 0xB8 >> put                a >> putList              ( S.elems b)
+    ObjIntSet  a b -> x 0xB9 >> put                a >> putListWith putVLInt (IS.elems b)
+    ObjElemSet a b -> x 0xBA >> put                a >> putList              ( S.elems b)
+    ObjChoice  a b -> x 0xBB >> put                a >> putList              ( S.elems b)
+    ObjLabel   a b -> x 0xBC >> put                a >> put                            b
+    ObjFailIf  a b -> x 0xBD >> put                a >> put                            b
+    ObjNot     a   -> x 0xBE >> put                a
+    where { x = putWord8 }
+  get   = getWord8 >>= \w -> case w of
+    0xB1 -> return ObjAnyX
+    0xB2 -> return ObjMany
+    0xB3 -> return ObjAny1
+    0xB4 -> liftM  ObjEQ       get
+    0xB5 -> liftM  ObjType    (getEnumSetWith get)
+    0xB6 -> liftM2 ObjBounded (getEnumInfWith get) (getEnumInfWith    get    )
+    0xB7 -> liftM2 ObjList     get                  getList
+    0xB8 -> liftM2 ObjNameSet  get                 (fmap S.fromList   getList)
+    0xB9 -> liftM2 ObjIntSet   get                 (fmap IS.fromList (getListWith getFromVLInt))
+    0xBA -> liftM2 ObjElemSet  get                 (fmap S.fromList   getList)
+    0xBB -> liftM2 ObjChoice   get                 (fmap S.fromList   getList)
+    0xBC -> liftM2 ObjLabel    get                  get
+    0xBD -> liftM2 ObjFailIf   get                  get
+    0xBE -> liftM  ObjNot      get
+    _    -> fail "expecting object-pattern expression"
 
--- This function is external to the instantation of Binary ObjPat because it is used by the
--- instantiation of Object as well.
-getObjPat :: Word8 -> Get ObjPat
-getObjPat w = fail "TODO: define binary decoder for ObjPat"
+instance Binary ObjSetOp where
+  put op = putWord8 $ case op of
+    ExactSet  -> 0xC1
+    AnyOfSet  -> 0xC2
+    AllOfSet  -> 0xC3
+    OnlyOneOf -> 0xC4
+    NoneOfSet -> 0xC5
+  get = getWord8 >>= \w -> case w of
+    0xC1 -> return ExactSet
+    0xC2 -> return AnyOfSet
+    0xC3 -> return AllOfSet
+    0xC4 -> return OnlyOneOf
+    0xC5 -> return NoneOfSet
+    _    -> fail "expecting set-logical operator for object pattern"
+
+putEnumInfWith :: (a -> Put) -> EnumInf a -> Put
+putEnumInfWith putx a = case a of
+  EnumNegInf  -> putWord8 0xC6
+  EnumPosInf  -> putWord8 0xC7
+  EnumPoint a -> putWord8 0xC8 >> putx a
+
+getEnumInfWith :: Get a -> Get (EnumInf a)
+getEnumInfWith getx = getWord8 >>= \w -> case w of
+  0xC6 -> return EnumNegInf
+  0xC7 -> return EnumPosInf
+  0xC8 -> liftM  EnumPoint  getx
+  _    -> fail "expecting enum-inf data"
+
+instance (Integral a, Bits a) => Binary (EnumInf a) where
+  put = putEnumInfWith putVLInt
+  get = getEnumInfWith getFromVLInt
+
+putSegmentWith :: (a -> Put) -> Segment a -> Put
+putSegmentWith putx a =
+    case plur of
+      Just ok -> ok
+      Nothing -> case plur of
+        Just ok -> ok
+        Nothing -> error "could not extract data from Dao.EnumSet.Segment data type"
+  where
+    plur = do
+      (a, b) <- plural a
+      return (putWord8 0xCA >> putEnumInfWith putx a >> putEnumInfWith putx b)
+    sing = do
+      a <- singular a
+      return (putWord8 0xC9 >> putEnumInfWith putx a)
+
+getSegmentWith :: (Enum a, Ord a, BoundedInf a) => Get a -> Get (Segment a)
+getSegmentWith getx = getWord8 >>= \w -> case w of
+  0xC9 -> getEnumInfWith getx >>= \a -> return (enumInfSeg a a)
+  0xCA -> liftM2 enumInfSeg (getEnumInfWith getx) (getEnumInfWith getx)
+  _    -> fail "expecting enum-segment expression"
+
+instance (Enum a, Ord a, BoundedInf a, Integral a, Bits a) => Binary (Segment a) where
+  put = putSegmentWith putVLInt
+  get = getSegmentWith getFromVLInt
+
+putEnumSetWith :: (a -> Put) -> EnumSet a -> Put
+putEnumSetWith putx s = putListWith (putSegmentWith putx) (listSegments s)
+
+getEnumSetWith :: (Enum a, Ord a, BoundedInf a) => Get a -> Get (EnumSet a)
+getEnumSetWith getx = fmap enumSet (getListWith (getSegmentWith getx))
+
+instance (BoundedInf a, Integral a, Bits a) => Binary (EnumSet a) where
+  put = putEnumSetWith putVLInt
+  get = getEnumSetWith getFromVLInt
 
 instance Binary TopLevelExpr where
   put d = case d of

@@ -141,7 +141,7 @@ pPrintComScriptExpr = pPrintSubBlock (return ())
 -- | Test the pretty printer and the parser. If a randomly generated object can be pretty printed,
 -- and the parser can parse the pretty-printed string and create the exact same object, then the
 -- test pases.
-testEveryParsePPrint :: MVar Bool -> MVar (Handle, HandlePosn) -> MVar Bool -> Chan (Maybe Int) -> IO ()
+testEveryParsePPrint :: MVar Bool -> MVar (Handle, HandlePosn) -> MVar Bool -> MVar (Maybe Int) -> IO ()
 testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLoop where
   topLoop ref = do
     handle (h ref) (loop ref)
@@ -155,7 +155,7 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
     hPutStrLn handl (concat [prettyPrint 80 "    " obj, "\n", sep]) >>= evaluate
     hClose handl
   loop ref = do
-    i <- readChan ch
+    i <- takeMVar ch
     case i of
       Nothing -> return ()
       Just  i -> do
@@ -163,12 +163,12 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
           hSetPosn pos
           hPutStrLn handl (show i++"               ") >>= evaluate
           return (handl, pos)
-        let obexp = genRandWith randO maxRecurseDepth i :: TopLevelExpr
+        let obexp = {-# SCC obexp #-} genRandWith randO maxRecurseDepth i :: TopLevelExpr
         writeIORef ref (i, obexp)
-        let bytes = B.encode obexp
-            obj   = B.decode bytes
-            str   = showPPrint 80 "    " (pPrint obexp)
-            (par, msg) = runParser (regexMany space >> parseDirective) str 
+        let bytes = {-# SCC bytes #-} B.encode obexp
+            obj   = {-# SCC obj   #-} B.decode bytes
+            str   = {-# SCC str   #-} showPPrint 80 "    " (pPrint obexp)
+            (par, msg) = {-# SCC par #-} runParser (regexMany space >> parseDirective) str 
             err reason = do
               handl <- openFile (show i++".log") AppendMode
               (hPutStrLn handl $! concat $!
@@ -193,7 +193,7 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
 ----------------------------------------------------------------------------------------------------
 
 threadCount :: Int
-threadCount = 2
+threadCount = 3
 
 maxErrors :: Int
 maxErrors = 8
@@ -206,10 +206,10 @@ main = do
   i <- return $ case args of
     i:_ -> read i
     []  -> 0
-  ch      <- newChan
+  ch      <- newEmptyMVar
   notify  <- newEmptyMVar
   counter <- newMVar (0, 0)
-  h       <- openFile "./debug.log" ReadWriteMode
+  h       <- openFile "./testid" ReadWriteMode
   pos     <- hGetPosn h
   hlock   <- newMVar (h, pos)
   hwait   <- newMVar True
@@ -224,7 +224,7 @@ main = do
             mapM_ killThread threads
       iterLoop i = do
         continue <- readMVar hwait
-        if continue then writeChan ch (Just i) else writeChan ch Nothing
+        putMVar ch (if continue then Just i else Nothing)
         iterLoop (i+1)
       displayInfo = do
         (total, count) <- modifyMVar counter $ \ (total, count) -> return ((total,0), (total,count))

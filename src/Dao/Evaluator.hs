@@ -89,7 +89,7 @@ initExecUnit runtime modName initGlobalData = do
   return $
     ExecUnit
     { parentRuntime      = runtime
-    , currentDocument    = Nothing
+    , currentWithRef     = Nothing
     , currentQuery       = Nothing
     , currentPattern     = Nothing
     , currentMatch       = Nothing
@@ -251,7 +251,7 @@ execHeapDelete name obj = execHeapUpdate name (return . const Nothing)
 curDocVarLookup :: [Name] -> Exec (Maybe Object)
 curDocVarLookup name = do
   xunit <- ask
-  case currentDocument xunit of
+  case currentWithRef xunit of
     Nothing                      -> return Nothing
     Just file@(DocumentFile res) -> lift (readResource res (currentBranch xunit ++ name))
     _ -> error $ concat $
@@ -264,7 +264,7 @@ curDocVarLookup name = do
 curDocVarUpdate :: [Name] -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe Object)
 curDocVarUpdate name runUpdate = do
   xunit <- ask
-  case currentDocument xunit of
+  case currentWithRef xunit of
     Nothing                  -> return Nothing
     Just file@(DocumentFile res) ->
       inEvalDoUpdateResource res (currentBranch xunit ++ name) runUpdate
@@ -322,13 +322,13 @@ staticVarDelete nm = staticVarUpdate nm (return . const Nothing)
 -- | Lookup an object, first looking in the current document, then in the 'globalData'.
 globalVarLookup :: [Name] -> Exec (Maybe Object)
 globalVarLookup ref = ask >>= \xunit ->
-  (if isJust (currentDocument xunit) then curDocVarLookup else execHeapLookup) ref
+  (if isJust (currentWithRef xunit) then curDocVarLookup else execHeapLookup) ref
 
 globalVarUpdate :: [Name] -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe Object)
 globalVarUpdate ref runUpdate = ask >>= \xunit ->
-  (if isJust (currentDocument xunit) then curDocVarUpdate else execHeapUpdate) ref runUpdate
+  (if isJust (currentWithRef xunit) then curDocVarUpdate else execHeapUpdate) ref runUpdate
 
--- | To define a global variable, first the 'currentDocument' is checked. If it is set, the variable
+-- | To define a global variable, first the 'currentWithRef' is checked. If it is set, the variable
 -- is assigned to the document at the reference location prepending 'currentBranch' reference.
 -- Otherwise, the variable is assigned to the 'globalData'.
 globalVarDefine :: [Name] -> Object -> Exec (Maybe Object)
@@ -1105,7 +1105,7 @@ execScriptExpr script = case unComment script of
           case file of
             Nothing  -> procErr $ OList $ map OString $
               [ustr "with file path", path, ustr "file has not been loaded"]
-            Just file -> return (xunit{currentDocument = Just file})
+            Just file -> return (xunit{currentWithRef = Just file})
         run upd = ask >>= upd >>= \r -> local (const r) (execScriptBlock thn)
     case lval of
       ORef (GlobalRef ref)    -> run (setBranch ref)

@@ -908,7 +908,7 @@ data ExecUnit
     { parentRuntime      :: Runtime
       -- ^ a reference to the 'Runtime' that spawned this 'ExecUnit'. Some built-in functions in the
       -- Dao scripting language may make calls that modify the state of the Runtime.
-    , currentDocument    :: Maybe File
+    , currentWithRef     :: Maybe File
       -- ^ the current document is set by the @with@ statement during execution of a Dao script.
     , currentQuery       :: Maybe UStr
     , currentPattern     :: Maybe Glob

@@ -2,9 +2,9 @@
 # They will appear in the order specified.
 src/Dao/Evaluator.hs
 scratch.hs
-src/Dao/Files.hs
-src/Dao.hs
 src/Dao/Object.hs
+src/Dao.hs
+src/Dao/Files.hs
 src/Dao/Object/Show.hs
 src/Dao/Object/Parser.hs
 src/Dao/Object/Math.hs

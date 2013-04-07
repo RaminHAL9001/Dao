@@ -792,7 +792,7 @@ parseSourceFile = do
 parseDirective :: Parser TopLevelExpr
 parseDirective = applyLocation $ mplus (parseKeywordOrName >>= parseKeywordDirective) $ do
   (objExpr, com1) <- parseObjectExpr
-  return (ToplevelScript (EvalObject objExpr com1 LocationUnknown) LocationUnknown)
+  return (TopScript (EvalObject objExpr com1 LocationUnknown) LocationUnknown)
 
 parseKeywordDirective :: String -> Parser TopLevelExpr
 parseKeywordDirective key = msum $
@@ -844,15 +844,15 @@ parseKeywordDirective key = msum $
             params <- parseFunctionParameters "function parameters"
             expect "top-level function declaration, function body" $ \com3 -> do
               scrpt <- parseBracketedScript
-              return (ToplevelFunc (com com1 name com2) params (com com2 scrpt com3) unloc)
+              return (TopFunc (com com1 name com2) params (com com2 scrpt com3) unloc)
   , do -- Parse a top-level script expression.
         guard (elem key (words "if else while try catch break continue return with"))
         expect "top-level script expression" $ \com1 -> do
           scrpt <- parseKeywordScriptExpr key com1
-          return (ToplevelScript scrpt LocationUnknown)
+          return (TopScript scrpt LocationUnknown)
   , do -- Parse a top-level object expression.
         expect "top-level variable assignment or function call" $ \com1 -> do
           objExpr <- keywordObjectExpr key com1
-          return (ToplevelScript (EvalObject objExpr [] LocationUnknown) LocationUnknown)
+          return (TopScript (EvalObject objExpr [] LocationUnknown) LocationUnknown)
   ]
 

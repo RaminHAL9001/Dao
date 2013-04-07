@@ -648,8 +648,8 @@ instance Show TopLevelEventType where
 -- is a list of these directives.
 data TopLevelExpr
   = Attribute      (Com Name)        (Com Name)                                    Location
-  | ToplevelFunc   (Com Name)        [Com ObjectExpr]       (Com [Com ScriptExpr]) Location
-  | ToplevelScript ScriptExpr                                                      Location
+  | TopFunc        (Com Name)        [Com ObjectExpr]       (Com [Com ScriptExpr]) Location
+  | TopScript      ScriptExpr                                                      Location
   | TopLambdaExpr  LambdaExprType    (Com [Com ObjectExpr]) [Com ScriptExpr]       Location
   | EventExpr      TopLevelEventType (Com [Com ScriptExpr])                        Location
   deriving (Eq, Ord, Show, Typeable)
@@ -657,14 +657,14 @@ data TopLevelExpr
 instance HasLocation TopLevelExpr where
   getLocation o = case o of
     Attribute      _ _   o -> o
-    ToplevelFunc   _ _ _ o -> o
-    ToplevelScript _     o -> o
+    TopFunc        _ _ _ o -> o
+    TopScript      _     o -> o
     TopLambdaExpr  _ _ _ o -> o
     EventExpr      _ _   o -> o
   setLocation o loc = case o of
     Attribute      a b   _ -> Attribute      a b   loc
-    ToplevelFunc   a b c _ -> ToplevelFunc   a b c loc
-    ToplevelScript a     _ -> ToplevelScript a     loc
+    TopFunc        a b c _ -> TopFunc   a b c loc
+    TopScript      a     _ -> TopScript a     loc
     TopLambdaExpr  a b c _ -> TopLambdaExpr  a b c loc
     EventExpr      a b   _ -> EventExpr      a b   loc
 
@@ -930,7 +930,8 @@ data ExecUnit
     , execStack          :: DMVar (Stack Name Object)
       -- ^ stack of local variables used during evaluation
     , queryTimeHeap      :: TreeResource
-      -- ^ the rules of this program
+      -- ^ the global vairables that are assigned only during a single query, and are deleted after
+      -- the query has completed.
     , globalData         :: TreeResource
       -- ^ global variables cleared after every string execution
     , taskForActions     :: Task

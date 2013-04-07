@@ -665,8 +665,8 @@ instance (BoundedInf a, Integral a, Bits a) => Binary (EnumSet a) where
 instance Binary TopLevelExpr where
   put d = case d of
     Attribute      a b   lc -> x 0x61    (putCom        a >> putCom     b                    >> put lc)
-    ToplevelFunc   a b c lc -> x 0x62    (putCom        a >> putComList b >> putComComList c >> put lc)
-    ToplevelScript a     lc -> x 0x63    (put           a                                    >> put lc)
+    TopFunc        a b c lc -> x 0x62    (putCom        a >> putComList b >> putComComList c >> put lc)
+    TopScript      a     lc -> x 0x63    (put           a                                    >> put lc)
     TopLambdaExpr  a b c lc -> x (top a) (putComComList b >> putComList c                    >> put lc)
     EventExpr      a b   lc -> x (evt a) (putComComList b                                    >> put lc)
     where
@@ -683,8 +683,8 @@ instance Binary TopLevelExpr where
     w <- getWord8
     case w of
       0x61 -> liftM3 Attribute      getCom getCom                   get
-      0x62 -> liftM4 ToplevelFunc   getCom getComList getComComList get
-      0x63 -> liftM2 ToplevelScript get                             get
+      0x62 -> liftM4 TopFunc        getCom getComList getComComList get
+      0x63 -> liftM2 TopScript      get                             get
       0x64 -> toplam FuncExprType
       0x65 -> toplam RuleExprType
       0x66 -> toplam PatExprType

@@ -1420,7 +1420,7 @@ programFromSource globalResource checkAttribute script = do
             if ok
               then return ()
               else err [ustr "script contains unknown attribute declaration", req]
-      ToplevelScript scrp     lc -> error "TODO: the new top-level nodes of the abstracct syntax tree are not fully implmented."
+      TopScript   scrp        lc -> error "TODO: the new top-level nodes of the abstracct syntax tree are not fully implmented."
       TopLambdaExpr typ rule scrp lc -> do
         result <- lift (evalLambdaExpr typ rule scrp)
         exe <- lift (lift (setupExecutable (Com scrp)))
@@ -1438,7 +1438,7 @@ programFromSource globalResource checkAttribute script = do
         EndExprType -> do
           exe <- lift $ lift $ setupExecutable scrp
           modify (\p -> p{inmpg_postExec = inmpg_postExec p ++ [exe]})
-      ToplevelFunc nm argv code lc -> do
+      TopFunc  nm  argv  code   lc -> do
         xunit <- ask
         argv <- lift (mapM argsToObjPat (map unComment argv))
         exe <- lift (inExecEvalRun (setupExecutable code))

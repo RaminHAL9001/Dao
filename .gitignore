@@ -2,6 +2,7 @@ dao
 test
 commit.txt
 scratch.hs
+debug
 *.log
 .*.sw*
 *.hi

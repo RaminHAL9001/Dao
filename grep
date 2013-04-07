@@ -1,3 +1,3 @@
 #!/bin/bash
 PAT="$1"; shift;
-exec grep -nH "$PAT" -R src --include='*.hs' --color=auto "$@";
+exec grep -nH "$PAT" -R src tests --include='*.hs' --color=auto "$@";

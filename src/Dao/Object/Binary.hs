@@ -26,7 +26,7 @@ module Dao.Object.Binary where
 import           Dao.Token
 import           Dao.Object
 import qualified Dao.Tree as T
-import           Dao.Pattern
+import           Dao.Glob
 import           Dao.EnumSet
 
 import           Control.Monad
@@ -184,7 +184,7 @@ typeIDBytePrefix t = case t of
   IntMapType   -> 0x17
   DictType     -> 0x18
   TreeType     -> 0x19
-  PatternType  -> 0x1A
+  GlobType     -> 0x1A
   ScriptType   -> 0x1B
   RuleType     -> 0x1C
   BytesType    -> 0x1D
@@ -212,7 +212,7 @@ bytePrefixToTypeID t = case t of
   0x17 -> Just IntMapType
   0x18 -> Just DictType
   0x19 -> Just TreeType
-  0x1A -> Just PatternType
+  0x1A -> Just GlobType
   0x1B -> Just ScriptType
   0x1C -> Just RuleType
   0x1D -> Just BytesType
@@ -253,7 +253,7 @@ instance Binary Object where
       OIntMap       a -> px o (putObjMap I.assocs putVLInt a)
       ODict         a -> px o (putObjMap M.assocs put a)
       OTree         a -> x o a
-      OPattern      a -> px o (put a)
+      OGlob         a -> px o (put a)
       OScript       a -> px o (put a)
       ORule         a -> px o (put a)
       OBytes        a -> x o a
@@ -286,7 +286,7 @@ instance Binary Object where
         IntMapType   -> fmap OIntMap (getObjMap (I.fromList) getFromVLInt)
         DictType     -> fmap ODict   (getObjMap (M.fromList) get)
         TreeType     -> x OTree
-        PatternType  -> x OPattern
+        GlobType     -> x OGlob
         ScriptType   -> x OScript
         RuleType     -> x ORule
         BytesType    -> x OBytes
@@ -345,12 +345,12 @@ instance Binary PatUnit where
     0x2B -> fmap Single get
     _    -> fail "expecting pattern unit object"
 
-instance Binary Pattern where
+instance Binary Glob where
   put p = putList (getPatUnits p)
   get   = getList >>= \px -> return $
-    Pattern
+    Glob
     { getPatUnits = px
-    , getPatternLength = length px
+    , getGlobLength = length px
     }
 
 ----------------------------------------------------------------------------------------------------
@@ -561,7 +561,7 @@ instance Binary Subroutine where
   get   = liftM3 Subroutine getList getComList (return (Executable err (return ()))) where
     err = error "subroutine loaded from binary file is used before being converted to an executable"
 
-instance Binary ObjPat where
+instance Binary Pattern where
   put a = case a of
     ObjAnyX        -> x 0xB1
     ObjMany        -> x 0xB2

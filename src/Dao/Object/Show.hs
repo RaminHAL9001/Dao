@@ -28,7 +28,7 @@ import           Dao.String
 import           Dao.PPrint
 import           Dao.Token
 import           Dao.Object
-import           Dao.Pattern
+import           Dao.Glob
 import           Dao.EnumSet
 import qualified Dao.Tree as T
 
@@ -77,7 +77,7 @@ instance PPrintable T_tree where
       leaf o = pWrapIndent [pString "struct(", pPrint o, pString ")"]
       branch = map (\ (lbl, obj) -> pMapAssoc (lbl, OTree obj)) . M.assocs
 
-instance PPrintable Pattern where { pPrint = pShow }
+instance PPrintable Glob where { pPrint = pShow }
 
 instance PPrintable Object where
   pPrint obj = case obj of
@@ -107,7 +107,7 @@ instance PPrintable Object where
     OIntMap    o     ->
       if I.null o then pString "intmap{}" else pContainer "intmap " pMapAssoc (I.assocs o)
     OTree      o     -> pPrint o
-    OPattern   o     -> pPrint o
+    OGlob      o     -> pPrint o
     ORule      o     -> pPrint o
     OScript    o     -> pPrint o
     OBytes     o     ->
@@ -315,7 +315,7 @@ instance PPrintable TopLevelExpr where
       header = pShow a >> pPrintComWith (pList_ "(" ", " ")" . map pPrint) b
     EventExpr      a b   _ -> pPrintComWith (pClosure (pShow a) " { " " }" . map pPrint) b
 
-instance PPrintable ObjPat where
+instance PPrintable Pattern where
   pPrint pat = case pat of
     ObjAnyX                             -> pString "some"
     ObjMany                             -> pString "all"
@@ -356,7 +356,7 @@ instance PPrintable TypeID where
     IntMapType   -> "intmap"
     DictType     -> "dict"
     TreeType     -> "struct"
-    PatternType  -> "glob"
+    GlobType     -> "glob"
     ScriptType   -> "function"
     RuleType     -> "rule"
     BytesType    -> "data"

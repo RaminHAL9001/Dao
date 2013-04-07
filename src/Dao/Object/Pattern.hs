@@ -34,13 +34,13 @@ module Dao.Object.Pattern
 -- portions of these complicated structures without resorting to dereferencing and if-else
 -- statements everywhere.
 --
--- The solution is to provide a predicate data-type, the "object pattern" or 'Dao.Object.ObjPat',
+-- The solution is to provide a predicate data-type, the "object pattern" or 'Dao.Object.Pattern',
 -- which can match objects and construct structures containing portions of data structures that
 -- match patterns associated with labels for those patterns.
 -- 
--- The 'Dao.Object.ObjPat' type is used throughout the Dao system, so it is defined in the
+-- The 'Dao.Object.Pattern' type is used throughout the Dao system, so it is defined in the
 -- "Dao.Object" module. This module defines the algorithm for matching 'Dao.Object.Object's to
--- 'Dao.Object.ObjPat' patterns.
+-- 'Dao.Object.Pattern' patterns.
 
 import           Dao.String
 import           Dao.Object
@@ -138,7 +138,7 @@ instance ErrorMonadPlus Reference Matcher where
 ----------------------------------------------------------------------------------------------------
 
 -- | Match a single object pattern to a single object.
-matchObject :: ObjPat -> Object -> Matcher Object
+matchObject :: Pattern -> Object -> Matcher Object
 matchObject pat o = let otype = objType o in case pat of
   ObjAnyX -> return o
   ObjMany -> return o
@@ -190,7 +190,7 @@ justOnce :: [Bool] -> Bool
 justOnce checks = 1 == foldl (\i check -> if check then i+1 else i) 0 checks
 
 -- | Returns the objects that did match the given patterns, and the remaining objects.
-matchObjectList :: [ObjPat] -> [Object] -> Matcher ([Object], [Object])
+matchObjectList :: [Pattern] -> [Object] -> Matcher ([Object], [Object])
 matchObjectList patx ax = do
   (matched, ax) <- loop [] patx (zipIndicies ax)
   return (map snd matched, map snd ax)
@@ -216,11 +216,11 @@ matchObjectList patx ax = do
       a:ax -> try1 matched (skipped++[a]) rvrsIfRvrsd patx ax
     zipIndicies = zip (map OWord (iterate (+1) 0))
 
-matchWholeObjectList :: [ObjPat] -> [Object] -> Matcher ()
+matchWholeObjectList :: [Pattern] -> [Object] -> Matcher ()
 matchWholeObjectList patx ax =
   matchObjectList patx ax >>= \ (_, ax) -> if null ax then return () else mzero
 
--- | Match a set of indecies in an 'ObjPat' to an object with indecies, for example, matching a
+-- | Match a set of indecies in an 'Pattern' to an object with indecies, for example, matching a
 -- @['Dao.String.Name']@ to a 'Dao.Tree.Tree' will check if a branch of the given
 -- @['Dao.String.Name']@ is defined in the tree. This is different than 'matchObjectElemSet' which
 -- matches on the elements of a set, instead of the indecies. This is a 'Control.Monad.guard'
@@ -243,10 +243,10 @@ matchObjectSet op branches tree = guard $ case op of
 makeTree :: Ord a => S.Set [a] -> T.Tree a Object
 makeTree branches = (T.fromList (map (\b -> (b, OTrue)) (S.elems branches)))
 
--- | Recurse into a set object and match a set of 'ObjPat's to the elements, matching as many (or as
+-- | Recurse into a set object and match a set of 'Pattern's to the elements, matching as many (or as
 -- few) as possible to satisfy the given 'ObjSetOp'. Returns the subset of the object that matched
 -- the pattern.
-matchObjectElemSet :: ObjSetOp -> (S.Set ObjPat) -> Object -> Matcher Object
+matchObjectElemSet :: ObjSetOp -> (S.Set Pattern) -> Object -> Matcher Object
 matchObjectElemSet op set o = do
   let foldSet insert matched (i, ref, a) set patx = case patx of
         []       -> return (False, set, matched)
@@ -277,7 +277,7 @@ matchObjectElemSet op set o = do
     NoneOfSet -> not (or checks)
   return o
 
-matchObjectChoice :: ObjSetOp -> S.Set ObjPat -> Object -> Matcher ()
+matchObjectChoice :: ObjSetOp -> S.Set Pattern -> Object -> Matcher ()
 matchObjectChoice op set o = do
   let fn pat = mplus (matchObject pat o >> return True) (return False)
   checks <- mapM fn (S.elems set)
@@ -300,10 +300,10 @@ matchObjectChoice op set o = do
 -- @    'Dao.Predicate.OK' (a, b)     -> evalMyFunc a b@
 -- @    'Dao.Predicate.Backtrack'     -> tryMyAlternative@
 -- @    'Dao.Predicate.PFail' ref msg -> 'Prelude.error' ('ustr' msg)
--- Be ware of 'ObjPat's that evaluate to 'Control.Monad.Error.State.throwError', this will not
+-- Be ware of 'Pattern's that evaluate to 'Control.Monad.Error.State.throwError', this will not
 -- evaluate to a 'Dao.Predicate.Backtrack'ing value, so the first pattern to throw an error will
 -- prevent further patterns from matching, which may or may not be what you expected.
-matchPair :: (ObjPat, ObjPat) -> (Object, Object) -> Matcher (Object, Object)
+matchPair :: (Pattern, Pattern) -> (Object, Object) -> Matcher (Object, Object)
 matchPair (fstPat, sndPat) (fstObj, sndObj) = do
   fstObj <- matchObject fstPat fstObj
   sndObj <- matchObject fstPat sndObj

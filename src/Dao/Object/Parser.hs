@@ -660,7 +660,7 @@ func_param_var = "function parameter variable"
 parseLambdaDef :: NameComParser ObjectExpr
 parseLambdaDef key com1 = msum $
   [ do  guard (key=="rule") -- parse a rule with only one string parameter not in parenthases
-        param <- fmap (OPattern . read) parseString
+        param <- fmap (OGlob . read) parseString
         expect "bracketed subroutine after \"rule\" statement" $ \com2 -> do
           scrpt <- parseBracketedScript
           return (LambdaExpr RuleExprType (com com1 [Com (Literal param unloc)] com2) scrpt unloc)

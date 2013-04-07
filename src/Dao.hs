@@ -41,7 +41,7 @@ module Dao
 import           Dao.Debug.OFF
 
 import           Dao.String
-import           Dao.Pattern
+import           Dao.Glob
 import           Dao.Object
 import           Dao.Resource
 import qualified Dao.Tree as T

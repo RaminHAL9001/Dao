@@ -32,7 +32,7 @@ import           Dao.Token
 import           Dao.Object
 import           Dao.PPrint
 import qualified Dao.Tree as T
-import           Dao.Pattern
+import           Dao.Glob
 import           Dao.Resource
 import           Dao.Predicate
 import           Dao.Files
@@ -96,7 +96,7 @@ initExecUnit runtime modName initGlobalData = do
     , currentExecutable  = error "ExecUnit.currentExecutable is undefined"
     , currentBranch      = []
     , importsTable       = []
-    , execAccessRules    = RestrictFiles (Pattern{getPatUnits = [Wildcard], getPatternLength = 1})
+    , execAccessRules    = RestrictFiles (Glob{getPatUnits = [Wildcard], getGlobLength = 1})
     , builtinFuncs       = initBuiltinFuncs
     , topLevelFuncs      = M.empty
     , queryTimeHeap      = qheap
@@ -134,7 +134,7 @@ runExecutable initStack exe = local (\xunit -> xunit{currentExecutable = exe}) $
   execFuncPushStack initStack (executable exe >>= liftIO . evaluate >> return ONull)
 
 -- | Given a list of arguments, matches these arguments toe the given subroutine's
--- 'Dao.Object.ObjPat'. If it matches, the 'Dao.Object.getSubExecutable' of the 'Dao.Object.Executable'
+-- 'Dao.Object.Pattern'. If it matches, the 'Dao.Object.getSubExecutable' of the 'Dao.Object.Executable'
 -- is evaluated with 'runExecutable'. If the pattern does not match, 'Nothing' is returned to the
 -- 'Dao.Object.Exec' monad, which allows multiple 'Dao.Object.Subroutine's to be tried before
 -- evaluating to an error in the calling context.
@@ -210,8 +210,8 @@ execFuncPushStack dict exe = do
 
 -- | Used to evaluate an expression like @$1@, retrieves the matched pattern associated with an
 -- integer. Specifically, it returns a list of 'Dao.ObjectObject's where each object is an
--- 'Dao.Object.OString' contained at the integer index of the 'Dao.Pattern.matchGaps' of a
--- 'Dao.Pattern.Pattern'.
+-- 'Dao.Object.OString' contained at the integer index of the 'Dao.Glob.matchGaps' of a
+-- 'Dao.Glob.Glob'.
 evalIntRef :: Word -> Exec Object
 evalIntRef i = do
   ma <- fmap currentMatch ask
@@ -1265,15 +1265,15 @@ evalLambdaExpr typ argv code = do
       return $ ORule $
         Rule{rulePattern=argv, ruleMetaExpr=VoidExpr, ruleAction=code, ruleExecutable=exe}
 
--- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Object.ObjPat'.
-argsToObjPat :: ObjectExpr -> Exec ObjPat
+-- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Object.Pattern'.
+argsToObjPat :: ObjectExpr -> Exec Pattern
 argsToObjPat o = case o of
   Literal (ORef (LocalRef r)) _ -> return (ObjLabel r ObjAny1)
   _ -> simpleError "does not evaluate to an object pattern"
   -- TODO: provide a more expressive way to create object patterns from 'Dao.Object.ObjectExpr's
 
--- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Pattern.Pattern'.
-argsToGlobExpr :: ObjectExpr -> Exec Pattern
+-- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Glob.Glob'.
+argsToGlobExpr :: ObjectExpr -> Exec Glob
 argsToGlobExpr o = case o of
   Literal (OString str) _ -> return (read (uchars str))
   _ -> simpleError "does not evaluate to a \"glob\" pattern"
@@ -1429,7 +1429,7 @@ programFromSource globalResource checkAttribute script = do
             let rulePat = rulePattern rule
                 fol tre pat = T.merge T.union (++) tre (toTree pat [exe])
             modify (\p -> p{ inmpg_ruleSet = foldl fol (inmpg_ruleSet p) rulePat })
-          OScript fn -> error "TODO: Need to define a second rule table for rules that respond to 'Dao.Object.ObjPat's."
+          OScript fn -> error "TODO: Need to define a second rule table for rules that respond to 'Dao.Object.Pattern's."
       EventExpr    typ scrp lc -> case typ of
         ExitExprType  -> modify (\p -> p{inmpg_destructScript  = inmpg_destructScript  p ++ [scrp]})
         BeginExprType -> do
@@ -1548,7 +1548,7 @@ execInputStringsLoop xunit = dStack xloc "execInputStringsLoop" $ do
 
 -- | Given an input string, and a program, return all patterns and associated match results and
 -- actions that matched the input string, but do not execute the actions. This is done by tokenizing
--- the input string and matching the tokens to the program using 'Dao.Pattern.matchTree'.
+-- the input string and matching the tokens to the program using 'Dao.Glob.matchTree'.
 -- NOTE: Rules that have multiple patterns may execute more than once if the input matches more than
 -- one of the patterns associated with the rule. *This is not a bug.* Each pattern may produce a
 -- different set of match results, it is up to the programmer of the rule to handle situations where

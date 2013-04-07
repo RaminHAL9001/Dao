@@ -1,5 +1,4 @@
 TODO:
-*	Investigate the pathalogical memory usage of the random test generator and parser.
 
 *	Listable parsers that end in a comma on their last item, with the comma followed by a closing
 brace instead of another item, will return a null list. This should not happen.
@@ -13,9 +12,6 @@ order.
 
 *	Some inlining pretty-printers are still messing up the indentation.
 
-*	Need a parser for "Dao.Object.ObjPat". Rename 'Dao.Pattern.Pattern' to "Dao.Glob.Glob' and
-rename 'Dao.Object.ObjPat' to 'Dao.Object.Pattern'.
-
 *	Need to define a second rule table for rules that respond to 'Dao.Object.ObjPat's.
 
 *	Need to create a means to track which modules have "open()"-ed and "close()"-ed which files. Like
@@ -23,9 +19,6 @@ reference counting with sets, each file will have a set of module references wit
 every module that has "open()"-ed it without yet "close()"-ing it. Files loaded from the command
 line might be represented by "Nothing" where files loaded by a module migh be represented by
 "Just moduleName".
-
-*	Need to modify the parser test program to generate entire source files, not just individual
-object expressions, so the whole parser can be tested.
 
 *	Need to provide a "meta-dereference" operator (kind of like macros in the C preprocessor) for
 constant script and rule object declarations in code. These objects treat all references as unbound.
@@ -56,6 +49,29 @@ source code into a working module object, and executing strings against that, al
 programmatically within the running Dao program.
 
 SOLVED:
+
+*	Need a parser for "Dao.Object.ObjPat". Rename 'Dao.Pattern.Pattern' to "Dao.Glob.Glob' and
+rename 'Dao.Object.ObjPat' to 'Dao.Object.Pattern'.
+	I have decided that the word 'Glob' is a better term for what I was calling a 'Pattern'. A glob
+is an old idea from UNIX where you can match arbitrary strings with wildcards, like writing "*.hs"
+in the command line and the command line automatically detects the "*" as a wildcard and expands the
+word to the list of all files matching the glob expression. This is in fact the very idea that
+inspired my 'Pattern' data type. But the word 'Pattern' was too general, so why not just call it a
+'Glob'? So that is what I have done.
+
+*	Investigate the pathalogical memory usage of the random test generator and parser.
+	SOLUTION: I will never use 'Control.Concurrent.Chan.Chan' ever again. I was generating integer
+values and passing them down a channel to several worker threads which would then take these
+integers from the channel and use them to generate random objects for testing the parser and
+serializer. Obviously the thread producing these integer values would run faster than the worker
+threads. What I didn't know was that channels will never block a 'writeChan' operation, and they
+have no limit on the number of items they can buffer, which means the integer generating thread
+which was designed to generate integers non-stop, would fill the channel, and the channel would
+buffer them until all memory was used up and the kernel killed the process. There must some some
+reason channel to have these properties, but I think it is just stupid.
+
+*	Need to modify the parser test program to generate entire source files, not just individual
+object expressions, so the whole parser can be tested.
 
 *	The "Dao.Object.Show" module is dreadfully out of date, it needs to be cleaned up for all the
 changes made to the abstract syntax tree.

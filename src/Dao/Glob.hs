@@ -1,5 +1,5 @@
--- "src/Dao/Pattern.hs"  functions and data types related to the
--- Pattern data type, and for matching Patterns to strings.
+-- "src/Dao/Glob.hs"  functions and data types related to the Glob
+-- data type, for matching unix-like glob patterns to strings.
 -- 
 -- Copyright (C) 2008-2012  Ramin Honary.
 -- This file is part of the Dao System.
@@ -21,7 +21,7 @@
 
 {-# LANGUAGE DeriveDataTypeable #-}
 
-module Dao.Pattern where
+module Dao.Glob where
 
 import           Dao.String
 import qualified Dao.Tree as T
@@ -57,7 +57,7 @@ tokens ax = map ustr (loop ax) where
   check a ax fn = if fn a then let (got, ax') = span fn ax in Just (a:got, ax') else Nothing
   kinds = [isSpace, isAlpha, isNumber, isPunctuation, isAscii, not . isAscii]
 
--- | Contains information related to how a 'Pattern' was matched to input 'Tokens' during the
+-- | Contains information related to how a 'Glob' was matched to input 'Tokens' during the
 -- 'runMatchPattern' function evaluation.
 data Match
   = Match
@@ -80,17 +80,17 @@ data PatUnit = Wildcard | AnyOne | Single UStr deriving (Eq, Ord, Show)
 
 -- | Patterns are lists of 'Data.Maybe.Maybe' elements, where constant strings are given by
 -- 'Data.Maybe.Just' or wildcards given by 'Data.Maybe.Nothing'. Wildcards runMatchPattern zero or more other
--- Tokens when used as a 'Pattern'.
-data Pattern = Pattern { getPatUnits :: [PatUnit], getPatternLength :: Int } deriving (Eq, Ord, Typeable)
-instance Show Pattern where
+-- Tokens when used as a 'Glob'.
+data Glob = Glob { getPatUnits :: [PatUnit], getGlobLength :: Int } deriving (Eq, Ord, Typeable)
+instance Show Glob where
   show pat = show (concatMap fn (getPatUnits pat)) where
     fn a = case a of { Wildcard -> "$*" ; AnyOne -> "$?" ; Single a  -> uchars a }
-instance Read Pattern where
+instance Read Glob where
   readsPrec _ str = [(parsePattern str, "")]
 
--- | Create a 'Pattern' from its string representation.
-parsePattern :: String -> Pattern
-parsePattern ax = Pattern{ getPatUnits = patrn, getPatternLength = foldl (+) 0 lenx } where
+-- | Create a 'Glob' from its string representation.
+parsePattern :: String -> Glob
+parsePattern ax = Glob{ getPatUnits = patrn, getGlobLength = foldl (+) 0 lenx } where
   (lenx, patrn) = unzip (loop ax)
   loop ax =
     case ax of
@@ -112,17 +112,17 @@ parsePattern ax = Pattern{ getPatUnits = patrn, getPatternLength = foldl (+) 0 l
 -- have many patterns that start with similar sequences of 'PatUnit's.
 type PatternTree a = T.Tree PatUnit a
 
--- | By converting an ordinary 'Pattern' to a pattern tree, you are able to use all of the methods
+-- | By converting an ordinary 'Glob' to a pattern tree, you are able to use all of the methods
 -- in the "Dao.Tree" module to modify the patterns in it.
-toTree :: Pattern -> a -> PatternTree a
+toTree :: Glob -> a -> PatternTree a
 toTree pat a = T.insert (getPatUnits pat) a T.Void
 
--- | Intended to be used as the first argument to 'runMatchPattern'. Each segment of the 'Pattern' is
+-- | Intended to be used as the first argument to 'runMatchPattern'. Each segment of the 'Glob' is
 -- matched *exactyl* to each input 'Token' exactly, same as 'Prelude.(==)'.
 exact :: UStr -> UStr -> Bool
 exact = (==)
 
--- | Intended to be used as the first argument to 'runMatchPattern'. Each segment of a 'Pattern' is
+-- | Intended to be used as the first argument to 'runMatchPattern'. Each segment of a 'Glob' is
 -- matched to each input 'Token' *approximately* using a very simple heuristic. This will eliminate
 -- some spelling errors, but may cause ambiguity amongst anagrams, for example "crash" will
 -- runMatchPattern "chars", "ant" will runMatchPattern "tan", etc. Typing errors where letters are missing
@@ -139,18 +139,18 @@ approx a b =
       || S.size (S.difference (S.union ax bx) (if S.size ax < S.size bx then ax else bx)) <= 1
 
 -- | Takes a 'Dao.Types.UStr' matching function, usually 'exact' or 'approx', and tries to runMatchPattern a
--- string of 'Tokens' to a 'Pattern', returning @'Data.Maybe.Just' 'Match'@ on a successful runMatchPattern
+-- string of 'Tokens' to a 'Glob', returning @'Data.Maybe.Just' 'Match'@ on a successful runMatchPattern
 -- ('Data.Maybe.Nothing' on no runMatchPattern) with wildcards stored in an array in the 'Match' data
 -- structure.
-matchPattern :: (UStr -> UStr -> Bool) -> Pattern -> Tokens -> [Match]
+matchPattern :: (UStr -> UStr -> Bool) -> Glob -> Tokens -> [Match]
 matchPattern eq pat tokx = matchTree eq (toTree pat ()) tokx >>= (\ (_,m,_) -> [m])
 ----------------------------------------------------------------------------------------------------
 -- This was the oringinal algorithm. It was tested, and it works well. I am keeping it here, just in
 -- case it might come in useful some day.
---  matchPattern :: (UStr -> UStr -> Bool) -> Pattern -> Tokens -> Maybe Match
+--  matchPattern :: (UStr -> UStr -> Bool) -> Glob -> Tokens -> Maybe Match
 --  matchPattern eq runMatchString ax = loop 0 [] pln (getPatUnits runMatchString) aln ax where
 --    aln = length ax
---    pln = getPatternLength runMatchString
+--    pln = getGlobLength runMatchString
 --    loop sz stk pln px aln ax =
 --      case (px, ax) of
 --        ([]           , []  )          -> done sz stk
@@ -177,7 +177,7 @@ matchPattern eq pat tokx = matchTree eq (toTree pat ()) tokx >>= (\ (_,m,_) -> [
 -- one of the patterns associated with the rule. *This is not a bug.* Each pattern may produce a
 -- different set of match results, it is up to the programmer of the rule to handle situations where
 -- the action may execute many times for a single input.
-matchTree :: (UStr -> UStr -> Bool) -> PatternTree a -> Tokens -> [(Pattern, Match, a)]
+matchTree :: (UStr -> UStr -> Bool) -> PatternTree a -> Tokens -> [(Glob, Match, a)]
 matchTree eq matchTree tokx = loop 0 [] 0 [] matchTree tokx where
   loop sz stk p path bx tokx =
     case (bx, tokx) of
@@ -202,11 +202,11 @@ matchTree eq matchTree tokx = loop 0 [] 0 [] matchTree tokx where
        loop (sz+1) (stk++[gap]) p path bx tokx
     ++ if null tokx then [] else skip (gap++[head tokx]) sz stk p path bx (tail tokx)
   done sz stk p path a =
-    [(Pattern{ getPatUnits = path, getPatternLength = p }, matchFromList tokx sz stk, a)]
+    [(Glob{ getPatUnits = path, getGlobLength = p }, matchFromList tokx sz stk, a)]
 
 -- | Match a pattern to a simple 'Prelude.String' without tokenizing the string, but returning each
 -- part that matched individually.
-stringMatch :: Pattern -> String -> Maybe [UStr]
+stringMatch :: Glob -> String -> Maybe [UStr]
 stringMatch pat cx = loop [] (getPatUnits pat) cx where
   loop retrn px cx = case cx of
     ""    -> case px of

@@ -26,7 +26,7 @@ module Dao.Prelude
 
 import           Dao.String
 import           Dao.Object
-import           Dao.Pattern
+import           Dao.Glob
 
 import           Data.Binary
 import qualified Data.ByteString.Lazy      as B
@@ -35,7 +35,7 @@ data Event = SETUP | BEGIN | END | TAKEDOWN deriving (Eq, Ord, Read, Show, Enum)
 
 data Builder a
   = Monadic { ruleStateMonad :: State RuleGroup a }
-  | AddRule [Pattern] DaoFunc a
+  | AddRule [Glob] DaoFunc a
   | AddEvent Event DaoFunc a
   | AddFunc DaoFunc a
 
@@ -71,10 +71,10 @@ instance Monad Builder where
 (...) evt act = AddEvent evt act ()
 
 class ToPattern pat where
-  toPattern :: pat -> [Pattern]
+  toPattern :: pat -> [Glob]
 
-instance ToPattern Pattern where { toPattern pat = [pat] }
-instance ToPattern [Pattern] where { toPattern = id }
+instance ToPattern Glob where { toPattern pat = [pat] }
+instance ToPattern [Glob] where { toPattern = id }
 instance ToPattern String where { toPattern str = [read str] }
 instance ToPattern [String] where { toPattern = map read }
 

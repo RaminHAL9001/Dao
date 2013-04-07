@@ -27,7 +27,7 @@ module Dao.Object.Data where
 
 import           Dao.Object
 import qualified Dao.Tree as T
-import           Dao.Pattern
+import           Dao.Glob
 import           Dao.Predicate
 import           Dao.Object.Monad
 
@@ -142,9 +142,9 @@ instance Objectify (T.Tree Name Object) where
   toObject = OTree
   fromObject (OTree o) = return o
 
-instance Objectify Pattern where
-  toObject = OPattern
-  fromObject (OPattern o) = return o
+instance Objectify Glob where
+  toObject = OGlob
+  fromObject (OGlob o) = return o
 
 instance Objectify Rule where
   toObject = ORule
@@ -191,8 +191,8 @@ instance HasNull (M.Map Name Object) where { nullValue = M.empty ; testNull = M.
 instance HasNull (I.IntMap Object) where { nullValue = I.empty ; testNull = I.null }
 instance HasNull (T.Tree Name Object) where { nullValue = T.Void ; testNull = (nullValue==) }
 instance HasNull (B.ByteString) where { nullValue = B.empty ; testNull = B.null }
-instance HasNull Pattern where
-  nullValue = Pattern{getPatUnits = [], getPatternLength = 0}
+instance HasNull Glob where
+  nullValue = Glob{getPatUnits = [], getGlobLength = 0}
   testNull o = getPatUnits o == []
 instance HasNull FuncExpr where
   nullValue = FuncExpr{scriptArgv = Com [], scriptCode = Com []}
@@ -226,7 +226,7 @@ objToBool obj = case obj of
   ODict      o -> testNull o
   OIntMap    o -> testNull o
   OTree      o -> testNull o
-  OPattern   o -> testNull o
+  OGlob      o -> testNull o
   OScript    o -> testNull o
   ORule      o -> True
   OBytes     o -> testNull o
@@ -250,7 +250,7 @@ objSize o = case o of
   OIntMap   o -> okInt $ I.size o
   ODict     o -> okInt $ M.size o
   OTree     o -> okInt $ T.size o
-  OPattern  o -> okInt $ length (getPatUnits o)
+  OGlob     o -> okInt $ length (getPatUnits o)
   ORule     o -> okInt $ length (unComment (ruleAction  o))
   OBytes    o -> okInt $ B.length o
   _           -> mzero
@@ -265,7 +265,7 @@ objToList o = case o of
   ODict    o   -> return $ map (\ (a, b) -> OPair (OString a, b))             (M.assocs o)
   OIntMap  o   -> return $ map (\ (a, b) -> OPair (OInt (fromIntegral a), b)) (I.assocs o)
   OTree    o   -> return $ map (\ (a, b) -> OPair (OList (map OString a), b)) (T.assocs o)
-  OPattern o   -> return $ patternComponents o
+  OGlob    o   -> return $ patternComponents o
   _            -> mzero
 
 patUnitToObj :: PatUnit -> Object
@@ -281,17 +281,17 @@ objToPatUnit o = case o of
   OString str      -> return $ Single str
   _                -> mzero
 
-objListToPattern :: [Object] -> PValue tok Pattern
+objListToPattern :: [Object] -> PValue tok Glob
 objListToPattern ox = loop 0 ox [] where
   loop i ox px = case ox of
-    []   -> return $ Pattern{getPatternLength = i, getPatUnits = px}
+    []   -> return $ Glob{getGlobLength = i, getPatUnits = px}
     o:ox -> objToPatUnit o >>= \o -> loop (i+1) ox (px++[o])
 
--- | Break a pattern into a list of it's component parts. 'Dao.Pattern.Wildcard's (the Kleene star
+-- | Break a pattern into a list of it's component parts. 'Dao.Glob.Wildcard's (the Kleene star
 -- operation) translates to a 'ListType' object because wildcards may match a whole list of
--- strings and 'Dao.Pattern.AnyOne's translate to a StringType object because they can only match
+-- strings and 'Dao.Glob.AnyOne's translate to a StringType object because they can only match
 -- one single string. Everything else translates to an 'OString' object.
-patternComponents :: Pattern -> [Object]
+patternComponents :: Glob -> [Object]
 patternComponents p = map patUnitToObj (getPatUnits p)
 
 ruleComponents :: Rule -> Object
@@ -606,7 +606,7 @@ checkCompareOp op fn a b = case (a, b) of
   (ODict     a, ODict     b) -> done $ fn a b
   (OIntMap   a, OIntMap   b) -> done $ fn a b
   (OTree     a, OTree     b) -> done $ fn a b
-  (OPattern  a, OPattern  b) -> done $ fn a b
+  (OGlob     a, OGlob     b) -> done $ fn a b
   (OScript   a, OScript   b) -> done $ fn a b
   (ORule     a, ORule     b) -> done $ fn a b
   (OBytes    a, OBytes    b) -> done $ fn a b

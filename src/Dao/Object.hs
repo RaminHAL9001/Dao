@@ -34,7 +34,7 @@ module Dao.Object
 import           Dao.Debug.OFF
 import           Dao.String
 import           Dao.Token
-import           Dao.Pattern
+import           Dao.Glob
 import           Dao.EnumSet
 import           Dao.Tree as T
 import           Dao.Predicate
@@ -96,7 +96,7 @@ type T_array    = Array T_array_ix Object
 type T_intMap   = IM.IntMap Object
 type T_dict     = M.Map Name Object
 type T_tree     = T.Tree Name Object
-type T_pattern  = Pattern
+type T_pattern  = Glob
 type T_rule     = Rule
 type T_script   = Subroutine
 type T_bytes    = B.ByteString
@@ -123,7 +123,7 @@ data TypeID
   | IntMapType
   | DictType
   | TreeType
-  | PatternType
+  | GlobType
   | ScriptType
   | RuleType
   | BytesType
@@ -209,7 +209,7 @@ data Object
   | ODict      T_dict
   | OIntMap    T_intMap
   | OTree      T_tree
-  | OPattern   T_pattern
+  | OGlob      T_pattern
   | OScript    T_script
   | ORule      T_rule
   | OBytes     T_bytes
@@ -248,7 +248,7 @@ objType o = case o of
   OIntMap   _ -> IntMapType
   ODict     _ -> DictType
   OTree     _ -> TreeType
-  OPattern  _ -> PatternType
+  OGlob     _ -> GlobType
   OScript   _ -> ScriptType
   ORule     _ -> RuleType
   OBytes    _ -> BytesType
@@ -293,7 +293,7 @@ object2Dynamic o = case o of
   ODict     o -> toDyn o
   OTree     o -> toDyn o
   OScript   o -> toDyn o
-  OPattern  o -> toDyn o
+  OGlob     o -> toDyn o
   ORule     o -> toDyn o
   OBytes    o -> toDyn o
 
@@ -393,7 +393,7 @@ instance Functor Com where
 data Rule
   = Rule
     { ruleMetaExpr   :: ObjectExpr -- ^ the source code that generated this object
-    , rulePattern    :: [Pattern]  -- ^ the patterns generated from the meta expression
+    , rulePattern    :: [Glob]  -- ^ the patterns generated from the meta expression
     , ruleAction     :: [Com ScriptExpr] -- ^ the executable script created from the 'ruleMetaExpr'
     , ruleExecutable :: Executable -- ^ the executable in memory
     }
@@ -421,7 +421,7 @@ data Executable
 -- confusion with Haskell's "Data.Function"). 
 data Subroutine
   = Subroutine
-    { argsPattern   :: [ObjPat]
+    { argsPattern   :: [Pattern]
     , subSourceCode :: [Com ScriptExpr]
     , getSubExecutable :: Executable
     }
@@ -685,7 +685,7 @@ data ObjSetOp
 -- | An object pattern, a data type that can be matched against objects,
 -- assigning portions of that object to variables stored in a
 -- 'Dao.Tree.Tree' structure.
-data ObjPat 
+data Pattern 
   = ObjAnyX -- ^ matches any number of objects, matches lazily (not greedily).
   | ObjMany -- ^ like ObjAnyX but matches greedily.
   | ObjAny1 -- ^ matches any one object
@@ -693,24 +693,24 @@ data ObjPat
   | ObjType    (EnumSet TypeID) -- ^ checks if the object type is any of the given types.
   | ObjBounded (EnumInf T_ratio) (EnumInf T_ratio)
     -- ^ checks that numeric types are in a certain range.
-  | ObjList    TypeID            [ObjPat]
+  | ObjList    TypeID            [Pattern]
     -- ^ recurse into a list-like object given by TypeID (TrueType for any list-like object)
   | ObjNameSet ObjSetOp          (S.Set [Name])
     -- ^ checks if a map object contains every name
   | ObjIntSet  ObjSetOp          IS.IntSet
     -- ^ checks if an intmap or array object contains every index
-  | ObjElemSet ObjSetOp          (S.Set ObjPat)
+  | ObjElemSet ObjSetOp          (S.Set Pattern)
     -- ^ recurse into a set-like object given by TypeID, match elements in the set according to
     -- ObjSetOp.
-  | ObjChoice  ObjSetOp          (S.Set ObjPat) -- ^ execute a series of tests on a single object
-  | ObjLabel   Name  ObjPat
-    -- ^ if the object matching matches this portion of the 'ObjPat', then save the object into the
+  | ObjChoice  ObjSetOp          (S.Set Pattern) -- ^ execute a series of tests on a single object
+  | ObjLabel   Name  Pattern
+    -- ^ if the object matching matches this portion of the 'Pattern', then save the object into the
     -- resulting 'Dao.Tree.Tree' under this name.
-  | ObjFailIf  UStr  ObjPat -- ^ fail with a message if the pattern does not match
-  | ObjNot           ObjPat -- ^ succedes if the given pattern fails to match.
+  | ObjFailIf  UStr  Pattern -- ^ fail with a message if the pattern does not match
+  | ObjNot           Pattern -- ^ succedes if the given pattern fails to match.
   deriving (Eq, Show, Typeable)
 
-instance Ord ObjPat where
+instance Ord Pattern where
   compare a b
     | a==b      = EQ
     | otherwise = compare (toInt a) (toInt b) where
@@ -911,7 +911,7 @@ data ExecUnit
     , currentDocument    :: Maybe File
       -- ^ the current document is set by the @with@ statement during execution of a Dao script.
     , currentQuery       :: Maybe UStr
-    , currentPattern     :: Maybe Pattern
+    , currentPattern     :: Maybe Glob
     , currentMatch       :: Maybe Match
     , currentExecutable  :: Executable
       -- ^ when evaluating an 'Executable' selected by a string query, the 'Action' resulting from
@@ -952,7 +952,7 @@ data ExecUnit
       -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
       -- module associated with this runtime.
     , programComparator :: CompareToken
-      -- ^ used to compare string tokens to 'Dao.Pattern.Single' pattern constants.
+      -- ^ used to compare string tokens to 'Dao.Glob.Single' pattern constants.
     , ruleSet           :: DMVar (PatternTree [Executable])
     }
 instance HasDebugRef ExecUnit where
@@ -961,12 +961,12 @@ instance HasDebugRef ExecUnit where
 
 -- | An 'Action' is the result of a pattern match that occurs during an input string query. It is a
 -- data structure that contains all the information necessary to run an 'Executable' assocaited with
--- a 'Pattern', including the parent 'ExecUnit', the 'Dao.Pattern.Pattern' and the
--- 'Dao.Pattern.Match' objects, and the 'Executables'.
+-- a 'Glob', including the parent 'ExecUnit', the 'Dao.Glob.Glob' and the
+-- 'Dao.Glob.Match' objects, and the 'Executables'.
 data Action
   = Action
     { actionQuery      :: Maybe UStr
-    , actionPattern    :: Maybe Pattern
+    , actionPattern    :: Maybe Glob
     , actionMatch      :: Maybe Match
     , actionExecutable :: Executable
     }
@@ -1000,11 +1000,11 @@ initTask = do
 
 -- | Rules dictating which files a particular 'ExecUnit' can load at runtime.
 data FileAccessRules
-  = RestrictFiles  Pattern
+  = RestrictFiles  Glob
     -- ^ files matching this pattern will never be loaded
-  | AllowFiles     Pattern
+  | AllowFiles     Glob
     -- ^ files matching this pattern can be loaded
-  | ProgramRule    Pattern [FileAccessRules] [FileAccessRules]
+  | ProgramRule    Glob [FileAccessRules] [FileAccessRules]
     -- ^ programs matching this pattern can be loaded and will be able to load files by other rules.
     -- Also has a list of rules dictating which built-in function sets are allowed for use, but
     -- these rules are not matched to files, they are matched to the function sets provided by the
@@ -1033,12 +1033,12 @@ isDocumentFile file = case file of
   DocumentFile d -> [d]
   _              -> []
 
--- | A type of function that can split an input query string into 'Dao.Pattern.Tokens'. The default
+-- | A type of function that can split an input query string into 'Dao.Glob.Tokens'. The default
 -- splits up strings on white-spaces, numbers, and punctuation marks.
 type Tokenizer = UStr -> Exec Tokens
 
--- | A type of function that can match 'Dao.Pattern.Single' patterns to 'Dao.Pattern.Tokens', the
--- default is the 'Dao.Pattern.exact' function. An alternative is 'Dao.Pattern.approx', which
+-- | A type of function that can match 'Dao.Glob.Single' patterns to 'Dao.Glob.Tokens', the
+-- default is the 'Dao.Glob.exact' function. An alternative is 'Dao.Glob.approx', which
 -- matches strings approximately, ignoring transposed letters and accidental double letters in words.
 type CompareToken = UStr -> UStr -> Bool
 

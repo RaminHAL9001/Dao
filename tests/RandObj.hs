@@ -24,7 +24,7 @@
 module RandObj where
 
 import           Dao.Token
-import           Dao.Pattern
+import           Dao.Glob
 import           Dao.Object
 import qualified Dao.Tree              as T
 
@@ -287,7 +287,7 @@ instance HasRandGen Object where
     , randObjMap ODict   M.fromList (fmap randUStr randInt)
     , randObjMap OIntMap I.fromList randInt
     , fmap OTree randO
-    , fmap OPattern randO
+    , fmap OGlob randO
     , fmap OScript randO
     , fmap ORule randO
     , do  i <- nextInt 10
@@ -317,7 +317,7 @@ instance HasRandGen Reference where
         let (i1, len) = divMod i0 4
         fmap ((randUStr i1 :) . map randUStr) (replicateM len randInt)
 
-instance HasRandGen Pattern where
+instance HasRandGen Glob where
   randO = do
     len <- fmap (+6) (nextInt 6)
     i <- randInt
@@ -334,7 +334,7 @@ instance HasRandGen Pattern where
             in  t ++ wx : loop tx' cuts ax'
     patUnits <- fmap (concat . loop tx cuts . intersperse (Single (ustr " "))) $
       replicateM len (fmap (Single . randUStr) randInt)
-    return (Pattern{getPatUnits=patUnits, getPatternLength=length patUnits})
+    return (Glob{getPatUnits=patUnits, getGlobLength=length patUnits})
 
 instance HasRandGen (T.Tree Name Object) where
   randO = do
@@ -515,7 +515,7 @@ instance HasRandGen TopLevelExpr where
 
 ----------------------------------------------------------------------------------------------------
 
-instance HasRandGen ObjPat where
+instance HasRandGen Pattern where
   randO = return ObjAny1
 
 ----------------------------------------------------------------------------------------------------

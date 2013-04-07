@@ -25,7 +25,7 @@
 module Dao.Object.Math where
 
 import           Dao.Object
-import           Dao.Pattern
+import           Dao.Glob
 import           Dao.Predicate
 import qualified Dao.Tree as T
 
@@ -78,7 +78,7 @@ testNull o = case o of
   ODict    o | M.null  o -> True
   OIntMap  o | IM.null o -> True
   OTree    o | o==T.Void -> True
-  OPattern o | null (getPatUnits o) -> True
+  OGlob    o | null (getPatUnits o) -> True
   ORule    o | null (rulePattern o) && null (ruleAction o) -> True
   OBytes   o | B.null o  -> True
   _ -> False
@@ -93,14 +93,14 @@ objToList o = case o of
   ODict    o   -> return $ map (\ (a, b) -> OPair (OString a, b))             (M.assocs o)
   OIntMap  o   -> return $ map (\ (a, b) -> OPair (OInt (fromIntegral a), b)) (IM.assocs o)
   OTree    o   -> return $ map (\ (a, b) -> OPair (OList (map OString a), b)) (T.assocs o)
-  OPattern o   -> return $ patternComponents o
+  OGlob    o   -> return $ patternComponents o
   _            -> mzero
 
--- | Break a pattern into a list of it's component parts. 'Dao.Pattern.Wildcard's (the Kleene star
+-- | Break a pattern into a list of it's component parts. 'Dao.Glob.Wildcard's (the Kleene star
 -- operation) translates to a 'ListType' object because wildcards may match a whole list of
--- strings and 'Dao.Pattern.AnyOne's translate to a StringType object because they can only match
+-- strings and 'Dao.Glob.AnyOne's translate to a StringType object because they can only match
 -- one single string. Everything else translates to an 'OString' object.
-patternComponents :: Pattern -> [Object]
+patternComponents :: Glob -> [Object]
 patternComponents p = map patUnitToObj (getPatUnits p)
 
 patUnitToObj :: PatUnit -> Object

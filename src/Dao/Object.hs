@@ -392,8 +392,7 @@ instance Functor Com where
 -- program is loaded, rules do not exist, the 'ORule' object constructor contains this structure.
 data Rule
   = Rule
-    { ruleMetaExpr   :: ObjectExpr -- ^ the source code that generated this object
-    , rulePattern    :: [Glob]  -- ^ the patterns generated from the meta expression
+    { rulePattern    :: [Glob]  -- ^ the patterns generated from the meta expression
     , ruleAction     :: [Com ScriptExpr] -- ^ the executable script created from the 'ruleMetaExpr'
     , ruleExecutable :: Executable -- ^ the executable in memory
     }
@@ -913,14 +912,16 @@ data ExecUnit
     , currentQuery       :: Maybe UStr
     , currentPattern     :: Maybe Glob
     , currentMatch       :: Maybe Match
-    , currentExecutable  :: Executable
+    , currentExecutable  :: Maybe Executable
       -- ^ when evaluating an 'Executable' selected by a string query, the 'Action' resulting from
-      -- that query is defnied here.
+      -- that query is defnied here. It is only 'Data.Maybe.Nothing' when the module is first being
+      -- loaded from source code.
     , currentBranch      :: [Name]
       -- ^ set by the @with@ statement during execution of a Dao script. It is used to prefix this
       -- to all global references before reading from or writing to those references.
-    , importsTable       :: [File]
+    , importsTable       :: M.Map Name (Maybe File)
       -- ^ a pointer to the ExecUnit of every Dao program imported with the @import@ keyword.
+    , patternTable       :: [Subroutine]
     , execAccessRules    :: FileAccessRules
       -- ^ restricting which files can be loaded by the program associated with this ExecUnit, these
       -- are the rules assigned this program by the 'ProgramRule' which allowed it to be loaded.

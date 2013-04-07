@@ -93,9 +93,10 @@ initExecUnit runtime modName initGlobalData = do
     , currentQuery       = Nothing
     , currentPattern     = Nothing
     , currentMatch       = Nothing
-    , currentExecutable  = error "ExecUnit.currentExecutable is undefined"
+    , currentExecutable  = Nothing
     , currentBranch      = []
-    , importsTable       = []
+    , importsTable       = M.empty
+    , patternTable       = []
     , execAccessRules    = RestrictFiles (Glob{getPatUnits = [Wildcard], getGlobLength = 1})
     , builtinFuncs       = initBuiltinFuncs
     , topLevelFuncs      = M.empty
@@ -130,7 +131,7 @@ setupExecutable scrp = do
     }
 
 runExecutable :: T_tree -> Executable -> Exec Object
-runExecutable initStack exe = local (\xunit -> xunit{currentExecutable = exe}) $!
+runExecutable initStack exe = local (\xunit -> xunit{currentExecutable = Just exe}) $!
   execFuncPushStack initStack (executable exe >>= liftIO . evaluate >> return ONull)
 
 -- | Given a list of arguments, matches these arguments toe the given subroutine's
@@ -303,15 +304,20 @@ localVarDelete nm = localVarUpdate nm (const Nothing)
 
 staticVarLookup :: Name -> Exec (Maybe Object)
 staticVarLookup nm = do
-  exe <- fmap (staticVars . currentExecutable) ask
-  liftIO (readIORef exe) >>= return . M.lookup nm
+  exe <- fmap (currentExecutable >=> return . staticVars) ask
+  case exe of
+    Nothing  -> return Nothing
+    Just exe -> liftIO (readIORef exe) >>= return . M.lookup nm
 
 staticVarUpdate :: Name -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe Object)
 staticVarUpdate nm upd = do
-  ref <- fmap (staticVars . currentExecutable) ask
-  val <- lift (lift (readIORef ref)) >>= return . (M.lookup nm) >>= upd
-  lift (lift (modifyIORef ref (M.update (const val) nm)))
-  return val
+  ref <- fmap (currentExecutable >=> return . staticVars) ask
+  case ref of
+    Nothing  -> return Nothing
+    Just ref -> do
+      val <- lift (lift (readIORef ref)) >>= return . (M.lookup nm) >>= upd
+      lift (lift (modifyIORef ref (M.update (const val) nm)))
+      return val
 
 staticVarDefine :: Name -> Object -> Exec (Maybe Object)
 staticVarDefine nm obj = staticVarUpdate nm (return . const (Just obj))
@@ -993,9 +999,10 @@ lookupFunction msg op = do
   xunit <- ask
   let toplevs xunit = return (M.lookup op (topLevelFuncs xunit))
       lkup p = case p of
-        ProgramFile xunit -> toplevs xunit
-        _                 -> return Nothing
-  funcs <- fmap (concatMap maybeToList) (sequence (toplevs xunit : map lkup (importsTable xunit)))
+        Just (ProgramFile xunit) -> toplevs xunit
+        _                        -> return Nothing
+  funcs <- fmap (concatMap maybeToList) $
+    sequence (toplevs xunit : map lkup (M.elems (importsTable xunit)))
   if null funcs
     then  objectError (OString op) $ "undefined "++msg++" ("++uchars op++")"
     else  return (concat funcs)
@@ -1248,7 +1255,7 @@ evalObject obj = case obj of
   LambdaExpr typ  argv  code  lc -> do
     result <- evalLambdaExpr typ argv code
     case result of
-      ORule r -> return (ORule (r{ruleMetaExpr=obj}))
+      ORule r -> return (ORule r)
       result  -> return result
 
 evalLambdaExpr :: LambdaExprType -> Com [Com ObjectExpr] -> [Com ScriptExpr] -> Exec Object
@@ -1263,7 +1270,7 @@ evalLambdaExpr typ argv code = do
     RuleExprType -> do
       argv <- convArgv argsToGlobExpr
       return $ ORule $
-        Rule{rulePattern=argv, ruleMetaExpr=VoidExpr, ruleAction=code, ruleExecutable=exe}
+        Rule{rulePattern=argv, ruleAction=code, ruleExecutable=exe}
 
 -- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Object.Pattern'.
 argsToObjPat :: ObjectExpr -> Exec Pattern
@@ -1302,6 +1309,102 @@ verifyRequirement nm a = return a -- TODO: the rest of this function.
 -- 'Dao.Object.Monad.procErr'
 verifyImport :: Name -> a -> Exec a
 verifyImport nm a = return a -- TODO: the rest of this function.
+
+-- | This function is evaluated to update the 'Dao.Object.ExecUnit' to fill the 'Dao.Object.ExecUnit'
+-- with the useful things in the 'Dao.Object.SourceCode'. Before evaluating this function you should
+-- evaluate sourceFromHandle' is called to create a 'Dao.Object.SourceCode',
+-- 'Dao.Resource.newTreeResource' is called to create a 'Dao.Resource.TreeResource', and
+-- 'registerSourceCode' is called to initialize a new 'Dao.Object.ExecUnit'.
+programFromSource :: TreeResource -> SourceCode -> ExecUnit -> Run (FlowCtrl ExecUnit)
+programFromSource theNewGlobalTable src xunit = do
+  runtime <- ask
+  let dx = map unComment (unComment (directives src))
+  evalStateT (importsLoop dx) (xunit{parentRuntime=runtime})
+  where
+    importsLoop dx = do
+      runtime <- gets parentRuntime
+      case dx of
+        Attribute     kindOfAttr attribName        _ : dx -> do
+          let nm = unComment attribName
+          case uchars (unComment kindOfAttr) of
+            a | a=="require" || a=="requires" -> do
+              case M.lookup nm (functionSets runtime) of
+                Nothing -> return $ FlowErr $ OList $
+                  [OString (ustr "requires"), OString nm, OString (ustr "but not provided")]
+                Just mp -> do
+                  modify (\xunit -> xunit{builtinFuncs = M.union mp (builtinFuncs xunit)})
+                  importsLoop dx
+            a | a=="import" || a=="imports" -> do
+              modify $ \xunit ->
+                xunit{importsTable = M.alter (flip mplus (Just Nothing)) nm (importsTable xunit)}
+              importsLoop dx
+        dx -> scriptLoop dx
+    scriptLoop dx = case dx of
+      [] -> fmap FlowOK get
+      TopFunc       name       argList    script _ : dx -> do
+        xunit  <- get
+        result <- mkArgvExe argList (unComment script)
+        let nm = unComment name
+        case result of
+          FlowOK sub -> do
+            let alt funcs = mplus (fmap (++[sub]) funcs) (return [sub])
+            put (xunit{topLevelFuncs = M.alter alt nm (topLevelFuncs xunit)})
+          FlowErr err -> return () -- errors are handled in the 'mkArgvExe' function
+        scriptLoop dx
+      TopScript     expr                         _ : dx -> do
+        modify $ \xunit ->
+          let cs = constructScript xunit
+          in  xunit{constructScript = if null cs then [[Com expr]] else [head cs ++ [Com expr]]}
+        scriptLoop dx
+      TopLambdaExpr ruleOrPat  argList    script _ : dx -> case ruleOrPat of
+        FuncExprType -> pat
+        PatExprType  -> pat
+        RuleExprType -> rule
+        where
+          pat = do
+            result <- mkArgvExe (unComment argList) script
+            case result of
+              FlowOK sub -> do
+                modify (\xunit -> xunit{patternTable = patternTable xunit ++ [sub]})
+              FlowErr _ -> return () -- errors are handled in the 'mkArgvExe' function.
+            scriptLoop dx
+          rule = do
+            exe  <- mkExe script
+            argv <- lift $ flip runExec xunit $ mapM (argsToGlobExpr . unComment) (unComment argList)
+            case argv of
+              FlowOK argv -> do
+                rules <- gets ruleSet
+                let fol tre pat = T.merge T.union (++) tre (toTree pat [exe])
+                lift $ dModifyMVar_ xloc rules (\patTree -> return (foldl fol patTree argv))
+              FlowErr _ -> return () -- errors are handled in the 'mkArgvExe' function.
+            scriptLoop dx
+      EventExpr     evtType    script            _ : dx -> do
+        exe <- lift $ setupExecutable script
+        case evtType of
+          BeginExprType -> modify $ \xunit -> xunit{preExec  = preExec  xunit ++ [exe]}
+          EndExprType   -> modify $ \xunit -> xunit{postExec = postExec xunit ++ [exe]}
+          ExitExprType  -> modify $ \xunit ->
+            xunit{destructScript = destructScript xunit ++ [unComment script]}
+        scriptLoop dx
+      Attribute     kindOfAttr attribName        _ : _  -> return $ FlowErr $ OList $
+        [ OString (unComment kindOfAttr), OString (unComment attribName)
+        , OString $ ustr "statement is not at the top of the source file"
+        ]
+    mkExe script = lift $ setupExecutable (Com script)
+    mkArgvExe argList script = do
+      argv <- lift $ flip runExec xunit $ mapM argsToObjPat $ map unComment argList
+      exe  <- mkExe script
+      case argv of
+        FlowOK argv  -> return $ FlowOK $
+          Subroutine
+          { argsPattern      = argv
+          , subSourceCode    = script
+          , getSubExecutable = exe
+          }
+        FlowErr err  -> do
+          lift $ dModifyMVar_ xloc (uncaughtErrors xunit) (\ex -> return (ex++[err]))
+          return (FlowErr err)
+        FlowReturn _ -> error "argsToObjPat returned 'FlowReturn' instead of '(FlowOK [Pattern])'"
 
 -- | When the 'programFromSource' is scanning through a 'Dao.Object.SourceCode' object, it first
 -- constructs an 'IntermediateProgram', which contains no 'Dao.Debug.DMVar's. Once all the data
@@ -1375,7 +1478,7 @@ initProgram inmpg = do
 -- been updated by evaluating the intermediate program. The function which evaluated this function
 -- must then update the 'Dao.Object.ExecUnit' it used to evaluate this
 -- 'Control.Monad.Reader.ReaderT' monad.
-programFromSource
+_programFromSource
   :: TreeResource
       -- ^ the global variables initialized at the top level of the program file are stored here.
   -> (Name -> UStr -> IntermediateProgram -> Exec Bool)
@@ -1384,7 +1487,7 @@ programFromSource
   -> SourceCode
       -- ^ the script file to use
   -> Exec ExecUnit
-programFromSource globalResource checkAttribute script = do
+_programFromSource globalResource checkAttribute script = do
   intermProgSt <- execStateT (mapM_ foldDirectives (unComment (directives script))) initIntermediateProgram
   initProgram intermProgSt >>= liftIO . evaluate
   where
@@ -1484,7 +1587,7 @@ completedThreadInTask task = dMyThreadId >>= dPutMVar xloc (taskWaitMVar task)
 -- | Evaluate an 'Dao.Object.Action' in the current thread.
 execAction :: ExecUnit -> Action -> Run ()
 execAction xunit_ action = dStack xloc ("execAction for ("++show (actionPattern action)++")") $ do
-  result <- runExec (runExecutable T.Void (currentExecutable xunit)) xunit >>= liftIO . evaluate
+  result <- runExec (runExecutable T.Void (actionExecutable action)) xunit >>= liftIO . evaluate
   case seq result result of
     FlowOK     _ -> return ()
     FlowReturn _ -> return ()
@@ -1495,7 +1598,7 @@ execAction xunit_ action = dStack xloc ("execAction for ("++show (actionPattern 
       { currentQuery      = actionQuery      action
       , currentPattern    = actionPattern    action
       , currentMatch      = actionMatch      action
-      , currentExecutable = actionExecutable action
+      , currentExecutable = Just (actionExecutable action)
       }
 
 -- | Create a new thread and evaluate an 'Dao.Object.Action' in that thread. This thread is defined
@@ -1717,7 +1820,7 @@ registerSourceCode upath script = dStack xloc "registerSourceCode" $ ask >>= \ru
 -- | You should not normally need to call evaluate this function, you should use
 -- 'registerSourceCode' which will evaluate this function and also place the
 -- 'Dao.Object.SourceCode' into the 'programs' table. This function will use
--- 'Dao.Evaluator.programFromSource' to construct a 'Dao.Evaluator.CachedProgram'
+-- 'Dao.Evaluator.programFromSource' to construct a 'Dao.Object.ExecUnit'
 -- and then execute the initialization code for that program, that is, use
 -- 'Dao.Evaluator.execScriptExpr' to evaluate every 'Dao.Object.Exec' in the
 -- 'Dao.Object.constructScript'. Returns the 'Dao.Evaluator.ExecUnit' used to initialize the
@@ -1731,8 +1834,8 @@ initSourceCode modName script = ask >>= \runtime -> do
   xunit <- initExecUnit runtime modName grsrc
   -- An execution unit is required to load a program, so of course, while a program is being
   -- loaded, the program is not in the program table, and is it's 'currentProgram' is 'Nothing'.
-  xunit <- runExec (programFromSource grsrc (\_ _ _ -> return False) script) xunit
-  case xunit of
+  result <- programFromSource grsrc script xunit
+  case result of
     FlowErr  obj   -> error ("script err: "++showObj obj)
     FlowOK   xunit -> do
       -- Run all initializer scripts (denoted with the @SETUP@ rule in the Dao language).

@@ -553,7 +553,7 @@ instance Binary Location where
 
 instance Binary Rule where
   put r = putList (rulePattern r) >> putComList (ruleAction r)
-  get   = liftM2 (\a b -> Rule VoidExpr a b err) getList getComList where
+  get   = liftM2 (\a b -> Rule a b err) getList getComList where
     err = error "rule loaded from binary file is used before being converted to an executable"
 
 instance Binary Subroutine where

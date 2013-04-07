@@ -503,12 +503,12 @@ instance HasRandGen TopLevelExpr where
             0 -> ustr $ show $ intercalate " " $ words
             1 -> ustr $ intercalate "." $ words
           return (Attribute req str LocationUnknown)
-    , liftM2 ToplevelScript randO no
+    , liftM2 TopScript randO no
     , do  name <- comRandName
           args <- randList 0 7 >>= mapM randCom
           scrp <- comRandScriptExpr
-          return (ToplevelFunc name args scrp LocationUnknown)
-    , liftM2 ToplevelScript randO no
+          return (TopFunc name args scrp LocationUnknown)
+    , liftM2 TopScript      randO no
     , liftM4 TopLambdaExpr  randO (randArgsDef >>= randCom) randScriptExpr no
     , liftM3 EventExpr      randO comRandScriptExpr no
     ]

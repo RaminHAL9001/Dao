@@ -37,6 +37,8 @@ import           Data.Complex
 import           Data.Time.Clock
 import           Numeric
 
+----------------------------------------------------------------------------------------------------
+
 rationalFromString :: Int -> Rational -> String -> Maybe Rational
 rationalFromString maxValue base str =
   if b<1 then fmap (b*) (fol (reverse str)) else fol str where
@@ -770,29 +772,25 @@ constructWithNonKeyword key com1 = msum [funcCall, parseBuiltinFuncCall key com1
 
 -- | Parse a source file: this is the entry point for the Dao parser when it parses @*.dao@ files.
 parseSourceFile :: Parser SourceCode
-parseSourceFile = do
-  parseComment >> string "module" >> regexMany space
-  flip mplus (fail "keyword \"module\" must be followed by a module name string") $ do
-    handl <- fmap ustr parseString
-    zeroOrOne (rxChar ';')
-    drcvs <- many $ do
-      com1 <- parseComment
-      regexMany space
-      directive <- applyLocation parseDirective
-      return (com com1 directive [])
-    regexMany space >> parseComment
-    return $
-      SourceCode
-      { sourceModified = 0
-      , sourceFullPath = nil
-      , sourceModuleName = Com handl
-      , directives = Com drcvs
-      }
+parseSourceFile = loop [] where
+  loop drcvs = mplus (endOfInput >>= guard >> done drcvs) $
+    applyLocation parseDirective >>= \directive -> loop (drcvs++[directive])
+  done drcvs = return $
+    SourceCode
+    { sourceModified = 0
+    , sourceFullPath = nil
+    , directives = drcvs
+    }
 
 parseDirective :: Parser TopLevelExpr
-parseDirective = applyLocation $ mplus (parseKeywordOrName >>= parseKeywordDirective) $ do
-  (objExpr, com1) <- parseObjectExpr
-  return (TopScript (EvalObject objExpr com1 LocationUnknown) LocationUnknown)
+parseDirective = applyLocation $ msum $
+  [ do  com1 <- parseComment
+        regexMany space
+        if null com1 then mzero else return (TopComment com1)
+  , parseKeywordOrName >>= parseKeywordDirective
+  , do  (objExpr, com1) <- parseObjectExpr
+        return (TopScript (EvalObject objExpr com1 unloc) unloc)
+  ]
 
 parseKeywordDirective :: String -> Parser TopLevelExpr
 parseKeywordDirective key = msum $
@@ -806,14 +804,15 @@ parseKeywordDirective key = msum $
             regexMany space >> char ';'
             return (Attribute (Com (ustr key)) (com com1 req com2) unloc)
   , do -- Parse an event action.
-        guard (key=="QUIT" || key=="BEGIN" || key=="END")
+        guard (key=="EXIT" || key=="QUIT" || key=="BEGIN" || key=="END")
         expect ("bracketed list of commands after "++key++" statement") $ \com1 -> do
           scrpt <- parseBracketedScript
           let block = com com1 scrpt []
           return $ case key of
-            "QUIT"     -> EventExpr ExitExprType  block unloc
-            "BEGIN"    -> EventExpr BeginExprType block unloc
-            "END"      -> EventExpr EndExprType   block unloc
+            "EXIT"  -> EventExpr ExitExprType  block unloc
+            "QUIT"  -> EventExpr ExitExprType  block unloc
+            "BEGIN" -> EventExpr BeginExprType block unloc
+            "END"   -> EventExpr EndExprType   block unloc
   , do -- Parse a top-level rule.
         guard (key=="rule" || key=="pat" || key=="pattern")
         let msg = "script expression for rule definition"
@@ -849,10 +848,13 @@ parseKeywordDirective key = msum $
         guard (elem key (words "if else while try catch break continue return with"))
         expect "top-level script expression" $ \com1 -> do
           scrpt <- parseKeywordScriptExpr key com1
-          return (TopScript scrpt LocationUnknown)
+          return (TopScript scrpt unloc)
   , do -- Parse a top-level object expression.
         expect "top-level variable assignment or function call" $ \com1 -> do
           objExpr <- keywordObjectExpr key com1
-          return (TopScript (EvalObject objExpr [] LocationUnknown) LocationUnknown)
+          expect "top-level assignment expression" $ \com1 -> do
+            (eqn, com1) <- parseEquation objExpr com1
+            flip mplus (fail "simicolon to terminate top-level assignment expression") $
+              char ';' >> return (TopScript (EvalObject eqn com1 unloc) unloc)
   ]
 

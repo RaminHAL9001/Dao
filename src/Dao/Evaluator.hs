@@ -1318,7 +1318,7 @@ verifyImport nm a = return a -- TODO: the rest of this function.
 programFromSource :: TreeResource -> SourceCode -> ExecUnit -> Run (FlowCtrl ExecUnit)
 programFromSource theNewGlobalTable src xunit = do
   runtime <- ask
-  let dx = map unComment (unComment (directives src))
+  let dx = directives src
   evalStateT (importsLoop dx) (xunit{parentRuntime=runtime})
   where
     importsLoop dx = do
@@ -1460,100 +1460,6 @@ initProgram inmpg = do
     , postExec          = inmpg_postExec inmpg
     , topLevelFuncs     = inmpg_topLevelFuncs inmpg
     }
-
--- | To parse a program, use 'Dao.Object.Parsers.source' and pass the resulting
--- 'Dao.Object.SourceCode' object to this funtion. It is in the 'Exec' monad because it needs
--- to evaluate 'Dao.ObjectObject's defined in the top-level of the source code, which requires
--- 'evalObject'.
--- Attributes in Dao scripts are of the form:
---     a.b.C.like.name  dot.separated.value;
--- The three built-in attributes are "requires", "string.tokenizer" and "string.compare". The
--- allowed attrubites can be extended by passing a call-back predicate which modifies the given
--- program, or returns Nothing to reject the program. If you are not sure what to pass, just pass
--- @(\ _ _ _ -> return Nothing)@ which always rejects the program. This predicate will only be
--- called if the attribute is not allowed by the minimal Dao system.
---     This is a 'Control.Monad.Reader.ReaderT' monad with an 'ExecUnit' state. This 'ExecUnit'
--- state cannot be updated (otherwise it would be a 'Control.Monad.State.StateT') so this function
--- evaluates to an 'Dao.Object.ExecUnit' that is the 'Control.Monad.Reader.ReaderT' state which has
--- been updated by evaluating the intermediate program. The function which evaluated this function
--- must then update the 'Dao.Object.ExecUnit' it used to evaluate this
--- 'Control.Monad.Reader.ReaderT' monad.
-_programFromSource
-  :: TreeResource
-      -- ^ the global variables initialized at the top level of the program file are stored here.
-  -> (Name -> UStr -> IntermediateProgram -> Exec Bool)
-      -- ^ a callback to check attributes written into the script. If the attribute is bogus, Return
-      -- False to throw a generic error, or throw your own FlowErr. Otherwise, return True.
-  -> SourceCode
-      -- ^ the script file to use
-  -> Exec ExecUnit
-_programFromSource globalResource checkAttribute script = do
-  intermProgSt <- execStateT (mapM_ foldDirectives (unComment (directives script))) initIntermediateProgram
-  initProgram intermProgSt >>= liftIO . evaluate
-  where
-    err lst = lift $ procErr $ OList $ map OString $ (sourceFullPath script : lst)
-    attrib req nm getRuntime putProg = do
-      runtime <- lift $ fmap parentRuntime ask
-      let item = M.lookup nm (getRuntime runtime)
-      case item of
-        Just item -> modify (putProg item)
-        Nothing   -> err [req, ustr "attribute", nm, ustr "is not available"]
-    foldDirectives directive = case unComment directive of
-      Attribute  req nm lc -> ask >>= \xunit -> do
-        let setName = unComment nm
-            runtime = parentRuntime xunit
-            builtins = M.lookup setName $ functionSets runtime
-        case unComment req of
-          req | req==ustr "import"           -> do
-            lift $ verifyImport setName () -- TODO: verifyImport will evaluate to a FlowErr if the import fails.
-            modify (\p -> p{inmpg_programImports = inmpg_programImports p ++ [setName]})
-          req | req==ustr "require"          -> case builtins of
-            Just  _ -> do
-              lift $ verifyRequirement setName ()
-              modify (\p -> p{inmpg_requiredBuiltins = inmpg_requiredBuiltins p++[setName]})
-            Nothing -> err $
-              [ustr "requires", setName, ustr "not provided by this version of the Dao system"]
-          req | req==ustr "string.tokenizer" ->
-            attrib req setName availableTokenizers (\item p -> p{inmpg_programTokenizer = item})
-          req | req==ustr "string.compare"   ->
-            attrib req setName availableComparators (\item p -> p{inmpg_programComparator = item})
-          req -> do
-            p  <- get
-            ok <- lift (checkAttribute req setName p)
-            if ok
-              then return ()
-              else err [ustr "script contains unknown attribute declaration", req]
-      TopScript   scrp        lc -> error "TODO: the new top-level nodes of the abstracct syntax tree are not fully implmented."
-      TopLambdaExpr typ rule scrp lc -> do
-        result <- lift (evalLambdaExpr typ rule scrp)
-        exe <- lift (lift (setupExecutable (Com scrp)))
-        case result of
-          ORule rule -> do
-            let rulePat = rulePattern rule
-                fol tre pat = T.merge T.union (++) tre (toTree pat [exe])
-            modify (\p -> p{ inmpg_ruleSet = foldl fol (inmpg_ruleSet p) rulePat })
-          OScript fn -> error "TODO: Need to define a second rule table for rules that respond to 'Dao.Object.Pattern's."
-      EventExpr    typ scrp lc -> case typ of
-        ExitExprType  -> modify (\p -> p{inmpg_destructScript  = inmpg_destructScript  p ++ [scrp]})
-        BeginExprType -> do
-          exe <- lift $ lift $ setupExecutable scrp
-          modify (\p -> p{inmpg_preExec = inmpg_preExec p ++ [exe]})
-        EndExprType -> do
-          exe <- lift $ lift $ setupExecutable scrp
-          modify (\p -> p{inmpg_postExec = inmpg_postExec p ++ [exe]})
-      TopFunc  nm  argv  code   lc -> do
-        xunit <- ask
-        argv <- lift (mapM argsToObjPat (map unComment argv))
-        exe <- lift (inExecEvalRun (setupExecutable code))
-        let sub =
-              Subroutine
-              { argsPattern      = argv
-              , subSourceCode    = unComment code
-              , getSubExecutable = exe
-              }
-            name = unComment nm
-            alt funcs = mplus (fmap (++[sub]) funcs) (return [sub])
-        modify (\p -> p{inmpg_topLevelFuncs = M.alter alt name (inmpg_topLevelFuncs p)})
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1799,8 +1705,7 @@ evalScriptString xunit instr = dStack xloc "evalScriptString" $
 -- with an initialized 'Dao.Object.ExecUnit'.
 registerSourceCode :: UPath -> SourceCode -> Run (FlowCtrl ExecUnit)
 registerSourceCode upath script = dStack xloc "registerSourceCode" $ ask >>= \runtime -> do
-  let modName = unComment (sourceModuleName script)
-      pathTab = pathIndex runtime
+  let pathTab = pathIndex runtime
   alreadyLoaded <- fmap (M.lookup upath) (dReadMVar xloc pathTab)
   -- Check to make sure the logical name in the loaded program does not conflict with that
   -- of another loaded previously.
@@ -1834,7 +1739,8 @@ initSourceCode modName script = ask >>= \runtime -> do
   xunit <- initExecUnit runtime modName grsrc
   -- An execution unit is required to load a program, so of course, while a program is being
   -- loaded, the program is not in the program table, and is it's 'currentProgram' is 'Nothing'.
-  result <- programFromSource grsrc script xunit
+  -- result <- runExec (programFromSource grsrc (\_ _ _ -> return True) script) xunit -- OLD
+  result <- programFromSource grsrc script xunit -- NEW
   case result of
     FlowErr  obj   -> error ("script err: "++showObj obj)
     FlowOK   xunit -> do

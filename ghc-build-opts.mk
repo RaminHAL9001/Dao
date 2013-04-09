@@ -79,7 +79,7 @@ dao: $(DAO_DEPENDS_SRC)
 
 debug: $(DAO_DEPENDS_SRC)
 	@echo 'Building debug project...'
-	$(GHC_COMPILE) -XTemplateHaskell $(DAO_DEPENDS_SRC) -o ./dao;
+	$(GHC_COMPILE) -rtsopts $(DAO_DEPENDS_SRC) -o ./dao;
 
 clean:
 	rm dao; find . \( -name '*.o' -o -name '*.hi' \)  -delete -print

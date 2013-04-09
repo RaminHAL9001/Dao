@@ -755,8 +755,7 @@ instance Binary SourceCode where
     (bx, cksum) <- putWithChecksum byteStringSHA1Sum $ do
       putWord64be program_magic_number
       putWord64be program_data_version
-      putCom (sourceModuleName sc)
-      putComComList (directives sc)
+      putList (directives sc)
     putLazyByteString bx
     put cksum
   get = do
@@ -766,7 +765,7 @@ instance Binary SourceCode where
         program_magic_number
       chk "this program was compiled with an incompatible version of the Dao binary protocal" $
         program_data_version
-      liftM2 (SourceCode 0 nil) getCom getComComList
+      liftM (SourceCode 0 nil) getList
     theirCksum <- fmap B.pack (replicateM 160 getWord8)
     if myCksum == theirCksum
       then return sc

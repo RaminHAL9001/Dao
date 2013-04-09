@@ -30,7 +30,7 @@ all possible files that could be modified.
 Uses 'sed' to change every spcified file in [files] such that
 debugging is turned ON or OFF. Every import directive for
 'Dao.Debug.ON' or 'Dao.Debug.OFF' is changed according to the
-ON/OFF parameter you specify. Also, "\$loc" and "xloc" statements
+ON/OFF parameter you specify. Also, "\$loc" and "$loc" statements
 are changed accordingly, and '{-# LANGUAGE TemplateHaskell #-}'
 will be uncommented/commented-out depending.
 ____END
@@ -42,10 +42,10 @@ DEBUG="${DEBUG^^}";
 TEMPLATE='[{]-[#][[:space:]]*LANGUAGE[[:space:]]\+TemplateHaskell[[:space:]]*[#]-[}]';
 
 case "$DEBUG" in
-    ('ON')  XLOC='s,\<xloc\>,$loc,g';
+    ('ON')  XLOC='s,\<$loc\>,$loc,g';
             PRAGMA='s,^[[:space:]]*--\+[[:space:]]*\('"$TEMPLATE"'\),\1,';
             ;;
-    ('OFF') XLOC='s,[$]loc\>,xloc,g';
+    ('OFF') XLOC='s,[$]loc\>,$loc,g';
             PRAGMA='s,^[[:space:]]*\('"$TEMPLATE"'\),-- \1,';
             ;;
     (*)     usage; exit 1;

@@ -71,7 +71,7 @@ loc = do
 
 -- | "Exclude location information" from a debug message. If you want to scrub your code of splices
 -- and stop using template Haskell, simply replace every @$'loc'@ splice with the plain word
--- 'xloc' using "sed", or your favorite string find/replace function.
+-- '$loc' using "sed", or your favorite string find/replace function.
 xloc :: MLoc
 xloc = Nothing
 

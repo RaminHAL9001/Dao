@@ -651,6 +651,7 @@ data TopLevelExpr
   | TopScript      ScriptExpr                                                      Location
   | TopLambdaExpr  LambdaExprType    (Com [Com ObjectExpr]) [Com ScriptExpr]       Location
   | EventExpr      TopLevelEventType (Com [Com ScriptExpr])                        Location
+  | TopComment     [Comment]
   deriving (Eq, Ord, Show, Typeable)
 
 instance HasLocation TopLevelExpr where
@@ -818,9 +819,7 @@ data SourceCode
     { sourceModified   :: Int
     , sourceFullPath   :: UStr
       -- ^ the URL (full file path) from where this source code was received.
-    , sourceModuleName :: Com UStr
-      -- ^ the logical name of this program defined by the "module" keyword in the Dao script.
-    , directives       :: Com [Com TopLevelExpr]
+    , directives       :: [TopLevelExpr]
     }
   deriving (Eq, Ord, Show, Typeable)
 

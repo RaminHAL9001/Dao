@@ -1,8 +1,4 @@
-module "test module"
-
-SETUP {
-	dao.string.compare = $approximate;
-}
+dao.string.compare = $approximate;
 
 END {
 	print("(-1)");
@@ -50,9 +46,7 @@ rule "recall" {
 	try { print("test.ref = "+test.ref); } catch err {}
 }
 
-SETUP {
-	print("test module setup 1");
-}
+print("test module setup 1");
 
 rule "recall another" {
 	print("I recall another.");
@@ -81,7 +75,7 @@ rule "file $*." {
 	catch err { print(err); }
 }
 
-TAKEDOWN {
+EXIT {
 	print("test module takedown 1");
 }
 
@@ -105,7 +99,7 @@ rule "contents of file" {
 	print("Recall file...done.");
 }
 
-TAKEDOWN {
+EXIT {
 	print("test module takedown 2");
 }
 
@@ -117,9 +111,7 @@ rule "test print" {
 		 );
 }
 
-SETUP {
-	print("test module setup 2");
-}
+print("test module setup 2");
 
 rule "test arith" {
 	try {

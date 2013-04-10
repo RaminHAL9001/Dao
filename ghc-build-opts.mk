@@ -106,7 +106,7 @@ DEBUG_DEPENDS := tests/RandObj.hs tests/main.hs \
   src/Dao/Parser.hs      src/Dao/Object.hs        src/Dao/PPrint.hs \
   src/Dao/Object/Show.hs src/Dao/Object/Parser.hs src/Dao/Object/Binary.hs
 
-GHC_COMPILE_DEBUG := $(GHC_COMPILE) -feager-blackholing -rtsopts -with-rtsopts='-M8G -N4'
+GHC_COMPILE_DEBUG := $(GHC_COMPILE) -rtsopts -with-rtsopts='-M8G -N4'
 
 ./debug/test: $(DEBUG_DEPENDS) ghc-build-opts.mk
 	mkdir -p ./debug/

@@ -30,9 +30,11 @@ import           Dao.Object
 import           Dao.Object.Parser
 import           Dao.Object.Binary
 import           Dao.Object.Show
+import           Dao.Object.DeepSeq
 
 import           Control.Concurrent
 import           Control.Exception
+import           Control.DeepSeq
 import           Control.Monad.State
 
 import           Data.Maybe
@@ -164,6 +166,7 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
           hPutStrLn handl (show i++"               ") >>= evaluate
           return (handl, pos)
         let obexp = {-# SCC obexp #-} genRandWith randO maxRecurseDepth i :: TopLevelExpr
+        deepseq obexp (return ())
         writeIORef ref (i, obexp)
         let bytes = {-# SCC bytes #-} B.encode obexp
             obj   = {-# SCC obj   #-} B.decode bytes
@@ -183,10 +186,12 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
             then  err "Binary deserialization does not match source object" >> return False
             else  return True
         status2 <- case par of
-          OK      _ -> return True
+          OK      o -> deepseq o $! return True
           Backtrack -> err "Ambiguous parse" >> return False
           PFail _ b -> err ("Parse failed, "++uchars b) >> return False
         putMVar notify (status1&&status2)
+        let (par, objxp, obj) = ((), (), ())
+        seq par $! seq objxp $! seq obj (return ()) -- will force these items out of scope allowing them to be garbage collected?
         yield >> loop ref
   sep = "--------------------------------------------------------------------------"
 

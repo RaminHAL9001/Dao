@@ -30,8 +30,9 @@ import           Dao.Object
 import           Dao.Token
 import           Dao.Glob
 import           Dao.EnumSet
+import           Dao.Parser
 import qualified Dao.Tree    as T
-import           Dao.Object.Parser
+import           Dao.Parser
 
 import           Control.DeepSeq
 
@@ -138,14 +139,9 @@ instance (NFData a, NFData b) => NFData (T.Tree a b) where
   rnf (T.Branch       b) = deepseq b ()
   rnf (T.LeafBranch a b) = deepseq a $! deepseq b ()
 
-instance NFData Glob where
-  rnf (Glob a b) = deepseq a $! deepseq b ()
-
-instance NFData Subroutine where
-  rnf (Subroutine a b c) = deepseq a $! deepseq b $! seq c ()
-
-instance NFData Rule where
-  rnf (Rule a b c) = deepseq a $! deepseq b $! seq c ()
+instance NFData Glob       where { rnf (Glob       a b  ) = deepseq a $! deepseq b () }
+instance NFData Subroutine where { rnf (Subroutine a b _) = deepseq a $! deepseq b () }
+instance NFData Rule       where { rnf (Rule       a b _) = deepseq a $! deepseq b () }
 
 instance NFData Pattern where
   rnf  ObjAnyX         = ()
@@ -164,4 +160,13 @@ instance NFData Pattern where
   rnf (ObjNot     a  ) = deepseq a ()
 
 instance NFData ObjSetOp where { rnf a = seq a () }
+instance NFData TopLevelEventType where { rnf a = seq a () }
+
+instance NFData TopLevelExpr where
+  rnf (Attribute      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (TopFunc        a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (TopScript      a b    ) = deepseq a $! deepseq b ()
+  rnf (TopLambdaExpr  a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (EventExpr      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (TopComment     a      ) = deepseq a ()
 

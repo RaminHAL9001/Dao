@@ -50,6 +50,7 @@ import           Data.List
 import           Data.Ratio
 import           Data.Binary
 import           Control.Monad
+import           Control.DeepSeq
 
 -- | Like 'Prelude.Bounded', except the bounds might be infinite, and return 'EnumNegInf' or
 -- 'EnumPosInf' for the bounds. Using the GHC "flexible instances" and "undecidable instances"
@@ -589,4 +590,18 @@ setInvert set = EnumSet{ enumSetElemCount = length inv, listSegments = inv } whe
 -- | Exclusive-OR-like union of set elements.
 setXUnion :: (Ord c, Enum c, BoundedInf c) => EnumSet c -> EnumSet c -> EnumSet c
 setXUnion a b = (a `setUnion` b) `setDelete` (a `setIntersect` b)
+
+----------------------------------------------------------------------------------------------------
+
+instance NFData a => NFData (EnumInf a) where
+  rnf  EnumNegInf   = ()
+  rnf  EnumPosInf   = ()
+  rnf (EnumPoint c) = deepseq c ()
+
+instance NFData a => NFData (Segment a) where
+  rnf (Single  a  ) = deepseq a ()
+  rnf (Segment a b) = deepseq a $! deepseq b ()
+
+instance NFData a => NFData (EnumSet a) where
+  rnf (EnumSet a b) = deepseq a $! deepseq b ()
 

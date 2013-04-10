@@ -6,6 +6,7 @@ scratch.hs
 src/Dao/Evaluator.hs
 src/Dao.hs
 src/Dao/Files.hs
+src/Dao/Object/DeepSeq.hs
 src/Dao/Object/Show.hs
 src/Dao/Object/Math.hs
 src/Dao/Object/Pattern.hs

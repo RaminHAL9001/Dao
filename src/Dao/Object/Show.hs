@@ -121,8 +121,8 @@ instance PPrintable Reference where
   pPrint ref = case ref of
     IntRef     w      -> pString ('$' : show w)
     LocalRef   nm     -> pPrint nm
-    StaticRef  nm     -> pInline [pString "static ", pRef [nm]]
-    QTimeRef   rx     -> pInline [pString "qtime ", pRef rx]
+    StaticRef  nm     -> pInline [pString "static(", pRef [nm], pString ")"]
+    QTimeRef   rx     -> pInline [pString "qtime(", pRef rx, pString ")"]
     GlobalRef  rx     -> pRef rx
     ProgramRef nm ref -> pInline [pString ("program("++show nm++", "), pPrint ref, pString ")"]
     FileRef    p   rx -> pInline [pString ("file("++show p++", "), pRef rx, pString ")"]

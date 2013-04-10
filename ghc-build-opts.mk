@@ -62,8 +62,9 @@ DAO_PROJECT_FILES_LIST := project-files.list
 DAO_PROJECT_FILES      := $(shell $(call listfile,$(DAO_PROJECT_FILES_LIST)))
 DAO_INCLUDES   = -i'./src' -i'./tests'
 
-GHC_BUILD_OPTS = -threaded
-GHC_COMPILE    = ghc $(DAO_INCLUDES) $(GHC_BUILD_OPTS) --make
+GHC_BUILD_OPTS   = -threaded
+GHC_COMPILE      = ghc $(DAO_INCLUDES) $(GHC_BUILD_OPTS) --make
+GHC_COMPILE_PROF = $(GHC_COMPILE) -rtsopts -prof
 
 ifndef DAO_PROJECT_FILES
 $(error $(DAO_PROJECT_FILES) list is empty)
@@ -77,9 +78,9 @@ dao: $(DAO_DEPENDS_SRC)
 	@echo 'Building project...'
 	$(GHC_COMPILE) $(DAO_DEPENDS_SRC) -o ./dao;
 
-debug: $(DAO_DEPENDS_SRC)
-	@echo 'Building debug project...'
-	$(GHC_COMPILE) -rtsopts $(DAO_DEPENDS_SRC) -o ./dao;
+dao-prof: $(DAO_DEPENDS_SRC)
+	@echo 'Building project...'
+	$(GHC_COMPILE_PROF) $(DAO_DEPENDS_SRC) -o ./dao-prof
 
 clean:
 	rm dao; find . \( -name '*.o' -o -name '*.hi' \)  -delete -print
@@ -100,12 +101,17 @@ enum-set-test:
 # try, just start writing a new source file, make a target for it here, and modify the 'default'
 # target above to use these targets as prerequisites.
 
-./debug/test: tests/RandObj.hs \
+DEBUG_DEPENDS := tests/RandObj.hs tests/main.hs \
   src/Dao/String.hs      src/Dao/Token.hs         src/Dao/Predicate.hs \
   src/Dao/Parser.hs      src/Dao/Object.hs        src/Dao/PPrint.hs \
-  src/Dao/Object/Show.hs src/Dao/Object/Parser.hs src/Dao/Object/Binary.hs \
-  tests/main.hs          ghc-build-opts.mk
+  src/Dao/Object/Show.hs src/Dao/Object/Parser.hs src/Dao/Object/Binary.hs
+
+GHC_COMPILE_DEBUG := $(GHC_COMPILE) -feager-blackholing -rtsopts -with-rtsopts='-M8G -N4'
+
+./debug/test: $(DEBUG_DEPENDS) ghc-build-opts.mk
 	mkdir -p ./debug/
-	$(GHC_COMPILE) $(RECOMP) -rtsopts \
-		-with-rtsopts=' -M8G -N4 ' tests/RandObj.hs tests/main.hs -o ./debug/test
+	$(GHC_COMPILE_DEBUG) $(DEBUG_DEPENDS) -o ./debug/test
+
+./debug/test-prof: $(DEBUG_DEPENDS) ghc-build-opts.mk
+	$(GHC_COMPILE_DEBUG) -prof $(DEBUG_DEPENDS) -o ./debug/test-prof
 

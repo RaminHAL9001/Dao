@@ -39,9 +39,11 @@ import           Numeric
 
 ----------------------------------------------------------------------------------------------------
 
+import Dao.PPrint
+import Dao.Object.Show
 import Debug.Trace
 tr :: String -> Parser ()
-tr msg = lookAhead 32 >>= \str -> trace (show str ++ '|':msg) >> retun ()
+tr msg = lookAhead 32 >>= \str -> trace (show str ++ '|':msg) (return ())
 
 ----------------------------------------------------------------------------------------------------
 
@@ -559,7 +561,7 @@ parseParenObjectExpr = do
 parseMetaEvalObjectExpr :: Parser ObjectExpr
 parseMetaEvalObjectExpr = do
   string "#{"
-  expect "object expression in parentheses" $ \com1 -> do
+  expect "object expression in meta-evaluation braces" $ \com1 -> do
     (expr, com2) <- parseObjectExpr
     flip mplus (fail "expecting closing \"}#\" token") $ do
       string "}#" >> return (MetaEvalExpr (com com1 expr com2) unloc)
@@ -590,7 +592,7 @@ parseUnaryOperatorExpr :: Parser ObjectExpr
 parseUnaryOperatorExpr = do -- high-prescedence unary operators, these are interpreted as 'FuncCall's.
   op <- regex (rxCharSetFromStr "-@$!~")
   expect ("\""++op++"\" operator must be followed by an object expression") $ \com1 -> do
-    expr <- mplus parseParenObjectExpr parseNonEquation
+    expr <- msum [parseParenObjectExpr, parseMetaEvalObjectExpr, parseNonEquation]
     return (PrefixExpr (read op) (com com1 expr []) unloc)
 
 parseInfixOp :: Parser Name
@@ -701,7 +703,7 @@ parseListItems :: String -> Bool -> Parser [Com ObjectExpr]
 parseListItems key requireAssign = do
   let getDictItem = token $ parseObjectExpr >>= \ (item, com2) -> case item of
         AssignExpr _ _ _ _ -> return (item, com2)
-        _ -> fail ("each entry to "++key++" definition must assign a value to a key")
+        _ -> fail ("each entry to "++key++" definition must assign a value to a key\ninstead received:\n"++prettyPrint 80 "    " item)
       getItem = if requireAssign then getDictItem else parseObjectExpr
   adjustComListable (parseListable ("items for "++key++" definition") '{' ',' '}' getItem)
 

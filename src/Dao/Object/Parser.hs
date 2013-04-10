@@ -39,6 +39,12 @@ import           Numeric
 
 ----------------------------------------------------------------------------------------------------
 
+import Debug.Trace
+tr :: String -> Parser ()
+tr msg = lookAhead 32 >>= \str -> trace (show str ++ '|':msg) >> retun ()
+
+----------------------------------------------------------------------------------------------------
+
 rationalFromString :: Int -> Rational -> String -> Maybe Rational
 rationalFromString maxValue base str =
   if b<1 then fmap (b*) (fol (reverse str)) else fol str where
@@ -242,7 +248,7 @@ parseKeywordOrName = liftM2 (++) (regex alpha_) (regexMany alnum_)
 
 isKeyword :: String -> Bool
 isKeyword str = elem str $ words $ concat $
-  [ " if else try catch for in break continue return throw call function"
+  [ " if else try catch for in break continue return throw function with"
   , " pattern regex import require"
   , " static qtime const global"
   ]
@@ -845,7 +851,7 @@ parseKeywordDirective key = msum $
               scrpt <- parseBracketedScript
               return (TopFunc (com com1 name com2) params (com com2 scrpt com3) unloc)
   , do -- Parse a top-level script expression.
-        guard (elem key (words "if else while try catch break continue return with"))
+        guard (isKeyword key || isTypeword key)
         expect "top-level script expression" $ \com1 -> do
           scrpt <- parseKeywordScriptExpr key com1
           return (TopScript scrpt unloc)
@@ -854,7 +860,7 @@ parseKeywordDirective key = msum $
           objExpr <- keywordObjectExpr key com1
           expect "top-level assignment expression" $ \com1 -> do
             (eqn, com1) <- parseEquation objExpr com1
-            flip mplus (fail "simicolon to terminate top-level assignment expression") $
+            flip mplus (fail "expecting simicolon to terminate top-level assignment expression") $
               char ';' >> return (TopScript (EvalObject eqn com1 unloc) unloc)
   ]
 

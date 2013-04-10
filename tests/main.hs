@@ -196,7 +196,7 @@ threadCount :: Int
 threadCount = 3
 
 maxErrors :: Int
-maxErrors = 8
+maxErrors = 200
 
 displayInterval :: Int
 displayInterval = 4000000

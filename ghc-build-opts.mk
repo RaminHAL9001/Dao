@@ -107,5 +107,5 @@ enum-set-test:
   tests/main.hs          ghc-build-opts.mk
 	mkdir -p ./debug/
 	$(GHC_COMPILE) $(RECOMP) -rtsopts \
-		-with-rtsopts='-M8G' tests/RandObj.hs tests/main.hs -o ./debug/test
+		-with-rtsopts=' -M8G -N4 ' tests/RandObj.hs tests/main.hs -o ./debug/test
 

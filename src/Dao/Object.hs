@@ -1,7 +1,7 @@
 -- "src/Dao/Object.hs"  declares the "Object" data type which is the
 -- fundamental data type used througout the Dao System.
 -- 
--- Copyright (C) 2008-2012  Ramin Honary.
+-- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or
@@ -737,7 +737,7 @@ instance Ord Pattern where
 -- the Dao System to facilitate execution of Dao programs, but are not
 -- used directly by the Dao scripting language as Objects are.
 -- 
--- Copyright (C) 2008-2012  Ramin Honary.
+-- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or
@@ -1078,7 +1078,7 @@ instance HasDebugRef Runtime where
 -- "src/Dao/Object/Monad.hs"  defines the monad that is used to evaluate
 -- expressions written in the Dao scripting lanugage.
 -- 
--- Copyright (C) 2008-2012  Ramin Honary.
+-- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

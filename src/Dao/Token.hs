@@ -1,7 +1,7 @@
 -- "src/Dao/Token.hs"  Defines the 'Token' and 'Location' types
 -- used by "src/Dao/Object.hs" and "src/Dao/Parser.hs".
 -- 
--- Copyright (C) 2008-2012  Ramin Honary.
+-- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

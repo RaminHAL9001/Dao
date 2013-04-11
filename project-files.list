@@ -1,7 +1,7 @@
 # "project-files.list"
 # used by the GNU-Make script "ghc-build-opts.mk" to specify which
 # files are to be compiled by GHC.
-# # Copyright (C) 2008-2012  Ramin Honary.
+# # Copyright (C) 2008-2013  Ramin Honary.
 # 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by

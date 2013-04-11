@@ -1,7 +1,7 @@
 -- "src/Dao/Resource.hs"  prevents many threads from updating a portion
 -- of a data structure within DMVar a state variable.
 -- 
--- Copyright (C) 2008-2012  Ramin Honary.
+-- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

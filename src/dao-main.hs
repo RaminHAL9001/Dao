@@ -1,7 +1,7 @@
 -- "src/dao-main.hs"  the Main module for the "dao" executable program.
 -- Provides an interactive command line interface to the Dao System.
 -- 
--- Copyright (C) 2008-2012  Ramin Honary.
+-- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

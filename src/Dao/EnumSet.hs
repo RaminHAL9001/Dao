@@ -1,7 +1,7 @@
 -- "src/Dao/EnumSet.hs"  defines the Segment data type used to denote
 -- a possibly infinite subset of contiguous elements of an Enum data type.
 -- 
--- Copyright (C) 2008-2012  Ramin Honary.
+-- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

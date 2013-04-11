@@ -2,7 +2,7 @@
 -- to construct a knowledge base of pattern->rule relationships that can
 -- be executed in the Dao system's runtime.
 -- 
--- Copyright (C) 2008-2012  Ramin Honary.
+-- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

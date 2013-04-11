@@ -2,7 +2,7 @@
 -- "Object" data type into the "Data.Binary" class that is exported by
 -- the "binary" package.
 -- 
--- Copyright (C) 2008-2012  Ramin Honary.
+-- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

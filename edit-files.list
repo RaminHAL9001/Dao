@@ -2,6 +2,8 @@
 # They will appear in the order specified.
 src/Dao/Object/Parser.hs
 src/Dao/Object.hs
+src/Dao/Object/Struct.hs
+src/Dao/Struct.hs
 scratch.hs
 src/Dao/Evaluator.hs
 src/Dao.hs

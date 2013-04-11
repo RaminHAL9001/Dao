@@ -36,6 +36,7 @@ Dao/Object/Parser.hs
 Dao/Object/Pattern.hs
 Dao/Object/PPrint.hs
 Dao/Object/DeepSeq.hs
+Dao/Object/Struct.hs
 Dao/PPrint.hs
 Dao/Parser.hs
 Dao/Glob.hs

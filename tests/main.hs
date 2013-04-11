@@ -29,7 +29,7 @@ import           Dao.Parser
 import           Dao.Object
 import           Dao.Object.Parser
 import           Dao.Object.Binary
-import           Dao.Object.Show
+import           Dao.Object.PPrint
 import           Dao.Object.DeepSeq
 
 import           Control.Concurrent

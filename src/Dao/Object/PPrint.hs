@@ -1,4 +1,4 @@
--- "src/Dao/Object/Show.hs"  provides functions for pretty printing Dao
+-- "src/Dao/Object/PPrint.hs"  provides functions for pretty printing Dao
 -- objects, Dao scripts, and Dao programs.
 -- 
 -- Copyright (C) 2008-2012  Ramin Honary.
@@ -22,7 +22,7 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 
-module Dao.Object.Show where
+module Dao.Object.PPrint where
 
 import           Dao.String
 import           Dao.PPrint

@@ -39,7 +39,7 @@ import           Dao.Files
 import           Dao.Parser
 
 import           Dao.Object.Math
-import           Dao.Object.Show
+import           Dao.Object.PPrint
 import           Dao.Object.Binary
 import           Dao.Object.Pattern
 import           Dao.Object.Parser

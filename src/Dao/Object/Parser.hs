@@ -40,7 +40,7 @@ import           Numeric
 ----------------------------------------------------------------------------------------------------
 
 import Dao.PPrint
-import Dao.Object.Show
+import Dao.Object.PPrint
 import Debug.Trace
 tr :: String -> Parser ()
 tr msg = lookAhead 32 >>= \str -> trace (show str ++ '|':msg) (return ())

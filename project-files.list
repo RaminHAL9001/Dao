@@ -34,7 +34,7 @@ Dao/Object/Binary.hs
 Dao/Object.hs
 Dao/Object/Parser.hs
 Dao/Object/Pattern.hs
-Dao/Object/Show.hs
+Dao/Object/PPrint.hs
 Dao/Object/DeepSeq.hs
 Dao/PPrint.hs
 Dao/Parser.hs

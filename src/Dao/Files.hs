@@ -34,7 +34,7 @@ import qualified Dao.Tree    as T
 import           Dao.Parser hiding (lookAhead)
 import           Dao.Predicate
 import           Dao.Object.Parser
-import           Dao.Object.Show
+import           Dao.Object.PPrint
 import           Dao.Object.Binary
 
 import           Control.Exception

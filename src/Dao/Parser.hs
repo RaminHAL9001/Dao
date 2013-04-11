@@ -26,7 +26,7 @@ module Dao.Parser
     Regex, matchRegex, matchRepeat
     -- * Primitive 'Regex's
     -- $Primitive_regexs
-  , rxNull, rxEmpty, rxTrue, rxFalse, rxSequence, rxChoice
+  , rxNull, rxEmpty, rxTrue, rxFalse
   , rxChar, rxString, rxUStr, rxCharSet, rxNotCharSet, rxUnion
   , rxCharSetFromStr, rxNotCharSetFromStr
     -- * Essential 'Regex's

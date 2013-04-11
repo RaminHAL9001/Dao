@@ -596,7 +596,7 @@ parseUnaryOperatorExpr = do -- high-prescedence unary operators, these are inter
     return (PrefixExpr (read op) (com com1 expr []) unloc)
 
 parseInfixOp :: Parser Name
-parseInfixOp = fmap ustr $ regex $ rxChoice $ map rxString $ words $ concat $
+parseInfixOp = fmap ustr $ msum $ map string $ words $ concat $
   [ " <<= >>= += -= *= /= %= &= |= ^= .= "
   , " != == <= >= && || << >> ** -> "
   , " . = + - * / % & | < > ^ "

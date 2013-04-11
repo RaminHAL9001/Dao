@@ -1,23 +1,24 @@
-module "test2"
-
-string.compare  approximate;
+string.compare = approximate;
 
 BEGIN {
-	${comma} = [];
-	${comma.count} = 0;
+	$comma = list {};
+	comma.count = 0;
 }
+
 rule "$*, $*" {
-	a = ${comma.count};
-	if(a != 0) { return null; }
-	${comma.count} = a+1;
-	a = [ "1 = "+join("", $1)
-		, "2 = "+join("", $2)+"\n"
-		];
-	${comma} = ${comma} + a;
+	a = comma.count;
+	if(a != 0) { return; }
+	comma.count = a + 1;
+	a = list {
+		"1 = " + join("", $1),
+		"2 = " + join("", $2) + "\n"
+	};
+	$comma += a;
 }
+
 END {
 	a = 1;
-	foreach x in ${comma} {
+	for x in @$comma {
 		print(a+": "+x);
 		a = a + 1;
 	}

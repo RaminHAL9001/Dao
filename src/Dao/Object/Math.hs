@@ -103,7 +103,7 @@ objToList o = case o of
 patternComponents :: Glob -> [Object]
 patternComponents p = map patUnitToObj (getPatUnits p)
 
-patUnitToObj :: PatUnit -> Object
+patUnitToObj :: GlobUnit -> Object
 patUnitToObj p = case p of
   Wildcard -> OType ListType
   AnyOne   -> OType StringType

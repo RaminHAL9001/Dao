@@ -63,7 +63,7 @@ instance NFData ArithOp1 where { rnf a = seq a () }
 instance NFData ArithOp2 where { rnf a = seq a () }
 instance NFData LambdaExprType where { rnf a = seq a () }
 instance NFData TypeID   where { rnf a = seq a () }
-instance NFData PatUnit  where { rnf a = seq a () }
+instance NFData GlobUnit  where { rnf a = seq a () }
 
 instance NFData ObjectExpr where
   rnf VoidExpr = ()

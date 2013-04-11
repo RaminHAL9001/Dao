@@ -268,13 +268,13 @@ objToList o = case o of
   OGlob    o   -> return $ patternComponents o
   _            -> mzero
 
-patUnitToObj :: PatUnit -> Object
+patUnitToObj :: GlobUnit -> Object
 patUnitToObj p = case p of
   Wildcard -> OType ListType
   AnyOne   -> OType StringType
   Single o -> OString o
 
-objToPatUnit :: Object -> PValue tok PatUnit
+objToPatUnit :: Object -> PValue tok GlobUnit
 objToPatUnit o = case o of
   OType StringType -> return Wildcard
   OType ListType   -> return AnyOne

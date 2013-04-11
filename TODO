@@ -1,5 +1,23 @@
 TODO:
 
+*	Rename "Dao.Object.Show" to "Dao.Object.PPrint".
+
+*	Need a class for converting data types to 'Dao.Tree.Tree's, with functions like "dataToStruct" and
+"structToData". Also in this module, there should be a State monad for building trees and updating
+trees, preferably a state that lifts the 'PValue' monad so you can throw errors.
+
+*	Clean up the "Dao.Parser" module.
+
+*	Break the abstract syntax tree off into it's own module, keeing the byte-code-like object as
+part of the "Dao.Object" module.
+
+*	Need to implement the evaluator for the "meta-dereference" operator, and make sure it is placed
+in the 'Dao.Evaluator.setupExecutable' function.
+
+*	Parse each input file in a separate thread, deep-sequence the parsed structures.
+
+*	Need a new element of the abstract syntax tree for parsing 'Dao.Object.Pattern's.
+
 *	Listable parsers that end in a comma on their last item, with the comma followed by a closing
 brace instead of another item, will return a null list. This should not happen.
 
@@ -12,21 +30,11 @@ order.
 
 *	Some inlining pretty-printers are still messing up the indentation.
 
-*	Need to define a second rule table for rules that respond to 'Dao.Object.ObjPat's.
-
 *	Need to create a means to track which modules have "open()"-ed and "close()"-ed which files. Like
 reference counting with sets, each file will have a set of module references with an element for
 every module that has "open()"-ed it without yet "close()"-ing it. Files loaded from the command
 line might be represented by "Nothing" where files loaded by a module migh be represented by
 "Just moduleName".
-
-*	Need to provide a "meta-dereference" operator (kind of like macros in the C preprocessor) for
-constant script and rule object declarations in code. These objects treat all references as unbound.
-Binding values are only resolved when the script code is evaluated, even if the context of variables
-is completely different from the time it was defined at the time it is evaluated. It might be handy
-to programmers if they had a means to tell Dao to "replace the variable name in this line of code
-with the value the variable has right now, and construct the script or rule object with that value
-instead of a reference in that point in the abstract syntax tree."
 
 *	'Dao.Object.Subroutine' is a data structure representing a function that takes a list of
 'Dao.Object.ObjPat's, and when it is executed, it will resolve all Reference parameters passed to
@@ -48,7 +56,24 @@ returned value. There should also be a "testSource()" built-in function for eval
 source code into a working module object, and executing strings against that, all done so
 programmatically within the running Dao program.
 
+*	Allow "catch" statements in the top level, which are a LambdaExprType expression that only
+respond to uncaught errors. Modify the "catch" statement to allow pattern expressions that only
+catch errors that match.
+
 SOLVED:
+
+*	Rename 'Dao.Glob.PatUnit' to 'GlobUnit'.
+
+*	Need to provide a "meta-dereference" operator (kind of like macros in the C preprocessor) for
+constant script and rule object declarations in code. These objects treat all references as unbound.
+Binding values are only resolved when the script code is evaluated, even if the context of variables
+is completely different from the time it was defined at the time it is evaluated. It might be handy
+to programmers if they had a means to tell Dao to "replace the variable name in this line of code
+with the value the variable has right now, and construct the script or rule object with that value
+instead of a reference in that point in the abstract syntax tree."
+
+*	Need to define a second rule table for rules that respond to 'Dao.Object.ObjPat's.
+Completed: this is called 'patternTable' and is a list of patterns in an 'Dao.Object.ExecUnit'.
 
 *	Need a parser for "Dao.Object.ObjPat". Rename 'Dao.Pattern.Pattern' to "Dao.Glob.Glob' and
 rename 'Dao.Object.ObjPat' to 'Dao.Object.Pattern'.

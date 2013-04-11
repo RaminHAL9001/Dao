@@ -921,6 +921,8 @@ data ExecUnit
     , importsTable       :: M.Map Name (Maybe File)
       -- ^ a pointer to the ExecUnit of every Dao program imported with the @import@ keyword.
     , patternTable       :: [Subroutine]
+      -- ^ contains functions which are evaluated not by name but by passing objects to them that
+      -- match their argument list.
     , execAccessRules    :: FileAccessRules
       -- ^ restricting which files can be loaded by the program associated with this ExecUnit, these
       -- are the rules assigned this program by the 'ProgramRule' which allowed it to be loaded.

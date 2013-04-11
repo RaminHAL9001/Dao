@@ -76,12 +76,12 @@ getMatch i ma =
   (fromMaybe (error "match retrieved from pattern which contained no wild-card symbols") $
     (matchGaps ma)) ! i
 
-data PatUnit = Wildcard | AnyOne | Single UStr deriving (Eq, Ord, Show)
+data GlobUnit = Wildcard | AnyOne | Single UStr deriving (Eq, Ord, Show)
 
 -- | Patterns are lists of 'Data.Maybe.Maybe' elements, where constant strings are given by
 -- 'Data.Maybe.Just' or wildcards given by 'Data.Maybe.Nothing'. Wildcards runMatchPattern zero or more other
 -- Tokens when used as a 'Glob'.
-data Glob = Glob { getPatUnits :: [PatUnit], getGlobLength :: Int } deriving (Eq, Ord, Typeable)
+data Glob = Glob { getPatUnits :: [GlobUnit], getGlobLength :: Int } deriving (Eq, Ord, Typeable)
 instance Show Glob where
   show pat = show (concatMap fn (getPatUnits pat)) where
     fn a = case a of { Wildcard -> "$*" ; AnyOne -> "$?" ; Single a  -> uchars a }
@@ -109,8 +109,8 @@ parsePattern ax = Glob{ getPatUnits = patrn, getGlobLength = foldl (+) 0 lenx } 
   n _       _       = False
 
 -- | 'PatternTree's contain many patterns in an tree structure, which is more efficient when you
--- have many patterns that start with similar sequences of 'PatUnit's.
-type PatternTree a = T.Tree PatUnit a
+-- have many patterns that start with similar sequences of 'GlobUnit's.
+type PatternTree a = T.Tree GlobUnit a
 
 -- | By converting an ordinary 'Glob' to a pattern tree, you are able to use all of the methods
 -- in the "Dao.Tree" module to modify the patterns in it.
@@ -168,7 +168,7 @@ matchPattern eq pat tokx = matchTree eq (toTree pat ()) tokx >>= (\ (_,m,_) -> [
 --    done sz stk = Just (matchFromList ax sz stk)
 ----------------------------------------------------------------------------------------------------
 
--- | Takes a tree full of 'PatUnit' objects, treating each path to a leaf as a list of 'PatUnit'
+-- | Takes a tree full of 'GlobUnit' objects, treating each path to a leaf as a list of 'GlobUnit'
 -- objects that comopses a single pattern, then matches the input 'Tokens' to each pattern that was
 -- composed from every path to every leaf in the given 'Dao.Tree' object. Evaluates every possible
 -- match. This is actually the the more general algorithm, and the 'matchPattern' token is a special

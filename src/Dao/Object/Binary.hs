@@ -334,7 +334,7 @@ instance (Binary a, RealFloat a) => Binary (Complex a) where
 
 ----------------------------------------------------------------------------------------------------
 
-instance Binary PatUnit where
+instance Binary GlobUnit where
   put p = case p of
     Wildcard -> putWord8 0x29
     AnyOne   -> putWord8 0x2A

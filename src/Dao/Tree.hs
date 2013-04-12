@@ -113,7 +113,7 @@ notVoid t = case t of
 
 -- | Alter a 'Tree', like 'Data.Map.alter', but you must provide functions for two situations: the
 -- first is the situation where you have reached the end of the given path and you need to choose
--- whther or not to insert or delete a 'Leaf'. the second is the situation where you have selected
+-- whther or not to insert or delete a 'Leaf'. The second is the situation where you have selected
 -- the next node in the path, and you need to choose how this node will be effected.
 alter :: Ord p => ModLeaf a -> ModTree p a -> [p] -> Tree p a -> Tree p a
 alter leaf tree px t = fromMaybe Void (loop px (Just t)) where
@@ -216,7 +216,7 @@ merge joinWith combine t u = case (t, u) of
 -- | Like 'merge', but performs the merge on the branch at the address of one tree.
 graft
   :: Ord p
-  => MergeType p a -- ^ is either 'union', 'intersection', or 'difference'.
+  => MergeType p a -- ^ is either 'union', 'intersection'.
   -> (a -> a -> a) -- ^ the function to use to combine 'Leaf' and 'LeafBranch' nodes.
   -> [p]           -- ^ the path of the branch to which to apply the 'merge'.
   -> Tree p a      -- ^ the tree which that above path will seek through.

@@ -1,5 +1,8 @@
 TODO:
 
+*	Need to introduce constructors for 'Dao.EnumSet.EnumSet' and 'Dao.Object.Pattern' into the
+'Dao.Object.Object' data type.
+
 *	Need a class for converting data types to 'Dao.Tree.Tree's, with functions like "dataToStruct" and
 "structToData". Also in this module, there should be a State monad for building trees and updating
 trees, preferably a state that lifts the 'PValue' monad so you can throw errors.

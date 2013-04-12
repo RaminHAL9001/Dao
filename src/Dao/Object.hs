@@ -127,7 +127,64 @@ data TypeID
   | ScriptType
   | RuleType
   | BytesType
-  deriving (Eq, Ord, Show, Enum, Typeable, Bounded)
+  deriving (Eq, Ord, Enum, Typeable, Bounded)
+
+instance Show TypeID where
+  show t = case t of
+    NullType     -> "null"
+    TrueType     -> "true"
+    TypeType     -> "type"
+    IntType      -> "int"
+    WordType     -> "word"
+    DiffTimeType -> "diff"
+    FloatType    -> "float"
+    LongType     -> "long"
+    RatioType    -> "ratio"
+    ComplexType  -> "complex"
+    TimeType     -> "time"
+    CharType     -> "char"
+    StringType   -> "string"
+    PairType     -> "pair"
+    RefType      -> "ref"
+    ListType     -> "list"
+    SetType      -> "set"
+    ArrayType    -> "array"
+    IntMapType   -> "intMap"
+    DictType     -> "dict"
+    TreeType     -> "tree"
+    GlobType     -> "glob"
+    ScriptType   -> "script"
+    RuleType     -> "rule"
+    BytesType    -> "bytes"
+
+instance Read TypeID where
+  readsPrec _ str = map (\a -> (a, "")) $ case str of
+    "null"    -> [NullType]
+    "true"    -> [TrueType]
+    "type"    -> [TypeType]
+    "int"     -> [IntType]
+    "word"    -> [WordType]
+    "diff"    -> [DiffTimeType]
+    "float"   -> [FloatType]
+    "long"    -> [LongType]
+    "ratio"   -> [RatioType]
+    "complex" -> [ComplexType]
+    "time"    -> [TimeType]
+    "char"    -> [CharType]
+    "string"  -> [StringType]
+    "pair"    -> [PairType]
+    "ref"     -> [RefType]
+    "list"    -> [ListType]
+    "set"     -> [SetType]
+    "array"   -> [ArrayType]
+    "intMap"  -> [IntMapType]
+    "dict"    -> [DictType]
+    "tree"    -> [TreeType]
+    "glob"    -> [GlobType]
+    "script"  -> [ScriptType]
+    "rule"    -> [RuleType]
+    "bytes"   -> [BytesType]
+    _         -> []
 
 oBool :: Bool -> Object
 oBool a = if a then OTrue else ONull
@@ -451,6 +508,9 @@ data UpdateOp = UCONST | UADD | USUB | UMULT | UDIV | UMOD | UORB | UANDB | UXOR
 
 instance Bounded UpdateOp where {minBound = UCONST; maxBound = USHR}
 
+allUpdateOpChars = "="
+allUpdateOpStrs = " = += -= *= /= %= |= &= ^= <<= >>= "
+
 instance Show UpdateOp where
   show a = case a of
     UCONST -> "="
@@ -482,8 +542,11 @@ instance Read UpdateOp where
 
 -- | Unary operators.
 data ArithOp1
-  = REF   | DEREF | INVB  | NOT   | NEG -- ^ unary
+  = REF | DEREF | INVB  | NOT | NEG | GLDOT -- ^ unary
   deriving (Eq, Ord, Enum, Ix, Typeable)
+
+allArithOp1Chars = "$@~!-."
+allArithOp1Strs = " $ @ ~ - ! . "
 
 instance Bounded ArithOp1 where {minBound = REF; maxBound = NEG}
 
@@ -503,7 +566,11 @@ data ArithOp2
   | AND   | EQUL  | NEQUL      
   | ORB   | ANDB  | XORB
   | SHL   | SHR
+  | GTN   | LTN   | GTEQ  | LTEQ
   deriving (Eq, Ord, Enum, Ix, Typeable)
+
+allArithOp2Chars = "+-*/%<>|"
+allArithOp2Strs = " + - * / ** -> . || && == != | & ^ << >> < > <= => "
 
 instance Show ArithOp2 where
   show a = case a of
@@ -513,6 +580,7 @@ instance Show ArithOp2 where
     ; AND   -> "&&"; EQUL -> "=="; NEQUL -> "!="
     ; ORB   -> "|" ; ANDB -> "&" ; XORB  -> "^"
     ; SHL   -> "<<"; SHR  -> ">>"
+    ; GTN -> ">"; LTN -> "<"; GTEQ -> ">="; LTEQ -> "<="
     }
 
 instance Read ArithOp2 where
@@ -522,7 +590,9 @@ instance Read ArithOp2 where
     ; "->" -> [POINT]; "."  -> [DOT  ]; "||" -> [OR   ]
     ; "&&" -> [AND  ]; "==" -> [EQUL ]; "!=" -> [NEQUL]
     ; "|"  -> [ORB  ]; "&"  -> [ANDB ]; "^"  -> [XORB ]
-    ; "<<" -> [SHL  ]; ">>" -> [SHR  ]; _    -> []
+    ; "<<" -> [SHL  ]; ">>" -> [SHR  ]; "<"  -> [LTN  ]
+    ; ">"  -> [GTN  ]; "<=" -> [GTEQ ]; ">=" -> [GTEQ ]
+    ; _    -> []
     }
 
 instance Bounded ArithOp2 where {minBound = ADD; maxBound = SHR}

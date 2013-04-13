@@ -26,17 +26,19 @@ hash:=\#
 
 listfile = grep -v '^[[:space:]]*$(hash).*$$' $1
 
-.PHONEY:  edit  default  debug  clean
+.PHONEY:  all  edit  default  debug  clean
 
 ####################################################################################################
 # The default target
 
-default: dao
+default: all
+
+all:  dao  debug/test
 
 ####################################################################################################
 # The 'edit' target conveniently opens all the files you want to edit in the vim editor.
 
-export GHCRTS := -M3G #Allow 3GB of heap space to GHC when compiling.
+export GHCRTS := -M8G #Allow 8GB of heap space to GHC when compiling.
 
 EDIT_FILES_LIST := edit-files.list
 EDIT_SCRATCH    := scratch.hs -c ':set autowrite autoread'
@@ -102,7 +104,7 @@ enum-set-test:
 # target above to use these targets as prerequisites.
 
 DEBUG_DEPENDS := tests/RandObj.hs tests/main.hs \
-  src/Dao/String.hs      src/Dao/Token.hs         src/Dao/Predicate.hs \
+  src/Dao/String.hs      src/Dao/Token.hs         src/Dao/Predicate.hs   src/Dao/Object/DeepSeq.hs \
   src/Dao/Parser.hs      src/Dao/Object.hs        src/Dao/PPrint.hs \
   src/Dao/Object/PPrint.hs src/Dao/Object/Parser.hs src/Dao/Object/Binary.hs
 

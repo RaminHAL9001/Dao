@@ -169,3 +169,35 @@ instance NFData AST_TopLevel where
   rnf (AST_Event      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (AST_TopComment a      ) = deepseq a ()
 
+instance NFData TopLevelExpr where
+  rnf (Attribute      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (TopFunc        a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (TopScript      a b    ) = deepseq a $! deepseq b ()
+  rnf (TopLambdaExpr  a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (EventExpr      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+
+instance NFData ScriptExpr where
+  rnf (EvalObject   a b    ) = deepseq a $! deepseq b ()
+  rnf (IfThenElse   a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (TryCatch     a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (ForLoop      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (WhileLoop    a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (ContinueExpr a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (ReturnExpr   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (WithDoc      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+
+instance NFData ObjectExpr where
+  rnf (Literal       a b    ) = deepseq a $! deepseq b ()
+  rnf (AssignExpr    a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (Equation      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (PrefixExpr    a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (ParenExpr     a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (ArraySubExpr  a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (FuncCall      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (DictExpr      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (ArrayExpr     a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (StructExpr    a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (DataExpr      a b    ) = deepseq a $! deepseq b ()
+  rnf (LambdaExpr    a b c d) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (MetaEvalExpr  a b    ) = deepseq a $! deepseq b ()
+

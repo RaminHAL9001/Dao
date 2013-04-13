@@ -383,6 +383,37 @@ instance Structured AST_TopLevel where
     , with "comment"   $ liftM AST_TopComment getData
     ]
 
+putIntermediate :: (Intermediate obj ast, Structured ast) => String -> obj -> T.Tree Name Object
+putIntermediate typ a = deconstruct $ case fromInterm a of
+  []  -> return ()
+  [a] -> putTree (dataToStruct a)
+  _   -> error ("fromInterm returned more than one possible intermediate data structure for "++typ)
+
+getIntermediate :: (Intermediate obj ast, Structured ast) => String -> T.Tree Name Object -> PValue UpdateErr obj
+getIntermediate typ = reconstruct $ do
+  a <- getData
+  case toInterm a of
+    []  -> get >>= \st ->
+      updateFailed (OTree st) ("could not convert "++typ++" expression to it's intermediate")
+    [a] -> return a
+    _   -> error ("toInterm returned more than one possible abstract syntax tree for "++typ)
+
+toplevel_intrm = "top-level intermedaite node"
+script_intrm = "script intermedaite node"
+object_intrm = "object intermedaite node"
+
+instance Structured TopLevelExpr where
+  dataToStruct = putIntermediate toplevel_intrm
+  structToData = getIntermediate toplevel_intrm
+
+instance Structured ScriptExpr where
+  dataToStruct = putIntermediate script_intrm
+  structToData = getIntermediate script_intrm
+
+instance Structured ObjectExpr where
+  dataToStruct = putIntermediate object_intrm
+  structToData = getIntermediate object_intrm
+
 instance (Ord a, Enum a, Structured a) => Structured (EnumInf a) where
   dataToStruct a = deconstruct $ case a of
     EnumPosInf  -> putStringData "+inf"

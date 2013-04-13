@@ -109,7 +109,7 @@ instance PPrintable Object where
       if I.null o then pString "intmap{}" else pContainer "intmap " pMapAssoc (I.assocs o)
     OTree      o     -> pPrint o
     OGlob      o     -> pPrint o
-    OScript    o     -> error "Need to replace 'OScript' data type instantiation into PPrintable"
+    OScript    o     -> pPrint o
     OBytes     o     ->
       if B.null o
         then  pString "data{}"
@@ -300,6 +300,24 @@ instance PPrintable AST_TopLevel where
     AST_TopLambda  a b c _ -> pClosure header " { " " }" (map pPrint c) where
       header = pShow a >> pPrintComWith (pList_ "(" ", " ")" . map pPrint) b
     AST_Event      a b   _ -> pPrintComWith (pClosure (pShow a) " { " " }" . map pPrint) b
+
+pPrintInterm :: (Intermediate obj ast, PPrintable ast) => obj -> PPrint ()
+pPrintInterm = mapM_ pPrint . fromInterm
+
+instance PPrintable TopLevelExpr where { pPrint = pPrintInterm }
+instance PPrintable ScriptExpr   where { pPrint = pPrintInterm }
+instance PPrintable ObjectExpr   where { pPrint = pPrintInterm }
+
+instance PPrintable Subroutine where
+  pPrint a = case a of
+    Subroutine pats exe -> prin "function" pats exe
+    GlobAction pats exe -> prin "rule"     pats exe
+    where
+      prin typ pats exe =
+        pClosure (pInline (pString typ : map pPrint pats)) "{" "}" $
+          map pPrint (origSourceCode exe)
+
+instance PPrintable Executable where { pPrint = mapM_ pPrint . origSourceCode }
 
 instance PPrintable Pattern where
   pPrint pat = case pat of

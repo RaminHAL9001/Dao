@@ -253,8 +253,8 @@ instance Binary Object where
       OIntMap       a -> px o (putObjMap I.assocs putVLInt a)
       ODict         a -> px o (putObjMap M.assocs put a)
       OTree         a -> x o a
-      OGlob         a -> px o (put a)
-      OScript       a -> error "TODO: need to update 'OScript' Object type."
+      OGlob         a -> x o a
+      OScript       a -> x o a
       OBytes        a -> x o a
   get = do
     ty <- getWord8
@@ -276,7 +276,7 @@ instance Binary Object where
         CharType     -> x OChar
         StringType   -> fmap OString decodeUStr
         RefType      -> x ORef
-        PairType     -> get >>= \a -> get >>= \b -> return (OPair (a, b))
+        PairType     -> fmap OPair (liftM2 (,) get get)
         ListType     -> fmap OList getList
         SetType      -> fmap (OSet . S.fromList) getList
         ArrayType    -> do
@@ -286,7 +286,7 @@ instance Binary Object where
         DictType     -> fmap ODict   (getObjMap (M.fromList) get)
         TreeType     -> x OTree
         GlobType     -> x OGlob
-        ScriptType   -> error "TODO: need to update 'OScript' Object type."
+        ScriptType   -> x OScript
         BytesType    -> x OBytes
 
 instance Binary Reference where
@@ -484,6 +484,34 @@ instance Binary Location where
           else return LocationUnknown
 
 ----------------------------------------------------------------------------------------------------
+
+instance Binary Subroutine where
+  put sub = case sub of
+    Subroutine pat exe -> putWord8 0x25 >> putList pat >> put exe
+    GlobAction pat exe -> putWord8 0x26 >> putList pat >> put exe
+  get = getWord8 >>= \w -> case w of
+    0x25 -> liftM2 Subroutine getList get
+    0x26 -> liftM2 GlobAction getList get
+
+instance Binary Executable where
+  put = putList . origSourceCode
+  get = do
+    code <- getList
+    let msg = "Executable retrieved from binary used before being initialized."
+    return $
+      Executable
+      { origSourceCode = code
+      , staticVars     = error msg
+      , executable     = error msg
+      }
+
+-- Used by the parser for 'Subroutine', needs to check if it's arguments are 'Dao.Object.Pattern's
+-- or 'Dao.Glob.Globs', so it is necessary to report whether or not a byte is a valid prefix for a
+-- 'Dao.Object.Pattern' expression.
+nextIsPattern :: Get Bool
+nextIsPattern = do
+  empty <- isEmpty
+  if empty then return False else fmap (\c -> 0xB1<=c && c<=0xBE) (lookAhead getWord8)
 
 instance Binary Pattern where
   put a = case a of

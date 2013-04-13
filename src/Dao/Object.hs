@@ -363,32 +363,12 @@ readObjUStr mkObj = mkObj . read . uchars
 
 ----------------------------------------------------------------------------------------------------
 
--- | This is the data structure used to store rules as serialized data, although when a bytecode
--- program is loaded, rules do not exist, the 'ORule' object constructor contains this structure.
--- data Rule
---   = Rule
---     { rulePattern    :: [Glob]  -- ^ the patterns generated from the meta expression
---     , ruleAction     :: [ScriptExpr] -- ^ the executable script created from the 'ruleMetaExpr'
---     , ruleExecutable :: Executable -- ^ the executable in memory
---     }
---     deriving Typeable
-
--- instance Eq Rule where
---   a == b = rulePattern a == rulePattern b && ruleAction a == ruleAction b
-
--- instance Ord Rule where
---   compare a b = case compare (rulePattern a) (rulePattern b) of
---     EQ -> compare (ruleAction a) (ruleAction b)
---     ne -> ne
-
--- instance Show Rule where
---   show r = "Rule{rulePattern="++show (rulePattern r)++",ruleAction="++show (ruleAction r)
-
 -- | An executable is either a rule action, or a function.
 data Executable
   = Executable
-    { staticVars :: IORef (M.Map Name Object)
-    , executable :: Exec ()
+    { origSourceCode :: [ScriptExpr]
+    , staticVars     :: IORef (M.Map Name Object)
+    , executable     :: Exec ()
     }
 
 -- | A subroutine is specifically a callable function (but we don't use the name Function to avoid
@@ -396,7 +376,6 @@ data Executable
 data Subroutine
   = Subroutine
     { argsPattern      :: [Pattern]
-    -- , subSourceCode :: [ScriptExpr]
     , getSubExecutable :: Executable
     }
   | GlobAction

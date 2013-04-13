@@ -114,10 +114,10 @@ initExecUnit runtime modName initGlobalData = do
     , destructScript    = []
     , requiredBuiltins  = []
     , programAttributes = M.empty
-    , preExec     = []
+    , preExec           = []
     , programTokenizer  = return . tokens . uchars
     , programComparator = (==)
-    , postExec    = []
+    , postExec          = []
     , ruleSet           = rules
     , globalData        = initGlobalData
     }
@@ -127,8 +127,9 @@ setupExecutable scrp = do
   staticRsrc <- lift (newIORef M.empty)
   return $
     Executable
-    { staticVars = staticRsrc
-    , executable = execScriptBlock scrp >>= liftIO . evaluate
+    { origSourceCode = scrp
+    , staticVars     = staticRsrc
+    , executable     = execScriptBlock scrp >>= liftIO . evaluate
     }
 
 runExecutable :: T_tree -> Executable -> Exec Object

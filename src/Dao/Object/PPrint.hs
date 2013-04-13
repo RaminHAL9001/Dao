@@ -28,6 +28,7 @@ import           Dao.String
 import           Dao.PPrint
 import           Dao.Token
 import           Dao.Object
+import           Dao.Object.AST
 import           Dao.Glob
 import           Dao.EnumSet
 import qualified Dao.Tree as T
@@ -108,8 +109,7 @@ instance PPrintable Object where
       if I.null o then pString "intmap{}" else pContainer "intmap " pMapAssoc (I.assocs o)
     OTree      o     -> pPrint o
     OGlob      o     -> pPrint o
-    ORule      o     -> pPrint o
-    OScript    o     -> pPrint o
+    OScript    o     -> error "Need to replace 'OScript' data type instantiation into PPrintable"
     OBytes     o     ->
       if B.null o
         then  pString "data{}"
@@ -160,47 +160,35 @@ instance PPrintable a => PPrintable (Com a) where { pPrint = pPrintComWith pPrin
 
 -- 'pPrintComWith' wasn't good enough for this, because the comments might occur after the header
 -- but before the opening bracket.
-pPrintComSubBlock :: PPrint () -> Com [Com ScriptExpr] -> PPrint ()
+pPrintComSubBlock :: PPrint () -> Com [Com AST_Script] -> PPrint ()
 pPrintComSubBlock header c = case c of
   Com          c    -> run [] c []
   ComBefore bx c    -> run bx c []
   ComAfter     c ax -> run [] c ax
   ComAround bx c ax -> run bx c ax
   where
-    run :: [Comment] -> [Com ScriptExpr] -> [Comment] -> PPrint ()
+    run :: [Comment] -> [Com AST_Script] -> [Comment] -> PPrint ()
     run before cx after = case cx of
       [] -> header >> pInline (map pPrint before) >> pString " {}" >> pInline (map pPrint after)
       cx -> do
         pClosure (header >> pInline (map pPrint before)) " { " " }" (map (pGroup True . pPrint) cx)
         pInline (map pPrint after)
 
-pPrintSubBlock :: PPrint () -> [Com ScriptExpr] -> PPrint ()
+pPrintSubBlock :: PPrint () -> [Com AST_Script] -> PPrint ()
 pPrintSubBlock header px = pPrintComSubBlock header (Com px)
 
-instance PPrintable Rule where
-  pPrint rule = do
-    let pat = rulePattern rule
-    flip pPrintSubBlock (ruleAction rule) $ case pat of
-      []  -> pString "rule()" 
-      [p] -> pInline [pString "rule ", pPrint p]
-      _   -> pList (pString "rule") "(" ", " ")" (map pPrint pat)
-
-instance PPrintable Subroutine where
-  pPrint sub = flip pPrintSubBlock (subSourceCode sub) $
-    pList (pString "function") "(" ", " ")" (map pPrint (argsPattern sub))
-
-instance PPrintable ScriptExpr where
+instance PPrintable AST_Script where
   pPrint expr = pGroup True $ case expr of
-    EvalObject   objXp  coms                    _ ->
+    AST_EvalObject   objXp  coms                    _ ->
       pPrint objXp >> mapM_ pPrint coms >> pString ";"
-    IfThenElse   coms   ifXp  thenXp  elseXp    _ -> do
+    AST_IfThenElse   coms   ifXp  thenXp  elseXp    _ -> do
       case ifXp of
-        ParenExpr _ obXp _ -> printIfXp obXp
+        AST_Paren _ obXp _ -> printIfXp obXp
         _                  -> printIfXp ifXp
       case unComment elseXp of
         []                   -> return ()
         [p] -> case unComment p of
-          (IfThenElse _ _ _ _ _) -> pEndLine >> pString "else " >> pPrint p
+          (AST_IfThenElse _ _ _ _ _) -> pEndLine >> pString "else " >> pPrint p
           _                      -> done
         px                       -> done
         where
@@ -208,112 +196,110 @@ instance PPrintable ScriptExpr where
             pInline (map pPrint coms)
             pPrintComSubBlock (pWrapIndent [pString "if(", pPrint ifXp, pString ")"]) thenXp
           done = pEndLine >> pPrintComSubBlock (pString "else") elseXp
-    TryCatch     cxcScrpXp  cUStr     xcScrpXp  _ -> do
+    AST_TryCatch     cxcScrpXp  cUStr     xcScrpXp  _ -> do
       pPrintComSubBlock (pString "try") cxcScrpXp
       if null xcScrpXp
         then  return ()
         else  pPrintSubBlock (pString "catch " >> pPrint cUStr) xcScrpXp
-    ForLoop      cNm        cObjXp    xcScrpXp  _ -> do
+    AST_ForLoop      cNm        cObjXp    xcScrpXp  _ -> do
       let hdr = do
             pString "for "
             pPrint cNm
             pString " in "
             pList_ "(" "" ")" [pPrint cObjXp]
       pPrintSubBlock hdr xcScrpXp
-    ContinueExpr contin     coms      cObjXp    _ -> pWrapIndent $
+    AST_ContinueExpr contin     coms      cObjXp    _ -> pWrapIndent $
       [ pString (if contin then "continue" else "break")
       , pInline (map pPrint coms)
       , case unComment cObjXp of
-          VoidExpr -> return ()
+          AST_Void -> return ()
           _        -> pString " if " >> pPrint cObjXp
       , pString ";"
       ]
-    ReturnExpr   retrn                cObjXp    _ -> pWrapIndent $
+    AST_ReturnExpr   retrn                cObjXp    _ -> pWrapIndent $
       [ pString (if retrn then "return " else "throw ")
       , case unComment cObjXp of
-          VoidExpr -> return ()
+          AST_Void -> return ()
           _        -> pPrint cObjXp
       , pString ";"
       ]
-    WithDoc      cObjXp               xcScrpXp  _ ->
+    AST_WithDoc      cObjXp               xcScrpXp  _ ->
       pPrintSubBlock (pString "with " >> pPrint cObjXp) xcScrpXp
 
 instance PPrintable ArithOp1  where { pPrint = pShow }
 instance PPrintable ArithOp2  where { pPrint = pShow }
 instance PPrintable UpdateOp where { pPrint op = pString (' ':show op++" ") }
 
-complicated :: ObjectExpr -> Bool
+complicated :: AST_Object -> Bool
 complicated obj = case obj of
-  Literal (OScript _) _ -> True
-  Literal (OTree   _) _ -> True
-  Literal (ORule   _) _ -> True
-  StructExpr _ _      _ -> True
-  Equation   _ _ _    _ -> True
-  AssignExpr _ _ _    _ -> True
-  ArrayExpr  _ _      _ -> True
-  LambdaExpr _ _ _    _ -> True
-  ParenExpr  _ _      _ -> True
-  _                     -> False
+  AST_Literal   (OTree   _) _ -> True
+  AST_Struct    _ _         _ -> True
+  AST_Equation  _ _ _       _ -> True
+  AST_Assign    _ _ _       _ -> True
+  AST_Array     _ _         _ -> True
+  AST_Lambda    _ _ _       _ -> True
+  AST_Paren     _ _         _ -> True
+  _                           -> False
 
-forceParen :: ObjectExpr -> ObjectExpr
+forceParen :: AST_Object -> AST_Object
 forceParen o =
   if complicated o
     then  case o of
-            ParenExpr True  _ _   -> o
-            ParenExpr False o loc -> ParenExpr True o loc
-            _                     -> ParenExpr True (Com o) (getLocation o)
+            AST_Paren True  _ _   -> o
+            AST_Paren False o loc -> AST_Paren True o loc
+            _                     -> AST_Paren True (Com o) (getLocation o)
     else  o
 
-instance PPrintable ObjectExpr where
+instance PPrintable AST_Object where
   pPrint expr = case expr of
-    VoidExpr                                 -> return ()
-    Literal      o                         _ -> pPrint o
-    AssignExpr   objXp1  comUpdOp  objXp2  _ -> pWrapIndent $
+    AST_Void                                 -> return ()
+    AST_Literal      o                         _ -> pPrint o
+    AST_Assign   objXp1  comUpdOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comUpdOp, pPrint objXp2]
-    Equation     objXp1  comAriOp  objXp2  _ -> pWrapIndent $
+    AST_Equation     objXp1  comAriOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comAriOp, pPrint objXp2]
-    PrefixExpr   ariOp    c_ObjXp          _ -> pPrint ariOp >> pPrint c_ObjXp
-    ParenExpr    bool     c_ObjXp          _ ->
+    AST_Prefix   ariOp    c_ObjXp          _ -> pPrint ariOp >> pPrint c_ObjXp
+    AST_Paren    bool     c_ObjXp          _ ->
       if bool then pWrapIndent [pString "(", pPrint c_ObjXp, pString ")"]
               else pWrapIndent [pPrint c_ObjXp]
-    ArraySubExpr objXp    coms     c_ObjXp _ -> pWrapIndent $
+    AST_ArraySub objXp    coms     c_ObjXp _ -> pWrapIndent $
       [pPrint objXp, mapM_ pPrint coms, pString "[", pGroup True (pPrint c_ObjXp), pString "]"]
-    FuncCall     nm       coms     xcObjXp _ -> do
+    AST_FuncCall     nm       coms     xcObjXp _ -> do
       pList (pPrint nm >> mapM_ pPrint coms) "(" ", " ")" (map pPrint xcObjXp)
-    DictExpr     dict     coms     xcObjXp _ ->
+    AST_Dict     dict     coms     xcObjXp _ ->
       if null xcObjXp
         then  pString (uchars dict++"{}")
         else  pList (pPrint dict >> mapM_ pPrint coms) " {" ", " " }" (map pPrint xcObjXp)
-    ArrayExpr    cxcObjXp xcObjXp          _ -> do
+    AST_Array    cxcObjXp xcObjXp          _ -> do
       let tag = pString "array"
           hdr = pPrintComWith (pList tag "(" ", " ")" . map (pGroup True . pPrint)) cxcObjXp
       case xcObjXp of
         [] -> hdr >> pString "{}"
         _  -> pList hdr  " { " ", " " }" (map pPrint xcObjXp)
-    StructExpr   cObjXp   xcObjXp          _ ->
+    AST_Struct   cObjXp   xcObjXp          _ ->
       pList (pString "struct " >> printObj cObjXp) "{" ", " "}" (map pPrint xcObjXp) where
         printObj obj =
           if complicated (unComment obj)
             then  pInline [pString "(", pPrint cObjXp, pString ")"]
             else  pPrint cObjXp
-    DataExpr     com   xcStr               _ ->
+    AST_Data     com   xcStr               _ ->
       if null xcStr
         then  pString "data{}"
         else  pClosure (pString "data" >> mapM_ pPrint com) "{" "}" (map pPrint xcStr)
-    LambdaExpr   typ   ccNmx   xcObjXp     _ -> do
+    AST_Lambda   typ   ccNmx   xcObjXp     _ -> do
       let hdr = pPrintComWith (pList_ (show typ++"(") ", " ")" . map (pPrintComWith pPrint)) ccNmx
       pPrintSubBlock hdr xcObjXp
-    MetaEvalExpr cObjXp                    _ -> pInline [pString "#{", pPrint cObjXp, pString "}#"]
+    AST_MetaEval cObjXp                    _ -> pInline [pString "#{", pPrint cObjXp, pString "}#"]
 
-instance PPrintable TopLevelExpr where
+instance PPrintable AST_TopLevel where
   pPrint o = case o of
-    Attribute      a b   _ -> pInline [pPrint a, pString "  ", pPrint b, pString ";"]
-    TopFunc        a b c _ -> pPrintComWith (pClosure header " { " " }" . map pPrint) c where
+    AST_Attribute      a b   _ -> pInline [pPrint a, pString "  ", pPrint b, pString ";"]
+    AST_TopFunc        a b c _ -> pPrintComWith (pClosure header " { " " }" . map pPrint) c where
       header = pString "function " >> pPrint a >> pList_ "(" ", " ")" (map pPrint b)
-    TopScript      a     _ -> pPrint a
-    TopLambdaExpr  a b c _ -> pClosure header " { " " }" (map pPrint c) where
+    AST_TopScript      a     _ -> pPrint a
+    AST_TopLambda  a b c _ -> pClosure header " { " " }" (map pPrint c) where
       header = pShow a >> pPrintComWith (pList_ "(" ", " ")" . map pPrint) b
-    EventExpr      a b   _ -> pPrintComWith (pClosure (pShow a) " { " " }" . map pPrint) b
+    AST_Event      a b   _ -> pPrintComWith (pClosure (pShow a) " { " " }" . map pPrint) b
 
 instance PPrintable Pattern where
   pPrint pat = case pat of

@@ -27,6 +27,7 @@ import           Dao.PPrint
 import           Dao.Token
 import           Dao.Parser
 import           Dao.Object
+import           Dao.Object.AST
 import           Dao.Object.Parser
 import           Dao.Object.Binary
 import           Dao.Object.PPrint
@@ -57,31 +58,31 @@ import           System.Environment
 el = EndlineComment . ustr
 il = InlineComment  . ustr
 lu = LocationUnknown
-a  = Literal (ORef (LocalRef (ustr "a"))) lu
-i0 = Literal (OInt 0) lu
-i1 = Literal (OInt 1) lu
-i2 = Literal (OInt 2) lu
-i3 = Literal (OInt 3) lu
+a  = AST_Literal (ORef (LocalRef (ustr "a"))) lu
+i0 = AST_Literal (OInt 0) lu
+i1 = AST_Literal (OInt 1) lu
+i2 = AST_Literal (OInt 2) lu
+i3 = AST_Literal (OInt 3) lu
 add   = Com ADD
 eqeq  = Com EQUL
 modu  = Com MOD
 mult  = Com MULT
 diveq = Com UDIV
 eq    = Com UCONST
-evalObj expr = EvalObject expr [] lu
+evalObj expr = AST_EvalObject expr [] lu
 
-ifExpr :: Int -> ScriptExpr
+ifExpr :: Int -> AST_Script
 ifExpr i =
-  IfThenElse
+  AST_IfThenElse
     []
-    (ParenExpr True (Com (Equation (Equation a modu i2 lu) eqeq i0 lu)) lu)
+    (AST_Paren True (Com (AST_Equation (AST_Equation a modu i2 lu) eqeq i0 lu)) lu)
     (Com $
       [ ComBefore [el " if the number is even, divide by two"] $
-          evalObj (AssignExpr a diveq i2 lu)
+          evalObj (AST_Assign a diveq i2 lu)
       ])
     (Com $
       [ ComBefore [el " if the number is odd, multiply by three and add one"] $
-          evalObj (AssignExpr a eq (Equation (Equation a mult i3 lu) add i1 lu) lu)
+          evalObj (AST_Assign a eq (AST_Equation (AST_Equation a mult i3 lu) add i1 lu) lu)
       ] ++ if i<=0 then [] else [ComBefore [el " then test it again"] (ifExpr (i-1))]
     )
     LocationUnknown
@@ -137,7 +138,7 @@ randTest = case specify of
 
 ----------------------------------------------------------------------------------------------------
 
-pPrintComScriptExpr :: [Com ScriptExpr] -> PPrint ()
+pPrintComScriptExpr :: [Com AST_Script] -> PPrint ()
 pPrintComScriptExpr = pPrintSubBlock (return ())
 
 -- | Test the pretty printer and the parser. If a randomly generated object can be pretty printed,
@@ -165,11 +166,12 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
           hSetPosn pos
           hPutStrLn handl (show i++"               ") >>= evaluate
           return (handl, pos)
-        let obexp = {-# SCC obexp #-} genRandWith randO maxRecurseDepth i :: TopLevelExpr
+        let obexp = {-# SCC obexp #-} genRandWith randO maxRecurseDepth i :: AST_TopLevel
+            binexp = {-# SCC binexp #-} toInterm obexp :: [TopLevelExpr]
         deepseq obexp (return ())
         writeIORef ref (i, obexp)
-        let bytes = {-# SCC bytes #-} B.encode obexp
-            obj   = {-# SCC obj   #-} B.decode bytes
+        let bytes = {-# SCC bytes #-} B.encode binexp
+            bin   = {-# SCC bin   #-} B.decode bytes
             str   = {-# SCC str   #-} showPPrint 80 "    " (pPrint obexp)
             (par, msg) = {-# SCC par #-} runParser (regexMany space >> parseDirective) str 
             err reason = do
@@ -182,7 +184,7 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
                 ]) >>= evaluate
               hClose handl
         status1 <- handle (\ (ErrorCall e) -> err ("Binary decoding failed: "++show e) >> return False) $ do
-          if seq obexp $! seq bytes $! obj/=obexp
+          if seq obexp $! seq bytes $! bin/=binexp
             then  err "Binary deserialization does not match source object" >> return False
             else  return True
         status2 <- case par of

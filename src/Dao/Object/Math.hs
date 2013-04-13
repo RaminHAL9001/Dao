@@ -79,7 +79,6 @@ testNull o = case o of
   OIntMap  o | IM.null o -> True
   OTree    o | o==T.Void -> True
   OGlob    o | null (getPatUnits o) -> True
-  ORule    o | null (rulePattern o) && null (ruleAction o) -> True
   OBytes   o | B.null o  -> True
   _ -> False
 

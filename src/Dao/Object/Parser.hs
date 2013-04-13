@@ -1,5 +1,5 @@
 -- "src/Dao/Object/Parser.hs" makes use of 'Dao.Parser' to parse
--- 'Dao.Object.Object's and 'Dao.Object.ObjectExpr'essions.
+-- 'Dao.Object.Object's and 'Dao.Object.AST_Object' expressions.
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.
@@ -23,6 +23,7 @@ module Dao.Object.Parser where
 import           Dao.String
 import           Dao.Token
 import           Dao.Object
+import           Dao.Object.AST
 import           Dao.EnumSet
 import           Dao.Parser
 import qualified Dao.Tree as T
@@ -227,14 +228,14 @@ parseComment = many comment where
 parseListable
   :: String
   -> Char -> Char -> Char
-  -> Parser (ObjectExpr, [Comment])
-  -> Parser [Com (ObjectExpr, [Comment])]
+  -> Parser (AST_Object, [Comment])
+  -> Parser [Com (AST_Object, [Comment])]
 parseListable msg open delim close getValue = begin where
   begin = do
     char open
     com1 <- parseComment
     regexMany space
-    mplus (char close >> return [Com (VoidExpr, com1)]) (loop com1 [])
+    mplus (char close >> return [Com (AST_Void, com1)]) (loop com1 [])
   loop com1 zx = do
     (value, com2) <- getValue
     regexMany space
@@ -315,8 +316,8 @@ parseLocalGlobal = msum $
 -- context.
 type NameComParser a = String -> [Comment] -> Parser a
 
--- | Like NameComParser but takes an initial 'Dao.Object.ObjectExpr' and comment as it's parameters.
-type ObjComParser a = ObjectExpr -> [Comment] -> Parser a
+-- | Like NameComParser but takes an initial 'Dao.Object.AST_Object' and comment as it's parameters.
+type ObjComParser a = AST_Object -> [Comment] -> Parser a
 
 -- | Construct a 'NameComParser' by passing it a keyword and the function used to act on the
 -- keyword. For example:
@@ -349,8 +350,8 @@ expect msg expectation =
 
 unloc = LocationUnknown
 
--- | Parses a sequence of 'Dao.Object.ScriptExpr's which can be used for interactive evaluation.
-parseInteractiveScript :: Parser [Com ScriptExpr]
+-- | Parses a sequence of 'Dao.Object.AST_Script's which can be used for interactive evaluation.
+parseInteractiveScript :: Parser [Com AST_Script]
 parseInteractiveScript = many commented where
   commented = do
     com1 <- parseComment
@@ -358,8 +359,8 @@ parseInteractiveScript = many commented where
     com2 <- parseComment
     return (com com1 expr com2)
 
--- | This is the entry point for parsing a 'Dao.Object.ScriptExpr'.
-parseScriptExpr :: Parser ScriptExpr
+-- | This is the entry point for parsing a 'Dao.Object.AST_Script'.
+parseScriptExpr :: Parser AST_Script
 parseScriptExpr = applyLocation $ mplus keywordExpr objectExpr where
   objectExpr = parseObjectExpr >>= uncurry objectExprStatement
   keywordExpr = do
@@ -368,7 +369,7 @@ parseScriptExpr = applyLocation $ mplus keywordExpr objectExpr where
     parseKeywordScriptExpr key com1
 
 -- | Parse a script expression that starts with a keyword, like "if", "for", "while", or "try".
-parseKeywordScriptExpr :: NameComParser ScriptExpr
+parseKeywordScriptExpr :: NameComParser AST_Script
 parseKeywordScriptExpr key com1 = nameComParserChoice choices key com1 where
   choices = -- these are all the kinds of expressions that start with a keyword
     [ ifStatement, tryStatement, forStatement, withStatement
@@ -382,7 +383,7 @@ parseKeywordScriptExpr key com1 = nameComParserChoice choices key com1 where
           objectExprStatement objExpr com2
     ]
 
-parseBracketedScript :: Parser [Com ScriptExpr]
+parseBracketedScript :: Parser [Com AST_Script]
 parseBracketedScript = token (char '{' >>= \com1 -> loop []) where
   loop zx = mplus (regexMany space >> char '}' >> return zx) $
     expect "script expression" $ \com1 -> do
@@ -392,17 +393,17 @@ parseBracketedScript = token (char '{' >>= \com1 -> loop []) where
 expected_sub_for msg = fail $
   "expecting bracketed sub-script expression for body of \""++msg++"\" statement"
 
-ifStatement :: NameComParser ScriptExpr
+ifStatement :: NameComParser AST_Script
 ifStatement = guardKeyword "if" loop where
   loop com1 = token $ do
     (objExpr, com2) <- mplus parseObjectExpr $
       fail "expecting object expression for condition of \"if\" statement"
     case objExpr of
-      ParenExpr _ _ _ -> token $
+      AST_Paren _ _ _ -> token $
         expect (expected_sub_for "if") $ \com3 -> do
           thenStmt <- parseBracketedScript
           let done com4 com5 elseStmt = return $
-                IfThenElse com1 objExpr (com com2 thenStmt com3) (com com4 elseStmt com5) unloc
+                AST_IfThenElse com1 objExpr (com com2 thenStmt com3) (com com4 elseStmt com5) unloc
           com4 <- parseComment
           flip mplus (done com4 [] []) $ do
             string "else"
@@ -415,12 +416,12 @@ ifStatement = guardKeyword "if" loop where
               ]
       _ -> fail "conditional expression must be in parentheses"
 
-tryStatement ::NameComParser ScriptExpr
+tryStatement ::NameComParser AST_Script
 tryStatement = guardKeyword "try" $ \com1 -> do
   tryStmt <- mplus parseBracketedScript (fail (expected_sub_for "try"))
   com2 <- parseComment
   let done com3 name com4 catchStmt = return $
-        TryCatch (com com1 tryStmt com2) (com com3 name com4) catchStmt unloc
+        AST_TryCatch (com com1 tryStmt com2) (com com3 name com4) catchStmt unloc
   flip mplus (done [] nil [] []) $ do
     string "catch"
     regexMany space
@@ -430,7 +431,7 @@ tryStatement = guardKeyword "try" $ \com1 -> do
         catchStmt <- parseBracketedScript
         done com3 name com4 catchStmt
 
-forStatement :: NameComParser ScriptExpr
+forStatement :: NameComParser AST_Script
 forStatement = guardKeyword "for" $ \com1 -> do
   name <- mplus (parseName "the name of the \"for\" variable") $
     fail "\"for\" statement must be followed by a variable name"
@@ -440,35 +441,35 @@ forStatement = guardKeyword "for" $ \com1 -> do
       (iterExpr, com4) <- parseObjectExpr
       forStmt <- mplus parseBracketedScript $ fail $
         "expecting bracketed sub-script expression for body of \"for\" statement"
-      return (ForLoop (com com1 name com2) (com com3 iterExpr com4) forStmt unloc)
+      return (AST_ForLoop (com com1 name com2) (com com3 iterExpr com4) forStmt unloc)
 
-withStatement :: NameComParser ScriptExpr
+withStatement :: NameComParser AST_Script
 withStatement = guardKeyword "with" $ \com1 -> do
   (withObjExpr, com2) <- mplus parseObjectExpr $
     fail "expecting object expression after \"with\" statement"
   with <- mplus parseBracketedScript (fail (expected_sub_for "with"))
-  return (WithDoc (com com1 withObjExpr com2) with unloc)
+  return (AST_WithDoc (com com1 withObjExpr com2) with unloc)
 
-returnStatement :: NameComParser ScriptExpr
+returnStatement :: NameComParser AST_Script
 returnStatement key com1 = do
   guard (key=="return" || key=="throw")
   regexMany space
   let semicolon = "expecting terminating semicolon \";\" after return statement"
-      done objExpr com2 = return (ReturnExpr (key=="return") (com com1 objExpr com2) unloc)
+      done objExpr com2 = return (AST_ReturnExpr (key=="return") (com com1 objExpr com2) unloc)
   msum $
     [ do  (objExpr, com2) <- parseObjectExpr
           mplus (char ';' >> done objExpr com2) $
             fail "return statement must be terminated with a semicolon \";\""
-    , char ';' >> done VoidExpr []
+    , char ';' >> done AST_Void []
     , fail semicolon
     ]
 
-continueStatement :: NameComParser ScriptExpr
+continueStatement :: NameComParser AST_Script
 continueStatement key com1 = do
   guard (key=="break" || key=="continue")
   let done com2 expr com3 =
-        return (ContinueExpr (key=="continue") com1 (com com2 expr com3) unloc)
-  mplus (char ';' >> done [] VoidExpr []) $ do
+        return (AST_ContinueExpr (key=="continue") com1 (com com2 expr com3) unloc)
+  mplus (char ';' >> done [] AST_Void []) $ do
     string "if"
     expect ("expecting object expression after "++key++"-if statement") $ \com2 -> do
       (objExpr, com3) <- parseObjectExpr
@@ -477,7 +478,7 @@ continueStatement key com1 = do
         fail ("\""++key++"\" statement must be terminated with a simicolon \";\" character")
 
 -- fails immediately, else and catch statements are parsed only after if and try statements.
-badStatement :: String -> String -> NameComParser ScriptExpr
+badStatement :: String -> String -> NameComParser AST_Script
 badStatement str msg key com1 = do
   guard (str==key)
   fail ("\""++str++"\" statement must be preceeded by a valid \""++msg++"\" statement")
@@ -485,32 +486,32 @@ badStatement str msg key com1 = do
 elseStatement  = badStatement "else" "if"
 catchStatement = badStatement "catch" "try"
 
--- | This function takes an 'Dao.Object.ObjectExpr' and checks if it can be used as a statement. It
+-- | This function takes an 'Dao.Object.AST_Object' and checks if it can be used as a statement. It
 -- then checks for a trailing simicolon or newline. Function calls with side-effects and assignment
 -- expressions can be used as stand-alone script expressions and will evaluate to a
--- 'Dao.Object.ScriptExpr', whereas equations and literal expressions cannot, and will evaluate to a
+-- 'Dao.Object.AST_Script', whereas equations and literal expressions cannot, and will evaluate to a
 -- syntax error.
-objectExprStatement :: ObjComParser ScriptExpr
+objectExprStatement :: ObjComParser AST_Script
 objectExprStatement initExpr com1 = loop initExpr where
   loop expr = case expr of
-    AssignExpr _ _ _  _ -> done
-    FuncCall   _ _ _  _ -> done
-    ParenExpr  _ expr _ -> loop (unComment expr)
+    AST_Assign _ _ _  _ -> done
+    AST_FuncCall   _ _ _  _ -> done
+    AST_Paren  _ expr _ -> loop (unComment expr)
     _ -> fail ("cannot use an object expression as a statement\n" ++ show expr)
-  done = mplus (char ';' >> return (EvalObject initExpr com1 unloc)) $
+  done = mplus (char ';' >> return (AST_EvalObject initExpr com1 unloc)) $
     fail "expecting terminating semicolon \";\" after statement"
 
 ----------------------------------------------------------------------------------------------------
 
--- | This is the "entry point" for parsing 'Dao.Object.ObjectExpr's.
-parseObjectExpr :: Parser (ObjectExpr, [Comment])
+-- | This is the "entry point" for parsing 'Dao.Object.AST_Object's.
+parseObjectExpr :: Parser (AST_Object, [Comment])
 parseObjectExpr = do
   obj  <- applyLocation parseNonEquation
   com1 <- parseComment
   regexMany space
   mplus (parseEquation obj com1) (return (obj, com1))
 
-parseEquation :: ObjectExpr -> [Comment] -> Parser (ObjectExpr, [Comment])
+parseEquation :: AST_Object -> [Comment] -> Parser (AST_Object, [Comment])
 parseEquation obj com1 = loop [] obj com1 where
   loop objx obj com1 = msum $
     [ do -- Parse an indexing expression in square brackets.
@@ -524,7 +525,7 @@ parseEquation obj com1 = loop [] obj com1 where
               char ']'
               com1 <- parseComment
               regexMany space
-              loop objx (ArraySubExpr obj com1 (com com2 idx com3) unloc) com1
+              loop objx (AST_ArraySub obj com1 (com com2 idx com3) unloc) com1
     , do -- Parse an infix operator.
           op <- parseInfixOp
           expect ("expecting object expression after infix operator \""++uchars op++"\"") $ \com2 -> do
@@ -540,47 +541,47 @@ parseEquation obj com1 = loop [] obj com1 where
                   _        -> []
     ]
 
--- | Parses anything that can be used as a single 'ObjectExpr', which includes equations which are
+-- | Parses anything that can be used as a single 'AST_Object', which includes equations which are
 -- enclosed in parentheses, so the name is a bit misleading. This function exists mostly for
 -- prescedence, as this function calls 'nonKeywordObjectExpr' which calls 'parseUnaryOperatorExpr'.
 -- The unary operator parser calls this function to get its operand, rather than 'parseObjectExpr',
 -- which ensures that the unary operators have a prescedence higher than any other operator.
-parseNonEquation :: Parser ObjectExpr
+parseNonEquation :: Parser AST_Object
 parseNonEquation = mplus nonKeywordObjectExpr $ do
   name <- parseKeywordOrName
   expect "some object expression" (\com1 -> keywordObjectExpr name com1)
 
-parseParenObjectExpr :: Parser ObjectExpr
+parseParenObjectExpr :: Parser AST_Object
 parseParenObjectExpr = do
   char '('
   expect "object expression in parentheses" $ \com1 -> do
     (expr, com2) <- parseObjectExpr
     flip mplus (fail "expecting close parethases") $
-      char ')' >> return (ParenExpr True (com com1 expr com2) unloc)
+      char ')' >> return (AST_Paren True (com com1 expr com2) unloc)
 
-parseMetaEvalObjectExpr :: Parser ObjectExpr
+parseMetaEvalObjectExpr :: Parser AST_Object
 parseMetaEvalObjectExpr = do
   string "#{"
   expect "object expression in meta-evaluation braces" $ \com1 -> do
     (expr, com2) <- parseObjectExpr
     flip mplus (fail "expecting closing \"}#\" token") $ do
-      string "}#" >> return (MetaEvalExpr (com com1 expr com2) unloc)
+      string "}#" >> return (AST_MetaEval (com com1 expr com2) unloc)
 
 -- Object expressions that don't begin with a keyword.
-nonKeywordObjectExpr :: Parser ObjectExpr
+nonKeywordObjectExpr :: Parser AST_Object
 nonKeywordObjectExpr = msum $
   [ parseParenObjectExpr
     -- ^ anything with an open-parenthasis.
   , parseMetaEvalObjectExpr
     -- ^ anything that begins with the meta-eval parens.
-  , fmap (flip Literal unloc . ORef) parseIntRef
+  , fmap (flip AST_Literal unloc . ORef) parseIntRef
     -- ^ literal integer references, parsed out as a single value, rather than the reference unary
     -- operator operating on an integer value.
-  , fmap (flip Literal unloc . OString . ustr) parseString 
+  , fmap (flip AST_Literal unloc . OString . ustr) parseString 
     -- ^ literal string
-  , fmap (flip Literal unloc . OChar) parseCharLiteral
+  , fmap (flip AST_Literal unloc . OChar) parseCharLiteral
     -- ^ literal character
-  , fmap (flip Literal unloc) numericObj
+  , fmap (flip AST_Literal unloc) numericObj
     -- ^ if a numeric object starts with an minus-sign, it will parse to a single negative value
     -- rather than parsing to a unary negation operator that operates on a positive integer value.
   , parseUnaryOperatorExpr
@@ -588,12 +589,12 @@ nonKeywordObjectExpr = msum $
   ]
 
 -- Parses an equation starting with a unary operator.
-parseUnaryOperatorExpr :: Parser ObjectExpr
-parseUnaryOperatorExpr = do -- high-prescedence unary operators, these are interpreted as 'FuncCall's.
+parseUnaryOperatorExpr :: Parser AST_Object
+parseUnaryOperatorExpr = do -- high-prescedence unary operators, these are interpreted as 'AST_FuncCall's.
   op <- regex (rxCharSetFromStr "-@$!~")
   expect ("\""++op++"\" operator must be followed by an object expression") $ \com1 -> do
     expr <- msum [parseParenObjectExpr, parseMetaEvalObjectExpr, parseNonEquation]
-    return (PrefixExpr (read op) (com com1 expr []) unloc)
+    return (AST_Prefix (read op) (com com1 expr []) unloc)
 
 parseInfixOp :: Parser Name
 parseInfixOp = fmap ustr $ msum $ map string $ words $ concat $
@@ -609,9 +610,9 @@ parseInfixOp = fmap ustr $ msum $ map string $ words $ concat $
 -- function, so the right-most operators have the highest prescedence because they get bound by
 -- 'scanBind' first. Therefore, listing the operators by prescedence (from left to right) means
 -- listing them from lowest to highest prescedence.
-applyPrescedence :: [Either (Com Name) ObjectExpr] -> [Either (Com Name) ObjectExpr]
-applyPrescedence = foldl (.) assignOp $ map (scanBind Equation . words) $ opPrecTable where
-  assignOp = scanBind AssignExpr $ -- lowest prescedence, used as initial value to fold
+applyPrescedence :: [Either (Com Name) AST_Object] -> [Either (Com Name) AST_Object]
+applyPrescedence = foldl (.) assignOp $ map (scanBind AST_Equation . words) $ opPrecTable where
+  assignOp = scanBind AST_Assign $ -- lowest prescedence, used as initial value to fold
     words "= += -= *= /= %= &= |= <<= >>= ^="
   opPrecTable = -- operators listed from lowest to highest prescedence
     [ "||", "&&", "|", "^", "&", "!= =="
@@ -621,13 +622,13 @@ applyPrescedence = foldl (.) assignOp $ map (scanBind Equation . words) $ opPrec
 -- Given a list of operators, scans through an equation of the form
 -- (Right exprA : Left op : Right exprB : ...) 
 -- and if the 'op' is in the list of operators, the 'exprA' and 'exprB' are bound together into an
--- 'Dao.Object.Equation' data structure. If 'op' is not in the list of operators, it is passed over.
+-- 'Dao.Object.AST_Equation' data structure. If 'op' is not in the list of operators, it is passed over.
 scanBind
   :: Read a
-  => (ObjectExpr -> Com a -> ObjectExpr -> Location -> ObjectExpr)
+  => (AST_Object -> Com a -> AST_Object -> Location -> AST_Object)
   -> [String]
-  -> [Either (Com Name) ObjectExpr]
-  -> [Either (Com Name) ObjectExpr]
+  -> [Either (Com Name) AST_Object]
+  -> [Either (Com Name) AST_Object]
 scanBind constructor ops objx = case objx of
   [Right o] -> [Right o]
   Right a : Left op : Right b : objx ->
@@ -637,8 +638,8 @@ scanBind constructor ops objx = case objx of
              scanBind constructor ops (Right b : objx)
   objx -> error ("scanBind failed:\n"++show objx)
 
--- Here we collect all of the ObjectExpr parsers that start by looking for a keyword
-keywordObjectExpr :: NameComParser ObjectExpr
+-- Here we collect all of the AST_Object parsers that start by looking for a keyword
+keywordObjectExpr :: NameComParser AST_Object
 keywordObjectExpr key com1 = msum $ map (\parser -> parser key com1) $
   [ parseDateTime, parseArrayDef, parseListSetDictIntmap
   , parseHexData, parseStruct, parseLambdaDef, constructWithNonKeyword
@@ -650,43 +651,43 @@ adjustComListable :: Parser [Com (a, [Comment])] -> Parser [Com a]
 adjustComListable =
   fmap (map (\a -> let (o, c) = unComment a in appendComments (fmap (const o) a) c))
 
-parseFunctionParameters :: String -> Parser [Com ObjectExpr]
+parseFunctionParameters :: String -> Parser [Com AST_Object]
 parseFunctionParameters msg = adjustComListable $
   parseListable msg '(' ',' ')' parseObjectExpr
 
 -- | Function calls with a single argument that are so common that, as convenience, you can call
 -- them without putting the argument in parenthases.
-parseBuiltinFuncCall :: NameComParser ObjectExpr
+parseBuiltinFuncCall :: NameComParser AST_Object
 parseBuiltinFuncCall key com1 = do
   guard $ elem key $ words $ concat $
     [ " sin cos tan asin acos atan sinh cosh tanh asinh acosh atanh exp log log10 "
     , " throw static qtime global local do query print file open save close edit test "
     ]
   (arg, com2) <- parseObjectExpr
-  return (FuncCall (ustr key) com1 [com [] arg com2] unloc)
+  return (AST_FuncCall (ustr key) com1 [com [] arg com2] unloc)
 
 func_param_var = "function parameter variable"
 
-parseLambdaDef :: NameComParser ObjectExpr
+parseLambdaDef :: NameComParser AST_Object
 parseLambdaDef key com1 = msum $
   [ do  guard (key=="rule") -- parse a rule with only one string parameter not in parenthases
         param <- fmap (OGlob . read) parseString
         expect "bracketed subroutine after \"rule\" statement" $ \com2 -> do
           scrpt <- parseBracketedScript
-          return (LambdaExpr RuleExprType (com com1 [Com (Literal param unloc)] com2) scrpt unloc)
+          return (AST_Lambda RuleExprType (com com1 [Com (AST_Literal param unloc)] com2) scrpt unloc)
   , do  guard (key=="func" || key=="function" || key=="rule" || key=="pat" || key=="pattern")
         let msg a = a++" \""++key++"\" statement"
         expect (msg "parameter variables immediately after") $ \com2 -> msum $
           [ do  scrpt <- parseBracketedScript -- parse a rule/function without a list of arguments
-                return (LambdaExpr (read key) (ComAfter [] (com1++com2)) scrpt unloc)
+                return (AST_Lambda (read key) (ComAfter [] (com1++com2)) scrpt unloc)
           , do  params <- parseFunctionParameters (msg "parameters to")
                 expect (expected_sub_for "lambda function definition") $ \com2 -> do
                   script <- parseBracketedScript
-                  return (LambdaExpr (read key) (com com1 params com2) script unloc)
+                  return (AST_Lambda (read key) (com com1 params com2) script unloc)
           ]
   ]
 
-parseArrayDef :: NameComParser ObjectExpr
+parseArrayDef :: NameComParser AST_Object
 parseArrayDef = guardKeyword "array" $ \com1 -> token $ do
   bounds <- parseFunctionParameters "upper/lower bound for array declaration"
   expect "(first,last) index bounds for array definition" $ \com2 -> do
@@ -696,53 +697,53 @@ parseArrayDef = guardKeyword "array" $ \com1 -> token $ do
         flip mplus (fail "expecting initializing values for array defition") $ do
           initValues <- adjustComListable $
             parseListable "array initializing element" '{' ',' '}' parseObjectExpr
-          return (ArrayExpr (com com1 bounds com2) initValues unloc)
+          return (AST_Array (com com1 bounds com2) initValues unloc)
       _       -> bad_bounds
 
-parseListItems :: String -> Bool -> Parser [Com ObjectExpr]
+parseListItems :: String -> Bool -> Parser [Com AST_Object]
 parseListItems key requireAssign = do
   let getDictItem = token $ parseObjectExpr >>= \ (item, com2) -> case item of
-        AssignExpr _ _ _ _ -> return (item, com2)
+        AST_Assign _ _ _ _ -> return (item, com2)
         _ -> fail ("each entry to "++key++" definition must assign a value to a key\ninstead received:\n"++prettyPrint 80 "    " item)
       getItem = if requireAssign then getDictItem else parseObjectExpr
   adjustComListable (parseListable ("items for "++key++" definition") '{' ',' '}' getItem)
 
-parseListSetDictIntmap :: NameComParser ObjectExpr
+parseListSetDictIntmap :: NameComParser AST_Object
 parseListSetDictIntmap key com1 = do
   guard (key=="dict" || key=="intmap" || key=="set" || key=="list")
   items <- parseListItems key (key=="dict" || key=="intmap")
-  return (DictExpr (ustr key) com1 items unloc)
+  return (AST_Dict (ustr key) com1 items unloc)
 
-parseDateTime :: NameComParser ObjectExpr
+parseDateTime :: NameComParser AST_Object
 parseDateTime = guardKeyword "time" $ \com1 -> do
   needsParen <- mplus (char '(' >> return True) (return False)
   expect "date-time literal expression" $ \com2 -> do
     date <- parseDate
     let msg       = "require close-parenthesis after date literal expression"
         done com3 = return $
-          FuncCall (ustr "time") com1 [com com2 (Literal (OTime date) unloc) com3] unloc
+          AST_FuncCall (ustr "time") com1 [com com2 (AST_Literal (OTime date) unloc) com3] unloc
     if needsParen then expect msg (\com3 -> char ')' >> done com3) else done []
 
-parseStruct :: NameComParser ObjectExpr
+parseStruct :: NameComParser AST_Object
 parseStruct = guardKeyword "struct" $ \com1 ->
   msum $
     [ do  (obj, com2) <- parseObjectExpr
-          mplus (objData com1 obj com2) (return (StructExpr (com com1 obj com2) [] unloc))
-    , objData com1 VoidExpr []
+          mplus (objData com1 obj com2) (return (AST_Struct (com com1 obj com2) [] unloc))
+    , objData com1 AST_Void []
     , fail "expecting data structure definition after keyword \"struct\""
     ]
   where
     objData com1 obj com2 = do
       items <- parseListItems "struct" True
-      return (StructExpr (com com1 obj com2) items unloc)
+      return (AST_Struct (com com1 obj com2) items unloc)
 
-parseHexData :: NameComParser ObjectExpr
+parseHexData :: NameComParser AST_Object
 parseHexData key _ = do
   guard (key=="data")
   expect "bracketed base-64-encoded data expression" $ \com1 -> do
     char '{'
     ax <- loop []
-    return (DataExpr com1 ax unloc)
+    return (AST_Data com1 ax unloc)
   where
     b64ch = enumSet [segment 'A' 'Z', segment 'a' 'z', segment '0' '9', single '/', single '+']
     loop zx = do
@@ -768,39 +769,39 @@ parseHexData key _ = do
 -- If 'parseKeywordOrName' was used to parse a symbol, and all of the above keyword parsers
 -- backtrack, this function takes the symbol and treats it as a name, which could be a local
 -- variable name, a simple function call, or a part of a global variable name.
-constructWithNonKeyword :: NameComParser ObjectExpr
+constructWithNonKeyword :: NameComParser AST_Object
 constructWithNonKeyword key com1 = msum [funcCall, parseBuiltinFuncCall key com1, localRef] where
-  localRef = return (Literal (ORef $ LocalRef $ ustr key) unloc)
+  localRef = return (AST_Literal (ORef $ LocalRef $ ustr key) unloc)
   funcCall = do
     argv <- adjustComListable $
       parseListable ("arguments to function \""++key++"\"") '(' ',' ')' parseObjectExpr
-    return (FuncCall (ustr key) com1 argv unloc)
+    return (AST_FuncCall (ustr key) com1 argv unloc)
 
 ----------------------------------------------------------------------------------------------------
 
 -- | Parse a source file: this is the entry point for the Dao parser when it parses @*.dao@ files.
-parseSourceFile :: Parser SourceCode
+parseSourceFile :: Parser AST_SourceCode
 parseSourceFile = loop [] where
   loop drcvs = mplus (endOfInput >>= guard >> done drcvs) $
     applyLocation parseDirective >>= \directive -> loop (drcvs++[directive])
   done drcvs = return $
-    SourceCode
+    AST_SourceCode
     { sourceModified = 0
     , sourceFullPath = nil
     , directives = drcvs
     }
 
-parseDirective :: Parser TopLevelExpr
+parseDirective :: Parser AST_TopLevel
 parseDirective = applyLocation $ msum $
   [ do  com1 <- parseComment
         regexMany space
-        if null com1 then mzero else return (TopComment com1)
+        if null com1 then mzero else return (AST_TopComment com1)
   , parseKeywordOrName >>= parseKeywordDirective
   , do  (objExpr, com1) <- parseObjectExpr
-        return (TopScript (EvalObject objExpr com1 unloc) unloc)
+        return (AST_TopScript (AST_EvalObject objExpr com1 unloc) unloc)
   ]
 
-parseKeywordDirective :: String -> Parser TopLevelExpr
+parseKeywordDirective :: String -> Parser AST_TopLevel
 parseKeywordDirective key = msum $
   [ do -- Parse an "import" or "require" directive.
         guard (key=="requires" || key=="require" || key=="import")
@@ -810,17 +811,17 @@ parseKeywordDirective key = msum $
             fmap (ustr . intercalate "." . map uchars . snd) parseDotName
           expect ("semicolon terminating "++key++" expression") $ \com2 -> do
             regexMany space >> char ';'
-            return (Attribute (Com (ustr key)) (com com1 req com2) unloc)
+            return (AST_Attribute (Com (ustr key)) (com com1 req com2) unloc)
   , do -- Parse an event action.
         guard (key=="EXIT" || key=="QUIT" || key=="BEGIN" || key=="END")
         expect ("bracketed list of commands after "++key++" statement") $ \com1 -> do
           scrpt <- parseBracketedScript
           let block = com com1 scrpt []
           return $ case key of
-            "EXIT"  -> EventExpr ExitExprType  block unloc
-            "QUIT"  -> EventExpr ExitExprType  block unloc
-            "BEGIN" -> EventExpr BeginExprType block unloc
-            "END"   -> EventExpr EndExprType   block unloc
+            "EXIT"  -> AST_Event ExitExprType  block unloc
+            "QUIT"  -> AST_Event ExitExprType  block unloc
+            "BEGIN" -> AST_Event BeginExprType block unloc
+            "END"   -> AST_Event EndExprType   block unloc
   , do -- Parse a top-level rule.
         guard (key=="rule" || key=="pat" || key=="pattern")
         let msg = "script expression for rule definition"
@@ -828,11 +829,11 @@ parseKeywordDirective key = msum $
           [ do  pattern <- parseFunctionParameters ("patterns to \""++key++"\" expression")
                 expect msg $ \com2 -> do
                   scrpt <- parseBracketedScript
-                  return (TopLambdaExpr (read key) (com com1 pattern com2) scrpt unloc)
+                  return (AST_TopLambda (read key) (com com1 pattern com2) scrpt unloc)
            , do (pattern, com2) <- parseObjectExpr
                 expect msg $ \com3 -> do
                   scrpt <- parseBracketedScript
-                  return (TopLambdaExpr (read key) (Com [com com1 pattern (com2++com3)]) scrpt unloc)
+                  return (AST_TopLambda (read key) (Com [com com1 pattern (com2++com3)]) scrpt unloc)
            ]
   , do -- Parse a top-level rule that is actually an object pattern, but was declared with the keyword "function".
         guard (key=="function" || key=="func")
@@ -841,7 +842,7 @@ parseKeywordDirective key = msum $
         pattern <- parseFunctionParameters ("for top-level \""++key++"\" object pattern")
         expect "function body for top-level " $ \com2 -> do
           scrpt <- parseBracketedScript
-          return (TopLambdaExpr (read key) (com com1 pattern com2) scrpt unloc)
+          return (AST_TopLambda (read key) (com com1 pattern com2) scrpt unloc)
   , do -- Parse a top-level function declaration, which has it's name stated before the arguments.
         guard (key=="function" || key=="func")
         let msg = "name for top-level function declaration"
@@ -851,18 +852,18 @@ parseKeywordDirective key = msum $
             params <- parseFunctionParameters "function parameters"
             expect "top-level function declaration, function body" $ \com3 -> do
               scrpt <- parseBracketedScript
-              return (TopFunc (com com1 name com2) params (com com2 scrpt com3) unloc)
+              return (AST_TopFunc (com com1 name com2) params (com com2 scrpt com3) unloc)
   , do -- Parse a top-level script expression.
         guard (isKeyword key || isTypeword key)
         expect "top-level script expression" $ \com1 -> do
           scrpt <- parseKeywordScriptExpr key com1
-          return (TopScript scrpt unloc)
+          return (AST_TopScript scrpt unloc)
   , do -- Parse a top-level object expression.
         expect "top-level variable assignment or function call" $ \com1 -> do
           objExpr <- keywordObjectExpr key com1
           expect "top-level assignment expression" $ \com1 -> do
             (eqn, com1) <- parseEquation objExpr com1
             flip mplus (fail "expecting simicolon to terminate top-level assignment expression") $
-              char ';' >> return (TopScript (EvalObject eqn com1 unloc) unloc)
+              char ';' >> return (AST_TopScript (AST_EvalObject eqn com1 unloc) unloc)
   ]
 

@@ -30,12 +30,13 @@ Dao/Evaluator.hs
 Dao/Files.hs
 Dao.hs
 dao-main.hs
-Dao/Object/Binary.hs
 Dao/Object.hs
+Dao/Object/AST.hs
+Dao/Object/Binary.hs
+Dao/Object/DeepSeq.hs
 Dao/Object/Parser.hs
 Dao/Object/Pattern.hs
 Dao/Object/PPrint.hs
-Dao/Object/DeepSeq.hs
 Dao/Object/Struct.hs
 Dao/PPrint.hs
 Dao/Parser.hs

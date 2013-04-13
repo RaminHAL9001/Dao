@@ -56,7 +56,18 @@ data Location
     , endingChar     :: Word64
     , endingColumn   :: Word
     }
-    deriving (Eq, Ord, Typeable)
+  | LineColumn -- ^ the 'Location' but without the starting/ending character count
+    { startingLine   :: Word64
+    , startingColumn :: Word
+    , endingLine     :: Word64
+    , endingColumn   :: Word
+    }
+  deriving (Eq, Ord, Typeable)
+
+lineColOnly :: Location -> Location
+lineColOnly loc = case loc of
+  Location a _ b c _ d -> LineColumn a b c d
+  loc                  -> loc
 
 -- | The the coordinates from a 'Location':
 -- @(('startingLine', 'startingColumn'), ('endingLine', 'endingColumn'))@

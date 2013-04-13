@@ -69,7 +69,6 @@ import           Control.Concurrent
 
 import           Control.Monad.Trans
 import           Control.Monad.Reader
---import           Control.Monad.State.Class
 import           Control.Monad.Error.Class
 
 ----------------------------------------------------------------------------------------------------
@@ -97,7 +96,6 @@ type T_intMap   = IM.IntMap Object
 type T_dict     = M.Map Name Object
 type T_tree     = T.Tree Name Object
 type T_pattern  = Glob
-type T_rule     = Rule
 type T_script   = Subroutine
 type T_bytes    = B.ByteString
 
@@ -268,7 +266,6 @@ data Object
   | OTree      T_tree
   | OGlob      T_pattern
   | OScript    T_script
-  | ORule      T_rule
   | OBytes     T_bytes
   deriving (Eq, Ord, Show, Typeable)
 
@@ -307,7 +304,6 @@ objType o = case o of
   OTree     _ -> TreeType
   OGlob     _ -> GlobType
   OScript   _ -> ScriptType
-  ORule     _ -> RuleType
   OBytes    _ -> BytesType
 
 instance Enum Object where
@@ -351,7 +347,6 @@ object2Dynamic o = case o of
   OTree     o -> toDyn o
   OScript   o -> toDyn o
   OGlob     o -> toDyn o
-  ORule     o -> toDyn o
   OBytes    o -> toDyn o
 
 castObj :: Typeable t => Object -> t
@@ -368,103 +363,26 @@ readObjUStr mkObj = mkObj . read . uchars
 
 ----------------------------------------------------------------------------------------------------
 
--- | Comments in the Dao language are not interpreted, but they are not disgarded either. Dao is
--- intended to manipulate natural language, and itself, so that it can "learn" new semantic
--- structures. Dao scripts can manipulate the syntax tree of other Dao scripts, and so it might be
--- helpful if the syntax tree included comments.
-data Comment
-  = InlineComment  UStr
-  | EndlineComment UStr
-  deriving (Eq, Ord, Show, Typeable)
-
-instance HasLocation a => HasLocation (Com a) where
-  getLocation = getLocation . unComment
-  setLocation com loc = fmap (\a -> setLocation a loc) com
-
-commentString :: Comment -> UStr
-commentString com = case com of
-  InlineComment  a -> a
-  EndlineComment a -> a
-
--- | Symbols in the Dao syntax tree that can actually be manipulated can be surrounded by comments.
--- The 'Com' structure represents a space-efficient means to surround each syntactic element with
--- comments that can be ignored without disgarding them.
-data Com a = Com a | ComBefore [Comment] a | ComAfter a [Comment] | ComAround [Comment] a [Comment]
-  deriving (Eq, Ord, Show, Typeable)
-
-appendComments :: Com a -> [Comment] -> Com a
-appendComments com cx = case com of
-  Com          a    -> ComAfter     a cx
-  ComAfter     a ax -> ComAfter     a (ax++cx)
-  ComBefore ax a    -> ComAround ax a cx
-  ComAround ax a bx -> ComAround ax a (bx++cx)
-
-com :: [Comment] -> a -> [Comment] -> Com a
-com before a after = case before of
-  [] -> case after of
-    [] -> Com a
-    dx -> ComAfter a dx
-  cx -> case after of
-    [] -> ComBefore cx a
-    dx -> ComAround cx a dx
-
-setCommentBefore :: [Comment] -> Com a -> Com a
-setCommentBefore cx com = case com of
-  Com         a    -> ComBefore cx a
-  ComBefore _ a    -> ComBefore cx a
-  ComAfter    a dx -> ComAround cx a dx
-  ComAround _ a dx -> ComAround cx a dx
-
-setCommentAfter :: [Comment] -> Com a -> Com a
-setCommentAfter cx com = case com of
-  Com          a   -> ComAfter     a cx
-  ComBefore dx a   -> ComAround dx a cx
-  ComAfter     a _ -> ComAfter     a cx
-  ComAround dx a _ -> ComAround dx a cx
-
-unComment :: Com a -> a
-unComment com = case com of
-  Com         a   -> a
-  ComBefore _ a   -> a
-  ComAfter    a _ -> a
-  ComAround _ a _ -> a
-
-getComment :: Com a -> [UStr]
-getComment com = map commentString $ case com of
-  Com         _   -> []
-  ComBefore a _   -> a
-  ComAfter    _ b -> b
-  ComAround a _ b -> a++b
-
-instance Functor Com where
-  fmap fn c = case c of
-    Com          a    -> Com          (fn a)
-    ComBefore c1 a    -> ComBefore c1 (fn a)
-    ComAfter     a c2 -> ComAfter     (fn a) c2
-    ComAround c1 a c2 -> ComAround c1 (fn a) c2
-
-----------------------------------------------------------------------------------------------------
-
 -- | This is the data structure used to store rules as serialized data, although when a bytecode
 -- program is loaded, rules do not exist, the 'ORule' object constructor contains this structure.
-data Rule
-  = Rule
-    { rulePattern    :: [Glob]  -- ^ the patterns generated from the meta expression
-    , ruleAction     :: [Com ScriptExpr] -- ^ the executable script created from the 'ruleMetaExpr'
-    , ruleExecutable :: Executable -- ^ the executable in memory
-    }
-    deriving Typeable
+-- data Rule
+--   = Rule
+--     { rulePattern    :: [Glob]  -- ^ the patterns generated from the meta expression
+--     , ruleAction     :: [ScriptExpr] -- ^ the executable script created from the 'ruleMetaExpr'
+--     , ruleExecutable :: Executable -- ^ the executable in memory
+--     }
+--     deriving Typeable
 
-instance Eq Rule where
-  a == b = rulePattern a == rulePattern b && ruleAction a == ruleAction b
+-- instance Eq Rule where
+--   a == b = rulePattern a == rulePattern b && ruleAction a == ruleAction b
 
-instance Ord Rule where
-  compare a b = case compare (rulePattern a) (rulePattern b) of
-    EQ -> compare (ruleAction a) (ruleAction b)
-    ne -> ne
+-- instance Ord Rule where
+--   compare a b = case compare (rulePattern a) (rulePattern b) of
+--     EQ -> compare (ruleAction a) (ruleAction b)
+--     ne -> ne
 
-instance Show Rule where
-  show r = "Rule{rulePattern="++show (rulePattern r)++",ruleAction="++show (ruleAction r)
+-- instance Show Rule where
+--   show r = "Rule{rulePattern="++show (rulePattern r)++",ruleAction="++show (ruleAction r)
 
 -- | An executable is either a rule action, or a function.
 data Executable
@@ -477,24 +395,27 @@ data Executable
 -- confusion with Haskell's "Data.Function"). 
 data Subroutine
   = Subroutine
-    { argsPattern   :: [Pattern]
-    , subSourceCode :: [Com ScriptExpr]
+    { argsPattern      :: [Pattern]
+    -- , subSourceCode :: [ScriptExpr]
     , getSubExecutable :: Executable
     }
-    deriving Typeable
+  | GlobAction
+    { globPattern      :: [Glob]
+    , getSubExecutable :: Executable
+    }
+  deriving Typeable
 
 instance Eq Subroutine where
-  a == b = argsPattern a == argsPattern b && subSourceCode a == subSourceCode b
+  a == b = argsPattern a == argsPattern b
+
 instance Ord Subroutine where
   compare a b =
-    if subSourceCode a == subSourceCode b
-      then  if argsPattern a == argsPattern b then EQ else compare (argsPattern a) (argsPattern b)
-      else  compare (subSourceCode a) (subSourceCode b)
+    let c = compare (argsPattern a) (argsPattern b)
+    in  if c==EQ then compare (argsPattern a) (argsPattern b) else c
+
 instance Show Subroutine where
   show a = concat $
-    [ "func(", intercalate ", " (map show (argsPattern a))
-    , ") { " , concatMap (\a -> show a++"; ") (subSourceCode a), "}"
-    ]
+    [ "Subroutine{argsPattern=", intercalate ", " (map show (argsPattern a)), "}" ]
 
 -- | All evaluation of the Dao language takes place in the 'Exec' monad. It allows @IO@
 -- functions to be lifeted into it so functions from "Control.Concurrent", "Dao.Document",
@@ -614,95 +535,83 @@ instance Read LambdaExprType where
 
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
-  = VoidExpr -- ^ Not a language construct, but used where an object expression is optional.
-  | Literal      Object                                   Location
-  | AssignExpr   ObjectExpr  (Com UpdateOp)  ObjectExpr   Location
-  | Equation     ObjectExpr  (Com ArithOp2)  ObjectExpr   Location
-  | PrefixExpr   ArithOp1    (Com ObjectExpr)             Location
-  | ParenExpr    Bool                   (Com ObjectExpr)  Location -- ^ Bool is True if the parenthases really exist.
-  | ArraySubExpr ObjectExpr  [Comment]  (Com ObjectExpr)  Location
-  | FuncCall     Name        [Comment]  [Com ObjectExpr]  Location
-  | DictExpr     Name        [Comment]  [Com ObjectExpr]  Location
-  | ArrayExpr    (Com [Com ObjectExpr]) [Com ObjectExpr]  Location
-  | StructExpr   (Com ObjectExpr)       [Com ObjectExpr]  Location
-  | DataExpr     [Comment]   [Com UStr]                   Location
-  | LambdaExpr   LambdaExprType  (Com [Com ObjectExpr]) [Com ScriptExpr]  Location
-  | MetaEvalExpr (Com ObjectExpr)                         Location
+  = Literal       Object                                   Location
+  | AssignExpr    ObjectExpr      UpdateOp     ObjectExpr  Location
+  | Equation      ObjectExpr      ArithOp2     ObjectExpr  Location
+  | PrefixExpr    ArithOp1        ObjectExpr               Location
+  | ParenExpr     Bool            ObjectExpr               Location
+  | ArraySubExpr  ObjectExpr      ObjectExpr               Location
+  | FuncCall      Name           [ObjectExpr]              Location
+  | DictExpr      Name           [ObjectExpr]              Location
+  | ArrayExpr     [ObjectExpr]   [ObjectExpr]              Location
+  | StructExpr     ObjectExpr    [ObjectExpr]              Location
+  | DataExpr      [UStr]                                   Location
+  | LambdaExpr    LambdaExprType [ObjectExpr] [ScriptExpr] Location
+  | MetaEvalExpr  ObjectExpr                               Location
   deriving (Eq, Ord, Show, Typeable)
 
 instance HasLocation ObjectExpr where
   getLocation o = case o of
-    VoidExpr -> LocationUnknown
-    Literal        _     o -> o
-    AssignExpr     _ _ _ o -> o
-    Equation       _ _ _ o -> o
-    PrefixExpr     _ _   o -> o
-    ParenExpr      _ _   o -> o
-    ArraySubExpr   _ _ _ o -> o
-    FuncCall       _ _ _ o -> o
-    DictExpr       _ _ _ o -> o
-    ArrayExpr      _ _   o -> o
-    StructExpr     _ _   o -> o
-    DataExpr       _ _   o -> o
-    LambdaExpr     _ _ _ o -> o
-    MetaEvalExpr   _     o -> o
+    Literal       _     o -> o
+    AssignExpr    _ _ _ o -> o
+    Equation      _ _ _ o -> o
+    PrefixExpr    _ _   o -> o
+    ParenExpr     _ _   o -> o
+    ArraySubExpr  _ _   o -> o
+    FuncCall      _ _   o -> o
+    DictExpr      _ _   o -> o
+    ArrayExpr     _ _   o -> o
+    StructExpr    _ _   o -> o
+    DataExpr      _     o -> o
+    LambdaExpr    _ _ _ o -> o
+    MetaEvalExpr  _     o -> o
   setLocation o loc = case o of
-    VoidExpr             -> VoidExpr
-    Literal      a     _ -> Literal      a     loc
-    AssignExpr   a b c _ -> AssignExpr   a b c loc
-    Equation     a b c _ -> Equation     a b c loc
-    PrefixExpr   a b   _ -> PrefixExpr   a b   loc
-    ParenExpr    a b   _ -> ParenExpr    a b   loc
-    ArraySubExpr a b c _ -> ArraySubExpr a b c loc
-    FuncCall     a b c _ -> FuncCall     a b c loc
-    DictExpr     a b c _ -> DictExpr     a b c loc
-    ArrayExpr    a b   _ -> ArrayExpr    a b   loc
-    StructExpr   a b   _ -> StructExpr   a b   loc
-    DataExpr     a b   _ -> DataExpr     a b   loc
-    LambdaExpr   a b c _ -> LambdaExpr   a b c loc
-    MetaEvalExpr a     _ -> MetaEvalExpr a     loc
+    Literal       a     _ -> Literal       a     loc
+    AssignExpr    a b c _ -> AssignExpr    a b c loc
+    Equation      a b c _ -> Equation      a b c loc
+    PrefixExpr    a b   _ -> PrefixExpr    a b   loc
+    ParenExpr     a b   _ -> ParenExpr     a b   loc
+    ArraySubExpr  a b   _ -> ArraySubExpr  a b   loc
+    FuncCall      a b   _ -> FuncCall      a b   loc
+    DictExpr      a b   _ -> DictExpr      a b   loc
+    ArrayExpr     a b   _ -> ArrayExpr     a b   loc
+    StructExpr    a b   _ -> StructExpr    a b   loc
+    DataExpr      a     _ -> DataExpr      a     loc
+    LambdaExpr    a b c _ -> LambdaExpr    a b c loc
+    MetaEvalExpr  a     _ -> MetaEvalExpr  a     loc
 
 -- | Part of the Dao language abstract syntax tree: any expression that controls the flow of script
 -- exectuion.
 data ScriptExpr
-  = EvalObject   ObjectExpr   [Comment]                                                  Location
-  | IfThenElse   [Comment]    ObjectExpr  (Com [Com ScriptExpr])  (Com [Com ScriptExpr]) Location
-    -- ^ @if /**/ objExpr /**/ {} /**/ else /**/ if /**/ {} /**/ else /**/ {} /**/@
-  | TryCatch     (Com [Com ScriptExpr])   (Com UStr)                   [Com ScriptExpr]  Location
-    -- ^ @try /**/ {} /**/ catch /**/ errVar /**/ {}@              
-  | ForLoop      (Com Name)               (Com ObjectExpr)             [Com ScriptExpr]  Location
-    -- ^ @for /**/ var /**/ in /**/ objExpr /**/ {}@
-  | WhileLoop    (Com ObjectExpr)                                      [Com ScriptExpr]  Location
-    -- ^ @while objExpr {}@
-  | ContinueExpr Bool  [Comment]          (Com ObjectExpr)                               Location
-    -- ^ The boolean parameter is True for a "continue" statement, False for a "break" statement.
-    -- @continue /**/ ;@ or @continue /**/ if /**/ objExpr /**/ ;@
-  | ReturnExpr   Bool                     (Com ObjectExpr)                               Location
-    -- ^ The boolean parameter is True foe a "return" statement, False for a "throw" statement.
-    -- ^ @return /**/ ;@ or @return /**/ objExpr /**/ ;@
-  | WithDoc      (Com ObjectExpr)         [Com ScriptExpr]                               Location
-    -- ^ @with /**/ objExpr /**/ {}@
+  = EvalObject   ObjectExpr                              Location
+  | IfThenElse   ObjectExpr   [ScriptExpr] [ScriptExpr]  Location
+  | TryCatch     [ScriptExpr]  UStr        [ScriptExpr]  Location
+  | ForLoop      Name          ObjectExpr  [ScriptExpr]  Location
+  | WhileLoop    ObjectExpr   [ScriptExpr]               Location
+  | ContinueExpr Bool          ObjectExpr                Location
+  | ReturnExpr   Bool          ObjectExpr                Location
+  | WithDoc      ObjectExpr   [ScriptExpr]               Location
   deriving (Eq, Ord, Show, Typeable)
 
 instance HasLocation ScriptExpr where
   getLocation o = case o of
-    EvalObject   _ _     o -> o
-    IfThenElse   _ _ _ _ o -> o
-    TryCatch     _ _ _   o -> o
-    ForLoop      _ _ _   o -> o
-    WhileLoop    _ _     o -> o
-    ContinueExpr _ _ _   o -> o
-    ReturnExpr   _ _     o -> o
-    WithDoc      _ _     o -> o
+    EvalObject   _     o -> o
+    IfThenElse   _ _ _ o -> o
+    TryCatch     _ _ _ o -> o
+    ForLoop      _ _ _ o -> o
+    WhileLoop    _ _   o -> o
+    ContinueExpr _ _   o -> o
+    ReturnExpr   _ _   o -> o
+    WithDoc      _ _   o -> o
   setLocation o loc = case o of
-    EvalObject   a b     _ -> EvalObject   a b     loc
-    IfThenElse   a b c d _ -> IfThenElse   a b c d loc
-    WhileLoop    a b     _ -> WhileLoop    a b     loc
-    TryCatch     a b c   _ -> TryCatch     a b c   loc
-    ForLoop      a b c   _ -> ForLoop      a b c   loc
-    ContinueExpr a b c   _ -> ContinueExpr a b c   loc
-    ReturnExpr   a b     _ -> ReturnExpr   a b     loc
-    WithDoc      a b     _ -> WithDoc      a b     loc
+    EvalObject   a     _ -> EvalObject   a     loc
+    IfThenElse   a b c _ -> IfThenElse   a b c loc
+    TryCatch     a b c _ -> TryCatch     a b c loc
+    ForLoop      a b c _ -> ForLoop      a b c loc
+    WhileLoop    a b   _ -> WhileLoop    a b   loc
+    ContinueExpr a b   _ -> ContinueExpr a b   loc
+    ReturnExpr   a b   _ -> ReturnExpr   a b   loc
+    WithDoc      a b   _ -> WithDoc      a b   loc
 
 data TopLevelEventType
   = BeginExprType | EndExprType | ExitExprType
@@ -716,12 +625,11 @@ instance Show TopLevelEventType where
 -- | A 'TopLevelExpr' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
 data TopLevelExpr
-  = Attribute      (Com Name)        (Com Name)                                    Location
-  | TopFunc        (Com Name)        [Com ObjectExpr]       (Com [Com ScriptExpr]) Location
-  | TopScript      ScriptExpr                                                      Location
-  | TopLambdaExpr  LambdaExprType    (Com [Com ObjectExpr]) [Com ScriptExpr]       Location
-  | EventExpr      TopLevelEventType (Com [Com ScriptExpr])                        Location
-  | TopComment     [Comment]
+  = Attribute      Name               Name                       Location
+  | TopFunc        Name               [ObjectExpr]  [ScriptExpr] Location
+  | TopScript      ScriptExpr                                    Location
+  | TopLambdaExpr  LambdaExprType     [ObjectExpr]  [ScriptExpr] Location
+  | EventExpr      TopLevelEventType  [ScriptExpr]               Location
   deriving (Eq, Ord, Show, Typeable)
 
 instance HasLocation TopLevelExpr where
@@ -733,8 +641,8 @@ instance HasLocation TopLevelExpr where
     EventExpr      _ _   o -> o
   setLocation o loc = case o of
     Attribute      a b   _ -> Attribute      a b   loc
-    TopFunc        a b c _ -> TopFunc   a b c loc
-    TopScript      a     _ -> TopScript a     loc
+    TopFunc        a b c _ -> TopFunc        a b c loc
+    TopScript      a     _ -> TopScript      a     loc
     TopLambdaExpr  a b c _ -> TopLambdaExpr  a b c loc
     EventExpr      a b   _ -> EventExpr      a b   loc
 
@@ -882,17 +790,6 @@ type DocResource   = Resource (StoredFile T.Tree Name) [Name]
 
 ----------------------------------------------------------------------------------------------------
 
--- | A 'SourceCode' is the structure loaded from source code. An 'ExecUnit' object is constructed from
--- 'SourceCode'.
-data SourceCode
-  = SourceCode
-    { sourceModified   :: Int
-    , sourceFullPath   :: UStr
-      -- ^ the URL (full file path) from where this source code was received.
-    , directives       :: [TopLevelExpr]
-    }
-  deriving (Eq, Ord, Show, Typeable)
-
 ----------------------------------------------------------------------------------------------------
 
 -- | The magic number is the first 8 bytes to every 'Document'. It is the ASCII value of the string
@@ -1013,8 +910,8 @@ data ExecUnit
     ---- used to be elements of Program ----
     , programModuleName :: UPath
     , programImports    :: [UPath]
-    , constructScript   :: [[Com ScriptExpr]]
-    , destructScript    :: [[Com ScriptExpr]]
+    , constructScript   :: [[ScriptExpr]]
+    , destructScript    :: [[ScriptExpr]]
     , requiredBuiltins  :: [Name]
     , programAttributes :: M.Map Name Name
     , preExec     :: [Executable]
@@ -1144,26 +1041,6 @@ instance HasDebugRef Runtime where
   setDebugRef dbg runtime = runtime{runtimeDebugger = dbg}
 
 ----------------------------------------------------------------------------------------------------
-
--- "src/Dao/Object/Monad.hs"  defines the monad that is used to evaluate
--- expressions written in the Dao scripting lanugage.
--- 
--- Copyright (C) 2008-2013  Ramin Honary.
--- This file is part of the Dao System.
---
--- The Dao System is free software: you can redistribute it and/or
--- modify it under the terms of the GNU General Public License as
--- published by the Free Software Foundation, either version 3 of the
--- License, or (at your option) any later version.
--- 
--- The Dao System is distributed in the hope that it will be useful,
--- but WITHOUT ANY WARRANTY; without even the implied warranty of
--- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
--- GNU General Public License for more details.
--- 
--- You should have received a copy of the GNU General Public License
--- along with this program (see the file called "LICENSE"). If not, see
--- <http://www.gnu.org/licenses/agpl.html>.
 
 -- | Used to play the role of an error-handling monad and a continuation monad together. It is
 -- basically an identity monad, but can evaluate to 'FlowErr's instead of relying on

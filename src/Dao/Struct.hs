@@ -118,8 +118,8 @@ putData = putTree . dataToStruct
 
 -- | Shortcut for @'with' addr ('putData' a)@. This function is the counter opreation of
 -- 'getDataAt'.
-putDataTo :: Structured a => String -> a -> Update ()
-putDataTo addr obj = with addr (putData obj)
+putDataAt :: Structured a => String -> a -> Update ()
+putDataAt addr obj = with addr (putData obj)
 
 -- | Update an object at the current node.
 placeWith :: ModLeaf Object -> Update ()

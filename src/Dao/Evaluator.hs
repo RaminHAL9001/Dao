@@ -30,6 +30,7 @@ module Dao.Evaluator where
 import           Dao.Debug.OFF
 import           Dao.Token
 import           Dao.Object
+import           Dao.Object.AST
 import           Dao.PPrint
 import qualified Dao.Tree as T
 import           Dao.Glob
@@ -48,7 +49,7 @@ import           Control.Exception
 import           Control.Concurrent
 import           Control.Monad.Trans
 import           Control.Monad.Reader
-import           Control.Monad.State -- for constructing 'Program's from 'SourceCode's.
+import           Control.Monad.State -- for constructing 'Program's from 'AST_SourceCode's.
 
 import           Data.Monoid
 import           Data.Maybe
@@ -121,13 +122,13 @@ initExecUnit runtime modName initGlobalData = do
     , globalData        = initGlobalData
     }
 
-setupExecutable :: HasDebugRef r => Com [Com ScriptExpr] -> ReaderT r IO Executable
+setupExecutable :: HasDebugRef r => [ScriptExpr] -> ReaderT r IO Executable
 setupExecutable scrp = do
   staticRsrc <- lift (newIORef M.empty)
   return $
     Executable
     { staticVars = staticRsrc
-    , executable = execScriptBlock (unComment scrp) >>= liftIO . evaluate
+    , executable = execScriptBlock scrp >>= liftIO . evaluate
     }
 
 runExecutable :: T_tree -> Executable -> Exec Object
@@ -146,32 +147,16 @@ runSubroutine args sub =
     Backtrack     -> return Nothing
     PFail ref msg -> procErr (OPair (OString msg, ORef ref))
 
--- | Execute a 'Dao.Object.Rule' object as though it were a script that could be called. The
--- parameters passed will be stored into the 'currentMatch' slot durring execution, but all
--- parameters passed must be of type 'Dao.Object.OString', or an error is thrown.
-execRuleCall :: [Object] -> Rule -> Exec Object
-execRuleCall ax rule = do
-  let typeErr o =
-        typeError o "when calling a Rule object as though it were a function, all parameters" $
-          show ListType++", where each list contains only objects of type "++show StringType
-  ax <- forM ax $ \a -> case a of
-    OList ax -> forM ax $ \a -> case a of
-      OString a -> return a
-      _ -> typeErr a
-    _ -> typeErr a
-  local (\xunit -> xunit{currentMatch = Just (matchFromList [] (iLength ax) ax)}) $
-    execFuncPushStack T.Void (execScriptBlock (ruleAction rule) >> procReturn ONull)
-
 -- | Very simply executes every given script item. Does not use catchReturnObj, does not use
 -- 'nestedExecStack'. CAUTION: you cannot assign to local variables unless you call this method
 -- within the 'nestedExecStack' or 'execFuncPushStack' functions. Failure to do so will cause a stack
 -- underflow exception.
-execScriptBlock :: [Com ScriptExpr] -> Exec ()
+execScriptBlock :: [ScriptExpr] -> Exec ()
 execScriptBlock block = mapM_ execScriptExpr block
 
 -- | A guard script is some Dao script that is executed before or after some event, for example, the
 -- code found in the @BEGIN@ and @END@ blocks.
-execGuardBlock :: [Com ScriptExpr] -> Exec ()
+execGuardBlock :: [ScriptExpr] -> Exec ()
 execGuardBlock block = void (execFuncPushStack T.Void (execScriptBlock block >> return ONull))
 
 -- $BasicCombinators
@@ -920,7 +905,6 @@ builtin_call = DaoFunc $ \args ->
                   [ OString (ustr "incorrect parameters passed to lambda call")
                   , OScript fn, OList args
                   ]
-            ORule   fn : args -> execRuleCall  args fn
             obj:args          -> called_nonfunction_object obj args
 
 -- | The map that contains the built-in functions that are used to initialize every
@@ -1049,63 +1033,60 @@ checkPValue altmsg tried pval = case pval of
 ----------------------------------------------------------------------------------------------------
 
 -- | Convert a single 'ScriptExpr' into a function of value @'Exec' 'Dao.Object.Object'@.
-execScriptExpr :: Com ScriptExpr -> Exec ()
-execScriptExpr script = case unComment script of
-  EvalObject  o  _             lc  -> unless (isNO_OP o) (void (evalObject o))
-  IfThenElse  _  ifn  thn  els lc  -> nestedExecStack T.Void $ do
+execScriptExpr :: ScriptExpr -> Exec ()
+execScriptExpr script = case script of
+  EvalObject  o             loc -> unless (isNO_OP o) (void (evalObject o))
+  IfThenElse  ifn  thn  els loc -> nestedExecStack T.Void $ do
     ifn <- evalObject ifn
     case ifn of
       ORef o -> do
         true <- fmap isJust (readReference o)
-        execScriptBlock (unComment (if true then thn else els))
-      o      -> execScriptBlock (unComment (if objToBool o then thn else els))
-  TryCatch    try  name catch  lc  -> do
-    ce <- procCatch (nestedExecStack T.Void (execScriptBlock (unComment try)))
+        execScriptBlock (if true then thn else els)
+      o      -> execScriptBlock (if objToBool o then thn else els)
+  TryCatch try  name  catch loc -> do
+    ce <- procCatch (nestedExecStack T.Void (execScriptBlock try))
     void $ case ce of
-      FlowErr o -> nestedExecStack (T.insert [unComment name] o T.Void) (execScriptBlock catch)
+      FlowErr o -> nestedExecStack (T.insert [name] o T.Void) (execScriptBlock catch)
       ce        -> joinFlowCtrl ce
-  ForLoop    varName inObj thn lc  -> nestedExecStack T.Void $ do
-    inObj <- evalObject (unComment inObj)
+  ForLoop varName inObj thn loc -> nestedExecStack T.Void $ do
+    inObj <- evalObject inObj
     let block thn = if null thn then return True else scrpExpr (head thn) >> block (tail thn)
         ctrlfn ifn thn = do
           ifn <- evalObject ifn
           case ifn of
             ONull -> return (not thn)
             _     -> return thn
-        scrpExpr expr = case unComment expr of
-          ContinueExpr a _  ifn lc -> ctrlfn (unComment ifn) a
-          _                        -> execScriptExpr expr >> return True
+        scrpExpr expr = case expr of
+          ContinueExpr a ifn loc -> ctrlfn ifn a
+          _                      -> execScriptExpr expr >> return True
         loop thn name ix = case ix of
           []   -> return ()
           i:ix -> localVarDefine name i >> block thn >>= flip when (loop thn name ix)
         inObjType = OType (objType inObj)
     case asList inObj of
-      OK        ox  -> loop thn (unComment varName) ox
+      OK        ox  -> loop thn varName ox
       Backtrack     -> objectError inObj "cannot be represented as list"
       PFail loc msg -> objectError inObj (uchars msg) -- TODO: also report the location of the failure.
-  WhileLoop    co   scrp       lc  -> outerLoop where
+  WhileLoop    co   scrp    loc -> outerLoop where
     outerLoop = do
-      condition <- evalObject (unComment co)
+      condition <- evalObject co
       if objToBool condition
         then  innerLoop scrp >>= \contin -> if contin then outerLoop else return ()
         else  return ()
     innerLoop ax = case ax of
       []     -> return True
-      a : ax -> case unComment a of
-        ContinueExpr  contin _ condition lc ->
-          case unComment condition of
-            VoidExpr -> if contin then return True else return False
-            _        -> do
-              condition <- evalObject (unComment condition)
-              if objToBool condition
-                then  if contin then return True else return False
-                else  innerLoop ax
+      a : ax -> case a of
+        ContinueExpr  contin condition loc -> do
+          condition <- evalObject condition
+          if objToBool condition
+            then  if contin then return True else return False
+            else  innerLoop ax
         _                                        -> execScriptExpr a >> innerLoop ax
-  ContinueExpr a    _    _     lc  -> simpleError $
+  ContinueExpr a    _       loc -> simpleError $
     '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" loop"
-  ReturnExpr   a    obj        lc  -> evalObject (unComment obj) >>= \obj -> (if a then procReturn else procErr) obj
-  WithDoc      lval thn        lc  -> nestedExecStack T.Void $ do
-    lval <- evalObject (unComment lval)
+  ReturnExpr   a    obj     loc -> evalObject obj >>= \obj -> (if a then procReturn else procErr) obj
+  WithDoc      lval thn     loc -> nestedExecStack T.Void $ do
+    lval <- evalObject lval
     let setBranch ref xunit = return (xunit{currentBranch = ref})
         setFile path xunit = do
           file <- lift (fmap (M.lookup path) (dReadMVar xloc (execOpenFiles xunit)))
@@ -1133,9 +1114,9 @@ showObjType obj = showObj (OType (objType obj))
 isNO_OP :: ObjectExpr -> Bool
 isNO_OP o = case o of
   Literal      _     _ -> True
-  ParenExpr    _ o   _ -> isNO_OP (unComment o)
-  ArraySubExpr _ _ _ _ -> True
-  DictExpr     _ _ _ _ -> True
+  ParenExpr    _ o   _ -> isNO_OP o
+  ArraySubExpr _ _   _ -> True
+  DictExpr     _ _   _ -> True
   ArrayExpr    _ _   _ -> True
   LambdaExpr   _ _ _ _ -> True
   _                    -> False
@@ -1150,10 +1131,8 @@ called_nonfunction_object ref args = procErr $ OList $
 -- type 'Dao.Object.ORef'
 evalObject :: ObjectExpr -> Exec Object
 evalObject obj = case obj of
-  VoidExpr                      -> return ONull
-  Literal       o            lc -> return o
-  AssignExpr    nm  op_ expr lc -> do
-    let op = unComment op_
+  Literal     o              loc -> return o
+  AssignExpr  nm  op  expr   loc -> do
     nm   <- evalObject nm
     nm   <- checkPValue ("left-hand side of "++show op) [nm] (asReference nm)
     expr <- evalObject expr >>= evalObjectRef
@@ -1162,7 +1141,7 @@ evalObject obj = case obj of
         UCONST -> return (Just expr)
         _      -> procErr $ OList $ [OString $ ustr "undefined refence", ORef nm]
       Just obj -> fmap Just $ checkPValue "assignment expression" [obj, expr] $ (updatingOps!op) obj expr
-  FuncCall   op  _  args     lc -> do -- a built-in function call
+  FuncCall   op   args       loc -> do -- a built-in function call
     bif  <- fmap builtinFuncs ask
     args <- evalArgsList args
     case M.lookup op bif of
@@ -1174,16 +1153,15 @@ evalObject obj = case obj of
           Nothing  -> procErr $ OList $
             [OString (ustr "incorrect parameters passed to function") , OString op, OList args]
       Just fn -> daoForeignCall fn args
-  ParenExpr     _     o      lc -> evalObject (unComment o)
-  ArraySubExpr  o  _  i      lc -> do
+  ParenExpr     _     o      loc -> evalObject o
+  ArraySubExpr  o     i      loc -> do
     o <- evalObject o >>= evalObjectRef
-    i <- evalObject (unComment i)
+    i <- evalObject i
     case evalSubscript o i of
       OK          a -> return a
       PFail loc msg -> procErr (OString msg)
       Backtrack     -> procErr (OList [i, OString (ustr "cannot be used as index of"), o])
-  Equation   left  op_ right lc -> do
-    let op = unComment op_
+  Equation   left  op  right loc -> do
     left  <- evalObject left
     right <- evalObject right
     (left, right) <- case op of
@@ -1195,19 +1173,18 @@ evalObject obj = case obj of
       Backtrack -> procErr $ OList $
         [OString $ ustr (show op), OString $ ustr "cannot operate on objects of type", left, right]
       PFail lc msg -> procErr $ OList [OString msg]
-  PrefixExpr op       expr   lc -> do
-    expr <- evalObject (unComment expr)
+  PrefixExpr op       expr   loc -> do
+    expr <- evalObject expr
     case (prefixOps!op) expr of
       OK result -> return result
       Backtrack -> procErr $ OList $
         [OString $ ustr (show op), OString $ ustr "cannot operate on objects of type", expr]
       PFail lc msg -> procErr $ OList [OString msg]
-  DictExpr   cons  _  args   lc -> do
+  DictExpr   cons     args   loc -> do
     let loop insfn getObjVal map argx = case argx of
           []       -> return map
-          arg:argx -> case unComment arg of
-            AssignExpr ixObj op_ new lc -> do
-              let op = unComment op_
+          arg:argx -> case arg of
+            AssignExpr ixObj op  new loc -> do
               ixObj <- evalObject ixObj >>= evalObjectRef
               ixVal <- checkPValue (show cons++" assignment expression") [ixObj] (getObjVal ixObj)
               new   <- evalObject new >>= evalObjectRef
@@ -1226,51 +1203,47 @@ evalObject obj = case obj of
         intmap = assign I.lookup I.insert
         dict   = assign M.lookup M.insert
     case () of
-      () | cons == ustr "list"   -> fmap OList (mapM (evalObject . unComment) args)
+      () | cons == ustr "list"   -> fmap OList (mapM evalObject args)
       () | cons == ustr "dict"   -> fmap ODict   (loop dict   asStringNoConvert M.empty args)
       () | cons == ustr "intmap" -> fmap OIntMap (loop intmap asHaskellInt      I.empty args)
       _ -> error ("INTERNAL ERROR: unknown dictionary declaration "++show cons)
-  ArrayExpr  rang  ox        lc -> do
-    case unComment rang of
+  ArrayExpr  rang  ox        loc -> do
+    case rang of
       (_ : _ : _ : _) ->
         simpleError "internal error: array range expression has more than 2 arguments"
       [lo, hi] -> do
-        lo <- evalObject (unComment lo)
-        hi <- evalObject (unComment hi)
+        lo <- evalObject lo
+        hi <- evalObject hi
         case (lo, hi) of
           (OInt lo, OInt hi) -> do
             (lo, hi) <- return (if lo<hi then (lo,hi) else (hi,lo))
-            ox <- mapM (evalObject . unComment) ox
+            ox <- mapM evalObject ox
             return (OArray (listArray (lo, hi) ox))
           _ -> objectError (OPair (OType (objType lo), OType (objType hi))) $
                    "range specified to an "++show ArrayType
                  ++" constructor must evaluate to two "++show IntType++"s"
       _ -> simpleError "internal error: array range expression has fewer than 2 arguments"
-  DataExpr   _    strs        _  -> case b64Decode (concatMap (uchars . unComment) strs) of
+  DataExpr   strs            loc -> case b64Decode (concatMap uchars strs) of
     Right dat -> return (OBytes dat)
     Left  (ch, loc) -> procErr $ OList $
       [ OString (ustr "invalid character in base-64 data expression"), OChar ch
       , OString (ustr "at position"), OWord loc
       ]
-  LambdaExpr typ  argv  code  lc -> do
-    result <- evalLambdaExpr typ argv code
-    case result of
-      ORule r -> return (ORule r)
-      result  -> return result
+  LambdaExpr typ argv code   loc -> evalLambdaExpr typ argv code
 
-evalLambdaExpr :: LambdaExprType -> Com [Com ObjectExpr] -> [Com ScriptExpr] -> Exec Object
+evalLambdaExpr :: LambdaExprType -> [ObjectExpr] -> [ScriptExpr] -> Exec Object
 evalLambdaExpr typ argv code = do
-  exe <- lift (setupExecutable (Com code))
-  let convArgv fn = mapM (fn . unComment) (unComment argv)
+  exe <- lift (setupExecutable (code))
+  let convArgv fn = mapM fn argv
   case typ of
     FuncExprType -> do
       argv <- convArgv argsToObjPat
       return $ OScript $
-        Subroutine{argsPattern=argv, subSourceCode=code, getSubExecutable=exe}
+        Subroutine{argsPattern=argv, getSubExecutable=exe}
     RuleExprType -> do
       argv <- convArgv argsToGlobExpr
-      return $ ORule $
-        Rule{rulePattern=argv, ruleAction=code, ruleExecutable=exe}
+      return $ OScript $
+        GlobAction{globPattern=argv, getSubExecutable=exe}
 
 -- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Object.Pattern'.
 argsToObjPat :: ObjectExpr -> Exec Pattern
@@ -1285,8 +1258,8 @@ argsToGlobExpr o = case o of
   Literal (OString str) _ -> return (read (uchars str))
   _ -> simpleError "does not evaluate to a \"glob\" pattern"
 
-evalArgsList :: [Com ObjectExpr] -> Exec [Object]
-evalArgsList = mapM ((evalObject >=> evalObjectRef) . unComment)
+evalArgsList :: [ObjectExpr] -> Exec [Object]
+evalArgsList = mapM (evalObject >=> evalObjectRef)
 
 -- | Simply checks if an 'Prelude.Integer' is within the maximum bounds allowed by 'Data.Int.Int'
 -- for 'Data.IntMap.IntMap'.
@@ -1311,22 +1284,21 @@ verifyImport :: Name -> a -> Exec a
 verifyImport nm a = return a -- TODO: the rest of this function.
 
 -- | This function is evaluated to update the 'Dao.Object.ExecUnit' to fill the 'Dao.Object.ExecUnit'
--- with the useful things in the 'Dao.Object.SourceCode'. Before evaluating this function you should
--- evaluate sourceFromHandle' is called to create a 'Dao.Object.SourceCode',
+-- with the useful things in the 'Dao.Object.AST_SourceCode'. Before evaluating this function you should
+-- evaluate sourceFromHandle' is called to create a 'Dao.Object.AST_SourceCode',
 -- 'Dao.Resource.newTreeResource' is called to create a 'Dao.Resource.TreeResource', and
 -- 'registerSourceCode' is called to initialize a new 'Dao.Object.ExecUnit'.
-programFromSource :: TreeResource -> SourceCode -> ExecUnit -> Run (FlowCtrl ExecUnit)
+programFromSource :: TreeResource -> AST_SourceCode -> ExecUnit -> Run (FlowCtrl ExecUnit)
 programFromSource theNewGlobalTable src xunit = do
   runtime <- ask
-  let dx = directives src
+  let dx = concatMap toInterm (directives src)
   evalStateT (importsLoop dx) (xunit{parentRuntime=runtime})
   where
     importsLoop dx = do
       runtime <- gets parentRuntime
       case dx of
-        Attribute     kindOfAttr attribName        _ : dx -> do
-          let nm = unComment attribName
-          case uchars (unComment kindOfAttr) of
+        Attribute kindOfAttr    nm               loc : dx -> do
+          case uchars kindOfAttr of
             a | a=="require" || a=="requires" -> do
               case M.lookup nm (functionSets runtime) of
                 Nothing -> return $ FlowErr $ OList $
@@ -1340,29 +1312,28 @@ programFromSource theNewGlobalTable src xunit = do
               importsLoop dx
         dx -> scriptLoop dx
     scriptLoop dx = case dx of
-      [] -> fmap FlowOK get
-      TopFunc       name       argList    script _ : dx -> do
+      []                                                  -> fmap FlowOK get
+      TopFunc       name       argList    script loc : dx -> do
         xunit  <- get
-        result <- mkArgvExe argList (unComment script)
-        let nm = unComment name
+        result <- mkArgvExe argList script
         case result of
           FlowOK sub -> do
             let alt funcs = mplus (fmap (++[sub]) funcs) (return [sub])
-            put (xunit{topLevelFuncs = M.alter alt nm (topLevelFuncs xunit)})
+            put (xunit{topLevelFuncs = M.alter alt name (topLevelFuncs xunit)})
           FlowErr err -> return () -- errors are handled in the 'mkArgvExe' function
         scriptLoop dx
-      TopScript     expr                         _ : dx -> do
+      TopScript     expr                         loc : dx -> do
         modify $ \xunit ->
           let cs = constructScript xunit
-          in  xunit{constructScript = if null cs then [[Com expr]] else [head cs ++ [Com expr]]}
+          in  xunit{constructScript = if null cs then [[expr]] else [head cs ++ [expr]]}
         scriptLoop dx
-      TopLambdaExpr ruleOrPat  argList    script _ : dx -> case ruleOrPat of
+      TopLambdaExpr ruleOrPat  argList    script loc : dx -> case ruleOrPat of
         FuncExprType -> pat
         PatExprType  -> pat
         RuleExprType -> rule
         where
           pat = do
-            result <- mkArgvExe (unComment argList) script
+            result <- mkArgvExe argList script
             case result of
               FlowOK sub -> do
                 modify (\xunit -> xunit{patternTable = patternTable xunit ++ [sub]})
@@ -1370,7 +1341,7 @@ programFromSource theNewGlobalTable src xunit = do
             scriptLoop dx
           rule = do
             exe  <- mkExe script
-            argv <- lift $ flip runExec xunit $ mapM (argsToGlobExpr . unComment) (unComment argList)
+            argv <- lift $ flip runExec xunit $ mapM argsToGlobExpr argList
             case argv of
               FlowOK argv -> do
                 rules <- gets ruleSet
@@ -1378,27 +1349,26 @@ programFromSource theNewGlobalTable src xunit = do
                 lift $ dModifyMVar_ xloc rules (\patTree -> return (foldl fol patTree argv))
               FlowErr _ -> return () -- errors are handled in the 'mkArgvExe' function.
             scriptLoop dx
-      EventExpr     evtType    script            _ : dx -> do
+      EventExpr     evtType    script            loc : dx -> do
         exe <- lift $ setupExecutable script
         case evtType of
           BeginExprType -> modify $ \xunit -> xunit{preExec  = preExec  xunit ++ [exe]}
           EndExprType   -> modify $ \xunit -> xunit{postExec = postExec xunit ++ [exe]}
           ExitExprType  -> modify $ \xunit ->
-            xunit{destructScript = destructScript xunit ++ [unComment script]}
+            xunit{destructScript = destructScript xunit ++ [script]}
         scriptLoop dx
-      Attribute     kindOfAttr attribName        _ : _  -> return $ FlowErr $ OList $
-        [ OString (unComment kindOfAttr), OString (unComment attribName)
+      Attribute     kindOfAttr attribName        loc : _  -> return $ FlowErr $ OList $
+        [ OString kindOfAttr, OString attribName
         , OString $ ustr "statement is not at the top of the source file"
         ]
-    mkExe script = lift $ setupExecutable (Com script)
+    mkExe script = lift $ setupExecutable (script)
     mkArgvExe argList script = do
-      argv <- lift $ flip runExec xunit $ mapM argsToObjPat $ map unComment argList
+      argv <- lift $ flip runExec xunit $ mapM argsToObjPat $ argList
       exe  <- mkExe script
       case argv of
         FlowOK argv  -> return $ FlowOK $
           Subroutine
           { argsPattern      = argv
-          , subSourceCode    = script
           , getSubExecutable = exe
           }
         FlowErr err  -> do
@@ -1406,15 +1376,15 @@ programFromSource theNewGlobalTable src xunit = do
           return (FlowErr err)
         FlowReturn _ -> error "argsToObjPat returned 'FlowReturn' instead of '(FlowOK [Pattern])'"
 
--- | When the 'programFromSource' is scanning through a 'Dao.Object.SourceCode' object, it first
+-- | When the 'programFromSource' is scanning through a 'Dao.Object.AST_SourceCode' object, it first
 -- constructs an 'IntermediateProgram', which contains no 'Dao.Debug.DMVar's. Once all the data
 -- structures are in place, a 'Dao.Object.CachedProgram' is constructed from this intermediate
 -- representation.
 data IntermediateProgram
   = IntermediateProgram
     { inmpg_programImports    :: [UStr]
-    , inmpg_constructScript   :: [Com [Com ScriptExpr]]
-    , inmpg_destructScript    :: [Com [Com ScriptExpr]]
+    , inmpg_constructScript   :: [[ScriptExpr]]
+    , inmpg_destructScript    :: [[ScriptExpr]]
     , inmpg_requiredBuiltins  :: [Name]
     , inmpg_programAttributes :: M.Map Name Name
     , inmpg_preExec           :: [Executable]
@@ -1424,41 +1394,6 @@ data IntermediateProgram
     , inmpg_ruleSet           :: PatternTree [Executable]
     -- , inmpg_globalData        :: T.Tree Name Object
     , inmpg_topLevelFuncs     :: M.Map Name [Subroutine]
-    }
-
-initIntermediateProgram =
-  IntermediateProgram
-  { inmpg_programImports    = []
-  , inmpg_constructScript   = []
-  , inmpg_destructScript    = []
-  , inmpg_requiredBuiltins  = []
-  , inmpg_programAttributes = M.empty
-  , inmpg_preExec           = []
-  , inmpg_postExec          = []
-  , inmpg_programTokenizer  = return . tokens . uchars
-  , inmpg_programComparator = (==)
-  , inmpg_ruleSet           = T.Void
-  -- , inmpg_globalData        = T.Void
-  , inmpg_topLevelFuncs     = M.empty
-  }
-
-initProgram :: IntermediateProgram -> Exec ExecUnit
-initProgram inmpg = do
-  xunit <- ask
-  -- inEvalDoModifyUnlocked_ (globalData xunit) (return . const (inmpg_globalData inmpg))
-  lift $ dModifyMVar_ xloc (ruleSet  xunit) (return . T.merge T.union (++) (inmpg_ruleSet inmpg))
-  return $
-    xunit
-    { programImports    = inmpg_programImports inmpg
-    , constructScript   = map unComment (inmpg_constructScript inmpg)
-    , destructScript    = map unComment (inmpg_destructScript  inmpg)
-    , requiredBuiltins  = inmpg_requiredBuiltins  inmpg
-    , programAttributes = M.empty
-    , preExec           = inmpg_preExec inmpg
-    , programTokenizer  = return . tokens . uchars
-    , programComparator = (==)
-    , postExec          = inmpg_postExec inmpg
-    , topLevelFuncs     = inmpg_topLevelFuncs inmpg
     }
 
 ----------------------------------------------------------------------------------------------------
@@ -1693,7 +1628,7 @@ evalScriptString xunit instr = dStack xloc "evalScriptString" $
     case fst (runParser parseInteractiveScript instr) of
       Backtrack     -> error "cannot parse expression"
       PFail tok msg -> error ("error: "++uchars msg++show tok)
-      OK expr       -> expr
+      OK expr       -> concatMap (toInterm . unComment) expr
 
 ----------------------------------------------------------------------------------------------------
 -- src/Dao/Files.hs
@@ -1703,7 +1638,7 @@ evalScriptString xunit instr = dStack xloc "evalScriptString" $
 -- 'initSourceCode' and associates the resulting 'Dao.Evaluator.ExecUnit' with the
 -- 'sourceFullPath' in the 'programs' table. Returns the logical "module" name of the script along
 -- with an initialized 'Dao.Object.ExecUnit'.
-registerSourceCode :: UPath -> SourceCode -> Run (FlowCtrl ExecUnit)
+registerSourceCode :: UPath -> AST_SourceCode -> Run (FlowCtrl ExecUnit)
 registerSourceCode upath script = dStack xloc "registerSourceCode" $ ask >>= \runtime -> do
   let pathTab = pathIndex runtime
   alreadyLoaded <- fmap (M.lookup upath) (dReadMVar xloc pathTab)
@@ -1724,7 +1659,7 @@ registerSourceCode upath script = dStack xloc "registerSourceCode" $ ask >>= \ru
 
 -- | You should not normally need to call evaluate this function, you should use
 -- 'registerSourceCode' which will evaluate this function and also place the
--- 'Dao.Object.SourceCode' into the 'programs' table. This function will use
+-- 'Dao.Object.AST_SourceCode' into the 'programs' table. This function will use
 -- 'Dao.Evaluator.programFromSource' to construct a 'Dao.Object.ExecUnit'
 -- and then execute the initialization code for that program, that is, use
 -- 'Dao.Evaluator.execScriptExpr' to evaluate every 'Dao.Object.Exec' in the
@@ -1733,7 +1668,7 @@ registerSourceCode upath script = dStack xloc "registerSourceCode" $ ask >>= \ru
 -- code). You need to pass the 'Runtime' to this function because it needs to initialize a new
 -- 'Dao.Evaluator.ExecUnit' with the 'programs' and 'runtimeDocList' but these values are not
 -- modified.
-initSourceCode :: UPath -> SourceCode -> Run ExecUnit
+initSourceCode :: UPath -> AST_SourceCode -> Run ExecUnit
 initSourceCode modName script = ask >>= \runtime -> do
   grsrc <- newTreeResource "Program.globalData" T.Void
   xunit <- initExecUnit runtime modName grsrc
@@ -1751,10 +1686,10 @@ initSourceCode modName script = ask >>= \runtime -> do
     FlowReturn _   ->
       error "INTERNAL ERROR: source code evaluation returned before completion"
 
--- | Load a Dao script program from the given file handle, return a 'Dao.Object.SourceCode' object.
+-- | Load a Dao script program from the given file handle, return a 'Dao.Object.AST_SourceCode' object.
 -- Specify a path to be used when reporting parsing errors. Does not register the source code into
 -- the given runtime.
-sourceFromHandle :: UPath -> Handle -> Run (FlowCtrl SourceCode)
+sourceFromHandle :: UPath -> Handle -> Run (FlowCtrl AST_SourceCode)
 sourceFromHandle upath h = lift $ do
   hSetBinaryMode h False
   fmap (FlowOK . loadSourceCode upath) (hGetContents h) >>= evaluate
@@ -1772,8 +1707,8 @@ registerSourceFromHandle upath h = do
 -- | Updates the 'Runtime' to include the Dao source code loaded from the given 'FilePath'. This
 -- function tries to load a file in three different attempts: (1) try to load the file as a binary
 -- @('Dao.Document.Document' 'Dao.Evaluator.DocData')@ object. (2) Try to load the file as a
--- binary @'Dao.Object.SourceCode'@ object. (3) Treat the file as text (using the current locale set
--- by the system, e.g. @en.UTF-8@) and parse a 'Dao.Object.SourceCode' object using
+-- binary @'Dao.Object.AST_SourceCode'@ object. (3) Treat the file as text (using the current locale set
+-- by the system, e.g. @en.UTF-8@) and parse a 'Dao.Object.AST_SourceCode' object using
 -- 'Dao.Object.Parsers.source'. If all three methods fail, an error is thrown. Returns
 -- the 'TypedFile', although all source code files are returned as 'PrivateType's. Use
 -- 'asPublic' to force the type to be a 'PublicType'd file. If the nothing exists at the file path,
@@ -1839,7 +1774,7 @@ unloadFilePath path = do
 -- | When a program is loaded, and when it is released, any block of Dao code in the source script
 -- that is denoted with the @SETUP@ or @TAKEDOWN@ rules will be executed. This function performs
 -- that execution in the current thread.
-setupOrTakedown :: (ExecUnit -> [[Com ScriptExpr]]) -> ExecUnit -> Run ()
+setupOrTakedown :: (ExecUnit -> [[ScriptExpr]]) -> ExecUnit -> Run ()
 setupOrTakedown select xunit = ask >>= \runtime ->
   forM_ (select xunit) $ \block -> runExec (execGuardBlock block) xunit >>= lift . evaluate
 

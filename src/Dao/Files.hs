@@ -29,6 +29,7 @@ module Dao.Files where
 
 import           Dao.Debug.OFF
 import           Dao.Object
+import           Dao.Object.AST
 import           Dao.Resource
 import qualified Dao.Tree    as T
 import           Dao.Parser hiding (lookAhead)
@@ -98,7 +99,7 @@ instance Binary (StoredFile T.Tree Name Object) where
 
 -- | Parse Dao program from a 'Prelude.String' containing valid Dao source code, creating a
 -- 'Dao.Object.SourceCode' object. This is a pure function called by 'loadFilePath'.
-loadSourceCode :: UPath -> String -> SourceCode
+loadSourceCode :: UPath -> String -> AST_SourceCode
 loadSourceCode upath sourceString = case fst (runParser parseSourceFile sourceString) of
   Backtrack     -> error ("FILE TYPE: "++show path++" does not appear to be a Dao script.")
   PFail tok msg -> error (path++':':show tok++"\n\t"++uchars msg)

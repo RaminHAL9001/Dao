@@ -56,6 +56,7 @@ import           Data.List
 import qualified Data.Map    as M
 import qualified Data.Set    as S
 
+import           System.Environment (getProgName)
 import           System.IO
 
 import Debug.Trace
@@ -72,20 +73,25 @@ newRuntime :: DebugRef -> IO Runtime
 newRuntime debugRef = flip runReaderT debugRef $ dStack xloc "newRuntime" $ do
   paths <- dNewMVar xloc "Runtime.pathIndex" (M.empty)
   task  <- initTask
-  return $
-    Runtime
-    { pathIndex            = paths
-    , defaultTimeout       = Just 8000000
-    , functionSets         = M.empty
-    , taskForExecUnits     = task
-    , availableTokenizers  = M.empty -- specifying no tokenizer will cause the default to be used
-    , availableComparators = M.fromList $
-        [ (ustr "exact"      , exact)
-        , (ustr "approximate", approx)
-        ]
-    , fileAccessRules      = []
-    , runtimeDebugger      = Nothing
-    }
+  let runtime =
+        Runtime
+        { pathIndex            = paths
+        , defaultTimeout       = Just 8000000
+        , functionSets         = M.empty
+        , taskForExecUnits     = task
+        , availableTokenizers  = M.empty
+        , availableComparators = M.fromList $
+            [ (ustr "exact"      , exact)
+            , (ustr "approximate", approx)
+            ]
+        , fileAccessRules      = []
+        , runtimeDebugger      = Nothing
+        , globalExecUnit       = error "newRuntime not set before being used"
+        }
+  globalGlobalTree <- newTreeResource "Runtime.globalExecUnit.globalData" T.Void
+  progName <- liftIO getProgName
+  xunit <- lift $ runReaderT (initExecUnit (ustr progName) globalGlobalTree) runtime
+  return (runtime{globalExecUnit = xunit{parentRuntime = runtime}})
 
 -- | Provide a labeled set of built-in functions for this runtime. Each label indicates a set of
 -- functionality which is checked by the "required" directive of any Dao program that is loaded into

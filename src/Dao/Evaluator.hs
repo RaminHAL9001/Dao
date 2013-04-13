@@ -78,8 +78,9 @@ import Debug.Trace
 showObj :: PPrintable a => a -> String
 showObj = prettyPrint 80 "    "
 
-initExecUnit :: Runtime -> UPath -> TreeResource -> Run ExecUnit
-initExecUnit runtime modName initGlobalData = do
+initExecUnit :: UPath -> TreeResource -> Run ExecUnit
+initExecUnit modName initGlobalData = do
+  runtime  <- ask
   unctErrs <- dNewMVar xloc "ExecUnit.uncaughtErrors" []
   recurInp <- dNewMVar xloc "ExecUnit.recursiveInput" []
   qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
@@ -1231,6 +1232,7 @@ evalObject obj = case obj of
       , OString (ustr "at position"), OWord loc
       ]
   LambdaExpr typ argv code   loc -> evalLambdaExpr typ argv code
+  MetaEvalExpr expr          loc -> evalObject expr
 
 evalLambdaExpr :: LambdaExprType -> [ObjectExpr] -> [ScriptExpr] -> Exec Object
 evalLambdaExpr typ argv code = do
@@ -1672,7 +1674,7 @@ registerSourceCode upath script = dStack xloc "registerSourceCode" $ ask >>= \ru
 initSourceCode :: UPath -> AST_SourceCode -> Run ExecUnit
 initSourceCode modName script = ask >>= \runtime -> do
   grsrc <- newTreeResource "Program.globalData" T.Void
-  xunit <- initExecUnit runtime modName grsrc
+  xunit <- initExecUnit modName grsrc
   -- An execution unit is required to load a program, so of course, while a program is being
   -- loaded, the program is not in the program table, and is it's 'currentProgram' is 'Nothing'.
   -- result <- runExec (programFromSource grsrc (\_ _ _ -> return True) script) xunit -- OLD

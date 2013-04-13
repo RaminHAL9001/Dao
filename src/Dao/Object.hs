@@ -1010,6 +1010,9 @@ data Runtime
       -- ^ rules loaded by config file dicating programs and ideas can be loaded by Dao, and also,
       -- which programs can load which programs and ideas.
     , runtimeDebugger      :: DebugRef
+    , globalExecUnit       :: ExecUnit
+      -- ^ the 'ExecUnit' used to initalize all others. Also keeps track of files loaded on the
+      -- command line, and can be used to evaluate script expressions.
     }
 
 -- | This is the monad used for most all methods that operate on the 'Runtime' state.

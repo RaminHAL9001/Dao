@@ -17,6 +17,8 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
+{-# LANGUAGE ScopedTypeVariables #-}
+
 module Main where
 
 import           RandObj
@@ -138,6 +140,12 @@ randTest = case specify of
 
 ----------------------------------------------------------------------------------------------------
 
+errHandler :: String -> [Handler ()]
+errHandler msg = 
+  [ Handler (\ (e::IOException) -> hPutStrLn stderr (msg++": "++show e))
+  , Handler (\ (e::ErrorCall) -> hPutStrLn stderr (msg++": "++show e))
+  ]
+
 pPrintComScriptExpr :: [Com AST_Script] -> PPrint ()
 pPrintComScriptExpr = pPrintSubBlock (return ())
 
@@ -153,18 +161,27 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
   h ref (SomeException e) = do
     putMVar notify False >>= evaluate
     (i, obj) <- readIORef ref
-    handl <- openFile (show i++".log") AppendMode
-    hPutStrLn handl ("ITEM #"++show i++"\n"++show e)
-    hPutStrLn handl (concat [prettyPrint 80 "    " obj, "\n", sep]) >>= evaluate
-    hClose handl
+    let fileName = "uncaught.log"
+    catches
+      (do logFile <- openFile fileName AppendMode
+          catches
+            (do hPutStrLn logFile ("ITEM #"++show i++"\n"++show e)
+                hPutStrLn logFile (concat [prettyPrint 80 "    " obj, "\n", sep]) >>= evaluate
+                hFlush logFile
+            )
+            (errHandler "uncaught exception")
+          hClose logFile
+      )
+      (errHandler ("while writing "++show fileName))
   loop ref = do
     i <- takeMVar ch
     case i of
       Nothing -> return ()
       Just  i -> do
         modifyMVar_ hlock $ \ (handl, pos) -> do -- using an mvar to prevent race conditions on output to this file
-          hSetPosn pos
-          hPutStrLn handl (show i++"               ") >>= evaluate
+          handle (\ (e::IOException) -> hPrint stderr e) $ do
+            hSetPosn pos >>= evaluate
+            hPutStrLn handl (show i++"               ") >>= evaluate
           return (handl, pos)
         let obexp = {-# SCC obexp #-} genRandWith randO maxRecurseDepth i :: AST_TopLevel
             binexp = {-# SCC binexp #-} toInterm obexp :: [TopLevelExpr]
@@ -175,25 +192,31 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
             str   = {-# SCC str   #-} showPPrint 80 "    " (pPrint obexp)
             (par, msg) = {-# SCC par #-} runParser (regexMany space >> parseDirective) str 
             err reason = do
-              handl <- openFile (show i++".log") AppendMode
-              (hPutStrLn handl $! concat $!
-                [ "ITEM #", show i, " ", reason
-                , if null msg then "." else '\n':msg
-                , "\n", str, "\n", show obexp, "\n"
-                , showBinary bytes, "\n", sep
-                ]) >>= evaluate
-              hClose handl
+              catches
+                (do logFile <- openFile (show i++".log") AppendMode
+                    catches
+                      (do (hPutStrLn logFile $! concat $!
+                              [ "ITEM #", show i, " ", reason
+                              , if null msg then "." else '\n':msg
+                              , "\n", str, "\n", show obexp, "\n"
+                              , showBinary bytes, "\n", sep
+                              ]) >>= evaluate
+                          hFlush logFile
+                      )
+                      (errHandler "while writing report")
+                    hClose logFile
+                )
+                (errHandler "exception during test")
         status1 <- handle (\ (ErrorCall e) -> err ("Binary decoding failed: "++show e) >> return False) $ do
           if seq obexp $! seq bytes $! bin/=binexp
             then  err "Binary deserialization does not match source object" >> return False
             else  return True
-        status2 <- case par of
-          OK      o -> deepseq o $! return True
-          Backtrack -> err "Ambiguous parse" >> return False
-          PFail _ b -> err ("Parse failed, "++uchars b) >> return False
+        status2 <- handle (\ (ErrorCall e) -> err ("Parsing failed: "++show e) >> return False) $ do
+          case par of
+            OK      o -> seq o $! return True
+            Backtrack -> err "Ambiguous parse" >> return False
+            PFail _ b -> err ("Parse failed, "++uchars b) >> return False
         putMVar notify (status1&&status2)
-        let (par, objxp, obj) = ((), (), ())
-        seq par $! seq objxp $! seq obj (return ()) -- will force these items out of scope allowing them to be garbage collected?
         yield >> loop ref
   sep = "--------------------------------------------------------------------------"
 

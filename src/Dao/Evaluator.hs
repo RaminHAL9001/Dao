@@ -830,6 +830,44 @@ sendStringsToPrograms permissive names strings = do
     else  forM_ found $ \ (name, xunit) -> inExecEvalRun $
             dModifyMVar_ xloc (recursiveInput xunit) (return . (++strings))
 
+builtin_convertRef :: String -> DaoFunc
+builtin_convertRef nm = DaoFunc $ \ax -> case ax of
+  []  -> procErr $ OString $ ustr ("\""++nm++"\" must be used on some reference value.")
+  [a] -> fmap head (mapM ref [a])
+  ax  -> fmap OList (mapM ref ax)
+  where
+    msg = OString $ ustr ("cannot use as a "++nm++" reference")
+    ref a = case a of
+      ORef a -> case nm of
+        "global" -> case a of
+          GlobalRef    a  -> return $ ORef $ GlobalRef a
+          LocalRef     a  -> return $ ORef $ GlobalRef [a]
+          StaticRef    a  -> return $ ORef $ GlobalRef [a]
+          QTimeRef     ax -> return $ ORef $ GlobalRef ax
+          FileRef    _ ax -> return $ ORef $ GlobalRef ax
+          a -> procErr $ OList [ORef a, msg]
+        "local" -> case a of
+          GlobalRef    [a] -> return $ ORef $ LocalRef a
+          LocalRef      a  -> return $ ORef $ LocalRef a
+          StaticRef     a  -> return $ ORef $ LocalRef a
+          QTimeRef     [a] -> return $ ORef $ LocalRef a
+          FileRef    _ [a] -> return $ ORef $ LocalRef a
+          _ -> procErr $ OList [ORef a, msg]
+        "qtime" -> case a of
+          GlobalRef    ax -> return $ ORef $ QTimeRef ax
+          LocalRef     a  -> return $ ORef $ QTimeRef [a]
+          StaticRef    a  -> return $ ORef $ QTimeRef [a]
+          QTimeRef     ax -> return $ ORef $ QTimeRef ax
+          FileRef    _ ax -> return $ ORef $ QTimeRef ax
+        "static" -> case a of
+          GlobalRef    [a] -> return $ ORef $ StaticRef a
+          LocalRef      a  -> return $ ORef $ StaticRef a
+          StaticRef     a  -> return $ ORef $ StaticRef a
+          QTimeRef     [a] -> return $ ORef $ StaticRef a
+          FileRef    _ [a] -> return $ ORef $ StaticRef a
+      _ -> procErr $ OList [a, msg]
+        
+
 builtin_do :: DaoFunc
 builtin_do = DaoFunc $ \ox -> do
   xunit <- ask
@@ -913,13 +951,17 @@ builtin_call = DaoFunc $ \args ->
 -- 'Dao.Object.ExecUnit'.
 initBuiltinFuncs :: M.Map Name DaoFunc
 initBuiltinFuncs = let o a b = (ustr a, b) in M.fromList $
-  [ o "print" builtin_print
-  , o "call"  builtin_call
-  , o "do"    builtin_do
-  , o "join"  builtin_join
-  , o "open"  builtin_open
-  , o "close" builtin_close
-  , o "write" builtin_write
+  [ o "print"  builtin_print
+  , o "call"   builtin_call
+  , o "do"     builtin_do
+  , o "join"   builtin_join
+  , o "global" $ builtin_convertRef "global"
+  , o "local"  $ builtin_convertRef "local"
+  , o "static" $ builtin_convertRef "static"
+  , o "qtime"  $ builtin_convertRef "qtime"
+  , o "open"   builtin_open
+  , o "close"  builtin_close
+  , o "write"  builtin_write
   ]
 
 ----------------------------------------------------------------------------------------------------

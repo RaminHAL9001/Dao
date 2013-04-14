@@ -314,7 +314,7 @@ instance PPrintable Subroutine where
     GlobAction pats exe -> prin "rule"     pats exe
     where
       prin typ pats exe =
-        pClosure (pInline (pString typ : map pPrint pats)) "{" "}" $
+        pClosure (pList (pString typ) "(" "," ")" (map pPrint pats)) "{" "}" $
           map pPrint (origSourceCode exe)
 
 instance PPrintable Executable where { pPrint = mapM_ pPrint . origSourceCode }

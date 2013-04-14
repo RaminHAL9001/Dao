@@ -1,23 +1,17 @@
 TODO:
 
+*	Need to change the types of @'Dao.Object.Exec' a@ and 'Dao.Object.Run' so they can more easily
+be evaluated with one-another.
+
 *	Need to introduce constructors for 'Dao.EnumSet.EnumSet' and 'Dao.Object.Pattern' into the
 'Dao.Object.Object' data type.
 
-*	Need a class for converting data types to 'Dao.Tree.Tree's, with functions like "dataToStruct" and
-"structToData". Also in this module, there should be a State monad for building trees and updating
-trees, preferably a state that lifts the 'PValue' monad so you can throw errors.
-
 *	Clean up the "Dao.Parser" module.
-
-*	Break the abstract syntax tree off into it's own module, keeing the byte-code-like object as
-part of the "Dao.Object" module.
 
 *	Need to implement the evaluator for the "meta-dereference" operator, and make sure it is placed
 in the 'Dao.Evaluator.setupExecutable' function.
 
 *	Parse each input file in a separate thread, deep-sequence the parsed structures.
-
-*	Need a new element of the abstract syntax tree for parsing 'Dao.Object.Pattern's.
 
 *	Listable parsers that end in a comma on their last item, with the comma followed by a closing
 brace instead of another item, will return a null list. This should not happen.
@@ -57,15 +51,41 @@ returned value. There should also be a "testSource()" built-in function for eval
 source code into a working module object, and executing strings against that, all done so
 programmatically within the running Dao program.
 
+SOLVED:
+
+*	Break the abstract syntax tree off into it's own module, keeing the byte-code-like object as
+part of the "Dao.Object" module.
+[Solution] The abstract syntax tree I was using before has been copied into the "Dao.Object.AST"
+module and every data type and constructor has been renamed to have the @AST_@ prefix, with the
+suffix "Expr" removed from many of the constrcutors to shorten the name. The original names for the
+data types and constructors have been kept in the "Dao.Object" module, but these data types and
+constructors now have a different type: the comments have been removed, and thus these old names now
+refer to a new "Intermediate" data type. There is an 'Dao.Object.AST.Intermediate' class in the
+"Dao.Object.Intermediate" module which uses functional dependencies to associate the intermedaite
+types with the abstract syntax tree types, and this class provides methods for converting between
+these types ('Dao.Object.AST.toInterm' and 'Dao.Object.AST.fromInterm'). The evaluator and
+binary serialization now make use the intermediate types. The pretty printer, random object
+generator, the "Dao.Struct" interface, and the parser make use of the "Dao.Object.AST" types. Where
+an intermediate structure needs to be treated as an abstract syntax tree, for example in the
+instantiation of the intermediate type into the pretty printer class, the intermediate type is
+simply converted to it's abstract syntax tree form using 'Dao.Object.AST.fromInterm' and the
+instantiation for the abstract syntax tree is then called.
+
+*	Need a class for converting data types to 'Dao.Tree.Tree's, with functions like "dataToStruct" and
+"structToData". Also in this module, there should be a State monad for building trees and updating
+trees, preferably a state that lifts the 'PValue' monad so you can throw errors.
+[Solution] This is the "Dao.Struct" and "Dao.Object.Struct" modules.
+
+*	Need a new element of the abstract syntax tree for parsing 'Dao.Object.Pattern's.
+[Soltuion] This will be done with the function call notation, or with the "Dao.Struct" interface.
+
 *	Allow "catch" statements in the top level, which are a LambdaExprType expression that only
 respond to uncaught errors. Modify the "catch" statement to allow pattern expressions that only
 catch errors that match.
 
-SOLVED:
+*	Rename "Dao.Object.Show" to "Dao.Object.PPrint". [Done]
 
-*	Rename "Dao.Object.Show" to "Dao.Object.PPrint".
-
-*	Rename 'Dao.Glob.PatUnit' to 'GlobUnit'.
+*	Rename 'Dao.Glob.PatUnit' to 'GlobUnit'. [Done]
 
 *	Need to provide a "meta-dereference" operator (kind of like macros in the C preprocessor) for
 constant script and rule object declarations in code. These objects treat all references as unbound.
@@ -74,6 +94,7 @@ is completely different from the time it was defined at the time it is evaluated
 to programmers if they had a means to tell Dao to "replace the variable name in this line of code
 with the value the variable has right now, and construct the script or rule object with that value
 instead of a reference in that point in the abstract syntax tree."
+[Solution] the data type is there, but it has still not been implemented in the "Dao.Evaluator".
 
 *	Need to define a second rule table for rules that respond to 'Dao.Object.ObjPat's.
 Completed: this is called 'patternTable' and is a list of patterns in an 'Dao.Object.ExecUnit'.

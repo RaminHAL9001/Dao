@@ -147,7 +147,7 @@ runSubroutine args sub =
   case evalMatcher (matchObjectList (argsPattern sub) args >> gets matcherTree) of
     OK       tree -> fmap Just (runExecutable tree (getSubExecutable sub))
     Backtrack     -> return Nothing
-    PFail ref msg -> procErr (OPair (OString msg, ORef ref))
+    PFail ref msg -> procErr (OList [OString msg, ORef ref])
 
 -- | Very simply executes every given script item. Does not use catchReturnObj, does not use
 -- 'nestedExecStack'. CAUTION: you cannot assign to local variables unless you call this method
@@ -796,7 +796,7 @@ recurseGetAllStringArgs ox = catch (loop [0] [] ox) where
     OK       ox -> return ox
 
 builtin_print :: DaoFunc
-builtin_print = DaoFunc $ \ox_ -> do
+builtin_print = DaoFuncAutoDeref $ \ox_ -> do
   let ox = flip map ox_ $ \o -> case o of
         OString o -> o
         o         -> ustr (showObj o)
@@ -831,7 +831,7 @@ sendStringsToPrograms permissive names strings = do
             dModifyMVar_ xloc (recursiveInput xunit) (return . (++strings))
 
 builtin_convertRef :: String -> DaoFunc
-builtin_convertRef nm = DaoFunc $ \ax -> case ax of
+builtin_convertRef nm = DaoFuncNoDeref $ \ax -> case ax of
   []  -> procErr $ OString $ ustr ("\""++nm++"\" must be used on some reference value.")
   [a] -> fmap head (mapM ref [a])
   ax  -> fmap OList (mapM ref ax)
@@ -865,11 +865,10 @@ builtin_convertRef nm = DaoFunc $ \ax -> case ax of
           StaticRef     a  -> return $ ORef $ StaticRef a
           QTimeRef     [a] -> return $ ORef $ StaticRef a
           FileRef    _ [a] -> return $ ORef $ StaticRef a
-      _ -> procErr $ OList [a, msg]
-        
+      _ -> procErr $ OList [msg, a]
 
 builtin_do :: DaoFunc
-builtin_do = DaoFunc $ \ox -> do
+builtin_do = DaoFuncAutoDeref $ \ox -> do
   xunit <- ask
   let currentProg = [programModuleName xunit]
       isProgRef r = case r of
@@ -893,12 +892,12 @@ builtin_do = DaoFunc $ \ox -> do
   return (OList (map OString execStrings))
 
 builtin_join :: DaoFunc
-builtin_join = DaoFunc $ \ox -> do
+builtin_join = DaoFuncAutoDeref $ \ox -> do
   ox <- recurseGetAllStringArgs ox
   return (OString (ustr (concatMap uchars ox)))
 
 builtin_open :: DaoFunc
-builtin_open = DaoFunc $ \ox -> case ox of
+builtin_open = DaoFuncAutoDeref $ \ox -> case ox of
   [OString path] -> do
     file <- inExecEvalRun (loadFilePath (uchars path)) >>= joinFlowCtrl
     return $ ORef $ case file of
@@ -908,7 +907,7 @@ builtin_open = DaoFunc $ \ox -> case ox of
     [OString (ustr "Argument provided to \"open()\" function must be a single file path"), OList ox]
 
 builtin_close_write :: String -> (FilePath -> Run a) -> (a -> Exec b) -> DaoFunc
-builtin_close_write funcName runFunc joinFunc = DaoFunc $ \ox -> case ox of
+builtin_close_write funcName runFunc joinFunc = DaoFuncAutoDeref $ \ox -> case ox of
   [OString path] -> unload path
   [ORef    path] -> case path of
     FileRef    path _ -> unload path
@@ -933,7 +932,7 @@ builtin_write :: DaoFunc
 builtin_write = builtin_close_write "write" writeFilePath joinFlowCtrl
 
 builtin_call :: DaoFunc
-builtin_call = DaoFunc $ \args -> 
+builtin_call = DaoFuncAutoDeref $ \args -> 
   if null args
     then  simpleError "call function must have at least one argument"
     else  case args of
@@ -969,11 +968,11 @@ initBuiltinFuncs = let o a b = (ustr a, b) in M.fromList $
 -- | If an 'Dao.Object.Object' value is a 'Dao.Object.Reference' (constructed with
 -- 'Dao.Object.ORef'), then the reference is looked up using 'readReference'. Otherwise, the object
 -- value is returned. This is used to evaluate every reference in an 'Dao.Object.ObjectExpr'.
-evalObjectRef :: Object -> Exec Object
-evalObjectRef obj = case obj of
+evalObjectRef :: (Location, Object) -> Exec Object
+evalObjectRef (loc, obj) = case obj of
   ORef (MetaRef o) -> return (ORef o)
   ORef ref         -> readReference ref >>= \o -> case o of
-    Nothing  -> procErr $ OList [obj, OString (ustr "undefined reference")]
+    Nothing  -> procErr $ OList $ errAt loc ++ [obj, OString (ustr "undefined reference")]
     Just obj -> return obj
   obj              -> return obj
 
@@ -981,14 +980,15 @@ evalObjectRef obj = case obj of
 -- 'Dao.Object.Reference'.
 readReference :: Reference -> Exec (Maybe Object)
 readReference ref = case ref of
-  IntRef     i     -> fmap Just (evalIntRef i)
-  LocalRef   nm    -> localVarLookup nm
-  QTimeRef   ref   -> qTimeVarLookup ref
-  StaticRef  ref   -> staticVarLookup ref
-  GlobalRef  ref   -> globalVarLookup ref
+  IntRef     i     -> {- trace ("read int ref: "   ++show i  ) $ -} fmap Just (evalIntRef i)
+  LocalRef   nm    -> {- trace ("read local ref: " ++show ref) $ -} localVarLookup nm
+  QTimeRef   ref   -> {- trace ("read qtime ref: " ++show ref) $ -} qTimeVarLookup ref
+  StaticRef  ref   -> {- trace ("read static ref: "++show ref) $ -} staticVarLookup ref
+  GlobalRef  ref   -> {- trace ("read global ref: "++show ref) $ -} globalVarLookup ref
   ProgramRef p ref -> error "TODO: haven't yet defined lookup behavior for Program references"
   FileRef    f ref -> error "TODO: haven't yet defined lookup behavior for file references"
-  MetaRef    _     -> error "cannot dereference a reference-to-a-reference"
+  MetaRef    _     -> procErr $ OList $
+    [OString (ustr "cannot dereference a reference-to-a-reference"), ORef ref]
 
 -- | All assignment operations are executed with this function. To modify any variable at all, you
 -- need a reference value and a function used to update the value. This function will select the
@@ -1045,17 +1045,16 @@ lookupFunction msg op = do
 simpleError :: String -> Exec a
 simpleError msg = procErr (OString (ustr msg))
 
--- | Like 'Dao.Object.Data.objectError', but simply constructs a 'Dao.Object.Monad.FlowErr' value
--- that can be returned in an inner monad that has been lifted into a 'Dao.Object.Monad.Procedural'
--- monad.
-objectErrorCE :: Object -> String -> FlowCtrl a
-objectErrorCE obj msg = FlowErr (OPair (OString (ustr msg), obj))
+-- | Convert a 'Dao.Token.Location' to an 'Dao.Object.Object' value.
+errAt :: Location -> [Object]
+errAt loc = case loc of
+  LocationUnknown -> []
+  loc -> [ OPair (OWord (startingLine loc), OWord (fromIntegral (startingColumn loc)))
+         , OPair (OWord (endingLine   loc), OWord (fromIntegral (endingColumn   loc)))
+         ]
 
 typeError :: Object -> String -> String -> Exec a
 typeError o cons expect = objectError (OType (objType o)) (cons++" must be of type "++expect)
-
-derefError :: Reference -> Exec a
-derefError ref = objectError (ORef ref) "undefined reference"
 
 -- | Evaluate to 'procErr' if the given 'PValue' is 'Backtrack' or 'PFail'. You must pass a
 -- 'Prelude.String' as the message to be used when the given 'PValue' is 'Backtrack'. You can also
@@ -1072,7 +1071,7 @@ checkPValue altmsg tried pval = case pval of
     OString (ustr "bad data type") : (if null altmsg then [] else [OString (ustr altmsg)]) ++ tried
   PFail lc msg -> procErr $ OList $
     OString (ustr "bad data value") :
-      (if null altmsg then [] else [OString (ustr altmsg)]) ++ OString msg : tried
+      errAt lc ++ (if null altmsg then [] else [OString (ustr altmsg)]) ++ OString msg : tried
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1093,7 +1092,8 @@ execScriptExpr script = case script of
       FlowErr o -> nestedExecStack (T.insert [name] o T.Void) (execScriptBlock catch)
       ce        -> joinFlowCtrl ce
   ForLoop varName inObj thn loc -> nestedExecStack T.Void $ do
-    inObj <- evalObject inObj
+    (inObjLoc, inObj) <- evalObjectWithLoc inObj
+    inObj <- evalObjectRef (inObjLoc, inObj)
     let block thn = if null thn then return True else scrpExpr (head thn) >> block (tail thn)
         ctrlfn ifn thn = do
           ifn <- evalObject ifn
@@ -1109,7 +1109,8 @@ execScriptExpr script = case script of
         inObjType = OType (objType inObj)
     case asList inObj of
       OK        ox  -> loop thn varName ox
-      Backtrack     -> objectError inObj "cannot be represented as list"
+      Backtrack     -> procErr $ OList $ errAt inObjLoc ++
+        [inObj, OString (ustr "cannot be represented as list")]
       PFail loc msg -> objectError inObj (uchars msg) -- TODO: also report the location of the failure.
   WhileLoop    co   scrp    loc -> outerLoop where
     outerLoop = do
@@ -1171,6 +1172,9 @@ called_nonfunction_object ref args = procErr $ OList $
   , ref, OList args
   ]
 
+evalObjectWithLoc :: ObjectExpr -> Exec (Location, Object)
+evalObjectWithLoc expr = fmap (\obj -> (getLocation expr, obj)) (evalObject expr)
+
 -- | Evaluate an 'ObjectExpr' to an 'Dao.Object.Object' value, and does not de-reference objects of
 -- type 'Dao.Object.ORef'
 evalObject :: ObjectExpr -> Exec Object
@@ -1179,38 +1183,41 @@ evalObject obj = case obj of
   AssignExpr  nm  op  expr   loc -> do
     nm   <- evalObject nm
     nm   <- checkPValue ("left-hand side of "++show op) [nm] (asReference nm)
-    expr <- evalObject expr >>= evalObjectRef
+    expr <- evalObjectWithLoc expr >>= evalObjectRef
     fmap (fromMaybe ONull) $ updateReference nm $ \maybeObj -> case maybeObj of
       Nothing  -> case op of
         UCONST -> return (Just expr)
-        _      -> procErr $ OList $ [OString $ ustr "undefined refence", ORef nm]
+        _      -> procErr $ OList $ errAt loc ++ [OString $ ustr "undefined refence", ORef nm]
       Just obj -> fmap Just $ checkPValue "assignment expression" [obj, expr] $ (updatingOps!op) obj expr
   FuncCall   op   args       loc -> do -- a built-in function call
     bif  <- fmap builtinFuncs ask
-    args <- evalArgsList args
+    args <- mapM evalObjectWithLoc args
     case M.lookup op bif of
       Nothing -> do
         fn   <- lookupFunction "function call" op
+        args <- mapM evalObjectRef args
         ~obj <- mapM (runSubroutine args) fn
         case msum obj of
           Just obj -> return obj
-          Nothing  -> procErr $ OList $
+          Nothing  -> procErr $ OList $ errAt loc ++
             [OString (ustr "incorrect parameters passed to function") , OString op, OList args]
-      Just fn -> daoForeignCall fn args
+      Just fn -> case fn of
+        DaoFuncNoDeref   fn -> fn (map snd args)
+        DaoFuncAutoDeref fn -> mapM evalObjectRef args >>= fn
   ParenExpr     _     o      loc -> evalObject o
   ArraySubExpr  o     i      loc -> do
-    o <- evalObject o >>= evalObjectRef
+    o <- evalObjectWithLoc o >>= evalObjectRef
     i <- evalObject i
     case evalSubscript o i of
       OK          a -> return a
       PFail loc msg -> procErr (OString msg)
       Backtrack     -> procErr (OList [i, OString (ustr "cannot be used as index of"), o])
   Equation   left  op  right loc -> do
-    left  <- evalObject left
-    right <- evalObject right
+    left  <- evalObjectWithLoc left
+    right <- evalObjectWithLoc right
     (left, right) <- case op of
-      DOT   -> return (left, right)
-      POINT -> liftM2 (,) (evalObjectRef left) (return right)
+      DOT   -> return (snd left, snd right)
+      POINT -> liftM2 (,) (evalObjectRef left) (return (snd right))
       _     -> liftM2 (,) (evalObjectRef left) (evalObjectRef right)
     case (infixOps!op) left right of
       OK result -> return result
@@ -1229,9 +1236,9 @@ evalObject obj = case obj of
           []       -> return map
           arg:argx -> case arg of
             AssignExpr ixObj op  new loc -> do
-              ixObj <- evalObject ixObj >>= evalObjectRef
+              ixObj <- evalObjectWithLoc ixObj >>= evalObjectRef
               ixVal <- checkPValue (show cons++" assignment expression") [ixObj] (getObjVal ixObj)
-              new   <- evalObject new >>= evalObjectRef
+              new   <- evalObjectWithLoc new >>= evalObjectRef
               map   <- insfn map ixObj ixVal op new
               loop insfn getObjVal map argx
             _ -> error "dictionary constructor contains an expression that is not an assignment"
@@ -1302,9 +1309,6 @@ argsToGlobExpr :: ObjectExpr -> Exec Glob
 argsToGlobExpr o = case o of
   Literal (OString str) _ -> return (read (uchars str))
   _ -> simpleError "does not evaluate to a \"glob\" pattern"
-
-evalArgsList :: [ObjectExpr] -> Exec [Object]
-evalArgsList = mapM (evalObject >=> evalObjectRef)
 
 -- | Simply checks if an 'Prelude.Integer' is within the maximum bounds allowed by 'Data.Int.Int'
 -- for 'Data.IntMap.IntMap'.

@@ -769,8 +769,6 @@ type DocResource   = Resource (StoredFile T.Tree Name) [Name]
 
 ----------------------------------------------------------------------------------------------------
 
-----------------------------------------------------------------------------------------------------
-
 -- | The magic number is the first 8 bytes to every 'Document'. It is the ASCII value of the string
 -- @"DaoData\0"@.
 document_magic_number :: Word64
@@ -838,7 +836,11 @@ objectError o msg = procErr (OPair (OString (ustr msg), o))
 -- language, are stored in 'Data.Map.Map's from the functions name to an object of this type.
 -- Functions of this type are called by 'evalObject' to evaluate expressions written in the Dao
 -- language.
-newtype DaoFunc = DaoFunc { daoForeignCall :: [Object] -> Exec Object }
+data DaoFunc
+  = DaoFuncNoDeref { daoForeignCall :: [Object] -> Exec Object }
+    -- ^ do not dereference the parameters passed to this function.
+  | DaoFuncAutoDeref { daoForeignCall :: [Object] -> Exec Object }
+    -- ^ automatically dereference the parameters passed to the function.
 
 -- | This is the state that is used to run the evaluation algorithm. Every Dao program file that has
 -- been loaded will have a single 'ExecUnit' assigned to it. Parameters that are stored in

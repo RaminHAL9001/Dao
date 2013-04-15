@@ -1,7 +1,7 @@
 string.compare = approximate;
 
 BEGIN {
-	global $comma = list {};
+	(global comma) = list {};
 	comma.count = 0;
 }
 
@@ -13,14 +13,14 @@ rule "$*, $*" {
 		"1 = " + join("", $1),
 		"2 = " + join("", $2) + "\n"
 	};
-	global $comma += a;
+	(global comma) += a;
 }
 
 END {
 	a = 1;
-	for x in global $comma {
+	for x in global comma {
 		print(a+": "+x);
-		a = a + 1;
+		a += 1;
 	}
 }
 

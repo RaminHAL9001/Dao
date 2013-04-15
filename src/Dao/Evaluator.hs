@@ -513,7 +513,7 @@ eval_ADD a b = msum
     stringAdd add a b = case a of
       OString a -> do
         b <- asString b
-        return (OString (ustr (add (uchars a) (uchars b))))
+        return (ostr (add (uchars a) (uchars b)))
       _         -> mzero
 
 eval_SUB :: Object -> Object -> BuiltinOp
@@ -769,8 +769,8 @@ updatingOps = let o = (,) in array (minBound, maxBound) $
 requireAllStringArgs :: [Object] -> Exec [UStr]
 requireAllStringArgs ox = case mapM check (zip (iterate (+1) 0) ox) of
   OK      obj -> return obj
-  Backtrack   -> procErr $ OList [OString (ustr "all input parameters must be strings")]
-  PFail i msg -> procErr $ OList [OString msg, OWord i, OString (ustr "is not a string")]
+  Backtrack   -> procErr $ OList [ostr "all input parameters must be strings"]
+  PFail i msg -> procErr $ OList [OString msg, OWord i, ostr "is not a string"]
   where
     check (i, o) = case o of
       OString o -> return o
@@ -791,7 +791,7 @@ recurseGetAllStringArgs ox = catch (loop [0] [] ox) where
   next (i:ix) zx nx ox = loop (0:i:ix) zx nx >>= \zx -> loop (i+1:ix) zx ox
   catch ox = case ox of
     PFail ix msg -> procErr $ OList $
-      [OString (ustr "function parameter"), OList (map OWord (reverse ix)), OString msg]
+      [ostr "function parameter", OList (map OWord (reverse ix)), OString msg]
     Backtrack   -> return []
     OK       ox -> return ox
 
@@ -817,14 +817,14 @@ sendStringsToPrograms permissive names strings = do
       errMsg = OList $
           if null notFound
             then []
-            else [OString (ustr "could not find program files:"), OList (map OString notFound)]
+            else [ostr "could not find program files:", OList (map OString notFound)]
        ++ if null nonPrograms
             then []
-            else [OString (ustr "not program files:"), OList (map OString nonPrograms)]
+            else [ostr "not program files:", OList (map OString nonPrograms)]
        ++ if null found
-            then [OString (ustr "no files found"), OList (map OString names)]
+            then [ostr "no files found", OList (map OString names)]
             else []
-       ++ [ OString (ustr "cannot execute strings"), OList (map OString strings) ]
+       ++ [ostr "cannot execute strings", OList (map OString strings) ]
   if null found || not permissive && not (null notFound && null nonPrograms)
     then  procErr errMsg
     else  forM_ found $ \ (name, xunit) -> inExecEvalRun $
@@ -832,11 +832,11 @@ sendStringsToPrograms permissive names strings = do
 
 builtin_convertRef :: String -> DaoFunc
 builtin_convertRef nm = DaoFuncNoDeref $ \ax -> case ax of
-  []  -> procErr $ OString $ ustr ("\""++nm++"\" must be used on some reference value.")
+  []  -> procErr $ ostr ("\""++nm++"\" must be used on some reference value.")
   [a] -> fmap head (mapM ref [a])
   ax  -> fmap OList (mapM ref ax)
   where
-    msg = OString $ ustr ("cannot use as a "++nm++" reference")
+    msg = ostr ("cannot use as a "++nm++" reference")
     ref a = case a of
       ORef a -> case nm of
         "global" -> case a of
@@ -874,10 +874,7 @@ builtin_do = DaoFuncAutoDeref $ \ox -> do
       isProgRef r = case r of
         ORef (ProgramRef a _) -> return a
         _ -> procErr $ OList $
-          [ OString $ ustr $
-              "first argument to \"do\" function must be all strings, or all file references"
-          , r
-          ]
+          [ostr "first argument to \"do\" function must be all strings, or all file references", r]
   (selectFiles, execStrings) <- case ox of
     [OString file , OList strs] -> return ([file], strs )
     [OList   files, OList strs] -> mapM isProgRef files >>= \files -> return (files , strs )
@@ -886,7 +883,7 @@ builtin_do = DaoFuncAutoDeref $ \ox -> do
     [OString str ] -> return (currentProg, [OString str])
     [OList   strs] -> return (currentProg, strs)
     _              -> procErr $ OList $
-      OString (ustr "require query strings as parameters to \"do\" function, but received") : ox
+      ostr "require query strings as parameters to \"do\" function, but received" : ox
   execStrings <- requireAllStringArgs execStrings
   sendStringsToPrograms False selectFiles execStrings
   return (OList (map OString execStrings))
@@ -894,7 +891,7 @@ builtin_do = DaoFuncAutoDeref $ \ox -> do
 builtin_join :: DaoFunc
 builtin_join = DaoFuncAutoDeref $ \ox -> do
   ox <- recurseGetAllStringArgs ox
-  return (OString (ustr (concatMap uchars ox)))
+  return (ostr (concatMap uchars ox))
 
 builtin_open :: DaoFunc
 builtin_open = DaoFuncAutoDeref $ \ox -> case ox of
@@ -904,7 +901,7 @@ builtin_open = DaoFuncAutoDeref $ \ox -> case ox of
       ProgramFile  _ -> ProgramRef{progID=path, subRef=GlobalRef{globalRef=[]}}
       DocumentFile _ -> FileRef{filePath=path, globalRef=[]}
   _ -> procErr $ OList $
-    [OString (ustr "Argument provided to \"open()\" function must be a single file path"), OList ox]
+    [ostr "Argument provided to \"open()\" function must be a single file path", OList ox]
 
 builtin_close_write :: String -> (FilePath -> Run a) -> (a -> Exec b) -> DaoFunc
 builtin_close_write funcName runFunc joinFunc = DaoFuncAutoDeref $ \ox -> case ox of
@@ -918,7 +915,7 @@ builtin_close_write funcName runFunc joinFunc = DaoFuncAutoDeref $ \ox -> case o
   where
     unload path = inExecEvalRun (runFunc (uchars path)) >>= joinFunc >> return OTrue
     err obj = procErr $ OList $
-      [ OString $ ustr $ concat $
+      [ ostr $ concat $
           [ "Argument provided to \"", funcName
           , "()\" must be a single file path or file reference"
           ]
@@ -941,7 +938,7 @@ builtin_call = DaoFuncAutoDeref $ \args ->
               case obj of
                 Just obj -> return obj
                 Nothing  -> procErr $ OList $
-                  [ OString (ustr "incorrect parameters passed to lambda call")
+                  [ ostr "incorrect parameters passed to lambda call"
                   , OScript fn, OList args
                   ]
             obj:args          -> called_nonfunction_object obj args
@@ -972,7 +969,7 @@ evalObjectRef :: (Location, Object) -> Exec Object
 evalObjectRef (loc, obj) = case obj of
   ORef (MetaRef o) -> return (ORef o)
   ORef ref         -> readReference ref >>= \o -> case o of
-    Nothing  -> procErr $ OList $ errAt loc ++ [obj, OString (ustr "undefined reference")]
+    Nothing  -> procErr $ OList $ errAt loc ++ [obj, ostr "undefined reference"]
     Just obj -> return obj
   obj              -> return obj
 
@@ -988,7 +985,7 @@ readReference ref = case ref of
   ProgramRef p ref -> error "TODO: haven't yet defined lookup behavior for Program references"
   FileRef    f ref -> error "TODO: haven't yet defined lookup behavior for file references"
   MetaRef    _     -> procErr $ OList $
-    [OString (ustr "cannot dereference a reference-to-a-reference"), ORef ref]
+    [ostr "cannot dereference a reference-to-a-reference", ORef ref]
 
 -- | All assignment operations are executed with this function. To modify any variable at all, you
 -- need a reference value and a function used to update the value. This function will select the
@@ -1043,7 +1040,7 @@ lookupFunction msg op = do
 -- a simplified method for constructing error 'Dao.Object.Object's.
 
 simpleError :: String -> Exec a
-simpleError msg = procErr (OString (ustr msg))
+simpleError msg = procErr (ostr msg)
 
 -- | Convert a 'Dao.Token.Location' to an 'Dao.Object.Object' value.
 errAt :: Location -> [Object]
@@ -1068,10 +1065,10 @@ checkPValue :: String -> [Object] -> PValue Location a -> Exec a
 checkPValue altmsg tried pval = case pval of
   OK a         -> return a
   Backtrack    -> procErr $ OList $
-    OString (ustr "bad data type") : (if null altmsg then [] else [OString (ustr altmsg)]) ++ tried
+    ostr "bad data type" : (if null altmsg then [] else [OString (ustr altmsg)]) ++ tried
   PFail lc msg -> procErr $ OList $
-    OString (ustr "bad data value") :
-      errAt lc ++ (if null altmsg then [] else [OString (ustr altmsg)]) ++ OString msg : tried
+    ostr "bad data value" :
+      errAt lc ++ (if null altmsg then [] else [ostr altmsg]) ++ OString msg : tried
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1110,7 +1107,7 @@ execScriptExpr script = case script of
     case asList inObj of
       OK        ox  -> loop thn varName ox
       Backtrack     -> procErr $ OList $ errAt inObjLoc ++
-        [inObj, OString (ustr "cannot be represented as list")]
+        [inObj, ostr "cannot be represented as list"]
       PFail loc msg -> objectError inObj (uchars msg) -- TODO: also report the location of the failure.
   WhileLoop    co   scrp    loc -> outerLoop where
     outerLoop = do
@@ -1168,7 +1165,7 @@ isNO_OP o = case o of
 
 called_nonfunction_object :: Object -> [Object] -> Exec e
 called_nonfunction_object ref args = procErr $ OList $
-  [ OString (ustr "first argument to \"call\" function must evaluate to a callable object")
+  [ ostr "first argument to \"call\" function must evaluate to a callable object"
   , ref, OList args
   ]
 
@@ -1187,7 +1184,7 @@ evalObject obj = case obj of
     fmap (fromMaybe ONull) $ updateReference nm $ \maybeObj -> case maybeObj of
       Nothing  -> case op of
         UCONST -> return (Just expr)
-        _      -> procErr $ OList $ errAt loc ++ [OString $ ustr "undefined refence", ORef nm]
+        _      -> procErr $ OList $ errAt loc ++ [ostr "undefined refence", ORef nm]
       Just obj -> fmap Just $ checkPValue "assignment expression" [obj, expr] $ (updatingOps!op) obj expr
   FuncCall   op   args       loc -> do -- a built-in function call
     bif  <- fmap builtinFuncs ask
@@ -1200,7 +1197,7 @@ evalObject obj = case obj of
         case msum obj of
           Just obj -> return obj
           Nothing  -> procErr $ OList $ errAt loc ++
-            [OString (ustr "incorrect parameters passed to function") , OString op, OList args]
+            [ostr "incorrect parameters passed to function", OString op, OList args]
       Just fn -> case fn of
         DaoFuncNoDeref   fn -> fn (map snd args)
         DaoFuncAutoDeref fn -> mapM evalObjectRef args >>= fn
@@ -1211,7 +1208,7 @@ evalObject obj = case obj of
     case evalSubscript o i of
       OK          a -> return a
       PFail loc msg -> procErr (OString msg)
-      Backtrack     -> procErr (OList [i, OString (ustr "cannot be used as index of"), o])
+      Backtrack     -> procErr (OList [i, ostr "cannot be used as index of", o])
   Equation   left  op  right loc -> do
     left  <- evalObjectWithLoc left
     right <- evalObjectWithLoc right
@@ -1222,14 +1219,14 @@ evalObject obj = case obj of
     case (infixOps!op) left right of
       OK result -> return result
       Backtrack -> procErr $ OList $
-        [OString $ ustr (show op), OString $ ustr "cannot operate on objects of type", left, right]
+        [OString $ ustr (show op), ostr "cannot operate on objects of type", left, right]
       PFail lc msg -> procErr $ OList [OString msg]
   PrefixExpr op       expr   loc -> do
     expr <- evalObject expr
     case (prefixOps!op) expr of
       OK result -> return result
       Backtrack -> procErr $ OList $
-        [OString $ ustr (show op), OString $ ustr "cannot operate on objects of type", expr]
+        [ostr (show op), ostr "cannot operate on objects of type", expr]
       PFail lc msg -> procErr $ OList [OString msg]
   DictExpr   cons     args   loc -> do
     let loop insfn getObjVal map argx = case argx of
@@ -1245,9 +1242,9 @@ evalObject obj = case obj of
         assign lookup insert map ixObj ixVal op new = case lookup ixVal map of
           Nothing  -> case op of
             UCONST -> return (insert ixVal new map)
-            op     -> procErr $ OList [OString (ustr ("undefined left-hand side of "++show op)), ixObj]
+            op     -> procErr $ OList [ostr ("undefined left-hand side of "++show op), ixObj]
           Just old -> case op of
-            UCONST -> procErr $ OList [OString (ustr ("twice defined left-hand side "++show op)), ixObj]
+            UCONST -> procErr $ OList [ostr ("twice defined left-hand side "++show op), ixObj]
             op     -> do
               new <- checkPValue (show cons++" assignment expression "++show op) [ixObj, old, new] $ (updatingOps!op) old new
               return (insert ixVal new map)
@@ -1277,8 +1274,8 @@ evalObject obj = case obj of
   DataExpr   strs            loc -> case b64Decode (concatMap uchars strs) of
     Right dat -> return (OBytes dat)
     Left  (ch, loc) -> procErr $ OList $
-      [ OString (ustr "invalid character in base-64 data expression"), OChar ch
-      , OString (ustr "at position"), OWord loc
+      [ ostr "invalid character in base-64 data expression", OChar ch
+      , ostr "at position", OWord loc
       ]
   LambdaExpr typ argv code   loc -> evalLambdaExpr typ argv code
   MetaEvalExpr expr          loc -> evalObject expr
@@ -1351,7 +1348,7 @@ programFromSource theNewGlobalTable src xunit = do
             a | a=="require" || a=="requires" -> do
               case M.lookup nm (functionSets runtime) of
                 Nothing -> return $ FlowErr $ OList $
-                  [OString (ustr "requires"), OString nm, OString (ustr "but not provided")]
+                  [ostr "requires", OString nm, ostr "but not provided"]
                 Just mp -> do
                   modify (\xunit -> xunit{builtinFuncs = M.union mp (builtinFuncs xunit)})
                   importsLoop dx
@@ -1408,7 +1405,7 @@ programFromSource theNewGlobalTable src xunit = do
         scriptLoop dx
       Attribute     kindOfAttr attribName        loc : _  -> return $ FlowErr $ OList $
         [ OString kindOfAttr, OString attribName
-        , OString $ ustr "statement is not at the top of the source file"
+        , ostr "statement is not at the top of the source file"
         ]
     mkExe script = lift $ setupExecutable (script)
     mkArgvExe argList script = do
@@ -1553,8 +1550,8 @@ makeActionsForQuery instr xunit = dStack xloc "makeActionsForQuery" $ do
     FlowErr    obj -> do
       dModifyMVar_ xloc (uncaughtErrors xunit) $ \objx -> return $ (objx++) $
         [ OList $
-            [ obj, OString (ustr "error occured while tokenizing input string")
-            , OString instr, OString (ustr "in the program")
+            [ obj, ostr "error occured while tokenizing input string"
+            , OString instr, ostr "in the program"
             , OString (programModuleName xunit)
             ]
         ]
@@ -1697,7 +1694,7 @@ registerSourceCode upath script = dStack xloc "registerSourceCode" $ ask >>= \ru
     Just (ProgramFile  f) -> return (FlowOK f)
     Just (DocumentFile f) -> return $ FlowErr $ OList $
       [ OString upath
-      , OString (ustr "is already loaded as an \"idea\" file, cannot be loaded as a \"dao\" file")
+      , ostr "is already loaded as an \"idea\" file, cannot be loaded as a \"dao\" file"
       ]
     Nothing -> do
       -- Call 'initSourceCode' which creates the 'ExecUnit', then place it in an 'MVar'.
@@ -1793,10 +1790,10 @@ writeFilePath path = do
   file <- fmap (M.lookup upath) (dReadMVar xloc idx)
   case file of
     Nothing -> return $ FlowErr $ OList $
-      [OString (ustr "cannot write, file path has not been opened"), OString upath]
+      [ostr "cannot write, file path has not been opened", OString upath]
     Just file -> case file of
       ProgramFile  _   -> return $ FlowErr $ OList $
-        [OString (ustr "cannot write, file path is opened as a module"), OString upath]
+        [ostr "cannot write, file path is opened as a module", OString upath]
       DocumentFile doc -> do
         let res = resource doc
         doc <- fmap fst (dReadMVar xloc res)

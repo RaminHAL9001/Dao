@@ -56,9 +56,6 @@ import qualified Data.ByteString.Lazy as B
 
 ----------------------------------------------------------------------------------------------------
 
-ostr :: String -> Object
-ostr = OString . ustr
-
 allStrings :: [Object] -> PValue UpdateErr [UStr]
 allStrings ox = forM (zip (iterate (+1) 0) ox) $ \ (i, o) -> case o of
   OString o -> return o
@@ -111,7 +108,7 @@ fromReadableOrChars chrs msg = reconstruct $ do
   a <- getStringData msg
   case readsPrec 0 a of
     [(o, "")] -> return o
-    _         -> updateFailed (OString (ustr a)) ("was expecting "++msg)
+    _         -> updateFailed (ostr a) ("was expecting "++msg)
 
 fromReadable :: Read a => String -> T.Tree Name Object -> PValue UpdateErr a
 fromReadable = fromReadableOrChars ""

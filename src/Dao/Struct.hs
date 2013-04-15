@@ -47,7 +47,7 @@ type UpdateErr = ([Name], Object)
 -- | Can be used with 'Dao.Predicate.fmapFailed' to get an error message expressed as an
 -- 'Dao.Object.Object' value.
 objFromUpdateErr :: UpdateErr -> Object
-objFromUpdateErr err = OList [OString (ustr "at address"), ORef (GlobalRef (fst err)), snd err]
+objFromUpdateErr err = OList [ostr "at address", ORef (GlobalRef (fst err)), snd err]
 
 class Structured a where
   dataToStruct :: a -> Tree Name Object

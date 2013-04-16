@@ -1523,22 +1523,20 @@ execInputStringsLoop xunit = dStack xloc "execInputStringsLoop" $ do
   completedThreadInTask (taskForActions xunit)
   where
     loop = do
-      dMessage xloc "(1) Get the next input string. Also nub the list of queued input strings."
+      dMessage xloc "Get the next input string. Also nub the list of queued input strings."
       instr <- dModifyMVar xloc (recursiveInput xunit) $ \ax -> return $ case nub ax of
         []   -> ([], Nothing)
         a:ax -> (ax, Just a)
       case instr of
         Nothing    -> return ()
         Just instr -> dStack xloc ("execInputString "++show instr) $ do
-          dStack xloc "(2) Run \"BEGIN\" scripts." $
-            waitAll (return (getBeginEndScripts preExec xunit)) >>= liftIO . evaluate
-          dStack xloc "(3) Run 'execPatternMatchExecutable' for every matching item." $
+          dStack xloc "Run 'execPatternMatchExecutable' for every matching item." $
             waitAll (makeActionsForQuery instr xunit) >>= liftIO . evaluate
-          dStack xloc "(4) Run \"END\" scripts." $
-            waitAll (return (getBeginEndScripts postExec xunit)) >>= liftIO . evaluate
-          dMessage xloc "(5) Run the next string."
+          dMessage xloc "Run the next string."
           loop
-    waitAll getActionGroup = getActionGroup >>= execActionGroup
+
+waitAll :: Run ActionGroup -> Run ()
+waitAll getActionGroup = getActionGroup >>= execActionGroup
 
 -- | Given an input string, and a program, return all patterns and associated match results and
 -- actions that matched the input string, but do not execute the actions. This is done by tokenizing
@@ -1609,8 +1607,14 @@ runStringQuery inputString xunits = dStack xloc "runStringsQuery" $ do
     runtime <- ask
     forM xunits $ \xunit -> do
       dModifyMVar_ xloc (recursiveInput xunit) (return . (++[inputString]))
-      dFork forkIO xloc "runStringQuery.execInputStringsLoop" $ do
-        dCatch xloc (execInputStringsLoop xunit) (\ (SomeException _) -> return ())
+      dFork forkIO xloc "runStringQuery" $ do
+        flip (dCatch xloc) (\ (SomeException _) -> return ()) $ do
+          dStack xloc "Run \"BEGIN\" scripts." $
+            waitAll (return (getBeginEndScripts preExec xunit)) >>= liftIO . evaluate
+          dStack xloc "Call execInputStringsLoop" $
+            execInputStringsLoop xunit >>= liftIO . evaluate -- Run RULES and PATTERNS
+          dStack xloc "Run \"END\" scripts." $
+            waitAll (return (getBeginEndScripts postExec xunit)) >>= liftIO . evaluate
         completedThreadInTask task
   taskWaitThreadLoop task
 

@@ -6,9 +6,6 @@ can work around this issue by putting parentheses around qualified variables:
 	global a = 1;   // Fails, parses as global (a = 1);
 	(global a) = 1; // Success.
 
-*	Need to change the types of @'Dao.Object.Exec' a@ and 'Dao.Object.Run' so they can more easily
-be evaluated with one-another.
-
 *	Need to introduce constructors for 'Dao.EnumSet.EnumSet' and 'Dao.Object.Pattern' into the
 'Dao.Object.Object' data type.
 
@@ -37,6 +34,13 @@ every module that has "open()"-ed it without yet "close()"-ing it. Files loaded 
 line might be represented by "Nothing" where files loaded by a module migh be represented by
 "Just moduleName".
 
+*	Implement the "editSource()" built-in function for loading Dao scripts into memory and allowing
+the abstract syntax tree to be modified. There need to be editor functions, like "updateWith()",
+which takes a source function and a lambda that traverses the AST and replaces matching nodes with a
+returned value. There should also be a "testSource()" built-in function for evaluating an edited
+source code into a working module object, and executing strings against that, all done so
+programmatically within the running Dao program.
+
 *	'Dao.Object.Subroutine' is a data structure representing a function that takes a list of
 'Dao.Object.ObjPat's, and when it is executed, it will resolve all Reference parameters passed to
 them to create a list of parameters, match this list of parameter arguments to this list of
@@ -49,15 +53,17 @@ custom native functions. Also, right now the evaluator checks if an operator is 
 update operator, and treats these as special cases. However, if there is a "pure" subroutine that
 takes parameters that are not resolved automatically, the update operators can be defined as
 object instances of this type of "pure" subroutine.
-
-*	Implement the "editSource()" built-in function for loading Dao scripts into memory and allowing
-the abstract syntax tree to be modified. There need to be editor functions, like "updateWith()",
-which takes a source function and a lambda that traverses the AST and replaces matching nodes with a
-returned value. There should also be a "testSource()" built-in function for evaluating an edited
-source code into a working module object, and executing strings against that, all done so
-programmatically within the running Dao program.
+	Because the 'ObjPat's (now called 'Pattern's) are matched in a pure function,
+there is no way to indicate whether or not you want to match the pattern against a reference or the
+value to which the reference is pointing like in C++. The pattern matching function needs to be
+lifted into IO so that dereferencing is possible, and there needs to be a separate pattern for
+matching values of referenecs, which needs to be the default pattern that binds values to labels.
 
 SOLVED:
+
+*	Need to change the types of @'Dao.Object.Exec' a@ and 'Dao.Object.Run' so they can more easily
+be evaluated with one-another.
+[Solution] I already did this a while ago, I forgot about it.
 
 *	Break the abstract syntax tree off into it's own module, keeing the byte-code-like object as
 part of the "Dao.Object" module.

@@ -1,20 +1,19 @@
 string.compare = approximate;
 
 BEGIN {
+	print("--- BEGIN ---");
 	(global comma) = list {};
-	comma.count = 0;
+	comma.final = 0;
 }
 
 rule "$*, $*" {
-	a = comma.count;
-	if(a != 0) { return; }
-	comma.count = a + 1;
-	a = list {
-		"($1) -> " + join("", $1),
-		"($2) -> " + join("", $2)
-	};
-	(global comma) += a;
-	do(join("", $2));
+	if(comma.final) { return; }
+	print("$1 -> " + join($1));
+	if($1) { (global comma) += list { join("", $1) }; }
+	print("$2 -> " + join($2));
+	a = join(" ", $2);
+	if(a) { do(a); }
+	else { comma.final = 1; }
 }
 
 END {

@@ -517,7 +517,8 @@ instance Read LambdaExprType where
 
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
-  = Literal       Object                                   Location
+  = VoidExpr
+  | Literal       Object                                   Location
   | AssignExpr    ObjectExpr      UpdateOp     ObjectExpr  Location
   | Equation      ObjectExpr      ArithOp2     ObjectExpr  Location
   | PrefixExpr    ArithOp1        ObjectExpr               Location
@@ -534,6 +535,7 @@ data ObjectExpr
 
 instance HasLocation ObjectExpr where
   getLocation o = case o of
+    VoidExpr              -> LocationUnknown
     Literal       _     o -> o
     AssignExpr    _ _ _ o -> o
     Equation      _ _ _ o -> o
@@ -548,6 +550,7 @@ instance HasLocation ObjectExpr where
     LambdaExpr    _ _ _ o -> o
     MetaEvalExpr  _     o -> o
   setLocation o loc = case o of
+    VoidExpr              -> VoidExpr
     Literal       a     _ -> Literal       a     loc
     AssignExpr    a b c _ -> AssignExpr    a b c loc
     Equation      a b c _ -> Equation      a b c loc

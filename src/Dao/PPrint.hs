@@ -313,8 +313,8 @@ tabAll alsoTabFinalLine ax = case ax of
 -- concatenate all strings into a one big string, with each string being indented and on it's own
 -- line.
 linesToString :: String -> [(Int, String)] -> String
-linesToString indentStr = concatMap $ \ (indentCount, string) ->
-  concat (replicate indentCount indentStr) ++ string ++ "\n"
+linesToString indentStr = intercalate "\n" .
+  map (\ (indentCount, content) -> concat (replicate indentCount indentStr) ++ content)
 
 -- Given an indentation string and a maximum width value, construct a string from the 'PPrintState'.
 -- The maximum width value is used to call 'linesFromPPrintState', and the indentation string is

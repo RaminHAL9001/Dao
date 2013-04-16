@@ -392,6 +392,7 @@ instance Binary UpdateOp where
 
 instance Binary ObjectExpr where
   put o = case o of
+    VoidExpr             -> putWord8 0x40
     Literal      a     z -> x z 0x41 $ put        a
     AssignExpr   a b c z -> x z 0x42 $ put        a >> put b >> put c
     Equation     a b c z -> x z 0x43 $ put        a >> put b >> put c
@@ -414,6 +415,7 @@ instance Binary ObjectExpr where
   get = do
     w <- getWord8
     case w of
+      0x40 -> return VoidExpr
       0x41 -> liftM2 Literal      get                 get
       0x42 -> liftM4 AssignExpr   get        get  get get
       0x43 -> liftM4 Equation     get        get  get get

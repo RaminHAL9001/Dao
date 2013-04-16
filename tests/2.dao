@@ -10,15 +10,17 @@ rule "$*, $*" {
 	if(a != 0) { return; }
 	comma.count = a + 1;
 	a = list {
-		"1 = " + join("", $1),
-		"2 = " + join("", $2) + "\n"
+		"($1) -> " + join("", $1),
+		"($2) -> " + join("", $2)
 	};
 	(global comma) += a;
+	do(join("", $2));
 }
 
 END {
+	print("---- END ----");
 	a = 1;
-	for x in global comma {
+	for x in (global comma) {
 		print(a+": "+x);
 		a += 1;
 	}

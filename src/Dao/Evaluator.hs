@@ -1108,7 +1108,7 @@ execScriptExpr script = case script of
       OK        ox  -> loop thn varName ox
       Backtrack     -> procErr $ OList $ errAt inObjLoc ++
         [inObj, ostr "cannot be represented as list"]
-      PFail loc msg -> objectError inObj (uchars msg) -- TODO: also report the location of the failure.
+      PFail loc msg -> procErr $ OList (errAt loc ++ [inObj, OString msg])
   WhileLoop    co   scrp    loc -> outerLoop where
     outerLoop = do
       condition <- evalObject co
@@ -1126,7 +1126,8 @@ execScriptExpr script = case script of
         _                                        -> execScriptExpr a >> innerLoop ax
   ContinueExpr a    _       loc -> simpleError $
     '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" loop"
-  ReturnExpr   a    obj     loc -> evalObject obj >>= \obj -> (if a then procReturn else procErr) obj
+  ReturnExpr   a    obj     loc -> do
+    evalObjectWithLoc obj >>= evalObjectRef >>= (if a then procReturn else procErr)
   WithDoc      lval thn     loc -> nestedExecStack T.Void $ do
     lval <- evalObject lval
     let setBranch ref xunit = return (xunit{currentBranch = ref})
@@ -1176,6 +1177,9 @@ evalObjectWithLoc expr = fmap (\obj -> (getLocation expr, obj)) (evalObject expr
 -- type 'Dao.Object.ORef'
 evalObject :: ObjectExpr -> Exec Object
 evalObject obj = case obj of
+  VoidExpr                       -> return ONull
+    -- ^ 'VoidExpr's only occur in return statements. Returning 'ONull' where nothing exists is
+    -- probably the most intuitive thing to do on an empty return statement.
   Literal     o              loc -> return o
   AssignExpr  nm  op  expr   loc -> do
     nm   <- evalObject nm

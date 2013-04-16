@@ -52,28 +52,22 @@ data AST_TopLevel
 data AST_Script
   = AST_EvalObject   AST_Object   [Comment]                                                  Location
   | AST_IfThenElse   [Comment]    AST_Object  (Com [Com AST_Script])  (Com [Com AST_Script]) Location
-  | AST_TryCatch     (Com [Com AST_Script])   (Com UStr)                   [Com AST_Script]  Location
-  | AST_ForLoop      (Com Name)               (Com AST_Object)             [Com AST_Script]  Location
-  | AST_WhileLoop    (Com AST_Object)                                      [Com AST_Script]  Location
-  | AST_ContinueExpr Bool  [Comment]          (Com AST_Object)                               Location
-  | AST_ReturnExpr   Bool                     (Com AST_Object)                               Location
-  | AST_WithDoc      (Com AST_Object)         [Com AST_Script]                               Location
-  deriving (Eq, Ord, Show, Typeable)
     -- ^ @if /**/ objExpr /**/ {} /**/ else /**/ if /**/ {} /**/ else /**/ {} /**/@
-    -- 
+  | AST_TryCatch     (Com [Com AST_Script])   (Com UStr)                   [Com AST_Script]  Location
     -- ^ @try /**/ {} /**/ catch /**/ errVar /**/ {}@              
-    -- 
+  | AST_ForLoop      (Com Name)               (Com AST_Object)             [Com AST_Script]  Location
     -- ^ @for /**/ var /**/ in /**/ objExpr /**/ {}@
-    -- 
+  | AST_WhileLoop    (Com AST_Object)                                      [Com AST_Script]  Location
     -- ^ @while objExpr {}@
-    -- 
+  | AST_ContinueExpr Bool  [Comment]          (Com AST_Object)                               Location
     -- ^ The boolean parameter is True for a "continue" statement, False for a "break" statement.
     -- @continue /**/ ;@ or @continue /**/ if /**/ objExpr /**/ ;@
-    -- 
+  | AST_ReturnExpr   Bool                     (Com AST_Object)                               Location
     -- ^ The boolean parameter is True foe a "return" statement, False for a "throw" statement.
     -- ^ @return /**/ ;@ or @return /**/ objExpr /**/ ;@
-    -- 
+  | AST_WithDoc      (Com AST_Object)         [Com AST_Script]                               Location
     -- ^ @with /**/ objExpr /**/ {}@
+  deriving (Eq, Ord, Show, Typeable)
 
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data AST_Object
@@ -326,7 +320,7 @@ instance Intermediate ScriptExpr AST_Script where
 
 instance Intermediate ObjectExpr AST_Object where
   toInterm   ast = case ast of
-    AST_Void               -> mzero
+    AST_Void               -> return VoidExpr
     AST_Literal  a     loc -> liftM2 Literal      [a]                               (ll loc)
     AST_Assign   a b c loc -> liftM4 AssignExpr   (toInterm a) (uc  b) (toInterm c) (ll loc)
     AST_Equation a b c loc -> liftM4 Equation     (toInterm a) (uc  b) (toInterm c) (ll loc)
@@ -341,6 +335,7 @@ instance Intermediate ObjectExpr AST_Object where
     AST_Lambda   a b c loc -> liftM4 LambdaExpr   [a]          (uc2 b) (uc1 c)      (ll loc)
     AST_MetaEval a     loc -> liftM2 MetaEvalExpr (uc0 a)                           (ll loc)
   fromInterm obj = case obj of
+    VoidExpr               -> return AST_Void
     Literal      a     loc -> liftM2 AST_Literal  [a]                                   [loc]
     AssignExpr   a b c loc -> liftM4 AST_Assign   (fromInterm a) (nc  b) (fromInterm c) [loc]
     Equation     a b c loc -> liftM4 AST_Equation (fromInterm a) (nc  b) (fromInterm c) [loc]

@@ -1,12 +1,18 @@
 # A list of files you want to edit with Vim.
 # They will appear in the order specified.
 src/Dao/Object.hs
+tests/2.dao
+src/Dao/Evaluator.hs
+tests/1.dao
+tests/main.hs
+tests/RandObj.hs
+tests/I.hs
+tests/EQN.hs
 src/Dao/Object/AST.hs
 src/Dao/Object/Parser.hs
 src/Dao/Object/Struct.hs
 src/Dao/Struct.hs
 scratch.hs
-src/Dao/Evaluator.hs
 src/Dao.hs
 src/Dao/Files.hs
 src/Dao/Object/DeepSeq.hs
@@ -28,12 +34,6 @@ src/Dao/Debug.hs
 src/Dao/Debug/OFF.hs
 src/Dao/Debug/ON.hs
 tests/TestEnumSet.hs
-tests/I.hs
-tests/EQN.hs
-tests/1.dao
-tests/2.dao
-tests/RandObj.hs
-tests/main.hs
 Setup.hs
 ghc-build-opts.mk
 project-files.list

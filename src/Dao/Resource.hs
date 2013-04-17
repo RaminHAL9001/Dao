@@ -209,7 +209,7 @@ inEvalDoUpdateResource rsrc ref runUpdate = do
   let toMaybe ce = case contErrMaybe ce of
         FlowOK Nothing  -> Nothing
         FlowOK (Just a) -> Just a
-        FlowReturn a      -> Just a
+        FlowReturn a    -> if null a then Just (head a) else Nothing
         FlowErr  _      -> Nothing
       fromMaybe item = ContErrMaybe{contErrMaybe = FlowOK item}
   inExecEvalRun >=> joinFlowCtrl $

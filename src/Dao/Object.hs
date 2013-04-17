@@ -843,9 +843,9 @@ objectError o msg = procErr (OPair (OString (ustr msg), o))
 -- Functions of this type are called by 'evalObject' to evaluate expressions written in the Dao
 -- language.
 data DaoFunc
-  = DaoFuncNoDeref { daoForeignCall :: [Object] -> Exec Object }
+  = DaoFuncNoDeref { daoForeignCall :: [Object] -> Exec [Object] }
     -- ^ do not dereference the parameters passed to this function.
-  | DaoFuncAutoDeref { daoForeignCall :: [Object] -> Exec Object }
+  | DaoFuncAutoDeref { daoForeignCall :: [Object] -> Exec [Object] }
     -- ^ automatically dereference the parameters passed to the function.
 
 -- | This is the state that is used to run the evaluation algorithm. Every Dao program file that has
@@ -1042,7 +1042,7 @@ instance HasDebugRef Runtime where
 data FlowCtrl a
   = FlowOK     a
   | FlowErr    Object
-  | FlowReturn Object
+  | FlowReturn [Object]
   deriving Show
 
 instance Monad FlowCtrl where
@@ -1119,11 +1119,11 @@ instance Monad m => MonadError Object (Procedural m) where
     FlowReturn obj -> return (FlowReturn obj)
     FlowErr  obj -> runProcedural (catch obj)
 
-catchReturn :: Monad m => Procedural m a -> (Object -> Procedural m a) -> Procedural m a
+catchReturn :: Monad m => Procedural m a -> ([Object] -> Procedural m a) -> Procedural m a
 catchReturn fn catch = Procedural $ runProcedural fn >>= \ce -> case ce of
   FlowReturn obj -> runProcedural (catch obj)
-  FlowOK   a   -> return (FlowOK a)
-  FlowErr  obj -> return (FlowErr obj)
+  FlowOK     a   -> return (FlowOK a)
+  FlowErr    obj -> return (FlowErr obj)
 
 -- | Force the computation to assume the value of a given 'FlowCtrl'. This function can be used to
 -- re-throw a 'Dao.Object.Monad.FlowCtrl' value captured by the 'procCatch' function.
@@ -1132,7 +1132,12 @@ joinFlowCtrl ce = Procedural (return ce)
 
 -- | Evaluate this function when the proceudre must return.
 procReturn :: Monad m => Object -> Procedural m a
-procReturn a = joinFlowCtrl (FlowReturn a)
+procReturn a = joinFlowCtrl (FlowReturn [a])
+
+-- | Evaluate this function when the procedure must return a nondeterministic result, where every
+-- possible value returned must be evaluated in the parent context.
+procNonDeterm :: Monad m => [Object] -> Procedural m a
+procNonDeterm ax = joinFlowCtrl (FlowReturn ax)
 
 -- | Evaluate this function when procedure must throw an error.
 procErr :: Monad m => Object -> Procedural m a
@@ -1152,8 +1157,8 @@ procJoin mfn = mfn >>= \a -> Procedural (return a)
 -- | Takes an inner 'Procedural' monad. If this inner monad evaluates to a 'FlowReturn', it will not
 -- collapse the continuation monad, and the outer monad will continue evaluation as if a
 -- @('FlowOK' 'Dao.Object.Object')@ value were evaluated.
-catchReturnObj :: Monad m => Procedural m Object -> Procedural m Object
+catchReturnObj :: Monad m => Procedural m Object -> Procedural m [Object]
 catchReturnObj exe = procCatch exe >>= \ce -> case ce of
   FlowReturn obj -> return obj
-  _            -> joinFlowCtrl ce
+  _              -> fmap (:[]) (joinFlowCtrl ce)
 

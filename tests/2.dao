@@ -2,6 +2,9 @@ string.compare = approximate;
 
 BEGIN {
 	print("--- BEGIN ---");
+	emptyList = list {};
+	if(emptyList) { print("emptyList is NOT empty"); }
+	else { print("emptyList is empty"); }
 	(global comma) = list {};
 	comma.final = 0;
 }

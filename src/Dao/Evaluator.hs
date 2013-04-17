@@ -1200,21 +1200,21 @@ called_nonfunction_object ref args = procErr $ OList $
   , ref, OList args
   ]
 
-evalObjectWithLoc :: ObjectExpr -> Exec [(Location, Object)]
-evalObjectWithLoc expr = fmap (map (\obj -> (getLocation expr, obj))) (evalObject expr)
+evalObject :: ObjectExpr -> Exec [Object]
+evalObject expr = fmap (map snd) (evalObjectWithLoc expr)
 
 -- | Evaluate an 'ObjectExpr' to an 'Dao.Object.Object' value, and does not de-reference objects of
 -- type 'Dao.Object.ORef'
-evalObject :: ObjectExpr -> Exec [Object]
-evalObject obj = case obj of
+evalObjectWithLoc :: ObjectExpr -> Exec [(Location, Object)]
+evalObjectWithLoc obj = case obj of
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   VoidExpr                       -> return []
     -- ^ 'VoidExpr's only occur in return statements. Returning 'ONull' where nothing exists is
     -- probably the most intuitive thing to do on an empty return statement.
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  Literal     o              loc -> return [o]
+  Literal     o              loc -> return [(loc, o)]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  AssignExpr  nm  op  expr   loc -> do
+  AssignExpr  nm  op  expr   loc -> setloc loc $ do
     nmx <- evalObjectWithLoc nm
     let lhs = "left-hand side of "++show op
     case nmx of
@@ -1232,7 +1232,7 @@ evalObject obj = case obj of
             Just prevVal -> fmap Just $
               checkPValue "assignment expression" [prevVal, o] $ (updatingOps!op) prevVal o
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  FuncCall   op   args       loc -> do -- a built-in function call
+  FuncCall   op   args       loc -> setloc loc $ do -- a built-in function call
     bif  <- fmap builtinFuncs ask
     args <- mapM evalObjectWithLoc args :: Exec [[(Location, Object)]]
     let combine ox args = -- given the non-deterministic arguments,
@@ -1253,9 +1253,9 @@ evalObject obj = case obj of
         DaoFuncNoDeref   bif -> bif (map snd args)
         DaoFuncAutoDeref bif -> mapM evalObjectRef args >>= fmap concat . mapM bif . combine []
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  ParenExpr     _     o      loc -> evalObject o
+  ParenExpr     _     o      loc -> evalObjectWithLoc o
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  ArraySubExpr  o     i      loc -> do
+  ArraySubExpr  o     i      loc -> setloc loc $ do
     ox <- fmap concat (evalObjectWithLoc o >>= mapM evalObjectRef)
     fmap concat $ forM ox $ \o -> do
       ix <- evalObjectWithLoc i
@@ -1264,7 +1264,7 @@ evalObject obj = case obj of
         PFail loc msg -> procErr (OString msg)
         Backtrack     -> procErr (OList $ errAt loc ++ [i, ostr "cannot be used as index of", o])
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  Equation   left' op right' loc -> do
+  Equation   left' op right' loc -> setloc loc $ do
     left  <- evalObjectWithLoc left'
     right <- evalObjectWithLoc right'
     let combine ax bx = ax >>= \a -> bx >>= \b -> return (a,b)
@@ -1287,7 +1287,7 @@ evalObject obj = case obj of
               ]
             PFail _  msg -> procErr $ OList $ errAt loc ++ [OString msg]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  PrefixExpr op       expr   loc -> do
+  PrefixExpr op       expr   loc -> setloc loc $ do
     expr <- evalObject expr
     forM expr $ \expr -> case (prefixOps!op) expr of
       OK result -> return result
@@ -1295,7 +1295,7 @@ evalObject obj = case obj of
         [ostr (show op), ostr "cannot operate on objects of type", expr]
       PFail lc msg -> procErr $ OList [OString msg]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  DictExpr   cons     args   loc -> do
+  DictExpr   cons     args   loc -> setloc loc $ do
     let loop insfn getObjVal mp argx  = case argx of
           []       -> return mp
           arg:argx -> case arg of
@@ -1332,7 +1332,7 @@ evalObject obj = case obj of
         fmap (OList . concat) (mapM evalObjectWithLoc args >>= mapM evalObjectRef . concat)
       _ -> error ("INTERNAL ERROR: unknown dictionary declaration "++show cons)
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  ArrayExpr  rang  ox        loc -> do
+  ArrayExpr  rang  ox        loc -> setloc loc $ do
     case rang of
       (_ : _ : _ : _) -> procErr $ OList $
         [ostr "internal error: array range expression has more than 2 arguments"]
@@ -1353,16 +1353,18 @@ evalObject obj = case obj of
       _ -> procErr $ OList
         [ostr "internal error: array range expression has fewer than 2 arguments"]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  DataExpr   strs            loc -> case b64Decode (concatMap uchars strs) of
+  DataExpr   strs            loc -> setloc loc $ case b64Decode (concatMap uchars strs) of
     Right dat -> return [OBytes dat]
     Left  (ch, loc) -> procErr $ OList $
       [ ostr "invalid character in base-64 data expression", OChar ch
       , ostr "at position", OWord loc
       ]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  LambdaExpr typ argv code   loc -> fmap (:[]) (evalLambdaExpr typ argv code)
+  LambdaExpr typ argv code   loc -> setloc loc $ fmap (:[]) (evalLambdaExpr typ argv code)
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  MetaEvalExpr expr          loc -> evalObject expr
+  MetaEvalExpr expr          loc -> evalObjectWithLoc expr
+  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+  where { setloc loc fn = fmap (map (\o -> (loc, o))) fn }
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
 evalLambdaExpr :: LambdaExprType -> [ObjectExpr] -> [ScriptExpr] -> Exec Object

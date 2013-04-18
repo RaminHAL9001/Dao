@@ -779,6 +779,56 @@ requireAllStringArgs ox = case mapM check (zip (iterate (+1) 0) ox) of
       OString o -> return o
       _         -> PFail i (ustr "requires string parameter, param number")
 
+-- | Given an object, if it is a string return the string characters. If it not a string,
+-- depth-recurse into it and extract strings, or if there is an object into which recursion is not
+-- possible, pretty-print the object and return the pretty-printed string. The first integer
+-- parameter is a depth limit, if recursion into the object exceeds this limit, recursion no longer
+-- steps into these objects, the strings returned are the pretty-printed representation of the
+-- objects. A pair of 'Data.Either.Either's are returned, references are 'Data.Either.Left',
+-- 'Prelude.String's are 'Data.Either.Right'. References are accompanied with their depth so you can
+-- choose whether or not you want to dereference or pretty-print them.
+getStringsToDepth :: Int -> Object -> [Either (Int, Reference) String]
+getStringsToDepth maxDepth o = loop 0 maxDepth o where
+  loop depth remDep o = case o of
+    OString   o -> return (Right (uchars o))
+    OList    ox -> recurse o ox
+    OSet     ox -> recurse o (S.elems ox)
+    OArray   ox -> recurse o   (elems ox)
+    ODict    ox -> recurse o (M.elems ox)
+    OIntMap  ox -> recurse o (I.elems ox)
+    OPair (a,b) -> recurse o [a,b]
+    ORef     ox -> return (Left (depth, ox))
+    o           -> return (Right (prettyShow o))
+    where
+      recurse o ox =
+        if remDep==0
+          then  return (Right (prettyShow o))
+          else  ox >>= loop (depth+1) (if remDep>0 then remDep-1 else remDep)
+
+-- | Calls 'getStringsToDepth' and dereferences all 'Data.Either.Left' values below a depth limit,
+-- this depth limit is specified by the first argument to this function. The second and third
+-- argument to this function are passed directly to 'getStringsToDepth'. Pass a handler to handle
+-- references that are undefined.
+derefStringsToDepth :: (Reference -> Object -> Exec [String]) -> Int -> Int -> Object -> Exec [String]
+derefStringsToDepth handler maxDeref maxDepth o =
+  fmap concat (mapM deref (getStringsToDepth maxDepth o)) where
+    deref o = case o of
+      Right    o    -> return [o]
+      Left (i, ref) ->
+        if i>=maxDeref
+          then  return [prettyShow ref]
+          else  do
+            let newMax = if maxDepth>=0 then (if i>=maxDepth then 0 else maxDepth-i) else (0-1)
+                recurse = fmap concat . mapM (derefStringsToDepth handler (maxDeref-i) newMax)
+            obj <- procCatch (readReference ref)
+            case obj of
+              FlowOK     ox -> recurse ox
+              FlowReturn ox -> recurse ox
+              FlowErr   err -> handler ref err
+
+-- | Returns a list of all string objects that can be found from within the given list of objects.
+-- This function might fail if objects exist that cannot resonably contain strings. If you want to
+-- pretty-print non-string objects, try using 'getStringsToDepth'.
 recurseGetAllStringArgs :: [Object] -> Exec [UStr]
 recurseGetAllStringArgs ox = catch (loop [0] [] ox) where
   loop ixs@(i:ix) zx ox = case ox of
@@ -870,6 +920,7 @@ builtin_convertRef nm = DaoFuncNoDeref $ \ax -> case ax of
           FileRef    _ [a] -> return [ORef (StaticRef a)]
       _ -> procErr $ OList [msg, a]
 
+-- queue strings for recursive string execution
 builtin_do :: DaoFunc
 builtin_do = DaoFuncAutoDeref $ \ox -> do
   xunit <- ask
@@ -891,10 +942,28 @@ builtin_do = DaoFuncAutoDeref $ \ox -> do
   sendStringsToPrograms False selectFiles execStrings
   return [OList (map OString execStrings)]
 
+-- Returns the current string query.
+builtin_doing :: DaoFunc
+builtin_doing = DaoFuncAutoDeref $ \ox ->
+  fmap currentQuery ask >>= \query -> case query of
+    Nothing    -> return [ONull]
+    Just query -> case ox of
+      []          -> return [OString query]
+      [OString o] -> return [boolToObj (o==query)]
+      [OSet    o] -> return [boolToObj (S.member (OString query) o)]
+      _ -> procErr $ OList $
+        [ostr "doing() must take as parameers a single string, a single set, or nothing", OList ox]
+
+-- join string elements of a container, pretty prints non-strings and joins those as well.
 builtin_join :: DaoFunc
-builtin_join = DaoFuncAutoDeref $ \ox -> do
-  ox <- recurseGetAllStringArgs ox
-  return [ostr (concatMap uchars ox)]
+builtin_join = DaoFuncAutoDeref $ \ox -> case ox of
+  [OString j, a] -> joinWith (uchars j) a
+  [a]            -> joinWith "" a
+  _ -> procErr $ OList $
+    [ostr "join() function requires one or two parameters", OList ox]
+  where
+    joinWith j =
+      fmap ((:[]) . OString . ustr . intercalate j) . derefStringsToDepth (\ _ o -> procErr o) 1 1
 
 builtin_open :: DaoFunc
 builtin_open = DaoFuncAutoDeref $ \ox -> case ox of
@@ -950,7 +1019,7 @@ builtin_call = DaoFuncAutoDeref $ \args ->
 
 builtin_check_ref :: DaoFunc
 builtin_check_ref = DaoFuncNoDeref $ \args ->
-  fmap ((:[]) . boolToObj . and) $ forM args $ \arg -> case arg of
+  fmap ( (:[]) . (\a -> trace ("defined("++show args++") -> "++show a) a) . boolToObj . and) $ forM args $ \arg -> case arg of
     ORef (MetaRef _) -> return True
     ORef o -> readReference o >>= return . not . null
     o -> return True
@@ -969,6 +1038,7 @@ initBuiltinFuncs = let o a b = (ustr a, b) in M.fromList $
   [ o "print"   builtin_print
   , o "call"    builtin_call
   , o "do"      builtin_do
+  , o "doing"   builtin_doing
   , o "join"    builtin_join
   , o "global"  $ builtin_convertRef "global"
   , o "local"   $ builtin_convertRef "local"
@@ -1102,9 +1172,7 @@ execScriptExpr script = case script of
     ifn <- fmap concat (evalObjectWithLoc ifn >>= mapM evalObjectRef)
     if null ifn
       then  procErr $ OList $ errAt loc ++ [ostr "if statement tests a value that does not exist"]
-      else  do
-        trace (unlines $ map (\i -> "if(" ++ prettyPrint 80 "    " i ++ ")") ifn) $ return ()
-        forM_ ifn $ \ifn -> execScriptBlock (if objToBool ifn then thn else els)
+      else  forM_ ifn $ \ifn -> execScriptBlock (if objToBool ifn then thn else els)
   --------------------------------------------------------------------------------------------------
   TryCatch try  name  catch loc -> do
     ce <- procCatch (nestedExecStack T.Void (execScriptBlock try))
@@ -1214,7 +1282,7 @@ evalObjectWithLoc obj = case obj of
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   Literal     o              loc -> return [(loc, o)]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  AssignExpr  nm  op  expr   loc -> setloc loc $ do
+  AssignExpr  nm  op  expr   loc -> setloc loc $ trace (prettyShow nm++" "++show op++" "++prettyShow expr) $ do
     nmx <- evalObjectWithLoc nm
     let lhs = "left-hand side of "++show op
     case nmx of
@@ -1232,26 +1300,28 @@ evalObjectWithLoc obj = case obj of
             Just prevVal -> fmap Just $
               checkPValue "assignment expression" [prevVal, o] $ (updatingOps!op) prevVal o
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  FuncCall   op   args       loc -> setloc loc $ do -- a built-in function call
+  FuncCall   op   args       loc -> setloc loc $ trace (uchars op++"("++intercalate "," (map prettyShow args)++")") $ do -- a built-in function call
     bif  <- fmap builtinFuncs ask
     args <- mapM evalObjectWithLoc args :: Exec [[(Location, Object)]]
-    let combine ox args = -- given the non-deterministic arguments,
+    let allCombinations ox args = -- given the non-deterministic arguments,
           if null args    -- create every possible combination of arguments
             then  return ox
-            else  head args >>= \arg -> combine (ox++[arg]) (tail args)
-    fmap concat $ forM (combine [] args) $ \args -> case M.lookup op bif of
+            else  head args >>= \arg -> allCombinations (ox++[arg]) (tail args)
+        combine args = if null args then [[]] else allCombinations [] args
+        dbg msg args = trace (msg++" call "++uchars op++"("++intercalate "," (map prettyShow args)++")") args
+    fmap concat $ forM (combine args) $ \args -> case M.lookup op bif of
       Nothing -> do -- no built-ins by the 'op' name
         fn   <- lookupFunction "function call" op
         args <- mapM evalObjectRef args
-        fmap concat $ forM (combine [] args) $ \args -> do
+        fmap concat $ forM (combine args) $ \args -> do
           ~obj <- mapM (runSubroutine args) fn
           case msum obj of
             Just obj -> return obj
             Nothing  -> procErr $ OList $ errAt loc ++
               [ostr "incorrect parameters passed to function", OString op, OList args]
       Just bif -> case bif of -- 'op' references a built-in
-        DaoFuncNoDeref   bif -> bif (map snd args)
-        DaoFuncAutoDeref bif -> mapM evalObjectRef args >>= fmap concat . mapM bif . combine []
+        DaoFuncNoDeref   bif -> bif $ dbg "(1)" (map snd args)
+        DaoFuncAutoDeref bif -> mapM evalObjectRef args >>= fmap concat . mapM (bif . dbg "(2)") . combine
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   ParenExpr     _     o      loc -> evalObjectWithLoc o
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --

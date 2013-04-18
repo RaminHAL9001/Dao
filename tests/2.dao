@@ -2,27 +2,27 @@ string.compare = approximate;
 
 BEGIN {
 	print("--- BEGIN ---");
-	emptyList = list {};
-	if(emptyList) { print("emptyList is NOT empty"); }
-	else { print("emptyList is empty"); }
-	(global comma) = list {};
-	comma.final = 0;
+	qtime(comma) = list{};
+	print("qtime(comma) = " + qtime(comma));
+	print("--- RULES ---");
 }
 
 rule "$*, $*" {
-	if(comma.final) { return; }
-	print("$1 -> " + join($1));
-	if($1) { (global comma) += list { join("", $1) }; }
-	print("$2 -> " + join($2));
+	a = doing();
+	if(defined(static(lastQuery)) && static(lastQuery)==a) { return; }
+	else { static(lastQuery) = a; }
+	print("$1 -> " + $1);
+	if($1) { qtime(comma) += list{ join(" ", $1) }; }
+	print("$2 -> " + $2);
 	a = join(" ", $2);
-	if(a) { do(a); }
-	else { comma.final = 1; }
+	if($2) { print("recurse: "+a); do(a); }
+	else { qtime(comma.final) = 1; }
 }
 
 END {
 	print("---- END ----");
 	a = 1;
-	for x in (global comma) {
+	for x in qtime(comma) {
 		print(a+": "+x);
 		a += 1;
 	}

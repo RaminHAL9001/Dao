@@ -38,10 +38,15 @@ import Debug.Trace
 ----------------------------------------------------------------------------------------------------
 
 -- | This is the function you will probably care about most: take a value of any data type that
--- instantiates 'PPrintable', and a maximum width value, and a tab string, and will convert that
--- value to a 'Prelude.String'.
+-- instantiates 'PPrintable', and a maximum text-wrapping width value, and a tab string, and will
+-- convert that value to a 'Prelude.String'.
 prettyPrint :: PPrintable a => Int -> String -> a -> String
 prettyPrint maxWidth tab = showPPrint maxWidth tab . pPrint
+
+-- | Calls 'prettyPrint' with the default values @80@ for the text-wrapping width, and a tab string
+-- consisting of four single-space characters (four ASCII @0x20@ characters).
+prettyShow :: PPrintable a => a -> String
+prettyShow = prettyPrint 80 "    "
 
 ----------------------------------------------------------------------------------------------------
 

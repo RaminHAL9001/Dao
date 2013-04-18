@@ -1019,7 +1019,7 @@ builtin_call = DaoFuncAutoDeref $ \args ->
 
 builtin_check_ref :: DaoFunc
 builtin_check_ref = DaoFuncNoDeref $ \args ->
-  fmap ( (:[]) . (\a -> trace ("defined("++show args++") -> "++show a) a) . boolToObj . and) $ forM args $ \arg -> case arg of
+  fmap ((:[]) . boolToObj . and) $ forM args $ \arg -> case arg of
     ORef (MetaRef _) -> return True
     ORef o -> readReference o >>= return . not . null
     o -> return True
@@ -1282,7 +1282,7 @@ evalObjectWithLoc obj = case obj of
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   Literal     o              loc -> return [(loc, o)]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  AssignExpr  nm  op  expr   loc -> setloc loc $ trace (prettyShow nm++" "++show op++" "++prettyShow expr) $ do
+  AssignExpr  nm  op  expr   loc -> setloc loc $ do
     nmx <- evalObjectWithLoc nm
     let lhs = "left-hand side of "++show op
     case nmx of
@@ -1300,15 +1300,14 @@ evalObjectWithLoc obj = case obj of
             Just prevVal -> fmap Just $
               checkPValue "assignment expression" [prevVal, o] $ (updatingOps!op) prevVal o
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  FuncCall   op   args       loc -> setloc loc $ trace (uchars op++"("++intercalate "," (map prettyShow args)++")") $ do -- a built-in function call
+  FuncCall   op   args       loc -> setloc loc $ do -- a built-in function call
     bif  <- fmap builtinFuncs ask
     args <- mapM evalObjectWithLoc args :: Exec [[(Location, Object)]]
     let allCombinations ox args = -- given the non-deterministic arguments,
           if null args    -- create every possible combination of arguments
             then  return ox
             else  head args >>= \arg -> allCombinations (ox++[arg]) (tail args)
-        combine args = if null args then [[]] else allCombinations [] args
-        dbg msg args = trace (msg++" call "++uchars op++"("++intercalate "," (map prettyShow args)++")") args
+        combine args = if args==[[]] then [[]] else allCombinations [] args
     fmap concat $ forM (combine args) $ \args -> case M.lookup op bif of
       Nothing -> do -- no built-ins by the 'op' name
         fn   <- lookupFunction "function call" op
@@ -1320,8 +1319,8 @@ evalObjectWithLoc obj = case obj of
             Nothing  -> procErr $ OList $ errAt loc ++
               [ostr "incorrect parameters passed to function", OString op, OList args]
       Just bif -> case bif of -- 'op' references a built-in
-        DaoFuncNoDeref   bif -> bif $ dbg "(1)" (map snd args)
-        DaoFuncAutoDeref bif -> mapM evalObjectRef args >>= fmap concat . mapM (bif . dbg "(2)") . combine
+        DaoFuncNoDeref   bif -> bif (map snd args)
+        DaoFuncAutoDeref bif -> mapM evalObjectRef args >>= fmap concat . mapM bif . combine
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   ParenExpr     _     o      loc -> evalObjectWithLoc o
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --

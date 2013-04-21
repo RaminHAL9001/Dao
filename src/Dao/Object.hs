@@ -371,13 +371,17 @@ data Executable
   = Executable
     { origSourceCode :: [ScriptExpr]
     , staticVars     :: IORef (M.Map Name Object)
-    , executable     :: Exec ()
+    , executable     :: Exec (Maybe Object)
     }
 
 -- | A subroutine is specifically a callable function (but we don't use the name Function to avoid
 -- confusion with Haskell's "Data.Function"). 
 data Subroutine
   = Subroutine
+    { argsPattern      :: [Pattern]
+    , getSubExecutable :: Executable
+    }
+  | MacroFunc
     { argsPattern      :: [Pattern]
     , getSubExecutable :: Executable
     }
@@ -843,9 +847,9 @@ objectError o msg = procErr (OPair (OString (ustr msg), o))
 -- Functions of this type are called by 'evalObject' to evaluate expressions written in the Dao
 -- language.
 data DaoFunc
-  = DaoFuncNoDeref { daoForeignCall :: [Object] -> Exec [Object] }
+  = DaoFuncNoDeref { daoForeignCall :: [Object] -> Exec (Maybe Object) }
     -- ^ do not dereference the parameters passed to this function.
-  | DaoFuncAutoDeref { daoForeignCall :: [Object] -> Exec [Object] }
+  | DaoFuncAutoDeref { daoForeignCall :: [Object] -> Exec (Maybe Object) }
     -- ^ automatically dereference the parameters passed to the function.
 
 -- | This is the state that is used to run the evaluation algorithm. Every Dao program file that has
@@ -1042,7 +1046,7 @@ instance HasDebugRef Runtime where
 data FlowCtrl a
   = FlowOK     a
   | FlowErr    Object
-  | FlowReturn [Object]
+  | FlowReturn (Maybe Object)
   deriving Show
 
 instance Monad FlowCtrl where
@@ -1119,7 +1123,7 @@ instance Monad m => MonadError Object (Procedural m) where
     FlowReturn obj -> return (FlowReturn obj)
     FlowErr  obj -> runProcedural (catch obj)
 
-catchReturn :: Monad m => Procedural m a -> ([Object] -> Procedural m a) -> Procedural m a
+catchReturn :: Monad m => Procedural m a -> (Maybe Object -> Procedural m a) -> Procedural m a
 catchReturn fn catch = Procedural $ runProcedural fn >>= \ce -> case ce of
   FlowReturn obj -> runProcedural (catch obj)
   FlowOK     a   -> return (FlowOK a)
@@ -1132,12 +1136,7 @@ joinFlowCtrl ce = Procedural (return ce)
 
 -- | Evaluate this function when the proceudre must return.
 procReturn :: Monad m => Object -> Procedural m a
-procReturn a = joinFlowCtrl (FlowReturn [a])
-
--- | Evaluate this function when the procedure must return a nondeterministic result, where every
--- possible value returned must be evaluated in the parent context.
-procNonDeterm :: Monad m => [Object] -> Procedural m a
-procNonDeterm ax = joinFlowCtrl (FlowReturn ax)
+procReturn a = joinFlowCtrl (FlowReturn (Just a))
 
 -- | Evaluate this function when procedure must throw an error.
 procErr :: Monad m => Object -> Procedural m a
@@ -1157,8 +1156,8 @@ procJoin mfn = mfn >>= \a -> Procedural (return a)
 -- | Takes an inner 'Procedural' monad. If this inner monad evaluates to a 'FlowReturn', it will not
 -- collapse the continuation monad, and the outer monad will continue evaluation as if a
 -- @('FlowOK' 'Dao.Object.Object')@ value were evaluated.
-catchReturnObj :: Monad m => Procedural m Object -> Procedural m [Object]
+catchReturnObj :: Monad m => Procedural m Object -> Procedural m (Maybe Object)
 catchReturnObj exe = procCatch exe >>= \ce -> case ce of
   FlowReturn obj -> return obj
-  _              -> fmap (:[]) (joinFlowCtrl ce)
+  _              -> fmap Just (joinFlowCtrl ce)
 

@@ -3,7 +3,7 @@ string.compare = approximate;
 BEGIN {
 	print("--- BEGIN ---");
 	qtime(comma) = list{};
-	print("qtime(comma) = " + qtime(comma));
+	//print("qtime(comma) = " + qtime(comma));
 	print("--- RULES ---");
 }
 
@@ -11,11 +11,14 @@ rule "$*, $*" {
 	a = doing();
 	if(defined(static(lastQuery)) && static(lastQuery)==a) { return; }
 	else { static(lastQuery) = a; }
-	print("$1 -> " + $1);
+	//print("$1 -> " + $1);
 	if($1) { qtime(comma) += list{ join(" ", $1) }; }
-	print("$2 -> " + $2);
+	//print("$2 -> " + $2);
 	a = join(" ", $2);
-	if($2) { print("recurse: "+a); do(a); }
+	if($2) {
+		//print("recurse: "+a);
+		do(a);
+	}
 	else { qtime(comma.final) = 1; }
 }
 

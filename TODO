@@ -1,5 +1,10 @@
 TODO:
 
+*	Change the 'evalObjectExpr' function so it always returns a location, it's type should be:
+@evalObjectExpr :: ObjectExpr -> Exec (Location, Maybe Object)@
+Then if it ever incorrectly evaluates to a pair where the second value is 'Nothing', the location
+can still be used to report where the failed evaluation occurs.
+
 *	Really need to modify the parser so variable scoping is parsed with a higher presecedence than
 arithmetic or assignment operators. As of right now, expressions do not parse as one would expect. I
 can work around this issue by putting parentheses around qualified variables:

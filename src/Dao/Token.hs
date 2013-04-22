@@ -62,7 +62,30 @@ data Location
     , endingLine     :: Word64
     , endingColumn   :: Word
     }
-  deriving (Eq, Ord, Typeable)
+  deriving (Eq, Typeable)
+
+instance Ord Location where
+  compare a b = case (a,b) of
+    (LocationUnknown, LocationUnknown) -> EQ
+    (_              , LocationUnknown) -> LT
+    (LocationUnknown, _              ) -> GT
+    (a              , b              ) ->
+      compare (abs(ela-sla), abs(eca-sca), sla, sca) (abs(elb-slb), abs(ecb-scb), slb, scb)
+    where
+      sla = startingLine   a
+      ela = endingLine     a
+      slb = startingLine   b
+      elb = endingLine     b
+      sca = startingColumn a
+      eca = endingColumn   a
+      scb = startingColumn b
+      ecb = endingColumn   b
+  -- ^ Greater-than is determined by a heuristic value of how large and uncertain the position of
+  -- the error is. If the exact location is known, it has the lowest uncertainty and is therefore
+  -- less than a location that might occur across two lines. The 'LocationUnknown' value is the most
+  -- uncertain and is greater than everything except itself. Using this comparison function, you can
+  -- sort lists of locations from least to greatest and hopefully get the most helpful, most
+  -- specific location at the top of the list.
 
 lineColOnly :: Location -> Location
 lineColOnly loc = case loc of

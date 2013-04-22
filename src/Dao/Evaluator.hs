@@ -1138,23 +1138,22 @@ errAt loc = case loc of
 -- Haskell value, because 'Backtrack' values indicate type exceptions, and 'PFail' values indicate a
 -- value error (e.g. out of bounds, or some kind of assert exception), and the messages passed to
 -- 'procErr' will indicate this.
-checkPValue :: String -> [Object] -> PValue Location a -> Exec a
-checkPValue altmsg tried pval = case pval of
-  OK a         -> return a
-  Backtrack    -> procErr $ OList $
-    ostr "bad data type" : (if null altmsg then [] else [OString (ustr altmsg)]) ++ tried
-  PFail lc msg -> procErr $ OList $
-    ostr "bad data value" :
-      errAt lc ++ (if null altmsg then [] else [ostr altmsg]) ++ OString msg : tried
+checkPValue :: Location -> String -> [Object] -> PValue Location a -> Exec a
+checkPValue loc altmsg tried pval = case pval of
+  OK a           -> return a
+  Backtrack      -> procErr $ OList $ ostr "bad data type" :
+    (if null altmsg then [] else [OString (ustr altmsg)]) ++ tried
+  PFail loc' msg -> procErr $ OList $ ostr "bad data value" :
+    errAt (min loc loc') ++ (if null altmsg then [] else [ostr altmsg]) ++ OString msg : tried
 
 -- | 'evalObjectExprExpr' can return 'Data.Maybe.Nothing', and usually this happens when something has
 -- failed (e.g. reference lookups), but it is not always an error (e.g. a void list of argument to
 -- functions). If you want 'Data.Maybe.Nothing' to cause an error, evaluate your
 -- @'Dao.Object.Exec' ('Data.Maybe.Maybe' 'Dao.Object.Object')@ as a parameter to this function.
-checkVoid :: Location -> String -> Exec (Maybe a) -> Exec a
-checkVoid loc msg fn = fn >>= \obj -> case obj of
+checkVoid :: String -> Exec (Location, Maybe a) -> Exec (Location, a)
+checkVoid msg fn = fn >>= \ (loc, obj) -> case obj of
   Nothing -> procErr $ OList $ errAt loc ++ [ostr msg, ostr "evaluates to a void"]
-  Just a  -> return a
+  Just  a -> return (loc, a)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1165,7 +1164,7 @@ execScriptExpr script = case script of
   EvalObject  o             loc -> unless (isNO_OP o) (void (evalObjectExpr o))
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   IfThenElse  ifn  thn  els loc -> nestedExecStack T.Void $ do
-    ifn <- checkVoid loc "conditional expression to if statement" (evalObjectExprDeref ifn)
+    (loc, ifn) <- checkVoid "conditional expression to if statement" (evalObjectExprDerefWithLoc ifn)
     execScriptBlock (if objToBool ifn then thn else els)
     return ()
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
@@ -1277,45 +1276,48 @@ objectDerefWithLoc (loc, obj) = case obj of
   obj              -> return (loc, obj)
 
 evalObjectExpr :: ObjectExpr -> Exec (Maybe Object)
-evalObjectExpr expr = fmap (fmap snd) (evalObjectExprWithLoc expr)
+evalObjectExpr expr = fmap snd (evalObjectExprWithLoc expr)
 
 -- | Combines 'evalObjectExprWithLoc' and 'objectDeref' 
-evalObjectExprDerefWithLoc :: ObjectExpr -> Exec (Maybe (Location, Object))
-evalObjectExprDerefWithLoc expr = evalObjectExprWithLoc expr >>= \obj -> case obj of
-  Nothing     -> return Nothing
-  Just locobj -> fmap Just (objectDerefWithLoc locobj)
+evalObjectExprDerefWithLoc :: ObjectExpr -> Exec (Location, Maybe Object)
+evalObjectExprDerefWithLoc expr = evalObjectExprWithLoc expr >>= \ (loc, obj) -> case obj of
+  Nothing  -> return (loc, Nothing)
+  Just obj -> fmap (\ (loc', o) -> (min loc loc', Just o)) (objectDerefWithLoc (loc, obj))
 
 -- | Calls 'evalObjectExprDerefWithLoc' but drops the 'Dao.Token.Location' from the returned pair
 -- @('Dao.Token.Location', 'Dao.Object.Object')@, returning just the 'Dao.Object.Object'.
 evalObjectExprDeref :: ObjectExpr -> Exec (Maybe Object)
-evalObjectExprDeref = fmap (fmap snd) . evalObjectExprDerefWithLoc
+evalObjectExprDeref = fmap snd . evalObjectExprDerefWithLoc
 
 -- | Evaluate an 'ObjectExpr' to an 'Dao.Object.Object' value, and does not de-reference objects of
 -- type 'Dao.Object.ORef'
-evalObjectExprWithLoc :: ObjectExpr -> Exec (Maybe (Location, Object))
+evalObjectExprWithLoc :: ObjectExpr -> Exec (Location, Maybe Object)
 evalObjectExprWithLoc obj = case obj of
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  VoidExpr                       -> return Nothing
+  VoidExpr                       -> return (LocationUnknown, Nothing)
     -- ^ 'VoidExpr's only occur in return statements. Returning 'ONull' where nothing exists is
     -- probably the most intuitive thing to do on an empty return statement.
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  Literal     o              loc -> return (Just (loc, o))
+  Literal     o              loc -> return (loc, Just o)
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   AssignExpr  nm  op  expr   loc -> setloc loc $ do
-    nm <- checkVoid loc "left-hand side of assignment" (evalObjectExpr nm)
+    (nmloc, nm) <- checkVoid "left-hand side of assignment" (evalObjectExprWithLoc nm)
     let lhs = "left-hand side of "++show op
-    nm   <- checkPValue lhs [nm] (asReference nm)
-    expr <- checkVoid loc "right-hand side of assignment" (evalObjectExprDeref expr)
+    nm   <- checkPValue nmloc lhs [nm] (asReference nm)
+    (exprloc, expr) <- checkVoid "right-hand side of assignment" (evalObjectExprDerefWithLoc expr)
     updateReference nm $ \maybeObj -> case maybeObj of
       Nothing      -> case op of
               UCONST -> return (Just expr)
-              _      -> procErr $ OList $ errAt loc ++ [ostr "undefined refence", ORef nm]
+              _      -> procErr $ OList $ errAt nmloc ++ [ostr "undefined refence", ORef nm]
       Just prevVal -> fmap Just $
-        checkPValue "assignment expression" [prevVal, expr] $ (updatingOps!op) prevVal expr
+        checkPValue exprloc "assignment expression" [prevVal, expr] $ (updatingOps!op) prevVal expr
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   FuncCall   op   args       loc -> setloc loc $ do -- a built-in function call
     bif  <- fmap builtinFuncs ask
-    args <- fmap (concatMap maybeToList) (mapM evalObjectExprWithLoc args) :: Exec [(Location, Object)]
+    let ignoreVoids (loc, obj) = case obj of
+          Nothing  -> []
+          Just obj -> [(loc, obj)]
+    args <- fmap (concatMap ignoreVoids) (mapM evalObjectExprWithLoc args) :: Exec [(Location, Object)]
     let allCombinations ox args = -- given the non-deterministic arguments,
           if null args    -- create every possible combination of arguments
             then  return ox
@@ -1335,32 +1337,32 @@ evalObjectExprWithLoc obj = case obj of
   ParenExpr     _     o      loc -> evalObjectExprWithLoc o
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   ArraySubExpr  o     i      loc -> setloc loc $ do
-    o <- checkVoid loc "operand of subscript expression" (evalObjectExprDeref o)
-    i <- checkVoid loc "index of subscript expression" (evalObjectExpr i)
+    (oloc, o) <- checkVoid "operand of subscript expression" (evalObjectExprDerefWithLoc o)
+    (iloc, i) <- checkVoid "index of subscript expression" (evalObjectExprWithLoc i)
     case evalSubscript o i of
       OK          a -> return (Just a)
       PFail loc msg -> procErr (OString msg)
       Backtrack     -> procErr (OList $ errAt loc ++ [i, ostr "cannot be used as index of", o])
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   Equation   left' op right' loc -> setloc loc $ do
-    left  <- checkVoid loc ("left-hand operand of "++show op++" opreator")  (evalObjectExprWithLoc left')
-    right <- checkVoid loc ("right-hand operand of "++show op++" operator") (evalObjectExprWithLoc right')
+    (leftloc , left ) <- checkVoid ("left-hand operand of "++show op++" opreator")  (evalObjectExprWithLoc left')
+    (rightloc, right) <- checkVoid ("right-hand operand of "++show op++" operator") (evalObjectExprWithLoc right')
     let err lr orig = procErr $ OList $ errAt (getLocation orig) ++
           [ostr (lr++"-hand of "++show op++" operator evaluates to a void")]
     args <- case op of
-      DOT   -> return (snd left, snd right)
-      POINT -> liftM2 (,) (objectDeref left) (return (snd right))
-      _     -> liftM2 (,) (objectDeref left) (objectDeref right)
-    case (infixOps!op) (snd left) (snd right) of
+      DOT   -> return (left, right)
+      POINT -> liftM2 (,) (objectDeref (leftloc, left)) (return right)
+      _     -> liftM2 (,) (objectDeref (leftloc, left)) (objectDeref (rightloc, right))
+    case (infixOps!op) left right of
       OK result -> return (Just result)
       Backtrack -> procErr $ OList $ concat $
         [ errAt loc, [ostr (show op), ostr "cannot operate on objects of type"]
-        , errAt (fst left), [snd left], errAt (fst right), [snd right]
+        , errAt leftloc, [left], errAt rightloc, [right]
         ]
       PFail _  msg -> procErr $ OList $ errAt loc ++ [OString msg]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   PrefixExpr op       expr   loc -> setloc loc $ do
-    expr <- checkVoid loc ("operand to prefix operator "++show op) (evalObjectExpr expr)
+    (locexpr, expr) <- checkVoid ("operand to prefix operator "++show op) (evalObjectExprWithLoc expr)
     case (prefixOps!op) expr of
       OK result -> return (Just result)
       Backtrack -> procErr $ OList $
@@ -1372,25 +1374,25 @@ evalObjectExprWithLoc obj = case obj of
           []       -> return mp
           arg:argx -> case arg of
             AssignExpr ixObj op  new loc -> do
-              ixObj <- checkVoid loc ("left-hand side of assignment in "++show cons) (evalObjectExprDeref ixObj)
-              ixVal <- checkPValue ("right-hand side of assignment in "++show cons) [ixObj] (getObjVal ixObj)
-              new   <- evalObjectExprDeref new
+              (ixloc, ixObj) <- checkVoid ("left-hand side of assignment in "++show cons) (evalObjectExprDerefWithLoc ixObj)
+              ixVal <- checkPValue ixloc ("right-hand side of assignment in "++show cons) [ixObj] (getObjVal ixObj)
+              (newloc, new ) <- evalObjectExprDerefWithLoc new
               case new of
-                Nothing  -> procErr $ OList $
+                Nothing  -> procErr $ OList $ errAt newloc ++
                   [ ostr (show op), ostr "assignment to index", ixObj
                   , ostr "failed, right-hand side evaluates to a void"
                   ]
-                Just new -> insfn mp ixObj ixVal op new
+                Just new -> insfn mp ixObj ixVal op newloc new
               loop insfn getObjVal mp argx
             _ -> error "dictionary constructor contains an expression that is not an assignment"
-        assign lookup insert mp ixObj ixVal op new = case lookup ixVal mp of
+        assign lookup insert mp ixObj ixVal op newloc new = case lookup ixVal mp of
           Nothing  -> case op of
             UCONST -> return (insert ixVal new mp)
             op     -> procErr $ OList [ostr ("undefined left-hand side of "++show op), ixObj]
           Just old -> case op of
             UCONST -> procErr $ OList [ostr ("twice defined left-hand side "++show op), ixObj]
             op     -> do
-              new <- checkPValue (show cons++" assignment expression "++show op) [ixObj, old, new] $
+              new <- checkPValue newloc (show cons++" assignment expression "++show op) [ixObj, old, new] $
                         (updatingOps!op) old new
               return (insert ixVal new mp)
         intmap = assign I.lookup I.insert
@@ -1402,24 +1404,23 @@ evalObjectExprWithLoc obj = case obj of
       _ -> error ("INTERNAL ERROR: unknown dictionary declaration "++show cons)
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   ArrayExpr  rang  ox        loc -> setloc loc $ case rang of
-    (_ : _ : _ : _) -> procErr $ OList $
+    (_ : _ : _ : _) -> procErr $ OList $ errAt loc ++
       [ostr "internal error: array range expression has more than 2 arguments"]
     [lo, hi] -> do
       let getIndex msg bnd = do
-            bnd <- fmap (fmap fromIntegral . asHaskellInt) $
-              checkVoid loc (msg++" of array declaration") (evalObjectExprDeref bnd)
-            case bnd of
+            (bndloc, bnd) <- checkVoid (msg++" of array declaration") (evalObjectExprDerefWithLoc bnd)
+            case fmap fromIntegral (asHaskellInt bnd) of
               OK          i -> return i
-              Backtrack     -> procErr $ OList $ errAt loc ++
+              Backtrack     -> procErr $ OList $ errAt bndloc ++
                 [ostr msg, ostr "of array declaration does not evaluate to an integer value"]
-              PFail loc msg -> procErr $ OList $ errAt loc ++
+              PFail loc msg -> procErr $ OList $ errAt bndloc ++
                 [OString msg, ostr "in array declaration"]
       lo <- getIndex "lower-bound" lo
       hi <- getIndex "upper-bound" hi
       (lo, hi) <- return (if lo<hi then (lo,hi) else (hi,lo))
       ox <- fmap (concatMap maybeToList) (mapM evalObjectExprDeref ox)
       return (Just (OArray (listArray (lo, hi) ox)))
-    _ -> procErr $ OList
+    _ -> procErr $ OList $ errAt loc ++
       [ostr "internal error: array range expression has fewer than 2 arguments"]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   DataExpr   strs            loc -> setloc loc $ case b64Decode (concatMap uchars strs) of
@@ -1433,7 +1434,7 @@ evalObjectExprWithLoc obj = case obj of
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   MetaEvalExpr expr          loc -> evalObjectExprWithLoc expr
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  where { setloc loc fn = fmap (fmap (\o -> (loc, o))) fn }
+  where { setloc loc fn = fmap (\o -> (loc, o)) fn }
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
 evalLambdaExpr :: LambdaExprType -> [ObjectExpr] -> [ScriptExpr] -> Exec Object

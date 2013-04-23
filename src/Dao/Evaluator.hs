@@ -372,14 +372,28 @@ clearAllQTimeVars xunit = modifyUnlocked_ (queryTimeHeap xunit) (return . const 
 
 type BuiltinOp = PValue Location Object
 
-evalBooleans :: (Bool -> Bool -> Bool) -> Object -> Object -> BuiltinOp
-evalBooleans fn a b = return (if fn (objToBool a) (objToBool b) then OTrue else ONull)
-
 eval_OR :: Object -> Object -> BuiltinOp
-eval_OR = evalBooleans (||)
+eval_OR = evalBooleans (\a b -> seq a (if a then True else seq b b))
 
 eval_AND :: Object -> Object -> BuiltinOp
-eval_AND = evalBooleans (&&)
+eval_AND = evalBooleans (\a b -> seq a (if a then seq b b else False))
+
+-- This function is evaluated by 'infixOps' below to be stored in the array of functions that
+-- respond to infix operators. However, because the logical operators 'Dao.Object.OR' and
+-- 'Dao.Object.AND' need to be especially lazy so the 'evalObjectExprWithLoc' function which
+-- evaluates all 'Dao.Object.Equation' expressions catches 'Dao.Object.OR' and 'Dao.Object.AND' to
+-- evaluate these expressions differently. The problem is that in languages in the C family, if the
+-- left-hand expression of an @||@ operator evaluates to true, or if the left-hand expression of a
+-- @&&@ operator evaluates to false, the right-hand expression is ignored. But in spite of all of
+-- Haskell's lazyness, the fact remains that the 'evalObjectExprWithLoc' function evaluates both the
+-- right and left hand sides of operators in the 'Exec' monad, which is lifted into the IO monad,
+-- and this evaluation occurs before passing the values to the operator function (e.g. this function
+-- here). Since they are evaluated in the IO Monad, the order in which evaluation occurs must be
+-- honored, and that means both the left and right hand side of the equations will always be
+-- evaluated unless special steps are taken to avoid this. Hence this function is not used, it is
+-- only here to provide a more complete API.
+evalBooleans :: (Bool -> Bool -> Bool) -> Object -> Object -> BuiltinOp
+evalBooleans fn a b = return (if fn (objToBool a) (objToBool b) then OTrue else ONull)
 
 asReference :: Object -> PValue Location Reference
 asReference o = case o of
@@ -746,8 +760,10 @@ infixOps :: Array ArithOp2 (Object -> Object -> BuiltinOp)
 infixOps = let o = (,) in array (minBound, maxBound) $
   [ o POINT evalSubscript
   , o DOT   eval_DOT
-  , o OR    (evalBooleans (||))
-  , o AND   (evalBooleans (&&))
+  -- , o OR    (evalBooleans (||)) -- These actually probably wont be evaluated. Locgical and/or is a
+  -- , o AND   (evalBooleans (&&)) -- special case to be evaluated in 'evalObjectExprWithLoc'.
+  , o OR    (error (e "OR" ))
+  , o AND   (error (e "AND"))
   , o EQUL  eval_EQUL
   , o NEQUL eval_NEQUL
   , o ORB   eval_ORB
@@ -762,6 +778,9 @@ infixOps = let o = (,) in array (minBound, maxBound) $
   , o MOD   eval_MOD
   , o POW   eval_POW
   ]
+  where
+    e msg = "logical-" ++ msg ++
+      " operator should have been evaluated within the 'evalObjectExprWithLoc' function."
 
 updatingOps :: Array UpdateOp (Object -> Object -> BuiltinOp)
 updatingOps = let o = (,) in array (minBound, maxBound) $
@@ -1030,11 +1049,11 @@ builtin_call = DaoFuncAutoDeref $ \args ->
               ]
 
 builtin_check_ref :: DaoFunc
-builtin_check_ref = DaoFuncNoDeref $ \args ->
+builtin_check_ref = DaoFuncNoDeref $ \args -> do
   fmap (Just . boolToObj . and) $ forM args $ \arg -> case arg of
     ORef (MetaRef _) -> return True
-    ORef o -> readReference o >>= return . isJust
-    o -> return True
+    ORef          o  -> readReference o >>= return . isJust >>= \a -> return a
+    o                -> return True
 
 builtin_delete :: DaoFunc
 builtin_delete = DaoFuncNoDeref $ \args -> do
@@ -1069,15 +1088,15 @@ initBuiltinFuncs = let o a b = (ustr a, b) in M.fromList $
 -- 'Dao.Object.Reference'.
 readReference :: Reference -> Exec (Maybe Object)
 readReference ref = case ref of
-  IntRef     i     -> {- trace ("read int ref: "   ++show i  ) $ -} fmap Just (evalIntRef i)
-  LocalRef   nm    -> {- trace ("read local ref: " ++show ref) $ -} localVarLookup nm
-  QTimeRef   ref   -> {- trace ("read qtime ref: " ++show ref) $ -} qTimeVarLookup ref
-  StaticRef  ref   -> {- trace ("read static ref: "++show ref) $ -} staticVarLookup ref
-  GlobalRef  ref   -> {- trace ("read global ref: "++show ref) $ -} globalVarLookup ref
-  ProgramRef p ref -> error "TODO: haven't yet defined lookup behavior for Program references"
-  FileRef    f ref -> error "TODO: haven't yet defined lookup behavior for file references"
-  MetaRef    _     -> procErr $ OList $
-    [ostr "cannot dereference a reference-to-a-reference", ORef ref]
+    IntRef     i     -> {- trace ("read int ref: "   ++show i  ) $ -} fmap Just (evalIntRef i)
+    LocalRef   nm    -> {- trace ("read local ref: " ++show ref) $ -} localVarLookup nm
+    QTimeRef   ref   -> {- trace ("read qtime ref: " ++show ref) $ -} qTimeVarLookup ref
+    StaticRef  ref   -> {- trace ("read static ref: "++show ref) $ -} staticVarLookup ref
+    GlobalRef  ref   -> {- trace ("read global ref: "++show ref) $ -} globalVarLookup ref
+    ProgramRef p ref -> error "TODO: haven't yet defined lookup behavior for Program references"
+    FileRef    f ref -> error "TODO: haven't yet defined lookup behavior for file references"
+    MetaRef    _     -> procErr $ OList $
+      [ostr "cannot dereference a reference-to-a-reference", ORef ref]
 
 -- | All assignment operations are executed with this function. To modify any variable at all, you
 -- need a reference value and a function used to update the value. This function will select the
@@ -1345,21 +1364,31 @@ evalObjectExprWithLoc obj = case obj of
       Backtrack     -> procErr (OList $ errAt loc ++ [i, ostr "cannot be used as index of", o])
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   Equation   left' op right' loc -> setloc loc $ do
-    (leftloc , left ) <- checkVoid ("left-hand operand of "++show op++" opreator")  (evalObjectExprWithLoc left')
-    (rightloc, right) <- checkVoid ("right-hand operand of "++show op++" operator") (evalObjectExprWithLoc right')
-    let err lr orig = procErr $ OList $ errAt (getLocation orig) ++
-          [ostr (lr++"-hand of "++show op++" operator evaluates to a void")]
-    args <- case op of
-      DOT   -> return (left, right)
-      POINT -> liftM2 (,) (objectDeref (leftloc, left)) (return right)
-      _     -> liftM2 (,) (objectDeref (leftloc, left)) (objectDeref (rightloc, right))
-    case (infixOps!op) left right of
-      OK result -> return (Just result)
-      Backtrack -> procErr $ OList $ concat $
-        [ errAt loc, [ostr (show op), ostr "cannot operate on objects of type"]
-        , errAt leftloc, [left], errAt rightloc, [right]
-        ]
-      PFail _  msg -> procErr $ OList $ errAt loc ++ [OString msg]
+    let err1 msg = msg++"-hand operand of "++show op++ "operator "
+        evalLeft   = checkVoid (err1 "left" ) (evalObjectExprWithLoc left')
+        evalRight  = checkVoid (err1 "right") (evalObjectExprWithLoc right')
+        derefLeft  = evalLeft  >>= objectDerefWithLoc
+        derefRight = evalRight >>= objectDerefWithLoc
+        logical isAndOp = fmap Just $ do
+          (leftloc, left) <- derefLeft
+          if objToBool left
+            then  if isAndOp then fmap snd derefRight else return OTrue
+            else  if isAndOp then return ONull else fmap snd derefRight
+    case op of
+      AND -> logical True
+      OR  -> logical False
+      op  -> do
+        ((leftloc, left), (rightloc, right)) <- case op of
+          DOT   -> liftM2 (,) evalLeft  evalRight
+          POINT -> liftM2 (,) derefLeft evalRight
+          _     -> liftM2 (,) derefLeft derefRight
+        case (infixOps!op) left right of
+          OK result -> return (Just result)
+          Backtrack -> procErr $ OList $ concat $
+            [ errAt loc, [ostr (show op), ostr "cannot operate on objects of type"]
+            , errAt leftloc, [left], errAt rightloc, [right]
+            ]
+          PFail _  msg -> procErr $ OList $ errAt loc ++ [OString msg]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   PrefixExpr op       expr   loc -> setloc loc $ do
     (locexpr, expr) <- checkVoid ("operand to prefix operator "++show op) (evalObjectExprWithLoc expr)
@@ -1374,8 +1403,9 @@ evalObjectExprWithLoc obj = case obj of
           []       -> return mp
           arg:argx -> case arg of
             AssignExpr ixObj op  new loc -> do
-              (ixloc, ixObj) <- checkVoid ("left-hand side of assignment in "++show cons) (evalObjectExprDerefWithLoc ixObj)
-              ixVal <- checkPValue ixloc ("right-hand side of assignment in "++show cons) [ixObj] (getObjVal ixObj)
+              let err msg = (msg++"-hand side of assignment in "++show cons)
+              (ixloc, ixObj) <- checkVoid (err "left") (evalObjectExprDerefWithLoc ixObj)
+              ixVal <- checkPValue ixloc (err "right") [ixObj] (getObjVal ixObj)
               (newloc, new ) <- evalObjectExprDerefWithLoc new
               case new of
                 Nothing  -> procErr $ OList $ errAt newloc ++

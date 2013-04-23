@@ -8,18 +8,17 @@ BEGIN {
 }
 
 rule "$*, $*" {
-	a = doing();
-	if(defined(static(lastQuery)) && static(lastQuery)==a) { return; }
-	else { static(lastQuery) = a; }
-	//print("$1 -> " + $1);
-	if($1) { qtime(comma) += list{ join(" ", $1) }; }
-	//print("$2 -> " + $2);
+	d = doing();
+	print("query: " + d);
+	if(defined(static(lastQuery)) && static(lastQuery)==d) { return; }
+	else { static(lastQuery) = d; }
+	print("$1 -> " + $1);
 	a = join(" ", $2);
-	if($2) {
-		//print("recurse: "+a);
-		do(a);
-	}
-	else { qtime(comma.final) = 1; }
+	if($1) { qtime(comma) += list{a}; }
+	print("$2 -> " + $2);
+	print("recurse? \"" + a + "\"");
+	if(a) { do(a); }
+	else { print("\"" + a + "\" is null."); }
 }
 
 END {

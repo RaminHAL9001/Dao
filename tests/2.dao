@@ -9,16 +9,35 @@ BEGIN {
 
 rule "$*, $*" {
 	d = doing();
+	a = join($1);
+	b = join($2);
 	print("query: " + d);
-	if(defined(static(lastQuery)) && static(lastQuery)==d) { return; }
-	else { static(lastQuery) = d; }
-	print("$1 -> " + $1);
-	a = join(" ", $2);
-	if($1) { qtime(comma) += list{a}; }
-	print("$2 -> " + $2);
+	print("$1 = " + a + "\"");
+	print("$2 = " + b + "\"");
+	if(defined(static(lastQuery)) && static(lastQuery)==d) {
+		print("STOP ON: " + a);
+		return;
+	}
+	else {
+		print("set lastQurey = \"" + d + "\"");
+		static(lastQuery) = d;
+		print("set lastQurey = \"" + d + "\" (OK)");
+	}
+	if($1) {
+		print("append \"" + a + "\" to list.");
+		qtime(comma) += list{a};
+		print("append \"" + a + "\" to list. (OK)");
+	}
+	else {
+		print(join($1) + " is null.");
+	}
 	print("recurse? \"" + a + "\"");
-	if(a) { do(a); }
-	else { print("\"" + a + "\" is null."); }
+	if(a) {
+		print("--- start recurse with \"" + a + "\" ---");
+		do(a);
+		print("---- end recurse with \"" + a + "\" ----");
+	}
+	else { print("\"" + a + "\" is null, no recurse."); }
 }
 
 END {

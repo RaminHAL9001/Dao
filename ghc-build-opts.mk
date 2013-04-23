@@ -103,7 +103,7 @@ enum-set-test:
 # try, just start writing a new source file, make a target for it here, and modify the 'default'
 # target above to use these targets as prerequisites.
 
-DEBUG_DEPENDS := tests/RandObj.hs tests/main.hs \
+DEBUG_DEPENDS := tests/main.hs \
   src/Dao/String.hs      src/Dao/Token.hs         src/Dao/Predicate.hs   src/Dao/Object/DeepSeq.hs \
   src/Dao/Parser.hs      src/Dao/Object.hs        src/Dao/PPrint.hs \
   src/Dao/Object/PPrint.hs src/Dao/Object/Parser.hs src/Dao/Object/Binary.hs

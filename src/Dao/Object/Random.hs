@@ -20,7 +20,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleInstances #-}
 
-module Dao.Random where
+module Dao.Object.Random where
 
 import           Dao.Token
 import           Dao.Glob
@@ -48,6 +48,10 @@ import qualified Data.IntMap           as I
 import           System.Random
 
 ----------------------------------------------------------------------------------------------------
+
+randObjMap :: (map Object -> Object) -> ([(key, Object)] -> map Object) -> RandO key -> RandO Object
+randObjMap objConstruct mapConstruct keygen = (randList 0 7) >>= \ox ->
+  fmap (objConstruct . mapConstruct) (forM ox (\obj -> keygen >>= \key -> return (key, obj)))
 
 randCom :: a -> RandO (Com a)
 randCom = return . Com
@@ -79,9 +83,6 @@ randComments = return []
 --        com typ = if typ==0 then EndlineComment else InlineComment
 --    forM (zip typx lenx) $ \ (typ, len) ->
 --      fmap (com typ . ustr . unwords . map (B.unpack . getRandomWord)) (replicateM len randInt)
-
-getRandomWord :: Int -> B.ByteString
-getRandomWord i = randomWords ! (mod i (rangeSize (bounds randomWords) - 1))
 
 ----------------------------------------------------------------------------------------------------
 

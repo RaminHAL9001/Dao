@@ -22,45 +22,49 @@
 
 module Dao.Prelude where
 
-import qualified Data.ByteString.Lazy   as B
- 
 -- | This type  for all commands in this module to "pipe" everything together like in the Bourne
 -- scripting language where you can pipe the output of one command to the input of another, or like
 -- Haskell "arrows", except with the monadic bind 'Control.Monad.(>>=)' operator (monads are a
 -- subcategory of arrows anyway).
-
-import           RandObj
 
 import           Dao.String
 import qualified Dao.Tree as T
 import           Dao.Object
 import           Dao.PPrint
 import           Dao.Struct
+import           Dao.Predicate
 import           Dao.Token
 import           Dao.Parser
+import           Dao.Random
 
 import           Dao.Object.PPrint
 import           Dao.Object.AST
 import           Dao.Object.Parser
 import           Dao.Object.Struct
+import           Dao.Object.Random
+import           Dao.Object.Binary
 
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.State
+
+import           Data.List (intercalate)
+import qualified Data.ByteString.Lazy as B
+import           Data.Binary
 
 ----------------------------------------------------------------------------------------------------
 
 -- | Everything is wrapped in this type to prevent GHCi from printing stuff all the time, or
 -- reporting errors about types not instantiating the 'Prelude.Show' class.
 newtype O a = O { uno :: a }
-instance Show (O a) where { show = "OK" }
+instance Show (O a) where { show _ = "OK" }
 
 randMaxDepth :: Int
 randMaxDepth = 6
 
 -- | Generate a random object of a polymorphic type with a specified maximum depth.
 ioRandOMax :: HasRandGen o => Int -> Int -> IO (O o)
-ioRandOMax max i = return (O (evalState randO (initRandState max i)))
+ioRandOMax max i = return (O (evalState randO (initRandOState max i)))
 
 -- | Generate a random object of a polymorphic type.
 ioRandO :: HasRandGen o => Int -> IO (O o)
@@ -111,31 +115,31 @@ toString (O o) = return (O (prettyShow o))
 parseWith :: Parser a -> O String -> IO (O a)
 parseWith parser (O str) = case runParser parser str of
   (OK          a, _) -> seq a $! return (O a)
-  (Backtrack    , s) -> ioError ("parser backtracks:\n\t"++show s)
-  (PFail loc msg, s) -> ioError (show loc ++ ": "++uchars msg++"\n\t"++show s)
+  (Backtrack    , s) -> error ("parser backtracks:\n\t"++show s)
+  (PFail loc msg, s) -> error (show loc ++ ": "++uchars msg++"\n\t"++show s)
 
 -- | Parse a 'Dao.Object.AST.AST_TopLevel'.
 parseTopExpr :: O String -> IO (O AST_TopLevel)
 parseTopExpr = parseWith parseDirective
 
 -- | Parse a 'Dao.Object.AST.AST_Script'.
-parseScriptExpr :: O String -> IO (O AST_TopLevel)
-parseScriptExpr = parseWith parseScriptExpr
+parseScriptExpr :: O String -> IO (O AST_Script)
+parseScriptExpr = parseWith Dao.Object.Parser.parseScriptExpr
 
 -- | Parse a 'Dao.Object.AST.AST_Object'.
-parseScriptExpr :: O String -> IO (O AST_Object)
-parseScriptExpr = parseWith parseObjectExpr
+parseObjExpr :: O String -> IO (O AST_Object)
+parseObjExpr = parseWith (fmap fst parseObjectExpr)
 
 -- | Parse a 'Dao.Object.AST.AST_TopLevel' from an ordinary 'Prelude.String'.
 readTopExpr :: String -> IO (O AST_TopLevel)
 readTopExpr = parseTopExpr . O
 
 -- | Parse a 'Dao.Object.AST.AST_TopLeve' from an ordinary 'Prelude.String'.
-readScriptExpr :: String -> IO (O AST_TopLevel)
-readScriptExpr = parseScriptExpr . O
+readScriptExpr :: String -> IO (O AST_Script)
+readScriptExpr = Dao.Prelude.parseScriptExpr . O
 
 -- | Parse a 'Dao.Object.AST.AST_TopLeve' from an ordinary 'Prelude.String'.
-readObjExpr :: String -> IO (O AST_TopLevel)
+readObjExpr :: String -> IO (O AST_Object)
 readObjExpr = parseObjExpr . O
 
 -- | Convert a structured item to its structured form.
@@ -144,7 +148,14 @@ toStruct (O o) = return (O (dataToStruct o))
 
 -- | Construct a random object of a polymorphic type from its 'Dao.Struct.Structured' form.
 fromStruct :: Structured o => (O (T.Tree Name Object)) -> IO (O o)
-fromStruct (O t) = return (O (structToData t))
+fromStruct (O t) = case structToData t of
+  OK              o   -> seq o $! return (O o)
+  Backtrack           -> error "constructor backtracked"
+  PFail (idx,obj) msg -> error $ concat $
+    [ "constructor failed: ", uchars msg
+    , "\nat index: ", intercalate "." (map uchars idx)
+    , "\nwith value: ", prettyShow obj
+    ]
 
 -- | Construct a random 'Dao.Object.AST.AST_TopLevel' expression from its 'Dao.Struct.Structured' form.
 structTopExpr :: O (T.Tree Name Object) -> IO (O AST_TopLevel)
@@ -158,32 +169,28 @@ structScriptExpr = fromStruct
 structObjExpr :: O (T.Tree Name Object) -> IO (O AST_Object)
 structObjExpr = fromStruct 
 
--- | Construct a random 'Dao.Object.Object.AST_Object' expression from its 'Dao.Struct.Structured' form.
-structObjExpr :: O (T.Tree Name Object) -> IO (O AST_Object)
-structObjExpr = fromStruct 
-
 -- | Convert a polymorphic type to a 'Data.ByteString.Lazy.ByteString'.
 toBinary :: Binary o => O o -> IO (O B.ByteString)
-toBinary o = return (encode o)
+toBinary (O o) = return (O (encode o))
 
 -- | Convert a polymorphic type to a 'Data.ByteString.Lazy.ByteString'.
 fromBinary :: Binary o => O B.ByteString -> IO (O o)
-fromBinary (O o) = return (encode o)
+fromBinary (O o) = return (O (decode o))
 
 -- | Parse a 'Dao.Object.TopLevelExpr' from it's binary representation.
-unbinTopExpr :: O B.ByteString -> IO TopLevelExpr
+unbinTopExpr :: O B.ByteString -> IO (O TopLevelExpr)
 unbinTopExpr = fromBinary
 
 -- | Parse a 'Dao.Object.ScriptExpr' from it's binary representation.
-unbinScriptExpr :: O B.ByteString -> IO ScriptExpr
+unbinScriptExpr :: O B.ByteString -> IO (O ScriptExpr)
 unbinScriptExpr = fromBinary
 
 -- | Parse a 'Dao.Object.ScriptExpr' from it's binary representation.
-unbinObjExpr :: O B.ByteString -> IO ObjectExpr
+unbinObjExpr :: O B.ByteString -> IO (O ObjectExpr)
 unbinObjExpr = fromBinary
 
 -- | Parse a 'Dao.Object.ScriptExpr' from it's binary representation.
-unbinObj :: O B.ByteString -> IO Object
+unbinObj :: O B.ByteString -> IO (O Object)
 unbinObj = fromBinary
 
 

@@ -21,20 +21,20 @@
 
 module Main where
 
-import           RandObj
-
 import           Dao.String
 import           Dao.Predicate
 import           Dao.PPrint
 import           Dao.Token
 import           Dao.Parser
 import           Dao.Struct
+import           Dao.Random
 import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Object.Parser
 import           Dao.Object.Binary
 import           Dao.Object.PPrint
 import           Dao.Object.Struct
+import           Dao.Object.Random
 import           Dao.Object.DeepSeq
 
 import           Control.Concurrent

@@ -28,11 +28,13 @@ import           Dao.Predicate
 import           Dao.PPrint
 import           Dao.Token
 import           Dao.Parser
+import           Dao.Struct
 import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Object.Parser
 import           Dao.Object.Binary
 import           Dao.Object.PPrint
+import           Dao.Object.Struct
 import           Dao.Object.DeepSeq
 
 import           Control.Concurrent
@@ -183,13 +185,15 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
             hSetPosn pos >>= evaluate
             hPutStrLn handl (show i++"               ") >>= evaluate
           return (handl, pos)
-        let obexp = {-# SCC obexp #-} genRandWith randO maxRecurseDepth i :: AST_TopLevel
+        let obexp  = {-# SCC obexp  #-} genRandWith randO maxRecurseDepth i :: AST_TopLevel
             binexp = {-# SCC binexp #-} toInterm obexp :: [TopLevelExpr]
+            tree   = {-# SCC tree   #-} dataToStruct obexp
         deepseq obexp (return ())
         writeIORef ref (i, obexp)
         let bytes = {-# SCC bytes #-} B.encode binexp
             bin   = {-# SCC bin   #-} B.decode bytes
             str   = {-# SCC str   #-} showPPrint 80 "    " (pPrint obexp)
+            untre = {-# SCC untre #-} structToData tree :: PValue UpdateErr AST_TopLevel
             (par, msg) = {-# SCC par #-} runParser (regexMany space >> parseDirective) str 
             err reason = do
               catches
@@ -207,16 +211,24 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
                     hClose logFile
                 )
                 (errHandler "exception during test")
-        status1 <- handle (\ (ErrorCall e) -> err ("Binary decoding failed: "++show e) >> return False) $ do
+        status1 <- handle (\ (ErrorCall e) -> err ("Construction failed: "++show e) >> return False) $ do
+          case untre of
+            OK      o ->
+              if seq o $! o/=obexp
+                then  err "Construction does not match source object" >> return False
+                else  return True
+            Backtrack -> err "Ambiguous construction" >> return False
+            PFail _ b -> err ("Construction failed, "++uchars b) >> return False
+        status2 <- handle (\ (ErrorCall e) -> err ("Binary decoding failed: "++show e) >> return False) $ do
           if seq obexp $! seq bytes $! bin/=binexp
             then  err "Binary deserialization does not match source object" >> return False
             else  return True
-        status2 <- handle (\ (ErrorCall e) -> err ("Parsing failed: "++show e) >> return False) $ do
+        status3 <- handle (\ (ErrorCall e) -> err ("Parsing failed: "++show e) >> return False) $ do
           case par of
             OK      o -> seq o $! return True
             Backtrack -> err "Ambiguous parse" >> return False
             PFail _ b -> err ("Parse failed, "++uchars b) >> return False
-        putMVar notify (status1&&status2)
+        putMVar notify (status1&&status2&&status3)
         yield >> loop ref
   sep = "--------------------------------------------------------------------------"
 

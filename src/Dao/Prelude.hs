@@ -19,8 +19,23 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FunctionalDependencies #-}
 
-module Dao.Prelude where
+module Dao.Prelude
+  ( module Dao.Prelude
+  , module Dao.Predicate
+  , module Dao.Token
+  , module Dao.String
+  , module Dao.Object
+  , module Dao.Object.AST
+  , module Dao.PPrint
+  , module Control.Monad
+  , module Control.Monad.State
+  , module Control.Applicative
+  ) where
 
 -- | This type  for all commands in this module to "pipe" everything together like in the Bourne
 -- scripting language where you can pipe the output of one command to the input of another, or like
@@ -47,17 +62,34 @@ import           Dao.Object.Binary
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.State
+import           Control.Applicative
 
+import           Data.Monoid
+import           Data.Typeable
+import           Data.Char
 import           Data.List (intercalate)
 import qualified Data.ByteString.Lazy as B
 import           Data.Binary
+
+import           Numeric
+
+import           System.IO
 
 ----------------------------------------------------------------------------------------------------
 
 -- | Everything is wrapped in this type to prevent GHCi from printing stuff all the time, or
 -- reporting errors about types not instantiating the 'Prelude.Show' class.
 newtype O a = O { uno :: a }
-instance Show (O a) where { show _ = "OK" }
+instance Typeable a => Show     (O a) where { show (O a)          = show (typeOf a) }
+instance Eq a     => Eq         (O a) where { (O a)==(O b)        = a==b            }
+instance Ord a    => Ord        (O a) where { compare (O a) (O b) = compare a b     }
+instance             Functor     O    where { fmap fn (O a)       = O (fn a)        }
+instance Monoid a => Monoid     (O a) where
+  mempty              = O mempty
+  mappend (O a) (O b) = O (mappend a b)
+instance             Applicative O    where
+  pure                = O
+  (O fn) <*> (O a)    = O (fn a)
 
 randMaxDepth :: Int
 randMaxDepth = 6
@@ -103,6 +135,10 @@ randObjExprMax = ioRandOMax
 randObjMax :: Int -> Int -> IO (O Object)
 randObjMax = ioRandOMax
 
+-- | Re-export 'Dao.PPring.prettyShow'
+-- prettyShow :: PPrintable a => a -> String
+-- prettyShow = Dao.PPrint.prettyShow
+
 -- | Pretty-print anything output by one of the functions in this module.
 pp :: PPrintable a => (O a) -> IO (O a)
 pp (O o) = putStrLn (prettyShow o) >> return (O o)
@@ -110,6 +146,29 @@ pp (O o) = putStrLn (prettyShow o) >> return (O o)
 -- | Convert an object to a string using the pretty printer.
 toString :: PPrintable a => (O a) -> IO (O String)
 toString (O o) = return (O (prettyShow o))
+
+-- | Write the text from pretty-printing an object to a file. I have always disliked how the
+-- 'System.IO.IOMode' comes after the file path in the 'System.IO.openFile' function, so the
+-- 'System.IO.IOMode' and 'System.IO.FilePath' parameters are flipped.
+fileOutputTextWith :: (a -> String) -> IOMode -> FilePath -> O a -> IO (O a)
+fileOutputTextWith toString mode path (O obj) = openFile path mode >>= \h ->
+  hPutStr h (toString obj) >>= evaluate >> hFlush h >>= evaluate >> hClose h >> return (O obj)
+
+-- | Like 'fileOutputTextWith' but uses 'System.IO.WriteMode'.
+writeTextWith :: (a -> String) -> FilePath -> O a -> IO (O a)
+writeTextWith toString path obj = fileOutputTextWith toString WriteMode path obj
+
+-- | Like 'fileOutputTextWith' but uses 'System.IO.AppendMode'.
+appendTextWith :: (a -> String) -> FilePath -> O a -> IO (O a)
+appendTextWith toString path obj = fileOutputTextWith toString AppendMode path obj
+
+-- | Like 'writeTextWith' but uses 'Dao.PPrint.prettyShow'.
+writeText :: PPrintable a => FilePath -> O a -> IO (O a)
+writeText path obj = writeTextWith prettyShow path obj
+
+-- | Like 'appendTextWith' but uses 'Dao.PPrint.prettyShow'.
+appendText :: PPrintable a => FilePath -> O a -> IO (O a)
+appendText path obj = appendTextWith prettyShow path obj
 
 -- | Parser a polymorphic type from a string expression.
 parseWith :: Parser a -> O String -> IO (O a)
@@ -178,20 +237,77 @@ fromBinary :: Binary o => O B.ByteString -> IO (O o)
 fromBinary (O o) = return (O (decode o))
 
 -- | Parse a 'Dao.Object.TopLevelExpr' from it's binary representation.
-unbinTopExpr :: O B.ByteString -> IO (O TopLevelExpr)
-unbinTopExpr = fromBinary
+unpackTopExpr :: O B.ByteString -> IO (O TopLevelExpr)
+unpackTopExpr = fromBinary
 
 -- | Parse a 'Dao.Object.ScriptExpr' from it's binary representation.
-unbinScriptExpr :: O B.ByteString -> IO (O ScriptExpr)
-unbinScriptExpr = fromBinary
+unpackScriptExpr :: O B.ByteString -> IO (O ScriptExpr)
+unpackScriptExpr = fromBinary
 
 -- | Parse a 'Dao.Object.ScriptExpr' from it's binary representation.
-unbinObjExpr :: O B.ByteString -> IO (O ObjectExpr)
-unbinObjExpr = fromBinary
+unpackObjExpr :: O B.ByteString -> IO (O ObjectExpr)
+unpackObjExpr = fromBinary
 
 -- | Parse a 'Dao.Object.ScriptExpr' from it's binary representation.
-unbinObj :: O B.ByteString -> IO (O Object)
-unbinObj = fromBinary
+unpackObj :: O B.ByteString -> IO (O Object)
+unpackObj = fromBinary
 
+-- | Reduce a Dao language expression from it's "Dao.Object.AST" representation to it's "Dao.Object"
+-- representation using its instantiation of methods 'Dao.Object.AST.Intermediate'. See also:
+-- 'expand', the inverse of this function.
+reduce :: Intermediate obj ast => O ast -> IO (O obj)
+reduce (O ast) = case toInterm ast of
+  [obj] -> return (O obj)
+  []    -> error "could not reduce"
+  _     -> error "ambiguous reduction"
 
+-- | Apply 'reduce' to an 'Dao.Object.AST.AST_TopLevel' expression, producing an
+-- 'Dao.Object.TopLevelExpr'.
+reduceTopExpr :: O AST_TopLevel -> IO (O TopLevelExpr)
+reduceTopExpr = reduce
+
+-- | Apply 'reduce' to an 'Dao.Object.AST.AST_Script' expression, producing an
+-- 'Dao.Object.ScriptExpr'.
+reduceScriptExpr :: O AST_TopLevel -> IO (O TopLevelExpr)
+reduceScriptExpr = reduce
+
+-- | Apply 'reduce' to an 'Dao.Object.AST.AST_Object' expression, producing an
+-- 'Dao.Object.ObjectExpr'.
+reduceObjExpr :: O AST_TopLevel -> IO (O TopLevelExpr)
+reduceObjExpr = reduce
+
+-- | Expand a Dao language expression into it's "Dao.Object.AST" representation from it's
+-- "Dao.Object" representation using its instantiation of methods 'Dao.Object.AST.Intermediate'. See
+-- also: 'reduce', the inverse of this function.
+expand :: Intermediate obj ast => O obj -> IO (O ast)
+expand (O obj) = case fromInterm obj of
+  [ast] -> return (O ast)
+  []    -> error "could not expand"
+  _     -> error "ambiguous expansion"
+
+-- | Apply 'expand' to an 'Dao.Object.AST.AST_TopLevel' expression, producing an
+-- 'Dao.Object.TopLevelExpr'.
+expandTopExpr :: O TopLevelExpr -> IO (O AST_TopLevel)
+expandTopExpr = expand
+
+-- | Apply 'expand' to an 'Dao.Object.AST.AST_Script' expression, producing an
+-- 'Dao.Object.ScriptExpr'.
+expandScriptExpr :: O ScriptExpr -> IO (O AST_Script)
+expandScriptExpr = expand
+
+-- | Apply 'expand' to an 'Dao.Object.AST.AST_Object' expression, producing an
+-- 'Dao.Object.ObjectExpr'.
+expandObjExpr :: O ObjectExpr -> IO (O AST_Object)
+expandObjExpr = expand
+
+-- | Pure function, convert a 'Data.ByteString.Lazy.ByteString' to a string that is easy to look
+-- through with your own eyes, all hexadecimal numbers, letters A-F capitalized, spaces between
+-- every byte, and split into lines of 32 bytes each.
+showBinary :: B.ByteString -> String
+showBinary b = intercalate "\n" $ breakInto (32*3) $ (" "++) $ map toUpper $
+  intercalate " " $ map (\b -> (if b<0x10 then ('0':) else id) (flip showHex "" b)) $ B.unpack b
+
+-- | Apply 'showBinary' to a 'Data.ByteString.Lazy.ByteString'.
+hexdump :: O B.ByteString -> IO (O B.ByteString)
+hexdump (O bytes) = putStrLn (showBinary bytes) >> return (O bytes)
 

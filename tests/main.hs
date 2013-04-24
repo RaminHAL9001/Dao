@@ -21,6 +21,7 @@
 
 module Main where
 
+import           Dao.Prelude
 import           Dao.String
 import           Dao.Predicate
 import           Dao.PPrint
@@ -51,8 +52,6 @@ import qualified Data.Binary          as B
 import qualified Data.ByteString.Lazy as B
 
 import           Text.Printf
-
-import           Numeric
 
 import           System.IO
 import           System.Environment
@@ -114,10 +113,6 @@ simpleTest = testList >> testInline >> testClosure >> putStrLn mainIfExpr
 
 ----------------------------------------------------------------------------------------------------
 
-showBinary :: B.ByteString -> String
-showBinary b =
-  intercalate " " $ map (\b -> (if b<0x10 then ('0':) else id) (flip showHex "" b)) $ B.unpack b
-
 maxRecurseDepth = 5
 
 randObj :: Int -> Object
@@ -128,7 +123,7 @@ randObj = genRand maxRecurseDepth
 -- see what the object looks like as a data Haskell structure.
 runItem i = do
   putStrLn ("//"++show i)
-  let obj = randObj i
+  let obj = Main.randObj i
   putStr (prettyPrint 80 "    " obj)
   return obj
 

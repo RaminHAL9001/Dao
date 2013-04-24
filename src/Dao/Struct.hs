@@ -31,6 +31,7 @@ import           Dao.Tree
 import           Dao.Predicate
 import           Dao.Object.Math
 
+import           Data.Maybe (fromMaybe)
 import           Data.Word
 import           Data.Int
 import           Data.Ratio
@@ -74,7 +75,9 @@ deconstruct fn = snd (runUpdate fn Void)
 reconstruct :: Update a -> Tree Name Object -> PValue UpdateErr a
 reconstruct fn tree = fst (runUpdate fn tree)
 
-instance MonadState (Tree Name Object) (PTrans UpdateErr (State (Tree Name Object)))
+instance MonadState (Tree Name Object) (PTrans UpdateErr (State (Tree Name Object))) where
+  get = PTrans (fmap OK get)
+  put = PTrans . (fmap OK) . put
 
 maybeToUpdate :: Maybe a -> Update a
 maybeToUpdate = pvalue . maybeToBacktrack
@@ -149,10 +152,11 @@ atAddress :: [Name] -> Update a -> Update a
 atAddress nm doUpdate = case nm of
   []   -> doUpdate
   n:nm -> do
-    (result, tree) <- fmap (runUpdate (atAddress nm doUpdate)) get
-    pvalue $ case result of
-      PFail (ref, o) msg -> PFail (n:ref, o) msg
-      result             -> result
+    tree <- fmap (lookupNode [n]) get
+    let (result, updatedTree) = runUpdate (atAddress nm doUpdate) (fromMaybe Void tree)
+    case result of
+      PFail (ref, o) msg -> pvalue $ PFail (n:ref, o) msg
+      result             -> modify (insertNode [n] updatedTree) >> pvalue result
 
 -- | Goes to a given address and tries to return the value stored at that node,
 -- 'Dao.Predicate.Backtrack's if nothing is there.

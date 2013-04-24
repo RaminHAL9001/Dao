@@ -122,6 +122,10 @@ alter leaf tree px t = fromMaybe Void (loop px (Just t)) where
     p:px -> tree t >>= notVoid . alterBranch (subAlt p px)
   subAlt p px m = mplus m (Just M.empty) >>= Just . M.alter (loop px) p
 
+-- | Insert a 'Tree' at a given address, overwriting any tree that may already be there.
+insertNode :: Ord p => [p] -> Tree p a -> Tree p a -> Tree p a
+insertNode px t = alter id (const (Just t)) px
+
 -- | Insert a 'Leaf' at a given address.
 insert :: Ord p => [p] -> a -> Tree p a -> Tree p a
 insert px a = alter (const (Just a)) (flip mplus (Just Void)) px

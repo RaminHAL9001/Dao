@@ -102,6 +102,31 @@ alterBranch alt t = fromMaybe Void $ case t of
   Branch       b -> alt (Just b)       >>= \b -> Just (Branch b)
   LeafBranch o b -> msum [alt (Just b) >>= \b -> Just (LeafBranch o b), Just (Leaf o)]
 
+-- | Alter a 'Tree' node at a given path with a function that returns a secondary value. This
+-- function is designed to be used with 'Control.Monad.State.StateT'.
+alterNodeWithM :: (Monad m, Ord p) => (Tree p a -> m (b, Tree p a)) -> [p] -> Tree p a -> m (b, Tree p a)
+alterNodeWithM alt px tree = case px of
+  []   -> alt tree
+  p:px -> case getBranch tree >>= M.lookup p of
+    Nothing      -> alterNodeWithM alt px Void    >>= altSub p
+    Just subTree -> alterNodeWithM alt px subTree >>= altSub p
+  where
+    altSub p (result, subTree) = return $ (,) result $ case subTree of
+      Void    -> flip alterBranch tree $ \branch ->
+        branch >>= return . M.delete p >>= \branch -> guard (not (M.null branch)) >> return branch
+      subTree -> alterBranch (return . (M.insert p subTree) . fromMaybe M.empty) tree
+
+alterNodeWith :: Ord p => (Tree p a -> (b, Tree p a)) -> [p] -> Tree p a -> (b, Tree p a)
+alterNodeWith alt px t = runIdentity $ alterNodeWithM (\t -> return (alt t)) px t
+
+-- | Like 'alterNodeWith' but takes a simple 'ModTree' function that does not return an additional
+-- parameter.
+alterNodeM :: (Monad m, Ord p) => (Tree p a -> m (Tree p a)) -> [p] -> Tree p a -> m (Tree p a)
+alterNodeM alt px t = alterNodeWithM (\t -> alt t >>= \t -> return ((), t)) px t >>= \ (_, t) -> return t
+
+alterNode :: Ord p => (Tree p a -> Tree p a) -> [p] -> Tree p a -> Tree p a
+alterNode alt px t = runIdentity $ alterNodeM (return . alt) px t
+
 -- | If a 'Tree' is 'Void' or a contains a branch that is equivalent to 'Data.Map.empty',
 -- 'Data.Maybe.Nothing' is returned.
 notVoid :: Tree p a -> Maybe (Tree p a)
@@ -111,20 +136,18 @@ notVoid t = case t of
   LeafBranch a b | M.null b -> Just (Leaf a)
   _                         -> Just t
 
--- | Alter a 'Tree', like 'Data.Map.alter', but you must provide functions for two situations: the
--- first is the situation where you have reached the end of the given path and you need to choose
--- whther or not to insert or delete a 'Leaf'. The second is the situation where you have selected
--- the next node in the path, and you need to choose how this node will be effected.
+-- | Alter a 'Tree', but not like 'Data.Map.alter'. First, the given path is used to traverse 'Tree'
+-- nodes, and *every* node traversed is altered by the given 'ModTree' function (not just the node
+-- at the end of the path). At the end of the path the given 'ModLeaf' function is evaluated to
+-- alter the node at that end point. The 'insert', 'update', 'delete', 'graft', and 'prune'
+-- functions are all defined as special cases of this function. If you need a function that works
+-- more like 'Data.Map.alter', use 'alterNode'.
 alter :: Ord p => ModLeaf a -> ModTree p a -> [p] -> Tree p a -> Tree p a
 alter leaf tree px t = fromMaybe Void (loop px (Just t)) where
   loop px t = case px of
     []   -> tree t >>= Just . alterData leaf >>= notVoid
     p:px -> tree t >>= notVoid . alterBranch (subAlt p px)
   subAlt p px m = mplus m (Just M.empty) >>= Just . M.alter (loop px) p
-
--- | Insert a 'Tree' at a given address, overwriting any tree that may already be there.
-insertNode :: Ord p => [p] -> Tree p a -> Tree p a -> Tree p a
-insertNode px t = alter id (const (Just t)) px
 
 -- | Insert a 'Leaf' at a given address.
 insert :: Ord p => [p] -> a -> Tree p a -> Tree p a

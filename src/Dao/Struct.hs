@@ -149,14 +149,7 @@ peek addr = peekAddress [ustr addr]
 
 -- | Modify or write a new a data structure at a given address using the given 'Update' function.
 atAddress :: [Name] -> Update a -> Update a
-atAddress nm doUpdate = case nm of
-  []   -> doUpdate
-  n:nm -> do
-    tree <- fmap (lookupNode [n]) get
-    let (result, updatedTree) = runUpdate (atAddress nm doUpdate) (fromMaybe Void tree)
-    case result of
-      PFail (ref, o) msg -> pvalue $ PFail (n:ref, o) msg
-      result             -> modify (insertNode [n] updatedTree) >> pvalue result
+atAddress nm doUpdate = PTrans $ state $ alterNodeWith (runUpdate doUpdate) nm
 
 -- | Goes to a given address and tries to return the value stored at that node,
 -- 'Dao.Predicate.Backtrack's if nothing is there.

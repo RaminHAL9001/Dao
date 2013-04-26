@@ -54,10 +54,28 @@ class Structured a where
   dataToStruct :: a -> Tree Name Object
   structToData :: Tree Name Object -> PValue UpdateErr a
 
-type Update a = PTrans UpdateErr (State (Tree Name Object)) a
+newtype Update a = Update { updateToPTrans :: PTrans UpdateErr (State (Tree Name Object)) a }
 
+-- | Like 'Control.Monad.StateT.runStateT', evaluates the 'Update' monad as a pure function,
+-- returning a pair containing first the 'Dao.Predicate.PValue' of that was returned and second the
+-- updated 'Dao.Tree.Tree'.
 runUpdate :: Update a -> Tree Name Object -> (PValue UpdateErr a, Tree Name Object)
-runUpdate = runState . runPTrans
+runUpdate upd tree = runState (runPTrans (updateToPTrans upd)) tree
+
+instance Monad Update where
+  (Update fn) >>= mfn = Update (fn >>= updateToPTrans . mfn)
+  return a = Update (return a)
+
+instance Functor Update where
+  fmap fn (Update a) = Update (fmap fn a)
+
+instance MonadPlus Update where
+  mzero = Update mzero
+  mplus (Update a) (Update b) = Update (mplus a b)
+
+instance MonadState (Tree UStr Object) Update where
+  get = Update $ PTrans $ get >>= return . OK
+  put st = Update $ PTrans $ put st >> return (OK ())
 
 -- | Update a data type in the 'Structured' class using an 'Update' monadic function.
 onStruct :: Structured a => Update ig -> a -> PValue UpdateErr a
@@ -79,8 +97,15 @@ instance MonadState (Tree Name Object) (PTrans UpdateErr (State (Tree Name Objec
   get = PTrans (fmap OK get)
   put = PTrans . (fmap OK) . put
 
+-- | Like 'Dao.Predicate.maybeToBacktrack', if the function parameter is 'Nothing' this monad
+-- evaluates to 'Dao.Predicate.Backtrack' (except wrapped in the 'Udpate' monad).
 maybeToUpdate :: Maybe a -> Update a
-maybeToUpdate = pvalue . maybeToBacktrack
+maybeToUpdate = Update . pvalue . maybeToBacktrack
+
+-- | Like 'Dao.Predicate.pvalue', evaluates this monad to the 'Dao.Predicate.PValue' predicate value
+-- you specify and wraps it up in the 'Update' monad.
+updatePValue :: PValue UpdateErr a -> Update a
+updatePValue = Update . pvalue
 
 ----------------------------------------------------------------------------------------------------
 -- $Fundamentals
@@ -102,7 +127,7 @@ with = atAddress . (:[]) . ustr
 -- | Use 'structToData' to construct data from the current node. This function is the counter
 -- operation of 'putData'.
 getData :: Structured a => Update a
-getData = get >>= pvalue . structToData
+getData = get >>= Update . pvalue . structToData
 
 -- | Shortcut for @'with' addr 'getData'@. This function is the counter operation of 'putDataAt'.
 getDataAt :: Structured a => String -> Update a
@@ -149,7 +174,7 @@ peek addr = peekAddress [ustr addr]
 
 -- | Modify or write a new a data structure at a given address using the given 'Update' function.
 atAddress :: [Name] -> Update a -> Update a
-atAddress nm doUpdate = PTrans $ state $ alterNodeWith (runUpdate doUpdate) nm
+atAddress nm doUpdate = Update $ PTrans $ state $ alterNodeWith (runUpdate doUpdate) nm
 
 -- | Goes to a given address and tries to return the value stored at that node,
 -- 'Dao.Predicate.Backtrack's if nothing is there.
@@ -158,7 +183,7 @@ peekAddress addr = atAddress addr this
 
 -- | Report a failure with an 'Dao.Object.Object' value that occurred at the current address.
 updateFailed :: Object -> String -> Update ig
-updateFailed obj msg = pvalue $ PFail ([], obj) (ustr msg)
+updateFailed obj msg = updatePValue $ PFail ([], obj) (ustr msg)
 
 ----------------------------------------------------------------------------------------------------
 -- $Helpers
@@ -259,7 +284,8 @@ instance Structured StructChar where
 instance Structured (Ratio Integer) where
   dataToStruct a = deconstruct (place (OPair (OLong (numerator a), OLong (denominator a))))
   structToData = reconstruct $ this >>= \a -> case a of
-    OPair (a, b) -> pvalue (objToIntegral a >>= \a -> objToIntegral b >>= \b -> return (a % b))
+    OPair (a, b) -> updatePValue $
+      objToIntegral a >>= \a -> objToIntegral b >>= \b -> return (a % b)
 
 instance Structured a => Structured [a] where
   dataToStruct ox = deconstruct $ place (OList (map (OTree . dataToStruct) ox))
@@ -267,7 +293,7 @@ instance Structured a => Structured [a] where
     o <- this
     case o of
       OList ox -> forM ox $ \o -> case o of
-        OTree o -> pvalue (structToData o)
+        OTree o -> updatePValue $ structToData o
         _ -> updateFailed o "was expecting structured data in each list item"
       _ -> updateFailed o "was expecting a list object"
 
@@ -323,8 +349,9 @@ instance (Ord a, Structured a, Structured b) => Structured (StructuredMap a b) w
     case ax of
       OList ax -> do
         ax <- forM ax $ \a -> case a of
-          OPair (OTree a, OTree b) -> liftM2 (,) (pvalue $ structToData a) (pvalue $ structToData b)
-          a -> updateFailed a "structured map item"
+          OPair (OTree a, OTree b) ->
+            liftM2 (,) (updatePValue $ structToData a) (updatePValue $ structToData b)
+          a                        -> updateFailed a "structured map item"
         return (StructuredMap (M.fromList ax))
       _        -> updateFailed ax "list of map items"
 

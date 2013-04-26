@@ -317,7 +317,7 @@ instance Structured Pattern where
         "any"  -> return ObjAnyX
         "many" -> return ObjMany
         "any1" -> return ObjAny1
-        _      -> pvalue Backtrack
+        _      -> updatePValue Backtrack
     , with "equals"  $ liftM  ObjEQ       this
     , with "type"    $ liftM  ObjType     getData
     , with "bounded" $ liftM2 ObjBounded  getData           (getDataAt "to")

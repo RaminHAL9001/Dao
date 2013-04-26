@@ -949,9 +949,17 @@ builtin_convertRef nm = DaoFuncNoDeref $ \ax -> case ax of
           FileRef    _ [a] -> return $ ORef (StaticRef a)
       _ -> procErr $ OList [msg, a]
 
--- queue strings for recursive string execution
+-- queue strings for recursive string execution, does not execute in the current thread.
+builtin_exec :: DaoFunc
+builtin_exec = builtin_exec_do (sendStringsToPrograms False)
+
+-- retrieve matching actions for given strings, execute all actions recursively in the current
+-- thread as though they were ordinary function calls.
 builtin_do :: DaoFunc
-builtin_do = DaoFuncAutoDeref $ \ox -> do
+builtin_do = builtin_exec_do execStringsAgainst
+
+builtin_exec_do :: ([UStr] -> [UStr] -> Exec ()) -> DaoFunc
+builtin_exec_do execFunc = DaoFuncAutoDeref $ \ox -> do
   xunit <- ask
   let currentProg = [programModuleName xunit]
       isProgRef r = case r of
@@ -968,7 +976,7 @@ builtin_do = DaoFuncAutoDeref $ \ox -> do
     _              -> procErr $ OList $
       ostr "require query strings as parameters to \"do\" function, but received" : ox
   execStrings <- requireAllStringArgs execStrings
-  sendStringsToPrograms False selectFiles execStrings
+  execFunc selectFiles execStrings
   return $ Just $ OList (map OString execStrings)
 
 -- Returns the current string query.
@@ -1069,6 +1077,7 @@ initBuiltinFuncs = let o a b = (ustr a, b) in M.fromList $
   [ o "print"   builtin_print
   , o "call"    builtin_call
   , o "do"      builtin_do
+  , o "exec"    builtin_exec
   , o "doing"   builtin_doing
   , o "join"    builtin_join
   , o "global"  $ builtin_convertRef "global"
@@ -1527,6 +1536,7 @@ programFromSource theNewGlobalTable src xunit = do
   let dx = concatMap toInterm (directives src)
   evalStateT (importsLoop dx) (xunit{parentRuntime=runtime})
   where
+  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     importsLoop dx = do
       runtime <- gets parentRuntime
       case dx of
@@ -1543,9 +1553,12 @@ programFromSource theNewGlobalTable src xunit = do
               modify $ \xunit ->
                 xunit{importsTable = M.alter (flip mplus (Just Nothing)) nm (importsTable xunit)}
               importsLoop dx
+      --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
         dx -> scriptLoop dx
+  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     scriptLoop dx = case dx of
       []                                                  -> fmap FlowOK get
+      --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
       TopFunc       name       argList    script loc : dx -> do
         xunit  <- get
         result <- mkArgvExe argList script
@@ -1555,11 +1568,13 @@ programFromSource theNewGlobalTable src xunit = do
             put (xunit{topLevelFuncs = M.alter alt name (topLevelFuncs xunit)})
           FlowErr err -> return () -- errors are handled in the 'mkArgvExe' function
         scriptLoop dx
+      --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
       TopScript     expr                         loc : dx -> do
         modify $ \xunit ->
           let cs = constructScript xunit
           in  xunit{constructScript = if null cs then [[expr]] else [head cs ++ [expr]]}
         scriptLoop dx
+      --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
       TopLambdaExpr ruleOrPat  argList    script loc : dx -> case ruleOrPat of
         FuncExprType -> pat
         PatExprType  -> pat
@@ -1582,6 +1597,7 @@ programFromSource theNewGlobalTable src xunit = do
                 lift $ dModifyMVar_ xloc rules (\patTree -> return (foldl fol patTree argv))
               FlowErr _ -> return () -- errors are handled in the 'mkArgvExe' function.
             scriptLoop dx
+      --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
       EventExpr     evtType    script            loc : dx -> do
         exe <- lift $ setupExecutable script
         case evtType of
@@ -1590,10 +1606,12 @@ programFromSource theNewGlobalTable src xunit = do
           ExitExprType  -> modify $ \xunit ->
             xunit{destructScript = destructScript xunit ++ [script]}
         scriptLoop dx
+      --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
       Attribute     kindOfAttr attribName        loc : _  -> return $ FlowErr $ OList $
         [ OString kindOfAttr, OString attribName
         , ostr "statement is not at the top of the source file"
         ]
+  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     mkExe script = lift $ setupExecutable (script)
     mkArgvExe argList script = do
       argv <- lift $ flip runExec xunit $ mapM argsToObjPat $ argList
@@ -1608,26 +1626,6 @@ programFromSource theNewGlobalTable src xunit = do
           lift $ dModifyMVar_ xloc (uncaughtErrors xunit) (\ex -> return (ex++[err]))
           return (FlowErr err)
         FlowReturn _ -> error "argsToObjPat returned 'FlowReturn' instead of '(FlowOK [Pattern])'"
-
--- | When the 'programFromSource' is scanning through a 'Dao.Object.AST_SourceCode' object, it first
--- constructs an 'IntermediateProgram', which contains no 'Dao.Debug.DMVar's. Once all the data
--- structures are in place, a 'Dao.Object.CachedProgram' is constructed from this intermediate
--- representation.
-data IntermediateProgram
-  = IntermediateProgram
-    { inmpg_programImports    :: [UStr]
-    , inmpg_constructScript   :: [[ScriptExpr]]
-    , inmpg_destructScript    :: [[ScriptExpr]]
-    , inmpg_requiredBuiltins  :: [Name]
-    , inmpg_programAttributes :: M.Map Name Name
-    , inmpg_preExec           :: [Executable]
-    , inmpg_postExec          :: [Executable]
-    , inmpg_programTokenizer  :: Tokenizer
-    , inmpg_programComparator :: CompareToken
-    , inmpg_ruleSet           :: PatternTree [Executable]
-    -- , inmpg_globalData        :: T.Tree Name Object
-    , inmpg_topLevelFuncs     :: M.Map Name [Subroutine]
-    }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1687,12 +1685,18 @@ forkExecAction xunit act = dFork forkIO xloc "forkExecAction" $ do
 -- | For every 'Dao.Object.Action' in the 'Dao.Object.ActionGroup', evaluate that
 -- 'Dao.Object.Action' in a new thread in the 'Task' associated with the 'Dao.Object.ExecUnit' of
 -- the 'Dao.Object.ActionGroup'.
-execActionGroup :: ActionGroup -> Run ()
-execActionGroup actgrp = dStack xloc ("execActionGroup ("++show (length (getActionList actgrp))++" items)") $ do
+forkActionGroup :: ActionGroup -> Run ()
+forkActionGroup actgrp = dStack xloc ("forkActionGroup ("++show (length (getActionList actgrp))++" items)") $ do
   let xunit = actionExecUnit actgrp
       task  = taskForActions xunit
   taskRegisterThreads task (forM (getActionList actgrp) (forkExecAction (actionExecUnit actgrp)))
   taskWaitThreadLoop task >>= liftIO . evaluate
+
+-- | For every 'Dao.Object.Action' in the 'Dao.Object.ActionGroup', evaluate that
+-- 'Dao.Object.Action' in a the current thread but in using the 'Dao.Object.ExecUnit' of the
+-- given 'Dao.Object.ActionGroup'.
+execActionGroup :: ActionGroup -> Run ()
+execActionGroup actgrp = mapM_ (execAction (actionExecUnit actgrp)) (getActionList actgrp)
 
 -- | This is the most important algorithm of the Dao system, in that it matches strings to all
 -- rule-patterns in the program that is associated with the 'Dao.Object.ExecUnit', and it dispatches
@@ -1719,7 +1723,7 @@ execInputStringsLoop xunit = dStack xloc "execInputStringsLoop" $ do
           loop
 
 waitAll :: Run ActionGroup -> Run ()
-waitAll getActionGroup = getActionGroup >>= execActionGroup
+waitAll getActionGroup = getActionGroup >>= forkActionGroup
 
 -- | Given an input string, and a program, return all patterns and associated match results and
 -- actions that matched the input string, but do not execute the actions. This is done by tokenizing
@@ -1837,22 +1841,20 @@ daoShutdown = do
 -- 'Runtime') will be returned. Pass @'Data.Maybe.Just' 'Dao.Evaluator.ExecUnit'@ to allow
 -- 'PrivateType' functions to also be selected, however only modules imported by the program
 -- associated with that 'ExecUnit' are allowed to be selected.
-selectModules :: Maybe ExecUnit -> [Name] -> Run [File]
-selectModules xunit names = dStack xloc "selectModules" $ ask >>= \runtime -> case names of
-  []    -> do
-    ax <- dReadMVar xloc (pathIndex runtime)
-    dMessage xloc ("selected modules: "++intercalate ", " (map show (M.keys ax)))
-    return (map ProgramFile (concatMap isProgramFile (M.elems ax)))
-  names -> do
-    pathTab <- dReadMVar xloc (pathIndex runtime)
-    let set msg           = M.fromList . map (\mod -> (mod, error msg))
-        request           = set "(selectModules: request files)" names
-    imports <- case xunit of
-      Nothing    -> return M.empty
-      Just xunit -> return $ set "(selectModules: imported files)" $ programImports xunit
-    ax <- return $ M.intersection pathTab request
-    dMessage xloc ("selected modules:\n"++unlines (map show (M.keys ax)))
-    return $ M.elems ax
+selectModules :: Maybe ExecUnit -> [Name] -> Run [ExecUnit]
+selectModules xunit names = dStack xloc "selectModules" $ do
+  runtime <- ask
+  ax <- case names of
+    []    -> dReadMVar xloc (pathIndex runtime)
+    names -> do
+      pathTab <- dReadMVar xloc (pathIndex runtime)
+      let set msg           = M.fromList . map (\mod -> (mod, error msg))
+          request           = set "(selectModules: request files)" names
+      imports <- case xunit of
+        Nothing    -> return M.empty
+        Just xunit -> return $ set "(selectModules: imported files)" $ programImports xunit
+      return (M.intersection pathTab request)
+  return (M.elems ax >>= isProgramFile)
 
 -- | In the current thread, and using the given 'Runtime' environment, parse an input string as
 -- 'Dao.Object.Script' and then evaluate it. This is used for interactive evaluation. The parser
@@ -1866,6 +1868,17 @@ evalScriptString xunit instr = dStack xloc "evalScriptString" $
       Backtrack     -> error "cannot parse expression"
       PFail tok msg -> error ("error: "++uchars msg++show tok)
       OK expr       -> concatMap (toInterm . unComment) expr
+
+-- | This is the simplest form of string execution, everything happens in the current thread, no
+-- "BEGIN" or "END" scripts are executed. Simply specify a list of programs (as file paths) and a
+-- list of strings to be executed against each program.
+execStringsAgainst :: [UStr] -> [UStr] -> Exec ()
+execStringsAgainst selectPrograms execStrings = do
+  xunit <- ask
+  otherXUnits <- inExecEvalRun (selectModules (Just xunit) selectPrograms)
+  forM_ otherXUnits $ \xunit ->
+    forM_ execStrings $ \execString ->
+      inExecEvalRun (makeActionsForQuery execString xunit >>= execActionGroup)
 
 ----------------------------------------------------------------------------------------------------
 -- src/Dao/Files.hs

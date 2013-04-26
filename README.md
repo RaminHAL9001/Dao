@@ -1,4 +1,4 @@
-The Dao System
+# The Dao System
 Copyright (C) 2008-2013, Ramin Honary, all rights reserved.
 
 THIS PROJECT IS NOT YET COMPLETE. It builds and runs, but it is still
@@ -46,8 +46,7 @@ natural human language. The Dao system aspires to become the testing
 ground for a new wave of effective, practical, natural language user
 interfaces.
 
-        HOW IT WORKS
-
+## How it works
 The Dao scripting language is designed to be similar to JavaScript,
 which is probably the most popular language in common use today (at the
 time of this writing).
@@ -56,9 +55,10 @@ The Dao runtime is vaguely similar to the UNIX "AWK" language. However,
 the Dao language provides a much more feature-rich set of built-in data
 types and functionality as compared to AWK, notably the ability to
 execute rules recursively in the same process. The Dao language makes
-use of "Patterns" rather than POSIX regular expressions. Patterns are
-inspired by UNIX "glob" expressions, and are intended to be used more
-for matching against natural language input.
+use of patterns called "globs" rather than POSIX regular expressions.
+These glob patterns are so-called because they are inspired by UNIX
+"glob" expressions, but in Dao they are more suitable for matching
+against natural language input.
 
 Patterns are optimized for faster matching of input text. Every action
 associated with a matching pattern is executed in its own thread, and
@@ -88,14 +88,33 @@ for this, not JSON. These document files are informally called "idea"
 files because they allow the Dao system to store knowledge, and
 transmit it to other Dao installations.
 
-How this relates to artificial intelligence is that the working memory
-of a Dao program forms an ontology. Functions can be defined to
+### Dao Foriegn Functions
+The Dao foreign function interface provides to a Haskell programer a
+method to install your own functions into a running Dao language
+interpreter. Your Haskell data types can be converted to and from
+intermediate tree data structures in the "Dao.Tree" module using the
+'Dao.Struct.Structured' class, which requires every field of a Haskell
+data type be named and updatable with a string. These strings are used
+by the Dao language interpreter to update your Haskell data structures.
+
+The Dao language intpreter borrows from the C language the concept of a
+`struct`, although internally, a Dao struct is actually a tree, and the Dao
+language has a similar syntax for reading or writing to fields of these
+structs, which is similar to the syntax of how JavaScript modifies the
+DOM tree:
+```c
+	person.home.email = "first.last@mail.com";
+```
+
+### Artificial Intelligence?
+How this all relates to artificial intelligence is that the working
+memory of a Dao program forms an ontology. Functions can be defined to
 manipulate the working memory in object-oriented fashion. The patterns
 that can match input queries formulate the axioms of the system. When an
 input query is executed, the Dao system can use these axioms to perform
 logical reasoning on the ontological objects in its working memory.
 
-        A SIMPLE EXAMPLE, DAO COMPARED TO AWK
+## A simple example, Dao compared to AWK
 
 To be clear, the purpose of Dao is completely different than the purpose
 of AWK. However, the Dao runtime uses a similar pattern matching and
@@ -103,6 +122,7 @@ execution algorithm to that of AWK, so comparing Dao to AWK can be
 instructive.
 
 Observe the following AWK program:
+```awk
 	# example.awk
 	/^ *put.*in/ {
 		match($0, /^put *(.*) *in *(.*) *$/, matched);
@@ -116,36 +136,40 @@ Observe the following AWK program:
 		user_name = matched[1];
 		print("> Hello, " user_name "!");
 	}
+```
 
 You can then interact with the AWK program like so:
+```console
 	% awk -f example.awk
 	my name is Dave
 	> Hello, Dave!
 	put the data into the spreadsheet
 	> what to put: the data
 	> where to put it: the spreadsheet
+```
 
 AWK was not designed with natural language in mind, so it is ill-suited
 to natural language systems:
-1.  POSIX regular expressions are not designed to match
+* POSIX regular expressions are not designed to match
 natural language input.
-    *	You need to place a Kleene-star after every space, and and
+    1.	You need to place a Kleene-star after every space, and and
 	capture "wildcards" in parentheses.
-    *	Typing mistakes, like writing "naem" instead of "name" would
+    2.	Typing mistakes, like writing "naem" instead of "name" would
 	fail to behave as expected.
-2.  It is necessary to build the "matched" array with a separate call to
+* It is necessary to build the "matched" array with a separate call to
 the "match()" built-in function.
-3.  Every rule is matched and executed in the order they are given in the
+* Every rule is matched and executed in the order they are given in the
 script. There is no concurrency.
-4.  All variables are global.
-5.  There is no facility to serialize the state of the program and store
+* All variables are global.
+* There is no facility to serialize the state of the program and store
 it to, or reload it from, the file system.
-6.  There is no function to force a string into the standard input, so
+* There is no function to force a string into the standard input, so
 recursive pattern matching is not possible.
 
 The Dao language and interpreter is designed for natural language
 understanding, and addresses all of the above mentioned shortcomings.
 The same program written in the Dao language would look like this:
+```
 	rule "put $* in $*" {
 		what.to.put = $1;
 		print("> what to put: " + $1);
@@ -156,6 +180,7 @@ The same program written in the Dao language would look like this:
 		user.name = $1;
 		print("> Hello, " + $1);
 	}
+```
 
 Dao's language is a bit more concise, both for patterns and for the
 scripted actions. Dao provides ways to make pattern matching more
@@ -166,8 +191,7 @@ account contextual clues to make more accurate guesses on how to rectify
 typing mistakes, and to facilitate gathering of statistical information
 on input strings to better predict what an end user will type.
 
-------------------------------------------------------------------------
-
+## History
 The Dao System is the result of my masters thesis, "Natural Language
 Understanding Systems using the Dao Programming Environment" published
 at the Tokyo Institute of Technology in 2007. The first public release

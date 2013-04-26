@@ -1,5 +1,9 @@
 TODO:
 
+*	There is an infinite loop in the "Dao.Strcut" module caused on certain occasions where the
+'Dao.Struct.atAddress' is called. I've tracked the problem down to 'Dao.Object.AST.AST_Assign'
+expressions, although I am still not clear as to why it is looping infinitely.
+
 *	Really need to modify the parser so variable scoping is parsed with a higher presecedence than
 arithmetic or assignment operators. As of right now, expressions do not parse as one would expect. I
 can work around this issue by putting parentheses around qualified variables:

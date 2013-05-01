@@ -43,6 +43,8 @@ import           Control.Monad
 import           Control.Monad.State
 import           Control.Monad.Error
 
+import Debug.Trace
+
 type UpdateErr = ([Name], Object)
 
 -- | Can be used with 'Dao.Predicate.fmapFailed' to get an error message expressed as an
@@ -125,9 +127,16 @@ with :: String -> Update a -> Update a
 with = atAddress . (:[]) . ustr
 
 -- | Use 'structToData' to construct data from the current node. This function is the counter
--- operation of 'putData'.
+-- operation of 'putData'. 'Dao.Predicate.Backtrack's if the current node is 'Dao.Tree.Void'.
 getData :: Structured a => Update a
-getData = get >>= Update . pvalue . structToData
+getData = get >>= \tree -> case tree of
+  Void -> mzero
+  tree -> updatePValue (structToData tree)
+
+-- | Like 'getData' but takes a default value as a parameter, and if the current 'Dao.Tree.Tree'
+-- node returned by 'Control.Monad.State.get' is 'Dao.Tree.Void', the default parameter is returned.
+getOptional :: Structured a => a -> Update a
+getOptional opt = mplus getData (return opt)
 
 -- | Shortcut for @'with' addr 'getData'@. This function is the counter operation of 'putDataAt'.
 getDataAt :: Structured a => String -> Update a

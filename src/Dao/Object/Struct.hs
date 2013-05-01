@@ -54,6 +54,8 @@ import qualified Data.IntSet as IS
 
 import qualified Data.ByteString.Lazy as B
 
+import Debug.Trace
+
 ----------------------------------------------------------------------------------------------------
 
 allStrings :: [Object] -> PValue UpdateErr [UStr]
@@ -152,9 +154,9 @@ instance Structured Location where
               with "line"   (place $ OWord $ endingLine     loc)
               with "column" (place $ OWord $ fromIntegral $ endingColumn   loc)
               with "char"   (place $ OWord $ endingChar     loc)
-  structToData = reconstruct $ do
+  structToData = reconstruct $ flip mplus (return LocationUnknown) $ do
     let getPos = liftM3 (,,) (getDataAt "line") (getDataAt "column") (getDataAt "char")
-    (a,b,c) <- mplus (with "from" getPos) (updateFailed ONull "location data")
+    (a,b,c) <- with "from" getPos
     flip mplus (return (Location a b c a b c)) $ do
       (d,e,f) <- getPos
       return (Location a b c d e f)
@@ -313,7 +315,7 @@ instance Structured Pattern where
     ObjFailIf  a b -> with "require" (putDataAt "message" a >> putData b)
     ObjNot     a   -> with "not" (putData a)
   structToData = reconstruct $ msum $
-    [ getStringData "pattern" >>= \a -> case a of
+    [ getStringData "src/Dao/Object/Struct.hs:318:pattern" >>= \a -> case a of
         "any"  -> return ObjAnyX
         "many" -> return ObjMany
         "any1" -> return ObjAny1
@@ -378,6 +380,7 @@ instance Structured AST_TopLevel where
     , with "lambda"    $ liftM4 AST_TopLambda (getDataAt "type") getData (getDataAt "script") getData
     , with "event"     $ liftM3 AST_Event (getDataAt "type") (getDataAt "script") getData
     , with "comment"   $ liftM AST_TopComment getData
+    , updateFailed ONull "top-level directive"
     ]
 
 putIntermediate :: (Intermediate obj ast, Structured ast) => String -> obj -> T.Tree Name Object

@@ -34,6 +34,8 @@ import           Data.Binary
 import qualified Data.Map as M
 import           Data.Word
 
+import Debug.Trace
+
 ----------------------------------------------------------------------------------------------------
 
 data Tree p a
@@ -105,16 +107,16 @@ alterBranch alt t = fromMaybe Void $ case t of
 -- | Alter a 'Tree' node at a given path with a function that returns a secondary value. This
 -- function is designed to be used with 'Control.Monad.State.StateT'.
 alterNodeWithM :: (Monad m, Ord p) => (Tree p a -> m (b, Tree p a)) -> [p] -> Tree p a -> m (b, Tree p a)
-alterNodeWithM alt px tree = case px of
-  []   -> alt tree
-  p:px -> case getBranch tree >>= M.lookup p of
-    Nothing      -> alterNodeWithM alt px Void    >>= altSub p
-    Just subTree -> alterNodeWithM alt px subTree >>= altSub p
-  where
-    altSub p (result, subTree) = return $ (,) result $ case subTree of
-      Void    -> flip alterBranch tree $ \branch ->
-        branch >>= return . M.delete p >>= \branch -> guard (not (M.null branch)) >> return branch
-      subTree -> alterBranch (return . (M.insert p subTree) . fromMaybe M.empty) tree
+alterNodeWithM alt px tree = loop 0 alt px tree where
+  loop i alt px tree = case px of
+    []   -> alt tree
+    p:px -> case getBranch tree >>= M.lookup p of
+      Nothing      -> loop (i+1) alt px Void    >>= altSub i p
+      Just subTree -> loop (i+1) alt px subTree >>= altSub i p
+  altSub i p (result, subTree) = return $ (,) result $ case subTree of
+    Void    -> flip alterBranch tree $ \branch ->
+      branch >>= return . M.delete p >>= \branch -> guard (not (M.null branch)) >> return branch
+    subTree -> alterBranch (return . (M.insert p subTree) . fromMaybe M.empty) tree
 
 alterNodeWith :: Ord p => (Tree p a -> (b, Tree p a)) -> [p] -> Tree p a -> (b, Tree p a)
 alterNodeWith alt px t = runIdentity $ alterNodeWithM (\t -> return (alt t)) px t

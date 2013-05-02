@@ -31,7 +31,7 @@ listfile = grep -v '^[[:space:]]*$(hash).*$$' $1
 ####################################################################################################
 # The default target
 
-default: all
+default: dao
 
 all:  dao  debug/test
 
@@ -116,4 +116,7 @@ GHC_COMPILE_DEBUG := $(GHC_COMPILE) -rtsopts -with-rtsopts='-M8G -N4'
 
 ./debug/test-prof: $(DEBUG_DEPENDS) ghc-build-opts.mk
 	$(GHC_COMPILE_DEBUG) -prof $(DEBUG_DEPENDS) -o ./debug/test-prof
+
+./src/Dao/NewParser.o: src/Dao/NewParser.hs
+	$(GHC_COMPILE) -i./src Dao.NewParser
 

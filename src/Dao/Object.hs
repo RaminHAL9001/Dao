@@ -452,8 +452,8 @@ data ArithOp1
   = REF | DEREF | INVB  | NOT | NEG | GLDOT -- ^ unary
   deriving (Eq, Ord, Enum, Ix, Typeable)
 
-allArithOp1Chars = "$@~!-."
-allArithOp1Strs = " $ @ ~ - ! . "
+allArithOp1Chars = "$@~!-"
+allArithOp1Strs = " $ @ ~ - ! "
 
 instance Bounded ArithOp1 where {minBound = REF; maxBound = NEG}
 
@@ -476,8 +476,8 @@ data ArithOp2
   | GTN   | LTN   | GTEQ  | LTEQ
   deriving (Eq, Ord, Enum, Ix, Typeable)
 
-allArithOp2Chars = "+-*/%<>|"
-allArithOp2Strs = " + - * / ** -> . || && == != | & ^ << >> < > <= => "
+allArithOp2Chars = "+-*/%<>^&|."
+allArithOp2Strs = " + - * / % ** -> . || && == != | & ^ << >> < > <= => "
 
 instance Show ArithOp2 where
   show a = case a of

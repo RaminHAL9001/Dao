@@ -81,14 +81,14 @@ import           System.IO
 -- reporting errors about types not instantiating the 'Prelude.Show' class.
 newtype Dao a = Dao { daoUnwrap :: a }
 instance Typeable a => Show     (Dao a) where { show (Dao a)            = show (typeOf a) }
-instance Eq a     => Eq         (Dao a) where { (Dao a)==(Dao b)        = a==b            }
-instance Ord a    => Ord        (Dao a) where { compare (Dao a) (Dao b) = compare a b     }
-instance             Functor     Dao    where { fmap fn (Dao a)         = Dao (fn a)      }
-instance Monoid a => Monoid     (Dao a) where
-  mempty              = Dao mempty
+instance Eq a       => Eq       (Dao a) where { (Dao a)==(Dao b)        = a==b            }
+instance Ord a      => Ord      (Dao a) where { compare (Dao a) (Dao b) = compare a b     }
+instance               Functor   Dao    where { fmap fn (Dao a)         = Dao (fn a)      }
+instance Monoid a   => Monoid   (Dao a) where
+  mempty                  = Dao mempty
   mappend (Dao a) (Dao b) = Dao (mappend a b)
-instance             Applicative Dao    where
-  pure                = Dao
+instance               Applicative Dao  where
+  pure                    = Dao
   (Dao fn) <*> (Dao a)    = Dao (fn a)
 
 randMaxDepth :: Int

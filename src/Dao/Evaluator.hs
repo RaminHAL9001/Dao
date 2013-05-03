@@ -125,9 +125,12 @@ initExecUnit modName initGlobalData = do
     , globalData        = initGlobalData
     }
 
-setupExecutable :: HasDebugRef r => [ScriptExpr] -> ReaderT r IO Executable
+setupExecutable :: [ScriptExpr] -> Exec Executable
 setupExecutable scrp = do
-  staticRsrc <- lift (newIORef M.empty)
+  -- do meta-expression evaluation right here and now ('Dao.Object.MetaEvalExpr')
+  scrp <- mapM evalMetaExpr scrp
+  -- create the 'Data.IORef.IORef' for storing static variables
+  staticRsrc <- liftIO (newIORef M.empty)
   return $
     Executable
     { origSourceCode = scrp
@@ -1271,6 +1274,27 @@ execScriptExpr script = case script of
         [ostr "target of \"with\" statement evaluates to a void"]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
+-- | Runs through a 'Dao.Object.ScriptExpr' and any 'Dao.Object.ObjectExpr' inside of it evaluating
+-- every 'Dao.Object.MetaEvalExpr' and replacing it with the evaluation result.
+evalMetaExpr :: ScriptExpr -> Exec ScriptExpr
+evalMetaExpr script = case script of
+  EvalObject   o             loc -> liftM2 EvalObject   (me o)                       (r loc)
+  IfThenElse   o    thn els  loc -> liftM4 IfThenElse   (me o)   (ms thn)  (ms els)  (r loc)
+  TryCatch     try  nm  ctch loc -> liftM4 TryCatch     (ms try) (r nm)    (ms ctch) (r loc)
+  ForLoop      nm   o   loop loc -> liftM4 ForLoop      (r nm)   (me o)    (ms loop) (r loc)
+  WhileLoop    o    loop     loc -> liftM3 WhileLoop    (me o)   (ms loop)           (r loc)
+  ContinueExpr bool o        loc -> liftM3 ContinueExpr (r bool) (me o)              (r loc)
+  ReturnExpr   bool o        loc -> liftM3 ReturnExpr   (r bool) (me o)              (r loc)
+  WithDoc      o    loop     loc -> liftM3 WithDoc      (me o)   (ms loop)           (r loc)
+  where
+    r = return -- alias for return
+    me o = case o of -- meta-eval an object
+      MetaEvalExpr o loc -> evalObjectExprDerefWithLoc o >>= \ (loc, o) -> return $ case o of
+        Nothing -> VoidExpr
+        Just  o -> Literal o loc
+      o                  -> return o
+    ms = mapM evalMetaExpr -- meta-eval a script
+
 -- | 'Dao.Object.ObjectExpr's can be evaluated anywhere in a 'Dao.Object.Script'. However, a
 -- 'Dao.Object.ObjectExpr' is evaluated as a lone command expression, and not assigned to any
 -- variables, and do not have any other side-effects, then evaluating an object is a no-op. This
@@ -1478,7 +1502,7 @@ evalObjectExprWithLoc obj = case obj of
 
 evalLambdaExpr :: LambdaExprType -> [ObjectExpr] -> [ScriptExpr] -> Exec Object
 evalLambdaExpr typ argv code = do
-  exe <- lift (setupExecutable (code))
+  exe <- setupExecutable (code)
   let convArgv fn = mapM fn argv
   case typ of
     FuncExprType -> do
@@ -1537,6 +1561,7 @@ programFromSource theNewGlobalTable src xunit = do
   evalStateT (importsLoop dx) (xunit{parentRuntime=runtime})
   where
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    importsLoop :: [TopLevelExpr] -> StateT ExecUnit (ReaderT Runtime IO) (FlowCtrl ExecUnit)
     importsLoop dx = do
       runtime <- gets parentRuntime
       case dx of
@@ -1556,16 +1581,16 @@ programFromSource theNewGlobalTable src xunit = do
       --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
         dx -> scriptLoop dx
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    scriptLoop :: [TopLevelExpr] -> StateT ExecUnit (ReaderT Runtime IO) (FlowCtrl ExecUnit)
     scriptLoop dx = case dx of
       []                                                  -> fmap FlowOK get
       --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
       TopFunc       name       argList    script loc : dx -> do
-        xunit  <- get
         result <- mkArgvExe argList script
         case result of
           FlowOK sub -> do
             let alt funcs = mplus (fmap (++[sub]) funcs) (return [sub])
-            put (xunit{topLevelFuncs = M.alter alt name (topLevelFuncs xunit)})
+            modify (\xunit -> xunit{topLevelFuncs = M.alter alt name (topLevelFuncs xunit)})
           FlowErr err -> return () -- errors are handled in the 'mkArgvExe' function
         scriptLoop dx
       --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
@@ -1587,22 +1612,27 @@ programFromSource theNewGlobalTable src xunit = do
             scriptLoop dx
           rule = do
             exe  <- mkExe script
-            argv <- lift $ flip runExec xunit $ mapM argsToGlobExpr argList
-            case argv of
-              FlowOK argv -> do
+            argv <- lift $ runExec (mapM argsToGlobExpr argList) xunit 
+            case liftM2 (,) argv exe of
+              FlowOK (argv, exe) -> do
                 rules <- gets ruleSet
                 let fol tre pat = T.merge T.union (++) tre (toTree pat [exe])
                 lift $ dModifyMVar_ xloc rules (\patTree -> return (foldl fol patTree argv))
-              FlowErr _ -> return () -- errors are handled in the 'mkArgvExe' function.
+              FlowErr err -> void (storeInitErr err)
             scriptLoop dx
       --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
       EventExpr     evtType    script            loc : dx -> do
-        exe <- lift $ setupExecutable script
-        case evtType of
-          BeginExprType -> modify $ \xunit -> xunit{preExec  = preExec  xunit ++ [exe]}
-          EndExprType   -> modify $ \xunit -> xunit{postExec = postExec xunit ++ [exe]}
-          ExitExprType  -> modify $ \xunit ->
-            xunit{destructScript = destructScript xunit ++ script}
+        xunit <- get
+        exe   <- lift (runExec (setupExecutable script) xunit)
+        case exe of
+          FlowOK exe ->
+            case evtType of
+              BeginExprType -> modify $ \xunit -> xunit{preExec  = preExec  xunit ++ [exe]}
+              EndExprType   -> modify $ \xunit -> xunit{postExec = postExec xunit ++ [exe]}
+              ExitExprType  -> modify $ \xunit ->
+                xunit{destructScript = destructScript xunit ++ script}
+          FlowReturn obj -> throwFailure obj
+          FlowErr    err -> void (storeInitErr err)
         scriptLoop dx
       --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
       Attribute     kindOfAttr attribName        loc : _  -> return $ FlowErr $ OList $
@@ -1610,20 +1640,28 @@ programFromSource theNewGlobalTable src xunit = do
         , ostr "statement is not at the top of the source file"
         ]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    mkExe script = lift $ setupExecutable (script)
+    mkExe script = get >>= lift . runExec (setupExecutable (script))
     mkArgvExe argList script = do
       argv <- lift $ flip runExec xunit $ mapM argsToObjPat $ argList
       exe  <- mkExe script
-      case argv of
-        FlowOK argv  -> return $ FlowOK $
+      case liftM2 (,) argv exe of
+        FlowOK (argv, exe)  -> return $ FlowOK $
           Subroutine
           { argsPattern      = argv
           , getSubExecutable = exe
           }
-        FlowErr err  -> do
-          lift $ dModifyMVar_ xloc (uncaughtErrors xunit) (\ex -> return (ex++[err]))
-          return (FlowErr err)
-        FlowReturn _ -> error "argsToObjPat returned 'FlowReturn' instead of '(FlowOK [Pattern])'"
+        FlowErr    err -> storeInitErr err
+        FlowReturn obj -> throwFailure obj
+    storeInitErr err = do
+      lift $ dModifyMVar_ xloc (uncaughtErrors xunit) (\ex -> return (ex++[err]))
+      return (FlowErr err)
+    throwFailure :: Maybe Object -> e
+    throwFailure obj = error $ concat $
+      [ "argsToObjPat returned 'FlowReturn' instead of '(FlowOK [Pattern])'\n"
+      , case obj of
+          Nothing  -> ""
+          Just obj -> "Object returned:\n" ++ prettyShow obj
+      ]
 
 ----------------------------------------------------------------------------------------------------
 

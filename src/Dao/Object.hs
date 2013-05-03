@@ -901,8 +901,8 @@ data ExecUnit
     ---- used to be elements of Program ----
     , programModuleName :: UPath
     , programImports    :: [UPath]
-    , constructScript   :: [[ScriptExpr]]
-    , destructScript    :: [[ScriptExpr]]
+    , constructScript   :: [ScriptExpr]
+    , destructScript    :: [ScriptExpr]
     , requiredBuiltins  :: [Name]
     , programAttributes :: M.Map Name Name
     , preExec     :: [Executable]

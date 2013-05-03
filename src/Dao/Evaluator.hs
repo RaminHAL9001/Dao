@@ -1536,7 +1536,7 @@ programFromSource theNewGlobalTable src xunit = do
   let dx = concatMap toInterm (directives src)
   evalStateT (importsLoop dx) (xunit{parentRuntime=runtime})
   where
-  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     importsLoop dx = do
       runtime <- gets parentRuntime
       case dx of
@@ -1555,7 +1555,7 @@ programFromSource theNewGlobalTable src xunit = do
               importsLoop dx
       --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
         dx -> scriptLoop dx
-  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     scriptLoop dx = case dx of
       []                                                  -> fmap FlowOK get
       --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
@@ -1569,10 +1569,8 @@ programFromSource theNewGlobalTable src xunit = do
           FlowErr err -> return () -- errors are handled in the 'mkArgvExe' function
         scriptLoop dx
       --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-      TopScript     expr                         loc : dx -> do
-        modify $ \xunit ->
-          let cs = constructScript xunit
-          in  xunit{constructScript = if null cs then [[expr]] else [head cs ++ [expr]]}
+      TopScript     script                       loc : dx -> do
+        modify (\xunit -> xunit{constructScript = constructScript xunit ++ [script]})
         scriptLoop dx
       --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
       TopLambdaExpr ruleOrPat  argList    script loc : dx -> case ruleOrPat of
@@ -1604,14 +1602,14 @@ programFromSource theNewGlobalTable src xunit = do
           BeginExprType -> modify $ \xunit -> xunit{preExec  = preExec  xunit ++ [exe]}
           EndExprType   -> modify $ \xunit -> xunit{postExec = postExec xunit ++ [exe]}
           ExitExprType  -> modify $ \xunit ->
-            xunit{destructScript = destructScript xunit ++ [script]}
+            xunit{destructScript = destructScript xunit ++ script}
         scriptLoop dx
       --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
       Attribute     kindOfAttr attribName        loc : _  -> return $ FlowErr $ OList $
         [ OString kindOfAttr, OString attribName
         , ostr "statement is not at the top of the source file"
         ]
-  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     mkExe script = lift $ setupExecutable (script)
     mkArgvExe argList script = do
       argv <- lift $ flip runExec xunit $ mapM argsToObjPat $ argList
@@ -2024,7 +2022,7 @@ unloadFilePath path = do
 -- | When a program is loaded, and when it is released, any block of Dao code in the source script
 -- that is denoted with the @SETUP@ or @TAKEDOWN@ rules will be executed. This function performs
 -- that execution in the current thread.
-setupOrTakedown :: (ExecUnit -> [[ScriptExpr]]) -> ExecUnit -> Run ()
+setupOrTakedown :: (ExecUnit -> [ScriptExpr]) -> ExecUnit -> Run ()
 setupOrTakedown select xunit = ask >>= \runtime ->
-  forM_ (select xunit) $ \block -> runExec (execGuardBlock block) xunit >>= lift . evaluate
+  void (runExec (execGuardBlock (select xunit)) xunit) >>= lift . evaluate
 

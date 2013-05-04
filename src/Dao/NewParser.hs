@@ -48,25 +48,19 @@ import           Data.List
 -- integer value (actually a 'Data.Word.Word') for how many columns a tab takes to give more
 -- accurate column counts.
 lex :: Word -> String -> PValue L.Location [Line]
-lex tablen input = fmap (cluster 1 []) (lexLoop 1 0 [] input) where
+lex tablen input = fmap (cluster 1 []) (lexLoop 1 1 [] input) where
   lexLoop lineNum colNum toks str = case nextLex str of
     OK (tok, str) ->
-      let tokUStr = tokToUStr tok
-          countNLs (lineInc, _) line = (lineInc+1, line)
-          (lineInc, finalLine) = foldl countNLs (0, "") (lines $ uchars $ tokUStr)
-          countCols count c = count + (if c=='\t' then tablen else 1)
-          latestCol  = foldl countCols 0 finalLine
-          (newLineNum, newColNum) =
-            if mightHaveNLorTabs tok
-              then  (lineNum + lineInc , latestCol + (if lineInc>0 then 0 else colNum))
-              else  (lineNum, colNum + fromIntegral (ulength tokUStr))
-          toks' = toks ++ [(newLineNum, newColNum, tok)]
+      let (lns, cols) = countNLs 0 0 $ uchars $ tokToUStr tok
+          newLineNum = lns + lineNum
+          newColNum  = cols + colNum
+          toks' = toks ++ [(lineNum, colNum, tok)]
       in  if null str then OK toks' else lexLoop newLineNum newColNum toks' str
     PFail u v -> PFail u v
     Backtrack -> PFail (L.LineColumn (fromIntegral lineNum) colNum (fromIntegral lineNum) colNum) $
-      ustr "bad symbol in character stream"
-  nextLex str = msum $ map ($str) $
-    [getSpace, getLetters, getNumbers, getPunct, getStrLit, getComEndl, getComInln]
+      ustr ("bad symbol"++(if null str then "<END>" else show (head str))++" in character stream")
+  nextLex str = msum $ map ($str) $ -- the ordering of these lexers is important
+    [getSpace, getComInln, getComEndl, getStrLit, getLetters, getNumbers, getPunct]
   cluster curLineNum toks tx = case tx of
     []                          ->
       if null toks then [] else [Line{lineLineNumber=curLineNum, lineTokens=toks}]
@@ -74,6 +68,14 @@ lex tablen input = fmap (cluster 1 []) (lexLoop 1 0 [] input) where
       if lineNum==curLineNum || null toks -- if we are on the same line, or if the line is empty
         then  cluster lineNum (toks++[(colNum, tok)]) tx -- then get the next token
         else  Line{lineLineNumber=curLineNum, lineTokens=toks} : cluster lineNum [(colNum, tok)] tx
+  countNLs lns cols input = case break (=='\n') input of
+    (""    , ""        ) -> (lns, cols)
+    (_     , '\n':after) -> countNLs (lns+1) 0 after
+    (before, after     ) -> (lns, cols + foldl (+) 0 (map charPrintWidth (before++after)))
+  charPrintWidth c = case c of
+    c | c=='\t'   -> tablen
+    c | isPrint c -> 1
+    c             -> 0
 
 ----------------------------------------------------------------------------------------------------
 -- Important data types for lexical analysis.
@@ -87,6 +89,7 @@ data Token
   | ComEndl  {tokToUStr::UStr} -- ^ a comment at the end of the line
   | ComInln  {tokToUStr::UStr} -- ^ the start of a multi-line comment
   | Ignored  {tokToUStr::UStr} -- ^ characters that can be ignored, like in multi-line comments.
+  deriving (Eq, Ord, Show)
 
 class HasLineNumber   a where { lineNumber   :: a -> Word }
 class HasColumnNumber a where { columnNumber :: a -> Word }
@@ -97,10 +100,16 @@ instance HasColumnNumber TokenAt where { columnNumber = tokenAtColumnNumber }
 
 -- | The punctuation marks used in the Dao language, sorted from longest to shortest strings.
 daoPuncts :: [String]
-daoPuncts = reverse $ nub $ sort $ words $ concat $
+daoPuncts = reverse $ nub $ sortBy len $ words $ concat $
   [ allArithOp2Strs, " ", allArithOp1Strs, " ", allUpdateOpStrs
-  , " : " -- included for tokenizing the colon in a time value expression.
+  , " : ; " -- legal tokens that are not infix or suffix operators
+  , " ( ) { } [ ] #{ }# " -- parenthetical tokens are also included here.
   ]
+  where
+    len a b = case compare (length a) (length b) of
+      EQ -> compare a b
+      GT -> GT
+      LT -> LT
 
 data Line
   = Line
@@ -109,6 +118,9 @@ data Line
     }
 
 instance HasLineNumber Line where { lineNumber = lineLineNumber }
+
+instance Show Line where
+  show line = show (lineLineNumber line) ++ ": " ++ show (lineTokens line)
 
 type Tokenizer = String -> PValue L.Location (Token, String)
 
@@ -212,8 +224,8 @@ getStrLit input = case input of
 -- | Tokenize a comment starting with a @//@ symbol and runs to the first newline character it sees.
 getComEndl :: Tokenizer
 getComEndl input = case input of
-  '/':'/':more -> loop "//" more where
-    loop str input = case break (=='\n') str of
+  '/':'/':input -> loop "//" input where
+    loop str input = case break (=='\n') input of
       (got, '\n':input) -> return (ComEndl (ustr $ str++got++"\n"), input)
       (got,      input) -> return (ComEndl (ustr $ str++got), input)
   _            -> mzero
@@ -221,10 +233,11 @@ getComEndl input = case input of
 -- once you have tokenized your initial open-comment characters, this tokenizer lexes-out the rest
 -- of the comment.
 getInnerComment :: String -> Tokenizer
-getInnerComment str input = case break (\c -> c=='/') input of
+getInnerComment str input = case break (=='*') input of
   (got, '*':'/':input) -> return (ComInln (ustr $ str++got++"*/"), input)
   (got,            "") -> return (ComInln  (ustr $ str++got), "")
-  (got,         input) -> getInnerComment (str++got) input
+  (got,         input) ->
+    let (astrs, more) = span (=='*') input in getInnerComment (str++got++astrs) more
 
 getComInln :: Tokenizer
 getComInln input = case input of

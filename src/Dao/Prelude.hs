@@ -66,6 +66,7 @@ import           Control.Applicative
 
 import           Data.Monoid
 import           Data.Typeable
+import           Data.Dynamic
 import           Data.Char
 import           Data.List (intercalate)
 import qualified Data.ByteString.Lazy as B
@@ -80,7 +81,6 @@ import           System.IO
 -- | Everything is wrapped in this type to prevent GHCi from printing stuff all the time, or
 -- reporting errors about types not instantiating the 'Prelude.Show' class.
 newtype Dao a = Dao { daoUnwrap :: a }
-instance Typeable a => Show     (Dao a) where { show (Dao a)            = show (typeOf a) }
 instance Eq a       => Eq       (Dao a) where { (Dao a)==(Dao b)        = a==b            }
 instance Ord a      => Ord      (Dao a) where { compare (Dao a) (Dao b) = compare a b     }
 instance               Functor   Dao    where { fmap fn (Dao a)         = Dao (fn a)      }
@@ -90,6 +90,13 @@ instance Monoid a   => Monoid   (Dao a) where
 instance               Applicative Dao  where
   pure                    = Dao
   (Dao fn) <*> (Dao a)    = Dao (fn a)
+instance Typeable a => Show     (Dao a) where
+  show (Dao a)            = case typeOf a of
+    t | t == typeOf OTrue ->
+      let d = toDyn a
+      in  show $ objType $ fromDyn d $ error $
+            "converting Object to Dynamic and back yields a non-object value"
+    t                     -> show t
 
 randMaxDepth :: Int
 randMaxDepth = 6

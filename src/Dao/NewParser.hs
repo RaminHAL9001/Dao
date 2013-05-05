@@ -80,16 +80,20 @@ lex tablen input = fmap (cluster 1 []) (lexLoop 1 1 [] input) where
 ----------------------------------------------------------------------------------------------------
 -- Important data types for lexical analysis.
 
-data Token
-  = Space    {tokToUStr::UStr}
-  | Letters  {tokToUStr::UStr}
-  | Numbers  {tokToUStr::UStr}
-  | Punct    {tokToUStr::UStr}
-  | StrLit   {tokToUStr::UStr} -- ^ a string literal is treated as a single token
-  | ComEndl  {tokToUStr::UStr} -- ^ a comment at the end of the line
-  | ComInln  {tokToUStr::UStr} -- ^ the start of a multi-line comment
-  | Ignored  {tokToUStr::UStr} -- ^ characters that can be ignored, like in multi-line comments.
-  deriving (Eq, Ord, Show)
+data TokenType
+  = Space
+  | Letters
+  | Numbers
+  | Punct
+  | StrLit  -- ^ a string literal is treated as a single token
+  | ComEndl -- ^ a comment at the end of the line
+  | ComInln -- ^ the start of a multi-line comment
+  | Ignored -- ^ characters that can be ignored, like in multi-line comments.
+  deriving (Eq, Ord, Enum, Show)
+
+type Token = (TokenType, UStr)
+tokToUStr = snd
+tokType   = fst
 
 class HasLineNumber   a where { lineNumber   :: a -> Word }
 class HasColumnNumber a where { columnNumber :: a -> Word }
@@ -127,20 +131,32 @@ type Tokenizer = String -> PValue L.Location (Token, String)
 -- returns 'Prelude.True' if the token might have newline or tab characters and thus require it be
 -- scanned for updating the line or column counts more scrupulously.
 mightHaveNLorTabs :: Token -> Bool
-mightHaveNLorTabs tok = case tok of
-    Letters _ -> False
-    Numbers _ -> False
-    Punct   _ -> False
-    _         -> True
+mightHaveNLorTabs tok = case tokType tok of
+    Letters -> False
+    Numbers -> False
+    Punct   -> False
+    _       -> True
 
 ----------------------------------------------------------------------------------------------------
 -- The parser data type
 
-type Parser = PTrans L.Location (State [Line])
+data ParserErr
+  = ParseErrWithToken { parserErrLoc :: L.Location , parseErrToken :: Token }
+  | ParseErr          { parserErrLoc :: L.Location }
 
-instance MonadState [Line] (PTrans L.Location (State [Line])) where
-  get = PTrans (fmap OK get)
-  put = PTrans . fmap OK . put
+newtype Parser a = Parser { parserToPTrans :: PTrans (L.Location, Token) (State [Line]) a}
+instance Functor   Parser where { fmap f (Parser a) = Parser (fmap f a) }
+instance Monad     Parser where
+  (Parser ma) >>= mfa = Parser (ma >>= parserToPTrans . mfa)
+  return a            = Parser (return a)
+instance MonadPlus Parser where
+  mzero                       = Parser mzero
+  mplus (Parser a) (Parser b) = Parser (mplus a b)
+instance MonadState [Line] Parser where
+  get = Parser (PTrans (fmap OK get))
+  put = Parser . PTrans . fmap OK . put
+
+----------------------------------------------------------------------------------------------------
 
 -- | Return the next token in the state. If the boolean parameter is true, the current token will
 -- also be removed from the state.
@@ -153,8 +169,14 @@ nextToken doRemove = get >>= \lines -> case lines of
       if doRemove then put (line{lineTokens=toks}:lines) else return ()
       return (lineNumber line, colNum, tok)
 
+-- | Return the next token in the state if it is of the type specified, removing it from the state.
+token :: TokenType -> Parser UStr
+token requestedType = do
+  tok@(_, _, (currentTokenType, str)) <- nextToken False
+  if currentTokenType==requestedType then nextToken True >> return str else mzero
+
 -- | Push an arbitrary token into the state, but you really don't want to use this function. It is
--- used to implement backtracking by the 'withToken' function, use 'withToken' instead.
+-- used to implement backtracking by the 'withToken' function, so use 'withToken' instead.
 pushToken :: (Word, Word, Token) -> Parser ()
 pushToken (lineNum, colNum, tok) = modify $ \lines -> case lines of
   []         -> [Line{lineLineNumber=lineNum, lineTokens=[(colNum,tok)]}] :: [Line]
@@ -168,6 +190,14 @@ withToken :: ((Word, Word, Token) -> Parser a) -> Parser a
 withToken parser = do
   token <- nextToken True
   mplus (parser token) (pushToken token >> mzero)
+
+withTokenType :: TokenType -> (UStr -> Parser a) -> Parser a
+withTokenType requestedType parser = withToken $ \ (_, _, (currentTokenType, str)) ->
+  if currentTokenType==requestedType then parser str else mzero
+
+-- | Return the current line and column of the current token without modifying the state in any way.
+getCursor :: Parser (Word, Word)
+getCursor = nextToken False >>= \ (a,b, _) -> return (a,b)
 
 ----------------------------------------------------------------------------------------------------
 -- Functions that facilitate lexical analysis.
@@ -189,27 +219,27 @@ tokenize constructor predicate input = case span predicate input of
 
 -- | A fundamental parser using 'Data.Char.isSpace' and evaluating to a 'Space' token.
 getSpace :: Tokenizer
-getSpace = tokenize Space isSpace
+getSpace = tokenize ((,)Space) isSpace
 
 -- | A fundamental tokenizer using 'Data.Char.isAlpha' and evaluating to a 'Letters' token.
 getLetters :: Tokenizer
-getLetters = tokenize Letters isAlpha
+getLetters = tokenize ((,)Letters) isAlpha
 
 -- | A fundamental tokenizer using 'Data.Char.isDigit' and evaluating to a 'Numbers' token.
 getNumbers :: Tokenizer
-getNumbers = tokenize Letters isDigit
+getNumbers = tokenize ((,)Letters) isDigit
 
 -- | Parse a Dao-language operator, which is alway a punctuation mark of some kind. The punctuation
 -- marks are listed in the 'daoPuncts' constant in this module.
 getPunct :: Tokenizer
-getPunct input = msum (map (\daoPunct -> getString Punct daoPunct input) daoPuncts)
+getPunct input = msum (map (\daoPunct -> getString ((,)Punct) daoPunct input) daoPuncts)
 
 -- once you have tokenized your initial quote character, this tokenizer lexes-out the rest of the
 -- input string.
 getInnerStrLit :: String -> Tokenizer
 getInnerStrLit str input = case break (\c -> c=='"' || c=='\\') input of
-  (got, ""        ) -> return (StrLit (ustr $ str++got), "")
-  (got, '"' :input) -> return (StrLit (ustr $ str++got++"\""), input)
+  (got, ""        ) -> return ((StrLit, ustr (str++got)), "")
+  (got, '"' :input) -> return ((StrLit, ustr (str++got++"\"")), input)
   (got, '\\':input) -> getInnerStrLit (str++got++"\\") input
   (got,      input) -> getInnerStrLit (str++got) input
 
@@ -226,16 +256,16 @@ getComEndl :: Tokenizer
 getComEndl input = case input of
   '/':'/':input -> loop "//" input where
     loop str input = case break (=='\n') input of
-      (got, '\n':input) -> return (ComEndl (ustr $ str++got++"\n"), input)
-      (got,      input) -> return (ComEndl (ustr $ str++got), input)
+      (got, '\n':input) -> return ((ComEndl, ustr (str++got++"\n")), input)
+      (got,      input) -> return ((ComEndl, ustr (str++got))      , input)
   _            -> mzero
 
 -- once you have tokenized your initial open-comment characters, this tokenizer lexes-out the rest
 -- of the comment.
 getInnerComment :: String -> Tokenizer
 getInnerComment str input = case break (=='*') input of
-  (got, '*':'/':input) -> return (ComInln (ustr $ str++got++"*/"), input)
-  (got,            "") -> return (ComInln  (ustr $ str++got), "")
+  (got, '*':'/':input) -> return ((ComInln, ustr (str++got++"*/")), input)
+  (got,            "") -> return ((ComInln, ustr (str++got))      , ""   )
   (got,         input) ->
     let (astrs, more) = span (=='*') input in getInnerComment (str++got++astrs) more
 

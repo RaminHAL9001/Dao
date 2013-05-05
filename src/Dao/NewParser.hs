@@ -53,7 +53,7 @@ lex tablen input = fmap (cluster 1 []) (lexLoop 1 1 [] input) where
     OK (tok, str) ->
       let (lns, cols) = countNLs 0 0 $ uchars $ tokToUStr tok
           newLineNum = lns + lineNum
-          newColNum  = cols + colNum
+          newColNum  = cols + (if lns>0 then 0 else colNum)
           toks' = toks ++ [(lineNum, colNum, tok)]
       in  if null str then OK toks' else lexLoop newLineNum newColNum toks' str
     PFail u v -> PFail u v

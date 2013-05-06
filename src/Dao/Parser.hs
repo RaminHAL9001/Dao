@@ -480,8 +480,8 @@ instance MonadState ParseState Parser where
 -- error, after an error is caught, and after evaluating 'catchError'. Remember, it is convienient
 -- to use 'ok' instead of 'Control.Monad.return' because 'ok' automatically calls
 -- 'clearTokenStack'.
-instance MonadError UStr Parser where
-  throwError msg = getToken >>= \tok -> Parser (tokenThrowError tok msg)
+instance MonadError Token Parser where
+  throwError tok = Parser (assumePValue (PFail tok nil))
   catchError (Parser parser) catcher = Parser (catchError parser (parserPTransState . catcher))
 
 ----------------------------------------------------------------------------------------------------

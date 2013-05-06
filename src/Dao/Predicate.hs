@@ -69,10 +69,10 @@ data PValue item a
     -- Note that 'Backtrack'ing does not put back the characters that were taken from the input.
     -- Those characters are still gone, parsing simply continues from the next alternative in the
     -- branch. For example, the parser:
-    -- @'Control.Monad.mplus' (a >> b) c where@
-    -- @      a = 'manyRegex1' ('rxChar' \'A\')@
-    -- @      b = 'manyRegex1' ('rxChar' \'B\')@
-    -- @      c = 'manyRegex1' ('rxChar' \'C\')@
+    -- > 'Control.Monad.mplus' (a >> b) c where
+    -- >       a = 'manyRegex1' ('rxChar' \'A\')
+    -- >       b = 'manyRegex1' ('rxChar' \'B\')
+    -- >       c = 'manyRegex1' ('rxChar' \'C\')
     -- can evaluate against the string "AAACCC", and the whole string will be parsed and will return
     -- a 'Token' with the characters "CCC". What happens is this: @a@ parses "AAA" and succeeds, the
     -- remaining input string is now "CCC", @b@ tries to parse some "B" characters but fails and
@@ -115,10 +115,10 @@ instance MonadPlus (PValue tok) where
     PFail ~u v -> PFail u v
     OK     a   -> OK    a
 
-instance MonadError UStr (PValue tok) where
-  throwError = PFail undefined
+instance MonadError tok (PValue tok) where
+  throwError tok = PFail tok nil
   catchError try catch = case try of
-    PFail _ v -> catch v
+    PFail u _ -> catch u
     try       -> try
 
 fromPValue :: a -> PValue tok a -> a
@@ -132,7 +132,7 @@ fromPValue a pval = case pval of { OK a -> a ; _ -> a }
 newtype PTrans tok m a = PTrans { runPTrans :: m (PValue tok a) }
 
 pvalue :: Monad m => PValue tok a -> PTrans tok m a
-pvalue pval = PTrans (return pval)
+pvalue = assumePValue
 
 instance Monad m => Monad (PTrans tok m) where
   return a = PTrans (return (OK a))
@@ -173,13 +173,13 @@ instance MonadTrans (PTrans tok) where
 -- 'Dao.String.UStr'. The @tok@ type is undefeind, so it makes sense to define it once you have
 -- caught it, or to override the 'Control.Monad.Error.Class.throwError' function with your own
 -- instantiation of a newtype of 'PTrans'.
-instance Monad m => MonadError UStr (PTrans tok m) where
-  throwError msg = PTrans{ runPTrans = return (PFail undefined msg) }
+instance Monad m => MonadError tok (PTrans tok m) where
+  throwError msg = PTrans{ runPTrans = return (PFail msg nil) }
   catchError ptrans catcher = PTrans $ do
     value <- runPTrans ptrans
     case value of
       Backtrack -> return Backtrack
-      PFail u v -> runPTrans (catcher v)
+      PFail u v -> runPTrans (catcher u)
       OK    a   -> return (OK a)
 
 ----------------------------------------------------------------------------------------------------
@@ -190,13 +190,13 @@ instance Monad m => MonadError UStr (PTrans tok m) where
 -- the first, but will evaluate the second only if the first does not succeed, that is, if the first
 -- evaluates to either 'Control.Monad.mzero' or to 'Control.Monad.Error.Class.throwError'.  Minimal
 -- complete definition is 'catchPValue' and 'tokenThrowError'.
-class (MonadError UStr m, MonadPlus m) => ErrorMonadPlus tok m | m -> tok where
+class (MonadError tok m, MonadPlus m) => ErrorMonadPlus tok m | m -> tok where
   -- | Unlifts the 'PValue' resulting from evaluating the given monadic computation, returning the
   -- 'PValue' as 'Backtrack' if the given monad evaluates to 'Control.Monad.mzero' and as
   -- 'PFail' if the given monad evaluates to 'Control.Monad.Error.Class.throwError'.
   catchPValue :: m a -> m (PValue tok a)
   -- | Lift a 'PFail' value into the monad with the given token and error values.
-  tokenThrowError :: tok -> UStr -> m ig
+  assumePValue :: PValue tok a -> m a
   -- | Like 'Comtrol.Monad.mplus', except the second function is tried even if the first monadic
   -- function evaluates to 'Control.Monad.Error.Class.throwError'. This is different from ordinary
   -- 'Control.Monad.mplus' which always evaluates to 'throwError' if one of it's given monadic
@@ -217,17 +217,17 @@ class (MonadError UStr m, MonadPlus m) => ErrorMonadPlus tok m | m -> tok where
   -- re-throwing the result of "try".
   mplusFinal :: m a -> m () -> m a
   mplusFinal fn done = catchPValue fn >>= \a -> mplusCatch (done >> mzero) $ case a of
-    OK a       -> return a
-    Backtrack  -> mzero
-    PFail ~u v -> tokenThrowError u v
+    OK a      -> return a
+    Backtrack -> mzero
+    PFail u v -> assumePValue (PFail u v)
 
 instance ErrorMonadPlus tok (PValue tok) where
-  tokenThrowError = PFail
   catchPValue = OK
+  assumePValue = id
 
 instance Monad m => ErrorMonadPlus tok (PTrans tok m) where
-  tokenThrowError tok msg = PTrans{ runPTrans = return (PFail tok msg) }
   catchPValue (PTrans fn) = PTrans{ runPTrans = fn >>= \a -> return (OK a) }
+  assumePValue pval = PTrans (return pval)
 
 -- | Evaluates to an empty list if the given 'PValue' is 'Backtrack' or 'PFail', otherwise returns a
 -- list containing the value in the 'OK' value.
@@ -263,4 +263,13 @@ maybeToPFail :: err -> UStr -> Maybe a -> PValue err a
 maybeToPFail err msg a = case a of
   Nothing -> PFail err msg
   Just  a -> OK a
+
+-- | If the given monadic function (which instantiates 'ErrorMonadPlus') evaluates with a
+-- controlling 'PValue' of 'PFail', the given mapping function is applied to the token value stored
+-- within the 'PFail', then the modified 'PFail' is placed back into the monad transformer.
+mapPFail :: ErrorMonadPlus tok m => (tok -> tok) -> m a -> m a
+mapPFail fmap func = catchPValue func >>= \pval -> case pval of
+  OK      a -> return a
+  Backtrack -> mzero
+  PFail u v -> assumePValue (PFail (fmap u) v)
 

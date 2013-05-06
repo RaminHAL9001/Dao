@@ -127,12 +127,12 @@ instance MonadState MatcherState Matcher where
   put = Matcher . lift . put
   state = Matcher . lift . state
 
-instance MonadError UStr Matcher where
+instance MonadError Reference Matcher where
   throwError = Matcher . throwError
   catchError (Matcher m) em = Matcher (catchError m (matcherPTransState . em))
 
 instance ErrorMonadPlus Reference Matcher where
-  tokenThrowError tok msg  = Matcher (tokenThrowError tok msg)
+  assumePValue = Matcher . assumePValue
   catchPValue (Matcher fn) = Matcher (catchPValue fn)
 
 ----------------------------------------------------------------------------------------------------
@@ -180,11 +180,10 @@ matchObject pat o = let otype = objType o in case pat of
     o <- matchObject pat o
     modify (\st -> st{ matcherTree = T.insert (reverse (matcherRef st)) o (matcherTree st) })
     return o
-  ObjFailIf lbl pat -> mplus (matchObject pat o) (throwError lbl)
+  ObjFailIf lbl pat -> mplus (matchObject pat o) (throwError (LocalRef lbl))
   ObjNot        pat -> catchPValue (matchObject pat o) >>= \p -> case p of
     Backtrack  -> return o
-    OK       _ -> mzero
-    PFail ~u v -> tokenThrowError u v
+    p          -> assumePValue p
 
 justOnce :: [Bool] -> Bool
 justOnce checks = 1 == foldl (\i check -> if check then i+1 else i) 0 checks

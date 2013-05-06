@@ -117,6 +117,8 @@ GHC_COMPILE_DEBUG := $(GHC_COMPILE) -rtsopts -with-rtsopts='-M8G -N4'
 ./debug/test-prof: $(DEBUG_DEPENDS) ghc-build-opts.mk
 	$(GHC_COMPILE_DEBUG) -prof $(DEBUG_DEPENDS) -o ./debug/test-prof
 
-./src/Dao/NewParser.o: src/Dao/NewParser.hs
-	$(GHC_COMPILE) -i./src Dao.NewParser
+.PHONEY: Dao.Object.NewParser
+Dao.Object.NewParser: ./src/Dao/Object/NewParser.o
+./src/Dao/Object/NewParser.o: src/Dao/Object/NewParser.hs src/Dao/NewParser.hs src/Dao/Predicate.hs src/Dao/Token.hs
+	$(GHC_COMPILE) -i./src Dao.Object.NewParser
 

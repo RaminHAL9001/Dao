@@ -60,7 +60,7 @@ lex tablen input = fmap (cluster 1 []) (lexLoop 1 1 [] input) where
     Backtrack -> PFail (L.LineColumn (fromIntegral lineNum) colNum (fromIntegral lineNum) colNum) $
       ustr ("bad symbol"++(if null str then "<END>" else show (head str))++" in character stream")
   nextLex str = msum $ map ($str) $ -- the ordering of these lexers is important
-    [getSpace, getComInln, getComEndl, getStrLit, getLetters, getNumbers, getPunct]
+    [getSpace, getComInln, getComEndl, getStrLit, getHexDigits, getNumbers, getLetters, getPunct]
   cluster curLineNum toks tx = case tx of
     []                          ->
       if null toks then [] else [Line{lineLineNumber=curLineNum, lineTokens=toks}]
@@ -84,6 +84,7 @@ data TokenType
   = Space
   | Letters
   | Numbers
+  | HexDigits
   | Punct
   | StrLit  -- ^ a string literal is treated as a single token
   | ComEndl -- ^ a comment at the end of the line
@@ -141,10 +142,28 @@ mightHaveNLorTabs tok = case tokType tok of
 -- The parser data type
 
 data ParserErr
-  = ParseErrWithToken { parserErrLoc :: L.Location , parseErrToken :: Token }
-  | ParseErr          { parserErrLoc :: L.Location }
+  = ParserErr
+    { parserErrLoc :: L.Location
+    , parserErrMsg :: Maybe UStr
+    , parserErrTok :: Maybe Token
+    }
 
-newtype Parser a = Parser { parserToPTrans :: PTrans (L.Location, Token) (State [Line]) a}
+-- | An initial blank parser error.
+parserErr :: Word -> Word -> ParserErr
+parserErr lineNum colNum =
+  ParserErr
+  { parserErrLoc =
+      L.LineColumn
+      { L.startingLine   = fromIntegral lineNum
+      , L.startingColumn = colNum
+      , L.endingLine     = fromIntegral lineNum
+      , L.endingColumn   = colNum
+      }
+  , parserErrMsg   = Nothing
+  , parserErrTok   = Nothing
+  }
+
+newtype Parser a = Parser { parserToPTrans :: PTrans ParserErr (State [Line]) a}
 instance Functor   Parser where { fmap f (Parser a) = Parser (fmap f a) }
 instance Monad     Parser where
   (Parser ma) >>= mfa = Parser (ma >>= parserToPTrans . mfa)
@@ -155,6 +174,22 @@ instance MonadPlus Parser where
 instance MonadState [Line] Parser where
   get = Parser (PTrans (fmap OK get))
   put = Parser . PTrans . fmap OK . put
+instance MonadError ParserErr Parser where
+  throwError msg = assumePValue (PFail msg nil)
+  catchError (Parser ptrans) catcher = Parser $ do
+    pval <- catchPValue ptrans
+    case pval of
+      OK      a -> return a
+      Backtrack -> mzero
+      PFail u _ -> parserToPTrans (catcher u)
+instance ErrorMonadPlus ParserErr Parser where
+  catchPValue (Parser ptrans) = Parser (catchPValue ptrans)
+  assumePValue = Parser . assumePValue
+
+parseErr :: String -> Parser ig
+parseErr msg = do
+  (a, b) <- getCursor
+  Parser (tokenFail ((parserErr a b){parserErrMsg = Just (ustr msg)}) msg)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -194,8 +229,8 @@ pushToken (lineNum, colNum, tok) = modify $ \lines -> case lines of
   line:lines -> (line{lineTokens = (colNum, tok) : lineTokens line} : lines) :: [Line]
 
 -- | Single token look-ahead: takes the next token, removing it from the state, and uses it to
--- evaluate the given parser. If the backtracks, the token is replaced into the state. Failures are
--- not caught, make sure the parser you pass to this function makes use of
+-- evaluate the given 'Parser'. If the backtracks, the token is replaced into the state. Failures are
+-- not caught, make sure the 'Parser' you pass to this function makes use of
 -- 'Control.Monad.Error.catchError' to catch failures if that is what you need it to do.
 withToken :: ((Word, Word, Token) -> Parser a) -> Parser a
 withToken parser = do
@@ -217,6 +252,50 @@ getEOF = get >>= \st -> case st of
   [st] -> if null (lineTokens st) then return () else mzero
   _    -> mzero
 
+-- | Given two parameters: 1. an error message and 2. a 'Parser', will succeed normally if
+-- evaluating the given 'Parser' succeeds. But if the given 'Parser' backtracks, this this function
+-- will evaluate to a 'Parser' failure with the given error message. If the given 'Parser' fails,
+-- it's error message is used instead of the error message given to this function. The string
+-- "expecting " is automatically prepended to the given error message so it is a good idea for your
+-- error message to simple state what you were expecting, like "a string" or "an integer". I
+-- typically write 'expect' statements like so:
+-- > fracWithExp = do
+-- >     fractionalPart <- parseFractional
+-- >     'tokenP' 'Letters' (\tok -> tok=="E" || tok=="e")
+-- >     'expect' "an integer expression after the 'e'" $ do
+-- >         exponentPart <- parseSignedInteger
+-- >         return (makeFracWithExp fractionalPart exponentPart :: 'Prelude.Double')
+expect :: String -> Parser a -> Parser a
+expect errMsg parser = do
+  (a, b) <- getCursor
+  let expectMsg = "expecting "++errMsg
+  mplus parser (throwError ((parserErr a b){parserErrMsg = Just (ustr expectMsg)}))
+
+-- | If the given 'Parser' backtracks then evaluate to @return ()@, otherwise ignore the result of the
+-- 'Parser' and evaluate to @return ()@.
+ignore :: Parser ig -> Parser ()
+ignore = flip mplus (return ()) . void
+
+-- | Shorthand for @'ignore' ('token' 'Space')@
+skipSpaces :: Parser ()
+skipSpaces = ignore (token Space)
+
+-- | A 'marker' immediately stores the cursor onto the stack. It then evaluates the given 'Parser'.
+-- If the given 'Parser' fails, the position of the failure (stored in a 'Dao.Token.Location') is
+-- updated such that the starting point of the failure points to the cursor stored on the stack by
+-- this 'marker'. When used correctly, this function makes error reporting a bit more helpful.
+marker :: Parser a -> Parser a
+marker parser = do
+  (a, b) <- getCursor
+  flip mapPFail parser $ \parsErr ->
+    parsErr
+    { parserErrLoc =
+        (parserErrLoc parsErr)
+        { L.startingLine   = fromIntegral a
+        , L.startingColumn = b
+        }
+    }
+
 ----------------------------------------------------------------------------------------------------
 -- Functions that facilitate lexical analysis.
 
@@ -235,7 +314,7 @@ tokenize constructor predicate input = case span predicate input of
   ("" , _   ) -> mzero
   (str, more) -> return (constructor (ustr str), more)
 
--- | A fundamental parser using 'Data.Char.isSpace' and evaluating to a 'Space' token.
+-- | A fundamental tokenizer using 'Data.Char.isSpace' and evaluating to a 'Space' token.
 getSpace :: Tokenizer
 getSpace = tokenize ((,)Space) isSpace
 
@@ -246,6 +325,10 @@ getLetters = tokenize ((,)Letters) isAlpha
 -- | A fundamental tokenizer using 'Data.Char.isDigit' and evaluating to a 'Numbers' token.
 getNumbers :: Tokenizer
 getNumbers = tokenize ((,)Letters) isDigit
+
+-- | A fundamental tokenizer using 'Data.Char.isHexDigit' and evaluating to a 'HexDigit' token.
+getHexDigits :: Tokenizer
+getHexDigits = tokenize ((,)HexDigits) isHexDigit
 
 -- | Parse a Dao-language operator, which is alway a punctuation mark of some kind. The punctuation
 -- marks are listed in the 'daoPuncts' constant in this module.

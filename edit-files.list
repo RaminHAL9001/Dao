@@ -1,6 +1,8 @@
 # A list of files you want to edit with Vim.
 # They will appear in the order specified.
 src/Dao/Prelude.hs
+src/Dao/NewParser.hs
+src/Dao/Object/NewParser.hs
 src/Dao/Object.hs
 src/Dao/Random.hs
 src/Dao/Evaluator.hs

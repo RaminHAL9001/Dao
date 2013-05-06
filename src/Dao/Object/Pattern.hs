@@ -113,7 +113,7 @@ instance Monad Matcher where
   return = Matcher . return
   (Matcher f) >>= mfa = Matcher (f >>= matcherPTransState . mfa)
   (Matcher fa) >> (Matcher fb) = Matcher (fa >> fb)
-  fail msg = getCurrentRef >>= \ref -> Matcher (tokenFail ref msg)
+  fail msg = getCurrentRef >>= \ref -> Matcher (throwError ref)
 
 instance Functor Matcher where
   fmap f (Matcher a) = Matcher (fmap f a)

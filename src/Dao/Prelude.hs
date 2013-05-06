@@ -180,9 +180,9 @@ appendText path obj = appendTextWith prettyShow path obj
 -- | Parser a polymorphic type from a string expression.
 parseWith :: Parser a -> Dao String -> IO (Dao a)
 parseWith parser (Dao str) = case runParser parser str of
-  (OK          a, _) -> seq a $! return (Dao a)
-  (Backtrack    , s) -> error ("parser backtracks:\n\t"++show s)
-  (PFail loc msg, s) -> error (show loc ++ ": "++uchars msg++"\n\t"++show s)
+  (OK      a, _) -> seq a $! return (Dao a)
+  (Backtrack, s) -> error ("parser backtracks:\n\t"++show s)
+  (PFail loc, s) -> error (show loc ++ ": "++show s)
 
 -- | Parse a 'Dao.Object.AST.AST_TopLevel'.
 parseTopExpr :: Dao String -> IO (Dao AST_TopLevel)
@@ -215,10 +215,10 @@ toStruct (Dao o) = return (Dao (dataToStruct o))
 -- | Construct a random object of a polymorphic type from its 'Dao.Struct.Structured' form.
 fromStruct :: Structured o => (Dao (T.Tree Name Object)) -> IO (Dao o)
 fromStruct (Dao t) = case structToData t of
-  OK              o   -> seq o $! return (Dao o)
-  Backtrack           -> error "constructor backtracked"
-  PFail (idx,obj) msg -> error $ concat $
-    [ "constructor failed: ", uchars msg
+  OK           o  -> seq o $! return (Dao o)
+  Backtrack       -> error "constructor backtracked"
+  PFail (idx,obj) -> error $ concat $
+    [ "constructor failed: "
     , "\nat index: ", intercalate "." (map uchars idx)
     , "\nwith value: ", prettyShow obj
     ]

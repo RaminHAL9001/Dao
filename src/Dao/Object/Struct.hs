@@ -62,7 +62,7 @@ allStrings :: [Object] -> PValue UpdateErr [UStr]
 allStrings ox = forM (zip (iterate (+1) 0) ox) $ \ (i, o) -> case o of
   OString o -> return o
   _         ->
-    PFail ([], OList [ostr "in list, item number", OWord i]) (ustr "must be a string value")
+    PFail ([], OList [ostr "in list, item number", OWord i, ostr "must be a string value"])
 
 instance Structured Comment where
   dataToStruct a = case a of

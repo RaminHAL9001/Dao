@@ -192,7 +192,7 @@ peekAddress addr = atAddress addr this
 
 -- | Report a failure with an 'Dao.Object.Object' value that occurred at the current address.
 updateFailed :: Object -> String -> Update ig
-updateFailed obj msg = updatePValue $ PFail ([], obj) (ustr msg)
+updateFailed obj msg = updatePValue $ PFail ([], obj)
 
 ----------------------------------------------------------------------------------------------------
 -- $Helpers

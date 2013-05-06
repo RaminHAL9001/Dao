@@ -101,9 +101,9 @@ instance Binary (StoredFile T.Tree Name Object) where
 -- 'Dao.Object.SourceCode' object. This is a pure function called by 'loadFilePath'.
 loadSourceCode :: UPath -> String -> AST_SourceCode
 loadSourceCode upath sourceString = case fst (runParser parseSourceFile sourceString) of
-  Backtrack     -> error ("FILE TYPE: "++show path++" does not appear to be a Dao script.")
-  PFail tok msg -> error (path++':':show tok++"\n\t"++uchars msg)
-  OK src        -> src
+  Backtrack -> error ("FILE TYPE: "++show path++" does not appear to be a Dao script.")
+  PFail tok -> error (path++':':show tok)
+  OK    src -> src
   where { path = uchars upath }
 
 -- | This function will take any file path and return a file associated with it if it has been

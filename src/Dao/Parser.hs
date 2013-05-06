@@ -455,7 +455,7 @@ instance Monad Parser where
   Parser ma >> Parser mb = Parser $ ma >> mb
   fail msg = do
     token <- getToken
-    Parser (tokenFail token msg)
+    Parser (assumePValue (PFail token))
 
 instance Functor Parser where
   fmap f (Parser ma) = Parser $ fmap f ma
@@ -481,7 +481,7 @@ instance MonadState ParseState Parser where
 -- to use 'ok' instead of 'Control.Monad.return' because 'ok' automatically calls
 -- 'clearTokenStack'.
 instance MonadError Token Parser where
-  throwError tok = Parser (assumePValue (PFail tok nil))
+  throwError tok = Parser (throwError tok)
   catchError (Parser parser) catcher = Parser (catchError parser (parserPTransState . catcher))
 
 ----------------------------------------------------------------------------------------------------

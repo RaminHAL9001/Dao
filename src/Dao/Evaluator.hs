@@ -49,6 +49,7 @@ import           Control.Exception
 import           Control.Concurrent
 import           Control.Monad.Trans
 import           Control.Monad.Reader
+import           Control.Monad.Error
 import           Control.Monad.State -- for constructing 'Program's from 'AST_SourceCode's.
 
 import           Data.Monoid
@@ -160,9 +161,9 @@ runSubroutine args sub = do
     MacroFunc _ _ -> return (map snd args) -- do NOT dereference the arguments for a macro function.
     _             -> mapM objectDeref args
   case evalMatcher (matchObjectList (argsPattern sub) args >> gets matcherTree) of
-    OK       tree -> runExecutable tree (getSubExecutable sub)
-    Backtrack     -> return Nothing
-    PFail ref msg -> procErr (OList [OString msg, ORef ref])
+    OK   tree -> runExecutable tree (getSubExecutable sub)
+    Backtrack -> return Nothing
+    PFail ref -> procErr (ORef ref)
 
 -- | Very simply executes every given script item. Does not use catchReturnObj, does not use
 -- 'nestedExecStack'. CAUTION: you cannot assign to local variables unless you call this method
@@ -373,7 +374,7 @@ clearAllQTimeVars xunit = modifyUnlocked_ (queryTimeHeap xunit) (return . const 
 -- parameters passed to them with the 'BuiltinOp' monad, which is a fully lazy monad based on
 -- 'Dao.Predicate.PValue'.
 
-type BuiltinOp = PValue Location Object
+type BuiltinOp = PValue UStr Object
 
 eval_OR :: Object -> Object -> BuiltinOp
 eval_OR = evalBooleans (\a b -> seq a (if a then True else seq b b))
@@ -398,19 +399,19 @@ eval_AND = evalBooleans (\a b -> seq a (if a then seq b b else False))
 evalBooleans :: (Bool -> Bool -> Bool) -> Object -> Object -> BuiltinOp
 evalBooleans fn a b = return (if fn (objToBool a) (objToBool b) then OTrue else ONull)
 
-asReference :: Object -> PValue Location Reference
+asReference :: Object -> PValue UStr Reference
 asReference o = case o of
   ORef o -> return o
   _      -> mzero
 
-asInteger :: Object -> PValue Location Integer
+asInteger :: Object -> PValue UStr Integer
 asInteger o = case o of
   OWord o -> return (toInteger o)
   OInt  o -> return (toInteger o)
   OLong o -> return o
   _       -> mzero
 
-asRational :: Object -> PValue Location Rational
+asRational :: Object -> PValue UStr Rational
 asRational o = case o of
   OFloat     o     -> return (toRational o)
   ODiffTime  o     -> return (toRational o)
@@ -418,22 +419,22 @@ asRational o = case o of
   ORatio     o     -> return o
   _                -> mzero
 
-asStringNoConvert :: Object -> PValue Location UStr
+asStringNoConvert :: Object -> PValue UStr UStr
 asStringNoConvert o = case o of
   OString o -> return o
   _         -> mzero
 
-asString :: Object -> PValue Location UStr
+asString :: Object -> PValue UStr UStr
 asString o = case o of
   OString o -> return o
   o         -> return (ustr (showObj o))
 
-asListNoConvert :: Object -> PValue Location [Object]
+asListNoConvert :: Object -> PValue UStr [Object]
 asListNoConvert o = case o of
   OList o -> return o
   _       -> mzero
 
-asList :: Object -> PValue Location [Object]
+asList :: Object -> PValue UStr [Object]
 asList o = case o of
   OList   o -> return o
   OArray  o -> return (elems o)
@@ -452,7 +453,7 @@ objListAppend ax bx = OList $ flip concatMap (ax++bx) $ \a -> case a of
   OList ax -> ax
   a        -> [a]
 
-asHaskellInt :: Object -> PValue Location Int
+asHaskellInt :: Object -> PValue UStr Int
 asHaskellInt o = asInteger o >>= \o ->
   if (toInteger (minBound::Int)) <= o && o <= (toInteger (maxBound::Int))
     then return (fromIntegral o)
@@ -486,7 +487,7 @@ evalNum ifunc rfunc a b = msum $
           _ -> error "asRational returned a value for an object of an unexpected type"
   ]
 
-setToMapFrom :: (Object -> PValue Location i) -> ([(i, [Object])] -> m [Object]) -> S.Set Object -> m [Object]
+setToMapFrom :: (Object -> PValue UStr i) -> ([(i, [Object])] -> m [Object]) -> S.Set Object -> m [Object]
 setToMapFrom convert construct o = construct (zip (concatMap (okToList . convert) (S.elems o)) (repeat []))
 
 evalSets
@@ -643,24 +644,24 @@ evalShift fn a b = asHaskellInt b >>= \b -> case a of
 evalSubscript :: Object -> Object -> BuiltinOp
 evalSubscript a b = case a of
   OArray  a -> fmap fromIntegral (asInteger b) >>= \b ->
-    if inRange (bounds a) b then return (a!b) else pfail (ustr "array index out of bounds")
+    if inRange (bounds a) b then return (a!b) else throwError (ustr "array index out of bounds")
   OList   a -> asHaskellInt b >>= \b ->
-    let err = pfail (ustr "list index out of bounds")
+    let err = throwError (ustr "list index out of bounds")
         ax  = take 1 (drop b a)
     in  if b<0 then err else if null ax then err else return (head ax)
   OIntMap a -> asHaskellInt b >>= \b -> case I.lookup b a of
-    Nothing -> pfail (ustr "no item at index requested of intmap")
+    Nothing -> throwError (ustr "no item at index requested of intmap")
     Just  b -> return b
   ODict   a -> msum $
     [ do  asStringNoConvert b >>= \b -> case M.lookup b a of
-            Nothing -> pfail (ustr (show b++" is not defined in dict"))
+            Nothing -> throwError (ustr (show b++" is not defined in dict"))
             Just  b -> return b
     , do  asReference b >>= \b -> case b of
             LocalRef  b -> case M.lookup b a of
-              Nothing -> pfail (ustr (show b++" is not defined in dict"))
+              Nothing -> throwError (ustr (show b++" is not defined in dict"))
               Just  b -> return b
             GlobalRef bx -> loop [] a bx where
-              err = pfail (ustr (show b++" is not defined in dict"))
+              err = throwError (ustr (show b++" is not defined in dict"))
               loop zx a bx = case bx of
                 []   -> return (ODict a)
                 b:bx -> case M.lookup b a of
@@ -670,7 +671,7 @@ evalSubscript a b = case a of
                     _       ->
                       if null bx
                         then return a
-                        else pfail (ustr (show (GlobalRef zx)++" does not point to dict object"))
+                        else throwError (ustr (show (GlobalRef zx)++" does not point to dict object"))
     ]
   OTree   a -> msum $ 
     [ asStringNoConvert b >>= \b -> done (T.lookup [b] a)
@@ -679,7 +680,7 @@ evalSubscript a b = case a of
         GlobalRef bx -> done (T.lookup bx  a)
     ] where
         done a = case a of
-          Nothing -> pfail (ustr (show b++" is not defined in struct"))
+          Nothing -> throwError (ustr (show b++" is not defined in struct"))
           Just  a -> return a
   _         -> mzero
 
@@ -697,7 +698,7 @@ eval_SHL = evalShift id
 
 eval_DOT :: Object -> Object -> BuiltinOp
 eval_DOT a b = asReference a >>= \a -> asReference b >>= \b -> case appendReferences a b of
-  Nothing -> pfail (ustr (show b++" cannot be appended to "++show a))
+  Nothing -> throwError (ustr (show b++" cannot be appended to "++show a))
   Just  a -> return (ORef a)
 
 eval_NEG :: Object -> BuiltinOp
@@ -806,11 +807,11 @@ requireAllStringArgs :: [Object] -> Exec [UStr]
 requireAllStringArgs ox = case mapM check (zip (iterate (+1) 0) ox) of
   OK      obj -> return obj
   Backtrack   -> procErr $ OList [ostr "all input parameters must be strings"]
-  PFail i msg -> procErr $ OList [OString msg, OWord i, ostr "is not a string"]
+  PFail   msg -> procErr $ OList [OString msg, ostr "is not a string"]
   where
     check (i, o) = case o of
       OString o -> return o
-      _         -> PFail i (ustr "requires string parameter, param number")
+      _         -> PFail (ustr "requires string parameter, param number")
 
 -- | Given an object, if it is a string return the string characters. If it not a string,
 -- depth-recurse into it and extract strings, or if there is an object into which recursion is not
@@ -873,11 +874,10 @@ recurseGetAllStringArgs ox = catch (loop [0] [] ox) where
     ODict      o : ox -> next ixs zx (M.elems o) ox
     OIntMap    o : ox -> next ixs zx (I.elems o) ox
     OPair  (a,b) : ox -> next ixs zx      [a, b] ox
-    _                 -> PFail ix (ustr "is not a string value")
+    _                 -> PFail (ustr "is not a string value")
   next (i:ix) zx nx ox = loop (0:i:ix) zx nx >>= \zx -> loop (i+1:ix) zx ox
   catch ox = case ox of
-    PFail ix msg -> procErr $ OList $
-      [ostr "function parameter", OList (map OWord (reverse ix)), OString msg]
+    PFail   msg -> procErr $ OList [ostr "function parameter", OString msg]
     Backtrack   -> return []
     OK       ox -> return ox
 
@@ -1169,13 +1169,13 @@ errAt loc = case loc of
 -- Haskell value, because 'Backtrack' values indicate type exceptions, and 'PFail' values indicate a
 -- value error (e.g. out of bounds, or some kind of assert exception), and the messages passed to
 -- 'procErr' will indicate this.
-checkPValue :: Location -> String -> [Object] -> PValue Location a -> Exec a
+checkPValue :: Location -> String -> [Object] -> PValue UStr a -> Exec a
 checkPValue loc altmsg tried pval = case pval of
-  OK a           -> return a
-  Backtrack      -> procErr $ OList $ ostr "bad data type" :
+  OK     a  -> return a
+  Backtrack -> procErr $ OList $ ostr "bad data type" :
     (if null altmsg then [] else [OString (ustr altmsg)]) ++ tried
-  PFail loc' msg -> procErr $ OList $ ostr "bad data value" :
-    errAt (min loc loc') ++ (if null altmsg then [] else [ostr altmsg]) ++ OString msg : tried
+  PFail msg -> procErr $ OList $ ostr "bad data value" :
+    errAt loc ++ (if null altmsg then [] else [ostr altmsg]) ++ OString msg : tried
 
 -- | 'evalObjectExprExpr' can return 'Data.Maybe.Nothing', and usually this happens when something has
 -- failed (e.g. reference lookups), but it is not always an error (e.g. a void list of argument to
@@ -1227,9 +1227,9 @@ execScriptExpr script = case script of
     case inObj of
       Nothing    -> err [ostr "object over which to iterate evaluates to a void"]
       Just inObj -> case asList inObj of
-        OK         ix -> loop thn varName ix
-        Backtrack     -> err [inObj, ostr "cannot be represented as list"]
-        PFail loc msg -> err [inObj, OString msg]
+        OK     ix -> loop thn varName ix
+        Backtrack -> err [inObj, ostr "cannot be represented as list"]
+        PFail msg -> err [inObj, OString msg]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   WhileLoop    co   scrp    loc -> outerLoop where
     check obj = fmap (fromMaybe False . fmap objToBool) (evalObjectExprDeref obj)
@@ -1392,9 +1392,9 @@ evalObjectExprWithLoc obj = case obj of
     (oloc, o) <- checkVoid "operand of subscript expression" (evalObjectExprDerefWithLoc o)
     (iloc, i) <- checkVoid "index of subscript expression" (evalObjectExprWithLoc i)
     case evalSubscript o i of
-      OK          a -> return (Just a)
-      PFail loc msg -> procErr (OString msg)
-      Backtrack     -> procErr (OList $ errAt loc ++ [i, ostr "cannot be used as index of", o])
+      OK      a -> return (Just a)
+      PFail msg -> procErr (OString msg)
+      Backtrack -> procErr (OList $ errAt loc ++ [i, ostr "cannot be used as index of", o])
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   Equation   left' op right' loc -> setloc loc $ do
     let err1 msg = msg++"-hand operand of "++show op++ "operator "
@@ -1421,7 +1421,7 @@ evalObjectExprWithLoc obj = case obj of
             [ errAt loc, [ostr (show op), ostr "cannot operate on objects of type"]
             , errAt leftloc, [left], errAt rightloc, [right]
             ]
-          PFail _  msg -> procErr $ OList $ errAt loc ++ [OString msg]
+          PFail    msg -> procErr $ OList $ errAt loc ++ [OString msg]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   PrefixExpr op       expr   loc -> setloc loc $ do
     (locexpr, expr) <- checkVoid ("operand to prefix operator "++show op) (evalObjectExprWithLoc expr)
@@ -1429,7 +1429,7 @@ evalObjectExprWithLoc obj = case obj of
       OK result -> return (Just result)
       Backtrack -> procErr $ OList $
         [ostr (show op), ostr "cannot operate on objects of type", expr]
-      PFail lc msg -> procErr $ OList [OString msg]
+      PFail    msg -> procErr $ OList [OString msg]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   DictExpr   cons     args   loc -> setloc loc $ do
     let loop insfn getObjVal mp argx  = case argx of
@@ -1476,7 +1476,7 @@ evalObjectExprWithLoc obj = case obj of
               OK          i -> return i
               Backtrack     -> procErr $ OList $ errAt bndloc ++
                 [ostr msg, ostr "of array declaration does not evaluate to an integer value"]
-              PFail loc msg -> procErr $ OList $ errAt bndloc ++
+              PFail     msg -> procErr $ OList $ errAt bndloc ++
                 [OString msg, ostr "in array declaration"]
       lo <- getIndex "lower-bound" lo
       hi <- getIndex "upper-bound" hi
@@ -1901,9 +1901,9 @@ evalScriptString :: ExecUnit -> String -> Run ()
 evalScriptString xunit instr = dStack xloc "evalScriptString" $
   void $ flip runExec xunit $ nestedExecStack T.Void $ execScriptBlock $
     case fst (runParser parseInteractiveScript instr) of
-      Backtrack     -> error "cannot parse expression"
-      PFail tok msg -> error ("error: "++uchars msg++show tok)
-      OK expr       -> concatMap (toInterm . unComment) expr
+      Backtrack -> error "cannot parse expression"
+      PFail tok -> error ("error: "++show tok)
+      OK   expr -> concatMap (toInterm . unComment) expr
 
 -- | This is the simplest form of string execution, everything happens in the current thread, no
 -- "BEGIN" or "END" scripts are executed. Simply specify a list of programs (as file paths) and a

@@ -81,7 +81,7 @@ data PValue item a
     -- If you want to "undo" what was parsed by forcing characters back onto the input string, you
     -- can use the 'backtrack' function. But this is inefficient and you should design your parser
     -- to avoid this.
-  | PFail { failedItem :: item, failedBecause :: UStr }
+  | PFail { failedItem :: item }
     -- ^ If any 'Parser' function in your 'Parser' computation evaluates 'PFail', the whole parser
     -- evaluates to 'PFail' so no characters will be parsed after that, unless the failure is caught
     -- by 'Control.Monad.Error.catchError' or 'pcatch'.
@@ -92,33 +92,33 @@ data PValue item a
 -- manner of 'Control.Monad.fmap'.
 fmapFailed :: (a -> b) -> PValue a ig -> PValue b ig
 fmapFailed fn pval = case pval of
-  Backtrack   -> Backtrack
-  OK        a -> OK a
-  PFail   u v -> PFail (fn u) v
+  Backtrack -> Backtrack
+  OK      a -> OK a
+  PFail   u -> PFail (fn u)
 
 instance Functor (PValue tok) where
-  fmap fn (OK    a  ) = OK (fn a)
-  fmap _  (PFail u v) = PFail u v
-  fmap _  Backtrack   = Backtrack
+  fmap fn (OK    a) = OK (fn a)
+  fmap _  (PFail u) = PFail u
+  fmap _  Backtrack = Backtrack
 
 instance Monad (PValue tok) where
   return = OK
   ma >>= mfn = case ma of
-    OK    a   -> mfn a
-    PFail u v -> PFail u v
+    OK      a -> mfn a
+    PFail   u -> PFail u
     Backtrack -> Backtrack
 
 instance MonadPlus (PValue tok) where
   mzero = Backtrack
   mplus ma mb = case ma of
-    Backtrack  -> mb
-    PFail ~u v -> PFail u v
-    OK     a   -> OK    a
+    Backtrack -> mb
+    PFail   u -> PFail u
+    OK      a -> OK    a
 
 instance MonadError tok (PValue tok) where
-  throwError tok = PFail tok nil
+  throwError tok = PFail tok
   catchError try catch = case try of
-    PFail u _ -> catch u
+    PFail u   -> catch u
     try       -> try
 
 fromPValue :: a -> PValue tok a -> a
@@ -140,18 +140,15 @@ instance Monad m => Monad (PTrans tok m) where
     a <- ma
     case a of
       Backtrack -> return Backtrack
-      PFail u v -> return (PFail u v)
-      OK    o   -> runPTrans (fma o)
+      PFail   u -> return (PFail u)
+      OK      o -> runPTrans (fma o)
   PTrans ma >> PTrans mb = PTrans $ do
     a <- ma
     case a of
       Backtrack -> return Backtrack
-      PFail u v -> return (PFail u v)
-      OK    _   -> mb
-  fail msg = PTrans{ runPTrans = return (PFail undefined (ustr msg)) }
-
-tokenFail :: Monad m => tok -> String -> PTrans tok m ig
-tokenFail tok msg = PTrans{ runPTrans = return (PFail tok (ustr msg)) }
+      PFail   u -> return (PFail u)
+      OK      _ -> mb
+  fail msg = PTrans{ runPTrans = return (PFail (error msg)) }
 
 instance Functor m => Functor (PTrans tok m) where
   fmap f (PTrans ma) = PTrans (fmap (fmap f) ma)
@@ -162,9 +159,9 @@ instance Monad m => MonadPlus (PTrans tok m) where
   mplus (PTrans a) (PTrans b) = PTrans $ do
     result <- a
     case result of
-      Backtrack  -> b
-      PFail ~u v -> return (PFail u v)
-      OK     o   -> return (OK o)
+      Backtrack -> b
+      PFail   u -> return (PFail u)
+      OK      o -> return (OK o)
 
 instance MonadTrans (PTrans tok) where
   lift m = PTrans{ runPTrans = m >>= return . OK }
@@ -174,13 +171,13 @@ instance MonadTrans (PTrans tok) where
 -- caught it, or to override the 'Control.Monad.Error.Class.throwError' function with your own
 -- instantiation of a newtype of 'PTrans'.
 instance Monad m => MonadError tok (PTrans tok m) where
-  throwError msg = PTrans{ runPTrans = return (PFail msg nil) }
+  throwError msg = PTrans{ runPTrans = return (PFail msg) }
   catchError ptrans catcher = PTrans $ do
     value <- runPTrans ptrans
     case value of
       Backtrack -> return Backtrack
-      PFail u v -> runPTrans (catcher u)
-      OK    a   -> return (OK a)
+      PFail   u -> runPTrans (catcher u)
+      OK      a -> return (OK a)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -219,7 +216,7 @@ class (MonadError tok m, MonadPlus m) => ErrorMonadPlus tok m | m -> tok where
   mplusFinal fn done = catchPValue fn >>= \a -> mplusCatch (done >> mzero) $ case a of
     OK a      -> return a
     Backtrack -> mzero
-    PFail u v -> assumePValue (PFail u v)
+    PFail   u -> assumePValue (PFail u)
 
 instance ErrorMonadPlus tok (PValue tok) where
   catchPValue = OK
@@ -235,7 +232,7 @@ okToList :: PValue err a -> [a]
 okToList pval = case pval of
   OK      a -> [a]
   Backtrack -> []
-  PFail _ _ -> []
+  PFail   _ -> []
 
 -- | Like 'okToList', but evaluates to 'Data.Maybe.Nothing' if the given 'PValue' is 'Backtrack' or
 -- 'PFail', or 'Data.Maybe.Just' containing the value in the 'OK' value.
@@ -243,13 +240,13 @@ okToMaybe :: PValue err a -> Maybe a
 okToMaybe pval = case pval of
   OK      a -> Just a
   Backtrack -> Nothing
-  PFail _ _ -> Nothing
+  PFail   _ -> Nothing
 
 -- | Constructs a 'PFail' value with 'Data.Monoid.mempty'. Useful in functions that need to evaluate
 -- to an error, but cannot (or doesn't need to) set more detailed information about the error. The
 -- 'PFail' value can be caught elsewhere, and more detailed information can be constructed there.
-pfail :: Monoid err => UStr -> PValue err ig
-pfail msg = PFail mempty msg
+pfail :: Monoid err => UStr -> PValue UStr ig
+pfail msg = PFail msg
 
 -- | If given 'Data.Maybe.Nothing', evaluates to 'Backtrack', otherwise evaluates to 'OK'.
 maybeToBacktrack :: Maybe a -> PValue err a
@@ -259,9 +256,9 @@ maybeToBacktrack a = case a of
 
 -- | If given 'Data.Maybe.Nothing', evaluates to 'PFail' with the given error information.
 -- Otherwise, evaluates to 'OK'.
-maybeToPFail :: err -> UStr -> Maybe a -> PValue err a
-maybeToPFail err msg a = case a of
-  Nothing -> PFail err msg
+maybeToPFail :: err -> Maybe a -> PValue err a
+maybeToPFail err a = case a of
+  Nothing -> PFail err
   Just  a -> OK a
 
 -- | If the given monadic function (which instantiates 'ErrorMonadPlus') evaluates with a
@@ -271,5 +268,5 @@ mapPFail :: ErrorMonadPlus tok m => (tok -> tok) -> m a -> m a
 mapPFail fmap func = catchPValue func >>= \pval -> case pval of
   OK      a -> return a
   Backtrack -> mzero
-  PFail u v -> assumePValue (PFail (fmap u) v)
+  PFail   u -> assumePValue (PFail (fmap u))
 

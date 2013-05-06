@@ -1,8 +1,11 @@
 TODO:
 
-*	There is an infinite loop in the "Dao.Strcut" module caused on certain occasions where the
-'Dao.Struct.atAddress' is called. I've tracked the problem down to 'Dao.Object.AST.AST_Assign'
-expressions, although I am still not clear as to why it is looping infinitely.
+*	Now that 'Dao.Predicate.PValue' has been modified such that it no longer contains a required
+'Dao.String.UStr' message, many functions which used it now simply use 'Dao.String.UStr' as the type
+for 'Dao.Predicate.PFail'. Other functions do not use 'Dao.String.UStr'. I need to do a review of
+all code in the "Dao.Evaluator" module that makes use of 'Dao.Predicate.PValue' and make sure the
+failures contain useful information. If a 'Dao.String.UStr' is good enough, no change will be
+necessary. However it might be better to use 'Dao.Object.Object' instead, in most situations.
 
 *	Really need to modify the parser so variable scoping is parsed with a higher presecedence than
 arithmetic or assignment operators. As of right now, expressions do not parse as one would expect. I
@@ -61,6 +64,14 @@ lifted into IO so that dereferencing is possible, and there needs to be a separa
 matching values of referenecs, which needs to be the default pattern that binds values to labels.
 
 SOLVED:
+
+*	There is an infinite loop in the "Dao.Struct" module caused on certain occasions where the
+'Dao.Struct.atAddress' is called. I've tracked the problem down to 'Dao.Object.AST.AST_Assign'
+expressions, although I am still not clear as to why it is looping infinitely.
+[Solution] it was actually a problem with the instantiation of 'Dao.Token.Location' into the
+'Dao.Structured.Struct' monad. It evaluated 'Dao.Struct.getData' in a place where it should have
+evaluated 'Dao.Struct.getDataAt', which was causing it to call a function that would eventually call
+itself wihtout ever stepping into a field of a sub-structure.
 
 *	Need to implement the evaluator for the "meta-dereference" operator, and make sure it is placed
 in the 'Dao.Evaluator.setupExecutable' function.

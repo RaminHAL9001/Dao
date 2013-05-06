@@ -175,6 +175,17 @@ token requestedType = do
   tok@(_, _, (currentTokenType, str)) <- nextToken False
   if currentTokenType==requestedType then nextToken True >> return str else mzero
 
+-- | Return the next token in the state if it is of the type specified and also if the string value
+-- evaluated by the given predicate returns true, otherwise backtrack.
+tokenP :: TokenType -> (String -> Bool) -> Parser UStr
+tokenP requestedType predicate = token requestedType >>= \tokenString ->
+  if predicate (uchars tokenString) then return tokenString else mzero
+
+-- | Return the next token in the state if the string value of the token is exactly equal to the
+-- given string.
+tokenStr :: TokenType -> String -> Parser UStr
+tokenStr requestedType compareString = tokenP requestedType (==compareString)
+
 -- | Push an arbitrary token into the state, but you really don't want to use this function. It is
 -- used to implement backtracking by the 'withToken' function, so use 'withToken' instead.
 pushToken :: (Word, Word, Token) -> Parser ()
@@ -198,6 +209,13 @@ withTokenType requestedType parser = withToken $ \ (_, _, (currentTokenType, str
 -- | Return the current line and column of the current token without modifying the state in any way.
 getCursor :: Parser (Word, Word)
 getCursor = nextToken False >>= \ (a,b, _) -> return (a,b)
+
+-- | Evaluates to @()@ if we are at the end of the input text, otherwise backtracks.
+getEOF :: Parser ()
+getEOF = get >>= \st -> case st of
+  []   -> return ()
+  [st] -> if null (lineTokens st) then return () else mzero
+  _    -> mzero
 
 ----------------------------------------------------------------------------------------------------
 -- Functions that facilitate lexical analysis.

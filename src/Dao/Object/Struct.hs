@@ -90,8 +90,8 @@ instance Structured a => Structured (Com a) where
     where { com msg = putDataAt ("comments"++msg) }
   structToData = reconstruct $ do
     c <- getData
-    befor <- getDataAt "commentsBefore"
-    after <- getDataAt "commentsAfter"
+    befor <- mplus (getDataAt "commentsBefore") (return [])
+    after <- mplus (getDataAt "commentsAfter")  (return [])
     return $ case (befor, after) of
       ([], []) -> Com c
       (ax, []) -> ComBefore ax c
@@ -195,13 +195,13 @@ instance Structured AST_Object where
       putData (ustr (show a)) >> putDataAt "arguments" b >> putDataAt "script" c >> putData loc
     AST_MetaEval a     loc -> with "metaEval" $ putData a >> putData loc
   structToData = reconstruct $ msum $
-    [ with "literal"   $ liftM2 AST_Literal      getData getData
-    , with "assign"    $ liftM4 AST_Assign   (getDataAt "to") (getDataAt "op") getData getData
-    , with "equation"  $ liftM4 AST_Equation     getData (getDataAt "op") (getDataAt "next") getData
-    , with "prefix"    $ liftM3 AST_Prefix   (getDataAt "op") getData getData
-    , with "paren"     $ liftM3 AST_Paren    (mplus (getDataAt "visible") (return False)) getData getData
-    , with "subscript" $ liftM4 AST_ArraySub (getDataAt "bounds") (getDataAt "comments") getData getData
-    , with "funcCall"  $ liftM4 AST_FuncCall     getData (getDataAt "comments") (getDataAt "arguments") getData
+    [ with "literal"   $ liftM2 AST_Literal   getData getData
+    , with "assign"    $ liftM4 AST_Assign   (getDataAt "to") (getDataAt "op")  getData              getData
+    , with "equation"  $ liftM4 AST_Equation  getData         (getDataAt "op") (getDataAt "next")    getData
+    , with "prefix"    $ liftM3 AST_Prefix   (getDataAt "op")  getData          getData
+    , with "paren"     $ liftM3 AST_Paren    (mplus (getDataAt "visible") (return False))    getData getData
+    , with "subscript" $ liftM4 AST_ArraySub (getDataAt "bounds") (getDataAt "comments")     getData getData
+    , with "funcCall"  $ liftM4 AST_FuncCall  getData (getDataAt "comments") (getDataAt "arguments") getData
     , with "constructor" $ do
         kind <- getStringData "constructor type"
         case kind of

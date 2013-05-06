@@ -79,6 +79,14 @@ instance MonadState (Tree UStr Object) Update where
   get = Update $ PTrans $ get >>= return . OK
   put st = Update $ PTrans $ put st >> return (OK ())
 
+instance MonadError ([Name], Object) Update where
+  throwError = Update . throwError
+  catchError (Update func) catcher = Update (catchError func (updateToPTrans . catcher))
+
+instance ErrorMonadPlus ([Name], Object) Update where
+  catchPValue (Update func) = Update (catchPValue func)
+  assumePValue = Update . assumePValue
+
 -- | Update a data type in the 'Structured' class using an 'Update' monadic function.
 onStruct :: Structured a => Update ig -> a -> PValue UpdateErr a
 onStruct ufn a = (fst . runUpdate (ufn>>get)) (dataToStruct a) >>= structToData
@@ -94,10 +102,6 @@ deconstruct fn = snd (runUpdate fn Void)
 -- structure. This is essentially the same function as 'Control.Monad.State.evalState'.
 reconstruct :: Update a -> Tree Name Object -> PValue UpdateErr a
 reconstruct fn tree = fst (runUpdate fn tree)
-
-instance MonadState (Tree Name Object) (PTrans UpdateErr (State (Tree Name Object))) where
-  get = PTrans (fmap OK get)
-  put = PTrans . (fmap OK) . put
 
 -- | Like 'Dao.Predicate.maybeToBacktrack', if the function parameter is 'Nothing' this monad
 -- evaluates to 'Dao.Predicate.Backtrack' (except wrapped in the 'Udpate' monad).
@@ -183,7 +187,8 @@ peek addr = peekAddress [ustr addr]
 
 -- | Modify or write a new a data structure at a given address using the given 'Update' function.
 atAddress :: [Name] -> Update a -> Update a
-atAddress nm doUpdate = Update $ PTrans $ state $ alterNodeWith (runUpdate doUpdate) nm
+atAddress nm doUpdate = mapPFail (\ (names, obj) -> (nm++names, obj)) $
+  Update $ PTrans $ state $ alterNodeWith (runUpdate doUpdate) nm
 
 -- | Goes to a given address and tries to return the value stored at that node,
 -- 'Dao.Predicate.Backtrack's if nothing is there.

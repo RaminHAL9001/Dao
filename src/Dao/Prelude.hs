@@ -31,6 +31,7 @@ module Dao.Prelude
   , module Dao.String
   , module Dao.Object
   , module Dao.Object.AST
+  , module Dao.Object.PPrint
   , module Dao.PPrint
   , module Control.Monad
   , module Control.Monad.State
@@ -211,6 +212,20 @@ readObjExpr = parseObjExpr . Dao
 -- | Convert a structured item to its structured form.
 toStruct :: Structured o => (Dao o) -> IO (Dao (T.Tree Name Object))
 toStruct (Dao o) = return (Dao (dataToStruct o))
+
+instance (PPrintable a, PPrintable b) => PPrintable (T.TreeDiff a b) where
+  pPrint diff = pEndLine >> case diff of
+    T.LeftOnly   a -> pString "< " >> pPrint a
+    T.RightOnly  b -> pString "> " >> pPrint b
+    T.TreeDiff a b -> pString "< " >> pPrint a >> pEndLine >> pString "> " >> pPrint b
+
+instance (PPrintable a, PPrintable b) => PPrintable (T.Tree UStr (T.TreeDiff a b)) where
+  pPrint t = forM_ (T.assocs t) $ \ (addr, obj) -> do
+    pString (intercalate "." (map uchars addr) ++ ":")
+    pForceNewLine >> pPrint obj >> pForceNewLine
+
+diff :: (Dao (T.Tree Name Object)) -> (Dao (T.Tree Name Object)) -> IO (Dao (T.Tree Name (T.TreeDiff Object Object)))
+diff (Dao a) (Dao b) = return $ Dao $ T.treeDiff a b
 
 -- | Construct a random object of a polymorphic type from its 'Dao.Struct.Structured' form.
 fromStruct :: Structured o => (Dao (T.Tree Name Object)) -> IO (Dao o)

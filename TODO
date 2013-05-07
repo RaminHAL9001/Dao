@@ -1,5 +1,8 @@
 TODO:
 
+*	Bug: the instantiation for many of the nodes in the "Dao.Object.AST" module for
+'Dao.Struct.fromStruct' are not correctly constructing AST nodes with comments.
+
 *	Now that 'Dao.Predicate.PValue' has been modified such that it no longer contains a required
 'Dao.String.UStr' message, many functions which used it now simply use 'Dao.String.UStr' as the type
 for 'Dao.Predicate.PFail'. Other functions do not use 'Dao.String.UStr'. I need to do a review of

@@ -439,6 +439,7 @@ data TreeDiff a b
   = LeftOnly  a -- something exists in the "left" branch but not in the "right" branch.
   | RightOnly b -- something exists in the "right" branch but not in the "left" branch.
   | TreeDiff  a b -- something exists in the "left" and "right" branches but they are not equal
+  deriving (Eq, Typeable)
 
 -- | Produce a difference report of two trees with the given comparison predicate. If the predicate
 -- returns 'Prelude.True', the node is ignored, otherwise the differences is reported.

@@ -1616,7 +1616,7 @@ programFromSource theNewGlobalTable src xunit = do
             case liftM2 (,) argv exe of
               FlowOK (argv, exe) -> do
                 rules <- gets ruleSet
-                let fol tre pat = T.merge T.union (++) tre (toTree pat [exe])
+                let fol tre pat = T.unionWith (++) tre (toTree pat [exe])
                 lift $ dModifyMVar_ xloc rules (\patTree -> return (foldl fol patTree argv))
               FlowErr err -> void (storeInitErr err)
             scriptLoop dx

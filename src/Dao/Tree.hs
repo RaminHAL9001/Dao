@@ -199,7 +199,7 @@ ppTree showKey showVal t = dropWhile (\c->c=='\n'||c=='\r') (loop 0 0 t) where
     LeafBranch a b -> pp f d a ++ br d b
   br d b =
     let keys  = M.keys b
-        kp    = 1 + maximum (map (length . showKey) keys)
+        kp    = 1 + maximum (Prelude.map (length . showKey) keys)
         bar   = take kp (repeat '-')
         w s b = if null s then b else head s : w (tail s) (tail b)
         sh (k, t) = pre d++"+ "++w (showKey k++" ") bar++" "++loop kp (d+1) t
@@ -215,20 +215,20 @@ type MergeType p a
   -> M.Map p (Tree p a)
 
 -- | Used by 'merge' and 'graft' to determine how to merge branches of trees together.
-union :: Ord p => MergeType p a
-union = M.unionWith
+oldunion :: Ord p => MergeType p a
+oldunion = M.unionWith
 
 -- | Used by 'merge' and 'graft' to determine how to merge branches of trees together.
-intersection :: Ord p => MergeType p a
-intersection = M.intersectionWith
+oldintersection :: Ord p => MergeType p a
+oldintersection = M.intersectionWith
 
 -- | Merge two trees together.
-merge
+oldmerge
   :: Ord p
-  => MergeType p a -- ^ is either 'union', 'intersection', or 'difference'.
+  => MergeType p a -- ^ is either 'union', 'intersection'.
   -> (a -> a -> a) -- ^ the function to use when combining 'Leaf' or 'LeafBranch' nodes.
   -> Tree p a -> Tree p a -> Tree p a
-merge joinWith combine t u = case (t, u) of
+oldmerge joinWith combine t u = case (t, u) of
   (Void          , u             ) -> u
   (t             , Void          ) -> t
   (Leaf       x  , Leaf       y  ) -> Leaf (combine x y)
@@ -240,10 +240,91 @@ merge joinWith combine t u = case (t, u) of
   (Leaf       x  , LeafBranch y b) -> LeafBranch (combine x y) b
   (Branch       a, LeafBranch y b) -> LeafBranch y (joinWith op a b)
   (LeafBranch x a, LeafBranch y b) -> LeafBranch (combine x y) (joinWith op a b)
-  where { op = merge joinWith combine }
+  where { op = oldmerge joinWith combine }
+
+-- | Merge two trees together.
+mergeWithKey :: Ord p => ([p] -> Maybe a -> Maybe b -> Maybe c) -> (Tree p a -> Tree p c) -> (Tree p b -> Tree p c) -> Tree p a -> Tree p b -> Tree p c
+mergeWithKey overlap leftOnly rightOnly left right = loop [] left right where
+  -- loop :: Ord p => [p] -> Tree p a -> Tree p b -> Tree p c
+  loop px left right = case left of
+    Void           -> case right of
+      Void           -> Void
+      Leaf       y   -> rightOnly (Leaf       y  )
+      Branch       b -> rightOnly (Branch       b)
+      LeafBranch y b -> rightOnly (LeafBranch y b)
+    Leaf       x   -> case right of
+      Void           -> leftOnly  (Leaf       x  )
+      Leaf       y   -> fromMaybe Void (fmap Leaf (overlap px (Just x) (Just y)))
+      Branch       b -> leafbranch (Just x) Nothing  M.empty b
+      LeafBranch y b -> leafbranch (Just x) (Just y) M.empty b
+    Branch       a -> case right of
+      Void           -> leftOnly  (Branch       a)
+      Leaf       y   -> leafbranch Nothing (Just y) a M.empty
+      Branch       b -> leafbranch Nothing Nothing  a b      
+      LeafBranch y b -> leafbranch Nothing (Just y) a b      
+    LeafBranch x a -> case right of
+      Void           -> leftOnly  (LeafBranch x a)
+      Leaf       y   -> leafbranch (Just x) (Just y) a M.empty
+      Branch       b -> leafbranch (Just x) Nothing  a b      
+      LeafBranch y b -> leafbranch (Just x) (Just y) a b      
+    where
+      -- leafbranch :: Ord p => M.Map p (Tree p a) -> M.Map p (Tree p b) -> Maybe a -> Maybe b -> Tree p c
+      leafbranch x y left right = 
+        let c = M.mergeWithKey both (bias leftOnly) (bias rightOnly) left right -- :: M.Map p (Tree p c)
+        in  case overlap px x y of
+              Nothing -> notEmpty Branch c
+              Just  z -> notEmpty (LeafBranch z) c
+      -- notEmpty :: Ord p => (M.Map p (Tree p a) -> Tree p a) -> M.Map p (Tree p a) -> Tree p a
+      notEmpty cons c = if M.null c then Void else cons c
+      -- both :: Ord p => p -> Tree p a -> Tree p b -> Maybe (Tree p c)
+      both p left right = notVoid (loop (px++[p]) left right)
+      -- bias :: Ord p => (Tree p a -> Tree p b) -> M.Map p (Tree p a) -> M.Map p (Tree p b)
+      bias fn = M.mapMaybe (notVoid . fn)
+
+mergeWith :: Ord p => (Maybe a -> Maybe b -> Maybe c) -> (Tree p a -> Tree p c) -> (Tree p b -> Tree p c) -> Tree p a -> Tree p b -> Tree p c
+mergeWith overlap = mergeWithKey (\ _ -> overlap)
+
+unionWithKey :: Ord p => ([p] -> a -> a -> a) -> Tree p a -> Tree p a -> Tree p a
+unionWithKey overlap = mergeWithKey (\k a b -> msum [liftM2 (overlap k) a b, a, b]) id id
+
+unionWith :: Ord p => (a -> a -> a) -> Tree p a -> Tree p a -> Tree p a
+unionWith overlap = unionWithKey (\ _ -> overlap)
+
+union :: Ord p => Tree p a -> Tree p a -> Tree p a
+union = unionWith const
+
+unionsWith :: Ord p => (a -> a -> a) -> [Tree p a] -> Tree p a
+unionsWith overlap = foldl (unionWith overlap) Void
+
+unions :: Ord p => (a -> a -> a) -> [Tree p a] -> Tree p a
+unions overlap = unionsWith (flip const)
+
+intersectionWithKey :: Ord p => ([p] -> a -> a -> a) -> Tree p a -> Tree p a -> Tree p a
+intersectionWithKey overlap = mergeWithKey (\k -> liftM2 (overlap k)) (const Void) (const Void)
+
+intersectionWith :: Ord p => (a -> a -> a) -> Tree p a -> Tree p a -> Tree p a
+intersectionWith overlap = intersectionWithKey (\ _ -> overlap)
+
+intersection :: Ord p => Tree p a -> Tree p a -> Tree p a
+intersection = intersectionWith const
+
+intersectionsWith :: Ord p => (a -> a -> a) -> [Tree p a] -> Tree p a
+intersectionsWith overlap = foldl (intersectionWith overlap) Void
+
+intersections :: Ord p => [Tree p a] -> Tree p a
+intersections = intersectionsWith (flip const)
+
+differenceWithKey :: Ord p => ([p] -> a -> b -> Maybe a) -> Tree p a -> Tree p b -> Tree p a
+differenceWithKey overlap = mergeWithKey (\k a b -> mplus (b >>= \b -> a >>= \a -> overlap k a b) a) id (const Void)
+
+differenceWith :: Ord p => (a -> b -> Maybe a) -> Tree p a -> Tree p b -> Tree p a
+differenceWith overlap = differenceWithKey (\ _ -> overlap)
+
+difference :: Ord p => Tree p a -> Tree p b -> Tree p a
+difference = differenceWith (\ _ _ -> Nothing)
 
 -- | Like 'merge', but performs the merge on the branch at the address of one tree.
-graft
+oldgraft
   :: Ord p
   => MergeType p a -- ^ is either 'union', 'intersection'.
   -> (a -> a -> a) -- ^ the function to use to combine 'Leaf' and 'LeafBranch' nodes.
@@ -251,8 +332,12 @@ graft
   -> Tree p a      -- ^ the tree which that above path will seek through.
   -> Tree p a      -- ^ the tree to apply to the branch of the above tree.
   -> Tree p a
-graft joinWith combine px t u =
-  alter id (\t -> notVoid (merge joinWith combine (fromMaybe Void t) u)) px t
+oldgraft joinWith combine px t u =
+  alter id (\t -> notVoid (oldmerge joinWith combine (fromMaybe Void t) u)) px t
+
+-- | Like 'mergeWithKey', but updates a node at a given address.
+graft :: Ord p => (Tree p a -> Tree p a -> Tree p a) -> [p] -> Tree p a -> Tree p a -> Tree p a
+graft updTree addr a b = alter id (notVoid . updTree a . fromMaybe Void) addr b
 
 -- | Remove a branch from the tree.
 prune :: Ord p => [p] -> Tree p a -> Tree p a
@@ -271,7 +356,7 @@ assocs t = loop [] t where
 -- | Apply @'Prelude.map' 'Prelude.snd'@ to the result of 'assocs', behaves just like how
 -- 'Data.Map.elems' or 'Data.Array.IArray.elems' works.
 elems :: Tree p a -> [a]
-elems t =  map snd (assocs t)
+elems t =  Prelude.map snd (assocs t)
 
 -- | Counts the number of *nodes*, which includes the number of 'Branch'es and 'Leaf's.
 size :: Tree p a -> Word64
@@ -283,20 +368,36 @@ size t = case t of
   where { f m = foldl (\sz tre -> sz + size tre) (fromIntegral (M.size m)) (M.elems m) }
 
 -- Transform every node, leaves and branches alike, using monadic functions.
+mapNodesMaybeM
+  :: (Functor m, Monad m, Eq p, Ord p, Eq q, Ord q)
+  => (p -> m (Maybe q)) -- ^ modify each branch label with this function
+  -> (a -> m (Maybe b)) -- ^ modify each leaf with this function
+  -> Tree p a   -- ^ using the above two functions, modify everything in this 'Tree'.
+  -> m (Tree q b)
+mapNodesMaybeM bnf lef t = case t of
+  Void           -> return Void
+  Leaf       a   -> lef a >>= \a -> return (fromMaybe Void (fmap Leaf a))
+  Branch       m -> fmap Branch (branch m)
+  LeafBranch a m -> lef a >>= \b -> branch m >>= \n -> return $ case b of
+    Nothing -> if M.null n then Void   else Branch n
+    Just  b -> if M.null n then Leaf b else LeafBranch b n
+  where
+    branch m = fmap (M.fromList . concat) $ forM (M.assocs m) $ \ (p, a) -> do
+      q <- bnf p
+      case q of
+        Nothing -> return []
+        Just  q -> fmap notVoid (mapNodesMaybeM bnf lef a) >>= \b -> case b of
+          Nothing -> return []
+          Just  b -> return [(q, b)]
+
+-- Transform every node, leaves and branches alike, using monadic functions.
 mapNodesM
   :: (Functor m, Monad m, Eq p, Ord p, Eq q, Ord q)
   => (p -> m q) -- ^ modify each branch label with this function
   -> (a -> m b) -- ^ modify each leaf with this function
   -> Tree p a   -- ^ using the above two functions, modify everything in this 'Tree'.
   -> m (Tree q b)
-mapNodesM bnf lef t = case t of
-  Void           -> return Void
-  Leaf       a   -> fmap Leaf   (lef a)
-  Branch       m -> fmap Branch (branch m)
-  LeafBranch a m -> liftM2 LeafBranch (lef a) (branch m)
-  where
-    branch m = fmap M.fromList $ forM (M.assocs m) $ \ (p, a) ->
-      liftM2 (,) (bnf p) (mapNodesM bnf lef a)
+mapNodesM bnf lef = mapNodesMaybeM (fmap Just . bnf) (fmap Just . lef)
 
 -- | Transform every node, leaves and branches alike. This is the function that instantiates
 -- 'Data.Functor.fmap'.
@@ -314,11 +415,41 @@ mapBranchesM
   :: (Functor m, Monad m, Eq p, Ord p, Eq q, Ord q) => (p -> m q) -> Tree p a -> m (Tree q a)
 mapBranchesM bnf t = mapNodesM bnf return t
 
+-- | Transform all 'Leaf' data points, but if the given function returns 'Data.Maybe.Nothing' the
+-- 'Leaf' is removed.
+mapMaybeM :: (Functor m, Monad m, Eq p, Ord p) => (a -> m (Maybe b)) -> Tree p a -> m (Tree p b)
+mapMaybeM lef t = mapNodesMaybeM (return . Just) lef t
+
+-- | Transform all 'Leaf' data points, but if the given function returns 'Data.Maybe.Nothing' the
+-- 'Leaf' is removed.
+mapMaybe :: (Eq p, Ord p) => (a -> Maybe b) -> Tree p a -> Tree p b
+mapMaybe lef t = runIdentity (mapMaybeM (Identity . lef) t)
+
 -- | Transform every leaf using a monadic function, ignoring branches.
-mapLeavesM :: (Functor m, Monad m, Eq p, Ord p) => (a -> m b) -> Tree p a -> m (Tree p b)
-mapLeavesM lef t = mapNodesM return lef t
+mapM :: (Functor m, Monad m, Eq p, Ord p) => (a -> m b) -> Tree p a -> m (Tree p b)
+mapM lef t = mapNodesM return lef t
 
 -- | Transform every leaf, ignoraing branches.
-mapLeaves :: (Eq p, Ord p) => (a -> b) -> Tree p a -> Tree p b
-mapLeaves lef t = runIdentity (mapNodesM Identity (Identity . lef) t)
+map :: (Eq p, Ord p) => (a -> b) -> Tree p a -> Tree p b
+map lef t = runIdentity (mapNodesM Identity (Identity . lef) t)
+
+----------------------------------------------------------------------------------------------------
+
+data TreeDiff a b
+  = LeftOnly  a -- something exists in the "left" branch but not in the "right" branch.
+  | RightOnly b -- something exists in the "right" branch but not in the "left" branch.
+  | TreeDiff  a b -- something exists in the "left" and "right" branches but they are not equal
+
+-- | Produce a difference report of two trees with the given comparison predicate. If the predicate
+-- returns 'Prelude.True', the node is ignored, otherwise the differences is reported.
+treeDiffWith :: Ord p => (a -> b -> Bool) -> Tree p a -> Tree p b -> Tree p (TreeDiff a b)
+treeDiffWith compare = mergeWithKey leaf (Dao.Tree.map LeftOnly) (Dao.Tree.map RightOnly) where
+  leaf _ a b = msum $
+    [ a >>= \a -> b >>= \b -> if compare a b then Nothing else Just (TreeDiff a b)
+    , fmap LeftOnly a, fmap RightOnly b
+    ]
+
+-- | Call 'treeDiffWith' using 'Prelude.(==)' as the comparison predicate.
+treeDiff :: (Eq a, Ord p) => Tree p a -> Tree p a -> Tree p (TreeDiff a a)
+treeDiff = treeDiffWith (==)
 

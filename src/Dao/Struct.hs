@@ -178,7 +178,7 @@ putObjAt = modify . alterData . const . Just
 -- might be overwritten if you write a new 'Dao.Tree.Leaf'. *IMPORTANT:* Use this instead of
 -- 'Control.Monad.State.put'.
 putTree :: Tree Name Object -> Update ()
-putTree = modify . merge union const
+putTree = modify . union
 
 -- | Same as 'peekAddress' but more convenient as it takes just one string and passes it to
 -- 'atAddress' as @['Dao.String.ustr' address]@.
@@ -302,7 +302,7 @@ instance Structured (Ratio Integer) where
       objToIntegral a >>= \a -> objToIntegral b >>= \b -> return (a % b)
 
 instance Structured a => Structured [a] where
-  dataToStruct ox = deconstruct $ place (OList (map (OTree . dataToStruct) ox))
+  dataToStruct ox = deconstruct $ place (OList (Prelude.map (OTree . dataToStruct) ox))
   structToData = reconstruct $ do
     o <- this
     case o of
@@ -357,7 +357,7 @@ instance (Ord a, Structured a, Structured b) => Structured (StructuredTree a b) 
 newtype StructuredMap a b = StructuredMap { fromStructuredMap :: M.Map a b }
 instance (Ord a, Structured a, Structured b) => Structured (StructuredMap a b) where
   dataToStruct (StructuredMap mp) = deconstruct $ place $ OList $
-    map (\ (a, b) -> OPair (OTree (dataToStruct a), OTree (dataToStruct b))) (M.assocs mp)
+    Prelude.map (\ (a, b) -> OPair (OTree (dataToStruct a), OTree (dataToStruct b))) (M.assocs mp)
   structToData = reconstruct $ do
     ax <- this
     case ax of

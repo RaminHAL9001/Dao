@@ -36,7 +36,7 @@ import           Dao.String
 import           Dao.Token
 import           Dao.Glob
 import           Dao.EnumSet
-import           Dao.Tree as T
+import           Dao.Tree as T hiding (map)
 import           Dao.Predicate
 
 import           Data.Typeable

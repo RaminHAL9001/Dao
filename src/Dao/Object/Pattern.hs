@@ -234,7 +234,7 @@ matchObjectSet op branches tree = guard $ case op of
   NoneOfSet -> null $ T.elems isectd
   where
     tree0  = makeTree branches
-    isectd = T.merge T.intersection const tree0 tree -- Yes, 'tree0' and then 'tree' is correct.
+    isectd = T.intersection tree0 tree -- Yes, 'tree0' and then 'tree' is correct.
     -- The 'isectd' is a tree of branches mimicking the input set, but containing only 'OTrue'
     -- values, because in this predicate we don't care about the nature of the leaves, only the
     -- nature of the branches.

@@ -98,6 +98,12 @@ instance Structured a => Structured (Com a) where
       ([], bx) -> ComAfter     c bx
       (ax, bx) -> ComAround ax c bx
 
+putComments :: [Comment] -> Update ()
+putComments coms = if null coms then return () else putDataAt "comments" coms
+
+getComments :: Update [Comment]
+getComments = mplus (getDataAt "comments") (return [])
+
 fromShowable :: Show a => a -> T.Tree Name Object
 fromShowable = T.Leaf . OString . ustr . show
 
@@ -180,18 +186,18 @@ instance Structured AST_Object where
     AST_Paren    a b   loc -> with "paren" $
       putDataAt "visible" a >> putData b >> putData loc
     AST_ArraySub a b c loc -> with "subscript" $
-      putDataAt "bounds" a >> putDataAt "comments" b >> putData c >> putData loc
+      putDataAt "bounds" a >> putComments b >> putData c >> putData loc
     AST_FuncCall     a b c loc -> with "funcCall" $
-      putData a >> putDataAt "comments" b >> putDataAt "arguments" c >> putData loc
-    AST_Dict     a b c loc -> with "constructor" $
-      putData a >> putDataAt "comments" b >> putDataAt "arguments" c >> putData loc
-    AST_Array    a b   loc -> with "constructor" $
+      putData a >> putComments b >> putDataAt "arguments" c >> putData loc
+    AST_Dict     a b c loc -> with "container" $
+      putData a >> putComments b >> putDataAt "arguments" c >> putData loc
+    AST_Array    a b   loc -> with "container" $
       putData (ustr "array") >> putDataAt "bounds" a >> putDataAt "arguments" b >> putData loc
-    AST_Struct   a b   loc -> with "constructor" $
+    AST_Struct   a b   loc -> with "container" $
       putData (ustr "struct") >> putData a >> putDataAt "arguments" b >> putData loc
-    AST_Data     a b   loc -> with "constrcutor" $
-      putData (ustr "data") >> putDataAt "comments" a >> putDataAt "arguments" b >> putData loc
-    AST_Lambda   a b c loc -> with "constructor" $
+    AST_Data     a b   loc -> with "container" $
+      putData (ustr "data") >> putComments a >> putDataAt "arguments" b >> putData loc
+    AST_Lambda   a b c loc -> with "container" $
       putData (ustr (show a)) >> putDataAt "arguments" b >> putDataAt "script" c >> putData loc
     AST_MetaEval a     loc -> with "metaEval" $ putData a >> putData loc
   structToData = reconstruct $ msum $
@@ -200,14 +206,16 @@ instance Structured AST_Object where
     , with "equation"  $ liftM4 AST_Equation  getData         (getDataAt "op") (getDataAt "next")    getData
     , with "prefix"    $ liftM3 AST_Prefix   (getDataAt "op")  getData          getData
     , with "paren"     $ liftM3 AST_Paren    (mplus (getDataAt "visible") (return False))    getData getData
-    , with "subscript" $ liftM4 AST_ArraySub (getDataAt "bounds") (getDataAt "comments")     getData getData
-    , with "funcCall"  $ liftM4 AST_FuncCall  getData (getDataAt "comments") (getDataAt "arguments") getData
-    , with "constructor" $ do
+    , with "subscript" $ liftM4 AST_ArraySub (getDataAt "bounds") (getComments)     getData getData
+    , with "funcCall"  $ liftM4 AST_FuncCall  getData (getComments) (getDataAt "arguments") getData
+    , with "container" $ do
         kind <- getStringData "constructor type"
+        let mkDict = liftM3 (AST_Dict (ustr kind)) (getComments) (getDataAt "arguments") getData
         case kind of
+          kind | kind=="set" || kind=="list" || kind=="dict" || kind=="intmap" -> mkDict
           "array"  -> liftM3 AST_Array (getDataAt "bounds") (getDataAt "arguments") getData
           "struct" -> liftM3 AST_Struct getData (getDataAt "arguments") getData
-          "data"   -> liftM3 AST_Data   (getDataAt "comments") (getDataAt "arguments") getData
+          "data"   -> liftM3 AST_Data   (getComments) (getDataAt "arguments") getData
           kind -> case readsPrec 0 kind of
             [(kind, "")] -> liftM3 (AST_Lambda kind) (getDataAt "arguments") (getDataAt "script") getData
             _ -> updateFailed (ostr kind) "unknown type of object expression contructor"
@@ -218,9 +226,9 @@ instance Structured AST_Object where
 instance Structured AST_Script where
   dataToStruct a = deconstruct $ case a of
     AST_EvalObject   a b     loc -> with "eval" $
-      putData a >> putDataAt "comments" b >> putData loc
+      putData a >> putComments b >> putData loc
     AST_IfThenElse   a b c d loc -> with "if" $
-      putDataAt "comments" a >> putData b >> putDataAt "then" c >> putDataAt "else" d >> putData loc
+      putComments a >> putData b >> putDataAt "then" c >> putDataAt "else" d >> putData loc
     AST_TryCatch     a b c   loc -> with "try" $ do
       putData a
       if unComment b == nil then return () else putDataAt "varName" b >> putDataAt "catch" c
@@ -230,15 +238,15 @@ instance Structured AST_Script where
     AST_WhileLoop    a b     loc -> with "while" $
       putData a >> putDataAt "script" b >> putData loc
     AST_ContinueExpr a b c   loc -> with (if a then "continue" else "break") $
-      putDataAt "comments" b >> putData c >> putData loc
+      putComments b >> putData c >> putData loc
     AST_ReturnExpr   a b     loc -> with (if a then "return" else "throw") $
       putData b >> putData loc
     AST_WithDoc      a b     loc -> with "with" $
       putData a >> putDataAt "script" b >> putData loc
   structToData = reconstruct $ msum $
-    [ with "eval"  $ liftM3 AST_EvalObject getData (getDataAt "comments") getData
+    [ with "eval"  $ liftM3 AST_EvalObject getData (getComments) getData
     , with "if"    $
-        liftM5 AST_IfThenElse (getDataAt "comments") getData (getDataAt "then") (getDataAt "else") getData
+        liftM5 AST_IfThenElse (getComments) getData (getDataAt "then") (getDataAt "else") getData
     , with "try"   $ do
         script <- getData
         str <- getDataAt "varName"
@@ -255,7 +263,7 @@ instance Structured AST_Script where
     , mplus this (return ONull) >>= \o -> updateFailed o "script expression"
     ]
     where
-      getContinue tf = liftM3 (AST_ContinueExpr tf) (getDataAt "comments") getData getData
+      getContinue tf = liftM3 (AST_ContinueExpr tf) (getComments) getData getData
       getReturn   tf = liftM2 (AST_ReturnExpr   tf)                        getData getData
 
 instance Structured Reference where

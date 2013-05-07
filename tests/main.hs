@@ -213,7 +213,7 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
                 then  err "Construction does not match source object" >> return False
                 else  return True
             Backtrack -> err "Ambiguous construction" >> return False
-            PFail _ b -> err ("Construction failed, "++uchars b) >> return False
+            PFail   b -> err ("Construction failed, "++intercalate "." (map uchars (fst b))++" = "++prettyShow (snd b)) >> return False
         status2 <- handle (\ (ErrorCall e) -> err ("Binary decoding failed: "++show e) >> return False) $ do
           if seq obexp $! seq bytes $! bin/=binexp
             then  err "Binary deserialization does not match source object" >> return False
@@ -222,7 +222,7 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
           case par of
             OK      o -> seq o $! return True
             Backtrack -> err "Ambiguous parse" >> return False
-            PFail _ b -> err ("Parse failed, "++uchars b) >> return False
+            PFail   b -> err (show b) >> return False
         putMVar notify (status1&&status2&&status3)
         yield >> loop ref
   sep = "--------------------------------------------------------------------------"

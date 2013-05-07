@@ -105,7 +105,8 @@ enum-set-test:
 
 DEBUG_DEPENDS := tests/main.hs \
   src/Dao/String.hs      src/Dao/Token.hs         src/Dao/Predicate.hs   src/Dao/Object/DeepSeq.hs \
-  src/Dao/Parser.hs      src/Dao/Object.hs        src/Dao/PPrint.hs \
+  src/Dao/Parser.hs      src/Dao/Object.hs        src/Dao/PPrint.hs      src/Dao/Object/Struct.hs \
+  src/Dao/Struct.hs      src/Dao/Object/Random.hs \
   src/Dao/Object/PPrint.hs src/Dao/Object/Parser.hs src/Dao/Object/Binary.hs
 
 GHC_COMPILE_DEBUG := $(GHC_COMPILE) -rtsopts -with-rtsopts='-M8G -N4'

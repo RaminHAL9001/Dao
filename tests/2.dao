@@ -14,6 +14,7 @@ rule "$*, $*" {
 	print("query: " + d);
 	print("$1 = " + a + "\"");
 	print("$2 = " + b + "\"");
+	// Comment here
 	if(defined(static(lastQuery)) && static(lastQuery)==d) {
 		print("STOP ON: " + a);
 		return;

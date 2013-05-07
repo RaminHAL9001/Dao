@@ -87,6 +87,7 @@ instance NFData Location where
   rnf (Location a b c d e f) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e $! deepseq f ()
 
 instance NFData AST_Script where
+  rnf (AST_Comment      a        ) = deepseq a ()
   rnf (AST_EvalObject   a b c    ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (AST_IfThenElse   a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
   rnf (AST_TryCatch     a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()

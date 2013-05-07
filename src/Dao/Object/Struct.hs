@@ -225,6 +225,7 @@ instance Structured AST_Object where
 
 instance Structured AST_Script where
   dataToStruct a = deconstruct $ case a of
+    AST_Comment      a           -> with "notes" $ putData a
     AST_EvalObject   a b     loc -> with "eval" $
       putData a >> putComments b >> putData loc
     AST_IfThenElse   a b c d loc -> with "if" $
@@ -260,11 +261,12 @@ instance Structured AST_Script where
     , with "return"   $ getReturn True
     , with "throw"    $ getReturn False
     , with "with"  $ liftM3 AST_WithDoc getData (getDataAt "script") getData
+    , with "notes" $ liftM  AST_Comment getData -- needs to have a different name from "comments" to avoid confusion
     , mplus this (return ONull) >>= \o -> updateFailed o "script expression"
     ]
     where
       getContinue tf = liftM3 (AST_ContinueExpr tf) (getComments) getData getData
-      getReturn   tf = liftM2 (AST_ReturnExpr   tf)                        getData getData
+      getReturn   tf = liftM2 (AST_ReturnExpr   tf)                       getData getData
 
 instance Structured Reference where
   dataToStruct = deconstruct . place . ORef

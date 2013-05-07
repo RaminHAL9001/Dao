@@ -256,6 +256,7 @@ instance HasRandGen AST_Script where
     , liftM4 AST_ContinueExpr randBool randComments comRandObjExpr no
     , liftM3 AST_ReturnExpr   randBool comRandObjExpr no
     , liftM3 AST_WithDoc      comRandObjExpr randScriptExpr no
+    , liftM  AST_Comment      randComments
     ]
 
 instance HasRandGen LambdaExprType where

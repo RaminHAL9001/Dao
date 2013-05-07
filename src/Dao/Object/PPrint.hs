@@ -179,6 +179,7 @@ pPrintSubBlock header px = pPrintComSubBlock header (Com px)
 
 instance PPrintable AST_Script where
   pPrint expr = pGroup True $ case expr of
+    AST_Comment             coms -> mapM_ pPrint coms
     AST_EvalObject   objXp  coms                    _ ->
       pPrint objXp >> mapM_ pPrint coms >> pString ";"
     AST_IfThenElse   coms   ifXp  thenXp  elseXp    _ -> do

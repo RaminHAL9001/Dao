@@ -50,7 +50,8 @@ data AST_TopLevel
 -- | Part of the Dao language abstract syntax tree: any expression that controls the flow of script
 -- exectuion.
 data AST_Script
-  = AST_EvalObject   AST_Object   [Comment]                                                  Location
+  = AST_Comment                   [Comment]
+  | AST_EvalObject   AST_Object   [Comment]                                                  Location
   | AST_IfThenElse   [Comment]    AST_Object  (Com [Com AST_Script])  (Com [Com AST_Script]) Location
     -- ^ @if /**/ objExpr /**/ {} /**/ else /**/ if /**/ {} /**/ else /**/ {} /**/@
   | AST_TryCatch     (Com [Com AST_Script])   (Com UStr)                   [Com AST_Script]  Location
@@ -300,6 +301,7 @@ instance Intermediate TopLevelExpr AST_TopLevel where
 
 instance Intermediate ScriptExpr AST_Script where
   toInterm   ast = case ast of
+    AST_Comment      _           -> mzero
     AST_EvalObject   a b     loc -> liftM2 EvalObject   (toInterm a)                 (ll loc)
     AST_IfThenElse   _ b c d loc -> liftM4 IfThenElse   (toInterm b) (uc2 c) (uc2 d) (ll loc)
     AST_TryCatch     a b c   loc -> liftM4 TryCatch     (uc2 a)      (uc  b) (uc1 c) (ll loc)

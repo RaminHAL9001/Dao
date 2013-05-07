@@ -361,12 +361,13 @@ parseInteractiveScript = many commented where
 
 -- | This is the entry point for parsing a 'Dao.Object.AST_Script'.
 parseScriptExpr :: Parser AST_Script
-parseScriptExpr = applyLocation $ mplus keywordExpr objectExpr where
+parseScriptExpr = applyLocation $ msum [keywordExpr, objectExpr, commentExpr] where
   objectExpr = parseObjectExpr >>= uncurry objectExprStatement
   keywordExpr = do
     key <- parseKeywordOrName
     com1 <- parseComment
     parseKeywordScriptExpr key com1
+  commentExpr = regexMany space >> parseComment >>= return . AST_Comment
 
 -- | Parse a script expression that starts with a keyword, like "if", "for", "while", or "try".
 parseKeywordScriptExpr :: NameComParser AST_Script

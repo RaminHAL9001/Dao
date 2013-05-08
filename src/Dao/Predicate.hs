@@ -187,7 +187,7 @@ instance Monad m => MonadError tok (PTrans tok m) where
 -- the first, but will evaluate the second only if the first does not succeed, that is, if the first
 -- evaluates to either 'Control.Monad.mzero' or to 'Control.Monad.Error.Class.throwError'.  Minimal
 -- complete definition is 'catchPValue' and 'tokenThrowError'.
-class (MonadError tok m, MonadPlus m) => ErrorMonadPlus tok m | m -> tok where
+class (MonadError tok m, MonadPlus m) => ErrorMonadPlus tok m where
   -- | Unlifts the 'PValue' resulting from evaluating the given monadic computation, returning the
   -- 'PValue' as 'Backtrack' if the given monad evaluates to 'Control.Monad.mzero' and as
   -- 'PFail' if the given monad evaluates to 'Control.Monad.Error.Class.throwError'.
@@ -264,7 +264,7 @@ maybeToPFail err a = case a of
 -- | If the given monadic function (which instantiates 'ErrorMonadPlus') evaluates with a
 -- controlling 'PValue' of 'PFail', the given mapping function is applied to the token value stored
 -- within the 'PFail', then the modified 'PFail' is placed back into the monad transformer.
-mapPFail :: ErrorMonadPlus tok m => (tok -> tok) -> m a -> m a
+mapPFail :: (ErrorMonadPlus tok m, ErrorMonadPlus tok' m) => (tok -> tok') -> m a -> m a
 mapPFail fmap func = catchPValue func >>= \pval -> case pval of
   OK      a -> return a
   Backtrack -> mzero

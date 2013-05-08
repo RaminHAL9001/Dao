@@ -59,15 +59,17 @@ instance (Eq p, Eq a) => Eq (Tree p a) where
 instance (Ord p, Ord a) => Ord (Tree p a) where
   compare a b = case (a, b) of
     (Void           , Void           ) -> EQ
-    (Leaf       a   , Leaf       b   ) -> compare a b
-    (Branch     a   , Branch     b   ) -> compare a b
+    (Leaf       a   , Leaf       b   ) -> compare a  b
+    (Branch       aa, Branch       bb) -> compare aa bb
     (LeafBranch a aa, LeafBranch b bb) -> case compare a b of
       EQ -> compare aa bb
       e  -> e
     (Void           , _              ) -> LT
+    (_              , Void           ) -> GT
     (Leaf       _   , _              ) -> LT
-    (Branch     _   , _              ) -> LT
-    (LeafBranch _ _ , _              ) -> LT
+    (_              , Leaf       _   ) -> GT
+    (Branch       _ , _              ) -> LT
+    (_              , Branch       _ ) -> GT
 
 -- | If the given node is a 'Leaf' or 'LeafBranch', returns the Leaf portion of the node.
 getLeaf :: Tree p a -> Maybe a
@@ -78,15 +80,15 @@ getBranch :: Tree p a -> Maybe (M.Map p (Tree p a))
 getBranch t = case t of { Branch b -> Just b; LeafBranch _ b -> Just b; _ -> Nothing }
 
 -- | A combinator to modify the data in the 'Leaf' and 'LeafBranch' nodes of a tree when passed to
--- one of the functions below..
+-- one of the functions below.
 type ModLeaf     a = Maybe a -> Maybe a
 
 -- | A combinator to modify the data in the 'Branch' and 'LeafBranch' nodes of a tree when passed to
--- one of the functions below..
+-- one of the functions below.
 type ModBranch p a = Maybe (M.Map p (Tree p a)) -> Maybe (M.Map p (Tree p a))
 
 -- | A combinator to modify whole nodes, be they 'Leaf's or 'Branch'es, when passed to one of the
--- functions below..
+-- functions below.
 type ModTree   p a = Maybe (Tree p a) -> Maybe (Tree p a)
 
 -- | Use a 'ModLeaf' function to insert, update, or remove 'Leaf' and 'LeafBranch' nodes.

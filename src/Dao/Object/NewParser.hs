@@ -41,6 +41,24 @@ import           Numeric
 
 ----------------------------------------------------------------------------------------------------
 
+-- | This is the list of tokenizers used by 'lex' to break-up input string into parsable 'Token's.
+daoTokenizers :: [Tokenizer]
+daoTokenizers = 
+  [getSpace, getComInln, getComEndl, getStrLit, lexHexDigits, lexDigits, lexAlphabetic, getPunct]
+
+-- | The punctuation marks used in the Dao language, sorted from longest to shortest strings.
+daoPuncts :: [String]
+daoPuncts = reverse $ nub $ sortBy len $ words $ concat $
+  [ allArithOp2Strs, " ", allArithOp1Strs, " ", allUpdateOpStrs
+  , " : ; " -- legal tokens that are not infix or suffix operators
+  , " ( ) { } [ ] #{ }# " -- parenthetical tokens are also included here.
+  ]
+  where
+    len a b = case compare (length a) (length b) of
+      EQ -> compare a b
+      GT -> GT
+      LT -> LT
+
 -- copied from the Dao.Parser module
 rationalFromString :: Int -> Rational -> String -> Maybe Rational
 rationalFromString maxValue base str =
@@ -63,41 +81,41 @@ rationalFromString maxValue base str =
 -- might parse to 
 parseNumber :: Parser Object
 parseNumber = marker $ msum [parseDot 10 nil, hexadecimal, octOrBin, decimal] where
-  dot = tokenStr Punct "."
+  dot = opreator "."
   octOrBin = do
-    int <- tokenP Numbers (\str -> head str == '0')
+    int <- tokenP Digits (\str -> head str == '0')
     let uint = uchars int
     msum $
       [ do guard (uint=="0") -- octal or binary integer
-           typ  <- fmap (head . uchars) (tokenP Letters (\tok -> tok=="o" || tok=="b"))
-           int  <- mplus (token Numbers) (return nil)
+           typ  <- fmap (head . uchars) (tokenP Alphabetic (\tok -> tok=="o" || tok=="b"))
+           int  <- mplus (token Digits) (return nil)
            -- ^ ignore the previous "int" value it was the 0 before the "o" or "b" character
-           frac <- mplus (dot >> token Numbers) (return nil)
+           frac <- mplus (dot >> token Digits) (return nil)
            endWith (if typ=='o' then 8 else 2) int frac False nil
       , guard (uint=="0") >> (parseDot 10 int) -- 0.XXX is a base-10 number
       , do guard (uint=="00") -- 00.XXX is a base-8 number
-           frac <- dot >> token Numbers
+           frac <- dot >> token Digits
            endWith 8 int frac False nil
       , endWith 8 int nil False nil
       ]
   hexadecimal = do
-    tokenStr Numbers "0"
-    tokenP Letters (\str -> str=="x" || str=="X")
+    tokenStr Digits "0"
+    tokenP Alphabetic (\str -> str=="x" || str=="X")
     int  <- token HexDigits
     frac <- mplus (dot >> token HexDigits) (return nil)
     endWith 16 int frac False nil
   decimal = do
-    int <- token Numbers
+    int <- token Digits
     msum [parseDot 10 int, parseExp 10 int nil, endWith 10 int nil False nil]
   parseDot base int = do
-    frac <- dot >> token Numbers
+    frac <- dot >> token Digits
     mplus (parseExp base int frac) (endWith base int frac False nil)
   parseExp base int frac = do
-    tok <- tokenP Letters (\tok -> tok=="E" || tok=="e")
+    tok <- tokenP Alphabetic (\tok -> tok=="E" || tok=="e")
     expect ("an integer exponent after the "++show tok) $ do
       hasMinusSign <- fmap ((=="-") . uchars) $
         mplus (tokenP Punct (\tok -> tok=="-" || tok=="+")) (return nil)
-      exp <- token Numbers
+      exp <- token Digits
       endWith 10 int frac hasMinusSign exp
   endWith base int frac hasMinusSign exp = do
     int  <- return (uchars int)
@@ -114,7 +132,7 @@ parseNumber = marker $ msum [parseDot 10 nil, hexadecimal, octOrBin, decimal] wh
     (r_is_an_integer, r) <- case rational of
       Nothing -> fail ("incorrect digits used to form a base-"++show base++" number")
       Just  r -> return r
-    typ <- fmap uchars (mplus (token Letters) (return nil))
+    typ <- fmap uchars (mplus (token Alphabetic) (return nil))
     case typ of
       "U" -> return $ OWord (fromIntegral (round r))
       "I" -> return $ OInt  (round r)
@@ -137,14 +155,14 @@ parseNumber = marker $ msum [parseDot 10 nil, hexadecimal, octOrBin, decimal] wh
 
 parseDiffTime :: Parser T_diffTime
 parseDiffTime = marker $ do
-  let colon = tokenStr Punct ":"
-  hours   <- token Numbers
-  minutes <- colon >> token Numbers
-  seconds <- colon >> token Numbers
+  let colon = operator ":"
+  hours   <- token Digits
+  minutes <- colon >> token Digits
+  seconds <- colon >> token Digits
   if ulength minutes > 2 || ulength seconds > 2
     then fail ("invalid time literal expression")
     else do
-      milisec <- mplus (fmap uchars (tokenStr Punct "." >> token Numbers)) (return "")
+      milisec <- mplus (fmap uchars (operator "." >> token Digits)) (return "")
       hours   <- return (uchars hours)
       minutes <- return (uchars minutes)
       seconds <- return (uchars seconds)
@@ -156,13 +174,13 @@ parseDiffTime = marker $ do
 
 parseDate :: Parser T_time
 parseDate = marker $ do
-  let dash = tokenStr Punct "-"
-  year  <- fmap uchars (token Numbers)
-  month <- fmap uchars (dash >> token Numbers)
-  day   <- fmap uchars (dash >> token Numbers)
+  let dash = operator "-"
+  year  <- fmap uchars (token Digits)
+  month <- fmap uchars (dash >> token Digits)
+  day   <- fmap uchars (dash >> token Digits)
   let commaSpace = -- a comma followed by an optional space OR no comma but a required space
-        mplus (tokenStr Punct "," >> skipSpaces) (void $ token Space)
+        mplus (operator "," >> skipSpaces) (void $ token Space)
   diffTime <- mplus (commaSpace >> parseDiffTime) (return (fromRational 0))
-  zone <- mplus (commaSpace >> fmap uchars (token Letters)) (return "")
+  zone <- mplus (commaSpace >> fmap uchars (token Alphabetic)) (return "")
   return (addUTCTime diffTime (read (year ++ '-':month ++ '-':day ++ " 00:00:00" ++ zone)))
 

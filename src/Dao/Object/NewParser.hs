@@ -22,7 +22,7 @@ module Dao.Object.NewParser where
 
 import           Dao.String
 import qualified Dao.Token as L
-import           Dao.Object
+import           Dao.Object hiding (Tokenizer)
 import           Dao.Object.AST
 import           Dao.EnumSet
 import           Dao.NewParser
@@ -44,7 +44,20 @@ import           Numeric
 -- | This is the list of tokenizers used by 'lex' to break-up input string into parsable 'Token's.
 daoTokenizers :: [Tokenizer]
 daoTokenizers = 
-  [getSpace, getComInln, getComEndl, getStrLit, lexHexDigits, lexDigits, lexAlphabetic, getPunct]
+  [ lexStringLiteral
+  , lexCharLiteral
+  , lexInlineCComment
+  , lexEndlineCComment
+  , lexSpace
+  , lexKeyword
+  , lexNumber
+  , lexOperator $ concat $
+      [allArithOp2Strs, " ", allArithOp1Strs, " ", allUpdateOpStrs , " : ; "]
+  , lexString "#{" >> makeToken Opener
+  , lexString "}#" >> makeToken Closer
+  , lexCharP (charSet "([{") >> makeToken Opener
+  , lexCharP (charSet "}])") >> makeToken Closer
+  ]
 
 -- | The punctuation marks used in the Dao language, sorted from longest to shortest strings.
 daoPuncts :: [String]
@@ -76,12 +89,16 @@ rationalFromString maxValue base str =
       a | isUpper a -> return (ord a - ord 'A' + 10)
       _             -> mzero
 
+parseNumber :: Parser Object
+parseNumber = do
+  num <- fmap uchars (tokenType Number)
+
 -- | Parses a numeric object without the leading positive or negative sign. The sign must be part of
 -- an equation expression. If the negative sign were parsed in this parser, an expression like @1-1@
 -- might parse to 
-parseNumber :: Parser Object
-parseNumber = marker $ msum [parseDot 10 nil, hexadecimal, octOrBin, decimal] where
-  dot = opreator "."
+old_parseNumber :: Parser Object
+old_parseNumber = marker $ msum [parseDot 10 nil, hexadecimal, octOrBin, decimal] where
+  dot = operator "."
   octOrBin = do
     int <- tokenP Digits (\str -> head str == '0')
     let uint = uchars int

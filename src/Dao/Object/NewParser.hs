@@ -46,8 +46,8 @@ daoTokenizers :: [Tokenizer]
 daoTokenizers = 
   [ lexStringLiteral
   , lexCharLiteral
-  , lexInlineCComment
-  , lexEndlineCComment
+  , lexInlineC_Comment
+  , lexEndlineC_Comment
   , lexSpace
   , lexKeyword
   , lexNumber

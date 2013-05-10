@@ -65,7 +65,7 @@ DAO_PROJECT_FILES      := $(shell $(call listfile,$(DAO_PROJECT_FILES_LIST)))
 DAO_INCLUDES   = -i'./src' -i'./tests'
 
 GHC_BUILD_OPTS   = -threaded
-GHC_COMPILE      = ghc $(DAO_INCLUDES) $(GHC_BUILD_OPTS) --make
+GHC_COMPILE      = ghc $(GHC_BUILD_OPTS) --make $(DAO_INCLUDES)
 GHC_COMPILE_PROF = $(GHC_COMPILE) -rtsopts -prof
 
 ifndef DAO_PROJECT_FILES
@@ -118,8 +118,11 @@ GHC_COMPILE_DEBUG := $(GHC_COMPILE) -rtsopts -with-rtsopts='-M8G -N4'
 ./debug/test-prof: $(DEBUG_DEPENDS) ghc-build-opts.mk
 	$(GHC_COMPILE_DEBUG) -prof $(DEBUG_DEPENDS) -o ./debug/test-prof
 
-.PHONEY: Dao.Object.NewParser
+.PHONEY: Dao.Object.NewParser Dao.NewParser
+Dao.NewParser: ./src/Dao/NewParser.o
 Dao.Object.NewParser: ./src/Dao/Object/NewParser.o
-./src/Dao/Object/NewParser.o: src/Dao/Object/NewParser.hs src/Dao/NewParser.hs src/Dao/Predicate.hs src/Dao/Token.hs
-	$(GHC_COMPILE) -i./src Dao.Object.NewParser
+./src/Dao/NewParser.o: src/Dao/NewParser.hs
+	$(GHC_COMPILE) Dao.NewParser
+./src/Dao/Object/NewParser.o: src/Dao/Object/NewParser.hs src/Dao/NewParser.o src/Dao/Predicate.hs src/Dao/Token.hs
+	$(GHC_COMPILE) Dao.Object.NewParser
 

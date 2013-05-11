@@ -673,24 +673,6 @@ lexicalAnalysis tokenizers tablen input = fmap (cluster 1 []) (lexLoop 1 1 [] in
           newColNum   = cols + (if lns>0 then 0 else colNum)
       in  positionTok (rx++[(lineNum, colNum, tok)]) newLineNum newColNum toks
 
--- | This is the list of tokenizers used by 'lex' to break-up input string into parsable 'Token's.
-daoTokenizers :: [Tokenizer]
-daoTokenizers = 
-  [ lexStringLiteral
-  , lexCharLiteral
-  , lexInlineC_Comment
-  , lexEndlineC_Comment
-  , lexSpace
-  , lexKeyword
-  , lexNumber
-  , lexOperator $ concat $
-      [allArithOp2Strs, " ", allArithOp1Strs, " ", allUpdateOpStrs , " , : ; "]
-  , lexString "#{" >> makeToken Opener
-  , lexString "}#" >> makeToken Closer
-  , lexCharP (charSet "([{") >> makeToken Opener
-  , lexCharP (charSet "}])") >> makeToken Closer
-  ]
-
 testLexicalAnalysis_withFilePath :: (Eq tok, Enum tok, Show tok) => [GenTokenizer tok] -> Word -> FilePath -> String -> IO ()
 testLexicalAnalysis_withFilePath tokenizers tablen filepath input = putStrLn result where
   result = case lexicalAnalysis tokenizers tablen input of

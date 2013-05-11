@@ -52,7 +52,7 @@ daoTokenizers =
   , lexKeyword
   , lexNumber
   , lexOperator $ concat $
-      [allArithOp2Strs, " ", allArithOp1Strs, " ", allUpdateOpStrs , " : ; "]
+      [allArithOp2Strs, " ", allArithOp1Strs, " ", allUpdateOpStrs , " , : ; "]
   , lexString "#{" >> makeToken Opener
   , lexString "}#" >> makeToken Closer
   , lexCharP (charSet "([{") >> makeToken Opener

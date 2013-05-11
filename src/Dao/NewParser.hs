@@ -497,11 +497,14 @@ lexKeyword = do
 lexNumber :: Tokenizer
 lexNumber = do
   (getDot, isHex) <- msum $
-    [ do  lexChar '0'
-          mplus (lexCharP (charSet "xX") >> lexWhile isHexDigit >> return (True , True ))
-                (lexCharP (charSet "Bb") >> lexWhile isDigit    >> return (True , False))
-    , lexChar '.' >> lexWhile isDigit >> return (False, False)
-    , lexWhile isDigit                >> return (True , False)
+    [ do  lexChar '0' -- lex a leading zero
+          msum $
+            [ lexCharP (charSet "xX") >> lexWhile isHexDigit >> return (True , True )
+            , lexCharP (charSet "Bb") >> lexWhile isDigit    >> return (True , False)
+            , return (True , False) -- a zero not followed by an 'x' or 'b' is also valid
+            ]
+    , lexChar '.' >> lexWhile isDigit >> return (False, False) -- lex a leading decimal point
+    , lexWhile isDigit                >> return (True , False) -- lex an ordinary number
     ]
   lexOptional $ do
     if getDot
@@ -670,18 +673,37 @@ lexicalAnalysis tokenizers tablen input = fmap (cluster 1 []) (lexLoop 1 1 [] in
           newColNum   = cols + (if lns>0 then 0 else colNum)
       in  positionTok (rx++[(lineNum, colNum, tok)]) newLineNum newColNum toks
 
+-- | This is the list of tokenizers used by 'lex' to break-up input string into parsable 'Token's.
+daoTokenizers :: [Tokenizer]
+daoTokenizers = 
+  [ lexStringLiteral
+  , lexCharLiteral
+  , lexInlineC_Comment
+  , lexEndlineC_Comment
+  , lexSpace
+  , lexKeyword
+  , lexNumber
+  , lexOperator $ concat $
+      [allArithOp2Strs, " ", allArithOp1Strs, " ", allUpdateOpStrs , " , : ; "]
+  , lexString "#{" >> makeToken Opener
+  , lexString "}#" >> makeToken Closer
+  , lexCharP (charSet "([{") >> makeToken Opener
+  , lexCharP (charSet "}])") >> makeToken Closer
+  ]
+
 testLexicalAnalysis_withFilePath :: (Eq tok, Enum tok, Show tok) => [GenTokenizer tok] -> Word -> FilePath -> String -> IO ()
-testLexicalAnalysis_withFilePath tokenizers tablen filename input = putStrLn result where
+testLexicalAnalysis_withFilePath tokenizers tablen filepath input = putStrLn result where
   result = case lexicalAnalysis tokenizers tablen input of
     OK  lines -> concatMap showLine lines
-    Backtrack -> filename++": lexical analysis evalauted to \"Backtrack\""
-    PFail err -> filename++show err
+    Backtrack -> reportFilepath++": lexical analysis evalauted to \"Backtrack\""
+    PFail err -> reportFilepath++show err
   showLine line = concat $
     [ "\n----------\nline "
     , show (lineNumber line), "\n"
     , intercalate ", " $ map showTok (lineTokens line)
     ]
   showTok (col, tok) = concat [show col, " ", show (tokType tok), " ", show (tokToUStr tok)]
+  reportFilepath = if null filepath then "" else filepath++":"
 
 -- | Run the 'lexicalAnalysis' with the 'GenTokenizers' on the given 'Prelude.String' and print out
 -- every token created.

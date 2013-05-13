@@ -65,9 +65,12 @@ data TT
   | Label       -- ^ same as 'Identifier', unless you treat it differently
   | Digits
   | Number      -- ^ a whole number including floating points, not just digits.
+  | NumberExp   -- ^ a whole number including floating points with exponents, e.g. 6.022e+23 or 
   | PointDigits -- ^ digits with a decimal point
   | OctDigits
   | HexDigits
+  | DateTok
+  | TimeTok
   | Punct       -- ^ punctuation mark, not including mathematical symbols
   | Symbol      -- ^ a symbol (like punctuation)
   | Operator
@@ -224,6 +227,10 @@ mightHaveNLorTabsTT tok = case tokType tok of
   Keyword     -> False
   Alnum       -> False
   Digits      -> False
+  Number      -> False
+  NumberExp   -> False
+  DateTok     -> False
+  TimeTok     -> False
   PointDigits -> False
   OctDigits   -> False
   HexDigits   -> False
@@ -483,12 +490,17 @@ lexKeyword = do
   lexOptional (lexWhile (\c -> isAlphaNum c || c=='_'))
   makeToken Keyword
 
--- | Create a 'Tokenizer' that lexes the various forms of numbers. Hexadecimal and binary number
--- expressions are also tokenized, the characters @'x'@, @'X'@, @'b'@, and @'B'@ are all prefixes to
--- a string of hexadecimal digits (tokenized with 'Data.Char.isHexDigit'). So the following
--- expression are all parsed as 'Number' tokens:
--- > 0xO123456789ABCDEfabcdef, 0XO123456789ABCDEfabcdef, 0bO123456789ABCDEfabcdef, 0BO123456789ABCDEfabcdef
--- these could all be valid hexadecimal or binary numbers. Of course @0bO123456789ABCDEfabcdef@ is
+-- | Create a 'Tokenizer' that lexes the various forms of numbers. If the number contains no special
+-- modification, i.e. no hexadecimal digits, no decimal points, and no exponents, a 'Digits' token
+-- is returned. Anything more exotic than simple base-10 digits and a 'Number' token is returned. If
+-- the 'Number' is expressed in base-10 and also has an exponent, like @6.022e23@ where @e23@ is the
+-- exponent or @1.0e-10@ where @e-10@ is the exponent, then 'NumberExp' is returned.
+-- 
+-- Hexadecimal and binary number expressions are also tokenized, the characters @'x'@, @'X'@, @'b'@,
+-- and @'B'@ are all prefixes to a string of hexadecimal digits (tokenized with
+-- 'Data.Char.isHexDigit'). So the following expression are all parsed as 'Number' tokens:
+-- > 0xO123456789ABCDEfabcdef, 0XO123456789ABCDEfabcdef, 0bO123456789, 0BO123456789
+-- these could all be valid hexadecimal or binary numbers. Of course @0bO123456789@ is
 -- not a valid binary number, but this lexer does not care about the actual value, it is expected
 -- that the 'GenParser' report it as an error during the 'syntacticAnalysis' phase. Floating-point
 -- decimal numbers are also lexed appropriately, and this includes floating-point numbers expressed
@@ -496,31 +508,40 @@ lexKeyword = do
 -- an error in the 'syntacticAnalysis' phase.
 lexNumber :: Tokenizer
 lexNumber = do
+  let altBase typ xb@(u:l:_) pred = do
+        lexCharP (charSet xb)
+        mplus (lexWhile pred) (fail ("no digits after "++typ++" 0"++l:" token"))
   (getDot, isHex) <- msum $
     [ do  lexChar '0' -- lex a leading zero
           msum $
-            [ lexCharP (charSet "xX") >> lexWhile isHexDigit >> return (True , True )
-            , lexCharP (charSet "Bb") >> lexWhile isDigit    >> return (True , False)
-            , return (True , False) -- a zero not followed by an 'x' or 'b' is also valid
+            [ altBase "hexadecimal" "Xx" isHexDigit >> return (True , True )
+            , altBase "binary"      "Bb" isDigit    >> return (True , False)
+            , lexWhile isDigit                      >> return (True , False)
+            , return (True , False)
+              -- ^ a zero not followed by an 'x', 'b', or any other digits is also valid
             ]
     , lexChar '.' >> lexWhile isDigit >> return (False, False) -- lex a leading decimal point
     , lexWhile isDigit                >> return (True , False) -- lex an ordinary number
     ]
-  lexOptional $ do
-    if getDot
-      then  do
-        lexChar '.'
-        mplus (lexWhile (if isHex then isHexDigit else isDigit))
-              (fail "no digits after decimal point")
-      else  return ()
+  (gotDot, gotExp) <- flip mplus (return (False, False)) $ do
+    gotDot <-
+      if getDot -- we do not have the dot?
+        then  flip mplus (return False) $ do
+                lexChar '.'
+                mplus (lexWhile (if isHex then isHexDigit else isDigit))
+                      (fail "no digits after decimal point")
+                return True
+        else  return True -- we already had the dot
     if isHex
-      then  return ()
-      else  lexOptional $ do
+      then  return (gotDot, False) -- don't look for an exponent
+      else  flip mplus (return (gotDot, False)) $ do
               lexCharP (charSet "Ee")
               lexOptional (lexCharP (charSet "-+"))
               mplus (lexWhile isDigit)
                     (fail "no digits after exponent mark in decimal-point number")
-  makeToken Number
+              return (gotDot, True )
+  makeToken $
+    if gotDot then (if gotExp then NumberExp else Number) else (if isHex then HexDigits else Digits)
 
 -- | Creates a 'Label' token for haskell data type names, type names, class names, or constructors,
 -- i.e. one or more labels (alpha-numeric and underscore characters) separated by dots (with no
@@ -786,46 +807,50 @@ instance (Eq tok, Enum tok) => ErrorMonadPlus (GenParserErr tok) (GenParser tok)
   catchPValue (GenParser ptrans) = GenParser (catchPValue ptrans)
   assumePValue                   = GenParser . assumePValue
 
--- | Return the next token in the state. If the boolean parameter is true, the current token will
--- also be removed from the state.
-nextToken :: (Eq tok, Enum tok) => Bool -> GenParser tok (Word, Word, GenToken tok)
-nextToken doRemove = get >>= \lines -> case getLines lines of
+-- | Return the next token in the state along with it's line and column position. If the boolean
+-- parameter is true, the current token will also be removed from the state.
+nextTokenPos :: (Eq tok, Enum tok) => Bool -> GenParser tok (Word, Word, GenToken tok)
+nextTokenPos doRemove = get >>= \lines -> case getLines lines of
   []         -> mzero
   line:lines -> case lineTokens line of
-    []                 -> put (GenParserState{getLines=lines}) >> nextToken doRemove
+    []                 -> put (GenParserState{getLines=lines}) >> nextTokenPos doRemove
     (colNum, tok):toks -> do
       if doRemove then put (GenParserState{getLines = line{lineTokens=toks}:lines}) else return ()
       return (lineNumber line, colNum, tok)
 
+-- | Like 'nextTokenPos' but only returns the 'GenToken', not it's line and column position.
+nextToken :: (Eq tok, Enum tok) => Bool -> GenParser tok (GenToken tok)
+nextToken doRemove = nextTokenPos doRemove >>= \ (_, _, tok) -> return tok
+
 -- | Return the next token in the state if it is of the type specified, removing it from the state.
-token :: (Eq tok, Enum tok) => (tok -> Bool) -> GenParser tok UStr
-token requestedType = do
-  (_, _, tok) <- nextToken False
-  if requestedType (tokType tok) then nextToken True >> return (tokToUStr tok) else mzero
+tokenP :: (Eq tok, Enum tok) => (tok -> String -> Bool) -> GenParser tok UStr
+tokenP predicate = do
+  tok <- nextToken False
+  let tokUStr = tokToUStr tok
+  if predicate (tokType tok) (uchars tokUStr) then nextToken True >> return tokUStr else mzero
 
 -- | Return the next token in the state if it is of the type specified and also if the string value
 -- evaluated by the given predicate returns true, otherwise backtrack.
-tokenP :: (Eq tok, Enum tok) => (tok -> Bool) -> (String -> Bool) -> GenParser tok UStr
-tokenP requestedType predicate = token requestedType >>= \tokenString ->
-  if predicate (uchars tokenString) then return tokenString else mzero
+token :: (Eq tok, Enum tok) => (tok -> Bool) -> (String -> Bool) -> GenParser tok UStr
+token requestedType stringPredicate = tokenP (\typ str -> requestedType typ && stringPredicate str)
 
 tokenType :: (Eq tok, Enum tok) => tok -> GenParser tok UStr
-tokenType requestedType = token (==requestedType)
+tokenType requestedType = token (==requestedType) (const True)
 
 -- | Return the next token in the state if the string value of the token is exactly equal to the
 -- given string, and if the token type is any one of the given token types.
-tokenTypes :: (Eq tok, Enum tok) => [tok] -> String -> GenParser tok UStr
-tokenTypes requestedType compareString = tokenP (\b -> or (map (==b) requestedType)) (==compareString)
+tokenTypes :: (Eq tok, Enum tok) => [tok] -> GenParser tok UStr
+tokenTypes requestedTypes = token (\b -> or (map (==b) requestedTypes)) (const True)
 
 -- | Succeeds if the next 'Token' is a 'Alphabetic' 'TT' containing the exact string provided.
 -- This function is defined simply as @'tokenStr' ['Alnum', 'Alphabetic']@
 keyword :: String -> Parser UStr
-keyword = tokenTypes [Keyword]
+keyword k = token (==Keyword) (==k)
 
 -- | Succeeds if the next 'Token' is a 'Symbol' 'TT' containing the exact string provided.
 -- This function is defined simply as @'tokenStr' 'Symbol'@
 operator :: String -> Parser UStr
-operator = tokenTypes [Operator]
+operator k = token (==Operator) (==k)
 
 -- | Push an arbitrary token into the state, but you really don't want to use this function. It is
 -- used to implement backtracking by the 'withToken' function, so use 'withToken' instead.
@@ -843,18 +868,18 @@ pushToken (lineNum, colNum, tok) = modify $ \st -> case getLines st of
 -- 'Control.Monad.Error.catchError' to catch failures if that is what you need it to do. This
 -- function does not keep a copy of the state, it removes a token from the stream, then places it
 -- back if backtracking occurs. This is supposed to be more efficient.
-withToken :: (Eq tok, Enum tok) => ((Word, Word, GenToken tok) -> GenParser tok a) -> GenParser tok a
-withToken parser = do
-  token <- nextToken True
-  mplus (parser token) (pushToken token >> mzero)
+withTokenP :: (Eq tok, Enum tok) => (tok -> UStr -> GenParser tok a) -> GenParser tok a
+withTokenP parser = do
+  (line, col, tok) <- nextTokenPos True
+  mplus (parser (tokType tok) (tokToUStr tok)) (pushToken (line, col, tok) >> mzero)
 
-withTokenType :: (Eq tok, Enum tok) => tok -> (UStr -> GenParser tok a) -> GenParser tok a
-withTokenType requestedType parser = withToken $ \ (_, _, tok) ->
-  if tokType tok == requestedType then parser (tokToUStr tok) else mzero
+withToken :: (Eq tok, Enum tok) => (tok -> Bool) -> (UStr -> GenParser tok a) -> GenParser tok a
+withToken tokenPredicate parser = withTokenP $ \tok u ->
+  if tokenPredicate tok then parser u else mzero
 
 -- | Return the current line and column of the current token without modifying the state in any way.
 getCursor :: (Eq tok, Enum tok) => GenParser tok (Word, Word)
-getCursor = nextToken False >>= \ (a,b, _) -> return (a,b)
+getCursor = nextTokenPos False >>= \ (a,b, _) -> return (a,b)
 
 -- | Evaluates to @()@ if we are at the end of the input text, otherwise backtracks.
 getEOF :: (Eq tok, Enum tok) => GenParser tok ()
@@ -887,9 +912,14 @@ expect errMsg parser = do
 ignore :: (Eq tok, Enum tok) => GenParser tok ig -> GenParser tok ()
 ignore = flip mplus (return ()) . void
 
+-- | Return the default value provided in the case that the given 'GenParser' fails, otherwise
+-- return the value returned by the 'GenParser'.
+optional :: (Eq tok, Enum tok) => a -> GenParser tok a -> GenParser tok a
+optional defaultValue parser = mplus parser (return defaultValue)
+
 -- | Shorthand for @'ignore' ('token' 'Space')@
 skipSpaces :: Parser ()
-skipSpaces = ignore (token (==Space))
+skipSpaces = ignore (tokenType Space)
 
 -- | A 'marker' immediately stores the cursor onto the stack. It then evaluates the given 'Parser'.
 -- If the given 'Parser' fails, the position of the failure (stored in a 'Dao.Token.Location') is

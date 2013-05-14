@@ -165,7 +165,7 @@ newLexerState input = LexerState{ lexBuffer = "", lexInput = input }
 -- using 'lexBacktrack' (or don't backtrack at all, because it is inefficient). However you don't
 -- need to worry too much; if a 'GenLexer' backtracks while being evaluated in 'lexicalAnalysis' the
 -- 'lexInput' will not be affected at all and the 'lexBuffer' is ingored entirely.
-newtype GenLexer tok a = GenLexer { runLexer :: PTrans (GenParserErr tok) (State LexerState) a }
+newtype GenLexer tok a = GenLexer { runLexer :: PTrans (GenParserErr () tok) (State LexerState) a }
 instance (Eq tok, Enum tok) => Functor (GenLexer tok) where { fmap fn (GenLexer lex) = GenLexer (fmap fn lex) }
 instance (Eq tok, Enum tok) => Monad (GenLexer tok) where
   (GenLexer fn) >>= mfn = GenLexer (fn >>= runLexer . mfn)
@@ -177,10 +177,10 @@ instance (Eq tok, Enum tok) => MonadPlus (GenLexer tok) where
 instance (Eq tok, Enum tok) => MonadState LexerState (GenLexer tok) where
   get = GenLexer (lift get)
   put = GenLexer . lift . put
-instance (Eq tok, Enum tok) => MonadError (GenParserErr tok) (GenLexer tok) where
+instance (Eq tok, Enum tok) => MonadError (GenParserErr () tok) (GenLexer tok) where
   throwError                        = GenLexer . throwError
   catchError (GenLexer try) catcher = GenLexer (catchError try (runLexer . catcher))
-instance (Eq tok, Enum tok) => ErrorMonadPlus (GenParserErr tok) (GenLexer tok) where
+instance (Eq tok, Enum tok) => ErrorMonadPlus (GenParserErr () tok) (GenLexer tok) where
   catchPValue (GenLexer try) = GenLexer (catchPValue try)
   assumePValue               = GenLexer . assumePValue
 
@@ -398,7 +398,7 @@ testTokenizer tok str = case runTokenizer tok str of
   PFail     err  -> putStrLn (show err)  >> return str
   OK (toks, str) -> mapM print toks >> return str
 
-testLexer :: (Eq tok, Enum tok, Show tok) => GenLexer tok a -> String -> PValue (GenParserErr tok) a
+testLexer :: (Eq tok, Enum tok, Show tok) => GenLexer tok a -> String -> PValue (GenParserErr () tok) a
 testLexer lexer str = fst $ runLexerState lexer (newLexerState str)
 
 ----------------------------------------------------------------------------------------------------
@@ -541,7 +541,9 @@ lexNumber = do
                     (fail "no digits after exponent mark in decimal-point number")
               return (gotDot, True )
   makeToken $
-    if gotDot then (if gotExp then NumberExp else Number) else (if isHex then HexDigits else Digits)
+    if gotDot || gotExp
+      then  if gotExp then NumberExp else Number
+      else  if isHex  then HexDigits else Digits
 
 -- | Creates a 'Label' token for haskell data type names, type names, class names, or constructors,
 -- i.e. one or more labels (alpha-numeric and underscore characters) separated by dots (with no
@@ -612,7 +614,7 @@ lexConvertTT conv tokenizer = do
 
 -- | The 'GenLexer's analogue of 'Control.Monad.State.runState', runs the lexer using an existing
 -- 'LexerState'.
-runLexerState :: (Eq tok, Enum tok) => GenLexer tok a -> LexerState -> (PValue (GenParserErr tok) a, LexerState)
+runLexerState :: (Eq tok, Enum tok) => GenLexer tok a -> LexerState -> (PValue (GenParserErr () tok) a, LexerState)
 runLexerState (GenLexer lexer) = runState (runPTrans lexer)
 
 -- | Runs a 'GenLexer' (specifically a 'GenTokenizer' that returns a 'Prelude.String') with an input
@@ -621,7 +623,7 @@ runLexerState (GenLexer lexer) = runState (runPTrans lexer)
 -- also enforces the rule that 'GenToken's must never be null strings, all tokenized strings are
 -- checked. If a 'GenToken' containing a 'Dao.String.nil' is returned, this function evaluates to
 -- 'Control.Monad.mzero'.
-runTokenizer :: (Eq tok, Enum tok) => GenTokenizer tok -> String -> (PValue (GenParserErr tok) ([GenToken tok], String))
+runTokenizer :: (Eq tok, Enum tok) => GenTokenizer tok -> String -> (PValue (GenParserErr () tok) ([GenToken tok], String))
 runTokenizer lexer input = fst $ flip runLexerState (newLexerState input) $ do
   toks <- fmap (filter (not . (==nil) . tokToUStr)) lexer
   guard (not (null toks))
@@ -650,7 +652,7 @@ runTokenizer lexer input = fst $ flip runLexerState (newLexerState input) $ do
 -- treated as tokens, and that no characters are thrown-away during lexing. Lexers can return more
 -- than one token, so if necessary, return an 'Ignored' token along with a token containing the
 -- important characters.
-lexicalAnalysis :: (Eq tok, Enum tok) => [GenTokenizer tok] -> Word -> String -> PValue (GenParserErr tok) [GenLine tok]
+lexicalAnalysis :: (Eq tok, Enum tok) => [GenTokenizer tok] -> Word -> String -> PValue (GenParserErr () tok) [GenLine tok]
 lexicalAnalysis tokenizers tablen input = fmap (cluster 1 []) (lexLoop 1 1 [] input) where
   lexLoop lineNum colNum toks str = case nextLex str of
     OK (newToks, str) ->
@@ -722,52 +724,58 @@ testLexicalAnalysisOnFile a b c = readFile c >>= testLexicalAnalysis_withFilePat
 -- The parser data type
 
 -- | This data structure is used by both the 'GenLexer' and 'GenParser' monads.
-data GenParserErr tok
+data GenParserErr st tok
   = GenParserErr
-    { parserErrLoc :: L.Location
-    , parserErrMsg :: Maybe UStr
-    , parserErrTok :: Maybe (GenToken tok)
+    { parserErrLoc     :: Maybe L.Location
+    , parserErrMsg     :: Maybe UStr
+    , parserErrTok     :: Maybe (GenToken tok)
+    , parserStateAtErr :: Maybe st
     }
 
-type ParserErr = GenParserErr TT
+type StParserErr st = GenParserErr st TT
 
-instance Show tok => Show (GenParserErr tok) where
-  show err = concat $
-    [ show (parserErrLoc err)
+instance Show tok => Show (GenParserErr st tok) where
+  show err = flip mplus "Unknown parser error" $ concat $
+    [ fromMaybe "" (fmap show (parserErrLoc err))
     , fromMaybe "" (fmap ((": on token "++) . show) (parserErrTok err))
     , fromMaybe "" (fmap ((": "++) . uchars) (parserErrMsg err))
     ]
 
-instance (Eq tok, Enum tok) => CanMapTokens tok GenParserErr where
+instance (Eq tok, Enum tok) => CanMapTokens tok (GenParserErr st) where
   fmapTokens conv err =
     err{ parserErrTok = fmap (fmapTokens conv) (parserErrTok err) }
 
 -- | An initial blank parser error.
-parserErr :: (Eq tok, Enum tok) => Word -> Word -> GenParserErr tok
+parserErr :: (Eq tok, Enum tok) => Word -> Word -> GenParserErr st tok
 parserErr lineNum colNum =
   GenParserErr
-  { parserErrLoc =
+  { parserErrLoc = Just $
       L.LineColumn
       { L.startingLine   = fromIntegral lineNum
       , L.startingColumn = colNum
       , L.endingLine     = fromIntegral lineNum
       , L.endingColumn   = colNum
       }
-  , parserErrMsg   = Nothing
-  , parserErrTok   = Nothing
+  , parserErrMsg = Nothing
+  , parserErrTok = Nothing
+  , parserStateAtErr = Nothing
   }
 
 -- | The 'GenParserState' contains a stream of all tokens created by the 'lexicalAnalysis' phase.
 -- This is the state associated with a 'GenParser' in the instantiation of
--- 'Control.Monad.State.MonadState', so 'Control.Monad.State.get' returns a value of this data type.
-newtype GenParserState tok = GenParserState { getLines :: [GenLine tok] }
-type ParserState = GenParserState TT
+-- 'Control.Mimport Debug.Traceonad.State.MonadState', so 'Control.Monad.State.get' returns a value of this data type.
+data GenParserState st tok
+  = GenParserState
+    { userState :: st
+    , getLines :: [GenLine tok]
+    }
+type StParserState st = GenParserState st TT
 
-instance (Eq tok, Enum tok) => CanMapTokens tok GenParserState where
-  fmapTokens conv (GenParserState lines) = GenParserState (map (fmapTokens conv) lines)
+instance (Eq tok, Enum tok) => CanMapTokens tok (GenParserState st) where
+  fmapTokens conv st = st{getLines = map (fmapTokens conv) (getLines st)}
 
-newParserState :: (Eq tok, Enum tok) => [GenLine tok] -> GenParserState tok
-newParserState = GenParserState
+newParserState :: (Eq tok, Enum tok) => st -> [GenLine tok] -> GenParserState st tok
+newParserState st lines = GenParserState{userState = st, getLines = lines}
 
 -- | The task of the 'GenParser' monad is to look at every token in order and construct syntax trees
 -- in the 'syntacticAnalysis' phase.
@@ -780,81 +788,91 @@ newParserState = GenParserState
 -- which can be caught by 'Control.Monad.Error.catchError', and which automatically contain
 -- information about the location of the failure and the current token in the stream that caused the
 -- failure.
-newtype GenParser tok a = GenParser { parserToPTrans :: PTrans (GenParserErr tok) (State (GenParserState tok)) a}
-type Parser a = GenParser TT a
-instance (Eq tok, Enum tok) => Functor   (GenParser tok) where { fmap f (GenParser a) = GenParser (fmap f a) }
-instance (Eq tok, Enum tok) => Monad     (GenParser tok) where
+newtype GenParser st tok a = GenParser { parserToPTrans :: PTrans (GenParserErr st tok) (State (GenParserState st tok)) a}
+type StParser st a = GenParser st TT a
+instance (Eq tok, Enum tok) => Functor   (GenParser st tok) where { fmap f (GenParser a) = GenParser (fmap f a) }
+instance (Eq tok, Enum tok) => Monad     (GenParser st tok) where
   (GenParser ma) >>= mfa = GenParser (ma >>= parserToPTrans . mfa)
   return a               = GenParser (return a)
   fail msg = do
-    (a, b) <- getCursor
-    throwError ((parserErr a b){parserErrMsg = Just (ustr msg)})
-instance (Eq tok, Enum tok) => MonadPlus (GenParser tok) where
+    ab  <- maybeParse getCursor
+    tok <- maybeParse (nextToken False)
+    st  <- gets userState
+    throwError $
+      GenParserErr
+      { parserErrLoc = fmap (uncurry L.atPoint) ab
+      , parserErrMsg = Just (ustr msg)
+      , parserErrTok = tok
+      , parserStateAtErr = Just st
+      }
+instance (Eq tok, Enum tok) => MonadPlus (GenParser st tok) where
   mzero                             = GenParser mzero
   mplus (GenParser a) (GenParser b) = GenParser (mplus a b)
-instance (Eq tok, Enum tok) => MonadState (GenParserState tok) (GenParser tok) where
+instance (Eq tok, Enum tok) => MonadState (GenParserState st tok) (GenParser st tok) where
   get = GenParser (PTrans (fmap OK get))
   put = GenParser . PTrans . fmap OK . put
-instance (Eq tok, Enum tok) => MonadError (GenParserErr tok) (GenParser tok) where
-  throwError err                        = assumePValue (PFail err)
+instance (Eq tok, Enum tok) => MonadError (GenParserErr st tok) (GenParser st tok) where
+  throwError err                        = do
+    st <- gets userState
+    assumePValue (PFail (err{parserStateAtErr=Just st}))
   catchError (GenParser ptrans) catcher = GenParser $ do
     pval <- catchPValue ptrans
     case pval of
       OK      a -> return a
       Backtrack -> mzero
       PFail err -> parserToPTrans (catcher err)
-instance (Eq tok, Enum tok) => ErrorMonadPlus (GenParserErr tok) (GenParser tok) where
+instance (Eq tok, Enum tok) => ErrorMonadPlus (GenParserErr st tok) (GenParser st tok) where
   catchPValue (GenParser ptrans) = GenParser (catchPValue ptrans)
   assumePValue                   = GenParser . assumePValue
 
 -- | Return the next token in the state along with it's line and column position. If the boolean
 -- parameter is true, the current token will also be removed from the state.
-nextTokenPos :: (Eq tok, Enum tok) => Bool -> GenParser tok (Word, Word, GenToken tok)
-nextTokenPos doRemove = get >>= \lines -> case getLines lines of
+nextTokenPos :: (Eq tok, Enum tok) => Bool -> GenParser st tok (Word, Word, GenToken tok)
+nextTokenPos doRemove = get >>= \st -> case getLines st of
   []         -> mzero
   line:lines -> case lineTokens line of
-    []                 -> put (GenParserState{getLines=lines}) >> nextTokenPos doRemove
+    []                 -> put (st{getLines=lines}) >> nextTokenPos doRemove
     (colNum, tok):toks -> do
-      if doRemove then put (GenParserState{getLines = line{lineTokens=toks}:lines}) else return ()
+      if doRemove then put (st{getLines = line{lineTokens=toks}:lines}) else return ()
       return (lineNumber line, colNum, tok)
 
 -- | Like 'nextTokenPos' but only returns the 'GenToken', not it's line and column position.
-nextToken :: (Eq tok, Enum tok) => Bool -> GenParser tok (GenToken tok)
+nextToken :: (Eq tok, Enum tok) => Bool -> GenParser st tok (GenToken tok)
 nextToken doRemove = nextTokenPos doRemove >>= \ (_, _, tok) -> return tok
 
 -- | Return the next token in the state if it is of the type specified, removing it from the state.
-tokenP :: (Eq tok, Enum tok) => (tok -> String -> Bool) -> GenParser tok UStr
+tokenP :: (Eq tok, Enum tok) => (tok -> UStr -> Bool) -> GenParser st tok UStr
 tokenP predicate = do
   tok <- nextToken False
   let tokUStr = tokToUStr tok
-  if predicate (tokType tok) (uchars tokUStr) then nextToken True >> return tokUStr else mzero
+  if predicate (tokType tok) tokUStr then nextToken True >> return tokUStr else mzero
 
 -- | Return the next token in the state if it is of the type specified and also if the string value
 -- evaluated by the given predicate returns true, otherwise backtrack.
-token :: (Eq tok, Enum tok) => (tok -> Bool) -> (String -> Bool) -> GenParser tok UStr
+token :: (Eq tok, Enum tok) => (tok -> Bool) -> (String -> Bool) -> GenParser st tok UStr
 token requestedType stringPredicate = tokenP (\typ str -> requestedType typ && stringPredicate str)
 
-tokenType :: (Eq tok, Enum tok) => tok -> GenParser tok UStr
+tokenType :: (Eq tok, Enum tok) => tok -> GenParser st tok UStr
 tokenType requestedType = token (==requestedType) (const True)
 
 -- | Return the next token in the state if the string value of the token is exactly equal to the
 -- given string, and if the token type is any one of the given token types.
-tokenTypes :: (Eq tok, Enum tok) => [tok] -> GenParser tok UStr
+tokenTypes :: (Eq tok, Enum tok) => [tok] -> GenParser st tok UStr
 tokenTypes requestedTypes = token (\b -> or (map (==b) requestedTypes)) (const True)
 
 -- | Succeeds if the next 'Token' is a 'Alphabetic' 'TT' containing the exact string provided.
 -- This function is defined simply as @'tokenStr' ['Alnum', 'Alphabetic']@
-keyword :: String -> Parser UStr
+keyword :: String -> StParser st UStr
 keyword k = token (==Keyword) (==k)
 
 -- | Succeeds if the next 'Token' is a 'Symbol' 'TT' containing the exact string provided.
 -- This function is defined simply as @'tokenStr' 'Symbol'@
-operator :: String -> Parser UStr
+operator :: String -> StParser st UStr
 operator k = token (==Operator) (==k)
 
 -- | Push an arbitrary token into the state, but you really don't want to use this function. It is
 -- used to implement backtracking by the 'withToken' function, so use 'withToken' instead.
-pushToken :: (Eq tok, Enum tok) => (Word, Word, GenToken tok) -> GenParser tok ()
+pushToken :: (Eq tok, Enum tok) => (Word, Word, GenToken tok) -> GenParser st tok ()
 pushToken (lineNum, colNum, tok) = modify $ \st -> case getLines st of
   []         -> st{getLines = [GenLine{lineLineNumber=lineNum, lineTokens=[(colNum,tok)]}]}
   line:lines ->
@@ -868,21 +886,25 @@ pushToken (lineNum, colNum, tok) = modify $ \st -> case getLines st of
 -- 'Control.Monad.Error.catchError' to catch failures if that is what you need it to do. This
 -- function does not keep a copy of the state, it removes a token from the stream, then places it
 -- back if backtracking occurs. This is supposed to be more efficient.
-withTokenP :: (Eq tok, Enum tok) => (tok -> UStr -> GenParser tok a) -> GenParser tok a
+withTokenP :: (Eq tok, Enum tok) => (tok -> UStr -> GenParser st tok a) -> GenParser st tok a
 withTokenP parser = do
   (line, col, tok) <- nextTokenPos True
   mplus (parser (tokType tok) (tokToUStr tok)) (pushToken (line, col, tok) >> mzero)
 
-withToken :: (Eq tok, Enum tok) => (tok -> Bool) -> (UStr -> GenParser tok a) -> GenParser tok a
+withToken :: (Eq tok, Enum tok) => (tok -> Bool) -> (UStr -> GenParser st tok a) -> GenParser st tok a
 withToken tokenPredicate parser = withTokenP $ \tok u ->
   if tokenPredicate tok then parser u else mzero
 
+-- | Takes a list of functions where each function can be passed to @'withToken' (=='Keyword')@.
+eachWithKeyword :: [UStr -> StParser st a] -> StParser st a
+eachWithKeyword parsers = withToken (==Keyword) (\key -> msum (map ($key) parsers))
+
 -- | Return the current line and column of the current token without modifying the state in any way.
-getCursor :: (Eq tok, Enum tok) => GenParser tok (Word, Word)
+getCursor :: (Eq tok, Enum tok) => GenParser st tok (Word, Word)
 getCursor = nextTokenPos False >>= \ (a,b, _) -> return (a,b)
 
 -- | Evaluates to @()@ if we are at the end of the input text, otherwise backtracks.
-getEOF :: (Eq tok, Enum tok) => GenParser tok ()
+getEOF :: (Eq tok, Enum tok) => GenParser st tok ()
 getEOF = get >>= \st -> case getLines st of
   []   -> return ()
   [st] -> if null (lineTokens st) then return () else mzero
@@ -901,7 +923,7 @@ getEOF = get >>= \st -> case getLines st of
 -- >     'expect' "an integer expression after the 'e'" $ do
 -- >         exponentPart <- parseSignedInteger
 -- >         return (makeFracWithExp fractionalPart exponentPart :: 'Prelude.Double')
-expect :: (Eq tok, Enum tok) => String -> GenParser tok a -> GenParser tok a
+expect :: (Eq tok, Enum tok) => String -> GenParser st tok a -> GenParser st tok a
 expect errMsg parser = do
   (a, b) <- getCursor
   let expectMsg = "expecting "++errMsg
@@ -909,32 +931,35 @@ expect errMsg parser = do
 
 -- | If the given 'Parser' backtracks then evaluate to @return ()@, otherwise ignore the result of the
 -- 'Parser' and evaluate to @return ()@.
-ignore :: (Eq tok, Enum tok) => GenParser tok ig -> GenParser tok ()
+ignore :: (Eq tok, Enum tok) => GenParser st tok ig -> GenParser st tok ()
 ignore = flip mplus (return ()) . void
 
 -- | Return the default value provided in the case that the given 'GenParser' fails, otherwise
 -- return the value returned by the 'GenParser'.
-optional :: (Eq tok, Enum tok) => a -> GenParser tok a -> GenParser tok a
+optional :: (Eq tok, Enum tok) => a -> GenParser st tok a -> GenParser st tok a
 optional defaultValue parser = mplus parser (return defaultValue)
 
+-- | If the given parser backtracks, return 'Data.Maybe.Nothing', otherwise wrap the parsed value in
+-- 'Data.Maybe.Just'.
+maybeParse :: (Eq tok, Enum tok) => GenParser st tok a -> GenParser st tok (Maybe a)
+maybeParse parser = mplus (fmap Just parser) (return Nothing)
+
 -- | Shorthand for @'ignore' ('token' 'Space')@
-skipSpaces :: Parser ()
+skipSpaces :: StParser st ()
 skipSpaces = ignore (tokenType Space)
 
 -- | A 'marker' immediately stores the cursor onto the stack. It then evaluates the given 'Parser'.
 -- If the given 'Parser' fails, the position of the failure (stored in a 'Dao.Token.Location') is
 -- updated such that the starting point of the failure points to the cursor stored on the stack by
 -- this 'marker'. When used correctly, this function makes error reporting a bit more helpful.
-marker :: (Eq tok, Enum tok) => GenParser tok a -> GenParser tok a
+marker :: (Eq tok, Enum tok) => GenParser st tok a -> GenParser st tok a
 marker parser = do
-  (a, b) <- getCursor
+  ab <- mplus (fmap Just getCursor) (return Nothing)
   flip mapPFail parser $ \parsErr ->
     parsErr
     { parserErrLoc =
-        (parserErrLoc parsErr)
-        { L.startingLine   = fromIntegral a
-        , L.startingColumn = b
-        }
+        let p = parserErrLoc parsErr
+        in  mplus (p >>= \loc -> ab >>= \ (a, b) -> return (mappend loc (L.atPoint a b))) p
     }
 
 -- | If you like 'Parser's provided in this module, like 'keyword' or 'operator', but you
@@ -944,7 +969,7 @@ marker parser = do
 -- > myTokenToTT myTok = if myTok==MyKeyword then Keyword else Operator
 -- > myKeyword  = 'parseConvertTT' ('Prelude.const' MyKeyword)  myTokenToTT 'keyword'
 -- > myOperator = 'parseConvertTT' ('Prelude.const' MyOperator) myTokenToTT 'operator'
-parseConvertTT :: (Eq tok, Enum tok) => (TT -> tok) -> (tok -> TT) -> Parser a -> GenParser tok a
+parseConvertTT :: (Eq tok, Enum tok) => (TT -> tok) -> (tok -> TT) -> StParser st a -> GenParser st tok a
 parseConvertTT conv unconv parser = do
   st <- get
   let (result, st') = runParserState parser (fmapTokens unconv st)
@@ -956,14 +981,14 @@ parseConvertTT conv unconv parser = do
 
 -- | The 'GenParser's analogue of 'Control.Monad.State.runState', runs the parser using an existing
 -- 'GenParserState'.
-runParserState :: (Eq tok, Enum tok) => GenParser tok a -> GenParserState tok -> (PValue (GenParserErr tok) a, GenParserState tok)
+runParserState :: (Eq tok, Enum tok) => GenParser st tok a -> GenParserState st tok -> (PValue (GenParserErr st tok) a, GenParserState st tok)
 runParserState (GenParser parser) = runState (runPTrans parser)
 
 -- | This is the second phase of parsing, takes a stream of tokens created by the 'lexicalAnalysis'
 -- phase (the @['GenLine' tok]@ parameter) and constructs a syntax tree data structure using the
 -- 'GenParser' monad provided.
-syntacticAnalysis :: (Eq tok, Enum tok) => GenParser tok synTree -> [GenLine tok] -> PValue (GenParserErr tok) synTree
-syntacticAnalysis parser = fst . runParserState parser . newParserState
+syntacticAnalysis :: (Eq tok, Enum tok) => GenParser st tok synTree -> st -> [GenLine tok] -> PValue (GenParserErr st tok) synTree
+syntacticAnalysis parser st lines = fst $ runParserState parser $ newParserState st lines
 
 ----------------------------------------------------------------------------------------------------
 
@@ -974,7 +999,7 @@ syntacticAnalysis parser = fst . runParserState parser . newParserState
 -- the parser might have two phases, but because Haskell is a lazy language and 'parse' is a pure
 -- function, both phases happen at the same time, so the resulting parser does not need to parse the
 -- entire input in the first phase before beginning the second phase.
-data GenCFGrammar tok synTree
+data GenCFGrammar st tok synTree
   = GenCFGrammar
     { columnWidthOfTab :: Word
       -- ^ specify how many columns a @'\t'@ character takes up. This number is important to get
@@ -982,14 +1007,17 @@ data GenCFGrammar tok synTree
     , tokenizers       :: [GenTokenizer tok]
       -- ^ *the order of these tokenizers is important,* these are the tokenizers passed to the
       -- 'lexicalAnalysis' phase to generate the stream of tokens for the 'syntacticAnalysis' phase.
-    , mainParser       :: GenParser tok synTree
+    , mainParser       :: GenParser st tok synTree
       -- ^ this is the parser entry-point which is used to evaluate the 'syntacticAnalysis' phase.
     }
 
-type CFGrammar synTree = GenCFGrammar TT synTree
+type StCFGrammar st synTree = GenCFGrammar st TT synTree
 
 -- | This is *the function that parses* an input string according to a given 'GenCFGrammar'.
-parse :: (Eq tok, Enum tok) => GenCFGrammar tok synTree -> String -> PValue (GenParserErr tok) synTree
-parse cfg input =
-  lexicalAnalysis (tokenizers cfg) (columnWidthOfTab cfg) input >>= syntacticAnalysis (mainParser cfg)
+parse :: (Eq tok, Enum tok) => GenCFGrammar st tok synTree -> st -> String -> PValue (GenParserErr st tok) synTree
+parse cfg st input =
+  case lexicalAnalysis (tokenizers cfg) (columnWidthOfTab cfg) input of
+    OK  lines -> syntacticAnalysis (mainParser cfg) st lines
+    Backtrack -> Backtrack
+    PFail err -> PFail $ err{parserStateAtErr=Nothing}
 

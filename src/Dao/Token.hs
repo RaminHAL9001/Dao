@@ -64,6 +64,15 @@ data Location
     }
   deriving (Eq, Typeable)
 
+atPoint :: Word -> Word -> Location
+atPoint a b =
+  LineColumn
+  { startingLine   = fromIntegral a
+  , endingLine     = fromIntegral a
+  , startingColumn = b
+  , endingColumn   = b
+  }
+
 instance Ord Location where
   compare a b = case (a,b) of
     (LocationUnknown, LocationUnknown) -> EQ

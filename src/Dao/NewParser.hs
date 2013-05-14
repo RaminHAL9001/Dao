@@ -850,7 +850,8 @@ tokenP predicate = do
 -- | Return the next token in the state if it is of the type specified and also if the string value
 -- evaluated by the given predicate returns true, otherwise backtrack.
 token :: (Eq tok, Enum tok) => (tok -> Bool) -> (String -> Bool) -> GenParser st tok UStr
-token requestedType stringPredicate = tokenP (\typ str -> requestedType typ && stringPredicate str)
+token requestedType stringPredicate =
+  tokenP (\typ str -> requestedType typ && stringPredicate (uchars str))
 
 tokenType :: (Eq tok, Enum tok) => tok -> GenParser st tok UStr
 tokenType requestedType = token (==requestedType) (const True)

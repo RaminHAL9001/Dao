@@ -777,6 +777,9 @@ instance (Eq tok, Enum tok) => CanMapTokens tok (GenParserState st) where
 newParserState :: (Eq tok, Enum tok) => st -> [GenLine tok] -> GenParserState st tok
 newParserState st lines = GenParserState{userState = st, getLines = lines}
 
+modifyUserState :: (Eq tok, Enum tok) => (st -> st) -> GenParser st tok ()
+modifyUserState fn = modify (\st -> st{userState = fn (userState st)})
+
 -- | The task of the 'GenParser' monad is to look at every token in order and construct syntax trees
 -- in the 'syntacticAnalysis' phase.
 --

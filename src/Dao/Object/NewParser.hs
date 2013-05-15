@@ -45,6 +45,19 @@ import           Numeric
 
 import Debug.Trace
 
+dbg :: String -> Parser a -> Parser a
+dbg msg parser = do
+  t <- nextToken False
+  trace ("parse "++msg++", nextToken = "++show t) (return ())
+  v <- catchPValue parser
+  flip trace (return ()) $ case v of
+    PFail err -> msg++" failed: "++show err
+    Backtrack -> msg++" backtracked"
+    OK      _ -> msg++" OK"
+  assumePValue v
+
+----------------------------------------------------------------------------------------------------
+
 data ParserState
   = ParserState
     { bufferedComments :: Maybe [Comment]
@@ -80,6 +93,7 @@ daoTokenizers =
   , lexInlineC_Comment
   , lexEndlineC_Comment
   , lexSpace
+  , dataSpecialTokenizer
   , lexKeyword
   , lexNumber
   , lexOperator daoOperators
@@ -91,6 +105,38 @@ daoTokenizers =
 
 daoOperators :: String
 daoOperators = concat [allArithOp2Strs, " ", allArithOp1Strs, " ", allUpdateOpStrs , " , : ; "]
+
+-- | One of the design goals of Dao is for its language to be able to express any of it's built-in
+-- objects. Arbitrary data stored in 'Dao.Object.OBinary' objects are constructed from base-64
+-- encoded tokens directly from the source file. This tokenizer accomodates for base-64 tokens by
+-- looking for a "data" keyword and @{@ open-brace is seen, then switching to a special inner
+-- tokenizer, producing a stream of tokens until a @}@ closing brace is seen, then control is
+-- returned to the calling context.
+dataSpecialTokenizer :: Tokenizer
+dataSpecialTokenizer = do
+  k <- lexKeyword
+  case k of
+    [tok] | uchars (tokToUStr tok) == "data" -> do
+      got <- fmap ((k++) . concat) $ lexMany $ msum $
+        [lexSpace, lexInlineC_Comment, lexEndlineC_Comment]
+      flip mplus (return got) $ do
+        got <- fmap (got++) (lexChar '{' >> makeToken Opener)
+        let b64chars = unionCharP [isAlphaNum, (=='+'), (=='/'), (=='=')]
+            isDone yesNo tok = makeToken tok >>= \t -> return (t, yesNo)
+            loop got = do
+              (tok, continue) <- msum $
+                [ lexChar '}' >> isDone True Closer
+                , lexSpace >>= \t -> return (t, True)
+                , lexCharP b64chars >> isDone False Arbitrary
+                , lexCharP (not . unionCharP [b64chars, isSpace, (=='}')]) >> isDone False Unknown
+                , lexEOF >> return ([], False)
+                ]
+              let got' = got++tok
+              if continue then loop got' else return got'
+        loop got
+    _ -> return k
+
+----------------------------------------------------------------------------------------------------
 
 -- copied from the Dao.Parser module
 rationalFromString :: Int -> Rational -> String -> Maybe Rational
@@ -335,6 +381,10 @@ parseWithComments parser = do
   com2 <- parseComments
   return (com com1 a com2)
 
+parseTopLevelComments :: ([Comment] -> a) -> Parser a
+parseTopLevelComments construct = cachedComments $ \coms ->
+  if null coms then mzero else return (construct coms)
+
 -- | Most nodes in the Dao abstract syntax tree take a 'Dao.Token.Location' as the final parameter.
 -- This parser will take a sub-parser, store the cursor before and after running the sube parser,
 -- constructing a 'Dao.Token.Location' from the before and after cursor positions. The sub-parser
@@ -429,7 +479,7 @@ parseUnitObject = parseWithLocation $ msum $
           o <- parseWithComments parseObject
           expect "close-parenthesis" (token (==Closer) (==close) >> return (construct o))
   , fmap AST_Literal parseSimpleObject
-  , withToken (==Keyword) $ \ukey -> let k = uchars ukey in case k of
+  , withKeyword $ \ukey -> let k = uchars ukey in case k of
       k | k=="dict" || k=="intmap" -> cachedComments $ \coms ->
         fmap (AST_Dict ukey coms) (parseCommaSeparated k (assertAssignExpr k))
       k | k=="list" || k=="set"    -> cachedComments $ \coms ->
@@ -597,8 +647,8 @@ parseLambdaExpr key ftyp = do
 
 parseScript :: Parser AST_Script
 parseScript = parseWithLocation $ msum $
-  [ cachedComments $ \coms -> if null coms then mzero else return (\_ -> AST_Comment coms)
-  , withToken (==Keyword) $ \ukey -> case uchars ukey of
+  [ fmap const (parseTopLevelComments AST_Comment)
+  , withKeyword $ \ukey -> case uchars ukey of
       "if"       -> cachedComments $ \coms -> expect "conditional expression after \"if\" statement" $ do
         obj <- parseObject
         expect "bracketed script after \"if\" statement" $ do
@@ -669,21 +719,77 @@ parseScript = parseWithLocation $ msum $
 parseBracketedScript :: Parser [Com AST_Script]
 parseBracketedScript = token (==Opener) (=="{") >> loop [] where
   loop got = msum $
-    [ cachedComments $ \coms -> if null coms then mzero else loop (got++[Com (AST_Comment coms)])
+    [ parseTopLevelComments (Com . AST_Comment) >>= loop . (\c -> got++[c])
     , token (==Closer) (=="}") >> return got
     , expect "script expression" (parseScript >>= \script -> loop (got++[Com script]))
     ]
 
-dbg :: String -> Parser a -> Parser a
-dbg msg parser = do
-  t <- nextToken False
-  trace ("parse "++msg++", nextToken = "++show t) (return ())
-  v <- catchPValue parser
-  flip trace (return ()) $ case v of
-    PFail err -> msg++" failed: "++show err
-    Backtrack -> msg++" backtracked"
-    OK      _ -> msg++" OK"
-  assumePValue v
+----------------------------------------------------------------------------------------------------
+
+parseAttribute :: Parser AST_TopLevel
+parseAttribute = parseWithLocation $ msum $
+  [ fmap const (parseTopLevelComments AST_TopComment)
+  , withKeyword $ \ukey -> do
+      let k = uchars ukey
+      guard (k=="require" || k=="requires" || k=="import" || k=="imports")
+      expect ("string constant expression after "++k++" statement") $ do
+        str <- parseWithComments (fmap (ustr . concatMap uchars) (loop []))
+        expect ("semicolon after "++k++" statement") $
+          operator ";" >> return (AST_Attribute (Com ukey) str)
+  ]
+  where
+    loop got = do
+      next <- tokenTypes [StrLit, Keyword, Operator]
+      let got' = got++[next]
+      flip mplus (return got') $ withToken (==Operator) $ \op ->
+        if uchars op == ";" then mzero else loop (got' ++[op])
+
+parseTopLevel :: Parser AST_TopLevel
+parseTopLevel = parseWithLocation $ msum $
+  [ fmap const (parseTopLevelComments AST_TopComment)
+  , withKeyword $ \ukey -> case uchars ukey of
+      k | k=="BEGIN" || k=="END" || k=="EXIT" -> case readsPrec 0 k of
+        [(typ, "")] -> expect ("script expression after "++k++" statement") $ do
+          script <- cachedComments (\coms -> fmap (\o -> com coms o []) parseBracketedScript)
+          return (AST_Event typ script)
+        _ -> mzero
+      k | k=="func" || k=="function" -> expect "name for function" $ do
+        name <- parseWithComments (tokenType Keyword)
+        expect "argument list for function statement" $ do
+          args <- parseFuncParams $ parseWithLocation $
+            fmap (AST_Literal . ORef . LocalRef) (tokenType Keyword)
+          expect "script expression for function statement" $ do
+            fmap (AST_TopFunc name args) (parseWithComments parseBracketedScript)
+      k | k=="rule" || k=="pattern"  -> case readsPrec 0 k of
+        [(typ, "")] -> expect ("arguments list after "++k++" statement") $ do
+          args <- parseWithComments $ mplus (parseFuncParams parseObject) $
+            if k=="rule"
+              then  fmap (:[]) (parseWithLocation (tokenType StrLit >>= \nm -> return (Com . AST_Literal (OString nm))))
+              else  mzero
+          expect ("bracketed script expression after "++k++" statement") $
+            fmap (AST_TopLambda typ args) parseBracketedScript
+        _ -> mzero
+      _ -> mzero
+  , fmap AST_TopScript parseScript
+  ]
+
+parseDaoScript :: Parser AST_SourceCode
+parseDaoScript = do
+  attribs <- loopAttribs []
+  scripts <- loop []
+  return $
+    AST_SourceCode
+    { sourceModified = 0
+    , sourceFullPath = nil
+    , directives = attribs ++ scripts
+    }
+  where
+    loopAttribs got = mplus (parseAttribute >>= \a -> loopAttribs (got++[a])) (return got)
+    loop        got = msum $
+      [ parseEOF >> return got
+      , parseTopLevel >>= \a -> loop (got++[a])
+      , fail "bad token at top level"
+      ]
 
 ----------------------------------------------------------------------------------------------------
 

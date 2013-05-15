@@ -23,7 +23,7 @@
 
 module Dao.Object.Binary where
 
-import           Dao.Token
+import           Dao.NewParser (Location(Location, LocationUnknown), startingLine, endingLine, startingColumn, endingColumn)
 import           Dao.Object
 import qualified Dao.Tree as T
 import           Dao.Glob
@@ -465,8 +465,8 @@ instance Binary Location where
     loc             -> do
       putWord8 0x5F
       let fn acc = mapM_ putWord8 (bitsToVLInt (acc loc))
-      fn startingLine >> fn startingChar >> fn startingColumn
-      fn endingLine   >> fn endingChar   >> fn endingColumn
+      fn startingLine >> fn startingColumn
+      fn endingLine   >> fn endingColumn
   get = do
     is_empty <- isEmpty
     if is_empty
@@ -480,9 +480,7 @@ instance Binary Location where
             b <- getFromVLInt
             c <- getFromVLInt
             d <- getFromVLInt
-            e <- getFromVLInt
-            f <- getFromVLInt
-            return (Location a b c d e f)
+            return (Location a b c d)
           else return LocationUnknown
 
 ----------------------------------------------------------------------------------------------------

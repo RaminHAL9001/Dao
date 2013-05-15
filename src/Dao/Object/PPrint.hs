@@ -26,7 +26,7 @@ module Dao.Object.PPrint where
 
 import           Dao.String
 import           Dao.PPrint
-import           Dao.Token
+import           Dao.NewParser (HasLocation, Location(LocationUnknown, Location), getLocation)
 import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Glob

@@ -22,19 +22,19 @@
 
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 
 module Dao.NewParser where
 
 import           Dao.String
-import qualified Dao.Token as L
 import           Dao.Predicate
-import           Dao.Object  hiding (Tokenizer)
 
 import           Control.Monad
 import           Control.Monad.State
 import           Control.Monad.Error
 
 import           Data.Monoid
+import           Data.Typeable
 import           Data.Maybe
 import           Data.Word
 import           Data.Char  hiding (Space)
@@ -45,6 +45,88 @@ import           System.IO
 type LineNum   = Word
 type ColumnNum = Word
 type TabWidth  = Word
+
+----------------------------------------------------------------------------------------------------
+
+-- | Used mostly by 'Dao.Parser' and 'Dao.Object.Parser' but is also used to report location of
+-- errors and are stored in the abstract syntax tree, 'ObjectExpr', 'ScriptExpr'.
+data Location
+  = LocationUnknown
+  | Location -- ^ the 'Location' but without the starting/ending character count
+    { startingLine   :: LineNum
+    , startingColumn :: ColumnNum
+    , endingLine     :: LineNum
+    , endingColumn   :: ColumnNum
+    }
+  deriving (Eq, Typeable)
+
+atPoint :: LineNum -> ColumnNum -> Location
+atPoint a b =
+  Location
+  { startingLine   = a
+  , endingLine     = a
+  , startingColumn = b
+  , endingColumn   = b
+  }
+
+instance Ord Location where
+  compare a b = case (a,b) of
+    (LocationUnknown, LocationUnknown) -> EQ
+    (_              , LocationUnknown) -> LT
+    (LocationUnknown, _              ) -> GT
+    (a              , b              ) ->
+      compare (abs(ela-sla), abs(eca-sca), sla, sca) (abs(elb-slb), abs(ecb-scb), slb, scb)
+    where
+      sla = startingLine   a
+      ela = endingLine     a
+      slb = startingLine   b
+      elb = endingLine     b
+      sca = startingColumn a
+      eca = endingColumn   a
+      scb = startingColumn b
+      ecb = endingColumn   b
+  -- ^ Greater-than is determined by a heuristic value of how large and uncertain the position of
+  -- the error is. If the exact location is known, it has the lowest uncertainty and is therefore
+  -- less than a location that might occur across two lines. The 'LocationUnknown' value is the most
+  -- uncertain and is greater than everything except itself. Using this comparison function, you can
+  -- sort lists of locations from least to greatest and hopefully get the most helpful, most
+  -- specific location at the top of the list.
+
+-- | The the coordinates from a 'Location':
+-- @(('startingLine', 'startingColumn'), ('endingLine', 'endingColumn'))@
+locationCoords :: Location -> Maybe ((LineNum, ColumnNum), (LineNum, ColumnNum))
+locationCoords loc = case loc of
+  LocationUnknown -> Nothing
+  _ -> Just ((startingLine loc, startingColumn loc), (endingLine loc, endingColumn loc))
+
+class HasLocation a where
+  getLocation :: a -> Location
+  setLocation :: a -> Location -> a
+
+instance Show Location where
+  show t = case t of
+    LocationUnknown -> ""
+    _ -> show (startingLine t) ++ ':' : show (startingColumn t)
+
+instance Monoid Location where
+  mempty =
+    Location
+    { startingLine   = 0
+    , startingColumn = 0
+    , endingLine     = 0
+    , endingColumn   = 0
+    }
+  mappend loc a = case loc of
+    LocationUnknown -> a
+    _ -> case a of
+      LocationUnknown -> loc
+      _ ->
+        loc
+        { startingLine   = min (startingLine   loc) (startingLine   a)
+        , startingColumn = min (startingColumn loc) (startingColumn a)
+        , endingLine     = max (endingLine     loc) (endingLine     a)
+        , endingColumn   = max (endingColumn   loc) (endingColumn   a)
+        }
 
 ----------------------------------------------------------------------------------------------------
 -- Important data types for lexical analysis.
@@ -763,7 +845,7 @@ testLexicalAnalysisOnFile a b c = readFile c >>= testLexicalAnalysis_withFilePat
 -- | This data structure is used by both the 'GenLexer' and 'GenParser' monads.
 data GenParserErr st tok
   = GenParserErr
-    { parserErrLoc     :: Maybe L.Location
+    { parserErrLoc     :: Maybe Location
     , parserErrMsg     :: Maybe UStr
     , parserErrTok     :: Maybe (GenToken tok)
     , parserStateAtErr :: Maybe st
@@ -789,11 +871,11 @@ parserErr :: (Eq tok, Enum tok) => LineNum -> ColumnNum -> GenParserErr st tok
 parserErr lineNum colNum =
   GenParserErr
   { parserErrLoc = Just $
-      L.LineColumn
-      { L.startingLine   = fromIntegral lineNum
-      , L.startingColumn = colNum
-      , L.endingLine     = fromIntegral lineNum
-      , L.endingColumn   = colNum
+      Location
+      { startingLine   = lineNum
+      , startingColumn = colNum
+      , endingLine     = lineNum
+      , endingColumn   = colNum
       }
   , parserErrMsg = Nothing
   , parserErrTok = Nothing
@@ -845,7 +927,7 @@ instance (Eq tok, Enum tok) => Monad     (GenParser st tok) where
     st  <- gets userState
     throwError $
       GenParserErr
-      { parserErrLoc = fmap (uncurry L.atPoint) ab
+      { parserErrLoc = fmap (uncurry atPoint) ab
       , parserErrMsg = Just (ustr msg)
       , parserErrTok = tok
       , parserStateAtErr = Just st
@@ -1016,7 +1098,7 @@ marker parser = do
     parsErr
     { parserErrLoc =
         let p = parserErrLoc parsErr
-        in  mplus (p >>= \loc -> ab >>= \ (a, b) -> return (mappend loc (L.atPoint a b))) p
+        in  mplus (p >>= \loc -> ab >>= \ (a, b) -> return (mappend loc (atPoint a b))) p
     }
 
 -- | If you like 'Parser's provided in this module, like 'keyword' or 'operator', but you

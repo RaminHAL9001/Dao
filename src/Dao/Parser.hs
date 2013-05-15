@@ -50,7 +50,8 @@ module Dao.Parser
   where
 
 import           Dao.String
-import           Dao.Token
+import           Dao.Token (Token(Token), tokenLocation, Location(Location), startingLine, endingLine, startingChar, endingChar, startingColumn, endingColumn, tokenChars)
+import           Dao.NewParser (HasLocation, getLocation, setLocation)
 import           Dao.EnumSet
 import qualified Dao.Tree as T
 import           Dao.Predicate
@@ -510,7 +511,7 @@ withLocation parse construct = do
   return (construct result (mappend a b))
 
 applyLocation :: HasLocation a => Parser a -> Parser a
-applyLocation parse = withLocation parse setLocation
+applyLocation parse = {- withLocation parse setLocation -} parse -- now is just an identity
 
 -- not for export --
 new_token :: Parser Token

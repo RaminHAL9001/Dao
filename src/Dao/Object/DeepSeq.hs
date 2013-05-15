@@ -28,7 +28,7 @@ module Dao.Object.DeepSeq where
 import           Dao.Debug.OFF
 import           Dao.Object
 import           Dao.Object.AST
-import           Dao.Token
+import           Dao.NewParser (Location(LocationUnknown, Location))
 import           Dao.Glob
 import           Dao.EnumSet
 import           Dao.Parser
@@ -84,7 +84,7 @@ instance NFData AST_Object where
 
 instance NFData Location where
   rnf LocationUnknown = ()
-  rnf (Location a b c d e f) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e $! deepseq f ()
+  rnf (Location a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
 
 instance NFData AST_Script where
   rnf (AST_Comment      a        ) = deepseq a ()

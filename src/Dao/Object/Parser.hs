@@ -21,7 +21,8 @@
 module Dao.Object.Parser where
 
 import           Dao.String
-import           Dao.Token
+import           Dao.Token (tokenChars)
+import           Dao.NewParser (HasLocation, Location(Location, LocationUnknown))
 import           Dao.Object
 import           Dao.Object.AST
 import           Dao.EnumSet

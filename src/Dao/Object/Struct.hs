@@ -32,7 +32,7 @@ import           Dao.Object.AST
 import           Dao.Struct
 import           Dao.Predicate
 import           Dao.EnumSet
-import           Dao.Token
+import           Dao.NewParser
 import           Dao.Glob
 import           Dao.EnumSet
 import           Dao.Parser
@@ -146,26 +146,23 @@ instance Structured TypeID   where
 -- immedate node with 'putData'.
 instance Structured Location where
   dataToStruct loc = case loc of
-    LocationUnknown      -> T.Void
-    Location _ _ _ _ _ _ -> deconstruct $ do
+    LocationUnknown  -> T.Void
+    Location _ _ _ _ -> deconstruct $ do
       with "from" $ do
-        with "line"   (place $ OWord $ startingLine   loc)
+        with "line"   (place $ OWord $ fromIntegral $ startingLine   loc)
         with "column" (place $ OWord $ fromIntegral $ startingColumn loc)
-        with "char"   (place $ OWord $ startingChar   loc)
       if   startingLine   loc == endingLine   loc
         && startingColumn loc == endingColumn loc
-        && startingChar   loc == endingChar   loc
       then  return ()
       else  with "to"   $ do
-              with "line"   (place $ OWord $ endingLine     loc)
+              with "line"   (place $ OWord $ fromIntegral $ endingLine     loc)
               with "column" (place $ OWord $ fromIntegral $ endingColumn   loc)
-              with "char"   (place $ OWord $ endingChar     loc)
   structToData = reconstruct $ flip mplus (return LocationUnknown) $ do
-    let getPos = liftM3 (,,) (getDataAt "line") (getDataAt "column") (getDataAt "char")
-    (a,b,c) <- with "from" getPos
-    flip mplus (return (Location a b c a b c)) $ do
-      (d,e,f) <- getPos
-      return (Location a b c d e f)
+    let getPos = liftM2 (,) (getDataAt "line") (getDataAt "column")
+    (a,b) <- with "from" getPos
+    flip mplus (return (Location a b a b)) $ do
+      (c,d) <- getPos
+      return (Location a b c d)
 
 -- optionally put a location
 optPutLoc :: Location -> Update ()

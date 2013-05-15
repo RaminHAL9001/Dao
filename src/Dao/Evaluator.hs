@@ -28,7 +28,8 @@
 module Dao.Evaluator where
 
 import           Dao.Debug.OFF
-import           Dao.Token
+-- import           Dao.Token
+import           Dao.NewParser
 import           Dao.Object
 import           Dao.Object.AST
 import           Dao.PPrint
@@ -1157,8 +1158,8 @@ lookupFunction msg op = do
 errAt :: Location -> [Object]
 errAt loc = case loc of
   LocationUnknown -> []
-  loc -> [ OPair (OWord (startingLine loc), OWord (fromIntegral (startingColumn loc)))
-         , OPair (OWord (endingLine   loc), OWord (fromIntegral (endingColumn   loc)))
+  loc -> [ OPair (OWord (fromIntegral (startingLine loc)), OWord (fromIntegral (startingColumn loc)))
+         , OPair (OWord (fromIntegral (endingLine   loc)), OWord (fromIntegral (endingColumn   loc)))
          ]
 
 -- | Evaluate to 'procErr' if the given 'PValue' is 'Backtrack' or 'PFail'. You must pass a

@@ -21,7 +21,6 @@
 module Dao.Object.NewParser where
 
 import           Dao.String
-import qualified Dao.Token as L
 import           Dao.Object hiding (Tokenizer)
 import           Dao.Object.AST
 import           Dao.EnumSet
@@ -391,12 +390,12 @@ parseTopLevelComments construct = cachedComments $ \coms ->
 -- must return a function that constructs some value (e.g. a node of the dao abstract syntax tree
 -- with every sub-node filled in except for the 'Dao.Token.Location'). Then the location constructed
 -- by this function passed as a parameter to the the node constructor returned by the sub-parser.
-parseWithLocation :: Parser (L.Location -> a) -> Parser a
+parseWithLocation :: Parser (Location -> a) -> Parser a
 parseWithLocation parser = do
   (line1, col1) <- getCursor
   construct <- parser
-  loc <- mplus (getCursor >>= \ (line2, col2) -> return (L.LineColumn (fromIntegral line1) col1 (fromIntegral line2) col2))
-               (return (L.atPoint line1 col1))
+  loc <- mplus (getCursor >>= \ (line2, col2) -> return (Location (fromIntegral line1) col1 (fromIntegral line2) col2))
+               (return (atPoint line1 col1))
   return (construct loc)
 
 -- | Parse any object that can be constructed from the token stream directly and does not require an
@@ -542,7 +541,7 @@ parsePrefixedObject = withToken (==Operator) $ \ustr -> case readsPrec 0 (uchars
 -- > (global a) + (global b)
 parseRefEquation :: Parser AST_Object
 parseRefEquation = parsePrefixedObject >>= \obj -> parseWithLocation (loop [Right obj]) where
-  loop got = flip mplus (makeEquation got >>= \obj -> return (L.setLocation obj)) $ do
+  loop got = flip mplus (makeEquation got >>= \obj -> return (setLocation obj)) $ do
     op <- parseWithComments $ withToken (==Operator) $ \op -> case uchars op of
       "."  -> return op
       "->" -> return op
@@ -570,7 +569,7 @@ parseObject = parseWithLocation $ do
                 expect ("object after infix operator ("++show (unComment op)++")") $
                   parseObject >>= \obj -> loop (got++[Left op, Right obj])
           obj <- loop [Right obj] >>= makeEquation
-          return (L.setLocation obj)
+          return (setLocation obj)
     ]
 
 makeEquation :: [Either (Com Name) AST_Object] -> Parser AST_Object
@@ -605,7 +604,7 @@ applyPrescedence = foldl (.) assignOp $ map (scanBind AST_Equation . words) $ op
 -- 'Dao.Object.AST_Equation' data structure. If 'op' is not in the list of operators, it is passed over.
 scanBind
   :: Read a
-  => (AST_Object -> Com a -> AST_Object -> L.Location -> AST_Object)
+  => (AST_Object -> Com a -> AST_Object -> Location -> AST_Object)
   -> [String]
   -> [Either (Com Name) AST_Object]
   -> [Either (Com Name) AST_Object]
@@ -614,7 +613,7 @@ scanBind constructor ops objx = case objx of
   Right a : Left op : Right b : objx ->
     if elem (uchars (unComment op)) ops -- if this operator is of the prescedence we are looking for
       then  scanBind constructor ops $
-             (Right (constructor a (fmap (read . uchars) op) b L.LocationUnknown) : objx) -- "bind" the operands to it
+             (Right (constructor a (fmap (read . uchars) op) b LocationUnknown) : objx) -- "bind" the operands to it
       else  Right a : Left op : -- otherwise ignore this operator
               scanBind constructor ops (Right b : objx)
   objx -> error ("scanBind failed:\n"++show objx)
@@ -637,7 +636,7 @@ assertAssignExpr key o = case o of
   _                  -> failLater $
     "element of "++key++" expression is not an assignment expression"
 
-parseLambdaExpr :: String -> LambdaExprType -> Parser (L.Location -> AST_Object)
+parseLambdaExpr :: String -> LambdaExprType -> Parser (Location -> AST_Object)
 parseLambdaExpr key ftyp = do
   params <- parseWithComments (parseFuncParams parseObject)
   expect ("bracketed script after \""++key++"\" statement") $

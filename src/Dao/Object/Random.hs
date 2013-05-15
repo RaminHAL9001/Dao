@@ -22,7 +22,7 @@
 
 module Dao.Object.Random where
 
-import           Dao.Token
+import           Dao.NewParser (Location(LocationUnknown, Location))
 import           Dao.Glob
 import           Dao.Object
 import           Dao.Random

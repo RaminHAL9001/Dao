@@ -26,7 +26,7 @@
 module Dao.Object.AST where
 
 import           Dao.String
-import           Dao.Token
+import           Dao.NewParser
 import           Dao.Object
 
 import           Control.Monad
@@ -282,7 +282,7 @@ nc2 :: Intermediate obj ast => [obj] -> [Com [Com ast]]
 nc2 = fmap Com . nc1
 
 ll :: Location -> [Location]
-ll = return . lineColOnly
+ll = return
 
 instance Intermediate TopLevelExpr AST_TopLevel where
   toInterm   ast = case ast of

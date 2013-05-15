@@ -33,7 +33,7 @@ module Dao.Object
 
 import           Dao.Debug.OFF
 import           Dao.String
-import           Dao.Token
+import           Dao.NewParser
 import           Dao.Glob
 import           Dao.EnumSet
 import           Dao.Tree as T hiding (map)
@@ -915,7 +915,7 @@ data ExecUnit
       -- ^ the "guard scripts" that are executed before every string execution.
     , postExec    :: [Executable]
       -- ^ the "guard scripts" that are executed after every string execution.
-    , programTokenizer  :: Tokenizer
+    , programTokenizer  :: InputTokenizer
       -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
       -- module associated with this runtime.
     , programComparator :: CompareToken
@@ -1002,7 +1002,7 @@ isDocumentFile file = case file of
 
 -- | A type of function that can split an input query string into 'Dao.Glob.Tokens'. The default
 -- splits up strings on white-spaces, numbers, and punctuation marks.
-type Tokenizer = UStr -> Exec Tokens
+type InputTokenizer = UStr -> Exec Tokens
 
 -- | A type of function that can match 'Dao.Glob.Single' patterns to 'Dao.Glob.Tokens', the
 -- default is the 'Dao.Glob.exact' function. An alternative is 'Dao.Glob.approx', which
@@ -1020,7 +1020,7 @@ data Runtime
       -- ^ every labeled set of built-in functions provided by this runtime is listed here. This
       -- table is checked when a Dao program is loaded that has "requires" directives.
     , taskForExecUnits     :: Task
-    , availableTokenizers  :: M.Map Name Tokenizer
+    , availableTokenizers  :: M.Map Name InputTokenizer
       -- ^ a table of available string tokenizers.
     , availableComparators :: M.Map Name CompareToken
       -- ^ a table of available string matching functions.

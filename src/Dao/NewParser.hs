@@ -735,11 +735,13 @@ data GenParserErr st tok
 type StParserErr st = GenParserErr st TT
 
 instance Show tok => Show (GenParserErr st tok) where
-  show err = flip mplus "Unknown parser error" $ concat $
-    [ fromMaybe "" (fmap show (parserErrLoc err))
-    , fromMaybe "" (fmap ((": on token "++) . show) (parserErrTok err))
-    , fromMaybe "" (fmap ((": "++) . uchars) (parserErrMsg err))
-    ]
+  show err =
+    let msg = concat $ map (fromMaybe "") $
+          [ fmap show (parserErrLoc err)
+          , fmap ((": on token "++) . show) (parserErrTok err)
+          , fmap ((": "++) . uchars) (parserErrMsg err)
+          ]
+    in  if null msg then "Unknown parser error" else msg
 
 instance (Eq tok, Enum tok) => CanMapTokens tok (GenParserErr st) where
   fmapTokens conv err =

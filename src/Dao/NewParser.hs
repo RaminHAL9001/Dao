@@ -901,6 +901,11 @@ withToken :: (Eq tok, Enum tok) => (tok -> Bool) -> (UStr -> GenParser st tok a)
 withToken tokenPredicate parser = withTokenP $ \tok u ->
   if tokenPredicate tok then parser u else mzero
 
+-- | Defined as @'withToken' (=='Keyword')@, which is a pattern used so often it merits it's own
+-- function.
+withKeyword :: (UStr -> StParser st a) -> StParser st a
+withKeyword parser = withToken (==Keyword) parser
+
 -- | Takes a list of functions where each function can be passed to @'withToken' (=='Keyword')@.
 eachWithKeyword :: [UStr -> StParser st a] -> StParser st a
 eachWithKeyword parsers = withToken (==Keyword) (\key -> msum (map ($key) parsers))

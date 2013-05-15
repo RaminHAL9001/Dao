@@ -126,8 +126,8 @@ dataSpecialTokenizer = do
               (tok, continue) <- msum $
                 [ lexChar '}' >> isDone True Closer
                 , lexSpace >>= \t -> return (t, True)
-                , lexCharP b64chars >> isDone False Arbitrary
-                , lexCharP (not . unionCharP [b64chars, isSpace, (=='}')]) >> isDone False Unknown
+                , lexWhile b64chars >> isDone False Arbitrary
+                , lexUntil (unionCharP [b64chars, isSpace, (=='}')]) >> isDone False Unknown
                 , lexEOF >> return ([], False)
                 ]
               let got' = got++tok

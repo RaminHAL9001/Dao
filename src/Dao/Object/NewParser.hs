@@ -25,6 +25,7 @@ import qualified Dao.Token as L
 import           Dao.Object hiding (Tokenizer)
 import           Dao.Object.AST
 import           Dao.EnumSet
+import           Dao.Predicate
 import           Dao.NewParser
 import qualified Dao.Tree as T
 
@@ -42,6 +43,8 @@ import           Data.Complex
 import           Data.Time.Clock
 import           Numeric
 
+import Debug.Trace
+
 data ParserState
   = ParserState
     { bufferedComments :: Maybe [Comment]
@@ -56,8 +59,9 @@ instance Monoid ParserState where
 type Parser a = StParser ParserState a
 type CFGrammar a = StCFGrammar ParserState a
 
-setCommentBuffer :: Maybe [Comment] -> Parser ()
-setCommentBuffer coms = modifyUserState (\st -> st{bufferedComments=coms})
+setCommentBuffer :: [Comment] -> Parser ()
+setCommentBuffer coms = modifyUserState $ \st ->
+  st{ bufferedComments = if null coms then mzero else return coms }
 
 failLater :: String -> Parser ()
 failLater msg = catchError (fail msg) $ \err ->
@@ -197,7 +201,6 @@ parseDiffTime = marker $ withToken (==Digits) $ \d -> withToken (==Operator) $ \
       [days, hours, minutes, seconds] -> mk days hours minutes seconds
       [      hours, minutes, seconds] -> mk ""   hours minutes seconds
       [             minutes, seconds] -> mk ""   ""    minutes seconds
-  mzero
   where
     mk          = diffTimeFromStrs
     colon       = operator ":"
@@ -233,17 +236,18 @@ diffTimeFromStrs days hours minutes seconds = do
     (seconds, '.':miliseconds) -> do
       seconds <- sec seconds
       return (seconds + rint miliseconds % (10 ^ length miliseconds))
+    err -> fail "unexpeced WHAT"
   return $ fromRational (60*60*24*days + 60*60*hours + 60*minutes + seconds)
   where
     rint str            = if null str then 0 else (read str :: Integer)
     integerToRational s = s % 1 :: Rational
     check :: String -> Integer -> String -> Parser Rational
-    check typ maxVal  s =
+    check typ maxVal  s = do
       let i    = rint s
           zero = return (0%1)
           ok   = return (integerToRational i)
           err  = fail $ concat ["time value expression with ", s, " ", typ, " is invalid"]
-      in  if null s then zero else if i<maxVal then ok else err
+      if null s then zero else if i<maxVal then ok else err
 
 -- | Parses a different form of 'OTime', with the standard dash-separated @YYYY-MM-DD@ format, along
 -- with an optional time value as parsed by 'parseDiffTime'. This parser does not care about
@@ -306,11 +310,13 @@ parseComments = loop [] where
 cachedComments :: ([Comment] -> Parser a) -> Parser a
 cachedComments parser = do
   st   <- gets userState
+  let notCached = parseComments >>= \coms -> setCommentBuffer coms >> return coms
   coms <- case bufferedComments st of
-    Nothing   -> parseComments >>= \coms -> setCommentBuffer (Just coms) >> return coms
+    Nothing   -> notCached
+    Just []   -> notCached
     Just coms -> return coms
   a <- parser coms
-  setCommentBuffer Nothing
+  setCommentBuffer []
   return a
 
 -- | Uses already-buffered comments, or parses more comments into the buffer in the 'ParserState',
@@ -322,10 +328,10 @@ parseWithComments :: Parser a -> Parser (Com a)
 parseWithComments parser = do
   st   <- gets userState
   com1 <- case bufferedComments st of
-    Nothing   -> parseComments >>= \com1 ->  setCommentBuffer (Just com1) >> return com1
+    Nothing   -> parseComments >>= \com1 -> setCommentBuffer com1 >> return com1
     Just com1 -> return com1
   a    <- parser
-  setCommentBuffer Nothing
+  setCommentBuffer []
   com2 <- parseComments
   return (com com1 a com2)
 
@@ -406,6 +412,9 @@ daoKeywords = S.fromList $ map ustr $ words $ concat $
   , " list set dict intmap struct data "
   ]
 
+parseNonKeyword :: Parser UStr
+parseNonKeyword = token (==Keyword) (\e -> not $ S.member (ustr e) daoKeywords)
+
 -- | A unit object is any object expression that could be used as a part of a multi-part object
 -- expression, e.g. an equation contains multiple object units. This is important for deciding
 -- prescedence in equations. Consider unit objects of the highest prescedence. It is safe to call
@@ -420,21 +429,81 @@ parseUnitObject = parseWithLocation $ msum $
           o <- parseWithComments parseObject
           expect "close-parenthesis" (token (==Closer) (==close) >> return (construct o))
   , fmap AST_Literal parseSimpleObject
-  , withToken (==Keyword) $ \k -> do
-      msum $
-        [ parseDictExpr   k, parseListExpr  k, parseDataExpr k
-        , parseStructExpr k, parseArrayExpr k
-        , fmap const (parseFuncCall k)
-        , return (AST_Literal (ORef (LocalRef k)))
+  , withToken (==Keyword) $ \ukey -> let k = uchars ukey in case k of
+      k | k=="dict" || k=="intmap" -> cachedComments $ \coms ->
+        fmap (AST_Dict ukey coms) (parseCommaSeparated k (assertAssignExpr k))
+      k | k=="list" || k=="set"    -> cachedComments $ \coms ->
+        fmap (AST_Dict ukey coms) (parseCommaSeparated k (\_ -> return ()))
+      "data"    ->
+        cachedComments (\coms -> open >> loop [] >>= \items -> return (AST_Data coms items)) where
+          open     = token (==Opener) (=="{")
+          close    = skipSpaces >> token (==Closer) (=="}")
+          loop got = do
+            skipSpaces
+            next <- fmap Com (tokenType Arbitrary)
+            let got' = got++[next]
+            mplus (close >> return got') (loop got')
+      "struct" -> do
+        let key = uchars ukey
+            nobracket = do
+              t <- nextToken False
+              if tokType t == Opener && uchars (tokToUStr t) == "{" then mzero else return ()
+        guard (key == "struct")
+        expect "optional item and required bracketed list of items to initialize struct" $ do
+          init  <- parseWithComments (mplus (nobracket >> parseObject) (return AST_Void))
+          items <- parseCommaSeparated key (assertAssignExpr key)
+          return (AST_Struct init items)
+      "array"  -> do
+        bounds <- parseWithComments (parseFuncParams parseObject)
+        expect "bracketed list of items to initialized array" $ do
+          items  <- parseCommaSeparated "array" (\_ -> return ())
+          return (AST_Array bounds items)
+      "func"     -> parseLambdaExpr k FuncExprType
+      "function" -> parseLambdaExpr k FuncExprType
+      "rule"     -> parseLambdaExpr k RuleExprType
+      "pattern"  -> parseLambdaExpr k PatExprType
+      k | k=="global" || k=="local" || k=="static" || k=="qtime" -> cachedComments $ \coms -> do
+        obj <- parseRefEquation
+        return (AST_FuncCall ukey coms [Com obj])
+      k -> msum $
+        [ fmap const (parseFuncCall ukey)
+        , return (AST_Literal (ORef (LocalRef ukey)))
         ]
-  , withToken (==Operator) $ \ustr -> case readsPrec 0 (uchars ustr) of
-      [(op, "")] -> parseWithComments parseObject >>= \obj -> return (AST_Prefix op obj)
-      _          -> mzero
   ]
 
+-- | This is a parser that parses either a plain unit object using 'parseUnitObject', or
+-- alternatively, a prefix operator followed by a plain unit object. Supply a predicate that returns
+-- true for every prefix operator you need.
+parsePrefixedObject :: Parser AST_Object
+parsePrefixedObject = withToken (==Operator) $ \ustr -> case readsPrec 0 (uchars ustr) of
+  [(op, "")] -> parseWithLocation $
+    parseWithComments parseUnitObject >>= \obj -> return (AST_Prefix op obj)
+  _                         -> parseUnitObject
+
+-- | This is an alternative to 'parseObject'. It parses expressions of lower prescedence than
+-- 'parseUnitObject' but of higher than a typical equation parsed with 'parseObject'. Specifically,
+-- it parses unit objects (using 'parseUnitObject') interleaved with the 'Dao.Object.DOT' (@.@) and
+-- 'Dao.Object.POINT' (@->@) operators, and also prefix operators 'Dao.Object.REF' (@@@) and
+-- 'Dao.Object.DEREF' (@$@). This makes it suitable for parsing the parameter object expression for
+-- functions like @global@ or @struct@ without requiring parentheses in situations like the
+-- following:
+-- > global a + global b
+-- will be parsed as:
+-- > (global a) + (global b)
+parseRefEquation :: Parser AST_Object
+parseRefEquation = parsePrefixedObject >>= \obj -> parseWithLocation (loop [Right obj]) where
+  loop got = flip mplus (makeEquation got >>= \obj -> return (L.setLocation obj)) $ do
+    op <- parseWithComments $ withToken (==Operator) $ \op -> case uchars op of
+      "."  -> return op
+      "->" -> return op
+      _    -> mzero
+    expect ("object expression after "++uchars (unComment op)++" operator") $
+      parsePrefixedObject >>= \obj -> loop (got++[Left op, Right obj])
+
+-- | This is the entry-point parser for 'Dao.Object.AST.AST_Object'.
 parseObject :: Parser AST_Object
 parseObject = parseWithLocation $ do
-  obj <- parseUnitObject
+  obj <- parsePrefixedObject
   msum $
     [ cachedComments $ \com1 -> do
         token (==Opener) (=="[")
@@ -444,22 +513,23 @@ parseObject = parseWithLocation $ do
             token (==Closer) (=="]")
             return (AST_ArraySub obj com1 idx)
     , do  let loop got = flip mplus (return got) $ do
-                op <- parseWithComments parseInfixOp
+                op <- parseWithComments $ withToken (==Operator) $ \op -> case uchars op of
+                  ";" -> mzero
+                  "," -> mzero
+                  _   -> return op
                 expect ("object after infix operator ("++show (unComment op)++")") $
-                  parseObject >>= \obj -> loop (got++[Right obj])
-          objx <- loop [Right obj]
-          case applyPrescedence objx of
-            [Right obj] -> return (L.setLocation obj)
-            _ ->  error $ ("unknown prescedence for operators:"++) $ concat $
-                    flip concatMap objx $ \obj -> case obj of
-                      Left obj -> [' ':uchars (unComment obj)]
-                      _        -> []
+                  parseObject >>= \obj -> loop (got++[Left op, Right obj])
+          obj <- loop [Right obj] >>= makeEquation
+          return (L.setLocation obj)
     ]
 
-parseInfixOp :: Parser ArithOp2
-parseInfixOp = withToken (==Operator) $ \op -> case readsPrec 0 (uchars op) of
-  [(op, "")] -> return op
-  _          -> mzero
+makeEquation :: [Either (Com Name) AST_Object] -> Parser AST_Object
+makeEquation objx = case applyPrescedence objx of
+  [Right obj] -> return obj
+  _ ->  error $ ("unknown prescedence for operators:"++) $ concat $
+          flip concatMap objx $ \obj -> case obj of
+            Left obj -> [' ':uchars (unComment obj)]
+            _        -> []
 
 -- (Copied from the old parser "src/Dao/Object/Parser.hs")
 -- Operator prescedence mimics the C and C++ family of languages.
@@ -505,9 +575,10 @@ parseCommaSeparated key check = expect ("opening-brace for "++key++" expression"
   token (==Opener) (=="{")
   let done got = token (==Closer) (=="}") >> return got
       loop got = mplus (done got) $ do
-        obj <- parseWithComments (marker (parseObject >>= \o -> check o >> return o))
+        obj <- parseWithComments (marker (parseObject >>= \obj -> check obj >> return obj))
+        let got' = got++[obj]
         expect ("comma or closing-brace to denote elements of "++key++" expression") $
-          mplus (done got) (token (==Operator) (==",") >> loop (got++[obj]))
+          mplus (done got') (token (==Operator) (==",") >> loop got')
   loop []
 
 assertAssignExpr :: String -> AST_Object -> Parser ()
@@ -516,46 +587,103 @@ assertAssignExpr key o = case o of
   _                  -> failLater $
     "element of "++key++" expression is not an assignment expression"
 
-parseDictExpr :: UStr -> Parser (L.Location -> AST_Object)
-parseDictExpr ukey = do
-  let key = uchars ukey
-  guard (key=="dict" || key=="intmap")
-  cachedComments $ \coms ->
-    fmap (AST_Dict ukey coms) (parseCommaSeparated key (assertAssignExpr key))
+parseLambdaExpr :: String -> LambdaExprType -> Parser (L.Location -> AST_Object)
+parseLambdaExpr key ftyp = do
+  params <- parseWithComments (parseFuncParams parseObject)
+  expect ("bracketed script after \""++key++"\" statement") $
+    fmap (AST_Lambda ftyp params) parseBracketedScript
 
-parseListExpr :: UStr -> Parser (L.Location -> AST_Object)
-parseListExpr ukey = do
-  let key = uchars ukey
-  guard (key=="list" || key=="set")
-  cachedComments $ \coms ->
-    fmap (AST_Dict ukey coms) (parseCommaSeparated key (\_ -> return ()))
+----------------------------------------------------------------------------------------------------
 
-parseDataExpr :: UStr -> Parser (L.Location -> AST_Object)
-parseDataExpr ukey = do
-  let open  = token (==Opener) (=="{")
-      close = skipSpaces >> token (==Closer) (=="}")
-      loop got = do
-        skipSpaces
-        next <- fmap Com (tokenType Arbitrary)
-        let got' = got++[next]
-        mplus (close >> return got') (loop got')
-  guard (uchars ukey == "data")
-  cachedComments (\coms -> open >> loop [] >>= \items -> return (AST_Data coms items))
+parseScript :: Parser AST_Script
+parseScript = parseWithLocation $ msum $
+  [ cachedComments $ \coms -> if null coms then mzero else return (\_ -> AST_Comment coms)
+  , withToken (==Keyword) $ \ukey -> case uchars ukey of
+      "if"       -> cachedComments $ \coms -> expect "conditional expression after \"if\" statement" $ do
+        obj <- parseObject
+        expect "bracketed script after \"if\" statement" $ do
+          thn <- parseWithComments parseBracketedScript
+          let done = AST_IfThenElse coms obj thn
+          msum $
+            [ do  keyword "else"
+                  fmap done $ parseWithComments $
+                    expect "bracketed subscript or if statement after else statement" $ msum
+                      [ do  t <- nextToken False -- look ahead for "if"
+                            let next_is_if = tokType t == Keyword && uchars (tokToUStr t) == "if"
+                            if next_is_if then parseScript >>= \s -> return [Com s] else mzero
+                      , parseBracketedScript
+                      ]
+            , return $ done (Com [])
+            ]
+      "try"      -> do
+        tryScript <- parseWithComments parseBracketedScript
+        msum $
+          [ do  keyword "catch"
+                expect "variable name after \"catch\" statement" $ do
+                  nm <- parseWithComments parseNonKeyword
+                  expect "bracketed script after \"catch\" statement" $
+                    fmap (AST_TryCatch tryScript nm) parseBracketedScript
+          , return (AST_TryCatch tryScript (Com nil) [])
+          ]
+      "else"     -> fail "\"else\" statement not following an \"if\" statement"
+      "catch"    -> fail "\"catch\" statement not following a \"try\" statement"
+      "for"      -> expect "iterator variable name after \"for\" statement" $ do
+        nm  <- parseWithComments parseNonKeyword
+        expect "\"in\" after \"for\" statement" $ do
+          keyword "in"
+          obj <- parseWithComments parseObject
+          expect "bracketed script after \"for\" statement" $
+            fmap (AST_ForLoop nm obj) parseBracketedScript
+      "while"    -> expect "iterator expression after \"while\" statement" $ do
+        obj <- parseWithComments parseObject
+        expect "bracketed script after \"while\" statement" $
+          fmap (AST_WhileLoop obj) parseBracketedScript
+      key | key=="continue" || key=="break" -> msum $
+        [ do  cachedComments $ \coms -> do
+              keyword "if"
+              expect ("conditional expression after \""++key++" if\" statement") $ do
+                obj <- parseWithComments parseObject
+                expect ("semicolon after \""++key++"\" statement") $
+                  operator ";" >> return (AST_ContinueExpr (key=="continue") coms obj)
+        , expect ("semicolon after \""++key++"\" statement") $ cachedComments $ \com -> do
+            operator ";"
+            return (AST_ContinueExpr (key=="continue") com (Com AST_Void))
+        ]
+      key | key=="return"   || key=="throw" -> do
+        let done obj = expect ("colon after \""++key++"\" statement") $ 
+              operator ";" >> return (AST_ReturnExpr (key=="return") obj)
+        msum $
+          [ parseWithComments parseObject >>= done
+          , cachedComments $ \coms -> done (com coms AST_Void [])
+          ]
+      "with"     -> do
+        obj <- parseWithComments parseObject
+        expect "bracketed script after \"with\" statement" $
+          fmap (AST_WithDoc obj) parseBracketedScript
+      _          -> mzero
+  , do  obj  <- parseObject
+        cachedComments $ \coms ->
+          expect "semicolon" (operator ";" >> return (AST_EvalObject obj coms))
+  ]
 
-parseStructExpr :: UStr -> Parser (L.Location -> AST_Object)
-parseStructExpr ukey = do
-  let key = uchars ukey
-  guard (key == "struct")
-  init  <- parseWithComments (mplus parseObject (return AST_Void))
-  items <- parseCommaSeparated key (assertAssignExpr key)
-  return (AST_Struct init items)
+parseBracketedScript :: Parser [Com AST_Script]
+parseBracketedScript = token (==Opener) (=="{") >> loop [] where
+  loop got = msum $
+    [ cachedComments $ \coms -> if null coms then mzero else loop (got++[Com (AST_Comment coms)])
+    , token (==Closer) (=="}") >> return got
+    , expect "script expression" (parseScript >>= \script -> loop (got++[Com script]))
+    ]
 
-parseArrayExpr :: UStr -> Parser (L.Location -> AST_Object)
-parseArrayExpr ukey = do
-  guard (uchars ukey == "array")
-  bounds <- parseWithComments (parseFuncParams parseObject)
-  items  <- parseCommaSeparated "array" (\_ -> return ())
-  return (AST_Array bounds items)
+dbg :: String -> Parser a -> Parser a
+dbg msg parser = do
+  t <- nextToken False
+  trace ("parse "++msg++", nextToken = "++show t) (return ())
+  v <- catchPValue parser
+  flip trace (return ()) $ case v of
+    PFail err -> msg++" failed: "++show err
+    Backtrack -> msg++" backtracked"
+    OK      _ -> msg++" OK"
+  assumePValue v
 
 ----------------------------------------------------------------------------------------------------
 
@@ -568,5 +696,8 @@ daoCFGrammar =
   }
 
 testDaoGrammar :: Show a => Parser a -> String -> IO ()
-testDaoGrammar parser input = print (parse (daoCFGrammar{mainParser=parser}) mempty input)
+testDaoGrammar parser input = case parse (daoCFGrammar{mainParser=parser}) mempty input of
+  Backtrack -> putStrLn "Backtrack"
+  PFail err -> print err
+  OK    val -> print val
 

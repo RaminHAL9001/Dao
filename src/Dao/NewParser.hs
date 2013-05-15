@@ -328,12 +328,20 @@ isAlpha_ c = isAlpha c || c=='_'
 
 -- | Repeat the lexer until it fails. This 'GenLexer' never backtracks, so beware: it may cause
 -- infinite loops.
-lexMany :: (Eq tok, Enum tok) => GenLexer tok ig -> GenLexer tok ()
-lexMany lexer = let loop = mplus (lexer >> loop) (return ()) in loop
+lexMany :: (Eq tok, Enum tok) => GenLexer tok a -> GenLexer tok [a]
+lexMany lexer = let loop got = mplus (lexer >>= \a -> loop (got++[a])) (return got) in loop []
+
+-- | Like 'lexMany' but disgards return values, which is more efficient.
+lexMany_ :: (Eq tok, Enum tok) => GenLexer tok ig -> GenLexer tok ()
+lexMany_ lex = let loop = lex >> mplus loop (return ()) in loop
 
 -- | Repeat the lexer until it fails, backtrack if it fails the first time.
-lexMany1 :: (Eq tok, Enum tok) => GenLexer tok ig -> GenLexer tok ()
-lexMany1 lexer = lexer >> lexMany lexer
+lexMany1 :: (Eq tok, Enum tok) => GenLexer tok a -> GenLexer tok [a]
+lexMany1 lexer = lexer >>= \a -> lexMany lexer >>= \ax -> return (a:ax)
+
+-- | Like 'lexMany1' but disgards return values, which is more efficient.
+lexMany1_ :: (Eq tok, Enum tok) => GenLexer tok ig -> GenLexer tok ()
+lexMany1_ lexer = lexer >> lexMany_ lexer
 
 lexOptional :: (Eq tok, Enum tok) => GenLexer tok () -> GenLexer tok ()
 lexOptional lexer = mplus lexer (return ())
@@ -829,6 +837,10 @@ instance (Eq tok, Enum tok) => MonadError (GenParserErr st tok) (GenParser st to
 instance (Eq tok, Enum tok) => ErrorMonadPlus (GenParserErr st tok) (GenParser st tok) where
   catchPValue (GenParser ptrans) = GenParser (catchPValue ptrans)
   assumePValue                   = GenParser . assumePValue
+
+-- | Only succeeds if all tokens have been consumed, otherwise backtracks.
+parseEOF :: (Eq tok, Enum tok) => GenParser st tok ()
+parseEOF = get >>= \st -> if null (getLines st) then return () else mzero
 
 -- | Return the next token in the state along with it's line and column position. If the boolean
 -- parameter is true, the current token will also be removed from the state.

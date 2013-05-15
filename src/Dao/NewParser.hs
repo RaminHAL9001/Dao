@@ -42,6 +42,10 @@ import           Data.List
 
 import           System.IO
 
+type LineNum   = Word
+type ColumnNum = Word
+type TabWidth  = Word
+
 ----------------------------------------------------------------------------------------------------
 -- Important data types for lexical analysis.
 
@@ -97,22 +101,26 @@ instance Show tok => Show (GenToken tok) where
 instance (Eq tok, Enum tok) => CanMapTokens tok GenToken where
   fmapTokens conv tok = tok{tokType = conv (tokType tok)}
 
-class HasLineNumber   a where { lineNumber   :: a -> Word }
-class HasColumnNumber a where { columnNumber :: a -> Word }
+class HasLineNumber   a where { lineNumber   :: a -> LineNum }
+class HasColumnNumber a where { columnNumber :: a -> ColumnNum }
 
 class (Eq tok, Enum tok) => CanMapTokens tok m where
   fmapTokens :: (Eq tok', Enum tok') => (tok -> tok') -> m tok -> m tok'
 
 data GenTokenAt tok =
-  GenTokenAt{ tokenAtLineNumber :: Word, tokenAtColumnNumber :: Word, getToken :: GenToken tok }
+  GenTokenAt
+  { tokenAtLineNumber   :: LineNum
+  , tokenAtColumnNumber :: ColumnNum
+  , getToken            :: GenToken tok
+  }
 type TokenAt = GenTokenAt TT
 instance HasLineNumber   TokenAt where { lineNumber   = tokenAtLineNumber   }
 instance HasColumnNumber TokenAt where { columnNumber = tokenAtColumnNumber }
 
 data GenLine tok
   = GenLine
-    { lineLineNumber :: Word
-    , lineTokens     :: [(Word, GenToken tok)]
+    { lineLineNumber :: LineNum
+    , lineTokens     :: [(ColumnNum, GenToken tok)]
       -- ^ a list of tokens, each with an associated column number.
     }
 
@@ -166,7 +174,8 @@ newLexerState input = LexerState{ lexBuffer = "", lexInput = input }
 -- need to worry too much; if a 'GenLexer' backtracks while being evaluated in 'lexicalAnalysis' the
 -- 'lexInput' will not be affected at all and the 'lexBuffer' is ingored entirely.
 newtype GenLexer tok a = GenLexer { runLexer :: PTrans (GenParserErr () tok) (State LexerState) a }
-instance (Eq tok, Enum tok) => Functor (GenLexer tok) where { fmap fn (GenLexer lex) = GenLexer (fmap fn lex) }
+instance (Eq tok, Enum tok) => Functor (GenLexer tok) where
+  fmap fn (GenLexer lex) = GenLexer (fmap fn lex)
 instance (Eq tok, Enum tok) => Monad (GenLexer tok) where
   (GenLexer fn) >>= mfn = GenLexer (fn >>= runLexer . mfn)
   return                = GenLexer . return
@@ -247,7 +256,8 @@ mightHaveNLorTabsTT tok = case tokType tok of
 -- halves back into the 'LexerState', which is what this function does. *Be careful* you don't pass
 -- the wrong string as the second parameter. Or better yet, don't use this function.
 lexSetState :: (Eq tok, Enum tok) => String -> String -> GenLexer tok ()
-lexSetState got remainder = modify (\st -> st{lexBuffer = lexBuffer st ++ got, lexInput = remainder})
+lexSetState got remainder = modify $ \st ->
+  st{lexBuffer = lexBuffer st ++ got, lexInput = remainder}
 
 -- | Unlike simply evaluating 'Control.Monad.mzero', 'lexBacktrack' will push the contents of the
 -- 'lexBuffer' back onto the 'lexInput'. This is inefficient, so if you rely on this too often you
@@ -355,7 +365,9 @@ lexEOF = fmap (=="") (gets lexInput) >>= guard
 -- the terminating sequence 'GenLexer'. Evaluates to 'Prelude.True' if the termChar was found,
 -- returns 'Prelude.False' if this tokenizer went to the end of the input without seenig an
 -- un-escaped terminating character.
-lexUntilTerm :: (Eq tok, Enum tok) => GenLexer tok () -> GenLexer tok () -> GenLexer tok () -> GenLexer tok Bool
+lexUntilTerm
+  :: (Eq tok, Enum tok)
+  => GenLexer tok () -> GenLexer tok () -> GenLexer tok () -> GenLexer tok Bool
 lexUntilTerm scanLexer escLexer termLexer = loop where
   skipOne = lexCharP (const True)
   loop = do
@@ -370,8 +382,9 @@ lexUntilTerm scanLexer escLexer termLexer = loop where
       ]
     if shouldContinue then loop else return wasTerminated
 
--- | A special case of 'lexUntilTerm', lexes until it finds an un-escaped terminating 'Prelude.Char'. You
--- must only provide the escape 'Prelude.Char' and the terminating 'Prelude.Char'.
+-- | A special case of 'lexUntilTerm', lexes until it finds an un-escaped terminating
+-- 'Prelude.Char'. You must only provide the escape 'Prelude.Char' and the terminating
+-- 'Prelude.Char'.
 lexUntilTermChar :: (Eq tok, Enum tok) => Char -> Char -> GenLexer tok Bool
 lexUntilTermChar escChar termChar =
   lexUntilTerm (lexUntil (\c -> c==escChar || c==termChar)) (lexChar escChar) (lexChar termChar)
@@ -397,7 +410,8 @@ lexUntilTermStr escStr termStr = case (escStr, termStr) of
       let (scan, term) = case str of
             [a]          -> (lexUntil (==a), lexChar a)
             [a,b] | a/=b -> (lexUntil (==a), lexWhile (==a) >> lexChar b)
-            a:ax         -> (lexUntil (==a), let loop = mplus (lexString str) (lexChar a >> loop) in loop)
+            a:ax         ->
+              (lexUntil (==a), let loop = mplus (lexString str) (lexChar a >> loop) in loop)
       lexUntilTerm scan term term
 
 testTokenizer :: (Eq tok, Enum tok, Show tok) => GenTokenizer tok -> String -> IO String
@@ -406,7 +420,9 @@ testTokenizer tok str = case runTokenizer tok str of
   PFail     err  -> putStrLn (show err)  >> return str
   OK (toks, str) -> mapM print toks >> return str
 
-testLexer :: (Eq tok, Enum tok, Show tok) => GenLexer tok a -> String -> PValue (GenParserErr () tok) a
+testLexer
+  :: (Eq tok, Enum tok, Show tok)
+  => GenLexer tok a -> String -> PValue (GenParserErr () tok) a
 testLexer lexer str = fst $ runLexerState lexer (newLexerState str)
 
 ----------------------------------------------------------------------------------------------------
@@ -622,7 +638,9 @@ lexConvertTT conv tokenizer = do
 
 -- | The 'GenLexer's analogue of 'Control.Monad.State.runState', runs the lexer using an existing
 -- 'LexerState'.
-runLexerState :: (Eq tok, Enum tok) => GenLexer tok a -> LexerState -> (PValue (GenParserErr () tok) a, LexerState)
+runLexerState
+  :: (Eq tok, Enum tok)
+  => GenLexer tok a -> LexerState -> (PValue (GenParserErr () tok) a, LexerState)
 runLexerState (GenLexer lexer) = runState (runPTrans lexer)
 
 -- | Runs a 'GenLexer' (specifically a 'GenTokenizer' that returns a 'Prelude.String') with an input
@@ -631,7 +649,9 @@ runLexerState (GenLexer lexer) = runState (runPTrans lexer)
 -- also enforces the rule that 'GenToken's must never be null strings, all tokenized strings are
 -- checked. If a 'GenToken' containing a 'Dao.String.nil' is returned, this function evaluates to
 -- 'Control.Monad.mzero'.
-runTokenizer :: (Eq tok, Enum tok) => GenTokenizer tok -> String -> (PValue (GenParserErr () tok) ([GenToken tok], String))
+runTokenizer
+  :: (Eq tok, Enum tok)
+  => GenTokenizer tok -> String -> (PValue (GenParserErr () tok) ([GenToken tok], String))
 runTokenizer lexer input = fst $ flip runLexerState (newLexerState input) $ do
   toks <- fmap (filter (not . (==nil) . tokToUStr)) lexer
   guard (not (null toks))
@@ -660,7 +680,9 @@ runTokenizer lexer input = fst $ flip runLexerState (newLexerState input) $ do
 -- treated as tokens, and that no characters are thrown-away during lexing. Lexers can return more
 -- than one token, so if necessary, return an 'Ignored' token along with a token containing the
 -- important characters.
-lexicalAnalysis :: (Eq tok, Enum tok) => [GenTokenizer tok] -> Word -> String -> PValue (GenParserErr () tok) [GenLine tok]
+lexicalAnalysis
+  :: (Eq tok, Enum tok)
+  => [GenTokenizer tok] -> TabWidth -> String -> PValue (GenParserErr () tok) [GenLine tok]
 lexicalAnalysis tokenizers tablen input = fmap (cluster 1 []) (lexLoop 1 1 [] input) where
   lexLoop lineNum colNum toks str = case nextLex str of
     OK (newToks, str) ->
@@ -687,7 +709,8 @@ lexicalAnalysis tokenizers tablen input = fmap (cluster 1 []) (lexLoop 1 1 [] in
     (lineNum, colNum, tok) : tx ->
       if lineNum==curLineNum || null toks -- if we are on the same line, or if the line is empty
         then  cluster lineNum (toks++[(colNum, tok)]) tx -- then get the next token
-        else  GenLine{lineLineNumber=curLineNum, lineTokens=toks} : cluster lineNum [(colNum, tok)] tx
+        else  GenLine{lineLineNumber=curLineNum, lineTokens=toks} :
+                cluster lineNum [(colNum, tok)] tx
   countNLs lns cols input = case break (=='\n') input of
     (""    , ""        ) -> (lns, cols)
     (_     , '\n':after) -> countNLs (lns+1) 0 after
@@ -704,7 +727,9 @@ lexicalAnalysis tokenizers tablen input = fmap (cluster 1 []) (lexLoop 1 1 [] in
           newColNum   = cols + (if lns>0 then 0 else colNum)
       in  positionTok (rx++[(lineNum, colNum, tok)]) newLineNum newColNum toks
 
-testLexicalAnalysis_withFilePath :: (Eq tok, Enum tok, Show tok) => [GenTokenizer tok] -> Word -> FilePath -> String -> IO ()
+testLexicalAnalysis_withFilePath
+  :: (Eq tok, Enum tok, Show tok)
+  => [GenTokenizer tok] -> TabWidth -> FilePath -> String -> IO ()
 testLexicalAnalysis_withFilePath tokenizers tablen filepath input = putStrLn result where
   result = case lexicalAnalysis tokenizers tablen input of
     OK  lines -> concatMap showLine lines
@@ -720,12 +745,16 @@ testLexicalAnalysis_withFilePath tokenizers tablen filepath input = putStrLn res
 
 -- | Run the 'lexicalAnalysis' with the 'GenTokenizers' on the given 'Prelude.String' and print out
 -- every token created.
-testLexicalAnalysis :: (Eq tok, Enum tok, Show tok) => [GenTokenizer tok] -> Word -> String -> IO ()
+testLexicalAnalysis
+  :: (Eq tok, Enum tok, Show tok)
+  => [GenTokenizer tok] -> TabWidth -> String -> IO ()
 testLexicalAnalysis a b c = testLexicalAnalysis_withFilePath a b "" c
 
 -- | Run the 'lexicalAnalysis' with the 'GenTokenizers' on the contents of the file at the the given
 -- 'System.IO.FilePath' 'Prelude.String' and print out every token created.
-testLexicalAnalysisOnFile :: (Eq tok, Enum tok, Show tok) => [GenTokenizer tok] -> Word -> FilePath -> IO ()
+testLexicalAnalysisOnFile
+  :: (Eq tok, Enum tok, Show tok)
+  => [GenTokenizer tok] -> TabWidth -> FilePath -> IO ()
 testLexicalAnalysisOnFile a b c = readFile c >>= testLexicalAnalysis_withFilePath a b c
 
 ----------------------------------------------------------------------------------------------------
@@ -756,7 +785,7 @@ instance (Eq tok, Enum tok) => CanMapTokens tok (GenParserErr st) where
     err{ parserErrTok = fmap (fmapTokens conv) (parserErrTok err) }
 
 -- | An initial blank parser error.
-parserErr :: (Eq tok, Enum tok) => Word -> Word -> GenParserErr st tok
+parserErr :: (Eq tok, Enum tok) => LineNum -> ColumnNum -> GenParserErr st tok
 parserErr lineNum colNum =
   GenParserErr
   { parserErrLoc = Just $
@@ -772,8 +801,9 @@ parserErr lineNum colNum =
   }
 
 -- | The 'GenParserState' contains a stream of all tokens created by the 'lexicalAnalysis' phase.
--- This is the state associated with a 'GenParser' in the instantiation of
--- 'Control.Mimport Debug.Traceonad.State.MonadState', so 'Control.Monad.State.get' returns a value of this data type.
+-- This is the state associated with a 'GenParser' in the instantiation of 'Control.Mimport
+-- Debug.Traceonad.State.MonadState', so 'Control.Monad.State.get' returns a value of this data
+-- type.
 data GenParserState st tok
   = GenParserState
     { userState :: st
@@ -801,9 +831,11 @@ modifyUserState fn = modify (\st -> st{userState = fn (userState st)})
 -- which can be caught by 'Control.Monad.Error.catchError', and which automatically contain
 -- information about the location of the failure and the current token in the stream that caused the
 -- failure.
-newtype GenParser st tok a = GenParser { parserToPTrans :: PTrans (GenParserErr st tok) (State (GenParserState st tok)) a}
+newtype GenParser st tok a
+  = GenParser { parserToPTrans :: PTrans (GenParserErr st tok) (State (GenParserState st tok)) a}
 type StParser st a = GenParser st TT a
-instance (Eq tok, Enum tok) => Functor   (GenParser st tok) where { fmap f (GenParser a) = GenParser (fmap f a) }
+instance (Eq tok, Enum tok) => Functor   (GenParser st tok) where
+  fmap f (GenParser a) = GenParser (fmap f a)
 instance (Eq tok, Enum tok) => Monad     (GenParser st tok) where
   (GenParser ma) >>= mfa = GenParser (ma >>= parserToPTrans . mfa)
   return a               = GenParser (return a)
@@ -844,7 +876,7 @@ parseEOF = get >>= \st -> if null (getLines st) then return () else mzero
 
 -- | Return the next token in the state along with it's line and column position. If the boolean
 -- parameter is true, the current token will also be removed from the state.
-nextTokenPos :: (Eq tok, Enum tok) => Bool -> GenParser st tok (Word, Word, GenToken tok)
+nextTokenPos :: (Eq tok, Enum tok) => Bool -> GenParser st tok (LineNum, ColumnNum, GenToken tok)
 nextTokenPos doRemove = get >>= \st -> case getLines st of
   []         -> mzero
   line:lines -> case lineTokens line of
@@ -890,7 +922,7 @@ operator k = token (==Operator) (==k)
 
 -- | Push an arbitrary token into the state, but you really don't want to use this function. It is
 -- used to implement backtracking by the 'withToken' function, so use 'withToken' instead.
-pushToken :: (Eq tok, Enum tok) => (Word, Word, GenToken tok) -> GenParser st tok ()
+pushToken :: (Eq tok, Enum tok) => (LineNum, ColumnNum, GenToken tok) -> GenParser st tok ()
 pushToken (lineNum, colNum, tok) = modify $ \st -> case getLines st of
   []         -> st{getLines = [GenLine{lineLineNumber=lineNum, lineTokens=[(colNum,tok)]}]}
   line:lines ->
@@ -899,8 +931,8 @@ pushToken (lineNum, colNum, tok) = modify $ \st -> case getLines st of
       else  st{getLines = GenLine{lineLineNumber=lineNum, lineTokens=[(colNum,tok)]} : line : lines}
 
 -- | Single token look-ahead: takes the next token, removing it from the state, and uses it to
--- evaluate the given 'Parser'. If the backtracks, the token is replaced into the state. Failures are
--- not caught, make sure the 'Parser' you pass to this function makes use of
+-- evaluate the given 'Parser'. If the backtracks, the token is replaced into the state. Failures
+-- are not caught, make sure the 'Parser' you pass to this function makes use of
 -- 'Control.Monad.Error.catchError' to catch failures if that is what you need it to do. This
 -- function does not keep a copy of the state, it removes a token from the stream, then places it
 -- back if backtracking occurs. This is supposed to be more efficient.
@@ -909,7 +941,9 @@ withTokenP parser = do
   (line, col, tok) <- nextTokenPos True
   mplus (parser (tokType tok) (tokToUStr tok)) (pushToken (line, col, tok) >> mzero)
 
-withToken :: (Eq tok, Enum tok) => (tok -> Bool) -> (UStr -> GenParser st tok a) -> GenParser st tok a
+withToken
+  :: (Eq tok, Enum tok)
+  => (tok -> Bool) -> (UStr -> GenParser st tok a) -> GenParser st tok a
 withToken tokenPredicate parser = withTokenP $ \tok u ->
   if tokenPredicate tok then parser u else mzero
 
@@ -923,7 +957,7 @@ eachWithKeyword :: [UStr -> StParser st a] -> StParser st a
 eachWithKeyword parsers = withToken (==Keyword) (\key -> msum (map ($key) parsers))
 
 -- | Return the current line and column of the current token without modifying the state in any way.
-getCursor :: (Eq tok, Enum tok) => GenParser st tok (Word, Word)
+getCursor :: (Eq tok, Enum tok) => GenParser st tok (LineNum, ColumnNum)
 getCursor = nextTokenPos False >>= \ (a,b, _) -> return (a,b)
 
 -- | Evaluates to @()@ if we are at the end of the input text, otherwise backtracks.
@@ -952,8 +986,8 @@ expect errMsg parser = do
   let expectMsg = "expecting "++errMsg
   mplus parser (throwError ((parserErr a b){parserErrMsg = Just (ustr expectMsg)}))
 
--- | If the given 'Parser' backtracks then evaluate to @return ()@, otherwise ignore the result of the
--- 'Parser' and evaluate to @return ()@.
+-- | If the given 'Parser' backtracks then evaluate to @return ()@, otherwise ignore the result of
+-- the 'Parser' and evaluate to @return ()@.
 ignore :: (Eq tok, Enum tok) => GenParser st tok ig -> GenParser st tok ()
 ignore = flip mplus (return ()) . void
 
@@ -992,7 +1026,9 @@ marker parser = do
 -- > myTokenToTT myTok = if myTok==MyKeyword then Keyword else Operator
 -- > myKeyword  = 'parseConvertTT' ('Prelude.const' MyKeyword)  myTokenToTT 'keyword'
 -- > myOperator = 'parseConvertTT' ('Prelude.const' MyOperator) myTokenToTT 'operator'
-parseConvertTT :: (Eq tok, Enum tok) => (TT -> tok) -> (tok -> TT) -> StParser st a -> GenParser st tok a
+parseConvertTT
+  :: (Eq tok, Enum tok)
+  => (TT -> tok) -> (tok -> TT) -> StParser st a -> GenParser st tok a
 parseConvertTT conv unconv parser = do
   st <- get
   let (result, st') = runParserState parser (fmapTokens unconv st)
@@ -1004,13 +1040,19 @@ parseConvertTT conv unconv parser = do
 
 -- | The 'GenParser's analogue of 'Control.Monad.State.runState', runs the parser using an existing
 -- 'GenParserState'.
-runParserState :: (Eq tok, Enum tok) => GenParser st tok a -> GenParserState st tok -> (PValue (GenParserErr st tok) a, GenParserState st tok)
+runParserState
+  :: (Eq tok, Enum tok)
+  => GenParser st tok a
+  -> GenParserState st tok
+  -> (PValue (GenParserErr st tok) a, GenParserState st tok)
 runParserState (GenParser parser) = runState (runPTrans parser)
 
 -- | This is the second phase of parsing, takes a stream of tokens created by the 'lexicalAnalysis'
 -- phase (the @['GenLine' tok]@ parameter) and constructs a syntax tree data structure using the
 -- 'GenParser' monad provided.
-syntacticAnalysis :: (Eq tok, Enum tok) => GenParser st tok synTree -> st -> [GenLine tok] -> PValue (GenParserErr st tok) synTree
+syntacticAnalysis
+  :: (Eq tok, Enum tok)
+  => GenParser st tok synTree -> st -> [GenLine tok] -> PValue (GenParserErr st tok) synTree
 syntacticAnalysis parser st lines = fst $ runParserState parser $ newParserState st lines
 
 ----------------------------------------------------------------------------------------------------
@@ -1024,7 +1066,7 @@ syntacticAnalysis parser st lines = fst $ runParserState parser $ newParserState
 -- entire input in the first phase before beginning the second phase.
 data GenCFGrammar st tok synTree
   = GenCFGrammar
-    { columnWidthOfTab :: Word
+    { columnWidthOfTab :: TabWidth
       -- ^ specify how many columns a @'\t'@ character takes up. This number is important to get
       -- accurate line:column information in error messages.
     , tokenizers       :: [GenTokenizer tok]
@@ -1037,7 +1079,9 @@ data GenCFGrammar st tok synTree
 type StCFGrammar st synTree = GenCFGrammar st TT synTree
 
 -- | This is *the function that parses* an input string according to a given 'GenCFGrammar'.
-parse :: (Eq tok, Enum tok) => GenCFGrammar st tok synTree -> st -> String -> PValue (GenParserErr st tok) synTree
+parse
+  :: (Eq tok, Enum tok)
+  => GenCFGrammar st tok synTree -> st -> String -> PValue (GenParserErr st tok) synTree
 parse cfg st input =
   case lexicalAnalysis (tokenizers cfg) (columnWidthOfTab cfg) input of
     OK  lines -> syntacticAnalysis (mainParser cfg) st lines

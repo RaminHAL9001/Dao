@@ -610,6 +610,12 @@ instance Show TopLevelEventType where
     BeginExprType -> "BEGIN"
     EndExprType   -> "END"
     ExitExprType  -> "EXIT"
+instance Read TopLevelEventType where
+  readsPrec _ str = map (\t -> (t, "")) $ case str of
+    "BEGIN" -> [BeginExprType]
+    "END"   -> [EndExprType]
+    "EXIT"  -> [ExitExprType]
+    ""      -> []
 
 -- | A 'TopLevelExpr' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.

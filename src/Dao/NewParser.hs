@@ -509,7 +509,7 @@ lexUntilTermStr escStr termStr = case (escStr, termStr) of
 runSubTokenizer :: (Eq tok, Enum tok) => String -> GenTokenizer tok -> [GenTokenizer tok] -> GenTokenizer tok
 runSubTokenizer msg predicate lexers = loop [] where
   loop tokens = do
-    (got, continue) <- msum $
+    (tokens, continue) <- msum $
       [ predicate >>= \t -> return (tokens++t, False)
       , msum lexers >>= \t -> if null t then mzero else return (tokens++t, True)
       , fail ("unknown characters seen during "++msg)

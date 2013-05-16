@@ -122,12 +122,13 @@ dataSpecialTokenizer = do
       flip mplus (return got) $ do
         let b64chars = unionCharP [isAlphaNum, (=='+'), (=='/'), (=='=')]
         got <- fmap (got++) (lexChar '{' >> makeToken Opener)
-        fmap (got++) $ runSubTokenizer "base-64 data expression" (lexChar '}' >> makeToken Closer) $
-          [ lexSpace
-          , lexWhile b64chars >> makeToken Arbitrary
-          , lexUntil (unionCharP [b64chars, isSpace, (=='}')]) >> makeToken Unknown
-          , lexEOF >> fail "base-64 data expression runs past end of input"
-          ]
+        flip mplus (fail "could not lex input after \"data\" statement") $ fmap (got++) $
+          runSubTokenizer "base-64 data expression" (lexChar '}' >> makeToken Closer) $
+            [ lexSpace
+            , lexWhile b64chars >> makeToken Arbitrary
+            , lexUntil (unionCharP [b64chars, isSpace, (=='}')]) >> makeToken Unknown
+            , lexEOF >> fail "base-64 data expression runs past end of input"
+            ]
     _ -> return k
 
 ----------------------------------------------------------------------------------------------------

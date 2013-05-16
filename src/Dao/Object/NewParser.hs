@@ -28,6 +28,7 @@ import           Dao.Predicate
 import           Dao.NewParser
 import qualified Dao.Tree as T
 
+import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Error
 import           Control.Monad.State
@@ -116,23 +117,17 @@ dataSpecialTokenizer = do
   k <- lexKeyword
   case k of
     [tok] | uchars (tokToUStr tok) == "data" -> do
-      got <- fmap ((k++) . concat) $ lexMany $ msum $
+      got <- fmap ((k++) . concat) $ many $ msum $
         [lexSpace, lexInlineC_Comment, lexEndlineC_Comment]
       flip mplus (return got) $ do
-        got <- fmap (got++) (lexChar '{' >> makeToken Opener)
         let b64chars = unionCharP [isAlphaNum, (=='+'), (=='/'), (=='=')]
-            isDone yesNo tok = makeToken tok >>= \t -> return (t, yesNo)
-            loop got = do
-              (tok, continue) <- msum $
-                [ lexChar '}' >> isDone True Closer
-                , lexSpace >>= \t -> return (t, True)
-                , lexWhile b64chars >> isDone False Arbitrary
-                , lexUntil (unionCharP [b64chars, isSpace, (=='}')]) >> isDone False Unknown
-                , lexEOF >> return ([], False)
-                ]
-              let got' = got++tok
-              if continue then loop got' else return got'
-        loop got
+        got <- fmap (got++) (lexChar '{' >> makeToken Opener)
+        fmap (got++) $ runSubTokenizer "base-64 data expression" (lexChar '}' >> makeToken Closer) $
+          [ lexSpace
+          , lexWhile b64chars >> makeToken Arbitrary
+          , lexUntil (unionCharP [b64chars, isSpace, (=='}')]) >> makeToken Unknown
+          , lexEOF >> fail "base-64 data expression runs past end of input"
+          ]
     _ -> return k
 
 ----------------------------------------------------------------------------------------------------

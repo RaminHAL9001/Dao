@@ -487,6 +487,35 @@ lexUntilTermStr escStr termStr = case (escStr, termStr) of
               (lexUntil (==a), let loop = mplus (lexString str) (lexChar a >> loop) in loop)
       lexUntilTerm scan term term
 
+-- | It is a common necessity of tokenizers to change their behavior when they detect a certain
+-- sequence of tokens, which is the purpose of this function. Where 'lexicalAnalysis' takes a list
+-- of 'GenTokenizer's to produce a token stream, this function works similarly, but instead
+-- evaluates to a list of 'GenToken's which can be returned by the 'GenLexer' which evaluated this
+-- function.
+--
+-- Pass an error message as the first parameter to use in the event that this tokenizer gets stuck
+-- on an untokenizable character, the failure message will be placed in the string
+-- > "unknown characters seen during $MESSAGE"@.
+-- Provide a predicate 'GenTokenizer' as the second parameter, this 'GenTokenizer' is evaluated
+-- first on every loop, if it succeeds the loop is completed and all 'GenTokens' parsed to that
+-- point are returned in a list. If it backtracks, the loop continues with the list of
+-- 'GenTokenizer's. Pass a list of 'GenTokenizers' as the third parameter; like 'lexicalAnalysis',
+-- each token will be tried once in turn. Successful tokenizers will produe tokens to be placed in
+-- the list of 'GenTokens' to be returned. If all 'GenTokenizers' in the list backtrack, this is a
+-- failure and the error message is used.
+-- 
+-- The predicate tokenizer may return a null list of 'GenToken's, this is not considered
+-- backtracking. However every other tokenizer must return a non-null list.
+runSubTokenizer :: (Eq tok, Enum tok) => String -> GenTokenizer tok -> [GenTokenizer tok] -> GenTokenizer tok
+runSubTokenizer msg predicate lexers = loop [] where
+  loop tokens = do
+    (got, continue) <- msum $
+      [ predicate >>= \t -> return (tokens++t, False)
+      , msum lexers >>= \t -> if null t then mzero else return (tokens++t, True)
+      , fail ("unknown characters seen during "++msg)
+      ]
+    (if continue then loop else return) tokens
+
 testTokenizer :: (Eq tok, Enum tok, Show tok) => GenTokenizer tok -> String -> IO String
 testTokenizer tok str = case runTokenizer tok str of
   Backtrack      -> putStrLn "Backtrack" >> return str

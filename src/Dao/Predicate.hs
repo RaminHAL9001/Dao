@@ -39,6 +39,7 @@ module Dao.Predicate where
 import           Dao.String
 
 import           Control.Exception
+import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Error
 import           Control.Monad.IO.Class
@@ -121,6 +122,20 @@ instance MonadError tok (PValue tok) where
     PFail u   -> catch u
     try       -> try
 
+instance Applicative (PValue tok) where
+  pure = return
+  fa <*> a = fa >>= \f -> a >>= \a -> return (f a)
+
+instance Alternative (PValue tok) where
+  empty   = mzero
+  a <|> b = mplus a b
+  many fa = loop [] where
+    loop got = case fa of
+      OK      a -> loop (got++[a])
+      Backtrack -> return got
+      PFail err -> assumePValue (PFail err)
+  some fa = fa >>= \a -> many fa >>= \ax -> return (a:ax)
+
 fromPValue :: a -> PValue tok a -> a
 fromPValue a pval = case pval of { OK a -> a ; _ -> a }
 
@@ -178,6 +193,20 @@ instance Monad m => MonadError tok (PTrans tok m) where
       Backtrack -> return Backtrack
       PFail   u -> runPTrans (catcher u)
       OK      a -> return (OK a)
+
+instance (Functor m, Monad m) => Applicative (PTrans tok m) where
+  pure = return
+  fa <*> a = fa >>= \f -> a >>= \a -> return (f a)
+
+instance (Functor m, Monad m) => Alternative (PTrans tok m) where
+  empty   = mzero
+  a <|> b = mplus a b
+  many (PTrans fa) = PTrans (loop []) where
+    loop got = fa >>= \a -> case a of
+      OK      a -> loop (got++[a])
+      Backtrack -> return (OK    got)
+      PFail err -> return (PFail err)
+  some fa = fa >>= \a -> many fa >>= \ax -> return (a:ax)
 
 ----------------------------------------------------------------------------------------------------
 

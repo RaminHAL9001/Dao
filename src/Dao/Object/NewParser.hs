@@ -159,7 +159,7 @@ rationalFromString maxValue base str =
 -- might parse to 
 parseNumber :: Parser Object
 parseNumber = do
-  let getTyp = optional "" (fmap uchars (tokenType Keyword))
+  let getTyp = defaultTo "" (fmap uchars (tokenType Keyword))
   mplus (fmap uchars (tokenType Digits) >>= \num -> getTyp >>= numberFromStrs 10 num "" "") $ do
     num <- fmap uchars (tokenTypes [Number, NumberExp])
     typ <- getTyp
@@ -312,7 +312,7 @@ parseDate = marker $ withToken (==Digits) $ \yyyy -> expect "absolute date const
     [  do commaSpace
           msum $
             [ fmap uchars (tokenType Keyword)
-            , do  plus <- optional "" (fmap uchars (mplus (operator "+") (operator "-")))
+            , do  plus <- defaultTo "" (fmap uchars (mplus (operator "+") (operator "-")))
                   zone <- fmap uchars (tokenType Digits)
                   let withColon h1 h2 = expect "valid time-zone offset" $ msum $
                         [ do  operator ":"

@@ -29,6 +29,7 @@ module Dao.NewParser where
 import           Dao.String
 import           Dao.Predicate
 
+import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.State
 import           Control.Monad.Error
@@ -182,7 +183,6 @@ instance Show tok => Show (GenToken tok) where
   show tok = show (tokType tok) ++ " " ++ show (tokToUStr tok)
 instance (Eq tok, Enum tok) => CanMapTokens tok GenToken where
   fmapTokens conv tok = tok{tokType = conv (tokType tok)}
-
 class HasLineNumber   a where { lineNumber   :: a -> LineNum }
 class HasColumnNumber a where { columnNumber :: a -> ColumnNum }
 
@@ -239,10 +239,10 @@ newLexerState input = LexerState{ lexBuffer = "", lexInput = input }
 -- | The 'GenLexer' is very similar in many ways to regular expressions, however 'GenLexer's always
 -- begin evaluating at the beginning of the input string. The 'lexicalAnalysis' phase of parsing
 -- must generate 'GenToken's from the input string. 'GenLexer's provide you the means to do with
--- primitive functions like 'lexString', 'lexChar', and 'lexUntil', and combinators like 'lexMany',
--- 'lexMany1', and 'lexUntilTermChar'. These primitive functions collect characters into a buffer,
--- and you can then empty the buffer and use the buffered characters to create a 'GenToken' using
--- the 'makeToken' function.
+-- primitive functions like 'lexString', 'lexChar', and 'lexUntil', and combinators like 'defaultTo'
+-- and 'lexUntilTermChar'. These primitive functions collect characters into a buffer, and you can
+-- then empty the buffer and use the buffered characters to create a 'GenToken' using the
+-- 'makeToken' function.
 -- 
 -- 'GenLexer' instantiates 'Control.Monad.State.MonadState', 'Control.Monad.Error.MonadError',
 -- 'Control.Monad.MonadPlus', and of course 'Control.Monad.Monad' and 'Data.Functor.Functor'. The
@@ -265,6 +265,14 @@ instance (Eq tok, Enum tok) => Monad (GenLexer tok) where
 instance (Eq tok, Enum tok) => MonadPlus (GenLexer tok) where
   mplus (GenLexer a) (GenLexer b) = GenLexer (mplus a b)
   mzero                           = GenLexer mzero
+instance (Eq tok, Enum tok) => Applicative (GenLexer tok) where
+  pure = return
+  f <*> fa = f >>= \f -> fa >>= \a -> return (f a)
+instance (Eq tok, Enum tok) => Alternative (GenLexer tok) where
+  empty = mzero
+  a <|> b = mplus a b
+  many (GenLexer lex) = GenLexer (many lex)
+  some (GenLexer lex) = GenLexer (some lex)
 instance (Eq tok, Enum tok) => MonadState LexerState (GenLexer tok) where
   get = GenLexer (lift get)
   put = GenLexer . lift . put
@@ -417,23 +425,6 @@ isAlphaNum_ c = isAlphaNum c || c=='_'
 -- standard Haskell "Data.Char" module, it is succeeds for alpha-numeric or underscore character.
 isAlpha_ :: Char -> Bool
 isAlpha_ c = isAlpha c || c=='_'
-
--- | Repeat the lexer until it fails. This 'GenLexer' never backtracks, so beware: it may cause
--- infinite loops.
-lexMany :: (Eq tok, Enum tok) => GenLexer tok a -> GenLexer tok [a]
-lexMany lexer = let loop got = mplus (lexer >>= \a -> loop (got++[a])) (return got) in loop []
-
--- | Like 'lexMany' but disgards return values, which is more efficient.
-lexMany_ :: (Eq tok, Enum tok) => GenLexer tok ig -> GenLexer tok ()
-lexMany_ lex = let loop = lex >> mplus loop (return ()) in loop
-
--- | Repeat the lexer until it fails, backtrack if it fails the first time.
-lexMany1 :: (Eq tok, Enum tok) => GenLexer tok a -> GenLexer tok [a]
-lexMany1 lexer = lexer >>= \a -> lexMany lexer >>= \ax -> return (a:ax)
-
--- | Like 'lexMany1' but disgards return values, which is more efficient.
-lexMany1_ :: (Eq tok, Enum tok) => GenLexer tok ig -> GenLexer tok ()
-lexMany1_ lexer = lexer >> lexMany_ lexer
 
 lexOptional :: (Eq tok, Enum tok) => GenLexer tok () -> GenLexer tok ()
 lexOptional lexer = mplus lexer (return ())
@@ -1075,8 +1066,8 @@ ignore = flip mplus (return ()) . void
 
 -- | Return the default value provided in the case that the given 'GenParser' fails, otherwise
 -- return the value returned by the 'GenParser'.
-optional :: (Eq tok, Enum tok) => a -> GenParser st tok a -> GenParser st tok a
-optional defaultValue parser = mplus parser (return defaultValue)
+defaultTo :: (Eq tok, Enum tok) => a -> GenParser st tok a -> GenParser st tok a
+defaultTo defaultValue parser = mplus parser (return defaultValue)
 
 -- | If the given parser backtracks, return 'Data.Maybe.Nothing', otherwise wrap the parsed value in
 -- 'Data.Maybe.Just'.

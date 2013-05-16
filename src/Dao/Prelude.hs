@@ -27,7 +27,7 @@
 module Dao.Prelude
   ( module Dao.Prelude
   , module Dao.Predicate
-  , module Dao.Token
+  , module Dao.NewParser
   , module Dao.String
   , module Dao.Object
   , module Dao.Object.AST
@@ -49,7 +49,7 @@ import           Dao.Object
 import           Dao.PPrint
 import           Dao.Struct
 import           Dao.Predicate
-import           Dao.Token
+import           Dao.NewParser
 import           Dao.Parser
 import           Dao.Random
 

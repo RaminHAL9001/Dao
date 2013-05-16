@@ -25,7 +25,6 @@ import           Dao.Prelude
 import           Dao.String
 import           Dao.Predicate
 import           Dao.PPrint
-import           Dao.Token
 import           Dao.Parser
 import           Dao.Struct
 import           Dao.Random

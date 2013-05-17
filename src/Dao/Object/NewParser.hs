@@ -86,14 +86,14 @@ maxYears :: Integer
 maxYears = 9999
 
 -- | This is the list of tokenizers used by 'lex' to break-up input string into parsable 'Token's.
-daoTokenizers :: [Tokenizer]
-daoTokenizers = 
+daoLexers :: [Lexer ()]
+daoLexers = 
   [ lexStringLiteral
   , lexCharLiteral
   , lexInlineC_Comment
   , lexEndlineC_Comment
   , lexSpace
-  , dataSpecialTokenizer
+  , dataSpecialLexer
   , lexKeyword
   , lexNumber
   , lexOperator daoOperators
@@ -102,6 +102,9 @@ daoTokenizers =
   , lexCharP (charSet "([{") >> makeToken Opener
   , lexCharP (charSet "}])") >> makeToken Closer
   ]
+
+daoMainLexer :: Lexer ()
+daoMainLexer = runLexerLoop "Dao script" lexEOF daoLexers
 
 daoOperators :: String
 daoOperators = concat [allArithOp2Strs, " ", allArithOp1Strs, " ", allUpdateOpStrs , " , : ; "]
@@ -112,24 +115,24 @@ daoOperators = concat [allArithOp2Strs, " ", allArithOp1Strs, " ", allUpdateOpSt
 -- looking for a "data" keyword and @{@ open-brace is seen, then switching to a special inner
 -- tokenizer, producing a stream of tokens until a @}@ closing brace is seen, then control is
 -- returned to the calling context.
-dataSpecialTokenizer :: Tokenizer
-dataSpecialTokenizer = do
-  k <- lexKeyword
+dataSpecialLexer :: Lexer ()
+dataSpecialLexer = do
+  k <- lexWhile isAlpha >> gets lexBuffer
   case k of
-    [tok] | uchars (tokToUStr tok) == "data" -> do
-      got <- fmap ((k++) . concat) $ many $ msum $
-        [lexSpace, lexInlineC_Comment, lexEndlineC_Comment]
-      flip mplus (return got) $ do
+    "data" -> do
+      makeToken Keyword
+      many $ msum [lexSpace, lexInlineC_Comment, lexEndlineC_Comment]
+      flip mplus (return ()) $ do
         let b64chars = unionCharP [isAlphaNum, (=='+'), (=='/'), (=='=')]
-        got <- fmap (got++) (lexChar '{' >> makeToken Opener)
-        flip mplus (fail "could not lex input after \"data\" statement") $ fmap (got++) $
-          runSubTokenizer "base-64 data expression" (lexChar '}' >> makeToken Closer) $
-            [ lexSpace
-            , lexWhile b64chars >> makeToken Arbitrary
-            , lexUntil (unionCharP [b64chars, isSpace, (=='}')]) >> makeToken Unknown
-            , lexEOF >> fail "base-64 data expression runs past end of input"
-            ]
-    _ -> return k
+            ender    = lexChar '}' >> makeToken Closer
+        lexChar '{' >> makeToken Opener
+        runLexerLoop "base-64 data expression" ender $
+          [ lexSpace
+          , lexWhile b64chars >> makeToken Arbitrary
+          , lexUntil (unionCharP [b64chars, isSpace, (=='}')]) >> makeToken Unknown
+          , lexEOF >> fail "base-64 data expression runs past end of input"
+          ]
+    _ -> lexBacktrack
 
 ----------------------------------------------------------------------------------------------------
 
@@ -792,7 +795,7 @@ daoCFGrammar :: CFGrammar a
 daoCFGrammar =
   GenCFGrammar
   { columnWidthOfTab = 4
-  , tokenizers       = daoTokenizers
+  , mainLexer        = daoMainLexer
   , mainParser       = error "daoCFGrammar mainParser is not defined"
   }
 

@@ -43,6 +43,8 @@ import           Data.List
 
 import           System.IO
 
+import Debug.Trace
+
 type LineNum   = Word
 type ColumnNum = Word
 type TabWidth  = Word
@@ -171,13 +173,15 @@ data TT
   | Arbitrary   -- ^ a type used to mark arbitrary data
   | Ignored     -- ^ characters that can be ignored, like in multi-line comments.
   | Unknown
-      -- ^ it is possible to construct tokenizers that never fail by creating a 'Tokenizer' that
-      -- returns unknown tokens paired with this type. This 'Unknown' 'Tokenizer' should always be
-      -- the final 'Tokenizer' in your list of 'Tokenizers' passed to 'lex'. Then your 'Parser' can
+      -- ^ it is possible to construct tokenizers that never fail by creating a 'GenLexer' that
+      -- returns unknown tokens paired with this type. This 'Unknown' 'GenLexer' should always be
+      -- the final 'GenLexer' in your list of 'GenLexer' passed to 'lex'. Then your 'Parser' can
       -- decide how to handle these.
   deriving (Eq, Ord, Enum, Show)
 
-data GenToken tok = GenToken { tokType :: tok, tokToUStr :: UStr }
+data GenToken tok
+  = GenEmptyToken { tokType :: tok }
+  | GenToken { tokType :: tok, tokToUStr :: UStr }
 type Token = GenToken TT
 instance Show tok => Show (GenToken tok) where
   show tok = show (tokType tok) ++ " " ++ show (tokToUStr tok)
@@ -218,23 +222,38 @@ instance Show tok => Show (GenLine tok) where
 
 ----------------------------------------------------------------------------------------------------
 
--- | This is the state used by every 'GenLexer'. There is no @GenLexerState@, there is only this
--- data type because the 'LexerState' does not store any 'GenToken's, only strings.
-data LexerState
-  = LexerState
-    { lexBuffer :: String
+-- | This is the state used by every 'GenLexer'.
+data GenLexerState tok
+  = GenLexerState
+    { lexTabWidth      :: TabWidth
+    , lexCurrentLine   :: LineNum
+    , lexCurrentColumn :: ColumnNum
+    , lexTokenCounter  :: Word
+      -- ^ some algorithms would like to know if you lexed any tokens at all, and will fail if you
+      -- did not. There needs to be some way of knowing how many tokens your 'GenLexer' created.
+    , tokenStream      :: [GenTokenAt tok]
+    , lexBuffer        :: String
       -- ^ stores the characters consumed by 'GenLexer's. This buffer is never cleared until
       -- 'makeToken' is evaluated. Retrieve this string using:
       -- > 'Control.Monad.State.gets' 'lexBuffer'
-    , lexInput  :: String
+    , lexInput         :: String
       -- ^ contains the remainder of the input string to be analyzed. Retrieve this string using:
       -- > 'Control.Monad.State.gets' 'lexInput'
     }
 
 -- | Create a new lexer state using the given input 'Prelude.String'. This is only realy useful if
 -- you must evaluate 'runLexerState'.
-newLexerState :: String -> LexerState
-newLexerState input = LexerState{ lexBuffer = "", lexInput = input }
+newLexerState :: (Eq tok, Enum tok) => String -> GenLexerState tok
+newLexerState input =
+  GenLexerState
+  { lexTabWidth      = 4
+  , lexTokenCounter  = 0
+  , lexCurrentLine   = 1
+  , lexCurrentColumn = 1
+  , tokenStream      = []
+  , lexBuffer        = ""
+  , lexInput         = input
+  }
 
 -- | The 'GenLexer' is very similar in many ways to regular expressions, however 'GenLexer's always
 -- begin evaluating at the beginning of the input string. The 'lexicalAnalysis' phase of parsing
@@ -255,13 +274,16 @@ newLexerState input = LexerState{ lexBuffer = "", lexInput = input }
 -- using 'lexBacktrack' (or don't backtrack at all, because it is inefficient). However you don't
 -- need to worry too much; if a 'GenLexer' backtracks while being evaluated in 'lexicalAnalysis' the
 -- 'lexInput' will not be affected at all and the 'lexBuffer' is ingored entirely.
-newtype GenLexer tok a = GenLexer { runLexer :: PTrans (GenParserErr () tok) (State LexerState) a }
+newtype GenLexer tok a = GenLexer { runLexer :: PTrans (GenParserErr () tok) (State (GenLexerState tok)) a }
 instance (Eq tok, Enum tok) => Functor (GenLexer tok) where
   fmap fn (GenLexer lex) = GenLexer (fmap fn lex)
 instance (Eq tok, Enum tok) => Monad (GenLexer tok) where
-  (GenLexer fn) >>= mfn = GenLexer (fn >>= runLexer . mfn)
-  return                = GenLexer . return
-  fail msg              = GenLexer (throwError ((parserErr 0 0){parserErrMsg = Just (ustr msg)}))
+  (GenLexer fn) >>= mfn          = GenLexer (fn >>= runLexer . mfn)
+  return                         = GenLexer . return
+  fail msg                       = GenLexer (throwError ((parserErr 0 0){parserErrMsg = Just (ustr msg)}))
+    -- The lexer does not keep track of the line or column number in it's own state, so using "fail"
+    -- alone will not report correct the location of the failure. It is in the 'lexicalAnalysis'
+    -- function that the failure is caught and the correct location is applied.
 instance (Eq tok, Enum tok) => MonadPlus (GenLexer tok) where
   mplus (GenLexer a) (GenLexer b) = GenLexer (mplus a b)
   mzero                           = GenLexer mzero
@@ -273,7 +295,7 @@ instance (Eq tok, Enum tok) => Alternative (GenLexer tok) where
   a <|> b = mplus a b
   many (GenLexer lex) = GenLexer (many lex)
   some (GenLexer lex) = GenLexer (some lex)
-instance (Eq tok, Enum tok) => MonadState LexerState (GenLexer tok) where
+instance (Eq tok, Enum tok) => MonadState (GenLexerState tok) (GenLexer tok) where
   get = GenLexer (lift get)
   put = GenLexer . lift . put
 instance (Eq tok, Enum tok) => MonadError (GenParserErr () tok) (GenLexer tok) where
@@ -289,27 +311,6 @@ instance (Eq tok, Enum tok) => ErrorMonadPlus (GenParserErr () tok) (GenLexer to
 -- @deriving@ keyword). Regular 'Lexer' uses the 'TT' token type provided in this module, which
 -- should be enough for most purposes; rarely should you ever need your own token type.
 type Lexer a = GenLexer TT a
-
--- | A 'GenTokenizer' or 'Tokenizer' is a special form of 'GenLexer' which is essential to
--- 'lexicalAnalysis'. There are three "laws" that a 'GenTokenizer' must satisfy:
--- 1. 'GenTokenizers' are monads, but the final monadic binding must be the 'makeToken' function, or
---     some function that returns 'makeToken'. Returning your own 'GenToken' using monadic
---     'Control.Monad.return' is possible but should be considered bad style.
--- 2. 'GenTokenizers' *must always* consume at least one character if it does not backtrack. This
---    law cannot be enforced in the type system, although functions like 'makeToken', 'runTokenizer'
---    and the 'lexicalAnalysis' function both check that a tokenizer always consumes one token and
---    forces backtracking if it does not. However in places where 'makeToken' or 'lexicalAnalysis'
---    are not evaluated, tokenizers that return empty tokens might result in infinite loops.
--- 3. The line positions of tokens is computed by the 'lexicalAnalysis' phase, which assumes that
---    *every token* generated by a 'GenTokenizer' will return a token containing exactly the
---    characters lexed-off of the input string, nothing more and nothing less. It is therefore
---    important that space characters also be treated as tokens, and that no characters are
---    thrown-away during lexing.  Lexers can return more than one token, so if necessary, return an
---    'Ignored' token with tokens you don't need along with a second token containing the important
---    characters, then drop all 'Ignored' tokens during 'syntacticAnalysis'. 
-type GenTokenizer tok = GenLexer tok [GenToken tok]
-
-type Tokenizer = GenTokenizer TT
 
 -- Evaluates to 'Prelude.True' if the 'TT' token might have newline or tab characters and thus
 -- require it be scanned for updating the line or column counts more scrupulously. This is an
@@ -370,12 +371,50 @@ lexWhile predicate = do
 lexUntil :: (Eq tok, Enum tok) => (Char -> Bool) -> GenLexer tok ()
 lexUntil predicate = lexWhile (not . predicate)
 
+-- lexer: update line/column with string
+lexUpdLineColWithStr :: (Eq tok, Enum tok) => String -> GenLexer tok ()
+lexUpdLineColWithStr input = do
+  st <- get
+  let tablen = lexTabWidth st
+      countNLs lns cols input = case break (=='\n') input of
+        (""    , ""        ) -> (lns, cols)
+        (_     , '\n':after) -> countNLs (lns+1) 0 after
+        (before, after     ) -> (lns, cols + foldl (+) 0 (map charPrintWidth (before++after)))
+      charPrintWidth c = case c of
+        c | c=='\t'   -> tablen
+        c | isPrint c -> 1
+        c             -> 0
+      (newLine, newCol) = countNLs (lexCurrentLine st) (lexCurrentColumn st) input
+  put (st{lexCurrentLine=newLine, lexCurrentColumn=newCol})
+
 -- | Create a 'GenToken' using the contents of the 'lexBuffer', then clear the 'lexBuffer'. This
--- function backtracks if the 'lexBuffer' is empty -- you must never create null tokens.
-makeToken  :: (Eq tok, Enum tok) => tok -> GenLexer tok [GenToken tok]
-makeToken tok = do
-  str <- gets lexBuffer
-  if null str then mzero else modify (\st -> st{lexBuffer=""}) >> return [GenToken tok (ustr str)]
+-- function backtracks if the 'lexBuffer' is empty.
+makeGetToken  :: (Eq tok, Enum tok) => tok -> GenLexer tok (GenToken tok)
+makeGetToken typ = do
+  st <- get
+  let str = lexBuffer st
+  if null str
+    then  mzero
+    else  do
+      let tok = GenToken{tokType=typ, tokToUStr=ustr str}
+          at  = GenTokenAt
+                { tokenAtLineNumber   = lexCurrentLine   st
+                , tokenAtColumnNumber = lexCurrentColumn st
+                , getToken            = tok
+                }
+      put $ st{ lexBuffer   = ""
+              , tokenStream = tokenStream st ++ [at]
+              , lexTokenCounter = lexTokenCounter st + 1
+              }
+      lexUpdLineColWithStr str
+      return tok
+
+makeToken :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+makeToken = void . makeGetToken
+
+-- | Clear the 'lexBuffer' without creating a token.
+clearBuffer :: (Eq tok, Enum tok) => GenLexer tok ()
+clearBuffer = get >>= \st -> lexUpdLineColWithStr (lexBuffer st) >> put (st{lexBuffer=""})
 
 -- | A fundamental lexer using 'Data.List.stripPrefix' to check whether the given string is at the
 -- very beginning of the input.
@@ -487,45 +526,25 @@ lexUntilTermStr escStr termStr = case (escStr, termStr) of
               (lexUntil (==a), let loop = mplus (lexString str) (lexChar a >> loop) in loop)
       lexUntilTerm scan term term
 
--- | It is a common necessity of tokenizers to change their behavior when they detect a certain
--- sequence of tokens, which is the purpose of this function. Where 'lexicalAnalysis' takes a list
--- of 'GenTokenizer's to produce a token stream, this function works similarly, but instead
--- evaluates to a list of 'GenToken's which can be returned by the 'GenLexer' which evaluated this
--- function.
---
--- Pass an error message as the first parameter to use in the event that this tokenizer gets stuck
--- on an untokenizable character, the failure message will be placed in the string
--- > "unknown characters seen during $MESSAGE"@.
--- Provide a predicate 'GenTokenizer' as the second parameter, this 'GenTokenizer' is evaluated
--- first on every loop, if it succeeds the loop is completed and all 'GenTokens' parsed to that
--- point are returned in a list. If it backtracks, the loop continues with the list of
--- 'GenTokenizer's. Pass a list of 'GenTokenizers' as the third parameter; like 'lexicalAnalysis',
--- each token will be tried once in turn. Successful tokenizers will produe tokens to be placed in
--- the list of 'GenTokens' to be returned. If all 'GenTokenizers' in the list backtrack, this is a
--- failure and the error message is used.
--- 
--- The predicate tokenizer may return a null list of 'GenToken's, this is not considered
--- backtracking. However every other tokenizer must return a non-null list.
-runSubTokenizer :: (Eq tok, Enum tok) => String -> GenTokenizer tok -> [GenTokenizer tok] -> GenTokenizer tok
-runSubTokenizer msg predicate lexers = loop [] where
-  loop tokens = do
-    (tokens, continue) <- msum $
-      [ predicate >>= \t -> return (tokens++t, False)
-      , msum lexers >>= \t -> if null t then mzero else return (tokens++t, True)
-      , fail ("unknown characters seen during "++msg)
+-- | Takes three parameters. (1) A label for this set of 'GenLexer's used in error reporting.
+-- (2) A halting predicate which backtracks if there is more tokenizing to be done, and succeeds
+-- when this tokenizer is done. (3) A list of 'GenLexer's that will each be tried in turn. This
+-- function loops, first trying the halting predicate, and then trying the 'GenLexer' list, and
+-- looping continues until the halting predicate succeeds or fails if the 'GenLexer' list
+-- backtracks. If the 'GenLexer' list backtracks, the error message is
+-- > "unknown characters scanned by $LABEL tokenizer"
+-- where @$LABEL@ is the string passed as parameter 1.
+runLexerLoop
+  :: (Eq tok, Enum tok)
+  => String -> GenLexer tok () -> [GenLexer tok ()] -> GenLexer tok ()
+runLexerLoop msg predicate lexers = loop 0 where
+  loop i = do
+    shouldContinue <- msum $
+      [ predicate >> return False
+      , msum lexers >> return True
+      , fail ("unknown characters scanned by "++msg++" tokenizer")
       ]
-    (if continue then loop else return) tokens
-
-testTokenizer :: (Eq tok, Enum tok, Show tok) => GenTokenizer tok -> String -> IO String
-testTokenizer tok str = case runTokenizer tok str of
-  Backtrack      -> putStrLn "Backtrack" >> return str
-  PFail     err  -> putStrLn (show err)  >> return str
-  OK (toks, str) -> mapM print toks >> return str
-
-testLexer
-  :: (Eq tok, Enum tok, Show tok)
-  => GenLexer tok a -> String -> PValue (GenParserErr () tok) a
-testLexer lexer str = fst $ runLexerState lexer (newLexerState str)
+    seq shouldContinue $! if shouldContinue then loop (i+1) else return ()
 
 ----------------------------------------------------------------------------------------------------
 -- Functions that facilitate lexical analysis.
@@ -534,31 +553,31 @@ testLexer lexer str = fst $ runLexerState lexer (newLexerState str)
 -- matches, a token is constructed and it is paired with the remaining string and wrapped into a
 -- 'Data.Maybe.Just' value. Otherwise 'Data.Maybe.Nothing' is returned. The 'Data.Maybe.Maybe' type
 -- is used so you can combine fundamental tokenizers using 'Control.Monad.mplus'.
-lexSimple :: (Eq tok, Enum tok) => tok -> (Char -> Bool) -> GenTokenizer tok
+lexSimple :: (Eq tok, Enum tok) => tok -> (Char -> Bool) -> GenLexer tok ()
 lexSimple tok predicate = lexWhile predicate >> makeToken tok
 
 -- | A fundamental lexer using 'Data.Char.isSpace' and evaluating to a 'Space' token.
-lexSpace :: Tokenizer
+lexSpace :: GenLexer TT ()
 lexSpace = lexSimple Space isSpace
 
 -- | A fundamental lexer using 'Data.Char.isAlpha' and evaluating to a 'Alphabetic' token.
-lexAlpha :: Tokenizer
+lexAlpha :: GenLexer TT ()
 lexAlpha = lexSimple Alphabetic isAlpha
 
 -- | A fundamental lexer using 'Data.Char.isDigit' and evaluating to a 'Digits' token.
-lexDigits :: Tokenizer
+lexDigits :: GenLexer TT ()
 lexDigits = lexSimple Digits isDigit
 
 -- | A fundamental lexer using 'Data.Char.isHexDigit' and evaluating to a 'HexDigit' token.
-lexHexDigits :: Tokenizer
+lexHexDigits :: GenLexer TT ()
 lexHexDigits = lexSimple HexDigits isHexDigit
 
--- | Constructs an operator 'Tokenizer' from a string of operators separated by spaces. For example,
+-- | Constructs an operator 'GenLexer' from a string of operators separated by spaces. For example,
 -- pass @"+ += - -= * *= ** / /= % %= = == ! !="@ to create 'Lexer' that will properly parse all of
 -- those operators. The order of the operators is *NOT* important, repeat symbols are tried only
 -- once, the characters @+=@ are guaranteed to be parsed as a single operator @["+="]@ and not as
 -- @["+", "="]@.
-lexOperator :: String -> Tokenizer
+lexOperator :: String -> GenLexer TT ()
 lexOperator ops =
   msum (map (\op -> lexString op >> makeToken Operator) $ reverse $ nub $ sortBy len $ words ops)
   where
@@ -570,7 +589,7 @@ lexOperator ops =
 lexToEndline :: (Eq tok, Enum tok) => GenLexer tok ()
 lexToEndline = lexUntil (=='\n')
 
-lexInlineComment :: String -> String -> Tokenizer
+lexInlineComment :: String -> String -> GenLexer TT ()
 lexInlineComment startStr endStr = do
   lexString startStr
   completed <- lexUntilTermStr "" endStr
@@ -578,23 +597,23 @@ lexInlineComment startStr endStr = do
     then  makeToken ComInln
     else  fail "comment runs past end of input"
 
-lexInlineC_Comment :: Tokenizer
+lexInlineC_Comment :: GenLexer TT ()
 lexInlineC_Comment = lexInlineComment "/*" "*/"
 
-lexEndlineC_Comment :: Tokenizer
+lexEndlineC_Comment :: GenLexer TT ()
 lexEndlineC_Comment = lexString "//" >> lexUntil (=='\n') >> makeToken ComEndl
 
-lexInlineHaskellComment :: Tokenizer
+lexInlineHaskellComment :: GenLexer TT ()
 lexInlineHaskellComment = lexInlineComment "{-" "-}"
 
-lexEndlineHaskellComment :: Tokenizer
+lexEndlineHaskellComment :: GenLexer TT ()
 lexEndlineHaskellComment = lexString "--" >> lexToEndline >> makeToken ComEndl
 
 -- | A lot of programming languages provide only end-line comments beginning with a (@#@) character.
-lexEndlineCommentHash :: Tokenizer
+lexEndlineCommentHash :: GenLexer TT ()
 lexEndlineCommentHash = lexChar '#' >> lexToEndline >> makeToken ComEndl
 
-lexStringLiteral :: Tokenizer
+lexStringLiteral :: GenLexer TT ()
 lexStringLiteral = do
   lexChar '"'
   completed <- lexUntilTermChar '\\' '"'
@@ -602,7 +621,7 @@ lexStringLiteral = do
     then  makeToken StrLit
     else  fail "string literal expression runs past end of input"
 
-lexCharLiteral :: Tokenizer
+lexCharLiteral :: GenLexer TT ()
 lexCharLiteral = lexChar '\'' >> lexUntilTermChar '\\' '\'' >> makeToken CharLit
 
 -- | This actually tokenizes a general label: alpha-numeric and underscore characters starting with
@@ -610,13 +629,13 @@ lexCharLiteral = lexChar '\'' >> lexUntilTermChar '\\' '\'' >> makeToken CharLit
 -- Evaluates to a 'Keyword' token type, it is up to the 'GenParser's in the syntacticAnalysis phase
 -- to sort out which 'Keyword's are actually keywords and which are labels for things like variable
 -- names.
-lexKeyword :: Tokenizer
+lexKeyword :: GenLexer TT ()
 lexKeyword = do
   lexWhile (\c -> isAlpha    c || c=='_')
   lexOptional (lexWhile (\c -> isAlphaNum c || c=='_'))
   makeToken Keyword
 
--- | Create a 'Tokenizer' that lexes the various forms of numbers. If the number contains no special
+-- | Create a 'GenLexer' that lexes the various forms of numbers. If the number contains no special
 -- modification, i.e. no hexadecimal digits, no decimal points, and no exponents, a 'Digits' token
 -- is returned. Anything more exotic than simple base-10 digits and a 'Number' token is returned. If
 -- the 'Number' is expressed in base-10 and also has an exponent, like @6.022e23@ where @e23@ is the
@@ -632,7 +651,7 @@ lexKeyword = do
 -- decimal numbers are also lexed appropriately, and this includes floating-point numbers expressed
 -- in hexadecimal. Again, if your language must disallow hexadecimal floating-point numbers, throw
 -- an error in the 'syntacticAnalysis' phase.
-lexNumber :: Tokenizer
+lexNumber :: GenLexer TT ()
 lexNumber = do
   let altBase typ xb@(u:l:_) pred = do
         lexCharP (charSet xb)
@@ -648,6 +667,7 @@ lexNumber = do
             ]
     , lexChar '.' >> lexWhile isDigit >> return (False, False) -- lex a leading decimal point
     , lexWhile isDigit                >> return (True , False) -- lex an ordinary number
+    , lexBacktrack
     ]
   (gotDot, gotExp) <- flip mplus (return (False, False)) $ do
     gotDot <-
@@ -677,7 +697,7 @@ lexNumber = do
 -- label may start with a lower-case letter or underscore, or the final label may also be
 -- punctuation surrounded by parens. Examples are: @Aaa.Bbb@, @D.Ee_ee.ccc123@, @Aaa.Bbb.Ccc.___d1@,
 -- @A.B.C.(-->)@.
-lexHaskellLabel :: Tokenizer
+lexHaskellLabel :: GenLexer TT ()
 lexHaskellLabel = loop 0 where
   label    = do
     lexCharP (\c -> isUpper c && isAlpha c)
@@ -690,174 +710,64 @@ lexHaskellLabel = loop 0 where
                       (fail "bad operator token after final dot of label")
   done     = makeToken Label
 
--- | Creates a list of 'Tokenizer's for a C-like programming language. Since the operators are the
--- biggest lexical difference between languages, you must only provide a string of space-separated
--- operator symbols, for example:
--- > "= == ! != < <= > >= + ++ += - -- -> -= * *= / /= % %= ^ ^= << <<= >> >>= . & ~ ? : ;"
--- This string is passed directly to 'lexOperator' to construct the final 'Tokenizer' in the list of
--- 'Tokenizers' to which the function evaluates. This is a very simple tokenizer, so all tokens
--- starting with an underscore or alphabetic character are tokenized as 'Dao.Parser.Keyword's. Your
--- 'Dao.Parser.GenParser' can then use the 'Dao.Parser.keyword' function to sort out which
--- 'Dao.Parser.Keyword' tokens are actually keywords and which are labels.
--- 
--- This simplified tokenizing strategy is applied to punctuation as well. It is best to treat all
--- punctuation marks as 'Dao.Parser.Operator's, and leave it to the 'GenParser's in the
--- syntacticAnalysis phase to sort out which operators are actually operators. Therefore, if you
--- leave out (for example) the semicolon because it is not technically an operator, your C-like
--- language will fail to tokenize when it comes to a semicolon. If your parser must have semicolons
--- treated differently from operators, you can omit the semicolon from the string parameter passed
--- to this function and then append your own semicolon 'Dao.Parser.Tokenizer' to the list produced
--- by this function.
-tokenizeC_Like :: String -> [Tokenizer]
-tokenizeC_Like operators =
-  [ lexStringLiteral
-  , lexCharLiteral
-  , lexInlineC_Comment
-  , lexEndlineC_Comment
-  , lexSpace
-  , lexKeyword
-  , lexNumber
-  , lexOperator operators
-  , lexCharP (charSet "([{") >> makeToken Opener
-  , lexCharP (charSet "}])") >> makeToken Closer
-  ]
-
--- | If you like 'Tokenizer's provided in this module, like 'lexOperator' or 'lexDigits', but you
--- need a 'GenTokenizer' version of them, you can provide a conversion function to convert from a
--- 'TT' token type to your own token type:
--- > data MyToken = MyAlpha | MyDigits deriving ('Prelude.Eq', 'Prelude.Enum')
--- > myLexAlpha  = 'lexConvertTT' ('Prelude.const' MyAlpha)  'lexAlpha'
--- > myLexDigits = 'lexConvertTT' ('Prelude.const' MyDigits) 'lexDigits'
-lexConvertTT :: (Eq tok, Enum tok) => (TT -> tok) -> Tokenizer -> GenTokenizer tok
-lexConvertTT conv tokenizer = do
-  st <- get
-  let (result, st) = runLexerState tokenizer st
-  result <- assumePValue $ case result of
-    OK   toks -> return (map (fmapTokens conv) toks)
-    Backtrack -> Backtrack
-    PFail err -> PFail (fmapTokens conv err)
-  put st >> return result
+-- | Takes a 'tokenStream' resulting from the evaulation of 'lexicalAnalysis' and breaks it into
+-- 'GenLine's. This makes things a bit more efficient because it is not necessary to store a line
+-- number with every single token. It is necessary for initializing a 'GenParser'.
+tokenStreamToLines :: (Eq tok, Enum tok) => [GenTokenAt tok] -> [GenLine tok]
+tokenStreamToLines toks = loop toks where
+  makeLine num toks =
+    GenLine
+    { lineLineNumber = num
+    , lineTokens     = map (\t -> (tokenAtColumnNumber t, getToken t)) toks
+    }
+  loop toks = case toks of
+    []     -> []
+    t:toks ->
+      let num           = tokenAtLineNumber t
+          (line, toks') = span ((==num) . tokenAtLineNumber) (t:toks)
+      in  makeLine num line : loop toks'
 
 -- | The 'GenLexer's analogue of 'Control.Monad.State.runState', runs the lexer using an existing
 -- 'LexerState'.
-runLexerState
-  :: (Eq tok, Enum tok)
-  => GenLexer tok a -> LexerState -> (PValue (GenParserErr () tok) a, LexerState)
-runLexerState (GenLexer lexer) = runState (runPTrans lexer)
-
--- | Runs a 'GenLexer' (specifically a 'GenTokenizer' that returns a 'Prelude.String') with an input
--- string and evaluates it using an input string, returning the 'Dao.Prelude.PValue' result of the
--- 'GenTokenizer' evaluation with portion of the input string that was not lexed. FYI: this function
--- also enforces the rule that 'GenToken's must never be null strings, all tokenized strings are
--- checked. If a 'GenToken' containing a 'Dao.String.nil' is returned, this function evaluates to
--- 'Control.Monad.mzero'.
-runTokenizer
-  :: (Eq tok, Enum tok)
-  => GenTokenizer tok -> String -> (PValue (GenParserErr () tok) ([GenToken tok], String))
-runTokenizer lexer input = fst $ flip runLexerState (newLexerState input) $ do
-  toks <- fmap (filter (not . (==nil) . tokToUStr)) lexer
-  guard (not (null toks))
-  gets lexInput >>= \remainder -> return (toks, remainder)
-
--- | This function performs the lexical analysis pass over an entire input text. It iterates over an
--- input string. Each iteration takes a list of 'Tokenizer's and tries each one in order. If one of
--- the 'Tokenizers' succeeds, the characters tokenized are broken off of the input string and stored
--- with their line and column information, and the next iteration begins with the remaining input
--- string. If all of the given 'Tokenizer's fail, this function evaluates to 'Dao.Predicate.PFail'
--- and returns the location of the failure. This iteration continues until the entire input string
--- is consumed. In this way, the lexer breaks an arbitrary input string into lines, and breaks lines
--- into 'Token's. 'Token's like string literals and comments might take up several lines, so the
--- 'Token' data type is defined to be able to still work even though the input is broken into lines.
--- The first parameter is an integer value (actually a 'Data.Word.Word') for how many columns a tab
--- takes to give more accurate column counts.
---
--- Every 'GenTokenizer' passed to this function is treated as an atomic lexer: it either succeeds or
--- backtracks. If it succeeds, the token produced is used, if it backtracks, the 'lexInput' is
--- restored to exactly the state it was before evaluating the 'GenTokenizer' as if nothing happened,
--- The characters in 'lexInput' or 'lexBuffer' are ignored after backtracking.
--- 
--- Line positions of tokens assumes that *every token* generated by the @['GenTokenizer' tok]@ list
--- of tokenizers will return a token containing exactly the characters lexed-off of the input
--- string, nothing more and nothing less. It is therefore important that space characters also be
--- treated as tokens, and that no characters are thrown-away during lexing. Lexers can return more
--- than one token, so if necessary, return an 'Ignored' token along with a token containing the
--- important characters.
 lexicalAnalysis
   :: (Eq tok, Enum tok)
-  => [GenTokenizer tok] -> TabWidth -> String -> PValue (GenParserErr () tok) [GenLine tok]
-lexicalAnalysis tokenizers tablen input = fmap (cluster 1 []) (lexLoop 1 1 [] input) where
-  lexLoop lineNum colNum toks str = case nextLex str of
-    OK (newToks, str) ->
-      let (newLineNum, newColNum, positionedToks) = positionTok [] lineNum colNum newToks
-          toks' = toks ++ positionedToks
-      in  if null newToks
-            then  PFail $ 
-                    (parserErr lineNum colNum){
-                      parserErrMsg = Just $ ustr $ "tokenizer evaluated to null list of tokens"
-                    }
-            else  if null str
-                    then  OK toks'
-                    else  lexLoop newLineNum newColNum toks' str
-    PFail err -> PFail err
-    Backtrack -> PFail $
-      (parserErr lineNum colNum)
-      { parserErrMsg = Just $ ustr $
-          "bad symbol"++(if null str then "<END>" else ' ':show (head str))++" in character stream"
-      }
-  nextLex str = msum $ map (flip runTokenizer str) $ tokenizers
-  cluster curLineNum toks tx = case tx of
-    []                          ->
-      if null toks then [] else [GenLine{lineLineNumber=curLineNum, lineTokens=toks}]
-    (lineNum, colNum, tok) : tx ->
-      if lineNum==curLineNum || null toks -- if we are on the same line, or if the line is empty
-        then  cluster lineNum (toks++[(colNum, tok)]) tx -- then get the next token
-        else  GenLine{lineLineNumber=curLineNum, lineTokens=toks} :
-                cluster lineNum [(colNum, tok)] tx
-  countNLs lns cols input = case break (=='\n') input of
-    (""    , ""        ) -> (lns, cols)
-    (_     , '\n':after) -> countNLs (lns+1) 0 after
-    (before, after     ) -> (lns, cols + foldl (+) 0 (map charPrintWidth (before++after)))
-  charPrintWidth c = case c of
-    c | c=='\t'   -> tablen
-    c | isPrint c -> 1
-    c             -> 0
-  positionTok rx lineNum colNum toks = case toks of
-    []       -> (lineNum, colNum, rx)
-    tok:toks -> 
-      let (lns, cols) = countNLs 0 0 $ uchars $ tokToUStr tok
-          newLineNum  = lns + lineNum
-          newColNum   = cols + (if lns>0 then 0 else colNum)
-      in  positionTok (rx++[(lineNum, colNum, tok)]) newLineNum newColNum toks
+  => GenLexer tok a -> GenLexerState tok -> (PValue (GenParserErr () tok) a, GenLexerState tok)
+lexicalAnalysis lexer st = runState (runPTrans (runLexer lexer)) st
 
 testLexicalAnalysis_withFilePath
   :: (Eq tok, Enum tok, Show tok)
-  => [GenTokenizer tok] -> TabWidth -> FilePath -> String -> IO ()
-testLexicalAnalysis_withFilePath tokenizers tablen filepath input = putStrLn result where
-  result = case lexicalAnalysis tokenizers tablen input of
-    OK  lines -> concatMap showLine lines
-    Backtrack -> reportFilepath++": lexical analysis evalauted to \"Backtrack\""
-    PFail err -> reportFilepath++show err
+  => GenLexer tok () -> FilePath -> TabWidth -> String -> IO ()
+testLexicalAnalysis_withFilePath tokenizer filepath tablen input = putStrLn report where
+  (result, st) = lexicalAnalysis tokenizer ((newLexerState input){lexTabWidth=tablen})
+  lines  = tokenStreamToLines (tokenStream st)
+  more   = take 21 (lexInput st)
+  remain = "\nremaining: "++(if length more > 20 then show (take 20 more)++"..." else show more)
+  loc    = show (lexCurrentLine st) ++ ":" ++ show (lexCurrentColumn st)
+  report = (++remain) $ intercalate "\n" (map showLine lines) ++ '\n' : case result of
+    OK      _ -> "Success!"
+    Backtrack -> reportFilepath ++ ": lexical analysis evalauted to \"Backtrack\""
+    PFail err -> reportFilepath ++ show err
   showLine line = concat $
-    [ "\n----------\nline "
+    [ "----------\nline "
     , show (lineNumber line), "\n"
     , intercalate ", " $ map showTok (lineTokens line)
     ]
   showTok (col, tok) = concat [show col, " ", show (tokType tok), " ", show (tokToUStr tok)]
-  reportFilepath = if null filepath then "" else filepath++":"
+  reportFilepath = (if null filepath then "" else filepath)++":"++loc
 
--- | Run the 'lexicalAnalysis' with the 'GenTokenizers' on the given 'Prelude.String' and print out
+-- | Run the 'lexicalAnalysis' with the 'GenLexer' on the given 'Prelude.String' and print out
 -- every token created.
 testLexicalAnalysis
   :: (Eq tok, Enum tok, Show tok)
-  => [GenTokenizer tok] -> TabWidth -> String -> IO ()
-testLexicalAnalysis a b c = testLexicalAnalysis_withFilePath a b "" c
+  => GenLexer tok () -> TabWidth -> String -> IO ()
+testLexicalAnalysis a b c = testLexicalAnalysis_withFilePath a "" b c
 
--- | Run the 'lexicalAnalysis' with the 'GenTokenizers' on the contents of the file at the the given
+-- | Run the 'lexicalAnalysis' with the 'GenLexer' on the contents of the file at the the given
 -- 'System.IO.FilePath' 'Prelude.String' and print out every token created.
 testLexicalAnalysisOnFile
   :: (Eq tok, Enum tok, Show tok)
-  => [GenTokenizer tok] -> TabWidth -> FilePath -> IO ()
-testLexicalAnalysisOnFile a b c = readFile c >>= testLexicalAnalysis_withFilePath a b c
+  => GenLexer tok () -> TabWidth -> FilePath -> IO ()
+testLexicalAnalysisOnFile a b c = readFile c >>= testLexicalAnalysis_withFilePath a c b
 
 ----------------------------------------------------------------------------------------------------
 -- The parser data type
@@ -876,8 +786,7 @@ type StParserErr st = GenParserErr st TT
 instance Show tok => Show (GenParserErr st tok) where
   show err =
     let msg = concat $ map (fromMaybe "") $
-          [ fmap show (parserErrLoc err)
-          , fmap ((": on token "++) . show) (parserErrTok err)
+          [ fmap (("(on token "++) . (++")") . show) (parserErrTok err)
           , fmap ((": "++) . uchars) (parserErrMsg err)
           ]
     in  if null msg then "Unknown parser error" else msg
@@ -1154,8 +1063,11 @@ runParserState (GenParser parser) = runState (runPTrans parser)
 -- 'GenParser' monad provided.
 syntacticAnalysis
   :: (Eq tok, Enum tok)
-  => GenParser st tok synTree -> st -> [GenLine tok] -> PValue (GenParserErr st tok) synTree
-syntacticAnalysis parser st lines = fst $ runParserState parser $ newParserState st lines
+  => GenParser st tok synTree
+  -> st
+  -> [GenLine tok]
+  -> (PValue (GenParserErr st tok) synTree, GenParserState st tok)
+syntacticAnalysis parser st lines = runParserState parser $ newParserState st lines
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1171,7 +1083,7 @@ data GenCFGrammar st tok synTree
     { columnWidthOfTab :: TabWidth
       -- ^ specify how many columns a @'\t'@ character takes up. This number is important to get
       -- accurate line:column information in error messages.
-    , tokenizers       :: [GenTokenizer tok]
+    , mainLexer        :: GenLexer tok ()
       -- ^ *the order of these tokenizers is important,* these are the tokenizers passed to the
       -- 'lexicalAnalysis' phase to generate the stream of tokens for the 'syntacticAnalysis' phase.
     , mainParser       :: GenParser st tok synTree
@@ -1184,9 +1096,16 @@ type StCFGrammar st synTree = GenCFGrammar st TT synTree
 parse
   :: (Eq tok, Enum tok)
   => GenCFGrammar st tok synTree -> st -> String -> PValue (GenParserErr st tok) synTree
-parse cfg st input =
-  case lexicalAnalysis (tokenizers cfg) (columnWidthOfTab cfg) input of
-    OK  lines -> syntacticAnalysis (mainParser cfg) st lines
+parse cfg st input = case lexicalResult of
+  OK      _ -> case parserResult of
+    OK      a -> OK a
     Backtrack -> Backtrack
-    PFail err -> PFail $ err{parserStateAtErr=Nothing}
+    PFail err -> PFail $ err{parserStateAtErr=Just (userState parserState)}
+  Backtrack -> Backtrack
+  PFail err -> PFail $ err{parserStateAtErr=Nothing}
+  where
+    initState = (newLexerState input){lexTabWidth = columnWidthOfTab cfg}
+    (lexicalResult, lexicalState) = lexicalAnalysis (mainLexer cfg) initState
+    (parserResult , parserState ) =
+      syntacticAnalysis (mainParser cfg) st (tokenStreamToLines (tokenStream lexicalState))
 

@@ -28,6 +28,7 @@ import           Control.Monad
 import           Control.Monad.Identity
 
 import           Data.Typeable
+import           Data.Monoid
 import           Data.Maybe (fromMaybe)
 import           Data.List (intercalate)
 import           Data.Binary
@@ -70,6 +71,10 @@ instance (Ord p, Ord a) => Ord (Tree p a) where
     (_              , Leaf       _   ) -> GT
     (Branch       _ , _              ) -> LT
     (_              , Branch       _ ) -> GT
+
+instance (Ord p, Monoid a) => Monoid (Tree p a) where
+  mempty  = Void
+  mappend = unionWith mappend
 
 -- | If the given node is a 'Leaf' or 'LeafBranch', returns the Leaf portion of the node.
 getLeaf :: Tree p a -> Maybe a

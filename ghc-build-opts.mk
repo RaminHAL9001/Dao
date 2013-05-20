@@ -120,9 +120,9 @@ GHC_COMPILE_DEBUG := $(GHC_COMPILE) -rtsopts -with-rtsopts='-M8G -N4'
 
 .PHONEY: Dao.Object.NewParser Dao.NewParser
 Dao.NewParser: ./src/Dao/NewParser.o
-Dao.Object.NewParser: ./src/Dao/Object/NewParser.o
+Dao.Object.NewParser: Dao.NewParser ./src/Dao/Object/NewParser.o
 ./src/Dao/NewParser.o: src/Dao/NewParser.hs
 	$(GHC_COMPILE) Dao.NewParser
-./src/Dao/Object/NewParser.o: src/Dao/Object/NewParser.hs src/Dao/NewParser.o src/Dao/Predicate.hs src/Dao/Token.hs
+./src/Dao/Object/NewParser.o: Dao.NewParser src/Dao/Object/NewParser.hs src/Dao/Predicate.hs
 	$(GHC_COMPILE) Dao.Object.NewParser
 

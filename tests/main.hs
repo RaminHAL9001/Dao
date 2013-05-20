@@ -25,12 +25,14 @@ import           Dao.Prelude
 import           Dao.String
 import           Dao.Predicate
 import           Dao.PPrint
-import           Dao.Parser
+-- import           Dao.Parser
+import           Dao.NewParser
 import           Dao.Struct
 import           Dao.Random
 import           Dao.Object
 import           Dao.Object.AST
-import           Dao.Object.Parser
+-- import           Dao.Object.Parser
+import           Dao.Object.NewParser
 import           Dao.Object.Binary
 import           Dao.Object.PPrint
 import           Dao.Object.Struct
@@ -188,7 +190,15 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
             bin   = {-# SCC bin   #-} B.decode bytes
             str   = {-# SCC str   #-} showPPrint 80 "    " (pPrint obexp)
             untre = {-# SCC untre #-} structToData tree :: PValue UpdateErr AST_TopLevel
-            (par, msg) = {-# SCC par #-} runParser (regexMany space >> parseDirective) str 
+            -- #ifdef OLD_PARSER
+            -- (par, msg) = {-# SCC par #-} runParser (regexMany space >> parseDirective) str 
+            -- #else
+            par = {-# SCC par #-} parse daoCFGrammar mempty str 
+            msg = case par of
+              PFail err -> "parser error"
+              Backtrack -> "parser backtracked"
+              _         -> ""
+            -- #endif OLD_PARSER
             err reason = do
               catches
                 (do logFile <- openFile (show i++".log") AppendMode

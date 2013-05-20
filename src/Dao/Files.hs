@@ -32,9 +32,11 @@ import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Resource
 import qualified Dao.Tree    as T
-import           Dao.Parser hiding (lookAhead)
+-- import           Dao.Parser hiding (lookAhead)
+import           Dao.NewParser
 import           Dao.Predicate
-import           Dao.Object.Parser
+-- import           Dao.Object.Parser
+import           Dao.Object.NewParser
 import           Dao.Object.PPrint
 import           Dao.Object.Binary
 
@@ -42,6 +44,7 @@ import           Control.Exception
 import           Control.Concurrent
 import           Control.Monad.Reader
 
+import           Data.Monoid
 import           Data.Maybe
 import           Data.List (partition, isSuffixOf)
 import qualified Data.Map    as M
@@ -100,11 +103,14 @@ instance Binary (StoredFile T.Tree Name Object) where
 -- | Parse Dao program from a 'Prelude.String' containing valid Dao source code, creating a
 -- 'Dao.Object.SourceCode' object. This is a pure function called by 'loadFilePath'.
 loadSourceCode :: UPath -> String -> AST_SourceCode
-loadSourceCode upath sourceString = case fst (runParser parseSourceFile sourceString) of
+-- loadSourceCode upath sourceString = case fst (runParser parseSourceFile sourceString) of
+loadSourceCode upath sourceString = case parse daoCFGrammar mempty sourceString of
   Backtrack -> error ("FILE TYPE: "++show path++" does not appear to be a Dao script.")
   PFail tok -> error (path++':':show tok)
   OK    src -> src
-  where { path = uchars upath }
+  where
+    path = uchars upath
+    
 
 -- | This function will take any file path and return a file associated with it if it has been
 -- loaded once before. If not, it runs the function you provide to load the file.

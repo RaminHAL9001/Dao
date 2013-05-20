@@ -61,6 +61,7 @@ import           Dao.Object.Random
 import           Dao.Object.Binary
 
 import           Control.Exception
+import           Control.Concurrent
 import           Control.Monad
 import           Control.Monad.State
 import           Control.Applicative
@@ -332,4 +333,70 @@ showBinary b = intercalate "\n" $ breakInto (32*3) $ (" "++) $ map toUpper $
 -- | Apply 'showBinary' to a 'Data.ByteString.Lazy.ByteString'.
 hexdump :: Dao B.ByteString -> IO (Dao B.ByteString)
 hexdump (Dao bytes) = putStrLn (showBinary bytes) >> return (Dao bytes)
+
+----------------------------------------------------------------------------------------------------
+
+class IsList a where { listItems :: a b -> [b] }
+
+instance IsList [] where { listItems = id }
+
+-- | Stores items in lists in such a way that GHCi can always pretty-print each item in the list on
+-- a single line.
+newtype LL a = LL { unwrapLL :: [a] }
+instance IsList LL where { listItems = unwrapLL }
+instance PPrintable a => Show (LL a) where { show = intercalate "\n" . map prettyShow . listItems }
+
+----------------------------------------------------------------------------------------------------
+
+-- | Object tree: store 'Dao.Object.Object's at addresses. In the Dao scripting language, objects
+-- can be stored at address with an expression like:
+-- > aaa.bbb.ccc = list {1,2,3};
+-- In this "Dao.Prelude" module, functions are provided to easily construct trees of
+-- @address->object@ associations. Refer to 'newObjTree', 'defObjTree', and 'delObjTree'.
+newtype ObjTree = ObjTree { getObjTreeMVar :: MVar (T.Tree Name Object) } deriving Typeable
+
+data ObjTreePair = ObjTreePair { getObjTreeAddress :: [Name], getObjTreeValue :: Object }
+instance Show ObjTreePair where
+  show otp = show (getObjTreeAddress otp) ++ " := " ++ prettyShow (getObjTreeValue otp)
+instance PPrintable ObjTreePair where
+  pPrint otp = pInline [pShow (getObjTreeAddress otp), pString ":=", pPrint (getObjTreeValue otp)]
+
+-- | Create a new tree for relating objects to names.
+newObjTree :: IO (Dao ObjTree)
+newObjTree = fmap (Dao . ObjTree) (newMVar T.Void)
+
+-- | Define an address storing a value. For example, in the Dao scripting language a global variable
+-- can be defined with the following expression:
+-- > aaa.bbb.ccc = 0;
+-- To define the same address and value assoication, you could use this 'defObjTree' function like so:
+-- > 'defineObjTree' [ustr "aaa", ustr "bbb", ustr "ccc"] OInt 0
+defineObjTree :: Dao ObjTree -> [Name] -> (a -> Object) -> a -> IO ()
+defineObjTree (Dao (ObjTree mvar)) addr construct a =
+  modifyMVar_ mvar $ \tree -> return (T.insert addr (construct a) tree)
+
+-- | Define an address storing a value. For example, in the Dao scripting language a global variable
+-- can be defined with the following expression:
+-- > aaa.bbb.ccc = 0;
+-- To define the same address and value assoication, you could use this 'defObjTree' function like so:
+-- > 'defObjTree' "aaa bbb ccc" OInt 0
+-- Notice each segemtn of the address is separated by spaces, not dots like in the Dao scripting
+-- language. This is a simple way to prevent spaces from showing up in names, although an expression
+-- like:
+-- > 'defObjTree' "aaa 1234 *** +++" OInt 0
+-- is also valid. To write the above expression in the Dao scripting language you would have to
+-- write:
+-- > aaa.$"1234".$"***".$"+++" = 0;
+defOT :: Dao ObjTree -> String -> (a -> Object) -> a -> IO ()
+defOT daomvar addr construct a = defineObjTree daomvar (map ustr (words addr)) construct a
+
+-- | Delete any item existing at the address given by the address string.
+deleteObjTree :: Dao ObjTree -> [Name] -> IO ()
+deleteObjTree (Dao (ObjTree mvar)) addr = modifyMVar_ mvar $ \tree -> return (T.delete addr tree)
+
+delOT :: Dao ObjTree -> String -> IO ()
+delOT daomvar addr = deleteObjTree daomvar (map ustr (words addr))
+
+listObjTree :: Dao ObjTree -> IO (LL ObjTreePair)
+listObjTree (Dao (ObjTree mvar)) = fmap (LL . map pair . T.assocs) (readMVar mvar) where
+  pair (path, objVal) = ObjTreePair{ getObjTreeAddress = path, getObjTreeValue = objVal }
 

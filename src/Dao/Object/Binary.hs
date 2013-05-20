@@ -142,7 +142,7 @@ putTreeWith putp puta t =
     T.Branch       t -> putWord8 0x23 >> putMapWith putp (putTreeWith putp puta) t
     T.LeafBranch a t -> putWord8 0x24 >> puta a >> putMapWith putp (putTreeWith putp puta) t
 
-getTreeWith :: (Eq p, Ord p, Show p, Show a) => Get p -> Get a -> Get (T.Tree p a)
+getTreeWith :: (Eq p, Ord p) => Get p -> Get a -> Get (T.Tree p a)
 getTreeWith getp geta = do
   t <- getWord8
   case t of
@@ -155,7 +155,7 @@ getTreeWith getp geta = do
       return (T.LeafBranch{T.branchData=a, T.branchMap=t})
     _    -> fail "corrupted T.Tree data"
 
-instance (Eq p, Ord p, Binary p, Binary a, Show p, Show a) => Binary (T.Tree p a) where
+instance (Eq p, Ord p, Binary p, Binary a) => Binary (T.Tree p a) where
   put t = putTreeWith put put t
   get   = getTreeWith get get
 

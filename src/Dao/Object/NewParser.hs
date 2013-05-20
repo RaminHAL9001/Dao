@@ -57,11 +57,72 @@ dbg msg parser = do
   assumePValue v
 
 ----------------------------------------------------------------------------------------------------
+-- The token types.
+
+-- | This is a basic token typing system suitable for most parsers. Your lexer does not need to
+-- use all of these types. These types are semi-arbitrary labels you can use however you please.
+-- Keep in mind, however, that functions in this module might make assumptions as to the kind of
+-- characters stored along side these token types. For example: 'mightHaveNLorTabsTT' assumes that
+-- 'Space' and 'StrLit' may contain newline characters and 'Keyword and 'Identifier' will not.
+data TT
+  = Space
+  | Newline
+      -- ^ your lexer might return '\n' characters as 'Space's, but this token type is here in
+      -- case you need to treat newlines as special characters.
+  | Indent
+      -- ^ your lexer might return '\t' characters as 'Space's, but this token type is here in
+      -- case you need to treat indentation as special characters.
+  | Alphabetic
+  | Alnum -- ^ alphabetical or numerical (digits)
+  | Keyword
+  | Identifier  -- ^ same as 'Label', unless you treat it differently
+  | Label       -- ^ same as 'Identifier', unless you treat it differently
+  | Digits
+  | Number      -- ^ a whole number including floating points, not just digits.
+  | NumberExp   -- ^ a whole number including floating points with exponents, e.g. 6.022e+23 or 
+  | PointDigits -- ^ digits with a decimal point
+  | OctDigits
+  | HexDigits
+  | DateTok
+  | TimeTok
+  | Punct       -- ^ punctuation mark, not including mathematical symbols
+  | Symbol      -- ^ a symbol (like punctuation)
+  | Operator
+  | CharLit     -- ^ a character literal treated as a single token
+  | StrLit      -- ^ a string literal treated as a single token
+  | ComEndl     -- ^ a comment at the end of the line
+  | ComInln     -- ^ the start of a multi-line comment
+  | Opener      -- ^ an open-paren or brace or anything that opens a closure
+  | Closer      -- ^ a close-paren or brace or anything that closes a closure
+  | CtrlChar    -- ^ ascii control characters
+  | Arbitrary   -- ^ a type used to mark arbitrary data
+  | Ignored     -- ^ characters that can be ignored, like in multi-line comments.
+  | Unknown
+      -- ^ it is possible to construct tokenizers that never fail by creating a 'GenLexer' that
+      -- returns unknown tokens paired with this type. This 'Unknown' 'GenLexer' should always be
+      -- the final 'GenLexer' in your list of 'GenLexer' passed to 'lex'. Then your 'Parser' can
+      -- decide how to handle these.
+  deriving (Eq, Ord, Enum, Show)
+
+-- | Shorthand for @'ignore' ('token' 'Space')@
+skipSpaces :: Parser ()
+skipSpaces = ignore (tokenType Space)
+
+operator :: String -> Parser UStr
+operator k = token (==Operator) (==k)
+
+withKeyword :: (UStr -> Parser a) -> Parser a
+withKeyword parser = withToken (==Keyword) parser
+
+keyword :: String -> Parser UStr
+keyword k = token (==Keyword) (==k)
+
+----------------------------------------------------------------------------------------------------
 
 data ParserState
   = ParserState
     { bufferedComments :: Maybe [Comment]
-    , nonHaltingErrors :: [StParserErr ParserState]
+    , nonHaltingErrors :: [ParserErr]
     }
 instance Monoid ParserState where
   mappend a b =
@@ -69,8 +130,10 @@ instance Monoid ParserState where
       , nonHaltingErrors = nonHaltingErrors a ++ nonHaltingErrors b
       }
   mempty = ParserState{ bufferedComments = Nothing, nonHaltingErrors = [] }
-type Parser a = StParser ParserState a
-type CFGrammar a = StCFGrammar ParserState a
+type Lexer a = GenLexer TT a
+type Parser a = GenParser ParserState TT a
+type CFGrammar a = GenCFGrammar ParserState TT a
+type ParserErr = GenParserErr ParserState TT
 
 setCommentBuffer :: [Comment] -> Parser ()
 setCommentBuffer coms = modifyUserState $ \st ->
@@ -88,15 +151,15 @@ maxYears = 9999
 -- | This is the list of tokenizers used by 'lex' to break-up input string into parsable 'Token's.
 daoLexers :: [Lexer ()]
 daoLexers = 
-  [ lexStringLiteral
-  , lexCharLiteral
-  , lexInlineC_Comment
-  , lexEndlineC_Comment
-  , lexSpace
+  [ lexStringLiteral     StrLit
+  , lexCharLiteral       CharLit
+  , lexInlineC_Comment   ComInln
+  , lexEndlineC_Comment  ComEndl
+  , lexSpace             Space
   , dataSpecialLexer
-  , lexKeyword
-  , lexNumber
-  , lexOperator daoOperators
+  , lexKeyword           Keyword
+  , lexNumber            Digits HexDigits Number NumberExp
+  , lexOperator          Operator daoOperators
   , lexString "#{" >> makeToken Opener
   , lexString "}#" >> makeToken Closer
   , lexCharP (charSet "([{") >> makeToken Opener
@@ -170,13 +233,13 @@ dataSpecialLexer = do
   case k of
     "data" -> do
       makeToken Keyword
-      many $ msum [lexSpace, lexInlineC_Comment, lexEndlineC_Comment]
+      many $ msum [lexSpace Space, lexInlineC_Comment ComInln, lexEndlineC_Comment ComEndl]
       flip mplus (return ()) $ do
         let b64chars = unionCharP [isAlphaNum, (=='+'), (=='/'), (=='=')]
             ender    = lexChar '}' >> makeToken Closer
         lexChar '{' >> makeToken Opener
         runLexerLoop "base-64 data expression" ender $
-          [ lexSpace
+          [ lexSpace Space
           , lexWhile b64chars >> makeToken Arbitrary
           , lexUntil (unionCharP [b64chars, isSpace, (=='}')]) >> makeToken Unknown
           , lexEOF >> fail "base-64 data expression runs past end of input"

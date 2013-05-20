@@ -131,67 +131,13 @@ instance Monoid Location where
         , endingColumn   = max (endingColumn   loc) (endingColumn   a)
         }
 
-----------------------------------------------------------------------------------------------------
--- Important data types for lexical analysis.
-
--- | This is a basic token typing system suitable for most parsers. Your lexer does not need to
--- use all of these types. These types are semi-arbitrary labels you can use however you please.
--- Keep in mind, however, that functions in this module might make assumptions as to the kind of
--- characters stored along side these token types. For example: 'mightHaveNLorTabsTT' assumes that
--- 'Space' and 'StrLit' may contain newline characters and 'Keyword and 'Identifier' will not.
-data TT
-  = Space
-  | Newline
-      -- ^ your lexer might return '\n' characters as 'Space's, but this token type is here in
-      -- case you need to treat newlines as special characters.
-  | Indent
-      -- ^ your lexer might return '\t' characters as 'Space's, but this token type is here in
-      -- case you need to treat indentation as special characters.
-  | Alphabetic
-  | Alnum -- ^ alphabetical or numerical (digits)
-  | Keyword
-  | Identifier  -- ^ same as 'Label', unless you treat it differently
-  | Label       -- ^ same as 'Identifier', unless you treat it differently
-  | Digits
-  | Number      -- ^ a whole number including floating points, not just digits.
-  | NumberExp   -- ^ a whole number including floating points with exponents, e.g. 6.022e+23 or 
-  | PointDigits -- ^ digits with a decimal point
-  | OctDigits
-  | HexDigits
-  | DateTok
-  | TimeTok
-  | Punct       -- ^ punctuation mark, not including mathematical symbols
-  | Symbol      -- ^ a symbol (like punctuation)
-  | Operator
-  | CharLit     -- ^ a character literal treated as a single token
-  | StrLit      -- ^ a string literal treated as a single token
-  | ComEndl     -- ^ a comment at the end of the line
-  | ComInln     -- ^ the start of a multi-line comment
-  | Opener      -- ^ an open-paren or brace or anything that opens a closure
-  | Closer      -- ^ a close-paren or brace or anything that closes a closure
-  | CtrlChar    -- ^ ascii control characters
-  | Arbitrary   -- ^ a type used to mark arbitrary data
-  | Ignored     -- ^ characters that can be ignored, like in multi-line comments.
-  | Unknown
-      -- ^ it is possible to construct tokenizers that never fail by creating a 'GenLexer' that
-      -- returns unknown tokens paired with this type. This 'Unknown' 'GenLexer' should always be
-      -- the final 'GenLexer' in your list of 'GenLexer' passed to 'lex'. Then your 'Parser' can
-      -- decide how to handle these.
-  deriving (Eq, Ord, Enum, Show)
-
 data GenToken tok
   = GenEmptyToken { tokType :: tok }
   | GenToken { tokType :: tok, tokToUStr :: UStr }
-type Token = GenToken TT
 instance Show tok => Show (GenToken tok) where
   show tok = show (tokType tok) ++ " " ++ show (tokToUStr tok)
-instance (Eq tok, Enum tok) => CanMapTokens tok GenToken where
-  fmapTokens conv tok = tok{tokType = conv (tokType tok)}
 class HasLineNumber   a where { lineNumber   :: a -> LineNum }
 class HasColumnNumber a where { columnNumber :: a -> ColumnNum }
-
-class (Eq tok, Enum tok) => CanMapTokens tok m where
-  fmapTokens :: (Eq tok', Enum tok') => (tok -> tok') -> m tok -> m tok'
 
 data GenTokenAt tok =
   GenTokenAt
@@ -199,9 +145,8 @@ data GenTokenAt tok =
   , tokenAtColumnNumber :: ColumnNum
   , getToken            :: GenToken tok
   }
-type TokenAt = GenTokenAt TT
-instance HasLineNumber   TokenAt where { lineNumber   = tokenAtLineNumber   }
-instance HasColumnNumber TokenAt where { columnNumber = tokenAtColumnNumber }
+instance HasLineNumber   (GenTokenAt tok) where { lineNumber   = tokenAtLineNumber   }
+instance HasColumnNumber (GenTokenAt tok) where { columnNumber = tokenAtColumnNumber }
 
 data GenLine tok
   = GenLine
@@ -209,11 +154,6 @@ data GenLine tok
     , lineTokens     :: [(ColumnNum, GenToken tok)]
       -- ^ a list of tokens, each with an associated column number.
     }
-
-instance (Eq tok, Enum tok) => CanMapTokens tok GenLine where
-  fmapTokens conv (GenLine a list) = GenLine a (map (\ (b, tok) -> (b, fmapTokens conv tok)) list)
-
-type Line = GenLine TT
 
 instance HasLineNumber (GenLine tok) where { lineNumber = lineLineNumber }
 
@@ -309,43 +249,6 @@ instance (Eq tok, Enum tok) =>
   ErrorMonadPlus (GenParserErr (GenLexerState tok) tok) (GenLexer tok) where
     catchPValue (GenLexer try) = GenLexer (catchPValue try)
     assumePValue               = GenLexer . assumePValue
-
--- | Throughout this module, there are @Gen@/Thing/s (general /Thing/s) and regular /Thing/s, for
--- example 'GenLexer' and 'Lexer'. 'GenLexer's allow you to specify your own type of tokens as long
--- as the token type instantiates 'Prelude.Eq' and 'Prelude.Enum' (which can be derived using the
--- @deriving@ keyword). Regular 'Lexer' uses the 'TT' token type provided in this module, which
--- should be enough for most purposes; rarely should you ever need your own token type.
-type Lexer a = GenLexer TT a
-
--- Evaluates to 'Prelude.True' if the 'TT' token might have newline or tab characters and thus
--- require it be scanned for updating the line or column counts more scrupulously. This is an
--- optimization. If the 'lex'er needs to check every token for newlines, even if tokens that are
--- /defined/ to never lexSimple newlines, checking every character within these tokens is a waste of
--- time. This function is useful to tell the lexer which tokens it need not worry about when
--- updating the newline table. However, if you mistakenly tell the lexer that a token does not have
--- newlines when it actually does, the lexer will not update the line information correctly. If your
--- parser is showing line numbers that are always less than the actual lines numbers, this is a good
--- place to check for debugging.
-mightHaveNLorTabsTT :: Token -> Bool
-mightHaveNLorTabsTT tok = case tokType tok of
-  Alphabetic  -> False
-  Keyword     -> False
-  Alnum       -> False
-  Digits      -> False
-  Number      -> False
-  NumberExp   -> False
-  DateTok     -> False
-  TimeTok     -> False
-  PointDigits -> False
-  OctDigits   -> False
-  HexDigits   -> False
-  Symbol      -> False
-  Punct       -> False
-  Operator    -> False
-  Identifier  -> False
-  Opener      -> False
-  Closer      -> False
-  _           -> True
 
 -- | Append the first string parameter to the 'lexBuffer', and set the 'lexInput' to the value of
 -- the second string parameter. Most lexers simply takes the input, breaks it, then places the two
@@ -573,29 +476,29 @@ lexSimple :: (Eq tok, Enum tok) => tok -> (Char -> Bool) -> GenLexer tok ()
 lexSimple tok predicate = lexWhile predicate >> makeToken tok
 
 -- | A fundamental lexer using 'Data.Char.isSpace' and evaluating to a 'Space' token.
-lexSpace :: GenLexer TT ()
-lexSpace = lexSimple Space isSpace
+lexSpace :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexSpace tok = lexSimple tok isSpace
 
 -- | A fundamental lexer using 'Data.Char.isAlpha' and evaluating to a 'Alphabetic' token.
-lexAlpha :: GenLexer TT ()
-lexAlpha = lexSimple Alphabetic isAlpha
+lexAlpha :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexAlpha tok = lexSimple tok isAlpha
 
 -- | A fundamental lexer using 'Data.Char.isDigit' and evaluating to a 'Digits' token.
-lexDigits :: GenLexer TT ()
-lexDigits = lexSimple Digits isDigit
+lexDigits :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexDigits tok = lexSimple tok isDigit
 
 -- | A fundamental lexer using 'Data.Char.isHexDigit' and evaluating to a 'HexDigit' token.
-lexHexDigits :: GenLexer TT ()
-lexHexDigits = lexSimple HexDigits isHexDigit
+lexHexDigits :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexHexDigits tok = lexSimple tok isHexDigit
 
 -- | Constructs an operator 'GenLexer' from a string of operators separated by spaces. For example,
 -- pass @"+ += - -= * *= ** / /= % %= = == ! !="@ to create 'Lexer' that will properly parse all of
 -- those operators. The order of the operators is *NOT* important, repeat symbols are tried only
 -- once, the characters @+=@ are guaranteed to be parsed as a single operator @["+="]@ and not as
 -- @["+", "="]@.
-lexOperator :: String -> GenLexer TT ()
-lexOperator ops =
-  msum (map (\op -> lexString op >> makeToken Operator) $ reverse $ nub $ sortBy len $ words ops)
+lexOperator :: (Eq tok, Enum tok) => tok -> String -> GenLexer tok ()
+lexOperator tok ops =
+  msum (map (\op -> lexString op >> makeToken tok) $ reverse $ nub $ sortBy len $ words ops)
   where
     len a b = case compare (length a) (length b) of
       EQ -> compare a b
@@ -605,51 +508,51 @@ lexOperator ops =
 lexToEndline :: (Eq tok, Enum tok) => GenLexer tok ()
 lexToEndline = lexUntil (=='\n')
 
-lexInlineComment :: String -> String -> GenLexer TT ()
-lexInlineComment startStr endStr = do
+lexInlineComment :: (Eq tok, Enum tok) => tok -> String -> String -> GenLexer tok ()
+lexInlineComment tok startStr endStr = do
   lexString startStr
   completed <- lexUntilTermStr "" endStr
   if completed
-    then  makeToken ComInln
+    then  makeToken tok
     else  fail "comment runs past end of input"
 
-lexInlineC_Comment :: GenLexer TT ()
-lexInlineC_Comment = lexInlineComment "/*" "*/"
+lexInlineC_Comment :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexInlineC_Comment tok = lexInlineComment tok "/*" "*/"
 
-lexEndlineC_Comment :: GenLexer TT ()
-lexEndlineC_Comment = lexString "//" >> lexUntil (=='\n') >> makeToken ComEndl
+lexEndlineC_Comment :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexEndlineC_Comment tok = lexString "//" >> lexUntil (=='\n') >> makeToken tok
 
-lexInlineHaskellComment :: GenLexer TT ()
-lexInlineHaskellComment = lexInlineComment "{-" "-}"
+lexInlineHaskellComment :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexInlineHaskellComment tok = lexInlineComment tok "{-" "-}"
 
-lexEndlineHaskellComment :: GenLexer TT ()
-lexEndlineHaskellComment = lexString "--" >> lexToEndline >> makeToken ComEndl
+lexEndlineHaskellComment :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexEndlineHaskellComment tok = lexString "--" >> lexToEndline >> makeToken tok
 
 -- | A lot of programming languages provide only end-line comments beginning with a (@#@) character.
-lexEndlineCommentHash :: GenLexer TT ()
-lexEndlineCommentHash = lexChar '#' >> lexToEndline >> makeToken ComEndl
+lexEndlineCommentHash :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexEndlineCommentHash tok = lexChar '#' >> lexToEndline >> makeToken tok
 
-lexStringLiteral :: GenLexer TT ()
-lexStringLiteral = do
+lexStringLiteral :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexStringLiteral tok = do
   lexChar '"'
   completed <- lexUntilTermChar '\\' '"'
   if completed
-    then  makeToken StrLit
+    then  makeToken tok
     else  fail "string literal expression runs past end of input"
 
-lexCharLiteral :: GenLexer TT ()
-lexCharLiteral = lexChar '\'' >> lexUntilTermChar '\\' '\'' >> makeToken CharLit
+lexCharLiteral :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexCharLiteral tok = lexChar '\'' >> lexUntilTermChar '\\' '\'' >> makeToken tok
 
 -- | This actually tokenizes a general label: alpha-numeric and underscore characters starting with
 -- an alphabetic or underscore character. This is useful for several programming languages.
 -- Evaluates to a 'Keyword' token type, it is up to the 'GenParser's in the syntacticAnalysis phase
 -- to sort out which 'Keyword's are actually keywords and which are labels for things like variable
 -- names.
-lexKeyword :: GenLexer TT ()
-lexKeyword = do
-  lexWhile (\c -> isAlpha    c || c=='_')
+lexKeyword :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexKeyword tok = do
+  lexWhile (\c -> isAlpha c || c=='_')
   lexOptional (lexWhile (\c -> isAlphaNum c || c=='_'))
-  makeToken Keyword
+  makeToken tok
 
 -- | Create a 'GenLexer' that lexes the various forms of numbers. If the number contains no special
 -- modification, i.e. no hexadecimal digits, no decimal points, and no exponents, a 'Digits' token
@@ -667,8 +570,8 @@ lexKeyword = do
 -- decimal numbers are also lexed appropriately, and this includes floating-point numbers expressed
 -- in hexadecimal. Again, if your language must disallow hexadecimal floating-point numbers, throw
 -- an error in the 'syntacticAnalysis' phase.
-lexNumber :: GenLexer TT ()
-lexNumber = do
+lexNumber :: (Eq tok, Enum tok) => tok -> tok -> tok -> tok -> GenLexer tok ()
+lexNumber digits hexDigits number numberExp = do
   let altBase typ xb@(u:l:_) pred = do
         lexCharP (charSet xb)
         mplus (lexWhile pred) (fail ("no digits after "++typ++" 0"++l:" token"))
@@ -704,8 +607,8 @@ lexNumber = do
               return (gotDot, True )
   makeToken $
     if gotDot || gotExp
-      then  if gotExp then NumberExp else Number
-      else  if isHex  then HexDigits else Digits
+      then  if gotExp then numberExp else number
+      else  if isHex  then hexDigits else digits
 
 -- | Creates a 'Label' token for haskell data type names, type names, class names, or constructors,
 -- i.e. one or more labels (alpha-numeric and underscore characters) separated by dots (with no
@@ -713,8 +616,8 @@ lexNumber = do
 -- label may start with a lower-case letter or underscore, or the final label may also be
 -- punctuation surrounded by parens. Examples are: @Aaa.Bbb@, @D.Ee_ee.ccc123@, @Aaa.Bbb.Ccc.___d1@,
 -- @A.B.C.(-->)@.
-lexHaskellLabel :: GenLexer TT ()
-lexHaskellLabel = loop 0 where
+lexHaskellLabel :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexHaskellLabel tok = loop 0 where
   label    = do
     lexCharP (\c -> isUpper c && isAlpha c)
     lexOptional (lexWhile isAlphaNum_)
@@ -724,7 +627,7 @@ lexHaskellLabel = loop 0 where
   oper     = do lexChar '('
                 mplus (lexWhile (\c -> c/=')' && isSymPunct c) >> lexChar ')')
                       (fail "bad operator token after final dot of label")
-  done     = makeToken Label
+  done     = makeToken tok
 
 -- | Takes a 'tokenStream' resulting from the evaulation of 'lexicalAnalysis' and breaks it into
 -- 'GenLine's. This makes things a bit more efficient because it is not necessary to store a line
@@ -799,8 +702,6 @@ data GenParserErr st tok
     , parserStateAtErr :: Maybe st
     }
 
-type StParserErr st = GenParserErr st TT
-
 instance Show tok => Show (GenParserErr st tok) where
   show err =
     let msg = concat $ map (fromMaybe "") $
@@ -808,10 +709,6 @@ instance Show tok => Show (GenParserErr st tok) where
           , fmap ((": "++) . uchars) (parserErrMsg err)
           ]
     in  if null msg then "Unknown parser error" else msg
-
-instance (Eq tok, Enum tok) => CanMapTokens tok (GenParserErr st) where
-  fmapTokens conv err =
-    err{ parserErrTok = fmap (fmapTokens conv) (parserErrTok err) }
 
 -- | An initial blank parser error.
 parserErr :: (Eq tok, Enum tok) => LineNum -> ColumnNum -> GenParserErr st tok
@@ -860,10 +757,6 @@ data GenParserState st tok
     { userState :: st
     , getLines :: [GenLine tok]
     }
-type StParserState st = GenParserState st TT
-
-instance (Eq tok, Enum tok) => CanMapTokens tok (GenParserState st) where
-  fmapTokens conv st = st{getLines = map (fmapTokens conv) (getLines st)}
 
 newParserState :: (Eq tok, Enum tok) => st -> [GenLine tok] -> GenParserState st tok
 newParserState st lines = GenParserState{userState = st, getLines = lines}
@@ -884,7 +777,6 @@ modifyUserState fn = modify (\st -> st{userState = fn (userState st)})
 -- failure.
 newtype GenParser st tok a
   = GenParser { parserToPTrans :: PTrans (GenParserErr st tok) (State (GenParserState st tok)) a}
-type StParser st a = GenParser st TT a
 instance (Eq tok, Enum tok) => Functor   (GenParser st tok) where
   fmap f (GenParser a) = GenParser (fmap f a)
 instance (Eq tok, Enum tok) => Monad     (GenParser st tok) where
@@ -969,16 +861,6 @@ tokenType requestedType = token (==requestedType) (const True)
 tokenTypes :: (Eq tok, Enum tok) => [tok] -> GenParser st tok UStr
 tokenTypes requestedTypes = token (\b -> or (map (==b) requestedTypes)) (const True)
 
--- | Succeeds if the next 'Token' is a 'Alphabetic' 'TT' containing the exact string provided.
--- This function is defined simply as @'tokenStr' ['Alnum', 'Alphabetic']@
-keyword :: String -> StParser st UStr
-keyword k = token (==Keyword) (==k)
-
--- | Succeeds if the next 'Token' is a 'Symbol' 'TT' containing the exact string provided.
--- This function is defined simply as @'tokenStr' 'Symbol'@
-operator :: String -> StParser st UStr
-operator k = token (==Operator) (==k)
-
 -- | Push an arbitrary token into the state, but you really don't want to use this function. It is
 -- used to implement backtracking by the 'withToken' function, so use 'withToken' instead.
 pushToken :: (Eq tok, Enum tok) => (LineNum, ColumnNum, GenToken tok) -> GenParser st tok ()
@@ -1005,15 +887,6 @@ withToken
   => (tok -> Bool) -> (UStr -> GenParser st tok a) -> GenParser st tok a
 withToken tokenPredicate parser = withTokenP $ \tok u ->
   if tokenPredicate tok then parser u else mzero
-
--- | Defined as @'withToken' (=='Keyword')@, which is a pattern used so often it merits it's own
--- function.
-withKeyword :: (UStr -> StParser st a) -> StParser st a
-withKeyword parser = withToken (==Keyword) parser
-
--- | Takes a list of functions where each function can be passed to @'withToken' (=='Keyword')@.
-eachWithKeyword :: [UStr -> StParser st a] -> StParser st a
-eachWithKeyword parsers = withToken (==Keyword) (\key -> msum (map ($key) parsers))
 
 -- | Return the current line and column of the current token without modifying the state in any way.
 getCursor :: (Eq tok, Enum tok) => GenParser st tok (LineNum, ColumnNum)
@@ -1055,10 +928,6 @@ ignore = flip mplus (return ()) . void
 defaultTo :: (Eq tok, Enum tok) => a -> GenParser st tok a -> GenParser st tok a
 defaultTo defaultValue parser = mplus parser (return defaultValue)
 
--- | Shorthand for @'ignore' ('token' 'Space')@
-skipSpaces :: StParser st ()
-skipSpaces = ignore (tokenType Space)
-
 -- | A 'marker' immediately stores the cursor onto the stack. It then evaluates the given 'Parser'.
 -- If the given 'Parser' fails, the position of the failure (stored in a 'Dao.Token.Location') is
 -- updated such that the starting point of the failure points to the cursor stored on the stack by
@@ -1072,25 +941,6 @@ marker parser = do
         let p = parserErrLoc parsErr
         in  mplus (p >>= \loc -> ab >>= \ (a, b) -> return (mappend loc (atPoint a b))) p
     }
-
--- | If you like 'Parser's provided in this module, like 'keyword' or 'operator', but you
--- need a 'GenParser' version of them, you can provide a conversion function to convert from a
--- 'TT' token type to your own token type:
--- > data MyToken = MyKeyword | MyOperator deriving ('Prelude.Eq', 'Prelude.Enum')
--- > myTokenToTT myTok = if myTok==MyKeyword then Keyword else Operator
--- > myKeyword  = 'parseConvertTT' ('Prelude.const' MyKeyword)  myTokenToTT 'keyword'
--- > myOperator = 'parseConvertTT' ('Prelude.const' MyOperator) myTokenToTT 'operator'
-parseConvertTT
-  :: (Eq tok, Enum tok)
-  => (TT -> tok) -> (tok -> TT) -> StParser st a -> GenParser st tok a
-parseConvertTT conv unconv parser = do
-  st <- get
-  let (result, st') = runParserState parser (fmapTokens unconv st)
-  result <- assumePValue $ case result of
-    OK      a -> OK      a
-    Backtrack -> Backtrack
-    PFail err -> PFail (fmapTokens conv err)
-  put (fmapTokens conv st') >> return result
 
 -- | The 'GenParser's analogue of 'Control.Monad.State.runState', runs the parser using an existing
 -- 'GenParserState'.
@@ -1132,8 +982,6 @@ data GenCFGrammar st tok synTree
     , mainParser       :: GenParser st tok synTree
       -- ^ this is the parser entry-point which is used to evaluate the 'syntacticAnalysis' phase.
     }
-
-type StCFGrammar st synTree = GenCFGrammar st TT synTree
 
 -- | This is *the function that parses* an input string according to a given 'GenCFGrammar'.
 parse

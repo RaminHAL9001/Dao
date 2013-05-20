@@ -109,6 +109,55 @@ daoMainLexer = runLexerLoop "Dao script" lexEOF daoLexers
 daoOperators :: String
 daoOperators = concat [allArithOp2Strs, " ", allArithOp1Strs, " ", allUpdateOpStrs , " , : ; "]
 
+lexDaoNumber :: Lexer ()
+lexDaoNumber = mplus init0 init >> lexSuffix where
+  take1 = lexCharP (const True)
+  init0 = do
+    lexCharP (=='0')
+    c <- lexLook1
+    case c of
+      'x' -> take1 >> getOther "hexadecimal" isHexDigit Number -- TODO: should be HexDigits
+      'X' -> take1 >> getOther "hexadecimal" isHexDigit Number -- TODO: should be HexDigits
+      'b' -> take1 >> getOther "binary"      isDigit    Number -- TODO: should be BinDigits
+      'B' -> take1 >> getOther "binary"      isDigit    Number -- TODO: should be BinDigits
+      'o' -> take1 >> getOther "octal"       isDigit    Number -- TODO: should be Octal
+      c   -> msum $
+        [ getDotExp
+        , if c/='.' then mzero else mplus (take1 >> getDigitsExp) badDot
+        , lexWhile isDigit >> makeToken Number -- TODO: make this 'Octal', not 'Number'
+        , makeToken Digits -- TODO: make this 'Zero', not 'Digits'
+        ]
+  lexDot = lexCharP (=='.')
+  badDot = fail "expecting digits after decimal point"
+  badExp = fail "expecting digits after exponent expression"
+  onlyDigits :: Lexer ()
+  onlyDigits = lexWhile isDigit
+  getDotExp = do
+    msum (map lexString $ words " .+e .+E .-e .-E .e .E +e +E -e -E e E ")
+    mplus (lexWhile isDigit) badExp
+    makeToken Number -- TODO: should be NumDotExp
+  getDigitsExp = do
+    lexWhile isDigit
+    msum $
+      [ do  msum $ map lexString $ words " +e +E -e -E e E "
+            mplus (lexWhile isDigit) badExp
+            makeToken Number -- TODO: should be NumDotExp
+      , makeToken Number -- TODO: should be NumDot
+      ]
+  init = do
+    lexWhile isDigit
+    msum $
+      [ getDotExp
+      , lexDot >> mplus getDigitsExp badDot
+      , makeToken Digits
+      ]
+  getOther :: String -> (Char -> Bool) -> TT -> Lexer ()
+  getOther typ predicate tokTyp = flip mplus (fail ("expecting "++typ++" digits")) $ do
+    lexWhile predicate
+    flip mplus (makeToken tokTyp) $
+      lexDot >> mplus (lexWhile predicate) badDot >> makeToken Number -- TODO: should be HexDot or BinDot
+  lexSuffix = lexCharP (charSet "UILRFfijs") >> makeToken Keyword -- TODO: should be NumSuffix
+
 -- | One of the design goals of Dao is for its language to be able to express any of it's built-in
 -- objects. Arbitrary data stored in 'Dao.Object.OBinary' objects are constructed from base-64
 -- encoded tokens directly from the source file. This tokenizer accomodates for base-64 tokens by
@@ -168,8 +217,11 @@ parseNumber = do
         getDot = break (=='.')
         getExp = break (\c -> c=='e' || c=='E')
         altBaseDot base num = case getDot num of
-          (num, "" ) -> mk base num ""  ""
-          (num, dec) -> mk base num dec ""
+          (num, "" )           -> mk base num ""  ""
+          (num, dec) | base==8 -> mk 10   num dec ""
+          -- ^ disregard base-8 if there is a decimal point
+          -- for example, 0701 is base-8, 07.01 is not base-8
+          (num, dec)           -> mk base num dec ""
     case num of
       '0':x:num | x=='x' || x=='X' -> altBaseDot 16 num
       '0':b:num | b=='b' || b=='B' -> altBaseDot 2  num
@@ -533,25 +585,26 @@ parsePrefixedObject = withToken (==Operator) $ \ustr -> case readsPrec 0 (uchars
 -- it parses unit objects (using 'parseUnitObject') interleaved with the 'Dao.Object.DOT' (@.@) and
 -- 'Dao.Object.POINT' (@->@) operators, and also prefix operators 'Dao.Object.REF' (@@@) and
 -- 'Dao.Object.DEREF' (@$@). This makes it suitable for parsing the parameter object expression for
--- functions like @global@ or @struct@ without requiring parentheses in situations like the
--- following:
+-- functions like @global@ or @struct@ without requiring parentheses. Therefore in situations like
+-- the following:
 -- > global a + global b
--- will be parsed as:
+-- will be parsed equivalently to the expression:
 -- > (global a) + (global b)
 parseRefEquation :: Parser AST_Object
-parseRefEquation = parsePrefixedObject >>= \obj -> parseWithLocation (loop [Right obj]) where
+parseRefEquation = getObj >>= \obj -> parseWithLocation (loop [Right obj]) where
+  getObj = mplus parsePrefixedObject parseUnitObject
   loop got = flip mplus (makeEquation got >>= \obj -> return (setLocation obj)) $ do
     op <- parseWithComments $ withToken (==Operator) $ \op -> case uchars op of
       "."  -> return op
       "->" -> return op
       _    -> mzero
     expect ("object expression after "++uchars (unComment op)++" operator") $
-      parsePrefixedObject >>= \obj -> loop (got++[Left op, Right obj])
+      getObj >>= \obj -> loop (got++[Left op, Right obj])
 
 -- | This is the entry-point parser for 'Dao.Object.AST.AST_Object'.
 parseObject :: Parser AST_Object
 parseObject = parseWithLocation $ do
-  obj <- parsePrefixedObject
+  obj <- mplus parsePrefixedObject parseUnitObject
   msum $
     [ cachedComments $ \com1 -> do
         token (==Opener) (=="[")
@@ -751,13 +804,20 @@ parseTopLevel = parseWithLocation $ msum $
           script <- cachedComments (\coms -> fmap (\o -> com coms o []) parseBracketedScript)
           return (AST_Event typ script)
         _ -> mzero
-      k | k=="func" || k=="function" -> expect "name for function" $ do
-        name <- parseWithComments (tokenType Keyword)
-        expect "argument list for function statement" $ do
-          args <- parseFuncParams $ parseWithLocation $
-            fmap (AST_Literal . ORef . LocalRef) (tokenType Keyword)
-          expect "script expression for function statement" $ do
-            fmap (AST_TopFunc name args) (parseWithComments parseBracketedScript)
+      k | k=="func" || k=="function" -> msum $
+        [ do  args <- parseWithComments $ parseFuncParams parseObject
+              expect "bracketed script expression after function statement" $ do
+                fmap (AST_TopLambda PatExprType args) parseBracketedScript
+          -- ^ The keyword "function" followed not by a function name but by an argument list in
+          -- parenthesis is another way of declaring a top-level "pattern" expression.
+        , expect "name for function" $ do
+            name <- parseWithComments (tokenType Keyword)
+            expect "argument list for function statement" $ do
+              args <- parseFuncParams $ parseWithLocation $
+                fmap (AST_Literal . ORef . LocalRef) (tokenType Keyword)
+              expect "script expression for function statement" $ do
+                fmap (AST_TopFunc name args) (parseWithComments parseBracketedScript)
+        ]
       k | k=="rule" || k=="pattern"  -> case readsPrec 0 k of
         [(typ, "")] -> expect ("arguments list after "++k++" statement") $ do
           args <- parseWithComments $ mplus (parseFuncParams parseObject) $
@@ -783,21 +843,29 @@ parseDaoScript = do
     }
   where
     loopAttribs got = mplus (parseAttribute >>= \a -> loopAttribs (got++[a])) (return got)
-    loop        got = msum $
-      [ parseEOF >> return got
-      , parseTopLevel >>= \a -> loop (got++[a])
-      , fail "bad token at top level"
-      ]
+    loop        got = do
+      skipSpaces
+      lines <- gets getLines
+      (ax, continue) <- msum $
+        [ parseEOF >> return (got, False)
+        , parseTopLevel >>= \a -> return ([a], True)
+        , fail ("bad token at top level: "++show lines)
+        ]
+      let got' = got++ax
+      if continue then loop got' else return got'
 
 ----------------------------------------------------------------------------------------------------
 
-daoCFGrammar :: CFGrammar a
+daoCFGrammar :: CFGrammar AST_SourceCode
 daoCFGrammar =
   GenCFGrammar
   { columnWidthOfTab = 4
   , mainLexer        = daoMainLexer
-  , mainParser       = error "daoCFGrammar mainParser is not defined"
+  , mainParser       = parseDaoScript
   }
+
+testDaoLexer :: String -> IO ()
+testDaoLexer = testLexicalAnalysis daoMainLexer 4
 
 testDaoGrammar :: Show a => Parser a -> String -> IO ()
 testDaoGrammar parser input = case parse (daoCFGrammar{mainParser=parser}) mempty input of

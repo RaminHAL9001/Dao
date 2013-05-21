@@ -40,6 +40,7 @@ import           Data.Maybe
 import           Data.Word
 import           Data.Char  hiding (Space)
 import           Data.List
+import           Data.Array
 
 import           System.IO
 
@@ -133,11 +134,24 @@ instance Monoid Location where
 
 data GenToken tok
   = GenEmptyToken { tokType :: tok }
-  | GenToken { tokType :: tok, tokToUStr :: UStr }
+  | GenCharToken { tokType :: tok, tokChar :: !Char }
+  | GenToken { tokType :: tok, tokUStr :: UStr }
 instance Show tok => Show (GenToken tok) where
   show tok = show (tokType tok) ++ " " ++ show (tokToUStr tok)
 class HasLineNumber   a where { lineNumber   :: a -> LineNum }
 class HasColumnNumber a where { columnNumber :: a -> ColumnNum }
+
+tokToUStr :: GenToken tok -> UStr
+tokToUStr tok = case tok of
+  GenEmptyToken _   -> nil
+  GenCharToken  _ c -> ustr [c]
+  GenToken      _ u -> u
+
+tokToStr :: GenToken tok -> String
+tokToStr tok = case tok of
+  GenEmptyToken _   -> ""
+  GenCharToken  _ c -> [c]
+  GenToken      _ u -> uchars u
 
 data GenTokenAt tok =
   GenTokenAt
@@ -307,29 +321,42 @@ lexUpdLineColWithStr input = do
   put (st{lexCurrentLine=newLine, lexCurrentColumn=newCol})
 
 -- | Create a 'GenToken' using the contents of the 'lexBuffer', then clear the 'lexBuffer'. This
--- function backtracks if the 'lexBuffer' is empty.
-makeGetToken  :: (Eq tok, Enum tok) => tok -> GenLexer tok (GenToken tok)
-makeGetToken typ = do
+-- function backtracks if the 'lexBuffer' is empty. If you pass "Prelude.False' as the first
+-- parameter the tokens in the 'lexBuffer' are not stored with the token, the token will only
+-- contain the type.
+makeGetToken  :: (Eq tok, Enum tok) => Bool -> tok -> GenLexer tok (GenToken tok)
+makeGetToken storeChars typ = do
   st <- get
   let str = lexBuffer st
-  if null str
-    then  mzero
-    else  do
-      let tok = GenToken{tokType=typ, tokToUStr=ustr str}
-          at  = GenTokenAt
-                { tokenAtLineNumber   = lexCurrentLine   st
-                , tokenAtColumnNumber = lexCurrentColumn st
-                , getToken            = tok
-                }
-      put $ st{ lexBuffer   = ""
-              , tokenStream = tokenStream st ++ [at]
-              , lexTokenCounter = lexTokenCounter st + 1
-              }
-      lexUpdLineColWithStr str
-      return tok
+  token <- case str of
+    []               -> mzero
+    [c] | storeChars -> return $ GenCharToken{tokType=typ, tokChar=c}
+    cx  | storeChars -> return $ GenToken{tokType=typ, tokUStr=ustr str}
+    _                -> return $ GenEmptyToken{tokType=typ}
+  put $
+    st{ lexBuffer   = ""
+      , tokenStream = tokenStream st ++
+          [ GenTokenAt
+            { tokenAtLineNumber   = lexCurrentLine   st
+            , tokenAtColumnNumber = lexCurrentColumn st
+            , getToken            = token
+            } ]
+      , lexTokenCounter = lexTokenCounter st + 1
+      }
+  lexUpdLineColWithStr str
+  return token
 
+-- | Create a token in the stream without returning it (you usually don't need the token anyway). If
+-- you do need the token, use 'makeGetToken'.
 makeToken :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
-makeToken = void . makeGetToken
+makeToken = void . makeGetToken True
+
+-- | Create a token in the stream without returning it (you usually don't need the token anyway). If
+-- you do need the token, use 'makeGetToken'. The token created will not store any characters, only
+-- the type of the token. This can save a lot of memory, but it requires you have very descriptive
+-- token types.
+makeEmptyToken :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+makeEmptyToken = void . makeGetToken False
 
 -- | Clear the 'lexBuffer' without creating a token.
 clearBuffer :: (Eq tok, Enum tok) => GenLexer tok ()
@@ -495,10 +522,11 @@ lexHexDigits tok = lexSimple tok isHexDigit
 -- pass @"+ += - -= * *= ** / /= % %= = == ! !="@ to create 'Lexer' that will properly parse all of
 -- those operators. The order of the operators is *NOT* important, repeat symbols are tried only
 -- once, the characters @+=@ are guaranteed to be parsed as a single operator @["+="]@ and not as
--- @["+", "="]@.
-lexOperator :: (Eq tok, Enum tok) => tok -> String -> GenLexer tok ()
-lexOperator tok ops =
-  msum (map (\op -> lexString op >> makeToken tok) $ reverse $ nub $ sortBy len $ words ops)
+-- @["+", "="]@. *No token is created,* you must create your token using 'makeToken' or
+-- 'makeEmptyToken' immediately after evaluating this tokenizer.
+lexOperator :: (Eq tok, Enum tok) => String -> GenLexer tok ()
+lexOperator ops =
+  msum (map (\op -> lexString op) $ reverse $ nub $ sortBy len $ words ops)
   where
     len a b = case compare (length a) (length b) of
       EQ -> compare a b
@@ -754,12 +782,17 @@ lexErrToParseErr lexErr =
 -- type.
 data GenParserState st tok
   = GenParserState
-    { userState :: st
-    , getLines :: [GenLine tok]
+    { userState   :: st
+    , getLines    :: [GenLine tok]
+    , recentTokens :: [(LineNum, ColumnNum, GenToken tok)]
+      -- ^ single look-ahead is common, but the next token exists within the 'Prelude.snd' value
+      -- within a pair within a list within the 'lineTokens' field of a 'GenLine' data structure.
+      -- Rather than traverse that same path every time 'nextToken' or 'withToken' is called, the
+      -- next token is cached here.
     }
 
 newParserState :: (Eq tok, Enum tok) => st -> [GenLine tok] -> GenParserState st tok
-newParserState st lines = GenParserState{userState = st, getLines = lines}
+newParserState st lines = GenParserState{userState = st, getLines = lines, recentTokens = []}
 
 modifyUserState :: (Eq tok, Enum tok) => (st -> st) -> GenParser st tok ()
 modifyUserState fn = modify (\st -> st{userState = fn (userState st)})
@@ -828,13 +861,36 @@ parseEOF = mplus (nextTokenPos False >> return False) (return True) >>= guard
 -- | Return the next token in the state along with it's line and column position. If the boolean
 -- parameter is true, the current token will also be removed from the state.
 nextTokenPos :: (Eq tok, Enum tok) => Bool -> GenParser st tok (LineNum, ColumnNum, GenToken tok)
-nextTokenPos doRemove = get >>= \st -> case getLines st of
-  []         -> mzero
-  line:lines -> case lineTokens line of
-    []                 -> put (st{getLines=lines}) >> nextTokenPos doRemove
-    (colNum, tok):toks -> do
-      if doRemove then put (st{getLines = line{lineTokens=toks}:lines}) else return ()
-      return (lineNumber line, colNum, tok)
+nextTokenPos doRemove = do
+  st <- get
+  case recentTokens st of
+    [] -> case getLines st of
+      []         -> mzero
+      line:lines -> case lineTokens line of
+        []                 -> put (st{getLines=lines}) >> nextTokenPos doRemove
+        (colNum, tok):toks -> do
+          let postok = (lineNumber line, colNum, tok)
+          if doRemove -- the 'recentTokens' buffer is cleared here regardless.
+            then  put (st{getLines=line{lineTokens=toks}:lines, recentTokens=mzero})
+            else  put (st{recentTokens=[postok]}) -- buffer the token if this was a look-ahead.
+          return postok
+    tok:tokx | doRemove -> put (st{recentTokens=tokx}) >> return tok
+    tok:tokx            -> return tok
+      -- ^ if we remove a token, the 'recentTokens' cache must be cleared because we don't know what
+      -- the next token will be. I use 'mzero' to clear the cache, it has nothing to do with the
+      -- parser backtracking.
+
+-- push an arbitrary token into the state. It is used to implement backtracking by the 'withToken'
+-- function, so use 'withToken' instead.
+pushToken :: (Eq tok, Enum tok) => (LineNum, ColumnNum, GenToken tok) -> GenParser st tok ()
+pushToken postok@(lineNum, colNum, tok) = do
+  modify (\st -> st{recentTokens = postok : recentTokens st})
+  modify $ \st -> case getLines st of
+    []         -> st{getLines = [GenLine{lineLineNumber=lineNum, lineTokens=[(colNum,tok)]}]}
+    line:lines ->
+      if lineLineNumber line == lineNum
+        then  st{getLines = line{lineTokens = (colNum, tok) : lineTokens line} : lines}
+        else  st{getLines = GenLine{lineLineNumber=lineNum, lineTokens=[(colNum,tok)]} : line : lines}
 
 -- | Like 'nextTokenPos' but only returns the 'GenToken', not it's line and column position.
 nextToken :: (Eq tok, Enum tok) => Bool -> GenParser st tok (GenToken tok)
@@ -861,16 +917,6 @@ tokenType requestedType = token (==requestedType) (const True)
 tokenTypes :: (Eq tok, Enum tok) => [tok] -> GenParser st tok UStr
 tokenTypes requestedTypes = token (\b -> or (map (==b) requestedTypes)) (const True)
 
--- | Push an arbitrary token into the state, but you really don't want to use this function. It is
--- used to implement backtracking by the 'withToken' function, so use 'withToken' instead.
-pushToken :: (Eq tok, Enum tok) => (LineNum, ColumnNum, GenToken tok) -> GenParser st tok ()
-pushToken (lineNum, colNum, tok) = modify $ \st -> case getLines st of
-  []         -> st{getLines = [GenLine{lineLineNumber=lineNum, lineTokens=[(colNum,tok)]}]}
-  line:lines ->
-    if lineLineNumber line == lineNum
-      then  st{getLines = line{lineTokens = (colNum, tok) : lineTokens line} : lines}
-      else  st{getLines = GenLine{lineLineNumber=lineNum, lineTokens=[(colNum,tok)]} : line : lines}
-
 -- | Single token look-ahead: takes the next token, removing it from the state, and uses it to
 -- evaluate the given 'Parser'. If the backtracks, the token is replaced into the state. Failures
 -- are not caught, make sure the 'Parser' you pass to this function makes use of
@@ -885,8 +931,58 @@ withTokenP parser = do
 withToken
   :: (Eq tok, Enum tok)
   => (tok -> Bool) -> (UStr -> GenParser st tok a) -> GenParser st tok a
-withToken tokenPredicate parser = withTokenP $ \tok u ->
-  if tokenPredicate tok then parser u else mzero
+withToken tokenPredicate parser =
+  withTokenP $ \tok u -> if tokenPredicate tok then parser u else mzero
+
+-- | Created with 'ptab', this type is used to initalize a parser table.
+newtype GenParseTableElem st tok a
+  = GenParseTableElem { parseTableElemToPair :: (tok, UStr -> GenParser st tok a) }
+
+newtype GenParseTable st tok a
+  = GenParseTable { parserTableArray :: Array tok (UStr -> GenParser st tok a) }
+
+-- | Run a single 'GenParseTableElem' as a stand-alone parser.
+runParseTableElem :: (Ix tok, Enum tok) => GenParseTableElem st tok a -> GenParser st tok a
+runParseTableElem elem = let (tok, parser) = parseTableElemToPair elem in withToken (==tok) parser
+
+-- | Since 'GenToken's all have a type value that instantiates 'Prelude.Enum', it can be efficient
+-- to create an array with each parser stored at an index related to the token type. To create such
+-- an array, use this function and 'ptab', then evaluate the parser with
+-- 'evalParseTable'. Specify the range of tokens to use (it is most efficient if the range consists
+-- of consecutive 'Prelude.Enum' elements), and then the list of parsers, where each parser is
+-- constructed with 'ptab'.
+newParseTable
+  :: (Ix tok, Enum tok)
+  => tok -> tok
+  -> [GenParseTableElem st tok a]
+  -> GenParseTable st tok a
+newParseTable mintok maxtok elems = GenParseTable $ array (mintok, maxtok) $ concat
+  [ zip [min mintok maxtok .. max maxtok mintok] (repeat (\_ -> mzero))
+  , map parseTableElemToPair elems
+  ]
+
+-- | Use this function to construct 'ParseTableElem's used to initialize a parser array constructed
+-- with the 'newParseTable' function. An example function could be a parser that creates
+-- identifiers:
+-- > data IDEN | NUM deriving ('Prelude.Eq', 'Prelude.Ord', 'Prelude.Enum', 'Data.Ix.Ix, 'Prelude.Show')
+-- > data Identifier String | Number Int
+-- > 'newParserArray' IDEN NUM $
+-- >     [ 'ptab' IDEN $ \str -> return (Identifier str)
+-- >     , 'ptab' NUM  $ \str -> return (Number ('Prelude.read' str))
+-- >     ]
+ptab :: (Ix tok, Enum tok) => tok -> (UStr -> GenParser st tok a) -> GenParseTableElem st tok a
+ptab tok parser = GenParseTableElem (tok, parser)
+
+-- | Efficiently evaluates a 'GenParseTable'. One token is shifted from the stream, and the
+-- 'tokType' is used to select and evaluate the 'GenParser' in the 'GenParseTable'. The 'tokToStr'
+-- value of the token is passed to the selected 'GenParser'. If the 'tokType' does not exist in the
+-- table, or if the selected parser backtracks, this parser backtracks and the selecting token is
+-- shifted back onto the stream.
+evalParseTable :: (Ix tok, Enum tok) => GenParseTable st tok a -> GenParser st tok a
+evalParseTable table = do
+  let arr = parserTableArray table
+  tokPos@(_, _, tok) <- nextTokenPos True
+  if inRange (bounds arr) (tokType tok) then (arr ! tokType tok) (tokToUStr tok) else mzero
 
 -- | Return the current line and column of the current token without modifying the state in any way.
 getCursor :: (Eq tok, Enum tok) => GenParser st tok (LineNum, ColumnNum)

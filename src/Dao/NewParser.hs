@@ -941,6 +941,31 @@ newtype GenParseTableElem st tok a
 newtype GenParseTable st tok a
   = GenParseTable { parserTableArray :: Array tok (UStr -> GenParser st tok a) }
 
+-- | Modify the return type of the 'GenParser' within a 'GenParseTableElem'. This is handy for
+-- re-using lists of 'GenParseTableElem's in 'GenParseTable's that should parse the same tokens but
+-- evaluate a different type of object. For example, if you have a list of 'GenParseTableElem's that
+-- evaluate a type 'Prelude.Int':
+-- > myIntParseTabElems :: ['GenParseTableElem' st tok 'Prelude.Int']
+-- and you would like to use these exact same parsers but in a table that returns 'Prelude.Float'.
+-- types, then you would use this function like so:
+-- > myFloatParseTabElems :: ['GenParseTableElem' st tok 'Prelude.Float']
+-- > myFloatParseTabElems =
+-- >     map ('bindPTabElem' ('Prelude.fmap' 'Prelude.fromIntegral')) myIntParseTabElems
+-- The name "bind" is used because it is similar to the monadic "bind" operator
+-- 'Control.Monad.(>>=)', however this function is not an infix operator so it is more convenient to
+-- have the parameters are flipped from the order of the parameters used in monadic bind.
+bindPTabElem
+  :: (Ix tok, Enum tok)
+  => (a -> GenParser st tok b)
+  -> GenParseTableElem st tok a
+  -> GenParseTableElem st tok b
+bindPTabElem bindFunc tabElem =
+  GenParseTableElem
+  { parseTableElemToPair =
+      let (tok, func) = parseTableElemToPair tabElem
+      in  (tok, (\str -> func str >>= bindFunc))
+  }
+
 -- | Run a single 'GenParseTableElem' as a stand-alone parser.
 runParseTableElem :: (Ix tok, Enum tok) => GenParseTableElem st tok a -> GenParser st tok a
 runParseTableElem elem = let (tok, parser) = parseTableElemToPair elem in withToken (==tok) parser

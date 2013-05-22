@@ -34,13 +34,16 @@ import           Control.Monad.Error
 import           Control.Monad.State
 
 import           Data.Monoid
+import           Data.Maybe
 import           Data.List
-import           Data.Char hiding (Space)
+import           Data.Char hiding (Spaces)
 import           Data.Word
 import qualified Data.Set  as S
+import qualified Data.Map  as M
 import           Data.Ratio
 import           Data.Complex
 import           Data.Time.Clock
+import           Data.Array.IArray
 import           Numeric
 
 import Debug.Trace
@@ -57,65 +60,44 @@ dbg msg parser = do
   assumePValue v
 
 ----------------------------------------------------------------------------------------------------
--- The token types.
 
--- | This is a basic token typing system suitable for most parsers. Your lexer does not need to
--- use all of these types. These types are semi-arbitrary labels you can use however you please.
--- Keep in mind, however, that functions in this module might make assumptions as to the kind of
--- characters stored along side these token types. For example: 'mightHaveNLorTabsTT' assumes that
--- 'Space' and 'StrLit' may contain newline characters and 'Keyword and 'Identifier' will not.
+-- | The token types.
 data TT
-  = Space
-  | Newline
-      -- ^ your lexer might return '\n' characters as 'Space's, but this token type is here in
-      -- case you need to treat newlines as special characters.
-  | Indent
-      -- ^ your lexer might return '\t' characters as 'Space's, but this token type is here in
-      -- case you need to treat indentation as special characters.
-  | Alphabetic
-  | Alnum -- ^ alphabetical or numerical (digits)
-  | Keyword
-  | Identifier  -- ^ same as 'Label', unless you treat it differently
-  | Label       -- ^ same as 'Identifier', unless you treat it differently
-  | Digits
-  | Number      -- ^ a whole number including floating points, not just digits.
-  | NumberExp   -- ^ a whole number including floating points with exponents, e.g. 6.022e+23 or 
-  | PointDigits -- ^ digits with a decimal point
-  | OctDigits
-  | HexDigits
-  | DateTok
-  | TimeTok
-  | Punct       -- ^ punctuation mark, not including mathematical symbols
-  | Symbol      -- ^ a symbol (like punctuation)
-  | Operator
-  | CharLit     -- ^ a character literal treated as a single token
-  | StrLit      -- ^ a string literal treated as a single token
-  | ComEndl     -- ^ a comment at the end of the line
-  | ComInln     -- ^ the start of a multi-line comment
-  | Opener      -- ^ an open-paren or brace or anything that opens a closure
-  | Closer      -- ^ a close-paren or brace or anything that closes a closure
-  | CtrlChar    -- ^ ascii control characters
-  | Arbitrary   -- ^ a type used to mark arbitrary data
-  | Ignored     -- ^ characters that can be ignored, like in multi-line comments.
-  | Unknown
-      -- ^ it is possible to construct tokenizers that never fail by creating a 'GenLexer' that
-      -- returns unknown tokens paired with this type. This 'Unknown' 'GenLexer' should always be
-      -- the final 'GenLexer' in your list of 'GenLexer' passed to 'lex'. Then your 'Parser' can
-      -- decide how to handle these.
-  deriving (Eq, Ord, Enum, Show)
+  = Spaces | Label
+  | KeyIF | KeyELSE | KeyFOR | KeyIN | KeyWHILE | KeyWITH | KeyTRY | KeyCATCH
+  | KeyCONTINUE | KeyBREAK | KeyTHROW | KeyRETURN
+  | KeyDATA | KeySTRUCT | KeyLIST | KeySET | KeyINTMAP | KeyDICT | KeyARRAY | KeyDATE | KeyTIME
+  | KeyGLOBAL | KeyLOCAL | KeyQTIME | KeySTATIC
+  | KeyFUNCTION | KeyFUNC | KeyPAT | KeyRULE
+  | DateTok | TimeTok
+  | Digits10 | DotDigits10 | Exponent | Digits16 | Digits8 | Digits2 | NumSuffix
+  | LogicNotOp | ArithNegOp | BinInvertOp | DerefOp | RefOp | DotOp | ArrowOp
+  | InfixOp | AssignOp | Comma | Semicolon | Colon | IntRefTok
+  | CharLit | StrLit
+  | ComEndl | ComInln
+  | OpenParen | CloseParen | OpenSquare | CloseSquare | OpenBrace | CloseBrace
+  | OpenMeta | CloseMeta
+  | Arbitrary | Unknown
+  deriving (Eq, Ord, Enum, Ix, Show)
 
--- | Shorthand for @'ignore' ('token' 'Space')@
+lexNumber :: Lexer ()
+lexNumber = error "TODO: define lexNumber"
+
+-- | Shorthand for @'ignore' ('token' 'Spaces')@
 skipSpaces :: Parser ()
-skipSpaces = ignore (tokenType Space)
+skipSpaces = ignore (tokenType Spaces)
 
 operator :: String -> Parser UStr
-operator k = token (==Operator) (==k)
+operator k = token (==InfixOp) (==k)
 
 withKeyword :: (UStr -> Parser a) -> Parser a
-withKeyword parser = withToken (==Keyword) parser
+withKeyword parser = withToken (==Label) parser
 
 keyword :: String -> Parser UStr
-keyword k = token (==Keyword) (==k)
+keyword k = token (==Label) (==k)
+
+optionStringType :: TT -> Parser String
+optionStringType tok = fmap (fromMaybe "") (optional (fmap uchars (tokenType tok)))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -130,10 +112,13 @@ instance Monoid ParserState where
       , nonHaltingErrors = nonHaltingErrors a ++ nonHaltingErrors b
       }
   mempty = ParserState{ bufferedComments = Nothing, nonHaltingErrors = [] }
-type Lexer a = GenLexer TT a
-type Parser a = GenParser ParserState TT a
-type CFGrammar a = GenCFGrammar ParserState TT a
-type ParserErr = GenParserErr ParserState TT
+
+type Lexer          a = GenLexer                      TT a
+type Parser         a = GenParser         ParserState TT a
+type CFGrammar      a = GenCFGrammar      ParserState TT a
+type ParserErr        = GenParserErr      ParserState TT
+type ParseTable     a = GenParseTable     ParserState TT a
+type ParseTableElem a = GenParseTableElem ParserState TT a
 
 setCommentBuffer :: [Comment] -> Parser ()
 setCommentBuffer coms = modifyUserState $ \st ->
@@ -155,71 +140,124 @@ daoLexers =
   , lexCharLiteral       CharLit
   , lexInlineC_Comment   ComInln
   , lexEndlineC_Comment  ComEndl
-  , lexSpace             Space
+  , lexSpace             Spaces
   , dataSpecialLexer
-  , lexKeyword           Keyword
-  , lexNumber            Digits HexDigits Number NumberExp
-  , lexOperator          Operator daoOperators
-  , lexString "#{" >> makeToken Opener
-  , lexString "}#" >> makeToken Closer
-  , lexCharP (charSet "([{") >> makeToken Opener
-  , lexCharP (charSet "}])") >> makeToken Closer
+  , lexDaoKeyword
+  , lexDaoNumber
+  , lexDaoOperator
+  , lexOperator allUpdateOpStrs >> makeToken AssignOp
+  , lexDaoParens
   ]
 
 daoMainLexer :: Lexer ()
 daoMainLexer = runLexerLoop "Dao script" lexEOF daoLexers
 
-daoOperators :: String
-daoOperators = concat [allArithOp2Strs, " ", allArithOp1Strs, " ", allUpdateOpStrs , " , : ; "]
+daoInfixOperators :: String
+daoInfixOperators = concat [allArithOp2Strs, " ", allArithOp1Strs, " , : ; "]
 
 lexDaoNumber :: Lexer ()
-lexDaoNumber = mplus init0 init >> lexSuffix where
-  take1 = lexCharP (const True)
-  init0 = do
-    lexCharP (=='0')
-    c <- lexLook1
-    case c of
-      'x' -> take1 >> getOther "hexadecimal" isHexDigit Number -- TODO: should be HexDigits
-      'X' -> take1 >> getOther "hexadecimal" isHexDigit Number -- TODO: should be HexDigits
-      'b' -> take1 >> getOther "binary"      isDigit    Number -- TODO: should be BinDigits
-      'B' -> take1 >> getOther "binary"      isDigit    Number -- TODO: should be BinDigits
-      'o' -> take1 >> getOther "octal"       isDigit    Number -- TODO: should be Octal
-      c   -> msum $
-        [ getDotExp
-        , if c/='.' then mzero else mplus (take1 >> getDigitsExp) badDot
-        , lexWhile isDigit >> makeToken Number -- TODO: make this 'Octal', not 'Number'
-        , makeToken Digits -- TODO: make this 'Zero', not 'Digits'
-        ]
-  lexDot = lexCharP (=='.')
-  badDot = fail "expecting digits after decimal point"
-  badExp = fail "expecting digits after exponent expression"
-  onlyDigits :: Lexer ()
-  onlyDigits = lexWhile isDigit
-  getDotExp = do
-    msum (map lexString $ words " .+e .+E .-e .-E .e .E +e +E -e -E e E ")
-    mplus (lexWhile isDigit) badExp
-    makeToken Number -- TODO: should be NumDotExp
-  getDigitsExp = do
-    lexWhile isDigit
-    msum $
-      [ do  msum $ map lexString $ words " +e +E -e -E e E "
+lexDaoNumber = msum $
+  [ otherBase 'x' 'X' isHexDigit Digits16
+  , otherBase 'b' 'B' isDigit    Digits2
+  , lexCharP (=='0') >> getDigits True
+  , getDigits False
+  ]
+  where
+    otherBase typmsg c1 c2 predicate tok = do
+      mplus (lexString ('0':c1)) (lexString ('0':c2))
+      flip mplus (fail ("expecting digits after "++typmsg++" token")) $
+        lexWhile predicate >> makeToken tok
+    getDigits initZero = flip mplus (if initZero then makeToken Digits10 else mzero) $ do
+      lexWhile isDigit
+      c <- lexLook1
+      case c of
+        '.' -> makeToken Digits10 >> exponent
+        _   -> makeToken (if initZero then Digits8 else Digits10)
+      suffix
+    badExp = fail "expecting digits after decimal point"
+    exponent = msum $
+      [ do  msum (map lexString $ words ".E+ .E- .E .e+ .e- .e")
+            mplus (lexWhile isDigit) (fail "expecting digits after exponent mark")
+            makeToken Exponent
+      , do  lexCharP (=='.')
             mplus (lexWhile isDigit) badExp
-            makeToken Number -- TODO: should be NumDotExp
-      , makeToken Number -- TODO: should be NumDot
+            makeToken DotDigits10
+            void (optional getE)
+      , getE
       ]
-  init = do
-    lexWhile isDigit
-    msum $
-      [ getDotExp
-      , lexDot >> mplus getDigitsExp badDot
-      , makeToken Digits
-      ]
-  getOther :: String -> (Char -> Bool) -> TT -> Lexer ()
-  getOther typ predicate tokTyp = flip mplus (fail ("expecting "++typ++" digits")) $ do
-    lexWhile predicate
-    flip mplus (makeToken tokTyp) $
-      lexDot >> mplus (lexWhile predicate) badDot >> makeToken Number -- TODO: should be HexDot or BinDot
-  lexSuffix = lexCharP (charSet "UILRFfijs") >> makeToken Keyword -- TODO: should be NumSuffix
+    getE = do
+      msum (map lexString $ words "E+ E- E e+ e- e")
+      mplus (lexWhile isDigit) badExp
+      makeToken Exponent
+    suffix = lexCharP (charSet "jisfFURLI")
+
+daoKeywords :: [String]
+daoKeywords = words $ concat $
+  [ " if else for in while with try catch "
+  , " continue break return throw "
+  , " data struct list set intmap dict array date time "
+  , " global local qtime static "
+  , " function func pattern rule "
+  ]
+
+daoKeywordTokens :: [TT]
+daoKeywordTokens =
+  [ KeyIF, KeyELSE, KeyFOR, KeyIN, KeyWHILE, KeyWITH, KeyTRY, KeyCATCH
+  , KeyCONTINUE, KeyBREAK, KeyRETURN, KeyTHROW
+  , KeyDATA, KeySTRUCT, KeyLIST, KeySET, KeyINTMAP, KeyDICT, KeyARRAY, KeyDATE, KeyTIME
+  , KeyGLOBAL, KeyLOCAL, KeyQTIME, KeySTATIC
+  , KeyFUNCTION, KeyFUNC, KeyPAT, KeyRULE
+  ]
+
+daoStringToKeywordMap :: M.Map String TT
+daoStringToKeywordMap = M.fromList (zip daoKeywords daoKeywordTokens)
+
+-- assumes keyword tokesn are consecutively enumerated
+daoKeywordToStringArray :: Array TT String
+daoKeywordToStringArray = array (KeyIF, KeyRULE) (zip daoKeywordTokens daoKeywords)
+
+daoKeywordToString :: TT -> String
+daoKeywordToString tok =
+  if inRange (bounds daoKeywordToStringArray) tok then daoKeywordToStringArray!tok else ""
+
+lexDaoKeyword :: Lexer ()
+lexDaoKeyword = do
+  let a = (=='_')
+  lexWhile (unionCharP (a:[isAlpha]))
+  optional (lexWhile (unionCharP (a:[isAlphaNum])))
+  str <- gets lexBuffer
+  case M.lookup daoStringToKeywordMap str of
+    Just key -> makeEmptyToken key
+    Nothing  -> makeToken Label
+
+-- This function also lexes integer references like:
+-- > $1 $2 $3 ...
+lexDaoOperator :: Lexer ()
+lexDaoOperator = do
+  lexOperator daoInfixOperators
+  op <- gets lexBuffer
+  case op of
+    ":"  -> makeEmptyToken Colon
+    ";"  -> makeEmptyToken Semicolon
+    ","  -> makeEmptyToken Comma
+    "->" -> makeEmptyToken ArrowOp
+    "@"  -> makeEmptyToken DerefOp
+    "!"  -> makeEmptyToken LogicNotOp
+    "~"  -> makeEmptyToken BinInvertOp
+    "-"  -> makeEmptyToken ArithNegOp
+    op  -> case (readsPrec 0 op :: [ArithOp1]) of
+      []    -> makeToken InfixOp
+      [REF] -> mplus (lexWhile isDigit >> makeToken IntRefTok) (makeToken RefOp)
+
+lexDaoParens :: Lexer ()
+lexDaoParens = msum $
+  [ lexString "#{" >> makeEmptyToken OpenMeta
+  , lexString "}#" >> makeEmptyToken CloseMeta
+  , mk '(' OpenParen , mk ')' CloseParen
+  , mk '[' OpenSquare, mk ']' CloseSquare
+  , mk '{' OpenBrace , mk '}' CloseBrace
+  ]
+  where { mk c tok = lexChar c >> makeEmptyToken tok }
 
 -- | One of the design goals of Dao is for its language to be able to express any of it's built-in
 -- objects. Arbitrary data stored in 'Dao.Object.OBinary' objects are constructed from base-64
@@ -232,14 +270,14 @@ dataSpecialLexer = do
   k <- lexWhile isAlpha >> gets lexBuffer
   case k of
     "data" -> do
-      makeToken Keyword
-      many $ msum [lexSpace Space, lexInlineC_Comment ComInln, lexEndlineC_Comment ComEndl]
+      makeToken Label
+      many $ msum [lexSpace Spaces, lexInlineC_Comment ComInln, lexEndlineC_Comment ComEndl]
       flip mplus (return ()) $ do
+        lexChar '{' >> makeToken OpenBrace
         let b64chars = unionCharP [isAlphaNum, (=='+'), (=='/'), (=='=')]
-            ender    = lexChar '}' >> makeToken Closer
-        lexChar '{' >> makeToken Opener
+            ender    = lexChar '}' >> makeToken CloseBrace
         runLexerLoop "base-64 data expression" ender $
-          [ lexSpace Space
+          [ lexSpace Spaces
           , lexWhile b64chars >> makeToken Arbitrary
           , lexUntil (unionCharP [b64chars, isSpace, (=='}')]) >> makeToken Unknown
           , lexEOF >> fail "base-64 data expression runs past end of input"
@@ -268,34 +306,26 @@ rationalFromString maxValue base str =
 -- | Parses a numeric object without the leading positive or negative sign. The sign must be part of
 -- an equation expression. If the negative sign were parsed in this parser, an expression like @1-1@
 -- might parse to 
-parseNumber :: Parser Object
-parseNumber = do
-  let getTyp = defaultTo "" (fmap uchars (tokenType Keyword))
-  mplus (fmap uchars (tokenType Digits) >>= \num -> getTyp >>= numberFromStrs 10 num "" "") $ do
-    num <- fmap uchars (tokenTypes [Number, NumberExp])
-    typ <- getTyp
-    -- ^ 'typ' is the optional terminating type modifier, for example numbers that end with "f" to
-    -- indicate the floating type or "L" to indicate the long-int type
-    let mk base int frac exp = numberFromStrs base int frac exp typ
-        getDot = break (=='.')
-        getExp = break (\c -> c=='e' || c=='E')
-        altBaseDot base num = case getDot num of
-          (num, "" )           -> mk base num ""  ""
-          (num, dec) | base==8 -> mk 10   num dec ""
-          -- ^ disregard base-8 if there is a decimal point
-          -- for example, 0701 is base-8, 07.01 is not base-8
-          (num, dec)           -> mk base num dec ""
-    case num of
-      '0':x:num | x=='x' || x=='X' -> altBaseDot 16 num
-      '0':b:num | b=='b' || b=='B' -> altBaseDot 2  num
-      '0':  num                    -> altBaseDot 8  num
-      num -> case getDot num of
-        (num, ""   ) -> case getExp num of
-          (num, ""   ) -> mk 10 num ""  ""
-          (num, _:exp) -> mk 10 num ""  exp -- _:exp skips the 'E' or 'e'
-        (num, _:dec) -> case getExp dec of  -- _:dec skips the decimal point
-          (dec, ""   ) -> mk 10 num dec ""
-          (dec, _:exp) -> mk 10 num dec exp -- _:exp skips the 'E' or 'e'
+parseNumberTabElems :: [ParseTableElem Object]
+parseNumberTabElems =
+  [ ptab Digits16 $ \str -> case uchars str of {'0':x:dx | charSet "Xx" x -> mk 16 dx "" ""}
+  , ptab Digits2  $ \str -> case uchars str of {'0':b:dx | charSet "Bb" b -> mk 2  dx "" ""}
+  , ptab Digits8  $ \str -> case uchars str of {'0':  dx                  -> mk 8  dx      }
+  , ptab Digits10 $ \str -> case uchars str of {dx                        -> mk 10 dx      }
+  ]
+  where
+    mk base int frac plusMinusExp = do
+      let stripDots str = case str of {'.':str -> str; _ -> str}
+          stripEs   str = case str of
+            e:str | e=='e' || e=='E' -> str
+            str                      -> str
+      (frac, plusMinusExp) <-
+        if base==10
+          then  liftM2 (,) (fmap stripDots (optionStringType DotDigits10))
+                           (fmap stripEs   (optionStringType Exponent   ))
+          else  return ("", "")
+      typ <- optionStringType NumSuffix
+      numberFromStrs base int frac plusMinusExp typ
 
 -- copied from the Dao.Parser module
 numberFromStrs :: Int -> String -> String -> String -> String -> Parser Object
@@ -341,61 +371,58 @@ numberFromStrs base int frac plusMinusExp typ = do
 -- message @"expecting close parenthesis after "++errMsg++" expression."@.
 parseOptionalParens :: String -> Parser a -> Parser a
 parseOptionalParens errMsg parser = flip mplus (skipSpaces >> parser) $ do
-  token (==Opener) (=="(")
+  tokenType OpenParen
   skipSpaces
   a <- parser
   skipSpaces
-  expect ("close parenthesis after "++errMsg++" expression") (token (==Closer) (==")") >> return a)
+  expect ("close parenthesis after "++errMsg++" expression") (tokenType CloseParen >> return a)
 
 -- | Parses a different form of 'ODiffTime', with days, hours, minutes, and seconds separated by
 -- colons. This parser does not care about context, colons are used as @hour:minute:second@ separator
 -- tokens, regardless of their meaning elsewhere. Spaces are not allowed between
 -- @hour:minute:second@ tokens.
-parseDiffTime :: Parser T_diffTime
-parseDiffTime = marker $ withToken (==Digits) $ \d -> withToken (==Operator) $ \co -> do
-  guard (uchars co == ":")
+parseDiffTime :: ParseTableElem T_diffTime
+parseDiffTime = ptab Digits10 $ \d -> do
+  tokenType Colon
   flip mplus (fail "expecting diff-time expression") $ do
-    dx <- loop [d] 3
-    case map uchars dx of
-      [days, hours, minutes, seconds] -> mk days hours minutes seconds
-      [      hours, minutes, seconds] -> mk ""   hours minutes seconds
-      [             minutes, seconds] -> mk ""   ""    minutes seconds
+    (dx, miliseconds) <- loop [d] 3
+    case dx of
+      [days, hours, minutes, seconds] -> mk days hours minutes seconds miliseconds
+      [      hours, minutes, seconds] -> mk ""   hours minutes seconds miliseconds
+      [             minutes, seconds] -> mk ""   ""    minutes seconds miliseconds
   where
-    mk          = diffTimeFromStrs
-    colon       = operator ":"
-    nocolonfail = fail "incorrect time expression, no digits after colon"
-    loop got i  = case i of
+    mk           = diffTimeFromStrs
+    colon        = tokenType Colon
+    stripDot str = case str of {'.':str -> str; _ -> str}
+    nocolonfail  = fail "incorrect time expression, no digits after colon"
+    loop  got i  = case i of
       i | i>0       ->
         flip mplus (return got) $ do
           d <- nextToken True
-          let td = tokType d
-          if td/=Number && td/=Digits
-            then  fail ("expecting digits for time value, got "++show td++" instead")
-            else  case uchars (tokToUStr d) of
-                    '0':xb:_ | isAlpha xb -> fail "time values must be expressed in base-10"
-                    _                     -> do
-                      let got' = got++[tokToUStr d]
-                      if td==Number
-                        then  return got'
-                        else  mplus (colon >> mplus (loop got' (i-1)) nocolonfail) (return got')
+          case tokType d of
+            Digits10  -> do
+              s <- nextToken False
+              case tokType s of
+                DotDigits10 -> nextToken True >> return (got, tokToStr s)
+                Colon       -> nextToken True >> loop (got++[tokToStr d]) (i-1)
+                _           -> return (got, nil)
+            td        -> fail ("expecting digits for time value, got "++show td++" instead")
         | otherwise -> return got
 
 -- | Compute diff times from strings representing days, hours, minutes, and seconds. The seconds
 -- value may have a decimal point.
-diffTimeFromStrs :: String -> String -> String -> String -> Parser T_diffTime
-diffTimeFromStrs days hours minutes seconds = do
+diffTimeFromStrs :: String -> String -> String -> String -> String -> Parser T_diffTime
+diffTimeFromStrs days hours minutes seconds miliseconds = do
   days    <- check "days"    (maxYears*365) days
   hours   <- check "hours"             24   hours
   minutes <- check "minutes"           60   minutes
   let sec =  check "seconds"           60
-  seconds <- case break (=='.') seconds of
-    (_      , "."            ) ->
-      fail "no digits after decimal point in seconds-value of time expression"
-    (seconds, ""             ) -> sec seconds
-    (seconds, '.':miliseconds) -> do
-      seconds <- sec seconds
-      return (seconds + rint miliseconds % (10 ^ length miliseconds))
-    err -> fail "unexpeced WHAT"
+  seconds <-
+    if null miliseconds
+      then  sec seconds
+      else  do
+        seconds <- sec seconds
+        return (seconds + rint miliseconds % (10 ^ length miliseconds))
   return $ fromRational (60*60*24*days + 60*60*hours + 60*minutes + seconds)
   where
     rint str            = if null str then 0 else (read str :: Integer)
@@ -412,25 +439,25 @@ diffTimeFromStrs days hours minutes seconds = do
 -- with an optional time value as parsed by 'parseDiffTime'. This parser does not care about
 -- context, dashes are used as @year-month-date@ separator tokens, regardless of their meaning
 -- elsewhere. Spaces are not allowed between @year-month-date@ tokens.
-parseDate :: Parser T_time
-parseDate = marker $ withToken (==Digits) $ \yyyy -> expect "absolute date constant expression" $ do
-  let dash = operator "-"
-      digits = fmap uchars (tokenType Digits)
+parseDate :: ParseTableElem T_time
+parseDate = ptab Digits10 $ \yyyy -> expect "absolute date constant expression" $ do
+  let dash = withToken (==InfixOp) (guard . (=="-") . uchars)
+      digits = fmap uchars (tokenType Digits10)
       year = uchars yyyy
   month <- dash >> digits
   day   <- dash >> digits
   let commaSpace = -- a comma followed by an optional space OR no comma but a required space
-        mplus (operator "," >> skipSpaces) (void $ tokenType Space)
+        mplus (operator "," >> skipSpaces) (void $ tokenType Spaces)
   diffTime <- mplus (commaSpace >> parseDiffTime) (return (fromRational 0))
   zone <- msum $
     [  do commaSpace
           msum $
-            [ fmap uchars (tokenType Keyword)
+            [ fmap uchars (tokenType Label)
             , do  plus <- defaultTo "" (fmap uchars (mplus (operator "+") (operator "-")))
-                  zone <- fmap uchars (tokenType Digits)
+                  zone <- fmap uchars (tokenType Digits10)
                   let withColon h1 h2 = expect "valid time-zone offset" $ msum $
-                        [ do  operator ":"
-                              mm <- tokenType Digits
+                        [ do  tokenType Colon
+                              mm <- tokenType Digits10
                               case uchars mm of
                                 [m1,m2] | (read [m1,m2] :: Int) < 60 -> return (plus++[h1,h2,m1,m2])
                                 _                                    -> mzero
@@ -459,7 +486,7 @@ parseComments = loop [] where
     msum $
       [ fmap InlineComment  (tokenType ComInln) >>= next
       , fmap EndlineComment (tokenType ComEndl) >>= next
-      , tokenType Space >> loop got
+      , tokenType Spaces >> loop got
       , return got
       ]
 
@@ -512,22 +539,13 @@ parseWithLocation parser = do
                (return (atPoint line1 col1))
   return (construct loc)
 
--- | Parse any object that can be constructed from the token stream directly and does not require an
--- 'Dao.Object.ObjectExpr' in order to be evaluated.
-parseSimpleObject :: Parser Object
-parseSimpleObject = msum $
-  [ parseNumber
-  , tokenType StrLit  >>= \strLit  -> return (ostr  $ read $ uchars strLit )
-  , tokenType CharLit >>= \charLit -> return (OChar $ read $ uchars charLit)
-  ]
-
 parseFuncParams :: Parser AST_Object -> Parser [Com AST_Object]
 parseFuncParams objParser = do
-  token (==Opener) (=="(")
+  tokenType OpenParen
   com1 <- parseComments
   mplus (close >> return [com com1 AST_Void []]) (loop com1 [])
   where
-    close = token (==Closer) (==")")
+    close = tokenType CloseParen
     loop com1 got = expect "object expression for function parameter" $ do
       obj  <- objParser
       com2 <- parseComments
@@ -539,7 +557,7 @@ parseFuncParams objParser = do
 -- | The @date@ and @time@ functions work on objects expressed with a special syntax that
 -- needs to be handled before trying any other parser. This function is intended to be used with
 -- 'Dao.NewParser.eachWithKeyword' or 'Dao.NewParser.withToken', so the final parameter is not
--- necessary unless your function is already holding a 'Dao.NewParser.Keyword'.
+-- necessary unless your function is already holding a 'Dao.NewParser.Label'.
 parseSpecialFuncCall :: String -> Parser Object -> UStr -> Parser AST_Object
 parseSpecialFuncCall key objParser nextKeyword = do
   guard (uchars nextKeyword == key)
@@ -564,128 +582,8 @@ parseFuncCall nextKeyword = msum $
   ]
 
 ----------------------------------------------------------------------------------------------------
-
--- Prescedence parsing: the following parsers define a prescedence for 'Dao.Object.AST.AST_Object'
--- expressions.
-
-daoKeywords :: S.Set Name
-daoKeywords = S.fromList $ map ustr $ words $ concat $
-  [ " func function rule pattern pat "
-  , " if else try catch for in while continue break return throw "
-  , " list set dict intmap struct data "
-  ]
-
-parseNonKeyword :: Parser UStr
-parseNonKeyword = token (==Keyword) (\e -> not $ S.member (ustr e) daoKeywords)
-
--- | A unit object is any object expression that could be used as a part of a multi-part object
--- expression, e.g. an equation contains multiple object units. This is important for deciding
--- prescedence in equations. Consider unit objects of the highest prescedence. It is safe to call
--- 'parseUnitObject' from any lower-prescedence parser without causing a backtracking loop.
-parseUnitObject :: Parser AST_Object
-parseUnitObject = parseWithLocation $ msum $
-  [ do  open <- fmap uchars (tokenType Opener)
-        let (construct, close) = case open of
-              "("  -> (AST_Paren True, ")")
-              "#{" -> (AST_MetaEval, "}#")
-        expect "object expression after open-parnethesis" $ do
-          o <- parseWithComments parseObject
-          expect "close-parenthesis" (token (==Closer) (==close) >> return (construct o))
-  , fmap AST_Literal parseSimpleObject
-  , withKeyword $ \ukey -> let k = uchars ukey in case k of
-      k | k=="dict" || k=="intmap" -> cachedComments $ \coms ->
-        fmap (AST_Dict ukey coms) (parseCommaSeparated k (assertAssignExpr k))
-      k | k=="list" || k=="set"    -> cachedComments $ \coms ->
-        fmap (AST_Dict ukey coms) (parseCommaSeparated k (\_ -> return ()))
-      "data"    ->
-        cachedComments (\coms -> open >> loop [] >>= \items -> return (AST_Data coms items)) where
-          open     = token (==Opener) (=="{")
-          close    = skipSpaces >> token (==Closer) (=="}")
-          loop got = do
-            skipSpaces
-            next <- fmap Com (tokenType Arbitrary)
-            let got' = got++[next]
-            mplus (close >> return got') (loop got')
-      "struct" -> do
-        let key = uchars ukey
-            nobracket = do
-              t <- nextToken False
-              if tokType t == Opener && uchars (tokToUStr t) == "{" then mzero else return ()
-        guard (key == "struct")
-        expect "optional item and required bracketed list of items to initialize struct" $ do
-          init  <- parseWithComments (mplus (nobracket >> parseObject) (return AST_Void))
-          items <- parseCommaSeparated key (assertAssignExpr key)
-          return (AST_Struct init items)
-      "array"  -> do
-        bounds <- parseWithComments (parseFuncParams parseObject)
-        expect "bracketed list of items to initialized array" $ do
-          items  <- parseCommaSeparated "array" (\_ -> return ())
-          return (AST_Array bounds items)
-      "func"     -> parseLambdaExpr k FuncExprType
-      "function" -> parseLambdaExpr k FuncExprType
-      "rule"     -> parseLambdaExpr k RuleExprType
-      "pattern"  -> parseLambdaExpr k PatExprType
-      k | k=="global" || k=="local" || k=="static" || k=="qtime" -> cachedComments $ \coms -> do
-        obj <- parseRefEquation
-        return (AST_FuncCall ukey coms [Com obj])
-      k -> msum $
-        [ fmap const (parseFuncCall ukey)
-        , return (AST_Literal (ORef (LocalRef ukey)))
-        ]
-  ]
-
--- | This is a parser that parses either a plain unit object using 'parseUnitObject', or
--- alternatively, a prefix operator followed by a plain unit object. Supply a predicate that returns
--- true for every prefix operator you need.
-parsePrefixedObject :: Parser AST_Object
-parsePrefixedObject = withToken (==Operator) $ \ustr -> case readsPrec 0 (uchars ustr) of
-  [(op, "")] -> parseWithLocation $
-    parseWithComments parseUnitObject >>= \obj -> return (AST_Prefix op obj)
-  _                         -> parseUnitObject
-
--- | This is an alternative to 'parseObject'. It parses expressions of lower prescedence than
--- 'parseUnitObject' but of higher than a typical equation parsed with 'parseObject'. Specifically,
--- it parses unit objects (using 'parseUnitObject') interleaved with the 'Dao.Object.DOT' (@.@) and
--- 'Dao.Object.POINT' (@->@) operators, and also prefix operators 'Dao.Object.REF' (@@@) and
--- 'Dao.Object.DEREF' (@$@). This makes it suitable for parsing the parameter object expression for
--- functions like @global@ or @struct@ without requiring parentheses. Therefore in situations like
--- the following:
--- > global a + global b
--- will be parsed equivalently to the expression:
--- > (global a) + (global b)
-parseRefEquation :: Parser AST_Object
-parseRefEquation = getObj >>= \obj -> parseWithLocation (loop [Right obj]) where
-  getObj = mplus parsePrefixedObject parseUnitObject
-  loop got = flip mplus (makeEquation got >>= \obj -> return (setLocation obj)) $ do
-    op <- parseWithComments $ withToken (==Operator) $ \op -> case uchars op of
-      "."  -> return op
-      "->" -> return op
-      _    -> mzero
-    expect ("object expression after "++uchars (unComment op)++" operator") $
-      getObj >>= \obj -> loop (got++[Left op, Right obj])
-
--- | This is the entry-point parser for 'Dao.Object.AST.AST_Object'.
-parseObject :: Parser AST_Object
-parseObject = parseWithLocation $ do
-  obj <- mplus parsePrefixedObject parseUnitObject
-  msum $
-    [ cachedComments $ \com1 -> do
-        token (==Opener) (=="[")
-        expect "object expression for array subscript index" $ do
-          idx <- parseWithComments parseObject
-          expect "closing bracket for array subscript expression" $ do
-            token (==Closer) (=="]")
-            return (AST_ArraySub obj com1 idx)
-    , do  let loop got = flip mplus (return got) $ do
-                op <- parseWithComments $ withToken (==Operator) $ \op -> case uchars op of
-                  ";" -> mzero
-                  "," -> mzero
-                  _   -> return op
-                expect ("object after infix operator ("++show (unComment op)++")") $
-                  parseObject >>= \obj -> loop (got++[Left op, Right obj])
-          obj <- loop [Right obj] >>= makeEquation
-          return (setLocation obj)
-    ]
+-- Functions used for creating equations constructed from object expressions interleaved with infix
+-- operators.
 
 makeEquation :: [Either (Com Name) AST_Object] -> Parser AST_Object
 makeEquation objx = case applyPrescedence objx of
@@ -733,110 +631,297 @@ scanBind constructor ops objx = case objx of
               scanBind constructor ops (Right b : objx)
   objx -> error ("scanBind failed:\n"++show objx)
 
+----------------------------------------------------------------------------------------------------
+-- Prescedence parsing: the following parsers define a prescedence for 'Dao.Object.AST.AST_Object'
+-- expressions.
+
+-- A function to create parser table elements for 'OpenParen' and 'OpenMeta'.
+parenOrMeta :: TT -> TT -> (o -> Location -> AST_Object) -> ParseTableElem (Location -> AST_Object)
+parenOrMeta open close construct = ptab open $ \ustr ->
+  expect "object expression after open-parnethesis" $ do
+    o <- parseWithComments parseObject
+    expect "close-parenthesis" (tokenType close >> return (construct o))
+
+-- Highest prescedence object expression parsers, parses string literals, integer literals, and
+-- expressions enclosed in parentheses or "meta-eval" braces, and labels.
+objectTabElemsPrec9 :: [ParseTable (Location -> AST_Object)]
+objectTabElemsPrec9 = map (bindPTabElem (fmap AST_Literal)) parseNumberTabElems ++
+  [ parenOrMeta OpenParen CloseParen (AST_Paren True)
+  , parenOrMeta OpenMeta  CloseMeta   AST_MetaEval
+  , ptab StrLit  $ \strLit  -> return (ostr  $ read $ uchars strLit )
+  , ptab CharLit $ \charLit -> return (OChar $ read $ uchars charLit)
+  , ptab Label (AST_Literal . ORef . LocalRef)
+  ]
+
+objectExprPrec9 :: Parser (Location -> AST_Object)
+objectExprPrec9 = evalParseTable $ newParseTable objectTabElemsPrec9
+
+-- Extends 'objextTabElemsPrec8' to also parse reference and dereference prefix opreators.
+objectTabElemsPrec8 :: [ParseTable (Location -> AST_Object)]
+objectTabElemsPrec8 = objectTabElemsPrec9 ++ [ptab DerefOp (mk REF), ptab RefOp (mk DEREF)] where
+  mk typ str = do
+    obj <- parseWithLocation objectExprPrec9
+    return (AST_Prefix typ obj)
+
+objectExprPrec8 :: Parser (Location -> AST_Object)
+objectExprPrec8 = evalParseTable $ newParseTable objectTabElemsPrec8
+
+-- Parses objects (using 'objectExprPrec8') interleaved with the 'Dao.Object.DOT' (@.@) and
+-- 'Dao.Object.POINT' (@->@) operators, prefix operators like 'Dao.Object.REF' (@@@) and
+-- 'Dao.Object.DEREF' (@$@). This makes it suitable for parsing the parameter object expression for
+-- functions like @global@ or @struct@ without requiring parentheses. Therefore expressions like the
+-- following:
+-- > global a + global b
+-- will be parsed equivalently to the expression:
+-- > (global a) + (global b)
+parseRefEquation :: Parser AST_Object
+parseRefEquation = init where
+  init = do -- get one object and then try the loop
+    obj <- objectExprPrec8 -- if the loop backtracks on it's first item, return the object alone.
+    mplus (parseWithLocation (loop [Right obj])) (return obj)
+  loop got = flip mplus (makeEquation got >>= \obj -> return (setLocation obj)) $ do
+    op <- parseWithComments $ withToken InfixOp $ \op -> case uchars op of
+      "."  -> return op
+      "->" -> return op
+      _    -> mzero
+    expect ("object expression after "++uchars (unComment op)++" operator") $
+      objectExprPrec8 >>= \obj -> loop (got++[Left op, Right obj])
+
+-- Extents objectTabElemsPrec8 with parsers of labels qualified with the keywords @global@, @local@,
+-- @qtime@, or @static@.
+objectTabElemsPrec7 :: [ParseTableElem (Location AST_Object)]
+objectTabElemsPrec7 = objectTabElemsPrec8 ++
+  [ ptab KeyGLOBAL qualifier
+  , ptab KeyQTIME  qualifier
+  , ptab KeyLOCAL  qualifier
+  , ptab KeySTATIC qualifier
+  ]
+  where
+    qualifier kw = parseRefEquation >>= \obj ->
+      cachedComments $ \coms -> return (AST_FuncCall kw coms [Com obj])
+
+objectExprPrec7 :: Parser (Location -> AST_Object)
+objectExprPrec7 = evalParseTable $ newParseTable objectTabElemsPrec7
+
+-- Parse object expressions indexed with a square-bracketed indexing epxression suffix.
+parseObjectIndexed :: Parser (Location -> AST_Object)
+parseObjectIndexed = do
+  obj <- parseWithLocation objectExprPrec7
+  flip mplus (return (AST_Literal obj)) $ cachedComments $ \coms -> do
+    tokenType OpenSquare
+    expect "object expression as an index value within square-brackets" $ do
+      idx <- parseWithComments parseObject
+      expect "expecting closing square-brackets" $ do
+        tokenType CloseSquare
+        return (AST_ArraySub obj coms idx)
+
+-- Extends the 'objectTabElemsPrec8' table with parsers that create object expressions from
+-- keywords, for example @date@, @time@, @list@, @set@, @dict@, @intmap@, @struct@, and @array@.
+-- Also parses arithmetic negation and bitwise inversion prefix operators.
+objectTabElemsPrec6 :: [ParseTableElem (Location -> AST_Object)]
+objectTabElemsPrec6 = objectExprPrec7 ++ 
+  [ ptab KeyDICT   dictIntmap
+  , ptab KeyINTMAP dictIntmap
+  , ptab KeyLIST   listSet
+  , ptab KeySET    listSet
+  , ptab KeyDATA   $ \ _ -> cachedComments $ \coms ->
+      expect "open brace containing base-64 data after \"data\" statement" $ do
+        tokenType OpenBrace
+        let loop got = do
+              next <- fmap Com (tokenType Arbitrary)
+              skipSpaces
+              let got' = got++[next]
+              mplus (tokenType CloseBrace >> return got') (loop got')
+        got <- expect "base-64 data for \"data\" statement, or closnig brace" (loop [])
+        skipSpaces >> return got
+  , ptab KeySTRUCT $ \ukey -> do
+      let key = uchars ukey
+          nobrace = do
+            t <- nextToken False
+            if tokType t == OpenBrace then mzero else return ()
+      expect "optional item and required bracketed list of items to initialize struct" $ do
+        init  <- parseWithComments (mplus (nobrace >> parseObject) (return AST_Void))
+        items <- parseCommaSeparated key (assertAssignExpr key)
+        return (AST_Struct init items)
+  , ptab KeyARRAY  $ \ _ -> do
+      bounds <- parseWithComments (parseFuncParams parseObject)
+      expect "bracketed list of items to initialized array" $ do
+        items  <- parseCommaSeparated "array" (\_ -> return ())
+        return (AST_Array bounds items)
+  , ptab KeyFUNC     $ parseLambdaExpr FuncExprType
+  , ptab KeyFUNCTION $ parseLambdaExpr FuncExprType
+  , ptab KeyPAT      $ parseLambdaExpr PatExprType
+  , ptab KeyRULE     $ parseLambdaExpr RuleExprType
+  , ptab ArithNegOp  $ prefixOp parseObjectIndexed NEG
+  , ptab BinInvertOp $ prefixOp parseObjectIndexed INVB
+  , parseDiffTime, parseDate
+  ]
+  where
+    dictIntmap ukey = cachedComments $ \coms -> do
+      let k = uchars ukey
+      fmap (AST_Dict ukey coms) (parseCommaSeparated k (assertAssignExpr k))
+    listSet    ukey = cachedComments $ \coms -> do
+      let k = uchars ukey
+      fmap (AST_Dict ukey coms) (parseCommaSeparated k (\_ -> return ()))
+    prefixOp parseObj typ _ = fmap (AST_Prefix typ) (parseWithLocation parseObj)
+
+-- Used in 'objectExprPrec6', lambda expressions are expressions that begin with a keyword liek
+-- "func" or "rule".
+parseLambdaExpr :: LambdaExprType -> UStr -> Parser (Location -> AST_Object)
+parseLambdaExpr key ftyp = do
+  params <- parseWithComments (parseFuncParams parseObject)
+  expect ("bracketed script after \""++uchars key++"\" statement") $
+    fmap (AST_Lambda ftyp params) parseBracedScript
+
+objectExprPrec6 :: Parser (Location -> AST_Object)
+objectExprPrec6 = evalParseTable $ newParseTable objectTabElemsPrec6
+
+-- A general equation used to parse object expressions interleaved with infix operators. Used by
+-- 'parseEqation' (indirectly via 'objectExprPrec5') and also by 'parseObject' directly.
+parseInterleavedInfixOps :: TT -> Parser (Location -> AST_Object) -> Parser (Location -> AST_Object)
+parseInterleavedInfixOps opType objParser = do
+  let getObj = parseWithLocation objParser
+  obj <- getObj
+  let getOp = parseWithComments (tokenType opType)
+      loop lastOp got = expect ("object expression after ("++uchars lastOp++") operator") $ do
+        obj <- getObj
+        let got' = got++[Right obj]
+        mplus (getOp >>= \op -> loop op (got'++[Left op])) (fmap const (makeEquation got'))
+  mplus (getOp >>= \op -> loop op [Right obj, Left op]) (return obj)
+
+-- Parses an equation with arithmetic and logic operators, excluding prefix logical NOT. Assignment
+-- operators are not parsed with this parser, they are lower presedence.
+objectExprPrec5 :: Parser (Location -> AST_Object)
+objectExprPrec5 = parseInterleavedInfixOps InfixOp objectExprPrec6
+
+-- Parses either a logical-NOT operator followed by an infix-operator expression, or just the
+-- infix-operator expression alone. This is the lowest-prescedence non-assignment equation
+-- expression. It does not need a parse table.
+parseEquation :: Parser (Location -> AST_Object)
+parseEquation = flip mplus objectExprPrec5 $ do
+  tokenType LogicNotOp
+  fmap (AST_Prefix NOT) (parseWithComments (parseWithLocation objectExprPrec5))
+
+-- | This is the entry-point parser for 'Dao.Object.AST.AST_Object'. It parses the
+-- lowest-prescedence object equation expression, which are assignment expressions.
+parseObject :: Parser AST_Object
+parseObject = parseWithLocation $ parseInterleavedInfixOps AssignOp parseEquation
+
 -- used by parseDictObject and parseListObject
 parseCommaSeparated :: String -> (AST_Object -> Parser ()) -> Parser [Com AST_Object]
 parseCommaSeparated key check = expect ("opening-brace for "++key++" expression") $ do
-  token (==Opener) (=="{")
-  let done got = token (==Closer) (=="}") >> return got
+  tokenType OpenBrace
+  let done got = tokenType CloseBrace >> return got
       loop got = mplus (done got) $ do
-        obj <- parseWithComments (marker (parseObject >>= \obj -> check obj >> return obj))
+        obj <- parseWithComments $
+          parseWithLocation parseObject >>= \obj -> check obj >> return obj
         let got' = got++[obj]
         expect ("comma or closing-brace to denote elements of "++key++" expression") $
-          mplus (done got') (token (==Operator) (==",") >> loop got')
+          mplus (done got') (tokenType Comma >> loop got')
   loop []
 
+-- Passed to 'parseCommaSeparated' by "dict" and "intmap" expressions.
 assertAssignExpr :: String -> AST_Object -> Parser ()
 assertAssignExpr key o = case o of
   AST_Assign _ _ _ _ -> return ()
   _                  -> failLater $
     "element of "++key++" expression is not an assignment expression"
 
-parseLambdaExpr :: String -> LambdaExprType -> Parser (Location -> AST_Object)
-parseLambdaExpr key ftyp = do
-  params <- parseWithComments (parseFuncParams parseObject)
-  expect ("bracketed script after \""++key++"\" statement") $
-    fmap (AST_Lambda ftyp params) parseBracketedScript
-
 ----------------------------------------------------------------------------------------------------
 
-parseScript :: Parser AST_Script
-parseScript = parseWithLocation $ msum $
-  [ fmap const (parseTopLevelComments AST_Comment)
-  , withKeyword $ \ukey -> case uchars ukey of
-      "if"       -> cachedComments $ \coms -> expect "conditional expression after \"if\" statement" $ do
+-- Parse any script expression starting with a keyword.
+scriptTabElems :: [ParseTableElem (Location -> AST_Script)]
+scriptTabElems = msum $
+  [ ptab KeyIF $ \ _ -> cachedComments $ \coms ->
+      expect "conditional expression after \"if\" statement" $ do
         obj <- parseObject
         expect "bracketed script after \"if\" statement" $ do
-          thn <- parseWithComments parseBracketedScript
+          thn <- parseWithComments parseBracedScript
           let done = AST_IfThenElse coms obj thn
           msum $
-            [ do  keyword "else"
+            [ do  tokenType KeyELSE
                   fmap done $ parseWithComments $
                     expect "bracketed subscript or if statement after else statement" $ msum
                       [ do  t <- nextToken False -- look ahead for "if"
-                            let next_is_if = tokType t == Keyword && uchars (tokToUStr t) == "if"
+                            let next_is_if = tokType t == Label && uchars (tokToUStr t) == "if"
                             if next_is_if then parseScript >>= \s -> return [Com s] else mzero
-                      , parseBracketedScript
+                      , parseBracedScript
                       ]
             , return $ done (Com [])
             ]
-      "try"      -> do
-        tryScript <- parseWithComments parseBracketedScript
-        msum $
-          [ do  keyword "catch"
-                expect "variable name after \"catch\" statement" $ do
-                  nm <- parseWithComments parseNonKeyword
-                  expect "bracketed script after \"catch\" statement" $
-                    fmap (AST_TryCatch tryScript nm) parseBracketedScript
-          , return (AST_TryCatch tryScript (Com nil) [])
-          ]
-      "else"     -> fail "\"else\" statement not following an \"if\" statement"
-      "catch"    -> fail "\"catch\" statement not following a \"try\" statement"
-      "for"      -> expect "iterator variable name after \"for\" statement" $ do
-        nm  <- parseWithComments parseNonKeyword
-        expect "\"in\" after \"for\" statement" $ do
-          keyword "in"
-          obj <- parseWithComments parseObject
-          expect "bracketed script after \"for\" statement" $
-            fmap (AST_ForLoop nm obj) parseBracketedScript
-      "while"    -> expect "iterator expression after \"while\" statement" $ do
-        obj <- parseWithComments parseObject
-        expect "bracketed script after \"while\" statement" $
-          fmap (AST_WhileLoop obj) parseBracketedScript
-      key | key=="continue" || key=="break" -> msum $
-        [ do  cachedComments $ \coms -> do
-              keyword "if"
-              expect ("conditional expression after \""++key++" if\" statement") $ do
-                obj <- parseWithComments parseObject
-                expect ("semicolon after \""++key++"\" statement") $
-                  operator ";" >> return (AST_ContinueExpr (key=="continue") coms obj)
-        , expect ("semicolon after \""++key++"\" statement") $ cachedComments $ \com -> do
-            operator ";"
-            return (AST_ContinueExpr (key=="continue") com (Com AST_Void))
+  , ptab KeyTRY $ \ _ -> do
+      tryScript <- parseWithComments parseBracedScript
+      msum $
+        [ do  tokenType KeyCATCH
+              expect "variable name after \"catch\" statement" $ do
+                nm <- parseWithComments (tokenType Label)
+                expect "bracketed script after \"catch\" statement" $
+                  fmap (AST_TryCatch tryScript nm) parseBracedScript
+        , return (AST_TryCatch tryScript (Com nil) [])
         ]
-      key | key=="return"   || key=="throw" -> do
-        let done obj = expect ("colon after \""++key++"\" statement") $ 
-              operator ";" >> return (AST_ReturnExpr (key=="return") obj)
-        msum $
-          [ parseWithComments parseObject >>= done
-          , cachedComments $ \coms -> done (com coms AST_Void [])
-          ]
-      "with"     -> do
+  , ptab KeyELSE  $ \ _ -> fail "\"else\" statement not following an \"if\" statement"
+  , ptab KeyCATCH $ \ _ -> fail "\"catch\" statement not following a \"try\" statement"
+  , ptab KeyFOR   $ \ _ -> expect "iterator variable name after \"for\" statement" $ do
+      nm  <- parseWithComments (tokenType Label)
+      expect "\"in\" after \"for\" statement" $ do
+        keyword "in"
         obj <- parseWithComments parseObject
-        expect "bracketed script after \"with\" statement" $
-          fmap (AST_WithDoc obj) parseBracketedScript
-      _          -> mzero
-  , do  obj  <- parseObject
-        cachedComments $ \coms ->
-          expect "semicolon" (operator ";" >> return (AST_EvalObject obj coms))
+        expect "bracketed script after \"for\" statement" $
+          fmap (AST_ForLoop nm obj) parseBracedScript
+  , ptab KeyWHILE $ \ _ -> expect "iterator expression after \"while\" statement" $ do
+      obj <- parseWithComments parseObject
+      expect "bracketed script after \"while\" statement" $
+        fmap (AST_WhileLoop obj) parseBracedScript
+  , ptab KeyCONTINUE $ continueBreak True
+  , ptab KeyBREAK    $ continueBreak False
+  , ptab KeyRETURN   $ throwReturn   True
+  , ptab KeyTHROW    $ throwReturn   False
+  , ptab KeyWITH     $ \ _ -> do
+      obj <- parseWithComments parseObject
+      expect "bracketed script after \"with\" statement" $
+        fmap (AST_WithDoc obj) parseBracedScript
+  ]
+  where
+    continueBreak isContinue key = msum $
+      [ do  cachedComments $ \coms -> do
+            tokenType KeyIF
+            expect ("conditional expression after \""++uchars key++" if\" statement") $ do
+              obj <- parseWithComments parseObject
+              expect ("semicolon after \""++uchars key++"\" statement") $
+                tokenType Semicolon >> return (AST_ContinueExpr isContinue coms obj)
+      , expect ("semicolon after \""++uchars key++"\" statement") $ cachedComments $ \com -> do
+          tokenType Semicolon
+          return (AST_ContinueExpr isContinue com (Com AST_Void))
+      ]
+    throwReturn isReturn key = do
+      let done obj = expect ("colon after \""++uchars key++"\" statement") $ 
+            tokenType Semicolon >> return (AST_ReturnExpr isReturn obj)
+      msum $
+        [ parseWithComments parseObject >>= done
+        , cachedComments $ \coms -> done (com coms AST_Void [])
+        ]
+
+parseScriptTable :: ParseTable (Location -> AST_Script)
+parseScriptTable = newParseTable scriptTabElems
+
+-- | This is the entry-point parser for 'Dao.Object.AST.AST_Script'.
+parseScript :: Parser AST_Script
+parseScript = msum $
+  [ fmap const (parseTopLevelComments AST_Comment)
+  , parseWithLocation (evalParseTable parseScriptTable)
+  , parseWithLocation $ do
+      obj <- parseObject
+      cachedComments $ \coms -> expect "semicolon terminating object expression" $ do
+        tokenType Semicolon
+        return (AST_EvalObject obj coms)
   ]
 
-parseBracketedScript :: Parser [Com AST_Script]
-parseBracketedScript = token (==Opener) (=="{") >> loop [] where
-  loop got = msum $
-    [ parseTopLevelComments (Com . AST_Comment) >>= loop . (\c -> got++[c])
-    , token (==Closer) (=="}") >> return got
-    , expect "script expression" (parseScript >>= \script -> loop (got++[Com script]))
-    ]
+parseBracedScript :: Parser [Com AST_Script]
+parseBracedScript = do
+  tokenType OpenBrace
+  exprs <- fmap (map Com) (many parseScript)
+  tokenType CloseBrace
+  return exprs
 
 ----------------------------------------------------------------------------------------------------
 
@@ -853,7 +938,7 @@ parseAttribute = parseWithLocation $ msum $
   ]
   where
     loop got = do
-      next <- tokenTypes [StrLit, Keyword, Operator]
+      next <- tokenTypes [StrLit, Label, Operator]
       let got' = got++[next]
       flip mplus (return got') $ withToken (==Operator) $ \op ->
         if uchars op == ";" then mzero else loop (got' ++[op])
@@ -864,22 +949,22 @@ parseTopLevel = parseWithLocation $ msum $
   , withKeyword $ \ukey -> case uchars ukey of
       k | k=="BEGIN" || k=="END" || k=="EXIT" -> case readsPrec 0 k of
         [(typ, "")] -> expect ("script expression after "++k++" statement") $ do
-          script <- cachedComments (\coms -> fmap (\o -> com coms o []) parseBracketedScript)
+          script <- cachedComments (\coms -> fmap (\o -> com coms o []) parseBracedScript)
           return (AST_Event typ script)
         _ -> mzero
       k | k=="func" || k=="function" -> msum $
         [ do  args <- parseWithComments $ parseFuncParams parseObject
               expect "bracketed script expression after function statement" $ do
-                fmap (AST_TopLambda PatExprType args) parseBracketedScript
+                fmap (AST_TopLambda PatExprType args) parseBracedScript
           -- ^ The keyword "function" followed not by a function name but by an argument list in
           -- parenthesis is another way of declaring a top-level "pattern" expression.
         , expect "name for function" $ do
-            name <- parseWithComments (tokenType Keyword)
+            name <- parseWithComments (tokenType Label)
             expect "argument list for function statement" $ do
               args <- parseFuncParams $ parseWithLocation $
-                fmap (AST_Literal . ORef . LocalRef) (tokenType Keyword)
+                fmap (AST_Literal . ORef . LocalRef) (tokenType Label)
               expect "script expression for function statement" $ do
-                fmap (AST_TopFunc name args) (parseWithComments parseBracketedScript)
+                fmap (AST_TopFunc name args) (parseWithComments parseBracedScript)
         ]
       k | k=="rule" || k=="pattern"  -> case readsPrec 0 k of
         [(typ, "")] -> expect ("arguments list after "++k++" statement") $ do
@@ -888,7 +973,7 @@ parseTopLevel = parseWithLocation $ msum $
               then  fmap (:[]) (parseWithLocation (tokenType StrLit >>= \nm -> return (Com . AST_Literal (OString nm))))
               else  mzero
           expect ("bracketed script expression after "++k++" statement") $
-            fmap (AST_TopLambda typ args) parseBracketedScript
+            fmap (AST_TopLambda typ args) parseBracedScript
         _ -> mzero
       _ -> mzero
   , fmap AST_TopScript parseScript

@@ -938,6 +938,10 @@ withToken tokenPredicate parser =
 newtype GenParseTableElem st tok a
   = GenParseTableElem { parseTableElemToPair :: (tok, UStr -> GenParser st tok a) }
 
+instance (Ix tok, Enum tok) => Functor (GenParseTableElem st tok) where
+  fmap fn (GenParseTableElem (a, b)) =
+    GenParseTableElem{ parseTableElemToPair = (a, \u -> fmap fn (b u)) }
+
 newtype GenParseTable st tok a
   = GenParseTable { parserTableArray :: Array tok (UStr -> GenParser st tok a) }
 
@@ -950,7 +954,7 @@ newtype GenParseTable st tok a
 -- types, then you would use this function like so:
 -- > myFloatParseTabElems :: ['GenParseTableElem' st tok 'Prelude.Float']
 -- > myFloatParseTabElems =
--- >     map ('bindPTabElem' ('Prelude.fmap' 'Prelude.fromIntegral')) myIntParseTabElems
+-- >     map ('bindPTabElem' ('Prelude.return' 'Prelude.(.)' 'Prelude.fromIntegral')) myIntParseTabElems
 -- The name "bind" is used because it is similar to the monadic "bind" operator
 -- 'Control.Monad.(>>=)', however this function is not an infix operator so it is more convenient to
 -- have the parameters are flipped from the order of the parameters used in monadic bind.
@@ -978,13 +982,15 @@ runParseTableElem elem = let (tok, parser) = parseTableElemToPair elem in withTo
 -- constructed with 'ptab'.
 newParseTable
   :: (Ix tok, Enum tok)
-  => tok -> tok
-  -> [GenParseTableElem st tok a]
+  => [GenParseTableElem st tok a]
   -> GenParseTable st tok a
-newParseTable mintok maxtok elems = GenParseTable $ array (mintok, maxtok) $ concat
-  [ zip [min mintok maxtok .. max maxtok mintok] (repeat (\_ -> mzero))
-  , map parseTableElemToPair elems
-  ]
+newParseTable elems =
+  let minmax (mintok, maxtok) tok = (min tok mintok, max tok maxtok)
+      (mintok, maxtok) = foldl minmax (toEnum 0, toEnum 0) $ map (fst . parseTableElemToPair) elems
+  in  GenParseTable $ array (mintok, maxtok) $ concat
+        [ zip [mintok..maxtok] (repeat (\_ -> mzero))
+        , map parseTableElemToPair elems
+        ]
 
 -- | Use this function to construct 'ParseTableElem's used to initialize a parser array constructed
 -- with the 'newParseTable' function. An example function could be a parser that creates

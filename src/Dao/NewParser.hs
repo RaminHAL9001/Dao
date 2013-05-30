@@ -485,6 +485,7 @@ runLexerLoop
   => String -> GenLexer tok () -> [GenLexer tok ()] -> GenLexer tok ()
 runLexerLoop msg predicate lexers = loop 0 where
   loop i = do
+    s <- gets lexInput
     shouldContinue <- msum $
       [ predicate >> return False
       , msum lexers >> return True
@@ -870,9 +871,10 @@ nextTokenPos doRemove = do
         []                 -> put (st{getLines=lines}) >> nextTokenPos doRemove
         (colNum, tok):toks -> do
           let postok = (lineNumber line, colNum, tok)
+              upd st = st{ getLines = line{ lineTokens = toks } : lines }
           if doRemove -- the 'recentTokens' buffer is cleared here regardless.
-            then  put (st{getLines=line{lineTokens=toks}:lines, recentTokens=mzero})
-            else  put (st{recentTokens=[postok]}) -- buffer the token if this was a look-ahead.
+            then  put (upd st)
+            else  put ((upd st){ recentTokens = [postok] })
           return postok
     tok:tokx | doRemove -> put (st{recentTokens=tokx}) >> return tok
     tok:tokx            -> return tok
@@ -883,14 +885,7 @@ nextTokenPos doRemove = do
 -- push an arbitrary token into the state. It is used to implement backtracking by the 'withToken'
 -- function, so use 'withToken' instead.
 pushToken :: (Eq tok, Enum tok) => (LineNum, ColumnNum, GenToken tok) -> GenParser st tok ()
-pushToken postok@(lineNum, colNum, tok) = do
-  modify (\st -> st{recentTokens = postok : recentTokens st})
-  modify $ \st -> case getLines st of
-    []         -> st{getLines = [GenLine{lineLineNumber=lineNum, lineTokens=[(colNum,tok)]}]}
-    line:lines ->
-      if lineLineNumber line == lineNum
-        then  st{getLines = line{lineTokens = (colNum, tok) : lineTokens line} : lines}
-        else  st{getLines = GenLine{lineLineNumber=lineNum, lineTokens=[(colNum,tok)]} : line : lines}
+pushToken postok = modify (\st -> st{recentTokens = postok : recentTokens st})
 
 -- | Like 'nextTokenPos' but only returns the 'GenToken', not it's line and column position.
 nextToken :: (Eq tok, Enum tok) => Bool -> GenParser st tok (GenToken tok)
@@ -989,7 +984,7 @@ newParseTable elems =
       (mintok, maxtok) = foldl minmax (toEnum 0, toEnum 0) $ map (fst . parseTableElemToPair) elems
   in  GenParseTable $ array (mintok, maxtok) $ concat
         [ zip [mintok..maxtok] (repeat (\_ -> mzero))
-        , map parseTableElemToPair elems
+        , reverse $ map parseTableElemToPair elems
         ]
 
 -- | Use this function to construct 'ParseTableElem's used to initialize a parser array constructed

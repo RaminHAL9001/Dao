@@ -172,10 +172,10 @@ lexDaoNumber = msum $
         lexWhile predicate >> makeToken tok
     getDigits initZero = flip mplus (if initZero then makeToken Digits10 else mzero) $ do
       lexWhile isDigit
-      c <- lexLook1
+      c <- optional lexLook1
       case c of
-        '.' -> makeToken Digits10 >> exponent
-        _   -> makeToken (if initZero then Digits8 else Digits10)
+        Just '.' -> makeToken Digits10 >> exponent
+        _        -> makeToken (if initZero then Digits8 else Digits10)
       suffix
     badExp = fail "expecting digits after decimal point"
     exponent = msum $
@@ -192,7 +192,7 @@ lexDaoNumber = msum $
       msum (map lexString $ words "E+ E- E e+ e- e")
       mplus (lexWhile isDigit) badExp
       makeToken Exponent
-    suffix = lexCharP (charSet "jisfFURLI")
+    suffix = mplus (lexCharP (charSet "jisfFURLI") >> makeToken NumSuffix) (return ())
 
 daoKeywords :: [String]
 daoKeywords = words $ concat $
@@ -388,8 +388,9 @@ parseOptionalParens errMsg parser = flip mplus (skipSpaces >> parser) $ do
 -- colons. This parser does not care about context, colons are used as @hour:minute:second@ separator
 -- tokens, regardless of their meaning elsewhere. Spaces are not allowed between
 -- @hour:minute:second@ tokens.
-parseDiffTime :: ParseTableElem T_diffTime
-parseDiffTime = ptab Digits10 $ \d -> do
+parseDiffTime :: Parser T_diffTime
+parseDiffTime = do
+  d <- tokenTypes [Digits10, Digits8]
   tokenType Colon
   flip mplus (fail "expecting diff-time expression") $ do
     (dx, miliseconds) <- loop [uchars d] 3
@@ -405,14 +406,15 @@ parseDiffTime = ptab Digits10 $ \d -> do
       i | i>0       ->
         flip mplus (return (got, "")) $ do
           d <- nextToken True
+          let got' = got++[tokToStr d]
           case tokType d of
-            Digits10  -> do
+            tt | tt==Digits10 || tt==Digits8 -> flip mplus (return (got', "")) $ do
               s <- nextToken False
               case tokType s of
-                DotDigits10 -> nextToken True >> return (got, tokToStr s)
-                Colon       -> nextToken True >> loop (got++[tokToStr d]) (i-1)
-                _           -> return (got, "")
-            td        -> fail ("expecting digits for time value, got "++show td++" instead")
+                DotDigits10 -> nextToken True >> return (got', tail (tokToStr s))
+                Colon       -> nextToken True >> loop got' (i-1)
+                _           -> return (got', "")
+            td -> fail ("expecting digits for time value, got "++show td++" instead")
         | otherwise -> return (got, "")
 
 -- | Compute diff times from strings representing days, hours, minutes, and seconds. The seconds
@@ -445,43 +447,45 @@ diffTimeFromStrs days hours minutes seconds miliseconds = do
 -- with an optional time value as parsed by 'parseDiffTime'. This parser does not care about
 -- context, dashes are used as @year-month-date@ separator tokens, regardless of their meaning
 -- elsewhere. Spaces are not allowed between @year-month-date@ tokens.
-parseDate :: ParseTableElem T_time
-parseDate = ptab Digits10 $ \yyyy -> expect "absolute date constant expression" $ do
-  let dash = withToken (==InfixOp) (guard . (=="-") . uchars)
-      digits = fmap uchars (tokenType Digits10)
-      year = uchars yyyy
-  month <- dash >> digits
-  day   <- dash >> digits
-  let commaSpace = -- a comma followed by an optional space OR no comma but a required space
-        mplus (operator "," >> skipSpaces) (void $ tokenType Spaces)
-  diffTime <- mplus (commaSpace >> runParseTableElem parseDiffTime) (return (fromRational 0))
-  zone <- msum $
-    [  do commaSpace
-          msum $
-            [ fmap uchars (tokenType Label)
-            , do  plus <- defaultTo "" (fmap uchars (mplus (operator "+") (operator "-")))
-                  zone <- fmap uchars (tokenType Digits10)
-                  let withColon h1 h2 = expect "valid time-zone offset" $ msum $
-                        [ do  tokenType Colon
-                              mm <- tokenType Digits10
-                              case uchars mm of
-                                [m1,m2] | (read [m1,m2] :: Int) < 60 -> return (plus++[h1,h2,m1,m2])
-                                _                                    -> mzero
-                        , if (read [h1,h2] :: Int) > 24 then return [h1,h2] else mzero
-                        ]
-                      withoutColon h1 h2 m1 m2 = do
-                        if (read [h1,h2] :: Int) < 24 && (read [m1,m2] :: Int) < 60
-                          then  return (plus++[h1,h2,m1,m2])
-                          else  fail ("timezone offset value "++zone++[h1,h2,m1,m2]++" is out-of-bounds")
-                  case zone of
-                    [h1,h2,m1,m2] -> withoutColon  h1 h2 m1 m2
-                    [   h2,m1,m2] -> withoutColon '0' h2 m1 m2
-                    [h1,h2      ] -> withColon  h1 h2
-                    [   h2      ] -> withColon '0' h2
-            ]
-    , return ""
-    ]
-  return (addUTCTime diffTime (read (year ++ '-':month ++ '-':day ++ " 00:00:00" ++ zone)))
+parseTime :: Parser T_time
+parseTime = do
+  yyyy <- tokenTypes [Digits10, Digits8]
+  expect "absolute time constant expression" $ do
+    let dash = tokenType ArithNegOp
+        digits = fmap uchars (tokenTypes [Digits10, Digits8])
+        year = uchars yyyy
+    month <- dash >> digits
+    day   <- dash >> digits
+    let commaSpace = -- a comma followed by an optional space OR no comma but a required space
+          mplus (operator "," >> skipSpaces) (void $ tokenType Spaces)
+    diffTime <- mplus (commaSpace >> parseDiffTime) (return (fromRational 0))
+    zone <- msum $
+      [  do commaSpace
+            msum $
+              [ fmap uchars (tokenType Label)
+              , do  plus <- defaultTo "" (fmap uchars (mplus (operator "+") (operator "-")))
+                    zone <- fmap uchars (tokenTypes [Digits10, Digits8])
+                    let withColon h1 h2 = expect "valid time-zone offset" $ msum $
+                          [ do  tokenType Colon
+                                mm <- tokenTypes [Digits10, Digits8]
+                                case uchars mm of
+                                  [m1,m2] | (read [m1,m2] :: Int) < 60 -> return (plus++[h1,h2,m1,m2])
+                                  _                                    -> mzero
+                          , if (read [h1,h2] :: Int) > 24 then return [h1,h2] else mzero
+                          ]
+                        withoutColon h1 h2 m1 m2 = do
+                          if (read [h1,h2] :: Int) < 24 && (read [m1,m2] :: Int) < 60
+                            then  return (plus++[h1,h2,m1,m2])
+                            else  fail ("timezone offset value "++zone++[h1,h2,m1,m2]++" is out-of-bounds")
+                    case zone of
+                      [h1,h2,m1,m2] -> withoutColon  h1 h2 m1 m2
+                      [   h2,m1,m2] -> withoutColon '0' h2 m1 m2
+                      [h1,h2      ] -> withColon  h1 h2
+                      [   h2      ] -> withColon '0' h2
+              ]
+      , return ""
+      ]
+    return (addUTCTime diffTime (read (year ++ '-':month ++ '-':day ++ " 00:00:00" ++ zone)))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -761,12 +765,13 @@ objectTabElemsPrec6 = objectTabElemsPrec7 ++
   , ptab KeyFUNCTION $ parseLambdaExpr FuncExprType
   , ptab KeyPAT      $ parseLambdaExpr PatExprType
   , ptab KeyRULE     $ parseLambdaExpr RuleExprType
-  , objLit ODiffTime parseDiffTime, objLit OTime parseDate
+  , objLit KeyDATE ODiffTime parseDiffTime, objLit KeyTIME OTime parseTime
   , ptab ArithNegOp  $ prefixOp objectSuffixed NEG
   , ptab BinInvertOp $ prefixOp objectSuffixed INVB
   ]
   where
-    objLit constructor = fmap (AST_Literal . constructor)
+    objLit :: TT -> (a -> Object) -> Parser a -> ParseTableElem (Location -> AST_Object)
+    objLit key constructor parser = ptab key (\ _ -> fmap (AST_Literal . constructor) parser)
     dictIntmap ukey = cachedComments $ \coms -> do
       let k = uchars ukey
       fmap (AST_Dict ukey coms) (parseCommaSeparated k (assertAssignExpr k))

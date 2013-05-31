@@ -50,7 +50,7 @@ import Debug.Trace
 
 dbg :: String -> Parser a -> Parser a
 dbg msg parser = do
-  t <- nextToken False
+  t <- optional (nextToken False)
   trace ("parse "++msg++", nextToken = "++show t) (return ())
   v <- catchPValue parser
   flip trace (return ()) $ case v of
@@ -63,7 +63,7 @@ dbg msg parser = do
 
 -- | The token types.
 data TT
-  = Spaces      | Label
+  = Spaces      | ComEndl     | ComInln     | Label
   | KeyIF       | KeyELSE     | KeyFOR      | KeyIN       | KeyWHILE  | KeyWITH
   | KeyTRY      | KeyCATCH    | KeyCONTINUE | KeyBREAK    | KeyTHROW  | KeyRETURN
   | KeyDATA     | KeySTRUCT   | KeyLIST     | KeySET     
@@ -75,7 +75,6 @@ data TT
   | DateTok     | TimeTok                  
   | CharLit     | StrLit                   
   | Digits10    | DotDigits10 | Exponent    | Digits16    | Digits8   | Digits2    | NumSuffix
-  | ComEndl     | ComInln
   | OpenMeta    | CloseMeta
   | OpenParen   | CloseParen  | OpenSquare  | CloseSquare | OpenBrace | CloseBrace
   | InfixOp     | AssignOp    | Comma       | Semicolon   | Colon     | IntRefTok
@@ -145,8 +144,8 @@ daoLexers =
   , lexEndlineC_Comment  ComEndl
   , lexSpace             Spaces
   , dataSpecialLexer
-  , lexDaoKeyword
   , lexDaoNumber
+  , lexDaoKeyword
   , lexDaoOperator
   , lexOperator allUpdateOpStrs >> makeToken AssignOp
   , lexDaoParens
@@ -162,23 +161,30 @@ lexDaoNumber :: Lexer ()
 lexDaoNumber = msum $
   [ otherBase "0x" 'x' 'X' isHexDigit Digits16
   , otherBase "0b" 'b' 'B' isDigit    Digits2
-  , lexCharP (=='0') >> getDigits True
-  , getDigits False
+  , leadingZero
+  , lexWhile isDigit >> makeToken Digits10 >> getDotExp
+  , getDot >> getE >> suffix
   ]
   where
     otherBase typmsg c1 c2 predicate tok = do
       mplus (lexString ('0':c1:[])) (lexString ('0':c2:[]))
       flip mplus (fail ("expecting digits after "++typmsg++" token")) $
         lexWhile predicate >> makeToken tok
-    getDigits initZero = flip mplus (if initZero then makeToken Digits10 else mzero) $ do
-      lexWhile isDigit
-      c <- optional lexLook1
-      case c of
-        Just '.' -> makeToken Digits10 >> exponent
-        _        -> makeToken (if initZero then Digits8 else Digits10)
       suffix
+    leadingZero = do
+      lexCharP (=='0')
+      msum $
+        [ do  lexWhile isDigit
+              c <- optional lexLook1
+              if c == Just '.'
+                then  makeToken Digits10 >> getDotExp
+                else  makeToken Digits8
+        , makeToken Digits10 >> getDotExp
+        , suffix -- if the above 'getDotExp' fails, we have still evalauted makeToken Digits10
+        ]
+    getDot = lexCharP (=='.') >> mplus (lexWhile isDigit >> makeToken DotDigits10) lexBacktrack
     badExp = fail "expecting digits after decimal point"
-    exponent = msum $
+    getExp = msum $
       [ do  msum (map lexString $ words ".E+ .E- .E .e+ .e- .e")
             mplus (lexWhile isDigit) (fail "expecting digits after exponent mark")
             makeToken Exponent
@@ -192,7 +198,9 @@ lexDaoNumber = msum $
       msum (map lexString $ words "E+ E- E e+ e- e")
       mplus (lexWhile isDigit) badExp
       makeToken Exponent
-    suffix = mplus (lexCharP (charSet "jisfFURLI") >> makeToken NumSuffix) (return ())
+    getDotExp = msum [getDot >> getExp, getExp, return ()] >> suffix
+    suffix = void $ optional $
+      lexCharP (charSet "jisfFURLI") >> makeToken NumSuffix
 
 daoKeywords :: [String]
 daoKeywords = words $ concat $
@@ -321,16 +329,17 @@ parseNumberTabElems =
   , ptab Digits10 $ \str -> case uchars str of {dx                        -> mk 10 dx}
   ]
   where
+    dots = fmap stripDots (optionStringType DotDigits10)
+    exps = fmap stripEs   (optionStringType Exponent)
+    optexps frac = mplus exps (return "") >>= \e -> return (frac, e)
+    stripDots str = case str of {'.':str -> str; _ -> str}
+    stripEs   str = case str of
+      e:str     | e=='e' || e=='E' -> str
+      '.':e:str | e=='e' || e=='E' -> str
+      str                          -> str
     mk base int = do
-      let stripDots str = case str of {'.':str -> str; _ -> str}
-          stripEs   str = case str of
-            e:str | e=='e' || e=='E' -> str
-            str                      -> str
       (frac, plusMinusExp) <-
-        if base==10
-          then  liftM2 (,) (fmap stripDots (optionStringType DotDigits10))
-                           (fmap stripEs   (optionStringType Exponent   ))
-          else  return ("", "")
+        if base==10 then mplus (dots >>= optexps) (optexps "") else return ("", "")
       typ <- optionStringType NumSuffix
       numberFromStrs base int frac plusMinusExp typ
 
@@ -489,16 +498,15 @@ parseTime = do
 
 ----------------------------------------------------------------------------------------------------
 
+parseCommentsTable :: ParseTable [Comment]
+parseCommentsTable = newParseTable $
+  [ ptab ComInln (\com -> return [InlineComment  com])
+  , ptab ComEndl (\com -> return [EndlineComment com])
+  , ptab Spaces  (\ _  -> return [])
+  ]
+
 parseComments :: Parser [Comment]
-parseComments = loop [] where
-  loop got = do
-    let next c = loop (got++[c])
-    msum $
-      [ fmap InlineComment  (tokenType ComInln) >>= next
-      , fmap EndlineComment (tokenType ComEndl) >>= next
-      , tokenType Spaces >> loop got
-      , return got
-      ]
+parseComments = fmap concat $ many $ evalParseTable $ parseCommentsTable
 
 -- | Use this to prevent constant re-parsing of comments. If you need just one set of comments and would like
 -- to put it back if your parser fails, use this function. If you would like to try parsing an
@@ -532,7 +540,7 @@ parseWithComments parser = do
   return (com com1 a com2)
 
 parseTopLevelComments :: ([Comment] -> a) -> Parser a
-parseTopLevelComments construct = cachedComments $ \coms ->
+parseTopLevelComments construct = dbg "parseTopLevelComments" $ cachedComments $ \coms ->
   if null coms then mzero else return (construct coms)
 
 -- | Most nodes in the Dao abstract syntax tree take a 'Dao.Token.Location' as the final parameter.
@@ -705,7 +713,7 @@ objectTabElemsPrec7 = objectTabElemsPrec8 ++
 objectExprPrec7 :: Parser (Location -> AST_Object)
 objectExprPrec7 = evalParseTable $ newParseTable objectTabElemsPrec7
 
--- Parse object expressions indexed with a square-bracketed indexing epxression suffix.
+-- Parse object expressions indexed with a square-braced indexing epxression suffix.
 objectSuffixed :: Parser (Location -> AST_Object)
 objectSuffixed = do
   obj <- parseWithLocation objectExprPrec7
@@ -752,13 +760,13 @@ objectTabElemsPrec6 = objectTabElemsPrec7 ++
           nobrace = do
             t <- nextToken False
             if tokType t == OpenBrace then mzero else return ()
-      expect "optional item and required bracketed list of items to initialize struct" $ do
+      expect "optional item and required braced list of items to initialize struct" $ do
         init  <- parseWithComments (mplus (nobrace >> parseObject) (return AST_Void))
         items <- parseCommaSeparated key (assertAssignExpr key)
         return (AST_Struct init items)
   , ptab KeyARRAY  $ \ _ -> do
       bounds <- parseWithComments (parseFuncParams parseObject)
-      expect "bracketed list of items to initialized array" $ do
+      expect "braced list of items to initialized array" $ do
         items  <- parseCommaSeparated "array" (\_ -> return ())
         return (AST_Array bounds items)
   , ptab KeyFUNC     $ parseLambdaExpr FuncExprType
@@ -785,7 +793,7 @@ objectTabElemsPrec6 = objectTabElemsPrec7 ++
 parseLambdaExpr :: LambdaExprType -> UStr -> Parser (Location -> AST_Object)
 parseLambdaExpr ftyp key = do
   params <- parseWithComments (parseFuncParams parseObject)
-  expect ("bracketed script after \""++uchars key++"\" statement") $
+  expect ("braced script after \""++uchars key++"\" statement") $
     fmap (AST_Lambda ftyp params) parseBracedScript
 
 objectExprPrec6 :: Parser (Location -> AST_Object)
@@ -849,13 +857,13 @@ scriptTabElems =
   [ ptab KeyIF $ \ _ -> cachedComments $ \coms ->
       expect "conditional expression after \"if\" statement" $ do
         obj <- parseObject
-        expect "bracketed script after \"if\" statement" $ do
+        expect "braced script after \"if\" statement" $ do
           thn <- parseWithComments parseBracedScript
           let done = AST_IfThenElse coms obj thn
           msum $
             [ do  tokenType KeyELSE
                   fmap done $ parseWithComments $
-                    expect "bracketed subscript or if statement after else statement" $ msum
+                    expect "braced subscript or if statement after else statement" $ msum
                       [ do  t <- nextToken False -- look ahead for "if"
                             let next_is_if = tokType t == Label && uchars (tokToUStr t) == "if"
                             if next_is_if then parseScript >>= \s -> return [Com s] else mzero
@@ -869,7 +877,7 @@ scriptTabElems =
         [ do  tokenType KeyCATCH
               expect "variable name after \"catch\" statement" $ do
                 nm <- parseWithComments (tokenType Label)
-                expect "bracketed script after \"catch\" statement" $
+                expect "braced script after \"catch\" statement" $
                   fmap (AST_TryCatch tryScript nm) parseBracedScript
         , return (AST_TryCatch tryScript (Com nil) [])
         ]
@@ -880,11 +888,11 @@ scriptTabElems =
       expect "\"in\" after \"for\" statement" $ do
         keyword "in"
         obj <- parseWithComments parseObject
-        expect "bracketed script after \"for\" statement" $
+        expect "braced script after \"for\" statement" $
           fmap (AST_ForLoop nm obj) parseBracedScript
   , ptab KeyWHILE $ \ _ -> expect "iterator expression after \"while\" statement" $ do
       obj <- parseWithComments parseObject
-      expect "bracketed script after \"while\" statement" $
+      expect "braced script after \"while\" statement" $
         fmap (AST_WhileLoop obj) parseBracedScript
   , ptab KeyCONTINUE $ continueBreak True
   , ptab KeyBREAK    $ continueBreak False
@@ -892,7 +900,7 @@ scriptTabElems =
   , ptab KeyTHROW    $ throwReturn   False
   , ptab KeyWITH     $ \ _ -> do
       obj <- parseWithComments parseObject
-      expect "bracketed script after \"with\" statement" $
+      expect "braced script after \"with\" statement" $
         fmap (AST_WithDoc obj) parseBracedScript
   ]
   where
@@ -920,7 +928,7 @@ parseScriptTable = newParseTable scriptTabElems
 
 -- | This is the entry-point parser for 'Dao.Object.AST.AST_Script'.
 parseScript :: Parser AST_Script
-parseScript = msum $
+parseScript = dbg "parseScript" $ msum $
   [ parseTopLevelComments AST_Comment
   , parseWithLocation (evalParseTable parseScriptTable)
   , parseWithLocation $ do
@@ -931,10 +939,10 @@ parseScript = msum $
   ]
 
 parseBracedScript :: Parser [Com AST_Script]
-parseBracedScript = do
-  tokenType OpenBrace
+parseBracedScript = dbg "parseBracedScript" $ do
+  dbg "tokenType OpenBrace" $ tokenType OpenBrace
   exprs <- fmap (map Com) (many parseScript)
-  tokenType CloseBrace
+  dbg "tokenType CloseBrace" $ tokenType CloseBrace
   return exprs
 
 ----------------------------------------------------------------------------------------------------
@@ -974,7 +982,7 @@ topLevelTabElems =
     return (AST_Event typ script)
   func str typ _ = msum $
     [ do  args <- parseWithComments $ parseFuncParams parseObject
-          expect "bracketed script expression after function statement" $ do
+          expect "braced script expression after function statement" $ do
             fmap (AST_TopLambda typ args) parseBracedScript
       -- ^ The keyword "function" followed not by a function name but by an argument list in
       -- parenthesis is another way of declaring a top-level "pattern" expression.
@@ -991,7 +999,7 @@ topLevelTabElems =
       if typ==RuleExprType
         then  fmap (:[]) (parseWithLocation (tokenType StrLit >>= \nm -> return (Com . AST_Literal (OString nm))))
         else  mzero
-    expect ("bracketed script expression after "++str++" statement") $
+    expect ("braced script expression after "++str++" statement") $
       fmap (AST_TopLambda typ args) parseBracedScript
 
 topLevelTable :: Parser (Location -> AST_TopLevel)

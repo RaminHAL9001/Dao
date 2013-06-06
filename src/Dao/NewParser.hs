@@ -258,7 +258,7 @@ instance (Eq tok, Enum tok) =>
     throwError                        = GenLexer . throwError
     catchError (GenLexer try) catcher = GenLexer (catchError try (runLexer . catcher))
 instance (Eq tok, Enum tok) =>
-  ErrorMonadPlus (GenParseError (GenLexerState tok) tok) (GenLexer tok) where
+  MonadPlusError (GenParseError (GenLexerState tok) tok) (GenLexer tok) where
     catchPValue (GenLexer try) = GenLexer (catchPValue try)
     assumePValue               = GenLexer . assumePValue
 instance (Eq tok, Enum tok, Monoid a) =>
@@ -812,7 +812,7 @@ modifyUserState fn = modify (\st -> st{userState = fn (userState st)})
 --
 -- This function instantiates all the useful monad transformers, including 'Data.Functor.Functor',
 -- 'Control.Monad.Monad', 'Control.MonadPlus', 'Control.Monad.State.MonadState',
--- 'Control.Monad.Error.MonadError' and 'Dao.Predicate.ErrorMonadPlus'. Backtracking can be done
+-- 'Control.Monad.Error.MonadError' and 'Dao.Predicate.MonadPlusError'. Backtracking can be done
 -- with 'Control.Monad.mzero' and "caught" with 'Control.Monad.mplus'. 'Control.Monad.fail' and
 -- 'Control.Monad.Error.throwError' evaluate to a control value containing a 'GenParseError' value
 -- which can be caught by 'Control.Monad.Error.catchError', and which automatically contain
@@ -861,7 +861,7 @@ instance (Eq tok, Enum tok) =>
         Backtrack -> mzero
         PFail err -> parserToPTrans (catcher err)
 instance (Eq tok, Enum tok) =>
-  ErrorMonadPlus (SimParseError st tok) (SimParser st tok) where
+  MonadPlusError (SimParseError st tok) (SimParser st tok) where
     catchPValue (SimParser ptrans) = SimParser (catchPValue ptrans)
     assumePValue                   = SimParser . assumePValue
 instance (Eq tok, Enum tok, Monoid a) =>
@@ -1077,7 +1077,7 @@ instance (Ix tok, Enum tok) =>
         evalGenToSimParser (catcher err)
 
 instance (Ix tok, Enum tok) =>
-  ErrorMonadPlus (GenParseError st tok) (GenParser st tok) where
+  MonadPlusError (GenParseError st tok) (GenParser st tok) where
     catchPValue ptrans = GenParser $
       fmap (fmapFailed simGenParserErr) (catchPValue (evalGenToSimParser ptrans))
     assumePValue       = GenParser . assumePValue . fmapFailed SimParseError

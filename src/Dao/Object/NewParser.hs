@@ -118,9 +118,8 @@ instance Monoid ParserState where
 type Lexer          a = GenLexer                      TT a
 type Parser         a = GenParser         ParserState TT a
 type CFGrammar      a = GenCFGrammar      ParserState TT a
-type ParserErr        = GenParserErr      ParserState TT
+type ParserErr        = GenParseError     ParserState TT
 type ParseTable     a = GenParseTable     ParserState TT a
-type ParseTableElem a = GenParseTableElem ParserState TT a
 
 setCommentBuffer :: [Comment] -> Parser ()
 setCommentBuffer coms = modifyUserState $ \st ->
@@ -146,8 +145,8 @@ daoLexers =
   , dataSpecialLexer
   , lexDaoNumber
   , lexDaoKeyword
-  , lexDaoOperator
   , lexOperator allUpdateOpStrs >> makeToken AssignOp
+  , lexDaoOperator
   , lexDaoParens
   ]
 
@@ -540,7 +539,7 @@ parseWithComments parser = do
   return (com com1 a com2)
 
 parseTopLevelComments :: ([Comment] -> a) -> Parser a
-parseTopLevelComments construct = dbg "parseTopLevelComments" $ cachedComments $ \coms ->
+parseTopLevelComments construct = cachedComments $ \coms ->
   if null coms then mzero else return (construct coms)
 
 -- | Most nodes in the Dao abstract syntax tree take a 'Dao.Token.Location' as the final parameter.
@@ -559,18 +558,22 @@ parseWithLocation parser = do
 
 parseFuncParams :: Parser AST_Object -> Parser [Com AST_Object]
 parseFuncParams objParser = do
-  tokenType OpenParen
+  dbg "func-params-open-paren" $ tokenType OpenParen
   com1 <- parseComments
   mplus (close >> return [com com1 AST_Void []]) (loop com1 [])
   where
-    close = tokenType CloseParen
+    close = dbg "func-params-close-paren" $ tokenType CloseParen
     loop com1 got = expect "object expression for function parameter" $ do
-      obj  <- objParser
+      obj  <- dbg "func-param-object" $ objParser
       com2 <- parseComments
       let got' = got++[com com1 obj com2]
-      expect "comma and next item in function parameters list, or closing parenthesis" $
+          msg = concat $
+            [ "either a closing parenthesis, "
+            , "or a comma follwed by the next item in function parameters list"
+            ]
+      expect msg $
         mplus (close >> return got')
-              (operator "," >> parseComments >>= \com1 -> loop com1 got')
+              (tokenType Comma >> parseComments >>= \com1 -> loop com1 got')
 
 -- | The @date@ and @time@ functions work on objects expressed with a special syntax that
 -- needs to be handled before trying any other parser. This function is intended to be used with
@@ -690,11 +693,15 @@ parseRefEquation = init where
     obj <- parseWithLocation objectExprPrec8 -- if the loop backtracks on it's first item, return the object alone.
     mplus (parseWithLocation (loop [Right obj])) (return obj)
   loop got = flip mplus (makeEquation got >>= \obj -> return (setLocation obj)) $ do
-    op <- parseWithComments $ withToken (==InfixOp) $ \op -> case uchars op of
-      "."  -> return op
-      "->" -> return op
-      _    -> mzero
-    expect ("object expression after "++uchars (unComment op)++" operator") $
+    comOp <- parseWithComments $ dbg "get-dot-op" $ withTokenP $ \tok _ ->
+      guard (tok==DotOp || tok==ArrowOp) >> return tok
+    let uncomOp = unComment comOp
+        (opStr, opUStr) =
+          if uncomOp==DotOp
+            then  ("dot (.)"   , ustr "." )
+            else  ("arrow (->)", ustr "->")
+        op = fmap (const opUStr) comOp
+    expect ("object expression after "++opStr++" operator") $
       parseWithLocation objectExprPrec8 >>= \obj -> loop (got++[Left op, Right obj])
 
 -- Extents objectTabElemsPrec8 with parsers of labels qualified with the keywords @global@, @local@,
@@ -716,7 +723,7 @@ objectExprPrec7 = evalParseTable $ newParseTable objectTabElemsPrec7
 -- Parse object expressions indexed with a square-braced indexing epxression suffix.
 objectSuffixed :: Parser (Location -> AST_Object)
 objectSuffixed = do
-  obj <- parseWithLocation objectExprPrec7
+  obj <- dbg "function header" (parseWithLocation objectExprPrec7)
   flip mplus (return (const obj)) $ cachedComments $ \coms -> msum
     [ do  tokenType OpenSquare
           expect "object expression as an index value within square-brackets" $ do
@@ -724,23 +731,22 @@ objectSuffixed = do
             expect "expecting closing square-brackets" $ do
               tokenType CloseSquare
               return (AST_ArraySub obj coms idx)
-    , do  tokenType OpenParen
-          case obj of
-            AST_Literal (ORef ref) _ -> case ref of
-              LocalRef funcName -> expect "arguments for function call" $
-                cachedComments $ \coms -> do
-                  params <- parseFuncParams parseObject
-                  return (AST_FuncCall funcName coms params)
-              _ -> fail "function call to unsupported reference type"
-                   -- TODO: make function calls to object expressions rather than plain names.
-            _ -> fail "parenthetical expression after non-label"
+    , case obj of
+        AST_Literal (ORef ref) _ -> case ref of
+          LocalRef funcName -> flip mplus (return (const obj)) $
+            cachedComments $ \coms -> do
+              params <- parseFuncParams parseObject
+              return (AST_FuncCall funcName coms params)
+          _ -> fail "function call to unsupported reference type"
+               -- TODO: make function calls to object expressions rather than plain names.
+        _ -> return (const obj)
     ]
 
 -- Extends the 'objectTabElemsPrec8' table with parsers that create object expressions from
 -- keywords, for example @date@, @time@, @list@, @set@, @dict@, @intmap@, @struct@, and @array@.
 -- Also parses arithmetic negation and bitwise inversion prefix operators.
 objectTabElemsPrec6 :: [ParseTableElem (Location -> AST_Object)]
-objectTabElemsPrec6 = objectTabElemsPrec7 ++ 
+objectTabElemsPrec6 = objectTabElemsPrec7 ++
   [ ptab KeyDICT   dictIntmap
   , ptab KeyINTMAP dictIntmap
   , ptab KeyLIST   listSet
@@ -797,15 +803,15 @@ parseLambdaExpr ftyp key = do
     fmap (AST_Lambda ftyp params) parseBracedScript
 
 objectExprPrec6 :: Parser (Location -> AST_Object)
-objectExprPrec6 = evalParseTable $ newParseTable objectTabElemsPrec6
+objectExprPrec6 = mplus objectSuffixed (evalParseTable $ newParseTable objectTabElemsPrec6)
 
 -- A general equation used to parse object expressions interleaved with infix operators. Used by
 -- 'parseEqation' (indirectly via 'objectExprPrec5') and also by 'parseObject' directly.
 parseInterleavedInfixOps :: TT -> Parser (Location -> AST_Object) -> Parser (Location -> AST_Object)
 parseInterleavedInfixOps opType objParser = do
   let getObj = parseWithLocation objParser
-  obj <- getObj
-  let getOp = parseWithComments (tokenType opType)
+  obj <- dbg "get object" getObj
+  let getOp = parseWithComments (dbg "get infix" $ tokenType opType)
       loop lastOp got = expect ("object expression after ("++uchars (unComment lastOp)++") operator") $ do
         obj <- getObj
         let got' = got++[Right obj]
@@ -821,7 +827,7 @@ objectExprPrec5 = parseInterleavedInfixOps InfixOp objectExprPrec6
 -- infix-operator expression alone. This is the lowest-prescedence non-assignment equation
 -- expression. It does not need a parse table.
 parseEquation :: Parser (Location -> AST_Object)
-parseEquation = flip mplus objectExprPrec5 $ do
+parseEquation = dbg "parseEquation" $ flip mplus objectExprPrec5 $ do
   tokenType LogicNotOp
   fmap (AST_Prefix NOT) (parseWithComments (parseWithLocation objectExprPrec5))
 

@@ -83,7 +83,7 @@ instance MonadError ([Name], Object) Update where
   throwError = Update . throwError
   catchError (Update func) catcher = Update (catchError func (updateToPTrans . catcher))
 
-instance ErrorMonadPlus ([Name], Object) Update where
+instance MonadPlusError ([Name], Object) Update where
   catchPValue (Update func) = Update (catchPValue func)
   assumePValue = Update . assumePValue
 

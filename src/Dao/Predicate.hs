@@ -216,7 +216,7 @@ instance (Functor m, Monad m) => Alternative (PTrans tok m) where
 -- the first, but will evaluate the second only if the first does not succeed, that is, if the first
 -- evaluates to either 'Control.Monad.mzero' or to 'Control.Monad.Error.Class.throwError'.  Minimal
 -- complete definition is 'catchPValue' and 'tokenThrowError'.
-class (MonadError tok m, MonadPlus m) => ErrorMonadPlus tok m where
+class (MonadError tok m, MonadPlus m) => MonadPlusError tok m where
   -- | Unlifts the 'PValue' resulting from evaluating the given monadic computation, returning the
   -- 'PValue' as 'Backtrack' if the given monad evaluates to 'Control.Monad.mzero' and as
   -- 'PFail' if the given monad evaluates to 'Control.Monad.Error.Class.throwError'.
@@ -247,11 +247,11 @@ class (MonadError tok m, MonadPlus m) => ErrorMonadPlus tok m where
     Backtrack -> mzero
     PFail   u -> assumePValue (PFail u)
 
-instance ErrorMonadPlus tok (PValue tok) where
+instance MonadPlusError tok (PValue tok) where
   catchPValue = OK
   assumePValue = id
 
-instance Monad m => ErrorMonadPlus tok (PTrans tok m) where
+instance Monad m => MonadPlusError tok (PTrans tok m) where
   catchPValue (PTrans fn) = PTrans{ runPTrans = fn >>= \a -> return (OK a) }
   assumePValue pval = PTrans (return pval)
 
@@ -290,10 +290,10 @@ maybeToPFail err a = case a of
   Nothing -> PFail err
   Just  a -> OK a
 
--- | If the given monadic function (which instantiates 'ErrorMonadPlus') evaluates with a
+-- | If the given monadic function (which instantiates 'MonadPlusError') evaluates with a
 -- controlling 'PValue' of 'PFail', the given mapping function is applied to the token value stored
 -- within the 'PFail', then the modified 'PFail' is placed back into the monad transformer.
-mapPFail :: (ErrorMonadPlus tok m, ErrorMonadPlus tok' m) => (tok -> tok') -> m a -> m a
+mapPFail :: (MonadPlusError tok m, MonadPlusError tok' m) => (tok -> tok') -> m a -> m a
 mapPFail fmap func = catchPValue func >>= \pval -> case pval of
   OK      a -> return a
   Backtrack -> mzero

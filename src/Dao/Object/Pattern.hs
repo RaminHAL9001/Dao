@@ -131,7 +131,7 @@ instance MonadError Reference Matcher where
   throwError = Matcher . throwError
   catchError (Matcher m) em = Matcher (catchError m (matcherPTransState . em))
 
-instance ErrorMonadPlus Reference Matcher where
+instance MonadPlusError Reference Matcher where
   assumePValue = Matcher . assumePValue
   catchPValue (Matcher fn) = Matcher (catchPValue fn)
 

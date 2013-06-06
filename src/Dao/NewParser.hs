@@ -40,7 +40,7 @@ import           Data.Maybe
 import           Data.Word
 import           Data.Char  hiding (Space)
 import           Data.List
-import           Data.Array
+import           Data.Array.IArray
 
 import           System.IO
 
@@ -228,33 +228,31 @@ newLexerState input =
 -- using 'lexBacktrack' (or don't backtrack at all, because it is inefficient). However you don't
 -- need to worry too much; if a 'GenLexer' backtracks while being evaluated in 'lexicalAnalysis' the
 -- 'lexInput' will not be affected at all and the 'lexBuffer' is ingored entirely.
-newtype GenLexer tok a
-  = GenLexer
-    { runLexer :: PTrans (GenParserErr (GenLexerState tok) tok) (State (GenLexerState tok)) a
-    }
-instance (Eq tok, Enum tok) => Functor (GenLexer tok) where
-  fmap fn (GenLexer lex) = GenLexer (fmap fn lex)
-instance (Eq tok, Enum tok) => Monad (GenLexer tok) where
-  (GenLexer fn) >>= mfn          = GenLexer (fn >>= runLexer . mfn)
-  return                         = GenLexer . return
-  fail msg                       = do
-    st <- get
-    throwError $
-      (parserErr (lexCurrentLine st) (lexCurrentColumn st)){parserErrMsg = Just (ustr msg)}
-instance (Eq tok, Enum tok) => MonadPlus (GenLexer tok) where
-  mplus (GenLexer a) (GenLexer b) = GenLexer (mplus a b)
-  mzero                           = GenLexer mzero
-instance (Eq tok, Enum tok) => Applicative (GenLexer tok) where
-  pure = return
-  f <*> fa = f >>= \f -> fa >>= \a -> return (f a)
-instance (Eq tok, Enum tok) => Alternative (GenLexer tok) where
-  empty = mzero
-  a <|> b = mplus a b
-  many (GenLexer lex) = GenLexer (many lex)
-  some (GenLexer lex) = GenLexer (some lex)
-instance (Eq tok, Enum tok) => MonadState (GenLexerState tok) (GenLexer tok) where
-  get = GenLexer (lift get)
-  put = GenLexer . lift . put
+newtype GenLexer tok a = GenLexer{
+    runLexer :: PTrans (GenParserErr (GenLexerState tok) tok) (State (GenLexerState tok)) a
+  }
+instance (Eq tok, Enum tok) =>
+  Functor (GenLexer tok) where { fmap fn (GenLexer lex) = GenLexer (fmap fn lex) }
+instance (Eq tok, Enum tok) =>
+  Monad (GenLexer tok) where
+    (GenLexer fn) >>= mfn          = GenLexer (fn >>= runLexer . mfn)
+    return                         = GenLexer . return
+    fail msg                       = do
+      st <- get
+      throwError $
+        (parserErr (lexCurrentLine st) (lexCurrentColumn st)){parserErrMsg = Just (ustr msg)}
+instance (Eq tok, Enum tok) =>
+  MonadPlus (GenLexer tok) where
+    mplus (GenLexer a) (GenLexer b) = GenLexer (mplus a b)
+    mzero                           = GenLexer mzero
+instance (Eq tok, Enum tok) =>
+  Applicative (GenLexer tok) where { pure = return; (<*>) = ap; }
+instance (Eq tok, Enum tok) =>
+  Alternative (GenLexer tok) where { empty = mzero; (<|>) = mplus; }
+instance (Eq tok, Enum tok) =>
+  MonadState (GenLexerState tok) (GenLexer tok) where
+    get = GenLexer (lift get)
+    put = GenLexer . lift . put
 instance (Eq tok, Enum tok) =>
   MonadError (GenParserErr (GenLexerState tok) tok) (GenLexer tok) where
     throwError                        = GenLexer . throwError
@@ -811,49 +809,50 @@ modifyUserState fn = modify (\st -> st{userState = fn (userState st)})
 -- failure.
 newtype GenParser st tok a
   = GenParser { parserToPTrans :: PTrans (GenParserErr st tok) (State (GenParserState st tok)) a}
-instance (Eq tok, Enum tok) => Functor   (GenParser st tok) where
-  fmap f (GenParser a) = GenParser (fmap f a)
-instance (Eq tok, Enum tok) => Monad     (GenParser st tok) where
-  (GenParser ma) >>= mfa = GenParser (ma >>= parserToPTrans . mfa)
-  return a               = GenParser (return a)
-  fail msg = do
-    ab  <- optional getCursor
-    tok <- optional (nextToken False)
-    st  <- gets userState
-    throwError $
-      GenParserErr
-      { parserErrLoc = fmap (uncurry atPoint) ab
-      , parserErrMsg = Just (ustr msg)
-      , parserErrTok = tok
-      , parserStateAtErr = Just st
-      }
-instance (Eq tok, Enum tok) => MonadPlus (GenParser st tok) where
-  mzero                             = GenParser mzero
-  mplus (GenParser a) (GenParser b) = GenParser (mplus a b)
-instance (Eq tok, Enum tok) => Applicative (GenParser st tok) where
-  pure = return
-  f <*> fa = f >>= \f -> fa >>= \a -> return (f a)
-instance (Eq tok, Enum tok) => Alternative (GenParser st tok) where
-  empty = mzero
-  a <|> b = mplus a b
-  many (GenParser par) = GenParser (many par)
-  some (GenParser par) = GenParser (some par)
-instance (Eq tok, Enum tok) => MonadState (GenParserState st tok) (GenParser st tok) where
-  get = GenParser (PTrans (fmap OK get))
-  put = GenParser . PTrans . fmap OK . put
-instance (Eq tok, Enum tok) => MonadError (GenParserErr st tok) (GenParser st tok) where
-  throwError err                        = do
-    st <- gets userState
-    assumePValue (PFail (err{parserStateAtErr=Just st}))
-  catchError (GenParser ptrans) catcher = GenParser $ do
-    pval <- catchPValue ptrans
-    case pval of
-      OK      a -> return a
-      Backtrack -> mzero
-      PFail err -> parserToPTrans (catcher err)
-instance (Eq tok, Enum tok) => ErrorMonadPlus (GenParserErr st tok) (GenParser st tok) where
-  catchPValue (GenParser ptrans) = GenParser (catchPValue ptrans)
-  assumePValue                   = GenParser . assumePValue
+instance (Eq tok, Enum tok) =>
+  Functor   (GenParser st tok) where { fmap f (GenParser a) = GenParser (fmap f a) }
+instance (Eq tok, Enum tok) =>
+  Monad     (GenParser st tok) where
+    (GenParser ma) >>= mfa = GenParser (ma >>= parserToPTrans . mfa)
+    return a               = GenParser (return a)
+    fail msg = do
+      ab  <- optional getCursor
+      tok <- optional (nextToken False)
+      st  <- gets userState
+      throwError $
+        GenParserErr
+        { parserErrLoc = fmap (uncurry atPoint) ab
+        , parserErrMsg = Just (ustr msg)
+        , parserErrTok = tok
+        , parserStateAtErr = Just st
+        }
+instance (Eq tok, Enum tok) =>
+  MonadPlus (GenParser st tok) where
+    mzero                             = GenParser mzero
+    mplus (GenParser a) (GenParser b) = GenParser (mplus a b)
+instance (Eq tok, Enum tok) =>
+  Applicative (GenParser st tok) where { pure = return ; (<*>) = ap; }
+instance (Eq tok, Enum tok) =>
+  Alternative (GenParser st tok) where { empty = mzero; (<|>) = mplus; }
+instance (Eq tok, Enum tok) =>
+  MonadState (GenParserState st tok) (GenParser st tok) where
+    get = GenParser (PTrans (fmap OK get))
+    put = GenParser . PTrans . fmap OK . put
+instance (Eq tok, Enum tok) =>
+  MonadError (GenParserErr st tok) (GenParser st tok) where
+    throwError err                        = do
+      st <- gets userState
+      assumePValue (PFail (err{parserStateAtErr=Just st}))
+    catchError (GenParser ptrans) catcher = GenParser $ do
+      pval <- catchPValue ptrans
+      case pval of
+        OK      a -> return a
+        Backtrack -> mzero
+        PFail err -> parserToPTrans (catcher err)
+instance (Eq tok, Enum tok) =>
+  ErrorMonadPlus (GenParserErr st tok) (GenParser st tok) where
+    catchPValue (GenParser ptrans) = GenParser (catchPValue ptrans)
+    assumePValue                   = GenParser . assumePValue
 
 -- | Only succeeds if all tokens have been consumed, otherwise backtracks.
 parseEOF :: (Eq tok, Show tok, Enum tok) => GenParser st tok ()
@@ -929,17 +928,6 @@ withToken
 withToken tokenPredicate parser =
   withTokenP $ \tok u -> if tokenPredicate tok then parser u else mzero
 
--- | Created with 'ptab', this type is used to initalize a parser table.
-newtype GenParseTableElem st tok a
-  = GenParseTableElem { parseTableElemToPair :: (tok, UStr -> GenParser st tok a) }
-
-instance (Ix tok, Enum tok) => Functor (GenParseTableElem st tok) where
-  fmap fn (GenParseTableElem (a, b)) =
-    GenParseTableElem{ parseTableElemToPair = (a, \u -> fmap fn (b u)) }
-
-newtype GenParseTable st tok a
-  = GenParseTable { parserTableArray :: Array tok (UStr -> GenParser st tok a) }
-
 -- | Modify the return type of the 'GenParser' within a 'GenParseTableElem'. This is handy for
 -- re-using lists of 'GenParseTableElem's in 'GenParseTable's that should parse the same tokens but
 -- evaluate a different type of object. For example, if you have a list of 'GenParseTableElem's that
@@ -953,39 +941,141 @@ newtype GenParseTable st tok a
 -- The name "bind" is used because it is similar to the monadic "bind" operator
 -- 'Control.Monad.(>>=)', however this function is not an infix operator so it is more convenient to
 -- have the parameters are flipped from the order of the parameters used in monadic bind.
-bindPTabElem
-  :: (Ix tok, Enum tok)
-  => (a -> GenParser st tok b)
-  -> GenParseTableElem st tok a
-  -> GenParseTableElem st tok b
-bindPTabElem bindFunc tabElem =
-  GenParseTableElem
-  { parseTableElemToPair =
-      let (tok, func) = parseTableElemToPair tabElem
-      in  (tok, (\str -> func str >>= bindFunc))
-  }
+--  EDIT:
+--  Since 'GenParseTableElem' is no longer it's own type, but a constructor of 'GenParseTable', and
+--  'GenParseTable' instantiates 'Prelude.Monad', this function has been replace with the ordinary
+--  monadic bind operator.
+--  bindPTabElem
+--    :: (Ix tok, Enum tok)
+--    => (a -> GenParser st tok b)
+--    -> GenParseTableElem st tok a
+--    -> GenParseTableElem st tok b
+--  bindPTabElem bindFunc tabElem =
+--    GenParseTableElem
+--    { parseTableElemToPair =
+--        let (tok, func) = parseTableElemToPair tabElem
+--        in  (tok, (\str -> func str >>= bindFunc))
+--    }
+
+--  EDIT:
+--  'GenParseTableElem' is no longer it's own type, but a constructor of 'GenParseTable', and
+--  'GenParseTable' instantiates 'Data.Functor.Functor'
+--  instance (Ix tok, Enum tok) => Functor (GenParseTableElem st tok) where
+--    fmap fn (GenParseTableElem (a, b)) =
+--      GenParseTableElem{ parseTableElemToPair = (a, \u -> fmap fn (b u)) }
+
+data GenParseTable st tok a
+  = GenParseTable { parserTableArray :: Array tok (GenToken tok -> GenParseTable st tok a) }
+    -- ^ a parser table constructed from 'GenParseTableElem's. This is the most efficient method to
+    -- parse, so it is best to try and construct your parser from 'GenParseTableElem's rather than
+    -- simply using monadic notation to stick together a bunch of parsing functions.
+  | GenParseFunction { parserFunction :: GenParser st tok a }
+    -- ^ a plain parser function, used for lifting 'GenParser' into the 'GenParseTable' monad,
+    -- specificaly for the 'Control.Monad.return' function.
+  | GenParseTableElem
+    { indexToken :: tok
+      -- ^ the type of the next token in the token stream must match this type to trigger evaluation
+      -- of the 'tableElement'
+    , tableElement :: GenToken tok -> GenParseTable st tok a
+      -- ^ if the next token in the token stream matched the 'indexToken' type, this token is
+      -- shifted out of the stream and passed to this function to be evaluated. You can use
+      -- 'tokToStr' or 'tokToUStr' to further analyze the token and evaluate to
+      -- 'Control.Monad.mzero' or 'Control.Monad.fail' if necessary.
+    }
+    -- ^ Created with 'ptab', this type is used to initalize a parser table.
+
+liftParser :: (Ix tok, Enum tok) => GenParser st tok a -> GenParseTable st tok a
+liftParser = GenParseFunction
+
+-- | Evaluate a 'GenParseTable' to a 'GenParser'.
+evalParseTable :: (Ix tok, Enum tok) => GenParseTable st tok a -> GenParser st tok a
+evalParseTable table = case table of
+  GenParseFunction      parser -> parser
+  GenParseTableElem tok parser -> evalParseTableElem tok parser
+  parserTable                  -> evalParseArray (parserTableArray parserTable)
+
+instance (Ix tok, Enum tok) => Monad (GenParseTable st tok) where
+  return a = GenParseFunction { parserFunction = return a }
+  fail     = GenParseFunction . fail
+  parser >>= bindTo =
+    GenParseFunction{
+      parserFunction = do
+        a <- case parser of
+          GenParseFunction      parser -> parser
+          GenParseTableElem tok parser -> evalParseTableElem tok parser
+          parserTable                  -> evalParseArray (parserTableArray parserTable)
+        evalParseTable (bindTo a)
+    }
+
+instance (Ix tok, Enum tok) => Functor (GenParseTable st tok) where
+  fmap f parser = case parser of
+    GenParseTable     arr        ->
+      GenParseTable { parserTableArray = amap (\origFunc -> fmap f . origFunc) arr }
+    GenParseTableElem tok parser ->
+      GenParseTableElem{ indexToken = tok, tableElement = fmap f  . parser }
+    GenParseFunction      parser ->
+      GenParseFunction{ parserFunction = fmap f parser}
+
+instance (Ix tok, Enum tok) =>
+  MonadPlus (GenParseTable st tok) where
+    mzero     = GenParseFunction{ parserFunction = mzero }
+    mplus a b = case a of
+      GenParseTable     arrA    -> case b of
+        GenParseTable     arrB    -> merge (assocs arrA ++ assocs arrB)
+        GenParseTableElem tokB fb -> merge (assocs arrA ++ [(tokB, fb)])
+        GenParseFunction       fb -> GenParseFunction{
+            parserFunction = mplus (evalParseArray arrA) fb
+          }
+      GenParseFunction       fa -> GenParseFunction $ mplus fa $ case b of
+        GenParseTable     arrB    -> evalParseArray arrB
+        GenParseTableElem tokB fb -> evalParseTableElem tokB fb
+        GenParseFunction       fb -> fb
+      GenParseTableElem tokA fa -> case b of
+        GenParseTable     arrB    -> merge ((tokA, fa) : assocs arrB)
+        GenParseTableElem tokB fb -> merge [(tokA, fa), (tokB, fb)]
+        GenParseFunction       fb -> GenParseFunction{
+            parserFunction = mplus (evalParseTableElem tokA fa) fb
+          }
+      where
+        accumFunc a b tok = mplus (a tok) (b tok)
+        minmax a = foldl (\ (n, x) a -> (min n a, max x a)) (a, a) . map fst
+        merge ax = case ax of
+          []                 -> mzero
+          [(tok, func)]      -> GenParseTableElem{ indexToken = tok, tableElement = func }
+          ax@((tok, func):_) -> GenParseTable{
+              parserTableArray = accumArray accumFunc (const mzero) (minmax tok ax) ax
+            }
+          
+instance (Ix tok, Enum tok) =>
+  Applicative (GenParseTable st tok) where { pure = return; (<*>) = ap; }
+
+instance (Ix tok, Enum tok) =>
+  Alternative (GenParseTable st tok) where { empty = mzero; (<|>) = mplus; }
 
 -- | Run a single 'GenParseTableElem' as a stand-alone parser.
-runParseTableElem :: (Ix tok, Enum tok) => GenParseTableElem st tok a -> GenParser st tok a
-runParseTableElem elem = let (tok, parser) = parseTableElemToPair elem in withToken (==tok) parser
+evalParseTableElem :: (Ix tok, Enum tok) => tok -> (GenToken tok -> GenParseTable st tok a) -> GenParser st tok a
+evalParseTableElem tok parser = do
+  (line, col, tok) <- nextTokenPos True
+  mplus (evalParseTable (parser tok)) (pushToken (line, col, tok) >> mzero)
 
--- | Since 'GenToken's all have a type value that instantiates 'Prelude.Enum', it can be efficient
+-- EDIT: We no longer construct parse tables with 'newParseTable', we now use 'msum'.
+-- Since 'GenToken's all have a type value that instantiates 'Prelude.Enum', it can be efficient
 -- to create an array with each parser stored at an index related to the token type. To create such
 -- an array, use this function and 'ptab', then evaluate the parser with
--- 'evalParseTable'. Specify the range of tokens to use (it is most efficient if the range consists
+-- 'evalParseArray'. Specify the range of tokens to use (it is most efficient if the range consists
 -- of consecutive 'Prelude.Enum' elements), and then the list of parsers, where each parser is
 -- constructed with 'ptab'.
-newParseTable
-  :: (Ix tok, Enum tok)
-  => [GenParseTableElem st tok a]
-  -> GenParseTable st tok a
-newParseTable elems =
-  let minmax (mintok, maxtok) tok = (min tok mintok, max tok maxtok)
-      (mintok, maxtok) = foldl minmax (toEnum 0, toEnum 0) $ map (fst . parseTableElemToPair) elems
-  in  GenParseTable $ array (mintok, maxtok) $ concat
-        [ zip [mintok..maxtok] (repeat (\_ -> mzero))
-        , reverse $ map parseTableElemToPair elems
-        ]
+--  newParseTable
+--    :: (Ix tok, Enum tok)
+--    => [GenParseTableElem st tok a]
+--    -> GenParseTable st tok a
+--  newParseTable elems =
+--    let minmax (mintok, maxtok) tok = (min tok mintok, max tok maxtok)
+--        (mintok, maxtok) = foldl minmax (toEnum 0, toEnum 0) $ map (fst . parseTableElemToPair) elems
+--    in  GenParseTable $ array (mintok, maxtok) $ concat
+--          [ zip [mintok..maxtok] (repeat (\_ -> mzero))
+--          , reverse $ map parseTableElemToPair elems
+--          ]
 
 -- | Use this function to construct 'ParseTableElem's used to initialize a parser array constructed
 -- with the 'newParseTable' function. An example function could be a parser that creates
@@ -996,19 +1086,19 @@ newParseTable elems =
 -- >     [ 'ptab' IDEN $ \str -> return (Identifier str)
 -- >     , 'ptab' NUM  $ \str -> return (Number ('Prelude.read' str))
 -- >     ]
-ptab :: (Ix tok, Enum tok) => tok -> (UStr -> GenParser st tok a) -> GenParseTableElem st tok a
-ptab tok parser = GenParseTableElem (tok, parser)
+ptab :: (Ix tok, Enum tok) => tok -> (GenToken tok -> GenParseTable st tok a) -> GenParseTable st tok a
+ptab tok parser = GenParseTableElem{ indexToken = tok, tableElement = parser }
 
 -- | Efficiently evaluates a 'GenParseTable'. One token is shifted from the stream, and the
 -- 'tokType' is used to select and evaluate the 'GenParser' in the 'GenParseTable'. The 'tokToStr'
 -- value of the token is passed to the selected 'GenParser'. If the 'tokType' does not exist in the
 -- table, or if the selected parser backtracks, this parser backtracks and the selecting token is
 -- shifted back onto the stream.
-evalParseTable :: (Ix tok, Enum tok) => GenParseTable st tok a -> GenParser st tok a
-evalParseTable table = do
-  let arr = parserTableArray table
+evalParseArray :: (Ix tok, Enum tok) => Array tok (GenToken tok -> GenParseTable st tok a) -> GenParser st tok a
+evalParseArray arr = do
   tokPos@(_, _, tok) <- nextTokenPos True
-  if inRange (bounds arr) (tokType tok) then (arr ! tokType tok) (tokToUStr tok) else mzero
+  flip mplus (pushToken tokPos >> mzero) $
+    if inRange (bounds arr) (tokType tok) then evalParseTable (arr ! tokType tok $ tok) else mzero
 
 -- | Return the current line and column of the current token without modifying the state in any way.
 getCursor :: (Eq tok, Enum tok) => GenParser st tok (LineNum, ColumnNum)

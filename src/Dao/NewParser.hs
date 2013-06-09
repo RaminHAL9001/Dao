@@ -908,44 +908,6 @@ simNextToken doRemove = simNextTokenPos doRemove >>= \ (_, _, tok) -> return tok
 subGetCursor :: (Show tok, Eq tok, Enum tok) => SimParser st tok (LineNum, ColumnNum)
 subGetCursor = simNextTokenPos False >>= \ (a,b, _) -> return (a,b)
 
--- | Return the next token in the state if it is of the type specified, removing it from the state.
---  tokenP :: (Show tok, Eq tok, Enum tok) => (tok -> UStr -> Bool) -> SimParser st tok UStr
---  tokenP predicate = do
---    tok <- simNextToken False
---    let tokUStr = tokToUStr tok
---    if predicate (tokType tok) tokUStr then simNextToken True >> return tokUStr else mzero
-
--- | Return the next token in the state if it is of the type specified and also if the string value
--- evaluated by the given predicate returns true, otherwise backtrack.
---  token :: (Show tok, Eq tok, Enum tok) => (tok -> Bool) -> (String -> Bool) -> SimParser st tok UStr
---  token requestedType stringPredicate =
---    tokenP (\typ str -> requestedType typ && stringPredicate (uchars str))
-
---  tokenType :: (Show tok, Eq tok, Enum tok) => tok -> SimParser st tok UStr
---  tokenType requestedType = token (==requestedType) (const True)
-
--- | Return the next token in the state if the string value of the token is exactly equal to the
--- given string, and if the token type is any one of the given token types.
---  tokenTypes :: (Show tok, Eq tok, Enum tok) => [tok] -> SimParser st tok UStr
---  tokenTypes requestedTypes = token (\b -> or (map (==b) requestedTypes)) (const True)
-
--- | Single token look-ahead: takes the next token, removing it from the state, and uses it to
--- evaluate the given 'Parser'. If the backtracks, the token is replaced into the state. Failures
--- are not caught, make sure the 'Parser' you pass to this function makes use of
--- 'Control.Monad.Error.catchError' to catch failures if that is what you need it to do. This
--- function does not keep a copy of the state, it removes a token from the stream, then places it
--- back if backtracking occurs. This is supposed to be more efficient.
---  withTokenP :: (Show tok, Eq tok, Enum tok) => (tok -> UStr -> SimParser st tok a) -> SimParser st tok a
---  withTokenP parser = do
---    (line, col, tok) <- simNextTokenPos True
---    mplus (parser (tokType tok) (tokToUStr tok)) (pushToken (line, col, tok) >> mzero)
-
---  withToken
---    :: (Show tok, Eq tok, Enum tok)
---    => (tok -> Bool) -> (UStr -> SimParser st tok a) -> SimParser st tok a
---  withToken tokenPredicate parser =
---    withTokenP $ \tok u -> if tokenPredicate tok then parser u else mzero
-
 ----------------------------------------------------------------------------------------------------
 -- $GenParser
 -- GenParser is a data type (e.g. it is a 'Data.Monoid.Monoid') and also a control structure (e.g.
@@ -1068,25 +1030,6 @@ evalGenToSimParser table = case table of
 evalParseTableElem :: (Show tok, Ix tok, Enum tok) => tok -> GenParser st tok a -> SimParser st tok a
 evalParseTableElem tok parser =
   simNextTokenPos False >>= \ (line, col, tok) -> mplus (evalGenToSimParser parser) mzero
-
--- EDIT: We no longer construct parse tables with 'newParseTable', we now use 'msum'.
--- Since 'GenToken's all have a type value that instantiates 'Prelude.Enum', it can be efficient
--- to create an array with each parser stored at an index related to the token type. To create such
--- an array, use this function and 'token', then evaluate the parser with
--- 'evalParseArray'. Specify the range of tokens to use (it is most efficient if the range consists
--- of consecutive 'Prelude.Enum' elements), and then the list of parsers, where each parser is
--- constructed with 'token'.
---  newParseTable
---    :: (Show tok, Ix tok, Enum tok)
---    => [GenParserArrayItem st tok a]
---    -> GenParser st tok a
---  newParseTable elems =
---    let minmax (mintok, maxtok) tok = (min tok mintok, max tok maxtok)
---        (mintok, maxtok) = foldl minmax (toEnum 0, toEnum 0) $ map (fst . parseTableElemToPair) elems
---    in  GenParserArray $ array (mintok, maxtok) $ concat
---          [ zip [mintok..maxtok] (repeat (\_ -> mzero))
---          , reverse $ map parseTableElemToPair elems
---          ]
 
 token :: (Show tok, Ix tok, Enum tok) => tok -> GenParser st tok b -> GenParser st tok b
 token tok parser = GenParserArrayItem{ indexToken = tok, tableElement = parser }

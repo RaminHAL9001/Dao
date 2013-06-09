@@ -970,7 +970,7 @@ subGetCursor = simNextTokenPos False >>= \ (a,b, _) -> return (a,b)
 -- once. Although inlining tends to occur without @{-#INLINE ... #-}@, it is not a guarantee.
 
 data GenParser st tok a
-  = GenParserArray { parserTableArray :: Array tok (GenToken tok -> GenParser st tok a) }
+  = GenParserArray { parserTableArray :: Array tok (GenParser st tok a) }
     -- ^ a parser table constructed from 'GenParserArrayItem's. This is the most efficient method to
     -- parse, so it is best to try and construct your parser from 'GenParserArrayItem's rather than
     -- simply using monadic notation to stick together a bunch of parsing functions.
@@ -981,7 +981,7 @@ data GenParser st tok a
     { indexToken :: tok
       -- ^ the type of the next token in the token stream must match this type to trigger evaluation
       -- of the 'tableElement'
-    , tableElement :: GenToken tok -> GenParser st tok a
+    , tableElement :: GenParser st tok a
       -- ^ if the next token in the token stream matched the 'indexToken' type, this token is
       -- shifted out of the stream and passed to this function to be evaluated. You can use
       -- 'tokToStr' or 'tokToUStr' to further analyze the token and evaluate to
@@ -1003,9 +1003,9 @@ instance (Show tok, Ix tok, Enum tok) => Monad (GenParser st tok) where
 instance (Show tok, Ix tok, Enum tok) => Functor (GenParser st tok) where
   fmap f parser = case parser of
     GenParserArray     arr        ->
-      GenParserArray { parserTableArray = amap (\origFunc -> fmap f . origFunc) arr }
+      GenParserArray { parserTableArray = amap (\origFunc -> fmap f origFunc) arr }
     GenParserArrayItem tok parser ->
-      GenParserArrayItem{ indexToken = tok, tableElement = fmap f  . parser }
+      GenParserArrayItem{ indexToken = tok, tableElement = fmap f parser }
     GenParser      parser ->
       GenParser{ simParser = fmap f parser}
 instance (Show tok, Ix tok, Enum tok) =>
@@ -1025,13 +1025,12 @@ instance (Show tok, Ix tok, Enum tok) =>
         GenParserArrayItem tokB fb -> evalParseTableElem tokB fb
         GenParser               fb -> fb
       where
-        accumFunc a b tok = mplus (a tok) (b tok)
         minmax a = foldl (\ (n, x) a -> (min n a, max x a)) (a, a) . map fst
         merge ax = case ax of
           []                 -> mzero
           [(tok, func)]      -> GenParserArrayItem{ indexToken = tok, tableElement = func }
           ax@((tok, func):_) -> GenParserArray{
-              parserTableArray = accumArray accumFunc (const mzero) (minmax tok ax) ax
+              parserTableArray = accumArray mplus mzero (minmax tok ax) ax
             }
 instance (Show tok, Ix tok, Enum tok) =>
   Applicative (GenParser st tok) where { pure = return; (<*>) = ap; }
@@ -1066,10 +1065,9 @@ evalGenToSimParser table = case table of
   parserTable                   -> evalParseArray (parserTableArray parserTable)
 
 -- | Run a single 'GenParserArrayItem' as a stand-alone parser.
-evalParseTableElem :: (Show tok, Ix tok, Enum tok) => tok -> (GenToken tok -> GenParser st tok a) -> SimParser st tok a
-evalParseTableElem tok parser = do
-  (line, col, tok) <- simNextTokenPos True
-  mplus (evalGenToSimParser (parser tok)) (pushToken (line, col, tok) >> mzero)
+evalParseTableElem :: (Show tok, Ix tok, Enum tok) => tok -> GenParser st tok a -> SimParser st tok a
+evalParseTableElem tok parser =
+  simNextTokenPos False >>= \ (line, col, tok) -> mplus (evalGenToSimParser parser) mzero
 
 -- EDIT: We no longer construct parse tables with 'newParseTable', we now use 'msum'.
 -- Since 'GenToken's all have a type value that instantiates 'Prelude.Enum', it can be efficient
@@ -1090,39 +1088,40 @@ evalParseTableElem tok parser = do
 --          , reverse $ map parseTableElemToPair elems
 --          ]
 
-token :: (Show tok, Ix tok, Enum tok) =>
-  tok -> (GenToken tok -> GenParser st tok b) -> GenParser st tok b
+token :: (Show tok, Ix tok, Enum tok) => tok -> GenParser st tok b -> GenParser st tok b
 token tok parser = GenParserArrayItem{ indexToken = tok, tableElement = parser }
 
-tokens :: (Show tok, Ix tok, Enum tok) =>
-  [tok] -> (GenToken tok -> GenParser st tok b) -> GenParser st tok b
+tokens :: (Show tok, Ix tok, Enum tok) => [tok] -> GenParser st tok b -> GenParser st tok b
 tokens toks parser = msum $ map (flip token parser) toks
 
 -- | Return the next token in the stream if it is of the given type.
 takeToken :: (Show tok, Ix tok, Enum tok) => tok -> GenParser st tok (GenToken tok)
-takeToken tok = token tok return
+takeToken tok = token tok shift
 
 -- | Return the next token in the stream if it is any of the given types.
 takeTokens :: (Show tok, Ix tok, Enum tok) => [tok] -> GenParser st tok (GenToken tok)
-takeTokens tok = tokens tok return
+takeTokens tok = tokens tok shift
 
-lookAheadPos :: (Show tok, Ix tok, Enum tok) => GenParser st tok (LineNum, ColumnNum, GenToken tok)
-lookAheadPos = GenParser (simNextTokenPos False)
+shift :: (Show tok, Ix tok, Enum tok) => GenParser st tok (GenToken tok)
+shift = GenParser (simNextToken True)
 
-lookAhead :: (Show tok, Ix tok, Enum tok) => GenParser st tok (GenToken tok)
-lookAhead = GenParser (simNextToken False)
+currentTokPos :: (Show tok, Ix tok, Enum tok) => GenParser st tok (LineNum, ColumnNum, GenToken tok)
+currentTokPos = GenParser (simNextTokenPos False)
+
+currentTok :: (Show tok, Ix tok, Enum tok) => GenParser st tok (GenToken tok)
+currentTok = GenParser (simNextToken False)
 
 -- Efficiently evaluates a array from a 'GenParserArray'. One token is shifted from the stream, and
 -- the 'tokType' is used to select and evaluate the 'SimParser' in the 'GenParser'. The 'tokToStr'
 -- value of the token is passed to the selected 'SimParser'. If the 'tokType' does not exist in the
 -- table, or if the selected parser backtracks, this parser backtracks and the selecting token is
 -- shifted back onto the stream.
-evalParseArray :: (Show tok, Ix tok, Enum tok) => Array tok (GenToken tok -> GenParser st tok a) -> SimParser st tok a
+evalParseArray :: (Show tok, Ix tok, Enum tok) => Array tok (GenParser st tok a) -> SimParser st tok a
 evalParseArray arr = do
-  tokPos@(_, _, tok) <- simNextTokenPos True
+  tokPos@(_, _, tok) <- simNextTokenPos False
   flip mplus (pushToken tokPos >> mzero) $
     if inRange (bounds arr) (tokType tok)
-      then  evalGenToSimParser (arr ! tokType tok $ tok)
+      then  evalGenToSimParser (arr ! tokType tok)
       else  mzero
 
 -- | Return the current line and column of the current token without modifying the state in any way.

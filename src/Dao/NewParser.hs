@@ -994,63 +994,8 @@ instance (Show tok, Ix tok, Enum tok) =>
       fmap (fmapFailed simGenParserErr) (catchPValue (evalGenToSimParser ptrans))
     assumePValue       = GenParser . assumePValue . fmapFailed SimParseError
 
--- | When concatenating parsers using 'pconcat', the return type of each parser in the list must be
--- a value wrapped in this type. This type instantiates 'Data.Monoid.Monoid' in such a way that
--- items occuring later in the list will be kept over items occuring earlier, for example:
--- > 'Data.Monoid.mappend' ('KeepItem' x)  ('KeepItem' y) == y
--- is always true.
-data LatestOf a = IgnoreItem | KeepItem a deriving (Eq, Ord, Show)
-instance Monad LatestOf where
-  return            = KeepItem
-  KeepItem a >>= fn = fn a
-  IgnoreItem >>= _  = IgnoreItem
-instance MonadPlus LatestOf where { mplus   _ b = b        ; mzero  = IgnoreItem; }
-instance Monoid (LatestOf a)  where { mappend a b = mplus a b; mempty = mzero; }
-instance Functor LatestOf     where
-  fmap fn (KeepItem a) = KeepItem (fn a)
-  fmap _   IgnoreItem  = IgnoreItem 
-instance Applicative LatestOf where { pure = return; (<*>) = ap }
-instance Alternative LatestOf where { empty = mzero; (<|>) = mplus }
-
 liftParser :: (Show tok, Ix tok, Enum tok) => SimParser st tok a -> GenParser st tok a
 liftParser = GenParser
-
--- | Extract the item from 'LatestOf' with a default value provided in case the 'LatestOf' value is
--- 'IgnoreItem'.
-evalLatest :: a -> LatestOf a -> a
-evalLatest deflt a = case a of { KeepItem a -> a; IgnoreItem -> deflt; }
-
--- | Intended to be used with 'pconcat', parsers that should not return a value should be wrapped in
--- 'skip', for example:
--- > pconcat ['keep' letters, 'skip' spaces, 'keep' numbers]
--- Will return the parse result of @'keep' numbers@. Yes, 'letters' were kept too, but only the
--- latest item of the list will be kept. If you would like to keep item, use
--- > 'Data.Functor.fmap' (:[]) yourParser
-skip :: (Show tok, Ix tok, Enum tok) => GenParser st tok a -> GenParser st tok (LatestOf a)
-skip = fmap (const IgnoreItem)
-
--- | Intended to be used with 'pconcat', parsers that should not return a value should be wrapped in
--- 'skip', for example:
--- > pconcat ['keep' letters, 'skip' spaces, 'keep' numbers]
--- Will return the parse result of @'keep' numbers@.  Yes, 'letters' were kept too, but only the
--- latest item of the list will be kept. If you would like to keep every item, use
--- > 'Data.Functor.fmap' (:[]) yourParser
-keep :: (Show tok, Ix tok, Enum tok) => GenParser st tok a -> GenParser st tok (LatestOf a)
-keep = fmap KeepItem
-
--- | Combining 'GenParser's using 'Data.Monoid.mconcat' or monadic bind will not implicitly shift
--- tokens from the stream. That is to say, a parser that parses @number@ numeric token and a parser
--- @space@ that parses a white-space token applied in order must be written like so:
--- > number >> 'shift' >> 'space'
--- Without the shift, both the @number@ parser and the @space@ parser will check the same token in
--- the token stream, and @space@ will fail.
--- 
--- To create sequences of parser with implicit 'shift' statements between each parser, you can use
--- this function. Every parser must return a value wrapped in a 'LatestOf' data type. You can use
--- 'keep' and 'skip' to indicate which parsers should keep the value returned. 
-pconcat :: (Show tok, Ix tok, Enum tok) =>
-  [GenParser st tok (LatestOf a)] -> GenParser st tok (LatestOf a)
-pconcat = mconcat . map (\parser -> parser >>= \a -> shift >> return a)
 
 -- | Evaluate a 'GenParser' to a 'SimParser'.
 evalGenToSimParser :: (Show tok, Ix tok, Enum tok) => GenParser st tok a -> SimParser st tok a

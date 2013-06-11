@@ -41,6 +41,8 @@ import           Data.Word
 import           Data.Char  hiding (Space)
 import           Data.List
 import           Data.Array.IArray
+import qualified Data.Map    as M
+import qualified Data.IntMap as IM
 
 import           System.IO
 
@@ -936,38 +938,21 @@ data GenParser st tok a
     -- ^ a parser table constructed from 'GenParserArrayItem's. This is the most efficient method to
     -- parse, so it is best to try and construct your parser from 'GenParserArrayItem's rather than
     -- simply using monadic notation to stick together a bunch of parsing functions.
+  | GenParserMap { parserMap :: M.Map UStr (GenParser st tok a) }
   | GenParser { simParser :: SimParser st tok a }
     -- ^ a plain parser function, used for lifting 'SimParser' into the 'GenParser' monad,
     -- specificaly for the 'Control.Monad.return' function.
-  | GenParserArrayItem
-    { indexToken :: tok
-      -- ^ the type of the next token in the token stream must match this type to trigger evaluation
-      -- of the 'tableElement'
-    , tableElement :: GenParser st tok a
-      -- ^ if the next token in the token stream matched the 'indexToken' type, this token is
-      -- shifted out of the stream and passed to this function to be evaluated. You can use
-      -- 'tokToStr' or 'tokToUStr' to further analyze the token and evaluate to
-      -- 'Control.Monad.mzero' or 'Control.Monad.fail' if necessary.
-    }
-    -- ^ Created with 'token', this type is used to initalize a parser table.
 instance (Show tok, Ix tok, Enum tok) => Monad (GenParser st tok) where
   return a = GenParser { simParser = return a }
   fail     = GenParser . fail
   parser >>= bindTo =
     GenParser{
-      simParser = do
-        a <- case parser of
-          GenParser              parser -> parser
-          GenParserArrayItem tok parser -> evalParseTableElem tok parser
-          parserTable                   -> evalParseArray (parserTableArray parserTable)
-        evalGenToSimParser (bindTo a)
+      simParser = evalGenToSimParser parser >>= \a -> evalGenToSimParser (bindTo a)
     }
 instance (Show tok, Ix tok, Enum tok) => Functor (GenParser st tok) where
   fmap f parser = case parser of
     GenParserArray     arr        ->
       GenParserArray { parserTableArray = amap (\origFunc -> fmap f origFunc) arr }
-    GenParserArrayItem tok parser ->
-      GenParserArrayItem{ indexToken = tok, tableElement = fmap f parser }
     GenParser      parser ->
       GenParser{ simParser = fmap f parser}
 instance (Show tok, Ix tok, Enum tok) =>
@@ -976,22 +961,15 @@ instance (Show tok, Ix tok, Enum tok) =>
     mplus a b = case a of
       GenParserArray     arrA    -> case b of
         GenParserArray     arrB    -> merge (assocs arrA ++ assocs arrB)
-        GenParserArrayItem tokB fb -> merge (assocs arrA ++ [(tokB, fb)])
-        GenParser               fb -> GenParser{ simParser = mplus (evalParseArray arrA) fb }
-      GenParserArrayItem tokA fa -> case b of
-        GenParserArray     arrB    -> merge ((tokA, fa) : assocs arrB)
-        GenParserArrayItem tokB fb -> merge [(tokA, fa), (tokB, fb)]
-        GenParser               fb -> GenParser{ simParser = mplus (evalParseTableElem tokA fa) fb }
+        GenParser               fb -> trace ("parser mplus after "++show (indices arrA)) $ GenParser{ simParser = mplus (evalParseArray arrA) fb }
       GenParser               fa -> GenParser $ mplus fa $ case b of
-        GenParserArray     arrB    -> evalParseArray arrB
-        GenParserArrayItem tokB fb -> evalParseTableElem tokB fb
-        GenParser               fb -> fb
+        GenParserArray     arrB    -> trace ("parser mplus before "++show (indices arrB)) $ evalParseArray arrB
+        GenParser               fb -> trace ("mplus two simple parsers ") $ fb
       where
         minmax a = foldl (\ (n, x) a -> (min n a, max x a)) (a, a) . map fst
-        merge ax = case ax of
+        merge ax = trace "merged two parser arrays" $ case ax of
           []                 -> mzero
-          [(tok, func)]      -> GenParserArrayItem{ indexToken = tok, tableElement = func }
-          ax@((tok, func):_) -> GenParserArray{
+          ax@((tok, func):_) -> trace ("created array for: "++show (map fst ax)) $ GenParserArray{
               parserTableArray = accumArray mplus mzero (minmax tok ax) ax
             }
 instance (Show tok, Ix tok, Enum tok) =>
@@ -1016,37 +994,77 @@ instance (Show tok, Ix tok, Enum tok) =>
       fmap (fmapFailed simGenParserErr) (catchPValue (evalGenToSimParser ptrans))
     assumePValue       = GenParser . assumePValue . fmapFailed SimParseError
 
+-- | When concatenating parsers using 'pconcat', the return type of each parser in the list must be
+-- a value wrapped in this type. This type instantiates 'Data.Monoid.Monoid' in such a way that
+-- items occuring later in the list will be kept over items occuring earlier, for example:
+-- > 'Data.Monoid.mappend' ('KeepItem' x)  ('KeepItem' y) == y
+-- is always true.
+data LatestOf a = IgnoreItem | KeepItem a deriving (Eq, Ord, Show)
+instance Monad LatestOf where
+  return            = KeepItem
+  KeepItem a >>= fn = fn a
+  IgnoreItem >>= _  = IgnoreItem
+instance MonadPlus LatestOf where { mplus   _ b = b        ; mzero  = IgnoreItem; }
+instance Monoid (LatestOf a)  where { mappend a b = mplus a b; mempty = mzero; }
+instance Functor LatestOf     where
+  fmap fn (KeepItem a) = KeepItem (fn a)
+  fmap _   IgnoreItem  = IgnoreItem 
+instance Applicative LatestOf where { pure = return; (<*>) = ap }
+instance Alternative LatestOf where { empty = mzero; (<|>) = mplus }
+
 liftParser :: (Show tok, Ix tok, Enum tok) => SimParser st tok a -> GenParser st tok a
 liftParser = GenParser
+
+-- | Extract the item from 'LatestOf' with a default value provided in case the 'LatestOf' value is
+-- 'IgnoreItem'.
+evalLatest :: a -> LatestOf a -> a
+evalLatest deflt a = case a of { KeepItem a -> a; IgnoreItem -> deflt; }
+
+-- | Intended to be used with 'pconcat', parsers that should not return a value should be wrapped in
+-- 'skip', for example:
+-- > pconcat ['keep' letters, 'skip' spaces, 'keep' numbers]
+-- Will return the parse result of @'keep' numbers@. Yes, 'letters' were kept too, but only the
+-- latest item of the list will be kept. If you would like to keep item, use
+-- > 'Data.Functor.fmap' (:[]) yourParser
+skip :: (Show tok, Ix tok, Enum tok) => GenParser st tok a -> GenParser st tok (LatestOf a)
+skip = fmap (const IgnoreItem)
+
+-- | Intended to be used with 'pconcat', parsers that should not return a value should be wrapped in
+-- 'skip', for example:
+-- > pconcat ['keep' letters, 'skip' spaces, 'keep' numbers]
+-- Will return the parse result of @'keep' numbers@.  Yes, 'letters' were kept too, but only the
+-- latest item of the list will be kept. If you would like to keep every item, use
+-- > 'Data.Functor.fmap' (:[]) yourParser
+keep :: (Show tok, Ix tok, Enum tok) => GenParser st tok a -> GenParser st tok (LatestOf a)
+keep = fmap KeepItem
+
+-- | Combining 'GenParser's using 'Data.Monoid.mconcat' or monadic bind will not implicitly shift
+-- tokens from the stream. That is to say, a parser that parses @number@ numeric token and a parser
+-- @space@ that parses a white-space token applied in order must be written like so:
+-- > number >> 'shift' >> 'space'
+-- Without the shift, both the @number@ parser and the @space@ parser will check the same token in
+-- the token stream, and @space@ will fail.
+-- 
+-- To create sequences of parser with implicit 'shift' statements between each parser, you can use
+-- this function. Every parser must return a value wrapped in a 'LatestOf' data type. You can use
+-- 'keep' and 'skip' to indicate which parsers should keep the value returned. 
+pconcat :: (Show tok, Ix tok, Enum tok) =>
+  [GenParser st tok (LatestOf a)] -> GenParser st tok (LatestOf a)
+pconcat = mconcat . map (\parser -> parser >>= \a -> shift >> return a)
 
 -- | Evaluate a 'GenParser' to a 'SimParser'.
 evalGenToSimParser :: (Show tok, Ix tok, Enum tok) => GenParser st tok a -> SimParser st tok a
 evalGenToSimParser table = case table of
-  GenParser              parser -> parser
-  GenParserArrayItem tok parser -> evalParseTableElem tok parser
-  parserTable                   -> evalParseArray (parserTableArray parserTable)
+  GenParser              parser -> trace "ordinary parser" $ parser
+  parserTable                   -> trace "parser array"    $ evalParseArray (parserTableArray parserTable)
 
 -- | Run a single 'GenParserArrayItem' as a stand-alone parser.
 evalParseTableElem :: (Show tok, Ix tok, Enum tok) => tok -> GenParser st tok a -> SimParser st tok a
 evalParseTableElem tok parser =
   simNextTokenPos False >>= \ (line, col, tok) -> mplus (evalGenToSimParser parser) mzero
 
-token :: (Show tok, Ix tok, Enum tok) => tok -> GenParser st tok b -> GenParser st tok b
-token tok parser = GenParserArrayItem{ indexToken = tok, tableElement = parser }
-
-tokens :: (Show tok, Ix tok, Enum tok) => [tok] -> GenParser st tok b -> GenParser st tok b
-tokens toks parser = msum $ map (flip token parser) toks
-
--- | Return the next token in the stream if it is of the given type.
-takeToken :: (Show tok, Ix tok, Enum tok) => tok -> GenParser st tok (GenToken tok)
-takeToken tok = token tok shift
-
--- | Return the next token in the stream if it is any of the given types.
-takeTokens :: (Show tok, Ix tok, Enum tok) => [tok] -> GenParser st tok (GenToken tok)
-takeTokens tok = tokens tok shift
-
 shift :: (Show tok, Ix tok, Enum tok) => GenParser st tok (GenToken tok)
-shift = GenParser (simNextToken True)
+shift = GenParser (simNextToken True >>= \a -> simNextToken False >>= \b -> trace ("shifted token: "++show a++"\n"++"next token: "++show b) (return a))
 
 currentTokPos :: (Show tok, Ix tok, Enum tok) => GenParser st tok (LineNum, ColumnNum, GenToken tok)
 currentTokPos = GenParser (simNextTokenPos False)
@@ -1061,11 +1079,10 @@ currentTok = GenParser (simNextToken False)
 -- shifted back onto the stream.
 evalParseArray :: (Show tok, Ix tok, Enum tok) => Array tok (GenParser st tok a) -> SimParser st tok a
 evalParseArray arr = do
-  tokPos@(_, _, tok) <- simNextTokenPos False
-  flip mplus (pushToken tokPos >> mzero) $
-    if inRange (bounds arr) (tokType tok)
-      then  evalGenToSimParser (arr ! tokType tok)
-      else  mzero
+  tok <- simNextToken False
+  if trace ("check array: "++show (indices arr)) $ inRange (bounds arr) (tokType tok)
+    then  evalGenToSimParser (arr ! tokType tok)
+    else  mzero
 
 -- | Return the current line and column of the current token without modifying the state in any way.
 getCursor :: (Show tok, Ix tok, Enum tok) => GenParser st tok (LineNum, ColumnNum)
@@ -1140,6 +1157,138 @@ syntacticAnalysis
   -> [GenLine tok]
   -> (PValue (SimParseError st tok) synTree, GenParserState st tok)
 syntacticAnalysis parser st lines = runParserState parser $ newParserState st lines
+
+----------------------------------------------------------------------------------------------------
+
+-- | Generalized State Transformer Parser differs from 'GenParser' in that ever monadic bind
+-- operation shifts a token from the stream. This makes it easier to write parsers with simple
+-- 'Control.Monad.Monad'ic or 'Control.Applicative.Applicative' functions.
+data GSTP st tok a
+  = GSTPBacktrack
+  | GSTPConst  { constValue  :: a }
+  | GSTPFail   { failMessage :: String }
+  | GSTPUpdate { updateInner :: GenParser st tok a }
+  | GSTPTable
+    { checkTokenAndString :: M.Map tok  (M.Map UStr (GSTP st tok a))
+    , checkToken          :: M.Map tok  (GSTP st tok a)
+    , checkString         :: M.Map UStr (GSTP st tok a)
+    }
+instance (Show tok, Ix tok, Enum tok) =>
+  Monad (GSTP st tok) where
+    return     = GSTPConst
+    fail       = GSTPFail
+    p >>= bind = case p of
+      GSTPBacktrack            -> GSTPBacktrack
+      GSTPConst a              -> bind a
+      GSTPFail msg             -> GSTPFail msg
+      GSTPUpdate p -> GSTPUpdate{
+          updateInner = do
+            a <- p >>= evalGSTPtoGenParser . bind
+            shift >> return a
+        }
+      GSTPTable tokstr tok str ->
+        GSTPTable
+        { checkTokenAndString = fmap (fmap (>>=bind)) tokstr
+        , checkToken          = fmap (>>=bind) tok
+        , checkString         = fmap (>>=bind) str
+        }
+instance (Ix tok, Enum tok, Show tok) =>
+  Functor (GSTP st tok) where
+    fmap f p = case p of
+      GSTPBacktrack -> GSTPBacktrack
+      GSTPConst  a -> GSTPConst (f a)
+      GSTPFail msg -> GSTPFail  msg
+      GSTPUpdate p -> GSTPUpdate (fmap f p)
+      GSTPTable tokstr tok str ->
+        GSTPTable
+        { checkTokenAndString = fmap (fmap (fmap f)) tokstr
+        , checkToken          = fmap (fmap f) tok
+        , checkString         = fmap (fmap f) str
+        }
+instance (Ix tok, Enum tok, Show tok) =>
+  MonadPlus (GSTP st tok) where
+    mzero     = GSTPBacktrack
+    mplus a b = case a of
+      GSTPBacktrack -> b
+      GSTPConst   a -> GSTPConst a
+      GSTPFail  msg -> GSTPFail msg
+      GSTPUpdate  a -> case b of
+        GSTPBacktrack -> GSTPUpdate a
+        GSTPFail  msg -> GSTPUpdate a
+        GSTPConst   b -> GSTPUpdate (mplus a (return b))
+        GSTPUpdate  b -> GSTPUpdate (mplus a b)
+        b             -> GSTPUpdate (mplus a (evalGSTPtoGenParser b))
+      GSTPTable tokstrA tokA strA -> case b of
+        GSTPBacktrack -> GSTPTable tokstrA tokA strA
+        GSTPConst   b ->
+          GSTPTable
+          { checkTokenAndString = fmap (fmap (flip mplus (GSTPConst b))) tokstrA
+          , checkToken          = fmap (flip mplus (GSTPConst b)) tokA
+          , checkString         = fmap (flip mplus (GSTPConst b)) strA
+          }
+        GSTPFail  msg -> GSTPTable tokstrA tokA strA
+        GSTPUpdate  b ->
+          GSTPTable
+          { checkTokenAndString = fmap (fmap (mplus (GSTPUpdate b))) tokstrA
+          , checkToken          = fmap (mplus (GSTPUpdate b)) tokA
+          , checkString         = fmap (mplus (GSTPUpdate b)) strA
+          }
+        GSTPTable tokstrB tokB strB ->
+          GSTPTable
+          { checkTokenAndString = M.unionWith (M.unionWith mplus) tokstrA tokstrB
+          , checkToken          = M.unionWith              mplus  tokA    tokB
+          , checkString         = M.unionWith              mplus strA    strB
+          }
+instance (Ix tok, Enum tok, Show tok) => Applicative (GSTP st tok) where { pure = return; (<*>) = ap; }
+instance (Ix tok, Enum tok, Show tok) => Alternative (GSTP st tok) where { empty = mzero; (<|>) = mplus; }
+
+evalGSTPtoGenParser :: (Ix tok, Enum tok, Show tok) => GSTP st tok a -> GenParser st tok a
+evalGSTPtoGenParser p = case p of
+  GSTPBacktrack -> mzero
+  GSTPConst   a -> return a
+  GSTPFail  msg -> fail msg
+  GSTPUpdate fn -> fn
+  GSTPTable tokstr tok str -> msum $ concat $
+    [ mkMapArray tokstr
+    , mkArray tok
+    , mkmap str
+    ]
+  where
+    findBounds tok = foldl (\ (min0, max0) (tok, _) -> (min min0 tok, max max0 tok)) (tok, tok)
+    mkMapArray :: (Ix tok, Enum tok, Show tok) => M.Map tok (M.Map UStr (GSTP st tok a)) -> [GenParser st tok a]
+    mkMapArray m = do
+      let ax = M.assocs m
+      case ax of
+        []          -> mzero
+        [(tok, m)]  -> return $ do
+          t <- fmap tokType currentTok
+          guard (t==tok)
+          GenParserMap{parserMap = M.map evalGSTPtoGenParser m}
+        (tok, _):ax' -> do
+          let minmax = findBounds tok ax'
+              bx     = concatMap (\ (tok, par) -> map ((,)tok) (mkmap par)) ax
+          return (GenParserArray{parserTableArray = accumArray (\_ a -> a) mzero minmax bx})
+    mkArray :: (Ix tok, Enum tok, Show tok) => M.Map tok (GSTP st tok a) -> [GenParser st tok a]
+    mkArray m = do
+      let ax = M.assocs m
+      case ax of
+        []            -> mzero
+        [(tok, gstp)] -> return $ do
+          t <- fmap tokType currentTok
+          guard (t==tok)
+          evalGSTPtoGenParser gstp
+        (tok, _):ax'  -> do
+          let minmax = findBounds tok ax'
+              bx = map (\ (tok, par) -> (tok, evalGSTPtoGenParser par)) ax
+          return (GenParserArray{parserTableArray = accumArray (\_ a -> a) mzero minmax bx})
+    mkmap :: (Ix tok, Enum tok, Show tok) => M.Map UStr (GSTP st tok a) -> [GenParser st tok a]
+    mkmap m = case M.assocs m of
+      []            -> mzero
+      [(str, gstp)] -> return $ do
+        t <- fmap tokToUStr currentTok
+        guard (t==str)
+        evalGSTPtoGenParser gstp
+      _             -> return (GenParserMap{parserMap = M.map evalGSTPtoGenParser m})
 
 ----------------------------------------------------------------------------------------------------
 

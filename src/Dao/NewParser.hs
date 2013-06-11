@@ -1121,7 +1121,7 @@ instance (Show tok, Ix tok, Enum tok) =>
       GenParserFail msg             -> GenParserFail msg
       GenParserUpdate p -> GenParserUpdate{
           updateInner = do
-            a <- p >>= evalGSTPtoGenParser . bind
+            a <- p >>= evalGenParserToParseTable . bind
             ParseTable shift >> return a
         }
       GenParserTable tokstr tok str ->
@@ -1155,7 +1155,7 @@ instance (Ix tok, Enum tok, Show tok) =>
         GenParserFail  msg -> GenParserUpdate a
         GenParserConst   b -> GenParserUpdate (mplus a (return b))
         GenParserUpdate  b -> GenParserUpdate (mplus a b)
-        b             -> GenParserUpdate (mplus a (evalGSTPtoGenParser b))
+        b             -> GenParserUpdate (mplus a (evalGenParserToParseTable b))
       GenParserTable tokstrA tokA strA -> case b of
         GenParserBacktrack -> GenParserTable tokstrA tokA strA
         GenParserConst   b ->
@@ -1189,14 +1189,14 @@ instance (Show tok, Ix tok, Enum tok) =>
   MonadError (TokStreamError st tok) (GenParser st tok) where
     throwError = GenParserUpdate . throwError
     catchError trial catcher = GenParserUpdate $
-      catchError (evalGSTPtoGenParser trial) (\err -> evalGSTPtoGenParser (catcher err))
+      catchError (evalGenParserToParseTable trial) (\err -> evalGenParserToParseTable (catcher err))
 instance (Show tok, Ix tok, Enum tok) =>
   MonadPlusError (TokStreamError st tok) (GenParser st tok) where
-    catchPValue ptrans = GenParserUpdate (catchPValue (evalGSTPtoGenParser ptrans))
+    catchPValue ptrans = GenParserUpdate (catchPValue (evalGenParserToParseTable ptrans))
     assumePValue       = GenParserUpdate . assumePValue
 
-evalGSTPtoGenParser :: (Ix tok, Enum tok, Show tok) => GenParser st tok a -> ParseTable st tok a
-evalGSTPtoGenParser p = case p of
+evalGenParserToParseTable :: (Ix tok, Enum tok, Show tok) => GenParser st tok a -> ParseTable st tok a
+evalGenParserToParseTable p = case p of
   GenParserBacktrack -> mzero
   GenParserConst   a -> return a
   GenParserFail  msg -> fail msg
@@ -1216,7 +1216,7 @@ evalGSTPtoGenParser p = case p of
         [(tok, m)]  -> return $ do
           t <- fmap tokType (ParseTable look1)
           guard (t==tok)
-          ParseTableMap{parserMap = M.map evalGSTPtoGenParser m}
+          ParseTableMap{parserMap = M.map evalGenParserToParseTable m}
         (tok, _):ax' -> do
           let minmax = findBounds tok ax'
               bx     = concatMap (\ (tok, par) -> map ((,)tok) (mkmap par)) ax
@@ -1229,10 +1229,10 @@ evalGSTPtoGenParser p = case p of
         [(tok, gstp)] -> return $ do
           t <- fmap tokType (ParseTable look1)
           guard (t==tok)
-          evalGSTPtoGenParser gstp
+          evalGenParserToParseTable gstp
         (tok, _):ax'  -> do
           let minmax = findBounds tok ax'
-              bx = map (\ (tok, par) -> (tok, evalGSTPtoGenParser par)) ax
+              bx = map (\ (tok, par) -> (tok, evalGenParserToParseTable par)) ax
           return (ParseTableArray{parserTableArray = accumArray (\_ a -> a) mzero minmax bx})
     mkmap :: (Ix tok, Enum tok, Show tok) => M.Map UStr (GenParser st tok a) -> [ParseTable st tok a]
     mkmap m = case M.assocs m of
@@ -1240,8 +1240,8 @@ evalGSTPtoGenParser p = case p of
       [(str, gstp)] -> return $ do
         t <- fmap tokToUStr (ParseTable look1)
         guard (t==str)
-        evalGSTPtoGenParser gstp
-      _             -> return (ParseTableMap{parserMap = M.map evalGSTPtoGenParser m})
+        evalGenParserToParseTable gstp
+      _             -> return (ParseTableMap{parserMap = M.map evalGenParserToParseTable m})
 
 ----------------------------------------------------------------------------------------------------
 

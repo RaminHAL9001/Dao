@@ -199,7 +199,7 @@ instance Show tok =>
       in  if null msg then "Unknown parser error" else msg
 
 -- | An initial blank parser error.
-parserErr :: (Eq tok, Enum tok) => LineNum -> ColumnNum -> GenError st tok
+parserErr :: Eq tok => LineNum -> ColumnNum -> GenError st tok
 parserErr lineNum colNum =
   GenError
   { parseErrLoc = Just $
@@ -237,7 +237,7 @@ data GenLexerState tok
 
 -- | Create a new lexer state using the given input 'Prelude.String'. This is only realy useful if
 -- you must evaluate 'runLexerState'.
-newLexerState :: (Eq tok, Enum tok) => String -> GenLexerState tok
+newLexerState :: Eq tok => String -> GenLexerState tok
 newLexerState input =
   GenLexerState
   { lexTabWidth      = 4
@@ -251,9 +251,9 @@ newLexerState input =
 
 -- | 'parse' will evaluate the 'GenLexer' over the input string first. If the 'GenLexer' fails, it
 -- will evaluate to a 'Dao.Prelude.PFail' value containing a 'GenError' value of type:
--- > ('Prelude.Eq' tok, 'Prelude.Enum' tok) => 'GenError' ('GenLexerState' tok)
+-- > 'Prelude.Eq' tok => 'GenError' ('GenLexerState' tok)
 -- However the 'TokStream's evaluate to 'GenError's containing type:
--- > ('Prelude.Eq' tok, 'Prelude.Enum' tok) => 'GenError' ('TokStreamState' st tok)
+-- > 'Prelude.Eq' tok => 'GenError' ('TokStreamState' st tok)
 -- This function provides an easy way to convert between the two 'GenError' types, however since
 -- the state value @st@ is polymorphic, you will need to insert your parser state into the error
 -- value after evaluating this function. For example:
@@ -261,7 +261,7 @@ newLexerState input =
 -- >    'Dao.Predicate.PFail' lexErr -> 'Dao.Predicate.PFail' (('lexErrToParseErr' lexErr){'parseStateAtErr' = Nothing})
 -- >    ....
 lexErrToParseErr
-  :: (Eq tok, Enum tok)
+  :: Eq tok
   => GenError (GenLexerState tok) tok
   -> GenError (TokStreamState st tok) tok
 lexErrToParseErr lexErr =
@@ -294,9 +294,9 @@ lexErrToParseErr lexErr =
 newtype GenLexer tok a = GenLexer{
     runLexer :: PTrans (GenError (GenLexerState tok) tok) (State (GenLexerState tok)) a
   }
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   Functor (GenLexer tok) where { fmap fn (GenLexer lex) = GenLexer (fmap fn lex) }
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   Monad (GenLexer tok) where
     (GenLexer fn) >>= mfn          = GenLexer (fn >>= runLexer . mfn)
     return                         = GenLexer . return
@@ -304,58 +304,58 @@ instance (Eq tok, Enum tok) =>
       st <- get
       throwError $
         (parserErr (lexCurrentLine st) (lexCurrentColumn st)){parseErrMsg = Just (ustr msg)}
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   MonadPlus (GenLexer tok) where
     mplus (GenLexer a) (GenLexer b) = GenLexer (mplus a b)
     mzero                           = GenLexer mzero
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   Applicative (GenLexer tok) where { pure = return; (<*>) = ap; }
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   Alternative (GenLexer tok) where { empty = mzero; (<|>) = mplus; }
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   MonadState (GenLexerState tok) (GenLexer tok) where
     get = GenLexer (lift get)
     put = GenLexer . lift . put
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   MonadError (GenError (GenLexerState tok) tok) (GenLexer tok) where
     throwError                        = GenLexer . throwError
     catchError (GenLexer try) catcher = GenLexer (catchError try (runLexer . catcher))
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   MonadPlusError (GenError (GenLexerState tok) tok) (GenLexer tok) where
     catchPValue (GenLexer try) = GenLexer (catchPValue try)
     assumePValue               = GenLexer . assumePValue
-instance (Eq tok, Enum tok, Monoid a) =>
+instance (Eq tok, Monoid a) =>
   Monoid (GenLexer tok a) where { mempty = return mempty; mappend a b = liftM2 mappend a b; }
 
 -- | Append the first string parameter to the 'lexBuffer', and set the 'lexInput' to the value of
 -- the second string parameter. Most lexers simply takes the input, breaks it, then places the two
 -- halves back into the 'LexerState', which is what this function does. *Be careful* you don't pass
 -- the wrong string as the second parameter. Or better yet, don't use this function.
-lexSetState :: (Eq tok, Enum tok) => String -> String -> GenLexer tok ()
+lexSetState :: Eq tok => String -> String -> GenLexer tok ()
 lexSetState got remainder = modify $ \st ->
   st{lexBuffer = lexBuffer st ++ got, lexInput = remainder}
 
 -- | Unlike simply evaluating 'Control.Monad.mzero', 'lexBacktrack' will push the contents of the
 -- 'lexBuffer' back onto the 'lexInput'. This is inefficient, so if you rely on this too often you
 -- should probably re-think the design of your lexer.
-lexBacktrack :: (Eq tok, Enum tok) => GenLexer tok ig
+lexBacktrack :: Eq tok => GenLexer tok ig
 lexBacktrack = modify (\st -> st{lexBuffer = "", lexInput = lexBuffer st ++ lexInput st}) >> mzero
 
 -- | Single character look-ahead, never consumes any tokens, never backtracks unless we are at the
 -- end of input.
-lexLook1 :: (Eq tok, Enum tok) => GenLexer tok Char
+lexLook1 :: Eq tok => GenLexer tok Char
 lexLook1 = gets lexInput >>= \input -> case input of { "" -> mzero ; c:_ -> return c }
 
 -- | Arbitrary look-ahead, creates a and returns copy of the portion of the input string that
 -- matches the predicate. This function never backtracks, and it might be quite inefficient because
 -- it must force strict evaluation of all characters that match the predicate.
-lexCopyWhile :: (Eq tok, Enum tok) => (Char -> Bool) -> GenLexer tok String
+lexCopyWhile :: Eq tok => (Char -> Bool) -> GenLexer tok String
 lexCopyWhile predicate = fmap (takeWhile predicate) (gets lexInput)
 
 -- | A fundamental 'Lexer', uses 'Data.List.break' to break-off characters from the input string
 -- until the given predicate evaluates to 'Prelude.True'. Backtracks if no characters are lexed.
 -- See also: 'charSet' and 'unionCharP'.
-lexWhile :: (Eq tok, Enum tok) => (Char -> Bool) -> GenLexer tok ()
+lexWhile :: Eq tok => (Char -> Bool) -> GenLexer tok ()
 lexWhile predicate = do
   (got, remainder) <- fmap (span predicate) (gets lexInput)
   if null got then mzero else lexSetState got remainder
@@ -364,11 +364,11 @@ lexWhile predicate = do
 -- function is defined as:
 -- > \predicate -> 'lexUntil' ('Prelude.not' . predicate)
 -- See also: 'charSet' and 'unionCharP'.
-lexUntil :: (Eq tok, Enum tok) => (Char -> Bool) -> GenLexer tok ()
+lexUntil :: Eq tok => (Char -> Bool) -> GenLexer tok ()
 lexUntil predicate = lexWhile (not . predicate)
 
 -- lexer: update line/column with string
-lexUpdLineColWithStr :: (Eq tok, Enum tok) => String -> GenLexer tok ()
+lexUpdLineColWithStr :: Eq tok => String -> GenLexer tok ()
 lexUpdLineColWithStr input = do
   st <- get
   let tablen = lexTabWidth st
@@ -387,7 +387,7 @@ lexUpdLineColWithStr input = do
 -- function backtracks if the 'lexBuffer' is empty. If you pass "Prelude.False' as the first
 -- parameter the tokens in the 'lexBuffer' are not stored with the token, the token will only
 -- contain the type.
-makeGetToken  :: (Eq tok, Enum tok) => Bool -> tok -> GenLexer tok (GenToken tok)
+makeGetToken  :: Eq tok => Bool -> tok -> GenLexer tok (GenToken tok)
 makeGetToken storeChars typ = do
   st <- get
   let str = lexBuffer st
@@ -411,35 +411,35 @@ makeGetToken storeChars typ = do
 
 -- | Create a token in the stream without returning it (you usually don't need the token anyway). If
 -- you do need the token, use 'makeGetToken'.
-makeToken :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+makeToken :: Eq tok => tok -> GenLexer tok ()
 makeToken = void . makeGetToken True
 
 -- | Create a token in the stream without returning it (you usually don't need the token anyway). If
 -- you do need the token, use 'makeGetToken'. The token created will not store any characters, only
 -- the type of the token. This can save a lot of memory, but it requires you have very descriptive
 -- token types.
-makeEmptyToken :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+makeEmptyToken :: Eq tok => tok -> GenLexer tok ()
 makeEmptyToken = void . makeGetToken False
 
 -- | Clear the 'lexBuffer' without creating a token.
-clearBuffer :: (Eq tok, Enum tok) => GenLexer tok ()
+clearBuffer :: Eq tok => GenLexer tok ()
 clearBuffer = get >>= \st -> lexUpdLineColWithStr (lexBuffer st) >> put (st{lexBuffer=""})
 
 -- | A fundamental lexer using 'Data.List.stripPrefix' to check whether the given string is at the
 -- very beginning of the input.
-lexString :: (Eq tok, Enum tok) => String -> GenLexer tok ()
+lexString :: Eq tok => String -> GenLexer tok ()
 lexString str =
   gets lexInput >>= assumePValue . maybeToBacktrack . stripPrefix str >>= lexSetState str
 
 -- | A fundamental lexer succeeding if the next 'Prelude.Char' in the 'lexInput' matches the
 -- given predicate. See also: 'charSet' and 'unionCharP'.
-lexCharP ::  (Eq tok, Enum tok) => (Char -> Bool) -> GenLexer tok ()
+lexCharP ::  Eq tok => (Char -> Bool) -> GenLexer tok ()
 lexCharP predicate = gets lexInput >>= \input -> case input of
   c:input | predicate c -> lexSetState [c] input
   _                     -> mzero
 
 -- | Succeeds if the next 'Prelude.Char' on the 'lexInput' matches the given 'Prelude.Char'
-lexChar :: (Eq tok, Enum tok) => Char -> GenLexer tok ()
+lexChar :: Eq tok => Char -> GenLexer tok ()
 lexChar c = lexCharP (==c)
 
 -- | *Not a 'GenLexer'* but useful when passed as the first parameter to 'lexCharP', 'lexWhile' or
@@ -474,11 +474,11 @@ isAlphaNum_ c = isAlphaNum c || c=='_'
 isAlpha_ :: Char -> Bool
 isAlpha_ c = isAlpha c || c=='_'
 
-lexOptional :: (Eq tok, Enum tok) => GenLexer tok () -> GenLexer tok ()
+lexOptional :: Eq tok => GenLexer tok () -> GenLexer tok ()
 lexOptional lexer = mplus lexer (return ())
 
 -- | Backtracks if there are still characters in the input.
-lexEOF :: (Eq tok, Enum tok) => GenLexer tok ()
+lexEOF :: Eq tok => GenLexer tok ()
 lexEOF = fmap (=="") (gets lexInput) >>= guard
 
 -- | Create a 'GenLexer' that will continue scanning until it sees an unescaped terminating
@@ -487,7 +487,7 @@ lexEOF = fmap (=="") (gets lexInput) >>= guard
 -- returns 'Prelude.False' if this tokenizer went to the end of the input without seenig an
 -- un-escaped terminating character.
 lexUntilTerm
-  :: (Eq tok, Enum tok)
+  :: Eq tok
   => GenLexer tok () -> GenLexer tok () -> GenLexer tok () -> GenLexer tok Bool
 lexUntilTerm scanLexer escLexer termLexer = loop where
   skipOne = lexCharP (const True)
@@ -506,7 +506,7 @@ lexUntilTerm scanLexer escLexer termLexer = loop where
 -- | A special case of 'lexUntilTerm', lexes until it finds an un-escaped terminating
 -- 'Prelude.Char'. You must only provide the escape 'Prelude.Char' and the terminating
 -- 'Prelude.Char'.
-lexUntilTermChar :: (Eq tok, Enum tok) => Char -> Char -> GenLexer tok Bool
+lexUntilTermChar :: Eq tok => Char -> Char -> GenLexer tok Bool
 lexUntilTermChar escChar termChar =
   lexUntilTerm (lexUntil (\c -> c==escChar || c==termChar)) (lexChar escChar) (lexChar termChar)
 
@@ -516,7 +516,7 @@ lexUntilTermChar escChar termChar =
 -- an always-backtracking lexer). The most escape and terminating strings are analyzed and the most
 -- efficient method of lexing is decided, so this lexer is guaranteed to be as efficient as
 -- possible.
-lexUntilTermStr :: (Eq tok, Enum tok) => String -> String -> GenLexer tok Bool
+lexUntilTermStr :: Eq tok => String -> String -> GenLexer tok Bool
 lexUntilTermStr escStr termStr = case (escStr, termStr) of
   (""    , ""     ) -> mzero
   (""    , termStr) -> hasOnlyTerm termStr
@@ -544,7 +544,7 @@ lexUntilTermStr escStr termStr = case (escStr, termStr) of
 -- > "unknown characters scanned by $LABEL tokenizer"
 -- where @$LABEL@ is the string passed as parameter 1.
 runLexerLoop
-  :: (Eq tok, Enum tok)
+  :: Eq tok
   => String -> GenLexer tok () -> [GenLexer tok ()] -> GenLexer tok ()
 runLexerLoop msg predicate lexers = loop 0 where
   loop i = do
@@ -563,23 +563,23 @@ runLexerLoop msg predicate lexers = loop 0 where
 -- matches, a token is constructed and it is paired with the remaining string and wrapped into a
 -- 'Data.Maybe.Just' value. Otherwise 'Data.Maybe.Nothing' is returned. The 'Data.Maybe.Maybe' type
 -- is used so you can combine fundamental tokenizers using 'Control.Monad.mplus'.
-lexSimple :: (Eq tok, Enum tok) => tok -> (Char -> Bool) -> GenLexer tok ()
+lexSimple :: Eq tok => tok -> (Char -> Bool) -> GenLexer tok ()
 lexSimple tok predicate = lexWhile predicate >> makeToken tok
 
 -- | A fundamental lexer using 'Data.Char.isSpace' and evaluating to a 'Space' token.
-lexSpace :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexSpace :: Eq tok => tok -> GenLexer tok ()
 lexSpace tok = lexSimple tok isSpace
 
 -- | A fundamental lexer using 'Data.Char.isAlpha' and evaluating to a 'Alphabetic' token.
-lexAlpha :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexAlpha :: Eq tok => tok -> GenLexer tok ()
 lexAlpha tok = lexSimple tok isAlpha
 
 -- | A fundamental lexer using 'Data.Char.isDigit' and evaluating to a 'Digits' token.
-lexDigits :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexDigits :: Eq tok => tok -> GenLexer tok ()
 lexDigits tok = lexSimple tok isDigit
 
 -- | A fundamental lexer using 'Data.Char.isHexDigit' and evaluating to a 'HexDigit' token.
-lexHexDigits :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexHexDigits :: Eq tok => tok -> GenLexer tok ()
 lexHexDigits tok = lexSimple tok isHexDigit
 
 -- | Constructs an operator 'GenLexer' from a string of operators separated by spaces. For example,
@@ -588,7 +588,7 @@ lexHexDigits tok = lexSimple tok isHexDigit
 -- once, the characters @+=@ are guaranteed to be parsed as a single operator @["+="]@ and not as
 -- @["+", "="]@. *No token is created,* you must create your token using 'makeToken' or
 -- 'makeEmptyToken' immediately after evaluating this tokenizer.
-lexOperator :: (Eq tok, Enum tok) => String -> GenLexer tok ()
+lexOperator :: Eq tok => String -> GenLexer tok ()
 lexOperator ops =
   msum (map (\op -> lexString op) $ reverse $ nub $ sortBy len $ words ops)
   where
@@ -597,10 +597,10 @@ lexOperator ops =
       GT -> GT
       LT -> LT
 
-lexToEndline :: (Eq tok, Enum tok) => GenLexer tok ()
+lexToEndline :: Eq tok => GenLexer tok ()
 lexToEndline = lexUntil (=='\n')
 
-lexInlineComment :: (Eq tok, Enum tok) => tok -> String -> String -> GenLexer tok ()
+lexInlineComment :: Eq tok => tok -> String -> String -> GenLexer tok ()
 lexInlineComment tok startStr endStr = do
   lexString startStr
   completed <- lexUntilTermStr "" endStr
@@ -608,23 +608,23 @@ lexInlineComment tok startStr endStr = do
     then  makeToken tok
     else  fail "comment runs past end of input"
 
-lexInlineC_Comment :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexInlineC_Comment :: Eq tok => tok -> GenLexer tok ()
 lexInlineC_Comment tok = lexInlineComment tok "/*" "*/"
 
-lexEndlineC_Comment :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexEndlineC_Comment :: Eq tok => tok -> GenLexer tok ()
 lexEndlineC_Comment tok = lexString "//" >> lexUntil (=='\n') >> makeToken tok
 
-lexInlineHaskellComment :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexInlineHaskellComment :: Eq tok => tok -> GenLexer tok ()
 lexInlineHaskellComment tok = lexInlineComment tok "{-" "-}"
 
-lexEndlineHaskellComment :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexEndlineHaskellComment :: Eq tok => tok -> GenLexer tok ()
 lexEndlineHaskellComment tok = lexString "--" >> lexToEndline >> makeToken tok
 
 -- | A lot of programming languages provide only end-line comments beginning with a (@#@) character.
-lexEndlineCommentHash :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexEndlineCommentHash :: Eq tok => tok -> GenLexer tok ()
 lexEndlineCommentHash tok = lexChar '#' >> lexToEndline >> makeToken tok
 
-lexStringLiteral :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexStringLiteral :: Eq tok => tok -> GenLexer tok ()
 lexStringLiteral tok = do
   lexChar '"'
   completed <- lexUntilTermChar '\\' '"'
@@ -632,7 +632,7 @@ lexStringLiteral tok = do
     then  makeToken tok
     else  fail "string literal expression runs past end of input"
 
-lexCharLiteral :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexCharLiteral :: Eq tok => tok -> GenLexer tok ()
 lexCharLiteral tok = lexChar '\'' >> lexUntilTermChar '\\' '\'' >> makeToken tok
 
 -- | This actually tokenizes a general label: alpha-numeric and underscore characters starting with
@@ -640,7 +640,7 @@ lexCharLiteral tok = lexChar '\'' >> lexUntilTermChar '\\' '\'' >> makeToken tok
 -- Evaluates to a 'Keyword' token type, it is up to the 'TokStream's in the syntacticAnalysis phase
 -- to sort out which 'Keyword's are actually keywords and which are labels for things like variable
 -- names.
-lexKeyword :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexKeyword :: Eq tok => tok -> GenLexer tok ()
 lexKeyword tok = do
   lexWhile (\c -> isAlpha c || c=='_')
   lexOptional (lexWhile (\c -> isAlphaNum c || c=='_'))
@@ -662,7 +662,7 @@ lexKeyword tok = do
 -- decimal numbers are also lexed appropriately, and this includes floating-point numbers expressed
 -- in hexadecimal. Again, if your language must disallow hexadecimal floating-point numbers, throw
 -- an error in the 'syntacticAnalysis' phase.
-lexNumber :: (Eq tok, Enum tok) => tok -> tok -> tok -> tok -> GenLexer tok ()
+lexNumber :: Eq tok => tok -> tok -> tok -> tok -> GenLexer tok ()
 lexNumber digits hexDigits number numberExp = do
   let altBase typ xb@(u:l:_) pred = do
         lexCharP (charSet xb)
@@ -708,7 +708,7 @@ lexNumber digits hexDigits number numberExp = do
 -- label may start with a lower-case letter or underscore, or the final label may also be
 -- punctuation surrounded by parens. Examples are: @Aaa.Bbb@, @D.Ee_ee.ccc123@, @Aaa.Bbb.Ccc.___d1@,
 -- @A.B.C.(-->)@.
-lexHaskellLabel :: (Eq tok, Enum tok) => tok -> GenLexer tok ()
+lexHaskellLabel :: Eq tok => tok -> GenLexer tok ()
 lexHaskellLabel tok = loop 0 where
   label    = do
     lexCharP (\c -> isUpper c && isAlpha c)
@@ -724,7 +724,7 @@ lexHaskellLabel tok = loop 0 where
 -- | Takes a 'tokenStream' resulting from the evaulation of 'lexicalAnalysis' and breaks it into
 -- 'GenLine's. This makes things a bit more efficient because it is not necessary to store a line
 -- number with every single token. It is necessary for initializing a 'TokStream'.
-tokenStreamToLines :: (Eq tok, Enum tok) => [GenTokenAt tok] -> [GenLine tok]
+tokenStreamToLines :: Eq tok => [GenTokenAt tok] -> [GenLine tok]
 tokenStreamToLines toks = loop toks where
   makeLine num toks =
     GenLine
@@ -741,14 +741,14 @@ tokenStreamToLines toks = loop toks where
 -- | The 'GenLexer's analogue of 'Control.Monad.State.runState', runs the lexer using an existing
 -- 'LexerState'.
 lexicalAnalysis
-  :: (Eq tok, Enum tok)
+  :: Eq tok
   => GenLexer tok a
   -> GenLexerState tok
   -> (PValue (GenError (GenLexerState tok) tok) a, GenLexerState tok)
 lexicalAnalysis lexer st = runState (runPTrans (runLexer lexer)) st
 
 testLexicalAnalysis_withFilePath
-  :: (Eq tok, Enum tok, Show tok)
+  :: (Eq tok, Show tok)
   => GenLexer tok () -> FilePath -> TabWidth -> String -> IO ()
 testLexicalAnalysis_withFilePath tokenizer filepath tablen input = putStrLn report where
   (result, st) = lexicalAnalysis tokenizer ((newLexerState input){lexTabWidth=tablen})
@@ -771,14 +771,14 @@ testLexicalAnalysis_withFilePath tokenizer filepath tablen input = putStrLn repo
 -- | Run the 'lexicalAnalysis' with the 'GenLexer' on the given 'Prelude.String' and print out
 -- every token created.
 testLexicalAnalysis
-  :: (Eq tok, Enum tok, Show tok)
+  :: (Eq tok, Show tok)
   => GenLexer tok () -> TabWidth -> String -> IO ()
 testLexicalAnalysis a b c = testLexicalAnalysis_withFilePath a "" b c
 
 -- | Run the 'lexicalAnalysis' with the 'GenLexer' on the contents of the file at the the given
 -- 'System.IO.FilePath' 'Prelude.String' and print out every token created.
 testLexicalAnalysisOnFile
-  :: (Eq tok, Enum tok, Show tok)
+  :: (Eq tok, Show tok)
   => GenLexer tok () -> TabWidth -> FilePath -> IO ()
 testLexicalAnalysisOnFile a b c = readFile c >>= testLexicalAnalysis_withFilePath a c b
 
@@ -805,11 +805,11 @@ testLexicalAnalysisOnFile a b c = readFile c >>= testLexicalAnalysis_withFilePat
 -- > 'unshift'
 -- but these default definitions are very inefficient. Hopefully your parser will extend a more
 -- efficient instantiation of 'MonadParser' such as 'TokStream' or better yet 'GenParser'.
-class (Eq tok, Enum tok, Monad (parser tok), MonadPlus (parser tok)) =>
+class (Eq tok, Monad (parser tok), MonadPlus (parser tok)) =>
   MonadParser parser tok where
     -- | A 'Control.Monad.guard'-like function that backtracks if there are still tokens in the
     -- token stream, or succeeds if there are no tokens left.
-    guardEOF :: (Eq tok, Enum tok) => parser tok ()
+    guardEOF :: Eq tok => parser tok ()
     -- | Put a token and it's positional information into the front of the token stream, so the very
     -- next call to 'shiftPos' or 'look1Pos' will retrieve the information you passed to this
     -- function. This is used to implement backtracking in a function like 'tokenP'. Use of this
@@ -908,11 +908,11 @@ data TokStreamState st tok
       -- next token is cached here.
     }
 
-newParserState :: (Eq tok, Enum tok) => ust -> [GenLine tok] -> TokStreamState ust tok
+newParserState :: Eq tok => ust -> [GenLine tok] -> TokStreamState ust tok
 newParserState userState lines =
   TokStreamState{userState = userState, getLines = lines, recentTokens = []}
 
-modifyUserState :: (Eq tok, Enum tok) => (st -> st) -> TokStream st tok ()
+modifyUserState :: Eq tok => (st -> st) -> TokStream st tok ()
 modifyUserState fn = modify (\st -> st{userState = fn (userState st)})
 
 -- | The task of the 'TokStream' monad is to look at every token in order and construct syntax trees
@@ -931,9 +931,9 @@ newtype TokStream ust tok a
       parserToPTrans ::
         PTrans (GenError (TokStreamState ust tok) tok) (State (TokStreamState ust tok)) a
     }
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   Functor   (TokStream st tok) where { fmap f (TokStream a) = TokStream (fmap f a) }
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   Monad (TokStream ust tok) where
     (TokStream ma) >>= mfa = TokStream (ma >>= parserToPTrans . mfa)
     return a               = TokStream (return a)
@@ -948,19 +948,19 @@ instance (Eq tok, Enum tok) =>
         , parseErrTok = tok
         , parseStateAtErr = Just st
         }
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   MonadPlus (TokStream ust tok) where
     mzero                             = TokStream mzero
     mplus (TokStream a) (TokStream b) = TokStream (mplus a b)
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   Applicative (TokStream ust tok) where { pure = return ; (<*>) = ap; }
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   Alternative (TokStream ust tok) where { empty = mzero; (<|>) = mplus; }
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   MonadState (TokStreamState ust tok) (TokStream ust tok) where
     get = TokStream (PTrans (fmap OK get))
     put = TokStream . PTrans . fmap OK . put
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   MonadError (GenError (TokStreamState ust tok) tok) (TokStream ust tok) where
     throwError err = do
       st <- get
@@ -971,13 +971,13 @@ instance (Eq tok, Enum tok) =>
         OK      a -> return a
         Backtrack -> mzero
         PFail err -> parserToPTrans (catcher err)
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   MonadPlusError (GenError (TokStreamState ust tok) tok) (TokStream ust tok) where
     catchPValue (TokStream ptrans) = TokStream (catchPValue ptrans)
     assumePValue                   = TokStream . assumePValue
-instance (Eq tok, Enum tok, Monoid a) =>
+instance (Eq tok, Monoid a) =>
   Monoid (TokStream ust tok a) where { mempty = return mempty; mappend a b = liftM2 mappend a b; }
-instance (Eq tok, Enum tok) =>
+instance Eq tok =>
   MonadParser (TokStream ust) tok where
     guardEOF = mplus (look1Pos >> return False) (return True) >>= guard
     unshift postok = modify (\st -> st{recentTokens = postok : recentTokens st})
@@ -986,7 +986,7 @@ instance (Eq tok, Enum tok) =>
 
 -- | Return the next token in the state along with it's line and column position. If the boolean
 -- parameter is true, the current token will also be removed from the state.
-nextTokenPos :: (Eq tok, Enum tok) => Bool -> TokStream st tok (LineNum, ColumnNum, GenToken tok)
+nextTokenPos :: Eq tok => Bool -> TokStream st tok (LineNum, ColumnNum, GenToken tok)
 nextTokenPos doRemove = do
   st <- get
   case recentTokens st of
@@ -1092,20 +1092,20 @@ data ParseTable st tok a
   | ParseTable { tokStreamParser :: TokStream st tok a }
     -- ^ a plain parser function, used for lifting 'TokStream' into the 'ParseTable' monad,
     -- specificaly for the 'Control.Monad.return' function.
-instance (Ix tok, Enum tok) => Monad (ParseTable st tok) where
+instance Ix tok => Monad (ParseTable st tok) where
   return a = ParseTable { tokStreamParser = return a }
   fail     = ParseTable . fail
   parser >>= bindTo =
     ParseTable{
       tokStreamParser = evalTableToTokStream parser >>= \a -> evalTableToTokStream (bindTo a)
     }
-instance (Ix tok, Enum tok) => Functor (ParseTable ust tok) where
+instance Ix tok => Functor (ParseTable ust tok) where
   fmap f parser = case parser of
     ParseTableArray     arr        ->
       ParseTableArray { parseTableArray = amap (\origFunc -> fmap f origFunc) arr }
     ParseTable      parser ->
       ParseTable{ tokStreamParser = fmap f parser}
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   MonadPlus (ParseTable ust tok) where
     mzero     = ParseTable{ tokStreamParser = mzero }
     mplus a b = case a of
@@ -1122,26 +1122,26 @@ instance (Ix tok, Enum tok) =>
           ax@((tok, func):_) -> ParseTableArray{
               parseTableArray = accumArray mplus mzero (minmax tok ax) ax
             }
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   Applicative (ParseTable ust tok) where { pure = return; (<*>) = ap; }
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   Alternative (ParseTable ust tok) where { empty = mzero; (<|>) = mplus; }
-instance (Ix tok, Enum tok, Monoid a) =>
+instance (Ix tok, Monoid a) =>
   Monoid (ParseTable ust tok a) where { mempty = return mempty; mappend a b = liftM2 mappend a b; }
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   MonadState ust (ParseTable ust tok) where
     get = ParseTable (gets userState)
     put st = ParseTable $ modify $ \parserState -> parserState{userState=st}
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   MonadError (GenError (TokStreamState ust tok) tok) (ParseTable ust tok) where
     throwError = ParseTable . throwError
     catchError trial catcher = ParseTable $
       catchError (evalTableToTokStream trial) (\err -> evalTableToTokStream (catcher err))
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   MonadPlusError (GenError (TokStreamState ust tok) tok) (ParseTable ust tok) where
     catchPValue ptrans = ParseTable (catchPValue (evalTableToTokStream ptrans))
     assumePValue       = ParseTable . assumePValue
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   MonadParser (ParseTable ust) tok where
     guardEOF = ParseTable guardEOF
     unshift  = ParseTable . unshift
@@ -1149,7 +1149,7 @@ instance (Ix tok, Enum tok) =>
     look1Pos = ParseTable look1Pos
 
 -- | Evaluate a 'ParseTable' to a 'TokStream'.
-evalTableToTokStream :: (Ix tok, Enum tok) => ParseTable st tok a -> TokStream st tok a
+evalTableToTokStream :: Ix tok => ParseTable st tok a -> TokStream st tok a
 evalTableToTokStream table = case table of
   ParseTable      parser -> parser
   ParseTableArray parser -> evalParseArray parser
@@ -1160,12 +1160,12 @@ evalTableToTokStream table = case table of
 -- value of the token is passed to the selected 'TokStream'. If the 'tokType' does not exist in the
 -- table, or if the selected parser backtracks, this parser backtracks and the selecting token is
 -- shifted back onto the stream.
-evalParseArray :: (Ix tok, Enum tok) => Array tok (ParseTable st tok a) -> TokStream st tok a
+evalParseArray :: Ix tok => Array tok (ParseTable st tok a) -> TokStream st tok a
 evalParseArray arr = do
   tok <- fmap tokType look1
   if inRange (bounds arr) tok then evalTableToTokStream (arr!tok) else mzero
 
-evalParseMap :: (Ix tok, Enum tok) => M.Map UStr (ParseTable st tok a) -> TokStream st tok a
+evalParseMap :: Ix tok => M.Map UStr (ParseTable st tok a) -> TokStream st tok a
 evalParseMap m = do
   tok <- fmap tokToUStr look1
   join $ fmap evalTableToTokStream $ assumePValue $ maybeToBacktrack $ M.lookup tok m
@@ -1201,7 +1201,7 @@ data GenParser ust tok a
     , checkToken          :: M.Map tok  (GenParser ust tok a)
     , checkString         :: M.Map UStr (GenParser ust tok a)
     }
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   Monad (GenParser ust tok) where
     return     = GenParserConst
     fail       = GenParserFail
@@ -1220,7 +1220,7 @@ instance (Ix tok, Enum tok) =>
         , checkToken          = fmap (>>=bind) tok
         , checkString         = fmap (>>=bind) str
         }
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   Functor (GenParser ust tok) where
     fmap f p = case p of
       GenParserBacktrack -> GenParserBacktrack
@@ -1233,7 +1233,7 @@ instance (Ix tok, Enum tok) =>
         , checkToken          = fmap (fmap f) tok
         , checkString         = fmap (fmap f) str
         }
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   MonadPlus (GenParser ust tok) where
     mzero     = GenParserBacktrack
     mplus a b = case a of
@@ -1267,24 +1267,24 @@ instance (Ix tok, Enum tok) =>
           , checkToken          = M.unionWith              mplus  tokA    tokB
           , checkString         = M.unionWith              mplus strA    strB
           }
-instance (Ix tok, Enum tok) => Applicative (GenParser ust tok) where { pure = return; (<*>) = ap; }
-instance (Ix tok, Enum tok) => Alternative (GenParser ust tok) where { empty = mzero; (<|>) = mplus; }
-instance (Ix tok, Enum tok, Monoid a) =>
+instance Ix tok => Applicative (GenParser ust tok) where { pure = return; (<*>) = ap; }
+instance Ix tok => Alternative (GenParser ust tok) where { empty = mzero; (<|>) = mplus; }
+instance (Ix tok, Monoid a) =>
   Monoid (GenParser ust tok a) where { mempty = return mempty; mappend a b = liftM2 mappend a b; }
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   MonadState ust (GenParser ust tok) where
     get = GenParserUpdate get
     put = GenParserUpdate . put
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   MonadError (GenError (TokStreamState ust tok) tok) (GenParser ust tok) where
     throwError = GenParserUpdate . throwError
     catchError trial catcher = GenParserUpdate $
       catchError (evalGenParserToParseTable trial) (\err -> evalGenParserToParseTable (catcher err))
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   MonadPlusError (GenError (TokStreamState ust tok) tok) (GenParser ust tok) where
     catchPValue ptrans = GenParserUpdate (catchPValue (evalGenParserToParseTable ptrans))
     assumePValue       = GenParserUpdate . assumePValue
-instance (Ix tok, Enum tok) =>
+instance Ix tok =>
   MonadParser (GenParser ust) tok where
     guardEOF = GenParserUpdate guardEOF
     unshift  = GenParserUpdate . unshift
@@ -1309,10 +1309,10 @@ emptyTable =
   , checkString         = M.empty
   }
 
-tokenTypeUStr :: (Ix tok, Enum tok) => tok -> UStr -> GenParser ust tok a -> GenParser ust tok a
+tokenTypeUStr :: Ix tok => tok -> UStr -> GenParser ust tok a -> GenParser ust tok a
 tokenTypeUStr t u = tokenP (GenToken{tokType=t, tokUStr=u})
 
-tokenTypeStr :: (Ix tok, Enum tok) => tok -> String -> GenParser ust tok a -> GenParser ust tok a
+tokenTypeStr :: Ix tok => tok -> String -> GenParser ust tok a -> GenParser ust tok a
 tokenTypeStr t s = tokenTypeUStr t (ustr s)
 
 -- | Convert a 'GenParser' to a 'ParseTable'. Doing this will lazily construct a sparse matrix which
@@ -1320,7 +1320,7 @@ tokenTypeStr t s = tokenTypeUStr t (ustr s)
 -- 'Data.Ix.Ix'. Try to keep the resulting 'ParseTable' in scope for as long as there is a
 -- possibility that you will use it. Every time this function is evaluated, a new set of
 -- 'Data.Array.IArray.Array's are constructed to build the sparse matrix.
-evalGenParserToParseTable :: (Ix tok, Enum tok) => GenParser st tok a -> ParseTable st tok a
+evalGenParserToParseTable :: Ix tok => GenParser st tok a -> ParseTable st tok a
 evalGenParserToParseTable p = case p of
   GenParserBacktrack -> mzero
   GenParserConst   a -> return a
@@ -1333,7 +1333,7 @@ evalGenParserToParseTable p = case p of
     ]
   where
     findBounds tok = foldl (\ (min0, max0) (tok, _) -> (min min0 tok, max max0 tok)) (tok, tok)
-    mkMapArray :: (Ix tok, Enum tok) => M.Map tok (M.Map UStr (GenParser st tok a)) -> [ParseTable st tok a]
+    mkMapArray :: Ix tok => M.Map tok (M.Map UStr (GenParser st tok a)) -> [ParseTable st tok a]
     mkMapArray m = do
       let ax = M.assocs m
       case ax of
@@ -1346,7 +1346,7 @@ evalGenParserToParseTable p = case p of
           let minmax = findBounds tok ax'
               bx     = concatMap (\ (tok, par) -> map ((,)tok) (mkmap par)) ax
           return (ParseTableArray{parseTableArray = accumArray (\_ a -> a) mzero minmax bx})
-    mkArray :: (Ix tok, Enum tok) => M.Map tok (GenParser st tok a) -> [ParseTable st tok a]
+    mkArray :: Ix tok => M.Map tok (GenParser st tok a) -> [ParseTable st tok a]
     mkArray m = do
       let ax = M.assocs m
       case ax of
@@ -1359,7 +1359,7 @@ evalGenParserToParseTable p = case p of
           let minmax = findBounds tok ax'
               bx = map (\ (tok, par) -> (tok, evalGenParserToParseTable par)) ax
           return (ParseTableArray{parseTableArray = accumArray (\_ a -> a) mzero minmax bx})
-    mkmap :: (Ix tok, Enum tok) => M.Map UStr (GenParser st tok a) -> [ParseTable st tok a]
+    mkmap :: Ix tok => M.Map UStr (GenParser st tok a) -> [ParseTable st tok a]
     mkmap m = case M.assocs m of
       []            -> mzero
       [(str, gstp)] -> return $ do
@@ -1391,7 +1391,7 @@ data GenCFGrammar st tok synTree
 
 -- | This is *the function that parses* an input string according to a given 'GenCFGrammar'.
 parse
-  :: (Eq tok, Enum tok)
+  :: Eq tok
   => GenCFGrammar st tok synTree
   -> st -> String -> PValue (GenError st tok) synTree
 parse cfg st input = case lexicalResult of

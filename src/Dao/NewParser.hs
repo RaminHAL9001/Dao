@@ -54,8 +54,18 @@ type TabWidth  = Word
 
 ----------------------------------------------------------------------------------------------------
 
--- | Used mostly by 'Dao.Parser' and 'Dao.Object.Parser' but is also used to report location of
--- errors and are stored in the abstract syntax tree, 'ObjectExpr', 'ScriptExpr'.
+-- | If an object contains a location, it can instantiate this class to allow locations to be
+-- updated or deleted (deleted by converting it to 'LocationUnknown'. Only three types in this
+-- module instantiate this class, but any data type that makes up an Abstract Syntax Tree, for
+-- example 'Dao.Object.ObjectExpr' or 'Dao.Object.AST.ObjectExrpr' also instantiate this class.
+class HasLocation a where
+  getLocation :: a -> Location
+  setLocation :: a -> Location -> a
+
+-- | Contains two points, a starting and and ending point, where each point consists of a row (line
+-- number) and column (character count from the beginning of a line) for locating entities in a
+-- parsable text. This type does not contain information regarding the source of the text, or
+-- whether or not the input text is a file or stream.
 data Location
   = LocationUnknown
   | Location -- ^ the 'Location' but without the starting/ending character count
@@ -65,16 +75,30 @@ data Location
     , endingColumn   :: ColumnNum
     }
   deriving (Eq, Typeable)
-
-atPoint :: LineNum -> ColumnNum -> Location
-atPoint a b =
-  Location
-  { startingLine   = a
-  , endingLine     = a
-  , startingColumn = b
-  , endingColumn   = b
-  }
-
+instance HasLocation Location where { getLocation = id; setLocation = flip const; }
+instance Show Location where
+  show t = case t of
+    LocationUnknown -> ""
+    _ -> show (startingLine t) ++ ':' : show (startingColumn t)
+instance Monoid Location where
+  mempty =
+    Location
+    { startingLine   = 0
+    , startingColumn = 0
+    , endingLine     = 0
+    , endingColumn   = 0
+    }
+  mappend loc a = case loc of
+    LocationUnknown -> a
+    _ -> case a of
+      LocationUnknown -> loc
+      _ ->
+        loc
+        { startingLine   = min (startingLine   loc) (startingLine   a)
+        , startingColumn = min (startingColumn loc) (startingColumn a)
+        , endingLine     = max (endingLine     loc) (endingLine     a)
+        , endingColumn   = max (endingColumn   loc) (endingColumn   a)
+        }
 instance Ord Location where
   compare a b = case (a,b) of
     (LocationUnknown, LocationUnknown) -> EQ
@@ -98,6 +122,16 @@ instance Ord Location where
   -- sort lists of locations from least to greatest and hopefully get the most helpful, most
   -- specific location at the top of the list.
 
+-- | Create a location where the starting and ending point is the same row and column.
+atPoint :: LineNum -> ColumnNum -> Location
+atPoint a b =
+  Location
+  { startingLine   = a
+  , endingLine     = a
+  , startingColumn = b
+  , endingColumn   = b
+  }
+
 -- | The the coordinates from a 'Location':
 -- @(('startingLine', 'startingColumn'), ('endingLine', 'endingColumn'))@
 locationCoords :: Location -> Maybe ((LineNum, ColumnNum), (LineNum, ColumnNum))
@@ -105,82 +139,100 @@ locationCoords loc = case loc of
   LocationUnknown -> Nothing
   _ -> Just ((startingLine loc, startingColumn loc), (endingLine loc, endingColumn loc))
 
-class HasLocation a where
-  getLocation :: a -> Location
-  setLocation :: a -> Location -> a
+----------------------------------------------------------------------------------------------------
+-- $All about tokens
+-- This module was designed to create parsers which operate in two phases: a lexical analysis phase
+-- (see 'lexicalAnalysis') where input text is split up into tokens, and a syntactic analysis phase
+-- where a stream of tokens is converted into data. 'GenToken' is the data type that makes this
+-- possible.
 
-instance Show Location where
-  show t = case t of
-    LocationUnknown -> ""
-    _ -> show (startingLine t) ++ ':' : show (startingColumn t)
+-- | Used by 'GenTokenAt' and 'GenLine'. This class is probably not useful outside of this module.
+class HasLineNumber   a where
+  lineNumber    :: a -> LineNum
+  setLineNumber :: a -> LineNum -> a
 
-instance Monoid Location where
-  mempty =
-    Location
-    { startingLine   = 0
-    , startingColumn = 0
-    , endingLine     = 0
-    , endingColumn   = 0
-    }
-  mappend loc a = case loc of
-    LocationUnknown -> a
-    _ -> case a of
-      LocationUnknown -> loc
-      _ ->
-        loc
-        { startingLine   = min (startingLine   loc) (startingLine   a)
-        , startingColumn = min (startingColumn loc) (startingColumn a)
-        , endingLine     = max (endingLine     loc) (endingLine     a)
-        , endingColumn   = max (endingColumn   loc) (endingColumn   a)
-        }
+-- | Used by 'GenTokenAt' and 'GenLine'. This class is probably not useful outside of this module.
+class HasColumnNumber a where
+  columnNumber    :: a -> ColumnNum
+  setColumnNumber :: a -> ColumnNum -> a
 
+-- | Every token emitted by a lexical analyzer must have at least a type. 'GenToken' is polymorphic
+-- over the type of token. The 'MonadParser' class only requires tokens to instantiate 'Prelude.Eq',
+-- but you will find that the useful parser defined in this module, the 'GenParser', requires tokens
+-- to instantiate 'Data.Ix.Ix' so that tokens can be used as indecies to 'Data.Array.IArray.Array's
+-- in order to implement fast lookup tables.
 data GenToken tok
   = GenEmptyToken { tokType :: tok }
+    -- ^ Often times, tokens may not need to contain any text. This is often true of opreator
+    -- symbols and keywords. This constructor constructs a token with just a type and no text. The
+    -- more descriptive your token types are, the less you need you will have for storing the text
+    -- along with the token type, and the more memory you will save.
   | GenCharToken  { tokType :: tok, tokChar :: !Char }
+    -- ^ Constructs tokens along with the text. If the text is only a single character, this
+    -- constructor is used, which can save a little memory as compared to storing a
+    -- 'Dao.String.UStr'.
   | GenToken      { tokType :: tok, tokUStr :: UStr }
+    -- ^ Constructs tokens that contain a copy of the text extracted by the lexical analyzer to
+    -- create the token.
 instance Show tok => Show (GenToken tok) where
   show tok = show (tokType tok) ++ " " ++ show (tokToUStr tok)
 
-class HasLineNumber   a where { lineNumber   :: a -> LineNum }
-class HasColumnNumber a where { columnNumber :: a -> ColumnNum }
-
+-- | If the lexical analyzer emitted a token with a copy of the text used to create it, this
+-- function can retrieve that text. Returns 'Dao.String.nil' if there is no text.
 tokToUStr :: GenToken tok -> UStr
 tokToUStr tok = case tok of
   GenEmptyToken _   -> nil
   GenCharToken  _ c -> ustr [c]
   GenToken      _ u -> u
 
+-- | Like 'tokToUStr' but returns a 'Prelude.String' or @""@ instead.
 tokToStr :: GenToken tok -> String
 tokToStr tok = case tok of
   GenEmptyToken _   -> ""
   GenCharToken  _ c -> [c]
   GenToken      _ u -> uchars u
 
+-- | This data type stores the starting point (the line number and column number) in the
+-- source file of where the token was emitted along with the 'GenToken' itself.
 data GenTokenAt tok =
   GenTokenAt
   { tokenAtLineNumber   :: LineNum
   , tokenAtColumnNumber :: ColumnNum
   , getToken            :: GenToken tok
   }
-instance HasLineNumber   (GenTokenAt tok) where { lineNumber   = tokenAtLineNumber   }
-instance HasColumnNumber (GenTokenAt tok) where { columnNumber = tokenAtColumnNumber }
+instance HasLineNumber   (GenTokenAt tok) where
+  lineNumber        = tokenAtLineNumber
+  setLineNumber a n = a{tokenAtLineNumber=n}
+instance HasColumnNumber (GenTokenAt tok) where
+  columnNumber        = tokenAtColumnNumber
+  setColumnNumber a n = a{tokenAtColumnNumber=n}
 
+-- | The lexical analysis phase emits a stream of 'GenTokenAt' objects, but it is not memory
+-- efficient to store the line and column number with every single token. To save space, the token
+-- stream is "compressed" into 'GenLines', where 'GenTokenAt' that has the same 'lineNumber' is
+-- placed into the same 'GenLine' object. The 'GenLine' stores the 'lineNumber', and the
+-- 'lineNumber's are deleted from every 'GenTokenAt', leaving only the 'columnNumber' and 'GenToken'
+-- in each line.
 data GenLine tok
   = GenLine
     { lineLineNumber :: LineNum
     , lineTokens     :: [(ColumnNum, GenToken tok)]
       -- ^ a list of tokens, each with an associated column number.
     }
-
-instance HasLineNumber (GenLine tok) where { lineNumber = lineLineNumber }
-
+instance HasLineNumber (GenLine tok) where
+  lineNumber        = lineLineNumber
+  setLineNumber a n = a{lineLineNumber=n}
 instance Show tok => Show (GenLine tok) where
   show line = show (lineLineNumber line) ++ ": " ++ show (lineTokens line)
 
 ----------------------------------------------------------------------------------------------------
--- The parser error data type.
+-- $Error_handling
+-- The lexical analyzer and syntactic analysis monads all instantiate
+-- 'Control.Monad.Error.Class.MonadError' in the Monad Transformer Library ("mtl" package). This is
+-- the type used for 'Control.Monad.Error.Class.throwError' and
+-- 'Control.Monad.Error.Class.catchError'.
 
--- | This data structure is used by both the 'GenLexer' and 'TokStream' monads.
+-- | This data structure is used by both the lexical analysis and the syntactic analysis phase.
 data GenError st tok
   = GenError
     { parseErrLoc     :: Maybe Location
@@ -188,7 +240,6 @@ data GenError st tok
     , parseErrTok     :: Maybe (GenToken tok)
     , parseStateAtErr :: Maybe st
     }
-
 instance Show tok =>
   Show (GenError st tok) where
     show err =
@@ -198,7 +249,7 @@ instance Show tok =>
             ]
       in  if null msg then "Unknown parser error" else msg
 
--- | An initial blank parser error.
+-- | An initial blank parser error you can use to construct more detailed error messages.
 parserErr :: Eq tok => LineNum -> ColumnNum -> GenError st tok
 parserErr lineNum colNum =
   GenError
@@ -215,11 +266,30 @@ parserErr lineNum colNum =
   }
 
 ----------------------------------------------------------------------------------------------------
+-- $Lexical_Analysis
+-- There is only one type used for lexical analysis: the 'GenLexer'. This monad is used to analyze
+-- text in a 'Prelude.String', and to emit 'GenToken's. Internally, the 'GenToken's
+-- emitted are automatically stored with their line and column number information in a 'GenTokenAt'
+-- object.
+--
+-- Although lexical analysis and syntactic analysis are both separate stages, keep in mind that
+-- Haskell is a lazy language. So when each phase is composed into a single function, syntactic
+-- analysis will occur as tokens become available as they are emitted the lexical analyzer. So what
+-- tends to happen is that lexical and syntactic analysis will occur in parallel.
+--
+-- Although if your syntactic analysis does something like apply 'Data.List.reverse' to the entire
+-- token stream and then begin parsing the 'Data.List.reverse'd stream, this will force the entire
+-- lexical analysis phase to complete and store the entire token stream into memory before the
+-- syntactic analyse can begin. Any parser that scans forward over tokens will consume a lot of
+-- memory. But through use of 'GenParser' it is difficult to make this mistake.
 
--- | This is the state used by every 'GenLexer'.
+-- | This is the state used by every 'GenLexer'. It keeps track of the line number and column
+-- number, the current input string, and the list of emitted 'GenToken's.
 data GenLexerState tok
   = GenLexerState
     { lexTabWidth      :: TabWidth
+      -- ^ When computing the column number of tokens, the number of spaces a @'\TAB'@ character
+      -- counts for should be configured. The default set in 'newLexerState' is 4.
     , lexCurrentLine   :: LineNum
     , lexCurrentColumn :: ColumnNum
     , lexTokenCounter  :: Word
@@ -273,24 +343,22 @@ lexErrToParseErr lexErr =
 
 
 -- | The 'GenLexer' is very similar in many ways to regular expressions, however 'GenLexer's always
--- begin evaluating at the beginning of the input string. The 'lexicalAnalysis' phase of parsing
+-- begin evaluating at the beginning of the input string. The lexical analysis phase of parsing
 -- must generate 'GenToken's from the input string. 'GenLexer's provide you the means to do with
 -- primitive functions like 'lexString', 'lexChar', and 'lexUntil', and combinators like 'defaultTo'
 -- and 'lexUntilTermChar'. These primitive functions collect characters into a buffer, and you can
 -- then empty the buffer and use the buffered characters to create a 'GenToken' using the
 -- 'makeToken' function.
 -- 
--- 'GenLexer' instantiates 'Control.Monad.State.MonadState', 'Control.Monad.Error.MonadError',
--- 'Control.Monad.MonadPlus', and of course 'Control.Monad.Monad' and 'Data.Functor.Functor'. The
--- 'Control.Monad.fail' function is overloaded such that it does not evaluate to an exception, such
--- that it can halt 'lexecialAnalysis' and also provide useful information about the failure.
--- 'Control.Monad.Error.throwError' can also be used, and 'Control.Monad.Error.catchError' will
--- catch errors thrown by 'Control.Monad.Error.throwError' and 'Control.Monad.fail'.
--- 'Control.Monad.mzero' causes backtracking. Be careful when recovering from backtracking using
--- 'Control.Monad.mplus' because the 'lexBuffer' is not cleared. It is usually better to backtrack
--- using 'lexBacktrack' (or don't backtrack at all, because it is inefficient). However you don't
--- need to worry too much; if a 'GenLexer' backtracks while being evaluated in 'lexicalAnalysis' the
--- 'lexInput' will not be affected at all and the 'lexBuffer' is ingored entirely.
+-- The 'Control.Monad.fail' function is overloaded such that it halts 'lexecialAnalysis' with a
+-- useful error message about the location of the failure. 'Control.Monad.Error.throwError' can
+-- also be used, and 'Control.Monad.Error.catchError' will catch errors thrown by
+-- 'Control.Monad.Error.throwError' and 'Control.Monad.fail'.  'Control.Monad.mzero' causes
+-- backtracking. Be careful when recovering from backtracking using 'Control.Monad.mplus' because
+-- the 'lexBuffer' is not cleared. It is usually better to backtrack using 'lexBacktrack' (or don't
+-- backtrack at all, because it is inefficient). However you don't need to worry too much; if a
+-- 'GenLexer' backtracks while being evaluated in lexical analysis the 'lexInput' will not be
+-- affected at all and the 'lexBuffer' is ingored entirely.
 newtype GenLexer tok a = GenLexer{
     runLexer :: PTrans (GenError (GenLexerState tok) tok) (State (GenLexerState tok)) a
   }
@@ -557,7 +625,7 @@ runLexerLoop msg predicate lexers = loop 0 where
     seq shouldContinue $! if shouldContinue then loop (i+1) else return ()
 
 ----------------------------------------------------------------------------------------------------
--- Functions that facilitate lexical analysis.
+-- $Handy_lexers
 
 -- | The fundamental lexer: takes a predicate over characters, if one or more characters
 -- matches, a token is constructed and it is paired with the remaining string and wrapped into a
@@ -597,6 +665,7 @@ lexOperator ops =
       GT -> GT
       LT -> LT
 
+-- | Gather up all the characters until a newline character is reached.
 lexToEndline :: Eq tok => GenLexer tok ()
 lexToEndline = lexUntil (=='\n')
 
@@ -721,7 +790,7 @@ lexHaskellLabel tok = loop 0 where
                       (fail "bad operator token after final dot of label")
   done     = makeToken tok
 
--- | Takes a 'tokenStream' resulting from the evaulation of 'lexicalAnalysis' and breaks it into
+-- | Takes a 'tokenStream' resulting from the evaulation of lexical analysis and breaks it into
 -- 'GenLine's. This makes things a bit more efficient because it is not necessary to store a line
 -- number with every single token. It is necessary for initializing a 'TokStream'.
 tokenStreamToLines :: Eq tok => [GenTokenAt tok] -> [GenLine tok]
@@ -803,8 +872,9 @@ testLexicalAnalysisOnFile a b c = readFile c >>= testLexicalAnalysis_withFilePat
 -- > 'guardEOF'
 -- > 'shiftPos'
 -- > 'unshift'
--- but these default definitions are very inefficient. Hopefully your parser will extend a more
--- efficient instantiation of 'MonadParser' such as 'TokStream' or better yet 'GenParser'.
+-- but these default definitions alone would be very inefficient. Hopefully your parser will
+-- instantiate this class with a more efficient 'MonadParser' such as one that extends 'TokStream'
+-- or better yet 'GenParser'.
 class (Eq tok, Monad (parser tok), MonadPlus (parser tok)) =>
   MonadParser parser tok where
     -- | A 'Control.Monad.guard'-like function that backtracks if there are still tokens in the
@@ -885,7 +955,7 @@ defaultTo :: MonadParser parser tok => a -> parser tok a -> parser tok a
 defaultTo defaultValue parser = mplus parser (return defaultValue)
 
 ----------------------------------------------------------------------------------------------------
--- $The_parser_data_types
+-- $Fundamental_parser_data_types
 -- A parser is defined as a stateful monad for analyzing a stream of tokens. A token stream is
 -- represented by a list of 'GenLine' structures, and the parser monad's jobs is to look at the
 -- current line, and extract the current token in the current line in the state, and use the tokens
@@ -912,6 +982,12 @@ newParserState :: Eq tok => ust -> [GenLine tok] -> TokStreamState ust tok
 newParserState userState lines =
   TokStreamState{userState = userState, getLines = lines, recentTokens = []}
 
+-- | The 'TokStreamState' data structure has a field of a polymorphic type reserved for containing
+-- arbitrary stateful information. 'TokStream' instantiates 'Control.Monad.State.Class.MonadState'
+-- usch that 'Control.Monad.State.Class.MonadState.get' and
+-- 'Control.Monad.State.Class.MonadState.put' return the 'TokStreamState' type, however if you wish
+-- to modify the arbitrary state value using a function similar to how the
+-- 'Control.Monad.State.Class.MonadState.modify' would do, you can use this function.
 modifyUserState :: Eq tok => (st -> st) -> TokStream st tok ()
 modifyUserState fn = modify (\st -> st{userState = fn (userState st)})
 
@@ -1062,36 +1138,53 @@ syntacticAnalysis parser userState lines = runParserState parser $ newParserStat
 
 ----------------------------------------------------------------------------------------------------
 -- $ParseTable
--- ParseTable is a data type (e.g. it is a 'Data.Monoid.Monoid') and also a control structure (e.g.
--- it is a 'Control.Monad.Monad' and a 'Control.Applicative.Alternative'). As a control structure,
--- it allows you to construct parser functions that generate objects from token streams. As a data
--- structure (internally) a sparse matrix parsing table is constructed to do this.
--- 
--- When you make use of 'Control.Monad.Monad', 'Control.Monad.MonadPlus',
--- 'Control.Applicative.Applicative', 'Control.Applicative.Alternative', and other classes to
--- construct your 'ParseTable', behind the scenes the combinators are actually defining a sparse
--- matrix with a default parser action of 'Control.Monad.mzero' which are filled-in with values
--- supplied to the the 'token' function. If your 'ParseTable' refers to an enumerated data type which
--- instantiates this class, you will also be able to fill-in the parser table with pointers to other
--- columns in the table.
+-- A parse table is not something you should construct by hand in your own code. The 'ParseTable' is
+-- really an intermediate data structure between the very high-level 'GenParser' and the rather
+-- low-level 'TokStream'.
 --
--- You are presumably using GHC, so you can use the @{-#INLINE ... #-}@ pragma to improve efficency.
--- To create a row in the parser table, you would use the function 'token' or 'tokens' and combine
--- them with from 'Control.Monad.mplus', 'Control.Monad.msum', and ('Control.Applicative.<|>').
--- Behind the scenes, this module will construct an 'Data.Array.Array' so that it may very quickly
--- lookup the next parser. By making these functions top-level functions and using
--- @{-#INLINE ... #-}@ pragma, GHC will try harder to make sure these arrays are only allocated
--- once. Although inlining tends to occur without @{-#INLINE ... #-}@, it is not a guarantee.
+-- At the 'TokStream' level, you must always worry about the tokens in the stream, whether or not it
+-- is necessary to 'shift' the next token or 'unshift' it if you have backtracked, or if it is
+-- necessary to fail with an error message, making sure you don't 'unshift' the same token twice,
+-- but also making sure you don't forget to 'unshift' a token after backtracking. Creating parsers
+-- can become very tedius and error-prone.
+-- 
+-- At the 'GenParser' level, you don't concern yourself with the token stream, you only worry about
+-- what token type and string value you need in order to construct your data type, and you can trust
+-- that token stream will be shifted and checked accordingly without you ever having to actually
+-- call 'shift' or 'unshift'. But how is this possible? All parsers that operate on token streams
+-- need some mechanism to determine when to 'shift' or 'unshift' a token, right?
+-- 
+-- That is where 'ParseTable' comes in. The 'GenParser' is actually a meta-parser that does not
+-- operate on the token stream directly. Instead, the 'GenParser' monad is used to construct a large
+-- object that can be converted to a 'ParseTable' with the 'evalGenParserToParseTable' function. The
+-- parse table object contains a sparse matrix that maps tokens to state transitions. The matrix is
+-- constructed of variously sized 'Data.Array.IArray.Array's with the token type value used as and
+-- index (hence the polymorphic token type @tok@ must instantiate 'Data.Ix.Ix').
+-- 
+-- The 'ParseTable' can then be evaluated to a 'TokStream' monad which does all the tedius work of
+-- keeping track of the tokens in the stream. However generating the 'ParseTable' with
+-- 'evalGenParserToParseTable' is not a trivial operation, the mappings between token indecies and
+-- 'TokStream' combinators must be computed and arrays must be allocated. So it is better to hang on
+-- to your 'ParseTable' throughout the duration of your parsing task. As long as you have a
+-- reference to the same 'ParseTable' constructed by your one call to the
+-- 'evalGenParserToParseTable' function, neither the 'ParseTable' nor the arrays within it be
+-- garbage collected.
 
+-- | This data type instantiates 'Control.Monad.Monad', 'Control.Applicative.Alternative', and
+-- others, but you really should not compose your own parse tables using these functions. Define
+-- your parser using 'GenParser' and let 'evalGenParserToParseTable' compose the 'ParseTable' for
+-- you.
 data ParseTable st tok a
   = ParseTableArray { parseTableArray :: Array tok (ParseTable st tok a) }
     -- ^ a parser table constructed from 'ParseTableArrayItem's. This is the most efficient method to
     -- parse, so it is best to try and construct your parser from 'ParseTableArrayItem's rather than
-    -- simply using monadic notation to stick together a bunch of parsing functions.
+    -- simply using monadic notation to stick together a bunch of 'TokStream' functions.
   | ParseTableMap { parserMap :: M.Map UStr (ParseTable st tok a) }
   | ParseTable { tokStreamParser :: TokStream st tok a }
-    -- ^ a plain parser function, used for lifting 'TokStream' into the 'ParseTable' monad,
-    -- specificaly for the 'Control.Monad.return' function.
+    -- ^ this constructor stores a plain 'TokStream' function, so this constructor can be used to
+    -- lift 'TokStream' functions into the 'ParseTable' monad. This constructor is not composable
+    -- like the above two constructors are, so the 'evalGenParserToParseTable' function tries to
+    -- avoid using this unless it is absolutely necessary.
 instance Ix tok => Monad (ParseTable st tok) where
   return a = ParseTable { tokStreamParser = return a }
   fail     = ParseTable . fail
@@ -1155,16 +1248,21 @@ evalTableToTokStream table = case table of
   ParseTableArray parser -> evalParseArray parser
   ParseTableMap   parser -> evalParseMap   parser
 
--- Efficiently evaluates a array from a 'ParseTableArray'. One token is shifted from the stream, and
--- the 'tokType' is used to select and evaluate the 'TokStream' in the 'TokStream'. The 'tokToStr'
--- value of the token is passed to the selected 'TokStream'. If the 'tokType' does not exist in the
--- table, or if the selected parser backtracks, this parser backtracks and the selecting token is
--- shifted back onto the stream.
+-- | Efficiently evaluates an array stored in the 'ParseTableArray' constructor. Evaluation will
+-- shift on token from the stream and the 'tokType' is used to select the next 'ParseTable' stored
+-- in the array at that 'tokType' address. If the 'tokType' is not a valid index of the
+-- 'Data.Array.IArray.Array', or if the selected 'ParseTable' backtracks when evaluated, this parser
+-- backtracks and the selecting token is shifted back onto the stream.
 evalParseArray :: Ix tok => Array tok (ParseTable st tok a) -> TokStream st tok a
 evalParseArray arr = do
   tok <- fmap tokType look1
   if inRange (bounds arr) tok then evalTableToTokStream (arr!tok) else mzero
 
+-- | Efficiently evaluates a 'Data.Map.Map' stored in a 'ParseTableMap' constructor. Evaluation will
+-- shift one token from the stream, and the 'tokToUStr' value is used as a key to select and
+-- evaluate the 'ParseTable' stored in the 'Data.Map.Map'. If the 'tokToUStr' value is not a key in
+-- the 'Data.Map.Map', or if the selected 'ParseTable' backtracks when evaluated, this parser
+-- backtracks and the selecting token is shifted back onto the stream.
 evalParseMap :: Ix tok => M.Map UStr (ParseTable st tok a) -> TokStream st tok a
 evalParseMap m = do
   tok <- fmap tokToUStr look1
@@ -1172,25 +1270,70 @@ evalParseMap m = do
 
 ----------------------------------------------------------------------------------------------------
 -- $Generalized_state_transition_parser
--- This parser is a high-level representation of parsers. It is essentially a data structure that
--- behaves like a 'MonadParser', but this data type is really a meta-structure for building
--- 'TokStream' parsers. When you convert a 'GenParser' to a 'ParseTable' using
--- 'evalGenParserToParseTable', the high-level structure of the 'GenParser' is stored into a sparse
--- matrix with every column of the matrix being an array of token types associated with an action
--- function that can be translated into a 'TokStream' function. As long as the 'ParseTable' does not
--- go out of scope, the matrix will not be garbage collected. Furthermore, using arrays to select
--- the next 'TokStream' parser to evaluated is extremely fast.
+-- This data type is a high-level representation of parsers. To understand how it differs from
+-- a 'ParseTable', please read the section above.
 --
--- 'GenParser' of course instantiates 'MonadParser' so you can use all the ordinary functions like
--- 'token' and 'shift' to build up a parser. However you should never need to use 'shift' or
--- 'unshift'. 'GenParser' is specially designed to construct an efficient 'TokStream' parser that
--- takes care of the 'shift'ing and 'unshift'ing so that 'unshift'ing is used as little as possible.
---
--- All you need to do is specify how to convert tokens into data structures using 'token',
--- 'tokenUStr', and 'tokenStr', and use 'Control.Monad.Monad' and 'Control.Applicative.Applicative'
--- to construct objects from simpler parsers.
+-- A 'GenParser' can be used to build arbitrarily complex Abstract Syntax Trees (ASTs), and the
+-- 'evalGenParserToParseTable' function will do its best to find the most efficient 'ParseTable'
+-- representation of the parser for any given AST.
+-- 
+-- Here is a quick example of how to build your own parser using 'GenParser':
+-- > data TOKEN = NUMBER | PLUS | MINUS | TIMES | OPENPAREN | CLOSEPAREN deriving Ix
+-- > data AST = Value Int | Add AST AST | Sub AST AST | Mult AST AST | Parens AST
+-- > 
+-- > -- The tokenizer, associates a 'GenLexer' with every TOKEN.
+-- > myTokenizer :: GenLexer TOKEN ()
+-- > myTokenizer = 'Control.Applicative.many' $ 'Control.Monad.msum' $
+-- >     [ 'lexUntil' 'Data.Char.isNumber' >> 'makeToken' NUMBER
+-- >     , 'lexChar' @'@(@'@ >> 'makeEmptyToken' OPENPAREN
+-- >     , 'lexChar' @'@)@'@ >> 'makeEmptyToken' CLOSEPAREN
+-- >     , 'lexChar' @'@+@'@ >> 'makeEmptyToken' PLUS
+-- >     , 'lexChar' @'@-@'@ >> 'makeEmptyToken' MINUS
+-- >     , 'lexChar' @'@*@'@ >> 'makeEmptyToken' TIMES
+-- >     , 'lexWhile' 'Data.Char.isSpace' >> 'clearBuffer' -- ignore spaces
+-- >     , 'Control.Monad.fail' "unknown character"
+-- >     ]
+-- > 
+-- > -- The Plus, Minus, and Times constructors in the AST data type all have the same parser, just
+-- > -- with different token types and constructors.
+-- > operator :: TOKEN -> (AST -> AST -> AST) -> 'GenParser' () TOKEN AST -> 'GenParser' () TOKEN AST
+-- > operator tokTyp constructor parse = 'Control.Applicatie.pure' constructor 'Control.Applicative.<*>' (parse >>= 'token' tokTyp . 'Control.Monad.return') 'Control.Applicative.<*>) parse
+-- > 
+-- > -- Parse an expression in parentheses.
+-- > parens :: 'GenParser' () TOKEN AST
+-- > parens = token OPENPARN >> mainParser >>= token CLOSEPAREN . return
+-- > 
+-- > -- Multiplication has a higher prescedence than addition or subtraction, so we make a separate table for multiplication
+-- > mult :: 'GenParser' () TOKEN AST
+-- > mult = operator TIMES Mult (parens 'Control.Applicative.<|>' mult)
+-- > 
+-- > -- Addition and subtraction have the same prescedence, they call the above "mult" function which has a higher prescedence.
+-- > add :: 'GenParser' () TOKEN AST
+-- > add = let getHigherPrec = mult 'Control.Applicative.<|>' add
+-- >       in  operator PLUS Add getHigherPrec 'Control.Applicative.<|>' operator MINUS Sub getHigherPrec
+-- > 
+-- > mainParser :: 'GenCFGrammar' () TOKEN [AST]
+-- > mainParser = 'genCFGrammar' 4 myTokenizer $
+-- >     'Control.Applicative.many' $ 'Control.Monad.msum' $
+-- >         [ 'Control.Applicatie.pure' Value 'Control.Applicative.<*>' ('token' NUMBER $ 'fromString' 'Prelude.read')
+-- >         , parens, mult, add
+-- >         ]
+-- > 
+-- > evalAST :: AST -> Int
+-- > evalAST a = case a of
+-- >     Value i   -> i
+-- >     Plus  a b -> evalAST a + evalAST b
+-- >     Minus a b -> evalAST a - evalAST b
+-- >     Times a b -> evalAST a * evalAST b
+-- >     Parens i  -> evalAST i
+-- >
+-- > main = getContents >>= \inputString -> case 'parse' mainParser () inputString of
+-- >     'Dao.Predicate.OK' ast    -> 'Control.Monad.mapM_' ('System.IO.print' . evalAST) ast
+-- >     'Dao.Predicate.Backtrack' -> 'System.IO.hPutStrLn' 'System.IO.stderr' "error: parse backtracked"
+-- >     'Dao.Predicate.PFail' err -> 'System.IO.hPrint' 'System.IO.stderr' err
 
--- | The *Generalized State Transition Parser*. Use this to build parsers.
+-- | This data type is used to express *Generalized State Transition Parsers*. Use this to build
+-- your parsers.
 data GenParser ust tok a
   = GenParserBacktrack
   | GenParserConst  { constValue  :: a }
@@ -1368,15 +1511,34 @@ evalGenParserToParseTable p = case p of
         evalGenParserToParseTable gstp
       _             -> return (ParseTableMap{parserMap = M.map evalGenParserToParseTable m})
 
+-- | Your 'GenParser' will needs to convert 'GenToken's to other data types. This function takes a
+-- pure function that performs a conversion from a single 'Prelude.String', and uses the string
+-- value of the current function to evaluate it.
+fromString :: Ix tok => (String -> a) -> GenParser st tok a
+fromString f = pure (f . tokToStr) <*> look1
+
+-- | Your 'GenParser' will needs to convert 'GenToken's to other data types. This function takes a
+-- pure function that performs a conversion from a single 'Dao.String.UStr', and uses the string
+-- value of the current function to evaluate it.
+fromUStr :: Ix tok => (UStr -> a) -> GenParser st tok a
+fromUStr f = pure (f . tokToUStr) <*> look1
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A *General Context-Free Grammar* is a data structure that allows you to easily define a
 -- two-phase parser (a parser with a 'lexicalAnalysis' phase, and a 'syntacticAnalysis' phase). The
--- fields supplied to this data type are define the grammar, and the 'parse' function can be used to
+-- fields supplied to this data type define the grammar, and the 'parse' function can be used to
 -- parse an input string using the context-free grammar defined in this data structure. *Note* that
 -- the parser might have two phases, but because Haskell is a lazy language and 'parse' is a pure
 -- function, both phases happen at the same time, so the resulting parser does not need to parse the
 -- entire input in the first phase before beginning the second phase.
+-- 
+-- This data type can be constructed from a 'GenParser' in such a way that the resulting
+-- 'ParseTable' is stored in this object permenantly. It might then be possible to reduce
+-- initialization time by using an *INLINE* pragma, which will hopefully cause the compiler to
+-- define as much of the 'ParseTable'@'@s sparse matrix as it possibly can at compile time. But this
+-- is not a guarantee, of course, you never really know how much an optimization helps until you do
+-- proper profiling.
 data GenCFGrammar st tok synTree
   = GenCFGrammar
     { columnWidthOfTab :: TabWidth
@@ -1385,13 +1547,27 @@ data GenCFGrammar st tok synTree
     , mainLexer        :: GenLexer tok ()
       -- ^ *the order of these tokenizers is important,* these are the tokenizers passed to the
       -- 'lexicalAnalysis' phase to generate the stream of tokens for the 'syntacticAnalysis' phase.
-    , mainParser       :: TokStream st tok synTree
+    , mainParser       :: ParseTable st tok synTree
       -- ^ this is the parser entry-point which is used to evaluate the 'syntacticAnalysis' phase.
     }
 
+-- | Construct a 'GenCFGrammar' from a 'GenParser'. This defines a complete parser that can be used
+-- by the 'parse' function. In constructing this 'GenCFGrammar', the 'GenParser' will be converted
+-- to a 'ParseTable' which can be referenced directly from this object. This encourages the runtime
+-- to cache the 'ParseTable' which can lead to better performance. Using an INLINE pragma on this
+-- value could possibly improve performance even further.
+genCFGrammar :: Ix tok =>
+  TabWidth -> GenLexer tok () -> GenParser st tok synTree -> GenCFGrammar st tok synTree
+genCFGrammar tabw lexer parser =
+  GenCFGrammar
+  { columnWidthOfTab = tabw
+  , mainLexer        = lexer
+  , mainParser       = evalGenParserToParseTable parser
+  }
+
 -- | This is *the function that parses* an input string according to a given 'GenCFGrammar'.
 parse
-  :: Eq tok
+  :: Ix tok
   => GenCFGrammar st tok synTree
   -> st -> String -> PValue (GenError st tok) synTree
 parse cfg st input = case lexicalResult of
@@ -1405,5 +1581,6 @@ parse cfg st input = case lexicalResult of
     initState = (newLexerState input){lexTabWidth = columnWidthOfTab cfg}
     (lexicalResult, lexicalState) = lexicalAnalysis (mainLexer cfg) initState
     (parserResult , parserState ) =
-      syntacticAnalysis (mainParser cfg) st (tokenStreamToLines (tokenStream lexicalState))
+      syntacticAnalysis (evalTableToTokStream (mainParser cfg)) st $
+        tokenStreamToLines (tokenStream lexicalState)
 

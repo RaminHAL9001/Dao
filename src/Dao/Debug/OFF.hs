@@ -19,12 +19,6 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
-
-module Dao.Debug.OFF
-  ( module Dao.Debug
-  , module Dao.Debug.OFF
-  ) where
-
 -- | This module provides replacements for many key functions in "System.IO" and
 -- "Control.Concurrent". The replacement functions require you pass additional parameters,
 -- particularly one of 'nonloc' or a template Haskell splice "$(loc)".
@@ -44,6 +38,11 @@ module Dao.Debug.OFF
 -- could also compose separate @'debugIO' =<< 'enableDebug' ...@ and
 -- @'debugIO' =<< 'disableDebug' ...@ statements at the relevant locations in your code instead of
 -- changing the types of your monadic computations.
+
+module Dao.Debug.OFF
+  ( module Dao.Debug
+  , module Dao.Debug.OFF
+  ) where
 
 import           Dao.Debug
 import           Dao.String

@@ -17,6 +17,11 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
+-- | Used to debug multi-threading problems, deadlocks in particular. The basic idea is to rewrite
+-- the Haskell code that you want to debug such that all pertinent system calls, like
+-- 'Control.Concurrent.forkIO', 'Control.Concurrent.MVar.modifyMVar', and 'System.IO.putStrLn' with
+-- debugging equivalents. Each of these calls then logs an event with the debugger, and these events
+-- can be written to a file.
 
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FunctionalDependencies #-}
@@ -25,12 +30,6 @@
 {-# LANGUAGE RankNTypes #-}
 
 module Dao.Debug where
-
--- | Used to debug multi-threading problems, deadlocks in particular. The basic idea is to rewrite
--- the Haskell code that you want to debug such that all pertinent system calls, like
--- 'Control.Concurrent.forkIO', 'Control.Concurrent.MVar.modifyMVar', and 'System.IO.putStrLn' with
--- debugging equivalents. Each of these calls then logs an event with the debugger, and these events
--- can be written to a file.
 
 import           Dao.String
 

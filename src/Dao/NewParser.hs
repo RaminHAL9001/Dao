@@ -68,8 +68,9 @@ class HasLocation a where
 -- whether or not the input text is a file or stream.
 data Location
   = LocationUnknown
-  | Location -- ^ the 'Location' but without the starting/ending character count
+  | Location
     { startingLine   :: LineNum
+      -- ^ the 'Location' but without the starting/ending character count
     , startingColumn :: ColumnNum
     , endingLine     :: LineNum
     , endingColumn   :: ColumnNum
@@ -743,7 +744,7 @@ lexNumber digits hexDigits number numberExp = do
             , altBase "binary"      "Bb" isDigit    >> return (True , False)
             , lexWhile isDigit                      >> return (True , False)
             , return (True , False)
-              -- ^ a zero not followed by an 'x', 'b', or any other digits is also valid
+              -- a zero not followed by an 'x', 'b', or any other digits is also valid
             ]
     , lexChar '.' >> lexWhile isDigit >> return (False, False) -- lex a leading decimal point
     , lexWhile isDigit                >> return (True , False) -- lex an ordinary number
@@ -1079,7 +1080,7 @@ nextTokenPos doRemove = do
           return postok
     tok:tokx | doRemove -> put (st{recentTokens=tokx}) >> return tok
     tok:tokx            -> return tok
-      -- ^ if we remove a token, the 'recentTokens' cache must be cleared because we don't know what
+      -- If we remove a token, the 'recentTokens' cache must be cleared because we don't know what
       -- the next token will be. I use 'mzero' to clear the cache, it has nothing to do with the
       -- parser backtracking.
 
@@ -1176,9 +1177,8 @@ syntacticAnalysis parser userState lines = runParserState parser $ newParserStat
 -- you.
 data ParseTable st tok a
   = ParseTableArray { parseTableArray :: Array tok (ParseTable st tok a) }
-    -- ^ a parser table constructed from 'ParseTableArrayItem's. This is the most efficient method to
-    -- parse, so it is best to try and construct your parser from 'ParseTableArrayItem's rather than
-    -- simply using monadic notation to stick together a bunch of 'TokStream' functions.
+    -- ^ stores references to 'ParseTable' functions into an array for fast retrieval by the type of
+    -- the current token.
   | ParseTableMap { parserMap :: M.Map UStr (ParseTable st tok a) }
   | ParseTable { tokStreamParser :: TokStream st tok a }
     -- ^ this constructor stores a plain 'TokStream' function, so this constructor can be used to
@@ -1565,7 +1565,7 @@ genCFGrammar tabw lexer parser =
   , mainParser       = evalGenParserToParseTable parser
   }
 
--- | This is *the function that parses* an input string according to a given 'GenCFGrammar'.
+-- | This is /the function that parses/ an input string according to a given 'GenCFGrammar'.
 parse
   :: Ix tok
   => GenCFGrammar st tok synTree

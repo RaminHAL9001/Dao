@@ -1,5 +1,11 @@
 TODO:
 
+* TODO AFTER the new parser is fully functioning and the old parser has been deleted:
+the "Dao.EnumSet" exposes many functions for manipulating 'Dao.EnumSet.Segment's. I would like to
+keep 'Dao.EnumSet.Segment' exposed, but have all of the functions which manipulate it directly
+(apart from it's constructor) to no longer be exported, and instead make everything which imoprts
+the "Dao.EnumSet" module make use of the 'Dao.EnumSet.EnumSet' data type exclusively.
+
 * Complex numbers are not being parsed correctly by the new parser.
 
 *	Try to make the new parser more efficient. Here is the results from the old parser:

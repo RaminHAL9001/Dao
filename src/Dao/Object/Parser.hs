@@ -31,6 +31,7 @@ import qualified Dao.Tree as T
 
 import           Control.Monad
 
+import           Data.Monoid
 import           Data.List
 import           Data.Char
 import           Data.Word
@@ -144,9 +145,9 @@ numericObj = token $ do
 
 parseString :: Parser String
 parseString = token (char '"' >> loop) where
-  stops = foldl1 setUnion $ map point "\"\\\n"
+  stops = foldl1 mappend $ map (flip point ()) "\"\\\n"
   loop = do
-    regexMany (rxCharSet (setInvert stops))
+    regexMany (rxCharSet (setInvert () stops))
     let errmsg = fail "string literal runs past end of input"
     flip mplus errmsg $ do
       stop <- charSet stops
@@ -191,7 +192,7 @@ parseCharLiteral = token $ do
   char '\''
   flip mplus (fail "expecting character literal") $ do
     let loop cx = do
-          cx1 <- many (notCharSet (setUnion (point '\\') (point '\'')))
+          cx1 <- many (notCharSet (mappend (point '\\' ()) (point '\'' ())))
           (more, cx2) <- msum $
             [ char '\'' >> return (False, "'")
             , char '\\' >> return (True , "\\")
@@ -213,14 +214,14 @@ parseComment = many comment where
       msum [endline, inline, backtrack]
   endline = do
     char '/'
-    ax <- regexMany (rxNotCharSet (point '\n'))
+    ax <- regexMany (rxNotCharSet (point '\n' ()))
     zeroOrOne (rxChar '\n')
     t <- getToken
     return (EndlineComment (ustr (tokenChars t)))
   inline = do
     regexMany1 (rxChar '*')
     mplus (char '/' >> getToken >>= \t -> return (InlineComment (ustr (tokenChars t)))) $ do
-      regexMany (rxCharSet (setInvert (point '*')))
+      regexMany (rxCharSet (setInvert () (point '*' ())))
       we_hit_the_end <- endOfInput
       if we_hit_the_end
         then fail "comment runs past end of input"
@@ -747,7 +748,7 @@ parseHexData key _ = do
     ax <- loop []
     return (AST_Data com1 ax unloc)
   where
-    b64ch = enumSet [segment 'A' 'Z', segment 'a' 'z', segment '0' '9', single '/', single '+']
+    b64ch = enumSet const [segment 'A' 'Z' (), segment 'a' 'z' (), segment '0' '9' (), single '/' (), single '+' ()]
     loop zx = do
       com1 <- parseComment
       regexMany space

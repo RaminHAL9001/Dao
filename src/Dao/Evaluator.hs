@@ -29,7 +29,7 @@ module Dao.Evaluator where
 
 import           Dao.Debug.OFF
 -- import           Dao.Token
-import           Dao.NewParser
+import           Dao.NewParser hiding (shift)
 import           Dao.Object
 import           Dao.Object.AST
 import           Dao.PPrint

@@ -435,17 +435,17 @@ instance (Ord a, Enum a, Structured a) => Structured (EnumInf a) where
     ]
     where { msg = "unit of a segment of an enum set" }
 
-instance (Ord a, Enum a, Bounded a, Structured a) => Structured (Segment a) where
+instance (Ord a, Enum a, Bounded a, Structured a) => Structured (Segment a ()) where
   dataToStruct a = deconstruct $
     mplus (maybeToUpdate (singular a) >>= putDataAt "at") $
       maybeToUpdate (plural a) >>= \ (a, b) -> putDataAt "to" a >> putDataAt "from" b
   structToData = reconstruct $ msum $
-    [ getDataAt "to" >>= \a -> getDataAt "from" >>= \b -> return (segment a b)
-    , fmap single (getDataAt "at")
+    [ getDataAt "to" >>= \a -> getDataAt "from" >>= \b -> return (segment a b ())
+    , fmap (flip single ()) (getDataAt "at")
     , mplus this (return ONull) >>= \o -> updateFailed o "unit segment of an enum set"
     ]
 
-instance (Ord a, Enum a, Bounded a, Structured a) => Structured (EnumSet a) where
+instance (Ord a, Enum a, Bounded a, BoundedInf a, Structured a) => Structured (EnumSet a ()) where
   dataToStruct a = deconstruct (putData (listSegments a))
-  structToData = reconstruct (fmap enumSet getData)
+  structToData = reconstruct (fmap (enumSet const) getData)
 

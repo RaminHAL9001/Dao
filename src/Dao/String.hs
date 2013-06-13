@@ -26,6 +26,7 @@ module Dao.String where
 import           Control.Monad
 import           Control.Monad.State
 
+import           Data.Monoid
 import           Data.Function
 import           Data.Typeable
 import qualified Data.Binary               as B
@@ -35,6 +36,8 @@ import           Data.Array.Unboxed
 import qualified Data.ByteString.Lazy.UTF8 as U
 import qualified Data.ByteString.Lazy      as B
 import qualified Codec.Binary.UTF8.String  as UTF8
+
+----------------------------------------------------------------------------------------------------
 
 uStrBinaryPrefix :: Word8
 uStrBinaryPrefix = 0x01

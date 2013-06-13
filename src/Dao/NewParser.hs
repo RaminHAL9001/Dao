@@ -267,6 +267,88 @@ parserErr lineNum colNum =
   }
 
 ----------------------------------------------------------------------------------------------------
+-- $Token_database
+-- When defining a computer language, one essential step will be to define your keywords and
+-- operators, and define tokens for these keywords and operators. Since the 'MonadParser's defined
+-- in this module are polymorphic over token types, you could do this yourself with an ordinary
+-- Haskell data structure deriving the 'Prelude.Eq', 'Data.Ix.Ix', 'Prelude.Show', and
+-- 'Prelude.Read' instantiations with the deriving keyword. You could then use this data type to
+-- represent all possible tokens in your language.
+--
+-- However, it might be more convenient if there was a way to simply declare to your program "here
+-- are my keywords, here are my operators, here is how you lex comments, here is how you lex white
+-- spaces", stated simply using Haskell functions, and then let the token types be derived from
+-- these declarations. The functions in this section intend to provide you with this ability.
+
+-- | An actual value used to symbolize a type of token is a 'TT'. For example, an integer token
+-- might be assigned a value of @('TT' 0)@ a keyword might be @('TT' 1)@, an operator might be
+-- @('TT' 2)@, and so on. You do not define the numbers representing these token types, these
+-- numbers are defined automatically when you construct a 'TokenDB'.
+--
+-- A 'TT' value is just an integer wrapped in an opaque newtype and deriving 'Prelude.Eq',
+-- 'Prelude.Ord', 'Prelude.Show', and 'Data.Ix.Ix'. The constructor for 'TT' is not exported, so you
+-- can rest assured any 'TT' objects in your program can only be generated during construction of a
+-- 'TokenDB'.
+-- 
+-- It is also a good idea to wrap this 'TT' type in your own newtype and define your parser over
+-- your newtype, which will prevent you from confusing the same 'TT' type in two different parsers.
+-- For example:
+-- > newtype MyToken { myTokenTT :: TT }
+-- > myLexer :: 'GenLexer' MyToken ()
+-- > myLexer = ...
+-- If you instantiate your newtype into the 'TokenType' class, you can also very easily instantiate
+-- 'Prelude.Read' and 'Prelude.Show' for your tokens.
+newtype TT = MkTT{ intTT :: Int } deriving (Eq, Ord, Show, Ix)
+
+-- | A 'TokenTable' is an intermediate data structure, objects of which can be unioned to form a
+-- 'TokenDB' (actually, the union operation is 'Data.Monoid.mappend'). A 'TokenTable' is made of the
+-- simplest kind of tokens: which are keywords or operators, the types of tokens that can be
+-- represented by a simple string, types that are /not/ represented by 'GenLexer's.
+data TokenTable
+  = EmptyTokenTable
+  | TokenTable{ indexToString :: Array Int UStr, stringToIndex :: M.Map UStr TT }
+instance Monoid TokenTable where
+  mempty = EmptyTokenTable
+  mappend EmptyTokenTable b = b
+  mappend a EmptyTokenTable = a
+  mappend a b = ustrTable (elems (indexToString a) ++ elems (indexToString b))
+
+-- | Creates a 'TokenTable' using a list of keywords or operators you provide to it.
+-- Every string provided becomes it's own token type. For example:
+-- > myKeywords = 'tokenTable' $ 'Data.List.words' $ 'Data.List.unwords' $
+-- >     [ "data newtype class instance"
+-- >     , "if then else case of let in where"
+-- >     , "import module qualified as hiding"
+-- >     ]
+stringTable :: [String] -> TokenTable
+stringTable = ustrTable . map ustr
+
+-- | Like 'stringTable' except takes a list of 'Dao.String.UStr's.
+ustrTable :: [UStr] -> TokenTable
+ustrTable strs = if null strs then EmptyTokenTable else newTable where
+  comp a b = case compare a b of {EQ->EQ; GT->LT; LT->GT}
+  strlist  = sortBy comp (nub strs)
+  topindex = length strlist - 1 -- the final index in the list
+  newTable =
+    TokenTable
+    { indexToString = listArray (0, topindex) strs
+    , stringToIndex = M.fromList $ zip strlist $ map MkTT [0..topindex]
+    }
+
+-- | To define token types that can be used consistently throughout a parser program, you must
+-- create a sort of "database" of tokens, a 'TokenDB'. Several functions are provided to allow you
+-- to create this database. These functions will automatically create a table of 'TokenDBEntry's.
+--
+-- Every token type will have an entry associated with something used to define it.  For example,
+-- keywords can be defined by 'Dao.String.UStr's, operators might be defined by 'Dao.String.UStr's
+-- or 'Data.Char's. Other tokens types (e.g. comments, floating-point numbers) will be defined by
+-- 'GenLexer's. The constructors in this data type are designed for this purpose.
+data TokenDBEntry
+  = CharToken  { typeIndex :: Int, charRep       :: !Char }
+  | StringToken{ typeIndex :: Int, strRep        :: !UStr }
+  | OtherToken { typeIndex :: Int, lexerForToken :: GenLexer TT () }
+
+----------------------------------------------------------------------------------------------------
 -- $Lexical_Analysis
 -- There is only one type used for lexical analysis: the 'GenLexer'. This monad is used to analyze
 -- text in a 'Prelude.String', and to emit 'GenToken's. Internally, the 'GenToken's

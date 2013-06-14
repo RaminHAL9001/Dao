@@ -1,4 +1,4 @@
--- "src/Dao/EnumSet.hs"  defines the Segment data type used to denote
+-- "src/Dao/EnumSetM.hs"  defines the Segment data type used to denote
 -- a possibly infinite subset of contiguous elements of an Enum data type.
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
@@ -27,20 +27,20 @@ module Dao.EnumSet
   , stepDown, stepUp, toPoint, enumIsInf
   , BoundedInf, minBoundInf, maxBoundInf
     -- * the 'Segment' data type
-  , Segment, getItem, segment, single, negInfTo, toPosInf, infiniteSegment, enumInfSeg
+  , Segment, segment, single, negInfTo, toPosInf, infiniteSegment, enumInfSeg
   , canonicalSegment, toBounded, toBoundedPair, segmentMember, singular, plural
     -- * Predicates on 'Segment's
   , containingSet, numElems, isWithin, segmentHasEnumInf, segmentIsInfinite
     -- * Set Operators for 'Segment's
   , areIntersecting, areConsecutive
   , segmentUnion, segmentIntersect, segmentDelete, segmentInvert, segmentNub
-    -- * The 'EnumSet' data type
-  , EnumSet, infinite, enumSet, range, point
+    -- * The 'EnumSetM' data type
+  , EnumSetM, infinite, enumSet, range, point
   , listSegments, setMember, setIsNull, setIsSingleton
-    -- * Set Operators for 'EnumSet's
+    -- * Set Operators for 'EnumSetM's
   , setUnion, setIntersect, setDelete, setInvert, setXUnion
     -- * Miscelaneous
-  , upperTriangular, associativeProduct, nonAssociativeProduct
+  , upperTriangular, nonAssociativeProduct
   )
   where
 
@@ -125,76 +125,73 @@ toPoint c = case c of
 
 -- | A enumInfSeg of 'EnumInf' items is a subset of consectutive items in the set of all @c@ where @c@
 -- is any type satisfying the 'Prelude.Ix' class. To construct a 'Segment' object, use 'enumInfSeg'.
-data Segment c x
-  = Single  { startPoint :: EnumInf c, getItem  :: x }
-  | Segment { startPoint :: EnumInf c, endPoint :: EnumInf c, getItem :: x }
+data Segment c
+  = Single  { startPoint :: EnumInf c }
+  | Segment { startPoint :: EnumInf c, endPoint :: EnumInf c }
   deriving Eq
   -- NOTE: the constructor for this data type is not exported because all of the functions in this
   -- module that operate on 'Segment's make the assumption that the first parameter *less than* the
   -- second parameter. To prevent anyone from screwing it up, the constructor is hidden and
   -- constructing a 'Segment' must be done with the 'enumInfSeg' function which checks the parameters.
-instance Functor (Segment c) where
-  fmap f (Single  a   x) = Single  a   (f x)
-  fmap f (Segment a b x) = Segment a b (f x)
 
 -- not exported
-mkSegment :: Eq c => EnumInf c -> EnumInf c -> x -> Segment c x
-mkSegment a b x
-  | a==b      = Single  a   x
-  | otherwise = Segment a b x
+mkSegment :: Eq c => EnumInf c -> EnumInf c -> Segment c
+mkSegment a b
+  | a==b      = Single  a
+  | otherwise = Segment a b
 
 -- | If the 'Segment' was constructed with 'single', return the point (possibly 'EnumPosInf' or
 -- 'EnumNegInf') value used to construct it, otherwise return 'Data.Maybe.Nothing'.
-singular :: Segment a x -> Maybe (EnumInf a)
+singular :: Segment a -> Maybe (EnumInf a)
 singular seg = case seg of
-  Segment _ _ _ -> mzero
-  Single  a   _ -> return a
+  Segment _ _ -> mzero
+  Single  a   -> return a
 
 -- | If the 'Segment' was constructed with 'segment', return a pair of points (possibly 'EnumPosInf'
 -- or 'EnumNegInf') value used to construct it, otherwise return 'Data.Maybe.Nothing'.
-plural :: Segment a x -> Maybe (EnumInf a, EnumInf a)
+plural :: Segment a -> Maybe (EnumInf a, EnumInf a)
 plural a = case a of
-  Segment a b _ -> return (a, b)
-  Single  _   _ -> mzero
+  Segment a b -> return (a, b)
+  Single  _   -> mzero
 
 -- | Compare segments with a parameterized function for ordering the contained object (the object of
 -- type @x@).
-compareSegments :: Ord c => (x -> x -> Ordering) -> Segment c x -> Segment c x -> Ordering
-compareSegments comp x y = case x of
-  Single  a     m -> case y of
-    Single  b     n -> mappend (compare a b) (comp m n)
-    Segment b  b' n -> mappend (compare a b) (comp m n)
-  Segment a  b  m -> case y of
-    Single  a'    n -> mappend (compare a b) (comp m n)
-    Segment a' b' n -> if a==a' then compare b' b else mappend (compare a a') (comp m n)
+compareSegments :: Ord c => Segment c -> Segment c -> Ordering
+compareSegments x y = case x of
+  Single  a     -> case y of
+    Single  b     -> compare a b
+    Segment b  b' -> compare a b
+  Segment a  b  -> case y of
+    Single  a'    -> compare a b
+    Segment a' b' -> if a==a' then compare b' b else compare a a'
 
-showSegment :: Show c => (x -> String) -> Segment c x -> String
-showSegment showx seg = case seg of
-  Single  a   x -> "at "++show a++' ':showx x
-  Segment a b x -> "from "++show a++" to "++show b++' ':showx x
+showSegment :: Show c => Segment c -> String
+showSegment seg = case seg of
+  Single  a   -> "at "++show a
+  Segment a b -> "from "++show a++" to "++show b
 
 -- | This gets rid of as many infinite elements as possible. All @'Single' 'EnumPosInf'@ and
 -- @'Single' 'EnumNegInf'@ points are eliminated, and if an 'EnumNegInf' or 'EnumPosInf' can be
 -- replaced with a corresponding 'minBoundInf' or 'maxBoundInf', then it is. This function is
 -- intended to be used as a list monadic function, so use it like so:
 -- @let myListOfSegments = [...] in myListOfSegments >>= 'delInfPoints'@
-canonicalSegment :: (Eq c, BoundedInf c) => Segment c x -> [Segment c x]
+canonicalSegment :: (Eq c, BoundedInf c) => Segment c -> [Segment c]
 canonicalSegment seg = nonInf seg >>= \seg -> case seg of
-  Single  a   m -> [Single a m]
-  Segment a b m -> nonInf (mkSegment (bounds a) (bounds b) m)
+  Single  a   -> [Single a]
+  Segment a b -> nonInf (mkSegment (bounds a) (bounds b))
   where
     nonInf seg = case seg of
-      Single  EnumNegInf _ -> []
-      Single  EnumPosInf _ -> []
-      Single  a          m -> [Single  a   m]
-      Segment a b        m -> [Segment a b m]
+      Single  EnumNegInf -> []
+      Single  EnumPosInf -> []
+      Single  a          -> [Single  a  ]
+      Segment a b        -> [Segment a b]
     bounds x = case x of
       EnumNegInf -> minBoundInf
       EnumPosInf -> maxBoundInf
       x          -> x
 
-instance (Show c, Show x) =>
-  Show (Segment c x) where { show seg = "("++showSegment show seg++")" }
+instance Show c =>
+  Show (Segment c) where { show seg = "("++showSegment seg++")" }
 
 -- | A predicate evaluating whether or not a segment includes an 'EnumPosInf' or 'EnumNegInf' value.
 -- This should not be confused with a predicate evaluating whether the set of elements included by
@@ -202,59 +199,59 @@ instance (Show c, Show x) =>
 -- 'EnumPosInf' or 'EnumNegInf' elements, values of these types may be evaluated as "infintie" by
 -- this function, even though they are 'Prelude.Bounded'. To check if a segment is infinite, use
 -- 'segmentIsInfinite' instead.
-segmentHasEnumInf :: Segment c x -> Bool
+segmentHasEnumInf :: Segment c -> Bool
 segmentHasEnumInf seg = case seg of
-  Single  c   _ -> enumIsInf c
-  Segment a b _ -> enumIsInf a || enumIsInf b
+  Single  c   -> enumIsInf c
+  Segment a b -> enumIsInf a || enumIsInf b
 
 -- | A predicate evaluating whether or not a segment is infinite. Types that are 'Prelude.Bounded'
 -- are always finite, and thus this function will always evaluate to 'Prelude.False' for these
 -- types.
-segmentIsInfinite :: BoundedInf c => Segment c x -> Bool
-segmentIsInfinite seg = case [Single minBoundInf undefined, Single maxBoundInf undefined, seg] of
-  [Single a _, Single b _, c] | enumIsInf a || enumIsInf b -> case c of
-    Single  c   ~_ -> enumIsInf c
-    Segment a b ~_ -> enumIsInf a || enumIsInf b
+segmentIsInfinite :: BoundedInf c => Segment c -> Bool
+segmentIsInfinite seg = case [Single minBoundInf, Single maxBoundInf, seg] of
+  [Single a, Single b, c] | enumIsInf a || enumIsInf b -> case c of
+    Single  c   -> enumIsInf c
+    Segment a b -> enumIsInf a || enumIsInf b
   _ -> False
 
 -- | Construct a 'Segment' from two 'EnumInf' items. /NOTE/ if the 'EnumInf' type you are
 -- constructing is an instance of 'Prelude.Bounded', use the 'boundedSegment' constructor instead of
 -- this function.
-enumInfSeg :: (Ord c, Enum c, BoundedInf c) => EnumInf c -> EnumInf c -> x -> Segment c x
-enumInfSeg a b x = seg a b where
+enumInfSeg :: (Ord c, Enum c, BoundedInf c) => EnumInf c -> EnumInf c -> Segment c
+enumInfSeg a b = seg a b where
   seg a b = construct (ck minBoundInf EnumNegInf a) (ck maxBoundInf EnumPosInf b)
   ck inf subst ab = if inf==ab then subst else ab
   construct a b
-    | a == b    = Single  a   x
-    | a < b     = Segment a b x
-    | otherwise = Segment b a x
+    | a == b    = Single  a
+    | a < b     = Segment a b
+    | otherwise = Segment b a
 
 -- | Construct a 'Segment' from two values.
-segment :: Ord c => c -> c -> x -> Segment c x
+segment :: Ord c => c -> c -> Segment c
 segment a b = mkSegment (EnumPoint (min a b)) (EnumPoint (max a b))
 
 -- | Construct a 'Segment' that is only a single unit, i.e. it starts at X and ends at X.
-single :: Ord c => c -> x -> Segment c x
+single :: Ord c => c -> Segment c
 single a = segment a a
 
 -- | Construct a 'Segment' from negative infinity to a given value.
-negInfTo :: BoundedInf c => c -> x -> Segment c x
+negInfTo :: BoundedInf c => c -> Segment c
 negInfTo a = Segment minBoundInf (EnumPoint a)
 
 -- | Construct a 'Segment' from a given value to positive infinity.
-toPosInf :: BoundedInf c => c -> x -> Segment c x
+toPosInf :: BoundedInf c => c -> Segment c
 toPosInf a = Segment (EnumPoint a) maxBoundInf
 
 -- | Construct the infinite 'Segment'
-infiniteSegment :: x -> Segment c x
+infiniteSegment :: Segment c
 infiniteSegment = Segment EnumNegInf EnumPosInf
 
 -- | Tests whether an element is a member is enclosed by the 'Segment'.
-segmentMember :: Ord c => c -> Segment c x -> Bool
+segmentMember :: Ord c => c -> Segment c -> Bool
 segmentMember c seg = case seg of
-  Single  (EnumPoint d) _ -> c == d
-  Segment lo hi         _ -> let e = EnumPoint c in lo <= e && e <= hi
-  _                       -> False
+  Single  (EnumPoint d) -> c == d
+  Segment lo hi         -> let e = EnumPoint c in lo <= e && e <= hi
+  _                     -> False
 
 -- | Construct a 'Segment', like the 'enumInfSeg' constructor above, however does not require 'EnumInf'
 -- parameters as inputs. This function performs the additional check of testing whether or not a
@@ -277,24 +274,23 @@ toBounded r = case r of
   EnumPoint c -> c
 
 -- | Like 'toBounded', but operates on a segment and returns a pair of values.
-toBoundedPair :: (Enum c, Bounded c) => Segment c x -> (c, c)
+toBoundedPair :: (Enum c, Bounded c) => Segment c -> (c, c)
 toBoundedPair r = case r of
-  Single  c   _ -> (toBounded c, toBounded c)
-  Segment c d _ -> (toBounded c, toBounded d)
+  Single  c   -> (toBounded c, toBounded c)
+  Segment c d -> (toBounded c, toBounded d)
 
 -- | Computes the minimum 'Segment' that can contain the list of all given 'EnumRanges'.
 -- 'Data.Maybe.Nothing' indicates the empty set.
-containingSet :: (Ord c, Enum c, BoundedInf c) => 
-  (x -> x -> x) -> [Segment c x] -> Maybe (Segment c x)
-containingSet add ex = foldl fe Nothing ex where
+containingSet :: (Ord c, Enum c, BoundedInf c) => [Segment c] -> Maybe (Segment c)
+containingSet ex = foldl fe Nothing ex where
   fe Nothing a  = Just a
   fe (Just a) c = Just $ case a of
-    Single  a   m -> case c of
-      Single   c   n -> enumInfSeg (min a c) (max a c) (add m n)
-      Segment  c d n -> enumInfSeg (min a c) (max a d) (add m n)
-    Segment a b m -> case c of
-      Single   c   n -> enumInfSeg (min a b) (max b c) (add m n)
-      Segment  c d n -> enumInfSeg (min a c) (max b d) (add m n)
+    Single  a   -> case c of
+      Single   c   -> enumInfSeg (min a c) (max a c)
+      Segment  c d -> enumInfSeg (min a c) (max a d)
+    Segment a b -> case c of
+      Single   c   -> enumInfSeg (min a b) (max b c)
+      Segment  c d -> enumInfSeg (min a c) (max b d)
 
 -- | Evaluates to the number of elements covered by this region. Returns 'Prelude.Nothing' if there
 -- are an infinite number of elements. For data of a type that is not an instance of 'Prelude.Num',
@@ -302,142 +298,138 @@ containingSet add ex = foldl fe Nothing ex where
 -- @'Segment' 'Data.Int.Int'@ using @'Control.Functor.fmap' 'Prelude.fromEnum'@ before using this
 -- function, then convert the result back using @'Control.Functor.fmap' 'Prelude.toEnum'@ if
 -- necessary.
-numElems :: (Integral c, Enum c) => Segment c x -> Maybe Integer
+numElems :: (Integral c, Enum c) => Segment c -> Maybe Integer
 numElems seg = case seg of
-  Single  (EnumPoint _)               _ -> Just 1
-  Segment (EnumPoint a) (EnumPoint b) _ -> Just (fromIntegral a - fromIntegral b + 1)
-  _                                     -> Nothing
+  Single  (EnumPoint _)               -> Just 1
+  Segment (EnumPoint a) (EnumPoint b) -> Just (fromIntegral a - fromIntegral b + 1)
+  _                                   -> Nothing
 
 -- | Tests whether an 'EnumInf' is within the enumInfSeg. It is handy when used with backquote noation:
 -- @enumInf `isWithin` enumInfSeg@
-isWithin :: (Ord c, Enum c) => EnumInf c -> Segment c x -> Bool
+isWithin :: (Ord c, Enum c) => EnumInf c -> Segment c -> Bool
 isWithin point seg = case seg of
-  Single x              _ -> point == x
-  Segment EnumNegInf hi _ -> point <= hi
-  Segment lo EnumPosInf _ -> lo <= point
-  Segment lo hi         _ -> lo <= point && point <= hi
+  Single x              -> point == x
+  Segment EnumNegInf hi -> point <= hi
+  Segment lo EnumPosInf -> lo <= point
+  Segment lo hi         -> lo <= point && point <= hi
 
 -- | Returns true if two 'Segment's are intersecting.
-areIntersecting :: (Ord c, Enum c) => Segment c x -> Segment c y -> Bool
+areIntersecting :: (Ord c, Enum c) => Segment c -> Segment c -> Bool
 areIntersecting a b = case a of
-  Single  aa  _ -> case b of
-    Single  bb    _ -> aa == bb
-    Segment _  _  _ -> aa `isWithin` b
-  Segment x y _ -> case b of
-    Single  bb    _ -> bb `isWithin` a
-    Segment x' y' _ -> x' `isWithin` a || y' `isWithin` a || x `isWithin` b || y `isWithin` b
+  Single  aa  -> case b of
+    Single  bb    -> aa == bb
+    Segment _  _  -> aa `isWithin` b
+  Segment x y -> case b of
+    Single  bb    -> bb `isWithin` a
+    Segment x' y' -> x' `isWithin` a || y' `isWithin` a || x `isWithin` b || y `isWithin` b
 
 -- | Returns true if two 'Segment's are consecutive, that is, if the end is the 'Prelude.pred'essor
 -- of the start of the other.
-areConsecutive :: (Ord c, Enum c, BoundedInf c) => Segment c x -> Segment c x -> Bool
+areConsecutive :: (Ord c, Enum c, BoundedInf c) => Segment c -> Segment c -> Bool
 areConsecutive a b = case a of
-  Single  a   _ -> case b of
-    Single  b     _
-      | a < b       -> consec a  b
-      | otherwise   -> consec b  a
-    Segment x  y  _             
-      | a < x       -> consec a  x
-      | otherwise   -> consec y  a
-  Segment x y _ -> case b of    
-    Single  a     _             
-      | a < x       -> consec a  x
-      | otherwise   -> consec y  a
-    Segment x' y' _
-      | y < x'      -> consec y  x'
-      | otherwise   -> consec y' x
+  Single  a   -> case b of
+    Single  b
+      | a < b     -> consec a  b
+      | otherwise -> consec b  a
+    Segment x  y
+      | a < x     -> consec a  x
+      | otherwise -> consec y  a
+  Segment x y -> case b of    
+    Single  a
+      | a < x     -> consec a  x
+      | otherwise -> consec y  a
+    Segment x' y'
+      | y < x'    -> consec y  x'
+      | otherwise -> consec y' x
   where { consec a b = stepUp a == b || a == stepDown b }
 
 -- | Performs a set union on two 'Segment's of elements to create a new enumInfSeg. If the elements of
 -- the new enumInfSeg are not contiguous, each enumInfSeg is returned separately and unchanged. The first
 -- item in the pair of items returned is 'Prelude.True' if any of the items were modified.
-segmentUnion :: (Ord c, Enum c, BoundedInf c) =>
-  (x -> x -> x) -> Segment c x -> Segment c x -> (Bool, [Segment c x])
-segmentUnion add a b
+segmentUnion :: (Ord c, Enum c, BoundedInf c) => Segment c -> Segment c -> (Bool, [Segment c])
+segmentUnion a b
   | areIntersecting a b = case a of
-      Single  _   m -> case b of
-        Single  _      n -> (True, [a])
-        Segment _  _   n -> (True, [b])
-      Segment x y m -> case b of
-        Single  _      n -> (True, [a])
-        Segment x' y'  n -> (True, [enumInfSeg (min x x') (max y y') (add m n)])
+      Single  _   -> case b of
+        Single  _      -> (True, [a])
+        Segment _  _   -> (True, [b])
+      Segment x y -> case b of
+        Single  _      -> (True, [a])
+        Segment x' y'  -> (True, [enumInfSeg (min x x') (max y y')])
   | areConsecutive a b = case a of
-      Single  aa  m -> case b of
-        Single  bb     n -> (True, [enumInfSeg      aa         bb    (add m n)])
-        Segment x  y   n -> (True, [enumInfSeg (min aa x) (max aa y) (add m n)])
-      Segment x y m -> case b of
-        Single  bb     n -> (True, [enumInfSeg (min bb x) (max bb y) (add m n)])
-        Segment x' y'  n -> (True, [enumInfSeg (min x x') (max y y') (add m n)])
+      Single  aa  -> case b of
+        Single  bb     -> (True, [enumInfSeg      aa         bb   ])
+        Segment x  y   -> (True, [enumInfSeg (min aa x) (max aa y)])
+      Segment x y -> case b of
+        Single  bb     -> (True, [enumInfSeg (min bb x) (max bb y)])
+        Segment x' y'  -> (True, [enumInfSeg (min x x') (max y y')])
   | otherwise = (False, [a, b])
 
 -- | Performs a set intersection on two 'Segment's of elements to create a new enumInfSeg. If the
 -- elements of the new enumInfSeg are not contiguous, this function evaluates to an empty list.
-segmentIntersect :: (Ord c, Enum c, BoundedInf c) =>
-  (x -> y -> z) -> Segment c x -> Segment c y -> (Bool, [Segment c z])
-segmentIntersect mult a b = if areIntersecting a b then joined else (False, []) where
+segmentIntersect :: (Ord c, Enum c, BoundedInf c) => Segment c -> Segment c -> (Bool, [Segment c])
+segmentIntersect a b = if areIntersecting a b then joined else (False, []) where
   joined = case a of
-    Single  aa    m -> case b of
-      Single  aa    n -> (True, [Single aa (mult m n)])
-      Segment _  _  n -> (True, [Single aa (mult m n)])
-    Segment x  y  m -> case b of
-      Single  aa    n -> (True, [Single aa (mult m n)])
-      Segment x' y' n -> (True, [enumInfSeg (max x x') (min y y') (mult m n)]) 
+    Single  aa    -> case b of
+      Single  aa    -> (True, [Single aa])
+      Segment _  _  -> (True, [Single aa])
+    Segment x  y  -> case b of
+      Single  aa    -> (True, [Single aa])
+      Segment x' y' -> (True, [enumInfSeg (max x x') (min y y')]) 
 
 -- | Performs a set "delete" operation, deleteing any elements selected by the first enumInfSeg if
 -- they are contained in the second enumInfSeg. This operation is not associative, i.e.
 -- @'segmentDelete' a b /= 'segmentDelete' b a@.
 segmentDelete :: (Ord c, Enum c, BoundedInf c) =>
-  (x -> y -> x) -> Segment c x -> Segment c y -> (Bool, [Segment c x])
-segmentDelete sub a b = if not (areIntersecting a b) then (False, [a]) else del where
+  Segment c -> Segment c -> (Bool, [Segment c])
+segmentDelete a b = if not (areIntersecting a b) then (False, [a]) else del where
   del = case a of
-    Single  x   _ -> case b of
-      Single  x'    _ -> (True, [])
-      Segment x' y' _ -> (True, [])
-    Segment x y m -> case b of
-      Single  x'    n
-        | x==x'     -> (True, [enumInfSeg (stepUp x)  y  (sub m n)])
-        | y==x'     -> (True, [enumInfSeg x (stepDown y) (sub m n)])
-        | otherwise -> (True, [enumInfSeg x (stepDown x') mn, enumInfSeg (stepUp x') y mn])
-        where { mn = sub m n }
-      Segment x' y' n
-        | x' >  x && y' <  y -> (True, [enumInfSeg x (stepDown x') mn, enumInfSeg (stepUp y') y mn])
+    Single  x   -> case b of
+      Single  x'    -> (True, [])
+      Segment x' y' -> (True, [])
+    Segment x y -> case b of
+      Single  x'
+        | x==x'     -> (True, [enumInfSeg (stepUp x)  y ])
+        | y==x'     -> (True, [enumInfSeg x (stepDown y)])
+        | otherwise -> (True, [enumInfSeg x (stepDown x'), enumInfSeg (stepUp x') y])
+      Segment x' y'
+        | x' >  x && y' <  y -> (True, [enumInfSeg x (stepDown x'), enumInfSeg (stepUp y') y])
         | x' <= x && y' >= y -> (True, [])
-        | x' <= x && y' <  y -> (True, [enumInfSeg (stepUp y') y mn])
-        | x' >  x && y' >= y -> (True, [enumInfSeg x (stepDown x') mn])
-        where { mn = sub m n }
+        | x' <= x && y' <  y -> (True, [enumInfSeg (stepUp y') y])
+        | x' >  x && y' >= y -> (True, [enumInfSeg x (stepDown x')])
 
 -- | Evaluates to the set of all elements not selected by the given 'Segment'.
-segmentInvert :: (Ord c, Enum c, BoundedInf c) => y -> Segment c x -> [Segment c y]
-segmentInvert m seg = canonicalSegment =<< case seg of
-  Single  x   _ -> case x of
+segmentInvert :: (Ord c, Enum c, BoundedInf c) => Segment c -> [Segment c]
+segmentInvert seg = canonicalSegment =<< case seg of
+  Single  x   -> case x of
     EnumNegInf  -> [] -- [Single EnumPosInf]
     EnumPosInf  -> [] -- [Single EnumNegInf]
-    EnumPoint _ -> [mkSegment EnumNegInf (stepDown x) m, mkSegment (stepUp x) EnumPosInf m]
-  Segment x y _ -> case x of
+    EnumPoint _ -> [mkSegment EnumNegInf (stepDown x), mkSegment (stepUp x) EnumPosInf]
+  Segment x y -> case x of
     EnumNegInf  -> case y of
       EnumNegInf  -> [] -- [Single  EnumPosInf]
       EnumPosInf  -> [] -- []
-      EnumPoint _ -> [mkSegment (stepUp y) EnumPosInf m]
+      EnumPoint _ -> [mkSegment (stepUp y) EnumPosInf]
     EnumPosInf  -> case y of
       EnumPosInf  -> [] -- [Single  EnumNegInf]
       EnumNegInf  -> [] -- []
-      EnumPoint _ -> [mkSegment EnumNegInf (stepDown y) m]
+      EnumPoint _ -> [mkSegment EnumNegInf (stepDown y)]
     EnumPoint _ -> case y of
-      EnumNegInf  -> [mkSegment (stepUp x) EnumPosInf   m]
-      EnumPosInf  -> [mkSegment EnumNegInf (stepDown x) m]
+      EnumNegInf  -> [mkSegment (stepUp x) EnumPosInf  ]
+      EnumPosInf  -> [mkSegment EnumNegInf (stepDown x)]
       EnumPoint _ ->
-        [ mkSegment EnumNegInf (min (stepDown x) (stepDown y)) m
-        , mkSegment (max (stepUp x) (stepUp y))  EnumPosInf    m
+        [ mkSegment EnumNegInf (min (stepDown x) (stepDown y))
+        , mkSegment (max (stepUp x) (stepUp y))  EnumPosInf
         ]
 
 -- | Eliminate overlapping and duplicate 'Segment's from a list of segments. Requires a union
 -- function for combining elements that overlap.
-segmentNub :: (Ord c, Enum c, BoundedInf c) => (x -> x -> x) -> [Segment c x] -> [Segment c x]
-segmentNub add ax = loop (sortBy (compareSegments (\ _ _ -> EQ)) ax) >>= canonicalSegment where
+segmentNub :: (Ord c, Enum c, BoundedInf c) => [Segment c] -> [Segment c]
+segmentNub ax = loop (sortBy compareSegments ax) >>= canonicalSegment where
   loop ax = case ax of
     []     -> []
     [a]    -> [a]
     a:b:ax ->
-      let (changed, bx) = segmentUnion add a b
+      let (changed, bx) = segmentUnion a b
       in  if changed
             then loop (bx++ax)
             else if null bx then loop ax else head bx : loop (tail bx ++ ax)
@@ -446,7 +438,7 @@ segmentNub add ax = loop (sortBy (compareSegments (\ _ _ -> EQ)) ax) >>= canonic
 
 -- | This function is used by 'associativeProduct' to generate the list of pairs on which to execute the
 -- inner production function. It is a general function that may come in handy, but otherwise does
--- not specifically relate to 'EnumSet' or 'Segment' types.
+-- not specifically relate to 'EnumSetM' or 'Segment' types.
 --
 -- What it does is, Given two lists of items, returns every possible unique combination of two
 -- items. For example the pair (1,2) and (2,1) are considered to be the same combination, so only
@@ -462,7 +454,7 @@ upperTriangular mainDiag ax bx = do
   (a, bx) <- zip ax (if mainDiag then iter bx else if null bx then [] else iter (tail bx))
   map (\b -> (a, b)) bx
 
--- | Used by the various set operations, including 'setUnion', 'setIntersect', and 'setDelete', to
+-- Used by the various set operations, including 'setUnion', 'setIntersect', and 'setDelete', to
 -- compute a new set from two parameter sets and a single operation on the compnent 'Segment's. What
 -- it does is, given two lists of elements, the largest possible upper triangular matrix (using
 -- 'upperTriangular') of all possible pairs of elements from a and b is formed, and on each pair a
@@ -470,15 +462,13 @@ upperTriangular mainDiag ax bx = do
 -- to be a function like 'segmentUnion', 'segmentIntersect', or 'segmentDelete'.
 associativeProduct
   :: (Ord c, Enum c, BoundedInf c)
-  => (Segment c x -> Segment c y -> (Bool, [Segment c z]))
-  -> EnumSet c x -> EnumSet c y -> EnumSet c z
+  => (Segment c -> Segment c -> (Bool, [Segment c]))
+  -> [Segment c] -> [Segment c] -> [Segment c]
 associativeProduct reduce a b =
-  let (ax,bx) = (listSegments a, listSegments b)
-      f reduce ax bx = upperTriangular True ax bx >>= snd . uncurry reduce
-      product = segmentNub (\ _ a -> a) $
-        if enumSetElemCount b > enumSetElemCount a then f reduce ax bx else f (flip reduce) bx ax
-  in  EnumSet{ enumSetElemCount = length product, listSegments = product }
+  let f a b = upperTriangular True a b >>= snd . uncurry reduce
+  in  segmentNub (if length b > length a then f a b else f b a)
 
+-- not for export
 -- not for export
 -- This equation assumes list arguments passed to it are already sorted list. This alrorithm works
 -- in O(log (n^2)) time. Pass two functions, a function for combining intersecting items, and a
@@ -517,127 +507,227 @@ nonAssociativeProduct product ax bx = exclusiveProduct product (sort ax) (sort b
 ----------------------------------------------------------------------------------------------------
 
 -- | A set-union of serveral 'Segment's.
-data EnumSet c x
-  = EnumSet
-    { enumSetElemCount :: Int
-    , listSegments :: [Segment c x]
-    }
+data EnumSetM c x
+  = EmptyEnumSet
+  | InverseSet  { invertedSet :: EnumSetM c x, enumSetValue :: x }
+  | InfiniteSet { enumSetValue :: x }
+  | EnumSetM    { listSegments :: [Segment c], enumSetValue :: x }
   deriving Eq
 instance (Ord c, Enum c, BoundedInf c, Monoid x) =>
-  Monoid (EnumSet c x) where
-    mempty  = EnumSet{ enumSetElemCount = 0, listSegments = [] }
+  Monoid (EnumSetM c x) where
+    mempty  = EmptyEnumSet
     mappend = setUnion mappend
 instance
-  Functor (EnumSet c) where
-    fmap f s = s{listSegments = fmap (fmap f) (listSegments s)}
+  Functor (EnumSetM c) where
+    fmap f a = case a of
+      EmptyEnumSet     -> EmptyEnumSet
+      InverseSet   a x -> fmap f a
+      InfiniteSet    x -> InfiniteSet (f x)
+      EnumSetM     a x -> EnumSetM  a (f x)
 instance (Ord c, Enum c, BoundedInf c) =>
-  Monad (EnumSet c) where
-    return x  = EnumSet{ enumSetElemCount = 1, listSegments = [infiniteSegment x] }
-    a >>= b = EnumSet{ enumSetElemCount = length result, listSegments = result } where
-      result = exclusiveProduct (segmentDelete const) bx ax
-      (ax, bx) = foldl f ([], []) $ map separate (listSegments a)
-      f (a0, b0) (a1, b1) = (a0++a1, b0++b1)
-      separate a = case a of
-        Single  x   a -> ([Single  x   ()], listSegments (b a))
-        Segment x y a -> ([Segment x y ()], listSegments (b a))
-        -- 'separate' takes the value stored in a segment 'A' and applies that value to the binding
-        -- function to produce a second set 'B'. The segment 'A' is then 'void'ed and paired with
-        -- the segments extracted from set 'B'. 'exclusiveProduct' is then used to filter-out any
-        -- segment from 'B' that does not intersect with any of the segments from 'A'. The remaining
-        -- segments from 'B' becomes the result of the monadic bind operation.
+  Monad (EnumSetM c) where
+    return  = InfiniteSet
+    a >>= b = case a of
+      EmptyEnumSet      -> EmptyEnumSet
+      InverseSet   a ax -> forceInvert a ax >>= b
+      InfiniteSet    ax -> b ax
+      EnumSetM     a ax -> setIntersect (flip const) (EnumSetM a ax) (b ax)
 instance (Ord c, Enum c, BoundedInf c) =>
-  Applicative (EnumSet c) where { pure = return; (<*>) = ap; }
-instance (Show c, Show x) =>
-  Show (EnumSet c x) where
-    show s = "("++intercalate ", " (map (showSegment show) (listSegments s))++")"
+  MonadPlus (EnumSetM c) where
+    mzero = EmptyEnumSet
+    mplus = setUnion (flip const)
+instance (Ord c, Enum c, BoundedInf c) =>
+  Applicative (EnumSetM c) where { pure = return; (<*>) = ap; }
+instance (Ord c, Enum c, BoundedInf c) =>
+  Alternative (EnumSetM c) where { empty = mzero; (<|>) = mplus; }
 
--- | Initialize a new intinite 'EnumSet', that is, the set that contains all possible elements.
-infinite :: (Ord c, Enum c, BoundedInf c) => x -> EnumSet c x
-infinite = return
+--  instance (Show c, Show x) =>
+--    Show (EnumSetM c x) where
+--      show s = "("++intercalate ", " (map (showSegment show) (listSegments s))++")"
 
--- | Initialize a new 'EnumSet' object with a list of 'Segment's, which are 'segmentUnion'ed
+-- | Initialize a new intinite 'EnumSetM', that is, the set that contains all possible elements.
+infinite :: (Ord c, Enum c, BoundedInf c) => x -> EnumSetM c x
+infinite = InfiniteSet
+
+-- | Initialize a new 'EnumSetM' object with a list of 'Segment's, which are 'segmentUnion'ed
 -- together to create the set.
-enumSet :: (Ord c, Enum c, BoundedInf c) => (x -> x -> x) -> [Segment c x] -> EnumSet c x
-enumSet add ax = EnumSet{ enumSetElemCount = length list , listSegments = list } where
-  list = segmentNub add ax
+enumSet :: (Ord c, Enum c, BoundedInf c) => [Segment c] -> x -> EnumSetM c x
+enumSet a ax = enumSet_ (segmentNub a) ax
+
+-- Not exported. Assumes the segments list proivded was produced within this module and does not
+-- need to be 'segmentNub'bed.
+enumSet_ :: (Ord c, Enum c, BoundedInf c) => [Segment c] -> x -> EnumSetM c x
+enumSet_ a ax = case a of
+  []                              -> EmptyEnumSet
+  [Segment EnumNegInf EnumPosInf] -> InfiniteSet ax
+  a                               -> EnumSetM   a ax
 
 -- | Create a set with a single range of elements, no gaps.
-range :: (Ord c, Enum c, BoundedInf c) => c -> c -> x -> EnumSet c x
-range a b x = enumSet const [segment a b x]
+range :: (Ord c, Enum c, BoundedInf c) => c -> c -> x -> EnumSetM c x
+range a b x = EnumSetM [segment a b] x
 
 -- | Create a set with a single element.
-point :: (Ord c, Enum c, BoundedInf c) => c -> x -> EnumSet c x
+point :: (Ord c, Enum c, BoundedInf c) => c -> x -> EnumSetM c x
 point c = range c c
 
 -- | Tests if an element is a member of the set.
-setMember :: Ord c => EnumSet c x -> c -> Bool
-setMember set c = or $ map (segmentMember c) $ listSegments set
+setMember :: Ord c => EnumSetM c x -> c -> Bool
+setMember a c = case a of
+  EmptyEnumSet     -> False
+  InfiniteSet    _ -> True
+  InverseSet   a _ -> not (setMember a c)
+  EnumSetM     a _ -> or $ map (segmentMember c) a
 
 -- | Test if a set encompases only one element, and if so, returns that one element.
-setIsSingleton :: EnumSet c x -> Maybe c
-setIsSingleton set = case listSegments set of
-  [Single (EnumPoint a) _] -> Just a
-  _                        -> Nothing
+setIsSingleton :: (Ord c, Enum c, BoundedInf c) => EnumSetM c x -> Maybe c
+setIsSingleton a = case void a of
+  EnumSetM     a _ -> case a of
+    [Single (EnumPoint a)] -> Just a
+    _                      -> Nothing
+  InverseSet   a x -> setIsSingleton (forceInvert a x)
+  _                -> Nothing
 
 -- | Tests if a set is empty.
-setIsNull :: EnumSet c x -> Bool
-setIsNull s = null (listSegments s)
+setIsNull :: EnumSetM c x -> Bool
+setIsNull a = case a of
+  EmptyEnumSet                   -> True
+  InfiniteSet                  _ -> False
+  EnumSetM     _               _ -> False
+  InverseSet   EmptyEnumSet    _ -> False
+  InverseSet  (InfiniteSet  _) _ -> True
+  InverseSet  (InverseSet a _) _ -> setIsNull a
+  InverseSet   a               _ -> setIsNull a
+    -- simply 'not'ting the result of (setIsNull s) will not work, the inverse of a set may or may
+    -- not be null.
 
--- | Union the set of elements in two 'EnumSet's. This is the operation used for overriding
+-- | Inverting an empty set will produce the 'infinity' set, but this set cannot be 'null' so you
+-- must provide a value to be used in the case the given set is 'mempty'. If the given set is not
+-- 'mempty' the value provided to this function is not used.
+setInvert :: (Ord c, Enum c, BoundedInf c) => EnumSetM c x -> x -> EnumSetM c x
+setInvert a y = case a of
+  EmptyEnumSet     -> InfiniteSet y
+  InfiniteSet  _   -> EmptyEnumSet
+  InverseSet   a _ -> a
+  EnumSetM     a x -> InverseSet (EnumSetM a x) y
+
+-- | Union the set of elements in two 'EnumSetM's. This is the operation used for overriding
 -- 'Data.Monoid.mappend'.
 setUnion :: (Ord c, Enum c, BoundedInf c) =>
-  (x -> x -> x) -> EnumSet c x -> EnumSet c x -> EnumSet c x
-setUnion add a b =
-  if setIsNull a then b else if setIsNull b then a else associativeProduct (segmentUnion add) a b
+  (x -> x -> x) -> EnumSetM c x -> EnumSetM c x -> EnumSetM c x
+setUnion add a b = case a of
+  EmptyEnumSet       -> b
+  InfiniteSet     ax -> case b of
+    EmptyEnumSet       -> InfiniteSet ax
+    InfiniteSet     bx -> InfiniteSet (add ax bx)
+    EnumSetM      b bx -> EnumSetM  b (add ax bx)
+    InverseSet    b bx -> setUnion add (InfiniteSet ax) (forceInvert b bx)
+  InverseSet    a ax -> setUnion add (forceInvert a ax) b
+  EnumSetM      a ax -> case b of
+    EmptyEnumSet       -> EnumSetM a ax
+    InfiniteSet     bx -> InfiniteSet (add ax bx)
+    InverseSet    b bx -> setUnion add (EnumSetM a ax) (forceInvert b bx)
+    EnumSetM      b bx -> enumSet_ (associativeProduct segmentUnion a b) (add ax bx)
 
--- | Intersect the set of elements in two 'EnumSet's, i.e. create a new set of elements that are
+-- | Intersect the set of elements in two 'EnumSetM's, i.e. create a new set of elements that are
 -- where every element must be included in both of the sets that were given as parameters. This
 -- function is defined as @('associativeProduct' 'segmentIntersect')@.
 setIntersect :: (Ord c, Enum c, BoundedInf c) =>
-  (x -> y -> z) -> EnumSet c x -> EnumSet c y -> EnumSet c z
-setIntersect mult = associativeProduct (segmentIntersect mult)
+  (x -> y -> z) -> EnumSetM c x -> EnumSetM c y -> EnumSetM c z
+setIntersect mult a b = case a of
+  EmptyEnumSet      -> EmptyEnumSet
+  InfiniteSet    ax -> case b of
+    EmptyEnumSet      -> EmptyEnumSet
+    InfiniteSet    bx -> InfiniteSet (mult ax bx)
+    InverseSet   b bx -> setIntersect mult (InfiniteSet ax) (forceInvert b bx)
+    EnumSetM     b bx -> enumSet_ b (mult ax bx)
+  InverseSet   a ax -> setIntersect mult (forceInvert a ax) b
+  EnumSetM     a ax -> case b of
+    EmptyEnumSet      -> EmptyEnumSet
+    InfiniteSet    bx -> InfiniteSet (mult ax bx)
+    InverseSet   b bx -> setIntersect mult (EnumSetM a ax) (forceInvert b bx)
+    EnumSetM     b bx -> enumSet_ (associativeProduct segmentIntersect a b) (mult ax bx)
 
 -- | Delete every element from the first set if it exists in the second set. This operation is not
 -- associative.
 setDelete :: (Ord c, Enum c, BoundedInf c) =>
-  (x -> y -> x) -> EnumSet c x -> EnumSet c y -> EnumSet c x
-setDelete sub a b = if null bx then a else delSet where
-  bx     = listSegments b
-  delSet = EnumSet{ enumSetElemCount = length del, listSegments = del }
-  del    = exclusiveProduct (segmentDelete sub) (listSegments a) bx
-  -- WARNING: used to apply 'segmentNub' to the whole of this function. Wether or not we can do
-  -- without it must be tested.
+  (x -> y -> x) -> EnumSetM c x -> EnumSetM c y -> EnumSetM c x
+setDelete sub a b = case a of
+  EmptyEnumSet      -> EmptyEnumSet
+  InfiniteSet    ax -> case b of
+    EmptyEnumSet      -> InfiniteSet ax
+    InfiniteSet    bx -> InfiniteSet (sub ax bx)
+    InverseSet   b bx -> setDelete sub (InfiniteSet ax) (forceInvert b bx)
+    EnumSetM     _ bx -> InfiniteSet (sub ax bx)
+  InverseSet   a ax -> setDelete sub (forceInvert a ax) b
+  EnumSetM     a ax -> case b of
+    EmptyEnumSet      -> EmptyEnumSet
+    InfiniteSet    _  -> EmptyEnumSet
+    InverseSet   b bx -> setDelete sub (EnumSetM a ax) (forceInvert b bx)
+    EnumSetM     b bx -> enumSet_ (exclusiveProduct segmentDelete a b) (sub ax bx)
+      -- WARNING: used to apply 'segmentNub' to the whole of this function (which would now be done
+      -- by constructing using 'fromList' instead of 'enumSet_'). Wether or not we can do without it
+      -- must be tested.
 
--- | Invert the items selected by a given set.
-setInvert :: (Show c, Ord c, Enum c, BoundedInf c) => x -> EnumSet c x -> EnumSet c x
-setInvert x set = EnumSet{ enumSetElemCount = length inv, listSegments = inv } where
-  inv = canonicalSegment =<< case listSegments set of
-    []                                -> [infiniteSegment x]
-    [Segment EnumNegInf EnumPosInf _] -> [] -- the infinite segment set goes to null
-    segs                              -> loop EnumNegInf segs where
-      loop mark segs = case segs of
-        []                          -> [mkSegment (stepUp mark)  EnumPosInf  x]
-        [Segment a EnumPosInf _]    -> [mkSegment (stepUp mark) (stepDown a) x]
-        Segment EnumNegInf b _ : segs -> loop b segs
-        Segment a          b _ : segs -> mkSegment (stepUp mark) (stepDown a) x : loop b segs
-        Single  a            _ : segs -> mkSegment (stepUp mark) (stepDown a) x : loop a segs
+-- Not for export. Invert the items selected by a given set.
+forceInvert :: (Ord c, Enum c, BoundedInf c) => EnumSetM c x -> x -> EnumSetM c x
+forceInvert a ax = case a of
+  EmptyEnumSet      -> InfiniteSet ax
+  InfiniteSet    _  -> EmptyEnumSet
+  InverseSet   a ax -> fmap (const ax) a -- use the 'ax' value from the previous call to 'setInvert'
+  EnumSetM     a ax -> enumSet_ (inv a) ax
+  where
+    inv segs = canonicalSegment =<< loop EnumNegInf segs
+    loop mark segs = case segs of
+      []                          -> [mkSegment (stepUp mark)  EnumPosInf ]
+      [Segment a EnumPosInf]      -> [mkSegment (stepUp mark) (stepDown a)]
+      Segment EnumNegInf b : segs -> loop b segs
+      Segment a          b : segs -> mkSegment (stepUp mark) (stepDown a) : loop b segs
+      Single  a            : segs -> mkSegment (stepUp mark) (stepDown a) : loop a segs
 
 -- | Exclusive-OR-like union of set elements.
 setXUnion :: (Ord c, Enum c, BoundedInf c) =>
-  (x -> x -> x) -> EnumSet c x -> EnumSet c x -> EnumSet c x
-setXUnion add a b = setDelete const (setUnion add a b) (setIntersect const a b)
+  (x -> x -> x) -> EnumSetM c x -> EnumSetM c x -> EnumSetM c x
+setXUnion add a b = case a of
+  EmptyEnumSet      -> case b of
+    EmptyEnumSet      -> EmptyEnumSet
+    InfiniteSet    bx -> InfiniteSet    bx
+    InverseSet   b bx -> InverseSet   b bx
+    EnumSetM     b bx -> EnumSetM     b bx
+  InfiniteSet    ax -> case b of
+    EmptyEnumSet      -> InfiniteSet ax
+    InfiniteSet    _  -> EmptyEnumSet
+    InverseSet   b bx -> fmap (add ax) b
+    EnumSetM     b bx -> xorWithInf (EnumSetM b bx) bx ax
+  InverseSet   a ax -> setXUnion add (forceInvert a ax) b
+  EnumSetM     a ax -> case b of
+    EmptyEnumSet      -> EnumSetM a ax
+    InfiniteSet    bx -> xorWithInf (EnumSetM a ax) ax bx
+    InverseSet   b bx -> setXUnion add (EnumSetM a ax) (forceInvert b bx)
+    EnumSetM     b bx ->
+      let va = EnumSetM a ()
+          vb = EnumSetM b ()
+      in  const (add ax bx) <$> setDelete const (setUnion const va vb) (setIntersect const va vb)
+  where
+    xorWithInf a ax bx = const (add ax bx) <$> forceInvert a ax
 
 ----------------------------------------------------------------------------------------------------
 
-instance NFData a => NFData (EnumInf a) where
-  rnf  EnumNegInf   = ()
-  rnf  EnumPosInf   = ()
-  rnf (EnumPoint c) = deepseq c ()
+instance NFData a =>
+  NFData (EnumInf a) where
+    rnf  EnumNegInf   = ()
+    rnf  EnumPosInf   = ()
+    rnf (EnumPoint c) = deepseq c ()
 
-instance NFData a => NFData (Segment a x) where
-  rnf (Single  a   _) = deepseq a ()
-  rnf (Segment a b _) = deepseq a $! deepseq b ()
+instance NFData a =>
+  NFData (Segment a) where
+    rnf (Single  a  ) = deepseq a ()
+    rnf (Segment a b) = deepseq a $! deepseq b ()
 
-instance NFData a => NFData (EnumSet a x) where
-  rnf (EnumSet a b) = deepseq a $! deepseq b ()
+instance (BoundedInf a, NFData a, NFData x) =>
+  NFData (EnumSetM a x) where
+    rnf a = case a of
+      EmptyEnumSet    -> ()
+      InfiniteSet  ax -> deepseq ax ()
+      InverseSet a ax -> deepseq a $! deepseq ax ()
+      EnumSetM   a ax -> deepseq a $! deepseq ax ()
 

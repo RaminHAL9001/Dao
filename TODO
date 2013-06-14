@@ -1,10 +1,6 @@
 TODO:
 
-* TODO AFTER the new parser is fully functioning and the old parser has been deleted:
-the "Dao.EnumSet" exposes many functions for manipulating 'Dao.EnumSet.Segment's. I would like to
-keep 'Dao.EnumSet.Segment' exposed, but have all of the functions which manipulate it directly
-(apart from it's constructor) to no longer be exported, and instead make everything which imoprts
-the "Dao.EnumSet" module make use of the 'Dao.EnumSet.EnumSet' data type exclusively.
+* Fix the bugs introduced into the "Dao.EnumSet" module after this last bout of sweeping changes.
 
 * Complex numbers are not being parsed correctly by the new parser.
 
@@ -93,6 +89,17 @@ lifted into IO so that dereferencing is possible, and there needs to be a separa
 matching values of referenecs, which needs to be the default pattern that binds values to labels.
 
 SOLVED:
+
+* TODO AFTER the new parser is fully functioning and the old parser has been deleted:
+the "Dao.EnumSet" exposes many functions for manipulating 'Dao.EnumSet.Segment's. I would like to
+keep 'Dao.EnumSet.Segment' exposed, but have all of the functions which manipulate it directly
+(apart from it's constructor) to no longer be exported, and instead make everything which imoprts
+the "Dao.EnumSet" module make use of the 'Dao.EnumSet.EnumSet' data type exclusively.
+[Solution] It turns out I needed it sooner rather than later. So I just went ahead and changed
+everything in the "Dao.EnumSet" module, and then I had to go through the old parser modules,
+refactoring everything that broke. I would like to re-affirm my love of Haskell's propensity for
+finding errors, and my love of the old UNIX "Sed" program, which in spite of all its primitive
+simplicity, still happens to be extremely useful for refactoring.
 
 *	There is an infinite loop in the "Dao.Struct" module caused on certain occasions where the
 'Dao.Struct.atAddress' is called. I've tracked the problem down to 'Dao.Object.AST.AST_Assign'

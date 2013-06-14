@@ -47,7 +47,7 @@ import           Dao.Object
 import           Dao.Object.Math
 import qualified Dao.Tree as T
 import           Dao.Predicate
-import           Dao.EnumSet
+import qualified Dao.EnumSet as Es
 
 import           Data.Maybe
 import           Data.List
@@ -144,13 +144,13 @@ matchObject pat o = let otype = objType o in case pat of
   ObjMany -> return o
   ObjAny1 -> return o
   ObjEQ q   | q == o            -> return o
-  ObjType t | setMember t otype -> return o
+  ObjType t | Es.member t otype -> return o
   ObjBounded  lo hi             -> Matcher $ pvalue $ msum $
-    [ fmap EnumPoint (objToRational o) >>= \r -> guard (lo <= r && r <= hi) >> return o
+    [ fmap Es.Point (objToRational o) >>= \r -> guard (lo <= r && r <= hi) >> return o
     , case o of
         OArray arr -> do
           let (a, b) = bounds arr
-          guard (lo <= EnumPoint (toRational a) && EnumPoint (toRational b) <= hi)
+          guard (lo <= Es.Point (toRational a) && Es.Point (toRational b) <= hi)
           return o
         _          -> mzero
     ]

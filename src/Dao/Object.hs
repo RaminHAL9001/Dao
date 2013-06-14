@@ -35,7 +35,7 @@ import           Dao.Debug.OFF
 import           Dao.String
 import           Dao.NewParser
 import           Dao.Glob
-import           Dao.EnumSet
+import qualified Dao.EnumSet as Es
 import           Dao.Tree as T hiding (map)
 import           Dao.Predicate
 
@@ -127,9 +127,9 @@ data TypeID
   | BytesType
   deriving (Eq, Ord, Enum, Typeable, Bounded)
 
-instance BoundedInf TypeID where
-  minBoundInf = EnumPoint minBound
-  maxBoundInf = EnumPoint maxBound
+instance Es.InfBound TypeID where
+  minBoundInf = Es.Point minBound
+  maxBoundInf = Es.Point maxBound
 
 instance Show TypeID where
   show t = case t of
@@ -667,8 +667,8 @@ data Pattern
   | ObjMany -- ^ like ObjAnyX but matches greedily.
   | ObjAny1 -- ^ matches any one object
   | ObjEQ      Object -- ^ simply checks if the object is exactly equivalent
-  | ObjType    (EnumSet TypeID ()) -- ^ checks if the object type is any of the given types.
-  | ObjBounded (EnumInf T_ratio) (EnumInf T_ratio)
+  | ObjType    (Es.Set TypeID) -- ^ checks if the object type is any of the given types.
+  | ObjBounded (Es.Inf T_ratio) (Es.Inf T_ratio)
     -- ^ checks that numeric types are in a certain range.
   | ObjList    TypeID            [Pattern]
     -- ^ recurse into a list-like object given by TypeID (TrueType for any list-like object)

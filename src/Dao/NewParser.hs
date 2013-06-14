@@ -22,12 +22,15 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 
 module Dao.NewParser where
 
 import           Dao.String
 import           Dao.Predicate
+import qualified Dao.EnumSet  as Es
 
 import           Control.Applicative
 import           Control.Monad
@@ -177,6 +180,11 @@ data GenToken tok
     -- create the token.
 instance Show tok => Show (GenToken tok) where
   show tok = show (tokType tok) ++ " " ++ show (tokToUStr tok)
+instance TokenType tok => CFG GenToken tok where
+  castTT t = case t of
+    GenEmptyToken t   -> GenEmptyToken (wrapTT t)
+    GenCharToken  t c -> GenCharToken  (wrapTT t) c
+    GenToken      t u -> GenToken      (wrapTT t) u
 
 -- | If the lexical analyzer emitted a token with a copy of the text used to create it, this
 -- function can retrieve that text. Returns 'Dao.String.nil' if there is no text.
@@ -207,6 +215,15 @@ instance HasLineNumber   (GenTokenAt tok) where
 instance HasColumnNumber (GenTokenAt tok) where
   columnNumber        = tokenAtColumnNumber
   setColumnNumber a n = a{tokenAtColumnNumber=n}
+instance TokenType tok =>
+  CFG GenTokenAt tok where
+    castTT t = case t of
+      GenTokenAt line col t ->
+        GenTokenAt
+        { tokenAtLineNumber   = line
+        , tokenAtColumnNumber = col
+        , getToken            = castTT t
+        }
 
 -- | The lexical analysis phase emits a stream of 'GenTokenAt' objects, but it is not memory
 -- efficient to store the line and column number with every single token. To save space, the token
@@ -225,6 +242,15 @@ instance HasLineNumber (GenLine tok) where
   setLineNumber a n = a{lineLineNumber=n}
 instance Show tok => Show (GenLine tok) where
   show line = show (lineLineNumber line) ++ ": " ++ show (lineTokens line)
+instance TokenType tok =>
+  CFG GenLine tok where
+    castTT t =
+      GenLine
+      { lineLineNumber = lineLineNumber t
+      , lineTokens     = fmap (fmap castTT) (lineTokens t)
+        -- taking advantage of the fact that a 2-tuple instantiates 'Data.Functor.Functor' over the
+        -- second item.
+      }
 
 ----------------------------------------------------------------------------------------------------
 -- $Error_handling
@@ -249,6 +275,15 @@ instance Show tok =>
             , fmap ((": "++) . uchars) (parseErrMsg err)
             ]
       in  if null msg then "Unknown parser error" else msg
+instance TokenType tok =>
+  CFG (GenError st) tok where
+    castTT t =
+      GenError
+      { parseErrLoc = parseErrLoc t
+      , parseErrMsg = parseErrMsg t
+      , parseErrTok = fmap castTT (parseErrTok t)
+      , parseStateAtErr = parseStateAtErr t
+      }
 
 -- | An initial blank parser error you can use to construct more detailed error messages.
 parserErr :: Eq tok => LineNum -> ColumnNum -> GenError st tok
@@ -300,18 +335,55 @@ parserErr lineNum colNum =
 -- 'Prelude.Read' and 'Prelude.Show' for your tokens.
 newtype TT = MkTT{ intTT :: Int } deriving (Eq, Ord, Show, Ix)
 
--- | A 'TokenTable' is an intermediate data structure, objects of which can be unioned to form a
--- 'TokenDB' (actually, the union operation is 'Data.Monoid.mappend'). A 'TokenTable' is made of the
--- simplest kind of tokens: which are keywords or operators, the types of tokens that can be
--- represented by a simple string, types that are /not/ represented by 'GenLexer's.
-data TokenTable
-  = EmptyTokenTable
-  | TokenTable{ indexToString :: Array Int UStr, stringToIndex :: M.Map UStr TT }
-instance Monoid TokenTable where
-  mempty = EmptyTokenTable
-  mappend EmptyTokenTable b = b
-  mappend a EmptyTokenTable = a
-  mappend a b = ustrTable (elems (indexToString a) ++ elems (indexToString b))
+-- | A 'TokenDB' is the data constructed by the 'DefineTokens' monad which you will use to keep
+-- track of your tokens. You can then use 'Data.Monoid.mconcat' to combine a list of 'TokenDB's,
+-- where each 'TokenDB' created is by one of 'stringTable', 'ustrTable', or 'lexerTable', like
+-- so:
+-- > myTokens :: 'TokenDB'
+-- > myTokens = 'Data.Monoid.mconcat' $ [
+-- >      'stringTable' $ 'Prelude.unwords' "if then else case of let in where",
+-- >      'stringTable' $ 'Prelude.unwords' "() == /= -> \\ : :: ~ @",
+-- >      'lexerTable' $ [
+-- >          newTokenType "string.literal" 'lexStringLiteral',
+-- >          newTokenType "comment.endline" 'lexEndlineC_Comment',
+-- >          newTokenType "comment.inline"  'lexInlineC_Comment' 
+-- >          -- (The dots in the token type name do not mean anything, it just looks nicer.)
+-- >        ]
+-- >  ]
+-- Or, if you are like me and prefer monadic notation, you can just use the
+-- 'Control.Monad.Writer.Writer' monad, since 'TokenDB' instantiates 'Data.Monoid.Monoid':
+-- > myTokens :: 'TokenDB'
+-- > myTokens = 'Control.Monad.Writer.execWriter' $ do
+-- >     let key = 'Control.Monad.Writer.Class.tell' . 'stringTable' . 'Prelude.unwords'
+-- >     key "if then else case of let in where"
+-- >     key "() == /= -> \\ : :: ~ @"
+-- >     let define k t = 'Control.Monad.Writer.Class.tell' $ 'lexerTable' k t
+-- >     define "string.literal"  'lexStringLiteral'
+-- >     define "comment.endline" 'lexEndlineC_Comment'
+-- >     define "comment.inline"  'lexInlineC_Comment'
+-- >     -- (The dots in the token type name do not mean anything, it just looks nicer.)
+data TokenDB
+  = TokenDB
+    { indexToString :: [Array Int UStr]
+    , stringToIndex :: M.Map UStr TT
+    , labeledTokenizers :: M.Map UStr (GenLexer TT ())
+    }
+instance Monoid TokenDB where
+  mempty =
+    TokenDB
+    { indexToString = mempty
+    , stringToIndex = mempty
+    , labeledTokenizers = mempty
+    }
+  mappend a b = combined{ labeledTokenizers = M.union mb ma }
+    where
+      ma = labeledTokenizers a
+      mb = labeledTokenizers b
+      combined = ustrTable $ concat $
+        [ concatMap elems (indexToString a)
+        , concatMap elems (indexToString b)
+        , M.keys ma, M.keys mb
+        ]
 
 -- | Creates a 'TokenTable' using a list of keywords or operators you provide to it.
 -- Every string provided becomes it's own token type. For example:
@@ -320,33 +392,76 @@ instance Monoid TokenTable where
 -- >     , "if then else case of let in where"
 -- >     , "import module qualified as hiding"
 -- >     ]
-stringTable :: [String] -> TokenTable
+stringTable :: [String] -> TokenDB
 stringTable = ustrTable . map ustr
 
 -- | Like 'stringTable' except takes a list of 'Dao.String.UStr's.
-ustrTable :: [UStr] -> TokenTable
-ustrTable strs = if null strs then EmptyTokenTable else newTable where
+ustrTable :: [UStr] -> TokenDB
+ustrTable strs = if null strs then mempty else newTable where
   comp a b = case compare a b of {EQ->EQ; GT->LT; LT->GT}
   strlist  = sortBy comp (nub strs)
   topindex = length strlist - 1 -- the final index in the list
   newTable =
-    TokenTable
-    { indexToString = listArray (0, topindex) strs
+    TokenDB
+    { indexToString = [listArray (0, topindex) strs]
     , stringToIndex = M.fromList $ zip strlist $ map MkTT [0..topindex]
+    , labeledTokenizers = mempty
     }
 
--- | To define token types that can be used consistently throughout a parser program, you must
--- create a sort of "database" of tokens, a 'TokenDB'. Several functions are provided to allow you
--- to create this database. These functions will automatically create a table of 'TokenDBEntry's.
+-- | Create a token type that is defined by a tokenizer.
+lexerTable :: String -> GenLexer TT () -> TokenDB
+lexerTable label lexer = mempty{labeledTokenizers = M.singleton (ustr label) lexer}
+
+-- | Here is class that allows you to create your own token type from a Haskell newtype. It is
+-- usually a good idea do this to keep parsers isolated from one another. It should be considered a
+-- best practice to do this for every language. For example, if you have a Python parser, make a new
+-- type for Python tokens:
+-- > newtype Python = Python 'TT' deriving 'Data.Ix.Ix'
+-- > instance TokenType Python where { 'wrapTT' = Python }
+-- Only two lines of code, so there is no excuse not to do it. It /MUST/ derive 'Data.Ix.Ix'.
 --
--- Every token type will have an entry associated with something used to define it.  For example,
--- keywords can be defined by 'Dao.String.UStr's, operators might be defined by 'Dao.String.UStr's
--- or 'Data.Char's. Other tokens types (e.g. comments, floating-point numbers) will be defined by
--- 'GenLexer's. The constructors in this data type are designed for this purpose.
-data TokenDBEntry
-  = CharToken  { typeIndex :: Int, charRep       :: !Char }
-  | StringToken{ typeIndex :: Int, strRep        :: !UStr }
-  | OtherToken { typeIndex :: Int, lexerForToken :: GenLexer TT () }
+-- The reason for this is to prevent confusing tokens produced by different tokenizers for different
+-- languages. For example: if you have a large project that compiles two different
+-- languages, say Python and Ruby, into the same Abstract Syntax Tree, you don't want both parsers
+-- using 'TT' as their token types because someone might accidentally feed 'TT' tokens from the Ruby
+-- parser into the Python parser or vice-versa. Using a wrapper type lets you catch this error at
+-- compile time.
+-- 
+-- Now your parsers may peacfully coexist, even in the same module:
+-- > parsePython :: 'Prelude.String' -> 'GenParser' Python MySyntaxTree
+-- > parsePython = 'parse' myPythonGrammar mempty
+-- > parseRuby   :: 'Prelude.String' -> 'GenParser' Ruby MySyntaxTree
+-- > parseRuby   = 'parse' myRubyGrammar   mempty
+class Ix a => TokenType a where { wrapTT :: TT -> a }
+instance TokenType TT where { wrapTT = id }
+
+-- | The class of Context Free Grammars ('CFG'). A 'CFG' is defined by its functions of lexical
+-- analysis and syntactic analysis. Central to these functions are the type of token which defines
+-- the language. So nearly every data type in this program is polymorphic over the token type.  Many
+-- of these functions begin as tokenizers or lexers over the generic token type 'TT', so there needs
+-- to be a way of converting these functions to ones over a polymorphic type.
+-- 
+-- This class provides a function 'castTT' function to allow any data type that operates on a
+-- generic 'TT' token stream to be converted to the correct token type (a type which must be an
+-- instance of 'TokenType'). There is no way to convert back from this token type to 'TT', as I
+-- currently see no reason to allow the same parser to have access to two diffent token types.
+class TokenType tok =>
+  CFG p tok where { castTT :: p TT -> p tok }
+
+----------------------------------------------------------------------------------------------------
+-- $Regular_Expressions
+-- Regular expressions are used to build lexical analyzers. They are a high-level data type that
+-- instantiate important classes like 'Control.Monad.Monad', 'Control.Applicative.Applicative',
+-- 'Control.Applicative.Alternative', and 'Data.Monoid.Monoid'. Once a 'GenRegex' has been
+-- constructed, it can be converted to a lower-level 'GenLexer' which does the actual work of
+-- lexing. It is generally difficult to program lexers by hand with the 'GenLexer' monad, so it is
+-- better to use 'GenRegex'.
+
+data GenRegex tok a
+  = GenRegex     { genRegex         :: GenLexer tok a }
+  | GenRxCharSet { genRxCharSet     :: Es.SetM Char (GenRegex tok a) }
+  | GenRxString  { genRxString      :: UStr, nextRegex :: GenRegex tok a }
+  | GenRxRepeat  { genRxRepeatCount :: Int , nextRegex :: GenRegex tok a }
 
 ----------------------------------------------------------------------------------------------------
 -- $Lexical_Analysis
@@ -387,6 +502,18 @@ data GenLexerState tok
       -- ^ contains the remainder of the input string to be analyzed. Retrieve this string using:
       -- > 'Control.Monad.State.gets' 'lexInput'
     }
+instance TokenType tok =>
+  CFG GenLexerState tok where
+    castTT t =
+      GenLexerState
+      { lexTabWidth      = lexTabWidth t
+      , lexCurrentLine   = lexCurrentLine t
+      , lexCurrentColumn = lexCurrentColumn t
+      , lexTokenCounter  = lexTokenCounter t
+      , tokenStream      = fmap castTT (tokenStream t)
+      , lexBuffer        = lexBuffer t
+      , lexInput         = lexInput t
+      }
 
 -- | Create a new lexer state using the given input 'Prelude.String'. This is only realy useful if
 -- you must evaluate 'runLexerState'.

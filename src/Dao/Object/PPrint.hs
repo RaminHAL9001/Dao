@@ -30,8 +30,8 @@ import           Dao.NewParser (HasLocation, Location(LocationUnknown, Location)
 import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Glob
-import           Dao.EnumSet
-import qualified Dao.Tree as T
+import qualified Dao.EnumSet as Es
+import qualified Dao.Tree    as T
 
 import           Control.Monad
 import           Control.Monad.State
@@ -327,7 +327,7 @@ instance PPrintable Pattern where
     ObjAny1                             -> pString "any1"
     ObjEQ       o                       -> pList (pString "eq") "(" "" ")" [pPrint o]
     ObjType     enumSet_TypeID          ->
-      pList_ "(" "|" ")" (map pPrint (filter (setMember enumSet_TypeID) [NullType .. BytesType]))
+      pList_ "(" "|" ")" (map pPrint (filter (Es.member enumSet_TypeID) [NullType .. BytesType]))
     ObjBounded  loRatio        hiRatio  -> undefined
     ObjList     typeID         oPatx    -> undefined
     ObjNameSet  objSetOp       sSetName -> undefined

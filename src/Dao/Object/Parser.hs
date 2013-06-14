@@ -25,7 +25,7 @@ import           Dao.Token (tokenChars)
 import           Dao.NewParser (HasLocation, Location(Location, LocationUnknown))
 import           Dao.Object
 import           Dao.Object.AST
-import           Dao.EnumSet
+import qualified Dao.EnumSet as Es
 import           Dao.Parser
 import qualified Dao.Tree as T
 
@@ -145,9 +145,9 @@ numericObj = token $ do
 
 parseString :: Parser String
 parseString = token (char '"' >> loop) where
-  stops = foldl1 mappend $ map (flip point ()) "\"\\\n"
+  stops = foldl1 mappend $ map Es.point "\"\\\n"
   loop = do
-    regexMany (rxCharSet (setInvert () stops))
+    regexMany (rxCharSet (Es.invert stops))
     let errmsg = fail "string literal runs past end of input"
     flip mplus errmsg $ do
       stop <- charSet stops
@@ -192,7 +192,7 @@ parseCharLiteral = token $ do
   char '\''
   flip mplus (fail "expecting character literal") $ do
     let loop cx = do
-          cx1 <- many (notCharSet (mappend (point '\\' ()) (point '\'' ())))
+          cx1 <- many (notCharSet (mappend (Es.point '\\') (Es.point '\'')))
           (more, cx2) <- msum $
             [ char '\'' >> return (False, "'")
             , char '\\' >> return (True , "\\")
@@ -214,14 +214,14 @@ parseComment = many comment where
       msum [endline, inline, backtrack]
   endline = do
     char '/'
-    ax <- regexMany (rxNotCharSet (point '\n' ()))
+    ax <- regexMany (rxNotCharSet (Es.point '\n'))
     zeroOrOne (rxChar '\n')
     t <- getToken
     return (EndlineComment (ustr (tokenChars t)))
   inline = do
     regexMany1 (rxChar '*')
     mplus (char '/' >> getToken >>= \t -> return (InlineComment (ustr (tokenChars t)))) $ do
-      regexMany (rxCharSet (setInvert () (point '*' ())))
+      regexMany (rxCharSet (Es.invert (Es.point '*')))
       we_hit_the_end <- endOfInput
       if we_hit_the_end
         then fail "comment runs past end of input"
@@ -312,7 +312,7 @@ parseLocalGlobal = msum $
 -- | A 'NameComParser' is a parser that starts by looking for a keyword, then parses an expression
 -- based on that keyword. It is left-factored, so before calling a function of this type, the
 -- keyword and first comment after the keyword must both be parsed by the calling context and passed
--- to this function. The result is, many parsers of this type can be placed together in a single
+-- to this function. The result is, many parsers of this type can be placed together in a Es.point
 -- 'Control.Monad.msum' list, and each parser will be tried in turn but will not need to backtrack
 -- to the initial keyword, because the initial keyword and comment was parsed for it by the calling
 -- context.
@@ -544,7 +544,7 @@ parseEquation obj com1 = loop [] obj com1 where
                   _        -> []
     ]
 
--- | Parses anything that can be used as a single 'AST_Object', which includes equations which are
+-- | Parses anything that can be used as a Es.point 'AST_Object', which includes equations which are
 -- enclosed in parentheses, so the name is a bit misleading. This function exists mostly for
 -- prescedence, as this function calls 'nonKeywordObjectExpr' which calls 'parseUnaryOperatorExpr'.
 -- The unary operator parser calls this function to get its operand, rather than 'parseObjectExpr',
@@ -578,14 +578,14 @@ nonKeywordObjectExpr = msum $
   , parseMetaEvalObjectExpr
     -- ^ anything that begins with the meta-eval parens.
   , fmap (flip AST_Literal unloc . ORef) parseIntRef
-    -- ^ literal integer references, parsed out as a single value, rather than the reference unary
+    -- ^ literal integer references, parsed out as a Es.point value, rather than the reference unary
     -- operator operating on an integer value.
   , fmap (flip AST_Literal unloc . OString . ustr) parseString 
     -- ^ literal string
   , fmap (flip AST_Literal unloc . OChar) parseCharLiteral
     -- ^ literal character
   , fmap (flip AST_Literal unloc) numericObj
-    -- ^ if a numeric object starts with an minus-sign, it will parse to a single negative value
+    -- ^ if a numeric object starts with an minus-sign, it will parse to a Es.point negative value
     -- rather than parsing to a unary negation operator that operates on a positive integer value.
   , parseUnaryOperatorExpr
     -- ^ unary operators, like dereference (@name) or reference ($name)
@@ -658,7 +658,7 @@ parseFunctionParameters :: String -> Parser [Com AST_Object]
 parseFunctionParameters msg = adjustComListable $
   parseListable msg '(' ',' ')' parseObjectExpr
 
--- | Function calls with a single argument that are so common that, as convenience, you can call
+-- | Function calls with a Es.point argument that are so common that, as convenience, you can call
 -- them without putting the argument in parenthases.
 parseBuiltinFuncCall :: NameComParser AST_Object
 parseBuiltinFuncCall key com1 = do
@@ -748,7 +748,7 @@ parseHexData key _ = do
     ax <- loop []
     return (AST_Data com1 ax unloc)
   where
-    b64ch = enumSet const [segment 'A' 'Z' (), segment 'a' 'z' (), segment '0' '9' (), single '/' (), single '+' ()]
+    b64ch = mconcat [Es.range 'A' 'Z', Es.range 'a' 'z', Es.range '0' '9', Es.point '/', Es.point '+']
     loop zx = do
       com1 <- parseComment
       regexMany space

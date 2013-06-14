@@ -1,5 +1,5 @@
 -- "src/Dao/Parser.hs"  Construct tokenizeres from
--- 'Dao.EnumSet.EnumSet's, and parsers from tokenizers. 
+-- 'Dao.Es.Set.Es.Set's, and parsers from tokenizers. 
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.
@@ -52,7 +52,7 @@ module Dao.Parser
 import           Dao.String
 import           Dao.Token (Token(Token), tokenLocation, Location(Location), startingLine, endingLine, startingChar, endingChar, startingColumn, endingColumn, tokenChars)
 import           Dao.NewParser (HasLocation, getLocation, setLocation)
-import           Dao.EnumSet
+import qualified Dao.EnumSet as Es
 import qualified Dao.Tree as T
 import           Dao.Predicate
 
@@ -69,7 +69,7 @@ import           Data.List
 ----------------------------------------------------------------------------------------------------
 
 -- | Combines the functionality of 'Data.List.break' and 'Prelude.splitAt', and takes a 'Data.Word'
--- as the splitting point, unlike 'Data.List.splitAt' which takes an 'Data.Int.Int'.
+-- as the splitting Es.point, unlike 'Data.List.splitAt' which takes an 'Data.Int.Int'.
 spanAtWord :: (a -> Bool) -> Word -> [a] -> ([a], [a])
 spanAtWord chk w ax = loop w [] ax where
   loop w rx ax = case ax of
@@ -92,7 +92,7 @@ data Regex
   | RTrue
   | REmpty
   | RChar     Char
-  | RCharSet  { rxToEnumSet :: EnumSet Char () }
+  | RCharSet  { rxToEnumSet :: Es.Set Char }
   | RString   UStr
   | RSequence [Regex]
   | RChoice   [Regex]
@@ -133,7 +133,7 @@ matchRegex reg ax = loop 0 reg ax where
           let s = uchars r in stripPrefix s ax >>= \ax -> Just (s, ax)
         RCharSet   r ->
           case ax of
-            a:ax  | setMember r a -> return ([a], ax)
+            a:ax  | Es.member r a -> return ([a], ax)
             _                     -> mzero
         RSequence px -> runStateT (fmap concat $ sequence $ map (StateT . loop (i+1)) px) ax
         RChoice   rx -> choiceLoop rx where
@@ -157,7 +157,7 @@ matchRepeat lo hi reg ax = case reg of -- TODO: resolve infinite loop
   RTrue        -> return (spanAtWord (const True) hi ax)
   REmpty       -> matchRegex REmpty ax
   RChar    c   -> simple (==c)
-  RCharSet set -> simple (setMember set)
+  RCharSet set -> simple (Es.member set)
   r            -> flip runStateT ax $
     fmap concat (wordReplicateM lo (StateT (matchRegex r))) >>= limLoop
   where
@@ -192,7 +192,7 @@ rxFalse = RFalse
 rxTrue :: Regex
 rxTrue = RTrue
 
--- | This 'Regex' matches a single character.
+-- | This 'Regex' matches a Es.single character.
 rxChar :: Char -> Regex
 rxChar = RChar
 
@@ -214,25 +214,25 @@ rxUStr u = case uchars u of
   [c] -> RChar c
   _   -> RString u
 
--- | A regular expression matching an @'Dao.EnumSet.EnumSet' 'Data.Char.Char'@
-rxCharSet :: EnumSet Char () -> Regex
+-- | A regular expression matching an @'Dao.Es.Set.Set' 'Data.Char.Char'@
+rxCharSet :: Es.Set Char -> Regex
 rxCharSet set = case set of
-  set | setIsNull set -> RFalse
+  set | Es.null set -> RFalse
   set | set==mempty   -> RTrue
   set                 ->
-    fromMaybe (RCharSet set) (setIsSingleton set >>= Just . RChar)
+    fromMaybe (RCharSet set) (Es.isSingleton set >>= Just . RChar)
 
 -- | Like 'rxCharSet' but creates a set from a given string of characters.
 rxCharSetFromStr :: String -> Regex
-rxCharSetFromStr str = rxCharSet (foldl mappend mempty (map (flip point ()) str))
+rxCharSetFromStr str = rxCharSet (foldl mappend mempty (map Es.point str))
 
--- | Like 'rxCharSet' but uses 'Dao.EnumSet.setInvert' to invert the set of characters.
-rxNotCharSet :: EnumSet Char () -> Regex
-rxNotCharSet = rxCharSet . setInvert ()
+-- | Like 'rxCharSet' but uses 'Dao.Es.Set.Es.invert' to invert the set of characters.
+rxNotCharSet :: Es.Set Char -> Regex
+rxNotCharSet = rxCharSet . Es.invert
 
 -- | Like 'rxNotCharSet' but creates an inveted set from a given string of characters.
 rxNotCharSetFromStr :: String -> Regex
-rxNotCharSetFromStr str = rxNotCharSet (foldl mappend mempty (map (flip point ()) str))
+rxNotCharSetFromStr str = rxNotCharSet (foldl mappend mempty (map Es.point str))
 
 -- | This 'Regex' matches a string if every 'Regex' in the given list matches in order.
 rxSequence :: [Regex] -> Regex
@@ -277,19 +277,19 @@ rxChoice rx = case rx of
 
 -- | ASCII space, tab, carriage return, newline, and vertical tab.
 space :: Regex
-space = RCharSet $ enumSet const (map (flip single ()) "\t\r\n\v ")
+space = RCharSet $ mconcat (map Es.point "\t\r\n\v ")
 
 -- | ASCII space or tab only, "horizontal" space.
 hspace :: Regex
-hspace = RCharSet $ enumSet const (map (flip single ()) "\t ")
+hspace = RCharSet $ mconcat (map Es.point "\t ")
 
 -- | ASCII upper case alphabet characters.
 upper :: Regex
-upper = RCharSet $ range 'A' 'Z' ()
+upper = RCharSet $ Es.range 'A' 'Z'
 
 -- | ASCII lower case alphabet characters.
 lower :: Regex
-lower = RCharSet $ range 'a' 'z' ()
+lower = RCharSet $ Es.range 'a' 'z'
 
 -- | ASCII alphabet characters, upper and lower case.
 alpha :: Regex
@@ -297,11 +297,11 @@ alpha = RCharSet $ mappend (rxToEnumSet upper) (rxToEnumSet lower)
 
 -- | ASCII alphabet characters, upper and lower case, or the underscore @'_'@ character.
 alpha_ :: Regex
-alpha_ = RCharSet $ mappend (rxToEnumSet alpha) (point '_' ())
+alpha_ = RCharSet $ mappend (rxToEnumSet alpha) (Es.point '_')
 
 -- | ASCII digit characters.
 digit :: Regex
-digit = RCharSet $ range '0' '9' ()
+digit = RCharSet $ Es.range '0' '9'
 
 -- | ASCII digit and alphabet characters.
 alnum :: Regex
@@ -309,32 +309,32 @@ alnum = RCharSet $ mappend (rxToEnumSet digit) (rxToEnumSet alpha)
 
 -- | ASCII digit and alphabet characters, and the underscore @'_'@ character.
 alnum_ :: Regex
-alnum_ = RCharSet $ mappend (rxToEnumSet alnum) (point '_' ())
+alnum_ = RCharSet $ mappend (rxToEnumSet alnum) (Es.point '_')
 
 -- | ASCII digit characters and the alphabet characters @'A'@ through @'F'@ and @'a'@ through @'f'@
 -- for hexadecimal digit parsing.
 xdigit :: Regex
-xdigit = RCharSet $ mappend (rxToEnumSet digit) (enumSet const [segment 'A' 'F' (), segment 'a' 'f' ()])
+xdigit = RCharSet $ mappend (rxToEnumSet digit) (mconcat [Es.range 'A' 'F', Es.range 'a' 'f'])
 
 -- | ASCII control characters, including 'whitespace's.
 spaceCtrl :: Regex
-spaceCtrl = RCharSet $ enumSet const [segment '\x00' '\x1F' (), single '\x7F' ()]
+spaceCtrl = RCharSet $ mconcat [Es.range '\x00' '\x1F', Es.point '\x7F']
 
 -- | ASCII control characters, *excluding* 'whitespace's.
 cntrl :: Regex
-cntrl = RCharSet $ setDelete const (rxToEnumSet cntrl) (rxToEnumSet space)
+cntrl = RCharSet $ Es.delete (rxToEnumSet cntrl) (rxToEnumSet space)
 
 -- | ASCII punctuation marks.
 punct :: Regex
-punct = RCharSet $ enumSet const [segment '!' '/' (), segment ':' '@' (), segment '[' '`' (), segment '{' '~' ()]
+punct = RCharSet $ mconcat [Es.range '!' '/', Es.range ':' '@', Es.range '[' '`', Es.range '{' '~']
 
 -- | ASCII printable characters, all spaces, 'punct'uation, alphabet and digit characters.
 printable :: Regex
-printable = RCharSet $ mappend (rxToEnumSet space) (range '!' '~' ())
+printable = RCharSet $ mappend (rxToEnumSet space) (Es.range '!' '~')
 
 -- | Any ASCII character.
 ascii :: Regex
-ascii = RCharSet $ range '\x00' '\x7F' ()
+ascii = RCharSet $ Es.range '\x00' '\x7F'
 
 -- | Union of two 'Regex's.
 rxUnion :: Regex -> Regex -> Regex
@@ -368,20 +368,20 @@ rxUnion a b  = loop 0 a b where
           RString   s  -> case uchars s of
             c:cx | c==a -> RString s
             c:cx        ->
-              let u = RCharSet (enumSet const [single a (), single c ()])
+              let u = RCharSet (mconcat [Es.point a, Es.point c])
               in  if null cx then u else RSequence [u, RString (ustr cx)]
             _           -> RChar a
-          RChar b | a/=b -> RCharSet (enumSet const [single a (), single b ()])
-          RCharSet s     -> RCharSet (mappend (point a ()) s)
+          RChar b | a/=b -> RCharSet (mconcat [Es.point a, Es.point b])
+          RCharSet s     -> RCharSet (mappend (Es.point a) s)
           _     -> RChar a
         RCharSet a -> mplus (usimple (i+1) (RCharSet a) b) $ Just $ case b of
           RTrue      -> RTrue
-          RChar    b -> rxCharSet (mappend a $ point b ())
+          RChar    b -> rxCharSet (mappend a $ Es.point b)
           RCharSet b -> RCharSet (mappend a b)
           RString  b -> case uchars b of
             []   -> RCharSet a
-            [b]  -> RCharSet (mappend a $ point b ())
-            b:bx -> rxSequence [RCharSet (mappend a $ point b ()), rxString bx]
+            [b]  -> RCharSet (mappend a $ Es.point b)
+            b:bx -> rxSequence [RCharSet (mappend a $ Es.point b), rxString bx]
           _          -> RCharSet a
         RString  a -> mplus (usimple (i+1) (RString a) b) $ Just $ case b of
           RString  b
@@ -585,7 +585,7 @@ getToken = token_stack new_token (\ (t:tx) _ -> return t)
 concat_tokens :: [Token] -> Token
 concat_tokens = foldl1 mappend . reverse
 
--- | Get a copy of the whole 'tokenStack', but with every 'Token' combined together into a single
+-- | Get a copy of the whole 'tokenStack', but with every 'Token' combined together into a Es.single
 -- 'Token'. Returns an empty 'Token' at the current position in the input string if the 'tokenStack'
 -- is empty.
 getCombinedTokens :: Parser Token
@@ -666,7 +666,7 @@ readsAll errmsg reads str = case reads str of
 lookAhead :: Int -> Parser String
 lookAhead i = get >>= \st -> return (take i (parseString st))
 
--- | Parse a single character, shorthand for @'parseRegex' . 'rxChar'@.
+-- | Parse a Es.single character, shorthand for @'parseRegex' . 'rxChar'@.
 char :: Char -> Parser Char
 char = parseRegex matchRegex . rxChar >=> \ [c] -> return c
 
@@ -678,13 +678,13 @@ ustring = parseRegex matchRegex . rxUStr >=> return . ustr
 string :: String -> Parser String
 string = parseRegex matchRegex . rxString
 
--- | Parse a @'Dao.EnumSet.EnumSet' 'Data.Char.Char'@, shorthand for @'parseRegex' . 'rxCharSet'@.
-charSet :: EnumSet Char () -> Parser String
+-- | Parse a @'Dao.Es.Set.Es.Set' 'Data.Char.Char'@, shorthand for @'parseRegex' . 'rxCharSet'@.
+charSet :: Es.Set Char -> Parser String
 charSet = parseRegex matchRegex . rxCharSet
 
--- | Parse a @'Dao.EnumSet.EnumSet' 'Data.Char.Char'@ but invert the set.
-notCharSet :: EnumSet Char () -> Parser String
-notCharSet = parseRegex matchRegex . rxCharSet . setInvert ()
+-- | Parse a @'Dao.Es.Set.Es.Set' 'Data.Char.Char'@ but invert the set.
+notCharSet :: Es.Set Char -> Parser String
+notCharSet = parseRegex matchRegex . rxCharSet . Es.invert
 
 -- | Parse a 'Regex' repeatedly, but failing if the lower-limit number of matches does not match,
 -- and then succeding only an upper-limit number of times. The maximum number of times that a parseRegex

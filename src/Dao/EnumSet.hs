@@ -22,13 +22,13 @@
 {-# LANGUAGE FlexibleContexts #-}
 
 module Dao.EnumSet
-  ( -- * The 'EnumInf' data type
-    EnumInf(EnumNegInf, EnumPosInf, EnumPoint)
+  ( -- * The 'Inf' data type
+    Inf(NegInf, PosInf, Point)
   , stepDown, stepUp, toPoint, enumIsInf
-  , BoundedInf, minBoundInf, maxBoundInf
+  , InfBound, minBoundInf, maxBoundInf
     -- * the 'Segment' data type
   , Segment, segment, single, negInfTo, toPosInf, enumInfSeg
-  , toBounded, toBoundedPair, segmentMember, singular, plural
+  , toBounded, toBoundedPair, segmentMember, singular, plural, segmentNub
     -- * Predicates on 'Segment's
   , containingSet, numElems, isWithin, segmentHasEnumInf, segmentIsInfinite
     -- * The 'SetM' monadic data type
@@ -57,80 +57,80 @@ import           Control.Monad
 import           Control.Applicative
 import           Control.DeepSeq
 
--- | Like 'Prelude.Bounded', except the bounds might be infiniteM, and return 'EnumNegInf' or
--- 'EnumPosInf' for the bounds. Using the GHC "flexible instances" and "undecidable instances"
+-- | Like 'Prelude.Bounded', except the bounds might be infiniteM, and return 'NegInf' or
+-- 'PosInf' for the bounds. Using the GHC "flexible instances" and "undecidable instances"
 -- feature, any data type that is an instance of 'Prelude.Bounded' is also a memberM of 'BoundInf'.
-class BoundedInf c where
-  minBoundInf :: EnumInf c
-  maxBoundInf :: EnumInf c
+class InfBound c where
+  minBoundInf :: Inf c
+  maxBoundInf :: Inf c
 
-instance BoundedInf ()              where { minBoundInf = EnumPoint (); maxBoundInf = EnumPoint (); }
-instance BoundedInf Int             where { minBoundInf = EnumPoint minBound; maxBoundInf = EnumPoint maxBound; }
-instance BoundedInf Char            where { minBoundInf = EnumPoint minBound; maxBoundInf = EnumPoint maxBound; }
-instance BoundedInf Integer         where { minBoundInf = EnumNegInf; maxBoundInf = EnumPosInf; }
-instance BoundedInf (Ratio Integer) where { minBoundInf = EnumNegInf; maxBoundInf = EnumPosInf; }
-instance BoundedInf Float           where { minBoundInf = EnumNegInf; maxBoundInf = EnumPosInf; }
-instance BoundedInf Double          where { minBoundInf = EnumNegInf; maxBoundInf = EnumPosInf; }
+instance InfBound ()              where { minBoundInf = Point (); maxBoundInf = Point (); }
+instance InfBound Int             where { minBoundInf = Point minBound; maxBoundInf = Point maxBound; }
+instance InfBound Char            where { minBoundInf = Point minBound; maxBoundInf = Point maxBound; }
+instance InfBound Integer         where { minBoundInf = NegInf; maxBoundInf = PosInf; }
+instance InfBound (Ratio Integer) where { minBoundInf = NegInf; maxBoundInf = PosInf; }
+instance InfBound Float           where { minBoundInf = NegInf; maxBoundInf = PosInf; }
+instance InfBound Double          where { minBoundInf = NegInf; maxBoundInf = PosInf; }
 
 -- | Enumerable elements with the possibility of infinity.
-data EnumInf c
-  = EnumNegInf -- ^ negative infinity
-  | EnumPosInf -- ^ positive infinity
-  | EnumPoint c -- ^ a single pointM
+data Inf c
+  = NegInf -- ^ negative infinity
+  | PosInf -- ^ positive infinity
+  | Point c -- ^ a single pointM
   deriving Eq
 
-enumIsInf :: EnumInf c -> Bool
+enumIsInf :: Inf c -> Bool
 enumIsInf c = case c of
-  EnumNegInf -> True
-  EnumPosInf -> True
+  NegInf -> True
+  PosInf -> True
   _          -> False
 
-instance Ord c => Ord (EnumInf c) where
+instance Ord c => Ord (Inf c) where
   compare a b = f a b where
     f a b | a == b = EQ
-    f EnumNegInf _ = LT
-    f _ EnumNegInf = GT
-    f EnumPosInf _ = GT
-    f _ EnumPosInf = LT
-    f (EnumPoint a) (EnumPoint b) = compare a b
+    f NegInf _ = LT
+    f _ NegInf = GT
+    f PosInf _ = GT
+    f _ PosInf = LT
+    f (Point a) (Point b) = compare a b
 
-instance Show c => Show (EnumInf c) where
+instance Show c => Show (Inf c) where
   show e = case e of
-    EnumPoint c -> show c
-    EnumNegInf  -> "-inf"
-    EnumPosInf  -> "+inf"
+    Point c -> show c
+    NegInf  -> "-inf"
+    PosInf  -> "+inf"
 
-instance Functor EnumInf where
+instance Functor Inf where
   fmap f e = case e of
-    EnumNegInf  -> EnumNegInf
-    EnumPosInf  -> EnumPosInf
-    EnumPoint e -> EnumPoint (f e)
+    NegInf  -> NegInf
+    PosInf  -> PosInf
+    Point e -> Point (f e)
 
--- | Increment a given value, but if the value is 'Prelude.maxBound', return 'EnumPosInf'. In some
+-- | Increment a given value, but if the value is 'Prelude.maxBound', return 'PosInf'. In some
 -- circumstances this is better than incrementing with @'Data.Functor.fmap' 'Prelude.succ'@ because
 -- 'Prelude.succ' evaluates to an error when passing 'Prelude.maxBound' as the argument. This
 -- function will never evaluate to an error.
-stepUp :: (Eq c, Enum c, BoundedInf c) => EnumInf c -> EnumInf c
-stepUp x = if x==maxBoundInf then EnumPosInf else fmap succ x
+stepUp :: (Eq c, Enum c, InfBound c) => Inf c -> Inf c
+stepUp x = if x==maxBoundInf then PosInf else fmap succ x
 
--- | Decrement a given value, but if the value is 'Prelude.minBound', returns 'EnumNegInf'. In some
+-- | Decrement a given value, but if the value is 'Prelude.minBound', returns 'NegInf'. In some
 -- circumstances this is better than incrementing @'Data.Functor.fmap' 'Prelude.pred'@ because
 -- 'Prelude.pred' evaluates to an error when passing 'Prelude.maxBound' as the argument. This
 -- function will never evaluate to an error.
-stepDown :: (Eq c, Enum c, BoundedInf c) => EnumInf c -> EnumInf c
-stepDown x = if x==minBoundInf then EnumNegInf else fmap pred x
+stepDown :: (Eq c, Enum c, InfBound c) => Inf c -> Inf c
+stepDown x = if x==minBoundInf then NegInf else fmap pred x
 
--- | Retrieve the value contained in an 'EnumInf', if it exists.
-toPoint :: EnumInf c -> Maybe c
+-- | Retrieve the value contained in an 'Inf', if it exists.
+toPoint :: Inf c -> Maybe c
 toPoint c = case c of
-  EnumPoint c -> Just c
+  Point c -> Just c
   _           -> Nothing
 
--- | A enumInfSeg of 'EnumInf' items is a subset of consectutive items in the set of all @c@ where @c@
+-- | A enumInfSeg of 'Inf' items is a subset of consectutive items in the set of all @c@ where @c@
 -- is any type satisfying the 'Prelude.Ix' class. To construct a 'Segment' object, use 'enumInfSeg'.
 data Segment c
-  = Single  { startPoint :: EnumInf c }
-  | Segment { startPoint :: EnumInf c, endPoint :: EnumInf c }
+  = Single  { startPoint :: Inf c }
+  | Segment { startPoint :: Inf c, endPoint :: Inf c }
   deriving Eq
   -- NOTE: the constructor for this data type is not exported because all of the functions in this
   -- module that operate on 'Segment's make the assumption that the first parameter *less than* the
@@ -138,21 +138,21 @@ data Segment c
   -- constructing a 'Segment' must be done with the 'enumInfSeg' function which checks the parameters.
 
 -- not exported
-mkSegment :: Eq c => EnumInf c -> EnumInf c -> Segment c
+mkSegment :: Eq c => Inf c -> Inf c -> Segment c
 mkSegment a b
   | a==b      = Single  a
   | otherwise = Segment a b
 
--- | If the 'Segment' was constructed with 'single', return the pointM (possibly 'EnumPosInf' or
--- 'EnumNegInf') value used to construct it, otherwise return 'Data.Maybe.Nothing'.
-singular :: Segment a -> Maybe (EnumInf a)
+-- | If the 'Segment' was constructed with 'single', return the pointM (possibly 'PosInf' or
+-- 'NegInf') value used to construct it, otherwise return 'Data.Maybe.Nothing'.
+singular :: Segment a -> Maybe (Inf a)
 singular seg = case seg of
   Segment _ _ -> mzero
   Single  a   -> return a
 
--- | If the 'Segment' was constructed with 'segment', return a pair of points (possibly 'EnumPosInf'
--- or 'EnumNegInf') value used to construct it, otherwise return 'Data.Maybe.Nothing'.
-plural :: Segment a -> Maybe (EnumInf a, EnumInf a)
+-- | If the 'Segment' was constructed with 'segment', return a pair of points (possibly 'PosInf'
+-- or 'NegInf') value used to construct it, otherwise return 'Data.Maybe.Nothing'.
+plural :: Segment a -> Maybe (Inf a, Inf a)
 plural a = case a of
   Segment a b -> return (a, b)
   Single  _   -> mzero
@@ -173,33 +173,33 @@ showSegment seg = case seg of
   Single  a   -> "at "++show a
   Segment a b -> "from "++show a++" to "++show b
 
--- | This gets rid of as many infiniteM elements as possible. All @'Single' 'EnumPosInf'@ and
--- @'Single' 'EnumNegInf'@ points are eliminated, and if an 'EnumNegInf' or 'EnumPosInf' can be
+-- | This gets rid of as many infiniteM elements as possible. All @'Single' 'PosInf'@ and
+-- @'Single' 'NegInf'@ points are eliminated, and if an 'NegInf' or 'PosInf' can be
 -- replaced with a corresponding 'minBoundInf' or 'maxBoundInf', then it is. This function is
 -- intended to be used as a list monadic function, so use it like so:
 -- @let myListOfSegments = [...] in myListOfSegments >>= 'delInfPoints'@
-canonicalSegment :: (Eq c, BoundedInf c) => Segment c -> [Segment c]
+canonicalSegment :: (Eq c, InfBound c) => Segment c -> [Segment c]
 canonicalSegment seg = nonInf seg >>= \seg -> case seg of
   Single  a   -> [Single a]
   Segment a b -> nonInf (mkSegment (bounds a) (bounds b))
   where
     nonInf seg = case seg of
-      Single  EnumNegInf -> []
-      Single  EnumPosInf -> []
+      Single  NegInf -> []
+      Single  PosInf -> []
       Single  a          -> [Single  a  ]
       Segment a b        -> [Segment a b]
     bounds x = case x of
-      EnumNegInf -> minBoundInf
-      EnumPosInf -> maxBoundInf
+      NegInf -> minBoundInf
+      PosInf -> maxBoundInf
       x          -> x
 
 instance Show c =>
   Show (Segment c) where { show seg = "("++showSegment seg++")" }
 
--- | A predicate evaluating whether or not a segment includes an 'EnumPosInf' or 'EnumNegInf' value.
+-- | A predicate evaluating whether or not a segment includes an 'PosInf' or 'NegInf' value.
 -- This should not be confused with a predicate evaluating whether the set of elements included by
 -- the rangeM is infiniteM, because types that are instances of 'Prelude.Bounded' may also contain
--- 'EnumPosInf' or 'EnumNegInf' elements, values of these types may be evaluated as "infintie" by
+-- 'PosInf' or 'NegInf' elements, values of these types may be evaluated as "infintie" by
 -- this function, even though they are 'Prelude.Bounded'. To check if a segment is infiniteM, use
 -- 'segmentIsInfinite' instead.
 segmentHasEnumInf :: Segment c -> Bool
@@ -210,19 +210,19 @@ segmentHasEnumInf seg = case seg of
 -- | A predicate evaluating whether or not a segment is infiniteM. Types that are 'Prelude.Bounded'
 -- are always finite, and thus this function will always evaluate to 'Prelude.False' for these
 -- types.
-segmentIsInfinite :: BoundedInf c => Segment c -> Bool
+segmentIsInfinite :: InfBound c => Segment c -> Bool
 segmentIsInfinite seg = case [Single minBoundInf, Single maxBoundInf, seg] of
   [Single a, Single b, c] | enumIsInf a || enumIsInf b -> case c of
     Single  c   -> enumIsInf c
     Segment a b -> enumIsInf a || enumIsInf b
   _ -> False
 
--- | Construct a 'Segment' from two 'EnumInf' items. /NOTE/ if the 'EnumInf' type you are
+-- | Construct a 'Segment' from two 'Inf' items. /NOTE/ if the 'Inf' type you are
 -- constructing is an instance of 'Prelude.Bounded', use the 'boundedSegment' constructor instead of
 -- this function.
-enumInfSeg :: (Ord c, Enum c, BoundedInf c) => EnumInf c -> EnumInf c -> Segment c
+enumInfSeg :: (Ord c, Enum c, InfBound c) => Inf c -> Inf c -> Segment c
 enumInfSeg a b = seg a b where
-  seg a b = construct (ck minBoundInf EnumNegInf a) (ck maxBoundInf EnumPosInf b)
+  seg a b = construct (ck minBoundInf NegInf a) (ck maxBoundInf PosInf b)
   ck inf subst ab = if inf==ab then subst else ab
   construct a b
     | a == b    = Single  a
@@ -231,50 +231,50 @@ enumInfSeg a b = seg a b where
 
 -- | Construct a 'Segment' from two values.
 segment :: Ord c => c -> c -> Segment c
-segment a b = mkSegment (EnumPoint (min a b)) (EnumPoint (max a b))
+segment a b = mkSegment (Point (min a b)) (Point (max a b))
 
 -- | Construct a 'Segment' that is only a single unit, i.e. it starts at X and ends at X.
 single :: Ord c => c -> Segment c
 single a = segment a a
 
 -- | Construct a 'Segment' from negative infinity to a given value.
-negInfTo :: BoundedInf c => c -> Segment c
-negInfTo a = Segment minBoundInf (EnumPoint a)
+negInfTo :: InfBound c => c -> Segment c
+negInfTo a = Segment minBoundInf (Point a)
 
 -- | Construct a 'Segment' from a given value to positive infinity.
-toPosInf :: BoundedInf c => c -> Segment c
-toPosInf a = Segment (EnumPoint a) maxBoundInf
+toPosInf :: InfBound c => c -> Segment c
+toPosInf a = Segment (Point a) maxBoundInf
 
 -- | Construct the infiniteM 'Segment'
 infiniteSegment :: Segment c
-infiniteSegment = Segment EnumNegInf EnumPosInf
+infiniteSegment = Segment NegInf PosInf
 
 -- | Tests whether an element is a memberM is enclosed by the 'Segment'.
 segmentMember :: Ord c => c -> Segment c -> Bool
 segmentMember c seg = case seg of
-  Single  (EnumPoint d) -> c == d
-  Segment lo hi         -> let e = EnumPoint c in lo <= e && e <= hi
+  Single  (Point d) -> c == d
+  Segment lo hi         -> let e = Point c in lo <= e && e <= hi
   _                     -> False
 
--- | Construct a 'Segment', like the 'enumInfSeg' constructor above, however does not require 'EnumInf'
+-- | Construct a 'Segment', like the 'enumInfSeg' constructor above, however does not require 'Inf'
 -- parameters as inputs. This function performs the additional check of testing whether or not a
 -- value is equivalent to 'Prelude.minBound' or 'Prelude.maxBound', and if it is, replaces that
--- value with 'EnumNegInf' or 'EnumPosInf' respectively. In other words, you can use
--- 'Prelude.minBound' in place of EnumNegInf and 'Prelude.maxBound' in place of 'EnumPosInf' without
+-- value with 'NegInf' or 'PosInf' respectively. In other words, you can use
+-- 'Prelude.minBound' in place of NegInf and 'Prelude.maxBound' in place of 'PosInf' without
 -- changing the semantics of the data structure as it is used throughout the program.
 -- boundedSegment :: (Ord c, Enum c, Bounded c) => c -> c -> Segment c
 -- boundedSegment a b = if a>b then co b a else co a b where
---    co a b = enumInfSeg (f a minBound EnumNegInf) (f b maxBound EnumPosInf)
---    f x bound inf = if x==bound then inf else EnumPoint x
+--    co a b = enumInfSeg (f a minBound NegInf) (f b maxBound PosInf)
+--    f x bound inf = if x==bound then inf else Point x
 
--- | If an 'EnumInf' is also 'Prelude.Bounded' then you can convert it to some value in the set of
--- 'Prelude.Bounded' items. 'EnumNegInf' translates to 'Prelude.minBound', 'EnumPosInf' translates
--- to 'Prelude.maxBound', and 'EnumPoint' translates to the value at that pointM.
-toBounded :: Bounded c => EnumInf c -> c
+-- | If an 'Inf' is also 'Prelude.Bounded' then you can convert it to some value in the set of
+-- 'Prelude.Bounded' items. 'NegInf' translates to 'Prelude.minBound', 'PosInf' translates
+-- to 'Prelude.maxBound', and 'Point' translates to the value at that pointM.
+toBounded :: Bounded c => Inf c -> c
 toBounded r = case r of
-  EnumNegInf  -> minBound
-  EnumPosInf  -> maxBound
-  EnumPoint c -> c
+  NegInf  -> minBound
+  PosInf  -> maxBound
+  Point c -> c
 
 -- | Like 'toBounded', but operates on a segment and returns a pair of values.
 toBoundedPair :: (Enum c, Bounded c) => Segment c -> (c, c)
@@ -284,7 +284,7 @@ toBoundedPair r = case r of
 
 -- | Computes the minimum 'Segment' that can contain the list of all given 'EnumRanges'.
 -- 'Data.Maybe.Nothing' indicates the empty set.
-containingSet :: (Ord c, Enum c, BoundedInf c) => [Segment c] -> Maybe (Segment c)
+containingSet :: (Ord c, Enum c, InfBound c) => [Segment c] -> Maybe (Segment c)
 containingSet ex = foldl fe Nothing ex where
   fe Nothing a  = Just a
   fe (Just a) c = Just $ case a of
@@ -303,17 +303,17 @@ containingSet ex = foldl fe Nothing ex where
 -- necessary.
 numElems :: (Integral c, Enum c) => Segment c -> Maybe Integer
 numElems seg = case seg of
-  Single  (EnumPoint _)               -> Just 1
-  Segment (EnumPoint a) (EnumPoint b) -> Just (fromIntegral a - fromIntegral b + 1)
+  Single  (Point _)               -> Just 1
+  Segment (Point a) (Point b) -> Just (fromIntegral a - fromIntegral b + 1)
   _                                   -> Nothing
 
--- | Tests whether an 'EnumInf' is within the enumInfSeg. It is handy when used with backquote noation:
+-- | Tests whether an 'Inf' is within the enumInfSeg. It is handy when used with backquote noation:
 -- @enumInf `isWithin` enumInfSeg@
-isWithin :: (Ord c, Enum c) => EnumInf c -> Segment c -> Bool
+isWithin :: (Ord c, Enum c) => Inf c -> Segment c -> Bool
 isWithin pointM seg = case seg of
   Single x              -> pointM == x
-  Segment EnumNegInf hi -> pointM <= hi
-  Segment lo EnumPosInf -> lo <= pointM
+  Segment NegInf hi -> pointM <= hi
+  Segment lo PosInf -> lo <= pointM
   Segment lo hi         -> lo <= pointM && pointM <= hi
 
 -- | Returns true if two 'Segment's are intersecting.
@@ -328,7 +328,7 @@ areIntersecting a b = case a of
 
 -- | Returns true if two 'Segment's are consecutive, that is, if the end is the 'Prelude.pred'essor
 -- of the start of the other.
-areConsecutive :: (Ord c, Enum c, BoundedInf c) => Segment c -> Segment c -> Bool
+areConsecutive :: (Ord c, Enum c, InfBound c) => Segment c -> Segment c -> Bool
 areConsecutive a b = case a of
   Single  a   -> case b of
     Single  b
@@ -349,7 +349,7 @@ areConsecutive a b = case a of
 -- | Performs a set union on two 'Segment's of elements to create a new enumInfSeg. If the elements of
 -- the new enumInfSeg are not contiguous, each enumInfSeg is returned separately and unchanged. The first
 -- item in the pair of items returned is 'Prelude.True' if any of the items were modified.
-segmentUnion :: (Ord c, Enum c, BoundedInf c) => Segment c -> Segment c -> (Bool, [Segment c])
+segmentUnion :: (Ord c, Enum c, InfBound c) => Segment c -> Segment c -> (Bool, [Segment c])
 segmentUnion a b
   | areIntersecting a b = case a of
       Single  _   -> case b of
@@ -369,7 +369,7 @@ segmentUnion a b
 
 -- | Performs a set intersection on two 'Segment's of elements to create a new enumInfSeg. If the
 -- elements of the new enumInfSeg are not contiguous, this function evaluates to an empty list.
-segmentIntersect :: (Ord c, Enum c, BoundedInf c) => Segment c -> Segment c -> (Bool, [Segment c])
+segmentIntersect :: (Ord c, Enum c, InfBound c) => Segment c -> Segment c -> (Bool, [Segment c])
 segmentIntersect a b = if areIntersecting a b then joined else (False, []) where
   joined = case a of
     Single  aa    -> case b of
@@ -382,7 +382,7 @@ segmentIntersect a b = if areIntersecting a b then joined else (False, []) where
 -- | Performs a set "delete" operation, deleteing any elements selected by the first enumInfSeg if
 -- they are contained in the second enumInfSeg. This operation is not associative, i.e.
 -- @'segmentDelete' a b /= 'segmentDelete' b a@.
-segmentDelete :: (Ord c, Enum c, BoundedInf c) =>
+segmentDelete :: (Ord c, Enum c, InfBound c) =>
   Segment c -> Segment c -> (Bool, [Segment c])
 segmentDelete a b = if not (areIntersecting a b) then (False, [a]) else del where
   del = case a of
@@ -401,32 +401,32 @@ segmentDelete a b = if not (areIntersecting a b) then (False, [a]) else del wher
         | x' >  x && y' >= y -> (True, [enumInfSeg x (stepDown x')])
 
 -- | Evaluates to the set of all elements not selected by the given 'Segment'.
-segmentInvert :: (Ord c, Enum c, BoundedInf c) => Segment c -> [Segment c]
+segmentInvert :: (Ord c, Enum c, InfBound c) => Segment c -> [Segment c]
 segmentInvert seg = canonicalSegment =<< case seg of
   Single  x   -> case x of
-    EnumNegInf  -> [] -- [Single EnumPosInf]
-    EnumPosInf  -> [] -- [Single EnumNegInf]
-    EnumPoint _ -> [mkSegment EnumNegInf (stepDown x), mkSegment (stepUp x) EnumPosInf]
+    NegInf  -> [] -- [Single PosInf]
+    PosInf  -> [] -- [Single NegInf]
+    Point _ -> [mkSegment NegInf (stepDown x), mkSegment (stepUp x) PosInf]
   Segment x y -> case x of
-    EnumNegInf  -> case y of
-      EnumNegInf  -> [] -- [Single  EnumPosInf]
-      EnumPosInf  -> [] -- []
-      EnumPoint _ -> [mkSegment (stepUp y) EnumPosInf]
-    EnumPosInf  -> case y of
-      EnumPosInf  -> [] -- [Single  EnumNegInf]
-      EnumNegInf  -> [] -- []
-      EnumPoint _ -> [mkSegment EnumNegInf (stepDown y)]
-    EnumPoint _ -> case y of
-      EnumNegInf  -> [mkSegment (stepUp x) EnumPosInf  ]
-      EnumPosInf  -> [mkSegment EnumNegInf (stepDown x)]
-      EnumPoint _ ->
-        [ mkSegment EnumNegInf (min (stepDown x) (stepDown y))
-        , mkSegment (max (stepUp x) (stepUp y))  EnumPosInf
+    NegInf  -> case y of
+      NegInf  -> [] -- [Single  PosInf]
+      PosInf  -> [] -- []
+      Point _ -> [mkSegment (stepUp y) PosInf]
+    PosInf  -> case y of
+      PosInf  -> [] -- [Single  NegInf]
+      NegInf  -> [] -- []
+      Point _ -> [mkSegment NegInf (stepDown y)]
+    Point _ -> case y of
+      NegInf  -> [mkSegment (stepUp x) PosInf  ]
+      PosInf  -> [mkSegment NegInf (stepDown x)]
+      Point _ ->
+        [ mkSegment NegInf (min (stepDown x) (stepDown y))
+        , mkSegment (max (stepUp x) (stepUp y))  PosInf
         ]
 
 -- | Eliminate overlapping and duplicate 'Segment's from a list of segments. Requires a union
 -- function for combining elements that overlap.
-segmentNub :: (Ord c, Enum c, BoundedInf c) => [Segment c] -> [Segment c]
+segmentNub :: (Ord c, Enum c, InfBound c) => [Segment c] -> [Segment c]
 segmentNub ax = loop (sortBy compareSegments ax) >>= canonicalSegment where
   loop ax = case ax of
     []     -> []
@@ -464,7 +464,7 @@ upperTriangular mainDiag ax bx = do
 -- given inner product function is executed. The first parameter, the product function, is intended
 -- to be a function like 'segmentUnion', 'segmentIntersect', or 'segmentDelete'.
 associativeProduct
-  :: (Ord c, Enum c, BoundedInf c)
+  :: (Ord c, Enum c, InfBound c)
   => (Segment c -> Segment c -> (Bool, [Segment c]))
   -> [Segment c] -> [Segment c] -> [Segment c]
 associativeProduct reduce a b =
@@ -516,7 +516,7 @@ data SetM c x
   | InfiniteSet { enumSetValue :: x }
   | SetM    { toListM :: [Segment c], enumSetValue :: x }
   deriving Eq
-instance (Ord c, Enum c, BoundedInf c, Monoid x) =>
+instance (Ord c, Enum c, InfBound c, Monoid x) =>
   Monoid (SetM c x) where
     mempty  = EmptyEnumSet
     mappend = unionWithM mappend
@@ -527,7 +527,7 @@ instance
       InverseSet   a x -> fmap f a
       InfiniteSet    x -> InfiniteSet (f x)
       SetM     a x -> SetM  a (f x)
-instance (Ord c, Enum c, BoundedInf c) =>
+instance (Ord c, Enum c, InfBound c) =>
   Monad (SetM c) where
     return  = InfiniteSet
     a >>= b = case a of
@@ -535,13 +535,13 @@ instance (Ord c, Enum c, BoundedInf c) =>
       InverseSet   a ax -> forceInvert a ax >>= b
       InfiniteSet    ax -> b ax
       SetM     a ax -> intersectWithM (flip const) (SetM a ax) (b ax)
-instance (Ord c, Enum c, BoundedInf c) =>
+instance (Ord c, Enum c, InfBound c) =>
   MonadPlus (SetM c) where
     mzero = EmptyEnumSet
     mplus = unionWithM const
-instance (Ord c, Enum c, BoundedInf c) =>
+instance (Ord c, Enum c, InfBound c) =>
   Applicative (SetM c) where { pure = return; (<*>) = ap; }
-instance (Ord c, Enum c, BoundedInf c) =>
+instance (Ord c, Enum c, InfBound c) =>
   Alternative (SetM c) where { empty = mzero; (<|>) = mplus; }
 
 --  instance (Show c, Show x) =>
@@ -549,28 +549,28 @@ instance (Ord c, Enum c, BoundedInf c) =>
 --      show s = "("++intercalate ", " (map (showSegment show) (toListM s))++")"
 
 -- | Initialize a new intinite 'SetM', that is, the set that contains all possible elements.
-infiniteM :: (Ord c, Enum c, BoundedInf c) => x -> SetM c x
+infiniteM :: (Ord c, Enum c, InfBound c) => x -> SetM c x
 infiniteM = InfiniteSet
 
 -- | Initialize a new 'SetM' object with a list of 'Segment's, which are 'segmentUnion'ed
 -- together to create the set.
-fromListM :: (Ord c, Enum c, BoundedInf c) => [Segment c] -> x -> SetM c x
+fromListM :: (Ord c, Enum c, InfBound c) => [Segment c] -> x -> SetM c x
 fromListM a ax = enumSet_ (segmentNub a) ax
 
 -- Not exported. Assumes the segments list proivded was produced within this module and does not
 -- need to be 'segmentNub'bed.
-enumSet_ :: (Ord c, Enum c, BoundedInf c) => [Segment c] -> x -> SetM c x
+enumSet_ :: (Ord c, Enum c, InfBound c) => [Segment c] -> x -> SetM c x
 enumSet_ a ax = case a of
   []                              -> EmptyEnumSet
-  [Segment EnumNegInf EnumPosInf] -> InfiniteSet ax
+  [Segment NegInf PosInf] -> InfiniteSet ax
   a                               -> SetM   a ax
 
 -- | Create a set with a single rangeM of elements, no gaps.
-rangeM :: (Ord c, Enum c, BoundedInf c) => c -> c -> x -> SetM c x
+rangeM :: (Ord c, Enum c, InfBound c) => c -> c -> x -> SetM c x
 rangeM a b x = SetM [segment a b] x
 
 -- | Create a set with a single element.
-pointM :: (Ord c, Enum c, BoundedInf c) => c -> x -> SetM c x
+pointM :: (Ord c, Enum c, InfBound c) => c -> x -> SetM c x
 pointM c = rangeM c c
 
 -- | Tests if an element is a memberM of the set.
@@ -582,10 +582,10 @@ memberM a c = case a of
   SetM     a _ -> or $ map (segmentMember c) a
 
 -- | Test if a set encompases only one element, and if so, returns that one element.
-isSingletonM :: (Ord c, Enum c, BoundedInf c) => SetM c x -> Maybe c
+isSingletonM :: (Ord c, Enum c, InfBound c) => SetM c x -> Maybe c
 isSingletonM a = case void a of
   SetM     a _ -> case a of
-    [Single (EnumPoint a)] -> Just a
+    [Single (Point a)] -> Just a
     _                      -> Nothing
   InverseSet   a x -> isSingletonM (forceInvert a x)
   _                -> Nothing
@@ -606,7 +606,7 @@ nullM a = case a of
 -- | Inverting an empty set will produce the 'infinity' set, but this set cannot be 'null' so you
 -- must provide a value to be used in the case the given set is 'mempty'. If the given set is not
 -- 'mempty' the value provided to this function is not used.
-invertM :: (Ord c, Enum c, BoundedInf c) => SetM c x -> x -> SetM c x
+invertM :: (Ord c, Enum c, InfBound c) => SetM c x -> x -> SetM c x
 invertM a y = case a of
   EmptyEnumSet     -> InfiniteSet y
   InfiniteSet  _   -> EmptyEnumSet
@@ -615,7 +615,7 @@ invertM a y = case a of
 
 -- | Union the set of elements in two 'SetM's. This is the operation used for overriding
 -- 'Data.Monoid.mappend'.
-unionWithM :: (Ord c, Enum c, BoundedInf c) =>
+unionWithM :: (Ord c, Enum c, InfBound c) =>
   (x -> x -> x) -> SetM c x -> SetM c x -> SetM c x
 unionWithM add a b = case a of
   EmptyEnumSet       -> b
@@ -634,7 +634,7 @@ unionWithM add a b = case a of
 -- | Intersect the set of elements in two 'SetM's, i.e. create a new set of elements that are
 -- where every element must be included in both of the sets that were given as parameters. This
 -- function is defined as @('associativeProduct' 'segmentIntersect')@.
-intersectWithM :: (Ord c, Enum c, BoundedInf c) =>
+intersectWithM :: (Ord c, Enum c, InfBound c) =>
   (x -> y -> z) -> SetM c x -> SetM c y -> SetM c z
 intersectWithM mult a b = case a of
   EmptyEnumSet      -> EmptyEnumSet
@@ -652,7 +652,7 @@ intersectWithM mult a b = case a of
 
 -- | Delete every element from the first set if it exists in the second set. This operation is not
 -- associative.
-deleteWithM :: (Ord c, Enum c, BoundedInf c) =>
+deleteWithM :: (Ord c, Enum c, InfBound c) =>
   (x -> y -> x) -> SetM c x -> SetM c y -> SetM c x
 deleteWithM sub a b = case a of
   EmptyEnumSet      -> EmptyEnumSet
@@ -672,23 +672,23 @@ deleteWithM sub a b = case a of
       -- must be tested.
 
 -- Not for export. Invert the items selected by a given set.
-forceInvert :: (Ord c, Enum c, BoundedInf c) => SetM c x -> x -> SetM c x
+forceInvert :: (Ord c, Enum c, InfBound c) => SetM c x -> x -> SetM c x
 forceInvert a ax = case a of
   EmptyEnumSet      -> InfiniteSet ax
   InfiniteSet    _  -> EmptyEnumSet
   InverseSet   a ax -> fmap (const ax) a -- use the 'ax' value from the previous call to 'invertM'
   SetM     a ax -> enumSet_ (inv a) ax
   where
-    inv segs = canonicalSegment =<< loop EnumNegInf segs
+    inv segs = canonicalSegment =<< loop NegInf segs
     loop mark segs = case segs of
-      []                          -> [mkSegment (stepUp mark)  EnumPosInf ]
-      [Segment a EnumPosInf]      -> [mkSegment (stepUp mark) (stepDown a)]
-      Segment EnumNegInf b : segs -> loop b segs
+      []                          -> [mkSegment (stepUp mark)  PosInf ]
+      [Segment a PosInf]      -> [mkSegment (stepUp mark) (stepDown a)]
+      Segment NegInf b : segs -> loop b segs
       Segment a          b : segs -> mkSegment (stepUp mark) (stepDown a) : loop b segs
       Single  a            : segs -> mkSegment (stepUp mark) (stepDown a) : loop a segs
 
 -- | Exclusive-OR-like union of set elements.
-setXUnionM :: (Ord c, Enum c, BoundedInf c) =>
+setXUnionM :: (Ord c, Enum c, InfBound c) =>
   (x -> x -> x) -> SetM c x -> SetM c x -> SetM c x
 setXUnionM add a b = case a of
   EmptyEnumSet      -> case b of
@@ -713,29 +713,34 @@ setXUnionM add a b = case a of
   where
     xorWithInf a ax bx = const (add ax bx) <$> forceInvert a ax
 
-unionM :: (Ord c, Enum c, BoundedInf c) => SetM c x -> SetM c x -> SetM c x
+unionM :: (Ord c, Enum c, InfBound c) => SetM c x -> SetM c x -> SetM c x
 unionM = unionWithM const
 
-intersectM :: (Ord c, Enum c, BoundedInf c) => SetM c x -> SetM c y -> SetM c x
+intersectM :: (Ord c, Enum c, InfBound c) => SetM c x -> SetM c y -> SetM c x
 intersectM = intersectWithM const
 
-deleteM :: (Ord c, Enum c, BoundedInf c) => SetM c x -> SetM c y -> SetM c x
+deleteM :: (Ord c, Enum c, InfBound c) => SetM c x -> SetM c y -> SetM c x
 deleteM = deleteWithM const
 
 ----------------------------------------------------------------------------------------------------
 
-newtype Set c = Set (SetM c ())
+newtype Set c = Set (SetM c ()) deriving Eq
+instance (Ord c, Enum c, InfBound c) =>
+  Monoid (Set c) where { mempty = Set mempty; mappend (Set a) (Set b) = Set (mappend a b); }
+instance Show c =>
+  Show (Set c) where
+    show (Set s) = "enumSet("++intercalate ", " (map show $ toListM s)++")"
 
-infinite :: (Ord c, Enum c, BoundedInf c) => Set c
+infinite :: (Ord c, Enum c, InfBound c) => Set c
 infinite = Set (infiniteM ())
 
-fromList :: (Ord c, Enum c, BoundedInf c) => [Segment c] -> Set c
+fromList :: (Ord c, Enum c, InfBound c) => [Segment c] -> Set c
 fromList = Set . flip fromListM ()
 
-range :: (Ord c, Enum c, BoundedInf c) => c -> c -> Set c
+range :: (Ord c, Enum c, InfBound c) => c -> c -> Set c
 range a b = Set (rangeM a b ())
 
-point :: (Ord c, Enum c, BoundedInf c) => c -> Set c
+point :: (Ord c, Enum c, InfBound c) => c -> Set c
 point a = Set (pointM a ())
 
 toList (Set a) = toListM a
@@ -746,31 +751,31 @@ member (Set a) b = memberM a b
 null :: Set c -> Bool
 null (Set a) = nullM a
 
-isSingleton :: (Ord c, Enum c, BoundedInf c) => Set c -> Maybe c
+isSingleton :: (Ord c, Enum c, InfBound c) => Set c -> Maybe c
 isSingleton (Set a) = isSingletonM a
 
-invert :: (Ord c, Enum c, BoundedInf c) => Set c -> Set c
+invert :: (Ord c, Enum c, InfBound c) => Set c -> Set c
 invert (Set a) = Set (invertM a ())
 
-setXUnion :: (Ord c, Enum c, BoundedInf c) => Set c -> Set c -> Set c
+setXUnion :: (Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
 setXUnion (Set a) (Set b) = Set (setXUnionM const a b)
 
-union :: (Ord c, Enum c, BoundedInf c) => Set c -> Set c -> Set c
+union :: (Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
 union (Set a) (Set b) = Set (unionWithM const a b)
 
-intersect :: (Ord c, Enum c, BoundedInf c) => Set c -> Set c -> Set c
+intersect :: (Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
 intersect (Set a) (Set b) = Set (intersectWithM const a b)
 
-delete :: (Ord c, Enum c, BoundedInf c) => Set c -> Set c -> Set c
+delete :: (Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
 delete (Set a) (Set b) = Set (deleteWithM const a b)
 
 ----------------------------------------------------------------------------------------------------
 
 instance NFData a =>
-  NFData (EnumInf a) where
-    rnf  EnumNegInf   = ()
-    rnf  EnumPosInf   = ()
-    rnf (EnumPoint c) = deepseq c ()
+  NFData (Inf a) where
+    rnf  NegInf   = ()
+    rnf  PosInf   = ()
+    rnf (Point c) = deepseq c ()
 
 instance NFData a =>
   NFData (Segment a) where

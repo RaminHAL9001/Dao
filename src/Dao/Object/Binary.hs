@@ -27,7 +27,7 @@ import           Dao.NewParser (Location(Location, LocationUnknown), startingLin
 import           Dao.Object
 import qualified Dao.Tree as T
 import           Dao.Glob
-import           Dao.EnumSet
+import qualified Dao.EnumSet as Es
 
 import           Control.Monad
 
@@ -519,24 +519,24 @@ instance Binary Pattern where
     ObjAnyX        -> x 0xB1
     ObjMany        -> x 0xB2
     ObjAny1        -> x 0xB3
-    ObjEQ      a   -> x 0xB4 >> put                    a
-    ObjType    a   -> x 0xB5 >> putEnumSetWith put put a
-    ObjBounded a b -> x 0xB6 >> putEnumInfWith put     a >> putEnumInfWith put             b
-    ObjList    a b -> x 0xB7 >> put                    a >> putList                        b
-    ObjNameSet a b -> x 0xB8 >> put                    a >> putList              ( S.elems b)
-    ObjIntSet  a b -> x 0xB9 >> put                    a >> putListWith putVLInt (IS.elems b)
-    ObjElemSet a b -> x 0xBA >> put                    a >> putList              ( S.elems b)
-    ObjChoice  a b -> x 0xBB >> put                    a >> putList              ( S.elems b)
-    ObjLabel   a b -> x 0xBC >> put                    a >> put                            b
-    ObjFailIf  a b -> x 0xBD >> put                    a >> put                            b
-    ObjNot     a   -> x 0xBE >> put                    a
+    ObjEQ      a   -> x 0xB4 >> put                a
+    ObjType    a   -> x 0xB5 >> putEnumSetWith put a
+    ObjBounded a b -> x 0xB6 >> putEnumInfWith put a >> putEnumInfWith put             b
+    ObjList    a b -> x 0xB7 >> put                a >> putList                        b
+    ObjNameSet a b -> x 0xB8 >> put                a >> putList              ( S.elems b)
+    ObjIntSet  a b -> x 0xB9 >> put                a >> putListWith putVLInt (IS.elems b)
+    ObjElemSet a b -> x 0xBA >> put                a >> putList              ( S.elems b)
+    ObjChoice  a b -> x 0xBB >> put                a >> putList              ( S.elems b)
+    ObjLabel   a b -> x 0xBC >> put                a >> put                            b
+    ObjFailIf  a b -> x 0xBD >> put                a >> put                            b
+    ObjNot     a   -> x 0xBE >> put                a
     where { x = putWord8 }
   get   = getWord8 >>= \w -> case w of
     0xB1 -> return ObjAnyX
     0xB2 -> return ObjMany
     0xB3 -> return ObjAny1
     0xB4 -> liftM  ObjEQ       get
-    0xB5 -> liftM  ObjType    (getEnumSetWith get get get_binary_enumset_error)
+    0xB5 -> liftM  ObjType    (getEnumSetWith get)
     0xB6 -> liftM2 ObjBounded (getEnumInfWith get) (getEnumInfWith    get    )
     0xB7 -> liftM2 ObjList     get                  getList
     0xB8 -> liftM2 ObjNameSet  get                 (fmap S.fromList   getList)
@@ -563,55 +563,55 @@ instance Binary ObjSetOp where
     0xC5 -> return NoneOfSet
     _    -> fail "expecting set-logical operator for object pattern"
 
-putEnumInfWith :: (a -> Put) -> EnumInf a -> Put
+putEnumInfWith :: (a -> Put) -> Es.Inf a -> Put
 putEnumInfWith putx a = case a of
-  EnumNegInf  -> putWord8 0xC6
-  EnumPosInf  -> putWord8 0xC7
-  EnumPoint a -> putWord8 0xC8 >> putx a
+  Es.NegInf  -> putWord8 0xC6
+  Es.PosInf  -> putWord8 0xC7
+  Es.Point a -> putWord8 0xC8 >> putx a
 
-getEnumInfWith :: Get a -> Get (EnumInf a)
+getEnumInfWith :: Get a -> Get (Es.Inf a)
 getEnumInfWith getx = getWord8 >>= \w -> case w of
-  0xC6 -> return EnumNegInf
-  0xC7 -> return EnumPosInf
-  0xC8 -> liftM  EnumPoint  getx
+  0xC6 -> return Es.NegInf
+  0xC7 -> return Es.PosInf
+  0xC8 -> liftM  Es.Point  getx
   _    -> fail "expecting enum-inf data"
 
-instance (Integral a, Bits a) => Binary (EnumInf a) where
+instance (Integral a, Bits a) => Binary (Es.Inf a) where
   put = putEnumInfWith putVLInt
   get = getEnumInfWith getFromVLInt
 
-putSegmentWith :: (a -> Put) -> (x -> Put) -> Segment a x -> Put
-putSegmentWith putA putX a = flip fromMaybe (mplus plur sing) $
-  error "could not extract data from Dao.EnumSet.Segment data type"
+putSegmentWith :: (a -> Put) -> Es.Segment a -> Put
+putSegmentWith putA a = flip fromMaybe (mplus plur sing) $
+  error "could not extract data from Dao.EnumSet.Segment dataype"
   where
     plur = do
-      (lo, hi) <- plural a
-      return (putWord8 0xCA >> putEnumInfWith putA lo >> putEnumInfWith putA hi >> putX (getItem a))
+      (lo, hi) <- Es.plural a
+      return (putWord8 0xCA >> putEnumInfWith putA lo >> putEnumInfWith putA hi)
     sing = do
-      point <- singular a
-      return (putWord8 0xC9 >> putEnumInfWith putA point >> putX (getItem a))
+      point <- Es.singular a
+      return (putWord8 0xC9 >> putEnumInfWith putA point)
 
-getSegmentWith :: (Enum a, Ord a, BoundedInf a) => Get a -> Get x -> Get (Segment a x)
-getSegmentWith getA getX = getWord8 >>= \w -> case w of
-  0xC9 -> getEnumInfWith getA >>= \a -> getX >>= \x -> return (enumInfSeg a a x)
-  0xCA -> liftM3 enumInfSeg (getEnumInfWith getA) (getEnumInfWith getA) getX
+getSegmentWith :: (Enum a, Ord a, Es.InfBound a) => Get a -> Get (Es.Segment a)
+getSegmentWith getA = getWord8 >>= \w -> case w of
+  0xC9 -> getEnumInfWith getA >>= \a -> return (Es.enumInfSeg a a)
+  0xCA -> liftM2 Es.enumInfSeg (getEnumInfWith getA) (getEnumInfWith getA)
   _    -> fail "expecting enum-segment expression"
 
-instance (Enum a, Ord a, BoundedInf a, Integral a, Bits a, Binary x) => Binary (Segment a x) where
-  put = putSegmentWith putVLInt put
-  get = getSegmentWith getFromVLInt get
+instance (Enum a, Ord a, Es.InfBound a, Integral a, Bits a) => Binary (Es.Segment a) where
+  put = putSegmentWith putVLInt
+  get = getSegmentWith getFromVLInt
 
-putEnumSetWith :: (a -> Put) -> (x -> Put) -> EnumSet a x -> Put
-putEnumSetWith putA putX s = putListWith (putSegmentWith putA putX) (listSegments s)
+putEnumSetWith :: (a -> Put) -> Es.Set a -> Put
+putEnumSetWith putA s = putListWith (putSegmentWith putA) (Es.toList s)
 
-getEnumSetWith :: (Enum a, Ord a, BoundedInf a) => Get a -> Get x -> (x -> x -> x) -> Get (EnumSet a x)
-getEnumSetWith getA getX f = fmap (enumSet f) (getListWith (getSegmentWith getA getX))
+getEnumSetWith :: (Enum a, Ord a, Es.InfBound a) => Get a -> Get (Es.Set a)
+getEnumSetWith getA = fmap Es.fromList (getListWith (getSegmentWith getA))
 
 get_binary_enumset_error = error "invalid object set from binary stream (overlapping items)"
 
-instance (BoundedInf a, Integral a, Bits a, Binary x) => Binary (EnumSet a x) where
-  put = putEnumSetWith putVLInt     put
-  get = getEnumSetWith getFromVLInt get get_binary_enumset_error
+instance (Es.InfBound a, Integral a, Bits a) => Binary (Es.Set a) where
+  put = putEnumSetWith putVLInt
+  get = getEnumSetWith getFromVLInt
 
 instance Binary TopLevelExpr where
   put d = case d of

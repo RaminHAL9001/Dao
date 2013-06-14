@@ -31,10 +31,9 @@ import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Struct
 import           Dao.Predicate
-import           Dao.EnumSet
 import           Dao.NewParser
 import           Dao.Glob
-import           Dao.EnumSet
+import qualified Dao.EnumSet as Es
 import           Dao.Parser
 import qualified Dao.Tree    as T
 import           Dao.Parser
@@ -421,31 +420,31 @@ instance Structured ObjectExpr where
   dataToStruct = putIntermediate object_intrm
   structToData = getIntermediate object_intrm
 
-instance (Ord a, Enum a, Structured a) => Structured (EnumInf a) where
+instance (Ord a, Enum a, Structured a) => Structured (Es.Inf a) where
   dataToStruct a = deconstruct $ case a of
-    EnumPosInf  -> putStringData "+inf"
-    EnumNegInf  -> putStringData "-inf"
-    EnumPoint a -> putData a
+    Es.PosInf  -> putStringData "+inf"
+    Es.NegInf  -> putStringData "-inf"
+    Es.Point a -> putData a
   structToData = reconstruct $ msum $
-    [ fmap EnumPoint getData
+    [ fmap Es.Point getData
     , getStringData msg >>= \a -> case a of
-        "+inf" -> return EnumPosInf
-        "-inf" -> return EnumNegInf
+        "+inf" -> return Es.PosInf
+        "-inf" -> return Es.NegInf
     , mplus this (return ONull) >>= \o -> updateFailed o msg
     ]
     where { msg = "unit of a segment of an enum set" }
 
-instance (Ord a, Enum a, Bounded a, Structured a) => Structured (Segment a ()) where
+instance (Ord a, Enum a, Bounded a, Structured a) => Structured (Es.Segment a) where
   dataToStruct a = deconstruct $
-    mplus (maybeToUpdate (singular a) >>= putDataAt "at") $
-      maybeToUpdate (plural a) >>= \ (a, b) -> putDataAt "to" a >> putDataAt "from" b
+    mplus (maybeToUpdate (Es.singular a) >>= putDataAt "at") $
+      maybeToUpdate (Es.plural a) >>= \ (a, b) -> putDataAt "to" a >> putDataAt "from" b
   structToData = reconstruct $ msum $
-    [ getDataAt "to" >>= \a -> getDataAt "from" >>= \b -> return (segment a b ())
-    , fmap (flip single ()) (getDataAt "at")
+    [ getDataAt "to" >>= \a -> getDataAt "from" >>= \b -> return (Es.segment a b)
+    , fmap Es.single (getDataAt "at")
     , mplus this (return ONull) >>= \o -> updateFailed o "unit segment of an enum set"
     ]
 
-instance (Ord a, Enum a, Bounded a, BoundedInf a, Structured a) => Structured (EnumSet a ()) where
-  dataToStruct a = deconstruct (putData (listSegments a))
-  structToData = reconstruct (fmap (enumSet const) getData)
+instance (Ord a, Enum a, Bounded a, Es.InfBound a, Structured a) => Structured (Es.Set a) where
+  dataToStruct a = deconstruct (putData (Es.toList a))
+  structToData = reconstruct (fmap Es.fromList getData)
 

@@ -458,10 +458,98 @@ class TokenType tok =>
 -- better to use 'GenRegex'.
 
 data GenRegex tok a
-  = GenRegex     { genRegex         :: GenLexer tok a }
-  | GenRxCharSet { genRxCharSet     :: Es.SetM Char (GenRegex tok a) }
-  | GenRxString  { genRxString      :: UStr, nextRegex :: GenRegex tok a }
-  | GenRxRepeat  { genRxRepeatCount :: Int , nextRegex :: GenRegex tok a }
+  = GenRxBacktrack
+  | GenRxConst   { genRxConst   :: a }
+  | GenRegex     { genLexer     :: GenLexer tok a }
+  | GenRxString  { genRxString  :: UStr           , nextRegex :: GenRegex tok a }
+  | GenMakeToken { genMakeToken :: tok            , nextRegex :: GenRegex tok a }
+  | GenRxCharSet { genRxCharSet :: Es.Set Char    , nextRegex :: GenRegex tok a }
+  | GenRxInvert  { invRegex     :: GenRegex tok (), nextRegex :: GenRegex tok a }
+  | GenRxRepeat 
+    { genRxLimit :: Es.Segment Int
+    , repeating  :: GenRegex tok a
+    , nextRegex  :: GenRegex tok a
+    }
+instance Eq tok =>
+  Monad (GenRegex tok) where
+    return  = GenRxConst
+    a >>= b = GenRegex{ genLexer = evalRegexToTokStream a >>= evalRegexToTokStream . b }
+instance Eq tok =>
+  MonadPlus (GenRegex tok) where
+    mzero = GenRxBacktrack
+    mplus a b = case a of
+      GenRxBacktrack -> b
+      GenRxConst   a -> GenRxConst a
+      GenRegex    fn -> case b of
+        GenRxBacktrack  -> GenRegex  fn
+        GenRxConst    a -> GenRxConst a
+        GenRegex     fn -> GenRegex  fn
+        GenRxInvert u r -> undefined
+
+evalRegexToTokStream :: Eq tok => GenRegex tok a -> GenLexer tok a
+evalRegexToTokStream r = case r of
+  GenRxBacktrack     -> lexBacktrack
+  GenRxInvert   fn r -> do
+    continue <- msum [evalRegexToTokStream fn >> return False, lexBacktrack, return True]
+    if continue then evalRegexToTokStream r else lexBacktrack
+  GenRxConst       a -> return a
+  GenRegex        fn -> fn
+  GenRxRepeat  i f r -> genRepeat i r
+  GenRxCharSet   s r -> lexCharP (Es.member s) >> evalRegexToTokStream r
+  GenMakeToken   t r -> makeToken   t >> evalRegexToTokStream r
+  GenRxString    s r -> lexString (uchars s) >> evalRegexToTokStream r
+  where
+    genRepeat :: Eq tok => Es.Segment Int -> GenRegex tok a -> GenLexer tok a
+    genRepeat i r = case r of
+      GenRxBacktrack     -> lexBacktrack
+      GenRxConst       a -> return a
+      GenRxRepeat  i f r -> genRepeat i f >> evalRegexToTokStream r
+      GenRxCharSet   s r -> lexWhile (Es.member s) >> evalRegexToTokStream r
+      GenMakeToken   t r -> makeToken t >> evalRegexToTokStream r
+      r                  -> do
+        let fn = evalRegexToTokStream r
+        a <- optional fn -- try the repeating function just once at first
+        case a of
+          Nothing -> lexBacktrack -- backtrack if the repeating funcion cannot succeed even once
+          Just  a -> do
+            str <- gets lexBuffer -- get the string from the initial run
+            let withUpBound upBound = lexCycle fn upperBound upBound a str
+            let withoutBound        = lexCycle fn noBound    ()      a str
+            let withLoBound loBound = msum $
+                  [ foldl (flip const) a <$> sequence (take loBound (repeat fn))
+                  , lexBacktrack
+                  ]
+            let withBounds loBound upBound = do
+                  a    <- withLoBound loBound -- get the latest value returned
+                  str' <- gets lexBuffer
+                  lexCycle fn upperBound upBound a (str++str')
+            case Es.singular i of
+              Just (Es.Point upBound) -> withUpBound upBound
+              Just  Es.NegInf         -> withoutBound
+              Just  Es.PosInf         -> withoutBound
+              Nothing                 -> case Es.plural i of
+                Just (Es.Point loBound, Es.Point upBound) -> withBounds   loBound  upBound
+                Just (Es.Point loBound, _               ) -> withLoBound  loBound
+                Just (_               , Es.Point upBound) -> withUpBound  upBound
+                Just (_               , _               ) -> withoutBound
+                Nothing                                   -> withoutBound
+    upperBound c = (c-1, c>=0)
+    noBound   () = ((), True)
+    lexCycle :: Eq tok => GenLexer tok a -> (c -> (c, Bool)) -> c -> a -> String -> GenLexer tok a
+    lexCycle fn next c a str = do
+      clearBuffer
+      let (c, continue) = next c -- update the counter c
+      let done str = modify (\st -> st{lexBuffer=str}) >> return a
+      if not continue
+        then done str
+        else do
+          (continue, str) <- msum $
+              [ fn >>= \a -> ((,)(Just a) . (str++)) <$> gets lexBuffer
+              , lexBacktrack, return (Nothing, str)
+              ]
+          case continue of
+            Nothing -> done str
+            Just  a -> lexCycle fn next c a str
 
 ----------------------------------------------------------------------------------------------------
 -- $Lexical_Analysis

@@ -32,7 +32,7 @@ module Dao.EnumSet
     -- * Predicates on 'Segment's
   , containingSet, numElems, isWithin, segmentHasEnumInf, segmentIsInfinite
     -- * The 'SetM' monadic data type
-  , SetM, infiniteM, fromListM, rangeM, pointM
+  , SetM, evalSetM, infiniteM, fromListM, rangeM, pointM
   , toListM, memberM, nullM, isSingletonM
     -- * Set Operators for monadic 'SetM's
   , unionWithM, intersectWithM, deleteWithM, invertM, setXUnionM
@@ -544,9 +544,14 @@ instance (Ord c, Enum c, InfBound c) =>
 instance (Ord c, Enum c, InfBound c) =>
   Alternative (SetM c) where { empty = mzero; (<|>) = mplus; }
 
---  instance (Show c, Show x) =>
---    Show (SetM c x) where
---      show s = "("++intercalate ", " (map (showSegment show) (toListM s))++")"
+-- | Similar to 'Control.Monad.join', but takes the @x@ value out of the 'SetM' monad and lowers it
+-- into an arbitrary 'Control.Monad.MonadPlus' data type. Evaluates to 'mzero' if the set is empty.
+evalSetM :: (Ord c, Enum c, InfBound c, MonadPlus m) => SetM c x -> m x
+evalSetM a = case a of
+  EmptyEnumSet   -> mzero
+  InverseSet a x -> evalSetM (forceInvert a x)
+  InfiniteSet  x -> return x
+  SetM       _ x -> return x
 
 -- | Initialize a new intinite 'SetM', that is, the set that contains all possible elements.
 infiniteM :: (Ord c, Enum c, InfBound c) => x -> SetM c x

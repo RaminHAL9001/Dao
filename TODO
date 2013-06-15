@@ -1,5 +1,13 @@
 TODO:
 
+* Unioning 'Dao.Enum.SetM' data types should produce a list of segments where not every item is
+	associated with the same return value. I will need to modify the 'Dao.EnumSet.SetM' data type to
+	have a fifth constructor 'MultiSet' which contains a list of pairs of the type:
+		('Dao.EnumSet.Segment c', x)
+	where @x@ is the return value contained within constructor. Unioning sets should work a bit more
+	like 'Prelude.concatMap' does when a list is treated as a monad. However intersecting
+	'Dao.EnumSet.SetM' types is the operation to be used for monadic bind.
+
 * Fix the bugs introduced into the "Dao.EnumSet" module after this last bout of sweeping changes.
 
 * Complex numbers are not being parsed correctly by the new parser.

@@ -38,7 +38,7 @@ module Dao.EnumSet
   , unionWithM, intersectWithM, deleteWithM, invertM, setXUnionM
   , unionM, intersectM, deleteM
     -- * The 'Set' non-monadic data type
-  , Set, infinite, fromList, range, point
+  , Set, infinite, fromList, fromPairs, range, point
   , toList, member, Dao.EnumSet.null, isSingleton
     -- * Set Operators for non-monadic 'Set's
   , Dao.EnumSet.invert, setXUnion, Dao.EnumSet.union, Dao.EnumSet.intersect, Dao.EnumSet.delete
@@ -137,6 +137,15 @@ data Segment c
   -- second parameter. To prevent anyone from screwing it up, the constructor is hidden and
   -- constructing a 'Segment' must be done with the 'enumInfSeg' function which checks the parameters.
 
+instance Ord c => Ord (Segment c) where
+  compare x y = case x of
+    Single    a    -> case y of
+      Single  b      -> compare a b
+      Segment b  b'  -> if a==b then LT else compare a b
+    Segment   a  b -> case y of
+      Single  a'     -> if a==b then GT else compare a a'
+      Segment a' b'  -> if a==a' then compare b' b else compare a a'
+
 -- not exported
 mkSegment :: Eq c => Inf c -> Inf c -> Segment c
 mkSegment a b
@@ -156,17 +165,6 @@ plural :: Segment a -> Maybe (Inf a, Inf a)
 plural a = case a of
   Segment a b -> return (a, b)
   Single  _   -> mzero
-
--- | Compare segments with a parameterized function for ordering the contained object (the object of
--- type @x@).
-compareSegments :: Ord c => Segment c -> Segment c -> Ordering
-compareSegments x y = case x of
-  Single  a     -> case y of
-    Single  b     -> compare a b
-    Segment b  b' -> compare a b
-  Segment a  b  -> case y of
-    Single  a'    -> compare a b
-    Segment a' b' -> if a==a' then compare b' b else compare a a'
 
 showSegment :: Show c => Segment c -> String
 showSegment seg = case seg of
@@ -194,7 +192,7 @@ canonicalSegment seg = nonInf seg >>= \seg -> case seg of
       x          -> x
 
 instance Show c =>
-  Show (Segment c) where { show seg = "("++showSegment seg++")" }
+  Show (Segment c) where { show seg = showSegment seg }
 
 -- | A predicate evaluating whether or not a segment includes an 'PosInf' or 'NegInf' value.
 -- This should not be confused with a predicate evaluating whether the set of elements included by
@@ -220,7 +218,7 @@ segmentIsInfinite seg = case [Single minBoundInf, Single maxBoundInf, seg] of
 -- | Construct a 'Segment' from two 'Inf' items. /NOTE/ if the 'Inf' type you are
 -- constructing is an instance of 'Prelude.Bounded', use the 'boundedSegment' constructor instead of
 -- this function.
-enumInfSeg :: (Ord c, Enum c, InfBound c) => Inf c -> Inf c -> Segment c
+enumInfSeg :: (Show c, Ord c, Enum c, InfBound c) => Inf c -> Inf c -> Segment c
 enumInfSeg a b = seg a b where
   seg a b = construct (ck minBoundInf NegInf a) (ck maxBoundInf PosInf b)
   ck inf subst ab = if inf==ab then subst else ab
@@ -250,8 +248,8 @@ infiniteSegment :: Segment c
 infiniteSegment = Segment NegInf PosInf
 
 -- | Tests whether an element is a memberM is enclosed by the 'Segment'.
-segmentMember :: Ord c => c -> Segment c -> Bool
-segmentMember c seg = case seg of
+segmentMember :: Ord c => Segment c -> c -> Bool
+segmentMember seg c = case seg of
   Single  (Point d) -> c == d
   Segment lo hi         -> let e = Point c in lo <= e && e <= hi
   _                     -> False
@@ -262,7 +260,7 @@ segmentMember c seg = case seg of
 -- value with 'NegInf' or 'PosInf' respectively. In other words, you can use
 -- 'Prelude.minBound' in place of NegInf and 'Prelude.maxBound' in place of 'PosInf' without
 -- changing the semantics of the data structure as it is used throughout the program.
--- boundedSegment :: (Ord c, Enum c, Bounded c) => c -> c -> Segment c
+-- boundedSegment :: (Show c, Ord c, Enum c, Bounded c) => c -> c -> Segment c
 -- boundedSegment a b = if a>b then co b a else co a b where
 --    co a b = enumInfSeg (f a minBound NegInf) (f b maxBound PosInf)
 --    f x bound inf = if x==bound then inf else Point x
@@ -284,7 +282,7 @@ toBoundedPair r = case r of
 
 -- | Computes the minimum 'Segment' that can contain the list of all given 'EnumRanges'.
 -- 'Data.Maybe.Nothing' indicates the empty set.
-containingSet :: (Ord c, Enum c, InfBound c) => [Segment c] -> Maybe (Segment c)
+containingSet :: (Show c, Ord c, Enum c, InfBound c) => [Segment c] -> Maybe (Segment c)
 containingSet ex = foldl fe Nothing ex where
   fe Nothing a  = Just a
   fe (Just a) c = Just $ case a of
@@ -309,7 +307,7 @@ numElems seg = case seg of
 
 -- | Tests whether an 'Inf' is within the enumInfSeg. It is handy when used with backquote noation:
 -- @enumInf `isWithin` enumInfSeg@
-isWithin :: (Ord c, Enum c) => Inf c -> Segment c -> Bool
+isWithin :: (Show c, Ord c, Enum c) => Inf c -> Segment c -> Bool
 isWithin pointM seg = case seg of
   Single x              -> pointM == x
   Segment NegInf hi -> pointM <= hi
@@ -317,7 +315,7 @@ isWithin pointM seg = case seg of
   Segment lo hi         -> lo <= pointM && pointM <= hi
 
 -- | Returns true if two 'Segment's are intersecting.
-areIntersecting :: (Ord c, Enum c) => Segment c -> Segment c -> Bool
+areIntersecting :: (Show c, Ord c, Enum c) => Segment c -> Segment c -> Bool
 areIntersecting a b = case a of
   Single  aa  -> case b of
     Single  bb    -> aa == bb
@@ -328,7 +326,7 @@ areIntersecting a b = case a of
 
 -- | Returns true if two 'Segment's are consecutive, that is, if the end is the 'Prelude.pred'essor
 -- of the start of the other.
-areConsecutive :: (Ord c, Enum c, InfBound c) => Segment c -> Segment c -> Bool
+areConsecutive :: (Show c, Ord c, Enum c, InfBound c) => Segment c -> Segment c -> Bool
 areConsecutive a b = case a of
   Single  a   -> case b of
     Single  b
@@ -349,7 +347,7 @@ areConsecutive a b = case a of
 -- | Performs a set union on two 'Segment's of elements to create a new enumInfSeg. If the elements of
 -- the new enumInfSeg are not contiguous, each enumInfSeg is returned separately and unchanged. The first
 -- item in the pair of items returned is 'Prelude.True' if any of the items were modified.
-segmentUnion :: (Ord c, Enum c, InfBound c) => Segment c -> Segment c -> (Bool, [Segment c])
+segmentUnion :: (Show c, Ord c, Enum c, InfBound c) => Segment c -> Segment c -> (Bool, [Segment c])
 segmentUnion a b
   | areIntersecting a b = case a of
       Single  _   -> case b of
@@ -369,7 +367,7 @@ segmentUnion a b
 
 -- | Performs a set intersection on two 'Segment's of elements to create a new enumInfSeg. If the
 -- elements of the new enumInfSeg are not contiguous, this function evaluates to an empty list.
-segmentIntersect :: (Ord c, Enum c, InfBound c) => Segment c -> Segment c -> (Bool, [Segment c])
+segmentIntersect :: (Show c, Ord c, Enum c, InfBound c) => Segment c -> Segment c -> (Bool, [Segment c])
 segmentIntersect a b = if areIntersecting a b then joined else (False, []) where
   joined = case a of
     Single  aa    -> case b of
@@ -382,7 +380,7 @@ segmentIntersect a b = if areIntersecting a b then joined else (False, []) where
 -- | Performs a set "delete" operation, deleteing any elements selected by the first enumInfSeg if
 -- they are contained in the second enumInfSeg. This operation is not associative, i.e.
 -- @'segmentDelete' a b /= 'segmentDelete' b a@.
-segmentDelete :: (Ord c, Enum c, InfBound c) =>
+segmentDelete :: (Show c, Ord c, Enum c, InfBound c) =>
   Segment c -> Segment c -> (Bool, [Segment c])
 segmentDelete a b = if not (areIntersecting a b) then (False, [a]) else del where
   del = case a of
@@ -401,7 +399,7 @@ segmentDelete a b = if not (areIntersecting a b) then (False, [a]) else del wher
         | x' >  x && y' >= y -> (True, [enumInfSeg x (stepDown x')])
 
 -- | Evaluates to the set of all elements not selected by the given 'Segment'.
-segmentInvert :: (Ord c, Enum c, InfBound c) => Segment c -> [Segment c]
+segmentInvert :: (Show c, Ord c, Enum c, InfBound c) => Segment c -> [Segment c]
 segmentInvert seg = canonicalSegment =<< case seg of
   Single  x   -> case x of
     NegInf  -> [] -- [Single PosInf]
@@ -424,10 +422,9 @@ segmentInvert seg = canonicalSegment =<< case seg of
         , mkSegment (max (stepUp x) (stepUp y))  PosInf
         ]
 
--- | Eliminate overlapping and duplicate 'Segment's from a list of segments. Requires a union
--- function for combining elements that overlap.
-segmentNub :: (Ord c, Enum c, InfBound c) => [Segment c] -> [Segment c]
-segmentNub ax = loop (sortBy compareSegments ax) >>= canonicalSegment where
+-- | Eliminate overlapping and duplicate 'Segment's from a list of segments.
+segmentNub :: (Show c, Ord c, Enum c, InfBound c) => [Segment c] -> [Segment c]
+segmentNub ax = loop (sort ax) >>= canonicalSegment where
   loop ax = case ax of
     []     -> []
     [a]    -> [a]
@@ -464,7 +461,7 @@ upperTriangular mainDiag ax bx = do
 -- given inner product function is executed. The first parameter, the product function, is intended
 -- to be a function like 'segmentUnion', 'segmentIntersect', or 'segmentDelete'.
 associativeProduct
-  :: (Ord c, Enum c, InfBound c)
+  :: (Show c, Ord c, Enum c, InfBound c)
   => (Segment c -> Segment c -> (Bool, [Segment c]))
   -> [Segment c] -> [Segment c] -> [Segment c]
 associativeProduct reduce a b =
@@ -511,178 +508,162 @@ nonAssociativeProduct product ax bx = exclusiveProduct product (sort ax) (sort b
 
 -- | A set-union of serveral 'Segment's.
 data SetM c x
-  = EmptyEnumSet
-  | InverseSet  { invertedSet :: SetM c x, enumSetValue :: x }
-  | InfiniteSet { enumSetValue :: x }
-  | SetM    { toListM :: [Segment c], enumSetValue :: x }
+  = EmptyEnumSetM
+  | InverseSetM  { invertedSet  :: SetM c x, enumSetValue :: x }
+  | InfiniteSetM { enumSetValue :: x }
+  | SetM         { toListM      :: [Segment c], enumSetValue :: x }
   deriving Eq
-instance (Ord c, Enum c, InfBound c, Monoid x) =>
+instance (Show c, Ord c, Enum c, InfBound c, Monoid x) =>
   Monoid (SetM c x) where
-    mempty  = EmptyEnumSet
+    mempty  = EmptyEnumSetM
     mappend = unionWithM mappend
 instance
   Functor (SetM c) where
     fmap f a = case a of
-      EmptyEnumSet     -> EmptyEnumSet
-      InverseSet   a x -> fmap f a
-      InfiniteSet    x -> InfiniteSet (f x)
-      SetM     a x -> SetM  a (f x)
-instance (Ord c, Enum c, InfBound c) =>
-  Monad (SetM c) where
-    return  = InfiniteSet
-    a >>= b = case a of
-      EmptyEnumSet      -> EmptyEnumSet
-      InverseSet   a ax -> forceInvert a ax >>= b
-      InfiniteSet    ax -> b ax
-      SetM     a ax -> intersectWithM (flip const) (SetM a ax) (b ax)
-instance (Ord c, Enum c, InfBound c) =>
-  MonadPlus (SetM c) where
-    mzero = EmptyEnumSet
-    mplus = unionWithM const
-instance (Ord c, Enum c, InfBound c) =>
-  Applicative (SetM c) where { pure = return; (<*>) = ap; }
-instance (Ord c, Enum c, InfBound c) =>
-  Alternative (SetM c) where { empty = mzero; (<|>) = mplus; }
+      EmptyEnumSetM     -> EmptyEnumSetM
+      InverseSetM   a x -> InverseSetM (fmap f a) (f x)
+      InfiniteSetM    x -> InfiniteSetM (f x)
+      SetM          a x -> SetM  a (f x)
 
 -- | Similar to 'Control.Monad.join', but takes the @x@ value out of the 'SetM' monad and lowers it
 -- into an arbitrary 'Control.Monad.MonadPlus' data type. Evaluates to 'mzero' if the set is empty.
-evalSetM :: (Ord c, Enum c, InfBound c, MonadPlus m) => SetM c x -> m x
+evalSetM :: (Show c, Ord c, Enum c, InfBound c, MonadPlus m) => SetM c x -> m x
 evalSetM a = case a of
-  EmptyEnumSet   -> mzero
-  InverseSet a x -> evalSetM (forceInvert a x)
-  InfiniteSet  x -> return x
+  EmptyEnumSetM   -> mzero
+  InverseSetM a x -> evalSetM (forceInvertM a x)
+  InfiniteSetM  x -> return x
   SetM       _ x -> return x
 
 -- | Initialize a new intinite 'SetM', that is, the set that contains all possible elements.
-infiniteM :: (Ord c, Enum c, InfBound c) => x -> SetM c x
-infiniteM = InfiniteSet
+infiniteM :: (Show c, Ord c, Enum c, InfBound c) => x -> SetM c x
+infiniteM = InfiniteSetM
 
 -- | Initialize a new 'SetM' object with a list of 'Segment's, which are 'segmentUnion'ed
 -- together to create the set.
-fromListM :: (Ord c, Enum c, InfBound c) => [Segment c] -> x -> SetM c x
+fromListM :: (Show c, Ord c, Enum c, InfBound c) => [Segment c] -> x -> SetM c x
 fromListM a ax = enumSet_ (segmentNub a) ax
 
 -- Not exported. Assumes the segments list proivded was produced within this module and does not
 -- need to be 'segmentNub'bed.
-enumSet_ :: (Ord c, Enum c, InfBound c) => [Segment c] -> x -> SetM c x
+enumSet_ :: (Show c, Ord c, Enum c, InfBound c) => [Segment c] -> x -> SetM c x
 enumSet_ a ax = case a of
-  []                              -> EmptyEnumSet
-  [Segment NegInf PosInf] -> InfiniteSet ax
-  a                               -> SetM   a ax
+  []                      -> EmptyEnumSetM
+  [Segment NegInf PosInf] -> InfiniteSetM ax
+  a                       -> SetM       a ax
 
 -- | Create a set with a single rangeM of elements, no gaps.
-rangeM :: (Ord c, Enum c, InfBound c) => c -> c -> x -> SetM c x
+rangeM :: (Show c, Ord c, Enum c, InfBound c) => c -> c -> x -> SetM c x
 rangeM a b x = SetM [segment a b] x
 
 -- | Create a set with a single element.
-pointM :: (Ord c, Enum c, InfBound c) => c -> x -> SetM c x
+pointM :: (Show c, Ord c, Enum c, InfBound c) => c -> x -> SetM c x
 pointM c = rangeM c c
 
 -- | Tests if an element is a memberM of the set.
 memberM :: Ord c => SetM c x -> c -> Bool
 memberM a c = case a of
-  EmptyEnumSet     -> False
-  InfiniteSet    _ -> True
-  InverseSet   a _ -> not (memberM a c)
-  SetM     a _ -> or $ map (segmentMember c) a
+  EmptyEnumSetM     -> False
+  InfiniteSetM    _ -> True
+  InverseSetM   a _ -> not (memberM a c)
+  SetM          a _ -> or $ map (flip segmentMember c) a
 
 -- | Test if a set encompases only one element, and if so, returns that one element.
-isSingletonM :: (Ord c, Enum c, InfBound c) => SetM c x -> Maybe c
+isSingletonM :: (Show c, Ord c, Enum c, InfBound c) => SetM c x -> Maybe c
 isSingletonM a = case void a of
   SetM     a _ -> case a of
     [Single (Point a)] -> Just a
     _                      -> Nothing
-  InverseSet   a x -> isSingletonM (forceInvert a x)
+  InverseSetM   a x -> isSingletonM (forceInvertM a x)
   _                -> Nothing
 
 -- | Tests if a set is empty.
 nullM :: SetM c x -> Bool
 nullM a = case a of
-  EmptyEnumSet                   -> True
-  InfiniteSet                  _ -> False
+  EmptyEnumSetM                   -> True
+  InfiniteSetM                  _ -> False
   SetM     _               _ -> False
-  InverseSet   EmptyEnumSet    _ -> False
-  InverseSet  (InfiniteSet  _) _ -> True
-  InverseSet  (InverseSet a _) _ -> nullM a
-  InverseSet   a               _ -> nullM a
+  InverseSetM   EmptyEnumSetM    _ -> False
+  InverseSetM  (InfiniteSetM  _) _ -> True
+  InverseSetM  (InverseSetM a _) _ -> nullM a
+  InverseSetM   a               _ -> nullM a
     -- simply 'not'ting the result of (null s) will not work, the inverse of a set may or may
     -- not be null.
 
 -- | Inverting an empty set will produce the 'infinity' set, but this set cannot be 'null' so you
 -- must provide a value to be used in the case the given set is 'mempty'. If the given set is not
 -- 'mempty' the value provided to this function is not used.
-invertM :: (Ord c, Enum c, InfBound c) => SetM c x -> x -> SetM c x
+invertM :: (Show c, Ord c, Enum c, InfBound c) => SetM c x -> x -> SetM c x
 invertM a y = case a of
-  EmptyEnumSet     -> InfiniteSet y
-  InfiniteSet  _   -> EmptyEnumSet
-  InverseSet   a _ -> a
-  SetM     a x -> InverseSet (SetM a x) y
+  EmptyEnumSetM     -> InfiniteSetM y
+  InfiniteSetM  _   -> EmptyEnumSetM
+  InverseSetM   a _ -> a
+  SetM     a x -> InverseSetM (SetM a x) y
 
 -- | Union the set of elements in two 'SetM's. This is the operation used for overriding
 -- 'Data.Monoid.mappend'.
-unionWithM :: (Ord c, Enum c, InfBound c) =>
+unionWithM :: (Show c, Ord c, Enum c, InfBound c) =>
   (x -> x -> x) -> SetM c x -> SetM c x -> SetM c x
 unionWithM add a b = case a of
-  EmptyEnumSet       -> b
-  InfiniteSet     ax -> case b of
-    EmptyEnumSet       -> InfiniteSet ax
-    InfiniteSet     bx -> InfiniteSet (add ax bx)
-    SetM      b bx -> SetM  b (add ax bx)
-    InverseSet    b bx -> unionWithM add (InfiniteSet ax) (forceInvert b bx)
-  InverseSet    a ax -> unionWithM add (forceInvert a ax) b
-  SetM      a ax -> case b of
-    EmptyEnumSet       -> SetM a ax
-    InfiniteSet     bx -> InfiniteSet (add ax bx)
-    InverseSet    b bx -> unionWithM add (SetM a ax) (forceInvert b bx)
-    SetM      b bx -> enumSet_ (associativeProduct segmentUnion a b) (add ax bx)
+  EmptyEnumSetM       -> b
+  InfiniteSetM     ax -> case b of
+    EmptyEnumSetM       -> InfiniteSetM ax
+    InfiniteSetM     bx -> InfiniteSetM (add ax bx)
+    SetM          b bx -> SetM  b (add ax bx)
+    InverseSetM    b bx -> unionWithM add (InfiniteSetM ax) (forceInvertM b bx)
+  InverseSetM    a ax -> unionWithM add (forceInvertM a ax) b
+  SetM          a ax -> case b of
+    EmptyEnumSetM       -> SetM a ax
+    InfiniteSetM     bx -> InfiniteSetM (add ax bx)
+    InverseSetM    b bx -> unionWithM add (SetM a ax) (forceInvertM b bx)
+    SetM          b bx -> enumSet_ (associativeProduct segmentUnion a b) (add ax bx)
 
 -- | Intersect the set of elements in two 'SetM's, i.e. create a new set of elements that are
 -- where every element must be included in both of the sets that were given as parameters. This
 -- function is defined as @('associativeProduct' 'segmentIntersect')@.
-intersectWithM :: (Ord c, Enum c, InfBound c) =>
+intersectWithM :: (Show c, Ord c, Enum c, InfBound c) =>
   (x -> y -> z) -> SetM c x -> SetM c y -> SetM c z
 intersectWithM mult a b = case a of
-  EmptyEnumSet      -> EmptyEnumSet
-  InfiniteSet    ax -> case b of
-    EmptyEnumSet      -> EmptyEnumSet
-    InfiniteSet    bx -> InfiniteSet (mult ax bx)
-    InverseSet   b bx -> intersectWithM mult (InfiniteSet ax) (forceInvert b bx)
-    SetM     b bx -> enumSet_ b (mult ax bx)
-  InverseSet   a ax -> intersectWithM mult (forceInvert a ax) b
-  SetM     a ax -> case b of
-    EmptyEnumSet      -> EmptyEnumSet
-    InfiniteSet    bx -> InfiniteSet (mult ax bx)
-    InverseSet   b bx -> intersectWithM mult (SetM a ax) (forceInvert b bx)
+  EmptyEnumSetM      -> EmptyEnumSetM
+  InfiniteSetM    ax -> case b of
+    EmptyEnumSetM      -> EmptyEnumSetM
+    InfiniteSetM    bx -> InfiniteSetM (mult ax bx)
+    InverseSetM   b bx -> intersectWithM mult (InfiniteSetM ax) (forceInvertM b bx)
+    SetM         b bx -> enumSet_ b (mult ax bx)
+  InverseSetM   a ax -> intersectWithM mult (forceInvertM a ax) b
+  SetM         a ax -> case b of
+    EmptyEnumSetM      -> EmptyEnumSetM
+    InfiniteSetM    bx -> InfiniteSetM (mult ax bx)
+    InverseSetM   b bx -> intersectWithM mult (SetM a ax) (forceInvertM b bx)
     SetM     b bx -> enumSet_ (associativeProduct segmentIntersect a b) (mult ax bx)
 
 -- | Delete every element from the first set if it exists in the second set. This operation is not
 -- associative.
-deleteWithM :: (Ord c, Enum c, InfBound c) =>
+deleteWithM :: (Show c, Ord c, Enum c, InfBound c) =>
   (x -> y -> x) -> SetM c x -> SetM c y -> SetM c x
 deleteWithM sub a b = case a of
-  EmptyEnumSet      -> EmptyEnumSet
-  InfiniteSet    ax -> case b of
-    EmptyEnumSet      -> InfiniteSet ax
-    InfiniteSet    bx -> InfiniteSet (sub ax bx)
-    InverseSet   b bx -> deleteWithM sub (InfiniteSet ax) (forceInvert b bx)
-    SetM     _ bx -> InfiniteSet (sub ax bx)
-  InverseSet   a ax -> deleteWithM sub (forceInvert a ax) b
+  EmptyEnumSetM      -> EmptyEnumSetM
+  InfiniteSetM    ax -> case b of
+    EmptyEnumSetM      -> InfiniteSetM ax
+    InfiniteSetM    bx -> InfiniteSetM (sub ax bx)
+    InverseSetM   b bx -> deleteWithM sub (InfiniteSetM ax) (forceInvertM b bx)
+    SetM         _ bx -> InfiniteSetM (sub ax bx)
+  InverseSetM   a ax -> deleteWithM sub (forceInvertM a ax) b
   SetM     a ax -> case b of
-    EmptyEnumSet      -> EmptyEnumSet
-    InfiniteSet    _  -> EmptyEnumSet
-    InverseSet   b bx -> deleteWithM sub (SetM a ax) (forceInvert b bx)
-    SetM     b bx -> enumSet_ (exclusiveProduct segmentDelete a b) (sub ax bx)
+    EmptyEnumSetM      -> EmptyEnumSetM
+    InfiniteSetM    _  -> EmptyEnumSetM
+    InverseSetM   b bx -> deleteWithM sub (SetM a ax) (forceInvertM b bx)
+    SetM         b bx -> enumSet_ (exclusiveProduct segmentDelete a b) (sub ax bx)
       -- WARNING: used to apply 'segmentNub' to the whole of this function (which would now be done
       -- by constructing using 'fromListM' instead of 'enumSet_'). Wether or not we can do without it
       -- must be tested.
 
 -- Not for export. Invert the items selected by a given set.
-forceInvert :: (Ord c, Enum c, InfBound c) => SetM c x -> x -> SetM c x
-forceInvert a ax = case a of
-  EmptyEnumSet      -> InfiniteSet ax
-  InfiniteSet    _  -> EmptyEnumSet
-  InverseSet   a ax -> fmap (const ax) a -- use the 'ax' value from the previous call to 'invertM'
-  SetM     a ax -> enumSet_ (inv a) ax
+forceInvertM :: (Show c, Ord c, Enum c, InfBound c) => SetM c x -> x -> SetM c x
+forceInvertM a ax = case a of
+  EmptyEnumSetM      -> InfiniteSetM ax
+  InfiniteSetM    _  -> EmptyEnumSetM
+  InverseSetM   a ax -> fmap (const ax) a -- use the 'ax' value from the previous call to 'invertM'
+  SetM         a ax -> enumSet_ (inv a) ax
   where
     inv segs = canonicalSegment =<< loop NegInf segs
     loop mark segs = case segs of
@@ -693,86 +674,192 @@ forceInvert a ax = case a of
       Single  a            : segs -> mkSegment (stepUp mark) (stepDown a) : loop a segs
 
 -- | Exclusive-OR-like union of set elements.
-setXUnionM :: (Ord c, Enum c, InfBound c) =>
+setXUnionM :: (Show c, Ord c, Enum c, InfBound c) =>
   (x -> x -> x) -> SetM c x -> SetM c x -> SetM c x
 setXUnionM add a b = case a of
-  EmptyEnumSet      -> case b of
-    EmptyEnumSet      -> EmptyEnumSet
-    InfiniteSet    bx -> InfiniteSet    bx
-    InverseSet   b bx -> InverseSet   b bx
-    SetM     b bx -> SetM     b bx
-  InfiniteSet    ax -> case b of
-    EmptyEnumSet      -> InfiniteSet ax
-    InfiniteSet    _  -> EmptyEnumSet
-    InverseSet   b bx -> fmap (add ax) b
-    SetM     b bx -> xorWithInf (SetM b bx) bx ax
-  InverseSet   a ax -> setXUnionM add (forceInvert a ax) b
+  EmptyEnumSetM      -> case b of
+    EmptyEnumSetM      -> EmptyEnumSetM
+    InfiniteSetM    bx -> InfiniteSetM    bx
+    InverseSetM   b bx -> InverseSetM   b bx
+    SetM         b bx -> SetM     b bx
+  InfiniteSetM    ax -> case b of
+    EmptyEnumSetM      -> InfiniteSetM ax
+    InfiniteSetM    _  -> EmptyEnumSetM
+    InverseSetM   b bx -> fmap (add ax) b
+    SetM         b bx -> xorWithInf (SetM b bx) bx ax
+  InverseSetM   a ax -> setXUnionM add (forceInvertM a ax) b
   SetM     a ax -> case b of
-    EmptyEnumSet      -> SetM a ax
-    InfiniteSet    bx -> xorWithInf (SetM a ax) ax bx
-    InverseSet   b bx -> setXUnionM add (SetM a ax) (forceInvert b bx)
-    SetM     b bx ->
+    EmptyEnumSetM      -> SetM a ax
+    InfiniteSetM    bx -> xorWithInf (SetM a ax) ax bx
+    InverseSetM   b bx -> setXUnionM add (SetM a ax) (forceInvertM b bx)
+    SetM         b bx ->
       let va = SetM a ()
           vb = SetM b ()
       in  const (add ax bx) <$> deleteWithM const (unionWithM const va vb) (intersectWithM const va vb)
   where
-    xorWithInf a ax bx = const (add ax bx) <$> forceInvert a ax
+    xorWithInf a ax bx = const (add ax bx) <$> forceInvertM a ax
 
-unionM :: (Ord c, Enum c, InfBound c) => SetM c x -> SetM c x -> SetM c x
+unionM :: (Show c, Ord c, Enum c, InfBound c) => SetM c x -> SetM c x -> SetM c x
 unionM = unionWithM const
 
-intersectM :: (Ord c, Enum c, InfBound c) => SetM c x -> SetM c y -> SetM c x
+intersectM :: (Show c, Ord c, Enum c, InfBound c) => SetM c x -> SetM c y -> SetM c x
 intersectM = intersectWithM const
 
-deleteM :: (Ord c, Enum c, InfBound c) => SetM c x -> SetM c y -> SetM c x
+deleteM :: (Show c, Ord c, Enum c, InfBound c) => SetM c x -> SetM c y -> SetM c x
 deleteM = deleteWithM const
 
 ----------------------------------------------------------------------------------------------------
 
-newtype Set c = Set (SetM c ()) deriving Eq
-instance (Ord c, Enum c, InfBound c) =>
+data Set c
+  = EmptyEnumSet
+  | InfiniteSet
+  | InverseSet  { inverseSet :: Set c }
+  | Set         { segmentList :: [Segment c] }
+instance (Show c, Ord c, Enum c, InfBound c) => Eq (Set c) where
+  a == b = case a of
+    EmptyEnumSet -> case b of
+      EmptyEnumSet  -> True
+      Set        [] -> True
+      _             -> False
+    InfiniteSet  -> case b of
+      InfiniteSet                  -> True
+      Set [s] | s==infiniteSegment -> True
+      _                            -> False
+    InverseSet a -> case b of
+      InverseSet b -> a==b
+      _            -> forceInvert a == b
+    Set        a -> case b of
+      Set        b -> a==b
+      _            -> False
+instance (Show c, Ord c, Enum c, InfBound c) =>
   Monoid (Set c) where { mempty = Set mempty; mappend (Set a) (Set b) = Set (mappend a b); }
 instance Show c =>
   Show (Set c) where
-    show (Set s) = "enumSet("++intercalate ", " (map show $ toListM s)++")"
+    show s = case s of
+      EmptyEnumSet -> "enumSet()"
+      InfiniteSet  -> "enumSet(-Inf to +Inf)"
+      InverseSet s -> "!enumSet("++show s++")"
+      Set        s -> "enumSet("++intercalate ", " (map show s)++")"
 
-infinite :: (Ord c, Enum c, InfBound c) => Set c
-infinite = Set (infiniteM ())
+infinite :: Set c
+infinite = InfiniteSet
 
-fromList :: (Ord c, Enum c, InfBound c) => [Segment c] -> Set c
-fromList = Set . flip fromListM ()
+-- not exported, creates a list from segments, but does not clean it with 'segmentNub'
+fromListNoNub :: (Show c, Ord c, Enum c, InfBound c) => [Segment c] -> Set c
+fromListNoNub a =
+  if Data.List.null a
+    then EmptyEnumSet
+    else if a==[infiniteSegment] then InfiniteSet else Set{segmentList=a}
 
-range :: (Ord c, Enum c, InfBound c) => c -> c -> Set c
-range a b = Set (rangeM a b ())
+fromList :: (Show c, Ord c, Enum c, InfBound c) => [Segment c] -> Set c
+fromList a = if Data.List.null a then EmptyEnumSet else fromListNoNub a
 
-point :: (Ord c, Enum c, InfBound c) => c -> Set c
-point a = Set (pointM a ())
+fromPairs :: (Show c, Ord c, Enum c, InfBound c) => [(c, c)] -> Set c
+fromPairs = fromList . map (uncurry segment)
 
-toList (Set a) = toListM a
+range :: (Show c, Ord c, Enum c, InfBound c) => c -> c -> Set c
+range a b = Set{segmentList=[segment a b]}
 
-member :: Ord c => Set c -> c -> Bool
-member (Set a) b = memberM a b
+point :: (Show c, Ord c, Enum c, InfBound c) => c -> Set c
+point a = Set{segmentList=[single a]}
+
+toList :: (Show c, Ord c, Enum c, InfBound c) => Set c -> [Segment c]
+toList s = case s of
+  EmptyEnumSet -> []
+  InfiniteSet  -> [infiniteSegment]
+  InverseSet s -> toList (forceInvert s)
+  Set        s -> s
+
+member :: (Show c, Ord c, InfBound c) => Set c -> c -> Bool
+member s b = case s of
+  EmptyEnumSet -> False
+  InfiniteSet  -> True
+  InverseSet s -> not (member s b)
+  Set       [] -> False
+  Set        s -> or (map (flip segmentMember b) s)
 
 null :: Set c -> Bool
-null (Set a) = nullM a
+null s = case s of
+  EmptyEnumSet -> True
+  InfiniteSet  -> False
+  InverseSet s -> not (Dao.EnumSet.null s)
+  Set       [] -> True
+  Set        _ -> False
 
-isSingleton :: (Ord c, Enum c, InfBound c) => Set c -> Maybe c
-isSingleton (Set a) = isSingletonM a
+isSingleton :: (Show c, Ord c, Enum c, InfBound c) => Set c -> Bool
+isSingleton s = case s of
+  EmptyEnumSet   -> False
+  InfiniteSet    -> False
+  InverseSet   s -> isSingleton (forceInvert s)
+  Set         [] -> False
+  Set [Single _] -> True
 
-invert :: (Ord c, Enum c, InfBound c) => Set c -> Set c
-invert (Set a) = Set (invertM a ())
+invert :: (Show c, Ord c, Enum c, InfBound c) => Set c -> Set c
+invert s = case s of
+  EmptyEnumSet -> InfiniteSet
+  InfiniteSet  -> EmptyEnumSet
+  InverseSet s -> s
+  Set        s -> InverseSet (Set s)
 
-setXUnion :: (Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
-setXUnion (Set a) (Set b) = Set (setXUnionM const a b)
+-- not for export
+forceInvert :: (Show c, Ord c, Enum c, InfBound c) => Set c -> Set c
+forceInvert s = case s of
+  EmptyEnumSet -> InfiniteSet
+  InfiniteSet  -> EmptyEnumSet
+  InverseSet s -> s
+  Set      []  -> InfiniteSet
+  Set     [s] | s==infiniteSegment -> EmptyEnumSet
+  Set       s  -> fromListNoNub (loop NegInf s >>= canonicalSegment) where
+    loop mark s = case s of
+      []                   -> [mkSegment (stepUp mark) PosInf]
+      [Segment a PosInf]   -> [mkSegment (stepUp mark) (stepDown a)]
+      Segment NegInf b : s -> loop b s
+      Segment a      b : s -> mkSegment (stepUp mark) (stepDown a) : loop b s
+      Single  a        : s -> mkSegment (stepUp mark) (stepDown a) : loop a s
 
-union :: (Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
-union (Set a) (Set b) = Set (unionWithM const a b)
+setXUnion :: (Show c, Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
+setXUnion a b = Dao.EnumSet.delete (Dao.EnumSet.union a b) (Dao.EnumSet.intersect a b)
 
-intersect :: (Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
-intersect (Set a) (Set b) = Set (intersectWithM const a b)
+union :: (Show c, Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
+union a b = case a of
+  EmptyEnumSet -> b
+  InfiniteSet  -> InfiniteSet
+  InverseSet a -> Dao.EnumSet.union (forceInvert a) b
+  Set       [] -> b
+  Set        a -> case b of
+    EmptyEnumSet -> Set a
+    InfiniteSet  -> InfiniteSet
+    InverseSet b -> Dao.EnumSet.union (Set a) (forceInvert b)
+    Set       [] -> Set a
+    Set        b -> fromListNoNub (associativeProduct segmentUnion a b)
 
-delete :: (Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
-delete (Set a) (Set b) = Set (deleteWithM const a b)
+intersect :: (Show c, Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
+intersect a b = case a of
+  EmptyEnumSet -> EmptyEnumSet
+  InfiniteSet  -> b
+  InverseSet a -> Dao.EnumSet.intersect (forceInvert a) b
+  Set       [] -> EmptyEnumSet
+  Set        a -> case b of
+    EmptyEnumSet -> EmptyEnumSet
+    InfiniteSet  -> Set a
+    InverseSet b -> Dao.EnumSet.intersect (Set a) (forceInvert b)
+    Set       [] -> EmptyEnumSet
+    Set        b -> fromListNoNub (associativeProduct segmentIntersect a b)
+
+delete :: (Show c, Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
+delete a b = case b of
+  EmptyEnumSet -> a
+  InfiniteSet  -> EmptyEnumSet
+  InverseSet b -> Dao.EnumSet.delete a (forceInvert b)
+  Set       [] -> a
+  Set        b -> case a of
+    EmptyEnumSet -> EmptyEnumSet
+    InfiniteSet  -> forceInvert (Set b)
+    InverseSet a -> Dao.EnumSet.delete (forceInvert a) (Set b)
+    Set       [] -> EmptyEnumSet
+    Set        a -> fromList (exclusiveProduct segmentDelete a b)
+      -- Here we call 'fromList' instead of 'fromListNoNub' because an additional 'segmentNub'
+      -- operation is required.
 
 ----------------------------------------------------------------------------------------------------
 
@@ -790,9 +877,9 @@ instance NFData a =>
 instance (NFData a, NFData x) =>
   NFData (SetM a x) where
     rnf a = case a of
-      EmptyEnumSet    -> ()
-      InfiniteSet  ax -> deepseq ax ()
-      InverseSet a ax -> deepseq a $! deepseq ax ()
+      EmptyEnumSetM    -> ()
+      InfiniteSetM  ax -> deepseq ax ()
+      InverseSetM a ax -> deepseq a $! deepseq ax ()
       SetM   a ax -> deepseq a $! deepseq ax ()
 
 instance NFData a => NFData (Set a) where { rnf (Set a) = deepseq a () }

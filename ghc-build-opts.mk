@@ -95,8 +95,8 @@ parser-test: $(PARSER_TEST_FILES)
 	$(GHC_COMPILE) $(PARSER_TEST_FILES) -o ./parser-test
 
 ENUM_SET_TEST_FILES := src/Dao/EnumSet.hs tests/I.hs tests/EQN.hs tests/TestEnumSet.hs
-enum-set-test:
-	$(GHC_COMPILE) $(ENUM_SET_TEST_FILES) -o enum-set-test
+enum-set-test: $(ENUM_SET_TEST_FILES)
+	$(GHC_COMPILE) -rtsopts $(ENUM_SET_TEST_FILES) -o enum-set-test
 
 ####################################################################################################
 # Other modules. These are mostly for experimenting with new ideas. If you have a new algorithm to

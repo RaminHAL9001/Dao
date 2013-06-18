@@ -80,7 +80,7 @@ showEqn = intercalate " " . map f where
     OR       -> " | "
     DEL      -> " - "
     INV eqn  -> "!("++showEqn eqn++")"
-    TERM w s -> show w ++ show s
+    TERM w s -> show w ++ ':' : show s
 
 -- | Generate all possible equations over @n@ terms.
 genEquations :: Int -> [(Word64, [EQN])]

@@ -100,14 +100,17 @@ test :: IO ()
 test = do
   hSetBuffering stderr LineBuffering
   mv <- newMVar (0, [], False)
-  qs <- newQSem 0
+  ch <- newEmptyMVar
+  qs <- newEmptyMVar -- actually is used as a semaphore
   mainThread <- myThreadId
   let exceptionHandler (SomeException e) = print e
   startTime <- getCurrentTime
-  timed <- forkIO (forever (threadDelay 5000000 >> signalQSem qs))
-  t  <- forkIO $ do
-    handle exceptionHandler $ do
-      forM_ (genEquations 4) $ \ (eqnNum, eqn) -> do
+  timed <- forkIO (forever (threadDelay 5000000 >> putMVar qs ()))
+  let genEquation fn = handle exceptionHandler $ do
+        forM_ (genEquations 4) (\ input@(eqnNum, eqn) -> seq eqnNum $! seq eqn $! fn input)
+        modifyMVar_ mv (\ (a, b, _) -> return (a, b, True))
+        putMVar qs ()
+  let compute (eqnNum, eqn) = handle exceptionHandler $ do
         let c@(_, s) = evalEqn eqn
             r@(a, b) = results c
         if uncurry (==) r
@@ -115,10 +118,12 @@ test = do
           else  modifyMVar_ mv $ \ (_, errx, _) ->
                   return (eqnNum, errx++[(eqnNum, eqn, a, b)], False)
         -- if mod eqnNum 128 == 0 then signalQSem qs else return ()
-    modifyMVar_ mv (\ (a, b, _) -> return (a, b, True))
-    signalQSem qs
+  let multiThreaded = do
+        forkIO (forever (takeMVar ch >>= evaluate >>= compute))
+        forkIO (genEquation (\ (eqnNum, eqn) -> putMVar ch (eqnNum, eqn) >> yield))
+  let singleThreaded = forkIO (genEquation compute)
   let runTestsLoop = do
-        waitQSem qs
+        takeMVar qs
         (count, errs, done) <- modifyMVar mv (\ (a,b,c) -> return ((a,[],c), (a,b,c)))
         unless (null errs) (mapM_ (putStrLn . showResults) errs)
         now <- getCurrentTime
@@ -146,6 +151,7 @@ test = do
           , ")\n"
           ]
         if done then return () else runTestsLoop
+  singleThreaded
   runTestsLoop
 
 main = pretest >> test

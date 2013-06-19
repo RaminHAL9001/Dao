@@ -797,13 +797,13 @@ null s = case s of
   Set       [] -> True
   Set        _ -> False
 
-isSingleton :: (Ord c, Enum c, InfBound c) => Set c -> Bool
+isSingleton :: (Ord c, Enum c, InfBound c) => Set c -> Maybe c
 isSingleton s = case s of
-  EmptySet       -> False
-  InfiniteSet    -> False
+  EmptySet       -> mzero
+  InfiniteSet    -> mzero
   InverseSet   s -> isSingleton (forceInvert s)
-  Set         [] -> False
-  Set [Single _] -> True
+  Set         [] -> mzero
+  Set [Single c] -> toPoint c
 
 invert :: (Ord c, Enum c, InfBound c) => Set c -> Set c
 invert s = case s of

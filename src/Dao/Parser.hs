@@ -218,9 +218,8 @@ rxUStr u = case uchars u of
 rxCharSet :: Es.Set Char -> Regex
 rxCharSet set = case set of
   set | Es.null set -> RFalse
-  set | set==mempty   -> RTrue
-  set                 ->
-    fromMaybe (RCharSet set) (Es.isSingleton set >>= Just . RChar)
+  set | set==mempty -> RTrue
+  set               -> fromMaybe (RCharSet set) (Es.isSingleton set >>= return . RChar)
 
 -- | Like 'rxCharSet' but creates a set from a given string of characters.
 rxCharSetFromStr :: String -> Regex

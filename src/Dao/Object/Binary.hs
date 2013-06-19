@@ -601,7 +601,7 @@ instance (Enum a, Ord a, Es.InfBound a, Integral a, Bits a) => Binary (Es.Segmen
   put = putSegmentWith putVLInt
   get = getSegmentWith getFromVLInt
 
-putEnumSetWith :: (a -> Put) -> Es.Set a -> Put
+putEnumSetWith :: (Ord a, Enum a, Es.InfBound a) => (a -> Put) -> Es.Set a -> Put
 putEnumSetWith putA s = putListWith (putSegmentWith putA) (Es.toList s)
 
 getEnumSetWith :: (Enum a, Ord a, Es.InfBound a) => Get a -> Get (Es.Set a)

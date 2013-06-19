@@ -302,7 +302,7 @@ parserErr lineNum colNum =
   }
 
 ----------------------------------------------------------------------------------------------------
--- $Token_database
+-- $Lexer_builder
 -- When defining a computer language, one essential step will be to define your keywords and
 -- operators, and define tokens for these keywords and operators. Since the 'MonadParser's defined
 -- in this module are polymorphic over token types, you could do this yourself with an ordinary
@@ -318,12 +318,12 @@ parserErr lineNum colNum =
 -- | An actual value used to symbolize a type of token is a 'TT'. For example, an integer token
 -- might be assigned a value of @('TT' 0)@ a keyword might be @('TT' 1)@, an operator might be
 -- @('TT' 2)@, and so on. You do not define the numbers representing these token types, these
--- numbers are defined automatically when you construct a 'TokenDB'.
+-- numbers are defined automatically when you construct a 'LexBuilder'.
 --
 -- A 'TT' value is just an integer wrapped in an opaque newtype and deriving 'Prelude.Eq',
 -- 'Prelude.Ord', 'Prelude.Show', and 'Data.Ix.Ix'. The constructor for 'TT' is not exported, so you
 -- can rest assured any 'TT' objects in your program can only be generated during construction of a
--- 'TokenDB'.
+-- 'LexBuilder'.
 -- 
 -- It is also a good idea to wrap this 'TT' type in your own newtype and define your parser over
 -- your newtype, which will prevent you from confusing the same 'TT' type in two different parsers.
@@ -335,55 +335,60 @@ parserErr lineNum colNum =
 -- 'Prelude.Read' and 'Prelude.Show' for your tokens.
 newtype TT = MkTT{ intTT :: Int } deriving (Eq, Ord, Show, Ix)
 
--- | A 'TokenDB' is the data constructed by the 'DefineTokens' monad which you will use to keep
--- track of your tokens. You can then use 'Data.Monoid.mconcat' to combine a list of 'TokenDB's,
--- where each 'TokenDB' created is by one of 'stringTable', 'ustrTable', or 'lexerTable', like
--- so:
--- > myTokens :: 'TokenDB'
--- > myTokens = 'Data.Monoid.mconcat' $ [
--- >      'stringTable' $ 'Prelude.unwords' "if then else case of let in where",
--- >      'stringTable' $ 'Prelude.unwords' "() == /= -> \\ : :: ~ @",
--- >      'lexerTable' $ [
--- >          newTokenType "string.literal" 'lexStringLiteral',
--- >          newTokenType "comment.endline" 'lexEndlineC_Comment',
--- >          newTokenType "comment.inline"  'lexInlineC_Comment' 
--- >          -- (The dots in the token type name do not mean anything, it just looks nicer.)
--- >        ]
--- >  ]
--- Or, if you are like me and prefer monadic notation, you can just use the
--- 'Control.Monad.Writer.Writer' monad, since 'TokenDB' instantiates 'Data.Monoid.Monoid':
--- > myTokens :: 'TokenDB'
--- > myTokens = 'Control.Monad.Writer.execWriter' $ do
--- >     let key = 'Control.Monad.Writer.Class.tell' . 'stringTable' . 'Prelude.unwords'
+-- | Example:
+-- > myTokens :: 'LexBuilder'
+-- > myTokens = do
+-- >     let key = 'stringTable' . 'Prelude.unwords'
 -- >     key "if then else case of let in where"
 -- >     key "() == /= -> \\ : :: ~ @"
--- >     let define k t = 'Control.Monad.Writer.Class.tell' $ 'lexerTable' k t
--- >     define "string.literal"  'lexStringLiteral'
--- >     define "comment.endline" 'lexEndlineC_Comment'
--- >     define "comment.inline"  'lexInlineC_Comment'
+-- >     lexer "string.literal"  'lexStringLiteral'
+-- >     lexer "comment.endline" 'lexEndlineC_Comment'
+-- >     lexer "comment.inline"  'lexInlineC_Comment'
 -- >     -- (The dots in the token type name do not mean anything, it just looks nicer.)
-data TokenDB
-  = TokenDB
-    { indexToString :: [Array Int UStr]
-    , stringToIndex :: M.Map UStr TT
-    , labeledTokenizers :: M.Map UStr (GenLexer TT ())
+data LexBuilderState tok
+  = LexBuilderState
+    { regexItemCounter :: Int
+    , labeledLexers    :: M.Map UStr (Int, [GenLexer tok ()])
     }
-instance Monoid TokenDB where
-  mempty =
-    TokenDB
-    { indexToString = mempty
-    , stringToIndex = mempty
-    , labeledTokenizers = mempty
-    }
-  mappend a b = combined{ labeledTokenizers = M.union mb ma }
-    where
-      ma = labeledTokenizers a
-      mb = labeledTokenizers b
-      combined = ustrTable $ concat $
-        [ concatMap elems (indexToString a)
-        , concatMap elems (indexToString b)
-        , M.keys ma, M.keys mb
-        ]
+newtype LexBuilder tok a = LexBuilder{ runLexBuilder :: State (LexBuilderState tok) a }
+instance (Ix tok, TokenType tok) =>
+  Monad (LexBuilder tok) where
+    return = LexBuilder . return
+    (LexBuilder a) >>= b = LexBuilder (a >>= runLexBuilder . b)
+
+-- | The data type constructed from the 'LexBuilder' monad, used to build a 'GenLexer' for your
+-- programming language, and also can be used to define the 'Prelude.Show' instance for your token
+-- type using 'deriveShowFromTokenDB'.
+data TokenDB tok =
+  TokenDB
+  { tableTTtoUStr :: Array TT UStr
+  , tableUStrToTT :: M.Map UStr TT
+  , tokenDBLexer  :: GenLexer tok ()
+  }
+
+deriveShowFromTokenDB :: TokenType tok => TokenDB tok -> tok -> String
+deriveShowFromTokenDB tokenDB tok = uchars (tableTTtoUStr tokenDB ! unwrapTT tok)
+
+getTTfromUStr :: TokenType tok => TokenDB tok -> UStr -> Maybe tok
+getTTfromUStr tokenDB = fmap wrapTT . flip M.lookup (tableUStrToTT tokenDB)
+
+makeTokenDB :: (Eq tok, TokenType tok) => LexBuilder tok a -> TokenDB tok
+makeTokenDB builder =
+  TokenDB
+  { tableTTtoUStr = array (MkTT 1, MkTT (regexItemCounter st)) $
+      fmap (\ (a,b) -> (b,a)) (M.assocs tabmap)
+  , tableUStrToTT = tabmap
+  , tokenDBLexer  = void $ many $ msum $ stringLexers ++ monadicLexers
+  }
+  where
+    st = execState (runLexBuilder builder) $
+      LexBuilderState{regexItemCounter=1, labeledLexers=mempty}
+    tabmap = fmap (wrapTT . MkTT . fst) (labeledLexers st)
+    (strlex, monlex) = partition (null . snd . snd) (M.assocs (labeledLexers st))
+    revComp a b = case compare a b of {EQ->EQ; LT->GT; GT->LT; }
+    monadicLexers = fmap ((\ (tt, lexers) -> msum lexers >> makeToken (wrapTT $ MkTT tt)) . snd) monlex
+    stringLexers  = fmap (\ (str, tt) -> lexString (uchars str) >> makeToken (wrapTT $ MkTT tt)) $
+      sortBy revComp $ fmap (fmap fst) strlex
 
 -- | Creates a 'TokenTable' using a list of keywords or operators you provide to it.
 -- Every string provided becomes it's own token type. For example:
@@ -392,25 +397,30 @@ instance Monoid TokenDB where
 -- >     , "if then else case of let in where"
 -- >     , "import module qualified as hiding"
 -- >     ]
-stringTable :: [String] -> TokenDB
+stringTable :: TokenType tok => [String] -> LexBuilder tok ()
 stringTable = ustrTable . map ustr
 
 -- | Like 'stringTable' except takes a list of 'Dao.String.UStr's.
-ustrTable :: [UStr] -> TokenDB
-ustrTable strs = if null strs then mempty else newTable where
-  comp a b = case compare a b of {EQ->EQ; GT->LT; LT->GT}
-  strlist  = sortBy comp (nub strs)
-  topindex = length strlist - 1 -- the final index in the list
-  newTable =
-    TokenDB
-    { indexToString = [listArray (0, topindex) strs]
-    , stringToIndex = M.fromList $ zip strlist $ map MkTT [0..topindex]
-    , labeledTokenizers = mempty
-    }
+ustrTable :: TokenType tok => [UStr] -> LexBuilder tok ()
+ustrTable u = LexBuilder{
+    runLexBuilder = forM_ u $ \str -> modify $ \st ->
+      let i = 1 + regexItemCounter st
+      in  st{ labeledLexers    = M.insert str (i, []) (labeledLexers st)
+            , regexItemCounter = i
+            }
+  }
 
--- | Create a token type that is defined by a tokenizer.
-lexerTable :: String -> GenLexer TT () -> TokenDB
-lexerTable label lexer = mempty{labeledTokenizers = M.singleton (ustr label) lexer}
+-- | Create a token type that is defined by a 'GenLexer' instead of a keyword or operator string.
+-- The lexer must be labeled so it can be uniquely identified, and also for producing more
+-- desriptive error messages.
+lexer :: String -> GenLexer tok () -> LexBuilder tok ()
+lexer label lex = LexBuilder{
+    runLexBuilder = modify $ \st ->
+      let i = 1 + regexItemCounter st
+      in  st{ labeledLexers    = M.insert (ustr label) (i, [lex]) (labeledLexers st)
+            , regexItemCounter = i
+            }
+  }
 
 -- | Here is class that allows you to create your own token type from a Haskell newtype. It is
 -- usually a good idea do this to keep parsers isolated from one another. It should be considered a
@@ -432,8 +442,8 @@ lexerTable label lexer = mempty{labeledTokenizers = M.singleton (ustr label) lex
 -- > parsePython = 'parse' myPythonGrammar mempty
 -- > parseRuby   :: 'Prelude.String' -> 'GenParser' Ruby MySyntaxTree
 -- > parseRuby   = 'parse' myRubyGrammar   mempty
-class Ix a => TokenType a where { wrapTT :: TT -> a }
-instance TokenType TT where { wrapTT = id }
+class Ix a => TokenType a where { wrapTT :: TT -> a; unwrapTT :: a -> TT; }
+instance TokenType TT where { wrapTT = id; unwrapTT = id; }
 
 -- | The class of Context Free Grammars ('CFG'). A 'CFG' is defined by its functions of lexical
 -- analysis and syntactic analysis. Central to these functions are the type of token which defines
@@ -447,109 +457,6 @@ instance TokenType TT where { wrapTT = id }
 -- currently see no reason to allow the same parser to have access to two diffent token types.
 class TokenType tok =>
   CFG p tok where { castTT :: p TT -> p tok }
-
-----------------------------------------------------------------------------------------------------
--- $Regular_Expressions
--- Regular expressions are used to build lexical analyzers. They are a high-level data type that
--- instantiate important classes like 'Control.Monad.Monad', 'Control.Applicative.Applicative',
--- 'Control.Applicative.Alternative', and 'Data.Monoid.Monoid'. Once a 'GenRegex' has been
--- constructed, it can be converted to a lower-level 'GenLexer' which does the actual work of
--- lexing. It is generally difficult to program lexers by hand with the 'GenLexer' monad, so it is
--- better to use 'GenRegex'.
-
-data GenRegex tok a
-  = GenRxBacktrack
-  | GenRxConst   { genRxConst   :: a }
-  | GenRegex     { genLexer     :: GenLexer tok a }
-  | GenRxString  { genRxString  :: UStr           , nextRegex :: GenRegex tok a }
-  | GenMakeToken { genMakeToken :: tok            , nextRegex :: GenRegex tok a }
-  | GenRxCharSet { genRxCharSet :: Es.Set Char    , nextRegex :: GenRegex tok a }
-  | GenRxInvert  { invRegex     :: GenRegex tok (), nextRegex :: GenRegex tok a }
-  | GenRxRepeat 
-    { genRxLimit :: Es.Segment Int
-    , repeating  :: GenRegex tok a
-    , nextRegex  :: GenRegex tok a
-    }
-instance Eq tok =>
-  Monad (GenRegex tok) where
-    return  = GenRxConst
-    a >>= b = GenRegex{ genLexer = evalRegexToTokStream a >>= evalRegexToTokStream . b }
-instance Eq tok =>
-  MonadPlus (GenRegex tok) where
-    mzero = GenRxBacktrack
-    mplus a b = case a of
-      GenRxBacktrack -> b
-      GenRxConst   a -> GenRxConst a
-      GenRegex    fn -> case b of
-        GenRxBacktrack  -> GenRegex  fn
-        GenRxConst    a -> GenRxConst a
-        GenRegex     fn -> GenRegex  fn
-        GenRxInvert u r -> undefined
-
-evalRegexToTokStream :: Eq tok => GenRegex tok a -> GenLexer tok a
-evalRegexToTokStream r = case r of
-  GenRxBacktrack     -> lexBacktrack
-  GenRxInvert   fn r -> do
-    continue <- msum [evalRegexToTokStream fn >> return False, lexBacktrack, return True]
-    if continue then evalRegexToTokStream r else lexBacktrack
-  GenRxConst       a -> return a
-  GenRegex        fn -> fn
-  GenRxRepeat  i f r -> genRepeat i r
-  GenRxCharSet   s r -> lexCharP (Es.member s) >> evalRegexToTokStream r
-  GenMakeToken   t r -> makeToken   t >> evalRegexToTokStream r
-  GenRxString    s r -> lexString (uchars s) >> evalRegexToTokStream r
-  where
-    genRepeat :: Eq tok => Es.Segment Int -> GenRegex tok a -> GenLexer tok a
-    genRepeat i r = case r of
-      GenRxBacktrack     -> lexBacktrack
-      GenRxConst       a -> return a
-      GenRxRepeat  i f r -> genRepeat i f >> evalRegexToTokStream r
-      GenRxCharSet   s r -> lexWhile (Es.member s) >> evalRegexToTokStream r
-      GenMakeToken   t r -> makeToken t >> evalRegexToTokStream r
-      r                  -> do
-        let fn = evalRegexToTokStream r
-        a <- optional fn -- try the repeating function just once at first
-        case a of
-          Nothing -> lexBacktrack -- backtrack if the repeating funcion cannot succeed even once
-          Just  a -> do
-            str <- gets lexBuffer -- get the string from the initial run
-            let withUpBound upBound = lexCycle fn upperBound upBound a str
-            let withoutBound        = lexCycle fn noBound    ()      a str
-            let withLoBound loBound = msum $
-                  [ foldl (flip const) a <$> sequence (take loBound (repeat fn))
-                  , lexBacktrack
-                  ]
-            let withBounds loBound upBound = do
-                  a    <- withLoBound loBound -- get the latest value returned
-                  str' <- gets lexBuffer
-                  lexCycle fn upperBound upBound a (str++str')
-            case Es.singular i of
-              Just (Es.Point upBound) -> withUpBound upBound
-              Just  Es.NegInf         -> withoutBound
-              Just  Es.PosInf         -> withoutBound
-              Nothing                 -> case Es.plural i of
-                Just (Es.Point loBound, Es.Point upBound) -> withBounds   loBound  upBound
-                Just (Es.Point loBound, _               ) -> withLoBound  loBound
-                Just (_               , Es.Point upBound) -> withUpBound  upBound
-                Just (_               , _               ) -> withoutBound
-                Nothing                                   -> withoutBound
-    upperBound c = (c-1, c>=0)
-    noBound   () = ((), True)
-    lexCycle :: Eq tok => GenLexer tok a -> (c -> (c, Bool)) -> c -> a -> String -> GenLexer tok a
-    lexCycle fn next c a str = do
-      clearBuffer
-      let (c, continue) = next c -- update the counter c
-      let done str = modify (\st -> st{lexBuffer=str}) >> return a
-      if not continue
-        then done str
-        else do
-          (continue, str) <- msum $
-              [ fn >>= \a -> ((,)(Just a) . (str++)) <$> gets lexBuffer
-              , lexBacktrack, return (Nothing, str)
-              ]
-          case continue of
-            Nothing -> done str
-            Just  a -> lexCycle fn next c a str
 
 ----------------------------------------------------------------------------------------------------
 -- $Lexical_Analysis

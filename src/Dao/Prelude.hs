@@ -180,7 +180,7 @@ appendText :: PPrintable a => FilePath -> Dao a -> IO (Dao a)
 appendText path obj = appendTextWith prettyShow path obj
 
 -- | Parser a polymorphic type from a string expression.
-parseWith :: Parser a -> Dao String -> IO (Dao a)
+parseWith :: Dao.Parser.Parser a -> Dao String -> IO (Dao a)
 parseWith parser (Dao str) = case runParser parser str of
   (OK      a, _) -> seq a $! return (Dao a)
   (Backtrack, s) -> error ("parser backtracks:\n\t"++show s)

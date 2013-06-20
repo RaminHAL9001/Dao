@@ -27,7 +27,7 @@ module Dao.EnumSet
   , stepDown, stepUp, toPoint, enumIsInf
   , InfBound, minBoundInf, maxBoundInf
     -- * the 'Segment' data type
-  , Segment, segment, single, negInfTo, toPosInf, enumInfSeg
+  , Segment, segment, single, inf, negInfTo, toPosInf, enumInfSeg
   , toBounded, toBoundedPair, segmentMember, singular, plural, segmentNub
     -- * Predicates on 'Segment's
   , containingSet, numElems, isWithin, segmentHasEnumInf, segmentIsInfinite
@@ -97,8 +97,8 @@ instance Ord c => Ord (Inf c) where
 instance Show c => Show (Inf c) where
   show e = case e of
     Point c -> show c
-    NegInf  -> "-inf"
-    PosInf  -> "+inf"
+    NegInf  -> "-infnt"
+    PosInf  -> "+infnt"
 
 instance Functor Inf where
   fmap f e = case e of
@@ -221,7 +221,7 @@ segmentIsInfinite seg = case [Single minBoundInf, Single maxBoundInf, seg] of
 enumInfSeg :: (Ord c, Enum c, InfBound c) => Inf c -> Inf c -> Segment c
 enumInfSeg a b = seg a b where
   seg a b = construct (ck minBoundInf NegInf a) (ck maxBoundInf PosInf b)
-  ck inf subst ab = if inf==ab then subst else ab
+  ck infnt subst ab = if infnt==ab then subst else ab
   construct a b
     | a == b    = Single  a
     | a < b     = Segment a b
@@ -244,8 +244,8 @@ toPosInf :: InfBound c => c -> Segment c
 toPosInf a = Segment (Point a) maxBoundInf
 
 -- | Construct the infiniteM 'Segment'
-infiniteSegment :: Segment c
-infiniteSegment = Segment NegInf PosInf
+inf :: Segment c
+inf = Segment NegInf PosInf
 
 -- | Tests whether an element is a memberM is enclosed by the 'Segment'.
 segmentMember :: Ord c => Segment c -> c -> Bool
@@ -263,7 +263,7 @@ segmentMember seg c = case seg of
 -- boundedSegment :: (Ord c, Enum c, Bounded c) => c -> c -> Segment c
 -- boundedSegment a b = if a>b then co b a else co a b where
 --    co a b = enumInfSeg (f a minBound NegInf) (f b maxBound PosInf)
---    f x bound inf = if x==bound then inf else Point x
+--    f x bound infnt = if x==bound then infnt else Point x
 
 -- | If an 'Inf' is also 'Prelude.Bounded' then you can convert it to some value in the set of
 -- 'Prelude.Bounded' items. 'NegInf' translates to 'Prelude.minBound', 'PosInf' translates
@@ -549,7 +549,7 @@ sieveM b a = case a of
   InfiniteM x -> SetM [(b, x)] []
   SetM    a x -> case filter (areIntersecting b . fst) a of
     []                            -> EmptySetM
-    [(a, x)] | a==infiniteSegment -> InfiniteM x
+    [(a, x)] | a==inf -> InfiniteM x
     a                             -> SetM    a x
 
 -- | 'SetM' monads contain values accumulate into lists. This function will reduce these lists to a
@@ -654,7 +654,7 @@ infiniteM = InfiniteM
 -- together to create the set.
 fromListM :: (Ord c, Enum c, InfBound c) => [Segment c] -> [x] -> SetM c x
 fromListM a ax = case segmentNub a of
-  [a] | a==infiniteSegment -> InfiniteM ax
+  [a] | a==inf -> InfiniteM ax
   []                       -> EmptySetM
   a                        -> SetM (map (flip (,) ax) a) []
 
@@ -734,7 +734,7 @@ instance (Ord c, Enum c, InfBound c) => Eq (Set c) where
       _             -> False
     InfiniteSet  -> case b of
       InfiniteSet                  -> True
-      Set [s] | s==infiniteSegment -> True
+      Set [s] | s==inf -> True
       _                            -> False
     InverseSet a -> case b of
       InverseSet b -> a==b
@@ -760,7 +760,7 @@ fromListNoNub :: (Ord c, Enum c, InfBound c) => [Segment c] -> Set c
 fromListNoNub a =
   if Data.List.null a
     then EmptySet    
-    else if a==[infiniteSegment] then InfiniteSet else Set{segmentList=a}
+    else if a==[inf] then InfiniteSet else Set{segmentList=a}
 
 fromList :: (Ord c, Enum c, InfBound c) => [Segment c] -> Set c
 fromList a = if Data.List.null a then EmptySet     else fromListNoNub a
@@ -777,7 +777,7 @@ point a = Set{segmentList=[single a]}
 toList :: (Ord c, Enum c, InfBound c) => Set c -> [Segment c]
 toList s = case s of
   EmptySet     -> []
-  InfiniteSet  -> [infiniteSegment]
+  InfiniteSet  -> [inf]
   InverseSet s -> toList (forceInvert s)
   Set        s -> s
 
@@ -819,7 +819,7 @@ forceInvert s = case s of
   InfiniteSet  -> EmptySet    
   InverseSet s -> s
   Set      []  -> InfiniteSet
-  Set     [s] | s==infiniteSegment -> EmptySet    
+  Set     [s] | s==inf -> EmptySet    
   Set       s  -> fromListNoNub (loop NegInf s >>= canonicalSegment) where
     loop mark s = case s of
       []                   -> [mkSegment (stepUp mark) PosInf]

@@ -23,14 +23,14 @@ module Dao.Object.NewParser where
 import           Dao.String
 import           Dao.Object hiding (Tokenizer)
 import           Dao.Object.AST
-import           Dao.EnumSet
 import           Dao.Predicate
 import           Dao.NewParser
 import qualified Dao.Tree as T
+import qualified Dao.EnumSet as Es
 
 import           Control.Applicative
 import           Control.Monad
-import           Control.Monad.Error
+import           Control.Monad.Error hiding (Error)
 import           Control.Monad.State
 
 import           Data.Monoid
@@ -48,7 +48,7 @@ import           Numeric
 
 import Debug.Trace
 
---  dbg :: String -> Parser a -> Parser a
+--  dbg :: String -> Parser Parstate Dao a -> Parser Parstate Dao a
 --  dbg msg parser = do
 --    t <- optional currentTok
 --    trace ("parsing "++msg++", next token is "++show t) (return ())
@@ -61,8 +61,12 @@ import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
+type DaoParser a = Parser Parstate DaoTT a
+type DaoLexer  a = Lexer DaoTT a
+type DaoParseErr = Error Parstate DaoTT
+
 -- | The token types.
-data TOK
+data DaoTT
   = Spaces      | ComEndl     | ComInln     | Label
   | KeyIF       | KeyELSE     | KeyFOR      | KeyIN       | KeyWHILE  | KeyWITH
   | KeyTRY      | KeyCATCH    | KeyCONTINUE | KeyBREAK    | KeyTHROW  | KeyRETURN
@@ -82,42 +86,36 @@ data TOK
   | Arbitrary   | Unknown
   deriving (Eq, Ord, Ix, Show)
 
---  operator :: String -> Parser String
+--  operator :: String -> DaoParser String
 --  operator a = token InfixOp $
 --    currentTok >>= \tok -> let b = tokToStr tok in guard (a==b) >> return a
 
 -- | Shorthand for @'ignore' ('token' 'Spaces')@
---  skipSpaces :: Parser ()
+--  skipSpaces :: DaoParser ()
 --  skipSpaces = ignore (takeToken Spaces)
 
---  optionStringType :: TOK -> Parser String
+--  optionStringType :: DaoTT -> DaoParser String
 --  optionStringType tok = fmap (fromMaybe "") (optional $ fmap tokToStr $ takeToken tok)
 
 ----------------------------------------------------------------------------------------------------
 
-data ParserState
-  = ParserState
+data Parstate
+  = Parstate
     { bufferedComments :: Maybe [Comment]
-    , nonHaltingErrors :: [ParseErr]
+    , nonHaltingErrors :: [DaoParseErr]
     }
-instance Monoid ParserState where
+instance Monoid Parstate where
   mappend a b =
      b{ bufferedComments = bufferedComments a >>= \a -> bufferedComments b >>= \b -> return (a++b)
       , nonHaltingErrors = nonHaltingErrors a ++ nonHaltingErrors b
       }
-  mempty = ParserState{ bufferedComments = Nothing, nonHaltingErrors = [] }
+  mempty = Parstate{ bufferedComments = Nothing, nonHaltingErrors = [] }
 
-type Token       = GenToken                  TOK
-type Lexer     a = GenLexer                  TOK a
-type Parser    a = GenParser     ParserState TOK a
-type CFGrammar a = GenCFGrammar  ParserState TOK a
-type ParseErr    = GenError      ParserState TOK
-
-setCommentBuffer :: [Comment] -> Parser ()
+setCommentBuffer :: [Comment] -> DaoParser ()
 setCommentBuffer coms = modify $ \st ->
   st{ bufferedComments = if null coms then mzero else return coms }
 
-failLater :: String -> Parser ()
+failLater :: String -> DaoParser ()
 failLater msg = catchError (fail msg) $ \err ->
   modify $ \st -> st{nonHaltingErrors = nonHaltingErrors st ++ [err{parseStateAtErr=Nothing}]}
 
@@ -126,29 +124,7 @@ failLater msg = catchError (fail msg) $ \err ->
 maxYears :: Integer
 maxYears = 9999
 
--- | This is the list of tokenizers used by 'lex' to break-up input string into parsable 'Token's.
-daoLexers :: [Lexer ()]
-daoLexers = 
-  [ lexStringLiteral     StrLit
-  , lexCharLiteral       CharLit
-  , lexInlineC_Comment   ComInln
-  , lexEndlineC_Comment  ComEndl
-  , lexSpace             Spaces
-  , dataSpecialLexer
-  , lexDaoNumber
-  , lexDaoKeyword
-  , lexOperator allUpdateOpStrs >> makeToken AssignOp
-  , lexDaoOperator
-  , lexDaoParens
-  ]
-
-daoMainLexer :: Lexer ()
-daoMainLexer = runLexerLoop "Dao script" lexEOF daoLexers
-
-daoInfixOperators :: String
-daoInfixOperators = concat [allArithOp2Strs, " ", allArithOp1Strs, " , : ; "]
-
-lexDaoNumber :: Lexer ()
+lexDaoNumber :: DaoLexer ()
 lexDaoNumber = msum $
   [ otherBase "0x" 'x' 'X' isHexDigit Digits16
   , otherBase "0b" 'b' 'B' isDigit    Digits2
@@ -204,7 +180,7 @@ daoKeywords = words $ concat $
   , " BEGIN END EXIT "
   ]
 
-daoKeywordTokens :: [TOK]
+daoKeywordTokens :: [DaoTT]
 daoKeywordTokens =
   [ KeyIF, KeyELSE, KeyFOR, KeyIN, KeyWHILE, KeyWITH, KeyTRY, KeyCATCH
   , KeyCONTINUE, KeyBREAK, KeyRETURN, KeyTHROW
@@ -215,18 +191,18 @@ daoKeywordTokens =
   , KeyBEGIN, KeyEND, KeyEXIT
   ]
 
-daoStringToKeywordMap :: M.Map String TOK
+daoStringToKeywordMap :: M.Map String DaoTT
 daoStringToKeywordMap = M.fromList (zip daoKeywords daoKeywordTokens)
 
 -- assumes keyword tokesn are consecutively enumerated
-daoKeywordToStringArray :: Array TOK String
+daoKeywordToStringArray :: Array DaoTT String
 daoKeywordToStringArray = array (KeyIF, KeyRULE) (zip daoKeywordTokens daoKeywords)
 
-daoKeywordToString :: TOK -> String
+daoKeywordToString :: DaoTT -> String
 daoKeywordToString tok =
   if inRange (bounds daoKeywordToStringArray) tok then daoKeywordToStringArray!tok else ""
 
-lexDaoKeyword :: Lexer ()
+lexDaoKeyword :: DaoLexer ()
 lexDaoKeyword = do
   let a = (=='_')
   lexWhile (unionCharP (a:[isAlpha]))
@@ -238,7 +214,7 @@ lexDaoKeyword = do
 
 -- This function also lexes integer references like:
 -- > $1 $2 $3 ...
-lexDaoOperator :: Lexer ()
+lexDaoOperator :: DaoLexer ()
 lexDaoOperator = do
   lexOperator daoInfixOperators
   op <- gets lexBuffer
@@ -255,7 +231,7 @@ lexDaoOperator = do
       []          -> makeToken InfixOp
       [(REF, "")] -> mplus (lexWhile isDigit >> makeToken IntRefTok) (makeToken RefOp)
 
-lexDaoParens :: Lexer ()
+lexDaoParens :: DaoLexer ()
 lexDaoParens = msum $
   [ lexString "#{" >> makeEmptyToken OpenMeta
   , lexString "}#" >> makeEmptyToken CloseMeta
@@ -265,13 +241,13 @@ lexDaoParens = msum $
   ]
   where { mk c tok = lexChar c >> makeEmptyToken tok }
 
--- | One of the design goals of Dao is for its language to be able to express any of it's built-in
--- objects. Arbitrary data stored in 'Dao.Object.OBinary' objects are constructed from base-64
+-- | One of the design goals of DaoTT is for its language to be able to express any of it's built-in
+-- objects. Arbitrary data stored in 'DaoTT.Object.OBinary' objects are constructed from base-64
 -- encoded tokens directly from the source file. This tokenizer accomodates for base-64 tokens by
 -- looking for a "data" keyword and @{@ open-brace is seen, then switching to a special inner
 -- tokenizer, producing a stream of tokens until a @}@ closing brace is seen, then control is
 -- returned to the calling context.
-dataSpecialLexer :: Lexer ()
+dataSpecialLexer :: DaoLexer ()
 dataSpecialLexer = do
   k <- lexWhile isAlpha >> gets lexBuffer
   case k of
@@ -290,9 +266,31 @@ dataSpecialLexer = do
           ]
     _ -> lexBacktrack
 
+-- | This is the list of tokenizers used by 'lex' to break-up input string into parsable 'Token's.
+daoLexers :: [DaoLexer ()]
+daoLexers = 
+  [ lexStringLiteral     StrLit
+  , lexCharLiteral       CharLit
+  , lexInlineC_Comment   ComInln
+  , lexEndlineC_Comment  ComEndl
+  , lexSpace             Spaces
+  , dataSpecialLexer
+  , lexDaoNumber
+  , lexDaoKeyword
+  , lexOperator allUpdateOpStrs >> makeToken AssignOp
+  , lexDaoOperator
+  , lexDaoParens
+  ]
+
+daoMainLexer :: DaoLexer ()
+daoMainLexer = runLexerLoop "DaoTT script" lexEOF daoLexers
+
+daoInfixOperators :: String
+daoInfixOperators = concat [allArithOp2Strs, " ", allArithOp1Strs, " , : ; "]
+
 ----------------------------------------------------------------------------------------------------
 
--- copied from the Dao.Parser module
+-- copied from the DaoTT.DaoParser module
 rationalFromString :: Int -> Rational -> String -> Maybe Rational
 rationalFromString maxValue base str =
   if b<1 then fmap (b*) (fol (reverse str)) else fol str where
@@ -312,7 +310,7 @@ rationalFromString maxValue base str =
 -- | Parses a numeric object without the leading positive or negative sign. The sign must be part of
 -- an equation expression. If the negative sign were parsed in this parser, an expression like @1-1@
 -- might parse to 
---  parseNumber :: Parser Object
+--  parseNumber :: DaoParser Object
 --  parseNumber = msum $
 --    [ token Digits16 $ shift >>= \str -> case tokToStr str of {'0':x:dx | charSet "Xx" x -> mk 16 dx}
 --    , token Digits2  $ shift >>= \str -> case tokToStr str of {'0':b:dx | charSet "Bb" b -> mk 2  dx}
@@ -334,8 +332,8 @@ rationalFromString maxValue base str =
 --        typ <- optionStringType NumSuffix
 --        numberFromStrs base int frac plusMinusExp typ
 
--- copied from the Dao.Parser module
-numberFromStrs :: Int -> String -> String -> String -> String -> Parser Object
+-- copied from the DaoTT.Parser module
+numberFromStrs :: Int -> String -> String -> String -> String -> DaoParser Object
 numberFromStrs base int frac plusMinusExp typ = do
   let (exp, hasMinusSign) = case plusMinusExp of
         ""             -> ("" , False)
@@ -376,7 +374,7 @@ numberFromStrs base int frac plusMinusExp typ = do
 -- | Parses optional parenthesis around an inner parser, but does not parse white spaces or
 -- comments before or after the parser. Provide a message which will be used to build the error
 -- message @"expecting close parenthesis after "++errMsg++" expression."@.
---  parseOptionalParens :: String -> Parser a -> Parser a
+--  parseOptionalParens :: String -> DaoParser a -> DaoParser a
 --  parseOptionalParens errMsg parser = flip mplus (skipSpaces >> parser) $ do
 --    takeToken OpenParen
 --    skipSpaces
@@ -388,7 +386,7 @@ numberFromStrs base int frac plusMinusExp typ = do
 -- colons. This parser does not care about context, colons are used as @hour:minute:second@ separator
 -- tokens, regardless of their meaning elsewhere. Spaces are not allowed between
 -- @hour:minute:second@ tokens.
---  parseDiffTime :: Parser T_diffTime
+--  parseDiffTime :: DaoParser T_diffTime
 --  parseDiffTime = do
 --    d <- takeTokens [Digits10, Digits8]
 --    takeToken Colon
@@ -418,7 +416,7 @@ numberFromStrs base int frac plusMinusExp typ = do
 
 -- | Compute diff times from strings representing days, hours, minutes, and seconds. The seconds
 -- value may have a decimal point.
-diffTimeFromStrs :: String -> String -> String -> String -> String -> Parser T_diffTime
+diffTimeFromStrs :: String -> String -> String -> String -> String -> DaoParser T_diffTime
 diffTimeFromStrs days hours minutes seconds miliseconds = do
   days    <- check "days"    (maxYears*365) days
   hours   <- check "hours"             24   hours
@@ -434,7 +432,7 @@ diffTimeFromStrs days hours minutes seconds miliseconds = do
   where
     rint str            = if null str then 0 else (read str :: Integer)
     integerToRational s = s % 1 :: Rational
-    check :: String -> Integer -> String -> Parser Rational
+    check :: String -> Integer -> String -> DaoParser Rational
     check typ maxVal  s = do
       let i    = rint s
           zero = return (0%1)
@@ -446,7 +444,7 @@ diffTimeFromStrs days hours minutes seconds miliseconds = do
 -- with an optional time value as parsed by 'parseDiffTime'. This parser does not care about
 -- context, dashes are used as @year-month-date@ separator tokens, regardless of their meaning
 -- elsewhere. Spaces are not allowed between @year-month-date@ tokens.
---  parseTime :: Parser T_time
+--  parseTime :: DaoParser T_time
 --  parseTime = do
 --    yyyy <- takeTokens [Digits10, Digits8]
 --    expect "absolute time constant expression" $ do
@@ -492,7 +490,7 @@ diffTimeFromStrs days hours minutes seconds miliseconds = do
 
 ----------------------------------------------------------------------------------------------------
 
-parseComments :: Parser [Comment]
+parseComments :: DaoParser [Comment]
 parseComments = msum $
   [ token ComInln $ shift >>= \com -> return [InlineComment  $ tokToUStr com]
   , token ComEndl $ shift >>= \com -> return [EndlineComment $ tokToUStr com]
@@ -502,7 +500,7 @@ parseComments = msum $
 -- | Use this to prevent constant re-parsing of comments. If you need just one set of comments and would like
 -- to put it back if your parser fails, use this function. If you would like to try parsing an
 -- expression with comments before and after it, use 'parseWithComments', which also does caching.
-cachedComments :: ([Comment] -> Parser a) -> Parser a
+cachedComments :: ([Comment] -> DaoParser a) -> DaoParser a
 cachedComments parser = do
   st   <- get
   let notCached = parseComments >>= \coms -> setCommentBuffer coms >> return coms
@@ -514,12 +512,12 @@ cachedComments parser = do
   setCommentBuffer []
   return a
 
--- | Uses already-buffered comments, or parses more comments into the buffer in the 'ParserState',
+-- | Uses already-buffered comments, or parses more comments into the buffer in the 'Parstate',
 -- then evaluates a sub-parser. If the sub-parser succeeds, the buffer is cleared and the comments
 -- are used to create a wrapper around the result value of the sub-parser. If the sub-parser
 -- backtracks, the comments are left in the buffer for another parser to have a try. See also
 -- 'cachedComments' if you need only comments before an expression, not before and after.
-parseWithComments :: Parser a -> Parser (Com a)
+parseWithComments :: DaoParser a -> DaoParser (Com a)
 parseWithComments parser = do
   st   <- get
   com1 <- case bufferedComments st of
@@ -530,17 +528,17 @@ parseWithComments parser = do
   com2 <- parseComments
   return (com com1 a com2)
 
-parseTopLevelComments :: ([Comment] -> a) -> Parser a
+parseTopLevelComments :: ([Comment] -> a) -> DaoParser a
 parseTopLevelComments construct = cachedComments $ \coms ->
   if null coms then mzero else return (construct coms)
 
--- | Most nodes in the Dao abstract syntax tree take a 'Dao.Token.Location' as the final parameter.
+-- | Most nodes in the DaoTT abstract syntax tree take a 'DaoTT.Token.Location' as the final parameter.
 -- This parser will take a sub-parser, store the cursor before and after running the sube parser,
--- constructing a 'Dao.Token.Location' from the before and after cursor positions. The sub-parser
+-- constructing a 'DaoTT.Token.Location' from the before and after cursor positions. The sub-parser
 -- must return a function that constructs some value (e.g. a node of the dao abstract syntax tree
--- with every sub-node filled in except for the 'Dao.Token.Location'). Then the location constructed
+-- with every sub-node filled in except for the 'DaoTT.Token.Location'). Then the location constructed
 -- by this function passed as a parameter to the the node constructor returned by the sub-parser.
-parseWithLocation :: Parser (Location -> a) -> Parser a
+parseWithLocation :: DaoParser (Location -> a) -> DaoParser a
 parseWithLocation parser = do
   (line1, col1) <- getCursor
   construct <- parser
@@ -548,7 +546,7 @@ parseWithLocation parser = do
                (return (atPoint line1 col1))
   return (construct loc)
 
---  parseFuncParams :: Parser AST_Object -> Parser [Com AST_Object]
+--  parseFuncParams :: DaoParser AST_Object -> DaoParser [Com AST_Object]
 --  parseFuncParams objParser = do
 --    takeToken OpenParen
 --    com1 <- parseComments
@@ -569,9 +567,9 @@ parseWithLocation parser = do
 
 -- | The @date@ and @time@ functions work on objects expressed with a special syntax that
 -- needs to be handled before trying any other parser. This function is intended to be used with
--- 'Dao.NewParser.eachWithKeyword' or 'Dao.NewParser.withToken', so the final parameter is not
--- necessary unless your function is already holding a 'Dao.NewParser.Label'.
---  parseSpecialFuncCall :: String -> Parser Object -> UStr -> Parser AST_Object
+-- 'DaoTT.NewParser.eachWithKeyword' or 'DaoTT.NewParser.withToken', so the final parameter is not
+-- necessary unless your function is already holding a 'DaoTT.NewParser.Label'.
+--  parseSpecialFuncCall :: String -> DaoParser Object -> UStr -> DaoParser AST_Object
 --  parseSpecialFuncCall key objParser nextKeyword = do
 --    guard (uchars nextKeyword == key)
 --    com1 <- parseComments
@@ -587,7 +585,7 @@ parseWithLocation parser = do
 -- Functions used for creating equations constructed from object expressions interleaved with infix
 -- operators.
 
-makeEquation :: [Either (Com Name) AST_Object] -> Parser AST_Object
+makeEquation :: [Either (Com Name) AST_Object] -> DaoParser AST_Object
 makeEquation objx = case applyPrescedence objx of
   [Right obj] -> return obj
   _ ->  error $ ("unknown prescedence for operators:"++) $ concat $
@@ -595,7 +593,7 @@ makeEquation objx = case applyPrescedence objx of
             Left obj -> [' ':uchars (unComment obj)]
             _        -> []
 
--- (Copied from the old parser "src/Dao/Object/Parser.hs")
+-- (Copied from the old parser "src/DaoTT/Object/Parser.hs")
 -- Operator prescedence mimics the C and C++ family of languages.
 -- 'applyPrescedence' scans from highest to lowest prescedence, essentially creating a function
 -- that looks like this: (scanBind (words p3) . scanBind (words p2) . scanBind (words p1) . ...)
@@ -612,11 +610,11 @@ applyPrescedence = foldl (.) assignOp $ map (scanBind AST_Equation . words) $ op
     , "<= >= < >", "<< >>", "+ -", "* / %", "**", ". ->"
     ]
 
--- (Copied from the old parser "src/Dao/Object/Parser.hs")
+-- (Copied from the old parser "src/DaoTT/Object/Parser.hs")
 -- Given a list of operators, scans through an equation of the form
 -- (Right exprA : Left op : Right exprB : ...) 
 -- and if the 'op' is in the list of operators, the 'exprA' and 'exprB' are bound together into an
--- 'Dao.Object.AST_Equation' data structure. If 'op' is not in the list of operators, it is passed over.
+-- 'DaoTT.Object.AST_Equation' data structure. If 'op' is not in the list of operators, it is passed over.
 scanBind
   :: Read a
   => (AST_Object -> Com a -> AST_Object -> Location -> AST_Object)
@@ -634,14 +632,14 @@ scanBind constructor ops objx = case objx of
   objx -> error ("scanBind failed:\n"++show objx)
 
 ----------------------------------------------------------------------------------------------------
--- Prescedence parsing: the following parsers define a prescedence for 'Dao.Object.AST.AST_Object'
+-- Prescedence parsing: the following parsers define a prescedence for 'DaoTT.Object.AST.AST_Object'
 -- expressions.
 
 -- A function to create parser table elements for 'OpenParen' and 'OpenMeta'.
 --  parenOrMeta
---    :: TOK -> TOK
+--    :: DaoTT -> DaoTT
 --    -> (Com AST_Object -> Location -> AST_Object)
---    -> Parser (Location -> AST_Object)
+--    -> DaoParser (Location -> AST_Object)
 --  parenOrMeta open close construct = token open $ do
 --    shift
 --    expect "object expression after open-parnethesis" $ do
@@ -650,7 +648,7 @@ scanBind constructor ops objx = case objx of
 
 -- Highest prescedence object expression parsers, parses string literals, integer literals, and
 -- expressions enclosed in parentheses or "meta-eval" braces.
---  objectExprPrec9 :: Parser (Location -> AST_Object)
+--  objectExprPrec9 :: DaoParser (Location -> AST_Object)
 --  objectExprPrec9 = msum $
 --    [ parenOrMeta OpenParen CloseParen (AST_Paren True)
 --    , parenOrMeta OpenMeta  CloseMeta   AST_MetaEval
@@ -660,21 +658,21 @@ scanBind constructor ops objx = case objx of
 --    ]
 
 -- Extends 'objextTabElemsPrec8' to also parse reference and dereference prefix opreators.
---  objectExprPrec8 :: Parser (Location -> AST_Object)
+--  objectExprPrec8 :: DaoParser (Location -> AST_Object)
 --  objectExprPrec8 = mplus objectExprPrec9 $ msum [token DerefOp (mk REF), token RefOp (mk DEREF)] where
 --    mk typ = do
 --      obj <- parseWithComments (parseWithLocation objectExprPrec9)
 --      return (AST_Prefix typ obj)
 
--- Parses objects (using 'objectExprPrec8') interleaved with the 'Dao.Object.DOT' (@.@) and
--- 'Dao.Object.POINT' (@->@) operators, prefix operators like 'Dao.Object.REF' (@@@) and
--- 'Dao.Object.DEREF' (@$@). This makes it suitable for parsing the parameter object expression for
+-- Parses objects (using 'objectExprPrec8') interleaved with the 'DaoTT.Object.DOT' (@.@) and
+-- 'DaoTT.Object.POINT' (@->@) operators, prefix operators like 'DaoTT.Object.REF' (@@@) and
+-- 'DaoTT.Object.DEREF' (@$@). This makes it suitable for parsing the parameter object expression for
 -- functions like @global@ or @struct@ without requiring parentheses. Therefore expressions like the
 -- following:
 -- > global a + global b
 -- will be parsed equivalently to the expression:
 -- > (global a) + (global b)
---  parseRefEquation :: Parser AST_Object
+--  parseRefEquation :: DaoParser AST_Object
 --  parseRefEquation = init where
 --    init = do -- get one object and then try the loop
 --      obj <- parseWithLocation objectExprPrec8 -- if the loop backtracks on it's first item, return the object alone.
@@ -692,7 +690,7 @@ scanBind constructor ops objx = case objx of
 
 -- Extents objectTabElemsPrec8 with parsers of labels qualified with the keywords @global@, @local@,
 -- @qtime@, or @static@.
---  objectExprPrec7 :: Parser (Location -> AST_Object)
+--  objectExprPrec7 :: DaoParser (Location -> AST_Object)
 --  objectExprPrec7 = mplus objectExprPrec8 $ msum $
 --    [ token KeyGLOBAL qualifier
 --    , token KeyQTIME  qualifier
@@ -704,7 +702,7 @@ scanBind constructor ops objx = case objx of
 --        cachedComments $ \coms -> return (AST_FuncCall (tokToUStr kw) coms [Com obj])
 
 -- Parse object expressions indexed with a square-braced indexing epxression suffix.
---  objectSuffixed :: Parser (Location -> AST_Object)
+--  objectSuffixed :: DaoParser (Location -> AST_Object)
 --  objectSuffixed = do
 --    obj <- parseWithLocation objectExprPrec7
 --    flip mplus (return (const obj)) $ cachedComments $ \coms -> msum
@@ -728,7 +726,7 @@ scanBind constructor ops objx = case objx of
 -- Extends the 'objectTabElemsPrec8' table with parsers that create object expressions from
 -- keywords, for example @date@, @time@, @list@, @set@, @dict@, @intmap@, @struct@, and @array@.
 -- Also parses arithmetic negation and bitwise inversion prefix operators.
---  objectExprPrec6 :: Parser (Location -> AST_Object)
+--  objectExprPrec6 :: DaoParser (Location -> AST_Object)
 --  objectExprPrec6 = msum $
 --    [ objectSuffixed
 --    , objectExprPrec7 
@@ -768,7 +766,7 @@ scanBind constructor ops objx = case objx of
 --    , token BinInvertOp $ prefixOp objectSuffixed INVB
 --    ]
 --    where
---      objLit :: TOK -> (a -> Object) -> Parser a -> Parser (Location -> AST_Object)
+--      objLit :: DaoTT -> (a -> Object) -> DaoParser a -> DaoParser (Location -> AST_Object)
 --      objLit key constructor parser = token key (fmap (AST_Literal . constructor) parser)
 --      dictIntmap = shift >>= \tok -> cachedComments $ \coms -> do
 --        let k = tokToStr tok
@@ -781,7 +779,7 @@ scanBind constructor ops objx = case objx of
 
 -- Used in 'objectExprPrec6', lambda expressions are expressions that begin with a keyword like
 -- "func" or "rule".
---  parseLambdaExpr :: LambdaExprType -> Parser (Location -> AST_Object)
+--  parseLambdaExpr :: LambdaExprType -> DaoParser (Location -> AST_Object)
 --  parseLambdaExpr ftyp = do
 --    tok <- shift
 --    params <- parseWithComments (parseFuncParams parseObject)
@@ -790,7 +788,7 @@ scanBind constructor ops objx = case objx of
 
 -- A general equation used to parse object expressions interleaved with infix operators. Used by
 -- 'parseEqation' (indirectly via 'objectExprPrec5') and also by 'parseObject' directly.
---  parseInterleavedInfixOps :: TOK -> Parser (Location -> AST_Object) -> Parser (Location -> AST_Object)
+--  parseInterleavedInfixOps :: DaoTT -> DaoParser (Location -> AST_Object) -> DaoParser (Location -> AST_Object)
 --  parseInterleavedInfixOps opType objParser = do
 --    let getObj = parseWithLocation objParser
 --    obj <- getObj
@@ -803,24 +801,24 @@ scanBind constructor ops objx = case objx of
 
 -- Parses an equation with arithmetic and logic operators, excluding prefix logical NOT. Assignment
 -- operators are not parsed with this parser, they are lower presedence.
---  objectExprPrec5 :: Parser (Location -> AST_Object)
+--  objectExprPrec5 :: DaoParser (Location -> AST_Object)
 --  objectExprPrec5 = parseInterleavedInfixOps InfixOp objectExprPrec6
 
 -- Parses either a logical-NOT operator followed by an infix-operator expression, or just the
 -- infix-operator expression alone. This is the lowest-prescedence non-assignment equation
 -- expression. It does not need a parse table.
---  parseEquation :: Parser (Location -> AST_Object)
+--  parseEquation :: DaoParser (Location -> AST_Object)
 --  parseEquation = flip mplus objectExprPrec5 $ do
 --    takeToken LogicNotOp
 --    fmap (AST_Prefix NOT) (parseWithComments (parseWithLocation objectExprPrec5))
 
--- | This is the entry-point parser for 'Dao.Object.AST.AST_Object'. It parses the
+-- | This is the entry-point parser for 'DaoTT.Object.AST.AST_Object'. It parses the
 -- lowest-prescedence object equation expression, which are assignment expressions.
---  parseObject :: Parser AST_Object
+--  parseObject :: DaoParser AST_Object
 --  parseObject = parseWithLocation $ parseInterleavedInfixOps AssignOp parseEquation
 
 -- used by parseDictObject and parseListObject
---  parseCommaSeparated :: String -> (AST_Object -> Parser ()) -> Parser [Com AST_Object]
+--  parseCommaSeparated :: String -> (AST_Object -> DaoParser ()) -> DaoParser [Com AST_Object]
 --  parseCommaSeparated key check = expect ("opening-brace for "++key++" expression") $ do
 --    takeToken OpenBrace
 --    let done got = takeToken CloseBrace >> return got
@@ -832,7 +830,7 @@ scanBind constructor ops objx = case objx of
 --    loop []
 
 -- Passed to 'parseCommaSeparated' by "dict" and "intmap" expressions.
-assertAssignExpr :: String -> AST_Object -> Parser ()
+assertAssignExpr :: String -> AST_Object -> DaoParser ()
 assertAssignExpr key o = case o of
   AST_Assign _ _ _ _ -> return ()
   _                  -> failLater $
@@ -841,7 +839,7 @@ assertAssignExpr key o = case o of
 ----------------------------------------------------------------------------------------------------
 
 -- Parse any script expression starting with a keyword.
---  parseScriptTable :: Parser (Location -> AST_Script)
+--  parseScriptTable :: DaoParser (Location -> AST_Script)
 --  parseScriptTable = msum $
 --    [ token KeyIF $ cachedComments $ \coms ->
 --        expect "conditional expression after \"if\" statement" $ do
@@ -913,8 +911,8 @@ assertAssignExpr key o = case o of
 --          , cachedComments $ \coms -> done (com coms AST_Void [])
 --          ]
 
--- | This is the entry-point parser for 'Dao.Object.AST.AST_Script'.
---  parseScript :: Parser AST_Script
+-- | This is the entry-point parser for 'DaoTT.Object.AST.AST_Script'.
+--  parseScript :: DaoParser AST_Script
 --  parseScript = dbg "parseScript" $ msum $
 --    [ parseTopLevelComments AST_Comment
 --    , parseWithLocation parseScriptTable
@@ -925,7 +923,7 @@ assertAssignExpr key o = case o of
 --          return (AST_EvalObject obj coms)
 --    ]
 
---  parseBracedScript :: Parser [Com AST_Script]
+--  parseBracedScript :: DaoParser [Com AST_Script]
 --  parseBracedScript = dbg "parseBracedScript" $ do
 --    dbg "takeToken OpenBrace" $ takeToken OpenBrace
 --    exprs <- fmap (map Com) (many parseScript)
@@ -934,7 +932,7 @@ assertAssignExpr key o = case o of
 
 ----------------------------------------------------------------------------------------------------
 
---  parseAttribute :: Parser AST_TopLevel
+--  parseAttribute :: DaoParser AST_TopLevel
 --  parseAttribute = msum $
 --    [ parseTopLevelComments AST_TopComment
 --    , parseWithLocation $ tokens [KeyREQUIRE, KeyIMPORT] $ do
@@ -947,13 +945,13 @@ assertAssignExpr key o = case o of
 --            takeToken Semicolon >> return (AST_Attribute (Com (ustr k)) str)
 --    ]
 
---  parseTopLevel :: Parser AST_TopLevel
+--  parseTopLevel :: DaoParser AST_TopLevel
 --  parseTopLevel = msum $
 --    [ parseTopLevelComments AST_TopComment
 --    , parseWithLocation (fmap AST_TopScript parseScript)
 --    ]
 
---  topLevelKeywords :: Parser (Location -> AST_TopLevel)
+--  topLevelKeywords :: DaoParser (Location -> AST_TopLevel)
 --  topLevelKeywords = msum $
 --    [ token KeyBEGIN    $ evt  "BEGIN"    BeginExprType
 --    , token KeyEND      $ evt  "END"      EndExprType
@@ -992,7 +990,7 @@ assertAssignExpr key o = case o of
 
 ----------------------------------------------------------------------------------------------------
 
---  parseDaoScript :: Parser AST_SourceCode
+--  parseDaoScript :: DaoParser AST_SourceCode
 --  parseDaoScript = do
 --    attribs <- loopAttribs []
 --    scripts <- loop []
@@ -1006,7 +1004,7 @@ assertAssignExpr key o = case o of
 --      loopAttribs got = mplus (parseAttribute >>= \a -> loopAttribs (got++[a])) (return got)
 --      loop        got = do
 --        skipSpaces
---        lines <- GenParser (gets getLines)
+--        lines <- DaoParser (gets getLines)
 --        (ax, continue) <- msum $
 --          [ guardEOF >> return (got, False)
 --          , parseTopLevel >>= \a -> return ([a], True)
@@ -1019,7 +1017,7 @@ assertAssignExpr key o = case o of
 
 --  daoCFGrammar :: CFGrammar AST_SourceCode
 --  daoCFGrammar =
---    GenCFGrammar
+--    CFGrammar
 --    { columnWidthOfTab = 4
 --    , mainLexer        = daoMainLexer
 --    , mainParser       = evalGenToSimParser parseDaoScript
@@ -1028,7 +1026,7 @@ assertAssignExpr key o = case o of
 testDaoLexer :: String -> IO ()
 testDaoLexer = testLexicalAnalysis daoMainLexer 4
 
---  testDaoGrammar :: Show a => Parser a -> String -> IO ()
+--  testDaoGrammar :: Show a => DaoParser a -> String -> IO ()
 --  testDaoGrammar parser input =
 --    case parse (daoCFGrammar{mainParser = evalGenToSimParser parser}) mempty input of
 --      Backtrack -> putStrLn "Backtrack"

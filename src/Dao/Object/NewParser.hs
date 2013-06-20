@@ -65,6 +65,33 @@ type DaoParser a = Parser Parstate DaoTT a
 type DaoLexer  a = Lexer DaoTT a
 type DaoParseErr = Error Parstate DaoTT
 
+newtype Dao = Dao{ daoUnwrapTT :: TT } deriving (Eq, Ord, Ix)
+instance TokenType Dao where { unwrapTT = daoUnwrapTT; wrapTT = Dao; }
+
+daoTokensDef :: LexBuilder Dao ()
+daoTokensDef = do
+  stringTable $ words $ unwords $
+    [ "if else for in while with try catch"
+    , "continue break return throw"
+    , "data struct list set intmap dict array date time"
+    , "global local qtime static"
+    , "function func pattern rule"
+    , "import imports require requires"
+    , "BEGIN END EXIT"
+    , allUpdateOpStrs, allArithOp1Strs, allArithOp2Strs
+    ]
+  let rxstr =  RxString . ustr
+  let hexdigit = RxCharSet $ foldl Es.union (Es.range '0' '9') [Es.range 'A' 'F', Es.range 'a' 'f']
+  regex "literal hexadecimal" $ RxChoice $
+    [ RxSequence [rxstr "0x", hexdigit]
+    , RxSequence [rxstr "0X", hexdigit]
+    ]
+  let quot   = RxCharSet (Es.point '"')
+      unquot = RxCharSet (Es.invert (Es.union (Es.point '"') (Es.point '\\')))
+      strlit = RxStep (RxRepeat Es.inf unquot) $ RxChoice $
+        [RxSequence [rxstr "\\", RxCharSet Es.infinite], strlit]
+  regex "literal string" $ RxStep quot strlit
+
 -- | The token types.
 data DaoTT
   = Spaces      | ComEndl     | ComInln     | Label

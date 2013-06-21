@@ -67,9 +67,17 @@ type DaoParseErr = Error Parstate DaoTT
 
 newtype Dao = Dao{ daoUnwrapTT :: TT } deriving (Eq, Ord, Ix)
 instance TokenType Dao where { unwrapTT = daoUnwrapTT; wrapTT = Dao; }
+instance Show Dao where { show = deriveShowFromTokenDB daoTokenDB }
 
-daoTokensDef :: LexBuilder Dao ()
-daoTokensDef = do
+daoTokenDB :: TokenDB Dao
+daoTokenDB = makeTokenDB daoTokenDef
+
+base16intLabel = "BASE16"
+base2intLabel = "BASE2"
+litStrLabel = "STRING"
+
+daoTokenDef :: LexBuilder Dao ()
+daoTokenDef = do
   stringTable $ words $ unwords $
     [ "if else for in while with try catch"
     , "continue break return throw"
@@ -80,17 +88,13 @@ daoTokensDef = do
     , "BEGIN END EXIT"
     , allUpdateOpStrs, allArithOp1Strs, allArithOp2Strs
     ]
-  let rxstr =  RxString . ustr
-  let hexdigit = RxCharSet $ foldl Es.union (Es.range '0' '9') [Es.range 'A' 'F', Es.range 'a' 'f']
-  regex "literal hexadecimal" $ RxChoice $
-    [ RxSequence [rxstr "0x", hexdigit]
-    , RxSequence [rxstr "0X", hexdigit]
-    ]
-  let quot   = RxCharSet (Es.point '"')
-      unquot = RxCharSet (Es.invert (Es.union (Es.point '"') (Es.point '\\')))
-      strlit = RxStep (RxRepeat Es.inf unquot) $ RxChoice $
-        [RxSequence [rxstr "\\", RxCharSet Es.infinite], strlit]
-  regex "literal string" $ RxStep quot strlit
+  let strlit = rxRepeat (invert [ch '"', ch '\\']) . (rx "\\" . rx anyChar . strlit <> rx '"')
+  regexToken litStrLabel $ rx '"' . strlit
+  let from0to9 = from '0' to '9'
+      hexdigits = rxRepeat[from0to9, from 'A' to 'F', from 'a' to 'f']
+      decdigits = rxRepeat from0to9
+  regexToken base16intLabel $ (rx "0x" <> rx "0X") . hexdigits
+  regexToken base2intLabel  $ (rx "0b" <> rx "0B") . decdigits
 
 -- | The token types.
 data DaoTT
@@ -1051,7 +1055,7 @@ assertAssignExpr key o = case o of
 --    }
 
 testDaoLexer :: String -> IO ()
-testDaoLexer = testLexicalAnalysis daoMainLexer 4
+testDaoLexer = testLexicalAnalysis (tokenDBLexer daoTokenDB) 4
 
 --  testDaoGrammar :: Show a => DaoParser a -> String -> IO ()
 --  testDaoGrammar parser input =

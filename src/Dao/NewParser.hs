@@ -423,8 +423,8 @@ ustrTable u = LexBuilder{
 -- | Create a token type that is defined by a 'Lexer' instead of a keyword or operator string.
 -- The lexer must be labeled so it can be uniquely identified, and also for producing more
 -- desriptive error messages.
-regex :: TokenType tok => String -> Regex -> LexBuilder tok ()
-regex label rx = LexBuilder{
+regexToken :: TokenType tok => String -> Regex -> LexBuilder tok ()
+regexToken label rx = LexBuilder{
     runLexBuilder = modify $ \st ->
       let i = regexItemCounter st
       in  st{ labeledLexers =
@@ -476,44 +476,57 @@ class TokenType tok =>
 -- is converted to a 'Lexer', a token of the associated type is generated when a regex matches
 -- the beginning of the input string that is being lexically analyzed.
 -- 
--- Although 'Regex's provides constructors that can translate to 'Lexer's, there is no way to
+-- Although 'RegexUnit's provides constructors that can translate to 'Lexer's, there is no way to
 -- construct a 'Lexer' that evaluates to 'makeToken' or 'makeEmptyToken', which means there is no
--- way to actually produce tokens with a 'Regex'. So a 'Regex' alone cannot do lexical analysis,
+-- way to actually produce tokens with a 'RegexUnit'. So a 'RegexUnit' alone cannot do lexical analysis,
 -- it must be used with the 'TokenDB' type to produce a token stream.
 
-data Regex
+-- | Any function with a type @'RegexUnit' -> 'RegexUnit'@ or 'Regex' can be used in a
+-- dot-operator-separated sequence of expressions. But the 'rx' function provided by this class
+-- introduces a kind of constant expression that can be used in sequences of 'RegexUnit's. For
+-- example, suppose you have defined a regular expression @digit@ of type
+-- @'RegexUnit' -> 'RegexUnit'@ to match an arbitrarily long sequence of numeric characters, and a
+-- regular expression @space@ of type 'Regex' to match an arbitrarily long sequence of whitespace
+-- characters. You could then define a regular expression with a sequence like so:
+-- > myRegex :: Regex
+-- > myRegex = 'rx' "first" . space . digit . space . 'rx' "second" . space . digit
+-- Here, we take advantage of the fact that 'Prelude.String' is instnatiated into the
+-- 'RegexBaseType' class, because this allows us to write @'rx' "first"@ and @'rx' "second"@, which
+-- will match the strings "first" and "second" if they occur in the input string to be matched. This
+-- expression is equivalent to the POSIX regular expression
+-- @first[[:space:]]+[[:digit:]]+[[:space:]]+second[[:space:]]+[[:digit:]]+@
+-- which would match strings like the following:
+-- > "first 1231 second 99"
+-- > "first    0          second      1233491202"
+-- 
+-- /To create a choice/ you can use 'Data.Monoid.mappend', 'Data.Monoid.mconcat', or the infix
+-- operator equivalent of 'Data.Monoid.mappend', which is 'Data.Monoid.<>'. The reason is,
+-- 'Data.Monoid.Monoid' instantiates functions of type @a -> b@, and this provides a default
+-- instnatiation for functions of type 'Regex'. For example,
+-- suppose you have two regular expressions, @regexA@ and @regexB@. If you want to construct a
+-- 'Regex' that tries matching @regexA@, and if it fails, then tries @regexB@, you would write:
+-- > matchAorB = regexA 'Data.Monoid.<>' regexB
+-- You can use 'Data.Monoid.concat' to create larger choices:
+-- > 'Data.Monoid.mconcat' ['rx' "tryThis", 'rx' "thenThis", regexA, regexB]
+-- or equivalently:
+-- > 'rx' 'Data.Monoid.<>' "tryThis" 'Data.Monoid.<>' 'rx' "thenThis" 'Data.Monoid.<>' regexA 'Data.Monoid.<>' regexB
+type Regex = RegexUnit -> RegexUnit
+
+-- | This is an intermediate type for constructing 'Regex's. You will not be using it directly. You
+-- will instead use any function that evaluates to a 'Regex', which is a function of this data type.
+data RegexUnit
   = RxBacktrack
   | RxSuccess
-  | RxSequence{ getRxUnits    :: [RegexUnit] }
-  | RxChoice  { getSubRegexes :: [Regex] }
-  | RxStep    { rxStepUnit    :: RegexUnit   , subRegex :: Regex }
-  | RxExpect  { rxErrMsg      :: UStr        , subRegex :: Regex }
+  | RxChoice   { getSubRegexes :: [RegexUnit] }
+  | RxStep     { rxStepUnit    :: RxPrimitive , subRegex :: RegexUnit }
+  | RxExpect   { rxErrMsg      :: UStr        , subRegex :: RegexUnit }
+  | RxDontMatch{ subRegex      :: RegexUnit }
   deriving Eq
-instance Monoid Regex where
+instance Monoid RegexUnit where
   mempty      = RxBacktrack
   mappend a b = case a of
     RxBacktrack    -> b
     RxSuccess      -> RxSuccess
-    RxSequence  [] -> RxSuccess
-    RxSequence  ax -> case b of
-      RxBacktrack    -> RxSequence ax
-      RxSuccess      -> RxChoice [RxSequence ax, RxSuccess]
-      RxSequence  bx -> loop ax bx where
-        loop ax bx = case ax of
-          []   -> if null bx then RxSuccess else RxSequence bx
-          a:ax -> case bx of
-            []           -> RxSequence (a:ax)
-            b:bx | a==b  -> RxStep a (loop ax bx)
-            bx           -> RxChoice [RxSequence (a:ax), RxSequence bx]
-      RxChoice    bx -> case bx of
-        []              -> RxSequence ax
-        [b]             -> mappend (RxSequence ax) b
-        b:bx            -> RxChoice (mappend (RxSequence ax) b : bx)
-      RxStep    b bx ->
-        if head ax == b
-          then  RxStep b (mappend (RxSequence (tail ax)) bx)
-          else  RxChoice [RxSequence ax, RxStep b bx]
-      RxExpect err b -> RxChoice [RxSequence ax, RxExpect err b]
     RxChoice    [] -> b
     RxChoice    ax -> case b of
       RxBacktrack    -> RxChoice ax
@@ -529,61 +542,65 @@ instance Monoid Regex where
     RxStep    a ax      -> case b of
       RxBacktrack       -> RxStep a ax
       RxSuccess         -> RxChoice [RxStep a ax, RxSuccess]
-      RxSequence    []  -> RxStep a ax
-      RxSequence (b:bx) ->
-        if a==b
-          then  RxStep a (mappend ax (RxSequence bx))
-          else  RxChoice [RxStep a ax, RxSequence (b:bx)]
       RxChoice      []  -> RxStep a ax
       RxChoice   (b:bx) -> case mappend (RxStep a ax) b of
         RxChoice      ax  -> RxChoice (ax++bx)
         b                 -> RxChoice (b:bx)
-      RxStep      b bx  ->
-        if a==b
-          then  RxStep a (mappend ax bx)
-          else  RxChoice [RxStep a ax, RxStep b bx]
-      RxExpect  err bx  -> RxChoice [RxStep a ax, RxExpect err bx]
+      RxStep      b bx  -> case (a, b) of
+        (a, b) | a==b -> RxStep a (mappend ax bx)
+        (a, b)        -> case (a, b) of
+          (RxCharSet a, RxCharSet b) -> RxStep (RxCharSet $ Es.union a b) (mappend ax bx)
+          (RxCharSet _, RxString  _) -> RxChoice [RxStep b bx, RxStep a ax]
+          _                          -> RxChoice [RxStep a ax, RxStep b bx]
+      b                 -> RxChoice [RxStep a ax, b]
     RxExpect  err ax -> RxExpect err ax
+    RxDontMatch       a -> case b of
+      RxDontMatch       b -> RxDontMatch (mappend a b)
+      b                   -> RxChoice [b, RxDontMatch a]
 
+-- | Convert a 'Regex' function to a 'Lexer'. The resulting 'Lexer' will not call 'makeToken' or
+-- 'makeEmptyToken', it will only match the beginning of the input string according to the 'Regex',
+-- leaving the matched characters in the 'lexBuffer'.
 regexToLexer :: Eq tok => Regex -> Lexer tok ()
-regexToLexer   rx = case rx of
-  RxBacktrack     -> lexBacktrack
-  RxSuccess       -> return ()
-  RxSequence   rx -> sequence_ $ map regexUnitToLexer rx
-  RxChoice     rx -> msum $ map regexToLexer rx
-  RxStep     r rx -> regexUnitToLexer r >> regexToLexer rx
-  RxExpect err rx -> mplus (regexToLexer rx) (fail (uchars err))
+regexToLexer rx = case rx RxSuccess of
+  RxBacktrack      -> lexBacktrack
+  RxSuccess        -> return ()
+  RxChoice      rx -> msum $ map (regexToLexer . const) rx
+  RxStep      r rx -> regexPrimToLexer r >> regexToLexer (const rx)
+  RxExpect  err rx -> mplus (regexToLexer (const rx)) (fail (uchars err))
+  RxDontMatch   rx -> do
+    let match rx = regexToLexer (const rx)
+    case rx of
+      RxDontMatch rx -> match rx -- double negative means succeed on match
+      rx             -> do
+        keep <- gets lexBuffer
+        matched <- clearBuffer >> mplus (match rx >> return True) (return False)
+        if matched
+          then  do -- fail if matched
+            modify $ \st ->
+              st{ lexBuffer = ""
+                , lexInput  = keep ++ lexBuffer st ++ lexInput st
+                }
+            mzero
+          else  do -- success if not matched
+            modify $ \st ->
+              st{ lexBuffer = keep
+                , lexInput  = lexBuffer st ++ lexInput st
+                }
+            return ()
 
-data RegexUnit
-  = RxString   { rxString     :: UStr }
-  | RxCharSet  { rxCharSet    :: Es.Set Char }
-  | RxRepeat   { rxLimits     :: Es.Segment Int, subRegexUnit :: RegexUnit }
-  | RxDontMatch{ subRegexUnit :: RegexUnit }
+-- Not for export
+data RxPrimitive
+  = RxString   { rxString  :: UStr }
+  | RxCharSet  { rxCharSet :: Es.Set Char }
+  | RxRepeat   { rxLimits  :: Es.Segment Int, subRegexUnit :: RxPrimitive }
   deriving Eq
 
-regexUnitToLexer :: Eq tok => RegexUnit -> Lexer tok ()
-regexUnitToLexer rx = case rx of
+regexPrimToLexer :: Eq tok => RxPrimitive -> Lexer tok ()
+regexPrimToLexer rx = case rx of
   RxString  str    -> lexString (uchars str)
   RxCharSet set    -> lexCharP (Es.member set)
   RxRepeat  lim rx -> rxRepeat lim rx
-  RxDontMatch   rx -> case rx of
-    RxDontMatch   rx -> regexUnitToLexer rx -- double negative means succeed on match
-    rx               -> do
-      keep <- gets lexBuffer
-      matched <- clearBuffer >> mplus (regexUnitToLexer rx >> return True) (return False)
-      if matched
-        then  do -- fail if matched
-          modify $ \st ->
-            st{ lexBuffer = ""
-              , lexInput  = keep ++ lexBuffer st ++ lexInput st
-              }
-          mzero
-        else  do -- success if not matched
-          modify $ \st ->
-            st{ lexBuffer = keep
-              , lexInput  = lexBuffer st ++ lexInput st
-              }
-          return ()
   where
     rxRepeat lim rx = fromMaybe (error "bad limit values in RxRepeat") $ msum $
       [ do  lo <- Es.singular lim
@@ -622,6 +639,104 @@ regexUnitToLexer rx = case rx of
     loop lex = do
       continue <- mplus (lex >> return True) (return False)
       if continue then loop lex else return ()
+
+-- | Any type which instantiates the 'RegexBaseType' class can be used to with the 'rx' function to
+-- construct a part of a 'Regex' which can be used in a sequence of 'Regex's.
+--
+-- Probably the most useful instance of this class apart from that of 'Prelude.String' is the
+-- instance for the type @['Dao.EnumSet.Set' 'Data.Char.Char']@, which allows you to union ranges of
+-- character sets like so:
+-- > 'rx'['from' '0' 'to' '9', from @'A'@ 'to' @'Z'@, 'from' '@a@' 'to' '@z@', 'ch' '@_@']
+-- which would be equivalent to the POSIX regular expression @[0-9A-Za-z_]@, a regular expression
+-- that matches any single alphabetic, numeric, of underscore character.
+class RegexBaseType t where
+  rxPrim :: t -> RxPrimitive
+  rx :: t -> Regex
+  rx = RxStep . rxPrim
+instance RegexBaseType  Char         where { rxPrim = RxCharSet . Es.point }
+instance RegexBaseType  String       where { rxPrim = RxString  . ustr     }
+instance RegexBaseType  UStr         where { rxPrim = RxString  }
+instance RegexBaseType (Es.Set Char) where { rxPrim = RxCharSet }
+instance RegexBaseType [Es.Set Char] where { rxPrim = RxCharSet . foldl Es.union mempty }
+
+-- | The type of the 'from' and 'to' functions are specially defined so that you can write ranges of
+-- characters. For example, if you want to match upper-case characters, you would simply write:
+-- > from 'A' to 'Z'
+-- or equivalently:
+-- > 'A' `to` 'Z'
+-- but I prefer to use 'from' because the use of single quotes and back-quotes together in the same
+-- expression is tedius. This would be equivalent to the POSIX regular expressions: @[A-Z]@
+from :: Char -> (Char -> Char -> Es.Set Char) -> Char -> Es.Set Char
+from a to b = to a b
+
+-- | The type of the 'from' and 'to' functions are specially defined so that you can write ranges of
+-- characters. For example, if you want to match upper-case characters, you would simply write:
+-- > from 'A' to 'Z'
+-- or equivalently:
+-- > 'A' `to` 'Z'
+-- but I prefer to use 'from' because the use of single quotes and back-quotes together in the same
+-- expression is tedius. This would be equivalent to the POSIX regular expressions: @[A-Z]@
+to :: Char -> Char -> Es.Set Char
+to toch frch = Es.range frch toch
+
+-- | Create a character set that matches only a single character. For example if you want to match
+-- just a single lowercase letter-A character:
+-- > ch 'a'
+-- This would b equivalent to the POSIX regular expression @[a]@
+-- Be careful not to confuse this function with the 'rx' function, which is instantiated to create
+-- 'Regex' functions from 'Prelude.Char's. The expression @'rx' @'@@a@@'@ cannot be used in a
+-- set of other @'Dao.EnumSet.Set' 'Prelude.Char'@ types to create a larger set:
+-- > badRegex = 'repeat' ['from' '0' 'to' '9', 'rx' '.'] -- /COMPILE-TIME ERROR!!!/
+-- >
+-- > -- This matches strings ending in dots, like "98765.", "123.", and "0."
+-- > -- but does not match "0.0" or ".123"
+-- > numberEndingWithDot 'repeat' ['from' '0' 'to' '9'] . 'rx' '.' 
+-- >
+-- > -- This matches strings like "0.0.0.0", "123.", ".99", "...", "0.0" and "1..20"
+-- > dotsOrDigits = 'repeat' ['from' '0' 'to' '9', 'ch' '.'] 
+ch :: Char -> Es.Set Char
+ch = Es.point
+
+anyChar :: Es.Set Char
+anyChar = Es.infinite
+
+-- | Invert a character set: this 'Regex' will match any characters not in the union of the sets
+-- provided.
+invert :: [Es.Set Char] -> Es.Set Char
+invert = Es.invert . foldl Es.union mempty
+
+rxLimitMinMax :: RegexBaseType rx => Int -> Int -> rx -> Regex
+rxLimitMinMax lo hi = RxStep . RxRepeat (Es.segment lo hi) . rxPrim
+
+rxLimitMin :: RegexBaseType rx => Int -> rx -> Regex
+rxLimitMin lo = RxStep . RxRepeat (Es.toPosInf lo) . rxPrim
+
+rxLimitMax :: RegexBaseType rx => Int -> rx -> Regex
+rxLimitMax hi = RxStep . RxRepeat (Es.negInfTo hi) . rxPrim
+
+-- | Like 'rx' but repeats, but must match at least one character. It is similar to the @+@ operator
+-- in POSIX regular expressions.
+rxRepeat :: RegexBaseType rx => rx -> Regex
+rxRepeat = RxStep . RxRepeat Es.inf . rxPrim
+
+-- | Marks a point in a 'Regex' sequence where the matching must not fail, and if it does fail, the
+-- resulting 'Lexer' to which this 'Regex' evaluates will evaluate to 'Control.Monad.fail' with an
+-- error message provided as a paramater to this function. For example:
+-- > decimalPoint = digits . 'rx' '.' . 'cantFail' "must have digits after a decimal point" . digits
+cantFail :: String -> Regex
+cantFail msg = RxExpect (ustr msg)
+
+-- | This is a look-ahead 'Regex' that matches if the 'Regex' parameter provided does not match. An
+-- extremely inefficient function, you should avoid using it and consider re-designing your
+-- 'LexBuilder' if you rely on this function too often. This function is designed to occur only at
+-- the end of your 'Regex', that is, every 'Regex' that occurs after 'doNot' is part of the 'Regex'
+-- to not match. For example:
+-- > myRegex = 'rx' "else" . spaces . 'doNot' . 'rx' "if" . spaces . rx "end"
+-- will succeed only if the string else is not followed by a string @"if end"@. There is no way to
+-- make the 'Regex' first check if the next string is not @"if"@ and if it is not then continue
+-- matching with @spaces@ and @'rx' "end"@ after that.
+doNot :: Regex
+doNot = RxDontMatch
 
 ----------------------------------------------------------------------------------------------------
 -- $Lexical_Analysis
@@ -884,7 +999,7 @@ lexChar c = lexCharP (==c)
 -- 'lexUntil'. This function creates a predicate over 'Prelude.Chars's that evaluates to
 -- 'Prelude.True' if the 'Prelude.Char' is equal to any of the 'Prelude.Char's in the given
 -- 'Prelude.String'. This is similar to the behavior of character sets in POSIX regular expressions:
--- the Regex @[abcd]@ matches the same characters as the predicate @('charSet' "abcd")@
+-- the RegexUnit @[abcd]@ matches the same characters as the predicate @('charSet' "abcd")@
 charSet :: String -> Char -> Bool
 charSet charset c = or $ map (c==) $ nub charset
 
@@ -892,7 +1007,7 @@ charSet charset c = or $ map (c==) $ nub charset
 -- 'lexUntil'.This function creates a simple set-union of predicates to create a new predicate on
 -- 'Prelude.Char's. The predicate evalautes to 'Prelude.True' if the 'Prelude.Char' applied to any
 -- of the predicates evaluate to 'Prelude.True'. This is similar to unions of character ranges in
--- POSIX regular expressions: the Regex @[[:xdigit:]xyzXYZ]@ matches the same characters as the
+-- POSIX regular expressions: the RegexUnit @[[:xdigit:]xyzXYZ]@ matches the same characters as the
 -- predicate:
 -- > ('unionCharP' [isHexDigit, charSet "xyzXYZ"])
 unionCharP :: [Char -> Bool] -> Char -> Bool

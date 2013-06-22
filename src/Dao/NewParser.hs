@@ -406,6 +406,22 @@ makeTokenDB builder =
     st = execState (runLexBuilder builder) $
       LexBuilderState{regexItemCounter=1, labeledLexers=mempty, buildingLexer=mempty}
 
+-- | Creates a single keyword or operator token, with the name of the token being the string that is
+-- lexed-out of the input. Its like 'stringTable' but creates only a single token which stores no
+-- data and returns the newly created token value.
+ustrToken :: TokenType tok => UStr -> LexBuilder tok tok
+ustrToken u = LexBuilder $ do
+  tok <- newTokID
+  modify $ \st ->
+    st{ labeledLexers = M.insert u tok (labeledLexers st)
+      , buildingLexer = buildingLexer st <> rx u . rxEmptyToken tok
+      }
+  return tok
+
+-- | Like 'ustrToken', except takes a 'Prelude.String' input.
+stringToken :: TokenType tok => String -> LexBuilder tok tok
+stringToken = ustrToken . ustr
+
 -- | Creates a 'TokenTable' using a list of keywords or operators you provide to it.
 -- Every string provided becomes it's own token type. For example:
 -- > myKeywords = 'tokenTable' $ 'Data.List.words' $ 'Data.List.unwords' $
@@ -418,12 +434,7 @@ stringTable = ustrTable . map ustr
 
 -- | Like 'stringTable' except takes a list of 'Dao.String.UStr's.
 ustrTable :: TokenType tok => [UStr] -> LexBuilder tok ()
-ustrTable u = LexBuilder $ forM_ (reverse (sort u)) $ \str -> do
-  tok <- newTokID
-  modify $ \st ->
-    st{ labeledLexers = M.insert str tok (labeledLexers st)
-      , buildingLexer = buildingLexer st <> rx str . rxEmptyToken tok
-      }
+ustrTable = mapM_ ustrToken . reverse . sort
 
 -- | Create a token type that is defined by a 'Lexer' instead of a keyword or operator string.
 -- The lexer must be labeled so it can be uniquely identified, and also for producing more

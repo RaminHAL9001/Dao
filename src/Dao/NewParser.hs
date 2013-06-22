@@ -411,12 +411,16 @@ makeTokenDB builder =
 -- data and returns the newly created token value.
 ustrToken :: TokenType tok => UStr -> LexBuilder tok tok
 ustrToken u = LexBuilder $ do
-  tok <- newTokID
-  modify $ \st ->
-    st{ labeledLexers = M.insert u tok (labeledLexers st)
-      , buildingLexer = buildingLexer st <> rx u . rxEmptyToken tok
-      }
-  return tok
+  tok <- fmap (M.lookup u) (gets labeledLexers)
+  case tok of
+    Just tok -> return tok
+    Nothing  -> do
+      tok <- newTokID
+      modify $ \st ->
+        st{ labeledLexers = M.insert u tok (labeledLexers st)
+          , buildingLexer = buildingLexer st <> rx u . rxEmptyToken tok
+          }
+      return tok
 
 -- | Like 'ustrToken', except takes a 'Prelude.String' input.
 stringToken :: TokenType tok => String -> LexBuilder tok tok
@@ -439,18 +443,25 @@ ustrTable = mapM_ ustrToken . reverse . sort
 -- | Create a token type that is defined by a 'Lexer' instead of a keyword or operator string.
 -- The lexer must be labeled so it can be uniquely identified, and also for producing more
 -- desriptive error messages.
-regexToken :: TokenType tok => String -> Regex -> LexBuilder tok ()
+regexToken :: TokenType tok => String -> Regex -> LexBuilder tok tok
 regexToken label rx = LexBuilder $ do
   tok <- newTokID
   modify $ \st ->
     st{ labeledLexers = M.insert (ustr label) tok (labeledLexers st)
       , buildingLexer = buildingLexer st <> rx . rxToken tok
       }
+  return tok
 
+-- | Create a new token type without assigning any regular expression to it. The type ID is
+-- registered but not used until you explicitly make use of the token type within a regex with a
+-- function like 'rxToken' or 'rxEmptyToken'.
 newTokenType :: TokenType tok => String -> LexBuilder tok tok
 newTokenType t = LexBuilder newTokID
 
--- | Simply append a 'Regex' to the 'LexBuilder'.
+-- | Simply append a 'Regex' to the 'LexBuilder', it will function within the larger lexer but it
+-- won't be assigned to any token type. The use of this function implies that you have created a
+-- token type for it using 'newTokenType' or 'regexToken' and will use that type within this lexer
+-- via the 'rxToken' or 'rxEmptyToken' functions.
 regex :: Regex -> LexBuilder tok ()
 regex rx = LexBuilder (modify $ \st -> st{buildingLexer = buildingLexer st <> rx})
 
@@ -568,8 +579,8 @@ instance Monoid RegexUnit where
         (a, b)        -> case (a, b) of
           (RxCharSet a, RxCharSet b) -> RxStep (RxCharSet $ Es.union a b) (mappend ax bx)
           (RxCharSet _, RxString  _) -> RxChoice [RxStep b bx, RxStep a ax]
-          (RxString aa, RxString bb) -> RxChoice $
-            (if aa<bb then ([RxStep a ax]++) else (++[RxStep a ax])) [RxStep b bx]
+          (RxString aa, RxString bb) -> RxChoice $ -- sort strings from longest to shortest
+            (if aa<bb then (++[RxStep a ax]) else ([RxStep a ax]++)) [RxStep b bx]
           _                          -> RxChoice [RxStep a ax, RxStep b bx]
       b                 -> RxChoice [RxStep a ax, b]
     RxExpect  err ax -> RxExpect err ax
@@ -718,10 +729,16 @@ to toch frch = Es.range frch toch
 -- > numberEndingWithDot 'repeat' ['from' '0' 'to' '9'] . 'rx' '.' 
 -- >
 -- > -- This matches strings like "0.0.0.0", "123.", ".99", "...", "0.0" and "1..20"
--- > dotsOrDigits = 'repeat' ['from' '0' 'to' '9', 'ch' '.'] 
+-- > dotsOrDigits = 'repeat' ['from' '0' 'to' '9', 'ch' '.']
+-- This function is also useful with the 'Prelude.map' function to create a set of characters from a
+-- 'Prelude.String':
+-- > stringOfVowels = 'rxRepeat' ('Prelude.map' 'ch' "AEIOUaeiou")
 ch :: Char -> Es.Set Char
 ch = Es.point
 
+-- | Produces a character set that matches any character, like the POSIX regular expression dot
+-- (@.@). /NEVER use this in a 'rxRepeat' function/ unless you really want to dump the entire
+-- remainder of the input string into the 'lexBuffer'.
 anyChar :: Es.Set Char
 anyChar = Es.infinite
 
@@ -730,12 +747,20 @@ anyChar = Es.infinite
 invert :: [Es.Set Char] -> Es.Set Char
 invert = Es.invert . foldl Es.union mempty
 
+-- | Repeat a regular 'RegexBaseType' regular expression a number of times, with the number of times
+-- repeated being limited by an upper and lower bound. Fails to match if the minimum number of
+-- occurences cannot be matched, otherwise continues to repeat as many times as possible (greedily)
+-- but not exceeding the upper bound given.
 rxLimitMinMax :: RegexBaseType rx => Int -> Int -> rx -> Regex
 rxLimitMinMax lo hi = RxStep . RxRepeat (Es.segment lo hi) . rxPrim
 
+-- | Repeats greedily, matching the 'RegexBaseType' regular expression as many times as possible,
+-- but backtracks if the regex cannot be matched a minimum of the given number of times.
 rxLimitMin :: RegexBaseType rx => Int -> rx -> Regex
 rxLimitMin lo = RxStep . RxRepeat (Es.toPosInf lo) . rxPrim
 
+-- | Match a 'RegexBaseType' regex as many times as possible (greedily) but never exceeding the
+-- maximum number of times given. Must match at least one character, or else backtracks.
 rxLimitMax :: RegexBaseType rx => Int -> rx -> Regex
 rxLimitMax hi = RxStep . RxRepeat (Es.negInfTo hi) . rxPrim
 

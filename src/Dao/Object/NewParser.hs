@@ -72,12 +72,42 @@ instance Show Dao where { show = deriveShowFromTokenDB daoTokenDB }
 daoTokenDB :: TokenDB Dao
 daoTokenDB = makeTokenDB daoTokenDef
 
-base16intLabel = "BASE16"
-base2intLabel = "BASE2"
-litStrLabel = "STRING"
+spaceLabel      = "SPACE"
+base16intLabel  = "BASE16"
+base2intLabel   = "BASE2"
+litStrLabel     = "STRING"
+inlineComLabel  = "INLINECOM"
+endlineComLabel = "ENDLINECOM"
 
 daoTokenDef :: LexBuilder Dao ()
 daoTokenDef = do
+  let spaceRegex = rxRepeat(map ch " \t\n\r\f\v")
+  space <- regexToken spaceLabel spaceRegex
+  let inlineComRegex =
+        rx "/*" . rxRepeat(invert[ch '*']) . rxRepeat(ch '*') . (rx '/' <> inlineComRegex)
+  inlineCom  <- regexToken inlineComLabel inlineComRegex
+  let endlineComRegex = rx "//" . rxRepeat(invert[ch '\n'])
+  endlineCom <- regexToken endlineComLabel endlineComRegex
+  dataToken  <- stringToken "data"
+  openBrace  <- stringToken "{"
+  closeBrace <- stringToken "}"
+  base64Data <- newTokenType "BASE64DATA"
+  let multiComments =
+        (mconcat $
+            [ spaceRegex      . rxEmptyToken space
+            , inlineComRegex  . rxToken inlineCom
+            , endlineComRegex . rxToken endlineCom
+            ]) . multiComments
+  let base64DataRegex =
+        (spaceRegex . rxToken space <>
+          rxRepeat [from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/'] .
+            rxToken base64Data) . base64DataRegex
+  regex $ rx "data" . rxEmptyToken dataToken . (multiComments <>
+    rx "{" . rxEmptyToken openBrace . (base64DataRegex <> rx "}" . rxEmptyToken closeBrace))
+  stringTable $ words $ unwords $
+    [ allUpdateOpStrs, allArithOp1Strs, allArithOp2Strs
+    , "{ } ( ) [ ]"
+    ]
   stringTable $ words $ unwords $
     [ "if else for in while with try catch"
     , "continue break return throw"
@@ -86,7 +116,6 @@ daoTokenDef = do
     , "function func pattern rule"
     , "import imports require requires"
     , "BEGIN END EXIT"
-    , allUpdateOpStrs, allArithOp1Strs, allArithOp2Strs
     ]
   let strlit = rxRepeat (invert [ch '"', ch '\\']) . (rx "\\" . rx anyChar . strlit <> rx '"')
   regexToken litStrLabel $ rx '"' . strlit
@@ -95,6 +124,7 @@ daoTokenDef = do
       decdigits = rxRepeat from0to9
   regexToken base16intLabel $ (rx "0x" <> rx "0X") . hexdigits
   regexToken base2intLabel  $ (rx "0b" <> rx "0B") . decdigits
+  return ()
 
 -- | The token types.
 data DaoTT

@@ -369,6 +369,7 @@ instance (Ix tok, TokenType tok) =>
   Monad (LexBuilder tok) where
     return = LexBuilder . return
     (LexBuilder a) >>= b = LexBuilder (a >>= runLexBuilder . b)
+initLexBuilder = LexBuilderState 1 mempty (const RxBacktrack)
 
 -- not for export
 newTokID :: TokenType tok => State (LexBuilderState tok) tok
@@ -444,11 +445,11 @@ ustrTable = mapM_ ustrToken . reverse . sort
 -- The lexer must be labeled so it can be uniquely identified, and also for producing more
 -- desriptive error messages.
 regexToken :: TokenType tok => String -> Regex -> LexBuilder tok tok
-regexToken label rx = LexBuilder $ do
+regexToken label re = LexBuilder $ do
   tok <- newTokID
   modify $ \st ->
     st{ labeledLexers = M.insert (ustr label) tok (labeledLexers st)
-      , buildingLexer = buildingLexer st <> rx . rxToken tok
+      , buildingLexer = buildingLexer st <> re . rxToken tok
       }
   return tok
 
@@ -463,7 +464,7 @@ newTokenType t = LexBuilder newTokID
 -- token type for it using 'newTokenType' or 'regexToken' and will use that type within this lexer
 -- via the 'rxToken' or 'rxEmptyToken' functions.
 regex :: Regex -> LexBuilder tok ()
-regex rx = LexBuilder (modify $ \st -> st{buildingLexer = buildingLexer st <> rx})
+regex re = LexBuilder (modify $ \st -> st{buildingLexer = buildingLexer st <> re})
 
 -- | Here is class that allows you to create your own token type from a Haskell newtype. It is
 -- usually a good idea do this to keep parsers isolated from one another. It should be considered a
@@ -578,7 +579,6 @@ instance Monoid RegexUnit where
         (a, b) | a==b -> RxStep a (mappend ax bx)
         (a, b)        -> case (a, b) of
           (RxCharSet a, RxCharSet b) -> RxStep (RxCharSet $ Es.union a b) (mappend ax bx)
-          (RxCharSet _, RxString  _) -> RxChoice [RxStep b bx, RxStep a ax]
           (RxString aa, RxString bb) -> RxChoice $ -- sort strings from longest to shortest
             (if aa<bb then (++[RxStep a ax]) else ([RxStep a ax]++)) [RxStep b bx]
           _                          -> RxChoice [RxStep a ax, RxStep b bx]
@@ -591,26 +591,46 @@ instance Monoid RegexUnit where
       RxMakeToken _  _    bx -> RxMakeToken tt keep (mappend ax bx)
       bx                     -> RxMakeToken tt keep (mappend ax bx)
 
+showRegex :: TokenDB tok -> Regex -> String
+showRegex tokDB re = evalState (loop (re RxSuccess)) ("", mempty) where
+  loop re = case re of
+    RxBacktrack   -> return "backtrack"
+    RxSuccess     -> return "success"
+    RxChoice   re -> do
+      (indent, _) <- get
+      withState (\ (indent, vars) -> ("  "++indent, vars)) $
+        mapM loop re >>= return . foldl (\str next -> indent++str++"\n"++next) ""
+    RxStep            r re -> loop re >>= return . ((showRegexPrim r ++ " ")++)
+    RxExpect          e re -> loop re >>= return . (("must(else fail "++show e++") do-> ")++)
+    RxDontMatch         re -> loop re >>= return . (\s -> "not("++s++")")
+    RxMakeToken tt keep re -> do
+      vars <- fmap snd get
+      let cons = if keep then "token" else "emptok"
+      case M.lookup tt vars of
+        Nothing -> do
+          let str = tableTTtoUStr tokDB ! tt
+          modify (\ (indent, vars) -> (indent, M.insert tt str vars))
+          after <- loop re
+          return (cons++' ':uchars str++' ':after)
+        Just str -> return (cons++' ':uchars str++" ...")
+
 -- | Convert a 'Regex' function to a 'Lexer'. The resulting 'Lexer' will not call 'makeToken' or
 -- 'makeEmptyToken', it will only match the beginning of the input string according to the 'Regex',
 -- leaving the matched characters in the 'lexBuffer'.
 regexToLexer :: (Eq tok, TokenType tok) => Regex -> Lexer tok ()
-regexToLexer rx = case rx RxSuccess of
-  RxBacktrack            -> lexBacktrack
-  RxSuccess              -> return ()
-  RxMakeToken tt keep rx -> do
-    (if keep then makeToken else makeEmptyToken) (wrapTT tt)
-    regexToLexer (const rx)
-  RxChoice            rx -> msum $ map (regexToLexer . const) rx
-  RxStep         r    rx -> regexPrimToLexer r >> regexToLexer (const rx)
-  RxExpect       err  rx -> mplus (regexToLexer (const rx)) (fail (uchars err))
-  RxDontMatch         rx -> do
-    let match rx = regexToLexer (const rx)
-    case rx of
-      RxDontMatch rx -> match rx -- double negative means succeed on match
-      rx             -> do
+regexToLexer re = loop (re RxSuccess) where
+  loop re = case re of
+    RxBacktrack            -> lexBacktrack
+    RxSuccess              -> return ()
+    RxMakeToken tt keep re -> (if keep then makeToken else makeEmptyToken) (wrapTT tt) >> loop re
+    RxChoice            re -> msum $ map loop re
+    RxStep         r    re -> regexPrimToLexer r >> loop re
+    RxExpect       err  re -> mplus (loop re) (fail (uchars err))
+    RxDontMatch         re -> case re of
+      RxDontMatch re -> loop re -- double negative means succeed on match
+      re             -> do
         keep <- gets lexBuffer
-        matched <- clearBuffer >> mplus (match rx >> return True) (return False)
+        matched <- clearBuffer >> mplus (loop re >> return True) (return False)
         if matched
           then  do -- fail if matched
             modify $ \st ->
@@ -629,26 +649,28 @@ regexToLexer rx = case rx RxSuccess of
 data RxPrimitive
   = RxString   { rxString  :: UStr }
   | RxCharSet  { rxCharSet :: Es.Set Char }
-  | RxRepeat   { rxLimits  :: Es.Segment Int, subRegexUnit :: RxPrimitive }
+  | RxRepeat   { rxLowerLim :: Es.Inf Int, rxUpperLim :: Es.Inf Int, subRegexUnit :: RxPrimitive }
   deriving Eq
 
+showRegexPrim :: RxPrimitive -> String
+showRegexPrim re = case re of
+  RxString       str -> show str
+  RxCharSet      ch  -> show ch
+  RxRepeat lo hi re  -> "repeat("++show lo++".."++show hi++", "++showRegexPrim re++")"
+
 regexPrimToLexer :: Eq tok => RxPrimitive -> Lexer tok ()
-regexPrimToLexer rx = case rx of
-  RxString  str    -> lexString (uchars str)
-  RxCharSet set    -> lexCharP (Es.member set)
-  RxRepeat  lim rx -> rxRepeat lim rx
+regexPrimToLexer re = case re of
+  RxString  str     -> lexString (uchars str)
+  RxCharSet set     -> lexCharP (Es.member set)
+  RxRepeat lo hi re -> rept lo hi re
   where
-    rxRepeat lim rx = fromMaybe (error "bad limit values in RxRepeat") $ msum $
-      [ do  lo <- Es.singular lim
-            mplus (Es.toPoint lo >>= return . upperLim) (return (noLimit rx))
-      , do  (lo, hi) <- Es.plural lim
-            getLo <- mplus (Es.toPoint lo >>= return . lowerLim) (return (return ()))
-            getHi <- mplus (Es.toPoint hi >>= return . upperLim) (return (noLimit rx))
-            return (getLo >> getHi)
-      ]
-    lowerLim lo = case rx of
-      RxString  str    -> lowerLimLex lo (lexString (uchars str))
-      RxCharSet set    -> do
+    rept lo hi re = fromMaybe (seq "internal error" $! return ()) $ do
+      getLo <- mplus (Es.toPoint lo >>= return . lowerLim re) (return (return ()))
+      getHi <- mplus (Es.toPoint hi >>= return . upperLim re) (return (noLimit re))
+      return (getLo >> getHi)
+    lowerLim re lo = case re of
+      RxString  str       -> lowerLimLex lo (lexString (uchars str))
+      RxCharSet set       -> do
         keep <- gets lexBuffer
         clearBuffer >> lexWhile (Es.member set)
         got <- gets lexBuffer
@@ -657,21 +679,21 @@ regexPrimToLexer rx = case rx of
             modify (\st -> st{lexInput = keep ++ got ++ lexInput st, lexBuffer = ""})
             mzero
           else  modify (\st -> st{lexBuffer = keep ++ got})
-      RxRepeat  lim rx -> lowerLimLex lo (rxRepeat lim rx)
+      RxRepeat lo' hi' re -> lowerLimLex lo (rept lo' hi' re)
     lowerLimLex lo lex = replicateM_ lo (mplus lex lexBacktrack)
-    upperLim hi = case rx of
-      RxString  str    -> replicateM_ hi (lexString (uchars str))
-      RxCharSet set    -> do
+    upperLim re hi = case re of
+      RxString  str     -> replicateM_ hi (lexString (uchars str))
+      RxCharSet set     -> do
         keep <- gets lexBuffer
         clearBuffer >> lexWhile (Es.member set)
         modify $ \st ->
           let (buf, rem) = splitAt hi (lexBuffer st)
           in  st{lexBuffer = keep++buf, lexInput = rem ++ lexInput st}
-      RxRepeat  lim rx -> replicateM_ hi (rxRepeat lim rx)
-    noLimit rx = case rx of
-      RxString  str    -> loop (lexString (uchars str))
-      RxCharSet set    -> lexWhile (Es.member set)
-      RxRepeat  lim rx -> loop (rxRepeat lim rx)
+      RxRepeat lo' hi' re -> replicateM_ hi (rept lo' hi' re)
+    noLimit re = case re of
+      RxString  str      -> loop (lexString (uchars str))
+      RxCharSet set      -> mplus (lexWhile (Es.member set)) (return ())
+      RxRepeat  lo hi re -> loop (rept lo hi re)
     loop lex = do
       continue <- mplus (lex >> return True) (return False)
       if continue then loop lex else return ()
@@ -752,22 +774,22 @@ invert = Es.invert . foldl Es.union mempty
 -- occurences cannot be matched, otherwise continues to repeat as many times as possible (greedily)
 -- but not exceeding the upper bound given.
 rxLimitMinMax :: RegexBaseType rx => Int -> Int -> rx -> Regex
-rxLimitMinMax lo hi = RxStep . RxRepeat (Es.segment lo hi) . rxPrim
+rxLimitMinMax lo hi = RxStep . RxRepeat (Es.Point lo) (Es.Point hi) . rxPrim
 
 -- | Repeats greedily, matching the 'RegexBaseType' regular expression as many times as possible,
 -- but backtracks if the regex cannot be matched a minimum of the given number of times.
 rxLimitMin :: RegexBaseType rx => Int -> rx -> Regex
-rxLimitMin lo = RxStep . RxRepeat (Es.toPosInf lo) . rxPrim
+rxLimitMin lo = RxStep . RxRepeat (Es.Point lo) Es.PosInf . rxPrim
 
 -- | Match a 'RegexBaseType' regex as many times as possible (greedily) but never exceeding the
 -- maximum number of times given. Must match at least one character, or else backtracks.
 rxLimitMax :: RegexBaseType rx => Int -> rx -> Regex
-rxLimitMax hi = RxStep . RxRepeat (Es.negInfTo hi) . rxPrim
+rxLimitMax hi = RxStep . RxRepeat Es.NegInf (Es.Point hi) . rxPrim
 
 -- | Like 'rx' but repeats, but must match at least one character. It is similar to the @+@ operator
 -- in POSIX regular expressions.
 rxRepeat :: RegexBaseType rx => rx -> Regex
-rxRepeat = RxStep . RxRepeat Es.inf . rxPrim
+rxRepeat = RxStep . RxRepeat Es.NegInf Es.PosInf . rxPrim
 
 -- | Marks a point in a 'Regex' sequence where the matching must not fail, and if it does fail, the
 -- resulting 'Lexer' to which this 'Regex' evaluates will evaluate to 'Control.Monad.fail' with an

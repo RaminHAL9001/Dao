@@ -623,8 +623,16 @@ regexToLexer re = loop (re RxSuccess) where
     RxBacktrack            -> lexBacktrack
     RxSuccess              -> return ()
     RxMakeToken tt keep re -> (if keep then makeToken else makeEmptyToken) (wrapTT tt) >> loop re
-    RxChoice            re -> msum $ map loop re
-    RxStep         r    re -> regexPrimToLexer r >> loop re
+    RxChoice            re -> msum $ map loop re where
+    RxStep         r    re -> do
+      keep <- gets lexBuffer
+      clearBuffer
+      continue <- msum $
+        [ regexPrimToLexer r >> modify (\st -> st{lexBuffer = keep ++ lexBuffer st}) >> return True
+        , do  modify (\st -> st{ lexBuffer = keep, lexInput = lexBuffer st ++ lexInput st})
+              return False
+        ]
+      if continue then loop re else mzero
     RxExpect       err  re -> mplus (loop re) (fail (uchars err))
     RxDontMatch         re -> case re of
       RxDontMatch re -> loop re -- double negative means succeed on match
@@ -680,20 +688,15 @@ regexPrimToLexer re = case re of
             mzero
           else  modify (\st -> st{lexBuffer = keep ++ got})
       RxRepeat lo' hi' re -> lowerLimLex lo (rept lo' hi' re)
-    lowerLimLex lo lex = replicateM_ lo (mplus lex lexBacktrack)
+    lowerLimLex lo lex = replicateM_ lo lex
     upperLim re hi = case re of
-      RxString  str     -> replicateM_ hi (lexString (uchars str))
-      RxCharSet set     -> do
-        keep <- gets lexBuffer
-        clearBuffer >> lexWhile (Es.member set)
-        modify $ \st ->
-          let (buf, rem) = splitAt hi (lexBuffer st)
-          in  st{lexBuffer = keep++buf, lexInput = rem ++ lexInput st}
+      RxString  str       -> replicateM_ hi (lexString (uchars str))
+      RxCharSet set       -> lexWhile (Es.member set)
       RxRepeat lo' hi' re -> replicateM_ hi (rept lo' hi' re)
     noLimit re = case re of
-      RxString  str      -> loop (lexString (uchars str))
-      RxCharSet set      -> mplus (lexWhile (Es.member set)) (return ())
-      RxRepeat  lo hi re -> loop (rept lo hi re)
+      RxString  str       -> loop (lexString (uchars str))
+      RxCharSet set       -> mplus (lexWhile (Es.member set)) (return ())
+      RxRepeat lo  hi  re -> loop (rept lo hi re)
     loop lex = do
       continue <- mplus (lex >> return True) (return False)
       if continue then loop lex else return ()
@@ -786,10 +789,16 @@ rxLimitMin lo = RxStep . RxRepeat (Es.Point lo) Es.PosInf . rxPrim
 rxLimitMax :: RegexBaseType rx => Int -> rx -> Regex
 rxLimitMax hi = RxStep . RxRepeat Es.NegInf (Es.Point hi) . rxPrim
 
--- | Like 'rx' but repeats, but must match at least one character. It is similar to the @+@ operator
--- in POSIX regular expressions.
+-- | Like 'rx' but repeats, but must match at least one character. It is similar to the @*@ operator
+-- in POSIX regular expressions. /WARNING:/ do not create regex loops using only regexs of this
+-- type, your regex will loop indefinitely.
 rxRepeat :: RegexBaseType rx => rx -> Regex
 rxRepeat = RxStep . RxRepeat Es.NegInf Es.PosInf . rxPrim
+
+-- | Defined as @'rxLimitMin' 1@, matches a primitive 'RegexBaseType' one or more times, rather than
+-- zero or more times. It is imilar to the @+@ operator in POSIX regular expressions.
+rxRepeat1 :: RegexBaseType rx => rx -> Regex
+rxRepeat1 = rxLimitMin 1
 
 -- | Marks a point in a 'Regex' sequence where the matching must not fail, and if it does fail, the
 -- resulting 'Lexer' to which this 'Regex' evaluates will evaluate to 'Control.Monad.fail' with an

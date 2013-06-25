@@ -336,7 +336,7 @@ parserErr lineNum colNum =
 -- 'Prelude.Read' and 'Prelude.Show' for your tokens.
 newtype TT = MkTT{ intTT :: Int } deriving (Eq, Ord, Show, Ix)
 
--- Used internally to the 'LexBuilderState', particularly the 'labeledLexers' field.
+-- Used internally to the 'LexBuilderState', particularly the 'stringToIDTable' field.
 -- data LexBuilderUnit tt
 --   = KeyStrRef { builderUnitKey :: tt }
 --   | RegexRef  { builderUnitKey :: tt, builderUnitRegex :: Regex }
@@ -358,7 +358,7 @@ newtype TT = MkTT{ intTT :: Int } deriving (Eq, Ord, Show, Ix)
 data LexBuilderState tok
   = LexBuilderState
     { regexItemCounter :: Int
-    , labeledLexers    :: M.Map UStr tok
+    , stringToIDTable  :: M.Map UStr tok
       -- ^ contains all simple lexers which do not establish loops. This would be any lexer that
       -- takes a keyword or operator, or a lexer constructed from a 'Regex' (which might or might
       -- not loop) but produces only one kind of token.
@@ -369,14 +369,8 @@ instance (Ix tok, TokenType tok) =>
   Monad (LexBuilder tok) where
     return = LexBuilder . return
     (LexBuilder a) >>= b = LexBuilder (a >>= runLexBuilder . b)
+instance Functor (LexBuilder tok) where { fmap f (LexBuilder m) = LexBuilder (fmap f m) }
 initLexBuilder = LexBuilderState 1 mempty (const RxBacktrack)
-
--- not for export
-newTokID :: TokenType tok => State (LexBuilderState tok) tok
-newTokID = do
-  i <- gets regexItemCounter
-  modify (\st -> st{regexItemCounter = i+1})
-  return (wrapTT (MkTT i))
 
 -- | The data type constructed from the 'LexBuilder' monad, used to build a 'Lexer' for your
 -- programming language, and also can be used to define the 'Prelude.Show' instance for your token
@@ -388,12 +382,11 @@ data TokenDB tok =
   , tokenDBLexer  :: Lexer tok ()
   }
 
-deriveShowFromTokenDB :: TokenType tok => TokenDB tok -> tok -> String
-deriveShowFromTokenDB tokenDB tok = uchars (tableTTtoUStr tokenDB ! unwrapTT tok)
-
-getTTfromUStr :: TokenType tok => TokenDB tok -> UStr -> Maybe tok
-getTTfromUStr tokenDB = flip M.lookup (tableUStrToTT tokenDB)
-
+-- | Once you have defined your 'LexBuilder' function using monadic notation, convert the value of
+-- this function to a 'TokenDB' value. The 'TokenDB' is mostly handy for retreiving the string
+-- values associated with each token ID created by the 'newTokenType' function, for example when
+-- using 'dervieShowFromTokenDB' which uses a 'TokenDB' to produce a function suitable for
+-- instantiating your @'TokenType' tok@ into the 'Prelude.Show' class.
 makeTokenDB :: (Eq tok, TokenType tok) => LexBuilder tok a -> TokenDB tok
 makeTokenDB builder =
   TokenDB
@@ -403,25 +396,48 @@ makeTokenDB builder =
   , tableUStrToTT = tabmap
   }
   where
-    tabmap = labeledLexers st
+    tabmap = stringToIDTable st
     st = execState (runLexBuilder builder) $
-      LexBuilderState{regexItemCounter=1, labeledLexers=mempty, buildingLexer=mempty}
+      LexBuilderState{regexItemCounter=1, stringToIDTable=mempty, buildingLexer=mempty}
+
+-- not for export
+newTokID :: TokenType tok => UStr -> State (LexBuilderState tok) tok
+newTokID u = do
+  tok <- fmap (M.lookup u) (gets stringToIDTable)
+  case tok of
+    Nothing  -> do
+      i <- gets regexItemCounter
+      let tok = wrapTT (MkTT i)
+      modify $ \st ->
+        st{ regexItemCounter = i+1
+          , stringToIDTable = M.insert u tok (stringToIDTable st)
+          }
+      return tok
+    Just tok -> return tok
+
+-- | Create a new token type without assigning any regular expression to it. The type ID is
+-- registered but not used until you explicitly make use of the token type within a regex with a
+-- function like 'rxToken' or 'rxEmptyToken'.
+newTokenType :: TokenType tok => String -> LexBuilder tok tok
+newTokenType s = LexBuilder (newTokID (ustr s))
+
+deriveShowFromTokenDB :: TokenType tok => TokenDB tok -> tok -> String
+deriveShowFromTokenDB tokenDB tok = uchars (tableTTtoUStr tokenDB ! unwrapTT tok)
+
+getTTfromUStr :: TokenType tok => TokenDB tok -> UStr -> Maybe tok
+getTTfromUStr tokenDB = flip M.lookup (tableUStrToTT tokenDB)
 
 -- | Creates a single keyword or operator token, with the name of the token being the string that is
 -- lexed-out of the input. Its like 'stringTable' but creates only a single token which stores no
--- data and returns the newly created token value.
+-- data and returns the newly created token value. The tokenizer created uses 'rxEmptyToken' to
+-- create the token, meaning the actual lexed string value is not stored in the token because there
+-- is no need to store the string value because the token ID of the token created can be used to
+-- retrieve the string value from the 'TokenDB' created from this 'LexBuilder'.
 ustrToken :: TokenType tok => UStr -> LexBuilder tok tok
 ustrToken u = LexBuilder $ do
-  tok <- fmap (M.lookup u) (gets labeledLexers)
-  case tok of
-    Just tok -> return tok
-    Nothing  -> do
-      tok <- newTokID
-      modify $ \st ->
-        st{ labeledLexers = M.insert u tok (labeledLexers st)
-          , buildingLexer = buildingLexer st <> rx u . rxEmptyToken tok
-          }
-      return tok
+  tok <- newTokID u
+  modify (\st -> st{buildingLexer = buildingLexer st <> rx u . rxEmptyToken tok})
+  return tok
 
 -- | Like 'ustrToken', except takes a 'Prelude.String' input.
 stringToken :: TokenType tok => String -> LexBuilder tok tok
@@ -441,30 +457,24 @@ stringTable = ustrTable . map ustr
 ustrTable :: TokenType tok => [UStr] -> LexBuilder tok ()
 ustrTable = mapM_ ustrToken . reverse . sort
 
--- | Create a token type that is defined by a 'Lexer' instead of a keyword or operator string.
--- The lexer must be labeled so it can be uniquely identified, and also for producing more
--- desriptive error messages.
+-- | Create a token type that is defined by a 'Regex' instead of a keyword or operator string.
+-- The 'Prelude.String' label is used to create or retrieve a token ID, and this token ID will be
+-- created whenever the 'Regex' provided here successfully lexes a token from the input string.
+-- Actually, the 'Regex' @re@ provided here will be stored into the 'LexBuilder' with the equation:
+-- > re . 'rxToken' tokID
+-- where @tokID@ is the token ID associated with the 'Prelude.String' label parameter.
 regexToken :: TokenType tok => String -> Regex -> LexBuilder tok tok
 regexToken label re = LexBuilder $ do
-  tok <- newTokID
-  modify $ \st ->
-    st{ labeledLexers = M.insert (ustr label) tok (labeledLexers st)
-      , buildingLexer = buildingLexer st <> re . rxToken tok
-      }
+  tok <- newTokID (ustr label)
+  modify (\st -> st{buildingLexer = buildingLexer st <> re . rxToken tok})
   return tok
-
--- | Create a new token type without assigning any regular expression to it. The type ID is
--- registered but not used until you explicitly make use of the token type within a regex with a
--- function like 'rxToken' or 'rxEmptyToken'.
-newTokenType :: TokenType tok => String -> LexBuilder tok tok
-newTokenType t = LexBuilder newTokID
 
 -- | Simply append a 'Regex' to the 'LexBuilder', it will function within the larger lexer but it
 -- won't be assigned to any token type. The use of this function implies that you have created a
 -- token type for it using 'newTokenType' or 'regexToken' and will use that type within this lexer
 -- via the 'rxToken' or 'rxEmptyToken' functions.
 regex :: Regex -> LexBuilder tok ()
-regex re = LexBuilder (modify $ \st -> st{buildingLexer = buildingLexer st <> re})
+regex re = LexBuilder (modify (\st -> st{buildingLexer = buildingLexer st <> re}))
 
 -- | Here is class that allows you to create your own token type from a Haskell newtype. It is
 -- usually a good idea do this to keep parsers isolated from one another. It should be considered a
@@ -538,6 +548,14 @@ class TokenType tok =>
 -- > 'Data.Monoid.mconcat' ['rx' "tryThis", 'rx' "thenThis", regexA, regexB]
 -- or equivalently:
 -- > 'rx' 'Data.Monoid.<>' "tryThis" 'Data.Monoid.<>' 'rx' "thenThis" 'Data.Monoid.<>' regexA 'Data.Monoid.<>' regexB
+-- 
+-- Another advantage of 'Regex' being a function of type @'RegexUnit' -> 'RegexUnit'@ is that any
+-- function of the type @a -> a@ can easily be used with the 'Prelude.fix' function to create loops,
+-- for example, to lex an arbitrarily long sequence of numbers separated by spacecs:
+-- > do space  <- 'newTokenType' "SPACE"
+-- >    number <- 'newTokenType' "NUMBER"
+-- >    'regex' $ 'Prelude.fix' $ \loop ->
+-- >        ('rxRepeat1'('ch' ' ') . 'rxEmptyToken' space 'Data.Monoid.<>' 'rxRepeat1'('from' '0' 'to' '9') . 'rxToken' number) . loop
 type Regex = RegexUnit -> RegexUnit
 
 -- | This is an intermediate type for constructing 'Regex's. You will not be using it directly. You
@@ -552,44 +570,39 @@ data RegexUnit
   | RxMakeToken{ rxMakeToken   :: TT, rxKeepContent :: Bool, subRegex :: RegexUnit }
   deriving Eq
 instance Monoid RegexUnit where
-  mempty      = RxBacktrack
+  mempty = RxBacktrack
   mappend a b = case a of
-    RxBacktrack    -> b
-    RxSuccess      -> RxSuccess
-    RxChoice    [] -> b
-    RxChoice    ax -> case b of
-      RxBacktrack    -> RxChoice ax
-      RxSuccess      -> RxChoice (cut $ ax++[RxSuccess])
-      RxChoice    bx -> RxChoice (cut $ ax++bx)
-      b              -> foldr mappend b ax
-      where
-        cut ax = case ax of
-          []                -> []
-          RxSuccess:ax      -> [RxSuccess]
-          RxExpect b bx : _ -> [RxExpect b bx]
-          a:ax              -> a : cut ax
-    RxStep    a ax      -> case b of
-      RxBacktrack       -> RxStep a ax
-      RxSuccess         -> RxChoice [RxStep a ax, RxSuccess]
-      RxChoice      []  -> RxStep a ax
-      RxChoice   (b:bx) -> case mappend (RxStep a ax) b of
-        RxChoice      ax  -> RxChoice (ax++bx)
-        b                 -> RxChoice (b:bx)
-      RxStep      b bx  -> case (a, b) of
-        (a, b) | a==b -> RxStep a (mappend ax bx)
-        (a, b)        -> case (a, b) of
-          (RxCharSet a, RxCharSet b) -> RxStep (RxCharSet $ Es.union a b) (mappend ax bx)
-          (RxString aa, RxString bb) -> RxChoice $ -- sort strings from longest to shortest
-            (if aa<bb then (++[RxStep a ax]) else ([RxStep a ax]++)) [RxStep b bx]
-          _                          -> RxChoice [RxStep a ax, RxStep b bx]
-      b                 -> RxChoice [RxStep a ax, b]
-    RxExpect  err ax -> RxExpect err ax
-    RxDontMatch       a -> case b of
-      RxDontMatch       b -> RxDontMatch (mappend a b)
-      b                   -> RxChoice [b, RxDontMatch a]
-    RxMakeToken tt keep ax -> case b of
-      RxMakeToken _  _    bx -> RxMakeToken tt keep (mappend ax bx)
-      bx                     -> RxMakeToken tt keep (mappend ax bx)
+    RxBacktrack          -> b
+    RxSuccess            -> a
+    RxExpect         _ _ -> a
+    RxStep         a' ax -> case b of
+      RxStep         b' bx -> if a'==b' then RxStep a' (ax<>bx) else RxChoice [a,b]
+      b                    -> RxChoice [a,b]
+    RxDontMatch      ax  -> case b of
+      RxDontMatch      bx  -> RxDontMatch (ax<>bx)
+      b                    -> RxChoice [a,b]
+    RxChoice         ax  -> case b of
+      RxChoice        bx   ->
+        let list = loop ax bx
+        in  if null list
+              then RxBacktrack
+              else if null (tail list) then head list else RxChoice list
+      b                    ->
+        let list = loop ax [b]
+        in  if null (tail list) then head list else RxChoice list
+    RxMakeToken ta ka ax -> case b of
+      RxMakeToken tb kb bx ->
+        if ta==tb then RxMakeToken ta (ka||kb) (ax<>bx) else RxChoice [a,b]
+      b                    -> RxChoice [a,b]
+    where
+      loop ax bx = case ax of
+        []   -> bx
+        [a]  -> case bx of
+          []   -> [a]
+          b:bx -> case a<>b of
+            RxChoice ax -> ax++bx
+            b           -> a:b:bx
+        a:ax -> a : loop ax bx
 
 showRegex :: TokenDB tok -> Regex -> String
 showRegex tokDB re = evalState (loop (re RxSuccess)) ("", mempty) where
@@ -622,17 +635,15 @@ regexToLexer re = loop (re RxSuccess) where
   loop re = case re of
     RxBacktrack            -> lexBacktrack
     RxSuccess              -> return ()
-    RxMakeToken tt keep re -> (if keep then makeToken else makeEmptyToken) (wrapTT tt) >> loop re
-    RxChoice            re -> msum $ map loop re where
+    RxMakeToken tt keep re ->
+      (optional . (if keep then makeToken else makeEmptyToken)) (wrapTT tt) >> loop re
+    RxChoice            re -> msum $ map loop re
     RxStep         r    re -> do
       keep <- gets lexBuffer
       clearBuffer
-      continue <- msum $
-        [ regexPrimToLexer r >> modify (\st -> st{lexBuffer = keep ++ lexBuffer st}) >> return True
-        , do  modify (\st -> st{ lexBuffer = keep, lexInput = lexBuffer st ++ lexInput st})
-              return False
-        ]
-      if continue then loop re else mzero
+      mplus (regexPrimToLexer r >> modify (\st -> st{lexBuffer = keep ++ lexBuffer st}))
+            (modify (\st -> st{lexBuffer=keep, lexInput = lexBuffer st ++ lexInput st}) >> mzero)
+      loop re
     RxExpect       err  re -> mplus (loop re) (fail (uchars err))
     RxDontMatch         re -> case re of
       RxDontMatch re -> loop re -- double negative means succeed on match

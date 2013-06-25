@@ -316,6 +316,29 @@ parserErr lineNum colNum =
 -- spaces", stated simply using Haskell functions, and then let the token types be derived from
 -- these declarations. The functions in this section intend to provide you with this ability.
 
+-- | Here is class that allows you to create your own token type from a Haskell newtype. It is
+-- usually a good idea do this to keep parsers isolated from one another. It should be considered a
+-- best practice to do this for every language. For example, if you have a Python parser, make a new
+-- type for Python tokens:
+-- > newtype Python = Python 'TT' deriving 'Data.Ix.Ix'
+-- > instance TokenType Python where { 'wrapTT' = Python }
+-- Only two lines of code, so there is no excuse not to do it. It /MUST/ derive 'Data.Ix.Ix'.
+--
+-- The reason for this is to prevent confusing tokens produced by different tokenizers for different
+-- languages. For example: if you have a large project that compiles two different
+-- languages, say Python and Ruby, into the same Abstract Syntax Tree, you don't want both parsers
+-- using 'TT' as their token types because someone might accidentally feed 'TT' tokens from the Ruby
+-- tokenizer into the Python parser or vice-versa. Using a wrapper type lets you catch this error at
+-- compile time.
+-- 
+-- Now your parsers may peacfully coexist, even in the same module:
+-- > parsePython :: 'Prelude.String' -> 'Parser' () Python MySyntaxTree
+-- > parsePython = 'parse' myPythonGrammar mempty
+-- > parseRuby   :: 'Prelude.String' -> 'Parser' () Ruby MySyntaxTree
+-- > parseRuby   = 'parse' myRubyGrammar   mempty
+class Ix a => TokenType a where { wrapTT :: TT -> a; unwrapTT :: a -> TT; }
+instance TokenType TT where { wrapTT = id; unwrapTT = id; }
+
 -- | An actual value used to symbolize a type of token is a 'TT'. For example, an integer token
 -- might be assigned a value of @('TT' 0)@ a keyword might be @('TT' 1)@, an operator might be
 -- @('TT' 2)@, and so on. You do not define the numbers representing these token types, these
@@ -345,6 +368,16 @@ newtype TT = MkTT{ intTT :: Int } deriving (Eq, Ord, Show, Ix)
 -- isKeyStrRef :: LexBuilderUnit tt -> Bool
 -- isKeyStrRef a = case a of { KeyStrRef _ -> True; _ -> False; }
 
+-- | The data type constructed from the 'LexBuilder' monad, used to build a 'Lexer' for your
+-- programming language, and also can be used to define the 'Prelude.Show' instance for your token
+-- type using 'deriveShowFromTokenDB'.
+data TokenDB tok =
+  TokenDB
+  { tableTTtoUStr :: Array TT UStr
+  , tableUStrToTT :: M.Map UStr tok
+  , tokenDBLexer  :: Lexer tok ()
+  }
+
 -- | Example:
 -- > myTokens :: 'LexBuilder'
 -- > myTokens = do
@@ -365,21 +398,77 @@ data LexBuilderState tok
     , buildingLexer    :: Regex
     }
 newtype LexBuilder tok a = LexBuilder{ runLexBuilder :: State (LexBuilderState tok) a }
-instance (Ix tok, TokenType tok) =>
-  Monad (LexBuilder tok) where
+instance Monad (LexBuilder tok) where
     return = LexBuilder . return
     (LexBuilder a) >>= b = LexBuilder (a >>= runLexBuilder . b)
-instance Functor (LexBuilder tok) where { fmap f (LexBuilder m) = LexBuilder (fmap f m) }
+instance Functor     (LexBuilder tok) where { fmap f (LexBuilder m) = LexBuilder (fmap f m) }
+instance Applicative (LexBuilder tok) where { pure = return; (<*>) = ap; }
+instance Monoid a =>
+  Monoid (LexBuilder tok a) where { mempty = return mempty; mappend = liftM2 mappend; }
+
+-- | This class exists to make 'emptyToken', 'fullToken', and 'activate' polymorphic over the
+-- 'RegexBaseType's and also over the 'Regex' and @['Regex']@ types.
+class RegexType rx where { toRegex :: rx -> Regex }
+instance RegexType  Char         where { toRegex = rx }
+instance RegexType  String       where { toRegex = rx }
+instance RegexType  UStr         where { toRegex = rx }
+instance RegexType (Es.Set Char) where { toRegex = rx }
+instance RegexType [Es.Set Char] where { toRegex = rx }
+instance RegexType Regex         where { toRegex = id }
+instance RegexType [Regex]       where { toRegex = mconcat }
+
+-- not for export
+initLexBuilder :: LexBuilderState tok
 initLexBuilder = LexBuilderState 1 mempty (const RxBacktrack)
 
--- | The data type constructed from the 'LexBuilder' monad, used to build a 'Lexer' for your
--- programming language, and also can be used to define the 'Prelude.Show' instance for your token
--- type using 'deriveShowFromTokenDB'.
-data TokenDB tok =
-  TokenDB
-  { tableTTtoUStr :: Array TT UStr
-  , tableUStrToTT :: M.Map UStr tok
-  , tokenDBLexer  :: Lexer tok ()
+-- not for export
+newTokID :: TokenType tok => UStr -> State (LexBuilderState tok) tok
+newTokID u = do
+  tok <- fmap (M.lookup u) (gets stringToIDTable)
+  case tok of
+    Nothing  -> do
+      i <- gets regexItemCounter
+      let tok = wrapTT (MkTT i)
+      modify $ \st ->
+        st{ regexItemCounter = i+1
+          , stringToIDTable = M.insert u tok (stringToIDTable st)
+          }
+      return tok
+    Just tok -> return tok
+
+-- not for export
+makeRegex :: (RegexType rx, TokenType tok) => Bool -> UStr -> rx -> LexBuilder tok Regex
+makeRegex keep u re = LexBuilder $ newTokID u >>= \tok ->
+  return (toRegex re . (if keep then rxToken else rxEmptyToken) tok)
+
+-- | The 'tokenHold' function creates a token ID and associates it with a type that is used to
+-- construct a 'Regex', and returns the 'Regex' to the 'LexBuilder' monad. However this does not
+-- actually 'activate' the 'Regex', it simply allows you to use the returned 'Regex' in more
+-- complex expressions that might construct multiple tokens. You can 'tokenHold' expressions in any
+-- order, ordering is not important.
+fullToken :: (UStrType str, RegexType rx, TokenType tok) => str -> rx -> LexBuilder tok Regex
+fullToken s = makeRegex True (ustr s)
+
+-- | 'token' has identical behavior as 'tokenHold', except the 'Regex' created will produce an empty
+-- token, that is, a token that only indicates it's type and contains none of the string that
+-- matched the regular expression. This can be done when it is clear (or you do not care) what
+-- string was lexed when the token was created just by knowing the type of the token, for example
+-- whitespace tokens, or keyword tokens which have the text used to create the token easily
+-- retrievable by converting token to a string. Making use of 'token' can greatly improveme
+-- performance as compared to using 'tokenHold' exclusively.
+emptyToken :: (UStrType str, RegexType rx, TokenType tok) => str -> rx -> LexBuilder tok Regex
+emptyToken s = makeRegex False (ustr s)
+
+-- | 'activating' a regular expression actually converts the regular expression to a 'Lexer'. The
+-- /order of activation is important/, expressions that are defined first will have the first try at
+-- lexing input strings, followed by every expression activated after it in order. It is also NOT
+-- necessary to define an expression with 'regex' or 'regexHold' before activating it, however
+-- expressions that have not been associated with a token type will simply consume input without
+-- producing any tokens. This might be desireable for things like whitespace, but it is usually not
+-- what you want to do.
+activate :: (RegexType rx, TokenType tok) => rx -> LexBuilder tok ()
+activate re = LexBuilder{
+    runLexBuilder = modify (\st -> st{buildingLexer = buildingLexer st <> toRegex re})
   }
 
 -- | Once you have defined your 'LexBuilder' function using monadic notation, convert the value of
@@ -400,48 +489,16 @@ makeTokenDB builder =
     st = execState (runLexBuilder builder) $
       LexBuilderState{regexItemCounter=1, stringToIDTable=mempty, buildingLexer=mempty}
 
--- not for export
-newTokID :: TokenType tok => UStr -> State (LexBuilderState tok) tok
-newTokID u = do
-  tok <- fmap (M.lookup u) (gets stringToIDTable)
-  case tok of
-    Nothing  -> do
-      i <- gets regexItemCounter
-      let tok = wrapTT (MkTT i)
-      modify $ \st ->
-        st{ regexItemCounter = i+1
-          , stringToIDTable = M.insert u tok (stringToIDTable st)
-          }
-      return tok
-    Just tok -> return tok
-
--- | Create a new token type without assigning any regular expression to it. The type ID is
--- registered but not used until you explicitly make use of the token type within a regex with a
--- function like 'rxToken' or 'rxEmptyToken'.
-newTokenType :: TokenType tok => String -> LexBuilder tok tok
-newTokenType s = LexBuilder (newTokID (ustr s))
-
 deriveShowFromTokenDB :: TokenType tok => TokenDB tok -> tok -> String
 deriveShowFromTokenDB tokenDB tok = uchars (tableTTtoUStr tokenDB ! unwrapTT tok)
 
-getTTfromUStr :: TokenType tok => TokenDB tok -> UStr -> Maybe tok
-getTTfromUStr tokenDB = flip M.lookup (tableUStrToTT tokenDB)
+getTokenFromUStr :: TokenType tok => TokenDB tok -> UStr -> Maybe tok
+getTokenFromUStr tokenDB = flip M.lookup (tableUStrToTT tokenDB)
 
--- | Creates a single keyword or operator token, with the name of the token being the string that is
--- lexed-out of the input. Its like 'stringTable' but creates only a single token which stores no
--- data and returns the newly created token value. The tokenizer created uses 'rxEmptyToken' to
--- create the token, meaning the actual lexed string value is not stored in the token because there
--- is no need to store the string value because the token ID of the token created can be used to
--- retrieve the string value from the 'TokenDB' created from this 'LexBuilder'.
-ustrToken :: TokenType tok => UStr -> LexBuilder tok tok
-ustrToken u = LexBuilder $ do
-  tok <- newTokID u
-  modify (\st -> st{buildingLexer = buildingLexer st <> rx u . rxEmptyToken tok})
-  return tok
-
--- | Like 'ustrToken', except takes a 'Prelude.String' input.
-stringToken :: TokenType tok => String -> LexBuilder tok tok
-stringToken = ustrToken . ustr
+-- | Creates a token type with 'regex' where the text lexed from the input is identical to name of
+-- the token. This is most useful for defining keywords and operators.
+keyString :: (UStrType str, TokenType tok) => str -> LexBuilder tok Regex
+keyString str = makeRegex False (ustr str) (ustr str)
 
 -- | Creates a 'TokenTable' using a list of keywords or operators you provide to it.
 -- Every string provided becomes it's own token type. For example:
@@ -450,54 +507,8 @@ stringToken = ustrToken . ustr
 -- >     , "if then else case of let in where"
 -- >     , "import module qualified as hiding"
 -- >     ]
-stringTable :: TokenType tok => [String] -> LexBuilder tok ()
-stringTable = ustrTable . map ustr
-
--- | Like 'stringTable' except takes a list of 'Dao.String.UStr's.
-ustrTable :: TokenType tok => [UStr] -> LexBuilder tok ()
-ustrTable = mapM_ ustrToken . reverse . sort
-
--- | Create a token type that is defined by a 'Regex' instead of a keyword or operator string.
--- The 'Prelude.String' label is used to create or retrieve a token ID, and this token ID will be
--- created whenever the 'Regex' provided here successfully lexes a token from the input string.
--- Actually, the 'Regex' @re@ provided here will be stored into the 'LexBuilder' with the equation:
--- > re . 'rxToken' tokID
--- where @tokID@ is the token ID associated with the 'Prelude.String' label parameter.
-regexToken :: TokenType tok => String -> Regex -> LexBuilder tok tok
-regexToken label re = LexBuilder $ do
-  tok <- newTokID (ustr label)
-  modify (\st -> st{buildingLexer = buildingLexer st <> re . rxToken tok})
-  return tok
-
--- | Simply append a 'Regex' to the 'LexBuilder', it will function within the larger lexer but it
--- won't be assigned to any token type. The use of this function implies that you have created a
--- token type for it using 'newTokenType' or 'regexToken' and will use that type within this lexer
--- via the 'rxToken' or 'rxEmptyToken' functions.
-regex :: Regex -> LexBuilder tok ()
-regex re = LexBuilder (modify (\st -> st{buildingLexer = buildingLexer st <> re}))
-
--- | Here is class that allows you to create your own token type from a Haskell newtype. It is
--- usually a good idea do this to keep parsers isolated from one another. It should be considered a
--- best practice to do this for every language. For example, if you have a Python parser, make a new
--- type for Python tokens:
--- > newtype Python = Python 'TT' deriving 'Data.Ix.Ix'
--- > instance TokenType Python where { 'wrapTT' = Python }
--- Only two lines of code, so there is no excuse not to do it. It /MUST/ derive 'Data.Ix.Ix'.
---
--- The reason for this is to prevent confusing tokens produced by different tokenizers for different
--- languages. For example: if you have a large project that compiles two different
--- languages, say Python and Ruby, into the same Abstract Syntax Tree, you don't want both parsers
--- using 'TT' as their token types because someone might accidentally feed 'TT' tokens from the Ruby
--- tokenizer into the Python parser or vice-versa. Using a wrapper type lets you catch this error at
--- compile time.
--- 
--- Now your parsers may peacfully coexist, even in the same module:
--- > parsePython :: 'Prelude.String' -> 'Parser' () Python MySyntaxTree
--- > parsePython = 'parse' myPythonGrammar mempty
--- > parseRuby   :: 'Prelude.String' -> 'Parser' () Ruby MySyntaxTree
--- > parseRuby   = 'parse' myRubyGrammar   mempty
-class Ix a => TokenType a where { wrapTT :: TT -> a; unwrapTT :: a -> TT; }
-instance TokenType TT where { wrapTT = id; unwrapTT = id; }
+keyStringTable :: TokenType tok => [String] -> LexBuilder tok Regex
+keyStringTable = fmap mconcat . mapM keyString
 
 -- | The class of Context Free Grammars ('CFG'). A 'CFG' is defined by its functions of lexical
 -- analysis and syntactic analysis. Central to these functions are the type of token which defines

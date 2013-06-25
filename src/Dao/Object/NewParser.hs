@@ -73,6 +73,7 @@ daoTokenDB :: TokenDB Dao
 daoTokenDB = makeTokenDB daoTokenDef
 
 spaceLabel      = "SPACE"
+base64dataLabel = "BASE64DATA"
 base16intLabel  = "BASE16"
 base2intLabel   = "BASE2"
 litStrLabel     = "STRING"
@@ -81,26 +82,23 @@ endlineComLabel = "ENDLINECOM"
 
 daoTokenDef :: LexBuilder Dao ()
 daoTokenDef = do
-  let spaceRegex = rxRepeat(map ch " \t\n\r\f\v")
-  space <- regexToken spaceLabel spaceRegex
-  let inlineComRegex =
-        rx "/*" . rxRepeat(invert[ch '*']) . rxRepeat(ch '*') . (rx '/' <> inlineComRegex)
-  inlineCom  <- regexToken inlineComLabel inlineComRegex
-  let endlineComRegex = rx "//" . rxRepeat(invert[ch '\n'])
-  endlineCom <- regexToken endlineComLabel endlineComRegex
-  dataToken  <- stringToken "data"
-  openBrace  <- stringToken "{"
-  closeBrace <- stringToken "}"
-  base64Data <- newTokenType "BASE64DATA"
-  let multiComments =
-        (mconcat $
-            [ spaceRegex      . rxEmptyToken space
-            , inlineComRegex  . rxToken inlineCom
-            , endlineComRegex . rxToken endlineCom
-            ]) . multiComments
+  space <- newTokenType spaceLabel
+  let spaceRegex = rxRepeat1(map ch "\t\n\r\f\v ") . rxEmptyToken space
+  regex spaceRegex
+  inlineCom <- newTokenType inlineComLabel
+  let inlineComRegex = rx "/*" . fix (\loop -> rxRepeat1(ch '*') . rx '/' . rxToken inlineCom <> rxRepeat1(invert[ch '*']) . loop)
+  regex inlineComRegex
+  endlineCom <- newTokenType endlineComLabel
+  let endlineComRegex = rx "//" . rxRepeat(invert[ch '\n']) . rxToken endlineCom
+  regex endlineComRegex
+  dataToken  <- newTokenType "data"
+  openBrace  <- newTokenType "{"
+  closeBrace <- newTokenType "}"
+  base64Data <- newTokenType base64dataLabel
+  let multiComments = (mconcat [spaceRegex, inlineComRegex, endlineComRegex]) . multiComments
   let base64DataRegex =
         (spaceRegex . rxToken space <>
-          rxRepeat [from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/'] .
+          rxRepeat1[from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/'] .
             rxToken base64Data) . base64DataRegex
   regex $ rx "data" . rxEmptyToken dataToken . (multiComments <>
     rx "{" . rxEmptyToken openBrace . (base64DataRegex <> rx "}" . rxEmptyToken closeBrace))
@@ -125,6 +123,9 @@ daoTokenDef = do
   regexToken base16intLabel $ (rx "0x" <> rx "0X") . hexdigits
   regexToken base2intLabel  $ (rx "0b" <> rx "0B") . decdigits
   return ()
+
+daoRegex :: String
+daoRegex = showRegex daoTokenDB (buildingLexer (execState (runLexBuilder daoTokenDef) initLexBuilder))
 
 -- | The token types.
 data DaoTT

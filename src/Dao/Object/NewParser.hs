@@ -72,41 +72,35 @@ instance Show Dao where { show = deriveShowFromTokenDB daoTokenDB }
 daoTokenDB :: TokenDB Dao
 daoTokenDB = makeTokenDB daoTokenDef
 
-spaceLabel      = "SPACE"
-base64dataLabel = "BASE64DATA"
-base16intLabel  = "BASE16"
-base2intLabel   = "BASE2"
-litStrLabel     = "STRING"
-inlineComLabel  = "INLINECOM"
-endlineComLabel = "ENDLINECOM"
+data DaoTokenLabel
+  = SPACE | BASE64DATA | BASE16 | BASE2 | STRING | INLINECOM | ENDLINECOM
+  | STRINGLIT
+  deriving (Eq, Enum, Show)
+instance UStrType DaoTokenLabel where { ustr = uString . show }
 
 daoTokenDef :: LexBuilder Dao ()
 daoTokenDef = do
-  space <- newTokenType spaceLabel
-  let spaceRegex = rxRepeat1(map ch "\t\n\r\f\v ") . rxEmptyToken space
-  regex spaceRegex
-  inlineCom <- newTokenType inlineComLabel
-  let inlineComRegex = rx "/*" . fix (\loop -> rxRepeat1(ch '*') . rx '/' . rxToken inlineCom <> rxRepeat1(invert[ch '*']) . loop)
-  regex inlineComRegex
-  endlineCom <- newTokenType endlineComLabel
-  let endlineComRegex = rx "//" . rxRepeat(invert[ch '\n']) . rxToken endlineCom
-  regex endlineComRegex
-  dataToken  <- newTokenType "data"
-  openBrace  <- newTokenType "{"
-  closeBrace <- newTokenType "}"
-  base64Data <- newTokenType base64dataLabel
-  let multiComments = (mconcat [spaceRegex, inlineComRegex, endlineComRegex]) . multiComments
-  let base64DataRegex =
-        (spaceRegex . rxToken space <>
-          rxRepeat1[from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/'] .
-            rxToken base64Data) . base64DataRegex
-  regex $ rx "data" . rxEmptyToken dataToken . (multiComments <>
-    rx "{" . rxEmptyToken openBrace . (base64DataRegex <> rx "}" . rxEmptyToken closeBrace))
-  stringTable $ words $ unwords $
-    [ allUpdateOpStrs, allArithOp1Strs, allArithOp2Strs
-    , "{ } ( ) [ ]"
-    ]
-  stringTable $ words $ unwords $
+  openBrace    <- keyString "{"
+  closeBrace   <- keyString "}"
+  openParen    <- keyString "("
+  closeParen   <- keyString ")"
+  openBracket  <- keyString "("
+  closeBracket <- keyString ")"
+  space        <- emptyToken SPACE      $ rxRepeat1(map ch "\t\n\r\f\v ")
+  closeInliner <- fullToken  INLINECOM  $ rxRepeat1(ch '*') . rx '/'
+  inlineCom    <- fullToken  INLINECOM  $ rx "/*" .
+    fix (\loop -> closeInliner <> rxRepeat1(invert[ch '*']) . loop)
+  endlineCom   <- fullToken  ENDLINECOM $ rx "//" . rxRepeat(invert[ch '\n'])
+  datarx       <- keyString "data"
+  multiComs    <- pure $ fix (\loop -> (mconcat [space, inlineCom, endlineCom]) . loop)
+  base64Data   <- fullToken  BASE64DATA $
+    rxRepeat1[from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/']
+  activate space
+  activate inlineCom
+  activate endlineCom
+  activate $ datarx . multiComs <> openBrace .
+    fix (\loop -> base64Data . loop <> space . loop) <> closeBrace
+  keyStringTable $ words $ unwords $
     [ "if else for in while with try catch"
     , "continue break return throw"
     , "data struct list set intmap dict array date time"
@@ -115,14 +109,17 @@ daoTokenDef = do
     , "import imports require requires"
     , "BEGIN END EXIT"
     ]
-  let strlit = rxRepeat (invert [ch '"', ch '\\']) . (rx "\\" . rx anyChar . strlit <> rx '"')
-  regexToken litStrLabel $ rx '"' . strlit
+  stringLit    <- fullToken  STRINGLIT  $ rx '"' .
+    (fix $ \loop ->
+      rxRepeat(invert [ch '"', ch '\\']) . (rx "\\" . rx anyChar . loop <> rx '"'))
+  activate stringLit
   let from0to9 = from '0' to '9'
-      hexdigits = rxRepeat[from0to9, from 'A' to 'F', from 'a' to 'f']
       decdigits = rxRepeat from0to9
-  regexToken base16intLabel $ (rx "0x" <> rx "0X") . hexdigits
-  regexToken base2intLabel  $ (rx "0b" <> rx "0B") . decdigits
-  return ()
+  base2        <- fullToken  BASE2      $ (rx "0b" <> rx "0B") . decdigits
+  base16       <- fullToken  BASE16     $ (rx "0x" <> rx "0X") .
+    rxRepeat[from0to9, from 'A' to 'F', from 'a' to 'f']
+  activate base16
+  activate base2
 
 daoRegex :: String
 daoRegex = showRegex daoTokenDB (buildingLexer (execState (runLexBuilder daoTokenDef) initLexBuilder))

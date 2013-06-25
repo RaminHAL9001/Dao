@@ -20,6 +20,7 @@
 
 
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Dao.String where
 
@@ -36,6 +37,11 @@ import           Data.Array.Unboxed
 import qualified Data.ByteString.Lazy.UTF8 as U
 import qualified Data.ByteString.Lazy      as B
 import qualified Codec.Binary.UTF8.String  as UTF8
+
+-- | Convert types to a 'Name' or a 'UStr' object.
+class UStrType a where { ustr :: a -> UStr }
+instance UStrType String where { ustr = uString }
+instance UStrType UStr where { ustr = id }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -83,6 +89,7 @@ putVLInt = mapM_ B.put . bitsToVLInt
 
 -- | A type synonym for 'Data.ByteString.Lazy.UTF8.ByteString'
 newtype UStr = UStr { toUTF8ByteString :: U.ByteString } deriving (Eq, Ord, Typeable)
+instance Monoid UStr where { mempty = nil; mappend a b = ustr (uchars a ++ uchars b); }
 
 -- | Return the length of the 'UStr'.
 ulength :: UStr -> Int
@@ -113,7 +120,7 @@ decodeUStr = do
         ,"at least one string in this file has corrupted string length prefix"
         ]
 
-instance Read UStr where { readsPrec n str = map (\ (s, rem) -> (ustr s, rem)) $ readsPrec n str }
+instance Read UStr where { readsPrec n str = map (\ (s, rem) -> (uString s, rem)) $ readsPrec n str }
 instance Show UStr where { show u = show (uchars u) }
 instance B.Binary UStr where
   put u = B.putWord8 uStrBinaryPrefix >> encodeUStr u
@@ -122,9 +129,6 @@ instance B.Binary UStr where
     if w==uStrBinaryPrefix
       then decodeUStr
       else error "binary data decoder failed while on expecting U-String"
-
-uconcat :: [UStr] -> UStr
-uconcat = UStr . U.fromString . concatMap (U.toString . toUTF8ByteString)
 
 -- | A type synonym for 'UStr' used where a string is used as some kind of identifier.
 type Name = UStr
@@ -136,9 +140,8 @@ type UPath = UStr
 uchars :: UStr -> String
 uchars = U.toString . toUTF8ByteString
 
--- | Convert a [Char] string to either a 'Name' or a 'Dao.Types.UStr' object.
-ustr :: String -> UStr
-ustr = UStr . U.fromString
+uString :: String -> UStr
+uString = UStr . U.fromString
 
 uwords :: UStr -> [Word8]
 uwords str = UTF8.encode (uchars str)

@@ -365,7 +365,7 @@ objectsOfType ox = concatMap obj ox
 readObjUStr :: Read a => (a -> Object) -> UStr -> Object
 readObjUStr mkObj = mkObj . read . uchars
 
-ostr :: String -> Object
+ostr :: UStrType u => u -> Object
 ostr = OString . ustr
 
 ----------------------------------------------------------------------------------------------------

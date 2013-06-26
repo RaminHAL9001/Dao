@@ -646,12 +646,17 @@ regexToLexer re = loop (re RxSuccess) where
   loop re = case re of
     RxBacktrack            -> lexBacktrack
     RxSuccess              -> return ()
-    RxMakeToken tt keep re ->
-      (optional . (if keep then makeToken else makeEmptyToken)) (wrapTT tt) >> loop re
+    RxMakeToken tt keep re -> case re of
+      RxMakeToken tt keep re -> loop (RxMakeToken tt keep re)
+      _                      ->
+        (optional . (if keep then makeToken else makeEmptyToken)) (wrapTT tt) >> loop re
+        -- if there are two 'RxMakeToken's in a row, use the later one. This makes for more
+        -- intuitive regular expressions.
     RxChoice            re -> msum $ map loop re
     RxStep         r    re -> do
       keep <- gets lexBuffer
       clearBuffer
+      inpt <- fmap (take 4) (gets lexInput)
       mplus (regexPrimToLexer r >> modify (\st -> st{lexBuffer = keep ++ lexBuffer st}))
             (modify (\st -> st{lexBuffer=keep, lexInput = lexBuffer st ++ lexInput st}) >> mzero)
       loop re
@@ -697,7 +702,7 @@ regexPrimToLexer re = case re of
     rept lo hi re = fromMaybe (seq "internal error" $! return ()) $ do
       getLo <- mplus (Es.toPoint lo >>= return . lowerLim re) (return (return ()))
       getHi <- mplus (Es.toPoint hi >>= return . upperLim re) (return (noLimit re))
-      return (getLo >> getHi)
+      return (getLo >> mplus getHi (return ()))
     lowerLim re lo = case re of
       RxString  str       -> lowerLimLex lo (lexString (uchars str))
       RxCharSet set       -> do
@@ -713,15 +718,12 @@ regexPrimToLexer re = case re of
     lowerLimLex lo lex = replicateM_ lo lex
     upperLim re hi = case re of
       RxString  str       -> replicateM_ hi (lexString (uchars str))
-      RxCharSet set       -> lexWhile (Es.member set)
+      RxCharSet set       -> lexWhile       (Es.member set)
       RxRepeat lo' hi' re -> replicateM_ hi (rept lo' hi' re)
     noLimit re = case re of
-      RxString  str       -> loop (lexString (uchars str))
-      RxCharSet set       -> mplus (lexWhile (Es.member set)) (return ())
-      RxRepeat lo  hi  re -> loop (rept lo hi re)
-    loop lex = do
-      continue <- mplus (lex >> return True) (return False)
-      if continue then loop lex else return ()
+      RxString  str       -> forever  (lexString (uchars str))
+      RxCharSet set       -> lexWhile (Es.member set)
+      RxRepeat lo  hi  re -> forever  (rept lo hi re)
 
 -- | Any type which instantiates the 'RegexBaseType' class can be used to with the 'rx' function to
 -- construct a part of a 'Regex' which can be used in a sequence of 'Regex's.
@@ -794,6 +796,40 @@ anyChar = Es.infinite
 invert :: [Es.Set Char] -> Es.Set Char
 invert = Es.invert . foldl Es.union mempty
 
+-- | An optional regex, tries to match, but succeeds regardless of whether or not the given
+-- actually matches. In fact, this 'Regex' is exactly identical to the equation:
+-- > \regex -> regex 'Data.Monoid.<>' 'Prelude.id'
+opt :: Regex -> Regex
+opt = (<>id)
+
+-- | This 'Regex' matches nothing and succeeds, and deletes any 'Regex' appended to it with the dot
+-- operator. Any 'Regex' occurring after a 'halt' will not be evaluated.
+halt :: Regex
+halt = const RxSuccess
+
+-- | Marks a point in a 'Regex' sequence where the matching must not fail, and if it does fail, the
+-- resulting 'Lexer' to which this 'Regex' evaluates will evaluate to 'Control.Monad.fail' with an
+-- error message provided as a paramater to this function. For example:
+-- > decimalPoint = digits . 'rx' '.' . 'cantFail' "must have digits after a decimal point" . digits
+cantFail :: String -> Regex
+cantFail msg = RxExpect (ustr msg)
+
+-- | This is a look-ahead 'Regex' that matches if the 'Regex' parameter provided does not match. An
+-- extremely inefficient function, you should avoid using it and consider re-designing your
+-- 'LexBuilder' if you rely on this function too often. This function is designed to occur only at
+-- the end of your 'Regex', that is, every 'Regex' that occurs after 'rxDont' is part of the 'Regex'
+-- to not match. For example:
+-- > myRegex = 'rx' "else" . spaces . 'rxDont' . 'rx' "if" . spaces . rx "end"
+-- will succeed only if the string else is not followed by a string @"if end"@. There is no way to
+-- make the 'Regex' first check if the next string is not @"if"@ and if it is not then continue
+-- matching with @spaces@ and @'rx' "end"@ after that.
+dont :: Regex
+dont = RxDontMatch
+
+-- | Force an error to occur.
+rxErr :: String -> Regex
+rxErr msg = cantFail msg . mempty
+
 -- | Repeat a regular 'RegexBaseType' regular expression a number of times, with the number of times
 -- repeated being limited by an upper and lower bound. Fails to match if the minimum number of
 -- occurences cannot be matched, otherwise continues to repeat as many times as possible (greedily)
@@ -821,25 +857,6 @@ rxRepeat = RxStep . RxRepeat Es.NegInf Es.PosInf . rxPrim
 -- zero or more times. It is imilar to the @+@ operator in POSIX regular expressions.
 rxRepeat1 :: RegexBaseType rx => rx -> Regex
 rxRepeat1 = rxLimitMin 1
-
--- | Marks a point in a 'Regex' sequence where the matching must not fail, and if it does fail, the
--- resulting 'Lexer' to which this 'Regex' evaluates will evaluate to 'Control.Monad.fail' with an
--- error message provided as a paramater to this function. For example:
--- > decimalPoint = digits . 'rx' '.' . 'cantFail' "must have digits after a decimal point" . digits
-cantFail :: String -> Regex
-cantFail msg = RxExpect (ustr msg)
-
--- | This is a look-ahead 'Regex' that matches if the 'Regex' parameter provided does not match. An
--- extremely inefficient function, you should avoid using it and consider re-designing your
--- 'LexBuilder' if you rely on this function too often. This function is designed to occur only at
--- the end of your 'Regex', that is, every 'Regex' that occurs after 'doNot' is part of the 'Regex'
--- to not match. For example:
--- > myRegex = 'rx' "else" . spaces . 'doNot' . 'rx' "if" . spaces . rx "end"
--- will succeed only if the string else is not followed by a string @"if end"@. There is no way to
--- make the 'Regex' first check if the next string is not @"if"@ and if it is not then continue
--- matching with @spaces@ and @'rx' "end"@ after that.
-doNot :: Regex
-doNot = RxDontMatch
 
 -- | Create a token, keep the portion of the string that has matched the regex up to this point, but
 -- clear the match buffer once the token has been created.

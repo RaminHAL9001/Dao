@@ -186,11 +186,6 @@ instance Functor Token where
     EmptyToken t   -> EmptyToken (f t)
     CharToken  t c -> CharToken  (f t) c
     Token      t u -> Token      (f t) u
-instance TokenType tok => CFG Token tok where
-  castTT t = case t of
-    EmptyToken t   -> EmptyToken (wrapTT t)
-    CharToken  t c -> CharToken  (wrapTT t) c
-    Token      t u -> Token      (wrapTT t) u
 
 -- | If the lexical analyzer emitted a token with a copy of the text used to create it, this
 -- function can retrieve that text. Returns 'Dao.String.nil' if there is no text.
@@ -228,15 +223,6 @@ instance Functor TokenAt where
     , tokenAtColumnNumber = tokenAtColumnNumber t
     , getToken            = fmap f (getToken t)
     }
-instance TokenType tok =>
-  CFG TokenAt tok where
-    castTT t = case t of
-      TokenAt line col t ->
-        TokenAt
-        { tokenAtLineNumber   = line
-        , tokenAtColumnNumber = col
-        , getToken            = castTT t
-        }
 
 -- | The lexical analysis phase emits a stream of 'TokenAt' objects, but it is not memory
 -- efficient to store the line and column number with every single token. To save space, the token
@@ -261,15 +247,6 @@ instance Functor Line where
     { lineLineNumber = lineLineNumber line
     , lineTokens = fmap (fmap (fmap f)) (lineTokens line)
     }
-instance TokenType tok =>
-  CFG Line tok where
-    castTT t =
-      Line
-      { lineLineNumber = lineLineNumber t
-      , lineTokens     = fmap (fmap castTT) (lineTokens t)
-        -- taking advantage of the fact that a 2-tuple instantiates 'Data.Functor.Functor' over the
-        -- second item.
-      }
 
 ----------------------------------------------------------------------------------------------------
 -- $Error_handling
@@ -302,15 +279,6 @@ instance Functor (Error st) where
     , parseErrTok     = fmap (fmap f) (parseErrTok e)
     , parseStateAtErr = parseStateAtErr e
     }
-instance TokenType tok =>
-  CFG (Error st) tok where
-    castTT t =
-      Error
-      { parseErrLoc = parseErrLoc t
-      , parseErrMsg = parseErrMsg t
-      , parseErrTok = fmap castTT (parseErrTok t)
-      , parseStateAtErr = parseStateAtErr t
-      }
 
 -- | An initial blank parser error you can use to construct more detailed error messages.
 parserErr :: Eq tok => LineNum -> ColumnNum -> Error st tok
@@ -364,19 +332,6 @@ parserErr lineNum colNum =
 -- > parseRuby   = 'parse' myRubyGrammar   mempty
 class Ix a => TokenType a where { wrapTT :: TT -> a; unwrapTT :: a -> TT; }
 instance TokenType TT where { wrapTT = id; unwrapTT = id; }
-
--- | The class of Context Free Grammars ('CFG'). A 'CFG' is defined by its functions of lexical
--- analysis and syntactic analysis. Central to these functions are the type of token which defines
--- the language. So nearly every data type in this program is polymorphic over the token type.  Many
--- of these functions begin as tokenizers or lexers over the generic token type 'TT', so there needs
--- to be a way of converting these functions to ones over a polymorphic type.
--- 
--- This class provides a function 'castTT' function to allow any data type that operates on a
--- generic 'TT' token stream to be converted to the correct token type (a type which must be an
--- instance of 'TokenType'). There is no way to convert back from this token type to 'TT', as I
--- currently see no reason to allow the same parser to have access to two diffent token types.
-class TokenType tok =>
-  CFG p tok where { castTT :: p TT -> p tok }
 
 -- | An actual value used to symbolize a type of token is a 'TT'. For example, an integer token
 -- might be assigned a value of @('TT' 0)@ a keyword might be @('TT' 1)@, an operator might be
@@ -950,18 +905,6 @@ instance Functor LexerState where
     , lexBuffer        = lexBuffer s
     , lexInput         = lexInput s
     }
-instance TokenType tok =>
-  CFG LexerState tok where
-    castTT t =
-      LexerState
-      { lexTabWidth      = lexTabWidth t
-      , lexCurrentLine   = lexCurrentLine t
-      , lexCurrentColumn = lexCurrentColumn t
-      , lexTokenCounter  = lexTokenCounter t
-      , tokenStream      = fmap castTT (tokenStream t)
-      , lexBuffer        = lexBuffer t
-      , lexInput         = lexInput t
-      }
 
 -- | Create a new lexer state using the given input 'Prelude.String'. This is only realy useful if
 -- you must evaluate 'runLexerState'.

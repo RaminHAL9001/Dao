@@ -181,6 +181,11 @@ data Token tok
     -- create the token.
 instance Show tok => Show (Token tok) where
   show tok = show (tokType tok) ++ " " ++ show (tokToUStr tok)
+instance Functor Token where
+  fmap f t = case t of
+    EmptyToken t   -> EmptyToken (f t)
+    CharToken  t c -> CharToken  (f t) c
+    Token      t u -> Token      (f t) u
 instance TokenType tok => CFG Token tok where
   castTT t = case t of
     EmptyToken t   -> EmptyToken (wrapTT t)
@@ -216,6 +221,13 @@ instance HasLineNumber   (TokenAt tok) where
 instance HasColumnNumber (TokenAt tok) where
   columnNumber        = tokenAtColumnNumber
   setColumnNumber a n = a{tokenAtColumnNumber=n}
+instance Functor TokenAt where
+  fmap f t =
+    TokenAt
+    { tokenAtLineNumber   = tokenAtLineNumber t
+    , tokenAtColumnNumber = tokenAtColumnNumber t
+    , getToken            = fmap f (getToken t)
+    }
 instance TokenType tok =>
   CFG TokenAt tok where
     castTT t = case t of
@@ -243,6 +255,12 @@ instance HasLineNumber (Line tok) where
   setLineNumber a n = a{lineLineNumber=n}
 instance Show tok => Show (Line tok) where
   show line = show (lineLineNumber line) ++ ": " ++ show (lineTokens line)
+instance Functor Line where
+  fmap f line =
+    Line
+    { lineLineNumber = lineLineNumber line
+    , lineTokens = fmap (fmap (fmap f)) (lineTokens line)
+    }
 instance TokenType tok =>
   CFG Line tok where
     castTT t =
@@ -276,6 +294,14 @@ instance Show tok =>
             , fmap ((": "++) . uchars) (parseErrMsg err)
             ]
       in  if null msg then "Unknown parser error" else msg
+instance Functor (Error st) where
+  fmap f e =
+    Error
+    { parseErrLoc     = parseErrLoc e
+    , parseErrMsg     = parseErrMsg e
+    , parseErrTok     = fmap (fmap f) (parseErrTok e)
+    , parseStateAtErr = parseStateAtErr e
+    }
 instance TokenType tok =>
   CFG (Error st) tok where
     castTT t =
@@ -339,6 +365,19 @@ parserErr lineNum colNum =
 class Ix a => TokenType a where { wrapTT :: TT -> a; unwrapTT :: a -> TT; }
 instance TokenType TT where { wrapTT = id; unwrapTT = id; }
 
+-- | The class of Context Free Grammars ('CFG'). A 'CFG' is defined by its functions of lexical
+-- analysis and syntactic analysis. Central to these functions are the type of token which defines
+-- the language. So nearly every data type in this program is polymorphic over the token type.  Many
+-- of these functions begin as tokenizers or lexers over the generic token type 'TT', so there needs
+-- to be a way of converting these functions to ones over a polymorphic type.
+-- 
+-- This class provides a function 'castTT' function to allow any data type that operates on a
+-- generic 'TT' token stream to be converted to the correct token type (a type which must be an
+-- instance of 'TokenType'). There is no way to convert back from this token type to 'TT', as I
+-- currently see no reason to allow the same parser to have access to two diffent token types.
+class TokenType tok =>
+  CFG p tok where { castTT :: p TT -> p tok }
+
 -- | An actual value used to symbolize a type of token is a 'TT'. For example, an integer token
 -- might be assigned a value of @('TT' 0)@ a keyword might be @('TT' 1)@, an operator might be
 -- @('TT' 2)@, and so on. You do not define the numbers representing these token types, these
@@ -397,6 +436,13 @@ data LexBuilderState tok
       -- not loop) but produces only one kind of token.
     , buildingLexer    :: Regex
     }
+instance Functor LexBuilderState where
+  fmap f s =
+    LexBuilderState
+    { regexItemCounter = regexItemCounter s
+    , stringToIDTable  = fmap f (stringToIDTable s)
+    , buildingLexer    = buildingLexer s
+    }
 newtype LexBuilder tok a = LexBuilder{ runLexBuilder :: State (LexBuilderState tok) a }
 instance Monad (LexBuilder tok) where
     return = LexBuilder . return
@@ -406,8 +452,8 @@ instance Applicative (LexBuilder tok) where { pure = return; (<*>) = ap; }
 instance Monoid a =>
   Monoid (LexBuilder tok a) where { mempty = return mempty; mappend = liftM2 mappend; }
 
--- | This class exists to make 'emptyToken', 'fullToken', and 'activate' polymorphic over the
--- 'RegexBaseType's and also over the 'Regex' and @['Regex']@ types.
+-- | This class exists to make 'emptyToken', 'fullToken', and 'activate' functions polymorphic over
+-- two different types: the 'RegexBaseType's and 'Regex' and @['Regex']@ types.
 class RegexType rx where { toRegex :: rx -> Regex }
 instance RegexType  Char         where { toRegex = rx }
 instance RegexType  String       where { toRegex = rx }
@@ -509,19 +555,6 @@ keyString str = makeRegex False (ustr str) (ustr str)
 -- >     ]
 keyStringTable :: TokenType tok => [String] -> LexBuilder tok Regex
 keyStringTable = fmap mconcat . mapM keyString
-
--- | The class of Context Free Grammars ('CFG'). A 'CFG' is defined by its functions of lexical
--- analysis and syntactic analysis. Central to these functions are the type of token which defines
--- the language. So nearly every data type in this program is polymorphic over the token type.  Many
--- of these functions begin as tokenizers or lexers over the generic token type 'TT', so there needs
--- to be a way of converting these functions to ones over a polymorphic type.
--- 
--- This class provides a function 'castTT' function to allow any data type that operates on a
--- generic 'TT' token stream to be converted to the correct token type (a type which must be an
--- instance of 'TokenType'). There is no way to convert back from this token type to 'TT', as I
--- currently see no reason to allow the same parser to have access to two diffent token types.
-class TokenType tok =>
-  CFG p tok where { castTT :: p TT -> p tok }
 
 ----------------------------------------------------------------------------------------------------
 -- $Regular_expressions
@@ -905,6 +938,17 @@ data LexerState tok
     , lexInput         :: String
       -- ^ contains the remainder of the input string to be analyzed. Retrieve this string using:
       -- > 'Control.Monad.State.gets' 'lexInput'
+    }
+instance Functor LexerState where
+  fmap f s =
+    LexerState
+    { lexTabWidth      = lexTabWidth s
+    , lexCurrentLine   = lexCurrentLine s
+    , lexCurrentColumn = lexCurrentColumn s
+    , lexTokenCounter  = lexTokenCounter s
+    , tokenStream      = fmap (fmap f) (tokenStream s)
+    , lexBuffer        = lexBuffer s
+    , lexInput         = lexInput s
     }
 instance TokenType tok =>
   CFG LexerState tok where
@@ -1591,6 +1635,13 @@ data TokStreamState st tok
       -- Rather than traverse that same path every time 'nextToken' or 'withToken' is called, the
       -- next token is cached here.
     }
+instance Functor (TokStreamState st) where
+  fmap f s =
+    TokStreamState
+    { userState    = userState s
+    , getLines     = fmap (fmap f) (getLines s)
+    , recentTokens = fmap (\ (line, col, tok) -> (line, col, fmap f tok)) (recentTokens s)
+    }
 
 newParserState :: Eq tok => ust -> [Line tok] -> TokStreamState ust tok
 newParserState userState lines =
@@ -1792,8 +1843,8 @@ data ParseTable st tok a
   = ParseTableArray { parseTableArray :: Array tok (ParseTable st tok a) }
     -- ^ stores references to 'ParseTable' functions into an array for fast retrieval by the type of
     -- the current token.
-  | ParseTableMap { parserMap :: M.Map UStr (ParseTable st tok a) }
-  | ParseTable { tokStreamParser :: TokStream st tok a }
+  | ParseTableMap { parserMap         :: M.Map UStr (ParseTable st tok a) }
+  | ParseTable    { tokStreamParser   :: TokStream st tok a }
     -- ^ this constructor stores a plain 'TokStream' function, so this constructor can be used to
     -- lift 'TokStream' functions into the 'ParseTable' monad. This constructor is not composable
     -- like the above two constructors are, so the 'evalGenParserToParseTable' function tries to
@@ -2062,7 +2113,7 @@ emptyTable =
   ParserTable
   { checkTokenAndString = M.empty
   , checkToken          = M.empty
-  , checkString         = M.empty
+  , checkString         = mempty
   }
 
 tokenTypeUStr :: Ix tok => tok -> UStr -> Parser ust tok a -> Parser ust tok a

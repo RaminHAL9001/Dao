@@ -38,10 +38,18 @@ import qualified Data.ByteString.Lazy.UTF8 as U
 import qualified Data.ByteString.Lazy      as B
 import qualified Codec.Binary.UTF8.String  as UTF8
 
--- | Convert types to a 'Name' or a 'UStr' object.
-class UStrType a where { ustr :: a -> UStr }
-instance UStrType String where { ustr = uString }
-instance UStrType UStr where { ustr = id }
+-- | Convert types to a 'Name' or a 'UStr' object and back again. This implies that (by converntion)
+-- there is a one-to-one mapping from your type to strings. This is always true of data types that
+-- derive the instantiations for theses three classes: 'Prelude.Enum', 'Prelude.Show' and
+-- 'Prelude.Read'. So the conversion from the 'UStr' to the polymorphic type will never fail because
+-- it is generated automatically at compile time by Haskell's deriving mechanism.
+class UStrType a where { ustr :: a -> UStr; fromUStr :: UStr -> a; }
+instance UStrType String where { ustr = uString; fromUStr = uchars; }
+instance UStrType UStr where { ustr = id; fromUStr = id; }
+derive_ustr :: (Enum a, Read a, Show a) => a -> UStr
+derive_ustr = uString . show
+derive_fromUStr :: (Enum a, Read a, Show a) => UStr -> a
+derive_fromUStr = read . uchars
 
 ----------------------------------------------------------------------------------------------------
 

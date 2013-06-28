@@ -161,9 +161,6 @@ daoTokenDef = do
     , keywords, mconcat groups, operators
     ]
 
-testDaoLexer :: String -> IO ()
-testDaoLexer = testLexicalAnalysis (tokenDBLexer daoTokenDB) 4
-
 ----------------------------------------------------------------------------------------------------
 
 data DaoParState
@@ -291,10 +288,15 @@ diffTimeFromStrs days hours minutes seconds miliseconds = do
 
 ----------------------------------------------------------------------------------------------------
 
+testDaoLexer :: String -> IO ()
+testDaoLexer = testLexicalAnalysis (tokenDBLexer daoTokenDB) 4
+
 daoGrammar :: CFGrammar DaoParState DaoTT Object
 daoGrammar = newCFGrammar 4 parseNumber
 
 testDaoParser :: String -> IO ()
 testDaoParser input = case parse daoGrammar mempty input of
-  
+  OK      a -> putStrLn ("Parser succeeded:\n"++show a)
+  Backtrack -> testDaoLexer input >> putStrLn "---- PARSER BACKTRACKED ----"
+  PFail err -> testDaoLexer input >> putStrLn ("---- PARSER FAILED ----" ++ show err)
 

@@ -1,15 +1,15 @@
--- "src/Dao/Object/NewParser.hs" makes use of "Dao.NewParser" to parse
--- parse 'Dao.Object.AST_Object' expressions.
+-- "src/DaoTT/Object/NewParser.hs" makes use of "DaoTT.NewParser" to parse
+-- parse 'DaoTT.Object.AST_Object' expressions.
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
--- This file is part of the Dao System.
+-- This file is part of the DaoTT System.
 --
--- The Dao System is free software: you can redistribute it and/or
+-- The DaoTT System is free software: you can redistribute it and/or
 -- modify it under the terms of the GNU General Public License as
 -- published by the Free Software Foundation, either version 3 of the
 -- License, or (at your option) any later version.
 -- 
--- The Dao System is distributed in the hope that it will be useful,
+-- The DaoTT System is distributed in the hope that it will be useful,
 -- but WITHOUT ANY WARRANTY; without even the implied warranty of
 -- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 -- GNU General Public License for more details.
@@ -17,6 +17,8 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
+
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 module Dao.Object.NewParser where
 
@@ -53,15 +55,17 @@ maxYears = 99999
 
 ----------------------------------------------------------------------------------------------------
 
-newtype Dao = Dao{ daoUnwrapTT :: TT } deriving (Eq, Ord, Ix)
-instance TokenType Dao where { unwrapTT = daoUnwrapTT; wrapTT = Dao; }
-instance Show Dao where { show = deriveShowFromTokenDB daoTokenDB }
+newtype DaoTT = DaoTT{ daoUnwrapTT :: TT } deriving (Eq, Ord, Ix)
+instance TokenType  DaoTT where { unwrapTT = daoUnwrapTT; wrapTT = DaoTT }
+instance HasTokenDB DaoTT where { tokenDB  = daoTokenDB }
+instance MetaToken DaoTokenLabel DaoTT where { tokenDBFromMetaValue _ = tokenDB }
+instance Show DaoTT where { show = deriveShowFromTokenDB daoTokenDB }
 
-type DaoParser a = Parser ParState Dao a
-type DaoLexer  a = Lexer Dao a
-type DaoParseErr = Error ParState Dao
+type DaoLexer    = Lexer DaoTT ()
+type DaoParser a = Parser DaoParState DaoTT a
+type DaoParseErr = Error DaoParState DaoTT
 
-daoTokenDB :: TokenDB Dao
+daoTokenDB :: TokenDB DaoTT
 daoTokenDB = makeTokenDB daoTokenDef
 
 data DaoTokenLabel
@@ -69,9 +73,9 @@ data DaoTokenLabel
   | BASE64DATA | BASE16 | BASE2 | BASE10 | DOTBASE10 | NUMTYPE | EXPONENT | INTREF
   | DATE | TIME | STRINGLIT | LABEL
   deriving (Eq, Enum, Show, Read)
-instance UStrType DaoTokenLabel where { ustr = uString . show }
+instance UStrType DaoTokenLabel where { ustr = derive_ustr; fromUStr = derive_fromUStr; }
 
-daoTokenDef :: LexBuilder Dao ()
+daoTokenDef :: LexBuilder ()
 daoTokenDef = do
   ------------------------------------------ WHITESPACE -------------------------------------------
   space        <- emptyToken SPACE      $ rxRepeat1(map ch "\t\n\r\f\v ")
@@ -157,25 +161,22 @@ daoTokenDef = do
     , keywords, mconcat groups, operators
     ]
 
-daoRegex :: String
-daoRegex = showRegex daoTokenDB (buildingLexer (execState (runLexBuilder daoTokenDef) initLexBuilder))
-
 testDaoLexer :: String -> IO ()
 testDaoLexer = testLexicalAnalysis (tokenDBLexer daoTokenDB) 4
 
 ----------------------------------------------------------------------------------------------------
 
-data ParState
-  = ParState
+data DaoParState
+  = DaoParState
     { bufferedComments :: Maybe [Comment]
     , nonHaltingErrors :: [DaoParseErr]
     }
-instance Monoid ParState where
+instance Monoid DaoParState where
   mappend a b =
      b{ bufferedComments = bufferedComments a >>= \a -> bufferedComments b >>= \b -> return (a++b)
       , nonHaltingErrors = nonHaltingErrors a ++ nonHaltingErrors b
       }
-  mempty = ParState{ bufferedComments = Nothing, nonHaltingErrors = [] }
+  mempty = DaoParState{ bufferedComments = Nothing, nonHaltingErrors = [] }
 
 setCommentBuffer :: [Comment] -> DaoParser ()
 setCommentBuffer coms = modify $ \st ->
@@ -187,7 +188,23 @@ failLater msg = catchError (fail msg) $ \err ->
 
 ----------------------------------------------------------------------------------------------------
 
--- copied from the DaoTT.DaoParser module
+parseNumber :: DaoParser Object
+parseNumber = msum $
+  [ base 16 BASE16
+  , base  2 BASE2
+  , join $ pure (numberFromStrs 10)
+      <*> token BASE10
+      <*> optional (token DOTBASE10)
+      <*> optional (token EXPONENT)
+      <*> numType
+  ]
+  where
+    numType = optional (token NUMTYPE)
+    ignore  = pure Nothing
+    base b t = join $ pure (numberFromStrs b) <*>
+      fmap (drop 2) (token t) <*> ignore <*> ignore <*> numType
+
+-- copied from the Dao.DaoParser module
 rationalFromString :: Int -> Rational -> String -> Maybe Rational
 rationalFromString maxValue base str =
   if b<1 then fmap (b*) (fol (reverse str)) else fol str where
@@ -204,10 +221,13 @@ rationalFromString maxValue base str =
       a | isUpper a -> return (ord a - ord 'A' + 10)
       _             -> mzero
 
--- copied from the DaoTT.Parser module
-numberFromStrs :: Int -> String -> String -> String -> String -> DaoParser Object
-numberFromStrs base int frac plusMinusExp typ = do
-  let (exp, hasMinusSign) = case plusMinusExp of
+-- copied from the Dao.Parser module
+numberFromStrs :: Int -> String -> Maybe String -> Maybe String -> Maybe String -> DaoParser Object
+numberFromStrs base int maybFrac maybPlusMinusExp maybTyp = do
+  let frac         = fromMaybe "" maybFrac
+      plusMinusExp = fromMaybe "" maybPlusMinusExp
+      typ          = fromMaybe "" maybTyp
+      (exp, hasMinusSign) = case plusMinusExp of
         ""             -> ("" , False)
         p:exp | p=='+' -> (exp, False)
               | p=='-' -> (exp, True )
@@ -268,4 +288,13 @@ diffTimeFromStrs days hours minutes seconds miliseconds = do
           ok   = return (integerToRational i)
           err  = fail $ concat ["time value expression with ", s, " ", typ, " is invalid"]
       if null s then zero else if i<maxVal then ok else err
+
+----------------------------------------------------------------------------------------------------
+
+daoGrammar :: CFGrammar DaoParState DaoTT Object
+daoGrammar = newCFGrammar 4 parseNumber
+
+testDaoParser :: String -> IO ()
+testDaoParser input = case parse daoGrammar mempty input of
+  
 

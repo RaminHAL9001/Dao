@@ -317,7 +317,7 @@ parserErr lineNum colNum =
 -- > 
 -- > myTokenDB = 'makeTokenDB' $ do
 -- >     ....
-class Ix a => TokenType a where { wrapTT :: TT -> a; unwrapTT :: a -> TT; }
+class (Ix a, Show a) => TokenType a where { wrapTT :: TT -> a; unwrapTT :: a -> TT; }
 instance TokenType TT where { wrapTT = id; unwrapTT = id; }
 
 -- | An actual value used to symbolize a type of token is a 'TT'. For example, an integer token
@@ -339,6 +339,10 @@ instance TokenType TT where { wrapTT = id; unwrapTT = id; }
 -- If you instantiate your newtype into the 'TokenType' class, you can also very easily instantiate
 -- 'Prelude.Read' and 'Prelude.Show' for your tokens.
 newtype TT = MkTT{ intTT :: Int } deriving (Eq, Ord, Show, Ix)
+
+-- Not for export, wouldn't want people making arbitrary 'TT's now, would we?
+enumTTFrom :: Int -> Int -> [TT]
+enumTTFrom a b = map MkTT [a..b]
 
 -- | The data type constructed from the 'LexBuilder' monad, used to build a 'Lexer' for your
 -- programming language, and also can be used to define the 'Prelude.Show' instance for your token
@@ -460,11 +464,25 @@ makeTokenDB builder =
     st = execState (runLexBuilder builder) $
       LexBuilderState{regexItemCounter=MkTT 1, stringToIDTable=mempty, buildingLexer=mempty}
 
+-- | This function lets you easily "derive" the instance for 'Prelude.Show' for a given 'TokenType'
+-- associated with a 'TokenDB'. It should be used like so:
+-- > newtype MyToken = MyToken{ unwrapMyToken :: TT }
+-- > instance 'TokenType' MyToken where{ wrapTT = MyToken; unwrapTT = unwrapMyToken; }
+-- > instance 'Prelude.Show' MyToken where{ show = 'deriveShowFromTokenDB' myTokenDB }
+-- > myTokenDB :: 'TokenDB' MyToken
+-- > myTokenDB = 'makeTokenDB' $ ....
 deriveShowFromTokenDB :: TokenType tok => TokenDB tok -> tok -> String
 deriveShowFromTokenDB tokenDB tok = uchars (tableTTtoUStr tokenDB ! unwrapTT tok)
 
-getTokenFromUStr :: (UStrType str, TokenType tok) => TokenDB tok -> str -> Maybe tok
-getTokenFromUStr tokenDB = fmap wrapTT . flip M.lookup (tableUStrToTT tokenDB) . ustr
+-- | Get token from a 'TokenDB' that was associated with the 'Dao.String.UStrType'.
+maybeLookupToken :: (UStrType str, TokenType tok) => TokenDB tok -> str -> Maybe tok
+maybeLookupToken tokenDB = fmap wrapTT . flip M.lookup (tableUStrToTT tokenDB) . ustr
+
+-- | Like 'maybeLookupToken' but evaluates to 'Prelude.error' if no such token was defined.
+lookupToken :: (UStrType str, TokenType tok) => TokenDB tok -> str -> tok
+lookupToken tokenDB str =
+  fromMaybe (error $ "internal: token "++show (ustr str)++" was never defined") $
+    maybeLookupToken tokenDB str
 
 -- | Creates a token type with 'regex' where the text lexed from the input is identical to name of
 -- the token. This is most useful for defining keywords and operators.
@@ -617,19 +635,22 @@ regexToLexer re = loop (re RxSuccess) where
 
 -- Not for export
 data RxPrimitive
-  = RxString   { rxString  :: UStr }
-  | RxCharSet  { rxCharSet :: Es.Set Char }
+  = RxDelete
+  | RxString   { rxString   :: UStr }
+  | RxCharSet  { rxCharSet  :: Es.Set Char }
   | RxRepeat   { rxLowerLim :: Es.Inf Int, rxUpperLim :: Es.Inf Int, subRegexUnit :: RxPrimitive }
   deriving Eq
 
 showRegexPrim :: RxPrimitive -> String
 showRegexPrim re = case re of
+  RxDelete           -> "(delete)"
   RxString       str -> show str
   RxCharSet      ch  -> show ch
   RxRepeat lo hi re  -> "repeat("++show lo++".."++show hi++", "++showRegexPrim re++")"
 
 regexPrimToLexer :: TokenType tok => RxPrimitive -> Lexer tok ()
 regexPrimToLexer re = case re of
+  RxDelete          -> clearBuffer
   RxString  str     -> lexString (uchars str)
   RxCharSet set     -> lexCharP (Es.member set)
   RxRepeat lo hi re -> rept lo hi re
@@ -760,6 +781,11 @@ cantFail msg = RxExpect (ustr msg)
 -- matching with @spaces@ and @'rx' "end"@ after that.
 dont :: Regex
 dont = RxDontMatch
+
+-- | Clear the 'lexBuffer' without creating a token, effectively deleting the characters from the
+-- input stream, ignoring those characters.
+rxClear :: Regex
+rxClear = RxStep RxDelete
 
 -- | Force an error to occur.
 rxErr :: String -> Regex
@@ -1678,9 +1704,10 @@ instance TokenType tok =>
 nextTokenPos :: TokenType tok => Bool -> TokStream st tok (LineNum, ColumnNum, Token tok)
 nextTokenPos doRemove = do
   st <- get
-  case recentTokens st of
+  {- let tracef msg = trace ((if doRemove then "shiftPos" else "look1pos")++": "++msg) -}
+  r <- case recentTokens st of
     [] -> case getLines st of
-      []         -> mzero
+      []         -> {- tracef "backtracked, no more input" -}mzero
       line:lines -> case lineTokens line of
         []                 -> put (st{getLines=lines}) >> nextTokenPos doRemove
         (colNum, tok):toks -> do
@@ -1695,6 +1722,7 @@ nextTokenPos doRemove = do
       -- If we remove a token, the 'recentTokens' cache must be cleared because we don't know what
       -- the next token will be. I use 'mzero' to clear the cache, it has nothing to do with the
       -- parser backtracking.
+  return r{- tracef ("returned "++show r) (return r)-}
 
 -- | A 'marker' immediately stores the cursor onto the stack. It then evaluates the given 'Parser'.
 -- If the given 'Parser' fails, the position of the failure (stored in a 'Dao.Token.Location') is
@@ -1867,9 +1895,14 @@ evalTableToTokStream table = case table of
 -- 'Data.Array.IArray.Array', or if the selected 'ParseTable' backtracks when evaluated, this parser
 -- backtracks and the selecting token is shifted back onto the stream.
 evalParseArray :: TokenType tok => Array TT (ParseTable st tok a) -> TokStream st tok a
-evalParseArray arr = do
-  tok <- fmap (unwrapTT . tokType) look1
-  if inRange (bounds arr) tok then evalTableToTokStream (arr!tok) else mzero
+evalParseArray arr = {- trace "evalParseArray" $ -} do
+  tok <- fmap tokType look1
+  let tt = unwrapTT tok
+      (a, b) = bounds arr
+      bnds = (intTT a, intTT b)
+  id${- trace ("evalParseArray: current token = "++show (intTT tt)++" "++show tok++"\nevalParseArray: "++show bnds++" "++show (map (flip asTypeOf tok . wrapTT) (uncurry enumTTFrom bnds))) $ -}
+    mplus (if inRange (bounds arr) tt then evalTableToTokStream (arr!tt) else mzero)
+          ({- trace "backtrack" -}mzero)
 
 -- | Efficiently evaluates a 'Data.Map.Map' stored in a 'ParseTableMap' constructor. Evaluation will
 -- shift one token from the stream, and the 'tokToUStr' value is used as a key to select and
@@ -1877,9 +1910,13 @@ evalParseArray arr = do
 -- the 'Data.Map.Map', or if the selected 'ParseTable' backtracks when evaluated, this parser
 -- backtracks and the selecting token is shifted back onto the stream.
 evalParseMap :: TokenType tok => M.Map UStr (ParseTable st tok a) -> TokStream st tok a
-evalParseMap m = do
-  tok <- fmap tokToUStr look1
-  join $ fmap evalTableToTokStream $ assumePValue $ maybeToBacktrack $ M.lookup tok m
+evalParseMap m = {- trace "evalParseMap" $ -} do
+  tok <- look1
+  let str = tokToUStr tok
+      typ = tokType   tok
+  id${- trace ("evalParseMap: current token = "++show (intTT $ unwrapTT typ)++" "++show typ++" "++show str++"\nevalParseArray: "++show(M.keys m)) $ -}
+    mplus (join $ fmap evalTableToTokStream $ assumePValue $ maybeToBacktrack $ M.lookup str m)
+          ({- trace "backtrack" -}mzero)
 
 ----------------------------------------------------------------------------------------------------
 -- $State_transition_parser
@@ -1891,46 +1928,53 @@ evalParseMap m = do
 -- representation of the parser for any given AST.
 -- 
 -- Here is a quick example of how to build your own parser using 'Parser':
--- > data TOKEN = NUMBER | PLUS | MINUS | TIMES | OPENPAREN | CLOSEPAREN deriving Ix
+-- > newtype TOKEN = TOKEN{ unwrapToken :: TT } deriving ('Prelude.Eq', 'Prelude.Ord', 'Data.Ix.Ix')
+-- > instance 'TokenType'  TOKEN where { 'wrapTT' = TOKEN; 'unwrapTT' = unwrapToken; }
+-- > instance 'HasTokenDB' TOKEN where { tokenDB  = myTokenDB; }
+-- > 
 -- > data AST = Value Int | Add AST AST | Sub AST AST | Mult AST AST | Parens AST
 -- > 
 -- > -- The tokenizer, associates a 'Lexer' with every TOKEN.
--- > myTokenizer :: Lexer TOKEN ()
--- > myTokenizer = 'Control.Applicative.many' $ 'Control.Monad.msum' $
--- >     [ 'lexUntil' 'Data.Char.isNumber' >> 'makeToken' NUMBER
--- >     , 'lexChar' @'@(@'@ >> 'makeEmptyToken' OPENPAREN
--- >     , 'lexChar' @'@)@'@ >> 'makeEmptyToken' CLOSEPAREN
--- >     , 'lexChar' @'@+@'@ >> 'makeEmptyToken' PLUS
--- >     , 'lexChar' @'@-@'@ >> 'makeEmptyToken' MINUS
--- >     , 'lexChar' @'@*@'@ >> 'makeEmptyToken' TIMES
--- >     , 'lexWhile' 'Data.Char.isSpace' >> 'clearBuffer' -- ignore spaces
--- >     , 'Control.Monad.fail' "unknown character"
--- >     ]
+-- > myTokenDB :: Lexer TOKEN ()
+-- > myTokenDB = makeTokenDB $ do
+-- >     operators <- 'keyStringTable' $ 'Prelude.words' "( ) + - *"
+-- >     numbers   <- 'fullToken' "NUMBER" $ 'rxRepeat1'('from' '0' 'to' '9')
+-- >     spaces    <- 'Control.Applicative.pure' $ 'rxRepeat'('Prelude.map' 'ch' "\t\n\r ") . 'rxClear'
+-- >     'activate'[operators, numbers, spaces]
+-- > 
+-- > -- get the TOKEN values for which we will be using to build 'Parser's.
+-- > [openToken, closeToken, plusToken, minusToken, timesToken, numberToken] =
+-- >     'Prelude.map' 'lookupToken' $ 'Prelude.words' "( ) + - * NUMBER"
 -- > 
 -- > -- The Plus, Minus, and Times constructors in the AST data type all have the same parser, just
 -- > -- with different token types and constructors.
 -- > operator :: TOKEN -> (AST -> AST -> AST) -> 'Parser' () TOKEN AST -> 'Parser' () TOKEN AST
--- > operator tokTyp constructor parse = 'Control.Applicatie.pure' constructor 'Control.Applicative.<*>' (parse >>= 'token' tokTyp . 'Control.Monad.return') 'Control.Applicative.<*>) parse
+-- > operator tokTyp constructor parser = 'Control.Applicatie.pure' constructor
+-- >     'Control.Applicative.<*>' (parser >>= \a -> 'token' tokTyp -> 'Prelude.return' a) -- parse a value, get an opreator, then return the value as the first value applied to the constructor
+-- >     'Control.Applicative.<*>' parser -- then parse and return the next value after the operator as the second value applied to the constructor
 -- > 
 -- > -- Parse an expression in parentheses.
 -- > parens :: 'Parser' () TOKEN AST
--- > parens = token OPENPARN >> mainParser >>= token CLOSEPAREN . return
+-- > parens = 'token' openToken >> myTopLevelParser >>= \a -> 'token' closeToken >> 'Prelude.return' a
 -- > 
 -- > -- Multiplication has a higher prescedence than addition or subtraction, so we make a separate table for multiplication
 -- > mult :: 'Parser' () TOKEN AST
--- > mult = operator TIMES Mult (parens 'Control.Applicative.<|>' mult)
+-- > mult = operator timesToken Mult (parens 'Control.Applicative.<|>' mult)
 -- > 
 -- > -- Addition and subtraction have the same prescedence, they call the above "mult" function which has a higher prescedence.
 -- > add :: 'Parser' () TOKEN AST
 -- > add = let getHigherPrec = mult 'Control.Applicative.<|>' add
--- >       in  operator PLUS Add getHigherPrec 'Control.Applicative.<|>' operator MINUS Sub getHigherPrec
+-- >       in  operator plusToken Add getHigherPrec 'Control.Applicative.<|>' operator minusToken Sub getHigherPrec
 -- > 
--- > mainParser :: 'CFGrammar' () TOKEN [AST]
--- > mainParser = 'newCFGrammar' 4 myTokenizer $
--- >     'Control.Applicative.many' $ 'Control.Monad.msum' $
--- >         [ 'Control.Applicatie.pure' Value 'Control.Applicative.<*>' ('token' NUMBER $ 'fromString' 'Prelude.read')
--- >         , parens, mult, add
--- >         ]
+-- > -- This is the top-level (entry point) for the parser. It parses as many valid expressions as it can.
+-- > myTopLevelParser :: 'Parser' () TOKEN [AST]
+-- > myTopLevelParser = 'Control.Applicative.many' $ 'Control.Monad.msum' $
+-- >     [ 'Control.Applicatie.pure' Value 'Control.Applicative.<*>' 'Prelude.fmap' 'Prelude.read' ('token' numberToken)
+-- >     , parens, mult, add
+-- >     ]
+-- > 
+-- > myGrammar :: 'CFGrammar' () TOKEN [AST]
+-- > myGrammar = 'newCFGrammar' 4 myTopLevelParser
 -- > 
 -- > evalAST :: AST -> Int
 -- > evalAST a = case a of
@@ -1939,8 +1983,8 @@ evalParseMap m = do
 -- >     Minus a b -> evalAST a - evalAST b
 -- >     Times a b -> evalAST a * evalAST b
 -- >     Parens i  -> evalAST i
--- >
--- > main = getContents >>= \inputString -> case 'parse' mainParser () inputString of
+-- > 
+-- > main = getContents >>= \inputString -> case 'parse' myGrammar () inputString of
 -- >     'Dao.Predicate.OK' ast    -> 'Control.Monad.mapM_' ('System.IO.print' . evalAST) ast
 -- >     'Dao.Predicate.Backtrack' -> 'System.IO.hPutStrLn' 'System.IO.stderr' "error: parse backtracked"
 -- >     'Dao.Predicate.PFail' err -> 'System.IO.hPrint' 'System.IO.stderr' err

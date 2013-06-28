@@ -55,8 +55,8 @@ maxYears = 99999
 
 ----------------------------------------------------------------------------------------------------
 
-newtype DaoTT = DaoTT{ daoUnwrapTT :: TT } deriving (Eq, Ord, Ix)
-instance TokenType  DaoTT where { unwrapTT = daoUnwrapTT; wrapTT = DaoTT }
+newtype DaoTT = DaoTT{ unwrapDaoTT :: TT } deriving (Eq, Ord, Ix)
+instance TokenType  DaoTT where { unwrapTT = unwrapDaoTT; wrapTT = DaoTT }
 instance HasTokenDB DaoTT where { tokenDB  = daoTokenDB }
 instance MetaToken DaoTokenLabel DaoTT where { tokenDBFromMetaValue _ = tokenDB }
 instance Show DaoTT where { show = deriveShowFromTokenDB daoTokenDB }
@@ -193,13 +193,13 @@ parseNumber = msum $
       <*> token BASE10
       <*> optional (token DOTBASE10)
       <*> optional (token EXPONENT)
-      <*> numType
+      <*> optNumType
   ]
   where
-    numType = optional (token NUMTYPE)
-    ignore  = pure Nothing
-    base b t = join $ pure (numberFromStrs b) <*>
-      fmap (drop 2) (token t) <*> ignore <*> ignore <*> numType
+    optNumType = optional (token NUMTYPE)
+    ignore     = pure Nothing
+    base   b t = join $ pure (numberFromStrs b) <*>
+      fmap (drop 2) (token t) <*> ignore <*> ignore <*> optNumType
 
 -- copied from the Dao.DaoParser module
 rationalFromString :: Int -> Rational -> String -> Maybe Rational

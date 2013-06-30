@@ -1379,7 +1379,7 @@ testLexicalAnalysis_withFilePath tokenizer filepath tablen input = putStrLn repo
   remain = "\nremaining: "++(if length more > 20 then show (take 20 more)++"..." else show more)
   loc    = show (lexCurrentLine st) ++ ":" ++ show (lexCurrentColumn st)
   report = (++remain) $ intercalate "\n" (map showLine lines) ++ '\n' : case result of
-    OK      _ -> "Success!"
+    OK      _ -> "No failures during lexical analysis."
     Backtrack -> reportFilepath ++ ": lexical analysis evalauted to \"Backtrack\""
     PFail err -> reportFilepath ++ show err
   showLine line = concat $
@@ -1707,7 +1707,7 @@ nextTokenPos doRemove = do
   {- let tracef msg = trace ((if doRemove then "shiftPos" else "look1pos")++": "++msg) -}
   r <- case recentTokens st of
     [] -> case getLines st of
-      []         -> {- tracef "backtracked, no more input" -}mzero
+      []         -> {- tracef "backtracked, no more input" -} mzero
       line:lines -> case lineTokens line of
         []                 -> put (st{getLines=lines}) >> nextTokenPos doRemove
         (colNum, tok):toks -> do
@@ -1722,7 +1722,8 @@ nextTokenPos doRemove = do
       -- If we remove a token, the 'recentTokens' cache must be cleared because we don't know what
       -- the next token will be. I use 'mzero' to clear the cache, it has nothing to do with the
       -- parser backtracking.
-  return r{- tracef ("returned "++show r) (return r)-}
+  {- tracef ("returned "++show r) (return r) -}
+  return r
 
 -- | A 'marker' immediately stores the cursor onto the stack. It then evaluates the given 'Parser'.
 -- If the given 'Parser' fails, the position of the failure (stored in a 'Dao.Token.Location') is
@@ -1816,52 +1817,46 @@ syntacticAnalysis parser userState lines = runParserState parser $ newParserStat
 -- your parser using 'Parser' and let 'evalParserToParseTable' compose the 'ParseTable' for
 -- you.
 data ParseTable st tok a
-  = ParseTableArray { parseTableArray :: Array TT (ParseTable st tok a) }
+  = ParseTableBacktrack
+  | ParseTableConst { constTableValue  :: a }
+  | ParseTableFail  { tableFailMessage :: String }
+  | ParseTableArray { parseTableArray  :: Array TT (ParseTable st tok a) }
     -- ^ stores references to 'ParseTable' functions into an array for fast retrieval by the type of
     -- the current token.
-  | ParseTableMap { parserMap         :: M.Map UStr (ParseTable st tok a) }
-  | ParseTable    { tokStreamParser   :: TokStream st tok a }
+  | ParseTableMap { parserMap          :: M.Map UStr (ParseTable st tok a) }
+  | ParseTable    { tokStreamParser    :: TokStream st tok a }
     -- ^ this constructor stores a plain 'TokStream' function, so this constructor can be used to
     -- lift 'TokStream' functions into the 'ParseTable' monad. This constructor is not composable
     -- like the above two constructors are, so the 'evalParserToParseTable' function tries to
     -- avoid using this unless it is absolutely necessary.
+instance (TokenType tok, Show a) =>
+  Show (ParseTable st tok a) where
+    show p = case p of
+      ParseTableConst a   -> "ParseTableConst "++show a
+      ParseTableArray arr -> concat
+        [ show1 p, show (let (a,b) = bounds arr in (intTT a, intTT b)), "\n"
+        , unlines (map(\ (a,b) -> show(intTT a)++" -> "++show1 b) (assocs arr))
+        ]
+      ParseTableMap   mp  -> show1 p++unlines(map(\ (a,b) -> show a++" -> "++show1 b) (M.assocs mp))
+      p                   -> show1 p
+      where { show1 = showParseTableCons }
 instance TokenType tok =>
   Monad (ParseTable st tok) where
-    return a = ParseTable { tokStreamParser = return a }
-    fail     = ParseTable . fail
-    parser >>= bindTo =
-      ParseTable{
-        tokStreamParser = evalTableToTokStream parser >>= \a -> evalTableToTokStream (bindTo a)
-      }
+    return = ParseTableConst
+    fail   = ParseTableFail
+    parser >>= bindTo = ParseTable $ evalTableToTokStream parser >>= evalTableToTokStream . bindTo
 instance Functor (ParseTable st tok) where
   fmap f parser = case parser of
-    ParseTableArray     arr        ->
-      ParseTableArray { parseTableArray = amap (\origFunc -> fmap f origFunc) arr }
-    ParseTable      parser ->
-      ParseTable{ tokStreamParser = fmap f parser}
+    ParseTableArray arr -> ParseTableArray (amap (\origFunc -> fmap f origFunc) arr)
+    ParseTable   parser -> ParseTable (fmap f parser)
 instance TokenType tok =>
   MonadPlus (ParseTable st tok) where
-    mzero     = ParseTable{ tokStreamParser = mzero }
-    mplus a b = case a of
-      ParseTableArray arrA -> case b of
-        ParseTableArray arrB -> merge (assocs arrA ++ assocs arrB)
-        ParseTable      fb   -> ParseTable{tokStreamParser = mplus (evalParseArray arrA) fb}
-      ParseTable      fa   -> ParseTable $ mplus fa $ case b of
-        ParseTableArray arrB -> evalParseArray arrB
-        ParseTable      fb   -> fb
-      where
-        minmax a = foldl (\ (n, x) a -> (min n a, max x a)) (a, a) . map fst
-        merge ax = case ax of
-          []                 -> mzero
-          ax@((tok, func):_) -> ParseTableArray{
-              parseTableArray = accumArray mplus mzero (minmax tok ax) ax
-            }
+    mzero     = ParseTable mzero
+    mplus a b = ParseTable (mplus (evalTableToTokStream a) (evalTableToTokStream b))
 instance TokenType tok =>
   Applicative (ParseTable st tok) where { pure = return; (<*>) = ap; }
 instance TokenType tok =>
   Alternative (ParseTable st tok) where { empty = mzero; (<|>) = mplus; }
-instance (TokenType tok, Monoid a) =>
-  Monoid (ParseTable st tok a) where { mempty = return mempty; mappend a b = liftM2 mappend a b; }
 instance TokenType tok =>
   MonadState st (ParseTable st tok) where
     get = ParseTable (gets userState)
@@ -1882,9 +1877,20 @@ instance TokenType tok =>
     shiftPos = ParseTable shiftPos
     look1Pos = ParseTable look1Pos
 
+showParseTableCons :: ParseTable st tok a -> String
+showParseTableCons p = case p of
+  ParseTableBacktrack -> "ParseTableBacktrack"
+  ParseTableConst   _ -> "ParseTableConst"
+  ParseTableArray   _ -> "ParseTableArray"
+  ParseTableMap     _ -> "ParseTableMap"
+  ParseTable        _ -> "TokStream"
+
 -- | Evaluate a 'ParseTable' to a 'TokStream'.
 evalTableToTokStream :: TokenType tok => ParseTable st tok a -> TokStream st tok a
 evalTableToTokStream table = case table of
+  ParseTableBacktrack    -> mzero
+  ParseTableConst      a -> return a
+  ParseTableFail     msg -> fail msg
   ParseTable      parser -> parser
   ParseTableArray parser -> evalParseArray parser
   ParseTableMap   parser -> evalParseMap   parser
@@ -1895,14 +1901,12 @@ evalTableToTokStream table = case table of
 -- 'Data.Array.IArray.Array', or if the selected 'ParseTable' backtracks when evaluated, this parser
 -- backtracks and the selecting token is shifted back onto the stream.
 evalParseArray :: TokenType tok => Array TT (ParseTable st tok a) -> TokStream st tok a
-evalParseArray arr = {- trace "evalParseArray" $ -} do
+evalParseArray arr = do
   tok <- fmap tokType look1
   let tt = unwrapTT tok
       (a, b) = bounds arr
       bnds = (intTT a, intTT b)
-  id${- trace ("evalParseArray: current token = "++show (intTT tt)++" "++show tok++"\nevalParseArray: "++show bnds++" "++show (map (flip asTypeOf tok . wrapTT) (uncurry enumTTFrom bnds))) $ -}
-    mplus (if inRange (bounds arr) tt then evalTableToTokStream (arr!tt) else mzero)
-          ({- trace "backtrack" -}mzero)
+  if inRange (bounds arr) tt then evalTableToTokStream (arr!tt) else mzero
 
 -- | Efficiently evaluates a 'Data.Map.Map' stored in a 'ParseTableMap' constructor. Evaluation will
 -- shift one token from the stream, and the 'tokToUStr' value is used as a key to select and
@@ -1910,13 +1914,11 @@ evalParseArray arr = {- trace "evalParseArray" $ -} do
 -- the 'Data.Map.Map', or if the selected 'ParseTable' backtracks when evaluated, this parser
 -- backtracks and the selecting token is shifted back onto the stream.
 evalParseMap :: TokenType tok => M.Map UStr (ParseTable st tok a) -> TokStream st tok a
-evalParseMap m = {- trace "evalParseMap" $ -} do
+evalParseMap m = do
   tok <- look1
   let str = tokToUStr tok
       typ = tokType   tok
-  id${- trace ("evalParseMap: current token = "++show (intTT $ unwrapTT typ)++" "++show typ++" "++show str++"\nevalParseArray: "++show(M.keys m)) $ -}
-    mplus (join $ fmap evalTableToTokStream $ assumePValue $ maybeToBacktrack $ M.lookup str m)
-          ({- trace "backtrack" -}mzero)
+  join $ fmap evalTableToTokStream $ assumePValue $ maybeToBacktrack $ M.lookup str m
 
 ----------------------------------------------------------------------------------------------------
 -- $State_transition_parser
@@ -1993,44 +1995,72 @@ evalParseMap m = {- trace "evalParseMap" $ -} do
 -- your parsers.
 data Parser st tok a
   = ParserBacktrack
-  | ParserConst  { constValue  :: a }
-  | ParserFail   { failMessage :: String }
-  | ParserUpdate { updateInner :: ParseTable st tok a }
+  | ParserConst     a
+  | ParserFail      String
   | ParserTable
-    { checkTokenAndString :: IM.IntMap  (M.Map UStr (Parser st tok a))
-    , checkToken          :: IM.IntMap  (Parser st tok a)
-    , checkString         :: M.Map UStr (Parser st tok a)
+    { updateInner :: [ParseTable st tok a]
+    , checkTokStr :: IM.IntMap  (M.Map UStr (Parser st tok a))
+    , checkToken  :: IM.IntMap  (Parser st tok a)
+    , checkString :: M.Map UStr (Parser st tok a)
+    , altParsers  :: Parser st tok a
     }
+instance (TokenType tok, Show a) =>
+  Show (Parser st tok a) where
+    show p = case p of
+      ParserBacktrack       -> "ParserBacktrack"
+      ParserConst         a -> "ParserConst "++show a
+      ParserTable a b c d e -> concat $
+        [ "ParserTable {\n"
+        , "  update: ", show (fmap showParseTableCons a), "\n"
+        , "  tokstr {\n"
+        , "  tok___: ", show (fmap (fmap showParserCons) (IM.assocs c)), "\n"
+        , "  ___str: ", show (fmap (fmap showParserCons) (M.assocs d)), "\n"
+        , unlines $
+            fmap(\ (i, m) ->
+                  concat $
+                    [ "    ", show i, " {\n"
+                    , unlines $
+                        fmap(\ (i, m) ->
+                              concat ["      ", show i, ": ", showParserCons m]
+                            )
+                            (M.assocs m)
+                    , "\n"
+                    , "    }"
+                    ]
+                )
+                (IM.assocs b)
+        , "  }\n"
+        , "  altern: ", showParserCons e, "\n"
+        , "}"
+        ]
 instance TokenType tok =>
   Monad (Parser st tok) where
     return     = ParserConst
     fail       = ParserFail
     p >>= bind = case p of
-      ParserBacktrack            -> ParserBacktrack
-      ParserConst a              -> bind a
-      ParserFail msg             -> ParserFail msg
-      ParserUpdate p -> ParserUpdate{
-          updateInner = do
-            a <- p >>= evalParserToParseTable . bind
-            ParseTable shift >> return a
-        }
-      ParserTable tokstr tok str ->
+      ParserBacktrack                 -> ParserBacktrack
+      ParserConst                   a -> bind a
+      ParserFail                  msg -> ParserFail  msg
+      ParserTable px tokstr tok str p ->
         ParserTable
-        { checkTokenAndString = fmap (fmap (>>=bind)) tokstr
-        , checkToken          = fmap (>>=bind) tok
-        , checkString         = fmap (>>=bind) str
+        { updateInner = map (\p -> p >>= evalParserToParseTable . bind) px
+        , checkTokStr = fmap (fmap (>>=bind)) tokstr
+        , checkToken  = fmap (>>=bind) tok
+        , checkString = fmap (>>=bind) str
+        , altParsers  = p >>= bind
         }
 instance Functor (Parser st tok) where
   fmap f p = case p of
-    ParserBacktrack -> ParserBacktrack
-    ParserConst  a -> ParserConst (f a)
-    ParserFail msg -> ParserFail  msg
-    ParserUpdate p -> ParserUpdate (fmap f p)
-    ParserTable tokstr tok str ->
+    ParserBacktrack             -> ParserBacktrack
+    ParserConst               a -> ParserConst (f a)
+    ParserFail              msg -> ParserFail msg
+    ParserTable px ts tok str p ->
       ParserTable
-      { checkTokenAndString = fmap (fmap (fmap f)) tokstr
-      , checkToken          = fmap (fmap f) tok
-      , checkString         = fmap (fmap f) str
+      { updateInner = fmap (fmap f) px
+      , checkTokStr = fmap (fmap (fmap f)) ts
+      , checkToken  = fmap (fmap f) tok
+      , checkString = fmap (fmap f) str
+      , altParsers  = fmap f p
       }
 instance TokenType tok =>
   MonadPlus (Parser st tok) where
@@ -2039,58 +2069,43 @@ instance TokenType tok =>
       ParserBacktrack -> b
       ParserConst   a -> ParserConst a
       ParserFail  msg -> ParserFail msg
-      ParserUpdate  a -> case b of
-        ParserBacktrack -> ParserUpdate a
-        ParserFail  msg -> ParserUpdate a
-        ParserConst   b -> ParserUpdate (mplus a (return b))
-        ParserUpdate  b -> ParserUpdate (mplus a b)
-        b             -> ParserUpdate (mplus a (evalParserToParseTable b))
-      ParserTable tokstrA tokA strA -> case b of
-        ParserBacktrack -> ParserTable tokstrA tokA strA
-        ParserConst   b ->
+      ParserTable pA tsA tokA strA altA -> case b of
+        ParserBacktrack -> a
+        ParserConst   _ -> ParserTable pA tsA tokA strA (mplus altA b)
+        ParserFail  msg -> ParserTable pA tsA tokA strA (mplus altA b)
+        ParserTable pB tsB tokB strB altB ->
           ParserTable
-          { checkTokenAndString = fmap (fmap (flip mplus (ParserConst b))) tokstrA
-          , checkToken          = fmap (flip mplus (ParserConst b)) tokA
-          , checkString         = fmap (flip mplus (ParserConst b)) strA
-          }
-        ParserFail  msg -> ParserTable tokstrA tokA strA
-        ParserUpdate  b ->
-          ParserTable
-          { checkTokenAndString = fmap (fmap (mplus (ParserUpdate b))) tokstrA
-          , checkToken          = fmap (mplus (ParserUpdate b)) tokA
-          , checkString         = fmap (mplus (ParserUpdate b)) strA
-          }
-        ParserTable tokstrB tokB strB ->
-          ParserTable
-          { checkTokenAndString = IM.unionWith (M.unionWith mplus) tokstrA tokstrB
-          , checkToken          = IM.unionWith              mplus  tokA    tokB
-          , checkString         = M.unionWith               mplus  strA    strB
+          { updateInner = pA ++ pB
+          , checkTokStr = IM.unionWith (M.unionWith mplus) tsA tsB
+          , checkToken  = IM.unionWith mplus tokA tokB
+          , checkString = M.unionWith  mplus strA strB
+          , altParsers  = mplus altA altB
           }
 instance TokenType tok =>
   Applicative (Parser st tok) where { pure = return; (<*>) = ap; }
 instance TokenType tok =>
   Alternative (Parser st tok) where { empty = mzero; (<|>) = mplus; }
 instance (TokenType tok, Monoid a) =>
-  Monoid (Parser st tok a) where { mempty = return mempty; mappend a b = liftM2 mappend a b; }
+  Monoid (Parser st tok a) where { mempty = ParserBacktrack; mappend a b = liftM2 mappend a b; }
 instance TokenType tok =>
   MonadState st (Parser st tok) where
-    get = ParserUpdate get
-    put = ParserUpdate . put
+    get = parserLift get
+    put = parserLift . put
 instance TokenType tok =>
   MonadError (Error (TokStreamState st tok) tok) (Parser st tok) where
-    throwError = ParserUpdate . throwError
-    catchError trial catcher = ParserUpdate $
-      catchError (evalParserToParseTable trial) (\err -> evalParserToParseTable (catcher err))
+    throwError           = parserLift . throwError
+    catchError try catch = parserLift $
+      catchError (evalParserToParseTable try) (\err -> evalParserToParseTable (catch err))
 instance TokenType tok =>
   MonadPlusError (Error (TokStreamState st tok) tok) (Parser st tok) where
-    catchPValue ptrans = ParserUpdate (catchPValue (evalParserToParseTable ptrans))
-    assumePValue       = ParserUpdate . assumePValue
+    catchPValue  = parserLift . catchPValue . evalParserToParseTable
+    assumePValue = parserLift . assumePValue
 instance TokenType tok =>
   MonadParser (Parser st) tok where
-    guardEOF = ParserUpdate guardEOF
-    unshift  = ParserUpdate . unshift
-    shiftPos = ParserUpdate shiftPos
-    look1Pos = ParserUpdate look1Pos
+    guardEOF = parserLift guardEOF
+    unshift  = parserLift . unshift
+    shiftPos = parserLift shiftPos
+    look1Pos = parserLift look1Pos
     tokenType   t p = emptyTable{checkToken  = IM.singleton (intTT (unwrapTT t)) p}
     tokenString u p = emptyTable{checkString = M.singleton (ustr u) p}
     tokenP    tok p = do
@@ -2098,17 +2113,29 @@ instance TokenType tok =>
           u = tokToUStr tok
       if u==nil
         then  tokenType t p
-        else  emptyTable{checkTokenAndString = IM.singleton (intTT (unwrapTT t)) (M.singleton u p)}
+        else  emptyTable{checkTokStr = IM.singleton (intTT (unwrapTT t)) (M.singleton u p)}
+
+showParserCons :: Parser st tok a -> String
+showParserCons p = case p of
+  ParserBacktrack       -> "ParserBacktrack"
+  ParserConst         _ -> "ParserConst"
+  ParserFail          _ -> "ParserFail"
+  ParserTable _ _ _ _ _ -> "ParserTable"
 
 -- | Allows you to build your own parser table from scratch by directly mapping tokens and strings
 -- to 'Parser's using functions provided in "Data.Map".
-emptyTable :: Parser st tok a
+emptyTable :: TokenType tok => Parser st tok a
 emptyTable =
   ParserTable
-  { checkTokenAndString = mempty
-  , checkToken          = mempty
-  , checkString         = mempty
+  { updateInner = mempty
+  , checkTokStr = mempty
+  , checkToken  = mempty
+  , checkString = mempty
+  , altParsers  = mzero
   }
+
+parserLift :: TokenType tok => ParseTable st tok a -> Parser st tok a
+parserLift f = emptyTable{updateInner=[f]}
 
 -- | Convert a 'Parser' to a 'ParseTable'. Doing this will lazily construct a sparse matrix which
 -- becomes the state transition table for this parser, hence the token type must instantiate
@@ -2117,14 +2144,15 @@ emptyTable =
 -- 'Data.Array.IArray.Array's are constructed to build the sparse matrix.
 evalParserToParseTable :: TokenType tok => Parser st tok a -> ParseTable st tok a
 evalParserToParseTable p = case p of
-  ParserBacktrack -> mzero
-  ParserConst   a -> return a
-  ParserFail  msg -> fail msg
-  ParserUpdate fn -> fn
-  ParserTable tokstr tok str -> msum $ concat $
-    [ mkMapArray tokstr
+  ParserBacktrack                 -> mzero
+  ParserConst                   a -> return a
+  ParserFail                  msg -> fail msg
+  ParserTable px tokstr tok str p -> msum $ concat $
+    [ px
+    , mkMapArray tokstr
     , mkArray tok
     , mkmap str
+    , [evalParserToParseTable p]
     ]
   where
     findBounds tok = foldl (\ (min0, max0) (tok, _) -> (min min0 tok, max max0 tok)) (tok, tok)

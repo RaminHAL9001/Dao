@@ -224,6 +224,39 @@ instance Functor TokenAt where
     , getToken            = fmap f (getToken t)
     }
 
+-- | See 'token' and 'tokenBy'.
+asString :: TokenAt tok -> String
+asString = tokToStr . getToken
+
+-- | See 'token' and 'tokenBy'.
+asUStr :: TokenAt tok -> UStr
+asUStr = tokUStr . getToken
+
+-- | That is as-zero, because "0" looks kind of like "()".
+-- See 'token' and 'tokenBy'.
+as0 :: TokenAt tok -> ()
+as0 = const ()
+
+-- | See 'token' and 'tokenBy'.
+asToken :: TokenAt tok -> Token tok
+asToken = getToken
+
+-- | See 'token' and 'tokenBy'.
+asTokenAt :: TokenAt tok -> TokenAt tok
+asTokenAt = id
+
+-- | See 'token' and 'tokenBy'.
+asTripple :: TokenAt tok -> (LineNum, ColumnNum, Token tok)
+asTripple tok = (lineNumber tok, columnNumber tok, getToken tok)
+
+-- | See 'token' and 'tokenBy'.
+asLineColumn :: TokenAt tok -> (LineNum, ColumnNum)
+asLineColumn tok = (lineNumber tok, columnNumber tok)
+
+-- | See 'token' and 'tokenBy'.
+asLocation :: TokenAt tok  -> Location
+asLocation = uncurry atPoint . asLineColumn
+
 -- | The lexical analysis phase emits a stream of 'TokenAt' objects, but it is not memory
 -- efficient to store the line and column number with every single token. To save space, the token
 -- stream is "compressed" into 'Lines', where 'TokenAt' that has the same 'lineNumber' is
@@ -1546,46 +1579,45 @@ defaultTo defaultValue parser = mplus parser (return defaultValue)
 class (Enum meta, UStrType meta) =>
   MetaToken meta tok | meta -> tok where { tokenDBFromMetaValue :: meta -> TokenDB tok }
 
--- | Like 'token', except returns the position of the token along with the token. See 'MetaToken'
--- class for an explanation of how to use this function.
-tokenPos :: (MetaToken meta tok, MonadParser parser tok) =>
-  meta -> parser tok (LineNum, ColumnNum, Token tok)
-tokenPos meta = case M.lookup (ustr meta) (tableUStrToTT (tokenDBFromMetaValue meta)) of
+-- | This function takes two parameters, the first is a polymorphic function we can call @getter@
+-- that takes some of the contents of the current token in the stream. The first value is a
+-- 'MetaToken' value we can call @meta@. This function will check the whether current token in the
+-- stream has an identifier value that matches the given @meta@ value. If so, the current token is
+-- shifted off of the stream and passed to the @getter@ function to extract the necessary
+-- information from the token.
+-- 
+-- Valid @getter@ functions are 'asString', 'asUStr', 'as_',
+-- 'asToken', 'asTokenAt', 'asTripple', 'asLineColumn', 'asLocation', or any composition of
+-- functions with any of the above as the right-most function.
+token :: (MetaToken meta tok, MonadParser parser tok) =>
+  meta -> (TokenAt tok -> a) -> parser tok a
+token meta getter = case M.lookup (ustr meta) (tableUStrToTT (tokenDBFromMetaValue meta)) of
   Nothing  -> error $ "internal: parser defined to use meta token "++show (ustr meta)++
     " without having activated any tokenizer that constructs a token by that meta type"
-  Just tok -> tokenType (wrapTT tok) shiftPos
+  Just tok -> tokenType (wrapTT tok) (fmap (getter . \ (a,b,c) -> TokenAt a b c) shiftPos)
 
--- | Like 'token', except returns the full 'Token' value rather than just the 'Dao.String.UStrType'
--- value. See 'MetaToken' class for an explanation of how to use this function.
-tokenVal :: (MetaToken meta tok, MonadParser parser tok) => meta -> parser tok (Token tok)
-tokenVal meta = fmap (\ (_, _, tok) -> tok) (tokenPos meta)
-
--- | If the current 'Token' in the 'TokStream' has a 'TokenType' value equivalent to the
--- 'TokenValue' associated with the 'MetaToken' provided here, then the 'Prelude.String' value of
--- that 'Token' is returned and the 'TokStream' is 'shift'ed. See 'MetaToken' class for an
--- explanation of how to use this function.
-token :: (MetaToken meta tok, MonadParser parser tok) => meta -> parser tok String
-token meta = fmap tokToStr (tokenVal meta)
-
--- | This class exists to to provide the 'tokenName' function.
+-- | This class exists to to provide the 'tokenBy' function.
 class TokenType tok => HasTokenDB tok where { tokenDB :: TokenDB tok }
 getTokenDB :: (HasTokenDB tok, MonadParser parser tok) => parser tok (TokenDB tok)
 getTokenDB = return tokenDB
 
--- | Used to check if the next 'Token' value in the 'TokStream' is a string constant value, like a
--- keyword or operator. This function has similar behavior to @('tokenString' 'shift')@.
-tokenNamePos :: (UStrType str, HasTokenDB tok, MonadParser parser tok) =>
-  str -> parser tok (LineNum, ColumnNum)
-tokenNamePos str = fmap (\ (line, col, _) -> (line, col)) $ do
+-- | Useful for keywords or operators, this function is used to check if the next 'Token' value in
+-- the 'TokStream' is of a 'TokenType' labeled by the given constant string. This function has
+-- similar behavior to @('tokenString' 'shift')@, /HOWEVER/ unlike 'tokenString', /this function is
+-- much more efficient/ because the 'Token' identifier is looked up in the 'TokenDB' only once and
+-- then used to add this parser to a parse table instead of merely comparing the string value of the
+-- token.
+-- 
+-- Valid @getter@ functions are 'asString', 'asUStr', 'as_',
+-- 'asToken', 'asTokenAt', 'asTripple', 'asLineColumn', 'asLocation', or any composition of
+-- functions with any of the above as the right-most function.
+tokenBy :: (UStrType name, HasTokenDB tok, MonadParser parser tok) =>
+  name -> (TokenAt tok -> a) -> parser tok a
+tokenBy name getter = fmap (getter . \ (a,b,c) -> TokenAt a b c) $ do
   db <- getTokenDB
-  case M.lookup (ustr str) (tableUStrToTT db) of
-    Nothing  -> tokenString str shiftPos
+  case M.lookup (ustr name) (tableUStrToTT db) of
+    Nothing  -> tokenString name shiftPos
     Just tok -> tokenType (wrapTT tok) shiftPos
-
--- | Like 'tokenNamePos' but throws-away the @('LineNum', 'ColumnNum')@ value.
-tokenName :: (UStrType str, HasTokenDB tok, MonadParser parser tok) =>
-  str -> parser tok ()
-tokenName = void . tokenNamePos
 
 ----------------------------------------------------------------------------------------------------
 -- $Fundamental_parser_data_types
@@ -1752,7 +1784,8 @@ marker parser = do
 -- >     'expect' "an integer expression after the 'e'" $ do
 -- >         exponentPart <- parseSignedInteger
 -- >         return (makeFracWithExp fractionalPart exponentPart :: 'Prelude.Double')
-expect :: TokenType tok => String -> TokStream st tok a -> TokStream st tok a
+expect :: (MonadParser parser tok, MonadError (Error st tok) (parser tok), TokenType tok) =>
+  String -> parser tok a -> parser tok a
 expect errMsg parser = do
   (a, b) <- getCursor
   let expectMsg = "expecting "++errMsg
@@ -2199,6 +2232,63 @@ fromString f = pure (f . fromUStr . tokToUStr) <*> look1
 
 fromTypeString :: (UStrType str, TokenType tok) => tok -> str -> Parser st tok a -> Parser st tok a
 fromTypeString tok str = tokenP (Token{tokType=tok, tokUStr=ustr str})
+
+----------------------------------------------------------------------------------------------------
+
+-- | A 'LookAhead' parser is a newtype wrapper around 'Parser', but the
+-- 'Control.Applicative.Applicative' and 'Control.Monad.Monad' with a slightly different semantics.
+-- In a 'Parser', if one of the applied functions after bind ('Control.Monad.>>=') or apply
+-- ('Control.Monad.<*>') backtracks, the 'Token's that were 'shift'ed from the 'TokStream' before it
+-- are lost. This is usually not a problem because a 'Parser' only ever needs to look ahead by one
+-- token. However when a constructor for a data type takes two or more
+-- non-'Control.Applicative.optional' tokens in a row, this requires a 'LookAhead' to make sure that
+-- both 'Token's can be shifted. So if the first parser succeeds, but the second parser backtracks,
+-- both tokens are placed back into the 'TokStream'.
+-- 
+-- Using too many 'LookAhead's is very inefficient, but it is sometimes unavoidable. It is an
+-- especially bad idea to write a recursive 'LookAhead' function, although there might be rare
+-- occasions when this is unavoidable as well.
+-- 
+-- 'LookAhead' instantiates 'MonadParser' so you can use the ordinary 'token' or 'tokenBy' functions
+-- to compose a 'LookAhead' parser. Simply compose your parser as a value passed to the 'lookAhead'
+-- function and type inference will do the job of constructing the 'LookAhead' parser and converting
+-- it to a regular 'Parser'. To lift a function of type @'Parser' st tok a@ into the 'LookAhead'
+-- monad, simply use the 'LookAhead' constructor.
+newtype LookAhead st tok a = LookAhead{ lookAhead :: Parser st tok a }
+instance Functor (LookAhead st tok) where { fmap f (LookAhead p) = LookAhead (fmap f p) }
+instance TokenType tok =>
+  Monad (LookAhead st tok) where
+    return               = LookAhead . return
+    (LookAhead p) >>= fn = LookAhead $ do
+      tok <- look1Pos
+      p >>= \a -> mplus (lookAhead (fn a)) (unshift tok >> mzero)
+instance TokenType tok =>
+  MonadPlus (LookAhead st tok) where
+    mzero     = LookAhead mzero
+    mplus a b = LookAhead (mplus (lookAhead a) (lookAhead b))
+instance TokenType tok =>
+  Applicative (LookAhead st tok) where { pure = return; (<*>) = ap; }
+instance TokenType tok =>
+  Alternative (LookAhead st tok) where { empty = mzero; (<|>) = mplus; }
+instance TokenType tok =>
+  MonadState st (LookAhead st tok) where
+    get = LookAhead get
+    put = LookAhead . put
+instance TokenType tok =>
+  MonadError (Error (TokStreamState st tok) tok) (LookAhead st tok) where
+    throwError           = LookAhead . throwError
+    catchError try catch = LookAhead $
+      catchError (lookAhead try) (\err -> lookAhead (catch err))
+instance TokenType tok =>
+  MonadPlusError (Error (TokStreamState st tok) tok) (LookAhead st tok) where
+    catchPValue  = LookAhead . catchPValue . lookAhead
+    assumePValue = LookAhead . assumePValue
+instance TokenType tok =>
+  MonadParser (LookAhead st) tok where
+    guardEOF        = LookAhead guardEOF
+    unshift         = LookAhead . unshift
+    shiftPos        = LookAhead shiftPos
+    look1Pos        = LookAhead look1Pos
 
 ----------------------------------------------------------------------------------------------------
 

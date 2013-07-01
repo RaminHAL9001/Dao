@@ -150,7 +150,7 @@ daoTokenDef = do
           opt getMills . optComma . label)
   timeKeyword  <- keyString "time"
   dateKeyword  <- keyString "date"
-  timeSyntax   <- pure $ timeKeyword . optParens (time . opt getMills)
+  timeSyntax   <- pure $ timeKeyword . optParens (opt plusMinus . time . opt getMills)
   dateSyntax   <- pure $ dateKeyword . optParens dateTime
   
   ------------------------------------------- ACTIVATE --------------------------------------------
@@ -185,21 +185,63 @@ failLater msg = catchError (fail msg) $ \err ->
 
 ----------------------------------------------------------------------------------------------------
 
+-- | Parses an arbitrary number of space and comment tokens, comments are returned.
+space :: DaoParser [Comment]
+space = do
+  st <- get
+  case bufferedComments st of
+    Just coms -> put (st{bufferedComments=mempty}) >> return coms
+    Nothing   -> fmap concat $ many $ msum $
+      [ token SPACE (const [] . as0)
+      , token INLINECOM  (\c -> [InlineComment  $ asUStr c])
+      , token ENDLINECOM (\c -> [EndlineComment $ asUStr c])
+      ]
+
+-- | Evaluates a 'DaoParser' within a cluster of optional spaces and comments, returning the result
+-- of the parser wrapped in a 'Dao.Object.Com' constructor. If the given 'DaoParser' backtracks, the
+-- comments that were parsed before the 'DaoParser' was evaluated are buffered so a second call two
+-- successive calls to this function return immediately. For example in an expression like:
+-- > 'Control.Monad.msum' ['commented' p1, 'commented' p2, ... , 'commented' pN]
+-- The spaces and comments occurring before the parsers @p1@, @p2@, ... , @pN@ are only being parsed
+-- once, no matter how many parser are tried.
+commented :: DaoParser a -> DaoParser (Com a)
+commented parser = do
+  before <- space
+  msum $
+    [ parser >>= \result -> space >>= \after -> return (com before result after)
+    , modify(\st -> st{bufferedComments = Just before}) >> mzero
+    ]
+
+-- | Parses an expression which may optionally occur within a parenthetical closure. Provide a
+-- message that will be used to produce an error message if there is no matching close parenthesis
+-- token.
+optParens :: String -> DaoParser a -> DaoParser a
+optParens errmsg parser = msum $
+  [ tokenBy "(" as0 >> parser >>= \a -> expect errmsg (tokenBy ")" as0) >> return a
+  , parser
+  ]
+
+----------------------------------------------------------------------------------------------------
+
+-- | Parsing numerical literals
 parseNumber :: DaoParser Object
 parseNumber = msum $
   [ base 16 BASE16
   , base  2 BASE2
   , join $ pure (numberFromStrs 10)
-      <*> token BASE10
-      <*> optional (token DOTBASE10)
-      <*> optional (token EXPONENT)
-      <*> optNumType
+      <*> token BASE10 asString
+      <*> optional (token DOTBASE10 asString)
+      <*> optional (token EXPONENT  asString)
+      <*> optional (token NUMTYPE   asString)
+  , join $ pure (numberFromStrs 10 "")
+      <*> token DOTBASE10 (Just . asString)
+      <*> optional (token EXPONENT asString)
+      <*> optional (token NUMTYPE  asString)
   ]
   where
-    optNumType = optional (token NUMTYPE)
-    ignore     = pure Nothing
-    base   b t = join $ pure (numberFromStrs b) <*>
-      fmap (drop 2) (token t) <*> ignore <*> ignore <*> optNumType
+    ignore   = pure Nothing
+    base b t = join $ pure (numberFromStrs b) <*>
+      fmap (drop 2) (token t asString) <*> ignore <*> ignore <*> optional (token NUMTYPE asString)
 
 -- copied from the Dao.DaoParser module
 rationalFromString :: Int -> Rational -> String -> Maybe Rational
@@ -221,8 +263,9 @@ rationalFromString maxValue base str =
 -- copied from the Dao.Parser module
 numberFromStrs :: Int -> String -> Maybe String -> Maybe String -> Maybe String -> DaoParser Object
 numberFromStrs base int maybFrac maybPlusMinusExp maybTyp = do
-  let frac         = fromMaybe "" maybFrac
-      plusMinusExp = fromMaybe "" maybPlusMinusExp
+  let frac         = fromMaybe "" (fmap tail maybFrac)
+      strprfx      = foldl (\f s t -> f (fromMaybe t (stripPrefix s t))) id . words
+      plusMinusExp = fromMaybe "" (fmap (strprfx ".e .E e E") maybPlusMinusExp)
       typ          = fromMaybe "" maybTyp
       (exp, hasMinusSign) = case plusMinusExp of
         ""             -> ("" , False)
@@ -260,10 +303,14 @@ numberFromStrs base int maybFrac maybPlusMinusExp maybTyp = do
         else return (ORatio r)
     typ -> fail ("unknown numeric type "++show typ)
 
+----------------------------------------------------------------------------------------------------
+
 -- | Compute diff times from strings representing days, hours, minutes, and seconds. The seconds
 -- value may have a decimal point.
-diffTimeFromStrs :: String -> String -> String -> String -> String -> DaoParser T_diffTime
-diffTimeFromStrs days hours minutes seconds miliseconds = do
+diffTimeFromStrs :: String -> Maybe String -> DaoParser T_diffTime
+diffTimeFromStrs time optMils = do
+  let miliseconds = noDot optMils
+  let [days,hours,minutes,seconds] = split [] time
   days    <- check "days"    (maxYears*365) days
   hours   <- check "hours"             24   hours
   minutes <- check "minutes"           60   minutes
@@ -276,6 +323,11 @@ diffTimeFromStrs days hours minutes seconds miliseconds = do
         return (seconds + rint miliseconds % (10 ^ length miliseconds))
   return $ fromRational (60*60*24*days + 60*60*hours + 60*minutes + seconds)
   where
+    noDot     str       = case str of { Nothing -> ""; Just('.':str) -> str; Just str -> str; }
+    noPlus    str       = case str of { '+':str -> str; _ -> str; }
+    split buf str       = case break (==':') str of
+      (t, ""     ) -> reverse $ take 4 $ (t:buf) ++ repeat ""
+      (t, ':':str) -> split (t:buf) str
     rint str            = if null str then 0 else (read str :: Integer)
     integerToRational s = s % 1 :: Rational
     check :: String -> Integer -> String -> DaoParser Rational
@@ -288,15 +340,28 @@ diffTimeFromStrs days hours minutes seconds miliseconds = do
 
 ----------------------------------------------------------------------------------------------------
 
+-- All literal parsers combined
+parseLiteral :: DaoParser Object
+parseLiteral = msum $
+  [ parseNumber
+  , fmap ODiffTime $ join $ pure diffTimeFromStrs
+      <*> token TIME asString
+      <*> optional (token DOTBASE10 asString)
+  , fmap (OTime . read) $ token DATE asString
+  , fmap (ORef . IntRef . read . tail) $ token INTREF asString
+  ]
+
+----------------------------------------------------------------------------------------------------
+
 testDaoLexer :: String -> IO ()
 testDaoLexer = testLexicalAnalysis (tokenDBLexer daoTokenDB) 4
 
 daoGrammar :: CFGrammar DaoParState DaoTT Object
-daoGrammar = newCFGrammar 4 parseNumber
+daoGrammar = newCFGrammar 4 parseLiteral
 
 testDaoParser :: String -> IO ()
 testDaoParser input = case parse daoGrammar mempty input of
   OK      a -> putStrLn ("Parser succeeded:\n"++show a)
-  Backtrack -> testDaoLexer input >> putStrLn "---- PARSER BACKTRACKED ----"
-  PFail err -> testDaoLexer input >> putStrLn ("---- PARSER FAILED ----" ++ show err)
+  Backtrack -> testDaoLexer input >> putStrLn "---- PARSER BACKTRACKED ----\n"
+  PFail err -> testDaoLexer input >> putStrLn ("---- PARSER FAILED ----\n" ++ show err)
 

@@ -151,15 +151,9 @@ locationCoords loc = case loc of
 -- where a stream of tokens is converted into data. 'Token' is the data type that makes this
 -- possible.
 
--- | Used by 'TokenAt' and 'Line'. This class is probably not useful outside of this module.
-class HasLineNumber   a where
-  lineNumber    :: a -> LineNum
-  setLineNumber :: a -> LineNum -> a
-
--- | Used by 'TokenAt' and 'Line'. This class is probably not useful outside of this module.
-class HasColumnNumber a where
-  columnNumber    :: a -> ColumnNum
-  setColumnNumber :: a -> ColumnNum -> a
+class HasLineNumber   a where { lineNumber   :: a -> LineNum }
+class HasColumnNumber a where { columnNumber :: a -> ColumnNum }
+class HasToken        a where { getToken     :: a tok -> Token tok }
 
 -- | Every token emitted by a lexical analyzer must have at least a type. 'Token' is polymorphic
 -- over the type of token. The 'MonadParser' class only requires tokens to instantiate 'Prelude.Eq',
@@ -184,8 +178,8 @@ instance Show tok => Show (Token tok) where
 instance Functor Token where
   fmap f t = case t of
     EmptyToken t   -> EmptyToken (f t)
-    CharToken  t c -> CharToken (f t) c
-    Token      t u -> Token     (f t) u
+    CharToken  t c -> CharToken  (f t) c
+    Token      t u -> Token      (f t) u
 
 -- | If the lexical analyzer emitted a token with a copy of the text used to create it, this
 -- function can retrieve that text. Returns 'Dao.String.nil' if there is no text.
@@ -208,21 +202,24 @@ data TokenAt tok =
   TokenAt
   { tokenAtLineNumber   :: LineNum
   , tokenAtColumnNumber :: ColumnNum
-  , getToken            :: Token tok
+  , getTokenValue       :: Token tok
   }
-instance HasLineNumber   (TokenAt tok) where
-  lineNumber        = tokenAtLineNumber
-  setLineNumber a n = a{tokenAtLineNumber=n}
-instance HasColumnNumber (TokenAt tok) where
-  columnNumber        = tokenAtColumnNumber
-  setColumnNumber a n = a{tokenAtColumnNumber=n}
-instance Functor TokenAt where
+instance Show tok =>
+  Show (TokenAt tok) where { show = show . asTripple }
+instance HasLineNumber   (TokenAt tok) where { lineNumber   = tokenAtLineNumber }
+instance HasColumnNumber (TokenAt tok) where { columnNumber = tokenAtColumnNumber }
+instance HasToken TokenAt where { getToken = getTokenValue }
+instance Functor  TokenAt where
   fmap f t =
     TokenAt
     { tokenAtLineNumber   = tokenAtLineNumber t
     , tokenAtColumnNumber = tokenAtColumnNumber t
-    , getToken            = fmap f (getToken t)
+    , getTokenValue       = fmap f (getToken t)
     }
+
+-- | See 'token' and 'tokenBy'.
+asTokType :: TokenAt tok -> tok
+asTokType = tokType . getToken
 
 -- | See 'token' and 'tokenBy'.
 asString :: TokenAt tok -> String
@@ -269,9 +266,7 @@ data Line tok
     , lineTokens     :: [(ColumnNum, Token tok)]
       -- ^ a list of tokens, each with an associated column number.
     }
-instance HasLineNumber (Line tok) where
-  lineNumber        = lineLineNumber
-  setLineNumber a n = a{lineLineNumber=n}
+instance HasLineNumber (Line tok) where { lineNumber = lineLineNumber }
 instance Show tok => Show (Line tok) where
   show line = show (lineLineNumber line) ++ ": " ++ show (lineTokens line)
 instance Functor Line where
@@ -279,6 +274,16 @@ instance Functor Line where
     Line
     { lineLineNumber = lineLineNumber t
     , lineTokens     = fmap (fmap (fmap f)) (lineTokens t)
+    }
+
+lineToTokensAt :: Line tok -> [TokenAt tok]
+lineToTokensAt line = map f (lineTokens line) where
+  lineNum         = lineNumber line
+  f (colNum, tok) =
+    TokenAt
+    { tokenAtLineNumber   = lineNum
+    , tokenAtColumnNumber = colNum
+    , getTokenValue       = tok
     }
 
 ----------------------------------------------------------------------------------------------------
@@ -313,19 +318,22 @@ instance Functor (Error st) where
     }
 
 -- | An initial blank parser error you can use to construct more detailed error messages.
-parserErr :: LineNum -> ColumnNum -> Error st tok
-parserErr lineNum colNum =
+parserErr :: Location -> Error st tok
+parserErr loc =
   Error
-  { parseErrLoc = Just $
-      Location
-      { startingLine   = lineNum
-      , startingColumn = colNum
-      , endingLine     = lineNum
-      , endingColumn   = colNum
-      }
+  { parseErrLoc = Just loc
   , parseErrMsg = Nothing
   , parseErrTok = Nothing
   , parseStateAtErr = Nothing
+  }
+
+newError :: Error st tok
+newError =
+  Error
+  { parseErrLoc=Nothing
+  , parseErrMsg=Nothing
+  , parseErrTok=Nothing
+  , parseStateAtErr=Nothing
   }
 
 ----------------------------------------------------------------------------------------------------
@@ -900,6 +908,8 @@ data LexerState tok
       -- ^ contains the remainder of the input string to be analyzed. Retrieve this string using:
       -- > 'Control.Monad.State.gets' 'lexInput'
     }
+instance HasLineNumber   (LexerState tok) where { lineNumber   = lexCurrentLine }
+instance HasColumnNumber (LexerState tok) where { columnNumber = lexCurrentColumn }
 
 -- | Create a new lexer state using the given input 'Prelude.String'. This is only realy useful if
 -- you must evaluate 'runLexerState'.
@@ -934,6 +944,8 @@ lexErrToParseErr lexErr =
   }
   where { st = parseStateAtErr lexErr }
 
+lexCurrentLocation :: LexerState tok -> Location
+lexCurrentLocation st = atPoint (lineNumber st) (columnNumber st)
 
 -- | The 'Lexer' is very similar in many ways to regular expressions, however 'Lexer's always
 -- begin evaluating at the beginning of the input string. The lexical analysis phase of parsing
@@ -963,7 +975,7 @@ instance TokenType tok =>
     fail msg           = do
       st <- get
       throwError $
-        (parserErr (lexCurrentLine st) (lexCurrentColumn st)){parseErrMsg = Just (ustr msg)}
+        (parserErr (lexCurrentLocation st)){parseErrMsg = Just (ustr msg)}
 instance TokenType tok =>
   MonadPlus (Lexer tok) where
     mplus (Lexer a) (Lexer b) = Lexer (mplus a b)
@@ -1040,7 +1052,7 @@ lexUpdLineColWithStr input = do
         c | c=='\t'   -> tablen
         c | isPrint c -> 1
         c             -> 0
-      (newLine, newCol) = countNLs (lexCurrentLine st) (lexCurrentColumn st) input
+      (newLine, newCol) = countNLs (lineNumber st) (columnNumber st) input
   put (st{lexCurrentLine=newLine, lexCurrentColumn=newCol})
 
 -- | Create a 'Token' using the contents of the 'lexBuffer', then clear the 'lexBuffer'. This
@@ -1060,9 +1072,9 @@ makeGetToken storeChars typ = do
     st{ lexBuffer   = ""
       , tokenStream = tokenStream st ++
           [ TokenAt
-            { tokenAtLineNumber   = lexCurrentLine   st
-            , tokenAtColumnNumber = lexCurrentColumn st
-            , getToken            = token
+            { tokenAtLineNumber   = lineNumber   st
+            , tokenAtColumnNumber = columnNumber st
+            , getTokenValue       = token
             } ]
       , lexTokenCounter = lexTokenCounter st + 1
       }
@@ -1410,7 +1422,7 @@ testLexicalAnalysis_withFilePath tokenizer filepath tablen input = putStrLn repo
   lines  = tokenStreamToLines (tokenStream st)
   more   = take 21 (lexInput st)
   remain = "\nremaining: "++(if length more > 20 then show (take 20 more)++"..." else show more)
-  loc    = show (lexCurrentLine st) ++ ":" ++ show (lexCurrentColumn st)
+  loc    = show (lineNumber st) ++ ":" ++ show (lexCurrentColumn st)
   report = (++remain) $ intercalate "\n" (map showLine lines) ++ '\n' : case result of
     OK      _ -> "No failures during lexical analysis."
     Backtrack -> reportFilepath ++ ": lexical analysis evalauted to \"Backtrack\""
@@ -1453,84 +1465,68 @@ testLexicalAnalysisOnFile a b c = readFile c >>= testLexicalAnalysis_withFilePat
 -- 'token' function for the 'Parser' monad works very differently (more efficiently) under the
 -- hood as compared to the ordinary 'TokStream' monad which does not build lookup tables.
 
--- not for export
--- This class declares a set of functions that are expected to be common to all parsers dervied
+-- | This class declares a set of functions that are expected to be common to all parsers dervied
 -- from the parsers in this module. *The minimal complete definition is:*
 -- > 'guardEOF'
--- > 'shiftPos'
+-- > 'shift'
 -- > 'unshift'
 -- but these default definitions alone would be very inefficient. Hopefully your parser will
 -- instantiate this class with a more efficient 'MonadParser' such as one that extends 'TokStream'
 -- or better yet 'Parser'.
+-- 
+-- All of these parsers take a @getter@ function of type @('TokenAt' tok -> a)@, which shall extract
+-- data from a 'TokenAt' value from the 'TokStream' and return it. Several of @getter@ functions are
+-- provided in this module, including 'asTokType', 'asString', 'asUStr', 'asToken', 'asLocation',
+-- 'asLineColumn', 'as0', or 'asTripple'.
 class (TokenType tok, Functor (parser tok), Monad (parser tok), MonadPlus (parser tok)) =>
   MonadParser parser tok where
-    -- | A 'Control.Monad.guard'-like function that backtracks if there are still tokens in the
-    -- token stream, or succeeds if there are no tokens left.
+    unshift :: TokenAt tok -> parser tok ()
+    -- ^ Put a 'TokenAt' value and into the front of the token stream, so the very next call to
+    -- 'shift' or 'look1' will retrieve the information you passed to this function. This is used to
+    -- implement backtracking in a function like 'tokenStrType'.
+    shift :: (TokenAt tok -> a) -> parser tok a
+    -- ^ Shift the next 'TokenAt' value off of the token stream along with it's positional
+    -- information and succeed. Backtrack if there are no more tokens.
     guardEOF :: parser tok ()
-    -- | Put a token and it's positional information into the front of the token stream, so the very
-    -- next call to 'shiftPos' or 'look1Pos' will retrieve the information you passed to this
-    -- function. This is used to implement backtracking in a function like 'tokenP'. Use of this
-    -- function is an anti-pattern, meaning if you find yourself using this function often, say
-    -- *more than once* in your entire module (and that one usage is not within the instantiation of
-    -- 'tokenP'), you have probably done a terrible job of designing your parser.
-    unshift :: (LineNum, ColumnNum, Token tok) -> parser tok ()
-    -- | Shift the token off of the token stream along with it's positional information and succeed.
-    -- Backtrack if there are no more tokens.
-    shiftPos :: parser tok (LineNum, ColumnNum, Token tok)
-    -- | Look-ahead 1 token, i.e. copy the token off of the token stream without shifting it out of
+    -- ^ A 'Control.Monad.guard'-like function that backtracks if there are still tokens in the
+    -- token stream, or succeeds if there are no tokens left.
+    look1 :: (TokenAt tok -> a) -> parser tok a
+    look1 as = shift id >>= \t -> unshift t >> return (as t)
+    -- ^ Look-ahead 1 token, i.e. copy the token off of the token stream without shifting it out of
     -- the stream. The token is copied along with it's positional information. Succeed if there was
     -- a token that could be copied, backtrack if the token stream is empty.
-    look1Pos :: parser tok (LineNum, ColumnNum, Token tok)
-    look1Pos = shiftPos >>= \t -> unshift t >> return t
-    -- | Like 'tokenP' but is only concerned with the type of the token. The 'Parser'
-    -- instantiation of this function uses the token type as an array index and stores the
-    -- sub-parser at that index. The 'TokStream' instantiation of this function is merely a special
-    -- case of 'tokenP'.
-    tokenType :: tok -> parser tok a -> parser tok a
-    tokenType tok parser = do
-      kept@(_, _, nxt) <- shiftPos
-      mplus (if tok == tokType nxt then parser else mzero) (unshift kept >> mzero)
-    -- | Like 'tokenP' but is only concerned with the string-value of the token. The 'Parser'
+    tokenType :: (TokenAt tok -> a) -> tok -> parser tok a
+    tokenType as tok = do
+      kept <- shift id
+      mplus (unshift kept >> mzero) $
+        if tok == tokType (getToken kept) then return (as kept) else mzero
+    -- ^ Provide a 'TokenType' value, the value will be checked against the next token in the stream
+    -- and returned if the 'tokType' matches.
+    tokenString :: UStrType str => (TokenAt tok -> a) -> str -> parser tok a
+    tokenString as str = do
+      kept <- shift id
+      flip mplus (unshift kept >> mzero) $
+        if ustr str == tokToUStr (getToken kept) then return (as kept) else mzero
+    -- ^ Like 'tokenStrType' but is only concerned with the string-value of the token. The 'Parser'
     -- instantiation of this function uses the token string as a 'Data.Map.Map' key and stores the
     -- sub-parser at that key. The default instantiation of this function is merely a special
-    -- case of 'tokenP'.
-    tokenString :: UStrType str => str -> parser tok a -> parser tok a
-    tokenString str parser = do
-      kept@(_, _, nxt) <- shiftPos
-      mplus (if ustr str == tokToUStr nxt then parser else mzero) (unshift kept >> mzero)
-    -- | A predicate matching the 'TokenType' within a 'Token' value to the 'TokenType' of the next
+    -- case of 'tokenStrType'.
+    tokenStrType :: UStrType str => (TokenAt tok -> a) -> tok -> str -> parser tok a
+    tokenStrType as tok str = do
+      kept <- shift id
+      let nxt = getToken kept
+      flip mplus (unshift kept >> mzero) $
+        if tok == tokType nxt && ustr str == tokToUStr nxt
+          then  return (as kept)
+          else  mzero
+    -- ^ A predicate matching the 'TokenType' within a 'Token' value to the 'TokenType' of the next
     -- 'Token' in the 'TokStream'. Works like like 'tokenPosP' but takes a plain 'Token' value
-    -- instead of a @'TokenType' tok => ('LineNum', 'ColumnNum', 'Token' tok)@ tripple.
-    tokenP :: Token tok -> parser tok a -> parser tok a
-    tokenP tok parser = do
-      kept@(_, _, nxt) <- shiftPos
-      mplus (if tokType tok == tokType nxt && tokToUStr tok == tokToUStr nxt then parser else mzero)
-            (unshift kept >> mzero)
-
--- | A predicate matching the 'TokenType' within a 'Token' value to the 'TokenType' of the next
--- 'Token' in the 'TokStream'. Although it takes a 
--- @'TokenType' tok => ('LineNum', 'ColumnNum', 'Token' tok)@ tripple, the 'LineNum' and
--- 'ColumnNum' are ignored. This function is really just for convenience when you happen to have
--- a tripple but you only want to match on the 'TokenType' of the third item (the 'Token' value)
--- in the tripple.
-tokenPosP :: MonadParser parser tok =>
-  (LineNum, ColumnNum, Token tok) -> parser tok a -> parser tok a
-tokenPosP (_, _, tok) parser = tokenP tok parser
-
--- | Like 'shiftPos' but conveniently removes the 'LineNum' and 'ColumnNum', since usually you
--- don't need that information.
-shift :: MonadParser parser tok => parser tok (Token tok)
-shift = shiftPos >>= \ (_, _, tok) -> return tok
-
--- | Like 'look1Pos' but conveniently removes the 'LineNum' and 'ColumnNum', since usually you
--- don't need that information.
-look1 :: MonadParser parser tok => parser tok (Token tok)
-look1 = look1Pos >>= \ (_, _, tok) -> return tok
-
--- | Return the current line and column of the current token without modifying shifting the token
--- stream.
-getCursor :: MonadParser parser tok => parser tok (LineNum, ColumnNum)
-getCursor = look1Pos >>= \ (a,b, _) -> return (a,b)
+    -- instead of a @'TokenType' tok => ('LineNum', 'ColumnNum', 'Token' tok)@ triple.
+    getFinalLocation :: parser tok Location
+    getFinalLocation = return LocationUnknown
+    -- ^ A parser should be able to retrieve minimal information about the file it is parsing, which
+    -- in this case is the last line number, and the number of columns (characters) contained in the
+    -- last line.
 
 -- | If the given 'Parser' backtracks then evaluate to @return ()@, otherwise ignore the result of
 -- the 'Parser' and evaluate to @return ()@.
@@ -1586,15 +1582,15 @@ class (Enum meta, UStrType meta) =>
 -- shifted off of the stream and passed to the @getter@ function to extract the necessary
 -- information from the token.
 -- 
--- Valid @getter@ functions are 'asString', 'asUStr', 'as_',
+-- Valid @getter@ functions are 'asTokType', 'asString', 'asUStr', 'as0',
 -- 'asToken', 'asTokenAt', 'asTripple', 'asLineColumn', 'asLocation', or any composition of
 -- functions with any of the above as the right-most function.
 token :: (MetaToken meta tok, MonadParser parser tok) =>
   meta -> (TokenAt tok -> a) -> parser tok a
-token meta getter = case M.lookup (ustr meta) (tableUStrToTT (tokenDBFromMetaValue meta)) of
+token meta as = case M.lookup (ustr meta) (tableUStrToTT (tokenDBFromMetaValue meta)) of
   Nothing  -> error $ "internal: parser defined to use meta token "++show (ustr meta)++
     " without having activated any tokenizer that constructs a token by that meta type"
-  Just tok -> tokenType (wrapTT tok) (fmap (getter . \ (a,b,c) -> TokenAt a b c) shiftPos)
+  Just tok -> tokenType as (wrapTT tok)
 
 -- | This class exists to to provide the 'tokenBy' function.
 class TokenType tok => HasTokenDB tok where { tokenDB :: TokenDB tok }
@@ -1608,16 +1604,16 @@ getTokenDB = return tokenDB
 -- then used to add this parser to a parse table instead of merely comparing the string value of the
 -- token.
 -- 
--- Valid @getter@ functions are 'asString', 'asUStr', 'as_',
+-- Valid @getter@ functions are 'asTokType', 'asString', 'asUStr', 'as0',
 -- 'asToken', 'asTokenAt', 'asTripple', 'asLineColumn', 'asLocation', or any composition of
 -- functions with any of the above as the right-most function.
 tokenBy :: (UStrType name, HasTokenDB tok, MonadParser parser tok) =>
   name -> (TokenAt tok -> a) -> parser tok a
-tokenBy name getter = fmap (getter . \ (a,b,c) -> TokenAt a b c) $ do
+tokenBy name as = do
   db <- getTokenDB
   case M.lookup (ustr name) (tableUStrToTT db) of
-    Nothing  -> tokenString name shiftPos
-    Just tok -> tokenType (wrapTT tok) shiftPos
+    Nothing  -> tokenString as name
+    Just tok -> tokenType as (wrapTT tok)
 
 ----------------------------------------------------------------------------------------------------
 -- $Fundamental_parser_data_types
@@ -1634,25 +1630,39 @@ tokenBy name getter = fmap (getter . \ (a,b,c) -> TokenAt a b c) $ do
 -- type.
 data TokStreamState st tok
   = TokStreamState
-    { userState    :: st
-    , getLines     :: [Line tok]
-    , recentTokens :: [(LineNum, ColumnNum, Token tok)]
+    { userState  :: st
+    , getLines   :: [Line tok]
+    , tokenQueue :: [TokenAt tok]
       -- ^ single look-ahead is common, but the next token exists within the 'Prelude.snd' value
       -- within a pair within a list within the 'lineTokens' field of a 'Line' data structure.
       -- Rather than traverse that same path every time 'nextToken' or 'withToken' is called, the
       -- next token is cached here.
+    , finalLocation :: Location -- ^ the line and column number marking the end of the file.
     }
 instance Functor (TokStreamState st) where
   fmap f s =
     TokStreamState
-    { userState    = userState s
-    , getLines     = fmap (fmap f) (getLines s)
-    , recentTokens = fmap (\ (line, col, tok) -> (line, col, fmap f tok)) (recentTokens s)
+    { userState  = userState s
+    , getLines   = fmap (fmap f) (getLines s)
+    , tokenQueue = fmap (fmap f) (tokenQueue s)
+    , finalLocation = finalLocation s
     }
 
-newParserState :: TokenType tok => st -> [Line tok] -> TokStreamState st tok
-newParserState userState lines =
-  TokStreamState{userState = userState, getLines = lines, recentTokens = []}
+newTokStream :: TokenType tok => st -> [Line tok] -> TokStreamState st tok
+newTokStream userState lines =
+  TokStreamState
+  { userState     = userState
+  , getLines      = lines
+  , tokenQueue    = []
+  , finalLocation = LocationUnknown
+  }
+
+newTokStreamFromLexer :: TokenType tok => st -> LexerState tok -> TokStreamState st tok
+newTokStreamFromLexer userState lexerState =
+  (newTokStream userState $ tokenStreamToLines $ tokenStream lexerState)
+  { finalLocation =
+      atPoint (lexCurrentColumn lexerState) (lexCurrentColumn lexerState)
+  }
 
 -- | The 'TokStreamState' data structure has a field of a polymorphic type reserved for containing
 -- arbitrary stateful information. 'TokStream' instantiates 'Control.Monad.State.Class.MonadState'
@@ -1684,21 +1694,20 @@ instance TokenType tok =>
   Monad (TokStream st tok) where
     (TokStream ma) >>= mfa = TokStream (ma >>= parserToPTrans . mfa)
     return a               = TokStream (return a)
-    fail msg = do
-      ab  <- optional getCursor
-      tok <- optional look1
+    fail msg = trace "LexStream.fail" $ do
+      tok <- optional (look1 id)
       st  <- get
       throwError $
         Error
-        { parseErrLoc     = fmap (uncurry atPoint) ab
+        { parseErrLoc     = fmap asLocation tok
         , parseErrMsg     = Just (ustr msg)
-        , parseErrTok     = tok
+        , parseErrTok     = fmap getToken tok
         , parseStateAtErr = Just st
         }
 instance TokenType tok =>
   MonadPlus (TokStream st tok) where
-    mzero                             = TokStream mzero
-    mplus (TokStream a) (TokStream b) = TokStream (mplus a b)
+    mzero                             = TokStream (trace "LexStream.Backtrack") mzero
+    mplus (TokStream a) (TokStream b) = TokStream (mplus a (trace "LexStream.mplus" b))
 instance TokenType tok =>
   Applicative (TokStream st tok) where { pure = return ; (<*>) = ap; }
 instance TokenType tok =>
@@ -1726,50 +1735,44 @@ instance (TokenType tok, Monoid a) =>
   Monoid (TokStream st tok a) where { mempty = return mempty; mappend a b = liftM2 mappend a b; }
 instance TokenType tok =>
   MonadParser (TokStream st) tok where
-    guardEOF = mplus (look1Pos >> return False) (return True) >>= guard
-    unshift postok = modify (\st -> st{recentTokens = postok : recentTokens st})
-    shiftPos = nextTokenPos True
-    look1Pos = nextTokenPos False
+    guardEOF    = mplus (look1 as0 >> trace "not EOF" (return False)) (trace "EOF" $ return True) >>= guard
+    unshift tok = trace "unshift" $ modify (\st -> st{tokenQueue=tok:tokenQueue st})
+    shift   as  = trace "shift" $ fmap as (nextTokenPos True)
+    look1   as  = trace "look1" $ fmap as (nextTokenPos False)
+    getFinalLocation = gets finalLocation
 
--- | Return the next token in the state along with it's line and column position. If the boolean
+-- Return the next token in the state along with it's line and column position. If the boolean
 -- parameter is true, the current token will also be removed from the state.
-nextTokenPos :: TokenType tok => Bool -> TokStream st tok (LineNum, ColumnNum, Token tok)
+nextTokenPos :: TokenType tok => Bool -> TokStream st tok (TokenAt tok)
 nextTokenPos doRemove = do
   st <- get
-  {- let tracef msg = trace ((if doRemove then "shiftPos" else "look1pos")++": "++msg) -}
-  r <- case recentTokens st of
+  let tracef msg = trace ((if doRemove then "shift" else "look1pos")++": "++msg)
+  r <- case tokenQueue st of
     [] -> case getLines st of
-      []         -> {- tracef "backtracked, no more input" -} mzero
-      line:lines -> case lineTokens line of
-        []                 -> put (st{getLines=lines}) >> nextTokenPos doRemove
-        (colNum, tok):toks -> do
-          let postok = (lineNumber line, colNum, tok)
-              upd st = st{ getLines = line{ lineTokens = toks } : lines }
-          if doRemove -- the 'recentTokens' buffer is cleared here regardless.
-            then  put (upd st)
-            else  put ((upd st){ recentTokens = [postok] })
-          return postok
-    tok:tokx | doRemove -> put (st{recentTokens=tokx}) >> return tok
-    tok:tokx            -> return tok
-      -- If we remove a token, the 'recentTokens' cache must be cleared because we don't know what
+      []         -> tracef "backtracked, no more input" mzero
+      line:lines -> do
+        modify (\st -> st{tokenQueue=lineToTokensAt line, getLines=lines})
+        nextTokenPos doRemove
+    tok:tokx
+      | doRemove -> put (st{tokenQueue=tokx}) >> return tok
+    tok:tokx     -> return tok
+      -- If we remove a token, the 'tokenQueue' cache must be cleared because we don't know what
       -- the next token will be. I use 'mzero' to clear the cache, it has nothing to do with the
       -- parser backtracking.
-  {- tracef ("returned "++show r) (return r) -}
+  tracef ("returned "++show r) (return r)
   return r
 
--- | A 'marker' immediately stores the cursor onto the stack. It then evaluates the given 'Parser'.
--- If the given 'Parser' fails, the position of the failure (stored in a 'Dao.Token.Location') is
--- updated such that the starting point of the failure points to the cursor stored on the stack by
--- this 'marker'. When used correctly, this function makes error reporting a bit more helpful.
-marker :: TokenType tok => TokStream st tok a -> TokStream st tok a
+-- | A 'marker' immediately stores the cursor onto the runtime call stack. It then evaluates the
+-- given 'Parser'. If the given 'Parser' fails, the position of the failure (stored in a
+-- 'Dao.Token.Location') is updated such that the starting point of the failure points to the cursor
+-- stored on the stack by this 'marker'. When used correctly, this function makes error reporting a
+-- bit more helpful.
+marker :: (TokenType tok, MonadParser parser tok, MonadPlusError (Error st tok) (parser tok)) =>
+  parser tok a -> parser tok a
 marker parser = do
-  ab <- mplus (fmap Just getCursor) (return Nothing)
+  before <- mplus (look1 asLocation) getFinalLocation
   flip mapPFail parser $ \parsErr ->
-    parsErr
-    { parseErrLoc =
-        let p = parseErrLoc parsErr
-        in  mplus (p >>= \loc -> ab >>= \ (a, b) -> return (mappend loc (atPoint a b))) p
-    }
+    parsErr{parseErrLoc = parseErrLoc parsErr >>= \after -> return(before<>after)}
 
 -- | Given two parameters: 1. an error message and 2. a 'Parser', will succeed normally if
 -- evaluating the given 'Parser' succeeds. But if the given 'Parser' backtracks, this this function
@@ -1780,16 +1783,28 @@ marker parser = do
 -- typically write 'expect' statements like so:
 -- > fracWithExp = do
 -- >     fractionalPart <- parseFractional
--- >     'tokenP' 'Alphabetic' (\tok -> tok=="E" || tok=="e")
+-- >     'tokenStrType' 'Alphabetic' (\tok -> tok=="E" || tok=="e")
 -- >     'expect' "an integer expression after the 'e'" $ do
 -- >         exponentPart <- parseSignedInteger
 -- >         return (makeFracWithExp fractionalPart exponentPart :: 'Prelude.Double')
-expect :: (MonadParser parser tok, MonadError (Error st tok) (parser tok), TokenType tok) =>
+expect :: (TokenType tok, MonadParser parser tok, MonadError (Error st tok) (parser tok)) =>
   String -> parser tok a -> parser tok a
 expect errMsg parser = do
-  (a, b) <- getCursor
+  loc <- mplus (look1 asLocation) getFinalLocation
   let expectMsg = "expecting "++errMsg
-  mplus parser (throwError ((parserErr a b){parseErrMsg = Just (ustr expectMsg)}))
+  mplus parser (throwError ((parserErr loc){parseErrMsg = Just (ustr expectMsg)}))
+
+-- | Given a constructor that takes an arbitray value and a 'Dao.NewParser.Location' value, and a
+-- 'Dao.NewParser.Parser' that evaluates to the same type of arbitrary value, this function
+-- automatically notes the location of the current token, then evaluates the parser, then notes the
+-- location of the next token to create a 'Dao.NewParser.Location' value and apply it to the
+-- constructor.
+withLoc :: (TokenType tok, MonadParser parser tok) => parser tok (Location -> a) -> parser tok a
+withLoc parser = do
+  before <- look1 asLocation
+  cons   <- parser
+  after  <- look1 asLocation
+  return (cons (before<>after))
 
 -- | The 'TokStream's analogue of 'Control.Monad.State.runState', runs the parser using an existing
 -- 'TokStreamState'.
@@ -1806,10 +1821,9 @@ runParserState (TokStream parser) = runState (runPTrans parser)
 syntacticAnalysis
   :: TokenType tok
   => TokStream st tok synTree
-  -> st
-  -> [Line tok]
+  -> TokStreamState st tok
   -> (PValue (Error (TokStreamState st tok) tok) synTree, TokStreamState st tok)
-syntacticAnalysis parser userState lines = runParserState parser $ newParserState userState lines
+syntacticAnalysis = runParserState
 
 ----------------------------------------------------------------------------------------------------
 -- $ParseTable
@@ -1885,7 +1899,11 @@ instance Functor (ParseTable st tok) where
 instance TokenType tok =>
   MonadPlus (ParseTable st tok) where
     mzero     = ParTab mzero
-    mplus a b = ParTab (mplus (evalTableToTokStream a) (evalTableToTokStream b))
+    mplus a b = case a of
+      ParTabBacktrack -> b
+      ParTabConst   _ -> a
+      ParTabFail    _ -> a
+      a               -> ParTab (mplus (evalTableToTokStream a) (evalTableToTokStream b))
 instance TokenType tok =>
   Applicative (ParseTable st tok) where { pure = return; (<*>) = ap; }
 instance TokenType tok =>
@@ -1907,8 +1925,9 @@ instance TokenType tok =>
   MonadParser (ParseTable st) tok where
     guardEOF = ParTab guardEOF
     unshift  = ParTab . unshift
-    shiftPos = ParTab shiftPos
-    look1Pos = ParTab look1Pos
+    shift    = ParTab . shift
+    look1    = ParTab . look1
+    getFinalLocation = ParTab getFinalLocation
 
 showParseTableCons :: ParseTable st tok a -> String
 showParseTableCons p = case p of
@@ -1935,7 +1954,7 @@ evalTableToTokStream table = case table of
 -- backtracks and the selecting token is shifted back onto the stream.
 evalParseArray :: TokenType tok => Array TT (ParseTable st tok a) -> TokStream st tok a
 evalParseArray arr = do
-  tok <- fmap tokType look1
+  tok <- look1 asTokType
   let tt = unwrapTT tok
       (a, b) = bounds arr
       bnds = (intTT a, intTT b)
@@ -1948,7 +1967,7 @@ evalParseArray arr = do
 -- backtracks and the selecting token is shifted back onto the stream.
 evalParseMap :: TokenType tok => M.Map UStr (ParseTable st tok a) -> TokStream st tok a
 evalParseMap m = do
-  tok <- look1
+  tok <- look1 asToken
   let str = tokToUStr tok
       typ = tokType   tok
   join $ fmap evalTableToTokStream $ assumePValue $ maybeToBacktrack $ M.lookup str m
@@ -2076,11 +2095,11 @@ instance TokenType tok =>
       ParserFail                  msg -> ParserFail  msg
       Parser      px tokstr tok str p ->
         Parser
-        { updateInner = map (\p -> p >>= evalParserToParseTable . bind) px
-        , checkTokStr = fmap (fmap (>>=bind)) tokstr
-        , checkToken  = fmap (>>=bind) tok
-        , checkString = fmap (>>=bind) str
-        , altParsers  = p >>= bind
+        { updateInner = map (\p -> trace "Parser.>>= updateInner" $ p >>= evalParserToParseTable . bind) px
+        , checkTokStr = fmap (fmap (>>=bind)) $ trace "Parser.>>= checkToStr" tokstr
+        , checkToken  = fmap (>>=bind) $ trace "Parser.>>= checkToken" tok
+        , checkString = fmap (>>=bind) $ trace "Parser.>>= checkString" str
+        , altParsers  = trace "Parser.>>= altParsers" $ p >>= bind
         }
 instance Functor (Parser st tok) where
   fmap f p = case p of
@@ -2104,8 +2123,8 @@ instance TokenType tok =>
       ParserFail  msg -> ParserFail msg
       Parser      pA tsA tokA strA altA -> case b of
         ParserBacktrack -> a
-        ParserConst   _ -> Parser      pA tsA tokA strA (mplus altA b)
-        ParserFail  msg -> Parser      pA tsA tokA strA (mplus altA b)
+        ParserConst   _ -> Parser pA tsA tokA strA (mplus altA b)
+        ParserFail    _ -> Parser pA tsA tokA strA (mplus altA b)
         Parser      pB tsB tokB strB altB ->
           Parser
           { updateInner = pA ++ pB
@@ -2137,23 +2156,28 @@ instance TokenType tok =>
   MonadParser (Parser st) tok where
     guardEOF = parserLift guardEOF
     unshift  = parserLift . unshift
-    shiftPos = parserLift shiftPos
-    look1Pos = parserLift look1Pos
-    tokenType   t p = emptyTable{checkToken  = IM.singleton (intTT (unwrapTT t)) p}
-    tokenString u p = emptyTable{checkString = M.singleton (ustr u) p}
-    tokenP    tok p = do
-      let t = tokType tok
-          u = tokToUStr tok
+    shift    = parserLift . shift
+    look1    = parserLift . look1
+    tokenType   as t =
+      emptyTable{checkToken = IM.singleton (intTT (unwrapTT t)) (parserLift (shift as))}
+    tokenString as u =
+      emptyTable{checkString = M.singleton (ustr u) (parserLift (shift as))}
+    tokenStrType as tok str = do
+      let u = ustr str
       if u==nil
-        then  tokenType t p
-        else  emptyTable{checkTokStr = IM.singleton (intTT (unwrapTT t)) (M.singleton u p)}
+        then  tokenType as tok
+        else  emptyTable
+              { checkTokStr = IM.singleton (intTT (unwrapTT tok)) $
+                  M.singleton u (parserLift (shift as))
+              }
+    getFinalLocation = parserLift getFinalLocation
 
 showParserCons :: Parser st tok a -> String
 showParserCons p = case p of
   ParserBacktrack  -> "ParserBacktrack"
   ParserConst    _ -> "ParserConst"
   ParserFail     _ -> "ParserFail"
-  Parser _ _ _ _ _ -> "Parser     "
+  Parser _ _ _ _ _ -> "Parser"
 
 -- | Allows you to build your own parser table from scratch by directly mapping tokens and strings
 -- to 'Parser's using functions provided in "Data.Map".
@@ -2169,6 +2193,9 @@ emptyTable =
 
 parserLift :: TokenType tok => ParseTable st tok a -> Parser st tok a
 parserLift f = emptyTable{updateInner=[f]}
+
+tokStreamLift :: TokenType tok => TokStream st tok a -> Parser st tok a
+tokStreamLift = parserLift . ParTab
 
 -- | Convert a 'Parser' to a 'ParseTable'. Doing this will lazily construct a sparse matrix which
 -- becomes the state transition table for this parser, hence the token type must instantiate
@@ -2195,7 +2222,7 @@ evalParserToParseTable p = case p of
       case ax of
         []          -> mzero
         [(tok, m)]  -> return $ do
-          t <- fmap tokType (ParTab look1)
+          t <- ParTab (look1 asTokType)
           guard (unwrapTT t == tok)
           ParTabMap{parserMap = M.map evalParserToParseTable m}
         (tok, _):ax' -> do
@@ -2208,7 +2235,7 @@ evalParserToParseTable p = case p of
       case ax of
         []            -> mzero
         [(tok, gstp)] -> return $ do
-          t <- fmap tokType (ParTab look1)
+          t <- ParTab (look1 asTokType)
           guard (unwrapTT t == tok)
           evalParserToParseTable gstp
         (tok, _):ax'  -> do
@@ -2219,19 +2246,10 @@ evalParserToParseTable p = case p of
     mkmap m = case M.assocs m of
       []            -> mzero
       [(str, gstp)] -> return $ do
-        t <- fmap tokToUStr (ParTab look1)
+        t <- ParTab (look1 asUStr)
         guard (t==str)
         evalParserToParseTable gstp
       _             -> return (ParTabMap{parserMap = M.map evalParserToParseTable m})
-
--- | Your 'Parser' will needs to convert 'Token's to other data types. This function takes a pure
--- function that performs a conversion from a single 'Dao.String.UStrType' (usually 'Prelude.String'
--- or 'Dao.String.UStr'), and uses the string value of the current function to evaluate it.
-fromString :: (TokenType tok, UStrType str) => (str -> a) -> Parser st tok a
-fromString f = pure (f . fromUStr . tokToUStr) <*> look1
-
-fromTypeString :: (UStrType str, TokenType tok) => tok -> str -> Parser st tok a -> Parser st tok a
-fromTypeString tok str = tokenP (Token{tokType=tok, tokUStr=ustr str})
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2260,7 +2278,7 @@ instance TokenType tok =>
   Monad (LookAhead st tok) where
     return               = LookAhead . return
     (LookAhead p) >>= fn = LookAhead $ do
-      tok <- look1Pos
+      tok <- look1 id
       p >>= \a -> mplus (lookAhead (fn a)) (unshift tok >> mzero)
 instance TokenType tok =>
   MonadPlus (LookAhead st tok) where
@@ -2285,10 +2303,11 @@ instance TokenType tok =>
     assumePValue = LookAhead . assumePValue
 instance TokenType tok =>
   MonadParser (LookAhead st) tok where
-    guardEOF        = LookAhead guardEOF
-    unshift         = LookAhead . unshift
-    shiftPos        = LookAhead shiftPos
-    look1Pos        = LookAhead look1Pos
+    guardEOF     = LookAhead guardEOF
+    unshift      = LookAhead . unshift
+    shift        = LookAhead . shift
+    look1        = LookAhead . look1
+    getFinalLocation = LookAhead getFinalLocation
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2350,13 +2369,12 @@ parse cfg st input = case lexicalResult of
   OK      _ -> case parserResult of
     OK     a  -> OK a
     Backtrack -> Backtrack
-    PFail err -> PFail $ err{parseStateAtErr=Just (userState parserState)}
+    PFail err -> PFail $ err{parseStateAtErr = Just (userState parserState)}
   Backtrack -> Backtrack
   PFail err -> PFail $ (lexErrToParseErr err){parseStateAtErr = Nothing}
   where
     initState = (newLexerState input){lexTabWidth = columnWidthOfTab cfg}
     (lexicalResult, lexicalState) = lexicalAnalysis (mainLexer cfg) initState
     (parserResult , parserState ) =
-      syntacticAnalysis (mainParser cfg) st $
-        tokenStreamToLines (tokenStream lexicalState)
+      syntacticAnalysis (mainParser cfg) (newTokStreamFromLexer st lexicalState)
 

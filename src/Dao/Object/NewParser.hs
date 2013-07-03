@@ -156,9 +156,9 @@ daoTokenDef = do
   ------------------------------------------- ACTIVATE --------------------------------------------
   activate $
     [ space, inlineCom, endlineCom
-    , dataSyntax, dateSyntax, timeSyntax
     , stringLit, base16, base2, base10Syntax, intRefSyntax
-    , keywords, mconcat groups, operators
+    --  , dataSyntax, dateSyntax, timeSyntax
+    , keywords, label, mconcat groups, operators
     ]
 
 ----------------------------------------------------------------------------------------------------
@@ -167,13 +167,20 @@ data DaoParState
   = DaoParState
     { bufferedComments :: Maybe [Comment]
     , nonHaltingErrors :: [DaoParseErr]
+    , internalState    :: Maybe (TokStreamState DaoParState DaoTT)
     }
 instance Monoid DaoParState where
   mappend a b =
      b{ bufferedComments = bufferedComments a >>= \a -> bufferedComments b >>= \b -> return (a++b)
       , nonHaltingErrors = nonHaltingErrors a ++ nonHaltingErrors b
+      , internalState    = internalState b
       }
-  mempty = DaoParState{ bufferedComments = Nothing, nonHaltingErrors = [] }
+  mempty =
+    DaoParState
+    { bufferedComments = Nothing
+    , nonHaltingErrors = []
+    , internalState = Nothing
+    }
 
 setCommentBuffer :: [Comment] -> DaoParser ()
 setCommentBuffer coms = modify $ \st ->
@@ -340,28 +347,104 @@ diffTimeFromStrs time optMils = do
 
 ----------------------------------------------------------------------------------------------------
 
--- All literal parsers combined
-parseLiteral :: DaoParser Object
-parseLiteral = msum $
+-- | The top-level object parser.
+object :: DaoParser AST_Object
+object = assignment
+
+-- Objects that are parsed as a single value, which includes all literal expressions and equtions in
+-- parentheses.
+singleton :: DaoParser AST_Object
+singleton = mplus (inParens object) $ fmap (\o -> AST_Literal o LocationUnknown) $ msum $
   [ parseNumber
   , fmap ODiffTime $ join $ pure diffTimeFromStrs
       <*> token TIME asString
       <*> optional (token DOTBASE10 asString)
-  , fmap (OTime . read) $ token DATE asString
-  , fmap (ORef . IntRef . read . tail) $ token INTREF asString
+  , OTime   . read                   <$> token DATE      asString
+  , ORef    . IntRef   . read . tail <$> token INTREF    asString
+  , ORef    . LocalRef               <$> token LABEL     asUStr
+  , OString . read                   <$> token STRINGLIT asString
   ]
+
+inParens :: DaoParser AST_Object -> DaoParser AST_Object
+inParens parser = do
+  tokenBy "(" as0
+  a <- pure (\o -> AST_Paren True o LocationUnknown) <*> commented object
+  expect "close-parentheses" $ tokenBy ")" (const a)
+
+commaSepd :: (UStrType str, UStrType errmsg) =>
+  errmsg -> str -> str -> DaoParser AST_Object -> DaoParser [Com AST_Object]
+commaSepd errMsg open close parser = do
+  tokenBy open as0
+  objs <- space >>= \c -> tokenBy close as0 >> return[com c AST_Void[]] <|> many(commented object)
+  expect errMsg $ tokenBy close as0 >> return objs
+
+refPrefix :: DaoParser AST_Object
+refPrefix = withLoc $
+  pure AST_Prefix <*> (read <$> (tokenBy "$" <> tokenBy "@") asString) <*> commented singleton
+
+infixed
+  :: (UStrType opstr, Read op)
+  => (AST_Object -> Com op -> AST_Object -> Location -> AST_Object)
+  -> DaoParser AST_Object
+  -> [opstr]
+  -> DaoParser AST_Object
+infixed constructor parser ops = withLoc $ pure constructor <*>
+  parser <*> commented (read <$> mconcat (map tokenBy ops) asString) <*> parser 
+
+equation :: UStrType opstr => DaoParser AST_Object -> [opstr] -> DaoParser AST_Object
+equation = infixed AST_Equation
+
+reference :: DaoParser AST_Object
+reference = equation refPrefix (words ". ->")
+
+funcCall :: DaoParser AST_Object
+funcCall = withLoc $ pure AST_FuncCall
+  <*> token LABEL asUStr
+  <*> space
+  <*> commaSepd "close-parentheses after function call" "(" ")" object
+
+arraySub :: DaoParser AST_Object
+arraySub = withLoc $ pure AST_ArraySub
+  <*> reference
+  <*> space
+  <*> (tokenBy "[" as0 >> commented object >>= \o -> tokenBy "]" as0 >> return o)
+
+arithPrefix :: DaoParser AST_Object
+arithPrefix = withLoc $ pure AST_Prefix
+  <*> read <$> mconcat (map tokenBy (words "- ~ !")) asString
+  <*> commented (msum [funcCall, arraySub, singleton, refPrefix])
+
+arithmetic :: DaoParser AST_Object
+arithmetic = msum $ map (equation arithPrefix . words) $
+  ["**", "* / %", "+ -", "<< >>", "&", "^", "|", "&&", "||", "< <= == != >= >"]
+
+assignment :: DaoParser AST_Object
+assignment = msum $ map (infixed AST_Assign arithmetic . return) (words allUpdateOpStrs)
+
+----------------------------------------------------------------------------------------------------
+
+daoParser :: DaoParser AST_Object
+daoParser = inParens singleton
+
+daoGrammar :: CFGrammar DaoParState DaoTT AST_Object
+daoGrammar = newCFGrammar 4 $ mplus daoParser $ do
+  tokSt <- tokStreamLift get
+  modify (\st -> st{internalState = Just tokSt})
+  fail "Parser backtracked without taking all input."
 
 ----------------------------------------------------------------------------------------------------
 
 testDaoLexer :: String -> IO ()
 testDaoLexer = testLexicalAnalysis (tokenDBLexer daoTokenDB) 4
 
-daoGrammar :: CFGrammar DaoParState DaoTT Object
-daoGrammar = newCFGrammar 4 parseLiteral
-
-testDaoParser :: String -> IO ()
-testDaoParser input = case parse daoGrammar mempty input of
+testDaoParser :: Show a => DaoParser a -> String -> IO ()
+testDaoParser daoGrammar input = case parse (newCFGrammar 4 daoGrammar) mempty input of
   OK      a -> putStrLn ("Parser succeeded:\n"++show a)
   Backtrack -> testDaoLexer input >> putStrLn "---- PARSER BACKTRACKED ----\n"
-  PFail err -> testDaoLexer input >> putStrLn ("---- PARSER FAILED ----\n" ++ show err)
+  PFail err -> do
+    testDaoLexer input
+    putStrLn ("---- PARSER FAILED ----\n" ++ show err)
+    let st = parseStateAtErr err >>= internalState
+    putStrLn ("recentTokens = "++show (tokenQueue <$> st))
+    putStrLn ("getLines     = "++show (getLines   <$> st))
 

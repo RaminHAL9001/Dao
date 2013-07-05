@@ -405,7 +405,7 @@ daoSyntax = inParens singleton
 
 daoGrammar :: Language DaoParState DaoTT AST_Object
 daoGrammar = newLanguage 4 $ mplus daoSyntax $ do
-  tokSt <- parserLiftTokStream get
+  tokSt <- syntaxLiftTokStream get
   modify (\st -> st{internalState = Just tokSt})
   fail "Syntax backtracked without taking all input."
 

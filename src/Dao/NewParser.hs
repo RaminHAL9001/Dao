@@ -158,7 +158,7 @@ class HasToken        a where { getToken     :: a tok -> Token tok }
 
 -- | Every token emitted by a lexical analyzer must have at least a type. 'Token' is polymorphic
 -- over the type of token. The 'MonadParser' class only requires tokens to instantiate 'Prelude.Eq',
--- but you will find that the useful parser defined in this module, the 'Parser', requires tokens
+-- but you will find that the useful parser defined in this module, the 'Syntax', requires tokens
 -- to instantiate 'Data.Ix.Ix' so that tokens can be used as indecies to 'Data.Array.IArray.Array's
 -- in order to implement fast lookup tables.
 data Token tok
@@ -892,7 +892,7 @@ rxEmptyToken tok = RxMakeToken (unwrapTT tok) False
 -- token stream and then begin parsing the 'Data.List.reverse'd stream, this will force the entire
 -- lexical analysis phase to complete and store the entire token stream into memory before the
 -- syntactic analyse can begin. Any parser that scans forward over tokens will consume a lot of
--- memory. But through use of 'Parser' it is difficult to make this mistake.
+-- memory. But through use of 'Syntax' it is difficult to make this mistake.
 
 -- | This is the state used by every 'Lexer'. It keeps track of the line number and column
 -- number, the current input string, and the list of emitted 'Token's.
@@ -1033,7 +1033,6 @@ lexCopyWhile predicate = fmap (takeWhile predicate) (gets lexInput)
 
 -- | A fundamental 'Lexer', uses 'Data.List.break' to break-off characters from the input string
 -- until the given predicate evaluates to 'Prelude.True'. Backtracks if no characters are lexed.
--- See also: 'charSet' and 'unionCharP'.
 lexWhile :: TokenType tok => (Char -> Bool) -> Lexer tok ()
 lexWhile predicate = do
   (got, remainder) <- fmap (span predicate) (gets lexInput)
@@ -1042,7 +1041,6 @@ lexWhile predicate = do
 -- | Like 'lexUnit' but inverts the predicate, lexing until the predicate does not match. This
 -- function is defined as:
 -- > \predicate -> 'lexUntil' ('Prelude.not' . predicate)
--- See also: 'charSet' and 'unionCharP'.
 lexUntil :: TokenType tok => (Char -> Bool) -> Lexer tok ()
 lexUntil predicate = lexWhile (not . predicate)
 
@@ -1121,281 +1119,9 @@ lexCharP predicate = gets lexInput >>= \input -> case input of
 lexChar :: TokenType tok => Char -> Lexer tok ()
 lexChar c = lexCharP (==c)
 
--- | *Not a 'Lexer'* but useful when passed as the first parameter to 'lexCharP', 'lexWhile' or
--- 'lexUntil'. This function creates a predicate over 'Prelude.Chars's that evaluates to
--- 'Prelude.True' if the 'Prelude.Char' is equal to any of the 'Prelude.Char's in the given
--- 'Prelude.String'. This is similar to the behavior of character sets in POSIX regular expressions:
--- the RegexUnit @[abcd]@ matches the same characters as the predicate @('charSet' "abcd")@
-charSet :: String -> Char -> Bool
-charSet charset c = or $ map (c==) $ nub charset
-
--- | *'Not a 'Lexer'* but useful when passed as the first parameter to 'lexCharP', 'lexWhile' or
--- 'lexUntil'.This function creates a simple set-union of predicates to create a new predicate on
--- 'Prelude.Char's. The predicate evalautes to 'Prelude.True' if the 'Prelude.Char' applied to any
--- of the predicates evaluate to 'Prelude.True'. This is similar to unions of character ranges in
--- POSIX regular expressions: the RegexUnit @[[:xdigit:]xyzXYZ]@ matches the same characters as the
--- predicate:
--- > ('unionCharP' [isHexDigit, charSet "xyzXYZ"])
-unionCharP :: [Char -> Bool] -> Char -> Bool
-unionCharP px c = or (map ($c) px)
-
--- | Unions the 'Data.Char.isSymbol' and 'Data.Char.isPunctuation' predicates.
-isSymPunct :: Char -> Bool
-isSymPunct c = isSymbol c || isPunctuation c
-
--- | This is a character predicate I find very useful and I believe it should be included in the
--- standard Haskell "Data.Char" module, it is succeeds for alpha-numeric or underscore character.
-isAlphaNum_ :: Char -> Bool
-isAlphaNum_ c = isAlphaNum c || c=='_'
-
--- | This is a character predicate I find very useful and I believe it should be included in the
--- standard Haskell "Data.Char" module, it is succeeds for alpha-numeric or underscore character.
-isAlpha_ :: Char -> Bool
-isAlpha_ c = isAlpha c || c=='_'
-
-lexOptional :: TokenType tok => Lexer tok () -> Lexer tok ()
-lexOptional lexer = mplus lexer (return ())
-
 -- | Backtracks if there are still characters in the input.
 lexEOF :: TokenType tok => Lexer tok ()
 lexEOF = fmap (=="") (gets lexInput) >>= guard
-
--- | Create a 'Lexer' that will continue scanning until it sees an unescaped terminating
--- sequence. You must provide three lexers: the scanning lexer, the escape sequence 'Lexer' and
--- the terminating sequence 'Lexer'. Evaluates to 'Prelude.True' if the termChar was found,
--- returns 'Prelude.False' if this tokenizer went to the end of the input without seenig an
--- un-escaped terminating character.
-lexUntilTerm :: TokenType tok => Lexer tok () -> Lexer tok () -> Lexer tok () -> Lexer tok Bool
-lexUntilTerm scanLexer escLexer termLexer = loop where
-  skipOne = lexCharP (const True)
-  loop = do
-    (shouldContinue, wasTerminated) <- msum $
-      [ lexEOF    >> return (False, False)
-      , termLexer >> return (False, True )
-      , escLexer  >>
-          mplus (lexEOF                              >> return (False, False))
-                (msum [termLexer, escLexer, skipOne] >> return (True , False))
-      , scanLexer >> return (True , False)
-      , skipOne   >> return (True , False)
-      ]
-    if shouldContinue then loop else return wasTerminated
-
--- | A special case of 'lexUntilTerm', lexes until it finds an un-escaped terminating
--- 'Prelude.Char'. You must only provide the escape 'Prelude.Char' and the terminating
--- 'Prelude.Char'.
-lexUntilTermChar :: TokenType tok => Char -> Char -> Lexer tok Bool
-lexUntilTermChar escChar termChar =
-  lexUntilTerm (lexUntil (\c -> c==escChar || c==termChar)) (lexChar escChar) (lexChar termChar)
-
--- | A special case of 'lexUntilTerm', lexes until finds an un-escaped terminating 'Prelude.String'.
--- You must provide only the escpae 'Prelude.String' and the terminating 'Prelude.String'. You can
--- pass a null string for either escape or terminating strings (passing null for both evaluates to
--- an always-backtracking lexer). The most escape and terminating strings are analyzed and the most
--- efficient method of lexing is decided, so this lexer is guaranteed to be as efficient as
--- possible.
-lexUntilTermStr :: TokenType tok => String -> String -> Lexer tok Bool
-lexUntilTermStr escStr termStr = case (escStr, termStr) of
-  (""    , ""     ) -> mzero
-  (""    , termStr) -> hasOnlyTerm termStr
-  (escStr, ""     ) -> hasOnlyTerm escStr
-  _                 -> do
-    let e = head escStr
-        t = head termStr
-        predicate = if e==t then (==t) else (\c -> c==e || c==t)
-    lexUntilTerm (lexUntil predicate) (lexString escStr) (lexString termStr)
-  where
-    hasOnlyTerm str = do
-      let (scan, term) = case str of
-            [a]          -> (lexUntil (==a), lexChar a)
-            [a,b] | a/=b -> (lexUntil (==a), lexWhile (==a) >> lexChar b)
-            a:ax         ->
-              (lexUntil (==a), let loop = mplus (lexString str) (lexChar a >> loop) in loop)
-      lexUntilTerm scan term term
-
--- | Takes three parameters. (1) A label for this set of 'Lexer's used in error reporting.
--- (2) A halting predicate which backtracks if there is more tokenizing to be done, and succeeds
--- when this tokenizer is done. (3) A list of 'Lexer's that will each be tried in turn. This
--- function loops, first trying the halting predicate, and then trying the 'Lexer' list, and
--- looping continues until the halting predicate succeeds or fails if the 'Lexer' list
--- backtracks. If the 'Lexer' list backtracks, the error message is
--- > "unknown characters scanned by $LABEL tokenizer"
--- where @$LABEL@ is the string passed as parameter 1.
-runLexerLoop :: TokenType tok => String -> Lexer tok () -> [Lexer tok ()] -> Lexer tok ()
-runLexerLoop msg predicate lexers = loop 0 where
-  loop i = do
-    s <- gets lexInput
-    shouldContinue <- msum $
-      [ predicate >> return False
-      , msum lexers >> return True
-      , fail ("unknown characters scanned by "++msg++" tokenizer")
-      ]
-    seq shouldContinue $! if shouldContinue then loop (i+1) else return ()
-
-----------------------------------------------------------------------------------------------------
--- $Handy_lexers
-
--- | The fundamental lexer: takes a predicate over characters, if one or more characters
--- matches, a token is constructed and it is paired with the remaining string and wrapped into a
--- 'Data.Maybe.Just' value. Otherwise 'Data.Maybe.Nothing' is returned. The 'Data.Maybe.Maybe' type
--- is used so you can combine fundamental tokenizers using 'Control.Monad.mplus'.
-lexSimple :: TokenType tok => tok -> (Char -> Bool) -> Lexer tok ()
-lexSimple tok predicate = lexWhile predicate >> makeToken tok
-
--- | A fundamental lexer using 'Data.Char.isSpace' and evaluating to a 'Space' token.
-lexSpace :: TokenType tok => tok -> Lexer tok ()
-lexSpace tok = lexSimple tok isSpace
-
--- | A fundamental lexer using 'Data.Char.isAlpha' and evaluating to a 'Alphabetic' token.
-lexAlpha :: TokenType tok => tok -> Lexer tok ()
-lexAlpha tok = lexSimple tok isAlpha
-
--- | A fundamental lexer using 'Data.Char.isDigit' and evaluating to a 'Digits' token.
-lexDigits :: TokenType tok => tok -> Lexer tok ()
-lexDigits tok = lexSimple tok isDigit
-
--- | A fundamental lexer using 'Data.Char.isHexDigit' and evaluating to a 'HexDigit' token.
-lexHexDigits :: TokenType tok => tok -> Lexer tok ()
-lexHexDigits tok = lexSimple tok isHexDigit
-
--- | Constructs an operator 'Lexer' from a string of operators separated by spaces. For example,
--- pass @"+ += - -= * *= ** / /= % %= = == ! !="@ to create 'Lexer' that will properly parse all of
--- those operators. The order of the operators is *NOT* important, repeat symbols are tried only
--- once, the characters @+=@ are guaranteed to be parsed as a single operator @["+="]@ and not as
--- @["+", "="]@. *No token is created,* you must create your token using 'makeToken' or
--- 'makeEmptyToken' immediately after evaluating this tokenizer.
-lexOperator :: TokenType tok => String -> Lexer tok ()
-lexOperator ops =
-  msum (map (\op -> lexString op) $ reverse $ nub $ sortBy len $ words ops)
-  where
-    len a b = case compare (length a) (length b) of
-      EQ -> compare a b
-      GT -> GT
-      LT -> LT
-
--- | Gather up all the characters until a newline character is reached.
-lexToEndline :: TokenType tok => Lexer tok ()
-lexToEndline = lexUntil (=='\n')
-
-lexInlineComment :: TokenType tok => tok -> String -> String -> Lexer tok ()
-lexInlineComment tok startStr endStr = do
-  lexString startStr
-  completed <- lexUntilTermStr "" endStr
-  if completed
-    then  makeToken tok
-    else  fail "comment runs past end of input"
-
-lexInlineC_Comment :: TokenType tok => tok -> Lexer tok ()
-lexInlineC_Comment tok = lexInlineComment tok "/*" "*/"
-
-lexEndlineC_Comment :: TokenType tok => tok -> Lexer tok ()
-lexEndlineC_Comment tok = lexString "//" >> lexUntil (=='\n') >> makeToken tok
-
-lexInlineHaskellComment :: TokenType tok => tok -> Lexer tok ()
-lexInlineHaskellComment tok = lexInlineComment tok "{-" "-}"
-
-lexEndlineHaskellComment :: TokenType tok => tok -> Lexer tok ()
-lexEndlineHaskellComment tok = lexString "--" >> lexToEndline >> makeToken tok
-
--- | A lot of programming languages provide only end-line comments beginning with a (@#@) character.
-lexEndlineCommentHash :: TokenType tok => tok -> Lexer tok ()
-lexEndlineCommentHash tok = lexChar '#' >> lexToEndline >> makeToken tok
-
-lexStringLiteral :: TokenType tok => tok -> Lexer tok ()
-lexStringLiteral tok = do
-  lexChar '"'
-  completed <- lexUntilTermChar '\\' '"'
-  if completed
-    then  makeToken tok
-    else  fail "string literal expression runs past end of input"
-
-lexCharLiteral :: TokenType tok => tok -> Lexer tok ()
-lexCharLiteral tok = lexChar '\'' >> lexUntilTermChar '\\' '\'' >> makeToken tok
-
--- | This actually tokenizes a general label: alpha-numeric and underscore characters starting with
--- an alphabetic or underscore character. This is useful for several programming languages.
--- Evaluates to a 'Keyword' token type, it is up to the 'TokStream's in the syntacticAnalysis phase
--- to sort out which 'Keyword's are actually keywords and which are labels for things like variable
--- names.
-lexKeyword :: TokenType tok => tok -> Lexer tok ()
-lexKeyword tok = do
-  lexWhile (\c -> isAlpha c || c=='_')
-  lexOptional (lexWhile (\c -> isAlphaNum c || c=='_'))
-  makeToken tok
-
--- | Create a 'Lexer' that lexes the various forms of numbers. If the number contains no special
--- modification, i.e. no hexadecimal digits, no decimal points, and no exponents, a 'Digits' token
--- is returned. Anything more exotic than simple base-10 digits and a 'Number' token is returned. If
--- the 'Number' is expressed in base-10 and also has an exponent, like @6.022e23@ where @e23@ is the
--- exponent or @1.0e-10@ where @e-10@ is the exponent, then 'NumberExp' is returned.
--- 
--- Hexadecimal and binary number expressions are also tokenized, the characters @'x'@, @'X'@, @'b'@,
--- and @'B'@ are all prefixes to a string of hexadecimal digits (tokenized with
--- 'Data.Char.isHexDigit'). So the following expression are all parsed as 'Number' tokens:
--- > 0xO123456789ABCDEfabcdef, 0XO123456789ABCDEfabcdef, 0bO123456789, 0BO123456789
--- these could all be valid hexadecimal or binary numbers. Of course @0bO123456789@ is
--- not a valid binary number, but this lexer does not care about the actual value, it is expected
--- that the 'TokStream' report it as an error during the 'syntacticAnalysis' phase. Floating-point
--- decimal numbers are also lexed appropriately, and this includes floating-point numbers expressed
--- in hexadecimal. Again, if your language must disallow hexadecimal floating-point numbers, throw
--- an error in the 'syntacticAnalysis' phase.
-lexNumber :: TokenType tok => tok -> tok -> tok -> tok -> Lexer tok ()
-lexNumber digits hexDigits number numberExp = do
-  let altBase typ xb@(u:l:_) pred = do
-        lexCharP (charSet xb)
-        mplus (lexWhile pred) (fail ("no digits after "++typ++" 0"++l:" token"))
-  (getDot, isHex) <- msum $
-    [ do  lexChar '0' -- lex a leading zero
-          msum $
-            [ altBase "hexadecimal" "Xx" isHexDigit >> return (True , True )
-            , altBase "binary"      "Bb" isDigit    >> return (True , False)
-            , lexWhile isDigit                      >> return (True , False)
-            , return (True , False)
-              -- a zero not followed by an 'x', 'b', or any other digits is also valid
-            ]
-    , lexChar '.' >> lexWhile isDigit >> return (False, False) -- lex a leading decimal point
-    , lexWhile isDigit                >> return (True , False) -- lex an ordinary number
-    , lexBacktrack
-    ]
-  (gotDot, gotExp) <- flip mplus (return (False, False)) $ do
-    gotDot <-
-      if getDot -- we do not have the dot?
-        then  flip mplus (return False) $ do
-                lexChar '.'
-                mplus (lexWhile (if isHex then isHexDigit else isDigit))
-                      (fail "no digits after decimal point")
-                return True
-        else  return True -- we already had the dot
-    if isHex
-      then  return (gotDot, False) -- don't look for an exponent
-      else  flip mplus (return (gotDot, False)) $ do
-              lexCharP (charSet "Ee")
-              lexOptional (lexCharP (charSet "-+"))
-              mplus (lexWhile isDigit)
-                    (fail "no digits after exponent mark in decimal-point number")
-              return (gotDot, True )
-  makeToken $
-    if gotDot || gotExp
-      then  if gotExp then numberExp else number
-      else  if isHex  then hexDigits else digits
-
--- | Creates a 'Label' token for haskell data type names, type names, class names, or constructors,
--- i.e. one or more labels (alpha-numeric and underscore characters) separated by dots (with no
--- spaces between the dots) where every first label is a capital alphabetic character, and the final
--- label may start with a lower-case letter or underscore, or the final label may also be
--- punctuation surrounded by parens. Examples are: @Aaa.Bbb@, @D.Ee_ee.ccc123@, @Aaa.Bbb.Ccc.___d1@,
--- @A.B.C.(-->)@.
-lexHaskellLabel :: TokenType tok => tok -> Lexer tok ()
-lexHaskellLabel tok = loop 0 where
-  label    = do
-    lexCharP (\c -> isUpper c && isAlpha c)
-    lexOptional (lexWhile isAlphaNum_)
-  loop   i = mplus (label >> mplus (tryDot i) done) (if i>0 then final else mzero)
-  tryDot i = lexChar '.' >> loop (i+1)
-  final    = mplus (lexCharP isAlpha_ >> lexOptional (lexWhile isAlphaNum_)) oper >> done
-  oper     = do lexChar '('
-                mplus (lexWhile (\c -> c/=')' && isSymPunct c) >> lexChar ')')
-                      (fail "bad operator token after final dot of label")
-  done     = makeToken tok
 
 -- | Takes a 'tokenStream' resulting from the evaulation of lexical analysis and breaks it into
 -- 'Line's. This makes things a bit more efficient because it is not necessary to store a line
@@ -1453,7 +1179,7 @@ testLexicalAnalysisOnFile a b c = readFile c >>= testLexicalAnalysis_withFilePat
 
 ----------------------------------------------------------------------------------------------------
 -- $The_parser_class
--- This module provides the 'TokStream' and 'Parser' monads, both of which can be used to
+-- This module provides the 'TokStream' and 'Syntax' monads, both of which can be used to
 -- construct parsers, and so there is a set of functions which are common to both of these monads.
 -- You can also extend either of these monads with your own data type and instantiate this class to
 -- make use of the same functions.
@@ -1462,9 +1188,9 @@ testLexicalAnalysisOnFile a b c = readFile c >>= testLexicalAnalysis_withFilePat
 -- 'TokStream' parser. For example, a 'TokStream' parser doesn't care about the kind of tokens you
 -- use, so the 'token' function might simply take the token, compares it to the token in the stream,
 -- and then decides whether or not to shift it off the stream and use it, or put it back and fail.
--- On the other hand, the 'Parser' monad requires your tokens to instantiate the 'Data.Ix.Ix'
+-- On the other hand, the 'Syntax' monad requires your tokens to instantiate the 'Data.Ix.Ix'
 -- class so that your tokens can be used to build efficient lookup tables. The instantiation of the
--- 'token' function for the 'Parser' monad works very differently (more efficiently) under the
+-- 'token' function for the 'Syntax' monad works very differently (more efficiently) under the
 -- hood as compared to the ordinary 'TokStream' monad which does not build lookup tables.
 
 -- | This class declares a set of functions that are expected to be common to all parsers dervied
@@ -1474,7 +1200,7 @@ testLexicalAnalysisOnFile a b c = readFile c >>= testLexicalAnalysis_withFilePat
 -- > 'unshift'
 -- but these default definitions alone would be very inefficient. Hopefully your parser will
 -- instantiate this class with a more efficient 'MonadParser' such as one that extends 'TokStream'
--- or better yet 'Parser'.
+-- or better yet 'Syntax'.
 -- 
 -- All of these parsers take a @getter@ function of type @('TokenAt' tok -> a)@, which shall extract
 -- data from a 'TokenAt' value from the 'TokStream' and return it. Several of @getter@ functions are
@@ -1507,7 +1233,7 @@ class (TokenType tok, Functor (parser tok), Monad (parser tok), MonadPlus (parse
     tokenString as str = do
       kept <- look1 id
       if ustr str == tokToUStr (getToken kept) then return (as kept) else mzero
-    -- ^ Like 'tokenStrType' but is only concerned with the string-value of the token. The 'Parser'
+    -- ^ Like 'tokenStrType' but is only concerned with the string-value of the token. The 'Syntax'
     -- instantiation of this function uses the token string as a 'Data.Map.Map' key and stores the
     -- sub-parser at that key. The default instantiation of this function is merely a special
     -- case of 'tokenStrType'.
@@ -1528,8 +1254,8 @@ class (TokenType tok, Functor (parser tok), Monad (parser tok), MonadPlus (parse
     -- last line.
     parseDebug :: String -> parser tok a -> parser tok a
 
--- | If the given 'Parser' backtracks then evaluate to @return ()@, otherwise ignore the result of
--- the 'Parser' and evaluate to @return ()@.
+-- | If the given 'Syntax' backtracks then evaluate to @return ()@, otherwise ignore the result of
+-- the 'Syntax' and evaluate to @return ()@.
 ignore :: MonadParser parser tok => parser tok ig -> parser tok ()
 ignore parser = mplus (parser >> return ()) (return ()) 
 
@@ -1548,7 +1274,7 @@ defaultTo defaultValue parser = mplus parser (return defaultValue)
 -- type to be used as a 'MetaType' and used it to construct tokens, the 'Dao.String.UStr' value of
 -- the 'MetaToken' type is associated with the 'TT' value of your 'TokenType' in the 'TokenDB'. This
 -- function conveniently sees your 'MetaToken' type, retrieves it from the 'TokenDB', and uses the
--- 'TT' value retrieved to construct a 'Parser' using the 'tokenType' function.
+-- 'TT' value retrieved to construct a 'Syntax' using the 'tokenType' function.
 -- > newtype MyToken = MyToken{ unwrapMyToken :: TT }
 -- > instance 'TokenType' MyToken where { 'unwrapTT' = unwrapMyToken; 'wrapTT' = MyToken; }
 -- > data MyMetaTT WHITESPACE | NUMBER | LABEL
@@ -1569,8 +1295,8 @@ defaultTo defaultValue parser = mplus parser (return defaultValue)
 -- > mkAssign :: String -> String -> MyAST
 -- > mkAssign lbl val = Assign{ label = lbl, intValue = 'Prelude.read' val }
 -- > 
--- > -- make a 'Parser' that parses a label, followed by a space, followed by a number
--- > myParser :: Parser () MyToken MyAST
+-- > -- make a 'Syntax' that parses a label, followed by a space, followed by a number
+-- > myParser :: Syntax () MyToken MyAST
 -- > myParser = 'Control.Applicative.pure' mkAssign 'Control.Applicative.<*>' ('token' LABEL) 'Control.Applicative.<*>' ('token' NUMBER)
 class (Enum meta, UStrType meta) =>
   MetaToken meta tok | meta -> tok where { tokenDBFromMetaValue :: meta -> TokenDB tok }
@@ -1620,7 +1346,7 @@ tokenBy name as = do
 -- represented by a list of 'Line' structures, and the parser monad's jobs is to look at the
 -- current line, and extract the current token in the current line in the state, and use the tokens
 -- to construct data. 'TokStream' is the fundamental parser, but it might be very tedious to use. It
--- is better to construct parsers using 'Parser' which is a higher-level, easier to use data type
+-- is better to construct parsers using 'Syntax' which is a higher-level, easier to use data type
 -- that is converted into the lower-level 'TokStream' type.
 
 -- | The 'TokStreamState' contains a stream of all tokens created by the 'lexicalAnalysis' phase.
@@ -1756,7 +1482,7 @@ nextToken doRemove = do
     tok:tokx            -> return tok
 
 -- | A 'marker' immediately stores the cursor onto the runtime call stack. It then evaluates the
--- given 'Parser'. If the given 'Parser' fails, the position of the failure (stored in a
+-- given 'Syntax'. If the given 'Syntax' fails, the position of the failure (stored in a
 -- 'Dao.Token.Location') is updated such that the starting point of the failure points to the cursor
 -- stored on the stack by this 'marker'. When used correctly, this function makes error reporting a
 -- bit more helpful.
@@ -1767,9 +1493,9 @@ marker parser = do
   flip mapPFail parser $ \parsErr ->
     parsErr{parseErrLoc = parseErrLoc parsErr >>= \after -> return(before<>after)}
 
--- | Given two parameters: 1. an error message and 2. a 'Parser', will succeed normally if
--- evaluating the given 'Parser' succeeds. But if the given 'Parser' backtracks, this this function
--- will evaluate to a 'Parser' failure with the given error message. If the given 'Parser' fails,
+-- | Given two parameters: 1. an error message and 2. a 'Syntax', will succeed normally if
+-- evaluating the given 'Syntax' succeeds. But if the given 'Syntax' backtracks, this this function
+-- will evaluate to a 'Syntax' failure with the given error message. If the given 'Syntax' fails,
 -- it's error message is used instead of the error message given to this function. The string
 -- "expecting " is automatically prepended to the given error message so it is a good idea for your
 -- error message to simple state what you were expecting, like "a string" or "an integer". I
@@ -1791,7 +1517,7 @@ expect errMsg parser = do
   mplus parser (throwError ((parserErr loc){parseErrMsg = Just (ustr expectMsg)}))
 
 -- | Given a constructor that takes an arbitray value and a 'Dao.NewParser.Location' value, and a
--- 'Dao.NewParser.Parser' that evaluates to the same type of arbitrary value, this function
+-- 'Dao.NewParser.Syntax' that evaluates to the same type of arbitrary value, this function
 -- automatically notes the location of the current token, then evaluates the parser, then notes the
 -- location of the next token to create a 'Dao.NewParser.Location' value and apply it to the
 -- constructor.
@@ -1825,9 +1551,9 @@ getNullToken :: (TokenType tok, MonadParser parser tok) => parser tok tok
 getNullToken = return (wrapTT (MkTT 0))
 
 ----------------------------------------------------------------------------------------------------
--- $ParseTable
--- A parse table is not something you should construct by hand in your own code. The 'ParseTable' is
--- really an intermediate data structure between the very high-level 'Parser' and the rather
+-- $Parser
+-- A parse table is not something you should construct by hand in your own code. The 'Parser' is
+-- really an intermediate data structure between the very high-level 'Syntax' and the rather
 -- low-level 'TokStream'.
 --
 -- At the 'TokStream' level, you must always worry about the tokens in the stream, whether or not it
@@ -1836,58 +1562,58 @@ getNullToken = return (wrapTT (MkTT 0))
 -- but also making sure you don't forget to 'unshift' a token after backtracking. Creating parsers
 -- can become very tedius and error-prone.
 -- 
--- At the 'Parser' level, you don't concern yourself with the token stream, you only worry about
+-- At the 'Syntax' level, you don't concern yourself with the token stream, you only worry about
 -- what token type and string value you need in order to construct your data type, and you can trust
 -- that token stream will be shifted and checked accordingly without you ever having to actually
 -- call 'shift' or 'unshift'. But how is this possible? All parsers that operate on token streams
 -- need some mechanism to determine when to 'shift' or 'unshift' a token, right?
 -- 
--- That is where 'ParseTable' comes in. The 'Parser' is actually a meta-parser that does not
--- operate on the token stream directly. Instead, the 'Parser' monad is used to construct a large
--- object that can be converted to a 'ParseTable' with the 'evalParserToTable' function. The
+-- That is where 'Parser' comes in. The 'Syntax' is actually a meta-parser that does not
+-- operate on the token stream directly. Instead, the 'Syntax' monad is used to construct a large
+-- object that can be converted to a 'Parser' with the 'evalParserToTable' function. The
 -- parse table object contains a sparse matrix that maps tokens to state transitions. The matrix is
 -- constructed of variously sized 'Data.Array.IArray.Array's with the token type value used as and
 -- index (hence the polymorphic token type @tok@ must instantiate 'Data.Ix.Ix').
 -- 
--- The 'ParseTable' can then be evaluated to a 'TokStream' monad which does all the tedius work of
--- keeping track of the tokens in the stream. However generating the 'ParseTable' with
+-- The 'Parser' can then be evaluated to a 'TokStream' monad which does all the tedius work of
+-- keeping track of the tokens in the stream. However generating the 'Parser' with
 -- 'evalParserToTable' is not a trivial operation, the mappings between token indecies and
 -- 'TokStream' combinators must be computed and arrays must be allocated. So it is better to hang on
--- to your 'ParseTable' throughout the duration of your parsing task. As long as you have a
--- reference to the same 'ParseTable' constructed by your one call to the
--- 'evalParserToTable' function, neither the 'ParseTable' nor the arrays within it be
+-- to your 'Parser' throughout the duration of your parsing task. As long as you have a
+-- reference to the same 'Parser' constructed by your one call to the
+-- 'evalParserToTable' function, neither the 'Parser' nor the arrays within it be
 -- garbage collected.
 
 -- | This data type instantiates 'Control.Monad.Monad', 'Control.Applicative.Alternative', and
 -- others, but you really should not compose your own parse tables using these functions. Define
--- your parser using 'Parser' and let 'evalParserToTable' compose the 'ParseTable' for
+-- your parser using 'Syntax' and let 'evalParserToTable' compose the 'Parser' for
 -- you.
-data ParseTable st tok a
+data Parser st tok a
   = ParTabBacktrack
-  | ParTabDebug { parTabDebug   :: String, altParTab :: ParseTable st tok a }
+  | ParTabDebug { parTabDebug   :: String, altParTab :: Parser st tok a }
   | ParTabConst { parTableConst :: a }
   | ParTab
     { tokStreamParser  :: TokStream st tok a
-    , altParTab        :: ParseTable st tok a
+    , altParTab        :: Parser st tok a
     }                 
   | ParTabSingle
     { parTabSingle     :: tok
-    , nextParTab       :: ParseTable st tok a
-    , altParTab        :: ParseTable st tok a
+    , nextParTab       :: Parser st tok a
+    , altParTab        :: Parser st tok a
     }
   | ParTabArray       
-    { parseTableArray  :: Array TT (ParseTable st tok a)
-    , altParTab        :: ParseTable st tok a
+    { parseTableArray  :: Array TT (Parser st tok a)
+    , altParTab        :: Parser st tok a
     }
   | ParTabMap
-    { parserMap        :: M.Map UStr (ParseTable st tok a)
-    , altParTab        :: ParseTable st tok a
+    { parserMap        :: M.Map UStr (Parser st tok a)
+    , altParTab        :: Parser st tok a
     }
     -- ^ this constructor stores a plain 'TokStream' function, so this constructor can be used to
-    -- lift 'TokStream' functions into the 'ParseTable' monad. This constructor is not composable
+    -- lift 'TokStream' functions into the 'Parser' monad. This constructor is not composable
     -- like the above two constructors are, so the 'evalParserToTable' function tries to
     -- avoid using this unless it is absolutely necessary.
-instance Functor (ParseTable st tok) where
+instance Functor (Parser st tok) where
   fmap f parser = case parser of
     ParTabBacktrack        -> ParTabBacktrack
     ParTabDebug   str  p   -> ParTabDebug  str (fmap f p)
@@ -1896,7 +1622,7 @@ instance Functor (ParseTable st tok) where
     ParTabArray   arr  alt -> ParTabArray (fmap (fmap f) arr) (fmap f alt)
     ParTabMap     arr  alt -> ParTabMap   (fmap (fmap f) arr) (fmap f alt)
 instance TokenType tok =>
-  Monad (ParseTable st tok) where
+  Monad (Parser st tok) where
     return   = ParTabConst
     fail msg = parTabLift (fail msg)
     parser >>= bind = case parser of
@@ -1908,7 +1634,7 @@ instance TokenType tok =>
       ParTabArray     a alt -> ParTabArray (fmap (>>= bind) a) (alt >>= bind)
       ParTabMap       m alt -> ParTabMap   (fmap (>>= bind) m) (alt >>= bind)
 instance TokenType tok =>
-  MonadPlus (ParseTable st tok) where
+  MonadPlus (Parser st tok) where
     mzero     = ParTabBacktrack
     mplus pa pb = case pa of
       ParTabBacktrack         -> pb
@@ -1924,26 +1650,26 @@ instance TokenType tok =>
       where
         add pa pb = pa{altParTab = mplus (altParTab pa) pb}
 instance TokenType tok =>
-  Monoid (ParseTable st tok a) where { mempty = mzero; mappend = mplus; }
+  Monoid (Parser st tok a) where { mempty = mzero; mappend = mplus; }
 instance TokenType tok =>
-  Applicative (ParseTable st tok) where { pure = return; (<*>) = ap; }
+  Applicative (Parser st tok) where { pure = return; (<*>) = ap; }
 instance TokenType tok =>
-  Alternative (ParseTable st tok) where { empty = mzero; (<|>) = mplus; }
+  Alternative (Parser st tok) where { empty = mzero; (<|>) = mplus; }
 instance TokenType tok =>
-  MonadState st (ParseTable st tok) where
+  MonadState st (Parser st tok) where
     get    = parTabLift (gets userState)
     put st = parTabLift $ modify $ \parserState -> parserState{userState=st}
 instance TokenType tok =>
-  MonadError (Error (TokStreamState st tok) tok) (ParseTable st tok) where
+  MonadError (Error (TokStreamState st tok) tok) (Parser st tok) where
     throwError = parTabLift . throwError
     catchError trial catcher = parTabLift $
       catchError (evalTableToTokStream trial) (\err -> evalTableToTokStream (catcher err))
 instance TokenType tok =>
-  MonadPlusError (Error (TokStreamState st tok) tok) (ParseTable st tok) where
+  MonadPlusError (Error (TokStreamState st tok) tok) (Parser st tok) where
     catchPValue ptrans = parTabLift (catchPValue (evalTableToTokStream ptrans))
     assumePValue       = parTabLift . assumePValue
 instance TokenType tok =>
-  MonadParser (ParseTable st) tok where
+  MonadParser (Parser st) tok where
     guardEOF         = parTabLift guardEOF
     unshift          = parTabLift . unshift
     shift            = parTabLift . shift
@@ -1951,7 +1677,7 @@ instance TokenType tok =>
     parseDebug       = ParTabDebug
     getFinalLocation = parTabLift getFinalLocation
 
-showParTabConstr :: ParseTable st tok a -> String
+showParTabConstr :: Parser st tok a -> String
 showParTabConstr p = case p of
   ParTabBacktrack      -> "ParTabBacktrack"
   ParTabDebug      m p -> showParTabConstr p ++ " (" ++ m ++ ")"
@@ -1961,14 +1687,14 @@ showParTabConstr p = case p of
   ParTabArray      _ _ -> "ParTabArray"
   ParTabMap        _ _ -> "ParTabMap"
 
-parTabLift :: TokenType tok => TokStream st tok a -> ParseTable st tok a
+parTabLift :: TokenType tok => TokStream st tok a -> Parser st tok a
 parTabLift p = ParTab p mzero
 
-parTabBacktracks :: ParseTable st tok a -> Bool
+parTabBacktracks :: Parser st tok a -> Bool
 parTabBacktracks p = case p of {ParTabBacktrack -> True; _ -> False; }
 
--- | Evaluate a 'ParseTable' to a 'TokStream'.
-evalTableToTokStream :: TokenType tok => ParseTable st tok a -> TokStream st tok a
+-- | Evaluate a 'Parser' to a 'TokStream'.
+evalTableToTokStream :: TokenType tok => Parser st tok a -> TokStream st tok a
 evalTableToTokStream table = trace (showParTabConstr table) $ case table of
   ParTabBacktrack    -> mzero
   ParTabDebug  str p -> trace str $ evalTableToTokStream p
@@ -1980,19 +1706,19 @@ evalTableToTokStream table = trace (showParTabConstr table) $ case table of
     ParTabMap      p _ -> evalParseMap   p
   where { loop = evalTableToTokStream }
 
-evalParseSingleton :: TokenType tok => tok -> ParseTable st tok a -> TokStream st tok a
+evalParseSingleton :: TokenType tok => tok -> Parser st tok a -> TokStream st tok a
 evalParseSingleton tok par = do
   curTok <- look1 id
   if asTokType curTok==tok
     then  trace ("eval ParTabSingle: got "++show curTok) $ evalTableToTokStream par
     else  mzero
 
--- | Efficiently evaluates an array stored in the 'ParseTableArray' constructor. Evaluation will
--- shift on token from the stream and the 'tokType' is used to select the next 'ParseTable' stored
+-- | Efficiently evaluates an array stored in the 'ParserArray' constructor. Evaluation will
+-- shift on token from the stream and the 'tokType' is used to select the next 'Parser' stored
 -- in the array at that 'tokType' address. If the 'tokType' is not a valid index of the
--- 'Data.Array.IArray.Array', or if the selected 'ParseTable' backtracks when evaluated, this parser
+-- 'Data.Array.IArray.Array', or if the selected 'Parser' backtracks when evaluated, this parser
 -- backtracks and the selecting token is shifted back onto the stream.
-evalParseArray :: TokenType tok => Array TT (ParseTable st tok a) -> TokStream st tok a
+evalParseArray :: TokenType tok => Array TT (Parser st tok a) -> TokStream st tok a
 evalParseArray arr = do
   tok <- look1 id
   let tt = unwrapTT (asTokType tok)
@@ -2004,10 +1730,10 @@ evalParseArray arr = do
 
 -- | Efficiently evaluates a 'Data.Map.Map' stored in a 'ParTabMap' constructor. Evaluation will
 -- shift one token from the stream, and the 'tokToUStr' value is used as a key to select and
--- evaluate the 'ParseTable' stored in the 'Data.Map.Map'. If the 'tokToUStr' value is not a key in
--- the 'Data.Map.Map', or if the selected 'ParseTable' backtracks when evaluated, this parser
+-- evaluate the 'Parser' stored in the 'Data.Map.Map'. If the 'tokToUStr' value is not a key in
+-- the 'Data.Map.Map', or if the selected 'Parser' backtracks when evaluated, this parser
 -- backtracks and the selecting token is shifted back onto the stream.
-evalParseMap :: TokenType tok => M.Map UStr (ParseTable st tok a) -> TokStream st tok a
+evalParseMap :: TokenType tok => M.Map UStr (Parser st tok a) -> TokStream st tok a
 evalParseMap m = do
   tok <- look1 id
   let str = asUStr    tok
@@ -2019,120 +1745,58 @@ evalParseMap m = do
 ----------------------------------------------------------------------------------------------------
 -- $State_transition_parser
 -- This data type is a high-level representation of parsers. To understand how it differs from
--- a 'ParseTable', please read the section above.
+-- a 'Parser', please read the section above.
 --
--- A 'Parser' can be used to build arbitrarily complex Abstract Syntax Trees (ASTs), and the
--- 'evalParserToTable' function will do its best to find the most efficient 'ParseTable'
+-- A 'Syntax' can be used to build arbitrarily complex Abstract Syntax Trees (ASTs), and the
+-- 'evalParserToTable' function will do its best to find the most efficient 'Parser'
 -- representation of the parser for any given AST.
--- 
--- Here is a quick example of how to build your own parser using 'Parser':
--- > newtype TOKEN = TOKEN{ unwrapToken :: TT } deriving ('Prelude.Eq', 'Prelude.Ord', 'Data.Ix.Ix')
--- > instance 'TokenType'  TOKEN where { 'wrapTT' = TOKEN; 'unwrapTT' = unwrapToken; }
--- > instance 'HasTokenDB' TOKEN where { tokenDB  = myTokenDB; }
--- > 
--- > data AST = Value Int | Add AST AST | Sub AST AST | Mult AST AST | Parens AST
--- > 
--- > -- The tokenizer, associates a 'Lexer' with every TOKEN.
--- > myTokenDB :: Lexer TOKEN ()
--- > myTokenDB = makeTokenDB $ do
--- >     operators <- 'keyStringTable' $ 'Prelude.words' "( ) + - *"
--- >     numbers   <- 'fullToken' "NUMBER" $ 'rxRepeat1'('from' '0' 'to' '9')
--- >     spaces    <- 'Control.Applicative.pure' $ 'rxRepeat'('Prelude.map' 'ch' "\t\n\r ") . 'rxClear'
--- >     'activate'[operators, numbers, spaces]
--- > 
--- > -- get the TOKEN values for which we will be using to build 'Parser's.
--- > [openToken, closeToken, plusToken, minusToken, timesToken, numberToken] =
--- >     'Prelude.map' 'lookupToken' $ 'Prelude.words' "( ) + - * NUMBER"
--- > 
--- > -- The Plus, Minus, and Times constructors in the AST data type all have the same parser, just
--- > -- with different token types and constructors.
--- > operator :: TOKEN -> (AST -> AST -> AST) -> 'Parser' () TOKEN AST -> 'Parser' () TOKEN AST
--- > operator tokTyp constructor parser = 'Control.Applicatie.pure' constructor
--- >     'Control.Applicative.<*>' (parser >>= \a -> 'token' tokTyp -> 'Prelude.return' a) -- parse a value, get an opreator, then return the value as the first value applied to the constructor
--- >     'Control.Applicative.<*>' parser -- then parse and return the next value after the operator as the second value applied to the constructor
--- > 
--- > -- Parse an expression in parentheses.
--- > parens :: 'Parser' () TOKEN AST
--- > parens = 'token' openToken >> myTopLevelParser >>= \a -> 'token' closeToken >> 'Prelude.return' a
--- > 
--- > -- Multiplication has a higher prescedence than addition or subtraction, so we make a separate table for multiplication
--- > mult :: 'Parser' () TOKEN AST
--- > mult = operator timesToken Mult (parens 'Control.Applicative.<|>' mult)
--- > 
--- > -- Addition and subtraction have the same prescedence, they call the above "mult" function which has a higher prescedence.
--- > add :: 'Parser' () TOKEN AST
--- > add = let getHigherPrec = mult 'Control.Applicative.<|>' add
--- >       in  operator plusToken Add getHigherPrec 'Control.Applicative.<|>' operator minusToken Sub getHigherPrec
--- > 
--- > -- This is the top-level (entry point) for the parser. It parses as many valid expressions as it can.
--- > myTopLevelParser :: 'Parser' () TOKEN [AST]
--- > myTopLevelParser = 'Control.Applicative.many' $ 'Control.Monad.msum' $
--- >     [ 'Control.Applicatie.pure' Value 'Control.Applicative.<*>' 'Prelude.fmap' 'Prelude.read' ('token' numberToken)
--- >     , parens, mult, add
--- >     ]
--- > 
--- > myGrammar :: 'CFGrammar' () TOKEN [AST]
--- > myGrammar = 'newCFGrammar' 4 myTopLevelParser
--- > 
--- > evalAST :: AST -> Int
--- > evalAST a = case a of
--- >     Value i   -> i
--- >     Plus  a b -> evalAST a + evalAST b
--- >     Minus a b -> evalAST a - evalAST b
--- >     Times a b -> evalAST a * evalAST b
--- >     Parens i  -> evalAST i
--- > 
--- > main = getContents >>= \inputString -> case 'parse' myGrammar () inputString of
--- >     'Dao.Predicate.OK' ast    -> 'Control.Monad.mapM_' ('System.IO.print' . evalAST) ast
--- >     'Dao.Predicate.Backtrack' -> 'System.IO.hPutStrLn' 'System.IO.stderr' "error: parse backtracked"
--- >     'Dao.Predicate.PFail' err -> 'System.IO.hPrint' 'System.IO.stderr' err
 
--- | This data type is used to express /State Transition Parsers/. Use this to build
+-- | This data type is used to build parsers withing a 'Grammar' monad. Use this to build
 -- your parsers.
-data Parser st tok a
+data Syntax st tok a
   = ParserBacktrack
-  | ParserDebug { parserDebug :: String, altParsers :: Parser st tok a }
+  | ParserDebug { parserDebug :: String, altSyntax :: Syntax st tok a }
   | ParserConst a
   | ParserToTable
-    { parserTokStream :: ParseTable st tok a
-    , altParsers      :: Parser     st tok a
+    { parserTokStream :: Parser st tok a
+    , altSyntax      :: Syntax st tok a
     }
-  | Parser
-    { checkTokStr     :: IM.IntMap  (M.Map UStr (Parser st tok a))
-    , checkToken      :: IM.IntMap  (Parser st tok a)
-    , checkString     :: M.Map UStr (Parser st tok a)
-    , altParsers      :: Parser st tok a
+  | Syntax
+    { checkTokStr     :: IM.IntMap  (M.Map UStr (Syntax st tok a))
+    , checkToken      :: IM.IntMap  (Syntax st tok a)
+    , checkString     :: M.Map UStr (Syntax st tok a)
+    , altSyntax      :: Syntax st tok a
     }
--- The 'Parser' data type defines a kind of "list" of choices, where the (<|>) or 'mplus' functions
--- are analgous to the (:) operator. When a 'Parser' data type is evaluated, each node is evaluated
--- in turn until one function evaluates to a non-'mzero' function. The semantics of the 'Parser'
+-- The 'Syntax' data type defines a kind of "list" of choices, where the (<|>) or 'mplus' functions
+-- are analgous to the (:) operator. When a 'Syntax' data type is evaluated, each node is evaluated
+-- in turn until one function evaluates to a non-'mzero' function. The semantics of the 'Syntax'
 -- type requires 'mplus' be NOT associative so the order in which parsers are evaluated remains true
 -- to the order in which they were written, hence the the list-of-nodes mechanism.
 -- 'ParserBacktrack' is a null list, the 'ParserConst' is a terminal character (to which nothing can
 -- be appended). The 'ParserTokStream' contains a head, which is an ordinary 'TokStream' function,
--- and 'altParsers' is the tail. 'Parser' is the other type of list node, the difference being that
+-- and 'altSyntax' is the tail. 'Syntax' is the other type of list node, the difference being that
 -- it contains mappings of token types and strings which can be converted into an efficient
--- 'ParseTable' type.  The 'Parser' constructor, like the 'ParserTokStream' constructor also stores
--- a 'altParsers' field as the tail. The instantiation of 'mplus' will always append the right-hand
--- value to the end of the "list". If a 'Parser' constructor is appended to the "list" and the last
--- node in the "list" is also a 'Parser' constructor (which is expected to happen often), the
+-- 'Parser' type.  The 'Syntax' constructor, like the 'ParserTokStream' constructor also stores
+-- a 'altSyntax' field as the tail. The instantiation of 'mplus' will always append the right-hand
+-- value to the end of the "list". If a 'Syntax' constructor is appended to the "list" and the last
+-- node in the "list" is also a 'Syntax' constructor (which is expected to happen often), the
 -- contents of the maps of each node are combined into larger maps.
 
-instance Functor (Parser st tok) where
+instance Functor (Syntax st tok) where
   fmap f p = case p of
     ParserBacktrack        -> ParserBacktrack
     ParserDebug    str   p -> ParserDebug str (fmap f p)
     ParserConst      a     -> ParserConst (f a)
     ParserToTable    a   p -> ParserToTable (fmap f a) (fmap f p)
-    Parser    ts tok str p -> 
-      Parser
+    Syntax    ts tok str p -> 
+      Syntax
       { checkTokStr = fmap (fmap (fmap f)) ts
       , checkToken  = fmap (fmap f) tok
       , checkString = fmap (fmap f) str
-      , altParsers  = fmap f p
+      , altSyntax  = fmap f p
       }
 instance TokenType tok =>
-  Monad (Parser st tok) where
+  Monad (Syntax st tok) where
     return     = ParserConst
     fail       = parserLiftTokStream . fail
     p >>= bind = case p of
@@ -2142,17 +1806,17 @@ instance TokenType tok =>
       ParserToTable     a   p ->
         ParserToTable   
         { parserTokStream = a >>= evalParserToTable . bind
-        , altParsers      = p >>= bind
+        , altSyntax      = p >>= bind
         }
-      Parser tokstr tok str p -> 
-        Parser
+      Syntax tokstr tok str p -> 
+        Syntax
         { checkTokStr = fmap (fmap (>>=bind)) tokstr
         , checkToken  = fmap (>>=bind) tok
         , checkString = fmap (>>=bind) str
-        , altParsers  = p >>= bind
+        , altSyntax  = p >>= bind
         }
 instance TokenType tok =>
-  MonadPlus (Parser st tok) where
+  MonadPlus (Syntax st tok) where
     mzero = ParserBacktrack
     mplus a b = case a of
       ParserBacktrack           -> b
@@ -2161,39 +1825,39 @@ instance TokenType tok =>
         b                         -> ParserDebug strA (mplus a b)
       ParserConst        a      -> ParserConst   a
       ParserToTable      a    p -> ParserToTable a (mplus p b)
-      Parser tsA tokA strA altA -> case b of
-        ParserBacktrack           -> Parser tsA tokA strA altA
-        Parser tsB tokB strB altB ->
+      Syntax tsA tokA strA altA -> case b of
+        ParserBacktrack           -> Syntax tsA tokA strA altA
+        Syntax tsB tokB strB altB ->
           if not (parserBacktracks altA)
-            then  Parser tsA tokA strA (mplus altA b)
-            else  Parser
+            then  Syntax tsA tokA strA (mplus altA b)
+            else  Syntax
                   { checkTokStr = IM.unionWith (M.unionWith mplus) tsA tsB
                   , checkToken  = IM.unionWith mplus tokA tokB
                   , checkString = M.unionWith  mplus strA strB
-                  , altParsers  = altB
+                  , altSyntax  = altB
                   }
-        b                         -> Parser tsA tokA strA (mplus altA b)
+        b                         -> Syntax tsA tokA strA (mplus altA b)
 instance TokenType tok =>
-  Applicative (Parser st tok) where { pure = return; (<*>) = ap; }
+  Applicative (Syntax st tok) where { pure = return; (<*>) = ap; }
 instance TokenType tok =>
-  Alternative (Parser st tok) where { empty = mzero; (<|>) = mplus; }
+  Alternative (Syntax st tok) where { empty = mzero; (<|>) = mplus; }
 instance TokenType tok =>
-  Monoid (Parser st tok a) where { mempty = mzero; mappend = mplus; }
+  Monoid (Syntax st tok a) where { mempty = mzero; mappend = mplus; }
 instance TokenType tok =>
-  MonadState st (Parser st tok) where
+  MonadState st (Syntax st tok) where
     get = parserLiftTokStream (gets userState)
     put = parserLiftTokStream . modify . (\u st -> st{userState=u})
 instance TokenType tok =>
-  MonadError (Error (TokStreamState st tok) tok) (Parser st tok) where
+  MonadError (Error (TokStreamState st tok) tok) (Syntax st tok) where
     throwError           = parserLiftTokStream . throwError
     catchError try catch = parserLiftTokStream $
       catchError (evalParserToTokStream try) (\err -> evalParserToTokStream (catch err))
 instance TokenType tok =>
-  MonadPlusError (Error (TokStreamState st tok) tok) (Parser st tok) where
+  MonadPlusError (Error (TokStreamState st tok) tok) (Syntax st tok) where
     catchPValue  = parserLiftTokStream . catchPValue . evalParserToTokStream
     assumePValue = parserLiftTokStream . assumePValue
 instance TokenType tok =>
-  MonadParser (Parser st) tok where
+  MonadParser (Syntax st) tok where
     guardEOF = parserLiftTokStream guardEOF
     unshift  = parseLiftParTab . unshift
     shift    = parseLiftParTab . shift
@@ -2213,44 +1877,44 @@ instance TokenType tok =>
     getFinalLocation = parserLiftTokStream getFinalLocation
     parseDebug = ParserDebug
 
-parserBacktracks :: Parser st tok a -> Bool
+parserBacktracks :: Syntax st tok a -> Bool
 parserBacktracks p = case p of { ParserBacktrack -> True; _ -> False; }
 
 -- | Allows you to build your own parser table from scratch by directly mapping tokens and strings
--- to 'Parser's using functions provided in "Data.Map".
-emptyTable :: TokenType tok => Parser st tok a
+-- to 'Syntax's using functions provided in "Data.Map".
+emptyTable :: TokenType tok => Syntax st tok a
 emptyTable =
-  Parser
+  Syntax
   { checkTokStr = mempty
   , checkToken  = mempty
   , checkString = mempty
-  , altParsers  = mzero
+  , altSyntax  = mzero
   }
 
-parseLiftParTab :: TokenType tok => ParseTable st tok a -> Parser st tok a
+parseLiftParTab :: TokenType tok => Parser st tok a -> Syntax st tok a
 parseLiftParTab = flip ParserToTable mzero
 
-parserLiftTokStream :: TokenType tok => TokStream st tok a -> Parser st tok a
+parserLiftTokStream :: TokenType tok => TokStream st tok a -> Syntax st tok a
 parserLiftTokStream = parseLiftParTab . parTabLift
 
-evalParserToTokStream :: TokenType tok => Parser st tok a -> TokStream st tok a
+evalParserToTokStream :: TokenType tok => Syntax st tok a -> TokStream st tok a
 evalParserToTokStream = evalTableToTokStream . evalParserToTable
 
--- | Convert a 'Parser' to a 'ParseTable'. Doing this will lazily construct a sparse matrix which
+-- | Convert a 'Syntax' to a 'Parser'. Doing this will lazily construct a sparse matrix which
 -- becomes the state transition table for this parser, hence the token type must instantiate
--- 'Data.Ix.Ix'. Try to keep the resulting 'ParseTable' in scope for as long as there is a
+-- 'Data.Ix.Ix'. Try to keep the resulting 'Parser' in scope for as long as there is a
 -- possibility that you will use it. Every time this function is evaluated, a new set of
 -- 'Data.Array.IArray.Array's are constructed to build the sparse matrix.
-evalParserToTable :: TokenType tok => Parser st tok a -> ParseTable st tok a
+evalParserToTable :: TokenType tok => Syntax st tok a -> Parser st tok a
 evalParserToTable p = case p of
   ParserBacktrack         -> mzero
   ParserDebug       str p -> ParTabDebug str (evalParserToTable p)
   ParserConst       a     -> return a
   ParserToTable     ts  p -> mplus ts (evalParserToTable p)
-  Parser tokstr tok str p -> msum [mkMapArray tokstr, mkArray tok, mkmap str, evalParserToTable p]
+  Syntax tokstr tok str p -> msum [mkMapArray tokstr, mkArray tok, mkmap str, evalParserToTable p]
   where
     findBounds tok = foldl (\ (min0, max0) (tok, _) -> (min min0 tok, max max0 tok)) (tok, tok)
-    mkMapArray :: TokenType tok => IM.IntMap (M.Map UStr (Parser st tok a)) -> ParseTable st tok a
+    mkMapArray :: TokenType tok => IM.IntMap (M.Map UStr (Syntax st tok a)) -> Parser st tok a
     mkMapArray m = do
       let ax = fmap (\ (a, b) -> (MkTT a, b)) (IM.assocs m)
       case ax of
@@ -2263,7 +1927,7 @@ evalParserToTable p = case p of
             { parseTableArray = accumArray mplus mzero minmax bx
             , altParTab       = mzero
             }
-    mkArray :: TokenType tok => IM.IntMap (Parser st tok a) -> ParseTable st tok a
+    mkArray :: TokenType tok => IM.IntMap (Syntax st tok a) -> Parser st tok a
     mkArray m = do
       nultok <- getNullToken
       let ax = fmap (\ (a, b) -> (MkTT a, b)) (IM.assocs m)
@@ -2277,7 +1941,7 @@ evalParserToTable p = case p of
             { parseTableArray = accumArray mplus mzero minmax bx
             , altParTab       = mzero
             }
-    mkmap :: TokenType tok => M.Map UStr (Parser st tok a) -> ParseTable st tok a
+    mkmap :: TokenType tok => M.Map UStr (Syntax st tok a) -> Parser st tok a
     mkmap m = case M.assocs m of
       []            -> mzero
       [(str, gstp)] -> look1 asUStr >>= guard . (str==) >> shift as0 >>  evalParserToTable gstp
@@ -2290,11 +1954,11 @@ evalParserToTable p = case p of
 
 ----------------------------------------------------------------------------------------------------
 
--- | A 'LookAhead' parser is a newtype wrapper around 'Parser', but the
+-- | A 'LookAhead' parser is a newtype wrapper around 'Syntax', but the
 -- 'Control.Applicative.Applicative' and 'Control.Monad.Monad' with a slightly different semantics.
--- In a 'Parser', if one of the applied functions after bind ('Control.Monad.>>=') or apply
+-- In a 'Syntax', if one of the applied functions after bind ('Control.Monad.>>=') or apply
 -- ('Control.Monad.<*>') backtracks, the 'Token's that were 'shift'ed from the 'TokStream' before it
--- are lost. This is usually not a problem because a 'Parser' only ever needs to look ahead by one
+-- are lost. This is usually not a problem because a 'Syntax' only ever needs to look ahead by one
 -- token. However when a constructor for a data type takes two or more
 -- non-'Control.Applicative.optional' tokens in a row, this requires a 'LookAhead' to make sure that
 -- both 'Token's can be shifted. So if the first parser succeeds, but the second parser backtracks,
@@ -2307,9 +1971,9 @@ evalParserToTable p = case p of
 -- 'LookAhead' instantiates 'MonadParser' so you can use the ordinary 'token' or 'tokenBy' functions
 -- to compose a 'LookAhead' parser. Simply compose your parser as a value passed to the 'lookAhead'
 -- function and type inference will do the job of constructing the 'LookAhead' parser and converting
--- it to a regular 'Parser'. To lift a function of type @'Parser' st tok a@ into the 'LookAhead'
+-- it to a regular 'Syntax'. To lift a function of type @'Syntax' st tok a@ into the 'LookAhead'
 -- monad, simply use the 'LookAhead' constructor.
-newtype LookAhead st tok a = LookAhead{ lookAhead :: Parser st tok a }
+newtype LookAhead st tok a = LookAhead{ lookAhead :: Syntax st tok a }
 instance Functor (LookAhead st tok) where { fmap f (LookAhead p) = LookAhead (fmap f p) }
 instance TokenType tok =>
   Monad (LookAhead st tok) where
@@ -2349,7 +2013,7 @@ instance TokenType tok =>
 
 ----------------------------------------------------------------------------------------------------
 
--- | A /Context Free Grammar/ is a data structure that allows you to easily define a
+-- | A 'Language' is a data structure that allows you to easily define a
 -- two-phase parser (a parser with a 'lexicalAnalysis' phase, and a 'syntacticAnalysis' phase). The
 -- fields supplied to this data type define the grammar, and the 'parse' function can be used to
 -- parse an input string using the context-free grammar defined in this data structure. *Note* that
@@ -2357,52 +2021,42 @@ instance TokenType tok =>
 -- function, both phases happen at the same time, so the resulting parser does not need to parse the
 -- entire input in the first phase before beginning the second phase.
 -- 
--- This data type can be constructed from a 'Parser' in such a way that the resulting
--- 'ParseTable' is stored in this object permenantly. It might then be possible to reduce
+-- This data type can be constructed from a 'Syntax' in such a way that the resulting
+-- 'Parser' is stored in this object permenantly. It might then be possible to reduce
 -- initialization time by using an *INLINE* pragma, which will hopefully cause the compiler to
--- define as much of the 'ParseTable'@'@s sparse matrix as it possibly can at compile time. But this
+-- define as much of the 'Parser'@'@s sparse matrix as it possibly can at compile time. But this
 -- is not a guarantee, of course, you never really know how much an optimization helps until you do
 -- proper profiling.
-data CFGrammar st tok synTree
-  = CFGrammar
+data Language st tok synTree
+  = Language
     { columnWidthOfTab :: TabWidth
       -- ^ specify how many columns a @'\t'@ character takes up. This number is important to get
       -- accurate line:column information in error messages.
     , mainLexer        :: Lexer tok ()
       -- ^ *the order of these tokenizers is important,* these are the tokenizers passed to the
       -- 'lexicalAnalysis' phase to generate the stream of tokens for the 'syntacticAnalysis' phase.
-    , mainParseTable   :: Maybe (ParseTable st tok synTree)
-      -- ^ you have the option of keeping in memory the parser table which was constructed from the
-      -- 'Parser' monad for debugging purposes. Usually, though, you will probably want to use
-      -- 'deleteTable' on the 'CFGrammer' constructed by the 'newCFGrammar' function when creating a
-      -- 'CFGrammar' object you have already thoroughly debugged and placed at the top level of your
-      -- Haskell program.
-    , mainParser       :: TokStream st tok synTree
+    , mainParser    :: TokStream st tok synTree
       -- ^ this is the parser entry-point which is used to evaluate the 'syntacticAnalysis' phase.
     }
 
--- | Construct a 'CFGrammar' from a 'Parser'. This defines a complete parser that can be used
--- by the 'parse' function. In constructing this 'CFGrammar', the 'Parser' will be converted
--- to a 'ParseTable' which can be referenced directly from this object. This encourages the runtime
--- to cache the 'ParseTable' which can lead to better performance. Using an INLINE pragma on this
+-- | Construct a 'Language' from a 'Syntax'. This defines a complete parser that can be used
+-- by the 'parse' function. In constructing this 'Language', the 'Syntax' will be converted
+-- to a 'Parser' which can be referenced directly from this object. This encourages the runtime
+-- to cache the 'Parser' which can lead to better performance. Using an INLINE pragma on this
 -- value could possibly improve performance even further.
-newCFGrammar :: (HasTokenDB tok, TokenType tok) =>
-  TabWidth -> Parser st tok synTree -> CFGrammar st tok synTree
-newCFGrammar tabw parser =
-  CFGrammar
+newLanguage :: (HasTokenDB tok, TokenType tok) =>
+  TabWidth -> Syntax st tok synTree -> Language st tok synTree
+newLanguage tabw parser =
+  Language
   { columnWidthOfTab = tabw
   , mainLexer        = tokenDBLexer tokenDB
-  , mainParseTable   = Just ptab
   , mainParser       = evalTableToTokStream ptab
   }
   where { ptab = evalParserToTable parser }
 
-deleteTable :: CFGrammar st tok synTree -> CFGrammar st tok synTree
-deleteTable cfg = cfg{mainParseTable=Nothing}
-
--- | This is /the function that parses/ an input string according to a given 'CFGrammar'.
+-- | This is /the function that parses/ an input string according to a given 'Language'.
 parse :: TokenType tok =>
-  CFGrammar st tok synTree -> st -> String -> PValue (Error st tok) synTree
+  Language st tok synTree -> st -> String -> PValue (Error st tok) synTree
 parse cfg st input = case lexicalResult of
   OK      _ -> case parserResult of
     OK     a  -> OK a

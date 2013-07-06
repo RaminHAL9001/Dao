@@ -208,7 +208,8 @@ data TokenAt tok
     , getTokenValue       :: Token tok
     }
 instance Show tok =>
-  Show (TokenAt tok) where { show = show . asTripple }
+  Show (TokenAt tok) where
+    show tok = let (a,b,c) = asTripple tok in show a++':':show b++' ':show c
 instance HasLineNumber   (TokenAt tok) where { lineNumber   = tokenAtLineNumber }
 instance HasColumnNumber (TokenAt tok) where { columnNumber = tokenAtColumnNumber }
 instance HasToken TokenAt where { getToken = getTokenValue }
@@ -1301,44 +1302,10 @@ defaultTo defaultValue parser = mplus parser (return defaultValue)
 class (Enum meta, UStrType meta) =>
   MetaToken meta tok | meta -> tok where { tokenDBFromMetaValue :: meta -> TokenDB tok }
 
--- | This function takes two parameters, the first is a polymorphic function we can call @getter@
--- that takes some of the contents of the current token in the stream. The first value is a
--- 'MetaToken' value we can call @meta@. This function will check the whether current token in the
--- stream has an identifier value that matches the given @meta@ value. If so, the current token is
--- shifted off of the stream and passed to the @getter@ function to extract the necessary
--- information from the token.
--- 
--- Valid @getter@ functions are 'asTokType', 'asString', 'asUStr', 'as0',
--- 'asToken', 'asTokenAt', 'asTripple', 'asLineColumn', 'asLocation', or any composition of
--- functions with any of the above as the right-most function.
-token :: (MetaToken meta tok, MonadParser parser tok) => meta -> (TokenAt tok -> a) -> parser tok a
-token meta as = case M.lookup (ustr meta) (tableUStrToTT (tokenDBFromMetaValue meta)) of
-  Nothing  -> error $ "internal: parser defined to use meta token "++show (ustr meta)++
-    " without having activated any tokenizer that constructs a token by that meta type"
-  Just tok -> tokenType as0 (wrapTT tok) >> shift as
-
 -- | This class exists to to provide the 'tokenBy' function.
 class TokenType tok => HasTokenDB tok where { tokenDB :: TokenDB tok }
 getTokenDB :: (HasTokenDB tok, MonadParser parser tok) => parser tok (TokenDB tok)
 getTokenDB = return tokenDB
-
--- | Useful for keywords or operators, this function is used to check if the next 'Token' value in
--- the 'TokStream' is of a 'TokenType' labeled by the given constant string. This function has
--- similar behavior to @('tokenString' 'shift')@, /HOWEVER/ unlike 'tokenString', /this function is
--- much more efficient/ because the 'Token' identifier is looked up in the 'TokenDB' only once and
--- then used to add this parser to a parse table instead of merely comparing the string value of the
--- token.
--- 
--- Valid @getter@ functions are 'asTokType', 'asString', 'asUStr', 'as0',
--- 'asToken', 'asTokenAt', 'asTripple', 'asLineColumn', 'asLocation', or any composition of
--- functions with any of the above as the right-most function.
-tokenBy :: (UStrType name, HasTokenDB tok, MonadParser parser tok) =>
-  name -> (TokenAt tok -> a) -> parser tok a
-tokenBy name as = do
-  db <- getTokenDB
-  case M.lookup (ustr name) (tableUStrToTT db) of
-    Nothing  -> tokenString as name
-    Just tok -> tokenType as0 (wrapTT tok) >> shift as
 
 ----------------------------------------------------------------------------------------------------
 -- $Fundamental_parser_data_types
@@ -1743,6 +1710,61 @@ evalParseMap m = do
     Just  p -> trace ("eval ParserMap: got "++show tok) $ evalParserToTokStream p
 
 ----------------------------------------------------------------------------------------------------
+
+
+newtype Grammar st tok a = Grammar{ grammarState :: State (GrammarState st tok) a }
+newtype GrammarState st tok = GrammarState Int
+instance TokenType tok =>
+  Functor (Grammar st tok) where { fmap f (Grammar g) = Grammar (fmap f g) }
+instance TokenType tok =>
+  Monad (Grammar st tok) where
+    return = Grammar . return
+    f >>= bind = Grammar (grammarState f >>= grammarState . bind)
+instance TokenType tok =>
+  MonadState (GrammarState st tok) (Grammar st tok) where { get = Grammar get; put = Grammar . put; }
+
+data SynIDUnit tok = SynTokID tok | SynUStrID UStr | SynGroupID Int deriving (Eq, Ord, Show)
+
+newSyntaxID :: TokenType tok => Grammar st tok Int
+newSyntaxID = get >>= \ (GrammarState i) -> put (GrammarState (i+1)) >> return i
+
+-- | This function takes two parameters, the first is a polymorphic function we can call @getter@
+-- that takes some of the contents of the current token in the stream. The first value is a
+-- 'MetaToken' value we can call @meta@. This function will check the whether current token in the
+-- stream has an identifier value that matches the given @meta@ value. If so, the current token is
+-- shifted off of the stream and passed to the @getter@ function to extract the necessary
+-- information from the token.
+-- 
+-- Valid @getter@ functions are 'asTokType', 'asString', 'asUStr', 'as0',
+-- 'asToken', 'asTokenAt', 'asTripple', 'asLineColumn', 'asLocation', or any composition of
+-- functions with any of the above as the right-most function.
+token :: (TokenType tok, MetaToken meta tok, MonadParser parser tok) =>
+  meta -> (TokenAt tok -> a) -> parser tok a
+token meta as = case M.lookup (ustr meta) (tableUStrToTT (tokenDBFromMetaValue meta)) of
+  Nothing  -> error $ "internal: parser defined to use meta token "++show (ustr meta)++
+    " without having activated any tokenizer that constructs a token of that meta type"
+  Just tok -> tokenType as (wrapTT tok)
+
+-- | Useful for keywords or operators, this function is used to check if the next 'Token' value in
+-- the 'TokStream' is of a 'TokenType' labeled by the given constant string. This function has
+-- similar behavior to @('tokenString' 'shift')@, /HOWEVER/ unlike 'tokenString', /this function is
+-- much more efficient/ because the 'Token' identifier is looked up in the 'TokenDB' only once and
+-- then used to add this parser to a parse table instead of merely comparing the string value of the
+-- token.
+-- 
+-- Valid @getter@ functions are 'asTokType', 'asString', 'asUStr', 'as0',
+-- 'asToken', 'asTokenAt', 'asTripple', 'asLineColumn', 'asLocation', or any composition of
+-- functions with any of the above as the right-most function.
+tokenBy :: (UStrType name, HasTokenDB tok, MonadParser parser tok) =>
+  name -> (TokenAt tok -> a) -> parser tok a
+tokenBy name as = do
+  db <- getTokenDB
+  let uname = ustr name 
+  case M.lookup uname (tableUStrToTT db) of
+    Nothing  -> tokenString as uname
+    Just tok -> tokenType as (wrapTT tok)
+
+----------------------------------------------------------------------------------------------------
 -- $State_transition_parser
 -- This data type is a high-level representation of parsers. To understand how it differs from
 -- a 'Parser', please read the section above.
@@ -1755,24 +1777,21 @@ evalParseMap m = do
 -- your parsers.
 data Syntax st tok a
   = SyntaxNull
-  | SyntaxLabel { parserDebug :: String, altSyntax :: Syntax st tok a }
-  | SyntaxConst a
-  | SyntaxParser
-    { parserTokStream :: Parser st tok a
-    , altSyntax      :: Syntax st tok a
-    }
+  | SyntaxLabel  { parserDebug :: String, altSyntax :: Syntax st tok a }
+  | SyntaxReturn { syntaxConst :: a }
+  | SyntaxParser { parserTokStream :: Parser st tok a, altSyntax :: Syntax st tok a }
   | Syntax
-    { checkTokStr     :: IM.IntMap  (M.Map UStr (Syntax st tok a))
-    , checkToken      :: IM.IntMap  (Syntax st tok a)
-    , checkString     :: M.Map UStr (Syntax st tok a)
-    , altSyntax      :: Syntax st tok a
+    { checkTokStr :: IM.IntMap  (M.Map UStr (Syntax st tok a))
+    , checkToken  :: IM.IntMap  (Syntax st tok a)
+    , checkString :: M.Map UStr (Syntax st tok a)
+    , altSyntax   :: Syntax st tok a
     }
 -- The 'Syntax' data type defines a kind of "list" of choices, where the (<|>) or 'mplus' functions
 -- are analgous to the (:) operator. When a 'Syntax' data type is evaluated, each node is evaluated
 -- in turn until one function evaluates to a non-'mzero' function. The semantics of the 'Syntax'
 -- type requires 'mplus' be NOT associative so the order in which parsers are evaluated remains true
 -- to the order in which they were written, hence the the list-of-nodes mechanism.
--- 'SyntaxNull' is a null list, the 'SyntaxConst' is a terminal character (to which nothing can
+-- 'SyntaxNull     ' is a null list, the 'SyntaxReturn' is a terminal character (to which nothing can
 -- be appended). The 'ParserTokStream' contains a head, which is an ordinary 'TokStream' function,
 -- and 'altSyntax' is the tail. 'Syntax' is the other type of list node, the difference being that
 -- it contains mappings of token types and strings which can be converted into an efficient
@@ -1784,49 +1803,49 @@ data Syntax st tok a
 
 instance Functor (Syntax st tok) where
   fmap f p = case p of
-    SyntaxNull        -> SyntaxNull
-    SyntaxLabel    str   p -> SyntaxLabel str (fmap f p)
-    SyntaxConst      a     -> SyntaxConst (f a)
-    SyntaxParser    a   p -> SyntaxParser (fmap f a) (fmap f p)
-    Syntax    ts tok str p -> 
+    SyntaxNull           -> SyntaxNull
+    SyntaxLabel  str   p -> SyntaxLabel str (fmap f p)
+    SyntaxReturn a       -> SyntaxReturn (f a)
+    SyntaxParser a     p -> SyntaxParser (fmap f a) (fmap f p)
+    Syntax  ts tok str p -> 
       Syntax
       { checkTokStr = fmap (fmap (fmap f)) ts
       , checkToken  = fmap (fmap f) tok
       , checkString = fmap (fmap f) str
-      , altSyntax  = fmap f p
+      , altSyntax   = fmap f p
       }
 instance TokenType tok =>
   Monad (Syntax st tok) where
-    return     = SyntaxConst
+    return     = SyntaxReturn
     fail       = syntaxLiftTokStream . fail
     p >>= bind = case p of
       SyntaxNull         -> SyntaxNull
-      SyntaxLabel     str   p -> SyntaxLabel str (p >>= bind)
-      SyntaxConst       a     -> bind a
-      SyntaxParser     a   p ->
+      SyntaxLabel  str p -> SyntaxLabel str (p >>= bind)
+      SyntaxReturn a     -> bind a
+      SyntaxParser a   p ->
         SyntaxParser   
         { parserTokStream = a >>= evalSyntaxToParser . bind
-        , altSyntax      = p >>= bind
+        , altSyntax       = p >>= bind
         }
       Syntax tokstr tok str p -> 
         Syntax
         { checkTokStr = fmap (fmap (>>=bind)) tokstr
         , checkToken  = fmap (>>=bind) tok
         , checkString = fmap (>>=bind) str
-        , altSyntax  = p >>= bind
+        , altSyntax   = p >>= bind
         }
 instance TokenType tok =>
   MonadPlus (Syntax st tok) where
-    mzero = SyntaxNull
+    mzero     = SyntaxNull
     mplus a b = case a of
-      SyntaxNull           -> b
+      SyntaxNull                -> b
       SyntaxLabel       strA  a -> case b of
         SyntaxLabel       strB  b -> SyntaxLabel (strA++"|"++strB) (mplus a b)
         b                         -> SyntaxLabel strA (mplus a b)
-      SyntaxConst        a      -> SyntaxConst   a
-      SyntaxParser      a    p -> SyntaxParser a (mplus p b)
+      SyntaxReturn    a         -> SyntaxReturn   a
+      SyntaxParser    a    p    -> SyntaxParser a (mplus p b)
       Syntax tsA tokA strA altA -> case b of
-        SyntaxNull           -> Syntax tsA tokA strA altA
+        SyntaxNull                -> Syntax tsA tokA strA altA
         Syntax tsB tokB strB altB ->
           if not (syntaxIsNull altA)
             then  Syntax tsA tokA strA (mplus altA b)
@@ -1878,7 +1897,7 @@ instance TokenType tok =>
     parseDebug = SyntaxLabel
 
 syntaxIsNull :: Syntax st tok a -> Bool
-syntaxIsNull p = case p of { SyntaxNull -> True; _ -> False; }
+syntaxIsNull p = case p of { SyntaxNull      -> True; _ -> False; }
 
 -- | Allows you to build your own parser table from scratch by directly mapping tokens and strings
 -- to 'Syntax's using functions provided in "Data.Map".
@@ -1909,7 +1928,7 @@ evalSyntaxToParser :: TokenType tok => Syntax st tok a -> Parser st tok a
 evalSyntaxToParser p = case p of
   SyntaxNull              -> mzero
   SyntaxLabel       str p -> ParserMessage str (evalSyntaxToParser p)
-  SyntaxConst       a     -> return a
+  SyntaxReturn       a     -> return a
   SyntaxParser      ts  p -> mplus ts (evalSyntaxToParser p)
   Syntax tokstr tok str p -> msum [mkMapArray tokstr, mkArray tok, mkmap str, evalSyntaxToParser p]
   where

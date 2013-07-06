@@ -329,7 +329,7 @@ diffTimeFromStrs time optMils = do
 
 -- | The top-level object parser.
 object :: DaoSyntax AST_Object
-object = assignment
+object = equation
 
 -- Objects that are parsed as a single value, which includes all literal expressions and equtions in
 -- parentheses.
@@ -360,7 +360,8 @@ refPrefix = withLoc $
   pure AST_Prefix <*> (read <$> (tokenBy "$" <> tokenBy "@") asString) <*> commented singleton
 
 reference :: DaoSyntax AST_Object
-reference = equation refPrefix (words ". ->")
+reference = infixed msg rightAssoc AST_Equation refPrefix (opsParser ". ->") where
+  msg = "label after dot or arrow operator"
 
 funcCall :: DaoSyntax AST_Object
 funcCall = withLoc $ pure AST_FuncCall
@@ -379,24 +380,78 @@ arithPrefix = withLoc $ pure AST_Prefix
   <*> read <$> mconcat (map tokenBy (words "- ~ !")) asString
   <*> commented (msum [funcCall, arraySub, singleton, refPrefix])
 
+type InfixConstr   op obj = obj -> op -> obj -> Location -> obj
+type Associativity op obj = InfixConstr op obj -> obj -> [(Location, obj, op)] -> obj
+
+rightAssoc :: Associativity op obj
+rightAssoc constr = foldr (\ (loc, lhs, op) rhs -> constr lhs op rhs loc)
+
+leftAssoc :: Associativity op obj
+leftAssoc constr = foldl (\ lhs (loc, rhs, op) -> constr lhs op rhs loc)
+
+initInfixed
+  :: String
+  -> Associativity op obj
+  -> InfixConstr op obj
+  -> DaoSyntax obj
+  -> DaoSyntax op
+  -> obj -> DaoSyntax obj
+initInfixed msg assoc constr parser opsParser initObj = loop [] initObj where
+  loop stack first = flip mplus (return (assoc constr first stack)) $ do
+    tok <- look1 id
+    let loc = asLocation tok
+    op  <- opsParser
+    join $ pure (\loc rhs -> loop (stack++[(loc, rhs, op)]) first)
+      <*> look1 asLocation
+      <*> expect (msg++" after "++show tok++" token") parser
+
 infixed
-  :: (UStrType opstr, Read op)
-  => (AST_Object -> Com op -> AST_Object -> Location -> AST_Object)
-  -> DaoSyntax AST_Object
-  -> [opstr]
-  -> DaoSyntax AST_Object
-infixed constructor parser ops = parseDebug "infixed" $ withLoc $ pure constructor <*>
-  parser <*> commented (read <$> mconcat (map tokenBy ops) asString) <*> parser
+  :: String
+  -> Associativity op obj
+  -> InfixConstr op obj
+  -> DaoSyntax obj
+  -> DaoSyntax op
+  -> DaoSyntax obj
+infixed msg assoc constr parser opsParser =
+  parser >>= initInfixed msg assoc constr parser opsParser
 
-equation :: UStrType opstr => DaoSyntax AST_Object -> [opstr] -> DaoSyntax AST_Object
-equation p ops = infixed AST_Equation p ops
+initInfixTable
+  :: String
+  -> DaoSyntax obj
+  -> [(Associativity op obj, InfixConstr op obj, DaoSyntax op)]
+  -> obj -> DaoSyntax obj
+initInfixTable msg parser table first = loop table first where
+  loop upper first = case upper of
+    []                            -> mzero
+    (assoc, constr, opstrs):lower -> msum $
+      [ initInfixed msg assoc constr parser opstrs first >>= loop table
+      , loop lower first
+      , return first
+      ]
 
-arithmetic :: DaoSyntax AST_Object
-arithmetic = msum $ map (equation arithPrefix . words) $
-  ["**", "* / %", "+ -", "<< >>", "&", "^", "|", "&&", "||", "< <= == != >= >"]
+infixTable
+  :: String
+  -> DaoSyntax obj
+  -> [(Associativity op obj, InfixConstr op obj, DaoSyntax op)]
+  -> DaoSyntax obj
+infixTable msg parser table = parser >>= initInfixTable msg parser table
 
-assignment :: DaoSyntax AST_Object
-assignment = msum $ map (infixed AST_Assign arithmetic . return) (words allUpdateOpStrs)
+opsParser :: Read op => String -> DaoSyntax (Com op)
+opsParser = commented . msum . fmap (flip tokenBy (read . asString)) . words
+
+arithmetic :: AST_Object -> DaoSyntax AST_Object
+arithmetic = initInfixTable msg arithPrefix table where
+  msg   = "object expression after arithmetic operator"
+  table = (rightAssoc, AST_Equation, commented $ tokenBy "**" (read . asString)) :
+    map (\str -> (leftAssoc, AST_Equation, opsParser str))
+      ["* / %", "+ -", "<< >>", "&", "^", "|", "&&", "||", "< <= >= >", "== !="]
+
+assignment :: AST_Object -> DaoSyntax AST_Object
+assignment = initInfixed msg rightAssoc AST_Assign arithPrefix (opsParser allUpdateOpStrs) where
+  msg = "object expression after assignment operator"
+
+equation :: DaoSyntax AST_Object
+equation = arithPrefix >>= (arithmetic <> assignment)
 
 ----------------------------------------------------------------------------------------------------
 

@@ -1556,66 +1556,26 @@ getNullToken = return (wrapTT (MkTT 0))
 -- your parser using 'Syntax' and let 'evalSyntaxToParser' compose the 'Parser' for
 -- you.
 data Parser st tok a
-  = ParserBacktrack
-  | ParserMessage { parserMessage :: String, altParser :: Parser st tok a }
-  | ParserConst { parserConst :: a }
-  | Parser
-    { tokStreamParser  :: TokStream st tok a
-    , altParser        :: Parser st tok a
-    }                 
-  | ParserSingle
-    { parTabSingle     :: tok
-    , nextParser       :: Parser st tok a
-    , altParser        :: Parser st tok a
-    }
-  | ParserArray       
-    { parseTableArray  :: Array TT (Parser st tok a)
-    , altParser        :: Parser st tok a
-    }
-  | ParserMap
-    { parserMap        :: M.Map UStr (Parser st tok a)
-    , altParser        :: Parser st tok a
-    }
-    -- ^ this constructor stores a plain 'TokStream' function, so this constructor can be used to
-    -- lift 'TokStream' functions into the 'Parser' monad. This constructor is not composable
-    -- like the above two constructors are, so the 'evalSyntaxToParser' function tries to
-    -- avoid using this unless it is absolutely necessary.
+  = Parser      { tokStreamParser   :: TokStream st tok a }
+  | ParserArray { parseTableArray   :: Array TT   (Parser st tok a) }
+  | ParserMap   { parserMap         :: M.Map UStr (Parser st tok a) }
+  | ParseSingle { parseSingle :: TokenAt tok -> Parser st tok a }
+  | ParserLabel { parserLabel :: UStr, parserParser :: Parser st tok a }
 instance Functor (Parser st tok) where
   fmap f parser = case parser of
-    ParserBacktrack        -> ParserBacktrack
-    ParserMessage   str  p -> ParserMessage  str (fmap f p)
-    ParserConst        a   -> ParserConst      (f a)
-    Parser        par  alt -> Parser      (fmap       f  par) (fmap f alt)
-    ParserArray   arr  alt -> ParserArray (fmap (fmap f) arr) (fmap f alt)
-    ParserMap     arr  alt -> ParserMap   (fmap (fmap f) arr) (fmap f alt)
+    Parser          par -> Parser      (fmap       f  par)
+    ParserArray     arr -> ParserArray (fmap (fmap f) arr)
+    ParserMap       arr -> ParserMap   (fmap (fmap f) arr)
+    ParserLabel str par -> ParserLabel str (fmap f par)
 instance TokenType tok =>
   Monad (Parser st tok) where
-    return   = ParserConst
+    return   = parserLiftTokStream . return
     fail msg = parserLiftTokStream (fail msg)
-    parser >>= bind = case parser of
-      ParserBacktrack       -> ParserBacktrack
-      ParserMessage   str p   -> ParserMessage    str (p >>= bind)  
-      ParserConst   c       -> bind c
-      Parser        par alt -> Parser (par >>= evalParserToTokStream . bind) (alt >>= bind)
-      ParserSingle  t p alt -> ParserSingle   t (p >>= bind)   (alt >>= bind)
-      ParserArray     a alt -> ParserArray (fmap (>>= bind) a) (alt >>= bind)
-      ParserMap       m alt -> ParserMap   (fmap (>>= bind) m) (alt >>= bind)
+    parser >>= bind = Parser (evalParserToTokStream parser >>= evalParserToTokStream . bind)
 instance TokenType tok =>
   MonadPlus (Parser st tok) where
-    mzero     = ParserBacktrack
-    mplus pa pb = case pa of
-      ParserBacktrack         -> pb
-      ParserMessage      str p  -> ParserMessage str (mplus p pb)
-      ParserConst      c      -> ParserConst c
-      ParserSingle tA pA altA -> case pb of
-        ParserSingle tB pB altB ->
-          if tA==tB
-            then  ParserSingle tA    (mplus pA   pB) (mplus altA altB)
-            else  ParserSingle tA pA (mplus altA pb)
-        pb                    -> add pa pb
-      pa                    -> add pa pb
-      where
-        add pa pb = pa{altParser = mplus (altParser pa) pb}
+    mzero       = parserLiftTokStream mzero
+    mplus pa pb = parserLiftTokStream (mplus (evalParserToTokStream pa) (evalParserToTokStream pb))
 instance TokenType tok =>
   Monoid (Parser st tok a) where { mempty = mzero; mappend = mplus; }
 instance TokenType tok =>
@@ -1641,65 +1601,44 @@ instance TokenType tok =>
     unshift          = parserLiftTokStream . unshift
     shift            = parserLiftTokStream . shift
     tokenType  as  t = parserLiftTokStream (tokenType as t)
-    parseDebug       = ParserMessage
+    parseDebug       = ParserLabel . ustr
     getFinalLocation = parserLiftTokStream getFinalLocation
 
 showParserConstr :: Parser st tok a -> String
 showParserConstr p = case p of
-  ParserBacktrack      -> "ParserBacktrack"
-  ParserMessage    m p -> showParserConstr p ++ " (" ++ m ++ ")"
-  ParserConst        _ -> "ParserConst"
-  Parser           _ _ -> "Parser"
-  ParserSingle   _ _ _ -> "ParserSingle"
-  ParserArray      _ _ -> "ParserArray"
-  ParserMap        _ _ -> "ParserMap"
+  Parser         _ -> "Parser"
+  ParserArray    _ -> "ParserArray"
+  ParserMap      _ -> "ParserMap"
+  ParseSingle    _ -> "ParseSingle "
+  ParserLabel  m p -> showParserConstr p ++ " (" ++ uchars m ++ ")"
 
 parserLiftTokStream :: TokenType tok => TokStream st tok a -> Parser st tok a
-parserLiftTokStream p = Parser p mzero
-
-parserBacktracks :: Parser st tok a -> Bool
-parserBacktracks p = case p of {ParserBacktrack -> True; _ -> False; }
+parserLiftTokStream = Parser
 
 -- | Evaluate a 'Parser' to a 'TokStream'.
 evalParserToTokStream :: TokenType tok => Parser st tok a -> TokStream st tok a
-evalParserToTokStream table = trace (showParserConstr table) $ case table of
-  ParserBacktrack    -> mzero
-  ParserMessage  str p -> trace str $ evalParserToTokStream p
-  ParserConst      c -> return c
-  table              -> flip mplus (trace (showParserConstr table++" backtracked") $ loop (altParser table)) $ case table of
-    Parser         p _ -> p
-    ParserSingle t p _ -> evalParseSingleton t p
-    ParserArray    p _ -> evalParseArray p
-    ParserMap      p _ -> evalParseMap   p
-  where { loop = evalParserToTokStream }
+evalParserToTokStream table = case table of
+  ParserLabel  str p -> evalParserToTokStream p
+  table           -> case table of
+    Parser        p -> p
+    ParserArray   p -> evalParseArray p
+    ParserMap     p -> evalParseMap   p
+    ParseSingle   p -> evalParseSingleton p
+    ParserLabel _ p -> evalParserToTokStream p
 
-evalParseSingleton :: TokenType tok => tok -> Parser st tok a -> TokStream st tok a
-evalParseSingleton tok par = do
+evalParseSingleton :: TokenType tok => (TokenAt tok -> Parser st tok a) -> TokStream st tok a
+evalParseSingleton predicate = do
   curTok <- look1 id
-  if asTokType curTok==tok
-    then  trace ("eval ParserSingle: got "++show curTok) $ evalParserToTokStream par
-    else  mzero
+  evalParserToTokStream (predicate curTok)
 
--- | Efficiently evaluates an array stored in the 'ParserArray' constructor. Evaluation will
--- shift on token from the stream and the 'tokType' is used to select the next 'Parser' stored
--- in the array at that 'tokType' address. If the 'tokType' is not a valid index of the
--- 'Data.Array.IArray.Array', or if the selected 'Parser' backtracks when evaluated, this parser
--- backtracks and the selecting token is shifted back onto the stream.
 evalParseArray :: TokenType tok => Array TT (Parser st tok a) -> TokStream st tok a
 evalParseArray arr = do
   tok <- look1 id
   let tt = unwrapTT (asTokType tok)
       (a, b) = bounds arr
       bnds = (intTT a, intTT b)
-  if inRange (bounds arr) tt
-    then  trace ("eval ParserArray: got "++show tok) $ evalParserToTokStream (arr!tt)
-    else  mzero
+  if inRange (bounds arr) tt then evalParserToTokStream (arr!tt) else mzero
 
--- | Efficiently evaluates a 'Data.Map.Map' stored in a 'ParserMap' constructor. Evaluation will
--- shift one token from the stream, and the 'tokToUStr' value is used as a key to select and
--- evaluate the 'Parser' stored in the 'Data.Map.Map'. If the 'tokToUStr' value is not a key in
--- the 'Data.Map.Map', or if the selected 'Parser' backtracks when evaluated, this parser
--- backtracks and the selecting token is shifted back onto the stream.
 evalParseMap :: TokenType tok => M.Map UStr (Parser st tok a) -> TokStream st tok a
 evalParseMap m = do
   tok <- look1 id
@@ -1707,10 +1646,9 @@ evalParseMap m = do
       typ = asTokType tok
   case M.lookup str m of
     Nothing -> mzero
-    Just  p -> trace ("eval ParserMap: got "++show tok) $ evalParserToTokStream p
+    Just  p -> evalParserToTokStream p
 
 ----------------------------------------------------------------------------------------------------
-
 
 newtype Grammar st tok a = Grammar{ grammarState :: State (GrammarState st tok) a }
 newtype GrammarState st tok = GrammarState Int
@@ -1723,10 +1661,8 @@ instance TokenType tok =>
 instance TokenType tok =>
   MonadState (GrammarState st tok) (Grammar st tok) where { get = Grammar get; put = Grammar . put; }
 
-data SynIDUnit tok = SynTokID tok | SynUStrID UStr | SynGroupID Int deriving (Eq, Ord, Show)
-
-newSyntaxID :: TokenType tok => Grammar st tok Int
-newSyntaxID = get >>= \ (GrammarState i) -> put (GrammarState (i+1)) >> return i
+syntax :: TokenType tok => Syntax st tok a -> Grammar st tok (Syntax st tok a)
+syntax syn = get >>= \ (GrammarState i) -> put (GrammarState (i+1)) >> return (SyntaxID i syn)
 
 -- | This function takes two parameters, the first is a polymorphic function we can call @getter@
 -- that takes some of the contents of the current token in the stream. The first value is a
@@ -1777,7 +1713,7 @@ tokenBy name as = do
 -- your parsers.
 data Syntax st tok a
   = SyntaxNull
-  | SyntaxLabel  { parserDebug :: String, altSyntax :: Syntax st tok a }
+  | SyntaxLabel  { syntaxLabel :: String, altSyntax :: Syntax st tok a }
   | SyntaxReturn { syntaxConst :: a }
   | SyntaxParser { parserTokStream :: Parser st tok a, altSyntax :: Syntax st tok a }
   | Syntax
@@ -1786,20 +1722,7 @@ data Syntax st tok a
     , checkString :: M.Map UStr (Syntax st tok a)
     , altSyntax   :: Syntax st tok a
     }
--- The 'Syntax' data type defines a kind of "list" of choices, where the (<|>) or 'mplus' functions
--- are analgous to the (:) operator. When a 'Syntax' data type is evaluated, each node is evaluated
--- in turn until one function evaluates to a non-'mzero' function. The semantics of the 'Syntax'
--- type requires 'mplus' be NOT associative so the order in which parsers are evaluated remains true
--- to the order in which they were written, hence the the list-of-nodes mechanism.
--- 'SyntaxNull     ' is a null list, the 'SyntaxReturn' is a terminal character (to which nothing can
--- be appended). The 'ParserTokStream' contains a head, which is an ordinary 'TokStream' function,
--- and 'altSyntax' is the tail. 'Syntax' is the other type of list node, the difference being that
--- it contains mappings of token types and strings which can be converted into an efficient
--- 'Parser' type.  The 'Syntax' constructor, like the 'ParserTokStream' constructor also stores
--- a 'altSyntax' field as the tail. The instantiation of 'mplus' will always append the right-hand
--- value to the end of the "list". If a 'Syntax' constructor is appended to the "list" and the last
--- node in the "list" is also a 'Syntax' constructor (which is expected to happen often), the
--- contents of the maps of each node are combined into larger maps.
+  | SyntaxID { syntaxID :: Int, altSyntax :: Syntax st tok a }
 
 instance Functor (Syntax st tok) where
   fmap f p = case p of
@@ -1834,6 +1757,7 @@ instance TokenType tok =>
         , checkString = fmap (>>=bind) str
         , altSyntax   = p >>= bind
         }
+      SyntaxID     _   p -> p >>= bind
 instance TokenType tok =>
   MonadPlus (Syntax st tok) where
     mzero     = SyntaxNull
@@ -1856,6 +1780,10 @@ instance TokenType tok =>
                   , altSyntax  = altB
                   }
         b                         -> Syntax tsA tokA strA (mplus altA b)
+      SyntaxID        iA   pA   -> case b of
+        SyntaxID        iB   pB   ->
+          if iA==iB then SyntaxID iA pA else SyntaxID iA (SyntaxID iB (mplus pA pB))
+        b                         -> SyntaxID iA (mplus pA b)
 instance TokenType tok =>
   Applicative (Syntax st tok) where { pure = return; (<*>) = ap; }
 instance TokenType tok =>
@@ -1882,16 +1810,16 @@ instance TokenType tok =>
     shift    = syntaxLiftParser . shift
     look1    = syntaxLiftParser . look1
     tokenType   as t =
-      newSyntax{checkToken = IM.singleton (intTT (unwrapTT t)) (trace ("check token: "++show t) (look1 as))}
+      newSyntax{checkToken = IM.singleton (intTT (unwrapTT t)) (look1 as)}
     tokenString as u =
-      newSyntax{checkString = M.singleton (ustr u) (trace ("check string: "++show (ustr u)) $ (look1 as))}
+      newSyntax{checkString = M.singleton (ustr u) (look1 as)}
     tokenStrType as tok str = do
       let u = ustr str
       if u==nil
         then  tokenType as tok
         else  newSyntax
               { checkTokStr = IM.singleton (intTT (unwrapTT tok)) $
-                  M.singleton u (trace ("check token: "++show tok++" and string "++show (ustr u)) $ (look1 as))
+                  M.singleton u (look1 as)
               }
     getFinalLocation = syntaxLiftTokStream getFinalLocation
     parseDebug = SyntaxLabel
@@ -1927,8 +1855,8 @@ evalSyntaxToTokStream = evalParserToTokStream . evalSyntaxToParser
 evalSyntaxToParser :: TokenType tok => Syntax st tok a -> Parser st tok a
 evalSyntaxToParser p = case p of
   SyntaxNull              -> mzero
-  SyntaxLabel       str p -> ParserMessage str (evalSyntaxToParser p)
-  SyntaxReturn       a     -> return a
+  SyntaxLabel       str p -> ParserLabel (ustr str) (evalSyntaxToParser p)
+  SyntaxReturn      a     -> return a
   SyntaxParser      ts  p -> mplus ts (evalSyntaxToParser p)
   Syntax tokstr tok str p -> msum [mkMapArray tokstr, mkArray tok, mkmap str, evalSyntaxToParser p]
   where
@@ -1938,38 +1866,30 @@ evalSyntaxToParser p = case p of
       let ax = fmap (\ (a, b) -> (MkTT a, b)) (IM.assocs m)
       case ax of
         []           -> mzero
-        [(tok, m)]   -> ParserSingle (wrapTT tok) (mkmap m) mzero
+        [(tok, m)]   -> ParseSingle $ \t ->
+          if unwrapTT (asTokType t) == tok then shift as0 >> mkmap m else mzero
         (tok, _):ax' -> do
           let minmax = findBounds tok ax'
-              bx     = fmap (\ (tok, par) -> (tok, mkmap par)) ax
-          ParserArray
-            { parseTableArray = accumArray mplus mzero minmax bx
-            , altParser       = mzero
-            }
+              bx     = fmap (\ (tok, syn) -> (tok, mkmap syn)) ax
+          ParserArray(accumArray mplus mzero minmax bx)
     mkArray :: TokenType tok => IM.IntMap (Syntax st tok a) -> Parser st tok a
     mkArray m = do
-      nultok <- getNullToken
       let ax = fmap (\ (a, b) -> (MkTT a, b)) (IM.assocs m)
       case ax of
-        []            -> mzero
-        [(tok, gstp)] -> ParserSingle (wrapTT tok) (evalSyntaxToParser gstp) mzero
-        (tok, _):ax'  -> do
+        []           -> mzero
+        [(tok, syn)] -> ParseSingle $ \t ->
+          if unwrapTT (asTokType t) == tok then shift as0 >> evalSyntaxToParser syn else mzero
+        (tok, _):ax' -> do
           let minmax = findBounds tok ax'
-              bx = map (\ (tok, par) -> (tok, evalSyntaxToParser par)) ax
-          ParserArray
-            { parseTableArray = accumArray mplus mzero minmax bx
-            , altParser       = mzero
-            }
+              bx = flip map ax $ \ (tok, syn) ->
+                (tok, evalSyntaxToParser syn >>= \a -> shift as0 >> return a)
+          ParserArray(accumArray mplus mzero minmax bx)
     mkmap :: TokenType tok => M.Map UStr (Syntax st tok a) -> Parser st tok a
     mkmap m = case M.assocs m of
       []            -> mzero
-      [(str, gstp)] -> look1 asUStr >>= guard . (str==) >> shift as0 >>  evalSyntaxToParser gstp
-      mx            -> do
-        nultok <- getNullToken
-        ParserMap
-          { parserMap = M.map evalSyntaxToParser m
-          , altParser = mzero
-          }
+      [(str, gstp)] -> look1 asUStr >>= guard . (str==) >> shift as0 >> evalSyntaxToParser gstp
+      mx            ->
+        ParserMap(M.map (\syn -> evalSyntaxToParser syn >>= \a -> shift as0 >> return a) m)
 
 ----------------------------------------------------------------------------------------------------
 -- | A 'Language' is a data structure that allows you to easily define a

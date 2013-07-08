@@ -174,7 +174,7 @@ failLater msg = catchError (fail msg) $ \err ->
 
 -- | Parses an arbitrary number of space and comment tokens, comments are returned.
 space :: DaoSyntax [Comment]
-space = do
+space = labelSyntax "space" $ do
   st <- get
   case bufferedComments st of
     Just coms -> put (st{bufferedComments=mempty}) >> return coms
@@ -209,26 +209,6 @@ optParens errmsg parser = msum $
   ]
 
 ----------------------------------------------------------------------------------------------------
-
--- | Parsing numerical literals
-number :: DaoSyntax Object
-number = msum $
-  [ base 16 BASE16
-  , base  2 BASE2
-  , join $ pure (numberFromStrs 10)
-      <*> token BASE10 asString
-      <*> optional (token DOTBASE10 asString)
-      <*> optional (token EXPONENT  asString)
-      <*> optional (token NUMTYPE   asString)
-  , join $ pure (numberFromStrs 10 "")
-      <*> token DOTBASE10 (Just . asString)
-      <*> optional (token EXPONENT asString)
-      <*> optional (token NUMTYPE  asString)
-  ]
-  where
-    ignore   = pure Nothing
-    base b t = join $ pure (numberFromStrs b) <*>
-      fmap (drop 2) (token t asString) <*> ignore <*> ignore <*> optional (token NUMTYPE asString)
 
 -- copied from the Dao.DaoSyntax module
 rationalFromString :: Int -> Rational -> String -> Maybe Rational
@@ -327,14 +307,30 @@ diffTimeFromStrs time optMils = do
 
 ----------------------------------------------------------------------------------------------------
 
--- | The top-level object parser.
-object :: DaoSyntax AST_Object
-object = equation
+-- | Parsing numerical literals
+number :: DaoSyntax Object
+number = labelSyntax "number" $ msum $
+  [ base 16 BASE16
+  , base  2 BASE2
+  , join $ pure (numberFromStrs 10)
+      <*> token BASE10 asString
+      <*> optional (token DOTBASE10 asString)
+      <*> optional (token EXPONENT  asString)
+      <*> optional (token NUMTYPE   asString)
+  , join $ pure (numberFromStrs 10 "")
+      <*> token DOTBASE10 (Just . asString)
+      <*> optional (token EXPONENT asString)
+      <*> optional (token NUMTYPE  asString)
+  ]
+  where
+    ignore   = pure Nothing
+    base b t = join $ pure (numberFromStrs b) <*>
+      fmap (drop 2) (token t asString) <*> ignore <*> ignore <*> optional (token NUMTYPE asString)
 
 -- Objects that are parsed as a single value, which includes all literal expressions and equtions in
 -- parentheses.
 singleton :: DaoSyntax AST_Object
-singleton = mplus (inParens object) $ fmap (\o -> AST_Literal o LocationUnknown) $ msum $
+singleton = labelSyntax "singleton" $ mplus (inParens object) $ fmap (\o -> AST_Literal o LocationUnknown) $ msum $
   [ number
   , ORef    . IntRef   . read . tail <$> token INTREF    asString
   , ORef    . LocalRef               <$> token LABEL     asUStr
@@ -342,43 +338,36 @@ singleton = mplus (inParens object) $ fmap (\o -> AST_Literal o LocationUnknown)
   ]
 
 inParens :: DaoSyntax AST_Object -> DaoSyntax AST_Object
-inParens parser = do
+inParens parser = labelSyntax "inParens" $ do
   tokenBy "(" as0
   a <- pure (\o -> AST_Paren True o LocationUnknown) <*> commented object
   expect "close-parentheses" $ tokenBy ")" (const a)
 
 commaSepd :: (UStrType str, UStrType errmsg) =>
   errmsg -> str -> str -> DaoSyntax AST_Object -> DaoSyntax [Com AST_Object]
-commaSepd errMsg open close parser = do
+commaSepd errMsg open close parser = labelSyntax "commaSepd" $ do
   tokenBy open as0
   objs <- (space >>= \c -> tokenBy close as0 >> return [com c AST_Void []])
     <|> many (commented object)
   expect errMsg $ tokenBy close as0 >> return objs
 
-refPrefix :: DaoSyntax AST_Object
-refPrefix = withLoc $
-  pure AST_Prefix <*> (read <$> (tokenBy "$" <> tokenBy "@") asString) <*> commented singleton
-
 reference :: DaoSyntax AST_Object
-reference = infixed msg rightAssoc AST_Equation refPrefix (opsParser ". ->") where
+reference = labelSyntax "reference" $ infixed msg rightAssoc AST_Equation prefixedTerm (opsParser ". ->") where
   msg = "label after dot or arrow operator"
+  prefixedTerm = labelSyntax "reference.prefixedTerm" $ withLoc $
+    pure AST_Prefix <*> (read <$> (tokenBy "$" <> tokenBy "@") asString) <*> commented singleton
 
 funcCall :: DaoSyntax AST_Object
-funcCall = withLoc $ pure AST_FuncCall
+funcCall = labelSyntax "funcCall" $ withLoc $ pure AST_FuncCall
   <*> token LABEL asUStr
   <*> space
   <*> commaSepd "close-parentheses after function call" "(" ")" object
 
 arraySub :: DaoSyntax AST_Object
-arraySub = withLoc $ pure AST_ArraySub
+arraySub = labelSyntax "arraySub" $ withLoc $ pure AST_ArraySub
   <*> reference
   <*> space
   <*> (tokenBy "[" as0 >> commented object >>= \o -> tokenBy "]" as0 >> return o)
-
-arithPrefix :: DaoSyntax AST_Object
-arithPrefix = withLoc $ pure AST_Prefix
-  <*> read <$> mconcat (map tokenBy (words "- ~ !")) asString
-  <*> commented (msum [funcCall, arraySub, singleton, refPrefix])
 
 type InfixConstr   op obj = obj -> op -> obj -> Location -> obj
 type Associativity op obj = InfixConstr op obj -> obj -> [(Location, obj, op)] -> obj
@@ -397,7 +386,7 @@ initInfixed
   -> DaoSyntax op
   -> obj -> DaoSyntax obj
 initInfixed msg assoc constr parser opsParser initObj = loop [] initObj where
-  loop stack first = flip mplus (return (assoc constr first stack)) $ do
+  loop stack first = flip mplus (return (assoc constr first stack)) $ labelSyntax "initInfixed.loop" $ do
     tok <- look1 id
     let loc = asLocation tok
     op  <- opsParser
@@ -421,7 +410,7 @@ initInfixTable
   -> [(Associativity op obj, InfixConstr op obj, DaoSyntax op)]
   -> obj -> DaoSyntax obj
 initInfixTable msg parser table first = loop table first where
-  loop upper first = case upper of
+  loop upper first = labelSyntax "initInfixTable.loop" $ case upper of
     []                            -> mzero
     (assoc, constr, opstrs):lower -> msum $
       [ initInfixed msg assoc constr parser opstrs first >>= loop table
@@ -439,24 +428,26 @@ infixTable msg parser table = parser >>= initInfixTable msg parser table
 opsParser :: Read op => String -> DaoSyntax (Com op)
 opsParser = commented . msum . fmap (flip tokenBy (read . asString)) . words
 
-arithmetic :: AST_Object -> DaoSyntax AST_Object
-arithmetic = initInfixTable msg arithPrefix table where
+arithmetic :: DaoSyntax AST_Object
+arithmetic = labelSyntax "arithmetic" $ infixTable msg object table where
   msg   = "object expression after arithmetic operator"
   table = (rightAssoc, AST_Equation, commented $ tokenBy "**" (read . asString)) :
-    map (\str -> (leftAssoc, AST_Equation, opsParser str))
+    map (\str -> (leftAssoc, AST_Equation, labelSyntax "arithmetic.operator" $ opsParser str))
       ["* / %", "+ -", "<< >>", "&", "^", "|", "&&", "||", "< <= >= >", "== !="]
 
-assignment :: AST_Object -> DaoSyntax AST_Object
-assignment = initInfixed msg rightAssoc AST_Assign arithPrefix (opsParser allUpdateOpStrs) where
-  msg = "object expression after assignment operator"
+object :: DaoSyntax AST_Object
+object = labelSyntax "object" $ flip mplus obj $ withLoc $
+  pure AST_Prefix <*> read <$> mconcat (map tokenBy (words "- ~ !")) asString <*> commented obj
+  where { obj = msum [funcCall, arraySub, reference, singleton] }
 
 equation :: DaoSyntax AST_Object
-equation = arithPrefix >>= (arithmetic <> assignment)
+equation = labelSyntax "equation" $ infixed msg rightAssoc AST_Assign arithmetic (opsParser allUpdateOpStrs) where
+  msg = "object expression after assignment operator"
 
 ----------------------------------------------------------------------------------------------------
 
 daoSyntax :: DaoSyntax AST_Object
-daoSyntax = inParens singleton
+daoSyntax = equation
 
 daoGrammar :: Language DaoParState DaoTT AST_Object
 daoGrammar = newLanguage 4 $ mplus daoSyntax $ do

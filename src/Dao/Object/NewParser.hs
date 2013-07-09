@@ -62,7 +62,7 @@ instance MetaToken DaoTokenLabel DaoTT where { tokenDBFromMetaValue _ = tokenDB 
 instance Show DaoTT where { show = deriveShowFromTokenDB daoTokenDB }
 
 type DaoLexer    = Lexer DaoTT ()
-type DaoSyntax a = Syntax DaoParState DaoTT a
+type DaoParser a = Parser DaoParState DaoTT a
 type DaoParseErr = Error DaoParState DaoTT
 
 daoTokenDB :: TokenDB DaoTT
@@ -109,7 +109,7 @@ daoTokenDef = do
   dataRX       <- keyString "data"
   base64Data   <- fullToken  BASE64DATA $
     rxRepeat1[from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/']
-  dataSyntax   <- pure $ dataRX . multiComs . openBrace .
+  dataParser   <- pure $ dataRX . multiComs . openBrace .
     fix(\loop -> (base64Data<>space) . loop <> closeBrace <> rxErr "unknown token in base-64 data")
   
   ---------------------------------------- STRING  LITERAL ----------------------------------------
@@ -129,14 +129,14 @@ daoTokenDef = do
   base16       <- fullToken  BASE16     $ (rx "0x" <> rx "0X") .
     rxRepeat[from0to9, from 'A' to 'F', from 'a' to 'f']
   numType      <- fullToken  NUMTYPE    $ rx (map ch "UILRFfijs")
-  intRefSyntax <- fullToken  INTREF     $ rx '$' . rxRepeat1 from0to9
-  let base10Syntax = dotBase10 . opt exponent . opt numType <>
+  intRefParser <- fullToken  INTREF     $ rx '$' . rxRepeat1 from0to9
+  let base10Parser = dotBase10 . opt exponent . opt numType <>
         base10 . opt (dotBase10 <> dot) . opt exponent . opt numType
   
   ------------------------------------------- ACTIVATE --------------------------------------------
   activate $
     [ space, inlineCom, endlineCom, comma
-    , stringLit, base16, base2, base10Syntax, intRefSyntax, dataSyntax
+    , stringLit, base16, base2, base10Parser, intRefParser, dataParser
     , keywords, label, mconcat groups, operators
     , semicolon
     ]
@@ -162,19 +162,19 @@ instance Monoid DaoParState where
     , internalState = Nothing
     }
 
-setCommentBuffer :: [Comment] -> DaoSyntax ()
+setCommentBuffer :: [Comment] -> DaoParser ()
 setCommentBuffer coms = modify $ \st ->
   st{ bufferedComments = if null coms then mzero else return coms }
 
-failLater :: String -> DaoSyntax ()
+failLater :: String -> DaoParser ()
 failLater msg = catchError (fail msg) $ \err ->
   modify $ \st -> st{nonHaltingErrors = nonHaltingErrors st ++ [err{parseStateAtErr=Nothing}]}
 
 ----------------------------------------------------------------------------------------------------
 
 -- | Parses an arbitrary number of space and comment tokens, comments are returned.
-space :: DaoSyntax [Comment]
-space = labelSyntax "space" $ do
+space :: DaoParser [Comment]
+space = label "space" $ do
   st <- get
   case bufferedComments st of
     Just coms -> put (st{bufferedComments=mempty}) >> return coms
@@ -184,14 +184,14 @@ space = labelSyntax "space" $ do
       , token ENDLINECOM (\c -> [EndlineComment $ asUStr c])
       ]
 
--- | Evaluates a 'DaoSyntax' within a cluster of optional spaces and comments, returning the result
--- of the parser wrapped in a 'Dao.Object.Com' constructor. If the given 'DaoSyntax' backtracks, the
--- comments that were parsed before the 'DaoSyntax' was evaluated are buffered so a second call two
+-- | Evaluates a 'DaoParser' within a cluster of optional spaces and comments, returning the result
+-- of the parser wrapped in a 'Dao.Object.Com' constructor. If the given 'DaoParser' backtracks, the
+-- comments that were parsed before the 'DaoParser' was evaluated are buffered so a second call two
 -- successive calls to this function return immediately. For example in an expression like:
 -- > 'Control.Monad.msum' ['commented' p1, 'commented' p2, ... , 'commented' pN]
 -- The spaces and comments occurring before the parsers @p1@, @p2@, ... , @pN@ are only being parsed
 -- once, no matter how many parser are tried.
-commented :: DaoSyntax a -> DaoSyntax (Com a)
+commented :: DaoParser a -> DaoParser (Com a)
 commented parser = do
   before <- space
   msum $
@@ -202,7 +202,7 @@ commented parser = do
 -- | Parses an expression which may optionally occur within a parenthetical closure. Provide a
 -- message that will be used to produce an error message if there is no matching close parenthesis
 -- token.
-optParens :: String -> DaoSyntax a -> DaoSyntax a
+optParens :: String -> DaoParser a -> DaoParser a
 optParens errmsg parser = msum $
   [ tokenBy "(" as0 >> parser >>= \a -> expect errmsg (tokenBy ")" as0) >> return a
   , parser
@@ -210,7 +210,7 @@ optParens errmsg parser = msum $
 
 ----------------------------------------------------------------------------------------------------
 
--- copied from the Dao.DaoSyntax module
+-- copied from the Dao.DaoParser module
 rationalFromString :: Int -> Rational -> String -> Maybe Rational
 rationalFromString maxValue base str =
   if b<1 then fmap (b*) (fol (reverse str)) else fol str where
@@ -227,8 +227,8 @@ rationalFromString maxValue base str =
       a | isUpper a -> return (ord a - ord 'A' + 10)
       _             -> mzero
 
--- copied from the Dao.Syntax module
-numberFromStrs :: Int -> String -> Maybe String -> Maybe String -> Maybe String -> DaoSyntax Object
+-- copied from the Dao.Parser module
+numberFromStrs :: Int -> String -> Maybe String -> Maybe String -> Maybe String -> DaoParser Object
 numberFromStrs base int maybFrac maybPlusMinusExp maybTyp = do
   let frac         = fromMaybe "" (fmap tail maybFrac)
       strprfx      = foldl (\f s t -> f (fromMaybe t (stripPrefix s t))) id . words
@@ -274,7 +274,7 @@ numberFromStrs base int maybFrac maybPlusMinusExp maybTyp = do
 
 -- | Compute diff times from strings representing days, hours, minutes, and seconds. The seconds
 -- value may have a decimal point.
-diffTimeFromStrs :: String -> Maybe String -> DaoSyntax T_diffTime
+diffTimeFromStrs :: String -> Maybe String -> DaoParser T_diffTime
 diffTimeFromStrs time optMils = do
   let miliseconds = noDot optMils
   let [days,hours,minutes,seconds] = split [] time
@@ -297,7 +297,7 @@ diffTimeFromStrs time optMils = do
       (t, ':':str) -> split (t:buf) str
     rint str            = if null str then 0 else (read str :: Integer)
     integerToRational s = s % 1 :: Rational
-    check :: String -> Integer -> String -> DaoSyntax Rational
+    check :: String -> Integer -> String -> DaoParser Rational
     check typ maxVal  s = do
       let i    = rint s
           zero = return (0%1)
@@ -308,8 +308,8 @@ diffTimeFromStrs time optMils = do
 ----------------------------------------------------------------------------------------------------
 
 -- | Parsing numerical literals
-number :: DaoSyntax Object
-number = labelSyntax "number" $ msum $
+number :: DaoParser Object
+number = label "number" $ msum $
   [ base 16 BASE16
   , base  2 BASE2
   , join $ pure (numberFromStrs 10)
@@ -329,42 +329,42 @@ number = labelSyntax "number" $ msum $
 
 -- Objects that are parsed as a single value, which includes all literal expressions and equtions in
 -- parentheses.
-singleton :: DaoSyntax AST_Object
-singleton = labelSyntax "singleton" $ mplus (inParens object) $ fmap (\o -> AST_Literal o LocationUnknown) $ msum $
+singleton :: DaoParser AST_Object
+singleton = label "singleton" $ mplus (inParens object) $ fmap (\o -> AST_Literal o LocationUnknown) $ msum $
   [ number
   , ORef    . IntRef   . read . tail <$> token INTREF    asString
   , ORef    . LocalRef               <$> token LABEL     asUStr
   , OString . read                   <$> token STRINGLIT asString
   ]
 
-inParens :: DaoSyntax AST_Object -> DaoSyntax AST_Object
-inParens parser = labelSyntax "inParens" $ do
+inParens :: DaoParser AST_Object -> DaoParser AST_Object
+inParens parser = label "inParens" $ do
   tokenBy "(" as0
   a <- pure (\o -> AST_Paren True o LocationUnknown) <*> commented object
   expect "close-parentheses" $ tokenBy ")" (const a)
 
 commaSepd :: (UStrType str, UStrType errmsg) =>
-  errmsg -> str -> str -> DaoSyntax AST_Object -> DaoSyntax [Com AST_Object]
-commaSepd errMsg open close parser = labelSyntax "commaSepd" $ do
+  errmsg -> str -> str -> DaoParser AST_Object -> DaoParser [Com AST_Object]
+commaSepd errMsg open close parser = label "commaSepd" $ do
   tokenBy open as0
   objs <- (space >>= \c -> tokenBy close as0 >> return [com c AST_Void []])
     <|> many (commented object)
   expect errMsg $ tokenBy close as0 >> return objs
 
-reference :: DaoSyntax AST_Object
-reference = labelSyntax "reference" $ infixed msg rightAssoc AST_Equation prefixedTerm (opsParser ". ->") where
+reference :: DaoParser AST_Object
+reference = label "reference" $ infixed msg rightAssoc AST_Equation prefixedTerm (opsParser ". ->") where
   msg = "label after dot or arrow operator"
-  prefixedTerm = labelSyntax "reference.prefixedTerm" $ withLoc $
+  prefixedTerm = label "reference.prefixedTerm" $ withLoc $
     pure AST_Prefix <*> (read <$> (tokenBy "$" <> tokenBy "@") asString) <*> commented singleton
 
-funcCall :: DaoSyntax AST_Object
-funcCall = labelSyntax "funcCall" $ withLoc $ pure AST_FuncCall
+funcCall :: DaoParser AST_Object
+funcCall = label "funcCall" $ withLoc $ pure AST_FuncCall
   <*> token LABEL asUStr
   <*> space
   <*> commaSepd "close-parentheses after function call" "(" ")" object
 
-arraySub :: DaoSyntax AST_Object
-arraySub = labelSyntax "arraySub" $ withLoc $ pure AST_ArraySub
+arraySub :: DaoParser AST_Object
+arraySub = label "arraySub" $ withLoc $ pure AST_ArraySub
   <*> reference
   <*> space
   <*> (tokenBy "[" as0 >> commented object >>= \o -> tokenBy "]" as0 >> return o)
@@ -382,11 +382,11 @@ initInfixed
   :: String
   -> Associativity op obj
   -> InfixConstr op obj
-  -> DaoSyntax obj
-  -> DaoSyntax op
-  -> obj -> DaoSyntax obj
+  -> DaoParser obj
+  -> DaoParser op
+  -> obj -> DaoParser obj
 initInfixed msg assoc constr parser opsParser initObj = loop [] initObj where
-  loop stack first = flip mplus (return (assoc constr first stack)) $ labelSyntax "initInfixed.loop" $ do
+  loop stack first = flip mplus (return (assoc constr first stack)) $ do
     tok <- look1 id
     let loc = asLocation tok
     op  <- opsParser
@@ -398,71 +398,72 @@ infixed
   :: String
   -> Associativity op obj
   -> InfixConstr op obj
-  -> DaoSyntax obj
-  -> DaoSyntax op
-  -> DaoSyntax obj
-infixed msg assoc constr parser opsParser =
-  parser >>= initInfixed msg assoc constr parser opsParser
+  -> DaoParser obj
+  -> DaoParser op
+  -> DaoParser obj
+infixed msg assoc constr parser opsParser = trace "infixed" $
+  trace "initial parser for infix" parser >>= trace "bind to initInfixed" . initInfixed msg assoc constr parser opsParser
 
 initInfixTable
   :: String
-  -> DaoSyntax obj
-  -> [(Associativity op obj, InfixConstr op obj, DaoSyntax op)]
-  -> obj -> DaoSyntax obj
-initInfixTable msg parser table first = loop table first where
-  loop upper first = labelSyntax "initInfixTable.loop" $ case upper of
-    []                            -> mzero
+  -> DaoParser obj
+  -> [(Associativity op obj, InfixConstr op obj, DaoParser op)]
+  -> obj -> DaoParser obj
+initInfixTable msg parser table first = trace "initInfixTable" $ loop table first where
+  loop upper first = trace "loop infixTable" $ case upper of
+    []                            -> trace "infixTable backtracked" $ mzero
     (assoc, constr, opstrs):lower -> msum $
-      [ initInfixed msg assoc constr parser opstrs first >>= loop table
-      , loop lower first
+      [ trace "initInfixTable: parse then loop at current associativity" $ initInfixed msg assoc constr parser opstrs first >>= loop table
+      , trace "initInfixTable: loop to lower associativity" loop lower first
       , return first
       ]
 
 infixTable
   :: String
-  -> DaoSyntax obj
-  -> [(Associativity op obj, InfixConstr op obj, DaoSyntax op)]
-  -> DaoSyntax obj
-infixTable msg parser table = parser >>= initInfixTable msg parser table
+  -> DaoParser obj
+  -> [(Associativity op obj, InfixConstr op obj, DaoParser op)]
+  -> DaoParser obj
+infixTable msg parser table = trace "init parser for infixTable" parser >>= trace "bind to initInfixTable" . initInfixTable msg parser table
 
-opsParser :: Read op => String -> DaoSyntax (Com op)
+opsParser :: Read op => String -> DaoParser (Com op)
 opsParser = commented . msum . fmap (flip tokenBy (read . asString)) . words
 
-arithmetic :: DaoSyntax AST_Object
-arithmetic = labelSyntax "arithmetic" $ infixTable msg object table where
-  msg   = "object expression after arithmetic operator"
-  table = (rightAssoc, AST_Equation, commented $ tokenBy "**" (read . asString)) :
-    map (\str -> (leftAssoc, AST_Equation, labelSyntax "arithmetic.operator" $ opsParser str))
-      ["* / %", "+ -", "<< >>", "&", "^", "|", "&&", "||", "< <= >= >", "== !="]
-
-object :: DaoSyntax AST_Object
-object = labelSyntax "object" $ flip mplus obj $ withLoc $
+object :: DaoParser AST_Object
+object = trace "object" $ label "object" $ flip mplus obj $ withLoc $
   pure AST_Prefix <*> read <$> mconcat (map tokenBy (words "- ~ !")) asString <*> commented obj
   where { obj = msum [funcCall, arraySub, reference, singleton] }
 
-equation :: DaoSyntax AST_Object
-equation = labelSyntax "equation" $ infixed msg rightAssoc AST_Assign arithmetic (opsParser allUpdateOpStrs) where
-  msg = "object expression after assignment operator"
+arithmetic :: DaoParser AST_Object
+arithmetic = trace "evaluate arithmetic" $ label "arithmetic" $ infixTable msg object table where
+  msg   = "object expression after arithmetic operator"
+  table = (rightAssoc, AST_Equation, commented $ tokenBy "**" (read . asString)) :
+    map (\str -> (leftAssoc, AST_Equation, label "arithmetic.operator" $ opsParser str))
+      ["* / %", "+ -", "<< >>", "&", "^", "|", "&&", "||", "< <= >= >", "== !="]
+
+equation :: DaoParser AST_Object
+equation = label "equation" $
+  infixed msg rightAssoc AST_Assign (trace "arithmetic parser in \"equation\"" arithmetic) (opsParser allUpdateOpStrs) where
+    msg = "object expression after assignment operator"
 
 ----------------------------------------------------------------------------------------------------
 
-daoSyntax :: DaoSyntax AST_Object
-daoSyntax = equation
+daoParser :: DaoParser AST_Object
+daoParser = equation
 
 daoGrammar :: Language DaoParState DaoTT AST_Object
-daoGrammar = newLanguage 4 $ mplus daoSyntax $ do
-  tokSt <- syntaxLiftTokStream get
+daoGrammar = newLanguage 4 $ mplus daoParser $ do
+  tokSt <- parserLiftTokStream get
   modify (\st -> st{internalState = Just tokSt})
-  fail "Syntax backtracked without taking all input."
+  fail "Parser backtracked without taking all input."
 
 ----------------------------------------------------------------------------------------------------
 
 testDaoLexer :: String -> IO ()
 testDaoLexer = testLexicalAnalysis (tokenDBLexer daoTokenDB) 4
 
-testDaoSyntax :: String -> IO ()
-testDaoSyntax input = case parse daoGrammar mempty input of
-  OK      a -> putStrLn ("Syntax succeeded:\n"++show a)
+testDaoParser :: String -> IO ()
+testDaoParser input = case parse daoGrammar mempty input of
+  OK      a -> putStrLn ("Parser succeeded:\n"++show a)
   Backtrack -> testDaoLexer input >> putStrLn "---- PARSER BACKTRACKED ----\n"
   PFail err -> do
     testDaoLexer input

@@ -87,6 +87,14 @@ daoTokenDef = do
   endlineCom   <- fullToken  ENDLINECOM $ rx "//" . rxRepeat(invert[ch '\n'])
   multiComs    <- pure $ opt $ fix((mconcat[space, inlineCom, endlineCom]).)
   
+  ------------------------------------------ PUNCTUATION ------------------------------------------
+  operators    <- keyStringTable $ words $ unwords $
+    [allUpdateOpStrs, allArithOp1Strs, allArithOp2Strs, ":"]
+  groups@[openParen, closeParen, openBrace, closeBrace, _, _, _, _] <-
+    mapM keyString $ words "( ) { } [ ] #{ }#"
+  semicolon    <- keyString                   ";"
+  comma        <- emptyToken COMMA       $ rx ','
+  
   ------------------------------------------- KEYWORDS --------------------------------------------
   keywords     <- keyStringTable $ words $ unwords $
     [ "if else for in while with try catch continue break return throw"
@@ -96,14 +104,6 @@ daoTokenDef = do
     ]
   let alpha = [from 'A' to 'Z', from 'a' to 'z', ch '_']
   label        <- fullToken  LABEL      $ rxRepeat1 alpha . rxRepeat(from '0' to '9' : alpha)
-  
-  ------------------------------------------ PUNCTUATION ------------------------------------------
-  operators    <- keyStringTable $ words $ unwords $
-    [allUpdateOpStrs, allArithOp1Strs, allArithOp2Strs, ":"]
-  groups@[openParen, closeParen, openBrace, closeBrace, _, _, _, _] <-
-    mapM keyString $ words "( ) { } [ ] #{ }#"
-  semicolon    <- keyString                   ";"
-  comma        <- emptyToken COMMA       $ rx ','
   
   -------------------------------------- DATA SPECIAL SYNTAX --------------------------------------
   dataRX       <- keyString "data"
@@ -230,8 +230,8 @@ rationalFromString maxValue base str =
 -- copied from the Dao.Parser module
 numberFromStrs :: Int -> String -> Maybe String -> Maybe String -> Maybe String -> DaoParser Object
 numberFromStrs base int maybFrac maybPlusMinusExp maybTyp = do
-  let frac         = fromMaybe "" (fmap tail maybFrac)
-      strprfx      = foldl (\f s t -> f (fromMaybe t (stripPrefix s t))) id . words
+  let frac         = maybe "" id (maybFrac >>= stripPrefix ".")
+      strprfx      = foldl (\f s t -> f (maybe t id (stripPrefix s t))) id . words
       plusMinusExp = fromMaybe "" (fmap (strprfx ".e .E e E") maybPlusMinusExp)
       typ          = fromMaybe "" maybTyp
       (exp, hasMinusSign) = case plusMinusExp of
@@ -369,61 +369,58 @@ arraySub = label "arraySub" $ withLoc $ pure AST_ArraySub
   <*> space
   <*> (tokenBy "[" as0 >> commented object >>= \o -> tokenBy "]" as0 >> return o)
 
-type InfixConstr   op obj = obj -> op -> obj -> Location -> obj
-type Associativity op obj = InfixConstr op obj -> obj -> [(Location, obj, op)] -> obj
-
-rightAssoc :: Associativity op obj
-rightAssoc constr = foldr (\ (loc, lhs, op) rhs -> constr lhs op rhs loc)
-
-leftAssoc :: Associativity op obj
-leftAssoc constr = foldl (\ lhs (loc, rhs, op) -> constr lhs op rhs loc)
-
 initInfixed
   :: String
-  -> Associativity op obj
+  -> Associativity
   -> InfixConstr op obj
   -> DaoParser obj
   -> DaoParser op
   -> obj -> DaoParser obj
-initInfixed msg assoc constr parser opsParser initObj = loop [] initObj where
-  loop stack first = flip mplus (return (assoc constr first stack)) $ do
-    tok <- look1 id
-    let loc = asLocation tok
-    op  <- opsParser
-    join $ pure (\loc rhs -> loop (stack++[(loc, rhs, op)]) first)
-      <*> look1 asLocation
-      <*> expect (msg++" after "++show tok++" token") parser
+initInfixed msg assoc constr parser opsParser initObj = undefined
+--  loop [] initObj where
+--    loop stack first = flip mplus (return (assoc constr first stack)) $ do
+--      tok <- look1 id
+--      let loc = asLocation tok
+--      op  <- opsParser
+--      join $ pure (\loc rhs -> loop (stack++[(loc, rhs, op)]) first)
+--        <*> look1 asLocation
+--        <*> expect (msg++" after "++show tok++" token") parser
 
 infixed
   :: String
-  -> Associativity op obj
+  -> Associativity
   -> InfixConstr op obj
   -> DaoParser obj
   -> DaoParser op
   -> DaoParser obj
-infixed msg assoc constr parser opsParser = trace "infixed" $
-  trace "initial parser for infix" parser >>= trace "bind to initInfixed" . initInfixed msg assoc constr parser opsParser
+infixed msg assoc constr parser opsParser = undefined
+--  trace "infixed" $
+--    trace "initial parser for infix" parser >>= trace "bind to initInfixed" . initInfixed msg assoc constr parser opsParser
 
 initInfixTable
-  :: String
+  :: Show obj
+  => String
   -> DaoParser obj
-  -> [(Associativity op obj, InfixConstr op obj, DaoParser op)]
+  -> [(Associativity, InfixConstr op obj, DaoParser op)]
   -> obj -> DaoParser obj
-initInfixTable msg parser table first = trace "initInfixTable" $ loop table first where
-  loop upper first = trace "loop infixTable" $ case upper of
-    []                            -> trace "infixTable backtracked" $ mzero
-    (assoc, constr, opstrs):lower -> msum $
-      [ trace "initInfixTable: parse then loop at current associativity" $ initInfixed msg assoc constr parser opstrs first >>= loop table
-      , trace "initInfixTable: loop to lower associativity" loop lower first
-      , return first
-      ]
+initInfixTable msg parser opTable first = undefined
+--  trace "initInfixTable" $ loop opTable first where
+--    loop upper first = trace "loop infixTable" $ case upper of
+--      []                            -> trace "infixTable backtracked" $ mzero
+--      (assoc, constr, opstrs):lower -> msum $
+--        [ trace "initInfixTable: parse then loop at current associativity" $ initInfixed msg assoc constr parser opstrs first >>= loop opTable
+--        , trace "initInfixTable: loop to lower associativity" loop lower first
+--        , return first
+--        ]
 
 infixTable
-  :: String
+  :: Show obj
+  => String
   -> DaoParser obj
-  -> [(Associativity op obj, InfixConstr op obj, DaoParser op)]
+  -> [(Associativity, InfixConstr op obj, DaoParser op)]
   -> DaoParser obj
-infixTable msg parser table = trace "init parser for infixTable" parser >>= trace "bind to initInfixTable" . initInfixTable msg parser table
+infixTable msg parser table = undefined
+--  trace "init parser for infixTable" parser >>= trace "bind to initInfixTable" . initInfixTable msg parser table
 
 opsParser :: Read op => String -> DaoParser (Com op)
 opsParser = commented . table . fmap (flip tokenBy (read . asString)) . words
@@ -437,7 +434,7 @@ arithmetic :: DaoParser AST_Object
 arithmetic = trace "evaluate arithmetic" $ label "arithmetic" $ infixTable msg object table where
   msg   = "object expression after arithmetic operator"
   table = (rightAssoc, AST_Equation, commented $ tokenBy "**" (read . asString)) :
-    map (\str -> (leftAssoc, AST_Equation, label "arithmetic.operator" $ opsParser str))
+    map (\str -> (leftAssoc, AST_Equation, label "arithmetic.operator" $ opsParser (trace ("parse operator "++show str) str)))
       ["* / %", "+ -", "<< >>", "&", "^", "|", "&&", "||", "< <= >= >", "== !="]
 
 equation :: DaoParser AST_Object

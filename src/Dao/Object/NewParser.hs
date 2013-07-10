@@ -178,7 +178,7 @@ space = label "space" $ do
   st <- get
   case bufferedComments st of
     Just coms -> put (st{bufferedComments=mempty}) >> return coms
-    Nothing   -> fmap concat $ many $ msum $
+    Nothing   -> fmap concat $ many $ table $
       [ token SPACE (const [] . as0)
       , token INLINECOM  (\c -> [InlineComment  $ asUStr c])
       , token ENDLINECOM (\c -> [EndlineComment $ asUStr c])
@@ -309,7 +309,7 @@ diffTimeFromStrs time optMils = do
 
 -- | Parsing numerical literals
 number :: DaoParser Object
-number = label "number" $ msum $
+number = label "number" $ table $
   [ base 16 BASE16
   , base  2 BASE2
   , join $ pure (numberFromStrs 10)
@@ -330,7 +330,7 @@ number = label "number" $ msum $
 -- Objects that are parsed as a single value, which includes all literal expressions and equtions in
 -- parentheses.
 singleton :: DaoParser AST_Object
-singleton = label "singleton" $ mplus (inParens object) $ fmap (\o -> AST_Literal o LocationUnknown) $ msum $
+singleton = label "singleton" $ mplus (inParens object) $ fmap (\o -> AST_Literal o LocationUnknown) $ table $
   [ number
   , ORef    . IntRef   . read . tail <$> token INTREF    asString
   , ORef    . LocalRef               <$> token LABEL     asUStr
@@ -426,12 +426,12 @@ infixTable
 infixTable msg parser table = trace "init parser for infixTable" parser >>= trace "bind to initInfixTable" . initInfixTable msg parser table
 
 opsParser :: Read op => String -> DaoParser (Com op)
-opsParser = commented . msum . fmap (flip tokenBy (read . asString)) . words
+opsParser = commented . table . fmap (flip tokenBy (read . asString)) . words
 
 object :: DaoParser AST_Object
 object = trace "object" $ label "object" $ flip mplus obj $ withLoc $
   pure AST_Prefix <*> read <$> mconcat (map tokenBy (words "- ~ !")) asString <*> commented obj
-  where { obj = msum [funcCall, arraySub, reference, singleton] }
+  where { obj = table [funcCall, arraySub, reference, singleton] }
 
 arithmetic :: DaoParser AST_Object
 arithmetic = trace "evaluate arithmetic" $ label "arithmetic" $ infixTable msg object table where

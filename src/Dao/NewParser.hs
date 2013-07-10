@@ -177,8 +177,8 @@ data Token tok
     -- create the token.
 instance Show tok => Show (Token tok) where
   show tok =
-    let str = tokToStr tok
-    in  show (tokType tok) ++ (if null str then "" else " "++show str)
+    let cont = tokToStr tok
+    in  show (tokType tok) ++ (if null cont then "" else ' ':show cont)
 instance Functor Token where
   fmap f t = case t of
     EmptyToken t   -> EmptyToken (f t)
@@ -388,7 +388,8 @@ instance TokenType TT where { wrapTT = id; unwrapTT = id; }
 -- > myLexer = ...
 -- If you instantiate your newtype into the 'TokenType' class, you can also very easily instantiate
 -- 'Prelude.Read' and 'Prelude.Show' for your tokens.
-newtype TT = MkTT{ intTT :: Int } deriving (Eq, Ord, Show, Ix, Typeable)
+newtype TT = MkTT{ intTT :: Int } deriving (Eq, Ord, Ix, Typeable)
+instance Show TT where { show (MkTT tt) = "TT"++show tt }
 
 -- Not for export, wouldn't want people making arbitrary 'TT's now, would we?
 enumTTFrom :: Int -> Int -> [TT]
@@ -522,7 +523,9 @@ makeTokenDB builder =
 -- > myTokenDB :: 'TokenDB' MyToken
 -- > myTokenDB = 'makeTokenDB' $ ....
 deriveShowFromTokenDB :: TokenType tok => TokenDB tok -> tok -> String
-deriveShowFromTokenDB tokenDB tok = uchars (tableTTtoUStr tokenDB ! unwrapTT tok)
+deriveShowFromTokenDB tokenDB tok =
+  let str = uchars (tableTTtoUStr tokenDB ! unwrapTT tok)
+  in  if or (map (not . isAlphaNum) str) then show str else str
 
 -- | Get token from a 'TokenDB' that was associated with the 'Dao.String.UStrType'.
 maybeLookupToken :: (UStrType str, TokenType tok) => TokenDB tok -> str -> Maybe tok
@@ -1268,11 +1271,13 @@ class (TokenType tok, Functor (parser tok), Monad (parser tok), MonadPlus (parse
     -- the stream. The token is copied along with it's positional information. Succeed if there was
     -- a token that could be copied, backtrack if the token stream is empty.
     tokenType :: (TokenAt tok -> a) -> tok -> parser tok a
-    tokenType   as tok = look1 id >>= \cur-> guard (tok      == asTokType cur) >> return (as cur)
+    tokenType   as tok = look1 id >>= \cur->
+      mplus (guard (tok      == asTokType cur) >> shift as) mzero
     -- ^ Provide a 'TokenType' value, the value will be checked against the current token in the stream
     -- and if the 'tokType' matches, the current token is returned and the stream is shifted.
     tokenString :: UStrType str => (TokenAt tok -> a) -> str -> parser tok a
-    tokenString as str = look1 id >>= \cur-> guard (ustr str == asUStr    cur) >> return (as cur)
+    tokenString as str = look1 id >>= \cur->
+      mplus (guard (ustr str == asUStr    cur) >> shift as) mzero
     -- ^ Like 'tokenStrType' but is only concerned with the string-value of the token. The 'Parser'
     -- instantiation of this function uses the token string as a 'Data.Map.Map' key and stores the
     -- sub-parser at that key. The default instantiation of this function is merely a special
@@ -1281,9 +1286,7 @@ class (TokenType tok, Functor (parser tok), Monad (parser tok), MonadPlus (parse
     tokenStrType as tok str = do
       kept <- look1 id
       let nxt = getToken kept
-      if tok == tokType nxt && ustr str == tokToUStr nxt
-        then  return (as kept)
-        else  mzero
+      if tok == tokType nxt && ustr str == tokToUStr nxt then shift as else mzero
     -- ^ A predicate matching the 'TokenType' within a 'Token' value to the 'TokenType' of the next
     -- 'Token' in the 'TokStream'. Works like like 'tokenPosP' but takes a plain 'Token' value
     -- instead of a @'TokenType' tok => ('LineNum', 'ColumnNum', 'Token' tok)@ triple.
@@ -1293,45 +1296,47 @@ class (TokenType tok, Functor (parser tok), Monad (parser tok), MonadPlus (parse
     -- in this case is the last line number, and the number of columns (characters) contained in the
     -- last line.
     label :: UStrType str => str -> parser tok a -> parser tok a
-    token :: (TokenType tok, MetaToken meta tok, MonadParser parser tok) =>
-      meta -> (TokenAt tok -> a) -> parser tok a
-    token meta as = case M.lookup (ustr meta) (tableUStrToTT (tokenDBFromMetaValue meta)) of
-      Nothing  -> error $ "internal: parser defined to use meta token "++show (ustr meta)++
-        " without having activated any tokenizer that constructs a token of that meta type"
-      Just tok -> tokenType as (wrapTT tok) >> shift as
-    -- ^ This function takes two parameters, the first is a polymorphic function we can call
-    -- @getter@ that takes some of the contents of the current token in the stream. The first value
-    -- is a 'MetaToken' value we can call @meta@. This function will check the whether current token
-    -- in the stream has an identifier value that matches the given @meta@ value. If so, the current
-    -- token is shifted off of the stream and passed to the @getter@ function to extract the
-    -- necessary information from the token.
-    -- 
-    -- Valid @getter@ functions are 'asTokType', 'asString', 'asUStr', 'as0', 'asToken',
-    -- 'asTokenAt', 'asTripple', 'asLineColumn', 'asLocation', or any composition of functions with
-    -- any of the above as the right-most function.
-    tokenBy :: (UStrType name, HasTokenDB tok, MonadParser parser tok) =>
-      name -> (TokenAt tok -> a) -> parser tok a
-    tokenBy name as = do
-      db <- getTokenDB
-      let uname = ustr name 
-      case M.lookup uname (tableUStrToTT db) of
-        Nothing  -> tokenString as  uname       >> shift as
-        Just tok -> tokenType   as (wrapTT tok) >> shift as
-    -- ^ Useful for keywords or operators, this function is used to check if the next 'Token' value
-    -- in the 'TokStream' is of a 'TokenType' labeled by the given constant string. This function
-    -- has similar behavior to @('tokenString' 'shift')@, /HOWEVER/ unlike 'tokenString', /this
-    -- function is much more efficient/ because the 'Token' identifier is looked up in the 'TokenDB'
-    -- only once and then used to add this parser to a parse table instead of merely comparing the
-    -- string value of the token.
-    -- 
-    -- Valid @getter@ functions are 'asTokType', 'asString', 'asUStr', 'as0', 'asToken',
-    -- 'asTokenAt', 'asTripple', 'asLineColumn', 'asLocation', or any composition of functions with
-    -- any of the above as the right-most function.
     table :: [parser tok a] -> parser tok a
     table = msum
     -- /Use this instead of 'Control.Monad.msum'/ as often as possible. Rather than testing each token
     -- in turn, the token type is used to select the next parser action from an array, which is many
     -- times more efficient.
+
+-- | This function takes two parameters, the first is a polymorphic function we can call
+-- @getter@ that takes some of the contents of the current token in the stream. The first value
+-- is a 'MetaToken' value we can call @meta@. This function will check the whether current token
+-- in the stream has an identifier value that matches the given @meta@ value. If so, the current
+-- token is shifted off of the stream and passed to the @getter@ function to extract the
+-- necessary information from the token.
+-- 
+-- Valid @getter@ functions are 'asTokType', 'asString', 'asUStr', 'as0', 'asToken',
+-- 'asTokenAt', 'asTripple', 'asLineColumn', 'asLocation', or any composition of functions with
+-- any of the above as the right-most function.
+token :: (TokenType tok, MetaToken meta tok, MonadParser parser tok) =>
+  meta -> (TokenAt tok -> a) -> parser tok a
+token meta as = case M.lookup (ustr meta) (tableUStrToTT (tokenDBFromMetaValue meta)) of
+  Nothing  -> error $ "internal: parser defined to use meta token "++show (ustr meta)++
+    " without having activated any tokenizer that constructs a token of that meta type"
+  Just tok -> tokenType as (wrapTT tok)
+
+-- | Useful for keywords or operators, this function is used to check if the next 'Token' value
+-- in the 'TokStream' is of a 'TokenType' labeled by the given constant string. This function
+-- has similar behavior to @('tokenString' 'shift')@, /HOWEVER/ unlike 'tokenString', /this
+-- function is much more efficient/ because the 'Token' identifier is looked up in the 'TokenDB'
+-- only once and then used to add this parser to a parse table instead of merely comparing the
+-- string value of the token.
+-- 
+-- Valid @getter@ functions are 'asTokType', 'asString', 'asUStr', 'as0', 'asToken',
+-- 'asTokenAt', 'asTripple', 'asLineColumn', 'asLocation', or any composition of functions with
+-- any of the above as the right-most function.
+tokenBy :: (UStrType name, HasTokenDB tok, MonadParser parser tok) =>
+  name -> (TokenAt tok -> a) -> parser tok a
+tokenBy name as = do
+  db <- getTokenDB
+  let uname = ustr name 
+  case M.lookup uname (tableUStrToTT db) of
+    Nothing  -> tokenString as  uname
+    Just tok -> tokenType   as (wrapTT tok)
 
 -- | If the given 'Parser' backtracks then evaluate to @return ()@, otherwise ignore the result of
 -- the 'Parser' and evaluate to @return ()@.
@@ -1598,29 +1603,61 @@ getNullToken = return (wrapTT (MkTT 0))
 -- your parser using 'Parser' and let 'evalSyntaxToParser' compose the 'Parser' for
 -- you.
 data Parser st tok a
-  = Parser       { tokStreamParser :: TokStream st tok a }
+  = ParserNull
+  | Parser       { tokStreamParser :: TokStream st tok a }
+  | ParserConst  { parserConst     :: a }
   | ParserArray  { parseTableArray :: Array TT   (Parser st tok a) }
   | ParserStrMap { parserMap       :: M.Map UStr (Parser st tok a) }
-  | ParserToken  { parserToken     ::  tok  , parsedAs :: TokenAt tok -> a }
-  | ParserString { parserString    ::  UStr , parsedAs :: TokenAt tok -> a }
+  | ParserToken  { parserToken     ::  tok  , nextParser :: Parser st tok a }
+  | ParserString { parserString    ::  UStr , nextParser :: Parser st tok a }
+  | ParserChoice { parserChoice    :: [Parser st tok a] }
   | ParserLabel  { getParserLabel  :: [UStr], nextParser :: Parser st tok a }
 instance Functor (Parser st tok) where
-  fmap f parser = case parser of
-    Parser           par -> Parser           (fmap f par)
-    ParserArray      arr -> ParserArray      (fmap (fmap f) arr)
-    ParserStrMap     arr -> ParserStrMap     (fmap (fmap f) arr)
-    ParserToken  tok as  -> ParserToken  tok (f . as)
-    ParserString str as  -> ParserString str (f . as)
-    ParserLabel  lbl par -> ParserLabel  lbl (fmap f par)
+  fmap f p = case p of
+    ParserNull       -> ParserNull
+    Parser         p -> Parser         (fmap       f  p)
+    ParserConst    a -> ParserConst               (f  a)
+    ParserArray    a -> ParserArray    (fmap (fmap f) a)
+    ParserStrMap   m -> ParserStrMap   (fmap (fmap f) m)
+    ParserToken  t p -> ParserToken  t (fmap       f  p)
+    ParserString s p -> ParserString s (fmap       f  p)
+    ParserChoice   p -> ParserChoice   (fmap (fmap f) p)
+    ParserLabel  l p -> ParserLabel  l (fmap       f  p)
 instance TokenType tok =>
   Monad (Parser st tok) where
-    return   = parserLiftTokStream . return
+    return   = ParserConst
     fail msg = parserLiftTokStream (fail msg)
-    parser >>= bind = Parser (evalParserToTokStream parser >>= evalParserToTokStream . bind)
+    p >>= bind = case p of
+      ParserNull       -> ParserNull
+      Parser         p -> Parser (p >>= evalParserToTokStream . bind)
+      ParserConst    a -> bind a
+      ParserArray    a -> ParserArray    (fmap (>>=bind) a)
+      ParserStrMap   m -> ParserStrMap   (fmap (>>=bind) m)
+      ParserToken  t p -> ParserToken  t (p>>=bind)
+      ParserString s p -> ParserString s (p>>=bind)
+      ParserChoice   p -> ParserChoice   (fmap (>>=bind) p)
+      ParserLabel  l p -> ParserLabel  l (p>>=bind)
 instance TokenType tok =>
   MonadPlus (Parser st tok) where
-    mzero       = parserLiftTokStream mzero
-    mplus pa pb = parserLiftTokStream (mplus (evalParserToTokStream pa) (evalParserToTokStream pb))
+    mzero       = ParserNull
+    mplus pa pb = case pa of
+      ParserNull        -> pb
+      ParserConst     a -> ParserConst a
+      ParserLabel la pa -> case pb of
+        ParserLabel lb pb ->
+          if la==lb
+            then  ParserLabel la (mplus pa (ParserLabel lb pb))
+            else  ParserLabel (la++lb) (mplus pa pb)
+          -- ParserLabel (if la==lb then la else la++lb) (mplus pa pb)
+        pb                -> ParserLabel la (mplus pa pb)
+      ParserChoice   pa -> case pb of
+        ParserChoice   pb -> ParserChoice (pa++pb)
+          -- TODO: this is a punt, I need to take more care when summing lists like this. The lists
+          -- could easily be infinite if the 'Parser' expression is (a = mplus p a).
+        pb                -> ParserChoice (parserCut (pa++[pb]))
+      pa                -> case pb of
+        ParserChoice   pb -> ParserChoice (pa:pb)
+        pb                -> ParserChoice [pa, pb]
 instance TokenType tok =>
   Monoid (Parser st tok a) where { mempty = mzero; mappend = mplus; }
 instance TokenType tok =>
@@ -1646,74 +1683,124 @@ instance TokenType tok =>
     unshift          = parserLiftTokStream . unshift
     shift            = parserLiftTokStream . shift
     look1            = parserLiftTokStream . look1
-    tokenType   as t = ParserToken        t  as
-    tokenString as s = ParserString (ustr s) as
+    tokenType   as t = ParserToken        t  (shift as)
+    tokenString as s = ParserString (ustr s) (shift as)
     label    lbl par = parserLabel [ustr lbl] par
     getFinalLocation = parserLiftTokStream getFinalLocation
-    table            = foldl mplus mzero . map combine . groupBy parserGrouping where
-      combine :: TokenType tok => [Parser st tok a] -> Parser st tok a
-      combine ax = case ax of
-        []                    -> mzero
-        [a]                   -> a
-        ParserArray  arr : ax ->
-          let combine (lbls, bnds@(lo0, hi0), elems) p = case p of
-                ParserArray arr -> 
-                  let (lo1, hi1) = bounds arr :: (TT, TT)
-                  in  (lbls, (min lo0 lo1, max hi0 hi1), elems ++ assocs arr)
-                ParserLabel l p -> combine (lbls++l, bnds, elems) p
-              (lbls, bnds, elems) = foldl combine ([], bounds arr, assocs arr) ax
-          in  parserLabel lbls (ParserArray (accumArray mplus mzero bnds elems))
-        ParserStrMap a   : ax ->
-          let union (lbls, pm) p = case p of
-                ParserStrMap  p -> (lbls, M.unionWith mplus pm p)
-                ParserLabel l p -> union (lbls++l, pm) p
-              (lbls, pm) = foldl union ([], a) ax
-          in  parserLabel lbls (ParserStrMap pm)
-        ParserToken  a p : ax ->
-          let combine :: TokenType tok => ([UStr], (TT, TT), [(TT, Parser st tok a)]) -> Parser st tok a -> ([UStr], (TT, TT), [(TT, Parser st tok a)])
-              combine (lbls, bnds@(lo, hi), elems) p = case p of
-                ParserToken a p -> 
-                  let tt = unwrapTT a
-                  in  (lbls, (min lo tt, max hi tt), elems++[(tt, look1 p)])
-                ParserLabel l p -> combine (lbls++l, bnds, elems) p
-              tt = unwrapTT a
-              (lbls, bnds, elems) = foldl combine ([], (tt, tt), [(tt, look1 p)]) ax
-          in  parserLabel lbls (ParserArray (accumArray mplus mzero bnds elems))
-        ParserString s p : ax ->
-          let union (lbls, pm) p = case p of
-                ParserString s p -> (lbls, M.unionWith mplus pm (M.singleton s (look1 p)))
-                ParserLabel  l p -> union (lbls++l, pm) p
-              (lbls, pm) = foldl union ([], M.singleton s (look1 p)) ax
-          in  parserLabel lbls (ParserStrMap pm)
-        ParserLabel  l p : ax ->
-          let combine (lbls, px) p = case p of
-                ParserLabel l p -> combine (lbls++l, px) p
-                p               -> (lbls, px++[p])
-              (lbls, px) = foldl combine (l, [p]) ax
-          in  parserLabel lbls (table px)
+    table            = parserTable
 
--- Creating a 'ParserArray' for the instance of 'table' requires grouping together similar
--- 'Parser' primitives. To do this, the 'Data.List.groupBy'
-parserGrouping :: Parser st tok a -> Parser st tok a -> Bool
-parserGrouping a b = case a of
-  Parser         _ -> False
-  ParserArray    _ -> case b of { ParserArray    _ -> True; _ -> False }
-  ParserStrMap   _ -> case b of { ParserStrMap   _ -> True; _ -> False }
-  ParserToken  _ _ -> case b of { ParserToken  _ _ -> True; _ -> False }
-  ParserString _ _ -> case b of { ParserString _ _ -> True; _ -> False }
-  ParserLabel  _ a -> case b of { ParserLabel  _ b -> parserGrouping a b; b -> parserGrouping a b; }
+parserCut :: [Parser st tok a] -> [Parser st tok a]
+parserCut ax = case ax of
+  []                 -> []
+  ParserNull    : ax -> parserCut ax
+  ParserConst a : ax -> [ParserConst a]
+  a             : ax -> a : parserCut ax
+
+-- | Try to group together similar parsers into a more efficient form, like an array of tokens, or a
+-- map of strings. This function is identical to the instance of 'MonadParser' 'table' for the
+-- 'Parser' type. Try to use this or 'table' in place of 'msum'.
+parserTable :: TokenType tok => [Parser st tok a] -> Parser st tok a
+parserTable ax = foldl mplus mzero $ map f $ groupBy similar (init True (parserCut ax)) where
+  init doDescend ax = case ax of
+    []                     -> []
+    a@(ParserChoice bx):ax -> (if doDescend then init False bx else [a]) ++ init doDescend ax
+    a                  :ax -> a : init doDescend ax
+  showTok :: TokenType tok => Parser st tok a -> tok -> String
+  showTok p tok = show tok
+  showToks :: TokenType tok => Parser st tok a -> [tok] -> String
+  showToks p ax = "[" ++ intercalate ", "(map (showTok p) ax) ++ "]"
+  f ax = case ax of
+    []                    -> trace "create table: empty list" mzero
+    [a]                   -> trace ("create table, only one entry: "++showParserConstr a) a
+    ParserArray    a : ax -> trace "create ParserArray from ParserArrays" $
+      let combine (lbls, bnds@(lo, hi), elems) p = case p of
+            ParserArray   a -> 
+              let (lo', hi') = bounds a :: (TT, TT)
+              in  (lbls, (min lo lo', max hi hi'), elems ++ assocs a)
+            ParserToken t p ->
+              let tt = unwrapTT t
+              in (lbls, (min lo tt, max hi tt), elems ++ [(tt, p)])
+            ParserLabel l p -> combine (lbls++l, bnds, elems) p
+          (lbls, bnds, elems) = foldl combine ([], bounds a, assocs a) ax
+      in  parserLabel lbls (ParserArray (accumArray mplus mzero bnds (trace ("created array for: "++showToks (ParserArray a) (map (wrapTT . fst) elems)) elems)))
+    ParserStrMap   a : ax -> trace "create ParserStrMap from ParserStrMaps" $
+      let union (lbls, pm) p = case p of
+            ParserStrMap   p -> (lbls, M.unionWith mplus pm p)
+            ParserString s p -> (lbls, M.unionWith mplus pm (M.singleton s p))
+            ParserLabel  l p -> union (lbls++l, pm) p
+          (lbls, pm) = foldl union ([], a) ax
+      in  parserLabel lbls (ParserStrMap pm)
+    ParserToken  a p : ax -> trace "create ParserArray from ParserTokens" $
+      let combine (lbls, bnds@(lo, hi), elems) p = case p of
+            ParserToken t p -> 
+              let tt = unwrapTT t
+              in  (lbls, (min lo tt, max hi tt), elems++[(tt, p)])
+            ParserArray   a -> 
+              let (lo', hi') = bounds a :: (TT, TT)
+              in  (lbls, (min lo lo', max hi hi'), elems ++ assocs a)
+            ParserLabel l p -> combine (lbls++l, bnds, elems) p
+          tt = unwrapTT a
+          (lbls, bnds, elems) = foldl combine ([], (tt, tt), [(tt, p)]) ax
+      in  parserLabel lbls (ParserArray (accumArray mplus mzero bnds (trace ("created array for: "++showToks (ParserToken a p) (map (wrapTT . fst) elems)) elems)))
+    ParserString s p : ax -> trace "create ParserStrMap from ParserString" $
+      let union (lbls, pm) p = case p of
+            ParserStrMap   p -> (lbls, M.unionWith mplus pm p)
+            ParserString s p -> (lbls, M.unionWith mplus pm (M.singleton s p))
+            ParserLabel  l p -> union (lbls++l, pm) p
+          (lbls, pm) = foldl union ([], M.singleton s p) ax
+      in  parserLabel lbls (ParserStrMap (trace ("created map for: "++show (M.keys pm)) pm))
+    ParserLabel  l p : ax -> trace "create table from labeled items" $
+      let combine (lbls, px) p = case p of
+            ParserLabel l p -> combine (lbls++l, px) p
+            p               -> (lbls, px++[p])
+          (lbls, px) = foldl combine (l, [p]) ax
+      in  parserLabel lbls (trace ("creating table including labeled parser: "++show lbls) $ parserTable px)
+  similar a b = case a of
+    Parser         _ -> False
+    ParserConst    _ -> False
+    ParserArray    _ -> case b of { ParserArray    _ -> True; ParserToken  _ _ -> True; _ -> False; }
+    ParserStrMap   _ -> case b of { ParserStrMap   _ -> True; ParserString _ _ -> True; _ -> False; }
+    ParserToken  _ _ -> case b of { ParserToken  _ _ -> True; ParserArray    _ -> True; _ -> False; }
+    ParserString _ _ -> case b of { ParserString _ _ -> True; ParserStrMap   _ -> True; _ -> False; }
+    ParserChoice   _ -> False
+    ParserLabel  _ a -> case b of { ParserLabel  _ b -> similar a b; b -> similar a b; }
 
 parserLabel :: [UStr] -> Parser st tok a -> Parser st tok a
 parserLabel strs par = case par of
   ParserLabel lbl par -> ParserLabel (strs++lbl) par
   par                 -> ParserLabel strs par
 
-showParserConstr :: Parser st tok a -> String
-showParserConstr p = case p of
-  Parser         _ -> "Parser"
-  ParserArray    _ -> "ParserArray"
-  ParserStrMap   _ -> "ParserStrMap"
-  ParserLabel  m p -> showParserConstr p ++ " (" ++ show m ++ ")"
+showParserConstr :: TokenType tok => Parser st tok a -> String
+showParserConstr p = loop 0 0 p where
+  wrap :: TokenType tok => (TT, Parser st tok a) -> (tok, Parser st tok a)
+  wrap (t, p) = (wrapTT t, p)
+  next :: TokenType tok => Int -> Int -> Parser st tok a -> String
+  next breadth depth p = block $
+    if breadth>2 then "..." else loop (breadth+1) 0 p
+  nextPairs :: (TokenType tok, Show t) => Int -> Int -> [(t, Parser st tok a)] -> String
+  nextPairs breadth depth px = block $ unlines $
+    map (\ (t, p) -> show t ++ next (breadth+1) 0 p) px
+  loop :: TokenType tok => Int -> Int -> Parser st tok a -> String
+  loop breadth depth p = if depth>2 then "..." else case p of
+    ParserNull       -> "Null"
+    ParserConst    _ -> "Const"
+    Parser         _ -> "?"
+    ParserArray    p -> "Array"  ++ nextPairs (breadth+1) 0 (map wrap (assocs p))
+    ParserStrMap   p -> "StrMap" ++ nextPairs (breadth+1) 0 (M.assocs p)
+    ParserToken  t p -> "Token " ++ show t ++ ' ' : next (breadth+1) 0 p
+    ParserString s p -> "String "++ show s ++ ' ' : next (breadth+1) 0 p
+    ParserChoice   p -> "Choice" ++ block (unlines (map (loop breadth (depth+1)) p))
+    ParserLabel  l p -> "("++intercalate " | " (map uchars l) ++")" ++ block (loop breadth depth p)
+  len n ax = if n<=0 then False else if null ax then True else len (n-1) (tail ax)
+  block px = 
+    let short = len 80 px
+    in  case lines px of
+          [ ] -> "{}"
+          [p] -> "{" ++ (if short then p else "\n"++p++"\n") ++ "}"
+          px  -> (("{")++) $ (++("}")) $
+            if short
+              then  intercalate "; " px
+              else  unlines (map ("  "++) px)
 
 parserLiftTokStream :: TokenType tok => TokStream st tok a -> Parser st tok a
 parserLiftTokStream = Parser
@@ -1721,14 +1808,17 @@ parserLiftTokStream = Parser
 -- | Evaluate a 'Parser' to a 'TokStream'.
 evalParserToTokStream :: TokenType tok => Parser st tok a -> TokStream st tok a
 evalParserToTokStream table = case table of
-  ParserLabel  str p -> trace (show str) $ evalParserToTokStream p
-  table             -> case table of
-    Parser         p  -> p
-    ParserArray    p  -> evalParseArray p
-    ParserStrMap   p  -> evalParseMap   p
-    ParserToken  t as -> tokenType   as t
-    ParserString s as -> tokenString as s
-    ParserLabel  m p  -> trace (intercalate " | " (map uchars m)) $ loop p
+  ParserLabel  str p -> trace (intercalate " | " (map uchars str)) $ evalParserToTokStream p
+  table              -> trace ("eval "++showParserConstr table) $ case table of
+    ParserNull       -> mzero
+    Parser         p -> p
+    ParserConst    a -> return a
+    ParserArray    a -> evalParseArray a
+    ParserStrMap   m -> evalParseMap   m
+    ParserToken  t p -> tokenType   as0 t >> loop p
+    ParserString s p -> tokenString as0 s >> loop p
+    ParserChoice   p -> msum (map loop p)
+    ParserLabel  l p -> trace (intercalate " | " (map uchars l)) (loop p)
     where { loop = evalParserToTokStream }
 
 evalParseArray :: TokenType tok => Array TT (Parser st tok a) -> TokStream st tok a
@@ -1737,14 +1827,14 @@ evalParseArray arr = do
   let tt = unwrapTT (asTokType tok)
       (a, b) = bounds arr
       bnds = (intTT a, intTT b)
-  trace ("eval parse array "++show (map (\t -> wrapTT t `asTypeOf` (tokType (getToken tok))) (uncurry enumTTFrom bnds))) $ if inRange (bounds arr) tt then evalParserToTokStream (arr!tt) else trace "backtracked" mzero
+  trace ("eval parse array "++showParserConstr (ParserArray arr)) $ if inRange (bounds arr) tt then evalParserToTokStream (arr!tt) else trace "backtracked" mzero
 
 evalParseMap :: TokenType tok => M.Map UStr (Parser st tok a) -> TokStream st tok a
 evalParseMap m = do
   tok <- look1 id
   let str = asUStr    tok
       typ = asTokType tok
-  trace ("eval parse map "++show (M.keys m)) $ case M.lookup str m of
+  trace ("eval parse map "++showParserConstr (ParserStrMap m)) $ case M.lookup str m of
     Nothing -> trace "backtrack" $ mzero
     Just  p -> evalParserToTokStream p
 

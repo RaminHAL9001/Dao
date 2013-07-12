@@ -54,6 +54,8 @@ import           System.IO
 
 import Debug.Trace
 
+----------------------------------------------------------------------------------------------------
+
 type LineNum   = Word
 type ColumnNum = Word
 type TabWidth  = Word
@@ -1384,6 +1386,262 @@ withLoc parser = do
   return (cons (before<>after))
 
 ----------------------------------------------------------------------------------------------------
+
+-- | An infix constructor is a function of this form. It takes a 'Location' as it's final parameter,
+-- which will denote the location of the @op@ token. The 'Location' can just be ignored if you want.
+type InfixConstr op obj = obj -> op -> obj -> obj
+
+-- | Used to define right or left associativity for infix operators.
+newtype Associativity = Associativity{ associatesLeft :: Bool } deriving (Eq, Ord)
+instance Show Associativity where { show (Associativity left) = if left then "left" else "right" }
+
+associatesRight :: Associativity -> Bool
+associatesRight = not . associatesLeft
+
+rightAssoc :: Associativity
+rightAssoc = Associativity False
+
+leftAssoc :: Associativity
+leftAssoc  = Associativity True
+
+runAssociativity :: Associativity -> InfixConstr op obj -> obj -> [(obj, op)] -> obj
+runAssociativity assoc constr =
+  if associatesLeft assoc
+    then  foldl (\ lhs (rhs, op) -> constr lhs op rhs)
+    else  foldr (\ (lhs, op) rhs -> constr lhs op rhs)
+
+newtype OpPrec op obj = OpPrec{ opPrecTo3Tuple :: (Associativity, [UStr], InfixConstr op obj) }
+
+opPrec :: UStrType str => Associativity -> [str] -> InfixConstr op obj -> OpPrec op obj
+opPrec a b c = OpPrec (a, map ustr b, c)
+
+opLeft :: UStrType str => [str] -> InfixConstr op obj -> OpPrec op obj
+opLeft = opPrec leftAssoc
+
+opRight :: UStrType str => [str] -> InfixConstr op obj -> OpPrec op obj
+opRight = opPrec rightAssoc
+
+-- Each function in an infix operator table will receive an "initial object" and a stack of
+-- previously parsed objects and operators. The function will then try to parse an operator symbol
+-- from the rows of the table. If the next token is not an operator in the table, the stack is
+-- collapsed with the initial object into the resulting object value using the 'runAssociativity'
+-- function.
+type OpTableFunc   st tok op obj = obj -> [(obj, op)] -> OpTableColumn st tok op obj
+
+-- A table column is segmented by associativity.
+data OpTableColumn st tok op obj
+  = OpTableEmpty
+  | OpTableColumn
+    { opTableAssoc       :: Associativity
+    , opTableArray       :: Maybe (Array TT   (OpTableColumn st tok op obj))
+    , opTableStrMap      :: Maybe (M.Map UStr (OpTableColumn st tok op obj))
+    , opTableNextSegment :: OpTableColumn st tok op obj
+    }
+
+instance Monoid (OpTableColumn st tok op obj) where
+  mempty      = OpTableEmpty
+  mappend a b = case a of
+    OpTableEmpty -> b
+    OpTableColumn assocA arrA mapA nextA -> case b of
+      OpTableEmpty -> a
+      OpTableColumn assocB arrB mapB nextB -> case nextA of
+        OpTableEmpty | assocA==assocB ->
+          OpTableColumn
+          { opTableAssoc  = assocA
+          , opTableArray  = msum [liftM2 (mergeArrays mappend mempty) arrA arrB, arrA, arrB]
+          , opTableStrMap = msum [liftM2 (M.unionWith mappend       ) mapA mapB, mapA, mapB]
+          , opTableNextSegment = OpTableEmpty
+          }
+        OpTableEmpty -> a{opTableNextSegment=b}
+        nextA        -> a{opTableNextSegment=mappend nextA b}
+
+-- | Use this data type to setup an operator table parser which parses a sequence of @obj@ type data
+-- separated by @op@ type operator tokens, where the @op@ tokens have been assigned the properties
+-- of fixity and right or left associativity.
+data OpTableParser st tok op obj
+  = OpTableParser
+    { opTableErrMsg      :: UStr
+    , opTableAutoShift   :: Bool
+      -- ^ instructs the 'evalOpTableParser' whether or not to automatically shift the operator
+      -- token from the token stream. Usually you should set this tor 'Prelude.True'. However if
+      -- your @op@ parser is more complicated than just converting a token, and actually needs to
+      -- parse tokens in between terms, set this to 'Prelude.False' and make the 'opTableOpAs'
+      -- function perform parsing and shifting of the operator. If you do set this to
+      -- 'Prelude.False', make sure your 'opTableOpAs' function evaluates 'shift' at least once.
+      -- The original reason for providing this option is to more easily build parsers that keep
+      -- comments in the abstract syntax tree. Parsers that keep comments will usually parse all
+      -- comments at the beginning of the file, then proceed with parsing, and every token parsed
+      -- will have comments immediately after it parsed and paired with it. But it would be
+      -- impossible to create such a parser without the ability to specify exactly when to shift the
+      -- operator token and parse the comments.
+    , opTableOpAs        :: TokenAt tok -> Parser st tok op
+      -- ^ 'TokenAt' values are automatically retrieved from the token stream by the
+      -- 'evalOpTableParser' function, and this function is used to convert those 'TokenAt' values
+      -- to values of data type @op@. During evaluation of 'evalOpTableParser' this function is
+      -- evaluated before the operator token is shifted from the token stream.
+    , opTableObjParser   :: Parser st tok obj
+      -- ^ This function will parse the non-opreator values of the equation.
+    , opTableConstr      :: InfixConstr op obj
+      -- ^ This function is used to construct an @obj@ from a stack of @obj@ and @op@ values, it is
+      -- passed to 'runAssociativity'. In an arithmetic parser, for example, this function might be
+      -- of the form:
+      -- > constr :: Int -> String -> Int -> Int
+      -- > constr a op b = if op=="+" then a+b else if op=="*" then a*b
+    , opTableFirstColumn :: OpTableColumn st tok op obj
+      -- ^ This is the entry-point to the 'OpTableParser' which is constructed from 'newOpTableParser'.
+    }
+
+-- | Evaluate an 'OpTableParser' to a 'Parser'.
+evalOpTableParser :: (HasTokenDB tok, TokenType tok) => OpTableParser st tok op obj -> Parser st tok obj
+evalOpTableParser optab = evalOpTableParserWithInit (opTableObjParser optab) optab
+
+-- | Same as 'evalOpTableParser', but lets you provide a different parser for parsing the first
+-- object term in the expression. This is useful if the function for parsing the initial term of the
+-- expression is slightly different (but necessarily returns the same data type) as the function
+-- that parses object terms in the expression. After the initial parser function is evaluated, the
+-- 'opTableObjParser' function is used for every other term after it.
+evalOpTableParserWithInit
+  :: (HasTokenDB tok, TokenType tok)
+  => Parser st tok obj
+  -> OpTableParser st tok op obj
+  -> Parser st tok obj
+evalOpTableParserWithInit initParser optab = initParser >>= loop (opTableFirstColumn optab) [] where
+  loop column stack initObj = do
+    tok <- look1 id -- look ahead, we are expecting an operator
+    let idx = asTokType tok
+        tt  = unwrapTT  idx
+        str = asUStr    tok
+        arr = opTableArray column
+    let runNext next = do -- if the next parser could be selected from the column by the token
+          op <- opTableOpAs optab tok -- evaluate the token to an operator type
+          if opTableAutoShift optab then shift as0 else return ()
+          -- now we now must have a value following the operator, syntax error if not
+          expect (uchars (opTableErrMsg optab)++"after "++show tok++" token") $ do
+            -- now stack the item and operator and evaluate the parser that we had selected
+            obj <- opTableObjParser optab
+            loop next (stack++[(obj, op)]) initObj
+    let byString stack = case opTableStrMap column >>= M.lookup str of
+          Just next -> runNext next -- if the map table doesn't exist or if none of the tokens match
+          Nothing   -> return $ -- any rows of the table, collapse the stack and return.
+            runAssociativity (opTableAssoc column) (opTableConstr optab) initObj stack
+    case opTableArray column of -- check if there is an array table
+      Nothing  -> byString stack -- if not, try to evalaute the map table
+      Just arr -> -- select the next parser from the array, otherwise try to evaluate the map table
+        if inRange (bounds arr) tt
+          then mplus (runNext (arr!tt)) (byString stack)
+          else byString stack
+
+-- | Sets up the 'OpTableParser' data structure.
+--
+-- The first parameter is a function used to parse the right and left hand sides of each infix
+-- operator. This function may safely recurse to itself via the 'Parser' created by the evaluation
+-- of 'evalOpTableParser' provided that there is at least one other parser that does not recurse
+-- which is tried before it. For example:
+-- > myOperatorTable :: OpPrecTable MyOperator MySymbol
+-- > myOperatorFromToken :: 'TokenAt' MyTokType -> 'Parser' () MyTokType MyOperator
+-- > nonRecursive :: 'Parser' () MyTokType MySymbol -- This parser never recurses to 'myExpression'.
+-- >
+-- > -- This parser does recurse to 'myExpression'
+-- > recursive :: 'Parser' () MyTokType MySymbol
+-- > recursive = 'evalOpTableParser' myExpression
+-- >
+-- > -- This expression parser is OK, it will not loop infinitely as long as nonRecursive takes at
+-- > least one token from the token stream.
+-- > myExpression :: 'OpTableParser' () MyTokType MyOperator MySymbol
+-- > myExpression = 'newOpTableParser' (nonRecursive >> recursive) myOperatorFromToken myOperatorTable
+-- >
+-- > -- These expression parsers will loop infinitely doing nothing:
+-- > badExpression1 = 'newOpTableParser' recursive myOperatorFromToken myOperatorTable
+-- > badExpression2 = 'newOpTableParser' (nonRecursive<|>recursive) myOperatorFromToken myOperatorTable
+-- > 
+-- 
+-- The second parameter is a function which produces an @op@ data type from a 'TokenAt' value.
+-- Operators are taken from the token stream by the table evaluator, and this function will take the
+-- 'TokenAt' value provided by the table evaluator and convert it to an operator data type. The @op@
+-- typed data evaluated from this function will be used to construct the final @obj@ value.
+-- 
+-- The final parameters is an 'OpPrecTable' which you construct with the 'opPrecTable' or 'opTable'
+-- functions, where you will assign prescedence and associativity properties to every operator
+-- token.
+newOpTableParser
+  :: (HasTokenDB tok, TokenType tok, UStrType errMsg)
+  => errMsg
+  -> Bool
+  -> (TokenAt tok -> Parser st tok op)
+  -> Parser st tok obj
+  -> InfixConstr op obj
+  -> [OpPrec op obj]
+  -> OpTableParser st tok op obj
+newOpTableParser errMsg autoShift asOp objParser constr optab =
+  OpTableParser
+  { opTableErrMsg      = ustr errMsg
+  , opTableAutoShift   = autoShift
+  , opTableObjParser   = objParser
+  , opTableOpAs        = asOp
+  , opTableConstr      = constr
+  , opTableFirstColumn = loop tokenDB OpTableEmpty (map opPrecTo3Tuple optab)
+  }
+  where
+    loop
+      :: (HasTokenDB tok, TokenType tok)
+      => TokenDB tok
+      -> OpTableColumn st tok op obj
+      -> [(Associativity, [UStr], InfixConstr op obj)]
+      -> OpTableColumn st tok op obj
+    loop db prevCols ax = case ax of
+      [] -> prevCols
+      a@(assoc, ops, constr):ax ->
+        let (toks, strs) = part db ops
+        in  if associatesLeft assoc
+              then  let next   = loop db (prevCols<>newCol) ax
+                        newCol = mkTableCol assoc toks strs constr (newCol<>next)
+                    in  next
+              -- Left associative parsers can stack up right-hand expressions of equal or lower
+              -- prescedence. a <3> b <2> c <1> d <0> e = ((((a <3> b) <2> c) <1> d) <0> e)
+              else  let next   = prevCols<>newCol
+                        newCol = mkTableCol assoc toks strs constr next
+                    in  loop db next ax
+              -- Right associative parsers can stack up right-hand expressions of equal or higher
+              -- prescedence. a <0> b <1> c <2> d <3> e = (a <0> (b <1> (c <2> (d <3> e))))
+    part db = foldl (checkTokType db) ([], [])
+    checkTokType db (toks, strs) op = case M.lookup op (tableUStrToTT db) of
+      Nothing  -> (toks, strs++[op])
+      Just tok -> (toks++[tok], strs)
+      -- split ops into those that have a meta-type and those that do not. Whether or not a meta
+      -- type exists depends on whether the string representation of that meta type exists in the
+      -- 'TokenDB'.
+    mkTableCol assoc toks strs constr next = 
+      if null strs && null toks
+        then OpTableEmpty
+        else OpTableColumn
+              { opTableAssoc  = assoc
+              , opTableArray  = case map unwrapTT toks of
+                  []   -> Nothing
+                  t:tx -> Just $
+                    accumArray mappend mempty
+                      (foldl (\ (lo, hi) t -> (min lo t, max hi t)) (t, t) tx)
+                      (zip (map unwrapTT toks) (repeat next))
+              , opTableStrMap = case strs of
+                  []   -> Nothing
+                  t:tx -> Just (M.fromList (zip strs (repeat next)))
+              , opTableNextSegment = OpTableEmpty
+              }
+
+-- | Parse a simple expression of terms with infix operators in between each term. All infix
+-- operators are of the same prescedence and associativity, no tables are created.
+simpleInfixed
+  :: (TokenType tok, UStrType errMsg)
+  => errMsg
+  -> Associativity
+  -> InfixConstr op obj
+  -> Parser st tok obj
+  -> Parser st tok op
+  -> Parser st tok obj
+simpleInfixed errMsg assoc constr objPar opPar = objPar >>= loop [] where
+  loop stack initObj = flip mplus (return (runAssociativity assoc constr initObj stack)) $
+    opPar >>= \op -> expect (ustr errMsg) (objPar >>= \o -> loop (stack++[(o, op)]) initObj)
+
+----------------------------------------------------------------------------------------------------
 -- $Fundamental_parser_data_types
 -- A parser is defined as a stateful monad for analyzing a stream of tokens. A token stream is
 -- represented by a list of 'Line' structures, and the parser monad's jobs is to look at the
@@ -1656,6 +1914,7 @@ instance TokenType tok =>
           -- could easily be infinite if the 'Parser' expression is (a = mplus p a).
         pb                -> ParserChoice (parserCut (pa++[pb]))
       pa                -> case pb of
+        ParserNull        -> pa
         ParserChoice   pb -> ParserChoice (pa:pb)
         pb                -> ParserChoice [pa, pb]
 instance TokenType tok =>
@@ -1894,4 +2153,11 @@ parse lang st input = case lexicalResult of
     (lexicalResult, lexicalState) = lexicalAnalysis (mainLexer lang) initState
     (parserResult , parserState ) =
       syntacticAnalysis (mainParser lang) (newTokStreamFromLexer st lexicalState)
+
+----------------------------------------------------------------------------------------------------
+
+mergeArrays :: Ix i => (e -> e -> e) -> e -> Array i e -> Array i e -> Array i e
+mergeArrays plus zero a b =
+  accumArray plus zero (boun (bounds a) (bounds b)) (assocs a ++ assocs b) where
+    boun (loA, hiA) (loB, hiB) = (min loA loB, max hiA hiB)
 

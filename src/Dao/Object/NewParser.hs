@@ -164,7 +164,7 @@ instance Monoid DaoParState where
 
 setCommentBuffer :: [Comment] -> DaoParser ()
 setCommentBuffer coms = modify $ \st ->
-  st{ bufferedComments = if null coms then mzero else return coms }
+  st{ bufferedComments = (if null coms then mzero else return coms) <> bufferedComments st }
 
 failLater :: String -> DaoParser ()
 failLater msg = catchError (fail msg) $ \err ->
@@ -198,6 +198,13 @@ commented parser = do
     [ parser >>= \result -> space >>= \after -> return (com before result after)
     , modify(\st -> st{bufferedComments = Just before}) >> mzero
     ]
+
+-- Take comments of the stream, but do not return them, instead buffer them. This is a good way to
+-- do a look-ahead past comments without deleting comments. If the next parser evaluated immediately
+-- after this one is 'commented', the comments buffered by this function will be returned with the
+-- object parsed by 'commented'.
+bufferComments :: DaoParser ()
+bufferComments = space >>= setCommentBuffer
 
 -- | Parses an expression which may optionally occur within a parenthetical closure. Provide a
 -- message that will be used to produce an error message if there is no matching close parenthesis
@@ -351,15 +358,26 @@ commaSepd errMsg open close parser = label "commaSepd" $ do
     <|> many (commented object)
   expect errMsg $ tokenBy close as0 >> return objs
 
+equationConstructor :: AST_Object -> (Location, Com ArithOp2) -> AST_Object -> AST_Object
+equationConstructor left (loc, op) right = AST_Equation left op right loc
+
 reference :: DaoParser AST_Object
-reference = label "reference" $ infixed msg rightAssoc AST_Equation prefixedTerm (opsParser ". ->") where
-  msg = "label after dot or arrow operator"
-  prefixedTerm = label "reference.prefixedTerm" $ withLoc $
-    pure AST_Prefix <*> (read <$> (tokenBy "$" <> tokenBy "@") asString) <*> commented singleton
+reference = label "reference" $
+  simpleInfixed "label after dot or arrow operator" leftAssoc
+    equationConstructor
+    (label "reference.prefixedTerm" $ flip mplus singleton $
+        pure (\ (loc, op) obj -> AST_Prefix op obj loc)
+          <*> liftM2 (,) (look1 asLocation)
+                (let as = read . asString in table [tokenBy "$" as, tokenBy "@" as])
+          <*> commented singleton
+    )
+    (liftM2 (,) (look1 asLocation) $
+        commented (table $ fmap (flip tokenBy (read . asString)) (words ". ->"))
+    )
 
 funcCall :: DaoParser AST_Object
 funcCall = label "funcCall" $ withLoc $ pure AST_FuncCall
-  <*> token LABEL asUStr
+  <*> (look1 asLocation >>= \loc -> token LABEL (flip AST_Literal loc . ORef . LocalRef . asUStr))
   <*> space
   <*> commaSepd "close-parentheses after function call" "(" ")" object
 
@@ -369,78 +387,34 @@ arraySub = label "arraySub" $ withLoc $ pure AST_ArraySub
   <*> space
   <*> (tokenBy "[" as0 >> commented object >>= \o -> tokenBy "]" as0 >> return o)
 
-initInfixed
-  :: String
-  -> Associativity
-  -> InfixConstr op obj
-  -> DaoParser obj
-  -> DaoParser op
-  -> obj -> DaoParser obj
-initInfixed msg assoc constr parser opsParser initObj = undefined
---  loop [] initObj where
---    loop stack first = flip mplus (return (assoc constr first stack)) $ do
---      tok <- look1 id
---      let loc = asLocation tok
---      op  <- opsParser
---      join $ pure (\loc rhs -> loop (stack++[(loc, rhs, op)]) first)
---        <*> look1 asLocation
---        <*> expect (msg++" after "++show tok++" token") parser
-
-infixed
-  :: String
-  -> Associativity
-  -> InfixConstr op obj
-  -> DaoParser obj
-  -> DaoParser op
-  -> DaoParser obj
-infixed msg assoc constr parser opsParser = undefined
---  trace "infixed" $
---    trace "initial parser for infix" parser >>= trace "bind to initInfixed" . initInfixed msg assoc constr parser opsParser
-
-initInfixTable
-  :: Show obj
-  => String
-  -> DaoParser obj
-  -> [(Associativity, InfixConstr op obj, DaoParser op)]
-  -> obj -> DaoParser obj
-initInfixTable msg parser opTable first = undefined
---  trace "initInfixTable" $ loop opTable first where
---    loop upper first = trace "loop infixTable" $ case upper of
---      []                            -> trace "infixTable backtracked" $ mzero
---      (assoc, constr, opstrs):lower -> msum $
---        [ trace "initInfixTable: parse then loop at current associativity" $ initInfixed msg assoc constr parser opstrs first >>= loop opTable
---        , trace "initInfixTable: loop to lower associativity" loop lower first
---        , return first
---        ]
-
-infixTable
-  :: Show obj
-  => String
-  -> DaoParser obj
-  -> [(Associativity, InfixConstr op obj, DaoParser op)]
-  -> DaoParser obj
-infixTable msg parser table = undefined
---  trace "init parser for infixTable" parser >>= trace "bind to initInfixTable" . initInfixTable msg parser table
-
-opsParser :: Read op => String -> DaoParser (Com op)
-opsParser = commented . table . fmap (flip tokenBy (read . asString)) . words
-
 object :: DaoParser AST_Object
 object = trace "object" $ label "object" $ flip mplus obj $ withLoc $
   pure AST_Prefix <*> read <$> mconcat (map tokenBy (words "- ~ !")) asString <*> commented obj
   where { obj = table [funcCall, arraySub, reference, singleton] }
 
+arithOpTable :: OpTableParser DaoParState DaoTT (Location, Com ArithOp2) AST_Object
+arithOpTable =
+  newOpTableParser "arithmetic expression" False
+    (\tok -> bufferComments >>
+        pure (,) <*> look1 asLocation <*> commented (shift (read . asString))
+    )
+    object
+    (\left (loc, op) right -> AST_Equation left op right loc)
+    ( opRight ["**"] equationConstructor
+    : fmap (\ops -> opLeft (words ops) equationConstructor)
+        ["* / %", "+ -", "<< >>", "&", "^", "|", "&&", "||", "< <= >= >", "== !="]
+    )
+
 arithmetic :: DaoParser AST_Object
-arithmetic = trace "evaluate arithmetic" $ label "arithmetic" $ infixTable msg object table where
-  msg   = "object expression after arithmetic operator"
-  table = (rightAssoc, AST_Equation, commented $ tokenBy "**" (read . asString)) :
-    map (\str -> (leftAssoc, AST_Equation, label "arithmetic.operator" $ opsParser (trace ("parse operator "++show str) str)))
-      ["* / %", "+ -", "<< >>", "&", "^", "|", "&&", "||", "< <= >= >", "== !="]
+arithmetic = evalOpTableParser arithOpTable
 
 equation :: DaoParser AST_Object
-equation = label "equation" $
-  infixed msg rightAssoc AST_Assign (trace "arithmetic parser in \"equation\"" arithmetic) (opsParser allUpdateOpStrs) where
-    msg = "object expression after assignment operator"
+equation =
+  simpleInfixed "object expression for assignment operator" rightAssoc
+    (\left (loc, op) right -> AST_Assign left op right loc)
+    arithmetic
+    (liftM2 (,) (look1 asLocation) $ commented $ table $
+      fmap (flip tokenBy (read . asString)) $ words "= += -= *= /= %= &= |= ^= <<~ >>=")
 
 ----------------------------------------------------------------------------------------------------
 

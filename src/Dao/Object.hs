@@ -531,8 +531,8 @@ data ObjectExpr
   | Equation      ObjectExpr      ArithOp2     ObjectExpr  Location
   | PrefixExpr    ArithOp1        ObjectExpr               Location
   | ParenExpr     Bool            ObjectExpr               Location
-  | ArraySubExpr  ObjectExpr      ObjectExpr               Location
-  | FuncCall      Name           [ObjectExpr]              Location
+  | ArraySubExpr  ObjectExpr     [ObjectExpr]              Location
+  | FuncCall      ObjectExpr     [ObjectExpr]              Location
   | DictExpr      Name           [ObjectExpr]              Location
   | ArrayExpr     [ObjectExpr]   [ObjectExpr]              Location
   | StructExpr     ObjectExpr    [ObjectExpr]              Location

@@ -73,17 +73,17 @@ data AST_Script
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data AST_Object
   = AST_Void -- ^ Not a language construct, but used where an object expression is optional.
-  | AST_Literal  Object                                   Location
-  | AST_Assign   AST_Object  (Com UpdateOp)  AST_Object   Location
-  | AST_Equation AST_Object  (Com ArithOp2)  AST_Object   Location
-  | AST_Prefix   ArithOp1    (Com AST_Object)             Location
-  | AST_Paren    Bool                   (Com AST_Object)  Location -- ^ Bool is True if the parenthases really exist.
-  | AST_ArraySub AST_Object  [Comment]  (Com AST_Object)  Location
-  | AST_FuncCall Name        [Comment]  [Com AST_Object]  Location
-  | AST_Dict     Name        [Comment]  [Com AST_Object]  Location
-  | AST_Array    (Com [Com AST_Object]) [Com AST_Object]  Location
-  | AST_Struct   (Com AST_Object)       [Com AST_Object]  Location
-  | AST_Data     [Comment]   [Com UStr]                   Location
+  | AST_Literal  Object                                       Location
+  | AST_Assign   AST_Object   (Com UpdateOp)     AST_Object   Location
+  | AST_Equation AST_Object   (Com ArithOp2)     AST_Object   Location
+  | AST_Prefix   ArithOp1                   (Com AST_Object)  Location
+  | AST_Paren    Bool                       (Com AST_Object)  Location -- ^ Bool is True if the parenthases really exist.
+  | AST_ArraySub AST_Object       [Comment] [Com AST_Object]  Location
+  | AST_FuncCall AST_Object       [Comment] [Com AST_Object]  Location
+  | AST_Dict     Name             [Comment] [Com AST_Object]  Location
+  | AST_Array    (Com [Com AST_Object])     [Com AST_Object]  Location
+  | AST_Struct   (Com AST_Object)           [Com AST_Object]  Location
+  | AST_Data     [Comment]        [Com UStr]                  Location
   | AST_Lambda   LambdaExprType  (Com [Com AST_Object]) [Com AST_Script]  Location
   | AST_MetaEval (Com AST_Object)                         Location
   deriving (Eq, Ord, Show, Typeable)
@@ -328,8 +328,8 @@ instance Intermediate ObjectExpr AST_Object where
     AST_Equation a b c loc -> liftM4 Equation     (toInterm a) (uc  b) (toInterm c) (ll loc)
     AST_Prefix   a b   loc -> liftM3 PrefixExpr   [a]          (uc0 b)              (ll loc)
     AST_Paren    a b   loc -> liftM3 ParenExpr    [a]          (uc0 b)              (ll loc)
-    AST_ArraySub a _ c loc -> liftM3 ArraySubExpr (toInterm a)         (uc0 c)      (ll loc)
-    AST_FuncCall a _ c loc -> liftM3 FuncCall     [a]                  (uc1 c)      (ll loc)
+    AST_ArraySub a _ c loc -> liftM3 ArraySubExpr (toInterm a)         (uc1 c)      (ll loc)
+    AST_FuncCall a _ c loc -> liftM3 FuncCall     (toInterm a)         (uc1 c)      (ll loc)
     AST_Dict     a _ c loc -> liftM3 DictExpr     [a]                  (uc1 c)      (ll loc)
     AST_Array    a b   loc -> liftM3 ArrayExpr    (uc2 a)      (uc1 b)              (ll loc)
     AST_Struct   a b   loc -> liftM3 StructExpr   (uc0 a)      (uc1 b)              (ll loc)
@@ -343,8 +343,8 @@ instance Intermediate ObjectExpr AST_Object where
     Equation     a b c loc -> liftM4 AST_Equation (fromInterm a) (nc  b) (fromInterm c) [loc]
     PrefixExpr   a b   loc -> liftM3 AST_Prefix   [a]            (nc0 b)                [loc]
     ParenExpr    a b   loc -> liftM3 AST_Paren    [a]            (nc0 b)                [loc]
-    ArraySubExpr a b   loc -> liftM4 AST_ArraySub (fromInterm a) [[]]    (nc0 b)        [loc]
-    FuncCall     a b   loc -> liftM4 AST_FuncCall [a]            [[]]    (nc1 b)        [loc]
+    ArraySubExpr a b   loc -> liftM4 AST_ArraySub (fromInterm a) [[]]    (nc1 b)        [loc]
+    FuncCall     a b   loc -> liftM4 AST_FuncCall (fromInterm a) [[]]    (nc1 b)        [loc]
     DictExpr     a b   loc -> liftM4 AST_Dict     [a]            [[]]    (nc1 b)        [loc]
     ArrayExpr    a b   loc -> liftM3 AST_Array    (nc2 a)        (nc1 b)                [loc]
     StructExpr   a b   loc -> liftM3 AST_Struct   (nc0 a)        (nc1 b)                [loc]

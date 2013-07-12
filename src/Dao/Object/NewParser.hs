@@ -385,7 +385,7 @@ arraySub :: DaoParser AST_Object
 arraySub = label "arraySub" $ withLoc $ pure AST_ArraySub
   <*> reference
   <*> space
-  <*> (tokenBy "[" as0 >> commented object >>= \o -> tokenBy "]" as0 >> return o)
+  <*> commaSepd "array index value" "[" "]" object
 
 object :: DaoParser AST_Object
 object = trace "object" $ label "object" $ flip mplus obj $ withLoc $

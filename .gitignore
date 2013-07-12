@@ -5,6 +5,8 @@ test-prof
 commit.txt
 scratch.hs
 debug
+tags
+TAGS
 .ghci
 *.log
 .*.sw*

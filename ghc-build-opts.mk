@@ -126,3 +126,7 @@ Dao.Object.NewParser: Dao.NewParser ./src/Dao/Object/NewParser.o
 ./src/Dao/Object/NewParser.o: Dao.NewParser src/Dao/Object/NewParser.hs src/Dao/Predicate.hs
 	$(GHC_COMPILE) Dao.Object.NewParser
 
+debug.log: scratch.hs src/Dao/NewParser.hs src/Dao/Object/NewParser.hs src/Dao/Object.hs
+	ghc --make -rtsopts -i./src -o test scratch.hs
+	./test >debug.log 2>&1
+

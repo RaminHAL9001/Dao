@@ -184,7 +184,7 @@ instance PPrintable AST_Script where
       pPrint objXp >> mapM_ pPrint coms >> pString ";"
     AST_IfThenElse   coms   ifXp  thenXp  elseXp    _ -> do
       case ifXp of
-        AST_Paren _ obXp _ -> printIfXp obXp
+        AST_Paren   obXp _ -> printIfXp obXp
         _                  -> printIfXp ifXp
       case unComment elseXp of
         []                   -> return ()
@@ -239,16 +239,15 @@ complicated obj = case obj of
   AST_Assign    _ _ _       _ -> True
   AST_Array     _ _         _ -> True
   AST_Lambda    _ _ _       _ -> True
-  AST_Paren     _ _         _ -> True
+  AST_Paren     _           _ -> True
   _                           -> False
 
 forceParen :: AST_Object -> AST_Object
 forceParen o =
   if complicated o
     then  case o of
-            AST_Paren True  _ _   -> o
-            AST_Paren False o loc -> AST_Paren True o loc
-            _                     -> AST_Paren True (Com o) (getLocation o)
+            AST_Paren o loc -> AST_Paren o loc
+            _               -> AST_Paren (Com o) (getLocation o)
     else  o
 
 instance PPrintable AST_Object where
@@ -260,13 +259,11 @@ instance PPrintable AST_Object where
     AST_Equation     objXp1  comAriOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comAriOp, pPrint objXp2]
     AST_Prefix   ariOp    c_ObjXp          _ -> pPrint ariOp >> pPrint c_ObjXp
-    AST_Paren    bool     c_ObjXp          _ ->
-      if bool then pWrapIndent [pString "(", pPrint c_ObjXp, pString ")"]
-              else pWrapIndent [pPrint c_ObjXp]
-    AST_ArraySub objXp    coms     c_ObjXp _ -> pWrapIndent $
-      [pPrint objXp, mapM_ pPrint coms, pString "[", pGroup True (pPrint c_ObjXp), pString "]"]
-    AST_FuncCall     nm       coms     xcObjXp _ -> do
-      pList (pPrint nm >> mapM_ pPrint coms) "(" ", " ")" (map pPrint xcObjXp)
+    AST_Paren             c_ObjXp          _ -> pWrapIndent [pString "(", pPrint c_ObjXp, pString ")"]
+    AST_ArraySub objXp    coms     xcObjXp _ ->
+      pList (pPrint objXp >> mapM_ pPrint coms) "[" ", " "]" (map pPrint xcObjXp)
+    AST_FuncCall objXp    coms     xcObjXp _ ->
+      pList (pPrint objXp >> mapM_ pPrint coms) "(" ", " ")" (map pPrint xcObjXp)
     AST_Dict     dict     coms     xcObjXp _ ->
       if null xcObjXp
         then  pString (uchars dict++"{}")

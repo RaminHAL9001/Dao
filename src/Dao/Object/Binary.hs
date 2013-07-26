@@ -394,17 +394,17 @@ instance Binary UpdateOp where
 instance Binary ObjectExpr where
   put o = case o of
     VoidExpr             -> putWord8 0x40
-    Literal      a     z -> x z 0x41 $ put        a
-    AssignExpr   a b c z -> x z 0x42 $ put        a >> put b >> put c
-    Equation     a b c z -> x z 0x43 $ put        a >> put b >> put c
-    PrefixExpr   a b   z -> x z 0x44 $ put        a >> put b
-    ParenExpr    a b   z -> x z 0x45 $ putObjBool a >> put b
-    ArraySubExpr a b   z -> x z 0x46 $ put        a >> put b
-    FuncCall     a b   z -> x z 0x47 $ put        a >> put b
-    DictExpr     a b   z -> x z 0x48 $ put        a >> put b
-    ArrayExpr    a b   z -> x z 0x49 $ put        a >> put b
-    StructExpr   a b   z -> x z 0x4A $ put        a >> put b
-    DataExpr     a     z -> x z 0x4B $ put        a
+    Literal      a     z -> x z 0x41 $ put a
+    AssignExpr   a b c z -> x z 0x42 $ put a >> put b >> put c
+    Equation     a b c z -> x z 0x43 $ put a >> put b >> put c
+    PrefixExpr   a b   z -> x z 0x44 $ put a >> put b
+    ParenExpr    a     z -> x z 0x45 $ put a
+    ArraySubExpr a b   z -> x z 0x46 $ put a >> put b
+    FuncCall     a b   z -> x z 0x47 $ put a >> put b
+    DictExpr     a b   z -> x z 0x48 $ put a >> put b
+    ArrayExpr    a b   z -> x z 0x49 $ put a >> put b
+    StructExpr   a b   z -> x z 0x4A $ put a >> put b
+    DataExpr     a     z -> x z 0x4B $ put a
     LambdaExpr   a b c z -> x z (lamexp a) $ put  b >> put c
     MetaEvalExpr a     z -> x z 0x4F $ put a
     where
@@ -417,17 +417,17 @@ instance Binary ObjectExpr where
     w <- getWord8
     case w of
       0x40 -> return VoidExpr
-      0x41 -> liftM2 Literal      get                 get
-      0x42 -> liftM4 AssignExpr   get        get  get get
-      0x43 -> liftM4 Equation     get        get  get get
-      0x44 -> liftM3 PrefixExpr   get        get      get
-      0x45 -> liftM3 ParenExpr    getObjBool get      get
-      0x46 -> liftM3 ArraySubExpr get        get      get
-      0x47 -> liftM3 FuncCall     get        get      get
-      0x48 -> liftM3 DictExpr     get        get      get
-      0x49 -> liftM3 ArrayExpr    get        get      get
-      0x4A -> liftM3 StructExpr   get        get      get
-      0x4B -> liftM2 DataExpr     get                 get
+      0x41 -> liftM2 Literal      get          get
+      0x42 -> liftM4 AssignExpr   get get  get get
+      0x43 -> liftM4 Equation     get get  get get
+      0x44 -> liftM3 PrefixExpr   get get      get
+      0x45 -> liftM2 ParenExpr    get          get
+      0x46 -> liftM3 ArraySubExpr get get      get
+      0x47 -> liftM3 FuncCall     get get      get
+      0x48 -> liftM3 DictExpr     get get      get
+      0x49 -> liftM3 ArrayExpr    get get      get
+      0x4A -> liftM3 StructExpr   get get      get
+      0x4B -> liftM2 DataExpr     get          get
       0x4C -> lamexp FuncExprType
       0x4D -> lamexp RuleExprType
       0x4E -> lamexp PatExprType

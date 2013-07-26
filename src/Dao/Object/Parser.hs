@@ -402,7 +402,7 @@ ifStatement = guardKeyword "if" loop where
     (objExpr, com2) <- mplus parseObjectExpr $
       fail "expecting object expression for condition of \"if\" statement"
     case objExpr of
-      AST_Paren _ _ _ -> token $
+      AST_Paren _ _   -> token $
         expect (expected_sub_for "if") $ \com3 -> do
           thenStmt <- parseBracketedScript
           let done com4 com5 elseStmt = return $
@@ -499,7 +499,7 @@ objectExprStatement initExpr com1 = loop initExpr where
   loop expr = case expr of
     AST_Assign _ _ _  _ -> done
     AST_FuncCall   _ _ _  _ -> done
-    AST_Paren  _ expr _ -> loop (unComment expr)
+    AST_Paren    expr _ -> loop (unComment expr)
     _ -> fail ("cannot use an object expression as a statement\n" ++ show expr)
   done = mplus (char ';' >> return (AST_EvalObject initExpr com1 unloc)) $
     fail "expecting terminating semicolon \";\" after statement"
@@ -522,13 +522,12 @@ parseEquation obj com1 = loop [] obj com1 where
           -- operator, square-brackets (for example, "[i]") will have a higher prescedence than
           -- the unary referencing and dereferencing operators "$" and "@".
           char '['
-          expect "object expression inside of square brackets" $ \com2 -> do
-            (idx, com3) <- parseObjectExpr
-            flip mplus (fail "expecting closing square-bracket \"]\"") $ do
-              char ']'
-              com1 <- parseComment
-              regexMany space
-              loop objx (AST_ArraySub obj com1 (com com2 idx com3) unloc) com1
+          idx <- parseFunctionParameters "object expression inside of square brackets"
+          flip mplus (fail "expecting closing square-bracket \"]\"") $ do
+            char ']'
+            com1 <- parseComment
+            regexMany space
+            loop objx (AST_ArraySub obj com1 idx unloc) com1
     , do -- Parse an infix operator.
           op <- parseInfixOp
           expect ("expecting object expression after infix operator \""++uchars op++"\"") $ \com2 -> do
@@ -560,7 +559,7 @@ parseParenObjectExpr = do
   expect "object expression in parentheses" $ \com1 -> do
     (expr, com2) <- parseObjectExpr
     flip mplus (fail "expecting close parethases") $
-      char ')' >> return (AST_Paren True (com com1 expr com2) unloc)
+      char ')' >> return (AST_Paren (com com1 expr com2) unloc)
 
 parseMetaEvalObjectExpr :: Parser AST_Object
 parseMetaEvalObjectExpr = do
@@ -667,7 +666,7 @@ parseBuiltinFuncCall key com1 = do
     , " throw static qtime global local do query print file open save close edit test "
     ]
   (arg, com2) <- parseObjectExpr
-  return (AST_FuncCall (ustr key) com1 [com [] arg com2] unloc)
+  return (AST_FuncCall (AST_Literal (ORef (LocalRef (ustr key))) unloc) com1 [com [] arg com2] unloc)
 
 func_param_var = "function parameter variable"
 
@@ -724,7 +723,7 @@ parseDateTime = guardKeyword "time" $ \com1 -> do
     date <- parseDate
     let msg       = "require close-parenthesis after date literal expression"
         done com3 = return $
-          AST_FuncCall (ustr "time") com1 [com com2 (AST_Literal (OTime date) unloc) com3] unloc
+          AST_FuncCall (AST_Literal (ORef (LocalRef (ustr "time"))) unloc) com1 [com com2 (AST_Literal (OTime date) unloc) com3] unloc
     if needsParen then expect msg (\com3 -> char ')' >> done com3) else done []
 
 parseStruct :: NameComParser AST_Object
@@ -778,7 +777,7 @@ constructWithNonKeyword key com1 = msum [funcCall, parseBuiltinFuncCall key com1
   funcCall = do
     argv <- adjustComListable $
       parseListable ("arguments to function \""++key++"\"") '(' ',' ')' parseObjectExpr
-    return (AST_FuncCall (ustr key) com1 argv unloc)
+    return (AST_FuncCall (AST_Literal (ORef (LocalRef (ustr key))) unloc) com1 argv unloc)
 
 ----------------------------------------------------------------------------------------------------
 

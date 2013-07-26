@@ -454,6 +454,7 @@ instance Read UpdateOp where
 -- | Unary operators.
 data ArithOp1
   = REF | DEREF | INVB  | NOT | NEG | GLDOT -- ^ unary
+  | GLOBALPFX | LOCALPFX | QTIMEPFX | STATICPFX
   deriving (Eq, Ord, Enum, Ix, Typeable)
 
 allArithOp1Chars = "$@~!-"
@@ -463,11 +464,30 @@ instance Bounded ArithOp1 where {minBound = REF; maxBound = NEG}
 
 instance Show ArithOp1 where
   show op = case op of
-    { REF -> "$"; DEREF -> "@"; INVB -> "~"; NOT -> "!"; NEG -> "-" }
+    REF   -> "$"
+    DEREF -> "@"
+    INVB  -> "~"
+    NOT   -> "!"
+    NEG   -> "-"
+    GLDOT -> "."
+    GLOBALPFX -> "global"
+    LOCALPFX  -> "local"
+    QTIMEPFX  -> "qtime"
+    STATICPFX -> "static"
 
 instance Read ArithOp1 where
   readsPrec _ str = map (\a -> (a, "")) $ case str of
-    { "$" -> [REF]; "@" -> [DEREF]; "~" -> [INVB]; "!" -> [NOT]; "-" -> [NEG]; _ -> [] }
+    "$"      -> [REF]
+    "@"      -> [DEREF]
+    "~"      -> [INVB]
+    "!"      -> [NOT]
+    "-"      -> [NEG]
+    "."      -> [GLDOT]
+    "global" -> [GLOBALPFX]
+    "local"  -> [LOCALPFX]
+    "qtime"  -> [QTIMEPFX]
+    "static" -> [STATICPFX]
+    _        -> []
 
 -- | Binary operators.
 data ArithOp2
@@ -481,7 +501,7 @@ data ArithOp2
   deriving (Eq, Ord, Enum, Ix, Typeable)
 
 allArithOp2Chars = "+-*/%<>^&|."
-allArithOp2Strs = " + - * / % ** -> . || && == != | & ^ << >> < > <= => "
+allArithOp2Strs = " + - * / % ** -> . || && == != | & ^ << >> < > <= >= "
 
 instance Show ArithOp2 where
   show a = case a of
@@ -491,7 +511,7 @@ instance Show ArithOp2 where
     ; AND   -> "&&"; EQUL -> "=="; NEQUL -> "!="
     ; ORB   -> "|" ; ANDB -> "&" ; XORB  -> "^"
     ; SHL   -> "<<"; SHR  -> ">>"
-    ; GTN -> ">"; LTN -> "<"; GTEQ -> ">="; LTEQ -> "<="
+    ; GTN   -> ">" ; LTN  -> "<" ; GTEQ  -> ">="; LTEQ -> "<="
     }
 
 instance Read ArithOp2 where
@@ -503,7 +523,7 @@ instance Read ArithOp2 where
     ; "|"  -> [ORB  ]; "&"  -> [ANDB ]; "^"  -> [XORB ]
     ; "<<" -> [SHL  ]; ">>" -> [SHR  ]; "<"  -> [LTN  ]
     ; ">"  -> [GTN  ]; "<=" -> [GTEQ ]; ">=" -> [GTEQ ]
-    ; _    -> []
+    ; _    -> [error ("cannot convert string to ArithOp2: "++show str)]
     }
 
 instance Bounded ArithOp2 where {minBound = ADD; maxBound = SHR}
@@ -530,7 +550,7 @@ data ObjectExpr
   | AssignExpr    ObjectExpr      UpdateOp     ObjectExpr  Location
   | Equation      ObjectExpr      ArithOp2     ObjectExpr  Location
   | PrefixExpr    ArithOp1        ObjectExpr               Location
-  | ParenExpr     Bool            ObjectExpr               Location
+  | ParenExpr                     ObjectExpr               Location
   | ArraySubExpr  ObjectExpr     [ObjectExpr]              Location
   | FuncCall      ObjectExpr     [ObjectExpr]              Location
   | DictExpr      Name           [ObjectExpr]              Location
@@ -548,7 +568,7 @@ instance HasLocation ObjectExpr where
     AssignExpr    _ _ _ o -> o
     Equation      _ _ _ o -> o
     PrefixExpr    _ _   o -> o
-    ParenExpr     _ _   o -> o
+    ParenExpr     _     o -> o
     ArraySubExpr  _ _   o -> o
     FuncCall      _ _   o -> o
     DictExpr      _ _   o -> o
@@ -563,7 +583,7 @@ instance HasLocation ObjectExpr where
     AssignExpr    a b c _ -> AssignExpr    a b c loc
     Equation      a b c _ -> Equation      a b c loc
     PrefixExpr    a b   _ -> PrefixExpr    a b   loc
-    ParenExpr     a b   _ -> ParenExpr     a b   loc
+    ParenExpr     a     _ -> ParenExpr     a     loc
     ArraySubExpr  a b   _ -> ArraySubExpr  a b   loc
     FuncCall      a b   _ -> FuncCall      a b   loc
     DictExpr      a b   _ -> DictExpr      a b   loc

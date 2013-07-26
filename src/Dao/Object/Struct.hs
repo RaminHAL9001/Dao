@@ -179,8 +179,7 @@ instance Structured AST_Object where
       putData a >> putDataAt "op" b >> putDataAt "next" c >> putData loc
     AST_Prefix   a b   loc -> with "prefix" $
       putDataAt "op" a >> putData b >> putData loc
-    AST_Paren    a b   loc -> with "paren" $
-      putDataAt "visible" a >> putData b >> putData loc
+    AST_Paren    a     loc -> with "paren" (putData a >> putData loc)
     AST_ArraySub a b c loc -> with "subscript" $
       putDataAt "bounds" a >> putComments b >> putData c >> putData loc
     AST_FuncCall     a b c loc -> with "funcCall" $
@@ -201,7 +200,7 @@ instance Structured AST_Object where
     , with "assign"    $ liftM4 AST_Assign   (getDataAt "to") (getDataAt "op")  getData              getData
     , with "equation"  $ liftM4 AST_Equation  getData         (getDataAt "op") (getDataAt "next")    getData
     , with "prefix"    $ liftM3 AST_Prefix   (getDataAt "op")  getData          getData
-    , with "paren"     $ liftM3 AST_Paren    (mplus (getDataAt "visible") (return False))    getData getData
+    , with "paren"     $ liftM2 AST_Paren     getData                                                getData
     , with "subscript" $ liftM4 AST_ArraySub (getDataAt "bounds") (getComments)     getData getData
     , with "funcCall"  $ liftM4 AST_FuncCall  getData (getComments) (getDataAt "arguments") getData
     , with "container" $ do

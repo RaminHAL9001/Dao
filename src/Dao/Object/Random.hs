@@ -231,7 +231,7 @@ mostlyRefExprs :: RandO AST_Object
 mostlyRefExprs = do
   nonRef <- randBool
   if nonRef
-    then  fmap (flip (AST_Paren True) LocationUnknown . Com) $
+    then  fmap (flip AST_Paren LocationUnknown . Com) $
             limSubRandO (lit $ ORef $ LocalRef $ ustr "arr")
     else  fmap (lit . ORef . LocalRef . randUStr) randInt
 
@@ -279,18 +279,18 @@ instance HasRandGen AST_Object where
             AST_Literal (ORef (LocalRef _))           _   -> a
             AST_Literal (OString _)                   _   -> a
             AST_FuncCall _ _ _                        _   -> a
-            AST_Paren _ a                         loc -> AST_Paren True a loc
-            a                                         -> AST_Paren True (Com a) LocationUnknown
+            AST_Paren   a                         loc -> AST_Paren a loc
+            a                                         -> AST_Paren (Com a) LocationUnknown
       in  fmap check (liftM4 AST_Equation randO (randO >>= randCom) randO no)
     , do  o@(AST_Prefix fn cObjXp no)  <- liftM3 AST_Prefix randO comRandObjExpr no
           return $ case fn of
             REF -> case unComment cObjXp of
               AST_Literal (ORef (LocalRef _)) _ -> o
-              _ -> AST_Prefix fn (fmap (flip ((AST_Paren True) . Com) no) cObjXp) no
+              _ -> AST_Prefix fn (fmap (flip (AST_Paren . Com) no) cObjXp) no
             _ -> o
-    , liftM3 AST_Paren    randBool comRandObjExpr no
-    , liftM4 AST_ArraySub mostlyRefExprs randComments comRandObjExpr no
-    , liftM4 AST_FuncCall     (fmap randUStr randInt) randComments comRandObjExprList no
+    , liftM2 AST_Paren    comRandObjExpr no
+    , liftM4 AST_ArraySub mostlyRefExprs randComments comRandObjExprList no
+    , liftM4 AST_FuncCall randO randComments comRandObjExprList no
     , do -- AST_Dict
           typ   <- nextInt 4
           dict  <- return $ ustr $ case typ of

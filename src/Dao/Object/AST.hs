@@ -64,7 +64,7 @@ data AST_Script
     -- ^ The boolean parameter is True for a "continue" statement, False for a "break" statement.
     -- @continue /**/ ;@ or @continue /**/ if /**/ objExpr /**/ ;@
   | AST_ReturnExpr   Bool                     (Com AST_Object)                               Location
-    -- ^ The boolean parameter is True foe a "return" statement, False for a "throw" statement.
+    -- ^ The boolean parameter is True for a "return" statement, False for a "throw" statement.
     -- ^ @return /**/ ;@ or @return /**/ objExpr /**/ ;@
   | AST_WithDoc      (Com AST_Object)         [Com AST_Script]                               Location
     -- ^ @with /**/ objExpr /**/ {}@
@@ -77,7 +77,7 @@ data AST_Object
   | AST_Assign   AST_Object   (Com UpdateOp)     AST_Object   Location
   | AST_Equation AST_Object   (Com ArithOp2)     AST_Object   Location
   | AST_Prefix   ArithOp1                   (Com AST_Object)  Location
-  | AST_Paren    Bool                       (Com AST_Object)  Location -- ^ Bool is True if the parenthases really exist.
+  | AST_Paren                               (Com AST_Object)  Location
   | AST_ArraySub AST_Object       [Comment] [Com AST_Object]  Location
   | AST_FuncCall AST_Object       [Comment] [Com AST_Object]  Location
   | AST_Dict     Name             [Comment] [Com AST_Object]  Location
@@ -142,7 +142,7 @@ instance HasLocation AST_Object where
     AST_Assign     _ _ _ o -> o
     AST_Equation   _ _ _ o -> o
     AST_Prefix     _ _   o -> o
-    AST_Paren      _ _   o -> o
+    AST_Paren      _     o -> o
     AST_ArraySub   _ _ _ o -> o
     AST_FuncCall   _ _ _ o -> o
     AST_Dict       _ _ _ o -> o
@@ -157,7 +157,7 @@ instance HasLocation AST_Object where
     AST_Assign   a b c _ -> AST_Assign   a b c loc
     AST_Equation a b c _ -> AST_Equation a b c loc
     AST_Prefix   a b   _ -> AST_Prefix   a b   loc
-    AST_Paren    a b   _ -> AST_Paren    a b   loc
+    AST_Paren    a     _ -> AST_Paren    a     loc
     AST_ArraySub a b c _ -> AST_ArraySub a b c loc
     AST_FuncCall a b c _ -> AST_FuncCall a b c loc
     AST_Dict     a b c _ -> AST_Dict     a b c loc
@@ -327,7 +327,7 @@ instance Intermediate ObjectExpr AST_Object where
     AST_Assign   a b c loc -> liftM4 AssignExpr   (toInterm a) (uc  b) (toInterm c) (ll loc)
     AST_Equation a b c loc -> liftM4 Equation     (toInterm a) (uc  b) (toInterm c) (ll loc)
     AST_Prefix   a b   loc -> liftM3 PrefixExpr   [a]          (uc0 b)              (ll loc)
-    AST_Paren    a b   loc -> liftM3 ParenExpr    [a]          (uc0 b)              (ll loc)
+    AST_Paren    a     loc -> liftM2 ParenExpr                 (uc0 a)              (ll loc)
     AST_ArraySub a _ c loc -> liftM3 ArraySubExpr (toInterm a)         (uc1 c)      (ll loc)
     AST_FuncCall a _ c loc -> liftM3 FuncCall     (toInterm a)         (uc1 c)      (ll loc)
     AST_Dict     a _ c loc -> liftM3 DictExpr     [a]                  (uc1 c)      (ll loc)
@@ -342,7 +342,7 @@ instance Intermediate ObjectExpr AST_Object where
     AssignExpr   a b c loc -> liftM4 AST_Assign   (fromInterm a) (nc  b) (fromInterm c) [loc]
     Equation     a b c loc -> liftM4 AST_Equation (fromInterm a) (nc  b) (fromInterm c) [loc]
     PrefixExpr   a b   loc -> liftM3 AST_Prefix   [a]            (nc0 b)                [loc]
-    ParenExpr    a b   loc -> liftM3 AST_Paren    [a]            (nc0 b)                [loc]
+    ParenExpr    a     loc -> liftM2 AST_Paren                   (nc0 a)                [loc]
     ArraySubExpr a b   loc -> liftM4 AST_ArraySub (fromInterm a) [[]]    (nc1 b)        [loc]
     FuncCall     a b   loc -> liftM4 AST_FuncCall (fromInterm a) [[]]    (nc1 b)        [loc]
     DictExpr     a b   loc -> liftM4 AST_Dict     [a]            [[]]    (nc1 b)        [loc]

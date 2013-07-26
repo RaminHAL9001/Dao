@@ -72,7 +72,7 @@ instance NFData AST_Object where
   rnf (AST_Assign   a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_Equation a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_Prefix   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_Paren    a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_Paren    a b    ) = deepseq a $! deepseq b $! ()
   rnf (AST_ArraySub a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_FuncCall a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_Dict     a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()

@@ -1305,7 +1305,7 @@ evalMetaExpr script = case script of
 isNO_OP :: ObjectExpr -> Bool
 isNO_OP o = case o of
   Literal      _     _ -> True
-  ParenExpr    _ o   _ -> isNO_OP o
+  ParenExpr      o   _ -> isNO_OP o
   ArraySubExpr _ _   _ -> True
   DictExpr     _ _   _ -> True
   ArrayExpr    _ _   _ -> True
@@ -1375,27 +1375,38 @@ evalObjectExprWithLoc obj = case obj of
           if null args    -- create every possible combination of arguments
             then  return ox
             else  head args >>= \arg -> allCombinations (ox++[arg]) (tail args)
-    case M.lookup op bif of
-      Nothing -> do -- no built-ins by the 'op' name
-        fn   <- lookupFunction "function call" op
-        ~obj <- mapM (runSubroutine args) fn
-        case msum obj of
-          Just obj -> return (Just obj)
-          Nothing  -> procErr $ OList $ errAt loc ++
-            [ostr "incorrect parameters passed to function", OString op, OList (map snd args)]
-      Just bif -> case bif of -- 'op' references a built-in
-        DaoFuncNoDeref   bif -> bif (map snd args)
-        DaoFuncAutoDeref bif -> mapM objectDeref args >>= bif
+    (oploc, op) <- checkVoid "function name" (evalObjectExprWithLoc op)
+    case op of -- first check if there is a built-in function
+      ORef (LocalRef op) -> case M.lookup op bif of
+        Nothing -> do -- no built-ins by the 'op' name
+          fn   <- lookupFunction "function call" op
+          ~obj <- mapM (runSubroutine args) fn
+          case msum obj of
+            Just obj -> return (Just obj)
+            Nothing  -> procErr $ OList $ errAt loc ++
+              [ostr "incorrect parameters passed to function", OString op, OList (map snd args)]
+        Just bif -> case bif of -- 'op' references a built-in
+          DaoFuncNoDeref   bif -> bif (map snd args)
+          DaoFuncAutoDeref bif -> mapM objectDeref args >>= bif
+      op -> do -- otherwise if the function head is a reference object and evaluate it to a 'OScript'
+        (_, sub) <- objectDerefWithLoc (oploc, op)
+        case sub of
+          OScript sub -> runSubroutine args sub
+          obj         -> procErr $ OList $ errAt loc ++
+            [ostr "function-call operation on object that is not a function object", op]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  ParenExpr     _     o      loc -> evalObjectExprWithLoc o
+  ParenExpr           o      loc -> evalObjectExprWithLoc o
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  ArraySubExpr  o     i      loc -> setloc loc $ do
+  ArraySubExpr  o     i      loc -> do
     (oloc, o) <- checkVoid "operand of subscript expression" (evalObjectExprDerefWithLoc o)
-    (iloc, i) <- checkVoid "index of subscript expression" (evalObjectExprWithLoc i)
-    case evalSubscript o i of
-      OK      a -> return (Just a)
-      PFail msg -> procErr (OString msg)
-      Backtrack -> procErr (OList $ errAt loc ++ [i, ostr "cannot be used as index of", o])
+    forM i (checkVoid "index of subscript expression" . evalObjectExprWithLoc) >>= loop oloc o
+    where
+      loop oloc o idxs = case idxs of
+        []            -> return (oloc, Just o)
+        (loc, i):idxs -> case evalSubscript o i of
+          OK      o -> loop (oloc<>loc) o idxs
+          PFail msg -> procErr (OString msg)
+          Backtrack -> procErr (OList $ errAt loc ++ [i, ostr "cannot be used as index of", o])
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   Equation   left' op right' loc -> setloc loc $ do
     let err1 msg = msg++"-hand operand of "++show op++ "operator "
@@ -1979,7 +1990,7 @@ initSourceCode modName script = ask >>= \runtime -> do
 sourceFromHandle :: UPath -> Handle -> Run (FlowCtrl AST_SourceCode)
 sourceFromHandle upath h = lift $ do
   hSetBinaryMode h False
-  fmap (FlowOK . loadSourceCode upath) (hGetContents h) >>= evaluate
+  fmap (loadSourceCode upath) (hGetContents h) >>= evaluate
 
 -- | Load a Dao script program from the given file handle (calls 'sourceFromHandle') and then
 -- register it into the 'Dao.Object.Runtime' as with the given 'Dao.String.UPath'.
@@ -1989,7 +2000,7 @@ registerSourceFromHandle upath h = do
   case source of
     FlowOK source -> registerSourceCode upath source
     FlowReturn  _ -> error "registerSourceFromHandle: sourceFromHandle evaluated to FlowReturn"
-    FlowErr   err -> error ("registerSourceFromHandle: "++show err)
+    FlowErr   err -> return (FlowErr err)
 
 -- | Updates the 'Runtime' to include the Dao source code loaded from the given 'FilePath'. This
 -- function tries to load a file in three different attempts: (1) try to load the file as a binary
@@ -2020,7 +2031,11 @@ loadFilePath path = dontLoadFileTwice (ustr path) $ \upath -> do
         Right doc -> return (FlowOK (DocumentFile doc))
         Left  _   -> do -- The file does not seem to be a document, try parsing it as a script.
           lift (hSetPosn zero >> hSetEncoding h (fromMaybe localeEncoding enc))
-          fmap (fmap ProgramFile) (registerSourceFromHandle upath h)
+          prog <- registerSourceFromHandle upath h
+          case prog of
+            FlowOK   prog -> return (FlowOK (ProgramFile prog))
+            FlowErr   err -> return (FlowErr err)
+            FlowReturn re -> error ("registerSourceFromHandle evaluated to: return "++show re)
       liftIO $! (evaluate file >> hClose h >> return file)
 
 -- | If any changes have been made to the file, write these files to persistent storage.

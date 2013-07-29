@@ -311,9 +311,10 @@ data Error st tok
     }
 instance Show tok => Show (Error st tok) where
   show err =
-    let msg = concat $ map (fromMaybe "") $
-          [ fmap (("(on token "++) . (++")") . show) (parseErrTok err)
-          , fmap ((": "++) . uchars) (parseErrMsg err)
+    let msg = concat $ map (maybe "" id) $
+          [ fmap ((':':) . (++":") . show) (parseErrLoc err)
+          , fmap ((" (on token "++) . (++")") . show) (parseErrTok err)
+          , fmap ((" "++) . uchars) (parseErrMsg err)
           ]
     in  if null msg then "Unknown parser error" else msg
 instance Functor (Error st) where
@@ -1477,6 +1478,9 @@ shift as = Parser (fmap as (nextToken True))
 look1 :: TokenType tok => (TokenAt tok -> a) -> Parser st tok a
 look1 as = Parser (fmap as (nextToken False))
 
+unshift :: TokenType tok => TokenAt tok -> Parser st tok ()
+unshift tok = Parser $ modify (\st -> st{tokenQueue = tok : tokenQueue st})
+
 metaTypeToTokenType :: (TokenType tok, MetaToken meta tok) => meta -> tok
 metaTypeToTokenType meta =
   case M.lookup (ustr meta) (tableUStrToTT (tokenDBFromMetaValue meta)) of
@@ -1550,6 +1554,9 @@ syntacticAnalysis = runParserState
 
 getNullToken :: TokenType tok => Parser st tok tok
 getNullToken = return (wrapTT (MkTT 0))
+
+isEOF :: TokenType tok => Parser st tok Bool
+isEOF = Parser (get >>= \st -> return (null (getLines st) && null (tokenQueue st)))
 
 ----------------------------------------------------------------------------------------------------
 

@@ -193,7 +193,7 @@ instance NFData ObjectExpr where
   rnf (AssignExpr    a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (Equation      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (PrefixExpr    a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (ParenExpr     a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (ParenExpr     a b    ) = deepseq a $! deepseq b ()
   rnf (ArraySubExpr  a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (FuncCall      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (DictExpr      a b c  ) = deepseq a $! deepseq b $! deepseq c ()

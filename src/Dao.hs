@@ -105,19 +105,39 @@ initRuntimeFunctions funcs runtime =
 -- parsed in turn (order is important) by the 'registerFile' function, which can detect the kind of
 -- file and load it accordingly. The kinds of files that can be loaded are Dao source files, Dao
 -- data files, and Dao compiled programs.
-initRuntimeFiles :: [FilePath] -> Run ()
+initRuntimeFiles :: [FilePath] -> Run Bool
 initRuntimeFiles filePaths = dStack xloc "initRuntimeFiles" $ do
-  forM_ filePaths (\filePath -> void (loadFilePath filePath))
-  problems <- checkAllImports
-  if null problems
+  problems <- forM filePaths $ \filePath ->
+    loadFilePath filePath >>= \flow -> return (filePath, flow)
+  score <- fmap sum $ forM problems $ \p -> case p of
+    (path, FlowOK      _) -> dPutStrErr xloc ("loaded file "++show path) >> return 0
+    (path, FlowReturn re) ->
+      dMessage xloc ("evaluating file "++show path++" returned value "++show re) >> return 1
+    (path, FlowErr   err) -> do
+      case err of
+        OString o -> dPutStrErr xloc (uchars o)
+        o         -> dPutStrErr xloc (concatMap uchars (extractStringElems o))
+      return 1
+  if score==0
     then do
-      runtime <- ask
-      files <- fmap M.keys (dReadMVar xloc (pathIndex runtime))
-      dMessage xloc ("list of loaded files updated: " ++ intercalate ", " (map show files))
-    else error $ "ERROR: some Dao programs have imported modules which were not loaded.\n"
-          ++(flip concatMap problems $ \ (mod, imprts) ->
-                "\tmodule "++show mod++" could not satisfy the import requirements for:\n\t\t"
-              ++intercalate ", " (map show imprts)++"\n")
+      problems <- checkAllImports
+      if null problems
+        then do
+          runtime <- ask
+          files <- fmap M.keys (dReadMVar xloc (pathIndex runtime))
+          dMessage xloc ("list of loaded files updated: " ++ intercalate ", " (map show files))
+          return True
+        else do
+          dPutStrErr xloc $ concat $
+            [ "some Dao programs have imported modules which were not loaded.\n"
+            , (flip concatMap problems $ \ (mod, imprts) -> concat $
+                [ "\tmodule ", show mod, " could not satisfy the import requirements for:\n\t\t"
+                , intercalate ", " (map show imprts), "\n"
+                ]
+              )
+            ]
+          return False
+    else return False
   where
     handlers = [Handler ioerr, Handler errcall]
     ioerr :: IOException -> IO ()

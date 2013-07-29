@@ -32,11 +32,11 @@ import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Resource
 import qualified Dao.Tree    as T
-import           Dao.Parser hiding (lookAhead)
--- import           Dao.NewParser
+-- import           Dao.Parser hiding (lookAhead)
+import           Dao.NewParser
 import           Dao.Predicate
-import           Dao.Object.Parser
--- import           Dao.Object.NewParser
+-- import           Dao.Object.Parser
+import           Dao.Object.NewParser
 import           Dao.Object.PPrint
 import           Dao.Object.Binary
 
@@ -102,12 +102,13 @@ instance Binary (StoredFile T.Tree Name Object) where
 
 -- | Parse Dao program from a 'Prelude.String' containing valid Dao source code, creating a
 -- 'Dao.Object.SourceCode' object. This is a pure function called by 'loadFilePath'.
-loadSourceCode :: UPath -> String -> AST_SourceCode
-loadSourceCode upath sourceString = case fst (runParser parseSourceFile sourceString) of
--- loadSourceCode upath sourceString = case parse daoCFGrammar mempty sourceString of
-  Backtrack -> error ("FILE TYPE: "++show path++" does not appear to be a Dao script.")
-  PFail tok -> error (path++':':show tok)
-  OK    src -> src
+loadSourceCode :: UPath -> String -> FlowCtrl AST_SourceCode
+-- loadSourceCode upath sourceString = case fst (runParser parseSourceFile sourceString) of
+loadSourceCode upath sourceString = case parse daoGrammar mempty sourceString of
+  Backtrack -> FlowErr $ OList $
+    [ostr "file ", ostr (show path), ostr " does not appear to be a Dao script."]
+  PFail tok -> FlowErr (ostr $ path++show tok)
+  OK    src -> FlowOK src
   where
     path = uchars upath
     

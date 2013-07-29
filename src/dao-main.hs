@@ -85,8 +85,8 @@ main = do
     , debugOutputTo = DebugOutputToFile "./debug.log"
     , initializeRuntime = newRuntime
     , beginProgram = do
-        initRuntimeFiles argv
-        daoInputLoop (liftIO inputLoop)
+        ok <- initRuntimeFiles argv
+        if ok then daoInputLoop (liftIO inputLoop) else return ()
     }
   --restorePrompt -- shut-down the ReadLine library
   hPutStrLn stderr "Dao has exited."

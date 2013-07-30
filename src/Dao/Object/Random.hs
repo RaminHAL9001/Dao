@@ -123,7 +123,7 @@ instance HasRandGen Object where
           lo <- nextInt 8
           fmap (OArray . listArray (fromIntegral lo, fromIntegral (lo+hi))) $
             replicateM (hi+1) (limSubRandO ONull)
-    , randObjMap ODict   M.fromList (fmap randUStr randInt)
+    , randObjMap ODict   M.fromList (randName)
     , randObjMap OIntMap I.fromList randInt
     , fmap OTree randO
     , fmap OGlob randO
@@ -149,7 +149,7 @@ instance HasRandGen Reference where
     , fmap MetaRef subRandO
     ]
     where
-      single = fmap randUStr randInt
+      single = randName
       multi = do
         i0 <- randInt
         let (i1, len) = divMod i0 4
@@ -179,7 +179,7 @@ instance HasRandGen (T.Tree Name Object) where
     branchCount <- nextInt 4
     cuts <- fmap (map (+1) . randToBase 6) randInt
     fmap (T.fromList . concat) $ replicateM (branchCount+1) $ do
-      wx <- replicateM 6 (fmap randUStr randInt)
+      wx <- replicateM 6 (randName)
       forM cuts $ \cut -> do
         obj <- limSubRandO ONull
         return (take cut wx, obj)
@@ -194,7 +194,7 @@ instance HasRandGen Subroutine where
       { argsPattern      = pats
       , getSubExecutable =
           Executable
-          { origSourceCode = concatMap (toInterm . unComment) scrp
+          { origSourceCode = concatMap toInterm scrp
           , staticVars     = error msg
           , executable     = error msg
           }
@@ -208,14 +208,14 @@ no = return LocationUnknown
 lit :: Object -> AST_Object
 lit = flip AST_Literal LocationUnknown
 
-randScriptExpr :: RandO [Com AST_Script]
-randScriptExpr = randList 0 30 >>= mapM randCom
+randScriptExpr :: RandO [AST_Script]
+randScriptExpr = randList 0 30
 
-comRandScriptExpr :: RandO (Com [Com AST_Script])
+comRandScriptExpr :: RandO (Com [AST_Script])
 comRandScriptExpr = randScriptExpr >>= randCom
 
-comRandName :: RandO (Com Name)
-comRandName = fmap randUStr randInt >>= randCom
+randName :: RandO Name
+randName = fmap randUStr randInt
 
 comRandObjExpr :: RandO (Com AST_Object)
 comRandObjExpr = randO >>= randCom
@@ -251,8 +251,8 @@ instance HasRandGen AST_Script where
   randO = randOFromList $
     [ liftM3 AST_EvalObject   randAssignExpr randComments no
     , liftM5 AST_IfThenElse   randComments randO comRandScriptExpr comRandScriptExpr no
-    , liftM4 AST_TryCatch     comRandScriptExpr comRandName randScriptExpr no
-    , liftM4 AST_ForLoop      comRandName comRandObjExpr randScriptExpr no
+    , liftM4 AST_TryCatch     comRandScriptExpr (randName>>=randCom) randScriptExpr no
+    , liftM4 AST_ForLoop      (randName>>=randCom) comRandObjExpr randScriptExpr no
     , liftM4 AST_ContinueExpr randBool randComments comRandObjExpr no
     , liftM3 AST_ReturnExpr   randBool comRandObjExpr no
     , liftM3 AST_WithDoc      comRandObjExpr randScriptExpr no
@@ -265,7 +265,7 @@ instance HasRandGen LambdaExprType where
 -- | Will create a random 'Dao.Object.AST_Object' of a type suitable for use as a stand-alone script
 -- expression, which is only 'AST_Assign'.
 randAssignExpr :: RandO AST_Object
-randAssignExpr = liftM4 AST_Assign   randO (randO >>= randCom) randO no
+randAssignExpr = liftM4 AST_Assign   randO (randO>>=randCom) randO no
 
 instance HasRandGen AST_Object where
   -- | Differs from 'randAssignExpr' in that this 'randO' can generate 'Dao.Object.AST_Literal' expressions
@@ -281,7 +281,7 @@ instance HasRandGen AST_Object where
             AST_FuncCall _ _ _                        _   -> a
             AST_Paren   a                         loc -> AST_Paren a loc
             a                                         -> AST_Paren (Com a) LocationUnknown
-      in  fmap check (liftM4 AST_Equation randO (randO >>= randCom) randO no)
+      in  fmap check (liftM4 AST_Equation randO (randO>>=randCom) randO no)
     , do  o@(AST_Prefix fn cObjXp no)  <- liftM3 AST_Prefix randO comRandObjExpr no
           return $ case fn of
             REF -> case unComment cObjXp of
@@ -334,19 +334,20 @@ instance HasRandGen AST_TopLevel where
     [ do  req_ <- nextInt 2
           let req = Com $ ustr $ if req_ == 0 then "require" else "import"
           typ <- nextInt 2
-          words <- fmap (map uchars) (randListOf 1 6 (fmap randUStr randInt))
+          words <- fmap (map uchars) (randListOf 1 6 (randName))
           str <- randCom $ case typ of
             0 -> ustr $ show $ intercalate " " $ words
             1 -> ustr $ intercalate "." $ words
           return (AST_Attribute req str LocationUnknown)
     , liftM2 AST_TopScript randO no
-    , do  name <- comRandName
-          args <- randList 0 7 >>= mapM randCom
-          scrp <- comRandScriptExpr
-          return (AST_TopFunc name args scrp LocationUnknown)
+    , do  coms <- randComments
+          name <- randName
+          args <- randList 0 7 >>= mapM randCom >>= randCom
+          scrp <- randScriptExpr
+          return (AST_TopFunc coms name args scrp LocationUnknown)
     , liftM2 AST_TopScript      randO no
     , liftM4 AST_TopLambda  randO (randArgsDef >>= randCom) randScriptExpr no
-    , liftM3 AST_Event      randO comRandScriptExpr no
+    , liftM4 AST_Event      randO randComments randScriptExpr no
     ]
 
 ----------------------------------------------------------------------------------------------------

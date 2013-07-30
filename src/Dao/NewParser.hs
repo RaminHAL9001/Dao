@@ -619,17 +619,17 @@ data RegexUnit
 instance Monoid RegexUnit where
   mempty = RxBacktrack
   mappend a b = case a of
-    RxBacktrack          -> b
-    RxSuccess            -> a
-    RxExpect         _ _ -> a
-    RxStep         a' ax -> case b of
-      RxStep         b' bx -> if a'==b' then RxStep a' (ax<>bx) else RxChoice [a,b]
-      b                    -> RxChoice [a,b]
-    RxDontMatch      ax  -> case b of
-      RxDontMatch      bx  -> RxDontMatch (ax<>bx)
-      b                    -> RxChoice [a,b]
-    RxChoice         ax  -> case b of
-      RxChoice        bx   ->
+    RxBacktrack        -> b
+    RxSuccess          -> a
+    RxExpect    _   _  -> a
+    RxStep      a'  ax -> case b of
+      RxStep      b'  bx -> if a'==b' then RxStep a' (ax<>bx) else RxChoice [a,b]
+      b                  -> RxChoice [a,b]
+    RxDontMatch    ax  -> case b of
+      RxDontMatch    bx  -> RxDontMatch (ax<>bx)
+      b                  -> RxChoice [a,b]
+    RxChoice       ax  -> case b of
+      RxChoice       bx  ->
         let list = loop ax bx
         in  if null list
               then RxBacktrack

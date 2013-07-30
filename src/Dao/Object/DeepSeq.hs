@@ -164,12 +164,12 @@ instance NFData ObjSetOp where { rnf a = seq a () }
 instance NFData TopLevelEventType where { rnf a = seq a () }
 
 instance NFData AST_TopLevel where
-  rnf (AST_Attribute  a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_TopFunc    a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_TopScript  a b    ) = deepseq a $! deepseq b ()
-  rnf (AST_TopLambda  a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_Event      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_TopComment a      ) = deepseq a ()
+  rnf (AST_Attribute  a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_TopFunc    a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
+  rnf (AST_TopScript  a b      ) = deepseq a $! deepseq b ()
+  rnf (AST_TopLambda  a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_Event      a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_TopComment a        ) = deepseq a ()
 
 instance NFData TopLevelExpr where
   rnf (Attribute      a b c  ) = deepseq a $! deepseq b $! deepseq c ()

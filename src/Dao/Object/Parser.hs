@@ -386,12 +386,12 @@ parseKeywordScriptExpr key com1 = nameComParserChoice choices key com1 where
           objectExprStatement objExpr com2
     ]
 
-parseBracketedScript :: Parser [Com AST_Script]
-parseBracketedScript = token (char '{' >>= \com1 -> loop []) where
+parseBracketedScript :: Parser [AST_Script]
+parseBracketedScript = token (char '{' >> loop []) where
   loop zx = mplus (regexMany space >> char '}' >> return zx) $
     expect "script expression" $ \com1 -> do
       expr <- parseScriptExpr
-      loop (zx++[com com1 expr []])
+      loop (zx++(if null com1 then [] else [AST_Comment com1] )++[expr])
 
 expected_sub_for msg = fail $
   "expecting bracketed sub-script expression for body of \""++msg++"\" statement"
@@ -413,7 +413,7 @@ ifStatement = guardKeyword "if" loop where
             com5 <- parseComment
             regexMany space 
             msum $
-              [ string "if" >> parseComment >>= loop >>= done com4 com5 . (:[]) . Com
+              [ string "if" >> parseComment >>= loop >>= done com4 com5 . (:[])
               , parseBracketedScript >>= done com4 com5
               , fail (expected_sub_for "else")
               ]
@@ -818,12 +818,11 @@ parseKeywordDirective key = msum $
         guard (key=="EXIT" || key=="QUIT" || key=="BEGIN" || key=="END")
         expect ("bracketed list of commands after "++key++" statement") $ \com1 -> do
           scrpt <- parseBracketedScript
-          let block = com com1 scrpt []
           return $ case key of
-            "EXIT"  -> AST_Event ExitExprType  block unloc
-            "QUIT"  -> AST_Event ExitExprType  block unloc
-            "BEGIN" -> AST_Event BeginExprType block unloc
-            "END"   -> AST_Event EndExprType   block unloc
+            "EXIT"  -> AST_Event ExitExprType  com1 scrpt unloc
+            "QUIT"  -> AST_Event ExitExprType  com1 scrpt unloc
+            "BEGIN" -> AST_Event BeginExprType com1 scrpt unloc
+            "END"   -> AST_Event EndExprType   com1 scrpt unloc
   , do -- Parse a top-level rule.
         guard (key=="rule" || key=="pat" || key=="pattern")
         let msg = "script expression for rule definition"
@@ -854,7 +853,7 @@ parseKeywordDirective key = msum $
             params <- parseFunctionParameters "function parameters"
             expect "top-level function declaration, function body" $ \com3 -> do
               scrpt <- parseBracketedScript
-              return (AST_TopFunc (com com1 name com2) params (com com2 scrpt com3) unloc)
+              return (AST_TopFunc com1 name (com com2 params com3) scrpt unloc)
   , do -- Parse a top-level script expression.
         guard (isKeyword key || isTypeword key)
         expect "top-level script expression" $ \com1 -> do

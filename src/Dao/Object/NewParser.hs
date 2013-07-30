@@ -73,7 +73,7 @@ daoTokenDB = makeTokenDB daoTokenDef
 
 data DaoTokenLabel
   = SPACE | INLINECOM | ENDLINECOM | COMMA | LABEL | STRINGLIT | DATE | TIME
-  | BASE10 | DOTBASE10 | NUMTYPE | EXPONENT | INTREF | BASE64DATA | BASE16 | BASE2
+  | BASE10 | DOTBASE10 | NUMTYPE | EXPONENT | BASE64DATA | BASE16 | BASE2
   deriving (Eq, Enum, Show, Read)
 instance UStrType DaoTokenLabel where { ustr = derive_ustr; fromUStr = derive_fromUStr; }
 
@@ -108,7 +108,6 @@ daoTokenDef = do
   base16       <- fullToken  BASE16     $ (rx "0x" <> rx "0X") .
     rxRepeat[from0to9, from 'A' to 'F', from 'a' to 'f']
   numType      <- fullToken  NUMTYPE    $ rx (map ch "UILRFfijs")
-  intRefParser <- fullToken  INTREF     $ rx '$' . number
   let base10Parser = dotBase10 . opt exponent . opt numType <>
         base10 . opt (dotBase10 <> dot) . opt exponent . opt numType
   
@@ -161,7 +160,7 @@ daoTokenDef = do
   
   ------------------------------------------- ACTIVATE --------------------------------------------
   activate $
-    [ space, inlineCom, endlineCom, comma, intRefParser, operators
+    [ space, inlineCom, endlineCom, comma, operators
     , stringLit, base16, base2, base10Parser
     , date, time, dataLexer
     , keywords_groups, label
@@ -377,8 +376,7 @@ singletonPTab :: DaoPTable AST_Object
 singletonPTab = numberPTab <> singlPTab where
   literal constr tok = return (AST_Literal (constr tok) (asLocation tok))
   singlPTab = table $
-    [ tableItem INTREF    (literal $ ORef . IntRef   . read . tail . asString)
-    , tableItem STRINGLIT (literal $ OString         . read        . asString)
+    [ tableItem STRINGLIT (literal $ OString . read . asString)
     , tableItemBy "("    $ \tok -> do
         obj <- commented equation
         expect "closing parentheses" $ do
@@ -439,11 +437,11 @@ container :: UStrType lbl =>
 container lbl constr = tableItemBy lbl $ \startTok -> do
   let typeStr = uchars (ustr lbl)
       msg = "bracketed list of items for \""++typeStr++"\" statement"
-  com1 <- space
+  coms <- optSpace
   (items, endLoc) <- expect msg $ do
     startLoc <- tokenBy "{" as0
     commaSepd msg "}" (equation >>= constr)
-  return (AST_Dict (ustr lbl) com1 items (asLocation startTok <> endLoc))
+  return (AST_Dict (ustr lbl) coms items (asLocation startTok <> endLoc))
 
 -- Objects that are parsed as a single value, which includes all literal expressions and equtions in
 -- parentheses.
@@ -457,7 +455,7 @@ referencePTab :: DaoPTable AST_Object
 referencePTab = table $ map mkPar ["$", "@"] ++ labeled where
   mkPar opStr = tableItemBy opStr $ \tok -> do
     let as = read . tokTypeToString . asTokType
-    obj <- commented reference
+    obj <- commented referenceOrSingleton
     return (AST_Prefix (as tok) obj ((getLocation (unComment obj)) <> asLocation tok))
   labeled = (:[]) $ tableItem LABEL $ \tok -> do
     let initObj = AST_Literal (ORef (LocalRef (asUStr tok))) (asLocation tok)
@@ -473,6 +471,12 @@ referencePTab = table $ map mkPar ["$", "@"] ++ labeled where
 
 reference :: DaoParser AST_Object
 reference = evalPTable referencePTab
+
+referenceOrSingletonPTab :: DaoPTable AST_Object
+referenceOrSingletonPTab = referencePTab <> singletonPTab
+
+referenceOrSingleton :: DaoParser AST_Object
+referenceOrSingleton = evalPTable referenceOrSingletonPTab
 
 -- A 'reference' statement qualified by a prefix like "global", "local", "qtime", or "static".
 qualReferencePTab :: DaoPTable AST_Object
@@ -496,6 +500,18 @@ commaSepd errMsg close parser =
       expect errMsg (commented parser >>= \o -> loop (stack++[o]))
     err = fail $ "unknown token while parsing list of items for "++uchars (ustr errMsg)
 
+-- More than one parser has need of 'commaSepd' as a parameter to 'commented', but passing
+-- 'commaSped' to 'commented' will return a value of type:
+-- > 'Dao.Object.Com' (['Dao.Object.Com'], 'Dao.NewParser.Location')
+-- which is not useful for constructors of the abstract syntax tree. This function takes the
+-- comments around the pair and maps the first item of the pair to the comments, returning an
+-- uncommented pair.
+commentedInPair :: DaoParser (a, Location) -> DaoParser (Com a, Location)
+commentedInPair parser = do
+  comntd <- commented parser
+  let (a, loc) = unComment comntd
+  return (fmap (const a) comntd, loc)
+
 -- This is 'reference' expression possibly followed by square brackets or parentheses. If there is
 -- no juxtapose, just return the 'reference' expression. This covers function call expressions and
 -- array subscript expressions. Because there is no delimiting token, this table is a combination of
@@ -509,7 +525,7 @@ funcCallArraySubPTab =
   where
     refPTab = bindPTable referencePTab (\obj -> return obj)
     bracket obj (open:close:[], constr) = tableItemBy [open] $ \tok -> do
-      coms <- space
+      coms <- optSpace
       (args, endloc) <- commaSepd "argument to function" [close] equation
       return (constr obj coms args (asLocation tok <> endloc))
     juxtaposedPTab obj = table $ fmap (bracket obj) [("()", AST_FuncCall), ("[]", AST_ArraySub)]
@@ -612,13 +628,13 @@ scriptPTab = comments <> objExpr <> table exprs where
         let (try, endLoc) = unComment tryCom
         tryCom <- return (fmap (const try) tryCom)
         let done comName catch endLoc = return $
-              AST_TryCatch (fmap (fmap Com) tryCom) comName catch (asLocation tok <> endLoc)
+              AST_TryCatch tryCom comName catch (asLocation tok <> endLoc)
         flip mplus (done (Com nil) [] endLoc) $ do
           tokenBy "catch" as0
           expect "varaible name after \"catch\" statement" $ do
             comName <- commented (token LABEL asUStr)
             (catch, endLoc) <- bracketed "\"catch\" statement"
-            done comName (fmap Com catch) endLoc
+            done comName catch endLoc
     , tableItemBy "for"   $ \tok -> expect "iterator label after \"for statement\"" $ do
         comName <- commented (token LABEL asUStr)
         expect "\"in\" statement after \"for\" statement" $ do
@@ -627,17 +643,17 @@ scriptPTab = comments <> objExpr <> table exprs where
             obj <- commented equation
             expect "bracketed script after \"for-in\" statement" $ do
               (for, endLoc) <- bracketed "\"for\" statement"
-              return (AST_ForLoop comName obj (fmap Com for) (asLocation tok <> endLoc))
+              return (AST_ForLoop comName obj for (asLocation tok <> endLoc))
     , tableItemBy "while" $ \tok -> expect "conditional expression after \"while\" statement" $ do
         obj <- commented equation
         expect "bracketed script after \"while\" statement" $ do
           (while, endLoc) <- bracketed "\"while\" statement"
-          return (AST_WhileLoop obj (fmap Com while) (asLocation tok <> endLoc))
+          return (AST_WhileLoop obj while (asLocation tok <> endLoc))
     , tableItemBy "with"  $ \tok -> expect "reference expression after \"with\" statement" $ do
         obj <- commented equation
         expect "bracketed script after \"with\" statement" $ do
           (with, endLoc) <- bracketed "\"with\" statement"
-          return (AST_WithDoc obj (fmap Com with) (asLocation tok <> endLoc))
+          return (AST_WithDoc obj with (asLocation tok <> endLoc))
     ]
   semicolon = tokenBy ";" asLocation
   returnExpr isReturn tok = do
@@ -670,7 +686,7 @@ if_tableItem = tableItemBy "if" $ \tok -> expect "conditional expression after \
     expect "bracketed script expressions after \"if\" statement" $ do
       (comThen, thenLoc) <- fmap (\ (thn, loc) -> (com coms thn [], loc)) $ bracketed "if statement"
       (comElse, elseLoc) <- elseStatement
-      return (AST_IfThenElse coms obj (fmap (fmap Com) comThen) (fmap (fmap Com) comElse) (asLocation tok <> thenLoc <> elseLoc))
+      return (AST_IfThenElse coms obj comThen comElse (asLocation tok <> thenLoc <> elseLoc))
 
 elseStatement :: DaoParser (Com [AST_Script], Location)
 elseStatement = do
@@ -700,20 +716,23 @@ toplevelPTab = comments <> scriptExpr <> table expr where
     ]
   singlePattern = commented equation >>= \eqn -> return ([eqn], getLocation (unComment eqn))
   function tok = do
-    let exprType = '"':asString tok++"\""
-    comName <- commented (token LABEL asUStr)
-    expect ("list of patterns for \""++asString tok++"\" statement") $ do
-      startLoc <- tokenBy "(" asLocation
-      (pats, endLoc) <- commaSepd ("pattern for "++exprType++" statement") ")" equation
-      expect ("bracketed script expression for "++exprType++" statement") $ do
-        (scrp, endLoc) <- bracketed ('"':asString tok++"\" statement")
-        return (AST_TopFunc comName pats (Com (fmap Com scrp)) (asLocation tok <> endLoc))
+    let exprType = '"':show (asTokType tok)++"\""
+    coms <- optSpace
+    name <- token LABEL asUStr
+    (pats, _     ) <- expect ("list of patterns for \""++asString tok++"\" statement") $
+      commentedInPair $ do
+        tokenBy "(" as0
+        commaSepd ("pattern after "++exprType++" statement") ")" equation
+    (actn, endLoc) <-
+      expect ("bracketed script expression after "++exprType++" statement") $
+        bracketed ('"':asString tok++"\" statement")
+    return (AST_TopFunc coms name pats actn (asLocation tok <> endLoc))
   event   tok = do
     let exprType = show (asTokType tok)
     coms <- optSpace
     expect ("bracketed script after \""++exprType++"\" statement") $ do
       (event, endLoc) <- bracketed ('"':exprType++"\" statement")
-      return (AST_Event (read exprType) (Com (fmap Com event)) (asLocation tok <> endLoc))
+      return (AST_Event (read exprType) coms event (asLocation tok <> endLoc))
   pattern tok = do
     let exprType = show (asTokType tok)
     expect ("pattern expression for \""++exprType++"\"") $ do
@@ -724,7 +743,7 @@ toplevelPTab = comments <> scriptExpr <> table expr where
           rule = fmap (const pats) comPat
       expect ("bracketed script after \""++exprType++"\" statement") $ do
         (action, endLoc) <- bracketed ('"':exprType++"\" statement")
-        return (AST_TopLambda (read exprType) rule (fmap Com action) (asLocation tok <> endLoc))
+        return (AST_TopLambda (read exprType) rule action (asLocation tok <> endLoc))
 
 toplevel :: DaoParser AST_TopLevel
 toplevel = evalPTable toplevelPTab

@@ -60,7 +60,7 @@ import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
--- | A commonly used pattern, like 'pHeader' but the contents of it is always a list of items which
+-- | A commonly used pattern, like 'pClosure' but the contents of it is always a list of items which
 -- can be pretty-printed by the given @(o -> 'PPrint' ())@ function.
 pContainer :: String -> (o -> PPrint ()) -> [o] -> PPrint ()
 pContainer label prin ox = pList (pString label) "{ " ", " " }" (map prin ox)
@@ -160,21 +160,21 @@ instance PPrintable a => PPrintable (Com a) where { pPrint = pPrintComWith pPrin
 
 -- 'pPrintComWith' wasn't good enough for this, because the comments might occur after the header
 -- but before the opening bracket.
-pPrintComSubBlock :: PPrint () -> Com [Com AST_Script] -> PPrint ()
+pPrintComSubBlock :: PPrint () -> Com [AST_Script] -> PPrint ()
 pPrintComSubBlock header c = case c of
   Com          c    -> run [] c []
   ComBefore bx c    -> run bx c []
   ComAfter     c ax -> run [] c ax
   ComAround bx c ax -> run bx c ax
   where
-    run :: [Comment] -> [Com AST_Script] -> [Comment] -> PPrint ()
+    run :: [Comment] -> [AST_Script] -> [Comment] -> PPrint ()
     run before cx after = case cx of
       [] -> header >> pInline (map pPrint before) >> pString " {}" >> pInline (map pPrint after)
       cx -> do
         pClosure (header >> pInline (map pPrint before)) " { " " }" (map (pGroup True . pPrint) cx)
         pInline (map pPrint after)
 
-pPrintSubBlock :: PPrint () -> [Com AST_Script] -> PPrint ()
+pPrintSubBlock :: PPrint () -> [AST_Script] -> PPrint ()
 pPrintSubBlock header px = pPrintComSubBlock header (Com px)
 
 instance PPrintable AST_Script where
@@ -188,10 +188,10 @@ instance PPrintable AST_Script where
         _                  -> printIfXp ifXp
       case unComment elseXp of
         []                   -> return ()
-        [p] -> case unComment p of
+        [p]                  -> case p of
           (AST_IfThenElse _ _ _ _ _) -> pEndLine >> pString "else " >> pPrint p
-          _                      -> done
-        px                       -> done
+          _                          -> done
+        px                   -> done
         where
           printIfXp ifXp = do
             pInline (map pPrint coms)
@@ -291,13 +291,17 @@ instance PPrintable AST_Object where
 
 instance PPrintable AST_TopLevel where
   pPrint o = case o of
-    AST_Attribute      a b   _ -> pInline [pPrint a, pString "  ", pPrint b, pString ";"]
-    AST_TopFunc        a b c _ -> pPrintComWith (pClosure header " { " " }" . map pPrint) c where
-      header = pString "function " >> pPrint a >> pList_ "(" ", " ")" (map pPrint b)
-    AST_TopScript      a     _ -> pPrint a
-    AST_TopLambda  a b c _ -> pClosure header " { " " }" (map pPrint c) where
+    AST_Attribute a b     _ -> pInline [pPrint a, pString "  ", pPrint b, pString ";"]
+    AST_TopFunc   a b c d _ -> pClosure header " { " " }" (map pPrint d) where
+      header = do
+        pString "function "
+        mapM_ pPrint a
+        pPrint b
+        pPrintComWith (pList_ "(" ", " ")" . map pPrint) c
+    AST_TopScript a       _ -> pPrint a
+    AST_TopLambda a b c   _ -> pClosure header " { " " }" (map pPrint c) where
       header = pShow a >> pPrintComWith (pList_ "(" ", " ")" . map pPrint) b
-    AST_Event      a b   _ -> pPrintComWith (pClosure (pShow a) " { " " }" . map pPrint) b
+    AST_Event     a b c   _ -> pClosure (pShow a >> mapM_ pPrint b) " { " " }" (map pPrint c)
 
 pPrintInterm :: (Intermediate obj ast, PPrintable ast) => obj -> PPrint ()
 pPrintInterm = mapM_ pPrint . fromInterm

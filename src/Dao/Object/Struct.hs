@@ -368,22 +368,23 @@ instance Structured TopLevelEventType where
 
 instance Structured AST_TopLevel where
   dataToStruct a = deconstruct $ case a of
-    AST_Attribute      a b   loc -> with "attribute" $
+    AST_Attribute      a b     loc -> with "attribute" $
       putData a >> putDataAt "value" b >> putData loc
-    AST_TopFunc        a b c loc -> with "function" $
-      putDataAt "name" a >> putData b >> putDataAt "script" c >> putData loc
-    AST_TopScript      a     loc -> with "directive" $ putData a >> putData loc
-    AST_TopLambda  a b c loc -> with "lambda" $
+    AST_TopFunc        a b c d loc -> with "function" $ do
+      putDataAt "comment" a >> putDataAt "name" b
+      putData c >> putDataAt "script" d >> putData loc
+    AST_TopScript      a       loc -> with "directive" $ putData a >> putData loc
+    AST_TopLambda  a b c   loc -> with "lambda" $
       putDataAt "type" a >> putData b >> putDataAt "script" c >> putData loc
-    AST_Event      a b   loc -> with "event" $
-      putDataAt "type" a >> putDataAt "script" b
+    AST_Event      a b c   loc -> with "event" $
+      putDataAt "type" a >> putDataAt "comment" b >> putDataAt "script" c
     AST_TopComment     a         -> putDataAt "comment" a
   structToData = reconstruct $ msum $
     [ with "attribute" $ liftM3 AST_Attribute getData (getDataAt "value") getData
-    , with "function"  $ liftM4 AST_TopFunc (getDataAt "name") getData (getDataAt "script") getData
+    , with "function"  $ liftM5 AST_TopFunc (getDataAt "comment") (getDataAt "name") getData (getDataAt "script") getData
     , with "directive" $ liftM2 AST_TopScript getData getData
     , with "lambda"    $ liftM4 AST_TopLambda (getDataAt "type") getData (getDataAt "script") getData
-    , with "event"     $ liftM3 AST_Event (getDataAt "type") (getDataAt "script") getData
+    , with "event"     $ liftM4 AST_Event (getDataAt "type") (getDataAt "comments") (getDataAt "script") getData
     , with "comment"   $ liftM AST_TopComment getData
     , updateFailed ONull "top-level directive"
     ]

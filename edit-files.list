@@ -1,20 +1,21 @@
 # A list of files you want to edit with Vim.
 # They will appear in the order specified.
-src/Dao/Predicate.hs
-src/Dao/NewParser.hs
-src/Dao/Object/NewParser.hs
+src/Dao/Evaluator.hs
 src/Dao/Object.hs
+src/Dao/Object/AST.hs
+src/Dao/Object/NewParser.hs
+src/Dao/NewParser.hs
+
 src/Dao/Prelude.hs
 src/Dao/EnumSet.hs
+src/Dao/Predicate.hs
 src/Dao/Random.hs
-src/Dao/Evaluator.hs
 tests/2.dao
 tests/1.dao
 tests/main.hs
 tests/RandObj.hs
 tests/I.hs
 tests/EQN.hs
-src/Dao/Object/AST.hs
 src/Dao/Object/Parser.hs
 src/Dao/Object/Struct.hs
 src/Dao/Struct.hs

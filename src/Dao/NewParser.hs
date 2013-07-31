@@ -401,11 +401,12 @@ data TokenDB tok =
   , tokenDBLexer  :: Lexer tok ()
   }
 
--- | Example:
+-- | A state for the 'LexBuilder' monad, used to declaring the regular expressions for a lexer. This
+-- state is converted to a 'TokenDB' which is used by the parser to identify tokens.
 -- > myTokens :: 'LexBuilder'
 -- > myTokens = do
--- >     let key = 'stringTable' . 'Prelude.unwords'
--- >     key "if then else case of let in where"
+-- >     let keyword = 'stringTable' . 'Prelude.unwords'
+-- >     keyword "if then else case of let in where"
 -- >     key "() == /= -> \\ : :: ~ @"
 -- >     lexer "string.literal"  'lexStringLiteral'
 -- >     lexer "comment.endline" 'lexEndlineC_Comment'
@@ -544,20 +545,66 @@ lookupToken tokenDB str =
   fromMaybe (error $ "internal: token "++show (ustr str)++" was never defined") $
     maybeLookupToken tokenDB str
 
--- | Creates a token type with 'regex' where the text lexed from the input is identical to name of
--- the token. This is most useful for defining keywords and operators.
-keyString :: UStrType str => str -> LexBuilder Regex
-keyString str = makeRegex False (ustr str) (ustr str)
+mk_keyword :: UStrType str => TT -> Regex -> str -> LexBuilder (UStr, TT)
+mk_keyword deflt regex key = do
+  let ukey = ustr key
+      keyChars = uchars ukey
+  if fst (runRegex regex keyChars :: (Bool, ([TokenAt TT], String)))
+    then  LexBuilder (newTokID ukey) >>= return . (,) ukey
+    else  error ("keyword token "++show keyChars++"does not match it's own keyword Regex")
 
--- | Creates a 'TokenTable' using a list of keywords or operators you provide to it.
+-- | Create a single keyword 'Regex'. 'Control.Monad.mapM'-ing over this function is not the same as
+-- using 'keywordTable', 'keywordTable' creates an actual table when evalauting to a 'Lexer'. This
+-- function creates no table, it will simply evaluate to a lexer that returns a token of the keyword
+-- type if the keyword matches the input, or else it returns the default token type.
+keyword :: (UStrType str, UStrType key) => str -> Regex -> key -> LexBuilder Regex
+keyword deflt regex key = do
+  deflt      <- LexBuilder (newTokID (ustr deflt))
+  (ukey, tt) <- mk_keyword deflt regex key
+  return $ rxMakeToken $ \str -> if str==(uchars ukey) then (False, tt) else (True, deflt)
+
+-- | To construct a keyword table, you must provide three parameters: the first two are a default
+-- 'TokenType' and a 'Regex' used to split non-keyword words out of the character stream. The third
+-- parameter is a list of keywords strings. Every keyword string will become it's own token type.
+-- The resultant 'Regex' will, when evaluated as a 'Lexer', first try to split a non-keyword string
+-- off of the stream. But if that string matches a keyword, a keyword token of it's own type is
+-- emitted. Otherwise, it will emit a non-keyword token of the 'TokenType' given here. Keyword
+-- tokens are empty, non-keyword contain the characters that matched the regex.
+--
+-- A common way to use this function is with the 'Data.List.words' function:
+-- > 'keywordTable' MyVarNameType ('rx' ('from' @'@a@'@ 'to' @'@z@'@)) $
+-- >     'Data.List.words' $ 'Data.List.unwords' $ 
+-- >         [ "while for if then else goto return break continue"
+-- >           "class instance new delete super typeof" ]
+keywordTable :: (UStrType str, UStrType key) => str -> Regex -> [key] -> LexBuilder Regex
+keywordTable deflt regex keys = do
+  deflt   <- LexBuilder (newTokID (ustr deflt))
+  keyDict <- fmap M.fromList (forM keys (mk_keyword deflt regex))
+  return $ mconcat $ flip fmap keys $ \key -> regex .
+    rxMakeToken (maybe (True, deflt) ((,) False) . flip M.lookup keyDict . ustr)
+
+-- | Creates a token type with 'regex' where the text lexed from the input is identical to name of
+-- the token. The difference between an operator and a keyword is that operators will be lexed
+-- regardless of the characters following it in the stream, which means if you have an operator "op"
+-- and the next characters in the stream are @"open()"@, then the lexical analysis will split this
+-- into @["op", "en()"]@, the remainder @"en()"@ characters must be lexed by some other lexer,
+-- and @"op"@ will be treated as a single operator token. Keywords do not work this way.
+operator :: UStrType str => str -> LexBuilder Regex
+operator str = makeRegex False (ustr str) (ustr str)
+
+-- | Creates a 'TokenTable' using a list of keywords or operators you provide to it. Use this
+-- function to ensure operators do not interfear with each other. For example, if you have two
+-- operators @"=="@ and @"="@, the lexer must try to split the @"=="@ operator from the stream
+-- before it tries splitting @"="@. This function ensures that the order in which operators are
+-- tried is the correct order.
+-- 
 -- Every string provided becomes it's own token type. For example:
 -- > myKeywords = 'tokenTable' $ 'Data.List.words' $ 'Data.List.unwords' $
--- >     [ "data newtype class instance"
--- >     , "if then else case of let in where"
--- >     , "import module qualified as hiding"
--- >     ]
-keyStringTable :: UStrType str => [str] -> LexBuilder Regex
-keyStringTable = fmap mconcat . mapM keyString . sortBy (flip compare) . map ustr
+-- >     [ "** * / % + - & | ^",
+-- >       "= *= /= %= += -= &= |= ^=",
+-- >       "== != <= >= < >" ]
+operatorTable :: UStrType str => [str] -> LexBuilder Regex
+operatorTable = fmap mconcat . mapM operator . sortBy (flip compare) . map ustr
 
 ----------------------------------------------------------------------------------------------------
 -- $Regular_expressions
@@ -605,6 +652,19 @@ keyStringTable = fmap mconcat . mapM keyString . sortBy (flip compare) . map ust
 -- >        ('rxRepeat1'('ch' ' ') . 'rxEmptyToken' space 'Data.Monoid.<>' 'rxRepeat1'('from' '0' 'to' '9') . 'rxToken' number) . loop
 type Regex = RegexUnit -> RegexUnit
 
+-- Not for export, this is a type used in the 'RxMakeToken' constructor, it is a basically a data
+-- representing a function that can convert a string to a 'TT', but could be a constant function.
+data MakeToken = MakeToken (String -> (Bool, TT)) | ConstToken Bool TT
+instance Eq MakeToken where
+  ConstToken kA ttA == ConstToken kB ttB = kA==kB && ttA==ttB
+  _                 == _                 = False
+
+evalMakeToken :: TokenType tok => MakeToken -> String -> Lexer tok ()
+evalMakeToken mkt withStr = (if keep then makeToken else makeEmptyToken) (wrapTT tt) where
+  (keep, tt) = case mkt of
+    ConstToken keep tt -> (keep, tt)
+    MakeToken  make    -> make withStr
+
 -- | This is an intermediate type for constructing 'Regex's. You will not be using it directly. You
 -- will instead use any function that evaluates to a 'Regex', which is a function of this data type.
 data RegexUnit
@@ -614,7 +674,7 @@ data RegexUnit
   | RxStep     { rxStepUnit    :: RxPrimitive , subRegex :: RegexUnit }
   | RxExpect   { rxErrMsg      :: UStr        , subRegex :: RegexUnit }
   | RxDontMatch{ subRegex      :: RegexUnit }
-  | RxMakeToken{ rxMakeToken   :: TT, rxKeepContent :: Bool, subRegex :: RegexUnit }
+  | RxMakeToken{ rxMakeFunc    :: MakeToken, subRegex :: RegexUnit }
   deriving Eq
 instance Monoid RegexUnit where
   mempty = RxBacktrack
@@ -623,7 +683,10 @@ instance Monoid RegexUnit where
     RxSuccess          -> a
     RxExpect    _   _  -> a
     RxStep      a'  ax -> case b of
-      RxStep      b'  bx -> if a'==b' then RxStep a' (ax<>bx) else RxChoice [a,b]
+      RxStep      b'  bx -> case a' of
+        RxRepeat lo _ _ | lo==Es.NegInf || lo==Es.Point 0 -> RxStep a' ax
+        a'              | a'==b'                          -> RxStep a' (ax<>bx)
+        a'                                                -> RxChoice [a,b]
       b                  -> RxChoice [a,b]
     RxDontMatch    ax  -> case b of
       RxDontMatch    bx  -> RxDontMatch (ax<>bx)
@@ -637,10 +700,10 @@ instance Monoid RegexUnit where
       b                    ->
         let list = loop ax [b]
         in  if null (tail list) then head list else RxChoice list
-    RxMakeToken ta ka ax -> case b of
-      RxMakeToken tb kb bx ->
-        if ta==tb then RxMakeToken ta (ka||kb) (ax<>bx) else RxChoice [a,b]
-      b                    -> RxChoice [a,b]
+    RxMakeToken ta ax -> case b of
+      RxMakeToken tb bx ->
+        if ta==tb then RxMakeToken ta (ax<>bx) else RxChoice [a,b]
+      b                 -> RxChoice [a,b]
     where
       loop ax bx = case ax of
         []   -> bx
@@ -657,26 +720,25 @@ instance Monoid RegexUnit where
 regexToLexer :: TokenType tok => Regex -> Lexer tok ()
 regexToLexer re = loop (re RxSuccess) where
   loop re = case re of
-    RxBacktrack            -> lexBacktrack
-    RxSuccess              -> return ()
-    RxMakeToken tt keep re -> case re of
-      RxMakeToken tt keep re -> loop (RxMakeToken tt keep re)
-      _                      ->
-        (optional . (if keep then makeToken else makeEmptyToken)) (wrapTT tt) >> loop re
+    RxBacktrack       -> lexBacktrack
+    RxSuccess         -> return ()
+    RxMakeToken tt re -> case re of
+      RxMakeToken tt re -> loop (RxMakeToken tt re)
+      _                 -> gets lexBuffer >>= evalMakeToken tt >> loop re
         -- if there are two 'RxMakeToken's in a row, use the later one. This makes for more
         -- intuitive regular expressions.
-    RxChoice            re -> msum $ map loop re
-    RxStep         r    re -> do
+    RxChoice       re -> msum $ map loop re
+    RxStep    r    re -> do
       keep <- gets lexBuffer
       clearBuffer
       inpt <- fmap (take 4) (gets lexInput)
       mplus (regexPrimToLexer r >> modify (\st -> st{lexBuffer = keep ++ lexBuffer st}))
             (modify (\st -> st{lexBuffer=keep, lexInput = lexBuffer st ++ lexInput st}) >> mzero)
       loop re
-    RxExpect       err  re -> mplus (loop re) (fail (uchars err))
-    RxDontMatch         re -> case re of
-      RxDontMatch re -> loop re -- double negative means succeed on match
-      re             -> do
+    RxExpect  err  re -> mplus (loop re) (fail (uchars err))
+    RxDontMatch    re -> case re of
+      RxDontMatch    re -> loop re -- double negative means succeed on match
+      re                -> do
         keep <- gets lexBuffer
         matched <- clearBuffer >> mplus (loop re >> return True) (return False)
         if matched
@@ -882,11 +944,14 @@ rxRepeat1 = rxLimitMin 1
 -- | Create a token, keep the portion of the string that has matched the regex up to this point, but
 -- clear the match buffer once the token has been created.
 rxToken :: TokenType tok => tok -> Regex
-rxToken tok = RxMakeToken (unwrapTT tok) True
+rxToken tok = RxMakeToken (ConstToken True $ unwrapTT tok)
 
 -- | Create a token, disgarding the portion of the string that has matched the regex up to this point.
 rxEmptyToken :: TokenType tok => tok -> Regex
-rxEmptyToken tok = RxMakeToken (unwrapTT tok) False
+rxEmptyToken tok = RxMakeToken (ConstToken False $ unwrapTT tok)
+
+rxMakeToken :: TokenType tok => (String -> (Bool, tok)) -> Regex
+rxMakeToken make = RxMakeToken (MakeToken (fmap (fmap unwrapTT) make))
 
 ----------------------------------------------------------------------------------------------------
 -- $Lexical_Analysis
@@ -984,12 +1049,12 @@ lexCurrentLocation st = atPoint (lineNumber st) (columnNumber st)
 -- 'Lexer' backtracks while being evaluated in lexical analysis the 'lexInput' will not be
 -- affected at all and the 'lexBuffer' is ingored entirely.
 newtype Lexer tok a = Lexer{
-    runLexer :: PTrans (Error (LexerState tok) tok) (State (LexerState tok)) a
+    lexerToPTrans :: PTrans (Error (LexerState tok) tok) (State (LexerState tok)) a
   }
 instance Functor (Lexer tok) where { fmap fn (Lexer lex) = Lexer (fmap fn lex) }
 instance TokenType tok =>
   Monad (Lexer tok) where
-    (Lexer fn) >>= mfn = Lexer (fn >>= runLexer . mfn)
+    (Lexer fn) >>= mfn = Lexer (fn >>= lexerToPTrans . mfn)
     return             = Lexer . return
     fail msg           = do
       st <- get
@@ -1010,7 +1075,7 @@ instance TokenType tok =>
 instance TokenType tok =>
   MonadError (Error (LexerState tok) tok) (Lexer tok) where
     throwError                     = Lexer . throwError
-    catchError (Lexer try) catcher = Lexer (catchError try (runLexer . catcher))
+    catchError (Lexer try) catcher = Lexer (catchError try (lexerToPTrans . catcher))
 instance TokenType tok =>
   MonadPlusError (Error (LexerState tok) tok) (Lexer tok) where
     catchPValue (Lexer try) = Lexer (catchPValue try)
@@ -1157,7 +1222,23 @@ tokenStreamToLines toks = loop toks where
 lexicalAnalysis
   :: TokenType tok
   => Lexer tok a -> LexerState tok -> (PValue (Error (LexerState tok) tok) a, LexerState tok)
-lexicalAnalysis lexer st = runState (runPTrans (runLexer lexer)) st
+lexicalAnalysis lexer st = runState (runPTrans (lexerToPTrans lexer)) st
+
+-- | Perform a simple evaluation of a 'Lexer' against the beginning of a string, returning the
+-- tokens and the remaining string. Evaluates to @('Prelude.True', (tokens, remainder))@ if the
+-- lexer succeeded, evaluates to @('Prelude.False', (tokens, remainder))@ if the lexer failed or
+-- backtracked, where @tokens@ are the tokens produced and @remainder@ is the portion of the string
+-- that was not tokenized.
+runLexer :: TokenType tok => Lexer tok a -> String -> (Bool, ([TokenAt tok], String))
+runLexer lexer inputStr =
+  let (lexResult, st) = lexicalAnalysis lexer (newLexerState inputStr)
+  in  (case lexResult of { OK _ -> True; _ -> False; }, (tokenStream st, lexInput st))
+
+-- | Convert a 'Regex' to a 'Lexer' and match a string against it using 'runLexer', so it only
+-- matches at the beginning of a string, not at any arbitrary point in the middle of the string.
+runRegex :: TokenType tok => Regex -> String -> (Bool, ([TokenAt tok], String))
+runRegex lexer inputStr =
+  let (a, (b, c)) = runLexer (regexToLexer lexer) inputStr in (a, (fmap (fmap wrapTT) b, c))
 
 testLexicalAnalysis_withFilePath
   :: (Show tok, TokenType tok)

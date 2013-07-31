@@ -117,30 +117,32 @@ daoTokenDef = do
       rxRepeat(invert [ch '"', ch '\\']) . (rx "\\" . rx anyChar . loop <> rx '"'))
   
   -------------------------------------- KEYWORDS AND GROUPING ------------------------------------
-  keyStringTable $ words "( [ ] )"
+  openers <- operatorTable $ words "( [ { #{"
   let com = rx ','
   comma           <- emptyToken COMMA       $ com
-  keyStringTable $ words "$ @ -> . global local qtime static"
-  keyStringTable (words "! - ~")
-  keywords_groups <- keyStringTable $ words $ unwords $
-    [ "{ data struct list set intmap dict array date time }"
+  operatorTable (words "$ @ -> .")
+  operatorTable (words "! - ~")
+  keywords_groups <- keywordTable LABEL labelRX $ words $ unwords $
+    [ "global local qtime static"
+    , "data struct list set intmap dict array date time"
     , "if else for in while with try catch continue break return throw"
-    , "#{ }# [ ] ( )"
     , "global local qtime static"
     , "function func pattern pat rule BEGIN END EXIT"
     , "import imports require requires"
     ]
-  [openBrace, closeBrace, openParen, closeParen] <- mapM keyString $ words "{ } ( )"
+  let myGetKeyword = keyword LABEL labelRX
+  closers <- operatorTable $ words "#} } ] )"
+  [openBrace, closeBrace, openParen, closeParen] <- mapM operator $ words "{ } ( )"
   
   -------------------------------------- DATA SPECIAL SYNTAX --------------------------------------
-  dataRX       <- keyString "data"
+  dataRX       <- myGetKeyword "data"
   base64Data   <- fullToken  BASE64DATA $
     rxRepeat1[from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/']
   dataLexer   <- pure $ dataRX . multiComs . openBrace .
     fix(\loop -> (base64Data<>space) . loop <> closeBrace <> rxErr "unknown token in base-64 data")
   
   ------------------------------------------- OPERATORS -------------------------------------------
-  operators    <- keyStringTable $ words $ unwords $
+  operators    <- operatorTable $ words $ unwords $
     [allUpdateOpStrs, allArithOp1Strs, allArithOp2Strs, ": ;"]
   
   ------------------------------------ DATE/TIME SPECIAL SYNTAX -----------------------------------
@@ -150,20 +152,19 @@ daoTokenDef = do
       col  = rx ':'
       hy   = rx '-'
       timeRX = dd . col . dd . col . dd . opt(dot . number)
-  dateExpr <- fullToken DATE $
-    year . hy . dd . hy . dd . opt(spaceRX . timeRX) . opt(spaceRX . labelRX)
-  dateTag  <- keyString "date"
-  date     <- pure $ dateTag . space . dateExpr
   timeExpr <- fullToken TIME timeRX
-  timeTag  <- keyString "time"
+  timeTag  <- myGetKeyword "time"
   time     <- pure $ timeTag . space . timeExpr
+  dateExpr <- fullToken DATE $ year . hy . dd . hy . dd
+  dateTag  <- myGetKeyword "date"
+  date     <- pure $ dateTag . space . dateExpr . opt(space . timeExpr) . opt(space . label)
   
   ------------------------------------------- ACTIVATE --------------------------------------------
   activate $
-    [ space, inlineCom, endlineCom, comma, operators
+    [ space, inlineCom, endlineCom, comma, openers, closers
     , stringLit, base16, base2, base10Parser
     , date, time, dataLexer
-    , keywords_groups, label
+    , keywords_groups, label, operators
     ]
 
 ----------------------------------------------------------------------------------------------------
@@ -424,6 +425,15 @@ singletonPTab = numberPTab <> singlPTab where
           tokenBy "{" as0
           (items, endLoc) <- commaSepd "list of items to initialize struct declaration" "}" equation
           return (AST_Struct initObj items (asLocation startTok <> endLoc))
+    , tableItemBy "data" $ \startTok -> expect "bracketed base-64 data expression" $ do
+        coms <- optSpace
+        tokenBy "{" as0
+        dat <- fmap concat $ many $ msum
+          [ fmap return (token BASE64DATA asUStr), token SPACE as0 >> return []
+          , fail "unknown token within base-64 data expression"
+          ]
+        endLoc <- expect "closing brack after base-64 data" (tokenBy "}" asLocation)
+        return (AST_Data coms (fmap Com dat) (asLocation startTok <> endLoc))
     ]
   checkAssign lbl obj = do
     case obj of

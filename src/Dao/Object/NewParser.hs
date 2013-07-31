@@ -161,10 +161,9 @@ daoTokenDef = do
   
   ------------------------------------------- ACTIVATE --------------------------------------------
   activate $
-    [ space, inlineCom, endlineCom, comma, openers, closers
+    [ space, inlineCom, endlineCom, comma, openers, closers, operators
     , stringLit, base16, base2, base10Parser
-    , date, time, dataLexer
-    , keywords_groups, label, operators
+    , date, time, dataLexer, keywords_groups, label
     ]
 
 ----------------------------------------------------------------------------------------------------

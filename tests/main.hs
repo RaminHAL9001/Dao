@@ -59,61 +59,6 @@ import           System.Environment
 
 ----------------------------------------------------------------------------------------------------
 
-el = EndlineComment . ustr
-il = InlineComment  . ustr
-lu = LocationUnknown
-a  = AST_Literal (ORef (LocalRef (ustr "a"))) lu
-i0 = AST_Literal (OInt 0) lu
-i1 = AST_Literal (OInt 1) lu
-i2 = AST_Literal (OInt 2) lu
-i3 = AST_Literal (OInt 3) lu
-add   = Com ADD
-eqeq  = Com EQUL
-modu  = Com MOD
-mult  = Com MULT
-diveq = Com UDIV
-eq    = Com UCONST
-evalObj expr = AST_EvalObject expr [] lu
-
-ifExpr :: Int -> AST_Script
-ifExpr i =
-  AST_IfThenElse
-    []
-    (AST_Paren True (Com (AST_Equation (AST_Equation a modu i2 lu) eqeq i0 lu)) lu)
-    (Com $
-      [ ComBefore [el " if the number is even, divide by two"] $
-          evalObj (AST_Assign a diveq i2 lu)
-      ])
-    (Com $
-      [ ComBefore [el " if the number is odd, multiply by three and add one"] $
-          evalObj (AST_Assign a eq (AST_Equation (AST_Equation a mult i3 lu) add i1 lu) lu)
-      ] ++ if i<=0 then [] else [ComBefore [el " then test it again"] (ifExpr (i-1))]
-    )
-    LocationUnknown
-
-mainIfExpr = showPPrint 80 "    " (pPrint (ifExpr 3))
-
-testPrinter item = mapM_ fn [20, 80, 120] where
-  fn maxWidth = putStrLn $ showPPrint maxWidth "    " item
-
-samples = [pString "Hello, world! ", pString "Spitting out the daemons. ", pString "Good times. "]
-
-testClosure = testPrinter $ pClosure (pString "begin ") "{ " "}" $ samples
-
-testList = testPrinter $ pList (pString "list ") "{ " ", " " }" $
-  map pString (words "this is something to test the pList function each word in this list is treated as a list item")
-
-testInline = testPrinter $ pInline $ intercalate [pString " + "] $ map return $ concat $
-  [ map pString (words "testing the pInline function")
-  , [pClosure (pString "innerClosure() ") "{ " "}" samples]
-  , map pString (words "after the closure more words exist")
-  ]
-
--- test the pretty printer
-simpleTest = testList >> testInline >> testClosure >> putStrLn mainIfExpr
-
-----------------------------------------------------------------------------------------------------
-
 maxRecurseDepth = 5
 
 randObj :: Int -> Object
@@ -143,9 +88,6 @@ errHandler msg =
   [ Handler (\ (e::IOException) -> hPutStrLn stderr (msg++": "++show e))
   , Handler (\ (e::ErrorCall) -> hPutStrLn stderr (msg++": "++show e))
   ]
-
-pPrintComScriptExpr :: [Com AST_Script] -> PPrint ()
-pPrintComScriptExpr = pPrintSubBlock (return ())
 
 -- | Test the pretty printer and the parser. If a randomly generated object can be pretty printed,
 -- and the parser can parse the pretty-printed string and create the exact same object, then the
@@ -193,7 +135,7 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
             -- #ifdef OLD_PARSER
             -- (par, msg) = {-# SCC par #-} runParser (regexMany space >> parseDirective) str 
             -- #else
-            par = {-# SCC par #-} parse daoCFGrammar mempty str 
+            par = {-# SCC par #-} parse daoGrammar mempty str 
             msg = case par of
               PFail err -> "parser error"
               Backtrack -> "parser backtracked"

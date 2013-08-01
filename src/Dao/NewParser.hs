@@ -52,7 +52,7 @@ import qualified Data.IntMap as IM
 
 import           System.IO
 
--- import Debug.Trace
+--import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -561,7 +561,7 @@ keyword :: (UStrType str, UStrType key) => str -> Regex -> key -> LexBuilder Reg
 keyword deflt regex key = do
   deflt      <- LexBuilder (newTokID (ustr deflt))
   (ukey, tt) <- mk_keyword deflt regex key
-  return $ rxMakeToken $ \str -> if str==(uchars ukey) then (False, tt) else (True, deflt)
+  return (regex . rxMakeToken (\str -> if ustr str==ukey then (False, tt) else (True, deflt)))
 
 -- | To construct a keyword table, you must provide three parameters: the first two are a default
 -- 'TokenType' and a 'Regex' used to split non-keyword words out of the character stream. The third
@@ -580,8 +580,7 @@ keywordTable :: (UStrType str, UStrType key) => str -> Regex -> [key] -> LexBuil
 keywordTable deflt regex keys = do
   deflt   <- LexBuilder (newTokID (ustr deflt))
   keyDict <- fmap M.fromList (forM keys (mk_keyword deflt regex))
-  return $ mconcat $ flip fmap keys $ \key -> regex .
-    rxMakeToken (maybe (True, deflt) ((,) False) . flip M.lookup keyDict . ustr)
+  return (regex . rxMakeToken (maybe (True, deflt) ((,) False) . flip M.lookup keyDict . ustr))
 
 -- | Creates a token type with 'regex' where the text lexed from the input is identical to name of
 -- the token. The difference between an operator and a keyword is that operators will be lexed
@@ -590,7 +589,12 @@ keywordTable deflt regex keys = do
 -- into @["op", "en()"]@, the remainder @"en()"@ characters must be lexed by some other lexer,
 -- and @"op"@ will be treated as a single operator token. Keywords do not work this way.
 operator :: UStrType str => str -> LexBuilder Regex
-operator str = makeRegex False (ustr str) (ustr str)
+operator str = do
+  let u = ustr str
+  case ulength u of
+    0 -> return id
+    1 -> makeRegex False u (head (uchars u))
+    _ -> makeRegex False u u
 
 -- | Creates a 'TokenTable' using a list of keywords or operators you provide to it. Use this
 -- function to ensure operators do not interfear with each other. For example, if you have two
@@ -658,6 +662,9 @@ data MakeToken = MakeToken (String -> (Bool, TT)) | ConstToken Bool TT
 instance Eq MakeToken where
   ConstToken kA ttA == ConstToken kB ttB = kA==kB && ttA==ttB
   _                 == _                 = False
+instance Show MakeToken where
+  show (ConstToken kA ttA) = (if kA then "full " else "empty ")++show ttA
+  show _                   = "MakeToken"
 
 evalMakeToken :: TokenType tok => MakeToken -> String -> Lexer tok ()
 evalMakeToken mkt withStr = (if keep then makeToken else makeEmptyToken) (wrapTT tt) where
@@ -673,9 +680,19 @@ data RegexUnit
   | RxChoice   { getSubRegexes :: [RegexUnit] }
   | RxStep     { rxStepUnit    :: RxPrimitive , subRegex :: RegexUnit }
   | RxExpect   { rxErrMsg      :: UStr        , subRegex :: RegexUnit }
-  | RxDontMatch{ subRegex      :: RegexUnit }
-  | RxMakeToken{ rxMakeFunc    :: MakeToken, subRegex :: RegexUnit }
+  | RxDontMatch{                                subRegex :: RegexUnit }
+  | RxMakeToken{ rxMakeFunc    :: MakeToken   , subRegex :: RegexUnit }
   deriving Eq
+instance Show RegexUnit where
+  show rx = case rx of
+    RxBacktrack     -> "RxBacktrack"
+    RxSuccess       -> "RxSuccess"
+    RxChoice      c -> "RxChoice "++show c
+    RxStep      p s -> "RxStep ("++showRegexPrim p++") . "++show s
+    RxExpect    e s -> "RxExpect "++show e++" . "++show s
+    RxDontMatch   s -> "RxDontMatch ("++show s++")"
+    RxMakeToken t s -> "RxMakeToken ("++show t++") . "++show s
+instance Show (RegexUnit -> RegexUnit) where { show rx = show (rx RxSuccess) }
 instance Monoid RegexUnit where
   mempty = RxBacktrack
   mappend a b = case a of
@@ -701,9 +718,8 @@ instance Monoid RegexUnit where
         let list = loop ax [b]
         in  if null (tail list) then head list else RxChoice list
     RxMakeToken ta ax -> case b of
-      RxMakeToken tb bx ->
-        if ta==tb then RxMakeToken ta (ax<>bx) else RxChoice [a,b]
-      b                 -> RxChoice [a,b]
+      RxMakeToken tb bx | ta==tb -> RxMakeToken ta (ax<>bx)
+      b                          -> RxChoice [a,b]
     where
       loop ax bx = case ax of
         []   -> bx
@@ -731,7 +747,7 @@ regexToLexer re = loop (re RxSuccess) where
     RxStep    r    re -> do
       keep <- gets lexBuffer
       clearBuffer
-      inpt <- fmap (take 4) (gets lexInput)
+      -- fmap (take 4) (gets lexInput) >>= \i -> trace ("lexInput = "++show i++"...") $ return ()
       mplus (regexPrimToLexer r >> modify (\st -> st{lexBuffer = keep ++ lexBuffer st}))
             (modify (\st -> st{lexBuffer=keep, lexInput = lexBuffer st ++ lexInput st}) >> mzero)
       loop re
@@ -774,7 +790,8 @@ regexPrimToLexer :: TokenType tok => RxPrimitive -> Lexer tok ()
 regexPrimToLexer re = case re of
   RxDelete          -> clearBuffer
   RxString  str     -> lexString (uchars str)
-  RxCharSet set     -> lexCharP (Es.member set)
+  RxCharSet set     -> -- gets lexInput >>= \i -> trace ("lexInput: "++show (take 4 i)++" match against "++show set) (lexCharP (Es.member set)) >> trace "OK" (return ())
+    lexCharP (Es.member set)
   RxRepeat lo hi re -> rept lo hi re
   where
     rept lo hi re = fromMaybe (seq "internal error" $! return ()) $ do
@@ -1280,9 +1297,8 @@ testLexicalAnalysisOnFile a b c = readFile c >>= testLexicalAnalysis_withFilePat
 -- that is converted into the lower-level 'TokStream' type.
 
 -- | The 'TokStreamState' contains a stream of all tokens created by the 'lexicalAnalysis' phase.
--- This is the state associated with a 'TokStream' in the instantiation of 'Control.Mimport
--- Debug.Traceonad.State.MonadState', so 'Control.Monad.State.get' returns a value of this data
--- type.
+-- This is the state associated with a 'TokStream' in the instantiation of
+-- 'Control.Monad.State.MonadState', so 'Control.Monad.State.get' returns a value of this data type.
 data TokStreamState st tok
   = TokStreamState
     { userState     :: st

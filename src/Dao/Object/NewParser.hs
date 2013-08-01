@@ -49,7 +49,7 @@ import           Data.Array.IArray
 import           Data.Time.LocalTime
 import           Numeric
 
-import Debug.Trace
+--import Debug.Trace
 
 maxYears :: Integer
 maxYears = 99999
@@ -118,6 +118,7 @@ daoTokenDef = do
   
   -------------------------------------- KEYWORDS AND GROUPING ------------------------------------
   openers <- operatorTable $ words "( [ { #{"
+  -- trace ("opener tokens ( [ { #{   ---> "++show openers) $ return ()
   let com = rx ','
   comma           <- emptyToken COMMA       $ com
   operatorTable (words "$ @ -> .")
@@ -132,18 +133,20 @@ daoTokenDef = do
     ]
   let myGetKeyword = keyword LABEL labelRX
   closers <- operatorTable $ words "#} } ] )"
-  [openBrace, closeBrace, openParen, closeParen] <- mapM operator $ words "{ } ( )"
+  [openBrace, closeBrace, openParen, closeParen] <- mapM operator (words "{ } ( )")
+  -- trace ("openBrace = "++show openBrace) $ return ()
   
   -------------------------------------- DATA SPECIAL SYNTAX --------------------------------------
-  dataRX       <- myGetKeyword "data"
+  dataTag      <- myGetKeyword "data"
   base64Data   <- fullToken  BASE64DATA $
     rxRepeat1[from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/']
-  dataLexer   <- pure $ dataRX . multiComs . openBrace .
+  dataLexer    <- pure $ dataTag . multiComs . openBrace .
     fix(\loop -> (base64Data<>space) . loop <> closeBrace <> rxErr "unknown token in base-64 data")
   
   ------------------------------------------- OPERATORS -------------------------------------------
   operators    <- operatorTable $ words $ unwords $
     [allUpdateOpStrs, allArithOp1Strs, allArithOp2Strs, ": ;"]
+  -- trace ("operators: "++show operators) $ return ()
   
   ------------------------------------ DATE/TIME SPECIAL SYNTAX -----------------------------------
   -- makes use of token types that have already been created above
@@ -161,9 +164,10 @@ daoTokenDef = do
   
   ------------------------------------------- ACTIVATE --------------------------------------------
   activate $
-    [ space, inlineCom, endlineCom, comma, openers, closers, operators
+    [ space, inlineCom, endlineCom, comma
     , stringLit, base16, base2, base10Parser
-    , date, time, dataLexer, keywords_groups, label
+    , openers, closers, operators
+    , dataLexer, date, time, keywords_groups, label
     ]
 
 ----------------------------------------------------------------------------------------------------
@@ -433,10 +437,8 @@ singletonPTab = numberPTab <> singlPTab where
         coms <- optSpace
         tokenBy "{" as0
         dat <- fmap concat $ many $ msum
-          [ fmap return (token BASE64DATA asUStr), token SPACE as0 >> return []
-          , fail "unknown token within base-64 data expression"
-          ]
-        endLoc <- expect "closing brack after base-64 data" (tokenBy "}" asLocation)
+          [fmap return (token BASE64DATA asUStr), token SPACE as0 >> return []]
+        endLoc <- expect "base-64 data" (tokenBy "}" asLocation)
         return (AST_Data coms (fmap Com dat) (asLocation startTok <> endLoc))
     , lambdaFunc "func", lambdaFunc "function"
     , lambdaFunc "pat", lambdaFunc "pattern"

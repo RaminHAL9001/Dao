@@ -382,6 +382,11 @@ singletonPTab = numberPTab <> singlPTab where
         expect "closing parentheses" $ do
           endloc <- tokenBy ")" asLocation
           return (AST_Paren obj (asLocation tok <> endloc))
+    , tableItemBy "#{" $ \startTok -> expect "object expression after open #{ meta-eval brace" $ do
+        obj <- commented equation
+        expect "closing }# meta-eval brace" $ do
+          endLoc <- tokenBy "}#" asLocation
+          return (AST_MetaEval obj (asLocation startTok <> endLoc))
     , tableItemBy "date" $ \startTok ->
         expect "date/time value expression after \"date\" statement" $ do
           token SPACE as0
@@ -433,6 +438,9 @@ singletonPTab = numberPTab <> singlPTab where
           ]
         endLoc <- expect "closing brack after base-64 data" (tokenBy "}" asLocation)
         return (AST_Data coms (fmap Com dat) (asLocation startTok <> endLoc))
+    , lambdaFunc "func", lambdaFunc "function"
+    , lambdaFunc "pat", lambdaFunc "pattern"
+    , lambdaFunc "rule"
     ]
   checkAssign lbl obj = do
     case obj of
@@ -440,6 +448,14 @@ singletonPTab = numberPTab <> singlPTab where
       obj                -> do
         failLater ("non-assignment expression in \""++lbl++"\" statement") (getLocation obj)
     return obj
+  lambdaFunc lbl = tableItemBy lbl $ \startTok -> do
+    com1 <- optSpace
+    (params, endLoc) <- expect ("parameter list after \""++lbl++"\" statement") $ do
+      tokenBy "(" as0
+      commaSepd ("parameter value for \""++lbl++"\" statement") ")" equation
+    com2 <- optSpace
+    (scrpt, endLoc) <- bracketed ("script expression after \""++lbl++"\" statement")
+    return (AST_Lambda (read lbl) (com com1 params com2) scrpt (asLocation startTok <> endLoc))
 
 container :: UStrType lbl =>
   lbl -> (AST_Object -> DaoParser AST_Object) -> DaoTableItem AST_Object
@@ -715,27 +731,32 @@ elseStatement = do
 ----------------------------------------------------------------------------------------------------
 
 toplevelPTab :: DaoPTable AST_TopLevel
-toplevelPTab = comments <> scriptExpr <> table expr where
+toplevelPTab = table expr <> comments <> scriptExpr where
   comments = bindPTable spaceComPTab (\c1 -> optSpace >>= \c2 -> return (AST_TopComment (c1++c2)))
   scriptExpr = bindPTable scriptPTab $ \obj -> return (AST_TopScript obj (getLocation obj))
   expr =
     [ tableItemBy "func"    function, tableItemBy "function" function
     , tableItemBy "BEGIN"   event   , tableItemBy "END"      event   , tableItemBy "EXIT" event
     , tableItemBy "pattern" pattern , tableItemBy "pat"      pattern , tableItemBy "rule" pattern
+    , header "require", header "requires", header "import"
     ]
   singlePattern = commented equation >>= \eqn -> return ([eqn], getLocation (unComment eqn))
   function tok = do
     let exprType = '"':show (asTokType tok)++"\""
     coms <- optSpace
-    name <- token LABEL asUStr
-    (pats, _     ) <- expect ("list of patterns for \""++asString tok++"\" statement") $
-      commentedInPair $ do
-        tokenBy "(" as0
-        commaSepd ("pattern after "++exprType++" statement") ")" equation
-    (actn, endLoc) <-
-      expect ("bracketed script expression after "++exprType++" statement") $
-        bracketed ('"':asString tok++"\" statement")
-    return (AST_TopFunc coms name pats actn (asLocation tok <> endLoc))
+    name <- optional (token LABEL asUStr)
+    expect ("parameter list after \""++exprType++"\" statement") $ do
+      (pats, _     ) <- expect ("list of patterns for \""++asString tok++"\" statement") $
+        commentedInPair $ do
+          tokenBy "(" as0
+          commaSepd ("pattern after "++exprType++" statement") ")" equation
+      (actn, endLoc) <-
+        expect ("bracketed script expression after "++exprType++" statement") $
+          bracketed ('"':asString tok++"\" statement")
+      let loc = asLocation tok <> endLoc
+      return $ case name of
+        Just name -> AST_TopFunc coms name pats actn loc
+        Nothing   -> AST_TopLambda (read (asString tok)) pats actn loc
   event   tok = do
     let exprType = show (asTokType tok)
     coms <- optSpace
@@ -753,6 +774,14 @@ toplevelPTab = comments <> scriptExpr <> table expr where
       expect ("bracketed script after \""++exprType++"\" statement") $ do
         (action, endLoc) <- bracketed ('"':exprType++"\" statement")
         return (AST_TopLambda (read exprType) rule action (asLocation tok <> endLoc))
+  header lbl = tableItemBy lbl $ \startTok ->
+    expect ("string literal for \""++lbl++"\" statement") $ do
+      item <- commented (token STRINGLIT id)
+      expect ("semicolon after \""++lbl++"\" statement") $ do
+        endLoc <- tokenBy ";" asLocation
+        return $
+          AST_Attribute (Com (asUStr startTok)) (fmap asUStr item) $
+            (asLocation startTok <> (asLocation (unComment item)))
 
 toplevel :: DaoParser AST_TopLevel
 toplevel = evalPTable toplevelPTab

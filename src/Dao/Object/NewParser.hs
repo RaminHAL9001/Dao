@@ -49,7 +49,7 @@ import           Data.Array.IArray
 import           Data.Time.LocalTime
 import           Numeric
 
---import Debug.Trace
+import Debug.Trace
 
 maxYears :: Integer
 maxYears = 99999
@@ -108,8 +108,13 @@ daoTokenDef = do
   base16       <- fullToken  BASE16     $ (rx "0x" <> rx "0X") .
     rxRepeat[from0to9, from 'A' to 'F', from 'a' to 'f']
   numType      <- fullToken  NUMTYPE    $ rx (map ch "UILRFfijs")
-  let base10Parser = dotBase10 . opt exponent . opt numType <>
-        base10 . opt (dotBase10 <> dot) . opt exponent . opt numType
+  point        <- operator "."
+  let base10Parser = mconcat $
+        [ dotBase10 . opt exponent . opt numType
+        , base10 . opt dotBase10 . opt exponent . opt numType
+        , base10 . dot . exponent . opt numType
+        , base10 . opt exponent . opt numType
+        ]
   
   ---------------------------------------- STRING  LITERAL ----------------------------------------
   stringLit    <- fullToken  STRINGLIT  $ rx '"' .
@@ -119,10 +124,8 @@ daoTokenDef = do
   -------------------------------------- KEYWORDS AND GROUPING ------------------------------------
   openers <- operatorTable $ words "( [ { #{"
   -- trace ("opener tokens ( [ { #{   ---> "++show openers) $ return ()
-  let com = rx ','
-  comma           <- emptyToken COMMA       $ com
-  operatorTable (words "$ @ -> .")
-  operatorTable (words "! - ~")
+  comma           <- emptyToken COMMA (rx ',')
+  operatorTable (words "$ @ -> . ! - ~")
   keywords_groups <- keywordTable LABEL labelRX $ words $ unwords $
     [ "global local qtime static"
     , "data struct list set intmap dict array date time"
@@ -131,7 +134,9 @@ daoTokenDef = do
     , "function func pattern pat rule BEGIN END EXIT"
     , "import imports require requires"
     ]
-  let myGetKeyword = keyword LABEL labelRX
+  let myGetKeyword tokID = do
+        tok <- getTokID (ustr tokID) :: LexBuilder DaoTT
+        return (rx (ustr tokID) . rxEmptyToken tok)
   closers <- operatorTable $ words "#} } ] )"
   [openBrace, closeBrace, openParen, closeParen] <- mapM operator (words "{ } ( )")
   -- trace ("openBrace = "++show openBrace) $ return ()
@@ -140,8 +145,9 @@ daoTokenDef = do
   dataTag      <- myGetKeyword "data"
   base64Data   <- fullToken  BASE64DATA $
     rxRepeat1[from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/']
-  dataLexer    <- pure $ dataTag . multiComs . openBrace .
-    fix(\loop -> (base64Data<>space) . loop <> closeBrace <> rxErr "unknown token in base-64 data")
+  let dataLexer = dataTag . multiComs . openBrace .
+        fix(\loop -> (base64Data<>space) . loop <>
+              closeBrace <> rxErr "unknown token in base-64 data")
   
   ------------------------------------------- OPERATORS -------------------------------------------
   operators    <- operatorTable $ words $ unwords $
@@ -157,16 +163,16 @@ daoTokenDef = do
       timeRX = dd . col . dd . col . dd . opt(dot . number)
   timeExpr <- fullToken TIME timeRX
   timeTag  <- myGetKeyword "time"
-  time     <- pure $ timeTag . space . timeExpr
+  let time = timeTag . space . timeExpr
   dateExpr <- fullToken DATE $ year . hy . dd . hy . dd
   dateTag  <- myGetKeyword "date"
-  date     <- pure $ dateTag . space . dateExpr . opt(space . timeExpr) . opt(space . label)
+  let date = dateTag . space . dateExpr . opt(space . timeExpr) . opt(space . label)
   
   ------------------------------------------- ACTIVATE --------------------------------------------
   activate $
     [ space, inlineCom, endlineCom, comma
     , stringLit, base16, base2, base10Parser
-    , openers, closers, operators
+    , operators, openers, closers
     , dataLexer, date, time, keywords_groups, label
     ]
 
@@ -316,9 +322,9 @@ numberFromStrs base int maybFrac maybPlusMinusExp maybTyp = do
 -- value may have a decimal point.
 diffTimeFromStrs :: String -> DaoParser T_diffTime
 diffTimeFromStrs time = do
-  let [days,hours,minutes,secMils] = split [] time
-      (seconds, miliseconds) = break (=='.') secMils
-  days    <- check "days"    (maxYears*365) days
+  let [hours,minutes,secMils] = split [] time
+      (seconds, dot_mils) = break (=='.') secMils
+      miliseconds = dropWhile (=='.') dot_mils
   hours   <- check "hours"             24   hours
   minutes <- check "minutes"           60   minutes
   let sec =  check "seconds"           60
@@ -328,10 +334,10 @@ diffTimeFromStrs time = do
       else  do
         seconds <- sec seconds
         return (seconds + rint miliseconds % (10 ^ length miliseconds))
-  return $ fromRational (60*60*24*days + 60*60*hours + 60*minutes + seconds)
+  return $ fromRational (60*60*hours + 60*minutes + seconds)
   where
     split buf str       = case break (==':') str of
-      (t, ""     ) -> reverse $ take 4 $ (t:buf) ++ repeat ""
+      (t, ""     ) -> reverse $ take 3 $ (t:buf) ++ repeat ""
       (t, ':':str) -> split (t:buf) str
     rint str            = if null str then 0 else (read str :: Integer)
     integerToRational s = s % 1 :: Rational
@@ -394,11 +400,16 @@ singletonPTab = numberPTab <> singlPTab where
     , tableItemBy "date" $ \startTok ->
         expect "date/time value expression after \"date\" statement" $ do
           token SPACE as0
-          tok <- token DATE id
-          case readsPrec 0 (asString tok) of
-            [(obj, "")] -> shift as0 >>
-              return (AST_Literal (OTime obj) (asLocation startTok <> asLocation tok))
-            _     -> unshift tok >> fail "invalid UTC-time expression"
+          date <- token DATE id
+          time <- optional (space >> token TIME  id)
+          zone <- optional (space >> token LABEL id)
+          let loc = asLocation startTok <>
+                  maybe LocationUnknown id (fmap asLocation time <> fmap asLocation zone)
+              astr = (' ':) . asString
+              timeAndZone = maybe "" astr time ++ maybe "" astr zone
+          case readsPrec 0 (asString date ++ timeAndZone) of
+            [(obj, "")] -> shift as0 >> return (AST_Literal (OTime obj) loc)
+            _           -> unshift date >> fail "invalid UTC-time expression"
     , tableItemBy "time" $ \startTok ->
         expect "UTC-time value after \"time\" statement" $ do
           token SPACE as0

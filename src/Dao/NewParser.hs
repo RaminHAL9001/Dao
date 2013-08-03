@@ -608,10 +608,11 @@ operator str = do
 -- >       "= *= /= %= += -= &= |= ^=",
 -- >       "== != <= >= < >" ]
 operatorTable :: UStrType str => [str] -> LexBuilder Regex
-operatorTable = fmap mconcat . mapM operator . sortBy (flip compare) . map ustr
+operatorTable = fmap mconcat . mapM operator .
+  sortBy (\a b -> compare (ulength b) (ulength a)) . map ustr
 
 -- | Retrieve a 'TokenType' from a 'UStrType' (or a subclass of 'UStrType' like 'MetaToken') value.
--- THis is necesary for building tokenizing regular expressions that are more complicated than a
+-- This is necesary for building tokenizing regular expressions that are more complicated than a
 -- typeical keyword or operator. You must declare in the 'Regex' when to create a token from the
 -- given token types returned to the 'LexBuilder' monad by this function.
 getTokID :: (UStrType tokID, TokenType tok) => tokID -> LexBuilder tok
@@ -692,14 +693,14 @@ data RegexUnit
   deriving Eq
 instance Show RegexUnit where
   show rx = loop 0 rx where
-    loop i rx = if i>2 then "..." else case rx of
+    loop i rx = case rx of
       RxBacktrack     -> "RxBacktrack"
       RxSuccess       -> "RxSuccess"
       RxChoice      c -> "RxChoice "++show c
-      RxStep      p s -> "RxStep ("++showRegexPrim p++") . "++loop (i+1) s
-      RxExpect    e s -> "RxExpect "++show e++" . "++loop (i+1) s
-      RxDontMatch   s -> "RxDontMatch ("++loop (i+1) s++")"
-      RxMakeToken t s -> "RxMakeToken ("++show t++") . "++loop (i+1) s
+      RxStep      p s -> "RxStep ("++showRegexPrim p++") ..."
+      RxExpect    e s -> "RxExpect "++show e++" ..."
+      RxDontMatch   s -> "RxDontMatch ..."
+      RxMakeToken t s -> "RxMakeToken ("++show t++") ..."
 instance Show (RegexUnit -> RegexUnit) where { show rx = show (rx RxSuccess) }
 instance Monoid RegexUnit where
   mempty = RxBacktrack
@@ -735,7 +736,7 @@ instance Monoid RegexUnit where
           []   -> [a]
           b:bx -> case a<>b of
             RxChoice ax -> ax++bx
-            b           -> a:b:bx
+            b           -> b : loop ax bx -- NEEDS TO BE TESTED, changed from (a:b:ax)
         a:ax -> a : loop ax bx
 
 -- | Convert a 'Regex' function to a 'Lexer'. The resulting 'Lexer' will not call 'makeToken' or
@@ -755,7 +756,6 @@ regexToLexer re = loop (re RxSuccess) where
     RxStep    r    re -> do
       keep <- gets lexBuffer
       clearBuffer
-      -- fmap (take 4) (gets lexInput) >>= \i -> trace ("lexInput = "++show i++"...") (return ())
       mplus (regexPrimToLexer r >> modify (\st -> st{lexBuffer = keep ++ lexBuffer st}))
             (modify (\st -> st{lexBuffer=keep, lexInput = lexBuffer st ++ lexInput st}) >> mzero)
       loop re
@@ -799,9 +799,6 @@ regexPrimToLexer re = case re of
   RxDelete          -> clearBuffer
   RxString  str     -> lexString (uchars str)
   RxCharSet set     -> lexCharP (Es.member set)
-  -- do i <- gets lexInput
-  --    trace ("lexInput: "++show (take 4 i)++" match against "++show set) (lexCharP (Es.member set))
-  --    trace "OK" (return ())
   RxRepeat lo hi re -> rept lo hi re
   where
     rept lo hi re = fromMaybe (seq (error "internal error") $! return ()) $ do
@@ -1734,7 +1731,6 @@ evalPTable ptable = case ptable of
   PTable arr -> do
     tok <- look1 id
     let tt = unwrapTT (asTokType tok)
-    -- trace ("evalPTable("++show (asTokType tok)++") "++show (map (\t -> wrapTT t `asTypeOf` (asTokType tok)) $ uncurry enumTTFrom (bounds arr))) $ return ()
     if inRange (bounds arr) tt
       then  case (arr!tt) tok of
               ParserNull -> mzero

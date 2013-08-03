@@ -72,7 +72,7 @@ daoTokenDB :: TokenDB DaoTT
 daoTokenDB = makeTokenDB daoTokenDef
 
 data DaoTokenLabel
-  = SPACE | INLINECOM | ENDLINECOM | COMMA | LABEL | STRINGLIT | DATE | TIME
+  = SPACE | INLINECOM | ENDLINECOM | COMMA | LABEL | STRINGLIT | CHARLIT | DATE | TIME
   | BASE10 | DOTBASE10 | NUMTYPE | EXPONENT | BASE64DATA | BASE16 | BASE2
   deriving (Eq, Enum, Show, Read)
 instance UStrType DaoTokenLabel where { ustr = derive_ustr; fromUStr = derive_fromUStr; }
@@ -115,12 +115,11 @@ daoTokenDef = do
         , base10 . dot . exponent . opt numType
         , base10 . opt exponent . opt numType
         ]
-  
   ---------------------------------------- STRING  LITERAL ----------------------------------------
-  stringLit    <- fullToken  STRINGLIT  $ rx '"' .
-    (fix $ \loop ->
-      rxRepeat(invert [ch '"', ch '\\']) . (rx "\\" . rx anyChar . loop <> rx '"'))
-  
+  let litExpr op =  rx op .  (fix $ \loop ->
+        rxRepeat(invert [ch op, ch '\\']) . (rx "\\" . rx anyChar . loop <> rx op))
+  stringLit    <- fullToken  STRINGLIT $ litExpr '"'
+  charLit      <- fullToken  CHARLIT   $ litExpr '\''
   -------------------------------------- KEYWORDS AND GROUPING ------------------------------------
   openers <- operatorTable $ words "( [ { #{"
   -- trace ("opener tokens ( [ { #{   ---> "++show openers) $ return ()
@@ -128,7 +127,7 @@ daoTokenDef = do
   operatorTable (words "$ @ -> . ! - ~")
   keywords_groups <- keywordTable LABEL labelRX $ words $ unwords $
     [ "global local qtime static"
-    , "data struct list set intmap dict array date time"
+    , "null false true data struct list set intmap dict array date time"
     , "if else for in while with try catch continue break return throw"
     , "global local qtime static"
     , "function func pattern pat rule BEGIN END EXIT"
@@ -137,7 +136,7 @@ daoTokenDef = do
   let myGetKeyword tokID = do
         tok <- getTokID (ustr tokID) :: LexBuilder DaoTT
         return (rx (ustr tokID) . rxEmptyToken tok)
-  closers <- operatorTable $ words "#} } ] )"
+  closers <- operatorTable $ words "}# } ] )"
   [openBrace, closeBrace, openParen, closeParen] <- mapM operator (words "{ } ( )")
   -- trace ("openBrace = "++show openBrace) $ return ()
   
@@ -163,15 +162,16 @@ daoTokenDef = do
       timeRX = dd . col . dd . col . dd . opt(dot . number)
   timeExpr <- fullToken TIME timeRX
   timeTag  <- myGetKeyword "time"
-  let time = timeTag . space . timeExpr
+  let time = timeTag . cantFail "time expression" . space . timeExpr
   dateExpr <- fullToken DATE $ year . hy . dd . hy . dd
   dateTag  <- myGetKeyword "date"
-  let date = dateTag . space . dateExpr . opt(space . timeExpr) . opt(space . label)
+  let date = dateTag . cantFail "date expression" .
+        space . dateExpr . opt(space . timeExpr) . opt(space . label)
   
   ------------------------------------------- ACTIVATE --------------------------------------------
   activate $
     [ space, inlineCom, endlineCom, comma
-    , stringLit, base16, base2, base10Parser
+    , stringLit, charLit, base16, base2, base10Parser
     , operators, openers, closers
     , dataLexer, date, time, keywords_groups, label
     ]
@@ -387,16 +387,24 @@ singletonPTab = numberPTab <> singlPTab where
   literal constr tok = return (AST_Literal (constr tok) (asLocation tok))
   singlPTab = table $
     [ tableItem STRINGLIT (literal $ OString . read . asString)
+    , tableItem CHARLIT   (literal $ OChar   . read . asString)
     , tableItemBy "("    $ \tok -> do
         obj <- commented equation
         expect "closing parentheses" $ do
           endloc <- tokenBy ")" asLocation
           return (AST_Paren obj (asLocation tok <> endloc))
-    , tableItemBy "#{" $ \startTok -> expect "object expression after open #{ meta-eval brace" $ do
-        obj <- commented equation
-        expect "closing }# meta-eval brace" $ do
-          endLoc <- tokenBy "}#" asLocation
-          return (AST_MetaEval obj (asLocation startTok <> endLoc))
+    , tableItemBy "#{" $ \startTok -> expect "object expression after open #{ meta-eval brace" $
+        msum $
+          [ do  bufferComments
+                endLoc <- tokenBy "}#" asLocation
+                com1 <- optSpace
+                return (AST_MetaEval (com com1 AST_Void []) (asLocation startTok <> endLoc))
+          , do  obj <- commented equation
+                expect "closing }# meta-eval brace" $ do
+                  endLoc <- tokenBy "}#" asLocation
+                  return (AST_MetaEval obj (asLocation startTok <> endLoc))
+          ]
+    , trueFalse "null" ONull, trueFalse "false" ONull, trueFalse "true" OTrue
     , tableItemBy "date" $ \startTok ->
         expect "date/time value expression after \"date\" statement" $ do
           token SPACE as0
@@ -455,6 +463,7 @@ singletonPTab = numberPTab <> singlPTab where
     , lambdaFunc "pat", lambdaFunc "pattern"
     , lambdaFunc "rule"
     ]
+  trueFalse lbl obj = tableItemBy lbl $ \tok -> return (AST_Literal obj (asLocation tok))
   checkAssign lbl obj = do
     case obj of
       AST_Assign _ _ _ _ -> return ()

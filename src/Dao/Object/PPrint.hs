@@ -92,7 +92,7 @@ instance PPrintable Object where
     ORatio     o     -> pString ("ratio("++show (numerator o)++"/"++show (denominator o)++")")
     OComplex  (r:+i) -> pString (show r++'+':show i++"j")
     ODiffTime  o     -> pShow o
-    OTime      o     -> pString ("time("++show o++")")
+    OTime      o     -> pString ("date "++show o)
     OChar      o     -> pShow o
     OString    o     -> pShow o
     ORef       o     -> pPrint o
@@ -121,11 +121,11 @@ instance PPrintable Reference where
   pPrint ref = case ref of
     IntRef     w      -> pString ('$' : show w)
     LocalRef   nm     -> pPrint nm
-    StaticRef  nm     -> pInline [pString "static(", pRef [nm], pString ")"]
-    QTimeRef   rx     -> pInline [pString "qtime(", pRef rx, pString ")"]
+    StaticRef  nm     -> pInline [pString "static ", pRef [nm]]
+    QTimeRef   rx     -> pInline [pString "qtime ", pRef rx]
     GlobalRef  rx     -> pRef rx
-    ProgramRef nm ref -> pInline [pString ("program("++show nm++", "), pPrint ref, pString ")"]
-    FileRef    p   rx -> pInline [pString ("file("++show p++", "), pRef rx, pString ")"]
+    ProgramRef nm ref -> pInline [pString ("program "++show nm++", "), pPrint ref, pString ")"]
+    FileRef    p   rx -> pInline [pString ("file "++show p++", "), pRef rx, pString ")"]
     Subscript  rx   o -> pInline [pPrint rx, pString "[", pPrint o, pString "]"]
     MetaRef    ref    -> pInline [pString "$(", pPrint ref, pString ")"]
     where

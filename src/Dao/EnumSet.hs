@@ -39,7 +39,7 @@ module Dao.EnumSet
   , setToSetM, setMtoSet
     -- * The 'Set' non-monadic data type
   , Set, infinite, fromList, fromPairs, range, point
-  , toList, member, Dao.EnumSet.null, isSingleton
+  , toList, elems, member, Dao.EnumSet.null, isSingleton
     -- * Set Operators for non-monadic 'Set's
   , Dao.EnumSet.invert, setXUnion, Dao.EnumSet.union, Dao.EnumSet.intersect, Dao.EnumSet.delete
     -- * Miscelaneous
@@ -279,6 +279,9 @@ toBoundedPair :: (Enum c, Bounded c) => Segment c -> (c, c)
 toBoundedPair r = case r of
   Single  c   -> (toBounded c, toBounded c)
   Segment c d -> (toBounded c, toBounded d)
+
+enumBoundedPair :: (Enum c, Bounded c) => Segment c -> [c]
+enumBoundedPair seg = let (lo, hi) = toBoundedPair seg in [lo..hi]
 
 -- | Computes the minimum 'Segment' that can contain the list of all given 'EnumRanges'.
 -- 'Data.Maybe.Nothing' indicates the empty set.
@@ -780,6 +783,9 @@ toList s = case s of
   InfiniteSet  -> [inf]
   InverseSet s -> toList (forceInvert s)
   Set        s -> s
+
+elems :: (Ord c, Enum c, Bounded c, InfBound c) => Set c -> [c]
+elems = concatMap enumBoundedPair . toList
 
 member :: (Ord c, InfBound c) => Set c -> c -> Bool
 member s b = case s of

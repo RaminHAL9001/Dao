@@ -129,7 +129,7 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
         deepseq obexp (return ())
         writeIORef ref (i, obexp)
         let bytes = {-# SCC bytes #-} B.encode binexp
-            bin   = {-# SCC bin   #-} B.decode bytes
+            -- bin   = {-# SCC bin   #-} B.decode bytes
             str   = {-# SCC str   #-} showPPrint 80 "    " (pPrint obexp)
             untre = {-# SCC untre #-} structToData tree :: PValue UpdateErr AST_TopLevel
             -- #ifdef OLD_PARSER
@@ -157,24 +157,24 @@ testEveryParsePPrint hwait hlock notify ch = newIORef (0-1, undefined) >>= topLo
                     hClose logFile
                 )
                 (errHandler "exception during test")
-        status1 <- handle (\ (ErrorCall e) -> err ("Construction failed: "++show e) >> return False) $ do
-          case untre of
-            OK      o ->
-              if seq o $! o/=obexp
-                then  err "Construction does not match source object" >> return False
-                else  return True
-            Backtrack -> err "Ambiguous construction" >> return False
-            PFail   b -> err ("Construction failed, "++intercalate "." (map uchars (fst b))++" = "++prettyShow (snd b)) >> return False
-        status2 <- handle (\ (ErrorCall e) -> err ("Binary decoding failed: "++show e) >> return False) $ do
-          if seq obexp $! seq bytes $! bin/=binexp
-            then  err "Binary deserialization does not match source object" >> return False
-            else  return True
+--        status1 <- handle (\ (ErrorCall e) -> err ("Construction failed: "++show e) >> return False) $ do
+--          case untre of
+--            OK      o ->
+--              if seq o $! o/=obexp
+--                then  err "Construction does not match source object" >> return False
+--                else  return True
+--            Backtrack -> err "Ambiguous construction" >> return False
+--            PFail   b -> err ("Construction failed, "++intercalate "." (map uchars (fst b))++" = "++prettyShow (snd b)) >> return False
+--        status2 <- handle (\ (ErrorCall e) -> err ("Binary decoding failed: "++show e) >> return False) $ do
+--          if seq obexp $! seq bytes $! bin/=binexp
+--            then  err "Binary deserialization does not match source object" >> return False
+--            else  return True
         status3 <- handle (\ (ErrorCall e) -> err ("Parsing failed: "++show e) >> return False) $ do
           case par of
             OK      o -> seq o $! return True
             Backtrack -> err "Ambiguous parse" >> return False
             PFail   b -> err (show b) >> return False
-        putMVar notify (status1&&status2&&status3)
+        putMVar notify ( {- status1 && -} {- status3 && -} status3 )
         yield >> loop ref
   sep = "--------------------------------------------------------------------------"
 

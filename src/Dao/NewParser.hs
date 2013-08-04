@@ -482,6 +482,26 @@ fullToken s = makeRegex True (ustr s)
 emptyToken :: (UStrType str, RegexType rx) => str -> rx -> LexBuilder Regex
 emptyToken s = makeRegex False (ustr s)
 
+-- | An array of tokenizers with every tokenizer indexed by the very first character they accept.
+data LexTable tok
+  = LexNoTable{ lexPreTable :: Lexer tok () }
+  | LexTable{ lexPreTable :: Lexer tok (), lexTableArray :: Array Char (Lexer tok ()) }
+
+-- | Create a 'LexTable' array with the given list of 'Regex's, the indecies of the array created
+-- are determined by the lowest and highest possible characters that of all of the 'Regex's you
+-- provide. If your parser works with UTF characters beyond the ASCII range, the arrays can get
+-- pretty big if you are not careful. Try to group parsers together that are near each other in the
+-- UTF table, which involves making sure the 'Prelude.Int' value returned by 'Data.Char.ord' for the
+-- characters that the tokenizer can match are all near each other on the number line. If your
+-- parser only works on ASCII characters, you have nothing to worry about, your tokenizer array will
+-- not be larger than 128 indecies.
+makeLexTable :: TokenType tok => Regex -> LexBuilder (LexTable tok)
+makeLexTable rxlist = return $ case regexToLexerPairs rxlist of
+  (pre, []   ) -> LexNoTable pre
+  (pre, elems) -> LexTable pre (accumArray mplus mzero bounds elems) where
+    bounds  = foldl (\ (lo, hi) c -> (min lo c, max hi c)) (initIdx, initIdx) (map fst elems)
+    initIdx = fst (head elems)
+
 -- | 'activating' a regular expression actually converts the regular expression to a 'Lexer'. The
 -- /order of activation is important/, expressions that are defined first will have the first try at
 -- lexing input strings, followed by every expression activated after it in order. It is also NOT
@@ -778,6 +798,39 @@ regexToLexer re = loop (re RxSuccess) where
                 , lexInput  = lexBuffer st ++ lexInput st
                 }
             return ()
+
+-- Evaluate a 'Regex' to a 'Lexer' using 'regexToLexer', but also create a list of pairs, every pair
+-- containing a character in the set of characters that this 'Regex' accepts. So, for example, if
+-- the 'Regex' passed to this function is created from an 'Dao.EnumSet.EnumSet' with characters from
+-- @a@ to @z@, this function will evaluate to a list of 26 pairs with every character from @a@ to
+-- @z@ as the first element and the 'Lexer' as the second element. Every pair has the exact same
+-- lexer function. This function returns 'Data.Maybe.Nothing' if the 'Regex' given does not evaluate
+-- to a 'RxChoice' or 'RxStep' regex.
+regexToLexerPairs :: TokenType tok => Regex -> (Lexer tok (), [(Char, Lexer tok ())])
+regexToLexerPairs regex = case regex RxSuccess of
+  RxChoice  [] -> (mzero, mzero)
+  RxChoice [r] -> regexToLexerPairs (const r)
+  RxChoice  rx -> loop mempty [] rx
+  RxStep  p r  -> loop mempty [] [RxStep p r]
+  _            -> (mzero, mzero)
+  where
+    done pre stk = (regexToLexer (const pre), stk)
+    loop :: TokenType tok => RegexUnit -> [(Char, Lexer tok ())] -> [RegexUnit] -> (Lexer tok (), [(Char, Lexer tok ())])
+    loop pre stk rx = case rx of
+      []   -> done pre stk
+      r:rx -> case r of
+        RxStep p next -> loopStep r p where
+          loopStep r p = case p of
+            RxDelete   -> loop (pre<>r) stk rx
+            RxString u -> case uchars u of
+              ""  -> done pre stk
+              c:_ -> loop mempty (create pre stk [c] p next) rx
+            RxCharSet cs -> case Es.elems cs of
+              [] -> loop pre stk rx
+              cx -> loop mempty (create pre stk cx p next) rx
+            RxRepeat lo hi p -> loopStep r p
+    create pre stk cx p next =
+      let fn = regexToLexer (const (pre <> (RxStep p next))) in map (\c -> (c, fn)) cx
 
 -- Not for export
 data RxPrimitive

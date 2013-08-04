@@ -445,9 +445,11 @@ singletonPTab = numberPTab <> singlPTab where
           (items, endLoc) <- commaSepd initMsg "}" equation
           return (AST_Array bnds items (asLocation startTok <> endLoc))
     , tableItemBy "struct" $ \startTok -> do
-        initObj <- commented equation
-        let noBracedItems =  return $
-              AST_Struct initObj [] (asLocation startTok <> getLocation (unComment initObj))
+        initObj <- commented (equation <|> return AST_Void)
+        let endLoc = case unComment initObj of
+              AST_Void -> asLocation startTok
+              obj      -> getLocation obj
+        let noBracedItems =  return (AST_Struct initObj [] (asLocation startTok <> endLoc))
         flip mplus noBracedItems $ do
           tokenBy "{" as0
           (items, endLoc) <- commaSepd "list of items to initialize struct declaration" "}" equation
@@ -648,7 +650,7 @@ equation = evalPTable equationPTab
 bracketed :: String -> DaoParser ([AST_Script], Location)
 bracketed msg = do
   startLoc <- tokenBy "{" asLocation
-  scrps <- mplus (many script) (return [])
+  scrps    <- mplus (many script) (return [])
   expect ("curly-bracket to close "++msg++" statement") $ do
     endLoc <- tokenBy "}" asLocation
     return (scrps, startLoc<>endLoc)
@@ -798,7 +800,7 @@ toplevelPTab = table expr <> comments <> scriptExpr where
         return (AST_TopLambda (read exprType) rule action (asLocation tok <> endLoc))
   header lbl = tableItemBy lbl $ \startTok ->
     expect ("string literal for \""++lbl++"\" statement") $ do
-      item <- commented (token STRINGLIT id)
+      item <- commented (token STRINGLIT id <> token LABEL id)
       expect ("semicolon after \""++lbl++"\" statement") $ do
         endLoc <- tokenBy ";" asLocation
         return $

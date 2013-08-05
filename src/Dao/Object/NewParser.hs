@@ -77,7 +77,7 @@ data DaoTokenLabel
   deriving (Eq, Enum, Show, Read)
 instance UStrType DaoTokenLabel where { ustr = derive_ustr; fromUStr = derive_fromUStr; }
 
-daoTokenDef :: LexBuilder ()
+daoTokenDef :: LexBuilder DaoTT
 daoTokenDef = do
   ------------------------------------------ WHITESPACE -------------------------------------------
   let spaceRX = rxRepeat1(map ch "\t\n\r\f\v ")
@@ -132,9 +132,10 @@ daoTokenDef = do
     , "global local qtime static"
     , "function func pattern pat rule BEGIN END EXIT"
     , "import imports require requires"
+    , "this class super new hash point vector matrix" -- reserved keywords, but they don't do anything yet.
     ]
   let myGetKeyword tokID = do
-        tok <- getTokID (ustr tokID) :: LexBuilder DaoTT
+        tok <- getTokID (ustr tokID) :: LexBuilderM DaoTT
         return (rx (ustr tokID) . rxEmptyToken tok)
   closers <- operatorTable $ words "}# } ] )"
   [openBrace, closeBrace, openParen, closeParen] <- mapM operator (words "{ } ( )")
@@ -146,7 +147,7 @@ daoTokenDef = do
     rxRepeat1[from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/']
   let dataLexer = dataTag . multiComs . openBrace .
         fix(\loop -> (base64Data<>space) . loop <>
-              closeBrace <> rxErr "unknown token in base-64 data")
+          closeBrace <> rxErr "unknown token in base-64 data")
   
   ------------------------------------------- OPERATORS -------------------------------------------
   operators    <- operatorTable $ words $ unwords $
@@ -169,7 +170,8 @@ daoTokenDef = do
         space . dateExpr . opt(space . timeExpr) . opt(space . label)
   
   ------------------------------------------- ACTIVATE --------------------------------------------
-  activate $
+  -- activate $
+  return $ regexToTableLexer $
     [ space, inlineCom, endlineCom, comma
     , stringLit, charLit, base16, base2, base10Parser
     , operators, openers, closers
@@ -409,15 +411,17 @@ singletonPTab = numberPTab <> singlPTab where
         expect "date/time value expression after \"date\" statement" $ do
           token SPACE as0
           date <- token DATE id
-          time <- optional (space >> token TIME  id)
-          zone <- optional (space >> token LABEL id)
+          let optsp tok = optional $
+                token SPACE id >>= \s -> mplus (token tok id) (unshift s >> mzero)
+          time <- optsp TIME
+          zone <- optsp LABEL
           let loc = asLocation startTok <>
                   maybe LocationUnknown id (fmap asLocation time <> fmap asLocation zone)
               astr = (' ':) . asString
-              timeAndZone = maybe "" astr time ++ maybe "" astr zone
+              timeAndZone = maybe " 00:00:00" astr time ++ maybe "" astr zone
           case readsPrec 0 (asString date ++ timeAndZone) of
-            [(obj, "")] -> shift as0 >> return (AST_Literal (OTime obj) loc)
-            _           -> unshift date >> fail "invalid UTC-time expression"
+            [(obj, "")] -> return (AST_Literal (OTime obj) loc)
+            _           -> fail "invalid UTC-time expression"
     , tableItemBy "time" $ \startTok ->
         expect "UTC-time value after \"time\" statement" $ do
           token SPACE as0

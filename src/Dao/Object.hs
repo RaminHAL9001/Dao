@@ -644,7 +644,7 @@ instance Read TopLevelEventType where
 -- | A 'TopLevelExpr' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
 data TopLevelExpr
-  = Attribute      Name               Name                       Location
+  = Attribute      Name               ObjectExpr                 Location
   | TopFunc        Name               [ObjectExpr]  [ScriptExpr] Location
   | TopScript      ScriptExpr                                    Location
   | TopLambdaExpr  LambdaExprType     [ObjectExpr]  [ScriptExpr] Location

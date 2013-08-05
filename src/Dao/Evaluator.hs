@@ -39,12 +39,14 @@ import           Dao.Resource
 import           Dao.Predicate
 import           Dao.Files
 import           Dao.Parser
+import           Dao.Struct
 
 import           Dao.Object.Math
 import           Dao.Object.PPrint
 import           Dao.Object.Binary
 import           Dao.Object.Pattern
 import           Dao.Object.Parser
+import           Dao.Object.Struct
 
 import           Control.Exception
 import           Control.Concurrent
@@ -1578,18 +1580,30 @@ programFromSource theNewGlobalTable src xunit = do
       runtime <- gets parentRuntime
       case dx of
         Attribute kindOfAttr    nm               loc : dx -> do
-          case uchars kindOfAttr of
-            a | a=="require" || a=="requires" -> do
-              case M.lookup nm (functionSets runtime) of
-                Nothing -> return $ FlowErr $ OList $
-                  [ostr "requires", OString nm, ostr "but not provided"]
-                Just mp -> do
-                  modify (\xunit -> xunit{builtinFuncs = M.union mp (builtinFuncs xunit)})
-                  importsLoop dx
-            a | a=="import" || a=="imports" -> do
-              modify $ \xunit ->
-                xunit{importsTable = M.alter (flip mplus (Just Nothing)) nm (importsTable xunit)}
-              importsLoop dx
+          nm <- lift $ runExec (evalObjectExprWithLoc nm) xunit
+          nm <- case nm of
+            FlowOK (loc, Just (OString o)) -> return $ FlowOK (loc, o)
+            FlowOK (loc, Just (ORef    o)) -> return $ FlowOK (loc, ustr (show o))
+            FlowErr    o                   -> return (FlowErr o)
+            FlowReturn o                   -> case o of
+              Just (OString    o)            -> return (FlowOK (LocationUnknown, o))
+              Just (ORef       o)            -> return (FlowOK (LocationUnknown, ustr (show o)))
+              Nothing                        -> return $ FlowErr $
+                OList [ostr kindOfAttr, ostr "evaluated to void expression"]
+          case nm of
+            FlowOK (loc, nm) -> case uchars kindOfAttr of
+              a | a=="require" || a=="requires" -> do
+                case M.lookup nm (functionSets runtime) of
+                  Nothing -> return $ FlowErr $ OList $
+                    [ostr "requires", OString nm, ostr "but not provided"]
+                  Just mp -> do
+                    modify (\xunit -> xunit{builtinFuncs = M.union mp (builtinFuncs xunit)})
+                    importsLoop dx
+              a | a=="import" || a=="imports" -> do
+                modify $ \xunit ->
+                  xunit{importsTable = M.alter (flip mplus (Just Nothing)) nm (importsTable xunit)}
+                importsLoop dx
+            FlowErr    o -> return (FlowErr o)
       --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
         dx -> scriptLoop dx
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
@@ -1648,7 +1662,7 @@ programFromSource theNewGlobalTable src xunit = do
         scriptLoop dx
       --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
       Attribute     kindOfAttr attribName        loc : _  -> return $ FlowErr $ OList $
-        [ OString kindOfAttr, OString attribName
+        [ OString kindOfAttr, OTree (dataToStruct attribName), OTree (dataToStruct loc)
         , ostr "statement is not at the top of the source file"
         ]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --

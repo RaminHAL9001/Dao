@@ -39,7 +39,7 @@ import           Data.List
 -- | A 'AST_TopLevel' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
 data AST_TopLevel
-  = AST_Attribute  (Com Name)        (Com Name)                          Location
+  = AST_Attribute  Name              (Com AST_Object)                    Location
   | AST_TopFunc    [Comment]   Name  (Com [Com AST_Object]) [AST_Script] Location
   | AST_TopScript  AST_Script                                            Location
   | AST_TopLambda  LambdaExprType    (Com [Com AST_Object]) [AST_Script] Location
@@ -300,14 +300,14 @@ ll = return
 
 instance Intermediate TopLevelExpr AST_TopLevel where
   toInterm   ast = case ast of
-    AST_Attribute  a b     loc -> liftM3 Attribute         (uc  a) (uc  b)         (ll loc)
+    AST_Attribute  a b     loc -> liftM3 Attribute         [a]     (uc0 b)         (ll loc)
     AST_TopFunc    _ a b c loc -> liftM4 TopFunc           [a]     (uc2 b) (ti0 c) (ll loc)
     AST_TopScript  a       loc -> liftM2 TopScript         (ti  a)                 (ll loc)
     AST_TopLambda  a b c   loc -> liftM4 TopLambdaExpr [a] (uc2 b) (ti0 c)         (ll loc)
     AST_Event      a _ b   loc -> liftM3 EventExpr     [a] (ti0 b)                 (ll loc)
     AST_TopComment a           -> mzero
   fromInterm obj = case obj of
-    Attribute     a b   loc -> liftM3 AST_Attribute (nc a)      (nc  b)         [loc]
+    Attribute     a b   loc -> liftM3 AST_Attribute [a]         (nc0 b)         [loc]
     TopFunc       a b c loc -> liftM5 AST_TopFunc   [[]]   [a]  (nc2 b) (fi0 c) [loc]
     TopScript     a     loc -> liftM2 AST_TopScript (fi a)                      [loc]
     TopLambdaExpr a b c loc -> liftM4 AST_TopLambda [a]         (nc2 b) (fi0 c) [loc]

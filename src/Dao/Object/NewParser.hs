@@ -804,12 +804,14 @@ toplevelPTab = table expr <> comments <> scriptExpr where
         return (AST_TopLambda (read exprType) rule action (asLocation tok <> endLoc))
   header lbl = tableItemBy lbl $ \startTok ->
     expect ("string literal for \""++lbl++"\" statement") $ do
-      item <- commented (token STRINGLIT id <> token LABEL id)
+      let strlit = do
+            tok <- token STRINGLIT id
+            return (AST_Literal (OString (asUStr tok)) (asLocation tok))
+      expr <- commented (mplus strlit reference)
       expect ("semicolon after \""++lbl++"\" statement") $ do
         endLoc <- tokenBy ";" asLocation
-        return $
-          AST_Attribute (Com (asUStr startTok)) (fmap asUStr item) $
-            (asLocation startTok <> (asLocation (unComment item)))
+        return $ AST_Attribute (asUStr startTok) expr $
+          (asLocation startTok <> (getLocation (unComment expr)))
 
 toplevel :: DaoParser AST_TopLevel
 toplevel = evalPTable toplevelPTab

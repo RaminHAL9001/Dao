@@ -332,12 +332,10 @@ instance HasRandGen TopLevelEventType where
 instance HasRandGen AST_TopLevel where
   randO = randOFromList $
     [ do  req_ <- nextInt 2
-          let req = Com $ ustr $ if req_ == 0 then "require" else "import"
+          let req = ustr $ if req_ == 0 then "require" else "import"
           typ <- nextInt 2
           words <- fmap (map uchars) (randListOf 1 6 (randName))
-          str <- randCom $ case typ of
-            0 -> ustr $ show $ intercalate " " $ words
-            1 -> ustr $ intercalate "." $ words
+          str <- comRandObjExpr 
           return (AST_Attribute req str LocationUnknown)
     , liftM2 AST_TopScript randO no
     , do  coms <- randComments

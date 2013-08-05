@@ -809,11 +809,10 @@ parseKeywordDirective key = msum $
         guard (key=="requires" || key=="require" || key=="import")
         regexMany space
         expect ("string or bareword for "++key++" directive") $ \com1 -> do
-          req <- mplus (fmap ustr parseString) $ do
-            fmap (ustr . intercalate "." . map uchars . snd) parseDotName
+          req <- parseLocalGlobal
           expect ("semicolon terminating "++key++" expression") $ \com2 -> do
             regexMany space >> char ';'
-            return (AST_Attribute (Com (ustr key)) (com com1 req com2) unloc)
+            return (AST_Attribute (ustr key) (com com1 (AST_Literal (ORef req) unloc) com2) unloc)
   , do -- Parse an event action.
         guard (key=="EXIT" || key=="QUIT" || key=="BEGIN" || key=="END")
         expect ("bracketed list of commands after "++key++" statement") $ \com1 -> do

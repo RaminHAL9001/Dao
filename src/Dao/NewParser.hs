@@ -435,13 +435,18 @@ instance Monoid a =>
 -- | This class exists to make 'emptyToken', 'fullToken', and 'activate' functions polymorphic over
 -- two different types: the 'RegexBaseType's and 'Regex' and @['Regex']@ types.
 class RegexType rx where { toRegex :: rx -> Regex }
-instance RegexType  Char         where { toRegex = rx }
-instance RegexType  String       where { toRegex = rx }
-instance RegexType  UStr         where { toRegex = rx }
-instance RegexType (Es.Set Char) where { toRegex = rx }
-instance RegexType [Es.Set Char] where { toRegex = rx }
-instance RegexType  Regex        where { toRegex = id }
-instance RegexType [Regex]       where { toRegex = mconcat }
+instance RegexType  Char          where { toRegex = rx }
+instance RegexType  String        where { toRegex = rx }
+instance RegexType  UStr          where { toRegex = rx }
+instance RegexType (Es.Set Char)  where { toRegex = rx }
+instance RegexType [Es.Set Char]  where { toRegex = rx }
+instance RegexType  Regex         where { toRegex = id }
+instance RegexType [Regex]        where { toRegex = mconcat }
+instance RegexType (Char, Char)   where { toRegex = rx }
+instance RegexType [(Char, Char)] where { toRegex = rx }
+
+-- example :: Regex
+-- example = regex 'a' "hello" ('0', '9')
 
 -- not for export
 initLexBuilder :: LexBuilderState
@@ -934,11 +939,13 @@ class RegexBaseType t where
   rxPrim :: t -> RxPrimitive
   rx :: t -> Regex
   rx = RxStep . rxPrim
-instance RegexBaseType  Char         where { rxPrim = RxCharSet . Es.point }
-instance RegexBaseType  String       where { rxPrim = RxString  . ustr     }
-instance RegexBaseType  UStr         where { rxPrim = RxString  }
-instance RegexBaseType (Es.Set Char) where { rxPrim = RxCharSet }
-instance RegexBaseType [Es.Set Char] where { rxPrim = RxCharSet . foldl Es.union mempty }
+instance RegexBaseType  Char          where { rxPrim = RxCharSet . Es.point }
+instance RegexBaseType  String        where { rxPrim = RxString  . ustr     }
+instance RegexBaseType  UStr          where { rxPrim = RxString  }
+instance RegexBaseType (Es.Set Char)  where { rxPrim = RxCharSet }
+instance RegexBaseType [Es.Set Char]  where { rxPrim = RxCharSet . foldl Es.union mempty }
+instance RegexBaseType (Char, Char)   where { rxPrim = RxCharSet . Es.fromPairs . (:[]) }
+instance RegexBaseType [(Char, Char)] where { rxPrim = RxCharSet . Es.fromPairs }
 
 -- | The type of the 'from' and 'to' functions are specially defined so that you can write ranges of
 -- characters. For example, if you want to match upper-case characters, you would simply write:

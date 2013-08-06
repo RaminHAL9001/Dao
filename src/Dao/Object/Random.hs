@@ -335,8 +335,25 @@ instance HasRandGen AST_TopLevel where
           let req = ustr $ if req_ == 0 then "require" else "import"
           typ <- nextInt 2
           words <- fmap (map uchars) (randListOf 1 6 (randName))
-          str <- comRandObjExpr 
-          return (AST_Attribute req str LocationUnknown)
+          (rnd, quoted) <- fmap (flip divMod 2) randInt
+          (rnd, len)    <- return (divMod rnd 4)
+          item <- sequence $ replicate (len+1) $ fmap (ustr . B.unpack . getRandomWord) randInt
+          item <- return $
+            if len==0
+              then  AST_Literal (OString (ustr (head words))) LocationUnknown
+              else
+                foldr
+                  (\a b ->
+                      AST_Equation
+                        (AST_Literal (ORef (LocalRef a)) LocationUnknown)
+                        (Com DOT)
+                        b
+                        LocationUnknown
+                  )
+                  (AST_Literal (ORef (LocalRef (head item))) LocationUnknown)
+                  (tail item)
+          item <- randCom item
+          return (AST_Attribute req item LocationUnknown)
     , liftM2 AST_TopScript randO no
     , do  coms <- randComments
           name <- randName

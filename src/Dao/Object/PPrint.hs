@@ -124,8 +124,8 @@ instance PPrintable Reference where
     StaticRef  nm     -> pInline [pString "static ", pRef [nm]]
     QTimeRef   rx     -> pInline [pString "qtime ", pRef rx]
     GlobalRef  rx     -> pRef rx
-    ProgramRef nm ref -> pInline [pString ("program "++show nm++", "), pPrint ref, pString ")"]
-    FileRef    p   rx -> pInline [pString ("file "++show p++", "), pRef rx, pString ")"]
+    ProgramRef nm ref -> pInline [pString ("program("++show nm++", "), pPrint ref, pString ")"]
+    FileRef    p   rx -> pInline [pString ("file("++show p++", "), pRef rx, pString ")"]
     Subscript  rx   o -> pInline [pPrint rx, pString "[", pPrint o, pString "]"]
     MetaRef    ref    -> pInline [pString "$(", pPrint ref, pString ")"]
     where

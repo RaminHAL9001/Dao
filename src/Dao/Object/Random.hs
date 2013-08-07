@@ -86,35 +86,42 @@ randComments = return []
 
 ----------------------------------------------------------------------------------------------------
 
+randSingleton :: RandO Object
+randSingleton = randOFromList $ randSingletonList++[fmap ORef randSimpleRef]
+
+randSingletonList :: [RandO Object]
+randSingletonList =
+  [ return ONull
+  , return OTrue
+  -- , fmap OType randO
+  , randInteger (OInt  0) $ \i -> randInt >>= \j -> return (OInt$fromIntegral$ i*j)
+  , randInteger (OWord 0) $ \i -> randInt >>= \j -> return (OWord$fromIntegral$abs$ i*j)
+  , randInteger (OLong 0) $ \i ->
+      replicateM (mod i 4 + 1) randInt >>= return . OLong . longFromInts
+  , randInteger (OFloat 0) (fmap (OFloat . fromRational) . randRational)
+  , randInteger (ORatio 0) (fmap ORatio . randRational)
+  , randInteger (OComplex 0) $ \i0 -> do
+      let (i1, rem) = divMod i0 4
+      real <- fmap fromRational (randRational i1)
+      cplx <- fmap fromRational (randRational rem)
+      return (OComplex (real:+cplx))
+  , do  day <- fmap (ModifiedJulianDay . unsign . flip mod 73000) randInt
+        sec <- fmap (fromRational . toRational . flip mod 86400) randInt
+        return (OTime (UTCTime{utctDay=day, utctDayTime=sec}))
+  , randInteger (ODiffTime 0) $ \i -> do
+      div <- randInt
+      fmap (ODiffTime . fromRational . (% fromIntegral div) . longFromInts) $
+        replicateM (mod i 2 + 1) randInt
+  , randInteger (OChar '\n') (\i -> return (OChar $ chr $ mod i $ ord (maxBound::Char)))
+  , randInteger (OString nil) $ \i -> do
+      len <- nextInt 4
+      flip fmap (replicateM (len+1) randInt) $
+        OString . ustr . unwords . map (B.unpack . getRandomWord)
+  ]
+
 instance HasRandGen Object where
-  randO = randOFromList $
-    [ return ONull
-    , return OTrue
-    -- , fmap OType randO
-    , randInteger (OInt  0) $ \i -> randInt >>= \j -> return (OInt$fromIntegral$ i*j)
-    , randInteger (OWord 0) $ \i -> randInt >>= \j -> return (OWord$fromIntegral$abs$ i*j)
-    , randInteger (OLong 0) $ \i ->
-        replicateM (mod i 4 + 1) randInt >>= return . OLong . longFromInts
-    , randInteger (OFloat 0) (fmap (OFloat . fromRational) . randRational)
-    , randInteger (ORatio 0) (fmap ORatio . randRational)
-    , randInteger (OComplex 0) $ \i0 -> do
-        let (i1, rem) = divMod i0 4
-        real <- fmap fromRational (randRational i1)
-        cplx <- fmap fromRational (randRational rem)
-        return (OComplex (real:+cplx))
-    , do  day <- fmap (ModifiedJulianDay . unsign . flip mod 73000) randInt
-          sec <- fmap (fromRational . toRational . flip mod 86400) randInt
-          return (OTime (UTCTime{utctDay=day, utctDayTime=sec}))
-    , randInteger (ODiffTime 0) $ \i -> do
-        div <- randInt
-        fmap (ODiffTime . fromRational . (% fromIntegral div) . longFromInts) $
-          replicateM (mod i 2 + 1) randInt
-    , randInteger (OChar '\n') (\i -> return (OChar $ chr $ mod i $ ord (maxBound::Char)))
-    , randInteger (OString nil) $ \i -> do
-        len <- nextInt 4
-        flip fmap (replicateM (len+1) randInt) $
-          OString . ustr . unwords . map (B.unpack . getRandomWord)
-    , fmap ORef randO
+  randO = randOFromList $ randSingletonList ++
+    [ fmap ORef randO
     , fmap OPair (liftM2 (,) randO randO)
     , fmap OList (randList 0 40)
     , fmap (OSet . S.fromList) (randList 0 40)
@@ -136,24 +143,32 @@ instance HasRandGen Object where
 instance HasRandGen TypeID where
   randO = fmap toEnum (nextInt (fromEnum (maxBound::TypeID)))
 
+randMultiName :: RandO [UStr]
+randMultiName = do
+  i0 <- randInt
+  let (i1, len) = divMod i0 4
+  fmap ((randUStr i1 :) . map randUStr) (replicateM len randInt)
+
+randSimpleRefList :: [RandO Reference]
+randSimpleRefList =
+  [ fmap (IntRef . fromIntegral . abs) randInt
+  , fmap LocalRef  randName
+  , fmap StaticRef randName
+  , fmap QTimeRef  randMultiName
+  , fmap GlobalRef randMultiName
+  ]
+
+randSimpleRef :: RandO Reference
+randSimpleRef = randOFromList randSimpleRefList
+
 instance HasRandGen Reference where
-  randO = randOFromList $
-    [ fmap (IntRef . fromIntegral . abs) randInt
-    , fmap LocalRef  single
-    , fmap StaticRef single
-    , fmap QTimeRef  multi
-    , fmap GlobalRef multi
-    , liftM2 ProgramRef (fmap (ustr . (++".dao") . uchars) single) subRandO 
-    , liftM2 FileRef (fmap (ustr . (++".idea") . uchars) single) multi
+  randO = randOFromList $ randSimpleRefList ++ 
+    [ liftM2 ProgramRef (fmap (ustr . (++".dao") . uchars) randName) subRandO 
+    , liftM2 FileRef (fmap (ustr . (++".idea") . uchars) randName) randMultiName
     , liftM2 Subscript subRandO (limSubRandO (OList []))
     , fmap MetaRef subRandO
     ]
     where
-      single = randName
-      multi = do
-        i0 <- randInt
-        let (i1, len) = divMod i0 4
-        fmap ((randUStr i1 :) . map randUStr) (replicateM len randInt)
 
 instance HasRandGen Glob where
   randO = do
@@ -267,6 +282,9 @@ instance HasRandGen LambdaExprType where
 randAssignExpr :: RandO AST_Object
 randAssignExpr = liftM4 AST_Assign   randO (randO>>=randCom) randO no
 
+randSingletonAST :: RandO AST_Object
+randSingletonAST = fmap (flip AST_Literal LocationUnknown) randSingleton
+
 instance HasRandGen AST_Object where
   -- | Differs from 'randAssignExpr' in that this 'randO' can generate 'Dao.Object.AST_Literal' expressions
   -- whereas 'randAssignExpr' will not so it does not generate stand-alone constant expressions within
@@ -282,7 +300,7 @@ instance HasRandGen AST_Object where
             AST_Paren   a                         loc -> AST_Paren a loc
             a                                         -> AST_Paren (Com a) LocationUnknown
       in  fmap check (liftM4 AST_Equation randO (randO>>=randCom) randO no)
-    , do  o@(AST_Prefix fn cObjXp no)  <- liftM3 AST_Prefix randO comRandObjExpr no
+    , do  o@(AST_Prefix fn cObjXp no) <- liftM3 AST_Prefix randO (randSingletonAST >>= randCom) no
           return $ case fn of
             REF -> case unComment cObjXp of
               AST_Literal (ORef (LocalRef _)) _ -> o

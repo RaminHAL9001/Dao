@@ -1,4 +1,17 @@
 TODO:
+* Fix this design flaw:
+	The abstract syntax tree can produce expressions that cannot be parsed. For example,
+	'Dao.Object.AST.AST_Prefix' contains an arbitrary (commented) 'Dao.Object.AST.AST_Object'
+	expression, but the parser does not allow arbitrary expressions to be parsed after a prefix
+	operator (the prefix operators are "$", "@", ".", "~", "-", "!"). This simplifies the abstract
+	syntax tree. The "Dao.Evaluator" module should have no problem evaluating expressions regardless
+	of whether or not the syntax of the language can construct these expressions.  But might cause
+	problems if the abstract syntax tree is produced programmatically for example, using the
+	functions in the "Dao.Struct" or "Dao.Random" modules, and then that abstract syntax tree is
+	used to generate code, the code generated will not be parsable. I have corrected the
+	"Dao.Object.Random" module so that this is not a problem, but this could cause problems with
+	"Dao.Object.Struct". For now, the AST is simplified and I would prefer it to stay that way, even
+	if it is not modeled well enough to prevent potential problems like this one.
 
 * Unioning 'Dao.Enum.SetM' data types should produce a list of segments where not every item is
 	associated with the same return value. I will need to modify the 'Dao.EnumSet.SetM' data type to

@@ -75,7 +75,10 @@ instance PPrintable T_tree where
     T.Branch       ox -> pList (pString "struct") "{ " ", " " }" (branch ox)
     T.LeafBranch o ox -> pList (leaf o) " { " ", " " }" (branch ox)
     where
-      leaf o = pWrapIndent [pString "struct(", pPrint o, pString ")"]
+      leaf o =
+        if o==ONull
+          then  pString "struct{}"
+          else  pWrapIndent [pString "struct(", pPrint o, pString ") {}"]
       branch = map (\ (lbl, obj) -> pMapAssoc (lbl, OTree obj)) . M.assocs
 
 instance PPrintable Glob where { pPrint = pShow }

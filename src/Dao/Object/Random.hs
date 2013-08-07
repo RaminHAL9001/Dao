@@ -268,8 +268,8 @@ instance HasRandGen AST_Script where
     , liftM5 AST_IfThenElse   randComments randO comRandScriptExpr comRandScriptExpr no
     , liftM4 AST_TryCatch     comRandScriptExpr (randName>>=randCom) randScriptExpr no
     , liftM4 AST_ForLoop      (randName>>=randCom) comRandObjExpr randScriptExpr no
-    , liftM4 AST_ContinueExpr randBool randComments comRandObjExpr no
-    , liftM3 AST_ReturnExpr   randBool comRandObjExpr no
+    , liftM4 AST_ContinueExpr randBool randComments (randObjectASTVoid >>= randCom) no
+    , liftM3 AST_ReturnExpr   randBool (randObjectASTVoid >>= randCom) no
     , liftM3 AST_WithDoc      comRandObjExpr randScriptExpr no
     , liftM  AST_Comment      randComments
     ]
@@ -285,61 +285,72 @@ randAssignExpr = liftM4 AST_Assign   randO (randO>>=randCom) randO no
 randSingletonAST :: RandO AST_Object
 randSingletonAST = fmap (flip AST_Literal LocationUnknown) randSingleton
 
+randObjectASTList :: [RandO AST_Object]
+randObjectASTList = 
+  [ liftM2 AST_Literal      limRandObj no
+  , randAssignExpr
+  , let check a = case a of
+          AST_Equation a op b no | DOT == unComment op  -> AST_Equation (check a) op (check b) no
+          AST_Literal (ORef (LocalRef _))           _   -> a
+          AST_Literal (OString _)                   _   -> a
+          AST_FuncCall _ _ _                        _   -> a
+          AST_Paren   a                         loc -> AST_Paren a loc
+          a                                         -> AST_Paren (Com a) LocationUnknown
+    in  fmap check (liftM4 AST_Equation randO (randO>>=randCom) randO no)
+  , do  o@(AST_Prefix fn cObjXp no) <- liftM3 AST_Prefix randO (randSingletonAST >>= randCom) no
+        return $ case fn of
+          REF -> case unComment cObjXp of
+            AST_Literal (ORef (LocalRef _)) _ -> o
+            _ -> AST_Prefix fn (fmap (flip (AST_Paren . Com) no) cObjXp) no
+          _ -> o
+  , liftM2 AST_Paren    comRandObjExpr no
+  , liftM4 AST_ArraySub mostlyRefExprs randComments comRandObjExprList no
+  , liftM4 AST_FuncCall randO randComments comRandObjExprList no
+  , do -- AST_Dict
+        typ   <- nextInt 4
+        dict  <- return $ ustr $ case typ of
+          0 -> "dict"
+          1 -> "intmap"
+          2 -> "list"
+          3 -> "set"
+        let rndlist = randListOf 0 30 (fmap lit limRandObj)
+        exprs <- mapM randCom =<< case typ of
+          0 -> randListOf 0 30 (fmap (lit . OString . randUStr ) randInt) >>= comAssignExprList
+          1 -> randListOf 0 30 (fmap (lit . OInt . fromIntegral) randInt) >>= comAssignExprList
+          2 -> rndlist
+          3 -> rndlist
+        coms  <- randComments
+        return (AST_Dict dict coms exprs LocationUnknown)
+  , do -- AST_Array
+        i <- nextInt 4
+        let int = fmap (OInt . fromIntegral) randInt
+            ref = fmap ORef subRandO
+            f x = liftM2 x int ref
+        idxExpr <- randCom =<< mapM (randCom . lit) =<< case i of
+          0 -> replicateM 2 int
+          1 -> f (\a b -> [a,b]) 
+          2 -> replicateM 2 ref
+          3 -> f (\a b -> [b,a])
+        items <- randList 0 30 >>= mapM randCom
+        return (AST_Array idxExpr items LocationUnknown)
+  , liftM3 AST_Struct (randObjectASTVoid >>= randCom) (randList 0 30 >>= comAssignExprList >>= mapM randCom) no
+  , liftM4 AST_Lambda randO (randArgsDef >>= randCom) randScriptExpr no
+  , liftM2 AST_MetaEval comRandObjExpr no
+  ]
+
+-- Can also produce void expressions.
+randObjectASTVoidList :: [RandO AST_Object]
+randObjectASTVoidList = return AST_Void : randObjectASTList
+
+-- Can also produce void expressions.
+randObjectASTVoid :: RandO AST_Object
+randObjectASTVoid = randOFromList randObjectASTVoidList
+
 instance HasRandGen AST_Object where
   -- | Differs from 'randAssignExpr' in that this 'randO' can generate 'Dao.Object.AST_Literal' expressions
   -- whereas 'randAssignExpr' will not so it does not generate stand-alone constant expressions within
   -- 'Dao.Object.AST_Script's.
-  randO = randOFromList $
-    [ liftM2 AST_Literal      limRandObj no
-    , randAssignExpr
-    , let check a = case a of
-            AST_Equation a op b no | DOT == unComment op  -> AST_Equation (check a) op (check b) no
-            AST_Literal (ORef (LocalRef _))           _   -> a
-            AST_Literal (OString _)                   _   -> a
-            AST_FuncCall _ _ _                        _   -> a
-            AST_Paren   a                         loc -> AST_Paren a loc
-            a                                         -> AST_Paren (Com a) LocationUnknown
-      in  fmap check (liftM4 AST_Equation randO (randO>>=randCom) randO no)
-    , do  o@(AST_Prefix fn cObjXp no) <- liftM3 AST_Prefix randO (randSingletonAST >>= randCom) no
-          return $ case fn of
-            REF -> case unComment cObjXp of
-              AST_Literal (ORef (LocalRef _)) _ -> o
-              _ -> AST_Prefix fn (fmap (flip (AST_Paren . Com) no) cObjXp) no
-            _ -> o
-    , liftM2 AST_Paren    comRandObjExpr no
-    , liftM4 AST_ArraySub mostlyRefExprs randComments comRandObjExprList no
-    , liftM4 AST_FuncCall randO randComments comRandObjExprList no
-    , do -- AST_Dict
-          typ   <- nextInt 4
-          dict  <- return $ ustr $ case typ of
-            0 -> "dict"
-            1 -> "intmap"
-            2 -> "list"
-            3 -> "set"
-          let rndlist = randListOf 0 30 (fmap lit limRandObj)
-          exprs <- mapM randCom =<< case typ of
-            0 -> randListOf 0 30 (fmap (lit . OString . randUStr ) randInt) >>= comAssignExprList
-            1 -> randListOf 0 30 (fmap (lit . OInt . fromIntegral) randInt) >>= comAssignExprList
-            2 -> rndlist
-            3 -> rndlist
-          coms  <- randComments
-          return (AST_Dict dict coms exprs LocationUnknown)
-    , do -- AST_Array
-          i <- nextInt 4
-          let int = fmap (OInt . fromIntegral) randInt
-              ref = fmap ORef subRandO
-              f x = liftM2 x int ref
-          idxExpr <- randCom =<< mapM (randCom . lit) =<< case i of
-            0 -> replicateM 2 int
-            1 -> f (\a b -> [a,b]) 
-            2 -> replicateM 2 ref
-            3 -> f (\a b -> [b,a])
-          items <- randList 0 30 >>= mapM randCom
-          return (AST_Array idxExpr items LocationUnknown)
-    , liftM3 AST_Struct comRandObjExpr (randList 0 30 >>= comAssignExprList >>= mapM randCom) no
-    , liftM4 AST_Lambda randO (randArgsDef >>= randCom) randScriptExpr no
-    , liftM2 AST_MetaEval comRandObjExpr no
-    ]
+  randO = randOFromList randObjectASTList
 
 randArgsDef :: RandO [Com AST_Object]
 randArgsDef = randList 0 7 >>= mapM randCom

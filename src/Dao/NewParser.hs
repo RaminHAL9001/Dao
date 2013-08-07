@@ -1767,76 +1767,105 @@ isEOF = Parser (get >>= \st -> return (null (getLines st) && null (tokenQueue st
 
 -- | Parse table, used to create arrays of tokens that can be used to efficiently select the next
 -- parse action to take based on the value of the current token in the token stream.
-data PTable st tok a
+data PTable tok a
   = PTableNull
-  | PTable { pTableArray :: Array TT (TokenAt tok -> Parser st tok a) }
-instance TokenType tok => Functor (PTable st tok) where
+  | PTable { pTableArray :: Array TT (Maybe (TokenAt tok -> a)) }
+instance TokenType tok => Functor (PTable tok) where
   fmap f ptab = case ptab of
     PTableNull -> PTableNull
     PTable arr -> PTable (fmap (fmap (fmap f)) arr)
-instance TokenType tok => Monoid (PTable st tok a) where
+instance (Monoid a, TokenType tok) => Monoid (PTable tok a) where
   mempty      = PTableNull
   mappend a b = case a of
     PTableNull -> b
     PTable arr -> case b of
       PTableNull  -> PTable arr
-      PTable arr' -> PTable (mergeArrays mappend (\_ -> mzero) arr arr' )
+      PTable arr' -> PTable (mergeArrays mappend mempty arr arr' )
 
-newtype TableItem st tok a = TableItem{ tableItemToPair :: (tok, TokenAt tok -> Parser st tok a) }
-instance TokenType tok => Functor (TableItem st tok) where
-  fmap f (TableItem ti) = TableItem (fmap (fmap (fmap f)) ti)
+newtype TableItem tok a = TableItem{ tableItemToPair :: (tok, TokenAt tok -> a) }
+instance TokenType tok => Functor (TableItem tok) where
+  fmap f (TableItem ti) = TableItem (fmap (fmap f) ti)
 
 tableItem :: (TokenType tok, MetaToken meta tok) =>
-  meta -> (TokenAt tok -> Parser st tok a) -> TableItem st tok a
+  meta -> (TokenAt tok -> a) -> TableItem tok a
 tableItem meta parser = TableItem (metaTypeToTokenType meta, parser)
 
 tableItemBy :: (TokenType tok, HasTokenDB tok, UStrType name) =>
-  name -> (TokenAt tok -> Parser st tok a) -> TableItem st tok a
+  name -> (TokenAt tok -> a) -> TableItem tok a
 tableItemBy name parser =
-  case M.lookup (ustr name) (tableUStrToTT (tokenDBFromParser (parser undefined))) of
+  case M.lookup (ustr name) (tableUStrToTT (tokdb parser)) of
     Nothing  -> error ("tableItemBy "++show (ustr name)++" not activated in TokenDB")
     Just tok -> TableItem (wrapTT tok, parser)
+  where
+    tokdb   :: HasTokenDB tok => (TokenAt tok -> a) -> TokenDB tok
+    tokdb parser = tokenDBFromToken (tokType parser)
+    tokType :: HasTokenDB tok => (TokenAt tok -> a) -> tok
+    tokType    _ = undefined -- don't want the value, just the type to be inferred
 
-evalPTableItem :: TokenType tok => TableItem st tok a -> Parser st tok a
+-- | Use this function if your 'TableItem' contains a parser which you also need to evalaute as a
+-- stand-alon parser.
+evalPTableItem :: TokenType tok => TableItem tok a -> Parser st tok a
 evalPTableItem (TableItem (tokType, parser)) =
-  look1 asTokType >>= \t -> if tokType==t then shift id >>= parser else mzero
+  look1 asTokType >>= \t -> if tokType==t then shift id >>= return . parser else mzero
 
-table :: TokenType tok => [TableItem st tok a] -> PTable st tok a
+-- | Usually, 'PTable's and 'TableItem's will contain monadic 'Parser' function elements, and evaluating a
+-- 'PTable or 'TableItem' will result in that 'Parser' function element being returned to the monadic
+-- function which evaluated it, in which case it must be 'Control.Monad.join'ed. This function
+-- provides a handy shortcut to the expression @('Control.Monad.join' . 'evalPTableItem')@. See also
+-- 'joinEvalPTable'.
+joinEvalPTableItem :: TokenType tok => TableItem tok (Parser st tok a) -> Parser st tok a
+joinEvalPTableItem = join . evalPTableItem
+
+table :: Monoid a => TokenType tok => [TableItem tok a] -> PTable tok a
 table tokParserAssocs = case asocs of
   []          -> PTableNull
-  (tok1, _):_ -> PTable (accumArray mappend (\_ -> mzero) bnds ttParserAssocs) where
+  (tok1, _):_ -> PTable (accumArray mappend mempty bnds ttParserAssocs) where
     asocs = fmap tableItemToPair tokParserAssocs
-    ttParserAssocs = fmap (\ (tok, parser) -> (unwrapTT tok, parser)) asocs
+    ttParserAssocs = fmap (\ (tok, parser) -> (unwrapTT tok, Just parser)) asocs
     tt = unwrapTT tok1
     bnds = foldl (\ (lo, hi) (tt, _) -> (min lo tt, max hi tt)) (tt, tt) ttParserAssocs
   where
     asocs = fmap tableItemToPair tokParserAssocs
 
+-- | Like 'bindPTable' but operates on a single 'TableItem'.
 bindPTableItem :: TokenType tok =>
-  TableItem st tok a -> (a -> Parser st tok b) -> TableItem st tok b
+  TableItem tok (Parser st tok a) -> (a -> Parser st tok b) -> TableItem tok (Parser st tok b)
 bindPTableItem (TableItem item) bind = TableItem (fmap (fmap (>>=bind)) item)
 
+-- | Like 'bindPTable' but operates on a list of 'TableItem's.
 bindPTableItemList :: TokenType tok =>
-  [TableItem st tok a] -> (a -> Parser st tok b) -> [TableItem st tok b]
+  [TableItem tok (Parser st tok a)] -> (a -> Parser st tok b) -> [TableItem tok (Parser st tok b)]
 bindPTableItemList list bind = fmap (flip bindPTableItem bind) list
 
+-- | 'PTable's take functions from a 'TokenAt' type to an arbitrary value, but usually this value is
+-- a monadic computation. This function takes a table containing monadic computations in the
+-- 'Parser' monad and binds it to a monadic 'Parser' function you provide using the
+-- 'Control.Monad.>>=' function, evaluating to a new 'PTable' containing the function you provided.
 bindPTable :: TokenType tok =>
-  PTable st tok a -> (a -> Parser st tok b) -> PTable st tok b
+  PTable tok (Parser st tok a) -> (a -> Parser st tok b) -> PTable tok (Parser st tok b)
 bindPTable table bind = case table of
   PTableNull -> PTableNull
-  PTable arr -> PTable (fmap (fmap (>>=bind)) arr)
+  PTable arr -> PTable (fmap (fmap (fmap (>>=bind))) arr)
 
-evalPTable :: TokenType tok => PTable st tok a -> Parser st tok a
+evalPTable :: TokenType tok => PTable tok a -> Parser st tok a
 evalPTable ptable = case ptable of
   PTableNull -> mzero
   PTable arr -> do
     tok <- look1 id
     let tt = unwrapTT (asTokType tok)
     if inRange (bounds arr) tt
-      then  case (arr!tt) tok of
-              ParserNull -> mzero
-              next       -> shift as0 >> next
+      then  case arr!tt of
+              Nothing -> mzero
+              Just fn -> shift id >>= return . fn
       else  mzero
+
+-- | 'PTable's take functions from a 'TokenAt' type to an arbitrary value, but usually this value is
+-- a monadic computation, therefore evaluating the table results in a computation that you must join
+-- to the monad in which it was evaluated using 'Control.Monad.join'. This is so common it is
+-- worthwhile to provide the 'joinEvalPTable' function as a handy shortcut for the expression:
+-- > 'Control.Monad.join' ('evalPTable' myTable)
+joinEvalPTable :: TokenType tok => PTable tok (Parser st tok a) -> Parser st tok a
+joinEvalPTable = join . evalPTable
 
 ----------------------------------------------------------------------------------------------------
 -- $Infix_operator_table

@@ -441,10 +441,10 @@ containerPTab = table $
         tok  <- token TIME id
         time <- diffTimeFromStrs (asString tok)
         return (AST_Literal (ODiffTime time) (asLocation startTok <> asLocation tok))
-  , container "list" return
-  , container "set"  return
-  , (\lbl -> container lbl (checkAssign lbl)) "dict"
-  , (\lbl -> container lbl (checkAssign lbl)) "intmap"
+  , containerWith "list" return
+  , containerWith "set"  return
+  , (\lbl -> containerWith lbl (checkAssign lbl)) "dict"
+  , (\lbl -> containerWith lbl (checkAssign lbl)) "intmap"
   , tableItemBy "array" $ \startTok -> do
       let arrBounds = expect "array bounds expression" $ do
             startLoc <- tokenBy "(" asLocation
@@ -466,8 +466,9 @@ containerPTab = table $
       let endLoc = case unComment initObj of
             AST_Void -> asLocation startTok
             obj      -> getLocation obj
-      let noBracedItems =  return (AST_Struct initObj [] (asLocation startTok <> endLoc))
-      flip mplus noBracedItems $ do
+      -- let noBracedItems =  return (AST_Struct initObj [] (asLocation startTok <> endLoc))
+      -- flip mplus noBracedItems $ do
+      expect "bracketed lits of item assignments after \"struct\" statement" $ do
         tokenBy "{" as0
         (items, endLoc) <- commaSepd "list of items to initialize struct declaration" "}" equation
         return (AST_Struct initObj items (asLocation startTok <> endLoc))
@@ -479,7 +480,7 @@ containerPTab = table $
       endLoc <- expect "base-64 data" (tokenBy "}" asLocation)
       return (AST_Data coms (fmap Com dat) (asLocation startTok <> endLoc))
   , lambdaFunc "func", lambdaFunc "function"
-  , lambdaFunc "pat", lambdaFunc "pattern"
+  , lambdaFunc "pat" , lambdaFunc "pattern"
   , lambdaFunc "rule"
   ]
   where
@@ -498,9 +499,9 @@ containerPTab = table $
       (scrpt, endLoc) <- bracketed ("script expression after \""++lbl++"\" statement")
       return (AST_Lambda (read lbl) (com com1 params com2) scrpt (asLocation startTok <> endLoc))
 
-container :: UStrType lbl =>
+containerWith :: UStrType lbl =>
   lbl -> (AST_Object -> DaoParser AST_Object) -> DaoTableItem AST_Object
-container lbl constr = tableItemBy lbl $ \startTok -> do
+containerWith lbl constr = tableItemBy lbl $ \startTok -> do
   let typeStr = uchars (ustr lbl)
       msg = "bracketed list of items for \""++typeStr++"\" statement"
   coms <- optSpace
@@ -527,7 +528,7 @@ referencePTab = table (map mkPar ["$", "@"]) <> labeled where
     let as = read . tokTypeToString . asTokType
     obj <- commented reference
     return (AST_Prefix (as tok) obj ((getLocation (unComment obj)) <> asLocation tok))
-  labeled = bindPTable singletonPTab $ \initObj -> 
+  labeled = bindPTable singletonPTab $ \initObj ->
     flip mplus (return initObj) $
       simpleInfixedWithInit "label after dot or arrow operator" rightAssoc
         equationConstructor
@@ -586,7 +587,7 @@ commentedInPair parser = do
 -- 'qualReferencePTab'. Tables of lower prescedence can include this table, but should not include
 -- those tables (it would be redundant).
 funcCallArraySubPTab :: DaoPTable AST_Object
-funcCallArraySubPTab = bindPTable qualReferencePTab loop where
+funcCallArraySubPTab = bindPTable (qualReferencePTab <> containerPTab) loop where
   loop obj =
     mplus (bufferComments >> evalPTable juxtaposedPTab >>= \call -> call obj >>= loop) (return obj)
   bracket (open:close:[], constr) = tableItemBy [open] $ \tok obj -> do
@@ -610,7 +611,7 @@ arithPrefix = joinEvalPTable arithPrefixPTab
 -- 'containerPTab' is also included at this level. It is the most complicated (and therefore lowest
 -- prescedence) object expression that can be formed without making use of infix operators.
 objectPTab :: DaoPTable AST_Object
-objectPTab = mconcat [funcCallArraySubPTab, arithPrefixPTab, containerPTab]
+objectPTab = mappend funcCallArraySubPTab arithPrefixPTab
 
 -- Evaluates 'objectPTab' to a 'DaoParser'.
 object :: DaoParser AST_Object

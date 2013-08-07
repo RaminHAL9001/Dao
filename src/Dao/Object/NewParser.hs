@@ -144,7 +144,7 @@ daoTokenDef = do
   -------------------------------------- DATA SPECIAL SYNTAX --------------------------------------
   dataTag      <- myGetKeyword "data"
   base64Data   <- fullToken  BASE64DATA $
-    rxRepeat1[from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/']
+    rxRepeat1[from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/', ch '=']
   let dataLexer = dataTag . multiComs . openBrace .
         fix(\loop -> (base64Data<>space) . loop <>
           closeBrace <> rxErr "unknown token in base-64 data")

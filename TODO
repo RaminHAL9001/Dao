@@ -1,4 +1,11 @@
 TODO:
+* The lexical analysis phase of the parse allows Base-64 data with equals "=" signs at any point in
+	the data expression. However equals signs must only occur at the end of a Base-64 data
+	expression. There is no need to make this a lexical analysis error, let the lexer pass arbitrary
+	equals signs anywhere. However there should be a quick pass over the tokens during the syntactic
+	analysis phase to check if equals signs occur anywhere other than at the end of the input and
+	throw a compile-time error if there are.
+
 * Fix this design flaw:
 	The abstract syntax tree can produce expressions that cannot be parsed. For example,
 	'Dao.Object.AST.AST_Prefix' contains an arbitrary (commented) 'Dao.Object.AST.AST_Object'

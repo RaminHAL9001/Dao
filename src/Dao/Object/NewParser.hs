@@ -466,9 +466,8 @@ containerPTab = table $
       let endLoc = case unComment initObj of
             AST_Void -> asLocation startTok
             obj      -> getLocation obj
-      -- let noBracedItems =  return (AST_Struct initObj [] (asLocation startTok <> endLoc))
-      -- flip mplus noBracedItems $ do
-      expect "bracketed lits of item assignments after \"struct\" statement" $ do
+      let noBracedItems =  return (AST_Struct initObj [] (asLocation startTok <> endLoc))
+      flip mplus noBracedItems $ do
         tokenBy "{" as0
         (items, endLoc) <- commaSepd "list of items to initialize struct declaration" "}" equation
         return (AST_Struct initObj items (asLocation startTok <> endLoc))
@@ -587,9 +586,9 @@ commentedInPair parser = do
 -- 'qualReferencePTab'. Tables of lower prescedence can include this table, but should not include
 -- those tables (it would be redundant).
 funcCallArraySubPTab :: DaoPTable AST_Object
-funcCallArraySubPTab = bindPTable (qualReferencePTab <> containerPTab) loop where
-  loop obj =
-    mplus (bufferComments >> evalPTable juxtaposedPTab >>= \call -> call obj >>= loop) (return obj)
+funcCallArraySubPTab = bindPTable qualReferencePTab loop where
+  loop obj = flip mplus (return obj) $
+    bufferComments >> evalPTable juxtaposedPTab >>= \call -> call obj >>= loop
   bracket (open:close:[], constr) = tableItemBy [open] $ \tok obj -> do
     coms <- optSpace
     (args, endloc) <- commaSepd "argument to function" [close] equation
@@ -611,7 +610,7 @@ arithPrefix = joinEvalPTable arithPrefixPTab
 -- 'containerPTab' is also included at this level. It is the most complicated (and therefore lowest
 -- prescedence) object expression that can be formed without making use of infix operators.
 objectPTab :: DaoPTable AST_Object
-objectPTab = mappend funcCallArraySubPTab arithPrefixPTab
+objectPTab = mconcat [funcCallArraySubPTab, arithPrefixPTab, containerPTab]
 
 -- Evaluates 'objectPTab' to a 'DaoParser'.
 object :: DaoParser AST_Object
@@ -723,9 +722,10 @@ scriptPTab = comments <> objExpr <> table exprs where
     ]
   semicolon = tokenBy ";" asLocation
   returnExpr isReturn tok = do
-    obj    <- commented equation
-    endLoc <- semicolon
-    return (AST_ReturnExpr isReturn obj (asLocation tok <> endLoc))
+    obj    <- commented (equation <|> return AST_Void)
+    expect ("semicolon after \""++asString tok++"\" statement") $ do
+      endLoc <- semicolon
+      return (AST_ReturnExpr isReturn obj (asLocation tok <> endLoc))
   continExpr isContin tok = do
     let startLoc = asLocation tok
     let msg e = concat $

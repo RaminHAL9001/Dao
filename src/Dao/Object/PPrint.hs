@@ -70,15 +70,12 @@ pMapAssoc (a, obj) = pWrapIndent [pShow a, pString " = ", pPrint obj]
 
 instance PPrintable T_tree where
   pPrint t = case t of
-    T.Void            -> pString "struct{}"
+    T.Void            -> pString "struct"
     T.Leaf       o    -> leaf o
     T.Branch       ox -> pList (pString "struct") "{ " ", " " }" (branch ox)
     T.LeafBranch o ox -> pList (leaf o) " { " ", " " }" (branch ox)
     where
-      leaf o =
-        if o==ONull
-          then  pString "struct{}"
-          else  pWrapIndent [pString "struct(", pPrint o, pString ") {}"]
+      leaf o = pWrapIndent [pString "struct(", pPrint o, pString ")"]
       branch = map (\ (lbl, obj) -> pMapAssoc (lbl, OTree obj)) . M.assocs
 
 instance PPrintable Glob where { pPrint = pShow }

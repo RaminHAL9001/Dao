@@ -47,6 +47,8 @@ import qualified Data.IntMap           as I
 
 import           System.Random
 
+-- import           Debug.Trace
+
 ----------------------------------------------------------------------------------------------------
 
 randObjMap :: (map Object -> Object) -> ([(key, Object)] -> map Object) -> RandO key -> RandO Object
@@ -87,7 +89,7 @@ randComments = return []
 ----------------------------------------------------------------------------------------------------
 
 randSingleton :: RandO Object
-randSingleton = randOFromList $ randSingletonList++[fmap ORef randSimpleRef]
+randSingleton = randOFromList randSingletonList
 
 randSingletonList :: [RandO Object]
 randSingletonList =
@@ -117,6 +119,7 @@ randSingletonList =
       len <- nextInt 4
       flip fmap (replicateM (len+1) randInt) $
         OString . ustr . unwords . map (B.unpack . getRandomWord)
+  , fmap ORef randSimpleRef
   ]
 
 instance HasRandGen Object where
@@ -262,6 +265,9 @@ instance HasRandGen ArithOp1 where
 instance HasRandGen ArithOp2 where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::ArithOp2)))
 
+instance HasRandGen LambdaExprType where
+  randO = fmap toEnum (nextInt 3)
+
 instance HasRandGen AST_Script where
   randO = randOFromList $
     [ liftM3 AST_EvalObject   randAssignExpr randComments no
@@ -274,39 +280,76 @@ instance HasRandGen AST_Script where
     , liftM  AST_Comment      randComments
     ]
 
-instance HasRandGen LambdaExprType where
-  randO = fmap toEnum (nextInt 3)
-
 -- | Will create a random 'Dao.Object.AST_Object' of a type suitable for use as a stand-alone script
 -- expression, which is only 'AST_Assign'.
 randAssignExpr :: RandO AST_Object
-randAssignExpr = liftM4 AST_Assign   randO (randO>>=randCom) randO no
+randAssignExpr = liftM4 AST_Assign randFuncHeader (randO>>=randCom) randFuncHeader no
+
+randSingletonASTList :: [RandO AST_Object]
+randSingletonASTList = fmap (fmap (flip AST_Literal LocationUnknown)) randSingletonList
 
 randSingletonAST :: RandO AST_Object
-randSingletonAST = fmap (flip AST_Literal LocationUnknown) randSingleton
+randSingletonAST = randOFromList randSingletonASTList
 
-randObjectASTList :: [RandO AST_Object]
-randObjectASTList = 
-  [ liftM2 AST_Literal      limRandObj no
-  , randAssignExpr
-  , let check a = case a of
-          AST_Equation a op b no | DOT == unComment op  -> AST_Equation (check a) op (check b) no
-          AST_Literal (ORef (LocalRef _))           _   -> a
-          AST_Literal (OString _)                   _   -> a
-          AST_FuncCall _ _ _                        _   -> a
-          AST_Paren   a                         loc -> AST_Paren a loc
-          a                                         -> AST_Paren (Com a) LocationUnknown
-    in  fmap check (liftM4 AST_Equation randO (randO>>=randCom) randO no)
-  , do  o@(AST_Prefix fn cObjXp no) <- liftM3 AST_Prefix randO (randSingletonAST >>= randCom) no
-        return $ case fn of
-          REF -> case unComment cObjXp of
-            AST_Literal (ORef (LocalRef _)) _ -> o
-            _ -> AST_Prefix fn (fmap (flip (AST_Paren . Com) no) cObjXp) no
-          _ -> o
+randReference :: RandO AST_Object
+randReference = do
+  let mk a = AST_Literal (ORef (LocalRef a)) LocationUnknown
+      cons typ o = randCom o >>= \o -> return (AST_Prefix typ o LocationUnknown)
+      pfxCons o = do
+        pfx <- nextInt 3
+        case pfx of
+          0 -> return o
+          1 -> cons REF o
+          2 -> cons DEREF o
+      loop right ax = case ax of
+        []      -> return right
+        left:ax -> do
+          op  <- nextInt 2
+          op  <- randCom (if op==0 then DOT else POINT)
+          loop (AST_Equation left op right LocationUnknown) ax
+      arr :: Array Int (Maybe ArithOp1)
+      arr = array (0, 4) $ zip [0..4] $
+        Nothing : fmap Just [GLDOT, GLOBALPFX, LOCALPFX, QTIMEPFX, STATICPFX]
+  ax  <- fmap (fmap mk) (randListOf 1 4 randName)
+  a   <- pfxCons (head ax)
+  ax  <- mapM pfxCons (tail ax)
+  eqn <- loop a ax
+  pfx <- fmap (arr!) (nextInt 5)
+  case pfx of
+    Nothing  -> return eqn
+    Just pfx -> randCom eqn >>= \eqn -> return (AST_Prefix pfx eqn LocationUnknown)
+
+randFuncHeaderList :: [RandO AST_Object]
+randFuncHeaderList = fmap loop $
+  [ randReference
+  , do  fn <- randO
+        liftM2 (flip (AST_Prefix fn)) no $ randCom =<< case fn of
+          NOT -> randO
+          _   -> randFuncHeader
   , liftM2 AST_Paren    comRandObjExpr no
-  , liftM4 AST_ArraySub mostlyRefExprs randComments comRandObjExprList no
-  , liftM4 AST_FuncCall randO randComments comRandObjExprList no
-  , do -- AST_Dict
+  , liftM2 AST_MetaEval comRandObjExpr no
+  ]
+  where
+    loop rand = do
+      o <- rand
+      i <- nextInt 2
+      if i==0
+        then return o
+        else do
+          c <- nextInt 2
+          liftM4
+            (if c==0 then AST_FuncCall else AST_ArraySub)
+            randFuncHeader
+            randComments
+            comRandObjExprList
+            no
+
+randFuncHeader :: RandO AST_Object
+randFuncHeader = randOFromList randFuncHeaderList
+
+randContainerList :: [RandO AST_Object]
+randContainerList =
+  [ do -- AST_Dict
         typ   <- nextInt 4
         dict  <- return $ ustr $ case typ of
           0 -> "dict"
@@ -335,8 +378,13 @@ randObjectASTList =
         return (AST_Array idxExpr items LocationUnknown)
   , liftM3 AST_Struct (randObjectASTVoid >>= randCom) (randList 0 30 >>= comAssignExprList >>= mapM randCom) no
   , liftM4 AST_Lambda randO (randArgsDef >>= randCom) randScriptExpr no
-  , liftM2 AST_MetaEval comRandObjExpr no
   ]
+
+randContainer :: RandO AST_Object
+randContainer = randOFromList randContainerList
+
+randObjectASTList :: [RandO AST_Object]
+randObjectASTList =  randAssignExpr : randFuncHeaderList ++ randContainerList
 
 -- Can also produce void expressions.
 randObjectASTVoidList :: [RandO AST_Object]
@@ -345,6 +393,18 @@ randObjectASTVoidList = return AST_Void : randObjectASTList
 -- Can also produce void expressions.
 randObjectASTVoid :: RandO AST_Object
 randObjectASTVoid = randOFromList randObjectASTVoidList
+
+randEquationASTList :: [RandO AST_Object]
+randEquationASTList = randFuncHeaderList ++
+  [ let check a = case a of
+          AST_Equation a op b no | DOT == unComment op  -> AST_Equation (check a) op (check b) no
+          AST_Literal (ORef (LocalRef _))           _   -> a
+          AST_Literal (OString _)                   _   -> a
+          AST_FuncCall _ _ _                        _   -> a
+          AST_Paren   a                         loc -> AST_Paren a loc
+          a                                         -> AST_Paren (Com a) LocationUnknown
+    in  fmap check (liftM4 AST_Equation randO (randO>>=randCom) randO no)
+  ]
 
 instance HasRandGen AST_Object where
   -- | Differs from 'randAssignExpr' in that this 'randO' can generate 'Dao.Object.AST_Literal' expressions

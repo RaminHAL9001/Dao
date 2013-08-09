@@ -33,6 +33,7 @@ module Dao.Object
 
 import           Dao.Debug.OFF
 import           Dao.String
+import           Dao.Token
 import           Dao.NewParser
 import           Dao.Glob
 import qualified Dao.EnumSet as Es
@@ -592,6 +593,27 @@ instance HasLocation ObjectExpr where
     DataExpr      a     _ -> DataExpr      a     loc
     LambdaExpr    a b c _ -> LambdaExpr    a b c loc
     MetaEvalExpr  a     _ -> MetaEvalExpr  a     loc
+  delLocation o = case o of
+    VoidExpr              -> VoidExpr
+    Literal       a     _ -> Literal           a                  lu
+    AssignExpr    a b c _ -> AssignExpr   (fd0 a)      b  (fd0 c) lu
+    Equation      a b c _ -> Equation     (fd0 a)      b  (fd0 c) lu
+    PrefixExpr    a b   _ -> PrefixExpr        a  (fd0 b)         lu
+    ParenExpr     a     _ -> ParenExpr    (fd0 a)                 lu
+    ArraySubExpr  a b   _ -> ArraySubExpr (fd0 a) (fd1 b)         lu
+    FuncCall      a b   _ -> FuncCall     (fd0 a) (fd1 b)         lu
+    DictExpr      a b   _ -> DictExpr          a  (fd1 b)         lu
+    ArrayExpr     a b   _ -> ArrayExpr    (fd1 a) (fd1 b)         lu
+    StructExpr    a b   _ -> StructExpr   (fd0 a) (fd1 b)         lu
+    DataExpr      a     _ -> DataExpr          a                  lu
+    LambdaExpr    a b c _ -> LambdaExpr        a  (fd1 b) (fd1 c) lu
+    MetaEvalExpr  a     _ -> MetaEvalExpr (fd0 a)                 lu
+    where
+      lu = LocationUnknown
+      fd0 :: HasLocation a => a -> a
+      fd0 = delLocation
+      fd1 :: (HasLocation a, Functor f) => f a -> f a
+      fd1 = fmap delLocation
 
 -- | Part of the Dao language abstract syntax tree: any expression that controls the flow of script
 -- exectuion.
@@ -625,6 +647,21 @@ instance HasLocation ScriptExpr where
     ContinueExpr a b   _ -> ContinueExpr a b   loc
     ReturnExpr   a b   _ -> ReturnExpr   a b   loc
     WithDoc      a b   _ -> WithDoc      a b   loc
+  delLocation o = case o of
+    EvalObject   a     _ -> EvalObject   (fd0 a)                 lu
+    IfThenElse   a b c _ -> IfThenElse   (fd0 a) (fd1 b) (fd1 c) lu
+    TryCatch     a b c _ -> TryCatch     (fd1 a)      b  (fd1 c) lu
+    ForLoop      a b c _ -> ForLoop           a  (fd0 b) (fd1 c) lu
+    WhileLoop    a b   _ -> WhileLoop    (fd0 a) (fd1 b)         lu
+    ContinueExpr a b   _ -> ContinueExpr      a  (fd0 b)         lu
+    ReturnExpr   a b   _ -> ReturnExpr        a  (fd0 b)         lu
+    WithDoc      a b   _ -> WithDoc      (fd0 a) (fd1 b)         lu
+    where
+      lu = LocationUnknown
+      fd0 :: HasLocation a => a -> a
+      fd0 = delLocation
+      fd1 :: (HasLocation a, Functor f) => f a -> f a
+      fd1 = fmap delLocation
 
 data TopLevelEventType
   = BeginExprType | EndExprType | ExitExprType
@@ -664,6 +701,18 @@ instance HasLocation TopLevelExpr where
     TopScript      a     _ -> TopScript      a     loc
     TopLambdaExpr  a b c _ -> TopLambdaExpr  a b c loc
     EventExpr      a b   _ -> EventExpr      a b   loc
+  delLocation o = case o of
+    Attribute      a b   _ -> Attribute          a  (fd0 b)         lu
+    TopFunc        a b c _ -> TopFunc            a  (fd1 b) (fd1 c) lu
+    TopScript      a     _ -> TopScript     (fd0 a)                 lu
+    TopLambdaExpr  a b c _ -> TopLambdaExpr      a  (fd1 b) (fd1 c) lu
+    EventExpr      a b   _ -> EventExpr          a  (fd1 b)         lu
+    where
+      lu = LocationUnknown
+      fd0 :: HasLocation a => a -> a
+      fd0 = delLocation
+      fd1 :: (HasLocation a, Functor f) => f a -> f a
+      fd1 = fmap delLocation
 
 ----------------------------------------------------------------------------------------------------
 

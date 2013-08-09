@@ -26,6 +26,7 @@
 module Dao.Object.AST where
 
 import           Dao.String
+import           Dao.Token
 import           Dao.NewParser
 import           Dao.Object
 
@@ -33,7 +34,7 @@ import           Control.Monad
 
 import           Data.Typeable
 import           Data.List
-
+import Debug.Trace
 ----------------------------------------------------------------------------------------------------
 
 -- | A 'AST_TopLevel' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
@@ -101,6 +102,16 @@ data AST_SourceCode
 
 ----------------------------------------------------------------------------------------------------
 
+lu  = LocationUnknown
+fd0 :: HasLocation a => a -> a
+fd0 = delLocation
+fd1 :: (HasLocation a, Functor f) => f a -> f a
+fd1 = fmap delLocation
+fd2 :: (HasLocation a, Functor f, Functor g) => f (g a) -> f (g a)
+fd2 = fmap (fmap delLocation)
+fd3 :: (HasLocation a, Functor f, Functor g, Functor h) => f (g (h a)) -> f (g (h a))
+fd3 = fmap (fmap (fmap delLocation))
+
 instance HasLocation AST_TopLevel where
   getLocation o = case o of
     AST_Attribute  _ _     o -> o
@@ -108,15 +119,25 @@ instance HasLocation AST_TopLevel where
     AST_TopScript  _       o -> o
     AST_TopLambda  _ _ _   o -> o
     AST_Event      _ _ _   o -> o
+    AST_TopComment _         -> LocationUnknown
   setLocation o loc = case o of
-    AST_Attribute  a b     _ -> AST_Attribute a b     loc
-    AST_TopFunc    a b c d _ -> AST_TopFunc   a b c d loc
-    AST_TopScript  a       _ -> AST_TopScript a       loc
-    AST_TopLambda  a b c   _ -> AST_TopLambda a b c   loc
-    AST_Event      a b c   _ -> AST_Event     a b c   loc
+    AST_Attribute  a b     _ -> AST_Attribute  a b     loc
+    AST_TopFunc    a b c d _ -> AST_TopFunc    a b c d loc
+    AST_TopScript  a       _ -> AST_TopScript  a       loc
+    AST_TopLambda  a b c   _ -> AST_TopLambda  a b c   loc
+    AST_Event      a b c   _ -> AST_Event      a b c   loc
+    AST_TopComment a         -> AST_TopComment a
+  delLocation o = case o of
+    AST_Attribute  a b     _ -> AST_Attribute       a (fd1 b)                 lu
+    AST_TopFunc    a b c d _ -> AST_TopFunc         a      b  (fd3 c) (fd1 d) lu
+    AST_TopScript  a       _ -> AST_TopScript (fd0  a)                        lu
+    AST_TopLambda  a b c   _ -> AST_TopLambda       a (fd3 b) (fd1 c)         lu
+    AST_Event      a b c   _ -> AST_Event           a      b  (fd1 c)         lu
+    AST_TopComment a         -> AST_TopComment      a
 
 instance HasLocation AST_Script where
   getLocation o = case o of
+    AST_Comment      _         -> LocationUnknown
     AST_EvalObject   _ _     o -> o
     AST_IfThenElse   _ _ _ _ o -> o
     AST_TryCatch     _ _ _   o -> o
@@ -126,6 +147,7 @@ instance HasLocation AST_Script where
     AST_ReturnExpr   _ _     o -> o
     AST_WithDoc      _ _     o -> o
   setLocation o loc = case o of
+    AST_Comment      a         -> AST_Comment      a
     AST_EvalObject   a b     _ -> AST_EvalObject   a b     loc
     AST_IfThenElse   a b c d _ -> AST_IfThenElse   a b c d loc
     AST_WhileLoop    a b     _ -> AST_WhileLoop    a b     loc
@@ -134,6 +156,16 @@ instance HasLocation AST_Script where
     AST_ContinueExpr a b c   _ -> AST_ContinueExpr a b c   loc
     AST_ReturnExpr   a b     _ -> AST_ReturnExpr   a b     loc
     AST_WithDoc      a b     _ -> AST_WithDoc      a b     loc
+  delLocation o = case o of
+    AST_Comment      a         -> AST_Comment           a
+    AST_EvalObject   a b     _ -> AST_EvalObject   (fd0 a)      b                  lu
+    AST_IfThenElse   a b c d _ -> AST_IfThenElse        a  (fd0 b) (fd2 c) (fd2 d) lu
+    AST_WhileLoop    a b     _ -> AST_WhileLoop    (fd1 a) (fd1 b)                 lu
+    AST_TryCatch     a b c   _ -> AST_TryCatch     (fd2 a)      b  (fd1 c)         lu
+    AST_ForLoop      a b c   _ -> AST_ForLoop           a  (fd1 b) (fd1 c)         lu
+    AST_ContinueExpr a b c   _ -> AST_ContinueExpr      a       b  (fd1 c)         lu
+    AST_ReturnExpr   a b     _ -> AST_ReturnExpr        a  (fd1 b)                 lu
+    AST_WithDoc      a b     _ -> AST_WithDoc      (fd1 a) (fd1 b)                 lu
 
 instance HasLocation AST_Object where
   getLocation o = case o of
@@ -166,6 +198,21 @@ instance HasLocation AST_Object where
     AST_Data     a b   _ -> AST_Data     a b   loc
     AST_Lambda   a b c _ -> AST_Lambda   a b c loc
     AST_MetaEval a     _ -> AST_MetaEval a     loc
+  delLocation o = case o of
+    AST_Void             -> AST_Void
+    AST_Literal  a     _ -> AST_Literal       a                  lu
+    AST_Assign   a b c _ -> AST_Assign   (fd0 a)      b  (fd0 c) lu
+    AST_Equation a b c _ -> AST_Equation (fd0 a)      b  (fd0 c) lu
+    AST_Prefix   a b   _ -> AST_Prefix        a  (fd1 b)         lu
+    AST_Paren    a     _ -> AST_Paren    (fd1 a)                 lu
+    AST_ArraySub a b c _ -> AST_ArraySub (fd0 a)      b  (fd2 c) lu
+    AST_FuncCall a b c _ -> AST_FuncCall (fd0 a)      b  (fd2 c) lu
+    AST_Dict     a b c _ -> AST_Dict          a       b  (fd2 c) lu
+    AST_Array    a b   _ -> AST_Array    (fd3 a) (fd2 b)         lu
+    AST_Struct   a b   _ -> AST_Struct   (fd1 a) (fd2 b)         lu
+    AST_Data     a b   _ -> AST_Data          a       b          lu
+    AST_Lambda   a b c _ -> AST_Lambda        a  (fd3 b) (fd1 c) lu
+    AST_MetaEval a     _ -> AST_MetaEval (fd1 a)                 lu
 
 ----------------------------------------------------------------------------------------------------
 
@@ -181,6 +228,7 @@ data Comment
 instance HasLocation a => HasLocation (Com a) where
   getLocation = getLocation . unComment
   setLocation com loc = fmap (\a -> setLocation a loc) com
+  delLocation = fmap delLocation
 
 commentString :: Comment -> UStr
 commentString com = case com of
@@ -251,9 +299,13 @@ instance Functor Com where
 -- these types, and also define functions for converting and de-converting between these types. For
 -- example, 'Dao.Object.ObjectExpr' is the intermediate representation of 'AST_Object', so our
 -- instance for this relationship is @instane 'Intermediate' 'Dao.Object.ObjectExpr' 'AST_Object'@.
-class Intermediate obj ast | obj -> ast where
+class Show obj => Intermediate obj ast | obj -> ast, ast -> obj where
   toInterm   :: ast -> [obj]
   fromInterm :: obj -> [ast]
+  -- | The default implementation is to convert an @ast@ to an @[obj]@ using 'toInterm' and then
+  -- immediately convert the @[obj]@ back to an @[ast]@ using 'fromInterm'.
+  canonicalize :: ast -> [ast]
+  canonicalize ast = toInterm ast >>= \o -> (trace ("interm:\n"++show o)) (fromInterm o)
 
 -- Not for export: here are a bunch of shortcuts to converting the AST to the intermediate data
 -- type. Sinec 'toInterm' returns a single item in a list to indicate success and an empty list to

@@ -34,9 +34,8 @@ import           Dao.Predicate
 import           Dao.NewParser
 import           Dao.Glob
 import qualified Dao.EnumSet as Es
-import           Dao.Parser
+import           Dao.Token
 import qualified Dao.Tree    as T
-import           Dao.Parser
 
 import           Control.Monad
 import           Control.Monad.State

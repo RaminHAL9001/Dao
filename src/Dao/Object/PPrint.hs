@@ -26,7 +26,7 @@ module Dao.Object.PPrint where
 
 import           Dao.String
 import           Dao.PPrint
-import           Dao.NewParser (HasLocation, Location(LocationUnknown, Location), getLocation)
+import           Dao.Token
 import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Glob
@@ -258,7 +258,7 @@ instance PPrintable AST_Object where
       [pPrint objXp1, pPrint comUpdOp, pPrint objXp2]
     AST_Equation     objXp1  comAriOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comAriOp, pPrint objXp2]
-    AST_Prefix   ariOp    c_ObjXp          _ -> pPrint ariOp >> pPrint c_ObjXp
+    AST_Prefix   ariOp    c_ObjXp          _ -> pWrapIndent [pPrint ariOp, pString " ", pPrint c_ObjXp]
     AST_Paren             c_ObjXp          _ -> pWrapIndent [pString "(", pPrint c_ObjXp, pString ")"]
     AST_ArraySub objXp    coms     xcObjXp _ ->
       pList (pPrint objXp >> mapM_ pPrint coms) "[" ", " "]" (map pPrint xcObjXp)

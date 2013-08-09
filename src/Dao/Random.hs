@@ -182,14 +182,16 @@ randUStr :: Int -> UStr
 randUStr = ustr . B.unpack . getRandomWord
 
 randListOf :: Int -> Int -> RandO a -> RandO [a]
-randListOf minlen maxlen rando = do
+randListOf minlen maxlen rando = limSubRandOWith [] $ do
   -- half of all lists will be null, unless the 'minlen' parameter is greater than 0
+  minlen <- return (min minlen maxlen)
+  maxlen <- return (max minlen maxlen)
   empt <- if minlen==0 then nextInt 2 else return 0
   if empt==1
     then return []
     else do
       ln <- nextInt (maxlen-minlen)
-      limSubRandOWith [] (replicateM (minlen+ln) rando)
+      replicateM (minlen+ln) rando
 
 randList :: HasRandGen a => Int -> Int -> RandO [a]
 randList lo hi = randListOf lo hi subRandO

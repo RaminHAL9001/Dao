@@ -22,7 +22,7 @@
 
 module Dao.Object.Random where
 
-import           Dao.NewParser (Location(LocationUnknown, Location))
+import           Dao.Token
 import           Dao.Glob
 import           Dao.Object
 import           Dao.Random
@@ -311,8 +311,13 @@ randReference = do
       arr = array (0, 4) $ zip [0..4] $
         Nothing : fmap Just [GLDOT, GLOBALPFX, LOCALPFX, QTIMEPFX, STATICPFX]
   ax  <- fmap (fmap mk) (randListOf 1 4 randName)
-  a   <- pfxCons (head ax)
-  ax  <- mapM pfxCons (tail ax)
+  (a, ax) <- -- The 'randListOf' function might return a null list if we are at the maximum depth.
+    if null ax -- in which case we will create a simple reference with a single random name.
+      then fmap ((\a -> (a, [])) . mk) randName
+      else do
+        a  <- pfxCons (head ax)
+        ax <- mapM pfxCons (tail ax)
+        return (a, ax)
   eqn <- loop a ax
   pfx <- fmap (arr!) (nextInt 5)
   case pfx of

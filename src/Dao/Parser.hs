@@ -50,7 +50,7 @@ module Dao.Parser
   where
 
 import           Dao.String
-import           Dao.Token (Token(Token), tokenLocation, Location(Location), startingLine, endingLine, startingChar, endingChar, startingColumn, endingColumn, tokenChars)
+import           Dao.Token (Token(Token), location, Location(Location), startingLine, endingLine, startingChar, endingChar, startingColumn, endingColumn, tokenChars)
 import           Dao.NewParser (HasLocation, getLocation, setLocation)
 import qualified Dao.EnumSet as Es
 import qualified Dao.Tree as T

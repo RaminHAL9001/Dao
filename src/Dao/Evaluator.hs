@@ -28,8 +28,8 @@
 module Dao.Evaluator where
 
 import           Dao.Debug.OFF
--- import           Dao.Token
-import           Dao.NewParser hiding (shift, asString)
+import           Dao.Token     hiding (asString)
+import           Dao.NewParser hiding (shift)
 import           Dao.Object
 import           Dao.Object.AST
 import           Dao.PPrint
@@ -38,17 +38,17 @@ import           Dao.Glob
 import           Dao.Resource
 import           Dao.Predicate
 import           Dao.Files
-import           Dao.Parser
 import           Dao.Struct
 
 import           Dao.Object.Math
 import           Dao.Object.PPrint
 import           Dao.Object.Binary
 import           Dao.Object.Pattern
-import           Dao.Object.Parser
 import           Dao.Object.Struct
+import           Dao.Object.NewParser
 
 import           Control.Exception
+import           Control.Applicative
 import           Control.Concurrent
 import           Control.Monad.Trans
 import           Control.Monad.Reader
@@ -1926,10 +1926,10 @@ selectModules xunit names = dStack xloc "selectModules" $ do
 evalScriptString :: ExecUnit -> String -> Run ()
 evalScriptString xunit instr = dStack xloc "evalScriptString" $
   void $ flip runExec xunit $ nestedExecStack T.Void $ execScriptBlock $
-    case fst (runParser parseInteractiveScript instr) of
+    case parse (daoGrammar{mainParser = many script <|> return []}) mempty instr of
       Backtrack -> error "cannot parse expression"
       PFail tok -> error ("error: "++show tok)
-      OK   expr -> concatMap (toInterm . unComment) expr
+      OK   expr -> concatMap toInterm expr
 
 -- | This is the simplest form of string execution, everything happens in the current thread, no
 -- "BEGIN" or "END" scripts are executed. Simply specify a list of programs (as file paths) and a

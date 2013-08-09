@@ -23,7 +23,7 @@
 
 module Dao.Object.Binary where
 
-import           Dao.NewParser (Location(Location, LocationUnknown), startingLine, endingLine, startingColumn, endingColumn)
+import           Dao.Token
 import           Dao.Object
 import qualified Dao.Tree as T
 import           Dao.Glob

@@ -28,12 +28,12 @@ module Dao.Object.DeepSeq where
 import           Dao.Debug.OFF
 import           Dao.Object
 import           Dao.Object.AST
-import           Dao.NewParser (Location(LocationUnknown, Location))
+import           Dao.Token
 import           Dao.Glob
 import           Dao.EnumSet
-import           Dao.Parser
+import           Dao.Token
+import           Dao.NewParser
 import qualified Dao.Tree    as T
-import           Dao.Parser
 
 import           Control.DeepSeq
 

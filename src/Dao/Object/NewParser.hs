@@ -23,6 +23,7 @@
 module Dao.Object.NewParser where
 
 import           Dao.String
+import           Dao.Token
 import           Dao.Object hiding (Tokenizer)
 import           Dao.Object.AST
 import           Dao.Predicate
@@ -131,7 +132,7 @@ daoTokenDef = do
     , "if else for in while with try catch continue break return throw"
     , "global local qtime static"
     , "function func pattern pat rule BEGIN END EXIT"
-    , "import imports require requires"
+    , "import require"
     , "this class super new hash point vector matrix" -- reserved keywords, but they don't do anything yet.
     ]
   let myGetKeyword tokID = do
@@ -779,7 +780,7 @@ toplevelPTab = table expr <> comments <> scriptExpr where
     [ tableItemBy "func"    function, tableItemBy "function" function
     , tableItemBy "BEGIN"   event   , tableItemBy "END"      event   , tableItemBy "EXIT" event
     , tableItemBy "pattern" pattern , tableItemBy "pat"      pattern , tableItemBy "rule" pattern
-    , header "require", header "requires", header "import"
+    , header "require", header "import"
     ]
   singlePattern = commented equation >>= \eqn -> return ([eqn], getLocation (unComment eqn))
   function tok = do
@@ -823,7 +824,7 @@ toplevelPTab = table expr <> comments <> scriptExpr where
       expr <- commented (mplus strlit reference)
       expect ("semicolon after \""++lbl++"\" statement") $ do
         endLoc <- tokenBy ";" asLocation
-        return $ AST_Attribute (asUStr startTok) expr $
+        return $ AST_Attribute (ustr lbl) expr $
           (asLocation startTok <> (getLocation (unComment expr)))
 
 toplevel :: DaoParser AST_TopLevel

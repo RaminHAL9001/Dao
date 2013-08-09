@@ -27,6 +27,7 @@
 module Dao.Prelude
   ( module Dao.Prelude
   , module Dao.Predicate
+  , module Dao.Token
   , module Dao.NewParser
   , module Dao.String
   , module Dao.Object
@@ -49,13 +50,13 @@ import           Dao.Object
 import           Dao.PPrint
 import           Dao.Struct
 import           Dao.Predicate
+import           Dao.Token
 import           Dao.NewParser
-import           Dao.Parser
 import           Dao.Random
 
 import           Dao.Object.PPrint
 import           Dao.Object.AST
-import           Dao.Object.Parser
+import           Dao.Object.NewParser
 import           Dao.Object.Struct
 import           Dao.Object.Random
 import           Dao.Object.Binary
@@ -180,23 +181,23 @@ appendText :: PPrintable a => FilePath -> Dao a -> IO (Dao a)
 appendText path obj = appendTextWith prettyShow path obj
 
 -- | Parser a polymorphic type from a string expression.
-parseWith :: Dao.Parser.Parser a -> Dao String -> IO (Dao a)
-parseWith parser (Dao str) = case runParser parser str of
-  (OK      a, _) -> seq a $! return (Dao a)
-  (Backtrack, s) -> error ("parser backtracks:\n\t"++show s)
-  (PFail loc, s) -> error (show loc ++ ": "++show s)
+parseWith :: DaoParser a -> Dao String -> IO (Dao a)
+parseWith p (Dao str) = case parse (daoGrammar{mainParser=p}) mempty str of
+  OK      a -> seq a $! return (Dao a)
+  Backtrack -> error "parser backtracks"
+  PFail err -> error (show err)
 
 -- | Parse a 'Dao.Object.AST.AST_TopLevel'.
 parseTopExpr :: Dao String -> IO (Dao AST_TopLevel)
-parseTopExpr = parseWith parseDirective
+parseTopExpr = parseWith toplevel
 
 -- | Parse a 'Dao.Object.AST.AST_Script'.
 parseScriptExpr :: Dao String -> IO (Dao AST_Script)
-parseScriptExpr = parseWith Dao.Object.Parser.parseScriptExpr
+parseScriptExpr = parseWith script
 
 -- | Parse a 'Dao.Object.AST.AST_Object'.
 parseObjExpr :: Dao String -> IO (Dao AST_Object)
-parseObjExpr = parseWith (fmap fst parseObjectExpr)
+parseObjExpr = parseWith equation
 
 -- | Parse a 'Dao.Object.AST.AST_TopLevel' from an ordinary 'Prelude.String'.
 readTopExpr :: String -> IO (Dao AST_TopLevel)

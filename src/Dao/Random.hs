@@ -221,14 +221,16 @@ randomWords = listArray (0, length list) (map B.pack list) where
     , "calling can change changes code commercial computability computation computer concepts"
     , "constructs contrast conversely declarative definition depending depends describing"
     , "designed developed development difference different domains domain easier effects"
-    , "elaborations elements eliminating emphasized emphasizes entscheidungsproblem eschewing"
+    , "elaborations elements eliminating emphasize entscheidungsproblem eschewing"
     , "especially evaluation example executing expression facilitate financial formal"
     , "functional has have hope how however imperative industrial input investigate is"
     , "it key lack lambda language languages largely like make many math mathematical may"
     , "motivations much mutable notion numeric of on one ones only organizations output paradigm"
     , "specific pioneering practice predict produce program programming prominent purely rather"
     , "recursion referential result roots same science side so software some specifically state"
-    , "statistics style subject such supported symbolic system than that the they this times"
+    , "statistics style subject such supported symbolic system than that the they this"
     , "transparency treats twice understand use used value values variety viewed which wide will"
+    , "dates times database structured listing setting dictionary returning throwing catching"
+    , "inside without trying patterned rules"
     ]
 

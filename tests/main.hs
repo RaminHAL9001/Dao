@@ -57,7 +57,7 @@ import           Text.Printf
 
 import           System.IO
 import           System.Environment
-
+import Debug.Trace
 ----------------------------------------------------------------------------------------------------
 
 type TestRun a = ReaderT TestEnv IO a
@@ -89,8 +89,7 @@ defaultTestConfig =
 
 data TestEnv
   = TestEnv
-    { onOffButton       :: MVar Bool
-    , testIDFileHandle  :: MVar (Handle, HandlePosn)
+    { testIDFileHandle  :: MVar (Handle, HandlePosn)
     , testPassedButton  :: MVar Bool
     , testCounter       :: MVar (Rational, Rational)
     , errorCounter      :: MVar Int
@@ -99,36 +98,38 @@ data TestEnv
     , testConfig        :: TestConfig
     }
 
+main :: IO ()
 main = do
-  testIDs <- getArgs >>= mapM readIO
+  -- testIDs <- getArgs >>= mapM readIO
   config  <- catches (readFile "./test.cfg" >>= readIO) $ errHandler $ \msg -> do
     hPutStrLn stderr ("Warning: "++msg++", creating default configuration")
     hPutStrLn stderr "Warning: setting default configuration"
     catches (writeFile "./test.cfg" (show defaultTestConfig)) $ errHandler $ \msg -> do
       hPutStrLn stderr ("Error: failed to open file \"./test.cfg\" for writing, "++msg)
     return defaultTestConfig
-  i <-  if null testIDs
-          then do
-            catches (readFile "./testid" >>= readIO) $ errHandler $ \msg -> do
-              hPutStrLn stderr ("Warning: could not read file \"./testid\", "++show msg)
-              hPutStrLn stderr "Warning: startig at test ID #0"
-              return 0
-          else return 0
+  multiThreaded config
+
+----------------------------------------------------------------------------------------------------
+
+multiThreaded :: TestConfig -> IO ()
+multiThreaded config = do
+  i <-  catches (readFile "./testid" >>= readIO) $ errHandler $ \msg -> do
+          hPutStrLn stderr ("Warning: could not read file \"./testid\", "++show msg)
+          hPutStrLn stderr "Warning: startig at test ID #0"
+          return 0
     -- dont bother reading the test ID file if the test IDs have been specified on the command line
-  ch      <- newEmptyMVar
-  notify  <- newEmptyMVar
+  ch       <- newEmptyMVar
+  notify   <- newEmptyMVar
   errcount <- newMVar 0
-  counter <- newMVar (0, 0)
-  h       <- openFile "./testid" ReadWriteMode
-  pos     <- hGetPosn h
-  hlock   <- newMVar (h, pos)
-  hwait   <- newMVar True
-  excplog <- openFile (logFileName config) WriteMode
+  counter  <- newMVar (0, 0)
+  h        <- openFile "./testid" ReadWriteMode
+  pos      <- hGetPosn h
+  hlock    <- newMVar (h, pos)
+  excplog  <- openFile (logFileName config) WriteMode
   excplogVar <- newMVar excplog
   let testEnv = 
         TestEnv
-        { onOffButton       = hwait
-        , testIDFileHandle  = hlock
+        { testIDFileHandle  = hlock
         , testPassedButton  = notify
         , testCounter       = counter
         , errorCounter      = errcount
@@ -137,52 +138,33 @@ main = do
         , testConfig        = config
         }
   workThreads <- replicateM (threadCount config) $ forkIO (runReaderT testThread testEnv)
-  iterThread  <- forkIO $ flip runReaderT testEnv $
-    if null testIDs then iterLoop 0 else iterTestIDs testIDs
+  iterThread  <- forkIO $ runReaderT (iterLoop 0) testEnv
   dispThread  <- forkIO (forever $ threadDelay (displayInterval config) >> runReaderT displayInfo testEnv)
   catches (runReaderT ctrlLoop testEnv) (errHandlerMessage "exception in main control loop")
   killThread dispThread >> killThread iterThread
   hClose excplog        >> hClose     h
 
 ctrlLoop :: TestRun ()
-ctrlLoop = do
-  env <- ask
-  count <- liftIO $ do
-    passed <- takeMVar (testPassedButton env)
-    count  <- modifyMVar (errorCounter env) $ \count -> do
-      let nextCount = if not passed then count+1 else count
-      return (nextCount, nextCount)
-    modifyMVar_ (testCounter env) (\ (total, count) -> return (total+1, count+1))
-    return count
-  if count < maxErrors (testConfig env)
-    then  ctrlLoop
-    else  liftIO $ modifyMVar_ (onOffButton env) (return . const False)
+ctrlLoop = ask >>= \env -> liftIO $ do
+  passed <- takeMVar (testPassedButton env) -- Wait for a result to come back
+  modifyMVar_ (testCounter env) (\ (total, count) -> return (total+1, count+1))
+  count <- modifyMVar (errorCounter env) $ \count -> do
+    let nextCount = if not passed then count+1 else count
+    return (nextCount, nextCount)
+  if count < maxErrors(testConfig env) then runReaderT ctrlLoop env else return ()
 
 -- Iterate test IDs by simply incrementing a counter.
 iterLoop :: Int -> TestRun ()
-iterLoop i = ask >>= \env -> liftIO $ do
-  continue <- readMVar (onOffButton env)
+iterLoop i = ask >>= \env -> isOn >>= \continue -> liftIO $ do
   putMVar (inputChannel env) (if continue then Just i else Nothing)
   runReaderT (iterLoop (i+1)) env
-
--- Iterate over a list of integer test IDs.
-iterTestIDs :: [Int] -> TestRun ()
-iterTestIDs testIDs = ask >>= \env -> liftIO $ do
-  continue <- readMVar (onOffButton env)
-  let chan = inputChannel env
-  let end  = putMVar chan Nothing
-  if not continue
-    then  end
-    else  case testIDs of
-      []   -> end
-      i:ix -> putMVar chan (Just i) >> runReaderT (iterTestIDs ix) env
 
 displayInfo :: TestRun ()
 displayInfo = ask >>= \env -> liftIO $ do
   (total, count) <- modifyMVar (testCounter env) $ \ (total, count) ->
     return ((total,0), (total,count))
   putStrLn $ concat $
-    [ show total, " tests completed at the rate of "
+    [ show (round total), " tests completed at the rate of "
     , printf "%.2f tests per second"
         (fromRational
             (toRational count * 1000000 / toRational (displayInterval(testConfig env))) :: Float)
@@ -190,8 +172,14 @@ displayInfo = ask >>= \env -> liftIO $ do
 
 ----------------------------------------------------------------------------------------------------
 
+-- This function reports whether or not testing should continue based on how many tests have failed
+-- so far (determined by the 'maxErrors' value in the 'TestConfig'). The test loop iterator
+-- 'loopOnInput' calls this function before deciding whether or not to take another test from the
+-- 'inputChannel'.
 isOn :: TestRun Bool
-isOn = asks onOffButton >>= liftIO . readMVar
+isOn = ask >>= \env -> liftIO $ do
+  count <- readMVar (errorCounter env)
+  return (count < maxErrors (testConfig env))
 
 errHandler :: (String -> IO a) -> [Handler a]
 errHandler func =
@@ -201,7 +189,9 @@ errHandler func =
 errHandlerMessage :: String -> [Handler ()]
 errHandlerMessage msg = errHandler (\e -> hPutStrLn stderr (msg++": "++e))
 
--- Handles errors by returning the error string in a 'Data.Either.Left' constructor.
+-- Handles errors by returning the error string in a 'Data.Either.Left' constructor. So if this
+-- function is the second parameter to 'Control.Exception.catches', the first parameter should
+-- return a value wrapped in an 'Data.Either.Either' data type.
 errTryCatch :: String -> [Handler (Either UStr a)]
 errTryCatch msg = 
   [ Handler (\ (e::IOException) -> return $ Left $ ustr (msg++": "++show e))
@@ -243,16 +233,19 @@ updateTestIDFile i = ask >>= \env -> liftIO $
 -- This is the function that should be run in its own thread.
 loopOnInput :: Show a => (Int -> TestRun a) -> (a -> TestRun Bool) -> TestRun ()
 loopOnInput genFunc checkFunc = loop where
-  loop = ask >>= \env -> liftIO $ do
-    i <- takeMVar (inputChannel env)
-    case i of
-      Nothing -> return ()
-      Just  i -> do
-        passed <- handle (\e -> runReaderT (h i Nothing e) env) $ do
-          obj <- runReaderT (genFunc i) env
-          catch (runReaderT (checkFunc obj) env) (\e -> runReaderT (h i (Just (show obj)) e) env)
-        putMVar (testPassedButton env) passed
-        runReaderT (updateTestIDFile i >> loop) env
+  loop = ask >>= \env -> isOn >>= \continue -> liftIO $ do
+    if continue
+      then do
+        i <- takeMVar (inputChannel env)
+        case i of
+          Nothing -> return ()
+          Just  i -> do
+            passed <- handle (\e -> runReaderT (h i Nothing e) env) $ do
+              obj <- runReaderT (genFunc i) env
+              catch (runReaderT (checkFunc obj) env) (\e -> runReaderT (h i (Just (show obj)) e) env)
+            putMVar (testPassedButton env) passed -- wait our turn to report success/failure
+            runReaderT (updateTestIDFile i >> loop) env
+      else return ()
   h i obj (SomeException e) = do
     catchToLog $ \logFile -> do
       hPutStrLn logFile ("ITEM #"++show i++"\n"++show e)
@@ -280,8 +273,31 @@ data TestCase
 
 instance Show TestCase where
   show obj = unlines $
-    [uchars (testResult obj), "original object:", prettyPrint 80 "    " (originalObject obj), sep]
+    [ uchars (testResult obj)
+    , "original object:", prettyPrint 80 "    " (originalObject obj)
+    , show (originalObject obj)
+    , sep
+    ]
 
+-- If the 'failedTestCount' is greater than 0, then this 'TestCase' is printed to a file, where the
+-- name of the file is the @'Prelude.show ('testCaseID' tc) ++ ".log"@. Returns 'Prelude.False' for
+-- failure, 'Prelude.True' for passed tests.
+reportTest :: TestCase -> IO Bool
+reportTest tc =
+  if failedTestCount tc > 0
+    then do
+      let fileName = show (testCaseID tc) ++ ".log"
+      writeFile fileName (show tc)
+      return False
+    else return True
+
+-- Generate a test case, which involves using functions in the "Dao.Object.Random" module to create
+-- a random object, and then possibly transforming the random object into forms suitable for testing
+-- various algorithms, for example generating a serialized binary representation of the random
+-- object if serialization is to be tested. This function checks the 'TestConfig' to decide which
+-- objects to generate, for example, if 'doTestSerializer' is set to 'Prelude.True', then the binary
+-- serialization of the random object is also generated and stored in this test case.  This function
+-- is used as a parameter to 'loopOnInput'.
 newTestCase :: Int -> TestRun TestCase
 newTestCase i = do
   cfg <- asks testConfig
@@ -301,69 +317,94 @@ newTestCase i = do
     , failedTestCount  = 0
     }
 
+-- Use 'passTest' or 'failTest' instead.
 updateTestCase :: TestCase -> Maybe String -> TestRun TestCase
 updateTestCase tc msg = return $
   tc{ testResult = let tr = testResult tc in maybe tr (tr<>) (fmap ustr msg)
     , failedTestCount = (if maybe False (const True) msg then (+1) else id) $ failedTestCount tc
     }
 
+-- Every 'TestCase' stores information as to whether or not the case has passed or failed. Use this
+-- function to update the 'TestCase' with information indicating that the test passed.
 passTest :: TestCase -> TestRun TestCase
 passTest tc = updateTestCase tc Nothing
 
+-- Every 'TestCase' stores information as to whether or not the case has passed or failed. Use this
+-- function to update the 'TestCase' with information indicating that the test failed, including a
+-- failure message string.
 failTest :: TestCase -> String -> TestRun TestCase
 failTest tc = updateTestCase tc . Just
 
+-- Every test is wrapped in this error handler (which calls to 'errHandler' above), and the test is
+-- considered a failure if an 'Control.Exception.Error' or 'Control.Exception.IOException' is
+-- caught. Pass a test case, a selector for selecting the object generated (Maybe) by 'newTestCase',
+-- and a function for checking the value of that generated object. If the object was not generated,
+-- the 'TestCase' is returned unmodified. If an exception is thrown, the test case is returned with
+-- a failure indicated.
+tryTest :: TestCase -> (TestCase -> Maybe item) -> (item -> TestRun TestCase) -> TestRun TestCase
+tryTest tc getTestItem testFunc = ask >>= \env -> case getTestItem tc of
+  Nothing   -> return tc
+  Just item -> liftIO $ catches (runReaderT (testFunc item) env) $
+    errHandler (flip runReaderT env . failTest tc)
+
 -- Test the pretty printer and the parser. If a randomly generated object can be pretty printed, and
 -- the parser can parse the pretty-printed string and create the exact same object, then the test
--- pases.
+-- pases. This function is used as a parameter to 'loopOnInput'.
 checkTestCase :: TestCase -> TestRun Bool
 checkTestCase tc = do
-  tc <- case parseString tc of
-    Nothing  -> return tc
-    Just str -> case parse daoGrammar mempty (uchars str)  of
-             -- case (par, msg) = {-# SCC par #-} runParser (regexMany space >> parseDirective) str of
+  ------------------- (0) Canonicalize the original object ------------------
+  tc <- case canonicalize (originalObject tc) of
+    [o] -> return (tc{originalObject=o})
+    [ ] -> error "could not canonicalize original object"
+    ox  -> error "original object canonicalized to multiple possible values"
+  --------------------------- (1) Test the parser ---------------------------
+  tc <- tryTest tc parseString $ \str -> do
+    case parse daoGrammar mempty (uchars str)  of
+    -- case (par, msg) = {-# SCC par #-} runParser (regexMany space >> parseDirective) str of
       OK      o -> do
-        let diro = directives o
+        let diro = fmap delLocation (directives o)
         if diro == [originalObject tc]
           then passTest tc
           else
-            failTest tc $ unlines
-              [ "Parsed AST does not match original object, parsed AST is:"
+            failTest tc $ unlines $ concat
+              [ ["Parsed AST does not match original object, parsed AST is:"]
               , case diro of
-                  []  -> "(Empty AST)"
-                  [o] -> prettyPrint 80 "    " o
-                  ox  -> "(Returned multiple AST items)\n" ++
-                    unlines (map (prettyPrint 80 "    ") ox)
-              , sep
+                  []  -> ["(Empty AST)"]
+                  [o] -> [prettyPrint 80 "    " o, show o]
+                  ox  -> ["(Returned multiple AST items)"]++
+                    (ox >>= \o -> [prettyPrint 80 "    " o, show o])
               ]
       Backtrack -> failTest tc "Parser backtrackd"
       PFail   b -> failTest tc (show b)
-  tc <- case liftM2 (,) (serializedObject tc) (originalInterm tc) of
-    Nothing  -> return tc
-    Just (_, []   ) -> failTest tc $
-      "Evaluated to null when converting the AST to an intermediate structure"
-    Just (bin, [obj]) -> do
-      unbin <- liftIO $ catches (return $ Right $ B.decode bin) $
-        errTryCatch "binary deserialization failed"
-      case unbin of
-        Left  msg   -> failTest tc (uchars msg)
-        Right unbin ->
-          if obj==unbin
-            then  passTest tc
-            else
-              failTest tc $ unwords $
-                [ "Original object does not match object deserialized from binary string"
-                , "Received bytes:", showBinary bin
-                , "Deserialied object:"
-                , prettyPrint 80 "    " unbin
-                ]
-    Just (_, ox) -> failTest tc $ unlines $
-      ["Converting the AST evaluated to it's intermediate form yielded in multiple possible results:"
-      , unlines (map ((++(sep++"\n")) . prettyPrint 80 "    ") ox)
-      ]
-  tc <- case structuredObject tc of
-    Nothing  -> return tc
-    Just obj -> case structToData obj :: PValue UpdateErr AST_TopLevel of
+  --
+  ------------------------- (2) Test the serializer -------------------------
+  tc <- tryTest tc (\tc -> liftM2 (,) (serializedObject tc) (originalInterm tc)) $ \binObjPair ->
+    case binObjPair of
+      (_, []   ) -> failTest tc $
+        "Evaluated to null when converting the AST to an intermediate structure"
+      (bin, [obj]) -> do
+        unbin <- liftIO $ catches (return $ Right $ B.decode bin) $
+          errTryCatch "binary deserialization failed"
+        case unbin of
+          Left  msg   -> failTest tc (uchars msg)
+          Right unbin ->
+            if obj==unbin
+              then  passTest tc
+              else
+                failTest tc $ unwords $
+                  [ "Original object does not match object deserialized from binary string"
+                  , "Received bytes:", showBinary bin
+                  , "Deserialied object:"
+                  , prettyPrint 80 "    " unbin
+                  ]
+      (_, ox) -> failTest tc $ unlines $
+        ["Evaluating the AST to it's intermediate form yielded multiple possible results:"
+        , unlines (map ((++(sep++"\n")) . prettyPrint 80 "    ") ox)
+        ]
+  --
+  ---------------- (3) Test the intermediate tree structures ----------------
+  tc <- tryTest tc  structuredObject $ \obj ->
+    case structToData obj :: PValue UpdateErr AST_TopLevel of
       OK struct ->
         if originalObject tc == struct
           then
@@ -374,8 +415,13 @@ checkTestCase tc = do
           else  passTest tc
       Backtrack -> failTest tc "Backtracked while constructing a Haskell object from a Dao tree"
       PFail   b -> failTest tc (show b)
-  return (failedTestCount tc > 0)
+  --
+  ------------------------------ Report results -----------------------------
+  liftIO (reportTest tc)
 
+----------------------------------------------------------------------------------------------------
+
+-- This is the computation that runs a series of tests, looping over the 'inputChannel'.
 testThread :: TestRun ()
 testThread = loopOnInput newTestCase checkTestCase
 

@@ -117,6 +117,41 @@ instance PPrintable Object where
 
 ----------------------------------------------------------------------------------------------------
 
+-- Statements like "if" or "while" take a condition, and the Dao languages does not require these
+-- conditions be enclosed in parenthases. The question is, should there be a space after the "if" or
+-- "while" statement? This function resolves that question by checking if an object expression
+-- already is enclosed in parentheses, and if so, does not put a space. Otherwise, a space will be
+-- printed between the "if" tag or "while" tag and the condition.
+class PrecedeWithSpace a where { precedeWithSpace :: a -> Bool }
+instance PrecedeWithSpace AST_Object where
+  precedeWithSpace o = case o of
+    AST_Void             -> False
+    AST_Paren    _     _ -> False
+    AST_MetaEval _     _ -> False
+    AST_Assign   o _ _ _ -> precedeWithSpace o
+    AST_Equation o _ _ _ -> precedeWithSpace o
+    AST_Prefix   o _   _ -> precedeWithSpace o
+    AST_ArraySub o _ _ _ -> precedeWithSpace o
+    AST_FuncCall o _ _ _ -> precedeWithSpace o
+    _                    -> True
+instance PrecedeWithSpace ArithOp1 where
+   precedeWithSpace o = case o of
+     GLOBALPFX  -> True
+     LOCALPFX   -> True
+     QTIMEPFX   -> True
+     STATICPFX  -> True
+     _          -> False
+instance PrecedeWithSpace a => PrecedeWithSpace (Com a) where
+  precedeWithSpace o = case o of
+    Com         b   -> precedeWithSpace b
+    ComBefore a b   -> precedeWithSpace a || precedeWithSpace b
+    ComAfter    b _ -> precedeWithSpace b
+    ComAround a b _ -> precedeWithSpace a || precedeWithSpace b
+    -- there should always be a space before a comment.
+instance PrecedeWithSpace [Comment] where { precedeWithSpace = not . null }
+
+----------------------------------------------------------------------------------------------------
+
 instance PPrintable Reference where
   pPrint ref = case ref of
     IntRef     w      -> pString ('$' : show w)
@@ -195,26 +230,26 @@ instance PPrintable AST_Script where
         where
           printIfXp ifXp = do
             pInline (map pPrint coms)
-            pPrintComSubBlock (pWrapIndent [pString "if(", pPrint ifXp, pString ")"]) thenXp
+            flip pPrintComSubBlock thenXp $ pWrapIndent $ concat $
+              [ [pString "if"]
+              , guard(precedeWithSpace coms || precedeWithSpace ifXp) >> [pString " "]
+              , [pPrint ifXp]
+              ]
           done = pEndLine >> pPrintComSubBlock (pString "else") elseXp
     AST_TryCatch     cxcScrpXp  cUStr     xcScrpXp  _ -> do
       pPrintComSubBlock (pString "try") cxcScrpXp
-      if null xcScrpXp
-        then  return ()
+      if nil == unComment cUStr
+        then  pPrint cUStr
         else  pPrintSubBlock (pString "catch " >> pPrint cUStr) xcScrpXp
-    AST_ForLoop      cNm        cObjXp    xcScrpXp  _ -> do
-      let hdr = do
-            pString "for "
-            pPrint cNm
-            pString " in "
-            pList_ "(" "" ")" [pPrint cObjXp]
-      pPrintSubBlock hdr xcScrpXp
+    AST_ForLoop      cNm        cObjXp    xcScrpXp  _ ->
+      pPrintSubBlock (pString "for " >> pPrint cNm >> pString " in " >> pPrint cObjXp) xcScrpXp
     AST_ContinueExpr contin     coms      cObjXp    _ -> pWrapIndent $
       [ pString (if contin then "continue" else "break")
       , pInline (map pPrint coms)
       , case unComment cObjXp of
           AST_Void -> return ()
-          _        -> pString " if " >> pPrint cObjXp
+          _        ->
+            pString " if" >> unless (not $ precedeWithSpace cObjXp) (pString " ") >> pPrint cObjXp
       , pString ";"
       ]
     AST_ReturnExpr   retrn                cObjXp    _ -> pWrapIndent $
@@ -231,25 +266,6 @@ instance PPrintable ArithOp1  where { pPrint = pShow }
 instance PPrintable ArithOp2  where { pPrint = pShow }
 instance PPrintable UpdateOp where { pPrint op = pString (' ':show op++" ") }
 
-complicated :: AST_Object -> Bool
-complicated obj = case obj of
-  AST_Literal   (OTree   _) _ -> True
-  AST_Struct    _ _         _ -> True
-  AST_Equation  _ _ _       _ -> True
-  AST_Assign    _ _ _       _ -> True
-  AST_Array     _ _         _ -> True
-  AST_Lambda    _ _ _       _ -> True
-  AST_Paren     _           _ -> True
-  _                           -> False
-
-forceParen :: AST_Object -> AST_Object
-forceParen o =
-  if complicated o
-    then  case o of
-            AST_Paren o loc -> AST_Paren o loc
-            _               -> AST_Paren (Com o) (getLocation o)
-    else  o
-
 instance PPrintable AST_Object where
   pPrint expr = case expr of
     AST_Void                                 -> return ()
@@ -258,7 +274,11 @@ instance PPrintable AST_Object where
       [pPrint objXp1, pPrint comUpdOp, pPrint objXp2]
     AST_Equation     objXp1  comAriOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comAriOp, pPrint objXp2]
-    AST_Prefix   ariOp    c_ObjXp          _ -> pWrapIndent [pPrint ariOp, pString " ", pPrint c_ObjXp]
+    AST_Prefix   ariOp    c_ObjXp          _ -> pWrapIndent $ concat $
+      [ [pPrint ariOp]
+      , guard (precedeWithSpace ariOp) >> [pString " "]
+      , [pPrint c_ObjXp]
+      ]
     AST_Paren             c_ObjXp          _ -> pWrapIndent [pString "(", pPrint c_ObjXp, pString ")"]
     AST_ArraySub objXp    coms     xcObjXp _ ->
       pList (pPrint objXp >> mapM_ pPrint coms) "[" ", " "]" (map pPrint xcObjXp)
@@ -275,11 +295,8 @@ instance PPrintable AST_Object where
         [] -> hdr >> pString "{}"
         _  -> pList hdr  " { " ", " " }" (map pPrint xcObjXp)
     AST_Struct   cObjXp   xcObjXp          _ ->
-      pList (pString "struct " >> printObj cObjXp) "{" ", " "}" (map pPrint xcObjXp) where
-        printObj obj =
-          if complicated (unComment obj)
-            then  pInline [pString "(", pPrint cObjXp, pString ")"]
-            else  pPrint cObjXp
+      pList (pString "struct" >> printObj cObjXp) "{" ", " "}" (map pPrint xcObjXp) where
+        printObj obj = pWrapIndent [pString " ", pInline [pPrint cObjXp]]
     AST_Data     com   xcStr               _ ->
       if null xcStr
         then  pString "data{}"
@@ -302,6 +319,7 @@ instance PPrintable AST_TopLevel where
     AST_TopLambda a b c   _ -> pClosure header " { " " }" (map pPrint c) where
       header = pShow a >> pPrintComWith (pList_ "(" ", " ")" . map pPrint) b
     AST_Event     a b c   _ -> pClosure (pShow a >> mapM_ pPrint b) " { " " }" (map pPrint c)
+    AST_TopComment a        -> mapM_ (\a -> pPrint a >> pNewLine) a
 
 pPrintInterm :: (Intermediate obj ast, PPrintable ast) => obj -> PPrint ()
 pPrintInterm = mapM_ pPrint . fromInterm

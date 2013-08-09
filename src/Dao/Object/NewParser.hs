@@ -457,7 +457,7 @@ containerPTab = table $
                   startLoc <> endLoc
             return bnds
       bnds <- commented arrBounds
-      let initMsg = "list of items to initialize array declaration"
+      let initMsg = "valid item in initializing list for array declaration"
       expect initMsg $ do
         tokenBy "{" as0
         (items, endLoc) <- commaSepd initMsg "}" equation
@@ -470,7 +470,7 @@ containerPTab = table $
       let noBracedItems =  return (AST_Struct initObj [] (asLocation startTok <> endLoc))
       flip mplus noBracedItems $ do
         tokenBy "{" as0
-        (items, endLoc) <- commaSepd "list of items to initialize struct declaration" "}" equation
+        (items, endLoc) <- commaSepd "item in list for initializing struct declaration" "}" equation
         return (AST_Struct initObj items (asLocation startTok <> endLoc))
   , tableItemBy "data" $ \startTok -> expect "bracketed base-64 data expression" $ do
       coms <- optSpace
@@ -526,7 +526,7 @@ referencePTab :: DaoPTable AST_Object
 referencePTab = table (map mkPar ["$", "@"]) <> labeled where
   mkPar opStr = tableItemBy opStr $ \tok -> do
     let as = read . tokTypeToString . asTokType
-    obj <- commented reference
+    obj <- commented object
     return (AST_Prefix (as tok) obj ((getLocation (unComment obj)) <> asLocation tok))
   labeled = bindPTable singletonPTab $ \initObj ->
     flip mplus (return initObj) $
@@ -565,7 +565,8 @@ commaSepd errMsg close parser =
       return (if null c then stack else stack++[com c AST_Void []], loc)
     loop stack = flip mplus (parseClose stack []) $ do
       token COMMA as0
-      expect errMsg (commented parser >>= \o -> loop (stack++[o]))
+      o <- commented (expect errMsg parser)
+      loop (stack++[o])
     err = fail $ "unknown token while parsing list of items for "++uchars (ustr errMsg)
 
 -- More than one parser has need of 'commaSepd' as a parameter to 'commented', but passing
@@ -601,7 +602,7 @@ funcCallArraySub = joinEvalPTable funcCallArraySubPTab
 
 arithPrefixPTab :: DaoPTable AST_Object
 arithPrefixPTab = table $ flip fmap ["~", "-"] $ \pfxOp -> tableItemBy pfxOp $ \tok -> do
-  obj <- commented reference
+  obj <- commented object
   return (AST_Prefix (read (tokTypeToString (asTokType tok))) obj (asLocation tok))
 
 arithPrefix :: DaoParser AST_Object
@@ -668,9 +669,12 @@ bracketed :: String -> DaoParser ([AST_Script], Location)
 bracketed msg = do
   startLoc <- tokenBy "{" asLocation
   scrps    <- mplus (many script) (return [])
+  let filtered = scrps >>= \scrp -> case scrp of
+        AST_Comment [] -> mzero
+        scrp           -> return scrp
   expect ("curly-bracket to close "++msg++" statement") $ do
     endLoc <- tokenBy "}" asLocation
-    return (scrps, startLoc<>endLoc)
+    return (filtered, startLoc<>endLoc)
 
 script :: DaoParser AST_Script
 script = joinEvalPTable scriptPTab
@@ -777,13 +781,13 @@ toplevelPTab = table expr <> comments <> scriptExpr where
   comments = bindPTable spaceComPTab (\c1 -> optSpace >>= \c2 -> return (AST_TopComment (c1++c2)))
   scriptExpr = bindPTable scriptPTab $ \obj -> return (AST_TopScript obj (getLocation obj))
   expr =
-    [ tableItemBy "func"    function, tableItemBy "function" function
-    , tableItemBy "BEGIN"   event   , tableItemBy "END"      event   , tableItemBy "EXIT" event
-    , tableItemBy "pattern" pattern , tableItemBy "pat"      pattern , tableItemBy "rule" pattern
-    , header "require", header "import"
+    [ function "func"   , function "function"
+    , event    "BEGIN"  , event    "END"     , event   "EXIT"
+    , pattern  "pattern", pattern  "pat"     , pattern "rule"
+    , header   "require", header   "import"
     ]
   singlePattern = commented equation >>= \eqn -> return ([eqn], getLocation (unComment eqn))
-  function tok = do
+  function lbl = tableItemBy lbl $ \tok -> do
     let exprType = '"':show (asTokType tok)++"\""
     coms <- optSpace
     name <- optional (token LABEL asUStr)
@@ -798,14 +802,14 @@ toplevelPTab = table expr <> comments <> scriptExpr where
       let loc = asLocation tok <> endLoc
       return $ case name of
         Just name -> AST_TopFunc coms name pats actn loc
-        Nothing   -> AST_TopLambda (read (asString tok)) pats actn loc
-  event   tok = do
+        Nothing   -> AST_TopLambda (read lbl) pats actn loc
+  event   lbl = tableItemBy lbl $ \tok -> do
     let exprType = show (asTokType tok)
     coms <- optSpace
     expect ("bracketed script after \""++exprType++"\" statement") $ do
       (event, endLoc) <- bracketed ('"':exprType++"\" statement")
-      return (AST_Event (read exprType) coms event (asLocation tok <> endLoc))
-  pattern tok = do
+      return (AST_Event (read lbl) coms event (asLocation tok <> endLoc))
+  pattern lbl = tableItemBy lbl $ \tok -> do
     let exprType = show (asTokType tok)
     expect ("pattern expression for \""++exprType++"\"") $ do
       comPat <- commented $ flip mplus singlePattern $ do
@@ -815,7 +819,7 @@ toplevelPTab = table expr <> comments <> scriptExpr where
           rule = fmap (const pats) comPat
       expect ("bracketed script after \""++exprType++"\" statement") $ do
         (action, endLoc) <- bracketed ('"':exprType++"\" statement")
-        return (AST_TopLambda (read exprType) rule action (asLocation tok <> endLoc))
+        return (AST_TopLambda (read lbl) rule action (asLocation tok <> endLoc))
   header lbl = tableItemBy lbl $ \startTok ->
     expect ("string literal or reference for \""++lbl++"\" statement") $ do
       let strlit = do

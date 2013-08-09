@@ -268,17 +268,28 @@ instance HasRandGen ArithOp2 where
 instance HasRandGen LambdaExprType where
   randO = fmap toEnum (nextInt 3)
 
+randScriptList :: [RandO AST_Script]
+randScriptList =
+  [ liftM3 AST_EvalObject   randAssignExpr randComments no
+  , liftM5 AST_IfThenElse   randComments randO comRandScriptExpr comRandScriptExpr no
+  , do  try   <- comRandScriptExpr
+        catch <- nextInt 2
+        (name, catch) <-
+          if catch==0
+            then  return (Com nil, [])
+            else  liftM2 (,) (randName >>= randCom) randScriptExpr
+        return (AST_TryCatch try name catch LocationUnknown)
+  , liftM4 AST_ForLoop      (randName>>=randCom) comRandObjExpr randScriptExpr no
+  , liftM4 AST_ContinueExpr randBool randComments (randObjectASTVoid >>= randCom) no
+  , liftM3 AST_ReturnExpr   randBool (randObjectASTVoid >>= randCom) no
+  , liftM3 AST_WithDoc      comRandObjExpr randScriptExpr no
+  ]
+
+randScript :: RandO AST_Script
+randScript = randOFromList randScriptList
+
 instance HasRandGen AST_Script where
-  randO = randOFromList $
-    [ liftM3 AST_EvalObject   randAssignExpr randComments no
-    , liftM5 AST_IfThenElse   randComments randO comRandScriptExpr comRandScriptExpr no
-    , liftM4 AST_TryCatch     comRandScriptExpr (randName>>=randCom) randScriptExpr no
-    , liftM4 AST_ForLoop      (randName>>=randCom) comRandObjExpr randScriptExpr no
-    , liftM4 AST_ContinueExpr randBool randComments (randObjectASTVoid >>= randCom) no
-    , liftM3 AST_ReturnExpr   randBool (randObjectASTVoid >>= randCom) no
-    , liftM3 AST_WithDoc      comRandObjExpr randScriptExpr no
-    , liftM  AST_Comment      randComments
-    ]
+  randO = randOFromList $ randScriptList ++ [liftM AST_Comment randComments]
 
 -- | Will create a random 'Dao.Object.AST_Object' of a type suitable for use as a stand-alone script
 -- expression, which is only 'AST_Assign'.
@@ -448,13 +459,12 @@ instance HasRandGen AST_TopLevel where
                   (tail item)
           item <- randCom item
           return (AST_Attribute req item LocationUnknown)
-    , liftM2 AST_TopScript randO no
+    , liftM2 AST_TopScript randScript no
     , do  coms <- randComments
           name <- randName
           args <- randList 0 7 >>= mapM randCom >>= randCom
           scrp <- randScriptExpr
           return (AST_TopFunc coms name args scrp LocationUnknown)
-    , liftM2 AST_TopScript      randO no
     , liftM4 AST_TopLambda  randO (randArgsDef >>= randCom) randScriptExpr no
     , liftM4 AST_Event      randO randComments randScriptExpr no
     ]

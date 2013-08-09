@@ -305,7 +305,7 @@ class Show obj => Intermediate obj ast | obj -> ast, ast -> obj where
   -- | The default implementation is to convert an @ast@ to an @[obj]@ using 'toInterm' and then
   -- immediately convert the @[obj]@ back to an @[ast]@ using 'fromInterm'.
   canonicalize :: ast -> [ast]
-  canonicalize ast = toInterm ast >>= \o -> (trace ("interm:\n"++show o)) (fromInterm o)
+  canonicalize ast = toInterm ast >>= fromInterm
 
 -- Not for export: here are a bunch of shortcuts to converting the AST to the intermediate data
 -- type. Sinec 'toInterm' returns a single item in a list to indicate success and an empty list to
@@ -325,7 +325,7 @@ uc2 = uc1 . unComment
 ti :: Intermediate obj ast => ast -> [obj]
 ti = toInterm
 ti0 :: Intermediate obj ast => [ast] -> [[obj]]
-ti0 = fmap toInterm
+ti0 = return . (>>=toInterm)
 ti1 :: Intermediate obj ast => Com [ast] -> [[obj]]
 ti1 = ti0 . unComment
 
@@ -343,7 +343,7 @@ nc2 = fmap Com . nc1
 fi :: Intermediate obj ast => obj -> [ast]
 fi = fromInterm
 fi0 :: Intermediate obj ast => [obj] -> [[ast]]
-fi0 = fmap fromInterm
+fi0 = return . (>>=fromInterm)
 fi1 :: Intermediate obj ast => [obj] -> [Com [ast]]
 fi1 = fmap Com . fi0
 

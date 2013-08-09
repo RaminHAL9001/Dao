@@ -961,7 +961,7 @@ lexUpdLineColWithStr input = do
   let tablen = lexTabWidth st
       countNLs lns cols input = case break (=='\n') input of
         (""    , ""        ) -> (lns, cols)
-        (_     , '\n':after) -> countNLs (lns+1) 0 after
+        (_     , '\n':after) -> countNLs (lns+1) 1 after
         (before, after     ) -> (lns, cols + foldl (+) 0 (map charPrintWidth (before++after)))
       charPrintWidth c = case c of
         c | c=='\t'   -> tablen

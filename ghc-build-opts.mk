@@ -113,11 +113,11 @@ GHC_COMPILE_DEBUG := $(GHC_COMPILE) -rtsopts -with-rtsopts='-M8G -N4'
 
 ./debug:: ./debug/test
 
-./debug/test: $(DEBUG_DEPENDS) ghc-build-opts.mk
+./debug/test: $(DAO_PROJECT_FILES_LIST) $(DEBUG_DEPENDS) ghc-build-opts.mk
 	mkdir -p ./debug/
 	$(GHC_COMPILE_DEBUG) $(DEBUG_DEPENDS) -o ./debug/test
 
-./debug/test-prof: $(DEBUG_DEPENDS) ghc-build-opts.mk
+./debug/test-prof: $(DAO_PROJECT_FILES_LIST) $(DEBUG_DEPENDS) ghc-build-opts.mk
 	$(GHC_COMPILE_DEBUG) -prof $(DEBUG_DEPENDS) -o ./debug/test-prof
 
 .PHONEY: Dao.Object.NewParser Dao.NewParser

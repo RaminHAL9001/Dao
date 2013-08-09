@@ -20,14 +20,14 @@
 
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Dao.Object.NewParser where
+module Dao.Object.Parser where
 
 import           Dao.String
 import           Dao.Token
 import           Dao.Object hiding (Tokenizer)
 import           Dao.Object.AST
 import           Dao.Predicate
-import           Dao.NewParser
+import           Dao.Parser
 import qualified Dao.Tree as T
 import qualified Dao.EnumSet as Es
 
@@ -512,8 +512,8 @@ singletonOrContainer :: DaoParser AST_Object
 singletonOrContainer = joinEvalPTable singletonOrContainerPTab
 
 -- A constructor that basically re-arranges the arguments to the 'Dao.Object.AST.AST_Equation'
--- constructor such that this function can be used as an argument to 'Dao.NewParser.sinpleInfixed'
--- or 'Dao.NewParser.newOpTableParser'.
+-- constructor such that this function can be used as an argument to 'Dao.Parser.sinpleInfixed'
+-- or 'Dao.Parser.newOpTableParser'.
 equationConstructor :: AST_Object -> (Location, Com ArithOp2) -> AST_Object -> AST_Object
 equationConstructor left (loc, op) right = AST_Equation left op right loc
 
@@ -566,7 +566,7 @@ commaSepd errMsg close parser =
 
 -- More than one parser has need of 'commaSepd' as a parameter to 'commented', but passing
 -- 'commaSped' to 'commented' will return a value of type:
--- > 'Dao.Object.Com' (['Dao.Object.Com'], 'Dao.NewParser.Location')
+-- > 'Dao.Object.Com' (['Dao.Object.Com'], 'Dao.Parser.Location')
 -- which is not useful for constructors of the abstract syntax tree. This function takes the
 -- comments around the pair and maps the first item of the pair to the comments, returning an
 -- uncommented pair.

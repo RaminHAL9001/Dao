@@ -27,7 +27,7 @@ module Dao.Object.AST where
 
 import           Dao.String
 import           Dao.Token
-import           Dao.NewParser
+import           Dao.Parser
 import           Dao.Object
 
 import           Control.Monad

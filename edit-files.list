@@ -3,8 +3,8 @@
 src/Dao/Evaluator.hs
 src/Dao/Object.hs
 src/Dao/Object/AST.hs
-src/Dao/Object/NewParser.hs
-src/Dao/NewParser.hs
+src/Dao/Object/Parser.hs
+src/Dao/Parser.hs
 
 src/Dao/Prelude.hs
 src/Dao/EnumSet.hs
@@ -16,7 +16,6 @@ tests/main.hs
 tests/RandObj.hs
 tests/I.hs
 tests/EQN.hs
-src/Dao/Object/Parser.hs
 src/Dao/Object/Struct.hs
 src/Dao/Struct.hs
 src/Dao.hs
@@ -27,7 +26,6 @@ src/Dao/Object/Math.hs
 src/Dao/Object/Pattern.hs
 src/Dao/Object/Binary.hs
 src/Dao/Object/Random.hs
-src/Dao/Parser.hs
 src/Dao/PPrint.hs
 src/Dao/Tree.hs
 src/Dao/Resource.hs

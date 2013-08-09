@@ -105,9 +105,9 @@ enum-set-test: $(ENUM_SET_TEST_FILES)
 
 DEBUG_DEPENDS := tests/main.hs \
   src/Dao/String.hs      src/Dao/Token.hs         src/Dao/Predicate.hs   src/Dao/Object/DeepSeq.hs \
-  src/Dao/NewParser.hs   src/Dao/Object.hs        src/Dao/PPrint.hs      src/Dao/Object/Struct.hs \
+  src/Dao/Parser.hs   src/Dao/Object.hs        src/Dao/PPrint.hs      src/Dao/Object/Struct.hs \
   src/Dao/Struct.hs      src/Dao/Object/Random.hs \
-  src/Dao/Object/PPrint.hs src/Dao/Object/NewParser.hs src/Dao/Object/Binary.hs
+  src/Dao/Object/PPrint.hs src/Dao/Object/Parser.hs src/Dao/Object/Binary.hs
 
 GHC_COMPILE_DEBUG := $(GHC_COMPILE) -rtsopts -with-rtsopts='-M8G -N4'
 
@@ -120,15 +120,15 @@ GHC_COMPILE_DEBUG := $(GHC_COMPILE) -rtsopts -with-rtsopts='-M8G -N4'
 ./debug/test-prof: $(DAO_PROJECT_FILES_LIST) $(DEBUG_DEPENDS) ghc-build-opts.mk
 	$(GHC_COMPILE_DEBUG) -prof $(DEBUG_DEPENDS) -o ./debug/test-prof
 
-.PHONEY: Dao.Object.NewParser Dao.NewParser
-Dao.NewParser: ./src/Dao/NewParser.o
-Dao.Object.NewParser: Dao.NewParser ./src/Dao/Object/NewParser.o
-./src/Dao/NewParser.o: src/Dao/NewParser.hs
-	$(GHC_COMPILE) Dao.NewParser
-./src/Dao/Object/NewParser.o: Dao.NewParser src/Dao/Object/NewParser.hs src/Dao/Predicate.hs
-	$(GHC_COMPILE) Dao.Object.NewParser
+.PHONEY: Dao.Object.Parser Dao.Parser
+Dao.Parser: ./src/Dao/Parser.o
+Dao.Object.Parser: Dao.Parser ./src/Dao/Object/Parser.o
+./src/Dao/Parser.o: src/Dao/Parser.hs
+	$(GHC_COMPILE) Dao.Parser
+./src/Dao/Object/Parser.o: Dao.Parser src/Dao/Object/Parser.hs src/Dao/Predicate.hs
+	$(GHC_COMPILE) Dao.Object.Parser
 
-debug.log: scratch.hs src/Dao/NewParser.hs src/Dao/Object/NewParser.hs src/Dao/Object.hs
+debug.log: scratch.hs src/Dao/Parser.hs src/Dao/Object/Parser.hs src/Dao/Object.hs
 	ghc --make -rtsopts -i./src -o test scratch.hs
 	./test >debug.log 2>&1
 

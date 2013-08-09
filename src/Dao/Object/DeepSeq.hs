@@ -32,7 +32,7 @@ import           Dao.Token
 import           Dao.Glob
 import           Dao.EnumSet
 import           Dao.Token
-import           Dao.NewParser
+import           Dao.Parser
 import qualified Dao.Tree    as T
 
 import           Control.DeepSeq

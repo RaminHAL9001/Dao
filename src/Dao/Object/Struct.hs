@@ -31,7 +31,7 @@ import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Struct
 import           Dao.Predicate
-import           Dao.NewParser
+import           Dao.Parser
 import           Dao.Glob
 import qualified Dao.EnumSet as Es
 import           Dao.Token

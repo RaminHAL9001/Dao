@@ -32,9 +32,9 @@ import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Resource
 import qualified Dao.Tree    as T
-import           Dao.NewParser
+import           Dao.Parser
 import           Dao.Predicate
-import           Dao.Object.NewParser
+import           Dao.Object.Parser
 import           Dao.Object.PPrint
 import           Dao.Object.Binary
 

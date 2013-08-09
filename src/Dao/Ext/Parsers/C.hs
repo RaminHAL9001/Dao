@@ -24,7 +24,7 @@ module Dao.Ext.Parsers.C where
 
 import           Dao.String
 import           Dao.Token
-import           Dao.NewParser
+import           Dao.Parser
 import           Dao.Predicate
 
 

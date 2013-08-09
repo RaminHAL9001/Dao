@@ -1,4 +1,4 @@
--- "src/Dao/NewParser.hs"  a parser for defining general context-free
+-- "src/Dao/Parser.hs"  a parser for defining general context-free
 -- grammars that are parsed in two phases: the lexical and the
 -- syntactic analysis phases.
 -- 
@@ -26,7 +26,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 
-module Dao.NewParser where
+module Dao.Parser where
 
 import           Dao.String
 import           Dao.Token

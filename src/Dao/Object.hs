@@ -34,7 +34,7 @@ module Dao.Object
 import           Dao.Debug.OFF
 import           Dao.String
 import           Dao.Token
-import           Dao.NewParser
+import           Dao.Parser
 import           Dao.Glob
 import qualified Dao.EnumSet as Es
 import           Dao.Tree as T hiding (map)

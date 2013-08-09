@@ -510,11 +510,12 @@ regexToLexer re = loop (re RxSuccess) where
   loop re = case re of
     RxBacktrack       -> lexBacktrack
     RxSuccess         -> return ()
+--  RxMakeToken tt re -> gets lexBuffer >>= evalMakeToken tt >> loop re
     RxMakeToken tt re -> case re of
       RxMakeToken tt re -> loop (RxMakeToken tt re)
       _                 -> gets lexBuffer >>= evalMakeToken tt >> loop re
         -- if there are two 'RxMakeToken's in a row, use the later one. This makes for more
-        -- intuitive regular expressions.
+        -- intuitive regular expressions. -- TODO, maybe lets not do this.
     RxChoice       re -> msum $ map loop re
     RxStep    r    re -> do
       keep <- gets lexBuffer
@@ -856,8 +857,16 @@ newLexerState input =
 lexErrToParseErr :: TokenType tok => Error (LexerState tok) tok -> Error (TokStreamState st tok) tok
 lexErrToParseErr lexErr =
   lexErr
-  { parseStateAtErr = Nothing
+  { parseStateAtErr = mzero
   , parseErrLoc = st >>= \st -> return (atPoint (lexCurrentLine st) (lexCurrentColumn st))
+  , parseErrMsg = return (ustr "Lexical analysis failed on ") <> parseErrMsg lexErr <>
+      (do st <- st
+          return $ ustr $ concat $ concat $
+            [ do  guard (not (null (lexBuffer st)))
+                  ["\nBuffered token string: ", show (lexBuffer st)]
+            , ["\nString failed on: ", show (take 20 (lexInput st))]
+            ]
+      )
   }
   where { st = parseStateAtErr lexErr }
 
@@ -892,7 +901,7 @@ instance TokenType tok =>
     fail msg           = do
       st <- get
       throwError $
-        (parserErr (lexCurrentLocation st)){parseErrMsg = Just (ustr msg)}
+        (parserErr (lexCurrentLocation st)){parseErrMsg = Just (ustr msg), parseStateAtErr=Just st}
 instance TokenType tok =>
   MonadPlus (Lexer tok) where
     mplus (Lexer a) (Lexer b) = Lexer (mplus a b)
@@ -1852,7 +1861,7 @@ newLanguage tabw parser =
 parse :: TokenType tok =>
   Language st tok synTree -> st -> String -> PValue (Error st tok) synTree
 parse lang st input = case lexicalResult of
-  OK      _ -> case parserResult of
+  OK     () -> case parserResult of
     OK     a  -> OK a
     Backtrack -> Backtrack
     PFail err -> PFail $ err{parseStateAtErr = Just (userState parserState)}

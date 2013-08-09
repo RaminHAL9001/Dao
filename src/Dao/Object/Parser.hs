@@ -1,5 +1,5 @@
--- "src/DaoTT/Object/NewParser.hs" makes use of "DaoTT.NewParser" to parse
--- parse 'DaoTT.Object.AST_Object' expressions.
+-- "src/Object/Parser.hs" makes use of "Dao.Parser" to parse
+-- parse 'Dao.Object.AST_Object' expressions.
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the DaoTT System.

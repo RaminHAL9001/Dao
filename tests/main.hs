@@ -25,13 +25,11 @@ import           Dao.Prelude
 import           Dao.String
 import           Dao.Predicate
 import           Dao.PPrint
--- import           Dao.OldParser
 import           Dao.Parser
 import           Dao.Struct
 import           Dao.Random
 import           Dao.Object
 import           Dao.Object.AST
--- import           Dao.Object.OldParser
 import           Dao.Object.Parser
 import           Dao.Object.Binary
 import           Dao.Object.PPrint

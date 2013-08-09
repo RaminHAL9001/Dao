@@ -2021,7 +2021,7 @@ registerSourceFromHandle upath h = do
 -- @('Dao.Document.Document' 'Dao.Evaluator.DocData')@ object. (2) Try to load the file as a
 -- binary @'Dao.Object.AST_SourceCode'@ object. (3) Treat the file as text (using the current locale set
 -- by the system, e.g. @en.UTF-8@) and parse a 'Dao.Object.AST_SourceCode' object using
--- 'Dao.Object.Parsers.source'. If all three methods fail, an error is thrown. Returns
+-- 'Dao.Object.OldParsers.source'. If all three methods fail, an error is thrown. Returns
 -- the 'TypedFile', although all source code files are returned as 'PrivateType's. Use
 -- 'asPublic' to force the type to be a 'PublicType'd file. If the nothing exists at the file path,
 -- the file is marked to be created and an empty document is created in memory.

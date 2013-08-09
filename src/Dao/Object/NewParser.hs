@@ -271,7 +271,7 @@ rationalFromString maxValue base str =
       a | isUpper a -> return (ord a - ord 'A' + 10)
       _             -> mzero
 
--- copied from the Dao.Parser module
+-- copied from the Dao.OldParser module
 numberFromStrs :: Int -> String -> Maybe String -> Maybe String -> Maybe String -> DaoParser Object
 numberFromStrs base int maybFrac maybPlusMinusExp maybTyp = do
   let frac         = maybe "" id (maybFrac >>= stripPrefix ".")

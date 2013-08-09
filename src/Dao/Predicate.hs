@@ -50,7 +50,7 @@ import           Data.Monoid
 
 -- | 'PValue' is a "predicate value" data type allows a monadic computation to backtrack and try
 -- another branch of computation, or to fail without causing backtracking. These values are used
--- internally to the 'Dao.Parser.Parser's.
+-- internally to the 'Dao.OldParser.Parser's.
 data PValue err ok
   = Backtrack
     -- ^ 'Backtrack' is a value used internally to the 'Parser's 'Control.Monad.State.State' monad
@@ -112,7 +112,7 @@ fromPValue ok pval = case pval of { OK ok -> ok; _ -> ok; }
 ----------------------------------------------------------------------------------------------------
 
 -- | A monad transformer for 'PValue', this is especially handy with a 'Control.Monad.State.State'
--- monad. For example 'Dao.Parser.Parser' is a 'Control.Monad.State.State' monad lifted into the
+-- monad. For example 'Dao.OldParser.Parser' is a 'Control.Monad.State.State' monad lifted into the
 -- 'PTrans' monad.
 newtype PTrans err m ok = PTrans { runPTrans :: m (PValue err ok) }
 instance Monad m => Monad (PTrans err m) where

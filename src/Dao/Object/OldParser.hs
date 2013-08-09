@@ -1,4 +1,4 @@
--- "src/Dao/Object/Parser.hs" makes use of 'Dao.Parser' to parse
+-- "src/Dao/Object/OldParser.hs" makes use of 'Dao.OldParser' to parse
 -- 'Dao.Object.Object's and 'Dao.Object.AST_Object' expressions.
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
@@ -18,7 +18,7 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
-module Dao.Object.Parser where
+module Dao.Object.OldParser where
 
 import           Dao.String
 import           Dao.Token (tokenChars)
@@ -26,7 +26,7 @@ import           Dao.NewParser (HasLocation, Location(Location, LocationUnknown)
 import           Dao.Object
 import           Dao.Object.AST
 import qualified Dao.EnumSet as Es
-import           Dao.Parser
+import           Dao.OldParser
 import qualified Dao.Tree as T
 
 import           Control.Monad

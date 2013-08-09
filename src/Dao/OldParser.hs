@@ -1,4 +1,4 @@
--- "src/Dao/Parser.hs"  Construct tokenizeres from
+-- "src/Dao/OldParser.hs"  Construct tokenizeres from
 -- 'Dao.Es.Set.Es.Set's, and parsers from tokenizers. 
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
@@ -21,7 +21,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 
-module Dao.Parser
+module Dao.OldParser
   ( -- * The 'Regex' Type
     Regex, matchRegex, matchRepeat
     -- * Primitive 'Regex's

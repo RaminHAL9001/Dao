@@ -1,5 +1,5 @@
 -- "src/Dao/Token.hs"  Defines the 'Token' and 'Location' types
--- used by "src/Dao/Object.hs" and "src/Dao/Parser.hs".
+-- used by "src/Dao/Object.hs" and "src/Dao/OldParser.hs".
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.

@@ -22,57 +22,70 @@
 
 module Dao.Token where
 
+import Dao.String
+
 import           Data.Monoid
-import           Data.Typeable
 import           Data.Word
+import           Data.List (intercalate)
+import           Data.Typeable
+import           Data.Data
 
--- | 'Token's are created by 'Parser's like 'regex' or 'regexMany1'. You can combine tokens using
--- 'append', 'appendTokens' and 'parseAppend'. There is no restriction on the order in which you
--- combine tokens, but it is less confusing if you append tokens in the order in which they were
--- parsed.  You can then use the 'tokenChars' function to retrieve the characters stored in the
--- 'Token' to create data structures that can be returned by your 'Parser' function. You can also
--- "undo" a parse by passing a 'Token' to the 'backtrack' function, which pushes the 'Token's
--- characters back onto the head of the input string, however this is inefficient and should be
--- avoided.
-data Token
-  = Token
-    { tokenLocation  :: Location
-    , tokenChars     :: String
-    }
-  deriving (Eq, Ord)
+----------------------------------------------------------------------------------------------------
 
-instance Show Token where
-  show t = show (tokenLocation t) ++ ' ' : show (tokenChars t)
+type LineNum   = Word
+type ColumnNum = Word
+type TabWidth  = Word
 
--- | Used mostly by 'Dao.Parser' and 'Dao.Object.Parser' but is also used to report location of
--- errors and are stored in the abstract syntax tree, 'ObjectExpr', 'ScriptExpr'.
+-- | If an object contains a location, it can instantiate this class to allow locations to be
+-- updated or deleted (deleted by converting it to 'LocationUnknown'. Only three types in this
+-- module instantiate this class, but any data type that makes up an Abstract Syntax Tree, for
+-- example 'Dao.Object.ObjectExpr' or 'Dao.Object.AST.ObjectExrpr' also instantiate this class.
+class HasLocation a where
+  getLocation :: a -> Location
+  setLocation :: a -> Location -> a
+  delLocation :: a -> a
+
+-- | Contains two points, a starting and and ending point, where each point consists of a row (line
+-- number) and column (character count from the beginning of a line) for locating entities in a
+-- parsable text. This type does not contain information regarding the source of the text, or
+-- whether or not the input text is a file or stream.
 data Location
   = LocationUnknown
   | Location
-    { startingLine   :: Word64
-    , startingChar   :: Word64
-    , startingColumn :: Word
-    , endingLine     :: Word64
-    , endingChar     :: Word64
-    , endingColumn   :: Word
+    { startingLine   :: LineNum
+      -- ^ the 'Location' but without the starting/ending character count
+    , startingColumn :: ColumnNum
+    , endingLine     :: LineNum
+    , endingColumn   :: ColumnNum
     }
-  | LineColumn -- ^ the 'Location' but without the starting/ending character count
-    { startingLine   :: Word64
-    , startingColumn :: Word
-    , endingLine     :: Word64
-    , endingColumn   :: Word
+  deriving (Eq, Typeable, Data)
+instance HasLocation Location where
+  getLocation = id
+  setLocation = flip const
+  delLocation = const LocationUnknown
+instance Show Location where
+  show t = case t of
+    LocationUnknown -> ""
+    _ -> show (startingLine t) ++ ':' : show (startingColumn t)
+instance Monoid Location where
+  mempty =
+    Location
+    { startingLine   = 0
+    , startingColumn = 0
+    , endingLine     = 0
+    , endingColumn   = 0
     }
-  deriving (Eq, Typeable)
-
-atPoint :: Word -> Word -> Location
-atPoint a b =
-  LineColumn
-  { startingLine   = fromIntegral a
-  , endingLine     = fromIntegral a
-  , startingColumn = b
-  , endingColumn   = b
-  }
-
+  mappend loc a = case loc of
+    LocationUnknown -> a
+    _ -> case a of
+      LocationUnknown -> loc
+      _ ->
+        loc
+        { startingLine   = min (startingLine   loc) (startingLine   a)
+        , startingColumn = min (startingColumn loc) (startingColumn a)
+        , endingLine     = max (endingLine     loc) (endingLine     a)
+        , endingColumn   = max (endingColumn   loc) (endingColumn   a)
+        }
 instance Ord Location where
   compare a b = case (a,b) of
     (LocationUnknown, LocationUnknown) -> EQ
@@ -96,52 +109,217 @@ instance Ord Location where
   -- sort lists of locations from least to greatest and hopefully get the most helpful, most
   -- specific location at the top of the list.
 
-lineColOnly :: Location -> Location
-lineColOnly loc = case loc of
-  Location a _ b c _ d -> LineColumn a b c d
-  loc                  -> loc
+-- | Create a location where the starting and ending point is the same row and column.
+atPoint :: LineNum -> ColumnNum -> Location
+atPoint a b =
+  Location
+  { startingLine   = a
+  , endingLine     = a
+  , startingColumn = b
+  , endingColumn   = b
+  }
 
 -- | The the coordinates from a 'Location':
 -- @(('startingLine', 'startingColumn'), ('endingLine', 'endingColumn'))@
-locationCoords :: Location -> Maybe ((Word64, Word), (Word64, Word))
+locationCoords :: Location -> Maybe ((LineNum, ColumnNum), (LineNum, ColumnNum))
 locationCoords loc = case loc of
   LocationUnknown -> Nothing
   _ -> Just ((startingLine loc, startingColumn loc), (endingLine loc, endingColumn loc))
 
-class HasLocation a where
-  getLocation :: a -> Location
-  setLocation :: a -> Location -> a
+----------------------------------------------------------------------------------------------------
+-- $All_about_tokens
+-- This module was designed to create parsers which operate in two phases: a lexical analysis phase
+-- (see 'lexicalAnalysis') where input text is split up into tokens, and a syntactic analysis phase
+-- where a stream of tokens is converted into data. 'Token' is the data type that makes this
+-- possible.
 
-instance Show Location where
-  show t = case t of
-    LocationUnknown -> ""
-    _ -> show (startingLine t) ++ ':' : show (startingColumn t)
+class HasLineNumber   a where { lineNumber   :: a -> LineNum }
+class HasColumnNumber a where { columnNumber :: a -> ColumnNum }
+class HasToken        a where { getToken     :: a tok -> Token tok }
 
-instance Monoid Location where
-  mempty =
-    Location
-    { startingLine   = 0
-    , startingChar   = 0
-    , startingColumn = 0
-    , endingLine     = 0
-    , endingChar     = 0
-    , endingColumn   = 0
+-- | Every token emitted by a lexical analyzer must have at least a type. 'Token' is polymorphic
+-- over the type of token.
+data Token tok
+  = EmptyToken { tokType :: tok }
+    -- ^ Often times, tokens may not need to contain any text. This is often true of opreator
+    -- symbols and keywords. This constructor constructs a token with just a type and no text. The
+    -- more descriptive your token types are, the less you need you will have for storing the text
+    -- along with the token type, and the more memory you will save.
+  | CharToken  { tokType :: tok, tokChar :: !Char }
+    -- ^ Constructs tokens along with the text. If the text is only a single character, this
+    -- constructor is used, which can save a little memory as compared to storing a
+    -- 'Dao.String.UStr'.
+  | Token      { tokType :: tok, tokUStr :: UStr }
+    -- ^ Constructs tokens that contain a copy of the text extracted by the lexical analyzer to
+    -- create the token.
+instance Show tok => Show (Token tok) where
+  show tok =
+    let cont = tokToStr tok
+    in  show (tokType tok) ++ (if null cont then "" else ' ':show cont)
+instance Functor Token where
+  fmap f t = case t of
+    EmptyToken t   -> EmptyToken (f t)
+    CharToken  t c -> CharToken  (f t) c
+    Token      t u -> Token      (f t) u
+
+-- | If the lexical analyzer emitted a token with a copy of the text used to create it, this
+-- function can retrieve that text. Returns 'Dao.String.nil' if there is no text.
+tokToUStr :: Token tok -> UStr
+tokToUStr tok = case tok of
+  EmptyToken _   -> nil
+  CharToken  _ c -> ustr [c]
+  Token      _ u -> u
+
+-- | Like 'tokToUStr' but returns a 'Prelude.String' or @""@ instead.
+tokToStr :: Token tok -> String
+tokToStr tok = case tok of
+  EmptyToken _   -> ""
+  CharToken  _ c -> [c]
+  Token      _ u -> uchars u
+
+-- | This data type stores the starting point (the line number and column number) in the
+-- source file of where the token was emitted along with the 'Token' itself.
+data TokenAt tok
+  = TokenAt
+    { tokenAtLineNumber   :: LineNum
+    , tokenAtColumnNumber :: ColumnNum
+    , getTokenValue       :: Token tok
     }
-  mappend loc a =
-    loc
-    { startingLine   = min (startingLine   loc) (startingLine   a)
-    , startingChar   = min (startingChar   loc) (startingChar   a)
-    , startingColumn = min (startingColumn loc) (startingColumn a)
-    , endingLine     = max (endingLine     loc) (endingLine     a)
-    , endingChar     = max (endingChar     loc) (endingChar     a)
-    , endingColumn   = max (endingColumn   loc) (endingColumn   a)
+instance Show tok =>
+  Show (TokenAt tok) where
+    show tok = let (a,b,c) = asTriple tok in show a++':':show b++' ':show c
+instance HasLineNumber   (TokenAt tok) where { lineNumber   = tokenAtLineNumber }
+instance HasColumnNumber (TokenAt tok) where { columnNumber = tokenAtColumnNumber }
+instance HasToken TokenAt where { getToken = getTokenValue }
+instance Functor  TokenAt where
+  fmap f t =
+    TokenAt
+    { tokenAtLineNumber   = tokenAtLineNumber t
+    , tokenAtColumnNumber = tokenAtColumnNumber t
+    , getTokenValue       = fmap f (getToken t)
     }
 
-instance Monoid Token where
-  mempty = Token{tokenLocation = mempty, tokenChars = mempty}
-  mappend token a =
-    token
-    { tokenLocation  = mappend (tokenLocation token) (tokenLocation a)
-    , tokenChars     = tokenChars token ++ tokenChars a
-    } 
+-- | See 'token' and 'tokenBy'.
+asTokType :: TokenAt tok -> tok
+asTokType = tokType . getToken
+
+-- | See 'token' and 'tokenBy'.
+asString :: TokenAt tok -> String
+asString = tokToStr . getToken
+
+-- | See 'token' and 'tokenBy'.
+asUStr :: TokenAt tok -> UStr
+asUStr = tokToUStr . getToken
+
+-- | That is as-zero, because "0" looks kind of like "()".
+-- See 'token' and 'tokenBy'.
+as0 :: TokenAt tok -> ()
+as0 = const ()
+
+-- | See 'token' and 'tokenBy'.
+asToken :: TokenAt tok -> Token tok
+asToken = getToken
+
+-- | See 'token' and 'tokenBy'.
+asTokenAt :: TokenAt tok -> TokenAt tok
+asTokenAt = id
+
+-- | See 'token' and 'tokenBy'.
+asTriple :: TokenAt tok -> (LineNum, ColumnNum, Token tok)
+asTriple tok = (lineNumber tok, columnNumber tok, getToken tok)
+
+-- | See 'token' and 'tokenBy'.
+asLineColumn :: TokenAt tok -> (LineNum, ColumnNum)
+asLineColumn tok = (lineNumber tok, columnNumber tok)
+
+-- | See 'token' and 'tokenBy'.
+asLocation :: TokenAt tok  -> Location
+asLocation = uncurry atPoint . asLineColumn
+
+-- | The lexical analysis phase emits a stream of 'TokenAt' objects, but it is not memory
+-- efficient to store the line and column number with every single token. To save space, the token
+-- stream is "compressed" into 'Lines', where 'TokenAt' that has the same 'lineNumber' is
+-- placed into the same 'Line' object. The 'Line' stores the 'lineNumber', and the
+-- 'lineNumber's are deleted from every 'TokenAt', leaving only the 'columnNumber' and 'Token'
+-- in each line.
+data Line tok
+  = Line
+    { lineLineNumber :: LineNum
+    , lineTokens     :: [(ColumnNum, Token tok)]
+      -- ^ a list of tokens, each with an associated column number.
+    }
+instance HasLineNumber (Line tok) where { lineNumber = lineLineNumber }
+instance Show tok => Show (Line tok) where
+  show line = concat $
+    [ "Line ", show (lineLineNumber line), ":\n"
+    , intercalate ", " $
+        map (\ (col, tok) -> show col++" "++show tok) (lineTokens line)
+    ]
+instance Functor Line where
+  fmap f t =
+    Line
+    { lineLineNumber = lineLineNumber t
+    , lineTokens     = fmap (fmap (fmap f)) (lineTokens t)
+    }
+
+lineToTokensAt :: Line tok -> [TokenAt tok]
+lineToTokensAt line = map f (lineTokens line) where
+  lineNum         = lineNumber line
+  f (colNum, tok) =
+    TokenAt
+    { tokenAtLineNumber   = lineNum
+    , tokenAtColumnNumber = colNum
+    , getTokenValue       = tok
+    }
+
+----------------------------------------------------------------------------------------------------
+-- $Error_handling
+-- The lexical analyzer and syntactic analysis monads all instantiate
+-- 'Control.Monad.Error.Class.MonadError' in the Monad Transformer Library ("mtl" package). This is
+-- the type used for 'Control.Monad.Error.Class.throwError' and
+-- 'Control.Monad.Error.Class.catchError'.
+
+-- | This data structure is used by both the lexical analysis and the syntactic analysis phase.
+data Error st tok
+  = Error
+    { parseErrLoc     :: Maybe Location
+    , parseErrMsg     :: Maybe UStr
+    , parseErrTok     :: Maybe (Token tok)
+    , parseStateAtErr :: Maybe st
+    }
+instance Show tok => Show (Error st tok) where
+  show err =
+    let msg = concat $ map (maybe "" id) $
+          [ fmap ((':':) . (++":") . show) (parseErrLoc err)
+          , fmap ((" (on token "++) . (++")") . show) (parseErrTok err)
+          , fmap ((" "++) . uchars) (parseErrMsg err)
+          ]
+    in  if null msg then "Unknown parser error" else msg
+instance Functor (Error st) where
+  fmap f e =
+    Error
+    { parseErrLoc     = parseErrLoc e
+    , parseErrMsg     = parseErrMsg e
+    , parseErrTok     = fmap (fmap f) (parseErrTok e)
+    , parseStateAtErr = parseStateAtErr e
+    }
+
+-- | An initial blank parser error you can use to construct more detailed error messages.
+parserErr :: Location -> Error st tok
+parserErr loc =
+  Error
+  { parseErrLoc = Just loc
+  , parseErrMsg = Nothing
+  , parseErrTok = Nothing
+  , parseStateAtErr = Nothing
+  }
+
+newError :: Error st tok
+newError =
+  Error
+  { parseErrLoc=Nothing
+  , parseErrMsg=Nothing
+  , parseErrTok=Nothing
+  , parseStateAtErr=Nothing
+  }
 

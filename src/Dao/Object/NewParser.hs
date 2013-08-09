@@ -93,8 +93,8 @@ daoTokenDef = do
   
   -------------------------------------------- LABELS ---------------------------------------------
   let alpha = [from 'A' to 'Z', from 'a' to 'z', ch '_']
-      labelRX = rxRepeat1 alpha
-  label        <- fullToken  LABEL      $ labelRX . rxRepeat(from '0' to '9' : alpha)
+      labelRX = rxRepeat1 alpha . rxRepeat(from '0' to '9' : alpha)
+  label        <- fullToken  LABEL      $ labelRX
   
   ---------------------------------------- NUMERICAL TYPES ----------------------------------------
   let from0to9  = from '0' to '9'
@@ -126,7 +126,7 @@ daoTokenDef = do
   -- trace ("opener tokens ( [ { #{   ---> "++show openers) $ return ()
   comma           <- emptyToken COMMA (rx ',')
   operatorTable (words "$ @ -> . ! - ~")
-  keywords_groups <- keywordTable LABEL labelRX $ words $ unwords $
+  daoKeywords <- keywordTable LABEL labelRX $ words $ unwords $
     [ "global local qtime static"
     , "null false true data struct list set intmap dict array date time"
     , "if else for in while with try catch continue break return throw"
@@ -135,18 +135,15 @@ daoTokenDef = do
     , "import require"
     , "this class super new hash point vector matrix" -- reserved keywords, but they don't do anything yet.
     ]
-  let myGetKeyword tokID = do
-        tok <- getTokID (ustr tokID) :: LexBuilderM DaoTT
-        return (rx (ustr tokID) . rxEmptyToken tok)
+  let withKeyword key func = rx key . (label <> func)
   closers <- operatorTable $ words "}# } ] )"
   [openBrace, closeBrace, openParen, closeParen] <- mapM operator (words "{ } ( )")
   -- trace ("openBrace = "++show openBrace) $ return ()
   
   -------------------------------------- DATA SPECIAL SYNTAX --------------------------------------
-  dataTag      <- myGetKeyword "data"
   base64Data   <- fullToken  BASE64DATA $
     rxRepeat1[from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/', ch '=']
-  let dataLexer = dataTag . multiComs . openBrace .
+  let dataLexer = withKeyword "data" $ multiComs . openBrace .
         fix(\loop -> (base64Data<>space) . loop <>
           closeBrace <> rxErr "unknown token in base-64 data")
   
@@ -163,11 +160,9 @@ daoTokenDef = do
       hy   = rx '-'
       timeRX = dd . col . dd . col . dd . opt(dot . number)
   timeExpr <- fullToken TIME timeRX
-  timeTag  <- myGetKeyword "time"
-  let time = timeTag . cantFail "time expression" . space . timeExpr
+  let time = withKeyword "time" $ cantFail "time expression" . space . timeExpr
   dateExpr <- fullToken DATE $ year . hy . dd . hy . dd
-  dateTag  <- myGetKeyword "date"
-  let date = dateTag . cantFail "date expression" .
+  let date = withKeyword "date" $ cantFail "date expression" .
         space . dateExpr . opt(space . timeExpr) . opt(space . label)
   
   ------------------------------------------- ACTIVATE --------------------------------------------
@@ -176,7 +171,7 @@ daoTokenDef = do
     [ space, inlineCom, endlineCom, comma
     , stringLit, charLit, base16, base2, base10Parser
     , operators, openers, closers
-    , dataLexer, date, time, keywords_groups, label
+    , dataLexer, date, time, daoKeywords
     ]
 
 ----------------------------------------------------------------------------------------------------

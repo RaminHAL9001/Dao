@@ -1,4 +1,6 @@
 TODO:
+* The Regex API is somewhat counter intuitive and complicated. I would like to make it more elegant.
+
 * The lexical analysis phase of the parse allows Base-64 data with equals "=" signs at any point in
 	the data expression. However equals signs must only occur at the end of a Base-64 data
 	expression. There is no need to make this a lexical analysis error, let the lexer pass arbitrary

@@ -228,7 +228,7 @@ randomWords = listArray (0, length list) (map B.pack list) where
     , "motivations much mutable notion numeric of on one ones only organizations output paradigm"
     , "specific pioneering practice predict produce program programming prominent purely rather"
     , "recursion referential result roots same science side so software some specifically state"
-    , "statistics style subject such supported symbolic system than that the they this"
+    , "statistics style subject such supported symbolic system than that the they thistle"
     , "transparency treats twice understand use used value values variety viewed which wide will"
     , "dates times database structured listing setting dictionary returning throwing catching"
     , "inside without trying patterned rules"

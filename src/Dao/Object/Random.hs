@@ -338,27 +338,17 @@ randReference = do
 randFuncHeaderList :: [RandO AST_Object]
 randFuncHeaderList = fmap loop $
   [ randReference
-  , do  fn <- randO
-        liftM2 (flip (AST_Prefix fn)) no $ randCom =<< case fn of
-          NOT -> randO
-          _   -> randFuncHeader
+  , liftM3 AST_Prefix randO (randFuncHeader >>= randCom) no
   , liftM2 AST_Paren    comRandObjExpr no
   , liftM2 AST_MetaEval comRandObjExpr no
   ]
   where
-    loop rand = do
-      o <- rand
-      i <- nextInt 2
+    loop rand = rand >>= \o -> nextInt 2 >>= \i ->
       if i==0
         then return o
-        else do
-          c <- nextInt 2
-          liftM4
-            (if c==0 then AST_FuncCall else AST_ArraySub)
-            randFuncHeader
-            randComments
-            comRandObjExprList
-            no
+        else nextInt 2 >>= \c -> 
+          liftM4 (if c==0 then AST_FuncCall else AST_ArraySub)
+            randFuncHeader randComments comRandObjExprList no
 
 randFuncHeader :: RandO AST_Object
 randFuncHeader = randOFromList randFuncHeaderList

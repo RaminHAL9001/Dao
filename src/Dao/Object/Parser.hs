@@ -135,7 +135,9 @@ daoTokenDef = do
     , "import require"
     , "this class super new hash point vector matrix" -- reserved keywords, but they don't do anything yet.
     ]
-  let withKeyword key func = rx key . (label <> func)
+  let withKeyword key func = do
+        tok <- getTokID key :: LexBuilderM DaoTT
+        return (rx key . (label <> rxEmptyToken tok . func))
   closers <- operatorTable $ words "}# } ] )"
   [openBrace, closeBrace, openParen, closeParen] <- mapM operator (words "{ } ( )")
   -- trace ("openBrace = "++show openBrace) $ return ()
@@ -143,9 +145,9 @@ daoTokenDef = do
   -------------------------------------- DATA SPECIAL SYNTAX --------------------------------------
   base64Data   <- fullToken  BASE64DATA $
     rxRepeat1[from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/', ch '=']
-  let dataLexer = withKeyword "data" $ multiComs . openBrace .
-        fix(\loop -> (base64Data<>space) . loop <>
-          closeBrace <> rxErr "unknown token in base-64 data")
+  dataLexer <- withKeyword "data" $ multiComs . openBrace .
+    fix(\loop -> (base64Data<>space) . loop <>
+      closeBrace <> rxErr "unknown token in base-64 data")
   
   ------------------------------------------- OPERATORS -------------------------------------------
   operators    <- operatorTable $ words $ unwords $
@@ -160,10 +162,10 @@ daoTokenDef = do
       hy   = rx '-'
       timeRX = dd . col . dd . col . dd . opt(dot . number)
   timeExpr <- fullToken TIME timeRX
-  let time = withKeyword "time" $ cantFail "time expression" . space . timeExpr
+  time <- withKeyword "time" $ cantFail "time expression" . space . timeExpr
   dateExpr <- fullToken DATE $ year . hy . dd . hy . dd
-  let date = withKeyword "date" $ cantFail "date expression" .
-        space . dateExpr . opt(space . timeExpr) . opt(space . label)
+  date <- withKeyword "date" $ cantFail "date expression" .
+    space . dateExpr . opt(space . timeExpr) . opt(space . label)
   
   ------------------------------------------- ACTIVATE --------------------------------------------
   -- activate $
@@ -596,9 +598,14 @@ funcCallArraySub :: DaoParser AST_Object
 funcCallArraySub = joinEvalPTable funcCallArraySubPTab
 
 arithPrefixPTab :: DaoPTable AST_Object
-arithPrefixPTab = table $ flip fmap ["~", "-"] $ \pfxOp -> tableItemBy pfxOp $ \tok -> do
-  obj <- commented object
-  return (AST_Prefix (read (tokTypeToString (asTokType tok))) obj (asLocation tok))
+arithPrefixPTab = table $ (logicalNOT:) $ flip fmap ["~", "-"] $ \pfxOp ->
+  tableItemBy pfxOp $ \tok -> do
+    obj <- commented object
+    return (AST_Prefix (read (tokTypeToString (asTokType tok))) obj (asLocation tok))
+  where
+    logicalNOT = tableItemBy "!" $ \op -> do
+      obj <- commented arithmetic
+      return (AST_Prefix (read $ tokTypeToString $ asTokType op) obj (asLocation op))
 
 arithPrefix :: DaoParser AST_Object
 arithPrefix = joinEvalPTable arithPrefixPTab
@@ -615,7 +622,7 @@ object = joinEvalPTable objectPTab
 
 -- Parses a sequence of 'object' expressions interspersed with arithmetic infix opreators.
 -- All infixed logical operators are included, assignment operators are not. The only prefix logical
--- operator, Logical NOT @(!)@ is not parsed here but in the 'logical' function.
+-- operator. Logical NOT @(!)@ is not parsed here but in the 'arithmetic' function.
 arithOpTable :: OpTableParser DaoParState DaoTT (Location, Com ArithOp2) AST_Object
 arithOpTable =
   newOpTableParser "arithmetic expression" False
@@ -631,12 +638,8 @@ arithOpTable =
     )
 
 arithmeticPTab :: DaoPTable AST_Object
-arithmeticPTab = ordinary <> table [prefixedWithLogicalNOT] where
-  ordinary = bindPTable objectPTab $ \obj ->
-    evalOpTableParserWithInit (bufferComments >> return obj) arithOpTable
-  prefixedWithLogicalNOT = tableItemBy "!" $ \op -> do
-    obj <- commented arithmetic
-    return (AST_Prefix (read $ tokTypeToString $ asTokType op) obj (asLocation op))
+arithmeticPTab = bindPTable objectPTab $ \obj ->
+  evalOpTableParserWithInit (bufferComments >> return obj) arithOpTable
 
 -- Evalautes the 'arithOpTable' to a 'DaoParser'.
 arithmetic :: DaoParser AST_Object

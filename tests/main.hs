@@ -60,29 +60,69 @@ import Debug.Trace
 
 type TestRun a = ReaderT TestEnv IO a
 
+-- | This data strcture derives 'Prelude.Read' so the test program can be configured from a plain
+-- text file. All of these tests randomly generate objects using the "Dao.Object.Random" module, so
+-- this module is also being tested.
 data TestConfig
   = TestConfig
     { doTestParser      :: Bool
+      -- ^ Enable testing of the "Dao.Parser","Dao.Object.Parser", "Dao.PPrint", and
+      -- "Dao.Object.PPrint" modules. The default value is 'Prelude.True'.
     , doTestSerializer  :: Bool
+      -- ^ Enable testing of the "Dao.Object.Binary" module. The default value is 'Prelude.True'.
     , doTestStructizer  :: Bool
+      -- ^ Enable testing of the "Dao.Struct" and "Dao.Object.Struct" module. The default value is
+      -- 'Prelude.True'.
+    , doCompareParsed   :: Bool
+      -- ^ if the 'doTestParser' parameter is enabled, you may also enable or disable a sub-test
+      -- that checks whether or not the object generated and pretty printed by the
+      -- "Dao.Object.Random" and "Dao.Object.PPrint" modules is identical to the object emitted by
+      -- the "Dao.Object.Parser". The default value is 'Prelude.True'.
     , maxRecurseDepth   :: Int
+      -- ^ The "Dao.Random" module generates objects within objects recursively. This parameter sets
+      -- the maximum recursion depth of objects within objects. The functions within "Dao.Random"
+      -- will generate only null objects at a certain depth to guarantee the this recursion limit is
+      -- not exceeded. The default value is 5.
     , threadCount       :: Int
+      -- ^ How many parallel testing threads should run? Set this parameter to the number of CPU
+      -- corse available to you on the hardware running the test program. The default value is 1.
+      -- Since there is also a display thread, this does not necessarily mean only one thread is
+      -- used. If the test program has not been compiled with multi-threading support, there will
+      -- always be only 1 thread regardless of the value of this parameter.
     , maxErrors         :: Int
+      -- ^ Every test that fails generates a report. If the testing is left unchecked, tests will
+      -- continue and reports will be generated until all disk space is consumed. Set this parameter
+      -- when you want the test to run for a while and be sure that if there are failed tests, the
+      -- testing will halt once that number of failed tests reaches this limit. The default value is
+      -- 20.
     , displayInterval   :: Int
+      -- ^ When testing is running, a separate thread is run to keep track of how many tests have
+      -- run, and will periodically, on an interval of time set by this parameter, report how many
+      -- tests have run per second. This value is passed to the 'Control.Concurrent.threadDelay'
+      -- function, so, in GHC at least, the value of this parameter is measured in microseconds. For
+      -- example, if you want to see the test program report every second, set this value to one
+      -- million (1000000). The default value is 4000000 (four seconds).
     , logFileName       :: String
+      -- ^ Every test run that fails will have the reason for failure and the object that caused the
+      -- failure written to it's own file. However, there may be exceptions thrown for other reasons
+      -- not related to the modules being tested, and these failures must be caught and reported as
+      -- well. Failures that appear not to be directly related to a failure in the code of the
+      -- modules being tested will be caught and a message will be written to a log file, the path
+      -- of which is set by this parameter. The defaut value is "./uncaught.log"
     }
   deriving (Show, Read)
 
 defaultTestConfig =
   TestConfig
-  { doTestParser      = True
-  , doTestSerializer  = False
-  , doTestStructizer  = False
-  , maxRecurseDepth   = 5
-  , displayInterval   = 4000000
-  , threadCount       = 3
-  , maxErrors         = 200
-  , logFileName       = "./uncaught.log"
+  { doTestParser     = True
+  , doTestSerializer = False
+  , doTestStructizer = False
+  , doCompareParsed  = False
+  , maxRecurseDepth  = 5
+  , displayInterval  = 4000000
+  , threadCount      = 1
+  , maxErrors        = 20
+  , logFileName      = "./uncaught.log"
   }
 
 data TestEnv
@@ -349,7 +389,7 @@ tryTest tc getTestItem testFunc = ask >>= \env -> case getTestItem tc of
 -- the parser can parse the pretty-printed string and create the exact same object, then the test
 -- pases. This function is used as a parameter to 'loopOnInput'.
 checkTestCase :: TestCase -> TestRun Bool
-checkTestCase tc = do
+checkTestCase tc = ask >>= \env -> do
   ------------------- (0) Canonicalize the original object ------------------
   tc <- case canonicalize (originalObject tc) of
     [o] -> return (tc{originalObject=o})
@@ -360,18 +400,19 @@ checkTestCase tc = do
     case parse daoGrammar mempty (uchars str)  of
     -- case (par, msg) = {-# SCC par #-} runParser (regexMany space >> parseDirective) str of
       OK      o -> do
-        let diro = fmap delLocation (directives o)
-        if diro == [originalObject tc]
+        let ~diro  = fmap delLocation (directives o)
+            ~match = diro == [originalObject tc]
+        if not (doCompareParsed (testConfig env)) || match
           then  passTest tc
-          else  passTest tc -- temporarily disabling the equality condition
-      --    failTest tc $ unlines $ concat
-      --      [ ["Parsed AST does not match original object, parsed AST is:"]
-      --      , case diro of
-      --          []  -> ["(Empty AST)"]
-      --          [o] -> [prettyPrint 80 "    " o, show o]
-      --          ox  -> ["(Returned multiple AST items)"]++
-      --            (ox >>= \o -> [prettyPrint 80 "    " o, show o])
-      --      ]
+          else  
+            failTest tc $ unlines $ concat
+              [ ["Parsed AST does not match original object, parsed AST is:"]
+              , case diro of
+                  []  -> ["(Empty AST)"]
+                  [o] -> [prettyPrint 80 "    " o, show o]
+                  ox  -> ["(Returned multiple AST items)"]++
+                    (ox >>= \o -> [prettyPrint 80 "    " o, show o])
+              ]
       Backtrack -> failTest tc "Parser backtrackd"
       PFail   b -> failTest tc (show b)
   --

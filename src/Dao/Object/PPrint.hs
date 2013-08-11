@@ -304,7 +304,7 @@ instance PPrintable AST_Object where
     AST_Lambda   typ   ccNmx   xcObjXp     _ -> do
       let hdr = pPrintComWith (pList_ (show typ++"(") ", " ")" . map (pPrintComWith pPrint)) ccNmx
       pPrintSubBlock hdr xcObjXp
-    AST_MetaEval cObjXp                    _ -> pInline [pString "#{", pPrint cObjXp, pString "}#"]
+    AST_MetaEval cObjXp                    _ -> pInline [pString "{#", pPrint cObjXp, pString "#}"]
 
 instance PPrintable AST_TopLevel where
   pPrint o = case o of

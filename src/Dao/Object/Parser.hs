@@ -122,8 +122,8 @@ daoTokenDef = do
   stringLit    <- fullToken  STRINGLIT $ litExpr '"'
   charLit      <- fullToken  CHARLIT   $ litExpr '\''
   -------------------------------------- KEYWORDS AND GROUPING ------------------------------------
-  openers <- operatorTable $ words "( [ { #{"
-  -- trace ("opener tokens ( [ { #{   ---> "++show openers) $ return ()
+  openers <- operatorTable $ words "( [ { {#"
+  -- trace ("opener tokens ( [ { {#   ---> "++show openers) $ return ()
   comma           <- emptyToken COMMA (rx ',')
   operatorTable (words "$ @ -> . ! - ~")
   daoKeywords <- keywordTable LABEL labelRX $ words $ unwords $
@@ -138,7 +138,7 @@ daoTokenDef = do
   let withKeyword key func = do
         tok <- getTokID key :: LexBuilderM DaoTT
         return (rx key . (label <> rxEmptyToken tok . func))
-  closers <- operatorTable $ words "}# } ] )"
+  closers <- operatorTable $ words "#} } ] )"
   [openBrace, closeBrace, openParen, closeParen] <- mapM operator (words "{ } ( )")
   -- trace ("openBrace = "++show openBrace) $ return ()
   
@@ -392,15 +392,15 @@ singletonPTab = (numberPTab<>) $ table $
       expect "closing parentheses" $ do
         endloc <- tokenBy ")" asLocation
         return (AST_Paren obj (asLocation tok <> endloc))
-  , tableItemBy "#{" $ \startTok -> expect "object expression after open #{ meta-eval brace" $
+  , tableItemBy "{#" $ \startTok -> expect "object expression after open {# meta-eval brace" $
       msum $
         [ do  bufferComments
-              endLoc <- tokenBy "}#" asLocation
+              endLoc <- tokenBy "#}" asLocation
               com1 <- optSpace
               return (AST_MetaEval (com com1 AST_Void []) (asLocation startTok <> endLoc))
         , do  obj <- commented equation
-              expect "closing }# meta-eval brace" $ do
-                endLoc <- tokenBy "}#" asLocation
+              expect "closing #} meta-eval brace" $ do
+                endLoc <- tokenBy "#}" asLocation
                 return (AST_MetaEval obj (asLocation startTok <> endLoc))
         ]
   , trueFalse "null" ONull, trueFalse "false" ONull, trueFalse "true" OTrue
@@ -668,9 +668,10 @@ bracketed msg = do
   startLoc <- tokenBy "{" asLocation
   scrps    <- mplus (many script) (return [])
   let filtered = scrps >>= \scrp -> case scrp of
-        AST_Comment [] -> mzero
-        scrp           -> return scrp
+        AST_Comment [] -> []
+        scrp           -> [scrp]
   expect ("curly-bracket to close "++msg++" statement") $ do
+    a <- look1 id
     endLoc <- tokenBy "}" asLocation
     return (filtered, startLoc<>endLoc)
 

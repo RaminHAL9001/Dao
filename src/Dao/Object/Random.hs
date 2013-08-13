@@ -303,7 +303,10 @@ instance HasRandGen AST_Script where
 -- | Will create a random 'Dao.Object.AST_Object' of a type suitable for use as a stand-alone script
 -- expression, which is only 'AST_Assign'.
 randAssignExpr :: RandO AST_Object
-randAssignExpr = liftM4 AST_Assign randFuncHeader (randO>>=randCom) randFuncHeader no
+randAssignExpr = do
+  ox <- randListOf 0 3 (liftM2 (,) randFuncHeader (randO>>=randCom))
+  o  <- randFuncHeader
+  return (foldr (\(left, op) right -> AST_Assign left op right LocationUnknown) o ox)
 
 randSingletonASTList :: [RandO AST_Object]
 randSingletonASTList = fmap (fmap (flip AST_Literal LocationUnknown)) randSingletonList
@@ -326,17 +329,11 @@ randRefQualified = randPrefixWith randRefDeref $
 
 randReference :: RandO AST_Object
 randReference = do
-  let mk a = AST_Literal (ORef (LocalRef a)) LocationUnknown
-      cons typ o = randCom o >>= \o -> return (AST_Prefix typ o LocationUnknown)
-      loop left ax = case ax of
-        []       -> return left
-        right:ax -> do
-          op  <- nextInt 2
-          op  <- randCom (if op==0 then DOT else POINT)
-          loop (AST_Equation left op right LocationUnknown) ax
-  a  <- fmap mk randName
-  ax <- randListOf 1 3 (fmap mk randName)
-  loop a ax
+  let ref = fmap (\a -> AST_Literal (ORef (LocalRef a)) LocationUnknown) randName
+      comOp = nextInt 2 >>= \op -> randCom (if op==0 then DOT else POINT)
+  ax <- randListOf 1 3 (liftM2 (,) ref comOp)
+  a  <- ref
+  return $ foldr (\ (left, op) right -> (AST_Equation left op right LocationUnknown)) a ax
 
 randFuncHeaderList :: [RandO AST_Object]
 randFuncHeaderList = fmap loop $
@@ -392,7 +389,7 @@ randContainer :: RandO AST_Object
 randContainer = randOFromList randContainerList
 
 randObjectASTList :: [RandO AST_Object]
-randObjectASTList =  randAssignExpr : randFuncHeaderList ++ randContainerList ++ randSingletonASTList
+randObjectASTList =  randAssignExpr : randContainerList ++ randSingletonASTList
 
 randObjectAST :: RandO AST_Object
 randObjectAST = randPrefixWith (randOFromList randObjectASTList) [INVB, NEGTIV]

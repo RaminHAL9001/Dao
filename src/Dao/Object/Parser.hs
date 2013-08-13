@@ -133,7 +133,7 @@ daoTokenDef = do
     , "global local qtime static"
     , "function func pattern pat rule BEGIN END EXIT"
     , "import require"
-    , "this class super new hash point vector matrix" -- reserved keywords, but they don't do anything yet.
+    , "class new hash point vector matrix" -- reserved keywords, but they don't do anything yet.
     ]
   let withKeyword key func = do
         tok <- getTokID key :: LexBuilderM DaoTT
@@ -523,7 +523,7 @@ referencePTab :: DaoPTable AST_Object
 referencePTab = table (map mkPar ["$", "@"]) <> labeled where
   mkPar opStr = tableItemBy opStr $ \tok -> do
     let as = read . tokTypeToString . asTokType
-    obj <- commented object
+    obj <- commented reference
     return (AST_Prefix (as tok) obj ((getLocation (unComment obj)) <> asLocation tok))
   labeled = bindPTable singletonPTab $ \initObj ->
     flip mplus (return initObj) $

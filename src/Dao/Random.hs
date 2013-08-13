@@ -172,7 +172,7 @@ randBool = fmap (0/=) (nextInt 2)
 
 ----------------------------------------------------------------------------------------------------
 
-randOFromList :: forall a . HasRandGen a => [RandO a] -> RandO a
+randOFromList :: forall a . [RandO a] -> RandO a
 randOFromList items = join (fmap (arr!) (nextInt len)) where
   len = length items
   arr :: Array Int (RandO a)
@@ -196,12 +196,6 @@ randListOf minlen maxlen rando = limSubRandOWith [] $ do
 randList :: HasRandGen a => Int -> Int -> RandO [a]
 randList lo hi = randListOf lo hi subRandO
 
-randInteger :: Object -> (Int -> RandO Object) -> RandO Object
-randInteger zero mkOther = do
-  i <- randInt
-  let (x, r) = divMod i 2
-  if r==0 then return zero else mkOther x
-
 randRational :: Int -> RandO Rational
 randRational i0 = do
   let (i1, len1) = divMod i0 4
@@ -216,21 +210,23 @@ getRandomWord i = randomWords ! (mod i (rangeSize (bounds randomWords) - 1))
 randomWords :: Array Int B.ByteString
 randomWords = listArray (0, length list) (map B.pack list) where
   list = words $ unwords $
-    [ "a academia accomplished added also an analysis and application applications apply are arent"
-    , "argument arguments as at avoids be because been behavior between book both by calculus"
-    , "calling can change changes code commercial computability computation computer concepts"
-    , "constructs contrast conversely declarative definition depending depends describing"
-    , "designed developed development difference different domains domain easier effects"
-    , "elaborations elements eliminating emphasize entscheidungsproblem eschewing"
-    , "especially evaluation example executing expression facilitate financial formal"
-    , "functional has have hope how however imperative industrial input investigate is"
-    , "it key lack lambda language languages largely like make many math mathematical may"
-    , "motivations much mutable notion numeric of on one ones only organizations output paradigm"
-    , "specific pioneering practice predict produce program programming prominent purely rather"
-    , "recursion referential result roots same science side so software some specifically state"
-    , "statistics style subject such supported symbolic system than that the they thistle"
-    , "transparency treats twice understand use used value values variety viewed which wide will"
-    , "dates times database structured listing setting dictionary returning throwing catching"
+    [ "a academia accomplished added also an analysis and application applications apply are arent slim"
+    , "argument arguments as at avoids be because been behavior between book both by calculus plus were"
+    , "calling can change changes code commercial computability computation computer concepts earth was"
+    , "constructs contrast conversely declarative definition depending depends describing metal key fee"
+    , "designed developed development difference different domains domain easier effects fire water add"
+    , "elaborations elements eliminating emphasize entscheidungsproblem eschewing star best least being"
+    , "especially evaluation example executing expression facilitate financial formal greatest open etc"
+    , "functional has have hope how however imperative industrial input investigate is home close where"
+    , "it key lack lambda language languages largely like make many math mathematical may from flow she"
+    , "motivations much mutable notion numeric of on one ones only organizations output paradigm pit he"
+    , "specific pioneering practice predict produce program programming prominent purely rather trust I"
+    , "recursion referential result roots same science side so software some specifically state move me"
+    , "statistics style subject such supported symbolic system than that the they child this super mesh"
+    , "transparency treats twice understand use used value values variety viewed which wide will bill X"
+    , "dates times database structured listing setting dictionary returning throwing catching law factor"
+    , "option procedure alpha beta electron proton neutron shift hard soft bean beam fix drug undo minus"
+    , "field magic latice jump assemble area volume interesting slice sector region cylinder sphere plan"
     , "inside without trying patterned rules"
     ]
 

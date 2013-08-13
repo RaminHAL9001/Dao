@@ -39,6 +39,7 @@ import           Data.Ratio
 import           Data.Complex
 import           Data.Time
 import           Data.Array.IArray
+import qualified Data.Binary           as Db
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy  as Bz
 import qualified Data.Set              as S
@@ -251,8 +252,7 @@ comRandObjExprList :: RandO [Com AST_Object]
 comRandObjExprList = randListOf 1 20 randObjectAST >>= mapM randCom
 
 comAssignExprList :: [AST_Object] -> RandO [AST_Object]
-comAssignExprList = mapM $ \item ->
-  liftM3 (AST_Assign item) (subRandO >>= randCom) randO no
+comAssignExprList = mapM $ \item -> liftM3 (AST_Assign item) (randO >>= randCom) randAssignExpr no
 
 mostlyRefExprs :: RandO AST_Object
 mostlyRefExprs = do
@@ -361,10 +361,11 @@ randContainerList =
           1 -> "intmap"
           2 -> "list"
           3 -> "set"
-        let rndlist = randListOf 0 30 (fmap lit limRandObj)
+        let rndlist = randListOf 0 30 randAssignExpr
+        let idx fn = fmap (lit . fn) randInt
         exprs <- mapM randCom =<< case typ of
-          0 -> randListOf 0 30 (fmap (lit . OString . randUStr ) randInt) >>= comAssignExprList
-          1 -> randListOf 0 30 (fmap (lit . OInt . fromIntegral) randInt) >>= comAssignExprList
+          0 -> randListOf 0 30 (idx (OString . randUStr)) >>= comAssignExprList
+          1 -> randListOf 0 30 (idx (OInt . fromIntegral)) >>= comAssignExprList
           2 -> rndlist
           3 -> rndlist
         coms  <- randComments
@@ -383,6 +384,12 @@ randContainerList =
         return (AST_Array idxExpr items LocationUnknown)
   , liftM3 AST_Struct (randObjectASTVoid >>= randCom) (randList 0 30 >>= comAssignExprList >>= mapM randCom) no
   , liftM4 AST_Lambda randO (randArgsDef >>= randCom) randScriptExpr no
+  , liftM2 (\coms dat -> AST_Data coms dat LocationUnknown) randComments $ do
+      spcs <- fmap ((+1) . (flip mod 8)) randInt
+      fmap concat $ replicateM spcs $ do
+        len <- fmap ((+1) . (flip mod 12)) randInt
+        dat <- fmap Bz.concat (replicateM len (fmap Db.encode randInt))
+        return (map (Com . ustr) $ b64Encode dat)
   ]
 
 randContainer :: RandO AST_Object

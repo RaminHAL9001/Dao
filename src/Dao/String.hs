@@ -43,7 +43,12 @@ import qualified Codec.Binary.UTF8.String  as UTF8
 -- derive the instantiations for theses three classes: 'Prelude.Enum', 'Prelude.Show' and
 -- 'Prelude.Read'. So the conversion from the 'UStr' to the polymorphic type will never fail because
 -- it is generated automatically at compile time by Haskell's deriving mechanism.
-class UStrType a where { ustr :: a -> UStr; fromUStr :: UStr -> a; }
+class UStrType a where
+  ustr :: a -> UStr
+  fromUStr :: UStr -> a
+  fromUStr str = maybe (error ("cannot construct data from UStr "++show str)) id (maybeFromUStr str)
+  maybeFromUStr :: UStr -> Maybe a
+  maybeFromUStr = Just . fromUStr
 instance UStrType String where { ustr = uString; fromUStr = uchars; }
 instance UStrType UStr where { ustr = id; fromUStr = id; }
 derive_ustr :: (Enum a, Read a, Show a) => a -> UStr

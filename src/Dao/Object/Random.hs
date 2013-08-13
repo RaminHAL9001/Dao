@@ -88,6 +88,12 @@ randComments = return []
 
 ----------------------------------------------------------------------------------------------------
 
+randInteger :: Object -> (Int -> RandO Object) -> RandO Object
+randInteger zero mkOther = do
+  i <- randInt
+  let (x, r) = divMod i 2
+  if r==0 then return zero else mkOther x
+
 randSingleton :: RandO Object
 randSingleton = randOFromList randSingletonList
 
@@ -98,36 +104,39 @@ randSingletonList =
   -- , fmap OType randO
   , randInteger (OInt  0) $ \i -> randInt >>= \j -> return (OInt$fromIntegral$ i*j)
   , randInteger (OWord 0) $ \i -> randInt >>= \j -> return (OWord$fromIntegral$abs$ i*j)
-  , randInteger (OLong 0) $ \i ->
-      replicateM (mod i 4 + 1) randInt >>= return . OLong . longFromInts
+  , randInteger (OLong 0) $ \i -> replicateM (mod i 4 + 1) randInt >>= return . OLong . longFromInts
+  , randInteger (ORatio 0) $ \i -> return (ORatio (toInteger i % 1))
+  , randInteger (OComplex (0:+0)) $ \i -> return (OComplex (0 :+ (fromRational (toInteger i % 1))))
   , randInteger (OFloat 0) (fmap (OFloat . fromRational) . randRational)
-  , randInteger (ORatio 0) (fmap ORatio . randRational)
-  , randInteger (OComplex 0) $ \i0 -> do
-      let (i1, rem) = divMod i0 4
-      real <- fmap fromRational (randRational i1)
-      cplx <- fmap fromRational (randRational rem)
-      return (OComplex (real:+cplx))
-  , do  day <- fmap (ModifiedJulianDay . unsign . flip mod 73000) randInt
-        sec <- fmap (fromRational . toRational . flip mod 86400) randInt
-        return (OTime (UTCTime{utctDay=day, utctDayTime=sec}))
-  , randInteger (ODiffTime 0) $ \i -> do
-      div <- randInt
-      fmap (ODiffTime . fromRational . (% fromIntegral div) . longFromInts) $
-        replicateM (mod i 2 + 1) randInt
   , randInteger (OChar '\n') (\i -> return (OChar $ chr $ mod i $ ord (maxBound::Char)))
   , randInteger (OString nil) $ \i -> do
       len <- nextInt 4
       flip fmap (replicateM (len+1) randInt) $
         OString . ustr . unwords . map (B.unpack . getRandomWord)
-  , fmap ORef randSimpleRef
+  , fmap (ORef . LocalRef) randName
   ]
 
 instance HasRandGen Object where
   randO = randOFromList $ randSingletonList ++
-    [ fmap ORef randO
+    [ randInteger (ORatio 0) (fmap ORatio . randRational)
+    , randInteger (OComplex 0) $ \i0 -> do
+        let (i1, rem) = divMod i0 4
+        real <- fmap fromRational (randRational i1)
+        cplx <- fmap fromRational (randRational rem)
+        return (OComplex (real:+cplx))
+    , fmap ORef randO
     , fmap OPair (liftM2 (,) randO randO)
     , fmap OList (randList 0 40)
     , fmap (OSet . S.fromList) (randList 0 40)
+      -- OTime
+    , do  day <- fmap (ModifiedJulianDay . unsign . flip mod 73000) randInt
+          sec <- fmap (fromRational . toRational . flip mod 86400) randInt
+          return (OTime (UTCTime{utctDay=day, utctDayTime=sec}))
+      -- ODiffTime
+    , randInteger (ODiffTime 0) $ \i -> do
+        div <- randInt
+        fmap (ODiffTime . fromRational . (% fromIntegral div) . longFromInts) $
+          replicateM (mod i 2 + 1) randInt
     , do -- OArray
           hi <- nextInt 12
           lo <- nextInt 8
@@ -138,6 +147,7 @@ instance HasRandGen Object where
     , fmap OTree randO
     , fmap OGlob randO
     , fmap OScript randO
+      -- OBytes
     , do  i <- nextInt 10
           fmap (OBytes . Bz.pack . map fromIntegral . concat) $
             replicateM i (fmap (randToBase 256) randInt)
@@ -156,9 +166,6 @@ randSimpleRefList :: [RandO Reference]
 randSimpleRefList =
   [ fmap (IntRef . fromIntegral . abs) randInt
   , fmap LocalRef  randName
-  , fmap StaticRef randName
-  , fmap QTimeRef  randMultiName
-  , fmap GlobalRef randMultiName
   ]
 
 randSimpleRef :: RandO Reference
@@ -166,12 +173,14 @@ randSimpleRef = randOFromList randSimpleRefList
 
 instance HasRandGen Reference where
   randO = randOFromList $ randSimpleRefList ++ 
-    [ liftM2 ProgramRef (fmap (ustr . (++".dao") . uchars) randName) subRandO 
+    [ fmap StaticRef randName
+    , fmap QTimeRef  randMultiName
+    , fmap GlobalRef randMultiName
+    , liftM2 ProgramRef (fmap (ustr . (++".dao") . uchars) randName) subRandO 
     , liftM2 FileRef (fmap (ustr . (++".idea") . uchars) randName) randMultiName
     , liftM2 Subscript subRandO (limSubRandO (OList []))
     , fmap MetaRef subRandO
     ]
-    where
 
 instance HasRandGen Glob where
   randO = do
@@ -239,7 +248,7 @@ comRandObjExpr :: RandO (Com AST_Object)
 comRandObjExpr = randO >>= randCom
 
 comRandObjExprList :: RandO [Com AST_Object]
-comRandObjExprList = randList 1 20 >>= mapM randCom
+comRandObjExprList = randListOf 1 20 randObjectAST >>= mapM randCom
 
 comAssignExprList :: [AST_Object] -> RandO [AST_Object]
 comAssignExprList = mapM $ \item ->
@@ -302,43 +311,36 @@ randSingletonASTList = fmap (fmap (flip AST_Literal LocationUnknown)) randSingle
 randSingletonAST :: RandO AST_Object
 randSingletonAST = randOFromList randSingletonASTList
 
+randPrefixWith :: RandO AST_Object -> [ArithOp1] -> RandO AST_Object
+randPrefixWith randGen ops = randOFromList $ randGen : fmap randOps ops where
+  randOps op = do
+    obj <- randGen >>= randCom
+    return (AST_Prefix op obj LocationUnknown)
+
+randRefDeref :: RandO AST_Object
+randRefDeref = randPrefixWith randReference [REF, DEREF]
+
+randRefQualified :: RandO AST_Object
+randRefQualified = randPrefixWith randRefDeref $
+  [GLDOT, GLOBALPFX, LOCALPFX, QTIMEPFX, STATICPFX]
+
 randReference :: RandO AST_Object
 randReference = do
   let mk a = AST_Literal (ORef (LocalRef a)) LocationUnknown
       cons typ o = randCom o >>= \o -> return (AST_Prefix typ o LocationUnknown)
-      pfxCons o = do
-        pfx <- nextInt 3
-        case pfx of
-          0 -> return o
-          1 -> cons REF o
-          2 -> cons DEREF o
-      loop right ax = case ax of
-        []      -> return right
-        left:ax -> do
+      loop left ax = case ax of
+        []       -> return left
+        right:ax -> do
           op  <- nextInt 2
           op  <- randCom (if op==0 then DOT else POINT)
           loop (AST_Equation left op right LocationUnknown) ax
-      arr :: Array Int (Maybe ArithOp1)
-      arr = array (0, 4) $ zip [0..4] $
-        Nothing : fmap Just [GLDOT, GLOBALPFX, LOCALPFX, QTIMEPFX, STATICPFX]
-  ax  <- fmap (fmap mk) (randListOf 1 4 randName)
-  (a, ax) <- -- The 'randListOf' function might return a null list if we are at the maximum depth.
-    if null ax -- in which case we will create a simple reference with a single random name.
-      then fmap ((\a -> (a, [])) . mk) randName
-      else do
-        a  <- pfxCons (head ax)
-        ax <- mapM pfxCons (tail ax)
-        return (a, ax)
-  eqn <- loop a ax
-  pfx <- fmap (arr!) (nextInt 5)
-  case pfx of
-    Nothing  -> return eqn
-    Just pfx -> randCom eqn >>= \eqn -> return (AST_Prefix pfx eqn LocationUnknown)
+  a  <- fmap mk randName
+  ax <- randListOf 1 3 (fmap mk randName)
+  loop a ax
 
 randFuncHeaderList :: [RandO AST_Object]
 randFuncHeaderList = fmap loop $
-  [ randReference
-  , liftM3 AST_Prefix randO (randFuncHeader >>= randCom) no
+  [ randRefQualified
   , liftM2 AST_Paren    comRandObjExpr no
   , liftM2 AST_MetaEval comRandObjExpr no
   ]
@@ -372,10 +374,10 @@ randContainerList =
         return (AST_Dict dict coms exprs LocationUnknown)
   , do -- AST_Array
         i <- nextInt 4
-        let int = fmap (OInt . fromIntegral) randInt
-            ref = fmap ORef subRandO
+        let int = randSingletonAST
+            ref = randReference
             f x = liftM2 x int ref
-        idxExpr <- randCom =<< mapM (randCom . lit) =<< case i of
+        idxExpr <- randCom =<< mapM randCom =<< case i of
           0 -> replicateM 2 int
           1 -> f (\a b -> [a,b]) 
           2 -> replicateM 2 ref
@@ -390,7 +392,43 @@ randContainer :: RandO AST_Object
 randContainer = randOFromList randContainerList
 
 randObjectASTList :: [RandO AST_Object]
-randObjectASTList =  randAssignExpr : randFuncHeaderList ++ randContainerList
+randObjectASTList =  randAssignExpr : randFuncHeaderList ++ randContainerList ++ randSingletonASTList
+
+randObjectAST :: RandO AST_Object
+randObjectAST = randPrefixWith (randOFromList randObjectASTList) [INVB, NEG]
+
+randArithOp2 :: RandO (Com ArithOp2, (Int, Bool))
+randArithOp2 = do
+  (op, prec) <- randOFromList opGroups
+  op         <- randCom op
+  return (op, prec)
+  where
+    left  op = (op, True )
+    right op = (op, False)
+    opGroups = fmap return $ do
+      (precedence, operators) <- zip [1..] $ (++[[right POW]]) $ fmap (fmap left) $
+        [ [EQUL, NEQUL]
+        , [GTN, LTN, GTEQ, LTEQ], [SHL, SHR]
+        , [OR], [AND], [ORB], [XORB], [ANDB]
+        , [ADD, SUB], [DIV, MOD], [MULT]
+        ]
+      (operator, associativity) <- operators
+      return (operator, (precedence, associativity))
+
+randArithmetic :: RandO AST_Object
+randArithmetic = do
+  o  <- randObjectAST
+  ox <- randListOf 0 4 (liftM2 (,) randObjectAST randArithOp2)
+  return (fst $ loop 0 o ox)
+  where
+    bind right op left = AST_Equation right op left LocationUnknown
+    loop prevPrec left opx = case opx of
+      []                                    -> (left, [])
+      -- (right, (op, _                )):[]   -> bind right op left
+      (right, (op, (prec, leftAssoc))):next ->
+        if prevPrec<prec || (prevPrec==prec && not leftAssoc) -- ? If so, we should bind right
+          then  let (right, next) = loop prec left opx in loop prevPrec right next
+          else  loop prec (bind right op left) next
 
 -- Can also produce void expressions.
 randObjectASTVoidList :: [RandO AST_Object]
@@ -404,11 +442,11 @@ randEquationASTList :: [RandO AST_Object]
 randEquationASTList = randFuncHeaderList ++
   [ let check a = case a of
           AST_Equation a op b no | DOT == unComment op  -> AST_Equation (check a) op (check b) no
-          AST_Literal (ORef (LocalRef _))           _   -> a
-          AST_Literal (OString _)                   _   -> a
-          AST_FuncCall _ _ _                        _   -> a
-          AST_Paren   a                         loc -> AST_Paren a loc
-          a                                         -> AST_Paren (Com a) LocationUnknown
+          AST_Literal (ORef (LocalRef _)) _   -> a
+          AST_Literal (OString _)         _   -> a
+          AST_FuncCall _       _      _   _   -> a
+          AST_Paren    a                  loc -> AST_Paren a loc
+          a                                   -> AST_Paren (Com a) LocationUnknown
     in  fmap check (liftM4 AST_Equation randO (randO>>=randCom) randO no)
   ]
 

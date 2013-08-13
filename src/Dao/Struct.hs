@@ -207,13 +207,13 @@ updateFailed obj msg = updatePValue $ PFail ([], obj)
 putStringData :: String -> Update ()
 putStringData = putData . ustr
 
-getStringData :: String -> Update String
-getStringData msg = do
+getUStrData :: UStrType str => str -> Update UStr
+getUStrData msg = do
   a <- this
   case a of
-    OString a -> return (uchars a)
-    OChar   c -> return [c]
-    _         -> updateFailed a ("was expecting a string for constructing a "++msg++" object")
+    OString a -> return a
+    OChar   c -> return (ustr [c])
+    _         -> updateFailed a ("was expecting a string for constructing a "++uchars (ustr msg)++" object")
 
 getIntegerData :: Integral a => String -> Update a
 getIntegerData msg = do

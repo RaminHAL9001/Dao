@@ -756,11 +756,12 @@ extractStringElems o = case o of
 
 prefixOps :: Array ArithOp1 (Object -> BuiltinOp)
 prefixOps = let o = (,) in array (minBound, maxBound) $
-  [ o REF   eval_REF
-  , o DEREF eval_DEREF
-  , o INVB  eval_INVB
-  , o NOT   eval_NOT
-  , o NEG   eval_NEG
+  [ o REF      eval_REF
+  , o DEREF    eval_DEREF
+  , o INVB     eval_INVB
+  , o NOT      eval_NOT
+  , o NEGTIV   eval_NEG
+  , o POSTIV   return
   ]
 
 infixOps :: Array ArithOp2 (Object -> Object -> BuiltinOp)

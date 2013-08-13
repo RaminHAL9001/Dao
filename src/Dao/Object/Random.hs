@@ -395,7 +395,7 @@ randObjectASTList :: [RandO AST_Object]
 randObjectASTList =  randAssignExpr : randFuncHeaderList ++ randContainerList ++ randSingletonASTList
 
 randObjectAST :: RandO AST_Object
-randObjectAST = randPrefixWith (randOFromList randObjectASTList) [INVB, NEG]
+randObjectAST = randPrefixWith (randOFromList randObjectASTList) [INVB, NEGTIV]
 
 randArithOp2 :: RandO (Com ArithOp2, (Int, Bool))
 randArithOp2 = do

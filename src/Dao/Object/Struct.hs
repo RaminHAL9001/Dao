@@ -105,14 +105,25 @@ getComments = mplus (getDataAt "comments") (return [])
 fromShowable :: Show a => a -> T.Tree Name Object
 fromShowable = T.Leaf . OString . ustr . show
 
+fromUStrType :: UStrType a => [Char] -> String -> T.Tree Name Object -> PValue UpdateErr a
+fromUStrType chrs msg = reconstruct $ do
+  let msg = "an "++msg++" expressed as a string value"
+      asChar o = case o of
+        OChar c | elem c chrs -> return [c]
+        _ -> mzero
+  a <- getUStrData msg
+  case maybeFromUStr a of
+    Just  o -> return o
+    Nothing -> updateFailed (ostr a) ("was expecting "++msg)
+
 fromReadableOrChars :: Read a => [Char] -> String -> T.Tree Name Object -> PValue UpdateErr a
 fromReadableOrChars chrs msg = reconstruct $ do
   let msg = "an "++msg++" expressed as a string value"
       asChar o = case o of
         OChar c | elem c chrs -> return [c]
         _ -> mzero
-  a <- getStringData msg
-  case readsPrec 0 a of
+  a <- getUStrData msg
+  case readsPrec 0 (uchars a) of
     [(o, "")] -> return o
     _         -> updateFailed (ostr a) ("was expecting "++msg)
 
@@ -121,15 +132,15 @@ fromReadable = fromReadableOrChars ""
 
 instance Structured UpdateOp where
   dataToStruct = fromShowable
-  structToData = fromReadableOrChars allUpdateOpChars "assignment operator"
+  structToData = fromUStrType allUpdateOpChars "assignment operator"
 
 instance Structured ArithOp1 where
   dataToStruct = fromShowable
-  structToData = fromReadableOrChars allArithOp1Chars "unary prefix operator"
+  structToData = fromUStrType allArithOp1Chars "unary prefix operator"
   
 instance Structured ArithOp2 where
   dataToStruct = fromShowable
-  structToData = fromReadableOrChars allArithOp2Chars "binary infix operator"
+  structToData = fromUStrType allArithOp2Chars "binary infix operator"
 
 instance Structured LambdaExprType where
   dataToStruct = fromShowable
@@ -203,7 +214,7 @@ instance Structured AST_Object where
     , with "subscript" $ liftM4 AST_ArraySub (getDataAt "bounds") (getComments)     getData getData
     , with "funcCall"  $ liftM4 AST_FuncCall  getData (getComments) (getDataAt "arguments") getData
     , with "container" $ do
-        kind <- getStringData "constructor type"
+        kind <- fmap uchars $ getUStrData "constructor type"
         let mkDict = liftM3 (AST_Dict (ustr kind)) (getComments) (getDataAt "arguments") getData
         case kind of
           kind | kind=="set" || kind=="list" || kind=="dict" || kind=="intmap" -> mkDict
@@ -276,8 +287,8 @@ instance Structured GlobUnit  where
     AnyOne   -> ustr "$?"
     Single s -> s
   structToData = reconstruct $ do
-    str <- getStringData "glob-unit"
-    return $ case str of
+    str <- getUStrData "glob-unit"
+    return $ case uchars str of
       "$*" -> Wildcard
       "*"  -> Wildcard
       "$?" -> AnyOne
@@ -319,7 +330,7 @@ instance Structured Pattern where
     ObjFailIf  a b -> with "require" (putDataAt "message" a >> putData b)
     ObjNot     a   -> with "not" (putData a)
   structToData = reconstruct $ msum $
-    [ getStringData "src/Dao/Object/Struct.hs:318:pattern" >>= \a -> case a of
+    [ getUStrData "src/Dao/Object/Struct.hs:318:pattern" >>= \a -> case uchars a of
         "any"  -> return ObjAnyX
         "many" -> return ObjMany
         "any1" -> return ObjAny1
@@ -345,7 +356,7 @@ instance Structured ObjSetOp where
     AllOfSet  -> "all"
     OnlyOneOf -> "only"
     NoneOfSet -> "none"
-  structToData = reconstruct $ getStringData "pattern set operator" >>= \a -> case a of
+  structToData = reconstruct $ getUStrData "pattern set operator" >>= \a -> case uchars a of
     "exact" -> return ExactSet
     "any"   -> return AnyOfSet
     "all"   -> return AllOfSet
@@ -358,7 +369,7 @@ instance Structured TopLevelEventType where
     BeginExprType -> "BEGIN"
     EndExprType   -> "END"
     ExitExprType  -> "EXIT"
-  structToData = reconstruct $ getStringData "event type" >>= \a -> case a of
+  structToData = reconstruct $ getUStrData "event type" >>= \a -> case uchars a of
     "BEGIN" -> return BeginExprType
     "END"   -> return EndExprType
     "EXIT"  -> return ExitExprType
@@ -426,7 +437,7 @@ instance (Ord a, Enum a, Structured a) => Structured (Es.Inf a) where
     Es.Point a -> putData a
   structToData = reconstruct $ msum $
     [ fmap Es.Point getData
-    , getStringData msg >>= \a -> case a of
+    , getUStrData msg >>= \a -> case uchars a of
         "+inf" -> return Es.PosInf
         "-inf" -> return Es.NegInf
     , mplus this (return ONull) >>= \o -> updateFailed o msg

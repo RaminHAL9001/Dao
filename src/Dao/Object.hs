@@ -416,15 +416,15 @@ type Exec a  = ProcReader ExecUnit IO a
 ----------------------------------------------------------------------------------------------------
 
 data UpdateOp = UCONST | UADD | USUB | UMULT | UDIV | UMOD | UORB | UANDB | UXORB | USHL | USHR
-  deriving (Eq, Ord, Enum, Ix, Typeable)
+  deriving (Eq, Ord, Enum, Ix, Typeable, Show)
 
 instance Bounded UpdateOp where {minBound = UCONST; maxBound = USHR}
 
 allUpdateOpChars = "="
 allUpdateOpStrs = " = += -= *= /= %= |= &= ^= <<= >>= "
 
-instance Show UpdateOp where
-  show a = case a of
+instance UStrType UpdateOp where
+  ustr a = ustr $ case a of
     UCONST -> "="
     UADD   -> "+="
     USUB   -> "-="
@@ -436,59 +436,60 @@ instance Show UpdateOp where
     UXORB  -> "^="
     USHL   -> "<<="
     USHR   -> ">>="
-
-instance Read UpdateOp where
-  readsPrec _ str = map (\a -> (a, "")) $ case str of
-    "="   -> [UCONST]
-    "+="  -> [UADD  ]
-    "-="  -> [USUB  ]
-    "*="  -> [UMULT ]
-    "/="  -> [UDIV  ]
-    "%="  -> [UMOD  ]
-    "|="  -> [UORB  ]
-    "&="  -> [UANDB ]
-    "^="  -> [UXORB ]
-    "<<=" -> [USHL  ]
-    ">>=" -> [USHR  ]
-    _     -> []
+  maybeFromUStr str = case uchars str of
+    "="   -> Just UCONST
+    "+="  -> Just UADD  
+    "-="  -> Just USUB  
+    "*="  -> Just UMULT 
+    "/="  -> Just UDIV  
+    "%="  -> Just UMOD  
+    "|="  -> Just UORB  
+    "&="  -> Just UANDB 
+    "^="  -> Just UXORB 
+    "<<=" -> Just USHL  
+    ">>=" -> Just USHR  
+    _     -> Nothing
+  fromUStr str =
+    maybe (error (show str++" is not an assignment/update operator")) id (maybeFromUStr str)
 
 -- | Unary operators.
 data ArithOp1
-  = REF | DEREF | INVB  | NOT | NEG | GLDOT -- ^ unary
+  = REF | DEREF | INVB  | NOT | NEGTIV | POSTIV | GLDOT -- ^ unary
   | GLOBALPFX | LOCALPFX | QTIMEPFX | STATICPFX
-  deriving (Eq, Ord, Enum, Ix, Typeable)
+  deriving (Eq, Ord, Enum, Ix, Typeable, Show)
 
-allArithOp1Chars = "$@~!-"
-allArithOp1Strs = " $ @ ~ - ! "
+allArithOp1Chars = "$@~!-+"
+allArithOp1Strs = " $ @ ~ - + ! "
 
-instance Bounded ArithOp1 where {minBound = REF; maxBound = NEG}
+instance Bounded ArithOp1 where {minBound = REF; maxBound = NEGTIV}
 
-instance Show ArithOp1 where
-  show op = case op of
-    REF   -> "$"
-    DEREF -> "@"
-    INVB  -> "~"
-    NOT   -> "!"
-    NEG   -> "-"
-    GLDOT -> "."
+instance UStrType ArithOp1 where
+  ustr op = ustr $ case op of
+    REF    -> "$"
+    DEREF  -> "@"
+    INVB   -> "~"
+    NOT    -> "!"
+    NEGTIV -> "-"
+    POSTIV -> "+"
+    GLDOT  -> "."
     GLOBALPFX -> "global"
     LOCALPFX  -> "local"
     QTIMEPFX  -> "qtime"
     STATICPFX -> "static"
-
-instance Read ArithOp1 where
-  readsPrec _ str = map (\a -> (a, "")) $ case str of
-    "$"      -> [REF]
-    "@"      -> [DEREF]
-    "~"      -> [INVB]
-    "!"      -> [NOT]
-    "-"      -> [NEG]
-    "."      -> [GLDOT]
-    "global" -> [GLOBALPFX]
-    "local"  -> [LOCALPFX]
-    "qtime"  -> [QTIMEPFX]
-    "static" -> [STATICPFX]
-    _        -> []
+  maybeFromUStr str = case uchars str of
+    "$"      -> Just REF
+    "@"      -> Just DEREF
+    "~"      -> Just INVB
+    "!"      -> Just NOT
+    "-"      -> Just NEGTIV
+    "+"      -> Just POSTIV
+    "."      -> Just GLDOT
+    "global" -> Just GLOBALPFX
+    "local"  -> Just LOCALPFX
+    "qtime"  -> Just QTIMEPFX
+    "static" -> Just STATICPFX
+    str      -> Nothing
+  fromUStr str = maybe (error (show str++" is not a prefix opretor")) id (maybeFromUStr str)
 
 -- | Binary operators.
 data ArithOp2
@@ -499,13 +500,13 @@ data ArithOp2
   | ORB   | ANDB  | XORB
   | SHL   | SHR
   | GTN   | LTN   | GTEQ  | LTEQ
-  deriving (Eq, Ord, Enum, Ix, Typeable)
+  deriving (Eq, Ord, Enum, Ix, Typeable, Show)
 
 allArithOp2Chars = "+-*/%<>^&|."
 allArithOp2Strs = " + - * / % ** -> . || && == != | & ^ << >> < > <= >= "
 
-instance Show ArithOp2 where
-  show a = case a of
+instance UStrType ArithOp2 where
+  ustr a = ustr $ case a of
     { ADD   -> "+" ; SUB  -> "-" ; MULT  -> "*"
     ; DIV   -> "/" ; MOD  -> "%" ; POW   -> "**"
     ; POINT -> "->"; DOT  -> "." ; OR    -> "||"
@@ -514,18 +515,17 @@ instance Show ArithOp2 where
     ; SHL   -> "<<"; SHR  -> ">>"
     ; GTN   -> ">" ; LTN  -> "<" ; GTEQ  -> ">="; LTEQ -> "<="
     }
-
-instance Read ArithOp2 where
-  readsPrec _ str = map (\a -> (a, "")) $ case str of
-    { "+"  -> [ADD  ]; "-"  -> [SUB  ]; "*"  -> [MULT ]
-    ; "/"  -> [DIV  ]; "%"  -> [MOD  ]; "**" -> [POW  ]
-    ; "->" -> [POINT]; "."  -> [DOT  ]; "||" -> [OR   ]
-    ; "&&" -> [AND  ]; "==" -> [EQUL ]; "!=" -> [NEQUL]
-    ; "|"  -> [ORB  ]; "&"  -> [ANDB ]; "^"  -> [XORB ]
-    ; "<<" -> [SHL  ]; ">>" -> [SHR  ]; "<"  -> [LTN  ]
-    ; ">"  -> [GTN  ]; "<=" -> [GTEQ ]; ">=" -> [GTEQ ]
-    ; _    -> [error ("cannot convert string to ArithOp2: "++show str)]
+  maybeFromUStr str = case uchars str of
+    { "+"  -> Just ADD  ; "-"  -> Just SUB  ; "*"  -> Just MULT 
+    ; "/"  -> Just DIV  ; "%"  -> Just MOD  ; "**" -> Just POW  
+    ; "->" -> Just POINT; "."  -> Just DOT  ; "||" -> Just OR   
+    ; "&&" -> Just AND  ; "==" -> Just EQUL ; "!=" -> Just NEQUL
+    ; "|"  -> Just ORB  ; "&"  -> Just ANDB ; "^"  -> Just XORB 
+    ; "<<" -> Just SHL  ; ">>" -> Just SHR  ; "<"  -> Just LTN  
+    ; ">"  -> Just GTN  ; "<=" -> Just GTEQ ; ">=" -> Just GTEQ 
+    ; _    -> Nothing
     }
+  fromUStr str = maybe (error (show str++" is not an infix operator")) id (maybeFromUStr str)
 
 instance Bounded ArithOp2 where {minBound = ADD; maxBound = SHR}
 

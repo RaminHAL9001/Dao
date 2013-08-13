@@ -649,17 +649,19 @@ instance Binary TopLevelExpr where
 
 instance Binary ArithOp1 where
   put o = putWord8 $ case o of
-    REF   -> 0x91
-    DEREF -> 0x92
-    INVB  -> 0x93
-    NOT   -> 0x94
-    NEG   -> 0x95
+    REF    -> 0x91
+    DEREF  -> 0x92
+    INVB   -> 0x93
+    NOT    -> 0x94
+    NEGTIV -> 0x95
+    POSTIV -> 0x96
   get = getWord8 >>= \w -> case w of
     0x91 -> return REF
     0x92 -> return DEREF
     0x93 -> return INVB
     0x94 -> return NOT
-    0x95 -> return NEG
+    0x95 -> return NEGTIV
+    0x96 -> return POSTIV
     _    -> fail "expecting prefix operator"
 
 instance Binary ArithOp2 where

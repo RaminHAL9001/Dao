@@ -522,7 +522,7 @@ equationConstructor left (loc, op) right = AST_Equation left op right loc
 referencePTab :: DaoPTable AST_Object
 referencePTab = table (map mkPar ["$", "@"]) <> labeled where
   mkPar opStr = tableItemBy opStr $ \tok -> do
-    let as = read . tokTypeToString . asTokType
+    let as = fromUStr . tokTypeToUStr . asTokType
     obj <- commented reference
     return (AST_Prefix (as tok) obj ((getLocation (unComment obj)) <> asLocation tok))
   labeled = bindPTable singletonPTab $ \initObj ->
@@ -534,7 +534,7 @@ referencePTab = table (map mkPar ["$", "@"]) <> labeled where
         (liftM2 (,) (look1 asLocation) (commented (joinEvalPTable infixPTab)))
   infixPTab :: DaoPTable ArithOp2
   infixPTab = table $ flip fmap [".", "->"] $
-    flip tableItemBy (return . read . tokTypeToString . asTokType)
+    flip tableItemBy (return . fromUStr . tokTypeToUStr . asTokType)
 
 reference :: DaoParser AST_Object
 reference = joinEvalPTable referencePTab
@@ -545,7 +545,7 @@ qualReferencePTab :: DaoPTable AST_Object
 qualReferencePTab = (<>referencePTab) $ table $ flip fmap (words "global local qtime static .") $ \pfx ->
   tableItemBy pfx $ \tok -> do
     obj <- commented reference
-    return (AST_Prefix (read (tokTypeToString (asTokType tok))) obj (asLocation tok <> (getLocation (unComment obj))))
+    return (AST_Prefix (fromUStr (tokTypeToUStr (asTokType tok))) obj (asLocation tok <> (getLocation (unComment obj))))
 
 qualReference :: DaoParser AST_Object
 qualReference = joinEvalPTable qualReferencePTab
@@ -598,14 +598,14 @@ funcCallArraySub :: DaoParser AST_Object
 funcCallArraySub = joinEvalPTable funcCallArraySubPTab
 
 arithPrefixPTab :: DaoPTable AST_Object
-arithPrefixPTab = table $ (logicalNOT:) $ flip fmap ["~", "-"] $ \pfxOp ->
+arithPrefixPTab = table $ (logicalNOT:) $ flip fmap ["~", "-", "+"] $ \pfxOp ->
   tableItemBy pfxOp $ \tok -> do
     obj <- commented object
-    return (AST_Prefix (read (tokTypeToString (asTokType tok))) obj (asLocation tok))
+    return (AST_Prefix (fromUStr (tokTypeToUStr (asTokType tok))) obj (asLocation tok))
   where
     logicalNOT = tableItemBy "!" $ \op -> do
       obj <- commented arithmetic
-      return (AST_Prefix (read $ tokTypeToString $ asTokType op) obj (asLocation op))
+      return (AST_Prefix (fromUStr $ tokTypeToUStr $ asTokType op) obj (asLocation op))
 
 arithPrefix :: DaoParser AST_Object
 arithPrefix = joinEvalPTable arithPrefixPTab
@@ -627,7 +627,7 @@ arithOpTable :: OpTableParser DaoParState DaoTT (Location, Com ArithOp2) AST_Obj
 arithOpTable =
   newOpTableParser "arithmetic expression" False
     (\tok -> do
-        op <- commented (shift (read . tokTypeToString . asTokType))
+        op <- commented (shift (fromUStr . tokTypeToUStr . asTokType))
         return (asLocation tok, op)
     )
     (object >>= \o -> bufferComments >> return o)
@@ -655,7 +655,7 @@ equationPTab = bindPTable arithmeticPTab $ \obj ->
   where
     opTab :: DaoPTable UpdateOp
     opTab = table $
-      fmap (flip tableItemBy (return . read . tokTypeToString . asTokType)) (words allUpdateOpStrs)
+      fmap (flip tableItemBy (return . fromUStr . tokTypeToUStr . asTokType)) (words allUpdateOpStrs)
 
 -- | Evaluates a sequence arithmetic expressions interspersed with assignment operators.
 equation :: DaoParser AST_Object

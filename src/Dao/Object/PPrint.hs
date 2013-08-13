@@ -274,9 +274,9 @@ instance PPrintable AST_Script where
     AST_WithDoc      cObjXp               xcScrpXp  _ ->
       pPrintSubBlock (pString "with " >> pPrint cObjXp) xcScrpXp
 
-instance PPrintable PrefixOp  where { pPrint = pShow }
-instance PPrintable InfixOp  where { pPrint = pShow }
-instance PPrintable UpdateOp where { pPrint op = pString (' ':show op++" ") }
+instance PPrintable PrefixOp  where { pPrint = pString . uchars . ustr }
+instance PPrintable InfixOp  where { pPrint = pString . uchars . ustr }
+instance PPrintable UpdateOp where { pPrint op = pString (' ':uchars (ustr op)++" ") }
 
 instance PPrintable AST_Object where
   pPrint expr = case expr of

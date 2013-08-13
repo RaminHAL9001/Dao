@@ -823,7 +823,9 @@ toplevelPTab = table expr <> comments <> scriptExpr where
     expect ("string literal or reference for \""++lbl++"\" statement") $ do
       let strlit = do
             tok <- token STRINGLIT id
-            return (AST_Literal (OString (asUStr tok)) (asLocation tok))
+            case readsPrec 0 (asString tok) of
+              [(sym, "")] -> return (AST_Literal (OString (ustr (sym::String))) (asLocation tok))
+              _           -> fail ("invalid string expression: "++show (asUStr tok))
       expr <- commented (mplus strlit reference)
       expect ("semicolon after \""++lbl++"\" statement") $ do
         endLoc <- tokenBy ";" asLocation

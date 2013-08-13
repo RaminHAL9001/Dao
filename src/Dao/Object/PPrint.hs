@@ -252,7 +252,7 @@ instance PPrintable AST_Script where
       pPrintComSubBlock (pString "try") cxcScrpXp
       if nil == unComment cUStr
         then  pPrint cUStr
-        else  pPrintSubBlock (pString "catch " >> pPrint cUStr) xcScrpXp
+        else  pPrintSubBlock (pString " " >> pString "catch " >> pPrint cUStr) xcScrpXp
     AST_ForLoop      cNm        cObjXp    xcScrpXp  _ ->
       pPrintSubBlock (pString "for " >> pPrint cNm >> pString " in " >> pPrint cObjXp) xcScrpXp
     AST_ContinueExpr contin     coms      cObjXp    _ -> pWrapIndent $

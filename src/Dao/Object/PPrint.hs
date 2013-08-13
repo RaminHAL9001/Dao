@@ -146,7 +146,7 @@ instance PrecedeWithSpace AST_Object where
     AST_ArraySub o _ _ _ -> precedeWithSpace o
     AST_FuncCall o _ _ _ -> precedeWithSpace o
     _                    -> True
-instance PrecedeWithSpace ArithOp1 where
+instance PrecedeWithSpace PrefixOp where
    precedeWithSpace o = case o of
      GLOBALPFX  -> True
      LOCALPFX   -> True
@@ -274,8 +274,8 @@ instance PPrintable AST_Script where
     AST_WithDoc      cObjXp               xcScrpXp  _ ->
       pPrintSubBlock (pString "with " >> pPrint cObjXp) xcScrpXp
 
-instance PPrintable ArithOp1  where { pPrint = pShow }
-instance PPrintable ArithOp2  where { pPrint = pShow }
+instance PPrintable PrefixOp  where { pPrint = pShow }
+instance PPrintable InfixOp  where { pPrint = pShow }
 instance PPrintable UpdateOp where { pPrint op = pString (' ':show op++" ") }
 
 instance PPrintable AST_Object where

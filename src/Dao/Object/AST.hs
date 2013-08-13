@@ -76,8 +76,8 @@ data AST_Object
   = AST_Void -- ^ Not a language construct, but used where an object expression is optional.
   | AST_Literal  Object                                                 Location
   | AST_Assign   AST_Object          (Com UpdateOp)         AST_Object  Location
-  | AST_Equation AST_Object          (Com ArithOp2)         AST_Object  Location
-  | AST_Prefix   ArithOp1                              (Com AST_Object) Location
+  | AST_Equation AST_Object          (Com InfixOp)         AST_Object  Location
+  | AST_Prefix   PrefixOp                              (Com AST_Object) Location
   | AST_Paren                                          (Com AST_Object) Location
   | AST_ArraySub AST_Object          [Comment]         [Com AST_Object] Location
   | AST_FuncCall AST_Object          [Comment]         [Com AST_Object] Location

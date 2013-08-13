@@ -134,13 +134,13 @@ instance Structured UpdateOp where
   dataToStruct = fromShowable
   structToData = fromUStrType allUpdateOpChars "assignment operator"
 
-instance Structured ArithOp1 where
+instance Structured PrefixOp where
   dataToStruct = fromShowable
-  structToData = fromUStrType allArithOp1Chars "unary prefix operator"
+  structToData = fromUStrType allPrefixOpChars "unary prefix operator"
   
-instance Structured ArithOp2 where
+instance Structured InfixOp where
   dataToStruct = fromShowable
-  structToData = fromUStrType allArithOp2Chars "binary infix operator"
+  structToData = fromUStrType allInfixOpChars "binary infix operator"
 
 instance Structured LambdaExprType where
   dataToStruct = fromShowable

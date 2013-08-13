@@ -453,17 +453,17 @@ instance UStrType UpdateOp where
     maybe (error (show str++" is not an assignment/update operator")) id (maybeFromUStr str)
 
 -- | Unary operators.
-data ArithOp1
+data PrefixOp
   = REF | DEREF | INVB  | NOT | NEGTIV | POSTIV | GLDOT -- ^ unary
   | GLOBALPFX | LOCALPFX | QTIMEPFX | STATICPFX
   deriving (Eq, Ord, Enum, Ix, Typeable, Show)
 
-allArithOp1Chars = "$@~!-+"
-allArithOp1Strs = " $ @ ~ - + ! "
+allPrefixOpChars = "$@~!-+"
+allPrefixOpStrs = " $ @ ~ - + ! "
 
-instance Bounded ArithOp1 where {minBound = REF; maxBound = NEGTIV}
+instance Bounded PrefixOp where {minBound = REF; maxBound = NEGTIV}
 
-instance UStrType ArithOp1 where
+instance UStrType PrefixOp where
   ustr op = ustr $ case op of
     REF    -> "$"
     DEREF  -> "@"
@@ -492,7 +492,7 @@ instance UStrType ArithOp1 where
   fromUStr str = maybe (error (show str++" is not a prefix opretor")) id (maybeFromUStr str)
 
 -- | Binary operators.
-data ArithOp2
+data InfixOp
   = ADD   | SUB   | MULT
   | DIV   | MOD   | POW
   | POINT | DOT   | OR
@@ -502,10 +502,10 @@ data ArithOp2
   | GTN   | LTN   | GTEQ  | LTEQ
   deriving (Eq, Ord, Enum, Ix, Typeable, Show)
 
-allArithOp2Chars = "+-*/%<>^&|."
-allArithOp2Strs = " + - * / % ** -> . || && == != | & ^ << >> < > <= >= "
+allInfixOpChars = "+-*/%<>^&|."
+allInfixOpStrs = " + - * / % ** -> . || && == != | & ^ << >> < > <= >= "
 
-instance UStrType ArithOp2 where
+instance UStrType InfixOp where
   ustr a = ustr $ case a of
     { ADD   -> "+" ; SUB  -> "-" ; MULT  -> "*"
     ; DIV   -> "/" ; MOD  -> "%" ; POW   -> "**"
@@ -527,7 +527,7 @@ instance UStrType ArithOp2 where
     }
   fromUStr str = maybe (error (show str++" is not an infix operator")) id (maybeFromUStr str)
 
-instance Bounded ArithOp2 where {minBound = ADD; maxBound = SHR}
+instance Bounded InfixOp where {minBound = ADD; maxBound = SHR}
 
 data LambdaExprType = FuncExprType | RuleExprType | PatExprType deriving (Eq, Ord, Enum, Typeable)
 instance Show LambdaExprType where
@@ -549,8 +549,8 @@ data ObjectExpr
   = VoidExpr
   | Literal       Object                                   Location
   | AssignExpr    ObjectExpr      UpdateOp     ObjectExpr  Location
-  | Equation      ObjectExpr      ArithOp2     ObjectExpr  Location
-  | PrefixExpr    ArithOp1        ObjectExpr               Location
+  | Equation      ObjectExpr      InfixOp     ObjectExpr  Location
+  | PrefixExpr    PrefixOp        ObjectExpr               Location
   | ParenExpr                     ObjectExpr               Location
   | ArraySubExpr  ObjectExpr     [ObjectExpr]              Location
   | FuncCall      ObjectExpr     [ObjectExpr]              Location

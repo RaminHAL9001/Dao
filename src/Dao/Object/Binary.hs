@@ -647,7 +647,7 @@ instance Binary TopLevelExpr where
         toplam typ = liftM3 (TopLambdaExpr typ) get get get
         evtexp typ = liftM2 (EventExpr     typ) get get
 
-instance Binary ArithOp1 where
+instance Binary PrefixOp where
   put o = putWord8 $ case o of
     REF    -> 0x91
     DEREF  -> 0x92
@@ -664,7 +664,7 @@ instance Binary ArithOp1 where
     0x96 -> return POSTIV
     _    -> fail "expecting prefix operator"
 
-instance Binary ArithOp2 where
+instance Binary InfixOp where
   put o = putWord8 $ case o of
     ADD   -> 0x9A
     SUB   -> 0x9B

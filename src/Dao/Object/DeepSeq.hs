@@ -60,8 +60,8 @@ instance NFData a => NFData (Com a) where
   rnf (ComAround a b c) = deepseq a $! deepseq b $! deepseq c ()
 
 instance NFData UpdateOp where { rnf a = seq a () }
-instance NFData ArithOp1 where { rnf a = seq a () }
-instance NFData ArithOp2 where { rnf a = seq a () }
+instance NFData PrefixOp where { rnf a = seq a () }
+instance NFData InfixOp where { rnf a = seq a () }
 instance NFData LambdaExprType where { rnf a = seq a () }
 instance NFData TypeID   where { rnf a = seq a () }
 instance NFData GlobUnit  where { rnf a = seq a () }

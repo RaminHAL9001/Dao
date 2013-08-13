@@ -151,7 +151,7 @@ daoTokenDef = do
   
   ------------------------------------------- OPERATORS -------------------------------------------
   operators    <- operatorTable $ words $ unwords $
-    [allUpdateOpStrs, allArithOp1Strs, allArithOp2Strs, ": ;"]
+    [allUpdateOpStrs, allPrefixOpStrs, allInfixOpStrs, ": ;"]
   -- trace ("operators: "++show operators) $ return ()
   
   ------------------------------------ DATE/TIME SPECIAL SYNTAX -----------------------------------
@@ -516,7 +516,7 @@ singletonOrContainer = joinEvalPTable singletonOrContainerPTab
 -- A constructor that basically re-arranges the arguments to the 'Dao.Object.AST.AST_Equation'
 -- constructor such that this function can be used as an argument to 'Dao.Parser.sinpleInfixed'
 -- or 'Dao.Parser.newOpTableParser'.
-equationConstructor :: AST_Object -> (Location, Com ArithOp2) -> AST_Object -> AST_Object
+equationConstructor :: AST_Object -> (Location, Com InfixOp) -> AST_Object -> AST_Object
 equationConstructor left (loc, op) right = AST_Equation left op right loc
 
 referencePTab :: DaoPTable AST_Object
@@ -532,7 +532,7 @@ referencePTab = table (map mkPar ["$", "@"]) <> labeled where
         (return initObj)
         (flip mplus singleton (reference >>= \o -> bufferComments >> return o))
         (liftM2 (,) (look1 asLocation) (commented (joinEvalPTable infixPTab)))
-  infixPTab :: DaoPTable ArithOp2
+  infixPTab :: DaoPTable InfixOp
   infixPTab = table $ flip fmap [".", "->"] $
     flip tableItemBy (return . fromUStr . tokTypeToUStr . asTokType)
 
@@ -623,7 +623,7 @@ object = joinEvalPTable objectPTab
 -- Parses a sequence of 'object' expressions interspersed with arithmetic infix opreators.
 -- All infixed logical operators are included, assignment operators are not. The only prefix logical
 -- operator. Logical NOT @(!)@ is not parsed here but in the 'arithmetic' function.
-arithOpTable :: OpTableParser DaoParState DaoTT (Location, Com ArithOp2) AST_Object
+arithOpTable :: OpTableParser DaoParState DaoTT (Location, Com InfixOp) AST_Object
 arithOpTable =
   newOpTableParser "arithmetic expression" False
     (\tok -> do

@@ -754,7 +754,7 @@ extractStringElems o = case o of
   OPair (a, b) -> concatMap extractStringElems [a, b]
   _            -> []
 
-prefixOps :: Array ArithOp1 (Object -> BuiltinOp)
+prefixOps :: Array PrefixOp (Object -> BuiltinOp)
 prefixOps = let o = (,) in array (minBound, maxBound) $
   [ o REF      eval_REF
   , o DEREF    eval_DEREF
@@ -764,7 +764,7 @@ prefixOps = let o = (,) in array (minBound, maxBound) $
   , o POSTIV   return
   ]
 
-infixOps :: Array ArithOp2 (Object -> Object -> BuiltinOp)
+infixOps :: Array InfixOp (Object -> Object -> BuiltinOp)
 infixOps = let o = (,) in array (minBound, maxBound) $
   [ o POINT evalSubscript
   , o DOT   eval_DOT

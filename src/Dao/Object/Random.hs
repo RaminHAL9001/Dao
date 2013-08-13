@@ -268,11 +268,11 @@ limRandObj = limSubRandO (OInt 0)
 instance HasRandGen UpdateOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::UpdateOp)))
 
-instance HasRandGen ArithOp1 where
-  randO = fmap toEnum (nextInt (1+fromEnum (maxBound::ArithOp1)))
+instance HasRandGen PrefixOp where
+  randO = fmap toEnum (nextInt (1+fromEnum (maxBound::PrefixOp)))
 
-instance HasRandGen ArithOp2 where
-  randO = fmap toEnum (nextInt (1+fromEnum (maxBound::ArithOp2)))
+instance HasRandGen InfixOp where
+  randO = fmap toEnum (nextInt (1+fromEnum (maxBound::InfixOp)))
 
 instance HasRandGen LambdaExprType where
   randO = fmap toEnum (nextInt 3)
@@ -311,7 +311,7 @@ randSingletonASTList = fmap (fmap (flip AST_Literal LocationUnknown)) randSingle
 randSingletonAST :: RandO AST_Object
 randSingletonAST = randOFromList randSingletonASTList
 
-randPrefixWith :: RandO AST_Object -> [ArithOp1] -> RandO AST_Object
+randPrefixWith :: RandO AST_Object -> [PrefixOp] -> RandO AST_Object
 randPrefixWith randGen ops = randOFromList $ randGen : fmap randOps ops where
   randOps op = do
     obj <- randGen >>= randCom
@@ -397,8 +397,8 @@ randObjectASTList =  randAssignExpr : randFuncHeaderList ++ randContainerList ++
 randObjectAST :: RandO AST_Object
 randObjectAST = randPrefixWith (randOFromList randObjectASTList) [INVB, NEGTIV]
 
-randArithOp2 :: RandO (Com ArithOp2, (Int, Bool))
-randArithOp2 = do
+randInfixOp :: RandO (Com InfixOp, (Int, Bool))
+randInfixOp = do
   (op, prec) <- randOFromList opGroups
   op         <- randCom op
   return (op, prec)
@@ -418,7 +418,7 @@ randArithOp2 = do
 randArithmetic :: RandO AST_Object
 randArithmetic = do
   o  <- randObjectAST
-  ox <- randListOf 0 4 (liftM2 (,) randObjectAST randArithOp2)
+  ox <- randListOf 0 4 (liftM2 (,) randObjectAST randInfixOp)
   return (fst $ loop 0 o ox)
   where
     bind right op left = AST_Equation right op left LocationUnknown

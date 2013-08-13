@@ -385,11 +385,9 @@ randContainerList =
   , liftM3 AST_Struct (randObjectASTVoid >>= randCom) (randList 0 30 >>= comAssignExprList >>= mapM randCom) no
   , liftM4 AST_Lambda randO (randArgsDef >>= randCom) randScriptExpr no
   , liftM2 (\coms dat -> AST_Data coms dat LocationUnknown) randComments $ do
-      spcs <- fmap ((+1) . (flip mod 8)) randInt
-      fmap concat $ replicateM spcs $ do
-        len <- fmap ((+1) . (flip mod 12)) randInt
-        dat <- fmap Bz.concat (replicateM len (fmap Db.encode randInt))
-        return (map (Com . ustr) $ b64Encode dat)
+      len <- fmap ((+1) . (flip mod 24)) randInt
+      dat <- fmap Bz.concat (replicateM len (fmap Db.encode randInt))
+      return (map (Com . ustr) $ b64Encode dat)
   ]
 
 randContainer :: RandO AST_Object

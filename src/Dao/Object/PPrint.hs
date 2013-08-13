@@ -89,8 +89,20 @@ instance PPrintable Object where
     OWord      o     -> pString (show o++"U")
     OLong      o     -> pString (show o++"L")
     OFloat     o     -> pString (show o++"f")
-    ORatio     o     -> pString ("ratio("++show (numerator o)++"/"++show (denominator o)++")")
-    OComplex  (r:+i) -> pString (show r++'+':show i++"j")
+    ORatio     o     ->
+      if denominator o == 1
+        then  pString (show (numerator o)++"R")
+        else  pWrapIndent $
+                [ pString "(", pString (show (numerator o))
+                , pString (show (denominator o)++"R"), pString ")"
+                ]
+    OComplex  (r:+i) ->
+      if r==0
+        then  pString (show i++"i")
+        else  pWrapIndent $
+                [ pString "(", pString (show r), unless (i<0) (pString "+")
+                , pString (show i++"i"), pString ")"
+                ]
     ODiffTime  o     -> pShow o
     OTime      o     -> pString ("date "++show o)
     OChar      o     -> pShow o

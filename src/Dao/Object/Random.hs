@@ -150,8 +150,8 @@ instance HasRandGen Object where
     , fmap OScript randO
       -- OBytes
     , do  i <- nextInt 10
-          fmap (OBytes . Bz.pack . map fromIntegral . concat) $
-            replicateM i (fmap (randToBase 256) randInt)
+          fmap (OBytes . Bz.concat) $
+            replicateM i (fmap (Db.encode . (\i -> fromIntegral i :: Word32)) randInt)
     ]
 
 instance HasRandGen TypeID where
@@ -382,11 +382,13 @@ randContainerList =
           3 -> f (\a b -> [b,a])
         items <- randList 0 30 >>= mapM randCom
         return (AST_Array idxExpr items LocationUnknown)
-  , liftM3 AST_Struct (randObjectASTVoid >>= randCom) (randList 0 30 >>= comAssignExprList >>= mapM randCom) no
+  , liftM3 AST_Struct (randObjectASTVoid >>= randCom)
+      (randListOf 0 30 randFuncHeader >>= comAssignExprList >>= mapM randCom) no
   , liftM4 AST_Lambda randO (randArgsDef >>= randCom) randScriptExpr no
   , liftM2 (\coms dat -> AST_Data coms dat LocationUnknown) randComments $ do
       len <- fmap ((+1) . (flip mod 24)) randInt
-      dat <- fmap Bz.concat (replicateM len (fmap Db.encode randInt))
+      dat <- fmap Bz.concat $
+        replicateM len (fmap (Db.encode . (\i -> fromIntegral i :: Word32)) randInt)
       return (map (Com . ustr) $ b64Encode dat)
   ]
 
@@ -394,10 +396,14 @@ randContainer :: RandO AST_Object
 randContainer = randOFromList randContainerList
 
 randObjectASTList :: [RandO AST_Object]
-randObjectASTList =  randAssignExpr : randContainerList ++ randSingletonASTList
+randObjectASTList =
+  [ randAssignExpr
+  , randPrefixWith (randOFromList complexObjData) [INVB, NEGTIV, POSTIV]
+  ] ++ complexObjData
+  where { complexObjData = randContainerList ++ randSingletonASTList }
 
 randObjectAST :: RandO AST_Object
-randObjectAST = randPrefixWith (randOFromList randObjectASTList) [INVB, NEGTIV]
+randObjectAST = randOFromList randObjectASTList
 
 randInfixOp :: RandO (Com InfixOp, (Int, Bool))
 randInfixOp = do

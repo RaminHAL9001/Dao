@@ -133,7 +133,7 @@ daoTokenDef = do
     , "global local qtime static"
     , "function func pattern pat rule BEGIN END EXIT"
     , "import require"
-    , "class new hash point vector matrix" -- reserved keywords, but they don't do anything yet.
+    , "class operator new hash point vector matrix" -- reserved keywords, but they don't do anything yet.
     ]
   let withKeyword key func = do
         tok <- getTokID key :: LexBuilderM DaoTT

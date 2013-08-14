@@ -93,7 +93,7 @@ instance PPrintable Object where
       if denominator o == 1
         then  pString (show (numerator o)++"R")
         else  pWrapIndent $
-                [ pString "(", pString (show (numerator o))
+                [ pString "(", pString (show (numerator o)), pString "/"
                 , pString (show (denominator o)++"R"), pString ")"
                 ]
     OComplex  (r:+i) ->
@@ -230,9 +230,7 @@ instance PPrintable AST_Script where
     AST_EvalObject   objXp  coms                    _ ->
       pPrint objXp >> mapM_ pPrint coms >> pString ";"
     AST_IfThenElse   coms   ifXp  thenXp  elseXp    _ -> do
-      case ifXp of
-        AST_Paren   obXp _ -> printIfXp obXp
-        _                  -> printIfXp ifXp
+      printIfXp ifXp
       case unComment elseXp of
         []                   -> return ()
         [p]                  -> case p of

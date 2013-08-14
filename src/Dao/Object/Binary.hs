@@ -647,21 +647,34 @@ instance Binary TopLevelExpr where
         toplam typ = liftM3 (TopLambdaExpr typ) get get get
         evtexp typ = liftM2 (EventExpr     typ) get get
 
+-- There are only 255 non-zero 8-bit prefixes available, I have reused a few here. To make it easier
+-- to remember, operators with the same string representation also have the same 8-bit serialization
+-- prefix.
 instance Binary PrefixOp where
   put o = putWord8 $ case o of
-    REF    -> 0x91
-    DEREF  -> 0x92
-    INVB   -> 0x93
-    NOT    -> 0x94
-    NEGTIV -> 0x95
-    POSTIV -> 0x96
+    REF       -> 0x91
+    DEREF     -> 0x92
+    INVB      -> 0x93
+    NOT       -> 0x94
+    GLOBALPFX -> 0x95
+    LOCALPFX  -> 0x96
+    QTIMEPFX  -> 0x97
+    STATICPFX -> 0x98
+    POSTIV    -> 0x9A -- same value as ADD
+    NEGTIV    -> 0x9B -- same value as SUB
+    GLDOT     -> 0xA2 -- same value as DOT
   get = getWord8 >>= \w -> case w of
     0x91 -> return REF
     0x92 -> return DEREF
     0x93 -> return INVB
     0x94 -> return NOT
-    0x95 -> return NEGTIV
-    0x96 -> return POSTIV
+    0x95 -> return GLOBALPFX
+    0x96 -> return LOCALPFX
+    0x97 -> return QTIMEPFX
+    0x98 -> return STATICPFX
+    0x9A -> return POSTIV -- same value as ADD
+    0x9B -> return NEGTIV -- same value as SUB
+    0xA2 -> return GLDOT  -- same value as DOT
     _    -> fail "expecting prefix operator"
 
 instance Binary InfixOp where

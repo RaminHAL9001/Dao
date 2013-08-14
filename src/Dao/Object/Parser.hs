@@ -128,12 +128,12 @@ daoTokenDef = do
   operatorTable (words "$ @ -> . ! - ~")
   daoKeywords <- keywordTable LABEL labelRX $ words $ unwords $
     [ "global local qtime static"
-    , "null false true data struct list set intmap dict array date time"
+    , "null false true data struct list set intmap dict array date time hash" -- hash is reserved
     , "if else for in while with try catch continue break return throw"
     , "global local qtime static"
     , "function func pattern pat rule BEGIN END EXIT"
     , "import require"
-    , "class operator new hash point vector matrix" -- reserved keywords, but they don't do anything yet.
+    , "class operator public private new" -- other reserved keywords, but they don't do anything yet.
     ]
   let withKeyword key func = do
         tok <- getTokID key :: LexBuilderM DaoTT

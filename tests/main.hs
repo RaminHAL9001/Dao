@@ -55,7 +55,9 @@ import           Text.Printf
 
 import           System.IO
 import           System.Environment
-import Debug.Trace
+
+import           Debug.Trace
+
 ----------------------------------------------------------------------------------------------------
 
 type TestRun a = ReaderT TestEnv IO a
@@ -115,8 +117,8 @@ data TestConfig
 defaultTestConfig =
   TestConfig
   { doTestParser     = True
-  , doTestSerializer = False
-  , doTestStructizer = False
+  , doTestSerializer = True
+  , doTestStructizer = True
   , doCompareParsed  = False
   , maxRecurseDepth  = 5
   , displayInterval  = 4000000
@@ -145,17 +147,22 @@ main = do
     catches (writeFile "./test.cfg" (show defaultTestConfig)) $ errHandler $ \msg -> do
       hPutStrLn stderr ("Error: failed to open file \"./test.cfg\" for writing, "++msg)
     return defaultTestConfig
-  multiThreaded config
+  i <-  catches (readFile "./testid" >>= readIO) $ errHandler $ \msg -> do
+          hPutStrLn stderr ("Warning: could not read file \"./testid\", "++show msg)
+          return 0
+    -- dont bother reading the test ID file if the test IDs have been specified on the command line
+  hPutStrLn stderr ("Starting at test ID #"++show i)
+  let reportEnabled msg fn =
+        hPutStrLn stderr (msg++" testing is "++(if fn config then "enabled" else "disabled"))
+  reportEnabled "Parser" doTestParser
+  reportEnabled "Serialization" doTestSerializer
+  reportEnabled "Structure" doTestStructizer
+  multiThreaded config i
 
 ----------------------------------------------------------------------------------------------------
 
-multiThreaded :: TestConfig -> IO ()
-multiThreaded config = do
-  i <-  catches (readFile "./testid" >>= readIO) $ errHandler $ \msg -> do
-          hPutStrLn stderr ("Warning: could not read file \"./testid\", "++show msg)
-          hPutStrLn stderr "Warning: startig at test ID #0"
-          return 0
-    -- dont bother reading the test ID file if the test IDs have been specified on the command line
+multiThreaded :: TestConfig -> Int -> IO ()
+multiThreaded config i = do
   ch       <- newEmptyMVar
   notify   <- newEmptyMVar
   errcount <- newMVar 0
@@ -176,7 +183,7 @@ multiThreaded config = do
         , testConfig        = config
         }
   workThreads <- replicateM (threadCount config) $ forkIO (runReaderT testThread testEnv)
-  iterThread  <- forkIO $ runReaderT (iterLoop 0) testEnv
+  iterThread  <- forkIO $ runReaderT (iterLoop i) testEnv
   dispThread  <- forkIO (forever $ threadDelay (displayInterval config) >> runReaderT displayInfo testEnv)
   catches (runReaderT ctrlLoop testEnv) (errHandlerMessage "exception in main control loop")
   killThread dispThread >> killThread iterThread
@@ -297,14 +304,62 @@ sep = "-------------------------------------------------------------------------
 
 ----------------------------------------------------------------------------------------------------
 
+-- There are actually two kinds of object tests I need to perform. First is the ordinary parser
+-- test, which generates a random, syntactically correct abstract syntax tree in such a way that the
+-- pretty-printed AST object will can be parsed back to exactly the same AST object. The second kind
+-- of test simply generates a random object, not an AST, and tests if it's pretty-printed form can
+-- be parsed without errors. For both types of object, serialization and strcutization are tested.
+data RandObj
+  = RandTopLevel AST_TopLevel
+  | RandObject   Object
+  deriving (Eq, Show)
+instance HasRandGen RandObj where
+  randO = do
+    i <- nextInt 2
+    if i==0 then fmap RandTopLevel randO else fmap RandObject randO
+instance PPrintable RandObj where
+  pPrint o = case o of
+    RandTopLevel o -> pPrint o
+    RandObject   o -> pPrint o
+instance Binary RandObj where
+  put o = case o of
+    RandTopLevel o -> case toInterm o of
+      [ ] -> fail "could not convert AST object to intermediate data for serialization"
+      [o] -> putWord8 0x01 >> B.put o
+      ox  -> fail $ concat $
+        [ "converting AST object to intermediate for serialization"
+        , " evaluated to multiple ambiguous data structures"
+        ]
+    RandObject   o -> putWord8 0x02 >> B.put o
+  get = do
+    w <- getWord8
+    case w of
+      0x01 -> B.get >>= \o -> case fromInterm o of
+        []  -> fail "could not convert deserialized intermediate object to AST"
+        [o] -> return (RandTopLevel o)
+        ox  -> fail $ concat $
+          [ "deserializing intermediate object to AST evaluated"
+          , " to mulitple ambiguous data structures"
+          ]
+      0x02 -> fmap RandObject   B.get
+      _    -> fail "Test program failed while trying to de-serialize it's own test data"
+instance Structured RandObj where
+  dataToStruct o = deconstruct $ case o of
+    RandTopLevel o -> putDataAt "ast" o
+    RandObject   o -> putDataAt "obj" o
+  structToData = reconstruct $ msum
+    [ fmap RandTopLevel (getDataAt "ast")
+    , fmap RandObject   (getDataAt "obj")
+    , fail "Test program failed while trying to structure it's own test data"
+    ]
+
 data TestCase
   = TestCase
     { testCaseID       :: Int
-    , originalObject   :: AST_TopLevel
+    , originalObject   :: RandObj
     , parseString      :: Maybe UStr
     , serializedObject :: Maybe B.ByteString
     , structuredObject :: Maybe T_tree
-    , originalInterm   :: Maybe [TopLevelExpr]
     , testResult       :: UStr
     , failedTestCount  :: Int
     }
@@ -339,18 +394,16 @@ reportTest tc =
 newTestCase :: Int -> TestRun TestCase
 newTestCase i = do
   cfg <- asks testConfig
-  let maxDepth = maxRecurseDepth cfg
-  let obj = genRandWith randO maxDepth i
-  let intermObj = toInterm obj
+  let maxDepth      = maxRecurseDepth cfg
+  let obj           = genRandWith randO maxDepth i
   let setup isSet o = if isSet cfg then Just o else Nothing
   return $
     TestCase
     { testCaseID       = i
     , originalObject   = obj
     , parseString      = setup doTestParser     $ ustr (showPPrint 80 "    " (pPrint obj))
-    , serializedObject = setup doTestSerializer $ B.encode intermObj
+    , serializedObject = setup doTestSerializer $ B.encode     obj
     , structuredObject = setup doTestStructizer $ dataToStruct obj
-    , originalInterm   = setup doTestStructizer $ intermObj
     , testResult       = nil
     , failedTestCount  = 0
     }
@@ -391,17 +444,32 @@ tryTest tc getTestItem testFunc = ask >>= \env -> case getTestItem tc of
 checkTestCase :: TestCase -> TestRun Bool
 checkTestCase tc = ask >>= \env -> do
   ------------------- (0) Canonicalize the original object ------------------
-  tc <- case canonicalize (originalObject tc) of
-    [o] -> return (tc{originalObject=o})
-    [ ] -> error "could not canonicalize original object"
-    ox  -> error "original object canonicalized to multiple possible values"
+  tc <- case originalObject tc of
+    RandTopLevel o -> case canonicalize o of
+      [o] -> return (tc{originalObject = RandTopLevel o})
+      [ ] -> error "could not canonicalize original object"
+      ox  -> error "original object canonicalized to multiple possible values"
+    RandObject   _ -> return tc
+  --
   --------------------------- (1) Test the parser ---------------------------
-  tc <- tryTest tc parseString $ \str -> do
-    case parse daoGrammar mempty (uchars str)  of
-    -- case (par, msg) = {-# SCC par #-} runParser (regexMany space >> parseDirective) str of
+  tc <- tryTest tc parseString $ \str -> case originalObject tc of
+    RandObject   orig -> case parse (daoGrammar{mainParser=equation}) mempty (uchars str) of
+      -- For ordinary Objects, we only test if the pretty-printed code can be parsed.
+      Backtrack -> failTest tc "Parser backtrackd"
+      PFail   b -> failTest tc (show b)
+      OK      _ -> return tc
+    RandTopLevel orig -> case parse daoGrammar mempty (uchars str) of
+      -- For AST objects, we also test if the data structure parsed is identical to the data
+      -- structure that was pretty-printed.
+      Backtrack -> failTest tc "Parser backtrackd"
+      PFail   b -> failTest tc (show b)
       OK      o -> do
-        let ~diro  = fmap delLocation (directives o)
-            ~match = diro == [originalObject tc]
+        let ~diro  = do -- clean up the parsed input a bit
+              o <- directives o
+              case o of
+                AST_TopComment [] -> []
+                o                 -> [delLocation o]
+            ~match = diro == [orig]
         if not (doCompareParsed (testConfig env)) || match
           then  passTest tc
           else  
@@ -410,40 +478,34 @@ checkTestCase tc = ask >>= \env -> do
               , case diro of
                   []  -> ["(Empty AST)"]
                   [o] -> [prettyPrint 80 "    " o, show o]
-                  ox  -> ["(Returned multiple AST items)"]++
-                    (ox >>= \o -> [prettyPrint 80 "    " o, show o])
+                  ox  -> concat $
+                    [ ["(Returned multiple AST items)"]
+                    , zip [1..] ox >>= \ (i, o) ->
+                        ["Parsed item #"++show i++":", prettyPrint 80 "    " o, show o, sep]
+                    ]
               ]
-      Backtrack -> failTest tc "Parser backtrackd"
-      PFail   b -> failTest tc (show b)
   --
   ------------------------- (2) Test the serializer -------------------------
-  tc <- tryTest tc (\tc -> liftM2 (,) (serializedObject tc) (originalInterm tc)) $ \binObjPair ->
-    case binObjPair of
-      (_, []   ) -> failTest tc $
-        "Evaluated to null when converting the AST to an intermediate structure"
-      (bin, [obj]) -> do
-        unbin <- liftIO $ catches (return $ Right $ B.decode bin) $
-          errTryCatch "binary deserialization failed"
-        case unbin of
-          Left  msg   -> failTest tc (uchars msg)
-          Right unbin ->
-            if obj==unbin
-              then  passTest tc
-              else
-                failTest tc $ unwords $
+  tc <- tryTest tc serializedObject $ \binObj -> do
+    unbin <- liftIO $ catches (return $ Right $ B.decode binObj) $
+      errTryCatch "binary deserialization failed"
+    case unbin of
+      Left  msg   -> failTest tc (uchars msg) :: TestRun TestCase
+      Right unbin ->
+        if unbin == originalObject tc
+          then  passTest tc
+          else  failTest tc $ unlines $
                   [ "Original object does not match object deserialized from binary string"
-                  , "Received bytes:", showBinary bin
+                  , "Received bytes:", showBinary binObj
                   , "Deserialied object:"
                   , prettyPrint 80 "    " unbin
                   ]
-      (_, ox) -> failTest tc $ unlines $
-        ["Evaluating the AST to it's intermediate form yielded multiple possible results:"
-        , unlines (map ((++(sep++"\n")) . prettyPrint 80 "    ") ox)
-        ]
   --
   ---------------- (3) Test the intermediate tree structures ----------------
   tc <- tryTest tc  structuredObject $ \obj ->
-    case structToData obj :: PValue UpdateErr AST_TopLevel of
+    case structToData obj :: PValue UpdateErr RandObj of
+      Backtrack -> failTest tc "Backtracked while constructing a Haskell object from a Dao tree"
+      PFail   b -> failTest tc (show b)
       OK struct ->
         if originalObject tc == struct
           then
@@ -452,8 +514,6 @@ checkTestCase tc = ask >>= \env -> do
               , prettyPrint 80 "    " struct
               ]
           else  passTest tc
-      Backtrack -> failTest tc "Backtracked while constructing a Haskell object from a Dao tree"
-      PFail   b -> failTest tc (show b)
   --
   ------------------------------ Report results -----------------------------
   liftIO (reportTest tc)

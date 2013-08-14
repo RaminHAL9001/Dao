@@ -504,12 +504,17 @@ checkTestCase tc = ask >>= \env -> do
   ---------------- (3) Test the intermediate tree structures ----------------
   tc <- tryTest tc  structuredObject $ \obj ->
     case structToData obj :: PValue UpdateErr RandObj of
-      Backtrack -> failTest tc "Backtracked while constructing a Haskell object from a Dao tree"
-      PFail   b -> failTest tc (show b)
-      OK struct ->
+      Backtrack          -> failTest tc $
+        "Backtracked while constructing a Haskell object from a Dao tree"
+      PFail (addr, node) -> failTest tc $ unlines $
+        [ "Structuring failed on address:"
+        , intercalate "." (map uchars addr)++" = "
+        , prettyPrint 80 "    " node
+        ]
+      OK          struct ->
         if originalObject tc == struct
           then
-            failTest tc $ unwords $
+            failTest tc $ unlines $
               [ "Original object does not match Haskell object constructed from it's Dao tree"
               , prettyPrint 80 "    " struct
               ]

@@ -189,6 +189,15 @@ instance Read TypeID where
     "bytes"   -> [BytesType]
     _         -> []
 
+instance UStrType TypeID where
+  ustr = ustr . show
+  maybeFromUStr a = case readsPrec 0 (uchars a) of
+    [(o, "")] -> Just o
+    _         -> Nothing
+  fromUStr a = case maybeFromUStr a of
+    Nothing -> error (show a++" is not a valid type identifier")
+    Just  a -> a
+
 oBool :: Bool -> Object
 oBool a = if a then OTrue else ONull
 
@@ -543,6 +552,14 @@ instance Read LambdaExprType where
     "pattern"  -> [PatExprType]
     "pat"      -> [PatExprType]
     _          -> []
+instance UStrType LambdaExprType where
+  ustr = ustr . show
+  maybeFromUStr a = case readsPrec 0 (uchars a) of
+    [(a, "")] -> Just a
+    _         -> Nothing
+  fromUStr a = case maybeFromUStr a of
+    Nothing -> error (show a++" is not a valid lambda expression type")
+    Just  a -> a
 
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr

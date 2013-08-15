@@ -53,6 +53,7 @@ data AST_TopLevel
 data AST_Script
   = AST_Comment                   [Comment]
   | AST_EvalObject   AST_Object   [Comment]                                         Location
+    -- ^ some.object.expression = for.example - equations || function(calls) /**/ ;
   | AST_IfThenElse   [Comment]    AST_Object  (Com [AST_Script]) (Com [AST_Script]) Location
     -- ^ @if /**/ objExpr /**/ {} /**/ else /**/ if /**/ {} /**/ else /**/ {} /**/@
   | AST_TryCatch     (Com [AST_Script])       (Com UStr)              [AST_Script]  Location

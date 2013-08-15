@@ -31,7 +31,8 @@ import           Dao.Tree
 import           Dao.Predicate
 import           Dao.Object.Math
 
-import           Data.Maybe (fromMaybe)
+import           Data.Monoid
+import           Data.List (intercalate)
 import           Data.Word
 import           Data.Int
 import           Data.Ratio
@@ -39,53 +40,98 @@ import qualified Data.Map    as M
 import qualified Data.IntMap as I
 import qualified Data.Set    as S
 
+import           Control.Applicative
 import           Control.Monad
+import           Control.Monad.Identity
 import           Control.Monad.State
 import           Control.Monad.Error
 
 import Debug.Trace
 
-type UpdateErr = ([Name], Object)
-
--- | Can be used with 'Dao.Predicate.fmapFailed' to get an error message expressed as an
--- 'Dao.Object.Object' value.
-objFromUpdateErr :: UpdateErr -> Object
-objFromUpdateErr err = OList [ostr "at address", ORef (GlobalRef (fst err)), snd err]
+----------------------------------------------------------------------------------------------------
 
 class Structured a where
   dataToStruct :: a -> Tree Name Object
   structToData :: Tree Name Object -> PValue UpdateErr a
 
-newtype Update a = Update { updateToPTrans :: PTrans UpdateErr (State (Tree Name Object)) a }
+----------------------------------------------------------------------------------------------------
+
+-- | If an error occurs while stepping through the branches of a tree, you can throw an error with
+-- this information using 'Control.Monad.Error.throwError'.
+data UpdateErr
+  = UpdateErr
+    { updateErrMsg  :: Maybe UStr -- ^ the message explaining why the error ocurred.
+    , updateErrAddr :: [UStr]     -- ^ the address at which the error was thrown.
+    , updateErrTree :: T_tree     -- ^ the sub-tree at the address at which the error was thrown.
+    }
+instance Show UpdateErr where
+  show err = concat $
+    [ "constructor failed" ++ maybe " " ((++"\n") . (": "++) . uchars) (updateErrMsg err)
+    , "at index: ", intercalate "." (fmap uchars (updateErrAddr err))
+    ]
+
+-- | This is the fundamental data type for Dao's foreign interface. This monad is used to convert
+-- data types in your Haskell program into a form that can be manipulated by Dao scripts.
+--
+-- Essentially, this is a simple zipper monad for traversing 'Dao.Object.T_tree' objects, which are 'Dao.Tree.Tree's with
+-- 'Dao.String.UStr's on the branches and 'Dao.Object.Object's on the leaves (nodes).
+newtype Update a = Update { updateToPTrans :: PTrans UpdateErr (UpdateTreeT Name Object Identity) a }
+instance Monad Update where
+  (Update fn) >>= mfn = Update (fn >>= updateToPTrans . mfn)
+  return a = Update (return a)
+  fail msg = newUpdateErr (Just msg) >>= throwError
+instance Functor Update where
+  fmap fn (Update a) = Update (fmap fn a)
+instance MonadPlus Update where
+  mzero = Update mzero
+  mplus (Update a) (Update b) = Update (mplus a b)
+instance MonadState (Tree UStr Object) Update where
+  get = Update $ PTrans $ gets focus >>= return . OK
+  put tree = Update $ PTrans $ modify (\st -> st{focus=tree}) >> return (OK ())
+instance MonadError UpdateErr Update where
+  throwError = Update . throwError
+  catchError (Update func) catcher = Update (catchError func (updateToPTrans . catcher))
+instance MonadPlusError UpdateErr Update where
+  catchPValue (Update func) = Update (catchPValue func)
+  assumePValue = Update . assumePValue
+instance Applicative Update where { pure = return; (<*>) = ap; }
+instance Alternative Update where { empty = mzero; (<|>) = mplus; }
+instance Monoid a => Monoid (Update a) where
+  mempty      = return mempty
+  mappend a b = liftM2 mappend a b
+
+-- | If you would like to create a detailed error message, create an error using the current
+-- information, then throw it using 'Control.Monad.Error.throwError'.
+newUpdateErr :: Maybe String -> Update UpdateErr
+newUpdateErr msg = Update (lift get) >>= \st -> return (err st) where
+  err st =
+    UpdateErr
+    { updateErrMsg  = fmap ustr msg
+    , updateErrAddr = reverse $ fmap fst $ history st
+    , updateErrTree = focus st
+    }
+
+updateError :: Update ig
+updateError = newUpdateErr Nothing >>= throwError
+
+-- | Goto an address. This 'Update' never fails, even if the address does not exist. Immediately
+-- returns the sub-tree to which we traversed.
+goto :: [Name] -> Update T_tree
+goto path = Update (lift (Dao.Tree.goto path))
+
+-- | Go up one node level.
+back :: Update ()
+back = Update (lift Dao.Tree.back)
+
+-- | Go to the root node.
+home :: Update ()
+home = Update (lift Dao.Tree.home)
 
 -- | Like 'Control.Monad.StateT.runStateT', evaluates the 'Update' monad as a pure function,
 -- returning a pair containing first the 'Dao.Predicate.PValue' of that was returned and second the
 -- updated 'Dao.Tree.Tree'.
 runUpdate :: Update a -> Tree Name Object -> (PValue UpdateErr a, Tree Name Object)
-runUpdate upd tree = runState (runPTrans (updateToPTrans upd)) tree
-
-instance Monad Update where
-  (Update fn) >>= mfn = Update (fn >>= updateToPTrans . mfn)
-  return a = Update (return a)
-
-instance Functor Update where
-  fmap fn (Update a) = Update (fmap fn a)
-
-instance MonadPlus Update where
-  mzero = Update mzero
-  mplus (Update a) (Update b) = Update (mplus a b)
-
-instance MonadState (Tree UStr Object) Update where
-  get = Update $ PTrans $ get >>= return . OK
-  put st = Update $ PTrans $ put st >> return (OK ())
-
-instance MonadError ([Name], Object) Update where
-  throwError = Update . throwError
-  catchError (Update func) catcher = Update (catchError func (updateToPTrans . catcher))
-
-instance MonadPlusError ([Name], Object) Update where
-  catchPValue (Update func) = Update (catchPValue func)
-  assumePValue = Update . assumePValue
+runUpdate upd = runUpdateTree (runPTrans (updateToPTrans upd))
 
 -- | Update a data type in the 'Structured' class using an 'Update' monadic function.
 onStruct :: Structured a => Update ig -> a -> PValue UpdateErr a
@@ -103,16 +149,6 @@ deconstruct fn = snd (runUpdate fn Void)
 reconstruct :: Update a -> Tree Name Object -> PValue UpdateErr a
 reconstruct fn tree = fst (runUpdate fn tree)
 
--- | Like 'Dao.Predicate.maybeToBacktrack', if the function parameter is 'Nothing' this monad
--- evaluates to 'Dao.Predicate.Backtrack' (except wrapped in the 'Udpate' monad).
-maybeToUpdate :: Maybe a -> Update a
-maybeToUpdate = Update . pvalue . maybeToBacktrack
-
--- | Like 'Dao.Predicate.pvalue', evaluates this monad to the 'Dao.Predicate.PValue' predicate value
--- you specify and wraps it up in the 'Update' monad.
-updatePValue :: PValue UpdateErr a -> Update a
-updatePValue = Update . pvalue
-
 ----------------------------------------------------------------------------------------------------
 -- $Fundamentals
 -- These are the most important functions for building instances of 'Structured'.
@@ -121,21 +157,28 @@ updatePValue = Update . pvalue
 -- node is empty, so it can be used to check if an item exists at the current node as well. This
 -- function is the counter operation of 'place'.
 this :: Update Object
-this = get >>= maybeToUpdate . getLeaf
+this = get >>= maybe mzero return . getLeaf
 
 -- | Same as 'atAddress' but but more convenient as it takes just one string and passes it to
 -- 'atAddress' as @['Dao.String.ustr' address]@. This function is the counter operation of itself.
 -- In other words, @'with' addr putFunc@ is the counter operation of @'with' addr getFunc@ where
 -- @getFunc@ and @putFunc@ are any function which are counter operations of each other.
+tryWith :: String -> Update a -> Update a
+tryWith = atAddress . (:[]) . ustr
+
+-- | Like 'tryWith' but throws fails if nothing exists at the given address.
 with :: String -> Update a -> Update a
-with = atAddress . (:[]) . ustr
+with addr upd = mplus (tryWith addr upd) updateError
+
+-- | Use 'structToData' to construct data from the current node. This function is the counter
+-- operation of 'putData'. 'Dao.Predicate.Backtrack's if the current node is 'Dao.Tree.Void'.
+tryGetData :: Structured a => Update a
+tryGetData = get >>= assumePValue . structToData
 
 -- | Use 'structToData' to construct data from the current node. This function is the counter
 -- operation of 'putData'. 'Dao.Predicate.Backtrack's if the current node is 'Dao.Tree.Void'.
 getData :: Structured a => Update a
-getData = get >>= \tree -> case tree of
-  Void -> mzero
-  tree -> updatePValue (structToData tree)
+getData = mplus tryGetData updateError
 
 -- | Like 'getData' but takes a default value as a parameter, and if the current 'Dao.Tree.Tree'
 -- node returned by 'Control.Monad.State.get' is 'Dao.Tree.Void', the default parameter is returned.
@@ -145,6 +188,9 @@ getOptional opt = mplus getData (return opt)
 -- | Shortcut for @'with' addr 'getData'@. This function is the counter operation of 'putDataAt'.
 getDataAt :: Structured a => String -> Update a
 getDataAt addr = with addr getData
+
+tryGetDataAt :: Structured a => String -> Update a
+tryGetDataAt addr = tryWith addr tryGetData
 
 -- | Place an object at in current node. This function is the counter opreation of 'this'.
 place :: Object -> Update ()
@@ -180,32 +226,27 @@ putObjAt = modify . alterData . const . Just
 putTree :: Tree Name Object -> Update ()
 putTree = modify . union
 
--- | Same as 'peekAddress' but more convenient as it takes just one string and passes it to
--- 'atAddress' as @['Dao.String.ustr' address]@.
-peek :: String -> Update Object
-peek addr = peekAddress [ustr addr]
-
 -- | Modify or write a new a data structure at a given address using the given 'Update' function.
 atAddress :: [Name] -> Update a -> Update a
-atAddress nm doUpdate = mapPFail (\ (names, obj) -> (nm++names, obj)) $
-  Update $ PTrans $ state $ alterNodeWith (runUpdate doUpdate) nm
+atAddress path doUpdate = do
+  Dao.Struct.goto path
+  a <- doUpdate
+  sequence_ (fmap (const Dao.Struct.back) path)
+  return a
 
 -- | Goes to a given address and tries to return the value stored at that node,
 -- 'Dao.Predicate.Backtrack's if nothing is there.
 peekAddress :: [Name] -> Update Object
 peekAddress addr = atAddress addr this
 
--- | Report a failure with an 'Dao.Object.Object' value that occurred at the current address.
-updateFailed :: Object -> String -> Update ig
-updateFailed obj msg = updatePValue $ PFail ([], obj)
-
 ----------------------------------------------------------------------------------------------------
 -- $Helpers
 -- Here are some handy helper functions for common data types which you can use to construct your
 -- own 'dataToStruct' and 'structToData' instances of 'Structured'.
 
-putStringData :: String -> Update ()
-putStringData = putData . ustr
+putUStrData :: UStrType str => str -> Update ()
+putUStrData s =
+  let u = ustr s in place (if ulength u == 1 then OChar (head (uchars u)) else OString u)
 
 getUStrData :: UStrType str => str -> Update UStr
 getUStrData msg = do
@@ -213,7 +254,7 @@ getUStrData msg = do
   case a of
     OString a -> return a
     OChar   c -> return (ustr [c])
-    _         -> updateFailed a ("was expecting a string for constructing a "++uchars (ustr msg)++" object")
+    _         -> fail ("was expecting a string for constructing a "++uchars (ustr msg)++" object")
 
 getIntegerData :: Integral a => String -> Update a
 getIntegerData msg = do
@@ -222,7 +263,7 @@ getIntegerData msg = do
     OLong a -> return (fromIntegral a)
     OInt  a -> return (fromIntegral a)
     OWord a -> return (fromIntegral a)
-    _ -> updateFailed a ("was expecting an integer value for constructing a "++msg++" object")
+    _ -> fail ("was expecting an integer value for constructing a "++msg++" object")
 
 getBoolData :: String -> String -> String -> Update Bool
 getBoolData msg tru fals = do
@@ -240,7 +281,7 @@ getBoolData msg tru fals = do
     OInt i -> return (i/=0)
     OWord i -> return (i/=0)
     OLong i -> return (i/=0)
-    _ -> updateFailed a $ concat $
+    _ -> fail $ concat $
       [ "was expecting a boolean value ("
       , show tru, " or ", fals
       , ") for constructing ", msg, " object"
@@ -262,7 +303,7 @@ instance Structured UStr where
     a <- this
     case a of
       OString a -> return a
-      _         -> updateFailed a "expecing string constant"
+      _         -> fail "expecing string constant"
 
 instance Structured Bool where
   dataToStruct a = deconstruct $ place (if a then OTrue else ONull)
@@ -293,12 +334,12 @@ instance Structured StructChar where
   dataToStruct (StructChar c) = deconstruct (place (OChar c))
   structToData = reconstruct $ this >>= \c -> case c of
     OChar c -> return (StructChar c)
-    _       -> updateFailed c "singleton character"
+    _       -> fail "singleton character"
 
 instance Structured (Ratio Integer) where
   dataToStruct a = deconstruct (place (OPair (OLong (numerator a), OLong (denominator a))))
   structToData = reconstruct $ this >>= \a -> case a of
-    OPair (a, b) -> updatePValue $
+    OPair (a, b) -> assumePValue $
       objToIntegral a >>= \a -> objToIntegral b >>= \b -> return (a % b)
 
 instance Structured a => Structured [a] where
@@ -307,9 +348,9 @@ instance Structured a => Structured [a] where
     o <- this
     case o of
       OList ox -> forM ox $ \o -> case o of
-        OTree o -> updatePValue $ structToData o
-        _ -> updateFailed o "was expecting structured data in each list item"
-      _ -> updateFailed o "was expecting a list object"
+        OTree o -> assumePValue $ structToData o
+        _ -> fail "was expecting structured data in each list item"
+      _ -> fail "was expecting a list object"
 
 instance Structured (Tree Name Object) where
   dataToStruct a = deconstruct $ place (OTree a)
@@ -317,7 +358,7 @@ instance Structured (Tree Name Object) where
     o <- this
     case o of
       OTree o -> return o
-      _       -> updateFailed o $
+      _       -> fail $
         "was expecting an 'OTree' object containing structured data to construct "
 
 -- | It might be useful to have a general instantiation of polymorphic 'Dao.Tree.Tree' types where
@@ -326,14 +367,14 @@ instance Structured (Tree Name Object) where
 -- if you want to use the more default instantiation for 'Structured'izing 'Dao.Tree.Tree's so you
 -- don't have to write your own, you can wrap your tree in this @newtype@ and use it with 'getData'
 -- and 'putData' like so:
--- @instance Structured MyKey@
--- @instance Structured MyVal@
--- 
--- @putMyTree :: 'Dao.Tree.Tree' MyKey MyVal -> 'Update' ()@
--- @putMyTree myTree = putData (StructuredTree myTree)@
---
--- @getMyTree :: 'Update' ('Dao.Tree.Tree' MyKey MyVal)@
--- @getMyTree = fmap fromStructuredTree getData@
+-- > instance 'Structured' MyKey { 'structToData' = .... ; 'dataToStruct' = .... ; }
+-- > instance 'Structured' MyVal { 'structToData' = .... ; 'dataToStruct' = .... ; }
+-- >
+-- > putMyTree :: 'Dao.Tree.Tree' MyKey MyVal -> 'Update' ()
+-- > putMyTree myTree = 'putData' (StructuredTree MyKey MyVal)
+-- >
+-- > getMyTree :: 'Update' ('Dao.Tree.Tree' MyKey MyVal)
+-- > getMyTree = 'Control.Monad.fmap' 'fromStructuredTree' 'getData'
 newtype StructuredTree a b = StructuredTree { fromStructuredTree :: Tree a b }
 instance (Ord a, Structured a, Structured b) => Structured (StructuredTree a b) where
   dataToStruct (StructuredTree a) = deconstruct $ case a of
@@ -348,7 +389,7 @@ instance (Ord a, Structured a, Structured b) => Structured (StructuredTree a b) 
       b <- getDataAt "branch"
       return (Just (M.map fromStructuredTree (fromStructuredMap b)))
     case (a, b) of
-      (Nothing, Nothing) -> updateFailed (OTree Void) "structured tree"
+      (Nothing, Nothing) -> fail "structured tree"
       (Just  a, Nothing) -> return (StructuredTree (Leaf a))
       (Nothing, Just b) -> return (StructuredTree (Branch b))
       (Just  a, Just b) -> return (StructuredTree (LeafBranch a b))
@@ -364,8 +405,8 @@ instance (Ord a, Structured a, Structured b) => Structured (StructuredMap a b) w
       OList ax -> do
         ax <- forM ax $ \a -> case a of
           OPair (OTree a, OTree b) ->
-            liftM2 (,) (updatePValue $ structToData a) (updatePValue $ structToData b)
-          a                        -> updateFailed a "structured map item"
+            liftM2 (,) (assumePValue $ structToData a) (assumePValue $ structToData b)
+          a                        -> fail "structured map item"
         return (StructuredMap (M.fromList ax))
-      _        -> updateFailed ax "list of map items"
+      _        -> fail "list of map items"
 

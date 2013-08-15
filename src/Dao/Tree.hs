@@ -21,17 +21,20 @@
 
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 module Dao.Tree where
 
+import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Identity
+import           Control.Monad.Trans
+import           Control.Monad.State
 
 import           Data.Typeable
 import           Data.Monoid
-import           Data.Maybe (fromMaybe)
 import           Data.List (intercalate)
-import           Data.Binary
+-- import           Data.Binary
 import qualified Data.Map as M
 import           Data.Word
 
@@ -76,14 +79,6 @@ instance (Ord p, Monoid a) => Monoid (Tree p a) where
   mempty  = Void
   mappend = unionWith mappend
 
--- | If the given node is a 'Leaf' or 'LeafBranch', returns the Leaf portion of the node.
-getLeaf :: Tree p a -> Maybe a
-getLeaf t = case t of { Leaf a -> Just a; LeafBranch a _ -> Just a; _ -> Nothing }
-
--- | If the given node is a 'Branch' or 'LeafBranch', returns the branch portion of the node.
-getBranch :: Tree p a -> Maybe (M.Map p (Tree p a))
-getBranch t = case t of { Branch b -> Just b; LeafBranch _ b -> Just b; _ -> Nothing }
-
 -- | A combinator to modify the data in the 'Leaf' and 'LeafBranch' nodes of a tree when passed to
 -- one of the functions below.
 type ModLeaf     a = Maybe a -> Maybe a
@@ -92,24 +87,109 @@ type ModLeaf     a = Maybe a -> Maybe a
 -- one of the functions below.
 type ModBranch p a = Maybe (M.Map p (Tree p a)) -> Maybe (M.Map p (Tree p a))
 
--- | A combinator to modify whole nodes, be they 'Leaf's or 'Branch'es, when passed to one of the
--- functions below.
-type ModTree   p a = Maybe (Tree p a) -> Maybe (Tree p a)
+-- | If a 'Tree' is 'Void' or a contains a branch that is equivalent to 'Data.Map.empty',
+-- 'Data.Maybe.Nothing' is returned.
+notVoid :: Tree p a -> Maybe (Tree p a)
+notVoid t = case t of
+  Void                      -> Nothing
+  Branch       b | M.null b -> Nothing
+  LeafBranch a b | M.null b -> Just (Leaf a)
+  _                         -> Just t
+
+-- | If the given node is a 'Leaf' or 'LeafBranch', returns the Leaf portion of the node.
+getLeaf :: Tree p a -> Maybe a
+getLeaf t = case t of { Leaf a -> Just a; LeafBranch a _ -> Just a; _ -> Nothing }
+
+-- | If the given node is a 'Branch' or 'LeafBranch', returns the branch portion of the node.
+getBranch :: Tree p a -> Maybe (M.Map p (Tree p a))
+getBranch t = case t of { Branch b -> Just b; LeafBranch _ b -> Just b; _ -> Nothing }
 
 -- | Use a 'ModLeaf' function to insert, update, or remove 'Leaf' and 'LeafBranch' nodes.
 alterData :: ModLeaf a -> Tree p a -> Tree p a
-alterData alt t = fromMaybe Void $ case t of
-  Void           -> alt Nothing        >>= \o -> Just (Leaf o)
-  Leaf       o   -> alt (Just o)       >>= \o -> Just (Leaf o)
-  Branch       b -> msum [alt Nothing  >>= \o -> Just (LeafBranch o b), Just (Branch b)]
-  LeafBranch o b -> msum [alt (Just o) >>= \o -> Just (LeafBranch o b), Just (Branch b)]
+alterData alt t = maybe Void id $ case t of
+  Void           -> alt Nothing         >>= \o -> Just (Leaf o)
+  Leaf       o   -> alt (Just o)        >>= \o -> Just (Leaf o)
+  Branch       b -> mplus (alt Nothing  >>= \o -> Just (LeafBranch o b)) (Just (Branch b))
+  LeafBranch o b -> mplus (alt (Just o) >>= \o -> Just (LeafBranch o b)) (Just (Branch b))
 
 alterBranch :: (Eq p, Ord p) => ModBranch p a -> Tree p a -> Tree p a
-alterBranch alt t = fromMaybe Void $ case t of
-  Void           -> alt Nothing        >>= \b -> Just (Branch b)
-  Leaf       o   -> msum [alt Nothing  >>= \b -> Just (LeafBranch o b), Just (Leaf o)]
-  Branch       b -> alt (Just b)       >>= \b -> Just (Branch b)
-  LeafBranch o b -> msum [alt (Just b) >>= \b -> Just (LeafBranch o b), Just (Leaf o)]
+alterBranch alt t = maybe Void id $ case t of
+  Void           -> alt Nothing         >>= \b -> Just (Branch b)
+  Leaf       o   -> mplus (alt Nothing  >>= \b -> Just (LeafBranch o b)) (Just (Leaf o))
+  Branch       b -> alt (Just b)        >>= \b -> Just (Branch b)
+  LeafBranch o b -> mplus (alt (Just b) >>= \b -> Just (LeafBranch o b)) (Just (Leaf o))
+
+----------------------------------------------------------------------------------------------------
+
+data ZipTree p n = ZipTree{ focus :: Tree p n, history :: [(p, Tree p n)] }
+
+newtype UpdateTreeT p n m a = UpdateTreeT{ getUpdateTreeStateT :: StateT (ZipTree p n) m a }
+type UpdateTree p n a = UpdateTreeT p n Identity a
+
+instance Monad m =>
+  Monad (UpdateTreeT p n m) where
+    return = UpdateTreeT . return
+    (UpdateTreeT a) >>= b = UpdateTreeT (a >>= getUpdateTreeStateT . b)
+instance Functor m =>
+  Functor (UpdateTreeT p n m) where { fmap f (UpdateTreeT m) = UpdateTreeT (fmap f m); }
+instance (Monad m, Functor m) =>
+  Applicative (UpdateTreeT p n m) where { pure = return; (<*>) = ap; }
+instance Monad m =>
+  MonadState (ZipTree p n) (UpdateTreeT p n m) where { state = UpdateTreeT . state; }
+instance MonadTrans (UpdateTreeT p n) where { lift m = UpdateTreeT (lift m); }
+
+runUpdateTree :: Ord p => UpdateTreeT p n Identity a -> Tree p n -> (a, Tree p n)
+runUpdateTree updfn = runIdentity . runUpdateTreeT updfn
+
+-- | Update a 'Tree' using an 'UpdateTreeT' monad, much like how 'Control.Monad.State.runStateT'
+-- works. Evaluates to a monadic computation of the lifted type @m@ that 'Control.Monad.return's a
+-- pair containing the value last 'Control.Monad.return'ed to the lifted monad and the updated
+-- 'Tree'.
+runUpdateTreeT :: (Ord p, Functor m, Monad m) => UpdateTreeT p n m a -> Tree p n -> m (a, Tree p n)
+runUpdateTreeT updfn tree = fmap (fmap focus) $
+  runStateT (getUpdateTreeStateT (updfn >>= \a -> home >> return a)) (ZipTree{focus=tree, history=[]})
+
+-- | Go to the node with the given path. If the path does not exist, it is created.
+goto :: (Ord p, Monad m) => [p] -> UpdateTreeT p n m (Tree p n)
+goto path = case path of
+  []       -> gets focus
+  (p:path) -> do
+    st <- get
+    let step tree = put $ st{focus=Void, history=(p, focus st):history st}
+    case getBranch (focus st) >>= M.lookup p of
+      Nothing   -> step Void
+      Just tree -> step tree
+    goto path
+
+-- | Go up one level in the tree, storing the current sub-tree into the upper tree, unless the
+-- current tree is 'Void', in which case it is deleted from the upper tree.
+back :: (Ord p, Monad m) => UpdateTreeT p n m ()
+back = modify $ \st -> case history st of
+  []             -> st
+  (p, tree):hist ->
+    st{ history = hist
+      , focus   = flip alterBranch tree $ \branch -> flip mplus (fmap (M.delete p) branch) $ do
+          subTree <- notVoid (focus st)
+          fmap (M.insert p subTree) (mplus branch (return mempty))
+      }
+
+-- | Returns 'Prelude.True' if we are at the top level of the tree.
+atTop :: (Functor m, Monad m) => UpdateTreeT p n m Bool
+atTop = fmap Prelude.null (gets history)
+
+-- | Go back to the top level of the tree.
+home :: (Ord p, Functor m, Monad m) => UpdateTreeT p n m ()
+home = atTop >>= flip unless (back >> home)
+
+-- | Return the current path.
+getPath :: (Ord p, Functor m, Monad m) => UpdateTreeT p n m [p]
+getPath = fmap (reverse . fmap fst) (gets history)
+
+----------------------------------------------------------------------------------------------------
+
+-- | A combinator to modify whole nodes, be they 'Leaf's or 'Branch'es, when passed to one of the
+-- functions below.
+type ModTree   p a = Maybe (Tree p a) -> Maybe (Tree p a)
 
 -- | Alter a 'Tree' node at a given path with a function that returns a secondary value. This
 -- function is designed to be used with 'Control.Monad.State.StateT'.
@@ -123,7 +203,7 @@ alterNodeWithM alt px tree = loop 0 alt px tree where
   altSub i p (result, subTree) = return $ (,) result $ case subTree of
     Void    -> flip alterBranch tree $ \branch ->
       branch >>= return . M.delete p >>= \branch -> guard (not (M.null branch)) >> return branch
-    subTree -> alterBranch (return . (M.insert p subTree) . fromMaybe M.empty) tree
+    subTree -> alterBranch (return . (M.insert p subTree) . maybe M.empty id) tree
 
 alterNodeWith :: Ord p => (Tree p a -> (b, Tree p a)) -> [p] -> Tree p a -> (b, Tree p a)
 alterNodeWith alt px t = runIdentity $ alterNodeWithM (\t -> return (alt t)) px t
@@ -136,15 +216,6 @@ alterNodeM alt px t = alterNodeWithM (\t -> alt t >>= \t -> return ((), t)) px t
 alterNode :: Ord p => (Tree p a -> Tree p a) -> [p] -> Tree p a -> Tree p a
 alterNode alt px t = runIdentity $ alterNodeM (return . alt) px t
 
--- | If a 'Tree' is 'Void' or a contains a branch that is equivalent to 'Data.Map.empty',
--- 'Data.Maybe.Nothing' is returned.
-notVoid :: Tree p a -> Maybe (Tree p a)
-notVoid t = case t of
-  Void                      -> Nothing
-  Branch       b | M.null b -> Nothing
-  LeafBranch a b | M.null b -> Just (Leaf a)
-  _                         -> Just t
-
 -- | Alter a 'Tree', but not like 'Data.Map.alter'. First, the given path is used to traverse 'Tree'
 -- nodes, and *every* node traversed is altered by the given 'ModTree' function (not just the node
 -- at the end of the path). At the end of the path the given 'ModLeaf' function is evaluated to
@@ -152,7 +223,7 @@ notVoid t = case t of
 -- functions are all defined as special cases of this function. If you need a function that works
 -- more like 'Data.Map.alter', use 'alterNode'.
 alter :: Ord p => ModLeaf a -> ModTree p a -> [p] -> Tree p a -> Tree p a
-alter leaf tree px t = fromMaybe Void (loop px (Just t)) where
+alter leaf tree px t = maybe Void id (loop px (Just t)) where
   loop px t = case px of
     []   -> tree t >>= Just . alterData leaf >>= notVoid
     p:px -> tree t >>= notVoid . alterBranch (subAlt p px)
@@ -221,34 +292,6 @@ type MergeType p a
   -> M.Map p (Tree p a)
   -> M.Map p (Tree p a)
 
--- | Used by 'merge' and 'graft' to determine how to merge branches of trees together.
-oldunion :: Ord p => MergeType p a
-oldunion = M.unionWith
-
--- | Used by 'merge' and 'graft' to determine how to merge branches of trees together.
-oldintersection :: Ord p => MergeType p a
-oldintersection = M.intersectionWith
-
--- | Merge two trees together.
-oldmerge
-  :: Ord p
-  => MergeType p a -- ^ is either 'union', 'intersection'.
-  -> (a -> a -> a) -- ^ the function to use when combining 'Leaf' or 'LeafBranch' nodes.
-  -> Tree p a -> Tree p a -> Tree p a
-oldmerge joinWith combine t u = case (t, u) of
-  (Void          , u             ) -> u
-  (t             , Void          ) -> t
-  (Leaf       x  , Leaf       y  ) -> Leaf (combine x y)
-  (Branch       a, Branch       b) -> Branch (joinWith op a b)
-  (Branch       b, Leaf       y  ) -> LeafBranch y b
-  (Leaf       x  , Branch       b) -> LeafBranch x b
-  (LeafBranch x b, Leaf       y  ) -> LeafBranch (combine x y) b
-  (LeafBranch x a, Branch       b) -> LeafBranch x (joinWith op a b)
-  (Leaf       x  , LeafBranch y b) -> LeafBranch (combine x y) b
-  (Branch       a, LeafBranch y b) -> LeafBranch y (joinWith op a b)
-  (LeafBranch x a, LeafBranch y b) -> LeafBranch (combine x y) (joinWith op a b)
-  where { op = oldmerge joinWith combine }
-
 -- | Merge two trees together.
 mergeWithKey :: Ord p => ([p] -> Maybe a -> Maybe b -> Maybe c) -> (Tree p a -> Tree p c) -> (Tree p b -> Tree p c) -> Tree p a -> Tree p b -> Tree p c
 mergeWithKey overlap leftOnly rightOnly left right = loop [] left right where
@@ -261,7 +304,7 @@ mergeWithKey overlap leftOnly rightOnly left right = loop [] left right where
       LeafBranch y b -> rightOnly (LeafBranch y b)
     Leaf       x   -> case right of
       Void           -> leftOnly  (Leaf       x  )
-      Leaf       y   -> fromMaybe Void (fmap Leaf (overlap px (Just x) (Just y)))
+      Leaf       y   -> maybe Void id (fmap Leaf (overlap px (Just x) (Just y)))
       Branch       b -> leafbranch (Just x) Nothing  M.empty b
       LeafBranch y b -> leafbranch (Just x) (Just y) M.empty b
     Branch       a -> case right of
@@ -330,21 +373,9 @@ differenceWith overlap = differenceWithKey (\ _ -> overlap)
 difference :: Ord p => Tree p a -> Tree p b -> Tree p a
 difference = differenceWith (\ _ _ -> Nothing)
 
--- | Like 'merge', but performs the merge on the branch at the address of one tree.
-oldgraft
-  :: Ord p
-  => MergeType p a -- ^ is either 'union', 'intersection'.
-  -> (a -> a -> a) -- ^ the function to use to combine 'Leaf' and 'LeafBranch' nodes.
-  -> [p]           -- ^ the path of the branch to which to apply the 'merge'.
-  -> Tree p a      -- ^ the tree which that above path will seek through.
-  -> Tree p a      -- ^ the tree to apply to the branch of the above tree.
-  -> Tree p a
-oldgraft joinWith combine px t u =
-  alter id (\t -> notVoid (oldmerge joinWith combine (fromMaybe Void t) u)) px t
-
 -- | Like 'mergeWithKey', but updates a node at a given address.
 graft :: Ord p => (Tree p a -> Tree p a -> Tree p a) -> [p] -> Tree p a -> Tree p a -> Tree p a
-graft updTree addr a b = alter id (notVoid . updTree a . fromMaybe Void) addr b
+graft updTree addr a b = alter id (notVoid . updTree a . maybe Void id) addr b
 
 -- | Remove a branch from the tree.
 prune :: Ord p => [p] -> Tree p a -> Tree p a
@@ -383,7 +414,7 @@ mapNodesMaybeM
   -> m (Tree q b)
 mapNodesMaybeM bnf lef t = case t of
   Void           -> return Void
-  Leaf       a   -> lef a >>= \a -> return (fromMaybe Void (fmap Leaf a))
+  Leaf       a   -> lef a >>= \a -> return (maybe Void id (fmap Leaf a))
   Branch       m -> fmap Branch (branch m)
   LeafBranch a m -> lef a >>= \b -> branch m >>= \n -> return $ case b of
     Nothing -> if M.null n then Void   else Branch n

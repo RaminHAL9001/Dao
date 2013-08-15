@@ -64,7 +64,8 @@ type TestRun a = ReaderT TestEnv IO a
 
 -- | This data strcture derives 'Prelude.Read' so the test program can be configured from a plain
 -- text file. All of these tests randomly generate objects using the "Dao.Object.Random" module, so
--- this module is also being tested.
+-- this module is also being tested, as well as the "Dao.Object.Parser", "Dao.Object.Binary", and
+-- "Dao.Object.Struct".
 data TestConfig
   = TestConfig
     { doTestParser      :: Bool
@@ -348,8 +349,8 @@ instance Structured RandObj where
     RandTopLevel o -> putDataAt "ast" o
     RandObject   o -> putDataAt "obj" o
   structToData = reconstruct $ msum
-    [ fmap RandTopLevel (getDataAt "ast")
-    , fmap RandObject   (getDataAt "obj")
+    [ fmap RandTopLevel (tryGetDataAt "ast")
+    , fmap RandObject   (tryGetDataAt "obj")
     , fail "Test program failed while trying to structure it's own test data"
     ]
 
@@ -504,14 +505,10 @@ checkTestCase tc = ask >>= \env -> do
   ---------------- (3) Test the intermediate tree structures ----------------
   tc <- tryTest tc  structuredObject $ \obj ->
     case structToData obj :: PValue UpdateErr RandObj of
-      Backtrack          -> failTest tc $
+      Backtrack -> failTest tc $
         "Backtracked while constructing a Haskell object from a Dao tree"
-      PFail (addr, node) -> failTest tc $ unlines $
-        [ "Structuring failed on address:"
-        , intercalate "." (map uchars addr)++" = "
-        , prettyPrint 80 "    " node
-        ]
-      OK          struct ->
+      PFail err -> failTest tc $ unlines [ show err, prettyPrint 80 "    " obj]
+      OK struct ->
         if originalObject tc == struct
           then
             failTest tc $ unlines $

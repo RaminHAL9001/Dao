@@ -57,10 +57,22 @@ import Debug.Trace
 ----------------------------------------------------------------------------------------------------
 
 allStrings :: [Object] -> PValue UpdateErr [UStr]
-allStrings ox = forM (zip (iterate (+1) 0) ox) $ \ (i, o) -> case o of
+allStrings ox = forM (zip [0..] ox) $ \ (i, o) -> case o of
   OString o -> return o
-  _         ->
-    PFail ([], OList [ostr "in list, item number", OWord i, ostr "must be a string value"])
+  OChar   c -> return (ustr [c])
+  _         -> fail ("in list, item number "++show i++" must be a string value")
+
+putUStrList :: [UStr] -> Update ()
+putUStrList = place . OList . map OString 
+
+getUStrList :: Update [UStr]
+getUStrList = do
+  ls <- this
+  case ls of
+    OList ls -> assumePValue (allStrings ls)
+    ls       -> fail "expecting a list of strings of base64-encoded data"
+
+----------------------------------------------------------------------------------------------------
 
 instance Structured Comment where
   dataToStruct a = case a of
@@ -75,16 +87,16 @@ instance Structured Comment where
       OPair (msg, OString a)
         | msg == ostr "inline"  -> return (InlineComment  a)
         | msg == ostr "endline" -> return (EndlineComment a)
-        | otherwise             -> nope (OString a)
-      _         -> nope a
-    where { nope a = updateFailed a "must be a comment string or typed comment string" }
+        | otherwise             -> nope
+      _         -> nope
+    where { nope = fail "must be a comment string or typed comment string" }
 
 instance Structured a => Structured (Com a) where
   dataToStruct a = deconstruct $ case a of
     Com         c   -> putData c
-    ComBefore b c   -> putData c >> com "Before" b
-    ComAfter    c a -> putData c >> com "After"  a
-    ComAround b c a -> putData c >> com "Before" b >> com "After" a
+    ComBefore b c   -> putData c >> com "before" b
+    ComAfter    c a -> putData c >> com "after"  a
+    ComAround b c a -> putData c >> com "before" b >> com "after" a
     where { com msg = putDataAt ("comments"++msg) }
   structToData = reconstruct $ do
     c <- getData
@@ -100,55 +112,37 @@ putComments :: [Comment] -> Update ()
 putComments coms = if null coms then return () else putDataAt "comments" coms
 
 getComments :: Update [Comment]
-getComments = mplus (getDataAt "comments") (return [])
+getComments = mplus (tryGetDataAt "comments") (return [])
 
-fromShowable :: Show a => a -> T.Tree Name Object
-fromShowable = T.Leaf . OString . ustr . show
+ustrToStruct :: UStrType a => a -> T.Tree Name Object
+ustrToStruct = deconstruct . place . ostr
 
-fromUStrType :: UStrType a => [Char] -> String -> T.Tree Name Object -> PValue UpdateErr a
-fromUStrType chrs msg = reconstruct $ do
-  let msg = "an "++msg++" expressed as a string value"
-      asChar o = case o of
-        OChar c | elem c chrs -> return [c]
-        _ -> mzero
+structToUStr :: UStrType a => String -> T.Tree Name Object -> PValue UpdateErr a
+structToUStr msg = reconstruct $ do
   a <- getUStrData msg
   case maybeFromUStr a of
-    Just  o -> return o
-    Nothing -> updateFailed (ostr a) ("was expecting "++msg)
-
-fromReadableOrChars :: Read a => [Char] -> String -> T.Tree Name Object -> PValue UpdateErr a
-fromReadableOrChars chrs msg = reconstruct $ do
-  let msg = "an "++msg++" expressed as a string value"
-      asChar o = case o of
-        OChar c | elem c chrs -> return [c]
-        _ -> mzero
-  a <- getUStrData msg
-  case readsPrec 0 (uchars a) of
-    [(o, "")] -> return o
-    _         -> updateFailed (ostr a) ("was expecting "++msg)
-
-fromReadable :: Read a => String -> T.Tree Name Object -> PValue UpdateErr a
-fromReadable = fromReadableOrChars ""
+    Just  a -> return a
+    Nothing -> fail ("was expecting "++msg)
 
 instance Structured UpdateOp where
-  dataToStruct = fromShowable
-  structToData = fromUStrType allUpdateOpChars "assignment operator"
+  dataToStruct = ustrToStruct
+  structToData = structToUStr "assignment operator"
 
 instance Structured PrefixOp where
-  dataToStruct = fromShowable
-  structToData = fromUStrType allPrefixOpChars "unary prefix operator"
+  dataToStruct = ustrToStruct
+  structToData = structToUStr "unary prefix operator"
   
 instance Structured InfixOp where
-  dataToStruct = fromShowable
-  structToData = fromUStrType allInfixOpChars "binary infix operator"
+  dataToStruct = ustrToStruct
+  structToData = structToUStr "binary infix operator"
 
 instance Structured LambdaExprType where
-  dataToStruct = fromShowable
-  structToData = fromReadable "type of lambda expression"
+  dataToStruct = ustrToStruct
+  structToData = structToUStr "type of lambda expression"
 
 instance Structured TypeID   where
-  dataToStruct = fromShowable
-  structToData = fromReadable "type identifier"
+  dataToStruct = ustrToStruct
+  structToData = structToUStr "type identifier"
 
 -- This instance never places data in the immediate ('Data.Struct.this') node, so it is safe to call
 -- 'putData' on a value of type 'Data.Token.Location' even if you have already placed data in the
@@ -156,7 +150,7 @@ instance Structured TypeID   where
 instance Structured Location where
   dataToStruct loc = case loc of
     LocationUnknown  -> T.Void
-    Location _ _ _ _ -> deconstruct $ do
+    Location _ _ _ _ -> deconstruct $ with "location" $ do
       with "from" $ do
         with "line"   (place $ OWord $ fromIntegral $ startingLine   loc)
         with "column" (place $ OWord $ fromIntegral $ startingColumn loc)
@@ -166,112 +160,88 @@ instance Structured Location where
       else  with "to"   $ do
               with "line"   (place $ OWord $ fromIntegral $ endingLine     loc)
               with "column" (place $ OWord $ fromIntegral $ endingColumn   loc)
-  structToData = reconstruct $ flip mplus (return LocationUnknown) $ do
+  structToData = reconstruct $ flip mplus (return LocationUnknown) $ tryWith "location" $ do
     let getPos = liftM2 (,) (getDataAt "line") (getDataAt "column")
     (a,b) <- with "from" getPos
-    flip mplus (return (Location a b a b)) $ do
+    flip mplus (return (Location a b a b)) $ tryWith "to" $ do
       (c,d) <- getPos
       return (Location a b c d)
-
--- optionally put a location
-optPutLoc :: Location -> Update ()
-optPutLoc loc = case loc of
-  LocationUnknown -> return ()
-  loc             -> with "location" (putData loc)
 
 instance Structured AST_Object where
   dataToStruct a = deconstruct $ case a of
     AST_Void               -> return ()
-    AST_Literal      a     loc -> with "literal" (place a >> putData loc)
-    AST_Assign   a b c loc -> with "assign" $
-      putDataAt "to" a >> putDataAt "op" b >> putData c >> putData loc
-    AST_Equation     a b c loc -> with "equation" $
-      putData a >> putDataAt "op" b >> putDataAt "next" c >> putData loc
-    AST_Prefix   a b   loc -> with "prefix" $
-      putDataAt "op" a >> putData b >> putData loc
-    AST_Paren    a     loc -> with "paren" (putData a >> putData loc)
-    AST_ArraySub a b c loc -> with "subscript" $
-      putDataAt "bounds" a >> putComments b >> putData c >> putData loc
-    AST_FuncCall     a b c loc -> with "funcCall" $
-      putData a >> putComments b >> putDataAt "arguments" c >> putData loc
-    AST_Dict     a b c loc -> with "container" $
-      putData a >> putComments b >> putDataAt "arguments" c >> putData loc
-    AST_Array    a b   loc -> with "container" $
-      putData (ustr "array") >> putDataAt "bounds" a >> putDataAt "arguments" b >> putData loc
-    AST_Struct   a b   loc -> with "container" $
-      putData (ustr "struct") >> putData a >> putDataAt "arguments" b >> putData loc
-    AST_Data     a b   loc -> with "container" $
-      putData (ustr "data") >> putComments a >> putDataAt "arguments" b >> putData loc
-    AST_Lambda   a b c loc -> with "container" $
-      putData (ustr (show a)) >> putDataAt "arguments" b >> putDataAt "script" c >> putData loc
-    AST_MetaEval a     loc -> with "metaEval" $ putData a >> putData loc
+    AST_Literal  a     loc -> with "object"    $ place              a                                                  >> putData loc
+    AST_Assign   a b c loc -> with "assign"    $ putDataAt "to"     a  >> putDataAt "op"     b >> putDataAt "from"   c >> putData loc
+    AST_Equation a b c loc -> with "equation"  $ putDataAt "left"   a  >> putDataAt "op"     b >> putDataAt "right"  c >> putData loc
+    AST_Prefix   a b   loc -> with "prefix"    $ putDataAt "op"     a  >> putDataAt "right"  b                         >> putData loc
+    AST_Paren    a     loc -> with "paren"     $ putDataAt "inner"  a                                                  >> putData loc
+    AST_ArraySub a b c loc -> with "subscript" $ putDataAt "header" a  >> putComments        b >> putDataAt "params" c >> putData loc
+    AST_FuncCall a b c loc -> with "funcCall"  $ putDataAt "header" a  >> putComments        b >> putDataAt "params" c >> putData loc
+    AST_MetaEval a     loc -> with "metaEval"  $ putDataAt "inner"  a                                                  >> putData loc
+    AST_Data     a b   loc -> with "data"      $ putComments        a  >> putUStrList (map unComment b)                >> putData loc
+    AST_Dict     a b c loc -> with "container" $ place (ostr        a) >> putComments        b >> putDataAt "params" c >> putData loc
+    AST_Array    a b   loc -> with "container" $ place (ostr  "array") >> putDataAt "bounds" a >> putDataAt "params" b >> putData loc
+    AST_Struct   a b   loc -> with "container" $ place (ostr "struct") >> putData            a >> putDataAt "params" b >> putData loc
+    AST_Lambda   a b c loc -> with "container" $ place (ostr        a) >> putDataAt "params" b >> putDataAt "script" c >> putData loc
   structToData = reconstruct $ msum $
-    [ with "literal"   $ liftM2 AST_Literal   getData getData
-    , with "assign"    $ liftM4 AST_Assign   (getDataAt "to") (getDataAt "op")  getData              getData
-    , with "equation"  $ liftM4 AST_Equation  getData         (getDataAt "op") (getDataAt "next")    getData
-    , with "prefix"    $ liftM3 AST_Prefix   (getDataAt "op")  getData          getData
-    , with "paren"     $ liftM2 AST_Paren     getData                                                getData
-    , with "subscript" $ liftM4 AST_ArraySub (getDataAt "bounds") (getComments)     getData getData
-    , with "funcCall"  $ liftM4 AST_FuncCall  getData (getComments) (getDataAt "arguments") getData
-    , with "container" $ do
+    [ tryWith "object"    $ liftM2 AST_Literal   this                                                       getData
+    , tryWith "assign"    $ liftM4 AST_Assign   (getDataAt "to")    (getDataAt "op")   (getDataAt "from")   getData
+    , tryWith "equation"  $ liftM4 AST_Equation (getDataAt "left")  (getDataAt "op")   (getDataAt "right")  getData
+    , tryWith "prefix"    $ liftM3 AST_Prefix   (getDataAt "op")    (getDataAt "right")                     getData
+    , tryWith "paren"     $ liftM2 AST_Paren    (getDataAt "inner")                                         getData
+    , tryWith "subscript" $ liftM4 AST_ArraySub (getDataAt "header") getComments        getData             getData
+    , tryWith "funcCall"  $ liftM4 AST_FuncCall (getDataAt "header") getComments       (getDataAt "params") getData
+    , tryWith "metaEval"  $ liftM2 AST_MetaEval (getDataAt "inner")                                         getData
+    , tryWith "data"      $ liftM3 AST_Data      getComments        (fmap (fmap Com) getUStrList)           getData
+    , tryWith "container" $ do
         kind <- fmap uchars $ getUStrData "constructor type"
-        let mkDict = liftM3 (AST_Dict (ustr kind)) (getComments) (getDataAt "arguments") getData
+        let mkDict = liftM3 (AST_Dict (ustr kind)) (getComments) (getDataAt "params") getData
         case kind of
-          kind | kind=="set" || kind=="list" || kind=="dict" || kind=="intmap" -> mkDict
-          "array"  -> liftM3 AST_Array (getDataAt "bounds") (getDataAt "arguments") getData
-          "struct" -> liftM3 AST_Struct getData (getDataAt "arguments") getData
-          "data"   -> liftM3 AST_Data   (getComments) (getDataAt "arguments") getData
-          kind -> case readsPrec 0 kind of
-            [(kind, "")] -> liftM3 (AST_Lambda kind) (getDataAt "arguments") (getDataAt "script") getData
-            _ -> updateFailed (ostr kind) "unknown type of object expression contructor"
-    , with "metaEval"  $ liftM2 AST_MetaEval getData getData
-    , mplus this (return ONull) >>= \o -> updateFailed o "object expression"
+          kind | elem kind (words "set list dict intmap") -> mkDict
+          "array"  -> liftM3 AST_Array  (getDataAt "bounds") (getDataAt "params") getData
+          "struct" -> liftM3 AST_Struct  getData             (getDataAt "params") getData
+          kind     -> case maybeFromUStr (ustr kind) of
+            Just kind -> liftM3 (AST_Lambda kind) (getDataAt "params") (getDataAt "script") getData
+            Nothing   -> fail "unknown type of object expression contructor"
+    , fail "object expression"
     ]
 
 instance Structured AST_Script where
   dataToStruct a = deconstruct $ case a of
-    AST_Comment      a           -> with "notes" $ putData a
-    AST_EvalObject   a b     loc -> with "eval" $
-      putData a >> putComments b >> putData loc
-    AST_IfThenElse   a b c d loc -> with "if" $
-      putComments a >> putData b >> putDataAt "then" c >> putDataAt "else" d >> putData loc
-    AST_TryCatch     a b c   loc -> with "try" $ do
+    AST_Comment      a           -> putComments a
+    AST_EvalObject   a b     loc -> with "equation" $  putComments          b                                                                         >> putData loc
+    AST_IfThenElse   a b c d loc -> with "if"       $  putComments          a >> putDataAt "condition" b >> putDataAt "then"  c >> putDataAt "else" d >> putData loc
+    AST_TryCatch     a b c   loc -> with "try"      $ do
       putData a
       if unComment b == nil then return () else putDataAt "varName" b >> putDataAt "catch" c
       putData loc
-    AST_ForLoop      a b c   loc -> with "for" $
-      putDataAt "varName" a >> putData b >> putDataAt "script" c >> putData loc
-    AST_WhileLoop    a b     loc -> with "while" $
-      putData a >> putDataAt "script" b >> putData loc
-    AST_ContinueExpr a b c   loc -> with (if a then "continue" else "break") $
-      putComments b >> putData c >> putData loc
-    AST_ReturnExpr   a b     loc -> with (if a then "return" else "throw") $
-      putData b >> putData loc
-    AST_WithDoc      a b     loc -> with "with" $
-      putData a >> putDataAt "script" b >> putData loc
+    AST_ForLoop      a b c   loc -> with "for"      $ putDataAt "varName"   a >> putDataAt "iterator" b >> putDataAt "script" c                       >> putData loc
+    AST_WhileLoop    a b     loc -> with "while"    $ putDataAt "iterator"  a >> putDataAt "script"   b                                               >> putData loc
+    AST_ContinueExpr a b c   loc -> with (if a then "continue" else "break") $ putComments b            >> putData c                                  >> putData loc
+    AST_ReturnExpr   a b     loc -> with (if a then "return"   else "throw") $ putData     b                                                          >> putData loc
+    AST_WithDoc      a b     loc -> with "with"     $ putDataAt "reference" a >> putDataAt "script"   b                                               >> putData loc
   structToData = reconstruct $ msum $
-    [ with "eval"  $ liftM3 AST_EvalObject getData (getComments) getData
-    , with "if"    $
-        liftM5 AST_IfThenElse (getComments) getData (getDataAt "then") (getDataAt "else") getData
-    , with "try"   $ do
-        script <- getData
-        str <- getDataAt "varName"
-        catch <- if unComment str == nil then return [] else getDataAt "catch"
-        loc <- getData
+    [ fmap AST_Comment getComments
+    , tryWith "equation" $ liftM3 AST_EvalObject (getDataAt "equation")   getComments                                                  getData
+    , tryWith "if"       $ liftM5 AST_IfThenElse  getComments            (getDataAt "condition") (getDataAt "then") (getDataAt "else") getData
+    , tryWith "try"      $ do
+        script <- getDataAt "script"
+        str    <- getDataAt "varName"
+        catch  <- if unComment str == nil then return [] else getDataAt "catch"
+        loc    <- getData
         return (AST_TryCatch script str catch loc)
-    , with "for"   $ liftM4 AST_ForLoop (getDataAt "varName") getData (getDataAt "script") getData
-    , with "while" $ liftM3 AST_WhileLoop getData (getDataAt "script") getData
-    , with "continue" $ getContinue True
-    , with "break"    $ getContinue False
-    , with "return"   $ getReturn True
-    , with "throw"    $ getReturn False
-    , with "with"  $ liftM3 AST_WithDoc getData (getDataAt "script") getData
-    , with "notes" $ liftM  AST_Comment getData -- needs to have a different name from "comments" to avoid confusion
-    , mplus this (return ONull) >>= \o -> updateFailed o "script expression"
+    , tryWith "for"      $ liftM4 AST_ForLoop    (getDataAt "varName")   (getDataAt "iterator") (getDataAt "script")                   getData
+    , tryWith "while"    $ liftM3 AST_WhileLoop  (getDataAt "iterator")  (getDataAt "script")                                          getData
+    , tryWith "continue" $ getContinue True
+    , tryWith "break"    $ getContinue False
+    , tryWith "return"   $ getReturn   True
+    , tryWith "throw"    $ getReturn   False
+    , tryWith "with"     $ liftM3 AST_WithDoc    (getDataAt "reference") (getDataAt "script")                                          getData
+    , fail "script expression"
     ]
     where
-      getContinue tf = liftM3 (AST_ContinueExpr tf) (getComments) getData getData
-      getReturn   tf = liftM2 (AST_ReturnExpr   tf)                       getData getData
+      getContinue tf = liftM3 (AST_ContinueExpr tf) getComments (getDataAt "condition") getData
+      getReturn   tf = liftM2 (AST_ReturnExpr   tf)             (getDataAt "object")    getData
 
 instance Structured Reference where
   dataToStruct = deconstruct . place . ORef
@@ -279,7 +249,7 @@ instance Structured Reference where
     a <- this
     case a of
       ORef a -> return a
-      _ -> updateFailed a "reference"
+      _ -> fail "reference"
 
 instance Structured GlobUnit  where
   dataToStruct a = T.Leaf $ OString $ case a of
@@ -314,39 +284,38 @@ instance Structured Subroutine where
 
 instance Structured Pattern where
   dataToStruct a = deconstruct $ case a of
-    ObjAnyX        -> putStringData "any"
-    ObjMany        -> putStringData "many"
-    ObjAny1        -> putStringData "any1"
-    ObjEQ      a   -> with "equals" (place a)
+    ObjAnyX        -> putUStrData "any"
+    ObjMany        -> putUStrData "many"
+    ObjAny1        -> putUStrData "any1"
+    ObjEQ      a   -> with "equals"  (place a)
     ObjType    a   -> putDataAt "type" a
     ObjBounded a b -> with "bounded" (putData a >> putDataAt "to" b)
-    ObjList    a b -> with "list" (putDataAt "op" a >> putData b)
+    ObjList    a b -> with "list"    (putDataAt "op" a >> putData b)
     ObjNameSet a b -> with "nameSet" (putDataAt "op" a >> putData (S.elems b))
-    ObjIntSet  a b -> with "intSet" $
-      putDataAt "op" a >> place (OList (map (OInt . fromIntegral) (IS.elems b)))
+    ObjIntSet  a b -> with "intSet" $ putDataAt "op" a >> place (OList (map (OInt . fromIntegral) (IS.elems b)))
     ObjElemSet a b -> with "elemSet" (putDataAt "op" a >> putData (S.elems b))
-    ObjChoice  a b -> with "choice" (putDataAt "op" a >> putData (S.elems b))
-    ObjLabel   a b -> with "label" (putDataAt "name" a >> putData b)
+    ObjChoice  a b -> with "choice"  (putDataAt "op" a >> putData (S.elems b))
+    ObjLabel   a b -> with "label"   (putDataAt "name" a >> putData b)
     ObjFailIf  a b -> with "require" (putDataAt "message" a >> putData b)
-    ObjNot     a   -> with "not" (putData a)
+    ObjNot     a   -> with "not"     (putData a)
   structToData = reconstruct $ msum $
-    [ getUStrData "src/Dao/Object/Struct.hs:318:pattern" >>= \a -> case uchars a of
+    [ getUStrData "src/Dao/Object/Struct.hs:302:pattern" >>= \a -> case uchars a of
         "any"  -> return ObjAnyX
         "many" -> return ObjMany
         "any1" -> return ObjAny1
-        _      -> updatePValue Backtrack
-    , with "equals"  $ liftM  ObjEQ       this
-    , with "type"    $ liftM  ObjType     getData
-    , with "bounded" $ liftM2 ObjBounded  getData           (getDataAt "to")
-    , with "list"    $ liftM2 ObjList    (getDataAt "op")    getData
-    , with "nameSet" $ liftM2 ObjNameSet (getDataAt "op")   (fmap S.fromList  getData)
-    , with "intSet"  $ liftM2 ObjIntSet  (getDataAt "op")   (fmap IS.fromList getData)
-    , with "elemSet" $ liftM2 ObjElemSet (getDataAt "op")   (fmap S.fromList  getData)
-    , with "choice"  $ liftM2 ObjChoice  (getDataAt "op")   (fmap S.fromList  getData)
-    , with "label"   $ liftM2 ObjLabel   (getDataAt "name")  getData
-    , with "require" $ liftM2 ObjFailIf  (getDataAt "message") getData
-    , with "not"     $ liftM  ObjNot     getData
-    , mplus this (return ONull) >>= \a -> updateFailed a "pattern"
+        _      -> assumePValue Backtrack
+    , tryWith "equals"  $ liftM  ObjEQ       this
+    , tryWith "type"    $ liftM  ObjType     getData
+    , tryWith "bounded" $ liftM2 ObjBounded  getData           (getDataAt "to")
+    , tryWith "list"    $ liftM2 ObjList    (getDataAt "op")    getData
+    , tryWith "nameSet" $ liftM2 ObjNameSet (getDataAt "op")   (fmap S.fromList  getData)
+    , tryWith "intSet"  $ liftM2 ObjIntSet  (getDataAt "op")   (fmap IS.fromList getData)
+    , tryWith "elemSet" $ liftM2 ObjElemSet (getDataAt "op")   (fmap S.fromList  getData)
+    , tryWith "choice"  $ liftM2 ObjChoice  (getDataAt "op")   (fmap S.fromList  getData)
+    , tryWith "label"   $ liftM2 ObjLabel   (getDataAt "name")  getData
+    , tryWith "require" $ liftM2 ObjFailIf  (getDataAt "message") getData
+    , tryWith "not"     $ liftM  ObjNot     getData
+    , mplus this (return ONull) >>= \a -> fail "pattern"
     ]
 
 instance Structured ObjSetOp where
@@ -362,7 +331,7 @@ instance Structured ObjSetOp where
     "all"   -> return AllOfSet
     "only"  -> return OnlyOneOf
     "none"  -> return NoneOfSet
-    a       -> updateFailed (ostr a) "pattern set operator"
+    a       -> fail "pattern set operator"
 
 instance Structured TopLevelEventType where
   dataToStruct a = deconstruct $ place $ ostr $ case a of
@@ -374,29 +343,24 @@ instance Structured TopLevelEventType where
     "END"   -> return EndExprType
     "EXIT"  -> return ExitExprType
     "QUIT"  -> return ExitExprType
-    _       -> updateFailed (ostr a) "top-level event type"
+    _       -> fail "top-level event type"
 
 instance Structured AST_TopLevel where
   dataToStruct a = deconstruct $ case a of
-    AST_Attribute      a b     loc -> with "attribute" $
-      putData a >> putDataAt "value" b >> putData loc
-    AST_TopFunc        a b c d loc -> with "function" $ do
-      putDataAt "comment" a >> putDataAt "name" b
-      putData c >> putDataAt "script" d >> putData loc
-    AST_TopScript      a       loc -> with "directive" $ putData a >> putData loc
-    AST_TopLambda  a b c   loc -> with "lambda" $
-      putDataAt "type" a >> putData b >> putDataAt "script" c >> putData loc
-    AST_Event      a b c   loc -> with "event" $
-      putDataAt "type" a >> putDataAt "comment" b >> putDataAt "script" c
-    AST_TopComment     a         -> putDataAt "comment" a
+    AST_TopComment a           -> putComments a
+    AST_Attribute  a b     loc -> with "attribute" $ putDataAt "type"   a >> putDataAt "value"    b                                                 >> putData loc
+    AST_TopFunc    a b c d loc -> with "function"  $ putComments        a >> putDataAt "name"     b >> putDataAt "params" c >> putDataAt "script" d >> putData loc
+    AST_TopScript  a       loc -> with "directive" $ putData            a                                                                           >> putData loc
+    AST_TopLambda  a b c   loc -> with "lambda"    $ putDataAt "type"   a >> putDataAt "function" b >> putDataAt "script" c                         >> putData loc
+    AST_Event      a b c   loc -> with "event"     $ putDataAt "type"   a >> putComments          b >> putDataAt "script" c
   structToData = reconstruct $ msum $
-    [ with "attribute" $ liftM3 AST_Attribute getData (getDataAt "value") getData
-    , with "function"  $ liftM5 AST_TopFunc (getDataAt "comment") (getDataAt "name") getData (getDataAt "script") getData
-    , with "directive" $ liftM2 AST_TopScript getData getData
-    , with "lambda"    $ liftM4 AST_TopLambda (getDataAt "type") getData (getDataAt "script") getData
-    , with "event"     $ liftM4 AST_Event (getDataAt "type") (getDataAt "comments") (getDataAt "script") getData
-    , with "comment"   $ liftM AST_TopComment getData
-    , updateFailed ONull "top-level directive"
+    [ liftM AST_TopComment getComments
+    , with "attribute" $ liftM3 AST_Attribute (getDataAt "type")   (getDataAt "value")                                              getData
+    , with "function"  $ liftM5 AST_TopFunc    getComments         (getDataAt "name")     (getDataAt "params") (getDataAt "script") getData
+    , with "directive" $ liftM2 AST_TopScript  getData                                                                              getData
+    , with "lambda"    $ liftM4 AST_TopLambda (getDataAt "type")   (getDataAt "function") (getDataAt "script")                      getData
+    , with "event"     $ liftM4 AST_Event     (getDataAt "type")    getComments           (getDataAt "script")                      getData
+    , fail "top-level directive"
     ]
 
 putIntermediate :: (Intermediate obj ast, Structured ast) => String -> obj -> T.Tree Name Object
@@ -409,8 +373,7 @@ getIntermediate :: (Intermediate obj ast, Structured ast) => String -> T.Tree Na
 getIntermediate typ = reconstruct $ do
   a <- getData
   case toInterm a of
-    []  -> get >>= \st ->
-      updateFailed (OTree st) ("could not convert "++typ++" expression to it's intermediate")
+    []  -> fail ("could not convert "++typ++" expression to it's intermediate")
     [a] -> return a
     _   -> error ("toInterm returned more than one possible abstract syntax tree for "++typ)
 
@@ -432,26 +395,26 @@ instance Structured ObjectExpr where
 
 instance (Ord a, Enum a, Structured a) => Structured (Es.Inf a) where
   dataToStruct a = deconstruct $ case a of
-    Es.PosInf  -> putStringData "+inf"
-    Es.NegInf  -> putStringData "-inf"
+    Es.PosInf  -> putUStrData "+inf"
+    Es.NegInf  -> putUStrData "-inf"
     Es.Point a -> putData a
   structToData = reconstruct $ msum $
     [ fmap Es.Point getData
     , getUStrData msg >>= \a -> case uchars a of
         "+inf" -> return Es.PosInf
         "-inf" -> return Es.NegInf
-    , mplus this (return ONull) >>= \o -> updateFailed o msg
+    , fail msg
     ]
     where { msg = "unit of a segment of an enum set" }
 
 instance (Ord a, Enum a, Bounded a, Structured a) => Structured (Es.Segment a) where
   dataToStruct a = deconstruct $
-    mplus (maybeToUpdate (Es.singular a) >>= putDataAt "at") $
-      maybeToUpdate (Es.plural a) >>= \ (a, b) -> putDataAt "to" a >> putDataAt "from" b
+    mplus (maybe mzero return (Es.singular a) >>= putDataAt "at") $
+      maybe mzero return (Es.plural a) >>= \ (a, b) -> putDataAt "to" a >> putDataAt "from" b
   structToData = reconstruct $ msum $
     [ getDataAt "to" >>= \a -> getDataAt "from" >>= \b -> return (Es.segment a b)
     , fmap Es.single (getDataAt "at")
-    , mplus this (return ONull) >>= \o -> updateFailed o "unit segment of an enum set"
+    , mplus this (return ONull) >>= \o -> fail "unit segment of an enum set"
     ]
 
 instance (Ord a, Enum a, Bounded a, Es.InfBound a, Structured a) => Structured (Es.Set a) where

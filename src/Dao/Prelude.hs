@@ -232,13 +232,9 @@ diff (Dao a) (Dao b) = return $ Dao $ T.treeDiff a b
 -- | Construct a random object of a polymorphic type from its 'Dao.Struct.Structured' form.
 fromStruct :: Structured o => (Dao (T.Tree Name Object)) -> IO (Dao o)
 fromStruct (Dao t) = case structToData t of
-  OK           o  -> seq o $! return (Dao o)
-  Backtrack       -> error "constructor backtracked"
-  PFail (idx,obj) -> error $ concat $
-    [ "constructor failed: "
-    , "\nat index: ", intercalate "." (map uchars idx)
-    , "\nwith value: ", prettyShow obj
-    ]
+  OK      o -> seq o $! return (Dao o)
+  Backtrack -> error "constructor backtracked"
+  PFail err -> error (show err)
 
 -- | Construct a random 'Dao.Object.AST.AST_TopLevel' expression from its 'Dao.Struct.Structured' form.
 structTopExpr :: Dao (T.Tree Name Object) -> IO (Dao AST_TopLevel)

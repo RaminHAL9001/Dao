@@ -120,8 +120,9 @@ initExecUnit modName runtime = flip runReaderT runtime $ do
     , constructScript   = []
     , destructScript    = []
     , requiredBuiltins  = []
-    , programAttributes = M.empty
+    , programAttributes = mempty
     , preExec           = []
+    , quittingTime      = mempty
     , programTokenizer  = return . tokens . uchars
     , programComparator = (==)
     , postExec          = []
@@ -199,9 +200,9 @@ stack_underflow = error "INTERNAL ERROR: stack underflow"
 nestedExecStack :: T_tree -> Exec a -> Exec a
 nestedExecStack init exe = do
   stack <- fmap execStack ask
-  lift (dModifyMVar_ xloc stack (return . stackPush init))
+  lift $ dModifyMVar_ xloc stack (return . stackPush init)
   ce <- procCatch exe
-  lift (dModifyMVar_ xloc stack (return . stackPop))
+  lift $ dModifyMVar xloc stack (return . stackPop)
   joinFlowCtrl ce
 
 -- | Keep the current 'execStack', but replace it with a new empty stack before executing the given
@@ -1582,24 +1583,24 @@ evalLambdaExpr typ argv code = do
   let convArgv fn = mapM fn argv
   case typ of
     FuncExprType -> do
-      argv <- convArgv argsToObjPat
+      argv <- convArgv paramsToObjPatExpr
       return $ OScript $
         Subroutine{argsPattern=argv, getSubExecutable=exe}
     RuleExprType -> do
-      argv <- convArgv argsToGlobExpr
+      argv <- convArgv paramsToGlobExpr
       return $ OScript $
         GlobAction{globPattern=argv, getSubExecutable=exe}
 
 -- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Object.Pattern'.
-argsToObjPat :: ObjectExpr -> Exec Pattern
-argsToObjPat o = case o of
+paramsToObjPatExpr :: ObjectExpr -> Exec Pattern
+paramsToObjPatExpr o = case o of
   Literal (ORef (LocalRef r)) _ -> return (ObjLabel r ObjAny1)
   _ -> procErr $ OList $ [ostr "does not evaluate to an object pattern"]
   -- TODO: provide a more expressive way to create object patterns from 'Dao.Object.ObjectExpr's
 
 -- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Glob.Glob'.
-argsToGlobExpr :: ObjectExpr -> Exec Glob
-argsToGlobExpr o = case o of
+paramsToGlobExpr :: ObjectExpr -> Exec Glob
+paramsToGlobExpr o = case o of
   Literal (OString str) _ -> return (read (uchars str))
   _ -> procErr $ OList $ [ostr "does not evaluate to a \"glob\" pattern"]
 
@@ -1700,7 +1701,7 @@ programFromSource theNewGlobalTable src xunit = do
             scriptLoop dx
           rule = do
             exe  <- mkExe script
-            argv <- lift $ runExec (mapM argsToGlobExpr argList) xunit 
+            argv <- lift $ runExec (mapM paramsToGlobExpr argList) xunit 
             case liftM2 (,) argv exe of
               FlowOK (argv, exe) -> do
                 rules <- gets ruleSet
@@ -1730,7 +1731,7 @@ programFromSource theNewGlobalTable src xunit = do
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     mkExe script = get >>= lift . runExec (setupExecutable (script))
     mkArgvExe argList script = do
-      argv <- lift $ flip runExec xunit $ mapM argsToObjPat $ argList
+      argv <- lift $ flip runExec xunit $ mapM paramsToObjPatExpr $ argList
       exe  <- mkExe script
       case liftM2 (,) argv exe of
         FlowOK (argv, exe)  -> return $ FlowOK $
@@ -1745,7 +1746,7 @@ programFromSource theNewGlobalTable src xunit = do
       return (FlowErr err)
     throwFailure :: Maybe Object -> e
     throwFailure obj = error $ concat $
-      [ "argsToObjPat returned 'FlowReturn' instead of '(FlowOK [Pattern])'\n"
+      [ "paramsToObjPatExpr returned 'FlowReturn' instead of '(FlowOK [Pattern])'\n"
       , case obj of
           Nothing  -> ""
           Just obj -> "Object returned:\n" ++ prettyShow obj
@@ -2157,15 +2158,76 @@ setupOrTakedown select xunit = ask >>= \runtime ->
 
 ----------------------------------------------------------------------------------------------------
 
+-- | Initialized the current 'ExecUnit' by evaluating all of the 'Dao.Object.TopLevel' data in a
+-- 'Dao.Object.AST.AST_SourceCode'.
+execTopLevel :: [TopLevelExpr] -> Exec ExecUnit
+execTopLevel ast = do
+  xunit  <- ask
+  funcs  <- liftIO (newIORef mempty)
+  macros <- liftIO (newIORef [])
+  pre    <- liftIO (newIORef [])
+  post   <- liftIO (newIORef [])
+  onExit <- liftIO (newIORef [])
+  forM_ (dropWhile isAttribute ast) $ \dirctv -> case dirctv of
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    Attribute a b c -> throwError $ OList $ concat $
+      [ maybe [] ((:[]) . ostr . (++(show c)) . uchars) (programModuleName xunit)
+      , [ostr $ uchars a ++ " expression must occur only at the top of a dao script"]
+      , [ostr $ prettyShow (Attribute a b c)]
+      ]
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    TopFunc name params scrpt lc -> do
+      exec   <- setupExecutable scrpt
+      params <- mapM paramsToObjPatExpr params
+      let newSub = Subroutine{argsPattern=params, getSubExecutable=exec}
+      liftIO $ modifyIORef funcs (flip M.union (M.singleton name [newSub]))
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    TopScript scrpt lc -> do
+      -- push a namespace onto the stack
+      lift $ dModifyMVar_ xloc (execStack xunit) (return . stackPush T.Void)
+      -- get the functions declared this far
+      funcMap <- liftIO (readIORef funcs)
+      flip catchReturn (\_ -> return ()) $ -- evaluate the script
+        local (\_ -> xunit{topLevelFuncs=funcMap}) (execScriptExpr scrpt)
+      -- pop the namespace, keep any local variable declarations
+      tree <- lift $ dModifyMVar xloc (execStack xunit) (return . stackPop)
+      -- merge the local variables into the global varaibles resource.
+      lift (modifyUnlocked_ (globalData xunit) (return . T.union tree))
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    TopLambdaExpr typ params scrpt lc -> do
+      exec   <- setupExecutable scrpt
+      let macro constr = do
+            params <- mapM paramsToObjPatExpr params
+            liftIO (modifyIORef macros (++[constr params exec]))
+      case typ of
+        FuncExprType -> macro MacroFunc
+        PatExprType  -> macro MacroFunc
+        RuleExprType -> do
+          params <- mapM paramsToGlobExpr params
+          let fol tre pat = T.unionWith (++) tre (toTree pat [exec])
+          lift $ dModifyMVar_ xloc (ruleSet xunit) (\patTree -> return (foldl fol patTree params))
+          -- modifyIORef rules (++[GlobAction{globPattern=params, getSubExecutable=exec}])
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    EventExpr typ scrpt lc -> do
+      exec   <- setupExecutable scrpt
+      liftIO $ flip modifyIORef (++[exec]) $ case typ of
+        BeginExprType -> pre
+        EndExprType   -> post
+        ExitExprType  -> onExit
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+  funcs  <- liftIO (readIORef funcs)
+  macros <- liftIO (readIORef macros)
+  pre    <- liftIO (readIORef pre)
+  post   <- liftIO (readIORef post)
+  onExit <- liftIO (readIORef onExit)
+  return $ xunit{ preExec=pre, postExec=post, quittingTime=onExit, topLevelFuncs=funcs }
+
+----------------------------------------------------------------------------------------------------
+
 -- | Simply converts an 'Dao.Object.AST.AST_SourceCode' directly to a list of
 -- 'Dao.Object.TopLevelExpr's.
 evalTopLevelAST :: AST_SourceCode -> [TopLevelExpr]
 evalTopLevelAST ast = directives ast >>= toInterm
-
--- | Initialized the current 'ExecUnit' by evaluating all of the 'Dao.Object.TopLevel' data in a
--- 'Dao.Object.AST.AST_SourceCode'.
-execTopLevel :: [TopLevelExpr] -> Exec ()
-execTopLevel ast = undefined
 
 -- Called by 'loadModHeader' and 'loadModule', throws a Dao exception if the source file could not
 -- be parsed.
@@ -2183,7 +2245,7 @@ loadModHeader path = do
   text <- liftIO (readFile (uchars path))
   case parse daoGrammar mempty text of
     OK    ast -> do
-      let attribs = takeWhile isAttribute (directives ast) >>= attributeToList
+      let attribs = takeWhile isAST_Attribute (directives ast) >>= attributeToList
       forM attribs $ \ (attrib, astobj, loc) -> case toInterm (unComment astobj) of
         []  -> throwError $ OList $
           [ostr ("bad "++uchars attrib++" statement"), ostr (prettyShow astobj)]
@@ -2207,8 +2269,7 @@ loadModule path = do
   case parse daoGrammar mempty text of
     OK  ast -> do
       mod <- childExecUnit (Just path)
-      local (const mod) (execTopLevel (evalTopLevelAST ast))
-      return mod
+      local (const mod) (execTopLevel (evalTopLevelAST ast)) -- updates and returns 'mod' 
     Backtrack -> throwError $ OList [ostr path, ostr "does not appear to be a valid Dao source file"]
     PFail err -> loadModParseFailed (Just path) err
 

@@ -42,6 +42,7 @@ import           Dao.Predicate
 
 import           Data.Typeable
 import           Data.Dynamic
+import           Data.Monoid
 import           Data.Unique
 import           Data.Maybe
 import           Data.Either
@@ -705,6 +706,9 @@ data TopLevelExpr
   | EventExpr      TopLevelEventType  [ScriptExpr]               Location
   deriving (Eq, Ord, Show, Typeable)
 
+isAttribute :: TopLevelExpr -> Bool
+isAttribute toplevel = case toplevel of { Attribute _ _ _ -> True; _ -> False; }
+
 instance HasLocation TopLevelExpr where
   getLocation o = case o of
     Attribute      _ _   o -> o
@@ -845,8 +849,10 @@ stackDefine key val = stackUpdate key (const val)
 stackPush :: Ord key => T.Tree key val -> Stack key val -> Stack key val
 stackPush init stack = stack{ mapList = init : mapList stack }
 
-stackPop :: Ord key => Stack key val -> Stack key val
-stackPop stack = stack{ mapList = let mx = mapList stack in if null mx then [] else tail mx }
+stackPop :: Ord key => Stack key val -> (Stack key val, T.Tree key val)
+stackPop stack =
+  let mx = mapList stack
+  in  if null mx then (stack, T.Void) else (stack{mapList=tail mx}, head mx)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -998,10 +1004,11 @@ data ExecUnit
     , destructScript    :: [ScriptExpr]
     , requiredBuiltins  :: [Name]
     , programAttributes :: M.Map Name Name
-    , preExec     :: [Executable]
+    , preExec      :: [Executable]
       -- ^ the "guard scripts" that are executed before every string execution.
-    , postExec    :: [Executable]
+    , postExec     :: [Executable]
       -- ^ the "guard scripts" that are executed after every string execution.
+    , quittingTime :: [Executable]
     , programTokenizer  :: InputTokenizer
       -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
       -- module associated with this runtime.

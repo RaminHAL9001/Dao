@@ -239,5 +239,5 @@ pushStackResource rsrc = modifyResource rsrc $ \unlocked locked ->
 -- | Operating on a 'StackResource', push an item onto the stack.
 popStackResource :: HasDebugRef r => StackResource -> Stack Name Object -> ReaderT r IO ()
 popStackResource rsrc stor = modifyResource rsrc $ \unlocked locked ->
-  return (stackPop unlocked, stackPop locked, ())
+  return (fst (stackPop unlocked), fst (stackPop locked), ())
 

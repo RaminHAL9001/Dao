@@ -103,8 +103,8 @@ data AST_SourceCode
 
 ----------------------------------------------------------------------------------------------------
 
-isAttribute :: AST_TopLevel -> Bool
-isAttribute o = case o of { AST_Attribute _ _ _ -> True; _ -> False; }
+isAST_Attribute :: AST_TopLevel -> Bool
+isAST_Attribute o = case o of { AST_Attribute _ _ _ -> True; _ -> False; }
 
 attributeToList :: AST_TopLevel -> [(Name, Com AST_Object, Location)]
 attributeToList o = case o of { AST_Attribute a b c -> return (a,b,c); _ -> mzero; }

@@ -182,7 +182,7 @@ dWriteChan _ var v = dVar (flip writeChan v) undefined undefined var
 dReadChan :: Bugged r m => MLoc -> DChan v -> m v
 dReadChan _ var = dVar readChan undefined undefined var
 
-----------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------------
 
 dNewQSem :: Bugged r m => MLoc -> String -> Int -> m DQSem
 dNewQSem _ _ i = dMakeVar (newQSem i) undefined undefined undefined undefined

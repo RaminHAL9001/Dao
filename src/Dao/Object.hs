@@ -420,7 +420,7 @@ instance Show Subroutine where
 -- | All evaluation of the Dao language takes place in the 'Exec' monad. It allows @IO@
 -- functions to be lifeted into it so functions from "Control.Concurrent", "Dao.Document",
 -- "System.IO", and other modules, can be evaluated.
-type Exec a  = ProcReader ExecUnit IO a
+type Exec a  = Procedural (ReaderT ExecUnit IO) a
 
 ----------------------------------------------------------------------------------------------------
 
@@ -977,9 +977,6 @@ data ExecUnit
     , patternTable       :: [Subroutine]
       -- ^ contains functions which are evaluated not by name but by passing objects to them that
       -- match their argument list.
-    , execAccessRules    :: FileAccessRules
-      -- ^ restricting which files can be loaded by the program associated with this ExecUnit, these
-      -- are the rules assigned this program by the 'ProgramRule' which allowed it to be loaded.
     , builtinFuncs       :: M.Map Name DaoFunc
       -- ^ a pointer to the builtin function table provided by the runtime.
     , topLevelFuncs      :: M.Map Name [Subroutine]
@@ -995,7 +992,7 @@ data ExecUnit
     , recursiveInput     :: DMVar [UStr]
     , uncaughtErrors     :: DMVar [Object]
     ---- used to be elements of Program ----
-    , programModuleName :: UPath
+    , programModuleName :: Maybe UPath
     , programImports    :: [UPath]
     , constructScript   :: [ScriptExpr]
     , destructScript    :: [ScriptExpr]
@@ -1055,21 +1052,6 @@ initTask = do
 
 ----------------------------------------------------------------------------------------------------
 
--- | Rules dictating which files a particular 'ExecUnit' can load at runtime.
-data FileAccessRules
-  = RestrictFiles  Glob
-    -- ^ files matching this pattern will never be loaded
-  | AllowFiles     Glob
-    -- ^ files matching this pattern can be loaded
-  | ProgramRule    Glob [FileAccessRules] [FileAccessRules]
-    -- ^ programs matching this pattern can be loaded and will be able to load files by other rules.
-    -- Also has a list of rules dictating which built-in function sets are allowed for use, but
-    -- these rules are not matched to files, they are matched to the function sets provided by the
-    -- 'Runtime'.
-  | DirectoryRule  UPath   [FileAccessRules]
-    -- ^ access rules will apply to every file in the path of this directory, but other rules
-    -- specific to certain files will override these rules.
-
 -- | The Dao 'Runtime' keeps track of all files loaded into memory in a 'Data.Map.Map' that
 -- associates 'Dao.String.UPath's to this items of this data type.
 data File
@@ -1099,6 +1081,9 @@ type InputTokenizer = UStr -> Exec Tokens
 -- matches strings approximately, ignoring transposed letters and accidental double letters in words.
 type CompareToken = UStr -> UStr -> Bool
 
+-- | The 'Runtime' is the shared state visible to every module. Every process will have a single
+-- 'Runtime' created by the main function, and every 'ExecUnit' created will receive a pointer to
+-- thie 'Runtime'. Modules communicate with each other by calling the correct API functions
 data Runtime
   = Runtime
     { pathIndex            :: DMVar (M.Map UPath File)
@@ -1114,13 +1099,7 @@ data Runtime
       -- ^ a table of available string tokenizers.
     , availableComparators :: M.Map Name CompareToken
       -- ^ a table of available string matching functions.
-    , fileAccessRules      :: [FileAccessRules]
-      -- ^ rules loaded by config file dicating programs and ideas can be loaded by Dao, and also,
-      -- which programs can load which programs and ideas.
     , runtimeDebugger      :: DebugRef
-    , globalExecUnit       :: ExecUnit
-      -- ^ the 'ExecUnit' used to initalize all others. Also keeps track of files loaded on the
-      -- command line, and can be used to evaluate script expressions.
     }
 
 -- | This is the monad used for most all methods that operate on the 'Runtime' state.
@@ -1256,4 +1235,35 @@ catchReturnObj :: Monad m => Procedural m Object -> Procedural m (Maybe Object)
 catchReturnObj exe = procCatch exe >>= \ce -> case ce of
   FlowReturn obj -> return obj
   _              -> fmap Just (joinFlowCtrl ce)
+
+----------------------------------------------------------------------------------------------------
+
+ioExec :: Exec a -> ExecUnit -> IO (FlowCtrl a)
+ioExec func xunit = runReaderT (runProcedural func) xunit
+
+newtype ExecHandler a = ExecHandler { execHandler :: ExecUnit -> Handler (FlowCtrl a) }
+instance Functor ExecHandler where { fmap f (ExecHandler h) = ExecHandler (fmap (fmap (fmap f)) h) }
+
+-- | Create an 'ExecHandler'.
+ioExecHandler :: Exception e => (e -> Exec a) -> ExecHandler a
+ioExecHandler h = ExecHandler (\xunit -> Handler (\e -> ioExec (h e) xunit))
+
+execCatch :: Exec a -> [ExecHandler a] -> Exec a
+execCatch tryFunc handlers = do
+  xunit <- ask
+  ctrl  <- liftIO $ catches (ioExec tryFunc xunit) (fmap (\h -> execHandler h xunit) handlers)
+  joinFlowCtrl ctrl
+
+-- | An 'ExecHandler' for catching 'Control.Exception.IOException's and re-throwing them to the
+-- 'Procedural' monad using 'Control.Monad.Error.throwError', allowing the exception to be caught
+-- and handled by Dao script code.
+execIOException :: ExecHandler ()
+execIOException = ioExecHandler $ \e -> throwError (ostr $ show (e::IOException))
+
+----------------------------------------------------------------------------------------------------
+
+type DepGraph = M.Map UPath [UPath]
+
+getDepFiles :: DepGraph -> [UPath]
+getDepFiles = M.keys
 

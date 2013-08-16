@@ -210,7 +210,7 @@ putDataAt addr obj = with addr (putData obj)
 
 -- | Update an object at the current node.
 placeWith :: ModLeaf Object -> Update ()
-placeWith fn = modify (alterData fn)
+placeWith fn = modify (alterLeaf fn)
 
 -- | Applies a function only if there is an item at the current node.
 mapThis :: (Object -> Object) -> Update ()
@@ -218,7 +218,7 @@ mapThis fn = placeWith (\item -> fmap fn item)
 
 -- | Put an 'Dao.Object.Object' in the current ('this') location, overwriting what is already here.
 putObjAt :: Object -> Update ()
-putObjAt = modify . alterData . const . Just
+putObjAt = modify . alterLeaf . const . Just
 
 -- | Union a tree node with the current node. If the current node is a 'Dao.Tree.Leaf', the leaf
 -- might be overwritten if you write a new 'Dao.Tree.Leaf'. *IMPORTANT:* Use this instead of

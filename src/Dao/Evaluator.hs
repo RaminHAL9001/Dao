@@ -28,7 +28,7 @@
 module Dao.Evaluator where
 
 import           Dao.Debug.OFF
-import           Dao.Token     hiding (asString)
+import           Dao.Token  hiding (asString)
 import           Dao.Parser hiding (shift)
 import           Dao.Object
 import           Dao.Object.AST
@@ -84,12 +84,12 @@ tra msg r = trace msg (return ()) >> return r
 showObj :: PPrintable a => a -> String
 showObj = prettyPrint 80 "    "
 
-initExecUnit :: UPath -> TreeResource -> Run ExecUnit
-initExecUnit modName initGlobalData = do
-  runtime  <- ask
+initExecUnit :: Maybe UPath -> Runtime -> IO ExecUnit
+initExecUnit modName runtime = flip runReaderT runtime $ do
   unctErrs <- dNewMVar xloc "ExecUnit.uncaughtErrors" []
   recurInp <- dNewMVar xloc "ExecUnit.recursiveInput" []
   qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
+  global   <- newTreeResource  "ExecUnit.globalData" T.Void
   task     <- initTask
   xstack   <- dNewMVar xloc "ExecUnit.execStack" emptyStack
   files    <- dNewMVar xloc "ExecUnit.execOpenFiles" M.empty
@@ -105,10 +105,10 @@ initExecUnit modName initGlobalData = do
     , currentBranch      = []
     , importsTable       = M.empty
     , patternTable       = []
-    , execAccessRules    = RestrictFiles (Glob{getPatUnits = [Wildcard], getGlobLength = 1})
     , builtinFuncs       = initBuiltinFuncs
     , topLevelFuncs      = M.empty
     , queryTimeHeap      = qheap
+    , globalData         = global
     , taskForActions     = task
     , execStack          = xstack
     , execOpenFiles      = files
@@ -126,8 +126,10 @@ initExecUnit modName initGlobalData = do
     , programComparator = (==)
     , postExec          = []
     , ruleSet           = rules
-    , globalData        = initGlobalData
     }
+
+childExecUnit :: Maybe UPath -> Exec ExecUnit
+childExecUnit path = ask >>= \xunit -> liftIO (initExecUnit path (parentRuntime xunit))
 
 setupExecutable :: [ScriptExpr] -> Exec Executable
 setupExecutable scrp = do
@@ -229,7 +231,7 @@ evalIntRef i = do
     Just ma | i==0 -> return $ OArray $
       listArray (let (a, b) = bounds ma in (fromIntegral a, fromIntegral b)) $
         map (OList . map OString) (elems ma)
-    Just ma | inRange (bounds ma) i -> return (OList (map OString (ma!i)))
+    Just ma | inRange (bounds ma) i -> return (OList (map OString $ trace ("evalIntRef "++show i) (ma!i)))
     Just ma -> do
       objectError oi $ concat $
         [ "pattern match variable $"
@@ -526,7 +528,8 @@ evalSets combine dict intmap set a b = msum $
 
 eval_ADD :: Object -> Object -> BuiltinOp
 eval_ADD a b = msum
-  [ evalNum (+) (+) a b
+  [ evalDist eval_ADD a b
+  , evalNum (+) (+) a b
   , timeAdd a b, timeAdd b a
   , listAdd a b, listAdd b a
   , stringAdd (++) a b, stringAdd (flip (++)) b a
@@ -553,7 +556,8 @@ eval_ADD a b = msum
 
 eval_SUB :: Object -> Object -> BuiltinOp
 eval_SUB a b = msum $
-  [ evalNum (-) (-) a b
+  [ evalDist eval_SUB a b
+  , evalNum (-) (-) a b
   , evalSets (\a -> head a) (\ _ a b -> M.difference a b) (\ _ a b -> I.difference a b) S.difference a b
   , case (a, b) of
       (OTime a, OTime     b) -> return (ODiffTime (diffUTCTime a b))
@@ -647,7 +651,7 @@ evalShift fn a b = asHaskellInt b >>= \b -> case a of
 evalSubscript :: Object -> Object -> BuiltinOp
 evalSubscript a b = case a of
   OArray  a -> fmap fromIntegral (asInteger b) >>= \b ->
-    if inRange (bounds a) b then return (a!b) else throwError (ustr "array index out of bounds")
+    if inRange (bounds a) b then return (trace ("evalSubscript "++show a++" ! "++show b) $ a!b) else throwError (ustr "array index out of bounds")
   OList   a -> asHaskellInt b >>= \b ->
     let err = throwError (ustr "list index out of bounds")
         ax  = take 1 (drop b a)
@@ -687,11 +691,31 @@ evalSubscript a b = case a of
           Just  a -> return a
   _         -> mzero
 
+evalCompare
+  :: (Integer -> Integer -> Bool) -> (Rational -> Rational -> Bool) -> Object -> Object -> BuiltinOp
+evalCompare compI compR a b = msum $
+  [ asInteger  a >>= \a -> asInteger  b >>= \b -> done (compI a b)
+  , asRational a >>= \a -> asRational b >>= \b -> done (compR a b)
+  ]
+  where { done true = if true then return OTrue else return ONull }
+
 eval_EQUL :: Object -> Object -> BuiltinOp
-eval_EQUL a b = return (if a==b then OTrue else ONull)
+eval_EQUL a b = if a==b then return OTrue else evalCompare (==) (==) a b
 
 eval_NEQUL :: Object -> Object -> BuiltinOp
-eval_NEQUL a b = return (if a==b then ONull else OTrue)
+eval_NEQUL a b = if a==b then return ONull else evalCompare (/=) (/=) a b
+
+eval_GTN :: Object -> Object -> BuiltinOp
+eval_GTN a b = if a==b then return ONull else evalCompare (>) (>) a b
+
+eval_LTN :: Object -> Object -> BuiltinOp
+eval_LTN a b = if a==b then return ONull else evalCompare (<) (<) a b
+
+eval_GTEQ :: Object -> Object -> BuiltinOp
+eval_GTEQ a b = if a==b then return OTrue else evalCompare (>=) (>=) a b
+
+eval_LTEQ :: Object -> Object -> BuiltinOp
+eval_LTEQ a b = if a==b then return OTrue else evalCompare (<=) (<=) a b
 
 eval_SHR :: Object -> Object -> BuiltinOp
 eval_SHR = evalShift negate
@@ -754,21 +778,48 @@ extractStringElems o = case o of
   OPair (a, b) -> concatMap extractStringElems [a, b]
   _            -> []
 
+eval_multiRef :: ([Name] -> Reference) -> Object -> BuiltinOp
+eval_multiRef mk o = case o of
+  ORef o -> case o of
+    LocalRef     o -> return $ ORef $ mk [o]
+    StaticRef    o -> return $ ORef $ mk [o]
+    QTimeRef     o -> return $ ORef $ mk  o
+    GlobalRef    o -> return $ ORef $ mk  o
+    _              -> throwError $ ustr $
+      prettyShow (ORef o) ++ "cannot be used as a global reference"
+
+eval_singleRef :: (Name -> Reference) -> Object -> BuiltinOp
+eval_singleRef mk o = case o of
+  ORef o -> case o of
+    LocalRef     o -> return (ORef $ mk o)
+    StaticRef    o -> return (ORef $ mk o)
+    _              -> throwError $ ustr $
+      prettyShow (ORef o) ++ "cannot be used as a global reference"
+
 prefixOps :: Array PrefixOp (Object -> BuiltinOp)
-prefixOps = let o = (,) in array (minBound, maxBound) $
-  [ o REF      eval_REF
-  , o DEREF    eval_DEREF
-  , o INVB     eval_INVB
-  , o NOT      eval_NOT
-  , o NEGTIV   eval_NEG
-  , o POSTIV   return
+prefixOps = array (minBound, maxBound) $ defaults ++
+  [ o REF       eval_REF
+  , o DEREF     eval_DEREF
+  , o INVB      eval_INVB
+  , o NOT       eval_NOT
+  , o NEGTIV    eval_NEG
+  , o POSTIV    return
+  , o GLDOT     (eval_multiRef  GlobalRef)
+  , o GLOBALPFX (eval_multiRef  GlobalRef)
+  , o LOCALPFX  (eval_singleRef LocalRef)
+  , o QTIMEPFX  (eval_multiRef  QTimeRef)
+  , o STATICPFX (eval_singleRef StaticRef)
   ]
+  where
+    o = (,)
+    defaults = flip map [minBound..maxBound] $ \op ->
+      (op, \_ -> error$"no builtin function for prefix "++show op++" operator")
 
 infixOps :: Array InfixOp (Object -> Object -> BuiltinOp)
-infixOps = let o = (,) in array (minBound, maxBound) $
+infixOps = array (minBound, maxBound) $ defaults ++
   [ o POINT evalSubscript
   , o DOT   eval_DOT
-  -- , o OR    (evalBooleans (||)) -- These actually probably wont be evaluated. Locgical and/or is a
+  -- , o OR    (evalBooleans (||)) -- These probably wont be evaluated. Locgical and/or is a
   -- , o AND   (evalBooleans (&&)) -- special case to be evaluated in 'evalObjectExprWithLoc'.
   , o OR    (error (e "OR" ))
   , o AND   (error (e "AND"))
@@ -785,13 +836,20 @@ infixOps = let o = (,) in array (minBound, maxBound) $
   , o DIV   eval_DIV
   , o MOD   eval_MOD
   , o POW   eval_POW
+  , o GTN   eval_GTN
+  , o LTN   eval_LTN
+  , o GTEQ  eval_GTEQ
+  , o LTEQ  eval_LTEQ
   ]
   where
+    o = (,)
+    defaults = flip map [minBound..maxBound] $ \op ->
+      (op, \_ _ -> error$"no builtin function for infix "++show op++" operator")
     e msg = "logical-" ++ msg ++
       " operator should have been evaluated within the 'evalObjectExprWithLoc' function."
 
 updatingOps :: Array UpdateOp (Object -> Object -> BuiltinOp)
-updatingOps = let o = (,) in array (minBound, maxBound) $
+updatingOps = let o = (,) in array (minBound, maxBound) $ defaults ++
   [ o UCONST (\_ b -> return b)
   , o UADD   eval_ADD
   , o USUB   eval_SUB
@@ -804,6 +862,9 @@ updatingOps = let o = (,) in array (minBound, maxBound) $
   , o USHL   eval_SHL
   , o USHR   eval_SHR
   ]
+  where
+    defaults = flip map [minBound..maxBound] $ \op ->
+      (op, \_ _ -> error$"no builtin function for update operator "++show op)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -968,7 +1029,7 @@ builtin_do = builtin_exec_do execStringsAgainst
 builtin_exec_do :: ([UStr] -> [UStr] -> Exec ()) -> DaoFunc
 builtin_exec_do execFunc = DaoFuncAutoDeref $ \ox -> do
   xunit <- ask
-  let currentProg = [programModuleName xunit]
+  let currentProg = maybe [] (:[]) (programModuleName xunit)
       isProgRef r = case r of
         ORef (ProgramRef a _) -> return a
         _ -> procErr $ OList $
@@ -1348,7 +1409,7 @@ evalObjectExprDeref = fmap snd . evalObjectExprDerefWithLoc
 -- | Evaluate an 'ObjectExpr' to an 'Dao.Object.Object' value, and does not de-reference objects of
 -- type 'Dao.Object.ORef'
 evalObjectExprWithLoc :: ObjectExpr -> Exec (Location, Maybe Object)
-evalObjectExprWithLoc obj = case obj of
+evalObjectExprWithLoc obj = trace (prettyShow obj) $ case obj of
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   VoidExpr                       -> return (LocationUnknown, Nothing)
     -- ^ 'VoidExpr's only occur in return statements. Returning 'ONull' where nothing exists is
@@ -1430,8 +1491,8 @@ evalObjectExprWithLoc obj = case obj of
           DOT   -> liftM2 (,) evalLeft  evalRight
           POINT -> liftM2 (,) derefLeft evalRight
           _     -> liftM2 (,) derefLeft derefRight
-        case (infixOps!op) left right of
-          OK result -> return (Just result)
+        case trace ("eval infixOp!"++show op) $ (infixOps!op) left right of
+          OK result -> trace ("eval infixOp!"++show op++" evaulated to:\n"++prettyShow result) $ return (Just result)
           Backtrack -> procErr $ OList $ concat $
             [ errAt loc, [ostr (show op), ostr "cannot operate on objects of type"]
             , errAt leftloc, [left], errAt rightloc, [right]
@@ -1804,8 +1865,7 @@ makeActionsForQuery instr xunit = dStack xloc "makeActionsForQuery" $ do
         [ OList $
             [ obj, ostr "error occured while tokenizing input string"
             , OString instr, ostr "in the program"
-            , OString (programModuleName xunit)
-            ]
+            ] ++ maybe [] ((:[]) . OString) (programModuleName xunit)
         ]
       return (ActionGroup{ actionExecUnit = xunit, getActionList = [] })
     FlowReturn tox -> match (concatMap extractStringElems (maybeToList tox))
@@ -1984,7 +2044,7 @@ registerSourceCode upath script = dStack xloc "registerSourceCode" $ ask >>= \ru
 initSourceCode :: UPath -> AST_SourceCode -> Run ExecUnit
 initSourceCode modName script = ask >>= \runtime -> do
   grsrc <- newTreeResource "Program.globalData" T.Void
-  xunit <- initExecUnit modName grsrc
+  xunit <- liftIO (initExecUnit (Just modName) runtime)
   -- An execution unit is required to load a program, so of course, while a program is being
   -- loaded, the program is not in the program table, and is it's 'currentProgram' is 'Nothing'.
   -- result <- runExec (programFromSource grsrc (\_ _ _ -> return True) script) xunit -- OLD
@@ -2094,4 +2154,99 @@ unloadFilePath path = do
 setupOrTakedown :: (ExecUnit -> [ScriptExpr]) -> ExecUnit -> Run ()
 setupOrTakedown select xunit = ask >>= \runtime ->
   void (runExec (execGuardBlock (select xunit)) xunit) >>= lift . evaluate
+
+----------------------------------------------------------------------------------------------------
+
+-- | Simply converts an 'Dao.Object.AST.AST_SourceCode' directly to a list of
+-- 'Dao.Object.TopLevelExpr's.
+evalTopLevelAST :: AST_SourceCode -> [TopLevelExpr]
+evalTopLevelAST ast = directives ast >>= toInterm
+
+-- | Initialized the current 'ExecUnit' by evaluating all of the 'Dao.Object.TopLevel' data in a
+-- 'Dao.Object.AST.AST_SourceCode'.
+execTopLevel :: [TopLevelExpr] -> Exec ()
+execTopLevel ast = undefined
+
+-- Called by 'loadModHeader' and 'loadModule', throws a Dao exception if the source file could not
+-- be parsed.
+loadModParseFailed :: Maybe UPath -> DaoParseErr -> Exec ig
+loadModParseFailed path err = throwError $ OList $ concat $
+  [ maybe [] (\path -> [ostr $ uchars path ++ maybe "" show (parseErrLoc err)]) path
+  , maybe [] (return . ostr) (parseErrMsg err)
+  , maybe [] (\tok -> [ostr "on token", ostr (show tok)]) (parseErrTok err)
+  ]
+
+-- | Load only the "require" and "import" statements from a Dao script file at the given filesystem
+-- path. Called by 'importDepGraph'.
+loadModHeader :: UPath -> Exec [(Name, Object, Location)]
+loadModHeader path = do
+  text <- liftIO (readFile (uchars path))
+  case parse daoGrammar mempty text of
+    OK    ast -> do
+      let attribs = takeWhile isAttribute (directives ast) >>= attributeToList
+      forM attribs $ \ (attrib, astobj, loc) -> case toInterm (unComment astobj) of
+        []  -> throwError $ OList $
+          [ostr ("bad "++uchars attrib++" statement"), ostr (prettyShow astobj)]
+        o:_ -> do
+          (loc, o) <- evalObjectExprWithLoc o
+          case o of
+            Nothing -> throwError $ OList $
+              [ ostr $ "parameter to "++uchars attrib++" evaluated to void"
+              , ostr (prettyShow astobj)
+              ]
+            Just  o -> return (attrib, o, loc)
+    Backtrack -> throwError $ OList $
+      [ostr path, ostr "does not appear to be a valid Dao source file"]
+    PFail err -> loadModParseFailed (Just path) err
+
+-- | Creates a child 'ExecUnit' for the current 'ExecUnit' and populates it with data by parsing and
+-- evaluating the contents of a Dao script file at the given filesystem path.
+loadModule :: UPath -> Exec ExecUnit
+loadModule path = do
+  text <- liftIO (readFile (uchars path))
+  case parse daoGrammar mempty text of
+    OK  ast -> do
+      mod <- childExecUnit (Just path)
+      local (const mod) (execTopLevel (evalTopLevelAST ast))
+      return mod
+    Backtrack -> throwError $ OList [ostr path, ostr "does not appear to be a valid Dao source file"]
+    PFail err -> loadModParseFailed (Just path) err
+
+-- | Takes a non-dereferenced 'Dao.Object.Object' expression which was returned by 'evalObjectExpr'
+-- and converts it to a file path. This is how "import" statements in Dao scripts are evaluated.
+-- This function is called by 'importDepGraph', and 'importFullDepGraph'.
+objectToImport :: UPath -> Object -> Location -> Exec [UPath]
+objectToImport file obj lc = case obj of
+  OString         str  -> return [str]
+  ORef (GlobalRef ref) -> return [ustr $ intercalate "/" (fmap uchars ref) ++ ".dao"]
+  ORef (LocalRef  ref) -> return [ustr $ uchars ref ++ ".dao"]
+  obj                  -> throwError $ OList $ 
+    [ ostr (uchars file ++ show lc)
+    , ostr "contains import expression evaluating to an object that is not a file path", obj
+    ]
+
+-- | Calls 'loadModHeader' for several filesystem paths, creates a dependency graph for every import
+-- statement. This function is not recursive, it only gets the imports for the paths listed. It
+-- takes an existing 'DepGraph' of any files that have already checked so they are not checked
+-- again. The returned 'DepGraph' will contain only the lists of imports for files in the given list
+-- of file paths that are not already in the given 'DepGraph', so you may need to
+-- 'Data.Monoid.mappend' the returned 'DepGraph's to the one given as a parameter. If the returned
+-- 'DepGraph' is 'Data.Monoid.mempty', there is no more work to be done.
+importDepGraph :: DepGraph -> [UPath] -> Exec DepGraph
+importDepGraph graph files = do
+  let isImport attrib = attrib == ustr "import" || attrib == ustr "imports"
+  fhdrs <- forM files (\file -> loadModHeader file >>= \hdrs -> return (file, hdrs))
+  fmap mconcat $ forM fhdrs $ \ (file, attribs) ->
+    if M.member file graph
+      then  return mempty
+      else  do
+        imports <- fmap mconcat $ forM attribs $ \ (attrib, obj, lc) ->
+          if isImport attrib then objectToImport file obj lc else return mempty
+        return (M.singleton file imports)
+
+-- | Recursively 'importDepGraph' until the full dependency graph is generated.
+importFullDepGraph :: [UPath] -> Exec DepGraph
+importFullDepGraph = loop mempty where
+  loop graph files = importDepGraph graph files >>= \newGraph ->
+    if M.null newGraph then return graph else loop (mappend graph newGraph) (M.keys newGraph)
 

@@ -126,7 +126,7 @@ debuggableProgram mloc setup =
     uncaught debug e = event debug (DUncaught mloc (debugGetThreadId debug) e)
     loop debug = do
       let debugRef = Just debug
-      evt <- readChan (debugChan debug)
+      evt <- takeMVar (debugChan debug)
       debugPrint debug evt >>= evaluate
       case evt of
         DHalt -> return ()
@@ -142,8 +142,7 @@ dDebug doSomething sendMessage = askDebug >>= \debugRef -> liftIO $ case debugRe
   Nothing    -> doSomething
   Just debug -> event debug (sendMessage (debugGetThreadId debug)) >> doSomething
 
--- | Generates a unique identifier that can be attached to 'Dao.Debug.DMVar's, and
--- 'Dao.Debug.DQSem's.
+-- | Generates a unique identifier that can be attached to 'Dao.Debug.DMVar's.
 uniqueID :: DebugData -> IO DUnique
 uniqueID debug = do
   next <- modifyMVar (debugUniqueCount debug) $ \a ->
@@ -156,7 +155,7 @@ uniqueID debug = do
     }
 
 event :: DebugData -> DEvent -> IO ()
-event debug evt = writeChan (debugChan debug) evt >>= evaluate
+event debug evt = putMVar (debugChan debug) evt >>= evaluate
 
 ----------------------------------------------------------------------------------------------------
 
@@ -198,11 +197,11 @@ dStack loc fname func = askDebug >>= \debug -> case debug of
     let ch  = debugChan debug
         msg = show fname
         this = debugGetThreadId debug
-    writeChan (debugChan debug) (DMsg loc this ("begin "++msg)) >>= evaluate
+    putMVar (debugChan debug) (DMsg loc this ("begin "++msg)) >>= evaluate
     a <- flip handle (debugUnliftIO func r) $ \ (SomeException e) -> do
-      writeChan ch (DMsg loc this (msg++" terminated by exception: "++show e)) >>= evaluate
+      putMVar ch (DMsg loc this (msg++" terminated by exception: "++show e)) >>= evaluate
       throwIO e
-    writeChan ch (DMsg loc this ("end   "++msg)) >>= evaluate
+    putMVar ch (DMsg loc this ("end   "++msg)) >>= evaluate
     return a
 
 -- | Used to derive 'dPutStrLn', 'dPutStr', and 'dPutStrErr'.
@@ -314,7 +313,7 @@ dThrow loc err = dDebug (throwIO err) $ \this -> DThrow loc this (SomeException 
 
 ----------------------------------------------------------------------------------------------------
 
--- | Used to derive the 'dNewChan', 'dNewQSem', and 'dNewMVar' functions.
+-- | Used to derive the 'dNewChan', and 'dNewMVar' functions.
 dMakeVar :: Bugged r m => String -> String -> IO v -> MLoc -> String -> m (DVar v)
 dMakeVar typeName funcName newIO loc msg = askDebug >>= \debug -> liftIO $ case debug of
   Nothing    -> fmap DVar newIO

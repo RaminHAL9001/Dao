@@ -128,7 +128,7 @@ data DEvent
 data DebugData
   = DebugData
     { debugGetThreadId :: DThread
-    , debugChan        :: Chan DEvent
+    , debugChan        :: MVar DEvent
     , debugStartTime   :: UTCTime
     , debugUniqueCount :: MVar Word
     , debugPrint       :: DEvent -> IO ()
@@ -138,7 +138,7 @@ data DebugData
 initDebugData :: IO DebugData
 initDebugData = do
   this <- myThreadId
-  chan <- newChan
+  chan <- newEmptyMVar
   time <- getCurrentTime
   uniq <- newMVar 1
   return $

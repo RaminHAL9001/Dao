@@ -77,17 +77,8 @@ main = do
   let (q, _) = partition (\a -> a=="-q" || a=="--dont-show-license") argv
   when (null q) (putStr disclaimer)
   --initialize -- initialize the ReadLine library
-  -- let debug = Nothing
-  -- debug <- debugToFile xloc "main" debugLog "./dao-debug.log" WriteMode
-  debuggableProgram xloc  $
-    (setupDebugger :: SetupDebugger Runtime (ReaderT Runtime IO))
-    { debugEnabled = True
-    , debugOutputTo = DebugOutputToFile "./debug.log"
-    , initializeRuntime = newRuntime
-    , beginProgram = do
-        ok <- initRuntimeFiles argv
-        if ok then daoInputLoop (liftIO inputLoop) else return ()
-    }
+  args <- fmap (fmap ustr) getArgs
+  daoRuntime Nothing (singleThreaded args)
   --restorePrompt -- shut-down the ReadLine library
   hPutStrLn stderr "Dao has exited."
 

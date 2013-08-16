@@ -47,6 +47,7 @@ import           Dao.Resource
 import qualified Dao.Tree as T
 import           Dao.Files
 import           Dao.Evaluator
+import           Dao.PPrint
 
 import           Control.Exception
 import           Control.Monad.Reader
@@ -56,7 +57,7 @@ import           Data.List
 import qualified Data.Map    as M
 import qualified Data.Set    as S
 
-import           System.Environment (getProgName)
+import           System.Environment (getProgName, getArgs)
 import           System.IO
 
 import Debug.Trace
@@ -68,30 +69,33 @@ import Debug.Trace
 min_exec_time :: Int
 min_exec_time = 200000
 
--- | Create a new 'Runtime' with nothing in it except for the 'userData' you pass to it.
-newRuntime :: DebugRef -> IO Runtime
-newRuntime debugRef = flip runReaderT debugRef $ dStack xloc "newRuntime" $ do
-  paths <- dNewMVar xloc "Runtime.pathIndex" (M.empty)
-  task  <- initTask
+-- | Create a new 'Runtime', optionally providing a file to which output debugging information, and
+-- an 'Exec' monad to evalaute.
+daoRuntime :: Maybe FilePath -> Exec () -> IO ()
+daoRuntime debugRef daoMain = do
+  progName <- getProgName
   let runtime =
         Runtime
-        { pathIndex            = paths
+        { pathIndex            = error "Dao:daoRuntime: forgot to set \"pathIndex\""
         , defaultTimeout       = Just 8000000
         , functionSets         = M.empty
-        , taskForExecUnits     = task
+        , taskForExecUnits     = error "Dao:daoRuntime: forgot to set \"taskForExecUnits\""
         , availableTokenizers  = M.empty
         , availableComparators = M.fromList $
             [ (ustr "exact"      , exact)
             , (ustr "approximate", approx)
             ]
-        , fileAccessRules      = []
         , runtimeDebugger      = Nothing
-        , globalExecUnit       = error "newRuntime not set before being used"
         }
-  globalGlobalTree <- newTreeResource "Runtime.globalExecUnit.globalData" T.Void
-  progName <- liftIO getProgName
-  xunit <- lift $ runReaderT (initExecUnit (ustr progName) globalGlobalTree) runtime
-  return (runtime{globalExecUnit = xunit{parentRuntime = runtime}})
+  paths    <- runReaderT (dNewMVar xloc "Runtime.pathIndex" (M.empty)) runtime
+  task     <- runReaderT initTask runtime
+  runtime  <- return $ runtime{taskForExecUnits=task, pathIndex=paths}
+  xunit    <- initExecUnit Nothing runtime
+  result   <- runReaderT (runExec daoMain xunit) runtime
+  case result of
+    FlowOK     ()  -> return ()
+    FlowReturn obj -> maybe (return ()) (putStrLn . prettyShow) obj
+    FlowErr    err -> hPutStrLn stderr (prettyShow err)
 
 -- | Provide a labeled set of built-in functions for this runtime. Each label indicates a set of
 -- functionality which is checked by the "required" directive of any Dao program that is loaded into
@@ -144,4 +148,12 @@ initRuntimeFiles filePaths = dStack xloc "initRuntimeFiles" $ do
     ioerr = print
     errcall :: ErrorCall -> IO ()
     errcall = print
+
+----------------------------------------------------------------------------------------------------
+
+singleThreaded :: [UStr] -> Exec ()
+singleThreaded args = do
+  deps <- importFullDepGraph args
+  mapM_ loadModule (getDepFiles deps)
+  
 

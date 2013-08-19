@@ -683,7 +683,7 @@ to toch frch = Es.range frch toch
 -- Be careful not to confuse this function with the 'rx' function, which is instantiated to create
 -- 'Regex' functions from 'Prelude.Char's. The expression @'rx' @'@@a@@'@ cannot be used in a
 -- set of other @'Dao.EnumSet.Set' 'Prelude.Char'@ types to create a larger set:
--- > badRegex = 'repeat' ['from' '0' 'to' '9', 'rx' '.'] -- /COMPILE-TIME ERROR!!!/
+-- > badRegex = 'repeat' ['from' '0' 'to' '9', 'rx' @'@.@'@] -- /COMPILE-TIME ERROR!!!/
 -- >
 -- > -- This matches strings ending in dots, like "98765.", "123.", and "0."
 -- > -- but does not match "0.0" or ".123"

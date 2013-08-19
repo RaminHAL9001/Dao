@@ -404,10 +404,13 @@ singletonPTab = (numberPTab<>) $ table $
                 return (AST_MetaEval obj (asLocation startTok <> endLoc))
         ]
   , trueFalse "null" ONull, trueFalse "false" ONull, trueFalse "true" OTrue
+  , reserved "class", reserved "operator", reserved "public", reserved "private", reserved "new"
   ]
   where
     literal constr tok = return (AST_Literal (constr tok) (asLocation tok))
     trueFalse lbl obj = tableItemBy lbl $ \tok -> return (AST_Literal obj (asLocation tok))
+    reserved key = tableItemBy key $ fail $
+      "keyword "++show key++" is reserved for future use, not implemented in this version of Dao"
 
 -- Objects that are parsed as a single value, which includes all literal expressions and equtions in
 -- parentheses.

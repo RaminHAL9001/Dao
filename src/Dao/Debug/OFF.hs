@@ -111,13 +111,13 @@ dPutString
 dPutString _ io _ msg = liftIO (io msg)
 
 dPutStrLn :: Bugged r m => MLoc -> String -> m ()
-dPutStrLn = dPutString undefined putStrLn
+dPutStrLn = dPutString (\ _ _ _ -> DIgnore) putStrLn
 
 dPutStr :: Bugged r m => MLoc -> String -> m ()
-dPutStr = dPutString undefined putStr
+dPutStr = dPutString (\ _ _ _ -> DIgnore) putStr
 
 dPutStrErr :: Bugged r m => MLoc -> String -> m ()
-dPutStrErr _ msg = dPutString undefined (hPutStrLn stderr) undefined msg
+dPutStrErr = dPutString (\ _ _ _ -> DIgnore) (hPutStrLn stderr)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -137,7 +137,7 @@ dCatch _ tryFunc catchFunc = askState >>= \r ->
   liftIO (handle (\e -> debugUnliftIO (catchFunc e) r) (debugUnliftIO tryFunc r))
 
 dHandle :: (Exception e, Bugged r m) => MLoc -> (e -> m a) -> m a -> m a
-dHandle _ catchFunc tryFunc = dCatch undefined tryFunc catchFunc
+dHandle loc catchFunc tryFunc = dCatch loc tryFunc catchFunc
 
 dCatches :: Bugged r m => m a -> [DHandler r a] -> m a
 dCatches tryfn dhands = do
@@ -163,64 +163,55 @@ dMakeVar
   -> m (DVar v)
 dMakeVar newIO _ _ _ _ = liftIO (fmap DVar newIO)
 
+dIgnore :: MLoc -> DThread -> DVar v -> DEvent
+dIgnore _ _ _ = DIgnore
+
 dVar ::
   Bugged r m
   => (v -> IO a)
-  -> (MLoc -> DThread -> DVar v)
   -> MLoc
   -> DVar v
   -> m a
-dVar withVar _ _ dvar = liftIO (withVar (dbgVar dvar))
-
-----------------------------------------------------------------------------------------------------
-
-dNewChan :: Bugged r m => MLoc -> String -> m (DChan v)
-dNewChan _ _ = dMakeVar newChan undefined undefined undefined undefined
-
-dWriteChan :: Bugged r m => MLoc -> DChan v -> v -> m ()
-dWriteChan _ var v = dVar (flip writeChan v) undefined undefined var
-
-dReadChan :: Bugged r m => MLoc -> DChan v -> m v
-dReadChan _ var = dVar readChan undefined undefined var
+dVar withVar _ dvar = liftIO (withVar (dbgVar dvar))
 
 ---------------------------------------------------------------------------------------------------
 
 dNewQSem :: Bugged r m => MLoc -> String -> Int -> m DQSem
-dNewQSem _ _ i = dMakeVar (Sem.new i) undefined undefined undefined undefined
+dNewQSem loc msg i = dMakeVar (Sem.new i) dIgnore "" loc msg
 
 dSignalQSem :: Bugged r m => MLoc -> DQSem -> m ()
-dSignalQSem _ var = dVar Sem.signal undefined undefined var
+dSignalQSem loc var = dVar Sem.signal loc var
 
 dWaitQSem :: Bugged r m => MLoc -> DQSem -> m ()
-dWaitQSem _ var = dVar Sem.wait undefined undefined var
+dWaitQSem loc var = dVar Sem.wait loc var
 
 ----------------------------------------------------------------------------------------------------
 
 dNewMVar :: Bugged r m => MLoc -> String -> v -> m (DMVar v)
-dNewMVar _ _ v = dMakeVar (newMVar v) undefined undefined undefined undefined
+dNewMVar loc msg v = dMakeVar (newMVar v) dIgnore "" loc msg
 
 dNewEmptyMVar :: Bugged r m => MLoc -> String -> m (DMVar v)
-dNewEmptyMVar _ _ = dMakeVar newEmptyMVar undefined undefined undefined undefined
+dNewEmptyMVar loc msg = dMakeVar newEmptyMVar dIgnore "" loc msg
 
 dPutMVar :: Bugged r m => MLoc -> DMVar v -> v -> m ()
-dPutMVar _ var v = dVar (flip putMVar v) undefined undefined var
+dPutMVar loc var v = dVar (flip putMVar v) loc var
 
 dTakeMVar :: Bugged r m => MLoc -> DMVar v -> m v
-dTakeMVar _ var = dVar takeMVar undefined undefined var
+dTakeMVar loc var = dVar takeMVar loc var
 
 dReadMVar :: Bugged r m => MLoc -> DMVar v -> m v
-dReadMVar _ var = dVar readMVar undefined undefined var
+dReadMVar loc var = dVar readMVar loc var
 
 dSwapMVar :: Bugged r m => MLoc -> DMVar v -> v -> m v
-dSwapMVar _ var v = dVar (flip swapMVar v) undefined undefined var
+dSwapMVar loc var v = dVar (flip swapMVar v) loc var
 
 dModifyMVar :: Bugged r m => MLoc -> DMVar v -> (v -> m (v, a)) -> m a
-dModifyMVar _ var updFunc = askState >>= \r ->
-  dVar (\v -> modifyMVar v (\v -> debugUnliftIO (updFunc v) r)) undefined undefined var
+dModifyMVar loc var updFunc = askState >>= \r ->
+  dVar (\v -> modifyMVar v (\v -> debugUnliftIO (updFunc v) r)) loc var
 
 dModifyMVar_ :: Bugged r m => MLoc -> DMVar v -> (v -> m v) -> m ()
-dModifyMVar_ _ var updFunc = askState >>= \r ->
-  dVar (\v -> modifyMVar_ v (\v -> debugUnliftIO (updFunc v) r)) undefined undefined var
+dModifyMVar_ loc var updFunc = askState >>= \r ->
+  dVar (\v -> modifyMVar_ v (\v -> debugUnliftIO (updFunc v) r)) loc var
 
 ----------------------------------------------------------------------------------------------------
 

@@ -120,6 +120,7 @@ data DEvent
   | DUncaught       MLoc DThread          SomeException
     -- ^ a signal sent when a thread is killed (assuming the thread must have been created with
     -- 'Dao.Debug.ON.dFork').
+  | DIgnore -- ^ Sent when an event is necessary but it should be ignored.
   | DHalt -- ^ Sent when the thread being debugged is done.
 
 -- | This is a state that is passed around to every function that uses the "Dao.Debug" facilities.

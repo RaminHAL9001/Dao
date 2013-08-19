@@ -333,20 +333,6 @@ dVar withVar funcName loc var =
 
 ----------------------------------------------------------------------------------------------------
 
--- | Emits a 'DNewChan' signal and calls 'Control.Concurrent.Chan.newChan'.
-dNewChan :: Bugged r m => MLoc -> String -> m (DChan v)
-dNewChan = dMakeVar "Chan" "newChan" newChan
-
--- | Emits a 'DWriteChan' signal and calls 'Control.Concurrent.Chan.writeChan'.
-dWriteChan :: Bugged r m => MLoc -> DChan v -> v -> m ()
-dWriteChan loc var v = dVar (flip writeChan v) "writeChan" loc var
-
--- | Emits a 'DWriteChan' signal and calls 'Control.Concurrent.Chan.writehan'.
-dReadChan :: Bugged r m => MLoc -> DChan v -> m v
-dReadChan = dVar readChan "readChan"
-
-----------------------------------------------------------------------------------------------------
-
 -- | Emits a 'DNewQSem' signal and calls 'Control.Concurrent.Chan.newChan'.
 dNewQSem :: Bugged r m => MLoc -> String -> Int -> m DQSem
 dNewQSem loc msg i = dMakeVar "QSem" ("newQSem "++show i) (Sem.new i) loc msg
@@ -418,6 +404,7 @@ instance Show DEvent where
       p loc th ("throwTo "++show targ++" ("++show err++")"++uchars (dThreadName targ))
     DUncaught       loc th      (SomeException err) ->
       p loc th ("THREAD TERMINATED, uncaught exception "++show err)
+    DIgnore -> ""
     DHalt -> "DEBUG HOST debug target thread execution halted."
     where
       here loc = case loc of

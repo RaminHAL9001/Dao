@@ -163,6 +163,9 @@ instance NFData Pattern where
 instance NFData ObjSetOp where { rnf a = seq a () }
 instance NFData TopLevelEventType where { rnf a = seq a () }
 
+instance NFData AST_SourceCode where
+  rnf (AST_SourceCode a b c) = deepseq a $! deepseq b $! deepseq c ()
+
 instance NFData AST_TopLevel where
   rnf (AST_Attribute  a b c    ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (AST_TopFunc    a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()

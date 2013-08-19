@@ -43,6 +43,7 @@ import           Dao.String
 
 import           Control.Exception
 import           Control.Concurrent
+import qualified Control.Concurrent.SSem as Sem
 import           Control.Monad.Reader
 
 import           Data.Maybe
@@ -348,15 +349,15 @@ dReadChan = dVar readChan "readChan"
 
 -- | Emits a 'DNewQSem' signal and calls 'Control.Concurrent.Chan.newChan'.
 dNewQSem :: Bugged r m => MLoc -> String -> Int -> m DQSem
-dNewQSem loc msg i = dMakeVar "QSem" ("newQSem "++show i) (newQSem i) loc msg
+dNewQSem loc msg i = dMakeVar "QSem" ("newQSem "++show i) (Sem.new i) loc msg
 
 -- | Emits a 'DSignqlQSem' signal and calls 'Control.Concurrent.QSem.signalQSem'.
 dSignalQSem :: Bugged r m => MLoc -> DQSem -> m ()
-dSignalQSem = dVar signalQSem "signalQSem"
+dSignalQSem = dVar Sem.signal "signalQSem"
 
 -- | Emits a 'DSignalQSem' signal and calls 'Control.Concurrent.QSem.signalQSem'.
 dWaitQSem :: Bugged r m => MLoc -> DQSem -> m ()
-dWaitQSem = dVar waitQSem "waitQSem"
+dWaitQSem = dVar Sem.wait "waitQSem"
 
 ----------------------------------------------------------------------------------------------------
 

@@ -49,6 +49,7 @@ import           Dao.String
 
 import           Control.Exception
 import           Control.Concurrent
+import qualified Control.Concurrent.SSem as Sem
 import           Control.Monad.Reader
 
 import           Data.Maybe
@@ -185,13 +186,13 @@ dReadChan _ var = dVar readChan undefined undefined var
 ---------------------------------------------------------------------------------------------------
 
 dNewQSem :: Bugged r m => MLoc -> String -> Int -> m DQSem
-dNewQSem _ _ i = dMakeVar (newQSem i) undefined undefined undefined undefined
+dNewQSem _ _ i = dMakeVar (Sem.new i) undefined undefined undefined undefined
 
 dSignalQSem :: Bugged r m => MLoc -> DQSem -> m ()
-dSignalQSem _ var = dVar signalQSem undefined undefined var
+dSignalQSem _ var = dVar Sem.signal undefined undefined var
 
 dWaitQSem :: Bugged r m => MLoc -> DQSem -> m ()
-dWaitQSem _ var = dVar waitQSem undefined undefined var
+dWaitQSem _ var = dVar Sem.wait undefined undefined var
 
 ----------------------------------------------------------------------------------------------------
 

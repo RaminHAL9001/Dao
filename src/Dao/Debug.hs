@@ -35,6 +35,7 @@ import           Dao.String
 
 import           Control.Exception
 import           Control.Concurrent
+import qualified Control.Concurrent.SSem as Sem
 import           Control.Monad.Reader
 import           Control.Monad.State
 import           Control.Monad.IO.Class
@@ -65,7 +66,7 @@ showThID :: ThreadId -> String
 showThID tid = let th = show tid in fromMaybe th (stripPrefix "ThreadId " th)
 
 -- | The most fundamental types in "Control.Concurrent" are 'Control.Concurrent.MVar',
--- 'Control.Concurrent.Chan' and 'Control.Concurrent.QSem'. These types are wrapped in a data type
+-- 'Control.Concurrent.Chan' and 'Control.Concurrent.SSem.SSem'. These types are wrapped in a data type
 -- that provides more useful information about the variable, particularly a comment string
 -- describing the nature of the variable, and a unique identifier.
 data DVar v
@@ -92,7 +93,7 @@ dVarInfo func dvar = case dvar of
   IDVar _ i ty nm ->
     DVarInfo{varFunction = ustr func, infoVarID = i, infoTypeName = ty, infoVarLabel = nm}
 
-type DQSem = DVar QSem
+type DQSem = DVar Sem.SSem
 type DMVar v = DVar (MVar v)
 type DChan v = DVar (Chan v)
 

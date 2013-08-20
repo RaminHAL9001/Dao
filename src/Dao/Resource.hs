@@ -38,17 +38,9 @@ newDMVarsForResource
   -> String
   -> stor Object
   -> stor (DQSem, Maybe Object)
-  -> ReaderT r IO (Resource stor ref)
-newDMVarsForResource dbg objname unlocked locked = do
-  content <- dNewMVar xloc (dbg++'(':objname++".resource)") (unlocked, locked)
-  return $
-    Resource
-    { resource        = content
-    , updateUnlocked  = error "Resource.updateUnlocked is not defined"
-    , lookupUnlocked  = error "Resource.lookupUnlocked is not defined"
-    , updateLocked    = error "Resource.updateLocked is not defined"
-    , lookupLocked    = error "Resource.lookupLocked is not defined"
-    }
+  -> ReaderT r IO (DMVar (stor Object, stor (DQSem, Maybe Object)))
+newDMVarsForResource dbg objname unlocked locked =
+  dNewMVar xloc (dbg++'(':objname++".resource)") (unlocked, locked)
 
 -- | Returns the unlocked portion of the resource. Locked resources are still being modified, so
 -- their not-yet-updated values are returned.
@@ -57,10 +49,11 @@ getUnlockedResource r = fmap fst (dReadMVar xloc (resource r))
 
 newStackResource :: HasDebugRef r => String -> [T.Tree Name Object] -> ReaderT r IO StackResource
 newStackResource dbg initStack = do
-  resource <- newDMVarsForResource dbg "StackResource" (Stack initStack) (Stack [])
+  content <- newDMVarsForResource dbg "StackResource" (Stack initStack) (Stack [])
   return $
-    resource
-      { updateUnlocked = stackDefine
+    Resource
+      { resource       = content
+      , updateUnlocked = stackDefine
       , lookupUnlocked = stackLookup
       , updateLocked   = stackDefine
       , lookupLocked   = stackLookup
@@ -68,11 +61,12 @@ newStackResource dbg initStack = do
 
 newTreeResource :: HasDebugRef r => String -> T.Tree Name Object -> ReaderT r IO TreeResource
 newTreeResource dbg initTree = do
-  resource <- newDMVarsForResource dbg "TreeResource" initTree T.Void
+  content <- newDMVarsForResource dbg "TreeResource" initTree T.Void
   let updater ref obj t = T.update ref (const obj) t
   return $
-    resource
-    { updateUnlocked = updater
+    Resource
+    { resource       = content
+    , updateUnlocked = updater
     , lookupUnlocked = T.lookup
     , updateLocked   = updater
     , lookupLocked   = T.lookup
@@ -80,11 +74,12 @@ newTreeResource dbg initTree = do
 
 newMapResource :: HasDebugRef r => String -> M.Map Name Object -> ReaderT r IO MapResource
 newMapResource dbg initMap = do
-  resource <- newDMVarsForResource dbg "MapResource" initMap M.empty
+  content <- newDMVarsForResource dbg "MapResource" initMap M.empty
   let updater ref obj m = M.update (const obj) ref m
   return $
-    resource
-    { updateUnlocked = updater
+    Resource
+    { resource       = content
+    , updateUnlocked = updater
     , lookupUnlocked = M.lookup
     , updateLocked   = updater
     , lookupLocked   = M.lookup
@@ -92,12 +87,13 @@ newMapResource dbg initMap = do
 
 newDocResource :: HasDebugRef r => String -> T_tree -> ReaderT r IO DocResource
 newDocResource dbg docdata = do
-  resource <- newDMVarsForResource dbg "DocResource" (initDoc docdata) (NotStored T.Void)
+  content <- newDMVarsForResource dbg "DocResource" (initDoc docdata) (NotStored T.Void)
   let lookup ref d = T.lookup ref (docRootObject d)
       updater ref obj d = d{ docRootObject = T.update ref (const obj) (docRootObject d) }
   return $
-    resource
-    { updateUnlocked = \ref obj d -> (updater ref obj d){ docModified = 1 + docModified d }
+    Resource
+    { resource       = content
+    , updateUnlocked = \ref obj d -> (updater ref obj d){ docModified = 1 + docModified d }
     , updateLocked   = updater
     , lookupUnlocked = lookup
     , lookupLocked   = lookup

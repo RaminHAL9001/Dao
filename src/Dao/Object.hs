@@ -471,7 +471,7 @@ data PrefixOp
 allPrefixOpChars = "$@~!-+"
 allPrefixOpStrs = " $ @ ~ - + ! "
 
-instance Bounded PrefixOp where {minBound = REF; maxBound = NEGTIV}
+instance Bounded PrefixOp where { minBound=REF; maxBound=STATICPFX; }
 
 instance UStrType PrefixOp where
   ustr op = ustr $ case op of
@@ -537,7 +537,7 @@ instance UStrType InfixOp where
     }
   fromUStr str = maybe (error (show str++" is not an infix operator")) id (maybeFromUStr str)
 
-instance Bounded InfixOp where {minBound = ADD; maxBound = SHR}
+instance Bounded InfixOp where { minBound = ADD; maxBound = LTEQ; }
 
 data LambdaExprType = FuncExprType | RuleExprType | PatExprType deriving (Eq, Ord, Enum, Typeable)
 instance Show LambdaExprType where
@@ -986,17 +986,17 @@ data ExecUnit
     , builtinFuncs       :: M.Map Name DaoFunc
       -- ^ a pointer to the builtin function table provided by the runtime.
     , topLevelFuncs      :: M.Map Name [Subroutine]
-    , execStack          :: DMVar (Stack Name Object)
+    , execStack          :: IORef (Stack Name Object)
       -- ^ stack of local variables used during evaluation
-    , queryTimeHeap      :: TreeResource
+    , queryTimeHeap      :: IORef T_tree
       -- ^ the global vairables that are assigned only during a single query, and are deleted after
       -- the query has completed.
-    , globalData         :: TreeResource
+    , globalData         :: IORef T_tree
       -- ^ global variables cleared after every string execution
     , taskForActions     :: Task
-    , execOpenFiles      :: DMVar (M.Map UPath File)
-    , recursiveInput     :: DMVar [UStr]
-    , uncaughtErrors     :: DMVar [Object]
+    , execOpenFiles      :: IORef (M.Map UPath File)
+    , recursiveInput     :: IORef [UStr]
+    , uncaughtErrors     :: IORef [Object]
     ---- used to be elements of Program ----
     , programModuleName :: Maybe UPath
     , programImports    :: [UPath]
@@ -1014,7 +1014,7 @@ data ExecUnit
       -- module associated with this runtime.
     , programComparator :: CompareToken
       -- ^ used to compare string tokens to 'Dao.Glob.Single' pattern constants.
-    , ruleSet           :: DMVar (PatternTree [Executable])
+    , ruleSet           :: IORef (PatternTree [Executable])
     }
 instance HasDebugRef ExecUnit where
   getDebugRef = runtimeDebugger . parentRuntime

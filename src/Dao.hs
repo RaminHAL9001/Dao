@@ -142,12 +142,6 @@ initRuntimeFiles filePaths = dStack xloc "initRuntimeFiles" $ do
             ]
           return False
     else return False
-  where
-    handlers = [Handler ioerr, Handler errcall]
-    ioerr :: IOException -> IO ()
-    ioerr = print
-    errcall :: ErrorCall -> IO ()
-    errcall = print
 
 ----------------------------------------------------------------------------------------------------
 

@@ -32,6 +32,7 @@ import           Dao.Token  hiding (asString)
 import           Dao.Parser hiding (shift)
 import           Dao.Object
 import           Dao.Object.AST
+import           Dao.Object.DeepSeq
 import           Dao.PPrint
 import qualified Dao.Tree as T
 import           Dao.Glob
@@ -75,6 +76,7 @@ import qualified Data.Binary as B
 
 import           System.IO
 
+import Control.DeepSeq
 import Debug.Trace
 tra :: Monad m => String -> r -> m r
 tra msg r = trace msg (return ()) >> return r
@@ -85,15 +87,22 @@ showObj :: PPrintable a => a -> String
 showObj = prettyPrint 80 "    "
 
 initExecUnit :: Maybe UPath -> Runtime -> IO ExecUnit
-initExecUnit modName runtime = flip runReaderT runtime $ do
-  unctErrs <- dNewMVar xloc "ExecUnit.uncaughtErrors" []
-  recurInp <- dNewMVar xloc "ExecUnit.recursiveInput" []
-  qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
-  global   <- newTreeResource  "ExecUnit.globalData" T.Void
-  task     <- initTask
-  xstack   <- dNewMVar xloc "ExecUnit.execStack" emptyStack
-  files    <- dNewMVar xloc "ExecUnit.execOpenFiles" M.empty
-  rules    <- dNewMVar xloc "ExecUnit.ruleSet" T.Void
+initExecUnit modName runtime = do
+  --unctErrs <- dNewMVar xloc "ExecUnit.uncaughtErrors" []
+  unctErrs <- newIORef []
+  --recurInp <- dNewMVar xloc "ExecUnit.recursiveInput" []
+  recurInp <- newIORef []
+  --qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
+  qheap    <- newIORef T.Void
+  --global   <- newTreeResource  "ExecUnit.globalData" T.Void
+  global   <- newIORef T.Void
+  task     <- runReaderT initTask runtime
+  --xstack   <- dNewMVar xloc "ExecUnit.execStack" emptyStack
+  xstack   <- newIORef emptyStack
+  --files    <- dNewMVar xloc "ExecUnit.execOpenFiles" M.empty
+  files    <- newIORef M.empty
+  --rules    <- dNewMVar xloc "ExecUnit.ruleSet" T.Void
+  rules    <- newIORef T.Void
   return $
     ExecUnit
     { parentRuntime      = runtime
@@ -200,9 +209,11 @@ stack_underflow = error "INTERNAL ERROR: stack underflow"
 nestedExecStack :: T_tree -> Exec a -> Exec a
 nestedExecStack init exe = do
   stack <- fmap execStack ask
-  lift $ dModifyMVar_ xloc stack (return . stackPush init)
+  --lift $ dModifyMVar_ xloc stack (return . stackPush init)
+  liftIO $ modifyIORef stack (stackPush init)
   ce <- procCatch exe
-  lift $ dModifyMVar xloc stack (return . stackPop)
+  --lift $ dModifyMVar xloc stack (return . stackPop)
+  liftIO $ modifyIORef stack (fst . stackPop)
   joinFlowCtrl ce
 
 -- | Keep the current 'execStack', but replace it with a new empty stack before executing the given
@@ -210,7 +221,8 @@ nestedExecStack init exe = do
 -- function. This is what you should use to perform a Dao function call within a Dao function call.
 execFuncPushStack :: T_tree -> Exec (Maybe Object) -> Exec (Maybe Object)
 execFuncPushStack dict exe = do
-  stackMVar <- lift (dNewMVar xloc "execFuncPushStack/ExecUnit.execStack" (Stack [dict]))
+  --stackMVar <- lift (dNewMVar xloc "execFuncPushStack/ExecUnit.execStack" (Stack [dict]))
+  stackMVar <- liftIO (newIORef (Stack [dict]))
   ce <- procCatch (local (\xunit -> xunit{execStack=stackMVar}) exe)
   case ce of
     FlowReturn obj -> return obj
@@ -232,7 +244,7 @@ evalIntRef i = do
     Just ma | i==0 -> return $ OArray $
       listArray (let (a, b) = bounds ma in (fromIntegral a, fromIntegral b)) $
         map (OList . map OString) (elems ma)
-    Just ma | inRange (bounds ma) i -> return (OList (map OString $ trace ("evalIntRef "++show i) (ma!i)))
+    Just ma | inRange (bounds ma) i -> return (OList (map OString (ma!i)))
     Just ma -> do
       objectError oi $ concat $
         [ "pattern match variable $"
@@ -244,12 +256,17 @@ evalIntRef i = do
 -- | Lookup an object in the 'globalData' for this 'ExecUnit'.
 execHeapLookup :: [Name] -> Exec (Maybe Object)
 execHeapLookup name = ask >>= \xunit -> lift $
-  readResource (globalData xunit) name
+  --readResource (globalData xunit) name
+  liftIO (fmap (T.lookup name) (readIORef (globalData xunit)))
 
 -- | Lookup an object in the 'globalData' for this 'ExecUnit'.
 execHeapUpdate :: [Name] -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe Object)
-execHeapUpdate name runUpdate = ask >>= \xunit ->
-  inEvalDoUpdateResource (globalData xunit) name runUpdate
+execHeapUpdate name runUpdate = ask >>= \xunit -> do
+  --inEvalDoUpdateResource (globalData xunit) name runUpdate
+  upd <- liftIO (fmap (T.lookup name) (readIORef (globalData xunit))) >>= runUpdate
+  case upd of
+    Nothing  -> return upd
+    Just obj -> liftIO (modifyIORef (globalData xunit) (T.insert name obj)) >> return upd
 
 execHeapDefine :: [Name] -> Object -> Exec (Maybe Object)
 execHeapDefine name obj = execHeapUpdate name (return . const (Just obj))
@@ -293,17 +310,21 @@ curDocVarDelete ref obj = curDocVarUpdate ref (return . const Nothing)
 
 -- | Lookup a value in the 'execStack'.
 localVarLookup :: Name -> Exec (Maybe Object)
-localVarLookup sym = fmap execStack ask >>= lift . dReadMVar xloc >>=
-  return . msum . map (T.lookup [sym]) . mapList
+localVarLookup sym =
+  --fmap execStack ask >>= lift . dReadMVar xloc >>= return . msum . map (T.lookup [sym]) . mapList
+  ask >>= \xunit -> liftIO (fmap (msum . fmap (T.lookup [sym]) . mapList) (readIORef (execStack xunit)))
 
 -- | Apply an altering function to the map at the top of the local variable stack.
 localVarUpdate :: Name -> (Maybe Object -> Maybe Object) -> Exec (Maybe Object)
-localVarUpdate name alt = ask >>= \xunit -> lift $
-  dModifyMVar xloc (execStack xunit) $ \ax -> case mapList ax of
+localVarUpdate name alt = do
+  xunit <- ask
+  --dModifyMVar xloc (execStack xunit) $ \ax -> case mapList ax of
+  liftIO $ atomicModifyIORef (execStack xunit) $ \ax -> case mapList ax of
     []   -> stack_underflow
     a:ax ->
       let obj = alt (T.lookup [name] a)
-      in  return (Stack (T.update [name] (const obj) a : ax), obj)
+      --in  return (Stack (T.update [name] (const obj) a : ax), obj)
+      in  (Stack (T.update [name] (const obj) a : ax), obj)
 
 -- | Force the local variable to be defined in the top level 'execStack' context, do not over-write
 -- a variable that has already been defined in lower in the context stack.
@@ -357,11 +378,17 @@ globalVarDelete :: [Name] -> Exec (Maybe Object)
 globalVarDelete name = globalVarUpdate name (return . const Nothing)
 
 qTimeVarLookup :: [Name] -> Exec (Maybe Object)
-qTimeVarLookup ref = ask >>= \xunit -> lift (readResource (queryTimeHeap xunit) ref)
+qTimeVarLookup ref = do --ask >>= \xunit -> lift (readResource (queryTimeHeap xunit) ref)
+  xunit <- ask
+  liftIO $ fmap (T.lookup ref) (readIORef (queryTimeHeap xunit))
 
 qTimeVarUpdate :: [Name] -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe Object)
-qTimeVarUpdate ref runUpdate = ask >>= \xunit ->
-  inEvalDoUpdateResource (queryTimeHeap xunit) ref runUpdate
+qTimeVarUpdate ref runUpdate = do --ask >>= \xunit -> inEvalDoUpdateResource (queryTimeHeap xunit) ref runUpdate
+  xunit <- ask
+  upd <- liftIO $ fmap (T.lookup ref) (readIORef (queryTimeHeap xunit))
+  case upd of
+    Nothing  -> return upd
+    Just obj -> liftIO (modifyIORef (queryTimeHeap xunit) (T.insert ref obj) >> return upd)
 
 qTimeVarDefine :: [Name] -> Object -> Exec (Maybe Object)
 qTimeVarDefine name obj = qTimeVarUpdate name (return . const (Just obj))
@@ -370,7 +397,8 @@ qTimeVarDelete :: [Name] -> Exec (Maybe Object)
 qTimeVarDelete name = qTimeVarUpdate name (return . const Nothing)
 
 clearAllQTimeVars :: ExecUnit -> Run ()
-clearAllQTimeVars xunit = modifyUnlocked_ (queryTimeHeap xunit) (return . const T.Void)
+clearAllQTimeVars xunit = do --modifyUnlocked_ (queryTimeHeap xunit) (return . const T.Void)
+  liftIO $ modifyIORef (queryTimeHeap xunit) (const T.Void)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -652,7 +680,7 @@ evalShift fn a b = asHaskellInt b >>= \b -> case a of
 evalSubscript :: Object -> Object -> BuiltinOp
 evalSubscript a b = case a of
   OArray  a -> fmap fromIntegral (asInteger b) >>= \b ->
-    if inRange (bounds a) b then return (trace ("evalSubscript "++show a++" ! "++show b) $ a!b) else throwError (ustr "array index out of bounds")
+    if inRange (bounds a) b then return (a!b) else throwError (ustr "array index out of bounds")
   OList   a -> asHaskellInt b >>= \b ->
     let err = throwError (ustr "list index out of bounds")
         ax  = take 1 (drop b a)
@@ -980,7 +1008,8 @@ sendStringsToPrograms permissive names strings = do
   if null found || not permissive && not (null notFound && null nonPrograms)
     then  procErr errMsg
     else  forM_ found $ \ (name, xunit) -> inExecEvalRun $
-            dModifyMVar_ xloc (recursiveInput xunit) (return . (++strings))
+            --dModifyMVar_ xloc (recursiveInput xunit) (return . (++strings))
+            liftIO $ modifyIORef (recursiveInput xunit) (++strings)
 
 builtin_convertRef :: String -> DaoFunc
 builtin_convertRef nm = DaoFuncNoDeref $ \ax -> case ax of
@@ -1323,7 +1352,8 @@ execScriptExpr script = case script of
     lval <- evalObjectExpr lval
     let setBranch ref xunit = return (xunit{currentBranch = ref})
         setFile path xunit = do
-          file <- lift (fmap (M.lookup path) (dReadMVar xloc (execOpenFiles xunit)))
+          --file <- lift (fmap (M.lookup path) (dReadMVar xloc (execOpenFiles xunit)))
+          file <- liftIO (fmap (M.lookup path) (readIORef (execOpenFiles xunit)))
           case file of
             Nothing  -> procErr $ OList $ map OString $
               [ustr "with file path", path, ustr "file has not been loaded"]
@@ -1410,7 +1440,7 @@ evalObjectExprDeref = fmap snd . evalObjectExprDerefWithLoc
 -- | Evaluate an 'ObjectExpr' to an 'Dao.Object.Object' value, and does not de-reference objects of
 -- type 'Dao.Object.ORef'
 evalObjectExprWithLoc :: ObjectExpr -> Exec (Location, Maybe Object)
-evalObjectExprWithLoc obj = trace (prettyShow obj) $ case obj of
+evalObjectExprWithLoc obj = case obj of
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   VoidExpr                       -> return (LocationUnknown, Nothing)
     -- ^ 'VoidExpr's only occur in return statements. Returning 'ONull' where nothing exists is
@@ -1492,8 +1522,8 @@ evalObjectExprWithLoc obj = trace (prettyShow obj) $ case obj of
           DOT   -> liftM2 (,) evalLeft  evalRight
           POINT -> liftM2 (,) derefLeft evalRight
           _     -> liftM2 (,) derefLeft derefRight
-        case trace ("eval infixOp!"++show op) $ (infixOps!op) left right of
-          OK result -> trace ("eval infixOp!"++show op++" evaulated to:\n"++prettyShow result) $ return (Just result)
+        case (infixOps!op) left right of
+          OK result -> return (Just result)
           Backtrack -> procErr $ OList $ concat $
             [ errAt loc, [ostr (show op), ostr "cannot operate on objects of type"]
             , errAt leftloc, [left], errAt rightloc, [right]
@@ -1706,7 +1736,8 @@ programFromSource theNewGlobalTable src xunit = do
               FlowOK (argv, exe) -> do
                 rules <- gets ruleSet
                 let fol tre pat = T.unionWith (++) tre (toTree pat [exe])
-                lift $ dModifyMVar_ xloc rules (\patTree -> return (foldl fol patTree argv))
+                --lift $ dModifyMVar_ xloc rules (\patTree -> return (foldl fol patTree argv))
+                liftIO $ modifyIORef rules (\patTree -> foldl fol patTree argv)
               FlowErr err -> void (storeInitErr err)
             scriptLoop dx
       --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
@@ -1742,7 +1773,8 @@ programFromSource theNewGlobalTable src xunit = do
         FlowErr    err -> storeInitErr err
         FlowReturn obj -> throwFailure obj
     storeInitErr err = do
-      lift $ dModifyMVar_ xloc (uncaughtErrors xunit) (\ex -> return (ex++[err]))
+      --lift $ dModifyMVar_ xloc (uncaughtErrors xunit) (\ex -> return (ex++[err]))
+      liftIO $ modifyIORef (uncaughtErrors xunit) (++[err])
       return (FlowErr err)
     throwFailure :: Maybe Object -> e
     throwFailure obj = error $ concat $
@@ -1836,7 +1868,8 @@ execInputStringsLoop xunit = dStack xloc "execInputStringsLoop" $ do
   where
     loop = do
       dMessage xloc "Get the next input string. Also nub the list of queued input strings."
-      instr <- dModifyMVar xloc (recursiveInput xunit) $ \ax -> return $ case nub ax of
+      --instr <- dModifyMVar xloc (recursiveInput xunit) $ \ax -> return $ case nub ax of
+      instr <- liftIO $ atomicModifyIORef (recursiveInput xunit) $ \ax -> case nub ax of
         []   -> ([], Nothing)
         a:ax -> (ax, Just a)
       case instr of
@@ -1862,7 +1895,8 @@ makeActionsForQuery instr xunit = dStack xloc "makeActionsForQuery" $ do
   tox <- runExec (programTokenizer xunit instr) xunit
   case tox of
     FlowErr    obj -> do
-      dModifyMVar_ xloc (uncaughtErrors xunit) $ \objx -> return $ (objx++) $
+      --dModifyMVar_ xloc (uncaughtErrors xunit) $ \objx -> return $ (objx++) $
+      liftIO $ modifyIORef (uncaughtErrors xunit) $ \objx -> (objx++) $
         [ OList $
             [ obj, ostr "error occured while tokenizing input string"
             , OString instr, ostr "in the program"
@@ -1874,7 +1908,8 @@ makeActionsForQuery instr xunit = dStack xloc "makeActionsForQuery" $ do
   where
     eq = programComparator xunit
     match tox = do
-      tree <- dReadMVar xloc (ruleSet xunit)
+      --tree <- dReadMVar xloc (ruleSet xunit)
+      tree <- liftIO $ readIORef (ruleSet xunit)
       return $
         ActionGroup
         { actionExecUnit = xunit
@@ -1917,22 +1952,26 @@ runStringQuery inputString xunits = dStack xloc "runStringsQuery" $ do
   taskRegisterThreads task $ do
     runtime <- ask
     forM xunits $ \xunit -> do
-      dModifyMVar_ xloc (recursiveInput xunit) (return . (++[inputString]))
-      dFork forkIO xloc "runStringQuery" $ do
-        flip (dCatch xloc) (\ (SomeException _) -> return ()) $ do
-          dStack xloc "Run \"BEGIN\" scripts." $
+      --dModifyMVar_ xloc (recursiveInput xunit) (return . (++[inputString]))
+      liftIO $ modifyIORef (recursiveInput xunit) (++[inputString])
+      --dFork forkIO xloc "runStringQuery" $ do
+      liftIO $ fmap DThread $ forkIO $ do
+        --flip (dCatch xloc) (\ (SomeException _) -> return ()) $ do
+        handle (\ (SomeException _) -> return ()) $ flip runReaderT runtime $ do
+          --dStack xloc "Run \"BEGIN\" scripts." $
             waitAll (return (getBeginEndScripts preExec xunit)) >>= liftIO . evaluate
-          dStack xloc "Call execInputStringsLoop" $
+          --dStack xloc "Call execInputStringsLoop" $
             execInputStringsLoop xunit >>= liftIO . evaluate -- Run RULES and PATTERNS
-          dStack xloc "Run \"END\" scripts." $
+          --dStack xloc "Run \"END\" scripts." $
             waitAll (return (getBeginEndScripts postExec xunit)) >>= liftIO . evaluate
-        completedThreadInTask task
+        runReaderT (completedThreadInTask task) runtime
   taskWaitThreadLoop task
 
 -- | Clears any string queries waiting in the 'Dao.Object.recurisveInput' of an
 -- 'Dao.Object.ExecUnit'.
 clearStringQueries :: ExecUnit -> Run ()
-clearStringQueries xunit = dModifyMVar_ xloc (recursiveInput xunit) (\_ -> return [])
+clearStringQueries xunit = --dModifyMVar_ xloc (recursiveInput xunit) (\_ -> return [])
+  liftIO $ modifyIORef (recursiveInput xunit) (const [])
 
 -- | This is the main input loop. Pass an input function callback to be called on every loop.
 daoInputLoop :: (Run (Maybe UStr)) -> Run ()
@@ -2184,15 +2223,18 @@ execTopLevel ast = do
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     TopScript scrpt lc -> do
       -- push a namespace onto the stack
-      lift $ dModifyMVar_ xloc (execStack xunit) (return . stackPush T.Void)
+      --lift $ dModifyMVar_ xloc (execStack xunit) (return . stackPush T.Void)
+      liftIO $ modifyIORef (execStack xunit) (stackPush T.Void)
       -- get the functions declared this far
       funcMap <- liftIO (readIORef funcs)
       flip catchReturn (\_ -> return ()) $ -- evaluate the script
         local (\_ -> xunit{topLevelFuncs=funcMap}) (execScriptExpr scrpt)
       -- pop the namespace, keep any local variable declarations
-      tree <- lift $ dModifyMVar xloc (execStack xunit) (return . stackPop)
+      --tree <- lift $ dModifyMVar xloc (execStack xunit) (return . stackPop)
+      tree <- liftIO $ atomicModifyIORef (execStack xunit) stackPop
       -- merge the local variables into the global varaibles resource.
-      lift (modifyUnlocked_ (globalData xunit) (return . T.union tree))
+      --lift (modifyUnlocked_ (globalData xunit) (return . T.union tree))
+      liftIO $ modifyIORef (globalData xunit) (T.union tree)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     TopLambdaExpr typ params scrpt lc -> do
       exec   <- setupExecutable scrpt
@@ -2205,8 +2247,9 @@ execTopLevel ast = do
         RuleExprType -> do
           params <- mapM paramsToGlobExpr params
           let fol tre pat = T.unionWith (++) tre (toTree pat [exec])
-          lift $ dModifyMVar_ xloc (ruleSet xunit) (\patTree -> return (foldl fol patTree params))
-          -- modifyIORef rules (++[GlobAction{globPattern=params, getSubExecutable=exec}])
+          --lift $ dModifyMVar_ xloc (ruleSet xunit) (\patTree -> return (foldl fol patTree params))
+          liftIO $ modifyIORef (ruleSet xunit) (\patTree -> foldl fol patTree params)
+          --modifyIORef rules (++[GlobAction{globPattern=params, getSubExecutable=exec}])
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     EventExpr typ scrpt lc -> do
       exec   <- setupExecutable scrpt
@@ -2267,7 +2310,7 @@ loadModule :: UPath -> Exec ExecUnit
 loadModule path = do
   text <- liftIO (readFile (uchars path))
   case parse daoGrammar mempty text of
-    OK  ast -> do
+    OK    ast -> deepseq ast $! do
       mod <- childExecUnit (Just path)
       local (const mod) (execTopLevel (evalTopLevelAST ast)) -- updates and returns 'mod' 
     Backtrack -> throwError $ OList [ostr path, ostr "does not appear to be a valid Dao source file"]

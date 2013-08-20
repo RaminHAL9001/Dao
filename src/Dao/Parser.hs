@@ -290,7 +290,7 @@ tokTypeToUStr tok =
       tt  = unwrapTT tok
   in  if inRange (bounds arr) tt
         then  arr!tt
-        else  error ("no registered identifier "++show tt++" in tokenDB")  where
+        else  error ("no registered identifier "++show tt++" in tokenDB")
 
 tokTypeToString :: (TokenType tok, HasTokenDB tok) => tok -> String
 tokTypeToString = uchars . tokTypeToUStr
@@ -1537,7 +1537,6 @@ table :: Monoid a => TokenType tok => [TableItem tok a] -> PTable tok a
 table tokParserAssocs = case asocs of
   []          -> PTableNull
   (tok1, _):_ -> PTable (accumArray mappend mempty bnds ttParserAssocs) where
-    asocs = fmap tableItemToPair tokParserAssocs
     ttParserAssocs = fmap (\ (tok, parser) -> (unwrapTT tok, Just parser)) asocs
     tt = unwrapTT tok1
     bnds = foldl (\ (lo, hi) (tt, _) -> (min lo tt, max hi tt)) (tt, tt) ttParserAssocs

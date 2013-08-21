@@ -100,7 +100,7 @@ instance Binary (StoredFile T.Tree Name Object) where
 
 -- | Parse Dao program from a 'Prelude.String' containing valid Dao source code, creating a
 -- 'Dao.Object.SourceCode' object. This is a pure function called by 'loadFilePath'.
-loadSourceCode :: UPath -> String -> FlowCtrl AST_SourceCode
+loadSourceCode :: UPath -> String -> FlowCtrl Object (Maybe Object) AST_SourceCode
 -- loadSourceCode upath sourceString = case fst (runParser parseSourceFile sourceString) of
 loadSourceCode upath sourceString = case parse daoGrammar mempty sourceString of
   Backtrack -> FlowErr $ OList $
@@ -113,7 +113,7 @@ loadSourceCode upath sourceString = case parse daoGrammar mempty sourceString of
 
 -- | This function will take any file path and return a file associated with it if it has been
 -- loaded once before. If not, it runs the function you provide to load the file.
-dontLoadFileTwice :: UPath -> (UPath -> Run (FlowCtrl File)) -> Run (FlowCtrl File)
+dontLoadFileTwice :: UPath -> (UPath -> Run (FlowCtrl Object (Maybe Object) File)) -> Run (FlowCtrl Object (Maybe Object) File)
 dontLoadFileTwice upath getFile = do
   runtime <- ask
   ptab <- fmap (M.lookup upath) (dReadMVar xloc (pathIndex runtime))

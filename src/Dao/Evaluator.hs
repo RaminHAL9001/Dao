@@ -1754,7 +1754,7 @@ sourceFromHandle upath h = do
   ctrlExec (loadSourceCode upath text)
 
 -- | If any changes have been made to the file, write these files to persistent storage.
-writeFilePath :: FilePath -> Exec (FlowCtrl ())
+writeFilePath :: FilePath -> Exec (FlowCtrl Object (Maybe Object) ())
 writeFilePath path = do
   let upath = ustr path
   idx  <- asks (pathIndex . parentRuntime)

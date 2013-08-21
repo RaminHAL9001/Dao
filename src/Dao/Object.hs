@@ -426,7 +426,7 @@ instance Show Subroutine where
 -- | All evaluation of the Dao language takes place in the 'Exec' monad. It allows @IO@
 -- functions to be lifeted into it so functions from "Control.Concurrent", "Dao.Document",
 -- "System.IO", and other modules, can be evaluated.
-newtype Exec a  = Exec{ execToProcedural :: Procedural (ReaderT ExecUnit IO) a }
+newtype Exec a  = Exec{ execToProcedural :: Procedural Object (Maybe Object) (ReaderT ExecUnit IO) a }
 instance Functor Exec where { fmap f (Exec m) = Exec (fmap f m) }
 instance Monad Exec where
   return = Exec . return
@@ -451,13 +451,13 @@ instance Bugged ExecUnit Exec where
 
 -- | Evaluate a sub-'Exec' monad and catch the resulting 'FlowCtrl' value, returning it. This
 -- function will never 'FlowReturn' of 'FlowErr', even if the sub-'Exec' does.
-tryExec :: Exec a -> Exec (FlowCtrl a)
+tryExec :: Exec a -> Exec (FlowCtrl Object (Maybe Object) a)
 tryExec fn = Exec (procCatch (execToProcedural fn))
 
 -- | Opposite of 'tryExec', take a 'FlowCtrl' value and behave accordingly: if the 'FlowCtrl' value
 -- is 'FlowReturn', this monad evaluates to a 'FlowReturn' 'Procedural'. If the 'FlowCtrl' is
 -- 'FlowErr', this monad evaluates to a 'FlowErr' 'Procedural'.
-ctrlExec :: FlowCtrl a -> Exec a
+ctrlExec :: FlowCtrl Object (Maybe Object) a -> Exec a
 ctrlExec = Exec . joinFlowCtrl
 
 ----------------------------------------------------------------------------------------------------
@@ -1165,31 +1165,22 @@ instance HasDebugRef Runtime where
 -- "Control.Monad" 'Control.Monad.return' function evaluates to 'FlowOK', which is the identity
 -- monad simply returning a value to be passed to the next monad. 'FlowErr' and 'FlowReturn' must
 -- contain a value of type 'Dao.Types.Object'.
-data FlowCtrl a
+data FlowCtrl err ret a
   = FlowOK     a
-  | FlowErr    Object
-  | FlowReturn (Maybe Object)
-  deriving Show
-
-instance Monad FlowCtrl where
+  | FlowErr    err
+  | FlowReturn ret
+instance Monad (FlowCtrl e r) where
   return = FlowOK
   ma >>= mfa = case ma of
     FlowOK     a -> mfa a
     FlowErr    a -> FlowErr a
     FlowReturn a -> FlowReturn a
-
-instance Functor FlowCtrl where
+instance Functor (FlowCtrl e r) where
   fmap fn mfn = case mfn of
     FlowOK     a -> FlowOK (fn a)
     FlowErr    a -> FlowErr a
     FlowReturn a -> FlowReturn a
-
-instance MonadPlus FlowCtrl where
-  mzero = FlowErr ONull
-  mplus (FlowErr _) b = b
-  mplus a           _ = a
-
-instance MonadError Object FlowCtrl where
+instance MonadError e (FlowCtrl e r) where
   throwError = FlowErr
   catchError ce catch = case ce of
     FlowOK     ce  -> FlowOK     ce
@@ -1199,9 +1190,10 @@ instance MonadError Object FlowCtrl where
 -- | Since the Dao language is a procedural language, there must exist a monad that mimics the
 -- behavior of a procedural program. A procedure may throw errors and return from any point. Thus,
 -- 'Control.Monad.Monad' is extended with 'FlowCtrl'.
-newtype Procedural m a = Procedural { runProcedural :: m (FlowCtrl a) }
-
-instance Monad m => Monad (Procedural m) where
+newtype Procedural err ret m a = Procedural { runProcedural :: m (FlowCtrl err ret a) }
+instance Functor m => Functor (Procedural err ret m) where
+  fmap fn (Procedural m) = Procedural (fmap (fmap fn) m)
+instance Monad m => Monad (Procedural err ret m) where
   return = Procedural . return . FlowOK
   (Procedural ma) >>= mfa = Procedural $ do
     a <- ma
@@ -1209,38 +1201,21 @@ instance Monad m => Monad (Procedural m) where
       FlowOK   a -> runProcedural (mfa a)
       FlowErr  a -> return (FlowErr  a)
       FlowReturn a -> return (FlowReturn a)
-  fail = Procedural . return . FlowErr . ostr
-
-instance Monad m => Functor (Procedural m) where
-  fmap fn mfn = mfn >>= return . fn
-
-instance Monad m => MonadPlus (Procedural m) where
-  mzero = Procedural (return mzero)
-  mplus (Procedural fa) (Procedural fb) = Procedural $ do
-    a <- fa
-    case a of
-      FlowOK     a -> return (FlowOK   a)
-      FlowErr    _ -> fb
-      FlowReturn a -> return (FlowReturn a)
-
-instance MonadTrans Procedural where
+instance MonadTrans (Procedural err ret) where
   lift ma = Procedural (ma >>= return . FlowOK)
-
-instance MonadIO m => MonadIO (Procedural m) where
+instance MonadIO m => MonadIO (Procedural err ret m) where
   liftIO ma = Procedural (liftIO ma >>= return . FlowOK)
-
-instance Monad m => MonadReader r (Procedural (ReaderT r m)) where
+instance Monad m => MonadReader reader (Procedural err ret (ReaderT reader m)) where
   local upd mfn = Procedural (local upd (runProcedural mfn))
   ask = Procedural (ask >>= return . FlowOK)
-
-instance Monad m => MonadError Object (Procedural m) where
+instance Monad m => MonadError e (Procedural e r m) where
   throwError = Procedural . return . FlowErr
   catchError mce catch = Procedural $ runProcedural mce >>= \ce -> case ce of
     FlowOK   a   -> return (FlowOK a)
     FlowReturn obj -> return (FlowReturn obj)
     FlowErr  obj -> runProcedural (catch obj)
 
-catchReturn :: Monad m => Procedural m a -> (Maybe Object -> Procedural m a) -> Procedural m a
+catchReturn :: Monad m => Procedural err (Maybe Object) m a -> (Maybe Object -> Procedural err (Maybe Object) m a) -> Procedural err (Maybe Object) m a
 catchReturn fn catch = Procedural $ runProcedural fn >>= \ce -> case ce of
   FlowReturn obj -> runProcedural (catch obj)
   FlowOK     a   -> return (FlowOK a)
@@ -1248,42 +1223,38 @@ catchReturn fn catch = Procedural $ runProcedural fn >>= \ce -> case ce of
 
 -- | Force the computation to assume the value of a given 'FlowCtrl'. This function can be used to
 -- re-throw a 'Dao.Object.Monad.FlowCtrl' value captured by the 'procCatch' function.
-joinFlowCtrl :: Monad m => FlowCtrl a -> Procedural m a
+joinFlowCtrl :: Monad m => FlowCtrl err ret a -> Procedural err ret m a
 joinFlowCtrl ce = Procedural (return ce)
 
 -- | Evaluate this function when the proceudre must return.
-procReturn :: Monad m => Object -> Procedural m a
+procReturn :: Monad m => Object -> Procedural err (Maybe Object) m a
 procReturn a = joinFlowCtrl (FlowReturn (Just a))
-
--- | Evaluate this function when procedure must throw an error.
-procErr :: Monad m => Object -> Procedural m a
-procErr  a = joinFlowCtrl (FlowErr a)
 
 -- | The inverse operation of 'procJoin', catches the inner 'FlowCtrl' of the given 'Procedural'
 -- evaluation, regardless of whether or not this function evaluates to 'procReturn' or 'procErr',
 -- whereas ordinarily, if the inner 'FlowCtrl' is 'FlowErr' or 'FlowReturn'.
-procCatch :: Monad m => Procedural m a -> Procedural m (FlowCtrl a)
+procCatch :: Monad m => Procedural err ret m a -> Procedural e r m (FlowCtrl err ret a)
 procCatch fn = Procedural (runProcedural fn >>= \ce -> return (FlowOK ce))
 
 -- | The inverse operation of 'procCatch', this function evaluates to a 'Procedural' behaving according
 -- to the 'FlowCtrl' evaluated from the given function.
-procJoin :: Monad m => Procedural m (FlowCtrl a) -> Procedural m a
+procJoin :: Monad m => Procedural err ret m (FlowCtrl err ret a) -> Procedural err ret m a
 procJoin mfn = mfn >>= \a -> Procedural (return a)
 
 -- | Takes an inner 'Procedural' monad. If this inner monad evaluates to a 'FlowReturn', it will not
 -- collapse the continuation monad, and the outer monad will continue evaluation as if a
 -- @('FlowOK' 'Dao.Object.Object')@ value were evaluated.
-catchReturnObj :: Monad m => Procedural m Object -> Procedural m (Maybe Object)
+catchReturnObj :: (Functor m, Monad m) => Procedural err (Maybe Object) m Object -> Procedural err (Maybe Object) m (Maybe Object)
 catchReturnObj exe = procCatch exe >>= \ce -> case ce of
   FlowReturn obj -> return obj
   _              -> fmap Just (joinFlowCtrl ce)
 
 ----------------------------------------------------------------------------------------------------
 
-ioExec :: Exec a -> ExecUnit -> IO (FlowCtrl a)
+ioExec :: Exec a -> ExecUnit -> IO (FlowCtrl Object (Maybe Object) a)
 ioExec func xunit = runReaderT (runProcedural (execToProcedural func)) xunit
 
-newtype ExecHandler a = ExecHandler { execHandler :: ExecUnit -> Handler (FlowCtrl a) }
+newtype ExecHandler a = ExecHandler { execHandler :: ExecUnit -> Handler (FlowCtrl Object (Maybe Object) a) }
 instance Functor ExecHandler where { fmap f (ExecHandler h) = ExecHandler (fmap (fmap (fmap f)) h) }
 
 -- | Create an 'ExecHandler'.

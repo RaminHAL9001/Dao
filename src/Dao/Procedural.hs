@@ -22,7 +22,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE FunctionalDependencies #-}
 
 module Dao.Procedural where
 
@@ -88,18 +88,23 @@ instance Monad m => MonadError e (Procedural e r m) where
     FlowReturn obj -> return (FlowReturn obj)
     FlowErr  obj -> runProcedural (catch obj)
 
--- | Force the computation to assume the value of a given 'FlowCtrl'.
-joinFlowCtrl :: Monad m => FlowCtrl err ret a -> Procedural err ret m a
-joinFlowCtrl ce = Procedural (return ce)
+class Monad m => ProceduralClass err ret m | m -> err ret where
+  -- | Force the computation to assume the value of a given 'FlowCtrl'.
+  proc :: FlowCtrl err ret a -> m a
+  -- | The inverse operation of 'procJoin', catches the inner 'FlowCtrl' of the given 'Procedural'
+  -- evaluation, regardless of whether or not this function evaluates to 'procReturn' or 'procErr',
+  -- whereas ordinarily, if the inner 'FlowCtrl' is 'FlowErr' or 'FlowReturn'.
+  procCatch :: m a -> m (FlowCtrl err ret a)
+  -- | The inverse operation of 'procCatch', this function evaluates to a 'Procedural' behaving
+  -- according to the 'FlowCtrl' evaluated from the given function.
+  procJoin :: m (FlowCtrl err ret a) -> m a
+  procJoin m = m >>= \ctrl -> proc ctrl
+  -- | Evaluate this function when the proceudre must stop exeuting and return a non-error value
+  -- immediately.
+  procReturn :: ret -> m ig
+  procReturn = proc . FlowReturn
 
--- | The inverse operation of 'procJoin', catches the inner 'FlowCtrl' of the given 'Procedural'
--- evaluation, regardless of whether or not this function evaluates to 'procReturn' or 'procErr',
--- whereas ordinarily, if the inner 'FlowCtrl' is 'FlowErr' or 'FlowReturn'.
-procCatch :: Monad m => Procedural err ret m a -> Procedural e r m (FlowCtrl err ret a)
-procCatch fn = Procedural (runProcedural fn >>= \ce -> return (FlowOK ce))
-
--- | The inverse operation of 'procCatch', this function evaluates to a 'Procedural' behaving according
--- to the 'FlowCtrl' evaluated from the given function.
-procJoin :: Monad m => Procedural err ret m (FlowCtrl err ret a) -> Procedural err ret m a
-procJoin mfn = mfn >>= \a -> Procedural (return a)
+instance Monad m => ProceduralClass err ret (Procedural err ret m) where
+  proc ce = Procedural (return ce)
+  procCatch fn = Procedural (runProcedural fn >>= \ce -> return (FlowOK ce))
 

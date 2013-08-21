@@ -449,17 +449,15 @@ instance Bugged ExecUnit Exec where
     FlowOK     a -> return a
     FlowReturn _ -> error "Exec.debugUnliftIO evaluated to 'FlowReturn'"
     FlowErr  err -> error "Exec.debugUnliftIO evaluated to 'FlowErr'"
+instance ProceduralClass Object (Maybe Object) Exec where
+  proc = Exec . proc
+  procCatch    = Exec . procCatch . execToProcedural
+  procJoin mfn = mfn >>= \a -> Exec (Procedural (return a))
 
 -- | Evaluate a sub-'Exec' monad and catch the resulting 'FlowCtrl' value, returning it. This
 -- function will never 'FlowReturn' of 'FlowErr', even if the sub-'Exec' does.
-tryExec :: Exec a -> Exec (FlowCtrl Object (Maybe Object) a)
-tryExec fn = Exec (procCatch (execToProcedural fn))
-
--- | Opposite of 'tryExec', take a 'FlowCtrl' value and behave accordingly: if the 'FlowCtrl' value
--- is 'FlowReturn', this monad evaluates to a 'FlowReturn' 'Procedural'. If the 'FlowCtrl' is
--- 'FlowErr', this monad evaluates to a 'FlowErr' 'Procedural'.
-ctrlExec :: FlowCtrl Object (Maybe Object) a -> Exec a
-ctrlExec = Exec . joinFlowCtrl
+--tryExec :: Exec a -> Exec (FlowCtrl Object (Maybe Object) a)
+--tryExec fn = Exec (procCatch (execToProcedural fn))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1173,7 +1171,7 @@ execCatch :: Exec a -> [ExecHandler a] -> Exec a
 execCatch tryFunc handlers = do
   xunit <- ask
   ctrl  <- liftIO $ catches (ioExec tryFunc xunit) (fmap (\h -> execHandler h xunit) handlers)
-  ctrlExec ctrl
+  proc ctrl
 
 -- | An 'ExecHandler' for catching 'Control.Exception.IOException's and re-throwing them to the
 -- 'Procedural' monad using 'Control.Monad.Error.throwError', allowing the exception to be caught
@@ -1187,17 +1185,13 @@ catchReturn fn catch = Procedural $ runProcedural fn >>= \ce -> case ce of
   FlowOK     a   -> return (FlowOK a)
   FlowErr    obj -> return (FlowErr obj)
 
--- | Evaluate this function when the proceudre must return.
-procReturn :: Monad m => Object -> Procedural err (Maybe Object) m a
-procReturn a = joinFlowCtrl (FlowReturn (Just a))
-
 -- | Takes an inner 'Procedural' monad. If this inner monad evaluates to a 'FlowReturn', it will not
 -- collapse the continuation monad, and the outer monad will continue evaluation as if a
 -- @('FlowOK' 'Dao.Object.Object')@ value were evaluated.
 catchReturnObj :: (Functor m, Monad m) => Procedural err (Maybe Object) m Object -> Procedural err (Maybe Object) m (Maybe Object)
 catchReturnObj exe = procCatch exe >>= \ce -> case ce of
   FlowReturn obj -> return obj
-  _              -> fmap Just (joinFlowCtrl ce)
+  _              -> fmap Just (proc ce)
 
 ----------------------------------------------------------------------------------------------------
 

@@ -946,7 +946,7 @@ derefStringsToDepth handler maxDeref maxDepth o =
           else  do
             let newMax = if maxDepth>=0 then (if i>=maxDepth then 0 else maxDepth-i) else (0-1)
                 recurse = fmap concat . mapM (derefStringsToDepth handler (maxDeref-i) newMax)
-            obj <- tryExec (readReference ref)
+            obj <- procCatch (readReference ref)
             case obj of
               FlowOK     o -> recurse (maybeToList o)
               FlowReturn o -> recurse (maybeToList o)
@@ -1138,10 +1138,10 @@ execScriptExpr script = case script of
     return ()
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   TryCatch try  name  catch loc -> do
-    ce <- tryExec (nestedExecStack T.Void (execScriptBlock try))
+    ce <- procCatch (nestedExecStack T.Void (execScriptBlock try))
     void $ case ce of
       FlowErr o -> nestedExecStack (T.insert [name] o T.Void) (execScriptBlock catch)
-      ce        -> ctrlExec ce
+      ce        -> proc ce
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   ForLoop varName inObj thn loc -> nestedExecStack T.Void $ do
     inObj <- evalObjectExprDeref inObj
@@ -1189,7 +1189,7 @@ execScriptExpr script = case script of
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   ReturnExpr returnStmt obj loc -> do
     o <- evalObjectExprDeref obj :: Exec (Maybe Object)
-    if returnStmt then ctrlExec (FlowReturn o) else throwError (fromMaybe ONull o)
+    if returnStmt then proc (FlowReturn o) else throwError (fromMaybe ONull o)
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   WithDoc   lval    thn     loc -> nestedExecStack T.Void $ do
     lval <- evalObjectExpr lval
@@ -1516,7 +1516,7 @@ completedThreadInTask task = dMyThreadId >>= dPutMVar xloc (taskWaitMVar task)
 -- | Evaluate an 'Dao.Object.Action' in the current thread.
 execAction :: ExecUnit -> Action -> Exec (Maybe Object)
 execAction xunit_ action = do
-  result <- tryExec $ runExecutable T.Void (actionExecutable action)
+  result <- procCatch $ runExecutable T.Void (actionExecutable action)
   case seq result result of
     FlowOK     o -> return o
     FlowReturn o -> return o
@@ -1593,7 +1593,7 @@ waitAll getActionGroup = getActionGroup >>= forkActionGroup
 makeActionsForQuery :: UStr -> ExecUnit -> Exec ActionGroup
 makeActionsForQuery instr xunit = do
   tokenizer <- asks programTokenizer
-  tox <- tryExec (tokenizer instr)
+  tox <- procCatch (tokenizer instr)
   case tox of
     FlowErr    obj -> do
       --dModifyMVar_ xloc (uncaughtErrors xunit) $ \objx -> return $ (objx++) $
@@ -1752,7 +1752,7 @@ execStringsAgainst selectPrograms execStrings = do
 sourceFromHandle :: UPath -> Handle -> Exec AST_SourceCode
 sourceFromHandle upath h = do
   text <- liftIO (hSetBinaryMode h False >> hGetContents h)
-  ctrlExec (loadSourceCode upath text)
+  proc (loadSourceCode upath text)
 
 -- | If any changes have been made to the file, write these files to persistent storage.
 writeFilePath :: FilePath -> Exec (FlowCtrl Object (Maybe Object) ())
@@ -1828,11 +1828,11 @@ execTopLevel ast = do
       liftIO $ modifyIORef (execStack xunit) (stackPush T.Void)
       -- get the functions declared this far
       funcMap <- liftIO (readIORef funcs)
-      ce <- tryExec $ local (\_ -> xunit{topLevelFuncs=funcMap}) (execScriptExpr scrpt)
+      ce <- procCatch $ local (\_ -> xunit{topLevelFuncs=funcMap}) (execScriptExpr scrpt)
       case ce of
         FlowOK     _ -> return ()
         FlowReturn _ -> return ()
-        FlowErr  err -> ctrlExec (FlowErr err)
+        FlowErr  err -> proc (FlowErr err)
       -- pop the namespace, keep any local variable declarations
       --tree <- lift $ dModifyMVar xloc (execStack xunit) (return . stackPop)
       tree <- liftIO $ atomicModifyIORef (execStack xunit) stackPop

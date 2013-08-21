@@ -31,6 +31,7 @@ import qualified Data.Map as M
 
 import           Control.Exception
 import           Control.Monad.Reader
+import           Control.Monad.Error
 
 newDMVarsForResource
   :: HasDebugRef r
@@ -138,13 +139,12 @@ modifyUnlocked_ rsrc runUpdate = modifyResource rsrc $ \unlocked locked ->
 inEvalDoModifyUnlocked :: Resource stor ref -> (stor Object -> Exec (stor Object, a)) -> Exec a
 inEvalDoModifyUnlocked rsrc runUpdate = do
   xunit <- ask
-  ce <- inExecEvalRun $ modifyUnlocked rsrc $ \stor -> do
-    ce <- runExec (runUpdate stor) xunit
+  Exec $ Procedural $ modifyUnlocked rsrc $ \stor -> do
+    ce <- liftIO $ runReaderT (runProcedural (execToProcedural (runUpdate stor))) xunit
     case ce of
       FlowOK (stor, a) -> return (stor, FlowOK   a  )
-      FlowReturn obj     -> return (stor, FlowReturn obj)
+      FlowReturn obj   -> return (stor, FlowReturn obj)
       FlowErr  obj     -> return (stor, FlowErr  obj)
-  joinFlowCtrl ce
 
 inEvalDoModifyUnlocked_ :: Resource stor ref -> (stor Object -> Exec (stor Object)) -> Exec ()
 inEvalDoModifyUnlocked_ rsrc runUpdate =
@@ -192,8 +192,6 @@ updateResource
   -> ReaderT r IO (Maybe Object)
 updateResource rsrc ref runUpdate = updateResource_ rsrc ref id id runUpdate
 
-newtype ContErrMaybe a = ContErrMaybe { contErrMaybe :: FlowCtrl (Maybe a) }
-
 -- | Same function as 'updateResource', but is of the 'Exec' monad type.
 inEvalDoUpdateResource
   :: Resource stor ref -- ^ the resource to access
@@ -202,15 +200,14 @@ inEvalDoUpdateResource
   -> Exec (Maybe Object)
 inEvalDoUpdateResource rsrc ref runUpdate = do
   xunit <- ask
-  let toMaybe ce = case contErrMaybe ce of
-        FlowOK Nothing  -> Nothing
-        FlowOK (Just a) -> Just a
-        FlowReturn a    -> a
-        FlowErr  _      -> Nothing
-      fromMaybe item = ContErrMaybe{contErrMaybe = FlowOK item}
-  inExecEvalRun >=> joinFlowCtrl $
-    fmap contErrMaybe $ updateResource_ rsrc ref toMaybe fromMaybe $ \item ->
-      fmap ContErrMaybe (runExec (runUpdate (toMaybe item)) xunit)
+  let toMaybe ce = case ce of
+        FlowOK     a  -> Just a
+        FlowReturn a  -> a
+        FlowErr  _    -> Nothing
+      fromMaybe = maybe (FlowErr (ostr "undefined reference")) FlowOK
+  ce <- Exec $
+    lift (updateResource_ rsrc ref toMaybe fromMaybe $ \item -> runProcedural (execToProcedural (runUpdate (toMaybe item) >>= maybe (throwError (ostr "undefined reference")) return)))
+  return (toMaybe ce)
 
 -- | This function will return an 'Dao.Object.Object' at a given address ('Dao.Object.Reference')
 -- without blocking, and will return values even if they are locked by another thread with the

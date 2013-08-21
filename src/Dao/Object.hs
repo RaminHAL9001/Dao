@@ -65,6 +65,7 @@ import qualified Data.Set                  as S
 import qualified Data.IntSet               as IS
 import qualified Data.ByteString.Lazy      as B
 
+import           Control.Applicative
 import           Control.Monad
 import           Control.Exception
 import           Control.Concurrent
@@ -207,7 +208,8 @@ oBool a = if a then OTrue else ONull
 -- declare, in the abstract syntax tree (AST) representation of the script exactly why types of
 -- variables are being accessed so the appropriate read, write, or update action can be planned.
 data Reference
-  = IntRef     { intRef    :: Word }  -- ^ reference to a read-only pattern-match variable.
+  = NullRef
+  | IntRef     { intRef    :: Word }  -- ^ reference to a read-only pattern-match variable.
   | LocalRef   { localRef  :: Name } -- ^ reference to a local variable.
   | StaticRef  { localRef  :: Name } -- ^ reference to a permanent static variable (stored per rule/function).
   | QTimeRef   { globalRef :: [Name] } -- ^ reference to a query-time static variable.
@@ -217,9 +219,34 @@ data Reference
   | Subscript  { dereference :: Reference, subscriptValue :: Object } -- ^ reference to value at a subscripted slot in a container object
   | MetaRef    { dereference :: Reference } -- ^ wraps up a 'Reference' as a value that cannot be used as a reference.
   deriving (Eq, Ord, Show, Typeable)
+instance Monoid Reference where
+  mempty = NullRef
+  mappend a b = case b of
+    IntRef     _   -> mempty
+    LocalRef     b -> fn [b]
+    StaticRef    b -> fn [b]
+    QTimeRef     b -> fn  b
+    GlobalRef    b -> fn  b
+    ProgramRef _ b -> mappend a b
+    FileRef    _ b -> fn  b
+    MetaRef    _   -> mempty
+    Subscript  b j -> case a of
+      Subscript a i -> Subscript (Subscript (mappend a b) i) j
+      a             -> Subscript (mappend a b) j
+    where
+      fn b = case a of
+        IntRef     _   -> mempty
+        LocalRef     a -> GlobalRef (a:b)
+        StaticRef    a -> mempty
+        QTimeRef     a -> QTimeRef     (a++b)
+        GlobalRef    a -> GlobalRef    (a++b)
+        ProgramRef f a -> ProgramRef f (mappend a (GlobalRef b))
+        FileRef    f a -> FileRef    f (a++b)
+        MetaRef    _   -> mempty
 
 refSameClass :: Reference -> Reference -> Bool
 refSameClass a b = case (a, b) of
+  (NullRef       , NullRef        ) -> True
   (IntRef       _, IntRef        _) -> True
   (LocalRef     _, LocalRef      _) -> True
   (StaticRef    _, StaticRef     _) -> True
@@ -230,30 +257,6 @@ refSameClass a b = case (a, b) of
   (MetaRef      _, MetaRef       _) -> True
   (Subscript  _ _, Subscript   _ _) -> True
   _                                 -> False
-
-appendReferences :: Reference -> Reference -> Maybe Reference
-appendReferences a b = case b of
-  IntRef     _   -> mzero
-  LocalRef     b -> fn [b]
-  StaticRef    b -> fn [b]
-  QTimeRef     b -> fn  b
-  GlobalRef    b -> fn  b
-  ProgramRef _ b -> appendReferences a b
-  FileRef    _ b -> fn  b
-  MetaRef    _   -> mzero
-  Subscript  b j -> case a of
-    Subscript a i -> appendReferences a b >>= \c -> return (Subscript (Subscript c i) j)
-    a             -> appendReferences a b >>= \c -> return (Subscript c j)
-  where
-    fn b = case a of
-      IntRef     _   -> mzero
-      LocalRef     a -> return (GlobalRef (a:b))
-      StaticRef    a -> mzero
-      QTimeRef     a -> return (QTimeRef     (a++b))
-      GlobalRef    a -> return (GlobalRef    (a++b))
-      ProgramRef f a -> appendReferences a (GlobalRef b) >>= \ref -> return (ProgramRef f ref)
-      FileRef    f a -> return (FileRef    f (a++b))
-      MetaRef    _   -> mzero
 
 -- | The 'Object' type is clumps together all of Haskell's most convenient data structures into a
 -- single data type so they can be used in a non-functional, object-oriented way in the Dao runtime.
@@ -418,10 +421,44 @@ instance Show Subroutine where
   show a = concat $
     [ "Subroutine{argsPattern=", intercalate ", " (map show (argsPattern a)), "}" ]
 
+----------------------------------------------------------------------------------------------------
+
 -- | All evaluation of the Dao language takes place in the 'Exec' monad. It allows @IO@
 -- functions to be lifeted into it so functions from "Control.Concurrent", "Dao.Document",
 -- "System.IO", and other modules, can be evaluated.
-type Exec a  = Procedural (ReaderT ExecUnit IO) a
+newtype Exec a  = Exec{ execToProcedural :: Procedural (ReaderT ExecUnit IO) a }
+instance Functor Exec where { fmap f (Exec m) = Exec (fmap f m) }
+instance Monad Exec where
+  return = Exec . return
+  (Exec m) >>= f = Exec (m >>= execToProcedural . f)
+  fail = Exec . fail
+instance MonadReader ExecUnit Exec where
+  local upd (Exec fn) = Exec (local upd fn)
+  ask = Exec ask
+instance MonadError Object Exec where
+  throwError = Exec . throwError
+  catchError (Exec try) catch = Exec (catchError try (execToProcedural . catch))
+instance MonadIO Exec where { liftIO io = Exec (liftIO io) }
+instance Applicative Exec where { pure = return; (<*>) = ap; }
+instance Bugged ExecUnit Exec where
+  askDebug = asks (runtimeDebugger . parentRuntime)
+  askState = ask
+  setState = local
+  debugUnliftIO exe xunit = ioExec exe xunit >>= \ce -> case ce of
+    FlowOK     a -> return a
+    FlowReturn _ -> error "Exec.debugUnliftIO evaluated to 'FlowReturn'"
+    FlowErr  err -> error "Exec.debugUnliftIO evaluated to 'FlowErr'"
+
+-- | Evaluate a sub-'Exec' monad and catch the resulting 'FlowCtrl' value, returning it. This
+-- function will never 'FlowReturn' of 'FlowErr', even if the sub-'Exec' does.
+tryExec :: Exec a -> Exec (FlowCtrl a)
+tryExec fn = Exec (procCatch (execToProcedural fn))
+
+-- | Opposite of 'tryExec', take a 'FlowCtrl' value and behave accordingly: if the 'FlowCtrl' value
+-- is 'FlowReturn', this monad evaluates to a 'FlowReturn' 'Procedural'. If the 'FlowCtrl' is
+-- 'FlowErr', this monad evaluates to a 'FlowErr' 'Procedural'.
+ctrlExec :: FlowCtrl a -> Exec a
+ctrlExec = Exec . joinFlowCtrl
 
 ----------------------------------------------------------------------------------------------------
 
@@ -930,17 +967,17 @@ initDoc docdata =
 -- which evaluated them, and so can use this reference to evaluate 'Run' monadic functions.
 
 -- | Evaluate an 'Exec' monadic function within the 'Run' monad.
-runExec :: Exec a -> ExecUnit -> Run (FlowCtrl a)
-runExec fn xunit = ReaderT $ \runtime ->
-  runReaderT (runProcedural fn) (xunit{parentRuntime = runtime})
+--runExec :: Exec a -> ExecUnit -> Run (FlowCtrl a)
+--runExec fn xunit = ReaderT $ \runtime ->
+--  runReaderT (runProcedural (execToProcedural fn)) (xunit{parentRuntime = runtime})
 
 -- Evaluate a 'Run' monadic function within an 'Exec' monad.
-inExecEvalRun :: Run a -> Exec a
-inExecEvalRun fn = ask >>= \xunit -> liftIO (runReaderT fn (parentRuntime xunit))
+--inExecEvalRun :: Run a -> Exec a
+--inExecEvalRun fn = ask >>= \xunit -> liftIO (runReaderT fn (parentRuntime xunit))
 
 -- | Pair an error message with an object that can help to describe what went wrong.
-objectError :: Monad m => Object -> String -> Procedural m err
-objectError o msg = procErr (OPair (OString (ustr msg), o))
+objectError :: Object -> String -> Exec ig
+objectError o msg = throwError $ OList [OString (ustr msg), o]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1000,8 +1037,8 @@ data ExecUnit
     ---- used to be elements of Program ----
     , programModuleName :: Maybe UPath
     , programImports    :: [UPath]
-    , constructScript   :: [ScriptExpr]
-    , destructScript    :: [ScriptExpr]
+--    , constructScript   :: [ScriptExpr]
+--    , destructScript    :: [ScriptExpr]
     , requiredBuiltins  :: [Name]
     , programAttributes :: M.Map Name Name
     , preExec      :: [Executable]
@@ -1096,6 +1133,9 @@ data Runtime
     { pathIndex            :: DMVar (M.Map UPath File)
       -- ^ every file opened, whether it is a data file or a program file, is registered here under
       -- it's file path (file paths map to 'File's).
+    , provides             :: S.Set UStr
+      -- ^ the set of features provided by the current version of Dao, and features are checked by
+      -- the "require" statements in Dao script files.
     , defaultTimeout       :: Maybe Int
       -- ^ the default time-out value to use when evaluating 'execInputString'
     , functionSets         :: M.Map Name (M.Map Name DaoFunc)
@@ -1161,12 +1201,6 @@ instance MonadError Object FlowCtrl where
 -- 'Control.Monad.Monad' is extended with 'FlowCtrl'.
 newtype Procedural m a = Procedural { runProcedural :: m (FlowCtrl a) }
 
--- | Procedural languages can modify the state of the program anywhere. To mimic this behavior,
--- 'Procedural' is extended with the 'Control.Monad.Reader.ReaderT' monad, where the
--- 'Control.Monad.Reader.ReaderT' can contain the program state in an 'Data.IORef.IORef' or
--- 'Control.Concurrent.MVar.MVar'.
-type ProcReader r m a = Procedural (ReaderT r m) a
-
 instance Monad m => Monad (Procedural m) where
   return = Procedural . return . FlowOK
   (Procedural ma) >>= mfa = Procedural $ do
@@ -1175,6 +1209,7 @@ instance Monad m => Monad (Procedural m) where
       FlowOK   a -> runProcedural (mfa a)
       FlowErr  a -> return (FlowErr  a)
       FlowReturn a -> return (FlowReturn a)
+  fail = Procedural . return . FlowErr . ostr
 
 instance Monad m => Functor (Procedural m) where
   fmap fn mfn = mfn >>= return . fn
@@ -1246,7 +1281,7 @@ catchReturnObj exe = procCatch exe >>= \ce -> case ce of
 ----------------------------------------------------------------------------------------------------
 
 ioExec :: Exec a -> ExecUnit -> IO (FlowCtrl a)
-ioExec func xunit = runReaderT (runProcedural func) xunit
+ioExec func xunit = runReaderT (runProcedural (execToProcedural func)) xunit
 
 newtype ExecHandler a = ExecHandler { execHandler :: ExecUnit -> Handler (FlowCtrl a) }
 instance Functor ExecHandler where { fmap f (ExecHandler h) = ExecHandler (fmap (fmap (fmap f)) h) }
@@ -1259,7 +1294,7 @@ execCatch :: Exec a -> [ExecHandler a] -> Exec a
 execCatch tryFunc handlers = do
   xunit <- ask
   ctrl  <- liftIO $ catches (ioExec tryFunc xunit) (fmap (\h -> execHandler h xunit) handlers)
-  joinFlowCtrl ctrl
+  ctrlExec ctrl
 
 -- | An 'ExecHandler' for catching 'Control.Exception.IOException's and re-throwing them to the
 -- 'Procedural' monad using 'Control.Monad.Error.throwError', allowing the exception to be caught

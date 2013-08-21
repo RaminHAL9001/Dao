@@ -52,7 +52,7 @@ import           Dao.PPrint
 import           Control.Exception
 import           Control.Monad.Reader
 
-import           Data.Maybe
+import           Data.Monoid
 import           Data.List
 import qualified Data.Map    as M
 import qualified Data.Set    as S
@@ -78,9 +78,10 @@ daoRuntime debugRef daoMain = do
         Runtime
         { pathIndex            = error "Dao:daoRuntime: forgot to set \"pathIndex\""
         , defaultTimeout       = Just 8000000
-        , functionSets         = M.empty
+        , provides             = mempty
+        , functionSets         = mempty
         , taskForExecUnits     = error "Dao:daoRuntime: forgot to set \"taskForExecUnits\""
-        , availableTokenizers  = M.empty
+        , availableTokenizers  = mempty
         , availableComparators = M.fromList $
             [ (ustr "exact"      , exact)
             , (ustr "approximate", approx)
@@ -91,7 +92,7 @@ daoRuntime debugRef daoMain = do
   task     <- runReaderT initTask runtime
   runtime  <- return $ runtime{taskForExecUnits=task, pathIndex=paths}
   xunit    <- initExecUnit Nothing runtime
-  result   <- runReaderT (runExec daoMain xunit) runtime
+  result   <- ioExec daoMain xunit
   case result of
     FlowOK     ()  -> return ()
     FlowReturn obj -> maybe (return ()) (putStrLn . prettyShow) obj
@@ -105,49 +106,10 @@ initRuntimeFunctions :: [(Name, M.Map Name DaoFunc)] -> Runtime -> Runtime
 initRuntimeFunctions funcs runtime =
   runtime{ functionSets = M.union (M.fromList funcs) (functionSets runtime) }
 
--- | Initialize files into the 'Runtime' data structure using a list of files. Each file will be
--- parsed in turn (order is important) by the 'registerFile' function, which can detect the kind of
--- file and load it accordingly. The kinds of files that can be loaded are Dao source files, Dao
--- data files, and Dao compiled programs.
-initRuntimeFiles :: [FilePath] -> Run Bool
-initRuntimeFiles filePaths = dStack xloc "initRuntimeFiles" $ do
-  problems <- forM filePaths $ \filePath ->
-    loadFilePath filePath >>= \flow -> return (filePath, flow)
-  score <- fmap sum $ forM problems $ \p -> case p of
-    (path, FlowOK      _) -> dPutStrErr xloc ("loaded file "++show path) >> return 0
-    (path, FlowReturn re) ->
-      dMessage xloc ("evaluating file "++show path++" returned value "++show re) >> return 1
-    (path, FlowErr   err) -> do
-      case err of
-        OString o -> dPutStrErr xloc (uchars o)
-        o         -> dPutStrErr xloc (concatMap uchars (extractStringElems o))
-      return 1
-  if score==0
-    then do
-      problems <- checkAllImports
-      if null problems
-        then do
-          runtime <- ask
-          files <- fmap M.keys (dReadMVar xloc (pathIndex runtime))
-          dMessage xloc ("list of loaded files updated: " ++ intercalate ", " (map show files))
-          return True
-        else do
-          dPutStrErr xloc $ concat $
-            [ "some Dao programs have imported modules which were not loaded.\n"
-            , (flip concatMap problems $ \ (mod, imprts) -> concat $
-                [ "\tmodule ", show mod, " could not satisfy the import requirements for:\n\t\t"
-                , intercalate ", " (map show imprts), "\n"
-                ]
-              )
-            ]
-          return False
-    else return False
-
 ----------------------------------------------------------------------------------------------------
 
 singleThreaded :: [UStr] -> Exec ()
 singleThreaded args = do
-  deps <- importFullDepGraph args
+  deps   <- importFullDepGraph args
   mapM_ loadModule (getDepFiles deps)
-  
 

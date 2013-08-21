@@ -38,6 +38,7 @@ import qualified Dao.Tree as T
 import           Dao.Glob
 import           Dao.Resource
 import           Dao.Predicate
+import           Dao.Procedural
 import           Dao.Files
 import           Dao.Struct
 

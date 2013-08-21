@@ -34,6 +34,7 @@ import           Dao.Resource
 import qualified Dao.Tree    as T
 import           Dao.Parser
 import           Dao.Predicate
+import           Dao.Procedural
 import           Dao.Object.Parser
 import           Dao.Object.PPrint
 import           Dao.Object.Binary

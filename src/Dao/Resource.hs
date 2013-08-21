@@ -25,6 +25,7 @@ module Dao.Resource where
 import           Dao.Debug.OFF
 import           Dao.String
 import           Dao.Object
+import           Dao.Procedural
 import qualified Dao.Tree as T
 
 import qualified Data.Map as M

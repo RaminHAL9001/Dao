@@ -45,7 +45,7 @@ Dao/Glob.hs
 Dao/Struct.hs
 Dao/Random.hs
 Dao/Predicate.hs
-Dao/Resource.hs
+Dao/Procedural.hs
 Dao/String.hs
 Dao/Token.hs
 Dao/Tree.hs

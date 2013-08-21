@@ -9,6 +9,7 @@ src/Dao/Parser.hs
 src/Dao/Prelude.hs
 src/Dao/EnumSet.hs
 src/Dao/Predicate.hs
+src/Dao/Procedural.hs
 src/Dao/Random.hs
 tests/2.dao
 tests/1.dao
@@ -28,7 +29,6 @@ src/Dao/Object/Binary.hs
 src/Dao/Object/Random.hs
 src/Dao/PPrint.hs
 src/Dao/Tree.hs
-src/Dao/Resource.hs
 src/Dao/String.hs
 src/Dao/Glob.hs
 src/Dao/Token.hs

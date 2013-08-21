@@ -43,7 +43,7 @@ import           Dao.Debug.OFF
 import           Dao.String
 import           Dao.Glob
 import           Dao.Object
-import           Dao.Resource
+import           Dao.Procedural
 import qualified Dao.Tree as T
 import           Dao.Files
 import           Dao.Evaluator

@@ -206,6 +206,10 @@ instance Structured AST_Object where
     , fail "object expression"
     ]
 
+instance Structured AST_CodeBlock where
+  dataToStruct a = deconstruct (putData (getAST_CodeBlock a))
+  structToData = reconstruct (fmap AST_CodeBlock getData)
+
 instance Structured AST_Script where
   dataToStruct a = deconstruct $ case a of
     AST_Comment      a           -> putComments a
@@ -224,12 +228,7 @@ instance Structured AST_Script where
     [ fmap AST_Comment getComments
     , tryWith "equation" $ liftM3 AST_EvalObject (getDataAt "equation")   getComments                                                  getData
     , tryWith "if"       $ liftM5 AST_IfThenElse  getComments            (getDataAt "condition") (getDataAt "then") (getDataAt "else") getData
-    , tryWith "try"      $ do
-        script <- getDataAt "script"
-        str    <- getDataAt "varName"
-        catch  <- if unComment str == nil then return [] else getDataAt "catch"
-        loc    <- getData
-        return (AST_TryCatch script str catch loc)
+    , tryWith "try"      $ liftM4 AST_TryCatch   (getDataAt "script")    (getDataAt "varName")    getData            getData
     , tryWith "for"      $ liftM4 AST_ForLoop    (getDataAt "varName")   (getDataAt "iterator") (getDataAt "script")                   getData
     , tryWith "while"    $ liftM3 AST_WhileLoop  (getDataAt "iterator")  (getDataAt "script")                                          getData
     , tryWith "continue" $ getContinue True
@@ -275,12 +274,12 @@ uninitialized_err a = error $ concat $
   , "the executable has not yet been initialized"
   ]
 
-instance Structured Subroutine where
+instance Structured CallableCode where
   dataToStruct a = deconstruct $ case a of
-    Subroutine a _ -> putData a
+    CallableCode a _ -> putData a
   structToData = reconstruct $ do
     a <- getData
-    return $ Subroutine a $ uninitialized_err "subroutine"
+    return $ CallableCode a $ uninitialized_err "subroutine"
 
 instance Structured Pattern where
   dataToStruct a = deconstruct $ case a of

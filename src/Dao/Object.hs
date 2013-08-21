@@ -100,7 +100,7 @@ type T_intMap   = IM.IntMap Object
 type T_dict     = M.Map Name Object
 type T_tree     = T.Tree Name Object
 type T_pattern  = Glob
-type T_script   = Subroutine
+type T_script   = CallableCode
 type T_bytes    = B.ByteString
 
 data TypeID
@@ -385,43 +385,55 @@ ostr = OString . ustr
 
 ----------------------------------------------------------------------------------------------------
 
+newtype CodeBlock = CodeBlock { codeBlock :: [ScriptExpr] } deriving (Eq, Ord, Show, Typeable)
+instance HasLocation CodeBlock where
+  getLocation o = case codeBlock o of
+    [] -> LocationUnknown
+    [o] -> getLocation o
+    o:ox -> mappend (getLocation o) (getLocation (foldl (flip const) o ox))
+  setLocation o _ = o
+  delLocation o = CodeBlock (fmap delLocation (codeBlock o))
+instance Monoid CodeBlock where
+  mempty      = CodeBlock []
+  mappend a b = CodeBlock (mappend (codeBlock a) (codeBlock b))
+
 -- | A code block is either a rule action, or a function, and contains an 'Data.IORef.IORef' to it's
 -- own static data.
-data CodeBlock
-  = CodeBlock
-    { origSourceCode :: [ScriptExpr]
+data Subroutine
+  = Subroutine
+    { origSourceCode :: CodeBlock
     , staticVars     :: IORef (M.Map Name Object)
     , executable     :: Exec (Maybe Object)
     }
 
 -- | A subroutine is specifically a callable function (but we don't use the name Function to avoid
 -- confusion with Haskell's "Data.Function"). 
-data Subroutine
-  = Subroutine
-    { argsPattern      :: [Pattern]
-    , getSubCodeBlock :: CodeBlock
+data CallableCode
+  = CallableCode
+    { argsPattern   :: [Pattern]
+    , getSubroutine :: Subroutine
     }
   | MacroFunc
-    { argsPattern      :: [Pattern]
-    , getSubCodeBlock :: CodeBlock
+    { argsPattern   :: [Pattern]
+    , getSubroutine :: Subroutine
     }
   | GlobAction
-    { globPattern      :: [Glob]
-    , getSubCodeBlock :: CodeBlock
+    { globPattern   :: [Glob]
+    , getSubroutine :: Subroutine
     }
   deriving Typeable
 
-instance Eq Subroutine where
+instance Eq CallableCode where
   a == b = argsPattern a == argsPattern b
 
-instance Ord Subroutine where
+instance Ord CallableCode where
   compare a b =
     let c = compare (argsPattern a) (argsPattern b)
     in  if c==EQ then compare (argsPattern a) (argsPattern b) else c
 
-instance Show Subroutine where
+instance Show CallableCode where
   show a = concat $
-    [ "Subroutine{argsPattern=", intercalate ", " (map show (argsPattern a)), "}" ]
+    [ "CallableCode{argsPattern=", intercalate ", " (map show (argsPattern a)), "}" ]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -456,7 +468,7 @@ instance ProceduralClass Object (Maybe Object) Exec where
 
 ----------------------------------------------------------------------------------------------------
 
--- | Any data type that can result in procedural executeion in the 'Exec' monad can instantiate this
+-- | Any data type that can result in procedural execution in the 'Exec' monad can instantiate this
 -- class. This will allow the data type to be used as a kind of executable code that can be passed
 -- around and evaluated at arbitrary points in your Dao program.
 class Executable exec where { execute :: exec -> Exec (Maybe Object) }
@@ -614,7 +626,7 @@ data ObjectExpr
   | ArrayExpr     [ObjectExpr]   [ObjectExpr]              Location
   | StructExpr     ObjectExpr    [ObjectExpr]              Location
   | DataExpr      [UStr]                                   Location
-  | LambdaExpr    LambdaExprType [ObjectExpr] [ScriptExpr] Location
+  | LambdaExpr    LambdaExprType [ObjectExpr] CodeBlock    Location
   | MetaEvalExpr  ObjectExpr                               Location
   deriving (Eq, Ord, Show, Typeable)
 
@@ -662,7 +674,7 @@ instance HasLocation ObjectExpr where
     ArrayExpr     a b   _ -> ArrayExpr    (fd1 a) (fd1 b)         lu
     StructExpr    a b   _ -> StructExpr   (fd0 a) (fd1 b)         lu
     DataExpr      a     _ -> DataExpr          a                  lu
-    LambdaExpr    a b c _ -> LambdaExpr        a  (fd1 b) (fd1 c) lu
+    LambdaExpr    a b c _ -> LambdaExpr        a  (fd1 b) (fd0 c) lu
     MetaEvalExpr  a     _ -> MetaEvalExpr (fd0 a)                 lu
     where
       lu = LocationUnknown
@@ -675,13 +687,13 @@ instance HasLocation ObjectExpr where
 -- exectuion.
 data ScriptExpr
   = EvalObject   ObjectExpr                              Location
-  | IfThenElse   ObjectExpr   [ScriptExpr] [ScriptExpr]  Location
-  | TryCatch     [ScriptExpr]  UStr        [ScriptExpr]  Location
-  | ForLoop      Name          ObjectExpr  [ScriptExpr]  Location
-  | WhileLoop    ObjectExpr   [ScriptExpr]               Location
+  | IfThenElse   ObjectExpr    CodeBlock   CodeBlock     Location
+  | TryCatch     CodeBlock     UStr        CodeBlock     Location
+  | ForLoop      Name          ObjectExpr  CodeBlock     Location
+  | WhileLoop    ObjectExpr    CodeBlock                 Location
   | ContinueExpr Bool          ObjectExpr                Location
   | ReturnExpr   Bool          ObjectExpr                Location
-  | WithDoc      ObjectExpr   [ScriptExpr]               Location
+  | WithDoc      ObjectExpr    CodeBlock                 Location
   deriving (Eq, Ord, Show, Typeable)
 
 instance HasLocation ScriptExpr where
@@ -705,13 +717,13 @@ instance HasLocation ScriptExpr where
     WithDoc      a b   _ -> WithDoc      a b   loc
   delLocation o = case o of
     EvalObject   a     _ -> EvalObject   (fd0 a)                 lu
-    IfThenElse   a b c _ -> IfThenElse   (fd0 a) (fd1 b) (fd1 c) lu
-    TryCatch     a b c _ -> TryCatch     (fd1 a)      b  (fd1 c) lu
-    ForLoop      a b c _ -> ForLoop           a  (fd0 b) (fd1 c) lu
-    WhileLoop    a b   _ -> WhileLoop    (fd0 a) (fd1 b)         lu
+    IfThenElse   a b c _ -> IfThenElse   (fd0 a) (fd0 b) (fd0 c) lu
+    TryCatch     a b c _ -> TryCatch     (fd0 a)      b  (fd0 c) lu
+    ForLoop      a b c _ -> ForLoop           a  (fd0 b) (fd0 c) lu
+    WhileLoop    a b   _ -> WhileLoop    (fd0 a) (fd0 b)         lu
     ContinueExpr a b   _ -> ContinueExpr      a  (fd0 b)         lu
     ReturnExpr   a b   _ -> ReturnExpr        a  (fd0 b)         lu
-    WithDoc      a b   _ -> WithDoc      (fd0 a) (fd1 b)         lu
+    WithDoc      a b   _ -> WithDoc      (fd0 a) (fd0 b)         lu
     where
       lu = LocationUnknown
       fd0 :: HasLocation a => a -> a
@@ -738,10 +750,10 @@ instance Read TopLevelEventType where
 -- is a list of these directives.
 data TopLevelExpr
   = Attribute      Name               ObjectExpr                 Location
-  | TopFunc        Name               [ObjectExpr]  [ScriptExpr] Location
+  | TopFunc        Name               [ObjectExpr]  CodeBlock    Location
   | TopScript      ScriptExpr                                    Location
-  | TopLambdaExpr  LambdaExprType     [ObjectExpr]  [ScriptExpr] Location
-  | EventExpr      TopLevelEventType  [ScriptExpr]               Location
+  | TopLambdaExpr  LambdaExprType     [ObjectExpr]  CodeBlock    Location
+  | EventExpr      TopLevelEventType  CodeBlock                  Location
   deriving (Eq, Ord, Show, Typeable)
 
 isAttribute :: TopLevelExpr -> Bool
@@ -762,16 +774,27 @@ instance HasLocation TopLevelExpr where
     EventExpr      a b   _ -> EventExpr      a b   loc
   delLocation o = case o of
     Attribute      a b   _ -> Attribute          a  (fd0 b)         lu
-    TopFunc        a b c _ -> TopFunc            a  (fd1 b) (fd1 c) lu
+    TopFunc        a b c _ -> TopFunc            a  (fd1 b) (fd0 c) lu
     TopScript      a     _ -> TopScript     (fd0 a)                 lu
-    TopLambdaExpr  a b c _ -> TopLambdaExpr      a  (fd1 b) (fd1 c) lu
-    EventExpr      a b   _ -> EventExpr          a  (fd1 b)         lu
+    TopLambdaExpr  a b c _ -> TopLambdaExpr      a  (fd1 b) (fd0 c) lu
+    EventExpr      a b   _ -> EventExpr          a  (fd0 b)         lu
     where
       lu = LocationUnknown
       fd0 :: HasLocation a => a -> a
       fd0 = delLocation
       fd1 :: (HasLocation a, Functor f) => f a -> f a
       fd1 = fmap delLocation
+
+-- | A program is just a list of 'TopLevelExpr's. It serves as the 'Dao.Object.AST.Intermediate'
+-- representation of a 'Dao.Object.AST.AST_SourceCode'.
+newtype Program = Program { topLevelExprs :: [TopLevelExpr] } deriving (Eq, Ord, Show)
+instance HasLocation Program where
+  getLocation o = case topLevelExprs o of
+    [] -> LocationUnknown
+    [o] -> getLocation o
+    o:ox -> mappend (getLocation o) (getLocation (foldl (flip const) o ox))
+  setLocation o _ = o
+  delLocation o = Program (fmap delLocation (topLevelExprs o))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -990,8 +1013,8 @@ data ExecUnit
     , currentQuery       :: Maybe UStr
     , currentPattern     :: Maybe Glob
     , currentMatch       :: Maybe Match
-    , currentCodeBlock  :: Maybe CodeBlock
-      -- ^ when evaluating a 'CodeBlock' selected by a string query, the 'Action' resulting from
+    , currentCodeBlock  :: Maybe Subroutine
+      -- ^ when evaluating a 'Subroutine' selected by a string query, the 'Action' resulting from
       -- that query is defnied here. It is only 'Data.Maybe.Nothing' when the module is first being
       -- loaded from source code.
     , currentBranch      :: [Name]
@@ -999,12 +1022,12 @@ data ExecUnit
       -- to all global references before reading from or writing to those references.
     , importsTable       :: M.Map Name (Maybe File)
       -- ^ a pointer to the ExecUnit of every Dao program imported with the @import@ keyword.
-    , patternTable       :: [Subroutine]
+    , patternTable       :: [CallableCode]
       -- ^ contains functions which are evaluated not by name but by passing objects to them that
       -- match their argument list.
     , builtinFuncs       :: M.Map Name DaoFunc
       -- ^ a pointer to the builtin function table provided by the runtime.
-    , topLevelFuncs      :: M.Map Name [Subroutine]
+    , topLevelFuncs      :: M.Map Name [CallableCode]
     , execStack          :: IORef (Stack Name Object)
       -- ^ stack of local variables used during evaluation
     , queryTimeHeap      :: IORef T_tree
@@ -1019,28 +1042,26 @@ data ExecUnit
     ---- used to be elements of Program ----
     , programModuleName :: Maybe UPath
     , programImports    :: [UPath]
---    , constructScript   :: [ScriptExpr]
---    , destructScript    :: [ScriptExpr]
     , requiredBuiltins  :: [Name]
     , programAttributes :: M.Map Name Name
-    , preExec      :: [CodeBlock]
+    , preExec      :: [Subroutine]
       -- ^ the "guard scripts" that are executed before every string execution.
-    , postExec     :: [CodeBlock]
+    , postExec     :: [Subroutine]
       -- ^ the "guard scripts" that are executed after every string execution.
-    , quittingTime :: [CodeBlock]
+    , quittingTime :: [Subroutine]
     , programTokenizer  :: InputTokenizer
       -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
       -- module associated with this runtime.
     , programComparator :: CompareToken
       -- ^ used to compare string tokens to 'Dao.Glob.Single' pattern constants.
-    , ruleSet           :: IORef (PatternTree [CodeBlock])
+    , ruleSet           :: IORef (PatternTree [Subroutine])
     }
 instance HasDebugRef ExecUnit where
   getDebugRef = runtimeDebugger . parentRuntime
   setDebugRef dbg xunit = xunit{parentRuntime = (parentRuntime xunit){runtimeDebugger = dbg}}
 
 -- | An 'Action' is the result of a pattern match that occurs during an input string query. It is a
--- data structure that contains all the information necessary to run an 'CodeBlock' assocaited with
+-- data structure that contains all the information necessary to run an 'Subroutine' assocaited with
 -- a 'Glob', including the parent 'ExecUnit', the 'Dao.Glob.Glob' and the
 -- 'Dao.Glob.Match' objects, and the 'Executables'.
 data Action
@@ -1048,7 +1069,7 @@ data Action
     { actionQuery      :: Maybe UStr
     , actionPattern    :: Maybe Glob
     , actionMatch      :: Maybe Match
-    , actionCodeBlock :: CodeBlock
+    , actionCodeBlock :: Subroutine
     }
 
 -- | An 'ActionGroup' is a group of 'Action's created within a given 'ExecUnit', this data structure
@@ -1164,11 +1185,11 @@ execHandle = flip execCatch
 execIOException :: ExecHandler ()
 execIOException = ioExecHandler $ \e -> throwError (ostr $ show (e::IOException))
 
-catchReturn :: Monad m => Procedural err (Maybe Object) m a -> (Maybe Object -> Procedural err (Maybe Object) m a) -> Procedural err (Maybe Object) m a
-catchReturn fn catch = Procedural $ runProcedural fn >>= \ce -> case ce of
-  FlowReturn obj -> runProcedural (catch obj)
-  FlowOK     a   -> return (FlowOK a)
-  FlowErr    obj -> return (FlowErr obj)
+catchReturn :: Monad m => Exec a -> (Maybe Object -> Exec a) -> Exec a
+catchReturn fn catch = procCatch fn >>= \ce -> case ce of
+  FlowReturn obj -> catch obj
+  FlowOK     a   -> proc (FlowOK a)
+  FlowErr    obj -> proc (FlowErr obj)
 
 ----------------------------------------------------------------------------------------------------
 

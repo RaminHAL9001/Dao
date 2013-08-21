@@ -141,8 +141,8 @@ instance (NFData a, NFData b) => NFData (T.Tree a b) where
   rnf (T.LeafBranch a b) = deepseq a $! deepseq b ()
 
 instance NFData Glob       where { rnf (Glob       a b  ) = deepseq a $! deepseq b () }
-instance NFData Subroutine where { rnf (Subroutine a _  ) = deepseq a () }
-instance NFData CodeBlock where { rnf (CodeBlock a _ _) = deepseq a () }
+instance NFData CallableCode where { rnf (CallableCode a _  ) = deepseq a () }
+instance NFData Subroutine where { rnf (Subroutine a _ _) = deepseq a () }
 
 instance NFData Pattern where
   rnf  ObjAnyX         = ()
@@ -166,6 +166,8 @@ instance NFData TopLevelEventType where { rnf a = seq a () }
 instance NFData AST_SourceCode where
   rnf (AST_SourceCode a b c) = deepseq a $! deepseq b $! deepseq c ()
 
+instance NFData AST_CodeBlock where { rnf (AST_CodeBlock a) = deepseq a () }
+
 instance NFData AST_TopLevel where
   rnf (AST_Attribute  a b c    ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (AST_TopFunc    a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
@@ -180,6 +182,8 @@ instance NFData TopLevelExpr where
   rnf (TopScript      a b    ) = deepseq a $! deepseq b ()
   rnf (TopLambdaExpr  a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (EventExpr      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+
+instance NFData CodeBlock where { rnf (CodeBlock a) = deepseq a () }
 
 instance NFData ScriptExpr where
   rnf (EvalObject   a b    ) = deepseq a $! deepseq b ()

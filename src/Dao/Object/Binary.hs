@@ -486,27 +486,31 @@ instance Binary Location where
 
 ----------------------------------------------------------------------------------------------------
 
-instance Binary Subroutine where
+instance Binary CallableCode where
   put sub = case sub of
-    Subroutine pat exe -> putWord8 0x25 >> putList pat >> put exe
+    CallableCode pat exe -> putWord8 0x25 >> putList pat >> put exe
     GlobAction pat exe -> putWord8 0x26 >> putList pat >> put exe
   get = getWord8 >>= \w -> case w of
-    0x25 -> liftM2 Subroutine getList get
+    0x25 -> liftM2 CallableCode getList get
     0x26 -> liftM2 GlobAction getList get
 
 instance Binary CodeBlock where
-  put = putList . origSourceCode
+  put = putList . codeBlock
+  get = fmap CodeBlock getList
+
+instance Binary Subroutine where
+  put = put . origSourceCode
   get = do
-    code <- getList
-    let msg = "CodeBlock retrieved from binary used before being initialized."
+    code <- get
+    let msg = "Subroutine retrieved from binary used before being initialized."
     return $
-      CodeBlock
+      Subroutine
       { origSourceCode = code
       , staticVars     = error msg
       , executable     = error msg
       }
 
--- Used by the parser for 'Subroutine', needs to check if it's arguments are 'Dao.Object.Pattern's
+-- Used by the parser for 'CallableCode', needs to check if it's arguments are 'Dao.Object.Pattern's
 -- or 'Dao.Glob.Globs', so it is necessary to report whether or not a byte is a valid prefix for a
 -- 'Dao.Object.Pattern' expression.
 nextIsPattern :: Get Bool

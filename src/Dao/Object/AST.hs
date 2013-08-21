@@ -33,6 +33,7 @@ import           Dao.Object
 import           Control.Monad
 
 import           Data.Typeable
+import           Data.Monoid
 import           Data.List
 import Debug.Trace
 ----------------------------------------------------------------------------------------------------
@@ -40,35 +41,40 @@ import Debug.Trace
 -- | A 'AST_TopLevel' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
 data AST_TopLevel
-  = AST_Attribute  Name              (Com AST_Object)                    Location
-  | AST_TopFunc    [Comment]   Name  (Com [Com AST_Object]) [AST_Script] Location
-  | AST_TopScript  AST_Script                                            Location
-  | AST_TopLambda  LambdaExprType    (Com [Com AST_Object]) [AST_Script] Location
-  | AST_Event      TopLevelEventType [Comment]              [AST_Script] Location
+  = AST_Attribute  Name              (Com AST_Object)                     Location
+  | AST_TopFunc    [Comment]   Name  (Com [Com AST_Object]) AST_CodeBlock Location
+  | AST_TopScript  AST_Script                                             Location
+  | AST_TopLambda  LambdaExprType    (Com [Com AST_Object]) AST_CodeBlock Location
+  | AST_Event      TopLevelEventType [Comment]              AST_CodeBlock Location
   | AST_TopComment [Comment]
   deriving (Eq, Ord, Show, Typeable)
+
+newtype AST_CodeBlock = AST_CodeBlock{ getAST_CodeBlock :: [AST_Script] } deriving (Eq, Ord, Show, Typeable)
+instance Monoid AST_CodeBlock where
+  mempty      = AST_CodeBlock []
+  mappend a b = AST_CodeBlock (mappend (getAST_CodeBlock a) (getAST_CodeBlock b))
 
 -- | Part of the Dao language abstract syntax tree: any expression that controls the flow of script
 -- exectuion.
 data AST_Script
   = AST_Comment                   [Comment]
-  | AST_EvalObject   AST_Object   [Comment]                                         Location
+  | AST_EvalObject   AST_Object   [Comment]                                           Location
     -- ^ some.object.expression = for.example - equations || function(calls) /**/ ;
-  | AST_IfThenElse   [Comment]    AST_Object  (Com [AST_Script]) (Com [AST_Script]) Location
+  | AST_IfThenElse   [Comment]    AST_Object  (Com AST_CodeBlock) (Com AST_CodeBlock) Location
     -- ^ @if /**/ objExpr /**/ {} /**/ else /**/ if /**/ {} /**/ else /**/ {} /**/@
-  | AST_TryCatch     (Com [AST_Script])       (Com UStr)              [AST_Script]  Location
+  | AST_TryCatch     (Com AST_CodeBlock)      (Com UStr)              AST_CodeBlock   Location
     -- ^ @try /**/ {} /**/ catch /**/ errVar /**/ {}@              
-  | AST_ForLoop      (Com Name)               (Com AST_Object)        [AST_Script]  Location
+  | AST_ForLoop      (Com Name)               (Com AST_Object)        AST_CodeBlock   Location
     -- ^ @for /**/ var /**/ in /**/ objExpr /**/ {}@
-  | AST_WhileLoop    (Com AST_Object)                                 [AST_Script]  Location
+  | AST_WhileLoop    (Com AST_Object)                                 AST_CodeBlock   Location
     -- ^ @while objExpr {}@
-  | AST_ContinueExpr Bool  [Comment]          (Com AST_Object)                      Location
+  | AST_ContinueExpr Bool  [Comment]          (Com AST_Object)                        Location
     -- ^ The boolean parameter is True for a "continue" statement, False for a "break" statement.
     -- @continue /**/ ;@ or @continue /**/ if /**/ objExpr /**/ ;@
-  | AST_ReturnExpr   Bool                     (Com AST_Object)                      Location
+  | AST_ReturnExpr   Bool                     (Com AST_Object)                        Location
     -- ^ The boolean parameter is True for a "return" statement, False for a "throw" statement.
     -- ^ @return /**/ ;@ or @return /**/ objExpr /**/ ;@
-  | AST_WithDoc      (Com AST_Object)         [AST_Script]                          Location
+  | AST_WithDoc      (Com AST_Object)         AST_CodeBlock                           Location
     -- ^ @with /**/ objExpr /**/ {}@
   deriving (Eq, Ord, Show, Typeable)
 
@@ -86,7 +92,7 @@ data AST_Object
   | AST_Array                   (Com [Com AST_Object]) [Com AST_Object] Location
   | AST_Struct                       (Com AST_Object)  [Com AST_Object] Location
   | AST_Data                         [Comment]         [Com UStr]       Location
-  | AST_Lambda   LambdaExprType (Com [Com AST_Object]) [AST_Script]     Location
+  | AST_Lambda   LambdaExprType (Com [Com AST_Object]) AST_CodeBlock    Location
   | AST_MetaEval                     (Com AST_Object)                   Location
   deriving (Eq, Ord, Show, Typeable)
 
@@ -138,11 +144,19 @@ instance HasLocation AST_TopLevel where
     AST_TopComment a         -> AST_TopComment a
   delLocation o = case o of
     AST_Attribute  a b     _ -> AST_Attribute       a (fd1 b)                 lu
-    AST_TopFunc    a b c d _ -> AST_TopFunc         a      b  (fd3 c) (fd1 d) lu
+    AST_TopFunc    a b c d _ -> AST_TopFunc         a      b  (fd3 c) (fd0 d) lu
     AST_TopScript  a       _ -> AST_TopScript (fd0  a)                        lu
-    AST_TopLambda  a b c   _ -> AST_TopLambda       a (fd3 b) (fd1 c)         lu
-    AST_Event      a b c   _ -> AST_Event           a      b  (fd1 c)         lu
+    AST_TopLambda  a b c   _ -> AST_TopLambda       a (fd3 b) (fd0 c)         lu
+    AST_Event      a b c   _ -> AST_Event           a      b  (fd0 c)         lu
     AST_TopComment a         -> AST_TopComment      a
+
+instance HasLocation AST_CodeBlock where
+  getLocation o = case getAST_CodeBlock o of
+    [] -> LocationUnknown
+    [o] -> getLocation o
+    o:ox -> mappend (getLocation o) (getLocation (foldl (flip const) o ox))
+  setLocation o _ = o
+  delLocation o = AST_CodeBlock (fmap delLocation (getAST_CodeBlock o))
 
 instance HasLocation AST_Script where
   getLocation o = case o of
@@ -168,13 +182,13 @@ instance HasLocation AST_Script where
   delLocation o = case o of
     AST_Comment      a         -> AST_Comment           a
     AST_EvalObject   a b     _ -> AST_EvalObject   (fd0 a)      b                  lu
-    AST_IfThenElse   a b c d _ -> AST_IfThenElse        a  (fd0 b) (fd2 c) (fd2 d) lu
-    AST_WhileLoop    a b     _ -> AST_WhileLoop    (fd1 a) (fd1 b)                 lu
-    AST_TryCatch     a b c   _ -> AST_TryCatch     (fd2 a)      b  (fd1 c)         lu
-    AST_ForLoop      a b c   _ -> AST_ForLoop           a  (fd1 b) (fd1 c)         lu
+    AST_IfThenElse   a b c d _ -> AST_IfThenElse        a  (fd0 b) (fd1 c) (fd1 d) lu
+    AST_WhileLoop    a b     _ -> AST_WhileLoop    (fd1 a) (fd0 b)                 lu
+    AST_TryCatch     a b c   _ -> AST_TryCatch     (fd1 a)      b  (fd0 c)         lu
+    AST_ForLoop      a b c   _ -> AST_ForLoop           a  (fd1 b) (fd0 c)         lu
     AST_ContinueExpr a b c   _ -> AST_ContinueExpr      a       b  (fd1 c)         lu
     AST_ReturnExpr   a b     _ -> AST_ReturnExpr        a  (fd1 b)                 lu
-    AST_WithDoc      a b     _ -> AST_WithDoc      (fd1 a) (fd1 b)                 lu
+    AST_WithDoc      a b     _ -> AST_WithDoc      (fd1 a) (fd0 b)                 lu
 
 instance HasLocation AST_Object where
   getLocation o = case o of
@@ -220,7 +234,7 @@ instance HasLocation AST_Object where
     AST_Array    a b   _ -> AST_Array    (fd3 a) (fd2 b)         lu
     AST_Struct   a b   _ -> AST_Struct   (fd1 a) (fd2 b)         lu
     AST_Data     a b   _ -> AST_Data          a       b          lu
-    AST_Lambda   a b c _ -> AST_Lambda        a  (fd3 b) (fd1 c) lu
+    AST_Lambda   a b c _ -> AST_Lambda        a  (fd3 b) (fd0 c) lu
     AST_MetaEval a     _ -> AST_MetaEval (fd1 a)                 lu
 
 ----------------------------------------------------------------------------------------------------
@@ -359,41 +373,54 @@ fi1 = fmap Com . fi0
 ll :: Location -> [Location]
 ll = return
 
+instance Intermediate Program AST_SourceCode where
+  toInterm   ast = return $ Program (directives ast >>= toInterm)
+  fromInterm obj = return $
+    AST_SourceCode
+    { sourceModified = 0
+    , sourceFullPath = nil
+    , directives     = topLevelExprs obj >>= fromInterm
+    }
+
 instance Intermediate TopLevelExpr AST_TopLevel where
   toInterm   ast = case ast of
     AST_Attribute  a b     loc -> liftM3 Attribute         [a]     (uc0 b)         (ll loc)
-    AST_TopFunc    _ a b c loc -> liftM4 TopFunc           [a]     (uc2 b) (ti0 c) (ll loc)
+    AST_TopFunc    _ a b c loc -> liftM4 TopFunc           [a]     (uc2 b) (ti  c) (ll loc)
     AST_TopScript  a       loc -> liftM2 TopScript         (ti  a)                 (ll loc)
-    AST_TopLambda  a b c   loc -> liftM4 TopLambdaExpr [a] (uc2 b) (ti0 c)         (ll loc)
-    AST_Event      a _ b   loc -> liftM3 EventExpr     [a] (ti0 b)                 (ll loc)
+    AST_TopLambda  a b c   loc -> liftM4 TopLambdaExpr [a] (uc2 b)         (ti  c) (ll loc)
+    AST_Event      a _ b   loc -> liftM3 EventExpr     [a] (ti  b)                 (ll loc)
     AST_TopComment a           -> mzero
   fromInterm obj = case obj of
     Attribute     a b   loc -> liftM3 AST_Attribute [a]         (nc0 b)         [loc]
-    TopFunc       a b c loc -> liftM5 AST_TopFunc   [[]]   [a]  (nc2 b) (fi0 c) [loc]
+    TopFunc       a b c loc -> liftM5 AST_TopFunc   [[]]   [a]  (nc2 b) (fi  c) [loc]
     TopScript     a     loc -> liftM2 AST_TopScript (fi a)                      [loc]
-    TopLambdaExpr a b c loc -> liftM4 AST_TopLambda [a]         (nc2 b) (fi0 c) [loc]
-    EventExpr     a b   loc -> liftM4 AST_Event     [a]    [[]] (fi0 b)         [loc]
+    TopLambdaExpr a b c loc -> liftM4 AST_TopLambda [a]         (nc2 b) (fi  c) [loc]
+    EventExpr     a b   loc -> liftM4 AST_Event     [a]    [[]] (fi  b)         [loc]
+
+instance Intermediate CodeBlock AST_CodeBlock where
+  toInterm   (AST_CodeBlock ast) = return $ CodeBlock (ast >>= toInterm)
+  fromInterm (CodeBlock obj) = return $ AST_CodeBlock (obj >>= fromInterm)
 
 instance Intermediate ScriptExpr AST_Script where
   toInterm   ast = case ast of
     AST_Comment      _           -> mzero
     AST_EvalObject   a b     loc -> liftM2 EvalObject   (ti  a)                 (ll loc)
-    AST_IfThenElse   _ b c d loc -> liftM4 IfThenElse   (ti  b) (ti1 c) (ti1 d) (ll loc)
-    AST_TryCatch     a b c   loc -> liftM4 TryCatch     (ti1 a) (uc  b) (ti0 c) (ll loc)
-    AST_ForLoop      a b c   loc -> liftM4 ForLoop      (uc  a) (uc0 b) (ti0 c) (ll loc)
-    AST_WhileLoop    a b     loc -> liftM3 WhileLoop    (uc0 a) (ti0 b)         (ll loc)
+    AST_IfThenElse   _ b c d loc -> liftM4 IfThenElse   (ti  b) (uc0 c) (uc0 d) (ll loc)
+    AST_TryCatch     a b c   loc -> liftM4 TryCatch     (uc0 a) (uc  b) (ti  c) (ll loc)
+    AST_ForLoop      a b c   loc -> liftM4 ForLoop      (uc  a) (uc0 b) (ti  c) (ll loc)
+    AST_WhileLoop    a b     loc -> liftM3 WhileLoop    (uc0 a) (ti  b)         (ll loc)
     AST_ContinueExpr a _ c   loc -> liftM3 ContinueExpr [a]     (uc0 c)         (ll loc)
     AST_ReturnExpr   a b     loc -> liftM3 ReturnExpr   [a]     (uc0 b)         (ll loc)
-    AST_WithDoc      a b     loc -> liftM3 WithDoc      (uc0 a) (ti0 b)         (ll loc)
+    AST_WithDoc      a b     loc -> liftM3 WithDoc      (uc0 a) (ti  b)         (ll loc)
   fromInterm obj = case obj of
     EvalObject   a     loc -> liftM3 AST_EvalObject   (fi  a) [[]]                    [loc]
-    IfThenElse   a b c loc -> liftM5 AST_IfThenElse   [[]]    (fi  a) (fi1 b) (fi1 c) [loc]
-    TryCatch     a b c loc -> liftM4 AST_TryCatch     (fi1 a) (nc  b) (fi0 c)         [loc]
-    ForLoop      a b c loc -> liftM4 AST_ForLoop      (nc  a) (nc0 b) (fi0 c)         [loc]
-    WhileLoop    a b   loc -> liftM3 AST_WhileLoop    (nc0 a) (fi0 b)                 [loc]
+    IfThenElse   a b c loc -> liftM5 AST_IfThenElse   [[]]    (fi  a) (nc0 b) (nc0 c) [loc]
+    TryCatch     a b c loc -> liftM4 AST_TryCatch     (nc0 a) (nc  b) (fi  c)         [loc]
+    ForLoop      a b c loc -> liftM4 AST_ForLoop      (nc  a) (nc0 b) (fi  c)         [loc]
+    WhileLoop    a b   loc -> liftM3 AST_WhileLoop    (nc0 a) (fi  b)                 [loc]
     ContinueExpr a b   loc -> liftM4 AST_ContinueExpr [a]     [[]]    (nc0 b)         [loc]
     ReturnExpr   a b   loc -> liftM3 AST_ReturnExpr   [a]     (nc0 b)                 [loc]
-    WithDoc      a b   loc -> liftM3 AST_WithDoc      (nc0 a) (fi0 b)                 [loc]
+    WithDoc      a b   loc -> liftM3 AST_WithDoc      (nc0 a) (fi  b)                 [loc]
 
 instance Intermediate ObjectExpr AST_Object where
   toInterm   ast = case ast of
@@ -409,7 +436,7 @@ instance Intermediate ObjectExpr AST_Object where
     AST_Array    a b   loc -> liftM3 ArrayExpr    (uc2 a) (uc1 b)         (ll loc)
     AST_Struct   a b   loc -> liftM3 StructExpr   (uc0 a) (uc1 b)         (ll loc)
     AST_Data     _ b   loc -> liftM2 DataExpr     (ucx b)                 (ll loc)
-    AST_Lambda   a b c loc -> liftM4 LambdaExpr   [a]     (uc2 b) (ti0 c) (ll loc)
+    AST_Lambda   a b c loc -> liftM4 LambdaExpr   [a]     (uc2 b) (ti  c) (ll loc)
     AST_MetaEval a     loc -> liftM2 MetaEvalExpr (uc0 a)                 (ll loc)
   fromInterm obj = case obj of
     VoidExpr               -> return AST_Void
@@ -424,6 +451,6 @@ instance Intermediate ObjectExpr AST_Object where
     ArrayExpr    a b   loc -> liftM3 AST_Array    (nc2 a)         (nc1 b) [loc]
     StructExpr   a b   loc -> liftM3 AST_Struct   (nc0 a)         (nc1 b) [loc]
     DataExpr     a     loc -> liftM3 AST_Data     [[]]            (ncx a) [loc]
-    LambdaExpr   a b c loc -> liftM4 AST_Lambda   [a]     (nc2 b) (fi0 c) [loc]
+    LambdaExpr   a b c loc -> liftM4 AST_Lambda   [a]     (nc2 b) (fi  c) [loc]
     MetaEvalExpr a     loc -> liftM2 AST_MetaEval (nc0 a)                 [loc]
 

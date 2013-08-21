@@ -666,7 +666,7 @@ equation = joinEvalPTable equationPTab
 
 ----------------------------------------------------------------------------------------------------
 
-bracketed :: String -> DaoParser ([AST_Script], Location)
+bracketed :: String -> DaoParser (AST_CodeBlock, Location)
 bracketed msg = do
   startLoc <- tokenBy "{" asLocation
   scrps    <- mplus (many script) (return [])
@@ -676,7 +676,7 @@ bracketed msg = do
   expect ("curly-bracket to close "++msg++" statement") $ do
     a <- look1 id
     endLoc <- tokenBy "}" asLocation
-    return (filtered, startLoc<>endLoc)
+    return (AST_CodeBlock filtered, startLoc<>endLoc)
 
 script :: DaoParser AST_Script
 script = joinEvalPTable scriptPTab
@@ -701,7 +701,7 @@ scriptPTab = comments <> objExpr <> table exprs where
         tryCom <- return (fmap (const try) tryCom)
         let done comName catch endLoc = return $
               AST_TryCatch tryCom comName catch (asLocation tok <> endLoc)
-        flip mplus (done (Com nil) [] endLoc) $ do
+        flip mplus (done (Com nil) mempty endLoc) $ do
           tokenBy "catch" as0
           expect "varaible name after \"catch\" statement" $ do
             comName <- commented (token LABEL asUStr)
@@ -761,10 +761,10 @@ if_tableItem = tableItemBy "if" $ \tok -> expect "conditional expression after \
       (comElse, elseLoc) <- elseStatement
       return (AST_IfThenElse coms obj comThen comElse (asLocation tok <> thenLoc <> elseLoc))
 
-elseStatement :: DaoParser (Com [AST_Script], Location)
+elseStatement :: DaoParser (Com AST_CodeBlock, Location)
 elseStatement = do
   com1 <- optSpace
-  flip mplus (return (com com1 [] [], LocationUnknown)) $ do
+  flip mplus (return (com com1 mempty [], LocationUnknown)) $ do
     startLoc <- tokenBy "else" asLocation
     com2     <- optSpace
     let done (els, endLoc) = return (com com1 els com2, startLoc<>endLoc)
@@ -774,7 +774,7 @@ elseStatement = do
     expect "curly-bracketed script or another \"if\" statement after \"else\" statement" $
       mplus (bracketed "\"else\" statement" >>= done) $ do
         elsif <- joinEvalPTableItem if_tableItem
-        return (com com1 [elsif] com2, startLoc <> getLocation elsif)
+        return (com com1 (AST_CodeBlock [elsif]) com2, startLoc <> getLocation elsif)
 
 ----------------------------------------------------------------------------------------------------
 

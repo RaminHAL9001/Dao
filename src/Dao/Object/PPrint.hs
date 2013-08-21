@@ -207,22 +207,24 @@ instance PPrintable a => PPrintable (Com a) where { pPrint = pPrintComWith pPrin
 
 -- 'pPrintComWith' wasn't good enough for this, because the comments might occur after the header
 -- but before the opening bracket.
-pPrintComSubBlock :: PPrint () -> Com [AST_Script] -> PPrint ()
-pPrintComSubBlock header c = case c of
+pPrintComCodeBlock :: PPrint () -> Com AST_CodeBlock -> PPrint ()
+pPrintComCodeBlock header c = case c of
   Com          c    -> run [] c []
   ComBefore bx c    -> run bx c []
   ComAfter     c ax -> run [] c ax
   ComAround bx c ax -> run bx c ax
   where
-    run :: [Comment] -> [AST_Script] -> [Comment] -> PPrint ()
-    run before cx after = case cx of
+    run :: [Comment] -> AST_CodeBlock -> [Comment] -> PPrint ()
+    run before cx after = case getAST_CodeBlock cx of
       [] -> header >> pInline (map pPrint before) >> pString " {}" >> pInline (map pPrint after)
       cx -> do
         pClosure (header >> pInline (map pPrint before)) " { " " }" (map (pGroup True . pPrint) cx)
         pInline (map pPrint after)
 
-pPrintSubBlock :: PPrint () -> [AST_Script] -> PPrint ()
-pPrintSubBlock header px = pPrintComSubBlock header (Com px)
+pPrintSubBlock :: PPrint () -> AST_CodeBlock -> PPrint ()
+pPrintSubBlock header px = pPrintComCodeBlock header (Com px)
+
+instance PPrintable AST_CodeBlock where { pPrint o = mapM_ pPrint (getAST_CodeBlock o) }
 
 instance PPrintable AST_Script where
   pPrint expr = pGroup True $ case expr of
@@ -231,7 +233,7 @@ instance PPrintable AST_Script where
       pPrint objXp >> mapM_ pPrint coms >> pString ";"
     AST_IfThenElse   coms   ifXp  thenXp  elseXp    _ -> do
       printIfXp ifXp
-      case unComment elseXp of
+      case getAST_CodeBlock (unComment elseXp) of
         []                   -> return ()
         [p]                  -> case p of
           (AST_IfThenElse _ _ _ _ _) -> pEndLine >> pString "else " >> pPrint p
@@ -240,14 +242,14 @@ instance PPrintable AST_Script where
         where
           printIfXp ifXp = do
             pInline (map pPrint coms)
-            flip pPrintComSubBlock thenXp $ pWrapIndent $ concat $
+            flip pPrintComCodeBlock thenXp $ pWrapIndent $ concat $
               [ [pString "if"]
               , guard(precedeWithSpace coms || precedeWithSpace ifXp) >> [pString " "]
               , [pPrint ifXp]
               ]
-          done = pEndLine >> pPrintComSubBlock (pString "else") elseXp
+          done = pEndLine >> pPrintComCodeBlock (pString "else") elseXp
     AST_TryCatch     cxcScrpXp  cUStr     xcScrpXp  _ -> do
-      pPrintComSubBlock (pString "try") cxcScrpXp
+      pPrintComCodeBlock (pString "try") cxcScrpXp
       if nil == unComment cUStr
         then  pPrint cUStr
         else  pPrintSubBlock (pString " " >> pString "catch " >> pPrint cUStr) xcScrpXp
@@ -319,16 +321,16 @@ instance PPrintable AST_Object where
 instance PPrintable AST_TopLevel where
   pPrint o = case o of
     AST_Attribute a b     _ -> pInline [pPrint a, pString "  ", pPrint b, pString ";"]
-    AST_TopFunc   a b c d _ -> pClosure header " { " " }" (map pPrint d) where
+    AST_TopFunc   a b c d _ -> pClosure header " { " " }" (map pPrint (getAST_CodeBlock d)) where
       header = do
         pString "function "
         mapM_ pPrint a
         pPrint b
         pPrintComWith (pList_ "(" ", " ")" . map pPrint) c
     AST_TopScript a       _ -> pPrint a
-    AST_TopLambda a b c   _ -> pClosure header " { " " }" (map pPrint c) where
+    AST_TopLambda a b c   _ -> pClosure header " { " " }" (map pPrint (getAST_CodeBlock c)) where
       header = pShow a >> pPrintComWith (pList_ "(" ", " ")" . map pPrint) b
-    AST_Event     a b c   _ -> pClosure (pShow a >> mapM_ pPrint b) " { " " }" (map pPrint c)
+    AST_Event     a b c   _ -> pClosure (pShow a >> mapM_ pPrint b) " { " " }" (map pPrint (getAST_CodeBlock c))
     AST_TopComment a        -> mapM_ (\a -> pPrint a >> pNewLine) a
 
 pPrintInterm :: (Intermediate obj ast, PPrintable ast) => obj -> PPrint ()
@@ -338,16 +340,16 @@ instance PPrintable TopLevelExpr where { pPrint = pPrintInterm }
 instance PPrintable ScriptExpr   where { pPrint = pPrintInterm }
 instance PPrintable ObjectExpr   where { pPrint = pPrintInterm }
 
-instance PPrintable Subroutine where
+instance PPrintable CallableCode where
   pPrint a = case a of
-    Subroutine pats exe -> prin "function" pats exe
+    CallableCode pats exe -> prin "function" pats exe
     GlobAction pats exe -> prin "rule"     pats exe
     where
       prin typ pats exe =
         pClosure (pList (pString typ) "(" "," ")" (map pPrint pats)) "{" "}" $
-          map pPrint (origSourceCode exe)
+          map pPrint (codeBlock (origSourceCode exe))
 
-instance PPrintable CodeBlock where { pPrint = mapM_ pPrint . origSourceCode }
+instance PPrintable Subroutine where { pPrint = mapM_ pPrint . codeBlock . origSourceCode }
 
 instance PPrintable Pattern where
   pPrint pat = case pat of

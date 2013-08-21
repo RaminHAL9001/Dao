@@ -20,7 +20,6 @@ tests/EQN.hs
 src/Dao/Object/Struct.hs
 src/Dao/Struct.hs
 src/Dao.hs
-src/Dao/Files.hs
 src/Dao/Object/DeepSeq.hs
 src/Dao/Object/PPrint.hs
 src/Dao/Object/Math.hs

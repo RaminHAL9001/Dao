@@ -39,7 +39,7 @@ import           Dao.Glob
 import           Dao.Resource
 import           Dao.Predicate
 import           Dao.Procedural
-import           Dao.Files
+--import           Dao.Files
 import           Dao.Struct
 
 import           Dao.Object.Math
@@ -111,7 +111,7 @@ initExecUnit modName runtime = do
     , currentQuery       = Nothing
     , currentPattern     = Nothing
     , currentMatch       = Nothing
-    , currentExecutable  = Nothing
+    , currentCodeBlock  = Nothing
     , currentBranch      = []
     , importsTable       = M.empty
     , patternTable       = []
@@ -142,26 +142,26 @@ initExecUnit modName runtime = do
 childExecUnit :: Maybe UPath -> Exec ExecUnit
 childExecUnit path = ask >>= \xunit -> liftIO (initExecUnit path (parentRuntime xunit))
 
-setupExecutable :: [ScriptExpr] -> Exec Executable
-setupExecutable scrp = do
+setupCodeBlock :: [ScriptExpr] -> Exec CodeBlock
+setupCodeBlock scrp = do
   -- do meta-expression evaluation right here and now ('Dao.Object.MetaEvalExpr')
   scrp <- mapM evalMetaExpr scrp
   -- create the 'Data.IORef.IORef' for storing static variables
   staticRsrc <- liftIO (newIORef M.empty)
   return $
-    Executable
+    CodeBlock
     { origSourceCode = scrp
     , staticVars     = staticRsrc
     , executable     = execScriptBlock scrp >>= liftIO . evaluate
     }
 
-runExecutable :: T_tree -> Executable -> Exec (Maybe Object)
-runExecutable initStack exe = local (\xunit -> xunit{currentExecutable = Just exe}) $!
+runCodeBlock :: T_tree -> CodeBlock -> Exec (Maybe Object)
+runCodeBlock initStack exe = local (\xunit -> xunit{currentCodeBlock = Just exe}) $!
   execFuncPushStack initStack (executable exe >>= liftIO . evaluate)
 
 -- | Given a list of arguments, matches these arguments to the given subroutine's
--- 'Dao.Object.Pattern'. If it matches, the 'Dao.Object.getSubExecutable' of the 'Dao.Object.Executable'
--- is evaluated with 'runExecutable'. If the pattern does not match, an empty list is returned to the
+-- 'Dao.Object.Pattern'. If it matches, the 'Dao.Object.getSubCodeBlock' of the 'Dao.Object.CodeBlock'
+-- is evaluated with 'runCodeBlock'. If the pattern does not match, an empty list is returned to the
 -- 'Dao.Object.Exec' monad, which allows multiple 'Dao.Object.Subroutine's to be tried before
 -- evaluating to an error in the calling context. The arguments to this function should be produced by
 -- 'evalObjectExprWithLoc', producing a list of values that might contain not-yet-dereferenced local
@@ -170,14 +170,14 @@ runExecutable initStack exe = local (\xunit -> xunit{currentExecutable = Just ex
 -- 'objectDeref' to produce the values that are to be "passed" to the function. The values passed
 -- are then bound to the local variables using 'Dao.Object.Pattern.matchObjectList', and the
 -- resulting local variables map is set before executing the 'Dao.Object.Subroutine's
--- 'Dao.Object.Executable'.
+-- 'Dao.Object.CodeBlock'.
 runSubroutine :: [(Location, Object)] -> Subroutine -> Exec (Maybe Object)
 runSubroutine args sub = do
   args <- case sub of
     MacroFunc _ _ -> return (map snd args) -- do NOT dereference the arguments for a macro function.
     _             -> mapM objectDeref args
   case evalMatcher (matchObjectList (argsPattern sub) args >> gets matcherTree) of
-    OK   tree -> runExecutable tree (getSubExecutable sub)
+    OK   tree -> runCodeBlock tree (getSubCodeBlock sub)
     Backtrack -> return Nothing
     PFail ref -> throwError (ORef ref)
 
@@ -334,14 +334,14 @@ localVarDelete nm = localVarUpdate nm (const Nothing)
 
 staticVarLookup :: Name -> Exec (Maybe Object)
 staticVarLookup nm = do
-  exe <- fmap (currentExecutable >=> return . staticVars) ask
+  exe <- fmap (currentCodeBlock >=> return . staticVars) ask
   case exe of
     Nothing  -> return Nothing
     Just exe -> liftIO (readIORef exe) >>= return . M.lookup nm
 
 staticVarUpdate :: Name -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe Object)
 staticVarUpdate nm upd = do
-  ref <- fmap (currentExecutable >=> return . staticVars) ask
+  ref <- fmap (currentCodeBlock >=> return . staticVars) ask
   case ref of
     Nothing  -> return Nothing
     Just ref -> do
@@ -1452,17 +1452,17 @@ evalObjectExprWithLoc obj = case obj of
 
 evalLambdaExpr :: LambdaExprType -> [ObjectExpr] -> [ScriptExpr] -> Exec Object
 evalLambdaExpr typ argv code = do
-  exe <- setupExecutable (code)
+  exe <- setupCodeBlock (code)
   let convArgv fn = mapM fn argv
   case typ of
     FuncExprType -> do
       argv <- convArgv paramsToObjPatExpr
       return $ OScript $
-        Subroutine{argsPattern=argv, getSubExecutable=exe}
+        Subroutine{argsPattern=argv, getSubCodeBlock=exe}
     RuleExprType -> do
       argv <- convArgv paramsToGlobExpr
       return $ OScript $
-        GlobAction{globPattern=argv, getSubExecutable=exe}
+        GlobAction{globPattern=argv, getSubCodeBlock=exe}
 
 -- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Object.Pattern'.
 paramsToObjPatExpr :: ObjectExpr -> Exec Pattern
@@ -1516,7 +1516,7 @@ completedThreadInTask task = dMyThreadId >>= dPutMVar xloc (taskWaitMVar task)
 -- | Evaluate an 'Dao.Object.Action' in the current thread.
 execAction :: ExecUnit -> Action -> Exec (Maybe Object)
 execAction xunit_ action = do
-  result <- procCatch $ runExecutable T.Void (actionExecutable action)
+  result <- procCatch $ runCodeBlock T.Void (actionCodeBlock action)
   case seq result result of
     FlowOK     o -> return o
     FlowReturn o -> return o
@@ -1527,7 +1527,7 @@ execAction xunit_ action = do
       { currentQuery      = actionQuery      action
       , currentPattern    = actionPattern    action
       , currentMatch      = actionMatch      action
-      , currentExecutable = Just (actionExecutable action)
+      , currentCodeBlock = Just (actionCodeBlock action)
       }
 
 -- | Create a new thread and evaluate an 'Dao.Object.Action' in that thread. This thread is defined
@@ -1575,7 +1575,7 @@ execInputStringsLoop xunit = dStack xloc "execInputStringsLoop" $ do
       case instr of
         Nothing    -> return ()
         Just instr -> dStack xloc ("execInputString "++show instr) $ do
-          dStack xloc "Exec 'execPatternMatchExecutable' for every matching item." $
+          dStack xloc "Exec 'execPatternMatchCodeBlock' for every matching item." $
             waitAll (makeActionsForQuery instr xunit) >>= liftIO . evaluate
           dMessage xloc "Exec the next string."
           loop
@@ -1620,14 +1620,14 @@ makeActionsForQuery instr xunit = do
               { actionQuery      = Just instr
               , actionPattern    = Just patn
               , actionMatch      = Just mtch
-              , actionExecutable = exec
+              , actionCodeBlock = exec
               }
         }
 
 -- | Create a list of 'Dao.Object.Action's for every BEGIN or END statement in the Dao program. Pass
 -- 'Dao.Object.preExec' as the first parameter to get the BEGIN scrpits, pass 'Dao.Object.postExec'
 -- to get the END scripts.
-getBeginEndScripts :: (ExecUnit -> [Executable]) -> ExecUnit -> ActionGroup
+getBeginEndScripts :: (ExecUnit -> [CodeBlock]) -> ExecUnit -> ActionGroup
 getBeginEndScripts select xunit =
   ActionGroup
   { actionExecUnit = xunit
@@ -1636,7 +1636,7 @@ getBeginEndScripts select xunit =
       { actionQuery      = Nothing
       , actionPattern    = Nothing
       , actionMatch      = Nothing
-      , actionExecutable = exe
+      , actionCodeBlock = exe
       }
   }
 
@@ -1744,59 +1744,6 @@ execStringsAgainst selectPrograms execStrings = do
       makeActionsForQuery execString xunit >>= execActionGroup
 
 ----------------------------------------------------------------------------------------------------
--- src/Dao/Files.hs
-
--- | Load a Dao script program from the given file handle, return a 'Dao.Object.AST_SourceCode' object.
--- Specify a path to be used when reporting parsing errors. Does not register the source code into
--- the given runtime.
-sourceFromHandle :: UPath -> Handle -> Exec AST_SourceCode
-sourceFromHandle upath h = do
-  text <- liftIO (hSetBinaryMode h False >> hGetContents h)
-  proc (loadSourceCode upath text)
-
--- | If any changes have been made to the file, write these files to persistent storage.
-writeFilePath :: FilePath -> Exec (FlowCtrl Object (Maybe Object) ())
-writeFilePath path = do
-  let upath = ustr path
-  idx  <- asks (pathIndex . parentRuntime)
-  file <- fmap (M.lookup upath) (dReadMVar xloc idx)
-  case file of
-    Nothing -> return $ FlowErr $ OList $
-      [ostr "cannot write, file path has not been opened", OString upath]
-    Just file -> case file of
-      ProgramFile  _   -> return $ FlowErr $ OList $
-        [ostr "cannot write, file path is opened as a module", OString upath]
-      DocumentFile doc -> do
-        let res = resource doc
-        doc <- fmap fst (dReadMVar xloc res)
-        case doc of
-          NotStored tree -> do
-            let doc = initDoc tree
-            liftIO (B.encodeFile path tree >>= evaluate)
-            dModifyMVar_ xloc res (\ (_, locked) -> return (doc, locked))
-            return (FlowOK ())
-          _ -> do -- StoredFile
-           liftIO (B.encodeFile path doc >>= evaluate) 
-           dModifyMVar_ xloc res (\ (_, locked) -> return (doc{docModified=0}, locked))
-           return (FlowOK ())
-
-unloadFilePath :: FilePath -> Exec ()
-unloadFilePath path = do
-  let upath = ustr path
-  idx  <- asks (pathIndex . parentRuntime)
-  file <- fmap (M.lookup upath) (dReadMVar xloc idx)
-  case file of
-    Nothing   -> return ()
-    Just file -> dModifyMVar_ xloc idx (return . M.delete upath)
-
--- | When a program is loaded, and when it is released, any block of Dao code in the source script
--- that is denoted with the @SETUP@ or @TAKEDOWN@ rules will be executed. This function performs
--- that execution in the current thread.
-setupOrTakedown :: (ExecUnit -> [ScriptExpr]) -> ExecUnit -> Exec ()
-setupOrTakedown select xunit = ask >>= \runtime ->
-  void (execGuardBlock (select xunit)) >>= liftIO . evaluate
-
-----------------------------------------------------------------------------------------------------
 
 -- | Initialized the current 'ExecUnit' by evaluating all of the 'Dao.Object.TopLevel' data in a
 -- 'Dao.Object.AST.AST_SourceCode'.
@@ -1817,9 +1764,9 @@ execTopLevel ast = do
       ]
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     TopFunc name params scrpt lc -> do
-      exec   <- setupExecutable scrpt
+      exec   <- setupCodeBlock scrpt
       params <- mapM paramsToObjPatExpr params
-      let newSub = Subroutine{argsPattern=params, getSubExecutable=exec}
+      let newSub = Subroutine{argsPattern=params, getSubCodeBlock=exec}
       liftIO $ modifyIORef funcs (flip M.union (M.singleton name [newSub]))
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     TopScript scrpt lc -> do
@@ -1841,7 +1788,7 @@ execTopLevel ast = do
       liftIO $ modifyIORef (globalData xunit) (T.union tree)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     TopLambdaExpr typ params scrpt lc -> do
-      exec   <- setupExecutable scrpt
+      exec   <- setupCodeBlock scrpt
       let macro constr = do
             params <- mapM paramsToObjPatExpr params
             liftIO (modifyIORef macros (++[constr params exec]))
@@ -1853,10 +1800,10 @@ execTopLevel ast = do
           let fol tre pat = T.unionWith (++) tre (toTree pat [exec])
           --lift $ dModifyMVar_ xloc (ruleSet xunit) (\patTree -> return (foldl fol patTree params))
           liftIO $ modifyIORef (ruleSet xunit) (\patTree -> foldl fol patTree params)
-          --modifyIORef rules (++[GlobAction{globPattern=params, getSubExecutable=exec}])
+          --modifyIORef rules (++[GlobAction{globPattern=params, getSubCodeBlock=exec}])
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     EventExpr typ scrpt lc -> do
-      exec   <- setupExecutable scrpt
+      exec   <- setupCodeBlock scrpt
       liftIO $ flip modifyIORef (++[exec]) $ case typ of
         BeginExprType -> pre
         EndExprType   -> post

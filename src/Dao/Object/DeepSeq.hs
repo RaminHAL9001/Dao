@@ -142,7 +142,7 @@ instance (NFData a, NFData b) => NFData (T.Tree a b) where
 
 instance NFData Glob       where { rnf (Glob       a b  ) = deepseq a $! deepseq b () }
 instance NFData Subroutine where { rnf (Subroutine a _  ) = deepseq a () }
-instance NFData Executable where { rnf (Executable a _ _) = deepseq a () }
+instance NFData CodeBlock where { rnf (CodeBlock a _ _) = deepseq a () }
 
 instance NFData Pattern where
   rnf  ObjAnyX         = ()

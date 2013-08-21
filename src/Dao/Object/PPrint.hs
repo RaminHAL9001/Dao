@@ -347,7 +347,7 @@ instance PPrintable Subroutine where
         pClosure (pList (pString typ) "(" "," ")" (map pPrint pats)) "{" "}" $
           map pPrint (origSourceCode exe)
 
-instance PPrintable Executable where { pPrint = mapM_ pPrint . origSourceCode }
+instance PPrintable CodeBlock where { pPrint = mapM_ pPrint . origSourceCode }
 
 instance PPrintable Pattern where
   pPrint pat = case pat of

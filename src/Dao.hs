@@ -45,7 +45,6 @@ import           Dao.Glob
 import           Dao.Object
 import           Dao.Procedural
 import qualified Dao.Tree as T
-import           Dao.Files
 import           Dao.Evaluator
 import           Dao.PPrint
 

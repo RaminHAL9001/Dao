@@ -494,13 +494,13 @@ instance Binary Subroutine where
     0x25 -> liftM2 Subroutine getList get
     0x26 -> liftM2 GlobAction getList get
 
-instance Binary Executable where
+instance Binary CodeBlock where
   put = putList . origSourceCode
   get = do
     code <- getList
-    let msg = "Executable retrieved from binary used before being initialized."
+    let msg = "CodeBlock retrieved from binary used before being initialized."
     return $
-      Executable
+      CodeBlock
       { origSourceCode = code
       , staticVars     = error msg
       , executable     = error msg

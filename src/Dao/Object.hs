@@ -385,9 +385,10 @@ ostr = OString . ustr
 
 ----------------------------------------------------------------------------------------------------
 
--- | An executable is either a rule action, or a function.
-data Executable
-  = Executable
+-- | A code block is either a rule action, or a function, and contains an 'Data.IORef.IORef' to it's
+-- own static data.
+data CodeBlock
+  = CodeBlock
     { origSourceCode :: [ScriptExpr]
     , staticVars     :: IORef (M.Map Name Object)
     , executable     :: Exec (Maybe Object)
@@ -398,15 +399,15 @@ data Executable
 data Subroutine
   = Subroutine
     { argsPattern      :: [Pattern]
-    , getSubExecutable :: Executable
+    , getSubCodeBlock :: CodeBlock
     }
   | MacroFunc
     { argsPattern      :: [Pattern]
-    , getSubExecutable :: Executable
+    , getSubCodeBlock :: CodeBlock
     }
   | GlobAction
     { globPattern      :: [Glob]
-    , getSubExecutable :: Executable
+    , getSubCodeBlock :: CodeBlock
     }
   deriving Typeable
 
@@ -432,7 +433,7 @@ instance Functor Exec where { fmap f (Exec m) = Exec (fmap f m) }
 instance Monad Exec where
   return = Exec . return
   (Exec m) >>= f = Exec (m >>= execToProcedural . f)
-  fail = Exec . fail
+  fail = Exec . throwError . ostr
 instance MonadReader ExecUnit Exec where
   local upd (Exec fn) = Exec (local upd fn)
   ask = Exec ask
@@ -450,14 +451,15 @@ instance Bugged ExecUnit Exec where
     FlowReturn _ -> error "Exec.debugUnliftIO evaluated to 'FlowReturn'"
     FlowErr  err -> error "Exec.debugUnliftIO evaluated to 'FlowErr'"
 instance ProceduralClass Object (Maybe Object) Exec where
-  proc = Exec . proc
+  proc         = Exec . proc
   procCatch    = Exec . procCatch . execToProcedural
-  procJoin mfn = mfn >>= \a -> Exec (Procedural (return a))
 
--- | Evaluate a sub-'Exec' monad and catch the resulting 'FlowCtrl' value, returning it. This
--- function will never 'FlowReturn' of 'FlowErr', even if the sub-'Exec' does.
---tryExec :: Exec a -> Exec (FlowCtrl Object (Maybe Object) a)
---tryExec fn = Exec (procCatch (execToProcedural fn))
+----------------------------------------------------------------------------------------------------
+
+-- | Any data type that can result in procedural executeion in the 'Exec' monad can instantiate this
+-- class. This will allow the data type to be used as a kind of executable code that can be passed
+-- around and evaluated at arbitrary points in your Dao program.
+class Executable exec where { execute :: exec -> Exec (Maybe Object) }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -857,9 +859,6 @@ instance Ord Pattern where
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
-catchErrorCall :: Run a -> Run (Either ErrorCall a)
-catchErrorCall fn = ReaderT $ \r -> try (runReaderT fn r)
-
 newtype Stack key val = Stack { mapList :: [T.Tree key val] }
 
 emptyStack :: Stack key val
@@ -958,22 +957,6 @@ initDoc docdata =
 
 ----------------------------------------------------------------------------------------------------
 
--- $Relating_Exec_and_Run
--- The 'Exec' monad is what evaluates Dao code, and keeps the state of an individual Dao
--- module. The 'Run' monad keeps the state of the the Dao runtime, including every Dao module
--- currently ready for execution. Functions in the 'Run' monad evaluate functions in the
--- 'Exec' monad. Functions in the 'Exec' monad have a reference to the 'Run' monad state
--- which evaluated them, and so can use this reference to evaluate 'Run' monadic functions.
-
--- | Evaluate an 'Exec' monadic function within the 'Run' monad.
---runExec :: Exec a -> ExecUnit -> Run (FlowCtrl a)
---runExec fn xunit = ReaderT $ \runtime ->
---  runReaderT (runProcedural (execToProcedural fn)) (xunit{parentRuntime = runtime})
-
--- Evaluate a 'Run' monadic function within an 'Exec' monad.
---inExecEvalRun :: Run a -> Exec a
---inExecEvalRun fn = ask >>= \xunit -> liftIO (runReaderT fn (parentRuntime xunit))
-
 -- | Pair an error message with an object that can help to describe what went wrong.
 objectError :: Object -> String -> Exec ig
 objectError o msg = throwError $ OList [OString (ustr msg), o]
@@ -1007,8 +990,8 @@ data ExecUnit
     , currentQuery       :: Maybe UStr
     , currentPattern     :: Maybe Glob
     , currentMatch       :: Maybe Match
-    , currentExecutable  :: Maybe Executable
-      -- ^ when evaluating an 'Executable' selected by a string query, the 'Action' resulting from
+    , currentCodeBlock  :: Maybe CodeBlock
+      -- ^ when evaluating a 'CodeBlock' selected by a string query, the 'Action' resulting from
       -- that query is defnied here. It is only 'Data.Maybe.Nothing' when the module is first being
       -- loaded from source code.
     , currentBranch      :: [Name]
@@ -1040,24 +1023,24 @@ data ExecUnit
 --    , destructScript    :: [ScriptExpr]
     , requiredBuiltins  :: [Name]
     , programAttributes :: M.Map Name Name
-    , preExec      :: [Executable]
+    , preExec      :: [CodeBlock]
       -- ^ the "guard scripts" that are executed before every string execution.
-    , postExec     :: [Executable]
+    , postExec     :: [CodeBlock]
       -- ^ the "guard scripts" that are executed after every string execution.
-    , quittingTime :: [Executable]
+    , quittingTime :: [CodeBlock]
     , programTokenizer  :: InputTokenizer
       -- ^ the tokenizer used to break-up string queries before being matched to the rules in the
       -- module associated with this runtime.
     , programComparator :: CompareToken
       -- ^ used to compare string tokens to 'Dao.Glob.Single' pattern constants.
-    , ruleSet           :: IORef (PatternTree [Executable])
+    , ruleSet           :: IORef (PatternTree [CodeBlock])
     }
 instance HasDebugRef ExecUnit where
   getDebugRef = runtimeDebugger . parentRuntime
   setDebugRef dbg xunit = xunit{parentRuntime = (parentRuntime xunit){runtimeDebugger = dbg}}
 
 -- | An 'Action' is the result of a pattern match that occurs during an input string query. It is a
--- data structure that contains all the information necessary to run an 'Executable' assocaited with
+-- data structure that contains all the information necessary to run an 'CodeBlock' assocaited with
 -- a 'Glob', including the parent 'ExecUnit', the 'Dao.Glob.Glob' and the
 -- 'Dao.Glob.Match' objects, and the 'Executables'.
 data Action
@@ -1065,7 +1048,7 @@ data Action
     { actionQuery      :: Maybe UStr
     , actionPattern    :: Maybe Glob
     , actionMatch      :: Maybe Match
-    , actionExecutable :: Executable
+    , actionCodeBlock :: CodeBlock
     }
 
 -- | An 'ActionGroup' is a group of 'Action's created within a given 'ExecUnit', this data structure
@@ -1147,13 +1130,9 @@ data Runtime
       -- ^ a table of available string matching functions.
     , runtimeDebugger      :: DebugRef
     }
-
--- | This is the monad used for most all methods that operate on the 'Runtime' state.
-type Run a = ReaderT Runtime IO a
-
 instance HasDebugRef Runtime where
-  getDebugRef             = runtimeDebugger
-  setDebugRef dbg runtime = runtime{runtimeDebugger = dbg}
+  getDebugRef = asks runtimeDebugger
+  setDebugRef dbg runtime = runtime{runtimeDebugger=dbg}
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1167,11 +1146,17 @@ instance Functor ExecHandler where { fmap f (ExecHandler h) = ExecHandler (fmap 
 ioExecHandler :: Exception e => (e -> Exec a) -> ExecHandler a
 ioExecHandler h = ExecHandler (\xunit -> Handler (\e -> ioExec (h e) xunit))
 
+-- | Using an 'ExecHandler' like 'execIOException', catch any exceptions thrown by the Haskell
+-- language runtime and wrap them up in the 'Exec' monad.
 execCatch :: Exec a -> [ExecHandler a] -> Exec a
 execCatch tryFunc handlers = do
   xunit <- ask
   ctrl  <- liftIO $ catches (ioExec tryFunc xunit) (fmap (\h -> execHandler h xunit) handlers)
   proc ctrl
+
+-- | Like 'execCatch' but with the arguments 'Prelude.flip'ped.
+execHandle :: [ExecHandler a] -> Exec a -> Exec a
+execHandle = flip execCatch
 
 -- | An 'ExecHandler' for catching 'Control.Exception.IOException's and re-throwing them to the
 -- 'Procedural' monad using 'Control.Monad.Error.throwError', allowing the exception to be caught
@@ -1184,14 +1169,6 @@ catchReturn fn catch = Procedural $ runProcedural fn >>= \ce -> case ce of
   FlowReturn obj -> runProcedural (catch obj)
   FlowOK     a   -> return (FlowOK a)
   FlowErr    obj -> return (FlowErr obj)
-
--- | Takes an inner 'Procedural' monad. If this inner monad evaluates to a 'FlowReturn', it will not
--- collapse the continuation monad, and the outer monad will continue evaluation as if a
--- @('FlowOK' 'Dao.Object.Object')@ value were evaluated.
-catchReturnObj :: (Functor m, Monad m) => Procedural err (Maybe Object) m Object -> Procedural err (Maybe Object) m (Maybe Object)
-catchReturnObj exe = procCatch exe >>= \ce -> case ce of
-  FlowReturn obj -> return obj
-  _              -> fmap Just (proc ce)
 
 ----------------------------------------------------------------------------------------------------
 

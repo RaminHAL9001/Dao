@@ -27,7 +27,6 @@ Dao/Debug/OFF.hs
 Dao/Debug/ON.hs
 Dao/EnumSet.hs
 Dao/Evaluator.hs
-Dao/Files.hs
 Dao.hs
 dao-main.hs
 Dao/Object.hs

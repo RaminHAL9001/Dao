@@ -171,9 +171,8 @@ instance PPrintable Reference where
     StaticRef  nm     -> pInline [pString "static ", pRef [nm]]
     QTimeRef   rx     -> pInline [pString "qtime ", pRef rx]
     GlobalRef  rx     -> pRef rx
-    ProgramRef nm ref -> pInline [pString ("program("++show nm++", "), pPrint ref, pString ")"]
-    FileRef    p   rx -> pInline [pString ("file("++show p++", "), pRef rx, pString ")"]
-    Subscript  rx   o -> pInline [pPrint rx, pString "[", pPrint o, pString "]"]
+    Subscript  rx   o -> pList (pPrint rx) "[" ", " "]" (map pPrint o)
+    CallWith   rx   o -> pList (pPrint rx) "(" ", " ")" (map pPrint o)
     MetaRef    ref    -> pInline [pString "$(", pPrint ref, pString ")"]
     where
       pRef rx = pString (intercalate "." (map prin rx))
@@ -396,4 +395,16 @@ instance PPrintable TypeID where
     ScriptType   -> "function"
     RuleType     -> "rule"
     BytesType    -> "data"
+
+----------------------------------------------------------------------------------------------------
+
+instance PPrintable ExecError where
+  pPrint err = case err of
+    ExecBadParam p -> case p of
+      NoParamInfo      -> pString "bad_parameter"
+      ParamValue o exp -> pClosure (pString "bad_parameter") "{" "}" $ concat $
+        [ maybe [] (\exp -> [pInline [pString "expression = ", pPrint exp]]) exp
+        , [pInline [pString "evaluated_to = ", pPrint o]]
+        ]
+    ExecError _ o -> pInline [pString "error = ", pPrint o]
 

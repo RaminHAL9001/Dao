@@ -292,26 +292,24 @@ instance Binary Object where
 
 instance Binary Reference where
   put o = case o of
-    IntRef     o   -> putWord8 0x81 >> mapM_ put (bitsToVLInt o)
-    LocalRef   o   -> x 0x82 o
-    QTimeRef   o   -> putWord8 0x83 >> putList o
-    StaticRef  o   -> x 0x84 o
-    GlobalRef  o   -> putWord8 0x85 >> putList o
-    ProgramRef o r -> x 0x86 o >> put r
-    FileRef    p o -> x 0x87 p >> putList o
-    MetaRef    r   -> putWord8 0x88 >> put r
-    Subscript  r s -> putWord8 0x89 >> put r >> put s
+    IntRef    o   -> putWord8 0x81 >> mapM_ put (bitsToVLInt o)
+    LocalRef  o   -> x 0x82 o
+    QTimeRef  o   -> putWord8 0x83 >> putList o
+    StaticRef o   -> x 0x84 o
+    GlobalRef o   -> putWord8 0x85 >> putList o
+    Subscript r s -> putWord8 0x86 >> put r >> put s
+    CallWith  r s -> putWord8 0x87 >> put r >> put s
+    MetaRef   r   -> putWord8 0x88 >> put r
     where { x a b = putWord8 a >> encodeUStr b }
   get = getWord8 >>= \w -> case w of
-    0x81 -> liftM  IntRef     getFromVLInt
-    0x82 -> liftM  LocalRef   decodeUStr
-    0x83 -> liftM  QTimeRef   getList
-    0x84 -> liftM  StaticRef  decodeUStr
-    0x85 -> liftM  GlobalRef  getList
-    0x86 -> liftM2 ProgramRef decodeUStr get
-    0x87 -> liftM2 FileRef    decodeUStr getList
-    0x88 -> liftM  MetaRef    get
-    0x89 -> liftM2 Subscript  get get
+    0x81 -> liftM  IntRef    getFromVLInt
+    0x82 -> liftM  LocalRef  decodeUStr
+    0x83 -> liftM  QTimeRef  getList
+    0x84 -> liftM  StaticRef decodeUStr
+    0x85 -> liftM  GlobalRef getList
+    0x86 -> liftM2 Subscript get get
+    0x87 -> liftM2 CallWith  get get
+    0x88 -> liftM  MetaRef   get
     _ -> fail "expecting reference expression"
 
 instance Binary UTCTime where

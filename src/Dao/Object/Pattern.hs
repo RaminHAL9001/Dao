@@ -95,7 +95,7 @@ withIdx i fn = modify (\st -> st{matcherIdx = i : matcherIdx st}) >>
 getCurrentRef :: Matcher Reference
 getCurrentRef = do
   idx <- flip fmap (gets matcherIdx) $
-    foldl (\fn i -> fn . flip Subscript i) id . reverse -- <-- reverse this?
+    foldl (\fn i -> fn . flip Subscript [i]) id . reverse -- <-- reverse this?
   fmap (idx . GlobalRef . reverse) (gets matcherRef)
 
 -- | A 'Control.Monad.State.State' monad used to execute matches

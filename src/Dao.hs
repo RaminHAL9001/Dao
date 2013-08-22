@@ -47,6 +47,7 @@ import           Dao.Procedural
 import qualified Dao.Tree as T
 import           Dao.Evaluator
 import           Dao.PPrint
+import           Dao.Object.PPrint
 
 import           Control.Exception
 import           Control.Monad.Reader

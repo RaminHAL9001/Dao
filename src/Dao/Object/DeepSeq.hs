@@ -103,9 +103,8 @@ instance NFData Reference where
   rnf (StaticRef  a  ) = deepseq a ()
   rnf (QTimeRef   a  ) = deepseq a ()
   rnf (GlobalRef  a  ) = deepseq a ()
-  rnf (ProgramRef a b) = deepseq a $! deepseq b ()
-  rnf (FileRef    a b) = deepseq a $! deepseq b ()
   rnf (Subscript  a b) = deepseq a $! deepseq b ()
+  rnf (CallWith   a b) = deepseq a $! deepseq b ()
   rnf (MetaRef    a  ) = deepseq a ()
 
 instance NFData Object where

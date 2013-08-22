@@ -178,9 +178,8 @@ instance HasRandGen Reference where
     [ fmap StaticRef randName
     , fmap QTimeRef  randMultiName
     , fmap GlobalRef randMultiName
-    , liftM2 ProgramRef (fmap (ustr . (++".dao") . uchars) randName) subRandO 
-    , liftM2 FileRef (fmap (ustr . (++".idea") . uchars) randName) randMultiName
-    , liftM2 Subscript subRandO (limSubRandO (OList []))
+    , liftM2 Subscript subRandO (randList 0 6)
+    , liftM2 CallWith  subRandO (randList 0 6)
     , fmap MetaRef subRandO
     ]
 

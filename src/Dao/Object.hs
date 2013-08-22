@@ -20,10 +20,12 @@
 
 -- {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE Rank2Types #-}
 
 module Dao.Object
@@ -65,6 +67,7 @@ import qualified Data.IntMap               as IM
 import qualified Data.Set                  as S
 import qualified Data.IntSet               as IS
 import qualified Data.ByteString.Lazy      as B
+import qualified Data.Binary               as B
 
 import           Control.Applicative
 import           Control.Monad
@@ -73,7 +76,143 @@ import           Control.Concurrent
 
 import           Control.Monad.Trans
 import           Control.Monad.Reader
+import           Control.Monad.State
 import           Control.Monad.Error.Class
+
+----------------------------------------------------------------------------------------------------
+
+-- | Instantiate your data type into this class by creating an 'ObjectInterface' for your data type
+-- and then wrapping your data type into a 'Data.Dynamic.Dynamic' data type and storing it with an
+-- into the 'ObjectInterface'. For example:
+-- > data MyDataType = MyDataType deriving (Data.Typeable.Typeable)
+-- > instance 'ObjectClass' MyDataType where
+-- >     newObject obj = ObjectInterface {
+-- >         objectValue = 'Data.Dynamic.toDynamic' obj,
+-- >         bytesToObj  = ... ,
+-- >         objToBytes  = ...
+-- >       }
+class ObjectClass a where { newObject :: a -> ObjectInterface a }
+
+-- | This is all of the functions used by the "Dao.Evaluator" when manipulating objects in a Dao
+-- program. Behavior of objects when they are used in "for" statements or "with" statements, or when
+-- they are dereferenced using the "@" operator, or when they are used in equations are all defined
+-- here.
+-- 
+-- The 'ObjectInterface' data type instantiates the 'Data.Monoid.Monoid' class in such a way that
+-- 'Data.Monoid.mappend' will union the two 'ObjectInterface's, which allows you to basically do
+-- multiple inheritance using any number of base classes. The resulting unioned 'ObjectInterface'
+-- is otherwise equivalent to an 'Data.Monoid.mempty', unititialized class, /only/ methods in the
+-- 'objMethods' tree are unioned. This is because functions like 'objNullTest' and 'objIterator' are
+-- Haskell functions that take a 'Data.Dynamic.Dynamic' type which will fail if the inherted class
+-- value contains a value of a different Haskell data type than it's inherited classes (which it
+-- almost always will).
+--
+-- If method names overlap, classes on the right of the 'Data.Monoid.mappend' function will
+-- overwrite the methods of the classes on the left. Since Dao does not have the @::@ operator from
+-- the C++ language, calling methods from super-classes can be done by referencing
+-- @this.superClassName.methodName@ or @this.superSuperClassName.superClassName.methodName@.
+data ObjectInterface a =
+  ObjectInterface
+  { objClassName  :: Name
+  , objSuperClasses :: [ObjectInterface ()]
+  , objToBytes    :: Maybe (Dynamic -> T_bytes) -- ^ convert this object to binary data.
+  , bytesToObj    :: Maybe (T_bytes -> Dynamic) -- ^ load this object from binary data.
+  , objNullTest   :: Maybe (Dynamic -> Bool)
+    -- ^ return true if the value is null, used by "if" and "while" statements.
+  , objIterator   :: Maybe (Dynamic -> Exec [Object])
+    -- ^ convert this object to a list of other objects, used by "for" statements.
+  , objIndexer    :: Maybe (Dynamic -> Object -> Exec Object)
+    -- ^ the function used when a square-brackets subscripting operation is used on an object of
+    -- this type.
+  , treeFormat    :: Maybe (Dynamic -> Exec T_tree, T_tree  -> Exec Dynamic)
+    -- ^ a pair of functions for converting this object to and from a 'T_tree'. Used when
+    -- dereferencing this object, that is, with the "@" operator, the point "->" operator, and in
+    -- "with" statements.
+  , objCodeFormat :: Maybe (Dynamic -> Exec CodeBlock, CodeBlock -> Exec Dynamic)
+    -- ^ objects do not have pretty printers, but you can convert your object to and from a
+    -- 'CodeBlock' data type. 'CodeBlock's can be pretty-printed and parsed by Dao, so this function
+    -- provides a method of both parsing and pretty printing an object to/from source code.
+  , updateOpTable :: Maybe (Array UpdateOp (UpdateOp -> Dynamic -> Object -> Exec Object))
+    -- ^ overload the update/assignment operators, @=@, @+=@, @-=@, etc.
+  , infixOpTable  :: Maybe (Array InfixOp  (InfixOp  -> Dynamic -> Object -> Exec Object))
+    -- ^ overload the infix operators, @+@, @*@, @&@, etc.
+  , prefixOpTable :: Maybe (Array PrefixOp (PrefixOp -> Dynamic -> Exec Object))
+    -- ^ overload the prefix operators, @!@, @-@, @+@, etc.
+  , objMethods    :: T.Tree Name (Dynamic -> DaoFunc)
+    -- ^ provide a list of 'DaoFunc's that can be called on this object, each function mapped to a
+    -- name. In the Dao source code, to call one of these functions, you would write code like so:
+    -- > myObj.funcName(param1, param2);
+    -- In the map returned by this function, you would map the string "funcName" to a function of
+    -- type @('Data.Dynamic.Dynamic -> 'DaoFunc')@, where the 'Data.Dynamic.Dynamic' parameter will
+    -- contain the "this" pointer.
+  , objectValue   :: Maybe Dynamic
+    -- ^ Contains the actual object.
+  }
+instance Monoid (ObjectInterface a) where
+  mempty = 
+    ObjectInterface
+    { objClassName  = nil
+    , objSuperClasses = []
+    , objToBytes    = Nothing
+    , bytesToObj    = Nothing
+    , objNullTest   = Nothing
+    , objIterator   = Nothing
+    , objIndexer    = Nothing
+    , treeFormat    = Nothing
+    , objCodeFormat = Nothing
+    , updateOpTable = Nothing
+    , infixOpTable  = Nothing
+    , prefixOpTable = Nothing
+    , objMethods    = T.Void
+    , objectValue   = Nothing
+    }
+  mappend a b = 
+    mempty
+    { objSuperClasses =
+        objSuperClasses (a{objectValue=Nothing}) ++ objSuperClasses (b{objectValue=Nothing})
+    , objMethods    =
+        let fn a = fmap (\ (nm, f) -> (objClassName a : nm, f)) (T.assocs (objMethods a)) 
+            (+)  = flip T.union
+        in  objMethods b + objMethods a + T.fromList (fn a ++ fn b)
+    , objectValue   = Nothing
+    }
+
+-- | A handy monadic interface for defining an 'ObjectInterface'.
+type DaoClassDef typ a = State (ObjectInterface typ) a
+
+defClassName :: (Typeable typ, B.Binary typ, UStrType name) => name -> DaoClassDef typ ()
+defClassName name = modify (\st -> st{objClassName=ustr name})
+
+defInitValue :: (Typeable typ, B.Binary typ) => typ -> DaoClassDef typ ()
+defInitValue val = modify (\st -> st{objectValue=Just (toDyn val)})
+
+defBinaryDecoder :: (Typeable typ, B.Binary typ) => (T_bytes -> typ) -> DaoClassDef typ ()
+defBinaryDecoder fn = modify (\st -> st{bytesToObj = Just (decodeDyn fn)}) where
+  decodeDyn fn obj = toDyn (fn obj)
+
+defDynamicMethod
+  :: (Typeable typ, B.Binary typ)
+  => String
+  -> (Maybe (Dynamic -> func) -> ObjectInterface typ -> ObjectInterface typ)
+  -> (typ -> func)
+  -> DaoClassDef typ ()
+defDynamicMethod methodDesc upd fn = modify (upd (Just (apply fn))) where
+  apply fn dyn = fn (fromDyn dyn (err fn dyn))
+  err :: (Typeable typ, B.Binary typ) => (typ -> func) -> Dynamic -> typ
+  err fn dyn = error $ unwords $
+    [ methodDesc, "for", show (typeOf (err fn dyn))
+    , "was evaluated with data of type", show (dynTypeRep dyn)
+    ]
+
+defBinaryEncoder :: (Typeable typ, B.Binary typ) => (typ -> T_bytes) -> DaoClassDef typ ()
+defBinaryEncoder = defDynamicMethod "binary encoder" (\o st -> st{objToBytes=o})
+
+-- | Remember, return 'Prelude.True' if the object is null.
+defNullTest :: (Typeable typ, B.Binary typ) => (typ -> Bool) -> DaoClassDef typ ()
+defNullTest = defDynamicMethod "null test" (\o st -> st{objNullTest=o})
+
+defIndexer :: (Typeable typ, B.Binary typ) => (typ -> Object -> Exec Object) -> DaoClassDef typ ()
+defIndexer = defDynamicMethod "indexing" (\o st -> st{objIndexer=o})
 
 ----------------------------------------------------------------------------------------------------
 
@@ -129,6 +268,7 @@ data TypeID
   | ScriptType
   | RuleType
   | BytesType
+  | HaskellType
   deriving (Eq, Ord, Enum, Typeable, Bounded)
 
 instance Es.InfBound TypeID where
@@ -162,6 +302,7 @@ instance Show TypeID where
     ScriptType   -> "script"
     RuleType     -> "rule"
     BytesType    -> "bytes"
+    HaskellType  -> "haskell"
 
 instance Read TypeID where
   readsPrec _ str = map (\a -> (a, "")) $ case str of
@@ -190,6 +331,7 @@ instance Read TypeID where
     "script"  -> [ScriptType]
     "rule"    -> [RuleType]
     "bytes"   -> [BytesType]
+    "haskell" -> [HaskellType]
     _         -> []
 
 instance UStrType TypeID where
@@ -210,15 +352,14 @@ oBool a = if a then OTrue else ONull
 -- variables are being accessed so the appropriate read, write, or update action can be planned.
 data Reference
   = NullRef
-  | IntRef     { intRef    :: Word }  -- ^ reference to a read-only pattern-match variable.
-  | LocalRef   { localRef  :: Name } -- ^ reference to a local variable.
-  | StaticRef  { localRef  :: Name } -- ^ reference to a permanent static variable (stored per rule/function).
-  | QTimeRef   { globalRef :: [Name] } -- ^ reference to a query-time static variable.
-  | GlobalRef  { globalRef :: [Name] } -- ^ reference to in-memory data stored per 'Dao.Types.ExecUnit'.
-  | ProgramRef { progID    :: Name , subRef    :: Reference } -- ^ reference to a portion of a 'ExecUnit'.
-  | FileRef    { filePath  :: UPath, globalRef :: [Name] } -- ^ reference to a variable in a 'File'
-  | Subscript  { dereference :: Reference, subscriptValue :: Object } -- ^ reference to value at a subscripted slot in a container object
-  | MetaRef    { dereference :: Reference } -- ^ wraps up a 'Reference' as a value that cannot be used as a reference.
+  | IntRef    { intRef    :: Word }  -- ^ reference to a read-only pattern-match variable.
+  | LocalRef  { localRef  :: Name } -- ^ reference to a local variable.
+  | StaticRef { localRef  :: Name } -- ^ reference to a permanent static variable (stored per rule/function).
+  | QTimeRef  { globalRef :: [Name] } -- ^ reference to a query-time static variable.
+  | GlobalRef { globalRef :: [Name] } -- ^ reference to in-memory data stored per 'Dao.Types.ExecUnit'.
+  | Subscript { dereference :: Reference, arguments :: [Object] } -- ^ reference to value at a subscripted slot in a container object
+  | CallWith  { dereference :: Reference, arguments :: [Object] } -- ^ reference prepended with arguments in parentheses.
+  | MetaRef   { dereference :: Reference } -- ^ wraps up a 'Reference' as a value that cannot be used as a reference.
   deriving (Eq, Ord, Show, Typeable)
 instance Monoid Reference where
   mempty = NullRef
@@ -228,12 +369,13 @@ instance Monoid Reference where
     StaticRef    b -> fn [b]
     QTimeRef     b -> fn  b
     GlobalRef    b -> fn  b
-    ProgramRef _ b -> mappend a b
-    FileRef    _ b -> fn  b
-    MetaRef    _   -> mempty
     Subscript  b j -> case a of
       Subscript a i -> Subscript (Subscript (mappend a b) i) j
       a             -> Subscript (mappend a b) j
+    CallWith   b j -> case a of
+      CallWith  a i -> CallWith  (CallWith  (mappend a b) i) j
+      a             -> CallWith  (mappend a b) j
+    MetaRef    _   -> mempty
     where
       fn b = case a of
         IntRef     _   -> mempty
@@ -241,8 +383,6 @@ instance Monoid Reference where
         StaticRef    a -> mempty
         QTimeRef     a -> QTimeRef     (a++b)
         GlobalRef    a -> GlobalRef    (a++b)
-        ProgramRef f a -> ProgramRef f (mappend a (GlobalRef b))
-        FileRef    f a -> FileRef    f (a++b)
         MetaRef    _   -> mempty
 
 refSameClass :: Reference -> Reference -> Bool
@@ -253,10 +393,9 @@ refSameClass a b = case (a, b) of
   (StaticRef    _, StaticRef     _) -> True
   (QTimeRef     _, QTimeRef      _) -> True
   (GlobalRef    _, GlobalRef     _) -> True
-  (ProgramRef _ _, ProgramRef  _ _) -> True
-  (FileRef    _ _, FileRef     _ _) -> True
-  (MetaRef      _, MetaRef       _) -> True
   (Subscript  _ _, Subscript   _ _) -> True
+  (CallWith   _ _, CallWith    _ _) -> True
+  (MetaRef      _, MetaRef       _) -> True
   _                                 -> False
 
 -- | The 'Object' type is clumps together all of Haskell's most convenient data structures into a
@@ -397,8 +536,11 @@ instance Monoid CodeBlock where
   mempty      = CodeBlock []
   mappend a b = CodeBlock (mappend (codeBlock a) (codeBlock b))
 
--- | A code block is either a rule action, or a function, and contains an 'Data.IORef.IORef' to it's
--- own static data.
+-- | A subroutine is contains a 'CodeBlock' and an 'Data.IORef.IORef' to it's own static data. It
+-- also has a reference to the last evaluation of 'execute' over it's 'CodeBlock', which provides a
+-- hint to the Haskell runtime system that this code can be cached rather than evaluating the
+-- 'CodeBlock' fresh every time. In a sense, it is a "live" 'CodeBlock' that can actually be
+-- executed.
 data Subroutine
   = Subroutine
     { origSourceCode :: CodeBlock
@@ -437,23 +579,32 @@ instance Show CallableCode where
 
 ----------------------------------------------------------------------------------------------------
 
--- | All evaluation of the Dao language takes place in the 'Exec' monad. It allows @IO@
--- functions to be lifeted into it so functions from "Control.Concurrent", "Dao.Document",
--- "System.IO", and other modules, can be evaluated.
-newtype Exec a  = Exec{ execToProcedural :: Procedural Object (Maybe Object) (ReaderT ExecUnit IO) a }
+-- | All evaluation of the Dao language takes place in the 'Exec' monad. It instantiates
+-- 'Control.Monad.MonadIO.MonadIO' to allow @IO@ functions to be lifeted into it. It instantiates
+-- 'Control.Monad.Error.MonadError' and provides it's own exception handling mechanism completely
+-- different from the Haskell runtime, so as to allow for more control over exception handling in
+-- the Dao runtime.
+newtype Exec a  = Exec{ execToProcedural :: Procedural ExecError (Maybe Object) (ReaderT ExecUnit IO) a }
 instance Functor Exec where { fmap f (Exec m) = Exec (fmap f m) }
 instance Monad Exec where
   return = Exec . return
   (Exec m) >>= f = Exec (m >>= execToProcedural . f)
-  fail = Exec . throwError . ostr
+  fail = execThrow . ostr
+instance MonadPlus Exec where
+  mzero = throwError (ExecBadParam mempty)
+  mplus a b = procCatch a >>= \a -> case a of
+    FlowOK      a -> proc (FlowOK     a)
+    FlowReturn  a -> proc (FlowReturn a)
+    FlowErr   err -> case err of { ExecBadParam _ -> b; _ -> proc (FlowErr err); }
 instance MonadReader ExecUnit Exec where
   local upd (Exec fn) = Exec (local upd fn)
   ask = Exec ask
-instance MonadError Object Exec where
+instance MonadError ExecError Exec where
   throwError = Exec . throwError
   catchError (Exec try) catch = Exec (catchError try (execToProcedural . catch))
 instance MonadIO Exec where { liftIO io = Exec (liftIO io) }
 instance Applicative Exec where { pure = return; (<*>) = ap; }
+instance Alternative Exec where { empty = mzero; (<|>) = mplus; }
 instance Bugged ExecUnit Exec where
   askDebug = asks (runtimeDebugger . parentRuntime)
   askState = ask
@@ -462,16 +613,65 @@ instance Bugged ExecUnit Exec where
     FlowOK     a -> return a
     FlowReturn _ -> error "Exec.debugUnliftIO evaluated to 'FlowReturn'"
     FlowErr  err -> error "Exec.debugUnliftIO evaluated to 'FlowErr'"
-instance ProceduralClass Object (Maybe Object) Exec where
-  proc         = Exec . proc
-  procCatch    = Exec . procCatch . execToProcedural
+instance ProceduralClass ExecError (Maybe Object) Exec where
+  proc      = Exec . proc
+  procCatch = Exec . procCatch . execToProcedural
+
+-- | When calling Dao program functions, arguments to functions are wrapped in this data type.
+data ParamValue
+  = NoParamInfo
+  | ParamValue{ paramValue :: Object, paramOrigExpr :: Maybe ObjectExpr }
+instance Monoid ParamValue where { mempty=NoParamInfo; mappend=const; }
+
+-- | Nearly all execution in the 'Exec' monad that could result in an error will throw an
+-- 'ExecError's. Even the use of 'Prelude.error' will throw an 'Control.Exception.ErrorCall' that
+-- will eventually be caught by the 'Exec' monad and converted to an 'ExecError'.
+data ExecError
+  = ExecBadParam ParamValue
+    -- ^ Exceptions of this type are thrown when passing a 'Object' of the wrong type as a parameter
+    -- to a function. The 'Exec' class instantiates 'Control.Monad.MonadPlus' in such a way that if
+    -- this type parameter is thrown, it is automatically caught and allows alternative expressions
+    -- to be tried.
+  | ExecError
+    { execUnitAtError   :: Maybe ExecUnit
+    , specificErrorData :: Object
+    }
+instance Monoid ExecError where { mempty = ExecBadParam mempty; mappend = const; }
+
+-- | Like 'Prelude.error' but works for the 'Exec' monad, throws an 'ExecError' using
+-- 'Control.Monad.Error.throwError' constructed using the given 'Object' value as the
+-- 'specificErrorData'.
+execThrow :: Object -> Exec ig
+execThrow obj = ask >>= \xunit ->
+  throwError $ ExecError{execUnitAtError=Just xunit, specificErrorData=obj}
 
 ----------------------------------------------------------------------------------------------------
 
--- | Any data type that can result in procedural execution in the 'Exec' monad can instantiate this
--- class. This will allow the data type to be used as a kind of executable code that can be passed
--- around and evaluated at arbitrary points in your Dao program.
-class Executable exec where { execute :: exec -> Exec (Maybe Object) }
+-- | This simple, humble little class is one of the most important in the Dao program because it
+-- defines the 'execute' function. Any data type that can result in procedural execution in the
+-- 'Exec' monad can instantiate this class. This will allow the instnatiated data type to be used as
+-- a kind of executable code that can be passed around and evaluated at arbitrary points in your Dao
+-- program.
+-- 
+-- Note that there the @result@ type parameter is functional dependent on the @exec@ type parameter.
+-- This guarantees there is a one-to-one mapping from independent @exec@ types to dependent @result@
+-- types, i.e. if you data type @MyDat@ maps to a data type @Rzlt@, then @Rzlt@ is the only possible
+-- data type that could ever be evaluated by 'execute'-ing the @MyDat@ function.
+--
+-- As a reminder, functional dependencies do not necessitate a one-to-one mapping from the
+-- dependent type to the independent type, so the @result@ parameter may be the same for many
+-- different @exec@ types. But once the compiler infers that the @exec@ parameter of the 'Executable'
+-- class is @MyDat@, the @result@ type /must/ be @Rzlt@ and nothing else.
+-- > instance Executable MyDat Rzlt
+-- > instance Executable A     () -- OK (different @exec@ parameters, same @result@ parameters)
+-- > instance Executable B     () -- OK
+-- > instance Executable C     () -- OK
+-- > 
+-- > instance Executable D     ()   -- COMPILER ERROR (same @exec@ parameters, different @result@ parameters)
+-- > instance Executable D     Int  -- COMPILER ERROR
+-- > instance Executable D     Char -- COMPILER ERROR
+-- > -- Should D instantiate () or Int or Char as it's result? You must choose only one.
+class Executable exec result | exec -> result where { execute :: exec -> Exec result }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -617,7 +817,7 @@ data ObjectExpr
   = VoidExpr
   | Literal       Object                                   Location
   | AssignExpr    ObjectExpr      UpdateOp     ObjectExpr  Location
-  | Equation      ObjectExpr      InfixOp     ObjectExpr  Location
+  | Equation      ObjectExpr      InfixOp      ObjectExpr  Location
   | PrefixExpr    PrefixOp        ObjectExpr               Location
   | ParenExpr                     ObjectExpr               Location
   | ArraySubExpr  ObjectExpr     [ObjectExpr]              Location
@@ -922,20 +1122,20 @@ stackPop stack =
 -- are handled appropriately. However, caching must be performed by each thread to make sure an
 -- update does not produce two different values across two separate read operations, the 'Resource'
 -- mechanism does *NOT* provide this caching.
-data Resource stor ref =
-  Resource
-  { resource        :: DMVar (stor Object, stor (DQSem, Maybe Object))
-  , updateUnlocked  :: ref -> Maybe Object -> stor Object -> stor Object
-  , lookupUnlocked  :: ref -> stor Object -> Maybe Object
-  , updateLocked    :: ref -> Maybe (DQSem, Maybe Object) -> stor (DQSem, Maybe Object) -> stor (DQSem, Maybe Object)
-  , lookupLocked    :: ref -> stor (DQSem, Maybe Object) -> Maybe (DQSem, Maybe Object)
-  } -- NOTE: this data type needs to be opaque.
-    -- Do not export the constructor or any of the accessor functions.
-
-type StackResource = Resource (Stack             Name) [Name]
-type TreeResource  = Resource (T.Tree            Name) [Name]
-type MapResource   = Resource (M.Map             Name) Name
-type DocResource   = Resource (StoredFile T.Tree Name) [Name]
+--data Resource stor ref =
+--  Resource
+--  { resource        :: DMVar (stor Object, stor (DQSem, Maybe Object))
+--  , updateUnlocked  :: ref -> Maybe Object -> stor Object -> stor Object
+--  , lookupUnlocked  :: ref -> stor Object -> Maybe Object
+--  , updateLocked    :: ref -> Maybe (DQSem, Maybe Object) -> stor (DQSem, Maybe Object) -> stor (DQSem, Maybe Object)
+--  , lookupLocked    :: ref -> stor (DQSem, Maybe Object) -> Maybe (DQSem, Maybe Object)
+--  } -- NOTE: this data type needs to be opaque.
+--    -- Do not export the constructor or any of the accessor functions.
+--
+--type StackResource = Resource (Stack             Name) [Name]
+--type TreeResource  = Resource (T.Tree            Name) [Name]
+--type MapResource   = Resource (M.Map             Name) Name
+--type DocResource   = Resource (StoredFile T.Tree Name) [Name]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -982,7 +1182,7 @@ initDoc docdata =
 
 -- | Pair an error message with an object that can help to describe what went wrong.
 objectError :: Object -> String -> Exec ig
-objectError o msg = throwError $ OList [OString (ustr msg), o]
+objectError o msg = execThrow $ OList [OString (ustr msg), o]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1103,21 +1303,21 @@ initTask = do
 -- associates 'Dao.String.UPath's to this items of this data type.
 data File
   = ProgramFile     ExecUnit    -- ^ "*.dao" files, a module loaded from the file system.
-  | DocumentFile    DocResource -- ^ "*.idea" files, 'Object' data loaded from the file system.
+--  | DocumentFile    DocResource -- ^ "*.idea" files, 'Object' data loaded from the file system.
 
 -- | Used to select programs from the 'pathIndex' that are currently available for recursive
 -- execution.
 isProgramFile :: File -> [ExecUnit]
 isProgramFile file = case file of
   ProgramFile p -> [p]
-  _             -> []
+--  _             -> []
 
 -- | Used to select programs from the 'pathIndex' that are currently available for recursive
 -- execution.
-isDocumentFile :: File -> [DocResource]
-isDocumentFile file = case file of
-  DocumentFile d -> [d]
-  _              -> []
+--isDocumentFile :: File -> [DocResource]
+--isDocumentFile file = case file of
+--  DocumentFile d -> [d]
+--  _              -> []
 
 -- | A type of function that can split an input query string into 'Dao.Glob.Tokens'. The default
 -- splits up strings on white-spaces, numbers, and punctuation marks.
@@ -1157,35 +1357,41 @@ instance HasDebugRef Runtime where
 
 ----------------------------------------------------------------------------------------------------
 
-ioExec :: Exec a -> ExecUnit -> IO (FlowCtrl Object (Maybe Object) a)
+ioExec :: Exec a -> ExecUnit -> IO (FlowCtrl ExecError (Maybe Object) a)
 ioExec func xunit = runReaderT (runProcedural (execToProcedural func)) xunit
 
-newtype ExecHandler a = ExecHandler { execHandler :: ExecUnit -> Handler (FlowCtrl Object (Maybe Object) a) }
+newtype ExecHandler a = ExecHandler { execHandler :: ExecUnit -> Handler (FlowCtrl ExecError (Maybe Object) a) }
 instance Functor ExecHandler where { fmap f (ExecHandler h) = ExecHandler (fmap (fmap (fmap f)) h) }
 
 -- | Create an 'ExecHandler'.
-ioExecHandler :: Exception e => (e -> Exec a) -> ExecHandler a
-ioExecHandler h = ExecHandler (\xunit -> Handler (\e -> ioExec (h e) xunit))
+newExecIOHandler :: Exception e => (e -> Exec a) -> ExecHandler a
+newExecIOHandler h = ExecHandler (\xunit -> Handler (\e -> ioExec (h e) xunit))
 
--- | Using an 'ExecHandler' like 'execIOException', catch any exceptions thrown by the Haskell
+-- | Using an 'ExecHandler' like 'execIOHandler', catch any exceptions thrown by the Haskell
 -- language runtime and wrap them up in the 'Exec' monad.
-execCatch :: Exec a -> [ExecHandler a] -> Exec a
-execCatch tryFunc handlers = do
+execCatchIO :: Exec a -> [ExecHandler a] -> Exec a
+execCatchIO tryFunc handlers = do
   xunit <- ask
   ctrl  <- liftIO $ catches (ioExec tryFunc xunit) (fmap (\h -> execHandler h xunit) handlers)
   proc ctrl
 
--- | Like 'execCatch' but with the arguments 'Prelude.flip'ped.
-execHandle :: [ExecHandler a] -> Exec a -> Exec a
-execHandle = flip execCatch
+-- | Like 'execCatchIO' but with the arguments 'Prelude.flip'ped.
+execHandleIO :: [ExecHandler a] -> Exec a -> Exec a
+execHandleIO = flip execCatchIO
 
--- | An 'ExecHandler' for catching 'Control.Exception.IOException's and re-throwing them to the
+-- | An 'ExecHandler' for catching 'Control.Exception.ErrorCall's and re-throwing them to the
 -- 'Procedural' monad using 'Control.Monad.Error.throwError', allowing the exception to be caught
 -- and handled by Dao script code.
-execIOException :: ExecHandler ()
-execIOException = ioExecHandler $ \e -> throwError (ostr $ show (e::IOException))
+execIOHandler :: ExecHandler ()
+execIOHandler = newExecIOHandler $ \e -> execThrow (ostr $ show (e::IOException))
 
-catchReturn :: Monad m => Exec a -> (Maybe Object -> Exec a) -> Exec a
+-- | An 'ExecHandler' for catching 'Control.Exception.ErrorCall's and re-throwing them to the
+-- 'Procedural' monad using 'Control.Monad.Error.throwError', allowing the exception to be caught
+-- and handled by Dao script code.
+execErrorHandler :: ExecHandler ()
+execErrorHandler = newExecIOHandler $ \e -> execThrow (ostr $ show (e::ErrorCall))
+
+catchReturn :: Exec a -> (Maybe Object -> Exec a) -> Exec a
 catchReturn fn catch = procCatch fn >>= \ce -> case ce of
   FlowReturn obj -> catch obj
   FlowOK     a   -> proc (FlowOK a)

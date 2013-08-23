@@ -143,7 +143,6 @@ matchObject pat o = let otype = objType o in case pat of
   ObjAnyX -> return o
   ObjMany -> return o
   ObjAny1 -> return o
-  ObjEQ q   | q == o            -> return o
   ObjType t | Es.member t otype -> return o
   ObjBounded  lo hi             -> Matcher $ pvalue $ msum $
     [ fmap Es.Point (objToRational o) >>= \r -> guard (lo <= r && r <= hi) >> return o

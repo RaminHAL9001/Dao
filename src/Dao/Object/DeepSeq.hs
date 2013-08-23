@@ -98,14 +98,17 @@ instance NFData AST_Script where
   rnf (AST_WithDoc      a b c    ) = deepseq a $! deepseq b $! deepseq c ()
 
 instance NFData Reference where
-  rnf (IntRef     a  ) = deepseq a ()
-  rnf (LocalRef   a  ) = deepseq a ()
-  rnf (StaticRef  a  ) = deepseq a ()
-  rnf (QTimeRef   a  ) = deepseq a ()
-  rnf (GlobalRef  a  ) = deepseq a ()
+  rnf (NullRef       ) = ()
+  rnf (PlainRef   a  ) = deepseq a ()
+  rnf (DerefOp    a  ) = deepseq a ()
+  rnf (MetaRef    a  ) = deepseq a ()
+  rnf (DotRef     a b) = deepseq a ()
+  rnf (PointRef   a b) = deepseq a $! deepseq b ()
   rnf (Subscript  a b) = deepseq a $! deepseq b ()
   rnf (CallWith   a b) = deepseq a $! deepseq b ()
-  rnf (MetaRef    a  ) = deepseq a ()
+
+instance NFData QualRef where
+  rnf (QualRef a b) = seq a $! deepseq b $! ()
 
 instance NFData Object where
   rnf  ONull         = ()
@@ -139,25 +142,10 @@ instance (NFData a, NFData b) => NFData (T.Tree a b) where
   rnf (T.Branch       b) = deepseq b ()
   rnf (T.LeafBranch a b) = deepseq a $! deepseq b ()
 
-instance NFData Glob       where { rnf (Glob       a b  ) = deepseq a $! deepseq b () }
+instance NFData Glob         where { rnf (Glob         a b  ) = deepseq a $! deepseq b () }
+instance NFData TypeCheck    where { rnf (TypeCheck    a    ) = deepseq a () }
 instance NFData CallableCode where { rnf (CallableCode a _  ) = deepseq a () }
-instance NFData Subroutine where { rnf (Subroutine a _ _) = deepseq a () }
-
-instance NFData Pattern where
-  rnf  ObjAnyX         = ()
-  rnf  ObjMany         = ()
-  rnf  ObjAny1         = ()
-  rnf (ObjEQ      a  ) = deepseq a ()
-  rnf (ObjType    a  ) = deepseq a ()
-  rnf (ObjBounded a b) = deepseq a ()
-  rnf (ObjList    a b) = seq a $! deepseq b ()
-  rnf (ObjNameSet a b) = seq a $! deepseq b ()
-  rnf (ObjIntSet  a b) = seq a $! deepseq b ()
-  rnf (ObjElemSet a b) = seq a $! deepseq b ()
-  rnf (ObjChoice  a b) = seq a $! deepseq b ()
-  rnf (ObjLabel   a b) = seq a $! deepseq b ()
-  rnf (ObjFailIf  a b) = seq a $! deepseq b ()
-  rnf (ObjNot     a  ) = deepseq a ()
+instance NFData Subroutine   where { rnf (Subroutine   a _ _) = deepseq a () }
 
 instance NFData ObjSetOp where { rnf a = seq a () }
 instance NFData TopLevelEventType where { rnf a = seq a () }

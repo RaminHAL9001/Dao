@@ -374,6 +374,10 @@ size t = case t of
   LeafBranch _ m -> 1 + f m
   where { f m = foldl (\sz tre -> sz + size tre) (fromIntegral (M.size m)) (M.elems m) }
 
+null :: Tree p a -> Bool
+null Void = True
+null _    = False
+
 ----------------------------------------------------------------------------------------------------
 
 data TreeDiff a b

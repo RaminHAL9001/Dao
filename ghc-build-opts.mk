@@ -42,7 +42,7 @@ export GHCRTS := -M8G #Allow 8GB of heap space to GHC when compiling.
 
 EDIT_FILES_LIST := edit-files.list
 EDIT_SCRATCH    := scratch.hs -c ':set autowrite autoread'
-NUMBER_OF_TABS  := 6
+NUMBER_OF_TABS  := 5
 
 edit: $(EDIT_FILES_LIST)
 	vim -p$(NUMBER_OF_TABS) \

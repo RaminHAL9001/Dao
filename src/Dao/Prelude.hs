@@ -226,8 +226,8 @@ instance (PPrintable a, PPrintable b) => PPrintable (T.Tree UStr (T.TreeDiff a b
     pString (intercalate "." (map uchars addr) ++ ":")
     pForceNewLine >> pPrint obj >> pForceNewLine
 
-diff :: (Dao (T.Tree Name Object)) -> (Dao (T.Tree Name Object)) -> IO (Dao (T.Tree Name (T.TreeDiff Object Object)))
-diff (Dao a) (Dao b) = return $ Dao $ T.treeDiff a b
+--diff :: (Dao (T.Tree Name Object)) -> (Dao (T.Tree Name Object)) -> IO (Dao (T.Tree Name (T.TreeDiff Object Object)))
+--diff (Dao a) (Dao b) = return $ Dao $ T.treeDiff a b
 
 -- | Construct a random object of a polymorphic type from its 'Dao.Struct.Structured' form.
 fromStruct :: Structured o => (Dao (T.Tree Name Object)) -> IO (Dao o)

@@ -39,6 +39,8 @@ import           Control.Monad.State
 import           Numeric
 
 import           Data.Maybe (fromMaybe, maybeToList)
+import           Data.Monoid
+import           Data.Char
 import           Data.List
 import           Data.Ratio
 import           Data.Complex
@@ -166,20 +168,33 @@ instance PrecedeWithSpace [Comment] where { precedeWithSpace = not . null }
 
 instance PPrintable Reference where
   pPrint ref = case ref of
-    IntRef     w      -> pString ('$' : show w)
-    LocalRef   nm     -> pPrint nm
-    StaticRef  nm     -> pInline [pString "static ", pRef [nm]]
-    QTimeRef   rx     -> pInline [pString "qtime ", pRef rx]
-    GlobalRef  rx     -> pRef rx
-    Subscript  rx   o -> pList (pPrint rx) "[" ", " "]" (map pPrint o)
-    CallWith   rx   o -> pList (pPrint rx) "(" ", " ")" (map pPrint o)
-    MetaRef    ref    -> pInline [pString "$(", pPrint ref, pString ")"]
+    NullRef              -> pString "$()"
+    PlainRef  nm         -> do
+      let str = uchars nm
+      if and (map (\c -> isAlphaNum c || c=='_') str) then pString str else pShow str
+    DerefOp   ref        -> pInline [pString "@(", pPrint ref, pString ")"]
+    MetaRef   ref        -> pInline [pString "$(", pPrint ref, pString ")"]
+    DotRef    left right -> pInline [pPrint left, pString ".", pPrint right]
+    PointRef  left right -> pInline [pPrint left, pString ".", pPrint right]
+    Subscript left subs  -> pList (pPrint left) "[" "," "]" (map pPrint subs)
     where
       pRef rx = pString (intercalate "." (map prin rx))
       prin r  = case uchars r of
         []                                                      -> "$\"\""
         r:rx | isAlpha r && (null rx || or (map isAlphaNum rx)) -> r:rx
         rx                                                      -> '$' : show rx
+
+instance PPrintable QualRef where
+  pPrint ref = do
+    let r = qualRef ref
+        qual q = pInline [pString q, pPrint r]
+    case qualifier ref of
+      Unqualified -> pPrint r
+      LocalRef    -> qual "local "
+      QTimeRef    -> qual "qtime "
+      GloDotRef   -> qual "."
+      StaticRef   -> qual "static "
+      GlobalRef   -> qual "global "
 
 instance PPrintable Comment where
   pPrint com = do
@@ -335,38 +350,28 @@ instance PPrintable AST_TopLevel where
 pPrintInterm :: (Intermediate obj ast, PPrintable ast) => obj -> PPrint ()
 pPrintInterm = mapM_ pPrint . fromInterm
 
+instance PPrintable AST_SourceCode where
+  pPrint sc = do
+    let (attrs, dirs) = span isAST_Attribute (directives sc)
+    mapM_ pPrint attrs
+    pForceNewLine
+    mapM_ (\dir -> pPrint dir >> pForceNewLine) dirs
+
 instance PPrintable TopLevelExpr where { pPrint = pPrintInterm }
 instance PPrintable ScriptExpr   where { pPrint = pPrintInterm }
 instance PPrintable ObjectExpr   where { pPrint = pPrintInterm }
 
+instance PPrintable TypeCheck    where { pPrint = pString . uchars . typeCheckSource }
 instance PPrintable CallableCode where
   pPrint a = case a of
     CallableCode pats exe -> prin "function" pats exe
-    GlobAction pats exe -> prin "rule"     pats exe
+    GlobAction   pats exe -> prin "rule"     pats exe
     where
       prin typ pats exe =
         pClosure (pList (pString typ) "(" "," ")" (map pPrint pats)) "{" "}" $
           map pPrint (codeBlock (origSourceCode exe))
 
 instance PPrintable Subroutine where { pPrint = mapM_ pPrint . codeBlock . origSourceCode }
-
-instance PPrintable Pattern where
-  pPrint pat = case pat of
-    ObjAnyX                             -> pString "some"
-    ObjMany                             -> pString "all"
-    ObjAny1                             -> pString "any1"
-    ObjEQ       o                       -> pList (pString "eq") "(" "" ")" [pPrint o]
-    ObjType     enumSet_TypeID          ->
-      pList_ "(" "|" ")" (map pPrint (filter (Es.member enumSet_TypeID) [NullType .. BytesType]))
-    ObjBounded  loRatio        hiRatio  -> undefined
-    ObjList     typeID         oPatx    -> undefined
-    ObjNameSet  objSetOp       sSetName -> undefined
-    ObjIntSet   objSetOp       isIntSet -> undefined
-    ObjElemSet  objSetOp       sSetOPat -> undefined
-    ObjChoice   objSetOp       sSetOPat -> undefined
-    ObjLabel    name           oPat     -> undefined
-    ObjFailIf   ustr           oPat     -> undefined
-    ObjNot                     oPat     -> undefined
 
 instance PPrintable TypeID where
   pPrint t = pString $ case t of

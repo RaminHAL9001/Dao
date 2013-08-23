@@ -84,9 +84,9 @@ instance Structured Comment where
     a <- this
     case a of
       OString a -> return (InlineComment a)
-      OPair (msg, OString a)
-        | msg == ostr "inline"  -> return (InlineComment  a)
-        | msg == ostr "endline" -> return (EndlineComment a)
+      OPair (OString msg, OString a)
+        | msg == ustr "inline"  -> return (InlineComment  a)
+        | msg == ustr "endline" -> return (EndlineComment a)
         | otherwise             -> nope
       _         -> nope
     where { nope = fail "must be a comment string or typed comment string" }
@@ -242,7 +242,7 @@ instance Structured AST_Script where
       getContinue tf = liftM3 (AST_ContinueExpr tf) getComments (getDataAt "condition") getData
       getReturn   tf = liftM2 (AST_ReturnExpr   tf)             (getDataAt "object")    getData
 
-instance Structured Reference where
+instance Structured QualRef where
   dataToStruct = deconstruct . place . ORef
   structToData = reconstruct $ do
     a <- this
@@ -273,49 +273,6 @@ uninitialized_err a = error $ concat $
   [ a, " was just constructed from 'structToData',"
   , "the executable has not yet been initialized"
   ]
-
-instance Structured CallableCode where
-  dataToStruct a = deconstruct $ case a of
-    CallableCode a _ -> putData a
-  structToData = reconstruct $ do
-    a <- getData
-    return $ CallableCode a $ uninitialized_err "subroutine"
-
-instance Structured Pattern where
-  dataToStruct a = deconstruct $ case a of
-    ObjAnyX        -> putUStrData "any"
-    ObjMany        -> putUStrData "many"
-    ObjAny1        -> putUStrData "any1"
-    ObjEQ      a   -> with "equals"  (place a)
-    ObjType    a   -> putDataAt "type" a
-    ObjBounded a b -> with "bounded" (putData a >> putDataAt "to" b)
-    ObjList    a b -> with "list"    (putDataAt "op" a >> putData b)
-    ObjNameSet a b -> with "nameSet" (putDataAt "op" a >> putData (S.elems b))
-    ObjIntSet  a b -> with "intSet" $ putDataAt "op" a >> place (OList (map (OInt . fromIntegral) (IS.elems b)))
-    ObjElemSet a b -> with "elemSet" (putDataAt "op" a >> putData (S.elems b))
-    ObjChoice  a b -> with "choice"  (putDataAt "op" a >> putData (S.elems b))
-    ObjLabel   a b -> with "label"   (putDataAt "name" a >> putData b)
-    ObjFailIf  a b -> with "require" (putDataAt "message" a >> putData b)
-    ObjNot     a   -> with "not"     (putData a)
-  structToData = reconstruct $ msum $
-    [ getUStrData "src/Dao/Object/Struct.hs:302:pattern" >>= \a -> case uchars a of
-        "any"  -> return ObjAnyX
-        "many" -> return ObjMany
-        "any1" -> return ObjAny1
-        _      -> assumePValue Backtrack
-    , tryWith "equals"  $ liftM  ObjEQ       this
-    , tryWith "type"    $ liftM  ObjType     getData
-    , tryWith "bounded" $ liftM2 ObjBounded  getData           (getDataAt "to")
-    , tryWith "list"    $ liftM2 ObjList    (getDataAt "op")    getData
-    , tryWith "nameSet" $ liftM2 ObjNameSet (getDataAt "op")   (fmap S.fromList  getData)
-    , tryWith "intSet"  $ liftM2 ObjIntSet  (getDataAt "op")   (fmap IS.fromList getData)
-    , tryWith "elemSet" $ liftM2 ObjElemSet (getDataAt "op")   (fmap S.fromList  getData)
-    , tryWith "choice"  $ liftM2 ObjChoice  (getDataAt "op")   (fmap S.fromList  getData)
-    , tryWith "label"   $ liftM2 ObjLabel   (getDataAt "name")  getData
-    , tryWith "require" $ liftM2 ObjFailIf  (getDataAt "message") getData
-    , tryWith "not"     $ liftM  ObjNot     getData
-    , mplus this (return ONull) >>= \a -> fail "pattern"
-    ]
 
 instance Structured ObjSetOp where
   dataToStruct a = deconstruct $ place $ ostr $ case a of

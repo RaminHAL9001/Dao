@@ -1671,7 +1671,7 @@ evalOpTableParser optab = evalOpTableParserWithInit (opTableObjParser optab) opt
 -- that parses object terms in the expression. After the initial parser function is evaluated, the
 -- 'opTableObjParser' function is used for every other term after it.
 evalOpTableParserWithInit
-  :: (HasTokenDB tok, TokenType tok, Show obj)
+  :: (HasTokenDB tok, TokenType tok)
   => Parser st tok obj
   -> OpTableParser st tok op obj
   -> Parser st tok obj

@@ -39,7 +39,7 @@ import           Dao.Token
 import           Dao.Parser
 import           Dao.Glob
 import qualified Dao.EnumSet as Es
-import           Dao.Tree as T hiding (map)
+import           Dao.Tree as T hiding (map, null)
 import           Dao.Predicate
 import           Dao.Procedural
 
@@ -113,106 +113,106 @@ class ObjectClass a where { newObject :: a -> ObjectInterface a }
 -- @this.superClassName.methodName@ or @this.superSuperClassName.superClassName.methodName@.
 data ObjectInterface a =
   ObjectInterface
-  { objClassName  :: Name
-  , objSuperClasses :: [ObjectInterface ()]
-  , objToBytes    :: Maybe (Dynamic -> T_bytes) -- ^ convert this object to binary data.
-  , bytesToObj    :: Maybe (T_bytes -> Dynamic) -- ^ load this object from binary data.
-  , objNullTest   :: Maybe (Dynamic -> Bool)
+  { objClassName    :: Name
+  , objHaskellType  :: TypeRep
+  , objSuperClasses :: [ObjectInterface a]
+  , objEquality     :: Maybe (a -> Object -> Bool)
+  , objCompare      :: Maybe (a -> Object -> Ordering)
+  , objBinaryFmt    :: Maybe (a -> T_bytes, T_bytes -> a)
+  , objNullTest     :: Maybe (a -> Bool)
     -- ^ return true if the value is null, used by "if" and "while" statements.
-  , objIterator   :: Maybe (Dynamic -> Exec [Object])
+  , objIterator     :: Maybe (a -> Exec [Object])
     -- ^ convert this object to a list of other objects, used by "for" statements.
-  , objIndexer    :: Maybe (Dynamic -> Object -> Exec Object)
+  , objIndexer      :: Maybe (a -> Object -> Exec Object)
     -- ^ the function used when a square-brackets subscripting operation is used on an object of
     -- this type.
-  , treeFormat    :: Maybe (Dynamic -> Exec T_tree, T_tree  -> Exec Dynamic)
+  , objTreeFormat   :: Maybe (a -> Exec T_tree, T_tree  -> Exec a)
     -- ^ a pair of functions for converting this object to and from a 'T_tree'. Used when
     -- dereferencing this object, that is, with the "@" operator, the point "->" operator, and in
     -- "with" statements.
-  , objCodeFormat :: Maybe (Dynamic -> Exec CodeBlock, CodeBlock -> Exec Dynamic)
+  , objCodeFormat   :: Maybe (a -> Exec CodeBlock, CodeBlock -> Exec a)
     -- ^ objects do not have pretty printers, but you can convert your object to and from a
     -- 'CodeBlock' data type. 'CodeBlock's can be pretty-printed and parsed by Dao, so this function
     -- provides a method of both parsing and pretty printing an object to/from source code.
-  , updateOpTable :: Maybe (Array UpdateOp (UpdateOp -> Dynamic -> Object -> Exec Object))
+  , objUpdateOpTable :: Maybe (Array UpdateOp (UpdateOp -> a -> Object -> Exec Object))
     -- ^ overload the update/assignment operators, @=@, @+=@, @-=@, etc.
-  , infixOpTable  :: Maybe (Array InfixOp  (InfixOp  -> Dynamic -> Object -> Exec Object))
+  , objInfixOpTable  :: Maybe (Array InfixOp  (InfixOp  -> a -> Object -> Exec Object))
     -- ^ overload the infix operators, @+@, @*@, @&@, etc.
-  , prefixOpTable :: Maybe (Array PrefixOp (PrefixOp -> Dynamic -> Exec Object))
+  , objPrefixOpTable :: Maybe (Array PrefixOp (PrefixOp -> a -> Exec Object))
     -- ^ overload the prefix operators, @!@, @-@, @+@, etc.
-  , objMethods    :: T.Tree Name (Dynamic -> DaoFunc)
+  , objMethods       :: T.Tree Name (a -> DaoFunc)
     -- ^ provide a list of 'DaoFunc's that can be called on this object, each function mapped to a
     -- name. In the Dao source code, to call one of these functions, you would write code like so:
     -- > myObj.funcName(param1, param2);
     -- In the map returned by this function, you would map the string "funcName" to a function of
     -- type @('Data.Dynamic.Dynamic -> 'DaoFunc')@, where the 'Data.Dynamic.Dynamic' parameter will
     -- contain the "this" pointer.
-  , objectValue   :: Maybe Dynamic
+  , objectValue     :: Maybe a
     -- ^ Contains the actual object.
   }
-instance Monoid (ObjectInterface a) where
+  deriving Typeable
+instance Eq  a => Eq (ObjectInterface a) where { a==b = objectValue a == objectValue b }
+instance Ord a => Ord (ObjectInterface a) where { compare a b = compare (objectValue a) (objectValue b) }
+
+-- Used to construct an 'ObjectInterface' in a "Control.Monad.State"-ful way. Instantiates
+-- 'Data.Monoid.Monoid' to provide 'Data.Monoid.mempty' an allows multiple inheritence by use of the
+-- 'Data.Monoid.mappend' function in the same way as
+data ObjIfc a =
+  ObjIfc
+  { objIfcClassName     :: Name
+  , objIfcSuperClasses  :: [ObjIfc a]
+  , objIfcEquality      :: Maybe (a -> Object -> Bool)
+  , objIfcCompare       :: Maybe (a -> Object -> Ordering)
+  , objIfcBinEncoder    :: Maybe (a -> T_bytes)
+  , objIfcBinDecoder    :: Maybe (T_bytes   -> a)
+  , objIfcNullTest      :: Maybe (a -> Bool)
+  , objIfcIterator      :: Maybe (a -> Exec [Object])
+  , objIfcIndexer       :: Maybe (a -> Object -> Exec Object)
+  , objIfcTreeEncoder   :: Maybe (a -> Exec T_tree)
+  , objIfcTreeDecoder   :: Maybe (T_tree    -> Exec a)
+  , objIfcExprDecoder   :: Maybe (a -> Exec CodeBlock)
+  , objIfcExprEncoder   :: Maybe (CodeBlock -> Exec a)
+  , objIfcUpdateOpTable :: [(UpdateOp, UpdateOp -> a -> Object -> Exec Object)]
+  , objIfcInfixOpTable  :: [(InfixOp , InfixOp  -> a -> Object -> Exec Object)]
+  , objIfcPrefixOpTable :: [(PrefixOp, PrefixOp -> a -> Exec Object)]
+  , objIfcMethods       :: T.Tree Name (a -> DaoFunc)
+  , objIfcInitValue     :: Maybe a
+  }
+instance Monoid (ObjIfc a) where
   mempty = 
-    ObjectInterface
-    { objClassName  = nil
-    , objSuperClasses = []
-    , objToBytes    = Nothing
-    , bytesToObj    = Nothing
-    , objNullTest   = Nothing
-    , objIterator   = Nothing
-    , objIndexer    = Nothing
-    , treeFormat    = Nothing
-    , objCodeFormat = Nothing
-    , updateOpTable = Nothing
-    , infixOpTable  = Nothing
-    , prefixOpTable = Nothing
-    , objMethods    = T.Void
-    , objectValue   = Nothing
+    ObjIfc
+    { objIfcClassName     = nil
+    , objIfcSuperClasses  = []
+    , objIfcEquality      = Nothing
+    , objIfcCompare       = Nothing
+    , objIfcBinEncoder    = Nothing
+    , objIfcBinDecoder    = Nothing
+    , objIfcNullTest      = Nothing
+    , objIfcIterator      = Nothing
+    , objIfcIndexer       = Nothing
+    , objIfcTreeEncoder   = Nothing
+    , objIfcTreeDecoder   = Nothing
+    , objIfcExprDecoder   = Nothing
+    , objIfcExprEncoder   = Nothing
+    , objIfcUpdateOpTable = []
+    , objIfcInfixOpTable  = []
+    , objIfcPrefixOpTable = []
+    , objIfcMethods       = T.Void
+    , objIfcInitValue     = Nothing
     }
   mappend a b = 
     mempty
-    { objSuperClasses =
-        objSuperClasses (a{objectValue=Nothing}) ++ objSuperClasses (b{objectValue=Nothing})
-    , objMethods    =
-        let fn a = fmap (\ (nm, f) -> (objClassName a : nm, f)) (T.assocs (objMethods a)) 
+    { objIfcSuperClasses = objIfcSuperClasses (a{objIfcInitValue=Nothing}) ++
+        objIfcSuperClasses (b{objIfcInitValue=Nothing})
+    , objIfcMethods =
+        let fn a = fmap (\ (nm, f) -> (objIfcClassName a : nm, f)) (T.assocs (objIfcMethods a)) 
             (+)  = flip T.union
-        in  objMethods b + objMethods a + T.fromList (fn a ++ fn b)
-    , objectValue   = Nothing
+        in  objIfcMethods b + objIfcMethods a + T.fromList (fn a ++ fn b)
+    , objIfcInitValue = Nothing
     }
 
 -- | A handy monadic interface for defining an 'ObjectInterface'.
-type DaoClassDef typ a = State (ObjectInterface typ) a
-
-defClassName :: (Typeable typ, B.Binary typ, UStrType name) => name -> DaoClassDef typ ()
-defClassName name = modify (\st -> st{objClassName=ustr name})
-
-defInitValue :: (Typeable typ, B.Binary typ) => typ -> DaoClassDef typ ()
-defInitValue val = modify (\st -> st{objectValue=Just (toDyn val)})
-
-defBinaryDecoder :: (Typeable typ, B.Binary typ) => (T_bytes -> typ) -> DaoClassDef typ ()
-defBinaryDecoder fn = modify (\st -> st{bytesToObj = Just (decodeDyn fn)}) where
-  decodeDyn fn obj = toDyn (fn obj)
-
-defDynamicMethod
-  :: (Typeable typ, B.Binary typ)
-  => String
-  -> (Maybe (Dynamic -> func) -> ObjectInterface typ -> ObjectInterface typ)
-  -> (typ -> func)
-  -> DaoClassDef typ ()
-defDynamicMethod methodDesc upd fn = modify (upd (Just (apply fn))) where
-  apply fn dyn = fn (fromDyn dyn (err fn dyn))
-  err :: (Typeable typ, B.Binary typ) => (typ -> func) -> Dynamic -> typ
-  err fn dyn = error $ unwords $
-    [ methodDesc, "for", show (typeOf (err fn dyn))
-    , "was evaluated with data of type", show (dynTypeRep dyn)
-    ]
-
-defBinaryEncoder :: (Typeable typ, B.Binary typ) => (typ -> T_bytes) -> DaoClassDef typ ()
-defBinaryEncoder = defDynamicMethod "binary encoder" (\o st -> st{objToBytes=o})
-
--- | Remember, return 'Prelude.True' if the object is null.
-defNullTest :: (Typeable typ, B.Binary typ) => (typ -> Bool) -> DaoClassDef typ ()
-defNullTest = defDynamicMethod "null test" (\o st -> st{objNullTest=o})
-
-defIndexer :: (Typeable typ, B.Binary typ) => (typ -> Object -> Exec Object) -> DaoClassDef typ ()
-defIndexer = defDynamicMethod "indexing" (\o st -> st{objIndexer=o})
+type DaoClassDef typ a = State (ObjIfc typ) a
 
 ----------------------------------------------------------------------------------------------------
 
@@ -229,7 +229,7 @@ type T_time     = UTCTime
 type T_diffTime = NominalDiffTime
 type T_char     = Char
 type T_string   = UStr
-type T_ref      = Reference
+type T_ref      = QualRef
 type T_pair     = (Object, Object)
 type T_list     = [Object]
 type T_set      = S.Set Object
@@ -241,6 +241,7 @@ type T_tree     = T.Tree Name Object
 type T_pattern  = Glob
 type T_script   = CallableCode
 type T_bytes    = B.ByteString
+type T_haskell  = ObjectInterface Dynamic
 
 data TypeID
   = NullType
@@ -269,7 +270,7 @@ data TypeID
   | RuleType
   | BytesType
   | HaskellType
-  deriving (Eq, Ord, Enum, Typeable, Bounded)
+  deriving (Eq, Ord, Typeable, Enum, Bounded)
 
 instance Es.InfBound TypeID where
   minBoundInf = Es.Point minBound
@@ -352,54 +353,58 @@ oBool a = if a then OTrue else ONull
 -- variables are being accessed so the appropriate read, write, or update action can be planned.
 data Reference
   = NullRef
-  | IntRef    { intRef    :: Word }  -- ^ reference to a read-only pattern-match variable.
-  | LocalRef  { localRef  :: Name } -- ^ reference to a local variable.
-  | StaticRef { localRef  :: Name } -- ^ reference to a permanent static variable (stored per rule/function).
-  | QTimeRef  { globalRef :: [Name] } -- ^ reference to a query-time static variable.
-  | GlobalRef { globalRef :: [Name] } -- ^ reference to in-memory data stored per 'Dao.Types.ExecUnit'.
-  | Subscript { dereference :: Reference, arguments :: [Object] } -- ^ reference to value at a subscripted slot in a container object
-  | CallWith  { dereference :: Reference, arguments :: [Object] } -- ^ reference prepended with arguments in parentheses.
-  | MetaRef   { dereference :: Reference } -- ^ wraps up a 'Reference' as a value that cannot be used as a reference.
-  deriving (Eq, Ord, Show, Typeable)
+  | PlainRef  { localRef  :: Name     } -- ^ reference to a local variable.
+  | DerefOp   { refObject :: Object   } -- ^ the at-sign operator
+  | MetaRef   { refObject :: Object   } -- ^ the dollar-sign operator
+  | DotRef    { refLeft   :: Reference, refRight  :: Reference }
+  | PointRef  { refLeft   :: Reference, refRight  :: Reference }
+  | Subscript { refLeft   :: Reference, refParams :: [Object]  } -- ^ reference to value at a subscripted slot in a container object
+  | CallWith  { refLeft   :: Reference, refParams :: [Object]  } -- ^ reference prepended with arguments in parentheses.
+  deriving (Eq, Ord, Typeable)
 instance Monoid Reference where
-  mempty = NullRef
-  mappend a b = case b of
-    IntRef     _   -> mempty
-    LocalRef     b -> fn [b]
-    StaticRef    b -> fn [b]
-    QTimeRef     b -> fn  b
-    GlobalRef    b -> fn  b
-    Subscript  b j -> case a of
-      Subscript a i -> Subscript (Subscript (mappend a b) i) j
-      a             -> Subscript (mappend a b) j
-    CallWith   b j -> case a of
-      CallWith  a i -> CallWith  (CallWith  (mappend a b) i) j
-      a             -> CallWith  (mappend a b) j
-    MetaRef    _   -> mempty
-    where
-      fn b = case a of
-        IntRef     _   -> mempty
-        LocalRef     a -> GlobalRef (a:b)
-        StaticRef    a -> mempty
-        QTimeRef     a -> QTimeRef     (a++b)
-        GlobalRef    a -> GlobalRef    (a++b)
-        MetaRef    _   -> mempty
+  mempty      = NullRef
+  mappend b c = loop b c where
+    loop b c = case b of
+      NullRef       -> c
+      PlainRef  _   -> DotRef   b c
+      DerefOp   _   -> DotRef   b c
+      MetaRef   _   -> DotRef   b c
+      DotRef    a b -> DotRef   a (loop b c)
+      PointRef  a b -> PointRef a (loop b c)
+      Subscript _ _ -> DotRef   b c
+      CallWith  _ _ -> DotRef   b c
 
-refSameClass :: Reference -> Reference -> Bool
-refSameClass a b = case (a, b) of
-  (NullRef       , NullRef        ) -> True
-  (IntRef       _, IntRef        _) -> True
-  (LocalRef     _, LocalRef      _) -> True
-  (StaticRef    _, StaticRef     _) -> True
-  (QTimeRef     _, QTimeRef      _) -> True
-  (GlobalRef    _, GlobalRef     _) -> True
-  (Subscript  _ _, Subscript   _ _) -> True
-  (CallWith   _ _, CallWith    _ _) -> True
-  (MetaRef      _, MetaRef       _) -> True
-  _                                 -> False
+-- | A 'Reference' type with an optional qualifier. 'UnqualRef' means there is no qualifier.
+data QualRef = QualRef { qualifier :: RefQualifier, qualRef :: Reference }
+  deriving (Eq, Ord, Typeable)
 
--- | The 'Object' type is clumps together all of Haskell's most convenient data structures into a
--- single data type so they can be used in a non-functional, object-oriented way in the Dao runtime.
+-- | Create a 'QualRef' from any 'Dao.String.UStr'.
+bareword :: UStr -> QualRef
+bareword = QualRef Unqualified . PlainRef
+
+-- | Reference qualifiers, specify which area of the execution unit a reference is pointing to.
+data RefQualifier = Unqualified | LocalRef | QTimeRef | GloDotRef | StaticRef | GlobalRef
+  deriving (Eq, Ord, Typeable, Enum, Ix, Bounded)
+instance Show RefQualifier where
+  show q = case q of
+    Unqualified -> ""
+    LocalRef    -> "local"
+    QTimeRef    -> "qtime"
+    GloDotRef   -> "."
+    StaticRef   -> "static"
+    GlobalRef   -> "global"
+instance Read RefQualifier where
+  readsPrec _ str = fmap (\o -> (o, "")) $ case str of
+    ""       -> [Unqualified]
+    "local"  -> [LocalRef]
+    "qtime"  -> [QTimeRef]
+    "."      -> [GloDotRef]
+    "static" -> [StaticRef]
+    "global" -> [GlobalRef]
+    _        -> []
+
+-- | The 'Object' type has constructors for primitive types, and for boxed Haskell types. Haskell
+-- types are boxed in 'Data.Dynamic.Dynamic' wrappers.
 data Object
   = ONull
   | OTrue
@@ -425,9 +430,73 @@ data Object
   | OGlob      T_pattern
   | OScript    T_script
   | OBytes     T_bytes
-  deriving (Eq, Ord, Show, Typeable)
-
-instance Exception Object
+  | OHaskell   T_haskell
+  deriving Typeable
+instance Eq Object where
+  a==b = case (a,b) of
+    (ONull       , ONull       ) -> True
+    (OTrue       , OTrue       ) -> True
+    (OType      a, OType      b) -> a==b
+    (OInt       a, OInt       b) -> a==b
+    (OWord      a, OWord      b) -> a==b
+    (OLong      a, OLong      b) -> a==b
+    (OFloat     a, OFloat     b) -> a==b
+    (ORatio     a, ORatio     b) -> a==b
+    (OComplex   a, OComplex   b) -> a==b
+    (OTime      a, OTime      b) -> a==b
+    (ODiffTime  a, ODiffTime  b) -> a==b
+    (OChar      a, OChar      b) -> a==b
+    (OString    a, OString    b) -> a==b
+    (ORef       a, ORef       b) -> a==b
+    (OPair      a, OPair      b) -> a==b
+    (OList      a, OList      b) -> a==b
+--  (OSet       a, OSet       b) -> a==b
+--  (OArray     a, OArray     b) -> a==b
+--  (ODict      a, ODict      b) -> a==b
+--  (OIntMap    a, OIntMap    b) -> a==b
+    (OTree      a, OTree      b) -> a==b
+--  (OGlob      a, OGlob      b) -> a==b
+--  (OScript    a, OScript    b) -> a==b
+    (OBytes     a, OBytes     b) -> a==b
+    (OHaskell   a, OHaskell   b) -> maybe False id $ do
+      eq  <- objEquality a
+      obj <- objectValue a
+      return (eq obj (OHaskell b))
+    _                            -> False
+instance Ord Object where
+  compare a b = case (a,b) of
+    (OType      a, OType      b) -> compare a b
+    (OInt       a, OInt       b) -> compare a b
+    (OWord      a, OWord      b) -> compare a b
+    (OLong      a, OLong      b) -> compare a b
+    (OFloat     a, OFloat     b) -> compare a b
+    (ORatio     a, ORatio     b) -> compare a b
+    (OComplex   a, OComplex   b) -> compare a b
+    (OTime      a, OTime      b) -> compare a b
+    (ODiffTime  a, ODiffTime  b) -> compare a b
+    (OChar      a, OChar      b) -> compare a b
+    (OString    a, OString    b) -> compare a b
+    (ORef       a, ORef       b) -> compare a b
+    (OPair      a, OPair      b) -> compare a b
+    (OList      a, OList      b) -> compare a b
+--  (OSet       a, OSet       b) -> compare a b
+--  (OArray     a, OArray     b) -> compare a b
+--  (ODict      a, ODict      b) -> compare a b
+--  (OIntMap    a, OIntMap    b) -> compare a b
+    (OTree      a, OTree      b) -> compare a b
+--  (OGlob      a, OGlob      b) -> compare a b
+--  (OScript    a, OScript    b) -> compare a b
+    (OBytes     a, OBytes     b) -> compare a b
+    (OHaskell   a, OHaskell   b) -> maybe (err a b) id $ do
+      comp <- objCompare a
+      obj  <- objectValue a
+      return (comp obj (OHaskell b))
+      where
+        err a b = error $ unwords $
+          [ "cannot compare object of type", show (objHaskellType a)
+          , "with obejct of type", show (objHaskellType b)
+          ]
+    _                            -> compare (objType a) (objType b)
 
 -- | Since 'Object' requires all of it's types instantiate 'Prelude.Ord', I have defined
 -- 'Prelude.Ord' of 'Data.Complex.Complex' numbers to be the distance from 0, that is, the radius of
@@ -463,6 +532,7 @@ objType o = case o of
   OGlob     _ -> GlobType
   OScript   _ -> ScriptType
   OBytes    _ -> BytesType
+  OHaskell  _ -> HaskellType
 
 instance Enum Object where
   toEnum   i = OType (toEnum i)
@@ -506,9 +576,7 @@ object2Dynamic o = case o of
   OScript   o -> toDyn o
   OGlob     o -> toDyn o
   OBytes    o -> toDyn o
-
-castObj :: Typeable t => Object -> t
-castObj o = fromDyn (object2Dynamic o) (throw (OType (objType o)))
+  OHaskell  o -> toDyn o
 
 obj :: Typeable t => Object -> [t]
 obj o = maybeToList (fromDynamic (object2Dynamic o))
@@ -524,7 +592,7 @@ ostr = OString . ustr
 
 ----------------------------------------------------------------------------------------------------
 
-newtype CodeBlock = CodeBlock { codeBlock :: [ScriptExpr] } deriving (Eq, Ord, Show, Typeable)
+newtype CodeBlock = CodeBlock { codeBlock :: [ScriptExpr] } deriving (Eq, Ord, Typeable)
 instance HasLocation CodeBlock where
   getLocation o = case codeBlock o of
     [] -> LocationUnknown
@@ -548,15 +616,14 @@ data Subroutine
     , executable     :: Exec (Maybe Object)
     }
 
+-- | Dao will have a compile-time type checker in the near future.
+data TypeCheck = TypeCheck{ typeCheckSource :: Name }
+
 -- | A subroutine is specifically a callable function (but we don't use the name Function to avoid
 -- confusion with Haskell's "Data.Function"). 
 data CallableCode
   = CallableCode
-    { argsPattern   :: [Pattern]
-    , getSubroutine :: Subroutine
-    }
-  | MacroFunc
-    { argsPattern   :: [Pattern]
+    { argsPattern   :: [TypeCheck]
     , getSubroutine :: Subroutine
     }
   | GlobAction
@@ -564,18 +631,6 @@ data CallableCode
     , getSubroutine :: Subroutine
     }
   deriving Typeable
-
-instance Eq CallableCode where
-  a == b = argsPattern a == argsPattern b
-
-instance Ord CallableCode where
-  compare a b =
-    let c = compare (argsPattern a) (argsPattern b)
-    in  if c==EQ then compare (argsPattern a) (argsPattern b) else c
-
-instance Show CallableCode where
-  show a = concat $
-    [ "CallableCode{argsPattern=", intercalate ", " (map show (argsPattern a)), "}" ]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -676,7 +731,7 @@ class Executable exec result | exec -> result where { execute :: exec -> Exec re
 ----------------------------------------------------------------------------------------------------
 
 data UpdateOp = UCONST | UADD | USUB | UMULT | UDIV | UMOD | UORB | UANDB | UXORB | USHL | USHR
-  deriving (Eq, Ord, Enum, Ix, Typeable, Show)
+  deriving (Eq, Ord, Typeable, Enum, Ix, Show)
 
 instance Bounded UpdateOp where {minBound = UCONST; maxBound = USHR}
 
@@ -716,7 +771,7 @@ instance UStrType UpdateOp where
 data PrefixOp
   = REF | DEREF | INVB  | NOT | NEGTIV | POSTIV | GLDOT -- ^ unary
   | GLOBALPFX | LOCALPFX | QTIMEPFX | STATICPFX
-  deriving (Eq, Ord, Enum, Ix, Typeable, Show)
+  deriving (Eq, Ord, Typeable, Enum, Ix, Show)
 
 allPrefixOpChars = "$@~!-+"
 allPrefixOpStrs = " $ @ ~ - + ! "
@@ -760,7 +815,7 @@ data InfixOp
   | ORB   | ANDB  | XORB
   | SHL   | SHR
   | GTN   | LTN   | GTEQ  | LTEQ
-  deriving (Eq, Ord, Enum, Ix, Typeable, Show)
+  deriving (Eq, Ord, Typeable, Enum, Ix, Show)
 
 allInfixOpChars = "+-*/%<>^&|."
 allInfixOpStrs = " + - * / % ** -> . || && == != | & ^ << >> < > <= >= "
@@ -789,7 +844,7 @@ instance UStrType InfixOp where
 
 instance Bounded InfixOp where { minBound = ADD; maxBound = LTEQ; }
 
-data LambdaExprType = FuncExprType | RuleExprType | PatExprType deriving (Eq, Ord, Enum, Typeable)
+data LambdaExprType = FuncExprType | RuleExprType | PatExprType deriving (Eq, Ord, Typeable, Enum)
 instance Show LambdaExprType where
   show a = case a of
     FuncExprType -> "function"
@@ -828,7 +883,7 @@ data ObjectExpr
   | DataExpr      [UStr]                                   Location
   | LambdaExpr    LambdaExprType [ObjectExpr] CodeBlock    Location
   | MetaEvalExpr  ObjectExpr                               Location
-  deriving (Eq, Ord, Show, Typeable)
+  deriving (Eq, Ord, Typeable)
 
 instance HasLocation ObjectExpr where
   getLocation o = case o of
@@ -894,7 +949,7 @@ data ScriptExpr
   | ContinueExpr Bool          ObjectExpr                Location
   | ReturnExpr   Bool          ObjectExpr                Location
   | WithDoc      ObjectExpr    CodeBlock                 Location
-  deriving (Eq, Ord, Show, Typeable)
+  deriving (Eq, Ord, Typeable)
 
 instance HasLocation ScriptExpr where
   getLocation o = case o of
@@ -933,7 +988,7 @@ instance HasLocation ScriptExpr where
 
 data TopLevelEventType
   = BeginExprType | EndExprType | ExitExprType
-  deriving (Eq, Ord, Enum, Typeable)
+  deriving (Eq, Ord, Typeable, Enum)
 instance Show TopLevelEventType where
   show t = case t of
     BeginExprType -> "BEGIN"
@@ -954,7 +1009,7 @@ data TopLevelExpr
   | TopScript      ScriptExpr                                    Location
   | TopLambdaExpr  LambdaExprType     [ObjectExpr]  CodeBlock    Location
   | EventExpr      TopLevelEventType  CodeBlock                  Location
-  deriving (Eq, Ord, Show, Typeable)
+  deriving (Eq, Ord, Typeable)
 
 isAttribute :: TopLevelExpr -> Bool
 isAttribute toplevel = case toplevel of { Attribute _ _ _ -> True; _ -> False; }
@@ -987,7 +1042,7 @@ instance HasLocation TopLevelExpr where
 
 -- | A program is just a list of 'TopLevelExpr's. It serves as the 'Dao.Object.AST.Intermediate'
 -- representation of a 'Dao.Object.AST.AST_SourceCode'.
-newtype Program = Program { topLevelExprs :: [TopLevelExpr] } deriving (Eq, Ord, Show)
+newtype Program = Program { topLevelExprs :: [TopLevelExpr] } deriving (Eq, Ord, Typeable)
 instance HasLocation Program where
   getLocation o = case topLevelExprs o of
     [] -> LocationUnknown
@@ -1008,56 +1063,7 @@ data ObjSetOp
   | AllOfSet -- ^ all of the patterns match, but it doesn't matter if not all items were matched.
   | OnlyOneOf -- ^ only one of the patterns in the set matches only one of the items.
   | NoneOfSet -- ^ all of the patterns do not match any of the items in the set.
-  deriving (Eq, Ord, Enum, Typeable, Show, Read)
-
--- | An object pattern, a data type that can be matched against objects,
--- assigning portions of that object to variables stored in a
--- 'Dao.Tree.Tree' structure.
-data Pattern 
-  = ObjAnyX -- ^ matches any number of objects, matches lazily (not greedily).
-  | ObjMany -- ^ like ObjAnyX but matches greedily.
-  | ObjAny1 -- ^ matches any one object
-  | ObjEQ      Object -- ^ simply checks if the object is exactly equivalent
-  | ObjType    (Es.Set TypeID) -- ^ checks if the object type is any of the given types.
-  | ObjBounded (Es.Inf T_ratio) (Es.Inf T_ratio)
-    -- ^ checks that numeric types are in a certain range.
-  | ObjList    TypeID            [Pattern]
-    -- ^ recurse into a list-like object given by TypeID (TrueType for any list-like object)
-  | ObjNameSet ObjSetOp          (S.Set [Name])
-    -- ^ checks if a map object contains every name
-  | ObjIntSet  ObjSetOp          IS.IntSet
-    -- ^ checks if an intmap or array object contains every index
-  | ObjElemSet ObjSetOp          (S.Set Pattern)
-    -- ^ recurse into a set-like object given by TypeID, match elements in the set according to
-    -- ObjSetOp.
-  | ObjChoice  ObjSetOp          (S.Set Pattern) -- ^ execute a series of tests on a single object
-  | ObjLabel   Name  Pattern
-    -- ^ if the object matching matches this portion of the 'Pattern', then save the object into the
-    -- resulting 'Dao.Tree.Tree' under this name.
-  | ObjFailIf  UStr  Pattern -- ^ fail with a message if the pattern does not match
-  | ObjNot           Pattern -- ^ succedes if the given pattern fails to match.
-  deriving (Eq, Show, Typeable)
-
-instance Ord Pattern where
-  compare a b
-    | a==b      = EQ
-    | otherwise = compare (toInt a) (toInt b) where
-        f s = foldl max 0 (map toInt (S.elems s))
-        toInt a = case a of
-          ObjAnyX   -> 1
-          ObjMany   -> 2
-          ObjAny1   -> 3
-          ObjEQ   _ -> 4
-          ObjType _ -> 5
-          ObjBounded _ _ -> 6
-          ObjList    _ _ -> 7
-          ObjNameSet _ _ -> 8
-          ObjIntSet  _ _ -> 9
-          ObjElemSet _ s -> f s
-          ObjChoice  _ s -> f s
-          ObjNot       a -> toInt a
-          ObjLabel   _ a -> toInt a
-          ObjFailIf  _ w -> toInt a
+  deriving (Eq, Ord, Typeable, Enum, Show, Read)
 
 ----------------------------------------------------------------------------------------------------
 

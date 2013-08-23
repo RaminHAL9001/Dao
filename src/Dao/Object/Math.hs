@@ -69,15 +69,12 @@ testNull o = case o of
   ODiffTime o | toRational o == 0%1 -> True
   OChar     o | ord o == 0          -> True
   OString   o | o==nil              -> True
-  ORef (GlobalRef [])          -> True
-  ORef (QTimeRef  [])          -> True
-  ORef (LocalRef  s)  | s==nil -> True
-  ORef (StaticRef s)  | s==nil -> True
+  ORef(QualRef Unqualified NullRef) -> True
   OList        []        -> True
   OSet     o | S.null  o -> True
   ODict    o | M.null  o -> True
   OIntMap  o | IM.null o -> True
-  OTree    o | o==T.Void -> True
+  OTree    o | T.null  o -> True
   OGlob    o | null (getPatUnits o) -> True
   OBytes   o | B.null o  -> True
   _ -> False
@@ -160,9 +157,6 @@ objToRational o = case o of
   OLong     o -> return $ toRational o
   ORatio    o -> return o
   _           -> mzero
-
-instance Real Object where
-  toRational o = fromPValue (error "Object value is not a rational number") (objToRational o)
 
 objToComplex :: Object -> PValue tok T_complex
 objToComplex o = case o of
@@ -288,22 +282,6 @@ instance Floating Object where
     , objToComplex a >>= \a -> objToComplex b >>= \b -> return (OComplex (logBase a b))
     ]
 
-instance Integral Object where
-  toInteger o = fromPValue (type_mismatch "toInteger" o) $ objToIntegral o
-  quotRem a b = fromPValue (type_mismatch2 "quotRem" a b) $ do
-    a <- objToIntegral a
-    b <- objToIntegral b
-    let (x,y) = quotRem a b
-    a <- smallestIntContainer x
-    b <- smallestIntContainer y
-    return (a, b)
-
-instance RealFrac Object where
-  properFraction a = fromPValue (type_mismatch "properFraction" a) $ msum $
-    [ objToIntegral a >>= \a -> return (fromIntegral a, OWord 0)
-    , objToRational a >>= \a -> let (x, y) = properFraction a in return (fromIntegral x, ORatio y)
-    ]
-
 objToInt :: Object -> PValue tok Int
 objToInt a = objToIntegral a >>= \a ->
   if minInt <= a && a <= maxInt then return (fromIntegral a) else mzero
@@ -340,36 +318,4 @@ objTestBit a i = objToInt i >>= \i -> case a of
   OWord a -> return (oBool (testBit a i))
   OLong a -> return (oBool (testBit a i))
   _       -> mzero
-
-instance Bits Object where
-  a .&. b = fromPValue (type_mismatch "&" a b) $ bitsOp2 (.&.) a b
-  a .|. b = fromPValue (type_mismatch "|" a b) $ bitsOp2 (.|.) a b
-  xor a b = fromPValue (type_mismatch "^" a b) $ bitsOp2  xor  a b
-  complement a = fromPValue (type_mismatch "complement" a) $ case a of
-    OInt  a -> return $ OInt  (complement a)
-    OWord a -> return $ OWord (complement a)
-    OLong a -> return $ OLong (complement a)
-    _       -> mzero
-  shift  a i = fromPValue (type_mismatch "shift"  a) $ bitsMoveInt shift  a i
-  rotate a i = fromPValue (type_mismatch "rotate" a) $ bitsMoveInt rotate a i
-  bitSize a = case a of
-    OInt  a -> bitSize a
-    OWord a -> bitSize a
-    OLong a -> bitSize a
-    _       -> 0-1
-  testBit a i = case a of
-    OInt  a -> testBit a i
-    OWord a -> testBit a i
-    OLong a -> testBit a i
-    _       -> False
-  isSigned a = case a of
-    OInt  _ -> True
-    OLong _ -> True
-    _       -> False
-  bit i = OLong (bit i)
-  popCount a = case a of
-    OInt  a -> popCount a
-    OWord a -> popCount a
-    OLong a -> popCount a
-    _       -> 0-1
 

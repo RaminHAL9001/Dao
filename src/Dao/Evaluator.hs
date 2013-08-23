@@ -44,7 +44,6 @@ import           Dao.Struct
 import           Dao.Object.Math
 import           Dao.Object.PPrint
 import           Dao.Object.Binary
-import           Dao.Object.Pattern
 import           Dao.Object.Struct
 import           Dao.Object.Parser
 
@@ -160,6 +159,17 @@ runCodeBlock :: T_tree -> Subroutine -> Exec (Maybe Object)
 runCodeBlock initStack exe = local (\xunit -> xunit{currentCodeBlock = Just exe}) $!
   execFuncPushStack initStack (executable exe >>= liftIO . evaluate)
 
+matchFuncParams :: [TypeCheck] -> [Object] -> Exec T_tree
+matchFuncParams vars values = loop T.Void vars values where
+  loop tree ax bx
+    | null ax && null bx = return tree
+    | null ax || null bx =
+        flip objectError "function call parameters do not match argument variables" $ OList $
+          [ ostr "expecting:", OList (map (OString . typeCheckSource) vars)
+          , ostr "received:", OList values
+          ]
+    | otherwise = loop (T.insert [typeCheckSource (head ax)] (head bx) tree) (tail ax) (tail bx)
+
 -- | Given a list of arguments, matches these arguments to the given subroutine's
 -- 'Dao.Object.Pattern'. If it matches, the 'Dao.Object.getSubroutine' of the 'Dao.Object.Subroutine'
 -- is evaluated with 'runCodeBlock'. If the pattern does not match, an empty list is returned to the
@@ -174,13 +184,8 @@ runCodeBlock initStack exe = local (\xunit -> xunit{currentCodeBlock = Just exe}
 -- 'Dao.Object.Subroutine'.
 runSubroutine :: [(Location, Object)] -> CallableCode -> Exec (Maybe Object)
 runSubroutine args sub = do
-  args <- case sub of
-    MacroFunc _ _ -> return (map snd args) -- do NOT dereference the arguments for a macro function.
-    _             -> mapM objectDeref args
-  case evalMatcher (matchObjectList (argsPattern sub) args >> gets matcherTree) of
-    OK   tree -> runCodeBlock tree (getSubroutine sub)
-    Backtrack -> return Nothing
-    PFail ref -> execThrow (ORef ref)
+  tree <- mapM objectDeref args >>= matchFuncParams (argsPattern sub)
+  runCodeBlock tree (getSubroutine sub)
 
 -- | A guard script is some Dao script that is executed before or after some event, for example, the
 -- code found in the @BEGIN@ and @END@ blocks.
@@ -427,8 +432,8 @@ evalBooleans fn a b = return (if fn (objToBool a) (objToBool b) then OTrue else 
 
 asReference :: Object -> Exec Reference
 asReference o = case o of
-  ORef o -> return o
-  _      -> mzero
+  ORef (QualRef _ r) -> return r
+  _                  -> mzero
 
 asInteger :: Object -> Exec Integer
 asInteger o = case o of
@@ -549,20 +554,6 @@ eval_SUB a b = msum $
       (OTime a, ORatio    b) -> return (OTime (addUTCTime (fromRational (toRational (negate b))) a))
       (OTime a, OFloat    b) -> return (OTime (addUTCTime (fromRational (toRational (negate b))) a))
       _                  -> mzero
-  , do  ax <- asListNoConvert a
-        case b of
-          OList bx -> return $
-            let lenA = length ax
-                lenB = length bx
-                loop lenA zx ax = case ax of
-                  ax'@(a:ax) | lenA>=lenB ->
-                    if isPrefixOf bx ax' then  zx++a:ax else  loop (lenA-1) (zx++[a]) ax
-                  _                       -> [a]
-            in  if lenA <= lenB
-                  then  if isInfixOf bx ax then OList [] else a
-                  else  OList (loop lenA [] ax)
-          OSet  b -> return (OList (filter (flip S.notMember b) ax))
-          _       -> mzero
   ]
 
 evalDistNum
@@ -587,20 +578,20 @@ evalBitsOrSets
   :: ([Object]  -> Object)
   -> (([Object] -> [Object] -> [Object]) -> M.Map Name [Object] -> M.Map Name [Object] -> M.Map Name [Object])
   -> (([Object] -> [Object] -> [Object]) -> I.IntMap   [Object] -> I.IntMap   [Object] -> I.IntMap   [Object])
-  -> (T_set -> T_set  -> T_set)
+-- -> (T_set -> T_set  -> T_set)
   -> (Integer -> Integer -> Integer)
   -> Object -> Object -> BuiltinOp
-evalBitsOrSets combine dict intmap set num a b = evalInt num a b
+evalBitsOrSets combine dict intmap {-set-} num a b = evalInt num a b
 
 eval_ORB :: Object -> Object -> BuiltinOp
-eval_ORB  a b = evalBitsOrSets OList M.unionWith        I.unionWith        S.union        (.|.) a b
+eval_ORB  a b = evalBitsOrSets OList M.unionWith        I.unionWith        {-S.union-}        (.|.) a b
 
 eval_ANDB :: Object -> Object -> BuiltinOp
-eval_ANDB a b = evalBitsOrSets OList M.intersectionWith I.intersectionWith S.intersection (.&.) a b
+eval_ANDB a b = evalBitsOrSets OList M.intersectionWith I.intersectionWith {-S.intersection-} (.&.) a b
 
 eval_XORB :: Object -> Object -> BuiltinOp
-eval_XORB a b = evalBitsOrSets (\a -> head a) mfn ifn sfn xor a b where
-  sfn = fn S.union S.intersection S.difference head
+eval_XORB a b = evalBitsOrSets (\a -> head a) mfn ifn {-sfn-} xor a b where
+--sfn = fn S.union S.intersection S.difference head
   mfn = fn M.union M.intersection M.difference
   ifn = fn I.union I.intersection I.difference
   fn u n del _ a b = (a `u` b) `del` (a `n` b)
@@ -628,30 +619,18 @@ evalSubscript a b = case a of
             Nothing -> fail (show b++" is not defined in dict")
             Just  b -> return b
     , do  asReference b >>= \b -> case b of
-            LocalRef  b -> case M.lookup b a of
+            PlainRef b -> case M.lookup b a of
               Nothing -> fail (show b++" is not defined in dict")
               Just  b -> return b
-            GlobalRef bx -> loop [] a bx where
-              err = fail (show b++" is not defined in dict")
-              loop zx a bx = case bx of
-                []   -> return (ODict a)
-                b:bx -> case M.lookup b a of
-                  Nothing -> err
-                  Just  a -> case a of
-                    ODict a -> loop (zx++[b]) a bx
-                    _       ->
-                      if null bx
-                        then  return a
-                        else  fail (show (GlobalRef zx)++" does not point to dict object")
     ]
   OTree   a -> msum $ 
     [ asStringNoConvert b >>= \b -> done (T.lookup [b] a)
     , asReference b >>= \b -> case b of
-        LocalRef  b  -> done (T.lookup [b] a)
-        GlobalRef bx -> done (T.lookup bx  a)
+        PlainRef  b  -> done (T.lookup [b] a)
+        _            -> mzero
     ] where
         done a = case a of
-          Nothing -> fail (show b++" is not defined in struct")
+          Nothing -> fail (prettyShow b++" is not defined in struct")
           Just  a -> return a
   _         -> mzero
 
@@ -664,22 +643,22 @@ evalCompare compI compR a b = msum $
   where { done true = if true then return OTrue else return ONull }
 
 eval_EQUL :: Object -> Object -> BuiltinOp
-eval_EQUL a b = if a==b then return OTrue else evalCompare (==) (==) a b
+eval_EQUL a b = evalCompare (==) (==) a b
 
 eval_NEQUL :: Object -> Object -> BuiltinOp
-eval_NEQUL a b = if a==b then return ONull else evalCompare (/=) (/=) a b
+eval_NEQUL a b = evalCompare (/=) (/=) a b
 
 eval_GTN :: Object -> Object -> BuiltinOp
-eval_GTN a b = if a==b then return ONull else evalCompare (>) (>) a b
+eval_GTN a b = evalCompare (>) (>) a b
 
 eval_LTN :: Object -> Object -> BuiltinOp
-eval_LTN a b = if a==b then return ONull else evalCompare (<) (<) a b
+eval_LTN a b = evalCompare (<) (<) a b
 
 eval_GTEQ :: Object -> Object -> BuiltinOp
-eval_GTEQ a b = if a==b then return OTrue else evalCompare (>=) (>=) a b
+eval_GTEQ a b = evalCompare (>=) (>=) a b
 
 eval_LTEQ :: Object -> Object -> BuiltinOp
-eval_LTEQ a b = if a==b then return OTrue else evalCompare (<=) (<=) a b
+eval_LTEQ a b = evalCompare (<=) (<=) a b
 
 eval_SHR :: Object -> Object -> BuiltinOp
 eval_SHR = evalShift negate
@@ -688,9 +667,7 @@ eval_SHL :: Object -> Object -> BuiltinOp
 eval_SHL = evalShift id
 
 eval_DOT :: Object -> Object -> BuiltinOp
-eval_DOT a b = asReference a >>= \a -> asReference b >>= \b -> case mappend a b of
-  NullRef -> fail (show b++" cannot be appended to "++show a)
-  a       -> return (ORef a)
+eval_DOT a b = error "eval_DOT is not defined"
 
 eval_NEG :: Object -> BuiltinOp
 eval_NEG o = case o of
@@ -715,16 +692,10 @@ eval_INVB o = case o of
   _       -> mzero
 
 eval_REF :: Object -> BuiltinOp
-eval_REF r = case r of
-  ORef    r -> return (ORef (MetaRef r))
-  OString s -> return (ORef (LocalRef s))
-  _         -> mzero
+eval_REF r = error "eval_REF is not defined"
 
 eval_DEREF :: Object -> BuiltinOp
-eval_DEREF r = case r of
-  ORef (MetaRef r) -> return (ORef r)
-  ORef r           -> return (ORef r)
-  _                -> mzero
+eval_DEREF r = error "eval_DEREF is not defined"
 
 eval_NOT :: Object -> BuiltinOp
 eval_NOT o = return (boolToObj (testNull o))
@@ -743,22 +714,10 @@ extractStringElems o = case o of
   _            -> []
 
 eval_multiRef :: ([Name] -> Reference) -> Object -> BuiltinOp
-eval_multiRef mk o = case o of
-  ORef o -> case o of
-    LocalRef     o -> return $ ORef $ mk [o]
-    StaticRef    o -> return $ ORef $ mk [o]
-    QTimeRef     o -> return $ ORef $ mk  o
-    GlobalRef    o -> return $ ORef $ mk  o
-    _              -> fail $
-      prettyShow (ORef o) ++ "cannot be used as a global reference"
+eval_multiRef mk o = error "eval_multiRef is not defined"
 
 eval_singleRef :: (Name -> Reference) -> Object -> BuiltinOp
-eval_singleRef mk o = case o of
-  ORef o -> case o of
-    LocalRef     o -> return (ORef $ mk o)
-    StaticRef    o -> return (ORef $ mk o)
-    _              -> fail $ 
-      prettyShow (ORef o) ++ "cannot be used as a global reference"
+eval_singleRef mk o = error "eval_singleRef is not defined"
 
 prefixOps :: Array PrefixOp (Object -> BuiltinOp)
 prefixOps = array (minBound, maxBound) $ defaults ++
@@ -768,11 +727,11 @@ prefixOps = array (minBound, maxBound) $ defaults ++
   , o NOT       eval_NOT
   , o NEGTIV    eval_NEG
   , o POSTIV    return
-  , o GLDOT     (eval_multiRef  GlobalRef)
-  , o GLOBALPFX (eval_multiRef  GlobalRef)
-  , o LOCALPFX  (eval_singleRef LocalRef)
-  , o QTIMEPFX  (eval_multiRef  QTimeRef)
-  , o STATICPFX (eval_singleRef StaticRef)
+  , o GLDOT     (error "GLDOT prefixOp is not defined")
+  , o GLOBALPFX (error "GLOBALPFX prefixOp is not defined")
+  , o LOCALPFX  (error "LOCALPFX prefixOp is not defined")
+  , o QTIMEPFX  (error "QTIMEPFX prefixOp is not defined")
+  , o STATICPFX (error "STATICPFX prefixOp is not defined")
   ]
   where
     o = (,)
@@ -860,7 +819,6 @@ getStringsToDepth maxDepth o = loop 0 maxDepth o where
     ODict    ox -> recurse o (M.elems ox)
     OIntMap  ox -> recurse o (I.elems ox)
     OPair (a,b) -> recurse o [a,b]
-    ORef     ox -> return (Left (depth, ox))
     o           -> return (Right (prettyShow o))
     where
       recurse o ox =
@@ -900,7 +858,7 @@ recurseGetAllStrings o = catch (loop [] o) where
     OPair  (a,b) -> next OInt [(0,a), (1,b)]
     o            -> throwError $ OList $ concat $
       [ [ostr "object at index"]
-      , if null ix then [] else [ORef (Subscript mempty ix)]
+      , if null ix then [] else [ORef (QualRef Unqualified (Subscript NullRef ix))]
       , [ostr "cannot be evaluated to a string"], [o]
       ]
     where
@@ -925,7 +883,7 @@ builtin_doing = DaoFuncAutoDeref $ \ox ->
     Just query -> case ox of
       []          -> return $ Just $ OString query
       [OString o] -> return $ Just $ boolToObj (o==query)
-      [OSet    o] -> return $ Just $ boolToObj (S.member (OString query) o)
+    --[OSet    o] -> return $ Just $ boolToObj (S.member (OString query) o)
       _ -> execThrow $ OList $
         [ostr "doing() must take as parameers a single string, a single set, or nothing", OList ox]
 
@@ -942,15 +900,14 @@ builtin_join = DaoFuncAutoDeref $ \ox -> case ox of
 builtin_check_ref :: DaoFunc
 builtin_check_ref = DaoFuncNoDeref $ \args -> do
   fmap (Just . boolToObj . and) $ forM args $ \arg -> case arg of
-    ORef (MetaRef _) -> return True
-    ORef          o  -> readReference o >>= return . isJust >>= \a -> return a
-    o                -> return True
+    ORef (QualRef _ o) -> readReference o >>= return . isJust >>= \a -> return a
+    o                  -> return True
 
 builtin_delete :: DaoFunc
 builtin_delete = DaoFuncNoDeref $ \args -> do
   forM_ args $ \arg -> case arg of
-    ORef o -> void $ updateReference o (const (return Nothing))
-    _      -> return ()
+    ORef (QualRef _ o) -> void $ updateReference o (const (return Nothing))
+    _                  -> return ()
   return (Just ONull)
 
 -- | The map that contains the built-in functions that are used to initialize every
@@ -969,29 +926,14 @@ initBuiltinFuncs = let o a b = (ustr a, b) in M.fromList $
 -- | Will return any value from the 'Dao.Object.ExecUnit' environment associated with a
 -- 'Dao.Object.Reference'.
 readReference :: Reference -> Exec (Maybe Object)
-readReference ref = case ref of
-    IntRef     i     -> {- trace ("read int ref: "   ++show i  ) $ -} fmap Just (evalIntRef i)
-    LocalRef   nm    -> {- trace ("read local ref: " ++show ref) $ -} localVarLookup nm
-    QTimeRef   ref   -> {- trace ("read qtime ref: " ++show ref) $ -} qTimeVarLookup ref
-    StaticRef  ref   -> {- trace ("read static ref: "++show ref) $ -} staticVarLookup ref
-    GlobalRef  ref   -> {- trace ("read global ref: "++show ref) $ -} globalVarLookup ref
-    MetaRef    _     -> execThrow $ OList $
-      [ostr "cannot dereference a reference-to-a-reference", ORef ref]
+readReference ref = error "readReference is not defined"
 
 -- | All assignment operations are executed with this function. To modify any variable at all, you
 -- need a reference value and a function used to update the value. This function will select the
 -- correct value to modify based on the reference type and value, and modify it according to this
 -- function.
 updateReference :: Reference -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe Object)
-updateReference ref modf = do
-  xunit <- ask
-  case ref of
-    IntRef     i          -> error "cannot assign values to a pattern-matched reference"
-    LocalRef   ref        -> localVarLookup ref >>= modf >>= localVarUpdate ref . const
-    GlobalRef  ref        -> globalVarUpdate ref modf
-    QTimeRef   ref        -> qTimeVarUpdate ref modf
-    StaticRef  ref        -> staticVarUpdate ref modf
-    MetaRef    _          -> error "cannot assign values to a meta-reference"
+updateReference ref modf = error "updateReference is not defined"
 
 -- | Retrieve a 'Dao.Object.CheckFunc' function from one of many possible places in the
 -- 'Dao.Object.ExecUnit'. Every function call that occurs during execution of the Dao script will
@@ -1129,13 +1071,7 @@ instance Executable ScriptExpr () where
                 [ustr "with file path", path, ustr "file has not been loaded"]
               Just file -> return (xunit{currentWithRef = Just file})
           run upd = ask >>= upd >>= \r -> local (const r) (execute thn)
-      void $ case lval of
-        Just lval -> case lval of
-          ORef (GlobalRef ref)    -> run (setBranch ref)
-          _ -> execThrow $ OList $ errAt loc ++
-            [ostr "operand to \"with\" statement is not a reference type"]
-        Nothing -> execThrow $ OList $ errAt loc ++
-          [ostr "target of \"with\" statement evaluates to a void"]
+      fail "WithDoc semantics is not defined"
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
 -- | Runs through a 'Dao.Object.ScriptExpr' and any 'Dao.Object.ObjectExpr' inside of it evaluating
@@ -1185,8 +1121,8 @@ objectDeref = fmap snd . objectDerefWithLoc
 -- value is returned. This is used to evaluate every reference in an 'Dao.Object.ObjectExpr'.
 objectDerefWithLoc :: (Location, Object) -> Exec (Location, Object)
 objectDerefWithLoc (loc, obj) = case obj of
-  ORef (MetaRef o) -> return (loc, ORef o)
-  ORef ref         -> readReference ref >>= \o -> case o of
+  ORef (QualRef _ (MetaRef o)) -> return (loc, o)
+  ORef (QualRef _         ref) -> readReference ref >>= \o -> case o of
     Nothing -> execThrow $ OList $ errAt loc ++ [obj, ostr "undefined reference"]
     Just o  -> return (loc, o)
   obj              -> return (loc, obj)
@@ -1222,8 +1158,8 @@ evalObjectExprWithLoc obj = case obj of
     (exprloc, expr) <- checkVoid "right-hand side of assignment" (evalObjectExprDerefWithLoc expr)
     updateReference nm $ \maybeObj -> case maybeObj of
       Nothing      -> case op of
-              UCONST -> return (Just expr)
-              _      -> execThrow $ OList $ errAt nmloc ++ [ostr "undefined refence", ORef nm]
+        UCONST -> return (Just expr)
+        _      -> execThrow $ OList $ errAt nmloc ++ [ostr "undefined refence", ORef (QualRef Unqualified nm)]
       Just prevVal -> fmap Just $
         checkPValue exprloc "assignment expression" [prevVal, expr] $ (updatingOps!op) prevVal expr
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
@@ -1239,7 +1175,7 @@ evalObjectExprWithLoc obj = case obj of
             else  head args >>= \arg -> allCombinations (ox++[arg]) (tail args)
     (oploc, op) <- checkVoid "function name" (evalObjectExprWithLoc op)
     case op of -- first check if there is a built-in function
-      ORef (LocalRef op) -> case M.lookup op bif of
+      ORef (QualRef _ (PlainRef op)) -> case M.lookup op bif of
         Nothing -> do -- no built-ins by the 'op' name
           fn   <- lookupFunction "function call" op
           ~obj <- mapM (runSubroutine args) fn
@@ -1370,10 +1306,10 @@ evalLambdaExpr typ argv code = do
       return $ OScript $
         GlobAction{globPattern=argv, getSubroutine=exe}
 
--- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Object.Pattern'.
-paramsToObjPatExpr :: ObjectExpr -> Exec Pattern
+-- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Object.TypeCheck'.
+paramsToObjPatExpr :: ObjectExpr -> Exec TypeCheck
 paramsToObjPatExpr o = case o of
-  Literal (ORef (LocalRef r)) _ -> return (ObjLabel r ObjAny1)
+  Literal (ORef (QualRef _ (PlainRef r))) _ -> return (TypeCheck{typeCheckSource=r})
   _ -> execThrow $ OList $ [ostr "does not evaluate to an object pattern"]
   -- TODO: provide a more expressive way to create object patterns from 'Dao.Object.ObjectExpr's
 
@@ -1681,8 +1617,8 @@ execTopLevel (Program ast) = do
             params <- mapM paramsToObjPatExpr params
             liftIO (modifyIORef macros (++[constr params exec]))
       case typ of
-        FuncExprType -> macro MacroFunc
-        PatExprType  -> macro MacroFunc
+        FuncExprType -> macro CallableCode
+        PatExprType  -> macro CallableCode
         RuleExprType -> do
           params <- mapM paramsToGlobExpr params
           let fol tre pat = T.unionWith (++) tre (toTree pat [exec])
@@ -1763,20 +1699,16 @@ loadModule path = do
 -- This function is called by 'importDepGraph', and 'importFullDepGraph'.
 objectToImport :: UPath -> Object -> Location -> Exec [UPath]
 objectToImport file obj lc = case obj of
-  OString         str  -> return [str]
-  ORef (GlobalRef ref) -> return [ustr $ intercalate "/" (fmap uchars ref) ++ ".dao"]
-  ORef (LocalRef  ref) -> return [ustr $ uchars ref ++ ".dao"]
-  obj                  -> execThrow $ OList $ 
+  OString str -> return [str]
+  obj         -> execThrow $ OList $ 
     [ ostr (uchars file ++ show lc)
     , ostr "contains import expression evaluating to an object that is not a file path", obj
     ]
 
 objectToRequirement :: UPath -> Object -> Location -> Exec UStr
 objectToRequirement file obj lc = case obj of
-  OString         str  -> return str
-  ORef (GlobalRef ref) -> return (ustr $ intercalate "." (fmap uchars ref))
-  ORef (LocalRef  ref) -> return (ustr ref)
-  obj                  -> execThrow $ OList $ 
+  OString str -> return str
+  obj         -> execThrow $ OList $ 
     [ ostr (uchars file ++ show lc)
     , ostr "contains import expression evaluating to an object that is not a file path", obj
     ]

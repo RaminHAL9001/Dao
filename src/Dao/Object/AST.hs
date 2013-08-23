@@ -47,9 +47,9 @@ data AST_TopLevel
   | AST_TopLambda  LambdaExprType    (Com [Com AST_Object]) AST_CodeBlock Location
   | AST_Event      TopLevelEventType [Comment]              AST_CodeBlock Location
   | AST_TopComment [Comment]
-  deriving (Eq, Ord, Show, Typeable)
+  deriving (Eq, Ord, Typeable)
 
-newtype AST_CodeBlock = AST_CodeBlock{ getAST_CodeBlock :: [AST_Script] } deriving (Eq, Ord, Show, Typeable)
+newtype AST_CodeBlock = AST_CodeBlock{ getAST_CodeBlock :: [AST_Script] } deriving (Eq, Ord, Typeable)
 instance Monoid AST_CodeBlock where
   mempty      = AST_CodeBlock []
   mappend a b = AST_CodeBlock (mappend (getAST_CodeBlock a) (getAST_CodeBlock b))
@@ -76,7 +76,7 @@ data AST_Script
     -- ^ @return /**/ ;@ or @return /**/ objExpr /**/ ;@
   | AST_WithDoc      (Com AST_Object)         AST_CodeBlock                           Location
     -- ^ @with /**/ objExpr /**/ {}@
-  deriving (Eq, Ord, Show, Typeable)
+  deriving (Eq, Ord, Typeable)
 
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data AST_Object
@@ -94,7 +94,18 @@ data AST_Object
   | AST_Data                         [Comment]         [Com UStr]       Location
   | AST_Lambda   LambdaExprType (Com [Com AST_Object]) AST_CodeBlock    Location
   | AST_MetaEval                     (Com AST_Object)                   Location
-  deriving (Eq, Ord, Show, Typeable)
+  deriving (Eq, Ord, Typeable)
+
+data AST_Reference
+  = AST_NullRef
+  | AST_PlainRef   Name
+  | AST_DerefOp    [Comment] AST_Reference
+  | AST_MetaRef    [Comment] AST_Reference
+  | AST_DotRef     AST_Reference [Comment] [Comment] AST_Reference
+  | AST_PointRef   AST_Reference [Comment] [Comment] AST_Reference
+  | AST_Subscript  AST_Reference [Comment] [Com AST_Object]
+  | AST_CallWith   AST_Reference [Comment] [Com AST_Object]
+  deriving (Eq, Ord, Typeable)
 
 -- | A 'SourceCode' is the structure loaded from source code. An 'ExecUnit' object is constructed from
 -- 'SourceCode'.
@@ -105,7 +116,7 @@ data AST_SourceCode
       -- ^ the URL (full file path) from where this source code was received.
     , directives       :: [AST_TopLevel]
     }
-  deriving (Eq, Ord, Show, Typeable)
+  deriving (Eq, Ord, Typeable)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -246,7 +257,7 @@ instance HasLocation AST_Object where
 data Comment
   = InlineComment  UStr
   | EndlineComment UStr
-  deriving (Eq, Ord, Show, Typeable)
+  deriving (Eq, Ord, Typeable, Show)
 
 instance HasLocation a => HasLocation (Com a) where
   getLocation = getLocation . unComment
@@ -262,7 +273,7 @@ commentString com = case com of
 -- The 'Com' structure represents a space-efficient means to surround each syntactic element with
 -- comments that can be ignored without disgarding them.
 data Com a = Com a | ComBefore [Comment] a | ComAfter a [Comment] | ComAround [Comment] a [Comment]
-  deriving (Eq, Ord, Show, Typeable)
+  deriving (Eq, Ord, Typeable, Show)
 
 appendComments :: Com a -> [Comment] -> Com a
 appendComments com cx = case com of
@@ -322,7 +333,7 @@ instance Functor Com where
 -- these types, and also define functions for converting and de-converting between these types. For
 -- example, 'Dao.Object.ObjectExpr' is the intermediate representation of 'AST_Object', so our
 -- instance for this relationship is @instane 'Intermediate' 'Dao.Object.ObjectExpr' 'AST_Object'@.
-class Show obj => Intermediate obj ast | obj -> ast, ast -> obj where
+class Intermediate obj ast | obj -> ast, ast -> obj where
   toInterm   :: ast -> [obj]
   fromInterm :: obj -> [ast]
   -- | The default implementation is to convert an @ast@ to an @[obj]@ using 'toInterm' and then

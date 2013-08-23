@@ -31,7 +31,7 @@ import qualified Dao.EnumSet as Es
 
 import           Control.Monad
 
-import           Data.Maybe
+import           Data.Monoid
 import           Data.Function
 import           Data.Typeable
 import           Data.Dynamic
@@ -95,8 +95,9 @@ putObjBool a = if a then put OTrue else put ONull
 
 getObjBool :: Get Bool
 getObjBool = lookAhead get >>= \a -> case a of
-  a | a==OTrue || a==ONull -> fmap (==OTrue) get
-  _ -> fail "expecting boolean object value"
+  ONull -> return False
+  OTrue -> return True
+  _     -> fail "expecting boolean object value"
 
 putListWith :: (a -> Put) -> [a] -> Put
 putListWith p ax = mapM_ p ax >> putWord8 0x00
@@ -279,7 +280,7 @@ instance Binary Object where
         RefType      -> x ORef
         PairType     -> fmap OPair (liftM2 (,) get get)
         ListType     -> fmap OList getList
-        SetType      -> fmap (OSet . S.fromList) getList
+      --SetType      -> fmap (OSet . S.fromList) getList
         ArrayType    -> do
           get >>= \lo -> get >>= \hi -> getList >>= \ax ->
             return (OArray (listArray (lo, hi) ax))
@@ -292,25 +293,43 @@ instance Binary Object where
 
 instance Binary Reference where
   put o = case o of
-    IntRef    o   -> putWord8 0x81 >> mapM_ put (bitsToVLInt o)
-    LocalRef  o   -> x 0x82 o
-    QTimeRef  o   -> putWord8 0x83 >> putList o
-    StaticRef o   -> x 0x84 o
-    GlobalRef o   -> putWord8 0x85 >> putList o
-    Subscript r s -> putWord8 0x86 >> put r >> put s
-    CallWith  r s -> putWord8 0x87 >> put r >> put s
-    MetaRef   r   -> putWord8 0x88 >> put r
-    where { x a b = putWord8 a >> encodeUStr b }
+    NullRef       -> putWord8 0x81
+    PlainRef  o   -> putWord8 0x82 >> put o
+    DerefOp   o   -> putWord8 0x83 >> put o
+    MetaRef   o   -> putWord8 0x84 >> put o
+    DotRef    o p -> putWord8 0x85 >> put o >> put p
+    PointRef  o p -> putWord8 0x86 >> put o >> put p
+    Subscript o p -> putWord8 0x87 >> put o >> put p
+    CallWith  o p -> putWord8 0x88 >> put o >> put p
   get = getWord8 >>= \w -> case w of
-    0x81 -> liftM  IntRef    getFromVLInt
-    0x82 -> liftM  LocalRef  decodeUStr
-    0x83 -> liftM  QTimeRef  getList
-    0x84 -> liftM  StaticRef decodeUStr
-    0x85 -> liftM  GlobalRef getList
-    0x86 -> liftM2 Subscript get get
-    0x87 -> liftM2 CallWith  get get
-    0x88 -> liftM  MetaRef   get
-    _ -> fail "expecting reference expression"
+    0x81 -> return NullRef
+    0x82 -> liftM  PlainRef  get
+    0x83 -> liftM  DerefOp   get
+    0x84 -> liftM  MetaRef   get
+    0x85 -> liftM2 DotRef    get get
+    0x86 -> liftM2 PointRef  get get
+    0x87 -> liftM2 Subscript get get
+    0x88 -> liftM2 CallWith  get get
+    _    -> fail "expecting reference expression"
+
+instance Binary QualRef where
+  put (QualRef q r) = case q of
+    Unqualified -> put r
+    LocalRef    -> putWord8 0x89 >> put r
+    QTimeRef    -> putWord8 0x8A >> put r
+    GloDotRef   -> putWord8 0x8B >> put r
+    StaticRef   -> putWord8 0x8C >> put r
+    GlobalRef   -> putWord8 0x8D >> put r
+  get = do
+    w <- lookAhead getWord8
+    let x c = getWord8 >> fmap (QualRef c) get
+    case w of
+      0x89 -> x LocalRef
+      0x8A -> x QTimeRef
+      0x8B -> x GloDotRef
+      0x8C -> x StaticRef
+      0x8D -> x GlobalRef
+      _    -> fmap (QualRef Unqualified) get
 
 instance Binary UTCTime where
   put t = do
@@ -487,10 +506,14 @@ instance Binary Location where
 instance Binary CallableCode where
   put sub = case sub of
     CallableCode pat exe -> putWord8 0x25 >> putList pat >> put exe
-    GlobAction pat exe -> putWord8 0x26 >> putList pat >> put exe
+    GlobAction   pat exe -> putWord8 0x26 >> putList pat >> put exe
   get = getWord8 >>= \w -> case w of
     0x25 -> liftM2 CallableCode getList get
     0x26 -> liftM2 GlobAction getList get
+
+instance Binary TypeCheck where
+  put = put . typeCheckSource
+  get = fmap (\nm -> TypeCheck{typeCheckSource=nm}) get
 
 instance Binary CodeBlock where
   put = putList . codeBlock
@@ -507,48 +530,6 @@ instance Binary Subroutine where
       , staticVars     = error msg
       , executable     = error msg
       }
-
--- Used by the parser for 'CallableCode', needs to check if it's arguments are 'Dao.Object.Pattern's
--- or 'Dao.Glob.Globs', so it is necessary to report whether or not a byte is a valid prefix for a
--- 'Dao.Object.Pattern' expression.
-nextIsPattern :: Get Bool
-nextIsPattern = do
-  empty <- isEmpty
-  if empty then return False else fmap (\c -> 0xB1<=c && c<=0xBE) (lookAhead getWord8)
-
-instance Binary Pattern where
-  put a = case a of
-    ObjAnyX        -> x 0xB1
-    ObjMany        -> x 0xB2
-    ObjAny1        -> x 0xB3
-    ObjEQ      a   -> x 0xB4 >> put                a
-    ObjType    a   -> x 0xB5 >> putEnumSetWith put a
-    ObjBounded a b -> x 0xB6 >> putEnumInfWith put a >> putEnumInfWith put             b
-    ObjList    a b -> x 0xB7 >> put                a >> putList                        b
-    ObjNameSet a b -> x 0xB8 >> put                a >> putList              ( S.elems b)
-    ObjIntSet  a b -> x 0xB9 >> put                a >> putListWith putVLInt (IS.elems b)
-    ObjElemSet a b -> x 0xBA >> put                a >> putList              ( S.elems b)
-    ObjChoice  a b -> x 0xBB >> put                a >> putList              ( S.elems b)
-    ObjLabel   a b -> x 0xBC >> put                a >> put                            b
-    ObjFailIf  a b -> x 0xBD >> put                a >> put                            b
-    ObjNot     a   -> x 0xBE >> put                a
-    where { x = putWord8 }
-  get   = getWord8 >>= \w -> case w of
-    0xB1 -> return ObjAnyX
-    0xB2 -> return ObjMany
-    0xB3 -> return ObjAny1
-    0xB4 -> liftM  ObjEQ       get
-    0xB5 -> liftM  ObjType    (getEnumSetWith get)
-    0xB6 -> liftM2 ObjBounded (getEnumInfWith get) (getEnumInfWith    get    )
-    0xB7 -> liftM2 ObjList     get                  getList
-    0xB8 -> liftM2 ObjNameSet  get                 (fmap S.fromList   getList)
-    0xB9 -> liftM2 ObjIntSet   get                 (fmap IS.fromList (getListWith getFromVLInt))
-    0xBA -> liftM2 ObjElemSet  get                 (fmap S.fromList   getList)
-    0xBB -> liftM2 ObjChoice   get                 (fmap S.fromList   getList)
-    0xBC -> liftM2 ObjLabel    get                  get
-    0xBD -> liftM2 ObjFailIf   get                  get
-    0xBE -> liftM  ObjNot      get
-    _    -> fail "expecting object-pattern expression"
 
 instance Binary ObjSetOp where
   put op = putWord8 $ case op of
@@ -583,9 +564,9 @@ instance (Integral a, Bits a) => Binary (Es.Inf a) where
   get = getEnumInfWith getFromVLInt
 
 putSegmentWith :: (a -> Put) -> Es.Segment a -> Put
-putSegmentWith putA a = flip fromMaybe (mplus plur sing) $
-  error "could not extract data from Dao.EnumSet.Segment dataype"
+putSegmentWith putA a = maybe err id (mplus plur sing)
   where
+    err = error "could not extract data from Dao.EnumSet.Segment dataype"
     plur = do
       (lo, hi) <- Es.plural a
       return (putWord8 0xCA >> putEnumInfWith putA lo >> putEnumInfWith putA hi)

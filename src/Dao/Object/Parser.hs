@@ -24,6 +24,8 @@ module Dao.Object.Parser where
 
 import           Dao.String
 import           Dao.Token
+import           Dao.PPrint
+import           Dao.Object.PPrint
 import           Dao.Object hiding (Tokenizer)
 import           Dao.Object.AST
 import           Dao.Predicate
@@ -384,7 +386,7 @@ number = joinEvalPTable numberPTab
 
 singletonPTab :: DaoPTable AST_Object
 singletonPTab = (numberPTab<>) $ table $
-  [ tableItem LABEL     (literal $ ORef    . LocalRef . asUStr  )
+  [ tableItem LABEL     (literal $ ORef    . bareword . asUStr  )
   , tableItem STRINGLIT (literal $ OString . read     . asString)
   , tableItem CHARLIT   (literal $ OChar   . read     . asString)
   , tableItemBy "("    $ \tok -> do
@@ -860,7 +862,7 @@ testDaoLexer = testLexicalAnalysis (tokenDBLexer daoTokenDB) 4
 
 testDaoParser :: String -> IO ()
 testDaoParser input = case parse daoGrammar mempty input of
-  OK      a -> putStrLn ("Parser succeeded:\n"++show a)
+  OK      a -> putStrLn ("Parser succeeded:\n"++prettyShow a)
   Backtrack -> testDaoLexer input >> putStrLn "---- PARSER BACKTRACKED ----\n"
   PFail err -> do
     testDaoLexer input

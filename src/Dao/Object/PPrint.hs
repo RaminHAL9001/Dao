@@ -177,6 +177,7 @@ instance PPrintable Reference where
     DotRef    left right -> pInline [pPrint left, pString ".", pPrint right]
     PointRef  left right -> pInline [pPrint left, pString ".", pPrint right]
     Subscript left subs  -> pList (pPrint left) "[" "," "]" (map pPrint subs)
+    CallWith  left subs  -> pList (pPrint left) "(" "," ")" (map pPrint subs)
     where
       pRef rx = pString (intercalate "." (map prin rx))
       prin r  = case uchars r of

@@ -21,6 +21,12 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
+-- | A module with utility functions to help define instanes to the 'Dao.Object.Structured' class.
+-- A stateful monadic interface built on zippers is provided to allow leaves and branches in
+-- 'Dao.Tree.Tree's to be read and written using a syntax similar to that of a procedural
+-- programming language, which is more intuitive for the Dao programming language which is
+-- procedural. Please also see the 'Dao.Object.Structured' class and the 'Dao.Object.UpdateErr' data
+-- type.
 module Dao.Struct where
 
 import           Prelude hiding (lookup)
@@ -47,28 +53,6 @@ import           Control.Monad.State
 import           Control.Monad.Error
 
 import Debug.Trace
-
-----------------------------------------------------------------------------------------------------
-
-class Structured a where
-  dataToStruct :: a -> Tree Name Object
-  structToData :: Tree Name Object -> PValue UpdateErr a
-
-----------------------------------------------------------------------------------------------------
-
--- | If an error occurs while stepping through the branches of a tree, you can throw an error with
--- this information using 'Control.Monad.Error.throwError'.
-data UpdateErr
-  = UpdateErr
-    { updateErrMsg  :: Maybe UStr -- ^ the message explaining why the error ocurred.
-    , updateErrAddr :: [UStr]     -- ^ the address at which the error was thrown.
-    , updateErrTree :: T_tree     -- ^ the sub-tree at the address at which the error was thrown.
-    }
-instance Show UpdateErr where
-  show err = concat $
-    [ "constructor failed" ++ maybe " " ((++"\n") . (": "++) . uchars) (updateErrMsg err)
-    , "at index: ", intercalate "." (fmap uchars (updateErrAddr err))
-    ]
 
 -- | This is the fundamental data type for Dao's foreign interface. This monad is used to convert
 -- data types in your Haskell program into a form that can be manipulated by Dao scripts.
@@ -99,6 +83,8 @@ instance Alternative Update where { empty = mzero; (<|>) = mplus; }
 instance Monoid a => Monoid (Update a) where
   mempty      = return mempty
   mappend a b = liftM2 mappend a b
+
+----------------------------------------------------------------------------------------------------
 
 -- | If you would like to create a detailed error message, create an error using the current
 -- information, then throw it using 'Control.Monad.Error.throwError'.

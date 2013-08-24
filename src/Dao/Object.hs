@@ -39,7 +39,7 @@ import           Dao.Token
 import           Dao.Parser
 import           Dao.Glob
 import qualified Dao.EnumSet as Es
-import           Dao.Tree as T hiding (map, null)
+import qualified Dao.Tree as T
 import           Dao.Predicate
 import           Dao.Procedural
 
@@ -83,15 +83,43 @@ import           Control.Monad.Error.Class
 
 -- | Instantiate your data type into this class by creating an 'ObjectInterface' for your data type
 -- and then wrapping your data type into a 'Data.Dynamic.Dynamic' data type and storing it with an
--- into the 'ObjectInterface'. For example:
--- > data MyDataType = MyDataType deriving (Data.Typeable.Typeable)
--- > instance 'ObjectClass' MyDataType where
--- >     newObject obj = ObjectInterface {
--- >         objectValue = 'Data.Dynamic.toDynamic' obj,
--- >         bytesToObj  = ... ,
--- >         objToBytes  = ...
--- >       }
-class ObjectClass a where { newObject :: a -> ObjectInterface a }
+-- into the 'ObjectInterface'. Minimal complete definition is 'objectInterface'
+class Typeable typ => ObjectClass typ where
+  -- | This combinator evaluates to a data type used to encapsulate the object-oriented behavior of
+  -- your @typ@ at runtime. Use the 'defClass' function to create an 'objectInterface' for your type
+  -- using the convenient 'DaoClassDef' monad:
+  -- > instance ObjectClass MyType where
+  -- >     objectInterface = 'defClass' ('autoDefEquality' >> 'autoDefOrering' >> 'autoDefBinaryFmt' >> ... )
+  objectInterface :: ObjectInterface typ
+  -- | The default instantiation of 'new' works almost exactly as a C++ programmer would expect:
+  -- simply provide a value of your @typ@ and a new 'Object' encapsulaing that value is created.
+  new :: typ -> Object
+  new a = mkNew a objectInterface where
+    mkNew :: (Typeable typ, ObjectClass typ) => typ -> ObjectInterface typ -> Object
+    mkNew a ifc = OHaskell $ objectInterfaceToDynamic $ ifc{objectValue = Just a}
+
+-- | This class is used to define methods of converting arbitrary types to 'Dao.Tree.Tree's, where
+-- the leaves in the 'Dao.Tree.Tree' are Dao 'Object's. The branches of the 'Dao.Tree.Tree's are all
+-- labeled with 'Dao.String.Name's. It is an important interface for being able to maniuplate
+-- objects within a script written in the Dao language. 
+class Structured a where
+  dataToStruct :: a -> T.Tree Name Object
+  structToData :: T.Tree Name Object -> PValue UpdateErr a
+
+-- | This is the error type used to report errors that might occur while updating a 'Dao.Tree.Tree'
+-- with the 'structToData' function. If an error occurs while stepping through the branches of a
+-- tree, you can throw an error with this information using 'Control.Monad.Error.throwError'.
+data UpdateErr
+  = UpdateErr
+    { updateErrMsg  :: Maybe UStr -- ^ the message explaining why the error ocurred.
+    , updateErrAddr :: [UStr]     -- ^ the address at which the error was thrown.
+    , updateErrTree :: T_tree     -- ^ the sub-tree at the address at which the error was thrown.
+    }
+instance Show UpdateErr where
+  show err = concat $
+    [ "constructor failed" ++ maybe " " ((++"\n") . (": "++) . uchars) (updateErrMsg err)
+    , "at index: ", intercalate "." (fmap uchars (updateErrAddr err))
+    ]
 
 -- | This is all of the functions used by the "Dao.Evaluator" when manipulating objects in a Dao
 -- program. Behavior of objects when they are used in "for" statements or "with" statements, or when
@@ -113,11 +141,11 @@ class ObjectClass a where { newObject :: a -> ObjectInterface a }
 -- @this.superClassName.methodName@ or @this.superSuperClassName.superClassName.methodName@.
 data ObjectInterface a =
   ObjectInterface
-  { objClassName    :: Name
-  , objHaskellType  :: TypeRep
+  { objHaskellType  :: TypeRep
   , objSuperClasses :: [ObjectInterface a]
+  , objCastFrom     :: Maybe (Object -> a)
   , objEquality     :: Maybe (a -> Object -> Bool)
-  , objCompare      :: Maybe (a -> Object -> Ordering)
+  , objOrdering     :: Maybe (a -> Object -> Ordering)
   , objBinaryFmt    :: Maybe (a -> T_bytes, T_bytes -> a)
   , objNullTest     :: Maybe (a -> Bool)
     -- ^ return true if the value is null, used by "if" and "while" statements.
@@ -126,7 +154,7 @@ data ObjectInterface a =
   , objIndexer      :: Maybe (a -> Object -> Exec Object)
     -- ^ the function used when a square-brackets subscripting operation is used on an object of
     -- this type.
-  , objTreeFormat   :: Maybe (a -> Exec T_tree, T_tree  -> Exec a)
+  , objTreeFormat   :: Maybe (a -> Exec T_tree, T_tree -> Exec a)
     -- ^ a pair of functions for converting this object to and from a 'T_tree'. Used when
     -- dereferencing this object, that is, with the "@" operator, the point "->" operator, and in
     -- "with" statements.
@@ -151,49 +179,101 @@ data ObjectInterface a =
     -- ^ Contains the actual object.
   }
   deriving Typeable
-instance Eq  a => Eq (ObjectInterface a) where { a==b = objectValue a == objectValue b }
+instance Eq  a => Eq  (ObjectInterface a) where { a==b = objectValue a == objectValue b }
 instance Ord a => Ord (ObjectInterface a) where { compare a b = compare (objectValue a) (objectValue b) }
+
+typeRepToName :: TypeRep -> [Name]
+typeRepToName = split . show where
+  split str = case break ('.'==) str of
+    ("", "") -> []
+    (nm, "") -> [ustr nm]
+    (nm, '.':str) -> ustr nm : split str
+
+-- | This function works a bit like 'Data.Functor.fmap', but maps an 'ObjectInterface' from one type
+-- to another. This requires two functions: one that can cast from the given type to the adapted
+-- type (to convert outputs of functions), and one that can cast back from the adapted type to the
+-- original type (to convert inputs of functions). Each coversion function takes a string as it's
+-- first parameter, this is a string containing the name of the function that is currently making
+-- use of the conversion operation. Should you need to use 'Prelude.error' or 'execError', this
+-- string will allow you to throw more informative error messages.
+objectInterfaceAdapter
+  :: (Typeable typ_a, Typeable typ_b)
+  => (String -> typ_a -> typ_b)
+  -> (String -> typ_b -> typ_a)
+  -> ObjectInterface typ_a
+  -> ObjectInterface typ_b
+objectInterfaceAdapter a2b b2a ifc = 
+  let uninit  = error "'Dao.Object.fmapObjectInterface' evaluated on uninitialized object"
+      newVal  = maybe uninit id (fmap (a2b "objectValue") (objectValue ifc))
+      newType = typeOf newVal
+  in  ObjectInterface
+      { objHaskellType   = newType
+      , objSuperClasses  = let n="objSuperClasses"  in fmap (objectInterfaceAdapter (\ _ -> a2b n) (\ _ -> b2a n)) (objSuperClasses ifc)
+      , objCastFrom      = let n="objCastFrom"      in fmap (fmap (a2b n)) (objCastFrom ifc)
+      , objEquality      = let n="objEquality"      in fmap (\eq   b -> eq   (b2a n b)) (objEquality ifc)
+      , objOrdering      = let n="objOrdering"      in fmap (\ord  b -> ord  (b2a n b)) (objOrdering ifc)
+      , objBinaryFmt     = let n="objBinaryFmt"     in fmap (\ (toBin , fromBin) -> (toBin  . b2a n, a2b n . fromBin )) (objBinaryFmt  ifc)
+      , objNullTest      = let n="objNullTest"      in fmap (\null b -> null (b2a n b)) (objNullTest ifc)
+      , objIterator      = let n="objIterator"      in fmap (\iter b -> iter (b2a n b)) (objIterator ifc)
+      , objIndexer       = let n="objIndexer"       in fmap (\indx b -> indx (b2a n b)) (objIndexer  ifc)
+      , objTreeFormat    = let n="objTreeFormat"    in fmap (\ (toTree, fromTree) -> (toTree . b2a n, fmap (a2b n) . fromTree)) (objTreeFormat ifc)
+      , objCodeFormat    = let n="objCodeFormat"    in fmap (\ (toCode, fromCode) -> (toCode . b2a n, fmap (a2b n) . fromCode)) (objCodeFormat ifc)
+      , objUpdateOpTable = let n="objUpdateOpTable" in fmap (fmap (\updt op b -> updt op (b2a n b))) (objUpdateOpTable ifc)
+      , objInfixOpTable  = let n="objInfixOpTable"  in fmap (fmap (\infx op b -> infx op (b2a n b))) (objInfixOpTable  ifc)
+      , objPrefixOpTable = let n="objPrefixOpTabl"  in fmap (fmap (\prfx op b -> prfx op (b2a n b))) (objPrefixOpTable ifc)
+      , objMethods       = let n="objMethods"       in fmap (.(b2a n)) (objMethods ifc)
+      , objectValue      = let n="objectValue"      in fmap (a2b n) (objectValue ifc)
+      }
+
+objectInterfaceToDynamic :: Typeable typ => ObjectInterface typ -> ObjectInterface Dynamic
+objectInterfaceToDynamic oi = objectInterfaceAdapter (\ _ -> toDyn) (from oi) oi where
+  from :: Typeable typ => ObjectInterface typ -> String -> Dynamic -> typ
+  from oi msg dyn = fromDyn dyn (dynErr oi msg dyn)
+  origType :: Typeable typ => ObjectInterface typ -> typ
+  origType oi = maybe uninit id (objectValue oi)
+  uninit = error $
+    "'Dao.Object.objectInterfaceToDynamic' evaluated an uninitialized 'ObjectInterface'"
+  dynErr :: Typeable typ => ObjectInterface typ -> String -> Dynamic -> typ
+  dynErr oi msg dyn = error $ concat $
+    [ "The 'Dao.Object.", msg
+    , "' function defined for objects of type ", show (typeOf (origType oi))
+    , " was evaluated on an object of type ", show (dynTypeRep dyn)
+    ]
 
 -- Used to construct an 'ObjectInterface' in a "Control.Monad.State"-ful way. Instantiates
 -- 'Data.Monoid.Monoid' to provide 'Data.Monoid.mempty' an allows multiple inheritence by use of the
 -- 'Data.Monoid.mappend' function in the same way as
-data ObjIfc a =
+data ObjIfc typ =
   ObjIfc
-  { objIfcClassName     :: Name
-  , objIfcSuperClasses  :: [ObjIfc a]
-  , objIfcEquality      :: Maybe (a -> Object -> Bool)
-  , objIfcCompare       :: Maybe (a -> Object -> Ordering)
-  , objIfcBinEncoder    :: Maybe (a -> T_bytes)
-  , objIfcBinDecoder    :: Maybe (T_bytes   -> a)
-  , objIfcNullTest      :: Maybe (a -> Bool)
-  , objIfcIterator      :: Maybe (a -> Exec [Object])
-  , objIfcIndexer       :: Maybe (a -> Object -> Exec Object)
-  , objIfcTreeEncoder   :: Maybe (a -> Exec T_tree)
-  , objIfcTreeDecoder   :: Maybe (T_tree    -> Exec a)
-  , objIfcExprDecoder   :: Maybe (a -> Exec CodeBlock)
-  , objIfcExprEncoder   :: Maybe (CodeBlock -> Exec a)
-  , objIfcUpdateOpTable :: [(UpdateOp, UpdateOp -> a -> Object -> Exec Object)]
-  , objIfcInfixOpTable  :: [(InfixOp , InfixOp  -> a -> Object -> Exec Object)]
-  , objIfcPrefixOpTable :: [(PrefixOp, PrefixOp -> a -> Exec Object)]
-  , objIfcMethods       :: T.Tree Name (a -> DaoFunc)
-  , objIfcInitValue     :: Maybe a
+  { objIfcSuperClasses  :: [ObjIfc typ]
+  , objIfcCastFrom      :: Maybe (Object -> Exec typ)
+  , objIfcEquality      :: Maybe (typ -> Object -> Bool)
+  , objIfcOrdering      :: Maybe (typ -> Object -> Ordering)
+  , objIfcBinaryFmt     :: Maybe (typ -> T_bytes, T_bytes -> typ)
+  , objIfcNullTest      :: Maybe (typ -> Bool)
+  , objIfcIterator      :: Maybe (typ -> Exec [Object])
+  , objIfcIndexer       :: Maybe (typ -> Object -> Exec Object)
+  , objIfcTreeFormat    :: Maybe (typ -> Exec T_tree, T_tree -> Exec typ)
+  , objIfcExprFormat    :: Maybe (typ -> Exec CodeBlock, CodeBlock -> Exec typ)
+  , objIfcUpdateOpTable :: [(UpdateOp, UpdateOp -> typ -> Object -> Exec Object)]
+  , objIfcInfixOpTable  :: [(InfixOp , InfixOp  -> typ -> Object -> Exec Object)]
+  , objIfcPrefixOpTable :: [(PrefixOp, PrefixOp -> typ -> Exec Object)]
+  , objIfcMethods       :: T.Tree Name (typ -> DaoFunc)
+  , objIfcInitValue     :: Maybe typ
   }
-instance Monoid (ObjIfc a) where
+instance Monoid (ObjIfc typ) where
   mempty = 
     ObjIfc
-    { objIfcClassName     = nil
-    , objIfcSuperClasses  = []
+    { objIfcSuperClasses  = []
+    , objIfcCastFrom      = Nothing
     , objIfcEquality      = Nothing
-    , objIfcCompare       = Nothing
-    , objIfcBinEncoder    = Nothing
-    , objIfcBinDecoder    = Nothing
+    , objIfcOrdering      = Nothing
+    , objIfcBinaryFmt     = Nothing
     , objIfcNullTest      = Nothing
     , objIfcIterator      = Nothing
     , objIfcIndexer       = Nothing
-    , objIfcTreeEncoder   = Nothing
-    , objIfcTreeDecoder   = Nothing
-    , objIfcExprDecoder   = Nothing
-    , objIfcExprEncoder   = Nothing
+    , objIfcTreeFormat    = Nothing
+    , objIfcExprFormat    = Nothing
     , objIfcUpdateOpTable = []
     , objIfcInfixOpTable  = []
     , objIfcPrefixOpTable = []
@@ -204,15 +284,82 @@ instance Monoid (ObjIfc a) where
     mempty
     { objIfcSuperClasses = objIfcSuperClasses (a{objIfcInitValue=Nothing}) ++
         objIfcSuperClasses (b{objIfcInitValue=Nothing})
-    , objIfcMethods =
-        let fn a = fmap (\ (nm, f) -> (objIfcClassName a : nm, f)) (T.assocs (objIfcMethods a)) 
-            (+)  = flip T.union
-        in  objIfcMethods b + objIfcMethods a + T.fromList (fn a ++ fn b)
+    , objIfcMethods = T.union (objIfcMethods b) (objIfcMethods a)
     , objIfcInitValue = Nothing
     }
 
 -- | A handy monadic interface for defining an 'ObjectInterface'.
 type DaoClassDef typ a = State (ObjIfc typ) a
+
+defCastFrom :: Typeable typ => (Object -> Exec typ) -> DaoClassDef typ ()
+defCastFrom fn = modify(\st->st{objIfcCastFrom=Just fn})
+
+-- | Automatically define an equality operation over your @typ@ using the instantiation of
+-- 'Prelude.Eq' and the function you have provided to the 'defCastFrom' function. The 'defCastFrom'
+-- function is used to cast 'Object's to a value of your @typ@, and then the @Prelude.==@ function
+-- is evaluated. If you eventually never define a type casting funcion using 'defCastFrom', this
+-- function will fail, but it will fail lazily and at runtime, perhaps when you least expect it, so
+-- be sure to define 'defCastFrom' at some point.
+autoDefEquality :: (Typeable typ, Eq typ, ObjectClass typ) => DaoClassDef typ ()
+autoDefEquality = modify (\st -> st{objIfcEquality=Just (equals objectInterface)}) where
+  equals :: (Typeable typ, Eq typ, ObjectClass typ) => ObjectInterface typ -> typ -> Object -> Bool
+  equals ifc a obj = maybe (err a) (\cast -> a == cast obj) (objCastFrom ifc)
+  err a = error ("type casting not defined for "++show (typeOf a)++" type")
+
+-- | Define a customized equality relation for your @typ@, if the 'autoDefEquality' and
+-- 'defCastFrom' functions are to be avoided for some reason.
+defEquality :: Typeable typ => (typ -> Object -> Bool) -> DaoClassDef typ ()
+defEquality fn = modify(\st->st{objIfcEquality=Just fn})
+
+-- | Automatically define an ordering for your @typ@ using the instantiation of
+-- 'Prelude.Eq' and the function you have provided to the 'defCastFrom' function. The 'defCastFrom'
+-- function is used to cast 'Object's to a value of your @typ@, and then the @Prelude.==@ function
+-- is evaluated. If you eventually never define a type casting funcion using 'defCastFrom', this
+-- function will fail, but it will fail lazily and at runtime, perhaps when you least expect it, so
+-- be sure to define 'defCastFrom' at some point.
+autoDefOrdering :: (Typeable typ, Ord typ, ObjectClass typ) => DaoClassDef typ ()
+autoDefOrdering = modify (\st -> st{objIfcOrdering=Just (comp objectInterface)}) where
+  comp :: (Typeable typ, Ord typ, ObjectClass typ) => ObjectInterface typ -> typ -> Object -> Ordering
+  comp ifc a obj = maybe (err a) (\cast -> compare a (cast obj)) (objCastFrom ifc)
+  err a = error ("type casting not defined for "++show (typeOf a)++" type")
+
+-- | Define a customized ordering for your @typ@, if the 'autoDefEquality' and 'defCastFrom'
+-- functions are to be avoided for some reason.
+defOrdering :: Typeable typ => (typ -> Object -> Ordering) -> DaoClassDef typ ()
+defOrdering fn = modify(\st->st{objIfcOrdering=Just fn})
+
+-- | Automatically define the binary encoder and decoder using the 'Data.Binary.Binary' class
+-- instantiation for this @typ@.
+autoDefBinaryFmt :: (Typeable typ, B.Binary typ) => DaoClassDef typ ()
+autoDefBinaryFmt = modify(\st->st{objIfcBinaryFmt=Just(B.encode,B.decode)})
+
+-- | If you have binary coding and decoding methods for your @typ@ but for some silly reason not
+-- instantiated your @typ@ into the 'Data.Binary.Binary' class, your @typ@ can still be used as a
+-- binary formatted object by the Dao system if you define the encoder and decoder using this
+-- function. However, it would be better if you instantiated 'Data.Binary.Binary' and used
+-- 'autoDefBinaryFmt' instead.
+defBinaryFmt :: (Typeable typ, B.Binary typ) => (typ -> T_bytes) -> (T_bytes -> typ) -> DaoClassDef typ ()
+defBinaryFmt encode decode = modify(\st->st{objIfcBinaryFmt=Just(encode,decode)})
+
+defNullTest :: Typeable typ => (typ -> Bool) -> DaoClassDef typ ()
+defNullTest fn = modify(\st->st{objIfcNullTest=Just fn})
+
+defIterator :: Typeable typ => (typ -> Exec [Object]) -> DaoClassDef typ ()
+defIterator fn = modify(\st->st{objIfcIterator=Just fn})
+
+defIndexer :: Typeable typ => (typ -> Object -> Exec Object) -> DaoClassDef typ ()
+defIndexer fn = modify(\st->st{objIfcIndexer=Just fn})
+
+-- | Automatically define the tree encoder and decoder using the 'Structured' class instantiation
+-- for this @typ@.
+autoDefTreeFormat :: (Typeable typ, Structured typ) => DaoClassDef typ ()
+autoDefTreeFormat = defTreeFormat (return . dataToStruct) (execFromPValue . structToData)
+
+-- | If for some reason you need to define a tree encoder and decoder for the 'ObjectInterface' of
+-- your @typ@ without instnatiating 'Structured', use this function to define the tree encoder an
+-- decoder directly
+defTreeFormat :: Typeable typ => (typ -> Exec T_tree) -> (T_tree -> Exec typ) -> DaoClassDef typ ()
+defTreeFormat encode decode = modify $ \st -> st{objIfcTreeFormat=Just(encode,decode)}
 
 ----------------------------------------------------------------------------------------------------
 
@@ -374,7 +521,7 @@ instance Monoid Reference where
       Subscript _ _ -> DotRef   b c
       CallWith  _ _ -> DotRef   b c
 
--- | A 'Reference' type with an optional qualifier. 'UnqualRef' means there is no qualifier.
+-- | A 'Reference' type with an optional qualifier. 'Unqualified' means there is no qualifier.
 data QualRef = QualRef { qualifier :: RefQualifier, qualRef :: Reference }
   deriving (Eq, Ord, Typeable)
 
@@ -488,7 +635,7 @@ instance Ord Object where
 --  (OScript    a, OScript    b) -> compare a b
     (OBytes     a, OBytes     b) -> compare a b
     (OHaskell   a, OHaskell   b) -> maybe (err a b) id $ do
-      comp <- objCompare a
+      comp <- objOrdering a
       obj  <- objectValue a
       return (comp obj (OHaskell b))
       where
@@ -577,15 +724,6 @@ object2Dynamic o = case o of
   OGlob     o -> toDyn o
   OBytes    o -> toDyn o
   OHaskell  o -> toDyn o
-
-obj :: Typeable t => Object -> [t]
-obj o = maybeToList (fromDynamic (object2Dynamic o))
-
-objectsOfType :: Typeable t => [Object] -> [t]
-objectsOfType ox = concatMap obj ox
-
-readObjUStr :: Read a => (a -> Object) -> UStr -> Object
-readObjUStr mkObj = mkObj . read . uchars
 
 ostr :: UStrType u => u -> Object
 ostr = OString . ustr
@@ -699,6 +837,27 @@ instance Monoid ExecError where { mempty = ExecBadParam mempty; mappend = const;
 execThrow :: Object -> Exec ig
 execThrow obj = ask >>= \xunit ->
   throwError $ ExecError{execUnitAtError=Just xunit, specificErrorData=obj}
+
+execFromPValue :: PValue UpdateErr a -> Exec a
+execFromPValue pval = case pval of
+  OK      a -> return a
+  Backtrack -> mzero
+  PFail err -> throwError (errConv err)
+  where
+    errConv err = ExecBadParam $ -- TODO: create an 'ObjectInterface' for 'UpdateErr'.
+      ParamValue
+      { paramValue = OList $ concat $
+          [ maybe [] (return . ostr) (updateErrMsg err)
+          , let addr = updateErrAddr err
+            in  if null addr
+                  then []
+                  else [ ORef $ QualRef Unqualified $
+                           foldr (\a b -> DotRef (PlainRef a) b) (PlainRef (head addr)) (tail addr)
+                        ]
+          , let tree = updateErrTree err in if T.null tree then [] else [OTree $ updateErrTree err]
+          ]
+      , paramOrigExpr = Nothing
+      }
 
 ----------------------------------------------------------------------------------------------------
 

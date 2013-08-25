@@ -133,14 +133,14 @@ instance HasRandGen Object where
 --  , fmap OPair (liftM2 (,) randO randO)
     , fmap OList (randList 0 40)
 --  , fmap (OSet . S.fromList) (randList 0 40)
-      -- OTime
+      -- OAbsTime
     , do  day <- fmap (ModifiedJulianDay . unsign . flip mod 73000) randInt
           sec <- fmap (fromRational . toRational . flip mod 86400) randInt
-          return (OTime (UTCTime{utctDay=day, utctDayTime=sec}))
-      -- ODiffTime
-    , randInteger (ODiffTime 0) $ \i -> do
+          return (OAbsTime (UTCTime{utctDay=day, utctDayTime=sec}))
+      -- ORelTime
+    , randInteger (ORelTime 0) $ \i -> do
         div <- randInt
-        fmap (ODiffTime . fromRational . (% fromIntegral div) . longFromInts) $
+        fmap (ORelTime . fromRational . (% fromIntegral div) . longFromInts) $
           replicateM (mod i 2 + 1) randInt
 --  , do -- OArray
 --        hi <- nextInt 12

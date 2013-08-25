@@ -307,7 +307,7 @@ numberFromStrs base int maybFrac maybPlusMinusExp maybTyp = do
 --  "f" -> return $ OFloat (fromRational r)
 --  "i" -> return $ OComplex (0 :+ fromRational r)
 --  "j" -> return $ OComplex (0 :+ fromRational r)
-    "s" -> return $ ODiffTime (fromRational r)
+    "s" -> return $ ORelTime (fromRational r)
     ""  ->
       return (OInt (fromIntegral (round r)))
 --    if r_is_an_integer && null frac
@@ -437,14 +437,14 @@ containerPTab = table $
             astr = (' ':) . asString
             timeAndZone = maybe " 00:00:00" astr time ++ maybe "" astr zone
         case readsPrec 0 (asString date ++ timeAndZone) of
-          [(obj, "")] -> return (AST_Literal (OTime obj) loc)
+          [(obj, "")] -> return (AST_Literal (OAbsTime obj) loc)
           _           -> fail "invalid UTC-time expression"
   , tableItemBy "time" $ \startTok ->
       expect "UTC-time value after \"time\" statement" $ do
         token SPACE as0
         tok  <- token TIME id
         time <- diffTimeFromStrs (asString tok)
-        return (AST_Literal (ODiffTime time) (asLocation startTok <> asLocation tok))
+        return (AST_Literal (ORelTime time) (asLocation startTok <> asLocation tok))
   , containerWith "list" return
   , containerWith "set"  return
   , (\lbl -> containerWith lbl (checkAssign lbl)) "dict"

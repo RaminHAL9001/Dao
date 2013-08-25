@@ -445,7 +445,7 @@ asInteger o = case o of
 asRational :: Object -> Exec Rational
 asRational o = case o of
 --OFloat     o     -> return (toRational o)
-  ODiffTime  o     -> return (toRational o)
+  ORelTime  o     -> return (toRational o)
 --OComplex  (o:+0) -> return (toRational o)
 --ORatio     o     -> return o
   _                -> mzero
@@ -512,7 +512,7 @@ evalNum ifunc rfunc a b = msum $
         let x = rfunc ia ib
         return $ case (max (fromEnum (objType a)) (fromEnum (objType b))) of
 --        t | t == fromEnum FloatType    -> OFloat    (fromRational x)
-          t | t == fromEnum DiffTimeType -> ODiffTime (fromRational x)
+          t | t == fromEnum DiffTimeType -> ORelTime (fromRational x)
 --        t | t == fromEnum RatioType    -> ORatio    (fromRational x)
 --        t | t == fromEnum ComplexType  -> OComplex  (fromRational x)
           _ -> error "asRational returned a value for an object of an unexpected type"
@@ -527,9 +527,9 @@ eval_ADD a b = msum
   ]
   where
     timeAdd a b = case (a, b) of
-      (OTime a, ODiffTime b) -> return (OTime (addUTCTime b a))
---    (OTime a, ORatio    b) -> return (OTime (addUTCTime (fromRational (toRational b)) a))
---    (OTime a, OFloat    b) -> return (OTime (addUTCTime (fromRational (toRational b)) a))
+      (OAbsTime a, ORelTime b) -> return (OAbsTime (addUTCTime b a))
+--    (OAbsTime a, ORatio    b) -> return (OAbsTime (addUTCTime (fromRational (toRational b)) a))
+--    (OAbsTime a, OFloat    b) -> return (OAbsTime (addUTCTime (fromRational (toRational b)) a))
       _                      -> mzero
     listAdd a b = do
       ax <- asListNoConvert a
@@ -549,10 +549,10 @@ eval_SUB :: Object -> Object -> BuiltinOp
 eval_SUB a b = msum $
   [ evalNum (-) (-) a b
   , case (a, b) of
-      (OTime a, OTime     b) -> return (ODiffTime (diffUTCTime a b))
-      (OTime a, ODiffTime b) -> return (OTime (addUTCTime (negate b) a))
---    (OTime a, ORatio    b) -> return (OTime (addUTCTime (fromRational (toRational (negate b))) a))
---    (OTime a, OFloat    b) -> return (OTime (addUTCTime (fromRational (toRational (negate b))) a))
+      (OAbsTime a, OAbsTime     b) -> return (ORelTime (diffUTCTime a b))
+      (OAbsTime a, ORelTime b) -> return (OAbsTime (addUTCTime (negate b) a))
+--    (OAbsTime a, ORatio    b) -> return (OAbsTime (addUTCTime (fromRational (toRational (negate b))) a))
+--    (OAbsTime a, OFloat    b) -> return (OAbsTime (addUTCTime (fromRational (toRational (negate b))) a))
       _                  -> mzero
   ]
 
@@ -678,7 +678,7 @@ eval_NEG o = case o of
 --         else  OInt (fromIntegral n)
   OInt      o -> return $ OInt      (negate o)
 --OLong     o -> return $ OLong     (negate o)
-  ODiffTime o -> return $ ODiffTime (negate o)
+  ORelTime o -> return $ ORelTime (negate o)
 --OFloat    o -> return $ OFloat    (negate o)
 --ORatio    o -> return $ ORatio    (negate o)
 --OComplex  o -> return $ OComplex  (negate o)

@@ -242,8 +242,8 @@ instance Binary Object where
 --    OFloat        a -> x o a
 --    ORatio        a -> x o a
 --    OComplex      a -> x o a
-      OTime         a -> x o a
-      ODiffTime     a -> x o a
+      OAbsTime         a -> x o a
+      ORelTime     a -> x o a
       OChar         a -> x o a
       OString       a -> px o (encodeUStr a)
       ORef          a -> x o a
@@ -273,8 +273,8 @@ instance Binary Object where
 --      FloatType    -> x OFloat
 --      RatioType    -> x ORatio
 --      ComplexType  -> x OComplex
-        TimeType     -> x OTime
-        DiffTimeType -> x ODiffTime
+        TimeType     -> x OAbsTime
+        DiffTimeType -> x ORelTime
         CharType     -> x OChar
         StringType   -> fmap OString decodeUStr
         RefType      -> x ORef

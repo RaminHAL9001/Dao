@@ -105,8 +105,8 @@ instance PPrintable Object where
 --              [ pString "(", pString (show r), unless (i<0) (pString "+")
 --              , pString (show i++"i"), pString ")"
 --              ]
-    ODiffTime  o     -> pShow o
-    OTime      o     -> pString ("date "++show o)
+    ORelTime  o     -> pShow o
+    OAbsTime      o     -> pString ("date "++show o)
     OChar      o     -> pShow o
     OString    o     -> pShow o
     ORef       o     -> pPrint o

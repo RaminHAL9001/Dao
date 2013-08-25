@@ -66,7 +66,7 @@ testNull o = case o of
 --OFloat    0.0     -> True
 --ORatio    o | o==(0%1)      -> True
 --OComplex  o | o==(0:+0)     -> True
-  ODiffTime o | toRational o == 0%1 -> True
+  ORelTime o | toRational o == 0%1 -> True
   OChar     o | ord o == 0          -> True
   OString   o | o==nil              -> True
   ORef NullRef                      -> True
@@ -112,7 +112,7 @@ isNumeric o = case o of
 --OWord     _ -> True
   OInt      _ -> True
 --OLong     _ -> True
-  ODiffTime _ -> True
+  ORelTime _ -> True
 --OFloat    _ -> True
 --ORatio    _ -> True
 --OComplex  _ -> True
@@ -130,7 +130,7 @@ isRational o = case o of
 --OWord     _ -> True
   OInt      _ -> True
 --OLong     _ -> True
-  ODiffTime _ -> True
+  ORelTime _ -> True
 --OFloat    _ -> True
 --ORatio    _ -> True
   _           -> False
@@ -152,7 +152,7 @@ objToRational :: Object -> PValue tok Rational
 objToRational o = case o of
 --OWord     o -> return $ toRational o
   OInt      o -> return $ toRational o
-  ODiffTime o -> return $ toRational o
+  ORelTime o -> return $ toRational o
 --OFloat    o -> return $ toRational o
 --OLong     o -> return $ toRational o
 --ORatio    o -> return o
@@ -183,7 +183,7 @@ objToRational o = case o of
 
 objToDiffTime :: Object -> PValue tok T_diffTime
 objToDiffTime o = case o of
-  ODiffTime f -> return f
+  ORelTime f -> return f
   _           -> mzero
 
 type_mismatch f a = error $
@@ -197,21 +197,21 @@ type_mismatch2 f a b = error $
 --a + b = fromPValue (type_mismatch2 "+" a b) $ msum $
 --  [ objToIntegral a >>= \a -> objToIntegral b >>= \b -> smallestIntContainer (a+b)
 --  , objToFloat    a >>= \a -> objToFloat    b >>= \b -> return $ OFloat (a+b)
---  , objToDiffTime a >>= \a -> objToDiffTime b >>= \b -> return $ ODiffTime (a+b)
+--  , objToDiffTime a >>= \a -> objToDiffTime b >>= \b -> return $ ORelTime (a+b)
 --  , objToRational a >>= \a -> objToRational b >>= \b -> return $ ORatio (a+b)
 --  , objToComplex  a >>= \a -> objToComplex  b >>= \b -> return $ OComplex (a+b)
 --  ]
 --a - b = fromPValue (type_mismatch2 "-" a b) $  msum $
 --  [ objToIntegral a >>= \a -> objToIntegral b >>= \b -> smallestIntContainer (a-b)
 --  , objToFloat    a >>= \a -> objToFloat    b >>= \b -> return $ OFloat (a-b)
---  , objToDiffTime a >>= \a -> objToDiffTime b >>= \b -> return $ ODiffTime (a-b)
+--  , objToDiffTime a >>= \a -> objToDiffTime b >>= \b -> return $ ORelTime (a-b)
 --  , objToRational a >>= \a -> objToRational b >>= \b -> return $ ORatio (a-b)
 --  , objToComplex  a >>= \a -> objToComplex  b >>= \b -> return $ OComplex (a-b)
 --  ]
 --a * b = fromPValue (type_mismatch2 "*" a b) $ msum $
 --  [ objToIntegral a >>= \a -> objToIntegral b >>= \b -> smallestIntContainer (a*b)
 --  , objToFloat    a >>= \a -> objToFloat    b >>= \b -> return $ OFloat (a*b)
---  , objToDiffTime a >>= \a -> objToDiffTime b >>= \b -> return $ ODiffTime (a*b)
+--  , objToDiffTime a >>= \a -> objToDiffTime b >>= \b -> return $ ORelTime (a*b)
 --  , objToRational a >>= \a -> objToRational b >>= \b -> return $ ORatio (a*b)
 --  , objToComplex  a >>= \a -> objToComplex  b >>= \b -> return $ OComplex (a*b)
 --  ]
@@ -222,7 +222,7 @@ type_mismatch2 f a b = error $
 --  OWord     a -> return $ OWord a
 --  OInt      a -> return $ OInt (abs a)
 --  OLong     a -> return $ OLong (abs a)
---  ODiffTime a -> return $ ODiffTime (abs a)
+--  ORelTime a -> return $ ORelTime (abs a)
 --  OFloat    a -> return $ OFloat (abs a)
 --  ORatio    a -> return $ ORatio (abs a)
 --  OComplex  a -> return $ OFloat (magnitude a)
@@ -231,7 +231,7 @@ type_mismatch2 f a b = error $
 --negate a = fromPValue (type_mismatch "negate" a) $ case a of
 --  OInt      a -> return $ OInt      (negate a)
 --  OLong     a -> return $ OLong     (negate a)
---  ODiffTime a -> return $ ODiffTime (negate a)
+--  ORelTime a -> return $ ORelTime (negate a)
 --  OFloat    a -> return $ OFloat    (negate a)
 --  ORatio    a -> return $ ORatio    (negate a)
 --  OComplex  a -> return $ OComplex  (negate a)

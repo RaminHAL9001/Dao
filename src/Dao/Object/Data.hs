@@ -95,12 +95,12 @@ instance Objectify Double  where
   fromObject (OFloat o) = return o
 
 instance Objectify UTCTime where
-  toObject = OTime  
-  fromObject (OTime o) = return o
+  toObject = OAbsTime  
+  fromObject (OAbsTime o) = return o
 
 instance Objectify NominalDiffTime where
-  toObject = ODiffTime
-  fromObject (ODiffTime o) = return o
+  toObject = ORelTime
+  fromObject (ORelTime o) = return o
 
 instance Objectify Char where
   toObject = OChar
@@ -214,8 +214,8 @@ objToBool obj = case obj of
   OFloat     o -> testNull o
   ORatio     o -> testNull o
   OComplex   o -> testNull o
-  OTime      o -> testNull o
-  ODiffTime  o -> testNull o
+  OAbsTime      o -> testNull o
+  ORelTime  o -> testNull o
   OChar      o -> testNull o
   OString    o -> testNull o
   ORef       o -> True
@@ -368,7 +368,7 @@ instance ToFloat Object where
     OLong     o -> toFloat o
     OFloat    o -> toFloat o
     ORatio    o -> toFloat o
-    ODiffTime o -> toFloat o
+    ORelTime o -> toFloat o
 
 class ToRatio a where { toRatio :: a -> PredicateIO st T_ratio }
 instance ToRatio Word64  where { toRatio = return . fromIntegral }
@@ -384,7 +384,7 @@ instance ToRatio Object where
     OLong     o -> toRatio o
     OFloat    o -> toRatio o
     ORatio    o -> toRatio o
-    ODiffTime o -> toRatio o
+    ORelTime o -> toRatio o
 
 class ToDiffTime a where { toDiffTime :: a -> PredicateIO st T_diffTime }
 instance ToDiffTime Word64  where { toDiffTime = return . fromIntegral }
@@ -400,7 +400,7 @@ instance ToDiffTime Object where
     OLong     o -> toDiffTime o
     OFloat    o -> toDiffTime o
     ORatio    o -> toDiffTime o
-    ODiffTime o -> toDiffTime o
+    ORelTime o -> toDiffTime o
 
 class ToComplex a where { toComplex :: a -> PredicateIO st T_complex }
 instance ToComplex Word64  where { toComplex i = return (fromIntegral i :+ 0) }
@@ -418,7 +418,7 @@ instance ToComplex Object where
     OLong     o -> toComplex o
     OFloat    o -> toComplex o
     ORatio    o -> toComplex o
-    ODiffTime o -> toComplex o
+    ORelTime o -> toComplex o
     OComplex  o -> return o
 
 ----------------------------------------------------------------------------------------------------
@@ -428,7 +428,7 @@ instance ToComplex Object where
 -- For example, given an 'Object.OInt' and an 'Object.OFloat', the int will be converted to a float.
 -- The types that can be converted are as follows in lesser-to-greater order:
 --     'Object.OWord', 'Object.OInt', 'Object.OLong', 'Object.OFloat',
---     'Object.ORatio', 'Object.ODiffTime', 'Object.OComplex'
+--     'Object.ORatio', 'Object.ORelTime', 'Object.OComplex'
 promoteNum :: String -> Object -> Object -> PredicateIO st (Object, Object)
 promoteNum msg a b = case a of
     OWord      _ -> case b of
@@ -437,7 +437,7 @@ promoteNum msg a b = case a of
       OLong     _ -> rFst   (toLong     a)            b
       OFloat    _ -> rFst   (toFloat    a)            b
       ORatio    _ -> rFst   (toRatio    a)            b
-      ODiffTime _ -> rFst   (toDiffTime a)            b
+      ORelTime _ -> rFst   (toDiffTime a)            b
       OComplex  _ -> rFst   (toComplex  a)            b
     OInt       _ -> case b of
       OWord     _ -> rSnd               a (toInt      b)
@@ -445,7 +445,7 @@ promoteNum msg a b = case a of
       OLong     _ -> rFst   (toLong     a)            b
       OFloat    _ -> rFst   (toFloat    a)            b
       ORatio    _ -> rFst   (toRatio    a)            b
-      ODiffTime _ -> rFst   (toDiffTime a)            b
+      ORelTime _ -> rFst   (toDiffTime a)            b
       OComplex  _ -> rFst   (toComplex  a)            b
     OLong      _ -> case b of
       OWord     _ -> rSnd               a (toLong     b)
@@ -453,7 +453,7 @@ promoteNum msg a b = case a of
       OLong     _ -> return (           a,            b)
       OFloat    _ -> rFst   (toFloat    a)            b
       ORatio    _ -> rFst   (toRatio    a)            b
-      ODiffTime _ -> rFst   (toDiffTime a)            b
+      ORelTime _ -> rFst   (toDiffTime a)            b
       OComplex  _ -> rFst   (toComplex  a)            b
     OFloat     _ -> case b of
       OWord     _ -> rSnd               a (toFloat    b)
@@ -461,7 +461,7 @@ promoteNum msg a b = case a of
       OLong     _ -> rSnd               a (toFloat    b)
       OFloat    _ -> return (           a,            b)
       ORatio    _ -> rFst   (toRatio    a)            b
-      ODiffTime _ -> rFst   (toDiffTime a)            b
+      ORelTime _ -> rFst   (toDiffTime a)            b
       OComplex  _ -> rFst   (toComplex  a)            b
     ORatio     _ -> case b of
       OWord     _ -> rSnd               a (toRatio    b)
@@ -469,15 +469,15 @@ promoteNum msg a b = case a of
       OLong     _ -> rSnd               a (toRatio    b)
       OFloat    _ -> rSnd               a (toRatio    b)
       ORatio    _ -> return (           a,            b)
-      ODiffTime _ -> rFst   (toDiffTime a)            b
+      ORelTime _ -> rFst   (toDiffTime a)            b
       OComplex  _ -> rFst   (toComplex  a)            b
-    ODiffTime  _ -> case b of
+    ORelTime  _ -> case b of
       OWord     _ -> rSnd               a (toDiffTime b)
       OInt      _ -> rSnd               a (toDiffTime b)
       OLong     _ -> rSnd               a (toDiffTime b)
       OFloat    _ -> rSnd               a (toDiffTime b)
       ORatio    _ -> rSnd               a (toDiffTime b)
-      ODiffTime _ -> return (           a,            b)
+      ORelTime _ -> return (           a,            b)
       OComplex  _ -> rFst   (toComplex  a)            b
     OComplex   _ -> case b of
       OWord     _ -> rSnd               a (toComplex  b)
@@ -485,7 +485,7 @@ promoteNum msg a b = case a of
       OLong     _ -> rSnd               a (toComplex  b)
       OFloat    _ -> rSnd               a (toComplex  b)
       ORatio    _ -> rSnd               a (toComplex  b)
-      ODiffTime _ -> rSnd               a (toComplex  b)
+      ORelTime _ -> rSnd               a (toComplex  b)
       OComplex  _ -> return (           a,            b)
   where
     rFst fn b = fmap (\a -> (toObject a, b)) fn
@@ -504,7 +504,7 @@ withNum fn a b = return $ case (a, b) of
   (OLong     a, OLong     b) -> toObject (fn a b)
   (OFloat    a, OFloat    b) -> toObject (fn a b)
   (ORatio    a, ORatio    b) -> toObject (fn a b)
-  (ODiffTime a, ODiffTime b) -> toObject (fn a b)
+  (ORelTime a, ORelTime b) -> toObject (fn a b)
   (OComplex  a, OComplex  b) -> toObject (fn a b)
 
 -- | Execute a function that is a member of the class 'Prelude.Integral' over two objects. These
@@ -529,7 +529,7 @@ withFractional
 withFractional fn a b = return $ case (a, b) of
   (OFloat    a, OFloat    b) -> toObject (fn a b)
   (ORatio    a, ORatio    b) -> toObject (fn a b)
-  (ODiffTime a, ODiffTime b) -> toObject (fn a b)
+  (ORelTime a, ORelTime b) -> toObject (fn a b)
   (OComplex  a, OComplex  b) -> toObject (fn a b)
 
 checkNumericOp
@@ -598,7 +598,7 @@ checkCompareOp op fn a b = case (a, b) of
   (ONull      , OTrue      ) -> done $ fn False True
   (OTrue      , ONull      ) -> done $ fn True  False
   (OString   a, OString   b) -> done $ fn a b
-  (OTime     a, OTime     b) -> done $ fn a b
+  (OAbsTime     a, OAbsTime     b) -> done $ fn a b
   (OChar     a, OChar     b) -> done $ fn a b
   (OPair     a, OPair     b) -> done $ fn a b
   (OList     a, OList     b) -> done $ fn a b
@@ -617,6 +617,6 @@ checkCompareOp op fn a b = case (a, b) of
     (OFloat    a, OFloat    b) -> fn a b
     (ORatio    a, ORatio    b) -> fn a b
     (OComplex  a, OComplex  b) -> fn a b
-    (ODiffTime a, ODiffTime b) -> fn a b
+    (ORelTime a, ORelTime b) -> fn a b
   where { done = checkOK . boolToObj }
 

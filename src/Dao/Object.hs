@@ -562,8 +562,8 @@ data Object
 --  | OFloat     T_float
 --  | ORatio     T_ratio
 --  | OComplex   T_complex
-  | OTime      T_time
-  | ODiffTime  T_diffTime
+  | OAbsTime   T_time
+  | ORelTime   T_diffTime
   | OChar      T_char
   | OString    T_string
   | ORef       T_ref
@@ -590,8 +590,8 @@ instance Eq Object where
 --  (OFloat     a, OFloat     b) -> a==b
 --  (ORatio     a, ORatio     b) -> a==b
 --  (OComplex   a, OComplex   b) -> a==b
-    (OTime      a, OTime      b) -> a==b
-    (ODiffTime  a, ODiffTime  b) -> a==b
+    (OAbsTime      a, OAbsTime      b) -> a==b
+    (ORelTime  a, ORelTime  b) -> a==b
     (OChar      a, OChar      b) -> a==b
     (OString    a, OString    b) -> a==b
     (ORef       a, ORef       b) -> a==b
@@ -619,8 +619,8 @@ instance Ord Object where
 --  (OFloat     a, OFloat     b) -> compare a b
 --  (ORatio     a, ORatio     b) -> compare a b
 --  (OComplex   a, OComplex   b) -> compare a b
-    (OTime      a, OTime      b) -> compare a b
-    (ODiffTime  a, ODiffTime  b) -> compare a b
+    (OAbsTime      a, OAbsTime      b) -> compare a b
+    (ORelTime  a, ORelTime  b) -> compare a b
     (OChar      a, OChar      b) -> compare a b
     (OString    a, OString    b) -> compare a b
     (ORef       a, ORef       b) -> compare a b
@@ -664,8 +664,8 @@ objType o = case o of
 --OFloat    _ -> FloatType
 --ORatio    _ -> RatioType
 --OComplex  _ -> ComplexType
-  OTime     _ -> TimeType
-  ODiffTime _ -> DiffTimeType
+  OAbsTime     _ -> TimeType
+  ORelTime _ -> DiffTimeType
   OChar     _ -> CharType
   OString   _ -> StringType
   ORef      _ -> RefType
@@ -708,8 +708,8 @@ object2Dynamic o = case o of
 --OFloat    o -> toDyn o
 --ORatio    o -> toDyn o
 --OComplex  o -> toDyn o
-  OTime     o -> toDyn o
-  ODiffTime o -> toDyn o
+  OAbsTime     o -> toDyn o
+  ORelTime o -> toDyn o
   OChar     o -> toDyn o
   OString   o -> toDyn o
   ORef      o -> toDyn o

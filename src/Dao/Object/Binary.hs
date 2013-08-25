@@ -237,26 +237,26 @@ instance Binary Object where
       OTrue           -> px OTrue (return ())
       OType         a -> x o a
       OInt          a -> x o a
-      OWord         a -> x o a
-      OLong         a -> x o a
-      OFloat        a -> x o a
-      ORatio        a -> x o a
-      OComplex      a -> x o a
+--    OWord         a -> x o a
+--    OLong         a -> x o a
+--    OFloat        a -> x o a
+--    ORatio        a -> x o a
+--    OComplex      a -> x o a
       OTime         a -> x o a
       ODiffTime     a -> x o a
       OChar         a -> x o a
       OString       a -> px o (encodeUStr a)
       ORef          a -> x o a
-      OPair     (a,b) -> px o (put a >> put b)
+--    OPair     (a,b) -> px o (put a >> put b)
       OList         a -> px o (putList a)
-      OSet          a -> px o (putList (S.elems a))
-      OArray        a -> px o $
-        let (lo, hi) = bounds a in put lo >> put hi >> putList (elems a)
-      OIntMap       a -> px o (putObjMap I.assocs putVLInt a)
-      ODict         a -> px o (putObjMap M.assocs put a)
+--    OSet          a -> px o (putList (S.elems a))
+--    OArray        a -> px o $
+--      let (lo, hi) = bounds a in put lo >> put hi >> putList (elems a)
+--    OIntMap       a -> px o (putObjMap I.assocs putVLInt a)
+--    ODict         a -> px o (putObjMap M.assocs put a)
       OTree         a -> x o a
-      OGlob         a -> x o a
-      OScript       a -> x o a
+--    OGlob         a -> x o a
+--    OScript       a -> x o a
       OBytes        a -> x o a
   get = do
     ty <- getWord8
@@ -268,27 +268,27 @@ instance Binary Object where
         TrueType     -> return OTrue
         TypeType     -> x OType
         IntType      -> x OInt
-        WordType     -> x OWord
-        LongType     -> x OLong
-        FloatType    -> x OFloat
-        RatioType    -> x ORatio
-        ComplexType  -> x OComplex
+--      WordType     -> x OWord
+--      LongType     -> x OLong
+--      FloatType    -> x OFloat
+--      RatioType    -> x ORatio
+--      ComplexType  -> x OComplex
         TimeType     -> x OTime
         DiffTimeType -> x ODiffTime
         CharType     -> x OChar
         StringType   -> fmap OString decodeUStr
         RefType      -> x ORef
-        PairType     -> fmap OPair (liftM2 (,) get get)
+--      PairType     -> fmap OPair (liftM2 (,) get get)
         ListType     -> fmap OList getList
-      --SetType      -> fmap (OSet . S.fromList) getList
-        ArrayType    -> do
-          get >>= \lo -> get >>= \hi -> getList >>= \ax ->
-            return (OArray (listArray (lo, hi) ax))
-        IntMapType   -> fmap OIntMap (getObjMap (I.fromList) getFromVLInt)
-        DictType     -> fmap ODict   (getObjMap (M.fromList) get)
+--      SetType      -> fmap (OSet . S.fromList) getList
+--      ArrayType    -> do
+--        get >>= \lo -> get >>= \hi -> getList >>= \ax ->
+--          return (OArray (listArray (lo, hi) ax))
+--      IntMapType   -> fmap OIntMap (getObjMap (I.fromList) getFromVLInt)
+--      DictType     -> fmap ODict   (getObjMap (M.fromList) get)
         TreeType     -> x OTree
-        GlobType     -> x OGlob
-        ScriptType   -> x OScript
+--      GlobType     -> x OGlob
+--      ScriptType   -> x OScript
         BytesType    -> x OBytes
 
 instance Binary Reference where

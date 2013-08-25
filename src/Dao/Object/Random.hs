@@ -109,13 +109,13 @@ randSingletonList :: [RandO Object]
 randSingletonList =
   [ return ONull
   , return OTrue
-  -- , fmap OType randO
+-- , fmap OType randO
   , randInteger (OInt  0) $ \i -> randInt >>= \j -> return (OInt$fromIntegral$ i*j)
-  , randInteger (OWord 0) $ \i -> randInt >>= \j -> return (OWord$fromIntegral$abs$ i*j)
-  , randInteger (OLong 0) $ \i -> replicateM (mod i 4 + 1) randInt >>= return . OLong . longFromInts
-  , randInteger (ORatio 0) $ \i -> return (ORatio (toInteger i % 1))
-  , randInteger (OComplex (0:+0)) $ \i -> return (OComplex (0 :+ (fromRational (toInteger i % 1))))
-  , randInteger (OFloat 0) (fmap (OFloat . fromRational) . randRational)
+--  , randInteger (OWord 0) $ \i -> randInt >>= \j -> return (OWord$fromIntegral$abs$ i*j)
+--  , randInteger (OLong 0) $ \i -> replicateM (mod i 4 + 1) randInt >>= return . OLong . longFromInts
+--  , randInteger (ORatio 0) $ \i -> return (ORatio (toInteger i % 1))
+--  , randInteger (OComplex (0:+0)) $ \i -> return (OComplex (0 :+ (fromRational (toInteger i % 1))))
+--  , randInteger (OFloat 0) (fmap (OFloat . fromRational) . randRational)
   , randInteger (OChar '\n') (\i -> return (OChar $ chr $ mod i $ ord (maxBound::Char)))
   , randString
   , fmap (ORef . bareword) randName
@@ -123,16 +123,16 @@ randSingletonList =
 
 instance HasRandGen Object where
   randO = randOFromList $ randSingletonList ++
-    [ randInteger (ORatio 0) (fmap ORatio . randRational)
-    , randInteger (OComplex 0) $ \i0 -> do
-        let (i1, rem) = divMod i0 4
-        real <- fmap fromRational (randRational i1)
-        cplx <- fmap fromRational (randRational rem)
-        return (OComplex (real:+cplx))
-    , fmap ORef randO
-    , fmap OPair (liftM2 (,) randO randO)
+--  [ randInteger (ORatio 0) (fmap ORatio . randRational)
+--  , randInteger (OComplex 0) $ \i0 -> do
+--      let (i1, rem) = divMod i0 4
+--      real <- fmap fromRational (randRational i1)
+--      cplx <- fmap fromRational (randRational rem)
+--      return (OComplex (real:+cplx))
+    [ fmap ORef randO
+--  , fmap OPair (liftM2 (,) randO randO)
     , fmap OList (randList 0 40)
- -- , fmap (OSet . S.fromList) (randList 0 40)
+--  , fmap (OSet . S.fromList) (randList 0 40)
       -- OTime
     , do  day <- fmap (ModifiedJulianDay . unsign . flip mod 73000) randInt
           sec <- fmap (fromRational . toRational . flip mod 86400) randInt
@@ -142,16 +142,16 @@ instance HasRandGen Object where
         div <- randInt
         fmap (ODiffTime . fromRational . (% fromIntegral div) . longFromInts) $
           replicateM (mod i 2 + 1) randInt
-    , do -- OArray
-          hi <- nextInt 12
-          lo <- nextInt 8
-          fmap (OArray . listArray (fromIntegral lo, fromIntegral (lo+hi))) $
-            replicateM (hi+1) (limSubRandO ONull)
-    , randObjMap ODict   M.fromList (randName)
-    , randObjMap OIntMap I.fromList randInt
+--  , do -- OArray
+--        hi <- nextInt 12
+--        lo <- nextInt 8
+--        fmap (OArray . listArray (fromIntegral lo, fromIntegral (lo+hi))) $
+--          replicateM (hi+1) (limSubRandO ONull)
+--  , randObjMap ODict   M.fromList (randName)
+--  , randObjMap OIntMap I.fromList randInt
     , fmap OTree randO
-    , fmap OGlob randO
-    , fmap OScript randO
+--  , fmap OGlob randO
+--  , fmap OScript randO
       -- OBytes
     , do  i <- nextInt 10
           fmap (OBytes . Bz.concat) $
@@ -469,7 +469,7 @@ randEquationASTList :: [RandO AST_Object]
 randEquationASTList = randFuncHeaderList ++
   [ let check a = case a of
           AST_Equation a op b no | DOT == unComment op  -> AST_Equation (check a) op (check b) no
-          AST_Literal (ORef (QualRef Unqualified (PlainRef _))) _   -> a
+          AST_Literal (ORef (PlainRef _)) _   -> a
           AST_Literal (OString _)         _   -> a
           AST_FuncCall _       _      _   _   -> a
           AST_Paren    a                  loc -> AST_Paren a loc
@@ -505,7 +505,7 @@ instance HasRandGen AST_TopLevel where
                 foldr
                   (\a b ->
                       AST_Equation
-                        (AST_Literal (ORef (QualRef Unqualified (PlainRef a))) LocationUnknown)
+                        (AST_Literal (ORef (PlainRef a)) LocationUnknown)
                         (Com DOT)
                         b
                         LocationUnknown

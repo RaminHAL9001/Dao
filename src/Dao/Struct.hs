@@ -246,9 +246,9 @@ getIntegerData :: Integral a => String -> Update a
 getIntegerData msg = do
   a <- this
   case a of
-    OLong a -> return (fromIntegral a)
+--  OLong a -> return (fromIntegral a)
     OInt  a -> return (fromIntegral a)
-    OWord a -> return (fromIntegral a)
+--  OWord a -> return (fromIntegral a)
     _ -> fail ("was expecting an integer value for constructing a "++msg++" object")
 
 getBoolData :: String -> String -> String -> Update Bool
@@ -265,8 +265,8 @@ getBoolData msg tru fals = do
       | uchars str == "yes" -> return True
       | uchars str == "no" -> return True
     OInt i -> return (i/=0)
-    OWord i -> return (i/=0)
-    OLong i -> return (i/=0)
+--  OWord i -> return (i/=0)
+--  OLong i -> return (i/=0)
     _ -> fail $ concat $
       [ "was expecting a boolean value ("
       , show tru, " or ", fals
@@ -295,25 +295,25 @@ instance Structured Bool where
   dataToStruct a = deconstruct $ place (if a then OTrue else ONull)
   structToData = reconstruct $ getBoolData "strucutred boolean" "true" "false"
 
-instance Structured Word64 where
-  dataToStruct a = deconstruct $ place (OWord a)
-  structToData = reconstruct (fmap fromIntegral (getIntegerData "unsigned integer"))
+--instance Structured Word64 where
+--  dataToStruct a = deconstruct $ place (OWord a)
+----  structToData = reconstruct (fmap fromIntegral (getIntegerData "unsigned integer"))
 
 instance Structured Word where
-  dataToStruct a = deconstruct $ place (OWord (fromIntegral a))
+  dataToStruct a = deconstruct $ place (OInt (fromIntegral a))
   structToData = reconstruct (fmap fromIntegral (getIntegerData "unsigned integer"))
 
-instance Structured Int64 where
-  dataToStruct a = deconstruct $ place (OInt a)
-  structToData = reconstruct (fmap fromIntegral (getIntegerData "integer"))
+--instance Structured Int64 where
+--  dataToStruct a = deconstruct $ place (OInt a)
+--  structToData = reconstruct (fmap fromIntegral (getIntegerData "integer"))
 
 instance Structured Int where
   dataToStruct a = deconstruct $ place (OInt (fromIntegral a))
   structToData = reconstruct (fmap fromIntegral (getIntegerData "integer"))
 
-instance Structured Integer where
-  dataToStruct a = deconstruct $ place (OLong a)
-  structToData = reconstruct (fmap toInteger (getIntegerData "long-integer"))
+--instance Structured Integer where
+--  dataToStruct a = deconstruct $ place (OLong a)
+--  structToData = reconstruct (fmap toInteger (getIntegerData "long-integer"))
 
 newtype StructChar = StructChar Char
 instance Structured StructChar where
@@ -322,11 +322,11 @@ instance Structured StructChar where
     OChar c -> return (StructChar c)
     _       -> fail "singleton character"
 
-instance Structured (Ratio Integer) where
-  dataToStruct a = deconstruct (place (OPair (OLong (numerator a), OLong (denominator a))))
-  structToData = reconstruct $ this >>= \a -> case a of
-    OPair (a, b) -> assumePValue $
-      objToIntegral a >>= \a -> objToIntegral b >>= \b -> return (a % b)
+--instance Structured (Ratio Integer) where
+--  dataToStruct a = deconstruct (place (OPair (OLong (numerator a), OLong (denominator a))))
+--  structToData = reconstruct $ this >>= \a -> case a of
+--    OPair (a, b) -> assumePValue $
+--      objToIntegral a >>= \a -> objToIntegral b >>= \b -> return (a % b)
 
 instance Structured a => Structured [a] where
   dataToStruct ox = deconstruct $ place (OList (Prelude.map (OTree . dataToStruct) ox))
@@ -361,38 +361,38 @@ instance Structured (Tree Name Object) where
 -- >
 -- > getMyTree :: 'Update' ('Dao.Tree.Tree' MyKey MyVal)
 -- > getMyTree = 'Control.Monad.fmap' 'fromStructuredTree' 'getData'
-newtype StructuredTree a b = StructuredTree { fromStructuredTree :: Tree a b }
-instance (Ord a, Structured a, Structured b) => Structured (StructuredTree a b) where
-  dataToStruct (StructuredTree a) = deconstruct $ case a of
-    Void           -> return ()
-    Leaf       a   -> putData a
-    Branch       b -> putBranch b
-    LeafBranch a b -> putData a >> putBranch b
-    where { putBranch b = with "branch" (putData (StructuredMap (M.map StructuredTree b))) }
-  structToData = reconstruct $ do
-    a <- mplus (fmap Just getData) (return Nothing)
-    b <- flip mplus (return Nothing) $ do
-      b <- getDataAt "branch"
-      return (Just (M.map fromStructuredTree (fromStructuredMap b)))
-    case (a, b) of
-      (Nothing, Nothing) -> fail "structured tree"
-      (Just  a, Nothing) -> return (StructuredTree (Leaf a))
-      (Nothing, Just b) -> return (StructuredTree (Branch b))
-      (Just  a, Just b) -> return (StructuredTree (LeafBranch a b))
+--newtype StructuredTree a b = StructuredTree { fromStructuredTree :: Tree a b }
+--instance (Ord a, Structured a, Structured b) => Structured (StructuredTree a b) where
+--  dataToStruct (StructuredTree a) = deconstruct $ case a of
+--    Void           -> return ()
+--    Leaf       a   -> putData a
+--    Branch       b -> putBranch b
+--    LeafBranch a b -> putData a >> putBranch b
+--    where { putBranch b = with "branch" (putData (StructuredMap (M.map StructuredTree b))) }
+--  structToData = reconstruct $ do
+--    a <- mplus (fmap Just getData) (return Nothing)
+--    b <- flip mplus (return Nothing) $ do
+--      b <- getDataAt "branch"
+--      return (Just (M.map fromStructuredTree (fromStructuredMap b)))
+--    case (a, b) of
+--      (Nothing, Nothing) -> fail "structured tree"
+--      (Just  a, Nothing) -> return (StructuredTree (Leaf a))
+--      (Nothing, Just b) -> return (StructuredTree (Branch b))
+--      (Just  a, Just b) -> return (StructuredTree (LeafBranch a b))
     
 -- | Like 'StructuredTree' but for 'Data.Map.Map's.
-newtype StructuredMap a b = StructuredMap { fromStructuredMap :: M.Map a b }
-instance (Ord a, Structured a, Structured b) => Structured (StructuredMap a b) where
-  dataToStruct (StructuredMap mp) = deconstruct $ place $ OList $
-    Prelude.map (\ (a, b) -> OPair (OTree (dataToStruct a), OTree (dataToStruct b))) (M.assocs mp)
-  structToData = reconstruct $ do
-    ax <- this
-    case ax of
-      OList ax -> do
-        ax <- forM ax $ \a -> case a of
-          OPair (OTree a, OTree b) ->
-            liftM2 (,) (assumePValue $ structToData a) (assumePValue $ structToData b)
-          a                        -> fail "structured map item"
-        return (StructuredMap (M.fromList ax))
-      _        -> fail "list of map items"
+--newtype StructuredMap a b = StructuredMap { fromStructuredMap :: M.Map a b }
+--instance (Ord a, Structured a, Structured b) => Structured (StructuredMap a b) where
+--  dataToStruct (StructuredMap mp) = deconstruct $ place $ OList $
+--    Prelude.map (\ (a, b) -> OPair (OTree (dataToStruct a), OTree (dataToStruct b))) (M.assocs mp)
+--  structToData = reconstruct $ do
+--    ax <- this
+--    case ax of
+--      OList ax -> do
+--        ax <- forM ax $ \a -> case a of
+--          OPair (OTree a, OTree b) ->
+--            liftM2 (,) (assumePValue $ structToData a) (assumePValue $ structToData b)
+--          a                        -> fail "structured map item"
+--        return (StructuredMap (M.fromList ax))
+--      _        -> fail "list of map items"
 

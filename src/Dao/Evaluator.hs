@@ -231,24 +231,24 @@ execFuncPushStack dict exe = do
 -- integer. Specifically, it returns a list of 'Dao.ObjectObject's where each object is an
 -- 'Dao.Object.OString' contained at the integer index of the 'Dao.Glob.matchGaps' of a
 -- 'Dao.Glob.Glob'.
-evalIntRef :: Word -> Exec Object
-evalIntRef i = do
-  ma <- asks currentMatch
-  let oi = OInt (fromIntegral i)
-  case ma >>= matchGaps of
-    Nothing ->
-      objectError oi ("currently matching pattern has no variables, cannot evaluate $"++show i)
-    Just ma | i==0 -> return $ OArray $
-      listArray (let (a, b) = bounds ma in (fromIntegral a, fromIntegral b)) $
-        map (OList . map OString) (elems ma)
-    Just ma | inRange (bounds ma) i -> return (OList (map OString (ma!i)))
-    Just ma ->
-      objectError oi $ concat $
-        [ "pattern match variable $"
-        , show i ++ " is out of range "
-        , show (bounds ma)
-        , " in the current pattern match context"
-        ]
+--evalIntRef :: Word -> Exec Object
+--evalIntRef i = do
+--  ma <- asks currentMatch
+--  let oi = OInt (fromIntegral i)
+--  case ma >>= matchGaps of
+--    Nothing ->
+--      objectError oi ("currently matching pattern has no variables, cannot evaluate $"++show i)
+--    Just ma | i==0 -> return $ OArray $
+--      listArray (let (a, b) = bounds ma in (fromIntegral a, fromIntegral b)) $
+--        map (OList . map OString) (elems ma)
+--    Just ma | inRange (bounds ma) i -> return (OList (map OString (ma!i)))
+--    Just ma ->
+--      objectError oi $ concat $
+--        [ "pattern match variable $"
+--        , show i ++ " is out of range "
+--        , show (bounds ma)
+--        , " in the current pattern match context"
+--        ]
 
 -- | Lookup an object in the 'globalData' for this 'ExecUnit'.
 execHeapLookup :: [Name] -> Exec (Maybe Object)
@@ -432,22 +432,22 @@ evalBooleans fn a b = return (if fn (objToBool a) (objToBool b) then OTrue else 
 
 asReference :: Object -> Exec Reference
 asReference o = case o of
-  ORef (QualRef _ r) -> return r
-  _                  -> mzero
+  ORef r -> return r
+  _      -> mzero
 
 asInteger :: Object -> Exec Integer
 asInteger o = case o of
-  OWord o -> return (toInteger o)
+--OWord o -> return (toInteger o)
   OInt  o -> return (toInteger o)
-  OLong o -> return o
+--OLong o -> return o
   _       -> mzero
 
 asRational :: Object -> Exec Rational
 asRational o = case o of
-  OFloat     o     -> return (toRational o)
+--OFloat     o     -> return (toRational o)
   ODiffTime  o     -> return (toRational o)
-  OComplex  (o:+0) -> return (toRational o)
-  ORatio     o     -> return o
+--OComplex  (o:+0) -> return (toRational o)
+--ORatio     o     -> return o
   _                -> mzero
 
 asStringNoConvert :: Object -> Exec UStr
@@ -468,11 +468,11 @@ asListNoConvert o = case o of
 asList :: Object -> Exec [Object]
 asList o = case o of
   OList   o -> return o
-  OArray  o -> return (elems o)
-  OSet    o -> return (S.elems o)
-  ODict   o -> return (map (\ (i, o) -> OPair (OString i, o)) (M.assocs o))
-  OIntMap o -> return (map (\ (i, o) -> OPair (OInt (fromIntegral i), o)) (I.assocs o))
-  OTree   o -> return (map (\ (i, o) -> OPair (OList (map OString i), o)) (T.assocs o))
+--OArray  o -> return (elems o)
+--OSet    o -> return (S.elems o)
+--ODict   o -> return (map (\ (i, o) -> OPair (OString i, o)) (M.assocs o))
+--OIntMap o -> return (map (\ (i, o) -> OPair (OInt (fromIntegral i), o)) (I.assocs o))
+--OTree   o -> return (map (\ (i, o) -> OPair (OList (map OString i), o)) (T.assocs o))
   _         -> mzero
 
 -- | Combines two lists of objects, then removes one "layer of lists", that is, if the combined
@@ -496,9 +496,9 @@ evalInt ifunc a b = do
   ib <- asInteger b
   let x = ifunc ia ib
   return $ case max (fromEnum (objType a)) (fromEnum (objType b)) of
-    t | t == fromEnum WordType -> OWord (fromIntegral x)
+--  t | t == fromEnum WordType -> OWord (fromIntegral x)
     t | t == fromEnum IntType  -> OInt  (fromIntegral x)
-    t | t == fromEnum LongType -> OLong (fromIntegral x)
+--  t | t == fromEnum LongType -> OLong (fromIntegral x)
     _ -> error "asInteger returned a value for an object of an unexpected type"
 
 evalNum
@@ -511,10 +511,10 @@ evalNum ifunc rfunc a b = msum $
         ib <- asRational b
         let x = rfunc ia ib
         return $ case (max (fromEnum (objType a)) (fromEnum (objType b))) of
-          t | t == fromEnum FloatType    -> OFloat    (fromRational x)
+--        t | t == fromEnum FloatType    -> OFloat    (fromRational x)
           t | t == fromEnum DiffTimeType -> ODiffTime (fromRational x)
-          t | t == fromEnum RatioType    -> ORatio    (fromRational x)
-          t | t == fromEnum ComplexType  -> OComplex  (fromRational x)
+--        t | t == fromEnum RatioType    -> ORatio    (fromRational x)
+--        t | t == fromEnum ComplexType  -> OComplex  (fromRational x)
           _ -> error "asRational returned a value for an object of an unexpected type"
   ]
 
@@ -528,15 +528,15 @@ eval_ADD a b = msum
   where
     timeAdd a b = case (a, b) of
       (OTime a, ODiffTime b) -> return (OTime (addUTCTime b a))
-      (OTime a, ORatio    b) -> return (OTime (addUTCTime (fromRational (toRational b)) a))
-      (OTime a, OFloat    b) -> return (OTime (addUTCTime (fromRational (toRational b)) a))
+--    (OTime a, ORatio    b) -> return (OTime (addUTCTime (fromRational (toRational b)) a))
+--    (OTime a, OFloat    b) -> return (OTime (addUTCTime (fromRational (toRational b)) a))
       _                      -> mzero
     listAdd a b = do
       ax <- asListNoConvert a
       bx <- case b of
         OList  bx -> return bx
-        OSet   b  -> return (S.elems b)
-        OArray b  -> return (elems b)
+--      OSet   b  -> return (S.elems b)
+--      OArray b  -> return (elems b)
         _         -> mzero
       return (objListAppend ax bx)
     stringAdd add a b = case a of
@@ -551,8 +551,8 @@ eval_SUB a b = msum $
   , case (a, b) of
       (OTime a, OTime     b) -> return (ODiffTime (diffUTCTime a b))
       (OTime a, ODiffTime b) -> return (OTime (addUTCTime (negate b) a))
-      (OTime a, ORatio    b) -> return (OTime (addUTCTime (fromRational (toRational (negate b))) a))
-      (OTime a, OFloat    b) -> return (OTime (addUTCTime (fromRational (toRational (negate b))) a))
+--    (OTime a, ORatio    b) -> return (OTime (addUTCTime (fromRational (toRational (negate b))) a))
+--    (OTime a, OFloat    b) -> return (OTime (addUTCTime (fromRational (toRational (negate b))) a))
       _                  -> mzero
   ]
 
@@ -599,30 +599,30 @@ eval_XORB a b = evalBitsOrSets (\a -> head a) mfn ifn {-sfn-} xor a b where
 evalShift :: (Int -> Int) -> Object -> Object -> BuiltinOp
 evalShift fn a b = asHaskellInt b >>= \b -> case a of
   OInt  a -> return (OInt  (shift a (fn b)))
-  OWord a -> return (OWord (shift a (fn b)))
-  OLong a -> return (OLong (shift a (fn b)))
+--OWord a -> return (OWord (shift a (fn b)))
+--OLong a -> return (OLong (shift a (fn b)))
   _       -> mzero
 
 evalSubscript :: Object -> Object -> BuiltinOp
 evalSubscript a b = case a of
-  OArray  a -> fmap fromIntegral (asInteger b) >>= \b ->
-    if inRange (bounds a) b then return (a!b) else fail "array index out of bounds"
+--OArray  a -> fmap fromIntegral (asInteger b) >>= \b ->
+--  if inRange (bounds a) b then return (a!b) else fail "array index out of bounds"
   OList   a -> asHaskellInt b >>= \b ->
     let err = fail "list index out of bounds"
         ax  = take 1 (drop b a)
     in  if b<0 then err else if null ax then err else return (head ax)
-  OIntMap a -> asHaskellInt b >>= \b -> case I.lookup b a of
-    Nothing -> fail "no item at index requested of intmap"
-    Just  b -> return b
-  ODict   a -> msum $
-    [ do  asStringNoConvert b >>= \b -> case M.lookup b a of
-            Nothing -> fail (show b++" is not defined in dict")
-            Just  b -> return b
-    , do  asReference b >>= \b -> case b of
-            PlainRef b -> case M.lookup b a of
-              Nothing -> fail (show b++" is not defined in dict")
-              Just  b -> return b
-    ]
+--OIntMap a -> asHaskellInt b >>= \b -> case I.lookup b a of
+--  Nothing -> fail "no item at index requested of intmap"
+--  Just  b -> return b
+--ODict   a -> msum $
+--  [ do  asStringNoConvert b >>= \b -> case M.lookup b a of
+--          Nothing -> fail (show b++" is not defined in dict")
+--          Just  b -> return b
+--  , do  asReference b >>= \b -> case b of
+--          PlainRef b -> case M.lookup b a of
+--            Nothing -> fail (show b++" is not defined in dict")
+--            Just  b -> return b
+--  ]
   OTree   a -> msum $ 
     [ asStringNoConvert b >>= \b -> done (T.lookup [b] a)
     , asReference b >>= \b -> case b of
@@ -671,24 +671,24 @@ eval_DOT a b = error "eval_DOT is not defined"
 
 eval_NEG :: Object -> BuiltinOp
 eval_NEG o = case o of
-  OWord     o -> return $
-    let n = negate (toInteger o)
-    in  if n < toInteger (minBound::T_int)
-           then  OLong n
-           else  OInt (fromIntegral n)
+--OWord     o -> return $
+--  let n = negate (toInteger o)
+--  in  if n < toInteger (minBound::T_int)
+--         then  OLong n
+--         else  OInt (fromIntegral n)
   OInt      o -> return $ OInt      (negate o)
-  OLong     o -> return $ OLong     (negate o)
+--OLong     o -> return $ OLong     (negate o)
   ODiffTime o -> return $ ODiffTime (negate o)
-  OFloat    o -> return $ OFloat    (negate o)
-  ORatio    o -> return $ ORatio    (negate o)
-  OComplex  o -> return $ OComplex  (negate o)
+--OFloat    o -> return $ OFloat    (negate o)
+--ORatio    o -> return $ ORatio    (negate o)
+--OComplex  o -> return $ OComplex  (negate o)
   _           -> mzero
 
 eval_INVB :: Object -> BuiltinOp
 eval_INVB o = case o of
-  OWord o -> return $ OWord (complement o)
+--OWord o -> return $ OWord (complement o)
   OInt  o -> return $ OInt  (complement o)
-  OLong o -> return $ OLong (complement o)
+--OLong o -> return $ OLong (complement o)
   _       -> mzero
 
 eval_REF :: Object -> BuiltinOp
@@ -705,12 +705,12 @@ extractStringElems :: Object -> [UStr]
 extractStringElems o = case o of
   OString  o   -> [o]
   OList    o   -> concatMap extractStringElems o
-  OSet     o   -> concatMap extractStringElems (S.elems o)
-  OArray   o   -> concatMap extractStringElems (elems o)
-  ODict    o   -> concatMap extractStringElems (M.elems o)
-  OIntMap  o   -> concatMap extractStringElems (I.elems o)
+--OSet     o   -> concatMap extractStringElems (S.elems o)
+--OArray   o   -> concatMap extractStringElems (elems o)
+--ODict    o   -> concatMap extractStringElems (M.elems o)
+--OIntMap  o   -> concatMap extractStringElems (I.elems o)
   OTree    o   -> concatMap extractStringElems (T.elems o)
-  OPair (a, b) -> concatMap extractStringElems [a, b]
+--OPair (a, b) -> concatMap extractStringElems [a, b]
   _            -> []
 
 eval_multiRef :: ([Name] -> Reference) -> Object -> BuiltinOp
@@ -814,11 +814,11 @@ getStringsToDepth maxDepth o = loop 0 maxDepth o where
   loop depth remDep o = case o of
     OString   o -> return (Right (uchars o))
     OList    ox -> recurse o ox
-    OSet     ox -> recurse o (S.elems ox)
-    OArray   ox -> recurse o   (elems ox)
-    ODict    ox -> recurse o (M.elems ox)
-    OIntMap  ox -> recurse o (I.elems ox)
-    OPair (a,b) -> recurse o [a,b]
+--  OSet     ox -> recurse o (S.elems ox)
+--  OArray   ox -> recurse o   (elems ox)
+--  ODict    ox -> recurse o (M.elems ox)
+--  OIntMap  ox -> recurse o (I.elems ox)
+--  OPair (a,b) -> recurse o [a,b]
     o           -> return (Right (prettyShow o))
     where
       recurse o ox =
@@ -851,14 +851,14 @@ recurseGetAllStrings o = catch (loop [] o) where
   loop ix o = case o of
     OString  o   -> return [o]
     OList    o   -> next OInt (zip [0..] o)
-    OSet     o   -> next OInt (zip [0..] (S.elems o))
-    OArray   o   -> next OInt (assocs   o)
-    ODict    o   -> next OString (M.assocs o)
-    OIntMap  o   -> next (OInt . fromIntegral) (I.assocs o)
-    OPair  (a,b) -> next OInt [(0,a), (1,b)]
+--  OSet     o   -> next OInt (zip [0..] (S.elems o))
+--  OArray   o   -> next OInt (assocs   o)
+--  ODict    o   -> next OString (M.assocs o)
+--  OIntMap  o   -> next (OInt . fromIntegral) (I.assocs o)
+--  OPair  (a,b) -> next OInt [(0,a), (1,b)]
     o            -> throwError $ OList $ concat $
       [ [ostr "object at index"]
-      , if null ix then [] else [ORef (QualRef Unqualified (Subscript NullRef ix))]
+      , if null ix then [] else [ORef (Subscript NullRef ix)]
       , [ostr "cannot be evaluated to a string"], [o]
       ]
     where
@@ -900,14 +900,14 @@ builtin_join = DaoFuncAutoDeref $ \ox -> case ox of
 builtin_check_ref :: DaoFunc
 builtin_check_ref = DaoFuncNoDeref $ \args -> do
   fmap (Just . boolToObj . and) $ forM args $ \arg -> case arg of
-    ORef (QualRef _ o) -> readReference o >>= return . isJust >>= \a -> return a
-    o                  -> return True
+    ORef o -> readReference o >>= return . isJust >>= \a -> return a
+    o      -> return True
 
 builtin_delete :: DaoFunc
 builtin_delete = DaoFuncNoDeref $ \args -> do
   forM_ args $ \arg -> case arg of
-    ORef (QualRef _ o) -> void $ updateReference o (const (return Nothing))
-    _                  -> return ()
+    ORef o -> void $ updateReference o (const (return Nothing))
+    _      -> return ()
   return (Just ONull)
 
 -- | The map that contains the built-in functions that are used to initialize every
@@ -965,8 +965,8 @@ lookupFunction msg op = do
 errAt :: Location -> [Object]
 errAt loc = case loc of
   LocationUnknown -> []
-  loc -> [ OPair (OWord (fromIntegral (startingLine loc)), OWord (fromIntegral (startingColumn loc)))
-         , OPair (OWord (fromIntegral (endingLine   loc)), OWord (fromIntegral (endingColumn   loc)))
+  loc -> [ OInt (fromIntegral (startingLine loc)), OInt (fromIntegral (startingColumn loc))
+         , OInt (fromIntegral (endingLine   loc)), OInt (fromIntegral (endingColumn   loc))
          ]
 
 -- | Evaluate to 'procErr' if the given 'PValue' is 'Backtrack' or 'PFail'. You must pass a
@@ -1121,8 +1121,8 @@ objectDeref = fmap snd . objectDerefWithLoc
 -- value is returned. This is used to evaluate every reference in an 'Dao.Object.ObjectExpr'.
 objectDerefWithLoc :: (Location, Object) -> Exec (Location, Object)
 objectDerefWithLoc (loc, obj) = case obj of
-  ORef (QualRef _ (MetaRef o)) -> return (loc, o)
-  ORef (QualRef _         ref) -> readReference ref >>= \o -> case o of
+  ORef (MetaRef o) -> return (loc, o)
+  ORef (ref      ) -> readReference ref >>= \o -> case o of
     Nothing -> execThrow $ OList $ errAt loc ++ [obj, ostr "undefined reference"]
     Just o  -> return (loc, o)
   obj              -> return (loc, obj)
@@ -1159,7 +1159,7 @@ evalObjectExprWithLoc obj = case obj of
     updateReference nm $ \maybeObj -> case maybeObj of
       Nothing      -> case op of
         UCONST -> return (Just expr)
-        _      -> execThrow $ OList $ errAt nmloc ++ [ostr "undefined refence", ORef (QualRef Unqualified nm)]
+        _      -> execThrow $ OList $ errAt nmloc ++ [ostr "undefined refence", ORef nm]
       Just prevVal -> fmap Just $
         checkPValue exprloc "assignment expression" [prevVal, expr] $ (updatingOps!op) prevVal expr
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
@@ -1175,7 +1175,7 @@ evalObjectExprWithLoc obj = case obj of
             else  head args >>= \arg -> allCombinations (ox++[arg]) (tail args)
     (oploc, op) <- checkVoid "function name" (evalObjectExprWithLoc op)
     case op of -- first check if there is a built-in function
-      ORef (QualRef _ (PlainRef op)) -> case M.lookup op bif of
+      ORef (PlainRef op) -> case M.lookup op bif of
         Nothing -> do -- no built-ins by the 'op' name
           fn   <- lookupFunction "function call" op
           ~obj <- mapM (runSubroutine args) fn
@@ -1186,12 +1186,13 @@ evalObjectExprWithLoc obj = case obj of
         Just bif -> case bif of -- 'op' references a built-in
           DaoFuncNoDeref   bif -> bif (map snd args)
           DaoFuncAutoDeref bif -> mapM objectDeref args >>= bif
-      op -> do -- otherwise if the function head is a reference object and evaluate it to a 'OScript'
-        (_, sub) <- objectDerefWithLoc (oploc, op)
-        case sub of
-          OScript sub -> runSubroutine args sub
-          obj         -> execThrow $ OList $ errAt loc ++
-            [ostr "function-call operation on object that is not a function object", op]
+--    op -> do -- otherwise if the function head is a reference object and evaluate it to a 'OScript'
+--      (_, sub) <- objectDerefWithLoc (oploc, op)
+--      case sub of
+--        OScript sub -> runSubroutine args sub
+--        obj         -> execThrow $ OList $ errAt loc ++
+--          [ostr "function-call operation on object that is not a function object", op]
+      _ -> fail "function call on non-reference"
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   ParenExpr           o      loc -> evalObjectExprWithLoc o
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
@@ -1255,61 +1256,61 @@ evalObjectExprWithLoc obj = case obj of
                   new <- checkPValue newloc (show cons++" assignment expression "++show op) [ixObj, old, new] $
                             (updatingOps!op) old new
                   return (insert ixVal new mp)
-        intmap = assign I.lookup I.insert
-        dict   = assign M.lookup M.insert
+--      intmap = assign I.lookup I.insert
+--      dict   = assign M.lookup M.insert
     fmap Just $ case () of
-      () | cons == ustr "dict"   -> fmap ODict   (loop dict   asStringNoConvert M.empty args)
-      () | cons == ustr "intmap" -> fmap OIntMap (loop intmap asHaskellInt      I.empty args)
+--    () | cons == ustr "dict"   -> fmap ODict   (loop dict   asStringNoConvert M.empty args)
+--    () | cons == ustr "intmap" -> fmap OIntMap (loop intmap asHaskellInt      I.empty args)
       () | cons == ustr "list"   -> fmap (OList . concatMap maybeToList) (mapM evalObjectExprDeref args)
       _ -> error ("INTERNAL ERROR: unknown dictionary declaration "++show cons)
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  ArrayExpr  rang  ox        loc -> setloc loc $ case rang of
-    (_ : _ : _ : _) -> execThrow $ OList $ errAt loc ++
-      [ostr "internal error: array range expression has more than 2 arguments"]
-    [lo, hi] -> do
-      let getIndex msg bnd = do
-            (bndloc, bnd) <- checkVoid (msg++" of array declaration") (evalObjectExprDerefWithLoc bnd)
-            fmap fromIntegral (asHaskellInt bnd)
-      lo <- getIndex "lower-bound" lo
-      hi <- getIndex "upper-bound" hi
-      (lo, hi) <- return (if lo<hi then (lo,hi) else (hi,lo))
-      ox <- fmap (concatMap maybeToList) (mapM evalObjectExprDeref ox)
-      return (Just (OArray (listArray (lo, hi) ox)))
-    _ -> execThrow $ OList $ errAt loc ++
-      [ostr "internal error: array range expression has fewer than 2 arguments"]
+--ArrayExpr  rang  ox        loc -> setloc loc $ case rang of
+--  (_ : _ : _ : _) -> execThrow $ OList $ errAt loc ++
+--    [ostr "internal error: array range expression has more than 2 arguments"]
+--  [lo, hi] -> do
+--    let getIndex msg bnd = do
+--          (bndloc, bnd) <- checkVoid (msg++" of array declaration") (evalObjectExprDerefWithLoc bnd)
+--          fmap fromIntegral (asHaskellInt bnd)
+--    lo <- getIndex "lower-bound" lo
+--    hi <- getIndex "upper-bound" hi
+--    (lo, hi) <- return (if lo<hi then (lo,hi) else (hi,lo))
+--    ox <- fmap (concatMap maybeToList) (mapM evalObjectExprDeref ox)
+--    return (Just (OArray (listArray (lo, hi) ox)))
+--  _ -> execThrow $ OList $ errAt loc ++
+--    [ostr "internal error: array range expression has fewer than 2 arguments"]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   DataExpr   strs            loc -> setloc loc $ case b64Decode (concatMap uchars strs) of
     Right dat       -> return (Just (OBytes dat))
     Left  (ch, loc) -> execThrow $ OList $
       [ ostr "invalid character in base-64 data expression", OChar ch
-      , ostr "at position", OWord loc
+      , ostr "at position", OInt (fromIntegral loc)
       ]
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-  LambdaExpr typ argv code   loc -> setloc loc $ fmap Just (evalLambdaExpr typ argv code)
+--LambdaExpr typ argv code   loc -> setloc loc $ fmap Just (evalLambdaExpr typ argv code)
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   MetaEvalExpr expr          loc -> evalObjectExprWithLoc expr
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   where { setloc loc fn = fmap (\o -> (loc, o)) fn }
   --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
-evalLambdaExpr :: LambdaExprType -> [ObjectExpr] -> CodeBlock -> Exec Object
-evalLambdaExpr typ argv code = do
-  exe <- setupCodeBlock (code)
-  let convArgv fn = mapM fn argv
-  case typ of
-    FuncExprType -> do
-      argv <- convArgv paramsToObjPatExpr
-      return $ OScript $
-        CallableCode{argsPattern=argv, getSubroutine=exe}
-    RuleExprType -> do
-      argv <- convArgv paramsToGlobExpr
-      return $ OScript $
-        GlobAction{globPattern=argv, getSubroutine=exe}
+--evalLambdaExpr :: LambdaExprType -> [ObjectExpr] -> CodeBlock -> Exec Object
+--evalLambdaExpr typ argv code = do
+--  exe <- setupCodeBlock (code)
+--  let convArgv fn = mapM fn argv
+--  case typ of
+--    FuncExprType -> do
+--      argv <- convArgv paramsToObjPatExpr
+--      return $ OScript $
+--        CallableCode{argsPattern=argv, getSubroutine=exe}
+--    RuleExprType -> do
+--      argv <- convArgv paramsToGlobExpr
+--      return $ OScript $
+--        GlobAction{globPattern=argv, getSubroutine=exe}
 
 -- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Object.TypeCheck'.
 paramsToObjPatExpr :: ObjectExpr -> Exec TypeCheck
 paramsToObjPatExpr o = case o of
-  Literal (ORef (QualRef _ (PlainRef r))) _ -> return (TypeCheck{typeCheckSource=r})
+  Literal (ORef (PlainRef r)) _ -> return (TypeCheck{typeCheckSource=r})
   _ -> execThrow $ OList $ [ostr "does not evaluate to an object pattern"]
   -- TODO: provide a more expressive way to create object patterns from 'Dao.Object.ObjectExpr's
 

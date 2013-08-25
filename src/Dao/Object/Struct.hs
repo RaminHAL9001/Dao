@@ -75,21 +75,16 @@ getUStrList = do
 ----------------------------------------------------------------------------------------------------
 
 instance Structured Comment where
-  dataToStruct a = case a of
-    InlineComment  a -> done "inline"  a
-    EndlineComment a -> done "endline" a
-    where
-      done msg a = T.Leaf $ OPair (ostr msg, OString a)
+  dataToStruct a = deconstruct $ case a of
+    InlineComment  a -> putDataAt "inline"  (ostr a)
+    EndlineComment a -> putDataAt "endline" (ostr a)
   structToData = reconstruct $ do
     a <- this
-    case a of
-      OString a -> return (InlineComment a)
-      OPair (OString msg, OString a)
-        | msg == ustr "inline"  -> return (InlineComment  a)
-        | msg == ustr "endline" -> return (EndlineComment a)
-        | otherwise             -> nope
-      _         -> nope
-    where { nope = fail "must be a comment string or typed comment string" }
+    msum $
+      [ fmap InlineComment  (getDataAt "inline")
+      , fmap EndlineComment (getDataAt "endline")
+      , fail "must be a comment string or typed comment string"
+      ]
 
 instance Structured a => Structured (Com a) where
   dataToStruct a = deconstruct $ case a of
@@ -152,14 +147,14 @@ instance Structured Location where
     LocationUnknown  -> T.Void
     Location _ _ _ _ -> deconstruct $ with "location" $ do
       with "from" $ do
-        with "line"   (place $ OWord $ fromIntegral $ startingLine   loc)
-        with "column" (place $ OWord $ fromIntegral $ startingColumn loc)
+        with "line"   (place $ OInt $ fromIntegral $ startingLine   loc)
+        with "column" (place $ OInt $ fromIntegral $ startingColumn loc)
       if   startingLine   loc == endingLine   loc
         && startingColumn loc == endingColumn loc
       then  return ()
       else  with "to"   $ do
-              with "line"   (place $ OWord $ fromIntegral $ endingLine     loc)
-              with "column" (place $ OWord $ fromIntegral $ endingColumn   loc)
+              with "line"   (place $ OInt $ fromIntegral $ endingLine     loc)
+              with "column" (place $ OInt $ fromIntegral $ endingColumn   loc)
   structToData = reconstruct $ flip mplus (return LocationUnknown) $ tryWith "location" $ do
     let getPos = liftM2 (,) (getDataAt "line") (getDataAt "column")
     (a,b) <- with "from" getPos
@@ -242,7 +237,7 @@ instance Structured AST_Script where
       getContinue tf = liftM3 (AST_ContinueExpr tf) getComments (getDataAt "condition") getData
       getReturn   tf = liftM2 (AST_ReturnExpr   tf)             (getDataAt "object")    getData
 
-instance Structured QualRef where
+instance Structured Reference where
   dataToStruct = deconstruct . place . ORef
   structToData = reconstruct $ do
     a <- this

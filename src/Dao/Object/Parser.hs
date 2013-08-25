@@ -299,23 +299,24 @@ numberFromStrs base int maybFrac maybPlusMinusExp maybTyp = do
     Nothing -> fail ("incorrect digits used to form a base-"++show base++" number")
     Just  r -> return r
   case typ of
-    "U" -> return $ OWord (fromIntegral (round r))
-    "I" -> return $ OInt  (round r)
-    "L" -> return $ OLong (round r)
-    "R" -> return $ ORatio r
-    "F" -> return $ OFloat (fromRational r)
-    "f" -> return $ OFloat (fromRational r)
-    "i" -> return $ OComplex (0 :+ fromRational r)
-    "j" -> return $ OComplex (0 :+ fromRational r)
+--  "U" -> return $ OWord (fromIntegral (round r))
+--  "I" -> return $ OInt  (round r)
+--  "L" -> return $ OLong (round r)
+--  "R" -> return $ ORatio r
+--  "F" -> return $ OFloat (fromRational r)
+--  "f" -> return $ OFloat (fromRational r)
+--  "i" -> return $ OComplex (0 :+ fromRational r)
+--  "j" -> return $ OComplex (0 :+ fromRational r)
     "s" -> return $ ODiffTime (fromRational r)
     ""  ->
-      if r_is_an_integer && null frac
-        then
-          let i = round r
-          in  if fromIntegral (minBound::T_int) <= i && i <= fromIntegral (maxBound::T_int)
-                then  return $ OInt $ fromIntegral i
-                else  return $ OLong i
-        else return (ORatio r)
+      return (OInt (fromIntegral (round r)))
+--    if r_is_an_integer && null frac
+--      then
+--        let i = round r
+--        in  if fromIntegral (minBound::T_int) <= i && i <= fromIntegral (maxBound::T_int)
+--              then  return $ OInt $ fromIntegral i
+--              else  return $ OLong i
+--      else return (ORatio r)
     typ -> fail ("unknown numeric type "++show typ)
 
 ----------------------------------------------------------------------------------------------------

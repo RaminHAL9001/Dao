@@ -366,27 +366,27 @@ defTreeFormat encode decode = modify $ \st -> st{objIfcTreeFormat=Just(encode,de
 showEncoded :: [Word8] -> String
 showEncoded encoded = seq encoded (concatMap (\b -> showHex b " ") encoded)
 
-type T_int      = Int64
-type T_word     = Word64
-type T_long     = Integer
-type T_ratio    = Rational
-type T_complex  = Complex T_float
-type T_float    = Double
+type T_int      = Int
+--type T_word     = Word64
+--type T_long     = Integer
+--type T_ratio    = Rational
+--type T_complex  = Complex T_float
+--type T_float    = Double
 type T_time     = UTCTime
 type T_diffTime = NominalDiffTime
 type T_char     = Char
 type T_string   = UStr
-type T_ref      = QualRef
-type T_pair     = (Object, Object)
+type T_ref      = Reference
+--type T_pair     = (Object, Object)
 type T_list     = [Object]
-type T_set      = S.Set Object
-type T_array_ix = T_int
-type T_array    = Array T_array_ix Object
-type T_intMap   = IM.IntMap Object
-type T_dict     = M.Map Name Object
+--type T_set      = S.Set Object
+--type T_array_ix = T_int
+--type T_array    = Array T_array_ix Object
+--type T_intMap   = IM.IntMap Object
+--type T_dict     = M.Map Name Object
 type T_tree     = T.Tree Name Object
-type T_pattern  = Glob
-type T_script   = CallableCode
+--type T_pattern  = Glob
+--type T_script   = CallableCode
 type T_bytes    = B.ByteString
 type T_haskell  = ObjectInterface Dynamic
 
@@ -526,8 +526,8 @@ data QualRef = QualRef { qualifier :: RefQualifier, qualRef :: Reference }
   deriving (Eq, Ord, Typeable)
 
 -- | Create a 'QualRef' from any 'Dao.String.UStr'.
-bareword :: UStr -> QualRef
-bareword = QualRef Unqualified . PlainRef
+bareword :: UStr -> Reference
+bareword = PlainRef
 
 -- | Reference qualifiers, specify which area of the execution unit a reference is pointing to.
 data RefQualifier = Unqualified | LocalRef | QTimeRef | GloDotRef | StaticRef | GlobalRef
@@ -557,25 +557,25 @@ data Object
   | OTrue
   | OType      TypeID
   | OInt       T_int
-  | OWord      T_word
-  | OLong      T_long
-  | OFloat     T_float
-  | ORatio     T_ratio
-  | OComplex   T_complex
+--  | OWord      T_word
+--  | OLong      T_long
+--  | OFloat     T_float
+--  | ORatio     T_ratio
+--  | OComplex   T_complex
   | OTime      T_time
   | ODiffTime  T_diffTime
   | OChar      T_char
   | OString    T_string
   | ORef       T_ref
-  | OPair      T_pair
+--  | OPair      T_pair
   | OList      T_list
-  | OSet       T_set
-  | OArray     T_array
-  | ODict      T_dict
-  | OIntMap    T_intMap
+--  | OSet       T_set
+--  | OArray     T_array
+--  | ODict      T_dict
+--  | OIntMap    T_intMap
   | OTree      T_tree
-  | OGlob      T_pattern
-  | OScript    T_script
+--  | OGlob      T_pattern
+--  | OScript    T_script
   | OBytes     T_bytes
   | OHaskell   T_haskell
   deriving Typeable
@@ -585,17 +585,17 @@ instance Eq Object where
     (OTrue       , OTrue       ) -> True
     (OType      a, OType      b) -> a==b
     (OInt       a, OInt       b) -> a==b
-    (OWord      a, OWord      b) -> a==b
-    (OLong      a, OLong      b) -> a==b
-    (OFloat     a, OFloat     b) -> a==b
-    (ORatio     a, ORatio     b) -> a==b
-    (OComplex   a, OComplex   b) -> a==b
+--  (OWord      a, OWord      b) -> a==b
+--  (OLong      a, OLong      b) -> a==b
+--  (OFloat     a, OFloat     b) -> a==b
+--  (ORatio     a, ORatio     b) -> a==b
+--  (OComplex   a, OComplex   b) -> a==b
     (OTime      a, OTime      b) -> a==b
     (ODiffTime  a, ODiffTime  b) -> a==b
     (OChar      a, OChar      b) -> a==b
     (OString    a, OString    b) -> a==b
     (ORef       a, ORef       b) -> a==b
-    (OPair      a, OPair      b) -> a==b
+--  (OPair      a, OPair      b) -> a==b
     (OList      a, OList      b) -> a==b
 --  (OSet       a, OSet       b) -> a==b
 --  (OArray     a, OArray     b) -> a==b
@@ -614,17 +614,17 @@ instance Ord Object where
   compare a b = case (a,b) of
     (OType      a, OType      b) -> compare a b
     (OInt       a, OInt       b) -> compare a b
-    (OWord      a, OWord      b) -> compare a b
-    (OLong      a, OLong      b) -> compare a b
-    (OFloat     a, OFloat     b) -> compare a b
-    (ORatio     a, ORatio     b) -> compare a b
-    (OComplex   a, OComplex   b) -> compare a b
+--  (OWord      a, OWord      b) -> compare a b
+--  (OLong      a, OLong      b) -> compare a b
+--  (OFloat     a, OFloat     b) -> compare a b
+--  (ORatio     a, ORatio     b) -> compare a b
+--  (OComplex   a, OComplex   b) -> compare a b
     (OTime      a, OTime      b) -> compare a b
     (ODiffTime  a, ODiffTime  b) -> compare a b
     (OChar      a, OChar      b) -> compare a b
     (OString    a, OString    b) -> compare a b
     (ORef       a, ORef       b) -> compare a b
-    (OPair      a, OPair      b) -> compare a b
+--  (OPair      a, OPair      b) -> compare a b
     (OList      a, OList      b) -> compare a b
 --  (OSet       a, OSet       b) -> compare a b
 --  (OArray     a, OArray     b) -> compare a b
@@ -659,25 +659,25 @@ objType o = case o of
   OTrue       -> TrueType
   OType     _ -> TypeType
   OInt      _ -> IntType
-  OWord     _ -> WordType
-  OLong     _ -> LongType
-  OFloat    _ -> FloatType
-  ORatio    _ -> RatioType
-  OComplex  _ -> ComplexType
+--OWord     _ -> WordType
+--OLong     _ -> LongType
+--OFloat    _ -> FloatType
+--ORatio    _ -> RatioType
+--OComplex  _ -> ComplexType
   OTime     _ -> TimeType
   ODiffTime _ -> DiffTimeType
   OChar     _ -> CharType
   OString   _ -> StringType
   ORef      _ -> RefType
-  OPair     _ -> PairType
+--OPair     _ -> PairType
   OList     _ -> ListType
-  OSet      _ -> SetType
-  OArray    _ -> ArrayType
-  OIntMap   _ -> IntMapType
-  ODict     _ -> DictType
+--OSet      _ -> SetType
+--OArray    _ -> ArrayType
+--OIntMap   _ -> IntMapType
+--ODict     _ -> DictType
   OTree     _ -> TreeType
-  OGlob     _ -> GlobType
-  OScript   _ -> ScriptType
+--OGlob     _ -> GlobType
+--OScript   _ -> ScriptType
   OBytes    _ -> BytesType
   OHaskell  _ -> HaskellType
 
@@ -686,13 +686,13 @@ instance Enum Object where
   fromEnum o = fromEnum (objType o)
   pred o = case o of
     OInt  i -> OInt  (pred i)
-    OWord i -> OWord (pred i)
-    OLong i -> OLong (pred i)
+--  OWord i -> OWord (pred i)
+--  OLong i -> OLong (pred i)
     OType i -> OType (pred i)
   succ o = case o of
     OInt  i -> OInt  (succ i)
-    OWord i -> OWord (succ i)
-    OLong i -> OLong (succ i)
+--  OWord i -> OWord (succ i)
+--  OLong i -> OLong (succ i)
     OType i -> OType (succ i)
 
 ----------------------------------------------------------------------------------------------------
@@ -703,25 +703,25 @@ object2Dynamic o = case o of
   OTrue       -> toDyn True
   OType     o -> toDyn o
   OInt      o -> toDyn o
-  OWord     o -> toDyn o
-  OLong     o -> toDyn o
-  OFloat    o -> toDyn o
-  ORatio    o -> toDyn o
-  OComplex  o -> toDyn o
+--OWord     o -> toDyn o
+--OLong     o -> toDyn o
+--OFloat    o -> toDyn o
+--ORatio    o -> toDyn o
+--OComplex  o -> toDyn o
   OTime     o -> toDyn o
   ODiffTime o -> toDyn o
   OChar     o -> toDyn o
   OString   o -> toDyn o
   ORef      o -> toDyn o
-  OPair     o -> toDyn o
+--OPair     o -> toDyn o
   OList     o -> toDyn o
-  OSet      o -> toDyn o
-  OArray    o -> toDyn o
-  OIntMap   o -> toDyn o
-  ODict     o -> toDyn o
+--OSet      o -> toDyn o
+--OArray    o -> toDyn o
+--OIntMap   o -> toDyn o
+--ODict     o -> toDyn o
   OTree     o -> toDyn o
-  OScript   o -> toDyn o
-  OGlob     o -> toDyn o
+--OScript   o -> toDyn o
+--OGlob     o -> toDyn o
   OBytes    o -> toDyn o
   OHaskell  o -> toDyn o
 
@@ -851,9 +851,7 @@ execFromPValue pval = case pval of
           , let addr = updateErrAddr err
             in  if null addr
                   then []
-                  else [ ORef $ QualRef Unqualified $
-                           foldr (\a b -> DotRef (PlainRef a) b) (PlainRef (head addr)) (tail addr)
-                        ]
+                  else [ORef (foldr (\a b -> DotRef (PlainRef a) b) (PlainRef (head addr)) (tail addr))]
           , let tree = updateErrTree err in if T.null tree then [] else [OTree $ updateErrTree err]
           ]
       , paramOrigExpr = Nothing

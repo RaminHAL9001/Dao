@@ -88,42 +88,42 @@ instance PPrintable Object where
     OTrue            -> pString "true"
     OType      o     -> pPrint o
     OInt       o     -> pShow o
-    OWord      o     -> pString (show o++"U")
-    OLong      o     -> pString (show o++"L")
-    OFloat     o     -> pString (show o++"f")
-    ORatio     o     ->
-      if denominator o == 1
-        then  pString (show (numerator o)++"R")
-        else  pWrapIndent $
-                [ pString "(", pString (show (numerator o)), pString "/"
-                , pString (show (denominator o)++"R"), pString ")"
-                ]
-    OComplex  (r:+i) ->
-      if r==0
-        then  pString (show i++"i")
-        else  pWrapIndent $
-                [ pString "(", pString (show r), unless (i<0) (pString "+")
-                , pString (show i++"i"), pString ")"
-                ]
+--  OWord      o     -> pString (show o++"U")
+--  OLong      o     -> pString (show o++"L")
+--  OFloat     o     -> pString (show o++"f")
+--  ORatio     o     ->
+--    if denominator o == 1
+--      then  pString (show (numerator o)++"R")
+--      else  pWrapIndent $
+--              [ pString "(", pString (show (numerator o)), pString "/"
+--              , pString (show (denominator o)++"R"), pString ")"
+--              ]
+--  OComplex  (r:+i) ->
+--    if r==0
+--      then  pString (show i++"i")
+--      else  pWrapIndent $
+--              [ pString "(", pString (show r), unless (i<0) (pString "+")
+--              , pString (show i++"i"), pString ")"
+--              ]
     ODiffTime  o     -> pShow o
     OTime      o     -> pString ("date "++show o)
     OChar      o     -> pShow o
     OString    o     -> pShow o
     ORef       o     -> pPrint o
-    OPair     (a, b) -> pList (pString "pair") "(" ", " ")" [pPrint a, pPrint b]
+--  OPair     (a, b) -> pList (pString "pair") "(" ", " ")" [pPrint a, pPrint b]
     OList      ox    -> if null ox then pString "list{}" else pContainer "list " pPrint ox
-    OSet       o     -> if S.null o then pString "set{}" else pContainer "set "  pPrint (S.elems o)
-    OArray     o     -> do
-      let (lo, hi)   = bounds o
-          showBounds = pList (pString "array") "(" ", " ")" [pShow lo, pShow hi]
-      pList showBounds " { " ", " " }" (map pPrint (elems o))
-    ODict      o     ->
-      if M.null o then pString "dict{}" else pContainer "dict " pMapAssoc (M.assocs o)
-    OIntMap    o     ->
-      if I.null o then pString "intmap{}" else pContainer "intmap " pMapAssoc (I.assocs o)
+--  OSet       o     -> if S.null o then pString "set{}" else pContainer "set "  pPrint (S.elems o)
+--  OArray     o     -> do
+--    let (lo, hi)   = bounds o
+--        showBounds = pList (pString "array") "(" ", " ")" [pShow lo, pShow hi]
+--    pList showBounds " { " ", " " }" (map pPrint (elems o))
+--  ODict      o     ->
+--    if M.null o then pString "dict{}" else pContainer "dict " pMapAssoc (M.assocs o)
+--  OIntMap    o     ->
+--    if I.null o then pString "intmap{}" else pContainer "intmap " pMapAssoc (I.assocs o)
     OTree      o     -> pPrint o
-    OGlob      o     -> pPrint o
-    OScript    o     -> pPrint o
+--  OGlob      o     -> pPrint o
+--  OScript    o     -> pPrint o
     OBytes     o     ->
       if B.null o
         then  pString "data{}"

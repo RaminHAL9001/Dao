@@ -18,6 +18,7 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE Rank2Types #-}
 
 module Main where
 
@@ -43,6 +44,7 @@ import           Control.DeepSeq
 import           Control.Monad.Reader
 import           Control.Monad.Trans
 
+import           Data.Time.Clock
 import           Data.Maybe
 import           Data.List
 import           Data.Monoid
@@ -128,15 +130,46 @@ defaultTestConfig =
   , logFileName      = "./uncaught.log"
   }
 
+data TestRateInfo
+  = TestRateInfo
+    { testStartTime :: UTCTime, numberOfTests :: Int
+    , lastCheckTime :: UTCTime, lastTestCount :: Int
+    }
+
+newTestRateInfo :: IO (MVar TestRateInfo)
+newTestRateInfo = do
+  start <- getCurrentTime
+  newMVar $
+    TestRateInfo
+    { testStartTime = start, numberOfTests = 0
+    , lastCheckTime = start, lastTestCount = 0
+    }
+
+incrementRateInfo :: MVar TestRateInfo -> IO ()
+incrementRateInfo mvar = modifyMVar_ mvar $ \rateInfo -> return $
+  rateInfo
+  { numberOfTests = numberOfTests rateInfo + 1
+  , lastTestCount = lastTestCount rateInfo + 1
+  }
+
+clearRateInfo :: MVar TestRateInfo -> IO ()
+clearRateInfo mvar = modifyMVar_ mvar $ \rateInfo -> return $ rateInfo{lastTestCount=0}
+
+setLastCheckTime :: MVar TestRateInfo -> UTCTime -> IO ()
+setLastCheckTime mvar time = modifyMVar_ mvar $ \rateInfo -> return $ rateInfo{lastCheckTime=time}
+
+----------------------------------------------------------------------------------------------------
+
 data TestEnv
   = TestEnv
     { testIDFileHandle  :: MVar (Handle, HandlePosn)
     , testPassedButton  :: MVar Bool
-    , testCounter       :: MVar (Rational, Rational)
+    , testRateInfo      :: MVar TestRateInfo
     , errorCounter      :: MVar Int
     , inputChannel      :: MVar (Maybe Int)
     , uncaughtExceptLog :: MVar Handle
     , testConfig        :: TestConfig
+    , testCounterLock   :: MVar (Handle, HandlePosn)
     }
 
 main :: IO ()
@@ -158,62 +191,142 @@ main = do
   reportEnabled "Parser" doTestParser
   reportEnabled "Serialization" doTestSerializer
   reportEnabled "Structure" doTestStructizer
-  multiThreaded config i
+  let (msg, run) =
+        if threadCount config <= 0 then ("single", singleThreaded) else ("multi", multiThreaded)
+  hPutStrLn stderr ("running in "++msg++"-threaded mode")
+  run config i
 
 ----------------------------------------------------------------------------------------------------
 
-multiThreaded :: TestConfig -> Int -> IO ()
-multiThreaded config i = do
+newTestEnv :: TestConfig -> IO TestEnv
+newTestEnv config = do
   ch       <- newEmptyMVar
   notify   <- newEmptyMVar
   errcount <- newMVar 0
-  counter  <- newMVar (0, 0)
+  rateInfo <- newTestRateInfo
   h        <- openFile "./testid" ReadWriteMode
   pos      <- hGetPosn h
   hlock    <- newMVar (h, pos)
   excplog  <- openFile (logFileName config) WriteMode
   excplogVar <- newMVar excplog
-  let testEnv = 
-        TestEnv
-        { testIDFileHandle  = hlock
-        , testPassedButton  = notify
-        , testCounter       = counter
-        , errorCounter      = errcount
-        , inputChannel      = ch
-        , uncaughtExceptLog = excplogVar
-        , testConfig        = config
-        }
-  workThreads <- replicateM (threadCount config) $ forkIO (runReaderT testThread testEnv)
-  iterThread  <- forkIO $ runReaderT (iterLoop i) testEnv
-  dispThread  <- forkIO (forever $ threadDelay (displayInterval config) >> runReaderT displayInfo testEnv)
-  catches (runReaderT ctrlLoop testEnv) (errHandlerMessage "exception in main control loop")
+  return $
+    TestEnv
+    { testIDFileHandle  = hlock
+    , testPassedButton  = notify
+    , testRateInfo      = rateInfo
+    , errorCounter      = errcount
+    , inputChannel      = ch
+    , uncaughtExceptLog = excplogVar
+    , testConfig        = config
+    , testCounterLock   = hlock
+    }
+
+closeFiles :: TestEnv -> IO ()
+closeFiles env = do
+  modifyMVar_ (testCounterLock env) $ \ lock@(h, pos) -> hClose h >> return lock
+  modifyMVar_ (uncaughtExceptLog env) $ \h -> hClose h >> return h
+
+multiThreaded :: TestConfig -> Int -> IO ()
+multiThreaded config i = do
+  env         <- newTestEnv config
+  workThreads <- replicateM (threadCount config) $ forkIO (runReaderT testThread env)
+  iterThread  <- forkIO $ runReaderT (iterLoop i) env
+  dispThread  <- forkIO $ forever $ do
+    threadDelay (displayInterval config)
+    runReaderT (displayInfo >>= liftIO . putStrLn) env
+    clearRateInfo (testRateInfo env)
+  catches (runReaderT ctrlLoop env) (errHandlerMessage "exception in main control loop")
   killThread dispThread >> killThread iterThread
-  hClose excplog        >> hClose     h
+  closeFiles env
 
-ctrlLoop :: TestRun ()
-ctrlLoop = ask >>= \env -> liftIO $ do
-  passed <- takeMVar (testPassedButton env) -- Wait for a result to come back
-  modifyMVar_ (testCounter env) (\ (total, count) -> return (total+1, count+1))
-  count <- modifyMVar (errorCounter env) $ \count -> do
-    let nextCount = if not passed then count+1 else count
-    return (nextCount, nextCount)
-  if count < maxErrors(testConfig env) then runReaderT ctrlLoop env else return ()
+singleThreaded :: TestConfig -> Int -> IO ()
+singleThreaded config i = do
+  env <- newTestEnv config
+  startTime <- getCurrentTime
+  let loop fn ctrl = maybe (return ()) (uncurry fn >=> loop fn) ctrl
+  flip runReaderT env $ flip loop (Just (i, i+1)) $ \testID reportWhenID ->
+    if testID == reportWhenID
+      then do
+        -- Display current statistics. Then, based on the rate of tests completed, try to predict
+        -- how many tests will be completed in the next N seconds, where N is the 'displayInterval'.
+        -- Returning the current testID + the predicted number of tests effectively asks this
+        -- function to wait about N seconds before next displaying the statistics.
+        info <- displayInfo
+        liftIO $ do
+          putStrLn info
+          now      <- getCurrentTime
+          rateInfo <- readMVar (testRateInfo env)
+          return $ Just $ (,) testID $ (testID+) $ ceiling $
+            toRational (numberOfTests rateInfo) /
+              toRational (diffUTCTime now (testStartTime rateInfo))
+      else do
+        testID    <- signalNextTest (Just testID)
+        iterateOK <- testIterate newTestCase checkTestCase
+        resultOK  <- getTestResult
+        if iterateOK && resultOK
+          then return $ testID >>= \testID -> Just (testID, reportWhenID)
+          else return Nothing
+  closeFiles env
 
--- Iterate test IDs by simply incrementing a counter.
+-- Iterate test sending a test ID into the 'inputChannel', then return the next test ID in the
+-- iteration (which is just the input integer incremented). The 'testIteration' function will
+-- generate a test from  the test ID on the 'inputChannel' and update the result state. The
+-- 'getTestResult' function will check the result state decide whether or not testing should
+-- continue.
+signalNextTest :: Maybe Int -> TestRun (Maybe Int)
+signalNextTest i0 = ask >>= \env -> isOn >>= \continue -> liftIO $ do
+  let i = i0 >>= guard . (<maxBound) >> i0
+  putMVar (inputChannel env) (if continue then i else Nothing)
+  return (if continue then fmap (+1) i else Nothing)
+
+-- Loop over 'testIterate' starting at a given integer test ID value and continuing until either
+-- there are no more test ID's to be produced, or until the halt condition returned by 'isOn'
+-- goes to 'Prelude.False'.
 iterLoop :: Int -> TestRun ()
-iterLoop i = ask >>= \env -> isOn >>= \continue -> liftIO $ do
-  putMVar (inputChannel env) (if continue then Just i else Nothing)
-  runReaderT (iterLoop (i+1)) env
+iterLoop i = signalNextTest (Just i) >>= maybe (return ()) iterLoop
 
-displayInfo :: TestRun ()
+-- This function checks the result of a test after 'testIteration' is evaluated and decides whether
+-- or not testing should continue. This function does not call 'signalNextTest' (which puts the next
+-- test ID on the 'inputChannel') or 'testIterate' (which reads the 'inputChannel', and generates
+-- and runs a test).
+getTestResult :: TestRun Bool
+getTestResult = do
+  ask >>= \env -> liftIO $ do
+    passed <- takeMVar (testPassedButton env) -- Wait for a result to come back
+    incrementRateInfo (testRateInfo env)
+    modifyMVar_ (errorCounter env) $ \count -> do
+      let nextCount = if not passed then count+1 else count
+      return nextCount
+  isOn
+
+-- Loop over the 'getTestResult' function. This function is useful in multi-threaded execution to
+-- set the main thread into a loop that blocks, repeatedly waits synchronously on a channel for test
+-- results until a halting condition is reached, and then returns to the main function.
+ctrlLoop :: TestRun ()
+ctrlLoop = getTestResult >>= flip when ctrlLoop
+
+displayInfo :: TestRun String
 displayInfo = ask >>= \env -> liftIO $ do
-  (total, count) <- modifyMVar (testCounter env) $ \ (total, count) ->
-    return ((total,0), (total,count))
-  putStrLn $ concat $
-    [ show (round total), " tests completed at the rate of "
-    , printf "%.2f tests per second"
-        (fromRational
-            (toRational count * 1000000 / toRational (displayInterval(testConfig env))) :: Float)
+  x   <- readMVar (testRateInfo env)
+  now <- getCurrentTime
+  setLastCheckTime (testRateInfo env) now
+  failed <- readMVar (errorCounter env)
+  let count   = numberOfTests x
+      running = toRational $ diffUTCTime now (testStartTime x)
+      days    = floor $ running / (24*60*60) :: Integer
+      hours   = floor $ (running - toRational days*24*60*60) / (60*60) :: Int
+      mins    = floor $ (running - toRational days*24*60*60 - toRational hours*60*60) / 60 :: Int
+      secs    = fromRational $ running - toRational days*24*60*60 - toRational hours*60*60 - toRational mins*60 :: Double
+      runAvg  = fromRational $ toRational count / running :: Double
+      recent  = lastTestCount x
+      dtime   = toRational $ diffUTCTime now (lastCheckTime x)
+      instAvg = fromRational $ toRational recent / dtime :: Double
+  return $ unlines $ fmap unwords $
+    [ ["many_tests_run     =", show (lastTestCount x)]
+    , ["failed_tests_count =", show failed]
+    , ["total_running_time =", printf "%.4i:%.2i:%.2i:%2.4f" days hours mins secs]
+    , ["total_average_tests_per_second  =", printf "%.2f" runAvg ]
+    , ["recent_average_tests_per_second =", printf "%.2f" instAvg]
     ]
 
 ----------------------------------------------------------------------------------------------------
@@ -274,36 +387,42 @@ updateTestIDFile i = ask >>= \env -> liftIO $
       hSetFileSize h (toInteger (length out))
     return (h, pos)
 
--- This function loops, pulling test IDs out of the 'inputChannel' of the 'TestEnv', then passing
--- the test ID to a function that generates a test case for that ID, then checks the test case.
--- This is the function that should be run in its own thread.
+-- This function pulls the next test ID out of the 'inputChannel' of the 'TestEnv', then passes the
+-- test ID to a function that generates a test case for that ID, then checks the result of the test
+-- case and updates the result state.
+testIterate :: Show a => (Int -> TestRun a) -> (a -> TestRun Bool) -> TestRun Bool
+testIterate genFunc checkFunc = ask >>= \env -> isOn >>= \continue -> liftIO $ do
+  if continue
+    then do
+      i <- takeMVar (inputChannel env)
+      case i of
+        Nothing -> return False
+        Just  i -> do
+          passed <- handle (\e -> runReaderT (h i Nothing e) env) $ do
+            obj <- runReaderT (genFunc i) env
+            catch (runReaderT (checkFunc obj) env) (\e -> runReaderT (h i (Just (show obj)) e) env)
+          putMVar (testPassedButton env) passed -- wait our turn to report success/failure
+          runReaderT (updateTestIDFile i) env
+          return True
+    else return False
+  where
+    h i obj (SomeException e) = do
+      catchToLog $ \logFile -> do
+        hPutStrLn logFile ("ITEM #"++show i++"\n"++show e)
+        hPutStrLn logFile $ case obj of
+          Nothing  -> "(error occurred while generating test object)"
+          Just msg -> msg
+      return False
+
+-- This function loops over 'testIterate'. This is the function that should be run in its own thread.
 loopOnInput :: Show a => (Int -> TestRun a) -> (a -> TestRun Bool) -> TestRun ()
-loopOnInput genFunc checkFunc = loop where
-  loop = ask >>= \env -> isOn >>= \continue -> liftIO $ do
-    if continue
-      then do
-        i <- takeMVar (inputChannel env)
-        case i of
-          Nothing -> return ()
-          Just  i -> do
-            passed <- handle (\e -> runReaderT (h i Nothing e) env) $ do
-              obj <- runReaderT (genFunc i) env
-              catch (runReaderT (checkFunc obj) env) (\e -> runReaderT (h i (Just (show obj)) e) env)
-            putMVar (testPassedButton env) passed -- wait our turn to report success/failure
-            runReaderT (updateTestIDFile i >> loop) env
-      else return ()
-  h i obj (SomeException e) = do
-    catchToLog $ \logFile -> do
-      hPutStrLn logFile ("ITEM #"++show i++"\n"++show e)
-      hPutStrLn logFile $ case obj of
-        Nothing  -> "(error occurred while generating test object)"
-        Just msg -> msg
-    return False
+loopOnInput genFunc checkFunc =
+  testIterate genFunc checkFunc >>= flip when (loopOnInput genFunc checkFunc)
+
+----------------------------------------------------------------------------------------------------
 
 sep :: String
 sep = "--------------------------------------------------------------------------"
-
-----------------------------------------------------------------------------------------------------
 
 -- There are actually two kinds of object tests I need to perform. First is the ordinary parser
 -- test, which generates a random, syntactically correct abstract syntax tree in such a way that the
@@ -313,6 +432,7 @@ sep = "-------------------------------------------------------------------------
 data RandObj
   = RandTopLevel AST_TopLevel
   | RandObject   Object
+  deriving (Eq, Ord, Show)
 instance HasRandGen RandObj where
   randO = do
     i <- nextInt 2
@@ -352,6 +472,9 @@ instance Structured RandObj where
     , fmap RandObject   (tryGetDataAt "obj")
     , fail "Test program failed while trying to structure it's own test data"
     ]
+instance NFData RandObj where
+  rnf (RandTopLevel a) = deepseq a ()
+  rnf (RandObject   a) = deepseq a ()
 
 data TestCase
   = TestCase
@@ -365,11 +488,11 @@ data TestCase
     }
 
 instance Show TestCase where
-  show obj = unlines $
-    [ uchars (testResult obj)
-    , "original object:", prettyShow (originalObject obj)
-    , prettyShow (originalObject obj)
-    , sep
+  show obj = unlines $ concat $
+    [ [uchars (testResult obj)]
+    , ["original object:", prettyShow (originalObject obj)]
+    , [sep, show (originalObject obj)]
+    , maybe mzero (\bin -> [sep, show (Base16String bin)]) (serializedObject obj)
     ]
 
 -- If the 'failedTestCount' is greater than 0, then this 'TestCase' is printed to a file, where the
@@ -396,14 +519,17 @@ newTestCase i = do
   cfg <- asks testConfig
   let maxDepth      = maxRecurseDepth cfg
   let obj           = genRandWith randO maxDepth i
+  let str           = prettyShow obj
+  let bin           = B.encode   obj
+  let tree          = dataToStruct obj
   let setup isSet o = if isSet cfg then Just o else Nothing
   return $
     TestCase
     { testCaseID       = i
     , originalObject   = obj
-    , parseString      = setup doTestParser     $ ustr (prettyShow obj)
-    , serializedObject = setup doTestSerializer $ B.encode     obj
-    , structuredObject = setup doTestStructizer $ dataToStruct obj
+    , parseString      = setup doTestParser (ustr str)
+    , serializedObject = setup doTestSerializer bin
+    , structuredObject = setup doTestStructizer tree
     , testResult       = nil
     , failedTestCount  = 0
     }
@@ -446,7 +572,7 @@ checkTestCase tc = ask >>= \env -> do
   ------------------- (0) Canonicalize the original object ------------------
   tc <- case originalObject tc of
     RandTopLevel o -> case canonicalize o of
-      [o] -> return (tc{originalObject = RandTopLevel o})
+      [o] -> return $ (tc{originalObject = RandTopLevel o})
       [ ] -> error "could not canonicalize original object"
       ox  -> error "original object canonicalized to multiple possible values"
     RandObject   _ -> return tc
@@ -469,8 +595,8 @@ checkTestCase tc = ask >>= \env -> do
               case o of
                 AST_TopComment [] -> []
                 o                 -> [delLocation o]
-        --  ~match = diro == [orig]
-        if not (doCompareParsed (testConfig env)) -- || match
+        let ~match = diro == [orig]
+        if not (doCompareParsed (testConfig env)) || match
           then  passTest tc
           else  
             failTest tc $ unlines $ concat
@@ -491,30 +617,30 @@ checkTestCase tc = ask >>= \env -> do
       errTryCatch "binary deserialization failed" :: TestRun (Either UStr RandObj)
     case unbin of
       Left  msg   -> failTest tc (uchars msg) :: TestRun TestCase
-      Right unbin -> passTest tc
-     -- if unbin == originalObject tc
-     --   then  passTest tc
-     --   else  failTest tc $ unlines $
-     --           [ "Original object does not match object deserialized from binary string"
-     --           , "Received bytes:", showBinary binObj
-     --           , "Deserialied object:"
-     --           , prettyShow unbin
-     --           ]
+      Right unbin ->
+        if unbin == originalObject tc
+          then  passTest tc
+          else  failTest tc $ unlines $
+                  [ "Original object does not match object deserialized from binary string"
+                  , "Received bytes:", showBinary binObj
+                  , "Deserialied object:"
+                  , prettyShow unbin
+                  ]
   --
   ---------------- (3) Test the intermediate tree structures ----------------
-  tc <- tryTest tc  structuredObject $ \obj ->
+  tc <- tryTest tc structuredObject $ \obj ->
     case structToData obj :: PValue UpdateErr RandObj of
       Backtrack -> failTest tc $
         "Backtracked while constructing a Haskell object from a Dao tree"
       PFail err -> failTest tc $ unlines [ show err, prettyShow obj]
-      OK struct -> passTest tc
-      --if originalObject tc == struct
-      --  then
-      --    failTest tc $ unlines $
-      --      [ "Original object does not match Haskell object constructed from it's Dao tree"
-      --      , prettyShow struct
-      --      ]
-      --  else  passTest tc
+      OK struct ->
+        if originalObject tc == struct
+          then
+            failTest tc $ unlines $
+              [ "Original object does not match Haskell object constructed from it's Dao tree"
+              , prettyShow struct
+              ]
+          else  passTest tc
   --
   ------------------------------ Report results -----------------------------
   liftIO (reportTest tc)

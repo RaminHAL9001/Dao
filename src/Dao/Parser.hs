@@ -187,7 +187,7 @@ makeRegex keep u re = LexBuilderM $ newTokID u >>= \tok ->
 -- complex expressions that might construct multiple tokens. You can 'tokenHold' expressions in any
 -- order, ordering is not important.
 fullToken :: (UStrType str, RegexType rx) => str -> rx -> LexBuilderM Regex
-fullToken s = makeRegex True (ustr s)
+fullToken s = makeRegex True (toUStr s)
 
 -- | 'token' has identical behavior as 'tokenHold', except the 'Regex' created will produce an empty
 -- token, that is, a token that only indicates it's type and contains none of the string that
@@ -197,7 +197,7 @@ fullToken s = makeRegex True (ustr s)
 -- retrievable by converting token to a string. Making use of 'token' can greatly improveme
 -- performance as compared to using 'tokenHold' exclusively.
 emptyToken :: (UStrType str, RegexType rx) => str -> rx -> LexBuilderM Regex
-emptyToken s = makeRegex False (ustr s)
+emptyToken s = makeRegex False (toUStr s)
 
 -- | Activating a regular expression actually converts the regular expression to a 'Lexer'. The
 -- /order of activation is important/, expressions that are defined first will have the first try at
@@ -297,17 +297,17 @@ tokTypeToString = uchars . tokTypeToUStr
 
 -- | Get token from a 'TokenDB' that was associated with the 'Dao.String.UStrType'.
 maybeLookupToken :: (UStrType str, TokenType tok) => TokenDB tok -> str -> Maybe tok
-maybeLookupToken tokenDB = fmap wrapTT . flip M.lookup (tableUStrToTT tokenDB) . ustr
+maybeLookupToken tokenDB = fmap wrapTT . flip M.lookup (tableUStrToTT tokenDB) . toUStr
 
 -- | Like 'maybeLookupToken' but evaluates to 'Prelude.error' if no such token was defined.
 lookupToken :: (UStrType str, TokenType tok) => TokenDB tok -> str -> tok
 lookupToken tokenDB str =
-  fromMaybe (error $ "internal: token "++show (ustr str)++" was never defined") $
+  fromMaybe (error $ "internal: token "++show (toUStr str)++" was never defined") $
     maybeLookupToken tokenDB str
 
 mk_keyword :: UStrType str => TT -> Regex -> str -> LexBuilderM (UStr, TT)
 mk_keyword deflt regex key = do
-  let ukey = ustr key
+  let ukey = toUStr key
       keyChars = uchars ukey
   if fst (runRegex regex keyChars :: (Bool, ([TokenAt TT], String)))
     then  LexBuilderM (newTokID ukey) >>= return . (,) ukey
@@ -319,7 +319,7 @@ mk_keyword deflt regex key = do
 -- type if the keyword matches the input, or else it returns the default token type.
 keyword :: (UStrType str, UStrType key) => str -> Regex -> key -> LexBuilderM Regex
 keyword deflt regex key = do
-  deflt      <- LexBuilderM (newTokID (ustr deflt))
+  deflt      <- LexBuilderM (newTokID (toUStr deflt))
   (ukey, tt) <- mk_keyword deflt regex key
   return (regex . rxMakeToken (\str -> if ustr str==ukey then (False, tt) else (True, deflt)))
 
@@ -338,7 +338,7 @@ keyword deflt regex key = do
 -- >           "class instance new delete super typeof" ]
 keywordTable :: (UStrType str, UStrType key) => str -> Regex -> [key] -> LexBuilderM Regex
 keywordTable deflt regex keys = do
-  deflt   <- LexBuilderM (newTokID (ustr deflt))
+  deflt   <- LexBuilderM (newTokID (toUStr deflt))
   keyDict <- fmap M.fromList (forM keys (mk_keyword deflt regex))
   return (regex . rxMakeToken (maybe (True, deflt) ((,) False) . flip M.lookup keyDict . ustr))
 
@@ -350,7 +350,7 @@ keywordTable deflt regex keys = do
 -- and @"op"@ will be treated as a single operator token. Keywords do not work this way.
 operator :: UStrType str => str -> LexBuilderM Regex
 operator str = do
-  let u = ustr str
+  let u = toUStr str
   case ulength u of
     0 -> return id
     1 -> makeRegex False u (head (uchars u))
@@ -369,14 +369,14 @@ operator str = do
 -- >       "== != <= >= < >" ]
 operatorTable :: UStrType str => [str] -> LexBuilderM Regex
 operatorTable = fmap mconcat . mapM operator .
-  sortBy (\a b -> compare (ulength b) (ulength a)) . map ustr
+  sortBy (\a b -> compare (ulength b) (ulength a)) . map toUStr
 
 -- | Retrieve a 'TokenType' from a 'UStrType' (or a subclass of 'UStrType' like 'MetaToken') value.
 -- This is necesary for building tokenizing regular expressions that are more complicated than a
 -- typeical keyword or operator. You must declare in the 'Regex' when to create a token from the
 -- given token types returned to the 'LexBuilderM' monad by this function.
 getTokID :: (UStrType tokID, TokenType tok) => tokID -> LexBuilderM tok
-getTokID tokID = fmap wrapTT (LexBuilderM (newTokID (ustr tokID)))
+getTokID tokID = fmap wrapTT (LexBuilderM (newTokID (toUStr tokID)))
 
 ----------------------------------------------------------------------------------------------------
 -- $Regular_expressions
@@ -1379,7 +1379,7 @@ expect
   => str -> Parser st tok a -> Parser st tok a
 expect errMsg parser = do
   loc <- mplus (look1 asLocation) (Parser (gets finalLocation))
-  let expectMsg = "expecting " ++ uchars (ustr errMsg)
+  let expectMsg = "expecting " ++ uchars errMsg
   mplus parser (throwError ((parserErr loc){parseErrMsg = Just (ustr expectMsg)}))
 
 -- | Given a constructor that takes an arbitray value and a 'Dao.NewTokStream.Location' value, and a
@@ -1405,8 +1405,8 @@ unshift tok = Parser $ modify (\st -> st{tokenQueue = tok : tokenQueue st})
 
 metaTypeToTokenType :: (TokenType tok, MetaToken meta tok) => meta -> tok
 metaTypeToTokenType meta =
-  case M.lookup (ustr meta) (tableUStrToTT (tokenDBFromMetaValue meta)) of
-    Nothing  -> error $ "internal: parser defined to use meta token "++show (ustr meta)++
+  case M.lookup (toUStr meta) (tableUStrToTT (tokenDBFromMetaValue meta)) of
+    Nothing  -> error $ "internal: parser defined to use meta token "++show (toUStr meta)++
       " without having activated any tokenizer that constructs a token of that meta type"
     Just tt -> wrapTT tt
 
@@ -1437,7 +1437,7 @@ token meta as = look1 asTokType >>= \tok ->
 tokenBy :: (UStrType name, HasTokenDB tok) => name -> (TokenAt tok -> a) -> Parser st tok a
 tokenBy name as = do
   db <- getTokenDB
-  let uname = ustr name 
+  let uname = toUStr name 
   tok <- look1 id
   case M.lookup uname (tableUStrToTT db) of
     Nothing -> if asUStr tok == uname then shift as else mzero
@@ -1510,8 +1510,8 @@ tableItem meta parser = TableItem (metaTypeToTokenType meta, parser)
 tableItemBy :: (TokenType tok, HasTokenDB tok, UStrType name) =>
   name -> (TokenAt tok -> a) -> TableItem tok a
 tableItemBy name parser =
-  case M.lookup (ustr name) (tableUStrToTT (tokdb parser)) of
-    Nothing  -> error ("tableItemBy "++show (ustr name)++" not activated in TokenDB")
+  case M.lookup (toUStr name) (tableUStrToTT (tokdb parser)) of
+    Nothing  -> error ("tableItemBy "++show (toUStr name)++" not activated in TokenDB")
     Just tok -> TableItem (wrapTT tok, parser)
   where
     tokdb   :: HasTokenDB tok => (TokenAt tok -> a) -> TokenDB tok
@@ -1615,7 +1615,7 @@ runAssociativity assoc constr obj stack =
 data OpPrec op obj = OpPrec{ opPrecTo3Tuple :: (Associativity, [UStr], InfixConstr op obj) }
 
 opPrec :: UStrType str => Associativity -> [str] -> InfixConstr op obj -> OpPrec op obj
-opPrec a b c = OpPrec (a, map ustr b, c)
+opPrec a b c = OpPrec (a, map toUStr b, c)
 
 opLeft :: UStrType str => [str] -> InfixConstr op obj -> OpPrec op obj
 opLeft = opPrec leftAssoc
@@ -1760,7 +1760,7 @@ newOpTableParser
   -> OpTableParser st tok op obj
 newOpTableParser errMsg autoShift asOp objParser constr optab =
   OpTableParser
-  { opTableErrMsg    = ustr errMsg
+  { opTableErrMsg    = toUStr errMsg
   , opTableAutoShift = autoShift
   , opTableObjParser = objParser
   , opTableOpAs      = asOp
@@ -1798,7 +1798,7 @@ simpleInfixedWithInit
   -> Parser st tok obj
 simpleInfixedWithInit errMsg assoc constr initPar objPar opPar = initPar >>= loop [] where
   loop stack initObj = flip mplus (return (runAssociativity assoc constr initObj stack)) $
-    opPar >>= \op -> expect (ustr errMsg) (objPar >>= \o -> loop (stack++[(o, op)]) initObj)
+    opPar >>= \op -> expect (toUStr errMsg) (objPar >>= \o -> loop (stack++[(o, op)]) initObj)
 
 -- | Same as 'simpleInfixedWithInit' except the fourth parameter (the function for parsing the terms
 -- of the expression) is used as both the initial term parser and the function for parsing terms of
@@ -1813,7 +1813,7 @@ simpleInfixed
   -> Parser st tok obj
 simpleInfixed errMsg assoc constr objPar opPar = objPar >>= loop [] where
   loop stack initObj = flip mplus (return (runAssociativity assoc constr initObj stack)) $
-    opPar >>= \op -> expect (ustr errMsg) (objPar >>= \o -> loop (stack++[(o, op)]) initObj)
+    opPar >>= \op -> expect (toUStr errMsg) (objPar >>= \o -> loop (stack++[(o, op)]) initObj)
 
 ----------------------------------------------------------------------------------------------------
 -- | A 'Language' is a data structure that allows you to easily define a
@@ -1878,4 +1878,12 @@ mergeArrays :: Ix i => (e -> e -> e) -> e -> Array i e -> Array i e -> Array i e
 mergeArrays plus zero a b =
   accumArray plus zero (boun (bounds a) (bounds b)) (assocs a ++ assocs b) where
     boun (loA, hiA) (loB, hiB) = (min loA loB, max hiA hiB)
+
+----------------------------------------------------------------------------------------------------
+
+class Parseable a where
+  parser :: TokenType tok => Parser st tok a
+
+class HasParseTable a where
+  parseTable :: TokenType tok => PTable tok a
 

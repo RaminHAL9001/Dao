@@ -57,28 +57,6 @@ boolToObj b = if b then OTrue else ONull
 objToBool :: Object -> Bool
 objToBool obj = not (testNull obj)
 
-testNull :: Object -> Bool
-testNull o = case o of
-  ONull             -> True
-  OInt      0       -> True
---OWord     0       -> True
---OLong     0       -> True
---OFloat    0.0     -> True
---ORatio    o | o==(0%1)      -> True
---OComplex  o | o==(0:+0)     -> True
-  ORelTime o | toRational o == 0%1 -> True
-  OChar     o | ord o == 0          -> True
-  OString   o | o==nil              -> True
-  ORef NullRef                      -> True
-  OList        []        -> True
---OSet     o | S.null  o -> True
---ODict    o | M.null  o -> True
---OIntMap  o | IM.null o -> True
-  OTree    o | T.null  o -> True
---OGlob    o | null (getPatUnits o) -> True
-  OBytes   o | B.null o  -> True
-  _ -> False
-
 objToList :: Object -> PValue tok [Object]
 objToList o = case o of
 --OPair (a, b) -> return $ [a, b]
@@ -96,14 +74,14 @@ objToList o = case o of
 -- operation) translates to a 'ListType' object because wildcards may match a whole list of
 -- strings and 'Dao.Glob.AnyOne's translate to a StringType object because they can only match
 -- one single string. Everything else translates to an 'OString' object.
-patternComponents :: Glob -> [Object]
-patternComponents p = map patUnitToObj (getPatUnits p)
+--patternComponents :: Glob -> [Object]
+--patternComponents p = map patUnitToObj (getPatUnits p)
 
-patUnitToObj :: GlobUnit -> Object
-patUnitToObj p = case p of
-  Wildcard -> OType ListType
-  AnyOne   -> OType StringType
-  Single o -> OString o
+--patUnitToObj :: GlobUnit -> Object
+--patUnitToObj p = case p of
+--  Wildcard -> OType ListType
+--  AnyOne   -> OType StringType
+--  Single o -> OString o
 
 ----------------------------------------------------------------------------------------------------
 

@@ -77,6 +77,34 @@ initRandOState maxDepth seed =
 -- numbers using the 'RandO' monad.
 class HasRandGen o where { randO :: RandO o }
 
+instance HasRandGen () where { randO = return () }
+instance HasRandGen Int where { randO = randInt }
+instance HasRandGen Integer where { randO = fmap fromIntegral randInt }
+instance HasRandGen Char where { randO = fmap chr randInt }
+instance HasRandGen UTCTime where
+  randO = do
+    day <- fmap (ModifiedJulianDay . unsign . flip mod 73000) randInt
+    sec <- fmap (fromRational . toRational . flip mod 86400) randInt
+    return (UTCTime{utctDay=day, utctDayTime=sec})
+instance HasRandGen NominalDiffTime where
+  randO = randInteger (fromRational 0) $ \i -> do
+    div <- randInt
+    fmap (fromRational . (% fromIntegral div) . longFromInts) (replicateM (mod i 2 + 1) randInt)
+instance HasRandGen Name where { randO = fmap (fromUStr . randUStr) randInt }
+instance HasRandGen UStr where
+  randO = fmap (ustr . unwords . fmap (uchars . toUStr)) (randList 0 9 :: RandO [Name])
+instance HasRandGen Bool where { randO = fmap (0/=) (nextInt 2) }
+instance HasRandGen a => HasRandGen (Maybe a) where
+  randO = randO >>= \n -> if n then return Nothing else fmap Just randO
+
+-- | Construct a value from an 'Prelude.Int'. Actually, you have a 50/50 chance of drawing a zero,
+-- but this is because zeros are used often for you data type.
+randInteger :: a -> (Int -> RandO a) -> RandO a
+randInteger zero mkOther = do
+  i <- randInt
+  let (x, r) = divMod i 2
+  if r==0 then return zero else mkOther x
+
 -- | Generate a random object given a maximum recursion limit, a seed value, and a 'RandO' generator
 -- function.
 genRandWith :: RandO a -> Int -> Int -> a
@@ -167,8 +195,8 @@ randToBase base i = loop (unsign i)  where
 longFromInts :: [Int] -> Integer
 longFromInts = foldl (\a b -> a*intBase + unsign b) 0
 
-randBool :: RandO Bool
-randBool = fmap (0/=) (nextInt 2)
+randEnum :: (Bounded x, Enum x) => x -> x -> RandO x
+randEnum lo hi = fmap toEnum (nextInt (abs (fromEnum lo - fromEnum hi)))
 
 ----------------------------------------------------------------------------------------------------
 

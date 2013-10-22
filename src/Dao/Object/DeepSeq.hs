@@ -46,9 +46,6 @@ import qualified Data.ByteString.Lazy as B
 
 ----------------------------------------------------------------------------------------------------
 
-instance NFData UStr where
-  rnf (UStr a) = seq a ()
-
 instance NFData Comment where
   rnf (InlineComment  a) = seq a ()
   rnf (EndlineComment a) = seq a ()
@@ -61,59 +58,100 @@ instance NFData a => NFData (Com a) where
 
 instance NFData UpdateOp where { rnf a = seq a () }
 instance NFData PrefixOp where { rnf a = seq a () }
-instance NFData InfixOp where { rnf a = seq a () }
-instance NFData LambdaExprType where { rnf a = seq a () }
-instance NFData TypeID   where { rnf a = seq a () }
-instance NFData GlobUnit  where { rnf a = seq a () }
+instance NFData InfixOp  where { rnf a = seq a () }
+instance NFData CoreType where { rnf a = seq a () }
+instance NFData GlobUnit where { rnf a = seq a () }
+
+instance NFData LValueExpr where { rnf (LValueExpr a) = deepseq a () }
+instance NFData AST_LValue where { rnf (AST_LValue a) = deepseq a () }
+
+instance NFData AST_ObjList where { rnf (AST_ObjList a b c) = deepseq a $! deepseq b $! deepseq c () }
+instance NFData ObjListExpr where { rnf (ObjListExpr a b) = deepseq a $! deepseq b () }
+
+instance NFData RefExpr where { rnf (RefExpr a b) = deepseq a $! deepseq b () }
+instance NFData AST_Ref where
+  rnf  AST_RefNull    = ()
+  rnf (AST_Ref a b c) = deepseq a $! deepseq b $! deepseq c ()
+
+instance NFData QualRefExpr where
+  rnf (UnqualRefExpr b  ) = deepseq b ()
+  rnf (QualRefExpr a b c) = seq a $! deepseq b $! deepseq c ()
+instance NFData AST_QualRef where
+  rnf (AST_Unqualified   c  ) = deepseq c ()
+  rnf (AST_Qualified a b c d) = seq a $! deepseq b $! deepseq c $! deepseq d ()
+
+instance NFData AST_StringList where
+  rnf (AST_NoStrings  a b) = deepseq a $! deepseq b ()
+  rnf (AST_StringList a b) = deepseq a $! deepseq b ()
+
+instance NFData AST_OptObjList where
+  rnf (AST_NoObjList  a  ) = deepseq a ()
+  rnf (AST_OptObjList a b) = deepseq a $! deepseq b ()
 
 instance NFData AST_Object where
   rnf AST_Void = ()
-  rnf (AST_Literal  a b    ) = deepseq a $! deepseq b $! ()
-  rnf (AST_Assign   a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_Equation a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_Prefix   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_Paren    a b    ) = deepseq a $! deepseq b $! ()
-  rnf (AST_ArraySub a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_FuncCall a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_Dict     a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_Array    a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_Struct   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_Data     a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_Lambda   a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d () 
-  rnf (AST_MetaEval a b    ) = deepseq a $! deepseq b $! ()
+  rnf (AST_Literal  a b      ) = deepseq a $! deepseq b ()
+  rnf (AST_Assign   a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_Equation a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_Prefix   a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_Paren    a b      ) = deepseq a $! deepseq b ()
+  rnf (AST_ArraySub a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_FuncCall a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_Init     a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_Struct   a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_Lambda   a b c    ) = deepseq a $! deepseq b $! deepseq c () 
+  rnf (AST_Func     a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
+  rnf (AST_Rule     a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_MetaEval a b      ) = deepseq a $! deepseq b ()
 
 instance NFData Location where
   rnf LocationUnknown = ()
   rnf (Location a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
 
-instance NFData AST_Script where
-  rnf (AST_Comment      a        ) = deepseq a ()
-  rnf (AST_EvalObject   a b c    ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_IfThenElse   a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
-  rnf (AST_TryCatch     a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_ForLoop      a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_WhileLoop    a b c    ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_ContinueExpr a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_ReturnExpr   a b c    ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_WithDoc      a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+--instance NFData ElseIfExpr where
+--  rnf  NullElseIfExpr      = ()
+--  rnf (ElseExpr   a b    ) = deepseq a $! deepseq b ()
+--  rnf (ElseIfExpr a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
 
-instance NFData Reference where
-  rnf (NullRef       ) = ()
-  rnf (PlainRef   a  ) = deepseq a ()
-  rnf (DerefOp    a  ) = deepseq a ()
-  rnf (MetaRef    a  ) = deepseq a ()
-  rnf (DotRef     a b) = deepseq a ()
-  rnf (PointRef   a b) = deepseq a $! deepseq b ()
-  rnf (Subscript  a b) = deepseq a $! deepseq b ()
-  rnf (CallWith   a b) = deepseq a $! deepseq b ()
+--instance NFData AST_ElseIf where
+--  rnf  AST_NullElseIf      = ()
+--  rnf (AST_Else   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+--  rnf (AST_ElseIf a b c d) = deepseq a $! deepseq b $! deepseq c ()
+
+instance NFData AST_If     where { rnf (AST_If     a b c) = deepseq a $! deepseq b $! deepseq c () }
+instance NFData IfExpr     where { rnf (IfExpr     a b c) = deepseq a $! deepseq b $! deepseq c () }
+instance NFData AST_Else   where { rnf (AST_Else   a b c) = deepseq a $! deepseq b $! deepseq c () }
+instance NFData ElseExpr   where { rnf (ElseExpr   a b  ) = deepseq a $! deepseq b $! () }
+instance NFData AST_IfElse where
+  rnf (AST_IfElse a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
+instance NFData IfElseExpr where
+  rnf (IfElseExpr a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+
+instance NFData AST_While  where { rnf (AST_While (AST_If a b c)) = deepseq a $! deepseq b $! deepseq c () }
+instance NFData WhileExpr  where { rnf (WhileExpr (IfExpr a b c)) = deepseq a $! deepseq b $! deepseq c () }
+
+instance NFData AST_Script where
+  rnf (AST_Comment      a      ) = deepseq a ()
+  rnf (AST_IfThenElse   a      ) = deepseq a ()
+  rnf (AST_WhileLoop    a      ) = deepseq a ()
+  rnf (AST_EvalObject   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_TryCatch     a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_ForLoop      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_ContinueExpr a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_ReturnExpr   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_WithDoc      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+
+instance NFData Reference where { rnf (Reference  a) = deepseq a () }
 
 instance NFData QualRef where
-  rnf (QualRef a b) = seq a $! deepseq b $! ()
+  rnf (Unqualified b) = deepseq b ()
+  rnf (Qualified a b) = seq a $! deepseq b ()
+  rnf (ObjRef      b) = deepseq b ()
 
 instance NFData Object where
   rnf  ONull         = ()
   rnf  OTrue         = ()
-  rnf (OType      a) = deepseq a ()
+--rnf (OType      a) = deepseq a ()
   rnf (OInt       a) = deepseq a ()
 --rnf (OWord      a) = deepseq a ()
 --rnf (OLong      a) = deepseq a ()
@@ -142,12 +180,29 @@ instance (NFData a, NFData b) => NFData (T.Tree a b) where
   rnf (T.Branch       b) = deepseq b ()
   rnf (T.LeafBranch a b) = deepseq a $! deepseq b ()
 
-instance NFData Glob         where { rnf (Glob         a b  ) = deepseq a $! deepseq b () }
-instance NFData TypeCheck    where { rnf (TypeCheck    a    ) = deepseq a () }
-instance NFData CallableCode where { rnf (CallableCode a _  ) = deepseq a () }
-instance NFData Subroutine   where { rnf (Subroutine   a _ _) = deepseq a () }
+instance NFData TypeCodeBlock where { rnf (TypeCodeBlock a) = deepseq a () }
+instance NFData Type where
+  rnf (TypeConst a  ) = deepseq a ()
+  rnf (TypeProp  a b) = deepseq a $! deepseq b ()
+  rnf (TypeFunc  a b) = deepseq a $! deepseq b ()
 
-instance NFData ObjSetOp where { rnf a = seq a () }
+instance NFData TypeSymbol where
+  rnf VoidType     = ()
+  rnf (CoreType a) = deepseq a ()
+  rnf (TypeVar  a) = deepseq a ()
+  rnf AnyType      = ()
+
+instance NFData TypeStruct where
+  rnf (TypeSingle   a) = deepseq a ()
+  rnf (TypeSequence a) = deepseq a ()
+  rnf (TypeChoice   a) = deepseq a ()
+
+instance NFData Glob          where { rnf (Glob          a b  ) = deepseq a $! deepseq b () }
+instance NFData Subroutine    where { rnf (Subroutine    a _ _) = deepseq a () }
+instance NFData CallableCode  where { rnf (CallableCode  a b _) = deepseq a $! deepseq b () }
+instance NFData GlobAction    where { rnf (GlobAction    a b  ) = deepseq a $! deepseq b () }
+
+--instance NFData ObjSetOp where { rnf a = seq a () }
 instance NFData TopLevelEventType where { rnf a = seq a () }
 
 instance NFData AST_SourceCode where
@@ -155,32 +210,49 @@ instance NFData AST_SourceCode where
 
 instance NFData AST_CodeBlock where { rnf (AST_CodeBlock a) = deepseq a () }
 
+instance NFData a => NFData (TyChkExpr a) where
+  rnf (NotTypeChecked  a) = deepseq a ()
+  rnf (TypeChecked a b c) = deepseq a $! deepseq b $! deepseq c ()
+
+instance NFData a => NFData (AST_TyChk a) where
+  rnf (AST_NotChecked    a) = deepseq a ()
+  rnf (AST_Checked a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+
+instance NFData ParamExpr where
+  rnf (ParamExpr       a b c) = deepseq a $! deepseq b $! deepseq c ()
+instance NFData AST_Param where
+  rnf  AST_NoParams     = ()
+  rnf (AST_Param a b c) = deepseq a $! deepseq b $! deepseq c ()
+
+instance NFData ParamListExpr where { rnf (ParamListExpr a b) = deepseq a $! deepseq b () }
+instance NFData AST_ParamList where { rnf (AST_ParamList a b) = deepseq a $! deepseq b () }
+
 instance NFData AST_TopLevel where
   rnf (AST_Attribute  a b c    ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_TopFunc    a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
   rnf (AST_TopScript  a b      ) = deepseq a $! deepseq b ()
-  rnf (AST_TopLambda  a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_Event      a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_TopComment a        ) = deepseq a ()
 
 instance NFData TopLevelExpr where
   rnf (Attribute      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (TopFunc        a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (TopScript      a b    ) = deepseq a $! deepseq b ()
-  rnf (TopLambdaExpr  a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (EventExpr      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
 
 instance NFData CodeBlock where { rnf (CodeBlock a) = deepseq a () }
 
 instance NFData ScriptExpr where
+  rnf (IfThenElse   a      ) = deepseq a ()
+  rnf (WhileLoop    a      ) = deepseq a ()
   rnf (EvalObject   a b    ) = deepseq a $! deepseq b ()
-  rnf (IfThenElse   a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (TryCatch     a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (ForLoop      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (WhileLoop    a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (ContinueExpr a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (ReturnExpr   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (WithDoc      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+
+instance NFData RuleStrings where { rnf (RuleStrings a b) = deepseq a $! deepseq b () }
+
+instance NFData OptObjListExpr where { rnf (OptObjListExpr a) = deepseq a () }
 
 instance NFData ObjectExpr where
   rnf (Literal       a b    ) = deepseq a $! deepseq b ()
@@ -190,10 +262,10 @@ instance NFData ObjectExpr where
   rnf (ParenExpr     a b    ) = deepseq a $! deepseq b ()
   rnf (ArraySubExpr  a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (FuncCall      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (DictExpr      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (ArrayExpr     a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (InitExpr      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (StructExpr    a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (DataExpr      a b    ) = deepseq a $! deepseq b ()
-  rnf (LambdaExpr    a b c d) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (LambdaExpr    a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (FuncExpr      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (RuleExpr      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (MetaEvalExpr  a b    ) = deepseq a $! deepseq b ()
 

@@ -66,7 +66,7 @@ instance Objectify Bool    where
     OTrue -> True
     ONull -> False
 
-instance Objectify TypeID  where
+instance Objectify CoreType  where
   toObject = OType
   fromObject (OType o) = return o
 
@@ -168,7 +168,7 @@ class HasNull t where
 
 instance HasNull Object where { nullValue = ONull; testNull = (nullValue==) }
 instance HasNull () where { nullValue = (); testNull _ = True }
-instance HasNull TypeID where { nullValue = NullType; testNull = (nullValue==) }
+instance HasNull CoreType where { nullValue = NullType; testNull = (nullValue==) }
 instance HasNull Char where { nullValue = '\0'; testNull = (nullValue==) }
 instance HasNull Int64 where { nullValue = 0; testNull = (nullValue==) }
 instance HasNull Word64 where { nullValue = 0; testNull = (nullValue==) }
@@ -314,7 +314,7 @@ in_int_range a =
 
 checkBounds
   :: (Integral a, Integral b, Objectify a)
-  => TypeID
+  => CoreType
   -> (a -> Bool)
   -> a
   -> PValue Object b

@@ -45,6 +45,20 @@ class HasLocation a where
   setLocation :: a -> Location -> a
   delLocation :: a -> a
 
+instance HasLocation () where
+  { getLocation _ = LocationUnknown; setLocation a _ = a; delLocation a = a; }
+
+instance HasLocation UStr where
+  { getLocation _ = LocationUnknown; setLocation a _ = a; delLocation a = a; }
+
+instance HasLocation Name where
+  { getLocation _ = LocationUnknown; setLocation a _ = a; delLocation a = a; }
+
+instance HasLocation a => HasLocation (Maybe a) where
+  getLocation       = maybe LocationUnknown getLocation
+  setLocation o loc = fmap (flip setLocation loc) o
+  delLocation o     = fmap       delLocation      o
+
 -- | Contains two points, a starting and and ending point, where each point consists of a row (line
 -- number) and column (character count from the beginning of a line) for locating entities in a
 -- parsable text. This type does not contain information regarding the source of the text, or
@@ -65,8 +79,9 @@ instance HasLocation Location where
   delLocation = const LocationUnknown
 instance Show Location where
   show t = case t of
-    LocationUnknown -> ""
-    _ -> show (startingLine t) ++ ':' : show (startingColumn t)
+    LocationUnknown  -> ""
+    Location a b c d -> show a ++ ':' : show b ++
+      if a==c && b==d then "" else " to " ++ show c ++ ':' : show d
 instance Monoid Location where
   mempty =
     Location
@@ -210,6 +225,10 @@ asString = tokToStr . getToken
 -- | See 'token' and 'tokenBy'.
 asUStr :: TokenAt tok -> UStr
 asUStr = tokToUStr . getToken
+
+-- | See 'token' and 'tokenBy'.
+asName :: TokenAt tok -> Name
+asName = fromUStr . asUStr
 
 -- | That is as-zero, because "0" looks kind of like "()".
 -- See 'token' and 'tokenBy'.

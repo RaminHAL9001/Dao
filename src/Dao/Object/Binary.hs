@@ -30,6 +30,7 @@ import           Dao.Glob
 import qualified Dao.EnumSet as Es
 
 import           Control.Monad
+import           Control.Applicative
 
 import           Data.Monoid
 import           Data.Function
@@ -163,11 +164,11 @@ instance (Eq p, Ord p, Binary p, Binary a) => Binary (T.Tree p a) where
 
 ----------------------------------------------------------------------------------------------------
 
-typeIDBytePrefix :: TypeID -> Word8
+typeIDBytePrefix :: CoreType -> Word8
 typeIDBytePrefix t = case t of
   NullType     -> 0x05
   TrueType     -> 0x06
-  TypeType     -> 0x07
+--TypeType     -> 0x07
   IntType      -> 0x08
   WordType     -> 0x09
   LongType     -> 0x0A
@@ -179,23 +180,24 @@ typeIDBytePrefix t = case t of
   CharType     -> 0x10
   StringType   -> 0x11
   RefType      -> 0x12
-  PairType     -> 0x13
+--PairType     -> 0x13
   ListType     -> 0x14
-  SetType      -> 0x15
-  ArrayType    -> 0x16
-  IntMapType   -> 0x17
-  DictType     -> 0x18
+--SetType      -> 0x15
+--ArrayType    -> 0x16
+--IntMapType   -> 0x17
+--DictType     -> 0x18
   TreeType     -> 0x19
-  GlobType     -> 0x1A
-  ScriptType   -> 0x1B
-  RuleType     -> 0x1C
+--GlobType     -> 0x1A
+--ScriptType   -> 0x1B
+--RuleType     -> 0x1C
   BytesType    -> 0x1D
+  HaskellType  -> 0x1E
 
-bytePrefixToTypeID :: Word8 -> Maybe TypeID
+bytePrefixToTypeID :: Word8 -> Maybe CoreType
 bytePrefixToTypeID t = case t of
   0x05 -> Just NullType
   0x06 -> Just TrueType
-  0x07 -> Just TypeType
+--0x07 -> Just TypeType
   0x08 -> Just IntType
   0x09 -> Just WordType
   0x0A -> Just LongType
@@ -207,26 +209,58 @@ bytePrefixToTypeID t = case t of
   0x10 -> Just CharType
   0x11 -> Just StringType
   0x12 -> Just RefType
-  0x13 -> Just PairType
+--0x13 -> Just PairType
   0x14 -> Just ListType
-  0x15 -> Just SetType
-  0x16 -> Just ArrayType
-  0x17 -> Just IntMapType
-  0x18 -> Just DictType
+--0x15 -> Just SetType
+--0x16 -> Just ArrayType
+--0x17 -> Just IntMapType
+--0x18 -> Just DictType
   0x19 -> Just TreeType
-  0x1A -> Just GlobType
-  0x1B -> Just ScriptType
-  0x1C -> Just RuleType
+--0x1A -> Just GlobType
+--0x1B -> Just ScriptType
+--0x1C -> Just RuleType
   0x1D -> Just BytesType
+  0x1E -> Just HaskellType
   _    -> Nothing
 
-instance Binary TypeID where
+instance Binary CoreType where
   put t = putWord8 (typeIDBytePrefix t)
   get = do
     w <- getWord8
     case bytePrefixToTypeID w of
       Nothing -> fail "was expecting type data"
       Just  w -> return w
+
+-- The binary serialization of 'Dao.Object.Reference' and 'Dao.Object.QualRef' are intricately tied
+-- together.
+instance Binary Reference where
+  put (Reference r) = putWord8 0x31 >> putList r
+  get = getWord8 >>= \w -> case w of
+    0x31 -> liftM Reference getList
+    _    -> fail "expecting reference value"
+instance Binary QualRef where
+  put q = case q of
+    Unqualified r -> put r
+    Qualified q r -> do
+      let f n = putWord8 n >> put r
+      f $ case q of
+        LOCAL  -> 0x32
+        QTIME  -> 0x33
+        GLODOT -> 0x34
+        STATIC -> 0x35
+        GLOBAL -> 0x36
+    ObjRef      o -> put o
+  get = do
+    w <- lookAhead getWord8
+    let f q = getWord8 >> liftM (Qualified q) get
+    case w of
+      0x31 -> liftM Unqualified get
+      0x32 -> f LOCAL
+      0x33 -> f QTIME
+      0x34 -> f GLODOT
+      0x35 -> f STATIC
+      0x36 -> f GLOBAL
+      _    -> liftM ObjRef get
 
 instance Binary Object where
   put o = do
@@ -235,15 +269,15 @@ instance Binary Object where
     case o of
       ONull           -> px ONull (return ())
       OTrue           -> px OTrue (return ())
-      OType         a -> x o a
+--    OType         a -> x o a
       OInt          a -> x o a
---    OWord         a -> x o a
---    OLong         a -> x o a
---    OFloat        a -> x o a
---    ORatio        a -> x o a
---    OComplex      a -> x o a
-      OAbsTime         a -> x o a
-      ORelTime     a -> x o a
+      OWord         a -> x o a
+      OLong         a -> x o a
+      OFloat        a -> x o a
+      ORatio        a -> x o a
+      OComplex      a -> x o a
+      OAbsTime      a -> x o a
+      ORelTime      a -> x o a
       OChar         a -> x o a
       OString       a -> px o (encodeUStr a)
       ORef          a -> x o a
@@ -258,6 +292,10 @@ instance Binary Object where
 --    OGlob         a -> x o a
 --    OScript       a -> x o a
       OBytes        a -> x o a
+      OHaskell  a ifc -> case objBinaryFormat ifc of
+        Just (put, _) -> putLazyByteString (put a)
+        Nothing       -> error $ unwords $
+          ["no binary format method defied for Haskell type", show (objHaskellType ifc)]
   get = do
     ty <- getWord8
     let x fn = fmap fn get
@@ -266,13 +304,13 @@ instance Binary Object where
       Just ty -> case ty of
         NullType     -> return ONull
         TrueType     -> return OTrue
-        TypeType     -> x OType
+--      TypeType     -> x OType
         IntType      -> x OInt
---      WordType     -> x OWord
---      LongType     -> x OLong
---      FloatType    -> x OFloat
---      RatioType    -> x ORatio
---      ComplexType  -> x OComplex
+        WordType     -> x OWord
+        LongType     -> x OLong
+        FloatType    -> x OFloat
+        RatioType    -> x ORatio
+        ComplexType  -> x OComplex
         TimeType     -> x OAbsTime
         DiffTimeType -> x ORelTime
         CharType     -> x OChar
@@ -290,46 +328,35 @@ instance Binary Object where
 --      GlobType     -> x OGlob
 --      ScriptType   -> x OScript
         BytesType    -> x OBytes
+        HaskellType  -> error "internal: cannot retrieve Haskell types from a binary stream"
 
-instance Binary Reference where
-  put o = case o of
-    NullRef       -> putWord8 0x81
-    PlainRef  o   -> putWord8 0x82 >> put o
-    DerefOp   o   -> putWord8 0x83 >> put o
-    MetaRef   o   -> putWord8 0x84 >> put o
-    DotRef    o p -> putWord8 0x85 >> put o >> put p
-    PointRef  o p -> putWord8 0x86 >> put o >> put p
-    Subscript o p -> putWord8 0x87 >> put o >> put p
-    CallWith  o p -> putWord8 0x88 >> put o >> put p
+instance Binary RefExpr where
+  put (RefExpr r loc) = putWord8 0x88 >> put r >> put loc
   get = getWord8 >>= \w -> case w of
-    0x81 -> return NullRef
-    0x82 -> liftM  PlainRef  get
-    0x83 -> liftM  DerefOp   get
-    0x84 -> liftM  MetaRef   get
-    0x85 -> liftM2 DotRef    get get
-    0x86 -> liftM2 PointRef  get get
-    0x87 -> liftM2 Subscript get get
-    0x88 -> liftM2 CallWith  get get
+    0x88 -> liftM2 RefExpr get get
     _    -> fail "expecting reference expression"
 
-instance Binary QualRef where
-  put (QualRef q r) = case q of
-    Unqualified -> put r
-    LocalRef    -> putWord8 0x89 >> put r
-    QTimeRef    -> putWord8 0x8A >> put r
-    GloDotRef   -> putWord8 0x8B >> put r
-    StaticRef   -> putWord8 0x8C >> put r
-    GlobalRef   -> putWord8 0x8D >> put r
+instance Binary QualRefExpr where
+  put r = case r of
+    UnqualRefExpr   r -> put r
+    QualRefExpr typ r loc ->
+      let f n = putWord8 n >> put r >> put loc
+      in  case typ of
+            LOCAL  -> f 0x8B
+            QTIME  -> f 0x8C
+            GLODOT -> f 0x8D
+            STATIC -> f 0x8E
+            GLOBAL -> f 0x8F
   get = do
     w <- lookAhead getWord8
-    let x c = getWord8 >> fmap (QualRef c) get
+    let f typ = getWord8 >> liftM2 (QualRefExpr typ) get get
     case w of
-      0x89 -> x LocalRef
-      0x8A -> x QTimeRef
-      0x8B -> x GloDotRef
-      0x8C -> x StaticRef
-      0x8D -> x GlobalRef
-      _    -> fmap (QualRef Unqualified) get
+      0x8B -> f LOCAL
+      0x8C -> f QTIME
+      0x8D -> f GLODOT
+      0x8E -> f STATIC
+      0x8F -> f GLOBAL
+      _    -> liftM UnqualRefExpr get
 
 instance Binary UTCTime where
   put t = do
@@ -372,110 +399,178 @@ instance Binary Glob where
 ----------------------------------------------------------------------------------------------------
 
 putNullTermStr :: Name -> Put
-putNullTermStr nm = mapM_ putWord8 (uwords nm) >> putWord8 0
+putNullTermStr nm = mapM_ putWord8 (utf8bytes nm) >> putWord8 0
 
 getNullTermStr :: Get UStr
 getNullTermStr = loop [] where
   loop wx = getWord8 >>= \w -> if w==0 then return (upack wx) else loop (wx++[w])
 
+-- There are only 255 non-zero 8-bit prefixes available, I have reused a few here. To make it easier
+-- to remember, operators with the same string representation also have the same 8-bit serialization
+-- prefix.
 instance Binary UpdateOp where
   put a = putWord8 $ case a of
-    UCONST -> 0x71
-    UADD   -> 0x72
-    USUB   -> 0x73
-    UMULT  -> 0x74
-    UDIV   -> 0x75
-    UMOD   -> 0x76
+    UCONST -> 0x70
+    UADD   -> 0x71
+    USUB   -> 0x72
+    UMULT  -> 0x73
+    UDIV   -> 0x74
+    UMOD   -> 0x75
+    UPOW   -> 0x76
     UORB   -> 0x77
     UANDB  -> 0x78
     UXORB  -> 0x79
     USHL   -> 0x7A
     USHR   -> 0x7B
+    UARROW -> 0x7C
   get = do
     w <- getWord8
     let x = return
     case w of
-      0x71 -> x UCONST
-      0x72 -> x UADD
-      0x73 -> x USUB
-      0x74 -> x UMULT
-      0x75 -> x UDIV
-      0x76 -> x UMOD
+      0x70 -> x UCONST
+      0x71 -> x UADD
+      0x72 -> x USUB
+      0x73 -> x UMULT
+      0x74 -> x UDIV
+      0x75 -> x UMOD
+      0x76 -> x UPOW
       0x77 -> x UORB
       0x78 -> x UANDB
       0x79 -> x UXORB
       0x7A -> x USHL
       0x7B -> x USHR
+      0x7C -> x UARROW
       _    -> fail "expecting update/assignment operator symbol"
 
+instance Binary LValueExpr where
+  put (LValueExpr o) = putWord8 0x4D >> put o
+  get = getWord8 >>= \w -> case w of
+    0x4D -> liftM LValueExpr get
+    _    -> fail "expecting L-value expression"
+
+putTyChkExpr :: (a -> Put) -> TyChkExpr a -> Put
+putTyChkExpr putfn o = case o of
+  NotTypeChecked a       -> putfn a
+  TypeChecked    a b loc -> putWord8 0x3A >> putfn a >> put b >> put loc
+
+getTyChkExpr :: Get a -> Get (TyChkExpr a)
+getTyChkExpr getfn = lookAhead getWord8 >>= \w -> case w of
+  0x3A -> getWord8 >> liftM3 TypeChecked getfn get get
+  _    -> liftM NotTypeChecked getfn
+
+instance Binary ParamExpr where
+  put (ParamExpr a b loc) = putWord8 (if a then 0x39 else 0x38) >> putTyChkExpr put b >> put loc
+  get = getWord8 >>= \w -> let getfn = getTyChkExpr get in case w of
+    0x38 -> liftM2 (ParamExpr False) getfn get
+    0x39 -> liftM2 (ParamExpr True ) getfn get
+    _    -> fail "expecting parameter"
+
+instance Binary ParamListExpr where
+  put (ParamListExpr lst loc) = putTyChkExpr putList lst >> put loc
+  get = liftM2 ParamListExpr (getTyChkExpr getList) get
+
+instance Binary RuleStrings where
+  put (RuleStrings a b) = putList a >> put b
+  get = liftM2 RuleStrings getList get
+
+instance Binary OptObjListExpr where
+  put (OptObjListExpr a) = maybe (return ()) (\a -> putWord8 0x3B >> put a) a
+  get = fmap OptObjListExpr (optional (getWord8 >>= \a -> if a==0x38 then get else mzero))
+
 instance Binary ObjectExpr where
-  put o = case o of
-    VoidExpr             -> putWord8 0x40
-    Literal      a     z -> x z 0x41 $ put a
-    AssignExpr   a b c z -> x z 0x42 $ put a >> put b >> put c
-    Equation     a b c z -> x z 0x43 $ put a >> put b >> put c
-    PrefixExpr   a b   z -> x z 0x44 $ put a >> put b
-    ParenExpr    a     z -> x z 0x45 $ put a
-    ArraySubExpr a b   z -> x z 0x46 $ put a >> put b
-    FuncCall     a b   z -> x z 0x47 $ put a >> put b
-    DictExpr     a b   z -> x z 0x48 $ put a >> put b
-    ArrayExpr    a b   z -> x z 0x49 $ put a >> put b
-    StructExpr   a b   z -> x z 0x4A $ put a >> put b
-    DataExpr     a     z -> x z 0x4B $ put a
-    LambdaExpr   a b c z -> x z (lamexp a) $ put  b >> put c
-    MetaEvalExpr a     z -> x z 0x4F $ put a
-    where
-      x z i putx  = putWord8 i >> putx >> put z
-      lamexp t = case t of
-        FuncExprType -> 0x4C
-        RuleExprType -> 0x4D
-        PatExprType  -> 0x4E
+  put o = let x z w fn = putWord8 w >> fn >> put z in case o of
+    VoidExpr               -> putWord8 0x40
+    Literal        a     z -> x z 0x41 $ put a 
+    AssignExpr     a b c z -> x z 0x42 $ put a >> put b >> put c
+    Equation       a b c z -> x z 0x43 $ put a >> put b >> put c
+    PrefixExpr     a b   z -> x z 0x44 $ put a >> put b
+    ParenExpr      a     z -> x z 0x45 $ put a
+    ArraySubExpr   a b   z -> x z 0x46 $ put a >> put b
+    FuncCall       a b   z -> x z 0x47 $ put a >> put b
+    InitExpr       a b c z -> x z 0x48 $ put a >> put b >> put c
+    StructExpr     a b   z -> x z 0x49 $ put a >> put b
+    FuncExpr       a b c z -> x z 0x4A $ put a >> put b >> put c
+    RuleExpr       a b   z -> x z 0x4B $ put a >> put b
+    MetaEvalExpr   a     z -> x z 0x4C $ put a
+    ObjQualRefExpr a       -> put a
   get = do
-    w <- getWord8
+    w <- lookAhead getWord8
+    let f a = getWord8 >> a
     case w of
-      0x40 -> return VoidExpr
-      0x41 -> liftM2 Literal      get          get
-      0x42 -> liftM4 AssignExpr   get get  get get
-      0x43 -> liftM4 Equation     get get  get get
-      0x44 -> liftM3 PrefixExpr   get get      get
-      0x45 -> liftM2 ParenExpr    get          get
-      0x46 -> liftM3 ArraySubExpr get get      get
-      0x47 -> liftM3 FuncCall     get get      get
-      0x48 -> liftM3 DictExpr     get get      get
-      0x49 -> liftM3 ArrayExpr    get get      get
-      0x4A -> liftM3 StructExpr   get get      get
-      0x4B -> liftM2 DataExpr     get          get
-      0x4C -> lamexp FuncExprType
-      0x4D -> lamexp RuleExprType
-      0x4E -> lamexp PatExprType
-      0x4F -> liftM2 MetaEvalExpr  get                get
-      _    -> fail "expecting object expression"
-      where { lamexp typ = liftM3 (LambdaExpr typ) get get get }
+      0x40 -> f $ return VoidExpr
+      0x41 -> f $ liftM2 Literal      get         get
+      0x42 -> f $ liftM4 AssignExpr   get get get get
+      0x43 -> f $ liftM4 Equation     get get get get
+      0x44 -> f $ liftM3 PrefixExpr   get get     get
+      0x45 -> f $ liftM2 ParenExpr    get         get
+      0x46 -> f $ liftM3 ArraySubExpr get get     get
+      0x47 -> f $ liftM3 FuncCall     get get     get
+      0x48 -> f $ liftM4 InitExpr     get get get get
+      0x49 -> f $ liftM3 StructExpr   get get     get
+      0x4A -> f $ liftM4 FuncExpr     get get get get
+      0x4B -> f $ liftM3 RuleExpr     get get     get
+      0x4C -> f $ liftM2 MetaEvalExpr get         get
+      _    ->     liftM  ObjQualRefExpr get
+
+instance Binary IfExpr where
+  put (IfExpr a b loc) = putWord8 0x51 >> put a >> put b >> put loc
+  get = getWord8 >>= \w -> case w of
+    0x51 -> liftM3 IfExpr get get get
+    _    -> fail "expecting if expression"
+
+instance Binary ElseExpr where
+  put (ElseExpr a loc) = putWord8 0x52 >> put a >> put loc
+  get = getWord8 >>= \w -> case w of
+    0x52 -> liftM2 ElseExpr get get
+    _    -> fail "expecting else-if expression"
+
+instance Binary IfElseExpr where
+  put (IfElseExpr a b c loc) = putWord8 0x53 >> put a >> putList b >> maybe (return ()) put c >> put loc
+  get = getWord8 >>= \w -> case w of
+    0x53 -> liftM4 IfElseExpr get getList (optional get) get
+    _    -> fail "expecting if/else-if/else expression"
+
+instance Binary WhileExpr where
+  put (WhileExpr (IfExpr a b loc)) = putWord8 0x54 >> put a >> put b >> put loc
+  get = getWord8 >>= \w -> case w of
+    0x54 -> liftM3 (\a b c -> WhileExpr (IfExpr a b c)) get get get
+    _    -> fail "expecting while expression"
+
+--instance Binary ElseIfExpr where
+--  put o = case o of
+--    NullElseIfExpr       -> putWord8 0x51
+--    ElseExpr     b   loc -> putWord8 0x52 >> put b >> put loc
+--    ElseIfExpr o b n loc -> putWord8 0x53 >> put o >> put b >> put n >> put loc
+--  get = getWord8 >>= \w -> case w of
+--    0x51 -> return NullElseIfExpr
+--    0x52 -> liftM2 ElseExpr       get     get
+--    0x53 -> liftM4 ElseIfExpr get get get get
+--    _    -> fail "expecting if-then-else expression"
 
 instance Binary ScriptExpr where
   put s = case s of
-    EvalObject   a     z -> x z 0x51 $ put        a
-    IfThenElse   a b c z -> x z 0x52 $ put        a >> put b >> put c
-    TryCatch     a b c z -> x z 0x53 $ put        a >> put b >> put c
-    ForLoop      a b c z -> x z 0x54 $ put        a >> put b >> put c
-    WhileLoop    a b   z -> x z 0x55 $ put        a >> put b
-    ContinueExpr a b   z -> x z 0x56 $ putObjBool a >> put b
-    ReturnExpr   a b   z -> x z 0x57 $ putObjBool a >> put b
-    WithDoc      a b   z -> x z 0x58 $ put        a >> put b
+    IfThenElse   a       -> put a
+    WhileLoop    a       -> put a
+    EvalObject   a     z -> x z 0x55 $ put a
+    TryCatch     a b c z -> x z 0x56 $ put a >> maybe (return ()) put b >> maybe (return ()) put c
+    ForLoop      a b c z -> x z 0x57 $ put        a >> put b >> put c
+    ContinueExpr a b   z -> x z 0x58 $ putObjBool a >> put b
+    ReturnExpr   a b   z -> x z 0x59 $ putObjBool a >> put b
+    WithDoc      a b   z -> x z 0x5A $ put        a >> put b
     where
       x z i putx = putWord8 i >> putx >> put z
   get = do
-    w <- getWord8
+    w <- lookAhead getWord8
+    let x = getWord8
     case w of
-      0x51 -> liftM2 EvalObject   get                 get
-      0x52 -> liftM4 IfThenElse   get         get get get
-      0x53 -> liftM4 TryCatch     get         get get get
-      0x54 -> liftM4 ForLoop      get         get get get
-      0x55 -> liftM3 WhileLoop    get         get     get
-      0x56 -> liftM3 ContinueExpr getObjBool  get     get
-      0x57 -> liftM3 ReturnExpr   getObjBool  get     get
-      0x58 -> liftM3 WithDoc      get         get     get
-      _    -> fail "expecting script expression"
+      0x53 -> liftM IfThenElse get
+      0x54 -> liftM WhileLoop  get
+      0x55 -> x >> liftM2 EvalObject   get                 get
+      0x56 -> x >> liftM4 TryCatch     get (optional get) (optional get) get
+      0x57 -> x >> liftM4 ForLoop      get         get get get
+      0x58 -> x >> liftM3 ContinueExpr getObjBool  get     get
+      0x59 -> x >> liftM3 ReturnExpr   getObjBool  get     get
+      0x5A -> x >> liftM3 WithDoc      get         get     get
 
 instance Binary Location where
   put loc = case loc of
@@ -504,16 +599,16 @@ instance Binary Location where
 ----------------------------------------------------------------------------------------------------
 
 instance Binary CallableCode where
-  put sub = case sub of
-    CallableCode pat exe -> putWord8 0x25 >> putList pat >> put exe
-    GlobAction   pat exe -> putWord8 0x26 >> putList pat >> put exe
+  put (CallableCode pat ty exe) = putWord8 0x25 >> put     pat >> put ty >> put exe
   get = getWord8 >>= \w -> case w of
-    0x25 -> liftM2 CallableCode getList get
-    0x26 -> liftM2 GlobAction getList get
+    0x25 -> liftM3 CallableCode get     get get
+    _    -> fail "expecting CallableCode"
 
-instance Binary TypeCheck where
-  put = put . typeCheckSource
-  get = fmap (\nm -> TypeCheck{typeCheckSource=nm}) get
+instance Binary GlobAction where
+  put (GlobAction pat exe) = putWord8 0x26 >> putList pat >> put exe
+  get = getWord8 >>= \w -> case w of
+    0x26 -> liftM2 GlobAction getList get
+    _    -> fail "expecting GlobAction"
 
 instance Binary CodeBlock where
   put = putList . codeBlock
@@ -531,20 +626,20 @@ instance Binary Subroutine where
       , executable     = error msg
       }
 
-instance Binary ObjSetOp where
-  put op = putWord8 $ case op of
-    ExactSet  -> 0xC1
-    AnyOfSet  -> 0xC2
-    AllOfSet  -> 0xC3
-    OnlyOneOf -> 0xC4
-    NoneOfSet -> 0xC5
-  get = getWord8 >>= \w -> case w of
-    0xC1 -> return ExactSet
-    0xC2 -> return AnyOfSet
-    0xC3 -> return AllOfSet
-    0xC4 -> return OnlyOneOf
-    0xC5 -> return NoneOfSet
-    _    -> fail "expecting set-logical operator for object pattern"
+--instance Binary ObjSetOp where
+--  put op = putWord8 $ case op of
+--    ExactSet  -> 0xC1
+--    AnyOfSet  -> 0xC2
+--    AllOfSet  -> 0xC3
+--    OnlyOneOf -> 0xC4
+--    NoneOfSet -> 0xC5
+--  get = getWord8 >>= \w -> case w of
+--    0xC1 -> return ExactSet
+--    0xC2 -> return AnyOfSet
+--    0xC3 -> return AllOfSet
+--    0xC4 -> return OnlyOneOf
+--    0xC5 -> return NoneOfSet
+--    _    -> fail "expecting set-logical operator for object pattern"
 
 putEnumInfWith :: (a -> Put) -> Es.Inf a -> Put
 putEnumInfWith putx a = case a of
@@ -596,106 +691,153 @@ instance (Es.InfBound a, Integral a, Bits a) => Binary (Es.Set a) where
   put = putEnumSetWith putVLInt
   get = getEnumSetWith getFromVLInt
 
+instance Binary ObjListExpr where
+  put (ObjListExpr lst _) = putList lst
+  get = liftM2 ObjListExpr getList (return LocationUnknown)
+
 instance Binary TopLevelExpr where
   put d = case d of
     Attribute      a b   z -> x 0x61    $ put a >> put b          >> put z
-    TopFunc        a b c z -> x 0x62    $ put a >> put b >> put c >> put z
-    TopScript      a     z -> x 0x63    $ put a                   >> put z
-    TopLambdaExpr  a b c z -> x (top a) $ put b >> put c          >> put z
+    TopScript      a     z -> x 0x62    $ put a                   >> put z
     EventExpr      a b   z -> x (evt a) $ put b                   >> put z
     where
       x i putx = putWord8 i >> putx
-      top typ = case typ of
-        FuncExprType  -> 0x64
-        RuleExprType  -> 0x65
-        PatExprType   -> 0x66
       evt typ = case typ of
-        BeginExprType -> 0x67
-        EndExprType   -> 0x68
-        ExitExprType  -> 0x69
+        BeginExprType -> 0x63
+        EndExprType   -> 0x64
+        ExitExprType  -> 0x65
   get = do
     w <- getWord8
     case w of
       0x61 -> liftM3 Attribute      get get get
-      0x62 -> liftM4 TopFunc        get get get get
-      0x63 -> liftM2 TopScript      get get
-      0x64 -> toplam FuncExprType
-      0x65 -> toplam RuleExprType
-      0x66 -> toplam PatExprType
-      0x67 -> evtexp BeginExprType
-      0x68 -> evtexp EndExprType
-      0x69 -> evtexp ExitExprType
+      0x62 -> liftM2 TopScript      get get
+      0x63 -> evtexp BeginExprType
+      0x64 -> evtexp EndExprType
+      0x65 -> evtexp ExitExprType
       _    -> fail "expecting top-level expression"
-      where
-        toplam typ = liftM3 (TopLambdaExpr typ) get get get
-        evtexp typ = liftM2 (EventExpr     typ) get get
+      where { evtexp typ = liftM2 (EventExpr typ) get get }
+
+instance Binary RefQualifier where
+  put o = putWord8 $ case o of
+    LOCAL    -> 0x93
+    QTIME    -> 0x94
+    GLODOT   -> 0x95
+    STATIC   -> 0x96
+    GLOBAL   -> 0x97 -- same value as DOT
+  get = getWord8 >>= \w -> case w of
+    0x93 -> return LOCAL
+    0x94 -> return QTIME
+    0x95 -> return GLODOT
+    0x96 -> return STATIC
+    0x97 -> return GLOBAL  -- same value as DOT
+    _    -> fail "expecting reference qualifier"
 
 -- There are only 255 non-zero 8-bit prefixes available, I have reused a few here. To make it easier
 -- to remember, operators with the same string representation also have the same 8-bit serialization
 -- prefix.
 instance Binary PrefixOp where
   put o = putWord8 $ case o of
-    REF       -> 0x91
-    DEREF     -> 0x92
-    INVB      -> 0x93
-    NOT       -> 0x94
-    GLOBALPFX -> 0x95
-    LOCALPFX  -> 0x96
-    QTIMEPFX  -> 0x97
-    STATICPFX -> 0x98
-    POSTIV    -> 0x9A -- same value as ADD
-    NEGTIV    -> 0x9B -- same value as SUB
-    GLDOT     -> 0xA2 -- same value as DOT
+    INVB   -> 0x98
+    NOT    -> 0x99
+    POSTIV -> 0x9A -- same value as ADD
+    NEGTIV -> 0x9B -- same value as SUB
   get = getWord8 >>= \w -> case w of
-    0x91 -> return REF
-    0x92 -> return DEREF
-    0x93 -> return INVB
-    0x94 -> return NOT
-    0x95 -> return GLOBALPFX
-    0x96 -> return LOCALPFX
-    0x97 -> return QTIMEPFX
-    0x98 -> return STATICPFX
+    0x98 -> return INVB
+    0x99 -> return NOT
     0x9A -> return POSTIV -- same value as ADD
     0x9B -> return NEGTIV -- same value as SUB
-    0xA2 -> return GLDOT  -- same value as DOT
-    _    -> fail "expecting prefix operator"
+    _    -> fail "expecting reference prefix operator"
+
+--instance Binary RefInfixOp where
+--  put o = putWord8 $ case o of
+--    POINT -> 0xA1
+--    DOT   -> 0xA2
+--  get = getWord8 >>= \w -> case w of
+--    0xA1 -> return POINT
+--    0xA2 -> return DOT
+--    _ -> fail "expecting reference infix operator"
 
 instance Binary InfixOp where
   put o = putWord8 $ case o of
-    ADD   -> 0x9A
-    SUB   -> 0x9B
-    MULT  -> 0x9C
-    DIV   -> 0x9D
-    MOD   -> 0x9E
-    POW   -> 0x9F
-    POINT -> 0xA1
-    DOT   -> 0xA2
-    OR    -> 0xA3
-    AND   -> 0xA4
-    EQUL  -> 0xA5
-    NEQUL -> 0xA6
-    ORB   -> 0xA7
-    ANDB  -> 0xA8
-    XORB  -> 0xA9
-    SHL   -> 0xAA
-    SHR   -> 0xAB
+    ADD   -> 0x71
+    SUB   -> 0x72
+    MULT  -> 0x73
+    DIV   -> 0x74
+    MOD   -> 0x75
+    POW   -> 0x76
+    ORB   -> 0x77
+    ANDB  -> 0x78
+    XORB  -> 0x79
+    SHL   -> 0x7A
+    SHR   -> 0x7B
+    OR    -> 0x7C
+    AND   -> 0x7D
+    EQUL  -> 0x7E
+    NEQUL -> 0x7F
+    GTN   -> 0x80
+    LTN   -> 0x81
+    GTEQ  -> 0x82
+    LTEQ  -> 0x83
+    ARROW -> 0x84
   get = getWord8 >>= \w -> case w of
-    0x9A -> return ADD
-    0x9B -> return SUB
-    0x9C -> return MULT
-    0x9D -> return DIV
-    0x9E -> return MOD
-    0x9F -> return POW
-    0xA1 -> return POINT
-    0xA2 -> return DOT
-    0xA3 -> return OR
-    0xA4 -> return AND
-    0xA5 -> return EQUL
-    0xA6 -> return NEQUL
-    0xA7 -> return ORB
-    0xA8 -> return ANDB
-    0xA9 -> return XORB
-    0xAA -> return SHL
-    0xAB -> return SHR
+    0x71 -> return ADD
+    0x72 -> return SUB
+    0x73 -> return MULT
+    0x74 -> return DIV
+    0x75 -> return MOD
+    0x76 -> return POW
+    0x77 -> return ORB
+    0x78 -> return ANDB
+    0x79 -> return XORB
+    0x7A -> return SHL
+    0x7B -> return SHR
+    0x7C -> return OR
+    0x7D -> return AND
+    0x7E -> return EQUL
+    0x7F -> return NEQUL
+    0x80 -> return GTN
+    0x81 -> return LTN
+    0x82 -> return GTEQ
+    0x83 -> return LTEQ
+    0x84 -> return ARROW
     _ -> fail "expecting infix operator"
+
+----------------------------------------------------------------------------------------------------
+
+instance Binary TypeSymbol where
+  put t = case t of
+    VoidType   -> putWord8 0xA1
+    CoreType t -> putWord8 0xA2 >> putWord8 (fromIntegral (fromEnum t))
+    TypeVar  t -> putWord8 0xA3 >> put t
+    AnyType    -> putWord8 0xA4
+  get = getWord8 >>= \w -> case w of
+    0xA1 -> return VoidType
+    0xA2 -> fmap (CoreType . toEnum . fromIntegral) getWord8
+    0xA3 -> fmap TypeVar get
+    0xA4 -> return AnyType
+    _    -> fail "expecting TypeSymbol"
+
+instance Binary TypeStruct where
+  put t = case t of
+    TypeSingle   t -> put t
+    TypeSequence t -> putWord8 0xA5 >> putList t
+    TypeChoice   t -> putWord8 0xA6 >> putList t
+  get = lookAhead getWord8 >>= \w -> case w of
+    0xA5 -> getWord8 >> fmap TypeSequence getList
+    0xA6 -> getWord8 >> fmap TypeChoice   getList
+    w    -> fmap TypeSingle get
+
+instance Binary Type where
+  put t = case t of
+    TypeConst  t -> put t
+    TypeProp r t -> putWord8 0xA7 >> put r >> put t
+    TypeFunc r t -> putWord8 0xA8 >> put r >> put t
+  get = lookAhead getWord8 >>= \w -> case w of
+    0xA5 -> getWord8 >> liftM2 TypeProp get get
+    0xA6 -> getWord8 >> liftM2 TypeFunc get get
+    _    -> fmap TypeConst get
+
+instance Binary TypeCodeBlock where
+  put (TypeCodeBlock block) = put block
+  get = fmap TypeCodeBlock get
 

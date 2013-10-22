@@ -58,7 +58,7 @@ import Debug.Trace
 -- data types in your Haskell program into a form that can be manipulated by Dao scripts.
 --
 -- Essentially, this is a simple zipper monad for traversing 'Dao.Object.T_tree' objects, which are 'Dao.Tree.Tree's with
--- 'Dao.String.UStr's on the branches and 'Dao.Object.Object's on the leaves (nodes).
+-- 'Dao.String.Name's on the branches and 'Dao.Object.Object's on the leaves (nodes).
 newtype Update a = Update { updateToPTrans :: PTrans UpdateErr (UpdateTreeT Name Object Identity) a }
 instance Monad Update where
   (Update fn) >>= mfn = Update (fn >>= updateToPTrans . mfn)
@@ -69,7 +69,7 @@ instance Functor Update where
 instance MonadPlus Update where
   mzero = Update mzero
   mplus (Update a) (Update b) = Update (mplus a b)
-instance MonadState (Tree UStr Object) Update where
+instance MonadState (Tree Name Object) Update where
   get = Update $ PTrans $ gets focus >>= return . OK
   put tree = Update $ PTrans $ modify (\st -> st{focus=tree}) >> return (OK ())
 instance MonadError UpdateErr Update where
@@ -145,6 +145,13 @@ reconstruct fn tree = fst (runUpdate fn tree)
 this :: Update Object
 this = get >>= maybe mzero return . getLeaf
 
+-- | This is a 'Control.Monad.guard'-like function. Because 'tryWith' actually steps onto the
+-- branch, and there maye be situations where you want to check if a branch exists without actually
+-- stepping on to that branch, use this function to check if a branch exists and backtrack (evaluate
+-- to 'Control.Monad.mzero') if it does not exist.
+guardBranch :: String -> Update ()
+guardBranch addr = tryWith addr (return ())
+
 -- | Same as 'atAddress' but but more convenient as it takes just one string and passes it to
 -- 'atAddress' as @['Dao.String.ustr' address]@. This function is the counter operation of itself.
 -- In other words, @'with' addr putFunc@ is the counter operation of @'with' addr getFunc@ where
@@ -178,6 +185,12 @@ getDataAt addr = with addr getData
 tryGetDataAt :: Structured a => String -> Update a
 tryGetDataAt addr = tryWith addr tryGetData
 
+getMaybe :: Structured a => Update (Maybe a)
+getMaybe = mplus (fmap Just getData) (return Nothing)
+
+getMaybeAt :: Structured a => String -> Update (Maybe a)
+getMaybeAt addr = with addr $ getMaybe
+
 -- | Place an object at in current node. This function is the counter opreation of 'this'.
 place :: Object -> Update ()
 place obj = placeWith (const (Just obj))
@@ -193,6 +206,12 @@ putData = putTree . dataToStruct
 -- 'getDataAt'.
 putDataAt :: Structured a => String -> a -> Update ()
 putDataAt addr obj = with addr (putData obj)
+
+putMaybe :: Structured a => Maybe a -> Update ()
+putMaybe = maybe (return ()) putData
+
+putMaybeAt :: Structured a => String -> Maybe a -> Update ()
+putMaybeAt addr = with addr . putMaybe
 
 -- | Update an object at the current node.
 placeWith :: ModLeaf Object -> Update ()
@@ -232,7 +251,7 @@ peekAddress addr = atAddress addr this
 
 putUStrData :: UStrType str => str -> Update ()
 putUStrData s =
-  let u = ustr s in place (if ulength u == 1 then OChar (head (uchars u)) else OString u)
+  let u = toUStr s in place (if ulength u == 1 then OChar (head (uchars u)) else OString u)
 
 getUStrData :: UStrType str => str -> Update UStr
 getUStrData msg = do
@@ -240,7 +259,7 @@ getUStrData msg = do
   case a of
     OString a -> return a
     OChar   c -> return (ustr [c])
-    _         -> fail ("was expecting a string for constructing a "++uchars (ustr msg)++" object")
+    _         -> fail ("was expecting a string for constructing a "++uchars msg++" object")
 
 getIntegerData :: Integral a => String -> Update a
 getIntegerData msg = do
@@ -278,6 +297,12 @@ getBoolData msg tru fals = do
 -- Instantiation of common data types into the 'Strcutured' class. Although you may be better off
 -- instantiation your own lists or 'Data.Map.Map's, you can use these default instantiations if you
 -- would rather not bother writing your own instances.
+
+instance Structured () where
+  dataToStruct _ = deconstruct $ place ONull
+  structToData = reconstruct $ this >>= \o -> case o of
+    ONull -> return ()
+    o     -> fail $ "expecting () as ONull value, instead got "++show (objType o)
 
 instance Structured Object where
   dataToStruct = deconstruct . place
@@ -328,15 +353,21 @@ instance Structured StructChar where
 --    OPair (a, b) -> assumePValue $
 --      objToIntegral a >>= \a -> objToIntegral b >>= \b -> return (a % b)
 
+putListWith :: (a -> Update ()) -> [a] -> Update ()
+putListWith dat2srct ox = place (OList (fmap (OTree . deconstruct . dat2srct) ox))
+
+getListWith :: Update a -> Update [a]
+getListWith srct2dat = do
+  o <- this
+  case o of
+    OList ox -> forM ox $ \o -> case o of
+      OTree o -> assumePValue (reconstruct srct2dat o)
+      _       -> fail "was expecting structured data in each list item"
+    _        -> fail "was expecting a list object"
+
 instance Structured a => Structured [a] where
-  dataToStruct ox = deconstruct $ place (OList (Prelude.map (OTree . dataToStruct) ox))
-  structToData = reconstruct $ do
-    o <- this
-    case o of
-      OList ox -> forM ox $ \o -> case o of
-        OTree o -> assumePValue $ structToData o
-        _ -> fail "was expecting structured data in each list item"
-      _ -> fail "was expecting a list object"
+  dataToStruct ax = deconstruct (putListWith putData ax)
+  structToData    = reconstruct (getListWith getData)
 
 instance Structured (Tree Name Object) where
   dataToStruct a = deconstruct $ place (OTree a)

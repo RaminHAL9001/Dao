@@ -89,14 +89,14 @@ class Typeable typ => ObjectClass typ where
   -- your @typ@ at runtime. Use the 'defClass' function to create an 'objectInterface' for your type
   -- using the convenient 'DaoClassDef' monad:
   -- > instance ObjectClass MyType where
-  -- >     objectInterface = 'defClass' ('autoDefEquality' >> 'autoDefOrering' >> 'autoDefBinaryFmt' >> ... )
+  -- >     objectInterface = 'defClass' ('autoDefEquality' >> 'autoDefOrering' >> 'autoDefBinaryFormat' >> ... )
   objectInterface :: ObjectInterface typ
   -- | The default instantiation of 'new' works almost exactly as a C++ programmer would expect:
   -- simply provide a value of your @typ@ and a new 'Object' encapsulaing that value is created.
   new :: typ -> Object
   new a = mkNew a objectInterface where
     mkNew :: (Typeable typ, ObjectClass typ) => typ -> ObjectInterface typ -> Object
-    mkNew a ifc = OHaskell $ objectInterfaceToDynamic $ ifc{objectValue=a}
+    mkNew a ifc = OHaskell (toDyn a) $ objectInterfaceToDynamic $ ifc
 
 -- | This class is used to define methods of converting arbitrary types to 'Dao.Tree.Tree's, where
 -- the leaves in the 'Dao.Tree.Tree' are Dao 'Object's. The branches of the 'Dao.Tree.Tree's are all
@@ -112,7 +112,7 @@ class Structured typ where
 data UpdateErr
   = UpdateErr
     { updateErrMsg  :: Maybe UStr -- ^ the message explaining why the error ocurred.
-    , updateErrAddr :: [UStr]     -- ^ the address at which the error was thrown.
+    , updateErrAddr :: [Name]     -- ^ the address at which the error was thrown.
     , updateErrTree :: T_tree     -- ^ the sub-tree at the address at which the error was thrown.
     }
 instance Show UpdateErr where
@@ -129,23 +129,22 @@ data ObjectInterface typ =
   ObjectInterface
   { objHaskellType   :: TypeRep -- ^ this type is deduced from the initial value provided to the 'defObjectInterface'.
   , objCastFrom      :: Maybe (Object -> typ)                                                     -- ^ defined by 'defCastFrom'
-  , objEquality      :: Maybe (typ -> Object -> Bool)                                             -- ^ defined by 'defEquality'
-  , objOrdering      :: Maybe (typ -> Object -> Ordering)                                         -- ^ defined by 'defOrdering'
-  , objBinaryFmt     :: Maybe (typ -> T_bytes, T_bytes -> typ)                                    -- ^ defined by 'defBinaryFmt'
+  , objEquality      :: Maybe (typ -> typ -> Bool)                                                -- ^ defined by 'defEquality'
+  , objOrdering      :: Maybe (typ -> typ -> Ordering)                                            -- ^ defined by 'defOrdering'
+  , objBinaryFormat  :: Maybe (typ -> T_bytes, T_bytes -> typ)                                    -- ^ defined by 'defBinaryFmt'
   , objNullTest      :: Maybe (typ -> Bool)                                                       -- ^ defined by 'defNullTest'
-  , objIterator      :: Maybe (typ -> Exec [Object])                                              -- ^ defined by 'defIterator'
+  , objIterator      :: Maybe (typ -> Exec [Object], typ -> [Object] -> Exec typ)                 -- ^ defined by 'defIterator'
   , objIndexer       :: Maybe (typ -> Object -> Exec Object)                                      -- ^ defined by 'defIndexer'
   , objTreeFormat    :: Maybe (typ -> Exec T_tree, T_tree -> Exec typ)                            -- ^ defined by 'defTreeFormat'
   , objInitializer   :: Maybe ([Object] -> T_tree -> Exec typ)                                    -- ^ defined by 'defInitializer'
   , objUpdateOpTable :: Maybe (Array UpdateOp (Maybe (UpdateOp -> typ -> Object -> Exec Object))) -- ^ defined by 'defUpdateOp'
   , objInfixOpTable  :: Maybe (Array InfixOp  (Maybe (InfixOp  -> typ -> Object -> Exec Object))) -- ^ defined by 'defInfixOp'
   , objPrefixOpTable :: Maybe (Array PrefixOp (Maybe (PrefixOp -> typ -> Exec Object)))           -- ^ defined by 'defPrefixOp'
-  , objMethods       :: T.Tree Name (typ -> DaoFunc)                                              -- ^ defined by 'defMethod'
-  , objectValue      :: typ -- ^ defined directly by passing this value as typ parameter to 'defObjectInterface'.
+  , objCallable      :: Maybe (typ -> Exec [CallableCode])                                        -- ^ defined by 'defCallable'
   }
   deriving Typeable
-instance Eq  typ => Eq  (ObjectInterface typ) where { typ==b = objectValue typ == objectValue b }
-instance Ord typ => Ord (ObjectInterface typ) where { compare typ b = compare (objectValue typ) (objectValue b) }
+instance Eq  (ObjectInterface typ) where { a==b = objHaskellType a == objHaskellType b }
+instance Ord (ObjectInterface typ) where { compare a b = compare (objHaskellType a) (objHaskellType b) }
 
 typeRepToName :: TypeRep -> [Name]
 typeRepToName = split . show where
@@ -160,7 +159,8 @@ typeRepToName = split . show where
 -- original type (to convert inputs of functions). Each coversion function takes a string as it's
 -- first parameter, this is a string containing the name of the function that is currently making
 -- use of the conversion operation. Should you need to use 'Prelude.error' or 'execError', this
--- string will allow you to throw more informative error messages.
+-- string will allow you to throw more informative error messages. WARNING: this function leaves
+-- 'objHaskellType' unchanged, the calling context must change it.
 objectInterfaceAdapter
   :: (Typeable typ_a, Typeable typ_b)
   => (String -> typ_a -> typ_b)
@@ -169,38 +169,32 @@ objectInterfaceAdapter
   -> ObjectInterface typ_b
 objectInterfaceAdapter a2b b2a ifc = 
   let uninit  = error "'Dao.Object.fmapObjectInterface' evaluated on uninitialized object"
-      newVal  = objectValue ifc
-      newType = typeOf newVal
-  in  ObjectInterface
-      { objHaskellType   = newType
-      , objCastFrom      = let n="objCastFrom"      in fmap (fmap (a2b n)) (objCastFrom ifc)
-      , objEquality      = let n="objEquality"      in fmap (\eq   b -> eq   (b2a n b)) (objEquality ifc)
-      , objOrdering      = let n="objOrdering"      in fmap (\ord  b -> ord  (b2a n b)) (objOrdering ifc)
-      , objBinaryFmt     = let n="objBinaryFmt"     in fmap (\ (toBin , fromBin) -> (toBin  . b2a n, a2b n . fromBin )) (objBinaryFmt  ifc)
+  in  ifc
+      { objCastFrom      = let n="objCastFrom"      in fmap (fmap (a2b n)) (objCastFrom ifc)
+      , objEquality      = let n="objEquality"      in fmap (\eq  a b -> eq  (b2a n a) (b2a n b)) (objEquality ifc)
+      , objOrdering      = let n="objOrdering"      in fmap (\ord a b -> ord (b2a n b) (b2a n b)) (objOrdering ifc)
+      , objBinaryFormat  = let n="objBinaryFormat"  in fmap (\ (toBin , fromBin) -> (toBin  . b2a n, a2b n . fromBin )) (objBinaryFormat  ifc)
       , objNullTest      = let n="objNullTest"      in fmap (\null b -> null (b2a n b)) (objNullTest ifc)
-      , objIterator      = let n="objIterator"      in fmap (\iter b -> iter (b2a n b)) (objIterator ifc)
+      , objIterator      = let n="objIterator"      in fmap (\ (iter, fold) -> (iter . b2a n, \typ -> fmap (a2b n) . fold (b2a n typ))) (objIterator ifc)
       , objIndexer       = let n="objIndexer"       in fmap (\indx b -> indx (b2a n b)) (objIndexer  ifc)
       , objTreeFormat    = let n="objTreeFormat"    in fmap (\ (toTree, fromTree) -> (toTree . b2a n, fmap (a2b n) . fromTree)) (objTreeFormat ifc)
       , objInitializer   = let n="objInitializer"   in fmap (fmap (fmap (fmap (a2b n)))) (objInitializer ifc)
       , objUpdateOpTable = let n="objUpdateOpTable" in fmap (fmap (fmap (\updt op b -> updt op (b2a n b)))) (objUpdateOpTable ifc)
       , objInfixOpTable  = let n="objInfixOpTable"  in fmap (fmap (fmap (\infx op b -> infx op (b2a n b)))) (objInfixOpTable  ifc)
       , objPrefixOpTable = let n="objPrefixOpTabl"  in fmap (fmap (fmap (\prfx op b -> prfx op (b2a n b)))) (objPrefixOpTable ifc)
-      , objMethods       = let n="objMethods"       in fmap (.(b2a n)) (objMethods ifc)
-      , objectValue      = let n="objectValue"      in a2b n newVal
+      , objCallable      = let n="objCallable"      in fmap (\eval typ -> eval (b2a n typ)) (objCallable    ifc)
       }
 
 objectInterfaceToDynamic :: Typeable typ => ObjectInterface typ -> ObjectInterface Dynamic
 objectInterfaceToDynamic oi = objectInterfaceAdapter (\ _ -> toDyn) (from oi) oi where
   from :: Typeable typ => ObjectInterface typ -> String -> Dynamic -> typ
   from oi msg dyn = fromDyn dyn (dynErr oi msg dyn)
-  origType :: Typeable typ => ObjectInterface typ -> typ
-  origType oi = objectValue oi
   uninit = error $
     "'Dao.Object.objectInterfaceToDynamic' evaluated an uninitialized 'ObjectInterface'"
   dynErr :: Typeable typ => ObjectInterface typ -> String -> Dynamic -> typ
   dynErr oi msg dyn = error $ concat $
     [ "The 'Dao.Object.", msg
-    , "' function defined for objects of type ", show (typeOf (origType oi))
+    , "' function defined for objects of type ", show (objHaskellType oi)
     , " was evaluated on an object of type ", show (dynTypeRep dyn)
     ]
 
@@ -210,25 +204,25 @@ objectInterfaceToDynamic oi = objectInterfaceAdapter (\ _ -> toDyn) (from oi) oi
 data ObjIfc typ =
   ObjIfc
   { objIfcCastFrom      :: Maybe (Object -> typ)
-  , objIfcEquality      :: Maybe (typ -> Object -> Bool)
-  , objIfcOrdering      :: Maybe (typ -> Object -> Ordering)
-  , objIfcBinaryFmt     :: Maybe (typ -> T_bytes, T_bytes -> typ)
+  , objIfcEquality      :: Maybe (typ -> typ -> Bool)
+  , objIfcOrdering      :: Maybe (typ -> typ -> Ordering)
+  , objIfcBinaryFormat  :: Maybe (typ -> T_bytes, T_bytes -> typ)
   , objIfcNullTest      :: Maybe (typ -> Bool)
-  , objIfcIterator      :: Maybe (typ -> Exec [Object])
+  , objIfcIterator      :: Maybe (typ -> Exec [Object], typ -> [Object] -> Exec typ)
   , objIfcIndexer       :: Maybe (typ -> Object -> Exec Object)
   , objIfcTreeFormat    :: Maybe (typ -> Exec T_tree, T_tree -> Exec typ)
   , objIfcInitializer   :: Maybe ([Object] -> T_tree -> Exec typ)
   , objIfcUpdateOpTable :: [(UpdateOp, UpdateOp -> typ -> Object -> Exec Object)]
   , objIfcInfixOpTable  :: [(InfixOp , InfixOp  -> typ -> Object -> Exec Object)]
   , objIfcPrefixOpTable :: [(PrefixOp, PrefixOp -> typ -> Exec Object)]
-  , objIfcMethods       :: T.Tree Name [typ -> DaoFunc]
+  , objIfcCallable      :: Maybe (typ -> Exec [CallableCode])
   }
 initObjIfc =
   ObjIfc
   { objIfcCastFrom      = Nothing
   , objIfcEquality      = Nothing
   , objIfcOrdering      = Nothing
-  , objIfcBinaryFmt     = Nothing
+  , objIfcBinaryFormat  = Nothing
   , objIfcNullTest      = Nothing
   , objIfcIterator      = Nothing
   , objIfcIndexer       = Nothing
@@ -237,7 +231,7 @@ initObjIfc =
   , objIfcUpdateOpTable = []
   , objIfcInfixOpTable  = []
   , objIfcPrefixOpTable = []
-  , objIfcMethods       = T.Void
+  , objIfcCallable      = Nothing
   }
 
 -- | A handy monadic interface for defining an 'ObjectInterface' using nice, clean procedural
@@ -274,10 +268,7 @@ defCastFrom fn = updObjIfc(\st->st{objIfcCastFrom=Just fn})
 -- 'defCastFrom', this function will fail, but it will fail lazily and at runtime, perhaps when you
 -- least expect it, so be sure to define 'defCastFrom' at some point.
 autoDefEquality :: (Typeable typ, Eq typ, ObjectClass typ) => DaoClassDef typ ()
-autoDefEquality = updObjIfc (\st -> st{objIfcEquality=Just (equals objectInterface)}) where
-  equals :: (Typeable typ, Eq typ, ObjectClass typ) => ObjectInterface typ -> typ -> Object -> Bool
-  equals ifc a obj = maybe (err a) (\cast -> a == cast obj) (objCastFrom ifc)
-  err a = error ("type casting not defined for "++show (typeOf a)++" type")
+autoDefEquality = defEquality (==)
 
 -- | The callback function defined here is used where objects of your @typ@ might be compared to
 -- other objects using the @==@ and @!=@ operators in Dao programs. However using this is slightly
@@ -288,7 +279,7 @@ autoDefEquality = updObjIfc (\st -> st{objIfcEquality=Just (equals objectInterfa
 -- This function differs from 'autoDefEquality' because you must provide a customized equality
 -- relation for your @typ@, if the 'autoDefEquality' and 'defCastFrom' functions are to be avoided
 -- for some reason.
-defEquality :: Typeable typ => (typ -> Object -> Bool) -> DaoClassDef typ ()
+defEquality :: Typeable typ => (typ -> typ -> Bool) -> DaoClassDef typ ()
 defEquality fn = updObjIfc(\st->st{objIfcEquality=Just fn})
 
 -- | The callback function defined here is used where objects of your @typ@ might be compared to
@@ -304,10 +295,7 @@ defEquality fn = updObjIfc(\st->st{objIfcEquality=Just fn})
 -- function will fail, but it will fail lazily and at runtime, perhaps when you least expect it, so
 -- be sure to define 'defCastFrom' at some point.
 autoDefOrdering :: (Typeable typ, Ord typ, ObjectClass typ) => DaoClassDef typ ()
-autoDefOrdering = updObjIfc (\st -> st{objIfcOrdering=Just (comp objectInterface)}) where
-  comp :: (Typeable typ, Ord typ, ObjectClass typ) => ObjectInterface typ -> typ -> Object -> Ordering
-  comp ifc a obj = maybe (err a) (\cast -> compare a (cast obj)) (objCastFrom ifc)
-  err a = error ("type casting not defined for "++show (typeOf a)++" type")
+autoDefOrdering = defOrdering compare
 
 -- | The callback function defined here is used where objects of your @typ@ might be compared to
 -- other objects using the @<@, @>@, @<=@, and @>=@ operators in Dao programs. However using this is
@@ -317,7 +305,7 @@ autoDefOrdering = updObjIfc (\st -> st{objIfcOrdering=Just (comp objectInterface
 -- 
 -- Define a customized ordering for your @typ@, if the 'autoDefEquality' and 'defCastFrom'
 -- functions are to be avoided for some reason.
-defOrdering :: Typeable typ => (typ -> Object -> Ordering) -> DaoClassDef typ ()
+defOrdering :: Typeable typ => (typ -> typ -> Ordering) -> DaoClassDef typ ()
 defOrdering fn = updObjIfc(\st->st{objIfcOrdering=Just fn})
 
 -- | The callback function defined here is used if an object of your @typ@ should ever need to be
@@ -327,7 +315,7 @@ defOrdering fn = updObjIfc(\st->st{objIfcOrdering=Just fn})
 -- It automatically define the binary encoder and decoder using the 'Data.Binary.Binary' class
 -- instantiation for this @typ@.
 autoDefBinaryFmt :: (Typeable typ, B.Binary typ) => DaoClassDef typ ()
-autoDefBinaryFmt = updObjIfc(\st->st{objIfcBinaryFmt=Just(B.encode,B.decode)})
+autoDefBinaryFmt = updObjIfc(\st->st{objIfcBinaryFormat=Just(B.encode,B.decode)})
 
 -- | This function is used if an object of your @typ@ should ever need to be stored into a binary
 -- file in persistent storage (like your filesystem) or sent across a channel (like a UNIX pipe or a
@@ -339,7 +327,10 @@ autoDefBinaryFmt = updObjIfc(\st->st{objIfcBinaryFmt=Just(B.encode,B.decode)})
 -- function. However, it would be better if you instantiated 'Data.Binary.Binary' and used
 -- 'autoDefBinaryFmt' instead.
 defBinaryFmt :: (Typeable typ, B.Binary typ) => (typ -> T_bytes) -> (T_bytes -> typ) -> DaoClassDef typ ()
-defBinaryFmt encode decode = updObjIfc(\st->st{objIfcBinaryFmt=Just(encode,decode)})
+defBinaryFmt encode decode = updObjIfc(\st->st{objIfcBinaryFormat=Just(encode,decode)})
+
+autoDefNullTest :: (Typeable typ, HasNullValue typ) => DaoClassDef typ ()
+autoDefNullTest = defNullTest testNull
 
 -- | The callback function defined here is used if an object of your @typ@ is ever used in an @if@
 -- or @while@ statement in a Dao program. This function will return @Prelude.True@ if the object is
@@ -350,12 +341,16 @@ defNullTest :: Typeable typ => (typ -> Bool) -> DaoClassDef typ ()
 defNullTest fn = updObjIfc(\st->st{objIfcNullTest=Just fn})
 
 -- | The callback function defined here is used if an object of your @typ@ is ever used in a @for@
--- statement in a Dao program. The Dao execution unit tries to evaluate @for@ statements as lazily
--- as possible, so this function could return an infinite list if you don't mind forcing execution
--- to halt by some other means, for example by a timeout mechanism. But this is bad design so you
--- shouldn't do that, make sure the list you return is finite.
-defIterator :: Typeable typ => (typ -> Exec [Object]) -> DaoClassDef typ ()
-defIterator fn = updObjIfc(\st->st{objIfcIterator=Just fn})
+-- statement in a Dao program. However it is much better to instantiate your @typ@ into the
+-- 'HasIterator' class and use 'autoDefIterator' instead.
+defIterator :: Typeable typ => (typ -> Exec [Object]) -> (typ -> [Object] -> Exec typ) -> DaoClassDef typ ()
+defIterator iter fold = updObjIfc(\st->st{objIfcIterator=Just(iter,fold)})
+
+-- | Using the instantiation of the 'HasIterator' class for your @typ@, installs the necessary
+-- callbacks into the 'ObjectInterface' to allow your data type to be iterated over in the Dao
+-- programming language when it is used in a "for" statement.
+autoDefIterator :: (Typeable typ, HasIterator typ) => DaoClassDef typ ()
+autoDefIterator = defIterator iterateObject foldObject
 
 -- | The callback function defined here is used at any point in a Dao program where a variable is
 -- subscripted with square brackets, for example in the statement: @x[0] = t[1][A][B];@ The object
@@ -463,9 +458,12 @@ defPrefixOp op fn = updObjIfc $ \st -> st{objIfcPrefixOpTable = objIfcPrefixOpTa
 -- runtime, and so the functions defined at runtime should not be masked by functions defined by
 -- 'defMethod'. The 'defMethod' functions, therefore, are the immutable default functions for those
 -- function names.
-defMethod :: Typeable typ => Name -> (typ -> DaoFunc) -> DaoClassDef typ ()
-defMethod nm fn = updObjIfc $ \st ->
-  st{objIfcMethods = T.execUpdateTree (T.goto [nm] >> T.modifyLeaf(<>(Just [fn]))) (objIfcMethods st)}
+--defMethod :: Typeable typ => Name -> (typ -> DaoFunc) -> DaoClassDef typ ()
+--defMethod nm fn = updObjIfc $ \st ->
+--  st{objIfcMethods = T.execUpdateTree (T.goto [nm] >> T.modifyLeaf(<>(Just [fn]))) (objIfcMethods st)}
+
+defCallable :: Typeable typ => (typ -> Exec [CallableCode]) -> DaoClassDef typ ()
+defCallable fn = updObjIfc (\st -> st{objIfcCallable=Just fn})
 
 -- | Rocket. Yeah. Sail away with you.
 defLeppard :: Typeable typ => rocket -> yeah -> DaoClassDef typ ()
@@ -486,20 +484,20 @@ defObjectInterface :: Typeable typ => typ -> DaoClassDef typ ig -> ObjectInterfa
 defObjectInterface init defIfc =
   ObjectInterface
   { objHaskellType    = typ
-  , objectValue       = init
-  , objCastFrom       = objIfcCastFrom    ifc
-  , objEquality       = objIfcEquality    ifc
-  , objOrdering       = objIfcOrdering    ifc
-  , objBinaryFmt      = objIfcBinaryFmt   ifc
-  , objNullTest       = objIfcNullTest    ifc
-  , objIterator       = objIfcIterator    ifc
-  , objIndexer        = objIfcIndexer     ifc
-  , objTreeFormat     = objIfcTreeFormat  ifc
-  , objInitializer    = objIfcInitializer ifc
+  , objCastFrom       = objIfcCastFrom     ifc
+  , objEquality       = objIfcEquality     ifc
+  , objOrdering       = objIfcOrdering     ifc
+  , objBinaryFormat   = objIfcBinaryFormat ifc
+  , objNullTest       = objIfcNullTest     ifc
+  , objIterator       = objIfcIterator     ifc
+  , objIndexer        = objIfcIndexer      ifc
+  , objTreeFormat     = objIfcTreeFormat   ifc
+  , objInitializer    = objIfcInitializer  ifc
   , objUpdateOpTable  = mkArray "defUpdateOp" $ objIfcUpdateOpTable ifc
   , objInfixOpTable   = mkArray "defInfixOp"  $ objIfcInfixOpTable  ifc
   , objPrefixOpTable  = mkArray "defPrefixOp" $ objIfcPrefixOpTable ifc
-  , objMethods        = setupMethods (T.assocs (objIfcMethods ifc))
+  , objCallable       = objIfcCallable     ifc
+--  , objMethods        = setupMethods (T.assocs (objIfcMethods ifc))
   }
   where
     typ               = typeOf init
@@ -528,20 +526,25 @@ defObjectInterface init defIfc =
 
 ----------------------------------------------------------------------------------------------------
 
+-- $Object_types
+-- Here we have a lambda calculus for describing types. Computationally, it is very similar to the
+-- Prolog programming language, however an 'ObjType' is written using a subset the Dao scripting
+-- langauge.
+
 showEncoded :: [Word8] -> String
 showEncoded encoded = seq encoded (concatMap (\b -> showHex b " ") encoded)
 
 type T_int      = Int
---type T_word     = Word64
---type T_long     = Integer
---type T_ratio    = Rational
---type T_complex  = Complex T_float
---type T_float    = Double
+type T_word     = Word64
+type T_long     = Integer
+type T_ratio    = Rational
+type T_complex  = Complex T_float
+type T_float    = Double
 type T_time     = UTCTime
 type T_diffTime = NominalDiffTime
 type T_char     = Char
 type T_string   = UStr
-type T_ref      = Reference
+type T_ref      = QualRef
 --type T_pair     = (Object, Object)
 type T_list     = [Object]
 --type T_set      = S.Set Object
@@ -555,10 +558,10 @@ type T_tree     = T.Tree Name Object
 type T_bytes    = B.ByteString
 type T_haskell  = ObjectInterface Dynamic
 
-data TypeID
+data CoreType
   = NullType
   | TrueType
-  | TypeType
+--  | TypeType
   | IntType
   | WordType
   | DiffTimeType
@@ -569,86 +572,86 @@ data TypeID
   | TimeType
   | CharType
   | StringType
-  | PairType
+--  | PairType
   | RefType
   | ListType
-  | SetType
-  | ArrayType
-  | IntMapType
-  | DictType
+--  | SetType
+--  | ArrayType
+--  | IntMapType
+--  | DictType
   | TreeType
-  | GlobType
-  | ScriptType
-  | RuleType
+--  | GlobType
+--  | ScriptType
+--  | RuleType
   | BytesType
   | HaskellType
   deriving (Eq, Ord, Typeable, Enum, Bounded)
 
-instance Es.InfBound TypeID where
+instance Es.InfBound CoreType where
   minBoundInf = Es.Point minBound
   maxBoundInf = Es.Point maxBound
 
-instance Show TypeID where
+instance Show CoreType where
   show t = case t of
     NullType     -> "null"
     TrueType     -> "true"
-    TypeType     -> "type"
+--    TypeType     -> "type"
     IntType      -> "int"
-    WordType     -> "word"
+--  WordType     -> "word"
     DiffTimeType -> "diff"
-    FloatType    -> "float"
-    LongType     -> "long"
-    RatioType    -> "ratio"
-    ComplexType  -> "complex"
+--  FloatType    -> "float"
+--  LongType     -> "long"
+--  RatioType    -> "ratio"
+--  ComplexType  -> "complex"
     TimeType     -> "time"
     CharType     -> "char"
     StringType   -> "string"
-    PairType     -> "pair"
+--  PairType     -> "pair"
     RefType      -> "ref"
     ListType     -> "list"
-    SetType      -> "set"
-    ArrayType    -> "array"
-    IntMapType   -> "intMap"
-    DictType     -> "dict"
+--  SetType      -> "set"
+--  ArrayType    -> "array"
+--  IntMapType   -> "intMap"
+--  DictType     -> "dict"
     TreeType     -> "tree"
-    GlobType     -> "glob"
-    ScriptType   -> "script"
-    RuleType     -> "rule"
+--  GlobType     -> "glob"
+--  ScriptType   -> "script"
+--  RuleType     -> "rule"
     BytesType    -> "bytes"
     HaskellType  -> "haskell"
 
-instance Read TypeID where
+instance Read CoreType where
   readsPrec _ str = map (\a -> (a, "")) $ case str of
     "null"    -> [NullType]
     "true"    -> [TrueType]
-    "type"    -> [TypeType]
+--  "type"    -> [TypeType]
     "int"     -> [IntType]
-    "word"    -> [WordType]
+--  "word"    -> [WordType]
     "diff"    -> [DiffTimeType]
-    "float"   -> [FloatType]
-    "long"    -> [LongType]
-    "ratio"   -> [RatioType]
-    "complex" -> [ComplexType]
+--  "float"   -> [FloatType]
+--  "long"    -> [LongType]
+--  "ratio"   -> [RatioType]
+--  "complex" -> [ComplexType]
     "time"    -> [TimeType]
     "char"    -> [CharType]
     "string"  -> [StringType]
-    "pair"    -> [PairType]
+--  "pair"    -> [PairType]
     "ref"     -> [RefType]
     "list"    -> [ListType]
-    "set"     -> [SetType]
-    "array"   -> [ArrayType]
-    "intMap"  -> [IntMapType]
-    "dict"    -> [DictType]
+--  "set"     -> [SetType]
+--  "array"   -> [ArrayType]
+--  "intMap"  -> [IntMapType]
+--  "dict"    -> [DictType]
     "tree"    -> [TreeType]
-    "glob"    -> [GlobType]
-    "script"  -> [ScriptType]
-    "rule"    -> [RuleType]
+--  "glob"    -> [GlobType]
+--  "script"  -> [ScriptType]
+--  "rule"    -> [RuleType]
     "bytes"   -> [BytesType]
     "haskell" -> [HaskellType]
     _         -> []
 
-instance UStrType TypeID where
-  ustr = ustr . show
+instance UStrType CoreType where
+  toUStr = derive_ustr
   maybeFromUStr a = case readsPrec 0 (uchars a) of
     [(o, "")] -> Just o
     _         -> Nothing
@@ -659,74 +662,63 @@ instance UStrType TypeID where
 oBool :: Bool -> Object
 oBool a = if a then OTrue else ONull
 
--- | References used throughout the executable script refer to differer places in the Runtime where
--- values can be stored. Because each store is accessed slightly differently, it is necessary to
--- declare, in the abstract syntax tree (AST) representation of the script exactly why types of
--- variables are being accessed so the appropriate read, write, or update action can be planned.
-data Reference
-  = NullRef
-  | PlainRef  { localRef  :: Name     } -- ^ reference to a local variable.
-  | DerefOp   { refObject :: Object   } -- ^ the at-sign operator
-  | MetaRef   { refObject :: Object   } -- ^ the dollar-sign operator
-  | DotRef    { refLeft   :: Reference, refRight  :: Reference }
-  | PointRef  { refLeft   :: Reference, refRight  :: Reference }
-  | Subscript { refLeft   :: Reference, refParams :: [Object]  } -- ^ reference to value at a subscripted slot in a container object
-  | CallWith  { refLeft   :: Reference, refParams :: [Object]  } -- ^ reference prepended with arguments in parentheses.
-  deriving (Eq, Ord, Typeable)
+----------------------------------------------------------------------------------------------------
+
+-- | A 'Reference' is basically an address that can be used to lookup and update various objects in
+-- the runtime.
+newtype Reference = Reference { refNameList :: [Name] } deriving (Eq, Ord, Typeable, Show)
 instance Monoid Reference where
-  mempty      = NullRef
-  mappend b c = loop b c where
-    loop b c = case b of
-      NullRef       -> c
-      PlainRef  _   -> DotRef   b c
-      DerefOp   _   -> DotRef   b c
-      MetaRef   _   -> DotRef   b c
-      DotRef    a b -> DotRef   a (loop b c)
-      PointRef  a b -> PointRef a (loop b c)
-      Subscript _ _ -> DotRef   b c
-      CallWith  _ _ -> DotRef   b c
+  mempty = Reference []
+  mappend (Reference a) (Reference b) = Reference (a++b)
 
--- | A 'Reference' type with an optional qualifier. 'Unqualified' means there is no qualifier.
-data QualRef = QualRef { qualifier :: RefQualifier, qualRef :: Reference }
-  deriving (Eq, Ord, Typeable)
+-- | Direct a reference at a particular tree in the runtime.
+data RefQualifier
+  = LOCAL -- ^ the default unless in a "with" statement, refers to the current local variable stack
+  | QTIME -- ^ refers to a global variable stack that is alive only during a query, and is cleared
+          -- when the query completes.
+  | GLODOT -- ^ a relative reference, gets it's name because it begins with a dot (".") character.
+           -- Similar to the "this" keyword in C++ and Java, refers to the object of the current
+           -- context set by the "with" statement, but defaults to the global variable space when
+           -- not within a "with" statement. This is necessary to differentiate between local
+           -- variables and references to the "with" context.
+  | STATIC -- ^ a local variable stack specific to a 'Subroutine' that lives on even after the
+           -- subroutine has completed.
+  | GLOBAL -- ^ the global variable space for the current module.
+  deriving (Eq, Ord, Typeable, Enum, Ix, Show)
+instance Bounded RefQualifier where { minBound=LOCAL; maxBound=GLOBAL; }
 
--- | Create a 'QualRef' from any 'Dao.String.UStr'.
-bareword :: UStr -> Reference
-bareword = PlainRef
+-- | A 'Reference' qualified with a 'RefQualifier'. This allows references to be directed at
+-- different trees of the runtime.
+data QualRef
+  = Unqualified Reference
+  | Qualified RefQualifier Reference
+  | ObjRef    Object
+  deriving (Eq, Ord, Typeable, Show)
+fmapQualRef :: (Reference -> Reference) -> QualRef -> QualRef
+fmapQualRef fn r = case r of
+  Unqualified r -> Unqualified (fn r)
+  Qualified q r -> Qualified q (fn r)
+setQualifier :: RefQualifier -> QualRef -> QualRef
+setQualifier q ref = case ref of
+  Unqualified ref -> Qualified q ref
+  Qualified _ ref -> Qualified q ref
+delQualifier :: QualRef -> QualRef
+delQualifier ref = case ref of
+  Unqualified r -> Unqualified r
+  Qualified _ r -> Unqualified r
 
--- | Reference qualifiers, specify which area of the execution unit a reference is pointing to.
-data RefQualifier = Unqualified | LocalRef | QTimeRef | GloDotRef | StaticRef | GlobalRef
-  deriving (Eq, Ord, Typeable, Enum, Ix, Bounded)
-instance Show RefQualifier where
-  show q = case q of
-    Unqualified -> ""
-    LocalRef    -> "local"
-    QTimeRef    -> "qtime"
-    GloDotRef   -> "."
-    StaticRef   -> "static"
-    GlobalRef   -> "global"
-instance Read RefQualifier where
-  readsPrec _ str = fmap (\o -> (o, "")) $ case str of
-    ""       -> [Unqualified]
-    "local"  -> [LocalRef]
-    "qtime"  -> [QTimeRef]
-    "."      -> [GloDotRef]
-    "static" -> [StaticRef]
-    "global" -> [GlobalRef]
-    _        -> []
-
--- | The 'Object' type has constructors for primitive types, and for boxed Haskell types. Haskell
--- types are boxed in 'Data.Dynamic.Dynamic' wrappers.
+-- | The 'Object' type extends the 'Data.Dynamic.Dynamic' data type with a few more constructors for
+-- data types that are fundamental to a programming language, like integers, strings, and lists.
 data Object
   = ONull
   | OTrue
-  | OType      TypeID
+--  | OType      CoreType
   | OInt       T_int
---  | OWord      T_word
---  | OLong      T_long
---  | OFloat     T_float
---  | ORatio     T_ratio
---  | OComplex   T_complex
+  | OWord      T_word
+  | OLong      T_long
+  | OFloat     T_float
+  | ORatio     T_ratio
+  | OComplex   T_complex
   | OAbsTime   T_time
   | ORelTime   T_diffTime
   | OChar      T_char
@@ -742,19 +734,19 @@ data Object
 --  | OGlob      T_pattern
 --  | OScript    T_script
   | OBytes     T_bytes
-  | OHaskell   T_haskell
+  | OHaskell   Dynamic T_haskell
   deriving Typeable
 instance Eq Object where
   a==b = case (a,b) of
     (ONull       , ONull       ) -> True
     (OTrue       , OTrue       ) -> True
-    (OType      a, OType      b) -> a==b
+--    (OType      a, OType      b) -> a==b
     (OInt       a, OInt       b) -> a==b
---  (OWord      a, OWord      b) -> a==b
---  (OLong      a, OLong      b) -> a==b
---  (OFloat     a, OFloat     b) -> a==b
---  (ORatio     a, ORatio     b) -> a==b
---  (OComplex   a, OComplex   b) -> a==b
+    (OWord      a, OWord      b) -> a==b
+    (OLong      a, OLong      b) -> a==b
+    (OFloat     a, OFloat     b) -> a==b
+    (ORatio     a, ORatio     b) -> a==b
+    (OComplex   a, OComplex   b) -> a==b
     (OAbsTime      a, OAbsTime      b) -> a==b
     (ORelTime  a, ORelTime  b) -> a==b
     (OChar      a, OChar      b) -> a==b
@@ -770,18 +762,18 @@ instance Eq Object where
 --  (OGlob      a, OGlob      b) -> a==b
 --  (OScript    a, OScript    b) -> a==b
     (OBytes     a, OBytes     b) -> a==b
-    (OHaskell   a, OHaskell   b) -> maybe False id $
-      objEquality a >>= \eq -> return (eq (objectValue a) (OHaskell b))
+    (OHaskell a ifcA, OHaskell b ifcB) -> ((ifcA==ifcB)&&) $ maybe False id $
+      objEquality ifcA >>= \eq -> return (eq a b)
     _                            -> False
 instance Ord Object where
   compare a b = case (a,b) of
-    (OType      a, OType      b) -> compare a b
+--    (OType      a, OType      b) -> compare a b
     (OInt       a, OInt       b) -> compare a b
---  (OWord      a, OWord      b) -> compare a b
---  (OLong      a, OLong      b) -> compare a b
---  (OFloat     a, OFloat     b) -> compare a b
---  (ORatio     a, ORatio     b) -> compare a b
---  (OComplex   a, OComplex   b) -> compare a b
+    (OWord      a, OWord      b) -> compare a b
+    (OLong      a, OLong      b) -> compare a b
+    (OFloat     a, OFloat     b) -> compare a b
+    (ORatio     a, ORatio     b) -> compare a b
+    (OComplex   a, OComplex   b) -> compare a b
     (OAbsTime      a, OAbsTime      b) -> compare a b
     (ORelTime  a, ORelTime  b) -> compare a b
     (OChar      a, OChar      b) -> compare a b
@@ -797,14 +789,34 @@ instance Ord Object where
 --  (OGlob      a, OGlob      b) -> compare a b
 --  (OScript    a, OScript    b) -> compare a b
     (OBytes     a, OBytes     b) -> compare a b
-    (OHaskell   a, OHaskell   b) -> maybe (err a b) id $
-        objOrdering a >>= \comp -> return (comp (objectValue a) (OHaskell b))
+    (OHaskell a ifcA, OHaskell b ifcB) -> maybe (err a b) id $ do
+        guard (ifcA==ifcB)
+        objOrdering ifcA >>= \comp -> return (comp a b)
       where
         err a b = error $ unwords $
-          [ "cannot compare object of type", show (objHaskellType a)
-          , "with obejct of type", show (objHaskellType b)
+          [ "cannot compare object of type", show (objHaskellType ifcA)
+          , "with obejct of type", show (objHaskellType ifcB)
           ]
     _                            -> compare (objType a) (objType b)
+instance Show Object where
+  show o = case o of
+    ONull      -> "ONull"
+    OTrue      -> "OTrue"
+--    OType    o -> "OType "++show o
+    OInt     o -> "OInt "++show o
+    OWord    o -> "OWord "++show o
+    OLong    o -> "OLong "++show o
+    OFloat   o -> "OFloat "++show o
+    ORatio   o -> "ORatio "++show o
+    OComplex o -> "OComplex "++show o
+    OString  o -> "OString "++show o
+    OAbsTime o -> "OAbsTime "++show o
+    ORelTime o -> "ORelTime "++show o
+    OChar    o -> "OChar "++show o
+    OList    o -> "OList "++show o
+    OTree    o -> "OTree "++show o
+    OBytes   o -> "OBytes "++unwords (b64Encode o)
+    OHaskell _ ifc -> "OHaskell "++show (objHaskellType ifc)
 
 -- | Since 'Object' requires all of it's types instantiate 'Prelude.Ord', I have defined
 -- 'Prelude.Ord' of 'Data.Complex.Complex' numbers to be the distance from 0, that is, the radius of
@@ -812,19 +824,22 @@ instance Ord Object where
 instance RealFloat a => Ord (Complex a) where
   compare a b = compare (magnitude a) (magnitude b)
 
+ostr :: UStrType u => u -> Object
+ostr = OString . toUStr
+
 ----------------------------------------------------------------------------------------------------
 
-objType :: Object -> TypeID
+objType :: Object -> CoreType
 objType o = case o of
   ONull       -> NullType
   OTrue       -> TrueType
-  OType     _ -> TypeType
+--OType     _ -> TypeType
   OInt      _ -> IntType
---OWord     _ -> WordType
---OLong     _ -> LongType
---OFloat    _ -> FloatType
---ORatio    _ -> RatioType
---OComplex  _ -> ComplexType
+  OWord     _ -> WordType
+  OLong     _ -> LongType
+  OFloat    _ -> FloatType
+  ORatio    _ -> RatioType
+  OComplex  _ -> ComplexType
   OAbsTime     _ -> TimeType
   ORelTime _ -> DiffTimeType
   OChar     _ -> CharType
@@ -840,58 +855,158 @@ objType o = case o of
 --OGlob     _ -> GlobType
 --OScript   _ -> ScriptType
   OBytes    _ -> BytesType
-  OHaskell  _ -> HaskellType
+  OHaskell _ _ -> HaskellType
 
-instance Enum Object where
-  toEnum   i = OType (toEnum i)
-  fromEnum o = fromEnum (objType o)
-  pred o = case o of
-    OInt  i -> OInt  (pred i)
---  OWord i -> OWord (pred i)
---  OLong i -> OLong (pred i)
-    OType i -> OType (pred i)
-  succ o = case o of
-    OInt  i -> OInt  (succ i)
---  OWord i -> OWord (succ i)
---  OLong i -> OLong (succ i)
-    OType i -> OType (succ i)
+-- | A symbol in the type calculus.
+data TypeSymbol
+  = VoidType -- ^ used by functions that return void
+  | CoreType CoreType
+    -- ^ used when the type of an object is equal to it's value, for example Null and True,
+    -- or in situations where the type of an object has a value, for example the dimentions of a
+    -- matrix.
+  | TypeVar  Name
+    -- ^ a polymorphic type, like 'AnyType' but has a name.
+  | AnyType 
+    -- ^ used when the type is unknown and can be any arbitrary object; it is an anonymous variable
+  deriving (Eq, Ord, Show, Typeable)
+
+-- | Complex type structures can be programmed by combining 'ObjSimpleType's.
+data TypeStruct
+  = TypeSingle   TypeSymbol
+  | TypeSequence [TypeSymbol]
+  | TypeChoice   [TypeSymbol]
+  deriving (Eq, Ord, Show, Typeable)
+
+-- | The fundamental 'Type' used to reason about whether an object is fit to be used for a
+-- particular function.
+data Type
+  = TypeConst TypeStruct
+    -- ^ two 'TypeConst' types are said to be of the same type simply if there is a one-to-one
+    -- relationship between each type symbol in the structure.
+  | TypeProp  Reference  Type
+    -- ^ A type property is a type that describes an object where the instatiation of
+    -- 'Dao.Struct.Structured' can retrieve a value of a type a the given reference.
+  | TypeFunc  TypeStruct TypeCodeBlock
+    -- ^ A type function has a 'TypeStruct' header which begins matching against a type and
+    -- assinging type values to variables. Then the 'TypeCodeBlock' is evaluated with these
+    -- variables set in the local variable stack. If the 'TypeCodeBlock' returns a non 'ONull'
+    -- value, then the types match is successful.
+  deriving (Eq, Ord, Show, Typeable)
+
+nullType :: Type
+nullType = TypeConst (TypeSingle VoidType)
+
+anyType :: Type
+anyType = TypeConst (TypeSingle AnyType)
+
+newtype TypeCodeBlock = TypeCodeBlock CodeBlock deriving (Eq, Ord, Show, Typeable)
 
 ----------------------------------------------------------------------------------------------------
 
-object2Dynamic :: Object -> Dynamic
-object2Dynamic o = case o of
-  ONull       -> toDyn False
-  OTrue       -> toDyn True
-  OType     o -> toDyn o
-  OInt      o -> toDyn o
---OWord     o -> toDyn o
---OLong     o -> toDyn o
---OFloat    o -> toDyn o
---ORatio    o -> toDyn o
---OComplex  o -> toDyn o
-  OAbsTime     o -> toDyn o
-  ORelTime o -> toDyn o
-  OChar     o -> toDyn o
-  OString   o -> toDyn o
-  ORef      o -> toDyn o
---OPair     o -> toDyn o
-  OList     o -> toDyn o
---OSet      o -> toDyn o
---OArray    o -> toDyn o
---OIntMap   o -> toDyn o
---ODict     o -> toDyn o
-  OTree     o -> toDyn o
---OScript   o -> toDyn o
---OGlob     o -> toDyn o
-  OBytes    o -> toDyn o
-  OHaskell  o -> toDyn o
+class HasNullValue a where { nullValue :: a; testNull :: a -> Bool; }
+instance HasNullValue UStr where { nullValue = mempty; testNull = (==mempty); }
+instance HasNullValue [a]  where { nullValue = []; testNull = null; }
+instance HasNullValue Char where { nullValue = '\0'; testNull = (==nullValue); }
+instance HasNullValue Int  where { nullValue = 0; testNull = (==nullValue); }
+instance HasNullValue Int64  where { nullValue = 0; testNull = (==nullValue); }
+instance HasNullValue Word   where { nullValue = 0; testNull = (==nullValue); }
+instance HasNullValue Word64 where { nullValue = 0; testNull = (==nullValue); }
+instance HasNullValue Double where { nullValue = 0; testNull = (==nullValue); }
+instance HasNullValue Integer where { nullValue = 0; testNull = (==nullValue); }
+instance HasNullValue (Ratio Integer) where { nullValue = 0%1; testNull = (==nullValue); }
+instance HasNullValue (Complex Double) where { nullValue = 0:+0; testNull = (==nullValue); }
+instance HasNullValue NominalDiffTime where { nullValue = fromRational 0; testNull = (==nullValue); }
+instance HasNullValue (IM.IntMap a)   where { nullValue = IM.empty; testNull = IM.null }
+instance HasNullValue (M.Map k a)     where { nullValue = M.empty; testNull = M.null }
+instance HasNullValue (S.Set a)       where { nullValue = S.empty; testNull = S.null }
+instance HasNullValue B.ByteString    where { nullValue = mempty; testNull = (==mempty); }
+instance HasNullValue (T.Tree Name Object) where { nullValue = T.Void; testNull = T.null; }
+instance HasNullValue Type where { nullValue = nullType; testNull = (==nullType); }
+instance HasNullValue Object where
+  nullValue = ONull
+  testNull a = case a of
+    ONull        -> True
+    OInt      i  -> testNull i
+    OWord     i  -> testNull i
+    OLong     i  -> testNull i
+    ORatio    r  -> testNull r
+    OComplex  c  -> testNull c
+    OString   s  -> testNull s
+    OChar     c  -> testNull c
+    ORelTime  s  -> testNull s
+    OList     s  -> testNull s
+    OTree     t  -> testNull t
+    OBytes    o  -> testNull o
+    OHaskell  o ifc -> case objNullTest ifc of
+      Nothing -> error ("to check whether objects of type "++show (objHaskellType ifc)++" are null is undefined behavior")
+      Just fn -> fn o
+    _            -> False
 
-ostr :: UStrType u => u -> Object
-ostr = OString . ustr
+-- | Nearly every accesssor function in the 'ObjectInterface' data type take the form
+-- > 'ObjectInterface' 'Data.Dynamic.Dynamic' -> Maybe ('Data.Dynamic.Dynamic' -> method)
+-- where the first 'Data.Dynamic.Dynamic' value is analogous to the @this@" pointer in C++-like
+-- languages, and where @method@ is any function, for example an equality function @a -> a -> Bool@
+-- or an iterator function @Exec [Object]@. This function takes the @this@ value, an
+-- 'ObjectInterface', and an 'ObjectInterface' accessor (for example 'objEquality' or
+-- 'objIterator') and if the accessor is not 'Prelude.Nothing', the @this@ object is applied to the
+-- method and the partial application is returned. If the accessor does evaluate to
+-- 'Prelude.Nothing' the exception value is thrown. If the @this@ object has not been constructed
+-- with 'OHaskell', the exception value is thrown.
+evalObjectMethod :: Object -> Object -> (T_haskell -> Maybe (Dynamic -> method)) -> Exec method
+evalObjectMethod errmsg this getter = case this of
+  OHaskell this ifc -> case getter ifc of
+    Nothing -> execThrow errmsg
+    Just fn -> return (fn this)
+  _ -> execThrow errmsg
+
+-- | Instantiate your data type into this class when it makes sense for your data type to be used in
+-- a "for" statement in the Dao programming language.
+class HasIterator obj where
+  -- | This function converts your object to a list. Conversion is done as lazily as possible to
+  -- prevent "for" statements from eating up a huge amount of memory when iteration produces a large
+  -- number of objects. For example, lets say your @obj@ is an association list. This function
+  -- should return a list of every assocaition in the @obj@. Each association object will be stored
+  -- in a local variable and the body of the "for" statement will be evaluated with that local
+  -- variable.
+  iterateObject :: obj -> Exec [Object]
+  -- | This function takes the list of objects that was produced after evaluating the "for"
+  -- statement and uses it to create a new @obj@ data. For example, if your data type is an
+  -- association list and the "for" loop eliminates every 'Object' not satisfying a predicate, the
+  -- object list passed here will be the lists of 'Object's that did satisfy the predicate and you
+  -- should construct a new @obj@ using this new list of 'Object's.
+  foldObject :: obj -> [Object] -> Exec obj
+
+instance HasIterator [Object] where { iterateObject = return; foldObject _ = return; }
+instance HasIterator UStr where
+  iterateObject = return . fmap OChar . uchars
+  foldObject  _ = fmap toUStr . foldM f "" where
+    f str obj = case obj of
+      OString o -> return (str++uchars o)
+      OChar   o -> return (str++[o])
+      obj       -> execThrow $ OList [ostr "object cannot be used to construct string", obj]
+
+cant_iterate :: Object -> T_haskell -> Exec ig
+cant_iterate o ifc = execThrow $ OList $
+  [ostr $ "object of type "++show (objHaskellType ifc)++" cannot be iterated in a \"for\" statement", o]
+
+instance HasIterator Object where
+  iterateObject obj = case obj of
+    OString  o -> iterateObject o
+    OList    o -> iterateObject o
+    OHaskell o ifc -> case objIterator ifc of
+      Just (iter, _) -> iter o
+      Nothing        -> cant_iterate obj ifc
+  foldObject obj ox = case obj of
+    OString  o -> fmap OString (foldObject o ox)
+    OList    o -> fmap OList   (foldObject o ox)
+    OHaskell o ifc -> case objIterator ifc of
+      Just (_, fold) -> fmap (flip OHaskell ifc) (fold o ox)
+      Nothing        -> cant_iterate obj ifc
 
 ----------------------------------------------------------------------------------------------------
 
 newtype CodeBlock = CodeBlock { codeBlock :: [ScriptExpr] } deriving (Eq, Ord, Typeable)
+instance Show CodeBlock where { show (CodeBlock o) = "(code "++show o++")" }
 instance HasLocation CodeBlock where
   getLocation o = case codeBlock o of
     [] -> LocationUnknown
@@ -914,22 +1029,25 @@ data Subroutine
     , staticVars     :: IORef (M.Map Name Object)
     , executable     :: Exec (Maybe Object)
     }
-
--- | Dao will have a compile-time type checker in the near future.
-data TypeCheck = TypeCheck{ typeCheckSource :: Name }
+instance Show Subroutine where { show o = "(sub "++show (codeBlock (origSourceCode o))++")" }
 
 -- | A subroutine is specifically a callable function (but we don't use the name Function to avoid
 -- confusion with Haskell's "Data.Function"). 
 data CallableCode
   = CallableCode
-    { argsPattern   :: [TypeCheck]
-    , getSubroutine :: Subroutine
+    { argsPattern    :: ParamListExpr
+    , returnType     :: Type
+    , codeSubroutine :: Subroutine
     }
-  | GlobAction
-    { globPattern   :: [Glob]
-    , getSubroutine :: Subroutine
+  deriving (Show, Typeable)
+
+-- A subroutine that is executed when a query string matches it's @['Dao.Glob.Glob']@ expression.
+data GlobAction
+  = GlobAction
+    { globPattern    :: [Glob]
+    , globSubroutine :: Subroutine
     }
-  deriving Typeable
+  deriving (Show, Typeable)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -945,11 +1063,11 @@ instance Monad Exec where
   (Exec m) >>= f = Exec (m >>= execToProcedural . f)
   fail = execThrow . ostr
 instance MonadPlus Exec where
-  mzero = throwError (ExecBadParam mempty)
+  mzero = throwError mempty
   mplus a b = procCatch a >>= \a -> case a of
     FlowOK      a -> proc (FlowOK     a)
     FlowReturn  a -> proc (FlowReturn a)
-    FlowErr   err -> case err of { ExecBadParam _ -> b; _ -> proc (FlowErr err); }
+    FlowErr   err -> b
 instance MonadReader ExecUnit Exec where
   local upd (Exec fn) = Exec (local upd fn)
   ask = Exec ask
@@ -971,52 +1089,71 @@ instance ProceduralClass ExecError (Maybe Object) Exec where
   proc      = Exec . proc
   procCatch = Exec . procCatch . execToProcedural
 
--- | When calling Dao program functions, arguments to functions are wrapped in this data type.
-data ParamValue
-  = NoParamInfo
-  | ParamValue{ paramValue :: Object, paramOrigExpr :: Maybe ObjectExpr }
-instance Monoid ParamValue where { mempty=NoParamInfo; mappend=const; }
+-- | When calling Dao program functions, arguments to functions are wrapped in this data type. This
+-- data type exists mostly to allow for it to be instantiated into the 'Executable' class.
+-- Evaluating this data type with 'execute' will simply return the 'paramValue' unless the
+-- 'paramValue' is constructed with 'ORef', in which case the 'QualRef' in used to retrieve an
+-- object value associated with that 'QualRef'.
+data ParamValue = ParamValue{paramValue::Object, paramOrigExpr::ObjectExpr}
+
+-- | This data type is essentially a "thunk" used to store a 'DaoFunc' and a list of 'ParamValue's.
+-- It is primarily used to instantiate the 'Executable' class. When evaluating this data type with
+-- 'execute' the 'DaoFunc' is executed by passing it the list of 'ParamValues'.
+data ExecDaoFunc = MkExecDaoFunc Name [ParamValue] DaoFunc
 
 -- | Nearly all execution in the 'Exec' monad that could result in an error will throw an
 -- 'ExecError's. Even the use of 'Prelude.error' will throw an 'Control.Exception.ErrorCall' that
 -- will eventually be caught by the 'Exec' monad and converted to an 'ExecError'.
 data ExecError
-  = ExecBadParam ParamValue
-    -- ^ Exceptions of this type are thrown when passing a 'Object' of the wrong type as a parameter
-    -- to a function. The 'Exec' class instantiates 'Control.Monad.MonadPlus' in such a way that if
-    -- this type parameter is thrown, it is automatically caught and allows alternative expressions
-    -- to be tried.
-  | ExecError
+  = ExecError
     { execUnitAtError   :: Maybe ExecUnit
+    , execErrExpr       :: Maybe ObjectExpr
+    , execErrScript     :: Maybe ScriptExpr
+    , execErrTopLevel   :: Maybe TopLevelExpr
     , specificErrorData :: Object
     }
-instance Monoid ExecError where { mempty = ExecBadParam mempty; mappend = const; }
+instance Monoid ExecError where
+  mempty      =
+    ExecError
+    { execUnitAtError   = Nothing
+    , execErrExpr       = Nothing
+    , execErrScript     = Nothing
+    , execErrTopLevel   = Nothing
+    , specificErrorData = ONull
+    }
+  mappend a b =
+    a{ execUnitAtError   = execUnitAtError a <|> execUnitAtError b
+     , execErrExpr       = execErrExpr     a <|> execErrExpr     b
+     , execErrScript     = execErrScript   a <|> execErrScript   b
+     , execErrTopLevel   = execErrTopLevel a <|> execErrTopLevel b
+     , specificErrorData = case specificErrorData a of
+        ONull -> specificErrorData b
+        a     -> a
+     }
 
--- | Like 'Prelude.error' but works for the 'Exec' monad, throws an 'ExecError' using
--- 'Control.Monad.Error.throwError' constructed using the given 'Object' value as the
--- 'specificErrorData'.
-execThrow :: Object -> Exec ig
-execThrow obj = ask >>= \xunit ->
-  throwError $ ExecError{execUnitAtError=Just xunit, specificErrorData=obj}
+class ExecThrowable a where
+  toExecError :: a -> ExecError
+  -- | Like 'Prelude.error' but works for the 'Exec' monad, throws an 'ExecError' using
+  -- 'Control.Monad.Error.throwError' constructed using the given 'Object' value as the
+  -- 'specificErrorData'.
+  execThrow :: ExecThrowable a => a -> Exec ig
+  execThrow obj = ask >>= \xunit -> throwError $ (toExecError obj){execUnitAtError=Just xunit}
+
+instance ExecThrowable Object where
+  toExecError err = mempty{specificErrorData=err}
+
+instance ExecThrowable UpdateErr where
+  toExecError err = toExecError $ OList $ concat $
+    [ maybe [] ((:[]) . ostr) (updateErrMsg err)
+    , [ORef  $ Unqualified $ Reference $ updateErrAddr err]
+    , [OTree $ updateErrTree err]
+    ]
 
 execFromPValue :: PValue UpdateErr a -> Exec a
 execFromPValue pval = case pval of
   OK      a -> return a
   Backtrack -> mzero
-  PFail err -> throwError (errConv err)
-  where
-    errConv err = ExecBadParam $ -- TODO: create an 'ObjectInterface' for 'UpdateErr'.
-      ParamValue
-      { paramValue = OList $ concat $
-          [ maybe [] (return . ostr) (updateErrMsg err)
-          , let addr = updateErrAddr err
-            in  if null addr
-                  then []
-                  else [ORef (foldr (\a b -> DotRef (PlainRef a) b) (PlainRef (head addr)) (tail addr))]
-          , let tree = updateErrTree err in if T.null tree then [] else [OTree $ updateErrTree err]
-          ]
-      , paramOrigExpr = Nothing
-      }
+  PFail err -> execThrow err
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1046,29 +1183,111 @@ execFromPValue pval = case pval of
 -- > -- Should D instantiate () or Int or Char as it's result? You must choose only one.
 class Executable exec result | exec -> result where { execute :: exec -> Exec result }
 
+-- | Semantical data structures, which are all executable, might contain 'MetaEvalExpr's, which is a
+-- constructor of 'ObjectExpr'. Any data structure which contains an 'ObjectExpr' or an expression
+-- which itself contains an 'ObjectExpr' can be meta-evaluated. You can tell whether or not a data
+-- structure might contain an 'ObjectExpr' if it instantiates this class.
+--
+-- The 'metaEval' function takes a single boolean parameter which controls recursion. Basically, if
+-- you want to evaluate @expr@ itself then pass True for this parameter, if you want to evaluate the
+-- sub-expressions within the @expr@ leaving the structure of @expr@ mostly unchanged then pass
+-- false as this parameter.
+class MetaEvaluable expr where
+  metaEval :: Bool -> expr -> Exec expr
+  -- ^ the boolean parameter here indicates whether or not 'metaEval' has been called recursively.
+  -- This function can therefore decide whether or not to expand a meta-expression or simply return
+  -- it unmodified should it be necessary to only expand one layer of meta expressions, leaving
+  -- inner layers unmodified. However, most instantiations of 'metaEval' should just copy this value
+  -- to any recursive calls to 'metaEval'.
+
 ----------------------------------------------------------------------------------------------------
 
-data UpdateOp = UCONST | UADD | USUB | UMULT | UDIV | UMOD | UORB | UANDB | UXORB | USHL | USHR
+data RefExpr = RefExpr Reference Location deriving (Eq, Ord, Typeable, Show)
+
+data QualRefExpr
+  = UnqualRefExpr            RefExpr
+  | QualRefExpr RefQualifier RefExpr Location
+  deriving (Eq, Ord, Typeable, Show)
+
+refNames :: UStrType str => [str] -> QualRef
+refNames nx = Unqualified $ Reference $ fmap (fromUStr . toUStr) nx
+
+maybeRefNames :: UStrType str => [str] -> Maybe QualRef
+maybeRefNames nx = fmap (Unqualified . Reference) $ sequence $ fmap (maybeFromUStr . toUStr) nx
+
+-- | Create a 'QualRefExpr' from any single 'Dao.String.UStr'.
+bareword :: UStrType str => str -> QualRefExpr
+bareword = UnqualRefExpr . flip RefExpr LocationUnknown . Reference . return . fromUStr . toUStr
+
+instance HasLocation RefExpr where
+  getLocation (RefExpr _ loc)     = loc
+  setLocation (RefExpr o _  ) loc = RefExpr o loc
+  delLocation (RefExpr o _  )     = RefExpr o LocationUnknown
+
+instance HasLocation QualRefExpr where
+  getLocation o     = case o of
+    UnqualRefExpr r     -> getLocation r
+    QualRefExpr _ _ loc -> loc
+  setLocation o loc = case o of
+    UnqualRefExpr r     -> UnqualRefExpr (setLocation r loc)
+    QualRefExpr q r _   -> QualRefExpr q r loc
+  delLocation o     = case o of
+    UnqualRefExpr r     -> UnqualRefExpr (delLocation r)
+    QualRefExpr q r _   -> QualRefExpr q r LocationUnknown
+
+instance UStrType RefQualifier where
+  toUStr a = ustr $ case a of
+    LOCAL  -> "local"
+    QTIME  -> "qtime"
+    STATIC -> "static"
+    GLOBAL -> "global"
+    GLODOT -> "."
+  maybeFromUStr str = case uchars str of
+    "local"  -> Just LOCAL
+    "qtime"  -> Just QTIME
+    "static" -> Just STATIC
+    "global" -> Just GLOBAL
+    "."      -> Just GLODOT
+    _        -> Nothing
+  fromUStr str = maybe (error (show str++" is not a reference qualifier")) id (maybeFromUStr str)
+
+----------------------------------------------------------------------------------------------------
+
+allInfixOpChars = "+-*/%<>^&|."
+allInfixOpStrs = " + - * / % ** -> . || && == != | & ^ << >> < > <= >= . -> <- "
+
+-- | Contains a list of 'ObjectExpr's, which are used to encode parameters to function calls, and
+-- intialization lists.
+data ObjListExpr = ObjListExpr [ObjectExpr] Location deriving (Eq, Ord, Typeable)
+instance Show ObjListExpr where { show (ObjListExpr o loc) = show o++show loc }
+instance HasLocation ObjListExpr where
+  getLocation (ObjListExpr _ loc)     = loc
+  setLocation (ObjListExpr a _  ) loc = ObjListExpr (fmap delLocation a) loc
+  delLocation (ObjListExpr a _  )     = ObjListExpr (fmap delLocation a) LocationUnknown
+
+data UpdateOp
+  = UCONST | UADD | USUB | UMULT | UDIV | UMOD | UPOW | UORB | UANDB | UXORB | USHL | USHR | UARROW
   deriving (Eq, Ord, Typeable, Enum, Ix, Show)
 
-instance Bounded UpdateOp where {minBound = UCONST; maxBound = USHR}
+instance Bounded UpdateOp where {minBound = UCONST; maxBound = UARROW}
 
-allUpdateOpChars = "="
-allUpdateOpStrs = " = += -= *= /= %= |= &= ^= <<= >>= "
+allUpdateOpStrs = " = += -= *= /= %= **= |= &= ^= <<= >>= <- "
 
 instance UStrType UpdateOp where
-  ustr a = ustr $ case a of
+  toUStr a = ustr $ case a of
     UCONST -> "="
     UADD   -> "+="
     USUB   -> "-="
     UMULT  -> "*="
     UDIV   -> "/="
     UMOD   -> "%="
+    UPOW   -> "**="
     UORB   -> "|="
     UANDB  -> "&="
     UXORB  -> "^="
     USHL   -> "<<="
     USHR   -> ">>="
+    UARROW -> "<-"
   maybeFromUStr str = case uchars str of
     "="   -> Just UCONST
     "+="  -> Just UADD  
@@ -1076,179 +1295,220 @@ instance UStrType UpdateOp where
     "*="  -> Just UMULT 
     "/="  -> Just UDIV  
     "%="  -> Just UMOD  
+    "**=" -> Just UPOW
     "|="  -> Just UORB  
     "&="  -> Just UANDB 
     "^="  -> Just UXORB 
     "<<=" -> Just USHL  
     ">>=" -> Just USHR  
+    "<-"  -> Just UARROW
     _     -> Nothing
   fromUStr str =
     maybe (error (show str++" is not an assignment/update operator")) id (maybeFromUStr str)
 
 -- | Unary operators.
-data PrefixOp
-  = REF | DEREF | INVB  | NOT | NEGTIV | POSTIV | GLDOT -- ^ unary
-  | GLOBALPFX | LOCALPFX | QTIMEPFX | STATICPFX
+data PrefixOp = INVB | NOT | NEGTIV | POSTIV | REF | DEREF
   deriving (Eq, Ord, Typeable, Enum, Ix, Show)
-
-allPrefixOpChars = "$@~!-+"
-allPrefixOpStrs = " $ @ ~ - + ! "
-
-instance Bounded PrefixOp where { minBound=REF; maxBound=STATICPFX; }
-
+instance Bounded  PrefixOp where { minBound=INVB; maxBound=DEREF; }
 instance UStrType PrefixOp where
-  ustr op = ustr $ case op of
-    REF    -> "$"
-    DEREF  -> "@"
+  toUStr op = ustr $ case op of
     INVB   -> "~"
     NOT    -> "!"
     NEGTIV -> "-"
     POSTIV -> "+"
-    GLDOT  -> "."
-    GLOBALPFX -> "global"
-    LOCALPFX  -> "local"
-    QTIMEPFX  -> "qtime"
-    STATICPFX -> "static"
+    REF    -> "$"
+    DEREF  -> "@"
   maybeFromUStr str = case uchars str of
-    "$"      -> Just REF
-    "@"      -> Just DEREF
-    "~"      -> Just INVB
-    "!"      -> Just NOT
-    "-"      -> Just NEGTIV
-    "+"      -> Just POSTIV
-    "."      -> Just GLDOT
-    "global" -> Just GLOBALPFX
-    "local"  -> Just LOCALPFX
-    "qtime"  -> Just QTIMEPFX
-    "static" -> Just STATICPFX
-    str      -> Nothing
+    "~" -> Just INVB
+    "!" -> Just NOT
+    "-" -> Just NEGTIV
+    "+" -> Just POSTIV
+    "$" -> Just REF
+    "@" -> Just DEREF
+    str -> Nothing
   fromUStr str = maybe (error (show str++" is not a prefix opretor")) id (maybeFromUStr str)
+
+allPrefixOpChars = "$@~!-+"
+allPrefixOpStrs = " $ @ ~ - + ! "
 
 -- | Binary operators.
 data InfixOp
   = ADD   | SUB   | MULT
   | DIV   | MOD   | POW
-  | POINT | DOT   | OR
-  | AND   | EQUL  | NEQUL      
   | ORB   | ANDB  | XORB
   | SHL   | SHR
-  | GTN   | LTN   | GTEQ  | LTEQ
+  | OR    | AND
+  | EQUL  | NEQUL      
+  | GTN   | LTN
+  | GTEQ  | LTEQ
+  | ARROW
   deriving (Eq, Ord, Typeable, Enum, Ix, Show)
-
-allInfixOpChars = "+-*/%<>^&|."
-allInfixOpStrs = " + - * / % ** -> . || && == != | & ^ << >> < > <= >= "
-
 instance UStrType InfixOp where
-  ustr a = ustr $ case a of
-    { ADD   -> "+" ; SUB  -> "-" ; MULT  -> "*"
-    ; DIV   -> "/" ; MOD  -> "%" ; POW   -> "**"
-    ; POINT -> "->"; DOT  -> "." ; OR    -> "||"
-    ; AND   -> "&&"; EQUL -> "=="; NEQUL -> "!="
-    ; ORB   -> "|" ; ANDB -> "&" ; XORB  -> "^"
-    ; SHL   -> "<<"; SHR  -> ">>"
-    ; GTN   -> ">" ; LTN  -> "<" ; GTEQ  -> ">="; LTEQ -> "<="
+  toUStr a = ustr $ case a of
+    { ADD  -> "+" ; SUB  -> "-" ; MULT  -> "*"
+    ; DIV  -> "/" ; MOD  -> "%" ; POW   -> "**"
+    ; ORB  -> "|" ; ANDB -> "&" ; XORB  -> "^"
+    ; SHL  -> "<<"; SHR  -> ">>"
+    ; OR   -> "||"; AND  -> "&&"
+    ; EQUL -> "=="; NEQUL-> "!="
+    ; LTN  -> "<" ; GTN  -> ">"
+    ; LTEQ -> "<="; GTEQ -> ">="
+    ; ARROW -> "->";
     }
   maybeFromUStr str = case uchars str of
     { "+"  -> Just ADD  ; "-"  -> Just SUB  ; "*"  -> Just MULT 
     ; "/"  -> Just DIV  ; "%"  -> Just MOD  ; "**" -> Just POW  
-    ; "->" -> Just POINT; "."  -> Just DOT  ; "||" -> Just OR   
-    ; "&&" -> Just AND  ; "==" -> Just EQUL ; "!=" -> Just NEQUL
     ; "|"  -> Just ORB  ; "&"  -> Just ANDB ; "^"  -> Just XORB 
-    ; "<<" -> Just SHL  ; ">>" -> Just SHR  ; "<"  -> Just LTN  
-    ; ">"  -> Just GTN  ; "<=" -> Just GTEQ ; ">=" -> Just GTEQ 
+    ; "<<" -> Just SHL  ; ">>" -> Just SHR
+    ; "||" -> Just OR   ; "&&" -> Just AND
+    ; "==" -> Just EQUL ; "!=" -> Just NEQUL
+    ; "<"  -> Just LTN  ; ">"  -> Just GTN
+    ; "<=" -> Just GTEQ ; ">=" -> Just GTEQ 
     ; _    -> Nothing
     }
   fromUStr str = maybe (error (show str++" is not an infix operator")) id (maybeFromUStr str)
-
 instance Bounded InfixOp where { minBound = ADD; maxBound = LTEQ; }
 
-data LambdaExprType = FuncExprType | RuleExprType | PatExprType deriving (Eq, Ord, Typeable, Enum)
-instance Show LambdaExprType where
-  show a = case a of
-    FuncExprType -> "function"
-    RuleExprType -> "rule"
-    PatExprType  -> "pattern"
-instance Read LambdaExprType where
-  readsPrec _ str = map (\a->(a,"")) $ case str of
-    "func"     -> [FuncExprType]
-    "function" -> [FuncExprType]
-    "rule"     -> [RuleExprType]
-    "pattern"  -> [PatExprType]
-    "pat"      -> [PatExprType]
-    _          -> []
-instance UStrType LambdaExprType where
-  ustr = ustr . show
-  maybeFromUStr a = case readsPrec 0 (uchars a) of
-    [(a, "")] -> Just a
-    _         -> Nothing
-  fromUStr a = case maybeFromUStr a of
-    Nothing -> error (show a++" is not a valid lambda expression type")
-    Just  a -> a
+-- | Functions and function parameters can specify optional type-checking expressions.
+data TyChkExpr a
+  = NotTypeChecked{tyChkItem::a}
+    -- ^ no type information was specified for this item
+  | TypeChecked   {tyChkItem::a, tyChkExpr::ObjectExpr, tyChkLoc::Location}
+    -- ^ type check information was specified and should be checked every time it is evaluated.
+  | DisableCheck  {tyChkItem::a, tyChkExpr::ObjectExpr, typChkResult::Object, tyChkLoc::Location}
+    -- ^ type check information was specified but has been disabled for efficiency reasons because
+    -- we have verified that the item will always return a succesfull type-check.
+  deriving (Eq, Ord, Typeable, Show)
+
+instance Functor TyChkExpr where
+  fmap f (NotTypeChecked   a  ) = NotTypeChecked (f a)
+  fmap f (TypeChecked  a b c  ) = TypeChecked  (f a) b c
+  fmap f (DisableCheck a b c d) = DisableCheck (f a) b c d
+
+checkedExpr :: TyChkExpr a -> a
+checkedExpr o = case o of { NotTypeChecked o -> o; TypeChecked o _ _ -> o; }
+
+instance HasLocation a => HasLocation (TyChkExpr a) where
+  getLocation a     = case a of
+    NotTypeChecked a         -> getLocation a
+    TypeChecked    a _   loc -> getLocation a <> loc
+    DisableCheck   a _ _ loc -> getLocation a <> loc
+  setLocation a loc = case a of
+    NotTypeChecked a       -> NotTypeChecked (setLocation a loc)
+    TypeChecked    a b   _ -> TypeChecked  a b loc
+    DisableCheck   a b c _ -> DisableCheck a b c loc
+  delLocation a     = case a of
+    NotTypeChecked a       -> NotTypeChecked (delLocation a)
+    TypeChecked    a b   _ -> TypeChecked (delLocation a) (delLocation b) LocationUnknown
+    DisableCheck   a b c _ -> DisableCheck a b c LocationUnknown
+
+newtype LValueExpr = LValueExpr ObjectExpr deriving (Eq, Ord, Typeable, Show)
+instance HasLocation LValueExpr where
+  getLocation (LValueExpr o)     = getLocation o
+  setLocation (LValueExpr o) loc = LValueExpr (setLocation o loc)
+  delLocation (LValueExpr o)     = LValueExpr (delLocation o)
+
+-- | 'ParamExpr' is a part of the Dao language semantics, and is also used in the the 'CallableCode'
+-- data type when evaluating parameters to be passed to the callable code function execution. The
+-- boolean parameter here indicates whether or not the parameter should be passed by reference.
+data ParamExpr = ParamExpr Bool (TyChkExpr Name) Location deriving (Eq, Ord, Typeable, Show)
+instance HasLocation ParamExpr where
+  getLocation (ParamExpr _ _ loc)     = loc
+  setLocation (ParamExpr a b _  ) loc = ParamExpr a b loc
+  delLocation (ParamExpr a b _  )     = ParamExpr a b LocationUnknown
+
+data ParamListExpr = ParamListExpr (TyChkExpr [ParamExpr]) Location
+  deriving (Eq, Ord, Typeable, Show)
+
+getTypeCheckList :: ParamListExpr -> [ParamExpr]
+getTypeCheckList (ParamListExpr tychk _) = tyChkItem tychk 
+
+instance HasLocation ParamListExpr where
+  getLocation (ParamListExpr _ loc)     = loc
+  setLocation (ParamListExpr a _  ) loc = ParamListExpr a loc
+  delLocation (ParamListExpr a _  )     = ParamListExpr a LocationUnknown
+
+data RuleStrings = RuleStrings [UStr] Location deriving (Eq, Ord, Typeable, Show)
+
+instance HasLocation RuleStrings where
+  getLocation (RuleStrings _ o)     = o
+  setLocation (RuleStrings a _) loc = RuleStrings a loc
+  delLocation (RuleStrings a _)     = RuleStrings a LocationUnknown
+
+newtype OptObjListExpr = OptObjListExpr (Maybe ObjListExpr) deriving (Eq, Ord, Typeable, Show)
+instance HasLocation OptObjListExpr where
+  getLocation (OptObjListExpr o)     = maybe LocationUnknown getLocation o
+  setLocation (OptObjListExpr o) loc = OptObjListExpr (setLocation o loc)
+  delLocation (OptObjListExpr o)     = OptObjListExpr (delLocation o    )
 
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
   = VoidExpr
-  | Literal       Object                                   Location
-  | AssignExpr    ObjectExpr      UpdateOp     ObjectExpr  Location
-  | Equation      ObjectExpr      InfixOp      ObjectExpr  Location
-  | PrefixExpr    PrefixOp        ObjectExpr               Location
-  | ParenExpr                     ObjectExpr               Location
-  | ArraySubExpr  ObjectExpr     [ObjectExpr]              Location
-  | FuncCall      ObjectExpr     [ObjectExpr]              Location
-  | DictExpr      Name           [ObjectExpr]              Location
-  | ArrayExpr     [ObjectExpr]   [ObjectExpr]              Location
-  | StructExpr     ObjectExpr    [ObjectExpr]              Location
-  | DataExpr      [UStr]                                   Location
-  | LambdaExpr    LambdaExprType [ObjectExpr] CodeBlock    Location
-  | MetaEvalExpr  ObjectExpr                               Location
-  deriving (Eq, Ord, Typeable)
+  | ObjQualRefExpr QualRefExpr
+  | Literal        Object                                    Location
+  | AssignExpr     LValueExpr   UpdateOp        ObjectExpr   Location
+  | Equation       ObjectExpr   InfixOp         ObjectExpr   Location
+  | PrefixExpr     PrefixOp     ObjectExpr                   Location
+  | ParenExpr                   ObjectExpr                   Location
+  | ArraySubExpr   ObjectExpr   ObjListExpr                  Location
+  | FuncCall       ObjectExpr   ObjListExpr                  Location
+  | InitExpr       RefExpr      OptObjListExpr  ObjListExpr  Location
+  | StructExpr     ObjectExpr   ObjListExpr                  Location
+  | LambdaExpr                  ParamListExpr   CodeBlock    Location
+  | FuncExpr       Name         ParamListExpr   CodeBlock    Location
+  | RuleExpr       RuleStrings                  CodeBlock    Location
+  | MetaEvalExpr                                CodeBlock    Location
+  deriving (Eq, Ord, Typeable, Show)
 
 instance HasLocation ObjectExpr where
   getLocation o = case o of
-    VoidExpr              -> LocationUnknown
-    Literal       _     o -> o
-    AssignExpr    _ _ _ o -> o
-    Equation      _ _ _ o -> o
-    PrefixExpr    _ _   o -> o
-    ParenExpr     _     o -> o
-    ArraySubExpr  _ _   o -> o
-    FuncCall      _ _   o -> o
-    DictExpr      _ _   o -> o
-    ArrayExpr     _ _   o -> o
-    StructExpr    _ _   o -> o
-    DataExpr      _     o -> o
-    LambdaExpr    _ _ _ o -> o
-    MetaEvalExpr  _     o -> o
+    VoidExpr               -> LocationUnknown
+    ObjQualRefExpr       o -> getLocation o
+    Literal        _     o -> o
+    AssignExpr     _ _ _ o -> o
+    Equation       _ _ _ o -> o
+    PrefixExpr     _ _   o -> o
+    ParenExpr      _     o -> o
+    ArraySubExpr   _ _   o -> o
+    FuncCall       _ _   o -> o
+    InitExpr       _ _ _ o -> o
+    StructExpr     _ _   o -> o
+    LambdaExpr     _ _   o -> o
+    FuncExpr       _ _ _ o -> o
+    RuleExpr       _ _   o -> o
+    MetaEvalExpr   _     o -> o
   setLocation o loc = case o of
-    VoidExpr              -> VoidExpr
-    Literal       a     _ -> Literal       a     loc
-    AssignExpr    a b c _ -> AssignExpr    a b c loc
-    Equation      a b c _ -> Equation      a b c loc
-    PrefixExpr    a b   _ -> PrefixExpr    a b   loc
-    ParenExpr     a     _ -> ParenExpr     a     loc
-    ArraySubExpr  a b   _ -> ArraySubExpr  a b   loc
-    FuncCall      a b   _ -> FuncCall      a b   loc
-    DictExpr      a b   _ -> DictExpr      a b   loc
-    ArrayExpr     a b   _ -> ArrayExpr     a b   loc
-    StructExpr    a b   _ -> StructExpr    a b   loc
-    DataExpr      a     _ -> DataExpr      a     loc
-    LambdaExpr    a b c _ -> LambdaExpr    a b c loc
-    MetaEvalExpr  a     _ -> MetaEvalExpr  a     loc
+    VoidExpr               -> VoidExpr
+    ObjQualRefExpr a       -> ObjQualRefExpr (setLocation a loc)
+    Literal        a     _ -> Literal       a     loc
+    AssignExpr     a b c _ -> AssignExpr    a b c loc
+    Equation       a b c _ -> Equation      a b c loc
+    PrefixExpr     a b   _ -> PrefixExpr    a b   loc
+    ParenExpr      a     _ -> ParenExpr     a     loc
+    ArraySubExpr   a b   _ -> ArraySubExpr  a b   loc
+    FuncCall       a b   _ -> FuncCall      a b   loc
+    InitExpr       a b c _ -> InitExpr      a b c loc
+    StructExpr     a b   _ -> StructExpr    a b   loc
+    LambdaExpr     a b   _ -> LambdaExpr    a b   loc
+    FuncExpr       a b c _ -> FuncExpr      a b c loc
+    RuleExpr       a b   _ -> RuleExpr      a b   loc
+    MetaEvalExpr   a     _ -> MetaEvalExpr  a     loc
   delLocation o = case o of
-    VoidExpr              -> VoidExpr
-    Literal       a     _ -> Literal           a                  lu
-    AssignExpr    a b c _ -> AssignExpr   (fd0 a)      b  (fd0 c) lu
-    Equation      a b c _ -> Equation     (fd0 a)      b  (fd0 c) lu
-    PrefixExpr    a b   _ -> PrefixExpr        a  (fd0 b)         lu
-    ParenExpr     a     _ -> ParenExpr    (fd0 a)                 lu
-    ArraySubExpr  a b   _ -> ArraySubExpr (fd0 a) (fd1 b)         lu
-    FuncCall      a b   _ -> FuncCall     (fd0 a) (fd1 b)         lu
-    DictExpr      a b   _ -> DictExpr          a  (fd1 b)         lu
-    ArrayExpr     a b   _ -> ArrayExpr    (fd1 a) (fd1 b)         lu
-    StructExpr    a b   _ -> StructExpr   (fd0 a) (fd1 b)         lu
-    DataExpr      a     _ -> DataExpr          a                  lu
-    LambdaExpr    a b c _ -> LambdaExpr        a  (fd1 b) (fd0 c) lu
-    MetaEvalExpr  a     _ -> MetaEvalExpr (fd0 a)                 lu
+    VoidExpr               -> VoidExpr
+    ObjQualRefExpr a       -> ObjQualRefExpr (delLocation a)
+    Literal        a     _ -> Literal           a                  lu
+    AssignExpr     a b c _ -> AssignExpr   (fd0 a)      b  (fd0 c) lu
+    Equation       a b c _ -> Equation     (fd0 a)      b  (fd0 c) lu
+    PrefixExpr     a b   _ -> PrefixExpr        a  (fd0 b)         lu
+    ParenExpr      a     _ -> ParenExpr    (fd0 a)                 lu
+    ArraySubExpr   a b   _ -> ArraySubExpr (fd0 a) (fd0 b)         lu
+    FuncCall       a b   _ -> FuncCall     (fd0 a) (fd0 b)         lu
+    InitExpr       a b c _ -> InitExpr     (fd0 a) (fd0 b) (fd0 c) lu
+    StructExpr     a b   _ -> StructExpr   (fd0 a) (fd0 b)         lu
+    LambdaExpr     a b   _ -> LambdaExpr   (fd0 a) (fd0 b)         lu
+    FuncExpr       a b c _ -> FuncExpr          a  (fd0 b) (fd0 c) lu
+    RuleExpr       a b   _ -> RuleExpr          a  (fd0 b)         lu
+    MetaEvalExpr   a     _ -> MetaEvalExpr (fd0 a)                 lu
     where
       lu = LocationUnknown
       fd0 :: HasLocation a => a -> a
@@ -1256,47 +1516,86 @@ instance HasLocation ObjectExpr where
       fd1 :: (HasLocation a, Functor f) => f a -> f a
       fd1 = fmap delLocation
 
+data IfExpr       = IfExpr ObjectExpr CodeBlock Location deriving (Eq, Ord, Typeable, Show)
+data ElseExpr     = ElseExpr   IfExpr Location deriving (Eq, Ord, Typeable, Show)
+data IfElseExpr   = IfElseExpr IfExpr [ElseExpr] (Maybe CodeBlock) Location deriving (Eq, Ord, Typeable, Show)
+newtype WhileExpr = WhileExpr  IfExpr deriving (Eq, Ord, Typeable, Show)
+instance HasLocation IfExpr where
+  getLocation (IfExpr _ _ loc)     = loc
+  setLocation (IfExpr a b _  ) loc = IfExpr a b loc
+  delLocation (IfExpr a b _  )     = IfExpr (delLocation a) (delLocation b) LocationUnknown
+instance HasLocation ElseExpr where
+  getLocation (ElseExpr _ loc)     = loc
+  setLocation (ElseExpr a _  ) loc = ElseExpr a loc
+  delLocation (ElseExpr a _  )     = ElseExpr (delLocation a) LocationUnknown
+instance HasLocation IfElseExpr where
+  getLocation (IfElseExpr _ _ _ loc)     = loc
+  setLocation (IfElseExpr a b c _  ) loc = IfElseExpr a b c loc
+  delLocation (IfElseExpr a b c _  )     = IfElseExpr a (fmap delLocation b) c LocationUnknown
+instance HasLocation WhileExpr where
+  getLocation (WhileExpr a)     = getLocation a
+  setLocation (WhileExpr a) loc = WhileExpr (setLocation a loc)
+  delLocation (WhileExpr a)     = WhileExpr (delLocation a)
+
+--data ElseIfExpr
+--  = NullElseIfExpr
+--  | ElseExpr              CodeBlock            Location
+--  | ElseIfExpr ObjectExpr CodeBlock ElseIfExpr Location
+--  deriving (Eq, Ord, Typeable, Show)
+--instance HasLocation ElseIfExpr where
+--  getLocation o     = case o of
+--    NullElseIfExpr       -> LocationUnknown
+--    ElseExpr       _ loc -> loc
+--    ElseIfExpr _ _ _ loc -> loc
+--  setLocation o loc = case o of
+--    NullElseIfExpr       -> NullElseIfExpr
+--    ElseExpr       c _   -> ElseExpr       c loc
+--    ElseIfExpr a b c _   -> ElseIfExpr a b c loc
+--  delLocation o     = case o of
+--    NullElseIfExpr       -> NullElseIfExpr
+--    ElseExpr       c _   -> ElseExpr       c LocationUnknown
+--    ElseIfExpr a b c _   -> ElseIfExpr a b c LocationUnknown
+
 -- | Part of the Dao language abstract syntax tree: any expression that controls the flow of script
 -- exectuion.
 data ScriptExpr
-  = EvalObject   ObjectExpr                              Location
-  | IfThenElse   ObjectExpr    CodeBlock   CodeBlock     Location
-  | TryCatch     CodeBlock     UStr        CodeBlock     Location
-  | ForLoop      Name          ObjectExpr  CodeBlock     Location
-  | WhileLoop    ObjectExpr    CodeBlock                 Location
-  | ContinueExpr Bool          ObjectExpr                Location
-  | ReturnExpr   Bool          ObjectExpr                Location
-  | WithDoc      ObjectExpr    CodeBlock                 Location
-  deriving (Eq, Ord, Typeable)
-
+  = IfThenElse   IfElseExpr
+  | WhileLoop    WhileExpr
+  | EvalObject   ObjectExpr                               Location -- location of the semicolon
+  | TryCatch     CodeBlock (Maybe Name) (Maybe CodeBlock) Location
+  | ForLoop      Name       ObjectExpr   CodeBlock        Location
+  | ContinueExpr Bool       ObjectExpr                    Location
+  | ReturnExpr   Bool       ObjectExpr                    Location
+  | WithDoc      ObjectExpr CodeBlock                     Location
+  deriving (Eq, Ord, Typeable, Show)
 instance HasLocation ScriptExpr where
   getLocation o = case o of
     EvalObject   _     o -> o
-    IfThenElse   _ _ _ o -> o
+    IfThenElse         o -> getLocation o
+    WhileLoop          o -> getLocation o
     TryCatch     _ _ _ o -> o
     ForLoop      _ _ _ o -> o
-    WhileLoop    _ _   o -> o
     ContinueExpr _ _   o -> o
     ReturnExpr   _ _   o -> o
     WithDoc      _ _   o -> o
   setLocation o loc = case o of
     EvalObject   a     _ -> EvalObject   a     loc
-    IfThenElse   a b c _ -> IfThenElse   a b c loc
+    IfThenElse   a       -> IfThenElse   (setLocation a loc)
+    WhileLoop    a       -> WhileLoop    (setLocation a loc)
     TryCatch     a b c _ -> TryCatch     a b c loc
     ForLoop      a b c _ -> ForLoop      a b c loc
-    WhileLoop    a b   _ -> WhileLoop    a b   loc
     ContinueExpr a b   _ -> ContinueExpr a b   loc
     ReturnExpr   a b   _ -> ReturnExpr   a b   loc
     WithDoc      a b   _ -> WithDoc      a b   loc
   delLocation o = case o of
-    EvalObject   a     _ -> EvalObject   (fd0 a)                 lu
-    IfThenElse   a b c _ -> IfThenElse   (fd0 a) (fd0 b) (fd0 c) lu
-    TryCatch     a b c _ -> TryCatch     (fd0 a)      b  (fd0 c) lu
-    ForLoop      a b c _ -> ForLoop           a  (fd0 b) (fd0 c) lu
-    WhileLoop    a b   _ -> WhileLoop    (fd0 a) (fd0 b)         lu
-    ContinueExpr a b   _ -> ContinueExpr      a  (fd0 b)         lu
-    ReturnExpr   a b   _ -> ReturnExpr        a  (fd0 b)         lu
-    WithDoc      a b   _ -> WithDoc      (fd0 a) (fd0 b)         lu
+    EvalObject   a     _ -> EvalObject   (fd0 a)                     lu
+    IfThenElse   a       -> IfThenElse   (fd0 a)
+    WhileLoop    a       -> WhileLoop    (fd0 a)
+    TryCatch     a b c _ -> TryCatch     (fd0 a)      b (fmap fd0 c) lu
+    ForLoop      a b c _ -> ForLoop           a  (fd0 b)     (fd0 c) lu
+    ContinueExpr a b   _ -> ContinueExpr      a  (fd0 b)             lu
+    ReturnExpr   a b   _ -> ReturnExpr        a  (fd0 b)             lu
+    WithDoc      a b   _ -> WithDoc      (fd0 a) (fd0 b)             lu
     where
       lu = LocationUnknown
       fd0 :: HasLocation a => a -> a
@@ -1322,35 +1621,26 @@ instance Read TopLevelEventType where
 -- | A 'TopLevelExpr' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
 data TopLevelExpr
-  = Attribute      Name               ObjectExpr                 Location
-  | TopFunc        Name               [ObjectExpr]  CodeBlock    Location
-  | TopScript      ScriptExpr                                    Location
-  | TopLambdaExpr  LambdaExprType     [ObjectExpr]  CodeBlock    Location
-  | EventExpr      TopLevelEventType  CodeBlock                  Location
-  deriving (Eq, Ord, Typeable)
+  = Attribute Name              ObjectExpr Location
+  | TopScript ScriptExpr                   Location
+  | EventExpr TopLevelEventType CodeBlock  Location
+  deriving (Eq, Ord, Typeable, Show)
 
 isAttribute :: TopLevelExpr -> Bool
 isAttribute toplevel = case toplevel of { Attribute _ _ _ -> True; _ -> False; }
-
 instance HasLocation TopLevelExpr where
   getLocation o = case o of
     Attribute      _ _   o -> o
-    TopFunc        _ _ _ o -> o
     TopScript      _     o -> o
-    TopLambdaExpr  _ _ _ o -> o
     EventExpr      _ _   o -> o
   setLocation o loc = case o of
-    Attribute      a b   _ -> Attribute      a b   loc
-    TopFunc        a b c _ -> TopFunc        a b c loc
-    TopScript      a     _ -> TopScript      a     loc
-    TopLambdaExpr  a b c _ -> TopLambdaExpr  a b c loc
-    EventExpr      a b   _ -> EventExpr      a b   loc
+    Attribute      a b   _ -> Attribute a b loc
+    TopScript      a     _ -> TopScript a   loc
+    EventExpr      a b   _ -> EventExpr a b loc
   delLocation o = case o of
-    Attribute      a b   _ -> Attribute          a  (fd0 b)         lu
-    TopFunc        a b c _ -> TopFunc            a  (fd1 b) (fd0 c) lu
-    TopScript      a     _ -> TopScript     (fd0 a)                 lu
-    TopLambdaExpr  a b c _ -> TopLambdaExpr      a  (fd1 b) (fd0 c) lu
-    EventExpr      a b   _ -> EventExpr          a  (fd0 b)         lu
+    Attribute      a b   _ -> Attribute      a  (fd0 b) lu
+    TopScript      a     _ -> TopScript (fd0 a)         lu
+    EventExpr      a b   _ -> EventExpr      a  (fd0 b) lu
     where
       lu = LocationUnknown
       fd0 :: HasLocation a => a -> a
@@ -1361,6 +1651,7 @@ instance HasLocation TopLevelExpr where
 -- | A program is just a list of 'TopLevelExpr's. It serves as the 'Dao.Object.AST.Intermediate'
 -- representation of a 'Dao.Object.AST.AST_SourceCode'.
 newtype Program = Program { topLevelExprs :: [TopLevelExpr] } deriving (Eq, Ord, Typeable)
+instance Show Program where { show (Program o) = unlines (map show o) }
 instance HasLocation Program where
   getLocation o = case topLevelExprs o of
     [] -> LocationUnknown
@@ -1368,20 +1659,6 @@ instance HasLocation Program where
     o:ox -> mappend (getLocation o) (getLocation (foldl (flip const) o ox))
   setLocation o _ = o
   delLocation o = Program (fmap delLocation (topLevelExprs o))
-
-----------------------------------------------------------------------------------------------------
-
--- | Some matching operations can operate on objects with set-like properties ('Dao.Object.OSet',
--- 'Dao.Object.ODict', 'Dao.Object.OIntMap', 'Dao.Object.OTree'). This data type represents the
--- set operation for a set-like matching pattern. See also: 'ObjNameSet', 'ObjIntSet', 'ObjElemSet',
--- 'ObjChoice'.
-data ObjSetOp
-  = ExactSet -- ^ every pattern must match every item, no missing items, no spare items.
-  | AnyOfSet -- ^ any of the patterns match any of the items in the set
-  | AllOfSet -- ^ all of the patterns match, but it doesn't matter if not all items were matched.
-  | OnlyOneOf -- ^ only one of the patterns in the set matches only one of the items.
-  | NoneOfSet -- ^ all of the patterns do not match any of the items in the set.
-  deriving (Eq, Ord, Typeable, Enum, Show, Read)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1435,6 +1712,20 @@ stackPop :: Ord key => Stack key val -> (Stack key val, T.Tree key val)
 stackPop stack =
   let mx = mapList stack
   in  if null mx then (stack, T.Void) else (stack{mapList=tail mx}, head mx)
+
+execModifyTopStackItem :: Stack name obj -> (T.Tree name obj -> Exec (T.Tree name obj, a)) -> Exec (Stack name obj, a)
+execModifyTopStackItem (Stack stks) upd = case stks of
+  []       -> execThrow $ OList [ostr "execution stack empty"]
+  stk:stks -> upd stk >>= \ (stk, a) -> return (Stack (stk:stks), a)
+
+execModifyTopStackItem_ :: Stack name obj -> (T.Tree name obj -> Exec (T.Tree name obj)) -> Exec (Stack name obj)
+execModifyTopStackItem_ stack upd = fmap fst $
+  execModifyTopStackItem stack (\tree -> upd tree >>= \tree -> return (tree, ()))
+
+execReadTopStackItem :: Stack name obj -> (T.Tree name obj -> Exec a) -> Exec a
+execReadTopStackItem (Stack stks) lkup = case stks of
+  []    -> execThrow $ OList [ostr "execution stack empty"]
+  stk:_ -> lkup stk
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1510,15 +1801,31 @@ objectError o msg = execThrow $ OList [OString (ustr msg), o]
 
 ----------------------------------------------------------------------------------------------------
 
+newtype LocalStore       = LocalStore   (IORef (Stack Name Object))
+newtype CurrentCodeBlock = CurrentCodeBlock  (Maybe Subroutine)
+newtype GlobalStore      = GlobalStore  (MVar T_tree)
+newtype QTimeStore       = QTimeStore   (MVar T_tree)
+-- newtype WithRefStore     = WithRefStore (Maybe Object) -- DEFINED BELOW
+class Store store where
+  storeLookup :: store -> Reference -> Exec (Maybe Object)
+  storeUpdate :: store -> Reference -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe Object)
+  storeDefine :: store -> Reference -> Object -> Exec ()
+  storeDelete :: store -> Reference -> Exec ()
+
+-- The unfortunate thing about a 'WithStoreRef' is that it does not seem to need to be stored in an
+-- 'Data.IORef.IORef' because the evaluation of a "with" statement can just make use of the
+-- 'Control.Monad.Reader.local' function to update the 'currentWithRef' field of the 'ExecUnit'.
+-- However there is no easy way to pass back updated Object, so it must be stored in an IORef.
+-- Furthermore, th 'Store' class requires updates be made in the 'Exec' monad and these functions
+-- were designed on the assumption that the object to be modified would be stored in some kind of
+-- storage device, like an IORef or MVar.
+newtype WithRefStore     = WithRefStore (Maybe (IORef Object))
+
 -- | All functions that are built-in to the Dao language, or built-in to a library extending the Dao
 -- language, are stored in 'Data.Map.Map's from the functions name to an object of this type.
 -- Functions of this type are called by 'evalObject' to evaluate expressions written in the Dao
 -- language.
-data DaoFunc
-  = DaoFuncNoDeref { daoForeignCall :: [Object] -> Exec (Maybe Object) }
-    -- ^ do not dereference the parameters passed to this function.
-  | DaoFuncAutoDeref { daoForeignCall :: [Object] -> Exec (Maybe Object) }
-    -- ^ automatically dereference the parameters passed to the function.
+data DaoFunc = DaoFunc { autoDerefParams :: Bool, daoForeignCall :: [Object] -> Exec (Maybe Object) }
 
 -- | This is the state that is used to run the evaluation algorithm. Every Dao program file that has
 -- been loaded will have a single 'ExecUnit' assigned to it. Parameters that are stored in
@@ -1532,32 +1839,30 @@ data ExecUnit
     { parentRuntime      :: Runtime
       -- ^ a reference to the 'Runtime' that spawned this 'ExecUnit'. Some built-in functions in the
       -- Dao scripting language may make calls that modify the state of the Runtime.
-    , currentWithRef     :: Maybe File
+    , currentWithRef     :: WithRefStore
       -- ^ the current document is set by the @with@ statement during execution of a Dao script.
     , currentQuery       :: Maybe UStr
     , currentPattern     :: Maybe Glob
     , currentMatch       :: Maybe Match
-    , currentCodeBlock  :: Maybe Subroutine
+    , currentCodeBlock   :: CurrentCodeBlock
       -- ^ when evaluating a 'Subroutine' selected by a string query, the 'Action' resulting from
       -- that query is defnied here. It is only 'Data.Maybe.Nothing' when the module is first being
       -- loaded from source code.
     , currentBranch      :: [Name]
       -- ^ set by the @with@ statement during execution of a Dao script. It is used to prefix this
       -- to all global references before reading from or writing to those references.
-    , importsTable       :: M.Map Name (Maybe File)
+    , importsTable       :: [(Name, ExecUnit)]
       -- ^ a pointer to the ExecUnit of every Dao program imported with the @import@ keyword.
     , patternTable       :: [CallableCode]
       -- ^ contains functions which are evaluated not by name but by passing objects to them that
       -- match their argument list.
-    , builtinFuncs       :: M.Map Name DaoFunc
-      -- ^ a pointer to the builtin function table provided by the runtime.
     , topLevelFuncs      :: M.Map Name [CallableCode]
-    , execStack          :: IORef (Stack Name Object)
+    , execStack          :: LocalStore
       -- ^ stack of local variables used during evaluation
-    , queryTimeHeap      :: IORef T_tree
+    , queryTimeHeap      :: QTimeStore
       -- ^ the global vairables that are assigned only during a single query, and are deleted after
       -- the query has completed.
-    , globalData         :: IORef T_tree
+    , globalData         :: GlobalStore
       -- ^ global variables cleared after every string execution
     , taskForActions     :: Task
     , execOpenFiles      :: IORef (M.Map UPath File)
@@ -1580,6 +1885,9 @@ data ExecUnit
       -- ^ used to compare string tokens to 'Dao.Glob.Single' pattern constants.
     , ruleSet           :: IORef (PatternTree [Subroutine])
     }
+
+----------------------------------------------------------------------------------------------------
+
 instance HasDebugRef ExecUnit where
   getDebugRef = runtimeDebugger . parentRuntime
   setDebugRef dbg xunit = xunit{parentRuntime = (parentRuntime xunit){runtimeDebugger = dbg}}
@@ -1673,6 +1981,11 @@ data Runtime
       -- ^ a table of available string tokenizers.
     , availableComparators :: M.Map Name CompareToken
       -- ^ a table of available string matching functions.
+    , builtinFuncs         :: M.Map Name DaoFunc
+      -- ^ a pointer to the builtin function table provided by the runtime.
+    , importGraph          :: MVar (M.Map UPath ExecUnit)
+      -- ^ keeps track of which modules have impoted which other modules. Helps to prevent modules
+      -- from being loaded more than once in memory.
     , runtimeDebugger      :: DebugRef
     }
 instance HasDebugRef Runtime where
@@ -1715,13 +2028,63 @@ execIOHandler = newExecIOHandler $ \e -> execThrow (ostr $ show (e::IOException)
 execErrorHandler :: ExecHandler ()
 execErrorHandler = newExecIOHandler $ \e -> execThrow (ostr $ show (e::ErrorCall))
 
-catchReturn :: Exec a -> (Maybe Object -> Exec a) -> Exec a
-catchReturn fn catch = procCatch fn >>= \ce -> case ce of
-  FlowReturn obj -> catch obj
-  FlowOK     a   -> proc (FlowOK a)
-  FlowErr    obj -> proc (FlowErr obj)
+class CatchesReturns a where { catchReturn :: a -> Exec (Maybe Object) }
+instance CatchesReturns (Exec ()) where
+  catchReturn fn = procCatch fn >>= \flow -> case flow of
+    FlowOK    () -> return Nothing
+    FlowReturn m -> return m
+    FlowErr  err -> proc (FlowErr err)
+instance CatchesReturns (Exec Object) where
+  catchReturn fn = procCatch fn >>= \flow -> case flow of
+    FlowOK     o -> return (Just o)
+    FlowReturn m -> return m
+    FlowErr  err -> proc (FlowErr err)
+instance CatchesReturns (Exec (Maybe Object)) where
+  catchReturn fn = procCatch fn >>= \flow -> case flow of
+    FlowOK     o -> return o
+    FlowReturn m -> return m
+    FlowErr  err -> proc (FlowErr err)
 
 ----------------------------------------------------------------------------------------------------
+
+class ExecRef var where
+  execReadRef    :: var a -> Exec a
+  execTakeRef    :: var a -> Exec a
+  execPutRef     :: var a -> a -> Exec ()
+  execSwapRef    :: var a -> a -> Exec a
+  execModifyRef  :: var a -> (a -> Exec (a, b)) -> Exec b
+  execModifyRef_ :: var a -> (a -> Exec  a    ) -> Exec ()
+  execModifyRef_ var upd = execModifyRef var (\a -> upd a >>= \a -> return (a, ()))
+
+instance ExecRef MVar where
+  execModifyRef mvar upd = ask >>= \xunit -> procJoin $ liftIO $ modifyMVar mvar $ \a -> do
+    result <- flip ioExec xunit $ execCatchIO (upd a) $
+      [ newExecIOHandler $ \e -> execThrow $ OList $
+          [ostr "ErrorCall", ostr (show (e::ErrorCall))]
+      , newExecIOHandler $ \e -> execThrow $ OList $
+          [ostr "BlockedIndefinitelyOnMVar" , ostr (show (e::BlockedIndefinitelyOnMVar))]
+      , newExecIOHandler $ \e -> execThrow $ OList $
+          [ostr "Deadlock", ostr (show(e::Deadlock))]
+      ]
+    return $ case result of
+      FlowOK (a, b) -> (a, FlowOK     b)
+      FlowReturn o  -> (a, FlowReturn o)
+      FlowErr    o  -> (a, FlowErr    o)
+  execModifyRef_ mvar upd = execModifyRef mvar (\a -> upd a >>= \a -> return (a, ()))
+  execReadRef      = liftIO . readMVar
+  execTakeRef      = liftIO . takeMVar
+  execPutRef  mvar = liftIO . putMVar  mvar
+  execSwapRef mvar = liftIO . swapMVar mvar
+
+instance ExecRef IORef where
+  execModifyRef  ref upd = liftIO (readIORef ref) >>= upd >>= \ (a, b) -> liftIO (writeIORef ref a) >> return b
+  execModifyRef_ ref upd = liftIO (readIORef ref) >>= upd >>= liftIO . writeIORef ref
+  execReadRef            = liftIO . readIORef
+  execTakeRef            = execReadRef
+  execPutRef     ref     = liftIO . writeIORef ref
+  execSwapRef    ref obj = liftIO (readIORef ref >>= \sw -> writeIORef ref obj >> return sw)
+
+---------------------------------------------------------------------------------------------------
 
 type DepGraph = M.Map UPath [UPath]
 

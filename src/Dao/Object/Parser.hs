@@ -2,14 +2,14 @@
 -- parse 'Dao.Object.AST_Object' expressions.
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
--- This file is part of the DaoTT System.
+-- This file is part of the Dao System.
 --
--- The DaoTT System is free software: you can redistribute it and/or
+-- The Dao System is free software: you can redistribute it and/or
 -- modify it under the terms of the GNU General Public License as
 -- published by the Free Software Foundation, either version 3 of the
 -- License, or (at your option) any later version.
 -- 
--- The DaoTT System is distributed in the hope that it will be useful,
+-- The Dao System is distributed in the hope that it will be useful,
 -- but WITHOUT ANY WARRANTY; without even the implied warranty of
 -- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 -- GNU General Public License for more details.
@@ -76,9 +76,9 @@ daoTokenDB = makeTokenDB daoTokenDef
 
 data DaoTokenLabel
   = SPACE | INLINECOM | ENDLINECOM | COMMA | LABEL | STRINGLIT | CHARLIT | DATE | TIME
-  | BASE10 | DOTBASE10 | NUMTYPE | EXPONENT | BASE64DATA | BASE16 | BASE2
+  | BASE10 | DOTBASE10 | NUMTYPE | EXPONENT | BASE16 | BASE2
   deriving (Eq, Enum, Show, Read)
-instance UStrType DaoTokenLabel where { ustr = derive_ustr; fromUStr = derive_fromUStr; }
+instance UStrType DaoTokenLabel where { toUStr = derive_ustr; fromUStr = derive_fromUStr; }
 
 daoTokenDef :: LexBuilder DaoTT
 daoTokenDef = do
@@ -130,12 +130,12 @@ daoTokenDef = do
   operatorTable (words "$ @ -> . ! - ~")
   daoKeywords <- keywordTable LABEL labelRX $ words $ unwords $
     [ "global local qtime static"
-    , "null false true data struct list set intmap dict array date time hash" -- hash is reserved
+    , "null false true data tree list set intmap dict array date time hash" -- hash is reserved
     , "if else for in while with try catch continue break return throw"
     , "global local qtime static"
-    , "function func pattern pat rule BEGIN END EXIT"
+    , "function func rule BEGIN END EXIT"
     , "import require"
-    , "class operator public private new" -- other reserved keywords, but they don't do anything yet.
+    , "struct union operator public private new" -- other reserved keywords, but they don't do anything yet.
     ]
   let withKeyword key func = do
         tok <- getTokID key :: LexBuilderM DaoTT
@@ -143,13 +143,6 @@ daoTokenDef = do
   closers <- operatorTable $ words "#} } ] )"
   [openBrace, closeBrace, openParen, closeParen] <- mapM operator (words "{ } ( )")
   -- trace ("openBrace = "++show openBrace) $ return ()
-  
-  -------------------------------------- DATA SPECIAL SYNTAX --------------------------------------
-  base64Data   <- fullToken  BASE64DATA $
-    rxRepeat1[from 'A' to 'Z', from 'a' to 'z', from '0' to '9', ch '+', ch '/', ch '=']
-  dataLexer <- withKeyword "data" $ multiComs . openBrace .
-    fix(\loop -> (base64Data<>space) . loop <>
-      closeBrace <> rxErr "unknown token in base-64 data")
   
   ------------------------------------------- OPERATORS -------------------------------------------
   operators    <- operatorTable $ words $ unwords $
@@ -175,7 +168,7 @@ daoTokenDef = do
     [ space, inlineCom, endlineCom, comma
     , stringLit, charLit, base16, base2, base10Parser
     , operators, openers, closers
-    , dataLexer, date, time, daoKeywords
+    , date, time, daoKeywords
     ]
 
 ----------------------------------------------------------------------------------------------------
@@ -299,14 +292,14 @@ numberFromStrs base int maybFrac maybPlusMinusExp maybTyp = do
     Nothing -> fail ("incorrect digits used to form a base-"++show base++" number")
     Just  r -> return r
   case typ of
---  "U" -> return $ OWord (fromIntegral (round r))
---  "I" -> return $ OInt  (round r)
---  "L" -> return $ OLong (round r)
---  "R" -> return $ ORatio r
---  "F" -> return $ OFloat (fromRational r)
---  "f" -> return $ OFloat (fromRational r)
---  "i" -> return $ OComplex (0 :+ fromRational r)
---  "j" -> return $ OComplex (0 :+ fromRational r)
+    "U" -> return $ OWord (fromIntegral (round r))
+    "I" -> return $ OInt  (round r)
+    "L" -> return $ OLong (round r)
+    "R" -> return $ ORatio r
+    "F" -> return $ OFloat (fromRational r)
+    "f" -> return $ OFloat (fromRational r)
+    "i" -> return $ OComplex (0 :+ fromRational r)
+    "j" -> return $ OComplex (0 :+ fromRational r)
     "s" -> return $ ORelTime (fromRational r)
     ""  ->
       return (OInt (fromIntegral (round r)))
@@ -354,8 +347,8 @@ diffTimeFromStrs time = do
 
 ----------------------------------------------------------------------------------------------------
 
-numberPTab :: DaoPTable AST_Object
-numberPTab = table $
+numberPTabItems :: [DaoTableItem AST_Object]
+numberPTabItems = 
   [ base 16 BASE16
   , base  2 BASE2
   , tableItem BASE10    $ \tok -> do
@@ -381,31 +374,30 @@ numberPTab = table $
       let endLoc = asLocation tok
       return (AST_Literal num (maybe endLoc id loc))
 
+numberPTab :: DaoPTable AST_Object
+numberPTab = table numberPTabItems
+
 -- | Parsing numerical literals
 number :: DaoParser AST_Object
 number = joinEvalPTable numberPTab
 
 singletonPTab :: DaoPTable AST_Object
-singletonPTab = (numberPTab<>) $ table $
-  [ tableItem LABEL     (literal $ ORef    . bareword . asUStr  )
-  , tableItem STRINGLIT (literal $ OString . read     . asString)
+singletonPTab = table singletonPTabItems
+
+singletonPTabItems :: [DaoTableItem AST_Object]
+singletonPTabItems = numberPTabItems ++ fmap (fmap (fmap AST_ObjQualRef)) qualReferencePTabItems ++
+  [ tableItem STRINGLIT (literal $ OString . read     . asString)
   , tableItem CHARLIT   (literal $ OChar   . read     . asString)
   , tableItemBy "("    $ \tok -> do
       obj <- commented equation
       expect "closing parentheses" $ do
         endloc <- tokenBy ")" asLocation
         return (AST_Paren obj (asLocation tok <> endloc))
-  , tableItemBy "{#" $ \startTok -> expect "object expression after open {# meta-eval brace" $
-      msum $
-        [ do  bufferComments
-              endLoc <- tokenBy "#}" asLocation
-              com1 <- optSpace
-              return (AST_MetaEval (com com1 AST_Void []) (asLocation startTok <> endLoc))
-        , do  obj <- commented equation
-              expect "closing #} meta-eval brace" $ do
-                endLoc <- tokenBy "#}" asLocation
-                return (AST_MetaEval obj (asLocation startTok <> endLoc))
-        ]
+  , tableItemBy "{#" $ \startTok -> expect "object expression after open {# meta-eval brace" $ do
+      scrp <- fmap AST_CodeBlock (many script)
+      expect "closing #} meta-eval brace" $ do
+        endLoc <- tokenBy "#}" asLocation
+        return (AST_MetaEval scrp (asLocation startTok <> endLoc))
   , trueFalse "null" ONull, trueFalse "false" ONull, trueFalse "true" OTrue
   , reserved "class", reserved "operator", reserved "public", reserved "private", reserved "new"
   ]
@@ -419,6 +411,21 @@ singletonPTab = (numberPTab<>) $ table $
 -- parentheses.
 singleton :: DaoParser AST_Object
 singleton = joinEvalPTable singletonPTab
+
+prefixedSingletonPTabItems :: [DaoTableItem AST_Object]
+prefixedSingletonPTabItems = [prefixOp "$", prefixOp "@"] where
+  prefixOp op = tableItemBy op $ \tok -> case maybeFromUStr (asUStr tok) of
+    Nothing -> error ("token "++show tok++" used as prefix operator")
+    Just op -> do
+      ref <- commented qualReference
+      let loc = asLocation tok <> getLocation (unComment ref)
+      return (AST_Prefix op (fmap AST_ObjQualRef ref) loc)
+
+prefixedSingletonPTab :: DaoPTable AST_Object
+prefixedSingletonPTab = table prefixedSingletonPTabItems
+
+prefixedSingleton :: DaoParser AST_Object
+prefixedSingleton = joinEvalPTable prefixedSingletonPTab
 
 -- Objects that are parsed as a single value but which are constructed from other object
 -- expressions. This table excludes 'singletonPTab'.
@@ -439,79 +446,77 @@ containerPTab = table $
         case readsPrec 0 (asString date ++ timeAndZone) of
           [(obj, "")] -> return (AST_Literal (OAbsTime obj) loc)
           _           -> fail "invalid UTC-time expression"
-  , tableItemBy "time" $ \startTok ->
-      expect "UTC-time value after \"time\" statement" $ do
-        token SPACE as0
-        tok  <- token TIME id
-        time <- diffTimeFromStrs (asString tok)
-        return (AST_Literal (ORelTime time) (asLocation startTok <> asLocation tok))
-  , containerWith "list" return
-  , containerWith "set"  return
-  , (\lbl -> containerWith lbl (checkAssign lbl)) "dict"
-  , (\lbl -> containerWith lbl (checkAssign lbl)) "intmap"
-  , tableItemBy "array" $ \startTok -> do
-      let arrBounds = expect "array bounds expression" $ do
-            startLoc <- tokenBy "(" asLocation
-            (bnds, endLoc) <- commaSepd "bound value for \"array\" statement" ")" equation
-            case bnds of
-              [a, b] -> return ()
-              _      ->
-                failLater "array boundaries declratation should have only two expressions" $
-                  startLoc <> endLoc
-            return bnds
-      bnds <- commented arrBounds
-      let initMsg = "valid item in initializing list for array declaration"
-      expect initMsg $ do
-        tokenBy "{" as0
-        (items, endLoc) <- commaSepd initMsg "}" equation
-        return (AST_Array bnds items (asLocation startTok <> endLoc))
-  , tableItemBy "struct" $ \startTok -> do
+  , tableItemBy "time" $ \startTok -> expect "UTC-time value after \"time\" statement" $ do
+      token SPACE as0
+      tok  <- token TIME id
+      time <- diffTimeFromStrs (asString tok)
+      return (AST_Literal (ORelTime time) (asLocation startTok <> asLocation tok))
+  , tableItemBy "tree" $ \startTok -> do
       initObj <- commented (equation <|> return AST_Void)
       let endLoc = case unComment initObj of
             AST_Void -> asLocation startTok
             obj      -> getLocation obj
-      let noBracedItems =  return (AST_Struct initObj [] (asLocation startTok <> endLoc))
+      let noBracedItems =  return (AST_Struct initObj mempty (asLocation startTok <> endLoc))
       flip mplus noBracedItems $ do
         tokenBy "{" as0
-        (items, endLoc) <- commaSepd "item in list for initializing struct declaration" "}" equation
-        return (AST_Struct initObj items (asLocation startTok <> endLoc))
-  , tableItemBy "data" $ \startTok -> expect "bracketed base-64 data expression" $ do
-      coms <- optSpace
-      tokenBy "{" as0
-      dat <- fmap concat $ many $ msum
-        [fmap return (token BASE64DATA asUStr), token SPACE as0 >> return []]
-      endLoc <- expect "base-64 data" (tokenBy "}" asLocation)
-      return (AST_Data coms (fmap Com dat) (asLocation startTok <> endLoc))
+        (items, endLoc) <- commaSepd "item in list for initializing struct declaration" "}" (return . com [] AST_Void) equation id
+        return (AST_Struct initObj (mkObjList items) (asLocation startTok <> endLoc))
+  , tableItemBy "rule" $ \startTok -> expect "list of strings after \"rule\" statement" $ do
+      lst <- commented $ joinEvalPTable $ table $
+        [ tableItem STRINGLIT $ \str -> return $ AST_StringList [Com (asUStr str)] (asLocation str)
+        , tableItemBy "(" $ \openTok -> do
+            let lu = LocationUnknown
+            (lst, loc) <- commaSepd "strings for rule header" ")" (flip AST_NoStrings lu) (token STRINGLIT asUStr) (flip AST_StringList lu)
+            return (setLocation lst (asLocation openTok <> loc))
+        ]
+      expect "bracketed expression after rule header" $ do
+        (scrpt, endLoc) <- bracketed ("script expression for \"rule\" statement")
+        return $ AST_Rule lst scrpt (asLocation startTok <> endLoc)
   , lambdaFunc "func", lambdaFunc "function"
-  , lambdaFunc "pat" , lambdaFunc "pattern"
-  , lambdaFunc "rule"
   ]
   where
     checkAssign lbl obj = do
       case obj of
-        AST_Assign _ _ _ _ -> return ()
-        obj                -> do
+        AST_Assign{} -> return ()
+        obj          ->
           failLater ("non-assignment expression in \""++lbl++"\" statement") (getLocation obj)
       return obj
-    lambdaFunc lbl = tableItemBy lbl $ \startTok -> do
-      com1 <- optSpace
-      (params, endLoc) <- expect ("parameter list after \""++lbl++"\" statement") $ do
-        tokenBy "(" as0
-        commaSepd ("parameter value for \""++lbl++"\" statement") ")" equation
-      com2 <- optSpace
-      (scrpt, endLoc) <- bracketed ("script expression after \""++lbl++"\" statement")
-      return (AST_Lambda (read lbl) (com com1 params com2) scrpt (asLocation startTok <> endLoc))
+    lambdaFunc lbl = tableItemBy lbl $ \startTok ->
+      expect ("parameters and bracketed script after \""++lbl++"\" statement") $ do
+        constr <- mplus (pure AST_Func <*> optSpace <*> token LABEL asName) (return AST_Lambda)
+        params <- commented paramList
+        (scrpt, endLoc) <- bracketed ("script expression after \""++lbl++"\" statement")
+        return $ constr params scrpt (asLocation startTok <> endLoc)
 
-containerWith :: UStrType lbl =>
-  lbl -> (AST_Object -> DaoParser AST_Object) -> DaoTableItem AST_Object
-containerWith lbl constr = tableItemBy lbl $ \startTok -> do
-  let typeStr = uchars (ustr lbl)
-      msg = "bracketed list of items for \""++typeStr++"\" statement"
-  coms <- optSpace
-  (items, endLoc) <- expect msg $ do
-    startLoc <- tokenBy "{" as0
-    commaSepd msg "}" (equation >>= constr)
-  return (AST_Dict (ustr lbl) coms items (asLocation startTok <> endLoc))
+-- None of the functions related to parameters and type checking parse with tables because there is
+-- simply no need for it according to the Dao language syntax.
+typeCheckParser :: a -> DaoParser (AST_TyChk a)
+typeCheckParser a = flip mplus (return (AST_NotChecked a)) $ do
+  com1 <- commented (tokenBy ":" id)
+  let startLoc = asLocation (unComment com1)
+  expect "type expression after colon operator" $ equation >>= \obj -> return $
+    AST_Checked a (fmap as0 com1) obj (startLoc <> getLocation obj)
+
+typeCheckedName :: DaoParser (AST_TyChk Name)
+typeCheckedName = token LABEL id >>= \tok ->
+  fmap (\tychk -> setLocation tychk (asLocation tok <> getLocation tychk)) $
+    typeCheckParser (asName tok)
+
+parameter :: DaoParser AST_Param
+parameter = msum $
+  [ do  startLoc <- tokenBy "$" asLocation
+        coms     <- optional space
+        item     <- typeCheckedName
+        return $ AST_Param coms item (startLoc <> getLocation item)
+  , typeCheckedName >>= \nm -> return $ AST_Param Nothing nm (getLocation nm)
+  ]
+
+paramList :: DaoParser AST_ParamList
+paramList = do
+  startLoc   <- tokenBy "(" asLocation
+  (lst, loc) <- commaSepd "parameter value" ")" (return . com [] AST_NoParams) parameter id
+  lst        <- typeCheckParser lst
+  return (AST_ParamList lst (startLoc <> loc))
 
 singletonOrContainerPTab :: DaoPTable AST_Object
 singletonOrContainerPTab = singletonPTab <> containerPTab
@@ -519,58 +524,70 @@ singletonOrContainerPTab = singletonPTab <> containerPTab
 singletonOrContainer :: DaoParser AST_Object
 singletonOrContainer = joinEvalPTable singletonOrContainerPTab
 
--- A constructor that basically re-arranges the arguments to the 'Dao.Object.AST.AST_Equation'
--- constructor such that this function can be used as an argument to 'Dao.Parser.sinpleInfixed'
--- or 'Dao.Parser.newOpTableParser'.
-equationConstructor :: AST_Object -> (Location, Com InfixOp) -> AST_Object -> AST_Object
-equationConstructor left (loc, op) right = AST_Equation left op right loc
+--referencePTab :: DaoPTable AST_Ref
+--referencePTab = table (map mkPar ["$", "@"]) where
+--  mkPar opStr = tableItemBy opStr $ \tok -> do
+--    let as = fromUStr . tokTypeToUStr . asTokType
+--    coms <- optSpace
+--    obj  <- commented reference
+--    return (AST_RefOp (as tok) coms obj)
 
-referencePTab :: DaoPTable AST_Object
-referencePTab = table (map mkPar ["$", "@"]) <> labeled where
-  mkPar opStr = tableItemBy opStr $ \tok -> do
-    let as = fromUStr . tokTypeToUStr . asTokType
-    obj <- commented reference
-    return (AST_Prefix (as tok) obj ((getLocation (unComment obj)) <> asLocation tok))
-  labeled = bindPTable singletonPTab $ \initObj ->
-    flip mplus (return initObj) $
-      simpleInfixedWithInit "label after dot or arrow operator" rightAssoc
-        equationConstructor
-        (return initObj)
-        (flip mplus singleton (reference >>= \o -> bufferComments >> return o))
-        (liftM2 (,) (look1 asLocation) (commented (joinEvalPTable infixPTab)))
-  infixPTab :: DaoPTable InfixOp
-  infixPTab = table $ flip fmap [".", "->"] $
-    flip tableItemBy (return . fromUStr . tokTypeToUStr . asTokType)
+referencePTabItem :: DaoTableItem AST_Ref
+referencePTabItem = tableItem LABEL $ \init -> fmap constr $
+  simpleInfixedWithInit "reference expression" rightAssoc chain
+    (asName init)
+    (token LABEL id >>= asName)
+    (commented (tokenBy "." as0))
+  where
+    constr :: ([Com Name], Location) -> AST_Ref
+    constr (nx, loc) = case nx of
+      []   -> AST_RefNull
+      n:nx -> AST_Ref (unComment n) nx loc
+    chain (l, lloc) op (r, rloc) = (l++r, lloc<>rloc)
+    asName :: TokenAt DaoTT -> DaoParser ([Com Name], Location)
+    asName tok = case maybeFromUStr (asUStr tok) of
+      Just  n -> return ([Com n], asLocation tok)
+      Nothing -> fail ("expecting label, but token "++show (asString tok)++" is not a valid label")
 
-reference :: DaoParser AST_Object
-reference = joinEvalPTable referencePTab
+referencePTab :: DaoPTable AST_Ref
+referencePTab = table [referencePTabItem]
+
+reference :: DaoParser AST_Ref
+reference = joinEvalPTableItem referencePTabItem
 
 -- A 'reference' statement, or a 'reference' statement qualified by a prefix like "global", "local",
 -- "qtime", or "static".
-qualReferencePTab :: DaoPTable AST_Object
-qualReferencePTab = (<>referencePTab) $ table $ flip fmap (words "global local qtime static .") $ \pfx ->
-  tableItemBy pfx $ \tok -> do
-    obj <- commented reference
-    return (AST_Prefix (fromUStr (tokTypeToUStr (asTokType tok))) obj (asLocation tok <> (getLocation (unComment obj))))
+qualReferencePTabItems :: [DaoTableItem AST_QualRef]
+qualReferencePTabItems = (fmap (fmap AST_Unqualified) referencePTabItem :) $
+  flip fmap (words "global local qtime static .") $ \pfx ->
+    tableItemBy pfx $ \tok -> do
+      coms <- optSpace
+      obj  <- reference
+      let loc  = asLocation tok <> getLocation obj
+      let qual = fromUStr (tokTypeToUStr (asTokType tok))
+      return (AST_Qualified qual coms obj loc)
 
-qualReference :: DaoParser AST_Object
+qualReferencePTab :: DaoPTable AST_QualRef
+qualReferencePTab = table qualReferencePTabItems
+
+qualReference :: DaoParser AST_QualRef
 qualReference = joinEvalPTable qualReferencePTab
 
 ----------------------------------------------------------------------------------------------------
 
 commaSepd :: (UStrType str, UStrType errmsg) =>
-  errmsg -> str -> DaoParser AST_Object -> DaoParser ([Com AST_Object], Location)
-commaSepd errMsg close parser =
+  errmsg -> str -> ([Comment] -> b) -> DaoParser a -> ([Com a] -> b) -> DaoParser (b, Location)
+commaSepd errMsg close voidVal parser constr =
   msum [commented parser >>= loop . (:[]), parseComEmpty, parseClose [] [], err] where
     parseComEmpty = space >>= parseClose []
     parseClose stack c = do
       loc <- tokenBy close asLocation
-      return (if null c then stack else stack++[com c AST_Void []], loc)
+      return (if null stack && null c then constr stack else if null c then constr stack else voidVal c, loc)
     loop stack = flip mplus (parseClose stack []) $ do
       token COMMA as0
       o <- commented (expect errMsg parser)
       loop (stack++[o])
-    err = fail $ "unknown token while parsing list of items for "++uchars (ustr errMsg)
+    err = fail $ "unknown token while parsing list of items for "++uchars errMsg
 
 -- More than one parser has need of 'commaSepd' as a parameter to 'commented', but passing
 -- 'commaSped' to 'commented' will return a value of type:
@@ -584,24 +601,51 @@ commentedInPair parser = do
   let (a, loc) = unComment comntd
   return (fmap (const a) comntd, loc)
 
--- This is 'reference' expression possibly followed by square brackets or parentheses. If there is
--- no juxtapose, just return the 'reference' expression. This covers function call expressions and
--- array subscript expressions. Because there is no delimiting token, this table is a combination of
--- all the tables of higher prescedence than it, which are 'singletonPTab', 'referencePTab' and
--- 'qualReferencePTab'. Tables of lower prescedence can include this table, but should not include
--- those tables (it would be redundant).
-funcCallArraySubPTab :: DaoPTable AST_Object
-funcCallArraySubPTab = bindPTable qualReferencePTab loop where
-  loop obj = flip mplus (return obj) $
-    bufferComments >> evalPTable juxtaposedPTab >>= \call -> call obj >>= loop
-  bracket (open:close:[], constr) = tableItemBy [open] $ \tok obj -> do
-    coms <- optSpace
-    (args, endloc) <- commaSepd "argument to function" [close] equation
-    return (constr obj coms args (asLocation tok <> endloc))
-  juxtaposedPTab = table $ fmap bracket [("()", AST_FuncCall), ("[]", AST_ArraySub)]
+commaSepdObjList :: String -> String -> DaoParser AST_ObjList
+commaSepdObjList open close = do
+  coms          <- optSpace
+  startLoc      <- tokenBy open asLocation
+  (lst, endLoc) <- commaSepd "arguments to function call" close (return . com [] AST_Void) equation id
+  return (AST_ObjList coms lst (startLoc<>endLoc))
+    
+
+funcCallParamList :: DaoParser AST_ObjList
+funcCallParamList = commaSepdObjList "(" ")"
+
+initializerList :: DaoParser AST_ObjList
+initializerList = commaSepdObjList "{" "}"
+
+-- The syntax for 'Dao.Object.AST.AST_InitExpr', 'Dao.Object.AST.AST_FuncCall', and
+-- 'Dao.Object.AST_ObjQualRef' expressions are similar enough that 'AST_InitExpr' that the semantics
+-- need to be hand-merged into a single function here. Basically, if there is a reference expression
+-- alone, it is an 'Dao.Object.AST_ObjQualRef' expression. If the reference expression is followed
+-- immediately by a curly-bracketed list of object expressions and then a semicolon, it is an
+-- 'AST_Init' expression. If the reference expression is followed by round brackets with a
+-- comma-separated list of object expressions and then a semi-colon, it is a
+-- 'Dao.Object.AST_FuncCall' expression. If the reference expression is followed by a
+-- comma-separated list of object expressions in round brackets, AND THEN followed by a
+-- comma-separated list of object expressions in curly brackets, and then a semi-colon, it is once
+-- again a 'Dao.Object.AST_Init' expression.
+funcCallOrInitPTabItem :: DaoTableItem AST_Object
+funcCallOrInitPTabItem = bindPTableItem referencePTabItem $ \ref -> do
+  let objRef = AST_ObjQualRef (AST_Unqualified ref)
+  let refLoc = getLocation ref
+  let curlyBrackets params = do
+        initList <- initializerList
+        return (AST_Init ref params initList (refLoc <> getLocation initList))
+  msum $
+    [ do  paramList <- funcCallParamList
+          coms      <- optSpace
+          msum $
+            [ curlyBrackets (AST_OptObjList paramList coms)
+            , return (AST_FuncCall objRef paramList (refLoc <> getLocation paramList))
+            ]
+    , optSpace >>= curlyBrackets . AST_NoObjList
+    , return objRef
+    ]
 
 funcCallArraySub :: DaoParser AST_Object
-funcCallArraySub = joinEvalPTable funcCallArraySubPTab
+funcCallArraySub = joinEvalPTableItem funcCallOrInitPTabItem
 
 arithPrefixPTab :: DaoPTable AST_Object
 arithPrefixPTab = table $ (logicalNOT:) $ flip fmap ["~", "-", "+"] $ \pfxOp ->
@@ -620,11 +664,17 @@ arithPrefix = joinEvalPTable arithPrefixPTab
 -- 'containerPTab' is also included at this level. It is the most complicated (and therefore lowest
 -- prescedence) object expression that can be formed without making use of infix operators.
 objectPTab :: DaoPTable AST_Object
-objectPTab = mconcat [funcCallArraySubPTab, arithPrefixPTab, containerPTab]
+objectPTab = mconcat [table [funcCallOrInitPTabItem], arithPrefixPTab, singletonOrContainerPTab]
 
 -- Evaluates 'objectPTab' to a 'DaoParser'.
 object :: DaoParser AST_Object
 object = joinEvalPTable objectPTab
+
+-- A constructor that basically re-arranges the arguments to the 'Dao.Object.AST.AST_Equation'
+-- constructor such that this function can be used as an argument to 'Dao.Parser.sinpleInfixed'
+-- or 'Dao.Parser.newOpTableParser'.
+equationConstructor :: AST_Object -> (Location, Com InfixOp) -> AST_Object -> AST_Object
+equationConstructor left (loc, op) right = AST_Equation left op right loc
 
 -- Parses a sequence of 'object' expressions interspersed with arithmetic infix opreators.
 -- All infixed logical operators are included, assignment operators are not. The only prefix logical
@@ -638,7 +688,7 @@ arithOpTable =
     )
     (object >>= \o -> bufferComments >> return o)
     (\left (loc, op) right -> AST_Equation left op right loc)
-    ( opRight ["**"] equationConstructor
+    ( opRight ["->", "**"] equationConstructor
     : fmap (\ops -> opLeft (words ops) equationConstructor)
         ["* / %", "+ -", "<< >>", "&", "^", "|", "< <= >= >", "== !=", "&&", "||"]
     )
@@ -654,7 +704,7 @@ arithmetic = joinEvalPTable arithmeticPTab
 equationPTab :: DaoPTable AST_Object
 equationPTab = bindPTable arithmeticPTab $ \obj ->
   simpleInfixedWithInit "object expression for assignment operator" rightAssoc
-    (\left (loc, op) right -> AST_Assign left op right loc)
+    (\left (loc, op) right -> AST_Assign (AST_LValue left) op right loc)
     (bufferComments >> return obj)
     arithmetic
     (liftM2 (,) (look1 asLocation) (commented (joinEvalPTable opTab)))
@@ -684,6 +734,66 @@ bracketed msg = do
 script :: DaoParser AST_Script
 script = joinEvalPTable scriptPTab
 
+ifWhilePTabItem :: String -> (AST_If -> a) -> DaoTableItem a
+ifWhilePTabItem keyword constr = tableItemBy keyword $ \tok -> do
+  obj <- commented equation
+  (thn, loc) <- bracketed keyword
+  return $ constr $ AST_If obj thn (asLocation tok <> loc)
+
+whilePTabItem :: DaoTableItem AST_While
+whilePTabItem = ifWhilePTabItem "while" AST_While
+
+ifPTabItem :: DaoTableItem AST_If
+ifPTabItem = ifWhilePTabItem "if" id
+
+ifStatement :: DaoParser AST_If
+ifStatement = joinEvalPTableItem ifPTabItem
+
+ifElsePTabItem :: DaoTableItem AST_IfElse
+ifElsePTabItem = bindPTableItem ifPTabItem (loop []) where
+  loop elsx ifExpr = do
+    msum $
+      [ do  com1   <- optSpace
+            elsLoc <- tokenBy "else" asLocation
+            expect "bracketed expression, or another \"if\" expression after \"else\" statement" $ do
+              com2 <- optSpace
+              msum $
+                [ do  nextIf <- ifStatement
+                      loop (elsx++[AST_Else (com com1 () com2) nextIf (elsLoc <> getLocation nextIf)]) ifExpr
+                , do  (els, endLoc) <- bracketed "else statement"
+                      return (AST_IfElse ifExpr elsx (com com1 () com2) (Just els) (getLocation ifExpr <> endLoc))
+                ]
+      , return (AST_IfElse ifExpr elsx (Com ()) Nothing (getLocation ifExpr))
+      ]
+
+--ifStatementTabItem :: DaoTableItem (Com AST_Object, AST_CodeBlock, AST_ElseIf, Location)
+--ifStatementTabItem = tableItemBy "if" $ \tok -> expect "conditional expression after \"if\" statement" $ do
+--  coms <- optSpace
+--  expect "object expression after \"if\" statement" $ do
+--    coms <- optSpace
+--    obj  <- commented equation
+--    expect "bracketed script expressions after \"if\" statement" $ do
+--      (thenStmt, thenLoc) <- bracketed "if statement"
+--      elseStmt <- elseStatement
+--      return (obj, thenStmt, elseStmt, asLocation tok <> thenLoc <> getLocation elseStmt)
+--
+--ifStatement :: DaoParser (Com AST_Object, AST_CodeBlock, AST_ElseIf, Location)
+--ifStatement = joinEvalPTableItem ifStatementTabItem
+--
+--elseStatement :: DaoParser AST_ElseIf
+--elseStatement = do
+--  com1 <- optSpace
+--  flip mplus (return AST_NullElseIf) $ do
+--    startLoc <- tokenBy "else" asLocation
+--    com2     <- optSpace
+--    let done (els, endLoc) = return (AST_Else com1 els endLoc)
+--    -- The comments for the second bracketed script of AST_IfThenElse aren't surrounding the whole
+--    -- bracketed expression, only the "else" statement token. This needs to be considered when
+--    -- creating syntax trees with quickcheck, and when instantiating the pretty printer.
+--    expect "curly-bracketed script or another \"if\" statement after \"else\" statement" $
+--      mplus (bracketed "\"else\" statement" >>= done)
+--            (fmap (\ (a,b,c,d) -> AST_ElseIf a b c d) ifStatement)
+
 scriptPTab :: DaoPTable AST_Script
 scriptPTab = comments <> objExpr <> table exprs where
   objExpr = bindPTable equationPTab $ \obj -> do
@@ -692,9 +802,8 @@ scriptPTab = comments <> objExpr <> table exprs where
       endLoc <- tokenBy ";" asLocation
       return (AST_EvalObject obj coms (getLocation obj <> endLoc))
   comments = bindPTable spaceComPTab $ \c1 -> optSpace >>= \c2 -> return (AST_Comment (c1++c2))
-  exprs =
-    [ if_tableItem
-    , tableItemBy "return"   (returnExpr True)
+  exprs = fmap (fmap AST_WhileLoop) whilePTabItem : fmap (fmap AST_IfThenElse) ifElsePTabItem :
+    [ tableItemBy "return"   (returnExpr True)
     , tableItemBy "throw"    (returnExpr False)
     , tableItemBy "continue" (continExpr True)
     , tableItemBy "break"    (continExpr False)
@@ -704,14 +813,14 @@ scriptPTab = comments <> objExpr <> table exprs where
         tryCom <- return (fmap (const try) tryCom)
         let done comName catch endLoc = return $
               AST_TryCatch tryCom comName catch (asLocation tok <> endLoc)
-        flip mplus (done (Com nil) mempty endLoc) $ do
+        flip mplus (done (Just (Com mempty)) mempty endLoc) $ do
           tokenBy "catch" as0
           expect "varaible name after \"catch\" statement" $ do
-            comName <- commented (token LABEL asUStr)
+            comName <- commented (token LABEL asName)
             (catch, endLoc) <- bracketed "\"catch\" statement"
-            done comName catch endLoc
+            done (Just comName) (Just catch) endLoc
     , tableItemBy "for"   $ \tok -> expect "iterator label after \"for statement\"" $ do
-        comName <- commented (token LABEL asUStr)
+        comName <- commented (token LABEL asName)
         expect "\"in\" statement after \"for\" statement" $ do
           tokenBy "in" as0
           expect "object expression over which to iterate of \"for-in\" statement" $ do
@@ -719,11 +828,11 @@ scriptPTab = comments <> objExpr <> table exprs where
             expect "bracketed script after \"for-in\" statement" $ do
               (for, endLoc) <- bracketed "\"for\" statement"
               return (AST_ForLoop comName obj for (asLocation tok <> endLoc))
-    , tableItemBy "while" $ \tok -> expect "conditional expression after \"while\" statement" $ do
-        obj <- commented equation
-        expect "bracketed script after \"while\" statement" $ do
-          (while, endLoc) <- bracketed "\"while\" statement"
-          return (AST_WhileLoop obj while (asLocation tok <> endLoc))
+--    , tableItemBy "while" $ \tok -> expect "conditional expression after \"while\" statement" $ do
+--        obj <- commented equation
+--        expect "bracketed script after \"while\" statement" $ do
+--          (while, endLoc) <- bracketed "\"while\" statement"
+--          return (AST_WhileLoop obj while (asLocation tok <> endLoc))
     , tableItemBy "with"  $ \tok -> expect "reference expression after \"with\" statement" $ do
         obj <- commented equation
         expect "bracketed script after \"with\" statement" $ do
@@ -753,32 +862,6 @@ scriptPTab = comments <> objExpr <> table exprs where
       , fail (msg "expecting optional object expression followed by a semicolon")
       ]
 
-if_tableItem :: DaoTableItem AST_Script
-if_tableItem = tableItemBy "if" $ \tok -> expect "conditional expression after \"if\" statement" $ do
-  coms <- optSpace
-  expect "object expression after \"if\" statement" $ do
-    coms <- optSpace
-    obj  <- equation
-    expect "bracketed script expressions after \"if\" statement" $ do
-      (comThen, thenLoc) <- fmap (\ (thn, loc) -> (com coms thn [], loc)) $ bracketed "if statement"
-      (comElse, elseLoc) <- elseStatement
-      return (AST_IfThenElse coms obj comThen comElse (asLocation tok <> thenLoc <> elseLoc))
-
-elseStatement :: DaoParser (Com AST_CodeBlock, Location)
-elseStatement = do
-  com1 <- optSpace
-  flip mplus (return (com com1 mempty [], LocationUnknown)) $ do
-    startLoc <- tokenBy "else" asLocation
-    com2     <- optSpace
-    let done (els, endLoc) = return (com com1 els com2, startLoc<>endLoc)
-    -- The comments for the second bracketed script of AST_IfThenElse aren't surrounding the whole
-    -- bracketed expression, only the "else" statement token. This needs to be considered when
-    -- creating syntax trees with quickcheck, and when instantiating the pretty printer.
-    expect "curly-bracketed script or another \"if\" statement after \"else\" statement" $
-      mplus (bracketed "\"else\" statement" >>= done) $ do
-        elsif <- joinEvalPTableItem if_tableItem
-        return (com com1 (AST_CodeBlock [elsif]) com2, startLoc <> getLocation elsif)
-
 ----------------------------------------------------------------------------------------------------
 
 toplevelPTab :: DaoPTable AST_TopLevel
@@ -786,45 +869,16 @@ toplevelPTab = table expr <> comments <> scriptExpr where
   comments = bindPTable spaceComPTab (\c1 -> optSpace >>= \c2 -> return (AST_TopComment (c1++c2)))
   scriptExpr = bindPTable scriptPTab $ \obj -> return (AST_TopScript obj (getLocation obj))
   expr =
-    [ function "func"   , function "function"
-    , event    "BEGIN"  , event    "END"     , event   "EXIT"
-    , pattern  "pattern", pattern  "pat"     , pattern "rule"
+    [ event    "BEGIN"  , event    "END"     , event   "EXIT"
     , header   "require", header   "import"
     ]
   singlePattern = commented equation >>= \eqn -> return ([eqn], getLocation (unComment eqn))
-  function lbl = tableItemBy lbl $ \tok -> do
-    let exprType = '"':show (asTokType tok)++"\""
-    coms <- optSpace
-    name <- optional (token LABEL asUStr)
-    expect ("parameter list after \""++exprType++"\" statement") $ do
-      (pats, _     ) <- expect ("list of patterns for \""++asString tok++"\" statement") $
-        commentedInPair $ do
-          tokenBy "(" as0
-          commaSepd ("pattern after "++exprType++" statement") ")" equation
-      (actn, endLoc) <-
-        expect ("bracketed script expression after "++exprType++" statement") $
-          bracketed ('"':asString tok++"\" statement")
-      let loc = asLocation tok <> endLoc
-      return $ case name of
-        Just name -> AST_TopFunc coms name pats actn loc
-        Nothing   -> AST_TopLambda (read lbl) pats actn loc
   event   lbl = tableItemBy lbl $ \tok -> do
     let exprType = show (asTokType tok)
     coms <- optSpace
     expect ("bracketed script after \""++exprType++"\" statement") $ do
       (event, endLoc) <- bracketed ('"':exprType++"\" statement")
       return (AST_Event (read lbl) coms event (asLocation tok <> endLoc))
-  pattern lbl = tableItemBy lbl $ \tok -> do
-    let exprType = show (asTokType tok)
-    expect ("pattern expression for \""++exprType++"\"") $ do
-      comPat <- commented $ flip mplus singlePattern $ do
-        startLoc <- tokenBy "(" asLocation
-        commaSepd ("pattern for \""++exprType++"\" expression") ")" equation
-      let (pats, endLoc) = unComment comPat
-          rule = fmap (const pats) comPat
-      expect ("bracketed script after \""++exprType++"\" statement") $ do
-        (action, endLoc) <- bracketed ('"':exprType++"\" statement")
-        return (AST_TopLambda (read lbl) rule action (asLocation tok <> endLoc))
   header lbl = tableItemBy lbl $ \startTok ->
     expect ("string literal or reference for \""++lbl++"\" statement") $ do
       let strlit = do
@@ -832,7 +886,7 @@ toplevelPTab = table expr <> comments <> scriptExpr where
             case readsPrec 0 (asString tok) of
               [(sym, "")] -> return (AST_Literal (OString (ustr (sym::String))) (asLocation tok))
               _           -> fail ("invalid string expression: "++show (asUStr tok))
-      expr <- commented (mplus strlit reference)
+      expr <- commented equation
       expect ("semicolon after \""++lbl++"\" statement") $ do
         endLoc <- tokenBy ";" asLocation
         return $ AST_Attribute (ustr lbl) expr $

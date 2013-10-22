@@ -68,7 +68,7 @@ inputLoop = do
       case str of
         str | str==":quit"    || str==":quit\n" -> return Nothing
             | str==":license" || str==":license\n" -> putStrLn license_text >> inputLoop
-            | otherwise -> return (Just (ustr str))
+            | otherwise -> return (Just (toUStr str))
 
 main = do
   hSetBuffering stderr LineBuffering

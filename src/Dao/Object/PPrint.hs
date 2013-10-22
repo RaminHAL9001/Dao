@@ -70,43 +70,54 @@ pContainer label prin ox = pList (pString label) "{ " ", " " }" (map prin ox)
 pMapAssoc :: Show a => (a, Object) -> PPrint ()
 pMapAssoc (a, obj) = pWrapIndent [pShow a, pString " = ", pPrint obj]
 
+instance PPrintable Name where { pPrint = pUStr . toUStr }
+
 instance PPrintable T_tree where
   pPrint t = case t of
-    T.Void            -> pString "struct"
+    T.Void            -> pString "tree"
     T.Leaf       o    -> leaf o
-    T.Branch       ox -> pList (pString "struct") "{ " ", " " }" (branch ox)
+    T.Branch       ox -> pList (pString "tree") "{ " ", " " }" (branch ox)
     T.LeafBranch o ox -> pList (leaf o) " { " ", " " }" (branch ox)
     where
       leaf o = pWrapIndent [pString "struct(", pPrint o, pString ")"]
       branch = map (\ (lbl, obj) -> pMapAssoc (lbl, OTree obj)) . M.assocs
 
-instance PPrintable Glob where { pPrint = pShow }
+instance PPrintable Reference where
+  pPrint (Reference r) = pInline $ intercalate [pString "."] (fmap (return . pPrint) r)
 
+instance PPrintable QualRef where
+  pPrint r = case r of
+    Unqualified r -> pPrint r
+    Qualified q r -> pInline $ concat $
+      [[pUStr (toUStr q)], guard (precedeWithSpace q) >> [pString " "], [pPrint r]]
+    ObjRef      o -> pInline [pString "(", pPrint o, pString ")"]
+
+instance PPrintable Glob where { pPrint = pShow }
 instance PPrintable Object where
   pPrint obj = case obj of
     ONull            -> pString "null"
     OTrue            -> pString "true"
-    OType      o     -> pPrint o
+--    OType      o     -> pPrint o
     OInt       o     -> pShow o
---  OWord      o     -> pString (show o++"U")
---  OLong      o     -> pString (show o++"L")
---  OFloat     o     -> pString (show o++"f")
---  ORatio     o     ->
---    if denominator o == 1
---      then  pString (show (numerator o)++"R")
---      else  pWrapIndent $
---              [ pString "(", pString (show (numerator o)), pString "/"
---              , pString (show (denominator o)++"R"), pString ")"
---              ]
---  OComplex  (r:+i) ->
---    if r==0
---      then  pString (show i++"i")
---      else  pWrapIndent $
---              [ pString "(", pString (show r), unless (i<0) (pString "+")
---              , pString (show i++"i"), pString ")"
---              ]
-    ORelTime  o     -> pShow o
-    OAbsTime      o     -> pString ("date "++show o)
+    OWord      o     -> pString (show o++"U")
+    OLong      o     -> pString (show o++"L")
+    OFloat     o     -> pString (show o++"f")
+    ORatio     o     ->
+      if denominator o == 1
+        then  pString (show (numerator o)++"R")
+        else  pWrapIndent $
+                [ pString "(", pString (show (numerator o)), pString "/"
+                , pString (show (denominator o)++"R"), pString ")"
+                ]
+    OComplex  (r:+i) ->
+      if r==0
+        then  pString (show i++"i")
+        else  pWrapIndent $
+                [ pString "(", pString (show r), unless (i<0) (pString "+")
+                , pString (show i++"i"), pString ")"
+                ]
+    ORelTime   o     -> pShow o
+    OAbsTime   o     -> pString ("date "++show o)
     OChar      o     -> pShow o
     OString    o     -> pShow o
     ORef       o     -> pPrint o
@@ -128,6 +139,7 @@ instance PPrintable Object where
       if B.null o
         then  pString "data{}"
         else  pClosure (pString "data ") "{ " " }" (map pString (b64Encode o))
+    OHaskell   o ifc -> error $ "cannot pretty print Haskell data type: "++show (objHaskellType ifc)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -137,24 +149,27 @@ instance PPrintable Object where
 -- already is enclosed in parentheses, and if so, does not put a space. Otherwise, a space will be
 -- printed between the "if" tag or "while" tag and the condition.
 class PrecedeWithSpace a where { precedeWithSpace :: a -> Bool }
+instance PrecedeWithSpace Name where { precedeWithSpace _ = True }
+instance PrecedeWithSpace AST_LValue where { precedeWithSpace (AST_LValue o) = precedeWithSpace o }
 instance PrecedeWithSpace AST_Object where
   precedeWithSpace o = case o of
-    AST_Void             -> False
-    AST_Paren    _     _ -> False
-    AST_MetaEval _     _ -> False
-    AST_Assign   o _ _ _ -> precedeWithSpace o
-    AST_Equation o _ _ _ -> precedeWithSpace o
-    AST_Prefix   o _   _ -> precedeWithSpace o
-    AST_ArraySub o _ _ _ -> precedeWithSpace o
-    AST_FuncCall o _ _ _ -> precedeWithSpace o
-    _                    -> True
-instance PrecedeWithSpace PrefixOp where
+    AST_Void                -> False
+    AST_Paren{}             -> False
+    AST_MetaEval{}          -> False
+    AST_Prefix{}            -> False
+    AST_ObjQualRef  o       -> precedeWithSpace o
+    AST_Assign      o _ _ _ -> precedeWithSpace o
+    AST_Equation    o _ _ _ -> precedeWithSpace o
+    AST_ArraySub    o _ _   -> precedeWithSpace o
+    AST_FuncCall    o _ _   -> precedeWithSpace o
+    _                       -> True
+instance PrecedeWithSpace RefQualifier where
    precedeWithSpace o = case o of
-     GLOBALPFX  -> True
-     LOCALPFX   -> True
-     QTIMEPFX   -> True
-     STATICPFX  -> True
-     _          -> False
+     LOCAL    -> True
+     QTIME    -> True
+     STATIC   -> True
+     GLOBAL   -> True
+     _        -> False
 instance PrecedeWithSpace a => PrecedeWithSpace (Com a) where
   precedeWithSpace o = case o of
     Com         b   -> precedeWithSpace b
@@ -163,40 +178,18 @@ instance PrecedeWithSpace a => PrecedeWithSpace (Com a) where
     ComAround a b _ -> precedeWithSpace a || precedeWithSpace b
     -- there should always be a space before a comment.
 instance PrecedeWithSpace [Comment] where { precedeWithSpace = not . null }
+instance PrecedeWithSpace AST_Ref where
+  precedeWithSpace r = case r of
+    AST_RefNull   -> False
+    AST_Ref _ _ _ -> True
+instance PrecedeWithSpace AST_QualRef where
+  precedeWithSpace r = case r of
+    AST_Unqualified   r   -> precedeWithSpace r
+    AST_Qualified _ _ r _ -> precedeWithSpace r
 
 ----------------------------------------------------------------------------------------------------
 
-instance PPrintable Reference where
-  pPrint ref = case ref of
-    NullRef              -> pString "$()"
-    PlainRef  nm         -> do
-      let str = uchars nm
-      if and (map (\c -> isAlphaNum c || c=='_') str) then pString str else pShow str
-    DerefOp   ref        -> pInline [pString "@(", pPrint ref, pString ")"]
-    MetaRef   ref        -> pInline [pString "$(", pPrint ref, pString ")"]
-    DotRef    left right -> pInline [pPrint left, pString ".", pPrint right]
-    PointRef  left right -> pInline [pPrint left, pString ".", pPrint right]
-    Subscript left subs  -> pList (pPrint left) "[" "," "]" (map pPrint subs)
-    CallWith  left subs  -> pList (pPrint left) "(" "," ")" (map pPrint subs)
-    where
-      pRef rx = pString (intercalate "." (map prin rx))
-      prin r  = case uchars r of
-        []                                                      -> "$\"\""
-        r:rx | isAlpha r && (null rx || or (map isAlphaNum rx)) -> r:rx
-        rx                                                      -> '$' : show rx
-
-instance PPrintable QualRef where
-  pPrint ref = do
-    let r = qualRef ref
-        qual q = pInline [pString q, pPrint r]
-    case qualifier ref of
-      Unqualified -> pPrint r
-      LocalRef    -> qual "local "
-      QTimeRef    -> qual "qtime "
-      GloDotRef   -> qual "."
-      StaticRef   -> qual "static "
-      GlobalRef   -> qual "global "
-
+instance PPrintable [Comment]   where { pPrint = mapM_ pPrint }
 instance PPrintable Comment where
   pPrint com = do
     case com of
@@ -220,6 +213,24 @@ pListOfComs = pListOfComsWith pPrint
 
 instance PPrintable a => PPrintable (Com a) where { pPrint = pPrintComWith pPrint }
 
+----------------------------------------------------------------------------------------------------
+
+--instance PPrintable RefInfixOp  where { pPrint = pString . uchars . ustr }
+instance PPrintable AST_Ref where
+  pPrint ref = case ref of
+    AST_RefNull    -> return ()
+    AST_Ref n nx _ -> pInline $ pPrint n :
+      fmap (\n -> pPrintComWith (\ () -> pString ".") (fmap (const ()) n) >> pPrint (unComment n)) nx
+instance PPrintable RefQualifier where { pPrint = pUStr . toUStr }
+instance PPrintable AST_QualRef where
+  pPrint ref = case ref of
+    AST_Unqualified     r   -> pPrint r
+    AST_Qualified q com r _ -> pInline [pPrint q, pString " ", pPrint com, pPrint r]
+
+instance PPrintable RefExpr where { pPrint = mapM_ pPrint . fromInterm }
+
+----------------------------------------------------------------------------------------------------
+
 -- 'pPrintComWith' wasn't good enough for this, because the comments might occur after the header
 -- but before the opening bracket.
 pPrintComCodeBlock :: PPrint () -> Com AST_CodeBlock -> PPrint ()
@@ -241,33 +252,52 @@ pPrintSubBlock header px = pPrintComCodeBlock header (Com px)
 
 instance PPrintable AST_CodeBlock where { pPrint o = mapM_ pPrint (getAST_CodeBlock o) }
 
+instance PPrintable AST_If where
+  pPrint (AST_If ifn thn _) =
+    pClosure (pString (if precedeWithSpace ifn then "if " else "if") >> pPrint ifn) "{" "}" [pPrint thn]
+
+instance PPrintable AST_Else where
+  pPrint (AST_Else coms (AST_If ifn thn _) _) =
+    pClosure
+      (pPrintComWith (\ () -> pString "else ") coms >> pString (if precedeWithSpace ifn then "if " else "if"))
+        "{" "}" [pPrint thn]
+
+instance PPrintable AST_IfElse where
+  pPrint (AST_IfElse ifn els coms deflt _) = do
+    pPrint ifn >> pNewLine
+    mapM_ pPrint els >> pNewLine
+    case deflt of
+      Nothing    -> return ()
+      Just deflt -> pClosure (pPrintComWith (\ () -> pString "else") coms) "{" "}" [pPrint deflt]
+
+instance PPrintable AST_While where
+  pPrint (AST_While (AST_If ifn thn _)) =
+    pClosure (pString (if precedeWithSpace ifn then "while " else "while")) "{" "}" [pPrint thn]
+
+--instance PPrintable AST_ElseIf where
+--  pPrint o = case o of
+--    AST_NullElseIf                -> return ()
+--    AST_Else   coms  block      _ -> pClosure (hdr coms) "{" "}" [pPrint block] where
+--      hdr coms = pString (if precedeWithSpace coms then "else " else "else") >> pPrint coms
+--    AST_ElseIf objXp block next _ -> do
+--      pClosure (pString (if precedeWithSpace objXp then "if " else "if")) "{" "}" [pPrint block]
+--      pPrint next
+
 instance PPrintable AST_Script where
   pPrint expr = pGroup True $ case expr of
     AST_Comment             coms -> mapM_ pPrint coms
     AST_EvalObject   objXp  coms                    _ ->
       pPrint objXp >> mapM_ pPrint coms >> pString ";"
-    AST_IfThenElse   coms   ifXp  thenXp  elseXp    _ -> do
-      printIfXp ifXp
-      case getAST_CodeBlock (unComment elseXp) of
-        []                   -> return ()
-        [p]                  -> case p of
-          (AST_IfThenElse _ _ _ _ _) -> pEndLine >> pString "else " >> pPrint p
-          _                          -> done
-        px                   -> done
-        where
-          printIfXp ifXp = do
-            pInline (map pPrint coms)
-            flip pPrintComCodeBlock thenXp $ pWrapIndent $ concat $
-              [ [pString "if"]
-              , guard(precedeWithSpace coms || precedeWithSpace ifXp) >> [pString " "]
-              , [pPrint ifXp]
-              ]
-          done = pEndLine >> pPrintComCodeBlock (pString "else") elseXp
-    AST_TryCatch     cxcScrpXp  cUStr     xcScrpXp  _ -> do
+    AST_IfThenElse   ifXp                             -> pPrint ifXp
+    AST_WhileLoop    whileLoop                        -> pPrint whileLoop
+    AST_TryCatch     cxcScrpXp  cQRef     xcScrpXp  _ -> do
       pPrintComCodeBlock (pString "try") cxcScrpXp
-      if nil == unComment cUStr
-        then  pPrint cUStr
-        else  pPrintSubBlock (pString " " >> pString "catch " >> pPrint cUStr) xcScrpXp
+      let spref = when (maybe True id (fmap precedeWithSpace cQRef)) (pString " ")
+      flip (maybe (return ())) (liftM2 (,) cQRef xcScrpXp) $ \ (r, c) ->
+        pPrintSubBlock (pString "catch" >> spref >> pPrint r) c
+      flip (maybe (return ())) cQRef $ \r -> pInline $
+        [pString "catch" >> spref, pPrint r, pString ";"]
+      maybe (return ()) (pPrintSubBlock (pString "catch ")) xcScrpXp
     AST_ForLoop      cNm        cObjXp    xcScrpXp  _ ->
       pPrintSubBlock (pString "for " >> pPrint cNm >> pString " in " >> pPrint cObjXp) xcScrpXp
     AST_ContinueExpr contin     coms      cObjXp    _ -> pWrapIndent $
@@ -276,7 +306,7 @@ instance PPrintable AST_Script where
       , case unComment cObjXp of
           AST_Void -> return ()
           _        ->
-            pString " if" >> unless (not $ precedeWithSpace cObjXp) (pString " ") >> pPrint cObjXp
+            pString " if" >> when (precedeWithSpace cObjXp) (pString " ") >> pPrint cObjXp
       , pString ";"
       ]
     AST_ReturnExpr   retrn                cObjXp    _ -> pWrapIndent $
@@ -289,62 +319,68 @@ instance PPrintable AST_Script where
     AST_WithDoc      cObjXp               xcScrpXp  _ ->
       pPrintSubBlock (pString "with " >> pPrint cObjXp) xcScrpXp
 
-instance PPrintable PrefixOp  where { pPrint = pString . uchars . ustr }
-instance PPrintable InfixOp  where { pPrint = pString . uchars . ustr }
-instance PPrintable UpdateOp where { pPrint op = pString (' ':uchars (ustr op)++" ") }
+instance PPrintable PrefixOp where { pPrint = pUStr . toUStr }
+instance PPrintable InfixOp  where { pPrint = pUStr . toUStr }
+instance PPrintable UpdateOp where { pPrint op = pString (' ':uchars op++" ") }
+
+instance PPrintable AST_ObjList where
+  pPrint (AST_ObjList coms lst _) = pList (pPrint coms) "(" ", " ")" (map pPrint lst)
+
+instance PPrintable AST_LValue where { pPrint (AST_LValue o) = pPrint o }
+
+instance PPrintable AST_Param where
+  pPrint o = case o of
+    AST_NoParams            -> return ()
+    AST_Param mcoms tychk _ -> pInline $
+      [ maybe (return ()) (\coms -> pString "$" >> pPrint coms) mcoms
+      , pPrint tychk
+      ]
+
+instance PPrintable [Com AST_Param] where
+  pPrint lst = pList_ "(" ", " ")" (fmap pPrint lst)
+
+instance PPrintable AST_ParamList where
+  pPrint (AST_ParamList lst _) = pInline [pPrint lst]
+
+instance PPrintable AST_StringList where
+  pPrint o = case o of
+    AST_NoStrings  coms _ -> pInline [pString "rule(", pPrint coms, pString ")"]
+    AST_StringList [r]  _ -> pInline [pString "rule ", pPrint r]
+    AST_StringList ruls _ -> pList (pString "rule") "(" ", " ")" (fmap pPrint ruls)
+
+instance PPrintable AST_OptObjList where
+  pPrint o = case o of
+    AST_NoObjList coms -> pPrint coms
+    AST_OptObjList o _ -> pPrint o
 
 instance PPrintable AST_Object where
   pPrint expr = case expr of
     AST_Void                                 -> return ()
-    AST_Literal      o                         _ -> pPrint o
+    AST_ObjQualRef   o                       -> pPrint o
+    AST_Literal      o                     _ -> pPrint o
     AST_Assign   objXp1  comUpdOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comUpdOp, pPrint objXp2]
     AST_Equation     objXp1  comAriOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comAriOp, pPrint objXp2]
-    AST_Prefix   ariOp    c_ObjXp          _ -> pWrapIndent $ concat $
-      [ [pPrint ariOp]
-      , guard (precedeWithSpace ariOp) >> [pString " "]
-      , [pPrint c_ObjXp]
-      ]
+    AST_Prefix   ariOp    c_ObjXp          _ -> pWrapIndent [pPrint ariOp, pPrint c_ObjXp]
     AST_Paren             c_ObjXp          _ -> pWrapIndent [pString "(", pPrint c_ObjXp, pString ")"]
-    AST_ArraySub objXp    coms     xcObjXp _ ->
-      pList (pPrint objXp >> mapM_ pPrint coms) "[" ", " "]" (map pPrint xcObjXp)
-    AST_FuncCall objXp    coms     xcObjXp _ ->
-      pList (pPrint objXp >> mapM_ pPrint coms) "(" ", " ")" (map pPrint xcObjXp)
-    AST_Dict     dict     coms     xcObjXp _ ->
-      if null xcObjXp
-        then  pString (uchars dict++"{}")
-        else  pList (pPrint dict >> mapM_ pPrint coms) " {" ", " " }" (map pPrint xcObjXp)
-    AST_Array    cxcObjXp xcObjXp          _ -> do
-      let tag = pString "array"
-          hdr = pPrintComWith (pList tag "(" ", " ")" . map (pGroup True . pPrint)) cxcObjXp
-      case xcObjXp of
-        [] -> hdr >> pString "{}"
-        _  -> pList hdr  " { " ", " " }" (map pPrint xcObjXp)
+    AST_ArraySub objXp             xcObjXp _ -> pList (pPrint objXp) "[" ", " "]" [pPrint xcObjXp]
+    AST_FuncCall objXp             xcObjXp _ -> pInline [pPrint objXp, pPrint xcObjXp]
+    AST_Init     ref      objs     elems   _ ->
+      pList (pInline [pPrint ref, pPrint objs]) "{" ", " "}" [pPrint elems]
     AST_Struct   cObjXp   xcObjXp          _ ->
-      pList (pString "struct" >> printObj cObjXp) "{" ", " "}" (map pPrint xcObjXp) where
+      pList (pInline [pString "tree", printObj cObjXp]) "{" ", " "}" [pPrint xcObjXp] where
         printObj obj = pWrapIndent [pString " ", pInline [pPrint cObjXp]]
-    AST_Data     com   xcStr               _ ->
-      if null xcStr
-        then  pString "data{}"
-        else  pClosure (pString "data" >> mapM_ pPrint com) "{" "}" (map pPrint xcStr)
-    AST_Lambda   typ   ccNmx   xcObjXp     _ -> do
-      let hdr = pPrintComWith (pList_ (show typ++"(") ", " ")" . map (pPrintComWith pPrint)) ccNmx
-      pPrintSubBlock hdr xcObjXp
+    AST_Lambda         ccNmx   xcObjXp     _ -> pPrintSubBlock (pPrintComWith pPrint ccNmx) xcObjXp
+    AST_Func     co nm ccNmx   xcObjXp     _ ->
+      pClosure (pInline [pString "function ", pPrint co, pPrint nm, pPrint ccNmx]) "{" "}" [pPrint xcObjXp]
+    AST_Rule           ccNmx   xcObjXp     _ -> pClosure (pPrint ccNmx) "{" "}" [pPrint xcObjXp]
     AST_MetaEval cObjXp                    _ -> pInline [pString "{#", pPrint cObjXp, pString "#}"]
 
 instance PPrintable AST_TopLevel where
   pPrint o = case o of
     AST_Attribute a b     _ -> pInline [pPrint a, pString "  ", pPrint b, pString ";"]
-    AST_TopFunc   a b c d _ -> pClosure header " { " " }" (map pPrint (getAST_CodeBlock d)) where
-      header = do
-        pString "function "
-        mapM_ pPrint a
-        pPrint b
-        pPrintComWith (pList_ "(" ", " ")" . map pPrint) c
     AST_TopScript a       _ -> pPrint a
-    AST_TopLambda a b c   _ -> pClosure header " { " " }" (map pPrint (getAST_CodeBlock c)) where
-      header = pShow a >> pPrintComWith (pList_ "(" ", " ")" . map pPrint) b
     AST_Event     a b c   _ -> pClosure (pShow a >> mapM_ pPrint b) " { " " }" (map pPrint (getAST_CodeBlock c))
     AST_TopComment a        -> mapM_ (\a -> pPrint a >> pNewLine) a
 
@@ -362,23 +398,59 @@ instance PPrintable TopLevelExpr where { pPrint = pPrintInterm }
 instance PPrintable ScriptExpr   where { pPrint = pPrintInterm }
 instance PPrintable ObjectExpr   where { pPrint = pPrintInterm }
 
-instance PPrintable TypeCheck    where { pPrint = pString . uchars . typeCheckSource }
-instance PPrintable CallableCode where
+instance PPrintable a => PPrintable (AST_TyChk a) where
   pPrint a = case a of
-    CallableCode pats exe -> prin "function" pats exe
-    GlobAction   pats exe -> prin "rule"     pats exe
-    where
-      prin typ pats exe =
-        pClosure (pList (pString typ) "(" "," ")" (map pPrint pats)) "{" "}" $
-          map pPrint (codeBlock (origSourceCode exe))
+    AST_NotChecked a          -> pPrint a
+    AST_Checked    a coms expr _ -> pInline $
+      [ pPrint a
+      , pPrintComWith (\ () -> pString ": ") coms
+      , pPrint expr
+      ]
+
+instance PPrintable a => PPrintable (TyChkExpr a) where
+  pPrint a = case a of
+    NotTypeChecked a        -> pPrint a
+    TypeChecked    a expr _ -> pInline [pPrint a, pString ": ", pPrint expr]
+
+instance PPrintable ParamExpr where
+  pPrint (ParamExpr byRef tychk _) = when byRef (pString "$") >> pPrint tychk
+
+instance PPrintable [ParamExpr] where { pPrint lst = pList_ "(" ", " ")" (fmap pPrint lst) }
+
+instance PPrintable ParamListExpr where { pPrint (ParamListExpr lst _) = pPrint lst }
+
+-- Used by the instantiation of CallableCode and GlobAction into the PPrintable class.
+callableAction :: String -> PPrint () -> Type -> Subroutine -> PPrint ()
+callableAction what pats typ exe =
+  pClosure (pString what >> pats >> pPrint typ) "{" "}" (map pPrint (codeBlock (origSourceCode exe)))
+
+instance PPrintable CallableCode where 
+  pPrint (CallableCode pats ty exe) = callableAction "function" (pPrint pats) ty exe
+
+instance PPrintable GlobAction   where
+  pPrint (GlobAction pats exe) = (\a -> callableAction "rule" a nullType exe) $ case pats of
+    []    -> pString "()"
+    [pat] -> pPrint pat
+    pats  -> pList_ "(" ", " ")" (map pPrint pats)
 
 instance PPrintable Subroutine where { pPrint = mapM_ pPrint . codeBlock . origSourceCode }
 
-instance PPrintable TypeID where
+-- | Pretty-prints a 'Type' without a colon prefix. The instantiation of 'Dao.Object.Type' into the
+-- 'Dao.PPrint.PPrintable' class always prefixes the type with a colon except when the type is the
+-- 'Dao.Object.nullType' value. The instantiation is defined in terms of this function.
+pPrintType :: Type -> PPrint ()
+pPrintType t = error "pPrintType, used to instantiate 'Dao.Object.Type' into 'PPrintable', has not been defined yet."
+
+instance PPrintable Type where
+  pPrint t = case t of
+    TypeConst (TypeSingle VoidType) -> return ()
+    t -> pString ": " >> pPrintType t
+
+instance PPrintable CoreType where
   pPrint t = pString $ case t of
     NullType     -> "null"
     TrueType     -> "true"
-    TypeType     -> "type"
+--    TypeType     -> "type"
     IntType      -> "int"
     WordType     -> "word"
     DiffTimeType -> "difftime"
@@ -389,28 +461,19 @@ instance PPrintable TypeID where
     TimeType     -> "time"
     CharType     -> "char"
     StringType   -> "string"
-    PairType     -> "pair"
     RefType      -> "ref"
     ListType     -> "list"
-    SetType      -> "set"
-    ArrayType    -> "array"
-    IntMapType   -> "intmap"
-    DictType     -> "dict"
-    TreeType     -> "struct"
-    GlobType     -> "glob"
-    ScriptType   -> "function"
-    RuleType     -> "rule"
+    TreeType     -> "tree"
     BytesType    -> "data"
+    HaskellType  -> "HaskellDataType"
 
 ----------------------------------------------------------------------------------------------------
 
 instance PPrintable ExecError where
-  pPrint err = case err of
-    ExecBadParam p -> case p of
-      NoParamInfo      -> pString "bad_parameter"
-      ParamValue o exp -> pClosure (pString "bad_parameter") "{" "}" $ concat $
-        [ maybe [] (\exp -> [pInline [pString "expression = ", pPrint exp]]) exp
-        , [pInline [pString "evaluated_to = ", pPrint o]]
-        ]
-    ExecError _ o -> pInline [pString "error = ", pPrint o]
+  pPrint err = do
+    pInline [pString "error message: ", pPrint (specificErrorData err)]
+    let f get msg = maybe (return ()) (\o -> pString (msg++":") >> pPrint o) (get err)
+    f execErrExpr     "in expression" 
+    f execErrScript   "in statement"
+    f execErrTopLevel "in top-level directive"
 

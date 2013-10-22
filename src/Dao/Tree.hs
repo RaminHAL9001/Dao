@@ -50,7 +50,14 @@ data Tree p n
     { branchData :: n
     , branchMap  :: M.Map p (Tree p n)
     }
-  deriving (Show, Typeable)
+  deriving Typeable
+instance (Show p, Show n) => Show (Tree p n) where
+  show o = case o of
+    Void           -> "voidTree"
+    Leaf       o   -> "(leaf "++show o++")"
+    Branch       t -> "(branch ["++branch t++"])"
+    LeafBranch o t -> "(leaf "++show o++" branch ["++branch t++"])"
+    where { branch t = intercalate ", " (M.assocs t  >>= \ (nm, o) -> [show nm++"="++show o]) }
 instance (Eq p, Eq n) => Eq (Tree p n) where
   (==) a b = case (a, b) of
     (Void           , Void           ) -> True

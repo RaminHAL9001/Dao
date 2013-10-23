@@ -384,22 +384,28 @@ number = joinEvalPTable numberPTab
 singletonPTab :: DaoPTable AST_Object
 singletonPTab = table singletonPTabItems
 
+parenPTabItem :: DaoTableItem AST_Paren
+parenPTabItem = tableItemBy "("    $ \tok -> do
+  obj <- commented equation
+  expect "closing parentheses" $ do
+    endloc <- tokenBy ")" asLocation
+    return (AST_Paren obj (asLocation tok <> endloc))
+
+paren :: DaoParser AST_Paren
+paren = joinEvalPTableItem parenPTabItem
+
 singletonPTabItems :: [DaoTableItem AST_Object]
 singletonPTabItems = numberPTabItems ++ fmap (fmap (fmap AST_ObjQualRef)) qualReferencePTabItems ++
   [ tableItem STRINGLIT (literal $ OString . read     . asString)
   , tableItem CHARLIT   (literal $ OChar   . read     . asString)
-  , tableItemBy "("    $ \tok -> do
-      obj <- commented equation
-      expect "closing parentheses" $ do
-        endloc <- tokenBy ")" asLocation
-        return (AST_Paren obj (asLocation tok <> endloc))
+  , fmap (fmap AST_ObjParen) parenPTabItem
   , tableItemBy "{#" $ \startTok -> expect "object expression after open {# meta-eval brace" $ do
       scrp <- fmap AST_CodeBlock (many script)
       expect "closing #} meta-eval brace" $ do
         endLoc <- tokenBy "#}" asLocation
         return (AST_MetaEval scrp (asLocation startTok <> endLoc))
   , trueFalse "null" ONull, trueFalse "false" ONull, trueFalse "true" OTrue
-  , reserved "class", reserved "operator", reserved "public", reserved "private", reserved "new"
+  , reserved "operator", reserved "public", reserved "private", reserved "new"
   ]
   where
     literal constr tok = return (AST_Literal (constr tok) (asLocation tok))
@@ -736,7 +742,7 @@ script = joinEvalPTable scriptPTab
 
 ifWhilePTabItem :: String -> (AST_If -> a) -> DaoTableItem a
 ifWhilePTabItem keyword constr = tableItemBy keyword $ \tok -> do
-  obj <- commented equation
+  obj <- commented paren
   (thn, loc) <- bracketed keyword
   return $ constr $ AST_If obj thn (asLocation tok <> loc)
 
@@ -824,7 +830,7 @@ scriptPTab = comments <> objExpr <> table exprs where
         expect "\"in\" statement after \"for\" statement" $ do
           tokenBy "in" as0
           expect "object expression over which to iterate of \"for-in\" statement" $ do
-            obj <- commented equation
+            obj <- commented paren
             expect "bracketed script after \"for-in\" statement" $ do
               (for, endLoc) <- bracketed "\"for\" statement"
               return (AST_ForLoop comName obj for (asLocation tok <> endLoc))
@@ -834,7 +840,7 @@ scriptPTab = comments <> objExpr <> table exprs where
 --          (while, endLoc) <- bracketed "\"while\" statement"
 --          return (AST_WhileLoop obj while (asLocation tok <> endLoc))
     , tableItemBy "with"  $ \tok -> expect "reference expression after \"with\" statement" $ do
-        obj <- commented equation
+        obj <- commented paren
         expect "bracketed script after \"with\" statement" $ do
           (with, endLoc) <- bracketed "\"with\" statement"
           return (AST_WithDoc obj with (asLocation tok <> endLoc))

@@ -87,6 +87,8 @@ daoRuntime debugRef daoMain = do
             , (ustr "approximate", approx)
             ]
         , runtimeDebugger      = Nothing
+        , builtinFuncs         = mempty
+        , importGraph          = error "Dao:daoRuntime: forgot to set \"importGraph\""
         }
   paths    <- runReaderT (dNewMVar xloc "Runtime.pathIndex" (M.empty)) runtime
   task     <- runReaderT initTask runtime

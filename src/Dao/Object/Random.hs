@@ -270,6 +270,7 @@ instance HasRandGen AST_If     where { randO = liftM3 AST_If     randO randO no 
 instance HasRandGen AST_Else   where { randO = liftM3 AST_Else   randO randO no }
 instance HasRandGen AST_IfElse where { randO = liftM5 AST_IfElse randO (randList 0 4) randO randO no }
 instance HasRandGen AST_While  where { randO = liftM  AST_While  randO }
+instance HasRandGen AST_Paren  where { randO = pure AST_Paren <*> randO <*> no }
 
 randScriptList :: [RandO AST_Script]
 randScriptList =

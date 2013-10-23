@@ -1441,15 +1441,22 @@ instance HasLocation OptObjListExpr where
   setLocation (OptObjListExpr o) loc = OptObjListExpr (setLocation o loc)
   delLocation (OptObjListExpr o)     = OptObjListExpr (delLocation o    )
 
+-- | Required parenthesese.
+data ParenExpr = ParenExpr ObjectExpr Location deriving (Eq, Ord, Typeable, Show)
+instance HasLocation ParenExpr where
+  getLocation (ParenExpr _ loc)     = loc
+  setLocation (ParenExpr o _  ) loc = ParenExpr o loc
+  delLocation (ParenExpr o _  )     = ParenExpr (delLocation o) LocationUnknown
+
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
   = VoidExpr
   | ObjQualRefExpr QualRefExpr
+  | ObjParenExpr   ParenExpr
   | Literal        Object                                    Location
   | AssignExpr     LValueExpr   UpdateOp        ObjectExpr   Location
   | Equation       ObjectExpr   InfixOp         ObjectExpr   Location
   | PrefixExpr     PrefixOp     ObjectExpr                   Location
-  | ParenExpr                   ObjectExpr                   Location
   | ArraySubExpr   ObjectExpr   ObjListExpr                  Location
   | FuncCall       ObjectExpr   ObjListExpr                  Location
   | InitExpr       RefExpr      OptObjListExpr  ObjListExpr  Location
@@ -1464,11 +1471,11 @@ instance HasLocation ObjectExpr where
   getLocation o = case o of
     VoidExpr               -> LocationUnknown
     ObjQualRefExpr       o -> getLocation o
+    ObjParenExpr         o -> getLocation o
     Literal        _     o -> o
     AssignExpr     _ _ _ o -> o
     Equation       _ _ _ o -> o
     PrefixExpr     _ _   o -> o
-    ParenExpr      _     o -> o
     ArraySubExpr   _ _   o -> o
     FuncCall       _ _   o -> o
     InitExpr       _ _ _ o -> o
@@ -1480,11 +1487,11 @@ instance HasLocation ObjectExpr where
   setLocation o loc = case o of
     VoidExpr               -> VoidExpr
     ObjQualRefExpr a       -> ObjQualRefExpr (setLocation a loc)
+    ObjParenExpr   a       -> ObjParenExpr   (setLocation a loc)
     Literal        a     _ -> Literal       a     loc
     AssignExpr     a b c _ -> AssignExpr    a b c loc
     Equation       a b c _ -> Equation      a b c loc
     PrefixExpr     a b   _ -> PrefixExpr    a b   loc
-    ParenExpr      a     _ -> ParenExpr     a     loc
     ArraySubExpr   a b   _ -> ArraySubExpr  a b   loc
     FuncCall       a b   _ -> FuncCall      a b   loc
     InitExpr       a b c _ -> InitExpr      a b c loc
@@ -1496,11 +1503,11 @@ instance HasLocation ObjectExpr where
   delLocation o = case o of
     VoidExpr               -> VoidExpr
     ObjQualRefExpr a       -> ObjQualRefExpr (delLocation a)
+    ObjParenExpr   a       -> ObjParenExpr   (delLocation a)
     Literal        a     _ -> Literal           a                  lu
     AssignExpr     a b c _ -> AssignExpr   (fd0 a)      b  (fd0 c) lu
     Equation       a b c _ -> Equation     (fd0 a)      b  (fd0 c) lu
     PrefixExpr     a b   _ -> PrefixExpr        a  (fd0 b)         lu
-    ParenExpr      a     _ -> ParenExpr    (fd0 a)                 lu
     ArraySubExpr   a b   _ -> ArraySubExpr (fd0 a) (fd0 b)         lu
     FuncCall       a b   _ -> FuncCall     (fd0 a) (fd0 b)         lu
     InitExpr       a b c _ -> InitExpr     (fd0 a) (fd0 b) (fd0 c) lu
@@ -1516,7 +1523,7 @@ instance HasLocation ObjectExpr where
       fd1 :: (HasLocation a, Functor f) => f a -> f a
       fd1 = fmap delLocation
 
-data IfExpr       = IfExpr ObjectExpr CodeBlock Location deriving (Eq, Ord, Typeable, Show)
+data IfExpr       = IfExpr ParenExpr CodeBlock Location deriving (Eq, Ord, Typeable, Show)
 data ElseExpr     = ElseExpr   IfExpr Location deriving (Eq, Ord, Typeable, Show)
 data IfElseExpr   = IfElseExpr IfExpr [ElseExpr] (Maybe CodeBlock) Location deriving (Eq, Ord, Typeable, Show)
 newtype WhileExpr = WhileExpr  IfExpr deriving (Eq, Ord, Typeable, Show)
@@ -1563,10 +1570,10 @@ data ScriptExpr
   | WhileLoop    WhileExpr
   | EvalObject   ObjectExpr                               Location -- location of the semicolon
   | TryCatch     CodeBlock (Maybe Name) (Maybe CodeBlock) Location
-  | ForLoop      Name       ObjectExpr   CodeBlock        Location
+  | ForLoop      Name       ParenExpr    CodeBlock        Location
   | ContinueExpr Bool       ObjectExpr                    Location
   | ReturnExpr   Bool       ObjectExpr                    Location
-  | WithDoc      ObjectExpr CodeBlock                     Location
+  | WithDoc      ParenExpr  CodeBlock                     Location
   deriving (Eq, Ord, Typeable, Show)
 instance HasLocation ScriptExpr where
   getLocation o = case o of

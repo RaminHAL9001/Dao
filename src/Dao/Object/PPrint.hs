@@ -79,7 +79,7 @@ instance PPrintable T_tree where
     T.Branch       ox -> pList (pString "tree") "{ " ", " " }" (branch ox)
     T.LeafBranch o ox -> pList (leaf o) " { " ", " " }" (branch ox)
     where
-      leaf o = pWrapIndent [pString "struct(", pPrint o, pString ")"]
+      leaf o = pWrapIndent [pString "tree(", pPrint o, pString ")"]
       branch = map (\ (lbl, obj) -> pMapAssoc (lbl, OTree obj)) . M.assocs
 
 instance PPrintable Reference where
@@ -154,7 +154,7 @@ instance PrecedeWithSpace AST_LValue where { precedeWithSpace (AST_LValue o) = p
 instance PrecedeWithSpace AST_Object where
   precedeWithSpace o = case o of
     AST_Void                -> False
-    AST_Paren{}             -> False
+    AST_ObjParen{}          -> False
     AST_MetaEval{}          -> False
     AST_Prefix{}            -> False
     AST_ObjQualRef  o       -> precedeWithSpace o
@@ -252,15 +252,16 @@ pPrintSubBlock header px = pPrintComCodeBlock header (Com px)
 
 instance PPrintable AST_CodeBlock where { pPrint o = mapM_ pPrint (getAST_CodeBlock o) }
 
+instance PPrintable AST_Paren where
+  pPrint (AST_Paren o _) = pInline [pString "(", pPrint o, pString ")"]
+
 instance PPrintable AST_If where
   pPrint (AST_If ifn thn _) =
-    pClosure (pString (if precedeWithSpace ifn then "if " else "if") >> pPrint ifn) "{" "}" [pPrint thn]
+    pClosure (pString "if" >> pPrint ifn) "{" "}" [pPrint thn]
 
 instance PPrintable AST_Else where
   pPrint (AST_Else coms (AST_If ifn thn _) _) =
-    pClosure
-      (pPrintComWith (\ () -> pString "else ") coms >> pString (if precedeWithSpace ifn then "if " else "if"))
-        "{" "}" [pPrint thn]
+    pClosure (pPrintComWith (\ () -> pString "else ") coms >> pString "if") "{" "}" [pPrint thn]
 
 instance PPrintable AST_IfElse where
   pPrint (AST_IfElse ifn els coms deflt _) = do
@@ -272,7 +273,7 @@ instance PPrintable AST_IfElse where
 
 instance PPrintable AST_While where
   pPrint (AST_While (AST_If ifn thn _)) =
-    pClosure (pString (if precedeWithSpace ifn then "while " else "while")) "{" "}" [pPrint thn]
+    pClosure (pString "while") "{" "}" [pPrint thn]
 
 --instance PPrintable AST_ElseIf where
 --  pPrint o = case o of
@@ -291,13 +292,13 @@ instance PPrintable AST_Script where
     AST_IfThenElse   ifXp                             -> pPrint ifXp
     AST_WhileLoop    whileLoop                        -> pPrint whileLoop
     AST_TryCatch     cxcScrpXp  cQRef     xcScrpXp  _ -> do
-      pPrintComCodeBlock (pString "try") cxcScrpXp
-      let spref = when (maybe True id (fmap precedeWithSpace cQRef)) (pString " ")
-      flip (maybe (return ())) (liftM2 (,) cQRef xcScrpXp) $ \ (r, c) ->
-        pPrintSubBlock (pString "catch" >> spref >> pPrint r) c
-      flip (maybe (return ())) cQRef $ \r -> pInline $
-        [pString "catch" >> spref, pPrint r, pString ";"]
-      maybe (return ()) (pPrintSubBlock (pString "catch ")) xcScrpXp
+      pClosure (pString "try") "{" "}" [pPrint cxcScrpXp]
+      maybe (return ()) id $ msum $
+        [ cQRef >>= \qref -> xcScrpXp >>= \xscrp -> Just $
+            pClosure (pString "catch " >> pPrint qref) "{" "}" [pPrint xscrp]
+        , cQRef    >>= \qref  -> Just $ pString "catch " >> pPrint qref
+        , xcScrpXp >>= \xscrp -> Just $ pClosure (pString "catch ") "{" "}" [pPrint xscrp]
+        ]
     AST_ForLoop      cNm        cObjXp    xcScrpXp  _ ->
       pPrintSubBlock (pString "for " >> pPrint cNm >> pString " in " >> pPrint cObjXp) xcScrpXp
     AST_ContinueExpr contin     coms      cObjXp    _ -> pWrapIndent $
@@ -324,7 +325,13 @@ instance PPrintable InfixOp  where { pPrint = pUStr . toUStr }
 instance PPrintable UpdateOp where { pPrint op = pString (' ':uchars op++" ") }
 
 instance PPrintable AST_ObjList where
-  pPrint (AST_ObjList coms lst _) = pList (pPrint coms) "(" ", " ")" (map pPrint lst)
+  pPrint (AST_ObjList coms lst _) = pList (pPrint coms) "{" ", " "}" (map pPrint lst)
+
+instance PPrintable AST_OptObjList where
+  pPrint o = case o of
+    AST_NoObjList                           com2 -> pPrint com2
+    AST_OptObjList (AST_ObjList com1 lst _) com2 ->
+      pInline [pPrint com1, pList_ "{" ", " "}" (map pPrint lst), pPrint com2]
 
 instance PPrintable AST_LValue where { pPrint (AST_LValue o) = pPrint o }
 
@@ -348,22 +355,17 @@ instance PPrintable AST_StringList where
     AST_StringList [r]  _ -> pInline [pString "rule ", pPrint r]
     AST_StringList ruls _ -> pList (pString "rule") "(" ", " ")" (fmap pPrint ruls)
 
-instance PPrintable AST_OptObjList where
-  pPrint o = case o of
-    AST_NoObjList coms -> pPrint coms
-    AST_OptObjList o _ -> pPrint o
-
 instance PPrintable AST_Object where
   pPrint expr = case expr of
     AST_Void                                 -> return ()
     AST_ObjQualRef   o                       -> pPrint o
+    AST_ObjParen          c_ObjXp            -> pWrapIndent [pString "(", pPrint c_ObjXp, pString ")"]
     AST_Literal      o                     _ -> pPrint o
     AST_Assign   objXp1  comUpdOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comUpdOp, pPrint objXp2]
     AST_Equation     objXp1  comAriOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comAriOp, pPrint objXp2]
     AST_Prefix   ariOp    c_ObjXp          _ -> pWrapIndent [pPrint ariOp, pPrint c_ObjXp]
-    AST_Paren             c_ObjXp          _ -> pWrapIndent [pString "(", pPrint c_ObjXp, pString ")"]
     AST_ArraySub objXp             xcObjXp _ -> pList (pPrint objXp) "[" ", " "]" [pPrint xcObjXp]
     AST_FuncCall objXp             xcObjXp _ -> pInline [pPrint objXp, pPrint xcObjXp]
     AST_Init     ref      objs     elems   _ ->

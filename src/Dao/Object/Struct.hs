@@ -267,15 +267,19 @@ instance Structured AST_OptObjList where
     , AST_OptObjList <$> getDataAt "params" <*> getComments
     ]
 
+instance Structured AST_Paren where
+  dataToStruct (AST_Paren a loc) = deconstruct $ with "paren" $ putData a >> putData loc
+  structToData = reconstruct $ with "paren" $ pure AST_Paren <*> getData <*> getData
+
 instance Structured AST_Object where
   dataToStruct a = deconstruct $ case a of
-    AST_Void                   -> return ()
-    AST_ObjQualRef a           -> putDataAt "deref"   a
+    AST_Void                   -> place ONull
+    AST_ObjQualRef a           -> putData a
+    AST_ObjParen   a           -> putData a
     AST_Literal    a       loc -> with "literal"   $ place a >> putData loc
     AST_Assign     a b c   loc -> with "assign"    $ putDataAt "to"     a  >> putDataAt "op"     b >> putDataAt "from"   c >> putData loc
     AST_Equation   a b c   loc -> with "equation"  $ putDataAt "left"   a  >> putDataAt "op"     b >> putDataAt "right"  c >> putData loc
     AST_Prefix     a b     loc -> with "prefix"    $ putDataAt "op"     a  >> putDataAt "right"  b                         >> putData loc
-    AST_Paren      a       loc -> with "paren"     $ putDataAt "inner"  a                                                  >> putData loc
     AST_ArraySub   a b     loc -> with "subscript" $ putDataAt "header" a  >>                         putDataAt "params" b >> putData loc
     AST_FuncCall   a b     loc -> with "funcCall"  $ putDataAt "header" a  >>                         putDataAt "params" b >> putData loc
     AST_Init       a b c   loc -> with "initExpr"  $ putDataAt "header" a  >> putDataAt "params" b >> putDataAt "elems"  c >> putData loc
@@ -285,12 +289,12 @@ instance Structured AST_Object where
     AST_Rule       a b     loc -> with "ruleExpr"  $                          putDataAt "params" a >> putDataAt "script" b >> putData loc
     AST_MetaEval   a       loc -> with "metaEval"  $ putDataAt "inner"  a                                                  >> putData loc
   structToData =   reconstruct $ msum $
-    [ tryWith "qualRef"   $ pure AST_ObjQualRef  <*> getData
+    [ AST_ObjQualRef <$> getData
+    , AST_ObjParen   <$> getData
     , tryWith "literal"   $ pure AST_Literal     <*> this               <*> getData
     , tryWith "assign"    $ pure AST_Assign      <*> getDataAt "to"     <*> getDataAt "op"     <*> getDataAt "from"   <*> getData
     , tryWith "equation"  $ pure AST_Equation    <*> getDataAt "left"   <*> getDataAt "op"     <*> getDataAt "right"  <*> getData
     , tryWith "prefix"    $ pure AST_Prefix      <*> getDataAt "op"     <*> getDataAt "right"  <*> getData
-    , tryWith "paren"     $ pure AST_Paren       <*> getDataAt "inner"  <*> getData
     , tryWith "subscript" $ pure AST_ArraySub    <*> getDataAt "header" <*>                        getData            <*> getData
     , tryWith "funcCall"  $ pure AST_FuncCall    <*> getDataAt "header" <*>                        getDataAt "params" <*> getData
     , tryWith "initExpr"  $ pure AST_Init        <*> getDataAt "header" <*> getDataAt "params" <*> getDataAt "elems"  <*> getData
@@ -299,7 +303,9 @@ instance Structured AST_Object where
     , tryWith "funcExpr"  $ pure AST_Func        <*> getComments        <*> getDataAt "name"   <*> getDataAt "params" <*> getDataAt "script" <*> getData
     , tryWith "ruleExpr"  $ pure AST_Rule                               <*> getDataAt "params" <*> getDataAt "script" <*> getData
     , tryWith "metaEval"  $ pure AST_MetaEval    <*> getDataAt "inner"  <*> getData
-    , fail "object expression"
+    , this >>= \o -> case ONull of
+        ONull -> return AST_Void
+        _     -> fail "object expression"
     ]
 
 instance Structured AST_CodeBlock where

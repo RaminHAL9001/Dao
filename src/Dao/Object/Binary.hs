@@ -484,15 +484,15 @@ instance Binary ObjectExpr where
     AssignExpr     a b c z -> x z 0x42 $ put a >> put b >> put c
     Equation       a b c z -> x z 0x43 $ put a >> put b >> put c
     PrefixExpr     a b   z -> x z 0x44 $ put a >> put b
-    ParenExpr      a     z -> x z 0x45 $ put a
-    ArraySubExpr   a b   z -> x z 0x46 $ put a >> put b
-    FuncCall       a b   z -> x z 0x47 $ put a >> put b
-    InitExpr       a b c z -> x z 0x48 $ put a >> put b >> put c
-    StructExpr     a b   z -> x z 0x49 $ put a >> put b
-    FuncExpr       a b c z -> x z 0x4A $ put a >> put b >> put c
-    RuleExpr       a b   z -> x z 0x4B $ put a >> put b
-    MetaEvalExpr   a     z -> x z 0x4C $ put a
+    ArraySubExpr   a b   z -> x z 0x45 $ put a >> put b
+    FuncCall       a b   z -> x z 0x46 $ put a >> put b
+    InitExpr       a b c z -> x z 0x47 $ put a >> put b >> put c
+    StructExpr     a b   z -> x z 0x48 $ put a >> put b
+    FuncExpr       a b c z -> x z 0x49 $ put a >> put b >> put c
+    RuleExpr       a b   z -> x z 0x4A $ put a >> put b
+    MetaEvalExpr   a     z -> x z 0x4B $ put a
     ObjQualRefExpr a       -> put a
+    ObjParenExpr   a       -> put a
   get = do
     w <- lookAhead getWord8
     let f a = getWord8 >> a
@@ -502,15 +502,24 @@ instance Binary ObjectExpr where
       0x42 -> f $ liftM4 AssignExpr   get get get get
       0x43 -> f $ liftM4 Equation     get get get get
       0x44 -> f $ liftM3 PrefixExpr   get get     get
-      0x45 -> f $ liftM2 ParenExpr    get         get
-      0x46 -> f $ liftM3 ArraySubExpr get get     get
-      0x47 -> f $ liftM3 FuncCall     get get     get
-      0x48 -> f $ liftM4 InitExpr     get get get get
-      0x49 -> f $ liftM3 StructExpr   get get     get
-      0x4A -> f $ liftM4 FuncExpr     get get get get
-      0x4B -> f $ liftM3 RuleExpr     get get     get
-      0x4C -> f $ liftM2 MetaEvalExpr get         get
-      _    ->     liftM  ObjQualRefExpr get
+      0x45 -> f $ liftM3 ArraySubExpr get get     get
+      0x46 -> f $ liftM3 FuncCall     get get     get
+      0x47 -> f $ liftM4 InitExpr     get get get get
+      0x48 -> f $ liftM3 StructExpr   get get     get
+      0x49 -> f $ liftM4 FuncExpr     get get get get
+      0x4A -> f $ liftM3 RuleExpr     get get     get
+      0x4B -> f $ liftM2 MetaEvalExpr get         get
+      _    -> msum $
+        [ liftM ObjQualRefExpr get
+        , liftM ObjParenExpr   get
+        , fail "expecting object expression"
+        ]
+
+instance Binary ParenExpr where
+  put (ParenExpr a loc) = putWord8 0x4C >> put a >> put loc
+  get = lookAhead getWord8 >>= \a -> case a of
+    0x4C -> getWord8 >> liftM2 ParenExpr get get
+    _    -> mzero
 
 instance Binary IfExpr where
   put (IfExpr a b loc) = putWord8 0x51 >> put a >> put b >> put loc

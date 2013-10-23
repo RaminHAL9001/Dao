@@ -88,21 +88,24 @@ instance NFData AST_OptObjList where
   rnf (AST_NoObjList  a  ) = deepseq a ()
   rnf (AST_OptObjList a b) = deepseq a $! deepseq b ()
 
+instance NFData AST_Paren where { rnf (AST_Paren a b) = deepseq a $! deepseq b () }
+
 instance NFData AST_Object where
   rnf AST_Void = ()
-  rnf (AST_Literal  a b      ) = deepseq a $! deepseq b ()
-  rnf (AST_Assign   a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_Equation a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_Prefix   a b c    ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_Paren    a b      ) = deepseq a $! deepseq b ()
-  rnf (AST_ArraySub a b c    ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_FuncCall a b c    ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_Init     a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_Struct   a b c    ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_Lambda   a b c    ) = deepseq a $! deepseq b $! deepseq c () 
-  rnf (AST_Func     a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
-  rnf (AST_Rule     a b c    ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_MetaEval a b      ) = deepseq a $! deepseq b ()
+  rnf (AST_ObjParen   a        ) = deepseq a ()
+  rnf (AST_ObjQualRef a        ) = deepseq a ()
+  rnf (AST_Literal    a b      ) = deepseq a $! deepseq b ()
+  rnf (AST_Assign     a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_Equation   a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_Prefix     a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_ArraySub   a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_FuncCall   a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_Init       a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_Struct     a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_Lambda     a b c    ) = deepseq a $! deepseq b $! deepseq c () 
+  rnf (AST_Func       a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
+  rnf (AST_Rule       a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_MetaEval   a b      ) = deepseq a $! deepseq b ()
 
 instance NFData Location where
   rnf LocationUnknown = ()
@@ -254,18 +257,21 @@ instance NFData RuleStrings where { rnf (RuleStrings a b) = deepseq a $! deepseq
 
 instance NFData OptObjListExpr where { rnf (OptObjListExpr a) = deepseq a () }
 
+instance NFData ParenExpr where { rnf (ParenExpr a b) = deepseq a $! deepseq b () }
+
 instance NFData ObjectExpr where
-  rnf (Literal       a b    ) = deepseq a $! deepseq b ()
-  rnf (AssignExpr    a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (Equation      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (PrefixExpr    a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (ParenExpr     a b    ) = deepseq a $! deepseq b ()
-  rnf (ArraySubExpr  a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (FuncCall      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (InitExpr      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (StructExpr    a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (LambdaExpr    a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (FuncExpr      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (RuleExpr      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (MetaEvalExpr  a b    ) = deepseq a $! deepseq b ()
+  rnf (Literal        a b    ) = deepseq a $! deepseq b ()
+  rnf (ObjParenExpr   a      ) = deepseq a ()
+  rnf (ObjQualRefExpr a      ) = deepseq a ()
+  rnf (AssignExpr     a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (Equation       a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (PrefixExpr     a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (ArraySubExpr   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (FuncCall       a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (InitExpr       a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (StructExpr     a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (LambdaExpr     a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (FuncExpr       a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (RuleExpr       a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (MetaEvalExpr   a b    ) = deepseq a $! deepseq b ()
 

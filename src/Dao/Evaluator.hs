@@ -1182,11 +1182,13 @@ checkVoid loc msg fn = case fn of
 
 ----------------------------------------------------------------------------------------------------
 
-evalConditional :: ObjectExpr -> Exec Bool
+evalConditional :: ParenExpr -> Exec Bool
 evalConditional obj =
   (execute obj :: Exec (Maybe Object)) >>=
     checkVoid (getLocation obj) "conditional expression to if statement" >>=
       execHandleIO [fmap (const False) execIOHandler] . return . testNull
+
+instance Executable ParenExpr (Maybe Object) where { execute (ParenExpr a _) = execute a }
 
 instance Executable IfExpr Bool where
   execute (IfExpr ifn thn loc) = execNested T.Void $
@@ -1292,7 +1294,7 @@ instance Executable ForLoopBlock (Bool, Maybe Object) where
         e:ex -> case e of
           ContinueExpr a cond loc -> let stmt = if a then "continue" else "break" in case cond of
             VoidExpr -> done a
-            cond     -> evalConditional cond >>= done . (if a then id else not)
+            cond     -> evalConditional (ParenExpr cond LocationUnknown) >>= done . (if a then id else not)
           e -> execute e >> loop ex
 
 instance Executable QualRef (Maybe Object) where
@@ -1353,6 +1355,8 @@ instance Executable ObjectExpr (Maybe Object) where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     Literal o _ -> return (Just o)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    ObjParenExpr o -> execute o
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     AssignExpr nm0 op  expr0  loc -> do
       nm <- execute nm0 >>= checkVoid loc "left-hand side of assignment"
       let lhs = "left-hand side of "++show op
@@ -1371,8 +1375,6 @@ instance Executable ObjectExpr (Maybe Object) where
       op   <- mplus (asReference obj) $ execThrow $
         OList [ostr "function selector does not evaluate to reference", obj]
       execute args >>= callFunction op
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    ParenExpr o loc -> execute o
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ArraySubExpr o i loc -> do
       o <- execute o >>= checkVoid loc "operand of subscript expression" >>= derefObject

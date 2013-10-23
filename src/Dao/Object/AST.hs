@@ -129,15 +129,21 @@ instance HasLocation AST_OptObjList where
     AST_NoObjList{}    -> o
     AST_OptObjList o c -> AST_OptObjList (delLocation o) c
 
+data AST_Paren = AST_Paren (Com AST_Object) Location deriving (Eq, Ord, Typeable, Show)
+instance HasLocation AST_Paren where
+  getLocation (AST_Paren o loc)     = loc
+  setLocation (AST_Paren o _  ) loc = AST_Paren o loc
+  delLocation (AST_Paren o _  )     = AST_Paren (delLocation o) LocationUnknown
+
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data AST_Object
   = AST_Void -- ^ Not a language construct, but used where an object expression is optional.
   | AST_ObjQualRef AST_QualRef
+  | AST_ObjParen   AST_Paren
   | AST_Literal    Object                                              Location
   | AST_Assign     AST_LValue     (Com UpdateOp)         AST_Object    Location
   | AST_Equation   AST_Object     (Com InfixOp)          AST_Object    Location
   | AST_Prefix     PrefixOp                         (Com AST_Object)   Location
-  | AST_Paren                                       (Com AST_Object)   Location
   | AST_ArraySub   AST_Object                            AST_ObjList   Location
   | AST_FuncCall   AST_Object                            AST_ObjList   Location
   | AST_Init       AST_Ref             AST_OptObjList    AST_ObjList   Location
@@ -166,7 +172,7 @@ data AST_Script
     -- ^ @some.object.expression = for.example - equations || function(calls) /**/ ;@
   | AST_TryCatch     (Com AST_CodeBlock)     (Maybe (Com Name)) (Maybe AST_CodeBlock)  Location
     -- ^ @try /**/ {} /**/ catch /**/ errVar /**/ {}@              
-  | AST_ForLoop      (Com Name)              (Com AST_Object)          AST_CodeBlock   Location
+  | AST_ForLoop      (Com Name)              (Com AST_Paren)           AST_CodeBlock   Location
     -- ^ @for /**/ var /**/ in /**/ objExpr /**/ {}@
   | AST_ContinueExpr Bool  [Comment]         (Com AST_Object)                          Location
     -- ^ The boolean parameter is True for a "continue" statement, False for a "break" statement.
@@ -174,7 +180,7 @@ data AST_Script
   | AST_ReturnExpr   Bool                    (Com AST_Object)                          Location
     -- ^ The boolean parameter is True for a "return" statement, False for a "throw" statement.
     -- ^ @return /**/ ;@ or @return /**/ objExpr /**/ ;@
-  | AST_WithDoc      (Com AST_Object)         AST_CodeBlock                            Location
+  | AST_WithDoc      (Com AST_Paren)         AST_CodeBlock                            Location
     -- ^ @with /**/ objExpr /**/ {}@
   deriving (Eq, Ord, Typeable, Show)
 
@@ -259,11 +265,11 @@ instance HasLocation AST_Object where
   getLocation o = case o of
     AST_Void               -> LocationUnknown
     AST_ObjQualRef       o -> getLocation o
+    AST_ObjParen         o -> getLocation o
     AST_Literal  _       o -> o
     AST_Assign   _ _ _   o -> o
     AST_Equation _ _ _   o -> o
     AST_Prefix   _ _     o -> o
-    AST_Paren    _       o -> o
     AST_ArraySub _ _     o -> o
     AST_FuncCall _ _     o -> o
     AST_Init     _ _ _   o -> o
@@ -275,11 +281,11 @@ instance HasLocation AST_Object where
   setLocation o loc = case o of
     AST_Void                 -> AST_Void
     AST_ObjQualRef a         -> AST_ObjQualRef (setLocation a loc)
+    AST_ObjParen   a         -> AST_ObjParen   (setLocation a loc)
     AST_Literal    a       _ -> AST_Literal    a       loc
     AST_Assign     a b c   _ -> AST_Assign     a b c   loc
     AST_Equation   a b c   _ -> AST_Equation   a b c   loc
     AST_Prefix     a b     _ -> AST_Prefix     a b     loc
-    AST_Paren      a       _ -> AST_Paren      a       loc
     AST_ArraySub   a b     _ -> AST_ArraySub   a b     loc
     AST_FuncCall   a b     _ -> AST_FuncCall   a b     loc
     AST_Init       a b c   _ -> AST_Init       a b c   loc
@@ -291,11 +297,11 @@ instance HasLocation AST_Object where
   delLocation o = case o of                            
     AST_Void                 -> AST_Void                 
     AST_ObjQualRef a         -> AST_ObjQualRef (fd  a)
+    AST_ObjParen   a         -> AST_ObjParen   (fd  a)
     AST_Literal    a       _ -> AST_Literal         a                          lu
     AST_Assign     a b c   _ -> AST_Assign     (fd  a)      b  (fd  c)         lu
     AST_Equation   a b c   _ -> AST_Equation   (fd  a)      b  (fd  c)         lu
     AST_Prefix     a b     _ -> AST_Prefix          a  (fd  b)                 lu
-    AST_Paren      a       _ -> AST_Paren      (fd  a)                         lu
     AST_ArraySub   a b     _ -> AST_ArraySub   (fd  a) (fd  b)                 lu
     AST_FuncCall   a b     _ -> AST_FuncCall   (fd  a) (fd  b)                 lu
     AST_Init       a b c   _ -> AST_Init       (fd  a) (fd  b) (fd  c)         lu
@@ -313,7 +319,7 @@ instance HasLocation AST_CodeBlock where
   setLocation o _ = o
   delLocation o = AST_CodeBlock (fmap delLocation (getAST_CodeBlock o))
 
-data AST_If     = AST_If (Com AST_Object) AST_CodeBlock Location deriving (Eq, Ord, Typeable, Show)
+data AST_If     = AST_If (Com AST_Paren) AST_CodeBlock Location deriving (Eq, Ord, Typeable, Show)
 data AST_Else   = AST_Else (Com ()) AST_If Location deriving (Eq, Ord, Typeable, Show)
   -- ^ @/**/ else /**/ if /**/ obj /**/ {}@
 data AST_IfElse = AST_IfElse AST_If [AST_Else] (Com ()) (Maybe AST_CodeBlock) Location
@@ -604,15 +610,19 @@ instance Intermediate OptObjListExpr AST_OptObjList where
   fromInterm o = case o of
     OptObjListExpr o -> maybe [AST_NoObjList []] (fmap (flip AST_OptObjList []) . fi) o
 
+instance Intermediate ParenExpr AST_Paren where
+  toInterm   (AST_Paren o loc) = liftM2 ParenExpr (uc0 o) [loc]
+  fromInterm (ParenExpr o loc) = liftM2 AST_Paren (nc0 o) [loc]
+
 instance Intermediate ObjectExpr AST_Object where
   toInterm   ast = case ast of
     AST_Void                 -> return VoidExpr
     AST_ObjQualRef a         -> liftM  ObjQualRefExpr (ti  a)
+    AST_ObjParen   a         -> liftM  ObjParenExpr   (ti  a)
     AST_Literal    a     loc -> liftM2 Literal            [a]                 [loc]
     AST_Assign     a b c loc -> liftM4 AssignExpr     (ti  a) (uc  b) (ti  c) [loc]
     AST_Equation   a b c loc -> liftM4 Equation       (ti  a) (uc  b) (ti  c) [loc]
     AST_Prefix     a b   loc -> liftM3 PrefixExpr     [a]     (uc0 b)         [loc]
-    AST_Paren      a     loc -> liftM2 ParenExpr              (uc0 a)         [loc]
     AST_ArraySub   a b   loc -> liftM3 ArraySubExpr   (ti  a) (ti  b)         [loc]
     AST_FuncCall   a b   loc -> liftM3 FuncCall       (ti  a) (ti  b)         [loc]
     AST_Init       a b c loc -> liftM4 InitExpr       (ti  a) (ti  b) (ti  c) [loc]
@@ -624,11 +634,11 @@ instance Intermediate ObjectExpr AST_Object where
   fromInterm obj = case obj of
     VoidExpr                 -> return AST_Void
     ObjQualRefExpr a         -> liftM  AST_ObjQualRef (fi  a)
+    ObjParenExpr   a         -> liftM  AST_ObjParen   (fi  a)
     Literal        a     loc -> liftM2 AST_Literal        [a]                 [loc]
     AssignExpr     a b c loc -> liftM4 AST_Assign     (fi  a) (nc  b) (fi  c) [loc]
     Equation       a b c loc -> liftM4 AST_Equation   (fi  a) (nc  b) (fi  c) [loc]
     PrefixExpr     a b   loc -> liftM3 AST_Prefix     [a]             (nc0 b) [loc]
-    ParenExpr      a     loc -> liftM2 AST_Paren                      (nc0 a) [loc]
     ArraySubExpr   a b   loc -> liftM3 AST_ArraySub   (fi  a) (fi  b)         [loc]
     FuncCall       a b   loc -> liftM3 AST_FuncCall   (fi  a) (fi  b)         [loc]
     InitExpr       a b c loc -> liftM4 AST_Init       (fi  a) (fi  b) (fi  c) [loc]

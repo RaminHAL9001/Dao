@@ -2038,6 +2038,7 @@ type InputTokenizer = UStr -> Exec Tokens
 -- default is the 'Dao.Glob.exact' function. An alternative is 'Dao.Glob.approx', which
 -- matches strings approximately, ignoring transposed letters and accidental double letters in words.
 type CompareToken = UStr -> UStr -> Bool
+type ObjIfcTable  = M.Map TypeRep T_haskell
 
 -- | The 'Runtime' is the shared state visible to every module. Every process will have a single
 -- 'Runtime' created by the main function, and every 'ExecUnit' created will receive a pointer to
@@ -2055,7 +2056,7 @@ data Runtime
     , functionSets         :: M.Map Name (M.Map Name DaoFunc)
       -- ^ every labeled set of built-in functions provided by this runtime is listed here. This
       -- table is checked when a Dao program is loaded that has "requires" directives.
-    , objectInterfaces     :: M.Map TypeRep T_haskell
+    , objectInterfaces     :: ObjIfcTable
     , taskForExecUnits     :: Task
     , availableTokenizers  :: M.Map Name InputTokenizer
       -- ^ a table of available string tokenizers.

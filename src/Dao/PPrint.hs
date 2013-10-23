@@ -1,4 +1,4 @@
--- "src/Dao/PPrint.hs"  a pretty-printer designed especially for
+-- "src/Dao/PPrintM.hs"  a pretty-printer designed especially for
 -- printing Dao script code.
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
@@ -21,7 +21,7 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 
-module Dao.PPrint where
+module Dao.PPrintM where
 
 import           Dao.String
 
@@ -74,10 +74,11 @@ mapTail fn ax = case ax of
 
 ----------------------------------------------------------------------------------------------------
 
-class PPrintable a where { pPrint :: a -> PPrint () }
+class PPrintable a where { pPrint :: a -> PPrintM () }
+type PPrint = PPrintM ()
 
 -- | Put a new line regardless of whether or not we are aleady on a new line.
-pNewLine :: PPrint ()
+pNewLine :: PPrint
 pNewLine = modify $ \st ->
   st{ printerCol = 0
     , printerBuf = ""
@@ -88,16 +89,16 @@ pNewLine = modify $ \st ->
 
 -- | Like 'pNewLine' but also indicates that there *must* be a new line here (like after a comment)
 -- to prevent lines from being joined.
-pForceNewLine :: PPrint ()
+pForceNewLine :: PPrint
 pForceNewLine = modify (\st -> st{forcedNewLine=True})
 
 -- | Place a new line unless we are already on a new line.
-pEndLine :: PPrint ()
+pEndLine :: PPrint
 pEndLine = gets printerCol >>= \col ->
   if col==0 then modify (\st -> st{printerTab=nextTab st}) else pNewLine
     
 
-pIndent :: PPrint () -> PPrint ()
+pIndent :: PPrint -> PPrint
 pIndent indentedPrinter = do
   tab <- gets nextTab
   modify (\st -> st{nextTab=tab+1})
@@ -107,7 +108,7 @@ pIndent indentedPrinter = do
 instance PPrintable UStr where { pPrint = pUStr }
 
 -- not for export
-appendString :: Int -> String -> PPrint ()
+appendString :: Int -> String -> PPrint
 appendString len str = modify $ \st ->
   st{ printerCol = printerCol st + len
     , printerBuf = printerBuf st ++ str
@@ -115,43 +116,43 @@ appendString len str = modify $ \st ->
     }
 
 -- | Print a 'Dao.String.UStr' as a single line.
-pUStr :: UStr -> PPrint ()
+pUStr :: UStr -> PPrint
 pUStr u = if nil==u then return () else appendString (ulength u) (uchars u)
 
 -- | Print a 'Prelude.String' as a single line.
-pString :: String -> PPrint ()
+pString :: String -> PPrint
 pString s = if null s then return () else appendString (length s) s
 
 -- | Print any value that instantiates 'Prelude.Show'.
-pShow :: Show a => a -> PPrint ()
+pShow :: Show a => a -> PPrint
 pShow = pString . show
 
 -- | Shortcut for @('pPrint' . 'Data.List.concat')@
-pConcat :: [String] -> PPrint ()
+pConcat :: [String] -> PPrint
 pConcat = pString . concat
 
 -- | Just keep printing items along the line without wrapping until a 'pNewLine' or 'pEndLine'
 -- occurs. Actually, this function simply a synonym for 'Control.Monad.sequence_'.
-pNoWrap :: [PPrint ()] -> PPrint ()
+pNoWrap :: [PPrint] -> PPrint
 pNoWrap = sequence_
 
 -- | Try to print with the given function, but if the printed text runs past the 'maxWidth', or if
 -- the printed text results in multiple lines of output, end the current line of text before
 -- placing the text from the given function.
-pWrap :: PPrint () -> PPrint ()
+pWrap :: PPrint -> PPrint
 pWrap fn = do
   st <- get
   let trySt = execState fn (subprint st)
   if printerCol st + charCount trySt > maxWidth st then pEndLine else return ()
   appendState trySt
 
--- | Evaluate the 'PPrint' printer, and every line of output will be used as an item in a list and
+-- | Evaluate the 'PPrintM' printer, and every line of output will be used as an item in a list and
 -- printed across a line, wrapping on to the next line if the line goes past the width limit.
-pInline :: [PPrint ()] -> PPrint ()
+pInline :: [PPrint] -> PPrint
 pInline = sequence_ . map pWrap
 
 -- | Like 'pInline' but if the line wraps, every line after the first will be indented.
-pWrapIndent :: [PPrint ()] -> PPrint ()
+pWrapIndent :: [PPrint] -> PPrint
 pWrapIndent px = do
   st <- get
   let trySt = execState (pInline px) (subprint st)
@@ -161,14 +162,14 @@ pWrapIndent px = do
       let ind (tab, len, str) = (tab+1, len, str)
       in  appendState (trySt{printerOut = p : map ind px, printerTab = printerTab trySt + 1})
 
--- | Will evaluate a 'PPrint' function to create a block of text, and if the block of text can be
+-- | Will evaluate a 'PPrintM' function to create a block of text, and if the block of text can be
 -- fit into a single line, it will be placed inline with the text precceding and succeeding it.
 -- If it cannot be placed into a single line, it will be preceeded and succeeded by a 'pEndLine'.
 -- Passing 'Prelude.False' as the first parameter means 'pEndLine' will not succeed the block of
 -- text, which can come in handy (for example) when you need to follow an item with a closing
 -- punctuation mark like a comma or semicolon, and you don't want that closing punctuation on the
 -- next line.
-pGroup :: Bool -> PPrint () -> PPrint ()
+pGroup :: Bool -> PPrint -> PPrint
 pGroup after fn = do
   st <- get
   let trySt = execState (pEndLine >> fn) (subprint st)
@@ -176,7 +177,7 @@ pGroup after fn = do
     then  pEndLine >> appendState trySt >> (if after then pEndLine else return ())
     else  appendState (stateJoinLines trySt)
 
-pList :: PPrint () -> String -> String -> String -> [PPrint ()] -> PPrint ()
+pList :: PPrint -> String -> String -> String -> [PPrint] -> PPrint
 pList header open separator close px = do
   st <- get
   let mw  = maxWidth st
@@ -187,12 +188,12 @@ pList header open separator close px = do
     pIndent $ pInline $ map (pGroup True) $ mapAlmost (>>(pUStr sep)) px
     pEndLine >> pString close
 
--- | Like 'pList' but there is no need to pass the first @'PPrint' ()@ header parameter, this
+-- | Like 'pList' but there is no need to pass the first @'PPrintM' ()@ header parameter, this
 -- parameter is set to @'Prelude.return' ()@.
-pList_ :: String -> String -> String -> [PPrint ()] -> PPrint ()
+pList_ :: String -> String -> String -> [PPrint] -> PPrint
 pList_ = pList (return ())
 
-pClosure :: PPrint () -> String -> String -> [PPrint ()] -> PPrint ()
+pClosure :: PPrint -> String -> String -> [PPrint] -> PPrint
 pClosure header open close px = do
   st <- get
   let content = do
@@ -205,7 +206,7 @@ pClosure header open close px = do
 
 ----------------------------------------------------------------------------------------------------
 
-type PPrint a = State Printer a
+type PPrintM a = State Printer a
 type POutput = (Int, Int, UStr)
 
 -- not for export
@@ -268,7 +269,7 @@ instance Monoid Printer where
 -- | Force a string into the 'printerBuf' buffer without modifying anything else. This should allow
 -- you to put markers into the output without effecting any of the metrics used to control how the
 -- output is indented or wrapped.
-pDebug :: (Printer -> String) -> PPrint ()
+pDebug :: (Printer -> String) -> PPrint
 pDebug fn = do
   st <- get
   let msg = "["++fn st++"]"
@@ -280,17 +281,17 @@ stateJoinLines st =
     (len, str) = foldl joinln (0, "") (printerOut st)
     joinln (len0, str0) (_, len1, str1) = (len0+len1, str0 ++ uchars str1)
 
-appendState :: Printer -> PPrint ()
+appendState :: Printer -> PPrint
 appendState = modify . flip mappend
 
 -- | A kind of pre-conversion, the 'PPrintState' is broken into a list of strings, each string
 -- preceeded by it's indentation factor.
-linesFromPPrintState :: Int -> PPrint () -> [(Int, String)]
+linesFromPPrintState :: Int -> PPrint -> [(Int, String)]
 linesFromPPrintState maxWidth ps = end (execState ps mempty) where
   end st = flip map (printerOut st ++ [printerOutputTripple st]) $ \ (a, _, b) ->
     (a, dropWhile isSpace (chomp (uchars b)))
 
-printAcross :: [PPrint ()] -> PPrint ()
+printAcross :: [PPrint] -> PPrint
 printAcross px = case px of
   []   -> return ()
   p:px -> do
@@ -324,6 +325,6 @@ linesToString indentStr = intercalate "\n" .
 -- Given an indentation string and a maximum width value, construct a string from the 'PPrintState'.
 -- The maximum width value is used to call 'linesFromPPrintState', and the indentation string is
 -- used to call 'linesToString'.
-showPPrint :: Int -> String -> PPrint () -> String
+showPPrint :: Int -> String -> PPrint -> String
 showPPrint maxWidth indentStr ps = linesToString indentStr (linesFromPPrintState maxWidth ps)
 

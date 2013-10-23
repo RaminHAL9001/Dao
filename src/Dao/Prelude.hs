@@ -32,8 +32,8 @@ module Dao.Prelude
   , module Dao.String
   , module Dao.Object
   , module Dao.Object.AST
-  , module Dao.Object.PPrint
-  , module Dao.PPrint
+  , module Dao.Object.PPrintM
+  , module Dao.PPrintM
   , module Control.Monad
   , module Control.Monad.State
   , module Control.Applicative
@@ -47,14 +47,14 @@ module Dao.Prelude
 import           Dao.String
 import qualified Dao.Tree as T
 import           Dao.Object
-import           Dao.PPrint
+import           Dao.PPrintM
 import           Dao.Struct
 import           Dao.Predicate
 import           Dao.Token
 import           Dao.Parser
 import           Dao.Random
 
-import           Dao.Object.PPrint
+import           Dao.Object.PPrintM
 import           Dao.Object.AST
 import           Dao.Object.Parser
 import           Dao.Object.Struct
@@ -147,7 +147,7 @@ randObjMax = ioRandOMax
 
 -- | Re-export 'Dao.PPring.prettyShow'
 -- prettyShow :: PPrintable a => a -> String
--- prettyShow = Dao.PPrint.prettyShow
+-- prettyShow = Dao.PPrintM.prettyShow
 
 -- | Pretty-print anything output by one of the functions in this module.
 pp :: PPrintable a => (Dao a) -> IO (Dao a)
@@ -172,11 +172,11 @@ writeTextWith toString path obj = fileOutputTextWith toString WriteMode path obj
 appendTextWith :: (a -> String) -> FilePath -> Dao a -> IO (Dao a)
 appendTextWith toString path obj = fileOutputTextWith toString AppendMode path obj
 
--- | Like 'writeTextWith' but uses 'Dao.PPrint.prettyShow'.
+-- | Like 'writeTextWith' but uses 'Dao.PPrintM.prettyShow'.
 writeText :: PPrintable a => FilePath -> Dao a -> IO (Dao a)
 writeText path obj = writeTextWith prettyShow path obj
 
--- | Like 'appendTextWith' but uses 'Dao.PPrint.prettyShow'.
+-- | Like 'appendTextWith' but uses 'Dao.PPrintM.prettyShow'.
 appendText :: PPrintable a => FilePath -> Dao a -> IO (Dao a)
 appendText path obj = appendTextWith prettyShow path obj
 

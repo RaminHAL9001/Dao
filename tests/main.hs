@@ -1,4 +1,4 @@
--- "tests/pprint.hs"  tests the 'Dao.PPrint' module.
+-- "tests/pprint.hs"  tests the 'Dao.PPrintM' module.
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
 -- This file is part of the Dao System.
@@ -25,7 +25,7 @@ module Main where
 import           Dao.Prelude
 import           Dao.String
 import           Dao.Predicate
-import           Dao.PPrint
+import           Dao.PPrintM
 import           Dao.Parser
 import           Dao.Struct
 import           Dao.Random
@@ -33,7 +33,7 @@ import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Object.Parser
 import           Dao.Object.Binary
-import           Dao.Object.PPrint
+import           Dao.Object.PPrintM
 import           Dao.Object.Struct
 import           Dao.Object.Random
 import           Dao.Object.DeepSeq
@@ -71,8 +71,8 @@ type TestRun a = ReaderT TestEnv IO a
 data TestConfig
   = TestConfig
     { doTestParser      :: Bool
-      -- ^ Enable testing of the "Dao.Parser","Dao.Object.Parser", "Dao.PPrint", and
-      -- "Dao.Object.PPrint" modules. The default value is 'Prelude.True'.
+      -- ^ Enable testing of the "Dao.Parser","Dao.Object.Parser", "Dao.PPrintM", and
+      -- "Dao.Object.PPrintM" modules. The default value is 'Prelude.True'.
     , doTestSerializer  :: Bool
       -- ^ Enable testing of the "Dao.Object.Binary" module. The default value is 'Prelude.True'.
     , doTestStructizer  :: Bool
@@ -81,7 +81,7 @@ data TestConfig
     , doCompareParsed   :: Bool
       -- ^ if the 'doTestParser' parameter is enabled, you may also enable or disable a sub-test
       -- that checks whether or not the object generated and pretty printed by the
-      -- "Dao.Object.Random" and "Dao.Object.PPrint" modules is identical to the object emitted by
+      -- "Dao.Object.Random" and "Dao.Object.PPrintM" modules is identical to the object emitted by
       -- the "Dao.Object.Parser". The default value is 'Prelude.True'.
     , maxRecurseDepth   :: Int
       -- ^ The "Dao.Random" module generates objects within objects recursively. This parameter sets

@@ -36,7 +36,7 @@ import           Dao.Parser
 import           Dao.Predicate
 import           Dao.Procedural
 import           Dao.Object.Parser
-import           Dao.Object.PPrint
+import           Dao.Object.PPrintM
 import           Dao.Object.Binary
 
 import           Control.Exception

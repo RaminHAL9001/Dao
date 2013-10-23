@@ -1,4 +1,4 @@
--- "src/Dao/Object/PPrint.hs"  provides functions for pretty printing Dao
+-- "src/Dao/Object/PPrintM.hs"  provides functions for pretty printing Dao
 -- objects, Dao scripts, and Dao programs.
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
@@ -22,10 +22,10 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 
-module Dao.Object.PPrint where
+module Dao.Object.PPrintM where
 
 import           Dao.String
-import           Dao.PPrint
+import           Dao.PPrintM
 import           Dao.Token
 import           Dao.Object
 import           Dao.Object.AST
@@ -63,11 +63,11 @@ import Debug.Trace
 ----------------------------------------------------------------------------------------------------
 
 -- | A commonly used pattern, like 'pClosure' but the contents of it is always a list of items which
--- can be pretty-printed by the given @(o -> 'PPrint' ())@ function.
-pContainer :: String -> (o -> PPrint ()) -> [o] -> PPrint ()
+-- can be pretty-printed by the given @(o -> 'PPrintM' ())@ function.
+pContainer :: String -> (o -> PPrint) -> [o] -> PPrint
 pContainer label prin ox = pList (pString label) "{ " ", " " }" (map prin ox)
 
-pMapAssoc :: Show a => (a, Object) -> PPrint ()
+pMapAssoc :: Show a => (a, Object) -> PPrint
 pMapAssoc (a, obj) = pWrapIndent [pShow a, pString " = ", pPrint obj]
 
 instance PPrintable Name where { pPrint = pUStr . toUStr }
@@ -197,7 +197,7 @@ instance PPrintable Comment where
       InlineComment  c -> pGroup True $ pInline $
         concat [[pString " /*"], map pString (lines (uchars c)), [pString "*/ "]]
 
-pPrintComWith :: (a -> PPrint ()) -> Com a -> PPrint ()
+pPrintComWith :: (a -> PPrint) -> Com a -> PPrint
 pPrintComWith prin com = case com of
   Com          c    -> prin c
   ComBefore ax c    -> pcom ax >> prin c
@@ -205,10 +205,10 @@ pPrintComWith prin com = case com of
   ComAround ax c bx -> pcom ax >> prin c >> pcom bx
   where { pcom = pInline . map pPrint }
 
-pListOfComsWith :: (a -> PPrint ()) -> [Com a] -> PPrint ()
+pListOfComsWith :: (a -> PPrint) -> [Com a] -> PPrint
 pListOfComsWith prin = sequence_ . map (pPrintComWith prin)
 
-pListOfComs :: PPrintable a => [Com a] -> PPrint ()
+pListOfComs :: PPrintable a => [Com a] -> PPrint
 pListOfComs = pListOfComsWith pPrint
 
 instance PPrintable a => PPrintable (Com a) where { pPrint = pPrintComWith pPrint }
@@ -233,21 +233,21 @@ instance PPrintable RefExpr where { pPrint = mapM_ pPrint . fromInterm }
 
 -- 'pPrintComWith' wasn't good enough for this, because the comments might occur after the header
 -- but before the opening bracket.
-pPrintComCodeBlock :: PPrint () -> Com AST_CodeBlock -> PPrint ()
+pPrintComCodeBlock :: PPrint -> Com AST_CodeBlock -> PPrint
 pPrintComCodeBlock header c = case c of
   Com          c    -> run [] c []
   ComBefore bx c    -> run bx c []
   ComAfter     c ax -> run [] c ax
   ComAround bx c ax -> run bx c ax
   where
-    run :: [Comment] -> AST_CodeBlock -> [Comment] -> PPrint ()
+    run :: [Comment] -> AST_CodeBlock -> [Comment] -> PPrint
     run before cx after = case getAST_CodeBlock cx of
       [] -> header >> pInline (map pPrint before) >> pString " {}" >> pInline (map pPrint after)
       cx -> do
         pClosure (header >> pInline (map pPrint before)) " { " " }" (map (pGroup True . pPrint) cx)
         pInline (map pPrint after)
 
-pPrintSubBlock :: PPrint () -> AST_CodeBlock -> PPrint ()
+pPrintSubBlock :: PPrint -> AST_CodeBlock -> PPrint
 pPrintSubBlock header px = pPrintComCodeBlock header (Com px)
 
 instance PPrintable AST_CodeBlock where { pPrint o = mapM_ pPrint (getAST_CodeBlock o) }
@@ -386,7 +386,7 @@ instance PPrintable AST_TopLevel where
     AST_Event     a b c   _ -> pClosure (pShow a >> mapM_ pPrint b) " { " " }" (map pPrint (getAST_CodeBlock c))
     AST_TopComment a        -> mapM_ (\a -> pPrint a >> pNewLine) a
 
-pPrintInterm :: (Intermediate obj ast, PPrintable ast) => obj -> PPrint ()
+pPrintInterm :: (Intermediate obj ast, PPrintable ast) => obj -> PPrint
 pPrintInterm = mapM_ pPrint . fromInterm
 
 instance PPrintable AST_SourceCode where
@@ -422,7 +422,7 @@ instance PPrintable [ParamExpr] where { pPrint lst = pList_ "(" ", " ")" (fmap p
 instance PPrintable ParamListExpr where { pPrint (ParamListExpr lst _) = pPrint lst }
 
 -- Used by the instantiation of CallableCode and GlobAction into the PPrintable class.
-callableAction :: String -> PPrint () -> ObjType -> Subroutine -> PPrint ()
+callableAction :: String -> PPrint -> ObjType -> Subroutine -> PPrint
 callableAction what pats typ exe =
   pClosure (pString what >> pats >> pPrint typ) "{" "}" (map pPrint (codeBlock (origSourceCode exe)))
 
@@ -438,9 +438,9 @@ instance PPrintable GlobAction   where
 instance PPrintable Subroutine where { pPrint = mapM_ pPrint . codeBlock . origSourceCode }
 
 -- | Pretty-prints a 'Type' without a colon prefix. The instantiation of 'Dao.Object.Type' into the
--- 'Dao.PPrint.PPrintable' class always prefixes the type with a colon except when the type is the
+-- 'Dao.PPrintM.PPrintable' class always prefixes the type with a colon except when the type is the
 -- 'Dao.Object.nullType' value. The instantiation is defined in terms of this function.
-pPrintType :: ObjType -> PPrint ()
+pPrintType :: ObjType -> PPrint
 pPrintType t = error "pPrintType, used to instantiate 'Dao.Object.Type' into 'PPrintable', has not been defined yet."
 
 instance PPrintable TypeCtx where { pPrint (TypeCtx tx) = pPrint tx }

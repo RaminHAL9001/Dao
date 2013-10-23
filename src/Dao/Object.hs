@@ -534,6 +534,7 @@ defObjectInterface init defIfc =
 showEncoded :: [Word8] -> String
 showEncoded encoded = seq encoded (concatMap (\b -> showHex b " ") encoded)
 
+type T_type     = ObjType
 type T_int      = Int
 type T_word     = Word64
 type T_long     = Integer
@@ -561,7 +562,7 @@ type T_haskell  = ObjectInterface Dynamic
 data CoreType
   = NullType
   | TrueType
---  | TypeType
+  | TypeType
   | IntType
   | WordType
   | DiffTimeType
@@ -719,7 +720,7 @@ delQualifier ref = case ref of
 data Object
   = ONull
   | OTrue
---  | OType      CoreType
+  | OType      T_type
   | OInt       T_int
   | OWord      T_word
   | OLong      T_long
@@ -840,7 +841,7 @@ objType :: Object -> CoreType
 objType o = case o of
   ONull       -> NullType
   OTrue       -> TrueType
---OType     _ -> TypeType
+  OType     _ -> TypeType
   OInt      _ -> IntType
   OWord     _ -> WordType
   OLong     _ -> LongType
@@ -864,49 +865,28 @@ objType o = case o of
   OBytes    _ -> BytesType
   OHaskell _ _ -> HaskellType
 
+-- | Type variables can be constrained by referenes to other types.
+newtype TypeCtx = TypeCtx Reference deriving (Eq, Ord, Typeable, Show)
+
 -- | A symbol in the type calculus.
-data TypeSymbol
-  = VoidType -- ^ used by functions that return void
-  | CoreType CoreType
+data TypeSym
+  = CoreType CoreType
     -- ^ used when the type of an object is equal to it's value, for example Null and True,
     -- or in situations where the type of an object has a value, for example the dimentions of a
     -- matrix.
-  | TypeVar  Name
+  | TypeVar  Reference [TypeCtx]
     -- ^ a polymorphic type, like 'AnyType' but has a name.
-  | AnyType 
-    -- ^ used when the type is unknown and can be any arbitrary object; it is an anonymous variable
   deriving (Eq, Ord, Show, Typeable)
 
 -- | Complex type structures can be programmed by combining 'ObjSimpleType's.
-data TypeStruct
-  = TypeSingle   TypeSymbol
-  | TypeSequence [TypeSymbol]
-  | TypeChoice   [TypeSymbol]
-  deriving (Eq, Ord, Show, Typeable)
+newtype TypeStruct = TypeStruct [TypeSym] deriving (Eq, Ord, Show, Typeable)
 
 -- | The fundamental 'Type' used to reason about whether an object is fit to be used for a
 -- particular function.
-data Type
-  = TypeConst TypeStruct
-    -- ^ two 'TypeConst' types are said to be of the same type simply if there is a one-to-one
-    -- relationship between each type symbol in the structure.
-  | TypeProp  Reference  Type
-    -- ^ A type property is a type that describes an object where the instatiation of
-    -- 'Dao.Struct.Structured' can retrieve a value of a type a the given reference.
-  | TypeFunc  TypeStruct TypeCodeBlock
-    -- ^ A type function has a 'TypeStruct' header which begins matching against a type and
-    -- assinging type values to variables. Then the 'TypeCodeBlock' is evaluated with these
-    -- variables set in the local variable stack. If the 'TypeCodeBlock' returns a non 'ONull'
-    -- value, then the types match is successful.
-  deriving (Eq, Ord, Show, Typeable)
+newtype ObjType = ObjType { typeChoices :: [TypeStruct] } deriving (Eq, Ord, Show, Typeable)
 
-nullType :: Type
-nullType = TypeConst (TypeSingle VoidType)
-
-anyType :: Type
-anyType = TypeConst (TypeSingle AnyType)
-
-newtype TypeCodeBlock = TypeCodeBlock CodeBlock deriving (Eq, Ord, Show, Typeable)
+instance HasNullValue TypeStruct where { nullValue = TypeStruct []; testNull (TypeStruct a) = null a; }
+instance HasNullValue ObjType    where { nullValue = ObjType []; testNull (ObjType a) = null a; }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -928,7 +908,6 @@ instance HasNullValue (M.Map k a)     where { nullValue = M.empty; testNull = M.
 instance HasNullValue (S.Set a)       where { nullValue = S.empty; testNull = S.null }
 instance HasNullValue B.ByteString    where { nullValue = mempty; testNull = (==mempty); }
 instance HasNullValue (T.Tree Name Object) where { nullValue = T.Void; testNull = T.null; }
-instance HasNullValue Type where { nullValue = nullType; testNull = (==nullType); }
 instance HasNullValue Object where
   nullValue = ONull
   testNull a = case a of
@@ -1051,7 +1030,7 @@ instance HasNullValue Subroutine where
 data CallableCode
   = CallableCode
     { argsPattern    :: ParamListExpr
-    , returnType     :: Type
+    , returnType     :: ObjType
     , codeSubroutine :: Subroutine
     }
   deriving (Show, Typeable)
@@ -2076,6 +2055,7 @@ data Runtime
     , functionSets         :: M.Map Name (M.Map Name DaoFunc)
       -- ^ every labeled set of built-in functions provided by this runtime is listed here. This
       -- table is checked when a Dao program is loaded that has "requires" directives.
+    , objectInterfaces     :: M.Map TypeRep T_haskell
     , taskForExecUnits     :: Task
     , availableTokenizers  :: M.Map Name InputTokenizer
       -- ^ a table of available string tokenizers.

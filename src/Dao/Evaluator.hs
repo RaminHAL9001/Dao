@@ -1407,12 +1407,12 @@ instance Executable ObjectExpr (Maybe Object) where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     LambdaExpr params scrpt lc -> do
       exec       <- setupCodeBlock scrpt
-      let newFunc = CallableCode params nullType exec
+      let newFunc = CallableCode params nullValue exec
       return $ Just $ error "TODO: LambdaExpr needs to evaluate to an Object containing a CallableCode"
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     FuncExpr name params scrpt lc -> do
       exec   <- setupCodeBlock scrpt
-      let newFunc = CallableCode{argsPattern=params, codeSubroutine=exec, returnType=anyType}
+      let newFunc = CallableCode{argsPattern=params, codeSubroutine=exec, returnType=nullValue}
       return $ Just $ error "TODO: FuncExpr needs to evaluate to an Object containing a CallableCode"
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     RuleExpr (RuleStrings params _) scrpt lc -> do

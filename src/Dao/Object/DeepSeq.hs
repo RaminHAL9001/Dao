@@ -183,22 +183,12 @@ instance (NFData a, NFData b) => NFData (T.Tree a b) where
   rnf (T.Branch       b) = deepseq b ()
   rnf (T.LeafBranch a b) = deepseq a $! deepseq b ()
 
-instance NFData TypeCodeBlock where { rnf (TypeCodeBlock a) = deepseq a () }
-instance NFData Type where
-  rnf (TypeConst a  ) = deepseq a ()
-  rnf (TypeProp  a b) = deepseq a $! deepseq b ()
-  rnf (TypeFunc  a b) = deepseq a $! deepseq b ()
-
-instance NFData TypeSymbol where
-  rnf VoidType     = ()
-  rnf (CoreType a) = deepseq a ()
-  rnf (TypeVar  a) = deepseq a ()
-  rnf AnyType      = ()
-
-instance NFData TypeStruct where
-  rnf (TypeSingle   a) = deepseq a ()
-  rnf (TypeSequence a) = deepseq a ()
-  rnf (TypeChoice   a) = deepseq a ()
+instance NFData TypeCtx where { rnf (TypeCtx a) = deepseq a () }
+instance NFData TypeSym where
+  rnf (CoreType a  ) = deepseq a ()
+  rnf (TypeVar  a b) = deepseq a $! deepseq b ()
+instance NFData TypeStruct where { rnf (TypeStruct a) = deepseq a () }
+instance NFData ObjType where { rnf (ObjType a) = deepseq a () }
 
 instance NFData Glob          where { rnf (Glob          a b  ) = deepseq a $! deepseq b () }
 instance NFData Subroutine    where { rnf (Subroutine    a _ _) = deepseq a () }

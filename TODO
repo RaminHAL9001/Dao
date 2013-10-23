@@ -127,6 +127,8 @@ SOLVED:
 	like to move all execution into 'ExecUnit'. The 'Run' monad should be phased out, and the
 	'Runtime' data structure should simply be constructed in the IO monad and used to create every
 	'ExecUnit'.
+	NOTE: I think the 'Runtime' type is probably going to be essential. It should contain the
+	whole-program data which can be configured for each install site.
 
 * Fix the bugs introduced into the "Dao.EnumSet" module after this last bout of sweeping changes. (DONE)
 

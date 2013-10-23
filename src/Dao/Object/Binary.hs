@@ -813,40 +813,28 @@ instance Binary InfixOp where
 
 ----------------------------------------------------------------------------------------------------
 
-instance Binary TypeSymbol where
+instance Binary TypeCtx where
+  put (TypeCtx a) = put a
+  get = fmap TypeCtx get
+
+instance Binary TypeSym where
   put t = case t of
-    VoidType   -> putWord8 0xA1
-    CoreType t -> putWord8 0xA2 >> putWord8 (fromIntegral (fromEnum t))
-    TypeVar  t -> putWord8 0xA3 >> put t
-    AnyType    -> putWord8 0xA4
+    CoreType t   -> putWord8 0xA1 >> putWord8 (fromIntegral (fromEnum t))
+    TypeVar  t s -> putWord8 0xA2 >> put t >> putList s
   get = getWord8 >>= \w -> case w of
-    0xA1 -> return VoidType
-    0xA2 -> fmap (CoreType . toEnum . fromIntegral) getWord8
-    0xA3 -> fmap TypeVar get
-    0xA4 -> return AnyType
+    0xA1 -> fmap (CoreType . toEnum . fromIntegral) getWord8
+    0xA2 -> liftM2 TypeVar get getList
     _    -> fail "expecting TypeSymbol"
 
 instance Binary TypeStruct where
-  put t = case t of
-    TypeSingle   t -> put t
-    TypeSequence t -> putWord8 0xA5 >> putList t
-    TypeChoice   t -> putWord8 0xA6 >> putList t
+  put (TypeStruct t) = putWord8 0xA3 >> putList t
   get = lookAhead getWord8 >>= \w -> case w of
-    0xA5 -> getWord8 >> fmap TypeSequence getList
-    0xA6 -> getWord8 >> fmap TypeChoice   getList
-    w    -> fmap TypeSingle get
+    0xA3 -> getWord8 >> fmap TypeStruct getList
+    _    -> fail "expecting TypeStruct"
 
-instance Binary Type where
-  put t = case t of
-    TypeConst  t -> put t
-    TypeProp r t -> putWord8 0xA7 >> put r >> put t
-    TypeFunc r t -> putWord8 0xA8 >> put r >> put t
+instance Binary ObjType where
+  put (ObjType tx) = putWord8 0xA4 >> putList tx
   get = lookAhead getWord8 >>= \w -> case w of
-    0xA5 -> getWord8 >> liftM2 TypeProp get get
-    0xA6 -> getWord8 >> liftM2 TypeFunc get get
-    _    -> fmap TypeConst get
-
-instance Binary TypeCodeBlock where
-  put (TypeCodeBlock block) = put block
-  get = fmap TypeCodeBlock get
+    0xA4 -> getWord8 >> fmap ObjType getList
+    _    -> fail "expecting ObjType"
 

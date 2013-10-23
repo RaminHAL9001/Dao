@@ -211,7 +211,7 @@ instance HasRandGen CallableCode where
     let code = 
           CallableCode
           { argsPattern    = nullValue
-          , returnType     = anyType
+          , returnType     = nullValue
           , codeSubroutine = sub
           }
     recurse code $ do

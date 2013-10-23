@@ -422,7 +422,7 @@ instance PPrintable [ParamExpr] where { pPrint lst = pList_ "(" ", " ")" (fmap p
 instance PPrintable ParamListExpr where { pPrint (ParamListExpr lst _) = pPrint lst }
 
 -- Used by the instantiation of CallableCode and GlobAction into the PPrintable class.
-callableAction :: String -> PPrint () -> Type -> Subroutine -> PPrint ()
+callableAction :: String -> PPrint () -> ObjType -> Subroutine -> PPrint ()
 callableAction what pats typ exe =
   pClosure (pString what >> pats >> pPrint typ) "{" "}" (map pPrint (codeBlock (origSourceCode exe)))
 
@@ -430,7 +430,7 @@ instance PPrintable CallableCode where
   pPrint (CallableCode pats ty exe) = callableAction "function" (pPrint pats) ty exe
 
 instance PPrintable GlobAction   where
-  pPrint (GlobAction pats exe) = (\a -> callableAction "rule" a nullType exe) $ case pats of
+  pPrint (GlobAction pats exe) = (\a -> callableAction "rule" a nullValue exe) $ case pats of
     []    -> pString "()"
     [pat] -> pPrint pat
     pats  -> pList_ "(" ", " ")" (map pPrint pats)
@@ -440,13 +440,27 @@ instance PPrintable Subroutine where { pPrint = mapM_ pPrint . codeBlock . origS
 -- | Pretty-prints a 'Type' without a colon prefix. The instantiation of 'Dao.Object.Type' into the
 -- 'Dao.PPrint.PPrintable' class always prefixes the type with a colon except when the type is the
 -- 'Dao.Object.nullType' value. The instantiation is defined in terms of this function.
-pPrintType :: Type -> PPrint ()
+pPrintType :: ObjType -> PPrint ()
 pPrintType t = error "pPrintType, used to instantiate 'Dao.Object.Type' into 'PPrintable', has not been defined yet."
 
-instance PPrintable Type where
+instance PPrintable TypeCtx where { pPrint (TypeCtx tx) = pPrint tx }
+instance PPrintable TypeSym where
   pPrint t = case t of
-    TypeConst (TypeSingle VoidType) -> return ()
-    t -> pString ": " >> pPrintType t
+    CoreType t     -> pPrint t
+    TypeVar  t ctx -> pInline $
+      concat [[pPrint t], guard (not (null ctx)) >> [pList_ "[" ", " "]" (map pPrint ctx)]]
+
+instance PPrintable TypeStruct where
+  pPrint (TypeStruct tx) = case tx of
+    []  -> pString "void"
+    [a] -> pPrint a
+    ax  -> pList (pString "type") "(" ", " ")" (map pPrint ax)
+
+instance PPrintable ObjType where
+  pPrint (ObjType tx) = case tx of
+    []  -> return ()
+    [a] -> pPrint a
+    ax  -> pList (pString "anyOf") "(" ", " ")" (map pPrint tx)
 
 instance PPrintable CoreType where
   pPrint t = pString $ case t of

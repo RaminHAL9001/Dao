@@ -80,6 +80,7 @@ daoRuntime debugRef daoMain = do
         , defaultTimeout       = Just 8000000
         , provides             = mempty
         , functionSets         = mempty
+        , objectInterfaces     = mempty -- TODO: place the object interfaces for all of the important built-in types here.
         , taskForExecUnits     = error "Dao:daoRuntime: forgot to set \"taskForExecUnits\""
         , availableTokenizers  = mempty
         , availableComparators = M.fromList $

@@ -37,6 +37,7 @@ Dao/Object/Parser.hs
 Dao/Object/PPrint.hs
 Dao/Object/Struct.hs
 Dao/Object/Random.hs
+Dao/Binary.hs
 Dao/PPrint.hs
 Dao/Parser.hs
 Dao/Glob.hs

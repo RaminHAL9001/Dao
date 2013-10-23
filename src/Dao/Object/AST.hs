@@ -43,16 +43,28 @@ data AST_Ref
   = AST_RefNull
   | AST_Ref  Name [Com Name] Location
   deriving (Eq, Ord, Typeable, Show)
+instance HasNullValue AST_Ref where
+  nullValue = AST_RefNull
+  testNull AST_RefNull = True
+  testNull _ = False
 
 data AST_QualRef
   = AST_Unqualified                      AST_Ref
   | AST_Qualified RefQualifier [Comment] AST_Ref Location
   deriving (Eq, Ord, Typeable, Show)
+instance HasNullValue AST_QualRef where
+  nullValue = AST_Unqualified nullValue
+  testNull (AST_Unqualified a) = testNull a
 
 data AST_ObjList = AST_ObjList [Comment] [Com AST_Object] Location deriving (Eq, Ord, Typeable, Show)
 instance Monoid AST_ObjList where
   mempty = AST_ObjList [] [] LocationUnknown
   mappend (AST_ObjList a1 a2 aloc) (AST_ObjList b1 b2 bloc) = AST_ObjList (a1++b1) (a2++b2) (aloc<>bloc)
+
+instance HasNullValue AST_ObjList where
+  nullValue = mempty
+  testNull (AST_ObjList [] [] _) = True
+  testNull _ = False
 
 setObjListPreComments :: [Comment] -> AST_ObjList -> AST_ObjList
 setObjListPreComments coms (AST_ObjList _ a loc) = AST_ObjList coms a loc
@@ -61,15 +73,24 @@ mkObjList :: [Com AST_Object] -> AST_ObjList
 mkObjList ox = AST_ObjList [] ox (mconcat $ fmap (getLocation . unComment) ox)
 
 newtype AST_LValue = AST_LValue AST_Object deriving (Eq, Ord, Typeable, Show)
+
 instance HasLocation AST_LValue where
   getLocation (AST_LValue o)     = getLocation o
   setLocation (AST_LValue o) loc = AST_LValue (setLocation o loc)
   delLocation (AST_LValue o)     = AST_LValue (delLocation o)
 
+instance HasNullValue AST_LValue where
+  nullValue = AST_LValue nullValue
+  testNull (AST_LValue a) = testNull a
+
 data AST_TyChk a
   = AST_NotChecked a
   | AST_Checked    a (Com ()) AST_Object Location
   deriving (Eq, Ord, Typeable, Show)
+
+instance HasNullValue a => HasNullValue (AST_TyChk a) where
+  nullValue = AST_NotChecked nullValue
+  testNull (AST_NotChecked a) = testNull a
 
 checkedAST :: AST_TyChk a -> a
 checkedAST a = case a of { AST_NotChecked a -> a; AST_Checked a _ _ _ -> a; }
@@ -89,6 +110,12 @@ data AST_Param
   = AST_NoParams
   | AST_Param (Maybe [Comment]) (AST_TyChk Name) Location
   deriving (Eq, Ord, Typeable, Show)
+
+instance HasNullValue AST_Param where
+  nullValue = AST_NoParams
+  testNull AST_NoParams = True
+  testNull _ = False
+
 instance HasLocation AST_Param where
   getLocation a     = case a of
     AST_NoParams      -> LocationUnknown
@@ -104,6 +131,10 @@ data AST_ParamList
   = AST_ParamList (AST_TyChk [Com AST_Param]) Location
   deriving (Eq, Ord, Typeable, Show)
 
+instance HasNullValue AST_ParamList where
+  nullValue = AST_ParamList nullValue LocationUnknown
+  testNull (AST_ParamList a _) = testNull a
+
 instance HasLocation AST_ParamList where
   getLocation (AST_ParamList _ loc)     = loc
   setLocation (AST_ParamList a _  ) loc = AST_ParamList a loc
@@ -114,10 +145,21 @@ data AST_StringList
   | AST_StringList [Com UStr] Location
   deriving (Eq, Ord, Typeable, Show)
 
+instance HasNullValue AST_StringList where
+  nullValue = AST_NoStrings [] LocationUnknown
+  testNull (AST_NoStrings _ _) = True
+  testNull _ = False
+
 data AST_OptObjList
   = AST_NoObjList  [Comment]
   | AST_OptObjList AST_ObjList [Comment]
   deriving (Eq, Ord, Typeable, Show)
+
+instance HasNullValue AST_OptObjList where
+  nullValue = AST_NoObjList []
+  testNull (AST_NoObjList _) = True
+  testNull _ = False
+
 instance HasLocation AST_OptObjList where
   getLocation o     = case o of
     AST_NoObjList{}    -> LocationUnknown
@@ -134,6 +176,10 @@ instance HasLocation AST_Paren where
   getLocation (AST_Paren o loc)     = loc
   setLocation (AST_Paren o _  ) loc = AST_Paren o loc
   delLocation (AST_Paren o _  )     = AST_Paren (delLocation o) LocationUnknown
+
+instance HasNullValue AST_Paren where
+  nullValue = AST_Paren nullValue LocationUnknown
+  testNull (AST_Paren a _) = testNull a
 
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data AST_Object
@@ -153,6 +199,11 @@ data AST_Object
   | AST_Rule                      (Com AST_StringList)   AST_CodeBlock Location
   | AST_MetaEval                                         AST_CodeBlock Location
   deriving (Eq, Ord, Typeable, Show)
+
+instance HasNullValue AST_Object where
+  nullValue = AST_Void
+  testNull AST_Void = True
+  testNull _ = False
 
 --data AST_ElseIf
 --  = AST_NullElseIf
@@ -184,12 +235,20 @@ data AST_Script
     -- ^ @with /**/ objExpr /**/ {}@
   deriving (Eq, Ord, Typeable, Show)
 
+instance HasNullValue AST_Script where
+  nullValue = AST_EvalObject nullValue [] LocationUnknown
+  testNull (AST_EvalObject a _ _) = testNull a
+  testNull _ = False
+
 newtype AST_CodeBlock = AST_CodeBlock{ getAST_CodeBlock :: [AST_Script] } deriving (Eq, Ord, Typeable, Show)
   -- A code block is never standing on it's own, it is always part of a larger expression, so there
   -- is no 'Dao.Token.Location' parameter for 'AST_CodeBlock'.
 instance Monoid AST_CodeBlock where
   mempty      = AST_CodeBlock []
   mappend a b = AST_CodeBlock (mappend (getAST_CodeBlock a) (getAST_CodeBlock b))
+instance HasNullValue AST_CodeBlock where
+  nullValue = AST_CodeBlock []
+  testNull (AST_CodeBlock a) = null a
 
 -- | A 'AST_TopLevel' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
@@ -199,6 +258,11 @@ data AST_TopLevel
   | AST_Event      TopLevelEventType [Comment]           AST_CodeBlock Location
   | AST_TopComment [Comment]
   deriving (Eq, Ord, Typeable, Show)
+
+instance HasNullValue AST_TopLevel where
+  nullValue = AST_TopScript nullValue LocationUnknown
+  testNull (AST_TopScript a _) = testNull a
+  testNull _ = False
 
 -- | A 'SourceCode' is the structure loaded from source code. An 'ExecUnit' object is constructed from
 -- 'SourceCode'.
@@ -210,6 +274,11 @@ data AST_SourceCode
     , directives     :: [AST_TopLevel]
     }
   deriving (Eq, Ord, Typeable)
+
+instance HasNullValue AST_SourceCode where
+  nullValue = (AST_SourceCode 0 nil [])
+  testNull (AST_SourceCode 0 a []) | a==nil = True
+  testNull _ = False
 
 ----------------------------------------------------------------------------------------------------
 
@@ -326,6 +395,17 @@ data AST_IfElse = AST_IfElse AST_If [AST_Else] (Com ()) (Maybe AST_CodeBlock) Lo
   -- ^ @if /**/ obj /**/ {} /**/ else /**/ if /**/ obj /**/ {} /**/ else {}@
   deriving (Eq, Ord, Typeable, Show)
 
+instance HasNullValue AST_If where
+  nullValue = AST_If nullValue nullValue LocationUnknown
+  testNull (AST_If a b _) = testNull a && testNull b
+instance HasNullValue AST_Else where
+  nullValue = AST_Else nullValue nullValue LocationUnknown
+  testNull (AST_Else a b _) = testNull a && testNull b
+instance HasNullValue AST_IfElse where
+  nullValue = AST_IfElse nullValue [] nullValue Nothing LocationUnknown
+  testNull (AST_IfElse a [] (Com ()) Nothing _) = testNull a
+  testNull _ = False
+
 instance HasLocation AST_If where
   getLocation (AST_If _ _ loc)     = loc
   setLocation (AST_If a b _  ) loc = AST_If a b loc
@@ -334,11 +414,15 @@ instance HasLocation AST_IfElse where
   getLocation (AST_IfElse _ _ _ _ loc)     = loc
   setLocation (AST_IfElse a b c d _  ) loc = AST_IfElse a b c d loc
   delLocation (AST_IfElse a b c d _  )     = AST_IfElse a b c d LocationUnknown
+
+newtype AST_While = AST_While AST_If deriving (Eq, Ord, Typeable, Show)
 instance HasLocation AST_While where
   getLocation (AST_While a) = getLocation a
   setLocation (AST_While a) loc = AST_While (setLocation a loc)
   delLocation (AST_While a)     = AST_While (delLocation a)
-newtype AST_While = AST_While AST_If deriving (Eq, Ord, Typeable, Show)
+instance HasNullValue AST_While where
+  nullValue = AST_While nullValue
+  testNull (AST_While a) = testNull a
 
 --instance HasLocation AST_ElseIf where
 --  getLocation o     = case o of
@@ -437,6 +521,11 @@ commentString com = case com of
 -- comments that can be ignored without disgarding them.
 data Com a = Com a | ComBefore [Comment] a | ComAfter a [Comment] | ComAround [Comment] a [Comment]
   deriving (Eq, Ord, Typeable, Show)
+
+instance HasNullValue a => HasNullValue (Com a) where
+  nullValue = Com nullValue
+  testNull (Com a) = testNull a
+  testNull _ = False
 
 appendComments :: Com a -> [Comment] -> Com a
 appendComments com cx = case com of

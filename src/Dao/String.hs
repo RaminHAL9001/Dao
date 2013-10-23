@@ -66,6 +66,9 @@ import qualified Data.ByteString.Lazy.UTF8 as U
 import qualified Data.ByteString.Lazy      as B
 import qualified Codec.Binary.UTF8.String  as UTF8
 
+-- | Objects which have default values should instantiate this class.
+class HasNullValue a where { nullValue :: a; testNull :: a -> Bool; }
+
 -- | This is the /universal string/ type. It is a @newtype@ wrapper around
 -- 'Data.ByteString.Lazy.UTF8.ByteString', but has an API that is used throughout the Dao system.
 -- There is serious consideration to replace this module with "Data.Text", but even if that happens,

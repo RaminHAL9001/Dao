@@ -671,6 +671,10 @@ instance Monoid Reference where
   mempty = Reference []
   mappend (Reference a) (Reference b) = Reference (a++b)
 
+instance HasNullValue Reference where
+  nullValue = mempty
+  testNull (Reference a) = null a
+
 -- | Direct a reference at a particular tree in the runtime.
 data RefQualifier
   = LOCAL -- ^ the default unless in a "with" statement, refers to the current local variable stack
@@ -694,6 +698,9 @@ data QualRef
   | Qualified RefQualifier Reference
   | ObjRef    Object
   deriving (Eq, Ord, Typeable, Show)
+instance HasNullValue QualRef where
+  nullValue = Unqualified nullValue
+  testNull (Unqualified a) = testNull a
 fmapQualRef :: (Reference -> Reference) -> QualRef -> QualRef
 fmapQualRef fn r = case r of
   Unqualified r -> Unqualified (fn r)
@@ -903,7 +910,7 @@ newtype TypeCodeBlock = TypeCodeBlock CodeBlock deriving (Eq, Ord, Show, Typeabl
 
 ----------------------------------------------------------------------------------------------------
 
-class HasNullValue a where { nullValue :: a; testNull :: a -> Bool; }
+instance HasNullValue ()   where { nullValue = (); testNull () = True; }
 instance HasNullValue UStr where { nullValue = mempty; testNull = (==mempty); }
 instance HasNullValue [a]  where { nullValue = []; testNull = null; }
 instance HasNullValue Char where { nullValue = '\0'; testNull = (==nullValue); }
@@ -1017,6 +1024,10 @@ instance HasLocation CodeBlock where
 instance Monoid CodeBlock where
   mempty      = CodeBlock []
   mappend a b = CodeBlock (mappend (codeBlock a) (codeBlock b))
+instance HasNullValue CodeBlock where
+  nullValue = mempty
+  testNull (CodeBlock []) = True
+  testNull _ = False
 
 -- | A subroutine is contains a 'CodeBlock' and an 'Data.IORef.IORef' to it's own static data. It
 -- also has a reference to the last evaluation of 'execute' over it's 'CodeBlock', which provides a
@@ -1029,7 +1040,11 @@ data Subroutine
     , staticVars     :: IORef (M.Map Name Object)
     , executable     :: Exec (Maybe Object)
     }
-instance Show Subroutine where { show o = "(sub "++show (codeBlock (origSourceCode o))++")" }
+instance Show Subroutine where { show o = "Subroutine "++show (codeBlock (origSourceCode o)) }
+instance HasNullValue Subroutine where
+  nullValue =
+    Subroutine{origSourceCode=nullValue, staticVars=error "null Subroutine", executable=return Nothing}
+  testNull (Subroutine a _ _) = testNull a
 
 -- | A subroutine is specifically a callable function (but we don't use the name Function to avoid
 -- confusion with Haskell's "Data.Function"). 
@@ -1041,6 +1056,11 @@ data CallableCode
     }
   deriving (Show, Typeable)
 
+instance HasNullValue CallableCode where
+  nullValue =
+    CallableCode{argsPattern=nullValue, returnType=nullValue, codeSubroutine=nullValue}
+  testNull (CallableCode a b c) = testNull a && testNull b && testNull c
+
 -- A subroutine that is executed when a query string matches it's @['Dao.Glob.Glob']@ expression.
 data GlobAction
   = GlobAction
@@ -1048,6 +1068,10 @@ data GlobAction
     , globSubroutine :: Subroutine
     }
   deriving (Show, Typeable)
+
+instance HasNullValue GlobAction where
+  nullValue = GlobAction{globPattern=[], globSubroutine=nullValue}
+  testNull (GlobAction a b) = null a && testNull b
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1131,6 +1155,11 @@ instance Monoid ExecError where
         a     -> a
      }
 
+instance HasNullValue ExecError where
+  nullValue = mempty
+  testNull (ExecError Nothing Nothing Nothing Nothing ONull) = True
+  testNull _ = False
+
 class ExecThrowable a where
   toExecError :: a -> ExecError
   -- | Like 'Prelude.error' but works for the 'Exec' monad, throws an 'ExecError' using
@@ -1204,6 +1233,10 @@ class MetaEvaluable expr where
 
 data RefExpr = RefExpr Reference Location deriving (Eq, Ord, Typeable, Show)
 
+instance HasNullValue RefExpr where
+  nullValue = RefExpr nullValue LocationUnknown
+  testNull (RefExpr a _) = testNull a
+
 data QualRefExpr
   = UnqualRefExpr            RefExpr
   | QualRefExpr RefQualifier RefExpr Location
@@ -1218,6 +1251,10 @@ maybeRefNames nx = fmap (Unqualified . Reference) $ sequence $ fmap (maybeFromUS
 -- | Create a 'QualRefExpr' from any single 'Dao.String.UStr'.
 bareword :: UStrType str => str -> QualRefExpr
 bareword = UnqualRefExpr . flip RefExpr LocationUnknown . Reference . return . fromUStr . toUStr
+
+instance HasNullValue QualRefExpr where
+  nullValue = UnqualRefExpr nullValue
+  testNull (UnqualRefExpr a) = testNull a
 
 instance HasLocation RefExpr where
   getLocation (RefExpr _ loc)     = loc
@@ -1264,6 +1301,12 @@ instance HasLocation ObjListExpr where
   getLocation (ObjListExpr _ loc)     = loc
   setLocation (ObjListExpr a _  ) loc = ObjListExpr (fmap delLocation a) loc
   delLocation (ObjListExpr a _  )     = ObjListExpr (fmap delLocation a) LocationUnknown
+instance Monoid ObjListExpr where
+  mempty = ObjListExpr [] LocationUnknown
+  mappend (ObjListExpr a locA) (ObjListExpr b locB) = ObjListExpr (a++b) (locA<>locB)
+instance HasNullValue ObjListExpr where
+  nullValue = mempty
+  testNull (ObjListExpr a _) = null a
 
 data UpdateOp
   = UCONST | UADD | USUB | UMULT | UDIV | UMOD | UPOW | UORB | UANDB | UXORB | USHL | USHR | UARROW
@@ -1380,6 +1423,11 @@ data TyChkExpr a
     -- we have verified that the item will always return a succesfull type-check.
   deriving (Eq, Ord, Typeable, Show)
 
+instance HasNullValue a => HasNullValue (TyChkExpr a) where
+  nullValue = NotTypeChecked nullValue
+  testNull (NotTypeChecked a) = testNull a
+  testNull _ = False
+
 instance Functor TyChkExpr where
   fmap f (NotTypeChecked   a  ) = NotTypeChecked (f a)
   fmap f (TypeChecked  a b c  ) = TypeChecked  (f a) b c
@@ -1407,6 +1455,9 @@ instance HasLocation LValueExpr where
   getLocation (LValueExpr o)     = getLocation o
   setLocation (LValueExpr o) loc = LValueExpr (setLocation o loc)
   delLocation (LValueExpr o)     = LValueExpr (delLocation o)
+instance HasNullValue LValueExpr where
+  nullValue = LValueExpr nullValue
+  testNull (LValueExpr a) = testNull a
 
 -- | 'ParamExpr' is a part of the Dao language semantics, and is also used in the the 'CallableCode'
 -- data type when evaluating parameters to be passed to the callable code function execution. The
@@ -1420,6 +1471,11 @@ instance HasLocation ParamExpr where
 data ParamListExpr = ParamListExpr (TyChkExpr [ParamExpr]) Location
   deriving (Eq, Ord, Typeable, Show)
 
+instance HasNullValue ParamListExpr where
+  nullValue = ParamListExpr (NotTypeChecked []) LocationUnknown
+  testNull (ParamListExpr (NotTypeChecked []) _) = True
+  testNull _ = False
+
 getTypeCheckList :: ParamListExpr -> [ParamExpr]
 getTypeCheckList (ParamListExpr tychk _) = tyChkItem tychk 
 
@@ -1429,6 +1485,10 @@ instance HasLocation ParamListExpr where
   delLocation (ParamListExpr a _  )     = ParamListExpr a LocationUnknown
 
 data RuleStrings = RuleStrings [UStr] Location deriving (Eq, Ord, Typeable, Show)
+
+instance HasNullValue RuleStrings where
+  nullValue = RuleStrings [] LocationUnknown
+  testNull (RuleStrings a _) = null a
 
 instance HasLocation RuleStrings where
   getLocation (RuleStrings _ o)     = o
@@ -1441,12 +1501,20 @@ instance HasLocation OptObjListExpr where
   setLocation (OptObjListExpr o) loc = OptObjListExpr (setLocation o loc)
   delLocation (OptObjListExpr o)     = OptObjListExpr (delLocation o    )
 
+instance HasNullValue OptObjListExpr where
+  nullValue = OptObjListExpr Nothing
+  testNull (OptObjListExpr Nothing) = True
+  testNull _ = False
+
 -- | Required parenthesese.
 data ParenExpr = ParenExpr ObjectExpr Location deriving (Eq, Ord, Typeable, Show)
 instance HasLocation ParenExpr where
   getLocation (ParenExpr _ loc)     = loc
   setLocation (ParenExpr o _  ) loc = ParenExpr o loc
   delLocation (ParenExpr o _  )     = ParenExpr (delLocation o) LocationUnknown
+instance HasNullValue ParenExpr where
+  nullValue = ParenExpr nullValue LocationUnknown
+  testNull (ParenExpr a _) = testNull a
 
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
@@ -1466,6 +1534,11 @@ data ObjectExpr
   | RuleExpr       RuleStrings                  CodeBlock    Location
   | MetaEvalExpr                                CodeBlock    Location
   deriving (Eq, Ord, Typeable, Show)
+
+instance HasNullValue ObjectExpr where
+  nullValue = VoidExpr
+  testNull VoidExpr = True
+  testNull _ = False
 
 instance HasLocation ObjectExpr where
   getLocation o = case o of
@@ -1544,6 +1617,20 @@ instance HasLocation WhileExpr where
   setLocation (WhileExpr a) loc = WhileExpr (setLocation a loc)
   delLocation (WhileExpr a)     = WhileExpr (delLocation a)
 
+instance HasNullValue IfExpr where
+  nullValue = IfExpr nullValue nullValue LocationUnknown
+  testNull (IfExpr a b _) = testNull a && testNull b
+instance HasNullValue ElseExpr where
+  nullValue = ElseExpr nullValue LocationUnknown
+  testNull (ElseExpr a _) = testNull a
+instance HasNullValue IfElseExpr where
+  nullValue = IfElseExpr nullValue [] Nothing LocationUnknown
+  testNull (IfElseExpr a [] Nothing _) = testNull a
+  testNull _ = False
+instance HasNullValue WhileExpr where
+  nullValue = WhileExpr nullValue
+  testNull (WhileExpr a) = testNull a
+
 --data ElseIfExpr
 --  = NullElseIfExpr
 --  | ElseExpr              CodeBlock            Location
@@ -1575,6 +1662,12 @@ data ScriptExpr
   | ReturnExpr   Bool       ObjectExpr                    Location
   | WithDoc      ParenExpr  CodeBlock                     Location
   deriving (Eq, Ord, Typeable, Show)
+
+instance HasNullValue ScriptExpr where
+  nullValue = EvalObject nullValue LocationUnknown
+  testNull (EvalObject a _) = testNull a
+  testNull _ = False
+
 instance HasLocation ScriptExpr where
   getLocation o = case o of
     EvalObject   _     o -> o

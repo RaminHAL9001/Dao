@@ -83,13 +83,13 @@ instance Show Location where
     Location a b c d -> show a ++ ':' : show b ++
       if a==c && b==d then "" else " to " ++ show c ++ ':' : show d
 instance Monoid Location where
-  mempty =
-    Location
-    { startingLine   = 0
-    , startingColumn = 0
-    , endingLine     = 0
-    , endingColumn   = 0
-    }
+  mempty = LocationUnknown
+--  Location
+--  { startingLine   = 0
+--  , startingColumn = 0
+--  , endingLine     = 0
+--  , endingColumn   = 0
+--  }
   mappend loc a = case loc of
     LocationUnknown -> a
     _ -> case a of
@@ -123,6 +123,11 @@ instance Ord Location where
   -- uncertain and is greater than everything except itself. Using this comparison function, you can
   -- sort lists of locations from least to greatest and hopefully get the most helpful, most
   -- specific location at the top of the list.
+
+instance HasNullValue Location where
+  nullValue = LocationUnknown
+  testNull LocationUnknown = True
+  testNull _ = False
 
 -- | Create a location where the starting and ending point is the same row and column.
 atPoint :: LineNum -> ColumnNum -> Location

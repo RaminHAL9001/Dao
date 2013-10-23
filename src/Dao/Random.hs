@@ -143,29 +143,16 @@ nextInt maxval = do
 randInt :: RandO Int
 randInt = state (\st -> let (i, gen) = next (stdGenState st) in (i, st{stdGenState=gen}))
 
--- | A depth-first recursion, create a random sub-item with a totally different set of values for
--- "nextInt" by using the pseudo-random generator to generate a new seed value. The psuedo-random
--- generator is not itself re-initialized, it simply produces one random number to update the seed.
-subRandOWith :: RandO a -> RandO a
-subRandOWith fn = randInt >>= \i -> withState (\st -> st{integerState = fromIntegral i}) fn
-
--- | Shorthand for @'subRandOWith' 'randO'@.
-subRandO :: HasRandGen a => RandO a
-subRandO = subRandOWith randO
-
--- | Like 'subRandOWith', except heeds the maximum depth limit and if the limit has been exceeded,
--- returns a the default object provided.
-limSubRandOWith :: a -> RandO a -> RandO a
-limSubRandOWith defaultVal fn = do
+-- | Mark a recursion point. The recusion depth limit set when evaluating a 'randO' computation will
+-- not be exceeded. When the number of 'recurse' functions called without returning has reached this
+-- limit and this function is evaluated again, the given 'RandO' generator will not be evaluated,
+-- the default value will be returned.
+recurse :: a -> RandO a -> RandO a
+recurse defaultVal fn = do
   st <- get
   if subDepth st > subDepthLim st
     then return defaultVal
     else withState (\st -> st{subDepth = subDepth st + 1}) fn
-
--- | Like 'subRandO', except heeds the maximum depth limit and if the limit has been exceeded,
--- returns a the default object provided.
-limSubRandO :: HasRandGen a => a -> RandO a
-limSubRandO defaultVal = limSubRandOWith defaultVal subRandO
 
 -- | The number of unique values a 'Prelude.Int' can be, which is @('Prelude.maxBound'+1)*2@.
 intBase :: Integer
@@ -200,8 +187,8 @@ randEnum lo hi = fmap toEnum (nextInt (abs (fromEnum lo - fromEnum hi)))
 
 ----------------------------------------------------------------------------------------------------
 
-randOFromList :: forall a . [RandO a] -> RandO a
-randOFromList items = join (fmap (arr!) (nextInt len)) where
+randChoice :: forall a . [RandO a] -> RandO a
+randChoice items = join (fmap (arr!) (nextInt len)) where
   len = length items
   arr :: Array Int (RandO a)
   arr = listArray (0, len) items
@@ -210,7 +197,7 @@ randUStr :: Int -> UStr
 randUStr = ustr . B.unpack . getRandomWord
 
 randListOf :: Int -> Int -> RandO a -> RandO [a]
-randListOf minlen maxlen rando = limSubRandOWith [] $ do
+randListOf minlen maxlen rando = recurse [] $ do
   -- half of all lists will be null, unless the 'minlen' parameter is greater than 0
   minlen <- return (min minlen maxlen)
   maxlen <- return (max minlen maxlen)
@@ -222,7 +209,7 @@ randListOf minlen maxlen rando = limSubRandOWith [] $ do
       replicateM (minlen+ln) rando
 
 randList :: HasRandGen a => Int -> Int -> RandO [a]
-randList lo hi = randListOf lo hi subRandO
+randList lo hi = randListOf lo hi randO
 
 randRational :: Int -> RandO Rational
 randRational i0 = do

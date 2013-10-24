@@ -195,33 +195,52 @@ uStrBinaryPrefix = 0x01
 nameBinaryPrefix :: Word8
 nameBinaryPrefix = 0x02
 
--- | UStr's are stored using a Variable-Length Integer (VLI) prefix to indicate the length of the
--- string. The bits of a variable-length integer will have a format like so:
--- @     bit column number: 7 6543210@
--- @                        ---------@
--- @1st highest order byte: 1 XXXXXXX@
--- @2nd highest order byte: 1 XXXXXXX@
--- @3rd highest order byte: 1 XXXXXXX@
--- @...@
--- @lowest order byte     : 0 XXXXXXX@
+-- | A Variable-Length Integer (VLI) encoder. The bits of a variable-length integer will have a
+-- format like so:
+-- >      bit column number: 7 6543210
+-- >                         ---------
+-- > 1st highest order byte: 1 XXXXXXX
+-- > 2nd highest order byte: 1 XXXXXXX
+-- > 3rd highest order byte: 1 XXXXXXX
+-- > ...
+-- > lowest order byte     : 0 XXXXXXX
 -- If the highest-order bit is a one, it indicates there are more bytes to follow. If the highest
--- order bit is 0, then there are no more bytes. There will be a maximum of 9 bytes. The 7
--- lower-order bits will be concatenated in big-endian order to form the length value for the
--- string. By this method, most all strings will have a length prefix of only one or two bytes.
+-- order bit is 0, then there are no more bytes. The 7 lower-order bits will be concatenated in
+-- /big-endian order/ to form the length value for the string. By this method, most all strings
+-- will have a length prefix of only one or two bytes.
 bitsToVLInt :: (Integral a, Bits a) => a -> [Word8]
-bitsToVLInt w = reverse (zeroLowest (loop w)) where
-  zeroLowest (w:wx) = w .&. 0x7F : wx
-  loop w = fromIntegral ((w .&. 0x7F) .|. 0x80) : case shiftR w 7 of
-    w | w==0 -> []
-    w        -> loop w
+bitsToVLInt = reverse . (\ (a:ax) -> (a .&. 0x7F) : ax) .
+  fix (\loop w -> let v = 0x80 .|. fromIntegral (w .&. 0x7F)
+                  in  case shiftR w 7 of{ 0 -> [v]; w -> v : loop w; })
 
 -- | Inverse operation of 'bitsToVLI'
 vlIntToBits :: (Integral a, Bits a) => [Word8] -> (a, [Word8])
-vlIntToBits wx = loop 0 wx where
-  fn a w = shiftL a 7 .|. fromIntegral (w .&. 0x7F) 
+vlIntToBits = loop 0 where
+  fn   a w  = shiftL a 7 .|. fromIntegral (w .&. 0x7F) 
   loop a wx = case wx of
     []   -> (a, [])
     w:wx -> if w .&. 0x80 == 0 then (fn a w, wx) else loop (fn a w) wx
+
+-- | Since a negative number expressed in a 'Prelude.Integer' type translates to an infinite
+-- sequence of 0xFF bytes when converting it to a VLI, it needs to be encoded specially with a
+-- negation bit in the very first position.
+integerToVLInt :: Integer -> [Word8]
+integerToVLInt w = reverse $ (\ (b:bx) -> (if w<0 then b .|. 0x40 else b):bx) $ loop (abs w) where
+  loop w = fromInteger (w .&. 0x3F) :
+    fix (\loop w -> case w of
+            0 -> []
+            w -> (0x80 .|. fromInteger (w .&. 0x7F)) : loop (shiftR w 7)
+        ) (shiftR w 6)
+
+vlIntToInteger :: [Word8] -> (Integer, [Word8])
+vlIntToInteger = loop 0 where
+  fn s m a w  = shiftL a s .|. fromIntegral (w .&. m)
+  loop a wx = case wx of
+    []   -> (a, [])
+    w:wx ->
+      if w .&. 0x80 == 0
+        then ((if w .&. 0x40 == 0 then id else negate) $ fn 6 0x3F a w, wx)
+        else loop (fn 7 0x7F a w) wx
 
 -- | When reading from a binary file, gather the bits of a Variable-Length Integer.
 gatherVLInt :: B.Get [Word8]
@@ -232,7 +251,13 @@ getFromVLInt :: (Integral a, Bits a) => B.Get a
 getFromVLInt = fmap (fst . vlIntToBits) gatherVLInt
 
 putVLInt :: (Integral a, Bits a) => a -> B.Put
-putVLInt = mapM_ B.put . bitsToVLInt
+putVLInt = mapM_ B.putWord8 . bitsToVLInt
+
+getVLInteger :: B.Get Integer
+getVLInteger = fmap (fst . vlIntToInteger) gatherVLInt
+
+putVLInteger :: Integer -> B.Put
+putVLInteger = mapM_ B.putWord8 . integerToVLInt
 
 -- | Return the length of the 'UStr'.
 ulength :: UStr -> Int

@@ -21,6 +21,7 @@
 
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
+-- {-# LANGUAGE RankNTypes #-}
 
 module Dao.Object.Binary where
 
@@ -29,7 +30,7 @@ import           Dao.Object
 import qualified Dao.Tree as T
 import           Dao.Glob
 import qualified Dao.EnumSet as Es
-import           Dao.Binary as D
+import qualified Dao.Binary  as D
 
 import           Control.Monad
 import           Control.Applicative
@@ -42,24 +43,24 @@ import           Data.Word
 import           Data.Bits
 import           Data.Char
 import           Data.Complex
-import qualified Data.ByteString.Lazy   as B
-import qualified Data.Set               as S
 import qualified Data.Map               as M
-import qualified Data.IntMap            as I
-import qualified Data.IntSet            as IS
 import           Data.Digest.SHA1       as SHA1
 import           Data.Array.IArray
 import           Data.Time hiding (parseTime)
 
-import           Data.Binary     as B
-import           Data.Binary.Get as B
-import           Data.Binary.Put as B
+import qualified Data.ByteString.Lazy   as B
+import qualified Data.Binary            as B
+import qualified Data.Binary.Get        as B
+import qualified Data.Binary.Put        as B
 
 import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
-instance D.Binary CoreType where
+instance D.Binary UStr ExecUnit where { serializer = D.fromDataBinary }
+instance D.Binary Name ExecUnit where { serializer = D.fromDataBinary }
+
+instance D.Binary CoreType ExecUnit where
   put t = D.putWord8 $ case t of
     NullType     -> 0x05
     TrueType     -> 0x06
@@ -79,9 +80,9 @@ instance D.Binary CoreType where
     TreeType     -> 0x14
     BytesType    -> 0x15
     HaskellType  -> 0x16
-  get = D.runPrefixTable (D.prefixTable :: D.PrefixTable D.Byte CoreType)
+  get = D.word8PrefixTable
 
-instance D.HasPrefixTable D.Byte CoreType where
+instance D.HasPrefixTable CoreType D.Byte ExecUnit where
   prefixTable = D.mkPrefixTableWord8 "Dao.Object.CoreType" 0x05 0x16 $ map return $
     [ NullType
     , TrueType
@@ -103,6 +104,92 @@ instance D.HasPrefixTable D.Byte CoreType where
     , HaskellType
     ]
 
+instance D.Binary Object ExecUnit where
+  put o = do
+    let t   = D.put (objType o)
+        p o = t >> D.put o
+    case o of
+      ONull      -> t
+      OTrue      -> t
+      OType    o -> p o
+      OInt     o -> p o
+      OWord    o -> p o
+      OLong    o -> p o
+      OFloat   o -> p o
+      ORatio   o -> p o
+      OComplex o -> p o
+      OAbsTime o -> p o
+      ORelTime o -> p o
+      OChar    o -> p o
+      OString  o -> p o
+      ORef     o -> p o
+      OList    o -> p o
+      OTree    o -> p o
+      OBytes   o -> p o
+      OHaskell _ ifc -> error $ unwords $
+        ["no binary format method defied for Haskell type", show (objHaskellType ifc)]
+  get = D.word8PrefixTable
+
+instance D.HasPrefixTable Object D.Byte ExecUnit where
+  prefixTable =
+    let g f = fmap f D.get
+    in  D.mkPrefixTableWord8 "Dao.Object.Object" 0x05 0x15 $
+          [ return ONull
+          , return OTrue
+          , g OType
+          , g OInt
+          , g OWord
+          , g OLong
+          , g OFloat
+          , g ORatio
+          , g OComplex
+          , g OAbsTime
+          , g ORelTime
+          , g OChar
+          , g OString
+          , g ORef
+          , g OList
+          , g OTree
+          , g OBytes
+          , error "internal: cannot retrieve Haskell types from a binary stream"
+          ]
+
+instance D.Binary ObjType    ExecUnit where { put (ObjType    o) = D.put o; get = ObjType    <$> D.get; }
+instance D.Binary TypeStruct ExecUnit where { put (TypeStruct o) = D.put o; get = TypeStruct <$> D.get; }
+instance D.Binary TypeSym    ExecUnit where
+  put o = case o of
+    CoreType o       -> D.put o
+    TypeVar  ref ctx -> D.prefixByte 0x1A $ D.put ref >> D.put ctx
+  get = D.word8PrefixTable
+instance D.HasPrefixTable TypeSym D.Byte ExecUnit where
+  prefixTable = fmap CoreType D.prefixTable <>
+    D.mkPrefixTableWord8 "Dao.Object.TypeSym" 0x1A 0x1A [pure TypeVar <*> D.get <*> D.get]
+
+instance D.Binary Reference ExecUnit where { put (Reference o) = D.put o; get = Reference <$> D.get; }
+
+instance D.Binary QualRef ExecUnit where
+  put o = case o of
+    Unqualified ref -> D.prefixByte 0x21 $ D.put ref
+    ObjRef    o     -> D.prefixByte 0x22 $ D.put o
+    Qualified q ref -> D.prefixByte pfx  $ D.put ref where
+      pfx = case q of
+        LOCAL  -> 0x23
+        QTIME  -> 0x24
+        GLODOT -> 0x25
+        STATIC -> 0x26
+        GLOBAL -> 0x27
+  get = D.word8PrefixTable
+instance D.HasPrefixTable QualRef D.Byte ExecUnit where
+  prefixTable = D.mkPrefixTableWord8 "Dao.Object.QualRef" 0x1C 0x1E $
+    [ Unqualified      <$> D.get
+    , ObjRef           <$> D.get
+    , Qualified LOCAL  <$> D.get
+    , Qualified QTIME  <$> D.get
+    , Qualified GLODOT <$> D.get
+    , Qualified STATIC <$> D.get
+    , Qualified GLOBAL <$> D.get
+    ]
+
 ----------------------------------------------------------------------------------------------------
 
 -- | The magic number is the first 8 bytes to every bytecode compiled object program. It is the
@@ -113,7 +200,7 @@ program_magic_number = 0x44616f44617461A
 -- | This is the version number of the line protocol for transmitting bytecode compiled program
 -- objects.
 program_data_version :: Word64
-program_data_version = 0
+program_data_version = 1
 
 -- | Take a the last four 'Data.Char.Char's in a string and convert them to a 4-byte
 -- 'Data.Word.Word', the earliest 'Data.Char.Char' being in the highest byte, the last character
@@ -126,16 +213,6 @@ byteStringSHA1Sum bytes =
   let (SHA1.Word160 a b c d e) = SHA1.hash (B.unpack bytes)
       tobytes = reverse . map fromIntegral . take 4 . fix (\f w -> (w.&.0xFF) : f (shift w (0-8)))
   in  B.pack $ concatMap tobytes [a,b,c,d,e]
-
--- | Returns the string of bytes created by 'Data.B.Binary.B.Put.B.Put' and the checksum of those bytes.
-putWithChecksum :: (B.ByteString -> s) -> B.Put -> B.PutM (B.ByteString, s)
-putWithChecksum checkSum puta = let bx = runPut puta in return (bx, checkSum bx)
-
-getWithChecksum :: B.Binary a => (B.ByteString -> s) -> B.Get a -> B.Get (a, s)
-getWithChecksum checkSum geta = do
-  (a, count) <- B.lookAhead (geta >>= \a -> bytesRead >>= \count -> return (a, count))
-  bx <- getLazyByteString count
-  return (a, checkSum bx)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -160,18 +237,18 @@ getListWith getx = loop [] where
       _    -> getx >>= \a -> loop (ax++[a])
 
 putList :: B.Binary a => [a] -> B.Put
-putList = putListWith B.put
+putList = Dao.Object.Binary.putListWith B.put
 
 getList :: B.Binary a => B.Get [a]
-getList = getListWith B.get
+getList = Dao.Object.Binary.getListWith B.get
 
 ----------------------------------------------------------------------------------------------------
 
 putMapWith :: (Eq k, Ord k) => (k -> B.Put) -> (v -> B.Put) -> M.Map k v -> B.Put
-putMapWith putk putv m = putListWith (\ (a, b) -> putk a >> putv b) (M.assocs m)
+putMapWith putk putv m = Dao.Object.Binary.putListWith (\ (a, b) -> putk a >> putv b) (M.assocs m)
 
 getMapWith :: (Eq k, Ord k) => B.Get k -> B.Get v -> B.Get (M.Map k v)
-getMapWith getk getv = fmap M.fromList (getListWith (liftM2 (,) getk getv))
+getMapWith getk getv = fmap M.fromList (Dao.Object.Binary.getListWith (liftM2 (,) getk getv))
 
 putMap :: (Eq k, Ord k, B.Binary k, B.Binary v) => M.Map k v -> B.Put
 putMap m = putMapWith B.put B.put m
@@ -180,31 +257,31 @@ getMap :: (Eq k, Ord k, B.Binary k, B.Binary v) => B.Get (M.Map k v)
 getMap = getMapWith B.get B.get
 
 putObjMap :: B.Binary a => (m -> [(a, Object)]) -> (a -> B.Put) -> m -> B.Put
-putObjMap asocs putIndex o = putListWith (\ (i, o) -> putIndex i >> B.put o) (asocs o)
+putObjMap asocs putIndex o = Dao.Object.Binary.putListWith (\ (i, o) -> putIndex i >> B.put o) (asocs o)
 
 getObjMap :: B.Binary a => ([(a, Object)] -> m) -> B.Get a -> B.Get m
-getObjMap fromList getIndex = fmap fromList (getListWith (getIndex >>= \i -> B.get >>= \o -> return (i, o)))
+getObjMap fromList getIndex = fmap fromList (Dao.Object.Binary.getListWith (getIndex >>= \i -> B.get >>= \o -> return (i, o)))
 
 putTreeWith :: (Eq p, Ord p) => (p -> B.Put) -> (a -> B.Put) -> T.Tree p a -> B.Put
 putTreeWith putp puta t =
   case t of
-    T.Void           -> B.putWord8 0x21
-    T.Leaf       a   -> B.putWord8 0x22 >> puta a
-    T.Branch       t -> B.putWord8 0x23 >> putMapWith putp (putTreeWith putp puta) t
-    T.LeafBranch a t -> B.putWord8 0x24 >> puta a >> putMapWith putp (putTreeWith putp puta) t
+    T.Void           -> B.putWord8 0x03
+    T.Leaf       a   -> B.putWord8 0x04 >> puta a
+    T.Branch       t -> B.putWord8 0x05 >> putMapWith putp (putTreeWith putp puta) t
+    T.LeafBranch a t -> B.putWord8 0x06 >> puta a >> putMapWith putp (putTreeWith putp puta) t
 
 getTreeWith :: (Eq p, Ord p) => B.Get p -> B.Get a -> B.Get (T.Tree p a)
 getTreeWith getp geta = do
   t <- B.getWord8
   case t of
-    0x21 -> return T.Void
-    0x22 -> geta >>= \a -> return (T.Leaf{T.branchData=a})
-    0x23 -> getMapWith getp (getTreeWith getp geta) >>= \t -> return (T.Branch{T.branchMap=t})
-    0x24 -> do
+    0x03 -> return T.Void
+    0x04 -> geta >>= \a -> return (T.Leaf{T.branchData=a})
+    0x05 -> getMapWith getp (getTreeWith getp geta) >>= \t -> return (T.Branch{T.branchMap=t})
+    0x06 -> do
       a <- geta
       t <- getMapWith getp (getTreeWith getp geta)
       return (T.LeafBranch{T.branchData=a, T.branchMap=t})
-    _    -> fail "corrupted T.Tree data"
+    _    -> fail "Dao.Tree.Tree"
 
 instance (Eq p, Ord p, B.Binary p, B.Binary a) => B.Binary (T.Tree p a) where
   put t = putTreeWith B.put B.put t
@@ -216,7 +293,7 @@ typeIDBytePrefix :: CoreType -> Word8
 typeIDBytePrefix t = case t of
   NullType     -> 0x05
   TrueType     -> 0x06
---TypeType     -> 0x07
+  TypeType     -> 0x07
   IntType      -> 0x08
   WordType     -> 0x09
   LongType     -> 0x0A
@@ -228,24 +305,16 @@ typeIDBytePrefix t = case t of
   CharType     -> 0x10
   StringType   -> 0x11
   RefType      -> 0x12
---PairType     -> 0x13
-  ListType     -> 0x14
---SetType      -> 0x15
---ArrayType    -> 0x16
---IntMapType   -> 0x17
---DictType     -> 0x18
-  TreeType     -> 0x19
---GlobType     -> 0x1A
---ScriptType   -> 0x1B
---RuleType     -> 0x1C
-  BytesType    -> 0x1D
-  HaskellType  -> 0x1E
+  ListType     -> 0x13
+  TreeType     -> 0x14
+  BytesType    -> 0x15
+  HaskellType  -> 0x16
 
 bytePrefixToTypeID :: Word8 -> Maybe CoreType
 bytePrefixToTypeID t = case t of
   0x05 -> Just NullType
   0x06 -> Just TrueType
---0x07 -> Just TypeType
+  0x07 -> Just TypeType
   0x08 -> Just IntType
   0x09 -> Just WordType
   0x0A -> Just LongType
@@ -257,18 +326,10 @@ bytePrefixToTypeID t = case t of
   0x10 -> Just CharType
   0x11 -> Just StringType
   0x12 -> Just RefType
---0x13 -> Just PairType
-  0x14 -> Just ListType
---0x15 -> Just SetType
---0x16 -> Just ArrayType
---0x17 -> Just IntMapType
---0x18 -> Just DictType
-  0x19 -> Just TreeType
---0x1A -> Just GlobType
---0x1B -> Just ScriptType
---0x1C -> Just RuleType
-  0x1D -> Just BytesType
-  0x1E -> Just HaskellType
+  0x13 -> Just ListType
+  0x14 -> Just TreeType
+  0x15 -> Just BytesType
+  0x16 -> Just HaskellType
   _    -> Nothing
 
 --instance B.Binary CoreType where
@@ -340,10 +401,8 @@ instance B.Binary Object where
 --    OGlob         a -> x o a
 --    OScript       a -> x o a
       OBytes        a -> x o a
-      OHaskell  a ifc -> case objBinaryFormat ifc of
-        Just (put, _) -> putLazyByteString (put a)
-        Nothing       -> error $ unwords $
-          ["no binary format method defied for Haskell type", show (objHaskellType ifc)]
+      OHaskell  _ ifc -> error $ unwords $
+        ["no binary format method defied for Haskell type", show (objHaskellType ifc)]
   get = do
     ty <- B.getWord8
     let x fn = fmap fn B.get
@@ -405,19 +464,6 @@ instance B.Binary QualRefExpr where
       0x8E -> f STATIC
       0x8F -> f GLOBAL
       _    -> liftM UnqualRefExpr B.get
-
-instance B.Binary UTCTime where
-  put t = do
-    B.put (toModifiedJulianDay (utctDay t))
-    B.put (toRational (utctDayTime t))
-  get = do
-    d <- fmap ModifiedJulianDay B.get
-    t <- fmap fromRational B.get
-    return (UTCTime{ utctDay = d, utctDayTime = t })
-
-instance B.Binary NominalDiffTime where
-  put t = B.put (toRational t)
-  get = fmap fromRational B.get
 
 instance (B.Binary a, RealFloat a) => B.Binary (Complex a) where
   put o = B.put (realPart o) >> B.put (imagPart o)
@@ -638,7 +684,7 @@ instance B.Binary Location where
       fn startingLine >> fn startingColumn
       fn endingLine   >> fn endingColumn
   get = do
-    is_empty <- isEmpty
+    is_empty <- B.isEmpty
     if is_empty
       then return LocationUnknown
       else do
@@ -737,10 +783,10 @@ instance (Enum a, Ord a, Es.InfBound a, Integral a, Bits a) => B.Binary (Es.Segm
   get = getSegmentWith getFromVLInt
 
 putEnumSetWith :: (Ord a, Enum a, Es.InfBound a) => (a -> B.Put) -> Es.Set a -> B.Put
-putEnumSetWith putA s = putListWith (putSegmentWith putA) (Es.toList s)
+putEnumSetWith putA s = Dao.Object.Binary.putListWith (putSegmentWith putA) (Es.toList s)
 
 getEnumSetWith :: (Enum a, Ord a, Es.InfBound a) => B.Get a -> B.Get (Es.Set a)
-getEnumSetWith getA = fmap Es.fromList (getListWith (getSegmentWith getA))
+getEnumSetWith getA = fmap Es.fromList (Dao.Object.Binary.getListWith (getSegmentWith getA))
 
 get_binary_enumset_error = error "invalid object set from binary stream (overlapping items)"
 
@@ -860,10 +906,6 @@ instance B.Binary InfixOp where
     _ -> fail "expecting infix operator"
 
 ----------------------------------------------------------------------------------------------------
-
-instance B.Binary TypeCtx where
-  put (TypeCtx a) = B.put a
-  get = fmap TypeCtx B.get
 
 instance B.Binary TypeSym where
   put t = case t of

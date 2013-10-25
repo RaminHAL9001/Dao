@@ -443,7 +443,6 @@ instance PPrintable Subroutine where { pPrint = mapM_ pPrint . codeBlock . origS
 pPrintType :: ObjType -> PPrint
 pPrintType t = error "pPrintType, used to instantiate 'Dao.Object.Type' into 'PPrintable', has not been defined yet."
 
-instance PPrintable TypeCtx where { pPrint (TypeCtx tx) = pPrint tx }
 instance PPrintable TypeSym where
   pPrint t = case t of
     CoreType t     -> pPrint t

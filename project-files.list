@@ -30,6 +30,8 @@ Dao/Evaluator.hs
 Dao.hs
 dao-main.hs
 Dao/Object.hs
+Dao/Runtime.hs
+Dao/Stack.hs
 Dao/Object/AST.hs
 Dao/Object/Binary.hs
 Dao/Object/DeepSeq.hs

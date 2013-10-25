@@ -26,7 +26,7 @@ import           Dao.String
 import           Dao.Token
 import           Dao.PPrintM
 import           Dao.Object.PPrintM
-import           Dao.Object hiding (Tokenizer)
+import           Dao.Object hiding (Tokenizer, get, put)
 import           Dao.Object.AST
 import           Dao.Predicate
 import           Dao.Parser
@@ -214,7 +214,7 @@ spaceComPTab = table $
 -- there are no comments.
 space :: DaoParser [Comment]
 space = do
-  st <- get
+  st <- Control.Monad.State.get
   case bufferedComments st of
     Just coms -> put (st{bufferedComments=mempty}) >> return coms
     Nothing   -> fmap concat $ many (joinEvalPTable spaceComPTab)

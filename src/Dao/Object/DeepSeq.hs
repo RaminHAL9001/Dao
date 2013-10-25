@@ -183,7 +183,6 @@ instance (NFData a, NFData b) => NFData (T.Tree a b) where
   rnf (T.Branch       b) = deepseq b ()
   rnf (T.LeafBranch a b) = deepseq a $! deepseq b ()
 
-instance NFData TypeCtx where { rnf (TypeCtx a) = deepseq a () }
 instance NFData TypeSym where
   rnf (CoreType a  ) = deepseq a ()
   rnf (TypeVar  a b) = deepseq a $! deepseq b ()

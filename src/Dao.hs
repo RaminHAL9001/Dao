@@ -38,8 +38,7 @@ module Dao
   , module Dao
   ) where
 
-import           Dao.Debug.OFF
-
+import           Dao.Runtime
 import           Dao.String
 import           Dao.Glob
 import           Dao.Object
@@ -49,6 +48,7 @@ import           Dao.Evaluator
 import           Dao.PPrintM
 import           Dao.Object.PPrintM
 
+import           Control.Concurrent
 import           Control.Exception
 import           Control.Monad.Reader
 
@@ -78,36 +78,17 @@ daoRuntime debugRef daoMain = do
         Runtime
         { pathIndex            = error "Dao:daoRuntime: forgot to set \"pathIndex\""
         , defaultTimeout       = Just 8000000
-        , provides             = mempty
-        , functionSets         = mempty
-        , objectInterfaces     = mempty -- TODO: place the object interfaces for all of the important built-in types here.
-        , taskForExecUnits     = error "Dao:daoRuntime: forgot to set \"taskForExecUnits\""
-        , availableTokenizers  = mempty
-        , availableComparators = M.fromList $
-            [ (ustr "exact"      , exact)
-            , (ustr "approximate", approx)
-            ]
-        , runtimeDebugger      = Nothing
-        , builtinFuncs         = mempty
         , importGraph          = error "Dao:daoRuntime: forgot to set \"importGraph\""
+        , globalMethodTable    = error "Dao:daoRuntime: forgot to set \"globalMethodTable\""
         }
-  paths    <- runReaderT (dNewMVar xloc "Runtime.pathIndex" (M.empty)) runtime
-  task     <- runReaderT initTask runtime
-  runtime  <- return $ runtime{taskForExecUnits=task, pathIndex=paths}
+  paths    <- newMVar (M.empty)
+  runtime  <- return $ runtime{pathIndex=paths}
   xunit    <- initExecUnit Nothing runtime
   result   <- ioExec daoMain xunit
   case result of
     FlowOK     ()  -> return ()
     FlowReturn obj -> maybe (return ()) (putStrLn . prettyShow) obj
     FlowErr    err -> hPutStrLn stderr (prettyShow err)
-
--- | Provide a labeled set of built-in functions for this runtime. Each label indicates a set of
--- functionality which is checked by the "required" directive of any Dao program that is loaded into
--- this runtime. If all "required" function sets are not available, loading of that Dao program
--- fails.
-initRuntimeFunctions :: [(Name, M.Map Name DaoFunc)] -> Runtime -> Runtime
-initRuntimeFunctions funcs runtime =
-  runtime{ functionSets = M.union (M.fromList funcs) (functionSets runtime) }
 
 ----------------------------------------------------------------------------------------------------
 

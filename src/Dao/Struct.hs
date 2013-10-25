@@ -21,21 +21,20 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
--- | A module with utility functions to help define instanes to the 'Dao.Object.Structured' class.
+-- | A module with utility functions to help define instanes to the 'Dao.Object.GenStructured' class.
 -- A stateful monadic interface built on zippers is provided to allow leaves and branches in
 -- 'Dao.Tree.Tree's to be read and written using a syntax similar to that of a procedural
 -- programming language, which is more intuitive for the Dao programming language which is
--- procedural. Please also see the 'Dao.Object.Structured' class and the 'Dao.Object.UpdateErr' data
+-- procedural. Please also see the 'Dao.Object.GenStructured' class and the 'Dao.Object.GenUpdateErr' data
 -- type.
 module Dao.Struct where
 
 import           Prelude hiding (lookup)
 
+import           Dao.Runtime
 import           Dao.String
-import           Dao.Object
 import           Dao.Tree
 import           Dao.Predicate
-import           Dao.Object.Math
 
 import           Data.Monoid
 import           Data.List (intercalate)
@@ -54,33 +53,58 @@ import           Control.Monad.Error
 
 import Debug.Trace
 
+----------------------------------------------------------------------------------------------------
+
+-- | This class is used to define methods of converting arbitrary types to 'Dao.Tree.Tree's, where
+-- the leaves in the 'Dao.Tree.Tree' are Dao 'Object's. The branches of the 'Dao.Tree.Tree's are all
+-- labeled with 'Dao.String.Name's. It is an important interface for being able to maniuplate
+-- objects within a script written in the Dao language. 
+class GenStructured typ obj where
+  dataToStruct :: typ -> Tree Name obj
+  structToData :: Tree Name obj -> PValue (GenUpdateErr obj) typ
+
+-- | This is the error type used to report errors that might occur while updating a 'Dao.Tree.Tree'
+-- with the 'structToData' function. If an error occurs while stepping through the branches of a
+-- tree, you can throw an error with this information using 'Control.Monad.Error.throwError'.
+data GenUpdateErr obj
+  = UpdateErr
+    { updateErrMsg  :: Maybe UStr -- ^ the message explaining why the error ocurred.
+    , updateErrAddr :: [Name]     -- ^ the address at which the error was thrown.
+    , updateErrTree :: Tree Name obj     -- ^ the sub-tree at the address at which the error was thrown.
+    }
+instance Show obj => Show (GenUpdateErr obj) where
+  show err = concat $
+    [ "constructor failed" ++ maybe " " ((++"\n") . (": "++) . uchars) (updateErrMsg err)
+    , "at index: ", intercalate "." (fmap uchars (updateErrAddr err))
+    ]
+
 -- | This is the fundamental data type for Dao's foreign interface. This monad is used to convert
 -- data types in your Haskell program into a form that can be manipulated by Dao scripts.
 --
 -- Essentially, this is a simple zipper monad for traversing 'Dao.Object.T_tree' objects, which are 'Dao.Tree.Tree's with
 -- 'Dao.String.Name's on the branches and 'Dao.Object.Object's on the leaves (nodes).
-newtype Update a = Update { updateToPTrans :: PTrans UpdateErr (UpdateTreeT Name Object Identity) a }
-instance Monad Update where
+newtype GenUpdate obj a = Update { updateToPTrans :: PTrans (GenUpdateErr obj) (UpdateTreeT Name obj Identity) a }
+instance Monad (GenUpdate obj) where
   (Update fn) >>= mfn = Update (fn >>= updateToPTrans . mfn)
   return a = Update (return a)
   fail msg = newUpdateErr (Just msg) >>= throwError
-instance Functor Update where
+instance Functor (GenUpdate obj) where
   fmap fn (Update a) = Update (fmap fn a)
-instance MonadPlus Update where
+instance MonadPlus (GenUpdate obj) where
   mzero = Update mzero
   mplus (Update a) (Update b) = Update (mplus a b)
-instance MonadState (Tree Name Object) Update where
+instance MonadState (Tree Name obj) (GenUpdate obj) where
   get = Update $ PTrans $ gets focus >>= return . OK
   put tree = Update $ PTrans $ modify (\st -> st{focus=tree}) >> return (OK ())
-instance MonadError UpdateErr Update where
+instance MonadError (GenUpdateErr obj) (GenUpdate obj) where
   throwError = Update . throwError
   catchError (Update func) catcher = Update (catchError func (updateToPTrans . catcher))
-instance MonadPlusError UpdateErr Update where
+instance MonadPlusError (GenUpdateErr obj) (GenUpdate obj) where
   catchPValue (Update func) = Update (catchPValue func)
   assumePValue = Update . assumePValue
-instance Applicative Update where { pure = return; (<*>) = ap; }
-instance Alternative Update where { empty = mzero; (<|>) = mplus; }
-instance Monoid a => Monoid (Update a) where
+instance Applicative (GenUpdate obj) where { pure = return; (<*>) = ap; }
+instance Alternative (GenUpdate obj) where { empty = mzero; (<|>) = mplus; }
+instance Monoid a => Monoid (GenUpdate obj a) where
   mempty      = return mempty
   mappend a b = liftM2 mappend a b
 
@@ -88,8 +112,8 @@ instance Monoid a => Monoid (Update a) where
 
 -- | If you would like to create a detailed error message, create an error using the current
 -- information, then throw it using 'Control.Monad.Error.throwError'.
-newUpdateErr :: Maybe String -> Update UpdateErr
-newUpdateErr msg = Update (lift get) >>= \st -> return (err st) where
+newUpdateErr :: Maybe String -> GenUpdate obj (GenUpdateErr obj)
+newUpdateErr msg = Update (lift Control.Monad.State.get) >>= \st -> return (err st) where
   err st =
     UpdateErr
     { updateErrMsg  = fmap ustr msg
@@ -97,142 +121,142 @@ newUpdateErr msg = Update (lift get) >>= \st -> return (err st) where
     , updateErrTree = focus st
     }
 
-updateError :: Update ig
+updateError :: GenUpdate obj ig
 updateError = newUpdateErr Nothing >>= throwError
 
--- | Goto an address. This 'Update' never fails, even if the address does not exist. Immediately
+-- | Goto an address. This 'GenUpdate' never fails, even if the address does not exist. Immediately
 -- returns the sub-tree to which we traversed.
-goto :: [Name] -> Update T_tree
+goto :: [Name] -> GenUpdate obj (Tree Name obj)
 goto path = Update (lift (Dao.Tree.goto path))
 
 -- | Go up one node level.
-back :: Update ()
+back :: GenUpdate obj ()
 back = Update (lift Dao.Tree.back)
 
 -- | Go to the root node.
-home :: Update ()
+home :: GenUpdate obj ()
 home = Update (lift Dao.Tree.home)
 
--- | Like 'Control.Monad.StateT.runStateT', evaluates the 'Update' monad as a pure function,
+-- | Like 'Control.Monad.StateT.runStateT', evaluates the 'GenUpdate' monad as a pure function,
 -- returning a pair containing first the 'Dao.Predicate.PValue' of that was returned and second the
 -- updated 'Dao.Tree.Tree'.
-runUpdate :: Update a -> Tree Name Object -> (PValue UpdateErr a, Tree Name Object)
+runUpdate :: GenUpdate obj a -> Tree Name obj -> (PValue (GenUpdateErr obj) a, Tree Name obj)
 runUpdate upd = runUpdateTree (runPTrans (updateToPTrans upd))
 
--- | Update a data type in the 'Structured' class using an 'Update' monadic function.
-onStruct :: Structured a => Update ig -> a -> PValue UpdateErr a
+-- | GenUpdate a data type in the 'GenStructured' class using an 'GenUpdate' monadic function.
+onStruct :: GenStructured a obj => GenUpdate obj ig -> a -> PValue (GenUpdateErr obj) a
 onStruct ufn a = (fst . runUpdate (ufn>>get)) (dataToStruct a) >>= structToData
 
--- | Useful for instantiating the 'dataToStruct' function of the 'Structured' class, this is
+-- | Useful for instantiating the 'dataToStruct' function of the 'GenStructured' class, this is
 -- essentially the same function as 'Control.Monad.State.execState'.
-deconstruct :: Update a -> Tree Name Object
+deconstruct :: GenUpdate obj a -> Tree Name obj
 deconstruct fn = snd (runUpdate fn Void)
 
 -- | Useful for instantiating 'structToData', for example:
 -- @'structToData' = 'reconstruct' $ do { ... }@
 -- Then write everything in the @do@ statement that reconstructs your Haskell data type from a Dao
 -- structure. This is essentially the same function as 'Control.Monad.State.evalState'.
-reconstruct :: Update a -> Tree Name Object -> PValue UpdateErr a
+reconstruct :: GenUpdate obj a -> Tree Name obj -> PValue (GenUpdateErr obj) a
 reconstruct fn tree = fst (runUpdate fn tree)
 
 ----------------------------------------------------------------------------------------------------
 -- $Fundamentals
--- These are the most important functions for building instances of 'Structured'.
+-- These are the most important functions for building instances of 'GenStructured'.
 
 -- | Return the value stored in the current node. Evaluates to 'Control.Monad.mzero' if the current
 -- node is empty, so it can be used to check if an item exists at the current node as well. This
 -- function is the counter operation of 'place'.
-this :: Update Object
+this :: GenUpdate obj obj
 this = get >>= maybe mzero return . getLeaf
 
 -- | This is a 'Control.Monad.guard'-like function. Because 'tryWith' actually steps onto the
 -- branch, and there maye be situations where you want to check if a branch exists without actually
 -- stepping on to that branch, use this function to check if a branch exists and backtrack (evaluate
 -- to 'Control.Monad.mzero') if it does not exist.
-guardBranch :: String -> Update ()
+guardBranch :: String -> GenUpdate obj ()
 guardBranch addr = tryWith addr (return ())
 
 -- | Same as 'atAddress' but but more convenient as it takes just one string and passes it to
 -- 'atAddress' as @['Dao.String.ustr' address]@. This function is the counter operation of itself.
 -- In other words, @'with' addr putFunc@ is the counter operation of @'with' addr getFunc@ where
 -- @getFunc@ and @putFunc@ are any function which are counter operations of each other.
-tryWith :: String -> Update a -> Update a
+tryWith :: String -> GenUpdate obj a -> GenUpdate obj a
 tryWith = atAddress . (:[]) . ustr
 
 -- | Like 'tryWith' but throws fails if nothing exists at the given address.
-with :: String -> Update a -> Update a
+with :: String -> GenUpdate obj a -> GenUpdate obj a
 with addr upd = mplus (tryWith addr upd) updateError
 
 -- | Use 'structToData' to construct data from the current node. This function is the counter
 -- operation of 'putData'. 'Dao.Predicate.Backtrack's if the current node is 'Dao.Tree.Void'.
-tryGetData :: Structured a => Update a
+tryGetData :: GenStructured a obj => GenUpdate obj a
 tryGetData = get >>= assumePValue . structToData
 
 -- | Use 'structToData' to construct data from the current node. This function is the counter
 -- operation of 'putData'. 'Dao.Predicate.Backtrack's if the current node is 'Dao.Tree.Void'.
-getData :: Structured a => Update a
+getData :: GenStructured a obj => GenUpdate obj a
 getData = mplus tryGetData updateError
 
 -- | Like 'getData' but takes a default value as a parameter, and if the current 'Dao.Tree.Tree'
 -- node returned by 'Control.Monad.State.get' is 'Dao.Tree.Void', the default parameter is returned.
-getOptional :: Structured a => a -> Update a
+getOptional :: GenStructured a obj => a -> GenUpdate obj a
 getOptional opt = mplus getData (return opt)
 
 -- | Shortcut for @'with' addr 'getData'@. This function is the counter operation of 'putDataAt'.
-getDataAt :: Structured a => String -> Update a
+getDataAt :: GenStructured a obj => String -> GenUpdate obj a
 getDataAt addr = with addr getData
 
-tryGetDataAt :: Structured a => String -> Update a
+tryGetDataAt :: GenStructured a obj => String -> GenUpdate obj a
 tryGetDataAt addr = tryWith addr tryGetData
 
-getMaybe :: Structured a => Update (Maybe a)
+getMaybe :: GenStructured a obj => GenUpdate obj (Maybe a)
 getMaybe = mplus (fmap Just getData) (return Nothing)
 
-getMaybeAt :: Structured a => String -> Update (Maybe a)
+getMaybeAt :: GenStructured a obj => String -> GenUpdate obj (Maybe a)
 getMaybeAt addr = with addr $ getMaybe
 
 -- | Place an object at in current node. This function is the counter opreation of 'this'.
-place :: Object -> Update ()
+place :: obj -> GenUpdate obj ()
 place obj = placeWith (const (Just obj))
 
--- | Use 'dataToStruct' to convert a data type to a 'Structured' 'Dao.Tree.Tree' node, then union
+-- | Use 'dataToStruct' to convert a data type to a 'GenStructured' 'Dao.Tree.Tree' node, then union
 -- it with the current node. If the current node is a 'Dao.Tree.Leaf', the leaf might be
 -- overwritten if you write a new 'Dao.Tree.Leaf'. This function is the couner operation of
 -- 'getData'.
-putData :: Structured a => a -> Update ()
+putData :: GenStructured a obj => a -> GenUpdate obj ()
 putData = putTree . dataToStruct
 
 -- | Shortcut for @'with' addr ('putData' a)@. This function is the counter opreation of
 -- 'getDataAt'.
-putDataAt :: Structured a => String -> a -> Update ()
+putDataAt :: GenStructured a obj => String -> a -> GenUpdate obj ()
 putDataAt addr obj = with addr (putData obj)
 
-putMaybe :: Structured a => Maybe a -> Update ()
+putMaybe :: GenStructured a obj => Maybe a -> GenUpdate obj ()
 putMaybe = maybe (return ()) putData
 
-putMaybeAt :: Structured a => String -> Maybe a -> Update ()
+putMaybeAt :: GenStructured a obj => String -> Maybe a -> GenUpdate obj ()
 putMaybeAt addr = with addr . putMaybe
 
--- | Update an object at the current node.
-placeWith :: ModLeaf Object -> Update ()
+-- | GenUpdate an object at the current node.
+placeWith :: ModLeaf obj -> GenUpdate obj ()
 placeWith fn = modify (alterLeaf fn)
 
 -- | Applies a function only if there is an item at the current node.
-mapThis :: (Object -> Object) -> Update ()
+mapThis :: (obj -> obj) -> GenUpdate obj ()
 mapThis fn = placeWith (\item -> fmap fn item)
 
 -- | Put an 'Dao.Object.Object' in the current ('this') location, overwriting what is already here.
-putObjAt :: Object -> Update ()
+putObjAt :: obj -> GenUpdate obj ()
 putObjAt = modify . alterLeaf . const . Just
 
 -- | Union a tree node with the current node. If the current node is a 'Dao.Tree.Leaf', the leaf
 -- might be overwritten if you write a new 'Dao.Tree.Leaf'. *IMPORTANT:* Use this instead of
 -- 'Control.Monad.State.put'.
-putTree :: Tree Name Object -> Update ()
+putTree :: Tree Name obj -> GenUpdate obj ()
 putTree = modify . union
 
--- | Modify or write a new a data structure at a given address using the given 'Update' function.
-atAddress :: [Name] -> Update a -> Update a
+-- | Modify or write a new a data structure at a given address using the given 'GenUpdate' function.
+atAddress :: [Name] -> GenUpdate obj a -> GenUpdate obj a
 atAddress path doUpdate = do
   Dao.Struct.goto path
   a <- doUpdate
@@ -241,189 +265,6 @@ atAddress path doUpdate = do
 
 -- | Goes to a given address and tries to return the value stored at that node,
 -- 'Dao.Predicate.Backtrack's if nothing is there.
-peekAddress :: [Name] -> Update Object
+peekAddress :: [Name] -> GenUpdate obj obj
 peekAddress addr = atAddress addr this
-
-----------------------------------------------------------------------------------------------------
--- $Helpers
--- Here are some handy helper functions for common data types which you can use to construct your
--- own 'dataToStruct' and 'structToData' instances of 'Structured'.
-
-putUStrData :: UStrType str => str -> Update ()
-putUStrData s =
-  let u = toUStr s in place (if ulength u == 1 then OChar (head (uchars u)) else OString u)
-
-getUStrData :: UStrType str => str -> Update UStr
-getUStrData msg = do
-  a <- this
-  case a of
-    OString a -> return a
-    OChar   c -> return (ustr [c])
-    _         -> fail ("was expecting a string for constructing a "++uchars msg++" object")
-
-getIntegerData :: Integral a => String -> Update a
-getIntegerData msg = do
-  a <- this
-  case a of
---  OLong a -> return (fromIntegral a)
-    OInt  a -> return (fromIntegral a)
---  OWord a -> return (fromIntegral a)
-    _ -> fail ("was expecting an integer value for constructing a "++msg++" object")
-
-getBoolData :: String -> String -> String -> Update Bool
-getBoolData msg tru fals = do
-  a <- this
-  case a of
-    ONull -> return False
-    OTrue -> return True
-    OString str
-      | uchars str == tru  -> return True
-      | uchars str == fals -> return False
-      | uchars str == "true" -> return True
-      | uchars str == "false" -> return True
-      | uchars str == "yes" -> return True
-      | uchars str == "no" -> return True
-    OInt i -> return (i/=0)
---  OWord i -> return (i/=0)
---  OLong i -> return (i/=0)
-    _ -> fail $ concat $
-      [ "was expecting a boolean value ("
-      , show tru, " or ", fals
-      , ") for constructing ", msg, " object"
-      ]
-
-----------------------------------------------------------------------------------------------------
--- $Instances
--- Instantiation of common data types into the 'Strcutured' class. Although you may be better off
--- instantiation your own lists or 'Data.Map.Map's, you can use these default instantiations if you
--- would rather not bother writing your own instances.
-
-instance Structured () where
-  dataToStruct _ = deconstruct $ place ONull
-  structToData = reconstruct $ this >>= \o -> case o of
-    ONull -> return ()
-    o     -> fail $ "expecting () as ONull value, instead got "++show (objType o)
-
-instance Structured Object where
-  dataToStruct = deconstruct . place
-  structToData = reconstruct this
-
-instance Structured UStr where
-  dataToStruct a = deconstruct $ place (OString a)
-  structToData = reconstruct $ do
-    a <- this
-    case a of
-      OString a -> return a
-      _         -> fail "expecing string constant"
-
-instance Structured Bool where
-  dataToStruct a = deconstruct $ place (if a then OTrue else ONull)
-  structToData = reconstruct $ getBoolData "strucutred boolean" "true" "false"
-
---instance Structured Word64 where
---  dataToStruct a = deconstruct $ place (OWord a)
-----  structToData = reconstruct (fmap fromIntegral (getIntegerData "unsigned integer"))
-
-instance Structured Word where
-  dataToStruct a = deconstruct $ place (OInt (fromIntegral a))
-  structToData = reconstruct (fmap fromIntegral (getIntegerData "unsigned integer"))
-
---instance Structured Int64 where
---  dataToStruct a = deconstruct $ place (OInt a)
---  structToData = reconstruct (fmap fromIntegral (getIntegerData "integer"))
-
-instance Structured Int where
-  dataToStruct a = deconstruct $ place (OInt (fromIntegral a))
-  structToData = reconstruct (fmap fromIntegral (getIntegerData "integer"))
-
---instance Structured Integer where
---  dataToStruct a = deconstruct $ place (OLong a)
---  structToData = reconstruct (fmap toInteger (getIntegerData "long-integer"))
-
-newtype StructChar = StructChar Char
-instance Structured StructChar where
-  dataToStruct (StructChar c) = deconstruct (place (OChar c))
-  structToData = reconstruct $ this >>= \c -> case c of
-    OChar c -> return (StructChar c)
-    _       -> fail "singleton character"
-
---instance Structured (Ratio Integer) where
---  dataToStruct a = deconstruct (place (OPair (OLong (numerator a), OLong (denominator a))))
---  structToData = reconstruct $ this >>= \a -> case a of
---    OPair (a, b) -> assumePValue $
---      objToIntegral a >>= \a -> objToIntegral b >>= \b -> return (a % b)
-
-putListWith :: (a -> Update ()) -> [a] -> Update ()
-putListWith dat2srct ox = place (OList (fmap (OTree . deconstruct . dat2srct) ox))
-
-getListWith :: Update a -> Update [a]
-getListWith srct2dat = do
-  o <- this
-  case o of
-    OList ox -> forM ox $ \o -> case o of
-      OTree o -> assumePValue (reconstruct srct2dat o)
-      _       -> fail "was expecting structured data in each list item"
-    _        -> fail "was expecting a list object"
-
-instance Structured a => Structured [a] where
-  dataToStruct ax = deconstruct (putListWith putData ax)
-  structToData    = reconstruct (getListWith getData)
-
-instance Structured (Tree Name Object) where
-  dataToStruct a = deconstruct $ place (OTree a)
-  structToData = reconstruct $ do
-    o <- this
-    case o of
-      OTree o -> return o
-      _       -> fail $
-        "was expecting an 'OTree' object containing structured data to construct "
-
--- | It might be useful to have a general instantiation of polymorphic 'Dao.Tree.Tree' types where
--- the keys and values are both instances of 'Structured', but this instantiation would overlap with
--- the instantiation of @('Dao.Tree.Tree' 'Dao.String.Name' 'Dao.Object.Object')@. For convenience,
--- if you want to use the more default instantiation for 'Structured'izing 'Dao.Tree.Tree's so you
--- don't have to write your own, you can wrap your tree in this @newtype@ and use it with 'getData'
--- and 'putData' like so:
--- > instance 'Structured' MyKey { 'structToData' = .... ; 'dataToStruct' = .... ; }
--- > instance 'Structured' MyVal { 'structToData' = .... ; 'dataToStruct' = .... ; }
--- >
--- > putMyTree :: 'Dao.Tree.Tree' MyKey MyVal -> 'Update' ()
--- > putMyTree myTree = 'putData' (StructuredTree MyKey MyVal)
--- >
--- > getMyTree :: 'Update' ('Dao.Tree.Tree' MyKey MyVal)
--- > getMyTree = 'Control.Monad.fmap' 'fromStructuredTree' 'getData'
---newtype StructuredTree a b = StructuredTree { fromStructuredTree :: Tree a b }
---instance (Ord a, Structured a, Structured b) => Structured (StructuredTree a b) where
---  dataToStruct (StructuredTree a) = deconstruct $ case a of
---    Void           -> return ()
---    Leaf       a   -> putData a
---    Branch       b -> putBranch b
---    LeafBranch a b -> putData a >> putBranch b
---    where { putBranch b = with "branch" (putData (StructuredMap (M.map StructuredTree b))) }
---  structToData = reconstruct $ do
---    a <- mplus (fmap Just getData) (return Nothing)
---    b <- flip mplus (return Nothing) $ do
---      b <- getDataAt "branch"
---      return (Just (M.map fromStructuredTree (fromStructuredMap b)))
---    case (a, b) of
---      (Nothing, Nothing) -> fail "structured tree"
---      (Just  a, Nothing) -> return (StructuredTree (Leaf a))
---      (Nothing, Just b) -> return (StructuredTree (Branch b))
---      (Just  a, Just b) -> return (StructuredTree (LeafBranch a b))
-    
--- | Like 'StructuredTree' but for 'Data.Map.Map's.
---newtype StructuredMap a b = StructuredMap { fromStructuredMap :: M.Map a b }
---instance (Ord a, Structured a, Structured b) => Structured (StructuredMap a b) where
---  dataToStruct (StructuredMap mp) = deconstruct $ place $ OList $
---    Prelude.map (\ (a, b) -> OPair (OTree (dataToStruct a), OTree (dataToStruct b))) (M.assocs mp)
---  structToData = reconstruct $ do
---    ax <- this
---    case ax of
---      OList ax -> do
---        ax <- forM ax $ \a -> case a of
---          OPair (OTree a, OTree b) ->
---            liftM2 (,) (assumePValue $ structToData a) (assumePValue $ structToData b)
---          a                        -> fail "structured map item"
---        return (StructuredMap (M.fromList ax))
---      _        -> fail "list of map items"
 

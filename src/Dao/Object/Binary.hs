@@ -62,28 +62,28 @@ instance D.Binary Name ExecUnit where { serializer = D.fromDataBinary }
 
 instance D.Binary CoreType ExecUnit where
   put t = D.putWord8 $ case t of
-    NullType     -> 0x05
-    TrueType     -> 0x06
-    TypeType     -> 0x07
-    IntType      -> 0x08
-    WordType     -> 0x09
-    LongType     -> 0x0A
-    FloatType    -> 0x0B
-    RatioType    -> 0x0C
-    ComplexType  -> 0x0D
-    TimeType     -> 0x0E
-    DiffTimeType -> 0x0F
-    CharType     -> 0x10
-    StringType   -> 0x11
-    RefType      -> 0x12
-    ListType     -> 0x13
-    TreeType     -> 0x14
-    BytesType    -> 0x15
-    HaskellType  -> 0x16
+    NullType     -> 0x07
+    TrueType     -> 0x08
+    TypeType     -> 0x09
+    IntType      -> 0x0A
+    WordType     -> 0x0B
+    LongType     -> 0x0C
+    FloatType    -> 0x0D
+    RatioType    -> 0x0E
+    ComplexType  -> 0x0F
+    TimeType     -> 0x10
+    DiffTimeType -> 0x11
+    CharType     -> 0x12
+    StringType   -> 0x13
+    RefType      -> 0x14
+    ListType     -> 0x15
+    TreeType     -> 0x16
+    BytesType    -> 0x17
+    HaskellType  -> 0x18
   get = D.word8PrefixTable
 
 instance D.HasPrefixTable CoreType D.Byte ExecUnit where
-  prefixTable = D.mkPrefixTableWord8 "Dao.Object.CoreType" 0x05 0x16 $ map return $
+  prefixTable = D.mkPrefixTableWord8 "Dao.Object.CoreType" 0x05 0x18 $ map return $
     [ NullType
     , TrueType
     , TypeType
@@ -133,7 +133,7 @@ instance D.Binary Object ExecUnit where
 instance D.HasPrefixTable Object D.Byte ExecUnit where
   prefixTable =
     let g f = fmap f D.get
-    in  D.mkPrefixTableWord8 "Dao.Object.Object" 0x05 0x15 $
+    in  D.mkPrefixTableWord8 "Dao.Object.Object" 0x07 0x18 $
           [ return ONull
           , return OTrue
           , g OType
@@ -291,45 +291,45 @@ instance (Eq p, Ord p, B.Binary p, B.Binary a) => B.Binary (T.Tree p a) where
 
 typeIDBytePrefix :: CoreType -> Word8
 typeIDBytePrefix t = case t of
-  NullType     -> 0x05
-  TrueType     -> 0x06
-  TypeType     -> 0x07
-  IntType      -> 0x08
-  WordType     -> 0x09
-  LongType     -> 0x0A
-  FloatType    -> 0x0B
-  RatioType    -> 0x0C
-  ComplexType  -> 0x0D
-  TimeType     -> 0x0E
-  DiffTimeType -> 0x0F
-  CharType     -> 0x10
-  StringType   -> 0x11
-  RefType      -> 0x12
-  ListType     -> 0x13
-  TreeType     -> 0x14
-  BytesType    -> 0x15
-  HaskellType  -> 0x16
+  NullType     -> 0x07
+  TrueType     -> 0x08
+  TypeType     -> 0x09
+  IntType      -> 0x0A
+  WordType     -> 0x0B
+  LongType     -> 0x0C
+  FloatType    -> 0x0D
+  RatioType    -> 0x0E
+  ComplexType  -> 0x0F
+  TimeType     -> 0x10
+  DiffTimeType -> 0x11
+  CharType     -> 0x12
+  StringType   -> 0x13
+  RefType      -> 0x14
+  ListType     -> 0x15
+  TreeType     -> 0x16
+  BytesType    -> 0x17
+  HaskellType  -> 0x18
 
 bytePrefixToTypeID :: Word8 -> Maybe CoreType
 bytePrefixToTypeID t = case t of
-  0x05 -> Just NullType
-  0x06 -> Just TrueType
-  0x07 -> Just TypeType
-  0x08 -> Just IntType
-  0x09 -> Just WordType
-  0x0A -> Just LongType
-  0x0B -> Just FloatType
-  0x0C -> Just RatioType
-  0x0D -> Just ComplexType
-  0x0E -> Just TimeType
-  0x0F -> Just DiffTimeType
-  0x10 -> Just CharType
-  0x11 -> Just StringType
-  0x12 -> Just RefType
-  0x13 -> Just ListType
-  0x14 -> Just TreeType
-  0x15 -> Just BytesType
-  0x16 -> Just HaskellType
+  0x07 -> Just NullType
+  0x08 -> Just TrueType
+  0x09 -> Just TypeType
+  0x0A -> Just IntType
+  0x0B -> Just WordType
+  0x0C -> Just LongType
+  0x0D -> Just FloatType
+  0x0E -> Just RatioType
+  0x0F -> Just ComplexType
+  0x10 -> Just TimeType
+  0x11 -> Just DiffTimeType
+  0x12 -> Just CharType
+  0x13 -> Just StringType
+  0x14 -> Just RefType
+  0x15 -> Just ListType
+  0x16 -> Just TreeType
+  0x17 -> Just BytesType
+  0x18 -> Just HaskellType
   _    -> Nothing
 
 --instance B.Binary CoreType where
@@ -378,7 +378,7 @@ instance B.Binary Object where
     case o of
       ONull           -> px ONull (return ())
       OTrue           -> px OTrue (return ())
---    OType         a -> x o a
+      OType         a -> x o a
       OInt          a -> x o a
       OWord         a -> x o a
       OLong         a -> x o a
@@ -390,16 +390,8 @@ instance B.Binary Object where
       OChar         a -> x o a
       OString       a -> px o (encodeUStr a)
       ORef          a -> x o a
---    OPair     (a,b) -> px o (B.put a >> B.put b)
       OList         a -> px o (putList a)
---    OSet          a -> px o (putList (S.elems a))
---    OArray        a -> px o $
---      let (lo, hi) = bounds a in B.put lo >> B.put hi >> putList (elems a)
---    OIntMap       a -> px o (putObjMap I.assocs putVLInt a)
---    ODict         a -> px o (putObjMap M.assocs B.put a)
       OTree         a -> x o a
---    OGlob         a -> x o a
---    OScript       a -> x o a
       OBytes        a -> x o a
       OHaskell  _ ifc -> error $ unwords $
         ["no binary format method defied for Haskell type", show (objHaskellType ifc)]
@@ -411,7 +403,7 @@ instance B.Binary Object where
       Just ty -> case ty of
         NullType     -> return ONull
         TrueType     -> return OTrue
---      TypeType     -> x OType
+        TypeType     -> x OType
         IntType      -> x OInt
         WordType     -> x OWord
         LongType     -> x OLong
@@ -423,17 +415,8 @@ instance B.Binary Object where
         CharType     -> x OChar
         StringType   -> fmap OString decodeUStr
         RefType      -> x ORef
---      PairType     -> fmap OPair (liftM2 (,) B.get B.get)
         ListType     -> fmap OList getList
---      SetType      -> fmap (OSet . S.fromList) getList
---      ArrayType    -> do
---        B.get >>= \lo -> B.get >>= \hi -> getList >>= \ax ->
---          return (OArray (listArray (lo, hi) ax))
---      IntMapType   -> fmap OIntMap (getObjMap (I.fromList) getFromVLInt)
---      DictType     -> fmap ODict   (getObjMap (M.fromList) B.get)
         TreeType     -> x OTree
---      GlobType     -> x OGlob
---      ScriptType   -> x OScript
         BytesType    -> x OBytes
         HaskellType  -> error "internal: cannot retrieve Haskell types from a binary stream"
 

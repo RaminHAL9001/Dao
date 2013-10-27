@@ -78,7 +78,7 @@ getUStrList = do
 
 ----------------------------------------------------------------------------------------------------
 
-instance GenStructured Comment Object where
+instance Structured Comment Object where
   dataToStruct a = deconstruct $ case a of
     InlineComment  a -> putDataAt "inline"  (ostr a)
     EndlineComment a -> putDataAt "endline" (ostr a)
@@ -90,7 +90,7 @@ instance GenStructured Comment Object where
       , fail "must be a comment string or typed comment string"
       ]
 
-instance Structured a => GenStructured (Com a) Object where
+instance Structured a Object => Structured (Com a) Object where
   dataToStruct a = deconstruct $ case a of
     Com         c   -> putData c
     ComBefore b c   -> putData c >> com "before" b
@@ -123,30 +123,30 @@ structToUStr msg = reconstruct $ do
     Just  a -> return a
     Nothing -> fail ("was expecting "++msg)
 
-instance GenStructured Name Object where
+instance Structured Name Object where
   dataToStruct = ustrToStruct
   structToData = fmap fromUStr . structToUStr "a valid label"
 
-instance GenStructured UpdateOp Object where
+instance Structured UpdateOp Object where
   dataToStruct = ustrToStruct
   structToData = structToUStr "assignment operator"
 
-instance GenStructured PrefixOp Object where
+instance Structured PrefixOp Object where
   dataToStruct = ustrToStruct
   structToData = structToUStr "unary prefix operator"
   
-instance GenStructured InfixOp Object where
+instance Structured InfixOp Object where
   dataToStruct = ustrToStruct
   structToData = structToUStr "binary infix operator"
 
-instance GenStructured CoreType Object where
+instance Structured CoreType Object where
   dataToStruct = ustrToStruct
   structToData = structToUStr "type identifier"
 
 -- This instance never places data in the immediate ('Data.Struct.this') node, so it is safe to call
 -- 'putData' on a value of type 'Data.Token.Location' even if you have already placed data in the
 -- immedate node with 'putData'.
-instance GenStructured Location Object where
+instance Structured Location Object where
   dataToStruct loc = case loc of
     LocationUnknown  -> T.Void
     Location _ _ _ _ -> deconstruct $ with "location" $ do
@@ -175,7 +175,7 @@ instance GenStructured Location Object where
 --    "->" -> return POINT
 --    s    -> fail ("expecting reference infix operator, instead found string "++show s)
 
-instance GenStructured AST_Ref Object where
+instance Structured AST_Ref Object where
   dataToStruct a = deconstruct $ case a of
     AST_RefNull          -> place ONull
     AST_Ref r comref loc -> putData r >>
@@ -190,7 +190,7 @@ instance GenStructured AST_Ref Object where
         Nothing    -> return (AST_Ref ref []    loc)
         Just multi -> return (AST_Ref ref multi loc)
 
-instance GenStructured AST_QualRef Object where
+instance Structured AST_QualRef Object where
   dataToStruct ref = deconstruct $ case ref of
     AST_Qualified q com ref loc -> do
       let qref addr = with addr $ putComments com >> putData ref >> putData loc
@@ -207,15 +207,15 @@ instance GenStructured AST_QualRef Object where
         [LOCAL, QTIME, GLODOT, STATIC, GLOBAL]
       qref (addr, q) = with addr $ pure (AST_Qualified q) <*> getComments <*> getData <*> getData
 
-instance GenStructured AST_ObjList  Object where
+instance Structured AST_ObjList  Object where
   dataToStruct (AST_ObjList coms lst loc) = deconstruct $ with "objList" (putComments coms >> putData lst >> putData loc)
   structToData = reconstruct $ with "objList" (pure AST_ObjList <*> getComments <*> getData <*> getData)
 
-instance GenStructured AST_LValue Object where
+instance Structured AST_LValue Object where
   dataToStruct (AST_LValue o) = deconstruct (with "to" (putData o))
   structToData = reconstruct (with "to" $ pure AST_LValue <*> getData)
 
-instance Structured a => GenStructured (AST_TyChk a) Object where
+instance Structured a Object => Structured (AST_TyChk a) Object where
   dataToStruct o = deconstruct $ case o of
     AST_NotChecked o              -> putData o
     AST_Checked    o coms obj loc -> putData o >> putDataAt "colon" coms >> putDataAt "typeExpr" obj >> putData loc
@@ -224,7 +224,7 @@ instance Structured a => GenStructured (AST_TyChk a) Object where
     , fmap AST_NotChecked getData
     ]
 
-instance GenStructured AST_Param  Object where
+instance Structured AST_Param  Object where
   dataToStruct o = deconstruct $ case o of
     AST_NoParams          -> place ONull
     AST_Param coms nm loc -> do
@@ -241,11 +241,11 @@ instance GenStructured AST_Param  Object where
         _     -> fail "expecting function parameter declaration"
     ]
 
-instance GenStructured AST_ParamList  Object where
+instance Structured AST_ParamList  Object where
   dataToStruct (AST_ParamList lst loc) = deconstruct $ putData lst >> putData loc
   structToData = reconstruct $ liftM2 AST_ParamList getData getData
 
-instance GenStructured AST_StringList  Object where
+instance Structured AST_StringList  Object where
   dataToStruct o = deconstruct $ case o of
     AST_NoStrings  coms loc -> place ONull >> putData coms >> putData loc
     AST_StringList strs loc -> putData strs >> putData loc
@@ -253,7 +253,7 @@ instance GenStructured AST_StringList  Object where
     ONull -> pure AST_NoStrings  <*> getData <*> getData
     _     -> pure AST_StringList <*> getData <*> getData
 
-instance GenStructured (Maybe AST_ObjList)  Object where
+instance Structured (Maybe AST_ObjList)  Object where
   dataToStruct a = deconstruct $ case a of
     Nothing -> place ONull
     Just  a -> putData a
@@ -261,7 +261,7 @@ instance GenStructured (Maybe AST_ObjList)  Object where
     ONull -> return Nothing
     _     -> fail "expecting either null value or optional AST_ObjList expression"
 
-instance GenStructured AST_OptObjList  Object where
+instance Structured AST_OptObjList  Object where
   dataToStruct a = deconstruct $ case a of
     AST_NoObjList coms -> with "noParams" (putComments coms)
     AST_OptObjList o _ -> putDataAt "params" o
@@ -270,11 +270,11 @@ instance GenStructured AST_OptObjList  Object where
     , AST_OptObjList <$> getDataAt "params" <*> getComments
     ]
 
-instance GenStructured AST_Paren  Object where
+instance Structured AST_Paren  Object where
   dataToStruct (AST_Paren a loc) = deconstruct $ with "paren" $ putData a >> putData loc
   structToData = reconstruct $ with "paren" $ pure AST_Paren <*> getData <*> getData
 
-instance GenStructured AST_Object  Object where
+instance Structured AST_Object  Object where
   dataToStruct a = deconstruct $ case a of
     AST_Void                   -> place ONull
     AST_ObjQualRef a           -> putData a
@@ -311,33 +311,33 @@ instance GenStructured AST_Object  Object where
         _     -> fail "object expression"
     ]
 
-instance GenStructured AST_CodeBlock  Object where
+instance Structured AST_CodeBlock  Object where
   dataToStruct a = deconstruct (putDataAt "block" (getAST_CodeBlock a))
   structToData = reconstruct (fmap AST_CodeBlock (getDataAt "block"))
 
-instance GenStructured AST_If  Object where
+instance Structured AST_If  Object where
   dataToStruct (AST_If ifn thn loc) = deconstruct $
     with "ifExpr" $ putData ifn >> putDataAt "then" thn >> putData loc
   structToData = reconstruct $ with "ifExpr" $ liftM3 AST_If getData (getDataAt "then") getData
 
-instance GenStructured AST_Else  Object where
+instance Structured AST_Else  Object where
   dataToStruct (AST_Else coms ifn loc) = deconstruct $
     with "elseIfExpr" $ putData coms >> putData ifn >> putData loc
   structToData = reconstruct $ with "elseIfExpr" $ liftM3 AST_Else getData getData getData
 
-instance GenStructured AST_IfElse  Object where
+instance Structured AST_IfElse  Object where
   dataToStruct (AST_IfElse ifn els coms deflt loc) = deconstruct $ with "ifExpr" $
     putData ifn >> putListWith putData els >> putData coms >> maybe (return ()) (putDataAt "elseExpr") deflt >> putData loc
   structToData = reconstruct $ with "ifExpr" $
     liftM5 AST_IfElse getData (getListWith getData) getData (optional (getDataAt "elseExpr")) getData
 
-instance GenStructured AST_While  Object where
+instance Structured AST_While  Object where
   dataToStruct (AST_While (AST_If ifn thn loc)) = deconstruct $ with "whileExpr" $
     putData ifn >> putDataAt "script" thn >> putData loc
   structToData = reconstruct $ with "whileExpr" $
     liftM3 (\a b c -> AST_While (AST_If a b c)) getData (getDataAt "script") getData
 
---instance GenStructured AST_ElseIf  Object where
+--instance Structured AST_ElseIf  Object where
 --  dataToStruct a = deconstruct $ with "elseExpr" $ case a of
 --    AST_NullElseIf                 -> place ONull
 --    AST_Else   coms block      loc -> putComments coms >> putDataAt "thenExpr" block >> putData loc
@@ -352,7 +352,7 @@ instance GenStructured AST_While  Object where
 --    , fail "expecting if-then-else expression"
 --    ]
 
-instance GenStructured AST_Script  Object where
+instance Structured AST_Script  Object where
   dataToStruct a = deconstruct $ case a of
     AST_Comment      a         -> putComments a
     AST_EvalObject   a b   loc -> with "equation"  $               putComments           b                                      >> putData loc
@@ -381,7 +381,7 @@ instance GenStructured AST_Script  Object where
       getContinue tf = pure (AST_ContinueExpr tf) <*> getComments        <*> getDataAt "condition"     <*> getData
       getReturn   tf = pure (AST_ReturnExpr   tf) <*> getDataAt "object" <*> getData
 
-instance GenStructured QualRef  Object where
+instance Structured QualRef  Object where
   dataToStruct = deconstruct . place . ORef
   structToData = reconstruct $ do
     a <- this
@@ -389,7 +389,7 @@ instance GenStructured QualRef  Object where
       ORef a -> return a
       _      -> fail "reference"
 
-instance GenStructured GlobUnit   Object where
+instance Structured GlobUnit   Object where
   dataToStruct a = T.Leaf $ OString $ case a of
     Wildcard -> ustr "$*"
     AnyOne   -> ustr "$?"
@@ -403,7 +403,7 @@ instance GenStructured GlobUnit   Object where
       "?"  -> AnyOne
       str  -> Single (ustr str)
 
-instance GenStructured Glob        Object where
+instance Structured Glob        Object where
   dataToStruct a = deconstruct $ case a of
     Glob       a _   -> putData a
   structToData = reconstruct $ getData >>= \a -> return (Glob a (length a))
@@ -413,7 +413,7 @@ uninitialized_err a = error $ concat $
   , "the executable has not yet been initialized"
   ]
 
---instance GenStructured ObjSetOp  Object where
+--instance Structured ObjSetOp  Object where
 --  dataToStruct a = deconstruct $ place $ ostr $ case a of
 --    ExactSet  -> "exact"
 --    AnyOfSet  -> "any"
@@ -428,7 +428,7 @@ uninitialized_err a = error $ concat $
 --    "none"  -> return NoneOfSet
 --    a       -> fail "pattern set operator"
 
-instance GenStructured TopLevelEventType  Object where
+instance Structured TopLevelEventType  Object where
   dataToStruct a = deconstruct $ place $ ostr $ case a of
     BeginExprType -> "BEGIN"
     EndExprType   -> "END"
@@ -440,7 +440,7 @@ instance GenStructured TopLevelEventType  Object where
     "QUIT"  -> return ExitExprType
     _       -> fail "top-level event type"
 
-instance GenStructured AST_TopLevel  Object where
+instance Structured AST_TopLevel  Object where
   dataToStruct a = deconstruct $ case a of
     AST_TopComment a           -> putComments a
     AST_Attribute  a b     loc -> with "attribute" $ putDataAt "type" a >> putDataAt "value"    b                                                 >> putData loc
@@ -454,13 +454,13 @@ instance GenStructured AST_TopLevel  Object where
     , fail "top-level directive"
     ]
 
-putIntermediate :: (Intermediate obj ast, Structured ast) => String -> obj -> T.Tree Name Object
+putIntermediate :: (Intermediate obj ast, Structured ast Object) => String -> obj -> T.Tree Name Object
 putIntermediate typ a = deconstruct $ case fromInterm a of
   []  -> return ()
   [a] -> putTree (dataToStruct a)
   _   -> error ("fromInterm returned more than one possible intermediate data structure for "++typ)
 
-getIntermediate :: (Intermediate obj ast, Structured ast) => String -> T.Tree Name Object -> PValue UpdateErr obj
+getIntermediate :: (Intermediate obj ast, Structured ast Object) => String -> T.Tree Name Object -> PValue UpdateErr obj
 getIntermediate typ = reconstruct $ do
   a <- getData
   case toInterm a of
@@ -472,19 +472,19 @@ toplevel_intrm = "top-level intermedaite node"
 script_intrm = "script intermedaite node"
 object_intrm = "object intermedaite node"
 
-instance GenStructured TopLevelExpr  Object where
+instance Structured TopLevelExpr  Object where
   dataToStruct = putIntermediate toplevel_intrm
   structToData = getIntermediate toplevel_intrm
 
-instance GenStructured ScriptExpr  Object where
+instance Structured ScriptExpr  Object where
   dataToStruct = putIntermediate script_intrm
   structToData = getIntermediate script_intrm
 
-instance GenStructured ObjectExpr  Object where
+instance Structured ObjectExpr  Object where
   dataToStruct = putIntermediate object_intrm
   structToData = getIntermediate object_intrm
 
-instance (Ord a, Enum a, Structured a) => GenStructured (Es.Inf a) Object where
+instance (Ord a, Enum a, Structured a Object) => Structured (Es.Inf a) Object where
   dataToStruct a = deconstruct $ case a of
     Es.PosInf  -> putUStrData "+inf"
     Es.NegInf  -> putUStrData "-inf"
@@ -498,7 +498,7 @@ instance (Ord a, Enum a, Structured a) => GenStructured (Es.Inf a) Object where
     ]
     where { msg = "unit of a segment of an enum set" }
 
-instance (Ord a, Enum a, Bounded a, Structured a) => GenStructured (Es.Segment a) Object where
+instance (Ord a, Enum a, Bounded a, Structured a Object) => Structured (Es.Segment a) Object where
   dataToStruct a = deconstruct $
     mplus (maybe mzero return (Es.singular a) >>= putDataAt "at") $
       maybe mzero return (Es.plural a) >>= \ (a, b) -> putDataAt "to" a >> putDataAt "from" b
@@ -508,7 +508,7 @@ instance (Ord a, Enum a, Bounded a, Structured a) => GenStructured (Es.Segment a
     , mplus this (return ONull) >>= \o -> fail "unit segment of an enum set"
     ]
 
-instance (Ord a, Enum a, Bounded a, Es.InfBound a, Structured a) => GenStructured (Es.Set a) Object where
+instance (Ord a, Enum a, Bounded a, Es.InfBound a, Structured a Object) => Structured (Es.Set a) Object where
   dataToStruct a = deconstruct (putData (Es.toList a))
   structToData = reconstruct (fmap Es.fromList getData)
 

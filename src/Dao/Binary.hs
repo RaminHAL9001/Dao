@@ -46,14 +46,15 @@
 -- "Data.Binary" module, and provides a Dao-friendly wrapper around it.
 module Dao.Binary where
 
+import           Dao.Runtime
 import           Dao.String
 import qualified Dao.Tree             as T
 
+import           Control.Exception (assert)
 import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Trans
-import           Control.Monad.Reader
-import           Control.Exception (assert)
+import qualified Control.Monad.State  as S
 
 import           Data.Monoid
 import           Data.Function
@@ -83,10 +84,14 @@ import qualified Data.Binary.Put      as B
 ----------------------------------------------------------------------------------------------------
 
 type Byte = Word8
-newtype GGet gtab a = GGet  { decoderToReader :: ReaderT gtab B.Get  a }
+newtype GGet gtab a = GGet  { decoderToStateT :: S.StateT gtab B.Get a }
 instance Functor (GGet gtab) where { fmap f (GGet a) = GGet (fmap f a) }
-newtype GPutM gtab a = GPutM { encoderToReader :: ReaderT gtab B.PutM a }
+newtype GPutM gtab a = GPutM { encoderToStateT :: S.StateT gtab B.PutM a }
 type GPut gtab = GPutM gtab ()
+
+class HasCoderTable mtab exec where
+  getEncoderForType :: TypeRep -> exec (Dynamic -> GPut mtab)
+  getDecoderForType :: TypeRep -> exec (GGet mtab Dynamic)
 
 -- | A data type used to help instantiate the 'Dao.Binary.Binary' class. Refer to the
 -- 'fromDataBinary' function for more details.
@@ -104,10 +109,9 @@ class Binary a gtab where
   serializer :: Serializer gtab a
   serializer = Serializer{serializeGet=Dao.Binary.get,serializePut=Dao.Binary.put}
 
-
 instance Monad (GGet gtab) where
   return = GGet . return
-  (GGet a) >>= fn = GGet (a >>= decoderToReader . fn)
+  (GGet a) >>= fn = GGet (a >>= decoderToStateT . fn)
 instance MonadPlus   (GGet gtab) where { mzero = GGet mzero; mplus (GGet a) (GGet b) = GGet (mplus a b); }
 instance Applicative (GGet gtab) where { pure=return; (<*>)=ap; }
 instance Alternative (GGet gtab) where { empty=mzero; (<|>)=mplus; }
@@ -118,7 +122,7 @@ instance Monoid a => Monoid (GGet gtab a) where
 instance Functor (GPutM gtab) where { fmap f (GPutM a) = GPutM (fmap f a) }
 instance Monad (GPutM gtab) where
   return = GPutM . return
-  (GPutM a) >>= fn = GPutM (a >>= encoderToReader . fn)
+  (GPutM a) >>= fn = GPutM (a >>= encoderToStateT . fn)
 instance Applicative (GPutM gtab) where { pure=return; (<*>)=ap; }
 instance Monoid a => Monoid (GPutM gtab a) where
   mempty=return mempty
@@ -200,7 +204,7 @@ dataBinaryGet :: B.Get a -> GGet gtab a
 dataBinaryGet = GGet . lift
 
 lookAhead :: GGet gtab a -> GGet gtab a
-lookAhead (GGet fn) = GGet (ask >>= lift . B.lookAhead . runReaderT fn)
+lookAhead (GGet fn) = GGet (S.get >>= lift . B.lookAhead . S.evalStateT fn)
 
 putWord8    = GPutM . lift . B.putWord8
 putWord16be = GPutM . lift . B.putWord16be

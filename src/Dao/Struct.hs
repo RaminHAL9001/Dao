@@ -21,11 +21,11 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
--- | A module with utility functions to help define instanes to the 'Dao.Object.GenStructured' class.
+-- | A module with utility functions to help define instanes to the 'Dao.Object.Structured' class.
 -- A stateful monadic interface built on zippers is provided to allow leaves and branches in
 -- 'Dao.Tree.Tree's to be read and written using a syntax similar to that of a procedural
 -- programming language, which is more intuitive for the Dao programming language which is
--- procedural. Please also see the 'Dao.Object.GenStructured' class and the 'Dao.Object.GenUpdateErr' data
+-- procedural. Please also see the 'Dao.Object.Structured' class and the 'Dao.Object.GenUpdateErr' data
 -- type.
 module Dao.Struct where
 
@@ -59,7 +59,7 @@ import Debug.Trace
 -- the leaves in the 'Dao.Tree.Tree' are Dao 'Object's. The branches of the 'Dao.Tree.Tree's are all
 -- labeled with 'Dao.String.Name's. It is an important interface for being able to maniuplate
 -- objects within a script written in the Dao language. 
-class GenStructured typ obj where
+class Structured typ obj where
   dataToStruct :: typ -> Tree Name obj
   structToData :: Tree Name obj -> PValue (GenUpdateErr obj) typ
 
@@ -143,11 +143,11 @@ home = Update (lift Dao.Tree.home)
 runUpdate :: GenUpdate obj a -> Tree Name obj -> (PValue (GenUpdateErr obj) a, Tree Name obj)
 runUpdate upd = runUpdateTree (runPTrans (updateToPTrans upd))
 
--- | GenUpdate a data type in the 'GenStructured' class using an 'GenUpdate' monadic function.
-onStruct :: GenStructured a obj => GenUpdate obj ig -> a -> PValue (GenUpdateErr obj) a
+-- | GenUpdate a data type in the 'Structured' class using an 'GenUpdate' monadic function.
+onStruct :: Structured a obj => GenUpdate obj ig -> a -> PValue (GenUpdateErr obj) a
 onStruct ufn a = (fst . runUpdate (ufn>>get)) (dataToStruct a) >>= structToData
 
--- | Useful for instantiating the 'dataToStruct' function of the 'GenStructured' class, this is
+-- | Useful for instantiating the 'dataToStruct' function of the 'Structured' class, this is
 -- essentially the same function as 'Control.Monad.State.execState'.
 deconstruct :: GenUpdate obj a -> Tree Name obj
 deconstruct fn = snd (runUpdate fn Void)
@@ -161,7 +161,7 @@ reconstruct fn tree = fst (runUpdate fn tree)
 
 ----------------------------------------------------------------------------------------------------
 -- $Fundamentals
--- These are the most important functions for building instances of 'GenStructured'.
+-- These are the most important functions for building instances of 'Structured'.
 
 -- | Return the value stored in the current node. Evaluates to 'Control.Monad.mzero' if the current
 -- node is empty, so it can be used to check if an item exists at the current node as well. This
@@ -189,52 +189,52 @@ with addr upd = mplus (tryWith addr upd) updateError
 
 -- | Use 'structToData' to construct data from the current node. This function is the counter
 -- operation of 'putData'. 'Dao.Predicate.Backtrack's if the current node is 'Dao.Tree.Void'.
-tryGetData :: GenStructured a obj => GenUpdate obj a
+tryGetData :: Structured a obj => GenUpdate obj a
 tryGetData = get >>= assumePValue . structToData
 
 -- | Use 'structToData' to construct data from the current node. This function is the counter
 -- operation of 'putData'. 'Dao.Predicate.Backtrack's if the current node is 'Dao.Tree.Void'.
-getData :: GenStructured a obj => GenUpdate obj a
+getData :: Structured a obj => GenUpdate obj a
 getData = mplus tryGetData updateError
 
 -- | Like 'getData' but takes a default value as a parameter, and if the current 'Dao.Tree.Tree'
 -- node returned by 'Control.Monad.State.get' is 'Dao.Tree.Void', the default parameter is returned.
-getOptional :: GenStructured a obj => a -> GenUpdate obj a
+getOptional :: Structured a obj => a -> GenUpdate obj a
 getOptional opt = mplus getData (return opt)
 
 -- | Shortcut for @'with' addr 'getData'@. This function is the counter operation of 'putDataAt'.
-getDataAt :: GenStructured a obj => String -> GenUpdate obj a
+getDataAt :: Structured a obj => String -> GenUpdate obj a
 getDataAt addr = with addr getData
 
-tryGetDataAt :: GenStructured a obj => String -> GenUpdate obj a
+tryGetDataAt :: Structured a obj => String -> GenUpdate obj a
 tryGetDataAt addr = tryWith addr tryGetData
 
-getMaybe :: GenStructured a obj => GenUpdate obj (Maybe a)
+getMaybe :: Structured a obj => GenUpdate obj (Maybe a)
 getMaybe = mplus (fmap Just getData) (return Nothing)
 
-getMaybeAt :: GenStructured a obj => String -> GenUpdate obj (Maybe a)
+getMaybeAt :: Structured a obj => String -> GenUpdate obj (Maybe a)
 getMaybeAt addr = with addr $ getMaybe
 
 -- | Place an object at in current node. This function is the counter opreation of 'this'.
 place :: obj -> GenUpdate obj ()
 place obj = placeWith (const (Just obj))
 
--- | Use 'dataToStruct' to convert a data type to a 'GenStructured' 'Dao.Tree.Tree' node, then union
+-- | Use 'dataToStruct' to convert a data type to a 'Structured' 'Dao.Tree.Tree' node, then union
 -- it with the current node. If the current node is a 'Dao.Tree.Leaf', the leaf might be
 -- overwritten if you write a new 'Dao.Tree.Leaf'. This function is the couner operation of
 -- 'getData'.
-putData :: GenStructured a obj => a -> GenUpdate obj ()
+putData :: Structured a obj => a -> GenUpdate obj ()
 putData = putTree . dataToStruct
 
 -- | Shortcut for @'with' addr ('putData' a)@. This function is the counter opreation of
 -- 'getDataAt'.
-putDataAt :: GenStructured a obj => String -> a -> GenUpdate obj ()
+putDataAt :: Structured a obj => String -> a -> GenUpdate obj ()
 putDataAt addr obj = with addr (putData obj)
 
-putMaybe :: GenStructured a obj => Maybe a -> GenUpdate obj ()
+putMaybe :: Structured a obj => Maybe a -> GenUpdate obj ()
 putMaybe = maybe (return ()) putData
 
-putMaybeAt :: GenStructured a obj => String -> Maybe a -> GenUpdate obj ()
+putMaybeAt :: Structured a obj => String -> Maybe a -> GenUpdate obj ()
 putMaybeAt addr = with addr . putMaybe
 
 -- | GenUpdate an object at the current node.

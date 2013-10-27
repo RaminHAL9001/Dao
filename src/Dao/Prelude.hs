@@ -213,7 +213,7 @@ readObjExpr :: String -> IO (Dao AST_Object)
 readObjExpr = parseObjExpr . Dao
 
 -- | Convert a structured item to its structured form.
-toStruct :: Structured o => (Dao o) -> IO (Dao (T.Tree Name Object))
+toStruct :: Structured o Object => (Dao o) -> IO (Dao (T.Tree Name Object))
 toStruct (Dao o) = return (Dao (dataToStruct o))
 
 instance (PPrintable a, PPrintable b) => PPrintable (T.TreeDiff a b) where
@@ -231,7 +231,7 @@ instance (PPrintable a, PPrintable b) => PPrintable (T.Tree UStr (T.TreeDiff a b
 --diff (Dao a) (Dao b) = return $ Dao $ T.treeDiff a b
 
 -- | Construct a random object of a polymorphic type from its 'Dao.Struct.Structured' form.
-fromStruct :: Structured o => (Dao (T.Tree Name Object)) -> IO (Dao o)
+fromStruct :: Structured o Object => (Dao (T.Tree Name Object)) -> IO (Dao o)
 fromStruct (Dao t) = case structToData t of
   OK      o -> seq o $! return (Dao o)
   Backtrack -> error "constructor backtracked"

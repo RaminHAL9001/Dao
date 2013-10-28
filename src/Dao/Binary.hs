@@ -263,6 +263,9 @@ instance Binary Float  gtab  where
 instance Binary Double gtab  where
   put = dataBinaryPut . B.putFloat64be
   get = dataBinaryGet B.getFloat64be
+instance (RealFloat a, Binary a gtab) => Binary (Complex a) gtab where
+  put (a :+ b) = put a >> put b
+  get = pure (:+) <*> get <*> get
 
 instance (Num a, Integral a, Binary a gtab) => Binary (Ratio a) gtab where
   put o = let p = dataBinaryPut . putVLInteger . fromIntegral in p (numerator o) >> p (denominator o)
@@ -275,14 +278,6 @@ instance Binary Integer gtab where
 instance Binary Char gtab where
   put = Dao.Binary.putVLInt . ord
   get = fmap chr Dao.Binary.getFromVLInt
-
-instance Binary (Complex Float) gtab where
-  put o = put (realPart o) >> put (imagPart o)
-  get = pure (:+) <*> get <*> get
-
-instance Binary (Complex Double) gtab where
-  put o = put (realPart o) >> put (imagPart o)
-  get = pure (:+) <*> get <*> get
 
 instance Binary UTCTime gtab where { serializer = fromDataBinary }
 instance B.Binary UTCTime where

@@ -21,6 +21,7 @@
 
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 -- {-# LANGUAGE RankNTypes #-}
 
 module Dao.Object.Binary where
@@ -189,6 +190,224 @@ instance D.HasPrefixTable QualRef D.Byte ExecUnit where
     , Qualified STATIC <$> D.get
     , Qualified GLOBAL <$> D.get
     ]
+
+instance D.Binary Location ExecUnit where
+  put o = case o of
+    LocationUnknown  -> return ()
+    Location a b c d -> D.prefixByte 0x29 $ D.put a >> D.put b >> D.put c >> D.put d
+  get = D.tryWord8 0x29 $ pure Location <*> D.get <*> D.get <*> D.get <*> D.get
+
+instance D.Binary TopLevelExpr ExecUnit where
+  put o = case o of
+    Attribute a             b z -> D.prefixByte 0x2B $ D.put a >> D.put z
+    TopScript a               z -> D.prefixByte 0x2C $ D.put a >> D.put z
+    EventExpr BeginExprType b z -> D.prefixByte 0x2D $ D.put b >> D.put z
+    EventExpr ExitExprType  b z -> D.prefixByte 0x2E $ D.put b >> D.put z
+    EventExpr EndExprType   b z -> D.prefixByte 0x2F $ D.put b >> D.put z
+  get = D.word8PrefixTable
+instance D.HasPrefixTable TopLevelExpr D.Byte ExecUnit where
+  prefixTable = D.mkPrefixTableWord8 "Dao.Object.TopLevelExpr" 0x2B 0x2F $
+    [ pure Attribute <*> D.get <*> D.get <*> D.get
+    , pure TopScript <*> D.get <*> D.get
+    , pure (EventExpr BeginExprType) <*> D.get <*> D.get
+    , pure (EventExpr ExitExprType ) <*> D.get <*> D.get
+    , pure (EventExpr EndExprType  ) <*> D.get <*> D.get
+    ]
+
+instance D.Binary ScriptExpr ExecUnit where
+  put o = case o of
+    IfThenElse   a           -> D.prefixByte 0x31 $ D.put a
+    WhileLoop    a           -> D.prefixByte 0x32 $ D.put a
+    EvalObject   a         z -> D.prefixByte 0x33 $ D.put a >> D.put z
+    TryCatch     a     b c z -> D.prefixByte 0x34 $ D.put a >> D.put b >> D.put c >> D.put z
+    ForLoop      a     b c z -> D.prefixByte 0x35 $ D.put a >> D.put b >> D.put c >> D.put z
+    ContinueExpr True  b   z -> D.prefixByte 0x36 $ D.put b >> D.put z
+    ContinueExpr False b   z -> D.prefixByte 0x37 $ D.put b >> D.put z
+    ReturnExpr   True  b   z -> D.prefixByte 0x38 $ D.put b >> D.put z
+    ReturnExpr   False b   z -> D.prefixByte 0x39 $ D.put b >> D.put z
+    WithDoc      a     b   z -> D.prefixByte 0x3A $ D.put a >> D.put b >> D.put z
+  get = D.word8PrefixTable
+instance D.HasPrefixTable ScriptExpr D.Byte ExecUnit where
+  prefixTable = D.mkPrefixTableWord8 "Dao.Object.ScriptExpr" 0x31 0x3A $
+    [ IfThenElse <$> D.get
+    , WhileLoop  <$> D.get
+    , pure EvalObject   <*> D.get <*> D.get
+    , pure TryCatch     <*> D.get <*> D.get <*> D.get <*> D.get
+    , pure ForLoop      <*> D.get <*> D.get <*> D.get <*> D.get
+    , pure (ContinueExpr True ) <*> D.get <*> D.get
+    , pure (ContinueExpr False) <*> D.get <*> D.get
+    , pure (ReturnExpr   True ) <*> D.get <*> D.get
+    , pure (ReturnExpr   False) <*> D.get <*> D.get
+    , pure WithDoc      <*> D.get <*> D.get <*> D.get
+    ]
+
+instance D.Binary IfExpr ExecUnit where
+  put (IfExpr a b c) = D.put a >> D.put b >> D.put c
+  get = pure IfExpr <*> D.get <*> D.get <*> D.get
+
+instance D.Binary ElseExpr ExecUnit where
+  put (ElseExpr a b) = D.put a >> D.put b
+  get = pure ElseExpr <*> D.get <*> D.get
+
+instance D.Binary IfElseExpr ExecUnit where
+  put (IfElseExpr a b c d) = D.put a >> D.put b >> D.put c >> D.put d
+  get = pure IfElseExpr <*> D.get <*> D.get <*> D.get <*> D.get
+
+instance D.Binary WhileExpr ExecUnit where
+  put (WhileExpr o) = D.put o
+  get = WhileExpr <$> D.get
+
+instance D.Binary CodeBlock ExecUnit where
+  put (CodeBlock o) = D.put o
+  get = CodeBlock <$> D.get
+
+instance D.Binary RefExpr ExecUnit where
+  put (RefExpr a b) = D.put a >> D.put b
+  get = pure RefExpr <*> D.get <*> D.get
+
+instance D.Binary QualRefExpr ExecUnit where
+  put o = D.prefixByte 0x28 $ case o of
+    UnqualRefExpr (RefExpr o loc)     -> D.put (Unqualified o) >> D.put loc
+    QualRefExpr q (RefExpr o lo1) lo2 -> D.put (Qualified q o) >> D.put lo1 >> D.put lo2
+  get = D.word8PrefixTable
+instance D.HasPrefixTable QualRefExpr D.Byte ExecUnit where
+  prefixTable = D.mkPrefixTableWord8 "Dao.Object.QualRefExpr" 0x28 0x28 $
+    [ D.get >>= \q -> case q of
+        Unqualified o -> UnqualRefExpr . RefExpr o <$> D.get
+        Qualified q o -> pure (\lo1 lo2 -> QualRefExpr q (RefExpr o lo1) lo2) <*> D.get <*> D.get
+        ObjRef _ -> error "internal: received QualRef where QualRefExpr was expected."
+    ]
+
+instance D.Binary ObjectExpr ExecUnit where
+  put o = case o of
+    VoidExpr               -> D.putWord8   0x41
+    ObjQualRefExpr a       -> D.prefixByte 0x42 $ D.put a
+    ObjParenExpr   a       -> D.prefixByte 0x43 $ D.put a
+    Literal        a     z -> D.prefixByte 0x44 $ D.put a >> D.put z
+    AssignExpr     a b c z -> D.prefixByte 0x45 $ D.put a >> D.put b >> D.put c >> D.put z
+    Equation       a b c z -> D.prefixByte 0x46 $ D.put a >> D.put b >> D.put c >> D.put z
+    PrefixExpr     a b   z -> D.prefixByte 0x47 $ D.put a >> D.put b >> D.put z
+    ArraySubExpr   a b   z -> D.prefixByte 0x48 $ D.put a >> D.put b >> D.put z
+    FuncCall       a b   z -> D.prefixByte 0x49 $ D.put a >> D.put b >> D.put z
+    InitExpr       a b c z -> D.prefixByte 0x4A $ D.put a >> D.put b >> D.put c >> D.put z
+    StructExpr     a b   z -> D.prefixByte 0x4B $ D.put a >> D.put b >> D.put z
+    LambdaExpr     a b   z -> D.prefixByte 0x4C $ D.put a >> D.put b >> D.put z
+    FuncExpr       a b c z -> D.prefixByte 0x4D $ D.put a >> D.put b >> D.put c >> D.put z
+    RuleExpr       a b   z -> D.prefixByte 0x4E $ D.put a >> D.put b >> D.put z
+    MetaEvalExpr   a     z -> D.prefixByte 0x4F $ D.put a >> D.put z
+  get = D.word8PrefixTable
+instance D.HasPrefixTable ObjectExpr D.Byte ExecUnit where
+  prefixTable = D.mkPrefixTableWord8 "Dao.Object.ObjectExpr" 0x41 0x4F $
+    [ return VoidExpr
+    , ObjQualRefExpr <$> D.get
+    , ObjParenExpr   <$> D.get
+    , pure Literal      <*> D.get <*> D.get
+    , pure AssignExpr   <*> D.get <*> D.get <*> D.get <*> D.get
+    , pure Equation     <*> D.get <*> D.get <*> D.get <*> D.get
+    , pure PrefixExpr   <*> D.get <*> D.get <*> D.get
+    , pure ArraySubExpr <*> D.get <*> D.get <*> D.get
+    , pure FuncCall     <*> D.get <*> D.get <*> D.get
+    , pure InitExpr     <*> D.get <*> D.get <*> D.get <*> D.get
+    , pure StructExpr   <*> D.get <*> D.get <*> D.get
+    , pure LambdaExpr   <*> D.get <*> D.get <*> D.get
+    , pure FuncExpr     <*> D.get <*> D.get <*> D.get <*> D.get
+    , pure RuleExpr     <*> D.get <*> D.get <*> D.get
+    , pure MetaEvalExpr <*> D.get <*> D.get
+    ]
+
+instance D.Binary a ExecUnit => D.Binary (TyChkExpr a) ExecUnit where
+  put o = case o of
+    NotTypeChecked a       -> D.prefixByte 0x51 $ D.put a
+    TypeChecked    a b c   -> D.prefixByte 0x52 $ D.put a >> D.put b >> D.put c
+    DisableCheck   a b c d -> D.prefixByte 0x53 $ D.put a >> D.put b >> D.put c >> D.put d
+  get = D.word8PrefixTable
+instance D.Binary a ExecUnit => D.HasPrefixTable (TyChkExpr a) D.Byte ExecUnit where
+  prefixTable = D.mkPrefixTableWord8 "Dao.Object.TyChkExpr" 0x51 0x53 $
+    [ NotTypeChecked <$> D.get
+    , pure TypeChecked  <*> D.get <*> D.get <*> D.get
+    , pure DisableCheck <*> D.get <*> D.get <*> D.get <*> D.get
+    ]
+
+instance D.Binary ParamExpr ExecUnit where
+  put (ParamExpr True  a b) = D.prefixByte 0x54 $ D.put a >> D.put b
+  put (ParamExpr False a b) = D.prefixByte 0x55 $ D.put a >> D.put b
+  get = D.word8PrefixTable
+instance D.HasPrefixTable ParamExpr D.Byte ExecUnit where
+  prefixTable = D.mkPrefixTableWord8 "Dao.Object.ParamExpr" 0x54 0x55 $
+    [ pure (ParamExpr True ) <*> D.get <*> D.get
+    , pure (ParamExpr False) <*> D.get <*> D.get
+    ]
+
+instance D.Binary PrefixOp ExecUnit where
+  put o = D.putWord8 $ case o of
+    { INVB   -> 0x5A; NOT -> 0x5B; NEGTIV -> 0x5C
+    ; POSTIV -> 0x5D; REF -> 0x5E; DEREF  -> 0x5F }
+  get = D.word8PrefixTable
+instance D.HasPrefixTable PrefixOp D.Byte ExecUnit where
+  prefixTable = D.mkPrefixTableWord8 "Dao.Object.PrefixOp" 0x5A 0x5F $
+    map return [INVB, NOT, NEGTIV, POSTIV, REF, DEREF]
+
+instance D.Binary UpdateOp ExecUnit where
+  put o = D.putWord8 $ case o of
+    UCONST -> 0x61
+    UADD   -> 0x62
+    USUB   -> 0x63
+    UMULT  -> 0x64
+    UDIV   -> 0x65
+    UMOD   -> 0x66
+    UPOW   -> 0x67
+    UORB   -> 0x68
+    UANDB  -> 0x69
+    UXORB  -> 0x6A
+    USHL   -> 0x6B
+    USHR   -> 0x6C
+    UARROW -> 0x6D
+  get = D.word8PrefixTable
+instance D.HasPrefixTable UpdateOp D.Byte ExecUnit where
+  prefixTable = D.mkPrefixTableWord8 "Dao.Object.UpdateOp" 0x61 0x6D $ map return $
+    [UCONST, UADD, USUB, UMULT, UDIV, UMOD, UPOW, UORB, UANDB, UXORB, USHL, USHR, UARROW]
+
+-- The byte prefixes overlap with the update operators of similar function to
+-- the operators, except for the comparison opeators (EQUL, NEQUL, GTN, LTN,
+-- GTEQ, LTEQ) which overlap with the prefix operators (INVB, NOT, NEGTIV, POSTIV, REF, DEREF)
+instance D.Binary InfixOp ExecUnit where
+  put o = D.putWord8 $ case o of
+    { EQUL -> 0x5A; NEQUL -> 0x5B; GTN -> 0x5C; LTN -> 0x5D; GTEQ -> 0x5E; LTEQ -> 0x5F
+    ; ADD  -> 0x62; SUB -> 0x63; MULT -> 0x64; DIV   -> 0x65
+    ; MOD  -> 0x66; POW -> 0x67; ORB  -> 0x68; ANDB  -> 0x69
+    ; XORB -> 0x6A; SHL -> 0x6B; SHR  -> 0x6C; ARROW -> 0x6D
+    ; OR   -> 0x6E; AND -> 0x6F } 
+  get = D.word8PrefixTable
+instance D.HasPrefixTable InfixOp D.Byte ExecUnit where
+  prefixTable = D.mkPrefixTableWord8 "Dao.Object.InfixOp" 0x5A 0x6E $ let {r=return; z=mzero} in
+    [ r EQUL , r NEQUL, r GTN , r LTN, r GTEQ , r LTEQ , z, z
+    , r ADD  , r SUB  , r MULT, r DIV, r MOD  , r POW  , r ORB
+    , r ANDB , r XORB , r SHL , r SHR, r ARROW, r OR   , r AND
+    ]
+
+instance D.Binary ParenExpr ExecUnit where
+  put (ParenExpr a b) = D.put a >> D.put b
+  get = pure ParenExpr <*> D.get <*> D.get
+
+instance D.Binary LValueExpr ExecUnit where
+  put (LValueExpr o) = D.put o
+  get = LValueExpr <$> D.get
+
+instance D.Binary ParamListExpr ExecUnit where
+  put (ParamListExpr lst loc) = D.put lst >> D.put loc
+  get = pure ParamListExpr <*> D.get <*> D.get
+
+instance D.Binary RuleStrings ExecUnit where
+  put (RuleStrings a b) = D.put a >> D.put b
+  get = pure RuleStrings <*> D.get <*> D.get
+
+instance D.Binary ObjListExpr ExecUnit where
+  put (ObjListExpr a b) = D.put a >> D.put b
+  get = pure ObjListExpr <*> D.get <*> D.get
+
+instance D.Binary OptObjListExpr ExecUnit where
+  put (OptObjListExpr o) = D.put o
+  get = OptObjListExpr <$> D.get
 
 ----------------------------------------------------------------------------------------------------
 
@@ -448,11 +667,11 @@ instance B.Binary QualRefExpr where
       0x8F -> f GLOBAL
       _    -> liftM UnqualRefExpr B.get
 
+----------------------------------------------------------------------------------------------------
+
 instance (B.Binary a, RealFloat a) => B.Binary (Complex a) where
   put o = B.put (realPart o) >> B.put (imagPart o)
   get = liftM2 (:+) B.get B.get
-
-----------------------------------------------------------------------------------------------------
 
 instance B.Binary GlobUnit where
   put p = case p of

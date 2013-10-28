@@ -1345,6 +1345,9 @@ instance Executable ObjListExpr [ParamValue] where
       Nothing  -> execThrow $ OList [ostr "expression used in list evaluated to void"]
       Just val -> return [ParamValue{paramValue=val, paramOrigExpr=expr}]
 
+instance Executable OptObjListExpr [ParamValue] where
+  execute (OptObjListExpr lst) = maybe (return []) execute lst
+
 -- | Evaluate an 'Exec', but if it throws an exception, set record an 'Dao.Object.ObjectExpr' where
 -- the exception occurred in the exception information.
 updateExecError :: (ExecError -> ExecError) -> Exec a -> Exec a
@@ -1374,15 +1377,26 @@ instance Executable ObjectExpr (Maybe Object) where
         Just prevVal -> fmap Just $
           checkPValue (getLocation expr0) "assignment expression" [prevVal, expr] $ (updatingOps!op) prevVal expr
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    ArraySubExpr o i loc -> do
+      o <- execute o >>= checkVoid loc "operand of subscript expression" >>= derefObject
+      fmap Just $ execute i >>= mapM (derefObject . paramValue) >>= foldM indexObject o
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     FuncCall op args loc -> do -- a built-in function call
       obj  <- execute op >>= checkVoid loc "function selector evaluates to void"
       op   <- mplus (asReference obj) $ execThrow $
         OList [ostr "function selector does not evaluate to reference", obj]
       execute args >>= callFunction op
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    ArraySubExpr o i loc -> do
-      o <- execute o >>= checkVoid loc "operand of subscript expression" >>= derefObject
-      fmap Just $ execute i >>= mapM (derefObject . paramValue) >>= foldM indexObject o
+    InitExpr ref initList initMap loc -> do
+      tab <- execGetObjTable (toUStr ref)
+      let erf = ORef $ Unqualified $ refFromExpr ref
+      case tab of
+        Nothing  -> execThrow $ OList [ostr "object type is not available", erf]
+        Just tab -> case objInitializer tab of
+          Nothing   -> execThrow $ OList [ostr "object type cannot be used as initializer", erf]
+          Just init -> execute initList >>= mapM execute >>= \list ->
+            catchReturn $ execFuncPushStack T.Void $ fmap (Just . flip OHaskell tab) $
+              execute initMap >>= mapM execute >>= init list
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     Equation  left' op right' loc -> do
       let err1 msg = msg++"-hand operand of "++show op++ "operator "
@@ -1425,7 +1439,7 @@ instance Executable ObjectExpr (Maybe Object) where
       let fol tre pat = T.unionWith (++) tre (toTree pat [exec])
       return $ Just $ error "TODO: RuleExpr needs to evaluate to an Object containing a GlobAction"
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    MetaEvalExpr expr loc -> error "TODO: MetaEvalExpr needs to evaluate to an Object containing an AST_Script"
+    MetaEvalExpr expr _ -> catchReturn (execute expr)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
 instance Executable LValueExpr (Maybe Object) where { execute (LValueExpr expr) = execute expr }

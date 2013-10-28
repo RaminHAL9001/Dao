@@ -396,7 +396,6 @@ instance UStrType CoreType where
   fromUStr a = case maybeFromUStr a of
     Nothing -> error (show a++" is not a valid type identifier")
     Just  a -> a
-
 oBool :: Bool -> Object
 oBool a = if a then OTrue else ONull
 
@@ -412,6 +411,26 @@ instance Monoid Reference where
 instance HasNullValue Reference where
   nullValue = mempty
   testNull (Reference a) = null a
+
+instance Read Reference where
+  readsPrec _ str = case str of
+    c:cx | isAlpha c ->
+      case break (\c -> c=='.' || isAlphaNum c) str of
+        (cx, str) ->
+          maybe [] (return . (\ref -> (Reference ref, str))) $ sequence $
+            fix (\loop str -> case break (=='.') str of
+                    (cx, str) -> case cx of
+                      [] -> []
+                      cx -> maybeFromUStr (ustr (dropWhile (=='.') cx)) : loop str
+                ) cx
+    _ -> mzero
+
+instance UStrType Reference where
+  toUStr (Reference nx) = ustr $ intercalate "." $ map uchars nx
+  maybeFromUStr str = case readsPrec 0 (uchars str) of
+    [(ref, "")] -> Just ref
+    _           -> Nothing
+  nil = mempty
 
 -- | Direct a reference at a particular tree in the runtime.
 data RefQualifier
@@ -652,6 +671,17 @@ data RefExpr = RefExpr Reference Location deriving (Eq, Ord, Typeable, Show)
 instance HasNullValue RefExpr where
   nullValue = RefExpr nullValue LocationUnknown
   testNull (RefExpr a _) = testNull a
+
+instance Read RefExpr where
+  readsPrec prec = readsPrec prec >=> (\ (ref, str) -> return (RefExpr ref LocationUnknown, str))
+
+instance UStrType RefExpr where
+  toUStr (RefExpr ref _) = toUStr ref
+  maybeFromUStr str = flip RefExpr LocationUnknown <$> maybeFromUStr str
+  nil = RefExpr nil LocationUnknown
+
+refFromExpr :: RefExpr -> Reference
+refFromExpr (RefExpr ref _) = ref
 
 data QualRefExpr
   = UnqualRefExpr            RefExpr
@@ -1416,10 +1446,10 @@ execReadTopStackItem (Stack stks) lkup = case stks of
 
 ----------------------------------------------------------------------------------------------------
 
-newtype MethodTable = MethodTable (M.Map TypeRep (ObjectInterface Dynamic))
-execGetObjTable :: TypeRep -> Exec (Maybe (ObjectInterface Dynamic))
-execGetObjTable typ =
-  globalMethodTable <$> asks parentRuntime >>= \ (MethodTable m) -> return (M.lookup typ m)
+newtype MethodTable = MethodTable (M.Map UStr (ObjectInterface Dynamic))
+execGetObjTable :: UStr -> Exec (Maybe (ObjectInterface Dynamic))
+execGetObjTable nm =
+  globalMethodTable <$> asks parentRuntime >>= \ (MethodTable tab) -> return (M.lookup nm tab)
 
 -- | The 'Dao.Runtime.GenRuntime' general type is made specific with this type synonym.
 type Runtime = GenRuntime MethodTable ExecUnit
@@ -1690,7 +1720,7 @@ data ObjectInterface typ =
   , objIterator      :: Maybe (typ -> Exec [Object], typ -> [Object] -> Exec typ)                 -- ^ defined by 'defIterator'
   , objIndexer       :: Maybe (typ -> Object -> Exec Object)                                      -- ^ defined by 'defIndexer'
   , objTreeFormat    :: Maybe (typ -> Exec T_tree, T_tree -> Exec typ)                            -- ^ defined by 'defTreeFormat'
-  , objInitializer   :: Maybe ([Object] -> T_tree -> Exec typ)                                    -- ^ defined by 'defInitializer'
+  , objInitializer   :: Maybe ([Object] -> [Object] -> Exec typ)                                  -- ^ defined by 'defInitializer'
   , objUpdateOpTable :: Maybe (Array UpdateOp (Maybe (UpdateOp -> typ -> Object -> Exec Object))) -- ^ defined by 'defUpdateOp'
   , objInfixOpTable  :: Maybe (Array InfixOp  (Maybe (InfixOp  -> typ -> Object -> Exec Object))) -- ^ defined by 'defInfixOp'
   , objPrefixOpTable :: Maybe (Array PrefixOp (Maybe (PrefixOp -> typ -> Exec Object)))           -- ^ defined by 'defPrefixOp'
@@ -1769,7 +1799,7 @@ data ObjIfc typ =
   , objIfcIterator      :: Maybe (typ -> Exec [Object], typ -> [Object] -> Exec typ)
   , objIfcIndexer       :: Maybe (typ -> Object -> Exec Object)
   , objIfcTreeFormat    :: Maybe (typ -> Exec T_tree, T_tree -> Exec typ)
-  , objIfcInitializer   :: Maybe ([Object] -> T_tree -> Exec typ)
+  , objIfcInitializer   :: Maybe ([Object] -> [Object] -> Exec typ)
   , objIfcUpdateOpTable :: [(UpdateOp, UpdateOp -> typ -> Object -> Exec Object)]
   , objIfcInfixOpTable  :: [(InfixOp , InfixOp  -> typ -> Object -> Exec Object)]
   , objIfcPrefixOpTable :: [(PrefixOp, PrefixOp -> typ -> Exec Object)]
@@ -1961,7 +1991,7 @@ defTreeFormat encode decode = updObjIfc(\st->st{objIfcTreeFormat=Just(encode,dec
 -- evaluated with a list of object values passed as the first parameter which contain the object
 -- values written in the parentheses, and a 'T_tree' as the second paramter containing the tree
 -- structure that was constructed with the expression in the braces.
-defInitializer :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => ([Object] -> T_tree -> Exec typ) -> DaoClassDef typ ()
+defInitializer :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => ([Object] -> [Object] -> Exec typ) -> DaoClassDef typ ()
 defInitializer fn = updObjIfc(\st->st{objIfcInitializer=Just fn})
 
 -- | Overload update/assignment operators in the Dao programming language, for example @=@, @+=@,

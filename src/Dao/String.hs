@@ -51,6 +51,7 @@ module Dao.String where
 import           Control.Monad
 import           Control.Monad.State
 import           Control.DeepSeq
+import           Control.Exception (assert)
 
 import           Data.String
 import           Data.Monoid
@@ -242,6 +243,9 @@ vlIntToInteger = loop 0 where
         then ((if w .&. 0x40 == 0 then id else negate) $ fn 6 0x3F a w, wx)
         else loop (fn 7 0x7F a w) wx
 
+putVLInt :: (Integral a, Bits a) => a -> B.Put
+putVLInt = mapM_ B.putWord8 . bitsToVLInt
+
 -- | When reading from a binary file, gather the bits of a Variable-Length Integer.
 gatherVLInt :: B.Get [Word8]
 gatherVLInt = loop [] where
@@ -250,14 +254,33 @@ gatherVLInt = loop [] where
 getFromVLInt :: (Integral a, Bits a) => B.Get a
 getFromVLInt = fmap (fst . vlIntToBits) gatherVLInt
 
-putVLInt :: (Integral a, Bits a) => a -> B.Put
-putVLInt = mapM_ B.putWord8 . bitsToVLInt
+-- | Encode only positive 'Prelude.Integer's. This differs from 'putVLInteger' in that the sign of
+-- the integer is not stored in the byte stream, saving a single bit of space. This can actually
+-- simplify some equations that expect an VLInteger to be encoded as a multiple-of-7 length string
+-- of bits as you don't need to make additional rules for the final byte which would only have
+-- 6-bits if the sign is stored with it.
+putPosVLInteger :: Integer -> B.Put
+putPosVLInteger i = assert (i>=0) $ mapM_ B.putWord8 $ bitsToVLInt $ i
 
-getVLInteger :: B.Get Integer
-getVLInteger = fmap (fst . vlIntToInteger) gatherVLInt
+-- | Decode only positive 'Prelude.Integer's. This differs from 'putVLInteger' in that the sign of
+-- the integer is not stored in the byte stream, saving a single bit of space. This can actually
+-- simplify some equations that expect an VLInteger to be encoded as a multiple-of-7 length string
+-- of bits as you don't need to make additional rules for the final byte which only have 6-bits if
+-- the sign is stored with it.
+getPosVLInteger :: B.Get Integer
+getPosVLInteger = fmap (fst . vlIntToBits) gatherVLInt
 
+-- | Encode a positive or negative 'Prelude.Integer' using 'vlIntToInteger'. The sign of the integer
+-- is stored in the final byte in the list of encoded bytes, so the final encoded byte only has 6
+-- bits of information, rather than 7 in the case of positive integers.
 putVLInteger :: Integer -> B.Put
 putVLInteger = mapM_ B.putWord8 . integerToVLInt
+
+-- | Decode a positive or negative 'Prelude.Integer' using 'vlIntToInteger'. The sign of the integer
+-- is stored in the final byte in the list of encoded bytes, so the final encoded byte only has 6
+-- bits of information, rather than 7 in the case of positive integers.
+getVLInteger :: B.Get Integer
+getVLInteger = fmap (fst . vlIntToInteger) gatherVLInt
 
 -- | Return the length of the 'UStr'.
 ulength :: UStr -> Int

@@ -84,76 +84,206 @@ import qualified Data.Binary.Put      as B
 ----------------------------------------------------------------------------------------------------
 
 type Byte = Word8
-newtype GGet gtab a = GGet  { decoderToStateT :: S.StateT gtab B.Get a }
-instance Functor (GGet gtab) where { fmap f (GGet a) = GGet (fmap f a) }
-newtype GPutM gtab a = GPutM { encoderToStateT :: S.StateT gtab B.PutM a }
-type GPut gtab = GPutM gtab ()
-
-class HasCoderTable mtab exec where
-  getEncoderForType :: TypeRep -> exec (Dynamic -> GPut mtab)
-  getDecoderForType :: TypeRep -> exec (GGet mtab Dynamic)
+type InStreamID = Word32
 
 -- | A data type used to help instantiate the 'Dao.Binary.Binary' class. Refer to the
 -- 'fromDataBinary' function for more details.
-data Serializer gtab a = Serializer{ serializeGet :: GGet gtab a, serializePut :: a -> GPutM gtab () }
+data Serializer mtab a = Serializer{ serializeGet :: GGet mtab a, serializePut :: a -> GPutM mtab () }
 
 -- | Minimal complete definition is to either instantiate both 'get' and 'put', or to instnatiate
 -- just 'serializer'. You can instantiate all three if you want but that may cause a lot of
 -- confusion. Apart from 'serializer', it is identical to the 'Data.Binary.Binary' class, so please
 -- refer to that module for more background information on how to use this one.
-class Binary a gtab where
-  get :: GGet gtab a
+class Binary a mtab where
+  get :: GGet mtab a
   get = serializeGet serializer
-  put :: a -> GPutM gtab ()
+  put :: a -> GPutM mtab ()
   put = serializePut serializer
-  serializer :: Serializer gtab a
+  serializer :: Serializer mtab a
   serializer = Serializer{serializeGet=Dao.Binary.get,serializePut=Dao.Binary.put}
 
-instance Monad (GGet gtab) where
-  return = GGet . return
-  (GGet a) >>= fn = GGet (a >>= decoderToStateT . fn)
-instance MonadPlus   (GGet gtab) where { mzero = GGet mzero; mplus (GGet a) (GGet b) = GGet (mplus a b); }
-instance Applicative (GGet gtab) where { pure=return; (<*>)=ap; }
-instance Alternative (GGet gtab) where { empty=mzero; (<|>)=mplus; }
-instance Monoid a => Monoid (GGet gtab a) where
-  mempty=return mempty
-  mappend a b = a >>= \a -> b >>= \b -> return (mappend a b)
+class HasCoderTable mtab where
+  getEncoderForType :: UStr -> Maybe (Dynamic -> GPut mtab)
+  getDecoderForType :: UStr -> Maybe (GGet mtab Dynamic)
 
-instance Functor (GPutM gtab) where { fmap f (GPutM a) = GPutM (fmap f a) }
-instance Monad (GPutM gtab) where
-  return = GPutM . return
-  (GPutM a) >>= fn = GPutM (a >>= encoderToStateT . fn)
-instance Applicative (GPutM gtab) where { pure=return; (<*>)=ap; }
-instance Monoid a => Monoid (GPutM gtab a) where
+data EncodeIndex mtab
+  = EncodeIndex
+    { indexCounter :: InStreamID
+    , encodeIndex  :: M.Map UStr InStreamID
+    , encMTabRef   :: mtab
+    }
+
+data DecodeIndex mtab
+  = DecodeIndex
+    { decodeIndex  :: M.Map InStreamID UStr
+    , decMTabRef   :: mtab
+    }
+
+newtype GPutM mtab a = PutM{ encoderToStateT :: S.StateT (EncodeIndex mtab) B.PutM a }
+type GPut mtab = GPutM mtab ()
+
+newtype GGet mtab a = Get{ decoderToStateT :: S.StateT (DecodeIndex mtab) B.Get a }
+
+instance Functor (GPutM mtab) where { fmap f (PutM a) = PutM (fmap f a) }
+instance Monad (GPutM mtab) where
+  return = PutM . return
+  (PutM a) >>= fn = PutM (a >>= encoderToStateT . fn)
+instance Applicative (GPutM mtab) where { pure=return; (<*>)=ap; }
+instance Monoid a => Monoid (GPutM mtab a) where
   mempty=return mempty
   mappend a b = a >>= \a -> b >>= \b -> return (mappend a b)
+instance HasCoderTable mtab => S.MonadState (EncodeIndex mtab) (GPutM mtab) where
+  state fn = PutM (S.state fn)
+
+instance Functor (GGet mtab) where { fmap f (Get a) = Get (fmap f a) }
+instance Monad (GGet mtab) where
+  return = Get . return
+  (Get a) >>= fn = Get (a >>= decoderToStateT . fn)
+instance MonadPlus   (GGet mtab) where { mzero = Get mzero; mplus (Get a) (Get b) = Get (mplus a b); }
+instance Applicative (GGet mtab) where { pure=return; (<*>)=ap; }
+instance Alternative (GGet mtab) where { empty=mzero; (<|>)=mplus; }
+instance Monoid a => Monoid (GGet mtab a) where
+  mempty=return mempty
+  mappend a b = a >>= \a -> b >>= \b -> return (mappend a b)
+instance HasCoderTable mtab => S.MonadState (DecodeIndex mtab) (GGet mtab) where
+  state fn = Get (S.state fn)
+
+-- | This class only exists to provide the the function 'getCoderTable' with the exact same function
+-- in both the 'GPutM' and 'GGet' monads, rather than having a separate function for each monad.
+class HasCoderTable mtab => ProvidesCoderTable m mtab where { getCoderTable :: m mtab }
+instance HasCoderTable mtab => ProvidesCoderTable (GPutM mtab) mtab where { getCoderTable = S.gets encMTabRef }
+instance HasCoderTable mtab => ProvidesCoderTable (GGet  mtab) mtab where { getCoderTable = S.gets decMTabRef }
+
+data InStreamIndex = InStreamIndex{ inStreamIndexID :: InStreamID, inStreamIndexLabel :: UStr }
+  deriving (Eq, Ord, Show)
+instance HasCoderTable mtab => Binary InStreamIndex mtab where
+  put (InStreamIndex a b) = prefixByte 0x01 $ put a >> put b
+  get = tryWord8 0x01 $ pure InStreamIndex <*> get <*> get
+
+-- | Given an 'Data.Int.Int64' length value, compute how many VLI bytes of hash code should be
+-- necessary to for a byte stream of that length, and return an 'Data.Word.Word64' value trimmed to
+-- that byte length.
+trimIntegerHash :: Int64 -> Integer -> (Int, Integer)
+trimIntegerHash i h = snd $ head $ dropWhile ((i<) . fst) $
+  map (\x -> (2^(8+4*fromIntegral x), (x, h .&. (2^(7*x)-1)))) [0..14::Int]
+
+-- | A trimmed hash is an hash produced by SHA1 along with the length of the original data. However
+-- it instantiates 'Prelude.Eq', and 'Binary' in such a way that only a maximum of 5 bytes of the
+-- hash value are ever stored and used for verification. This is to conserve space in a byte stream
+-- when writing smaller chunks of data. For example, it is not necessary to store all 20 bytes of
+-- the hash code when the data you are storing or reading is itself 20 bytes long.
+data TrimmedHash = TrimmedHash Int64 Integer deriving (Eq, Ord)
+instance Binary TrimmedHash mtab where
+  put (TrimmedHash i h) =
+    let (len, h) = trimIntegerHash i h in if len>0 then Dao.Binary.putPosVLInteger h else return ()
+  get = TrimmedHash (error "TrimmedHash length not set") <$> Dao.Binary.getPosVLInteger
+
+-- | Create a 'TrimmedHash' a list of bytes as the second parameter and the maximum length of the
+-- list as the first parameter.
+trimmedHash :: Int64 -> Z.ByteString -> TrimmedHash
+trimmedHash len = TrimmedHash len . snd . trimIntegerHash len . SHA1.toInteger . hash .
+  map snd . takeWhile ((>0) . fst) . zip (iterate (\x->x-1) len) . Z.unpack
+
+-- not for export
+setTrimmedHashLength :: Int64 -> TrimmedHash -> TrimmedHash
+setTrimmedHashLength i (TrimmedHash _ h) = TrimmedHash i h
+
+trimmedHashVerify :: Z.ByteString -> TrimmedHash -> Bool
+trimmedHashVerify b h@(TrimmedHash i _) = h == trimmedHash i b
+
+-- | A lazy block stream that wraps up a 'Data.ByteString.Lazy.ByteString' in a data type that
+-- instantiates 'Binary' in such a way that the bytes are written lazily in chunks of 1 megabyte
+-- blocks with checksums, providing a protocol that can encode and decode arbitrarily large data
+-- without interfearing with the protocol used by this module.
+newtype BlockStream1M = BlockStream1M { block1MStreamToByteString :: Z.ByteString }
+instance Binary BlockStream1M mtab where
+  put =
+    mapM_ (\blk -> do
+              let len = Z.length blk
+              Dao.Binary.putPosVLInteger (fromIntegral len) >> put (trimmedHash len blk)
+          ) . fix (\loop blk ->
+                      let (a,b) = Z.splitAt (2^20) blk in a : if Z.null b then [] else loop b
+                  ) . block1MStreamToByteString
+  get = (BlockStream1M . Z.concat) <$> loop [] where
+    loop bx = get >>= getLazyByteString >>= \b -> get >>= \cksum ->
+      if trimmedHashVerify b (setTrimmedHashLength (Z.length b) cksum)
+        then loop (bx++[b])
+        else fail "bad checksum"
+
+-- | If the type signature in the given 'Dao.String.UStr' already has an associated type ID in the
+-- encoder table, the existing ID is returned rather than creating a new one, and nothing changes.
+-- If a new ID is created, the 'Dao.String.UStr' is paired with the new ID and written to the byte
+-- stream.
+newInStreamID :: HasCoderTable mtab => UStr -> GPutM mtab InStreamID
+newInStreamID typ = S.get >>= \st -> let idx = encodeIndex st in case M.lookup typ idx of
+  Nothing  -> do
+    let nextID = indexCounter st + 1
+    S.put $ st{indexCounter=nextID, encodeIndex=M.insert typ nextID idx}
+    put $ InStreamIndex{inStreamIndexID=nextID, inStreamIndexLabel=typ}
+    return nextID
+  Just tid -> return tid
+
+-- | When decoding a byte stream, it is up to you to check for the 'InStreamIndex'ies that are
+-- scattered throughout. To do this, 'newInStreamID' is only called after a special escape byte
+-- prefix is seen, for example, the byte prefix used when the 'Dao.Object.OHaskell' constructor is
+-- to be encoded. Once this prefix is decoded you should call 'newInStreamID'. That way, when you
+-- are decoding the byte stream, you will know that 'updateTypes' must be called whenever you decode
+-- the byte prefix for 'Dao.Object.OHaskell'.
+-- 
+-- This function simply checks if a 'InStreamIndex' exists at the current location in the byte
+-- stream. If it does not exist, this function simply returns and does nothing. If it does exist,
+-- the data is pulled out of the stream and the index is updated.
+updateTypes :: HasCoderTable mtab => GGet mtab ()
+updateTypes = flip mplus (return ()) $ tryWord8 0x01 $ do
+  (InStreamIndex tid label) <- get
+  S.modify $ \st -> st{decodeIndex = M.insert tid label (decodeIndex st)}
+
+runPut :: HasCoderTable mtab => mtab -> GPut mtab -> Z.ByteString
+runPut mtab fn = B.runPut $ S.evalStateT (encoderToStateT fn) $
+  EncodeIndex{indexCounter=1, encodeIndex=mempty, encMTabRef=mtab}
+
+runGet :: (HasCoderTable mtab, Binary a mtab) => mtab -> GGet mtab a -> Z.ByteString -> a
+runGet mtab fn = B.runGet $ S.evalStateT (decoderToStateT fn) $
+  DecodeIndex{decodeIndex=mempty, decMTabRef=mtab}
+
+encode :: (HasCoderTable mtab, Binary a mtab) => mtab -> a -> Z.ByteString
+encode mtab = runPut mtab . put
+
+decode :: (HasCoderTable mtab, Binary a mtab) => mtab -> Z.ByteString -> a
+decode mtab = runGet mtab get
+
+encodeFile :: (HasCoderTable mtab, Binary a mtab) => mtab -> FilePath -> a -> IO ()
+encodeFile mtab path = Z.writeFile path . encode mtab
+
+decodeFile :: (HasCoderTable mtab, Binary a mtab) => mtab -> FilePath -> IO a
+decodeFile mtab path = decode mtab <$> Z.readFile path
 
 ----------------------------------------------------------------------------------------------------
 
-class (Ix i, Binary i gtab, Binary a gtab) => HasPrefixTable a i gtab where { prefixTable :: PrefixTable gtab i a }
+class (Ix i, Binary i mtab, Binary a mtab) => HasPrefixTable a i mtab where { prefixTable :: PrefixTable mtab i a }
 
 -- | For data types with many constructors, especially enumerated types, it is effiecient if your
 -- decoder performs a single look-ahead to retrieve an index, then use the index to lookup the next
 -- parser in a table. This is a lookup table using 'Data.Array.IArray.Array' as the table which does
 -- exactly that.
-newtype PrefixTable gtab i a = PrefixTable (Maybe (Array i (GGet gtab a)))
+newtype PrefixTable mtab i a = PrefixTable (Maybe (Array i (GGet mtab a)))
 
-instance Ix i => Functor (PrefixTable gtab i) where
+instance Ix i => Functor (PrefixTable mtab i) where
   fmap f (PrefixTable t) = PrefixTable (fmap (amap (fmap f)) t)
-instance (Ix i, Binary a gtab) => Monoid (PrefixTable gtab i a) where
+instance (Ix i, Binary a mtab) => Monoid (PrefixTable mtab i a) where
   mempty = PrefixTable Nothing
   mappend (PrefixTable a) (PrefixTable b) = PrefixTable $ a >>= \a -> b >>= \b -> do
     let ((loA, hiA), (loB, hiB)) = (bounds    a, bounds    b)
     let ( lo       ,  hi       ) = (min loA loB, max hiA hiB)
     Just $ accumArray (flip mplus) mzero (lo, hi) (assocs a ++ assocs b) where
 
-indexDecoderForTable :: Binary i gtab => PrefixTable gtab i a -> GGet gtab i
+indexDecoderForTable :: Binary i mtab => PrefixTable mtab i a -> GGet mtab i
 indexDecoderForTable _ = get
 
 -- | Construct a 'Serializer' from a list of serializers, and each list item will be prefixed with a
 -- byte in the range given. It is necesary for the data type to instantiate 'Data.Typeable.Typeable'
 -- in order to 
-mkPrefixTable :: (Ix i, Num i) => String -> i -> i -> [GGet gtab a] -> PrefixTable gtab i a
+mkPrefixTable :: (Ix i, Num i) => String -> i -> i -> [GGet mtab a] -> PrefixTable mtab i a
 mkPrefixTable msg lo' hi' ser = assert (0<len && len<=hi-lo) table where
   len   = fromIntegral (length ser)
   lo    = min lo' hi'
@@ -161,21 +291,21 @@ mkPrefixTable msg lo' hi' ser = assert (0<len && len<=hi-lo) table where
   idxs  = takeWhile (<=hi) (iterate (+1) lo)
   table = PrefixTable $ Just $ accumArray (flip mplus) mzero (lo, hi) (zip idxs ser)
 
-mkPrefixTableWord8 :: String -> Byte -> Byte -> [GGet gtab a] -> PrefixTable gtab Byte a
+mkPrefixTableWord8 :: String -> Byte -> Byte -> [GGet mtab a] -> PrefixTable mtab Byte a
 mkPrefixTableWord8 msg lo' hi' ser = mkPrefixTable msg lo hi ser where
   lo = min lo' hi'
   hi = max lo' hi'
 
-runPrefixTable :: (Ix i, Binary i gtab) => PrefixTable gtab i a -> GGet gtab a
+runPrefixTable :: (Ix i, Binary i mtab) => PrefixTable mtab i a -> GGet mtab a
 runPrefixTable tab@(PrefixTable t) = flip (maybe mzero) t $ \decoderArray -> do
   prefix <- indexDecoderForTable tab
   guard $ inRange (bounds decoderArray) prefix
   decoderArray!prefix
 
-word8PrefixTable :: HasPrefixTable a Byte gtab => GGet gtab a
-word8PrefixTable = runPrefixTable (prefixTable :: HasPrefixTable a Byte gtab => PrefixTable gtab Byte a)
+word8PrefixTable :: HasPrefixTable a Byte mtab => GGet mtab a
+word8PrefixTable = runPrefixTable (prefixTable :: HasPrefixTable a Byte mtab => PrefixTable mtab Byte a)
 
-prefixByte :: Byte -> GPut gtab -> GPut gtab
+prefixByte :: Byte -> GPut mtab -> GPut mtab
 prefixByte w fn = putWord8 w >> fn
 
 -- | This is a polymorphic object that has been constructed using the instances of the canonical
@@ -190,96 +320,108 @@ prefixByte w fn = putWord8 w >> fn
 -- I need my own versions of 'Data.Binary.get' and 'Data.Binary.put' for certain types like
 -- 'Data.Maybe' and list types. So unfortunately, we are stuck declaring a new instance for every
 -- data type that needs serialization.
-fromDataBinary :: B.Binary a => Serializer gtab a
+fromDataBinary :: B.Binary a => Serializer mtab a
 fromDataBinary =
   Serializer
   { serializeGet = dataBinaryGet B.get
   , serializePut = dataBinaryPut . B.put
   }
 
-dataBinaryPut :: B.PutM a -> GPutM gtab a
-dataBinaryPut = GPutM . lift
+dataBinaryPut :: B.PutM a -> GPutM mtab a
+dataBinaryPut = PutM . lift
 
-dataBinaryGet :: B.Get a -> GGet gtab a
-dataBinaryGet = GGet . lift
+dataBinaryGet :: B.Get a -> GGet mtab a
+dataBinaryGet = Get . lift
 
-lookAhead :: GGet gtab a -> GGet gtab a
-lookAhead (GGet fn) = GGet (S.get >>= lift . B.lookAhead . S.evalStateT fn)
+lookAhead :: GGet mtab a -> GGet mtab a
+lookAhead (Get fn) = Get (S.get >>= lift . B.lookAhead . S.evalStateT fn)
 
-putWord8    = GPutM . lift . B.putWord8
-putWord16be = GPutM . lift . B.putWord16be
-putWord16le = GPutM . lift . B.putWord16le
-putWord32be = GPutM . lift . B.putWord32be
-putWord32le = GPutM . lift . B.putWord32le
-putWord64be = GPutM . lift . B.putWord64be
-putWord64le = GPutM . lift . B.putWord64le
+putWord8    = PutM . lift . B.putWord8
+putWord16be = PutM . lift . B.putWord16be
+putWord16le = PutM . lift . B.putWord16le
+putWord32be = PutM . lift . B.putWord32be
+putWord32le = PutM . lift . B.putWord32le
+putWord64be = PutM . lift . B.putWord64be
+putWord64le = PutM . lift . B.putWord64le
 
-getWord8    = GGet  $ lift $ B.getWord8
-getWord16be = GGet  $ lift $ B.getWord16be
-getWord16le = GGet  $ lift $ B.getWord16le
-getWord32be = GGet  $ lift $ B.getWord32be
-getWord32le = GGet  $ lift $ B.getWord32le
-getWord64be = GGet  $ lift $ B.getWord64be
-getWord64le = GGet  $ lift $ B.getWord64le
+getWord8    = Get  $ lift $ B.getWord8
+getWord16be = Get  $ lift $ B.getWord16be
+getWord16le = Get  $ lift $ B.getWord16le
+getWord32be = Get  $ lift $ B.getWord32be
+getWord32le = Get  $ lift $ B.getWord32le
+getWord64be = Get  $ lift $ B.getWord64be
+getWord64le = Get  $ lift $ B.getWord64le
 
-putVLInt :: (Integral a, Bits a) => a -> GPut gtab
+putVLInt :: (Integral a, Bits a) => a -> GPut mtab
 putVLInt = dataBinaryPut . Dao.String.putVLInt
 
-getFromVLInt :: (Integral a, Bits a) => GGet gtab a
+getFromVLInt :: (Integral a, Bits a) => GGet mtab a
 getFromVLInt = dataBinaryGet Dao.String.getFromVLInt
 
-putByteString :: B.ByteString -> GPut gtab
+putByteString :: B.ByteString -> GPut mtab
 putByteString = dataBinaryPut . B.putByteString
 
-putLazyByteString :: Z.ByteString -> GPut gtab
+putLazyByteString :: Z.ByteString -> GPut mtab
 putLazyByteString = dataBinaryPut . B.putLazyByteString
 
-getByteString :: Int -> GGet gtab B.ByteString
+getByteString :: Int -> GGet mtab B.ByteString
 getByteString = dataBinaryGet . B.getByteString
 
-getLazyByteString :: Int64 -> GGet gtab Z.ByteString
+getLazyByteString :: Int64 -> GGet mtab Z.ByteString
 getLazyByteString = dataBinaryGet . B.getLazyByteString
 
 -- | Look ahead one byte, if the byte is the number you are expecting drop the byte and evaluate the
 -- given 'GGet' function, otherwise backtrack.
-tryWord8 :: Word8 -> GGet gtab a -> GGet gtab a
+tryWord8 :: Word8 -> GGet mtab a -> GGet mtab a
 tryWord8 w fn = lookAhead getWord8 >>= guard . (w==) >> getWord8 >> fn
 
-instance Binary Int8   gtab  where
+putPosVLInteger :: Integral i => i -> GPut mtab
+putPosVLInteger = dataBinaryPut . Dao.String.putPosVLInteger . fromIntegral
+
+getPosVLInteger :: Integral i => GGet mtab i
+getPosVLInteger = fromIntegral <$> dataBinaryGet Dao.String.getVLInteger
+
+putVLInteger :: Integral i => i -> GPut mtab
+putVLInteger = dataBinaryPut . Dao.String.putVLInteger . fromIntegral
+
+getVLInteger :: Integral i => GGet mtab i
+getVLInteger = fmap fromIntegral $ dataBinaryGet Dao.String.getVLInteger
+
+instance Binary Int8   mtab  where
   put = putWord8 . fromIntegral
   get = fmap fromIntegral getWord8
-instance Binary Int16  gtab  where { put = Dao.Binary.putVLInt; get = Dao.Binary.getFromVLInt }
-instance Binary Int32  gtab  where { put = Dao.Binary.putVLInt; get = Dao.Binary.getFromVLInt }
-instance Binary Int64  gtab  where { put = Dao.Binary.putVLInt; get = Dao.Binary.getFromVLInt }
-instance Binary Int    gtab  where { put = Dao.Binary.putVLInt; get = Dao.Binary.getFromVLInt }
-instance Binary Word8  gtab  where { put = Dao.Binary.putVLInt; get = Dao.Binary.getFromVLInt }
-instance Binary Word16 gtab  where { put = Dao.Binary.putVLInt; get = Dao.Binary.getFromVLInt }
-instance Binary Word32 gtab  where { put = Dao.Binary.putVLInt; get = Dao.Binary.getFromVLInt }
-instance Binary Word64 gtab  where { put = Dao.Binary.putVLInt; get = Dao.Binary.getFromVLInt }
-instance Binary Word   gtab  where { put = Dao.Binary.putVLInt; get = Dao.Binary.getFromVLInt }
-instance Binary Float  gtab  where
+instance Binary Int16  mtab  where { put = Dao.Binary.putVLInteger; get = Dao.Binary.getVLInteger }
+instance Binary Int32  mtab  where { put = Dao.Binary.putVLInteger; get = Dao.Binary.getVLInteger }
+instance Binary Int64  mtab  where { put = Dao.Binary.putVLInteger; get = Dao.Binary.getVLInteger }
+instance Binary Int    mtab  where { put = Dao.Binary.putVLInteger; get = Dao.Binary.getVLInteger }
+instance Binary Word8  mtab  where { put = Dao.Binary.putPosVLInteger; get = Dao.Binary.getPosVLInteger }
+instance Binary Word16 mtab  where { put = Dao.Binary.putPosVLInteger; get = Dao.Binary.getPosVLInteger }
+instance Binary Word32 mtab  where { put = Dao.Binary.putPosVLInteger; get = Dao.Binary.getPosVLInteger }
+instance Binary Word64 mtab  where { put = Dao.Binary.putPosVLInteger; get = Dao.Binary.getPosVLInteger }
+instance Binary Word   mtab  where { put = Dao.Binary.putPosVLInteger; get = Dao.Binary.getPosVLInteger }
+instance Binary Float  mtab  where
   put = dataBinaryPut . B.putFloat32be
   get = dataBinaryGet B.getFloat32be
-instance Binary Double gtab  where
+instance Binary Double mtab  where
   put = dataBinaryPut . B.putFloat64be
   get = dataBinaryGet B.getFloat64be
-instance (RealFloat a, Binary a gtab) => Binary (Complex a) gtab where
+instance (RealFloat a, Binary a mtab) => Binary (Complex a) mtab where
   put (a :+ b) = put a >> put b
   get = pure (:+) <*> get <*> get
 
-instance (Num a, Integral a, Binary a gtab) => Binary (Ratio a) gtab where
-  put o = let p = dataBinaryPut . putVLInteger . fromIntegral in p (numerator o) >> p (denominator o)
-  get = let g = fmap fromIntegral (dataBinaryGet getVLInteger) in pure (%) <*> g <*> g
+instance (Num a, Integral a, Binary a mtab) => Binary (Ratio a) mtab where
+  put o = let p = Dao.Binary.putVLInteger . fromIntegral in p (numerator o) >> p (denominator o)
+  get = let g = fmap fromIntegral (Dao.Binary.getVLInteger) in pure (%) <*> g <*> g
 
-instance Binary Integer gtab where
-  put = dataBinaryPut . putVLInteger
-  get = dataBinaryGet getVLInteger
+instance Binary Integer mtab where
+  put = Dao.Binary.putVLInteger
+  get = Dao.Binary.getVLInteger
 
-instance Binary Char gtab where
+instance Binary Char mtab where
   put = Dao.Binary.putVLInt . ord
   get = fmap chr Dao.Binary.getFromVLInt
 
-instance Binary UTCTime gtab where { serializer = fromDataBinary }
+instance Binary UTCTime mtab where { serializer = fromDataBinary }
 instance B.Binary UTCTime where
   put t = do
     B.put (toModifiedJulianDay (utctDay t))
@@ -289,16 +431,16 @@ instance B.Binary UTCTime where
     t <- fmap fromRational B.get
     return (UTCTime{ utctDay = d, utctDayTime = t })
 
-instance Binary   NominalDiffTime gtab where { serializer = fromDataBinary }
+instance Binary   NominalDiffTime mtab where { serializer = fromDataBinary }
 instance B.Binary NominalDiffTime where
   put t = B.put (toRational t)
   get = fmap fromRational B.get
 
-instance Binary B.ByteString gtab where
+instance Binary B.ByteString mtab where
   put o = Dao.Binary.putVLInt (B.length o) >> Dao.Binary.putByteString o
   get = Dao.Binary.getFromVLInt >>= Dao.Binary.getByteString
 
-instance Binary Z.ByteString gtab where
+instance Binary Z.ByteString mtab where
   put o = Dao.Binary.putVLInt (Z.length o) >> Dao.Binary.putLazyByteString o
   get = Dao.Binary.getFromVLInt >>= Dao.Binary.getLazyByteString
 
@@ -324,21 +466,21 @@ instance (Binary a t, Binary b t, Binary c t, Binary d t, Binary e t, Binary f t
   put (a, b, c, d, e, f, g, h) = put a >> put b >> put c >> put d >> put e >> put f >> put g >> put h
   get = pure (,,,,,,,) <*> get <*> get <*> get <*> get <*> get <*> get <*> get <*> get
 
-instance (Ord i, Binary i gtab, Binary a gtab) => Binary (M.Map   i a) gtab where { put = put . M.assocs ; get = M.fromList  <$> get; }
-instance (                      Binary a gtab) => Binary (Im.IntMap a) gtab where { put = put . Im.assocs; get = Im.fromList <$> get; }
-instance (Ord a,                Binary a gtab) => Binary (S.Set     a) gtab where { put = put . S.elems  ; get = S.fromList  <$> get; }
-instance                                          Binary (Is.IntSet  ) gtab where { put = put . Is.elems ; get = Is.fromList <$> get; }
+instance (Ord i, Binary i mtab, Binary a mtab) => Binary (M.Map   i a) mtab where { put = put . M.assocs ; get = M.fromList  <$> get; }
+instance (                      Binary a mtab) => Binary (Im.IntMap a) mtab where { put = put . Im.assocs; get = Im.fromList <$> get; }
+instance (Ord a,                Binary a mtab) => Binary (S.Set     a) mtab where { put = put . S.elems  ; get = S.fromList  <$> get; }
+instance                                          Binary (Is.IntSet  ) mtab where { put = put . Is.elems ; get = Is.fromList <$> get; }
 
-instance (Eq p, Ord p, Binary p gtab, Binary a gtab) => Binary (T.Tree p a) gtab where
+instance (Eq p, Ord p, Binary p mtab, Binary a mtab) => Binary (T.Tree p a) mtab where
   put t = case t of
-    T.Void           -> prefixByte 0x03 $ return ()
-    T.Leaf       a   -> prefixByte 0x04 $ put a
-    T.Branch       t -> prefixByte 0x05 $ put t
-    T.LeafBranch a t -> prefixByte 0x06 $ put a >> put t where
+    T.Void           -> prefixByte 0x04 $ return ()
+    T.Leaf       a   -> prefixByte 0x05 $ put a
+    T.Branch       t -> prefixByte 0x06 $ put t
+    T.LeafBranch a t -> prefixByte 0x07 $ put a >> put t where
   get = word8PrefixTable
 
-instance (Eq p, Ord p, Binary p gtab, Binary a gtab) => HasPrefixTable (T.Tree p a) Byte gtab where
-  prefixTable = mkPrefixTableWord8 "Dao.Tree.Tree" 0x03 0x06 $
+instance (Eq p, Ord p, Binary p mtab, Binary a mtab) => HasPrefixTable (T.Tree p a) Byte mtab where
+  prefixTable = mkPrefixTableWord8 "Dao.Tree.Tree" 0x04 0x07 $
     [ return T.Void
     , T.Leaf   <$> get
     , T.Branch <$> get
@@ -352,19 +494,26 @@ instance Binary NullTerm t where
   put (NullTerm ()) = putWord8 0x00
   get = tryWord8 0x00 $ return nullTerm
 
-instance Binary a t => Binary (Maybe a) t where
+instance Binary Bool mtab where
+  put o = putWord8 (if o then 0x02 else 0x03)
+  get   = word8PrefixTable
+instance HasPrefixTable Bool Byte mtab where
+  prefixTable = mkPrefixTableWord8 "Prelude.Bool" 0x02 0x03 [return False, return True]
+
+instance Binary a mtab => Binary (Maybe a) mtab where
   put o = maybe (return ()) put o
   get   = optional get
 
-instance Binary a t => Binary [a] t where
+instance Binary a mtab => Binary [a] mtab where
   put o = mapM_ put o >> put nullTerm
   get   = mplus (many get >>= \o -> get >>= \ (NullTerm ()) -> return o) $
     fail "list not null terminated"
 
-instance HasPrefixTable Bool Byte gtab where
-  prefixTable = mkPrefixTableWord8 "Prelude.Bool" 0x01 0x02 [return False, return True]
+instance Binary UStr mtab where
+  put o = dataBinaryPut (B.put o)
+  get = dataBinaryGet B.get
 
-instance Binary Bool gtab where
-  put o = putWord8 (if o then 0x01 else 0x02)
-  get   = word8PrefixTable
+instance Binary Name mtab where
+  put o = dataBinaryPut (B.put o)
+  get = dataBinaryGet B.get
 

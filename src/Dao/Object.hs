@@ -581,14 +581,6 @@ minArray deflt elems = minAccumArray (flip const) deflt elems
 
 ----------------------------------------------------------------------------------------------------
 
-type Get     a = D.GGet  ExecUnit a
-type PutM    a = D.GPutM ExecUnit
-type Put       = D.GPut  ExecUnit
-type Update  a = GenUpdate Object a
-type UpdateErr = GenUpdateErr Object
-
-----------------------------------------------------------------------------------------------------
-
 newtype CodeBlock = CodeBlock { codeBlock :: [ScriptExpr] } deriving (Eq, Ord, Typeable)
 instance Show CodeBlock where { show (CodeBlock o) = "(code "++show o++")" }
 instance HasLocation CodeBlock where
@@ -1446,10 +1438,27 @@ execReadTopStackItem (Stack stks) lkup = case stks of
 
 ----------------------------------------------------------------------------------------------------
 
+type Get     a = D.GGet  MethodTable a
+type PutM    a = D.GPutM MethodTable
+type Put       = D.GPut  MethodTable
+type Update  a = GenUpdate Object a
+type UpdateErr = GenUpdateErr Object
+
+----------------------------------------------------------------------------------------------------
+
 newtype MethodTable = MethodTable (M.Map UStr (ObjectInterface Dynamic))
 execGetObjTable :: UStr -> Exec (Maybe (ObjectInterface Dynamic))
-execGetObjTable nm =
-  globalMethodTable <$> asks parentRuntime >>= \ (MethodTable tab) -> return (M.lookup nm tab)
+execGetObjTable nm = lookupMethodTable nm . globalMethodTable <$> asks parentRuntime
+
+lookupMethodTable :: UStr -> MethodTable -> Maybe (ObjectInterface Dynamic)
+lookupMethodTable nm (MethodTable tab) = M.lookup nm tab
+
+typeRepToUStr :: TypeRep -> UStr
+typeRepToUStr a = let con = typeRepTyCon a in ustr (tyConModule con ++ '.' : tyConName con)
+
+instance D.HasCoderTable MethodTable where
+  getEncoderForType nm mtab = fmap fst $ lookupMethodTable nm mtab >>= objBinaryFormat
+  getDecoderForType nm mtab = fmap snd $ lookupMethodTable nm mtab >>= objBinaryFormat
 
 -- | The 'Dao.Runtime.GenRuntime' general type is made specific with this type synonym.
 type Runtime = GenRuntime MethodTable ExecUnit
@@ -1902,7 +1911,7 @@ defOrdering fn = updObjIfc(\st->st{objIfcOrdering=Just fn})
 -- 
 -- It automatically define the binary encoder and decoder using the 'Data.Binary.Binary' class
 -- instantiation for this @typ@.
-autoDefBinaryFmt :: (Typeable typ, D.Binary typ ExecUnit, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDef typ ()
+autoDefBinaryFmt :: (Typeable typ, D.Binary typ MethodTable, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDef typ ()
 autoDefBinaryFmt = defBinaryFmt D.put D.get
 
 -- | This function is used if an object of your @typ@ should ever need to be stored into a binary

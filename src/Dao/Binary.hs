@@ -103,8 +103,8 @@ class Binary a mtab where
   serializer = Serializer{serializeGet=Dao.Binary.get,serializePut=Dao.Binary.put}
 
 class HasCoderTable mtab where
-  getEncoderForType :: UStr -> Maybe (Dynamic -> GPut mtab)
-  getDecoderForType :: UStr -> Maybe (GGet mtab Dynamic)
+  getEncoderForType :: UStr -> mtab -> Maybe (Dynamic -> GPut mtab)
+  getDecoderForType :: UStr -> mtab -> Maybe (GGet mtab Dynamic)
 
 data EncodeIndex mtab
   = EncodeIndex
@@ -159,6 +159,11 @@ data InStreamIndex = InStreamIndex{ inStreamIndexID :: InStreamID, inStreamIndex
 instance HasCoderTable mtab => Binary InStreamIndex mtab where
   put (InStreamIndex a b) = prefixByte 0x01 $ put a >> put b
   get = tryWord8 0x01 $ pure InStreamIndex <*> get <*> get
+
+-- | Find the 'Dao.String.UStr' that was associated with this 'InStreamID' when the byte stream was
+-- constructed when 'newInStreamID' was called.
+decodeIndexLookup :: HasCoderTable mtab => InStreamID -> GGet mtab (Maybe UStr)
+decodeIndexLookup tid = M.lookup tid <$> S.gets decodeIndex
 
 -- | Given an 'Data.Int.Int64' length value, compute how many VLI bytes of hash code should be
 -- necessary to for a byte stream of that length, and return an 'Data.Word.Word64' value trimmed to
@@ -242,7 +247,7 @@ runPut :: HasCoderTable mtab => mtab -> GPut mtab -> Z.ByteString
 runPut mtab fn = B.runPut $ S.evalStateT (encoderToStateT fn) $
   EncodeIndex{indexCounter=1, encodeIndex=mempty, encMTabRef=mtab}
 
-runGet :: (HasCoderTable mtab, Binary a mtab) => mtab -> GGet mtab a -> Z.ByteString -> a
+runGet :: HasCoderTable mtab => mtab -> GGet mtab a -> Z.ByteString -> a
 runGet mtab fn = B.runGet $ S.evalStateT (decoderToStateT fn) $
   DecodeIndex{decodeIndex=mempty, decMTabRef=mtab}
 
@@ -257,6 +262,15 @@ encodeFile mtab path = Z.writeFile path . encode mtab
 
 decodeFile :: (HasCoderTable mtab, Binary a mtab) => mtab -> FilePath -> IO a
 decodeFile mtab path = decode mtab <$> Z.readFile path
+
+putWithBlockStream1M :: HasCoderTable mtab => GPut mtab -> GPut mtab
+putWithBlockStream1M fn = getCoderTable >>= \mtab -> put $ BlockStream1M $ runPut mtab fn
+
+getWithBlockStream1M :: HasCoderTable mtab => GGet mtab a -> GGet mtab a
+getWithBlockStream1M fn = do
+  mtab <- getCoderTable
+  (BlockStream1M bs1m) <- get
+  return (runGet mtab fn bs1m)
 
 ----------------------------------------------------------------------------------------------------
 

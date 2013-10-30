@@ -1,4 +1,4 @@
--- "src/Dao/Object/PPrintM.hs"  provides functions for pretty printing Dao
+-- "src/Dao/Object/PPrint.hs"  provides functions for pretty printing Dao
 -- objects, Dao scripts, and Dao programs.
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
@@ -22,10 +22,10 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 
-module Dao.Object.PPrintM where
+module Dao.Object.PPrint where
 
 import           Dao.String
-import           Dao.PPrintM
+import           Dao.PPrint
 import           Dao.Token
 import           Dao.Object
 import           Dao.Object.AST
@@ -491,4 +491,7 @@ instance PPrintable ExecError where
     f execErrExpr     "in expression" 
     f execErrScript   "in statement"
     f execErrTopLevel "in top-level directive"
+
+instance PPrintable Base16String where { pPrint = pShow }
+instance PPrintable Base64String where { pPrint = pShow }
 

@@ -18,22 +18,26 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Main where
 
 import           Dao.Prelude
 import           Dao.String
 import           Dao.Predicate
-import           Dao.PPrintM
+import           Dao.PPrint
 import           Dao.Parser
 import           Dao.Struct
 import           Dao.Random
+import qualified Dao.Binary        as D
 import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Object.Parser
 import           Dao.Object.Binary
-import           Dao.Object.PPrintM
+import           Dao.Object.PPrint
 import           Dao.Object.Struct
 import           Dao.Object.Random
 import           Dao.Object.DeepSeq
@@ -49,7 +53,7 @@ import           Data.Maybe
 import           Data.List
 import           Data.Monoid
 import           Data.IORef
-import           Data.Binary
+import qualified Data.Binary          as B
 import qualified Data.Binary          as B
 import qualified Data.ByteString.Lazy as B
 
@@ -170,6 +174,7 @@ data TestEnv
     , uncaughtExceptLog :: MVar Handle
     , testConfig        :: TestConfig
     , testCounterLock   :: MVar (Handle, HandlePosn)
+    , testMethodTable   :: MethodTable
     }
 
 main :: IO ()
@@ -219,6 +224,7 @@ newTestEnv config = do
     , uncaughtExceptLog = excplogVar
     , testConfig        = config
     , testCounterLock   = hlock
+    , testMethodTable   = mempty
     }
 
 closeFiles :: TestEnv -> IO ()
@@ -441,29 +447,30 @@ instance PPrintable RandObj where
   pPrint o = case o of
     RandTopLevel o -> pPrint o
     RandObject   o -> pPrint o
-instance Binary RandObj where
+instance D.Binary RandObj MethodTable where
   put o = case o of
     RandTopLevel o -> case toInterm o of
       [ ] -> fail "could not convert AST object to intermediate data for serialization"
-      [o] -> putWord8 0x01 >> B.put o
+      [o] -> D.putWord8 0xFD >> D.put o
       ox  -> fail $ concat $
         [ "converting AST object to intermediate for serialization"
         , " evaluated to multiple ambiguous data structures"
         ]
-    RandObject   o -> putWord8 0x02 >> B.put o
-  get = do
-    w <- getWord8
-    case w of
-      0x01 -> B.get >>= \o -> case fromInterm o of
+    RandObject   o -> D.putWord8 0xFE >> D.put o
+  get = D.word8PrefixTable <|>
+    fail "Test program failed while trying to de-serialize it's own test data"
+instance D.HasPrefixTable RandObj D.Byte MethodTable where
+  prefixTable = D.mkPrefixTableWord8 "RandObj" 0xFD 0xFE $
+    [ D.get >>= \o -> case fromInterm o of
         []  -> fail "could not convert deserialized intermediate object to AST"
         [o] -> return (RandTopLevel o)
         ox  -> fail $ concat $
           [ "deserializing intermediate object to AST evaluated"
           , " to mulitple ambiguous data structures"
           ]
-      0x02 -> fmap RandObject   B.get
-      _    -> fail "Test program failed while trying to de-serialize it's own test data"
-instance Structured RandObj where
+    , fmap RandObject D.get
+    ]
+instance Structured RandObj Object where
   dataToStruct o = deconstruct $ case o of
     RandTopLevel o -> putDataAt "ast" o
     RandObject   o -> putDataAt "obj" o
@@ -516,11 +523,12 @@ reportTest tc =
 -- is used as a parameter to 'loopOnInput'.
 newTestCase :: Int -> TestRun TestCase
 newTestCase i = do
-  cfg <- asks testConfig
+  mtab <- asks testMethodTable
+  cfg  <- asks testConfig
   let maxDepth      = maxRecurseDepth cfg
   let obj           = genRandWith randO maxDepth i
   let str           = prettyShow obj
-  let bin           = B.encode   obj
+  let bin           = D.encode mtab obj
   let tree          = dataToStruct obj
   let setup isSet o = if isSet cfg then Just o else Nothing
   return $
@@ -569,6 +577,7 @@ tryTest tc getTestItem testFunc = ask >>= \env -> case getTestItem tc of
 -- pases. This function is used as a parameter to 'loopOnInput'.
 checkTestCase :: TestCase -> TestRun Bool
 checkTestCase tc = ask >>= \env -> do
+  mtab <- asks testMethodTable
   ------------------- (0) Canonicalize the original object ------------------
   tc <- case originalObject tc of
     RandTopLevel o -> case canonicalize o of
@@ -613,7 +622,7 @@ checkTestCase tc = ask >>= \env -> do
   --
   ------------------------- (2) Test the serializer -------------------------
   tc <- tryTest tc serializedObject $ \binObj -> do
-    unbin <- liftIO $ catches (return $ Right $ B.decode binObj) $
+    unbin <- liftIO $ catches (return $ Right $ D.decode mtab binObj) $
       errTryCatch "binary deserialization failed" :: TestRun (Either UStr RandObj)
     case unbin of
       Left  msg   -> failTest tc (uchars msg) :: TestRun TestCase

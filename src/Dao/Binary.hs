@@ -81,6 +81,9 @@ import qualified Data.Binary          as B
 import qualified Data.Binary.Get      as B
 import qualified Data.Binary.Put      as B
 
+import Numeric
+import Debug.Trace
+
 ----------------------------------------------------------------------------------------------------
 
 type Byte = Word8
@@ -280,40 +283,39 @@ class (Ix i, Binary i mtab, Binary a mtab) => HasPrefixTable a i mtab where { pr
 -- decoder performs a single look-ahead to retrieve an index, then use the index to lookup the next
 -- parser in a table. This is a lookup table using 'Data.Array.IArray.Array' as the table which does
 -- exactly that.
-newtype PrefixTable mtab i a = PrefixTable (Maybe (Array i (GGet mtab a)))
+data PrefixTable mtab i a = PrefixTable (GGet mtab i) (Maybe (Array i (GGet mtab a)))
 
 instance Ix i => Functor (PrefixTable mtab i) where
-  fmap f (PrefixTable t) = PrefixTable (fmap (amap (fmap f)) t)
+  fmap f (PrefixTable getIdx t) = PrefixTable getIdx (fmap (amap (fmap f)) t)
 instance (Ix i, Binary a mtab) => Monoid (PrefixTable mtab i a) where
-  mempty = PrefixTable Nothing
-  mappend (PrefixTable a) (PrefixTable b) = PrefixTable $ a >>= \a -> b >>= \b -> do
-    let ((loA, hiA), (loB, hiB)) = (bounds    a, bounds    b)
-    let ( lo       ,  hi       ) = (min loA loB, max hiA hiB)
-    Just $ accumArray (flip mplus) mzero (lo, hi) (assocs a ++ assocs b) where
-
-indexDecoderForTable :: Binary i mtab => PrefixTable mtab i a -> GGet mtab i
-indexDecoderForTable _ = get
+  mempty = PrefixTable mzero Nothing
+  mappend (PrefixTable _ a) (PrefixTable getIdx b) =
+    PrefixTable getIdx $ a >>= \a -> b >>= \b -> do
+      let ((loA, hiA), (loB, hiB)) = (bounds    a, bounds    b)
+      let ( lo       ,  hi       ) = (min loA loB, max hiA hiB)
+      Just $ accumArray (flip mplus) mzero (lo, hi) (assocs a ++ assocs b)
 
 -- | Construct a 'Serializer' from a list of serializers, and each list item will be prefixed with a
 -- byte in the range given. It is necesary for the data type to instantiate 'Data.Typeable.Typeable'
 -- in order to 
-mkPrefixTable :: (Ix i, Num i) => String -> i -> i -> [GGet mtab a] -> PrefixTable mtab i a
-mkPrefixTable msg lo' hi' ser = assert (0<len && len<=hi-lo) table where
+mkPrefixTable :: (Integral i, Show i, Ix i, Num i) => String -> GGet mtab i -> i -> i -> [GGet mtab a] -> PrefixTable mtab i a
+mkPrefixTable msg getIdx lo' hi' ser = trace (unwords ["mkPrefixTable:", msg, "len="++show len, "lo=0x"++showHex lo "", "hi=0x"++showHex hi "", "hi-lo+1="++show (hi-lo+1)]) $ assert (0<len && len<=hi-lo+1) table where
   len   = fromIntegral (length ser)
   lo    = min lo' hi'
   hi    = max lo' hi'
   idxs  = takeWhile (<=hi) (iterate (+1) lo)
-  table = PrefixTable $ Just $ accumArray (flip mplus) mzero (lo, hi) (zip idxs ser)
+  table = PrefixTable getIdx $ Just $ accumArray (flip mplus) mzero (lo, hi) (zip idxs ser)
 
 mkPrefixTableWord8 :: String -> Byte -> Byte -> [GGet mtab a] -> PrefixTable mtab Byte a
-mkPrefixTableWord8 msg lo' hi' ser = mkPrefixTable msg lo hi ser where
+mkPrefixTableWord8 msg lo' hi' ser = mkPrefixTable msg getWord8 lo hi ser where
   lo = min lo' hi'
   hi = max lo' hi'
 
-runPrefixTable :: (Ix i, Binary i mtab) => PrefixTable mtab i a -> GGet mtab a
-runPrefixTable tab@(PrefixTable t) = flip (maybe mzero) t $ \decoderArray -> do
-  prefix <- indexDecoderForTable tab
-  guard $ inRange (bounds decoderArray) prefix
+runPrefixTable :: (Integral i, Show i, Ix i, Binary i mtab) => PrefixTable mtab i a -> GGet mtab a
+runPrefixTable tab@(PrefixTable getIdx t) = flip (maybe mzero) t $ \decoderArray -> do
+  prefix <- lookAhead getIdx
+  trace ("prefix 0x"++map toUpper (showHex prefix "")) $ guard $ inRange (bounds decoderArray) prefix
+  _      <- getIdx
   decoderArray!prefix
 
 word8PrefixTable :: HasPrefixTable a Byte mtab => GGet mtab a
@@ -494,7 +496,7 @@ instance (Eq p, Ord p, Binary p mtab, Binary a mtab) => Binary (T.Tree p a) mtab
   get = word8PrefixTable
 
 instance (Eq p, Ord p, Binary p mtab, Binary a mtab) => HasPrefixTable (T.Tree p a) Byte mtab where
-  prefixTable = mkPrefixTableWord8 "Dao.Tree.Tree" 0x04 0x07 $
+  prefixTable = mkPrefixTableWord8 "Tree" 0x04 0x07 $
     [ return T.Void
     , T.Leaf   <$> get
     , T.Branch <$> get
@@ -512,7 +514,7 @@ instance Binary Bool mtab where
   put o = putWord8 (if o then 0x02 else 0x03)
   get   = word8PrefixTable
 instance HasPrefixTable Bool Byte mtab where
-  prefixTable = mkPrefixTableWord8 "Prelude.Bool" 0x02 0x03 [return False, return True]
+  prefixTable = mkPrefixTableWord8 "Bool" 0x02 0x03 [return False, return True]
 
 instance Binary a mtab => Binary (Maybe a) mtab where
   put o = maybe (return ()) put o

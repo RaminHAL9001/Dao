@@ -1447,6 +1447,10 @@ type UpdateErr = GenUpdateErr Object
 ----------------------------------------------------------------------------------------------------
 
 newtype MethodTable = MethodTable (M.Map UStr (ObjectInterface Dynamic))
+instance Monoid MethodTable where
+  mempty  = MethodTable mempty
+  mappend (MethodTable a) (MethodTable b) = MethodTable (M.union b a)
+
 execGetObjTable :: UStr -> Exec (Maybe (ObjectInterface Dynamic))
 execGetObjTable nm = lookupMethodTable nm . globalMethodTable <$> asks parentRuntime
 

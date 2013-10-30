@@ -82,10 +82,10 @@ instance D.Binary CoreType MTab where
     TreeType     -> 0x16
     BytesType    -> 0x17
     HaskellType  -> 0x18
-  get = D.word8PrefixTable
+  get = D.word8PrefixTable <|> fail "Dao.Object.CoreType"
 
 instance D.HasPrefixTable CoreType D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "Dao.Object.CoreType" 0x05 0x18 $ map return $
+  prefixTable = D.mkPrefixTableWord8 "CoreType" 0x07 0x18 $ map return $
     [ NullType
     , TrueType
     , TypeType
@@ -137,12 +137,12 @@ instance D.Binary Object MTab where
             tid  <- D.newInStreamID tid
             D.put tid >> D.putWithBlockStream1M (fn o)
           Nothing -> fail $ unwords ["no binary format method defied for Haskell type", show typ]
-  get = D.word8PrefixTable
+  get = D.word8PrefixTable <|> fail "Dao.Object.Object"
 
 instance D.HasPrefixTable Object D.Byte MTab where
   prefixTable =
     let g f = fmap f D.get
-    in  D.mkPrefixTableWord8 "Dao.Object.Object" 0x07 0x18 $
+    in  D.mkPrefixTableWord8 "Object" 0x07 0x18 $
           [ return ONull
           , return OTrue
           , g OType
@@ -176,10 +176,10 @@ instance D.Binary TypeSym    MTab where
   put o = case o of
     CoreType o       -> D.put o
     TypeVar  ref ctx -> D.prefixByte 0x1A $ D.put ref >> D.put ctx
-  get = D.word8PrefixTable
+  get = D.word8PrefixTable <|> fail "Dao.Object.TypeSym"
 instance D.HasPrefixTable TypeSym D.Byte MTab where
   prefixTable = fmap CoreType D.prefixTable <>
-    D.mkPrefixTableWord8 "Dao.Object.TypeSym" 0x1A 0x1A [pure TypeVar <*> D.get <*> D.get]
+    D.mkPrefixTableWord8 "TypeSym" 0x1A 0x1A [pure TypeVar <*> D.get <*> D.get]
 
 instance D.Binary Reference MTab where { put (Reference o) = D.put o; get = Reference <$> D.get; }
 
@@ -194,9 +194,9 @@ instance D.Binary QualRef MTab where
         GLODOT -> 0x25
         STATIC -> 0x26
         GLOBAL -> 0x27
-  get = D.word8PrefixTable
+  get = D.word8PrefixTable <|> fail "Dao.Object.QualRef"
 instance D.HasPrefixTable QualRef D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "Dao.Object.QualRef" 0x1C 0x1E $
+  prefixTable = D.mkPrefixTableWord8 "QualRef" 0x21 0x27 $
     [ Unqualified      <$> D.get
     , ObjRef           <$> D.get
     , Qualified LOCAL  <$> D.get
@@ -214,14 +214,14 @@ instance D.Binary Location MTab where
 
 instance D.Binary TopLevelExpr MTab where
   put o = case o of
-    Attribute a             b z -> D.prefixByte 0x2B $ D.put a >> D.put z
+    Attribute a             b z -> D.prefixByte 0x2B $ D.put a >> D.put b >> D.put z
     TopScript a               z -> D.prefixByte 0x2C $ D.put a >> D.put z
     EventExpr BeginExprType b z -> D.prefixByte 0x2D $ D.put b >> D.put z
     EventExpr ExitExprType  b z -> D.prefixByte 0x2E $ D.put b >> D.put z
     EventExpr EndExprType   b z -> D.prefixByte 0x2F $ D.put b >> D.put z
-  get = D.word8PrefixTable
+  get = D.word8PrefixTable <|> fail "Dao.Object.TopLevelExpr"
 instance D.HasPrefixTable TopLevelExpr D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "Dao.Object.TopLevelExpr" 0x2B 0x2F $
+  prefixTable = D.mkPrefixTableWord8 "TopLevelExpr" 0x2B 0x2F $
     [ pure Attribute <*> D.get <*> D.get <*> D.get
     , pure TopScript <*> D.get <*> D.get
     , pure (EventExpr BeginExprType) <*> D.get <*> D.get
@@ -241,9 +241,9 @@ instance D.Binary ScriptExpr MTab where
     ReturnExpr   True  b   z -> D.prefixByte 0x38 $ D.put b >> D.put z
     ReturnExpr   False b   z -> D.prefixByte 0x39 $ D.put b >> D.put z
     WithDoc      a     b   z -> D.prefixByte 0x3A $ D.put a >> D.put b >> D.put z
-  get = D.word8PrefixTable
+  get = D.word8PrefixTable <|> fail "Dao.Object.ScriptExpr"
 instance D.HasPrefixTable ScriptExpr D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "Dao.Object.ScriptExpr" 0x31 0x3A $
+  prefixTable = D.mkPrefixTableWord8 "ScriptExpr" 0x31 0x3A $
     [ IfThenElse <$> D.get
     , WhileLoop  <$> D.get
     , pure EvalObject   <*> D.get <*> D.get
@@ -284,9 +284,9 @@ instance D.Binary QualRefExpr MTab where
   put o = D.prefixByte 0x28 $ case o of
     UnqualRefExpr (RefExpr o loc)     -> D.put (Unqualified o) >> D.put loc
     QualRefExpr q (RefExpr o lo1) lo2 -> D.put (Qualified q o) >> D.put lo1 >> D.put lo2
-  get = D.word8PrefixTable
+  get = D.word8PrefixTable <|> fail "Dao.Object.QualRefExpr"
 instance D.HasPrefixTable QualRefExpr D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "Dao.Object.QualRefExpr" 0x28 0x28 $
+  prefixTable = D.mkPrefixTableWord8 "QualRefExpr" 0x28 0x28 $
     [ D.get >>= \q -> case q of
         Unqualified o -> UnqualRefExpr . RefExpr o <$> D.get
         Qualified q o -> pure (\lo1 lo2 -> QualRefExpr q (RefExpr o lo1) lo2) <*> D.get <*> D.get
@@ -310,9 +310,9 @@ instance D.Binary ObjectExpr MTab where
     FuncExpr       a b c z -> D.prefixByte 0x4D $ D.put a >> D.put b >> D.put c >> D.put z
     RuleExpr       a b   z -> D.prefixByte 0x4E $ D.put a >> D.put b >> D.put z
     MetaEvalExpr   a     z -> D.prefixByte 0x4F $ D.put a >> D.put z
-  get = D.word8PrefixTable
+  get = D.word8PrefixTable <|> fail "Dao.Object.ObjectExpr"
 instance D.HasPrefixTable ObjectExpr D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "Dao.Object.ObjectExpr" 0x41 0x4F $
+  prefixTable = D.mkPrefixTableWord8 "ObjectExpr" 0x41 0x4F $
     [ return VoidExpr
     , ObjQualRefExpr <$> D.get
     , ObjParenExpr   <$> D.get
@@ -335,9 +335,9 @@ instance D.Binary a MTab => D.Binary (TyChkExpr a) MTab where
     NotTypeChecked a       -> D.prefixByte 0x51 $ D.put a
     TypeChecked    a b c   -> D.prefixByte 0x52 $ D.put a >> D.put b >> D.put c
     DisableCheck   a b c d -> D.prefixByte 0x53 $ D.put a >> D.put b >> D.put c >> D.put d
-  get = D.word8PrefixTable
+  get = D.word8PrefixTable <|> fail "Dao.Object.TyChkExpr"
 instance D.Binary a MTab => D.HasPrefixTable (TyChkExpr a) D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "Dao.Object.TyChkExpr" 0x51 0x53 $
+  prefixTable = D.mkPrefixTableWord8 "TyChkExpr" 0x51 0x53 $
     [ NotTypeChecked <$> D.get
     , pure TypeChecked  <*> D.get <*> D.get <*> D.get
     , pure DisableCheck <*> D.get <*> D.get <*> D.get <*> D.get
@@ -346,9 +346,9 @@ instance D.Binary a MTab => D.HasPrefixTable (TyChkExpr a) D.Byte MTab where
 instance D.Binary ParamExpr MTab where
   put (ParamExpr True  a b) = D.prefixByte 0x54 $ D.put a >> D.put b
   put (ParamExpr False a b) = D.prefixByte 0x55 $ D.put a >> D.put b
-  get = D.word8PrefixTable
+  get = D.word8PrefixTable <|> fail "Dao.Object.ParamExpr"
 instance D.HasPrefixTable ParamExpr D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "Dao.Object.ParamExpr" 0x54 0x55 $
+  prefixTable = D.mkPrefixTableWord8 "ParamExpr" 0x54 0x55 $
     [ pure (ParamExpr True ) <*> D.get <*> D.get
     , pure (ParamExpr False) <*> D.get <*> D.get
     ]
@@ -357,9 +357,9 @@ instance D.Binary PrefixOp MTab where
   put o = D.putWord8 $ case o of
     { INVB   -> 0x5A; NOT -> 0x5B; NEGTIV -> 0x5C
     ; POSTIV -> 0x5D; REF -> 0x5E; DEREF  -> 0x5F }
-  get = D.word8PrefixTable
+  get = D.word8PrefixTable <|> fail "Dao.Object.PrefixOp"
 instance D.HasPrefixTable PrefixOp D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "Dao.Object.PrefixOp" 0x5A 0x5F $
+  prefixTable = D.mkPrefixTableWord8 "PrefixOp" 0x5A 0x5F $
     map return [INVB, NOT, NEGTIV, POSTIV, REF, DEREF]
 
 instance D.Binary UpdateOp MTab where
@@ -377,9 +377,9 @@ instance D.Binary UpdateOp MTab where
     USHL   -> 0x6B
     USHR   -> 0x6C
     UARROW -> 0x6D
-  get = D.word8PrefixTable
+  get = D.word8PrefixTable <|> fail "Dao.Object.UpdateOp"
 instance D.HasPrefixTable UpdateOp D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "Dao.Object.UpdateOp" 0x61 0x6D $ map return $
+  prefixTable = D.mkPrefixTableWord8 "UpdateOp" 0x61 0x6D $ map return $
     [UCONST, UADD, USUB, UMULT, UDIV, UMOD, UPOW, UORB, UANDB, UXORB, USHL, USHR, UARROW]
 
 -- The byte prefixes overlap with the update operators of similar function to
@@ -392,9 +392,9 @@ instance D.Binary InfixOp MTab where
     ; MOD  -> 0x66; POW -> 0x67; ORB  -> 0x68; ANDB  -> 0x69
     ; XORB -> 0x6A; SHL -> 0x6B; SHR  -> 0x6C; ARROW -> 0x6D
     ; OR   -> 0x6E; AND -> 0x6F } 
-  get = D.word8PrefixTable
+  get = D.word8PrefixTable <|> fail "Dao.Object.InfixOp"
 instance D.HasPrefixTable InfixOp D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "Dao.Object.InfixOp" 0x5A 0x6E $ let {r=return; z=mzero} in
+  prefixTable = D.mkPrefixTableWord8 "InfixOp" 0x5A 0x6E $ let {r=return; z=mzero} in
     [ r EQUL , r NEQUL, r GTN , r LTN, r GTEQ , r LTEQ , z, z
     , r ADD  , r SUB  , r MULT, r DIV, r MOD  , r POW  , r ORB
     , r ANDB , r XORB , r SHL , r SHR, r ARROW, r OR   , r AND

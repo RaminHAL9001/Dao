@@ -21,7 +21,7 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 
-module Dao.PPrintM where
+module Dao.PPrint where
 
 import           Dao.String
 

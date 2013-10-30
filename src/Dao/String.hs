@@ -406,7 +406,7 @@ b64Decode = loop 0 [] . breakInto 4 . filter (flip notElem " \t\r\n\v\f\0") wher
               else Left (c, i)
   splitup b = map fromIntegral [shiftR (b.&.0xFF0000) 16, shiftR (b.&.0xFF00) 8, b.&.0xFF]
 
-newtype Base64String = Base64String B.ByteString
+newtype Base64String = Base64String B.ByteString deriving Typeable
 instance Show Base64String where { show (Base64String s) = unlines (b64Encode s) }
 instance Read Base64String where
   readsPrec _ str =
@@ -415,7 +415,7 @@ instance Read Base64String where
       (str, rem) -> case b64Decode $ filter (not . isSpace) str of
         Left (ch, pos) -> error ("invalid charcter "++show ch++" at index "++show pos++" in base64-encoded string")
         Right u        -> [(Base64String u, rem)]
-newtype Base16String = Base16String B.ByteString
+newtype Base16String = Base16String B.ByteString deriving Typeable
 instance Show Base16String where
   show (Base16String u) = unlines $ fmap (unwords . fmap hex) $ breakInto 32 (B.unpack u) where
     hex b = [arr ! (shiftR (b.&.0xF0) 4), arr ! (b.&.0x0F)]

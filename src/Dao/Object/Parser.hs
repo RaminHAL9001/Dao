@@ -24,8 +24,8 @@ module Dao.Object.Parser where
 
 import           Dao.String
 import           Dao.Token
-import           Dao.PPrintM
-import           Dao.Object.PPrintM
+import           Dao.PPrint
+import           Dao.Object.PPrint
 import           Dao.Object hiding (Tokenizer, get, put)
 import           Dao.Object.AST
 import           Dao.Predicate

@@ -35,7 +35,7 @@ import           Dao.Parser hiding (shift)
 import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Object.DeepSeq
-import           Dao.PPrintM
+import           Dao.PPrint
 import qualified Dao.Tree as T
 import           Dao.Glob
 import           Dao.Predicate
@@ -44,7 +44,7 @@ import           Dao.Resource
 import           Dao.Struct
 
 import           Dao.Object.Math
-import           Dao.Object.PPrintM
+import           Dao.Object.PPrint
 import           Dao.Object.Binary
 import           Dao.Object.Struct
 import           Dao.Object.Parser

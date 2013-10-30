@@ -45,8 +45,8 @@ import           Dao.Object
 import           Dao.Procedural
 import qualified Dao.Tree as T
 import           Dao.Evaluator
-import           Dao.PPrintM
-import           Dao.Object.PPrintM
+import           Dao.PPrint
+import           Dao.Object.PPrint
 
 import           Control.Concurrent
 import           Control.Exception

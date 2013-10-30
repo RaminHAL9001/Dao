@@ -33,8 +33,8 @@ module Dao.Prelude
   , module Dao.String
   , module Dao.Object
   , module Dao.Object.AST
-  , module Dao.Object.PPrintM
-  , module Dao.PPrintM
+  , module Dao.Object.PPrint
+  , module Dao.PPrint
   , module Control.Monad
   , module Control.Monad.State
   , module Control.Applicative
@@ -48,14 +48,15 @@ module Dao.Prelude
 import           Dao.String
 import qualified Dao.Tree as T
 import           Dao.Object
-import           Dao.PPrintM
+import           Dao.PPrint
 import           Dao.Struct
 import           Dao.Predicate
 import           Dao.Token
 import           Dao.Parser
 import           Dao.Random
+import           Dao.Binary
 
-import           Dao.Object.PPrintM
+import           Dao.Object.PPrint
 import           Dao.Object.AST
 import           Dao.Object.Parser
 import           Dao.Object.Struct
@@ -71,14 +72,15 @@ import           Control.Applicative
 import           Data.Monoid
 import           Data.Typeable
 import           Data.Dynamic
+import           Data.IORef
 import           Data.Char
 import           Data.List (intercalate)
-import qualified Data.ByteString.Lazy as B
-import           Data.Binary
+import qualified Data.ByteString.Lazy as Z
 
 import           Numeric
 
 import           System.IO
+import           System.IO.Unsafe
 
 ----------------------------------------------------------------------------------------------------
 
@@ -101,6 +103,12 @@ instance Typeable a => Show     (Dao a) where
       in  show $ objType $ fromDyn d $ error $
             "converting Object to Dynamic and back yields a non-object value"
     t                     -> show t
+
+cast :: (a -> b) -> Dao a -> IO (Dao b)
+cast f = return . fmap f
+
+exampleMethodTable :: IORef MethodTable
+exampleMethodTable = unsafePerformIO (newIORef mempty)
 
 randMaxDepth :: Int
 randMaxDepth = 6
@@ -250,27 +258,27 @@ structObjExpr :: Dao (T.Tree Name Object) -> IO (Dao AST_Object)
 structObjExpr = fromStruct 
 
 -- | Convert a polymorphic type to a 'Data.ByteString.Lazy.ByteString'.
-toBinary :: Binary o => Dao o -> IO (Dao B.ByteString)
-toBinary (Dao o) = return (Dao (encode o))
+toBinary :: Binary o MethodTable => Dao o -> IO (Dao Z.ByteString)
+toBinary (Dao o) = readIORef exampleMethodTable >>= \mtab -> return (Dao (encode mtab o))
 
 -- | Convert a polymorphic type to a 'Data.ByteString.Lazy.ByteString'.
-fromBinary :: Binary o => Dao B.ByteString -> IO (Dao o)
-fromBinary (Dao o) = return (Dao (decode o))
+fromBinary :: Binary o MethodTable => Dao Z.ByteString -> IO (Dao o)
+fromBinary (Dao o) = readIORef exampleMethodTable >>= \mtab -> return (Dao (decode mtab o))
 
 -- | Parse a 'Dao.Object.TopLevelExpr' from it's binary representation.
-unpackTopExpr :: Dao B.ByteString -> IO (Dao TopLevelExpr)
+unpackTopExpr :: Dao Z.ByteString -> IO (Dao TopLevelExpr)
 unpackTopExpr = fromBinary
 
 -- | Parse a 'Dao.Object.ScriptExpr' from it's binary representation.
-unpackScriptExpr :: Dao B.ByteString -> IO (Dao ScriptExpr)
+unpackScriptExpr :: Dao Z.ByteString -> IO (Dao ScriptExpr)
 unpackScriptExpr = fromBinary
 
 -- | Parse a 'Dao.Object.ScriptExpr' from it's binary representation.
-unpackObjExpr :: Dao B.ByteString -> IO (Dao ObjectExpr)
+unpackObjExpr :: Dao Z.ByteString -> IO (Dao ObjectExpr)
 unpackObjExpr = fromBinary
 
 -- | Parse a 'Dao.Object.ScriptExpr' from it's binary representation.
-unpackObj :: Dao B.ByteString -> IO (Dao Object)
+unpackObj :: Dao Z.ByteString -> IO (Dao Object)
 unpackObj = fromBinary
 
 -- | Reduce a Dao language expression from it's "Dao.Object.AST" representation to it's "Dao.Object"
@@ -324,12 +332,12 @@ expandObjExpr = expand
 -- | Pure function, convert a 'Data.ByteString.Lazy.ByteString' to a string that is easy to look
 -- through with your own eyes, all hexadecimal numbers, letters A-F capitalized, spaces between
 -- every byte, and split into lines of 32 bytes each.
-showBinary :: B.ByteString -> String
+showBinary :: Z.ByteString -> String
 showBinary b = intercalate "\n" $ breakInto (32*3) $ (" "++) $ map toUpper $
-  intercalate " " $ map (\b -> (if b<0x10 then ('0':) else id) (flip showHex "" b)) $ B.unpack b
+  intercalate " " $ map (\b -> (if b<0x10 then ('0':) else id) (flip showHex "" b)) $ Z.unpack b
 
 -- | Apply 'showBinary' to a 'Data.ByteString.Lazy.ByteString'.
-hexdump :: Dao B.ByteString -> IO (Dao B.ByteString)
+hexdump :: Dao Z.ByteString -> IO (Dao Z.ByteString)
 hexdump (Dao bytes) = putStrLn (showBinary bytes) >> return (Dao bytes)
 
 ----------------------------------------------------------------------------------------------------

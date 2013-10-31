@@ -64,26 +64,25 @@ type MTab = MethodTable
 
 instance D.Binary CoreType MTab where
   put t = D.putWord8 $ case t of
-    NullType     -> 0x07
-    TrueType     -> 0x08
-    TypeType     -> 0x09
-    IntType      -> 0x0A
-    WordType     -> 0x0B
-    LongType     -> 0x0C
-    FloatType    -> 0x0D
-    RatioType    -> 0x0E
-    ComplexType  -> 0x0F
-    TimeType     -> 0x10
-    DiffTimeType -> 0x11
-    CharType     -> 0x12
-    StringType   -> 0x13
-    RefType      -> 0x14
-    ListType     -> 0x15
-    TreeType     -> 0x16
-    BytesType    -> 0x17
-    HaskellType  -> 0x18
-  get = D.word8PrefixTable <|> fail "Dao.Object.CoreType"
-
+    NullType     -> 0x08
+    TrueType     -> 0x09
+    TypeType     -> 0x0A
+    IntType      -> 0x0B
+    WordType     -> 0x0C
+    LongType     -> 0x0F
+    FloatType    -> 0x0E
+    RatioType    -> 0x0F
+    ComplexType  -> 0x10
+    TimeType     -> 0x11
+    DiffTimeType -> 0x12
+    CharType     -> 0x13
+    StringType   -> 0x14
+    RefType      -> 0x15
+    ListType     -> 0x16
+    TreeType     -> 0x17
+    BytesType    -> 0x18
+    HaskellType  -> 0x19
+  get = D.word8PrefixTable <|> fail "expecting CoreType"
 instance D.HasPrefixTable CoreType D.Byte MTab where
   prefixTable = D.mkPrefixTableWord8 "CoreType" 0x07 0x18 $ map return $
     [ NullType
@@ -137,12 +136,11 @@ instance D.Binary Object MTab where
             tid  <- D.newInStreamID tid
             D.put tid >> D.putWithBlockStream1M (fn o)
           Nothing -> fail $ unwords ["no binary format method defied for Haskell type", show typ]
-  get = D.word8PrefixTable <|> fail "Dao.Object.Object"
-
+  get = D.word8PrefixTable <|> fail "expecting Object"
 instance D.HasPrefixTable Object D.Byte MTab where
   prefixTable =
     let g f = fmap f D.get
-    in  D.mkPrefixTableWord8 "Object" 0x07 0x18 $
+    in  D.mkPrefixTableWord8 "Object" 0x08 0x19 $
           [ return ONull
           , return OTrue
           , g OType
@@ -170,58 +168,234 @@ instance D.HasPrefixTable Object D.Byte MTab where
                   return (flip OHaskell tab <$> D.getWithBlockStream1M fn)
           ]
 
-instance D.Binary ObjType    MTab where { put (ObjType    o) = D.put o; get = ObjType    <$> D.get; }
-instance D.Binary TypeStruct MTab where { put (TypeStruct o) = D.put o; get = TypeStruct <$> D.get; }
+instance D.Binary ObjType    MTab where
+  put (ObjType o) = D.prefixByte 0x1A $ D.put o
+  get = D.word8PrefixTable <|> fail "expecting ObjType"
+instance D.HasPrefixTable ObjType D.Byte MTab where
+  prefixTable = D.mkPrefixTableWord8 "ObjType" 0x1A 0x1A [ObjType <$> D.get]
+instance D.Binary TypeStruct MTab where
+  put (TypeStruct o) = D.prefixByte 0x1B $ D.put o
+  get = D.word8PrefixTable <|> fail "expecting TypeStruct"
+instance D.HasPrefixTable TypeStruct D.Byte MTab where
+  prefixTable = D.mkPrefixTableWord8 "TypeStruct" 0x1B 0x1B [TypeStruct <$> D.get]
 instance D.Binary TypeSym    MTab where
   put o = case o of
-    CoreType o       -> D.put o
-    TypeVar  ref ctx -> D.prefixByte 0x1A $ D.put ref >> D.put ctx
-  get = D.word8PrefixTable <|> fail "Dao.Object.TypeSym"
+    CoreType o       -> D.prefixByte 0x1C $ D.put o
+    TypeVar  ref ctx -> D.prefixByte 0x1D $ D.put ref >> D.put ctx
+  get = D.word8PrefixTable <|> fail "expecting TypeSym"
 instance D.HasPrefixTable TypeSym D.Byte MTab where
-  prefixTable = fmap CoreType D.prefixTable <>
-    D.mkPrefixTableWord8 "TypeSym" 0x1A 0x1A [pure TypeVar <*> D.get <*> D.get]
+  prefixTable =
+    D.mkPrefixTableWord8 "TypeSym" 0x1C 0x1D [CoreType <$> D.get, pure TypeVar <*> D.get <*> D.get]
 
-instance D.Binary Reference MTab where { put (Reference o) = D.put o; get = Reference <$> D.get; }
+instance D.Binary Reference MTab where
+  put (Reference o) = D.prefixByte 0x1E $ D.put o
+  get = D.word8PrefixTable <|> fail "expecting Reference"
+instance D.HasPrefixTable Reference D.Byte MTab where
+  prefixTable = D.mkPrefixTableWord8 "Reference" 0x1E 0x1E [Reference <$> D.get]
 
 instance D.Binary QualRef MTab where
   put o = case o of
-    Unqualified ref -> D.prefixByte 0x21 $ D.put ref
-    ObjRef    o     -> D.prefixByte 0x22 $ D.put o
-    Qualified q ref -> D.prefixByte pfx  $ D.put ref where
+    Unqualified ref -> D.put ref
+    ObjRef    o     -> D.put o
+    Qualified q ref -> D.prefixByte pfx $ D.put ref where
       pfx = case q of
-        LOCAL  -> 0x23
-        QTIME  -> 0x24
-        GLODOT -> 0x25
-        STATIC -> 0x26
-        GLOBAL -> 0x27
-  get = D.word8PrefixTable <|> fail "Dao.Object.QualRef"
+        LOCAL  -> 0x1F
+        QTIME  -> 0x20
+        GLODOT -> 0x21
+        STATIC -> 0x22
+        GLOBAL -> 0x23
+  get = D.word8PrefixTable <|> fail "expecting QualRef"
 instance D.HasPrefixTable QualRef D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "QualRef" 0x21 0x27 $
-    [ Unqualified      <$> D.get
-    , ObjRef           <$> D.get
-    , Qualified LOCAL  <$> D.get
-    , Qualified QTIME  <$> D.get
-    , Qualified GLODOT <$> D.get
-    , Qualified STATIC <$> D.get
-    , Qualified GLOBAL <$> D.get
+  prefixTable = mconcat $
+    [ Unqualified <$> D.prefixTable
+    , ObjRef      <$> D.prefixTable
+    , D.mkPrefixTableWord8 "QualRef" 0x1F 0x23 $
+        [ Qualified LOCAL  <$> D.get
+        , Qualified QTIME  <$> D.get
+        , Qualified GLODOT <$> D.get
+        , Qualified STATIC <$> D.get
+        , Qualified GLOBAL <$> D.get
+        ]
     ]
 
-instance D.Binary Location MTab where
+instance D.Binary QualRefExpr MTab where
+  put o = D.prefixByte 0x24 $ case o of
+    UnqualRefExpr (RefExpr o loc)     -> D.put (Unqualified o) >> D.put loc
+    QualRefExpr q (RefExpr o lo1) lo2 -> D.put (Qualified q o) >> D.put lo1 >> D.put lo2
+  get = D.word8PrefixTable <|> fail "expecting QualRefExpr"
+instance D.HasPrefixTable QualRefExpr D.Byte MTab where
+  prefixTable = D.mkPrefixTableWord8 "QualRefExpr" 0x24 0x24 $
+    [ D.get >>= \q -> case q of
+        Unqualified o -> UnqualRefExpr . RefExpr o <$> D.get
+        Qualified q o -> pure (\lo1 lo2 -> QualRefExpr q (RefExpr o lo1) lo2) <*> D.get <*> D.get
+        ObjRef _ -> error "internal: received QualRef where QualRefExpr was expected."
+    ]
+
+instance D.Binary ParenExpr MTab where
+  put (ParenExpr a b) = D.prefixByte 0x25 $ D.put a >> D.put b
+  get = D.word8PrefixTable <|> fail "expecting ParenExpr"
+instance D.HasPrefixTable ParenExpr D.Byte MTab where
+  prefixTable = D.mkPrefixTableWord8 "Dao.Object.ParenExpr" 0x25 0x25 $
+    [pure ParenExpr <*> D.get <*> D.get]
+
+instance D.Binary ObjectExpr MTab where
   put o = case o of
-    LocationUnknown  -> return ()
-    Location a b c d -> D.prefixByte 0x29 $ D.put a >> D.put b >> D.put c >> D.put d
-  get = D.tryWord8 0x29 $ pure Location <*> D.get <*> D.get <*> D.get <*> D.get
+    Literal        a     z -> D.put a >> D.put z
+    ObjQualRefExpr a       -> D.put a
+    ObjParenExpr   a       -> D.put a
+    VoidExpr               -> D.putWord8   0x26
+    AssignExpr     a b c z -> D.prefixByte 0x27 $ D.put a >> D.put b >> D.put c >> D.put z
+    Equation       a b c z -> D.prefixByte 0x28 $ D.put a >> D.put b >> D.put c >> D.put z
+    PrefixExpr     a b   z -> D.prefixByte 0x29 $ D.put a >> D.put b >> D.put z
+    ArraySubExpr   a b   z -> D.prefixByte 0x2A $ D.put a >> D.put b >> D.put z
+    FuncCall       a b   z -> D.prefixByte 0x2B $ D.put a >> D.put b >> D.put z
+    InitExpr       a b c z -> D.prefixByte 0x2C $ D.put a >> D.put b >> D.put c >> D.put z
+    StructExpr     a b   z -> D.prefixByte 0x2D $ D.put a >> D.put b >> D.put z
+    LambdaExpr     a b   z -> D.prefixByte 0x2E $ D.put a >> D.put b >> D.put z
+    FuncExpr       a b c z -> D.prefixByte 0x2F $ D.put a >> D.put b >> D.put c >> D.put z
+    RuleExpr       a b   z -> D.prefixByte 0x30 $ D.put a >> D.put b >> D.put z
+    MetaEvalExpr   a     z -> D.prefixByte 0x31 $ D.put a >> D.put z
+  get = D.word8PrefixTable <|> fail "expecting ObjectExpr"
+instance D.HasPrefixTable ObjectExpr D.Byte MTab where
+  prefixTable = mconcat $
+    [ D.bindPrefixTable D.prefixTable $ \obj -> Literal obj <$> D.get
+    , fmap ObjQualRefExpr D.prefixTable
+    , fmap ObjParenExpr   D.prefixTable
+    , D.mkPrefixTableWord8 "ObjectExpr" 0x26 0x31 $
+        [ return VoidExpr
+        , pure AssignExpr   <*> D.get <*> D.get <*> D.get <*> D.get
+        , pure Equation     <*> D.get <*> D.get <*> D.get <*> D.get
+        , pure PrefixExpr   <*> D.get <*> D.get <*> D.get
+        , pure ArraySubExpr <*> D.get <*> D.get <*> D.get
+        , pure FuncCall     <*> D.get <*> D.get <*> D.get
+        , pure InitExpr     <*> D.get <*> D.get <*> D.get <*> D.get
+        , pure StructExpr   <*> D.get <*> D.get <*> D.get
+        , pure LambdaExpr   <*> D.get <*> D.get <*> D.get
+        , pure FuncExpr     <*> D.get <*> D.get <*> D.get <*> D.get
+        , pure RuleExpr     <*> D.get <*> D.get <*> D.get
+        , pure MetaEvalExpr <*> D.get <*> D.get
+        ]
+    ]
+
+--------------------------------------------------------------------------------------------
+-- -- Here there is a gap of about 7 prefix bytes (from 0x32 to 0x38) where the 'ObjectExpr' 
+-- -- data type may be expanded to include more nodes.
+--------------------------------------------------------------------------------------------
+
+instance D.Binary LValueExpr MTab where
+  put (LValueExpr o) = D.put o
+  get = LValueExpr <$> D.get
+
+instance D.Binary ParamListExpr MTab where
+  put (ParamListExpr lst loc) = D.prefixByte 0x39 $ D.put lst >> D.put loc
+  get = D.word8PrefixTable <|> fail "expecting ParamListExpr"
+instance D.HasPrefixTable ParamListExpr D.Byte MTab where
+  prefixTable = D.mkPrefixTableWord8 "ParamListExpr" 0x39 0x39 $
+    [pure ParamListExpr <*> D.get <*> D.get]
+
+instance D.Binary RuleStrings MTab where
+  put (RuleStrings a b) = D.prefixByte 0x3A $ D.put a >> D.put b
+  get = (D.tryWord8 0x3A $ pure RuleStrings <*> D.get <*> D.get) <|> fail "expecting RuleStrings"
+
+instance D.Binary ObjListExpr MTab where
+  put (ObjListExpr a b) = D.prefixByte 0x3B $ D.put a >> D.put b
+  get = (D.tryWord8 0x3B $ pure ObjListExpr <*> D.get <*> D.get) <|> fail "expecting ObjListExpr"
+
+instance D.Binary OptObjListExpr MTab where
+  put (OptObjListExpr o) = D.put o
+  get = OptObjListExpr <$> D.get
+
+instance D.Binary IfExpr MTab where
+  put (IfExpr a b c) = D.put a >> D.put b >> D.put c
+  get = pure IfExpr <*> D.get <*> D.get <*> D.get
+
+instance D.Binary ElseExpr MTab where
+  put (ElseExpr a b) = D.prefixByte 0x3C $ D.put a >> D.put b
+  get = (D.tryWord8 0x3C $ pure ElseExpr <*> D.get <*> D.get) <|> fail "expecting ElseExpr"
+
+instance D.Binary CodeBlock MTab where
+  put (CodeBlock o) = D.prefixByte 0x3D $ D.put o
+  get = D.tryWord8 0x3D $ CodeBlock <$> D.get
+
+instance D.Binary RefExpr MTab where
+  put (RefExpr a b) = D.put a >> D.put b
+  get = pure RefExpr <*> D.get <*> D.get
+
+instance D.Binary IfElseExpr MTab where
+  put (IfElseExpr a b c d) = D.prefixByte 0x41 $ D.put a >> D.put b >> D.put c >> D.put d
+  get = D.word8PrefixTable <|> fail "expecting IfElseExpr"
+instance D.HasPrefixTable IfElseExpr D.Byte MTab where
+  prefixTable = D.mkPrefixTableWord8 "IfElseExpr" 0x41 0x41 $
+    [pure IfElseExpr <*> D.get <*> D.get <*> D.get <*> D.get]
+
+instance D.Binary WhileExpr MTab where
+  put (WhileExpr o) = D.prefixByte 0x42 $ D.put o
+  get = D.word8PrefixTable <|> fail "expecting WhileExpr"
+instance D.HasPrefixTable WhileExpr D.Byte MTab where
+  prefixTable = D.mkPrefixTableWord8 "WhileExpr" 0x42 0x42 [WhileExpr <$> D.get]
+
+instance D.Binary ScriptExpr MTab where
+  put o = case o of
+    IfThenElse   a           -> D.put a
+    WhileLoop    a           -> D.put a
+    EvalObject   a         z -> D.prefixByte 0x43 $ D.put a >> D.put z
+    TryCatch     a     b c z -> D.prefixByte 0x44 $ D.put a >> D.put b >> D.put c >> D.put z
+    ForLoop      a     b c z -> D.prefixByte 0x45 $ D.put a >> D.put b >> D.put c >> D.put z
+    ContinueExpr True  b   z -> D.prefixByte 0x46 $ D.put b >> D.put z
+    ContinueExpr False b   z -> D.prefixByte 0x47 $ D.put b >> D.put z
+    ReturnExpr   True  b   z -> D.prefixByte 0x48 $ D.put b >> D.put z
+    ReturnExpr   False b   z -> D.prefixByte 0x49 $ D.put b >> D.put z
+    WithDoc      a     b   z -> D.prefixByte 0x4A $ D.put a >> D.put b >> D.put z
+  get = D.word8PrefixTable <|> fail "expecting ScriptExpr"
+instance D.HasPrefixTable ScriptExpr D.Byte MTab where
+  prefixTable = mconcat $
+    [ fmap IfThenElse D.prefixTable
+    , fmap WhileLoop  D.prefixTable
+    , D.mkPrefixTableWord8 "ScriptExpr" 0x43 0x4A $
+        [ pure EvalObject   <*> D.get <*> D.get
+        , pure TryCatch     <*> D.get <*> D.get <*> D.get <*> D.get
+        , pure ForLoop      <*> D.get <*> D.get <*> D.get <*> D.get
+        , pure (ContinueExpr True ) <*> D.get <*> D.get
+        , pure (ContinueExpr False) <*> D.get <*> D.get
+        , pure (ReturnExpr   True ) <*> D.get <*> D.get
+        , pure (ReturnExpr   False) <*> D.get <*> D.get
+        , pure WithDoc      <*> D.get <*> D.get <*> D.get
+        ]
+    ]
+
+instance D.Binary a MTab => D.Binary (TyChkExpr a) MTab where
+  put o = case o of
+    NotTypeChecked a       -> D.prefixByte 0x4B $ D.put a
+    TypeChecked    a b c   -> D.prefixByte 0x4C $ D.put a >> D.put b >> D.put c
+    DisableCheck   a b c d -> D.prefixByte 0x4D $ D.put a >> D.put b >> D.put c >> D.put d
+  get = D.word8PrefixTable <|> fail "expecting TyChkExpr"
+instance D.Binary a MTab => D.HasPrefixTable (TyChkExpr a) D.Byte MTab where
+  prefixTable = D.mkPrefixTableWord8 "TyChkExpr" 0x4B 0x4D $
+    [ NotTypeChecked <$> D.get
+    , pure TypeChecked  <*> D.get <*> D.get <*> D.get
+    , pure DisableCheck <*> D.get <*> D.get <*> D.get <*> D.get
+    ]
+
+instance D.Binary ParamExpr MTab where
+  put (ParamExpr True  a b) = D.prefixByte 0x4E $ D.put a >> D.put b
+  put (ParamExpr False a b) = D.prefixByte 0x4F $ D.put a >> D.put b
+  get = D.word8PrefixTable <|> fail "expecting ParamExpr"
+instance D.HasPrefixTable ParamExpr D.Byte MTab where
+  prefixTable = D.mkPrefixTableWord8 "ParamExpr" 0x4E 0x4F $
+    [ pure (ParamExpr True ) <*> D.get <*> D.get
+    , pure (ParamExpr False) <*> D.get <*> D.get
+    ]
 
 instance D.Binary TopLevelExpr MTab where
   put o = case o of
-    Attribute a             b z -> D.prefixByte 0x2B $ D.put a >> D.put b >> D.put z
-    TopScript a               z -> D.prefixByte 0x2C $ D.put a >> D.put z
-    EventExpr BeginExprType b z -> D.prefixByte 0x2D $ D.put b >> D.put z
-    EventExpr ExitExprType  b z -> D.prefixByte 0x2E $ D.put b >> D.put z
-    EventExpr EndExprType   b z -> D.prefixByte 0x2F $ D.put b >> D.put z
-  get = D.word8PrefixTable <|> fail "Dao.Object.TopLevelExpr"
+    Attribute a             b z -> D.prefixByte 0x51 $ D.put a >> D.put b >> D.put z
+    TopScript a               z -> D.prefixByte 0x52 $ D.put a >> D.put z
+    EventExpr BeginExprType b z -> D.prefixByte 0x53 $ D.put b >> D.put z
+    EventExpr ExitExprType  b z -> D.prefixByte 0x54 $ D.put b >> D.put z
+    EventExpr EndExprType   b z -> D.prefixByte 0x55 $ D.put b >> D.put z
+  get = D.word8PrefixTable <|> fail "expecting TopLevelExpr"
 instance D.HasPrefixTable TopLevelExpr D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "TopLevelExpr" 0x2B 0x2F $
+  prefixTable = D.mkPrefixTableWord8 "TopLevelExpr" 0x51 0x55 $
     [ pure Attribute <*> D.get <*> D.get <*> D.get
     , pure TopScript <*> D.get <*> D.get
     , pure (EventExpr BeginExprType) <*> D.get <*> D.get
@@ -229,135 +403,11 @@ instance D.HasPrefixTable TopLevelExpr D.Byte MTab where
     , pure (EventExpr EndExprType  ) <*> D.get <*> D.get
     ]
 
-instance D.Binary ScriptExpr MTab where
-  put o = case o of
-    IfThenElse   a           -> D.prefixByte 0x31 $ D.put a
-    WhileLoop    a           -> D.prefixByte 0x32 $ D.put a
-    EvalObject   a         z -> D.prefixByte 0x33 $ D.put a >> D.put z
-    TryCatch     a     b c z -> D.prefixByte 0x34 $ D.put a >> D.put b >> D.put c >> D.put z
-    ForLoop      a     b c z -> D.prefixByte 0x35 $ D.put a >> D.put b >> D.put c >> D.put z
-    ContinueExpr True  b   z -> D.prefixByte 0x36 $ D.put b >> D.put z
-    ContinueExpr False b   z -> D.prefixByte 0x37 $ D.put b >> D.put z
-    ReturnExpr   True  b   z -> D.prefixByte 0x38 $ D.put b >> D.put z
-    ReturnExpr   False b   z -> D.prefixByte 0x39 $ D.put b >> D.put z
-    WithDoc      a     b   z -> D.prefixByte 0x3A $ D.put a >> D.put b >> D.put z
-  get = D.word8PrefixTable <|> fail "Dao.Object.ScriptExpr"
-instance D.HasPrefixTable ScriptExpr D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "ScriptExpr" 0x31 0x3A $
-    [ IfThenElse <$> D.get
-    , WhileLoop  <$> D.get
-    , pure EvalObject   <*> D.get <*> D.get
-    , pure TryCatch     <*> D.get <*> D.get <*> D.get <*> D.get
-    , pure ForLoop      <*> D.get <*> D.get <*> D.get <*> D.get
-    , pure (ContinueExpr True ) <*> D.get <*> D.get
-    , pure (ContinueExpr False) <*> D.get <*> D.get
-    , pure (ReturnExpr   True ) <*> D.get <*> D.get
-    , pure (ReturnExpr   False) <*> D.get <*> D.get
-    , pure WithDoc      <*> D.get <*> D.get <*> D.get
-    ]
-
-instance D.Binary IfExpr MTab where
-  put (IfExpr a b c) = D.put a >> D.put b >> D.put c
-  get = pure IfExpr <*> D.get <*> D.get <*> D.get
-
-instance D.Binary ElseExpr MTab where
-  put (ElseExpr a b) = D.put a >> D.put b
-  get = pure ElseExpr <*> D.get <*> D.get
-
-instance D.Binary IfElseExpr MTab where
-  put (IfElseExpr a b c d) = D.put a >> D.put b >> D.put c >> D.put d
-  get = pure IfElseExpr <*> D.get <*> D.get <*> D.get <*> D.get
-
-instance D.Binary WhileExpr MTab where
-  put (WhileExpr o) = D.put o
-  get = WhileExpr <$> D.get
-
-instance D.Binary CodeBlock MTab where
-  put (CodeBlock o) = D.put o
-  get = CodeBlock <$> D.get
-
-instance D.Binary RefExpr MTab where
-  put (RefExpr a b) = D.put a >> D.put b
-  get = pure RefExpr <*> D.get <*> D.get
-
-instance D.Binary QualRefExpr MTab where
-  put o = D.prefixByte 0x28 $ case o of
-    UnqualRefExpr (RefExpr o loc)     -> D.put (Unqualified o) >> D.put loc
-    QualRefExpr q (RefExpr o lo1) lo2 -> D.put (Qualified q o) >> D.put lo1 >> D.put lo2
-  get = D.word8PrefixTable <|> fail "Dao.Object.QualRefExpr"
-instance D.HasPrefixTable QualRefExpr D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "QualRefExpr" 0x28 0x28 $
-    [ D.get >>= \q -> case q of
-        Unqualified o -> UnqualRefExpr . RefExpr o <$> D.get
-        Qualified q o -> pure (\lo1 lo2 -> QualRefExpr q (RefExpr o lo1) lo2) <*> D.get <*> D.get
-        ObjRef _ -> error "internal: received QualRef where QualRefExpr was expected."
-    ]
-
-instance D.Binary ObjectExpr MTab where
-  put o = case o of
-    VoidExpr               -> D.putWord8   0x41
-    ObjQualRefExpr a       -> D.prefixByte 0x42 $ D.put a
-    ObjParenExpr   a       -> D.prefixByte 0x43 $ D.put a
-    Literal        a     z -> D.prefixByte 0x44 $ D.put a >> D.put z
-    AssignExpr     a b c z -> D.prefixByte 0x45 $ D.put a >> D.put b >> D.put c >> D.put z
-    Equation       a b c z -> D.prefixByte 0x46 $ D.put a >> D.put b >> D.put c >> D.put z
-    PrefixExpr     a b   z -> D.prefixByte 0x47 $ D.put a >> D.put b >> D.put z
-    ArraySubExpr   a b   z -> D.prefixByte 0x48 $ D.put a >> D.put b >> D.put z
-    FuncCall       a b   z -> D.prefixByte 0x49 $ D.put a >> D.put b >> D.put z
-    InitExpr       a b c z -> D.prefixByte 0x4A $ D.put a >> D.put b >> D.put c >> D.put z
-    StructExpr     a b   z -> D.prefixByte 0x4B $ D.put a >> D.put b >> D.put z
-    LambdaExpr     a b   z -> D.prefixByte 0x4C $ D.put a >> D.put b >> D.put z
-    FuncExpr       a b c z -> D.prefixByte 0x4D $ D.put a >> D.put b >> D.put c >> D.put z
-    RuleExpr       a b   z -> D.prefixByte 0x4E $ D.put a >> D.put b >> D.put z
-    MetaEvalExpr   a     z -> D.prefixByte 0x4F $ D.put a >> D.put z
-  get = D.word8PrefixTable <|> fail "Dao.Object.ObjectExpr"
-instance D.HasPrefixTable ObjectExpr D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "ObjectExpr" 0x41 0x4F $
-    [ return VoidExpr
-    , ObjQualRefExpr <$> D.get
-    , ObjParenExpr   <$> D.get
-    , pure Literal      <*> D.get <*> D.get
-    , pure AssignExpr   <*> D.get <*> D.get <*> D.get <*> D.get
-    , pure Equation     <*> D.get <*> D.get <*> D.get <*> D.get
-    , pure PrefixExpr   <*> D.get <*> D.get <*> D.get
-    , pure ArraySubExpr <*> D.get <*> D.get <*> D.get
-    , pure FuncCall     <*> D.get <*> D.get <*> D.get
-    , pure InitExpr     <*> D.get <*> D.get <*> D.get <*> D.get
-    , pure StructExpr   <*> D.get <*> D.get <*> D.get
-    , pure LambdaExpr   <*> D.get <*> D.get <*> D.get
-    , pure FuncExpr     <*> D.get <*> D.get <*> D.get <*> D.get
-    , pure RuleExpr     <*> D.get <*> D.get <*> D.get
-    , pure MetaEvalExpr <*> D.get <*> D.get
-    ]
-
-instance D.Binary a MTab => D.Binary (TyChkExpr a) MTab where
-  put o = case o of
-    NotTypeChecked a       -> D.prefixByte 0x51 $ D.put a
-    TypeChecked    a b c   -> D.prefixByte 0x52 $ D.put a >> D.put b >> D.put c
-    DisableCheck   a b c d -> D.prefixByte 0x53 $ D.put a >> D.put b >> D.put c >> D.put d
-  get = D.word8PrefixTable <|> fail "Dao.Object.TyChkExpr"
-instance D.Binary a MTab => D.HasPrefixTable (TyChkExpr a) D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "TyChkExpr" 0x51 0x53 $
-    [ NotTypeChecked <$> D.get
-    , pure TypeChecked  <*> D.get <*> D.get <*> D.get
-    , pure DisableCheck <*> D.get <*> D.get <*> D.get <*> D.get
-    ]
-
-instance D.Binary ParamExpr MTab where
-  put (ParamExpr True  a b) = D.prefixByte 0x54 $ D.put a >> D.put b
-  put (ParamExpr False a b) = D.prefixByte 0x55 $ D.put a >> D.put b
-  get = D.word8PrefixTable <|> fail "Dao.Object.ParamExpr"
-instance D.HasPrefixTable ParamExpr D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "ParamExpr" 0x54 0x55 $
-    [ pure (ParamExpr True ) <*> D.get <*> D.get
-    , pure (ParamExpr False) <*> D.get <*> D.get
-    ]
-
 instance D.Binary PrefixOp MTab where
   put o = D.putWord8 $ case o of
     { INVB   -> 0x5A; NOT -> 0x5B; NEGTIV -> 0x5C
     ; POSTIV -> 0x5D; REF -> 0x5E; DEREF  -> 0x5F }
-  get = D.word8PrefixTable <|> fail "Dao.Object.PrefixOp"
+  get = D.word8PrefixTable <|> fail "expecting PrefixOp"
 instance D.HasPrefixTable PrefixOp D.Byte MTab where
   prefixTable = D.mkPrefixTableWord8 "PrefixOp" 0x5A 0x5F $
     map return [INVB, NOT, NEGTIV, POSTIV, REF, DEREF]
@@ -377,7 +427,7 @@ instance D.Binary UpdateOp MTab where
     USHL   -> 0x6B
     USHR   -> 0x6C
     UARROW -> 0x6D
-  get = D.word8PrefixTable <|> fail "Dao.Object.UpdateOp"
+  get = D.word8PrefixTable <|> fail "expecting UpdateOp"
 instance D.HasPrefixTable UpdateOp D.Byte MTab where
   prefixTable = D.mkPrefixTableWord8 "UpdateOp" 0x61 0x6D $ map return $
     [UCONST, UADD, USUB, UMULT, UDIV, UMOD, UPOW, UORB, UANDB, UXORB, USHL, USHR, UARROW]
@@ -392,37 +442,19 @@ instance D.Binary InfixOp MTab where
     ; MOD  -> 0x66; POW -> 0x67; ORB  -> 0x68; ANDB  -> 0x69
     ; XORB -> 0x6A; SHL -> 0x6B; SHR  -> 0x6C; ARROW -> 0x6D
     ; OR   -> 0x6E; AND -> 0x6F } 
-  get = D.word8PrefixTable <|> fail "Dao.Object.InfixOp"
+  get = D.word8PrefixTable <|> fail "expecting InfixOp"
 instance D.HasPrefixTable InfixOp D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "InfixOp" 0x5A 0x6E $ let {r=return; z=mzero} in
+  prefixTable = D.mkPrefixTableWord8 "InfixOp" 0x5A 0x6F $ let {r=return; z=mzero} in
     [ r EQUL , r NEQUL, r GTN , r LTN, r GTEQ , r LTEQ , z, z
     , r ADD  , r SUB  , r MULT, r DIV, r MOD  , r POW  , r ORB
     , r ANDB , r XORB , r SHL , r SHR, r ARROW, r OR   , r AND
     ]
 
-instance D.Binary ParenExpr MTab where
-  put (ParenExpr a b) = D.put a >> D.put b
-  get = pure ParenExpr <*> D.get <*> D.get
-
-instance D.Binary LValueExpr MTab where
-  put (LValueExpr o) = D.put o
-  get = LValueExpr <$> D.get
-
-instance D.Binary ParamListExpr MTab where
-  put (ParamListExpr lst loc) = D.put lst >> D.put loc
-  get = pure ParamListExpr <*> D.get <*> D.get
-
-instance D.Binary RuleStrings MTab where
-  put (RuleStrings a b) = D.put a >> D.put b
-  get = pure RuleStrings <*> D.get <*> D.get
-
-instance D.Binary ObjListExpr MTab where
-  put (ObjListExpr a b) = D.put a >> D.put b
-  get = pure ObjListExpr <*> D.get <*> D.get
-
-instance D.Binary OptObjListExpr MTab where
-  put (OptObjListExpr o) = D.put o
-  get = OptObjListExpr <$> D.get
+instance D.Binary Location MTab where
+  put o = case o of
+    LocationUnknown  -> return ()
+    Location a b c d -> D.prefixByte 0x7F $ D.put a >> D.put b >> D.put c >> D.put d
+  get = D.tryWord8 0x7F $ pure Location <*> D.get <*> D.get <*> D.get <*> D.get
 
 ----------------------------------------------------------------------------------------------------
 
@@ -660,27 +692,27 @@ instance B.Binary RefExpr where
     0x88 -> liftM2 RefExpr B.get B.get
     _    -> fail "expecting reference expression"
 
-instance B.Binary QualRefExpr where
-  put r = case r of
-    UnqualRefExpr   r -> B.put r
-    QualRefExpr typ r loc ->
-      let f n = B.putWord8 n >> B.put r >> B.put loc
-      in  case typ of
-            LOCAL  -> f 0x8B
-            QTIME  -> f 0x8C
-            GLODOT -> f 0x8D
-            STATIC -> f 0x8E
-            GLOBAL -> f 0x8F
-  get = do
-    w <- B.lookAhead B.getWord8
-    let f typ = B.getWord8 >> liftM2 (QualRefExpr typ) B.get B.get
-    case w of
-      0x8B -> f LOCAL
-      0x8C -> f QTIME
-      0x8D -> f GLODOT
-      0x8E -> f STATIC
-      0x8F -> f GLOBAL
-      _    -> liftM UnqualRefExpr B.get
+--  instance B.Binary QualRefExpr where
+--    put r = case r of
+--      UnqualRefExpr   r -> B.put r
+--      QualRefExpr typ r loc ->
+--        let f n = B.putWord8 n >> B.put r >> B.put loc
+--        in  case typ of
+--              LOCAL  -> f 0x8B
+--              QTIME  -> f 0x8C
+--              GLODOT -> f 0x8D
+--              STATIC -> f 0x8E
+--              GLOBAL -> f 0x8F
+--    get = do
+--      w <- B.lookAhead B.getWord8
+--      let f typ = B.getWord8 >> liftM2 (QualRefExpr typ) B.get B.get
+--      case w of
+--        0x8B -> f LOCAL
+--        0x8C -> f QTIME
+--        0x8D -> f GLODOT
+--        0x8E -> f STATIC
+--        0x8F -> f GLOBAL
+--        _    -> liftM UnqualRefExpr B.get
 
 ----------------------------------------------------------------------------------------------------
 
@@ -753,108 +785,108 @@ instance B.Binary UpdateOp where
       0x7C -> x UARROW
       _    -> fail "expecting update/assignment operator symbol"
 
-instance B.Binary LValueExpr where
-  put (LValueExpr o) = B.putWord8 0x4D >> B.put o
-  get = B.getWord8 >>= \w -> case w of
-    0x4D -> liftM LValueExpr B.get
-    _    -> fail "expecting L-value expression"
+--  instance B.Binary LValueExpr where
+--    put (LValueExpr o) = B.putWord8 0x4D >> B.put o
+--    get = B.getWord8 >>= \w -> case w of
+--      0x4D -> liftM LValueExpr B.get
+--      _    -> fail "expecting L-value expression"
 
-putTyChkExpr :: (a -> B.Put) -> TyChkExpr a -> B.Put
-putTyChkExpr putfn o = case o of
-  NotTypeChecked a       -> putfn a
-  TypeChecked    a b loc -> B.putWord8 0x3A >> putfn a >> B.put b >> B.put loc
+--  putTyChkExpr :: (a -> B.Put) -> TyChkExpr a -> B.Put
+--  putTyChkExpr putfn o = case o of
+--    NotTypeChecked a       -> putfn a
+--    TypeChecked    a b loc -> B.putWord8 0x3A >> putfn a >> B.put b >> B.put loc
 
-getTyChkExpr :: B.Get a -> B.Get (TyChkExpr a)
-getTyChkExpr getfn = B.lookAhead B.getWord8 >>= \w -> case w of
-  0x3A -> B.getWord8 >> liftM3 TypeChecked getfn B.get B.get
-  _    -> liftM NotTypeChecked getfn
+--  getTyChkExpr :: B.Get a -> B.Get (TyChkExpr a)
+--  getTyChkExpr getfn = B.lookAhead B.getWord8 >>= \w -> case w of
+--    0x3A -> B.getWord8 >> liftM3 TypeChecked getfn B.get B.get
+--    _    -> liftM NotTypeChecked getfn
 
-instance B.Binary ParamExpr where
-  put (ParamExpr a b loc) = B.putWord8 (if a then 0x39 else 0x38) >> putTyChkExpr B.put b >> B.put loc
-  get = B.getWord8 >>= \w -> let getfn = getTyChkExpr B.get in case w of
-    0x38 -> liftM2 (ParamExpr False) getfn B.get
-    0x39 -> liftM2 (ParamExpr True ) getfn B.get
-    _    -> fail "expecting parameter"
+--  instance B.Binary ParamExpr where
+--    put (ParamExpr a b loc) = B.putWord8 (if a then 0x39 else 0x38) >> putTyChkExpr B.put b >> B.put loc
+--    get = B.getWord8 >>= \w -> let getfn = getTyChkExpr B.get in case w of
+--      0x38 -> liftM2 (ParamExpr False) getfn B.get
+--      0x39 -> liftM2 (ParamExpr True ) getfn B.get
+--      _    -> fail "expecting parameter"
 
-instance B.Binary ParamListExpr where
-  put (ParamListExpr lst loc) = putTyChkExpr putList lst >> B.put loc
-  get = liftM2 ParamListExpr (getTyChkExpr getList) B.get
+--  instance B.Binary ParamListExpr where
+--    put (ParamListExpr lst loc) = putTyChkExpr putList lst >> B.put loc
+--    get = liftM2 ParamListExpr (getTyChkExpr getList) B.get
 
 instance B.Binary RuleStrings where
   put (RuleStrings a b) = putList a >> B.put b
   get = liftM2 RuleStrings getList B.get
 
-instance B.Binary OptObjListExpr where
-  put (OptObjListExpr a) = maybe (return ()) (\a -> B.putWord8 0x3B >> B.put a) a
-  get = fmap OptObjListExpr (optional (B.getWord8 >>= \a -> if a==0x38 then B.get else mzero))
+--  instance B.Binary OptObjListExpr where
+--    put (OptObjListExpr a) = maybe (return ()) (\a -> B.putWord8 0x3B >> B.put a) a
+--    get = fmap OptObjListExpr (optional (B.getWord8 >>= \a -> if a==0x38 then B.get else mzero))
 
-instance B.Binary ObjectExpr where
-  put o = let x z w fn = B.putWord8 w >> fn >> B.put z in case o of
-    VoidExpr               -> B.putWord8 0x40
-    Literal        a     z -> x z 0x41 $ B.put a 
-    AssignExpr     a b c z -> x z 0x42 $ B.put a >> B.put b >> B.put c
-    Equation       a b c z -> x z 0x43 $ B.put a >> B.put b >> B.put c
-    PrefixExpr     a b   z -> x z 0x44 $ B.put a >> B.put b
-    ArraySubExpr   a b   z -> x z 0x45 $ B.put a >> B.put b
-    FuncCall       a b   z -> x z 0x46 $ B.put a >> B.put b
-    InitExpr       a b c z -> x z 0x47 $ B.put a >> B.put b >> B.put c
-    StructExpr     a b   z -> x z 0x48 $ B.put a >> B.put b
-    FuncExpr       a b c z -> x z 0x49 $ B.put a >> B.put b >> B.put c
-    RuleExpr       a b   z -> x z 0x4A $ B.put a >> B.put b
-    MetaEvalExpr   a     z -> x z 0x4B $ B.put a
-    ObjQualRefExpr a       -> B.put a
-    ObjParenExpr   a       -> B.put a
-  get = do
-    w <- B.lookAhead B.getWord8
-    let f a = B.getWord8 >> a
-    case w of
-      0x40 -> f $ return VoidExpr
-      0x41 -> f $ liftM2 Literal      B.get         B.get
-      0x42 -> f $ liftM4 AssignExpr   B.get B.get B.get B.get
-      0x43 -> f $ liftM4 Equation     B.get B.get B.get B.get
-      0x44 -> f $ liftM3 PrefixExpr   B.get B.get     B.get
-      0x45 -> f $ liftM3 ArraySubExpr B.get B.get     B.get
-      0x46 -> f $ liftM3 FuncCall     B.get B.get     B.get
-      0x47 -> f $ liftM4 InitExpr     B.get B.get B.get B.get
-      0x48 -> f $ liftM3 StructExpr   B.get B.get     B.get
-      0x49 -> f $ liftM4 FuncExpr     B.get B.get B.get B.get
-      0x4A -> f $ liftM3 RuleExpr     B.get B.get     B.get
-      0x4B -> f $ liftM2 MetaEvalExpr B.get         B.get
-      _    -> msum $
-        [ liftM ObjQualRefExpr B.get
-        , liftM ObjParenExpr   B.get
-        , fail "expecting object expression"
-        ]
+--  instance B.Binary ObjectExpr where
+--    put o = let x z w fn = B.putWord8 w >> fn >> B.put z in case o of
+--      ObjQualRefExpr a       -> B.put a
+--      ObjParenExpr   a       -> B.put a
+--      VoidExpr               -> B.putWord8 0x40
+--      Literal        a     z -> x z 0x41 $ B.put a 
+--      AssignExpr     a b c z -> x z 0x42 $ B.put a >> B.put b >> B.put c
+--      Equation       a b c z -> x z 0x43 $ B.put a >> B.put b >> B.put c
+--      PrefixExpr     a b   z -> x z 0x44 $ B.put a >> B.put b
+--      ArraySubExpr   a b   z -> x z 0x45 $ B.put a >> B.put b
+--      FuncCall       a b   z -> x z 0x46 $ B.put a >> B.put b
+--      InitExpr       a b c z -> x z 0x47 $ B.put a >> B.put b >> B.put c
+--      StructExpr     a b   z -> x z 0x48 $ B.put a >> B.put b
+--      FuncExpr       a b c z -> x z 0x49 $ B.put a >> B.put b >> B.put c
+--      RuleExpr       a b   z -> x z 0x4A $ B.put a >> B.put b
+--      MetaEvalExpr   a     z -> x z 0x4B $ B.put a
+--    get = do
+--      w <- B.lookAhead B.getWord8
+--      let f a = B.getWord8 >> a
+--      case w of
+--        0x40 -> f $ return VoidExpr
+--        0x41 -> f $ liftM2 Literal      B.get         B.get
+--        0x42 -> f $ liftM4 AssignExpr   B.get B.get B.get B.get
+--        0x43 -> f $ liftM4 Equation     B.get B.get B.get B.get
+--        0x44 -> f $ liftM3 PrefixExpr   B.get B.get     B.get
+--        0x45 -> f $ liftM3 ArraySubExpr B.get B.get     B.get
+--        0x46 -> f $ liftM3 FuncCall     B.get B.get     B.get
+--        0x47 -> f $ liftM4 InitExpr     B.get B.get B.get B.get
+--        0x48 -> f $ liftM3 StructExpr   B.get B.get     B.get
+--        0x49 -> f $ liftM4 FuncExpr     B.get B.get B.get B.get
+--        0x4A -> f $ liftM3 RuleExpr     B.get B.get     B.get
+--        0x4B -> f $ liftM2 MetaEvalExpr B.get         B.get
+--        _    -> msum $
+--          [ liftM ObjQualRefExpr B.get
+--          , liftM ObjParenExpr   B.get
+--          , fail "expecting object expression"
+--          ]
 
-instance B.Binary ParenExpr where
-  put (ParenExpr a loc) = B.putWord8 0x4C >> B.put a >> B.put loc
-  get = B.lookAhead B.getWord8 >>= \a -> case a of
-    0x4C -> B.getWord8 >> liftM2 ParenExpr B.get B.get
-    _    -> mzero
+--  instance B.Binary ParenExpr where
+--    put (ParenExpr a loc) = B.putWord8 0x4C >> B.put a >> B.put loc
+--    get = B.lookAhead B.getWord8 >>= \a -> case a of
+--      0x4C -> B.getWord8 >> liftM2 ParenExpr B.get B.get
+--      _    -> mzero
 
-instance B.Binary IfExpr where
-  put (IfExpr a b loc) = B.putWord8 0x51 >> B.put a >> B.put b >> B.put loc
-  get = B.getWord8 >>= \w -> case w of
-    0x51 -> liftM3 IfExpr B.get B.get B.get
-    _    -> fail "expecting if expression"
+--  instance B.Binary IfExpr where
+--    put (IfExpr a b loc) = B.putWord8 0x51 >> B.put a >> B.put b >> B.put loc
+--    get = B.getWord8 >>= \w -> case w of
+--      0x51 -> liftM3 IfExpr B.get B.get B.get
+--      _    -> fail "expecting if expression"
 
-instance B.Binary ElseExpr where
-  put (ElseExpr a loc) = B.putWord8 0x52 >> B.put a >> B.put loc
-  get = B.getWord8 >>= \w -> case w of
-    0x52 -> liftM2 ElseExpr B.get B.get
-    _    -> fail "expecting else-if expression"
+--  instance B.Binary ElseExpr where
+--    put (ElseExpr a loc) = B.putWord8 0x52 >> B.put a >> B.put loc
+--    get = B.getWord8 >>= \w -> case w of
+--      0x52 -> liftM2 ElseExpr B.get B.get
+--      _    -> fail "expecting else-if expression"
 
-instance B.Binary IfElseExpr where
-  put (IfElseExpr a b c loc) = B.putWord8 0x53 >> B.put a >> putList b >> maybe (return ()) B.put c >> B.put loc
-  get = B.getWord8 >>= \w -> case w of
-    0x53 -> liftM4 IfElseExpr B.get getList (optional B.get) B.get
-    _    -> fail "expecting if/else-if/else expression"
+--  instance B.Binary IfElseExpr where
+--    put (IfElseExpr a b c loc) = B.putWord8 0x53 >> B.put a >> putList b >> maybe (return ()) B.put c >> B.put loc
+--    get = B.getWord8 >>= \w -> case w of
+--      0x53 -> liftM4 IfElseExpr B.get getList (optional B.get) B.get
+--      _    -> fail "expecting if/else-if/else expression"
 
-instance B.Binary WhileExpr where
-  put (WhileExpr (IfExpr a b loc)) = B.putWord8 0x54 >> B.put a >> B.put b >> B.put loc
-  get = B.getWord8 >>= \w -> case w of
-    0x54 -> liftM3 (\a b c -> WhileExpr (IfExpr a b c)) B.get B.get B.get
-    _    -> fail "expecting while expression"
+--  instance B.Binary WhileExpr where
+--    put (WhileExpr (IfExpr a b loc)) = B.putWord8 0x54 >> B.put a >> B.put b >> B.put loc
+--    get = B.getWord8 >>= \w -> case w of
+--      0x54 -> liftM3 (\a b c -> WhileExpr (IfExpr a b c)) B.get B.get B.get
+--      _    -> fail "expecting while expression"
 
 --instance B.Binary ElseIfExpr where
 --  B.put o = case o of
@@ -867,30 +899,30 @@ instance B.Binary WhileExpr where
 --    0x53 -> liftM4 ElseIfExpr B.get B.get B.get B.get
 --    _    -> fail "expecting if-then-else expression"
 
-instance B.Binary ScriptExpr where
-  put s = case s of
-    IfThenElse   a       -> B.put a
-    WhileLoop    a       -> B.put a
-    EvalObject   a     z -> x z 0x55 $ B.put a
-    TryCatch     a b c z -> x z 0x56 $ B.put a >> maybe (return ()) B.put b >> maybe (return ()) B.put c
-    ForLoop      a b c z -> x z 0x57 $ B.put        a >> B.put b >> B.put c
-    ContinueExpr a b   z -> x z 0x58 $ putObjBool a >> B.put b
-    ReturnExpr   a b   z -> x z 0x59 $ putObjBool a >> B.put b
-    WithDoc      a b   z -> x z 0x5A $ B.put        a >> B.put b
-    where
-      x z i putx = B.putWord8 i >> putx >> B.put z
-  get = do
-    w <- B.lookAhead B.getWord8
-    let x = B.getWord8
-    case w of
-      0x53 -> liftM IfThenElse B.get
-      0x54 -> liftM WhileLoop  B.get
-      0x55 -> x >> liftM2 EvalObject   B.get                 B.get
-      0x56 -> x >> liftM4 TryCatch     B.get (optional B.get) (optional B.get) B.get
-      0x57 -> x >> liftM4 ForLoop      B.get         B.get B.get B.get
-      0x58 -> x >> liftM3 ContinueExpr getObjBool  B.get     B.get
-      0x59 -> x >> liftM3 ReturnExpr   getObjBool  B.get     B.get
-      0x5A -> x >> liftM3 WithDoc      B.get         B.get     B.get
+--  instance B.Binary ScriptExpr where
+--    put s = case s of
+--      IfThenElse   a       -> B.put a
+--      WhileLoop    a       -> B.put a
+--      EvalObject   a     z -> x z 0x55 $ B.put a
+--      TryCatch     a b c z -> x z 0x56 $ B.put a >> maybe (return ()) B.put b >> maybe (return ()) B.put c
+--      ForLoop      a b c z -> x z 0x57 $ B.put        a >> B.put b >> B.put c
+--      ContinueExpr a b   z -> x z 0x58 $ putObjBool a >> B.put b
+--      ReturnExpr   a b   z -> x z 0x59 $ putObjBool a >> B.put b
+--      WithDoc      a b   z -> x z 0x5A $ B.put        a >> B.put b
+--      where
+--        x z i putx = B.putWord8 i >> putx >> B.put z
+--    get = do
+--      w <- B.lookAhead B.getWord8
+--      let x = B.getWord8
+--      case w of
+--        0x53 -> liftM IfThenElse B.get
+--        0x54 -> liftM WhileLoop  B.get
+--        0x55 -> x >> liftM2 EvalObject   B.get                 B.get
+--        0x56 -> x >> liftM4 TryCatch     B.get (optional B.get) (optional B.get) B.get
+--        0x57 -> x >> liftM4 ForLoop      B.get         B.get B.get B.get
+--        0x58 -> x >> liftM3 ContinueExpr getObjBool  B.get     B.get
+--        0x59 -> x >> liftM3 ReturnExpr   getObjBool  B.get     B.get
+--        0x5A -> x >> liftM3 WithDoc      B.get         B.get     B.get
 
 instance B.Binary Location where
   put loc = case loc of
@@ -918,33 +950,33 @@ instance B.Binary Location where
 
 ----------------------------------------------------------------------------------------------------
 
-instance B.Binary CallableCode where
-  put (CallableCode pat ty exe) = B.putWord8 0x25 >> B.put     pat >> B.put ty >> B.put exe
-  get = B.getWord8 >>= \w -> case w of
-    0x25 -> liftM3 CallableCode B.get     B.get B.get
-    _    -> fail "expecting CallableCode"
+--  instance B.Binary CallableCode where
+--    put (CallableCode pat ty exe) = B.putWord8 0x25 >> B.put     pat >> B.put ty >> B.put exe
+--    get = B.getWord8 >>= \w -> case w of
+--      0x25 -> liftM3 CallableCode B.get     B.get B.get
+--      _    -> fail "expecting CallableCode"
 
-instance B.Binary GlobAction where
-  put (GlobAction pat exe) = B.putWord8 0x26 >> putList pat >> B.put exe
-  get = B.getWord8 >>= \w -> case w of
-    0x26 -> liftM2 GlobAction getList B.get
-    _    -> fail "expecting GlobAction"
+--  instance B.Binary GlobAction where
+--    put (GlobAction pat exe) = B.putWord8 0x26 >> putList pat >> B.put exe
+--    get = B.getWord8 >>= \w -> case w of
+--      0x26 -> liftM2 GlobAction getList B.get
+--      _    -> fail "expecting GlobAction"
 
-instance B.Binary CodeBlock where
-  put = putList . codeBlock
-  get = fmap CodeBlock getList
+--  instance B.Binary CodeBlock where
+--    put = putList . codeBlock
+--    get = fmap CodeBlock getList
 
-instance B.Binary Subroutine where
-  put = B.put . origSourceCode
-  get = do
-    code <- B.get
-    let msg = "Subroutine retrieved from binary used before being initialized."
-    return $
-      Subroutine
-      { origSourceCode = code
-      , staticVars     = error msg
-      , executable     = error msg
-      }
+--  instance B.Binary Subroutine where
+--    put = B.put . origSourceCode
+--    get = do
+--      code <- B.get
+--      let msg = "Subroutine retrieved from binary used before being initialized."
+--      return $
+--        Subroutine
+--        { origSourceCode = code
+--        , staticVars     = error msg
+--        , executable     = error msg
+--        }
 
 --instance B.Binary ObjSetOp where
 --  B.put op = B.putWord8 $ case op of
@@ -1011,31 +1043,31 @@ instance (Es.InfBound a, Integral a, Bits a) => B.Binary (Es.Set a) where
   put = putEnumSetWith putVLInt
   get = getEnumSetWith getFromVLInt
 
-instance B.Binary ObjListExpr where
-  put (ObjListExpr lst _) = putList lst
-  get = liftM2 ObjListExpr getList (return LocationUnknown)
+--  instance B.Binary ObjListExpr where
+--    put (ObjListExpr lst _) = putList lst
+--    get = liftM2 ObjListExpr getList (return LocationUnknown)
 
-instance B.Binary TopLevelExpr where
-  put d = case d of
-    Attribute      a b   z -> x 0x61    $ B.put a >> B.put b          >> B.put z
-    TopScript      a     z -> x 0x62    $ B.put a                   >> B.put z
-    EventExpr      a b   z -> x (evt a) $ B.put b                   >> B.put z
-    where
-      x i putx = B.putWord8 i >> putx
-      evt typ = case typ of
-        BeginExprType -> 0x63
-        EndExprType   -> 0x64
-        ExitExprType  -> 0x65
-  get = do
-    w <- B.getWord8
-    case w of
-      0x61 -> liftM3 Attribute      B.get B.get B.get
-      0x62 -> liftM2 TopScript      B.get B.get
-      0x63 -> evtexp BeginExprType
-      0x64 -> evtexp EndExprType
-      0x65 -> evtexp ExitExprType
-      _    -> fail "expecting top-level expression"
-      where { evtexp typ = liftM2 (EventExpr typ) B.get B.get }
+--  instance B.Binary TopLevelExpr where
+--    put d = case d of
+--      Attribute      a b   z -> x 0x61    $ B.put a >> B.put b          >> B.put z
+--      TopScript      a     z -> x 0x62    $ B.put a                   >> B.put z
+--      EventExpr      a b   z -> x (evt a) $ B.put b                   >> B.put z
+--      where
+--        x i putx = B.putWord8 i >> putx
+--        evt typ = case typ of
+--          BeginExprType -> 0x63
+--          EndExprType   -> 0x64
+--          ExitExprType  -> 0x65
+--    get = do
+--      w <- B.getWord8
+--      case w of
+--        0x61 -> liftM3 Attribute      B.get B.get B.get
+--        0x62 -> liftM2 TopScript      B.get B.get
+--        0x63 -> evtexp BeginExprType
+--        0x64 -> evtexp EndExprType
+--        0x65 -> evtexp ExitExprType
+--        _    -> fail "expecting top-level expression"
+--        where { evtexp typ = liftM2 (EventExpr typ) B.get B.get }
 
 instance B.Binary RefQualifier where
   put o = B.putWord8 $ case o of

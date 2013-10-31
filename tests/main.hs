@@ -451,14 +451,14 @@ instance D.Binary RandObj MethodTable where
   put o = case o of
     RandTopLevel o -> case toInterm o of
       [ ] -> fail "could not convert AST object to intermediate data for serialization"
-      [o] -> D.putWord8 0xFD >> D.put o
+      [o] -> D.prefixByte 0xFD $ D.put o
       ox  -> fail $ concat $
         [ "converting AST object to intermediate for serialization"
         , " evaluated to multiple ambiguous data structures"
         ]
-    RandObject   o -> D.putWord8 0xFE >> D.put o
-  get = D.word8PrefixTable <|>
-    fail "Test program failed while trying to de-serialize it's own test data"
+    RandObject   o -> D.prefixByte 0xFE $ D.put o
+  get = D.word8PrefixTable
+    <|> fail "Test program failed while trying to de-serialize it's own test data"
 instance D.HasPrefixTable RandObj D.Byte MethodTable where
   prefixTable = D.mkPrefixTableWord8 "RandObj" 0xFD 0xFE $
     [ D.get >>= \o -> case fromInterm o of

@@ -131,6 +131,7 @@ instance Functor (GPutM mtab) where { fmap f (PutM a) = PutM (fmap f a) }
 instance Monad (GPutM mtab) where
   return = PutM . return
   (PutM a) >>= fn = PutM (a >>= encoderToStateT . fn)
+  fail = PutM . fail
 instance Applicative (GPutM mtab) where { pure=return; (<*>)=ap; }
 instance Monoid a => Monoid (GPutM mtab a) where
   mempty=return mempty
@@ -142,6 +143,7 @@ instance Functor (GGet mtab) where { fmap f (Get a) = Get (fmap f a) }
 instance Monad (GGet mtab) where
   return = Get . return
   (Get a) >>= fn = Get (a >>= decoderToStateT . fn)
+  fail = Get . fail
 instance MonadPlus   (GGet mtab) where { mzero = Get mzero; mplus (Get a) (Get b) = Get (mplus a b); }
 instance Applicative (GGet mtab) where { pure=return; (<*>)=ap; }
 instance Alternative (GGet mtab) where { empty=mzero; (<|>)=mplus; }
@@ -295,26 +297,36 @@ instance (Ix i, Binary a mtab) => Monoid (PrefixTable mtab i a) where
       let ( lo       ,  hi       ) = (min loA loB, max hiA hiB)
       Just $ accumArray (flip mplus) mzero (lo, hi) (assocs a ++ assocs b)
 
+-- | For each 'GGet' function stored in the 'PrefixTable', bind it to the function provided here and
+-- store the bound functions back into the table. It works similar to the 'Control.Monad.>>='
+-- function.
+bindPrefixTable :: (Ix i, Binary b mtab) => PrefixTable mtab i a -> (a -> GGet mtab b) -> PrefixTable mtab i b
+bindPrefixTable (PrefixTable getIdx arr) fn = PrefixTable getIdx (fmap (amap (>>=fn)) arr)
+
 -- | Construct a 'Serializer' from a list of serializers, and each list item will be prefixed with a
 -- byte in the range given. It is necesary for the data type to instantiate 'Data.Typeable.Typeable'
 -- in order to 
-mkPrefixTable :: (Integral i, Show i, Ix i, Num i) => String -> GGet mtab i -> i -> i -> [GGet mtab a] -> PrefixTable mtab i a
-mkPrefixTable msg getIdx lo' hi' ser = trace (unwords ["mkPrefixTable:", msg, "len="++show len, "lo=0x"++showHex lo "", "hi=0x"++showHex hi "", "hi-lo+1="++show (hi-lo+1)]) $ assert (0<len && len<=hi-lo+1) table where
+mkPrefixTable :: ( {-Integral i, Show i, -} Ix i, Num i) => String -> GGet mtab i -> i -> i -> [GGet mtab a] -> PrefixTable mtab i a
+mkPrefixTable msg getIdx lo' hi' ser = assert (0<len && len<=hi-lo+1) table where
   len   = fromIntegral (length ser)
   lo    = min lo' hi'
   hi    = max lo' hi'
   idxs  = takeWhile (<=hi) (iterate (+1) lo)
   table = PrefixTable getIdx $ Just $ accumArray (flip mplus) mzero (lo, hi) (zip idxs ser)
+-- trace (unwords ["mkPrefixTable:", msg, "len="++show len, "lo=0x"++showHex lo "", "hi=0x"++showHex hi "", "hi-lo+1="++show (hi-lo+1)]) $
 
 mkPrefixTableWord8 :: String -> Byte -> Byte -> [GGet mtab a] -> PrefixTable mtab Byte a
 mkPrefixTableWord8 msg lo' hi' ser = mkPrefixTable msg getWord8 lo hi ser where
   lo = min lo' hi'
   hi = max lo' hi'
 
-runPrefixTable :: (Integral i, Show i, Ix i, Binary i mtab) => PrefixTable mtab i a -> GGet mtab a
+runPrefixTable :: ( {- Integral i, Show i, -} Ix i, Binary i mtab) => PrefixTable mtab i a -> GGet mtab a
 runPrefixTable tab@(PrefixTable getIdx t) = flip (maybe mzero) t $ \decoderArray -> do
   prefix <- lookAhead getIdx
-  trace ("prefix 0x"++map toUpper (showHex prefix "")) $ guard $ inRange (bounds decoderArray) prefix
+  {- trace ("prefix 0x"++map toUpper (showHex prefix "")) $ -}
+  p <- bytesRead
+  w <- lookAhead getWord8
+  trace (concat ["(", show p, ": ", if w>15 then "" else "0", map toUpper (showHex w ""), ")"]) $ guard $ inRange (bounds decoderArray) prefix
   _      <- getIdx
   decoderArray!prefix
 
@@ -351,6 +363,9 @@ dataBinaryGet = Get . lift
 
 lookAhead :: GGet mtab a -> GGet mtab a
 lookAhead (Get fn) = Get (S.get >>= lift . B.lookAhead . S.evalStateT fn)
+
+bytesRead :: GGet mtab Int64
+bytesRead = dataBinaryGet B.bytesRead
 
 putWord8    = PutM . lift . B.putWord8
 putWord16be = PutM . lift . B.putWord16be
@@ -489,14 +504,14 @@ instance                                          Binary (Is.IntSet  ) mtab wher
 
 instance (Eq p, Ord p, Binary p mtab, Binary a mtab) => Binary (T.Tree p a) mtab where
   put t = case t of
-    T.Void           -> prefixByte 0x04 $ return ()
-    T.Leaf       a   -> prefixByte 0x05 $ put a
-    T.Branch       t -> prefixByte 0x06 $ put t
-    T.LeafBranch a t -> prefixByte 0x07 $ put a >> put t where
+    T.Void           -> prefixByte 0x00 $ return ()
+    T.Leaf       a   -> prefixByte 0x01 $ put a
+    T.Branch       t -> prefixByte 0x02 $ put t
+    T.LeafBranch a t -> prefixByte 0x03 $ put a >> put t where
   get = word8PrefixTable
 
 instance (Eq p, Ord p, Binary p mtab, Binary a mtab) => HasPrefixTable (T.Tree p a) Byte mtab where
-  prefixTable = mkPrefixTableWord8 "Tree" 0x04 0x07 $
+  prefixTable = mkPrefixTableWord8 "Tree" 0x00 0x03 $
     [ return T.Void
     , T.Leaf   <$> get
     , T.Branch <$> get
@@ -511,19 +526,27 @@ instance Binary NullTerm t where
   get = tryWord8 0x00 $ return nullTerm
 
 instance Binary Bool mtab where
-  put o = putWord8 (if o then 0x02 else 0x03)
+  put o = putWord8 (if o then 0x04 else 0x05)
   get   = word8PrefixTable
 instance HasPrefixTable Bool Byte mtab where
-  prefixTable = mkPrefixTableWord8 "Bool" 0x02 0x03 [return False, return True]
+  prefixTable = mkPrefixTableWord8 "Bool" 0x04 0x05 [return False, return True]
 
 instance Binary a mtab => Binary (Maybe a) mtab where
-  put o = maybe (return ()) put o
-  get   = optional get
+  put = maybe (putWord8 0x00) (\o -> putWord8 0x01 >> put o) 
+  get = word8PrefixTable <|> fail "expecting Data.Maybe.Maybe"
+instance Binary a mtab => HasPrefixTable (Maybe a) Byte mtab where
+  prefixTable = mkPrefixTableWord8 "Maybe" 0x00 0x01 [return Nothing, Just <$> get]
 
 instance Binary a mtab => Binary [a] mtab where
-  put o = mapM_ put o >> put nullTerm
-  get   = mplus (many get >>= \o -> get >>= \ (NullTerm ()) -> return o) $
-    fail "list not null terminated"
+  put o = mapM_ put o >> put (NullTerm ())
+  get   = loop [] where
+    loop ox = msum $
+      [ get >>= \ (NullTerm ()) -> return ox
+        -- It is important to check for the null terminator first, then try to parse, that way the
+        -- parser dose not backtrack (which may cause it to fail) if we are at a null terminator.
+      , get >>= \o -> loop (ox++[o])
+      , fail "In binary data, list not null terminated"
+      ]
 
 instance Binary UStr mtab where
   put o = dataBinaryPut (B.put o)

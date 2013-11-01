@@ -31,13 +31,12 @@ src/dao-main.hs
 src/Dao/Debug.hs
 src/Dao/Debug/OFF.hs
 src/Dao/Debug/ON.hs
-tests/TestEnumSet.hs
+tests/Dao/Tests.hs
 tests/2.dao
 tests/1.dao
-tests/main.hs
-tests/RandObj.hs
-tests/I.hs
 tests/EQN.hs
+tests/I.hs
+tests/TestEnumSet.hs
 Setup.hs
 ghc-build-opts.mk
 project-files.list

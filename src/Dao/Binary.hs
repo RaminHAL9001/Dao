@@ -49,6 +49,7 @@ module Dao.Binary where
 import           Dao.Runtime
 import           Dao.String
 import qualified Dao.Tree             as T
+import           Dao.Token
 
 import           Control.Exception (assert)
 import           Control.Applicative
@@ -81,7 +82,6 @@ import qualified Data.Binary          as B
 import qualified Data.Binary.Get      as B
 import qualified Data.Binary.Put      as B
 
-import Numeric
 import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
@@ -109,6 +109,11 @@ class HasCoderTable mtab where
   getEncoderForType :: UStr -> mtab -> Maybe (Dynamic -> GPut mtab)
   getDecoderForType :: UStr -> mtab -> Maybe (GGet mtab Dynamic)
 
+-- | To evaluate a 'GPut' or 'GGet' function without providing any coder table, simply pass @()@.
+instance HasCoderTable () where
+  getEncoderForType _ _ = Nothing
+  getDecoderForType _ _ = Nothing
+
 data EncodeIndex mtab
   = EncodeIndex
     { indexCounter :: InStreamID
@@ -125,7 +130,7 @@ data DecodeIndex mtab
 newtype GPutM mtab a = PutM{ encoderToStateT :: S.StateT (EncodeIndex mtab) B.PutM a }
 type GPut mtab = GPutM mtab ()
 
-newtype GGet mtab a = Get{ decoderToStateT :: S.StateT (DecodeIndex mtab) B.Get a }
+data GGet mtab a = Get{ infoGet :: String, decoderToStateT :: S.StateT (DecodeIndex mtab) B.Get a }
 
 instance Functor (GPutM mtab) where { fmap f (PutM a) = PutM (fmap f a) }
 instance Monad (GPutM mtab) where
@@ -139,19 +144,23 @@ instance Monoid a => Monoid (GPutM mtab a) where
 instance HasCoderTable mtab => S.MonadState (EncodeIndex mtab) (GPutM mtab) where
   state fn = PutM (S.state fn)
 
-instance Functor (GGet mtab) where { fmap f (Get a) = Get (fmap f a) }
+instance Functor (GGet mtab) where { fmap f (Get msg a) = Get ("fmap "++msg) (fmap f a) }
 instance Monad (GGet mtab) where
-  return = Get . return
-  (Get a) >>= fn = Get (a >>= decoderToStateT . fn)
-  fail = Get . fail
-instance MonadPlus   (GGet mtab) where { mzero = Get mzero; mplus (Get a) (Get b) = Get (mplus a b); }
-instance Applicative (GGet mtab) where { pure=return; (<*>)=ap; }
+  return = Get "return" . return
+  Get msg a >>= fn = Get msg (a >>= decoderToStateT . fn)
+  Get msgA a >> Get msgB b = Get (msgA++" >> "++msgB) (a >> b)
+  fail msg = Get ("fail "++show msg) (S.StateT (\_ -> fail msg))
+instance MonadPlus   (GGet mtab) where { mzero = Get "mzero" mzero; mplus (Get msgA a) (Get msgB b) = Get (msgA++"<|>"++msgB) (mplus a b); }
+instance Applicative (GGet mtab) where { pure=return; (<*>)=ap;    }
 instance Alternative (GGet mtab) where { empty=mzero; (<|>)=mplus; }
 instance Monoid a => Monoid (GGet mtab a) where
   mempty=return mempty
   mappend a b = a >>= \a -> b >>= \b -> return (mappend a b)
 instance HasCoderTable mtab => S.MonadState (DecodeIndex mtab) (GGet mtab) where
-  state fn = Get (S.state fn)
+  state fn = Get "update state" (S.state fn)
+
+instance Show (GGet mtab a) where
+  show (Get msg _) = take 1024 msg
 
 -- | This class only exists to provide the the function 'getCoderTable' with the exact same function
 -- in both the 'GPutM' and 'GGet' monads, rather than having a separate function for each monad.
@@ -185,21 +194,23 @@ trimIntegerHash i h = snd $ head $ dropWhile ((i<) . fst) $
 data TrimmedHash = TrimmedHash Int64 Integer deriving (Eq, Ord)
 instance Binary TrimmedHash mtab where
   put (TrimmedHash i h) =
-    let (len, h) = trimIntegerHash i h in if len>0 then Dao.Binary.putPosVLInteger h else return ()
-  get = TrimmedHash (error "TrimmedHash length not set") <$> Dao.Binary.getPosVLInteger
+    let (len, h) = trimIntegerHash i h in if len>0 then putPosIntegral h else return ()
+  get = TrimmedHash (error "TrimmedHash length not set") <$> getPosIntegral
 
 -- | Create a 'TrimmedHash' a list of bytes as the second parameter and the maximum length of the
 -- list as the first parameter.
-trimmedHash :: Int64 -> Z.ByteString -> TrimmedHash
-trimmedHash len = TrimmedHash len . snd . trimIntegerHash len . SHA1.toInteger . hash .
-  map snd . takeWhile ((>0) . fst) . zip (iterate (\x->x-1) len) . Z.unpack
+trimmedHash :: Z.ByteString -> TrimmedHash
+trimmedHash blk = mkTrimmedHash blk where
+  len = Z.length blk
+  mkTrimmedHash = TrimmedHash len . snd . trimIntegerHash len . SHA1.toInteger . hash .
+    map snd . takeWhile ((>0) . fst) . zip (iterate (\x->x-1) len) . Z.unpack
 
 -- not for export
 setTrimmedHashLength :: Int64 -> TrimmedHash -> TrimmedHash
 setTrimmedHashLength i (TrimmedHash _ h) = TrimmedHash i h
 
 trimmedHashVerify :: Z.ByteString -> TrimmedHash -> Bool
-trimmedHashVerify b h@(TrimmedHash i _) = h == trimmedHash i b
+trimmedHashVerify b = (trimmedHash b ==)
 
 -- | A lazy block stream that wraps up a 'Data.ByteString.Lazy.ByteString' in a data type that
 -- instantiates 'Binary' in such a way that the bytes are written lazily in chunks of 1 megabyte
@@ -208,14 +219,12 @@ trimmedHashVerify b h@(TrimmedHash i _) = h == trimmedHash i b
 newtype BlockStream1M = BlockStream1M { block1MStreamToByteString :: Z.ByteString }
 instance Binary BlockStream1M mtab where
   put =
-    mapM_ (\blk -> do
-              let len = Z.length blk
-              Dao.Binary.putPosVLInteger (fromIntegral len) >> put (trimmedHash len blk)
-          ) . fix (\loop blk ->
+    mapM_ (\ blk -> put blk >> put (trimmedHash blk)
+          ) . fix (\ loop blk ->
                       let (a,b) = Z.splitAt (2^20) blk in a : if Z.null b then [] else loop b
                   ) . block1MStreamToByteString
   get = (BlockStream1M . Z.concat) <$> loop [] where
-    loop bx = get >>= getLazyByteString >>= \b -> get >>= \cksum ->
+    loop bx = get >>= \b -> get >>= \cksum ->
       if trimmedHashVerify b (setTrimmedHashLength (Z.length b) cksum)
         then loop (bx++[b])
         else fail "bad checksum"
@@ -244,7 +253,7 @@ newInStreamID typ = S.get >>= \st -> let idx = encodeIndex st in case M.lookup t
 -- stream. If it does not exist, this function simply returns and does nothing. If it does exist,
 -- the data is pulled out of the stream and the index is updated.
 updateTypes :: HasCoderTable mtab => GGet mtab ()
-updateTypes = flip mplus (return ()) $ tryWord8 0x01 $ do
+updateTypes = {- flip mplus (return ()) $ -} tryWord8 0x01 $ do
   (InStreamIndex tid label) <- get
   S.modify $ \st -> st{decodeIndex = M.insert tid label (decodeIndex st)}
 
@@ -285,49 +294,47 @@ class (Ix i, Binary i mtab, Binary a mtab) => HasPrefixTable a i mtab where { pr
 -- decoder performs a single look-ahead to retrieve an index, then use the index to lookup the next
 -- parser in a table. This is a lookup table using 'Data.Array.IArray.Array' as the table which does
 -- exactly that.
-data PrefixTable mtab i a = PrefixTable (GGet mtab i) (Maybe (Array i (GGet mtab a)))
+data PrefixTable mtab i a = PrefixTable String (Maybe (GGet mtab i)) (Maybe (Array i (GGet mtab a)))
 
 instance Ix i => Functor (PrefixTable mtab i) where
-  fmap f (PrefixTable getIdx t) = PrefixTable getIdx (fmap (amap (fmap f)) t)
-instance (Ix i, Binary a mtab) => Monoid (PrefixTable mtab i a) where
-  mempty = PrefixTable mzero Nothing
-  mappend (PrefixTable _ a) (PrefixTable getIdx b) =
-    PrefixTable getIdx $ a >>= \a -> b >>= \b -> do
-      let ((loA, hiA), (loB, hiB)) = (bounds    a, bounds    b)
-      let ( lo       ,  hi       ) = (min loA loB, max hiA hiB)
-      Just $ accumArray (flip mplus) mzero (lo, hi) (assocs a ++ assocs b)
+  fmap f (PrefixTable msg getIdx t) = PrefixTable msg getIdx (fmap (amap (fmap f)) t)
+instance (Integral i, Show i, Ix i, Binary a mtab) => Monoid (PrefixTable mtab i a) where
+  mempty = PrefixTable "" Nothing Nothing
+  mappend (PrefixTable msgA getIdxA a) (PrefixTable msgB getIdxB b) =
+    PrefixTable (msgA<>"<>"<>msgB) (msum [getIdxA >> getIdxB, getIdxB, getIdxA]) $ msum $
+      [ a >>= \a -> b >>= \b -> do
+          let ((loA, hiA), (loB, hiB)) = (bounds    a, bounds    b)
+          let ( lo       ,  hi       ) = (min loA loB, max hiA hiB)
+          Just $ accumArray (flip mplus) mzero (lo, hi) (assocs a ++ assocs b)
+      , a, b
+      ]
 
 -- | For each 'GGet' function stored in the 'PrefixTable', bind it to the function provided here and
 -- store the bound functions back into the table. It works similar to the 'Control.Monad.>>='
 -- function.
 bindPrefixTable :: (Ix i, Binary b mtab) => PrefixTable mtab i a -> (a -> GGet mtab b) -> PrefixTable mtab i b
-bindPrefixTable (PrefixTable getIdx arr) fn = PrefixTable getIdx (fmap (amap (>>=fn)) arr)
+bindPrefixTable (PrefixTable msg getIdx arr) fn = PrefixTable msg getIdx (fmap (amap (>>=fn)) arr)
 
 -- | Construct a 'Serializer' from a list of serializers, and each list item will be prefixed with a
 -- byte in the range given. It is necesary for the data type to instantiate 'Data.Typeable.Typeable'
 -- in order to 
-mkPrefixTable :: ( {-Integral i, Show i, -} Ix i, Num i) => String -> GGet mtab i -> i -> i -> [GGet mtab a] -> PrefixTable mtab i a
-mkPrefixTable msg getIdx lo' hi' ser = assert (0<len && len<=hi-lo+1) table where
-  len   = fromIntegral (length ser)
-  lo    = min lo' hi'
-  hi    = max lo' hi'
-  idxs  = takeWhile (<=hi) (iterate (+1) lo)
-  table = PrefixTable getIdx $ Just $ accumArray (flip mplus) mzero (lo, hi) (zip idxs ser)
--- trace (unwords ["mkPrefixTable:", msg, "len="++show len, "lo=0x"++showHex lo "", "hi=0x"++showHex hi "", "hi-lo+1="++show (hi-lo+1)]) $
+mkPrefixTable :: (Integral i, Show i, Ix i, Num i) => String -> GGet mtab i -> i -> i -> [GGet mtab a] -> PrefixTable mtab i a
+mkPrefixTable msg getIdx lo' hi' ser =
+  if null ser then PrefixTable msg (Just getIdx) Nothing else assert (0<len && len<=hi-lo+1) table where
+    len   = fromIntegral (length ser)
+    lo    = min lo' hi'
+    hi    = max lo' hi'
+    idxs  = takeWhile (<=hi) (iterate (+1) lo)
+    table = PrefixTable msg (Just getIdx) $ Just $ accumArray (flip const) (fail ("in "++msg++" table")) (lo, hi) (zip idxs ser)
 
 mkPrefixTableWord8 :: String -> Byte -> Byte -> [GGet mtab a] -> PrefixTable mtab Byte a
-mkPrefixTableWord8 msg lo' hi' ser = mkPrefixTable msg getWord8 lo hi ser where
-  lo = min lo' hi'
-  hi = max lo' hi'
+mkPrefixTableWord8 msg = mkPrefixTable msg getWord8
 
-runPrefixTable :: ( {- Integral i, Show i, -} Ix i, Binary i mtab) => PrefixTable mtab i a -> GGet mtab a
-runPrefixTable tab@(PrefixTable getIdx t) = flip (maybe mzero) t $ \decoderArray -> do
-  prefix <- lookAhead getIdx
-  {- trace ("prefix 0x"++map toUpper (showHex prefix "")) $ -}
-  p <- bytesRead
-  w <- lookAhead getWord8
-  trace (concat ["(", show p, ": ", if w>15 then "" else "0", map toUpper (showHex w ""), ")"]) $ guard $ inRange (bounds decoderArray) prefix
-  _      <- getIdx
+runPrefixTable :: (Integral i, Show i, Ix i, Binary i mtab) => PrefixTable mtab i a -> GGet mtab a
+runPrefixTable tab@(PrefixTable msg getIdx t) = flip (maybe mzero) t $ \decoderArray -> do
+  prefix <- lookAhead (maybe get id getIdx)
+  guard $ inRange (bounds decoderArray) prefix
+  prefix <- maybe get id getIdx
   decoderArray!prefix
 
 word8PrefixTable :: HasPrefixTable a Byte mtab => GGet mtab a
@@ -359,13 +366,16 @@ dataBinaryPut :: B.PutM a -> GPutM mtab a
 dataBinaryPut = PutM . lift
 
 dataBinaryGet :: B.Get a -> GGet mtab a
-dataBinaryGet = Get . lift
+dataBinaryGet = Get "dataBinaryGet" . lift
 
 lookAhead :: GGet mtab a -> GGet mtab a
-lookAhead (Get fn) = Get (S.get >>= lift . B.lookAhead . S.evalStateT fn)
+lookAhead (Get msg fn) = Get ("lookAhead "++msg) (S.get >>= lift . B.lookAhead . S.evalStateT fn)
 
 bytesRead :: GGet mtab Int64
-bytesRead = dataBinaryGet B.bytesRead
+bytesRead = Get "bytesRead" $ lift B.bytesRead
+
+isEmpty :: GGet mtab Bool
+isEmpty = dataBinaryGet B.isEmpty
 
 putWord8    = PutM . lift . B.putWord8
 putWord16be = PutM . lift . B.putWord16be
@@ -375,28 +385,46 @@ putWord32le = PutM . lift . B.putWord32le
 putWord64be = PutM . lift . B.putWord64be
 putWord64le = PutM . lift . B.putWord64le
 
-getWord8    = Get  $ lift $ B.getWord8
-getWord16be = Get  $ lift $ B.getWord16be
-getWord16le = Get  $ lift $ B.getWord16le
-getWord32be = Get  $ lift $ B.getWord32be
-getWord32le = Get  $ lift $ B.getWord32le
-getWord64be = Get  $ lift $ B.getWord64be
-getWord64le = Get  $ lift $ B.getWord64le
+getWord8    = Get "getWord8"    $ lift $ B.getWord8
+getWord16be = Get "getWord16be" $ lift $ B.getWord16be
+getWord16le = Get "getWord16le" $ lift $ B.getWord16le
+getWord32be = Get "getWord32be" $ lift $ B.getWord32be
+getWord32le = Get "getWord32le" $ lift $ B.getWord32le
+getWord64be = Get "getWord64be" $ lift $ B.getWord64be
+getWord64le = Get "getWord64le" $ lift $ B.getWord64le
 
-putVLInt :: (Integral a, Bits a) => a -> GPut mtab
-putVLInt = dataBinaryPut . Dao.String.putVLInt
+putIntegral :: (Integral a, Bits a) => a -> GPut mtab
+putIntegral = putInteger . fromIntegral
 
-getFromVLInt :: (Integral a, Bits a) => GGet mtab a
-getFromVLInt = dataBinaryGet Dao.String.getFromVLInt
+getIntegral :: (Integral a, Bits a) => GGet mtab a
+getIntegral = fromIntegral <$> getInteger
+
+putPosIntegral :: (Integral a, Bits a) => a -> GPut mtab
+putPosIntegral = putPosInteger . fromIntegral
+
+getPosIntegral :: (Integral a, Bits a) => GGet mtab a
+getPosIntegral = fromIntegral <$> getPosInteger
+
+putInteger :: Integer -> GPut mtab
+putInteger = dataBinaryPut . vlPutInteger
+
+getInteger :: GGet mtab Integer
+getInteger = fmap fromIntegral $ dataBinaryGet vlGetInteger
+
+putPosInteger :: Integer -> GPut mtab
+putPosInteger = dataBinaryPut . vlPutPosInteger
+
+getPosInteger :: GGet mtab Integer
+getPosInteger = dataBinaryGet vlGetPosInteger
 
 putByteString :: B.ByteString -> GPut mtab
 putByteString = dataBinaryPut . B.putByteString
 
-putLazyByteString :: Z.ByteString -> GPut mtab
-putLazyByteString = dataBinaryPut . B.putLazyByteString
-
 getByteString :: Int -> GGet mtab B.ByteString
 getByteString = dataBinaryGet . B.getByteString
+
+putLazyByteString :: Z.ByteString -> GPut mtab
+putLazyByteString = dataBinaryPut . B.putLazyByteString
 
 getLazyByteString :: Int64 -> GGet mtab Z.ByteString
 getLazyByteString = dataBinaryGet . B.getLazyByteString
@@ -406,30 +434,18 @@ getLazyByteString = dataBinaryGet . B.getLazyByteString
 tryWord8 :: Word8 -> GGet mtab a -> GGet mtab a
 tryWord8 w fn = lookAhead getWord8 >>= guard . (w==) >> getWord8 >> fn
 
-putPosVLInteger :: Integral i => i -> GPut mtab
-putPosVLInteger = dataBinaryPut . Dao.String.putPosVLInteger . fromIntegral
-
-getPosVLInteger :: Integral i => GGet mtab i
-getPosVLInteger = fromIntegral <$> dataBinaryGet Dao.String.getVLInteger
-
-putVLInteger :: Integral i => i -> GPut mtab
-putVLInteger = dataBinaryPut . Dao.String.putVLInteger . fromIntegral
-
-getVLInteger :: Integral i => GGet mtab i
-getVLInteger = fmap fromIntegral $ dataBinaryGet Dao.String.getVLInteger
-
 instance Binary Int8   mtab  where
   put = putWord8 . fromIntegral
   get = fmap fromIntegral getWord8
-instance Binary Int16  mtab  where { put = Dao.Binary.putVLInteger; get = Dao.Binary.getVLInteger }
-instance Binary Int32  mtab  where { put = Dao.Binary.putVLInteger; get = Dao.Binary.getVLInteger }
-instance Binary Int64  mtab  where { put = Dao.Binary.putVLInteger; get = Dao.Binary.getVLInteger }
-instance Binary Int    mtab  where { put = Dao.Binary.putVLInteger; get = Dao.Binary.getVLInteger }
-instance Binary Word8  mtab  where { put = Dao.Binary.putPosVLInteger; get = Dao.Binary.getPosVLInteger }
-instance Binary Word16 mtab  where { put = Dao.Binary.putPosVLInteger; get = Dao.Binary.getPosVLInteger }
-instance Binary Word32 mtab  where { put = Dao.Binary.putPosVLInteger; get = Dao.Binary.getPosVLInteger }
-instance Binary Word64 mtab  where { put = Dao.Binary.putPosVLInteger; get = Dao.Binary.getPosVLInteger }
-instance Binary Word   mtab  where { put = Dao.Binary.putPosVLInteger; get = Dao.Binary.getPosVLInteger }
+instance Binary Int16  mtab  where { put = putIntegral;    get = Dao.Binary.getIntegral    }
+instance Binary Int32  mtab  where { put = putIntegral;    get = Dao.Binary.getIntegral    }
+instance Binary Int64  mtab  where { put = putIntegral;    get = Dao.Binary.getIntegral    }
+instance Binary Int    mtab  where { put = putIntegral;    get = Dao.Binary.getIntegral    }
+instance Binary Word8  mtab  where { put = putPosIntegral; get = Dao.Binary.getPosIntegral }
+instance Binary Word16 mtab  where { put = putPosIntegral; get = Dao.Binary.getPosIntegral }
+instance Binary Word32 mtab  where { put = putPosIntegral; get = Dao.Binary.getPosIntegral }
+instance Binary Word64 mtab  where { put = putPosIntegral; get = Dao.Binary.getPosIntegral }
+instance Binary Word   mtab  where { put = putPosIntegral; get = Dao.Binary.getPosIntegral }
 instance Binary Float  mtab  where
   put = dataBinaryPut . B.putFloat32be
   get = dataBinaryGet B.getFloat32be
@@ -440,17 +456,12 @@ instance (RealFloat a, Binary a mtab) => Binary (Complex a) mtab where
   put (a :+ b) = put a >> put b
   get = pure (:+) <*> get <*> get
 
-instance (Num a, Integral a, Binary a mtab) => Binary (Ratio a) mtab where
-  put o = let p = Dao.Binary.putVLInteger . fromIntegral in p (numerator o) >> p (denominator o)
-  get = let g = fmap fromIntegral (Dao.Binary.getVLInteger) in pure (%) <*> g <*> g
+instance (Num a, Bits a, Integral a, Binary a mtab) => Binary (Ratio a) mtab where
+  put o = putIntegral (numerator o) >> putPosIntegral (denominator o)
+  get = pure (%) <*> getIntegral <*> getPosIntegral
 
-instance Binary Integer mtab where
-  put = Dao.Binary.putVLInteger
-  get = Dao.Binary.getVLInteger
-
-instance Binary Char mtab where
-  put = Dao.Binary.putVLInt . ord
-  get = fmap chr Dao.Binary.getFromVLInt
+instance Binary Integer mtab where { put = putInteger; get = getInteger; }
+instance Binary Char    mtab where { put = putPosIntegral . ord; get = chr <$> getPosIntegral; }
 
 instance Binary UTCTime mtab where { serializer = fromDataBinary }
 instance B.Binary UTCTime where
@@ -468,12 +479,12 @@ instance B.Binary NominalDiffTime where
   get = fmap fromRational B.get
 
 instance Binary B.ByteString mtab where
-  put o = Dao.Binary.putVLInt (B.length o) >> Dao.Binary.putByteString o
-  get = Dao.Binary.getFromVLInt >>= Dao.Binary.getByteString
+  put o = putPosIntegral (B.length o) >> Dao.Binary.putByteString o
+  get = getPosIntegral >>= Dao.Binary.getByteString
 
 instance Binary Z.ByteString mtab where
-  put o = Dao.Binary.putVLInt (Z.length o) >> Dao.Binary.putLazyByteString o
-  get = Dao.Binary.getFromVLInt >>= Dao.Binary.getLazyByteString
+  put o = putPosIntegral (Z.length o) >> Dao.Binary.putLazyByteString o
+  get = getPosIntegral >>= Dao.Binary.getLazyByteString
 
 instance (Binary a t, Binary b t) => Binary (a, b) t where
   put (a, b) = put a >> put b
@@ -538,15 +549,33 @@ instance Binary a mtab => HasPrefixTable (Maybe a) Byte mtab where
   prefixTable = mkPrefixTableWord8 "Maybe" 0x00 0x01 [return Nothing, Just <$> get]
 
 instance Binary a mtab => Binary [a] mtab where
-  put o = mapM_ put o >> put (NullTerm ())
-  get   = loop [] where
+  put o = mapM_ (put . Just) o >> put (NullTerm ())
+  get   = concatMap (maybe [] return) <$> loop [] where
     loop ox = msum $
-      [ get >>= \ (NullTerm ()) -> return ox
+      [ optional (lookAhead getWord8) >>= \w -> get >>= \ (NullTerm ()) -> return ox
         -- It is important to check for the null terminator first, then try to parse, that way the
         -- parser dose not backtrack (which may cause it to fail) if we are at a null terminator.
-      , get >>= \o -> loop (ox++[o])
-      , fail "In binary data, list not null terminated"
+      , optional get >>= maybe (fail "expecting list element") (loop . (ox++) . (:[]))
       ]
+
+-- | The inverse of 'getUnwrapped', this function is simply defined as:
+-- > \list -> 'Control.Monad.mapM_' 'put' list >> 'put' ('NullTerm' ())
+-- This is useful when you want to place a list of items, but you dont want to waste space on a
+-- prefix byte for each list element. In lists of millions of elements, this can save you megabytes
+-- of space, but placing any elements which are prefixed with a null byte will result in undefined
+-- behavior when decoding.
+putUnwrapped :: Binary a mtab => [a] -> GPut mtab
+putUnwrapped list = mapM_ put list >> put (NullTerm ())
+
+-- | The inverse of 'putUnwrapped', this function is simply defined as: 'Control.Applicative.many'
+-- 'get' >>= \list -> 'get' >>= \ ('NullTerm' ()) -> 'Control.Monad.return' list This assumes that
+-- every element placed by 'get' has a non-null prefixed encoding. If any elements in the list might
+-- be encoded such that they start with a 0x00 byte, the @'Control.Applicative.many'@ 'get'
+-- expression will parse the null terminator of the list as though it were an element and continue
+-- looping which results in undefined behavior. Examples of elements that may start with null @0x00@
+-- bytes are 'Dao.String.UStr', 'Dao.String.Name', 'Prelude.Integer', or any 'Prelude.Integral' type.
+getUnwrapped :: Binary a mtab => GGet mtab [a]
+getUnwrapped = many get >>= \list -> get >>= \ (NullTerm ()) -> return list
 
 instance Binary UStr mtab where
   put o = dataBinaryPut (B.put o)
@@ -555,4 +584,14 @@ instance Binary UStr mtab where
 instance Binary Name mtab where
   put o = dataBinaryPut (B.put o)
   get = dataBinaryGet B.get
+
+instance Binary Location mtab where
+  put o = case o of
+    LocationUnknown  -> return ()
+    Location a b c d -> prefixByte 0x7F $ put a >> put b >> put c >> put d
+  get = msum $
+    [ isEmpty >>= guard >> return LocationUnknown
+    , tryWord8 0x7F $ pure Location <*> get <*> get <*> get <*> get
+    , return LocationUnknown
+    ]
 

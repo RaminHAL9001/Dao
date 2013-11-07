@@ -69,7 +69,7 @@ instance D.Binary CoreType MTab where
     TypeType     -> 0x0A
     IntType      -> 0x0B
     WordType     -> 0x0C
-    LongType     -> 0x0F
+    LongType     -> 0x0D
     FloatType    -> 0x0E
     RatioType    -> 0x0F
     ComplexType  -> 0x10
@@ -84,7 +84,7 @@ instance D.Binary CoreType MTab where
     HaskellType  -> 0x19
   get = D.word8PrefixTable <|> fail "expecting CoreType"
 instance D.HasPrefixTable CoreType D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "CoreType" 0x07 0x18 $ map return $
+  prefixTable = D.mkPrefixTableWord8 "CoreType" 0x08 0x19 $ map return $
     [ NullType
     , TrueType
     , TypeType
@@ -124,7 +124,7 @@ instance D.Binary Object MTab where
       OChar    o -> p o
       OString  o -> p o
       ORef     o -> p o
-      OList    o -> p o
+      OList    o -> t >> D.putUnwrapped o
       OTree    o -> p o
       OBytes   o -> p o
       OHaskell o ifc -> do
@@ -155,7 +155,7 @@ instance D.HasPrefixTable Object D.Byte MTab where
           , g OChar
           , g OString
           , g ORef
-          , g OList
+          , OList <$> D.getUnwrapped
           , g OTree
           , g OBytes
           , do  D.updateTypes
@@ -260,7 +260,7 @@ instance D.HasPrefixTable ObjectExpr D.Byte MTab where
   prefixTable = mconcat $
     [ D.bindPrefixTable D.prefixTable $ \obj -> Literal obj <$> D.get
     , fmap ObjQualRefExpr D.prefixTable
-    , fmap ObjParenExpr   D.prefixTable
+    , fmap ObjParenExpr D.prefixTable
     , D.mkPrefixTableWord8 "ObjectExpr" 0x26 0x31 $
         [ return VoidExpr
         , pure AssignExpr   <*> D.get <*> D.get <*> D.get <*> D.get
@@ -287,18 +287,17 @@ instance D.Binary LValueExpr MTab where
   get = LValueExpr <$> D.get
 
 instance D.Binary ParamListExpr MTab where
-  put (ParamListExpr lst loc) = D.prefixByte 0x39 $ D.put lst >> D.put loc
+  put (ParamListExpr tyChk loc) = D.prefixByte 0x39 $ D.put tyChk >> D.put loc
   get = D.word8PrefixTable <|> fail "expecting ParamListExpr"
 instance D.HasPrefixTable ParamListExpr D.Byte MTab where
-  prefixTable = D.mkPrefixTableWord8 "ParamListExpr" 0x39 0x39 $
-    [pure ParamListExpr <*> D.get <*> D.get]
+  prefixTable = D.mkPrefixTableWord8 "ParamListExpr" 0x39 0x39 $ [pure ParamListExpr <*> D.get <*> D.get]
 
 instance D.Binary RuleStrings MTab where
   put (RuleStrings a b) = D.prefixByte 0x3A $ D.put a >> D.put b
   get = (D.tryWord8 0x3A $ pure RuleStrings <*> D.get <*> D.get) <|> fail "expecting RuleStrings"
 
 instance D.Binary ObjListExpr MTab where
-  put (ObjListExpr a b) = D.prefixByte 0x3B $ D.put a >> D.put b
+  put (ObjListExpr lst loc) = D.prefixByte 0x3B $ D.putUnwrapped lst >> D.put loc
   get = (D.tryWord8 0x3B $ pure ObjListExpr <*> D.get <*> D.get) <|> fail "expecting ObjListExpr"
 
 instance D.Binary OptObjListExpr MTab where
@@ -449,12 +448,6 @@ instance D.HasPrefixTable InfixOp D.Byte MTab where
     , r ADD  , r SUB  , r MULT, r DIV, r MOD  , r POW  , r ORB
     , r ANDB , r XORB , r SHL , r SHR, r ARROW, r OR   , r AND
     ]
-
-instance D.Binary Location MTab where
-  put o = case o of
-    LocationUnknown  -> return ()
-    Location a b c d -> D.prefixByte 0x7F $ D.put a >> D.put b >> D.put c >> D.put d
-  get = D.tryWord8 0x7F $ pure Location <*> D.get <*> D.get <*> D.get <*> D.get
 
 ----------------------------------------------------------------------------------------------------
 
@@ -929,7 +922,7 @@ instance B.Binary Location where
     LocationUnknown -> return ()
     loc             -> do
       B.putWord8 0x5F
-      let fn acc = mapM_ B.putWord8 (bitsToVLInt (acc loc))
+      let fn acc = vlPutPosInteger (fromIntegral (acc loc))
       fn startingLine >> fn startingColumn
       fn endingLine   >> fn endingColumn
   get = do
@@ -941,10 +934,10 @@ instance B.Binary Location where
         if w==0x5F
           then do
             B.getWord8
-            a <- getFromVLInt
-            b <- getFromVLInt
-            c <- getFromVLInt
-            d <- getFromVLInt
+            a <- fromIntegral <$> vlGetInteger
+            b <- fromIntegral <$> vlGetInteger
+            c <- fromIntegral <$> vlGetInteger
+            d <- fromIntegral <$> vlGetInteger
             return (Location a b c d)
           else return LocationUnknown
 
@@ -1007,8 +1000,8 @@ getEnumInfWith getx = B.getWord8 >>= \w -> case w of
   _    -> fail "expecting enum-inf data"
 
 instance (Integral a, Bits a) => B.Binary (Es.Inf a) where
-  put = putEnumInfWith putVLInt
-  get = getEnumInfWith getFromVLInt
+  put = putEnumInfWith (vlPutInteger . fromIntegral)
+  get = getEnumInfWith (fromIntegral <$> vlGetInteger)
 
 putSegmentWith :: (a -> B.Put) -> Es.Segment a -> B.Put
 putSegmentWith putA a = maybe err id (mplus plur sing)
@@ -1028,8 +1021,8 @@ getSegmentWith getA = B.getWord8 >>= \w -> case w of
   _    -> fail "expecting enum-segment expression"
 
 instance (Enum a, Ord a, Es.InfBound a, Integral a, Bits a) => B.Binary (Es.Segment a) where
-  put = putSegmentWith putVLInt
-  get = getSegmentWith getFromVLInt
+  put = putSegmentWith (vlPutInteger . fromIntegral)
+  get = getSegmentWith (fromIntegral <$> vlGetInteger)
 
 putEnumSetWith :: (Ord a, Enum a, Es.InfBound a) => (a -> B.Put) -> Es.Set a -> B.Put
 putEnumSetWith putA s = Dao.Object.Binary.putListWith (putSegmentWith putA) (Es.toList s)
@@ -1040,8 +1033,8 @@ getEnumSetWith getA = fmap Es.fromList (Dao.Object.Binary.getListWith (getSegmen
 get_binary_enumset_error = error "invalid object set from binary stream (overlapping items)"
 
 instance (Es.InfBound a, Integral a, Bits a) => B.Binary (Es.Set a) where
-  put = putEnumSetWith putVLInt
-  get = getEnumSetWith getFromVLInt
+  put = putEnumSetWith (vlPutInteger . fromIntegral)
+  get = getEnumSetWith (fromIntegral <$> vlGetInteger)
 
 --  instance B.Binary ObjListExpr where
 --    put (ObjListExpr lst _) = putList lst

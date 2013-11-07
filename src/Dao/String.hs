@@ -67,6 +67,8 @@ import qualified Data.ByteString.Lazy.UTF8 as U
 import qualified Data.ByteString.Lazy      as B
 import qualified Codec.Binary.UTF8.String  as UTF8
 
+import           Numeric
+
 -- | Objects which have default values should instantiate this class.
 class HasNullValue a where { nullValue :: a; testNull :: a -> Bool; }
 
@@ -190,12 +192,6 @@ upack ax = toUStr (UTF8.decode ax)
 
 ----------------------------------------------------------------------------------------------------
 
-uStrBinaryPrefix :: Word8
-uStrBinaryPrefix = 0x01
-
-nameBinaryPrefix :: Word8
-nameBinaryPrefix = 0x02
-
 -- | A Variable-Length Integer (VLI) encoder. The bits of a variable-length integer will have a
 -- format like so:
 -- >      bit column number: 7 6543210
@@ -209,14 +205,14 @@ nameBinaryPrefix = 0x02
 -- order bit is 0, then there are no more bytes. The 7 lower-order bits will be concatenated in
 -- /big-endian order/ to form the length value for the string. By this method, most all strings
 -- will have a length prefix of only one or two bytes.
-bitsToVLInt :: (Integral a, Bits a) => a -> [Word8]
-bitsToVLInt = reverse . (\ (a:ax) -> (a .&. 0x7F) : ax) .
+vlIntegralToWord8s :: (Integral a, Bits a) => a -> [Word8]
+vlIntegralToWord8s = reverse . (\ (a:ax) -> (a .&. 0x7F) : ax) .
   fix (\loop w -> let v = 0x80 .|. fromIntegral (w .&. 0x7F)
                   in  case shiftR w 7 of{ 0 -> [v]; w -> v : loop w; })
 
 -- | Inverse operation of 'bitsToVLI'
-vlIntToBits :: (Integral a, Bits a) => [Word8] -> (a, [Word8])
-vlIntToBits = loop 0 where
+vlWord8sToIntegral :: (Integral a, Bits a) => [Word8] -> (a, [Word8])
+vlWord8sToIntegral = loop 0 where
   fn   a w  = shiftL a 7 .|. fromIntegral (w .&. 0x7F) 
   loop a wx = case wx of
     []   -> (a, [])
@@ -225,16 +221,16 @@ vlIntToBits = loop 0 where
 -- | Since a negative number expressed in a 'Prelude.Integer' type translates to an infinite
 -- sequence of 0xFF bytes when converting it to a VLI, it needs to be encoded specially with a
 -- negation bit in the very first position.
-integerToVLInt :: Integer -> [Word8]
-integerToVLInt w = reverse $ (\ (b:bx) -> (if w<0 then b .|. 0x40 else b):bx) $ loop (abs w) where
+vlIntegerToWord8s :: Integer -> [Word8]
+vlIntegerToWord8s w = reverse $ (\ (b:bx) -> (if w<0 then b .|. 0x40 else b):bx) $ loop (abs w) where
   loop w = fromInteger (w .&. 0x3F) :
     fix (\loop w -> case w of
             0 -> []
             w -> (0x80 .|. fromInteger (w .&. 0x7F)) : loop (shiftR w 7)
         ) (shiftR w 6)
 
-vlIntToInteger :: [Word8] -> (Integer, [Word8])
-vlIntToInteger = loop 0 where
+vlWord8sToInteger :: [Word8] -> (Integer, [Word8])
+vlWord8sToInteger = loop 0 where
   fn s m a w  = shiftL a s .|. fromIntegral (w .&. m)
   loop a wx = case wx of
     []   -> (a, [])
@@ -243,44 +239,38 @@ vlIntToInteger = loop 0 where
         then ((if w .&. 0x40 == 0 then id else negate) $ fn 6 0x3F a w, wx)
         else loop (fn 7 0x7F a w) wx
 
-putVLInt :: (Integral a, Bits a) => a -> B.Put
-putVLInt = mapM_ B.putWord8 . bitsToVLInt
-
 -- | When reading from a binary file, gather the bits of a Variable-Length Integer.
-gatherVLInt :: B.Get [Word8]
-gatherVLInt = loop [] where
+vlGatherWord8s :: B.Get [Word8]
+vlGatherWord8s = loop [] where
   loop wx = B.getWord8 >>= \w -> if w .&. 0x80 == 0 then return (wx++[w]) else loop (wx++[w])
 
-getFromVLInt :: (Integral a, Bits a) => B.Get a
-getFromVLInt = fmap (fst . vlIntToBits) gatherVLInt
-
--- | Encode only positive 'Prelude.Integer's. This differs from 'putVLInteger' in that the sign of
+-- | Encode only positive 'Prelude.Integer's. This differs from 'vlPutInteger' in that the sign of
 -- the integer is not stored in the byte stream, saving a single bit of space. This can actually
 -- simplify some equations that expect an VLInteger to be encoded as a multiple-of-7 length string
 -- of bits as you don't need to make additional rules for the final byte which would only have
 -- 6-bits if the sign is stored with it.
-putPosVLInteger :: Integer -> B.Put
-putPosVLInteger i = assert (i>=0) $ mapM_ B.putWord8 $ bitsToVLInt $ i
+vlPutPosInteger :: Integer -> B.Put
+vlPutPosInteger i = assert (i>=0) $ mapM_ B.putWord8 $ vlIntegralToWord8s $ i
 
--- | Decode only positive 'Prelude.Integer's. This differs from 'putVLInteger' in that the sign of
+-- | Decode only positive 'Prelude.Integer's. This differs from 'vlPutInteger' in that the sign of
 -- the integer is not stored in the byte stream, saving a single bit of space. This can actually
 -- simplify some equations that expect an VLInteger to be encoded as a multiple-of-7 length string
 -- of bits as you don't need to make additional rules for the final byte which only have 6-bits if
 -- the sign is stored with it.
-getPosVLInteger :: B.Get Integer
-getPosVLInteger = fmap (fst . vlIntToBits) gatherVLInt
+vlGetPosInteger :: B.Get Integer
+vlGetPosInteger = fmap (fst . vlWord8sToIntegral) vlGatherWord8s
 
--- | Encode a positive or negative 'Prelude.Integer' using 'vlIntToInteger'. The sign of the integer
+-- | Encode a positive or negative 'Prelude.Integer' using 'vlWord8sToInteger'. The sign of the integer
 -- is stored in the final byte in the list of encoded bytes, so the final encoded byte only has 6
 -- bits of information, rather than 7 in the case of positive integers.
-putVLInteger :: Integer -> B.Put
-putVLInteger = mapM_ B.putWord8 . integerToVLInt
+vlPutInteger :: Integer -> B.Put
+vlPutInteger = mapM_ B.putWord8 . vlIntegerToWord8s
 
--- | Decode a positive or negative 'Prelude.Integer' using 'vlIntToInteger'. The sign of the integer
+-- | Decode a positive or negative 'Prelude.Integer' using 'vlWord8sToInteger'. The sign of the integer
 -- is stored in the final byte in the list of encoded bytes, so the final encoded byte only has 6
 -- bits of information, rather than 7 in the case of positive integers.
-getVLInteger :: B.Get Integer
-getVLInteger = fmap (fst . vlIntToInteger) gatherVLInt
+vlGetInteger :: B.Get Integer
+vlGetInteger = fmap (fst . vlWord8sToInteger) vlGatherWord8s
 
 -- | Return the length of the 'UStr'.
 ulength :: UStr -> Int
@@ -295,21 +285,17 @@ iLength = foldl (+) 0 . map (const 1)
 -- it to be used more safely in more complex data types.
 encodeUStr :: UStr -> B.Put
 encodeUStr u = mapM_ B.putWord8 $
-  bitsToVLInt (U.length (toUTF8ByteString u)) ++ (UTF8.encode (uchars u))
+  vlIntegralToWord8s (U.length (toUTF8ByteString u)) ++ (UTF8.encode (uchars u))
 
 -- | Used to decode a 'UStr' data type without any prefix. The instantiation of 'UStr' into the
 -- 'Data.Binary.Binary' class places a prefix before every 'UStr' as it is serialized, allowing it
 -- to be used more safely in more complex data types.
 decodeUStr :: B.Get UStr
 decodeUStr = do
-  (strlen, undecoded) <- fmap vlIntToBits gatherVLInt
+  (strlen, undecoded) <- fmap vlWord8sToIntegral vlGatherWord8s
   if null undecoded
-    then fmap (toUStr . (UTF8.decode)) (replicateM strlen B.getWord8)
-    else
-      error $ concat $
-        ["binary data decoder failed, "
-        ,"at least one string in this file has corrupted string length prefix"
-        ]
+    then  fmap (toUStr . (UTF8.decode)) (replicateM strlen B.getWord8)
+    else  fail "binary data decoder failed on UStr"
 
 ----------------------------------------------------------------------------------------------------
 
@@ -317,12 +303,8 @@ instance IsString UStr where { fromString = ustr }
 instance Read UStr where { readsPrec n str = map (\ (s, rem) -> (toUStr (s::String), rem)) $ readsPrec n str }
 instance Show UStr where { show u = show (uchars u) }
 instance B.Binary UStr where
-  put u = B.putWord8 uStrBinaryPrefix >> encodeUStr u
-  get = do
-    w <- B.getWord8
-    if w==uStrBinaryPrefix
-      then decodeUStr
-      else error "binary data decoder failed while on expecting U-String"
+  put u = encodeUStr u
+  get   = decodeUStr
 instance NFData UStr where { rnf (UStr a) = deepseq a () }
 
 -- | A type synonym for 'UStr' used where a string is used as some kind of identifier.
@@ -341,13 +323,10 @@ instance UStrType Name where
     msg = "'Dao.String.Name' object must be constructed from alpha-numeric and underscore characters only"
 instance IsString Name where { fromString = ustr }
 instance B.Binary Name where
-  put (Name u) = B.putWord8 nameBinaryPrefix >> encodeUStr u
-  get = B.getWord8 >>= \w ->
-    if w==nameBinaryPrefix
-      then  decodeUStr >>= \u -> case maybeFromUStr u of
-              Just nm -> return nm
-              Nothing -> fail "binary data contains invalid 'Dao.String.Name' object"
-      else  fail "expecting 'Dao.String.Name' expression"
+  put (Name u) = encodeUStr u
+  get = decodeUStr >>= \u -> case maybeFromUStr u of
+    Just nm -> return nm
+    Nothing -> fail "binary data contains invalid 'Dao.String.Name' object"
 instance NFData Name where { rnf (Name a) = deepseq a () }
 
 -- | A type synonym for 'UStr' used where a string is storing a file path or URL.
@@ -421,4 +400,7 @@ instance Show Base16String where
     hex b = [arr ! (shiftR (b.&.0xF0) 4), arr ! (b.&.0x0F)]
     arr :: Array Word8 Char
     arr = array (0,15) (zip [0..15] "0123456789ABCDEF")
+
+showHex :: (Show i, Integral i) => i -> String
+showHex = ("0x"++) . map toUpper . flip Numeric.showHex ""
 

@@ -1,4 +1,8 @@
 TODO:
+* It may be a good idea to simply never store any reference to the prefix parser in the
+	'Dao.Binary.PrefixTable' data type and always infer the prefix parser from the type when
+	evaluating 'Dao.Binary.runPrefixTable'.
+
 * I need a customized monad for binary serialization. The 'Data.Binary.Binary' monad does not let
 	you retrieve data from outside of the monad. This is a problem when parsing dynamic objects
 	constructed with the 'Dao.Object.OHaskell' constructor. We may receive a byte in the byte stream

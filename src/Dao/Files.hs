@@ -27,7 +27,6 @@
 
 module Dao.Files where
 
-import           Dao.Debug.OFF
 import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Resource
@@ -36,7 +35,7 @@ import           Dao.Parser
 import           Dao.Predicate
 import           Dao.Procedural
 import           Dao.Object.Parser
-import           Dao.Object.PPrintM
+import           Dao.Object.PPrint
 import           Dao.Object.Binary
 
 import           Control.Exception
@@ -114,46 +113,46 @@ loadSourceCode upath sourceString = case parse daoGrammar mempty sourceString of
 
 -- | This function will take any file path and return a file associated with it if it has been
 -- loaded once before. If not, it runs the function you provide to load the file.
-dontLoadFileTwice :: UPath -> (UPath -> Run (FlowCtrl Object (Maybe Object) File)) -> Run (FlowCtrl Object (Maybe Object) File)
-dontLoadFileTwice upath getFile = do
-  runtime <- ask
-  ptab <- fmap (M.lookup upath) (dReadMVar xloc (pathIndex runtime))
-  case ptab of
-    Just file -> return (FlowOK file)
-    Nothing   -> getFile upath
+--  dontLoadFileTwice :: UPath -> (UPath -> Run (FlowCtrl Object (Maybe Object) File)) -> Run (FlowCtrl Object (Maybe Object) File)
+--  dontLoadFileTwice upath getFile = do
+--    runtime <- ask
+--    ptab <- fmap (M.lookup upath) (dReadMVar xloc (pathIndex runtime))
+--    case ptab of
+--      Just file -> return (FlowOK file)
+--      Nothing   -> getFile upath
 
 -- | Load idea data from the given file handle. You must pass the path name to store the resulting
 -- 'File' into the 'Dao.Object.pathIndex' table.
-ideaLoadHandle :: UPath -> Handle -> Run DocResource
-ideaLoadHandle upath h = ask >>= \runtime -> do
-  lift (hSetBinaryMode h True)
-  doc <- lift (fmap (decode$!) (B.hGetContents h) >>= evaluate)
-  docHandle <- newDocResource ("DocHandle("++show upath++")") $! doc
-  dModifyMVar_ xloc (pathIndex runtime) $ \pathTab ->
-    seq pathTab $! seq docHandle $! return $! M.insert upath (DocumentFile docHandle) pathTab
-  dPutStrErr xloc ("Loaded data file "++show upath)
-  return docHandle
+--  ideaLoadHandle :: UPath -> Handle -> Run DocResource
+--  ideaLoadHandle upath h = ask >>= \runtime -> do
+--    lift (hSetBinaryMode h True)
+--    doc <- lift (fmap (decode$!) (B.hGetContents h) >>= evaluate)
+--    docHandle <- newDocResource ("DocHandle("++show upath++")") $! doc
+--    dModifyMVar_ xloc (pathIndex runtime) $ \pathTab ->
+--      seq pathTab $! seq docHandle $! return $! M.insert upath (DocumentFile docHandle) pathTab
+--    dPutStrErr xloc ("Loaded data file "++show upath)
+--    return docHandle
 
 -- | Where 'loadFilePath' keeps trying to load a given file by guessing it's type,
 -- 'loadFilePathWith' allows you to specify how to load the file by passing a function, like
 -- 'ideaLoadHandle' for parsing ideas or 'registerSourceFromHandle' for parsing scripts, and only files of
 -- that type will be loaded, or else this function will fail.
-loadFilePathWith :: (UPath -> Handle -> Run File) -> UPath -> Run File
-loadFilePathWith fn upath = lift (openFile (uchars upath) ReadMode) >>= fn upath
+--  loadFilePathWith :: (UPath -> Handle -> Run File) -> UPath -> Run File
+--  loadFilePathWith fn upath = lift (openFile (uchars upath) ReadMode) >>= fn upath
 
 -- | Tries to convert the given 'Dao.String.UPath' to it's full path using
 -- 'System.Directory.canonicalizePath', returning a pair @(True, fullPath)@ if successful. It does not
 -- throw an 'Control.Exception.IOException' if the lookup fails, it returns the pair
 -- @(False, originalPath)@.
-getFullPath :: UPath -> IO (Bool, UPath)
-getFullPath upath = handle (\ (err::IOException) -> return (False, upath)) $
-  fmap ((,)True . ustr) (canonicalizePath (uchars upath))
+--  getFullPath :: UPath -> IO (Bool, UPath)
+--  getFullPath upath = handle (\ (err::IOException) -> return (False, upath)) $
+--    fmap ((,)True . ustr) (canonicalizePath (uchars upath))
 
 -- | Return all files that have been loaded that match the given file name.
-findIndexedFile :: UPath -> Run [File]
-findIndexedFile upath = do
-  runtime <- ask
-  ptab    <- dReadMVar xloc (pathIndex runtime)
-  return $ flip concatMap (M.assocs ptab) $ \ (ipath, file) ->
-    if isSuffixOf (uchars upath) (uchars ipath) then [file] else []
+--  findIndexedFile :: UPath -> Run [File]
+--  findIndexedFile upath = do
+--    runtime <- ask
+--    ptab    <- dReadMVar xloc (pathIndex runtime)
+--    return $ flip concatMap (M.assocs ptab) $ \ (ipath, file) ->
+--      if isSuffixOf (uchars upath) (uchars ipath) then [file] else []
 

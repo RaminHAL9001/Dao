@@ -100,9 +100,9 @@ randSingletonList :: [RandO Object]
 randSingletonList =
   [ return ONull
   , return OTrue
---  , fmap OType randO
-  , randInteger (OInt  0) $ \i -> randInt >>= \j -> return (OInt$fromIntegral$ i*j)
-  , randInteger (OWord 0) $ \i -> randInt >>= \j -> return (OWord$fromIntegral$abs$ i*j)
+  , fmap OType randO
+  , randInteger (OInt  0) $ \i -> randInt >>= \j -> return (OInt  $ fromIntegral $ i*j)
+  , randInteger (OWord 0) $ \i -> randInt >>= \j -> return (OWord $ fromIntegral $ abs $ i*j)
   , randInteger (OLong 0) $ \i -> replicateM (mod i 4 + 1) randInt >>= return . OLong . longFromInts
   , randInteger (ORatio 0) $ \i -> return (ORatio (toInteger i % 1))
   , randInteger (OComplex (0:+0)) $ \i -> return (OComplex (0 :+ (fromRational (toInteger i % 1))))
@@ -142,8 +142,12 @@ instance HasRandGen Object where
             replicateM i (fmap (Db.encode . (\i -> fromIntegral i :: Word32)) randInt)
     ]
 
-instance HasRandGen CoreType where
-  randO = fmap toEnum (nextInt (fromEnum (maxBound::CoreType)))
+instance HasRandGen CoreType   where { randO = toEnum     <$> nextInt (fromEnum (maxBound::CoreType)) }
+instance HasRandGen TypeStruct where { randO = TypeStruct <$> randList 1 4 }
+instance HasRandGen ObjType    where { randO = ObjType    <$> randList 1 3 }
+instance HasRandGen TypeSym    where
+  randO = randChoice [CoreType <$> randO, pure TypeVar <*> randO <*> randList 1 4]
+
 
 randMultiName :: RandO [UStr]
 randMultiName = do

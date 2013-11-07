@@ -36,8 +36,6 @@ import qualified Dao.Tree    as T
 import           Control.Monad
 import           Control.Monad.State
 
-import           Numeric
-
 import           Data.Maybe (fromMaybe, maybeToList)
 import           Data.Monoid
 import           Data.Char
@@ -97,7 +95,7 @@ instance PPrintable Object where
   pPrint obj = case obj of
     ONull            -> pString "null"
     OTrue            -> pString "true"
---    OType      o     -> pPrint o
+    OType      o     -> pPrint o
     OInt       o     -> pShow o
     OWord      o     -> pString (show o++"U")
     OLong      o     -> pString (show o++"L")
@@ -138,7 +136,7 @@ instance PPrintable Object where
     OBytes     o     ->
       if B.null o
         then  pString "data{}"
-        else  pClosure (pString "data ") "{ " " }" (map pString (b64Encode o))
+        else  pList (pString "data") "{" ", " "}" (map (pString . showHex) (B.unpack o))
     OHaskell   o ifc -> error $ "cannot pretty print Haskell data type: "++show (objHaskellType ifc)
 
 ----------------------------------------------------------------------------------------------------
@@ -273,7 +271,7 @@ instance PPrintable AST_IfElse where
 
 instance PPrintable AST_While where
   pPrint (AST_While (AST_If ifn thn _)) =
-    pClosure (pString "while") "{" "}" [pPrint thn]
+    pClosure (pInline [pString "while", pPrint ifn]) "{" "}" [pPrint thn]
 
 --instance PPrintable AST_ElseIf where
 --  pPrint o = case o of
@@ -373,7 +371,8 @@ instance PPrintable AST_Object where
     AST_Struct   cObjXp   xcObjXp          _ ->
       pList (pInline [pString "tree", printObj cObjXp]) "{" ", " "}" [pPrint xcObjXp] where
         printObj obj = pWrapIndent [pString " ", pInline [pPrint cObjXp]]
-    AST_Lambda         ccNmx   xcObjXp     _ -> pPrintSubBlock (pPrintComWith pPrint ccNmx) xcObjXp
+    AST_Lambda         ccNmx   xcObjXp     _ ->
+      pPrintSubBlock (pInline [pString "function", pPrintComWith pPrint ccNmx]) xcObjXp
     AST_Func     co nm ccNmx   xcObjXp     _ ->
       pClosure (pInline [pString "function ", pPrint co, pPrint nm, pPrint ccNmx]) "{" "}" [pPrint xcObjXp]
     AST_Rule           ccNmx   xcObjXp     _ -> pClosure (pPrint ccNmx) "{" "}" [pPrint xcObjXp]

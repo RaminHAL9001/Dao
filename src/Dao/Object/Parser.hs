@@ -130,11 +130,10 @@ daoTokenDef = do
   operatorTable (words "$ @ -> . ! - ~")
   daoKeywords <- keywordTable LABEL labelRX $ words $ unwords $
     [ "global local qtime static"
-    , "null false true data tree list set intmap dict array date time hash" -- hash is reserved
+    , "null false true tree date time function func rule"
     , "if else for in while with try catch continue break return throw"
     , "global local qtime static"
-    , "function func rule BEGIN END EXIT"
-    , "import require"
+    , "BEGIN END EXIT import require"
     , "struct union operator public private new" -- other reserved keywords, but they don't do anything yet.
     ]
   let withKeyword key func = do
@@ -822,9 +821,9 @@ scriptPTab = comments <> objExpr <> table exprs where
         flip mplus (done (Just (Com mempty)) mempty endLoc) $ do
           tokenBy "catch" as0
           expect "varaible name after \"catch\" statement" $ do
-            comName <- commented (token LABEL asName)
+            comName <- optional $ commented $ token LABEL asName
             (catch, endLoc) <- bracketed "\"catch\" statement"
-            done (Just comName) (Just catch) endLoc
+            done comName (Just catch) endLoc
     , tableItemBy "for"   $ \tok -> expect "iterator label after \"for statement\"" $ do
         comName <- commented (token LABEL asName)
         expect "\"in\" statement after \"for\" statement" $ do

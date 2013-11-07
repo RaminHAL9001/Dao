@@ -77,8 +77,6 @@ import           Data.Char
 import           Data.List (intercalate)
 import qualified Data.ByteString.Lazy as Z
 
-import           Numeric
-
 import           System.IO
 import           System.IO.Unsafe
 
@@ -333,8 +331,7 @@ expandObjExpr = expand
 -- through with your own eyes, all hexadecimal numbers, letters A-F capitalized, spaces between
 -- every byte, and split into lines of 32 bytes each.
 showBinary :: Z.ByteString -> String
-showBinary b = intercalate "\n" $ breakInto (32*3) $ (" "++) $ map toUpper $
-  intercalate " " $ map (\b -> (if b<0x10 then ('0':) else id) (flip showHex "" b)) $ Z.unpack b
+showBinary = show . Base16String
 
 -- | Apply 'showBinary' to a 'Data.ByteString.Lazy.ByteString'.
 hexdump :: Dao Z.ByteString -> IO (Dao Z.ByteString)

@@ -22,12 +22,12 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
--- {-# LANGUAGE RankNTypes #-}
 
 module Dao.Object.Binary where
 
 import           Dao.Token
 import           Dao.Object
+import           Dao.Object.AST
 import qualified Dao.Tree as T
 import           Dao.Glob
 import qualified Dao.EnumSet as Es
@@ -61,6 +61,16 @@ import Debug.Trace
 -- This is only necessary to shorten the name 'MethodTable' because it is used throughout so many
 -- instance declarations and type contexts.
 type MTab = MethodTable
+
+putAST :: (Intermediate obj ast, D.Binary obj mtab) => ast -> D.GPut mtab
+putAST ast = case toInterm ast of
+    [obj] -> D.put obj
+    _     -> fail "binary encoder could not convert AST to intermediate expression"
+
+getAST :: (Intermediate obj ast, D.Binary obj mtab) => D.GGet mtab ast
+getAST = D.get >>= \obj -> case fromInterm obj of
+    [ast] -> return ast
+    _     -> fail "binary decoder constructed object that could not be converted to an AST representation"
 
 instance D.Binary CoreType MTab where
   put t = D.putWord8 $ case t of

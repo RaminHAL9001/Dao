@@ -32,6 +32,7 @@ src/Dao/Debug.hs
 src/Dao/Debug/OFF.hs
 src/Dao/Debug/ON.hs
 tests/Dao/Tests.hs
+tests/Dao/SingleTest.hs
 tests/2.dao
 tests/1.dao
 tests/EQN.hs

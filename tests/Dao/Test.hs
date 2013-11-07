@@ -440,6 +440,16 @@ data RandObj
   = RandTopLevel AST_TopLevel
   | RandObject   Object
   deriving (Eq, Ord, Show)
+instance HasLocation RandObj where
+  getLocation a     = case a of
+    RandTopLevel a -> getLocation a
+    RandObject   _ -> LocationUnknown
+  setLocation a loc = case a of
+    RandTopLevel a -> RandTopLevel (setLocation a loc)
+    RandObject   a -> RandObject a
+  delLocation a     = case a of
+    RandTopLevel a -> RandTopLevel (delLocation a)
+    RandObject   a -> RandObject a
 instance HasRandGen RandObj where
   randO = do
     i <- nextInt 2

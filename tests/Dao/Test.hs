@@ -613,7 +613,7 @@ checkTestCase tc = ask >>= \env -> do
               [ ["Parsed AST does not match original object, parsed AST is:"]
               , case diro of
                   []  -> ["(Empty AST)"]
-                  [o] -> [prettyShow o, prettyShow o]
+                  [o] -> [prettyShow o, show (RandTopLevel o)]
                   ox  -> concat $
                     [ ["(Returned multiple AST items)"]
                     , zip [1..] ox >>= \ (i, o) ->

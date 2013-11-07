@@ -25,7 +25,6 @@
 
 module Dao.Object.DeepSeq where
 
-import           Dao.Debug.OFF
 import           Dao.Object
 import           Dao.Object.AST
 import           Dao.Token

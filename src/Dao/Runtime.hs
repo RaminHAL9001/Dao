@@ -39,7 +39,6 @@
 -- all other modules without making everything depend on the "Dao.Object" module.
 module Dao.Runtime where
 
-import           Dao.Debug.OFF
 import           Dao.String
 
 import           Control.Concurrent.MVar

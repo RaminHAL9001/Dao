@@ -22,7 +22,6 @@
 
 module Dao.Resource where
 
-import           Dao.Debug.OFF
 import           Dao.String
 import           Dao.Object
 import           Dao.Procedural

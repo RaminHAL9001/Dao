@@ -27,7 +27,6 @@
 
 module Dao.Evaluator where
 
-import           Dao.Debug.OFF
 import           Dao.Runtime
 import           Dao.Stack
 import           Dao.Token  hiding (asString)
@@ -106,7 +105,7 @@ indexObject obj idx = case obj of
       doIdx obj idx i t = case T.lookup i t of
         Nothing -> execThrow $ OList [ostr "tree has no branch index: ", idx, ostr "indexing", obj]
         Just  o -> return o
-  obj       -> join $ fmap ($idx) $ evalObjectMethod errmsg obj objIndexer where
+  obj       -> join $ fmap ($ idx) $ evalObjectMethod errmsg obj objIndexer where
     errmsg = OList [ostr "cannot index object", obj]
 
 ----------------------------------------------------------------------------------------------------

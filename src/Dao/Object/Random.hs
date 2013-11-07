@@ -51,8 +51,6 @@ import qualified Data.IntMap           as I
 
 import           System.Random
 
--- import           Debug.Trace
-
 ----------------------------------------------------------------------------------------------------
 
 randObjMap :: (map Object -> Object) -> ([(key, Object)] -> map Object) -> RandO key -> RandO Object
@@ -100,7 +98,6 @@ randSingletonList :: [RandO Object]
 randSingletonList =
   [ return ONull
   , return OTrue
-  , fmap OType randO
   , randInteger (OInt  0) $ \i -> randInt >>= \j -> return (OInt  $ fromIntegral $ i*j)
   , randInteger (OWord 0) $ \i -> randInt >>= \j -> return (OWord $ fromIntegral $ abs $ i*j)
   , randInteger (OLong 0) $ \i -> replicateM (mod i 4 + 1) randInt >>= return . OLong . longFromInts
@@ -120,7 +117,8 @@ instance HasRandGen Object where
 --      real <- fmap fromRational (randRational i1)
 --      cplx <- fmap fromRational (randRational rem)
 --      return (OComplex (real:+cplx))
-    [ fmap ORef randO
+    [ fmap ORef  randO
+    , fmap OType randO
 --  , fmap OPair (pure (,) <*> randO <*> randO)
     , fmap OList (randList 0 40)
 --  , fmap (OSet . S.fromList) (randList 0 40)
@@ -243,14 +241,12 @@ instance HasRandGen AST_Ref where
 
 instance HasRandGen AST_QualRef where
   randO = do
-    let n = 2*(fromEnum (maxBound::RefQualifier) - fromEnum (minBound::RefQualifier))
-    i <- fmap (flip mod n) randInt
-    let (d, m) = divMod i 2
-    if m==0
-      then  pure AST_Unqualified <*> randO
-      else  pure (AST_Qualified (toEnum d)) <*> randO <*> randO <*> no
+    n <- nextInt (fromEnum (maxBound::RefQualifier) - fromEnum (minBound::RefQualifier) + 1)
+    if n==0
+      then  AST_Unqualified <$> randO
+      else  pure (AST_Qualified (toEnum (n-1))) <*> randO <*> randO <*> no
 
-instance HasRandGen AST_ObjList where { randO = recurse nullValue $ AST_ObjList <$> randO <*> randO <*> no }
+instance HasRandGen AST_ObjList   where { randO = recurse nullValue $ AST_ObjList <$> randO <*> randO <*> no }
 instance HasRandGen AST_CodeBlock where { randO = recurse nullValue $ fmap AST_CodeBlock (randList 0 30) }
 instance HasRandGen [Com AST_Object] where { randO = randList 1 20 }
 

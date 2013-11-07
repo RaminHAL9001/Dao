@@ -197,7 +197,7 @@ randUStr :: Int -> UStr
 randUStr = ustr . B.unpack . getRandomWord
 
 randListOf :: Int -> Int -> RandO a -> RandO [a]
-randListOf minlen maxlen rando = recurse [] $ do
+randListOf minlen maxlen rando = do
   -- half of all lists will be null, unless the 'minlen' parameter is greater than 0
   minlen <- return (min minlen maxlen)
   maxlen <- return (max minlen maxlen)

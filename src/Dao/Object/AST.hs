@@ -410,10 +410,14 @@ instance HasLocation AST_If where
   getLocation (AST_If _ _ loc)     = loc
   setLocation (AST_If a b _  ) loc = AST_If a b loc
   delLocation (AST_If a b _  )     = AST_If (delLocation a) (delLocation b) LocationUnknown
+instance HasLocation AST_Else where
+  getLocation (AST_Else _ _ loc)     = loc
+  setLocation (AST_Else a b _  ) loc = AST_Else a b loc
+  delLocation (AST_Else a b _  )     = AST_Else a (delLocation b) LocationUnknown
 instance HasLocation AST_IfElse where
   getLocation (AST_IfElse _ _ _ _ loc)     = loc
   setLocation (AST_IfElse a b c d _  ) loc = AST_IfElse a b c d loc
-  delLocation (AST_IfElse a b c d _  )     = AST_IfElse a b c d LocationUnknown
+  delLocation (AST_IfElse a b c d _  )     = AST_IfElse (delLocation a) (fmap delLocation b) c (fmap delLocation d) LocationUnknown
 
 newtype AST_While = AST_While AST_If deriving (Eq, Ord, Typeable, Show)
 instance HasLocation AST_While where

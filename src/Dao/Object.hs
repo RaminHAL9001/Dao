@@ -33,7 +33,6 @@ module Dao.Object
   , module Dao.Object
   ) where
 
-import           Dao.Debug.OFF
 import           Dao.Runtime
 import           Dao.String
 import           Dao.Token
@@ -64,7 +63,7 @@ import           Data.Array.IArray
 import           Data.Time hiding (parseTime)
 import           Data.IORef
 
-import           Numeric
+-- import           Numeric
 
 import qualified Data.Map                  as M
 import qualified Data.IntMap               as IM
@@ -311,7 +310,7 @@ instance Structured (T.Tree Name Object) Object where
 -- langauge.
 
 showEncoded :: [Word8] -> String
-showEncoded encoded = seq encoded (concatMap (\b -> showHex b " ") encoded)
+showEncoded encoded = seq encoded (concatMap (\b -> showHex b) encoded)
 
 type T_type     = ObjType
 type T_int      = Int
@@ -1049,7 +1048,7 @@ instance HasLocation ElseExpr where
 instance HasLocation IfElseExpr where
   getLocation (IfElseExpr _ _ _ loc)     = loc
   setLocation (IfElseExpr a b c _  ) loc = IfElseExpr a b c loc
-  delLocation (IfElseExpr a b c _  )     = IfElseExpr a (fmap delLocation b) c LocationUnknown
+  delLocation (IfElseExpr a b c _  )     = IfElseExpr (delLocation a) (fmap delLocation b) (fmap delLocation c) LocationUnknown
 instance HasLocation WhileExpr where
   getLocation (WhileExpr a)     = getLocation a
   setLocation (WhileExpr a) loc = WhileExpr (setLocation a loc)

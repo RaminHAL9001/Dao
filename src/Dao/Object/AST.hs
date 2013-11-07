@@ -88,12 +88,21 @@ data AST_TyChk a
   | AST_Checked    a (Com ()) AST_Object Location
   deriving (Eq, Ord, Typeable, Show)
 
+instance Functor AST_TyChk where
+  fmap f (AST_NotChecked a      ) = AST_NotChecked (f a)
+  fmap f (AST_Checked    a b c d) = AST_Checked    (f a) b c d
+
 instance HasNullValue a => HasNullValue (AST_TyChk a) where
   nullValue = AST_NotChecked nullValue
   testNull (AST_NotChecked a) = testNull a
 
 checkedAST :: AST_TyChk a -> a
 checkedAST a = case a of { AST_NotChecked a -> a; AST_Checked a _ _ _ -> a; }
+
+astTyChkDelLocWith :: (a -> a) -> AST_TyChk a -> AST_TyChk a
+astTyChkDelLocWith del a = case a of
+  AST_NotChecked a       -> AST_NotChecked (del a)
+  AST_Checked    a b c _ -> AST_Checked    (del a) b (delLocation c) LocationUnknown
 
 instance HasLocation a => HasLocation (AST_TyChk a) where
   getLocation a     = case a of
@@ -102,9 +111,7 @@ instance HasLocation a => HasLocation (AST_TyChk a) where
   setLocation a loc = case a of
     AST_NotChecked a         -> AST_NotChecked (setLocation a loc)
     AST_Checked    a b c _   -> AST_Checked a b c loc
-  delLocation a     = case a of
-    AST_NotChecked a         -> AST_NotChecked (delLocation a)
-    AST_Checked    a b c _   -> AST_Checked (delLocation a) b (delLocation c) LocationUnknown
+  delLocation       = astTyChkDelLocWith delLocation
 
 data AST_Param
   = AST_NoParams
@@ -138,7 +145,7 @@ instance HasNullValue AST_ParamList where
 instance HasLocation AST_ParamList where
   getLocation (AST_ParamList _ loc)     = loc
   setLocation (AST_ParamList a _  ) loc = AST_ParamList a loc
-  delLocation (AST_ParamList a _  )     = AST_ParamList a LocationUnknown
+  delLocation (AST_ParamList a _  )     = AST_ParamList (astTyChkDelLocWith (fmap delLocation) a) LocationUnknown
 
 data AST_StringList
   = AST_NoStrings  [Comment]  Location
@@ -375,7 +382,7 @@ instance HasLocation AST_Object where
     AST_FuncCall   a b     _ -> AST_FuncCall   (fd  a) (fd  b)                 lu
     AST_Init       a b c   _ -> AST_Init       (fd  a) (fd  b) (fd  c)         lu
     AST_Struct     a b     _ -> AST_Struct     (fd  a) (fd  b)                 lu
-    AST_Lambda     a b     _ -> AST_Lambda          a  (fd  b)                 lu
+    AST_Lambda     a b     _ -> AST_Lambda     (fd  a) (fd  b)                 lu
     AST_Func       a b c d _ -> AST_Func            a       b  (fd  c) (fd  d) lu
     AST_Rule       a b     _ -> AST_Rule            a  (fd  b)                 lu
     AST_MetaEval   a       _ -> AST_MetaEval   (fd  a)                         lu

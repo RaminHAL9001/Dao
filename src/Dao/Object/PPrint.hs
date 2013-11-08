@@ -366,8 +366,7 @@ instance PPrintable AST_Object where
     AST_Prefix   ariOp    c_ObjXp          _ -> pWrapIndent [pPrint ariOp, pPrint c_ObjXp]
     AST_ArraySub objXp             xcObjXp _ -> pList (pPrint objXp) "[" ", " "]" [pPrint xcObjXp]
     AST_FuncCall objXp             xcObjXp _ -> pInline [pPrint objXp, pPrint xcObjXp]
-    AST_Init     ref      objs     elems   _ ->
-      pList (pInline [pPrint ref, pPrint objs]) "{" ", " "}" [pPrint elems]
+    AST_Init     ref      objs     elems   _ -> pInline [pPrint ref, pPrint objs, pPrint elems]
     AST_Struct   cObjXp   xcObjXp          _ ->
       pList (pInline [pString "tree", printObj cObjXp]) "{" ", " "}" [pPrint xcObjXp] where
         printObj obj = pWrapIndent [pString " ", pInline [pPrint cObjXp]]

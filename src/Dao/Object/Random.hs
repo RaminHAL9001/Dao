@@ -291,7 +291,8 @@ randScript :: RandO AST_Script
 randScript = randChoice randScriptList
 
 instance HasRandGen AST_Script where
-  randO = recurse nullValue $ randChoice $ randScriptList ++ [AST_Comment <$> randO]
+  randO = recurse (AST_EvalObject (AST_Literal (OInt 0) LocationUnknown) [] LocationUnknown) $
+    randChoice $ randScriptList ++ [AST_Comment <$> randO]
 
 -- | Will create a random 'Dao.Object.AST_Object' of a type suitable for use as a stand-alone script
 -- expression, which is only 'AST_Assign'.
@@ -387,7 +388,7 @@ instance HasRandGen AST_Object where
   -- | Differs from 'randAssignExpr' in that this 'randO' can generate 'Dao.Object.AST_Literal' expressions
   -- whereas 'randAssignExpr' will not so it does not generate stand-alone constant expressions within
   -- 'Dao.Object.AST_Script's.
-  randO = recurse nullValue $ randChoice randObjectASTList
+  randO = recurse (AST_Literal (OInt 0) LocationUnknown) $ randChoice randObjectASTList
 
 randArgsDef :: RandO [Com AST_Object]
 randArgsDef = randList 0 7

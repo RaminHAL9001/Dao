@@ -818,12 +818,13 @@ scriptPTab = comments <> objExpr <> table exprs where
         tryCom <- return (fmap (const try) tryCom)
         let done comName catch endLoc = return $
               AST_TryCatch tryCom comName catch (asLocation tok <> endLoc)
-        flip mplus (done (Just (Com mempty)) mempty endLoc) $ do
-          tokenBy "catch" as0
-          expect "varaible name after \"catch\" statement" $ do
-            comName <- optional $ commented $ token LABEL asName
-            (catch, endLoc) <- bracketed "\"catch\" statement"
-            done comName (Just catch) endLoc
+        flip mplus (done Nothing mempty endLoc) $ do
+          endLoc  <- tokenBy "catch" asLocation
+          comName <- optional $ commented $ token LABEL asName
+          scrpt   <- optional $ bracketed "\"catch\" statement"
+          case scrpt of
+            Nothing              -> done comName Nothing      endLoc
+            Just (catch, endLoc) -> done comName (Just catch) endLoc
     , tableItemBy "for"   $ \tok -> expect "iterator label after \"for statement\"" $ do
         comName <- commented (token LABEL asName)
         expect "\"in\" statement after \"for\" statement" $ do

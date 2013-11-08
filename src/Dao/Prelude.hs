@@ -261,7 +261,10 @@ toBinary (Dao o) = readIORef exampleMethodTable >>= \mtab -> return (Dao (encode
 
 -- | Convert a polymorphic type to a 'Data.ByteString.Lazy.ByteString'.
 fromBinary :: Binary o MethodTable => Dao Z.ByteString -> IO (Dao o)
-fromBinary (Dao o) = readIORef exampleMethodTable >>= \mtab -> return (Dao (decode mtab o))
+fromBinary (Dao o) = readIORef exampleMethodTable >>= \mtab -> case decode mtab o of
+  OK      a -> return (Dao a)
+  Backtrack -> error "decoder backtracked"
+  PFail err -> error (show err)
 
 -- | Parse a 'Dao.Object.TopLevelExpr' from it's binary representation.
 unpackTopExpr :: Dao Z.ByteString -> IO (Dao TopLevelExpr)

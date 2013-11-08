@@ -634,18 +634,22 @@ checkTestCase tc = ask >>= \env -> do
   ------------------------- (2) Test the serializer -------------------------
   tc <- tryTest tc serializedObject $ \binObj -> do
     unbin <- liftIO $ catches (return $ Right $ D.decode mtab binObj) $
-      errTryCatch "binary deserialization failed" :: TestRun (Either UStr RandObj)
+      errTryCatch "binary deserialization failed" :: TestRun (Either UStr (PValue D.GGetErr RandObj))
     case unbin of
       Left  msg   -> failTest tc (uchars msg) :: TestRun TestCase
-      Right unbin ->
-        if unbin == originalObject tc
-          then  passTest tc
-          else  failTest tc $ unlines $
-                  [ "Original object does not match object deserialized from binary string"
-                  , "Received bytes:", showBinary binObj
-                  , "Deserialied object:"
-                  , prettyShow unbin
-                  ]
+      Right unbin -> do
+        let bad :: String -> Maybe RandObj -> TestRun TestCase
+            bad msg unbin = failTest tc $ unlines $ concat $
+              [ [msg]
+              , ["Received bytes:", showBinary binObj]
+              , maybe [] (\unbin -> ["Deserialied object:", prettyShow unbin]) unbin
+              ]
+        case unbin of
+          Backtrack -> bad "Decoder backtracked" Nothing
+          PFail err -> bad ("Decoder failed: "++show err) Nothing
+          OK  unbin | unbin==originalObject tc -> passTest tc
+          OK  unbin | otherwise ->
+            bad "Original object does not match object deserialized from binary string" (Just unbin)
   --
   ---------------- (3) Test the intermediate tree structures ----------------
   tc <- tryTest tc structuredObject $ \obj ->

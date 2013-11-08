@@ -50,10 +50,12 @@ import           Dao.Runtime
 import           Dao.String
 import qualified Dao.Tree             as T
 import           Dao.Token
+import           Dao.Predicate
 
 import           Control.Exception (assert)
 import           Control.Applicative
 import           Control.Monad
+import           Control.Monad.Error
 import           Control.Monad.Trans
 import qualified Control.Monad.State  as S
 
@@ -88,6 +90,7 @@ import Debug.Trace
 
 type Byte = Word8
 type InStreamID = Word32
+type ByteOffset = B.ByteOffset
 
 -- | A data type used to help instantiate the 'Dao.Binary.Binary' class. Refer to the
 -- 'fromDataBinary' function for more details.
@@ -130,7 +133,10 @@ data DecodeIndex mtab
 newtype GPutM mtab a = PutM{ encoderToStateT :: S.StateT (EncodeIndex mtab) B.PutM a }
 type GPut mtab = GPutM mtab ()
 
-data GGet mtab a = Get{ infoGet :: String, decoderToStateT :: S.StateT (DecodeIndex mtab) B.Get a }
+data GGetErr = GetErr { gGetErrOffset :: ByteOffset, gGetErrMsg :: UStr }
+instance Show GGetErr where { show (GetErr ofst msg) = "(offset="++show ofst++") "++uchars msg }
+
+newtype GGet mtab a = Get{ decoderToStateT :: PTrans GGetErr (S.StateT (DecodeIndex mtab) B.Get) a }
 
 instance Functor (GPutM mtab) where { fmap f (PutM a) = PutM (fmap f a) }
 instance Monad (GPutM mtab) where
@@ -144,23 +150,20 @@ instance Monoid a => Monoid (GPutM mtab a) where
 instance HasCoderTable mtab => S.MonadState (EncodeIndex mtab) (GPutM mtab) where
   state fn = PutM (S.state fn)
 
-instance Functor (GGet mtab) where { fmap f (Get msg a) = Get ("fmap "++msg) (fmap f a) }
+instance Functor (GGet mtab) where { fmap f (Get a) = Get (fmap f a) }
 instance Monad (GGet mtab) where
-  return = Get "return" . return
-  Get msg a >>= fn = Get msg (a >>= decoderToStateT . fn)
-  Get msgA a >> Get msgB b = Get (msgA++" >> "++msgB) (a >> b)
-  fail msg = Get ("fail "++show msg) (S.StateT (\_ -> fail msg))
-instance MonadPlus   (GGet mtab) where { mzero = Get "mzero" mzero; mplus (Get msgA a) (Get msgB b) = Get (msgA++"<|>"++msgB) (mplus a b); }
+  return = Get . return
+  (Get a) >>= fn = Get (a >>= decoderToStateT . fn)
+  Get a >> Get b = Get (a >> b)
+  fail msg = bytesRead >>= \ofst -> Get (throwError (GetErr ofst (toUStr msg)))
+instance MonadPlus   (GGet mtab) where { mzero = Get mzero; mplus (Get a) (Get b) = Get (mplus a b); }
 instance Applicative (GGet mtab) where { pure=return; (<*>)=ap;    }
 instance Alternative (GGet mtab) where { empty=mzero; (<|>)=mplus; }
 instance Monoid a => Monoid (GGet mtab a) where
   mempty=return mempty
   mappend a b = a >>= \a -> b >>= \b -> return (mappend a b)
-instance HasCoderTable mtab => S.MonadState (DecodeIndex mtab) (GGet mtab) where
-  state fn = Get "update state" (S.state fn)
-
-instance Show (GGet mtab a) where
-  show (Get msg _) = take 1024 msg
+instance S.MonadState (DecodeIndex mtab) (GGet mtab) where
+  state = Get . lift . S.state
 
 -- | This class only exists to provide the the function 'getCoderTable' with the exact same function
 -- in both the 'GPutM' and 'GGet' monads, rather than having a separate function for each monad.
@@ -261,20 +264,20 @@ runPut :: HasCoderTable mtab => mtab -> GPut mtab -> Z.ByteString
 runPut mtab fn = B.runPut $ S.evalStateT (encoderToStateT fn) $
   EncodeIndex{indexCounter=1, encodeIndex=mempty, encMTabRef=mtab}
 
-runGet :: HasCoderTable mtab => mtab -> GGet mtab a -> Z.ByteString -> a
-runGet mtab fn = B.runGet $ S.evalStateT (decoderToStateT fn) $
+runGet :: HasCoderTable mtab => mtab -> GGet mtab a -> Z.ByteString -> PValue GGetErr a
+runGet mtab fn = B.runGet $ S.evalStateT (runPTrans $ decoderToStateT fn) $
   DecodeIndex{decodeIndex=mempty, decMTabRef=mtab}
 
 encode :: (HasCoderTable mtab, Binary a mtab) => mtab -> a -> Z.ByteString
 encode mtab = runPut mtab . put
 
-decode :: (HasCoderTable mtab, Binary a mtab) => mtab -> Z.ByteString -> a
+decode :: (HasCoderTable mtab, Binary a mtab) => mtab -> Z.ByteString -> PValue GGetErr a
 decode mtab = runGet mtab get
 
 encodeFile :: (HasCoderTable mtab, Binary a mtab) => mtab -> FilePath -> a -> IO ()
 encodeFile mtab path = Z.writeFile path . encode mtab
 
-decodeFile :: (HasCoderTable mtab, Binary a mtab) => mtab -> FilePath -> IO a
+decodeFile :: (HasCoderTable mtab, Binary a mtab) => mtab -> FilePath -> IO (PValue GGetErr a)
 decodeFile mtab path = decode mtab <$> Z.readFile path
 
 putWithBlockStream1M :: HasCoderTable mtab => GPut mtab -> GPut mtab
@@ -284,7 +287,7 @@ getWithBlockStream1M :: HasCoderTable mtab => GGet mtab a -> GGet mtab a
 getWithBlockStream1M fn = do
   mtab <- getCoderTable
   (BlockStream1M bs1m) <- get
-  return (runGet mtab fn bs1m)
+  Get (pvalue (runGet mtab fn bs1m))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -366,13 +369,13 @@ dataBinaryPut :: B.PutM a -> GPutM mtab a
 dataBinaryPut = PutM . lift
 
 dataBinaryGet :: B.Get a -> GGet mtab a
-dataBinaryGet = Get "dataBinaryGet" . lift
+dataBinaryGet = Get . lift . lift
 
 lookAhead :: GGet mtab a -> GGet mtab a
-lookAhead (Get msg fn) = Get ("lookAhead "++msg) (S.get >>= lift . B.lookAhead . S.evalStateT fn)
+lookAhead (Get fn) = S.get >>= Get . lift . lift . B.lookAhead . S.evalStateT (runPTrans fn) >>= Get . pvalue
 
-bytesRead :: GGet mtab Int64
-bytesRead = Get "bytesRead" $ lift B.bytesRead
+bytesRead :: GGet mtab ByteOffset
+bytesRead = Get $ lift $ lift B.bytesRead
 
 isEmpty :: GGet mtab Bool
 isEmpty = dataBinaryGet B.isEmpty
@@ -385,13 +388,13 @@ putWord32le = PutM . lift . B.putWord32le
 putWord64be = PutM . lift . B.putWord64be
 putWord64le = PutM . lift . B.putWord64le
 
-getWord8    = Get "getWord8"    $ lift $ B.getWord8
-getWord16be = Get "getWord16be" $ lift $ B.getWord16be
-getWord16le = Get "getWord16le" $ lift $ B.getWord16le
-getWord32be = Get "getWord32be" $ lift $ B.getWord32be
-getWord32le = Get "getWord32le" $ lift $ B.getWord32le
-getWord64be = Get "getWord64be" $ lift $ B.getWord64be
-getWord64le = Get "getWord64le" $ lift $ B.getWord64le
+getWord8    = Get $ lift $ lift $ B.getWord8
+getWord16be = Get $ lift $ lift $ B.getWord16be
+getWord16le = Get $ lift $ lift $ B.getWord16le
+getWord32be = Get $ lift $ lift $ B.getWord32be
+getWord32le = Get $ lift $ lift $ B.getWord32le
+getWord64be = Get $ lift $ lift $ B.getWord64be
+getWord64le = Get $ lift $ lift $ B.getWord64le
 
 putIntegral :: (Integral a, Bits a) => a -> GPut mtab
 putIntegral = putInteger . fromIntegral

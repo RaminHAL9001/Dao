@@ -170,13 +170,14 @@ instance Show Object where
     OFloat   o -> "OFloat "++show o
     ORatio   o -> "ORatio "++show o
     OComplex o -> "OComplex "++show o
-    OString  o -> "OString "++show o
     OAbsTime o -> "OAbsTime "++show o
     ORelTime o -> "ORelTime "++show o
     OChar    o -> "OChar "++show o
+    OString  o -> "OString "++show o
+    ORef     o -> "ORef (" ++ show o++")"
     OList    o -> "OList "++show o
-    OTree    o -> "OTree "++show o
-    OBytes   o -> "OBytes "++unwords (b64Encode o)
+    OTree    o -> "OTree ("++show o++")"
+    OBytes   o -> "OBytes ("++unwords (b64Encode o)++")"
     OHaskell _ ifc -> "OHaskell "++show (objHaskellType ifc)
 
 instance Structured Object Object where

@@ -1,4 +1,10 @@
 TODO:
+* I should probably separate the 'Dao.Object.OHaskell' constructor from the 'Object' data type so I
+	can go back to using the "deriving" feature to derive 'Prelude.Show', 'Prelude.Eq', and
+	'Prelude.Ord' for the 'Object' data type, then just instantiate the data type with the single
+	'OHaskell' constructor into the 'Prelude.Eq', 'Prelude.Ord', and 'Prelude.Show' classes by hand
+	as is written now.
+
 * Define as many of the data types in "Dao.Object" and "Dao.Object.AST" to make use of
 	"Data.Generic" functions to program as many of the instances of the 'Dao.Token.HasLocation'
 	class as possible. I have been doing everything by hand, it has proven to be very error-prone.

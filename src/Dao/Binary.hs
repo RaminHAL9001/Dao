@@ -164,6 +164,9 @@ instance Monoid a => Monoid (GGet mtab a) where
   mappend a b = a >>= \a -> b >>= \b -> return (mappend a b)
 instance S.MonadState (DecodeIndex mtab) (GGet mtab) where
   state = Get . lift . S.state
+instance MonadError GGetErr (GGet mtab) where
+  throwError = Get . throwError
+  catchError (Get fn) catch = Get (catchError fn (decoderToStateT . catch))
 
 -- | This class only exists to provide the the function 'getCoderTable' with the exact same function
 -- in both the 'GPutM' and 'GGet' monads, rather than having a separate function for each monad.
@@ -532,12 +535,13 @@ instance (Eq p, Ord p, Binary p mtab, Binary a mtab) => HasPrefixTable (T.Tree p
     , pure T.LeafBranch <*> get <*> get
     ]
 
-instance Binary () t where { get = return (); put () = return (); }
-newtype NullTerm = NullTerm () deriving (Eq, Ord)
-nullTerm = NullTerm ()
-instance Binary NullTerm t where
-  put (NullTerm ()) = putWord8 0x00
-  get = tryWord8 0x00 $ return nullTerm
+instance Binary () mtab where { get = return (); put () = return (); }
+
+putNullTerm :: GPut mtab
+putNullTerm = putWord8 0x00
+
+getNullTerm :: GGet mtab ()
+getNullTerm = tryWord8 0x00 $ return ()
 
 instance Binary Bool mtab where
   put o = putWord8 (if o then 0x04 else 0x05)
@@ -552,33 +556,33 @@ instance Binary a mtab => HasPrefixTable (Maybe a) Byte mtab where
   prefixTable = mkPrefixTableWord8 "Maybe" 0x00 0x01 [return Nothing, Just <$> get]
 
 instance Binary a mtab => Binary [a] mtab where
-  put o = mapM_ (put . Just) o >> put (NullTerm ())
+  put o = mapM_ (put . Just) o >> putNullTerm
   get   = concatMap (maybe [] return) <$> loop [] where
     loop ox = msum $
-      [ optional (lookAhead getWord8) >>= \w -> get >>= \ (NullTerm ()) -> return ox
+      [ optional (lookAhead getWord8) >>= \w -> getNullTerm >> return ox
         -- It is important to check for the null terminator first, then try to parse, that way the
         -- parser dose not backtrack (which may cause it to fail) if we are at a null terminator.
       , optional get >>= maybe (fail "expecting list element") (loop . (ox++) . (:[]))
       ]
 
 -- | The inverse of 'getUnwrapped', this function is simply defined as:
--- > \list -> 'Control.Monad.mapM_' 'put' list >> 'put' ('NullTerm' ())
+-- > \list -> 'Control.Monad.mapM_' 'put' list >> 'putNullterm'
 -- This is useful when you want to place a list of items, but you dont want to waste space on a
 -- prefix byte for each list element. In lists of millions of elements, this can save you megabytes
 -- of space, but placing any elements which are prefixed with a null byte will result in undefined
 -- behavior when decoding.
 putUnwrapped :: Binary a mtab => [a] -> GPut mtab
-putUnwrapped list = mapM_ put list >> put (NullTerm ())
+putUnwrapped list = mapM_ put list >> putNullTerm
 
 -- | The inverse of 'putUnwrapped', this function is simply defined as: 'Control.Applicative.many'
--- 'get' >>= \list -> 'get' >>= \ ('NullTerm' ()) -> 'Control.Monad.return' list This assumes that
+-- 'get' >>= \list -> 'getNullTerm' >> 'Control.Monad.return' list This assumes that
 -- every element placed by 'get' has a non-null prefixed encoding. If any elements in the list might
 -- be encoded such that they start with a 0x00 byte, the @'Control.Applicative.many'@ 'get'
 -- expression will parse the null terminator of the list as though it were an element and continue
 -- looping which results in undefined behavior. Examples of elements that may start with null @0x00@
 -- bytes are 'Dao.String.UStr', 'Dao.String.Name', 'Prelude.Integer', or any 'Prelude.Integral' type.
-getUnwrapped :: Binary a mtab => GGet mtab [a]
-getUnwrapped = many get >>= \list -> get >>= \ (NullTerm ()) -> return list
+getUnwrapped :: (Binary a mtab, Show a) => GGet mtab [a]
+getUnwrapped = fix (\loop ox -> (getNullTerm >> return ox) <|> (get >>= \o -> loop (ox++[o]))) []
 
 instance Binary UStr mtab where
   put o = dataBinaryPut (B.put o)

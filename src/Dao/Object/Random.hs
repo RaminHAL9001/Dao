@@ -146,7 +146,6 @@ instance HasRandGen ObjType    where { randO = ObjType    <$> randList 1 3 }
 instance HasRandGen TypeSym    where
   randO = randChoice [CoreType <$> randO, pure TypeVar <*> randO <*> randList 1 4]
 
-
 randMultiName :: RandO [UStr]
 randMultiName = do
   i0 <- randInt
@@ -273,7 +272,7 @@ instance HasRandGen AST_If     where { randO = pure AST_If     <*> randO <*> ran
 instance HasRandGen AST_Else   where { randO = pure AST_Else   <*> randO <*> randO <*> no }
 instance HasRandGen AST_IfElse where { randO = pure AST_IfElse <*> randO <*> randList 0 4 <*> randO <*> randO <*> no }
 instance HasRandGen AST_While  where { randO = pure AST_While  <*> randO }
-instance HasRandGen AST_Paren  where { randO = pure AST_Paren  <*> randO <*> no }
+instance HasRandGen AST_Paren  where { randO = pure AST_Paren  <*> randComWith randAssignExpr <*> no }
 
 randScriptList :: [RandO AST_Script]
 randScriptList =
@@ -311,7 +310,7 @@ randSingletonAST = randChoice randSingletonASTList
 randFuncHeaderList :: [RandO AST_Object]
 randFuncHeaderList = fmap loop $
   [ pure AST_ObjQualRef <*> randO
-  , pure AST_Literal    <*> randO <*> no
+  , pure AST_Literal    <*> randSingleton <*> no
   , pure AST_MetaEval   <*> randO <*> no
   ]
   where

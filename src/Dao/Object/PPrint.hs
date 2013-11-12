@@ -322,8 +322,10 @@ instance PPrintable PrefixOp where { pPrint = pUStr . toUStr }
 instance PPrintable InfixOp  where { pPrint = pUStr . toUStr }
 instance PPrintable UpdateOp where { pPrint op = pString (' ':uchars op++" ") }
 
-instance PPrintable AST_ObjList where
-  pPrint (AST_ObjList coms lst _) = pList (pPrint coms) "{" ", " "}" (map pPrint lst)
+pPrintObjList :: String -> String -> String -> AST_ObjList -> PPrint
+pPrintObjList open comma close (AST_ObjList coms lst _) = pList (pPrint coms) open comma close (map pPrint lst)
+
+instance PPrintable AST_ObjList where { pPrint = pPrintObjList "{" ", " "}" }
 
 instance PPrintable AST_OptObjList where
   pPrint o = case o of
@@ -364,8 +366,8 @@ instance PPrintable AST_Object where
     AST_Equation     objXp1  comAriOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comAriOp, pPrint objXp2]
     AST_Prefix   ariOp    c_ObjXp          _ -> pWrapIndent [pPrint ariOp, pPrint c_ObjXp]
-    AST_ArraySub objXp             xcObjXp _ -> pList (pPrint objXp) "[" ", " "]" [pPrint xcObjXp]
-    AST_FuncCall objXp             xcObjXp _ -> pInline [pPrint objXp, pPrint xcObjXp]
+    AST_ArraySub objXp             xcObjXp _ -> pInline [pPrint objXp, pPrintObjList "[" ", " "]" xcObjXp]
+    AST_FuncCall objXp             xcObjXp _ -> pInline [pPrint objXp, pPrintObjList "(" ", " ")" xcObjXp]
     AST_Init     ref      objs     elems   _ -> pInline [pPrint ref, pPrint objs, pPrint elems]
     AST_Struct   cObjXp   xcObjXp          _ ->
       pList (pInline [pString "tree", printObj cObjXp]) "{" ", " "}" [pPrint xcObjXp] where

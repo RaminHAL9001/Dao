@@ -119,16 +119,16 @@ daoTokenDef = do
         , base10 . opt exponent . opt numType
         ]
   ---------------------------------------- STRING  LITERAL ----------------------------------------
-  let litExpr op =  rx op .  (fix $ \loop ->
+  let litExpr op =  rx op . (fix $ \loop ->
         rxRepeat(invert [ch op, ch '\\']) . (rx "\\" . rx anyChar . loop <> rx op))
   stringLit    <- fullToken  STRINGLIT $ litExpr '"'
   charLit      <- fullToken  CHARLIT   $ litExpr '\''
   -------------------------------------- KEYWORDS AND GROUPING ------------------------------------
-  openers <- operatorTable $ words "( [ { {#"
+  openers      <- operatorTable $ words "( [ { {#"
   -- trace ("opener tokens ( [ { {#   ---> "++show openers) $ return ()
-  comma           <- emptyToken COMMA (rx ',')
+  comma        <- emptyToken COMMA (rx ',')
   operatorTable (words "$ @ -> . ! - ~")
-  daoKeywords <- keywordTable LABEL labelRX $ words $ unwords $
+  daoKeywords  <- keywordTable LABEL labelRX $ words $ unwords $
     [ "global local qtime static"
     , "null false true tree date time function func rule"
     , "if else for in while with try catch continue break return throw"

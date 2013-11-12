@@ -606,51 +606,65 @@ commentedInPair parser = do
   let (a, loc) = unComment comntd
   return (fmap (const a) comntd, loc)
 
-commaSepdObjList :: String -> String -> DaoParser AST_ObjList
-commaSepdObjList open close = do
-  coms          <- optSpace
-  startLoc      <- tokenBy open asLocation
-  (lst, endLoc) <- commaSepd "arguments to function call" close (return . com [] AST_Void) equation id
-  return (AST_ObjList coms lst (startLoc<>endLoc))
-    
-
-funcCallParamList :: DaoParser AST_ObjList
-funcCallParamList = commaSepdObjList "(" ")"
-
-initializerList :: DaoParser AST_ObjList
-initializerList = commaSepdObjList "{" "}"
-
--- The syntax for 'Dao.Object.AST.AST_InitExpr', 'Dao.Object.AST.AST_FuncCall', and
--- 'Dao.Object.AST_ObjQualRef' expressions are similar enough that 'AST_InitExpr' that the semantics
--- need to be hand-merged into a single function here. Basically, if there is a reference expression
--- alone, it is an 'Dao.Object.AST_ObjQualRef' expression. If the reference expression is followed
--- immediately by a curly-bracketed list of object expressions and then a semicolon, it is an
--- 'AST_Init' expression. If the reference expression is followed by round brackets with a
--- comma-separated list of object expressions and then a semi-colon, it is a
+-- The syntax for 'Dao.Object.AST.AST_InitExpr', 'Dao.Object.AST.AST_FuncCall',
+-- 'Dao.Object.AST.AST_ObjQualRef', and 'Dao.Object.AST.AST_ArraySub' expressions are similar enough
+-- that the semantics need to be hand-merged into a single function here. Basically, if there is a
+-- reference expression alone, it is an 'Dao.Object.AST.AST_ObjQualRef' expression. If the reference
+-- expression is followed by a comma-separated list of objects in square-brackets, it is an
+-- 'Dao.Object.AST.AST_ArraySub'. If the reference expression is followed immediately by a
+-- curly-bracketed list of object expressions, it is an 'AST_Init' expression. If the reference
+-- expression is followed by a comma-separated list of object expressions in round brackets AND NOT
+-- followed by a comma separated list of object expressions in curly-brackets then it is a
 -- 'Dao.Object.AST_FuncCall' expression. If the reference expression is followed by a
 -- comma-separated list of object expressions in round brackets, AND THEN followed by a
--- comma-separated list of object expressions in curly brackets, and then a semi-colon, it is once
--- again a 'Dao.Object.AST_Init' expression.
-funcCallOrInitPTabItem :: DaoTableItem AST_Object
-funcCallOrInitPTabItem = bindPTableItem referencePTabItem $ \ref -> do
-  let objRef = AST_ObjQualRef (AST_Unqualified ref)
-  let refLoc = getLocation ref
-  let curlyBrackets params = do
-        initList <- initializerList
-        return (AST_Init ref params initList (refLoc <> getLocation initList))
-  msum $
-    [ do  paramList <- funcCallParamList
-          coms      <- optSpace
-          msum $
-            [ curlyBrackets (AST_OptObjList paramList coms)
-            , return (AST_FuncCall objRef paramList (refLoc <> getLocation paramList))
-            ]
-    , optSpace >>= curlyBrackets . AST_NoObjList
-    , return objRef
-    ]
+-- comma-separated list of object expressions in curly brackets, it is once again a
+-- 'Dao.Object.AST_Init' expression.
+funcCall_arraySub_initPTabItem :: DaoTableItem AST_Object
+funcCall_arraySub_initPTabItem = bindPTableItem referencePTabItem $ \ref ->
+  bufferComments >> msum [afterRef <*> pure ref, return (unqual ref)]
+  where
+    unqual :: AST_Ref -> AST_Object
+    unqual ref = AST_ObjQualRef (AST_Unqualified ref)
+    
+    afterRef :: DaoParser (AST_Ref -> AST_Object)
+    afterRef = joinEvalPTable afterRefPTable
+    
+    -- TODO: AST_Init takes a 'AST_Ref' but 'AST_FuncCall' and 'AST_ArraySub' take 'AST_QualRef's
+    -- It may be time to change 'AST_Init' so it also takes 'AST_QualRef's.
+    afterRefPTable :: DaoPTable (AST_Ref -> AST_Object)
+    afterRefPTable = table $
+      [ bindPTableItem funcCallParamList $ \paramList -> msum $
+          [ joinEvalPTableItem (initList (AST_OptObjList paramList))
+          , return (\ref -> AST_FuncCall (unqual ref) paramList (getLocation ref <> getLocation paramList))
+          ]
+      , bindPTableItem arraySubParamList $ \paramList -> return $ \ref ->
+          AST_ArraySub (unqual ref) paramList (getLocation ref <> getLocation paramList)
+      , initList AST_NoObjList
+      ]
+    
+    initList :: ([Comment] -> AST_OptObjList) -> DaoTableItem (AST_Ref -> AST_Object)
+    initList params = bindPTableItem initializerList $ \inits -> do
+      params <- fmap params optSpace
+      return (\ref -> AST_Init ref params inits (getLocation ref  <> getLocation inits))
+    
+    commaSepdObjList :: String -> String -> DaoTableItem AST_ObjList
+    commaSepdObjList open close = tableItemBy open $ \startTok -> do
+      let startLoc = asLocation startTok
+      coms <- optSpace -- the comments must have been buffered by this point, otherwise the parser behaves strangely.
+      (lst, endLoc) <- commaSepd "arguments to function call" close (return . com [] AST_Void) equation id
+      return (AST_ObjList coms lst (startLoc<>endLoc))
+    
+    funcCallParamList :: DaoTableItem AST_ObjList
+    funcCallParamList = commaSepdObjList "(" ")"
+    
+    initializerList :: DaoTableItem AST_ObjList
+    initializerList = commaSepdObjList "{" "}"
+    
+    arraySubParamList :: DaoTableItem AST_ObjList
+    arraySubParamList = commaSepdObjList "[" "]"
 
-funcCallArraySub :: DaoParser AST_Object
-funcCallArraySub = joinEvalPTableItem funcCallOrInitPTabItem
+funcCall_arraySub_init :: DaoParser AST_Object
+funcCall_arraySub_init = joinEvalPTableItem funcCall_arraySub_initPTabItem
 
 arithPrefixPTab :: DaoPTable AST_Object
 arithPrefixPTab = table $ (logicalNOT:) $ flip fmap ["~", "-", "+"] $ \pfxOp ->
@@ -669,7 +683,7 @@ arithPrefix = joinEvalPTable arithPrefixPTab
 -- 'containerPTab' is also included at this level. It is the most complicated (and therefore lowest
 -- prescedence) object expression that can be formed without making use of infix operators.
 objectPTab :: DaoPTable AST_Object
-objectPTab = mconcat [table [funcCallOrInitPTabItem], arithPrefixPTab, singletonOrContainerPTab]
+objectPTab = mconcat [table [funcCall_arraySub_initPTabItem], arithPrefixPTab, singletonOrContainerPTab]
 
 -- Evaluates 'objectPTab' to a 'DaoParser'.
 object :: DaoParser AST_Object

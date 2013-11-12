@@ -308,7 +308,7 @@ instance D.Binary RuleStrings MTab where
 
 instance D.Binary ObjListExpr MTab where
   put (ObjListExpr lst loc) = D.prefixByte 0x3B $ D.putUnwrapped lst >> D.put loc
-  get = (D.tryWord8 0x3B $ pure ObjListExpr <*> D.get <*> D.get) <|> fail "expecting ObjListExpr"
+  get = (D.tryWord8 0x3B $ pure ObjListExpr <*> D.getUnwrapped <*> D.get) <|> fail "expecting ObjListExpr"
 
 instance D.Binary OptObjListExpr MTab where
   put (OptObjListExpr o) = D.put o

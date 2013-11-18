@@ -19,5 +19,6 @@
 
 module Main where
 import qualified Dao.Test
-main = Dao.Test.main Dao.Test.unitTester
+import qualified Dao.CoreTests
+main = Dao.Test.main Dao.CoreTests.unitTester
 

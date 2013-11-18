@@ -156,6 +156,7 @@ instance Monad m => MonadError err (PTrans err m) where
 instance (Functor m, Monad m) => Applicative (PTrans err m) where { pure = return; (<*>) = ap; }
 instance (Functor m, Monad m) => Alternative (PTrans err m) where { empty = mzero; (<|>) = mplus; }
 instance MonadTrans (PTrans err) where { lift m = PTrans(m >>= return . OK) }
+instance MonadIO m => MonadIO (PTrans err m) where { liftIO = PTrans . liftIO . fmap OK }
 
 pvalue :: Monad m => PValue err ok -> PTrans err m ok
 pvalue = assumePValue
@@ -180,24 +181,6 @@ class (MonadError err m, MonadPlus m) => MonadPlusError err m where
   -- 'Control.Monad.mplus' which always evaluates to 'throwError' if one of it's given monadic
   -- computations evaluates as such. Said another way, this function "catches" errors and ignores
   -- them, instead trying the alternative function when an error or 'Control.Monad.mzero' occurs.
-  mplusCatch :: m a -> m a -> m a
-  mplusCatch ma mb = mplus (catchError ma (\ _ -> mzero)) mb
-  -- | Like 'Control.Monad.msum' in except it uses 'mplusCatch' to fold the list of given monadic
-  -- computations. Evaluates to 'Control.Monad.mzero' if none of the monadic computations in the
-  -- list evaluate to 'Control.Monad.return'.
-  msumCatch :: [m a] -> m a
-  msumCatch = foldl mplusCatch mzero
-  -- | Given a "try" function and a "final" function, this monadic computation evaluates the
-  -- "try" function, keeping "try's" value, Then it evaluates the "final" function, ignoring
-  -- "final's" value, then it evaluates to "try's" value. So the "final" function is evaluated
-  -- regardless of what "try's" value is, and this function always evalautes to the value of "try's"
-  -- evaluation. Said another way, the "final" function is always executed, before returning or
-  -- re-throwing the result of "try".
-  mplusFinal :: m a -> m () -> m a
-  mplusFinal fn done = catchPValue fn >>= \a -> mplusCatch (done >> mzero) $ case a of
-    OK a      -> return a
-    Backtrack -> mzero
-    PFail   u -> assumePValue (PFail u)
 instance MonadPlusError err (PValue err) where { catchPValue = OK; assumePValue = id; }
 instance Monad m => MonadPlusError err (PTrans err m) where
   catchPValue (PTrans fn) = PTrans{ runPTrans = fn >>= \a -> return (OK a) }
@@ -227,9 +210,7 @@ pfail msg = PFail msg
 
 -- | If given 'Data.Maybe.Nothing', evaluates to 'Backtrack', otherwise evaluates to 'OK'.
 maybeToBacktrack :: Maybe a -> PValue err a
-maybeToBacktrack a = case a of
-  Nothing -> Backtrack
-  Just ok -> OK     ok
+maybeToBacktrack = maybe Backtrack OK
 
 -- | If given 'Data.Maybe.Nothing', evaluates to 'PFail' with the given error information.
 -- Otherwise, evaluates to 'OK'.

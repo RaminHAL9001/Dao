@@ -18,6 +18,6 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 module Main where
-import Dao.Test
-main = startAutomatedTesting
+import qualified Dao.Test
+main = Dao.Test.main Dao.Test.unitTester
 

@@ -19,18 +19,16 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 
 module Dao.Test where
 
-import           Dao.Prelude
 import           Dao.String
+import           Dao.Token
 import           Dao.Predicate
 import           Dao.PPrint
-import           Dao.Parser
+import           Dao.Parser  hiding (isEOF)
 import           Dao.Struct
 import           Dao.Random
 import qualified Dao.Binary        as D
@@ -43,14 +41,21 @@ import           Dao.Object.Struct
 import           Dao.Object.Random
 import           Dao.Object.DeepSeq
 
+import           Control.Applicative
 import           Control.Concurrent
-import           Control.Exception
+import qualified Control.Concurrent.SSem as Sem
 import           Control.DeepSeq
+import           Control.Exception
+import           Control.Monad
 import           Control.Monad.Reader
-import           Control.Monad.Trans
+import           Control.Monad.State
+import           Control.Monad.Error
 
+import           Data.Typeable
+import           Data.Dynamic
 import           Data.Time.Clock
 import           Data.Maybe
+import           Data.Char (isSpace)
 import           Data.List
 import           Data.Monoid
 import           Data.IORef
@@ -63,37 +68,227 @@ import           Text.Printf
 import           System.IO
 import           System.Environment
 
-import           Debug.Trace
+sep :: String
+sep = "--------------------------------------------------------------------------"
+
+maxCPUCores :: Int
+maxCPUCores = 16
+
+main :: GUnitTester configuration environment statistics testCase testResult -> IO ()
+main tester = do
+  config <- configFromPath tester
+  args   <- getArgs
+  withNewTestEnv tester config $ ask >>= \env -> liftIO $ do
+    if null args
+    then do -- run starting from the test number written in the "testid" file.
+      i <- testInIO env tryGetSavedTestID
+      hPutStrLn stderr ("Starting at test ID #"++show i)
+      let (msg, run) =
+            if threadCount config <= 1
+            then ("single", singleThreaded)
+            else ("multi" , multiThreaded )
+      hPutStrLn stderr ("Running in "++msg++"-threaded mode.")
+      clock <- if periodicReports config then Just <$> startClockThread env else return Nothing
+      testInIO env (run i)
+      maybe (return ()) killThread clock
+    else case args of
+      ["-"] -> testInIO env stdinMode
+      args  -> do -- parse all command line arguments as a test IDs and then run each ID.
+        putStrLn "Running tests specified on command line."
+        ix <- forM args $ \arg -> case readsPrec 0 arg of
+          [(i, "")] -> return i
+          _         -> fail $ unwords $
+            ["(ERROR) Command line argument:", show arg, "is cannot be used as an integer value."]
+        (evaluate $! deepseq ix ix) >>= mapM_ (testInIO env . runSingleTest id)
 
 ----------------------------------------------------------------------------------------------------
 
-type TestRun a = ReaderT TestEnv IO a
+-- | This is the monad used to control the whole test program.
+newtype GTest c e s t r a = Test{ testToReaderT :: ReaderT (GTestEnv c e s t r) IO a }
+  deriving (Functor, Monad, Applicative, MonadIO)
+
+instance MonadReader (GTestEnv c e s t r) (GTest c e s t r) where
+  ask                   = Test ask
+  local f (Test reader) = Test (local f reader)
+
+-- | This is a monad lifting the 'GTest' monad which instantiates
+-- 'Control.Monad.State.Class.MonadState' class with the @result@ data type as the state which can
+-- be updated. This monad is used to create test results. To signal that the test has failed,
+-- evaluate 'Control.Monad.mzero'. To signal that the test has passed, evaluate to
+-- @'Control.Monad.return.' ()@. Exceptions of the type 'Control.Exception.IOException' and
+-- 'Control.Exception.ErrorCall' are caught and stored in the monad as a 'Dao.Predicate.PFail' value
+-- which can be handled without a 'Control.Exception.catch' or similar statement.
+newtype GResultM c e s t r a = ResultM { resultMtoPTrans :: PTrans (String, SomeException) (StateT r (GTest c e s t r)) a }
+instance Functor (GResultM c e s t r) where { fmap f (ResultM m) = ResultM (fmap f m) }
+instance Monad (GResultM c e s t r) where
+  ResultM f >>= to = ResultM (f >>= resultMtoPTrans . to)
+  return = ResultM . return
+  fail msg = ResultM (pvalue $ PFail ("", SomeException $ ErrorCall msg))
+  -- 'fail' is overridden to gently place an error into the monad, it never throws the error.
+instance MonadPlus (GResultM c e s t r) where
+  mzero = ResultM mzero
+  mplus (ResultM a) (ResultM b) = ResultM (mplus a b)
+instance Applicative (GResultM c e s t r) where { pure = return; (<*>) = ap; }
+instance MonadState r (GResultM c e s t r) where { state f = ResultM (lift (state f)) }
+instance MonadError (String, SomeException) (GResultM c e s t r) where
+  throwError e = ResultM (pvalue $ PFail e)
+  catchError f catch = ResultM $ catchError (resultMtoPTrans f) (resultMtoPTrans . catch)
+instance MonadIO (GResultM c e s t r) where { liftIO = ResultM . liftIO }
+
+runResultM :: GResultM c e s t r a -> r -> GTest c e s t r (PValue (String, SomeException) a, r)
+runResultM f = runStateT (runPTrans (resultMtoPTrans f))
+
+resultM :: (r -> GTest c e s t r (PValue (String, SomeException) a, r)) -> GResultM c e s t r a
+resultM = ResultM . PTrans . StateT
+
+testInResultM :: GTest c e s t r a -> GResultM c e s t r a
+testInResultM f = resultM (\r -> f >>= \a -> return (OK a, r))
+
+-- | This object contains the functions your test unit will need in order for the test environment
+-- to make use of them.
+-- @config@ = /configuration/ data: instantiation 'Prelude.Read' and 'Prelude.Show' so it can be read
+--            and written from a flat configuration file.
+-- @env@    = the /environment/: the read-only parameters established after reading the configuration
+--            but do not need to be stored in the configuration file. If everything can be stored in
+--            the configuration file, don't bother defining a separate environment data type, use
+--            @()@ for this type.
+-- @stats@  = /statistics/: records statistics about the entire test run. @()@ is an acceptable
+--            type to use for @stats@.
+-- @test@   = the /test case/ data type created from an 'Prelude.Integer', usually by way of a
+--            pseudo-random algorithm for generating arbitrary data types.
+-- @result@ = the /test results/ data type, which must report whether a test passed or failed, and
+--            can also contain statistical information about individual test runs.
+data GUnitTester config env stats test result
+  = UnitTester
+    { configFilePath :: FilePath
+      -- ^ The file path of the configuration file for this test suite.
+    , showConfig     :: GTestConfig config -> String
+      -- ^ It is best to just set this to 'Prelude.show'. The unit-specific configuration @config@
+      -- should derive 'Prelude.Show' so it can be stored within the 'TestConfig' data structure and
+      -- written to flat files in the file system.
+    , readConfig     :: String       -> IO (GTestConfig config)
+      -- ^ It is best to just set this to 'Prelude.readIO'. The unit-specific configuration @config@
+      -- should derive 'Prelude.Read' so it can be stored within the 'TestConfig' data structure and
+      -- read from flat files in the file system.
+    , checkConfig    :: Maybe config -> IO config
+      -- ^ This is a function evaluated after reading the configuration file stored at
+      -- 'configFilePath'. The unit-specific data structure @config@ is given to this function to
+      -- check whether or not it is valid. If it is not valid, throw an exception or evaluate
+      -- 'Preulde.error'. This configuration can be retrieved at any time during testing with the
+      -- asksUnitConfig function.
+    , newEnvironment :: GTestConfig config -> IO env
+      -- ^ This is a function evaluated after 'checkConfig' but before testing begins. The check
+      -- @config@ is passed to this function to allow you to setup a unit-specific environment data
+      -- structure. This environment may be an 'Control.Concurrent.MVar.MVar'. If not, the
+      -- environment is read-only. The environment can be retrieve at any time during testing with
+      -- the 'asksUnitEnv' function.
+    , newStatistics  :: GTestConfig config -> IO stats
+      -- ^ This function is evaluated after 'checkConfig' and 'newEnvironment' but before testing
+      -- begins. The @config@ is passed to this function to allow you to setup a unit-specific
+      -- statistic data type. This data type will be updated after every test evaluation using
+      -- the 'combineStats' function below.
+    , showStatistics :: stats -> String
+      -- ^ This function may well just be set to 'Prelude.show', this function will be called
+      -- periodically, depending on the 'displayInterval' setting in the 'TestConfig'. Every time a
+      -- periodic report is generated, this function is called and the resulting string is appended
+      -- to the report.
+    , generateTest   :: Integer -> GTest    config env stats test result test
+      -- ^ This is the function that should generate a @test@ data structure from an
+      -- 'Prelude.Integer'. The best way to do this is by instantiating your @test@ data type into
+      -- the 'Dao.Random.HasRandGen' class and returning the result of an evaluation of
+      -- 'Dao.Random.genRandWith' with the given 'Prelude.Integer'.
+    , newResult      :: GTest config env stats test result result
+      -- ^ This is the function that should create a new blank test result data structure. The
+      -- @result@ data should contain useful information about the test run.
+    , evaluateTest   :: test    -> GResultM config env stats test result ()
+      -- ^ This is the function that actually performs the test. Given a @test@ data structure, a
+      -- @result@ data structure is created in the 'GResultM' monad. 'GResultM' instantiates
+      -- 'Control.Monad.State.Class.MonadState' such that 'Control.Monad.State.get' and
+      -- 'Control.Monad.State.put' will get/put the @result@ data type statefully. The 'GResultM'
+      -- monad also lifts the 'GTest' monad so you can still evaluate the 'asksUnitEnv',
+      -- 'asksTestConfig', 'asksUnitConfig', and other useful function. You can lift any 'GTest'
+      -- function using the 'testInResultM'. To signify a test has passed, evaluate
+      -- 'Control.Monad.mzero', 'Control.Monad.fail', or 'Control.Monad.Error.throwError'. You can
+      -- also throw an exception using 'Control.Exception.throw' or 'Prelude.error', and these will
+      -- safely be caught, but probably it is better not to throw an exception to fail a test
+      -- because it is more difficult to control exception handling when generating reports. To pass
+      -- a test, simply evaluate to @return ()@
+    , showResult     :: result  -> GTest    config env stats test result String
+      -- ^ When a test is completed i.e. when the 'evaluateTest' function returns, the result of the
+      -- evaluation is checked. If an exception was thrown or one of 'Control.Monad.mzero',
+      -- 'Control.Monad.fail', or 'Control.Monad.Error.throwError' was evaluated, then this function
+      -- is called to convert the @result@ data structure to a report string that will be written to
+      -- a report file. The name of the report file will be the 'Preulde.Integer' of the test that
+      -- was used to generate the @test@ that was evaluated with the string ".log" appended to it.
+    , combineStats   :: result  -> stats -> GTest config env stats test result stats
+      -- Whenever a test is completed the @result@ data structure and the current @stats@ data
+      -- structure are used to evaluate this function. This function should update the @stats@ data
+      -- structure with statistical information about the tests, for example, execution time data.
+      -- The number of tests completed thus far, the number of tests failed, and rate of test
+      -- completion in tests-per-second are automatically tracked, so your @stats@ data structure
+      -- does not need to contain any data related to this.
+    }
+
+data GTestEnv c e s t r
+  = TestEnv
+    { testIDFileHandle  :: Maybe (MVar Handle)
+    , testRateInfo      :: MVar TestRateInfo
+    , errorCounter      :: MVar Int
+    , uncaughtExceptLog :: MVar Handle
+    , unitTestHandle    :: GUnitTester c e s t r
+    , unitEnvironment   :: e
+    , testStatistics    :: MVar s
+    , testConfig        :: GTestConfig c
+    , currentTestID     :: Maybe Integer
+    }
+
+newTestEnv :: GUnitTester c e s t r -> GTestConfig c -> IO (GTestEnv c e s t r)
+newTestEnv tester config = do
+  env        <- newEnvironment tester config
+  stats      <- newStatistics tester config >>= newMVar
+  rateInfo   <- newTestRateInfo
+  errcount   <- newMVar 0
+  excplog    <- openFile (logFileName config) WriteMode
+  excplogVar <- newMVar excplog
+  let path = savedTestIDPath config
+  hlock <- case path of
+    ""   -> return Nothing
+    path -> catches (fmap Just $ openFile path ReadWriteMode >>= newMVar) $ errHandler $ \err -> do
+      hPutStr stderr $ unlines $
+        [ "(WARNING) Could not open "++show path, '\t':err
+        , "\tWill run without tracking the latest test ID."
+        ]
+      return Nothing
+  return $
+    TestEnv
+    { testIDFileHandle  = hlock
+    , testRateInfo      = rateInfo
+    , errorCounter      = errcount
+    , uncaughtExceptLog = excplogVar
+    , unitTestHandle    = tester
+    , unitEnvironment   = env
+    , testStatistics    = stats
+    , testConfig        = config
+    , currentTestID     = Nothing
+    }
+
+withNewTestEnv :: GUnitTester c e s t r -> GTestConfig c -> GTest c e s t r a -> IO a
+withNewTestEnv tester config run = newTestEnv tester config >>= flip testInIO run
+
+-- | Similar to 'Control.Monad.Reader.runReaderT', but the 'GTestEnv' environment is the first
+-- parameter. Allows you to evaluate a 'GTest' monad in the @IO@ monad.
+testInIO :: GTestEnv c e s t r -> GTest c e s t r a -> IO a
+testInIO env test = runReaderT (testToReaderT test) env
+
+----------------------------------------------------------------------------------------------------
 
 -- | This data strcture derives 'Prelude.Read' so the test program can be configured from a plain
 -- text file. All of these tests randomly generate objects using the "Dao.Object.Random" module, so
 -- this module is also being tested, as well as the "Dao.Object.Parser", "Dao.Object.Binary", and
 -- "Dao.Object.Struct".
-data TestConfig
+data GTestConfig configuration
   = TestConfig
-    { doTestParser      :: Bool
-      -- ^ Enable testing of the "Dao.Parser","Dao.Object.Parser", "Dao.PPrintM", and
-      -- "Dao.Object.PPrintM" modules. The default value is 'Prelude.True'.
-    , doTestSerializer  :: Bool
-      -- ^ Enable testing of the "Dao.Object.Binary" module. The default value is 'Prelude.True'.
-    , doTestStructizer  :: Bool
-      -- ^ Enable testing of the "Dao.Struct" and "Dao.Object.Struct" module. The default value is
-      -- 'Prelude.True'.
-    , doCompareParsed   :: Bool
-      -- ^ if the 'doTestParser' parameter is enabled, you may also enable or disable a sub-test
-      -- that checks whether or not the object generated and pretty printed by the
-      -- "Dao.Object.Random" and "Dao.Object.PPrintM" modules is identical to the object emitted by
-      -- the "Dao.Object.Parser". The default value is 'Prelude.True'.
-    , maxRecurseDepth   :: Int
-      -- ^ The "Dao.Random" module generates objects within objects recursively. This parameter sets
-      -- the maximum recursion depth of objects within objects. The functions within "Dao.Random"
-      -- will generate only null objects at a certain depth to guarantee the this recursion limit is
-      -- not exceeded. The default value is 5.
-    , threadCount       :: Int
+    { threadCount       :: Int
       -- ^ How many parallel testing threads should run? Set this parameter to the number of CPU
       -- corse available to you on the hardware running the test program. The default value is 1.
       -- Since there is also a display thread, this does not necessarily mean only one thread is
@@ -105,6 +300,9 @@ data TestConfig
       -- when you want the test to run for a while and be sure that if there are failed tests, the
       -- testing will halt once that number of failed tests reaches this limit. The default value is
       -- 20.
+    , periodicReports   :: Bool
+      -- ^ Set this option to 'True' to have the test program periodically report statistics about
+      -- the running tests. Set the 'displayInterval' below...
     , displayInterval   :: Int
       -- ^ When testing is running, a separate thread is run to keep track of how many tests have
       -- run, and will periodically, on an interval of time set by this parameter, report how many
@@ -119,21 +317,92 @@ data TestConfig
       -- well. Failures that appear not to be directly related to a failure in the code of the
       -- modules being tested will be caught and a message will be written to a log file, the path
       -- of which is set by this parameter. The defaut value is "./uncaught.log"
+    , savedTestIDPath   :: String
+      -- ^If you need to interrupt testing, you can simply signal the executing test program with
+      -- the POSIX signal SIGINT (usually done from a command line console by pressing the Control+C
+      -- keys on the keyboard). When this happens, you may want to save the current test ID number
+      -- that is being evaluated so you can continue from that ID number the next time you launch
+      -- the test program. The default file name to save the test ID number is "./testid".
+    , unitTestConfig    :: configuration
+      -- ^ This is the test configuration data specific to this particular unit test program.
     }
   deriving (Show, Read)
 
-defaultTestConfig =
+defaultTestConfig :: config -> GTestConfig config
+defaultTestConfig config =
   TestConfig
-  { doTestParser     = True
-  , doTestSerializer = True
-  , doTestStructizer = True
-  , doCompareParsed  = False
-  , maxRecurseDepth  = 5
-  , displayInterval  = 4000000
-  , threadCount      = 1
+  { threadCount      = 1
   , maxErrors        = 20
+  , periodicReports  = True
+  , displayInterval  = 4000000
   , logFileName      = "./uncaught.log"
+  , savedTestIDPath  = "./testid"
+  , unitTestConfig   = config
   }
+
+errHandler :: (String -> IO a) -> [Handler a]
+errHandler func =
+  [Handler(\ (e::IOException) -> func(show e)), Handler(\ (e::ErrorCall) -> func(show e))]
+
+configFromPath :: GUnitTester c e s t r -> IO (GTestConfig c)
+configFromPath handle = do
+  let path    = configFilePath handle
+  let showCfg = showConfig handle
+  let readIO  = readConfig handle
+  let next msg a fn = flip (maybe (return Nothing)) a $ \a ->
+        catches (Just <$> fn a) $ errHandler $ \err -> do
+          hPutStrLn stderr $ concat ["(WARNING) Could not ", msg, " ", show path, "\n\t", err]
+          return Nothing
+  str  <- next "open configuration file" (Just()) $ \ () ->
+    readFile path >>= fmap toUStr . evaluate >>= \cfg -> return $! deepseq cfg cfg
+  cfg  <- next "read configuration file" str $ \str -> readIO (uchars str) >>= evaluate
+  unit <- checkConfig handle (fmap unitTestConfig cfg)
+    -- for 'checkConfig' exceptions are not caught, the unit-specific configuration is essential.
+  case cfg of
+    Just cfg -> return $ cfg{unitTestConfig=unit}
+    Nothing  -> do
+      let cfg = defaultTestConfig unit
+      unless (maybe False (const True) str) $ do -- Create a config file if it does not exist.
+        hPutStrLn stderr ("(WARNING) Saving default configuration to file "++show path)
+        next "save default configuration" (Just()) $ \ () -> writeFile path (showConfig handle cfg)
+        return ()
+      return cfg
+
+-- | Read the file containing the latest testID to have been run.
+tryGetSavedTestID :: GTest c e s t r Integer
+tryGetSavedTestID = ask >>= \env -> liftIO $ case testIDFileHandle env of
+  Nothing   -> return 0
+  Just mvar -> modifyMVar mvar $ \file -> do
+    empty <- hIsEOF file
+    i     <-
+      if empty
+      then return 0
+      else do
+        str <- hGetLine file
+        if null str
+        then return 0
+        else
+          catches (readIO str) $ errHandler $ \ _ -> do
+            let path = savedTestIDPath (testConfig env)
+            hPutStr stderr $ unwords $
+              [ "(WARNING) The file", show path
+              , "does not seem to contain a valid test ID."
+              , "The file will be overwritten."
+              ]
+            return 0
+    return (file, i)
+
+trySaveTestID :: Integer -> GTest c e s t r ()
+trySaveTestID i = do
+  mvar <- asks testIDFileHandle
+  case mvar of
+    Nothing   -> return ()
+    Just mvar -> liftIO $ modifyMVar_ mvar $ \file -> do
+      hSeek file AbsoluteSeek 0 >> hSetFileSize file 0
+      hPutStrLn file (show i) >> hFlush file
+      return file
+
+----------------------------------------------------------------------------------------------------
 
 data TestRateInfo
   = TestRateInfo
@@ -150,174 +419,46 @@ newTestRateInfo = do
     , lastCheckTime = start, lastTestCount = 0
     }
 
-incrementRateInfo :: MVar TestRateInfo -> IO ()
-incrementRateInfo mvar = modifyMVar_ mvar $ \rateInfo -> return $
+incrementRateInfo :: TestRateInfo -> IO TestRateInfo
+incrementRateInfo rateInfo = return $
   rateInfo
   { numberOfTests = numberOfTests rateInfo + 1
   , lastTestCount = lastTestCount rateInfo + 1
   }
 
-clearRateInfo :: MVar TestRateInfo -> IO ()
-clearRateInfo mvar = modifyMVar_ mvar $ \rateInfo -> return $ rateInfo{lastTestCount=0}
+clearRateInfo :: TestRateInfo -> IO TestRateInfo
+clearRateInfo rateInfo = return $ rateInfo{lastTestCount=0}
 
-setLastCheckTime :: MVar TestRateInfo -> UTCTime -> IO ()
-setLastCheckTime mvar time = modifyMVar_ mvar $ \rateInfo -> return $ rateInfo{lastCheckTime=time}
+setLastCheckTime :: UTCTime -> TestRateInfo -> IO TestRateInfo
+setLastCheckTime time rateInfo = return $ rateInfo{lastCheckTime=time}
 
-----------------------------------------------------------------------------------------------------
+-- | A clock thread can always be started, even in single-threaded mode, even if the program is not
+-- compiled with the GHC @-threaded@ option the 'Control.Concurrent.forkIO' can still be used to
+-- create timers, and that is how it is used here. When GHC @-threaded@ is used, and the test
+-- program sets up a many threads as there are cores on the CPU running it, the timer often becomes
+-- often an extra "pigeon" that has to share a nest (CPU core) with another therad. The timer can
+-- become somewhat starved but the GHC runtime implementation does well enough to make sure timers
+-- do respond eventually even when all CPU cores are extremely busy. You could specify in the
+-- configuration file to use one less core than the CPU has available, but in my opinion it is a
+-- waste to devote a whole CPU core to a timer which will only fire once every some seconds, it is
+-- better to just fork the timer thread even if it means the test program will have one more thread
+-- running than CPU cores available.
+startClockThread :: GTestEnv c e s t r -> IO ThreadId
+startClockThread env = forkIO $ forever $ do
+  threadDelay (displayInterval $ testConfig env)
+  testInIO env displayInfo >>= putStrLn
+  modifyMVar_ (testRateInfo env) clearRateInfo
 
-data TestEnv
-  = TestEnv
-    { testIDFileHandle  :: MVar (Handle, HandlePosn)
-    , testPassedButton  :: MVar Bool
-    , testRateInfo      :: MVar TestRateInfo
-    , errorCounter      :: MVar Int
-    , inputChannel      :: MVar (Maybe Int)
-    , uncaughtExceptLog :: MVar Handle
-    , testConfig        :: TestConfig
-    , testCounterLock   :: MVar (Handle, HandlePosn)
-    , testMethodTable   :: MethodTable
-    }
+updateClock :: GTest c e s t r ()
+updateClock = modTestEnvIO_ testRateInfo incrementRateInfo
 
-startAutomatedTesting :: IO ()
-startAutomatedTesting = do
-  -- testIDs <- getArgs >>= mapM readIO
-  config  <- catches (readFile "./test.cfg" >>= readIO) $ errHandler $ \msg -> do
-    hPutStrLn stderr ("Warning: "++msg++", creating default configuration")
-    hPutStrLn stderr "Warning: setting default configuration"
-    catches (writeFile "./test.cfg" (show defaultTestConfig)) $ errHandler $ \msg -> do
-      hPutStrLn stderr ("Error: failed to open file \"./test.cfg\" for writing, "++msg)
-    return defaultTestConfig
-  i <-  catches (readFile "./testid" >>= readIO) $ errHandler $ \msg -> do
-          hPutStrLn stderr ("Warning: could not read file \"./testid\", "++show msg)
-          return 0
-    -- dont bother reading the test ID file if the test IDs have been specified on the command line
-  hPutStrLn stderr ("Starting at test ID #"++show i)
-  let reportEnabled msg fn =
-        hPutStrLn stderr (msg++" testing is "++(if fn config then "enabled" else "disabled"))
-  reportEnabled "Parser" doTestParser
-  reportEnabled "Serialization" doTestSerializer
-  reportEnabled "Structure" doTestStructizer
-  let (msg, run) =
-        if threadCount config <= 0 then ("single", singleThreaded) else ("multi", multiThreaded)
-  hPutStrLn stderr ("running in "++msg++"-threaded mode")
-  run config i
-
-----------------------------------------------------------------------------------------------------
-
-newTestEnv :: TestConfig -> IO TestEnv
-newTestEnv config = do
-  ch       <- newEmptyMVar
-  notify   <- newEmptyMVar
-  errcount <- newMVar 0
-  rateInfo <- newTestRateInfo
-  h        <- openFile "./testid" ReadWriteMode
-  pos      <- hGetPosn h
-  hlock    <- newMVar (h, pos)
-  excplog  <- openFile (logFileName config) WriteMode
-  excplogVar <- newMVar excplog
-  return $
-    TestEnv
-    { testIDFileHandle  = hlock
-    , testPassedButton  = notify
-    , testRateInfo      = rateInfo
-    , errorCounter      = errcount
-    , inputChannel      = ch
-    , uncaughtExceptLog = excplogVar
-    , testConfig        = config
-    , testCounterLock   = hlock
-    , testMethodTable   = mempty
-    }
-
-closeFiles :: TestEnv -> IO ()
-closeFiles env = do
-  modifyMVar_ (testCounterLock env) $ \ lock@(h, pos) -> hClose h >> return lock
-  modifyMVar_ (uncaughtExceptLog env) $ \h -> hClose h >> return h
-
-multiThreaded :: TestConfig -> Int -> IO ()
-multiThreaded config i = do
-  env         <- newTestEnv config
-  workThreads <- replicateM (threadCount config) $ forkIO (runReaderT testThread env)
-  iterThread  <- forkIO $ runReaderT (iterLoop i) env
-  dispThread  <- forkIO $ forever $ do
-    threadDelay (displayInterval config)
-    runReaderT (displayInfo >>= liftIO . putStrLn) env
-    clearRateInfo (testRateInfo env)
-  catches (runReaderT ctrlLoop env) (errHandlerMessage "exception in main control loop")
-  killThread dispThread >> killThread iterThread
-  closeFiles env
-
-singleThreaded :: TestConfig -> Int -> IO ()
-singleThreaded config i = do
-  env <- newTestEnv config
-  startTime <- getCurrentTime
-  let loop fn ctrl = maybe (return ()) (uncurry fn >=> loop fn) ctrl
-  flip runReaderT env $ flip loop (Just (i, i+1)) $ \testID reportWhenID ->
-    if testID == reportWhenID
-      then do
-        -- Display current statistics. Then, based on the rate of tests completed, try to predict
-        -- how many tests will be completed in the next N seconds, where N is the 'displayInterval'.
-        -- Returning the current testID + the predicted number of tests effectively asks this
-        -- function to wait about N seconds before next displaying the statistics.
-        info <- displayInfo
-        liftIO $ do
-          putStrLn info
-          now      <- getCurrentTime
-          rateInfo <- readMVar (testRateInfo env)
-          return $ Just $ (,) testID $ (testID+) $ ceiling $
-            toRational (numberOfTests rateInfo) /
-              toRational (diffUTCTime now (testStartTime rateInfo))
-      else do
-        testID    <- signalNextTest (Just testID)
-        iterateOK <- testIterate newTestCase checkTestCase
-        resultOK  <- getTestResult
-        if iterateOK && resultOK
-          then return $ testID >>= \testID -> Just (testID, reportWhenID)
-          else return Nothing
-  closeFiles env
-
--- Iterate test sending a test ID into the 'inputChannel', then return the next test ID in the
--- iteration (which is just the input integer incremented). The 'testIteration' function will
--- generate a test from  the test ID on the 'inputChannel' and update the result state. The
--- 'getTestResult' function will check the result state decide whether or not testing should
--- continue.
-signalNextTest :: Maybe Int -> TestRun (Maybe Int)
-signalNextTest i0 = ask >>= \env -> isOn >>= \continue -> liftIO $ do
-  let i = i0 >>= guard . (<maxBound) >> i0
-  putMVar (inputChannel env) (if continue then i else Nothing)
-  return (if continue then fmap (+1) i else Nothing)
-
--- Loop over 'testIterate' starting at a given integer test ID value and continuing until either
--- there are no more test ID's to be produced, or until the halt condition returned by 'isOn'
--- goes to 'Prelude.False'.
-iterLoop :: Int -> TestRun ()
-iterLoop i = signalNextTest (Just i) >>= maybe (return ()) iterLoop
-
--- This function checks the result of a test after 'testIteration' is evaluated and decides whether
--- or not testing should continue. This function does not call 'signalNextTest' (which puts the next
--- test ID on the 'inputChannel') or 'testIterate' (which reads the 'inputChannel', and generates
--- and runs a test).
-getTestResult :: TestRun Bool
-getTestResult = do
-  ask >>= \env -> liftIO $ do
-    passed <- takeMVar (testPassedButton env) -- Wait for a result to come back
-    incrementRateInfo (testRateInfo env)
-    modifyMVar_ (errorCounter env) $ \count -> do
-      let nextCount = if not passed then count+1 else count
-      return nextCount
-  isOn
-
--- Loop over the 'getTestResult' function. This function is useful in multi-threaded execution to
--- set the main thread into a loop that blocks, repeatedly waits synchronously on a channel for test
--- results until a halting condition is reached, and then returns to the main function.
-ctrlLoop :: TestRun ()
-ctrlLoop = getTestResult >>= flip when ctrlLoop
-
-displayInfo :: TestRun String
+displayInfo :: GTest c e s t r String
 displayInfo = ask >>= \env -> liftIO $ do
   x   <- readMVar (testRateInfo env)
   now <- getCurrentTime
-  setLastCheckTime (testRateInfo env) now
-  failed <- readMVar (errorCounter env)
+  modifyMVar_ (testRateInfo env) (setLastCheckTime now)
+  stats  <- testInIO env (unit showStatistics <*> (asks testStatistics >>= liftIO . readMVar))
+  failed <- testInIO env (asks errorCounter) >>= readMVar
   let count   = numberOfTests x
       running = toRational $ diffUTCTime now (testStartTime x)
       days    = floor $ running / (24*60*60) :: Integer
@@ -334,102 +475,514 @@ displayInfo = ask >>= \env -> liftIO $ do
     , ["total_running_time =", printf "%.4i:%.2i:%.2i:%2.4f" days hours mins secs]
     , ["total_average_tests_per_second  =", printf "%.2f" runAvg ]
     , ["recent_average_tests_per_second =", printf "%.2f" instAvg]
+    , if null stats then [] else [stats]
     ]
 
 ----------------------------------------------------------------------------------------------------
 
--- This function reports whether or not testing should continue based on how many tests have failed
--- so far (determined by the 'maxErrors' value in the 'TestConfig'). The test loop iterator
--- 'loopOnInput' calls this function before deciding whether or not to take another test from the
--- 'inputChannel'.
-isOn :: TestRun Bool
-isOn = ask >>= \env -> liftIO $ do
-  count <- readMVar (errorCounter env)
-  return (count < maxErrors (testConfig env))
+-- | Get an element from the 'GTestConfig' data structure. Use @'asksTestConig' 'Prelude.id'@ to
+-- return the whole 'GTestConfig' data structure.
+asksTestConfig :: (GTestConfig c -> a) -> GTest c e s t r a
+asksTestConfig f = asks (f . testConfig)
 
-errHandler :: (String -> IO a) -> [Handler a]
-errHandler func =
-  [Handler(\ (e::IOException) -> func(show e)), Handler(\ (e::ErrorCall) -> func(show e))]
+-- | Get an element from the unit-specific configuration data structure. Use @'asksUnitConig'
+-- 'Prelude.id'@ to return the whole data structure.
+asksUnitConfig :: (c -> a) -> GTest c e s t r a
+asksUnitConfig f = asksTestConfig (f . unitTestConfig)
 
--- Handles errors by outputting the error string to stderr.
-errHandlerMessage :: String -> [Handler ()]
-errHandlerMessage msg = errHandler (\e -> hPutStrLn stderr (msg++": "++e))
+-- | Get an element from the unit-specific environment data structure. Use @'asksUnitEnv'
+-- 'Prelude.id'@ to return the whole 'GTestConfig' data structure.
+asksUnitEnv :: (e -> a) -> GTest c e s t r a
+asksUnitEnv f = asks (f . unitEnvironment)
 
--- Handles errors by returning the error string in a 'Data.Either.Left' constructor. So if this
--- function is the second parameter to 'Control.Exception.catches', the first parameter should
--- return a value wrapped in an 'Data.Either.Either' data type.
-errTryCatch :: String -> [Handler (Either UStr a)]
-errTryCatch msg = 
-  [ Handler (\ (e::IOException) -> return $ Left $ ustr (msg++": "++show e))
-  , Handler (\ (e::ErrorCall)   -> return $ Left $ ustr (msg++": "++show e))
-  ]
+-- | Evaluate a callback function in the 'GUnitTester' data type that is not in the @IO@ or 'GTest'
+-- monad.
+unit :: (GUnitTester c e s t r -> a) -> GTest c e s t r a
+unit f = asks (f . unitTestHandle)
 
--- If a test case throws an exception rather than simply returning true or false, this is a sign
--- that something unexpected happened. The exception will be caught and treated as a failed test,
--- and as much information as possible will be appended to the main test run log.
-catchToLog :: (Handle -> IO ()) -> TestRun ()
-catchToLog func = do
-  fileName <- asks (logFileName . testConfig)
-  logFile  <- asks uncaughtExceptLog
-  liftIO $ flip catches (errHandlerMessage ("while writing "++show fileName)) $
-    modifyMVar_ logFile $ \h -> do
-      catches
-        (catches
-          (func h >> hFlush h)
-          (errHandlerMessage ("while writing "++show fileName))
-        )
-        (errHandlerMessage "uncaught exception")
-      return h
+-- | Evaluate a callback function in the 'GUnitTester' data type in the @IO@ or 'GTest' monad.
+unitIO :: (GUnitTester c e s t r -> IO a) -> GTest c e s t r a
+unitIO f = asks (f . unitTestHandle) >>= liftIO
 
--- To make it easier to halt the test run and resume it later, the current test ID is written to a
--- persistent file. Every time a test case is completed, this file is updated with the ID number.
-updateTestIDFile :: Int -> TestRun ()
-updateTestIDFile i = ask >>= \env -> liftIO $
-  modifyMVar_ (testIDFileHandle env) $ \ (h, pos) -> do
-    handle (\ (e::IOException) -> hPrint stderr e) $ do
-      hSetPosn pos
-      let out = show i
-      hPutStrLn    h out
-      hFlush       h
-      hSetFileSize h (toInteger (length out))
-    return (h, pos)
+-- | Evaluate a callback function in the 'GUnitTester' in the 'GTest' monad.
+unitTest :: (GUnitTester c e s t r -> a -> GTest c e s t r b) -> a -> GTest c e s t r b
+unitTest f a = asks (f . unitTestHandle) >>= \func -> func a
 
--- This function pulls the next test ID out of the 'inputChannel' of the 'TestEnv', then passes the
--- test ID to a function that generates a test case for that ID, then checks the result of the test
--- case and updates the result state.
-testIterate :: Show a => (Int -> TestRun a) -> (a -> TestRun Bool) -> TestRun Bool
-testIterate genFunc checkFunc = ask >>= \env -> isOn >>= \continue -> liftIO $ do
-  if continue
-    then do
-      i <- takeMVar (inputChannel env)
-      case i of
-        Nothing -> return False
-        Just  i -> do
-          passed <- handle (\e -> runReaderT (h i Nothing e) env) $ do
-            obj <- runReaderT (genFunc i) env
-            catch (runReaderT (checkFunc obj) env) (\e -> runReaderT (h i (Just (show obj)) e) env)
-          putMVar (testPassedButton env) passed -- wait our turn to report success/failure
-          runReaderT (updateTestIDFile i) env
-          return True
-    else return False
-  where
-    h i obj (SomeException e) = do
-      catchToLog $ \logFile -> do
-        hPutStrLn logFile ("ITEM #"++show i++"\n"++show e)
-        hPutStrLn logFile $ case obj of
-          Nothing  -> "(error occurred while generating test object)"
-          Just msg -> msg
-      return False
+-- | Evaluate the 'evaluateTest' function in the 'GUnitTester' function. Since 'evaluateTest' is in
+-- the 'GResultM' monad, the value returned contains information about whether or not the test
+-- passed or failed within a 'Dao.Predicate.PValue' data type.
+unitResult :: t -> GTest c e s t r (PValue (String, SomeException) (), r)
+unitResult test = do
+  run    <- unit evaluateTest
+  result <- join $ unit newResult
+  runResultM (run test) result
 
--- This function loops over 'testIterate'. This is the function that should be run in its own thread.
-loopOnInput :: Show a => (Int -> TestRun a) -> (a -> TestRun Bool) -> TestRun ()
-loopOnInput genFunc checkFunc =
-  testIterate genFunc checkFunc >>= flip when (loopOnInput genFunc checkFunc)
+-- | Many of the values in the 'GTestEnv' data structuer are 'Control.Concurrent.MVar.MVar' data
+-- types. This function makes it a bit easier to to specify which 'Control.Concurrent.MVar.MVar' you
+-- wish to access, and then update value in the 'GTest' monad using a @IO@ monadic updating
+-- function.
+modTestEnvIO :: (GTestEnv c e s t r -> MVar a) -> (a -> IO (a, b)) -> GTest c e s t r b
+modTestEnvIO f modf = asks f >>= liftIO . flip modifyMVar modf
 
-----------------------------------------------------------------------------------------------------
+-- | Many of the values in the 'GTestEnv' data structuer are 'Control.Concurrent.MVar.MVar' data
+-- types. This function makes it a bit easier to to specify which 'Control.Concurrent.MVar.MVar' you
+-- wish to access, and then update value in the 'GTest' monad using a @IO@ monadic updating
+-- function.
+modTestEnvIO_ :: (GTestEnv c e s t r -> MVar a) -> (a -> IO a) -> GTest c e s t r ()
+modTestEnvIO_ f modf = modTestEnvIO f (\a -> modf a >>= \a -> return (a, ()))
 
-sep :: String
-sep = "--------------------------------------------------------------------------"
+-- | Many of the values in the 'GTestEnv' data structuer are 'Control.Concurrent.MVar.MVar' data
+-- types. This function makes it a bit easier to to specify which 'Control.Concurrent.MVar.MVar' you
+-- wish to access, and then update value in the 'GTest' monad using a pure function which can also
+-- return a specific value.
+modTestEnv :: (GTestEnv c e s t r -> MVar a) -> (a -> (a, b)) -> GTest c e s t r b
+modTestEnv f modf = modTestEnvIO f (return . modf)
+
+-- | Many of the values in the 'GTestEnv' data structuer are 'Control.Concurrent.MVar.MVar' data
+-- types. This function makes it a bit easier to to specify which 'Control.Concurrent.MVar.MVar' you
+-- wish to access, and then update value in the 'GTest' monad using a pure function.
+modTestEnv_ :: (GTestEnv c e s t r -> MVar a) -> (a -> a) -> GTest c e s t r ()
+modTestEnv_ f modf = modTestEnvIO_ f (return . modf)
+
+data NonAsyncException = NonAsyncException String Dynamic deriving Typeable
+instance Show NonAsyncException where { show (NonAsyncException msg _) = msg }
+instance Exception NonAsyncException
+
+-- | Use this function to write a message to the uncaught-exceptions error log file.
+uncaught :: String -> String -> GTest c e s t r ()
+uncaught msg err = ask >>= \env -> liftIO $
+  modifyMVar_ (uncaughtExceptLog env) $ \h -> do
+    hPutStr h $ unlines $
+      [ concat $
+          [ "Uncaught exception"
+          , maybe "" (\i -> ", test case #"++show i) (currentTestID env)
+          , " while ", msg
+          ]
+      , err, sep
+      ]
+    hFlush h >> return h
+
+-- | This function, or some function which uses this function like 'catchToLog', is the best way to
+-- catch exceptions. You provide three parameters: First is a message to report when an exception occurs, it
+-- is best to indicate what function you were trying to evaluate inside of the 'catchToPValue'
+-- function. Second is a function to evaluate when a 'Control.Exception.UserInterrupt' exception is
+-- caught. This function should shut down gracefully without reporting any error messages. Third is
+-- the function to run which might throw an exception. Exceptions handled are
+-- 'Control.Exception.IOException', 'Control.Exception.ErrorCall', and
+-- 'Control.Exception.AsyncException' but only the 'Control.Exception.UserInterrupt' exception, all
+-- other exceptions of the 'Control.Exception.AsyncException' type are re-thrown.
+-- 
+-- I define a special exception handler that catches every execption except for those of
+-- the type 'Control.Exception.AsyncException'.
+catchToPValue :: String -> GTest c e s t r a -> GTest c e s t r (PValue (String, SomeException) a)
+catchToPValue msg try = ask >>= \env -> liftIO $ do
+  let catchAll (SomeException e) = throwIO (NonAsyncException (show e) (toDyn e))
+  let rethrow (NonAsyncException err dyn) =
+        maybe (testInIO env (uncaught msg err) >> return Backtrack)
+              (\e -> throwIO (e::AsyncException))
+              (fromDynamic dyn)
+  handle rethrow $ handle catchAll $ fmap OK $ testInIO env try
+
+-- | Like 'catchToPValue' but simply reports the exception caught using 'uncaught' and returns
+-- 'Prelude.Nothing'.
+catchToLog :: String -> GTest c e s t r a -> GTest c e s t r (Maybe a)
+catchToLog msg try = ask >>= \env -> catchToPValue msg try >>= \pval -> case pval of
+  OK     a  -> return (Just a)
+  Backtrack -> return Nothing
+  PFail (msg, (SomeException e)) -> uncaught msg (show e) >> return Nothing
+
+-- | Like 'catchToPValue' except 'Dao.Predicate.Backtrack' results (usually caused by
+-- 'Control.Exception.UserInterrupt' exceptions) are translated to the
+-- @('Control.Monad.mzero' :: 'ResultM' c e s t r a) value, and uncaught exceptions are translated
+-- to the @('Control.Monad.Error.throwError' :: 'ResultM' c e s t r a)@ data type.
+catchToResultM :: String -> GResultM c e s t r a -> GResultM c e s t r a
+catchToResultM msg try = resultM $ \st -> do
+  pval <- catchToPValue msg (runResultM try st)
+  case pval of
+    OK (Backtrack, st) -> return (Backtrack, st)
+    OK (PFail err, st) -> return (PFail err, st)
+    OK (OK      a, st) -> return (OK      a, st)
+    Backtrack          -> return (Backtrack, st)
+    PFail err          -> return (PFail err, st)
+
+writeResult :: Integer -> r -> Maybe (String, SomeException) -> GTest c e s t r ()
+writeResult i result err = do
+  msg <- unitTest showResult result
+  liftIO $ writeFile (show i++".log") $ intercalate "\n" $ concat $
+    [maybe [] (\ (msg, SomeException err) -> ["TEST ERROR: on "++msg, show err]) err, [msg]]
+
+runSingleTest :: (GTest c e s t r Bool -> GTest c e s t r Bool) -> Integer -> GTest c e s t r Bool
+runSingleTest reportBracket i = local (\env -> env{currentTestID=Just i}) $ do
+  env <- ask
+  let incErr = modTestEnv errorCounter (\c -> (c+1, False))
+  let chk mayb fn = maybe (incErr >> return False) fn mayb
+  test <- catchToLog "generating test" (unitTest generateTest i)
+  chk test $ \test -> do
+    result <- catchToLog "evaluating test" (unitResult test)
+    chk result $ \ (pval, result) -> do
+      stats <- join $
+        unit combineStats <*> pure result <*> (asks testStatistics >>= liftIO . readMVar)
+      done  <- catchToLog "writing report file" $ case pval of
+        Backtrack -> incErr >> reportBracket (writeResult i result Nothing    >> return False)
+        PFail err -> incErr >> reportBracket (writeResult i result (Just err) >> return False)
+        OK     () -> modTestEnv_ testStatistics (const stats) >> return True
+      return $ maybe False (const True) done
+
+-- | Read list of test ID's to be executed from STDIN, execute each test after reading each line of
+-- input.
+stdinMode :: GTest c e s t r ()
+stdinMode = report >> loop 0 0 0 where
+  report = liftIO $ putStrLn "(running tests received from standard-input)"
+  loop :: Int -> Int -> Int -> GTest c e s t r ()
+  loop errCount attempts fails = ask >>= \env -> liftIO $ do
+    done <- System.IO.isEOF
+    if done
+    then putStrLn $ unwords ["(End of input.", show attempts, "tests run,", show fails, "failed.)"]
+    else do
+      line <- dropWhile isSpace <$> getLine
+      if null line
+      then testInIO env $ loop errCount attempts fails
+      else do
+        if head line == '#'
+        then testInIO env $ loop 0 attempts fails
+        else case readsPrec 0 line of
+              [(i, _)] -> do
+                print i
+                testInIO env $ do
+                  pass <- runSingleTest id i
+                  loop 0 attempts ((if pass then id else (+1)) fails)
+              _        -> do
+                hPutStrLn stderr $ unlines $
+                  [ "ERROR: line of input cannot be parsed as integer value", line ]
+                if errCount>1
+                then hPutStrLn stderr $ unlines $
+                        [ "Data from STDIN does not appear to be formatted correctly."
+                        , "Aborting test."
+                        ]
+                else testInIO env $ loop (errCount+1) attempts fails
+
+-- | Run all tests in a single thread. This is nice for debugging with GHCi because you can set
+-- break points and the entire test program will be paused on the break point. It is not quite as
+-- nice as threaded mode because SIGTSTP signalling a test will not result in a clean shut-down.
+singleThreaded :: Integer -> GTest c e s t r ()
+singleThreaded i = ask >>= \env -> void $ catchToLog "main test cycle" $ do
+  failMax <- asksTestConfig maxErrors
+  (fix $ \loop i -> do
+      passed <- runSingleTest id i
+      trySaveTestID i
+      failed <- liftIO $ readMVar (errorCounter env)
+      if failed<failMax
+      then loop (i+1)
+      else liftIO $ putStrLn "(Maximum number of failed tests reached. Test program ended.)"
+    ) i
+
+-- | Run tests in multi-threaded mode. This allow tests to complete their current work and stop
+-- gracefully in the event of a SIGTSTP. Also, if a thread dies unexpectedly, new threads are
+-- automatically spawned to try and keep the number of working threads the same as the number of
+-- threads specified in the configuration file.
+multiThreaded :: Integer -> GTest c e s t r ()
+multiThreaded i = ask >>= \env -> asksTestConfig id >>= \config -> liftIO $ do
+  onSwitch <- newMVar True
+  let isOn        = readMVar onSwitch
+  let switchOff   = modifyMVar_ onSwitch (return . const False)
+  let workerCount = min maxCPUCores $ max 1 $ threadCount config
+  unfinsh <- newMVar [] :: IO (MVar [Integer])
+  maxerrs <- testInIO env (asksTestConfig maxErrors)
+  worksem <- Sem.new 0 -- the semaphore to signal workers when to start working
+  flagsem <- Sem.new 0 -- the semaphore to signal the main thread of a completed test
+  busyvar <- newMVar (0, 0) -- (number of existing threads, number of busy threads)
+  let setBusy (f1, f2) = modifyMVar_ busyvar (\ (x1, x2) -> return (f1 x1, f2 x2))
+  let startWork  = setBusy ((+1), id)
+  let endWork    = setBusy (subtract 1, id)
+  let pauseTask  = setBusy (id, subtract 1)
+  let continTask = setBusy (id, (+1))
+  let reportBracket write = liftIO $ -- Writing a report is guarded by a semaphore.
+        bracket_ -- < This is a bracket that guards 'writeResult' function during 'runSingleTest'.
+          (mask_ (pauseTask >> Sem.signal flagsem) >> Sem.wait flagsem) -- < Requests to write.
+          (mask_ continTask) -- < Signals that writing is complete and next loop will begin.
+          (testInIO env write) -- < The 'writeResult' function.
+  let worker   i = bracket_ startWork endWork $
+        (fix $ \loop i -> Sem.wait worksem >> isOn >>= \on -> when on $
+            flip onException (modifyMVar_ unfinsh (return . (i:))) $ do
+              passed <- testInIO env $
+                runSingleTest reportBracket i >>= \p -> updateClock >> trySaveTestID i >> return p
+              Sem.signal flagsem >> loop (i + fromIntegral workerCount)
+          ) i
+  workers <- newMVar [] :: IO (MVar [ThreadId])
+  let startWorkersOn = mapM (forkIO . worker) >=> \thds -> modifyMVar_ workers (return . (++thds))
+  let forceHalt e = swapMVar workers [] >>= (mapM_ (flip throwTo e))
+  let shutdown = handle (\e -> forceHalt (e::SomeException)) $ do
+        switchOff
+        fix $ \loop -> do
+          (workerCount, busyCount) <- Sem.wait flagsem >> readMVar busyvar
+          Sem.signalN worksem busyCount
+          if workerCount==0 && busyCount==0 then forceHalt UserInterrupt else loop
+  -- Start the workers, then begin looping on the semaphores.
+  startWorkersOn (take workerCount [i..])
+  catches 
+    (fix $ \loop -> do
+        Sem.signal worksem
+        Sem.wait   flagsem
+        (thcount, busycount) <- readMVar busyvar
+        errcount <- testInIO env (asks errorCounter) >>= readMVar
+        if errcount<maxerrs
+        then do
+          unfinished <- swapMVar unfinsh [] -- start more workers if any seem to have died
+          unless (null unfinished) (startWorkersOn unfinished) >> loop
+        else shutdown
+      )
+    [ Handler $ \e -> case e of
+        UserInterrupt -> putStrLn "(CANCEL signal received, shutting down...)" >> shutdown
+        e             -> forceHalt e
+    , Handler (\ (SomeException e) -> forceHalt e)
+    ]
+
+-- ============================================================================================== --
+
+type UnitEnv   = MethodTable
+type UnitStats = ()
+
+-- | See 'unitTester' in this module for detailed comments.
+type DaoLangUnit    = GUnitTester UnitConfig UnitEnv UnitStats TestCase TestResult
+type DaoLangTest    = GTest       UnitConfig UnitEnv UnitStats TestCase TestResult
+type DaoLangResultM = GResultM    UnitConfig UnitEnv UnitStats TestCase TestResult
+
+data UnitConfig
+  = UnitConfig
+    { doTestParser      :: Bool
+      -- ^ Enable testing of the "Dao.Parser","Dao.Object.Parser", "Dao.PPrintM", and
+      -- "Dao.Object.PPrintM" modules. The default value is 'Prelude.True'.
+    , doTestSerializer  :: Bool
+      -- ^ Enable testing of the "Dao.Object.Binary" module. The default value is 'Prelude.True'.
+    , doTestStructizer  :: Bool
+      -- ^ Enable testing of the "Dao.Struct" and "Dao.Object.Struct" module. The default value is
+      -- 'Prelude.True'.
+    , maxRecurseDepth   :: Int
+    -- ^ The "Dao.Random" module generates objects within objects recursively. This parameter sets
+    -- the maximum recursion depth of objects within objects. The functions within "Dao.Random"
+    -- will generate only null objects at a certain depth to guarantee the this recursion limit is
+    -- not exceeded. The default value is 5.
+    }
+    deriving (Show, Read)
+
+unitConfig :: UnitConfig
+unitConfig =
+  UnitConfig
+  { doTestParser     = True
+  , doTestSerializer = True
+  , doTestStructizer = True
+  , maxRecurseDepth  = 5
+  }
+
+data TestCase
+  = TestCase
+    { testCaseID      :: Integer
+    , testObject      :: RandObj
+    , parseString     :: Maybe UStr
+    , serializedBytes :: Maybe B.ByteString
+    , treeStructure   :: Maybe T_tree
+    }
+instance Show TestCase where
+  show (TestCase i obj str bytes tree) = unlines $ concat $
+    [ ["TestID #"++show i]
+    , case obj of
+        RandObject   o -> ["Random Object:", prettyShow obj]
+        RandTopLevel o -> ["Random Top-Level Expression:", prettyShow obj]
+    ]
+
+data TestResult
+  = TestResult
+    { testCase            :: TestCase
+    , testResult          :: UStr
+    , failedTestCount     :: Int
+    , getParserResult     :: (Bool, Maybe RandObj)
+    , getDecodedResult    :: (Bool, Maybe RandObj)
+    , getConstrResult     :: (Bool, Maybe RandObj)
+    }
+-- Lens-like accessors for 'TestResult'
+data TRLens a
+  = TRLens
+    { trLensGetter :: TestResult -> a
+    , trLensSetter :: a -> TestResult -> TestResult
+    }
+parsing     = TRLens getParserResult  (\a r -> r{getParserResult=a})
+serializing = TRLens getDecodedResult (\a r -> r{getDecodedResult=a})
+structuring = TRLens getConstrResult  (\a r -> r{getConstrResult=a})
+
+setResult :: TRLens a -> (a -> a) -> DaoLangResultM ()
+setResult on f = modify (\r -> trLensSetter on (f $ trLensGetter on r) r)
+
+instance Show TestResult where
+  show (TestResult (TestCase i orig ppr enc tree) msg count parsd decod struct) =
+    unlines $ concat $ do
+      let o msg1 src prin msg2 (passed, item) = do
+            guard (not passed)
+            concat $
+              [ [sep]
+              , ["### original "++msg1++" ###"]
+              , maybe [] (return . prin) src, [""]
+              , ["### "++msg2++" object ###"]
+              , maybe [] (\o -> [show o, "", prettyShow o]) item, [""]
+              ]
+      [ ["Test #"++show i++' ':uchars msg, show orig, ""]
+        , o "pretty printed form:" ppr  uchars                "parsed"        parsd
+        , o "encoded bytes:"       enc  (show . Base16String) "decoded"       decod
+        , o "tree structured:"     tree prettyShow            "reconstructed" struct
+        ]
+
+getMethodTable :: DaoLangTest MethodTable
+getMethodTable = asksUnitEnv id
+
+-- Every 'TestCase' stores information as to whether or not the case has passed or failed. Use this
+-- function to update the 'TestCase' with information indicating that the test failed, including a
+-- failure message string. This function does not evaluate to 'Control.Monad.mzero' or
+-- 'Control.Monad.fail', either of those functions should be evaluated after this if you wish to
+-- halt testing.
+testFailed :: String -> DaoLangResultM ()
+testFailed msg = modify $ \r ->
+   r{ testResult      = testResult r <> toUStr msg
+    , failedTestCount = failedTestCount r + 1
+    }
+
+-- This is just @'Prelude.return' ()@ by another name, but it is helpful to indicate where a test
+-- passes.
+testPassed :: DaoLangResultM ()
+testPassed = return ()
+
+-- Every test is wrapped in this error handler (which calls to 'errHandler' above), and the test is
+-- considered a failure if an 'Control.Exception.Error' or 'Control.Exception.IOException' is
+-- caught. Pass a test case, a selector for selecting the object generated (Maybe) by 'newTestCase',
+-- and a function for checking the value of that generated object. If the object was not generated,
+-- the 'TestCase' is returned unmodified. If an exception is thrown, the test case is returned with
+-- a failure indicated.
+tryTest :: (TestCase -> Maybe item) -> (item -> DaoLangResultM ()) -> DaoLangResultM ()
+tryTest getTestItem testFunc = get >>= \r -> maybe (return ()) testFunc (getTestItem $ testCase r)
+
+-- newtype GResultM c e s t r a = ResultM { resultMtoStateT :: PTrans (StateT TestResult (GTest c e s t r)) a }
+--  deriving (Functor, Applicative, MonadPlus, MonadIO)
+
+-- | A 'UnitTester' for the Dao language. This does not merely test the parser, it also tests the pretty
+-- printer, the binary encoder/decoder, and the tree encoder/decoder, testing the full abstract
+-- syntax tree, semantics tree, and related encodings of these trees. Because the random syntax
+-- generator in the "Dao.Object.Random" module is used to generate tests, this module is also
+-- tested.
+unitTester :: DaoLangUnit
+unitTester =
+  UnitTester
+  { readConfig     = readIO
+  , showConfig     = show
+  , configFilePath = "./test.cfg"
+  , checkConfig    = maybe (return unitConfig) $ \o -> do
+      let ifReportEnabled msg fn = hPutStrLn stderr $ unwords $
+            [if fn o then "(ENABLED)" else "(DISABLED)", msg, "Testing"]
+      ifReportEnabled "Parser"        doTestParser
+      ifReportEnabled "Serialization" doTestSerializer
+      ifReportEnabled "Structure"     doTestStructizer
+      if doTestParser o || doTestSerializer o || doTestStructizer o
+      then return o
+      else fail "Test configuration has disabled all test categories."
+  , showResult      = \r -> return (show r)
+  , combineStats    = \r () -> return ()
+  , newEnvironment  = return . const mempty
+  , newStatistics   = return . const ()
+  , showStatistics  = const ""
+  , newResult       = return $
+      TestResult
+      { testCase = error "test result data not initialized with test case"
+      , testResult = nil
+      , failedTestCount  = 0
+      , getParserResult  = (True, Nothing)
+      , getDecodedResult = (True, Nothing)
+      , getConstrResult  = (True, Nothing)
+      }
+  --------------------------------------------------------------------------------------------------
+
+  , generateTest    = \i -> do
+      mtab <- getMethodTable
+      cfg  <- asksUnitConfig id
+      let maxDepth      = maxRecurseDepth cfg
+      let obj           = genRandWith randO maxDepth (fromIntegral i)
+      let str           = prettyShow obj
+      let bin           = D.encode mtab obj
+      let tree          = dataToStruct obj
+      let setup isSet o = if isSet cfg then Just o else Nothing
+      return $
+        TestCase
+        { testCaseID       = i
+        , testObject       = obj
+        , parseString      = setup doTestParser (ustr str)
+        , serializedBytes  = setup doTestSerializer bin
+        , treeStructure    = setup doTestStructizer tree
+        }
+  --------------------------------------------------------------------------------------------------
+
+  , evaluateTest   = \tc -> do
+      ------------------- (0) Canonicalize the original object ------------------
+      modify (\r->r{testCase=tc})
+      tc <- case testObject tc of
+        RandTopLevel o -> case canonicalize o of
+          [o] -> return $ tc{testObject = RandTopLevel o}
+          [ ] -> fail "could not canonicalize original object"
+          ox  -> fail "original object canonicalized to multiple possible values"
+        RandObject   _ -> return tc
+      --
+      --------------------------- (1) Test the parser ---------------------------
+      tryTest parseString $ \str -> case testObject tc of
+        RandObject   orig -> case parse (daoGrammar{mainParser=equation}) mempty (uchars str) of
+          -- For ordinary Objects, we only test if the pretty-printed code can be parsed.
+          Backtrack -> testFailed "Parser backtrackd"
+          PFail   b -> testFailed (show b)
+          OK      _ -> testPassed
+        RandTopLevel orig -> case parse daoGrammar mempty (uchars str) of
+          -- For AST objects, we also test if the data structure parsed is identical to the data
+          -- structure that was pretty-printed.
+          Backtrack -> testFailed "Parser backtrackd"
+          PFail   b -> testFailed (show b)
+          OK      o -> do
+            let ~diro  = do -- clean up the parsed input a bit
+                  o <- directives o
+                  case o of
+                    AST_TopComment [] -> []
+                    o                 -> [delLocation o]
+            if diro == [orig]
+              then  testPassed
+              else  do
+                testFailed "Parsed AST does not match original object"
+                setResult parsing (const $ (False, Just $ RandTopLevel $ head diro))
+      --
+      ------------------------- (2) Test the serializer -------------------------
+      tryTest serializedBytes $ \binObj -> do
+        mtab  <- testInResultM getMethodTable
+        unbin <- catchToResultM "binary deserialization" (return $! Right $! D.decode mtab binObj)
+          `catchError` (\err -> return $ Left (show err))
+        case unbin of
+          Left  msg   -> testFailed (uchars msg)
+          Right unbin -> case unbin of
+            Backtrack -> testFailed "Decoder backtracked"
+            PFail err -> testFailed ("Decoder failed: "++show err)
+            OK unbin | unbin == testObject tc -> testPassed
+            OK unbin | otherwise -> do
+              setResult serializing (const $ (False, Just unbin))
+              testFailed "Original object does not match object deserialized from binary string"
+      --
+      ---------------- (3) Test the intermediate tree structures ----------------
+      tryTest treeStructure $ \obj ->
+        case structToData obj :: PValue UpdateErr RandObj of
+          Backtrack -> testFailed $
+            "Backtracked while constructing a Haskell object from a Dao tree"
+          PFail err -> testFailed $ unlines [show err, prettyShow obj]
+          OK struct ->
+            if testObject tc == struct
+              then do
+                setResult structuring (const $ (False, Just struct))
+                testFailed $ unlines $
+                  [ "Original object does not match Haskell object constructed from it's Dao tree"
+                  , prettyShow struct
+                  ]
+              else  testPassed
+      --
+      gets failedTestCount >>= guard . (0==) -- mzero if the number of failed tests is more than zero
+  }
 
 -- There are actually two kinds of object tests I need to perform. First is the ordinary parser
 -- test, which generates a random, syntactically correct abstract syntax tree in such a way that the
@@ -493,185 +1046,4 @@ instance Structured RandObj Object where
 instance NFData RandObj where
   rnf (RandTopLevel a) = deepseq a ()
   rnf (RandObject   a) = deepseq a ()
-
-data TestCase
-  = TestCase
-    { testCaseID       :: Int
-    , originalObject   :: RandObj
-    , parseString      :: Maybe UStr
-    , serializedObject :: Maybe B.ByteString
-    , structuredObject :: Maybe T_tree
-    , testResult       :: UStr
-    , failedTestCount  :: Int
-    }
-
-instance Show TestCase where
-  show obj = unlines $ concat $
-    [ [uchars (testResult obj)]
-    , ["original object:", prettyShow (originalObject obj)]
-    , [sep, show (originalObject obj)]
-    , maybe mzero (\bin -> [sep, show (Base16String bin)]) (serializedObject obj)
-    ]
-
--- If the 'failedTestCount' is greater than 0, then this 'TestCase' is printed to a file, where the
--- name of the file is the @'Prelude.show ('testCaseID' tc) ++ ".log"@. Returns 'Prelude.False' for
--- failure, 'Prelude.True' for passed tests.
-reportTest :: TestCase -> IO Bool
-reportTest tc =
-  if failedTestCount tc > 0
-    then do
-      let fileName = show (testCaseID tc) ++ ".log"
-      writeFile fileName (show tc)
-      return False
-    else return True
-
--- Generate a test case, which involves using functions in the "Dao.Object.Random" module to create
--- a random object, and then possibly transforming the random object into forms suitable for testing
--- various algorithms, for example generating a serialized binary representation of the random
--- object if serialization is to be tested. This function checks the 'TestConfig' to decide which
--- objects to generate, for example, if 'doTestSerializer' is set to 'Prelude.True', then the binary
--- serialization of the random object is also generated and stored in this test case.  This function
--- is used as a parameter to 'loopOnInput'.
-newTestCase :: Int -> TestRun TestCase
-newTestCase i = do
-  mtab <- asks testMethodTable
-  cfg  <- asks testConfig
-  let maxDepth      = maxRecurseDepth cfg
-  let obj           = genRandWith randO maxDepth i
-  let str           = prettyShow obj
-  let bin           = D.encode mtab obj
-  let tree          = dataToStruct obj
-  let setup isSet o = if isSet cfg then Just o else Nothing
-  return $
-    TestCase
-    { testCaseID       = i
-    , originalObject   = obj
-    , parseString      = setup doTestParser (ustr str)
-    , serializedObject = setup doTestSerializer bin
-    , structuredObject = setup doTestStructizer tree
-    , testResult       = nil
-    , failedTestCount  = 0
-    }
-
--- Use 'passTest' or 'failTest' instead.
-updateTestCase :: TestCase -> Maybe String -> TestRun TestCase
-updateTestCase tc msg = return $
-  tc{ testResult = let tr = testResult tc in maybe tr (tr<>) (fmap ustr msg)
-    , failedTestCount = (if maybe False (const True) msg then (+1) else id) $ failedTestCount tc
-    }
-
--- Every 'TestCase' stores information as to whether or not the case has passed or failed. Use this
--- function to update the 'TestCase' with information indicating that the test passed.
-passTest :: TestCase -> TestRun TestCase
-passTest tc = updateTestCase tc Nothing
-
--- Every 'TestCase' stores information as to whether or not the case has passed or failed. Use this
--- function to update the 'TestCase' with information indicating that the test failed, including a
--- failure message string.
-failTest :: TestCase -> String -> TestRun TestCase
-failTest tc = updateTestCase tc . Just
-
--- Every test is wrapped in this error handler (which calls to 'errHandler' above), and the test is
--- considered a failure if an 'Control.Exception.Error' or 'Control.Exception.IOException' is
--- caught. Pass a test case, a selector for selecting the object generated (Maybe) by 'newTestCase',
--- and a function for checking the value of that generated object. If the object was not generated,
--- the 'TestCase' is returned unmodified. If an exception is thrown, the test case is returned with
--- a failure indicated.
-tryTest :: TestCase -> (TestCase -> Maybe item) -> (item -> TestRun TestCase) -> TestRun TestCase
-tryTest tc getTestItem testFunc = ask >>= \env -> case getTestItem tc of
-  Nothing   -> return tc
-  Just item -> liftIO $ catches (runReaderT (testFunc item) env) $
-    errHandler (flip runReaderT env . failTest tc)
-
--- Test the pretty printer and the parser. If a randomly generated object can be pretty printed, and
--- the parser can parse the pretty-printed string and create the exact same object, then the test
--- pases. This function is used as a parameter to 'loopOnInput'.
-checkTestCase :: TestCase -> TestRun Bool
-checkTestCase tc = ask >>= \env -> do
-  mtab <- asks testMethodTable
-  ------------------- (0) Canonicalize the original object ------------------
-  tc <- case originalObject tc of
-    RandTopLevel o -> case canonicalize o of
-      [o] -> return $ (tc{originalObject = RandTopLevel o})
-      [ ] -> error "could not canonicalize original object"
-      ox  -> error "original object canonicalized to multiple possible values"
-    RandObject   _ -> return tc
-  --
-  --------------------------- (1) Test the parser ---------------------------
-  tc <- tryTest tc parseString $ \str -> case originalObject tc of
-    RandObject   orig -> case parse (daoGrammar{mainParser=equation}) mempty (uchars str) of
-      -- For ordinary Objects, we only test if the pretty-printed code can be parsed.
-      Backtrack -> failTest tc "Parser backtrackd"
-      PFail   b -> failTest tc (show b)
-      OK      _ -> return tc
-    RandTopLevel orig -> case parse daoGrammar mempty (uchars str) of
-      -- For AST objects, we also test if the data structure parsed is identical to the data
-      -- structure that was pretty-printed.
-      Backtrack -> failTest tc "Parser backtrackd"
-      PFail   b -> failTest tc (show b)
-      OK      o -> do
-        let ~diro  = do -- clean up the parsed input a bit
-              o <- directives o
-              case o of
-                AST_TopComment [] -> []
-                o                 -> [delLocation o]
-        let ~match = diro == [orig]
-        if not (doCompareParsed (testConfig env)) || match
-          then  passTest tc
-          else  
-            failTest tc $ unlines $ concat
-              [ ["Parsed AST does not match original object, parsed AST is:"]
-              , case diro of
-                  []  -> ["(Empty AST)"]
-                  [o] -> [prettyShow o, show (RandTopLevel o)]
-                  ox  -> concat $
-                    [ ["(Returned multiple AST items)"]
-                    , zip [1..] ox >>= \ (i, o) ->
-                        ["Parsed item #"++show i++":", prettyShow o, prettyShow o, sep]
-                    ]
-              ]
-  --
-  ------------------------- (2) Test the serializer -------------------------
-  tc <- tryTest tc serializedObject $ \binObj -> do
-    unbin <- liftIO $ catches (return $ Right $ D.decode mtab binObj) $
-      errTryCatch "binary deserialization failed" :: TestRun (Either UStr (PValue D.GGetErr RandObj))
-    case unbin of
-      Left  msg   -> failTest tc (uchars msg) :: TestRun TestCase
-      Right unbin -> do
-        let bad :: String -> Maybe RandObj -> TestRun TestCase
-            bad msg unbin = failTest tc $ unlines $ concat $
-              [ [msg]
-              , ["Received bytes:", showBinary binObj]
-              , maybe [] (\unbin -> ["Deserialied object:", prettyShow unbin]) unbin
-              ]
-        case unbin of
-          Backtrack -> bad "Decoder backtracked" Nothing
-          PFail err -> bad ("Decoder failed: "++show err) Nothing
-          OK  unbin | unbin==originalObject tc -> passTest tc
-          OK  unbin | otherwise ->
-            bad "Original object does not match object deserialized from binary string" (Just unbin)
-  --
-  ---------------- (3) Test the intermediate tree structures ----------------
-  tc <- tryTest tc structuredObject $ \obj ->
-    case structToData obj :: PValue UpdateErr RandObj of
-      Backtrack -> failTest tc $
-        "Backtracked while constructing a Haskell object from a Dao tree"
-      PFail err -> failTest tc $ unlines [ show err, prettyShow obj]
-      OK struct ->
-        if originalObject tc == struct
-          then
-            failTest tc $ unlines $
-              [ "Original object does not match Haskell object constructed from it's Dao tree"
-              , prettyShow struct
-              ]
-          else  passTest tc
-  --
-  ------------------------------ Report results -----------------------------
-  liftIO (reportTest tc)
-
-----------------------------------------------------------------------------------------------------
-
--- This is the computation that runs a series of tests, looping over the 'inputChannel'.
-testThread :: TestRun ()
-testThread = loopOnInput newTestCase checkTestCase
 

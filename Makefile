@@ -55,11 +55,8 @@ test: debug debug/test
 debug:
 	mkdir -p debug
 
-debug/test: debug $(CHANGED_FILES)
+debug/test: tests/main.hs debug $(CHANGED_FILES)
 	$(GHC_BUILD) -o debug/test tests/main.hs $(CHANGED_FILES)
-
-debug/single: debug debug/single.hs
-	$(GHC_BUILD) -o debug/single debug/single.hs
 
 clean:
 	find ./src ./tests \( -name '*.o' -o -name '*.hi' \) -printf 'rm %p;\n' -delete;

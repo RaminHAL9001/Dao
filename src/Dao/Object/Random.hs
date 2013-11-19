@@ -307,11 +307,14 @@ randSingletonASTList = fmap (fmap (flip AST_Literal LocationUnknown)) randSingle
 randSingletonAST :: RandO AST_Object
 randSingletonAST = randChoice randSingletonASTList
 
+
 randFuncHeaderList :: [RandO AST_Object]
 randFuncHeaderList = fmap loop $
-  [ pure AST_ObjQualRef <*> randO
-  , pure AST_Literal    <*> randSingleton <*> no
-  , pure AST_MetaEval   <*> randO <*> no
+  [ AST_ObjQualRef    <$> randO
+  , AST_ObjParen      <$> randO
+  , pure (AST_Prefix REF)   <*> randO <*> randO <*> no
+  , pure (AST_Prefix DEREF) <*> randO <*> randO <*> no
+  , pure AST_MetaEval <*> randO <*> no
   ]
   where
     loop rand = rand >>= \o -> nextInt 2 >>= \i ->
@@ -327,9 +330,7 @@ instance HasRandGen AST_LValue where { randO = AST_LValue <$> randFuncHeader }
 
 randPrefixWith :: RandO AST_Object -> [PrefixOp] -> RandO AST_Object
 randPrefixWith randGen ops = randChoice $ randGen : fmap randOps ops where
-  randOps op = do
-    obj <- randComWith randGen
-    return (AST_Prefix op obj LocationUnknown)
+  randOps op = pure AST_Prefix <*> randO <*> randO <*> randO <*> no
 
 randObjectASTList :: [RandO AST_Object]
 randObjectASTList =
@@ -337,6 +338,7 @@ randObjectASTList =
   , randPrefixWith (randChoice randSingletonASTList) [INVB, NEGTIV, POSTIV, REF, DEREF]
   , pure AST_Func   <*> randO <*> randO <*> randO <*> randO <*> no
   , pure AST_Lambda <*> randO <*> randO <*> no
+  , pure AST_Init   <*> randO <*> randO <*> randO <*> randO <*> no
   ] ++ randSingletonASTList
 
 randObjectAST :: RandO AST_Object
@@ -383,6 +385,9 @@ randObjectASTVoidList = return AST_Void : randObjectASTList
 randObjectASTVoid :: RandO AST_Object
 randObjectASTVoid = randChoice randObjectASTVoidList
 
+instance HasRandGen AST_OptObjList where
+  randO = randChoice [AST_NoObjList <$> randO, pure AST_OptObjList <*> randO <*> randO]
+
 instance HasRandGen AST_Object where
   -- | Differs from 'randAssignExpr' in that this 'randO' can generate 'Dao.Object.AST_Literal' expressions
   -- whereas 'randAssignExpr' will not so it does not generate stand-alone constant expressions within
@@ -408,12 +413,17 @@ instance HasRandGen [Com AST_Param] where { randO = randList 0 8 }
 
 instance HasRandGen AST_ParamList where { randO = pure AST_ParamList <*> randO <*> no }
 
+randImport :: RandO AST_Object
+randImport = randChoice $
+  [ pure (AST_Literal . OString) <*> randO <*> no
+  , (AST_ObjQualRef . AST_Unqualified) <$> randO
+  ]
+
 instance HasRandGen AST_TopLevel where
   randO = randChoice $
     [ do  req_ <- nextInt 2
           let req = ustr $ if req_ == 0 then "require" else "import"
-          typ  <- nextInt 2
-          item <- randComWith randFuncHeader
+          item <- randComWith randImport
           return (AST_Attribute req item LocationUnknown)
     , pure AST_TopScript <*> randScript <*> no
     , pure AST_Event     <*> randO <*> randO <*> randO <*> no

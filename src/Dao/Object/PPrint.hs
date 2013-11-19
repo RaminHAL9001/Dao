@@ -359,16 +359,17 @@ instance PPrintable AST_Object where
   pPrint expr = case expr of
     AST_Void                                 -> return ()
     AST_ObjQualRef   o                       -> pPrint o
-    AST_ObjParen          c_ObjXp            -> pWrapIndent [pString "(", pPrint c_ObjXp, pString ")"]
+    AST_ObjParen          c_ObjXp            -> pPrint c_ObjXp
     AST_Literal      o                     _ -> pPrint o
     AST_Assign   objXp1  comUpdOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comUpdOp, pPrint objXp2]
     AST_Equation     objXp1  comAriOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comAriOp, pPrint objXp2]
-    AST_Prefix   ariOp    c_ObjXp          _ -> pWrapIndent [pPrint ariOp, pPrint c_ObjXp]
+    AST_Prefix   ariOp    coms     objXp   _ -> pWrapIndent [pPrint ariOp, pPrint coms, pPrint objXp]
     AST_ArraySub objXp             xcObjXp _ -> pInline [pPrint objXp, pPrintObjList "[" ", " "]" xcObjXp]
     AST_FuncCall objXp             xcObjXp _ -> pInline [pPrint objXp, pPrintObjList "(" ", " ")" xcObjXp]
-    AST_Init     ref      objs     elems   _ -> pInline [pPrint ref, pPrint objs, pPrint elems]
+    AST_Init     coms ref objs     elems   _ ->
+      pInline [pString "new ", pPrint coms, pPrint ref, pPrint objs, pPrint elems]
     AST_Struct   cObjXp   xcObjXp          _ ->
       pList (pInline [pString "tree", printObj cObjXp]) "{" ", " "}" [pPrint xcObjXp] where
         printObj obj = pWrapIndent [pString " ", pInline [pPrint cObjXp]]
@@ -465,7 +466,7 @@ instance PPrintable CoreType where
   pPrint t = pString $ case t of
     NullType     -> "null"
     TrueType     -> "true"
---    TypeType     -> "type"
+    TypeType     -> "type"
     IntType      -> "int"
     WordType     -> "word"
     DiffTimeType -> "difftime"

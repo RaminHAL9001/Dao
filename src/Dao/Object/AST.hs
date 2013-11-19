@@ -196,10 +196,10 @@ data AST_Object
   | AST_Literal    Object                                              Location
   | AST_Assign     AST_LValue     (Com UpdateOp)         AST_Object    Location
   | AST_Equation   AST_Object     (Com InfixOp)          AST_Object    Location
-  | AST_Prefix     PrefixOp                         (Com AST_Object)   Location
+  | AST_Prefix     PrefixOp       [Comment]              AST_Object    Location
   | AST_ArraySub   AST_Object                            AST_ObjList   Location
   | AST_FuncCall   AST_Object                            AST_ObjList   Location
-  | AST_Init       AST_Ref             AST_OptObjList    AST_ObjList   Location
+  | AST_Init       [Comment] AST_Ref   AST_OptObjList    AST_ObjList   Location
   | AST_Struct                    (Com AST_Object)       AST_ObjList   Location
   | AST_Lambda                    (Com AST_ParamList)    AST_CodeBlock Location
   | AST_Func       [Comment] Name (Com AST_ParamList)    AST_CodeBlock Location
@@ -345,10 +345,10 @@ instance HasLocation AST_Object where
     AST_Literal  _       o -> o
     AST_Assign   _ _ _   o -> o
     AST_Equation _ _ _   o -> o
-    AST_Prefix   _ _     o -> o
+    AST_Prefix   _ _ _   o -> o
     AST_ArraySub _ _     o -> o
     AST_FuncCall _ _     o -> o
-    AST_Init     _ _ _   o -> o
+    AST_Init     _ _ _ _ o -> o
     AST_Struct   _ _     o -> o
     AST_Lambda   _ _     o -> o
     AST_Func     _ _ _ _ o -> o
@@ -361,10 +361,10 @@ instance HasLocation AST_Object where
     AST_Literal    a       _ -> AST_Literal    a       loc
     AST_Assign     a b c   _ -> AST_Assign     a b c   loc
     AST_Equation   a b c   _ -> AST_Equation   a b c   loc
-    AST_Prefix     a b     _ -> AST_Prefix     a b     loc
+    AST_Prefix     a b c   _ -> AST_Prefix     a b c   loc
     AST_ArraySub   a b     _ -> AST_ArraySub   a b     loc
     AST_FuncCall   a b     _ -> AST_FuncCall   a b     loc
-    AST_Init       a b c   _ -> AST_Init       a b c   loc
+    AST_Init       a b c d _ -> AST_Init       a b c d loc
     AST_Struct     a b     _ -> AST_Struct     a b     loc
     AST_Lambda     a b     _ -> AST_Lambda     a b     loc
     AST_Func       a b c d _ -> AST_Func       a b c d loc
@@ -377,10 +377,10 @@ instance HasLocation AST_Object where
     AST_Literal    a       _ -> AST_Literal         a                          lu
     AST_Assign     a b c   _ -> AST_Assign     (fd  a)      b  (fd  c)         lu
     AST_Equation   a b c   _ -> AST_Equation   (fd  a)      b  (fd  c)         lu
-    AST_Prefix     a b     _ -> AST_Prefix          a  (fd  b)                 lu
+    AST_Prefix     a b c   _ -> AST_Prefix          a       b  (fd  c)         lu
     AST_ArraySub   a b     _ -> AST_ArraySub   (fd  a) (fd  b)                 lu
     AST_FuncCall   a b     _ -> AST_FuncCall   (fd  a) (fd  b)                 lu
-    AST_Init       a b c   _ -> AST_Init       (fd  a) (fd  b) (fd  c)         lu
+    AST_Init       a b c d _ -> AST_Init            a  (fd  b) (fd  c) (fd  d) lu
     AST_Struct     a b     _ -> AST_Struct     (fd  a) (fd  b)                 lu
     AST_Lambda     a b     _ -> AST_Lambda     (fd  a) (fd  b)                 lu
     AST_Func       a b c d _ -> AST_Func            a       b  (fd  c) (fd  d) lu
@@ -722,10 +722,10 @@ instance Intermediate ObjectExpr AST_Object where
     AST_Literal    a     loc -> liftM2 Literal            [a]                 [loc]
     AST_Assign     a b c loc -> liftM4 AssignExpr     (ti  a) (uc  b) (ti  c) [loc]
     AST_Equation   a b c loc -> liftM4 Equation       (ti  a) (uc  b) (ti  c) [loc]
-    AST_Prefix     a b   loc -> liftM3 PrefixExpr     [a]     (uc0 b)         [loc]
+    AST_Prefix     a _ c loc -> liftM3 PrefixExpr     [a]             (ti  c) [loc]
     AST_ArraySub   a b   loc -> liftM3 ArraySubExpr   (ti  a) (ti  b)         [loc]
     AST_FuncCall   a b   loc -> liftM3 FuncCall       (ti  a) (ti  b)         [loc]
-    AST_Init       a b c loc -> liftM4 InitExpr       (ti  a) (ti  b) (ti  c) [loc]
+    AST_Init     _ a b c loc -> liftM4 InitExpr       (ti  a) (ti  b) (ti  c) [loc]
     AST_Struct     a b   loc -> liftM3 StructExpr     (uc0 a)         (ti  b) [loc]
     AST_Lambda     a b   loc -> liftM3 LambdaExpr     (uc0 a)         (ti  b) [loc]
     AST_Func     _ a b c loc -> liftM4 FuncExpr       [a]     (uc0 b) (ti  c) [loc]
@@ -733,20 +733,20 @@ instance Intermediate ObjectExpr AST_Object where
     AST_MetaEval   a     loc -> liftM2 MetaEvalExpr                   (ti  a) [loc]
   fromInterm obj = case obj of
     VoidExpr                 -> return AST_Void
-    ObjQualRefExpr a         -> liftM  AST_ObjQualRef (fi  a)
-    ObjParenExpr   a         -> liftM  AST_ObjParen   (fi  a)
-    Literal        a     loc -> liftM2 AST_Literal        [a]                 [loc]
-    AssignExpr     a b c loc -> liftM4 AST_Assign     (fi  a) (nc  b) (fi  c) [loc]
-    Equation       a b c loc -> liftM4 AST_Equation   (fi  a) (nc  b) (fi  c) [loc]
-    PrefixExpr     a b   loc -> liftM3 AST_Prefix     [a]             (nc0 b) [loc]
-    ArraySubExpr   a b   loc -> liftM3 AST_ArraySub   (fi  a) (fi  b)         [loc]
-    FuncCall       a b   loc -> liftM3 AST_FuncCall   (fi  a) (fi  b)         [loc]
-    InitExpr       a b c loc -> liftM4 AST_Init       (fi  a) (fi  b) (fi  c) [loc]
-    StructExpr     a b   loc -> liftM3 AST_Struct     (nc0 a)         (fi  b) [loc]
-    LambdaExpr     a b   loc -> liftM3 AST_Lambda             (nc0 a) (fi  b) [loc]
-    FuncExpr       a b c loc -> liftM5 AST_Func   [[]]    [a] (nc0 b) (fi  c) [loc]
-    RuleExpr       a b   loc -> liftM3 AST_Rule               (nc0 a) (fi  b) [loc]
-    MetaEvalExpr   a     loc -> liftM2 AST_MetaEval   (fi  a)                 [loc]
+    ObjQualRefExpr a         -> liftM  AST_ObjQualRef  (fi  a)
+    ObjParenExpr   a         -> liftM  AST_ObjParen    (fi  a)
+    Literal        a     loc -> liftM2 AST_Literal         [a]                 [loc]
+    AssignExpr     a b c loc -> liftM4 AST_Assign      (fi  a) (nc  b) (fi  c) [loc]
+    Equation       a b c loc -> liftM4 AST_Equation    (fi  a) (nc  b) (fi  c) [loc]
+    PrefixExpr     a   c loc -> liftM4 AST_Prefix      [a]     [[]]    (fi  c) [loc]
+    ArraySubExpr   a b   loc -> liftM3 AST_ArraySub    (fi  a) (fi  b)         [loc]
+    FuncCall       a b   loc -> liftM3 AST_FuncCall    (fi  a) (fi  b)         [loc]
+    InitExpr       a b c loc -> liftM5 AST_Init   [[]] (fi  a) (fi  b) (fi  c) [loc]
+    StructExpr     a b   loc -> liftM3 AST_Struct      (nc0 a)         (fi  b) [loc]
+    LambdaExpr     a b   loc -> liftM3 AST_Lambda              (nc0 a) (fi  b) [loc]
+    FuncExpr       a b c loc -> liftM5 AST_Func   [[]]     [a] (nc0 b) (fi  c) [loc]
+    RuleExpr       a b   loc -> liftM3 AST_Rule                (nc0 a) (fi  b) [loc]
+    MetaEvalExpr   a     loc -> liftM2 AST_MetaEval    (fi  a)                 [loc]
 
 instance Intermediate CodeBlock AST_CodeBlock where
   toInterm   (AST_CodeBlock ast) = return $ CodeBlock     (ast >>= toInterm  )

@@ -282,10 +282,10 @@ instance Structured AST_Object  Object where
     AST_Literal    a       loc -> with "literal"   $ place a >> putData loc
     AST_Assign     a b c   loc -> with "assign"    $ putDataAt "to"     a  >> putDataAt "op"     b >> putDataAt "from"   c >> putData loc
     AST_Equation   a b c   loc -> with "equation"  $ putDataAt "left"   a  >> putDataAt "op"     b >> putDataAt "right"  c >> putData loc
-    AST_Prefix     a b     loc -> with "prefix"    $ putDataAt "op"     a  >> putDataAt "right"  b                         >> putData loc
+    AST_Prefix     a b c   loc -> with "prefix"    $ putDataAt "op"     a  >> putComments        b >> putDataAt "right"  c >> putData loc
     AST_ArraySub   a b     loc -> with "subscript" $ putDataAt "header" a  >>                         putDataAt "params" b >> putData loc
     AST_FuncCall   a b     loc -> with "funcCall"  $ putDataAt "header" a  >>                         putDataAt "params" b >> putData loc
-    AST_Init       a b c   loc -> with "initExpr"  $ putDataAt "header" a  >> putDataAt "params" b >> putDataAt "elems"  c >> putData loc
+    AST_Init       a b c d loc -> with "initExpr"  $ putComments        a  >> putDataAt "header" b >> putDataAt "params" c >> putDataAt "elems"  d >> putData loc
     AST_Struct     a b     loc -> with "structExpr"$ putDataAt "header" a  >> putDataAt "params" b >> putData loc
     AST_Lambda     a b     loc -> with "lambdaExpr"$                          putDataAt "params" a >> putDataAt "script" b >> putData loc
     AST_Func       a b c d loc -> with "funcExpr"  $ putComments        a  >> putDataAt "name"   b >> putDataAt "params" c >> putDataAt "script" d >> putData loc
@@ -297,10 +297,10 @@ instance Structured AST_Object  Object where
     , tryWith "literal"   $ pure AST_Literal     <*> this               <*> getData
     , tryWith "assign"    $ pure AST_Assign      <*> getDataAt "to"     <*> getDataAt "op"     <*> getDataAt "from"   <*> getData
     , tryWith "equation"  $ pure AST_Equation    <*> getDataAt "left"   <*> getDataAt "op"     <*> getDataAt "right"  <*> getData
-    , tryWith "prefix"    $ pure AST_Prefix      <*> getDataAt "op"     <*> getDataAt "right"  <*> getData
+    , tryWith "prefix"    $ pure AST_Prefix      <*> getDataAt "op"     <*> getComments        <*> getDataAt "right"  <*> getData
     , tryWith "subscript" $ pure AST_ArraySub    <*> getDataAt "header" <*>                        getData            <*> getData
     , tryWith "funcCall"  $ pure AST_FuncCall    <*> getDataAt "header" <*>                        getDataAt "params" <*> getData
-    , tryWith "initExpr"  $ pure AST_Init        <*> getDataAt "header" <*> getDataAt "params" <*> getDataAt "elems"  <*> getData
+    , tryWith "initExpr"  $ pure AST_Init        <*> getComments        <*> getDataAt "header" <*> getDataAt "params" <*> getDataAt "elems"  <*> getData
     , tryWith "structExpr"$ pure AST_Struct      <*> getDataAt "header" <*> getDataAt "params" <*> getData
     , tryWith "lambdaExpr"$ pure AST_Lambda                             <*> getDataAt "params" <*> getDataAt "script" <*> getData
     , tryWith "funcExpr"  $ pure AST_Func        <*> getComments        <*> getDataAt "name"   <*> getDataAt "params" <*> getDataAt "script" <*> getData

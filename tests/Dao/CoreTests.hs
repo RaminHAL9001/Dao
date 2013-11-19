@@ -244,28 +244,31 @@ unitTester =
         RandObject   _ -> return tc
       --
       --------------------------- (1) Test the parser ---------------------------
-      tryTest parseString $ \str -> case testObject tc of
-        RandObject   orig -> case parse (daoGrammar{mainParser=equation}) mempty (uchars str) of
-          -- For ordinary Objects, we only test if the pretty-printed code can be parsed.
-          Backtrack -> testFailed "Parser backtrackd"
-          PFail   b -> testFailed (show b)
-          OK      _ -> testPassed
-        RandTopLevel orig -> case parse daoGrammar mempty (uchars str) of
-          -- For AST objects, we also test if the data structure parsed is identical to the data
-          -- structure that was pretty-printed.
-          Backtrack -> testFailed "Parser backtrackd"
-          PFail   b -> testFailed (show b)
-          OK      o -> do
+      tryTest parseString $ \str -> do
+        let withPValue p fn = case p of
+              Backtrack -> testFailed $ unlines ["Parser backtracked", uchars str]
+              PFail   b -> testFailed $ unlines ["Parser failed", show b, uchars str]
+              OK      a -> fn a
+        case testObject tc of
+          RandObject   orig ->
+            -- For ordinary Objects, we only test if the pretty-printed code can be parsed.
+            withPValue
+              (parse (daoGrammar{mainParser=equation}) mempty (uchars str))
+              (const testPassed)
+          RandTopLevel orig -> withPValue (parse daoGrammar mempty (uchars str)) $ \o -> do
+            -- For AST objects, we also test if the data structure parsed is identical to the data
+            -- structure that was pretty-printed.
             let ~diro  = do -- clean up the parsed input a bit
                   o <- directives o
                   case o of
                     AST_TopComment [] -> []
                     o                 -> [delLocation o]
             if diro == [orig]
-              then  testPassed
-              else  do
+              then testPassed
+              else do
                 testFailed "Parsed AST does not match original object"
-                setResult parsing (const $ (False, Just $ RandTopLevel $ head diro))
+                setResult parsing $
+                  (const (False, if null diro then Nothing else Just $ RandTopLevel $ head diro))
       --
       ------------------------- (2) Test the serializer -------------------------
       tryTest serializedBytes $ \binObj -> do

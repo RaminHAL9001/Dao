@@ -73,7 +73,7 @@ main tester = do
             then ("single", singleThreaded)
             else ("multi" , multiThreaded )
       hPutStrLn stderr ("Running in "++msg++"-threaded mode.")
-      clock <- if periodicReports config then Just <$> startClockThread env else return Nothing
+      clock <- if displayInterval config <= 0 then Just <$> startClockThread env else return Nothing
       testInIO env (run i)
       maybe (return ()) killThread clock
     else case args of
@@ -283,18 +283,23 @@ data GTestConfig configuration
       -- ^ Every test that fails generates a report. If the testing is left unchecked, tests will
       -- continue and reports will be generated until all disk space is consumed. Set this parameter
       -- when you want the test to run for a while and be sure that if there are failed tests, the
-      -- testing will halt once that number of failed tests reaches this limit. The default value is
-      -- 20.
-    , periodicReports   :: Bool
-      -- ^ Set this option to 'True' to have the test program periodically report statistics about
-      -- the running tests. Set the 'displayInterval' below...
+      -- testing will halt once that number of failed tests reaches this limit. When running in
+      -- multi-threaded mode, you may end up with a few more failed test reports than you specify
+      -- here. For example, lets say you have eight CPU cores and you specify a maximum of ten
+      -- failed tests. If at some point there are 9 failed tests, then simultaneously all eight
+      -- cores evaluate a failed test, all eight cores will write their reports simultaneously
+      -- before checking whether or not the maximum error count has been reached. This will give you
+      -- 17 failed test reports, or (maxErrors + threadCount - 1) tests in the worst case. I assume
+      -- you do not mind a few additional error reports in exchange for having very fast and fully
+      -- autonomous testing threads. The default maxErrs value is 20.
     , displayInterval   :: Int
       -- ^ When testing is running, a separate thread is run to keep track of how many tests have
       -- run, and will periodically, on an interval of time set by this parameter, report how many
       -- tests have run per second. This value is passed to the 'Control.Concurrent.threadDelay'
       -- function, so, in GHC at least, the value of this parameter is measured in microseconds. For
       -- example, if you want to see the test program report every second, set this value to one
-      -- million (1000000). The default value is 4000000 (four seconds).
+      -- million (1000000). The default value is 4000000 (four seconds). Set this value to zero if
+      -- you want no reports at all.
     , logFileName       :: String
       -- ^ Every test run that fails will have the reason for failure and the object that caused the
       -- failure written to it's own file. However, there may be exceptions thrown for other reasons
@@ -309,7 +314,7 @@ data GTestConfig configuration
       -- that is being evaluated so you can continue from that ID number the next time you launch
       -- the test program. The default file name to save the test ID number is "./testid".
     , unitTestConfig    :: configuration
-      -- ^ This is the test configuration data specific to this particular unit test program.
+      -- ^ This is the test configuration data specific to a particular unit test program.
     }
   deriving (Show, Read)
 
@@ -318,7 +323,6 @@ defaultTestConfig config =
   TestConfig
   { threadCount      = 1
   , maxErrors        = 20
-  , periodicReports  = True
   , displayInterval  = 4000000
   , logFileName      = "./uncaught.log"
   , savedTestIDPath  = "./testid"
@@ -673,7 +677,6 @@ multiThreaded i = ask >>= \env -> asksTestConfig id >>= \config -> liftIO $ do
   let workerCount = min maxCPUCores $ max 1 $ threadCount config
   unfinsh <- newMVar [] :: IO (MVar [Integer])
   maxerrs <- testInIO env (asksTestConfig maxErrors)
-  worksem <- Sem.new 0 -- the semaphore to signal workers when to start working
   flagsem <- Sem.new 0 -- the semaphore to signal the main thread of a completed test
   busyvar <- newMVar (0, 0) -- (number of existing threads, number of busy threads)
   let setBusy (f1, f2) = modifyMVar_ busyvar (\ (x1, x2) -> return (f1 x1, f2 x2))
@@ -687,26 +690,28 @@ multiThreaded i = ask >>= \env -> asksTestConfig id >>= \config -> liftIO $ do
           (mask_ continTask) -- < Signals that writing is complete and next loop will begin.
           (testInIO env write) -- < The 'writeResult' function.
   let worker   i = bracket_ startWork endWork $
-        (fix $ \loop i -> Sem.wait worksem >> isOn >>= \on -> when on $
-            flip onException (modifyMVar_ unfinsh (return . (i:))) $ do
-              passed <- testInIO env $
-                runSingleTest reportBracket i >>= \p -> updateClock >> trySaveTestID i >> return p
-              Sem.signal flagsem >> loop (i + fromIntegral workerCount)
+        (fix $ \loop i -> do
+            canContinue  <- isOn
+            isBelowLimit <- fmap (<maxerrs) $ testInIO env (asks errorCounter) >>= readMVar
+            when (canContinue && isBelowLimit) $ do
+              flip onException (modifyMVar_ unfinsh (return . (i:)) >> Sem.signal flagsem) $ do
+                passed <- testInIO env $ do
+                  p <- runSingleTest reportBracket i
+                  updateClock >> trySaveTestID i >> return p
+                Sem.signal flagsem >> yield >> loop (i + fromIntegral workerCount)
           ) i
   workers <- newMVar [] :: IO (MVar [ThreadId])
   let startWorkersOn = mapM (forkIO . worker) >=> \thds -> modifyMVar_ workers (return . (++thds))
   let forceHalt e = swapMVar workers [] >>= (mapM_ (flip throwTo e))
-  let shutdown = handle (\e -> forceHalt (e::SomeException)) $ do
-        switchOff
-        fix $ \loop -> do
-          (workerCount, busyCount) <- Sem.wait flagsem >> readMVar busyvar
-          Sem.signalN worksem busyCount
-          if workerCount==0 && busyCount==0 then forceHalt UserInterrupt else loop
-  -- Start the workers, then begin looping on the semaphores.
+  -- Start the workers, then begin looping on the flag semaphore. Since the flag semaphore is only
+  -- used when writing a test report or signalling that a thread has died, this main loop does
+  -- nothing more than wait for signals and spawn new threads if the thread count is lower than what
+  -- was requested in the configuration file. It also waits for 'Control.Exception.UserInterrupt'
+  -- signals (probably generated by Posix SIGTSTP) and distributes this signal to the workers when
+  -- it receives one.
   startWorkersOn (take workerCount [i..])
   catches 
     (fix $ \loop -> do
-        Sem.signal worksem
         Sem.wait   flagsem
         (thcount, busycount) <- readMVar busyvar
         errcount <- testInIO env (asks errorCounter) >>= readMVar
@@ -714,10 +719,10 @@ multiThreaded i = ask >>= \env -> asksTestConfig id >>= \config -> liftIO $ do
         then do
           unfinished <- swapMVar unfinsh [] -- start more workers if any seem to have died
           unless (null unfinished) (startWorkersOn unfinished) >> loop
-        else shutdown
+        else switchOff
       )
     [ Handler $ \e -> case e of
-        UserInterrupt -> putStrLn "(CANCEL signal received, shutting down...)" >> shutdown
+        UserInterrupt -> putStrLn "(CANCEL signal received, shutting down...)" >> switchOff
         e             -> forceHalt e
     , Handler (\ (SomeException e) -> forceHalt e)
     ]

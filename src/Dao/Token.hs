@@ -219,44 +219,57 @@ instance Functor  TokenAt where
     , getTokenValue       = fmap f (getToken t)
     }
 
--- | See 'token' and 'tokenBy'.
+-- | Extract the type of the token.
 asTokType :: TokenAt tok -> tok
 asTokType = tokType . getToken
 
--- | See 'token' and 'tokenBy'.
+-- | Extract the string value stored in this token. /WARNING:/ keyword and operator tokens contain
+-- no strings to save memory, so evaluating this function on any token type defind by
+-- 'Dao.Parser.operator', 'Dao.Parser.operatorTable', or 'Dao.Parser.keyword' will result in a null
+-- sring.
 asString :: TokenAt tok -> String
 asString = tokToStr . getToken
 
--- | See 'token' and 'tokenBy'.
+-- | Extract the string value stored in this token. /WARNING:/ keyword and operator tokens contain
+-- no strings to save memory, so evaluating this function on any token type defind by
+-- 'Dao.Parser.operator', 'Dao.Parser.operatorTable', or 'Dao.Parser.keyword' will result in a null
+-- sring.
 asUStr :: TokenAt tok -> UStr
 asUStr = tokToUStr . getToken
 
--- | See 'token' and 'tokenBy'.
+-- | Extract the string value stored in this token. /WARNING:/ keyword and operator tokens contain
+-- no strings to save memory, so evaluating this function on any token type defind by
+-- 'Dao.Parser.operator', 'Dao.Parser.operatorTable', or 'Dao.Parser.keyword' will result in a null
+-- sring.
 asName :: TokenAt tok -> Name
 asName = fromUStr . asUStr
 
 -- | That is as-zero, because "0" looks kind of like "()".
--- See 'token' and 'tokenBy'.
+-- This function is useful when it is necessary to pass a function argument to functions like
+-- 'Dao.Parser.token' and 'Dao.Parser.tokenBy' but you want to ignore the token returned.
 as0 :: TokenAt tok -> ()
 as0 = const ()
 
--- | See 'token' and 'tokenBy'.
+-- | Retrieve the token part of a 'TokenAt' object. 
 asToken :: TokenAt tok -> Token tok
 asToken = getToken
 
--- | See 'token' and 'tokenBy'.
+-- | Synonym for 'Prelude.id', used when it is necessary to pass a function argument to functions like
+-- 'Dao.Parser.token' and 'Dao.Parser.tokenBy' but you just want the whole 'TokenAt' object.
 asTokenAt :: TokenAt tok -> TokenAt tok
 asTokenAt = id
 
--- | See 'token' and 'tokenBy'.
+-- | Convert the contents of a 'TokenAt' object to a tripple containg it's component parts.
 asTriple :: TokenAt tok -> (LineNum, ColumnNum, Token tok)
 asTriple tok = (lineNumber tok, columnNumber tok, getToken tok)
 
--- | See 'token' and 'tokenBy'.
+-- | Convert the contents of a 'TokenAt' object to a pair containg it's component parts, but not the
+-- 'Token' itself.
 asLineColumn :: TokenAt tok -> (LineNum, ColumnNum)
 asLineColumn tok = (lineNumber tok, columnNumber tok)
 
--- | See 'token' and 'tokenBy'.
+-- | Convert the contents of the 'TokenAt' object's 'lineNumber' and 'columnNumber' to a 'Location'
+-- object.
 asLocation :: TokenAt tok  -> Location
 asLocation = uncurry atPoint . asLineColumn
 

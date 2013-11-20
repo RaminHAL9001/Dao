@@ -1,4 +1,4 @@
--- "src/Object/Parser.hs" makes use of "Dao.Parser" to parse
+-- "src/Dao/Object/Parser.hs" makes use of "Dao.Parser" to parse
 -- parse 'Dao.Object.AST_Object' expressions.
 -- 
 -- Copyright (C) 2008-2013  Ramin Honary.
@@ -407,7 +407,7 @@ singletonPTabItems = numberPTabItems ++ fmap (fmap (fmap AST_ObjQualRef)) qualRe
   , fmap (fmap AST_ObjParen) parenPTabItem
   , metaEvalPTabItem
   , trueFalse "null" ONull, trueFalse "false" ONull, trueFalse "true" OTrue
-  , reserved "operator", reserved "public", reserved "private", reserved "new"
+  , reserved "operator", reserved "public", reserved "private"
   ]
   where
     literal constr tok = return (AST_Literal (constr tok) (asLocation tok))
@@ -422,13 +422,15 @@ singleton = joinEvalPTable singletonPTab
 
 prefixedSingletonPTabItems :: [DaoTableItem AST_Object]
 prefixedSingletonPTabItems = [prefixOp "$", prefixOp "@"] where
-  prefixOp op = tableItemBy op $ \tok -> case maybeFromUStr (seq tok $! (\i -> trace ("token: "++show tok++"\nstring: "++show i) i) $! asUStr tok) of
+  prefixOp op = tableItemBy op $ \tok -> case maybeFromUStr (ustr op) of
     Nothing -> fail ("token at "++show tok++" used as prefix operator")
     Just op -> do
-      ref  <- qualReference
+      ref  <- joinEvalPTable qualSinglePTab
       coms <- optSpace
       let loc = asLocation tok <> getLocation ref
-      return (AST_Prefix op coms (AST_ObjQualRef ref) loc)
+      return (AST_Prefix op coms ref loc)
+  qualSinglePTab = table $ singletonPTabItems ++
+    bindPTableItemList qualReferencePTabItems (return . AST_ObjQualRef)
 
 prefixedSingletonPTab :: DaoPTable AST_Object
 prefixedSingletonPTab = table prefixedSingletonPTabItems

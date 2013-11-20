@@ -106,8 +106,10 @@ randSingletonList =
   , randInteger (OFloat 0) (fmap (OFloat . fromRational) . randRational)
   , randInteger (OChar '\n') (\i -> return (OChar $ chr $ mod i $ ord (maxBound::Char)))
   , fmap OString randO
-  , fmap ORef    randO
   ]
+
+randSingletonWithRefList :: [RandO Object]
+randSingletonWithRefList = fmap ORef randO : randSingletonList
 
 instance HasRandGen Object where
   randO = randChoice $ randSingletonList ++
@@ -307,16 +309,16 @@ randSingletonASTList = fmap (fmap (flip AST_Literal LocationUnknown)) randSingle
 randSingletonAST :: RandO AST_Object
 randSingletonAST = randChoice randSingletonASTList
 
-
 randFuncHeaderList :: [RandO AST_Object]
 randFuncHeaderList = fmap loop $
   [ AST_ObjQualRef    <$> randO
   , AST_ObjParen      <$> randO
-  , pure (AST_Prefix REF)   <*> randO <*> randO <*> no
-  , pure (AST_Prefix DEREF) <*> randO <*> randO <*> no
+  , pure (AST_Prefix REF)   <*> randO <*> qualRefOrSingle <*> no
+  , pure (AST_Prefix DEREF) <*> randO <*> qualRefOrSingle <*> no
   , pure AST_MetaEval <*> randO <*> no
   ]
   where
+    qualRefOrSingle = randChoice $ (AST_ObjQualRef <$> randO) : randSingletonASTList
     loop rand = rand >>= \o -> nextInt 2 >>= \i ->
       if i==0
         then return o
@@ -335,6 +337,8 @@ randPrefixWith randGen ops = randChoice $ randGen : fmap randOps ops where
 randObjectASTList :: [RandO AST_Object]
 randObjectASTList =
   [ randAssignExpr
+  , AST_ObjQualRef <$> randO
+  , pure AST_Literal <*> randSingleton <*> no
   , randPrefixWith (randChoice randSingletonASTList) [INVB, NEGTIV, POSTIV, REF, DEREF]
   , pure AST_Func   <*> randO <*> randO <*> randO <*> randO <*> no
   , pure AST_Lambda <*> randO <*> randO <*> no

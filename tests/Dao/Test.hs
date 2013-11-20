@@ -73,10 +73,12 @@ main tester = do
             then ("single", singleThreaded)
             else ("multi" , multiThreaded )
       hPutStrLn stderr ("Running in "++msg++"-threaded mode.")
-      clock <- if displayInterval config <= 0 then Just <$> startClockThread env else return Nothing
+      clock <- if displayInterval config > 0 then Just <$> startClockThread env else return Nothing
       testInIO env (run i)
       maybe (return ()) killThread clock
     else case args of
+      "-t"          :args -> testInIO env (showTestMode args)
+      "--show-tests":args -> testInIO env $ showTestMode args
       ["-"] -> testInIO env stdinMode
       args  -> do -- parse all command line arguments as a test IDs and then run each ID.
         putStrLn "Running tests specified on command line."
@@ -182,6 +184,8 @@ data GUnitTester config env stats test result
       -- 'Prelude.Integer'. The best way to do this is by instantiating your @test@ data type into
       -- the 'Dao.Random.HasRandGen' class and returning the result of an evaluation of
       -- 'Dao.Random.genRandWith' with the given 'Prelude.Integer'.
+    , showTest       :: Maybe (test -> String)
+      -- ^ If you ever want to actually display the contents of a test object, define this function.
     , newResult      :: GTest config env stats test result result
       -- ^ This is the function that should create a new blank test result data structure. The
       -- @result@ data should contain useful information about the test run.
@@ -445,7 +449,7 @@ displayInfo :: GTest c e s t r String
 displayInfo = ask >>= \env -> liftIO $ do
   x   <- readMVar (testRateInfo env)
   now <- getCurrentTime
-  modifyMVar_ (testRateInfo env) (setLastCheckTime now)
+  modifyMVar_ (testRateInfo env) (clearRateInfo >=> setLastCheckTime now)
   stats  <- testInIO env (unit showStatistics <*> (asks testStatistics >>= liftIO . readMVar))
   failed <- testInIO env (asks errorCounter) >>= readMVar
   let count   = numberOfTests x
@@ -459,9 +463,10 @@ displayInfo = ask >>= \env -> liftIO $ do
       dtime   = toRational $ diffUTCTime now (lastCheckTime x)
       instAvg = fromRational $ toRational recent / dtime :: Double
   return $ unlines $ fmap unwords $
-    [ ["many_tests_run     =", show (lastTestCount x)]
+    [ ["many_tests_run     =", show count]
     , ["failed_tests_count =", show failed]
     , ["total_running_time =", printf "%.4i:%.2i:%.2i:%2.4f" days hours mins secs]
+    , ["tests_since_last_report         =", show recent]
     , ["total_average_tests_per_second  =", printf "%.2f" runAvg ]
     , ["recent_average_tests_per_second =", printf "%.2f" instAvg]
     , if null stats then [] else [stats]
@@ -617,6 +622,22 @@ runSingleTest reportBracket i = local (\env -> env{currentTestID=Just i}) $ do
         OK     () -> modTestEnv_ testStatistics (const stats) >> return True
       return $ maybe False (const True) done
 
+-- | With the list of integers given as command line parameters, generate tests but don't evaluate
+-- them, just print them to the standard output channel.
+showTestMode :: [String] -> GTest c e s t r ()
+showTestMode args = ask >>= \env -> do
+  disp <- unit showTest
+  case disp of
+    Nothing   -> fail "Show Tests mode not available for this unit test"
+    Just disp -> case args of
+      "-":args -> case args of
+        [] -> liftIO $ fix $ \loop -> isEOF >>= \stop -> unless stop $
+          getLine >>= readIO >>= (testInIO env . unitTest generateTest) >>=
+            liftIO . putStrLn . disp >> loop
+        arg:_ -> fail (show arg++"Must not specify any command line arguments after \"-\"")
+      args  -> liftIO (forM args $ readIO >=> evaluate) >>=
+        mapM_ (unitTest generateTest >=> (liftIO . putStrLn . disp))
+
 -- | Read list of test ID's to be executed from STDIN, execute each test after reading each line of
 -- input.
 stdinMode :: GTest c e s t r ()
@@ -658,6 +679,7 @@ singleThreaded i = ask >>= \env -> void $ catchToLog "main test cycle" $ do
   failMax <- asksTestConfig maxErrors
   (fix $ \loop i -> do
       passed <- runSingleTest id i
+      updateClock
       trySaveTestID i
       failed <- liftIO $ readMVar (errorCounter env)
       if failed<failMax

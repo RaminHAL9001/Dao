@@ -203,6 +203,7 @@ unitTester =
   , newEnvironment  = return . const mempty
   , newStatistics   = return . const ()
   , showStatistics  = const ""
+  , showTest        = Just show
   , newResult       = return $
       TestResult
       { testCase = error "test result data not initialized with test case"

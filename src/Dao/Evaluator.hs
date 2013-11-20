@@ -1684,7 +1684,7 @@ selectModules xunit names = do
 evalScriptString :: ExecUnit -> String -> Exec ()
 evalScriptString xunit instr =
   void $ execNested T.Void $ mapM_ execute $
-    case parse (daoGrammar{mainParser = many script <|> return []}) mempty instr of
+    case parse (daoGrammar{mainParser = concat <$> (many script <|> return [])}) mempty instr of
       Backtrack -> error "cannot parse expression"
       PFail tok -> error ("error: "++show tok)
       OK   expr -> concatMap toInterm expr

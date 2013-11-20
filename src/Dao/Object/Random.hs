@@ -51,6 +51,8 @@ import qualified Data.IntMap           as I
 
 import           System.Random
 
+import Debug.Trace
+
 ----------------------------------------------------------------------------------------------------
 
 randObjMap :: (map Object -> Object) -> ([(key, Object)] -> map Object) -> RandO key -> RandO Object
@@ -105,7 +107,7 @@ randSingletonList =
   , randInteger (OComplex (0:+0)) $ \i -> return (OComplex (0 :+ (fromRational (toInteger i % 1))))
   , randInteger (OFloat 0) (fmap (OFloat . fromRational) . randRational)
   , randInteger (OChar '\n') (\i -> return (OChar $ chr $ mod i $ ord (maxBound::Char)))
-  , fmap OString randO
+  , OString <$> randO
   ]
 
 randSingletonWithRefList :: [RandO Object]
@@ -113,29 +115,12 @@ randSingletonWithRefList = fmap ORef randO : randSingletonList
 
 instance HasRandGen Object where
   randO = randChoice $ randSingletonList ++
---  [ randInteger (ORatio 0) (fmap ORatio . randRational)
---  , randInteger (OComplex 0) $ \i0 -> do
---      let (i1, rem) = divMod i0 4
---      real <- fmap fromRational (randRational i1)
---      cplx <- fmap fromRational (randRational rem)
---      return (OComplex (real:+cplx))
     [ fmap ORef  randO
     , fmap OType randO
---  , fmap OPair (pure (,) <*> randO <*> randO)
     , fmap OList (randList 0 40)
---  , fmap (OSet . S.fromList) (randList 0 40)
     , fmap OAbsTime randO
     , fmap ORelTime randO
---  , do -- OArray
---        hi <- nextInt 12
---        lo <- nextInt 8
---        fmap (OArray . listArray (fromIntegral lo, fromIntegral (lo+hi))) $
---          replicateM (hi+1) (limSubRandO ONull)
---  , randObjMap ODict   M.fromList (randO)
---  , randObjMap OIntMap I.fromList randInt
     , fmap OTree randO
---  , fmap OGlob randO
---  , fmap OScript randO
       -- OBytes
     , do  i <- nextInt 10
           fmap (OBytes . Bz.concat) $
@@ -230,9 +215,6 @@ instance HasRandGen CallableCode where
 no :: RandO Location
 no = return LocationUnknown
 
-lit :: Object -> AST_Object
-lit = flip AST_Literal LocationUnknown
-
 instance HasRandGen AST_Ref where
   randO = do
     r <- randList 1 6
@@ -263,18 +245,14 @@ instance HasRandGen PrefixOp where
 instance HasRandGen InfixOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::InfixOp)))
 
---instance HasRandGen AST_ElseIf where
---  randO = randChoice $
---    [ return AST_NullElseIf
---    , pure AST_Else   <*> randO <*> randO <*> no
---    , pure AST_ElseIf <*> randO <*> randO <*> randO <*> no
---    ]
-
 instance HasRandGen AST_If     where { randO = pure AST_If     <*> randO <*> randO <*> no }
 instance HasRandGen AST_Else   where { randO = pure AST_Else   <*> randO <*> randO <*> no }
 instance HasRandGen AST_IfElse where { randO = pure AST_IfElse <*> randO <*> randList 0 4 <*> randO <*> randO <*> no }
 instance HasRandGen AST_While  where { randO = pure AST_While  <*> randO }
 instance HasRandGen AST_Paren  where { randO = pure AST_Paren  <*> randComWith randAssignExpr <*> no }
+
+randReturn :: RandO AST_Object
+randReturn = randChoice $ return AST_Void : randFuncHeaderList
 
 randScriptList :: [RandO AST_Script]
 randScriptList =
@@ -283,8 +261,8 @@ randScriptList =
   , pure AST_WhileLoop    <*> randO
   , pure AST_TryCatch     <*> randO <*> randO <*> randO <*> no
   , pure AST_ForLoop      <*> randO <*> randO <*> randO <*> no
-  , pure AST_ContinueExpr <*> randO <*> randO <*> randComWith randObjectASTVoid <*> no
-  , pure AST_ReturnExpr   <*> randO <*> randComWith randObjectASTVoid <*> no
+  , pure AST_ContinueExpr <*> randO <*> randO <*> randComWith randReturn <*> no
+  , pure AST_ReturnExpr   <*> randO <*> randComWith randReturn <*> no
   , pure AST_WithDoc      <*> randO <*> randO <*> no
   ]
 
@@ -339,10 +317,11 @@ randObjectASTList =
   [ randAssignExpr
   , AST_ObjQualRef <$> randO
   , pure AST_Literal <*> randSingleton <*> no
-  , randPrefixWith (randChoice randSingletonASTList) [INVB, NEGTIV, POSTIV, REF, DEREF]
+  , randPrefixWith randSingletonAST [INVB, NEGTIV, POSTIV]
   , pure AST_Func   <*> randO <*> randO <*> randO <*> randO <*> no
   , pure AST_Lambda <*> randO <*> randO <*> no
   , pure AST_Init   <*> randO <*> randO <*> randO <*> randO <*> no
+  , pure AST_MetaEval <*> randO <*> no
   ] ++ randSingletonASTList
 
 randObjectAST :: RandO AST_Object
@@ -411,7 +390,7 @@ instance HasRandGen a => HasRandGen (AST_TyChk a) where
   randO = randChoice [AST_NotChecked <$> randO, pure AST_Checked <*> randO <*> randO <*> randO <*> no]
 
 instance HasRandGen AST_Param where
-  randO = randChoice [return AST_NoParams, pure AST_Param <*> randO <*> randO <*> no]
+  randO = pure AST_Param <*> randO <*> randO <*> no
 
 instance HasRandGen [Com AST_Param] where { randO = randList 0 8 }
 

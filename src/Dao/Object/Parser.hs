@@ -124,10 +124,9 @@ daoTokenDef = do
   stringLit    <- fullToken  STRINGLIT $ litExpr '"'
   charLit      <- fullToken  CHARLIT   $ litExpr '\''
   -------------------------------------- KEYWORDS AND GROUPING ------------------------------------
-  openers      <- operatorTable $ words "( [ { {#"
-  -- trace ("opener tokens ( [ { {#   ---> "++show openers) $ return ()
+  openers      <- operatorTable $ words "( [ { @{"
   comma        <- emptyToken COMMA (rx ',')
-  operatorTable (words "$ @ -> . ! - ~")
+  -- prefixers    <- operatorTable (words "$ @ -> . ! - ~")
   daoKeywords  <- keywordTable LABEL labelRX $ words $ unwords $
     [ "global local qtime static"
     , "null false true tree date time function func rule"
@@ -139,14 +138,12 @@ daoTokenDef = do
   let withKeyword key func = do
         tok <- getTokID key :: LexBuilderM DaoTT
         return (rx key . (label <> rxEmptyToken tok . func))
-  closers <- operatorTable $ words "#} } ] )"
+  closers <- operatorTable $ words "} ] )"
   [openBrace, closeBrace, openParen, closeParen] <- mapM operator (words "{ } ( )")
-  -- trace ("openBrace = "++show openBrace) $ return ()
   
   ------------------------------------------- OPERATORS -------------------------------------------
   operators    <- operatorTable $ words $ unwords $
     [allUpdateOpStrs, allPrefixOpStrs, allInfixOpStrs, ": ;"]
-  -- trace ("operators: "++show operators) $ return ()
   
   ------------------------------------ DATE/TIME SPECIAL SYNTAX -----------------------------------
   -- makes use of token types that have already been created above
@@ -156,17 +153,18 @@ daoTokenDef = do
       hy   = rx '-'
       timeRX = dd . col . dd . col . dd . opt(dot . number)
   timeExpr <- fullToken TIME timeRX
-  time <- withKeyword "time" $ cantFail "time expression" . space . timeExpr
+  -- time <- withKeyword "time" $ cantFail "time expression" . space . timeExpr
+  time <- withKeyword "time" $ space . timeExpr
   dateExpr <- fullToken DATE $ year . hy . dd . hy . dd
-  date <- withKeyword "date" $ cantFail "date expression" .
-    space . dateExpr . opt(space . timeExpr) . opt(space . label)
+  -- date <- withKeyword "date" $ cantFail "date expression" .
+  date <- withKeyword "date" $ space . dateExpr . opt(space . timeExpr) . opt(space . label)
   
   ------------------------------------------- ACTIVATE --------------------------------------------
   -- activate $
   return $ regexToTableLexer $
     [ space, inlineCom, endlineCom, comma
     , stringLit, charLit, base16, base2, base10Parser
-    , operators, openers, closers
+    , openers, operators, closers
     , date, time, daoKeywords
     ]
 
@@ -394,10 +392,10 @@ paren :: DaoParser AST_Paren
 paren = joinEvalPTableItem parenPTabItem
 
 metaEvalPTabItem :: DaoTableItem AST_Object
-metaEvalPTabItem = tableItemBy "{#" $ \startTok -> expect "object expression after open {# meta-eval brace" $ do
-  scrp <- fmap AST_CodeBlock (many script)
-  expect "closing #} meta-eval brace" $ do
-    endLoc <- tokenBy "#}" asLocation
+metaEvalPTabItem = tableItemBy "@{" $ \startTok -> expect "object expression after open @{ meta-eval brace" $ do
+  scrp <- fmap (AST_CodeBlock . concat) (many script)
+  expect "closing } for meta-eval brace" $ do
+    endLoc <- tokenBy "}" asLocation
     return (AST_MetaEval scrp (asLocation startTok <> endLoc))
 
 singletonPTabItems :: [DaoTableItem AST_Object]
@@ -622,9 +620,13 @@ commentedInPair parser = do
   return (fmap (const a) comntd, loc)
 
 funcCall_arraySubPTab :: DaoPTable AST_Object
-funcCall_arraySubPTab = bindPTable funcHeaderPTab $ \hdr ->
-  flip mplus (return hdr) $ bufferComments >> joinEvalPTable subTable >>= \mk -> return (mk hdr)
+funcCall_arraySubPTab = bindPTable funcHeaderPTab loop
   where
+    loop :: AST_Object -> DaoParser AST_Object
+    loop hdr = flip mplus (return hdr) $ do
+      bufferComments
+      mk <- joinEvalPTable subTable
+      loop (mk hdr)
     subTable :: DaoPTable (AST_Object -> AST_Object)
     subTable = table $
       [ bindPTableItem (commaSepdObjList "(" ")") $ \params ->
@@ -640,11 +642,14 @@ funcCall_arraySub = joinEvalPTable funcCall_arraySubPTab
 -- expressions. It might be better, in the near-future, to make the function header it's own
 -- "newtype".
 funcHeaderPTab :: DaoPTable AST_Object
-funcHeaderPTab = table $
-  [ bindPTableItem referencePTabItem (return . AST_ObjQualRef . AST_Unqualified)
-  , bindPTableItem parenPTabItem (return . AST_ObjParen)
-  , metaEvalPTabItem
-  ] ++ prefixedSingletonPTabItems
+funcHeaderPTab = table $ concat $
+  [ [ bindPTableItem referencePTabItem (return . AST_ObjQualRef . AST_Unqualified)
+    , bindPTableItem parenPTabItem (return . AST_ObjParen)
+    , metaEvalPTabItem
+    ]
+  , prefixedSingletonPTabItems
+  , bindPTableItemList qualReferencePTabItems (return . AST_ObjQualRef)
+  ]
 
 funcHeader :: DaoParser AST_Object
 funcHeader = joinEvalPTable funcHeaderPTab
@@ -664,9 +669,7 @@ arithPrefixPTab = table $ (logicalNOT:) $ flip fmap ["~", "-", "+"] $ \pfxOp ->
 -- prescedence) object expression that can be formed without making use of infix operators.
 objectPTab :: DaoPTable AST_Object
 objectPTab = mconcat $
-  [ funcCall_arraySubPTab, arithPrefixPTab, singletonOrContainerPTab, prefixedSingletonPTab
-  , bindPTable qualReferencePTab (return . AST_ObjQualRef) 
-  ]
+  [funcCall_arraySubPTab, arithPrefixPTab, singletonOrContainerPTab, prefixedSingletonPTab]
 
 -- Evaluates 'objectPTab' to a 'DaoParser'.
 object :: DaoParser AST_Object
@@ -724,16 +727,13 @@ equation = joinEvalPTable equationPTab
 bracketed :: String -> DaoParser (AST_CodeBlock, Location)
 bracketed msg = do
   startLoc <- tokenBy "{" asLocation
-  scrps    <- mplus (many script) (return [])
-  let filtered = scrps >>= \scrp -> case scrp of
-        AST_Comment [] -> []
-        scrp           -> [scrp]
+  scrps    <- concat <$> (many script <|> return [])
   expect ("curly-bracket to close "++msg++" statement") $ do
     a <- look1 id
     endLoc <- tokenBy "}" asLocation
-    return (AST_CodeBlock filtered, startLoc<>endLoc)
+    return (AST_CodeBlock scrps, startLoc<>endLoc)
 
-script :: DaoParser AST_Script
+script :: DaoParser [AST_Script]
 script = joinEvalPTable scriptPTab
 
 ifWhilePTabItem :: String -> (AST_If -> a) -> DaoTableItem a
@@ -768,32 +768,40 @@ ifElsePTabItem = bindPTableItem ifPTabItem (loop []) where
       , return (AST_IfElse ifExpr elsx (Com ()) Nothing (getLocation ifExpr))
       ]
 
-scriptPTab :: DaoPTable AST_Script
+scriptPTab :: DaoPTable [AST_Script]
 scriptPTab = comments <> objExpr <> table exprs where
   objExpr = bindPTable equationPTab $ \obj -> do
     coms <- optSpace
     expect "semicolon after object expression" $ do
       endLoc <- tokenBy ";" asLocation
-      return (AST_EvalObject obj coms (getLocation obj <> endLoc))
-  comments = bindPTable spaceComPTab $ \c1 -> optSpace >>= \c2 -> return (AST_Comment (c1++c2))
-  exprs = fmap (fmap AST_WhileLoop) whilePTabItem : fmap (fmap AST_IfThenElse) ifElsePTabItem :
-    [ tableItemBy "return"   (returnExpr True)
-    , tableItemBy "throw"    (returnExpr False)
-    , tableItemBy "continue" (continExpr True)
-    , tableItemBy "break"    (continExpr False)
+      return [AST_EvalObject obj coms (getLocation obj <> endLoc)]
+  comments = bindPTable spaceComPTab $ \c1 -> optSpace >>= \c2 ->
+    let coms = c1++c2 in if null coms then return [] else return [AST_Comment coms]
+  exprs =
+    [ fmap (fmap (return . AST_WhileLoop)) whilePTabItem 
+    , fmap (fmap (return . AST_IfThenElse)) ifElsePTabItem
+    , returnExpr "return"   True
+    , returnExpr "throw"    False
+    , continExpr "continue" True
+    , continExpr "break"    False
     , tableItemBy "try"   $ \tok -> expect "bracketed script after \"try\" statement" $ do
         tryCom <- commented (bracketed "\"try\" statement")
         let (try, endLoc) = unComment tryCom
         tryCom <- return (fmap (const try) tryCom)
         let done comName catch endLoc = return $
-              AST_TryCatch tryCom comName catch (asLocation tok <> endLoc)
+              [AST_TryCatch tryCom comName catch (asLocation tok <> endLoc)]
         flip mplus (done Nothing mempty endLoc) $ do
           endLoc  <- tokenBy "catch" asLocation
           comName <- optional $ commented $ token LABEL asName
           scrpt   <- optional $ bracketed "\"catch\" statement"
           case scrpt of
-            Nothing              -> done comName Nothing      endLoc
             Just (catch, endLoc) -> done comName (Just catch) endLoc
+            Nothing              -> case comName of
+              Just comName ->
+                expect "semicolon after \"catch\" statement without catch block" $ do
+                  endLoc <- tokenBy ";" asLocation
+                  done (Just comName) Nothing endLoc
+              Nothing      -> done Nothing Nothing endLoc
     , tableItemBy "for"   $ \tok -> expect "iterator label after \"for statement\"" $ do
         comName <- commented (token LABEL asName)
         expect "\"in\" statement after \"for\" statement" $ do
@@ -802,50 +810,45 @@ scriptPTab = comments <> objExpr <> table exprs where
             obj <- commented paren
             expect "bracketed script after \"for-in\" statement" $ do
               (for, endLoc) <- bracketed "\"for\" statement"
-              return (AST_ForLoop comName obj for (asLocation tok <> endLoc))
---    , tableItemBy "while" $ \tok -> expect "conditional expression after \"while\" statement" $ do
---        obj <- commented equation
---        expect "bracketed script after \"while\" statement" $ do
---          (while, endLoc) <- bracketed "\"while\" statement"
---          return (AST_WhileLoop obj while (asLocation tok <> endLoc))
+              return [AST_ForLoop comName obj for (asLocation tok <> endLoc)]
     , tableItemBy "with"  $ \tok -> expect "reference expression after \"with\" statement" $ do
         obj <- commented paren
         expect "bracketed script after \"with\" statement" $ do
           (with, endLoc) <- bracketed "\"with\" statement"
-          return (AST_WithDoc obj with (asLocation tok <> endLoc))
+          return [AST_WithDoc obj with (asLocation tok <> endLoc)]
     ]
   semicolon = tokenBy ";" asLocation
-  returnExpr isReturn tok = do
+  returnExpr key isReturn = tableItemBy key $ \tok -> do
     obj    <- commented (equation <|> return AST_Void)
-    expect ("semicolon after \""++asString tok++"\" statement") $ do
+    expect ("semicolon after \""++key++"\" statement") $ do
       endLoc <- semicolon
-      return (AST_ReturnExpr isReturn obj (asLocation tok <> endLoc))
-  continExpr isContin tok = do
+      return [AST_ReturnExpr isReturn obj (asLocation tok <> endLoc)]
+  continExpr key isContin = tableItemBy key $ \tok -> do
     let startLoc = asLocation tok
-    let msg e = concat $
-          [e, " after ", if isContin then "\"continue" else "\"break", "-if\" statement"]
+    let msg e = concat [e, " after \"", key, "-if\" statement"]
     coms <- optSpace
     msum $
       [do endLoc <- semicolon
-          return (AST_ContinueExpr isContin coms (Com AST_Void) (startLoc<>endLoc))
+          return [AST_ContinueExpr isContin coms (Com AST_Void) (startLoc<>endLoc)]
       ,do tokenBy "if" as0
           expect (msg "conditional expression") $ do
             obj <- commented equation
             expect (msg "semicolon") $ do
               endLoc <- semicolon
-              return (AST_ContinueExpr isContin coms obj (startLoc<>endLoc))
+              return [AST_ContinueExpr isContin coms obj (startLoc<>endLoc)]
       , fail (msg "expecting optional object expression followed by a semicolon")
       ]
 
 ----------------------------------------------------------------------------------------------------
 
-toplevelPTab :: DaoPTable AST_TopLevel
+toplevelPTab :: DaoPTable [AST_TopLevel]
 toplevelPTab = table expr <> comments <> scriptExpr where
-  comments = bindPTable spaceComPTab (\c1 -> optSpace >>= \c2 -> return (AST_TopComment (c1++c2)))
-  scriptExpr = bindPTable scriptPTab $ \obj -> return (AST_TopScript obj (getLocation obj))
+  comments = bindPTable spaceComPTab $ \c1 -> optSpace >>= \c2 -> return $
+    let coms = c1++c2 in if null coms then [] else [AST_TopComment (c1++c2)]
+  scriptExpr = bindPTable scriptPTab $ return . map (\obj -> AST_TopScript obj (getLocation obj))
   expr =
-    [ event    "BEGIN"  , event    "END"     , event   "EXIT"
-    , header   "require", header   "import"
+    [ event  "BEGIN"  , event  "END"   , event  "EXIT"
+    , header "require", header "import"
     ]
   singlePattern = commented equation >>= \eqn -> return ([eqn], getLocation (unComment eqn))
   event   lbl = tableItemBy lbl $ \tok -> do
@@ -853,7 +856,7 @@ toplevelPTab = table expr <> comments <> scriptExpr where
     coms <- optSpace
     expect ("bracketed script after \""++exprType++"\" statement") $ do
       (event, endLoc) <- bracketed ('"':exprType++"\" statement")
-      return (AST_Event (read lbl) coms event (asLocation tok <> endLoc))
+      return [AST_Event (read lbl) coms event (asLocation tok <> endLoc)]
   strlit = table $
     [ tableItemBy STRINGLIT $ \tok -> case readsPrec 0 (asString tok) of
         [(sym, "")] -> return (AST_Literal (OString (ustr (sym::String))) (asLocation tok))
@@ -865,10 +868,10 @@ toplevelPTab = table expr <> comments <> scriptExpr where
       expr <- commented (joinEvalPTable strlit)
       expect ("semicolon after \""++lbl++"\" statement") $ do
         endLoc <- tokenBy ";" asLocation
-        return $ AST_Attribute (ustr lbl) expr $
-          (asLocation startTok <> (getLocation (unComment expr)))
+        return $
+          [AST_Attribute (ustr lbl) expr $ asLocation startTok <> (getLocation (unComment expr))]
 
-toplevel :: DaoParser AST_TopLevel
+toplevel :: DaoParser [AST_TopLevel]
 toplevel = joinEvalPTable toplevelPTab
 
 ----------------------------------------------------------------------------------------------------
@@ -877,7 +880,7 @@ daoParser :: DaoParser AST_SourceCode
 daoParser = do
   let loop dx = msum
         [ isEOF >>= guard >> return dx
-        , toplevel >>= \d -> loop (dx++[d])
+        , toplevel >>= \d -> loop (dx++d)
         , fail "syntax error on token"
         ]
   src <- loop []

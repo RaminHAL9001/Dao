@@ -259,7 +259,7 @@ instance PPrintable AST_If where
 
 instance PPrintable AST_Else where
   pPrint (AST_Else coms (AST_If ifn thn _) _) =
-    pClosure (pPrintComWith (\ () -> pString "else ") coms >> pString "if") "{" "}" [pPrint thn]
+    pClosure (pPrintComWith (\ () -> pString "else ") coms >> pString "if" >> pPrint ifn) "{" "}" [pPrint thn]
 
 instance PPrintable AST_IfElse where
   pPrint (AST_IfElse ifn els coms deflt _) = do
@@ -294,7 +294,7 @@ instance PPrintable AST_Script where
       maybe (return ()) id $ msum $
         [ cQRef >>= \qref -> xcScrpXp >>= \xscrp -> Just $
             pClosure (pString "catch " >> pPrint qref) "{" "}" [pPrint xscrp]
-        , cQRef    >>= \qref  -> Just $ pString "catch " >> pPrint qref
+        , cQRef    >>= \qref  -> Just $ pString "catch " >> pPrint qref >> pString ";"
         , xcScrpXp >>= \xscrp -> Just $ pClosure (pString "catch ") "{" "}" [pPrint xscrp]
         ]
     AST_ForLoop      cNm        cObjXp    xcScrpXp  _ ->
@@ -331,7 +331,7 @@ instance PPrintable AST_OptObjList where
   pPrint o = case o of
     AST_NoObjList                           com2 -> pPrint com2
     AST_OptObjList (AST_ObjList com1 lst _) com2 ->
-      pInline [pPrint com1, pList_ "{" ", " "}" (map pPrint lst), pPrint com2]
+      pInline [pPrint com1, pList_ "(" ", " ")" (map pPrint lst), pPrint com2]
 
 instance PPrintable AST_LValue where { pPrint (AST_LValue o) = pPrint o }
 
@@ -378,7 +378,7 @@ instance PPrintable AST_Object where
     AST_Func     co nm ccNmx   xcObjXp     _ ->
       pClosure (pInline [pString "function ", pPrint co, pPrint nm, pPrint ccNmx]) "{" "}" [pPrint xcObjXp]
     AST_Rule           ccNmx   xcObjXp     _ -> pClosure (pPrint ccNmx) "{" "}" [pPrint xcObjXp]
-    AST_MetaEval cObjXp                    _ -> pInline [pString "{#", pPrint cObjXp, pString "#}"]
+    AST_MetaEval cObjXp                    _ -> pInline [pString "@{", pPrint cObjXp, pString "}"]
 
 instance PPrintable AST_TopLevel where
   pPrint o = case o of
@@ -451,37 +451,31 @@ instance PPrintable TypeSym where
       concat [[pPrint t], guard (not (null ctx)) >> [pList_ "[" ", " "]" (map pPrint ctx)]]
 
 instance PPrintable TypeStruct where
-  pPrint (TypeStruct tx) = case tx of
-    []  -> pString "void"
-    [a] -> pPrint a
-    ax  -> pList (pString "type") "(" ", " ")" (map pPrint ax)
+  pPrint (TypeStruct tx) = pList (pString "type") "(" ", " ")" (map pPrint tx)
 
 instance PPrintable ObjType where
-  pPrint (ObjType tx) = case tx of
-    []  -> return ()
-    [a] -> pPrint a
-    ax  -> pList (pString "anyOf") "(" ", " ")" (map pPrint tx)
+  pPrint (ObjType tx) = pList (pString "anyOf") "(" ", " ")" (map pPrint tx)
 
 instance PPrintable CoreType where
   pPrint t = pString $ case t of
-    NullType     -> "null"
-    TrueType     -> "true"
-    TypeType     -> "type"
-    IntType      -> "int"
-    WordType     -> "word"
-    DiffTimeType -> "difftime"
-    FloatType    -> "float"
-    LongType     -> "long"
-    RatioType    -> "ratio"
-    ComplexType  -> "complex"
-    TimeType     -> "time"
-    CharType     -> "char"
-    StringType   -> "string"
-    RefType      -> "ref"
-    ListType     -> "list"
-    TreeType     -> "tree"
-    BytesType    -> "data"
-    HaskellType  -> "HaskellDataType"
+    NullType     -> "Null"
+    TrueType     -> "True"
+    TypeType     -> "Type"
+    IntType      -> "Int"
+    WordType     -> "Word"
+    DiffTimeType -> "Difftime"
+    FloatType    -> "Float"
+    LongType     -> "Long"
+    RatioType    -> "Ratio"
+    ComplexType  -> "Complex"
+    TimeType     -> "Time"
+    CharType     -> "Char"
+    StringType   -> "String"
+    RefType      -> "Ref"
+    ListType     -> "List"
+    TreeType     -> "Tree"
+    BytesType    -> "Data"
+    HaskellType  -> "Foreign"
 
 ----------------------------------------------------------------------------------------------------
 

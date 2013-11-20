@@ -195,11 +195,11 @@ parseWith p (Dao str) = case parse (daoGrammar{mainParser=p}) mempty str of
   PFail err -> error (show err)
 
 -- | Parse a 'Dao.Object.AST.AST_TopLevel'.
-parseTopExpr :: Dao String -> IO (Dao AST_TopLevel)
+parseTopExpr :: Dao String -> IO (Dao [AST_TopLevel])
 parseTopExpr = parseWith toplevel
 
 -- | Parse a 'Dao.Object.AST.AST_Script'.
-parseScriptExpr :: Dao String -> IO (Dao AST_Script)
+parseScriptExpr :: Dao String -> IO (Dao [AST_Script])
 parseScriptExpr = parseWith script
 
 -- | Parse a 'Dao.Object.AST.AST_Object'.
@@ -207,11 +207,11 @@ parseObjExpr :: Dao String -> IO (Dao AST_Object)
 parseObjExpr = parseWith equation
 
 -- | Parse a 'Dao.Object.AST.AST_TopLevel' from an ordinary 'Prelude.String'.
-readTopExpr :: String -> IO (Dao AST_TopLevel)
+readTopExpr :: String -> IO (Dao [AST_TopLevel])
 readTopExpr = parseTopExpr . Dao
 
 -- | Parse a 'Dao.Object.AST.AST_TopLeve' from an ordinary 'Prelude.String'.
-readScriptExpr :: String -> IO (Dao AST_Script)
+readScriptExpr :: String -> IO (Dao [AST_Script])
 readScriptExpr = Dao.Prelude.parseScriptExpr . Dao
 
 -- | Parse a 'Dao.Object.AST.AST_TopLeve' from an ordinary 'Prelude.String'.

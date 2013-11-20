@@ -48,6 +48,9 @@ instance HasNullValue AST_Ref where
   testNull AST_RefNull = True
   testNull _ = False
 
+astRef :: [Name] -> AST_Ref
+astRef nx = if null nx then AST_RefNull else AST_Ref (head nx) (map Com (tail nx)) LocationUnknown
+
 data AST_QualRef
   = AST_Unqualified                      AST_Ref
   | AST_Qualified RefQualifier [Comment] AST_Ref Location

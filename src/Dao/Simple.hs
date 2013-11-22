@@ -641,16 +641,21 @@ evalDataOperand addr o = do
     Nothing   -> badEval o [(Label $ text "dataType", XPTR addr)]
     Just eval -> eval o
 
+-- Automatically reverse and clear the stack, append the given parameters, and pair them with the
+-- 'Label' parameters, placing the remaining unpaired items back onto the stack and setting the
+-- registers by the pairs. Throw an error if there are not enough arguments to pair with the 'Label'
+-- parameters.
 matchArgs :: Monad m => [Label] -> [XData] -> RunT m ()
 matchArgs argVars argValues = do
+  stk <- gets evalStack
   let loop m ax bx = case (ax, bx) of
         (ax  , []  ) -> Just (m, [])
         ([]  , _   ) -> Nothing
         (a:ax, b:bx) -> loop ((a,b):m) ax bx
-  case loop [] argVars argValues of
+  case loop [] argVars (reverse stk ++ argValues) of
     Nothing -> evalError "FuncCall" "notEnoughParams" (XLIST (mkXArray argValues))
     Just (elms, rem) -> get >>= \old ->
-      modify $ \st -> st{registers=M.fromList elms, evalStack=rem}
+      modify $ \st -> st{registers=M.fromList elms, evalStack=reverse rem}
 
 setupJumpRegisters :: Monad m => Array Int XCommand -> RunT m ()
 setupJumpRegisters block = modify $ \st ->
@@ -787,7 +792,6 @@ instance Evaluable XEval where
     XLOCAL  a b   -> mapM eval b >>= callLocalMethod a
     XGOTO   a b   -> eval a >>= \a -> case a of
       XFUNC argParams (XBlock (Just block)) -> do
-        stk <- gets evalStack
         argValues <- mapM eval b
         modify $ \st ->
           st{ registers      = mempty
@@ -795,7 +799,7 @@ instance Evaluable XEval where
             , programCounter = 0
             , currentBlock   = Just block
             }
-        matchArgs argParams (reverse stk ++ argValues)
+        matchArgs argParams argValues
         setupJumpRegisters block
         gets lastResult
       XFUNC _ (XBlock Nothing) -> gets lastResult

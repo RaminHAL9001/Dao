@@ -1837,23 +1837,24 @@ initObjIfc =
 
 -- | A handy monadic interface for defining an 'ObjectInterface' using nice, clean procedural
 -- syntax.
-newtype DaoClassDef typ a = DaoClassDef { daoClassDefState :: State (ObjIfc typ) a }
-instance Typeable typ => Functor (DaoClassDef typ) where
-  fmap f (DaoClassDef m) = DaoClassDef (fmap f m)
-instance Typeable typ => Monad (DaoClassDef typ) where
-  return = DaoClassDef . return
-  (DaoClassDef m) >>= f = DaoClassDef (m >>= daoClassDefState . f)
-instance Typeable typ => Applicative (DaoClassDef typ) where { pure=return; (<*>)=ap; }
+type    DaoClassDef typ = DaoClassDefM typ ()
+newtype DaoClassDefM typ a = DaoClassDefM { daoClassDefState :: State (ObjIfc typ) a }
+instance Typeable typ => Functor (DaoClassDefM typ) where
+  fmap f (DaoClassDefM m) = DaoClassDefM (fmap f m)
+instance Typeable typ => Monad (DaoClassDefM typ) where
+  return = DaoClassDefM . return
+  (DaoClassDefM m) >>= f = DaoClassDefM (m >>= daoClassDefState . f)
+instance Typeable typ => Applicative (DaoClassDefM typ) where { pure=return; (<*>)=ap; }
 
 -- not for export
-updObjIfc :: Typeable typ => (ObjIfc typ -> ObjIfc typ) -> DaoClassDef typ ()
-updObjIfc = DaoClassDef . modify
+updObjIfc :: Typeable typ => (ObjIfc typ -> ObjIfc typ) -> DaoClassDefM typ ()
+updObjIfc = DaoClassDefM . modify
 
 -- | The callback function defined here is used when objects of your @typ@ can be constructed from
 -- some other 'Object'. This function is used to convert an 'Object' of another types to an data
 -- type of your @typ@ when it is necessary to do so (for example, evaluating the @==@ or @!=@
 -- operator).
-defCastFrom :: Typeable typ => (Object -> typ) -> DaoClassDef typ ()
+defCastFrom :: Typeable typ => (Object -> typ) -> DaoClassDefM typ ()
 defCastFrom fn = updObjIfc(\st->st{objIfcCastFrom=Just fn})
 
 -- | The callback function defined here is used where objects of your @typ@ might be compared to
@@ -1868,7 +1869,7 @@ defCastFrom fn = updObjIfc(\st->st{objIfcCastFrom=Just fn})
 -- @Prelude.==@ function is evaluated. If you eventually never define a type casting funcion using
 -- 'defCastFrom', this function will fail, but it will fail lazily and at runtime, perhaps when you
 -- least expect it, so be sure to define 'defCastFrom' at some point.
-autoDefEquality :: (Typeable typ, Eq typ, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDef typ ()
+autoDefEquality :: (Typeable typ, Eq typ, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDefM typ ()
 autoDefEquality = defEquality (==)
 
 -- | The callback function defined here is used where objects of your @typ@ might be compared to
@@ -1880,7 +1881,7 @@ autoDefEquality = defEquality (==)
 -- This function differs from 'autoDefEquality' because you must provide a customized equality
 -- relation for your @typ@, if the 'autoDefEquality' and 'defCastFrom' functions are to be avoided
 -- for some reason.
-defEquality :: (Typeable typ, Eq typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> typ -> Bool) -> DaoClassDef typ ()
+defEquality :: (Typeable typ, Eq typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> typ -> Bool) -> DaoClassDefM typ ()
 defEquality fn = updObjIfc(\st->st{objIfcEquality=Just fn})
 
 -- | The callback function defined here is used where objects of your @typ@ might be compared to
@@ -1895,7 +1896,7 @@ defEquality fn = updObjIfc(\st->st{objIfcEquality=Just fn})
 -- is evaluated. If you eventually never define a type casting funcion using 'defCastFrom', this
 -- function will fail, but it will fail lazily and at runtime, perhaps when you least expect it, so
 -- be sure to define 'defCastFrom' at some point.
-autoDefOrdering :: (Typeable typ, Ord typ, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDef typ ()
+autoDefOrdering :: (Typeable typ, Ord typ, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDefM typ ()
 autoDefOrdering = defOrdering compare
 
 -- | The callback function defined here is used where objects of your @typ@ might be compared to
@@ -1906,7 +1907,7 @@ autoDefOrdering = defOrdering compare
 -- 
 -- Define a customized ordering for your @typ@, if the 'autoDefEquality' and 'defCastFrom'
 -- functions are to be avoided for some reason.
-defOrdering :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> typ -> Ordering) -> DaoClassDef typ ()
+defOrdering :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> typ -> Ordering) -> DaoClassDefM typ ()
 defOrdering fn = updObjIfc(\st->st{objIfcOrdering=Just fn})
 
 -- | The callback function defined here is used if an object of your @typ@ should ever need to be
@@ -1915,7 +1916,7 @@ defOrdering fn = updObjIfc(\st->st{objIfcOrdering=Just fn})
 -- 
 -- It automatically define the binary encoder and decoder using the 'Data.Binary.Binary' class
 -- instantiation for this @typ@.
-autoDefBinaryFmt :: (Typeable typ, D.Binary typ MethodTable, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDef typ ()
+autoDefBinaryFmt :: (Typeable typ, D.Binary typ MethodTable, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDefM typ ()
 autoDefBinaryFmt = defBinaryFmt D.put D.get
 
 -- | This function is used if an object of your @typ@ should ever need to be stored into a binary
@@ -1927,10 +1928,10 @@ autoDefBinaryFmt = defBinaryFmt D.put D.get
 -- binary formatted object by the Dao system if you define the encoder and decoder using this
 -- function. However, it would be better if you instantiated 'Data.Binary.Binary' and used
 -- 'autoDefBinaryFmt' instead.
-defBinaryFmt :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> Put) -> Get typ -> DaoClassDef typ ()
+defBinaryFmt :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> Put) -> Get typ -> DaoClassDefM typ ()
 defBinaryFmt put get = updObjIfc(\st->st{objIfcBinaryFormat=Just(put,get)})
 
-autoDefNullTest :: (Typeable typ, HasNullValue typ, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDef typ ()
+autoDefNullTest :: (Typeable typ, HasNullValue typ, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDefM typ ()
 autoDefNullTest = defNullTest testNull
 
 -- | The callback function defined here is used if an object of your @typ@ is ever used in an @if@
@@ -1938,26 +1939,26 @@ autoDefNullTest = defNullTest testNull
 -- of a null value, which will cause the @if@ or @while@ test to fail and execution of the Dao
 -- program will branch accordingly. There is no default method for this function so it must be
 -- defined by this function, otherwise your object cannot be tested by @if@ or @while@ statements.
-defNullTest :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> Bool) -> DaoClassDef typ ()
+defNullTest :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> Bool) -> DaoClassDefM typ ()
 defNullTest fn = updObjIfc(\st->st{objIfcNullTest=Just fn})
 
 -- | The callback function defined here is used if an object of your @typ@ is ever used in a @for@
 -- statement in a Dao program. However it is much better to instantiate your @typ@ into the
 -- 'HasIterator' class and use 'autoDefIterator' instead.
-defIterator :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> Exec [Object]) -> (typ -> [Object] -> Exec typ) -> DaoClassDef typ ()
+defIterator :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> Exec [Object]) -> (typ -> [Object] -> Exec typ) -> DaoClassDefM typ ()
 defIterator iter fold = updObjIfc(\st->st{objIfcIterator=Just(iter,fold)})
 
 -- | Using the instantiation of the 'HasIterator' class for your @typ@, installs the necessary
 -- callbacks into the 'ObjectInterface' to allow your data type to be iterated over in the Dao
 -- programming language when it is used in a "for" statement.
-autoDefIterator :: (Typeable typ, HasIterator typ, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDef typ ()
+autoDefIterator :: (Typeable typ, HasIterator typ, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDefM typ ()
 autoDefIterator = defIterator iterateObject foldObject
 
--- | The callback function defined here is used at any point in a Dao program where a variable is
--- subscripted with square brackets, for example in the statement: @x[0] = t[1][A][B];@ The object
--- passed to your callback function is the object containing the subscript value. So in the above
--- example, if the local variables @x@ and @t@ are both values of your @typ@, this callback function
--- will be evaluated four times:
+-- | The callback function defined here is used at any point in a Dao program where an expression
+-- containing your object typ is subscripted with square brackets, for example in the statement:
+-- @x[0] = t[1][A][B];@ The object passed to your callback function is the object containing the
+-- subscript value. So in the above example, if the local variables @x@ and @t@ are both values of
+-- your @typ@, this callback function will be evaluated four times:
 -- 1.  with the given 'Object' parameter being @('OInt' 0)@ and the @typ@ parameter as the value stored in
 --     the local variable @x@.
 -- 2.  with the given 'Object' parameter being @('OInt' 1)@ and the @typ@ parameter as the value
@@ -1971,7 +1972,7 @@ autoDefIterator = defIterator iterateObject foldObject
 -- > a[0,1,2]
 -- are evaluated by the "Dao.Evaluator" module in the exact same way as statements like this:
 -- > a[0][1][2]
-defIndexer :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> Object -> Exec Object) -> DaoClassDef typ ()
+defIndexer :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> Object -> Exec Object) -> DaoClassDefM typ ()
 defIndexer fn = updObjIfc(\st->st{objIfcIndexer=Just fn})
 
 -- | The callback defined here is used when an object of your @typ@ is on the left-hand side of the
@@ -1985,13 +1986,13 @@ defIndexer fn = updObjIfc(\st->st{objIfcIndexer=Just fn})
 -- 
 -- This function automatically defines the tree encoder and decoder using the 'Structured' class
 -- instantiation for this @typ@.
-autoDefTreeFormat :: (Typeable typ, Structured typ Object, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDef typ ()
+autoDefTreeFormat :: (Typeable typ, Structured typ Object, ObjectClass typ Object (ObjectInterface typ)) => DaoClassDefM typ ()
 autoDefTreeFormat = defTreeFormat (return . dataToStruct) (execFromPValue . structToData)
 
 -- | If for some reason you need to define a tree encoder and decoder for the 'ObjectInterface' of
 -- your @typ@ without instnatiating 'Structured', use this function to define the tree encoder an
 -- decoder directly
-defTreeFormat :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> Exec T_tree) -> (T_tree -> Exec typ) -> DaoClassDef typ ()
+defTreeFormat :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> Exec T_tree) -> (T_tree -> Exec typ) -> DaoClassDefM typ ()
 defTreeFormat encode decode = updObjIfc(\st->st{objIfcTreeFormat=Just(encode,decode)})
 
 -- | The callback defined here is used when a Dao program makes use of the static initialization
@@ -2004,7 +2005,7 @@ defTreeFormat encode decode = updObjIfc(\st->st{objIfcTreeFormat=Just(encode,dec
 -- evaluated with a list of object values passed as the first parameter which contain the object
 -- values written in the parentheses, and a 'T_tree' as the second paramter containing the tree
 -- structure that was constructed with the expression in the braces.
-defInitializer :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => ([Object] -> [Object] -> Exec typ) -> DaoClassDef typ ()
+defInitializer :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => ([Object] -> [Object] -> Exec typ) -> DaoClassDefM typ ()
 defInitializer fn = updObjIfc(\st->st{objIfcInitializer=Just fn})
 
 -- | Overload update/assignment operators in the Dao programming language, for example @=@, @+=@,
@@ -2017,7 +2018,7 @@ defInitializer fn = updObjIfc(\st->st{objIfcInitializer=Just fn})
 -- If you define two callbacks for the same 'UpdateOp', this will result in a runtime error,
 -- hopefully the error will occur during the Dao runtime's object loading phase, and not while
 -- actually executing a program.
-defUpdateOp :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => UpdateOp -> (UpdateOp -> typ -> Object -> Exec Object) -> DaoClassDef typ ()
+defUpdateOp :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => UpdateOp -> (UpdateOp -> typ -> Object -> Exec Object) -> DaoClassDefM typ ()
 defUpdateOp op fn = updObjIfc(\st->st{objIfcUpdateOpTable=objIfcUpdateOpTable st++[(op, fn)]})
 
 -- | Overload infix operators in the Dao programming language, for example @+@, @*@, or @<<@.
@@ -2029,8 +2030,8 @@ defUpdateOp op fn = updObjIfc(\st->st{objIfcUpdateOpTable=objIfcUpdateOpTable st
 -- If you define two callbacks for the same 'UpdateOp', this will result in a runtime error,
 -- hopefully the error will occur during the Dao runtime's object loading phase, and not while
 -- actually executing a program.
-defInfixOp :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => InfixOp -> (InfixOp -> typ -> Object -> Exec Object) -> DaoClassDef typ ()
-defInfixOp  op fn = updObjIfc $ \st -> st{objIfcInfixOpTable  = objIfcInfixOpTable  st ++ [(op, fn)] }
+defInfixOp :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => InfixOp -> (InfixOp -> typ -> Object -> Exec Object) -> DaoClassDefM typ ()
+defInfixOp op fn = updObjIfc $ \st -> st{objIfcInfixOpTable  = objIfcInfixOpTable  st ++ [(op, fn)] }
 
 -- | Overload prefix operators in the Dao programming language, for example @@@, @$@, @-@, and @+@.
 -- 
@@ -2041,7 +2042,7 @@ defInfixOp  op fn = updObjIfc $ \st -> st{objIfcInfixOpTable  = objIfcInfixOpTab
 -- If you define two callbacks for the same 'UpdateOp', this will result in a runtime error,
 -- hopefully the error will occur during the Dao runtime's object loading phase, and not while
 -- actually executing a program.
-defPrefixOp :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => PrefixOp -> (PrefixOp -> typ -> Exec Object) -> DaoClassDef typ ()
+defPrefixOp :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => PrefixOp -> (PrefixOp -> typ -> Exec Object) -> DaoClassDefM typ ()
 defPrefixOp op fn = updObjIfc $ \st -> st{objIfcPrefixOpTable = objIfcPrefixOpTable st ++ [(op, fn)] }
 
 -- | Define static functions which can be called on objects of your @typ@. If you define a function here
@@ -2059,18 +2060,18 @@ defPrefixOp op fn = updObjIfc $ \st -> st{objIfcPrefixOpTable = objIfcPrefixOpTa
 -- runtime, and so the functions defined at runtime should not be masked by functions defined by
 -- 'defMethod'. The 'defMethod' functions, therefore, are the immutable default functions for those
 -- function names.
---defMethod :: Typeable typ => Name -> (typ -> DaoFunc) -> DaoClassDef typ ()
+--defMethod :: Typeable typ => Name -> (typ -> DaoFunc) -> DaoClassDefM typ ()
 --defMethod nm fn = updObjIfc $ \st ->
 --  st{objIfcMethods = T.execUpdateTree (T.goto [nm] >> T.modifyLeaf(<>(Just [fn]))) (objIfcMethods st)}
 
-defCallable :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> Exec [CallableCode]) -> DaoClassDef typ ()
+defCallable :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => (typ -> Exec [CallableCode]) -> DaoClassDefM typ ()
 defCallable fn = updObjIfc (\st -> st{objIfcCallable=Just fn})
 
 -- | Rocket. Yeah. Sail away with you.
-defLeppard :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => rocket -> yeah -> DaoClassDef typ ()
+defLeppard :: (Typeable typ, ObjectClass typ Object (ObjectInterface typ)) => rocket -> yeah -> DaoClassDefM typ ()
 defLeppard _ _ = return ()
 
--- | Use this function and the handy 'DaoClassDef' monad to define the 'objectInterface' function of
+-- | Use this function and the handy 'DaoClassDefM' monad to define the 'objectInterface' function of
 -- the 'ObjectClass' class:
 -- > instance 'ObjectClass' MyData where
 -- >     objectInterface = defObjectInterface initVal $ do
@@ -2081,7 +2082,7 @@ defLeppard _ _ = return ()
 -- 'Data.Typeable.typeOf' to extract a 'Data.Typeable.TypeRep'. If the value is 'Prelude.undefined'
 -- or otherwise evalautes to the bottom element, the 'objectInterface' will evaluate to the bottom
 -- element as well and will error at runtime, possibly when you least expect it to.
-defObjectInterface :: Typeable typ => typ -> DaoClassDef typ ig -> ObjectInterface typ
+defObjectInterface :: Typeable typ => typ -> DaoClassDefM typ ig -> ObjectInterface typ
 defObjectInterface init defIfc =
   ObjectInterface
   { objHaskellType    = typ

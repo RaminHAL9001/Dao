@@ -25,6 +25,7 @@
 module Dao.Object.Builtins where
 
 import           Dao.String
+import qualified Dao.Tree     as T
 import           Dao.Token
 import           Dao.Object
 import           Dao.Runtime
@@ -37,6 +38,22 @@ import           Dao.Object.Binary
 import           Dao.Object.Struct
 import           Dao.Object.Parser
 import           Dao.Object.DeepSeq
+
+listClass :: DaoClassDef [Object]
+listClass = do
+  autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefIterator
+  defBinaryFmt putUnwrapped getUnwrapped
+  defTreeFormat (return . T.Leaf . OList) $ \t -> case T.getLeaf t of
+    Just (OList o) -> return o
+    _              -> fail "expecting list"
+  defInitializer $ \args o -> do
+    unless (null args) (fail "list constructor takes no arguments")
+    return (OList o)
+  let append fn op = fn $ \o p -> case p of
+    OList p -> OList (o++p)
+    _       -> fail "appending to list, object not of list type"
+  append defUpdateOp UADD
+  append defInfixOp  ADD
 
 
 

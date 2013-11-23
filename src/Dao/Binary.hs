@@ -84,8 +84,6 @@ import qualified Data.Binary          as B
 import qualified Data.Binary.Get      as B
 import qualified Data.Binary.Put      as B
 
-import Debug.Trace
-
 ----------------------------------------------------------------------------------------------------
 
 type Byte = Word8

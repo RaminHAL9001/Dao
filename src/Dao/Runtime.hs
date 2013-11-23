@@ -44,6 +44,7 @@ import           Dao.String
 import           Control.Concurrent.MVar
 
 import           Data.Typeable
+import           Data.Dynamic
 import qualified Data.Map       as M
 
 ----------------------------------------------------------------------------------------------------

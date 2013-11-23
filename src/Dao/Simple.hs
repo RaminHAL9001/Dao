@@ -31,7 +31,7 @@ import qualified Dao.Tree                  as T
 
 import           Data.Char
 import           Data.Bits
-import           Data.List (intercalate)
+import           Data.List (intercalate, stripPrefix)
 import           Data.Monoid
 import           Data.Dynamic
 import           Data.Array.IArray
@@ -46,6 +46,73 @@ import           Control.Monad.State
 import           Control.Monad.Error hiding (Error)
 import           Control.Monad.Trans
 import           Control.Monad.IO.Class
+
+import           System.IO
+
+----------------------------------------------------------------------------------------------------
+
+-- | This is a simple monadic interface for interacting with a mini-Dao runtime. You can evaluate
+-- computations of this type using 'runDaoIO' in your main function. It instantiates
+-- 'Control.Monad.IO.MonadIO' so you can read from and write to a command line interface, load
+-- modules from files fork threads, and do anything else you need to do. This monad takes an
+-- optional state parameter which could be @()@, or it could contain a data structure containing
+-- stateful data, for example a command line history.
+-- 
+-- When you run a computation using 'runDaoIO', you should provide builtin modules using
+-- 'installModule', and load modules from files using 'loadModule'. You can then construct a
+-- read-eval-print loop which pre-processes input into a list of @['Text']@ objects, and broadcasts
+-- that input to the various modules. You can select which modules you want using 'selectModule',
+-- and you can evaluate a query in a module using 'evalQuery'.
+newtype DaoIO st a = DaoIO{ daoStateT :: StateT (st, Runtime IO) IO a }
+  deriving (Functor, Applicative, Monad, MonadIO)
+instance MonadState st (DaoIO st) where
+  state f = DaoIO $ state $ \ (st, run) -> let (a, st) = f st in (a, (st, run))
+
+-- | Using the 'DeclareRuntime' monad, you can install built-in modules. Built-in modules are
+-- constructed using the 'DeclareRuntime' interface, the 'installModule' function applies this
+-- function to the runtime. For example, suppose you have a function called @xmlFile@ of type
+-- 'DeclareRuntime' which constructs a built-in module, and this module provides an interface for
+-- the mini-Dao language to work with XML files. If you want this module to be provided in your Dao
+-- program, simply evaluate @'installModule' xmlFile@ in the main 'runDaoIO' function.
+installModule :: DeclareRuntime IO -> DaoIO st ()
+installModule (DeclareRuntime mod) = DaoIO $ modify $ \ (st, run) -> (st, execState mod run)
+
+-- | Provide a list of 'Prelude.String's that will be used to select modules. Modules that could not
+-- be selected will ouput an error message.
+selectModule :: [String] -> DaoIO st [XModule]
+selectModule qs = DaoIO $ fmap concat $ forM qs $ \q -> do
+  let err msg = liftIO (hPutStrLn stderr ("(selectModule) "++msg)) >> return []
+  case readsPrec 0 q of
+    [(addr, "")] -> do
+      (_, run) <- get
+      pval <- liftIO $ evalRun run initEvalState $ lookupModule addr
+      case pval of
+        OK    mod -> return [mod]
+        Backtrack -> err ("unknown error occurred when selecting "++show addr)
+        PFail msg -> case msg of
+          XError  msg -> err (show $ x_io msg)
+          XReturn msg -> err (show $ x_io msg)
+    _ -> err ("invalid address "++show q) >> return []
+
+-- | Select all non-built-in modules.
+selectLoadedModules :: DaoIO st [XModule]
+selectLoadedModules = DaoIO $ gets (T.elems . importedModules . snd)
+
+-- | Select all built-in modules.
+selectBuiltinModules :: DaoIO st [XModule]
+selectBuiltinModules = DaoIO $ gets (map fst . T.elems . builtinModules . snd)
+
+-- | Select all modules.
+selectAllModules :: DaoIO st [XModule]
+selectAllModules = pure (++) <*> selectBuiltinModules <*> selectLoadedModules
+
+-- | Evaluate a pre-processed string query. It is up to your implementation to do the preprocessing
+-- of the string, for example, converting to all lower-case or splitting the string by whitespaces.
+-- As a reminder, you can use the 'text' function to convert a 'Prelude.String' to a 'Text' data
+-- type.
+evalQuery :: [Text] -> [XModule] -> DaoIO st ()
+evalQuery qs mods = DaoIO $ forM_ mods $ \mod -> gets snd >>= \run ->
+  liftIO $ evalRun run initEvalState (evalRulesInMod qs mod)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -119,10 +186,23 @@ data Runtime m
   = Runtime
     { systemCalls     :: T.Tree Label (RunT m XData)
     , builtinModules  :: T.Tree Label (XModule, Maybe (XEval -> RunT m XData))
-      -- ^ contains a directory of built-in modules paired with their XEval evaluators, which is an
-      -- evaluator function which is used if the operand is constructed with 'XDATA'.
+      -- ^ contains a directory of built-in modules paired with their XEval evaluators. An XEval
+      -- evaluator is used when an object of a type matching this module is found in an 'XEval'
+      -- operator like 'XADD' or 'XINDEX'. The data type in the 'XEval' is stored with the object
+      -- and is used to select the pair
+      -- > ('XModule', 'Prelude.Maybe' ('XEval' -> 'RunT' m 'XData'))
+      -- If the 'Prelude.snd' item in the pair is not 'Prelude.Nothing', it is used to evaluate the
+      -- 'XEval'.
     , importedModules :: T.Tree Label XModule
     }
+
+initRuntime :: Runtime m
+initRuntime =
+  Runtime
+  { systemCalls     = T.Void
+  , builtinModules  = T.Void
+  , importedModules = T.Void
+  }
 
 data EvalState
   = EvalState
@@ -353,6 +433,8 @@ data RWCommand
   | PUSH    RWLookup
   | PEEK
   | POP
+  | CLRFWD  -- ^ clear the stack into a LIST object in the RESULT register
+  | CLRREV  -- ^ like 'CLRFWD' but reveres the lits of items.
   | EVAL    RWEval -- ^ evaluate a lisp-like expression
   | DO      RWCondition  -- ^ conditional evaluation
   | RETURN  RWLookup     -- ^ end evaluation
@@ -368,6 +450,8 @@ data XCommand
   | XPUSH    XLookup -- ^ push a value onto the stack
   | XPEEK    -- ^ copy the top item off of the stack
   | XPOP     -- ^ remove the top item off of the stack
+  | XCLRFWD
+  | XCLRREV
   | XEVAL    XEval -- ^ evaluate a lisp-like expression
   | XDO      XCondition  -- ^ branch conditional
   | XRETURN  XLookup     -- ^ end evaluation
@@ -382,6 +466,8 @@ instance RWX RWCommand XCommand where
     PUSH    a   -> XPUSH    (io_x a)
     PEEK        -> XPEEK
     POP         -> XPOP
+    CLRFWD      -> XCLRFWD
+    CLRREV      -> XCLRREV
     EVAL    a   -> XEVAL    (io_x a)
     DO      a   -> XDO      (io_x a)
     RETURN  a   -> XRETURN  (io_x a)
@@ -394,6 +480,8 @@ instance RWX RWCommand XCommand where
     XPUSH    a   -> PUSH    (x_io a)
     XPEEK        -> PEEK
     XPOP         -> POP
+    XCLRFWD      -> CLRFWD
+    XCLRREV      -> CLRREV
     XEVAL    a   -> EVAL    (x_io a)
     XDO      a   -> DO      (x_io a)
     XRETURN  a   -> RETURN  (x_io a)
@@ -605,6 +693,12 @@ instance Evaluable XCommand where
     XPOP       -> get >>= \st -> case evalStack st of
       []   -> throwXData $ XDATA (read "StackUnderflow") mempty
       a:ax -> put (st{evalStack=ax}) >> setResult a
+    XCLRFWD    -> do
+      modify (\st -> st{lastResult=XLIST (mkXArray $ evalStack st), evalStack=[]})
+      gets lastResult
+    XCLRREV    -> do
+      modify (\st -> st{lastResult=XLIST (mkXArray $ reverse $ evalStack st), evalStack=[]})
+      gets lastResult
     XEVAL    a -> eval a
     XDO      a -> eval a
     XRETURN  a -> eval a >>= \a -> throwError (XReturn a)
@@ -806,4 +900,21 @@ instance Evaluable XEval where
         gets lastResult
       XFUNC _ (XBlock Nothing) -> gets lastResult
       _ -> badEval o [(read "register", XSTR (text "target of GOTO is non-function data type"))]
+
+----------------------------------------------------------------------------------------------------
+
+-- | Matches the head of the input text list to each rule in the given module. Matching rules will
+-- strip the matched portion of the input text list, the remainder is placed onto the stack such
+-- that successive 'POP' operations retrieve each item in the remaining input text from head to
+-- tail.
+evalRulesInMod :: Monad m => [Text] -> XModule -> RunT m ()
+evalRulesInMod qs mod = do
+  modify (\st -> st{currentModule=Just mod})
+  forM_ (xrules mod) $ \ (XRULE pat block) -> case stripPrefix pat qs of
+    Nothing -> return ()
+    Just qs -> do
+      oldstk <- gets evalStack
+      modify (\st -> st{evalStack=map XSTR qs})
+      eval block
+      modify (\st -> st{evalStack=oldstk})
 

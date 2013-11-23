@@ -47,6 +47,150 @@ import           Control.Monad.Error hiding (Error)
 import           Control.Monad.Trans
 import           Control.Monad.IO.Class
 
+----------------------------------------------------------------------------------------------------
+
+-- | The monadic function used to declare a 'Module'. Pass a monadic computation of this type to the
+-- 'newModule' function.
+newtype DeclareMethodsM m a
+  = DeclareMethods{ runDeclMethods :: State (M.Map Label (RunT m XData)) a }
+  deriving (Functor, Monad)
+type DeclareMethods m = DeclareMethodsM m ()
+
+-- | Defines a method for a module
+newMethod :: String -> RunT m XData -> DeclareMethods m
+newMethod nm fn = case readsPrec 0 nm of
+  [(nm, "")] -> DeclareMethods (modify (\m -> M.insert (read nm) fn m))
+  _          -> fail ("could not define function, invalid name string: "++show nm)
+
+-- | The monadic function used to declare a 'Runtime'. You can use this monad to build up a kind of
+-- "default" module. When it comes time to run a mini-Dao program, this default module will be used
+-- to initialize the runtime for the mini-Dao evaluator.
+newtype DeclareRuntimeM m a
+  = DeclareRuntime { runDeclModule :: State (Runtime m) a } deriving (Functor, Monad)
+type DeclareRuntime m = DeclareRuntimeM m ()
+
+-- | Declare a built-in module for this runtime. The first paramater is the name of this module.
+-- Here are the details about how this works:
+-- 
+-- Suppose you are declaring a module "myModule", and you declare a function @myFunc@ with
+-- @'newMethod' "myFunc" (...)@. When 'newModule' is evaluated, a new system call will be added to
+-- the 'systemCalls' table at the address @"myModule.myFunc"@. Then, a 'MODULE' is constructed,
+-- and in this module a public variable declaration @"myFunc"@ is created which stores a 'FUNC'
+-- object, and this 'FUNC' object is a system call to the @"myModule.myFunc"@ function.
+newModule :: String -> DeclareMethods m -> Maybe (XEval -> RunT m XData) -> DeclareRuntime m
+newModule name decls opfunc = DeclareRuntime $ case readsPrec 0 name of
+  [(addr, "")] -> do
+    bi <- gets builtinModules
+    let modlbl   = addrToLabels addr
+        defs     = execState (runDeclMethods decls) M.empty
+        syscalls = T.Branch (M.map T.Leaf defs)
+        mod =
+          XMODULE
+          { ximports = []
+          , xprivate = XDefines mempty
+          , xpublic  = XDefines $ flip M.mapWithKey defs $ \func _ ->
+              XFUNC [] $ XBlock $ mkXArray $
+                [ XEVAL  (XSYS (labelsToAddr (modlbl++[func])) [])
+                , XRETURN XRESULT
+                ]
+          , xrules   = []
+          }
+    modify $ \st ->
+      st{ builtinModules = T.insert modlbl (mod, opfunc) (builtinModules st)
+        , systemCalls    = T.alter (T.union syscalls) modlbl (systemCalls st)
+        }
+  _ -> fail ("initializing built-in module, string cannot be used as module name: "++show name)
+
+-- | Declare a system call in the runtime.
+newSystemCall :: String -> RunT m XData -> DeclareRuntime m
+newSystemCall name func = DeclareRuntime $ modify $ \st ->
+  st{ systemCalls = T.insert [Label $ text name] func (systemCalls st) }
+
+----------------------------------------------------------------------------------------------------
+
+data XThrow
+  = XError  { thrownXData :: XData }
+  | XReturn { thrownXData :: XData }
+
+throwXData :: Monad m => XData -> RunT m ig
+throwXData = throwError . XError
+
+data Runtime m
+  = Runtime
+    { systemCalls     :: T.Tree Label (RunT m XData)
+    , builtinModules  :: T.Tree Label (XModule, Maybe (XEval -> RunT m XData))
+      -- ^ contains a directory of built-in modules paired with their XEval evaluators, which is an
+      -- evaluator function which is used if the operand is constructed with 'XDATA'.
+    , importedModules :: T.Tree Label XModule
+    }
+
+data EvalState
+  = EvalState
+    { evalCounter     :: Integer -- ^ counts how many evaluation steps have been taken
+    , lastResult      :: XData
+    , registers       :: M.Map Label XData
+    , pcRegisters     :: M.Map Label Int
+    , evalStack       :: [XData]
+    , currentModule   :: Maybe XModule
+    , currentBlock    :: Maybe (Array Int XCommand)
+    , programCounter  :: Int
+    }
+
+initEvalState :: EvalState
+initEvalState =
+  EvalState
+  { evalCounter    = 0
+  , lastResult     = XNULL
+  , registers      = mempty
+  , pcRegisters    = mempty
+  , evalStack      = []
+  , currentModule  = Nothing
+  , currentBlock   = Nothing
+  , programCounter = 0
+  }
+
+-- | This is the monad used for evaluating the mini-Dao language. It is a
+-- 'Control.Monad.Reader.MonadReader' where 'Control.Monad.Reader.ask' provides the an interface to
+-- the 'Runtime' data structure, 'Control.Monad.State.state' provides an interface to update the
+-- 'EvalState' data structure, 'Control.Monad.Trans.lift' allows you to lift the 'RunT' monad into
+-- your own custom monad, and 'Control.Monad.IO.Class.liftIO' allows you to lift the 'RunT' monad
+-- into your own custom @IO@ monad. The 'Control.Monad.Error.throwError' interface is provided which
+-- lets you safely (without having to catch exceptions in the IO monad) throw an exception of type
+-- 'XData', Lifting 'RunT' into the 'Control.Monad.Trans.Identity' monad is will allow all
+-- evaluation to be converted to a pure function, however it will make it difficult to provide
+-- system calls that do things like communicate with threads or read or write files.
+newtype RunT m a =
+  RunT{ runToPTrans :: PTrans XThrow (ReaderT (Runtime m) (StateT EvalState m)) a }
+
+evalRun :: Monad m => Runtime m -> EvalState -> RunT m a -> m (PValue XThrow a)
+evalRun env st (RunT f) = evalStateT (runReaderT (runPTrans f) env) st
+
+instance Functor m => Functor (RunT m) where { fmap f (RunT m) = RunT (fmap f m) }
+instance Monad m => Monad (RunT m) where
+  return = RunT . return
+  RunT a >>= f = RunT $ a >>= runToPTrans . f
+  RunT a >> RunT b = RunT (a >> b)
+  fail = RunT . pvalue . PFail . XError . XSTR . text
+instance MonadPlus m => MonadPlus (RunT m) where
+  mzero = RunT mzero
+  mplus (RunT a) (RunT b) = RunT (mplus a b)
+instance (Functor m, Monad     m) => Applicative (RunT m) where { pure = return; (<*>) = ap; }
+instance (Functor m, MonadPlus m) => Alternative (RunT m) where { empty = mzero; (<|>) = mplus; }
+instance Monad m => MonadError XThrow (RunT m) where
+  throwError = RunT . throwError
+  catchError (RunT try) catch = RunT (catchError try (runToPTrans . catch))
+instance MonadIO m => MonadIO (RunT m) where { liftIO = RunT . liftIO }
+instance MonadTrans RunT where { lift = RunT . lift . lift . lift }
+instance Monad m => MonadState  EvalState   (RunT m) where { state = RunT . lift . lift . state }
+instance Monad m => MonadReader (Runtime m) (RunT m) where
+  local f (RunT m) = RunT (PTrans (local f (runPTrans m)))
+  ask = RunT (lift ask)
+instance (MonadPlus m, Monad m) => MonadPlusError XThrow (RunT m) where
+  catchPValue (RunT f) = RunT (catchPValue f)
+  assumePValue p = RunT (assumePValue p)
+
+----------------------------------------------------------------------------------------------------
+
 class Typeable a => Translatable a where
   toXData   :: a -> XData
   fromXData :: XData -> Maybe a
@@ -386,148 +530,6 @@ instance RWX RWEval XEval where
     XCALL a b c -> CALL a (x_io b) (map x_io c)
     XLOCAL  a b -> LOCAL  (x_io a) (map x_io b)
     XGOTO   a b -> GOTO   (x_io a) (map x_io b)
-
-----------------------------------------------------------------------------------------------------
-
-data XThrow
-  = XError  { thrownXData :: XData }
-  | XReturn { thrownXData :: XData }
-
-throwXData :: Monad m => XData -> RunT m ig
-throwXData = throwError . XError
-
-data Runtime m
-  = Runtime
-    { systemCalls     :: T.Tree Label (RunT m XData)
-    , builtinModules  :: T.Tree Label (XModule, Maybe (XEval -> RunT m XData))
-      -- ^ contains a directory of built-in modules paired with their XEval evaluators, which is an
-      -- evaluator function which is used if the operand is constructed with 'XDATA'.
-    , importedModules :: T.Tree Label XModule
-    }
-
-data EvalState
-  = EvalState
-    { evalCounter     :: Integer -- ^ counts how many evaluation steps have been taken
-    , lastResult      :: XData
-    , registers       :: M.Map Label XData
-    , pcRegisters     :: M.Map Label Int
-    , evalStack       :: [XData]
-    , currentModule   :: Maybe XModule
-    , currentBlock    :: Maybe (Array Int XCommand)
-    , programCounter  :: Int
-    }
-
-initEvalState :: EvalState
-initEvalState =
-  EvalState
-  { evalCounter    = 0
-  , lastResult     = XNULL
-  , registers      = mempty
-  , pcRegisters    = mempty
-  , evalStack      = []
-  , currentModule  = Nothing
-  , currentBlock   = Nothing
-  , programCounter = 0
-  }
-
--- | This is the monad used for evaluating the mini-Dao language. It is a
--- 'Control.Monad.Reader.MonadReader' where 'Control.Monad.Reader.ask' provides the an interface to
--- the 'Runtime' data structure, 'Control.Monad.State.state' provides an interface to update the
--- 'EvalState' data structure, 'Control.Monad.Trans.lift' allows you to lift the 'RunT' monad into
--- your own custom monad, and 'Control.Monad.IO.Class.liftIO' allows you to lift the 'RunT' monad
--- into your own custom @IO@ monad. The 'Control.Monad.Error.throwError' interface is provided which
--- lets you safely (without having to catch exceptions in the IO monad) throw an exception of type
--- 'XData', Lifting 'RunT' into the 'Control.Monad.Trans.Identity' monad is will allow all
--- evaluation to be converted to a pure function, however it will make it difficult to provide
--- system calls that do things like communicate with threads or read or write files.
-newtype RunT m a =
-  RunT{ runToPTrans :: PTrans XThrow (ReaderT (Runtime m) (StateT EvalState m)) a }
-
-evalRun :: Monad m => Runtime m -> EvalState -> RunT m a -> m (PValue XThrow a)
-evalRun env st (RunT f) = evalStateT (runReaderT (runPTrans f) env) st
-
-instance Functor m => Functor (RunT m) where { fmap f (RunT m) = RunT (fmap f m) }
-instance Monad m => Monad (RunT m) where
-  return = RunT . return
-  RunT a >>= f = RunT $ a >>= runToPTrans . f
-  RunT a >> RunT b = RunT (a >> b)
-  fail = RunT . pvalue . PFail . XError . XSTR . text
-instance MonadPlus m => MonadPlus (RunT m) where
-  mzero = RunT mzero
-  mplus (RunT a) (RunT b) = RunT (mplus a b)
-instance (Functor m, Monad     m) => Applicative (RunT m) where { pure = return; (<*>) = ap; }
-instance (Functor m, MonadPlus m) => Alternative (RunT m) where { empty = mzero; (<|>) = mplus; }
-instance Monad m => MonadError XThrow (RunT m) where
-  throwError = RunT . throwError
-  catchError (RunT try) catch = RunT (catchError try (runToPTrans . catch))
-instance MonadIO m => MonadIO (RunT m) where { liftIO = RunT . liftIO }
-instance MonadTrans RunT where { lift = RunT . lift . lift . lift }
-instance Monad m => MonadState  EvalState   (RunT m) where { state = RunT . lift . lift . state }
-instance Monad m => MonadReader (Runtime m) (RunT m) where
-  local f (RunT m) = RunT (PTrans (local f (runPTrans m)))
-  ask = RunT (lift ask)
-instance (MonadPlus m, Monad m) => MonadPlusError XThrow (RunT m) where
-  catchPValue (RunT f) = RunT (catchPValue f)
-  assumePValue p = RunT (assumePValue p)
-
-----------------------------------------------------------------------------------------------------
-
--- | The monadic function used to declare a 'Module'. Pass a monadic computation of this type to the
--- 'newModule' function.
-newtype DeclareMethodsM m a
-  = DeclareMethods{ runDeclMethods :: State (M.Map Label (RunT m XData)) a }
-  deriving (Functor, Monad)
-type DeclareMethods m = DeclareMethodsM m ()
-
--- | Defines a method for a module
-newMethod :: String -> RunT m XData -> DeclareMethods m
-newMethod nm fn = case readsPrec 0 nm of
-  [(nm, "")] -> DeclareMethods (modify (\m -> M.insert (read nm) fn m))
-  _          -> fail ("could not define function, invalid name string: "++show nm)
-
--- | The monadic function used to declare a 'Runtime'. You can use this monad to build up a kind of
--- "default" module. When it comes time to run a mini-Dao program, this default module will be used
--- to initialize the runtime for the mini-Dao evaluator.
-newtype DeclareRuntimeM m a
-  = DeclareRuntime { runDeclModule :: State (Runtime m) a } deriving (Functor, Monad)
-type DeclareRuntime m = DeclareRuntimeM m ()
-
--- | Declare a built-in module for this runtime. The first paramater is the name of this module.
--- Here are the details about how this works:
--- 
--- Suppose you are declaring a module "myModule", and you declare a function @myFunc@ with
--- @'newMethod' "myFunc" (...)@. When 'newModule' is evaluated, a new system call will be added to
--- the 'systemCalls' table at the address @"myModule.myFunc"@. Then, a 'MODULE' is constructed,
--- and in this module a public variable declaration @"myFunc"@ is created which stores a 'FUNC'
--- object, and this 'FUNC' object is a system call to the @"myModule.myFunc"@ function.
-newModule :: String -> DeclareMethods m -> Maybe (XEval -> RunT m XData) -> DeclareRuntime m
-newModule name decls opfunc = DeclareRuntime $ case readsPrec 0 name of
-  [(addr, "")] -> do
-    bi <- gets builtinModules
-    let modlbl   = addrToLabels addr
-        defs     = execState (runDeclMethods decls) M.empty
-        syscalls = T.Branch (M.map T.Leaf defs)
-        mod =
-          XMODULE
-          { ximports = []
-          , xprivate = XDefines mempty
-          , xpublic  = XDefines $ flip M.mapWithKey defs $ \func _ ->
-              XFUNC [] $ XBlock $ mkXArray $
-                [ XEVAL   (XSYS (labelsToAddr (modlbl++[func])) [])
-                , XRETURN XRESULT
-                ]
-          , xrules   = []
-          }
-    modify $ \st ->
-      st{ builtinModules = T.insert modlbl (mod, opfunc) (builtinModules st)
-        , systemCalls    = T.alter (T.union syscalls) modlbl (systemCalls st)
-        }
-  _ -> fail ("initializing built-in module, string cannot be used as module name: "++show name)
-
--- | Declare a system call in the runtime.
-newSystemCall :: String -> RunT m XData -> DeclareRuntime m
-newSystemCall name func = DeclareRuntime $ modify $ \st ->
-  st{ systemCalls = T.insert [Label $ text name] func (systemCalls st) }
 
 ----------------------------------------------------------------------------------------------------
 

@@ -173,7 +173,7 @@ goto path = case path of
   []       -> gets focus
   (p:path) -> do
     st <- get
-    let step tree = put $ st{focus=Void, history=(p, focus st):history st}
+    let step tree = put $ st{focus=tree, history=(p, focus st):history st}
     case getBranch (focus st) >>= M.lookup p of
       Nothing   -> step Void
       Just tree -> step tree

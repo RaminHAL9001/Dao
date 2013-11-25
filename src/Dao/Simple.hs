@@ -51,6 +51,13 @@ import           System.IO
 
 ----------------------------------------------------------------------------------------------------
 
+data DaoIOState st
+  = DaoIOState
+    { userState       :: st
+    , ioRuntime       :: Runtime (DaoIO st)
+    , fileHandles     :: M.Map Text Handle
+    }
+
 -- | This is a simple monadic interface for interacting with a mini-Dao runtime. You can evaluate
 -- computations of this type using 'runDaoIO' in your main function. It instantiates
 -- 'Control.Monad.IO.MonadIO' so you can read from and write to a command line interface, load
@@ -63,10 +70,10 @@ import           System.IO
 -- read-eval-print loop which pre-processes input into a list of @['Text']@ objects, and broadcasts
 -- that input to the various modules. You can select which modules you want using 'selectModule',
 -- and you can evaluate a query in a module using 'evalQuery'.
-newtype DaoIO st a = DaoIO{ daoStateT :: StateT (st, Runtime IO) IO a }
+newtype DaoIO st a = DaoIO{ daoStateT :: StateT (DaoIOState st) IO a }
   deriving (Functor, Applicative, Monad, MonadIO)
 instance MonadState st (DaoIO st) where
-  state f = DaoIO $ state $ \ (st, run) -> let (a, st) = f st in (a, (st, run))
+  state f = DaoIO $ state $ \st -> let (a, ust) = f (userState st) in (a, st{userState=ust})
 
 -- | Using the 'DeclareRuntime' monad, you can install built-in modules. Built-in modules are
 -- constructed using the 'DeclareRuntime' interface, the 'installModule' function applies this
@@ -74,18 +81,21 @@ instance MonadState st (DaoIO st) where
 -- 'DeclareRuntime' which constructs a built-in module, and this module provides an interface for
 -- the mini-Dao language to work with XML files. If you want this module to be provided in your Dao
 -- program, simply evaluate @'installModule' xmlFile@ in the main 'runDaoIO' function.
-installModule :: DeclareRuntime IO -> DaoIO st ()
-installModule (DeclareRuntime mod) = DaoIO $ modify $ \ (st, run) -> (st, execState mod run)
+installModule :: DeclareRuntime (DaoIO st) -> DaoIO st ()
+installModule (DeclareRuntime mod) = do
+  st  <- DaoIO get
+  run <- execStateT mod (ioRuntime st)
+  DaoIO $ put (st{ioRuntime=run})
 
 -- | Provide a list of 'Prelude.String's that will be used to select modules. Modules that could not
 -- be selected will ouput an error message.
 selectModule :: [String] -> DaoIO st [XModule]
-selectModule qs = DaoIO $ fmap concat $ forM qs $ \q -> do
+selectModule qs = fmap concat $ forM qs $ \q -> do
   let err msg = liftIO (hPutStrLn stderr ("(selectModule) "++msg)) >> return []
   case readsPrec 0 q of
     [(addr, "")] -> do
-      (_, run) <- get
-      pval <- liftIO $ evalRun run initEvalState $ lookupModule addr
+      run <- DaoIO $ gets ioRuntime
+      pval <- evalRun run initEvalState $ lookupModule addr
       case pval of
         OK    mod -> return [mod]
         Backtrack -> err ("unknown error occurred when selecting "++show addr)
@@ -96,11 +106,11 @@ selectModule qs = DaoIO $ fmap concat $ forM qs $ \q -> do
 
 -- | Select all non-built-in modules.
 selectLoadedModules :: DaoIO st [XModule]
-selectLoadedModules = DaoIO $ gets (T.elems . importedModules . snd)
+selectLoadedModules = DaoIO $ gets (T.elems . importedModules . ioRuntime)
 
 -- | Select all built-in modules.
 selectBuiltinModules :: DaoIO st [XModule]
-selectBuiltinModules = DaoIO $ gets (map fst . T.elems . builtinModules . snd)
+selectBuiltinModules = DaoIO $ gets (map fst . T.elems . builtinModules . ioRuntime)
 
 -- | Select all modules.
 selectAllModules :: DaoIO st [XModule]
@@ -111,30 +121,37 @@ selectAllModules = pure (++) <*> selectBuiltinModules <*> selectLoadedModules
 -- As a reminder, you can use the 'text' function to convert a 'Prelude.String' to a 'Text' data
 -- type.
 evalQuery :: [Text] -> [XModule] -> DaoIO st ()
-evalQuery qs mods = DaoIO $ forM_ mods $ \mod -> gets snd >>= \run ->
-  liftIO $ evalRun run initEvalState (evalRulesInMod qs mod)
+evalQuery qs mods = forM_ mods $ \mod -> DaoIO (gets ioRuntime) >>= \run ->
+  evalRun run initEvalState (evalRulesInMod qs mod)
 
 ----------------------------------------------------------------------------------------------------
 
 -- | The monadic function used to declare a 'Module'. Pass a monadic computation of this type to the
 -- 'newModule' function.
 newtype DeclareMethodsM m a
-  = DeclareMethods{ runDeclMethods :: State (M.Map Label (RunT m XData)) a }
+  = DeclareMethods{ runDeclMethods :: State (M.Map Label (RunT m XData), [XRule]) a }
   deriving (Functor, Monad)
 type DeclareMethods m = DeclareMethodsM m ()
 
--- | Defines a method for a module
+-- | Defines a method for a module with the given name.
 newMethod :: String -> RunT m XData -> DeclareMethods m
 newMethod nm fn = case readsPrec 0 nm of
-  [(nm, "")] -> DeclareMethods (modify (\m -> M.insert (read nm) fn m))
+  [(nm, "")] -> DeclareMethods (modify (\ (m, r) -> (M.insert (read nm) fn m, r)))
   _          -> fail ("could not define function, invalid name string: "++show nm)
+
+-- | Declare a new rule for this module.
+newRule :: XRule -> DeclareMethods m
+newRule rul = DeclareMethods (modify (\ (m, r) -> (m, rul:r)))
 
 -- | The monadic function used to declare a 'Runtime'. You can use this monad to build up a kind of
 -- "default" module. When it comes time to run a mini-Dao program, this default module will be used
 -- to initialize the runtime for the mini-Dao evaluator.
-newtype DeclareRuntimeM m a
-  = DeclareRuntime { runDeclModule :: State (Runtime m) a } deriving (Functor, Monad)
 type DeclareRuntime m = DeclareRuntimeM m ()
+newtype DeclareRuntimeM m a
+  = DeclareRuntime { runDeclModule :: StateT (Runtime m) m a } deriving (Functor, Monad)
+instance Monad m => MonadState (Runtime m) (DeclareRuntimeM m) where
+  state f = DeclareRuntime (state f)
+instance MonadTrans DeclareRuntimeM where { lift = DeclareRuntime . lift }
 
 -- | Declare a built-in module for this runtime. The first paramater is the name of this module.
 -- Here are the details about how this works:
@@ -144,23 +161,23 @@ type DeclareRuntime m = DeclareRuntimeM m ()
 -- the 'systemCalls' table at the address @"myModule.myFunc"@. Then, a 'MODULE' is constructed,
 -- and in this module a public variable declaration @"myFunc"@ is created which stores a 'FUNC'
 -- object, and this 'FUNC' object is a system call to the @"myModule.myFunc"@ function.
-newModule :: String -> DeclareMethods m -> Maybe (XEval -> RunT m XData) -> DeclareRuntime m
+newModule :: Monad m => String -> DeclareMethods m -> Maybe (XEval -> RunT m XData) -> DeclareRuntime m
 newModule name decls opfunc = DeclareRuntime $ case readsPrec 0 name of
   [(addr, "")] -> do
     bi <- gets builtinModules
-    let modlbl   = addrToLabels addr
-        defs     = execState (runDeclMethods decls) M.empty
-        syscalls = T.Branch (M.map T.Leaf defs)
+    let modlbl       = addrToLabels addr
+        (defs, ruls) = execState (runDeclMethods decls) (M.empty, [])
+        syscalls     = T.Branch (M.map T.Leaf defs)
         mod =
           XMODULE
           { ximports = []
           , xprivate = XDefines mempty
           , xpublic  = XDefines $ flip M.mapWithKey defs $ \func _ ->
-              XFUNC [] $ XBlock $ mkXArray $
+              XFUNC $ XFunc [] $ XBlock $ mkXArray $
                 [ XEVAL  (XSYS (labelsToAddr (modlbl++[func])) [])
                 , XRETURN XRESULT
                 ]
-          , xrules   = []
+          , xrules   = ruls
           }
     modify $ \st ->
       st{ builtinModules = T.insert modlbl (mod, opfunc) (builtinModules st)
@@ -168,10 +185,94 @@ newModule name decls opfunc = DeclareRuntime $ case readsPrec 0 name of
         }
   _ -> fail ("initializing built-in module, string cannot be used as module name: "++show name)
 
--- | Declare a system call in the runtime.
-newSystemCall :: String -> RunT m XData -> DeclareRuntime m
+-- | Declare a system call in the runtime. The system call need not be part of any module, it can
+-- simply be declared with a name like "print" and the system call will be accessible to the 'SYS'
+-- instruction.
+newSystemCall :: Monad m => String -> RunT m XData -> DeclareRuntime m
 newSystemCall name func = DeclareRuntime $ modify $ \st ->
   st{ systemCalls = T.insert [Label $ text name] func (systemCalls st) }
+
+printer :: MonadIO m => Handle -> RunT m XData
+printer h = do
+  let tostr o = case o of
+        XNULL         -> "FALSE"
+        XTRUE         -> "TRUE"
+        XSTR (Text o) -> U.toString o
+        XINT       o  -> show o
+        XFLOAT     o  -> show o
+        XLIST      o  -> show (maybe [] (map x_io . elems) o)
+        XPTR       o  -> show o
+        XDATA addr o  -> concat ["(DATA ", show addr, ' ':show (map (fmap x_io) $ M.assocs o)]
+        XFUNC (XFunc args  o) -> concat ["(FUNC ", show args, ' ' : show (x_io o), ")"]
+  str <- gets evalStack >>= return . concatMap tostr . reverse
+  liftIO (hPutStrLn h str)
+  return (mkXStr str)
+
+-- | This is the default module which provides basic IO services to the mini-Dao runtime, like
+-- print.
+basicIO :: MonadIO m => DeclareRuntime m
+basicIO = do
+  newSystemCall "print" (printer stdout)
+  newSystemCall "error" (printer stderr)
+
+fileIO :: DeclareRuntime (DaoIO st)
+fileIO = do
+  let getPath = do
+        str <- popEvalStack
+        case str of
+          XSTR path -> return (str, path)
+          path      -> throwXData "FunctionParamater" $
+            [ ("stackItem", path)
+            , ("problem", mkXStr "expecting file path parameter")
+            ]
+      open func mode = do
+        (str, path) <- getPath
+        evalStackEmptyElse func []
+        h <- liftIO (openFile (textChars path) mode)
+        lift $ DaoIO $ modify (\st -> st{fileHandles = M.insert path h (fileHandles st)})
+        return $ mkXData "file" [("path", XSTR path)]
+      newOpenMethod func mode = newMethod func $ open func mode
+      newHandleMethod func fn = newMethod func $ do
+        xdat <- gets lastResult
+        path <- mplus (getXMember "path" xdat >>= asXSTR) $ throwXData "DataType" $
+          [("object", xdat), ("problem", mkXStr "does not contain a file path")]
+        h <- lift $ DaoIO $ gets fileHandles >>= return . M.lookup path
+        case h of
+          Nothing -> throwXData "file.NotOpen" [("path", XSTR path)]
+          Just  h -> fn (path, h)
+  newModule "File"
+    (do newOpenMethod "openRead"      ReadMode
+        newOpenMethod "openReadWrite" ReadWriteMode
+        newOpenMethod "openAppend"    AppendMode
+        newHandleMethod "close" $ \ (path, h) -> do
+          evalStackEmptyElse "close" []
+          liftIO (hClose h)
+          lift $ DaoIO $ modify (\st -> st{fileHandles = M.delete path (fileHandles st)})
+          return XTRUE
+        newHandleMethod "write" $ \ (_, h) -> printer h
+        newHandleMethod "read"  $ \ (_, h) -> do
+          evalStackEmptyElse "read" []
+          liftIO (hGetLine h) >>= setResult . mkXStr
+        newHandleMethod "readAll" $ \ (_, h) -> do
+          evalStackEmptyElse "readAll" []
+          liftIO (hGetContents h) >>= setResult . mkXStr
+    )
+    Nothing
+
+----------------------------------------------------------------------------------------------------
+
+-- | This module provides access to the mini-Dao runtime, which allows a dao program to create new
+-- modules and test them at runtime, which can be useful for "teaching" the system new things. This
+-- allows mini-Dao programs to save and load modules. Your implementation may choose to omit
+-- installation (by simply not evaluating 'installModule') if you do not wish to provide this
+-- ability, for example, when you have reason to be extraordinarily paranoid about security and do
+-- not wish users to create and evaluate arbitrary mini-Dao code.
+modBuilder :: Monad m => DeclareRuntime m
+modBuilder =
+  newModule "builder"
+    (do return ()
+    )
+    Nothing
 
 ----------------------------------------------------------------------------------------------------
 
@@ -179,8 +280,14 @@ data XThrow
   = XError  { thrownXData :: XData }
   | XReturn { thrownXData :: XData }
 
-throwXData :: Monad m => XData -> RunT m ig
-throwXData = throwError . XError
+-- | Pass an 'Address' as a 'Prelude.String' and a list of string-data pairs to be used to construct
+-- a 'Data.Map.Lazy.Map' to be used for the 'XDATA' constructor. The string-data pairs will be
+-- converted to a @('Data.Map.Lazy.Map' 'Label' 'XData')@ data structure which is how 'XDATA' types
+-- store values. If the string constructing the 'Address' or any of the strings constructing
+-- 'Label's for the 'Data.Map.Lazy.Map' cannot be parsed, a generic exception constructed from
+-- 'XLIST' is thrown instead.
+throwXData :: Monad m => String -> [(String, XData)] -> RunT m ig
+throwXData addr itms = throwError $ XError $ mkXData addr itms
 
 data Runtime m
   = Runtime
@@ -250,8 +357,8 @@ instance Monad m => Monad (RunT m) where
   return = RunT . return
   RunT a >>= f = RunT $ a >>= runToPTrans . f
   RunT a >> RunT b = RunT (a >> b)
-  fail = RunT . pvalue . PFail . XError . XSTR . text
-instance MonadPlus m => MonadPlus (RunT m) where
+  fail = RunT . pvalue . PFail . XError . mkXStr
+instance Monad m => MonadPlus (RunT m) where
   mzero = RunT mzero
   mplus (RunT a) (RunT b) = RunT (mplus a b)
 instance (Functor m, Monad     m) => Applicative (RunT m) where { pure = return; (<*>) = ap; }
@@ -273,7 +380,7 @@ instance (MonadPlus m, Monad m) => MonadPlusError XThrow (RunT m) where
 
 class Typeable a => Translatable a where
   toXData   :: a -> XData
-  fromXData :: XData -> Maybe a
+  fromXData :: XData -> PValue XThrow a
 
 readLabel :: String -> [(String, String)]
 readLabel str = case dropWhile isSpace str of
@@ -339,7 +446,7 @@ data XData
   = XNULL | XTRUE | XINT Int | XFLOAT Double | XSTR Text | XPTR Address
   | XLIST (Maybe (Array Int XData))
   | XDATA Address (M.Map Label XData)
-  | XFUNC [Label] XBlock
+  | XFUNC XFunc
   deriving (Eq, Ord)
 instance RWX RWData XData where
   io_x io = case io of
@@ -349,9 +456,9 @@ instance RWX RWData XData where
     FLOAT io -> XFLOAT     io
     STR   io -> XSTR       io
     PTR   io -> XPTR       io
-    LIST  io -> XLIST $ mkXArray (map io_x io)
+    LIST  io -> mkXList (map io_x io)
     DATA a b -> XDATA a (M.fromList $ map ((fmap io_x) . defToPair) b)
-    FUNC a b -> XFUNC a (io_x b)
+    FUNC a b -> XFUNC (XFunc{funcArgVars=a, funcBlock=io_x b})
   x_io x  = case x  of
     XNULL     -> NULL
     XTRUE     -> TRUE
@@ -361,10 +468,72 @@ instance RWX RWData XData where
     XPTR    x -> PTR        x
     XLIST   x -> LIST $ maybe [] (map x_io . elems) x
     XDATA a b -> DATA a (map (uncurry DEFINE . fmap x_io) (M.assocs b))
-    XFUNC a b -> FUNC a (x_io b)
+    XFUNC   x -> FUNC (funcArgVars x) (x_io $ funcBlock x)
+
+data XFunc = XFunc { funcArgVars :: [Label], funcBlock :: XBlock } deriving (Eq, Ord)
+
+mkXStr :: String -> XData
+mkXStr = XSTR . text
 
 mkXArray :: [a] -> Maybe (Array Int a)
 mkXArray o = if null o then Nothing else Just $ listArray (0, length o - 1) o
+
+mkXList :: [XData] -> XData
+mkXList = XLIST . mkXArray
+
+mkXData :: String -> [(String, XData)] -> XData
+mkXData addr itms = do
+  let mkDefault = mkXList $ concat $
+        [[mkXStr addr], flip concatMap itms $ (\ (lbl, dat) -> [mkXStr lbl, dat])]
+  maybe mkDefault id $ do
+    addr <- case readsPrec 0 addr of
+      [(addr, "")] -> return addr
+      _            -> mzero
+    itms <- forM itms $ \ (lbl, dat) -> case readsPrec 0 lbl of
+      [(lbl, "")] -> return (lbl, dat)
+      _           -> mzero
+    return $ XDATA addr $ M.fromList itms
+
+asXBool :: MonadPlus m => XData -> m Bool
+asXBool  o = case o of {XTRUE -> return True; XNULL -> return False; _ -> mzero;}
+
+asXINT :: MonadPlus m => XData -> m Int
+asXINT   o = case o of {XINT o -> return o; _ -> mzero;}
+
+asXFLOAT :: MonadPlus m => XData -> m Double
+asXFLOAT o = case o of {XFLOAT o -> return o; _ -> mzero;}
+
+asXSTR :: MonadPlus m => XData -> m Text
+asXSTR   o = case o of {XSTR o -> return o; _ -> mzero;}
+
+asXPTR :: MonadPlus m => XData -> m Address
+asXPTR   o = case o of {XPTR o -> return o; _ -> mzero;}
+
+asXLIST :: MonadPlus m => XData -> m [XData]
+asXLIST  o = case o of {XLIST o -> return (maybe [] elems o); _ -> mzero;}
+
+asXFUNC :: MonadPlus m => XData -> m XFunc
+asXFUNC  o = case o of {XFUNC o -> return o; _ -> mzero; }
+
+-- | Get an 'XData' type constructed with 'XDATA' of a specific 'Address' where the 'Address'
+-- represents the mini-Dao language type of the 'XDATA'. The 'Address' is passed here as a
+-- 'Prelude.String'. Returns the 'Data.Map.Lazy.Map' of elements that construct the mini-Dao
+-- language data type.
+asXDATA :: MonadPlus m => String -> XData -> m (M.Map Label XData)
+asXDATA str o = case readsPrec 0 str of
+  [(getAddr, "")] -> case o of
+    XDATA addr o | addr==getAddr -> return o
+    _  -> mzero
+  _  -> fail $ "asXDATA: could not parse Address from string "++show str
+
+-- | Get an 'XData' type constructed with 'XDATA', and from within the 'XDATA' lookup a 'Label' in
+-- the 'Data.Map.Lazy.Map' of member objects. The 'Label' is passed here as a 'Prelude.String'.
+getXMember :: MonadPlus m => String -> XData -> m XData
+getXMember str o = case readsPrec 0 str of
+  [(lbl, "")] -> case o of
+    XDATA _ o -> maybe mzero return (M.lookup lbl o)
+    _ -> mzero
+  _ -> fail $ "getXMember: could not parse Label from string "++show str
 
 data RWModule
   = MODULE
@@ -493,23 +662,23 @@ instance RWX [RWCommand] XBlock where
   x_io (XBlock x) = maybe [] (map x_io . elems) x
 
 data RWCondition
-  = IF      RWLookup RWCommand
-  | IFNOT   RWLookup RWCommand
+  = WHEN      RWLookup RWCommand
+  | UNLESS   RWLookup RWCommand
     -- ^ iterate over a 'LIST' or 'DATA' value. If it is a data value to be iterated, the first to
     -- registers provide where to store the data header and the key of each iteration. The result
     -- register always stored the value to be scrutinized.
   deriving (Eq, Ord, Show, Read)
 data XCondition
-  = XIF      XLookup XCommand
-  | XIFNOT   XLookup XCommand
+  = XWHEN   XLookup XCommand
+  | XUNLESS XLookup XCommand
   deriving (Eq, Ord)
 instance RWX RWCondition XCondition where
   io_x io = case io of
-    IF      a b     -> XIF          (io_x a) (io_x b)
-    IFNOT   a b     -> XIFNOT       (io_x a) (io_x b)
+    WHEN   a b -> XWHEN          (io_x a) (io_x b)
+    UNLESS a b -> XUNLESS       (io_x a) (io_x b)
   x_io io = case io of
-    XIF      a b     -> IF          (x_io a) (x_io b)
-    XIFNOT   a b     -> IFNOT       (x_io a) (x_io b)
+    XWHEN   a b -> WHEN          (x_io a) (x_io b)
+    XUNLESS a b -> UNLESS       (x_io a) (x_io b)
 
 data RWEval
   = TAKE   RWLookup
@@ -534,6 +703,8 @@ data RWEval
   | XOR    RWEval RWEval
   | SHIFTR RWEval RWEval
   | SHIFTL RWEval RWEval
+  | IF     RWEval RWEval RWEval
+  | IFNOT  RWEval RWEval RWEval
   | SYS    Address  [RWEval] -- ^ system call
   | CALL   Address  RWLookup [RWEval]
   | LOCAL  RWLookup [RWEval] -- ^ call a local function, push the result onto the stack
@@ -563,6 +734,8 @@ data XEval
   | X_XOR   XEval XEval
   | XSHIFTR XEval XEval
   | XSHIFTL XEval XEval
+  | XIF     XEval XEval XEval
+  | XIFNOT  XEval XEval XEval
   | XSYS    Address [XEval] -- ^ system call
   | XCALL   Address XLookup [XEval] -- ^ call code in a module
   | XLOCAL  XLookup [XEval] -- ^ call a local function, push the result onto the stack
@@ -591,6 +764,8 @@ instance RWX RWEval XEval where
     XOR    a b -> X_XOR   (io_x a) (io_x b)
     SHIFTR a b -> XSHIFTR (io_x a) (io_x b)
     SHIFTL a b -> XSHIFTL (io_x a) (io_x b)
+    IF     a b c -> XIF    (io_x a) (io_x b) (io_x c)
+    IFNOT  a b c -> XIFNOT (io_x a) (io_x b) (io_x c)
     SYS    a b   -> XSYS  a   (map io_x b)
     CALL   a b c -> XCALL a (io_x b) (map io_x c)
     LOCAL  a b   -> XLOCAL  (io_x a) (map io_x b)
@@ -614,10 +789,12 @@ instance RWX RWEval XEval where
     X_XOR   a b -> XOR    (x_io a) (x_io b)
     XSHIFTR a b -> SHIFTR (x_io a) (x_io b)
     XSHIFTL a b -> SHIFTL (x_io a) (x_io b)
-    XSYS    a b -> SYS  a   (map x_io b)
-    XCALL a b c -> CALL a (x_io b) (map x_io c)
-    XLOCAL  a b -> LOCAL  (x_io a) (map x_io b)
-    XGOTO   a b -> GOTO   (x_io a) (map x_io b)
+    XIF     a b c -> IF    (x_io a) (x_io b) (x_io c)
+    XIFNOT  a b c -> IFNOT (x_io a) (x_io b) (x_io c)
+    XSYS    a b   -> SYS  a   (map x_io b)
+    XCALL   a b c -> CALL a (x_io b) (map x_io c)
+    XLOCAL  a b   -> LOCAL  (x_io a) (map x_io b)
+    XGOTO   a b   -> GOTO   (x_io a) (map x_io b)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -633,7 +810,7 @@ setResult a = modify (\st -> st{lastResult=a}) >> return a
 
 evalError :: Monad m => String -> String -> XData -> RunT m ig
 evalError clas msg dat = case (readsPrec 0 clas, readsPrec 0 msg) of
-  ([(clas, "")], [(msg, "")]) -> throwXData $ XDATA clas (M.singleton msg dat)
+  ([(clas, "")], [(msg, "")]) -> throwXData clas [(msg, dat)]
   _ -> fail $ concat [clas, ": ", msg, "\n\t", show (x_io dat)]
 
 lookupModule :: Monad m => Address -> RunT m XModule
@@ -646,18 +823,18 @@ instance Evaluable XLookup where
     XRESULT     -> gets lastResult
     XCONST   o  -> return o
     XVAR     o  -> gets registers >>= \reg -> case M.lookup o reg of
-      Nothing -> evalError "Undefined" "variableName" (XSTR (text $ show o))
+      Nothing -> evalError "Undefined" "variableName" (mkXStr $ show o)
       Just  o -> return o
     XDEREF   o  -> do
       mod <- gets currentModule
       case msum $ map (fmap defsToMap >=> M.lookup o) [fmap xprivate mod, fmap xpublic mod] of
-        Nothing -> evalError "Undefined" "moduleVariable" (XSTR (text $ show o))
+        Nothing -> evalError "Undefined" "moduleVariable" (mkXStr $ show o)
         Just  o -> return o
     XLOOKUP a b -> do
       mod <- lookupModule a
       case M.lookup b (defsToMap $ xpublic mod) of
-        Nothing -> throwXData $ XDATA (read "Undefined") $ M.fromList $
-          [(read "inModule", XPTR a), (read "variableName", XSTR (text $ show b))]
+        Nothing -> throwXData "Undefined" $
+          [(read "inModule", XPTR a), (read "variableName", mkXStr $ show b)]
         Just  o -> return o
 
 -- Increment evaluation counter
@@ -668,18 +845,36 @@ incEC = modify (\st -> st{evalCounter=evalCounter st + 1})
 incPC :: Monad m => RunT m ()
 incPC = modify (\st -> st{programCounter=programCounter st + 1})
 
+popEvalStack :: Monad m => RunT m XData
+popEvalStack = get >>= \st -> case evalStack st of
+  []   -> throwXData "StackUnderflow" []
+  a:ax -> put (st{evalStack=ax}) >> setResult a
+
+pushEvalStack :: Monad m => [XData] -> RunT m ()
+pushEvalStack dx = get >>= \st -> modify (\st -> st{evalStack=reverse dx++evalStack st})
+
+evalStackEmptyElse :: Monad m => String -> [(String, XData)] -> RunT m ()
+evalStackEmptyElse functionLabel params = gets evalStack >>= \stk ->
+  if null stk
+    then  return ()
+    else  throwXData "FuncArgs" $
+            [ ("problem", mkXStr "too many arguments to function")
+            , ("function", mkXStr functionLabel)
+            , ("extraneousArguments", mkXList stk)
+            ]
+
 instance Evaluable XCommand where
   eval o = incEC >> incPC >> case o of
     XLOAD    a -> do
       reg <- gets registers
       case M.lookup a reg of
-        Nothing -> evalError "Undefined" "variableName" (XSTR (text $ show a))
+        Nothing -> evalError "Undefined" "variableName" (mkXStr $ show a)
         Just  a -> setResult a
     XSTORE   a -> gets lastResult >>= \b -> setRegister a b >> return b
     XSETJUMP a -> gets lastResult
     XJUMP    a -> do
       pcreg <- gets pcRegisters
-      let badJump = evalError "Undefined" "jumpTo" (XSTR (text $ show a))
+      let badJump = evalError "Undefined" "jumpTo" (mkXStr $ show a)
       case M.lookup a pcreg of
         Nothing -> badJump
         Just  i -> get >>= \st -> case currentBlock st of
@@ -688,16 +883,14 @@ instance Evaluable XCommand where
             if inRange (bounds b) i then put (st{programCounter=i}) >> return XNULL else badJump
     XPUSH    a -> eval a >>= \b -> modify (\st -> st{evalStack = b : evalStack st}) >> return b
     XPEEK      -> gets evalStack >>= \ax -> case ax of
-      []  -> throwXData $ XDATA (read "StackUnderflow") mempty
+      []  -> throwXData "StackUnderflow" []
       a:_ -> setResult a
-    XPOP       -> get >>= \st -> case evalStack st of
-      []   -> throwXData $ XDATA (read "StackUnderflow") mempty
-      a:ax -> put (st{evalStack=ax}) >> setResult a
+    XPOP       -> popEvalStack
     XCLRFWD    -> do
-      modify (\st -> st{lastResult=XLIST (mkXArray $ evalStack st), evalStack=[]})
+      modify (\st -> st{lastResult=mkXList (evalStack st), evalStack=[]})
       gets lastResult
     XCLRREV    -> do
-      modify (\st -> st{lastResult=XLIST (mkXArray $ reverse $ evalStack st), evalStack=[]})
+      modify (\st -> st{lastResult=mkXList (reverse $ evalStack st), evalStack=[]})
       gets lastResult
     XEVAL    a -> eval a
     XDO      a -> eval a
@@ -706,12 +899,12 @@ instance Evaluable XCommand where
 
 instance Evaluable XCondition where
   eval o = incEC >> case o of
-    XIF      a b -> eval a >>= \a -> case a of
-      XNULL -> return XNULL
-      _     -> eval b
-    XIFNOT   a b -> eval a >>= \a -> case a of
-      XNULL -> eval b
-      _     -> return XNULL
+    XWHEN a b -> eval a >>= \a -> case a of
+      XNULL     -> return XNULL
+      _         -> eval b
+    XUNLESS a b -> eval a >>= \a -> case a of
+      XNULL       -> eval b
+      _           -> return XNULL
 
 instance Evaluable XBlock where
   eval (XBlock cmds) = fix $ \loop -> incEC >> do
@@ -721,12 +914,10 @@ instance Evaluable XBlock where
       Just block | inRange (bounds block) pc -> eval (block!pc) >> loop
       _                                      -> gets lastResult
 
-badEval :: Monad m => XEval -> [(Label, XData)] -> RunT m ig
-badEval o other = throwXData $ XDATA (read "BadInstruction") $ M.fromList $
-  [ (Label $ text "instruction", XSTR $ text $ show $ x_io o)
-  , (Label $ text "problem"
-    , XSTR $ text ("evaluated operator on incorrect type of data")
-    )
+badEval :: Monad m => XEval -> [(String, XData)] -> RunT m ig
+badEval o other = throwXData "BadInstruction" $
+  [ ("instruction", mkXStr (show $ x_io o))
+  , ("problem", mkXStr "evaluated operator on incorrect type of data")
   ] ++ other
 
 evalDataOperand :: Monad m => Address -> XEval -> RunT m XData
@@ -734,7 +925,7 @@ evalDataOperand addr o = do
   -- avoids use of 'fmap' or '(<$>)' so we are not forced to put Functor in the context
   tabl <- asks builtinModules >>= return . join . fmap snd . T.lookup (addrToLabels addr)
   case tabl of
-    Nothing   -> badEval o [(Label $ text "dataType", XPTR addr)]
+    Nothing   -> badEval o [("dataType", XPTR addr)]
     Just eval -> eval o
 
 -- Automatically reverse and clear the stack, append the given parameters, and pair them with the
@@ -749,7 +940,7 @@ matchArgs argVars argValues = do
         ([]  , _   ) -> Nothing
         (a:ax, b:bx) -> loop ((a,b):m) ax bx
   case loop [] argVars (reverse stk ++ argValues) of
-    Nothing -> evalError "FuncCall" "notEnoughParams" (XLIST (mkXArray argValues))
+    Nothing -> evalError "FuncCall" "notEnoughParams" (mkXList argValues)
     Just (elms, rem) -> get >>= \old ->
       modify $ \st -> st{registers=M.fromList elms, evalStack=reverse rem}
 
@@ -765,13 +956,13 @@ callLocalMethod :: Monad m => XLookup -> [XData] -> RunT m XData
 callLocalMethod lbl argValues = do
   func <- eval lbl
   case func of
-    XFUNC argVars (XBlock (Just block)) -> do
+    XFUNC (XFunc argVars (XBlock (Just block))) -> do
       let loop m ax bx = case (ax, bx) of
             (ax  , []  ) -> Just (m, [])
             ([]  , _   ) -> Nothing
             (a:ax, b:bx) -> loop ((a,b):m) ax bx
       case loop [] argVars argValues of
-        Nothing -> evalError "FuncCall" "notEnoughParams" (XLIST (mkXArray argValues))
+        Nothing -> evalError "FuncCall" "notEnoughParams" (mkXList argValues)
         Just (elms, rem) -> get >>= \old -> do
           matchArgs argVars argValues
           setupJumpRegisters block
@@ -780,20 +971,20 @@ callLocalMethod lbl argValues = do
               , programCounter = programCounter old
               }
           catchError (eval (XBlock $ Just block)) $ \err -> case err of
-            XError  err -> throwXData err
+            XError  err -> throwError (XError err)
             XReturn dat -> do
               modify $ \st ->
-                st{ registers      = registers old
-                  , pcRegisters    = pcRegisters old
-                  , evalStack      = evalStack old
-                  , currentBlock   = currentBlock old
+                st{ registers      = registers      old
+                  , pcRegisters    = pcRegisters    old
+                  , evalStack      = evalStack      old
+                  , currentBlock   = currentBlock   old
                   , programCounter = programCounter old
                   }
               return dat
-    XFUNC _ (XBlock Nothing) -> gets lastResult
-    _ -> throwXData $ XDATA (read "FuncCall") $ M.fromList $
-            [ (read "problem", XSTR (text "target of call is not executable data"))
-            , (read "targetRegister", XSTR (text $ show $ x_io lbl))
+    XFUNC (XFunc _ (XBlock Nothing)) -> gets lastResult
+    _ -> throwXData "FuncCall" $
+            [ (read "problem", mkXStr "target of call is not executable data")
+            , (read "targetRegister", mkXStr $ show $ x_io lbl)
             ]
 
 arithmetic
@@ -820,6 +1011,12 @@ bitwise :: Monad m => XEval -> (Int -> Int -> Int) -> XEval -> XEval -> RunT m X
 bitwise o bit a b = eval a >>= \a -> eval b >>= \b -> case (a, b) of
   (XINT a, XINT b) -> return (XINT $ bit a b)
   _                -> badEval o []
+
+evalCondition :: Monad m => XEval -> Bool -> XEval -> XEval -> XEval -> RunT m XData
+evalCondition o inv a b c = do
+  a <- mplus (eval a >>= asXBool) $
+    badEval o [("problem", mkXStr "conditional does not evaluate to boolean value")]
+  if not inv && a || inv && not a then eval b else eval c
 
 instance Evaluable XEval where
   eval o = incEC >> case o of
@@ -857,13 +1054,15 @@ instance Evaluable XEval where
     XNEQL   a b -> return (if a/=b then XTRUE else XNULL)
     XAPPEND a b -> eval a >>= \a -> eval b >>= \b -> case (a, b) of
       (XSTR (Text a), XSTR (Text b)) -> return (XSTR $ Text $ U.fromString (U.toString a ++ U.toString b))
-      (XLIST a      , XLIST b      ) -> let el = maybe [] elems in return (XLIST (mkXArray (el a ++ el b)))
+      (XLIST a      , XLIST b      ) -> let el = maybe [] elems in return (mkXList (el a ++ el b))
     X_AND   a b -> bitwise o (.&.) a b
     X_OR    a b -> bitwise o (.|.) a b
     X_XOR   a b -> bitwise o  xor  a b
     XSHIFTR a b -> bitwise o shift a b
     XSHIFTL a b -> bitwise o (\a b -> shift a (negate b)) a b
-    XSYS    a b -> do
+    XIF     a b c -> evalCondition o True  a b c
+    XIFNOT  a b c -> evalCondition o False a b c
+    XSYS    a b   -> do
       syscall <- asks systemCalls >>= return . T.lookup (addrToLabels a)
       case syscall of
         Nothing -> evalError "Undefined" "systemCall" (XPTR a)
@@ -873,21 +1072,21 @@ instance Evaluable XEval where
           modify (\st -> st{evalStack=reverse b})
           dat <- catchError fn $ \err -> case err of
             XReturn dat -> return dat
-            XError  err -> throwXData $
-              XDATA (read "SystemCall") (M.singleton (Label $ text "exception") err)
+            XError  err -> throwXData "SystemCall" [("exception", err)]
           modify (\st -> st{evalStack=oldstk})
           setResult dat
     XCALL   a b c -> do
-      mod <- lookupModule a
+      this   <- gets lastResult
+      mod    <- lookupModule a
       curmod <- gets currentModule
       c      <- mapM eval c
-      modify (\st -> st{currentModule=Just mod})
+      modify (\st -> st{currentModule=Just mod, lastResult=this})
       catchError (callLocalMethod b c) $ \err -> case err of
         XReturn dat -> modify (\st -> st{currentModule=curmod}) >> return dat
-        XError  err -> throwXData err
+        XError  err -> throwError (XError err)
     XLOCAL  a b   -> mapM eval b >>= callLocalMethod a
     XGOTO   a b   -> eval a >>= \a -> case a of
-      XFUNC argParams (XBlock (Just block)) -> do
+      XFUNC (XFunc argParams (XBlock (Just block))) -> do
         argValues <- mapM eval b
         modify $ \st ->
           st{ registers      = mempty
@@ -898,8 +1097,8 @@ instance Evaluable XEval where
         matchArgs argParams argValues
         setupJumpRegisters block
         gets lastResult
-      XFUNC _ (XBlock Nothing) -> gets lastResult
-      _ -> badEval o [(read "register", XSTR (text "target of GOTO is non-function data type"))]
+      XFUNC (XFunc _ (XBlock Nothing)) -> gets lastResult
+      _ -> badEval o [(read "register", mkXStr "target of GOTO is non-function data type")]
 
 ----------------------------------------------------------------------------------------------------
 

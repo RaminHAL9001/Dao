@@ -262,14 +262,7 @@ class Translatable t where
   buildXData :: (Functor m, Monad m, Applicative m) => BuilderT m t
 
 newtype BuilderT m a = BuilderT { builderToPTrans :: PTrans XThrow (StateT DataBuilder m) a }
-  deriving Functor
-instance Monad m => Monad (BuilderT m) where
-  return = BuilderT . return
-  BuilderT f >>= fa = BuilderT $ f >>= builderToPTrans . fa
-  fail msg = BuilderT $ throwXData "DataBuilder.Error" [("problem", mkXStr msg)]
-instance Monad m => MonadPlus (BuilderT m) where
-  mzero = BuilderT mzero
-  mplus (BuilderT a) (BuilderT b) = BuilderT (mplus a b)
+  deriving (Functor, Monad, MonadPlus)
 instance (Functor m, Monad m) => Applicative (BuilderT m) where {pure=return; (<*>)=ap;}
 instance (Functor m, Monad m) => Alternative (BuilderT m) where {empty=mzero; (<|>)=mplus;}
 instance MonadTrans BuilderT where {lift = BuilderT . lift . lift}
@@ -283,15 +276,18 @@ instance Monad m => MonadPlusError XThrow (BuilderT m) where
 -- | Run a 'BuilderT' monad.
 runBuilderT :: BuilderT m t -> XData -> m (PValue XThrow t, DataBuilder)
 runBuilderT (BuilderT fn) init = runStateT (runPTrans fn) $
-  DataBuilder{builderItem=buildStep init, builderPath=[], builderModified=False}
+  DataBuilder{builderItem=buildStep init, builderPath=[], builderModified=0}
 
 data DataBuilder
   = DataBuilder
     { builderItem :: BuildStep
     , builderPath :: [BuildStep]
-    , builderModified :: Bool
+    , builderModified :: Integer
       -- ^ is the current item modified, must everything before it be rebuilt?
     }
+
+incMod :: Integer -> DataBuilder -> DataBuilder
+incMod i st = st{builderModified = builderModified st + i}
 
 data BuildStep
   = DataConst XData
@@ -304,18 +300,153 @@ data BuildStep
     , buildFieldItem  :: Maybe XData
     }
   | ListStep
-    { buildListIndex  :: Int
+    { buildIndex      :: Int
     , buildListBefore :: [XData]
     , buildListAfter  :: [XData]
+    }
+  | FuncStep
+    { buildFuncArgs  :: [Label]
+    , buildFuncBlock :: XBlock
+    }
+  | BlockStep
+    { buildIndex       :: Int
+    , buildBlockBefore :: [XCommand]
+    , buildBlockAfter  :: [XCommand]
     }
 
 buildStep :: XData -> BuildStep
 buildStep o = case o of
   XDATA addr dict ->
     DataStep{buildDataAddress=addr, buildDataDict=dict}
-  XLIST list      ->
-    ListStep{buildListIndex=0, buildListBefore=[], buildListAfter=maybe [] elems list}
-  o               -> DataConst o
+  XLIST list ->
+    ListStep{buildIndex=0, buildListBefore=[], buildListAfter=maybe [] elems list}
+  XFUNC (XFunc args block) -> FuncStep args block
+  o -> DataConst o
+
+newtype WithDataT m a = WithDataT { withDataToBuilderT :: BuilderT m a }
+  deriving (Functor, Applicative, Alternative, Monad, MonadPlus)
+instance Monad m => MonadError XThrow (WithDataT m) where
+  throwError = WithDataT . throwError
+  catchError (WithDataT try) catch = WithDataT $ catchError try (withDataToBuilderT . catch)
+instance Monad m => MonadPlusError XThrow (WithDataT m) where
+  catchPValue (WithDataT f) = WithDataT (catchPValue f)
+  assumePValue = WithDataT . assumePValue
+
+-- | Force the current focus to become an 'XDATA' constructor. If the item is already an 'XDATA'
+-- constructor, the fields will not be changed, otherwise a new field map is created.
+putXData :: Monad m => String -> WithDataT m a -> BuilderT m a
+putXData addr (WithDataT next) = do
+  addr <- parseAddress addr
+  BuilderT $ lift $ modify $ incMod 1 . \st -> case builderItem st of
+    DataStep _ dict -> st{builderItem=DataStep addr dict}
+    _ -> st{builderItem=DataStep{buildDataAddress=addr, buildDataDict=mempty}}
+  next
+
+putXDataFields :: Monad m => [(String, XData)] -> WithDataT m ()
+putXDataFields items = WithDataT $ forM_ items $ \ (lbl, dat) -> do
+  lbl <- parseLabel lbl
+  BuilderT $ lift $ do
+    st <- get
+    let (DataStep{buildDataAddress=addr, buildDataDict=dict}) = builderItem st
+    put $ incMod 1 $
+      st{ builderItem =
+            DataStep
+            { buildDataAddress = addr
+            , buildDataDict    = M.insert lbl dat dict
+            }
+        }
+
+-- | Check if the current focus is an 'XDATA' constructor, if not evaluate to 'Control.Monad.mzero'.
+-- If so, evaluate a function to read or write the fields of the object.
+withXData :: Monad m => String -> WithDataT m t -> BuilderT m t
+withXData addr (WithDataT (BuilderT next)) = BuilderT $ do
+  addr <- parseAddress addr
+  item <- lift (gets builderItem)
+  case item of
+    DataStep curAddr dict | curAddr==addr -> next
+    _                                     -> mzero
+
+-- | Evaluates 'withXData' using 'buildXData' converted to a 'WithDataT' data type.
+xdata :: (Applicative m, Monad m, Translatable t) => String -> BuilderT m t
+xdata addrStr = withXData addrStr $ mplus (WithDataT buildXData) $ do
+  addr <- parseAddress addrStr
+  throwXData "DataBuilder.Error" [("expecting", XPTR addr)]
+
+newtype WithFieldT m a = WithFieldT { withFieldToBuilderT :: BuilderT m a }
+  deriving (Functor, Applicative, Alternative, Monad, MonadPlus)
+instance Monad m => MonadError XThrow (WithFieldT m) where
+  throwError = WithFieldT . throwError
+  catchError (WithFieldT try) catch = WithFieldT $ catchError try (withFieldToBuilderT . catch)
+instance Monad m => MonadPlusError XThrow (WithFieldT m) where
+  catchPValue (WithFieldT f) = WithFieldT (catchPValue f)
+  assumePValue = WithFieldT . assumePValue
+instance Monad m => MonadState (Maybe XData) (WithFieldT m) where
+  state f = WithFieldT $ BuilderT $ do
+    st <- lift get
+    let doUpd lbl dat = lift $ put $ incMod 1 $
+          st{ builderItem = FieldStep{buildFieldIndex=lbl, buildFieldItem=dat} }
+    case builderItem st of
+      FieldStep{buildFieldIndex=lbl, buildFieldItem=dat} -> case dat of
+        Nothing -> case f Nothing of
+          (a, Nothing ) -> return a
+          (a, Just dat) -> doUpd lbl (Just dat) >> return a
+        dat -> let (a, dat') = f dat in doUpd lbl dat' >> return a
+      _ -> mzero
+
+-- | Evaluates a 'WithFieldT' monad on a particular field identified by a 'Label' constructed from
+-- the 'Prelude.String' parameter.
+withXField :: Monad m => String -> WithFieldT m t -> WithDataT m t
+withXField lbl (WithFieldT next) = WithDataT $ do
+  lbl <- parseLabel lbl
+  oldCount <- BuilderT $ do
+    st <- lift get
+    case builderItem st of
+      DataStep{buildDataAddress=addr, buildDataDict=dict} -> lift $ put $
+        st{ builderItem = FieldStep{buildFieldIndex=lbl, buildFieldItem=M.lookup lbl dict}
+          , builderPath = builderItem st : builderPath st
+          , builderModified = 0
+          }
+      _ -> mzero
+    return (builderModified st)
+  a <- next
+  BuilderT $ do
+    st <- lift get
+    let count = builderModified st
+    if count<=0
+    then return a
+    else do
+      let path = builderPath st
+      case builderItem st of
+        FieldStep{buildFieldIndex=lbl, buildFieldItem=dat} -> do
+          let (DataStep{buildDataAddress=addr, buildDataDict=dict}) = head path
+          lift $ put $ incMod oldCount $
+            st{ builderItem =
+                  DataStep
+                  { buildDataAddress = addr
+                  , buildDataDict    = M.alter (const dat) lbl dict
+                  }
+              }
+        _ -> return ()
+      lift $ modify $ \st -> st{builderPath=tail path}
+      return a
+
+-- | Evaluates 'withXField' using 'buildXData' converted to a 'WithFieldT' data type.
+xfield :: (Monad m, Applicative m, Translatable t) => String -> WithDataT m t
+xfield lbl = withXField lbl $ WithFieldT $ BuilderT $ do
+  mplus
+    (do step     <- lift (gets builderItem)
+        oldCount <- lift (gets builderModified)
+        case buildFieldItem step of
+          Just item -> do
+            lift $ modify $ \st -> st{builderItem=buildStep item, builderModified=0}
+            a <- builderToPTrans buildXData
+            lift $ modify $ \st -> incMod oldCount $ st{builderItem=step}
+            return a
+          Nothing   -> mzero
+    )
+    (do lbl <- parseAddress lbl
+        throwXData "DataBuilder.Error" [("expectingField", XPTR lbl)]
+    )
 
 -- | This module lets you construct arbitrary data types with a simple semantics similar to that of
 -- the Bourne shell, that is using commands like @ls@, @cd@, @pwd@, @cp@, @mv@, @rm@, @cat@, @echo@,
@@ -425,6 +556,14 @@ readLabel str = case dropWhile isSpace str of
   c:_ | isAlpha c || c=='_' -> return (span isAlphaNum str)
   [] -> fail "expecting Label"
 
+parseLabel :: MonadError XThrow m => String -> m Label
+parseLabel str = case readsPrec 0 str of
+  [(addr, "")] -> return addr
+  _ -> throwXData "Label.Error" $
+    [ ("problem", mkXStr "Labels must have no dots, commas, parens, spaces, and must not be null")
+    , ("parseInput", mkXStr str)
+    ]
+
 readAddress :: String -> [(String, String)]
 readAddress = readLabel >=> uncurry loop where 
   loop nm str = case dropWhile isSpace str of
@@ -432,6 +571,14 @@ readAddress = readLabel >=> uncurry loop where
       (lbl, str) <- readLabel str
       mplus (loop (nm++'.':lbl) str) (fail "expecting Address")
     str     -> return (nm, str)
+
+parseAddress :: MonadError XThrow m => String -> m Address
+parseAddress str = case readsPrec 0 str of
+  [(addr, "")] -> return addr
+  _ -> throwXData "Address.Error" $
+    [ ("problem", mkXStr "address must have no commas, parens, spaces, and must not be null")
+    , ("parseInput", mkXStr str)
+    ]
 
 newtype Label = Label { label :: Text } deriving (Eq, Ord)
 instance Show Label where { show (Label u) = textChars u }

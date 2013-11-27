@@ -259,7 +259,8 @@ fileIO = do
 
 -- | A class of data types that can be isomorphically translated to and from an 'XData' data type.
 class Translatable t where
-  buildXData :: (Functor m, Monad m, Applicative m) => BuilderT m t
+  toXData   :: (Functor m, Monad m, Applicative m) => t -> BuilderT m ()
+  fromXData :: (Functor m, Monad m, Applicative m) => BuilderT m t
 
 newtype BuilderT m a = BuilderT { builderToPTrans :: PTrans XThrow (StateT DataBuilder m) a }
   deriving (Functor, Monad, MonadPlus)
@@ -272,181 +273,441 @@ instance Monad m => MonadError XThrow (BuilderT m) where
 instance Monad m => MonadPlusError XThrow (BuilderT m) where
   catchPValue (BuilderT f) = BuilderT (catchPValue f)
   assumePValue = BuilderT . assumePValue
+instance Monad m => MonadState (Maybe XData) (BuilderT m) where
+  get   = BuilderT $ lift $ gets (fmap fromBuildStep . builderItem)
+  put o = BuilderT $ lift $ modify $ \st -> st{builderItem=fmap buildStep o}
 
 -- | Run a 'BuilderT' monad.
-runBuilderT :: BuilderT m t -> XData -> m (PValue XThrow t, DataBuilder)
-runBuilderT (BuilderT fn) init = runStateT (runPTrans fn) $
-  DataBuilder{builderItem=buildStep init, builderPath=[], builderModified=0}
+runBuilderT :: BuilderT m t -> m (PValue XThrow t, DataBuilder)
+runBuilderT (BuilderT fn) = runStateT (runPTrans fn) $
+  DataBuilder{builderItem = Nothing, builderPath = []}
 
 data DataBuilder
   = DataBuilder
-    { builderItem :: BuildStep
+    { builderItem :: Maybe BuildStep
     , builderPath :: [BuildStep]
-    , builderModified :: Integer
       -- ^ is the current item modified, must everything before it be rebuilt?
     }
 
-incMod :: Integer -> DataBuilder -> DataBuilder
-incMod i st = st{builderModified = builderModified st + i}
-
 data BuildStep
-  = DataConst XData
+  = ConstStep XData
   | DataStep
     { buildDataAddress :: Address
     , buildDataDict    :: M.Map Label XData
-    }
-  | FieldStep
-    { buildFieldIndex :: Label
-    , buildFieldItem  :: Maybe XData
+    , buildDataField   :: Maybe Label
     }
   | ListStep
     { buildIndex      :: Int
+    , buildListLength :: Int
     , buildListBefore :: [XData]
     , buildListAfter  :: [XData]
-    }
-  | FuncStep
-    { buildFuncArgs  :: [Label]
-    , buildFuncBlock :: XBlock
-    }
-  | BlockStep
-    { buildIndex       :: Int
-    , buildBlockBefore :: [XCommand]
-    , buildBlockAfter  :: [XCommand]
     }
 
 buildStep :: XData -> BuildStep
 buildStep o = case o of
-  XDATA addr dict ->
-    DataStep{buildDataAddress=addr, buildDataDict=dict}
   XLIST list ->
-    ListStep{buildIndex=0, buildListBefore=[], buildListAfter=maybe [] elems list}
-  XFUNC (XFunc args block) -> FuncStep args block
-  o -> DataConst o
+    ListStep
+    { buildIndex      = 0
+    , buildListLength = maybe 0 (uncurry subtract . bounds) list
+    , buildListBefore = []
+    , buildListAfter  = maybe [] elems list
+    }
+  XDATA addr dict -> DataStep{buildDataAddress=addr, buildDataDict=dict, buildDataField=Nothing}
+  o -> ConstStep o
 
-newtype WithDataT m a = WithDataT { withDataToBuilderT :: BuilderT m a }
-  deriving (Functor, Applicative, Alternative, Monad, MonadPlus)
-instance Monad m => MonadError XThrow (WithDataT m) where
-  throwError = WithDataT . throwError
-  catchError (WithDataT try) catch = WithDataT $ catchError try (withDataToBuilderT . catch)
-instance Monad m => MonadPlusError XThrow (WithDataT m) where
-  catchPValue (WithDataT f) = WithDataT (catchPValue f)
-  assumePValue = WithDataT . assumePValue
+fromBuildStep :: BuildStep -> XData
+fromBuildStep a = case a of
+  ConstStep a       -> a
+  DataStep  a b _   -> XDATA a b
+  ListStep  _ _ a b -> mkXList $ reverse a ++ b
 
--- | Force the current focus to become an 'XDATA' constructor. If the item is already an 'XDATA'
--- constructor, the fields will not be changed, otherwise a new field map is created.
-putXData :: Monad m => String -> WithDataT m a -> BuilderT m a
-putXData addr (WithDataT next) = do
+-- | Force the current 'BuildStep' to change to the given data.
+forceStep :: Monad m => XData -> BuilderT m ()
+forceStep dat = BuilderT $ lift $ modify $ \st -> st{builderItem = Just $ buildStep dat}
+
+-- | Push the current path, set the current 'builderItem' to contain the given data.
+pushStep :: Monad m => XData -> BuilderT m ()
+pushStep dat = BuilderT $ lift $ modify $ \st ->
+  st{ builderItem = Just (buildStep dat)
+    , builderPath = maybe [] (:[]) (builderItem st) ++ builderPath st
+    }
+
+-- | This is like a Unix shell @cd ..@ operation. After evaluating a @push*@ operation below (e.g.
+-- 'pushXData' or 'pushXList') you can pop the current 'builderItem' and place it into the next
+-- 'BuildStep' item in the 'builderPath', then make this popped-updated 'BuildStep' item the current
+-- 'builderItem'. How the 'builderPath' item is updated depends on what kind of path item it is. The
+-- item popped is returned.
+popStep :: Monad m => BuilderT m (Maybe XData)
+popStep = (BuilderT $ lift $ get) >>= \st -> case builderPath st of
+  []         -> do
+    BuilderT $ lift $ put $ st{builderItem=Nothing}
+    return $ fmap fromBuildStep $ builderItem st
+  step:stepx -> BuilderT $ lift $ do
+    let item = builderItem st
+    let xdat = fmap fromBuildStep item
+    let putItem item = do
+          put $ st{builderItem=item, builderPath=stepx}
+          return xdat
+    putItem $ case step of
+      ConstStep a -> mplus item (Just step) -- overwrite const steps
+      DataStep addr dict lbl -> case lbl of -- if lbl is nothing, treat as const and overwrite it
+        Nothing  -> mplus item (Just step)  -- otherwise associate it with the label
+        Just lbl -> Just $ DataStep addr (M.alter (const xdat) lbl dict) Nothing
+      ListStep i len bef aft -> let inc i = maybe i (const (i+1)) xdat in Just $
+        ListStep (inc i) (inc len) (maybe bef (:bef) xdat) aft
+
+-- | Deletes the item currently in 'builderItem'.
+deleteStep :: Monad m => BuilderT m ()
+deleteStep = BuilderT $ lift $ modify $ \st -> st{builderItem = Nothing}
+
+-- not for export
+tryBuildStep :: Monad m => (BuildStep -> BuilderT m t) -> BuilderT m t
+tryBuildStep update = (BuilderT $ lift $ gets builderItem) >>= maybe mzero update
+
+-- | Update the current 'builderItem' if it is a 'ConstStep', otherwise backtrack.
+tryXConst :: Monad m => (XData -> BuilderT m t) -> BuilderT m t
+tryXConst update = tryBuildStep $ \s -> case s of {ConstStep a -> update a; _ -> mzero;}
+
+-- | Update the current 'builderItem' if it is a 'DataStep', otherwise backtrack.
+tryXData :: Monad m => (Address -> M.Map Label XData -> Maybe Label -> BuilderT m t) -> BuilderT m t
+tryXData update = tryBuildStep $ \s -> case s of {DataStep a b c -> update a b c; _ -> mzero;}
+
+-- | Update the current 'builderItem' if it is a 'ListStep', otherwise backtrack.
+tryXList :: Monad m => (Int -> Int -> [XData] -> [XData] -> BuilderT m t) -> BuilderT m t
+tryXList update = tryBuildStep $ \s -> case s of {ListStep a b c d -> update a b c d; _ -> mzero;}
+
+-- | Push the 'builderPath' and create a new 'DataStep' as the current 'builderItem'. If the current
+-- item is a 'ConstStep', or we have not stepped into a field with 'pushXField', the 'popStep'
+-- operation will cause any data created after this 'pushXDataAddr' step to overwrite any element
+-- that existed on the stack before it. Likewise an immediately consecutive call to this function
+-- without an interveaning 'pushXField' operation will overwrite any data created by the current
+-- call.
+pushXDataAddr :: Monad m => String -> BuilderT m Address
+pushXDataAddr addr = do
   addr <- parseAddress addr
-  BuilderT $ lift $ modify $ incMod 1 . \st -> case builderItem st of
-    DataStep _ dict -> st{builderItem=DataStep addr dict}
-    _ -> st{builderItem=DataStep{buildDataAddress=addr, buildDataDict=mempty}}
-  next
+  BuilderT $ lift $ modify $ \st ->
+    st{ builderItem = Just $ DataStep addr mempty Nothing
+      , builderPath = concat [maybe [] (:[]) (builderItem st), builderPath st]
+      }
+  return addr
 
-putXDataFields :: Monad m => [(String, XData)] -> WithDataT m ()
-putXDataFields items = WithDataT $ forM_ items $ \ (lbl, dat) -> do
+-- | Evaluates a given 'BuilderT' but only if the current 'builderItem' is a 'DataStep' with an
+-- address value matching the address given by the 'Prelude.String' parameter.
+xdata :: Monad m => String -> BuilderT m a => BuilderT m a
+xdata getAddr builder = tryXData $ \addr _ _ ->
+  parseAddress getAddr >>= \getAddr -> guard (addr==getAddr) >> builder
+
+-- | If the current 'builderItem' is an 'XDATA' constructor, step into a field of the 'XDATA' item
+-- at the 'Label' provided by the 'Prelude.String' parameter. If the field does not exist, the field
+-- will be created.
+pushXField :: Monad m => String -> BuilderT m Label
+pushXField newLbl = tryXData $ \addr dict lbl -> do
+  newLbl <- parseLabel newLbl
+  -- the above 'tryXData' ensures 'builderItem st' is a 'DataStep', so this stateful update can
+  -- safely use 'buildDataFiled' without checking the constructor of 'builderItem st'.
+  BuilderT $ lift $ modify $ \st ->
+    st{ builderPath = DataStep addr dict lbl : builderPath st
+      , builderItem = fmap buildStep $ M.lookup newLbl dict
+      }
+  return newLbl
+
+-- | Evaluates a given 'BuilderT', but only if a given 'Label' (provided here as a 'Prelude.String'
+-- parameter) can be stepped-into. This is the optional version, which means the function backtracks
+-- rather than throwing an error if the field does not exist.
+optXFieldWith :: Monad m => String -> BuilderT m a -> BuilderT m a
+optXFieldWith lbl builder = do
   lbl <- parseLabel lbl
-  BuilderT $ lift $ do
-    st <- get
-    let (DataStep{buildDataAddress=addr, buildDataDict=dict}) = builderItem st
-    put $ incMod 1 $
-      st{ builderItem =
-            DataStep
-            { buildDataAddress = addr
-            , buildDataDict    = M.insert lbl dat dict
-            }
-        }
-
--- | Check if the current focus is an 'XDATA' constructor, if not evaluate to 'Control.Monad.mzero'.
--- If so, evaluate a function to read or write the fields of the object.
-withXData :: Monad m => String -> WithDataT m t -> BuilderT m t
-withXData addr (WithDataT (BuilderT next)) = BuilderT $ do
-  addr <- parseAddress addr
-  item <- lift (gets builderItem)
-  case item of
-    DataStep curAddr dict | curAddr==addr -> next
-    _                                     -> mzero
-
--- | Evaluates 'withXData' using 'buildXData' converted to a 'WithDataT' data type.
-xdata :: (Applicative m, Monad m, Translatable t) => String -> BuilderT m t
-xdata addrStr = withXData addrStr $ mplus (WithDataT buildXData) $ do
-  addr <- parseAddress addrStr
-  throwXData "DataBuilder.Error" [("expecting", XPTR addr)]
-
-newtype WithFieldT m a = WithFieldT { withFieldToBuilderT :: BuilderT m a }
-  deriving (Functor, Applicative, Alternative, Monad, MonadPlus)
-instance Monad m => MonadError XThrow (WithFieldT m) where
-  throwError = WithFieldT . throwError
-  catchError (WithFieldT try) catch = WithFieldT $ catchError try (withFieldToBuilderT . catch)
-instance Monad m => MonadPlusError XThrow (WithFieldT m) where
-  catchPValue (WithFieldT f) = WithFieldT (catchPValue f)
-  assumePValue = WithFieldT . assumePValue
-instance Monad m => MonadState (Maybe XData) (WithFieldT m) where
-  state f = WithFieldT $ BuilderT $ do
-    st <- lift get
-    let doUpd lbl dat = lift $ put $ incMod 1 $
-          st{ builderItem = FieldStep{buildFieldIndex=lbl, buildFieldItem=dat} }
-    case builderItem st of
-      FieldStep{buildFieldIndex=lbl, buildFieldItem=dat} -> case dat of
-        Nothing -> case f Nothing of
-          (a, Nothing ) -> return a
-          (a, Just dat) -> doUpd lbl (Just dat) >> return a
-        dat -> let (a, dat') = f dat in doUpd lbl dat' >> return a
-      _ -> mzero
-
--- | Evaluates a 'WithFieldT' monad on a particular field identified by a 'Label' constructed from
--- the 'Prelude.String' parameter.
-withXField :: Monad m => String -> WithFieldT m t -> WithDataT m t
-withXField lbl (WithFieldT next) = WithDataT $ do
-  lbl <- parseLabel lbl
-  oldCount <- BuilderT $ do
-    st <- lift get
-    case builderItem st of
-      DataStep{buildDataAddress=addr, buildDataDict=dict} -> lift $ put $
-        st{ builderItem = FieldStep{buildFieldIndex=lbl, buildFieldItem=M.lookup lbl dict}
-          , builderPath = builderItem st : builderPath st
-          , builderModified = 0
+  tryXData $ \addr dict _ -> case M.lookup lbl dict of
+    Nothing   -> mzero
+    Just item -> do
+      BuilderT $ lift $ modify $ \st ->
+        st{ builderPath = DataStep addr dict (Just lbl) : builderPath st
+          , builderItem = Just $ buildStep item
           }
-      _ -> mzero
-    return (builderModified st)
-  a <- next
-  BuilderT $ do
-    st <- lift get
-    let count = builderModified st
-    if count<=0
-    then return a
-    else do
-      let path = builderPath st
-      case builderItem st of
-        FieldStep{buildFieldIndex=lbl, buildFieldItem=dat} -> do
-          let (DataStep{buildDataAddress=addr, buildDataDict=dict}) = head path
-          lift $ put $ incMod oldCount $
-            st{ builderItem =
-                  DataStep
-                  { buildDataAddress = addr
-                  , buildDataDict    = M.alter (const dat) lbl dict
-                  }
-              }
-        _ -> return ()
-      lift $ modify $ \st -> st{builderPath=tail path}
-      return a
+      builder >>= \a -> popStep >> return a
 
--- | Evaluates 'withXField' using 'buildXData' converted to a 'WithFieldT' data type.
-xfield :: (Monad m, Applicative m, Translatable t) => String -> WithDataT m t
-xfield lbl = withXField lbl $ WithFieldT $ BuilderT $ do
-  mplus
-    (do step     <- lift (gets builderItem)
-        oldCount <- lift (gets builderModified)
-        case buildFieldItem step of
-          Just item -> do
-            lift $ modify $ \st -> st{builderItem=buildStep item, builderModified=0}
-            a <- builderToPTrans buildXData
-            lift $ modify $ \st -> incMod oldCount $ st{builderItem=step}
-            return a
-          Nothing   -> mzero
+-- | Like 'xfieldWith' but the 'BuilderT' used is the instantiation for the type @t@ of the
+-- 'fromXData' function. This is the optional version, which means the function backtracks
+-- rather than throwing an error if the field does not exist.
+optXField :: (Monad m, Applicative m, Translatable t) => String -> BuilderT m t
+optXField lbl = xfieldWith lbl fromXData
+
+-- | This is the non-optional version of 'optXFieldWith'. If the field does not exist, an error is
+-- thrown reporting which field that should have existed.
+xfieldWith :: Monad m => String -> BuilderT m t -> BuilderT m t
+xfieldWith lbl builder = mplus (optXFieldWith lbl builder) $
+  tryXData $ \addr _ _ -> parseLabel lbl >>= \lbl -> throwXData "DataBuilder.Error" $
+    [ ("problem", mkXStr "missing required field")
+    , ("dataType", XPTR addr)
+    , ("missingField", XPTR (labelsToAddr [lbl]))
+    ]
+
+-- | This is the non-optional version of 'optXField'. If the field does not exist, an error is
+-- thrown reporting which field that should have existed.
+xfield :: (Monad m, Applicative m, Translatable t) => String -> BuilderT m t
+xfield lbl = xfieldWith lbl fromXData
+
+-- | Combines the 'pushXDataAddr' and 'pushXField' steps into a single operation. Using this
+-- function is the best way to construct arbitrary data.
+pushXData :: Monad m => String -> [(String, BuilderT m ())] -> BuilderT m ()
+pushXData addr newDict = do
+  pushXDataAddr addr
+  forM_ newDict (\ (lbl, builder) -> pushXField lbl >> builder >> popStep)
+
+-- | Push the 'builderPath' and create a new 'ListStep' as the current 'builderItem'. If the current
+-- item is a 'ConstStep', or we have not stepped into a field with 'pushXField', the 'popStep'
+-- operation will cause any data created after this 'pushXList' operation to place the popped item
+-- into the list after the cursor.
+pushXList :: Monad m => BuilderT m ()
+pushXList = BuilderT $ lift $ modify $ \st ->
+  st{ builderItem = Just $ ListStep 0 0 [] []
+    , builderPath = concat [maybe [] (:[]) (builderItem st), builderPath st]
+    }
+
+-- | Evaluate a 'BuilderT' only if the 'builderItem' is a 'ListStep'
+xlist :: Monad m => BuilderT m a -> BuilderT m a
+xlist builder = tryXList $ \ _ _ _ _ -> builder
+
+-- | Step into the current list element, which is the element just before the cursor. If there are
+-- no elements before the cursor, an element is created at index 0.
+pushXElem :: Monad m => BuilderT m ()
+pushXElem = tryXList $ \i len before after -> BuilderT $ lift $ modify $ \st -> case before of
+  []       ->
+    st{ builderItem = Nothing
+      , builderPath = ListStep i len before after : builderPath st
+      }
+  b:before ->
+    st{ builderItem = Just (buildStep b)
+      , builderPath = ListStep (i-1) (len-1) before after : builderPath st
+      }
+
+-- | Evaluate a 'BuilderT' only if the cursor is positioned on an element.
+xelemWith :: Monad m => BuilderT m a -> BuilderT m a
+xelemWith builder = tryXList $ \i len before after -> guard (i<len) >> case after of
+  []      -> mzero
+  a:after -> do
+    BuilderT $ lift $ modify $ \st ->
+      st{ builderItem = Just $ buildStep a
+        , builderPath = ListStep i (len-1) before after : builderPath st
+        }
+    builder >>= \a -> popStep >> return a
+
+-- | Like 'xelem' but evaluates the 'BuilderT' used is the instantiation of the 'fromXData' function
+-- for the 'Translatable' type @t@.
+xelem :: (Monad m, Applicative m, Translatable t) => BuilderT m t
+xelem = xelemWith fromXData
+
+-- | Like 'xelemWith', evaluate a 'BuilderT' only if the cursor is positioned on an element. However
+-- after evaluation of the 'BuilderT' completes, advance the listt cursor
+xiterateWith :: Monad m => BuilderT m a -> BuilderT m a
+xiterateWith builder = xelemWith builder >>= \a -> moveCursor 1 >> return a
+
+-- | Like 'xiterateWith' but the 'BuilderT' used is the instantiation of 'fromXData' the function
+-- for the 'Translatable' type @t@.
+xiterate :: (Monad m, Applicative m, Translatable t) => BuilderT m t
+xiterate = xiterateWith fromXData
+
+-- | If the current 'builderItem' is a 'ListStep' and the list cursor is at the end of the list,
+-- return 'Prelude.True'. Works well when used before evaluating 'xiterate'.
+endOfXList :: Monad m => BuilderT m Bool
+endOfXList = tryXList $ \i len _ _ -> return (i>=len)
+
+-- | Assuming the current 'builderItem' is a 'ListStep', get the length of the current list.
+lengthXList :: Monad m => BuilderT m Int
+lengthXList = tryXList $ \ _ len _ _ -> return len
+
+-- | Assuming the current 'builderItem' is a 'ListStep', get the current cursor position.
+getCursor :: Monad m => BuilderT m Int
+getCursor = tryXList $ \ i _ _ _ -> return i
+
+-- | Assuming the current 'builderItem' is a 'ListStep', place a list of items before the current
+-- cursor position.
+putBefore :: Monad m => [XData] -> BuilderT m ()
+putBefore tx = tryXList $ \i len before after -> BuilderT $ lift $ modify $ \st ->
+  st{ builderItem = Just $ ListStep i (len + length tx) before (tx++after) }
+
+-- | Assuming the current 'builderItem' is a 'ListStep', place a list of items before the current
+-- cursor position.
+putAfter :: Monad m => [XData] -> BuilderT m ()
+putAfter tx = tryXList $ \i len before after ->
+  let len' = length tx
+  in  BuilderT $ lift $ modify $ \st ->
+        st{ builderItem = Just $ ListStep (i+len') (len+len') (before++reverse tx) after }
+
+indexError :: MonadError XThrow m => Int -> Int -> String -> Integer -> String -> m ig
+indexError i len msg req opmsg = throwXData "DataBuilder.Error" $
+  [ ("problem", mkXStr msg), ("cursorPosition", XINT i), ("listLength", XINT len)
+  , ( opmsg
+    , if curry inRange (fromIntegral (minBound::Int)) (fromIntegral (maxBound::Int)) req
+      then XINT (fromIntegral req)
+      else mkXStr (show req)
     )
-    (do lbl <- parseAddress lbl
-        throwXData "DataBuilder.Error" [("expectingField", XPTR lbl)]
-    )
+  ]
+
+-- | Assuming the current 'builderItem' is a 'ListStep', move forward or backward through the list. The
+-- resulting index must be in bounds or this function evaluates to an error.
+moveCursor :: Monad m => Integer -> BuilderT m ()
+moveCursor delta = tryXList $ \i len before after -> do
+  let checkBounds msg errorCondition = unless errorCondition $
+        indexError i len ("moved cursor passed "++msg++" of list") delta "shiftValue"
+  let newCursor = fromIntegral delta + i
+  case delta of
+    0               -> return ()
+    delta | delta<0 -> do
+      checkBounds "before" (fromIntegral i + delta >= 0)
+      BuilderT $ lift $ modify $ \st ->
+        let (took, remain) = splitAt (abs (fromIntegral delta)) before
+        in  st{ builderItem = Just $ ListStep newCursor len remain (reverse took ++ after) }
+    delta | delta>0 -> do
+      checkBounds "after" (fromIntegral (len-i) > delta)
+      BuilderT $ lift $ modify $ \st ->
+        let (took, remain) = splitAt (fromIntegral delta) after
+        in  st{ builderItem = Just $ ListStep newCursor len (before ++ reverse took) remain }
+
+-- | Assuming the current 'builderItem' is a 'ListStep', move the cursor to the specific index. The
+-- index must be in bounds or this function evaluates to an error.
+cursorToIndex :: Monad m => Integer -> BuilderT m ()
+cursorToIndex i' = join $ tryXList $ \i len before after ->
+  if curry inRange 0 (fromIntegral len) i'
+  then return $ moveCursor (fromIntegral i' - fromIntegral i)
+  else indexError i len "moved cursor to index out of range" i' "requestedIndex"
+
+cursorToStart :: Monad m => BuilderT m ()
+cursorToStart = tryXList $ \i len before after -> BuilderT $ lift $ modify $ \st ->
+  st{ builderItem = Just $ ListStep 0 len [] (reverse before ++ after) }
+
+cursorToEnd :: Monad m => BuilderT m ()
+cursorToEnd = tryXList $ \i len before after -> BuilderT $ lift $ modify $ \st ->
+  st{ builderItem = Just $ ListStep len len [] (before ++ reverse after) }
+
+-- | Assuming the current 'builderItem' is a 'ListStep', starting at the current cursor position
+-- step through the current list by pushing each list item to the 'builderItem', evaluating the
+-- given function, then popping the item.
+forEachForward :: Monad m => BuilderT m t -> BuilderT m [t]
+forEachForward update = loop [] where
+  loop tx = tryXList $ \i len before after -> case after of
+    [] -> return tx
+    _  -> pushXElem >> update >>= \t -> popStep >> moveCursor 1 >> loop (tx++[t])
+
+-- | Assuming the current 'builderItem' is a 'ListStep', starting at the current cursor position
+-- step through the current list by pushing each list item to the 'builderItem', evaluating the
+-- given function, then popping the item.
+forEachBackward :: Monad m => BuilderT m t -> BuilderT m [t]
+forEachBackward update = loop [] where
+  loop tx = tryXList $ \i len before after -> case before of
+    [] -> return tx
+    _  -> pushXElem >> update >>= \t -> popStep >> moveCursor (negate 1) >> loop (t:tx)
+
+instance Translatable Bool where
+  toXData a = put $ Just $ if a then XTRUE else XNULL
+  fromXData = tryXConst $ \o -> case o of
+    XNULL -> return False
+    XTRUE -> return True
+    _     -> mzero
+
+instance Translatable Int where
+  toXData   = put . Just . XINT
+  fromXData = tryXConst $ \o -> case o of { XINT o -> return o; _ -> mzero; }
+
+instance Translatable Double where
+  toXData   = put . Just . XFLOAT
+  fromXData = tryXConst $ \o -> case o of { XFLOAT o -> return o; _ -> mzero; }
+
+instance Translatable Text where
+  toXData   = put . Just . XSTR
+  fromXData = tryXConst $ \o -> case o of { XSTR o -> return o; _ -> mzero; }
+
+instance Translatable U.ByteString where
+  toXData   = put . Just . XSTR . Text
+  fromXData = tryXConst $ \o -> case o of { XSTR (Text o) -> return o; _ -> mzero; }
+
+instance Translatable String where
+  toXData   = put . Just . XSTR . text
+  fromXData = tryXConst $ \o -> case o of { XSTR o -> return (textChars o); _ -> mzero; }
+
+instance Translatable Address where
+  toXData   = put . Just . XPTR
+  fromXData = tryXConst $ \o -> case o of { XPTR o -> return o; _ -> mzero; }
+
+instance Translatable Label where
+  toXData   = put . Just . XPTR . labelsToAddr . return
+  fromXData = tryXConst $ \o -> case o of
+    XPTR o -> parseLabel (show o)
+    _      -> mzero
+
+instance Translatable a => Translatable [a] where
+  toXData ax = pushXList >> forM_ ax (\a -> pushXElem >> toXData a >> popStep >> moveCursor 1)
+  fromXData  = tryXList $ \i len _ _ -> do
+    when (i>0) cursorToStart
+    fix (\loop ax -> do
+            end <- endOfXList
+            if end then return ax else xiterate >>= \a -> loop (ax++[a])
+        ) []
+
+instance (Translatable a, Translatable b) => Translatable (a, b) where
+  toXData (a, b) = do
+    pushXList
+    pushXElem >> toXData a >> popStep
+    moveCursor 1
+    pushXElem >> toXData b >> popStep
+    return ()
+  fromXData = tryXList $ \i len _ _ -> do
+    unless (len==2) $ do
+      ptr <- parseAddress "Pair"
+      throwXData "DataBuilder.Error" $
+        [ ("problem", mkXStr "wrong number of elements to construct pair")
+        , ("dataType", XPTR ptr)
+        , ("elemCount", XINT len)
+        ]
+    when (i>0) cursorToStart
+    pure (,) <*> xiterate <*> xiterate
+
+instance (Ord a, Translatable a, Translatable b) => Translatable (M.Map a b) where
+  toXData   = toXData . M.assocs
+  fromXData = fmap M.fromList fromXData
+
+instance Translatable XData where
+  toXData   = put . Just
+  fromXData = get >>= maybe mzero return
+
+instance Translatable a => Translatable (Maybe a) where
+  toXData m = pushXData "Maybe" (maybe [] (\a -> [("just", toXData a)]) m)
+  fromXData = xdata "Maybe" (optXField "just")
+
+instance Translatable DataBuilder where
+  toXData (DataBuilder item path) = pushXData "DataBuilder" $
+    [("builderItem", toXData item), ("builderPath", toXData path)]
+  fromXData = xdata "DataBuilder" $
+    pure DataBuilder <*> xfield "builderItem" <*> xfield "builderPath"
+
+instance Translatable BuildStep where
+  toXData a = case a of
+    ConstStep a -> pushXData "BuildStep" [("const", toXData a)]
+    DataStep a b c -> pushXData "BuildStep.Data" $
+      [ ("buildDataAddress", toXData a)
+      , ("buildDataDict"   , toXData b)
+      , ("buildDataField"  , toXData c)
+      ]
+    ListStep a b c d -> pushXData "BuildStep.List" $
+      [ ("buildIndex"     , toXData a)
+      , ("buildListLength", toXData b)
+      , ("buildListBefore", toXData c)
+      , ("buildListAfter" , toXData d)
+      ]
+  fromXData = msum $
+    [ xdata "BuildStep" (ConstStep <$> xfield "const")
+    , xdata "BuildStep.Data" $
+        pure DataStep
+          <*> xfield "buildDataAddress"
+          <*> xfield "buildDataDict"
+          <*> xfield "buildDataField"
+    , xdata "BuildStep.List" $
+        pure ListStep
+          <*> xfield "buildIndex"
+          <*> xfield "buildListLength"
+          <*> xfield "buildListBefore"
+          <*> xfield "buildListAfter"
+    ]
 
 -- | This module lets you construct arbitrary data types with a simple semantics similar to that of
 -- the Bourne shell, that is using commands like @ls@, @cd@, @pwd@, @cp@, @mv@, @rm@, @cat@, @echo@,

@@ -122,22 +122,47 @@ evalQuery qs mods = forM_ mods $ \mod ->
 
 ----------------------------------------------------------------------------------------------------
 
+data ModBuilderState m
+  = ModBuilderState
+    { modBuilderRules    :: [XRule]
+    , modBuilderBuiltins :: M.Map Label (RunT m XData)
+    , modBuilderData     :: M.Map Label XData
+    }
+
+initModBuilderState :: ModBuilderState m
+initModBuilderState =
+  ModBuilderState
+  { modBuilderRules    = []
+  , modBuilderBuiltins = mempty
+  , modBuilderData     = mempty
+  }
+
 -- | The monadic function used to declare a 'Module'. Pass a monadic computation of this type to the
 -- 'newModule' function.
-newtype DeclareMethodsM m a
-  = DeclareMethods{ runDeclMethods :: State (M.Map Label (RunT m XData), [XRule]) a }
+newtype ModBuilderM m a
+  = ModBuilder{ runDeclMethods :: State (ModBuilderState m) a }
   deriving (Functor, Monad)
-type DeclareMethods m = DeclareMethodsM m ()
+type ModBuilder m = ModBuilderM m ()
 
 -- | Defines a method for a module with the given name.
-newMethod :: String -> RunT m XData -> DeclareMethods m
+newMethod :: String -> RunT m XData -> ModBuilder m
 newMethod nm fn = case readsPrec 0 nm of
-  [(nm, "")] -> DeclareMethods (modify (\ (m, r) -> (M.insert (read nm) fn m, r)))
+  [(nm, "")] -> ModBuilder $ modify $ \st ->
+    st{modBuilderBuiltins = M.insert (read nm) fn (modBuilderBuiltins st)}
   _          -> fail ("could not define function, invalid name string: "++show nm)
 
 -- | Declare a new rule for this module.
-newRule :: XRule -> DeclareMethods m
-newRule rul = DeclareMethods (modify (\ (m, r) -> (m, rul:r)))
+newRule :: XRule -> ModBuilder m
+newRule rul = ModBuilder $ modify $ \st -> st{modBuilderRules = modBuilderRules st ++ [rul]}
+
+-- | Define some static data for this module. All static data are stored in the 'xprivate' field of
+-- the 'XModule' data type. This is also how you can declare built-in functions that are not system
+-- calls but actual mini-Dao executable code that can be 'eval'uated at 'Runtime'.
+newData :: String -> XData -> ModBuilder m
+newData lbl dat = case readsPrec 0 lbl of
+  [(lbl, "")] -> ModBuilder $ modify $ \st ->
+    st{modBuilderData = M.insert lbl dat (modBuilderData st)}
+  _ -> fail ("invalid label given while defining module: (newData "++show lbl++")")
 
 -- | The monadic function used to declare a 'Runtime'. You can use this monad to build up a kind of
 -- "default" module. When it comes time to run a mini-Dao program, this default module will be used
@@ -157,23 +182,24 @@ instance MonadTrans DeclareRuntimeM where { lift = DeclareRuntime . lift }
 -- the 'systemCalls' table at the address @"myModule.myFunc"@. Then, a 'MODULE' is constructed,
 -- and in this module a public variable declaration @"myFunc"@ is created which stores a 'FUNC'
 -- object, and this 'FUNC' object is a system call to the @"myModule.myFunc"@ function.
-newModule :: Monad m => String -> DeclareMethods m -> Maybe (XEval -> RunT m XData) -> DeclareRuntime m
+newModule :: Monad m => String -> ModBuilder m -> Maybe (XEval -> RunT m XData) -> DeclareRuntime m
 newModule name decls opfunc = DeclareRuntime $ case readsPrec 0 name of
   [(addr, "")] -> do
     bi <- gets loadedModules
-    let modlbl       = addrToLabels addr
-        (defs, ruls) = execState (runDeclMethods decls) (M.empty, [])
-        syscalls     = T.Branch (M.map T.Leaf defs)
+    let modlbl   = addrToLabels addr
+        modbst   = execState (runDeclMethods decls) initModBuilderState
+        defs     = modBuilderBuiltins modbst
+        syscalls = T.Branch (M.map T.Leaf defs)
         mod =
           XMODULE
           { ximports = []
-          , xprivate = XDefines mempty
+          , xprivate = XDefines $ modBuilderData modbst
           , xpublic  = XDefines $ flip M.mapWithKey defs $ \func _ ->
               XFUNC $ XFunc [] $ XBlock $ mkXArray $
                 [ XEVAL  (XSYS (labelsToAddr (modlbl++[func])) [])
                 , XRETURN XRESULT
                 ]
-          , xrules   = ruls
+          , xrules   = modBuilderRules modbst
           }
     modify $ \st ->
       st{ loadedModules = T.insert modlbl (BuiltinModule mod opfunc) (loadedModules st)
@@ -226,7 +252,7 @@ fileIO = do
         evalStackEmptyElse func []
         h <- liftIO (openFile (textChars path) mode)
         lift $ DaoIO $ modify (\st -> st{fileHandles = M.insert path h (fileHandles st)})
-        return $ mkXData "file" [("path", XSTR path)]
+        return $ mkXData "File" [("path", XSTR path)]
       newOpenMethod func mode = newMethod func $ open func mode
       newHandleMethod func fn = newMethod func $ do
         xdat <- gets lastResult
@@ -278,16 +304,22 @@ instance Monad m => MonadState (Maybe XData) (BuilderT m) where
   put o = BuilderT $ lift $ modify $ \st -> st{builderItem=fmap buildStep o}
 
 -- | Run a 'BuilderT' monad.
-runBuilderT :: BuilderT m t -> m (PValue XThrow t, DataBuilder)
-runBuilderT (BuilderT fn) = runStateT (runPTrans fn) $
-  DataBuilder{builderItem = Nothing, builderPath = []}
+runBuilderT :: BuilderT m t -> DataBuilder -> m (PValue XThrow t, DataBuilder)
+runBuilderT (BuilderT fn) = runStateT (runPTrans fn)
 
 data DataBuilder
   = DataBuilder
     { builderItem :: Maybe BuildStep
     , builderPath :: [BuildStep]
-      -- ^ is the current item modified, must everything before it be rebuilt?
     }
+
+-- | Create a new 'DataBuilder', optionally with an 'XData' object to analyze.
+initDataBuilder :: Maybe XData -> DataBuilder
+initDataBuilder init = DataBuilder{ builderItem = fmap buildStep init, builderPath = [] }
+
+-- | Get the 'XData' object currently in the focus of a 'DataBuilder'.
+dataBuilderItem :: DataBuilder -> Maybe XData
+dataBuilderItem = fmap fromBuildStep . builderItem
 
 data BuildStep
   = ConstStep XData
@@ -321,11 +353,10 @@ fromBuildStep a = case a of
   DataStep  a b _   -> XDATA a b
   ListStep  _ _ a b -> mkXList $ reverse a ++ b
 
--- | Force the current 'BuildStep' to change to the given data.
-forceStep :: Monad m => XData -> BuilderT m ()
-forceStep dat = BuilderT $ lift $ modify $ \st -> st{builderItem = Just $ buildStep dat}
-
--- | Push the current path, set the current 'builderItem' to contain the given data.
+-- | Push the current path, set the current 'builderItem' to contain the given data. Use this to
+-- force already-constructed data into the 'builderItem'. The previous 'builderItem' is pushed onto
+-- the path stack, and unless it is a 'DataStep' or 'ListStep', it will be overwritten on the next
+-- 'popStep' operation.
 pushStep :: Monad m => XData -> BuilderT m ()
 pushStep dat = BuilderT $ lift $ modify $ \st ->
   st{ builderItem = Just (buildStep dat)
@@ -355,10 +386,6 @@ popStep = (BuilderT $ lift $ get) >>= \st -> case builderPath st of
         Just lbl -> Just $ DataStep addr (M.alter (const xdat) lbl dict) Nothing
       ListStep i len bef aft -> let inc i = maybe i (const (i+1)) xdat in Just $
         ListStep (inc i) (inc len) (maybe bef (:bef) xdat) aft
-
--- | Deletes the item currently in 'builderItem'.
-deleteStep :: Monad m => BuilderT m ()
-deleteStep = BuilderT $ lift $ modify $ \st -> st{builderItem = Nothing}
 
 -- not for export
 tryBuildStep :: Monad m => (BuildStep -> BuilderT m t) -> BuilderT m t
@@ -708,16 +735,6 @@ instance Translatable BuildStep where
           <*> xfield "buildListBefore"
           <*> xfield "buildListAfter"
     ]
-
--- | This module lets you construct arbitrary data types with a simple semantics similar to that of
--- the Bourne shell, that is using commands like @ls@, @cd@, @pwd@, @cp@, @mv@, @rm@, @cat@, @echo@,
--- @sed@, @grep@, @find@, @touch@, @type@, and more.
-dataBuilder :: Monad m => DeclareRuntime m
-dataBuilder =
-  newModule "DataBuilder"
-    (do return ()
-    )
-    Nothing
 
 ----------------------------------------------------------------------------------------------------
 

@@ -8,7 +8,6 @@ debug
 tags
 TAGS
 Makefile.bak
-.ghci
 *.log
 .*.sw*
 *.hi

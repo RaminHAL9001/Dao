@@ -1,0 +1,4 @@
+:set prompt "\x3BB "
+:set -i./src -i./test
+:set -XFlexibleContexts
+

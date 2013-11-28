@@ -32,6 +32,7 @@ import qualified Dao.Tree                  as T
 import           Data.Char
 import           Data.Bits
 import           Data.List (intercalate, stripPrefix)
+import           Data.IORef
 import           Data.Monoid
 import           Data.Dynamic
 import           Data.Array.IArray
@@ -49,6 +50,99 @@ import           Control.Monad.Trans
 import           Control.Monad.IO.Class
 
 import           System.IO
+import           System.IO.Unsafe
+import           System.Console.Readline
+
+----------------------------------------------------------------------------------------------------
+
+daoStateGHCI :: IORef (DaoIOState ())
+daoStateGHCI = unsafePerformIO (initialize >> newIORef (initDaoIOState ()))
+
+-- | Evaluate a 'BuilderT' monad. It will update a single 'DataBuilder' item in the mini-Dao state.
+dbPrintWith :: (t -> String) -> BuilderT IO t -> IO t
+dbPrintWith tshow builder = do
+  st <- readIORef daoStateGHCI
+  (result, dbst) <- runBuilderT builder (dataBuilder st)
+  let done result = do  
+        writeIORef daoStateGHCI (st{dataBuilder=dbst})
+        putStrLn (tshow result)
+        return result
+  case result of
+    Backtrack              -> fail "Backtrack"
+    PFail (XReturn result) -> fail ("XReturn\n"++show result)
+    PFail (XError  err   ) -> fail (show err)
+    OK             result  -> done result
+
+db :: Show t => BuilderT IO t -> IO t
+db = dbPrintWith (const "")
+
+db' :: BuilderT IO t -> IO ()
+db' f = dbPrintWith (const "") f >> return ()
+
+ioPValue :: PValue XThrow a -> IO a
+ioPValue p = case p of
+  Backtrack           -> fail "Backtrack"
+  PFail (XReturn err) -> fail ("XReturn\n"++show err)
+  PFail (XError  err) -> fail ("XError\n"++show err)
+  OK             a    -> return a
+
+dbstr :: IO String
+dbstr = do
+  st <- readIORef daoStateGHCI 
+  runBuilderT (toXData (dataBuilder st) >> popStep) (initDataBuilder Nothing) >>=
+    fmap show . ioPValue . fst
+
+showdb :: IO ()
+showdb = dbstr >>= putStrLn
+
+withDaoIO :: DaoIO () a -> IO a
+withDaoIO (DaoIO f) = do
+  st <- readIORef daoStateGHCI
+  (a, st) <- runStateT f st
+  writeIORef daoStateGHCI st
+  return a
+
+withShowRunT :: (t -> String) -> RunT (DaoIO ()) t -> IO t
+withShowRunT tshow f = do
+  st <- readIORef daoStateGHCI
+  ((result, runtime), st) <- runStateT (daoStateT (evalRun (ioRuntime st) f)) st
+  result <- ioPValue result
+  writeIORef daoStateGHCI (st{ioRuntime=runtime})
+  putStrLn (tshow result)
+  return result
+
+runPTransIO :: PTrans XThrow IO a -> IO a
+runPTransIO = runPTrans >=> ioPValue
+
+lbl :: String -> IO Label
+lbl = runPTransIO . parseLabel
+
+addr :: String -> IO Address
+addr = runPTransIO . parseAddress
+
+run :: Show t => RunT (DaoIO ()) t -> IO t
+run = withShowRunT (const "")
+
+run' :: RunT (DaoIO ()) t -> IO ()
+run' f = withShowRunT (const "") f >> return ()
+
+exe :: (RWX rwx eval, Evaluable eval) => rwx -> IO XData
+exe rwx = run $ eval $ io_x rwx
+
+useBuiltin :: DeclareRuntime (DaoIO ()) -> IO ()
+useBuiltin = withDaoIO . installModule
+
+execloop :: IO ()
+execloop = fix $ \loop -> readline "dao> " >>= \input -> case input of
+  Nothing    -> return ()
+  Just index -> do
+    addHistory index
+    case readsPrec 0 index of
+      [(expr, "" )] -> exe (expr::RWCommand) >>= print
+      [(expr, rem)] -> hPutStrLn stderr ("(NO PARSE)\n  remainder "++show rem++")")
+      []            -> hPutStrLn stderr "(NO PARSE)"
+      ax            -> hPutStr stderr $ unwords $ "(AMBIGUOUS PARSE)" : map show ax
+    loop
 
 ----------------------------------------------------------------------------------------------------
 
@@ -57,10 +151,17 @@ data DaoIOState st
     { userState   :: st
     , ioRuntime   :: Runtime (DaoIO st)
     , fileHandles :: M.Map Text Handle
+    , dataBuilder :: DataBuilder
     }
 
 initDaoIOState :: st -> DaoIOState st
-initDaoIOState ust = DaoIOState{userState=ust, ioRuntime=initRuntime, fileHandles=mempty}
+initDaoIOState ust =
+  DaoIOState
+  { userState   = ust
+  , ioRuntime   = initRuntime
+  , fileHandles = mempty
+  , dataBuilder = initDataBuilder Nothing
+  }
 
 -- | This is a simple monadic interface for interacting with a mini-Dao runtime. You can evaluate
 -- computations of this type using 'runDaoIO' in your main function. It instantiates
@@ -831,7 +932,7 @@ instance (MonadPlus m, Monad m) => MonadPlusError XThrow (RunT m) where
 
 readLabel :: String -> [(String, String)]
 readLabel str = case dropWhile isSpace str of
-  c:_ | isAlpha c || c=='_' -> return (span isAlphaNum str)
+  str@(c:_) | isAlpha c || c=='_' -> return (span isAlphaNum str)
   [] -> fail "expecting Label"
 
 parseLabel :: MonadError XThrow m => String -> m Label
@@ -911,6 +1012,7 @@ data XData
   | XDATA Address (M.Map Label XData)
   | XFUNC XFunc
   deriving (Eq, Ord)
+instance Show XData where { show = show . x_io }
 instance RWX RWData XData where
   io_x io = case io of
     NULL     -> XNULL
@@ -934,6 +1036,7 @@ instance RWX RWData XData where
     XFUNC   x -> FUNC (funcArgVars x) (x_io $ funcBlock x)
 
 data XFunc = XFunc { funcArgVars :: [Label], funcBlock :: XBlock } deriving (Eq, Ord)
+instance Show XFunc where { show (XFunc lbls block) = unwords ["FUNC", show lbls, show block] }
 
 mkXStr :: String -> XData
 mkXStr = XSTR . text
@@ -1014,12 +1117,14 @@ data XModule
     , xrules   :: [XRule]
     }
   deriving (Eq, Ord)
+instance Show XModule where { show = show . x_io }
 instance RWX RWModule XModule where
   io_x (MODULE imp pri exp act) = XMODULE imp (io_x pri) (io_x exp) (map io_x act) 
   x_io (XMODULE imp pri exp act) = MODULE imp (x_io pri) (x_io exp) (map x_io act) 
 
 data RWRule = RULE [Text] [RWCommand] deriving (Eq, Ord, Show, Read)
 data XRule = XRULE [Text] XBlock deriving (Eq, Ord)
+instance Show XRule where { show = show . x_io }
 instance RWX RWRule XRule where
   io_x (RULE a b) = XRULE a (io_x b :: XBlock)
   x_io (XRULE a b) = RULE a (x_io b :: [RWCommand])
@@ -1029,6 +1134,7 @@ defToPair :: RWDef -> (Label, RWData)
 defToPair (DEFINE a b) = (a, b)
 
 newtype XDefines = XDefines { defsToMap :: M.Map Label XData } deriving (Eq, Ord)
+instance Show XDefines where { show = show . x_io }
 instance RWX [RWDef] XDefines where
   io_x = XDefines . M.fromList . map (\ (DEFINE a b) -> (a, io_x b) )
   x_io (XDefines x) = map (\ (a, b) -> DEFINE a (x_io b)) (M.assocs x)
@@ -1043,6 +1149,7 @@ data RWLookup
 data XLookup
   = XRESULT | XCONST XData | XVAR Label | XDEREF Label | XLOOKUP Address Label
   deriving (Eq, Ord)
+instance Show XLookup where { show = show . x_io }
 instance RWX RWLookup XLookup where
   io_x io = case io of
     RESULT     -> XRESULT
@@ -1125,6 +1232,7 @@ instance RWX RWCommand XCommand where
     XTHROW   a   -> THROW   (x_io a)
 
 newtype XBlock = XBlock { toCommands :: Maybe (Array Int XCommand) } deriving (Eq, Ord)
+instance Show XBlock where { show = show . x_io }
 instance RWX [RWCommand] XBlock where
   io_x io = XBlock (mkXArray $ map io_x io)
   x_io (XBlock x) = maybe [] (map x_io . elems) x
@@ -1140,6 +1248,7 @@ data XCondition
   = XWHEN   XLookup XCommand
   | XUNLESS XLookup XCommand
   deriving (Eq, Ord)
+instance Show XCondition where { show = show . x_io }
 instance RWX RWCondition XCondition where
   io_x io = case io of
     WHEN   a b -> XWHEN          (io_x a) (io_x b)
@@ -1207,6 +1316,7 @@ data XEval
   | XLOCAL  XLookup [XEval] -- ^ call a local function, push the result onto the stack
   | XGOTO   XLookup [XEval] -- ^ goto a local function, never return
   deriving (Eq, Ord)
+instance Show XEval where { show = show . x_io }
 instance RWX RWEval XEval where
   io_x x  = case x  of
     TAKE   a   -> XTAKE   (io_x a)

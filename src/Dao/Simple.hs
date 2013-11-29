@@ -42,6 +42,7 @@ import qualified Data.ByteString.Lazy      as Z
 import           Data.Functor.Identity
 
 import           Control.Applicative
+import           Control.Exception
 import           Control.Monad
 import           Control.Monad.Reader
 import           Control.Monad.State
@@ -51,68 +52,34 @@ import           Control.Monad.IO.Class
 
 import           System.IO
 import           System.IO.Unsafe
+import           System.Directory
 import           System.Console.Readline
+
+import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
 daoStateGHCI :: IORef (DaoIOState ())
 daoStateGHCI = unsafePerformIO (initialize >> newIORef (initDaoIOState ()))
 
--- | Evaluate a 'BuilderT' monad. It will update a single 'DataBuilder' item in the mini-Dao state.
-dbPrintWith :: (t -> String) -> BuilderT IO t -> IO t
-dbPrintWith tshow builder = do
-  st <- readIORef daoStateGHCI
-  (result, dbst) <- runBuilderT builder (dataBuilder st)
-  let done result = do  
-        writeIORef daoStateGHCI (st{dataBuilder=dbst})
-        putStrLn (tshow result)
-        return result
-  case result of
-    Backtrack              -> fail "Backtrack"
-    PFail (XReturn result) -> fail ("XReturn\n"++show result)
-    PFail (XError  err   ) -> fail (show err)
-    OK             result  -> done result
-
-db :: Show t => BuilderT IO t -> IO t
-db = dbPrintWith (const "")
-
-db' :: BuilderT IO t -> IO ()
-db' f = dbPrintWith (const "") f >> return ()
-
-ioPValue :: PValue XThrow a -> IO a
-ioPValue p = case p of
-  Backtrack           -> fail "Backtrack"
-  PFail (XReturn err) -> fail ("XReturn\n"++show err)
-  PFail (XError  err) -> fail ("XError\n"++show err)
-  OK             a    -> return a
-
-dbstr :: IO String
-dbstr = do
-  st <- readIORef daoStateGHCI 
-  runBuilderT (toXData (dataBuilder st) >> popStep) (initDataBuilder Nothing) >>=
-    fmap show . ioPValue . fst
-
-showdb :: IO ()
-showdb = dbstr >>= putStrLn
-
 withDaoIO :: DaoIO () a -> IO a
 withDaoIO (DaoIO f) = do
   st <- readIORef daoStateGHCI
-  (a, st) <- runStateT f st
+  (a, st) <- runStateT (runPTrans f) st
+  a <- ioPValue a
   writeIORef daoStateGHCI st
   return a
 
-withShowRunT :: (t -> String) -> RunT (DaoIO ()) t -> IO t
-withShowRunT tshow f = do
-  st <- readIORef daoStateGHCI
-  ((result, runtime), st) <- runStateT (daoStateT (evalRun (ioRuntime st) f)) st
-  result <- ioPValue result
-  writeIORef daoStateGHCI (st{ioRuntime=runtime})
-  putStrLn (tshow result)
-  return result
+-- | Get the current 'XData' object in the 'DataBuilder'.
+showdb :: IO (Maybe XData)
+showdb = withDaoIO $ getCurrentXData
 
-runPTransIO :: PTrans XThrow IO a -> IO a
-runPTransIO = runPTrans >=> ioPValue
+-- | Evaluate a 'BuilderT' on the 'DataBuilder' state.
+db :: BuilderT (DaoIO ()) t -> IO t
+db = withDaoIO . updateDataBuilder
+
+takedb :: Translatable t => IO (Maybe t)
+takedb = withDaoIO getCurrentBuildData
 
 lbl :: String -> IO Label
 lbl = runPTransIO . parseLabel
@@ -120,38 +87,55 @@ lbl = runPTransIO . parseLabel
 addr :: String -> IO Address
 addr = runPTransIO . parseAddress
 
-run :: Show t => RunT (DaoIO ()) t -> IO t
-run = withShowRunT (const "")
+run :: RunT (DaoIO ()) t -> IO t
+run = withDaoIO . daoRunT
 
-run' :: RunT (DaoIO ()) t -> IO ()
-run' f = withShowRunT (const "") f >> return ()
+-- | Like 'eval' but in the IO monad and takes a @RW*@ data type which is easier to type in the GHCi
+-- prompt. The @RW*@ data type is automaticaly converted to it's @X*@ counterpart data type using
+-- 'io_x', which is why the 'RWX' instance is necessary.
+evalio :: (RWX rwx eval, Evaluable eval) => rwx -> IO XData
+evalio rwx = run $ eval $ io_x rwx
 
-exe :: (RWX rwx eval, Evaluable eval) => rwx -> IO XData
-exe rwx = run $ eval $ io_x rwx
+-- | Update the current runtime environment with a 'DeclareRuntime' function (e.g. 'basicIO'). This
+-- loads built-in modules and system calls.
+use :: DeclareRuntime (DaoIO ()) -> IO ()
+use = withDaoIO . installModule
 
-useBuiltin :: DeclareRuntime (DaoIO ()) -> IO ()
-useBuiltin = withDaoIO . installModule
-
+-- | Enter into a read-eval-print loop that executes 'RWCommand's.
 execloop :: IO ()
-execloop = fix $ \loop -> readline "dao> " >>= \input -> case input of
+execloop = fix $ \loop -> readline "evalio> " >>= \input -> case input of
   Nothing    -> return ()
   Just index -> do
     addHistory index
     case readsPrec 0 index of
-      [(expr, "" )] -> exe (expr::RWCommand) >>= print
+      [(expr, "" )] -> evalio (expr::RWCommand) >>= print
       [(expr, rem)] -> hPutStrLn stderr ("(NO PARSE)\n  remainder "++show rem++")")
       []            -> hPutStrLn stderr "(NO PARSE)"
       ax            -> hPutStr stderr $ unwords $ "(AMBIGUOUS PARSE)" : map show ax
     loop
 
+-- | Print the state of the virtual machine, the registers, stack, and so forth.
+showvm :: IO ()
+showvm = withDaoIO $ showVMState >>= liftIO . putStrLn
+
+showmods :: IO ()
+showmods = withDaoIO $ showLoadedMods >>= liftIO . putStrLn
+
+showsyscalls :: IO ()
+showsyscalls = withDaoIO $ showSystemCalls >>= liftIO . putStrLn
+
 ----------------------------------------------------------------------------------------------------
 
 data DaoIOState st
   = DaoIOState
-    { userState   :: st
-    , ioRuntime   :: Runtime (DaoIO st)
-    , fileHandles :: M.Map Text Handle
-    , dataBuilder :: DataBuilder
+    { userState    :: st
+    , ioRuntime    :: Runtime (DaoIO st)
+    , fileHandles  :: M.Map Text Handle
+    , dataBuilder  :: DataBuilder
+    , editModuleCount   :: Integer
+    , editModuleTable   :: M.Map Text XModule
+    , editingModule     :: Maybe XModule
+    , editingModulePath :: Maybe Text
     }
 
 initDaoIOState :: st -> DaoIOState st
@@ -161,6 +145,10 @@ initDaoIOState ust =
   , ioRuntime   = initRuntime
   , fileHandles = mempty
   , dataBuilder = initDataBuilder Nothing
+  , editModuleCount   = 0
+  , editModuleTable   = mempty
+  , editingModule     = Nothing
+  , editingModulePath = Nothing
   }
 
 -- | This is a simple monadic interface for interacting with a mini-Dao runtime. You can evaluate
@@ -175,10 +163,19 @@ initDaoIOState ust =
 -- read-eval-print loop which pre-processes input into a list of @['Text']@ objects, and broadcasts
 -- that input to the various modules. You can select which modules you want using 'selectModule',
 -- and you can evaluate a query in a module using 'evalQuery'.
-newtype DaoIO st a = DaoIO{ daoStateT :: StateT (DaoIOState st) IO a }
-  deriving (Functor, Applicative, Monad, MonadIO)
+newtype DaoIO st a = DaoIO{ daoStateT :: PTrans XThrow (StateT (DaoIOState st) IO) a }
+  deriving (Functor, Applicative, Alternative, Monad, MonadPlus, MonadIO)
 instance MonadState st (DaoIO st) where
-  state f = DaoIO $ state $ \st -> let (a, ust) = f (userState st) in (a, st{userState=ust})
+  state f = DaoIO $ lift $ state $ \st -> let (a, ust) = f (userState st) in (a, st{userState=ust})
+instance MonadError XThrow (DaoIO st) where
+  throwError = DaoIO . throwError
+  catchError (DaoIO try) catch = DaoIO $ catchError try (daoStateT . catch)
+instance MonadPlusError XThrow (DaoIO st) where
+  catchPValue (DaoIO f) = DaoIO (catchPValue f)
+  assumePValue = DaoIO . assumePValue
+
+runDaoIO :: DaoIO st a -> DaoIOState st -> IO (PValue XThrow a, DaoIOState st)
+runDaoIO (DaoIO f) = runStateT (runPTrans f)
 
 -- | Using the 'DeclareRuntime' monad, you can install built-in modules. Built-in modules are
 -- constructed using the 'DeclareRuntime' interface, the 'installModule' function applies this
@@ -188,9 +185,9 @@ instance MonadState st (DaoIO st) where
 -- program, simply evaluate @'installModule' xmlFile@ in the main 'runDaoIO' function.
 installModule :: DeclareRuntime (DaoIO st) -> DaoIO st ()
 installModule (DeclareRuntime mod) = do
-  st  <- DaoIO get
+  st  <- DaoIO (lift get)
   run <- execStateT mod (ioRuntime st)
-  DaoIO $ put (st{ioRuntime=run})
+  DaoIO $ lift $ put (st{ioRuntime=run})
 
 -- | Provide a list of 'Prelude.String's that will be used to select modules. Modules that could not
 -- be selected will ouput an error message.
@@ -199,7 +196,7 @@ selectModule qs = fmap concat $ forM qs $ \q -> do
   let err msg = liftIO (hPutStrLn stderr ("(selectModule) "++msg)) >> return []
   case readsPrec 0 q of
     [(addr, "")] -> do
-      run <- DaoIO $ gets ioRuntime
+      run <- DaoIO $ lift $ gets ioRuntime
       (pval, run) <- evalRun run $ lookupModule addr
       case pval of
         OK    mod -> return [mod]
@@ -211,7 +208,10 @@ selectModule qs = fmap concat $ forM qs $ \q -> do
 
 -- | Select all modules.
 selectAllModules :: DaoIO st [XModule]
-selectAllModules = DaoIO $ gets (map getXModule . T.elems . loadedModules . ioRuntime)
+selectAllModules = DaoIO $ lift $ gets (map getXModule . T.elems . loadedModules . ioRuntime)
+
+showLoadedMods :: DaoIO st String
+showLoadedMods = DaoIO $ showTreeAddresses <$> lift (gets (loadedModules . ioRuntime))
 
 -- | Evaluate a pre-processed string query. It is up to your implementation to do the preprocessing
 -- of the string, for example, converting to all lower-case or splitting the string by whitespaces.
@@ -219,7 +219,185 @@ selectAllModules = DaoIO $ gets (map getXModule . T.elems . loadedModules . ioRu
 -- type.
 evalQuery :: [Text] -> [XModule] -> DaoIO st ()
 evalQuery qs mods = forM_ mods $ \mod ->
-  DaoIO (gets ioRuntime) >>= \run -> evalRun run (evalRulesInMod qs mod)
+  DaoIO (lift $ gets ioRuntime) >>= \run -> evalRun run (evalRulesInMod qs mod)
+
+updateDataBuilder :: BuilderT (DaoIO st) t -> DaoIO st t
+updateDataBuilder builder = do
+  st <- DaoIO (lift get)
+  (result, dbst) <- runBuilderT builder (dataBuilder st)
+  result <- liftIO (ioPValue result)
+  DaoIO (lift $ put $ st{dataBuilder=dbst}) >> return result
+
+-- | Create a temporary copy of the current 'DataBuilder' state, and the collapse the copy to a
+-- single 'XData' object, returning that object.
+getCurrentXData :: DaoIO st (Maybe XData)
+getCurrentXData = DaoIO (lift $ gets dataBuilder) >>= loop where
+  loop dbst = do
+    (p, dbst) <- runBuilderT popStep dbst
+    xdat <- liftIO (ioPValue p)
+    if null (builderPath dbst) then return xdat else loop dbst
+
+-- | Try to construct a Haskell object of a 'Translatable' data type from current 'XData' value
+-- returned by 'getCurrentXData'.
+getCurrentBuildData :: Translatable t => DaoIO st (Maybe t)
+getCurrentBuildData = getCurrentXData >>= \xdat -> case xdat of
+  Nothing -> return Nothing
+  xdat    -> runBuilderT fromXData (initDataBuilder xdat) >>= liftIO . ioPValue . fst
+
+showDataBuilder :: DaoIO st String
+showDataBuilder = DaoIO $ lift $ show <$> gets dataBuilder
+
+showTreeAddresses :: T.Tree Label a -> String
+showTreeAddresses = intercalate "\n" . map (show . labelsToAddr . fst) . T.assocs
+
+runPTransIO :: PTrans XThrow IO a -> IO a
+runPTransIO = runPTrans >=> ioPValue
+
+ioPValue :: PValue XThrow a -> IO a
+ioPValue p = case p of
+  Backtrack -> fail "Backtrack"
+  PFail err -> fail (show err)
+  OK      a -> return a
+
+daoRunT :: RunT (DaoIO st) t -> DaoIO st t
+daoRunT f = DaoIO $ do
+  st <- lift get
+  (result, st) <- liftIO $ do
+    (result, st) <- runDaoIO (evalRun (ioRuntime st) f) st
+    (result, runtime) <- ioPValue result
+    result <- ioPValue result
+    return (result, st{ioRuntime=runtime})
+  lift $ put st
+  return result
+
+showVMState :: DaoIO st String
+showVMState = DaoIO $ do
+  st <- lift (gets ioRuntime)
+  let shows f = show (f st)
+  let showm f = concatMap (\ (a, b) -> concat ["  ",show a," = ",show b,"\n"]) (M.assocs (f st))
+  return $ intercalate "\n" $ filter (not . null) $ map unwords $
+    [ ["currentBlock:"]
+    , [ maybe [] (intercalate "\n" . map (\ (i, a) -> concat [show i,": ",show a]) . assocs)
+          (currentBlock st) ]
+    , ["evalCounter =", shows evalCounter]
+    , ["lastResult  =", shows lastResult ]
+    , ["registers:"]
+    , [showm registers]
+    , ["pcRegisters:"]
+    , [showm pcRegisters]
+    , ["evalStack = ", shows evalStack]
+    ]
+
+showSystemCalls :: DaoIO st String
+showSystemCalls = DaoIO $ showTreeAddresses <$> lift (gets (systemCalls . ioRuntime))
+
+setModuleName :: FilePath -> DaoIO st ()
+setModuleName path = do
+  when (null path) $ throwXData "Module.Error" [("problem", mkXStr "null file path")]
+  tpath <- return (text path)
+  DaoIO $ do
+    st <- lift get
+    if maybe False (const True) $ M.lookup tpath (editModuleTable st)
+    then  throwXData "Module.Error" $
+            [ ("problem", mkXStr "already loaded, cannot set name of current module")
+            , ("path", mkXStr path)
+            ]
+    else do
+      exists <- liftIO $ doesFileExist path
+      if exists
+      then throwXData "Parameter" [("problem", mkXStr "file already exists"), ("path", mkXStr path)]
+      else lift $ put $ st{ editingModulePath = Just tpath }
+
+saveModule :: DaoIO st ()
+saveModule = DaoIO $ do
+  st <- lift get
+  case editingModule st of
+    Nothing  -> return ()
+    Just mod -> case editingModulePath st of
+      Just path -> do
+        liftIO $ writeFile (textChars path) (show mod) >>= evaluate
+        lift $ put $ st{editModuleTable = M.insert path mod (editModuleTable st), editModuleCount=0}
+      Nothing | editModuleCount st==0 -> return ()
+      Nothing -> throwXData "Module.Error" $
+        [("problem", mkXStr "Current module has no file path.")]
+
+currentModuleIsSaved :: DaoIO st Bool
+currentModuleIsSaved = DaoIO $ lift $ get >>= \st -> return $ editModuleCount st == 0 &&
+  (maybe False (const True) $ pure (,) <*> editingModule st <*> editingModulePath st)
+
+requireModuleBeSaved :: DaoIO st ()
+requireModuleBeSaved = currentModuleIsSaved >>= flip unless unsavedException
+
+-- | Load a module but do not switch to it.
+loadModule :: FilePath -> DaoIO st ()
+loadModule path = DaoIO $ do
+  mod <- liftIO $ readFile path >>= readIO >>= evaluate . io_x >>= evaluate
+  lift $ modify $ \st -> st{editModuleTable = M.insert (text path) mod (editModuleTable st)}
+
+unsavedException :: DaoIO st ig
+unsavedException = DaoIO (lift get) >>= \st -> throwXData "Module.Error" $ concat $
+  [ [("problem", mkXStr "current module has unsaved changed")]
+  , maybe [] (\p -> [("currentPath", mkXStr $ textChars p)]) $ editingModulePath st
+  ]
+
+-- | Unload the current module, do not place it back into the table of editable modules.
+unloadCurrentModule :: DaoIO st ()
+unloadCurrentModule = do
+  requireModuleBeSaved
+  DaoIO $ lift $ modify $ \st -> st{editingModule = Nothing, editingModulePath = Nothing}
+
+unloadModule :: FilePath -> DaoIO st ()
+unloadModule path = DaoIO $ lift $ modify $ \st ->
+  st{editModuleTable = M.delete (text path) (editModuleTable st)}
+
+switchToModule :: FilePath -> DaoIO st ()
+switchToModule path = do
+  requireModuleBeSaved
+  DaoIO $ do
+    path <- return (text path)
+    tab  <- lift $ gets editModuleTable
+    case M.lookup path tab of
+      Nothing  -> fail ("no modules called "++show path++"have been loaded")
+      Just mod -> lift $ modify $ \st ->
+        st{ editingModule     = Just mod
+          , editingModulePath = Just path
+          , editModuleTable   = maybe (editModuleTable st)
+              (\ (a,b) -> M.insert a b (editModuleTable st))
+                (pure (,) <*> editingModulePath st <*> editingModule st)
+          , editModuleCount   = 0
+          }
+
+-- | Place the current module into the runtime environment at the address given by the
+-- 'Prelude.String' parameter so it can respond to queries. The module must be saved to disk. This
+-- will unload the current module.
+activateModule :: String -> DaoIO st ()
+activateModule addr = do
+  addr <- addrToLabels <$> parseAddress addr
+  requireModuleBeSaved
+  st <- DaoIO (lift get)
+  let nomod = throwXData "Module.Error" [("problem", mkXStr "no module currently selected")]
+  let rt = ioRuntime st
+  mod <- maybe nomod return (editingModule st)
+  case T.lookup addr (loadedModules rt) of
+    Nothing -> do
+      DaoIO $ lift $ modify $ \st ->
+        st{ ioRuntime = rt{loadedModules = T.insert addr (PlainModule mod) (loadedModules rt)} }
+      unloadCurrentModule
+    Just _  -> throwXData "Module.Error" $
+      [ ("problem", mkXStr "a module is already active under the given address")
+      , ("address", XPTR $ labelsToAddr addr)
+      ]
+
+deactivateModule :: String -> DaoIO st ()
+deactivateModule addr = do
+  addr <- addrToLabels <$> parseAddress addr
+  DaoIO $ lift $ modify $ \st ->
+    let rt = ioRuntime st
+    in  st{ ioRuntime =
+              rt{ loadedModules = T.delete addr (loadedModules rt)
+                , systemCalls = T.alter (T.alterBranch (const Nothing)) addr (systemCalls rt)
+                }
+          }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -352,14 +530,14 @@ fileIO = do
         (str, path) <- getPath
         evalStackEmptyElse func []
         h <- liftIO (openFile (textChars path) mode)
-        lift $ DaoIO $ modify (\st -> st{fileHandles = M.insert path h (fileHandles st)})
+        lift $ DaoIO $ lift $ modify (\st -> st{fileHandles = M.insert path h (fileHandles st)})
         return $ mkXData "File" [("path", XSTR path)]
       newOpenMethod func mode = newMethod func $ open func mode
       newHandleMethod func fn = newMethod func $ do
         xdat <- gets lastResult
         path <- mplus (tryXMember "path" xdat >>= asXSTR) $ throwXData "DataType" $
           [("object", xdat), ("problem", mkXStr "does not contain a file path")]
-        h <- lift $ DaoIO $ gets fileHandles >>= return . M.lookup path
+        h <- lift $ DaoIO $ lift $ gets fileHandles >>= return . M.lookup path
         case h of
           Nothing -> throwXData "file.NotOpen" [("path", XSTR path)]
           Just  h -> fn (path, h)
@@ -370,7 +548,7 @@ fileIO = do
         newHandleMethod "close" $ \ (path, h) -> do
           evalStackEmptyElse "close" []
           liftIO (hClose h)
-          lift $ DaoIO $ modify (\st -> st{fileHandles = M.delete path (fileHandles st)})
+          lift $ DaoIO $ lift $ modify (\st -> st{fileHandles = M.delete path (fileHandles st)})
           return XTRUE
         newHandleMethod "write" $ \ (_, h) -> printer h
         newHandleMethod "read"  $ \ (_, h) -> do
@@ -413,6 +591,14 @@ data DataBuilder
     { builderItem :: Maybe BuildStep
     , builderPath :: [BuildStep]
     }
+instance Show DataBuilder where
+  show db = concat $
+    [ "DataBuilder:\n"
+    , intercalate "\n" $ map (("  "++) . unwords) $ concat $
+        [ [["builderItem =", show (builderItem db)], ["builderPath:"]]
+        , map (return . intercalate "\n" . map ("  "++) . lines . show) (builderPath db)
+        ]
+    ]
 
 -- | Create a new 'DataBuilder', optionally with an 'XData' object to analyze.
 initDataBuilder :: Maybe XData -> DataBuilder
@@ -435,6 +621,24 @@ data BuildStep
     , buildListBefore :: [XData]
     , buildListAfter  :: [XData]
     }
+instance Show BuildStep where
+  show a = case a of
+    ConstStep a       -> "CONST "++show a
+    DataStep  a b c   -> 
+      let pshow (a, b) = show a ++ " = " ++ show b
+      in  concat $
+            [ "DATA ", show a, maybe "" (\a -> "(on field: "++show a++")") c
+            , concat $
+                if M.size b < 2
+                then  concat [["["], map pshow (M.assocs b), ["]"]]
+                else  let each = map pshow (M.assocs b)
+                      in ["[ ", head each, concatMap (\str -> ", "++str++"\n") each, "]"]
+            ]
+    ListStep  a b c d -> intercalate "\n" $ map concat $
+      [ ["LIST (index=", show a, ", length=", show b, ")"]
+      , ["  before = ", show c]
+      , ["  after = ", show d]
+      ]
 
 buildStep :: XData -> BuildStep
 buildStep o = case o of
@@ -842,6 +1046,9 @@ instance Translatable BuildStep where
 data XThrow
   = XError  { thrownXData :: XData }
   | XReturn { thrownXData :: XData }
+instance Show XThrow where
+  show (XError  o) = "ERROR " ++show o
+  show (XReturn o) = "RETURN "++show o
 
 -- | Pass an 'Address' as a 'Prelude.String' and a list of string-data pairs to be used to construct
 -- a 'Data.Map.Lazy.Map' to be used for the 'XDATA' constructor. The string-data pairs will be
@@ -973,8 +1180,9 @@ addrToLabels :: Address -> [Label]
 addrToLabels (Address nm) = loop [] (U.toString nm) where
   loop lx str = case break (=='.') str of
     ("" , ""     ) -> lx
-    (lbl, '.':str) -> loop (lx++[Label $ Text $ U.fromString lbl]) str
-    _              -> fail "could not split address to label"
+    (lbl, '.':str) -> loop (lx++[Label $ text lbl]) str
+    (lbl, ""     ) -> lx++[Label $ text lbl]
+    _              -> []
 
 labelsToAddr :: [Label] -> Address
 labelsToAddr = Address . U.fromString . intercalate "." . map (\ (Label o) -> textChars o)
@@ -1122,6 +1330,9 @@ instance RWX RWModule XModule where
   io_x (MODULE imp pri exp act) = XMODULE imp (io_x pri) (io_x exp) (map io_x act) 
   x_io (XMODULE imp pri exp act) = MODULE imp (x_io pri) (x_io exp) (map x_io act) 
 
+initXModule :: XModule
+initXModule = XMODULE{ximports=[], xprivate=initXDefines, xpublic=initXDefines, xrules=[] }
+
 data RWRule = RULE [Text] [RWCommand] deriving (Eq, Ord, Show, Read)
 data XRule = XRULE [Text] XBlock deriving (Eq, Ord)
 instance Show XRule where { show = show . x_io }
@@ -1138,6 +1349,9 @@ instance Show XDefines where { show = show . x_io }
 instance RWX [RWDef] XDefines where
   io_x = XDefines . M.fromList . map (\ (DEFINE a b) -> (a, io_x b) )
   x_io (XDefines x) = map (\ (a, b) -> DEFINE a (x_io b)) (M.assocs x)
+
+initXDefines :: XDefines
+initXDefines = XDefines{ defsToMap = mempty }
 
 data RWLookup
   = RESULT        -- ^ return the result register
@@ -1165,7 +1379,7 @@ instance RWX RWLookup XLookup where
     XLOOKUP a b -> LOOKUP a b
 
 data RWCommand
-  = LOAD    Label  -- ^ load a register to the result register
+  = LOAD    RWLookup  -- ^ load a register to the result register
   | STORE   Label  -- ^ store the result register to the given register
   | UPDATE  RWLookup Label -- ^ copy a value into a local variable of the current module.
   | DELETE  Label
@@ -1184,7 +1398,7 @@ data RWCommand
   | BREAK
   deriving (Eq, Ord, Show, Read)
 data XCommand
-  = XLOAD    Label -- ^ copy a register to the last result
+  = XLOAD    XLookup -- ^ copy a register to the last result
   | XSTORE   Label -- ^ copy the last result to a register
   | XUPDATE  XLookup Label -- ^ copy a value into a local variable of the current module.
   | XSETJUMP Label -- ^ set a jump point
@@ -1199,9 +1413,10 @@ data XCommand
   | XRETURN  XLookup     -- ^ end evaluation
   | XTHROW   XLookup
   deriving (Eq, Ord)
+instance Show XCommand where { show = show . x_io }
 instance RWX RWCommand XCommand where
   io_x io = case io of
-    LOAD    a   -> XLOAD          a
+    LOAD    a   -> XLOAD    (io_x a)
     STORE   a   -> XSTORE         a
     UPDATE  a b -> XUPDATE  (io_x a) b
     SETJUMP a   -> XSETJUMP       a
@@ -1216,7 +1431,7 @@ instance RWX RWCommand XCommand where
     RETURN  a   -> XRETURN  (io_x a)
     THROW   a   -> XTHROW   (io_x a)
   x_io x  = case x of
-    XLOAD    a   -> LOAD          a
+    XLOAD    a   -> LOAD    (x_io a)
     XSTORE   a   -> STORE         a
     XUPDATE  a b -> UPDATE  (x_io a) b
     XSETJUMP a   -> SETJUMP       a
@@ -1441,13 +1656,9 @@ evalStackEmptyElse functionLabel params = gets evalStack >>= \stk ->
 
 instance Evaluable XCommand where
   eval o = incEC >> incPC >> case o of
-    XLOAD    a   -> do
-      reg <- gets registers
-      case M.lookup a reg of
-        Nothing -> evalError "Undefined" "variableName" (mkXStr $ show a)
-        Just  a -> setResult a
-    XSTORE   a   -> gets lastResult >>= \b -> setRegister a b >> return b
-    XUPDATE  a b -> gets currentModule >>= \mod -> case mod of
+    XLOAD   a   -> eval a >>= setResult
+    XSTORE  a   -> gets lastResult >>= \b -> setRegister a b >> return b
+    XUPDATE a b -> gets currentModule >>= \mod -> case mod of
       Nothing  -> throwXData "Undefined" $
         [ ("problem", mkXStr "update occurred with no current module")
         , ("instruction", mkXStr (show (x_io o)))
@@ -1614,14 +1825,14 @@ evalCondition o inv a b c = do
 
 instance Evaluable XEval where
   eval o = incEC >> case o of
-    XTAKE   a     -> eval a
-    XNOT    a     -> eval a >>= \a -> case a of
+    XTAKE   a   -> eval a
+    XNOT    a   -> eval a >>= \a -> case a of
       XNULL     -> return XTRUE
       XTRUE     -> return XNULL
       XINT  a   -> return (XINT $ a `xor` 0xFFFFFFFFFFFFFFFF)
       XDATA a _ -> evalDataOperand a o
       _         -> badEval o []
-    XSIZE   a     -> eval a >>= \a -> case a of
+    XSIZE   a   -> eval a >>= \a -> case a of
       XNULL     -> return XNULL
       XTRUE     -> return XTRUE
       XINT    a -> return (XINT   $ abs a)

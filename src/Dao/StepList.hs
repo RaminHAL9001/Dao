@@ -34,7 +34,7 @@ module Dao.StepList where
 import           Control.Applicative
 import           Control.Monad
 
-import           Data.Ix
+import           Data.Array.IArray
 import           Data.Typeable
 import           Data.Monoid
 
@@ -84,6 +84,46 @@ slSingletonR a = StepList 1 1 [a] []
 -- | Create a 'StepList' with a single item to the left of the cursor.
 slSingletonL :: a -> StepList a
 slSingletonL a = StepList 1 1 [a] []
+
+-- | Create a 'StepList' from a list of elements and an initial cursor position. The cursor position
+-- can be out of range, it will be placed at the end by default.
+slFromList :: Int -> [a] -> StepList a
+slFromList i lst =
+  let len = length lst
+      cur = max 0 i
+      (left, right) = splitAt cur lst
+  in  StepList
+      { slCursor        = min cur len
+      , slLength        = len
+      , slLeftOfCursor  = left
+      , slRightOfCursor = right
+      }
+
+slToArray :: StepList a -> Maybe (Array Int a)
+slToArray (StepList cur len left right) =
+  if len==0
+  then Nothing
+  else Just $ array (negate cur, len-cur-1)
+          (zip (iterate (subtract 1) (negate 1)) left ++ zip (iterate (+1) 0) right)
+
+-- | Creates an array storing the list where the indecies are 'Data.Array.IArray.bounds' such that
+-- value at index zero is the value returned by 'slHeadR', items before the cursor have negative
+-- indecies, and items after the cursor are zero or positive. If the cursor is at the right-most
+-- position of the list, the resulting array, every item is assigned to a negative index.
+slFromArray :: Maybe (Array Int a) -> StepList a
+slFromArray arr = case arr of
+  Nothing  -> mempty
+  Just arr ->
+    let bnds = bounds arr
+        (lo, hi) = maybe bnds id $ do
+          (lo, hi) <- return bnds
+          (lo, hi) <- return (min lo hi, max lo hi)
+          return $ if lo>0 then (0, hi-lo) else (lo, hi)
+        len   = hi - lo + 1
+        cur   = negate lo
+        left  = map (arr!) (takeWhile (>=lo) $ iterate (subtract 1) (negate 1))
+        right = map (arr!) (takeWhile (<=hi) $ iterate (+1) 0)
+    in  StepList cur len left right
 
 -- | Convert the 'StepList' to an ordinary Haskell list.
 slToList :: StepList a -> [a]
@@ -147,6 +187,14 @@ infixr 5 <++
 (++>) = flip (foldr (|>))
 infixr 5 ++>
 
+-- | Returns 'Prelude.True' if it is possible to move the cursor left or right by @n@ steps.
+slMoveCheck :: Int -> StepList a -> Bool
+slMoveCheck delta (StepList cur len _ _) = inRange (0, len) (cur+delta)
+
+-- | Returns 'Prelude.True' if it the index is within the bounds of the list.
+slIndexCheck :: Int -> StepList a -> Bool
+slIndexCheck i (StepList _ len _ _) = inRange (0, len) i
+
 -- | Shift the cursor @delta@ elements to the left if @delta@ is negative, or @delta@ elements to
 -- the right if @delta@ is positive.
 slMoveCursor :: Int -> StepList a -> StepList a
@@ -177,6 +225,12 @@ biasedApply bias f (StepList cur len left right) = case bias of
     let (result, left') = f left
         newlen = length left'
     in (result, StepList newlen (len-cur+newlen) left' right)
+
+-- | Evaluates to true if the cursor is beyond the left or right-most position in the list.
+slAtEnd :: Bias -> StepList a -> Bool
+slAtEnd bias (StepList cur len _ _) = case bias of
+  ToRight -> cur==len
+  ToLeft  -> cur==0
 
 -- | Move the cursor to the right-most or left-most end of the 'StepList', depending on the 'Bias'
 -- value given. The word Return has nothing to do with monad, we use this term because this function
@@ -219,7 +273,7 @@ slBreak bias p = biasedApply bias (break p)
 -- | Apply a modifier to the whole list, try to keep the cursor in the same place. If the 'StepList'
 -- shrinks below where the cursor was, the cursor is placed at the end of the 'StepList'.
 slMapAll :: ([a] -> [b]) -> StepList a -> StepList b
-slMapAll fn a@(StepList cur _ left right) =
+slMapAll fn (StepList cur _ left right) =
   let (left', right') = splitAt cur (fn $ reverse left ++ right)
       newlen = length left' + length right'
   in StepList (min cur newlen) newlen (reverse left') right'

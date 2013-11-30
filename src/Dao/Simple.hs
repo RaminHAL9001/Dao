@@ -27,6 +27,7 @@
 module Dao.Simple where
 
 import           Dao.Predicate
+import           Dao.StepList
 import qualified Dao.Tree                  as T
 
 import           Data.Char
@@ -34,12 +35,9 @@ import           Data.Bits
 import           Data.List (intercalate, stripPrefix)
 import           Data.IORef
 import           Data.Monoid
-import           Data.Dynamic
 import           Data.Array.IArray
 import qualified Data.Map                  as M
 import qualified Data.ByteString.Lazy.UTF8 as U
-import qualified Data.ByteString.Lazy      as Z
-import           Data.Functor.Identity
 
 import           Control.Applicative
 import           Control.Exception
@@ -47,15 +45,11 @@ import           Control.Monad
 import           Control.Monad.Reader
 import           Control.Monad.State
 import           Control.Monad.Error hiding (Error)
-import           Control.Monad.Trans
-import           Control.Monad.IO.Class
 
 import           System.IO
 import           System.IO.Unsafe
 import           System.Directory
 import           System.Console.Readline
-
-import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -109,7 +103,7 @@ execloop = fix $ \loop -> readline "evalio> " >>= \input -> case input of
     addHistory index
     case readsPrec 0 index of
       [(expr, "" )] -> evalio (expr::RWCommand) >>= print
-      [(expr, rem)] -> hPutStrLn stderr ("(NO PARSE)\n  remainder "++show rem++")")
+      [(_   , rem)] -> hPutStrLn stderr ("(NO PARSE)\n  remainder "++show rem++")")
       []            -> hPutStrLn stderr "(NO PARSE)"
       ax            -> hPutStr stderr $ unwords $ "(AMBIGUOUS PARSE)" : map show ax
     loop
@@ -136,6 +130,7 @@ data DaoIOState st
     , editModuleTable   :: M.Map Text XModule
     , editingModule     :: Maybe XModule
     , editingModulePath :: Maybe Text
+    , editingFunction   :: StepList [XCommand]
     }
 
 initDaoIOState :: st -> DaoIOState st
@@ -149,6 +144,7 @@ initDaoIOState ust =
   , editModuleTable   = mempty
   , editingModule     = Nothing
   , editingModulePath = Nothing
+  , editingFunction   = mempty
   }
 
 -- | This is a simple monadic interface for interacting with a mini-Dao runtime. You can evaluate
@@ -197,7 +193,7 @@ selectModule qs = fmap concat $ forM qs $ \q -> do
   case readsPrec 0 q of
     [(addr, "")] -> do
       run <- DaoIO $ lift $ gets ioRuntime
-      (pval, run) <- evalRun run $ lookupModule addr
+      (pval, _run) <- evalRun run $ lookupModule addr
       case pval of
         OK    mod -> return [mod]
         Backtrack -> err ("unknown error occurred when selecting "++show addr)
@@ -242,7 +238,7 @@ getCurrentXData = DaoIO (lift $ gets dataBuilder) >>= loop where
 getCurrentBuildData :: Translatable t => DaoIO st (Maybe t)
 getCurrentBuildData = getCurrentXData >>= \xdat -> case xdat of
   Nothing -> return Nothing
-  xdat    -> runBuilderT fromXData (initDataBuilder xdat) >>= liftIO . ioPValue . fst
+  xdat    -> runBuilderT maybeFromXData (initDataBuilder xdat) >>= liftIO . ioPValue . fst
 
 showDataBuilder :: DaoIO st String
 showDataBuilder = DaoIO $ lift $ show <$> gets dataBuilder
@@ -399,6 +395,13 @@ deactivateModule addr = do
                 }
           }
 
+-- TODO: write a simple line-editor-like interface to create Dao language functions.
+
+
+
+-- TODO: write a function to copy the DataBuilder to a public or private slot in a module.
+-- TODO: write a function to edit the set of rules for a module.
+
 ----------------------------------------------------------------------------------------------------
 
 data ModBuilderState m
@@ -464,7 +467,6 @@ instance MonadTrans DeclareRuntimeM where { lift = DeclareRuntime . lift }
 newModule :: Monad m => String -> ModBuilder m -> Maybe (XEval -> RunT m XData) -> DeclareRuntime m
 newModule name decls opfunc = DeclareRuntime $ case readsPrec 0 name of
   [(addr, "")] -> do
-    bi <- gets loadedModules
     let modlbl   = addrToLabels addr
         modbst   = execState (runDeclMethods decls) initModBuilderState
         defs     = modBuilderBuiltins modbst
@@ -527,7 +529,7 @@ fileIO = do
             , ("problem", mkXStr "expecting file path parameter")
             ]
       open func mode = do
-        (str, path) <- getPath
+        (_str, path) <- getPath
         evalStackEmptyElse func []
         h <- liftIO (openFile (textChars path) mode)
         lift $ DaoIO $ lift $ modify (\st -> st{fileHandles = M.insert path h (fileHandles st)})
@@ -615,16 +617,12 @@ data BuildStep
     , buildDataDict    :: M.Map Label XData
     , buildDataField   :: Maybe Label
     }
-  | ListStep
-    { buildIndex      :: Int
-    , buildListLength :: Int
-    , buildListBefore :: [XData]
-    , buildListAfter  :: [XData]
-    }
+  | ListStep (StepList XData)
+
 instance Show BuildStep where
   show a = case a of
-    ConstStep a       -> "CONST "++show a
-    DataStep  a b c   -> 
+    ConstStep a     -> "CONST "++show a
+    DataStep  a b c -> 
       let pshow (a, b) = show a ++ " = " ++ show b
       in  concat $
             [ "DATA ", show a, maybe "" (\a -> "(on field: "++show a++")") c
@@ -634,29 +632,23 @@ instance Show BuildStep where
                 else  let each = map pshow (M.assocs b)
                       in ["[ ", head each, concatMap (\str -> ", "++str++"\n") each, "]"]
             ]
-    ListStep  a b c d -> intercalate "\n" $ map concat $
-      [ ["LIST (index=", show a, ", length=", show b, ")"]
-      , ["  before = ", show c]
-      , ["  after = ", show d]
+    ListStep  sl    -> intercalate "\n" $ map concat $
+      [ ["LIST (index=", show (slCursor sl), ", length=", show (slLength sl), ")"]
+      , ["  left  = ", show (slLeftOfCursor  sl)]
+      , ["  right = ", show (slRightOfCursor sl)]
       ]
 
 buildStep :: XData -> BuildStep
 buildStep o = case o of
-  XLIST list ->
-    ListStep
-    { buildIndex      = 0
-    , buildListLength = maybe 0 (uncurry subtract . bounds) list
-    , buildListBefore = []
-    , buildListAfter  = maybe [] elems list
-    }
+  XLIST list      -> ListStep $ slFromList 0 $ maybe [] elems list
   XDATA addr dict -> DataStep{buildDataAddress=addr, buildDataDict=dict, buildDataField=Nothing}
   o -> ConstStep o
 
 fromBuildStep :: BuildStep -> XData
 fromBuildStep a = case a of
-  ConstStep a       -> a
-  DataStep  a b _   -> XDATA a b
-  ListStep  _ _ a b -> mkXList $ reverse a ++ b
+  ConstStep a     -> a
+  DataStep  a b _ -> XDATA a b
+  ListStep  sl    -> mkXList $ slToList sl
 
 -- | Push the current path, set the current 'builderItem' to contain the given data. Use this to
 -- force already-constructed data into the 'builderItem'. The previous 'builderItem' is pushed onto
@@ -685,12 +677,11 @@ popStep = (BuilderT $ lift $ get) >>= \st -> case builderPath st of
           put $ st{builderItem=item, builderPath=stepx}
           return xdat
     putItem $ case step of
-      ConstStep a -> mplus item (Just step) -- overwrite const steps
+      ConstStep _ -> mplus item (Just step) -- overwrite const steps
       DataStep addr dict lbl -> case lbl of -- if lbl is nothing, treat as const and overwrite it
         Nothing  -> mplus item (Just step)  -- otherwise associate it with the label
         Just lbl -> Just $ DataStep addr (M.alter (const xdat) lbl dict) Nothing
-      ListStep i len bef aft -> let inc i = maybe i (const (i+1)) xdat in Just $
-        ListStep (inc i) (inc len) (maybe bef (:bef) xdat) aft
+      ListStep sl -> Just $ ListStep $ maybe sl (<|sl) xdat
 
 -- not for export
 tryBuildStep :: Monad m => (BuildStep -> BuilderT m t) -> BuilderT m t
@@ -705,8 +696,8 @@ tryXData :: Monad m => (Address -> M.Map Label XData -> Maybe Label -> BuilderT 
 tryXData update = tryBuildStep $ \s -> case s of {DataStep a b c -> update a b c; _ -> mzero;}
 
 -- | Update the current 'builderItem' if it is a 'ListStep', otherwise backtrack.
-tryXList :: Monad m => (Int -> Int -> [XData] -> [XData] -> BuilderT m t) -> BuilderT m t
-tryXList update = tryBuildStep $ \s -> case s of {ListStep a b c d -> update a b c d; _ -> mzero;}
+tryXList :: Monad m => (StepList XData -> BuilderT m t) -> BuilderT m t
+tryXList update = tryBuildStep $ \s -> case s of {ListStep sl -> update sl;  _ -> mzero;}
 
 -- | Push the 'builderPath' and create a new 'DataStep' as the current 'builderItem'. If the current
 -- item is a 'ConstStep', or we have not stepped into a field with 'pushXField', the 'popStep'
@@ -725,7 +716,7 @@ pushXDataAddr addr = do
 
 -- | Evaluates a given 'BuilderT' but only if the current 'builderItem' is a 'DataStep' with an
 -- address value matching the address given by the 'Prelude.String' parameter.
-xdata :: Monad m => String -> BuilderT m a => BuilderT m a
+xdata :: Monad m => String -> BuilderT m a -> BuilderT m a
 xdata getAddr builder = tryXData $ \addr _ _ ->
   parseAddress getAddr >>= \getAddr -> guard (addr==getAddr) >> builder
 
@@ -792,37 +783,35 @@ pushXData addr newDict = do
 -- into the list after the cursor.
 pushXList :: Monad m => BuilderT m ()
 pushXList = BuilderT $ lift $ modify $ \st ->
-  st{ builderItem = Just $ ListStep 0 0 [] []
+  st{ builderItem = Just $ ListStep mempty
     , builderPath = concat [maybe [] (:[]) (builderItem st), builderPath st]
     }
 
 -- | Evaluate a 'BuilderT' only if the 'builderItem' is a 'ListStep'
 xlist :: Monad m => BuilderT m a -> BuilderT m a
-xlist builder = tryXList $ \ _ _ _ _ -> builder
+xlist builder = tryXList $ \ _ -> builder
 
 -- | Step into the current list element, which is the element just before the cursor. If there are
 -- no elements before the cursor, an element is created at index 0.
 pushXElem :: Monad m => BuilderT m ()
-pushXElem = tryXList $ \i len before after -> BuilderT $ lift $ modify $ \st -> case before of
-  []       ->
-    st{ builderItem = Nothing
-      , builderPath = ListStep i len before after : builderPath st
-      }
-  b:before ->
-    st{ builderItem = Just (buildStep b)
-      , builderPath = ListStep (i-1) (len-1) before after : builderPath st
-      }
+pushXElem = tryXList $ \sl -> BuilderT $ lift $ modify $ \st -> 
+  if null (slLeftOfCursor sl)
+  then  st{ builderItem = Nothing
+          , builderPath = ListStep sl : builderPath st
+          }
+  else  st{ builderItem = Just (buildStep (slHeadL sl))
+          , builderPath = ListStep (slTail ToLeft sl) : builderPath st
+          }
 
 -- | Evaluate a 'BuilderT' only if the cursor is positioned on an element.
 xelemWith :: Monad m => BuilderT m a -> BuilderT m a
-xelemWith builder = tryXList $ \i len before after -> guard (i<len) >> case after of
-  []      -> mzero
-  a:after -> do
-    BuilderT $ lift $ modify $ \st ->
-      st{ builderItem = Just $ buildStep a
-        , builderPath = ListStep i (len-1) before after : builderPath st
-        }
-    builder >>= \a -> popStep >> return a
+xelemWith builder = tryXList $ \sl -> do
+  guard (not $ slAtEnd ToRight sl)
+  BuilderT $ lift $ modify $ \st ->
+    st{ builderItem = Just $ buildStep $ slHeadR sl
+      , builderPath = ListStep (slTail ToRight sl) : builderPath st
+      }
+  builder >>= \a -> popStep >> return a
 
 -- | Like 'xelem' but evaluates the 'BuilderT' used is the instantiation of the 'fromXData' function
 -- for the 'Translatable' type @t@.
@@ -842,93 +831,77 @@ xiterate = xiterateWith fromXData
 -- | If the current 'builderItem' is a 'ListStep' and the list cursor is at the end of the list,
 -- return 'Prelude.True'. Works well when used before evaluating 'xiterate'.
 endOfXList :: Monad m => BuilderT m Bool
-endOfXList = tryXList $ \i len _ _ -> return (i>=len)
+endOfXList = tryXList $ return . slAtEnd ToRight
 
 -- | Assuming the current 'builderItem' is a 'ListStep', get the length of the current list.
 lengthXList :: Monad m => BuilderT m Int
-lengthXList = tryXList $ \ _ len _ _ -> return len
+lengthXList = tryXList $ return . slLength
 
 -- | Assuming the current 'builderItem' is a 'ListStep', get the current cursor position.
 getCursor :: Monad m => BuilderT m Int
-getCursor = tryXList $ \ i _ _ _ -> return i
+getCursor = tryXList $ return . slCursor
 
 -- | Assuming the current 'builderItem' is a 'ListStep', place a list of items before the current
 -- cursor position.
 putBefore :: Monad m => [XData] -> BuilderT m ()
-putBefore tx = tryXList $ \i len before after -> BuilderT $ lift $ modify $ \st ->
-  st{ builderItem = Just $ ListStep i (len + length tx) before (tx++after) }
+putBefore tx = tryXList $ \sl ->
+  BuilderT $ lift $ modify $ \st -> st{ builderItem = Just $ ListStep $ tx <++ sl }
 
 -- | Assuming the current 'builderItem' is a 'ListStep', place a list of items before the current
 -- cursor position.
 putAfter :: Monad m => [XData] -> BuilderT m ()
-putAfter tx = tryXList $ \i len before after ->
-  let len' = length tx
-  in  BuilderT $ lift $ modify $ \st ->
-        st{ builderItem = Just $ ListStep (i+len') (len+len') (before++reverse tx) after }
+putAfter tx = tryXList $ \sl ->
+  BuilderT $ lift $ modify $ \st -> st{ builderItem = Just $ ListStep $ tx ++> sl }
 
-indexError :: MonadError XThrow m => Int -> Int -> String -> Integer -> String -> m ig
+indexError :: MonadError XThrow m => Int -> Int -> String -> Int -> String -> m ig
 indexError i len msg req opmsg = throwXData "DataBuilder.Error" $
   [ ("problem", mkXStr msg), ("cursorPosition", XINT i), ("listLength", XINT len)
-  , ( opmsg
-    , if curry inRange (fromIntegral (minBound::Int)) (fromIntegral (maxBound::Int)) req
-      then XINT (fromIntegral req)
-      else mkXStr (show req)
-    )
+  , (opmsg, XINT req)
   ]
 
 -- | Assuming the current 'builderItem' is a 'ListStep', move forward or backward through the list. The
 -- resulting index must be in bounds or this function evaluates to an error.
-moveCursor :: Monad m => Integer -> BuilderT m ()
-moveCursor delta = tryXList $ \i len before after -> do
-  let checkBounds msg errorCondition = unless errorCondition $
-        indexError i len ("moved cursor passed "++msg++" of list") delta "shiftValue"
-  let newCursor = fromIntegral delta + i
-  case delta of
-    0               -> return ()
-    delta | delta<0 -> do
-      checkBounds "before" (fromIntegral i + delta >= 0)
-      BuilderT $ lift $ modify $ \st ->
-        let (took, remain) = splitAt (abs (fromIntegral delta)) before
-        in  st{ builderItem = Just $ ListStep newCursor len remain (reverse took ++ after) }
-    delta | delta>0 -> do
-      checkBounds "after" (fromIntegral (len-i) > delta)
-      BuilderT $ lift $ modify $ \st ->
-        let (took, remain) = splitAt (fromIntegral delta) after
-        in  st{ builderItem = Just $ ListStep newCursor len (before ++ reverse took) remain }
+moveCursor :: Monad m => Int -> BuilderT m ()
+moveCursor delta = tryXList $ \sl ->
+  if slMoveCheck delta sl
+  then BuilderT $ lift $ modify $ \st -> st{builderItem = Just $ ListStep $ slMoveCursor delta sl}
+  else indexError (slCursor sl) (slLength sl) "moving cursor passed end of list" delta "shiftValue"
 
 -- | Assuming the current 'builderItem' is a 'ListStep', move the cursor to the specific index. The
 -- index must be in bounds or this function evaluates to an error.
-cursorToIndex :: Monad m => Integer -> BuilderT m ()
-cursorToIndex i' = join $ tryXList $ \i len before after ->
-  if curry inRange 0 (fromIntegral len) i'
-  then return $ moveCursor (fromIntegral i' - fromIntegral i)
-  else indexError i len "moved cursor to index out of range" i' "requestedIndex"
+cursorToIndex :: Monad m => Int -> BuilderT m ()
+cursorToIndex i = join $ tryXList $ \sl ->
+  if slIndexCheck i sl
+  then return $ moveCursor (i - slCursor sl)
+  else indexError (slCursor sl) (slLength sl) "moved cursor to index out of range" i "requestedIndex"
 
 cursorToStart :: Monad m => BuilderT m ()
-cursorToStart = tryXList $ \i len before after -> BuilderT $ lift $ modify $ \st ->
-  st{ builderItem = Just $ ListStep 0 len [] (reverse before ++ after) }
+cursorToStart = tryXList $ \sl -> BuilderT $ lift $ modify $ \st ->
+  st{ builderItem = Just $ ListStep $ slReturn ToLeft sl }
 
 cursorToEnd :: Monad m => BuilderT m ()
-cursorToEnd = tryXList $ \i len before after -> BuilderT $ lift $ modify $ \st ->
-  st{ builderItem = Just $ ListStep len len [] (before ++ reverse after) }
+cursorToEnd = tryXList $ \sl ->
+  BuilderT $ lift $ modify $ \st -> st{ builderItem = Just $ ListStep $ slReturn ToRight sl }
 
 -- | Assuming the current 'builderItem' is a 'ListStep', starting at the current cursor position
 -- step through the current list by pushing each list item to the 'builderItem', evaluating the
 -- given function, then popping the item.
 forEachForward :: Monad m => BuilderT m t -> BuilderT m [t]
 forEachForward update = loop [] where
-  loop tx = tryXList $ \i len before after -> case after of
-    [] -> return tx
-    _  -> pushXElem >> update >>= \t -> popStep >> moveCursor 1 >> loop (tx++[t])
+  loop tx = tryXList $ \sl ->
+    if slAtEnd ToRight sl
+    then return tx
+    else pushXElem >> update >>= \t -> popStep >> moveCursor 1 >> loop (tx++[t])
 
 -- | Assuming the current 'builderItem' is a 'ListStep', starting at the current cursor position
 -- step through the current list by pushing each list item to the 'builderItem', evaluating the
 -- given function, then popping the item.
 forEachBackward :: Monad m => BuilderT m t -> BuilderT m [t]
 forEachBackward update = loop [] where
-  loop tx = tryXList $ \i len before after -> case before of
-    [] -> return tx
-    _  -> pushXElem >> update >>= \t -> popStep >> moveCursor (negate 1) >> loop (t:tx)
+  loop tx = tryXList $ \sl ->
+    if slAtEnd ToLeft sl
+    then  return tx
+    else  pushXElem >> update >>= \t -> popStep >> moveCursor (negate 1) >> loop (t:tx)
 
 instance Translatable Bool where
   toXData a = put $ Just $ if a then XTRUE else XNULL
@@ -969,8 +942,8 @@ instance Translatable Label where
 
 instance Translatable a => Translatable [a] where
   toXData ax = pushXList >> forM_ ax (\a -> pushXElem >> toXData a >> popStep >> moveCursor 1)
-  fromXData  = tryXList $ \i len _ _ -> do
-    when (i>0) cursorToStart
+  fromXData  = tryXList $ \sl -> do
+    when (slCursor sl > 0) cursorToStart
     fix (\loop ax -> do
             end <- endOfXList
             if end then return ax else xiterate >>= \a -> loop (ax++[a])
@@ -983,15 +956,15 @@ instance (Translatable a, Translatable b) => Translatable (a, b) where
     moveCursor 1
     pushXElem >> toXData b >> popStep
     return ()
-  fromXData = tryXList $ \i len _ _ -> do
-    unless (len==2) $ do
+  fromXData = tryXList $ \sl -> do
+    unless (slLength sl == 2) $ do
       ptr <- parseAddress "Pair"
       throwXData "DataBuilder.Error" $
         [ ("problem", mkXStr "wrong number of elements to construct pair")
         , ("dataType", XPTR ptr)
-        , ("elemCount", XINT len)
+        , ("elemCount", XINT (slLength sl))
         ]
-    when (i>0) cursorToStart
+    when (slCursor sl > 0) cursorToStart
     pure (,) <*> xiterate <*> xiterate
 
 instance (Ord a, Translatable a, Translatable b) => Translatable (M.Map a b) where
@@ -1002,15 +975,17 @@ instance Translatable XData where
   toXData   = put . Just
   fromXData = get >>= maybe mzero return
 
-instance Translatable a => Translatable (Maybe a) where
-  toXData m = pushXData "Maybe" (maybe [] (\a -> [("just", toXData a)]) m)
-  fromXData = xdata "Maybe" (optXField "just")
+maybeToXData :: (Monad m, Applicative m, Translatable t) => Maybe t -> BuilderT m ()
+maybeToXData m = pushXData "Maybe" (maybe [] (\a -> [("just", toXData a)]) m)
+
+maybeFromXData :: (Monad m, Applicative m, Translatable t) => BuilderT m (Maybe t)
+maybeFromXData = xdata "Maybe" (mplus (Just <$> optXField "just") (return Nothing))
 
 instance Translatable DataBuilder where
   toXData (DataBuilder item path) = pushXData "DataBuilder" $
-    [("builderItem", toXData item), ("builderPath", toXData path)]
+    [("builderItem", maybeToXData item), ("builderPath", toXData path)]
   fromXData = xdata "DataBuilder" $
-    pure DataBuilder <*> xfield "builderItem" <*> xfield "builderPath"
+    pure DataBuilder <*> xfieldWith "builderItem" maybeFromXData <*> xfield "builderPath"
 
 instance Translatable BuildStep where
   toXData a = case a of
@@ -1018,27 +993,17 @@ instance Translatable BuildStep where
     DataStep a b c -> pushXData "BuildStep.Data" $
       [ ("buildDataAddress", toXData a)
       , ("buildDataDict"   , toXData b)
-      , ("buildDataField"  , toXData c)
+      , ("buildDataField"  , maybeToXData c)
       ]
-    ListStep a b c d -> pushXData "BuildStep.List" $
-      [ ("buildIndex"     , toXData a)
-      , ("buildListLength", toXData b)
-      , ("buildListBefore", toXData c)
-      , ("buildListAfter" , toXData d)
-      ]
+    ListStep sl -> pushXData "BuildStep.List" [("array", toXData $ XLIST $ slToArray sl)]
   fromXData = msum $
     [ xdata "BuildStep" (ConstStep <$> xfield "const")
     , xdata "BuildStep.Data" $
         pure DataStep
           <*> xfield "buildDataAddress"
           <*> xfield "buildDataDict"
-          <*> xfield "buildDataField"
-    , xdata "BuildStep.List" $
-        pure ListStep
-          <*> xfield "buildIndex"
-          <*> xfield "buildListLength"
-          <*> xfield "buildListBefore"
-          <*> xfield "buildListAfter"
+          <*> xfieldWith "buildDataField" maybeFromXData
+    , xdata "BuildStep.List" $ xfieldWith "array" (tryXList (return . ListStep))
     ]
 
 ----------------------------------------------------------------------------------------------------
@@ -1140,7 +1105,7 @@ instance (MonadPlus m, Monad m) => MonadPlusError XThrow (RunT m) where
 readLabel :: String -> [(String, String)]
 readLabel str = case dropWhile isSpace str of
   str@(c:_) | isAlpha c || c=='_' -> return (span isAlphaNum str)
-  [] -> fail "expecting Label"
+  _ -> []
 
 parseLabel :: MonadError XThrow m => String -> m Label
 parseLabel str = case readsPrec 0 str of
@@ -1394,13 +1359,12 @@ data RWCommand
   | DO      RWCondition  -- ^ conditional evaluation
   | RETURN  RWLookup     -- ^ end evaluation
   | THROW   RWLookup
-  | FOREACH Label Label RWLookup [RWCommand]
-  | BREAK
   deriving (Eq, Ord, Show, Read)
 data XCommand
   = XLOAD    XLookup -- ^ copy a register to the last result
   | XSTORE   Label -- ^ copy the last result to a register
   | XUPDATE  XLookup Label -- ^ copy a value into a local variable of the current module.
+  | XDELETE  Label
   | XSETJUMP Label -- ^ set a jump point
   | XJUMP    Label -- ^ goto a jump point
   | XPUSH    XLookup -- ^ push a value onto the stack
@@ -1419,6 +1383,7 @@ instance RWX RWCommand XCommand where
     LOAD    a   -> XLOAD    (io_x a)
     STORE   a   -> XSTORE         a
     UPDATE  a b -> XUPDATE  (io_x a) b
+    DELETE  a   -> XDELETE        a
     SETJUMP a   -> XSETJUMP       a
     JUMP    a   -> XJUMP          a
     PUSH    a   -> XPUSH    (io_x a)
@@ -1434,6 +1399,7 @@ instance RWX RWCommand XCommand where
     XLOAD    a   -> LOAD    (x_io a)
     XSTORE   a   -> STORE         a
     XUPDATE  a b -> UPDATE  (x_io a) b
+    XDELETE  a   -> DELETE        a
     XSETJUMP a   -> SETJUMP       a
     XJUMP    a   -> JUMP          a
     XPUSH    a   -> PUSH    (x_io a)
@@ -1505,6 +1471,7 @@ data RWEval
 data XEval
   = XTAKE   XLookup
   | XNOT    XEval
+  | XABS    XEval
   | XSIZE   XEval       -- ^ also functions as the absolute value operator
   | XADD    XEval XEval
   | XSUB    XEval XEval
@@ -1536,6 +1503,7 @@ instance RWX RWEval XEval where
   io_x x  = case x  of
     TAKE   a   -> XTAKE   (io_x a)
     NOT    a   -> XNOT    (io_x a)  
+    ABS    a   -> XABS    (io_x a)
     SIZE   a   -> XSIZE   (io_x a)  
     ADD    a b -> XADD    (io_x a) (io_x b)
     SUB    a b -> XSUB    (io_x a) (io_x b)
@@ -1564,6 +1532,7 @@ instance RWX RWEval XEval where
   x_io io = case io of
     XTAKE   a   -> TAKE   (x_io a)
     XNOT    a   -> NOT    (x_io a)  
+    XABS    a   -> ABS    (x_io a)
     XSIZE   a   -> SIZE   (x_io a)  
     XADD    a b -> ADD    (x_io a) (x_io b)
     XSUB    a b -> SUB    (x_io a) (x_io b)
@@ -1572,8 +1541,11 @@ instance RWX RWEval XEval where
     XMOD    a b -> MOD    (x_io a) (x_io b)
     XINDEX  a b -> INDEX  (x_io a) (x_io b)
     XGRTR   a b -> GRTR   (x_io a) (x_io b)
+    XGREQ   a b -> GREQ   (x_io a) (x_io b)
     XLESS   a b -> LESS   (x_io a) (x_io b)
+    XLSEQ   a b -> LSEQ   (x_io a) (x_io b)
     XEQUL   a b -> EQUL   (x_io a) (x_io b)
+    XNEQL   a b -> NEQL   (x_io a) (x_io b)
     XAPPEND a b -> APPEND (x_io a) (x_io b)
     X_AND   a b -> AND    (x_io a) (x_io b)
     X_OR    a b -> OR     (x_io a) (x_io b)
@@ -1642,7 +1614,7 @@ popEvalStack = get >>= \st -> case evalStack st of
   a:ax -> put (st{evalStack=ax}) >> setResult a
 
 pushEvalStack :: Monad m => [XData] -> RunT m ()
-pushEvalStack dx = get >>= \st -> modify (\st -> st{evalStack=reverse dx++evalStack st})
+pushEvalStack dx = modify (\st -> st{evalStack=reverse dx++evalStack st})
 
 evalStackEmptyElse :: Monad m => String -> [(String, XData)] -> RunT m ()
 evalStackEmptyElse functionLabel params = gets evalStack >>= \stk ->
@@ -1652,18 +1624,23 @@ evalStackEmptyElse functionLabel params = gets evalStack >>= \stk ->
             [ ("problem", mkXStr "too many arguments to function")
             , ("function", mkXStr functionLabel)
             , ("extraneousArguments", mkXList stk)
-            ]
+            ] ++ params
+
+requireCurrentMod :: Monad m => XCommand -> RunT m XModule
+requireCurrentMod o = gets currentModule >>= \mod -> case mod of
+  Nothing  -> throwXData "Undefined" $
+    [ ("problem", mkXStr "update occurred with no current module")
+    , ("instruction", mkXStr (show (x_io o)))
+    ]
+  Just mod -> return mod
 
 instance Evaluable XCommand where
   eval o = incEC >> incPC >> case o of
     XLOAD   a   -> eval a >>= setResult
     XSTORE  a   -> gets lastResult >>= \b -> setRegister a b >> return b
-    XUPDATE a b -> gets currentModule >>= \mod -> case mod of
-      Nothing  -> throwXData "Undefined" $
-        [ ("problem", mkXStr "update occurred with no current module")
-        , ("instruction", mkXStr (show (x_io o)))
-        ]
-      Just mod -> case M.lookup b $ defsToMap $ xprivate mod of
+    XUPDATE a b -> do
+      mod <- requireCurrentMod o
+      case M.lookup b $ defsToMap $ xprivate mod of
         Nothing  -> throwXData "Undefined" [("variableName", mkXStr (show (x_io a)))]
         Just var -> do
           a <- eval a
@@ -1676,7 +1653,14 @@ instance Evaluable XCommand where
                   }
               }
           gets lastResult
-    XSETJUMP a   -> gets lastResult
+    XDELETE  a   -> do
+      mod <- requireCurrentMod o
+      modify $ \st ->
+        st{ currentModule = Just $
+              mod{xprivate = XDefines{defsToMap = M.delete a (defsToMap (xprivate mod))}}
+          }
+      setResult (maybe XNULL id $ M.lookup a $ defsToMap $ xprivate mod)
+    XSETJUMP _   -> gets lastResult -- ignored, these instructions are used before evaluation
     XJUMP    a   -> do
       pcreg <- gets pcRegisters
       let badJump = evalError "Undefined" "jumpTo" (mkXStr $ show a)
@@ -1712,12 +1696,25 @@ instance Evaluable XCondition where
       _           -> return XNULL
 
 instance Evaluable XBlock where
-  eval (XBlock cmds) = fix $ \loop -> incEC >> do
-    pc <- gets programCounter
-    block <- gets currentBlock
-    case block of
-      Just block | inRange (bounds block) pc -> eval (block!pc) >> loop
-      _                                      -> gets lastResult
+  eval (XBlock cmds) = flip (maybe (gets lastResult)) cmds $ \cmds -> do
+    pcreg    <- gets pcRegisters
+    curblock <- gets currentBlock
+    pc       <- gets programCounter
+    modify $ \st -> 
+      st{ pcRegisters = M.fromList $ assocs cmds >>= \cmd -> case cmd of
+            (i, XSETJUMP lbl) -> [(lbl, i)]
+            _                 -> []
+        , programCounter = 0
+        , currentBlock = Just cmds
+        }
+    fix $ \loop -> incEC >> do
+      pc    <- gets programCounter
+      block <- gets currentBlock
+      case block of
+        Just block | inRange (bounds block) pc -> eval (block!pc) >> loop
+        _                                      -> gets lastResult
+    modify $ \st -> st{pcRegisters=pcreg, currentBlock=curblock, programCounter=pc}
+    gets lastResult
 
 badEval :: Monad m => XEval -> [(String, XData)] -> RunT m ig
 badEval o other = throwXData "BadInstruction" $
@@ -1741,13 +1738,12 @@ matchArgs :: Monad m => [Label] -> [XData] -> RunT m ()
 matchArgs argVars argValues = do
   stk <- gets evalStack
   let loop m ax bx = case (ax, bx) of
-        (ax  , []  ) -> Just (m, [])
+        (_   , []  ) -> Just (m, [])
         ([]  , _   ) -> Nothing
         (a:ax, b:bx) -> loop ((a,b):m) ax bx
   case loop [] argVars (reverse stk ++ argValues) of
     Nothing -> evalError "FuncCall" "notEnoughParams" (mkXList argValues)
-    Just (elms, rem) -> get >>= \old ->
-      modify $ \st -> st{registers=M.fromList elms, evalStack=reverse rem}
+    Just (elms, rem) -> modify $ \st -> st{registers=M.fromList elms, evalStack=reverse rem}
 
 setupJumpRegisters :: Monad m => Array Int XCommand -> RunT m ()
 setupJumpRegisters block = modify $ \st ->
@@ -1763,7 +1759,7 @@ callLocalMethod lbl argValues = do
   case func of
     XFUNC (XFunc argVars (XBlock (Just block))) -> do
       let loop m ax bx = case (ax, bx) of
-            (ax  , []  ) -> Just (m, [])
+            (_   , []  ) -> Just (m, [])
             ([]  , _   ) -> Nothing
             (a:ax, b:bx) -> loop ((a,b):m) ax bx
       case loop [] argVars argValues of
@@ -1774,6 +1770,8 @@ callLocalMethod lbl argValues = do
           modify $ \st ->
             st{ currentBlock   = Just block
               , programCounter = programCounter old
+              , registers      = M.union (M.fromList elms) (registers st)
+              , evalStack      = rem
               }
           catchError (eval (XBlock $ Just block)) $ \err -> case err of
             XError  err -> throwError (XError err)
@@ -1832,6 +1830,10 @@ instance Evaluable XEval where
       XINT  a   -> return (XINT $ a `xor` 0xFFFFFFFFFFFFFFFF)
       XDATA a _ -> evalDataOperand a o
       _         -> badEval o []
+    XABS    a   -> eval a >>= \a -> case a of
+      XINT    a   -> return $ XINT   $ abs a
+      XFLOAT  a   -> return $ XFLOAT $ abs a
+      _           -> badEval o []
     XSIZE   a   -> eval a >>= \a -> case a of
       XNULL     -> return XNULL
       XTRUE     -> return XTRUE
@@ -1851,6 +1853,7 @@ instance Evaluable XEval where
       (XINT i, XLIST l  ) -> return (maybe XNULL (!i) l)
       (XSTR i, XDATA _ m) -> return (maybe XNULL id (M.lookup (Label i) m))
       (XTRUE , XDATA p _) -> return (XPTR p)
+      _                   -> badEval o []
     XGRTR   a b -> boolean o (>)  a b
     XGREQ   a b -> boolean o (>=) a b
     XLESS   a b -> boolean o (<)  a b
@@ -1860,6 +1863,7 @@ instance Evaluable XEval where
     XAPPEND a b -> eval a >>= \a -> eval b >>= \b -> case (a, b) of
       (XSTR (Text a), XSTR (Text b)) -> return (XSTR $ Text $ U.fromString (U.toString a ++ U.toString b))
       (XLIST a      , XLIST b      ) -> let el = maybe [] elems in return (mkXList (el a ++ el b))
+      _                              -> badEval o []
     X_AND   a b -> bitwise o (.&.) a b
     X_OR    a b -> bitwise o (.|.) a b
     X_XOR   a b -> bitwise o  xor  a b

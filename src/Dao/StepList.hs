@@ -188,8 +188,8 @@ infixr 5 <++
 infixr 5 ++>
 
 -- | Returns 'Prelude.True' if it is possible to move the cursor left or right by @n@ steps.
-slMoveCheck :: Int -> StepList a -> Bool
-slMoveCheck delta (StepList cur len _ _) = inRange (0, len) (cur+delta)
+slShiftCheck :: Int -> StepList a -> Bool
+slShiftCheck delta (StepList cur len _ _) = inRange (0, len) (cur+delta)
 
 -- | Returns 'Prelude.True' if it the index is within the bounds of the list.
 slIndexCheck :: Int -> StepList a -> Bool
@@ -197,8 +197,8 @@ slIndexCheck i (StepList _ len _ _) = inRange (0, len) i
 
 -- | Shift the cursor @delta@ elements to the left if @delta@ is negative, or @delta@ elements to
 -- the right if @delta@ is positive.
-slMoveCursor :: Int -> StepList a -> StepList a
-slMoveCursor delta a@(StepList cur len left right)
+slCursorShift :: Int -> StepList a -> StepList a
+slCursorShift delta a@(StepList cur len left right)
   | delta==0 = a
   | delta<0 && abs delta <= cur =
       let (middle, left') = splitAt (abs delta) left
@@ -210,7 +210,29 @@ slMoveCursor delta a@(StepList cur len left right)
 
 -- | Place the cursor at an index position.
 slCursorTo :: Int -> StepList a -> StepList a
-slCursorTo i a@(StepList cur _ _ _) = slMoveCursor (i-cur) a
+slCursorTo i a@(StepList cur _ _ _) = slCursorShift (i-cur) a
+
+-- | Copy the elements elements between the given range. If the range is out of bounds, only the
+-- elements in range are collected, possibly evaluating to an empty list.
+slGetRange :: Int -> Int -> StepList a -> [a]
+slGetRange lo hi (StepList cur len left right)
+  | lo< cur && hi< cur = reverse $ select (cur - max 0 hi) (cur - max 0 lo) left
+  | lo< cur && hi>=cur = reverse (select 0 (cur - max 0 lo) left) ++ select 0 (min len hi - cur) right
+  | lo>=cur && hi< cur = swap
+  | lo>=cur && hi>=cur = reverse $ select (min len lo - cur) (min len hi - cur) right
+  | otherwise          = undefined
+  where
+    swap = slGetRange hi lo (StepList cur len left right)
+    select lo hi = map snd
+      . takeWhile (inRange (lo, hi) . fst)
+      . dropWhile ((<lo) . fst)
+      . zip (iterate (+1) 0)
+
+-- | Like 'slGetRange' but selects @cL::Int@ items before the cursor and @cR::Int@ items after the
+-- cursor.
+slGetRelativeRange :: Int -> Int -> StepList a -> [a]
+slGetRelativeRange cL cR (StepList cur len left right) =
+  reverse (take (min cL cur) left) ++ take (min cR (len-cur)) right
 
 -- | Many functions may need to modify a 'StepList' but only on the elements to the left or right of
 -- the cursor. These functions take a boolean type called 'Bias'

@@ -130,7 +130,7 @@ data DaoIOState st
     , editModuleTable   :: M.Map Text XModule
     , editingModule     :: Maybe XModule
     , editingModulePath :: Maybe Text
-    , editingFunction   :: StepList [XCommand]
+    , editingFunction   :: StepList XCommand
     }
 
 initDaoIOState :: st -> DaoIOState st
@@ -395,9 +395,45 @@ deactivateModule addr = do
                 }
           }
 
--- TODO: write a simple line-editor-like interface to create Dao language functions.
+parseXCommand :: String -> DaoIO st XCommand
+parseXCommand inp = case readsPrec 0 inp of
+  [(cmd, "" )] -> return (io_x cmd)
+  [(cmd, rem)] -> throwXData "Parser.Error" $
+    [ ("unparsedInput", mkXStr rem)
+    , ("parsedCommand", mkXStr (show cmd))
+    ]
+  []   -> throwXData "Parser.Error" [("problem", mkXStr "no parse")]
+  pars -> throwXData "Parser.Error" $
+    [ ("problem", mkXStr "ambiguous parse")
+    , ("possibleParses", mkXList $ map (mkXStr . show . fst) pars)
+    ]
 
+-- | Return a list of functions between the two indeces given.
+listCurrentFunc :: Int -> Int -> DaoIO st [XCommand]
+listCurrentFunc lo hi = DaoIO $ lift $ gets editingFunction >>= return . slGetRange lo hi
 
+listCurrentFuncAll :: DaoIO st [XCommand]
+listCurrentFuncAll = DaoIO $ lift $ gets editingFunction >>= return . slToList
+
+-- not for export
+currentFuncCursor
+  :: (Int -> StepList XCommand -> Bool)
+  -> (Int -> StepList XCommand -> StepList XCommand)
+  -> Int -> DaoIO st ()
+currentFuncCursor check move i = do
+  st <- DaoIO $ lift $ get
+  if check i (editingFunction st)
+  then  DaoIO $ lift $ put $ st{editingFunction = move i (editingFunction st)}
+  else  throwXData "FuncEditor.Error" $
+          [ ("problem", mkXStr "attempt to move cursor past end of list")
+          , ("shiftValue", XINT i)
+          ]
+
+currentFuncCursorTo :: Int -> DaoIO st ()
+currentFuncCursorTo = currentFuncCursor slIndexCheck slCursorTo
+
+currentFuncShiftCursor :: Int -> DaoIO st ()
+currentFuncShiftCursor = currentFuncCursor slShiftCheck slCursorShift
 
 -- TODO: write a function to copy the DataBuilder to a public or private slot in a module.
 -- TODO: write a function to edit the set of rules for a module.
@@ -863,8 +899,8 @@ indexError i len msg req opmsg = throwXData "DataBuilder.Error" $
 -- resulting index must be in bounds or this function evaluates to an error.
 moveCursor :: Monad m => Int -> BuilderT m ()
 moveCursor delta = tryXList $ \sl ->
-  if slMoveCheck delta sl
-  then BuilderT $ lift $ modify $ \st -> st{builderItem = Just $ ListStep $ slMoveCursor delta sl}
+  if slShiftCheck delta sl
+  then BuilderT $ lift $ modify $ \st -> st{builderItem = Just $ ListStep $ slCursorShift delta sl}
   else indexError (slCursor sl) (slLength sl) "moving cursor passed end of list" delta "shiftValue"
 
 -- | Assuming the current 'builderItem' is a 'ListStep', move the cursor to the specific index. The

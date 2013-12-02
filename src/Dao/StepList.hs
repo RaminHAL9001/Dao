@@ -106,9 +106,9 @@ slToArray (StepList cur len left right) =
   else Just $ array (negate cur, len-cur-1)
           (zip (iterate (subtract 1) (negate 1)) left ++ zip (iterate (+1) 0) right)
 
--- | Creates an array storing the list where the indecies are 'Data.Array.IArray.bounds' such that
+-- | Creates an array storing the list where the indicies are 'Data.Array.IArray.bounds' such that
 -- value at index zero is the value returned by 'slHeadR', items before the cursor have negative
--- indecies, and items after the cursor are zero or positive. If the cursor is at the right-most
+-- indicies, and items after the cursor are zero or positive. If the cursor is at the right-most
 -- position of the list, the resulting array, every item is assigned to a negative index.
 slFromArray :: Maybe (Array Int a) -> StepList a
 slFromArray arr = case arr of
@@ -212,27 +212,90 @@ slCursorShift delta a@(StepList cur len left right)
 slCursorTo :: Int -> StepList a -> StepList a
 slCursorTo i a@(StepList cur _ _ _) = slCursorShift (i-cur) a
 
--- | Copy the elements elements between the given range. If the range is out of bounds, only the
--- elements in range are collected, possibly evaluating to an empty list.
-slGetRange :: Int -> Int -> StepList a -> [a]
-slGetRange lo hi (StepList cur len left right)
-  | lo< cur && hi< cur = reverse $ select (cur - max 0 hi) (cur - max 0 lo) left
-  | lo< cur && hi>=cur = reverse (select 0 (cur - max 0 lo) left) ++ select 0 (min len hi - cur) right
-  | lo>=cur && hi< cur = swap
-  | lo>=cur && hi>=cur = reverse $ select (min len lo - cur) (min len hi - cur) right
-  | otherwise          = undefined
-  where
-    swap = slGetRange hi lo (StepList cur len left right)
-    select lo hi = map snd
-      . takeWhile (inRange (lo, hi) . fst)
-      . dropWhile ((<lo) . fst)
-      . zip (iterate (+1) 0)
+-- | A bounds value expressed as a pair of indicies relative to the current cursor position can be
+-- converted to an bounds value expressed as a pair of indicies relative to the 0th element in the
+-- 'StepList'. This is the inverse operation of 'slAbsToRel'.
+slRelToAbs :: StepList a -> (Int, Int) -> (Int, Int)
+slRelToAbs (StepList cur _ _ _) (lo, hi) = (cur+lo, cur+hi)
 
--- | Like 'slGetRange' but selects @cL::Int@ items before the cursor and @cR::Int@ items after the
--- cursor.
-slGetRelativeRange :: Int -> Int -> StepList a -> [a]
-slGetRelativeRange cL cR (StepList cur len left right) =
-  reverse (take (min cL cur) left) ++ take (min cR (len-cur)) right
+-- | A bounds value expressed as a pair of indicies relative to the 0th position in the 'StepList'
+-- can be converted to a bounds value expressed as a pair of indicies relative to the current
+-- cursor position. This is the inverse operation of 'slRelToAbs'.
+slAbsToRel :: StepList a -> (Int, Int) -> (Int, Int)
+slAbsToRel (StepList cur _ _ _) (lo, hi) = (lo-cur, hi-cur)
+
+-- | Selects items around the cursor, with the option of deleting the items selected from the
+-- 'StepList'. The first boolean parameter indicates whether or not the list should be altered by
+-- deleting the items that were selected. Items to the left of the cursor are selected if the
+-- indicies are negative and items to the right of the cursor are selected if the indicies are
+-- positive. Specify the range to select by passing a lower and upper bound relative to the cursor.
+-- For example, to select a range of ten items, five before the cursor and five after the cursor,
+-- use @slGetRelRange False (negate 5) 5@. To delete that same range from the 'StepList' and also
+-- return it use @slGetRelRange True (negate 5) 5@.
+--
+-- This function evaluates to a pair of 'StepList's. The 'Prelude.fst' is the selected items, the
+-- 'Prelude.snd' is the modified 'StepList' which may be identical to the parameter 'StepList' if
+-- the 'doDelete::Bool' parameter is 'Prelude.False'.
+slCutRelRange :: Bool -> (Int, Int) -> StepList a -> (StepList a, StepList a)
+slCutRelRange doDelete (lo, hi) o@(StepList cur len left right) = maybe (mempty, o) id $ do
+  let cutBiased minLen list = do
+        let lim = Just . min minLen . abs
+        lo <- lim $ min lo hi
+        hi <- lim $ max lo hi
+        let cutLen = hi-lo
+        guard (cutLen/=0)
+        (keep, list) <- Just $ splitAt lo     list
+        (cut , list) <- Just $ splitAt cutLen list
+        return (cutLen, keep, cut, list)
+  case lo of
+    lo|lo<0  -> case hi of
+      hi|hi<=0 -> do
+        (cutLen, keep, cut, left) <- cutBiased cur left
+        cut <- Just $ StepList cutLen cutLen cut []
+        Just $
+          if doDelete
+          then (cut, StepList (max 0 (cur-cutLen)) (len-cutLen) (left++keep) right)
+          else (cut, o)
+      hi|hi>0  -> do
+        lo <- Just $ min cur (abs lo)
+        hi <- Just $ min (len-cur) hi
+        let cutLen = hi+lo
+        (midLeft,  left ) <- Just $ splitAt lo left
+        (midRight, right) <- Just $ splitAt hi right
+        middle            <- Just $ StepList lo cutLen midLeft midRight
+        Just $
+          if doDelete
+          then (middle, StepList (max 0 (cur-cutLen)) (len-cutLen) left right)
+          else (middle, o)
+      _ -> undefined
+    lo|lo>=0 -> case hi of
+      hi|hi<=0 -> if lo==hi then Nothing else Just $ slCutRelRange doDelete (hi, lo) o
+      hi|hi>0  -> do
+        (cutLen, keep, cut, right) <- cutBiased (len-cur) right
+        cut <- Just $ StepList 0 cutLen [] cut
+        Just $
+          if doDelete
+          then (cut, StepList cur (max cur (len-cutLen)) left (keep++right))
+          else (cut, o)
+      _ -> undefined
+    _ -> undefined
+
+-- | Like 'slCutRelRange' but operates on an upper and lower bound indicated by absolute indicies,
+-- rather than indicies relative to the cursor.
+slCutAbsRange :: Bool -> (Int, Int) -> StepList a -> (StepList a, StepList a)
+slCutAbsRange doDelete bnds list = slCutRelRange doDelete (slAbsToRel list bnds) list
+
+slDeleteRelRange :: (Int, Int) -> StepList a -> StepList a
+slDeleteRelRange bnds = snd . slCutAbsRange True bnds
+
+slDeleteAbsRange :: (Int, Int) -> StepList a -> StepList a
+slDeleteAbsRange bnds list = slDeleteRelRange (slAbsToRel list bnds) list
+
+slCopyRelRange :: (Int, Int) -> StepList a -> StepList a
+slCopyRelRange bnds = fst . slCutRelRange False bnds
+
+slCopyAbsRange :: (Int, Int) -> StepList a -> StepList a
+slCopyAbsRange bnds list = slCopyRelRange (slAbsToRel list bnds) list
 
 -- | Many functions may need to modify a 'StepList' but only on the elements to the left or right of
 -- the cursor. These functions take a boolean type called 'Bias'

@@ -240,6 +240,32 @@ getCurrentBuildData = getCurrentXData >>= \xdat -> case xdat of
   Nothing -> return Nothing
   xdat    -> runBuilderT maybeFromXData (initDataBuilder xdat) >>= liftIO . ioPValue . fst
 
+-- | Check if the 'currentModule' is defined in the 'DaoIOState', if not throw
+-- an exception with the data type string and data given.
+requireEditingModule :: String -> [(String, XData)] -> DaoIO st XModule
+requireEditingModule msg info = do
+  mod <- DaoIO $ lift $ gets editingModule 
+  maybe (throwXData "Undefined" $ info ++ [("problem", mkXStr msg)]) return mod
+
+updateEditingModule :: String -> [(String, XData)] -> (XModule -> DaoIO st (a, XModule)) -> DaoIO st a
+updateEditingModule msg info update = do
+  mod <- requireEditingModule msg info
+  (a, mod) <- update mod
+  DaoIO $ lift $ modify $ \st -> st{editingModule = fmap (const mod) (editingModule st)}
+  return a
+
+setPrivateData :: String -> XData -> DaoIO st ()
+setPrivateData lbl xdat = do
+  lbl <- parseLabel lbl
+  updateEditingModule "cannot set private data" [("label", XPTR (labelsToAddr [lbl]))] $ \mod ->
+    return $ ((), mod{xprivate = XDefines $ M.insert lbl xdat (defsToMap $ xprivate mod)})
+
+setPublicData :: String -> XData -> DaoIO st ()
+setPublicData lbl xdat = do
+  lbl <- parseLabel lbl
+  updateEditingModule "cannot set private data" [("label", XPTR (labelsToAddr [lbl]))] $ \mod ->
+    return $ ((), mod{xpublic = XDefines $ M.insert lbl xdat (defsToMap $ xpublic mod)})
+
 showDataBuilder :: DaoIO st String
 showDataBuilder = DaoIO $ lift $ show <$> gets dataBuilder
 
@@ -395,6 +421,8 @@ deactivateModule addr = do
                 }
           }
 
+-- Functions to modify the current method.
+
 parseXCommand :: String -> DaoIO st XCommand
 parseXCommand inp = case readsPrec 0 inp of
   [(cmd, "" )] -> return (io_x cmd)
@@ -409,11 +437,30 @@ parseXCommand inp = case readsPrec 0 inp of
     ]
 
 -- | Return a list of functions between the two indeces given.
-listCurrentFunc :: Int -> Int -> DaoIO st [XCommand]
-listCurrentFunc lo hi = DaoIO $ lift $ gets editingFunction >>= return . slGetRange lo hi
+curFuncListAbs :: (Int, Int) -> DaoIO st [XCommand]
+curFuncListAbs bnds = DaoIO $ lift $
+  gets editingFunction >>= return . slToList . slCopyAbsRange bnds
 
-listCurrentFuncAll :: DaoIO st [XCommand]
-listCurrentFuncAll = DaoIO $ lift $ gets editingFunction >>= return . slToList
+curFuncListRel :: (Int, Int) -> DaoIO st [XCommand]
+curFuncListRel bnds = DaoIO $ lift $
+  gets editingFunction >>= return . slToList . slCopyRelRange bnds
+
+curFuncListAll :: DaoIO st [XCommand]
+curFuncListAll = DaoIO $ lift $ gets editingFunction >>= return . slToList
+
+curFuncModify :: (StepList XCommand -> StepList XCommand) -> DaoIO st ()
+curFuncModify f = DaoIO $ lift $ modify $ \st -> st{editingFunction = f (editingFunction st)}
+
+curFuncInsert :: [String] -> DaoIO st ()
+curFuncInsert list = do
+  list <- mapM parseXCommand list
+  curFuncModify (+:+(slFromList (length list) list))
+
+curFuncDeleteRel :: (Int, Int) -> DaoIO st ()
+curFuncDeleteRel bnds = curFuncModify (slDeleteRelRange bnds)
+
+curFuncDeleteAbs :: (Int, Int) -> DaoIO st ()
+curFuncDeleteAbs bnds = curFuncModify (slDeleteAbsRange bnds)
 
 -- not for export
 currentFuncCursor
@@ -429,20 +476,19 @@ currentFuncCursor check move i = do
           , ("shiftValue", XINT i)
           ]
 
-currentFuncCursorTo :: Int -> DaoIO st ()
-currentFuncCursorTo = currentFuncCursor slIndexCheck slCursorTo
+curFuncCursorTo :: Int -> DaoIO st ()
+curFuncCursorTo = currentFuncCursor slIndexCheck slCursorTo
 
-currentFuncShiftCursor :: Int -> DaoIO st ()
-currentFuncShiftCursor = currentFuncCursor slShiftCheck slCursorShift
+curFuncShiftCursor :: Int -> DaoIO st ()
+curFuncShiftCursor = currentFuncCursor slShiftCheck slCursorShift
 
--- TODO: write a function to copy the DataBuilder to a public or private slot in a module.
--- TODO: write a function to edit the set of rules for a module.
+-- TODO: Functions for manipulating the set rules.
 
 ----------------------------------------------------------------------------------------------------
 
 data ModBuilderState m
   = ModBuilderState
-    { modBuilderRules    :: [XRule]
+    { modBuilderRules    :: T.Tree Text [XBlock]
     , modBuilderBuiltins :: M.Map Label (RunT m XData)
     , modBuilderData     :: M.Map Label XData
     }
@@ -450,7 +496,7 @@ data ModBuilderState m
 initModBuilderState :: ModBuilderState m
 initModBuilderState =
   ModBuilderState
-  { modBuilderRules    = []
+  { modBuilderRules    = T.Void
   , modBuilderBuiltins = mempty
   , modBuilderData     = mempty
   }
@@ -470,8 +516,9 @@ newMethod nm fn = case readsPrec 0 nm of
   _          -> fail ("could not define function, invalid name string: "++show nm)
 
 -- | Declare a new rule for this module.
-newRule :: XRule -> ModBuilder m
-newRule rul = ModBuilder $ modify $ \st -> st{modBuilderRules = modBuilderRules st ++ [rul]}
+newRule :: [Text] -> [XBlock] -> ModBuilder m
+newRule rul blocks = ModBuilder $ modify $ \st ->
+  st{modBuilderRules = T.update rul (Just . (++blocks) . maybe [] id) (modBuilderRules st)}
 
 -- | Define some static data for this module. All static data are stored in the 'xprivate' field of
 -- the 'XModule' data type. This is also how you can declare built-in functions that are not system
@@ -1323,23 +1370,21 @@ data XModule
     { ximports :: [Address]
     , xprivate :: XDefines
     , xpublic  :: XDefines
-    , xrules   :: [XRule]
+    , xrules   :: T.Tree Text [XBlock]
     }
   deriving (Eq, Ord)
 instance Show XModule where { show = show . x_io }
 instance RWX RWModule XModule where
-  io_x (MODULE imp pri exp act) = XMODULE imp (io_x pri) (io_x exp) (map io_x act) 
-  x_io (XMODULE imp pri exp act) = MODULE imp (x_io pri) (x_io exp) (map x_io act) 
+  io_x (MODULE imp pri exp act) = XMODULE imp (io_x pri) (io_x exp) (io_x act) 
+  x_io (XMODULE imp pri exp act) = MODULE imp (x_io pri) (x_io exp) (x_io act) 
+
+data RWRule = RULE [Text] [[RWCommand]] deriving (Eq, Ord, Show, Read)
+instance RWX [RWRule] (T.Tree Text [XBlock]) where
+  io_x = foldl (\tree (RULE a b) -> T.update a (Just . (++map io_x b) . maybe [] id) tree) T.Void
+  x_io = map (uncurry RULE . fmap (fmap x_io)) . T.assocs
 
 initXModule :: XModule
-initXModule = XMODULE{ximports=[], xprivate=initXDefines, xpublic=initXDefines, xrules=[] }
-
-data RWRule = RULE [Text] [RWCommand] deriving (Eq, Ord, Show, Read)
-data XRule = XRULE [Text] XBlock deriving (Eq, Ord)
-instance Show XRule where { show = show . x_io }
-instance RWX RWRule XRule where
-  io_x (RULE a b) = XRULE a (io_x b :: XBlock)
-  x_io (XRULE a b) = RULE a (x_io b :: [RWCommand])
+initXModule = XMODULE{ximports=[], xprivate=initXDefines, xpublic=initXDefines, xrules=T.Void}
 
 data RWDef = DEFINE Label RWData deriving (Eq, Ord, Show, Read)
 defToPair :: RWDef -> (Label, RWData)
@@ -1954,11 +1999,11 @@ instance Evaluable XEval where
 evalRulesInMod :: Monad m => [Text] -> XModule -> RunT m ()
 evalRulesInMod qs mod = do
   modify (\st -> st{currentModule=Just mod})
-  forM_ (xrules mod) $ \ (XRULE pat block) -> case stripPrefix pat qs of
+  forM_ (T.assocs $ xrules mod) $ \ (pat, block) -> case stripPrefix pat qs of
     Nothing -> return ()
     Just qs -> do
       oldstk <- gets evalStack
       modify (\st -> st{evalStack=map XSTR qs})
-      eval block
+      msum (map eval block)
       modify (\st -> st{evalStack=oldstk})
 

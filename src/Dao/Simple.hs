@@ -131,6 +131,10 @@ data DaoIOState st
     , editingModule     :: Maybe XModule
     , editingModulePath :: Maybe Text
     , editingFunction   :: StepList XCommand
+    , editingFuncParams :: [Label]
+    , editFunctionCount :: Integer
+    , editingRules      :: T.Tree XData [XBlock]
+    , editingBlockList  :: StepList XBlock
     }
 
 initDaoIOState :: st -> DaoIOState st
@@ -145,6 +149,10 @@ initDaoIOState ust =
   , editingModule     = Nothing
   , editingModulePath = Nothing
   , editingFunction   = mempty
+  , editingFuncParams = []
+  , editFunctionCount = 0
+  , editingRules      = mempty
+  , editingBlockList  = mempty
   }
 
 -- | This is a simple monadic interface for interacting with a mini-Dao runtime. You can evaluate
@@ -213,7 +221,7 @@ showLoadedMods = DaoIO $ showTreeAddresses <$> lift (gets (loadedModules . ioRun
 -- of the string, for example, converting to all lower-case or splitting the string by whitespaces.
 -- As a reminder, you can use the 'text' function to convert a 'Prelude.String' to a 'Text' data
 -- type.
-evalQuery :: [Text] -> [XModule] -> DaoIO st ()
+evalQuery :: [XData] -> [XModule] -> DaoIO st ()
 evalQuery qs mods = forM_ mods $ \mod ->
   DaoIO (lift $ gets ioRuntime) >>= \run -> evalRun run (evalRulesInMod qs mod)
 
@@ -451,14 +459,17 @@ curFuncListAll = DaoIO $ lift $ gets editingFunction >>= return . slToList
 curFuncModify :: (StepList XCommand -> StepList XCommand) -> DaoIO st ()
 curFuncModify f = DaoIO $ lift $ modify $ \st -> st{editingFunction = f (editingFunction st)}
 
+-- | Insert instructions into the current function after the cursor.
 curFuncInsert :: [String] -> DaoIO st ()
 curFuncInsert list = do
   list <- mapM parseXCommand list
   curFuncModify (+:+(slFromList (length list) list))
 
+-- | Delete a region of instructions relative to the cursor.
 curFuncDeleteRel :: (Int, Int) -> DaoIO st ()
 curFuncDeleteRel bnds = curFuncModify (slDeleteRelRange bnds)
 
+-- | Delete a region of instructions between given line numbers.
 curFuncDeleteAbs :: (Int, Int) -> DaoIO st ()
 curFuncDeleteAbs bnds = curFuncModify (slDeleteAbsRange bnds)
 
@@ -482,13 +493,74 @@ curFuncCursorTo = currentFuncCursor slIndexCheck slCursorTo
 curFuncShiftCursor :: Int -> DaoIO st ()
 curFuncShiftCursor = currentFuncCursor slShiftCheck slCursorShift
 
--- TODO: Functions for manipulating the set rules.
+-- not for export
+curFuncCopyTo :: String -> [(String, XData)] -> (XModule -> XFunc -> DaoIO st XModule) -> DaoIO st ()
+curFuncCopyTo msg info upd = do
+  mod <- requireEditingModule ("could not "++msg) info
+  st  <- DaoIO $ lift get
+  mod <- upd mod $ XFunc (editingFuncParams st) (XBlock $ mkXArray $ slToList $ editingFunction st)
+  DaoIO $ lift $ put $ st{editingModule = Just mod}
+
+curFuncCopyToPrivate :: String -> DaoIO st ()
+curFuncCopyToPrivate lbl = do
+  lbl <- parseLabel lbl
+  curFuncCopyTo "copy function to private section of current module" [] $ \mod func -> return $
+    mod{xprivate = XDefines{defsToMap = M.insert lbl (XFUNC func) (defsToMap $ xprivate mod)}}
+
+curFuncCopyToPublic :: String -> DaoIO st ()
+curFuncCopyToPublic lbl = do
+  lbl <- parseLabel lbl
+  curFuncCopyTo "copy function to public section of current module" [] $ \mod func -> return $
+    mod{xpublic = XDefines{defsToMap = M.insert lbl (XFUNC func) (defsToMap $ xpublic mod)}}
+
+-- | Returns the 'XBlock' portion of an 'XFunc' only if there are no arguments and the function
+-- contains at least one instruction. If there are arguments to this function an error is reported.
+funcToRuleBlock :: XFunc -> DaoIO st XBlock
+funcToRuleBlock func = case func of
+  XFunc [] block | sizeXBlock block > 0 -> return block
+  XFunc [] _ -> throwXData "RuleEditor.Error" $ [("problem", mkXStr "empty function")]
+  XFunc  _ _ -> throwXData "RuleEditor.Error" $
+    [ ("problem", mkXStr "rules must not have function parameters")
+    , ("triedToInstall", XFUNC func)
+    ]
+
+curFuncCopyToRule :: [XData] -> Int -> DaoIO st ()
+curFuncCopyToRule addr i = do
+  let err = [("rule", mkXList addr), ("slot", XINT i)]
+  let ins block lst = let (a,b) = splitAt i lst in a++block:b
+  curFuncCopyTo "copy function to rule" err $ \mod func -> do
+    block <- funcToRuleBlock func
+    return $ mod{xrules = T.update addr (Just . ins block . maybe [] id) (xrules mod)}
+
+-- Functions for manipulating the set rules.
+
+-- | Select rules within the current editing module matching an input string, include the matched
+-- rules with the existing set of selected rules.
+ruleSetLookup :: [XData] -> DaoIO st ()
+ruleSetLookup addr =
+  curFuncCopyTo "RuleEditor.Error" [("lookup", XLIST (mkXArray addr))] $ \mod _ ->
+    case T.lookup addr (xrules mod) of
+      Nothing    -> return mod
+      Just rules -> do
+        DaoIO $ lift $ modify $ \st ->
+          st{editingRules = T.update addr (Just . (++rules) . maybe [] id) (editingRules st)}
+        return mod
+
+-- | Delete the set of selected rules from the current editing module.
+ruleSetDelete :: [XData] -> DaoIO st ()
+ruleSetDelete addr =
+  curFuncCopyTo "RuleEditor.Error" [("delete", XLIST (mkXArray addr))] $ \mod _ -> 
+    return $ mod{xrules = T.delete addr (xrules mod)}
+
+ruleSelectDelete :: [XData] -> DaoIO st ()
+ruleSelectDelete addr = DaoIO $ lift $ modify $ \st ->
+  st{editingRules = T.delete addr (editingRules st)}
 
 ----------------------------------------------------------------------------------------------------
 
 data ModBuilderState m
   = ModBuilderState
-    { modBuilderRules    :: T.Tree Text [XBlock]
+    { modBuilderRules    :: T.Tree XData [XBlock]
     , modBuilderBuiltins :: M.Map Label (RunT m XData)
     , modBuilderData     :: M.Map Label XData
     }
@@ -516,7 +588,7 @@ newMethod nm fn = case readsPrec 0 nm of
   _          -> fail ("could not define function, invalid name string: "++show nm)
 
 -- | Declare a new rule for this module.
-newRule :: [Text] -> [XBlock] -> ModBuilder m
+newRule :: [XData] -> [XBlock] -> ModBuilder m
 newRule rul blocks = ModBuilder $ modify $ \st ->
   st{modBuilderRules = T.update rul (Just . (++blocks) . maybe [] id) (modBuilderRules st)}
 
@@ -1370,7 +1442,7 @@ data XModule
     { ximports :: [Address]
     , xprivate :: XDefines
     , xpublic  :: XDefines
-    , xrules   :: T.Tree Text [XBlock]
+    , xrules   :: T.Tree XData [XBlock]
     }
   deriving (Eq, Ord)
 instance Show XModule where { show = show . x_io }
@@ -1378,10 +1450,10 @@ instance RWX RWModule XModule where
   io_x (MODULE imp pri exp act) = XMODULE imp (io_x pri) (io_x exp) (io_x act) 
   x_io (XMODULE imp pri exp act) = MODULE imp (x_io pri) (x_io exp) (x_io act) 
 
-data RWRule = RULE [Text] [[RWCommand]] deriving (Eq, Ord, Show, Read)
-instance RWX [RWRule] (T.Tree Text [XBlock]) where
-  io_x = foldl (\tree (RULE a b) -> T.update a (Just . (++map io_x b) . maybe [] id) tree) T.Void
-  x_io = map (uncurry RULE . fmap (fmap x_io)) . T.assocs
+data RWRule = RULE [RWData] [[RWCommand]] deriving (Eq, Ord, Show, Read)
+instance RWX [RWRule] (T.Tree XData [XBlock]) where
+  io_x = foldl (\tree (RULE a b) -> T.update (map io_x a) (Just . (++map io_x b) . maybe [] id) tree) T.Void
+  x_io = map ((\ (a,b) -> RULE (map x_io a) b) . fmap (fmap x_io)) . T.assocs
 
 initXModule :: XModule
 initXModule = XMODULE{ximports=[], xprivate=initXDefines, xpublic=initXDefines, xrules=T.Void}
@@ -1498,6 +1570,9 @@ instance Show XBlock where { show = show . x_io }
 instance RWX [RWCommand] XBlock where
   io_x io = XBlock (mkXArray $ map io_x io)
   x_io (XBlock x) = maybe [] (map x_io . elems) x
+
+sizeXBlock :: XBlock -> Int
+sizeXBlock = maybe 0 (uncurry subtract . bounds) . toCommands
 
 data RWCondition
   = WHEN      RWLookup RWCommand
@@ -1996,14 +2071,14 @@ instance Evaluable XEval where
 -- strip the matched portion of the input text list, the remainder is placed onto the stack such
 -- that successive 'POP' operations retrieve each item in the remaining input text from head to
 -- tail.
-evalRulesInMod :: Monad m => [Text] -> XModule -> RunT m ()
+evalRulesInMod :: Monad m => [XData] -> XModule -> RunT m ()
 evalRulesInMod qs mod = do
   modify (\st -> st{currentModule=Just mod})
   forM_ (T.assocs $ xrules mod) $ \ (pat, block) -> case stripPrefix pat qs of
     Nothing -> return ()
     Just qs -> do
       oldstk <- gets evalStack
-      modify (\st -> st{evalStack=map XSTR qs})
+      modify (\st -> st{evalStack=qs})
       msum (map eval block)
       modify (\st -> st{evalStack=oldstk})
 

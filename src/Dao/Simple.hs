@@ -32,7 +32,7 @@ import qualified Dao.Tree                  as T
 
 import           Data.Char
 import           Data.Bits
-import           Data.List (intercalate, stripPrefix)
+import           Data.List (intercalate, stripPrefix, nub, lookup)
 import           Data.IORef
 import           Data.Monoid
 import           Data.Array.IArray
@@ -109,14 +109,90 @@ execloop = fix $ \loop -> readline "evalio> " >>= \input -> case input of
     loop
 
 -- | Print the state of the virtual machine, the registers, stack, and so forth.
-showvm :: IO ()
-showvm = withDaoIO $ showVMState >>= liftIO . putStrLn
+lsvm :: IO ()
+lsvm = withDaoIO $ showVMState >>= liftIO . putStrLn
 
-showmods :: IO ()
-showmods = withDaoIO $ showLoadedMods >>= liftIO . putStrLn
+-- | List system calls currently available to the virtual machine.
+lssyscalls :: IO ()
+lssyscalls = withDaoIO $ showSystemCalls >>= liftIO . putStrLn
 
-showsyscalls :: IO ()
-showsyscalls = withDaoIO $ showSystemCalls >>= liftIO . putStrLn
+-- | Show the list of currently loaded modules.
+lsmods :: IO ()
+lsmods = withDaoIO $ showLoadedMods >>= liftIO . putStrLn
+
+-- | Load a module from a 'System.IO.FilePath', make it the current module.
+loadmod :: FilePath -> IO ()
+loadmod path = withDaoIO (unloadCurrentModule >> loadModule path >> switchToModule path)
+
+-- | Save the current module.
+savemod :: IO ()
+savemod = withDaoIO saveModule
+
+-- | Select the current module from the list of loaded modules.
+editmod :: FilePath -> IO ()
+editmod = withDaoIO . switchToModule
+
+-- | Put the current module into the runtime environment so it can be used or tested. The string
+-- given here should parse to an 'Address' that will be used to refer to the module by the virtual
+-- machine.
+actmod :: String -> IO ()
+actmod = withDaoIO . activateModule
+
+-- | Remove the module given by the 'Address' (parsed from the given 'Prelude.String') from the
+-- runtime environment.
+deactmod :: String -> IO ()
+deactmod = withDaoIO . deactivateModule
+
+printNumbered :: (MonadIO m, Show a) => Int -> [a] -> m ()
+printNumbered start = liftIO .
+  mapM_ (\ (a, b) -> putStrLn $ concat [show a, ": ", show b]) . zip [start..]
+
+-- | Show the contents of the function editor.
+lsfunc :: IO ()
+lsfunc = withDaoIO $ editFuncListAll >>= printNumbered 1
+
+-- | Show the function editor around the cursor.
+lsfuncur :: Int -> Int -> IO ()
+lsfuncur a b = withDaoIO $ editFuncListRel (a-1, b-1) >>= printNumbered a
+
+-- | Show the function editor between two line numbers.
+lsfuncln :: Int -> Int -> IO ()
+lsfuncln a b = withDaoIO $ do
+  ed <- DaoIO $ lift $ gets editingFunction
+  editFuncListAbs (a-1, b-1) >>= printNumbered (slCursor ed + a + 1)
+
+-- | Set the function editor cursor to a given line number.
+funcln :: Int -> IO ()
+funcln i = withDaoIO $
+  editFuncCursorTo i >> catchError (liftIO $ lsfuncur (negate 1) 1) (\ _ -> return ())
+
+-- | Move the function editor cursor forward or backward by N lines.
+funcmv :: Int -> IO ()
+funcmv i = withDaoIO $
+  editFuncCursorShift i >> catchError (liftIO $ lsfuncur (negate 1) 1) (\ _ -> return ())
+
+-- | Return a space-separated list of function argument 'Label's.
+getfuncargs :: IO String
+getfuncargs = withDaoIO $ (unwords . map show) <$> DaoIO (lift $ gets editingFuncParams)
+
+setfuncargs :: String -> IO ()
+setfuncargs args = withDaoIO $ do
+  args <- nub <$> mapM parseLabel (words args)
+  DaoIO $ lift $ modify $ \st -> st{editingFuncParams = args}
+
+-- | Insert an 'XCommand' constructed from a string parsed from the 'RWCommand' representation of
+-- the 'XCommand' into the editing function at the current cursor position. More than one command
+-- can be specified on multiple lines.
+func :: String -> IO ()
+func = withDaoIO . editFuncInsert . lines
+
+-- | Save the currently-editing function to an address, pass 'True' as the first parameter if the
+-- address should be public.
+savefunc :: Bool -> String -> IO ()
+savefunc public lbl = withDaoIO $
+  if public then editFuncCopyToPublic lbl else editFuncCopyToPrivate lbl
+
+
 
 ----------------------------------------------------------------------------------------------------
 
@@ -126,6 +202,7 @@ data DaoIOState st
     , ioRuntime    :: Runtime (DaoIO st)
     , fileHandles  :: M.Map Text Handle
     , dataBuilder  :: DataBuilder
+    , dataBuildCount    :: Integer
     , editModuleCount   :: Integer
     , editModuleTable   :: M.Map Text XModule
     , editingModule     :: Maybe XModule
@@ -144,6 +221,7 @@ initDaoIOState ust =
   , ioRuntime   = initRuntime
   , fileHandles = mempty
   , dataBuilder = initDataBuilder Nothing
+  , dataBuildCount    = 0
   , editModuleCount   = 0
   , editModuleTable   = mempty
   , editingModule     = Nothing
@@ -445,33 +523,36 @@ parseXCommand inp = case readsPrec 0 inp of
     ]
 
 -- | Return a list of functions between the two indeces given.
-curFuncListAbs :: (Int, Int) -> DaoIO st [XCommand]
-curFuncListAbs bnds = DaoIO $ lift $
+editFuncListAbs :: (Int, Int) -> DaoIO st [XCommand]
+editFuncListAbs bnds = DaoIO $ lift $
   gets editingFunction >>= return . slToList . slCopyAbsRange bnds
 
-curFuncListRel :: (Int, Int) -> DaoIO st [XCommand]
-curFuncListRel bnds = DaoIO $ lift $
+editFuncListRel :: (Int, Int) -> DaoIO st [XCommand]
+editFuncListRel bnds = DaoIO $ lift $
   gets editingFunction >>= return . slToList . slCopyRelRange bnds
 
-curFuncListAll :: DaoIO st [XCommand]
-curFuncListAll = DaoIO $ lift $ gets editingFunction >>= return . slToList
+editFuncListAll :: DaoIO st [XCommand]
+editFuncListAll = DaoIO $ lift $ gets editingFunction >>= return . slToList
 
-curFuncModify :: (StepList XCommand -> StepList XCommand) -> DaoIO st ()
-curFuncModify f = DaoIO $ lift $ modify $ \st -> st{editingFunction = f (editingFunction st)}
+editFuncModify :: Int -> (StepList XCommand -> StepList XCommand) -> DaoIO st ()
+editFuncModify count f = DaoIO $ lift $ modify $ \st ->
+  st{ editingFunction = f (editingFunction st)
+    , editFunctionCount = editFunctionCount st + fromIntegral count
+    }
 
 -- | Insert instructions into the current function after the cursor.
-curFuncInsert :: [String] -> DaoIO st ()
-curFuncInsert list = do
+editFuncInsert :: [String] -> DaoIO st ()
+editFuncInsert list = do
   list <- mapM parseXCommand list
-  curFuncModify (+:+(slFromList (length list) list))
+  editFuncModify (if null list then 0 else 1) (+:+(slFromList (length list) list))
 
 -- | Delete a region of instructions relative to the cursor.
-curFuncDeleteRel :: (Int, Int) -> DaoIO st ()
-curFuncDeleteRel bnds = curFuncModify (slDeleteRelRange bnds)
+editFuncDeleteRel :: (Int, Int) -> DaoIO st ()
+editFuncDeleteRel bnds = editFuncModify 1 (slDeleteRelRange bnds)
 
 -- | Delete a region of instructions between given line numbers.
-curFuncDeleteAbs :: (Int, Int) -> DaoIO st ()
-curFuncDeleteAbs bnds = curFuncModify (slDeleteAbsRange bnds)
+editFuncDeleteAbs :: (Int, Int) -> DaoIO st ()
+editFuncDeleteAbs bnds = editFuncModify 1 (slDeleteAbsRange bnds)
 
 -- not for export
 currentFuncCursor
@@ -487,30 +568,30 @@ currentFuncCursor check move i = do
           , ("shiftValue", XINT i)
           ]
 
-curFuncCursorTo :: Int -> DaoIO st ()
-curFuncCursorTo = currentFuncCursor slIndexCheck slCursorTo
+editFuncCursorTo :: Int -> DaoIO st ()
+editFuncCursorTo = currentFuncCursor slIndexCheck slCursorTo
 
-curFuncShiftCursor :: Int -> DaoIO st ()
-curFuncShiftCursor = currentFuncCursor slShiftCheck slCursorShift
+editFuncCursorShift :: Int -> DaoIO st ()
+editFuncCursorShift = currentFuncCursor slShiftCheck slCursorShift
 
 -- not for export
-curFuncCopyTo :: String -> [(String, XData)] -> (XModule -> XFunc -> DaoIO st XModule) -> DaoIO st ()
-curFuncCopyTo msg info upd = do
+editFuncCopyTo :: String -> [(String, XData)] -> (XModule -> XFunc -> DaoIO st XModule) -> DaoIO st ()
+editFuncCopyTo msg info upd = do
   mod <- requireEditingModule ("could not "++msg) info
   st  <- DaoIO $ lift get
   mod <- upd mod $ XFunc (editingFuncParams st) (XBlock $ mkXArray $ slToList $ editingFunction st)
-  DaoIO $ lift $ put $ st{editingModule = Just mod}
+  DaoIO $ lift $ put $ st{editingModule = Just mod, editFunctionCount=0}
 
-curFuncCopyToPrivate :: String -> DaoIO st ()
-curFuncCopyToPrivate lbl = do
+editFuncCopyToPrivate :: String -> DaoIO st ()
+editFuncCopyToPrivate lbl = do
   lbl <- parseLabel lbl
-  curFuncCopyTo "copy function to private section of current module" [] $ \mod func -> return $
+  editFuncCopyTo "copy function to private section of current module" [] $ \mod func -> return $
     mod{xprivate = XDefines{defsToMap = M.insert lbl (XFUNC func) (defsToMap $ xprivate mod)}}
 
-curFuncCopyToPublic :: String -> DaoIO st ()
-curFuncCopyToPublic lbl = do
+editFuncCopyToPublic :: String -> DaoIO st ()
+editFuncCopyToPublic lbl = do
   lbl <- parseLabel lbl
-  curFuncCopyTo "copy function to public section of current module" [] $ \mod func -> return $
+  editFuncCopyTo "copy function to public section of current module" [] $ \mod func -> return $
     mod{xpublic = XDefines{defsToMap = M.insert lbl (XFUNC func) (defsToMap $ xpublic mod)}}
 
 -- | Returns the 'XBlock' portion of an 'XFunc' only if there are no arguments and the function
@@ -524,13 +605,66 @@ funcToRuleBlock func = case func of
     , ("triedToInstall", XFUNC func)
     ]
 
-curFuncCopyToRule :: [XData] -> Int -> DaoIO st ()
-curFuncCopyToRule addr i = do
+editFuncCopyToRule :: [XData] -> Int -> DaoIO st ()
+editFuncCopyToRule addr i = do
   let err = [("rule", mkXList addr), ("slot", XINT i)]
   let ins block lst = let (a,b) = splitAt i lst in a++block:b
-  curFuncCopyTo "copy function to rule" err $ \mod func -> do
+  editFuncCopyTo "copy function to rule" err $ \mod func -> do
     block <- funcToRuleBlock func
     return $ mod{xrules = T.update addr (Just . ins block . maybe [] id) (xrules mod)}
+
+-- | Throw an exception if the current function has been modified.
+editFuncCheckModified :: DaoIO st ()
+editFuncCheckModified = (DaoIO $ lift get) >>= \st -> when (editFunctionCount st > 0) $
+  throwXData "FuncEditor.Error" [("problem", mkXStr "current function has been modified")]
+
+dataBuilderCheckModified :: DaoIO st ()
+dataBuilderCheckModified = (DaoIO $ lift get) >>= \st -> when (dataBuildCount st > 0) $
+  throwXData "DataBuilder.Error" [("problem", mkXStr "current object has been modified")]
+
+-- | Given a lookup function which returns an 'XData' value from somewhere in the editing 'XModule'
+-- place that XData into the 'editingFunction' if it is an 'XFUNC' object, or into the 'dataBuilder'
+-- otherwise.
+editLookup :: (XModule -> DaoIO st XData) -> DaoIO st ()
+editLookup fn = do
+  mod  <- requireEditingModule "FuncEditor.Error" []
+  xdat <- fn mod
+  case xdat of
+    XFUNC (XFunc args block) -> do
+      editFuncCheckModified
+      DaoIO $ lift $ modify $ \st ->
+        st{ editingFuncParams = args
+          , editingFunction   = slFromList 0 $ maybe [] elems $ toCommands block
+          }
+    xdat -> do
+      dataBuilderCheckModified
+      DaoIO $ lift $ modify $ \st -> st{ dataBuilder = initDataBuilder (Just xdat) }
+
+-- | Lookup a value from the editing module from the public dictionary. If it is 
+editLookupPublic :: String -> DaoIO st ()
+editLookupPublic lbl = do
+  lbl <- parseLabel lbl
+  editLookup $ \mod -> case M.lookup lbl (defsToMap $ xpublic mod) of
+    Nothing  -> throwXData "FuncEditor.Error" [("lookupPublic", XPTR $ labelsToAddr [lbl])]
+    Just dat -> return dat
+
+-- | Lookup a value from the editing module from the public dictionary. If it is 
+editLookupPrivate :: String -> DaoIO st ()
+editLookupPrivate lbl = do
+  lbl <- parseLabel lbl
+  editLookup $ \mod -> case M.lookup lbl (defsToMap $ xprivate mod) of
+    Nothing  -> throwXData "FuncEditor.Error" [("lookupPrivate", XPTR $ labelsToAddr [lbl])]
+    Just dat -> return dat
+
+-- | Lookup a block given a rule and an index from within the currently selected set of rules. Rule
+-- actions are lists of 'XBlock's, the index retrieves the Nth 'XBlock' from the list.
+editLookupRuleSet :: [XData] -> Int -> DaoIO st ()
+editLookupRuleSet pat i = editLookup $ \ _ -> do
+  st <- DaoIO $ lift $ get
+  case T.lookup pat (editingRules st) >>= Data.List.lookup i . zip [0..] of
+    Just block -> return (XFUNC $ XFunc [] block)
+    Nothing    -> throwXData "FuncEditor.Error" $
+      [("lookupRule", mkXList pat), ("lookupRuleIndex", XINT i)]
 
 -- Functions for manipulating the set rules.
 
@@ -538,7 +672,7 @@ curFuncCopyToRule addr i = do
 -- rules with the existing set of selected rules.
 ruleSetLookup :: [XData] -> DaoIO st ()
 ruleSetLookup addr =
-  curFuncCopyTo "RuleEditor.Error" [("lookup", XLIST (mkXArray addr))] $ \mod _ ->
+  editFuncCopyTo "RuleEditor.Error" [("lookup", XLIST (mkXArray addr))] $ \mod _ ->
     case T.lookup addr (xrules mod) of
       Nothing    -> return mod
       Just rules -> do
@@ -549,7 +683,7 @@ ruleSetLookup addr =
 -- | Delete the set of selected rules from the current editing module.
 ruleSetDelete :: [XData] -> DaoIO st ()
 ruleSetDelete addr =
-  curFuncCopyTo "RuleEditor.Error" [("delete", XLIST (mkXArray addr))] $ \mod _ -> 
+  editFuncCopyTo "RuleEditor.Error" [("delete", XLIST (mkXArray addr))] $ \mod _ -> 
     return $ mod{xrules = T.delete addr (xrules mod)}
 
 ruleSelectDelete :: [XData] -> DaoIO st ()

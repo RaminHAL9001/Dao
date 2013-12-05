@@ -38,8 +38,6 @@ import           Data.List (intercalate)
 import qualified Data.Map as M
 import           Data.Word
 
-import Debug.Trace
-
 ----------------------------------------------------------------------------------------------------
 
 data Tree p n
@@ -265,6 +263,25 @@ lookupNode px t = case px of
 lookup :: Ord p => [p] -> Tree p a -> Maybe a
 lookup px t = lookupNode px t >>= getLeaf
 
+-- | Using @[p]@ as a path, traverse the path through the given 'Tree' as far as possible, return
+-- the last node that could be reached along with the remainder of the path that was not traversed.
+-- This is used to lookup whether or not a leaf has been stored into the tree at the given path, or
+-- at some sub-path of the given path.
+partialLookup :: Ord p => [p] -> Tree p a -> Maybe ([p], Tree p a)
+partialLookup px t = case px of
+  []   -> Just ([], t)
+  p:px -> mplus (getBranch t >>= M.lookup p >>= partialLookup px) $
+    (getLeaf t >>= \ _ -> return (p:px, t))
+
+-- | Using @[p]@ as a path, traverse a tree and retrieve every leaf found along the path until
+-- traversal cannot continue. Evaluates to the list of leaves retrieved, the portion of the path
+-- that could not be traversed, and the node at which traversal stopped.
+leavesAlongPath :: Ord p => [p] -> Tree p a -> ([a], ([p], Tree p a))
+leavesAlongPath px t = maybe ([], (px, t)) id $ loop [] px t where
+  loop ax px t = return (ax ++ maybe [] (:[]) (getLeaf t)) >>= \ax -> case px of
+    []   -> return (ax, ([], t))
+    p:px -> mplus (getBranch t >>= M.lookup p >>= loop ax px) (return (ax, (p:px, t)))
+
 -- | There are only two kinds values defined as a 'MergeType': 'union' and 'intersection.
 type MergeType p a
   = (Tree p a -> Tree p a -> Tree p a)
@@ -330,8 +347,8 @@ union = unionWith const
 unionsWith :: Ord p => (a -> a -> a) -> [Tree p a] -> Tree p a
 unionsWith overlap = foldl (unionWith overlap) Void
 
-unions :: Ord p => (a -> a -> a) -> [Tree p a] -> Tree p a
-unions overlap = unionsWith (flip const)
+unions :: Ord p => [Tree p a] -> Tree p a
+unions = unionsWith (flip const)
 
 intersectionWithKey :: Ord p => ([p] -> a -> a -> a) -> Tree p a -> Tree p a -> Tree p a
 intersectionWithKey overlap = mergeWithKey (\k -> liftM2 (overlap k)) (const Void) (const Void)

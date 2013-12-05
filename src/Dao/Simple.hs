@@ -32,7 +32,7 @@ import qualified Dao.Tree                  as T
 
 import           Data.Char
 import           Data.Bits
-import           Data.List (intercalate, stripPrefix, nub, lookup)
+import           Data.List (intercalate, nub, lookup)
 import           Data.IORef
 import           Data.Monoid
 import           Data.Array.IArray
@@ -189,10 +189,32 @@ func = withDaoIO . editFuncInsert . lines
 -- | Save the currently-editing function to an address, pass 'True' as the first parameter if the
 -- address should be public.
 savefunc :: Bool -> String -> IO ()
-savefunc public lbl = withDaoIO $
-  if public then editFuncCopyToPublic lbl else editFuncCopyToPrivate lbl
+savefunc public = withDaoIO . if public then editFuncCopyToPublic else editFuncCopyToPrivate
 
+-- | Retrieve a saved function or data object from the editing module's public or private table. The
+-- same parameters are used as with 'savefunc' to save it.
+getfunc :: Bool -> String -> IO ()
+getfunc public = withDaoIO . if public then editLookupPublic else editLookupPrivate
 
+-- | Try running a test string against the editing module.
+test :: String -> IO ()
+test instr = withDaoIO $ do
+  mod <- requireEditingModule "Module.Error" [("testExecuteString", mkXStr instr)]
+  evalQuery instr [mod]
+
+-- | Start a read-eval-print loop where every input string is evaluated against every rule set in
+-- the table of loaded modules.
+talk :: IO ()
+talk = fix $ \loop -> do
+  instr <- readline "dao> "
+  case instr of
+    Nothing    -> return ()
+    Just instr -> withDaoIO $ do
+      pval <- daoRunT $ catchPValue (execString instr)
+      liftIO $ case pval of
+        Backtrack -> hPutStrLn stderr "Backtrack"
+        PFail err -> hPutStrLn stderr (show err)
+        OK     () -> loop
 
 ----------------------------------------------------------------------------------------------------
 
@@ -299,9 +321,10 @@ showLoadedMods = DaoIO $ showTreeAddresses <$> lift (gets (loadedModules . ioRun
 -- of the string, for example, converting to all lower-case or splitting the string by whitespaces.
 -- As a reminder, you can use the 'text' function to convert a 'Prelude.String' to a 'Text' data
 -- type.
-evalQuery :: [XData] -> [XModule] -> DaoIO st ()
-evalQuery qs mods = forM_ mods $ \mod ->
-  DaoIO (lift $ gets ioRuntime) >>= \run -> evalRun run (evalRulesInMod qs mod)
+evalQuery :: String -> [XModule] -> DaoIO st ()
+evalQuery qs mods = forM_ mods $ \mod -> do
+  run <- DaoIO (lift $ gets ioRuntime)
+  evalRun run (withModule mod $ execStringHere qs)
 
 updateDataBuilder :: BuilderT (DaoIO st) t -> DaoIO st t
 updateDataBuilder builder = do
@@ -429,12 +452,12 @@ saveModule = DaoIO $ do
       Nothing -> throwXData "Module.Error" $
         [("problem", mkXStr "Current module has no file path.")]
 
-currentModuleIsSaved :: DaoIO st Bool
-currentModuleIsSaved = DaoIO $ lift $ get >>= \st -> return $ editModuleCount st == 0 &&
+editModuleIsSaved :: DaoIO st Bool
+editModuleIsSaved = DaoIO $ lift $ get >>= \st -> return $ editModuleCount st == 0 &&
   (maybe False (const True) $ pure (,) <*> editingModule st <*> editingModulePath st)
 
 requireModuleBeSaved :: DaoIO st ()
-requireModuleBeSaved = currentModuleIsSaved >>= flip unless unsavedException
+requireModuleBeSaved = editModuleIsSaved >>= flip unless unsavedException
 
 -- | Load a module but do not switch to it.
 loadModule :: FilePath -> DaoIO st ()
@@ -761,7 +784,7 @@ newModule name decls opfunc = DeclareRuntime $ case readsPrec 0 name of
         defs     = modBuilderBuiltins modbst
         syscalls = T.Branch (M.map T.Leaf defs)
         mod =
-          XMODULE
+          initXModule
           { ximports = []
           , xprivate = XDefines $ modBuilderData modbst
           , xpublic  = XDefines $ flip M.mapWithKey defs $ \func _ ->
@@ -790,6 +813,7 @@ printer h = do
         XNULL         -> "FALSE"
         XTRUE         -> "TRUE"
         XSTR (Text o) -> U.toString o
+        XCHAR      o  -> show o
         XINT       o  -> show o
         XFLOAT     o  -> show o
         XLIST      o  -> show (maybe [] (map x_io . elems) o)
@@ -1326,19 +1350,20 @@ data LoadedModule m
 
 data Runtime m
   = Runtime
-    { evalCounter     :: Integer -- ^ counts how many evaluation steps have been taken
-    , lastResult      :: XData
-    , registers       :: M.Map Label XData
-    , pcRegisters     :: M.Map Label Int
-    , evalStack       :: [XData]
-    , currentModule   :: Maybe XModule
-    , currentBlock    :: Maybe (Array Int XCommand)
-    , programCounter  :: Int
-    , systemCalls     :: T.Tree Label (RunT m XData)
-    , loadedModules   :: T.Tree Label (LoadedModule m)
+    { evalCounter       :: Integer -- ^ counts how many evaluation steps have been taken
+    , lastResult        :: XData
+    , registers         :: M.Map Label XData
+    , pcRegisters       :: M.Map Label Int
+    , evalStack         :: [XData]
+    , currentModule     :: Maybe XModule
+    , currentBlock      :: Maybe (Array Int XCommand)
+    , programCounter    :: Int
+    , systemCalls       :: T.Tree Label (RunT m XData)
+    , loadedModules     :: T.Tree Label (LoadedModule m)
+    , loadedParsers     :: T.Tree Label (String -> RunT m [XData])
     }
 
-initRuntime :: Runtime m
+initRuntime :: Monad m => Runtime m
 initRuntime =
   Runtime
   { evalCounter    = 0
@@ -1351,6 +1376,7 @@ initRuntime =
   , programCounter = 0
   , systemCalls    = T.Void
   , loadedModules  = T.Void
+  , loadedParsers  = T.fromList [(addrToLabels (read "dao.simple"), return . simpleParser)]
   }
 
 -- | This is the monad used for evaluating the mini-Dao language. It is a
@@ -1464,12 +1490,98 @@ instance Read (Hidden a) where { readsPrec _ s = [(Hidden Nothing, s)] }
 
 data RWData
   = NULL | TRUE | INT Int | FLOAT Double | STR Text | PTR Address
+  | CHAR Char
   | LIST [RWData]
   | DATA Address [RWDef]
   | FUNC [Label] [RWCommand]
-  deriving (Eq, Ord, Show, Read)
+  deriving (Eq, Ord, Show)
+instance Read RWData where
+  readsPrec p str = take 1 $ do
+    let unspace = return . dropWhile isSpace
+    str <- unspace str
+    msum $
+      [ do  (txt, str) <- readsPrec p str
+            return (STR txt, str)
+      , do  (neg, str) <- case str of
+              '-':str            -> return (negate, str)
+              '+':str            -> return (id, str)
+              _                  -> return (id, str)
+            (a, str) <- return $ span isNumber str
+            if null a
+            then mzero
+            else do
+              let float str = readsPrec p str >>= \ (flo, str) -> return (FLOAT (neg flo), str)
+              case str of
+                '.':_           -> float str
+                'e':_           -> float str
+                'E':_           -> float str
+                b:_ | isAlpha b -> mzero
+                _               -> do
+                  (int, str) <- readsPrec p (a++str)
+                  return (INT int, str)
+      , case str of
+          '[':_    -> readsPrec p str >>= \ (lst , str) -> return (LIST lst, str)
+          '(':str  -> readsPrec p str >>= \ (xdat, str) -> unspace str >>= \str -> case str of
+            ')':str  -> return (xdat, str)
+            _        -> mzero
+          _        -> mzero
+      , do  (addr, str) <- readsPrec p str
+            lbls <- return (addrToLabels addr)
+            let bracketedData = unspace str >>= \str -> case str of
+                  '{':str -> do
+                    let loop items str = unspace str >>= \str -> case str of
+                          '}':str -> return (items, str)
+                          str     -> do
+                            (lbl, str) <- unspace str >>= readsPrec p
+                            case str of
+                              '=':str -> do
+                                (xdat, str) <- readsPrec p str
+                                str <- unspace str >>= \str -> case str of
+                                  ',':str -> return str
+                                  str     -> return str
+                                loop (items++[DEFINE lbl xdat]) str
+                              _       -> mzero
+                    (defs, str) <- unspace str >>= loop []
+                    return (DATA addr defs, str)
+                  _ -> mzero
+            case lbls of
+              [Label lbl] -> case map toLower (show lbl) of
+                "null"  -> return (NULL, str)
+                "false" -> return (NULL, str)
+                "true"  -> return (TRUE, str)
+                "int"   -> unspace str >>= readsPrec p >>= \ (int, str) -> return (INT int, str)
+                "str"   -> unspace str >>= readsPrec p >>= \ (txt, str) -> return (STR txt, str)
+                "char"  -> unspace str >>= readsPrec p >>= \ (ch , str) -> return (CHAR ch, str)
+                "float" -> unspace str >>= readsPrec p >>= \ (flo, str) -> return (FLOAT flo, str)
+                "data"  -> do
+                  (addr, str) <- unspace str >>= readsPrec p
+                  (defs, str) <- unspace str >>= readsPrec p
+                  return (DATA addr defs, str)
+                lbl | lbl=="func"||lbl=="function" -> do
+                  (lbls, str) <- unspace str >>= readsPrec p
+                  (cmds, str) <- unspace str >>= readsPrec p
+                  return (FUNC lbls cmds, str)
+                lbl | lbl=="@"||lbl=="ptr" ->
+                  unspace str >>= readsPrec p >>= \ (ptr, str) -> return (PTR ptr, str)
+                _ -> bracketedData
+              _ -> bracketedData
+      , do  (txt, str) <- return (break isSpace str)
+            guard (not $ null txt)
+            return (STR (text txt), str)
+      ]
+
+-- | Keeps evaluating the 'Prelude.readsPrec' instance for 'RWData' until the string is completely
+-- consumed.
+simpleParser :: String -> [XData]
+simpleParser str = case str of
+    ""  -> []
+    str -> case readsPrec 0 str of
+      []            -> XCHAR (head str) : simpleParser (tail str)
+      (xdat, str):_ -> io_x xdat : simpleParser str
+
 data XData
   = XNULL | XTRUE | XINT Int | XFLOAT Double | XSTR Text | XPTR Address
+  | XCHAR Char
   | XLIST (Maybe (Array Int XData))
   | XDATA Address (M.Map Label XData)
   | XFUNC XFunc
@@ -1479,20 +1591,22 @@ instance RWX RWData XData where
   io_x io = case io of
     NULL     -> XNULL
     TRUE     -> XTRUE
-    INT   io -> XINT       io
-    FLOAT io -> XFLOAT     io
-    STR   io -> XSTR       io
-    PTR   io -> XPTR       io
+    INT   io -> XINT   io
+    FLOAT io -> XFLOAT io
+    CHAR  io -> XCHAR  io
+    STR   io -> XSTR   io
+    PTR   io -> XPTR   io
     LIST  io -> mkXList (map io_x io)
     DATA a b -> XDATA a (M.fromList $ map ((fmap io_x) . defToPair) b)
     FUNC a b -> XFUNC (XFunc{funcArgVars=a, funcBlock=io_x b})
   x_io x  = case x  of
     XNULL     -> NULL
     XTRUE     -> TRUE
-    XINT    x -> INT        x
-    XFLOAT  x -> FLOAT      x
-    XSTR    x -> STR        x
-    XPTR    x -> PTR        x
+    XINT    x -> INT   x
+    XFLOAT  x -> FLOAT x
+    XCHAR   x -> CHAR  x
+    XSTR    x -> STR   x
+    XPTR    x -> PTR   x
     XLIST   x -> LIST $ maybe [] (map x_io . elems) x
     XDATA a b -> DATA a (map (uncurry DEFINE . fmap x_io) (M.assocs b))
     XFUNC   x -> FUNC (funcArgVars x) (x_io $ funcBlock x)
@@ -1565,24 +1679,28 @@ tryXMember str o = case readsPrec 0 str of
 
 data RWModule
   = MODULE
-    { imports :: [Address]
-    , private :: [RWDef]
-    , public  :: [RWDef]
-    , rules   :: [RWRule]
+    { parser     :: Address
+    , imports    :: [Address]
+    , private    :: [RWDef]
+    , public     :: [RWDef]
+    , rules      :: [RWRule]
     }
   deriving (Eq, Ord, Show, Read)
 data XModule
   = XMODULE
-    { ximports :: [Address]
-    , xprivate :: XDefines
-    , xpublic  :: XDefines
-    , xrules   :: T.Tree XData [XBlock]
+    { xparser     :: Address
+      -- ^ every module may specify it's own parser for responding to input strings. Unless changed,
+      -- this is always set to the default.
+    , ximports    :: [Address]
+    , xprivate    :: XDefines
+    , xpublic     :: XDefines
+    , xrules      :: T.Tree XData [XBlock]
     }
   deriving (Eq, Ord)
 instance Show XModule where { show = show . x_io }
 instance RWX RWModule XModule where
-  io_x (MODULE imp pri exp act) = XMODULE imp (io_x pri) (io_x exp) (io_x act) 
-  x_io (XMODULE imp pri exp act) = MODULE imp (x_io pri) (x_io exp) (x_io act) 
+  io_x (MODULE par imp pri exp act) = XMODULE par imp (io_x pri) (io_x exp) (io_x act) 
+  x_io (XMODULE par imp pri exp act) = MODULE par imp (x_io pri) (x_io exp) (x_io act) 
 
 data RWRule = RULE [RWData] [[RWCommand]] deriving (Eq, Ord, Show, Read)
 instance RWX [RWRule] (T.Tree XData [XBlock]) where
@@ -1590,7 +1708,14 @@ instance RWX [RWRule] (T.Tree XData [XBlock]) where
   x_io = map ((\ (a,b) -> RULE (map x_io a) b) . fmap (fmap x_io)) . T.assocs
 
 initXModule :: XModule
-initXModule = XMODULE{ximports=[], xprivate=initXDefines, xpublic=initXDefines, xrules=T.Void}
+initXModule =
+  XMODULE
+  { xparser     = read "dao.simple"
+  , ximports    = []
+  , xprivate    = initXDefines
+  , xpublic     = initXDefines
+  , xrules      = T.Void
+  }
 
 data RWDef = DEFINE Label RWData deriving (Eq, Ord, Show, Read)
 defToPair :: RWDef -> (Label, RWData)
@@ -1919,10 +2044,19 @@ evalStackEmptyElse functionLabel params = gets evalStack >>= \stk ->
 requireCurrentMod :: Monad m => XCommand -> RunT m XModule
 requireCurrentMod o = gets currentModule >>= \mod -> case mod of
   Nothing  -> throwXData "Undefined" $
-    [ ("problem", mkXStr "update occurred with no current module")
+    [ ("problem", mkXStr "evaluation performed update while not within a module")
     , ("instruction", mkXStr (show (x_io o)))
     ]
   Just mod -> return mod
+
+-- | Evaluate a 'RunT' monad with a new 'currentModule' set to the given module. After the 'RunT'
+-- monad has been evaluated, the previous 'currentModule' module is restored.
+withModule :: Monad m => XModule -> RunT m a -> RunT m a
+withModule mod f = do
+  oldmod <- gets currentModule
+  let restore = modify $ \st -> st{currentModule = oldmod}
+  modify $ \st -> st{currentModule = Just mod}
+  catchError (f >>= \a -> restore >> return a) (\err -> restore >> throwError err)
 
 instance Evaluable XCommand where
   eval o = incEC >> incPC >> case o of
@@ -2201,18 +2335,39 @@ instance Evaluable XEval where
 
 ----------------------------------------------------------------------------------------------------
 
+noCurrentModuleErr :: Monad m => [(String, XData)] -> RunT m ig
+noCurrentModuleErr info = throwXData "NoCurrentModule" $
+  [("problem", mkXStr "program flow is presently not evaluating within a module")] ++ info
+
 -- | Matches the head of the input text list to each rule in the given module. Matching rules will
 -- strip the matched portion of the input text list, the remainder is placed onto the stack such
 -- that successive 'POP' operations retrieve each item in the remaining input text from head to
 -- tail.
-evalRulesInMod :: Monad m => [XData] -> XModule -> RunT m ()
-evalRulesInMod qs mod = do
-  modify (\st -> st{currentModule=Just mod})
-  forM_ (T.assocs $ xrules mod) $ \ (pat, block) -> case stripPrefix pat qs of
-    Nothing -> return ()
-    Just qs -> do
-      oldstk <- gets evalStack
-      modify (\st -> st{evalStack=qs})
-      msum (map eval block)
-      modify (\st -> st{evalStack=oldstk})
+evalRules :: Monad m => [XData] -> RunT m ()
+evalRules qs = gets currentModule >>= \mod -> case mod of
+  Just mod ->
+    case T.partialLookup qs (xrules mod) >>= \ (a, b) -> T.getLeaf b >>= \b -> Just (a, b) of
+      Nothing           -> return ()
+      Just (qs, blocks) -> do
+        oldstk <- gets evalStack
+        modify (\st -> st{evalStack=qs})
+        msum (map eval blocks)
+        modify (\st -> st{evalStack=oldstk})
+  Nothing  -> noCurrentModuleErr [("input", mkXList qs) ]
+
+
+-- | Parse and execute a string in the current module.
+execStringHere :: Monad m => String -> RunT m ()
+execStringHere str = do
+  st  <- get
+  mod <- maybe (noCurrentModuleErr []) return (currentModule st)
+  case T.lookup (addrToLabels $ xparser mod) (loadedParsers st) of
+    Just parse -> parse str >>= evalRules
+    Nothing    -> throwXData "Undefined"
+      [("problem", mkXStr "module requires a parser that is not defined")]
+
+-- | Call 'execStringHere' with the same string for every loaded module.
+execString :: Monad m => String -> RunT m ()
+execString str = gets loadedModules >>=
+  mapM_ (flip withModule (execStringHere str) . getXModule) . T.elems
 

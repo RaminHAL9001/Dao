@@ -36,7 +36,6 @@ module Dao.Object
 import           Dao.Runtime
 import           Dao.String
 import           Dao.Token
-import           Dao.Parser
 import           Dao.Glob
 import qualified Dao.EnumSet   as Es
 import qualified Dao.Tree      as T
@@ -49,9 +48,6 @@ import           Dao.Procedural
 import           Data.Typeable
 import           Data.Dynamic
 import           Data.Monoid
-import           Data.Unique
-import           Data.Maybe
-import           Data.Either
 import           Data.List
 import           Data.Complex
 import           Data.Ix
@@ -68,11 +64,7 @@ import           Data.IORef
 import qualified Data.Map                  as M
 import qualified Data.IntMap               as IM
 import qualified Data.Set                  as S
-import qualified Data.IntSet               as IS
 import qualified Data.ByteString.Lazy      as B
-import qualified Data.Binary               as B
-import qualified Data.Binary.Get           as B
-import qualified Data.Binary.Put           as B
 
 import           Control.Applicative
 import           Control.Monad
@@ -149,11 +141,11 @@ instance Ord Object where
     (OList      a, OList      b) -> compare a b
     (OTree      a, OTree      b) -> compare a b
     (OBytes     a, OBytes     b) -> compare a b
-    (OHaskell a ifcA, OHaskell b ifcB) -> maybe (err a b) id $ do
+    (OHaskell a ifcA, OHaskell b ifcB) -> maybe err id $ do
         guard (ifcA==ifcB)
         objOrdering ifcA >>= \comp -> return (comp a b)
       where
-        err a b = error $ unwords $
+        err = error $ unwords $
           [ "cannot compare object of type", show (objHaskellType ifcA)
           , "with obejct of type", show (objHaskellType ifcB)
           ]
@@ -251,7 +243,7 @@ instance Structured Bool Object where
 
 instance Structured Word Object where
   dataToStruct a = deconstruct $ place (OInt (fromIntegral a))
-  structToData = reconstruct (fmap fromIntegral (getIntegerData "unsigned integer"))
+  structToData = reconstruct (getIntegerData "unsigned integer")
 
 --instance Structured Int64 where
 --  dataToStruct a = deconstruct $ place (OInt a)
@@ -259,7 +251,7 @@ instance Structured Word Object where
 
 instance Structured Int Object where
   dataToStruct a = deconstruct $ place (OInt (fromIntegral a))
-  structToData = reconstruct (fmap fromIntegral (getIntegerData "integer"))
+  structToData = reconstruct (getIntegerData "integer")
 
 --instance Structured Integer where
 --  dataToStruct a = deconstruct $ place (OLong a)
@@ -361,6 +353,10 @@ instance Show CoreType where
     TrueType     -> "true"
     TypeType     -> "type"
     IntType      -> "int"
+    WordType     -> "word"
+    FloatType    -> "float"
+    LongType     -> "long"
+    RatioType    -> "ratio"
     DiffTimeType -> "diff"
     TimeType     -> "time"
     CharType     -> "char"
@@ -369,6 +365,7 @@ instance Show CoreType where
     ListType     -> "list"
     TreeType     -> "tree"
     BytesType    -> "bytes"
+    ComplexType  -> "complex"
     HaskellType  -> "haskell"
 
 instance Read CoreType where
@@ -414,7 +411,7 @@ instance HasNullValue Reference where
 
 instance Read Reference where
   readsPrec _ str = case str of
-    c:cx | isAlpha c ->
+    c:_  | isAlpha c ->
       case break (\c -> c=='.' || isAlphaNum c) str of
         (cx, str) ->
           maybe [] (return . (\ref -> (Reference ref, str))) $ sequence $
@@ -458,18 +455,23 @@ data QualRef
 instance HasNullValue QualRef where
   nullValue = Unqualified nullValue
   testNull (Unqualified a) = testNull a
+  testNull (Qualified _ a) = testNull a
+  testNull (ObjRef      a) = testNull a
 fmapQualRef :: (Reference -> Reference) -> QualRef -> QualRef
 fmapQualRef fn r = case r of
   Unqualified r -> Unqualified (fn r)
   Qualified q r -> Qualified q (fn r)
+  ObjRef      o -> ObjRef o
 setQualifier :: RefQualifier -> QualRef -> QualRef
 setQualifier q ref = case ref of
   Unqualified ref -> Qualified q ref
   Qualified _ ref -> Qualified q ref
+  ObjRef        o -> ObjRef o
 delQualifier :: QualRef -> QualRef
 delQualifier ref = case ref of
   Unqualified r -> Unqualified r
   Qualified _ r -> Unqualified r
+  ObjRef      o -> ObjRef o
 
 -- | Since 'Object' requires all of it's types instantiate 'Prelude.Ord', I have defined
 -- 'Prelude.Ord' of 'Data.Complex.Complex' numbers to be the distance from 0, that is, the radius of
@@ -693,6 +695,7 @@ bareword = UnqualRefExpr . flip RefExpr LocationUnknown . Reference . return . f
 instance HasNullValue QualRefExpr where
   nullValue = UnqualRefExpr nullValue
   testNull (UnqualRefExpr a) = testNull a
+  testNull (QualRefExpr _ a _) = testNull a
 
 instance HasLocation RefExpr where
   getLocation (RefExpr _ loc)     = loc
@@ -728,7 +731,10 @@ instance UStrType RefQualifier where
 
 ----------------------------------------------------------------------------------------------------
 
+allInfixOpChars :: String
 allInfixOpChars = "+-*/%<>^&|."
+
+allInfixOpStrs :: String
 allInfixOpStrs = " + - * / % ** -> . || && == != | & ^ << >> < > <= >= . -> <- "
 
 -- | Contains a list of 'ObjectExpr's, which are used to encode parameters to function calls, and
@@ -752,6 +758,7 @@ data UpdateOp
 
 instance Bounded UpdateOp where {minBound = UCONST; maxBound = UARROW}
 
+allUpdateOpStrs :: String
 allUpdateOpStrs = " = += -= *= /= %= **= |= &= ^= <<= >>= <- "
 
 instance UStrType UpdateOp where
@@ -806,10 +813,13 @@ instance UStrType PrefixOp where
     "+" -> Just POSTIV
     "$" -> Just REF
     "@" -> Just DEREF
-    str -> Nothing
+    _   -> Nothing
   fromUStr str = maybe (error (show str++" is not a prefix opretor")) id (maybeFromUStr str)
 
+allPrefixOpChars :: String
 allPrefixOpChars = "$@~!-+"
+
+allPrefixOpStrs :: String
 allPrefixOpStrs = " $ @ ~ - + ! "
 
 -- | Binary operators.
@@ -872,7 +882,10 @@ instance Functor TyChkExpr where
   fmap f (DisableCheck a b c d) = DisableCheck (f a) b c d
 
 checkedExpr :: TyChkExpr a -> a
-checkedExpr o = case o of { NotTypeChecked o -> o; TypeChecked o _ _ -> o; }
+checkedExpr o = case o of
+  NotTypeChecked o       -> o
+  TypeChecked    o _ _   -> o
+  DisableCheck   o _ _ _ -> o
 
 instance HasLocation a => HasLocation (TyChkExpr a) where
   getLocation a     = case a of
@@ -1031,8 +1044,8 @@ instance HasLocation ObjectExpr where
       lu = LocationUnknown
       fd0 :: HasLocation a => a -> a
       fd0 = delLocation
-      fd1 :: (HasLocation a, Functor f) => f a -> f a
-      fd1 = fmap delLocation
+      -- fd1 :: (HasLocation a, Functor f) => f a -> f a
+      -- fd1 = fmap delLocation
 
 data IfExpr       = IfExpr ParenExpr CodeBlock Location deriving (Eq, Ord, Typeable, Show)
 data ElseExpr     = ElseExpr   IfExpr Location deriving (Eq, Ord, Typeable, Show)
@@ -1138,8 +1151,8 @@ instance HasLocation ScriptExpr where
       lu = LocationUnknown
       fd0 :: HasLocation a => a -> a
       fd0 = delLocation
-      fd1 :: (HasLocation a, Functor f) => f a -> f a
-      fd1 = fmap delLocation
+      -- fd1 :: (HasLocation a, Functor f) => f a -> f a
+      -- fd1 = fmap delLocation
 
 data TopLevelEventType
   = BeginExprType | EndExprType | ExitExprType
@@ -1154,7 +1167,7 @@ instance Read TopLevelEventType where
     "BEGIN" -> [BeginExprType]
     "END"   -> [EndExprType]
     "EXIT"  -> [ExitExprType]
-    ""      -> []
+    _       -> []
 
 -- | A 'TopLevelExpr' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
@@ -1183,8 +1196,8 @@ instance HasLocation TopLevelExpr where
       lu = LocationUnknown
       fd0 :: HasLocation a => a -> a
       fd0 = delLocation
-      fd1 :: (HasLocation a, Functor f) => f a -> f a
-      fd1 = fmap delLocation
+      -- fd1 :: (HasLocation a, Functor f) => f a -> f a
+      -- fd1 = fmap delLocation
 
 -- | A program is just a list of 'TopLevelExpr's. It serves as the 'Dao.Object.AST.Intermediate'
 -- representation of a 'Dao.Object.AST.AST_SourceCode'.
@@ -1583,7 +1596,7 @@ instance MonadPlus Exec where
   mplus a b = procCatch a >>= \a -> case a of
     FlowOK      a -> proc (FlowOK     a)
     FlowReturn  a -> proc (FlowReturn a)
-    FlowErr   err -> b
+    FlowErr     _ -> b
 instance MonadReader ExecUnit Exec where
   local upd (Exec fn) = Exec (local upd fn)
   ask = Exec ask
@@ -1684,9 +1697,9 @@ instance HasIterator UStr where
       OChar   o -> return (str++[o])
       obj       -> execThrow $ OList [ostr "object cannot be used to construct string", obj]
 
-cant_iterate :: Object -> T_haskell -> Exec ig
+cant_iterate :: Object -> String -> Exec ig
 cant_iterate o ifc = execThrow $ OList $
-  [ostr $ "object of type "++show (objHaskellType ifc)++" cannot be iterated in a \"for\" statement", o]
+  [ostr $ "object of type "++ifc++" cannot be iterated in a \"for\" statement", o]
 
 instance HasIterator Object where
   iterateObject obj = case obj of
@@ -1694,13 +1707,15 @@ instance HasIterator Object where
     OList    o -> iterateObject o
     OHaskell o ifc -> case objIterator ifc of
       Just (iter, _) -> iter o
-      Nothing        -> cant_iterate obj ifc
+      Nothing        -> cant_iterate obj (show (objHaskellType ifc))
+    _ -> cant_iterate obj (show $ objType obj)
   foldObject obj ox = case obj of
     OString  o -> fmap OString (foldObject o ox)
     OList    o -> fmap OList   (foldObject o ox)
     OHaskell o ifc -> case objIterator ifc of
       Just (_, fold) -> fmap (flip OHaskell ifc) (fold o ox)
-      Nothing        -> cant_iterate obj ifc
+      Nothing        -> cant_iterate obj (show (objHaskellType ifc))
+    _ -> cant_iterate obj (show $ objType obj)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1747,13 +1762,6 @@ instance ObjTableClass (ObjectInterface Dynamic) Object where
   objTable (OHaskell _ tab) = Just tab
   objTable  _               = Nothing
 
-typeRepToName :: TypeRep -> [Name]
-typeRepToName = split . show where
-  split str = case break ('.'==) str of
-    ("", "") -> []
-    (nm, "") -> [ustr nm]
-    (nm, '.':str) -> ustr nm : split str
-
 -- | This function works a bit like 'Data.Functor.fmap', but maps an 'ObjectInterface' from one type
 -- to another. This requires two functions: one that can cast from the given type to the adapted
 -- type (to convert outputs of functions), and one that can cast back from the adapted type to the
@@ -1769,29 +1777,26 @@ objectInterfaceAdapter
   -> ObjectInterface typ_a
   -> ObjectInterface typ_b
 objectInterfaceAdapter a2b b2a ifc = 
-  let uninit  = error "'Dao.Object.fmapObjectInterface' evaluated on uninitialized object"
-  in  ifc
-      { objCastFrom      = let n="objCastFrom"      in fmap (fmap (a2b n)) (objCastFrom ifc)
-      , objEquality      = let n="objEquality"      in fmap (\eq  a b -> eq  (b2a n a) (b2a n b)) (objEquality ifc)
-      , objOrdering      = let n="objOrdering"      in fmap (\ord a b -> ord (b2a n b) (b2a n b)) (objOrdering ifc)
-      , objBinaryFormat  = let n="objBinaryFormat"  in fmap (\ (toBin , fromBin) -> (toBin . b2a n, fmap (a2b n) fromBin)) (objBinaryFormat ifc)
-      , objNullTest      = let n="objNullTest"      in fmap (\null b -> null (b2a n b)) (objNullTest ifc)
-      , objIterator      = let n="objIterator"      in fmap (\ (iter, fold) -> (iter . b2a n, \typ -> fmap (a2b n) . fold (b2a n typ))) (objIterator ifc)
-      , objIndexer       = let n="objIndexer"       in fmap (\indx b -> indx (b2a n b)) (objIndexer  ifc)
-      , objTreeFormat    = let n="objTreeFormat"    in fmap (\ (toTree, fromTree) -> (toTree . b2a n, fmap (a2b n) . fromTree)) (objTreeFormat ifc)
-      , objInitializer   = let n="objInitializer"   in fmap (fmap (fmap (fmap (a2b n)))) (objInitializer ifc)
-      , objUpdateOpTable = let n="objUpdateOpTable" in fmap (fmap (fmap (\updt op b -> updt op (b2a n b)))) (objUpdateOpTable ifc)
-      , objInfixOpTable  = let n="objInfixOpTable"  in fmap (fmap (fmap (\infx op b -> infx op (b2a n b)))) (objInfixOpTable  ifc)
-      , objPrefixOpTable = let n="objPrefixOpTabl"  in fmap (fmap (fmap (\prfx op b -> prfx op (b2a n b)))) (objPrefixOpTable ifc)
-      , objCallable      = let n="objCallable"      in fmap (\eval typ -> eval (b2a n typ)) (objCallable    ifc)
-      }
+  ifc
+  { objCastFrom      = let n="objCastFrom"      in fmap (fmap (a2b n)) (objCastFrom ifc)
+  , objEquality      = let n="objEquality"      in fmap (\eq  a b -> eq  (b2a n a) (b2a n b)) (objEquality ifc)
+  , objOrdering      = let n="objOrdering"      in fmap (\ord _ b -> ord (b2a n b) (b2a n b)) (objOrdering ifc)
+  , objBinaryFormat  = let n="objBinaryFormat"  in fmap (\ (toBin , fromBin) -> (toBin . b2a n, fmap (a2b n) fromBin)) (objBinaryFormat ifc)
+  , objNullTest      = let n="objNullTest"      in fmap (\null b -> null (b2a n b)) (objNullTest ifc)
+  , objIterator      = let n="objIterator"      in fmap (\ (iter, fold) -> (iter . b2a n, \typ -> fmap (a2b n) . fold (b2a n typ))) (objIterator ifc)
+  , objIndexer       = let n="objIndexer"       in fmap (\indx b -> indx (b2a n b)) (objIndexer  ifc)
+  , objTreeFormat    = let n="objTreeFormat"    in fmap (\ (toTree, fromTree) -> (toTree . b2a n, fmap (a2b n) . fromTree)) (objTreeFormat ifc)
+  , objInitializer   = let n="objInitializer"   in fmap (fmap (fmap (fmap (a2b n)))) (objInitializer ifc)
+  , objUpdateOpTable = let n="objUpdateOpTable" in fmap (fmap (fmap (\updt op b -> updt op (b2a n b)))) (objUpdateOpTable ifc)
+  , objInfixOpTable  = let n="objInfixOpTable"  in fmap (fmap (fmap (\infx op b -> infx op (b2a n b)))) (objInfixOpTable  ifc)
+  , objPrefixOpTable = let n="objPrefixOpTabl"  in fmap (fmap (fmap (\prfx op b -> prfx op (b2a n b)))) (objPrefixOpTable ifc)
+  , objCallable      = let n="objCallable"      in fmap (\eval typ -> eval (b2a n typ)) (objCallable    ifc)
+  }
 
 objectInterfaceToDynamic :: Typeable typ => ObjectInterface typ -> ObjectInterface Dynamic
 objectInterfaceToDynamic oi = objectInterfaceAdapter (\ _ -> toDyn) (from oi) oi where
   from :: Typeable typ => ObjectInterface typ -> String -> Dynamic -> typ
   from oi msg dyn = fromDyn dyn (dynErr oi msg dyn)
-  uninit = error $
-    "'Dao.Object.objectInterfaceToDynamic' evaluated an uninitialized 'ObjectInterface'"
   dynErr :: Typeable typ => ObjectInterface typ -> String -> Dynamic -> typ
   dynErr oi msg dyn = error $ concat $
     [ "The 'Dao.Object.", msg
@@ -1818,6 +1823,8 @@ data ObjIfc typ =
   , objIfcPrefixOpTable :: [(PrefixOp, PrefixOp -> typ -> Exec Object)]
   , objIfcCallable      :: Maybe (typ -> Exec [CallableCode])
   }
+
+initObjIfc :: ObjIfc typ
 initObjIfc =
   ObjIfc
   { objIfcCastFrom      = Nothing
@@ -2104,14 +2111,6 @@ defObjectInterface init defIfc =
   where
     typ               = typeOf init
     ifc               = execState (daoClassDefState defIfc) initObjIfc
-    setupMethods elems = T.fromList $ elems >>= \ (nm, fn) -> case fn of
-      []    -> error $ unwords $
-        [ "INTERNAL: somehow the 'Dao.Object.defMethod' function"
-        , "has inserted a null list for the \""++intercalate "." (fmap uchars nm)++"\" function"
-        , "in the methods table of", show typ
-        ]
-      [fn]  -> return (nm, fn)
-      _:_:_ -> conflict "defMethod" ("the function called "++show nm)
     mkArray oiName elems =
       if null elems
         then  Nothing

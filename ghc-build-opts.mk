@@ -38,7 +38,7 @@ BUILTIN_RTS_OPTIONS = -M8G -N4
 
 ALLOW_CHANGE_RTS_OPTIONS = true
 
-GHC_FLAGS = -threaded -Wall -fno-warn-name-shadowing -fno-warn-unused-do-bind
+GHC_FLAGS = -threaded -Wall -fno-warn-name-shadowing -fno-warn-unused-do-bind -fno-warn-auto-orphans
 
 LINKER_FLAGS = # -dynamic # -shared
 

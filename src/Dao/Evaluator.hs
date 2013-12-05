@@ -32,20 +32,18 @@ import           Dao.Stack
 import           Dao.Token  hiding (asString)
 import           Dao.Parser hiding (shift)
 import           Dao.Object
+import           Dao.Object.DeepSeq ()
 import           Dao.Object.AST
-import           Dao.Object.DeepSeq
 import           Dao.PPrint
 import qualified Dao.Tree as T
 import           Dao.Glob
 import           Dao.Predicate
 import           Dao.Procedural
-import           Dao.Resource
-import           Dao.Struct
 
 import           Dao.Object.Math
-import           Dao.Object.PPrint
-import           Dao.Object.Binary
-import           Dao.Object.Struct
+import           Dao.Object.PPrint ()
+import           Dao.Object.Binary ()
+import           Dao.Object.Struct ()
 import           Dao.Object.Parser
 
 import           Control.Exception
@@ -54,31 +52,22 @@ import           Control.Concurrent
 import           Control.Monad.Trans
 import           Control.Monad.Reader
 import           Control.Monad.Error
-import           Control.Monad.State -- for constructing 'Program's from 'AST_SourceCode's.
 
 import           Data.Monoid
-import           Data.Maybe
-import           Data.Either
 import           Data.Array.IArray
-import           Data.Int
-import           Data.Word
 import           Data.Bits
 import           Data.List
 import           Data.Time.Clock
 import           Data.Ratio
 import           Data.Complex
 import           Data.IORef
-import           Data.Dynamic
 import qualified Data.Set    as S
 import qualified Data.Map    as M
 import qualified Data.IntMap as I
-import qualified Data.ByteString.Lazy.UTF8 as U
-import qualified Data.Binary as B
-
-import           System.IO
 
 import Control.DeepSeq
 import Debug.Trace
+
 tra :: Monad m => String -> r -> m r
 tra msg r = trace msg (return ()) >> return r
 
@@ -115,21 +104,14 @@ showObj = prettyPrint 80 "    "
 
 initExecUnit :: Maybe UPath -> Runtime -> IO ExecUnit
 initExecUnit modName runtime = do
-  --unctErrs <- dNewMVar xloc "ExecUnit.uncaughtErrors" []
   unctErrs <- newIORef []
-  --recurInp <- dNewMVar xloc "ExecUnit.recursiveInput" []
   recurInp <- newIORef []
-  --qheap    <- newTreeResource  "ExecUnit.queryTimeHeap" T.Void
   qheap    <- newMVar T.Void
-  --global   <- newTreeResource  "ExecUnit.globalData" T.Void
   global   <- newMVar T.Void
-  xstack   <- newMVar emptyStack
   task     <- runReaderT initTask runtime
   execTask <- runReaderT initTask runtime
   xstack   <- newIORef emptyStack
-  --files    <- dNewMVar xloc "ExecUnit.execOpenFiles" M.empty
   files    <- newIORef M.empty
-  --rules    <- dNewMVar xloc "ExecUnit.ruleSet" T.Void
   rules    <- newIORef T.Void
   return $
     ExecUnit
@@ -200,9 +182,9 @@ runCodeBlock initStack exe = local (\xunit -> xunit{currentCodeBlock = CurrentCo
 -- computing over the 'Dao.Object.tyChkExpr' in the 'Dao.Object.TyChkExpr'.
 instance Executable (TyChkExpr ParamValue) (Maybe Object) where
   execute tc = case tc of
-    NotTypeChecked pv          -> return (Just OTrue) -- TODO: this needs to return the 'Dao.Object.anyType', not 'OTrue'.
-    TypeChecked    pv _ _      -> return (Just OTrue) -- TODO: evaluate the actual type checking algorithm here
-    DisableCheck   pv _ rslt _ -> return (Just rslt)
+    NotTypeChecked _          -> return (Just OTrue) -- TODO: this needs to return the 'Dao.Object.anyType', not 'OTrue'.
+    TypeChecked    _ _ _      -> return (Just OTrue) -- TODO: evaluate the actual type checking algorithm here
+    DisableCheck   _ _ rslt _ -> return (Just rslt)
 
 -- | Matches 'Dao.Object.ParamValue's passed in function calls to 'Dao.Object.TyChkExpr's in
 -- function declarations. Returns a pair: 'Prelude.fst' is the value contained in the
@@ -229,8 +211,8 @@ matchFuncParams (ParamListExpr params _) values = loop T.Void (tyChkItem params)
     | null ax && null bx = return tree
     | null ax || null bx = mzero
     | otherwise          = do
-        let param@(ParamExpr  dontDeref tychk _) = head ax
-        let value@(ParamValue inObj inObjExpr  ) = head bx
+        let _param@(ParamExpr  dontDeref tychk _) = head ax
+        let  value@(ParamValue inObj _inObjExpr ) = head bx
         val       <- (if dontDeref then return else derefObject) inObj
         (name, _) <- checkType tychk  value
         -- Here ^ we ignore the most-general type value returned,
@@ -403,6 +385,9 @@ withObject store upd = execModifyRef store $ \target -> case target of
           ]
       , OHaskell o ifc
       ]
+  o -> upd (T.insert [] target T.Void) >>= \ (_, tree, a) -> case T.getLeaf tree of
+    Nothing -> return (o, a)
+    Just  o -> return (o, a)
 
 ---- | Lookup an object in the 'globalData' for this 'ExecUnit'.
 --  execHeapLookup :: Reference -> Exec (Maybe Object)
@@ -749,7 +734,7 @@ evalBitsOrSets
 -- -> (T_set -> T_set  -> T_set)
   -> (Integer -> Integer -> Integer)
   -> Object -> Object -> BuiltinOp
-evalBitsOrSets combine dict intmap {-set-} num a b = evalInt num a b
+evalBitsOrSets _combine _dict _intmap {-set-} num a b = evalInt num a b
 
 eval_ORB :: Object -> Object -> BuiltinOp
 eval_ORB  a b = evalBitsOrSets OList M.unionWith        I.unionWith        {-S.union-}        (.|.) a b
@@ -837,7 +822,7 @@ eval_SHL :: Object -> Object -> BuiltinOp
 eval_SHL = evalShift id
 
 eval_DOT :: Object -> Object -> BuiltinOp
-eval_DOT a b = error "eval_DOT is not defined"
+eval_DOT _a _b = error "eval_DOT is not defined"
 
 eval_NEG :: Object -> BuiltinOp
 eval_NEG o = case o of
@@ -862,10 +847,10 @@ eval_INVB o = case o of
   _       -> mzero
 
 eval_REF :: Object -> BuiltinOp
-eval_REF r = error "eval_REF is not defined"
+eval_REF _r = error "eval_REF is not defined"
 
 eval_DEREF :: Object -> BuiltinOp
-eval_DEREF r = error "eval_DEREF is not defined"
+eval_DEREF _r = error "eval_DEREF is not defined"
 
 eval_NOT :: Object -> BuiltinOp
 eval_NOT o = return (boolToObj (testNull o))
@@ -884,10 +869,10 @@ extractStringElems o = case o of
   _            -> []
 
 eval_multiRef :: ([Name] -> Reference) -> Object -> BuiltinOp
-eval_multiRef mk o = error "eval_multiRef is not defined"
+eval_multiRef _mk _o = error "eval_multiRef is not defined"
 
 eval_singleRef :: (Name -> Reference) -> Object -> BuiltinOp
-eval_singleRef mk o = error "eval_singleRef is not defined"
+eval_singleRef _mk _o = error "eval_singleRef is not defined"
 
 prefixOps :: Array PrefixOp (Object -> BuiltinOp)
 prefixOps = array (minBound, maxBound) $ defaults ++
@@ -962,12 +947,12 @@ updatingOps = let o = (,) in array (minBound, maxBound) $ defaults ++
 ----------------------------------------------------------------------------------------------------
 
 requireAllStringArgs :: [Object] -> Exec [UStr]
-requireAllStringArgs ox = case mapM check (zip (iterate (+1) 0) ox) of
+requireAllStringArgs ox = case mapM check (zip (iterate (+(1::Integer)) 0) ox) of
   OK      obj -> return obj
   Backtrack   -> execThrow $ OList [ostr "all input parameters must be strings"]
   PFail   msg -> execThrow $ OList [OString msg, ostr "is not a string"]
   where
-    check (i, o) = case o of
+    check (_i, o) = case o of
       OString o -> return o
       _         -> PFail (ustr "requires string parameter, param number")
 
@@ -980,7 +965,7 @@ requireAllStringArgs ox = case mapM check (zip (iterate (+1) 0) ox) of
 -- 'Prelude.String's are 'Data.Either.Right'. References are accompanied with their depth so you can
 -- choose whether or not you want to dereference or pretty-print them.
 getStringsToDepth :: Int -> Object -> [Either (Int, Reference) String]
-getStringsToDepth maxDepth o = loop 0 maxDepth o where
+getStringsToDepth maxDepth o = loop (0::Int) maxDepth o where
   loop depth remDep o = case o of
     OString   o -> return (Right (uchars o))
     OList    ox -> recurse o ox
@@ -1011,7 +996,7 @@ derefStringsToDepth handler maxDeref maxDepth o =
           else  do
             let newMax = if maxDepth>=0 then (if i>=maxDepth then 0 else maxDepth-i) else (0-1)
                 recurse = fmap concat . mapM (derefStringsToDepth handler (maxDeref-i) newMax)
-            catchReturn (execute (Unqualified ref)) >>= recurse . maybeToList
+            catchReturn (execute (Unqualified ref)) >>= recurse . maybe [] (:[])
 
 -- | Returns a list of all string objects that can be found from within the given list of objects.
 -- This function might fail if objects exist that cannot resonably contain strings. If you want to
@@ -1035,6 +1020,7 @@ recurseGetAllStrings o = catch (loop [] o) where
   catch ox = case ox of
     FlowErr  err -> execThrow err
     FlowOK    ox -> return ox
+    FlowReturn _ -> undefined
 
 builtin_print :: DaoFunc
 builtin_print = DaoFunc True $ \ox_ -> do
@@ -1070,7 +1056,7 @@ builtin_check_ref :: DaoFunc
 builtin_check_ref = DaoFunc True $ \args -> do
   fmap (Just . boolToObj . and) $ forM args $ \arg -> case arg of
     ORef o -> fmap (maybe False (const True)) (execute o :: Exec (Maybe Object))
-    o      -> return True
+    _      -> return True
 
 builtin_delete :: DaoFunc
 builtin_delete = DaoFunc True $ \args -> do
@@ -1109,9 +1095,10 @@ updateReference qref upd = do
       STATIC -> fn ref currentCodeBlock
       GLOBAL -> fn ref globalData
       GLODOT -> fn ref currentWithRef
+    ObjRef o -> upd (Just o)
 
 instance Executable ExecDaoFunc (Maybe Object) where
-  execute (MkExecDaoFunc op params fn) = do
+  execute (MkExecDaoFunc _op params fn) = do
     args <- if autoDerefParams fn then mapM execute params else return (fmap paramValue params)
     flow <- procCatch (daoForeignCall fn args)
     case flow of
@@ -1142,7 +1129,7 @@ callFunction qref params = do
         msum $ flip fmap callables $ \code ->
           matchFuncParams (argsPattern code) params >>= flip execFuncPushStack (execute code)
       Nothing -> err
-    obj -> err
+    _ -> err
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1167,12 +1154,13 @@ errAt loc = case loc of
 -- Haskell value, because 'Backtrack' values indicate type exceptions, and 'PFail' values indicate a
 -- value error (e.g. out of bounds, or some kind of assert exception), and the messages passed to
 -- 'procErr' will indicate this.
-checkPValue :: Location -> String -> [Object] -> Exec a -> Exec a
-checkPValue loc altmsg tried pval = procCatch pval >>= \pval -> case pval of
+checkPValue :: String -> [Object] -> Exec a -> Exec a
+checkPValue altmsg tried pval = procCatch pval >>= \pval -> case pval of
   FlowOK     a        -> return a
-  FlowReturn Nothing  -> fail "evaulated to void expression"
+  FlowReturn Nothing  -> fail (altmsg++" evaulated to void expression")
   FlowReturn (Just o) -> procReturn (Just o)
-  FlowErr    err      -> throwError err
+  FlowErr    err      -> throwError $
+    err{specificErrorData = OList $ specificErrorData err : tried}
 
 -- | 'evalObjectExprExpr' can return 'Data.Maybe.Nothing', and usually this happens when something has
 -- failed (e.g. reference lookups), but it is not always an error (e.g. a void list of argument to
@@ -1194,13 +1182,13 @@ evalConditional obj =
 instance Executable ParenExpr (Maybe Object) where { execute (ParenExpr a _) = execute a }
 
 instance Executable IfExpr Bool where
-  execute (IfExpr ifn thn loc) = execNested T.Void $
+  execute (IfExpr ifn thn _loc) = execNested T.Void $
     evalConditional ifn >>= \test -> when test (void (execute thn)) >> return test
 
 instance Executable ElseExpr Bool where { execute (ElseExpr ifn _) = execute ifn }
 
 instance Executable IfElseExpr () where
-  execute (IfElseExpr ifn elsx final loc) = do
+  execute (IfElseExpr ifn elsx final _loc) = do
     let tryEach elsx = case elsx of
           []       -> return False
           els:elsx -> execute els >>= \ok -> if ok then return ok else tryEach elsx
@@ -1218,13 +1206,13 @@ instance Executable ScriptExpr () where
   execute script = updateExecError (\err->err{execErrScript=Just script}) $ case script of
     IfThenElse  ifn     -> execute ifn
     WhileLoop   ifn     -> execute ifn
-    EvalObject  o   loc -> void (execute o :: Exec (Maybe Object))
+    EvalObject  o  _loc -> void (execute o :: Exec (Maybe Object))
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    TryCatch try  name  catch loc -> do
+    TryCatch try  name  catch _loc -> do
       ce <- procCatch (execNested T.Void $ execute try)
       case ce of
         FlowOK    () -> return ()
-        FlowReturn o -> proc ce
+        FlowReturn _ -> proc ce
         FlowErr  err -> do
           let errObj = specificErrorData err -- TODO: pass the whole error wrapped in an 'OHaskell' constructor.
           case name of
@@ -1233,7 +1221,7 @@ instance Executable ScriptExpr () where
               Nothing    -> localVarDefine nm errObj
               Just catch -> execNested T.Void (localVarDefine nm errObj >> execute catch)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    ForLoop varName inObj thn loc -> do
+    ForLoop varName inObj thn _loc -> do
       let loop newList ox = case ox of
             []   -> return newList
             o:ox -> do
@@ -1245,19 +1233,19 @@ instance Executable ScriptExpr () where
       case objRef of
         ORef qref -> void $ updateReference qref $ \obj -> case obj of
           Nothing  -> return Nothing
-          Just obj -> execute qref >>=
+          Just _obj -> execute qref >>=
             checkVoid (getLocation inObj) "reference over which to iterate evaluates to void" >>= \objRef ->
               fmap Just (iterateObject objRef >>= loop [] >>= foldObject objRef)
         obj       -> void (iterateObject obj >>= loop [])
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    ContinueExpr a    _       loc -> execThrow $ ostr $
+    ContinueExpr a    _      _loc -> execThrow $ ostr $
       '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" or \"while\" loop"
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    ReturnExpr returnStmt obj loc -> do
+    ReturnExpr returnStmt obj _loc -> do
       o <- (execute obj :: Exec (Maybe Object)) >>= maybe (return Nothing) (fmap Just . derefObject)
-      if returnStmt then proc (FlowReturn o) else execThrow (fromMaybe ONull o)
+      if returnStmt then proc (FlowReturn o) else execThrow (maybe ONull id o)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    WithDoc   expr    thn     loc -> void $ execNested T.Void $ do
+    WithDoc   expr   _thn    _loc -> void $ execNested T.Void $ do
       obj <- execute expr >>= checkVoid (getLocation expr) "expression in the focus of \"with\" statement"
       ref <- mplus (asReference obj) $ execThrow $ OList $
         [ostr "expression in \"with\" statement does not evaluate to a reference, evaluates to a", obj]
@@ -1271,7 +1259,7 @@ instance Executable ScriptExpr () where
                 liftIO (fmap Just (readIORef ioref))
           case obj of
             OTree    _ -> ok
-            OHaskell o ifc -> case objTreeFormat ifc of
+            OHaskell _ ifc -> case objTreeFormat ifc of
               Just  _ -> ok
               Nothing -> execThrow $ OList $
                 [ ostr "object of type", ostr (toUStr (show (objHaskellType ifc)))
@@ -1295,7 +1283,7 @@ instance Executable ForLoopBlock (Bool, Maybe Object) where
       loop ex = case ex of
         []   -> done True
         e:ex -> case e of
-          ContinueExpr a cond loc -> let stmt = if a then "continue" else "break" in case cond of
+          ContinueExpr a cond _loc -> case cond of
             VoidExpr -> done a
             cond     -> evalConditional (ParenExpr cond LocationUnknown) >>= done . (if a then id else not)
           e -> execute e >> loop ex
@@ -1304,15 +1292,22 @@ instance Executable QualRef (Maybe Object) where
   -- | 'Dao.Object.execute'-ing a 'Dao.Object.QualRef' will dereference it, essentially reading the
   -- value associated with that reference from the 'Dao.Object.ExecUnit'.
   execute ref = case ref of
+    ObjRef (OInt i) -> do
+      arr <- asks currentMatch
+      i <- return $ fromIntegral i
+      case arr >>= matchGaps of
+        Just arr | inRange (bounds arr) i -> return $ Just $ OList $ map OString $ arr!i
+        _ -> return Nothing
+    ObjRef       o  -> return (Just o)
     Unqualified ref -> case refNameList ref of
       []  -> emptyRefErr
-      [r] -> asks execStack  >>= flip storeLookup ref
+      [_] -> asks execStack  >>= flip storeLookup ref
       _   -> asks globalData >>= flip storeLookup ref
     Qualified q ref -> case q of
       LOCAL  -> case refNameList ref of
         [ ] -> emptyRefErr
-        [r] -> asks execStack >>= flip storeLookup ref
-        ref -> badRef "local"
+        [_] -> asks execStack >>= flip storeLookup ref
+        _   -> badRef "local"
       QTIME  -> asks queryTimeHeap >>= flip storeLookup ref
       GLODOT -> ask >>= \xunit -> case currentWithRef xunit of
         WithRefStore Nothing -> execThrow $ OList $
@@ -1322,8 +1317,8 @@ instance Executable QualRef (Maybe Object) where
         store -> storeLookup store ref
       STATIC -> case refNameList ref of
         [ ] -> emptyRefErr
-        [r] -> asks currentCodeBlock >>= flip storeLookup ref
-        ref -> badRef "static"
+        [_] -> asks currentCodeBlock >>= flip storeLookup ref
+        _   -> badRef "static"
       GLOBAL -> asks globalData >>= flip storeLookup ref
     where
       emptyRefErr = execThrow $ OList [ostr "dereferenced empty reference", ORef ref]
@@ -1374,7 +1369,7 @@ instance Executable ObjectExpr (Maybe Object) where
           UCONST -> return (Just expr)
           _      -> execThrow $ OList [ostr "undefined refence", ORef nm]
         Just prevVal -> fmap Just $
-          checkPValue (getLocation expr0) "assignment expression" [prevVal, expr] $ (updatingOps!op) prevVal expr
+          checkPValue "assignment expression" [prevVal, expr] $ (updatingOps!op) prevVal expr
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ArraySubExpr o i loc -> do
       o <- execute o >>= checkVoid loc "operand of subscript expression" >>= derefObject

@@ -22,11 +22,22 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleInstances #-}
 
--- | This module provides the /universal string/ data type 'UStr', and a type class 'UStrType' that
--- allows you to declare arbitrary data types to be convertible to and from universal strings.
--- Universal strings are built upon the "Data.ByteString.Lazy.UTF8" module in the @utf8-string@
--- package of the Haskell platform. All strings used in the Dao runtime are stored as this data
--- type.
+-- | This module has two purposes. Firstly, this module depends on no other module in the Dao
+-- program, so it may be imported by any other module, and as such it provides the classes and
+-- functions that must be available to every module. Most of these essential functions are related
+-- to strings, which is why this module is named so.
+--
+-- Therefore secondly, this module provides the /universal string/ data type 'UStr', and a type
+-- class 'UStrType' that allows you to declare arbitrary data types to be convertible to and from
+-- universal strings. Universal strings are built upon the "Data.ByteString.Lazy.UTF8" module in
+-- the @utf8-string@ package of the Haskell platform. All strings used in the Dao runtime are stored
+-- as this data type.
+--
+-- /NOTE:/ though this module is absolutely essential to every other module in the Dao system, not
+-- all data structures should need to instantiate 'UStrType'. By contrst, the
+-- 'Dao.Object.Structured' (not defined in this module) should be instantiated by nearly all
+-- data structures, especially if it is necessary to manipulate these structures within the Dao
+-- programming language.
 --
 -- Dao is a high-level language, like a macro language or a scripting language. One thing
 -- scripting/meta languages all have in common is the use of strings as a way to store and transmit
@@ -35,15 +46,10 @@
 -- transmitted over a socket or pipe, saved to disk. Data from the disk, the socket, or in memory
 -- can be parsed to reconstruct the data structures.
 --
--- /NOTE:/ though this module is absolutely essential to every other module in the Dao system, not
--- all data structures should need to instantiate 'UStrType'. Instead of 'UStrType', nearly all
--- structures should instantiate 'Dao.Object.Structured', especially if it is necessary to
--- manipulate these structures within the Dao programming language.
---
--- It is my opinion that use of strings as intermediate data structures is very poor design in any
--- programming language; it is an anti-pattern. I believe the universal data type should the tree
--- rather than the string. Therefore I have provided the "Dao.Tree" and "Dao.Struct" modules, and
--- the 'Dao.Object.Structured' type class which expand on the ideas of 'Prelude.Show' and
+-- However it is my opinion that use of strings as intermediate data structures is very poor design
+-- in any programming language; it is an anti-pattern. I believe the universal data type should the
+-- tree rather than the string. Therefore I have provided the "Dao.Tree" and "Dao.Struct" modules,
+-- and the 'Dao.Object.Structured' type class which expand on the ideas of 'Prelude.Show' and
 -- 'Prelude.Read' by using a 'Dao.Tree.Tree' as the intermediate data structure, rather than a
 -- 'Dao.String.UStr'.
 module Dao.String where
@@ -55,7 +61,6 @@ import           Control.Exception (assert)
 
 import           Data.String
 import           Data.Monoid
-import           Data.Function
 import           Data.Typeable
 import qualified Data.Binary               as B
 import           Data.Bits
@@ -69,8 +74,18 @@ import qualified Codec.Binary.UTF8.String  as UTF8
 
 import           Numeric
 
--- | Objects which have default values should instantiate this class.
+-- | Objects which can be used as a predicate testing whether or not the object is null, or of a
+-- default value, should instantiate this class.
 class HasNullValue a where { nullValue :: a; testNull :: a -> Bool; }
+
+-- | This class will be instantiated by the 'Dao.Object.Object' data type so that the 'objTable'
+-- function may retrieve the 'Dao.Object.ObjectInterface' from any 'Dao.Object.Object' constructed
+-- with the 'Dao.Object.OHaskell' function. If the 'Dao.Object.Object' is not of the
+-- 'Dao.Object.OHaskell' variety, this function returns 'Prelude.Nothing'. This functionality needs
+-- to be made abstract because modules that must not import the "Dao.Object" module (to prevent
+-- circular dependencies) may still make use of this functionality hence it is placed into
+-- "Dao.String" which depends on no other Dao module.
+class ObjTableClass mtabl obj | mtabl -> obj where { objTable :: obj -> Maybe mtabl }
 
 -- | This is the /universal string/ type. It is a @newtype@ wrapper around
 -- 'Data.ByteString.Lazy.UTF8.ByteString', but has an API that is used throughout the Dao system.

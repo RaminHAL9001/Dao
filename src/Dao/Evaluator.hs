@@ -27,7 +27,6 @@
 
 module Dao.Evaluator where
 
-import           Dao.Runtime
 import           Dao.Stack
 import           Dao.Token  hiding (asString)
 import           Dao.Parser hiding (shift)
@@ -102,20 +101,25 @@ indexObject obj idx = case obj of
 showObj :: PPrintable a => a -> String
 showObj = prettyPrint 80 "    "
 
-initExecUnit :: Maybe UPath -> Runtime -> IO ExecUnit
-initExecUnit modName runtime = do
+initExecUnit :: Maybe UPath -> IO ExecUnit
+initExecUnit modName = do
+  paths    <- newMVar mempty
+  igraph   <- newMVar mempty
   unctErrs <- newIORef []
   recurInp <- newIORef []
   qheap    <- newMVar T.Void
   global   <- newMVar T.Void
-  task     <- runReaderT initTask runtime
-  execTask <- runReaderT initTask runtime
+  task     <- initTask
+  execTask <- initTask
   xstack   <- newIORef emptyStack
   files    <- newIORef M.empty
   rules    <- newIORef T.Void
   return $
     ExecUnit
-    { parentRuntime      = runtime
+    { globalMethodTable  = mempty
+    , pathIndex          = paths
+    , defaultTimeout     = Nothing
+    , importGraph        = igraph
     , currentWithRef     = WithRefStore Nothing
     , currentQuery       = Nothing
     , currentPattern     = Nothing
@@ -147,7 +151,7 @@ initExecUnit modName runtime = do
     }
 
 childExecUnit :: Maybe UPath -> Exec ExecUnit
-childExecUnit path = ask >>= \xunit -> liftIO (initExecUnit path (parentRuntime xunit))
+childExecUnit path = liftIO (initExecUnit path)
 
 setupCodeBlock :: CodeBlock -> Exec Subroutine
 setupCodeBlock scrp = do
@@ -238,7 +242,7 @@ execGuardBlock block = void (execFuncPushStack T.Void (mapM_ execute block >> re
 -- a function call.
 execNested :: T_tree -> Exec a -> Exec a
 execNested init exe = do
-  (LocalStore stack) <- fmap (execStack) ask
+  (LocalStore stack) <- asks execStack
   --lift $ dModifyMVar_ xloc stack (return . stackPush init)
   liftIO $ modifyIORef stack (stackPush init)
   result <- exe
@@ -1333,11 +1337,12 @@ derefObject obj = case obj of
   obj      -> return obj
 
 instance Executable ObjListExpr [ParamValue] where
-  execute (ObjListExpr exprs _) = fmap concat $ forM exprs $ \expr -> case expr of
-    VoidExpr -> return []
-    expr     -> execute expr >>= \val -> case val of
-      Nothing  -> execThrow $ OList [ostr "expression used in list evaluated to void"]
-      Just val -> return [ParamValue{paramValue=val, paramOrigExpr=expr}]
+  execute (ObjListExpr exprs _) = execNested T.Void $ do
+    fmap concat $ forM exprs $ \expr -> case expr of
+      VoidExpr -> return []
+      expr     -> execute expr >>= \val -> case val of
+        Nothing  -> execThrow $ OList [ostr "expression used in list evaluated to void"]
+        Just val -> return [ParamValue{paramValue=val, paramOrigExpr=expr}]
 
 instance Executable OptObjListExpr [ParamValue] where
   execute (OptObjListExpr lst) = maybe (return []) execute lst
@@ -1354,16 +1359,19 @@ instance Executable ObjectExpr (Maybe Object) where
       -- ^ 'VoidExpr's only occur in return statements. Returning 'ONull' where nothing exists is
       -- probably the most intuitive thing to do on an empty return statement.
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    Literal o _ -> return (Just o)
+    ObjQualRefExpr o -> execute (qualRefFromExpr o)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ObjParenExpr o -> execute o
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    AssignExpr nm0 op  expr0  loc -> do
-      nm <- execute nm0 >>= checkVoid loc "left-hand side of assignment"
+    Literal o _ -> return (Just o)
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    AssignExpr nm op  expr loc -> do
       let lhs = "left-hand side of "++show op
-      nm   <- mplus (execute nm0 >>= checkVoid (getLocation nm0) (lhs++" evaluates to void") >>= asReference) $
-        execThrow $ OList [ostr (lhs++" is not a reference value")]
-      expr <- execute expr0 >>= checkVoid loc "right-hand side of assignment" >>= derefObject
+      nm <- msum $
+        [ execute nm >>= checkVoid (getLocation nm) (lhs++" evaluates to void") >>= asReference
+        , execThrow $ OList [ostr (lhs++" is not a reference value")]
+        ]
+      expr <- execute expr >>= checkVoid loc "right-hand side of assignment" >>= derefObject
       updateReference nm $ \maybeObj -> case maybeObj of
         Nothing      -> case op of
           UCONST -> return (Just expr)
@@ -1381,16 +1389,31 @@ instance Executable ObjectExpr (Maybe Object) where
         OList [ostr "function selector does not evaluate to reference", obj]
       execute args >>= callFunction op
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    InitExpr ref initList initMap loc -> do
-      tab <- execGetObjTable (toUStr ref)
+    InitExpr ref initList initMap _ -> do
       let erf = ORef $ Unqualified $ refFromExpr ref
-      case tab of
-        Nothing  -> execThrow $ OList [ostr "object type is not available", erf]
-        Just tab -> case objInitializer tab of
-          Nothing   -> execThrow $ OList [ostr "object type cannot be used as initializer", erf]
-          Just init -> execute initList >>= mapM execute >>= \list ->
-            catchReturn $ execFuncPushStack T.Void $ fmap (Just . flip OHaskell tab) $
-              execute initMap >>= mapM execute >>= init list
+      ref <- return $ toUStr ref
+      if uchars ref == "list"
+      then do
+        unless (testNull initList) $ execThrow $ OList $
+          [ostr "list must be initialized with items curly-brackets"]
+        fmap (Just . OList) $ execute initMap >>= mapM execute
+      else do
+        tab <- execGetObjTable ref
+        case tab of
+          Nothing  -> execThrow $ OList [ostr "object type is not available", erf]
+          Just tab -> case objInitializer tab of
+            Nothing   -> execThrow $ OList [ostr "object type cannot be used as initializer", erf]
+            Just init -> do
+              list <- execute initList >>= execNested T.Void . mapM execute
+              fmap (Just . flip OHaskell tab) $ execute initMap >>= mapM execute >>= init list
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    StructExpr leaf (ObjListExpr branches _) _ -> do
+      leaf <- execute leaf
+      let putLeaf = maybe id (T.insert []) leaf
+      execNested T.Void $ do
+        mapM_ execute branches
+        (LocalStore stack) <- asks execStack
+        liftIO $ (Just . OTree . putLeaf . head . mapList) <$> readIORef stack
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     Equation  left' op right' loc -> do
       let err1 msg = msg++"-hand operand of "++show op++ "operator "
@@ -1417,21 +1440,23 @@ instance Executable ObjectExpr (Maybe Object) where
       expr <- execute expr >>= checkVoid loc ("operand to prefix operator "++show op )
       fmap Just ((prefixOps!op) expr)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    LambdaExpr params scrpt lc -> do
-      exec       <- setupCodeBlock scrpt
-      let newFunc = CallableCode params nullValue exec
-      return $ Just $ error "TODO: LambdaExpr needs to evaluate to an Object containing a CallableCode"
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    FuncExpr name params scrpt lc -> do
-      exec   <- setupCodeBlock scrpt
-      let newFunc = CallableCode{argsPattern=params, codeSubroutine=exec, returnType=nullValue}
-      return $ Just $ error "TODO: FuncExpr needs to evaluate to an Object containing a CallableCode"
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    RuleExpr (RuleStrings params _) scrpt lc -> do
+    LambdaExpr params scrpt _ -> do
       exec <- setupCodeBlock scrpt
-      let mkCallable = GlobAction (fmap (parsePattern . uchars) params) exec
-      let fol tre pat = T.unionWith (++) tre (toTree pat [exec])
-      return $ Just $ error "TODO: RuleExpr needs to evaluate to an Object containing a GlobAction"
+      let callableCode = CallableCode{argsPattern=params, codeSubroutine=exec, returnType=nullValue}
+      return $ Just $ new callableCode
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    FuncExpr name params scrpt _ -> do
+      exec <- setupCodeBlock scrpt
+      let callableCode = CallableCode{argsPattern=params, codeSubroutine=exec, returnType=nullValue}
+      let obj = Just $ new callableCode
+      store <- asks execStack
+      storeUpdate store (Reference [name]) (return . const obj)
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    RuleExpr (RuleStrings params _) scrpt _ -> do
+      exec <- setupCodeBlock scrpt
+      let globAction = GlobAction (fmap (parsePattern . uchars) params) exec
+      -- let fol tre pat = T.unionWith (++) tre (toTree pat [exec])
+      return $ Just $ new globAction
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     MetaEvalExpr expr _ -> catchReturn (execute expr)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
@@ -1488,21 +1513,14 @@ completedThreadInTask task = liftIO (myThreadId >>= putMVar (taskWaitMVar task))
 
 -- | Evaluate an 'Dao.Object.Action' in the current thread.
 execAction :: ExecUnit -> Action -> Exec (Maybe Object)
-execAction xunit_ action = runCodeBlock T.Void (actionCodeBlock action) where
-  xunit =
-    xunit_
-    { currentQuery      = actionQuery      action
-    , currentPattern    = actionPattern    action
-    , currentMatch      = actionMatch      action
-    , currentCodeBlock  = CurrentCodeBlock (Just (actionCodeBlock action))
-    }
+execAction xunit action = local (const xunit) $ runCodeBlock T.Void (actionCodeBlock action)
 
 -- | Create a new thread and evaluate an 'Dao.Object.Action' in that thread. This thread is defined
 -- such that when it completes, regardless of whether or not an exception occurred, it signals
 -- completion to the 'Dao.Object.waitForActions' 'Dao.Debug.DMVar' of the 'Dao.Object.ExecUnit'
 -- associated with this 'Dao.Object.Action'.
 forkExecAction :: ExecUnit -> Action -> Exec ThreadId
-forkExecAction xunit act = ask >>= \xunit -> liftIO $ forkIO $ void $ flip ioExec xunit $ do
+forkExecAction xunit act = liftIO $ forkIO $ void $ flip ioExec xunit $ do
   execCatchIO (void $ execAction xunit act) [execErrorHandler, execIOHandler]
   completedThreadInTask (taskForActions xunit)
 
@@ -1529,7 +1547,6 @@ execActionGroup actgrp = mapM_ (execAction (actionExecUnit actgrp)) (getActionLi
 -- string. You could just run this loop in the current thread, if you only have one 'ExecUnit'.
 execInputStringsLoop :: ExecUnit -> Exec ()
 execInputStringsLoop xunit = do
-  runtime <- ask
   execCatchIO loop [execIOHandler]
   completedThreadInTask (taskForActions xunit)
   where
@@ -1603,19 +1620,12 @@ runStringQuery :: UStr -> [ExecUnit] -> Exec ()
 runStringQuery inputString xunits = do
   task <- asks taskForExecUnits
   taskRegisterThreads task $ do
-    runtime <- ask
     forM xunits $ \xunit -> do
-      --dModifyMVar_ xloc (recursiveInput xunit) (return . (++[inputString]))
       liftIO $ modifyIORef (recursiveInput xunit) (++[inputString])
-      --dFork forkIO xloc "runStringQuery" $ do
       liftIO $ forkIO $ void $ flip ioExec xunit $ do
-        --flip (dCatch xloc) (\ (SomeException _) -> return ()) $ do
         execHandleIO [execErrorHandler, execIOHandler] $ do
-          --dStack xloc "Exec \"BEGIN\" scripts." $
             waitAll (return (getBeginEndScripts preExec xunit)) >>= liftIO . evaluate
-          --dStack xloc "Call execInputStringsLoop" $
             execInputStringsLoop xunit >>= liftIO . evaluate -- Exec RULES and PATTERNS
-          --dStack xloc "Exec \"END\" scripts." $
             waitAll (return (getBeginEndScripts postExec xunit)) >>= liftIO . evaluate
         completedThreadInTask task
   taskWaitThreadLoop task
@@ -1628,56 +1638,47 @@ clearStringQueries xunit = --dModifyMVar_ xloc (recursiveInput xunit) (\_ -> ret
 
 -- | This is the main input loop. Pass an input function callback to be called on every loop.
 daoInputLoop :: (Exec (Maybe UStr)) -> Exec ()
-daoInputLoop getString = asks parentRuntime >>= loop >> daoShutdown where
-  loop runtime = do
-    inputString <- getString
-    case inputString of
-      Nothing          -> return ()
-      Just inputString -> do
-        xunits <- fmap M.elems (liftIO $ readMVar (pathIndex runtime))
-        mapM_ clearStringQueries xunits
-        task <- asks taskForExecUnits
-        runStringQuery inputString xunits
-        loop runtime
+daoInputLoop getString = fix $ \loop -> do
+  inputString <- getString
+  case inputString of
+    Nothing          -> return ()
+    Just inputString -> do
+      xunits <- asks pathIndex >>= liftIO . fmap M.elems . readMVar
+      mapM_ clearStringQueries xunits
+      runStringQuery inputString xunits
+      loop
 
 -- | Evaluates the @EXIT@ scripts for every presently loaded dao program, and then clears the
 -- 'Dao.Object.pathIndex', effectively removing every loaded dao program and idea file from memory.
 daoShutdown :: Exec ()
 daoShutdown = do
-  runtime <- asks parentRuntime
-  let idx = pathIndex runtime
-  xunits <- liftIO $ fmap M.elems (readMVar idx)
+  idx <- asks pathIndex
   liftIO $ modifyMVar_ idx $ (\_ -> return (M.empty))
+  xunits <- liftIO $ fmap M.elems (readMVar idx)
+  forM_ xunits $ \xunit -> local (const xunit) $ asks quittingTime >>= mapM_ execute
 
 -- | When executing strings against Dao programs (e.g. using 'Dao.Tasks.execInputString'), you often
 -- want to execute the string against only a subset of the number of total programs. Pass the
 -- logical names of every module you want to execute strings against, and this function will return
--- them. If you pass an empty list, all 'PublicType' modules (in the 'programs' table of the
--- 'Runtime') will be returned. Pass @'Data.Maybe.Just' 'Dao.Evaluator.ExecUnit'@ to allow
--- 'PrivateType' functions to also be selected, however only modules imported by the program
--- associated with that 'ExecUnit' are allowed to be selected.
-selectModules :: Maybe ExecUnit -> [Name] -> Exec [ExecUnit]
-selectModules xunit names = do
-  runtime <- asks parentRuntime
+-- them.
+selectModules :: [Name] -> Exec [ExecUnit]
+selectModules names = do
+  xunit <- ask
   ax <- case names of
-    []    -> liftIO $ readMVar (pathIndex runtime)
+    []    -> liftIO $ readMVar (pathIndex xunit)
     names -> do
-      pathTab <- liftIO $ readMVar (pathIndex runtime)
+      pathTab <- liftIO $ readMVar (pathIndex xunit)
       let set msg           = M.fromList . map (\mod -> (toUStr mod, error msg))
           request           = set "(selectModules: request files)" names
-      imports <- case xunit of
-        Nothing    -> return M.empty
-        Just xunit -> return $ set "(selectModules: imported files)" $ programImports xunit
       return (M.intersection pathTab request)
   return (M.elems ax)
 
--- | In the current thread, and using the given 'Runtime' environment, parse an input string as
--- 'Dao.Object.Script' and then evaluate it. This is used for interactive evaluation. The parser
--- used in this function will parse a block of Dao source code, the opening and closing curly-braces
--- are not necessary. Therefore you may enter a semi-colon separated list of commands and all will
--- be executed.
-evalScriptString :: ExecUnit -> String -> Exec ()
-evalScriptString xunit instr =
+-- | In the current thread parse an input string as 'Dao.Object.Script' and then evaluate it. This
+-- is used for interactive evaluation. The parser used in this function will parse a block of Dao
+-- source code, the opening and closing curly-braces are not necessary. Therefore you may enter a
+-- semi-colon separated list of commands and all will be executed.
+evalScriptString :: String -> Exec ()
+evalScriptString instr =
   void $ execNested T.Void $ mapM_ execute $
     case parse (daoGrammar{mainParser = concat <$> (many script <|> return [])}) mempty instr of
       Backtrack -> error "cannot parse expression"
@@ -1689,8 +1690,7 @@ evalScriptString xunit instr =
 -- list of strings to be executed against each program.
 execStringsAgainst :: [Name] -> [UStr] -> Exec ()
 execStringsAgainst selectPrograms execStrings = do
-  xunit <- ask
-  otherXUnits <- selectModules (Just xunit) selectPrograms
+  otherXUnits <- selectModules selectPrograms
   forM_ otherXUnits $ \xunit ->
     forM_ execStrings $ \execString ->
       makeActionsForQuery execString xunit >>= execActionGroup
@@ -1703,7 +1703,7 @@ execTopLevel :: Program -> Exec ExecUnit
 execTopLevel (Program ast) = do
   xunit  <- ask
   funcs  <- liftIO (newIORef mempty)
-  macros <- liftIO (newIORef [])
+  -- macros <- liftIO (newIORef [])
   pre    <- liftIO (newIORef [])
   post   <- liftIO (newIORef [])
   onExit <- liftIO (newIORef [])
@@ -1715,7 +1715,7 @@ execTopLevel (Program ast) = do
       , [ostr $ prettyShow (Attribute a b c)]
       ]
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    TopScript scrpt lc -> do
+    TopScript scrpt _ -> do
       -- push a namespace onto the stack
       --lift $ dModifyMVar_ xloc (execStack xunit) (return . stackPush T.Void)
       let (LocalStore stor) = execStack xunit
@@ -1736,7 +1736,7 @@ execTopLevel (Program ast) = do
       let (GlobalStore stor) = globalData xunit
       liftIO $ modifyMVar_ stor (return . T.union tree)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    EventExpr typ scrpt lc -> do
+    EventExpr typ scrpt _ -> do
       exec   <- setupCodeBlock scrpt
       liftIO $ flip modifyIORef (++[exec]) $ case typ of
         BeginExprType -> pre
@@ -1744,7 +1744,7 @@ execTopLevel (Program ast) = do
         ExitExprType  -> onExit
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   funcs  <- liftIO (readIORef funcs)
-  macros <- liftIO (readIORef macros)
+  -- macros <- liftIO (readIORef macros)
   pre    <- liftIO (readIORef pre)
   post   <- liftIO (readIORef post)
   onExit <- liftIO (readIORef onExit)
@@ -1833,7 +1833,7 @@ objectToRequirement file obj lc = case obj of
 importDepGraph :: DepGraph -> [UPath] -> Exec DepGraph
 importDepGraph graph files = do
   let isImport  attrib = attrib == ustr "import"  || attrib == ustr "imports"
-  let isRequire attrib = attrib == ustr "require" || attrib == ustr "requires"
+  -- let isRequire attrib = attrib == ustr "require" || attrib == ustr "requires"
   fhdrs <- forM files (\file -> loadModHeader file >>= \hdrs -> return (file, hdrs))
   fmap mconcat $ forM fhdrs $ \ (file, attribs) ->
     if M.member file graph

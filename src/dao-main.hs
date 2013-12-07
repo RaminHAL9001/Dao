@@ -24,20 +24,15 @@
 module Main where
 
 import           Dao
-import           Dao.Evaluator
 
 import           Data.List
 
 import           Control.Monad
-import           Control.Monad.Reader
-import           Control.Exception
 
 import           System.Environment
 import           System.IO
 --import           System.Console.Readline
 
-import Debug.Trace
-import Control.Concurrent
 
 ----------------------------------------------------------------------------------------------------
 
@@ -51,6 +46,7 @@ disclaimer = unlines $
   , "-----------------------------------------------"
   ]
 
+inputLoop :: IO (Maybe UStr)
 inputLoop = do
   putStr "dao> " >> hFlush stdout
   closed <- hIsClosed stdin
@@ -69,6 +65,7 @@ inputLoop = do
             | str==":license" || str==":license\n" -> putStrLn license_text >> inputLoop
             | otherwise -> return (Just (toUStr str))
 
+main :: IO ()
 main = do
   hSetBuffering stderr LineBuffering
   hSetBuffering stdout LineBuffering
@@ -77,10 +74,11 @@ main = do
   when (null q) (putStr disclaimer)
   --initialize -- initialize the ReadLine library
   args <- fmap (fmap ustr) getArgs
-  daoRuntime Nothing (singleThreaded args)
+  daoRuntime (singleThreaded args)
   --restorePrompt -- shut-down the ReadLine library
   hPutStrLn stderr "Dao has exited."
 
+license_text :: String
 license_text = unlines $
   [ "Copyright (C) 2008-2013  Ramin Honary"
   , ""

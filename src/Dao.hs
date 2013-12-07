@@ -38,29 +38,13 @@ module Dao
   , module Dao
   ) where
 
-import           Dao.Runtime
 import           Dao.String
-import           Dao.Glob
 import           Dao.Object
 import           Dao.Procedural
-import qualified Dao.Tree as T
 import           Dao.Evaluator
 import           Dao.PPrint
-import           Dao.Object.PPrint
 
-import           Control.Concurrent
-import           Control.Exception
-import           Control.Monad.Reader
-
-import           Data.Monoid
-import           Data.List
-import qualified Data.Map    as M
-import qualified Data.Set    as S
-
-import           System.Environment (getProgName, getArgs)
 import           System.IO
-
-import Debug.Trace
 
 -- | The minimum amount of time allowable for a single input string to execute before timing out.
 -- Any time smaller than this ammount, and it may not be possible to execute anything before it
@@ -71,19 +55,9 @@ min_exec_time = 200000
 
 -- | Create a new 'Runtime', optionally providing a file to which output debugging information, and
 -- an 'Exec' monad to evalaute.
-daoRuntime :: Maybe FilePath -> Exec () -> IO ()
-daoRuntime debugRef daoMain = do
-  progName <- getProgName
-  let runtime =
-        Runtime
-        { pathIndex            = error "Dao:daoRuntime: forgot to set \"pathIndex\""
-        , defaultTimeout       = Just 8000000
-        , importGraph          = error "Dao:daoRuntime: forgot to set \"importGraph\""
-        , globalMethodTable    = error "Dao:daoRuntime: forgot to set \"globalMethodTable\""
-        }
-  paths    <- newMVar (M.empty)
-  runtime  <- return $ runtime{pathIndex=paths}
-  xunit    <- initExecUnit Nothing runtime
+daoRuntime :: Exec () -> IO ()
+daoRuntime daoMain = do
+  xunit    <- initExecUnit Nothing
   result   <- ioExec daoMain xunit
   case result of
     FlowOK     ()  -> return ()

@@ -28,15 +28,13 @@ module Dao.Object.AST where
 
 import           Dao.String
 import           Dao.Token
-import           Dao.Parser
 import           Dao.Object
 
 import           Control.Monad
 
 import           Data.Typeable
 import           Data.Monoid
-import           Data.List
-import Debug.Trace
+
 ----------------------------------------------------------------------------------------------------
 
 data AST_Ref
@@ -57,7 +55,8 @@ data AST_QualRef
   deriving (Eq, Ord, Typeable, Show)
 instance HasNullValue AST_QualRef where
   nullValue = AST_Unqualified nullValue
-  testNull (AST_Unqualified a) = testNull a
+  testNull (AST_Unqualified a    ) = testNull a
+  testNull (AST_Qualified q a _ _) = case q of { LOCAL -> null a; _ -> False; }
 
 data AST_ObjList = AST_ObjList [Comment] [Com AST_Object] Location deriving (Eq, Ord, Typeable, Show)
 instance Monoid AST_ObjList where
@@ -97,7 +96,8 @@ instance Functor AST_TyChk where
 
 instance HasNullValue a => HasNullValue (AST_TyChk a) where
   nullValue = AST_NotChecked nullValue
-  testNull (AST_NotChecked a) = testNull a
+  testNull (AST_NotChecked  a  ) = testNull a
+  testNull (AST_Checked _ _ a _) = testNull a
 
 checkedAST :: AST_TyChk a -> a
 checkedAST a = case a of { AST_NotChecked a -> a; AST_Checked a _ _ _ -> a; }
@@ -183,7 +183,7 @@ instance HasLocation AST_OptObjList where
 
 data AST_Paren = AST_Paren (Com AST_Object) Location deriving (Eq, Ord, Typeable, Show)
 instance HasLocation AST_Paren where
-  getLocation (AST_Paren o loc)     = loc
+  getLocation (AST_Paren _ loc)     = loc
   setLocation (AST_Paren o _  ) loc = AST_Paren o loc
   delLocation (AST_Paren o _  )     = AST_Paren (delLocation o) LocationUnknown
 
@@ -292,6 +292,7 @@ instance HasNullValue AST_SourceCode where
 
 ----------------------------------------------------------------------------------------------------
 
+lu :: Location
 lu  = LocationUnknown
 fd :: HasLocation a => a -> a
 fd = delLocation
@@ -652,7 +653,7 @@ instance Intermediate RefExpr AST_Ref where
   toInterm   ast = case ast of
     AST_RefNull             -> [RefExpr (Reference []) LocationUnknown]
     AST_Ref  n nx  loc -> [RefExpr (Reference (n : fmap unComment nx)) loc]
-  fromInterm (RefExpr (Reference nx) loc) = case nx of
+  fromInterm (RefExpr (Reference nx) _) = case nx of
     []   -> [AST_RefNull]
     n:nx -> [AST_Ref n (fmap Com nx) LocationUnknown]
 
@@ -807,7 +808,7 @@ instance Intermediate TopLevelExpr AST_TopLevel where
     AST_Attribute  a b   loc -> liftM3 Attribute     [a]    (uc0 b)        (ll loc)
     AST_TopScript  a     loc -> liftM2 TopScript     (ti a)                (ll loc)
     AST_Event      a _ b loc -> liftM3 EventExpr     [a]    (ti  b)        (ll loc)
-    AST_TopComment a         -> mzero
+    AST_TopComment _         -> mzero
   fromInterm obj = case obj of
     Attribute a b loc -> liftM3 AST_Attribute [a]         (nc0 b)         [loc]
     TopScript a   loc -> liftM2 AST_TopScript (fi a)                      [loc]

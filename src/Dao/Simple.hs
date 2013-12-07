@@ -120,6 +120,15 @@ lssyscalls = withDaoIO $ showSystemCalls >>= liftIO . putStrLn
 lsmods :: IO ()
 lsmods = withDaoIO $ showLoadedMods >>= liftIO . putStrLn
 
+-- | Show the editing module.
+lsmod :: IO ()
+lsmod = withDaoIO $ (DaoIO $ lift $ gets editingModule) >>= \mod -> case mod of
+  Nothing  -> liftIO $ putStrLn "(no module selected)"
+  Just mod -> liftIO $ print mod
+
+newmod :: IO ()
+newmod = withDaoIO createNewModule
+
 -- | Load a module from a 'System.IO.FilePath', make it the current module.
 loadmod :: FilePath -> IO ()
 loadmod path = withDaoIO (unloadCurrentModule >> loadModule path >> switchToModule path)
@@ -454,22 +463,27 @@ saveModule = DaoIO $ do
 
 editModuleIsSaved :: DaoIO st Bool
 editModuleIsSaved = DaoIO $ lift $ get >>= \st -> return $ editModuleCount st == 0 &&
-  (maybe False (const True) $ pure (,) <*> editingModule st <*> editingModulePath st)
-
-requireModuleBeSaved :: DaoIO st ()
-requireModuleBeSaved = editModuleIsSaved >>= flip unless unsavedException
-
--- | Load a module but do not switch to it.
-loadModule :: FilePath -> DaoIO st ()
-loadModule path = DaoIO $ do
-  mod <- liftIO $ readFile path >>= readIO >>= evaluate . io_x >>= evaluate
-  lift $ modify $ \st -> st{editModuleTable = M.insert (text path) mod (editModuleTable st)}
+  (maybe True (const False) $ pure (,) <*> editingModule st <*> editingModulePath st)
 
 unsavedException :: DaoIO st ig
 unsavedException = DaoIO (lift get) >>= \st -> throwXData "Module.Error" $ concat $
   [ [("problem", mkXStr "current module has unsaved changed")]
   , maybe [] (\p -> [("currentPath", mkXStr $ textChars p)]) $ editingModulePath st
   ]
+
+requireModuleBeSaved :: DaoIO st ()
+requireModuleBeSaved = editModuleIsSaved >>= flip unless unsavedException
+
+createNewModule :: DaoIO st ()
+createNewModule = do
+  requireModuleBeSaved
+  DaoIO $ lift $ modify $ \st -> st{editingModule = Just initXModule}
+
+-- | Load a module but do not switch to it.
+loadModule :: FilePath -> DaoIO st ()
+loadModule path = DaoIO $ do
+  mod <- liftIO $ readFile path >>= readIO >>= evaluate . io_x >>= evaluate
+  lift $ modify $ \st -> st{editModuleTable = M.insert (text path) mod (editModuleTable st)}
 
 -- | Unload the current module, do not place it back into the table of editable modules.
 unloadCurrentModule :: DaoIO st ()
@@ -1488,37 +1502,60 @@ instance Ord (Hidden a) where { compare _ _ = EQ }
 instance Show (Hidden a) where { show _ = "" }
 instance Read (Hidden a) where { readsPrec _ s = [(Hidden Nothing, s)] }
 
+unspace :: String -> [String]
+unspace = return . dropWhile isSpace
+
+indent :: String -> Int -> String -> String
+indent ind wrap str =
+  if null (drop wrap str) then str else unlines (lines str >>= \str -> [ind++str])
+
 data RWData
   = NULL | TRUE | INT Int | FLOAT Double | STR Text | PTR Address
   | CHAR Char
   | LIST [RWData]
   | DATA Address [RWDef]
   | FUNC [Label] [RWCommand]
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord)
+instance Show RWData where
+  show o = case o of
+    NULL     -> "null"
+    TRUE     -> "true"
+    INT    i -> show i
+    FLOAT  d -> show d
+    STR    t -> show t
+    PTR    a -> show a
+    CHAR   c -> show c
+    LIST   l -> show l
+    DATA a l -> show a ++ show (RWDefines l)
+    FUNC p f -> concat ["func", show p, " ", show f]
 instance Read RWData where
   readsPrec p str = take 1 $ do
-    let unspace = return . dropWhile isSpace
     str <- unspace str
     msum $
       [ do  (txt, str) <- readsPrec p str
             return (STR txt, str)
-      , do  (neg, str) <- case str of
-              '-':str            -> return (negate, str)
-              '+':str            -> return (id, str)
-              _                  -> return (id, str)
-            (a, str) <- return $ span isNumber str
-            if null a
-            then mzero
-            else do
-              let float str = readsPrec p str >>= \ (flo, str) -> return (FLOAT (neg flo), str)
-              case str of
-                '.':_           -> float str
-                'e':_           -> float str
-                'E':_           -> float str
-                b:_ | isAlpha b -> mzero
-                _               -> do
-                  (int, str) <- readsPrec p (a++str)
-                  return (INT int, str)
+      , do  (isNeg, str) <- return $ case str of
+              '-':str -> (True, str)
+              '+':str -> (False, str)
+              str     -> (False, str)
+            (isInt, isFloat, str) <- return $ case str of
+              '.':n:_ | isNumber n -> (False, True, '0':str)
+              str -> case span isNumber str of
+                ("",       _)                  -> (False, False, str)
+                (_ , '.':n:_) | isNumber n     -> (True, True, str)
+                (_ ,     e:_) | e=='E'||e=='e' -> (True, True, str)
+                (_ ,     e:_)                  -> (not (isAlpha e), False, str)
+                (_ , ""     )                  -> (True , False, str)
+            let neg :: forall n . Num n => n -> n
+                neg = if isNeg then negate else id
+            case () of
+              () | isFloat -> do
+                (flo, str) <- readsPrec p str
+                return (FLOAT (neg flo), str)
+              () | isInt   -> do
+                (int, str) <- readsPrec p str
+                return (INT (neg int), str)
+              ()           -> mzero
       , case str of
           '[':_    -> readsPrec p str >>= \ (lst , str) -> return (LIST lst, str)
           '(':str  -> readsPrec p str >>= \ (xdat, str) -> unspace str >>= \str -> case str of
@@ -1527,25 +1564,11 @@ instance Read RWData where
           _        -> mzero
       , do  (addr, str) <- readsPrec p str
             lbls <- return (addrToLabels addr)
-            let bracketedData = unspace str >>= \str -> case str of
-                  '{':str -> do
-                    let loop items str = unspace str >>= \str -> case str of
-                          '}':str -> return (items, str)
-                          str     -> do
-                            (lbl, str) <- unspace str >>= readsPrec p
-                            case str of
-                              '=':str -> do
-                                (xdat, str) <- readsPrec p str
-                                str <- unspace str >>= \str -> case str of
-                                  ',':str -> return str
-                                  str     -> return str
-                                loop (items++[DEFINE lbl xdat]) str
-                              _       -> mzero
-                    (defs, str) <- unspace str >>= loop []
-                    return (DATA addr defs, str)
-                  _ -> mzero
+            let bracketedData = do
+                  (RWDefines rwdefs, str) <- readsPrec p str
+                  return (DATA addr rwdefs, str)
             case lbls of
-              [Label lbl] -> case map toLower (show lbl) of
+              [lbl] -> case map toLower (show lbl) of
                 "null"  -> return (NULL, str)
                 "false" -> return (NULL, str)
                 "true"  -> return (TRUE, str)
@@ -1679,22 +1702,22 @@ tryXMember str o = case readsPrec 0 str of
 
 data RWModule
   = MODULE
-    { parser     :: Address
-    , imports    :: [Address]
-    , private    :: [RWDef]
-    , public     :: [RWDef]
-    , rules      :: [RWRule]
+    { parser  :: Address
+    , imports :: [Address]
+    , private :: RWDefines
+    , public  :: RWDefines
+    , rules   :: [RWRule]
     }
   deriving (Eq, Ord, Show, Read)
 data XModule
   = XMODULE
-    { xparser     :: Address
+    { xparser  :: Address
       -- ^ every module may specify it's own parser for responding to input strings. Unless changed,
       -- this is always set to the default.
-    , ximports    :: [Address]
-    , xprivate    :: XDefines
-    , xpublic     :: XDefines
-    , xrules      :: T.Tree XData [XBlock]
+    , ximports :: [Address]
+    , xprivate :: XDefines
+    , xpublic  :: XDefines
+    , xrules   :: T.Tree XData [XBlock]
     }
   deriving (Eq, Ord)
 instance Show XModule where { show = show . x_io }
@@ -1717,15 +1740,51 @@ initXModule =
   , xrules      = T.Void
   }
 
-data RWDef = DEFINE Label RWData deriving (Eq, Ord, Show, Read)
+data RWDef = DEFINE Label RWData deriving (Eq, Ord)
 defToPair :: RWDef -> (Label, RWData)
 defToPair (DEFINE a b) = (a, b)
+instance Show RWDef where { show (DEFINE lbl dat) = show lbl ++ " = " ++ show dat }
+instance Read RWDef where
+  readsPrec p str = do
+    str <- unspace str
+    (lbl, str) <- readsPrec p str
+    str <- unspace str
+    case str of
+      '=':str -> do
+        str <- unspace str
+        (dat, str) <- readsPrec p str
+        return (DEFINE lbl dat, str)
+      _ -> mzero
+
+newtype RWDefines = RWDefines [RWDef] deriving (Eq, Ord)
+instance Show RWDefines where
+  show (RWDefines rw) = concat $ ["{ ", intercalate ", " $ map (indent "  " 80 . show) rw, "}"]
+instance Read RWDefines where
+  readsPrec p str = do
+    str <- unspace str
+    case str of
+      '{':str -> do
+        str <- unspace str
+        let loop defs str = do
+              str <- unspace str
+              case str of
+                '}':str -> return (defs, str)
+                str -> do
+                  (def, str) <- readsPrec p str
+                  str <- unspace str
+                  str <- case str of
+                    ',':str -> return str
+                    _       -> return str
+                  loop (defs++[def]) str
+        (defs, str) <- loop [] str
+        return (RWDefines defs, str)
+      _       -> mzero
 
 newtype XDefines = XDefines { defsToMap :: M.Map Label XData } deriving (Eq, Ord)
 instance Show XDefines where { show = show . x_io }
-instance RWX [RWDef] XDefines where
-  io_x = XDefines . M.fromList . map (\ (DEFINE a b) -> (a, io_x b) )
-  x_io (XDefines x) = map (\ (a, b) -> DEFINE a (x_io b)) (M.assocs x)
+instance RWX RWDefines XDefines where
+  io_x (RWDefines rw) = XDefines $ M.fromList $ map (\ (DEFINE a b) -> (a, io_x b)) rw
+  x_io (XDefines x) = RWDefines $ map (\ (a, b) -> DEFINE a (x_io b)) (M.assocs x)
 
 initXDefines :: XDefines
 initXDefines = XDefines{ defsToMap = mempty }

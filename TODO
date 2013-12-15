@@ -1,9 +1,8 @@
 TODO:
-* I should probably separate the 'Dao.Object.OHaskell' constructor from the 'Object' data type so I
-	can go back to using the "deriving" feature to derive 'Prelude.Show', 'Prelude.Eq', and
-	'Prelude.Ord' for the 'Object' data type, then just instantiate the data type with the single
-	'OHaskell' constructor into the 'Prelude.Eq', 'Prelude.Ord', and 'Prelude.Show' classes by hand
-	as is written now.
+* Move the semantic data types 'Dao.Object.ObjectExpr', 'Dao.Object.ScriptExpr', and
+	'Dao.Object.TopLevelExpr' types into their own module.
+	EDIT: this may not be possible, although I will need to break-down the Dao.Evaluator module
+	somehow because I really think 5000 lines of code is too large for a Haskell module.
 
 * Define as many of the data types in "Dao.Object" and "Dao.Object.AST" to make use of
 	"Data.Generic" functions to program as many of the instances of the 'Dao.Token.HasLocation'
@@ -13,29 +12,11 @@ TODO:
 	'Dao.Binary.PrefixTable' data type and always infer the prefix parser from the type when
 	evaluating 'Dao.Binary.runPrefixTable'.
 
-* I need a customized monad for binary serialization. The 'Data.Binary.Binary' monad does not let
-	you retrieve data from outside of the monad. This is a problem when parsing dynamic objects
-	constructed with the 'Dao.Object.OHaskell' constructor. We may receive a byte in the byte stream
-	when parsing an 'Dao.Object.Object' indicating that the following bytes construct a dynamic
-	type, but which 'Dao.Object.ObjectInterface' should be used to parse the following bytes? We can
-	write type information into the stream to indicate which 'Dao.Object.ObjectInterface' to use,
-	but when reading the byte stream, there is no way to retrieve the 'Dao.Object.ObjectInterface'
-	unless I lift the 'Dao.Binary.Get.GetM' into a 'Control.Monad.Reader.ReaderT' monad containing a
-	list of 'Dao.Object.ObjectInterface's.
-
 * Implement the ObjectInterface for the abstract syntax tree and fundamental data types like Maps
 	and Sets.
 
-* Move the semantic data types 'Dao.Object.ObjectExpr', 'Dao.Object.ScriptExpr', and
-	'Dao.Object.TopLevelExpr' types into their own module.
-
-* Line-up the code in each module, try to get the order of declaration of semantic data types and
-	the abstract syntax tree so the declarations occur in the order in their respective module
-	files. Also order the instantation of these data types into the various classes in their various
-	like PPrint, HasRandGen, and the binary and code Parsers, should also be in relatively the same
-	order they occur in the semantic data types module.
-
 * Clean up the "Dao.Parser" module.
+	EDIT: lets also move the tokenizer to the "Dao.Token" module.
 
 * Implement predicates on variables. (Started)
 * (related) create a new primitive for type values, perhaps add a constructor for it in the
@@ -137,6 +118,35 @@ matching values of referenecs, which needs to be the default pattern that binds 
 
 ----------------------------------------------------------------------------------------------------
 SOLVED:
+* Line-up the code in each module, try to get the order of declaration of semantic data types and
+	the abstract syntax tree so the declarations occur in the order in their respective module
+	files. Also order the instantation of these data types into the various classes in their various
+	like PPrint, HasRandGen, and the binary and code Parsers, should also be in relatively the same
+	order they occur in the semantic data types module.
+	NOTE: I did this now but I had to move everything into the "Dao.Evaluator" which makes the
+	module huge. I need to break things down, so I have created a new to-do item for that.
+
+* I should probably separate the 'Dao.Object.OHaskell' constructor from the 'Object' data type so I
+	can go back to using the "deriving" feature to derive 'Prelude.Show', 'Prelude.Eq', and
+	'Prelude.Ord' for the 'Object' data type, then just instantiate the data type with the single
+	'OHaskell' constructor into the 'Prelude.Eq', 'Prelude.Ord', and 'Prelude.Show' classes by hand
+	as is written now.
+	NOTE: the Object data type was renamed to the "Dao.Object.Value" data type and the 'OHaskell'
+	constructor was made polymorphic. A new type called 'HaskellData' was defined which contains the
+	Dynamic value and the ObjectInterface value that used to be part of the 'OHaskell' constructor.
+	Finally, a type synonym called "Dao.Evaluator.Object" was defined as a "Value HaskellData" type.
+
+* I need a customized monad for binary serialization. The 'Data.Binary.Binary' monad does not let
+	you retrieve data from outside of the monad. This is a problem when parsing dynamic objects
+	constructed with the 'Dao.Object.OHaskell' constructor. We may receive a byte in the byte stream
+	when parsing an 'Dao.Object.Object' indicating that the following bytes construct a dynamic
+	type, but which 'Dao.Object.ObjectInterface' should be used to parse the following bytes? We can
+	write type information into the stream to indicate which 'Dao.Object.ObjectInterface' to use,
+	but when reading the byte stream, there is no way to retrieve the 'Dao.Object.ObjectInterface'
+	unless I lift the 'Dao.Binary.Get.GetM' into a 'Control.Monad.Reader.ReaderT' monad containing a
+	list of 'Dao.Object.ObjectInterface's.
+	NOTE: this was solved a little while ago with the addition of the "Dao.Binary" module.
+
 * Modify the abismal function for converting top-level expressions to 'ExecUnit's. In fact, I would
 	like to move all execution into 'ExecUnit'. The 'Run' monad should be phased out, and the
 	'Runtime' data structure should simply be constructed in the IO monad and used to create every

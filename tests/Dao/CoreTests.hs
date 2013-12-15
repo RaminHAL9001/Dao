@@ -34,14 +34,8 @@ import           Dao.Parser  hiding (isEOF)
 import           Dao.Struct
 import           Dao.Random
 import qualified Dao.Binary        as D
-import           Dao.Object
-import           Dao.Object.AST
+import           Dao.Evaluator
 import           Dao.Object.Parser
-import           Dao.Object.Binary
-import           Dao.Object.PPrint
-import           Dao.Object.Struct
-import           Dao.Object.Random
-import           Dao.Object.DeepSeq
 
 import           Control.Applicative
 import           Control.DeepSeq
@@ -100,11 +94,11 @@ data TestCase
     , treeStructure   :: Maybe T_tree
     }
 instance Show TestCase where
-  show (TestCase i obj str bytes tree) = unlines $ concat $
+  show (TestCase i o _str _bytes _tree) = unlines $ concat $
     [ ["TestID #"++show i]
-    , case obj of
-        RandObject   o -> ["Random Object:", prettyShow obj]
-        RandTopLevel o -> ["Random Top-Level Expression:", prettyShow obj]
+    , case o of
+        RandObject   _ -> ["Random Object:", prettyShow o]
+        RandTopLevel _ -> ["Random Top-Level Expression:", prettyShow o]
     ]
 
 data TestResult
@@ -122,15 +116,21 @@ data TRLens a
     { trLensGetter :: TestResult -> a
     , trLensSetter :: a -> TestResult -> TestResult
     }
-parsing     = TRLens getParserResult  (\a r -> r{getParserResult=a})
+
+parsing :: TRLens (Bool, Maybe RandObj)
+parsing = TRLens getParserResult  (\a r -> r{getParserResult=a})
+
+serializing :: TRLens (Bool, Maybe RandObj)
 serializing = TRLens getDecodedResult (\a r -> r{getDecodedResult=a})
+
+structuring :: TRLens (Bool, Maybe RandObj)
 structuring = TRLens getConstrResult  (\a r -> r{getConstrResult=a})
 
 setResult :: TRLens a -> (a -> a) -> DaoLangResultM ()
 setResult on f = modify (\r -> trLensSetter on (f $ trLensGetter on r) r)
 
 instance Show TestResult where
-  show (TestResult (TestCase i orig ppr enc tree) msg count parsd decod struct) =
+  show (TestResult (TestCase i orig ppr enc tree) msg _count parsd decod struct) =
     unlines $ concat $ do
       let o msg1 src prin msg2 (passed, item) = do
             guard (not passed)
@@ -175,7 +175,7 @@ testPassed = return ()
 tryTest :: (TestCase -> Maybe item) -> (item -> DaoLangResultM ()) -> DaoLangResultM ()
 tryTest getTestItem testFunc = get >>= \r -> maybe (return ()) testFunc (getTestItem $ testCase r)
 
--- newtype GResultM c e s t r a = ResultM { resultMtoStateT :: PTrans (StateT TestResult (GTest c e s t r)) a }
+-- newtype GResultM c e s t r a = ResultM { resultMtoStateT :: PredicateT (StateT TestResult (GTest c e s t r)) a }
 --  deriving (Functor, Applicative, MonadPlus, MonadIO)
 
 -- | A 'UnitTester' for the Dao language. This does not merely test the parser, it also tests the pretty
@@ -199,7 +199,7 @@ unitTester =
       then return o
       else fail "Test configuration has disabled all test categories."
   , showResult      = \r -> return (show r)
-  , combineStats    = \r () -> return ()
+  , combineStats    = \_ () -> return ()
   , newEnvironment  = return . const mempty
   , newStatistics   = return . const ()
   , showStatistics  = const ""
@@ -219,15 +219,15 @@ unitTester =
       mtab <- getMethodTable
       cfg  <- asksUnitConfig id
       let maxDepth      = maxRecurseDepth cfg
-      let obj           = genRandWith randO maxDepth (fromIntegral i)
-      let str           = prettyShow obj
-      let bin           = D.encode mtab obj
-      let tree          = dataToStruct obj
+      let o             = genRandWith randO maxDepth (fromIntegral i)
+      let str           = prettyShow o
+      let bin           = D.encode mtab o
+      let tree          = dataToStruct o
       let setup isSet o = if isSet cfg then Just o else Nothing
       return $
         TestCase
         { testCaseID       = i
-        , testObject       = obj
+        , testObject       = o
         , parseString      = setup doTestParser (ustr str)
         , serializedBytes  = setup doTestSerializer bin
         , treeStructure    = setup doTestStructizer tree
@@ -241,22 +241,22 @@ unitTester =
         RandTopLevel o -> case canonicalize o of
           [o] -> return $ tc{testObject = RandTopLevel o}
           [ ] -> fail "could not canonicalize original object"
-          ox  -> fail "original object canonicalized to multiple possible values"
+          _   -> fail "original object canonicalized to multiple possible values"
         RandObject   _ -> return tc
       --
       --------------------------- (1) Test the parser ---------------------------
       tryTest parseString $ \str -> do
-        let withPValue p fn = case p of
+        let withPredicate p fn = case p of
               Backtrack -> testFailed $ unlines ["Parser backtracked", uchars str]
               PFail   b -> testFailed $ unlines ["Parser failed", show b, uchars str]
               OK      a -> fn a
         case testObject tc of
-          RandObject   orig ->
+          RandObject  _orig ->
             -- For ordinary Objects, we only test if the pretty-printed code can be parsed.
-            withPValue
+            withPredicate
               (parse (daoGrammar{mainParser=equation}) mempty (uchars str))
               (const testPassed)
-          RandTopLevel orig -> withPValue (parse daoGrammar mempty (uchars str)) $ \o -> do
+          RandTopLevel orig -> withPredicate (parse daoGrammar mempty (uchars str)) $ \o -> do
             -- For AST objects, we also test if the data structure parsed is identical to the data
             -- structure that was pretty-printed.
             let ~diro  = do -- clean up the parsed input a bit
@@ -287,11 +287,11 @@ unitTester =
               testFailed "Original object does not match object deserialized from binary string"
       --
       ---------------- (3) Test the intermediate tree structures ----------------
-      tryTest treeStructure $ \obj ->
-        case structToData obj :: PValue UpdateErr RandObj of
+      tryTest treeStructure $ \o ->
+        case structToData o :: Predicate UpdateErr RandObj of
           Backtrack -> testFailed $
             "Backtracked while constructing a Haskell object from a Dao tree"
-          PFail err -> testFailed $ unlines [show err, prettyShow obj]
+          PFail err -> testFailed $ unlines [show err, prettyShow o]
           OK struct ->
             if testObject tc == struct
               then do
@@ -337,7 +337,7 @@ instance D.Binary RandObj MethodTable where
     RandTopLevel o -> case toInterm o of
       [ ] -> fail "could not convert AST object to intermediate data for serialization"
       [o] -> D.prefixByte 0xFD $ D.put o
-      ox  -> fail $ concat $
+      _   -> fail $ concat $
         [ "converting AST object to intermediate for serialization"
         , " evaluated to multiple ambiguous data structures"
         ]
@@ -349,7 +349,7 @@ instance D.HasPrefixTable RandObj D.Byte MethodTable where
     [ D.get >>= \o -> case fromInterm o of
         []  -> fail "could not convert deserialized intermediate object to AST"
         [o] -> return (RandTopLevel o)
-        ox  -> fail $ concat $
+        _   -> fail $ concat $
           [ "deserializing intermediate object to AST evaluated"
           , " to mulitple ambiguous data structures"
           ]

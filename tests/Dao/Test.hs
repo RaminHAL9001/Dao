@@ -40,13 +40,8 @@ import           Control.Monad.Error
 import           Data.Typeable
 import           Data.Dynamic
 import           Data.Time.Clock
-import           Data.Maybe
 import           Data.Char (isSpace)
 import           Data.List
-import           Data.Monoid
-import           Data.IORef
-import qualified Data.Binary          as B
-import qualified Data.ByteString.Lazy as B
 
 import           Text.Printf -- used for printing clocks
 
@@ -105,12 +100,12 @@ instance MonadReader (GTestEnv c e s t r) (GTest c e s t r) where
 -- @'Control.Monad.return.' ()@. Exceptions of the type 'Control.Exception.IOException' and
 -- 'Control.Exception.ErrorCall' are caught and stored in the monad as a 'Dao.Predicate.PFail' value
 -- which can be handled without a 'Control.Exception.catch' or similar statement.
-newtype GResultM c e s t r a = ResultM { resultMtoPTrans :: PTrans (String, SomeException) (StateT r (GTest c e s t r)) a }
+newtype GResultM c e s t r a = ResultM { resultMtoPredicateT :: PredicateT (String, SomeException) (StateT r (GTest c e s t r)) a }
 instance Functor (GResultM c e s t r) where { fmap f (ResultM m) = ResultM (fmap f m) }
 instance Monad (GResultM c e s t r) where
-  ResultM f >>= to = ResultM (f >>= resultMtoPTrans . to)
+  ResultM f >>= to = ResultM (f >>= resultMtoPredicateT . to)
   return = ResultM . return
-  fail msg = ResultM (pvalue $ PFail ("", SomeException $ ErrorCall msg))
+  fail msg = ResultM (predicate $ PFail ("", SomeException $ ErrorCall msg))
   -- 'fail' is overridden to gently place an error into the monad, it never throws the error.
 instance MonadPlus (GResultM c e s t r) where
   mzero = ResultM mzero
@@ -118,15 +113,15 @@ instance MonadPlus (GResultM c e s t r) where
 instance Applicative (GResultM c e s t r) where { pure = return; (<*>) = ap; }
 instance MonadState r (GResultM c e s t r) where { state f = ResultM (lift (state f)) }
 instance MonadError (String, SomeException) (GResultM c e s t r) where
-  throwError e = ResultM (pvalue $ PFail e)
-  catchError f catch = ResultM $ catchError (resultMtoPTrans f) (resultMtoPTrans . catch)
+  throwError e = ResultM (predicate $ PFail e)
+  catchError f catch = ResultM $ catchError (resultMtoPredicateT f) (resultMtoPredicateT . catch)
 instance MonadIO (GResultM c e s t r) where { liftIO = ResultM . liftIO }
 
-runResultM :: GResultM c e s t r a -> r -> GTest c e s t r (PValue (String, SomeException) a, r)
-runResultM f = runStateT (runPTrans (resultMtoPTrans f))
+runResultM :: GResultM c e s t r a -> r -> GTest c e s t r (Predicate (String, SomeException) a, r)
+runResultM f = runStateT (runPredicateT (resultMtoPredicateT f))
 
-resultM :: (r -> GTest c e s t r (PValue (String, SomeException) a, r)) -> GResultM c e s t r a
-resultM = ResultM . PTrans . StateT
+resultM :: (r -> GTest c e s t r (Predicate (String, SomeException) a, r)) -> GResultM c e s t r a
+resultM = ResultM . PredicateT . StateT
 
 testInResultM :: GTest c e s t r a -> GResultM c e s t r a
 testInResultM f = resultM (\r -> f >>= \a -> return (OK a, r))
@@ -340,7 +335,7 @@ errHandler func =
 configFromPath :: GUnitTester c e s t r -> IO (GTestConfig c)
 configFromPath handle = do
   let path    = configFilePath handle
-  let showCfg = showConfig handle
+  --let showCfg = showConfig handle
   let readIO  = readConfig handle
   let next msg a fn = flip (maybe (return Nothing)) a $ \a ->
         catches (Just <$> fn a) $ errHandler $ \err -> do
@@ -504,8 +499,8 @@ unitTest f a = asks (f . unitTestHandle) >>= \func -> func a
 
 -- | Evaluate the 'evaluateTest' function in the 'GUnitTester' function. Since 'evaluateTest' is in
 -- the 'GResultM' monad, the value returned contains information about whether or not the test
--- passed or failed within a 'Dao.Predicate.PValue' data type.
-unitResult :: t -> GTest c e s t r (PValue (String, SomeException) (), r)
+-- passed or failed within a 'Dao.Predicate.Predicate' data type.
+unitResult :: t -> GTest c e s t r (Predicate (String, SomeException) (), r)
 unitResult test = do
   run    <- unit evaluateTest
   result <- join $ unit newResult
@@ -558,7 +553,7 @@ uncaught msg err = ask >>= \env -> liftIO $
 
 -- | This function, or some function which uses this function like 'catchToLog', is the best way to
 -- catch exceptions. You provide three parameters: First is a message to report when an exception occurs, it
--- is best to indicate what function you were trying to evaluate inside of the 'catchToPValue'
+-- is best to indicate what function you were trying to evaluate inside of the 'catchToPredicate'
 -- function. Second is a function to evaluate when a 'Control.Exception.UserInterrupt' exception is
 -- caught. This function should shut down gracefully without reporting any error messages. Third is
 -- the function to run which might throw an exception. Exceptions handled are
@@ -568,8 +563,8 @@ uncaught msg err = ask >>= \env -> liftIO $
 -- 
 -- I define a special exception handler that catches every execption except for those of
 -- the type 'Control.Exception.AsyncException'.
-catchToPValue :: String -> GTest c e s t r a -> GTest c e s t r (PValue (String, SomeException) a)
-catchToPValue msg try = ask >>= \env -> liftIO $ do
+catchToPredicate :: String -> GTest c e s t r a -> GTest c e s t r (Predicate (String, SomeException) a)
+catchToPredicate msg try = ask >>= \env -> liftIO $ do
   let catchAll (SomeException e) = throwIO (NonAsyncException (show e) (toDyn e))
   let rethrow (NonAsyncException err dyn) =
         maybe (testInIO env (uncaught msg err) >> return Backtrack)
@@ -577,21 +572,21 @@ catchToPValue msg try = ask >>= \env -> liftIO $ do
               (fromDynamic dyn)
   handle rethrow $ handle catchAll $ fmap OK $ testInIO env try
 
--- | Like 'catchToPValue' but simply reports the exception caught using 'uncaught' and returns
+-- | Like 'catchToPredicate' but simply reports the exception caught using 'uncaught' and returns
 -- 'Prelude.Nothing'.
 catchToLog :: String -> GTest c e s t r a -> GTest c e s t r (Maybe a)
-catchToLog msg try = ask >>= \env -> catchToPValue msg try >>= \pval -> case pval of
+catchToLog msg try = catchToPredicate msg try >>= \pval -> case pval of
   OK     a  -> return (Just a)
   Backtrack -> return Nothing
   PFail (msg, (SomeException e)) -> uncaught msg (show e) >> return Nothing
 
--- | Like 'catchToPValue' except 'Dao.Predicate.Backtrack' results (usually caused by
+-- | Like 'catchToPredicate' except 'Dao.Predicate.Backtrack' results (usually caused by
 -- 'Control.Exception.UserInterrupt' exceptions) are translated to the
 -- @('Control.Monad.mzero' :: 'ResultM' c e s t r a) value, and uncaught exceptions are translated
 -- to the @('Control.Monad.Error.throwError' :: 'ResultM' c e s t r a)@ data type.
 catchToResultM :: String -> GResultM c e s t r a -> GResultM c e s t r a
 catchToResultM msg try = resultM $ \st -> do
-  pval <- catchToPValue msg (runResultM try st)
+  pval <- catchToPredicate msg (runResultM try st)
   case pval of
     OK (Backtrack, st) -> return (Backtrack, st)
     OK (PFail err, st) -> return (PFail err, st)
@@ -607,7 +602,6 @@ writeResult i result err = do
 
 runSingleTest :: (GTest c e s t r Bool -> GTest c e s t r Bool) -> Integer -> GTest c e s t r Bool
 runSingleTest reportBracket i = local (\env -> env{currentTestID=Just i}) $ do
-  env <- ask
   let incErr = modTestEnv errorCounter (\c -> (c+1, False))
   let chk mayb fn = maybe (incErr >> return False) fn mayb
   test <- catchToLog "generating test" (unitTest generateTest i)
@@ -679,7 +673,7 @@ singleThreaded i = ask >>= \env -> void $ catchToLog "main test cycle" $ do
   failMax <- asksTestConfig maxErrors
   (fix $ \loop i -> do
       passed <- runSingleTest id i
-      updateClock
+      seq passed $! updateClock
       trySaveTestID i
       failed <- liftIO $ readMVar (errorCounter env)
       if failed<failMax
@@ -700,7 +694,7 @@ multiThreaded i = ask >>= \env -> asksTestConfig id >>= \config -> liftIO $ do
   unfinsh <- newMVar [] :: IO (MVar [Integer])
   maxerrs <- testInIO env (asksTestConfig maxErrors)
   flagsem <- Sem.new 0 -- the semaphore to signal the main thread of a completed test
-  busyvar <- newMVar (0, 0) -- (number of existing threads, number of busy threads)
+  busyvar <- newMVar (0::Int, 0::Int) -- (number of existing threads, number of busy threads)
   let setBusy (f1, f2) = modifyMVar_ busyvar (\ (x1, x2) -> return (f1 x1, f2 x2))
   let startWork  = setBusy ((+1), id)
   let endWork    = setBusy (subtract 1, id)
@@ -720,7 +714,7 @@ multiThreaded i = ask >>= \env -> asksTestConfig id >>= \config -> liftIO $ do
                 passed <- testInIO env $ do
                   p <- runSingleTest reportBracket i
                   updateClock >> trySaveTestID i >> return p
-                Sem.signal flagsem >> yield >> loop (i + fromIntegral workerCount)
+                seq passed $ Sem.signal flagsem >> yield >> loop (i + fromIntegral workerCount)
           ) i
   workers <- newMVar [] :: IO (MVar [ThreadId])
   let startWorkersOn = mapM (forkIO . worker) >=> \thds -> modifyMVar_ workers (return . (++thds))
@@ -735,7 +729,6 @@ multiThreaded i = ask >>= \env -> asksTestConfig id >>= \config -> liftIO $ do
   catches 
     (fix $ \loop -> do
         Sem.wait   flagsem
-        (thcount, busycount) <- readMVar busyvar
         errcount <- testInIO env (asks errorCounter) >>= readMVar
         if errcount<maxerrs
         then do

@@ -26,10 +26,8 @@
 
 module Dao.Procedural where
 
-import           Control.Applicative
 import           Control.Monad.Error
 import           Control.Monad.Reader
-import           Control.Monad.Trans
 
 -- | Used to play the role of an error-handling monad and a continuation monad together. It is
 -- basically an identity monad, but can evaluate to 'FlowErr's instead of relying on

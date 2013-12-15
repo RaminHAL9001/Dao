@@ -31,27 +31,18 @@ module Dao.Struct where
 
 import           Prelude hiding (lookup)
 
-import           Dao.Runtime
 import           Dao.String
 import           Dao.Tree
 import           Dao.Predicate
 
 import           Data.Monoid
 import           Data.List (intercalate)
-import           Data.Word
-import           Data.Int
-import           Data.Ratio
-import qualified Data.Map    as M
-import qualified Data.IntMap as I
-import qualified Data.Set    as S
 
 import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Identity
 import           Control.Monad.State
 import           Control.Monad.Error
-
-import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -61,7 +52,7 @@ import Debug.Trace
 -- objects within a script written in the Dao language. 
 class Structured typ obj where
   dataToStruct :: typ -> Tree Name obj
-  structToData :: Tree Name obj -> PValue (GenUpdateErr obj) typ
+  structToData :: Tree Name obj -> Predicate (GenUpdateErr obj) typ
 
 -- | This is the error type used to report errors that might occur while updating a 'Dao.Tree.Tree'
 -- with the 'structToData' function. If an error occurs while stepping through the branches of a
@@ -83,9 +74,9 @@ instance Show obj => Show (GenUpdateErr obj) where
 --
 -- Essentially, this is a simple zipper monad for traversing 'Dao.Object.T_tree' objects, which are 'Dao.Tree.Tree's with
 -- 'Dao.String.Name's on the branches and 'Dao.Object.Object's on the leaves (nodes).
-newtype GenUpdate obj a = Update { updateToPTrans :: PTrans (GenUpdateErr obj) (UpdateTreeT Name obj Identity) a }
+newtype GenUpdate obj a = Update { updateToPredicateT :: PredicateT (GenUpdateErr obj) (UpdateTreeT Name obj Identity) a }
 instance Monad (GenUpdate obj) where
-  (Update fn) >>= mfn = Update (fn >>= updateToPTrans . mfn)
+  (Update fn) >>= mfn = Update (fn >>= updateToPredicateT . mfn)
   return a = Update (return a)
   fail msg = newUpdateErr (Just msg) >>= throwError
 instance Functor (GenUpdate obj) where
@@ -94,14 +85,14 @@ instance MonadPlus (GenUpdate obj) where
   mzero = Update mzero
   mplus (Update a) (Update b) = Update (mplus a b)
 instance MonadState (Tree Name obj) (GenUpdate obj) where
-  get = Update $ PTrans $ gets focus >>= return . OK
-  put tree = Update $ PTrans $ modify (\st -> st{focus=tree}) >> return (OK ())
+  get = Update $ PredicateT $ gets focus >>= return . OK
+  put tree = Update $ PredicateT $ modify (\st -> st{focus=tree}) >> return (OK ())
 instance MonadError (GenUpdateErr obj) (GenUpdate obj) where
   throwError = Update . throwError
-  catchError (Update func) catcher = Update (catchError func (updateToPTrans . catcher))
+  catchError (Update func) catcher = Update (catchError func (updateToPredicateT . catcher))
 instance MonadPlusError (GenUpdateErr obj) (GenUpdate obj) where
-  catchPValue (Update func) = Update (catchPValue func)
-  assumePValue = Update . assumePValue
+  catchPredicate (Update func) = Update (catchPredicate func)
+  predicate = Update . predicate
 instance Applicative (GenUpdate obj) where { pure = return; (<*>) = ap; }
 instance Alternative (GenUpdate obj) where { empty = mzero; (<|>) = mplus; }
 instance Monoid a => Monoid (GenUpdate obj a) where
@@ -124,6 +115,13 @@ newUpdateErr msg = Update (lift Control.Monad.State.get) >>= \st -> return (err 
 updateError :: GenUpdate obj ig
 updateError = newUpdateErr Nothing >>= throwError
 
+-- | It is often a good idea to backtrack unless a precise number of branches exist on the current
+-- node, this prevents extraneous, unexpected, possibly malicious data from being hidden among the
+-- branches of the tree. Pass an predicate checking an 'Prelude.Int' number of branches of the
+-- current node, bracktrack if the predicate evaluates to 'Prelude.False'.
+guardBranchCount :: (Int -> Bool) -> GenUpdate obj ()
+guardBranchCount p = get >>= guard . p . branchCount
+
 -- | Goto an address. This 'GenUpdate' never fails, even if the address does not exist. Immediately
 -- returns the sub-tree to which we traversed.
 goto :: [Name] -> GenUpdate obj (Tree Name obj)
@@ -138,13 +136,13 @@ home :: GenUpdate obj ()
 home = Update (lift Dao.Tree.home)
 
 -- | Like 'Control.Monad.StateT.runStateT', evaluates the 'GenUpdate' monad as a pure function,
--- returning a pair containing first the 'Dao.Predicate.PValue' of that was returned and second the
+-- returning a pair containing first the 'Dao.Predicate.Predicate' of that was returned and second the
 -- updated 'Dao.Tree.Tree'.
-runUpdate :: GenUpdate obj a -> Tree Name obj -> (PValue (GenUpdateErr obj) a, Tree Name obj)
-runUpdate upd = runUpdateTree (runPTrans (updateToPTrans upd))
+runUpdate :: GenUpdate obj a -> Tree Name obj -> (Predicate (GenUpdateErr obj) a, Tree Name obj)
+runUpdate upd = runUpdateTree (runPredicateT (updateToPredicateT upd))
 
 -- | GenUpdate a data type in the 'Structured' class using an 'GenUpdate' monadic function.
-onStruct :: Structured a obj => GenUpdate obj ig -> a -> PValue (GenUpdateErr obj) a
+onStruct :: Structured a obj => GenUpdate obj ig -> a -> Predicate (GenUpdateErr obj) a
 onStruct ufn a = (fst . runUpdate (ufn>>get)) (dataToStruct a) >>= structToData
 
 -- | Useful for instantiating the 'dataToStruct' function of the 'Structured' class, this is
@@ -156,7 +154,7 @@ deconstruct fn = snd (runUpdate fn Void)
 -- @'structToData' = 'reconstruct' $ do { ... }@
 -- Then write everything in the @do@ statement that reconstructs your Haskell data type from a Dao
 -- structure. This is essentially the same function as 'Control.Monad.State.evalState'.
-reconstruct :: GenUpdate obj a -> Tree Name obj -> PValue (GenUpdateErr obj) a
+reconstruct :: GenUpdate obj a -> Tree Name obj -> Predicate (GenUpdateErr obj) a
 reconstruct fn tree = fst (runUpdate fn tree)
 
 ----------------------------------------------------------------------------------------------------
@@ -190,7 +188,7 @@ with addr upd = mplus (tryWith addr upd) updateError
 -- | Use 'structToData' to construct data from the current node. This function is the counter
 -- operation of 'putData'. 'Dao.Predicate.Backtrack's if the current node is 'Dao.Tree.Void'.
 tryGetData :: Structured a obj => GenUpdate obj a
-tryGetData = get >>= assumePValue . structToData
+tryGetData = get >>= predicate . structToData
 
 -- | Use 'structToData' to construct data from the current node. This function is the counter
 -- operation of 'putData'. 'Dao.Predicate.Backtrack's if the current node is 'Dao.Tree.Void'.

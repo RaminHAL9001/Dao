@@ -74,18 +74,35 @@ import qualified Codec.Binary.UTF8.String  as UTF8
 
 import           Numeric
 
+-- Necessary for the HasNullValue instances
+import           Data.Int
+import           Data.Ratio
+import           Data.Complex
+import           Data.Time.Clock
+import qualified Data.IntMap as IM
+import qualified Data.Map    as M
+import qualified Data.Set    as S
+
 -- | Objects which can be used as a predicate testing whether or not the object is null, or of a
 -- default value, should instantiate this class.
 class HasNullValue a where { nullValue :: a; testNull :: a -> Bool; }
-
--- | This class will be instantiated by the 'Dao.Object.Object' data type so that the 'objTable'
--- function may retrieve the 'Dao.Object.ObjectInterface' from any 'Dao.Object.Object' constructed
--- with the 'Dao.Object.OHaskell' function. If the 'Dao.Object.Object' is not of the
--- 'Dao.Object.OHaskell' variety, this function returns 'Prelude.Nothing'. This functionality needs
--- to be made abstract because modules that must not import the "Dao.Object" module (to prevent
--- circular dependencies) may still make use of this functionality hence it is placed into
--- "Dao.String" which depends on no other Dao module.
-class ObjTableClass mtabl obj | mtabl -> obj where { objTable :: obj -> Maybe mtabl }
+instance HasNullValue ()   where { nullValue = (); testNull () = True; }
+instance HasNullValue UStr where { nullValue = mempty; testNull = (==mempty); }
+instance HasNullValue [a]  where { nullValue = []; testNull = null; }
+instance HasNullValue Char where { nullValue = '\0'; testNull = (==nullValue); }
+instance HasNullValue Int  where { nullValue = 0; testNull = (==nullValue); }
+instance HasNullValue Int64  where { nullValue = 0; testNull = (==nullValue); }
+instance HasNullValue Word   where { nullValue = 0; testNull = (==nullValue); }
+instance HasNullValue Word64 where { nullValue = 0; testNull = (==nullValue); }
+instance HasNullValue Double where { nullValue = 0; testNull = (==nullValue); }
+instance HasNullValue Integer where { nullValue = 0; testNull = (==nullValue); }
+instance HasNullValue (Ratio Integer) where { nullValue = 0%1; testNull = (==nullValue); }
+instance HasNullValue (Complex Double) where { nullValue = 0:+0; testNull = (==nullValue); }
+instance HasNullValue NominalDiffTime where { nullValue = fromRational 0; testNull = (==nullValue); }
+instance HasNullValue (IM.IntMap a)   where { nullValue = IM.empty; testNull = IM.null }
+instance HasNullValue (M.Map k a)     where { nullValue = M.empty; testNull = M.null }
+instance HasNullValue (S.Set a)       where { nullValue = S.empty; testNull = S.null }
+instance HasNullValue U.ByteString    where { nullValue = mempty; testNull = (==mempty); }
 
 -- | This is the /universal string/ type. It is a @newtype@ wrapper around
 -- 'Data.ByteString.Lazy.UTF8.ByteString', but has an API that is used throughout the Dao system.

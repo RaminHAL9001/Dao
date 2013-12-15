@@ -19,13 +19,6 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-
 module Dao.Parser where
 
 import           Dao.String
@@ -37,23 +30,17 @@ import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Cont
 import           Control.Monad.State
-import           Control.Monad.Error hiding (Error)
+import           Control.Monad.Error.Class hiding (Error)
 
 import           Data.Data
 import           Data.Tuple
 import           Data.Monoid
-import           Data.Typeable
 import           Data.Maybe
 import           Data.Word
 import           Data.Char  hiding (Space)
 import           Data.List
 import           Data.Array.IArray
 import qualified Data.Map    as M
-import qualified Data.IntMap as IM
-
-import           System.IO
-
-import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 -- $Lexer_builder
@@ -305,8 +292,8 @@ lookupToken tokenDB str =
   fromMaybe (error $ "internal: token "++show (toUStr str)++" was never defined") $
     maybeLookupToken tokenDB str
 
-mk_keyword :: UStrType str => TT -> Regex -> str -> LexBuilderM (UStr, TT)
-mk_keyword deflt regex key = do
+mk_keyword :: UStrType str => Regex -> str -> LexBuilderM (UStr, TT)
+mk_keyword regex key = do
   let ukey = toUStr key
       keyChars = uchars ukey
   if fst (runRegex regex keyChars :: (Bool, ([TokenAt TT], String)))
@@ -320,7 +307,7 @@ mk_keyword deflt regex key = do
 keyword :: (UStrType str, UStrType key) => str -> Regex -> key -> LexBuilderM Regex
 keyword deflt regex key = do
   deflt      <- LexBuilderM (newTokID (toUStr deflt))
-  (ukey, tt) <- mk_keyword deflt regex key
+  (ukey, tt) <- mk_keyword regex key
   return (regex . rxMakeToken (\str -> if ustr str==ukey then (False, tt) else (True, deflt)))
 
 -- | To construct a keyword table, you must provide three parameters: the first two are a default
@@ -339,7 +326,7 @@ keyword deflt regex key = do
 keywordTable :: (UStrType str, UStrType key) => str -> Regex -> [key] -> LexBuilderM Regex
 keywordTable deflt regex keys = do
   deflt   <- LexBuilderM (newTokID (toUStr deflt))
-  keyDict <- fmap M.fromList (forM keys (mk_keyword deflt regex))
+  keyDict <- fmap M.fromList (forM keys (mk_keyword regex))
   return (regex . rxMakeToken (maybe (True, deflt) ((,) False) . flip M.lookup keyDict . ustr))
 
 -- | Creates a token type with 'regex' where the text lexed from the input is identical to name of
@@ -452,15 +439,15 @@ data RegexUnit
   | RxMakeToken{ rxMakeFunc    :: MakeToken   , subRegex :: RegexUnit }
   deriving Eq
 instance Show RegexUnit where
-  show rx = loop 0 rx where
-    loop i rx = case rx of
+  show rx = loop rx where
+    loop rx = case rx of
       RxBacktrack     -> "RxBacktrack"
       RxSuccess       -> "RxSuccess"
       RxChoice      c -> "RxChoice "++show c
-      RxStep      p s -> "RxStep ("++showRegexPrim p++") ..."
-      RxExpect    e s -> "RxExpect "++show e++" ..."
-      RxDontMatch   s -> "RxDontMatch ..."
-      RxMakeToken t s -> "RxMakeToken ("++show t++") ..."
+      RxStep      p _ -> "RxStep ("++showRegexPrim p++") ..."
+      RxExpect    e _ -> "RxExpect "++show e++" ..."
+      RxDontMatch   _ -> "RxDontMatch ..."
+      RxMakeToken t _ -> "RxMakeToken ("++show t++") ..."
 instance Show (RegexUnit -> RegexUnit) where { show rx = show (rx RxSuccess) }
 instance Monoid RegexUnit where
   mempty = RxBacktrack
@@ -574,18 +561,18 @@ regexToLexerPairs regex = case regex RxSuccess of
       r:rx -> case r of
         RxSuccess     -> done (pre<>RxSuccess) stk
         RxBacktrack   -> loop pre stk rx
-        RxStep p next -> loopStep r p where
+        RxStep p _ -> loopStep r p where
           loopStep r p = case p of
             RxDelete         -> loop (pre<>r) stk rx
             RxString  u      -> case uchars u of
               ""  -> done (pre<>RxSuccess) stk
-              c:_ -> loop mempty (create pre stk [c] r p next) rx
+              c:_ -> loop mempty (create pre stk [c] r) rx
             RxCharSet cs     -> case Es.elems cs of
               [] -> loop pre stk rx
-              cx -> loop mempty (create pre stk cx r p next) rx
-            RxRepeat lo hi p -> loopStep r p
+              cx -> loop mempty (create pre stk cx r) rx
+            RxRepeat _  _  p -> loopStep r p
         r             -> loop (pre<>r) stk rx
-    create pre stk cx r p next = let fn = const (pre<>r) in stk ++ map (\c -> (c, fn)) cx
+    create pre stk cx r = let fn = const (pre<>r) in stk ++ map (\c -> (c, fn)) cx
 
 -- Not for export
 data RxPrimitive
@@ -614,6 +601,7 @@ regexPrimToLexer re = case re of
       getHi <- mplus (Es.toPoint hi >>= return . upperLim re) (return (noLimit re))
       return (getLo >> mplus getHi (return ()))
     lowerLim re lo = case re of
+      RxDelete            -> clearBuffer
       RxString  str       -> lowerLimLex lo (lexString (uchars str))
       RxCharSet set       -> do
         keep <- gets lexBuffer
@@ -627,10 +615,12 @@ regexPrimToLexer re = case re of
       RxRepeat lo' hi' re -> lowerLimLex lo (rept lo' hi' re)
     lowerLimLex lo lex = replicateM_ lo lex
     upperLim re hi = case re of
+      RxDelete            -> clearBuffer
       RxString  str       -> replicateM_ hi (lexString (uchars str))
       RxCharSet set       -> lexWhile       (Es.member set)
       RxRepeat lo' hi' re -> replicateM_ hi (rept lo' hi' re)
     noLimit re = case re of
+      RxDelete            -> clearBuffer
       RxString  str       -> forever  (lexString (uchars str))
       RxCharSet set       -> lexWhile (Es.member set)
       RxRepeat lo  hi  re -> forever  (rept lo hi re)
@@ -891,39 +881,34 @@ lexCurrentLocation st = atPoint (lineNumber st) (columnNumber st)
 -- 'Lexer' backtracks while being evaluated in lexical analysis the 'lexInput' will not be
 -- affected at all and the 'lexBuffer' is ingored entirely.
 newtype Lexer tok a = Lexer{
-    lexerToPTrans :: PTrans (Error (LexerState tok) tok) (State (LexerState tok)) a
+    lexerToPredicateT :: PredicateT (Error (LexerState tok) tok) (State (LexerState tok)) a
   }
-instance Functor (Lexer tok) where { fmap fn (Lexer lex) = Lexer (fmap fn lex) }
+  deriving (Functor, Applicative, Alternative, MonadPlus)
+
 instance TokenType tok =>
   Monad (Lexer tok) where
-    (Lexer fn) >>= mfn = Lexer (fn >>= lexerToPTrans . mfn)
+    (Lexer fn) >>= mfn = Lexer (fn >>= lexerToPredicateT . mfn)
     return             = Lexer . return
     fail msg           = do
       st <- get
       throwError $
         (parserErr (lexCurrentLocation st)){parseErrMsg = Just (ustr msg), parseStateAtErr=Just st}
-instance TokenType tok =>
-  MonadPlus (Lexer tok) where
-    mplus (Lexer a) (Lexer b) = Lexer (mplus a b)
-    mzero                           = Lexer mzero
-instance TokenType tok =>
-  Applicative (Lexer tok) where { pure = return; (<*>) = ap; }
-instance TokenType tok =>
-  Alternative (Lexer tok) where { empty = mzero; (<|>) = mplus; }
-instance TokenType tok =>
-  MonadState (LexerState tok) (Lexer tok) where
-    get = Lexer (lift get)
-    put = Lexer . lift . put
-instance TokenType tok =>
-  MonadError (Error (LexerState tok) tok) (Lexer tok) where
-    throwError                     = Lexer . throwError
-    catchError (Lexer try) catcher = Lexer (catchError try (lexerToPTrans . catcher))
-instance TokenType tok =>
-  MonadPlusError (Error (LexerState tok) tok) (Lexer tok) where
-    catchPValue (Lexer try) = Lexer (catchPValue try)
-    assumePValue            = Lexer . assumePValue
-instance (TokenType tok, Monoid a) =>
-  Monoid (Lexer tok a) where { mempty = return mempty; mappend a b = liftM2 mappend a b; }
+
+instance TokenType tok => MonadState (LexerState tok) (Lexer tok) where
+  get = Lexer (lift get)
+  put = Lexer . lift . put
+
+instance TokenType tok => MonadError (Error (LexerState tok) tok) (Lexer tok) where
+  throwError                     = Lexer . throwError
+  catchError (Lexer try) catcher = Lexer (catchError try (lexerToPredicateT . catcher))
+
+instance TokenType tok => MonadPlusError (Error (LexerState tok) tok) (Lexer tok) where
+  catchPredicate (Lexer try) = Lexer (catchPredicate try)
+  predicate            = Lexer . predicate
+
+instance (TokenType tok, Monoid a) => Monoid (Lexer tok a) where
+  mempty      = return mempty
+  mappend a b = liftM2 mappend a b
 
 -- | Append the first string parameter to the 'lexBuffer', and set the 'lexInput' to the value of
 -- the second string parameter. Most lexers simply takes the input, breaks it, then places the two
@@ -975,7 +960,7 @@ lexUpdLineColWithStr input = do
       charPrintWidth c = case c of
         c | c=='\t'   -> tablen
         c | isPrint c -> 1
-        c             -> 0
+        _             -> 0
       (newLine, newCol) = countNLs (lineNumber st) (columnNumber st) input
   put (st{lexCurrentLine=newLine, lexCurrentColumn=newCol})
 
@@ -990,7 +975,7 @@ makeGetToken storeChars typ = do
   token <- case str of
     []               -> mzero
     [c] | storeChars -> return $ CharToken{tokType=typ, tokChar=c}
-    cx  | storeChars -> return $ Token{tokType=typ, tokUStr=ustr str}
+    _   | storeChars -> return $ Token{tokType=typ, tokUStr=ustr str}
     _                -> return $ EmptyToken{tokType=typ}
   put $
     st{ lexBuffer   = ""
@@ -1024,8 +1009,7 @@ clearBuffer = get >>= \st -> lexUpdLineColWithStr (lexBuffer st) >> put (st{lexB
 -- | A fundamental lexer using 'Data.List.stripPrefix' to check whether the given string is at the
 -- very beginning of the input.
 lexString :: TokenType tok => String -> Lexer tok ()
-lexString str =
-  gets lexInput >>= assumePValue . maybeToBacktrack . stripPrefix str >>= lexSetState str
+lexString str = gets lexInput >>= maybe mzero return . stripPrefix str >>= lexSetState str
 
 -- | A fundamental lexer succeeding if the next 'Prelude.Char' in the 'lexInput' matches the
 -- given predicate. See also: 'charSet' and 'unionCharP'.
@@ -1063,8 +1047,8 @@ tokenStreamToLines toks = loop toks where
 -- 'LexerState'.
 lexicalAnalysis
   :: TokenType tok
-  => Lexer tok a -> LexerState tok -> (PValue (Error (LexerState tok) tok) a, LexerState tok)
-lexicalAnalysis lexer st = runState (runPTrans (lexerToPTrans lexer)) st
+  => Lexer tok a -> LexerState tok -> (Predicate (Error (LexerState tok) tok) a, LexerState tok)
+lexicalAnalysis lexer st = runState (runPredicateT (lexerToPredicateT lexer)) st
 
 -- | Perform a simple evaluation of a 'Lexer' against the beginning of a string, returning the
 -- tokens and the remaining string. Evaluates to @('Prelude.True', (tokens, remainder))@ if the
@@ -1182,13 +1166,13 @@ newTokStreamFromLexer userState lexerState =
 -- failure.
 newtype TokStream st tok a
   = TokStream{
-      parserToPTrans ::
-        PTrans (Error (TokStreamState st tok) tok) (State (TokStreamState st tok)) a
+      parserToPredicateT ::
+        PredicateT (Error (TokStreamState st tok) tok) (State (TokStreamState st tok)) a
     }
 instance Functor (TokStream st tok) where { fmap f (TokStream a) = TokStream (fmap f a) }
 instance TokenType tok =>
   Monad (TokStream st tok) where
-    (TokStream ma) >>= mfa = TokStream (ma >>= parserToPTrans . mfa)
+    (TokStream ma) >>= mfa = TokStream (ma >>= parserToPredicateT . mfa)
     return a               = TokStream (return a)
     fail msg = do
       tok <- optional (nextToken False)
@@ -1210,23 +1194,23 @@ instance TokenType tok =>
   Alternative (TokStream st tok) where { empty = mzero; (<|>) = mplus; }
 instance TokenType tok =>
   MonadState (TokStreamState st tok) (TokStream st tok) where
-    get = TokStream (PTrans (fmap OK get))
-    put = TokStream . PTrans . fmap OK . put
+    get = TokStream (PredicateT (fmap OK get))
+    put = TokStream . PredicateT . fmap OK . put
 instance TokenType tok =>
   MonadError (Error (TokStreamState st tok) tok) (TokStream st tok) where
     throwError err = do
       st <- get
-      assumePValue (PFail (err{parseStateAtErr=Just st}))
+      predicate (PFail (err{parseStateAtErr=Just st}))
     catchError (TokStream ptrans) catcher = TokStream $ do
-      pval <- catchPValue ptrans
+      pval <- catchPredicate ptrans
       case pval of
         OK      a -> return a
         Backtrack -> mzero
-        PFail err -> parserToPTrans (catcher err)
+        PFail err -> parserToPredicateT (catcher err)
 instance TokenType tok =>
   MonadPlusError (Error (TokStreamState st tok) tok) (TokStream st tok) where
-    catchPValue (TokStream ptrans) = TokStream (catchPValue ptrans)
-    assumePValue                   = TokStream . assumePValue
+    catchPredicate (TokStream ptrans) = TokStream (catchPredicate ptrans)
+    predicate                   = TokStream . predicate
 instance (TokenType tok, Monoid a) =>
   Monoid (TokStream st tok a) where { mempty = return mempty; mappend a b = liftM2 mappend a b; }
 
@@ -1241,13 +1225,8 @@ nextToken doRemove = do
       line:lines -> do
         modify (\st -> st{tokenQueue=lineToTokensAt line, getLines=lines})
         nextToken doRemove
-    tok:tokx | doRemove -> do
-      put (st{tokenQueue=tokx})
-      -- trace ("shift: "++show tok++"\nremaining: "++show tokx) (return tok)
-      return tok
-    tok:tokx            -> do
-      -- trace ("look1, current = "++show tok++"\nlook1, next = "++show tokx) $ return ()
-      return tok
+    tok:tokx | doRemove -> put (st{tokenQueue=tokx}) >> return tok
+    tok:_               -> return tok
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1297,8 +1276,8 @@ instance TokenType tok =>
       catchError (parserToTokStream trial) (\err -> parserToTokStream (catcher err))
 instance TokenType tok =>
   MonadPlusError (Error (TokStreamState st tok) tok) (Parser st tok) where
-    catchPValue ptrans = Parser (catchPValue (parserToTokStream ptrans))
-    assumePValue       = Parser . assumePValue
+    catchPredicate ptrans = Parser (catchPredicate (parserToTokStream ptrans))
+    predicate       = Parser . predicate
 instance TokenType tok => Monoid (Parser st tok a) where {mempty=mzero; mappend=mplus; }
 
 ----------------------------------------------------------------------------------------------------
@@ -1448,12 +1427,14 @@ tokenBy name as = do
 -- 'Dao.Token.Location') is updated such that the starting point of the failure points to the cursor
 -- stored on the stack by this 'marker'. When used correctly, this function makes error reporting a
 -- bit more helpful.
-marker :: (TokenType tok, MonadPlusError (Error (TokStreamState st tok) tok) (Parser st tok)) =>
-  Parser st tok a -> Parser st tok a
+marker :: TokenType tok => Parser st tok a -> Parser st tok a
 marker parser = do
   before <- mplus (look1 asLocation) (Parser (gets finalLocation))
-  flip mapPFail parser $ \parsErr ->
-    parsErr{parseErrLoc = parseErrLoc parsErr >>= \after -> return(before<>after)}
+  pval <- catchPredicate parser
+  case pval of
+    PFail err -> throwError $
+      err{parseErrLoc = parseErrLoc err >>= \after -> return(before<>after)}
+    pval      -> predicate pval
 
 -- | The 'Parser's analogue of 'Control.Monad.State.runState', runs the parser using an existing
 -- 'TokStreamState'.
@@ -1461,8 +1442,10 @@ runParserState
   :: TokenType tok
   => Parser st tok a
   -> TokStreamState st tok
-  -> (PValue (Error (TokStreamState st tok) tok) a, TokStreamState st tok)
-runParserState (Parser (TokStream parser)) = runState (runPTrans parser)
+  -> (Predicate (Error (TokStreamState st tok) tok) a, TokStreamState st tok)
+runParserState parser initTokSt = case parser of
+  ParserNull                -> (Backtrack, initTokSt)
+  Parser (TokStream parser) -> runState (runPredicateT parser) initTokSt
 
 -- | This is the second phase of parsing, takes a stream of tokens created by the 'lexicalAnalysis'
 -- phase (the @['Line' tok]@ parameter) and constructs a syntax tree data structure using the
@@ -1471,7 +1454,7 @@ syntacticAnalysis
   :: TokenType tok
   => Parser st tok synTree
   -> TokStreamState st tok
-  -> (PValue (Error (TokStreamState st tok) tok) synTree, TokStreamState st tok)
+  -> (Predicate (Error (TokStreamState st tok) tok) synTree, TokStreamState st tok)
 syntacticAnalysis = runParserState
 
 getNullToken :: TokenType tok => Parser st tok tok
@@ -1771,7 +1754,7 @@ newOpTableParser errMsg autoShift asOp objParser constr optab =
     ttBounds (tt, _) = foldl (\ (lo, hi) (tt, _) -> (min lo tt, max hi tt)) (tt, tt) . tail
     maxPrec = length optab
     precList :: (TokenType tok, HasTokenDB tok) => Parser st tok obj -> TokenDB tok -> [OpPrec op obj] -> [(TT, OpTablePrec op obj)]
-    precList parser db optab = do
+    precList _parser db optab = do
       (n, (assoc, operatorUStrs, constr)) <- zip [0..] (fmap opPrecTo3Tuple optab)
       op <- operatorUStrs
       case M.lookup op (tableUStrToTT db) of
@@ -1858,7 +1841,7 @@ newLanguage tabw parser =
 
 -- | This is /the function that parses/ an input string according to a given 'Language'.
 parse :: TokenType tok =>
-  Language st tok synTree -> st -> String -> PValue (Error st tok) synTree
+  Language st tok synTree -> st -> String -> Predicate (Error st tok) synTree
 parse lang st input = case lexicalResult of
   OK     () -> case parserResult of
     OK     a  -> OK a

@@ -24,16 +24,15 @@
 module Dao.PPrint where
 
 import           Dao.String
+import qualified Dao.Tree as T
 
-import           Control.Monad
+import qualified Data.Map as M
+
 import           Control.Monad.State
 
 import           Data.List
 import           Data.Char
-import           Data.Word
 import           Data.Monoid
-
-import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -106,6 +105,22 @@ pIndent indentedPrinter = do
   modify (\st -> st{nextTab=tab})
 
 instance PPrintable UStr where { pPrint = pUStr }
+instance PPrintable Name where { pPrint = pUStr . toUStr }
+instance PPrintable t => PPrintable (T.Tree Name t) where
+  pPrint t = case t of
+    T.Void            -> pString "tree"
+    T.Leaf       o    -> leaf o
+    T.Branch       ox -> pList (pString "tree") "{ " ", " " }" (branch ox)
+    T.LeafBranch o ox -> pList (leaf o) " { " ", " " }" (branch ox)
+    where
+      leaf o = pWrapIndent [pString "tree(", pPrint o, pString ")"]
+      branch = map (\ (lbl, o) -> pMapAssoc (lbl, o)) . M.assocs
+
+instance PPrintable Base16String where { pPrint = pShow }
+instance PPrintable Base64String where { pPrint = pShow }
+
+pMapAssoc :: (PPrintable a, PPrintable o) => (a, o) -> PPrint
+pMapAssoc (a, o) = pWrapIndent [pPrint a, pString " = ", pPrint o]
 
 -- not for export
 appendString :: Int -> String -> PPrint
@@ -179,10 +194,7 @@ pGroup after fn = do
 
 pList :: PPrint -> String -> String -> String -> [PPrint] -> PPrint
 pList header open separator close px = do
-  st <- get
-  let mw  = maxWidth st
-      cur = printerCol st
-      sep = ustr separator
+  let sep = ustr separator
   pGroup False $ do
     header >> pString open >> pEndLine
     pIndent $ pInline $ map (pGroup True) $ mapAlmost (>>(pUStr sep)) px
@@ -203,6 +215,11 @@ pClosure header open close px = do
       trySt = execState content (subprint st)
   if charCount trySt + printerCol st > maxWidth st then pEndLine else return ()
   appendState trySt
+
+-- | A commonly used pattern, like 'pClosure' but the contents of it is always a list of items which
+-- can be pretty-printed by the given @(o -> 'PPrintM' ())@ function.
+pContainer :: String -> (o -> PPrint) -> [o] -> PPrint
+pContainer label prin ox = pList (pString label) "{ " ", " " }" (map prin ox)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -287,7 +304,7 @@ appendState = modify . flip mappend
 -- | A kind of pre-conversion, the 'PPrintState' is broken into a list of strings, each string
 -- preceeded by it's indentation factor.
 linesFromPPrintState :: Int -> PPrint -> [(Int, String)]
-linesFromPPrintState maxWidth ps = end (execState ps mempty) where
+linesFromPPrintState maxWidth ps = end (execState ps (initPrinter maxWidth)) where
   end st = flip map (printerOut st ++ [printerOutputTripple st]) $ \ (a, _, b) ->
     (a, dropWhile isSpace (chomp (uchars b)))
 
@@ -327,4 +344,14 @@ linesToString indentStr = intercalate "\n" .
 -- used to call 'linesToString'.
 showPPrint :: Int -> String -> PPrint -> String
 showPPrint maxWidth indentStr ps = linesToString indentStr (linesFromPPrintState maxWidth ps)
+
+----------------------------------------------------------------------------------------------------
+
+-- | Statements like "if" or "while" take a condition, and the Dao languages does not require these
+-- conditions be enclosed in parenthases. The question is, should there be a space after the "if" or
+-- "while" statement? This function resolves that question by checking if an object expression
+-- already is enclosed in parentheses, and if so, does not put a space. Otherwise, a space will be
+-- printed between the "if" tag or "while" tag and the condition.
+class PrecedeWithSpace a where { precedeWithSpace :: a -> Bool }
+instance PrecedeWithSpace Name where { precedeWithSpace _ = True }
 

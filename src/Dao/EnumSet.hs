@@ -27,8 +27,8 @@ module Dao.EnumSet
   , stepDown, stepUp, toPoint, enumIsInf
   , InfBound, minBoundInf, maxBoundInf
     -- * the 'Segment' data type
-  , Segment, segment, single, inf, negInfTo, toPosInf, enumInfSeg
-  , toBounded, toBoundedPair, segmentMember, singular, plural, segmentNub
+  , Segment, startPoint, endPoint, segment, single, inf, negInfTo, toPosInf, enumInfSeg
+  , toBounded, toBoundedPair, segmentMember, singular, plural, segmentNub, segmentInvert
     -- * Predicates on 'Segment's
   , containingSet, numElems, isWithin, segmentHasEnumInf, segmentIsInfinite
     -- * The 'SetM' monadic data type
@@ -48,10 +48,8 @@ module Dao.EnumSet
   where
 
 import           Data.Monoid
-import           Data.Bits
 import           Data.List
 import           Data.Ratio
-import           Data.Binary
 
 import           Control.Monad
 import           Control.Applicative
@@ -141,7 +139,7 @@ instance Ord c => Ord (Segment c) where
   compare x y = case x of
     Single    a    -> case y of
       Single  b      -> compare a b
-      Segment b  b'  -> if a==b then LT else compare a b
+      Segment b  _   -> if a==b then LT else compare a b
     Segment   a  b -> case y of
       Single  a'     -> if a==b then GT else compare a a'
       Segment a' b'  -> if a==a' then compare b' b else compare a a'
@@ -387,9 +385,9 @@ segmentDelete :: (Ord c, Enum c, InfBound c) =>
   Segment c -> Segment c -> (Bool, [Segment c])
 segmentDelete a b = if not (areIntersecting a b) then (False, [a]) else del where
   del = case a of
-    Single  x   -> case b of
-      Single  x'    -> (True, [])
-      Segment x' y' -> (True, [])
+    Single  _   -> case b of
+      Single  _     -> (True, [])
+      Segment _  _  -> (True, [])
     Segment x y -> case b of
       Single  x'
         | x==x'     -> (True, [enumInfSeg (stepUp x)  y ])
@@ -400,6 +398,7 @@ segmentDelete a b = if not (areIntersecting a b) then (False, [a]) else del wher
         | x' <= x && y' >= y -> (True, [])
         | x' <= x && y' <  y -> (True, [enumInfSeg (stepUp y') y])
         | x' >  x && y' >= y -> (True, [enumInfSeg x (stepDown x')])
+        | otherwise          -> error "segmentDelete"
 
 -- | Evaluates to the set of all elements not selected by the given 'Segment'.
 segmentInvert :: (Ord c, Enum c, InfBound c) => Segment c -> [Segment c]
@@ -592,13 +591,13 @@ joinSegments joiner (a, ax) (b, bx) =
       newA  = map (\s -> (s,   ax  )) delAB
       newAB = map (\s -> (s, ax++bx)) andAB
       newB  = map (\s -> (s,   bx  )) delBA
-      fstSeg a b = compare (fst a) (fst b)
   in  if not isecting
         then (False, [(a, ax), (b, bx)])
         else (,) True $ case (newA, newB) of
                 ([], [lo, hi]) -> joiner [lo] newAB [hi]
                 ([lo, hi], []) -> joiner [lo] newAB [hi]
                 ([lo],   [hi]) -> joiner [lo] newAB [hi]
+                _              -> error "joinSegments"
 
 unionM :: (Ord c, Enum c, InfBound c) => SetM c x -> SetM c x -> SetM c x
 unionM a b = case a of
@@ -727,8 +726,8 @@ setMtoSet a = case a of
 data Set c
   = EmptySet    
   | InfiniteSet
-  | InverseSet  { inverseSet :: Set c }
-  | Set         { segmentList :: [Segment c] }
+  | InverseSet  (Set c)
+  | Set         [Segment c]
 instance (Ord c, Enum c, InfBound c) => Eq (Set c) where
   a == b = case a of
     EmptySet     -> case b of
@@ -745,15 +744,17 @@ instance (Ord c, Enum c, InfBound c) => Eq (Set c) where
     Set        a -> case b of
       Set        b -> a==b
       _            -> False
-instance (Ord c, Enum c, InfBound c) =>
-  Monoid (Set c) where { mempty = Set mempty; mappend (Set a) (Set b) = Set (mappend a b); }
-instance Show c =>
-  Show (Set c) where
-    show s = case s of
-      EmptySet     -> "enumSet()"
-      InfiniteSet  -> "enumSet(-Inf to +Inf)"
-      InverseSet s -> "!enumSet("++show s++")"
-      Set        s -> "enumSet("++intercalate ", " (map show s)++")"
+
+instance (Ord c, Enum c, InfBound c) => Monoid (Set c) where
+  mempty  = EmptySet
+  mappend = Dao.EnumSet.union
+
+instance Show c => Show (Set c) where
+  show s = case s of
+    EmptySet     -> "enumSet()"
+    InfiniteSet  -> "enumSet(-Inf to +Inf)"
+    InverseSet s -> "!enumSet("++show s++")"
+    Set        s -> "enumSet("++intercalate ", " (map show s)++")"
 
 infinite :: Set c
 infinite = InfiniteSet
@@ -763,7 +764,7 @@ fromListNoNub :: (Ord c, Enum c, InfBound c) => [Segment c] -> Set c
 fromListNoNub a =
   if Data.List.null a
     then EmptySet    
-    else if a==[inf] then InfiniteSet else Set{segmentList=a}
+    else if a==[inf] then InfiniteSet else Set a
 
 fromList :: (Ord c, Enum c, InfBound c) => [Segment c] -> Set c
 fromList a = if Data.List.null a then EmptySet     else fromListNoNub a
@@ -772,10 +773,10 @@ fromPairs :: (Ord c, Enum c, InfBound c) => [(c, c)] -> Set c
 fromPairs = fromList . map (uncurry segment)
 
 range :: (Ord c, Enum c, InfBound c) => c -> c -> Set c
-range a b = Set{segmentList=[segment a b]}
+range a b = Set [segment a b]
 
 point :: (Ord c, Enum c, InfBound c) => c -> Set c
-point a = Set{segmentList=[single a]}
+point a = Set [single a]
 
 toList :: (Ord c, Enum c, InfBound c) => Set c -> [Segment c]
 toList s = case s of
@@ -805,11 +806,9 @@ null s = case s of
 
 isSingleton :: (Ord c, Enum c, InfBound c) => Set c -> Maybe c
 isSingleton s = case s of
-  EmptySet       -> mzero
-  InfiniteSet    -> mzero
   InverseSet   s -> isSingleton (forceInvert s)
-  Set         [] -> mzero
   Set [Single c] -> toPoint c
+  _              -> mzero
 
 invert :: (Ord c, Enum c, InfBound c) => Set c -> Set c
 invert s = case s of
@@ -898,5 +897,9 @@ instance (NFData a, NFData x) =>
       InfiniteM ax -> deepseq ax ()
       SetM    a ax -> deepseq a $! deepseq ax ()
 
-instance NFData a => NFData (Set a) where { rnf (Set a) = deepseq a () }
+instance NFData a => NFData (Set a) where
+  rnf EmptySet       = ()
+  rnf InfiniteSet    = ()
+  rnf (Set a)        = deepseq a ()
+  rnf (InverseSet a) = deepseq a ()
 

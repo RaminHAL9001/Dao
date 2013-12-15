@@ -30,6 +30,8 @@ import           Data.List (intercalate)
 import           Data.Typeable
 import           Data.Data
 
+import           Control.DeepSeq
+
 ----------------------------------------------------------------------------------------------------
 
 type LineNum   = Word
@@ -106,8 +108,7 @@ instance Ord Location where
     (LocationUnknown, LocationUnknown) -> EQ
     (_              , LocationUnknown) -> LT
     (LocationUnknown, _              ) -> GT
-    (a              , b              ) ->
-      compare (abs(ela-sla), abs(eca-sca), sla, sca) (abs(elb-slb), abs(ecb-scb), slb, scb)
+    _ -> compare (abs(ela-sla), abs(eca-sca), sla, sca) (abs(elb-slb), abs(ecb-scb), slb, scb)
     where
       sla = startingLine   a
       ela = endingLine     a
@@ -128,6 +129,10 @@ instance HasNullValue Location where
   nullValue = LocationUnknown
   testNull LocationUnknown = True
   testNull _ = False
+
+instance NFData Location where
+  rnf LocationUnknown = ()
+  rnf (Location a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
 
 -- | Create a location where the starting and ending point is the same row and column.
 atPoint :: LineNum -> ColumnNum -> Location

@@ -23,27 +23,16 @@
 
 module Dao.Random where
 
-import           Dao.Token
-import           Dao.Glob
-import           Dao.Object
-import           Dao.Object.AST
-import qualified Dao.Tree              as T
+import           Dao.String
+import qualified Dao.Tree as T
 
 import           Control.Monad.State
 
-import           Data.List
 import           Data.Char
-import           Data.Bits
-import           Data.Word
 import           Data.Ratio
-import           Data.Complex
 import           Data.Time
 import           Data.Array.IArray
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy  as Bz
-import qualified Data.Set              as S
-import qualified Data.Map              as M
-import qualified Data.IntMap           as I
 
 import           System.Random
 
@@ -96,6 +85,16 @@ instance HasRandGen UStr where
 instance HasRandGen Bool where { randO = fmap (0/=) (nextInt 2) }
 instance HasRandGen a => HasRandGen (Maybe a) where
   randO = randO >>= \n -> if n then return Nothing else fmap Just randO
+
+instance (Ord p, HasRandGen p, HasRandGen o) => HasRandGen (T.Tree p o) where
+  randO = recurse nullValue $ do
+    branchCount <- nextInt 4
+    cuts <- fmap (map (+1) . randToBase 6) randInt
+    fmap (T.fromList . concat) $ replicateM (branchCount+1) $ do
+      wx <- replicateM 6 randO
+      forM cuts $ \cut -> do
+        obj <- randO
+        return (take cut wx, obj)
 
 -- | Construct a value from an 'Prelude.Int'. Actually, you have a 50/50 chance of drawing a zero,
 -- but this is because zeros are used often for you data type.
@@ -195,6 +194,12 @@ randChoice items = join (fmap (arr!) (nextInt len)) where
 
 randUStr :: Int -> UStr
 randUStr = ustr . B.unpack . getRandomWord
+
+randMultiName :: RandO [UStr]
+randMultiName = do
+  i0 <- randInt
+  let (i1, len) = divMod i0 4
+  fmap ((randUStr i1 :) . map randUStr) (replicateM len randInt)
 
 randListOf :: Int -> Int -> RandO a -> RandO [a]
 randListOf minlen maxlen rando = do

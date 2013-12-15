@@ -25,16 +25,17 @@ module Dao.Glob where
 
 import           Dao.String
 import qualified Dao.Tree as T
+import           Dao.PPrint
+import           Dao.Random
 
+import           Control.DeepSeq
 import           Control.Monad
-import           Control.Monad.Reader
 
 import           Data.Typeable
 import           Data.List
 import           Data.Maybe
 import           Data.Char
 import           Data.Word
-import           Data.Ratio
 import           Data.Array.IArray
 import qualified Data.Set as S
 import qualified Data.Map as M
@@ -88,6 +89,29 @@ instance Show Glob where
 instance Read Glob where
   readsPrec _ str = [(parsePattern str, "")]
 
+instance NFData Glob     where { rnf (Glob          a b  ) = deepseq a $! deepseq b () }
+instance NFData GlobUnit where { rnf a = seq a () }
+instance PPrintable Glob where { pPrint = pShow }
+
+instance HasRandGen Glob where
+  randO = do
+    len <- fmap (+6) (nextInt 6)
+    i <- randInt
+    let loop len i =
+          if len<=1 then [] else let (i', n) = divMod i len 
+          in  (n+1) : loop (len-n-1) i'
+        cuts = loop len i
+    tx <- fmap (([]:) . map (\t -> if t==0 then [AnyOne] else [Wildcard]) . randToBase 2) randInt
+    let loop tx cuts ax = case cuts of
+          []       -> [ax]
+          cut:cuts ->
+            let (wx, ax') = splitAt cut ax
+                (t,  tx') = splitAt 1 tx
+            in  t ++ wx : loop tx' cuts ax'
+    patUnits <- fmap (concat . loop tx cuts . intersperse (Single (ustr " "))) $
+      replicateM len (fmap (Single . randUStr) randInt)
+    return (Glob{getPatUnits=patUnits, getGlobLength=length patUnits})
+
 -- | Create a 'Glob' from its string representation.
 parsePattern :: String -> Glob
 parsePattern ax = Glob{ getPatUnits = patrn, getGlobLength = foldl (+) 0 lenx } where
@@ -104,9 +128,6 @@ parsePattern ax = Glob{ getPatUnits = patrn, getGlobLength = foldl (+) 0 lenx } 
         next pfx ax =
           let (got, ax') = span(/='$') ax
           in  map (\a -> (1, Single a)) (tokens (pfx++got)) ++ loop ax'
-  nub = nubBy n
-  n Nothing Nothing = True
-  n _       _       = False
 
 -- | 'PatternTree's contain many patterns in an tree structure, which is more efficient when you
 -- have many patterns that start with similar sequences of 'GlobUnit's.
@@ -214,6 +235,7 @@ stringMatch pat cx = loop [] (getPatUnits pat) cx where
       [Wildcard]  -> Just retrn
       _           -> Nothing
     c:cx  -> case px of
+      []               -> Nothing
       AnyOne      : px -> loop (retrn++[ustr [c]]) px cx
       Single ustr : px -> stripPrefix (uchars ustr) (c:cx) >>= loop (retrn++[ustr]) px
       Wildcard    : px -> scan "" (c:cx) where

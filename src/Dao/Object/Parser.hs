@@ -25,13 +25,10 @@ module Dao.Object.Parser where
 import           Dao.String
 import           Dao.Token
 import           Dao.PPrint
-import           Dao.Object.PPrint
-import           Dao.Object hiding (Tokenizer, get, put)
-import           Dao.Object.AST
+import           Dao.Object
 import           Dao.Predicate
 import           Dao.Parser
-import qualified Dao.Tree as T
-import qualified Dao.EnumSet as Es
+import           Dao.Evaluator hiding (asString)
 
 import           Control.Applicative
 import           Control.Monad
@@ -41,18 +38,10 @@ import           Control.Monad.State
 import           Data.Monoid
 import           Data.Maybe
 import           Data.List
-import           Data.Char hiding (Spaces)
-import           Data.Word
-import qualified Data.Set  as S
-import qualified Data.Map  as M
+import           Data.Char
 import           Data.Ratio
 import           Data.Complex
-import           Data.Time.Clock
 import           Data.Array.IArray
-import           Data.Time.LocalTime
-import           Numeric
-
-import Debug.Trace
 
 maxYears :: Integer
 maxYears = 99999
@@ -91,7 +80,6 @@ daoTokenDef = do
   inlineCom    <- fullToken  INLINECOM  $ rx "/*" .
     fix (\loop -> closeInliner <> rxRepeat1(invert[ch '*']) . loop)
   endlineCom   <- fullToken  ENDLINECOM $ rx "//" . rxRepeat(invert[ch '\n'])
-  multiComs    <- pure $ opt $ fix((space <> inlineCom <> endlineCom).)
   
   -------------------------------------------- LABELS ---------------------------------------------
   let alpha = [from 'A' to 'Z', from 'a' to 'z', ch '_']
@@ -111,7 +99,6 @@ daoTokenDef = do
   base16       <- fullToken  BASE16     $ (rx "0x" <> rx "0X") .
     rxRepeat[from0to9, from 'A' to 'F', from 'a' to 'f']
   numType      <- fullToken  NUMTYPE    $ rx (map ch "UILRFfijs")
-  point        <- operator "."
   let base10Parser = mconcat $
         [ dotBase10 . opt exponent . opt numType
         , base10 . opt dotBase10 . opt exponent . opt numType
@@ -139,7 +126,6 @@ daoTokenDef = do
         tok <- getTokID key :: LexBuilderM DaoTT
         return (rx key . (label <> rxEmptyToken tok . func))
   closers <- operatorTable $ words "} ] )"
-  [openBrace, closeBrace, openParen, closeParen] <- mapM operator (words "{ } ( )")
   
   ------------------------------------------- OPERATORS -------------------------------------------
   operators    <- operatorTable $ words $ unwords $
@@ -281,25 +267,25 @@ numberFromStrs base int maybFrac maybPlusMinusExp maybTyp = do
       rational = do
         x   <- rationalFromString base b int
         y   <- rationalFromString base (recip b) frac
-        exp <- fmap (round . abs) (rationalFromString base b exp)
+        exp <- fmap (round . abs) (rationalFromString base b exp) :: Maybe Integer
         let ibase  = if hasMinusSign then recip b else b
             result = (x+y)*(ibase^^exp)
         return (round result % 1 == result, result)
-  (r_is_an_integer, r) <- case rational of
+  (_r_is_an_integer, r) <- case rational of
     Nothing -> fail ("incorrect digits used to form a base-"++show base++" number")
     Just  r -> return r
   case typ of
-    "U" -> return $ OWord (fromIntegral (round r))
+    "U" -> return $ OWord (round r)
     "I" -> return $ OInt  (round r)
     "L" -> return $ OLong (round r)
     "R" -> return $ ORatio r
     "F" -> return $ OFloat (fromRational r)
     "f" -> return $ OFloat (fromRational r)
-    "i" -> return $ OComplex (0 :+ fromRational r)
-    "j" -> return $ OComplex (0 :+ fromRational r)
+    "i" -> return $ OComplex $ Complex $ 0 :+ fromRational r
+    "j" -> return $ OComplex $ Complex $ 0 :+ fromRational r
     "s" -> return $ ORelTime (fromRational r)
     ""  ->
-      return (OInt (fromIntegral (round r)))
+      return (OInt (round r))
 --    if r_is_an_integer && null frac
 --      then
 --        let i = round r
@@ -332,6 +318,7 @@ diffTimeFromStrs time = do
     split buf str       = case break (==':') str of
       (t, ""     ) -> reverse $ take 3 $ (t:buf) ++ repeat ""
       (t, ':':str) -> split (t:buf) str
+      (_, _      ) -> error "unexpected character while parsing time-literal expression"
     rint str            = if null str then 0 else (read str :: Integer)
     integerToRational s = s % 1 :: Rational
     check :: String -> Integer -> String -> DaoParser Rational
@@ -361,8 +348,6 @@ numberPTabItems =
   where
     mloc = fmap asLocation
     mstr = fmap asString
-    ignore :: DaoParser (Maybe String)
-    ignore   = return Nothing
     base b t = tableItem t $ \tok -> do
       typ <- optional (token NUMTYPE id)
       done tok b (drop 2 (asString tok)) Nothing Nothing (mstr typ) (return (asLocation tok) <> mloc typ)
@@ -504,12 +489,6 @@ containerPTab = table $
       return $ AST_Init coms ref params inits (asLocation startTok <> getLocation inits)
   ]
   where
-    checkAssign lbl obj = do
-      case obj of
-        AST_Assign{} -> return ()
-        obj          ->
-          failLater ("non-assignment expression in \""++lbl++"\" statement") (getLocation obj)
-      return obj
     lambdaFunc lbl = tableItemBy lbl $ \startTok ->
       expect ("parameters and bracketed script after \""++lbl++"\" statement") $ do
         constr <- mplus (pure AST_Func <*> optSpace <*> token LABEL asName) (return AST_Lambda)
@@ -564,7 +543,7 @@ referencePTabItem = tableItem LABEL $ \init -> fmap constr $
     constr (nx, loc) = case nx of
       []   -> AST_RefNull
       n:nx -> AST_Ref (unComment n) nx loc
-    chain (l, lloc) op (r, rloc) = (l++r, lloc<>rloc)
+    chain (l, lloc) _op (r, rloc) = (l++r, lloc<>rloc)
     asName :: TokenAt DaoTT -> DaoParser ([Com Name], Location)
     asName tok = case maybeFromUStr (asUStr tok) of
       Just  n -> return ([Com n], asLocation tok)
@@ -729,7 +708,7 @@ bracketed msg = do
   startLoc <- tokenBy "{" asLocation
   scrps    <- concat <$> (many script <|> return [])
   expect ("curly-bracket to close "++msg++" statement") $ do
-    a <- look1 id
+    _ <- look1 id
     endLoc <- tokenBy "}" asLocation
     return (AST_CodeBlock scrps, startLoc<>endLoc)
 
@@ -850,7 +829,6 @@ toplevelPTab = table expr <> comments <> scriptExpr where
     [ event  "BEGIN"  , event  "END"   , event  "EXIT"
     , header "require", header "import"
     ]
-  singlePattern = commented equation >>= \eqn -> return ([eqn], getLocation (unComment eqn))
   event   lbl = tableItemBy lbl $ \tok -> do
     let exprType = show (asTokType tok)
     coms <- optSpace
@@ -869,7 +847,7 @@ toplevelPTab = table expr <> comments <> scriptExpr where
       expect ("semicolon after \""++lbl++"\" statement") $ do
         endLoc <- tokenBy ";" asLocation
         return $
-          [AST_Attribute (ustr lbl) expr $ asLocation startTok <> (getLocation (unComment expr))]
+          [AST_Attribute (ustr lbl) expr $ asLocation startTok <> endLoc]
 
 toplevel :: DaoParser [AST_TopLevel]
 toplevel = joinEvalPTable toplevelPTab

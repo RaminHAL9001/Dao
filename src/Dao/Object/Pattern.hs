@@ -67,7 +67,7 @@ import           Control.Monad.Error
 -- fails (rather than backtracks), the location of the failure is recorded as a
 -- 'Dao.Object.Reference' that can be used to select the value from the object. This is typically a
 -- 'Dao.Object.Subscript' value.
-type MatchValue a = PValue Reference a
+type MatchValue a = Predicate Reference a
 
 data MatcherState
   = MatcherState
@@ -99,15 +99,15 @@ getCurrentRef = do
   fmap (idx . GlobalRef . reverse) (gets matcherRef)
 
 -- | A 'Control.Monad.State.State' monad used to execute matches
-newtype Matcher a = Matcher { matcherPTransState :: PTrans Reference (State MatcherState) a }
+newtype Matcher a = Matcher { matcherPTransState :: PredicateT Reference (State MatcherState) a }
 
--- | Like 'Control.Monad.State.evalState', but returns a 'Dao.Predicate.PValue' based on how the
+-- | Like 'Control.Monad.State.evalState', but returns a 'Dao.Predicate.Predicate' based on how the
 -- matcher evaluates. 'Control.Monad.mzero' evaluates to 'Dao.Predicate.Backtrack',
 -- 'Control.Monad.fail' or 'Control.Monad.Error.Class.throwError' evaluates to
 -- 'Dao.Predicate.PFail'. 'Control.Monad.return' evaluates to 'Dao.Predicate.OK'. Evaluate this
 -- function in a case statement to take the appropriate action.
-evalMatcher :: Matcher a -> PValue Reference a
-evalMatcher m = evalState (runPTrans (matcherPTransState m)) initMatcherState
+evalMatcher :: Matcher a -> Predicate Reference a
+evalMatcher m = evalState (runPredicateT (matcherPTransState m)) initMatcherState
 
 instance Monad Matcher where
   return = Matcher . return
@@ -132,8 +132,8 @@ instance MonadError Reference Matcher where
   catchError (Matcher m) em = Matcher (catchError m (matcherPTransState . em))
 
 instance MonadPlusError Reference Matcher where
-  assumePValue = Matcher . assumePValue
-  catchPValue (Matcher fn) = Matcher (catchPValue fn)
+  predicate = Matcher . predicate
+  catchPredicate (Matcher fn) = Matcher (catchPredicate fn)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -144,7 +144,7 @@ matchObject pat o = let otype = objType o in case pat of
   ObjMany -> return o
   ObjAny1 -> return o
   ObjType t | Es.member t otype -> return o
-  ObjBounded  lo hi             -> Matcher $ pvalue $ msum $
+  ObjBounded  lo hi             -> Matcher $ predicate $ msum $
     [ fmap Es.Point (objToRational o) >>= \r -> guard (lo <= r && r <= hi) >> return o
     , case o of
         OArray arr -> do
@@ -180,9 +180,9 @@ matchObject pat o = let otype = objType o in case pat of
     modify (\st -> st{ matcherTree = T.insert (reverse (matcherRef st)) o (matcherTree st) })
     return o
   ObjFailIf lbl pat -> mplus (matchObject pat o) (throwError (LocalRef lbl))
-  ObjNot        pat -> catchPValue (matchObject pat o) >>= \p -> case p of
+  ObjNot        pat -> catchPredicate (matchObject pat o) >>= \p -> case p of
     Backtrack  -> return o
-    p          -> assumePValue p
+    p          -> predicate p
 
 justOnce :: [Bool] -> Bool
 justOnce checks = 1 == foldl (\i check -> if check then i+1 else i) 0 checks

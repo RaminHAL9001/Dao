@@ -46,7 +46,6 @@
 -- "Data.Binary" module, and provides a Dao-friendly wrapper around it.
 module Dao.Binary where
 
-import           Dao.Runtime
 import           Dao.String
 import qualified Dao.Tree             as T
 import           Dao.Token
@@ -56,12 +55,9 @@ import           Control.Exception (assert)
 import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Error
-import           Control.Monad.Trans
 import qualified Control.Monad.State  as S
 
 import           Data.Monoid
-import           Data.Function
-import           Data.Typeable
 import           Data.Dynamic
 import           Data.Char
 import           Data.Int
@@ -134,7 +130,7 @@ type GPut mtab = GPutM mtab ()
 data GGetErr = GetErr { gGetErrOffset :: ByteOffset, gGetErrMsg :: UStr }
 instance Show GGetErr where { show (GetErr ofst msg) = "(offset="++show ofst++") "++uchars msg }
 
-newtype GGet mtab a = Get{ decoderToStateT :: PTrans GGetErr (S.StateT (DecodeIndex mtab) B.Get) a }
+newtype GGet mtab a = Get{ decoderToStateT :: PredicateT GGetErr (S.StateT (DecodeIndex mtab) B.Get) a }
 
 instance Functor (GPutM mtab) where { fmap f (PutM a) = PutM (fmap f a) }
 instance Monad (GPutM mtab) where
@@ -188,7 +184,7 @@ decodeIndexLookup tid = M.lookup tid <$> S.gets decodeIndex
 -- that byte length.
 trimIntegerHash :: Int64 -> Integer -> (Int, Integer)
 trimIntegerHash i h = snd $ head $ dropWhile ((i<) . fst) $
-  map (\x -> (2^(8+4*fromIntegral x), (x, h .&. (2^(7*x)-1)))) [0..14::Int]
+  map (\x -> (2^(8+4*(fromIntegral x :: Int)), (x, h .&. (2^(7*x)-1)))) [0..14::Int]
 
 -- | A trimmed hash is an hash produced by SHA1 along with the length of the original data. However
 -- it instantiates 'Prelude.Eq', and 'Binary' in such a way that only a maximum of 5 bytes of the
@@ -197,8 +193,9 @@ trimIntegerHash i h = snd $ head $ dropWhile ((i<) . fst) $
 -- the hash code when the data you are storing or reading is itself 20 bytes long.
 data TrimmedHash = TrimmedHash Int64 Integer deriving (Eq, Ord)
 instance Binary TrimmedHash mtab where
-  put (TrimmedHash i h) =
-    let (len, h) = trimIntegerHash i h in if len>0 then putPosIntegral h else return ()
+  put (TrimmedHash i h0) =
+    let (len, h) = trimIntegerHash i h0
+    in  if len>0 then putPosIntegral h else return ()
   get = TrimmedHash (error "TrimmedHash length not set") <$> getPosIntegral
 
 -- | Create a 'TrimmedHash' a list of bytes as the second parameter and the maximum length of the
@@ -225,7 +222,7 @@ instance Binary BlockStream1M mtab where
   put =
     mapM_ (\ blk -> put blk >> put (trimmedHash blk)
           ) . fix (\ loop blk ->
-                      let (a,b) = Z.splitAt (2^20) blk in a : if Z.null b then [] else loop b
+                      let (a,b) = Z.splitAt (2^(20::Int)) blk in a : if Z.null b then [] else loop b
                   ) . block1MStreamToByteString
   get = (BlockStream1M . Z.concat) <$> loop [] where
     loop bx = get >>= \b -> get >>= \cksum ->
@@ -257,7 +254,7 @@ newInStreamID typ = S.get >>= \st -> let idx = encodeIndex st in case M.lookup t
 -- stream. If it does not exist, this function simply returns and does nothing. If it does exist,
 -- the data is pulled out of the stream and the index is updated.
 updateTypes :: HasCoderTable mtab => GGet mtab ()
-updateTypes = {- flip mplus (return ()) $ -} tryWord8 0x01 $ do
+updateTypes = tryWord8 0x01 $ do
   (InStreamIndex tid label) <- get
   S.modify $ \st -> st{decodeIndex = M.insert tid label (decodeIndex st)}
 
@@ -265,20 +262,20 @@ runPut :: HasCoderTable mtab => mtab -> GPut mtab -> Z.ByteString
 runPut mtab fn = B.runPut $ S.evalStateT (encoderToStateT fn) $
   EncodeIndex{indexCounter=1, encodeIndex=mempty, encMTabRef=mtab}
 
-runGet :: HasCoderTable mtab => mtab -> GGet mtab a -> Z.ByteString -> PValue GGetErr a
-runGet mtab fn = B.runGet $ S.evalStateT (runPTrans $ decoderToStateT fn) $
+runGet :: HasCoderTable mtab => mtab -> GGet mtab a -> Z.ByteString -> Predicate GGetErr a
+runGet mtab fn = B.runGet $ S.evalStateT (runPredicateT $ decoderToStateT fn) $
   DecodeIndex{decodeIndex=mempty, decMTabRef=mtab}
 
 encode :: (HasCoderTable mtab, Binary a mtab) => mtab -> a -> Z.ByteString
 encode mtab = runPut mtab . put
 
-decode :: (HasCoderTable mtab, Binary a mtab) => mtab -> Z.ByteString -> PValue GGetErr a
+decode :: (HasCoderTable mtab, Binary a mtab) => mtab -> Z.ByteString -> Predicate GGetErr a
 decode mtab = runGet mtab get
 
 encodeFile :: (HasCoderTable mtab, Binary a mtab) => mtab -> FilePath -> a -> IO ()
 encodeFile mtab path = Z.writeFile path . encode mtab
 
-decodeFile :: (HasCoderTable mtab, Binary a mtab) => mtab -> FilePath -> IO (PValue GGetErr a)
+decodeFile :: (HasCoderTable mtab, Binary a mtab) => mtab -> FilePath -> IO (Predicate GGetErr a)
 decodeFile mtab path = decode mtab <$> Z.readFile path
 
 putWithBlockStream1M :: HasCoderTable mtab => GPut mtab -> GPut mtab
@@ -288,7 +285,7 @@ getWithBlockStream1M :: HasCoderTable mtab => GGet mtab a -> GGet mtab a
 getWithBlockStream1M fn = do
   mtab <- getCoderTable
   (BlockStream1M bs1m) <- get
-  Get (pvalue (runGet mtab fn bs1m))
+  Get (predicate (runGet mtab fn bs1m))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -335,7 +332,7 @@ mkPrefixTableWord8 :: String -> Byte -> Byte -> [GGet mtab a] -> PrefixTable mta
 mkPrefixTableWord8 msg = mkPrefixTable msg getWord8
 
 runPrefixTable :: (Integral i, Show i, Ix i, Binary i mtab) => PrefixTable mtab i a -> GGet mtab a
-runPrefixTable tab@(PrefixTable msg getIdx t) = flip (maybe mzero) t $ \decoderArray -> do
+runPrefixTable (PrefixTable _msg getIdx t) = flip (maybe mzero) t $ \decoderArray -> do
   prefix <- lookAhead (maybe get id getIdx)
   guard $ inRange (bounds decoderArray) prefix
   prefix <- maybe get id getIdx
@@ -373,7 +370,7 @@ dataBinaryGet :: B.Get a -> GGet mtab a
 dataBinaryGet = Get . lift . lift
 
 lookAhead :: GGet mtab a -> GGet mtab a
-lookAhead (Get fn) = S.get >>= Get . lift . lift . B.lookAhead . S.evalStateT (runPTrans fn) >>= Get . pvalue
+lookAhead (Get fn) = S.get >>= Get . lift . lift . B.lookAhead . S.evalStateT (runPredicateT fn) >>= Get . predicate
 
 bytesRead :: GGet mtab ByteOffset
 bytesRead = Get $ lift $ lift B.bytesRead
@@ -381,20 +378,46 @@ bytesRead = Get $ lift $ lift B.bytesRead
 isEmpty :: GGet mtab Bool
 isEmpty = dataBinaryGet B.isEmpty
 
+putWord8 :: Word8 -> GPut mtab
 putWord8    = PutM . lift . B.putWord8
+
+putWord16be :: Word16 -> GPut mtab
 putWord16be = PutM . lift . B.putWord16be
+
+putWord16le :: Word16 -> GPut mtab
 putWord16le = PutM . lift . B.putWord16le
+
+putWord32be :: Word32 -> GPut mtab
 putWord32be = PutM . lift . B.putWord32be
+
+putWord32le :: Word32 -> GPut mtab
 putWord32le = PutM . lift . B.putWord32le
+
+putWord64be :: Word64 -> GPut mtab
 putWord64be = PutM . lift . B.putWord64be
+
+putWord64le :: Word64 -> GPut mtab
 putWord64le = PutM . lift . B.putWord64le
 
+getWord8 :: GGet mtab Word8
 getWord8    = Get $ lift $ lift $ B.getWord8
+
+getWord16be :: GGet mtab Word16
 getWord16be = Get $ lift $ lift $ B.getWord16be
+
+getWord16le :: GGet mtab Word16
 getWord16le = Get $ lift $ lift $ B.getWord16le
+
+getWord32be :: GGet mtab Word32
 getWord32be = Get $ lift $ lift $ B.getWord32be
+
+getWord32le :: GGet mtab Word32
 getWord32le = Get $ lift $ lift $ B.getWord32le
+
+getWord64be :: GGet mtab Word64
 getWord64be = Get $ lift $ lift $ B.getWord64be
+
+getWord64le :: GGet mtab Word64
 getWord64le = Get $ lift $ lift $ B.getWord64le
 
 putIntegral :: (Integral a, Bits a) => a -> GPut mtab
@@ -557,7 +580,7 @@ instance Binary a mtab => Binary [a] mtab where
   put o = mapM_ (put . Just) o >> putNullTerm
   get   = concatMap (maybe [] return) <$> loop [] where
     loop ox = msum $
-      [ optional (lookAhead getWord8) >>= \w -> getNullTerm >> return ox
+      [ getNullTerm >> return ox
         -- It is important to check for the null terminator first, then try to parse, that way the
         -- parser dose not backtrack (which may cause it to fail) if we are at a null terminator.
       , optional get >>= maybe (fail "expecting list element") (loop . (ox++) . (:[]))
@@ -579,7 +602,7 @@ putUnwrapped list = mapM_ put list >> putNullTerm
 -- expression will parse the null terminator of the list as though it were an element and continue
 -- looping which results in undefined behavior. Examples of elements that may start with null @0x00@
 -- bytes are 'Dao.String.UStr', 'Dao.String.Name', 'Prelude.Integer', or any 'Prelude.Integral' type.
-getUnwrapped :: (Binary a mtab, Show a) => GGet mtab [a]
+getUnwrapped :: Binary a mtab => GGet mtab [a]
 getUnwrapped = fix (\loop ox -> (getNullTerm >> return ox) <|> (get >>= \o -> loop (ox++[o]))) []
 
 instance Binary UStr mtab where

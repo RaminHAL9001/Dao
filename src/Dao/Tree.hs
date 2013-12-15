@@ -25,7 +25,10 @@
 
 module Dao.Tree where
 
+import           Dao.String (HasNullValue, nullValue, testNull) -- TODO: move the HasNullValue class to it's own module.
+
 import           Control.Applicative
+import           Control.DeepSeq
 import           Control.Monad
 import           Control.Monad.Identity
 import           Control.Monad.Trans
@@ -86,6 +89,12 @@ instance Ord p => Functor (Tree p) where
 instance (Ord p, Monoid n) => Monoid (Tree p n) where
   mempty  = Void
   mappend = unionWith mappend
+instance (NFData a, NFData b) => NFData (Tree a b) where
+  rnf  Void            = ()
+  rnf (Leaf       a  ) = deepseq a ()
+  rnf (Branch       b) = deepseq b ()
+  rnf (LeafBranch a b) = deepseq a $! deepseq b ()
+instance HasNullValue (Tree a b) where { nullValue = Void; testNull = Dao.Tree.null; }
 
 -- | A combinator to modify the data in the 'Leaf' and 'LeafBranch' nodes of a tree when passed to
 -- one of the functions below.
@@ -397,6 +406,9 @@ size t = case t of
   Branch       m -> 0 + f m
   LeafBranch _ m -> 1 + f m
   where { f m = foldl (\sz tre -> sz + size tre) (fromIntegral (M.size m)) (M.elems m) }
+
+branchCount :: Tree p a -> Int
+branchCount = maybe 0 M.size . getBranch
 
 null :: Tree p a -> Bool
 null Void = True

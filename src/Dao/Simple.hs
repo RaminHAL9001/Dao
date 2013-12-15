@@ -59,8 +59,8 @@ daoStateGHCI = unsafePerformIO (initialize >> newIORef (initDaoIOState ()))
 withDaoIO :: DaoIO () a -> IO a
 withDaoIO (DaoIO f) = do
   st <- readIORef daoStateGHCI
-  (a, st) <- runStateT (runPTrans f) st
-  a <- ioPValue a
+  (a, st) <- runStateT (runPredicateT f) st
+  a <- ioPredicate a
   writeIORef daoStateGHCI st
   return a
 
@@ -219,7 +219,7 @@ talk = fix $ \loop -> do
   case instr of
     Nothing    -> return ()
     Just instr -> withDaoIO $ do
-      pval <- daoRunT $ catchPValue (execString instr)
+      pval <- daoRunT $ catchPredicate (execString instr)
       liftIO $ case pval of
         Backtrack -> hPutStrLn stderr "Backtrack"
         PFail err -> hPutStrLn stderr (show err)
@@ -276,7 +276,7 @@ initDaoIOState ust =
 -- read-eval-print loop which pre-processes input into a list of @['Text']@ objects, and broadcasts
 -- that input to the various modules. You can select which modules you want using 'selectModule',
 -- and you can evaluate a query in a module using 'evalQuery'.
-newtype DaoIO st a = DaoIO{ daoStateT :: PTrans XThrow (StateT (DaoIOState st) IO) a }
+newtype DaoIO st a = DaoIO{ daoStateT :: PredicateT XThrow (StateT (DaoIOState st) IO) a }
   deriving (Functor, Applicative, Alternative, Monad, MonadPlus, MonadIO)
 instance MonadState st (DaoIO st) where
   state f = DaoIO $ lift $ state $ \st -> let (a, ust) = f (userState st) in (a, st{userState=ust})
@@ -284,11 +284,11 @@ instance MonadError XThrow (DaoIO st) where
   throwError = DaoIO . throwError
   catchError (DaoIO try) catch = DaoIO $ catchError try (daoStateT . catch)
 instance MonadPlusError XThrow (DaoIO st) where
-  catchPValue (DaoIO f) = DaoIO (catchPValue f)
-  assumePValue = DaoIO . assumePValue
+  catchPredicate (DaoIO f) = DaoIO (catchPredicate f)
+  predicate = DaoIO . predicate
 
-runDaoIO :: DaoIO st a -> DaoIOState st -> IO (PValue XThrow a, DaoIOState st)
-runDaoIO (DaoIO f) = runStateT (runPTrans f)
+runDaoIO :: DaoIO st a -> DaoIOState st -> IO (Predicate XThrow a, DaoIOState st)
+runDaoIO (DaoIO f) = runStateT (runPredicateT f)
 
 -- | Using the 'DeclareRuntime' monad, you can install built-in modules. Built-in modules are
 -- constructed using the 'DeclareRuntime' interface, the 'installModule' function applies this
@@ -339,7 +339,7 @@ updateDataBuilder :: BuilderT (DaoIO st) t -> DaoIO st t
 updateDataBuilder builder = do
   st <- DaoIO (lift get)
   (result, dbst) <- runBuilderT builder (dataBuilder st)
-  result <- liftIO (ioPValue result)
+  result <- liftIO (ioPredicate result)
   DaoIO (lift $ put $ st{dataBuilder=dbst}) >> return result
 
 -- | Create a temporary copy of the current 'DataBuilder' state, and the collapse the copy to a
@@ -348,7 +348,7 @@ getCurrentXData :: DaoIO st (Maybe XData)
 getCurrentXData = DaoIO (lift $ gets dataBuilder) >>= loop where
   loop dbst = do
     (p, dbst) <- runBuilderT popStep dbst
-    xdat <- liftIO (ioPValue p)
+    xdat <- liftIO (ioPredicate p)
     if null (builderPath dbst) then return xdat else loop dbst
 
 -- | Try to construct a Haskell object of a 'Translatable' data type from current 'XData' value
@@ -356,7 +356,7 @@ getCurrentXData = DaoIO (lift $ gets dataBuilder) >>= loop where
 getCurrentBuildData :: Translatable t => DaoIO st (Maybe t)
 getCurrentBuildData = getCurrentXData >>= \xdat -> case xdat of
   Nothing -> return Nothing
-  xdat    -> runBuilderT maybeFromXData (initDataBuilder xdat) >>= liftIO . ioPValue . fst
+  xdat    -> runBuilderT maybeFromXData (initDataBuilder xdat) >>= liftIO . ioPredicate . fst
 
 -- | Check if the 'currentModule' is defined in the 'DaoIOState', if not throw
 -- an exception with the data type string and data given.
@@ -390,11 +390,11 @@ showDataBuilder = DaoIO $ lift $ show <$> gets dataBuilder
 showTreeAddresses :: T.Tree Label a -> String
 showTreeAddresses = intercalate "\n" . map (show . labelsToAddr . fst) . T.assocs
 
-runPTransIO :: PTrans XThrow IO a -> IO a
-runPTransIO = runPTrans >=> ioPValue
+runPTransIO :: PredicateT XThrow IO a -> IO a
+runPTransIO = runPredicateT >=> ioPredicate
 
-ioPValue :: PValue XThrow a -> IO a
-ioPValue p = case p of
+ioPredicate :: Predicate XThrow a -> IO a
+ioPredicate p = case p of
   Backtrack -> fail "Backtrack"
   PFail err -> fail (show err)
   OK      a -> return a
@@ -404,8 +404,8 @@ daoRunT f = DaoIO $ do
   st <- lift get
   (result, st) <- liftIO $ do
     (result, st) <- runDaoIO (evalRun (ioRuntime st) f) st
-    (result, runtime) <- ioPValue result
-    result <- ioPValue result
+    (result, runtime) <- ioPredicate result
+    result <- ioPredicate result
     return (result, st{ioRuntime=runtime})
   lift $ put st
   return result
@@ -896,24 +896,24 @@ class Translatable t where
   toXData   :: (Functor m, Monad m, Applicative m) => t -> BuilderT m ()
   fromXData :: (Functor m, Monad m, Applicative m) => BuilderT m t
 
-newtype BuilderT m a = BuilderT { builderToPTrans :: PTrans XThrow (StateT DataBuilder m) a }
+newtype BuilderT m a = BuilderT { builderToPredicateT :: PredicateT XThrow (StateT DataBuilder m) a }
   deriving (Functor, Monad, MonadPlus)
 instance (Functor m, Monad m) => Applicative (BuilderT m) where {pure=return; (<*>)=ap;}
 instance (Functor m, Monad m) => Alternative (BuilderT m) where {empty=mzero; (<|>)=mplus;}
 instance MonadTrans BuilderT where {lift = BuilderT . lift . lift}
 instance Monad m => MonadError XThrow (BuilderT m) where
   throwError = BuilderT . throwError
-  catchError (BuilderT try) catch = BuilderT (catchError try (builderToPTrans . catch))
+  catchError (BuilderT try) catch = BuilderT (catchError try (builderToPredicateT . catch))
 instance Monad m => MonadPlusError XThrow (BuilderT m) where
-  catchPValue (BuilderT f) = BuilderT (catchPValue f)
-  assumePValue = BuilderT . assumePValue
+  catchPredicate (BuilderT f) = BuilderT (catchPredicate f)
+  predicate = BuilderT . predicate
 instance Monad m => MonadState (Maybe XData) (BuilderT m) where
   get   = BuilderT $ lift $ gets (fmap fromBuildStep . builderItem)
   put o = BuilderT $ lift $ modify $ \st -> st{builderItem=fmap buildStep o}
 
 -- | Run a 'BuilderT' monad.
-runBuilderT :: BuilderT m t -> DataBuilder -> m (PValue XThrow t, DataBuilder)
-runBuilderT (BuilderT fn) = runStateT (runPTrans fn)
+runBuilderT :: BuilderT m t -> DataBuilder -> m (Predicate XThrow t, DataBuilder)
+runBuilderT (BuilderT fn) = runStateT (runPredicateT fn)
 
 data DataBuilder
   = DataBuilder
@@ -1403,17 +1403,17 @@ initRuntime =
 -- 'XData', Lifting 'RunT' into the 'Control.Monad.Trans.Identity' monad is will allow all
 -- evaluation to be converted to a pure function, however it will make it difficult to provide
 -- system calls that do things like communicate with threads or read or write files.
-newtype RunT m a = RunT{ runToPTrans :: PTrans XThrow (StateT (Runtime m) m) a }
+newtype RunT m a = RunT{ runToPredicateT :: PredicateT XThrow (StateT (Runtime m) m) a }
 
-evalRun :: Monad m => Runtime m -> RunT m a -> m (PValue XThrow a, Runtime m)
-evalRun st (RunT f) = runStateT (runPTrans f) st
+evalRun :: Monad m => Runtime m -> RunT m a -> m (Predicate XThrow a, Runtime m)
+evalRun st (RunT f) = runStateT (runPredicateT f) st
 
 instance Functor m => Functor (RunT m) where { fmap f (RunT m) = RunT (fmap f m) }
 instance Monad m => Monad (RunT m) where
   return = RunT . return
-  RunT a >>= f = RunT $ a >>= runToPTrans . f
+  RunT a >>= f = RunT $ a >>= runToPredicateT . f
   RunT a >> RunT b = RunT (a >> b)
-  fail = RunT . pvalue . PFail . XError . mkXStr
+  fail = RunT . predicate . PFail . XError . mkXStr
 instance Monad m => MonadPlus (RunT m) where
   mzero = RunT mzero
   mplus (RunT a) (RunT b) = RunT (mplus a b)
@@ -1421,13 +1421,13 @@ instance (Functor m, Monad     m) => Applicative (RunT m) where { pure = return;
 instance (Functor m, MonadPlus m) => Alternative (RunT m) where { empty = mzero; (<|>) = mplus; }
 instance Monad m => MonadError XThrow (RunT m) where
   throwError = RunT . throwError
-  catchError (RunT try) catch = RunT (catchError try (runToPTrans . catch))
+  catchError (RunT try) catch = RunT (catchError try (runToPredicateT . catch))
 instance MonadIO m => MonadIO (RunT m) where { liftIO = RunT . liftIO }
 instance MonadTrans RunT where { lift = RunT . lift . lift }
 instance Monad m => MonadState  (Runtime m) (RunT m) where { state = RunT . lift . state }
 instance (MonadPlus m, Monad m) => MonadPlusError XThrow (RunT m) where
-  catchPValue (RunT f) = RunT (catchPValue f)
-  assumePValue p = RunT (assumePValue p)
+  catchPredicate (RunT f) = RunT (catchPredicate f)
+  predicate p = RunT (predicate p)
 
 ----------------------------------------------------------------------------------------------------
 

@@ -59,7 +59,7 @@ debug/test: tests/main.hs debug $(CHANGED_FILES)
 	$(GHC_BUILD) -o debug/test tests/main.hs $(CHANGED_FILES)
 
 clean:
-	find $(SRC_DIRS) \( -name '*.o' -o -name '*.hi' \) -printf 'rm %p;\n' -delete;
+	find $(SOURCE_DIRECTORIES) \( -name '*.o' -o -name '*.hi' \) -printf 'rm %p;\n' -delete;
 
 listfile = grep -v '^[[:space:]]*$(hash).*$$' $1
 

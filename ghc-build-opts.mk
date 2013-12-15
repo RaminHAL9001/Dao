@@ -25,14 +25,16 @@ SOURCE_DIRECTORIES =         \
 	./src                    \
 	./tests                  \
 
-LANGUAGE_EXTENSIONS =        \
-	TemplateHaskell          \
-	ScopedTypeVariables      \
-	RankNTypes               \
-	MultiParamTypeClasses    \
-	FunctionalDependencies   \
-	FlexibleInstances        \
-	FlexibleContexts         \
+LANGUAGE_EXTENSIONS =          \
+	TemplateHaskell            \
+	ScopedTypeVariables        \
+	RankNTypes                 \
+	MultiParamTypeClasses      \
+	FunctionalDependencies     \
+	FlexibleInstances          \
+	FlexibleContexts           \
+	DeriveDataTypeable         \
+	GeneralizedNewtypeDeriving \
 
 BUILTIN_RTS_OPTIONS = -M8G -N4
 

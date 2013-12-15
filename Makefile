@@ -41,7 +41,7 @@ LANG_EXTS = $(foreach X,$(LANGUAGE_EXTENSIONS),-X$X)
 GHC_CMD = ghc
 GHC_BUILD = $(GHC_CMD) --make $(SRC_DIRS) $(GHC_FLAGS) $(RTS_OPTS) $(LINKER_FLAGS) $(LANG_EXTS)
 
-CHANGED_FILES := $(shell find . -name '[A-Z]*.hs' -newer ./Makefile)
+CHANGED_FILES := $(shell find $(SOURCE_DIRECTORIES) -name '[A-Z]*.hs' -newer ./Makefile)
 
 ####################################################################################################
 
@@ -59,7 +59,7 @@ debug/test: tests/main.hs debug $(CHANGED_FILES)
 	$(GHC_BUILD) -o debug/test tests/main.hs $(CHANGED_FILES)
 
 clean:
-	find ./src ./tests \( -name '*.o' -o -name '*.hi' \) -printf 'rm %p;\n' -delete;
+	find $(SRC_DIRS) \( -name '*.o' -o -name '*.hi' \) -printf 'rm %p;\n' -delete;
 
 listfile = grep -v '^[[:space:]]*$(hash).*$$' $1
 

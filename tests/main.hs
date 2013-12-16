@@ -20,5 +20,7 @@
 module Main where
 import qualified Dao.Test
 import qualified Dao.CoreTests
+
+main :: IO ()
 main = Dao.Test.main Dao.CoreTests.unitTester
 

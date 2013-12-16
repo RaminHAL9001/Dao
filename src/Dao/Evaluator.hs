@@ -126,8 +126,9 @@ instance PPrintable Object where
     OBytes     o     ->
       if B.null o
         then  pString "data{}"
-        else  pList (pString "data") "{" ", " "}" (map (pString . showHex) (B.unpack o))
-    OHaskell   (HaskellData _ ifc) -> error $ "cannot pretty print Haskell data type: "++show (objHaskellType ifc)
+        else  pList (pString "new data") "{" ", " "}" (map (pString . showHex) (B.unpack o))
+    OHaskell   (HaskellData _ ifc) ->
+      fail $ "cannot pretty print Haskell data type: "++show (objHaskellType ifc)
 
 instance B.Binary HaskellData MTab where
   put (HaskellData o ifc) = do
@@ -432,7 +433,6 @@ randSingletonList =
   , randInteger (OWord 0) $ \i -> randInt >>= \j -> return (OWord $ fromIntegral $ abs $ i*j)
   , randInteger (OLong 0) $ \i -> replicateM (mod i 4 + 1) randInt >>= return . OLong . longFromInts
   , randInteger (ORatio 0) $ \i -> return (ORatio (toInteger i % 1))
-  , randInteger (OComplex (complex 0 0)) $ \i -> return (OComplex (complex 0 (fromRational (toInteger i % 1))))
   , randInteger (OFloat 0) (fmap (OFloat . fromRational) . randRational)
   , randInteger (OChar '\n') (\i -> return (OChar $ chr $ mod i $ ord (maxBound::Char)))
   , OString <$> randO
@@ -3790,100 +3790,6 @@ instance Executable ObjListExpr [ParamValue] where
 
 ----------------------------------------------------------------------------------------------------
 
-newtype OptObjListExpr = OptObjListExpr (Maybe ObjListExpr) deriving (Eq, Ord, Typeable, Show)
-
-instance NFData OptObjListExpr where { rnf (OptObjListExpr a) = deepseq a () }
-
-instance HasLocation OptObjListExpr where
-  getLocation (OptObjListExpr o)     = maybe LocationUnknown getLocation o
-  setLocation (OptObjListExpr o) loc = OptObjListExpr (setLocation o loc)
-  delLocation (OptObjListExpr o)     = OptObjListExpr (delLocation o    )
-
-instance HasNullValue OptObjListExpr where
-  nullValue = OptObjListExpr Nothing
-  testNull (OptObjListExpr Nothing) = True
-  testNull _ = False
-
-instance B.Binary OptObjListExpr MTab where
-  put (OptObjListExpr o) = B.put o
-  get = OptObjListExpr <$> B.get
-
-instance Executable OptObjListExpr [ParamValue] where
-  execute (OptObjListExpr lst) = maybe (return []) execute lst
-
--- | Evaluate an 'Exec', but if it throws an exception, set record an 'Dao.Object.ObjectExpr' where
--- the exception occurred in the exception information.
-updateExecError :: (ExecControl -> ExecControl) -> Exec a -> Exec a
-updateExecError upd fn = catchError fn (\err -> throwError (upd err))
-
-----------------------------------------------------------------------------------------------------
-
-data AST_OptObjList
-  = AST_NoObjList  [Comment]
-  | AST_OptObjList AST_ObjList [Comment]
-  deriving (Eq, Ord, Typeable, Show)
-
-instance NFData AST_OptObjList where
-  rnf (AST_NoObjList  a  ) = deepseq a ()
-  rnf (AST_OptObjList a b) = deepseq a $! deepseq b ()
-
-instance HasNullValue AST_OptObjList where
-  nullValue = AST_NoObjList []
-  testNull (AST_NoObjList _) = True
-  testNull _ = False
-
-pPrintObjList :: String -> String -> String -> AST_ObjList -> PPrint
-pPrintObjList open comma close (AST_ObjList coms lst _) = pList (pPrint coms) open comma close (map pPrint lst)
-
-instance HasLocation AST_OptObjList where
-  getLocation o     = case o of
-    AST_NoObjList{}    -> LocationUnknown
-    AST_OptObjList o _ -> getLocation o
-  setLocation o loc = case o of
-    AST_NoObjList{}    -> o
-    AST_OptObjList o c -> AST_OptObjList (setLocation o loc) c
-  delLocation o     = case o of
-    AST_NoObjList{}    -> o
-    AST_OptObjList o c -> AST_OptObjList (delLocation o) c
-
-instance PPrintable AST_OptObjList where
-  pPrint o = case o of
-    AST_NoObjList                           com2 -> pPrint com2
-    AST_OptObjList (AST_ObjList com1 lst _) com2 ->
-      pInline [pPrint com1, pList_ "(" ", " ")" (map pPrint lst), pPrint com2]
-
-instance Structured (Maybe AST_ObjList) Object where
-  dataToStruct a = deconstruct $ case a of
-    Nothing -> place ONull
-    Just  a -> putData a
-  structToData   = reconstruct $ mplus getData $ this >>= \a -> case a of
-    ONull -> return Nothing
-    _     -> fail "expecting either null value or optional AST_ObjList expression"
-
-instance Structured AST_OptObjList Object where
-  dataToStruct a = deconstruct $ case a of
-    AST_NoObjList coms -> with "noParams" (putComments coms)
-    AST_OptObjList o _ -> putDataAt "params" o
-  structToData   = reconstruct $ msum $
-    [ with "noParams" $ fmap AST_NoObjList getComments
-    , AST_OptObjList <$> getDataAt "params" <*> getComments
-    ]
-
-randArgsDef :: RandO [Com AST_Object]
-randArgsDef = randList 0 7
-
-instance HasRandGen AST_OptObjList where
-  randO = randChoice [AST_NoObjList <$> randO, pure AST_OptObjList <*> randO <*> randO]
-
-instance Intermediate OptObjListExpr AST_OptObjList where
-  toInterm   o = case o of
-    AST_NoObjList{}    -> [OptObjListExpr Nothing]
-    AST_OptObjList o _ -> fmap (OptObjListExpr . Just) (ti o)
-  fromInterm o = case o of
-    OptObjListExpr o -> maybe [AST_NoObjList []] (fmap (flip AST_OptObjList []) . fi) o
-
-----------------------------------------------------------------------------------------------------
-
 data AST_ObjList = AST_ObjList [Comment] [Com AST_Object] Location deriving (Eq, Ord, Typeable, Show)
 
 mkObjList :: [Com AST_Object] -> AST_ObjList
@@ -3914,6 +3820,84 @@ instance HasRandGen AST_ObjList   where { randO = recurse nullValue $ AST_ObjLis
 instance Intermediate ObjListExpr AST_ObjList where
   toInterm   (AST_ObjList _ lst loc) = liftM2 ObjListExpr      [lst>>=uc0] [loc]
   fromInterm (ObjListExpr   lst loc) = liftM3 AST_ObjList [[]] [lst>>=nc0] [loc]
+
+----------------------------------------------------------------------------------------------------
+
+newtype OptObjListExpr = OptObjListExpr (Maybe ObjListExpr) deriving (Eq, Ord, Typeable, Show)
+
+instance NFData OptObjListExpr where { rnf (OptObjListExpr a) = deepseq a () }
+
+instance HasLocation OptObjListExpr where
+  getLocation (OptObjListExpr o)     = maybe LocationUnknown getLocation o
+  setLocation (OptObjListExpr o) loc = OptObjListExpr (setLocation o loc)
+  delLocation (OptObjListExpr o)     = OptObjListExpr (delLocation o    )
+
+instance HasNullValue OptObjListExpr where
+  nullValue = OptObjListExpr Nothing
+  testNull (OptObjListExpr Nothing) = True
+  testNull _ = False
+
+instance B.Binary OptObjListExpr MTab where
+  put (OptObjListExpr o) = B.put o
+  get = OptObjListExpr <$> B.get
+
+instance Executable OptObjListExpr [ParamValue] where
+  execute (OptObjListExpr lst) = maybe (return []) execute lst
+
+-- | Evaluate an 'Exec', but if it throws an exception, set record an 'Dao.Object.ObjectExpr' where
+-- the exception occurred in the exception information.
+updateExecError :: (ExecControl -> ExecControl) -> Exec a -> Exec a
+updateExecError upd fn = catchError fn (\err -> throwError (upd err))
+
+----------------------------------------------------------------------------------------------------
+
+newtype AST_OptObjList = AST_OptObjList (Maybe AST_ObjList) deriving (Eq, Ord, Typeable, Show)
+
+instance NFData AST_OptObjList where
+  rnf (AST_OptObjList a) = deepseq a ()
+
+instance HasNullValue AST_OptObjList where
+  nullValue = AST_OptObjList Nothing
+  testNull (AST_OptObjList a) = maybe True testNull a
+
+pPrintObjList :: String -> String -> String -> AST_ObjList -> PPrint
+pPrintObjList open comma close (AST_ObjList coms lst _) = pList (pPrint coms) open comma close (map pPrint lst)
+
+instance HasLocation AST_OptObjList where
+  getLocation (AST_OptObjList o)     = maybe LocationUnknown getLocation o
+  setLocation (AST_OptObjList o) loc = AST_OptObjList (fmap (flip setLocation loc) o)
+  delLocation (AST_OptObjList o)     = AST_OptObjList (fmap delLocation o)
+
+instance PPrintable AST_OptObjList where
+  pPrint (AST_OptObjList o) = flip (maybe $ return ()) o $ \ (AST_ObjList com1 lst _) ->
+    pInline [pPrint com1, pList_ "(" ", " ")" (map pPrint lst)]
+
+--instance Structured (Maybe AST_ObjList) Object where
+--  dataToStruct a = deconstruct $ case a of
+--    Nothing -> place ONull
+--    Just  a -> putData a
+--  structToData   = reconstruct $ mplus getData $ this >>= \a -> case a of
+--    ONull -> return Nothing
+--    _     -> fail "expecting either null value or optional AST_ObjList expression"
+
+instance Structured AST_OptObjList Object where
+  dataToStruct (AST_OptObjList a) = deconstruct $ case a of
+    Nothing -> return ()
+    Just  o -> putDataAt "initParams" o
+  structToData   = reconstruct $ msum $
+    [ (AST_OptObjList . Just) <$> getDataAt "initParams"
+    , return $ AST_OptObjList Nothing
+    ]
+
+randArgsDef :: RandO [Com AST_Object]
+randArgsDef = randList 0 7
+
+instance HasRandGen AST_OptObjList where
+  randO = randChoice [return (AST_OptObjList Nothing), (AST_OptObjList . Just) <$> randO]
+
+instance Intermediate OptObjListExpr AST_OptObjList where
+  toInterm   (AST_OptObjList o) = liftM OptObjListExpr (um1 o)
+  fromInterm (OptObjListExpr o) = liftM AST_OptObjList (nm1 o)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4285,7 +4269,7 @@ data AST_Object
   | AST_Prefix     PrefixOp       [Comment]            AST_Object    Location
   | AST_ArraySub   AST_Object                          AST_ObjList   Location
   | AST_FuncCall   AST_Object                          AST_ObjList   Location
-  | AST_Init       [Comment] AST_Ref   AST_OptObjList  AST_ObjList   Location
+  | AST_Init       [Comment] AST_Ref   AST_OptObjList  AST_ObjList   Location -- TODO: the initial comments here succeed the "new" keyword. Try to eliminate these and the "new" keyword.
   | AST_Struct                    (Com AST_Object)     AST_ObjList   Location
   | AST_Lambda                    (Com AST_ParamList)  AST_CodeBlock Location
   | AST_Func       [Comment] Name (Com AST_ParamList)  AST_CodeBlock Location

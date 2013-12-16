@@ -327,7 +327,7 @@ instance B.Binary QualRef mtab where
     Unqualified ref -> B.put ref
     Qualified q ref -> B.prefixByte pfx $ B.put ref where
       pfx = case q of
-        LOCAL  -> 0x1F
+        LOCAL  -> 0x20
         GLODOT -> 0x21
         STATIC -> 0x22
         GLOBAL -> 0x23
@@ -336,7 +336,7 @@ instance B.Binary QualRef mtab where
 instance B.HasPrefixTable QualRef B.Byte mtab where
   prefixTable = mconcat $
     [ Unqualified <$> B.prefixTable
-    , B.mkPrefixTableWord8 "QualRef" 0x1F 0x23 $
+    , B.mkPrefixTableWord8 "QualRef" 0x20 0x23 $
         [ Qualified LOCAL  <$> B.get
         , Qualified GLODOT <$> B.get
         , Qualified STATIC <$> B.get
@@ -669,7 +669,7 @@ instance Ord Complex where
   compare (Complex a) (Complex b) = compare (C.polar a) (C.polar b)
 
 instance Show Complex where
-  show (Complex a) = "("++show re++(if im<0 then "-" else "+")++show im++"i" where
+  show (Complex a) = "("++show re++(if im<0 then "-" else "+")++show im++"i)" where
     re = C.realPart a
     im = C.imagPart a
 

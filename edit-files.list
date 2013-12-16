@@ -1,28 +1,18 @@
 # A list of files you want to edit with Vim.
 # They will appear in the order specified.
-src/Dao/StepList.hs
-src/Dao/Simple.hs
-src/Dao/Predicate.hs
-src/Dao/Tree.hs
-src/Dao/Random.hs
-
-src/Dao/Runtime.hs
 src/Dao/Object.hs
 src/Dao/Evaluator.hs
+src/Dao/Object/Parser.hs
+src/Dao/Predicate.hs
+src/Dao/Tree.hs
+
+src/Dao/Random.hs
 src/Dao/Binary.hs
 src/Dao/Stack.hs
-src/Dao/Object/AST.hs
-src/Dao/Object/Parser.hs
-src/Dao/Object/Struct.hs
-src/Dao/Object/DeepSeq.hs
-src/Dao/Object/PPrint.hs
-src/Dao/Object/Math.hs
-src/Dao/Object/Pattern.hs
-src/Dao/Object/Binary.hs
-src/Dao/Object/Random.hs
 src/Dao/Struct.hs
 src/Dao/Prelude.hs
 src/Dao/EnumSet.hs
+src/Dao/StepList.hs
 src/Dao/Procedural.hs
 src/Dao/Parser.hs
 src/Dao/PPrint.hs
@@ -37,9 +27,11 @@ tests/Dao/Tests.hs
 tests/Dao/SingleTest.hs
 tests/2.dao
 tests/1.dao
-tests/EQN.hs
-tests/I.hs
-tests/TestEnumSet.hs
 Setup.hs
 ghc-build-opts.mk
 project-files.list
+
+### to be removed ###
+src/Dao/Simple.hs
+src/Dao/Runtime.hs
+edit-files.list

@@ -365,7 +365,7 @@ singletonPTab :: DaoPTable AST_Object
 singletonPTab = table singletonPTabItems
 
 parenPTabItem :: DaoTableItem AST_Paren
-parenPTabItem = tableItemBy "("    $ \tok -> do
+parenPTabItem = tableItemBy "(" $ \tok -> do
   obj <- commented equation
   expect "closing parentheses" $ do
     endloc <- tokenBy ")" asLocation
@@ -382,10 +382,10 @@ metaEvalPTabItem = tableItemBy "@{" $ \startTok -> expect "object expression aft
     return (AST_MetaEval scrp (asLocation startTok <> endLoc))
 
 singletonPTabItems :: [DaoTableItem AST_Object]
-singletonPTabItems = numberPTabItems ++ fmap (fmap (fmap AST_ObjQualRef)) qualReferencePTabItems ++
+singletonPTabItems = numberPTabItems ++
   [ tableItem STRINGLIT (literal $ OString . read     . asString)
   , tableItem CHARLIT   (literal $ OChar   . read     . asString)
-  , fmap (fmap AST_ObjParen) parenPTabItem
+--  , fmap (fmap (AST_ObjLValue . AST_ObjParen)) parenPTabItem
   , metaEvalPTabItem
   , trueFalse "null" ONull, trueFalse "false" ONull, trueFalse "true" OTrue
   , reserved "operator", reserved "public", reserved "private"
@@ -400,24 +400,6 @@ singletonPTabItems = numberPTabItems ++ fmap (fmap (fmap AST_ObjQualRef)) qualRe
 -- parentheses.
 singleton :: DaoParser AST_Object
 singleton = joinEvalPTable singletonPTab
-
-prefixedSingletonPTabItems :: [DaoTableItem AST_Object]
-prefixedSingletonPTabItems = [prefixOp "$", prefixOp "@"] where
-  prefixOp op = tableItemBy op $ \tok -> case maybeFromUStr (ustr op) of
-    Nothing -> fail ("token at "++show tok++" used as prefix operator")
-    Just op -> do
-      ref  <- joinEvalPTable qualSinglePTab
-      coms <- optSpace
-      let loc = asLocation tok <> getLocation ref
-      return (AST_Prefix op coms ref loc)
-  qualSinglePTab = table $ singletonPTabItems ++
-    bindPTableItemList qualReferencePTabItems (return . AST_ObjQualRef)
-
-prefixedSingletonPTab :: DaoPTable AST_Object
-prefixedSingletonPTab = table prefixedSingletonPTabItems
-
-prefixedSingleton :: DaoParser AST_Object
-prefixedSingleton = joinEvalPTable prefixedSingletonPTab
 
 -- Returns an AST_ObjList, which is a constructor that contains leading whitespace/comments. However
 -- this function is a 'DaoTableItem' parser, which means the first token parsed must be the opening
@@ -482,19 +464,6 @@ containerPTab = table $
           (scrpt, endLoc) <- bracketed ("script expression for \"rule\" statement")
           return $ AST_Rule lst scrpt (asLocation startTok <> endLoc)
   , lambdaFunc "func", lambdaFunc "function"
---  , tableItemBy "new" $ \startTok -> do
---      coms   <- optSpace
---      ref    <- reference 
---      params <- do
---        coms <- optSpace
---        mplus
---          (do params <- joinEvalPTableItem (commaSepdObjList "(" ")")
---              return (AST_OptObjList params coms)
---          )
---          (return (AST_NoObjList coms))
---      bufferComments
---      inits  <- joinEvalPTableItem (commaSepdObjList "{" "}")
---      return $ AST_Init coms ref params inits (asLocation startTok <> getLocation inits)
   ]
   where
     lambdaFunc lbl = tableItemBy lbl $ \startTok ->
@@ -549,7 +518,7 @@ referencePTabItem = tableItem LABEL $ \init -> fmap constr $
     constr (nx, loc) = case nx of
       []   -> AST_RefNull
       n:nx -> AST_Ref (unComment n) nx loc
-    chain (l, lloc) _op (r, rloc) = (l++r, lloc<>rloc)
+    chain (l, lloc) _op (r, rloc) = return (l++r, lloc<>rloc)
     asName :: TokenAt DaoTT -> DaoParser ([Com Name], Location)
     asName tok = case maybeFromUStr (asUStr tok) of
       Just  n -> return ([Com n], asLocation tok)
@@ -575,6 +544,16 @@ qualReferencePTab = table qualReferencePTabItems
 
 qualReference :: DaoParser AST_QualRef
 qualReference = joinEvalPTable qualReferencePTab
+
+qualRef_parenPTabItems :: [DaoTableItem AST_LValue]
+qualRef_parenPTabItems = fmap (fmap AST_ObjParen) parenPTabItem :
+  fmap (fmap (fmap AST_ObjQualRef)) qualReferencePTabItems
+
+qualRef_parenPTab :: DaoPTable AST_LValue
+qualRef_parenPTab = table qualRef_parenPTabItems
+
+qualRef_paren :: DaoParser AST_LValue
+qualRef_paren = joinEvalPTable qualRef_parenPTab
 
 ----------------------------------------------------------------------------------------------------
 
@@ -653,12 +632,11 @@ commentedInPair parser = do
 -- 
 -- If all of the above fail, the qualified reference wrapped in the 'AST_ObjQualRef' constructor is
 -- returned.
-funcCall_arraySubPTab :: DaoPTable AST_Object
-funcCall_arraySubPTab =
-  bindPTable qualReferencePTab $ \qref ->
-    bufferComments >> mplus (init qref) (return $ AST_ObjQualRef qref)
+funcCall_arraySub_initPTab :: DaoPTable AST_Object
+funcCall_arraySub_initPTab = bindPTable qualRef_parenPTab $ \qref ->
+  bufferComments >> mplus (init qref) (return $ AST_ObjLValue qref)
   where
-    init :: AST_QualRef -> DaoParser AST_Object
+    init :: AST_LValue -> DaoParser AST_Object
     init qref = initBrackets >>= \constr -> constr qref
     curlyBracketsItem :: DaoTableItem AST_ObjList
     curlyBracketsItem = commaSepdObjList "{" "}"
@@ -668,79 +646,79 @@ funcCall_arraySubPTab =
     squareBracketsItem = commaSepdObjList "[" "]"
     roundBracketsItem :: DaoTableItem AST_ObjList
     roundBracketsItem = commaSepdObjList "(" ")"
-    initBrackets :: DaoParser (AST_QualRef -> DaoParser AST_Object)
+    initBrackets :: DaoParser (AST_LValue -> DaoParser AST_Object)
     initBrackets = joinEvalPTable initBracketsTable >>= \f -> return (join . f)
-    initBracketsTable :: DaoPTable (AST_QualRef -> DaoParser (DaoParser AST_Object))
+    initBracketsTable :: DaoPTable (AST_LValue -> DaoParser (DaoParser AST_Object))
     initBracketsTable = table $
-      [ bindPTableItem roundBracketsItem $ \params -> return $ \qref -> return $ loop $
-          AST_FuncCall  (AST_ObjQualRef qref) params (getLocation qref <> getLocation params)
+      [ bindPTableItem squareBracketsItem $ \params -> return $ \qref -> return $ loop $
+          AST_ArraySub qref params (getLocation qref <> getLocation params)
       , bindPTableItem curlyBracketsItem $ \initItems -> return $ \qref -> case qref of
-          AST_Qualified q _ _ _ -> cantUseQualRef qref q
-          AST_Unqualified   ref ->
-            return $ return $ AST_Init [] ref (AST_OptObjList Nothing) initItems
-              (getLocation qref <> getLocation initItems)
-      , bindPTableItem squareBracketsItem $ \params -> return $ \qref -> do
-          let startLoop = return $ loop $
-                AST_ArraySub (AST_ObjQualRef qref) params (getLocation qref <> getLocation params)
-          case qref of
-            AST_Qualified _ _ _ _ -> startLoop
-            AST_Unqualified   ref -> flip mplus startLoop $ do
-              initItems <- curlyBrackets
-              return $ return $ AST_Init [] ref (AST_OptObjList $ Just params) initItems
+          AST_ObjQualRef ref -> case ref of
+            AST_Unqualified ref ->
+              return $ return $ AST_Init ref (AST_OptObjList Nothing) initItems
                 (getLocation qref <> getLocation initItems)
+            AST_Qualified q _ _ _ -> fail $ "cannot use "++show q++" reference as constructor"
+          _ -> mzero
+      , bindPTableItem roundBracketsItem $ \params -> return $ \qref -> do
+          let startLoop = return $ loop $
+                AST_FuncCall qref params (getLocation qref <> getLocation params)
+          case qref of
+            AST_ObjQualRef (AST_Unqualified ref) -> flip mplus startLoop $ do
+              initItems <- curlyBrackets
+              return $ return $ AST_Init ref (AST_OptObjList $ Just params) initItems
+                (getLocation qref <> getLocation initItems)
+            _ -> startLoop
       ]
-    loop :: AST_Object -> DaoParser AST_Object
-    loop header = flip mplus (return header) $
+    loop :: AST_LValue -> DaoParser AST_Object
+    loop header = flip mplus (return $ AST_ObjLValue header) $
       bufferComments >> brackets >>= \constr -> loop (constr header)
-    brackets :: DaoParser (AST_Object -> AST_Object)
+    brackets :: DaoParser (AST_LValue -> AST_LValue)
     brackets = joinEvalPTable bracketsTable
-    bracketsTable :: DaoPTable (AST_Object -> AST_Object)
+    bracketsTable :: DaoPTable (AST_LValue -> AST_LValue)
     bracketsTable = table $
       [funcOrArray AST_FuncCall roundBracketsItem, funcOrArray AST_ArraySub squareBracketsItem]
     funcOrArray
-      :: (AST_Object -> AST_ObjList -> Location -> AST_Object)
+      :: (AST_LValue -> AST_ObjList -> Location -> AST_LValue)
       -> DaoTableItem AST_ObjList
-      -> DaoTableItem (AST_Object -> AST_Object)
+      -> DaoTableItem (AST_LValue -> AST_LValue)
     funcOrArray constr parsParams = bindPTableItem parsParams $ \params -> return $ \header ->
       constr header params (getLocation header <> getLocation params)
-    cantUseQualRef :: AST_QualRef -> RefQualifier -> DaoParser (DaoParser AST_Object)
-    cantUseQualRef _qref q = fail ("cannot use "++prettyShow q++" reference as constructor")
 
-funcCall_arraySub :: DaoParser AST_Object
-funcCall_arraySub = joinEvalPTable funcCall_arraySubPTab
+funcCall_arraySub_init :: DaoParser AST_Object
+funcCall_arraySub_init = joinEvalPTable funcCall_arraySub_initPTab
 
----- Function headers are AST_Object expressions, but are restricted to a few kinds of object
----- expressions. It might be better, in the near-future, to make the function header it's own
----- "newtype".
---funcHeaderPTab :: DaoPTable AST_Object
---funcHeaderPTab = table $ concat $
---  [ [ bindPTableItem referencePTabItem (return . AST_ObjQualRef . AST_Unqualified)
---    , bindPTableItem parenPTabItem (return . AST_ObjParen)
---    , metaEvalPTabItem
---    ]
---  , prefixedSingletonPTabItems
---  , bindPTableItemList qualReferencePTabItems (return . AST_ObjQualRef)
---  ]
+-- This function evaluates to an 'AST_Object' rather than an 'AST_LValue' because the 'AST_Init'
+-- expression is a type of 'AST_Object', but has a syntax similar to every other 'LValue' expression
+-- and so cannot be separated from the 'AST_LValue' parsers.
+objLValuePTab :: DaoPTable AST_Object
+objLValuePTab = funcCall_arraySub_initPTab <> refPrefixPTab where
+  refPrefixPTab = table refPrefixItems
+  refPrefixItems = flip map "$@" $ \c -> tableItemBy [c] $ \op -> do
+    coms <- optSpace
+    o    <- objLValue
+    case o of
+      AST_ObjLValue lval -> return $ AST_ObjLValue $
+        AST_RefPfx (ustr [c]) coms lval (asLocation op <> getLocation o)
+      _ -> fail ("reference operator "++c:"prefixes non-reference expression")
 
---funcHeader :: DaoParser AST_Object
---funcHeader = joinEvalPTable funcHeaderPTab
+objLValue :: DaoParser AST_Object
+objLValue = joinEvalPTable objLValuePTab
 
 arithPrefixPTab :: DaoPTable AST_Object
 arithPrefixPTab = table $ (logicalNOT:) $ flip fmap ["~", "-", "+"] $ \pfxOp ->
-  tableItemBy pfxOp $ \tok -> optSpace >>= \coms -> object >>= \obj -> 
-    return (AST_Prefix (fromUStr (tokTypeToUStr (asTokType tok))) coms obj (asLocation tok))
+  tableItemBy pfxOp $ \tok -> optSpace >>= \coms -> object >>= \o -> 
+    return (AST_ArithPfx (fromUStr (tokTypeToUStr (asTokType tok))) coms o (asLocation tok))
   where
     logicalNOT = tableItemBy "!" $ \op -> do
-      obj  <- arithmetic
+      o <- arithmetic
       coms <- optSpace
-      return (AST_Prefix (fromUStr $ tokTypeToUStr $ asTokType op) coms obj (asLocation op))
+      return $ AST_ArithPfx (fromUStr $ tokTypeToUStr $ asTokType op) coms o (asLocation op)
 
 -- This table extends the 'funcCallArraySubPTab' table with the 'arithPrefixPTab' table. The
 -- 'containerPTab' is also included at this level. It is the most complicated (and therefore lowest
 -- prescedence) object expression that can be formed without making use of infix operators.
 objectPTab :: DaoPTable AST_Object
-objectPTab = mconcat $
-  [funcCall_arraySubPTab, arithPrefixPTab, singletonOrContainerPTab, prefixedSingletonPTab]
+objectPTab = mconcat [singletonOrContainerPTab, arithPrefixPTab, objLValuePTab]
 
 -- Evaluates 'objectPTab' to a 'DaoParser'.
 object :: DaoParser AST_Object
@@ -749,8 +727,8 @@ object = joinEvalPTable objectPTab
 -- A constructor that basically re-arranges the arguments to the 'Dao.Object.AST.AST_Equation'
 -- constructor such that this function can be used as an argument to 'Dao.Parser.sinpleInfixed'
 -- or 'Dao.Parser.newOpTableParser'.
-equationConstructor :: AST_Object -> (Location, Com InfixOp) -> AST_Object -> AST_Object
-equationConstructor left (loc, op) right = AST_Equation left op right loc
+equationConstructor :: AST_Object -> (Location, Com InfixOp) -> AST_Object -> DaoParser AST_Object
+equationConstructor left (loc, op) right = return $ AST_Equation left op right loc
 
 -- Parses a sequence of 'object' expressions interspersed with arithmetic infix opreators.
 -- All infixed logical operators are included, assignment operators are not. The only prefix logical
@@ -763,7 +741,7 @@ arithOpTable =
         return (asLocation tok, op)
     )
     (object >>= \o -> bufferComments >> return o)
-    (\left (loc, op) right -> AST_Equation left op right loc)
+    (\left (loc, op) right -> return $ AST_Equation left op right loc)
     ( opRight ["->", "**"] equationConstructor
     : fmap (\ops -> opLeft (words ops) equationConstructor)
         ["* / %", "+ -", "<< >>", "&", "^", "|", "< <= >= >", "== !=", "&&", "||"]
@@ -778,10 +756,14 @@ arithmetic :: DaoParser AST_Object
 arithmetic = joinEvalPTable arithmeticPTab
 
 equationPTab :: DaoPTable AST_Object
-equationPTab = bindPTable arithmeticPTab $ \obj ->
+equationPTab = bindPTable arithmeticPTab $ \o ->
   simpleInfixedWithInit "object expression for assignment operator" rightAssoc
-    (\left (loc, op) right -> AST_Assign (AST_LValue left) op right loc)
-    (bufferComments >> return obj)
+    (\left (loc, op) right -> case left of
+        AST_ObjLValue left -> return $ AST_Assign left op right loc
+        _ -> fail $ "expression on left hand side of "++
+          show op++" operator does not evaluate to an updatable reference"
+    )
+    (bufferComments >> return o)
     arithmetic
     (liftM2 (,) (look1 asLocation) (commented (joinEvalPTable opTab)))
   where
@@ -931,7 +913,7 @@ toplevelPTab = table expr <> comments <> scriptExpr where
     [ tableItemBy STRINGLIT $ \tok -> case readsPrec 0 (asString tok) of
         [(sym, "")] -> return (AST_Literal (OString (ustr (sym::String))) (asLocation tok))
         _           -> fail ("invalid string expression: "++show (asUStr tok))
-    , bindPTableItem referencePTabItem (return . AST_ObjQualRef . AST_Unqualified)
+    , bindPTableItem referencePTabItem (return . AST_ObjLValue . AST_ObjQualRef . AST_Unqualified)
     ]
   header lbl = tableItemBy lbl $ \startTok ->
     expect ("string literal or reference for \""++lbl++"\" statement") $ do

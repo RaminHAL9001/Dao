@@ -1568,10 +1568,37 @@ joinEvalPTable = join . evalPTable
 
 ----------------------------------------------------------------------------------------------------
 -- $Infix_operator_table
+-- An infix operator table is an efficient method to parse equations expressed with infix operators.
+-- These functions and data types allow you to define a grammar that can handle operator precedence
+-- and right or left associativity (for example the rules for PEMDAS/BOMDAS).
+--
+-- The polymorphic types used throughout use @op@ as the operator token type, and @o@ as the
+-- expression type. Your grammar must be some form of tree data structure similar to this example:
+-- > data Equation = LEAF Int | BRANCH Equation Char Equation
+-- You have at least two constructors, leaves store values and branches store operators and branch
+-- to other trees. In the above example, the @Equation@ data type would be bound to the polymorphic
+-- type @o@, and @Data.Char.Char@ would be bound to the polymorphic @op@ type.
+
+---------
+-- Personal note: I considered making the 'InfixConstr' and 'OpPrec' types of the form:
+-- > type InfixConstr a op b = a -> op -> a -> b
+-- > data OpPrec a op b = OpPrec Associativity [UStr] (InfixConster a op b)
+-- But this required me to add another function to the 'OpTableParser' of the type @(a -> b)@ to
+-- handle the case where the there was only a single value not followed by an operator. But I
+-- figured this could be handled without complicating things: you can simply require the parsed type
+-- to be @a@ and use 'fmap' to convert the result of the parse table to @b@ using @(a -> b)@.
+-- 
+-- I also tried making InfixConstr like this:
+-- > type InfixConstr a op b = a -> op -> b -> a
+-- and also
+-- > type InfixConstr a op b = a -> op -> b -> b
+-- But doing this does not allow one to easily mix together right and left associative parsers into
+-- a single table. Again, it is best to assume a consistent type for all tokens over which to fold,
+-- and place the burden of matching inconsistent types on whoever is writting the infix parser.
 
 -- | An infix constructor is a function of this form. It takes a 'Location' as it's final parameter,
 -- which will denote the location of the @op@ token. The 'Location' can just be ignored if you want.
-type InfixConstr op obj = obj -> op -> obj -> obj
+type InfixConstr st tok op o = o -> op -> o -> Parser st tok o
 
 -- | Used to define right or left associativity for infix operators.
 newtype Associativity = Associativity{ associatesLeft :: Bool } deriving (Eq, Ord)
@@ -1587,32 +1614,40 @@ rightAssoc = Associativity False
 leftAssoc :: Associativity
 leftAssoc  = Associativity True
 
-runAssociativity :: Associativity -> InfixConstr op obj -> obj -> [(obj, op)] -> obj
-runAssociativity assoc constr obj stack =
+runAssociativity
+  :: TokenType tok
+  => Associativity
+  -> InfixConstr st tok op o
+  -> o
+  -> [(o, op)]
+  -> Parser st tok o
+runAssociativity assoc constr o stack =
   if associatesLeft assoc
-    then  foldl (\ lhs (rhs, op) -> constr lhs op rhs) obj stack
-    else  (foldr (\ (rhs, op) next initObj -> constr initObj op (next rhs)) id stack) obj
+    then  foldl (\ lhs (rhs, op) -> lhs >>= \lhs -> constr lhs op rhs) (return o) stack
+    else  (foldr (\ (rhs, op) next initObj -> next rhs >>= constr initObj op) return stack) o
 
 -- | This data type is used to relate an 'Associativity' and an 'InfixConstr' to some operators,
 -- the operators being given as strings.
-data OpPrec op obj = OpPrec{ opPrecTo3Tuple :: (Associativity, [UStr], InfixConstr op obj) }
+data OpPrec st tok op o
+  = OpPrec
+    { opPrecAssoc  :: Associativity
+    , opPrecOps    :: [UStr]
+    , opPrecConstr :: InfixConstr st tok op o
+    }
 
-opPrec :: UStrType str => Associativity -> [str] -> InfixConstr op obj -> OpPrec op obj
-opPrec a b c = OpPrec (a, map toUStr b, c)
+opLeft :: UStrType str => [str] -> InfixConstr st tok op o -> OpPrec st tok op o
+opLeft = OpPrec leftAssoc . map toUStr
 
-opLeft :: UStrType str => [str] -> InfixConstr op obj -> OpPrec op obj
-opLeft = opPrec leftAssoc
-
-opRight :: UStrType str => [str] -> InfixConstr op obj -> OpPrec op obj
-opRight = opPrec rightAssoc
+opRight :: UStrType str => [str] -> InfixConstr st tok op o -> OpPrec st tok op o
+opRight = OpPrec rightAssoc . map toUStr
 
 -- Stored in the 'OpTableParser', used to make choices on when to stack a token and when backtrack.
-type OpTablePrec op obj = Maybe (Associativity, Int, InfixConstr op obj)
+type OpTablePrec st tok op o = Maybe (Associativity, Int, InfixConstr st tok op o)
 
--- | Use this data type to setup an operator table parser which parses a sequence of @obj@ type data
+-- | Use this data type to setup an operator table parser which parses a sequence of @o@ type data
 -- separated by @op@ type operator tokens, where the @op@ tokens have been assigned the properties
 -- of fixity and right or left associativity.
-data OpTableParser st tok op obj
+data OpTableParser st tok op o
   = OpTableParser
     { opTableErrMsg      :: UStr
     , opTableAutoShift   :: Bool
@@ -1633,19 +1668,19 @@ data OpTableParser st tok op obj
       -- 'evalOpTableParser' function, and this function is used to convert those 'TokenAt' values
       -- to values of data type @op@. During evaluation of 'evalOpTableParser' this function is
       -- evaluated before the operator token is shifted from the token stream.
-    , opTableObjParser   :: Parser st tok obj
+    , opTableObjParser   :: Parser st tok o
       -- ^ This function will parse the non-opreator values of the equation.
-    , opTableConstr      :: InfixConstr op obj
-      -- ^ This function is used to construct an @obj@ from a stack of @obj@ and @op@ values, it is
+    , opTableConstr      :: InfixConstr st tok op o
+      -- ^ This function is used to construct an @o@ from a stack of @o@ and @op@ values, it is
       -- passed to 'runAssociativity'. In an arithmetic parser, for example, this function might be
       -- of the form:
       -- > constr :: Int -> String -> Int -> Int
       -- > constr a op b = if op=="+" then a+b else if op=="*" then a*b
-    , opTableArray  :: Maybe (Array TT (OpTablePrec op obj))
+    , opTableArray  :: Maybe (Array TT (OpTablePrec st tok op o))
     }
 
 -- | Evaluate an 'OpTableParser' to a 'Parser'.
-evalOpTableParser :: (HasTokenDB tok, TokenType tok, Show obj) => OpTableParser st tok op obj -> Parser st tok obj
+evalOpTableParser :: (HasTokenDB tok, TokenType tok, Show o) => OpTableParser st tok op o -> Parser st tok o
 evalOpTableParser optab = evalOpTableParserWithInit (opTableObjParser optab) optab
 
 -- | Same as 'evalOpTableParser', but lets you provide a different parser for parsing the first
@@ -1655,14 +1690,14 @@ evalOpTableParser optab = evalOpTableParserWithInit (opTableObjParser optab) opt
 -- 'opTableObjParser' function is used for every other term after it.
 evalOpTableParserWithInit
   :: (HasTokenDB tok, TokenType tok)
-  => Parser st tok obj
-  -> OpTableParser st tok op obj
-  -> Parser st tok obj
+  => Parser st tok o
+  -> OpTableParser st tok op o
+  -> Parser st tok o
 evalOpTableParserWithInit initParser optab = do
   initObj <- initParser
   maybe (return initObj) (begin initObj) (opTableArray optab)
   where
-    begin obj table = mplus (lookGetPrec table >>= bindLeft table obj) (return obj)
+    begin o table = mplus (lookGetPrec table >>= bindLeft table o) (return o)
     lookGetPrec table = do
       tok <- look1 id
       let tt = unwrapTT (asTokType tok)
@@ -1675,10 +1710,10 @@ evalOpTableParserWithInit initParser optab = do
       op <- opTableOpAs optab tok
       if opTableAutoShift optab then shift as0 else return ()
       (rightObj, opInfo) <- bindRight table tok assoc prec
-      let obj = constr leftObj op rightObj
+      o <- constr leftObj op rightObj
       case opInfo of
-        Nothing     -> return obj
-        Just opInfo -> bindLeft table obj opInfo
+        Nothing     -> return o
+        Just opInfo -> bindLeft table o opInfo
     bindRight table tok assoc prec = do
       expect (uchars (opTableErrMsg optab)++" after "++show tok++" token") $ do
         leftObj <- opTableObjParser optab
@@ -1698,7 +1733,7 @@ evalOpTableParserWithInit initParser optab = do
               op <- opTableOpAs optab nextTok
               if opTableAutoShift optab then shift as0 else return ()
               (rightObj, opInfo) <- bindRight table nextTok nextAssoc nextPrec
-              return (constr leftObj op rightObj, opInfo)
+              constr leftObj op rightObj >>= \o -> return (o, opInfo)
 
 -- | Sets up the 'OpTableParser' data structure.
 --
@@ -1727,7 +1762,7 @@ evalOpTableParserWithInit initParser optab = do
 -- The second parameter is a function which produces an @op@ data type from a 'TokenAt' value.
 -- Operators are taken from the token stream by the table evaluator, and this function will take the
 -- 'TokenAt' value provided by the table evaluator and convert it to an operator data type. The @op@
--- typed data evaluated from this function will be used to construct the final @obj@ value.
+-- typed data evaluated from this function will be used to construct the final @o@ value.
 -- 
 -- The final parameters is an 'OpPrecTable' which you construct with the 'opPrecTable' or 'opTable'
 -- functions, where you will assign prescedence and associativity properties to every operator
@@ -1737,10 +1772,10 @@ newOpTableParser
   => errMsg
   -> Bool
   -> (TokenAt tok -> Parser st tok op)
-  -> Parser st tok obj
-  -> InfixConstr op obj
-  -> [OpPrec op obj]
-  -> OpTableParser st tok op obj
+  -> Parser st tok o
+  -> InfixConstr st tok op o
+  -> [OpPrec st tok op o]
+  -> OpTableParser st tok op o
 newOpTableParser errMsg autoShift asOp objParser constr optab =
   OpTableParser
   { opTableErrMsg    = toUStr errMsg
@@ -1753,14 +1788,24 @@ newOpTableParser errMsg autoShift asOp objParser constr optab =
   where
     ttBounds (tt, _) = foldl (\ (lo, hi) (tt, _) -> (min lo tt, max hi tt)) (tt, tt) . tail
     maxPrec = length optab
-    precList :: (TokenType tok, HasTokenDB tok) => Parser st tok obj -> TokenDB tok -> [OpPrec op obj] -> [(TT, OpTablePrec op obj)]
-    precList _parser db optab = do
-      (n, (assoc, operatorUStrs, constr)) <- zip [0..] (fmap opPrecTo3Tuple optab)
-      op <- operatorUStrs
+    precList
+      :: (TokenType tok, HasTokenDB tok)
+      => Parser st tok o
+      -> TokenDB tok
+      -> [OpPrec st tok op o]
+      -> [(TT, OpTablePrec st tok op o)]
+    precList _ db optab = do
+      (n, p) <- zip [0..] optab
+      op <- opPrecOps p
       case M.lookup op (tableUStrToTT db) of
         Nothing -> error ("internal, token "++show op++" has not been activated in the TokenDB")
-        Just op -> return (op, Just (assoc, maxPrec-n, constr))
-    inferTypes :: (TokenType tok, HasTokenDB tok) => Parser st tok obj -> TokenDB tok -> [OpPrec op obj] -> Maybe (Array TT (OpTablePrec op obj))
+        Just op -> return (op, Just (opPrecAssoc p, maxPrec-n, opPrecConstr p))
+    inferTypes
+      :: (TokenType tok, HasTokenDB tok)
+      => Parser st tok o
+      -> TokenDB tok
+      -> [OpPrec st tok op o]
+      -> Maybe (Array TT (OpTablePrec st tok op o))
     inferTypes parser db optab = case precList parser db optab of
       [] -> Nothing
       ax -> Just (accumArray (flip const) Nothing (ttBounds (head ax) ax) ax)
@@ -1774,13 +1819,13 @@ simpleInfixedWithInit
   :: (TokenType tok, UStrType errMsg)
   => errMsg
   -> Associativity
-  -> InfixConstr op obj
-  -> Parser st tok obj
-  -> Parser st tok obj
+  -> InfixConstr st tok op o
+  -> Parser st tok o
+  -> Parser st tok o
   -> Parser st tok op
-  -> Parser st tok obj
+  -> Parser st tok o
 simpleInfixedWithInit errMsg assoc constr initPar objPar opPar = initPar >>= loop [] where
-  loop stack initObj = flip mplus (return (runAssociativity assoc constr initObj stack)) $
+  loop stack initObj = flip mplus (runAssociativity assoc constr initObj stack) $
     opPar >>= \op -> expect (toUStr errMsg) (objPar >>= \o -> loop (stack++[(o, op)]) initObj)
 
 -- | Same as 'simpleInfixedWithInit' except the fourth parameter (the function for parsing the terms
@@ -1790,12 +1835,12 @@ simpleInfixed
   :: (TokenType tok, UStrType errMsg)
   => errMsg
   -> Associativity
-  -> InfixConstr op obj
-  -> Parser st tok obj
+  -> InfixConstr st tok op o
+  -> Parser st tok o
   -> Parser st tok op
-  -> Parser st tok obj
+  -> Parser st tok o
 simpleInfixed errMsg assoc constr objPar opPar = objPar >>= loop [] where
-  loop stack initObj = flip mplus (return (runAssociativity assoc constr initObj stack)) $
+  loop stack initObj = flip mplus (runAssociativity assoc constr initObj stack) $
     opPar >>= \op -> expect (toUStr errMsg) (objPar >>= \o -> loop (stack++[(o, op)]) initObj)
 
 ----------------------------------------------------------------------------------------------------

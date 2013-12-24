@@ -116,7 +116,7 @@ daoTokenDef = do
   -- prefixers    <- operatorTable (words "$ @ -> . ! - ~")
   daoKeywords  <- keywordTable LABEL labelRX $ words $ unwords $
     [ "global local qtime static"
-    , "null false true tree date time function func rule"
+    , "null false true date time function func rule"
     , "if else for in while with try catch continue break return throw"
     , "global local qtime static"
     , "BEGIN END EXIT import require"
@@ -425,30 +425,18 @@ singleton = joinEvalPTable singletonPTab
 -- bracket. In order to correctly parse the leading whitespace/comments while also correctly
 -- identifying the opening bracket token, it is expected that you have called 'bufferComments'
 -- immediately before this function is evaluated.
-commaSepdObjList :: String -> String -> DaoTableItem AST_ObjList
-commaSepdObjList open close = tableItemBy open $ \startTok -> do
+commaSepdObjList :: String -> String -> String -> DaoTableItem AST_ObjList
+commaSepdObjList msg open close = tableItemBy open $ \startTok -> do
   let startLoc = asLocation startTok
   coms <- optSpace -- the comments must have been buffered by this point, otherwise the parser behaves strangely.
-  (lst, endLoc) <- commaSepd "arguments to function call" close (return . com [] AST_Void) equation id
+  (lst, endLoc) <- commaSepd ("arguments to "++msg) close (return . com [] AST_Void) equation id
   return (AST_ObjList coms lst (startLoc<>endLoc))
 
 -- Objects that are parsed as a single value but which are constructed from other object
 -- expressions. This table excludes 'singletonPTab'.
 containerPTab :: DaoPTable AST_Object
 containerPTab = table $
-  [ tableItemBy "tree" $ \startTok -> do
-      initObj <- commented (equation <|> return AST_Void)
-      let endLoc = case unComment initObj of
-            AST_Void -> asLocation startTok
-            obj      -> getLocation obj
-      let noBracedItems =  return (AST_Struct initObj mempty (asLocation startTok <> endLoc))
-      flip mplus noBracedItems $ do
-        tokenBy "{" as0
-        let msg = "item in list for initializing struct declaration"
-        expect msg $ do
-          (items, endLoc) <- commaSepd msg "}" (return . com [] AST_Void) equation id
-          return (AST_Struct initObj (mkObjList items) (asLocation startTok <> endLoc))
-  , tableItemBy "rule" $ \startTok ->
+  [ tableItemBy "rule" $ \startTok ->
       expect "list of strings after \"rule\" statement" $ do
         lst <- commented $ joinEvalPTable $ table $
           [ tableItem STRINGLIT $ \str -> return $ AST_StringList [Com (asUStr str)] (asLocation str)
@@ -619,19 +607,19 @@ funcCall_arraySub_initPTab =
   bindPTable qualRef_parenPTab $ \qref -> do
     bufferComments
     flip mplus (return $ AST_ObjLValue $ AST_LValue qref) $ case qref of
-      AST_PlainRef{} -> init qref
-      _              -> loop qref
+      AST_PlainRef (AST_Unqualified _) -> init qref
+      _ -> loop qref
   where
     init :: AST_RefOperand -> DaoParser AST_Object
     init qref = initBrackets >>= \constr -> constr qref
     curlyBracketsItem :: DaoTableItem AST_ObjList
-    curlyBracketsItem = commaSepdObjList "{" "}"
+    curlyBracketsItem = commaSepdObjList "initializer list" "{" "}"
     curlyBrackets :: DaoParser AST_ObjList
     curlyBrackets = joinEvalPTableItem curlyBracketsItem
     squareBracketsItem :: DaoTableItem AST_ObjList
-    squareBracketsItem = commaSepdObjList "[" "]"
+    squareBracketsItem = commaSepdObjList "subscript" "[" "]"
     roundBracketsItem :: DaoTableItem AST_ObjList
-    roundBracketsItem = commaSepdObjList "(" ")"
+    roundBracketsItem = commaSepdObjList "function parameters" "(" ")"
     initBrackets :: DaoParser (AST_RefOperand -> DaoParser AST_Object)
     initBrackets = joinEvalPTable initBracketsTable >>= \f -> return (join . f)
     initBracketsTable :: DaoPTable (AST_RefOperand -> DaoParser (DaoParser AST_Object))
@@ -640,18 +628,20 @@ funcCall_arraySub_initPTab =
           AST_ArraySub qref params (getLocation qref <> getLocation params)
       , bindPTableItem curlyBracketsItem $ \initItems -> return $ \qref -> case qref of
           AST_PlainRef ref -> case ref of
-            AST_Unqualified ref ->
-              return $ return $ AST_Init ref (AST_OptObjList Nothing) initItems
+            AST_Unqualified ref -> optSpace >>= \coms ->
+              return $ return $ AST_Init ref (AST_OptObjList coms Nothing) initItems
                 (getLocation qref <> getLocation initItems)
             AST_Qualified q _ _ _ -> fail $ "cannot use "++show q++" reference as constructor"
           _ -> mzero
       , bindPTableItem roundBracketsItem $ \params -> return $ \qref -> do
+          bufferComments
           let startLoop = return $ loop $
                 AST_FuncCall qref params (getLocation qref <> getLocation params)
           case qref of
             AST_PlainRef (AST_Unqualified ref) -> flip mplus startLoop $ do
+              coms <- optSpace
               initItems <- curlyBrackets
-              return $ return $ AST_Init ref (AST_OptObjList $ Just params) initItems
+              return $ return $ AST_Init ref (AST_OptObjList coms $ Just params) initItems
                 (getLocation qref <> getLocation initItems)
             _ -> startLoop
       ]

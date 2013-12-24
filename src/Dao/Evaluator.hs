@@ -3849,26 +3849,26 @@ updateExecError upd fn = catchError fn (\err -> throwError (upd err))
 
 ----------------------------------------------------------------------------------------------------
 
-newtype AST_OptObjList = AST_OptObjList (Maybe AST_ObjList) deriving (Eq, Ord, Typeable, Show)
+data AST_OptObjList = AST_OptObjList [Comment] (Maybe AST_ObjList) deriving (Eq, Ord, Typeable, Show)
 
 instance NFData AST_OptObjList where
-  rnf (AST_OptObjList a) = deepseq a ()
+  rnf (AST_OptObjList a b) = deepseq a $! deepseq b ()
 
 instance HasNullValue AST_OptObjList where
-  nullValue = AST_OptObjList Nothing
-  testNull (AST_OptObjList a) = maybe True testNull a
+  nullValue = AST_OptObjList [] Nothing
+  testNull (AST_OptObjList _ a) = maybe True testNull a
 
 pPrintObjList :: String -> String -> String -> AST_ObjList -> PPrint
 pPrintObjList open comma close (AST_ObjList coms lst _) = pList (pPrint coms) open comma close (map pPrint lst)
 
 pPrintOptObjList :: String -> String -> String -> AST_OptObjList -> PPrint
-pPrintOptObjList open comma close (AST_OptObjList o) =
-  maybe (return ()) (pPrintObjList open comma close) o
+pPrintOptObjList open comma close (AST_OptObjList coms o) =
+  maybe (return ()) (\o -> pPrint coms >> pPrintObjList open comma close o) o
 
 instance HasLocation AST_OptObjList where
-  getLocation (AST_OptObjList o)     = maybe LocationUnknown getLocation o
-  setLocation (AST_OptObjList o) loc = AST_OptObjList (fmap (flip setLocation loc) o)
-  delLocation (AST_OptObjList o)     = AST_OptObjList (fmap delLocation o)
+  getLocation (AST_OptObjList _ o)     = maybe LocationUnknown getLocation o
+  setLocation (AST_OptObjList c o) loc = AST_OptObjList c (fmap (flip setLocation loc) o)
+  delLocation (AST_OptObjList c o)     = AST_OptObjList c (fmap delLocation o)
 
 instance PPrintable AST_OptObjList where { pPrint o = pPrintOptObjList "{" ", " "}" o }
 
@@ -3881,20 +3881,22 @@ instance PPrintable AST_OptObjList where { pPrint o = pPrintOptObjList "{" ", " 
 --    _     -> fail "expecting either null value or optional AST_ObjList expression"
 
 instance Structured AST_OptObjList Object where
-  dataToStruct (AST_OptObjList a) = deconstruct $ case a of
-    Nothing -> return ()
-    Just  o -> putDataAt "initParams" o
+  dataToStruct (AST_OptObjList c o) = deconstruct $
+    with "initParams" $ maybe (return ()) putData o >> putComments c
   structToData   = reconstruct $ msum $
-    [ (AST_OptObjList . Just) <$> getDataAt "initParams"
-    , return $ AST_OptObjList Nothing
+    [ with "initParams" $ pure AST_OptObjList <*> getComments <*> optional getData
+    , fail "expecting initParams"
     ]
 
 instance HasRandGen AST_OptObjList where
-  randO = randChoice [return (AST_OptObjList Nothing), (AST_OptObjList . Just) <$> randO]
+  randO = randChoice $
+     [ pure AST_OptObjList <*> randO <*> pure Nothing
+     , pure AST_OptObjList <*> randO <*> (Just <$> randO)
+     ]
 
 instance Intermediate OptObjListExpr AST_OptObjList where
-  toInterm   (AST_OptObjList o) = liftM OptObjListExpr (um1 o)
-  fromInterm (OptObjListExpr o) = liftM AST_OptObjList (nm1 o)
+  toInterm   (AST_OptObjList _ o) = liftM OptObjListExpr (um1 o)
+  fromInterm (OptObjListExpr   o) = liftM (AST_OptObjList []) (nm1 o)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4256,7 +4258,6 @@ data ObjectExpr
   | AssignExpr     LValueExpr   UpdateOp        ObjectExpr   Location
   | Equation       ObjectExpr   InfixOp         ObjectExpr   Location
   | InitExpr       RefExpr      OptObjListExpr  ObjListExpr  Location
-  | StructExpr     ObjectExpr   ObjListExpr                  Location
   | LambdaExpr                  ParamListExpr   CodeBlock    Location
   | FuncExpr       Name         ParamListExpr   CodeBlock    Location
   | RuleExpr       RuleStrings                  CodeBlock    Location
@@ -4271,7 +4272,6 @@ instance NFData ObjectExpr where
   rnf (AssignExpr     a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (Equation       a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (InitExpr       a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (StructExpr     a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (LambdaExpr     a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (FuncExpr       a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (RuleExpr       a b c  ) = deepseq a $! deepseq b $! deepseq c ()
@@ -4291,7 +4291,6 @@ instance HasLocation ObjectExpr where
     AssignExpr     _ _ _ o -> o
     Equation       _ _ _ o -> o
     InitExpr       _ _ _ o -> o
-    StructExpr     _ _   o -> o
     LambdaExpr     _ _   o -> o
     FuncExpr       _ _ _ o -> o
     RuleExpr       _ _   o -> o
@@ -4304,7 +4303,6 @@ instance HasLocation ObjectExpr where
     ArithPfxExpr   a b   _ -> ArithPfxExpr  a b   loc
     Equation       a b c _ -> Equation      a b c loc
     InitExpr       a b c _ -> InitExpr      a b c loc
-    StructExpr     a b   _ -> StructExpr    a b   loc
     LambdaExpr     a b   _ -> LambdaExpr    a b   loc
     FuncExpr       a b c _ -> FuncExpr      a b c loc
     RuleExpr       a b   _ -> RuleExpr      a b   loc
@@ -4317,7 +4315,6 @@ instance HasLocation ObjectExpr where
     ArithPfxExpr   a b   _ -> ArithPfxExpr     a  (fd b)        lu
     Equation       a b c _ -> Equation     (fd a)     b  (fd c) lu
     InitExpr       a b c _ -> InitExpr     (fd a) (fd b) (fd c) lu
-    StructExpr     a b   _ -> StructExpr   (fd a) (fd b)        lu
     LambdaExpr     a b   _ -> LambdaExpr   (fd a) (fd b)        lu
     FuncExpr       a b c _ -> FuncExpr         a  (fd b) (fd c) lu
     RuleExpr       a b   _ -> RuleExpr         a  (fd b)        lu
@@ -4340,24 +4337,22 @@ instance B.Binary ObjectExpr MTab where
     ArithPfxExpr   a b   z -> B.prefixByte 0x2B $ B.put a >> B.put b >> B.put z
     Equation       a b c z -> B.prefixByte 0x2C $ B.put a >> B.put b >> B.put c >> B.put z
     InitExpr       a b c z -> B.prefixByte 0x2D $ B.put a >> B.put b >> B.put c >> B.put z
-    StructExpr     a b   z -> B.prefixByte 0x2E $ B.put a >> B.put b >> B.put z
-    LambdaExpr     a b   z -> B.prefixByte 0x2F $ B.put a >> B.put b >> B.put z
-    FuncExpr       a b c z -> B.prefixByte 0x30 $ B.put a >> B.put b >> B.put c >> B.put z
-    RuleExpr       a b   z -> B.prefixByte 0x31 $ B.put a >> B.put b >> B.put z
-    MetaEvalExpr   a     z -> B.prefixByte 0x32 $ B.put a >> B.put z
+    LambdaExpr     a b   z -> B.prefixByte 0x2E $ B.put a >> B.put b >> B.put z
+    FuncExpr       a b c z -> B.prefixByte 0x2F $ B.put a >> B.put b >> B.put c >> B.put z
+    RuleExpr       a b   z -> B.prefixByte 0x30 $ B.put a >> B.put b >> B.put z
+    MetaEvalExpr   a     z -> B.prefixByte 0x31 $ B.put a >> B.put z
   get = B.word8PrefixTable <|> fail "expecting ObjectExpr"
 
 instance B.HasPrefixTable ObjectExpr B.Byte MTab where
   prefixTable = mconcat $
     [ ObjLValueExpr <$> B.prefixTable
     , ObjSingleExpr <$> B.prefixTable
-    , B.mkPrefixTableWord8 "ObjectExpr" 0x29 0x32 $
+    , B.mkPrefixTableWord8 "ObjectExpr" 0x29 0x31 $
         [ return VoidExpr
         , pure AssignExpr   <*> B.get <*> B.get <*> B.get <*> B.get
         , pure ArithPfxExpr <*> B.get <*> B.get <*> B.get
         , pure Equation     <*> B.get <*> B.get <*> B.get <*> B.get
         , pure InitExpr     <*> B.get <*> B.get <*> B.get <*> B.get
-        , pure StructExpr   <*> B.get <*> B.get <*> B.get
         , pure LambdaExpr   <*> B.get <*> B.get <*> B.get
         , pure FuncExpr     <*> B.get <*> B.get <*> B.get <*> B.get
         , pure RuleExpr     <*> B.get <*> B.get <*> B.get
@@ -4425,14 +4420,25 @@ instance Executable ObjectExpr (Maybe Object) where
     InitExpr ref initList initMap _ -> do
       let erf = ORef $ Unqualified $ refFromExpr ref
       ref <- return $ toUStr ref
-      if uchars ref == "list"
-      then do
-        unless (testNull initList) $ execThrow $ obj $
-          [obj "list must be initialized with items curly-brackets"]
-        fmap (Just . OList) $ execute initMap >>= mapM execute
-      else do
-        tab <- execGetObjTable ref
-        case tab of
+      case uchars ref of
+        "list" -> do
+          unless (testNull initList) $ execThrow $ obj $
+            [obj "list must be initialized with items curly-brackets"]
+          fmap (Just . OList) $ execute initMap >>= mapM execute
+        "tree" -> do
+          o <- execute initList >>= mapM execute
+          let (ObjListExpr branches _) = initMap
+          let putLeaf = case o of
+                []  -> id
+                [o] -> T.insert [] o
+                o   -> T.insert [] (OList o)
+          execNested T.Void $ do
+            mapM_ execute branches
+            -- TODO: ^ expressions in the 'branches' list cannot simply be executed, each must be
+            -- inspected and executed in the context of building a tree.
+            (LocalStore stack) <- asks execStack
+            liftIO $ (Just . OTree . putLeaf . head . mapList) <$> readIORef stack
+        _ -> execGetObjTable ref >>= \tab -> case tab of
           Nothing  -> execThrow $ obj [obj "object type is not available", erf]
           Just tab -> case objInitializer tab of
             Nothing   -> execThrow $ obj [obj "object type cannot be used as initializer", erf]
@@ -4440,14 +4446,6 @@ instance Executable ObjectExpr (Maybe Object) where
               list <- execute initList >>= execNested T.Void . mapM execute
               fmap (Just . OHaskell . flip HaskellData tab) $
                 execute initMap >>= mapM execute >>= init list
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    StructExpr leaf (ObjListExpr branches _) _ -> do
-      leaf <- execute leaf
-      let putLeaf = maybe id (T.insert []) leaf
-      execNested T.Void $ do
-        mapM_ execute branches
-        (LocalStore stack) <- asks execStack
-        liftIO $ (Just . OTree . putLeaf . head . mapList) <$> readIORef stack
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     Equation  left' op right' loc -> do
       let err1 msg = msg++"-hand operand of "++show op++ "operator "
@@ -4506,7 +4504,6 @@ data AST_Object
   | AST_ArithPfx  ArithPfxOp [Comment]            AST_Object    Location
   | AST_Equation  AST_Object (Com InfixOp)        AST_Object    Location
   | AST_Init      AST_Ref         AST_OptObjList  AST_ObjList   Location
-  | AST_Struct               (Com AST_Object)     AST_ObjList   Location
   | AST_Lambda               (Com AST_ParamList)  AST_CodeBlock Location
   | AST_Func [Comment] Name  (Com AST_ParamList)  AST_CodeBlock Location
   | AST_Rule                 (Com AST_StringList) AST_CodeBlock Location
@@ -4521,7 +4518,6 @@ instance NFData AST_Object where
   rnf (AST_ArithPfx   a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_Equation   a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_Init       a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_Struct     a b c    ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (AST_Lambda     a b c    ) = deepseq a $! deepseq b $! deepseq c () 
   rnf (AST_Func       a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
   rnf (AST_Rule       a b c    ) = deepseq a $! deepseq b $! deepseq c ()
@@ -4541,7 +4537,6 @@ instance HasLocation AST_Object where
     AST_ArithPfx _ _ _   o -> o
     AST_Equation _ _ _   o -> o
     AST_Init     _ _ _   o -> o
-    AST_Struct   _ _     o -> o
     AST_Lambda   _ _     o -> o
     AST_Func     _ _ _ _ o -> o
     AST_Rule     _ _     o -> o
@@ -4554,7 +4549,6 @@ instance HasLocation AST_Object where
     AST_ArithPfx   a b c   _ -> AST_ArithPfx   a b c   loc
     AST_Equation   a b c   _ -> AST_Equation   a b c   loc
     AST_Init       a b c   _ -> AST_Init       a b c   loc
-    AST_Struct     a b     _ -> AST_Struct     a b     loc
     AST_Lambda     a b     _ -> AST_Lambda     a b     loc
     AST_Func       a b c d _ -> AST_Func       a b c d loc
     AST_Rule       a b     _ -> AST_Rule       a b     loc
@@ -4567,7 +4561,6 @@ instance HasLocation AST_Object where
     AST_ArithPfx   a b c   _ -> AST_ArithPfx        a       b  (fd  c)         lu
     AST_Equation   a b c   _ -> AST_Equation   (fd  a)      b  (fd  c)         lu
     AST_Init       a b c   _ -> AST_Init               (fd  a) (fd  b) (fd  c) lu
-    AST_Struct     a b     _ -> AST_Struct     (fd  a) (fd  b)                 lu
     AST_Lambda     a b     _ -> AST_Lambda     (fd  a) (fd  b)                 lu
     AST_Func       a b c d _ -> AST_Func            a       b  (fd  c) (fd  d) lu
     AST_Rule       a b     _ -> AST_Rule       (fd  a) (fd  b)                 lu
@@ -4586,8 +4579,6 @@ instance PPrintable AST_Object where
       [pPrint objXp1, pPrint comAriOp, pPrint objXp2]
     AST_Init          ref objs     elems   _ ->
       pInline [pPrint ref, pPrintOptObjList "(" ", " ")" objs, pPrintObjList "{" ", " "}" elems]
-    AST_Struct   cObjXp   xcObjXp          _ -> do
-      pClosure (pInline [pString "tree ", pPrint cObjXp]) "{" "}" [pPrint xcObjXp]
     AST_Lambda         ccNmx   xcObjXp     _ ->
       pPrintSubBlock (pInline [pString "function", pPrintComWith pPrint ccNmx]) xcObjXp
     AST_Func     co nm ccNmx   xcObjXp     _ ->
@@ -4613,7 +4604,6 @@ instance Structured AST_Object  Object where
     AST_ArithPfx   a b c   loc -> with "arithPfx"  $ putDataAt "op"     a >> putComments        b >> putDataAt "to"     c >> putData loc
     AST_Equation   a b c   loc -> with "equation"  $ putDataAt "left"   a >> putDataAt "op"     b >> putDataAt "right"  c >> putData loc
     AST_Init       a b c   loc -> with "initExpr"  $ putDataAt "header" a >> putDataAt "params" b >> putDataAt "elems"  c >> putData loc
-    AST_Struct     a b     loc -> with "structExpr"$ putDataAt "header" a >> putDataAt "params" b >> putData loc
     AST_Lambda     a b     loc -> with "lambdaExpr"$                         putDataAt "params" a >> putDataAt "script" b >> putData loc
     AST_Func       a b c d loc -> with "funcExpr"  $ putComments        a >> putDataAt "name"   b >> putDataAt "params" c >> putDataAt "script" d >> putData loc
     AST_Rule       a b     loc -> with "ruleExpr"  $                         putDataAt "params" a >> putDataAt "script" b >> putData loc
@@ -4623,7 +4613,6 @@ instance Structured AST_Object  Object where
     , tryWith "arithPfx"  $ pure AST_ArithPfx    <*> getDataAt "op"     <*> getComments        <*> getDataAt "to"     <*> getData
     , tryWith "equation"  $ pure AST_Equation    <*> getDataAt "left"   <*> getDataAt "op"     <*> getDataAt "right"  <*> getData
     , tryWith "initExpr"  $ pure AST_Init        <*> getDataAt "header" <*> getDataAt "params" <*> getDataAt "elems"  <*> getData
-    , tryWith "structExpr"$ pure AST_Struct      <*> getDataAt "header" <*> getDataAt "params" <*> getData
     , tryWith "lambdaExpr"$ pure AST_Lambda                             <*> getDataAt "params" <*> getDataAt "script" <*> getData
     , tryWith "funcExpr"  $ pure AST_Func        <*> getComments        <*> getDataAt "name"   <*> getDataAt "params" <*> getDataAt "script" <*> getData
     , tryWith "ruleExpr"  $ pure AST_Rule                               <*> getDataAt "params" <*> getDataAt "script" <*> getData
@@ -4659,7 +4648,6 @@ instance HasRandGen AST_Object where
           return (fst $ loop 0 o ox)
     -- AST_Init
     , pure AST_Init     <*> randO <*> randO <*> randO <*> no
-    , pure AST_Struct   <*> randO <*> randO <*> no
     , pure AST_Lambda   <*> randO <*> randO <*> no
     , pure AST_Func     <*> randO <*> randO <*> randO <*> randO <*> no
     , pure AST_Rule     <*> randO <*> randO <*> no
@@ -4677,7 +4665,6 @@ instance Intermediate ObjectExpr AST_Object where
     AST_ArithPfx   a _ c loc -> liftM3 ArithPfxExpr       [a]         (ti  c) [loc]
     AST_Equation   a b c loc -> liftM4 Equation       (ti  a) (uc  b) (ti  c) [loc]
     AST_Init       a b c loc -> liftM4 InitExpr       (ti  a) (ti  b) (ti  c) [loc]
-    AST_Struct     a b   loc -> liftM3 StructExpr     (uc0 a)         (ti  b) [loc]
     AST_Lambda     a b   loc -> liftM3 LambdaExpr     (uc0 a)         (ti  b) [loc]
     AST_Func     _ a b c loc -> liftM4 FuncExpr       [a]     (uc0 b) (ti  c) [loc]
     AST_Rule       a b   loc -> liftM3 RuleExpr               (uc0 a) (ti  b) [loc]
@@ -4690,7 +4677,6 @@ instance Intermediate ObjectExpr AST_Object where
     ArithPfxExpr   a b   loc -> liftM4 AST_ArithPfx      [a] [[]]    (fi  b) [loc]
     Equation       a b c loc -> liftM4 AST_Equation  (fi  a) (nc  b) (fi  c) [loc]
     InitExpr       a b c loc -> liftM4 AST_Init      (fi  a) (fi  b) (fi  c) [loc]
-    StructExpr     a b   loc -> liftM3 AST_Struct    (nc0 a)         (fi  b) [loc]
     LambdaExpr     a b   loc -> liftM3 AST_Lambda            (nc0 a) (fi  b) [loc]
     FuncExpr       a b c loc -> liftM5 AST_Func  [[]]    [a] (nc0 b) (fi  c) [loc]
     RuleExpr       a b   loc -> liftM3 AST_Rule              (nc0 a) (fi  b) [loc]

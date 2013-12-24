@@ -683,6 +683,13 @@ instance B.Binary Complex mtab where
   put o = B.put (realPart o) >> B.put (imagPart o)
   get   = pure complex <*> B.get <*> B.get
 
+instance PPrintable Complex where
+  pPrint (Complex (a C.:+ b))
+    | a==0.0 && b==0.0 = pString "0i"
+    | a==0.0           = pString (show b++"i")
+    | b==0.0           = pShow a
+    | otherwise        = pInline [pShow a, pString (if b<0 then "-" else "+"), pShow b]
+
 realPart :: Complex -> Double
 realPart (Complex o) = C.realPart o
 

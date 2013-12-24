@@ -456,7 +456,8 @@ containerPTab = table $
               let lu = LocationUnknown
               (lst, loc) <-
                 commaSepd "strings for rule header" ")"
-                  (flip AST_NoStrings lu) (token STRINGLIT asUStr) (flip AST_StringList lu)
+                  (flip AST_NoStrings lu) (token STRINGLIT asUStr)
+                  (\lst -> if null lst then AST_NoStrings [] lu else AST_StringList lst lu)
               return (setLocation lst (asLocation openTok <> loc))
           ]
         expect "bracketed expression after rule header" $ do
@@ -583,28 +584,10 @@ commentedInPair parser = do
   let (a, loc) = unComment comntd
   return (fmap (const a) comntd, loc)
 
---funcCall_arraySubPTab :: DaoPTable AST_Object
---funcCall_arraySubPTab = bindPTable funcHeaderPTab loop
---  where
---    sub :: DaoParser (AST_Object -> AST_Object)
---    sub = joinEvalPTable subTable
---    subTable :: DaoPTable (AST_Object -> AST_Object)
---    subTable = table $
---      [ bindPTableItem (commaSepdObjList "(" ")") $ \params -> msum $
---          [ do  coms  <- optSpace
---                inits <- 
---          , return (\obj -> AST_FuncCall obj params (getLocation obj <> getLocation params)) 
---          ]
---      , bindPTableItem (commaSepdObjList "[" "]") $ \params ->
---          return (\obj -> AST_ArraySub obj params (getLocation obj <> getLocation params))
---      ]
---    loop :: AST_Object -> DaoParser AST_Object
---    loop hdr = flip mplus (return hdr) $ bufferComments >> sub >>= \mk -> loop (mk hdr)
-
 -- The Dao language has four overlapping expressions: 1. an ordinary qualified label or reference
 -- expression, 2. a function call expression, 3. an array subscript expression, and 4. initializer
 -- expressions. All of these expressions start with an ordinary qualified reference and then may or
--- may not become pretty complicated after that. This function cleverly unifies the 4 parsers into a
+-- may not become more complicated after that. This function cleverly unifies the 4 parsers into a
 -- single parser such that it is not necessary to waste memory and time pushing lots of tokens onto
 -- the stack to figure out the kind of expression we have. It builds the syntax piece by piece to
 -- gradually determine which constructor to return.
@@ -614,11 +597,10 @@ commentedInPair parser = do
 -- 'AST_OptObjList' for it's parameters. For example, an expression like this:
 -- > list {0, 1, x}
 --
--- If after the first qualified reference expression there is a square-bracketed list of items
--- followed by a curly-bracketed list of initializing items, then also an 'AST_Init'
--- constructor is used with the square-bracketed items as the parameters. For example, an expression like
--- this:
--- > array[1,4] {"one", "two", thirdItem, fourthItem}
+-- If after the first qualified reference expression there is a round-bracketed list of items
+-- followed by a curly-bracketed list of initializing items, then also an 'AST_Init' constructor is
+-- used with the square-bracketed items as the parameters. For example, an expression like this:
+-- > array(1,4) {"one", "two", thirdItem, fourthItem}
 --
 -- If after the first qualified reference there are either round-brackets or square-brackets NOT
 -- followed by curly-brackets, then a loop is entered that parses as many square-bracketed lists and
@@ -630,11 +612,15 @@ commentedInPair parser = do
 -- > myFuncArray[4]("pass this string to the function element at index 4")
 -- > myChessBoard[3][a]
 -- 
--- If all of the above fail, the qualified reference wrapped in the 'AST_PlainRef' constructor is
--- returned.
+-- If all of the above backtrack, the qualified reference wrapped in the 'AST_PlainRef' constructor
+-- is returned.
 funcCall_arraySub_initPTab :: DaoPTable AST_Object
-funcCall_arraySub_initPTab = bindPTable qualRef_parenPTab $ \qref ->
-  bufferComments >> mplus (init qref) (return $ AST_ObjLValue $ AST_LValue qref)
+funcCall_arraySub_initPTab =
+  bindPTable qualRef_parenPTab $ \qref -> do
+    bufferComments
+    flip mplus (return $ AST_ObjLValue $ AST_LValue qref) $ case qref of
+      AST_PlainRef{} -> init qref
+      _              -> loop qref
   where
     init :: AST_RefOperand -> DaoParser AST_Object
     init qref = initBrackets >>= \constr -> constr qref
@@ -706,7 +692,7 @@ objLValue = joinEvalPTable objLValuePTab
 
 arithPrefixPTab :: DaoPTable AST_Object
 arithPrefixPTab = table $ (logicalNOT:) $ flip fmap ["~", "-", "+"] $ \pfxOp ->
-  tableItemBy pfxOp $ \tok -> optSpace >>= \coms -> object >>= \o -> 
+  tableItemBy pfxOp $ \tok -> optSpace >>= \coms -> object >>= \o ->
     return (AST_ArithPfx (fromUStr (tokTypeToUStr (asTokType tok))) coms o (asLocation tok))
   where
     logicalNOT = tableItemBy "!" $ \op -> do

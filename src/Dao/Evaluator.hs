@@ -115,7 +115,7 @@ instance PPrintable Object where
                 [ pString "(", pString (show (numerator o)), pString "/"
                 , pString (show (denominator o)++"R"), pString ")"
                 ]
-    OComplex   o     -> pShow o
+    OComplex   o     -> pPrint o
     ORelTime   o     -> pShow o
     OAbsTime   o     -> pString ("date "++show o)
     OChar      o     -> pShow o
@@ -2160,12 +2160,12 @@ eval_NEG o = case o of
     in  if n < toInteger (minBound::T_int)
            then  OLong n
            else  OInt (fromIntegral n)
-  OInt      o -> return $ OInt      (negate o)
-  OLong     o -> return $ OLong     (negate o)
+  OInt      o -> return $ OInt     (negate o)
+  OLong     o -> return $ OLong    (negate o)
   ORelTime  o -> return $ ORelTime (negate o)
-  OFloat    o -> return $ OFloat    (negate o)
-  ORatio    o -> return $ ORatio    (negate o)
-  OComplex  o -> return $ OComplex  (negate o)
+  OFloat    o -> return $ OFloat   (negate o)
+  ORatio    o -> return $ ORatio   (negate o)
+  OComplex  o -> return $ OComplex (negate o)
   _           -> mzero
 
 eval_INVB :: Object -> Exec Object
@@ -3965,7 +3965,8 @@ instance HasRandGen AST_Literal where
         replicateM (mod i 4 + 1) randInt >>= return . OLong . longFromInts
     , randInteger (ORatio 0) $ \i -> return (ORatio (toInteger i % 1))
     , randInteger (OFloat 0) (fmap (OFloat . fromRational) . randRational)
-    , randInteger (OComplex (complex 0 0)) (fmap (OComplex . complex 0 . fromRational) . randRational)
+    , randInteger (OComplex (complex 0 0)) $
+        fmap (OComplex . complex 0 . abs . fromRational) . randRational
     , randInteger (OChar '\n') $ \i ->
         return (OChar $ chr $ mod i $ ord (maxBound::Char))
     ]

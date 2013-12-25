@@ -1859,7 +1859,7 @@ instance Intermediate ParamListExpr AST_ParamList where
 -- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Glob.Glob'.
 paramsToGlobExpr :: ObjectExpr -> Exec Glob
 paramsToGlobExpr o = case o of
-  ObjSingleExpr (LiteralExpr (OString str) _) -> return (read (uchars str))
+  ObjLiteralExpr (LiteralExpr (OString str) _) -> return (read (uchars str))
   _ -> execThrow $ obj $ [obj "does not evaluate to a \"glob\" pattern"]
 
 data RuleStrings = RuleStrings [UStr] Location deriving (Eq, Ord, Typeable, Show)
@@ -3727,7 +3727,7 @@ instance Structured AST_Script Object where
       getReturn   tf = pure (AST_ReturnExpr   tf) <*> getDataAt "object" <*> getData
 
 randReturn :: RandO AST_Object
-randReturn = randChoice [return AST_Void, AST_ObjLValue <$> randO]
+randReturn = randChoice [return AST_Void, AST_ObjSingle <$> randO]
 
 randScriptList :: [RandO AST_Script]
 randScriptList =
@@ -4249,11 +4249,15 @@ instance Intermediate SingleExpr AST_Single where
 
 ----------------------------------------------------------------------------------------------------
 
+
+
+----------------------------------------------------------------------------------------------------
+
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
   = VoidExpr
-  | ObjSingleExpr  LiteralExpr
-  | ObjLValueExpr  SingleExpr
+  | ObjLiteralExpr LiteralExpr
+  | ObjSingleExpr  SingleExpr
   | ArithPfxExpr                ArithPfxOp      ObjectExpr   Location
   | AssignExpr     SingleExpr   UpdateOp        ObjectExpr   Location
   | Equation       ObjectExpr   InfixOp         ObjectExpr   Location
@@ -4266,8 +4270,8 @@ data ObjectExpr
 
 instance NFData ObjectExpr where
   rnf  VoidExpr                = ()
-  rnf (ObjSingleExpr  a      ) = deepseq a ()
-  rnf (ObjLValueExpr  a      ) = deepseq a $! ()
+  rnf (ObjLiteralExpr a      ) = deepseq a ()
+  rnf (ObjSingleExpr  a      ) = deepseq a $! ()
   rnf (ArithPfxExpr   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (AssignExpr     a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (Equation       a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
@@ -4285,8 +4289,8 @@ instance HasNullValue ObjectExpr where
 instance HasLocation ObjectExpr where
   getLocation o = case o of
     VoidExpr               -> LocationUnknown
+    ObjLiteralExpr       o -> getLocation o
     ObjSingleExpr        o -> getLocation o
-    ObjLValueExpr        o -> getLocation o
     ArithPfxExpr   _ _   o -> o
     AssignExpr     _ _ _ o -> o
     Equation       _ _ _ o -> o
@@ -4297,28 +4301,28 @@ instance HasLocation ObjectExpr where
     MetaEvalExpr   _     o -> o
   setLocation o loc = case o of
     VoidExpr               -> VoidExpr
-    ObjSingleExpr  a       -> ObjSingleExpr (setLocation a loc)
-    ObjLValueExpr  a       -> ObjLValueExpr (setLocation a loc)
-    AssignExpr     a b c _ -> AssignExpr    a b c loc
-    ArithPfxExpr   a b   _ -> ArithPfxExpr  a b   loc
-    Equation       a b c _ -> Equation      a b c loc
-    InitExpr       a b c _ -> InitExpr      a b c loc
-    LambdaExpr     a b   _ -> LambdaExpr    a b   loc
-    FuncExpr       a b c _ -> FuncExpr      a b c loc
-    RuleExpr       a b   _ -> RuleExpr      a b   loc
-    MetaEvalExpr   a     _ -> MetaEvalExpr  a     loc
+    ObjLiteralExpr a       -> ObjLiteralExpr (setLocation a loc)
+    ObjSingleExpr  a       -> ObjSingleExpr  (setLocation a loc)
+    AssignExpr     a b c _ -> AssignExpr     a b c loc
+    ArithPfxExpr   a b   _ -> ArithPfxExpr   a b   loc
+    Equation       a b c _ -> Equation       a b c loc
+    InitExpr       a b c _ -> InitExpr       a b c loc
+    LambdaExpr     a b   _ -> LambdaExpr     a b   loc
+    FuncExpr       a b c _ -> FuncExpr       a b c loc
+    RuleExpr       a b   _ -> RuleExpr       a b   loc
+    MetaEvalExpr   a     _ -> MetaEvalExpr   a     loc
   delLocation o = case o of
     VoidExpr               -> VoidExpr
-    ObjSingleExpr  a       -> ObjSingleExpr (fd a)
-    ObjLValueExpr  a       -> ObjLValueExpr (fd a)
-    AssignExpr     a b c _ -> AssignExpr   (fd a)     b  (fd c) lu
-    ArithPfxExpr   a b   _ -> ArithPfxExpr     a  (fd b)        lu
-    Equation       a b c _ -> Equation     (fd a)     b  (fd c) lu
-    InitExpr       a b c _ -> InitExpr     (fd a) (fd b) (fd c) lu
-    LambdaExpr     a b   _ -> LambdaExpr   (fd a) (fd b)        lu
-    FuncExpr       a b c _ -> FuncExpr         a  (fd b) (fd c) lu
-    RuleExpr       a b   _ -> RuleExpr         a  (fd b)        lu
-    MetaEvalExpr   a     _ -> MetaEvalExpr (fd a)               lu
+    ObjLiteralExpr a       -> ObjLiteralExpr (fd a)
+    ObjSingleExpr  a       -> ObjSingleExpr  (fd a)
+    AssignExpr     a b c _ -> AssignExpr     (fd a)     b  (fd c) lu
+    ArithPfxExpr   a b   _ -> ArithPfxExpr       a  (fd b)        lu
+    Equation       a b c _ -> Equation       (fd a)     b  (fd c) lu
+    InitExpr       a b c _ -> InitExpr       (fd a) (fd b) (fd c) lu
+    LambdaExpr     a b   _ -> LambdaExpr     (fd a) (fd b)        lu
+    FuncExpr       a b c _ -> FuncExpr           a  (fd b) (fd c) lu
+    RuleExpr       a b   _ -> RuleExpr           a  (fd b)        lu
+    MetaEvalExpr   a     _ -> MetaEvalExpr   (fd a)               lu
     where
       lu = LocationUnknown
       fd :: HasLocation a => a -> a
@@ -4330,8 +4334,8 @@ instance PPrintable ObjectExpr where { pPrint = pPrintInterm }
 -- data type may be expanded to include more nodes.
 instance B.Binary ObjectExpr MTab where
   put o = case o of
-    ObjLValueExpr  a       -> B.put a
     ObjSingleExpr  a       -> B.put a
+    ObjLiteralExpr a       -> B.put a
     VoidExpr               -> B.putWord8   0x29
     AssignExpr     a b c z -> B.prefixByte 0x2A $ B.put a >> B.put b >> B.put c >> B.put z
     ArithPfxExpr   a b   z -> B.prefixByte 0x2B $ B.put a >> B.put b >> B.put z
@@ -4345,8 +4349,8 @@ instance B.Binary ObjectExpr MTab where
 
 instance B.HasPrefixTable ObjectExpr B.Byte MTab where
   prefixTable = mconcat $
-    [ ObjLValueExpr <$> B.prefixTable
-    , ObjSingleExpr <$> B.prefixTable
+    [ ObjSingleExpr  <$> B.prefixTable
+    , ObjLiteralExpr <$> B.prefixTable
     , B.mkPrefixTableWord8 "ObjectExpr" 0x29 0x31 $
         [ return VoidExpr
         , pure AssignExpr   <*> B.get <*> B.get <*> B.get <*> B.get
@@ -4395,9 +4399,9 @@ instance Executable ObjectExpr (Maybe Object) where
       -- ^ 'VoidExpr's only occur in return statements. Returning 'ONull' where nothing exists is
       -- probably the most intuitive thing to do on an empty return statement.
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    ObjSingleExpr o -> execute o
+    ObjLiteralExpr o -> execute o
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    ObjLValueExpr o -> execute o
+    ObjSingleExpr o -> execute o
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ArithPfxExpr op expr loc -> do
       expr <- execute expr >>= checkVoid loc ("operand to prefix operator "++show op )
@@ -4498,22 +4502,22 @@ instance ObjectClass ObjectExpr where
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data AST_Object
   = AST_Void -- ^ Not a language construct, but used where an object expression is optional.
-  | AST_ObjSingle AST_Literal
-  | AST_ObjLValue AST_Single
-  | AST_Assign    AST_Single (Com UpdateOp)       AST_Object    Location
-  | AST_ArithPfx  ArithPfxOp [Comment]            AST_Object    Location
-  | AST_Equation  AST_Object (Com InfixOp)        AST_Object    Location
-  | AST_Init      AST_Ref         AST_OptObjList  AST_ObjList   Location
-  | AST_Lambda               (Com AST_ParamList)  AST_CodeBlock Location
-  | AST_Func [Comment] Name  (Com AST_ParamList)  AST_CodeBlock Location
-  | AST_Rule                 (Com AST_StringList) AST_CodeBlock Location
-  | AST_MetaEval                                  AST_CodeBlock Location
+  | AST_ObjLiteral AST_Literal
+  | AST_ObjSingle  AST_Single
+  | AST_Assign     AST_Single (Com UpdateOp)       AST_Object    Location
+  | AST_ArithPfx   ArithPfxOp [Comment]            AST_Object    Location
+  | AST_Equation   AST_Object (Com InfixOp)        AST_Object    Location
+  | AST_Init       AST_Ref         AST_OptObjList  AST_ObjList   Location
+  | AST_Lambda                (Com AST_ParamList)  AST_CodeBlock Location
+  | AST_Func [Comment] Name   (Com AST_ParamList)  AST_CodeBlock Location
+  | AST_Rule                  (Com AST_StringList) AST_CodeBlock Location
+  | AST_MetaEval                                   AST_CodeBlock Location
   deriving (Eq, Ord, Typeable, Show)
 
 instance NFData AST_Object where
   rnf AST_Void = ()
+  rnf (AST_ObjLiteral a        ) = deepseq a ()
   rnf (AST_ObjSingle  a        ) = deepseq a ()
-  rnf (AST_ObjLValue  a        ) = deepseq a ()
   rnf (AST_Assign     a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_ArithPfx   a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_Equation   a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
@@ -4531,8 +4535,8 @@ instance HasNullValue AST_Object where
 instance HasLocation AST_Object where
   getLocation o = case o of
     AST_Void               -> LocationUnknown
+    AST_ObjLiteral       o -> getLocation o
     AST_ObjSingle        o -> getLocation o
-    AST_ObjLValue        o -> getLocation o
     AST_Assign   _ _ _   o -> o
     AST_ArithPfx _ _ _   o -> o
     AST_Equation _ _ _   o -> o
@@ -4543,8 +4547,8 @@ instance HasLocation AST_Object where
     AST_MetaEval _       o -> o
   setLocation o loc = case o of
     AST_Void                 -> AST_Void
-    AST_ObjSingle  a         -> AST_ObjSingle (setLocation a loc)
-    AST_ObjLValue  a         -> AST_ObjLValue (setLocation a loc)
+    AST_ObjLiteral a         -> AST_ObjLiteral (setLocation a loc)
+    AST_ObjSingle  a         -> AST_ObjSingle  (setLocation a loc)
     AST_Assign     a b c   _ -> AST_Assign     a b c   loc
     AST_ArithPfx   a b c   _ -> AST_ArithPfx   a b c   loc
     AST_Equation   a b c   _ -> AST_Equation   a b c   loc
@@ -4555,8 +4559,8 @@ instance HasLocation AST_Object where
     AST_MetaEval   a       _ -> AST_MetaEval   a       loc
   delLocation o = case o of                            
     AST_Void                 -> AST_Void
+    AST_ObjLiteral a         -> AST_ObjLiteral (fd  a)
     AST_ObjSingle  a         -> AST_ObjSingle  (fd  a)
-    AST_ObjLValue  a         -> AST_ObjLValue  (fd  a)
     AST_Assign     a b c   _ -> AST_Assign     (fd  a)      b  (fd  c)         lu
     AST_ArithPfx   a b c   _ -> AST_ArithPfx        a       b  (fd  c)         lu
     AST_Equation   a b c   _ -> AST_Equation   (fd  a)      b  (fd  c)         lu
@@ -4569,8 +4573,8 @@ instance HasLocation AST_Object where
 instance PPrintable AST_Object where
   pPrint expr = case expr of
     AST_Void                                 -> return ()
+    AST_ObjLiteral   o                       -> pPrint o
     AST_ObjSingle    o                       -> pPrint o
-    AST_ObjLValue    o                       -> pPrint o
     AST_Assign   objXp1  comUpdOp  objXp2  _ -> pWrapIndent $
       [pPrint objXp1, pPrint comUpdOp, pPrint objXp2]
     AST_ArithPfx     op      coms      objXp   _ -> pWrapIndent $
@@ -4590,7 +4594,7 @@ instance PrecedeWithSpace AST_Object where
   precedeWithSpace o = case o of
     AST_Void                -> False
     AST_MetaEval{}          -> False
-    AST_ObjLValue   o       -> precedeWithSpace o
+    AST_ObjSingle   o       -> precedeWithSpace o
     AST_Assign      o _ _ _ -> precedeWithSpace o
     AST_Equation    o _ _ _ -> precedeWithSpace o
     _                       -> True
@@ -4598,8 +4602,8 @@ instance PrecedeWithSpace AST_Object where
 instance Structured AST_Object  Object where
   dataToStruct a = deconstruct $ case a of
     AST_Void                   -> place ONull
+    AST_ObjLiteral a           -> putData a
     AST_ObjSingle  a           -> putData a
-    AST_ObjLValue  a           -> putData a
     AST_Assign     a b c   loc -> with "assign"    $ putDataAt "to"     a >> putDataAt "op"     b >> putDataAt "from"   c >> putData loc
     AST_ArithPfx   a b c   loc -> with "arithPfx"  $ putDataAt "op"     a >> putComments        b >> putDataAt "to"     c >> putData loc
     AST_Equation   a b c   loc -> with "equation"  $ putDataAt "left"   a >> putDataAt "op"     b >> putDataAt "right"  c >> putData loc
@@ -4617,8 +4621,8 @@ instance Structured AST_Object  Object where
     , tryWith "funcExpr"  $ pure AST_Func        <*> getComments        <*> getDataAt "name"   <*> getDataAt "params" <*> getDataAt "script" <*> getData
     , tryWith "ruleExpr"  $ pure AST_Rule                               <*> getDataAt "params" <*> getDataAt "script" <*> getData
     , tryWith "metaEval"  $ pure AST_MetaEval    <*> getDataAt "inner"  <*> getData
+    , AST_ObjLiteral <$> getData
     , AST_ObjSingle <$> getData
-    , AST_ObjLValue <$> getData
     , this >>= \o -> case o of
         ONull -> return AST_Void
         _     -> fail "object expression"
@@ -4626,8 +4630,8 @@ instance Structured AST_Object  Object where
 
 instance HasRandGen AST_Object where
   randO = randChoice $
-    [ AST_ObjSingle <$> randO
-    , AST_ObjLValue <$> randO
+    [ AST_ObjLiteral <$> randO
+    , AST_ObjSingle <$> randO
     -- AST_Assign
     , do  ox <- randListOf 0 3 (pure (,) <*> randO <*> randO)
           o  <- randO
@@ -4659,8 +4663,8 @@ instance HasRandGen [Com AST_Object] where { randO = randList 1 20 }
 instance Intermediate ObjectExpr AST_Object where
   toInterm ast = case ast of
     AST_Void                 -> return VoidExpr
+    AST_ObjLiteral a         -> liftM  ObjLiteralExpr (ti  a)
     AST_ObjSingle  a         -> liftM  ObjSingleExpr  (ti  a)
-    AST_ObjLValue  a         -> liftM  ObjLValueExpr  (ti  a)
     AST_Assign     a b c loc -> liftM4 AssignExpr     (ti  a) (uc  b) (ti  c) [loc]
     AST_ArithPfx   a _ c loc -> liftM3 ArithPfxExpr       [a]         (ti  c) [loc]
     AST_Equation   a b c loc -> liftM4 Equation       (ti  a) (uc  b) (ti  c) [loc]
@@ -4671,16 +4675,16 @@ instance Intermediate ObjectExpr AST_Object where
     AST_MetaEval   a     loc -> liftM2 MetaEvalExpr                   (ti  a) [loc]
   fromInterm o = case o of
     VoidExpr                 -> return AST_Void
-    ObjSingleExpr  a         -> liftM  AST_ObjSingle (fi  a)
-    ObjLValueExpr  a         -> liftM  AST_ObjLValue (fi  a)
-    AssignExpr     a b c loc -> liftM4 AST_Assign    (fi  a) (nc  b) (fi  c) [loc]
-    ArithPfxExpr   a b   loc -> liftM4 AST_ArithPfx      [a] [[]]    (fi  b) [loc]
-    Equation       a b c loc -> liftM4 AST_Equation  (fi  a) (nc  b) (fi  c) [loc]
-    InitExpr       a b c loc -> liftM4 AST_Init      (fi  a) (fi  b) (fi  c) [loc]
-    LambdaExpr     a b   loc -> liftM3 AST_Lambda            (nc0 a) (fi  b) [loc]
-    FuncExpr       a b c loc -> liftM5 AST_Func  [[]]    [a] (nc0 b) (fi  c) [loc]
-    RuleExpr       a b   loc -> liftM3 AST_Rule              (nc0 a) (fi  b) [loc]
-    MetaEvalExpr   a     loc -> liftM2 AST_MetaEval  (fi  a)                 [loc]
+    ObjLiteralExpr a         -> liftM  AST_ObjLiteral (fi  a)
+    ObjSingleExpr  a         -> liftM  AST_ObjSingle  (fi  a)
+    AssignExpr     a b c loc -> liftM4 AST_Assign     (fi  a) (nc  b) (fi  c) [loc]
+    ArithPfxExpr   a b   loc -> liftM4 AST_ArithPfx       [a] [[]]    (fi  b) [loc]
+    Equation       a b c loc -> liftM4 AST_Equation   (fi  a) (nc  b) (fi  c) [loc]
+    InitExpr       a b c loc -> liftM4 AST_Init       (fi  a) (fi  b) (fi  c) [loc]
+    LambdaExpr     a b   loc -> liftM3 AST_Lambda             (nc0 a) (fi  b) [loc]
+    FuncExpr       a b c loc -> liftM5 AST_Func  [[]]     [a] (nc0 b) (fi  c) [loc]
+    RuleExpr       a b   loc -> liftM3 AST_Rule               (nc0 a) (fi  b) [loc]
+    MetaEvalExpr   a     loc -> liftM2 AST_MetaEval   (fi  a)                 [loc]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4816,8 +4820,8 @@ instance HasRandGen AST_TopLevel where
     [ do  req_ <- nextInt 2
           let req = ustr $ if req_ == 0 then "require" else "import"
               randItem = randChoice $
-                [ fmap (AST_ObjLValue . AST_Single . AST_PlainRef . AST_Unqualified) randO
-                , AST_ObjSingle <$> (pure AST_Literal <*> (OString <$> randO) <*> no)
+                [ fmap (AST_ObjSingle . AST_Single . AST_PlainRef . AST_Unqualified) randO
+                , AST_ObjLiteral <$> (pure AST_Literal <*> (OString <$> randO) <*> no)
                 ]
           item <- randComWith randItem
           return (AST_Attribute req item LocationUnknown)

@@ -606,7 +606,7 @@ funcCall_arraySub_initPTab :: DaoPTable AST_Object
 funcCall_arraySub_initPTab =
   bindPTable qualRef_parenPTab $ \qref -> do
     bufferComments
-    flip mplus (return $ AST_ObjLValue $ AST_LValue qref) $ case qref of
+    flip mplus (return $ AST_ObjLValue $ AST_Single qref) $ case qref of
       AST_PlainRef (AST_Unqualified _) -> init qref
       _ -> loop qref
   where
@@ -646,7 +646,7 @@ funcCall_arraySub_initPTab =
             _ -> startLoop
       ]
     loop :: AST_RefOperand -> DaoParser AST_Object
-    loop header = flip mplus (return $ AST_ObjLValue $ AST_LValue header) $
+    loop header = flip mplus (return $ AST_ObjLValue $ AST_Single header) $
       bufferComments >> brackets >>= \constr -> loop (constr header)
     brackets :: DaoParser (AST_RefOperand -> AST_RefOperand)
     brackets = joinEvalPTable bracketsTable
@@ -663,9 +663,9 @@ funcCall_arraySub_initPTab =
 funcCall_arraySub_init :: DaoParser AST_Object
 funcCall_arraySub_init = joinEvalPTable funcCall_arraySub_initPTab
 
--- This function evaluates to an 'AST_Object' rather than an 'AST_LValue' because the 'AST_Init'
+-- This function evaluates to an 'AST_Object' rather than an 'AST_Single' because the 'AST_Init'
 -- expression is a type of 'AST_Object', but has a syntax similar to every other 'LValue' expression
--- and so cannot be separated from the 'AST_LValue' parsers.
+-- and so cannot be separated from the 'AST_Single' parsers.
 objLValuePTab :: DaoPTable AST_Object
 objLValuePTab = funcCall_arraySub_initPTab <> refPrefixPTab where
   refPrefixPTab = table refPrefixItems
@@ -673,7 +673,7 @@ objLValuePTab = funcCall_arraySub_initPTab <> refPrefixPTab where
     coms <- optSpace
     o    <- objLValue
     case o of
-      AST_ObjLValue (AST_LValue ref) -> return $ AST_ObjLValue $
+      AST_ObjLValue (AST_Single ref) -> return $ AST_ObjLValue $
         AST_RefPfx (ustr [c]) coms ref (asLocation op <> getLocation o)
       _ -> fail ("reference operator "++c:"prefixes non-reference expression")
 
@@ -737,7 +737,7 @@ equationPTab = bindPTable arithmeticPTab $ \o ->
     (\left (loc, op) right -> case left of
         AST_ObjLValue left -> return $ AST_Assign left op right loc
         _ -> fail $ "expression on left hand side of "++
-          show op++" operator does not evaluate to an updatable reference"
+          prettyShow op++" operator does not evaluate to an updatable reference\n"++show left
     )
     (bufferComments >> return o)
     arithmetic
@@ -889,7 +889,7 @@ toplevelPTab = table expr <> comments <> scriptExpr where
     [ tableItemBy STRINGLIT $ \tok -> case readsPrec 0 (asString tok) of
         [(sym, "")] -> return (AST_ObjSingle $ AST_Literal (OString (ustr (sym::String))) (asLocation tok))
         _           -> fail ("invalid string expression: "++show (asUStr tok))
-    , bindPTableItem referencePTabItem (return . AST_ObjLValue . AST_LValue . AST_PlainRef . AST_Unqualified)
+    , bindPTableItem referencePTabItem (return . AST_ObjLValue . AST_Single . AST_PlainRef . AST_Unqualified)
     ]
   header lbl = tableItemBy lbl $ \startTok ->
     expect ("string literal or reference for \""++lbl++"\" statement") $ do

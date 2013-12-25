@@ -4015,7 +4015,7 @@ instance B.Binary RefOpExpr MTab where
     PlainRefExpr a     -> B.put a
     ArraySubExpr a b z -> B.prefixByte 0x27 $ B.put a >> B.put b >> B.put z
     FuncCall     a b z -> B.prefixByte 0x28 $ B.put a >> B.put b >> B.put z
-  get = B.word8PrefixTable <|> fail "expecting LValueExpr"
+  get = B.word8PrefixTable <|> fail "expecting SingleExpr"
 
 instance B.HasPrefixTable RefOpExpr Word8 MTab where
   prefixTable = fmap ObjParenExpr B.prefixTable <> fmap PlainRefExpr B.prefixTable <>
@@ -4124,40 +4124,40 @@ instance Intermediate RefOpExpr AST_RefOperand where
 
 ----------------------------------------------------------------------------------------------------
 
-data LValueExpr
-  = LValueExpr RefOpExpr
+data SingleExpr
+  = SingleExpr RefOpExpr
   | RefPfxExpr RefPfxOp RefOpExpr Location
   deriving (Eq, Ord, Typeable, Show)
 
-instance NFData LValueExpr where
-  rnf (LValueExpr a    ) = deepseq a ()
+instance NFData SingleExpr where
+  rnf (SingleExpr a    ) = deepseq a ()
   rnf (RefPfxExpr a b c) = deepseq a $! deepseq b $! deepseq c ()
 
-instance HasLocation LValueExpr where
+instance HasLocation SingleExpr where
   getLocation o     = case o of
-    LValueExpr     o -> getLocation o
+    SingleExpr     o -> getLocation o
     RefPfxExpr _ _ o -> o
   setLocation o loc = case o of
-    LValueExpr a      -> LValueExpr (setLocation a loc)
+    SingleExpr a      -> SingleExpr (setLocation a loc)
     RefPfxExpr a b  _ -> RefPfxExpr a b loc
   delLocation o     = case o of
-    LValueExpr a      -> LValueExpr (fd a)
+    SingleExpr a      -> SingleExpr (fd a)
     RefPfxExpr a b  _ -> RefPfxExpr a (fd b) lu
 
-instance B.Binary LValueExpr MTab where
+instance B.Binary SingleExpr MTab where
   put o = case o of
-    LValueExpr     a       -> B.put a
+    SingleExpr     a       -> B.put a
     RefPfxExpr     a b   z -> B.prefixByte 0x26 $ B.put a >> B.put b >> B.put z
-  get = B.word8PrefixTable <|> fail "expecting LValueExpr"
+  get = B.word8PrefixTable <|> fail "expecting SingleExpr"
 
-instance B.HasPrefixTable LValueExpr Word8 MTab where
-  prefixTable = fmap LValueExpr B.prefixTable <>
-    B.mkPrefixTableWord8 "LValueExpr" 0x26 0x26 [pure RefPfxExpr <*> B.get <*> B.get <*> B.get]
+instance B.HasPrefixTable SingleExpr Word8 MTab where
+  prefixTable = fmap SingleExpr B.prefixTable <>
+    B.mkPrefixTableWord8 "SingleExpr" 0x26 0x26 [pure RefPfxExpr <*> B.get <*> B.get <*> B.get]
 
-instance Executable LValueExpr (Maybe Object) where
+instance Executable SingleExpr (Maybe Object) where
   execute o = case o of
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    LValueExpr o -> execute o
+    SingleExpr o -> execute o
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     RefPfxExpr op o loc -> case op of
       REF   -> do
@@ -4181,70 +4181,70 @@ instance Executable LValueExpr (Maybe Object) where
           _ -> cantDeref
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
-instance Structured LValueExpr Object where
+instance Structured SingleExpr Object where
   dataToStruct = putIntermediate "LValue from intermediate"
   structToData = getIntermediate "LValue from intermediate"
 
 ----------------------------------------------------------------------------------------------------
 
--- | An 'LValueExpr' is any expression that can be on the left-hand side of an assignement operator.
+-- | An 'SingleExpr' is any expression that can be on the left-hand side of an assignement operator.
 -- This means any expression that may reference the target of some operation, like a record update.
 -- But it could also be used as an expression to be dereferenced when it is on the right-hand side
--- of an equation. 'LValueExpr's should also be left-associative and have a higher precedence than
--- other 'ObjectExpr's in the syntax tree so that parsing 'LValueExpr's.
-data AST_LValue
-  = AST_LValue AST_RefOperand
+-- of an equation. 'SingleExpr's should also be left-associative and have a higher precedence than
+-- other 'ObjectExpr's in the syntax tree so that parsing 'SingleExpr's.
+data AST_Single
+  = AST_Single AST_RefOperand
   | AST_RefPfx RefPfxOp [Comment] AST_RefOperand Location
   deriving (Eq, Ord, Typeable, Show)
 
-instance NFData AST_LValue where
-  rnf (AST_LValue a      ) = deepseq a ()
+instance NFData AST_Single where
+  rnf (AST_Single a      ) = deepseq a ()
   rnf (AST_RefPfx a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d  ()
 
-instance HasLocation AST_LValue where
+instance HasLocation AST_Single where
   getLocation o     = case o of
-    AST_LValue       o -> getLocation o
+    AST_Single       o -> getLocation o
     AST_RefPfx _ _ _ o -> o
   setLocation o loc = case o of
-    AST_LValue a       -> AST_LValue (setLocation a loc)
+    AST_Single a       -> AST_Single (setLocation a loc)
     AST_RefPfx a b c _ -> AST_RefPfx   a b c loc
   delLocation o     = case o of
-    AST_LValue a       -> AST_LValue (fd a)
+    AST_Single a       -> AST_Single (fd a)
     AST_RefPfx a b c _ -> AST_RefPfx a b (fd c) lu
 
-instance PPrintable AST_LValue where
+instance PPrintable AST_Single where
   pPrint o = case o of
-    AST_LValue refOp              -> pPrint refOp
+    AST_Single refOp              -> pPrint refOp
     AST_RefPfx ariOp coms objXp _ -> pWrapIndent [pPrint ariOp, pPrint coms, pPrint objXp]
 
-instance PrecedeWithSpace AST_LValue where
+instance PrecedeWithSpace AST_Single where
   precedeWithSpace o = case o of
-    AST_LValue o       -> precedeWithSpace o
+    AST_Single o       -> precedeWithSpace o
     AST_RefPfx _ _ _ _ -> True
 
-instance Structured AST_LValue Object where
+instance Structured AST_Single Object where
   dataToStruct o = deconstruct $ case o of
-    AST_LValue a         -> putData a
+    AST_Single a         -> putData a
     AST_RefPfx a b c loc -> with "refPrefix" $ putDataAt "op" a >> putComments b >> putDataAt "right"  c >> putData loc
   structToData = reconstruct $ msum $
     [ tryWith "refPrefix" $ pure AST_RefPfx <*> getDataAt "op" <*> getComments <*> getDataAt "right" <*> getData
-    , AST_LValue <$> getData
+    , AST_Single <$> getData
     , fail "L-Value expression"
     ]
 
-instance HasRandGen AST_LValue where
+instance HasRandGen AST_Single where
   randO = randChoice $
-    [ AST_LValue <$> randO
+    [ AST_Single <$> randO
     , pure (AST_RefPfx REF)   <*> randO <*> randO <*> no
     , pure (AST_RefPfx DEREF) <*> randO <*> randO <*> no
     ]
 
-instance Intermediate LValueExpr AST_LValue where
+instance Intermediate SingleExpr AST_Single where
   toInterm ast = case ast of
-    AST_LValue a         -> liftM  LValueExpr (ti a)
+    AST_Single a         -> liftM  SingleExpr (ti a)
     AST_RefPfx a _ c loc -> liftM3 RefPfxExpr [a] (ti c) [loc]
   fromInterm o = case o of
-    LValueExpr a       -> liftM  AST_LValue (fi a)
+    SingleExpr a       -> liftM  AST_Single (fi a)
     RefPfxExpr a c loc -> liftM4 AST_RefPfx [a] [[]] (fi c) [loc]
 
 ----------------------------------------------------------------------------------------------------
@@ -4253,9 +4253,9 @@ instance Intermediate LValueExpr AST_LValue where
 data ObjectExpr
   = VoidExpr
   | ObjSingleExpr  LiteralExpr
-  | ObjLValueExpr  LValueExpr
+  | ObjLValueExpr  SingleExpr
   | ArithPfxExpr                ArithPfxOp      ObjectExpr   Location
-  | AssignExpr     LValueExpr   UpdateOp        ObjectExpr   Location
+  | AssignExpr     SingleExpr   UpdateOp        ObjectExpr   Location
   | Equation       ObjectExpr   InfixOp         ObjectExpr   Location
   | InitExpr       RefExpr      OptObjListExpr  ObjListExpr  Location
   | LambdaExpr                  ParamListExpr   CodeBlock    Location
@@ -4499,8 +4499,8 @@ instance ObjectClass ObjectExpr where
 data AST_Object
   = AST_Void -- ^ Not a language construct, but used where an object expression is optional.
   | AST_ObjSingle AST_Literal
-  | AST_ObjLValue AST_LValue
-  | AST_Assign    AST_LValue (Com UpdateOp)       AST_Object    Location
+  | AST_ObjLValue AST_Single
+  | AST_Assign    AST_Single (Com UpdateOp)       AST_Object    Location
   | AST_ArithPfx  ArithPfxOp [Comment]            AST_Object    Location
   | AST_Equation  AST_Object (Com InfixOp)        AST_Object    Location
   | AST_Init      AST_Ref         AST_OptObjList  AST_ObjList   Location
@@ -4816,7 +4816,7 @@ instance HasRandGen AST_TopLevel where
     [ do  req_ <- nextInt 2
           let req = ustr $ if req_ == 0 then "require" else "import"
               randItem = randChoice $
-                [ fmap (AST_ObjLValue . AST_LValue . AST_PlainRef . AST_Unqualified) randO
+                [ fmap (AST_ObjLValue . AST_Single . AST_PlainRef . AST_Unqualified) randO
                 , AST_ObjSingle <$> (pure AST_Literal <*> (OString <$> randO) <*> no)
                 ]
           item <- randComWith randItem

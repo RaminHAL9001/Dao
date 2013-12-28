@@ -1554,9 +1554,9 @@ instance Intermediate CodeBlock AST_CodeBlock where
 data TyChkExpr a
   = NotTypeChecked{tyChkItem::a}
     -- ^ no type information was specified for this item
-  | TypeChecked   {tyChkItem::a, tyChkExpr::ObjectExpr, tyChkLoc::Location}
+  | TypeChecked   {tyChkItem::a, tyChkExpr::ArithExpr, tyChkLoc::Location}
     -- ^ type check information was specified and should be checked every time it is evaluated.
-  | DisableCheck  {tyChkItem::a, tyChkExpr::ObjectExpr, typChkResult::Object, tyChkLoc::Location}
+  | DisableCheck  {tyChkItem::a, tyChkExpr::ArithExpr, typChkResult::Object, tyChkLoc::Location}
     -- ^ type check information was specified but has been disabled for efficiency reasons because
     -- we have verified that the item will always return a succesfull type-check.
   deriving (Eq, Ord, Typeable, Show)
@@ -1623,7 +1623,7 @@ instance B.Binary a MTab => B.HasPrefixTable (TyChkExpr a) B.Byte MTab where
 -- purpose.
 data AST_TyChk a
   = AST_NotChecked a
-  | AST_Checked    a (Com ()) AST_Object Location
+  | AST_Checked    a (Com ()) AST_Arith Location
   deriving (Eq, Ord, Typeable, Show)
 
 checkedAST :: AST_TyChk a -> a
@@ -2789,7 +2789,7 @@ instance Executable ExecDaoFunc (Maybe Object) where
 -- Evaluating this data type with 'execute' will simply return the 'paramValue' unless the
 -- 'paramValue' is constructed with 'ORef', in which case the 'QualRefExpr' in used to retrieve an
 -- object value associated with that 'QualRefExpr'.
-data ParamValue = ParamValue{paramValue::Object, paramOrigExpr::ObjectExpr}
+data ParamValue = ParamValue{paramValue::Object, paramOrigExpr::AssignExpr}
 
 -- | To evaluate an 'Dao.Object.Object' value against a type expression, you can store the
 -- 'Dao.Object.Object' into a 'Dao.Object.ParamValue' and into a 'Dao.Object.TyChkExpr' and
@@ -3067,7 +3067,7 @@ checkVoid loc msg fn = case fn of
 ----------------------------------------------------------------------------------------------------
 
 -- | Required parenthesese.
-data ParenExpr = ParenExpr ObjectExpr Location deriving (Eq, Ord, Typeable, Show)
+data ParenExpr = ParenExpr AssignExpr Location deriving (Eq, Ord, Typeable, Show)
 
 evalConditional :: ParenExpr -> Exec Bool
 evalConditional obj =
@@ -3097,7 +3097,7 @@ instance Executable ParenExpr (Maybe Object) where { execute (ParenExpr a _) = e
 
 ----------------------------------------------------------------------------------------------------
 
-data AST_Paren = AST_Paren (Com AST_Object) Location deriving (Eq, Ord, Typeable, Show)
+data AST_Paren = AST_Paren (Com AST_Assign) Location deriving (Eq, Ord, Typeable, Show)
 
 instance HasLocation AST_Paren where
   getLocation (AST_Paren _ loc)     = loc
@@ -3116,11 +3116,6 @@ instance PPrintable AST_Paren where
 instance Intermediate ParenExpr AST_Paren where
   toInterm   (AST_Paren o loc) = liftM2 ParenExpr (uc0 o) [loc]
   fromInterm (ParenExpr o loc) = liftM2 AST_Paren (nc0 o) [loc]
-
-instance HasLocation AST_ObjList where
-  getLocation (AST_ObjList _ _ loc)     = loc
-  setLocation (AST_ObjList a b _  ) loc = AST_ObjList a      b  loc
-  delLocation (AST_ObjList a b _  )     = AST_ObjList a (fd1 b) lu
 
 instance Structured AST_Paren  Object where
   dataToStruct (AST_Paren a loc) = deconstruct $ with "paren" $ putData a >> putData loc
@@ -3373,11 +3368,11 @@ instance HasRandGen AST_While  where { randO = pure AST_While  <*> randO }
 data ScriptExpr
   = IfThenElse   IfElseExpr
   | WhileLoop    WhileExpr
-  | EvalObject   ObjectExpr                               Location -- location of the semicolon
+  | EvalObject   AssignExpr                               Location -- location of the semicolon
   | TryCatch     CodeBlock (Maybe Name) (Maybe CodeBlock) Location
   | ForLoop      Name       ParenExpr    CodeBlock        Location
-  | ContinueExpr Bool       ObjectExpr                    Location
-  | ReturnExpr   Bool       ObjectExpr                    Location
+  | ContinueExpr Bool       AssignExpr                    Location
+  | ReturnExpr   Bool       AssignExpr                    Location
   | WithDoc      ParenExpr  CodeBlock                     Location
   deriving (Eq, Ord, Typeable, Show)
 
@@ -3564,8 +3559,9 @@ instance Executable ForLoopBlock (Bool, Maybe Object) where
         []   -> done True
         e:ex -> case e of
           ContinueExpr a cond _loc -> case cond of
-            VoidExpr -> done a
-            cond     -> evalConditional (ParenExpr cond LocationUnknown) >>= done . (if a then id else not)
+            EvalExpr (ObjectExpr VoidExpr) -> done a
+            cond -> execute cond >>= maybe err objToBool >>= done . (if a then id else not) where
+              err = fail "expression does not evaluate to boolean"
           e -> execute e >> loop ex
 
 ----------------------------------------------------------------------------------------------------
@@ -3576,16 +3572,16 @@ data AST_Script
   = AST_Comment                 [Comment] 
   | AST_IfThenElse  AST_IfElse
   | AST_WhileLoop   AST_While
-  | AST_EvalObject  AST_Object  [Comment]                                              Location
+  | AST_EvalObject  AST_Assign  [Comment]                                              Location
     -- ^ @some.object.expression = for.example - equations || function(calls) /**/ ;@
   | AST_TryCatch     (Com AST_CodeBlock)     (Maybe (Com Name)) (Maybe AST_CodeBlock)  Location
     -- ^ @try /**/ {} /**/ catch /**/ errVar /**/ {}@              
   | AST_ForLoop      (Com Name)              (Com AST_Paren)           AST_CodeBlock   Location
     -- ^ @for /**/ var /**/ in /**/ objExpr /**/ {}@
-  | AST_ContinueExpr Bool  [Comment]         (Com AST_Object)                          Location
+  | AST_ContinueExpr Bool  [Comment]         (Com AST_Assign)                          Location
     -- ^ The boolean parameter is True for a "continue" statement, False for a "break" statement.
     -- @continue /**/ ;@ or @continue /**/ if /**/ objExpr /**/ ;@
-  | AST_ReturnExpr   Bool                    (Com AST_Object)                          Location
+  | AST_ReturnExpr   Bool                    (Com AST_Assign)                          Location
     -- ^ The boolean parameter is True for a "return" statement, False for a "throw" statement.
     -- ^ @return /**/ ;@ or @return /**/ objExpr /**/ ;@
   | AST_WithDoc      (Com AST_Paren)         AST_CodeBlock                             Location
@@ -3660,42 +3656,13 @@ instance PPrintable AST_Script where
     AST_ContinueExpr contin     coms      cObjXp    _ -> pWrapIndent $
       [ pString (if contin then "continue" else "break")
       , pInline (map pPrint coms)
-      , case unComment cObjXp of
-          AST_Void -> return ()
-          _        ->
-            pString " if" >> when (precedeWithSpace cObjXp) (pString " ") >> pPrint cObjXp
+      , pString " if" >> when (precedeWithSpace cObjXp) (pString " ") >> pPrint cObjXp
       , pString ";"
       ]
     AST_ReturnExpr   retrn                cObjXp    _ -> pWrapIndent $
-      [ pString (if retrn then "return " else "throw ")
-      , case unComment cObjXp of
-          AST_Void -> return ()
-          _        -> pPrint cObjXp
-      , pString ";"
-      ]
+      [pString (if retrn then "return " else "throw "), pPrint cObjXp, pString ";"]
     AST_WithDoc      cObjXp               xcScrpXp  _ ->
       pPrintSubBlock (pString "with " >> pPrint cObjXp) xcScrpXp
-
-instance Intermediate ScriptExpr AST_Script where
-  toInterm   ast = case ast of
-    AST_Comment      _         -> mzero
-    AST_EvalObject   a _   loc -> liftM2 EvalObject   (ti  a)                 [loc]
-    AST_IfThenElse   a         -> liftM  IfThenElse   (ti  a)
-    AST_WhileLoop    a         -> liftM  WhileLoop    (ti  a)
-    AST_TryCatch     a b c loc -> liftM4 TryCatch     (uc0 a) (um0 b) (um1 c) [loc]
-    AST_ForLoop      a b c loc -> liftM4 ForLoop      (uc  a) (uc0 b) (ti  c) [loc]
-    AST_ContinueExpr a _ c loc -> liftM3 ContinueExpr [a]             (uc0 c) [loc]
-    AST_ReturnExpr   a b   loc -> liftM3 ReturnExpr   [a]     (uc0 b)         [loc]
-    AST_WithDoc      a b   loc -> liftM3 WithDoc      (uc0 a) (ti  b)         [loc]
-  fromInterm obj = case obj of
-    EvalObject   a     loc -> liftM3 AST_EvalObject   (fi  a) [[]]            [loc]
-    IfThenElse   a         -> liftM  AST_IfThenElse   (fi  a)
-    WhileLoop    a         -> liftM  AST_WhileLoop    (fi  a)
-    TryCatch     a b c loc -> liftM4 AST_TryCatch     (nc0 a) (nm0 b) (nm1 c) [loc]
-    ForLoop      a b c loc -> liftM4 AST_ForLoop      (nc  a) (nc0 b) (fi  c) [loc]
-    ContinueExpr a b   loc -> liftM4 AST_ContinueExpr [a]     [[]]    (nc0 b) [loc]
-    ReturnExpr   a b   loc -> liftM3 AST_ReturnExpr   [a]     (nc0 b)         [loc]
-    WithDoc      a b   loc -> liftM3 AST_WithDoc      (nc0 a) (fi  b)         [loc]
 
 instance Structured AST_Script Object where
   dataToStruct a = deconstruct $ case a of
@@ -3726,9 +3693,6 @@ instance Structured AST_Script Object where
       getContinue tf = pure (AST_ContinueExpr tf) <*> getComments        <*> getDataAt "condition"     <*> getData
       getReturn   tf = pure (AST_ReturnExpr   tf) <*> getDataAt "object" <*> getData
 
-randReturn :: RandO AST_Object
-randReturn = randChoice [return AST_Void, AST_ObjSingle <$> randO]
-
 randScriptList :: [RandO AST_Script]
 randScriptList =
   [ pure AST_EvalObject   <*> randO <*> randO <*> no
@@ -3736,8 +3700,8 @@ randScriptList =
   , pure AST_WhileLoop    <*> randO
   , pure AST_TryCatch     <*> randO <*> randO <*> randO <*> no
   , pure AST_ForLoop      <*> randO <*> randO <*> randO <*> no
-  , pure AST_ContinueExpr <*> randO <*> randO <*> randComWith randReturn <*> no
-  , pure AST_ReturnExpr   <*> randO <*> randComWith randReturn <*> no
+  , pure AST_ContinueExpr <*> randO <*> randO <*> randO <*> no
+  , pure AST_ReturnExpr   <*> randO <*> randO <*> no
   , pure AST_WithDoc      <*> randO <*> randO <*> no
   ]
 
@@ -3749,11 +3713,32 @@ instance HasRandGen AST_Script where
 
 instance PPrintable ScriptExpr  where { pPrint = pPrintInterm }
 
+instance Intermediate ScriptExpr AST_Script where
+  toInterm   ast = case ast of
+    AST_Comment      _         -> mzero
+    AST_EvalObject   a _   loc -> liftM2 EvalObject   (ti  a)                 [loc]
+    AST_IfThenElse   a         -> liftM  IfThenElse   (ti  a)
+    AST_WhileLoop    a         -> liftM  WhileLoop    (ti  a)
+    AST_TryCatch     a b c loc -> liftM4 TryCatch     (uc0 a) (um0 b) (um1 c) [loc]
+    AST_ForLoop      a b c loc -> liftM4 ForLoop      (uc  a) (uc0 b) (ti  c) [loc]
+    AST_ContinueExpr a _ c loc -> liftM3 ContinueExpr [a]             (uc0 c) [loc]
+    AST_ReturnExpr   a b   loc -> liftM3 ReturnExpr   [a]     (uc0 b)         [loc]
+    AST_WithDoc      a b   loc -> liftM3 WithDoc      (uc0 a) (ti  b)         [loc]
+  fromInterm obj = case obj of
+    EvalObject   a     loc -> liftM3 AST_EvalObject   (fi  a) [[]]            [loc]
+    IfThenElse   a         -> liftM  AST_IfThenElse   (fi  a)
+    WhileLoop    a         -> liftM  AST_WhileLoop    (fi  a)
+    TryCatch     a b c loc -> liftM4 AST_TryCatch     (nc0 a) (nm0 b) (nm1 c) [loc]
+    ForLoop      a b c loc -> liftM4 AST_ForLoop      (nc  a) (nc0 b) (fi  c) [loc]
+    ContinueExpr a b   loc -> liftM4 AST_ContinueExpr [a]     [[]]    (nc0 b) [loc]
+    ReturnExpr   a b   loc -> liftM3 AST_ReturnExpr   [a]     (nc0 b)         [loc]
+    WithDoc      a b   loc -> liftM3 AST_WithDoc      (nc0 a) (fi  b)         [loc]
+
 ----------------------------------------------------------------------------------------------------
 
 -- | Contains a list of 'ObjectExpr's, which are used to encode parameters to function calls, and
 -- intialization lists.
-data ObjListExpr = ObjListExpr [ObjectExpr] Location deriving (Eq, Ord, Typeable)
+data ObjListExpr = ObjListExpr [AssignExpr] Location deriving (Eq, Ord, Typeable)
 
 instance Show ObjListExpr where { show (ObjListExpr o loc) = show o++show loc }
 
@@ -3778,17 +3763,15 @@ instance B.Binary ObjListExpr MTab where
 
 instance Executable ObjListExpr [ParamValue] where
   execute (ObjListExpr exprs _) = execNested T.Void $ do
-    fmap concat $ forM exprs $ \expr -> case expr of
-      VoidExpr -> return []
-      expr     -> execute expr >>= \val -> case val of
-        Nothing  -> execThrow $ obj [obj "expression used in list evaluated to void"]
-        Just val -> return [ParamValue{paramValue=val, paramOrigExpr=expr}]
+    fmap concat $ forM exprs $ \expr -> execute expr >>= \val -> case val of
+      Nothing  -> execThrow $ obj [obj "expression used in list evaluated to void"]
+      Just val -> return [ParamValue{paramValue=val, paramOrigExpr=expr}]
 
 ----------------------------------------------------------------------------------------------------
 
-data AST_ObjList = AST_ObjList [Comment] [Com AST_Object] Location deriving (Eq, Ord, Typeable, Show)
+data AST_ObjList = AST_ObjList [Comment] [Com AST_Assign] Location deriving (Eq, Ord, Typeable, Show)
 
-mkObjList :: [Com AST_Object] -> AST_ObjList
+mkObjList :: [Com AST_Assign] -> AST_ObjList
 mkObjList ox = AST_ObjList [] ox (mconcat $ fmap (getLocation . unComment) ox)
 
 setObjListPreComments :: [Comment] -> AST_ObjList -> AST_ObjList
@@ -3803,6 +3786,11 @@ instance HasNullValue AST_ObjList where
   testNull (AST_ObjList [] [] _) = True
   testNull _ = False
 
+instance HasLocation AST_ObjList where
+  getLocation (AST_ObjList _ _ loc)     = loc
+  setLocation (AST_ObjList a b _  ) loc = AST_ObjList a      b  loc
+  delLocation (AST_ObjList a b _  )     = AST_ObjList a (fd1 b) lu
+
 instance PPrintable AST_ObjList where
   pPrint (AST_ObjList coms lst _) = pPrint coms >>
     pInline (intersperse (pString ", ") (map pPrint lst))
@@ -3813,7 +3801,8 @@ instance Structured AST_ObjList  Object where
   dataToStruct (AST_ObjList coms lst loc) = deconstruct $ with "objList" (putComments coms >> putData lst >> putData loc)
   structToData = reconstruct $ with "objList" (pure AST_ObjList <*> getComments <*> getData <*> getData)
 
-instance HasRandGen AST_ObjList   where { randO = recurse nullValue $ AST_ObjList <$> randO <*> randO <*> no }
+instance HasRandGen AST_ObjList where
+  randO = recurse nullValue $ AST_ObjList <$> randO <*> randListOf 0 5 (randComWith randO) <*> no
 
 instance Intermediate ObjListExpr AST_ObjList where
   toInterm   (AST_ObjList _ lst loc) = liftM2 ObjListExpr      [lst>>=uc0] [loc]
@@ -4249,18 +4238,12 @@ instance Intermediate SingleExpr AST_Single where
 
 ----------------------------------------------------------------------------------------------------
 
-
-
-----------------------------------------------------------------------------------------------------
-
 -- | Part of the Dao language abstract syntax tree: any expression that evaluates to an Object.
 data ObjectExpr
   = VoidExpr
   | ObjLiteralExpr LiteralExpr
   | ObjSingleExpr  SingleExpr
   | ArithPfxExpr                ArithPfxOp      ObjectExpr   Location
-  | AssignExpr     SingleExpr   UpdateOp        ObjectExpr   Location
-  | Equation       ObjectExpr   InfixOp         ObjectExpr   Location
   | InitExpr       RefExpr      OptObjListExpr  ObjListExpr  Location
   | LambdaExpr                  ParamListExpr   CodeBlock    Location
   | FuncExpr       Name         ParamListExpr   CodeBlock    Location
@@ -4273,8 +4256,6 @@ instance NFData ObjectExpr where
   rnf (ObjLiteralExpr a      ) = deepseq a ()
   rnf (ObjSingleExpr  a      ) = deepseq a $! ()
   rnf (ArithPfxExpr   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AssignExpr     a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (Equation       a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (InitExpr       a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (LambdaExpr     a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (FuncExpr       a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
@@ -4292,8 +4273,6 @@ instance HasLocation ObjectExpr where
     ObjLiteralExpr       o -> getLocation o
     ObjSingleExpr        o -> getLocation o
     ArithPfxExpr   _ _   o -> o
-    AssignExpr     _ _ _ o -> o
-    Equation       _ _ _ o -> o
     InitExpr       _ _ _ o -> o
     LambdaExpr     _ _   o -> o
     FuncExpr       _ _ _ o -> o
@@ -4303,9 +4282,7 @@ instance HasLocation ObjectExpr where
     VoidExpr               -> VoidExpr
     ObjLiteralExpr a       -> ObjLiteralExpr (setLocation a loc)
     ObjSingleExpr  a       -> ObjSingleExpr  (setLocation a loc)
-    AssignExpr     a b c _ -> AssignExpr     a b c loc
     ArithPfxExpr   a b   _ -> ArithPfxExpr   a b   loc
-    Equation       a b c _ -> Equation       a b c loc
     InitExpr       a b c _ -> InitExpr       a b c loc
     LambdaExpr     a b   _ -> LambdaExpr     a b   loc
     FuncExpr       a b c _ -> FuncExpr       a b c loc
@@ -4315,9 +4292,7 @@ instance HasLocation ObjectExpr where
     VoidExpr               -> VoidExpr
     ObjLiteralExpr a       -> ObjLiteralExpr (fd a)
     ObjSingleExpr  a       -> ObjSingleExpr  (fd a)
-    AssignExpr     a b c _ -> AssignExpr     (fd a)     b  (fd c) lu
     ArithPfxExpr   a b   _ -> ArithPfxExpr       a  (fd b)        lu
-    Equation       a b c _ -> Equation       (fd a)     b  (fd c) lu
     InitExpr       a b c _ -> InitExpr       (fd a) (fd b) (fd c) lu
     LambdaExpr     a b   _ -> LambdaExpr     (fd a) (fd b)        lu
     FuncExpr       a b c _ -> FuncExpr           a  (fd b) (fd c) lu
@@ -4337,25 +4312,21 @@ instance B.Binary ObjectExpr MTab where
     ObjSingleExpr  a       -> B.put a
     ObjLiteralExpr a       -> B.put a
     VoidExpr               -> B.putWord8   0x29
-    AssignExpr     a b c z -> B.prefixByte 0x2A $ B.put a >> B.put b >> B.put c >> B.put z
-    ArithPfxExpr   a b   z -> B.prefixByte 0x2B $ B.put a >> B.put b >> B.put z
-    Equation       a b c z -> B.prefixByte 0x2C $ B.put a >> B.put b >> B.put c >> B.put z
-    InitExpr       a b c z -> B.prefixByte 0x2D $ B.put a >> B.put b >> B.put c >> B.put z
-    LambdaExpr     a b   z -> B.prefixByte 0x2E $ B.put a >> B.put b >> B.put z
-    FuncExpr       a b c z -> B.prefixByte 0x2F $ B.put a >> B.put b >> B.put c >> B.put z
-    RuleExpr       a b   z -> B.prefixByte 0x30 $ B.put a >> B.put b >> B.put z
-    MetaEvalExpr   a     z -> B.prefixByte 0x31 $ B.put a >> B.put z
+    ArithPfxExpr   a b   z -> B.prefixByte 0x2A $ B.put a >> B.put b >> B.put z
+    InitExpr       a b c z -> B.prefixByte 0x2B $ B.put a >> B.put b >> B.put c >> B.put z
+    LambdaExpr     a b   z -> B.prefixByte 0x2C $ B.put a >> B.put b >> B.put z
+    FuncExpr       a b c z -> B.prefixByte 0x2D $ B.put a >> B.put b >> B.put c >> B.put z
+    RuleExpr       a b   z -> B.prefixByte 0x2E $ B.put a >> B.put b >> B.put z
+    MetaEvalExpr   a     z -> B.prefixByte 0x2F $ B.put a >> B.put z
   get = B.word8PrefixTable <|> fail "expecting ObjectExpr"
 
 instance B.HasPrefixTable ObjectExpr B.Byte MTab where
   prefixTable = mconcat $
     [ ObjSingleExpr  <$> B.prefixTable
     , ObjLiteralExpr <$> B.prefixTable
-    , B.mkPrefixTableWord8 "ObjectExpr" 0x29 0x31 $
+    , B.mkPrefixTableWord8 "ObjectExpr" 0x29 0x2F $
         [ return VoidExpr
-        , pure AssignExpr   <*> B.get <*> B.get <*> B.get <*> B.get
         , pure ArithPfxExpr <*> B.get <*> B.get <*> B.get
-        , pure Equation     <*> B.get <*> B.get <*> B.get <*> B.get
         , pure InitExpr     <*> B.get <*> B.get <*> B.get <*> B.get
         , pure LambdaExpr   <*> B.get <*> B.get <*> B.get
         , pure FuncExpr     <*> B.get <*> B.get <*> B.get <*> B.get
@@ -4364,7 +4335,7 @@ instance B.HasPrefixTable ObjectExpr B.Byte MTab where
         ]
     ]
 
-instance Structured ObjectExpr  Object where
+instance Structured ObjectExpr Object where
   dataToStruct = putIntermediate "object intermedaite node"
   structToData = getIntermediate "object intermedaite node"
 
@@ -4407,20 +4378,6 @@ instance Executable ObjectExpr (Maybe Object) where
       expr <- execute expr >>= checkVoid loc ("operand to prefix operator "++show op )
       fmap Just ((arithPrefixOps!op) expr)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    AssignExpr nm op  expr loc -> do
-      let lhs = "left-hand side of "++show op
-      nm <- msum $
-        [ execute nm >>= checkVoid (getLocation nm) (lhs++" evaluates to void") >>= asReference
-        , execThrow $ obj [obj $ lhs++" is not a reference value"]
-        ]
-      expr <- execute expr >>= checkVoid loc "right-hand side of assignment" >>= derefObject
-      updateReference nm $ \maybeObj -> case maybeObj of
-        Nothing      -> case op of
-          UCONST -> return (Just expr)
-          _      -> execThrow $ obj [obj "undefined refence", obj nm]
-        Just prevVal -> fmap Just $
-          checkPredicate "assignment expression" [prevVal, expr] $ (updatingOps!op) prevVal expr
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     InitExpr ref initList initMap _ -> do
       let erf = ORef $ Unqualified $ refFromExpr ref
       ref <- return $ toUStr ref
@@ -4450,27 +4407,6 @@ instance Executable ObjectExpr (Maybe Object) where
               list <- execute initList >>= execNested T.Void . mapM execute
               fmap (Just . OHaskell . flip HaskellData tab) $
                 execute initMap >>= mapM execute >>= init list
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    Equation  left' op right' loc -> do
-      let err1 msg = msg++"-hand operand of "++show op++ "operator "
-          evalLeft   = execute left'  >>= checkVoid loc (err1 "left" )
-          evalRight  = execute right' >>= checkVoid loc (err1 "right")
-          derefLeft  = evalLeft  >>= derefObject
-          derefRight = evalRight >>= derefObject
-          logical isAndOp = fmap Just $ do
-            left <- derefLeft >>= objToBool
-            if left
-              then  if isAndOp then derefRight else return OTrue
-              else  if isAndOp then return ONull else derefRight
-      case op of
-        AND -> logical True
-        OR  -> logical False
-        op  -> do
-          (left, right) <- case op of
-          --DOT   -> liftM2 (,) evalLeft  evalRight
-            ARROW -> liftM2 (,) derefLeft evalRight
-            _     -> liftM2 (,) derefLeft derefRight
-          fmap Just ((infixOps!op) left right)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     LambdaExpr params scrpt _ -> do
       exec <- setupCodeBlock scrpt
@@ -4504,9 +4440,7 @@ data AST_Object
   = AST_Void -- ^ Not a language construct, but used where an object expression is optional.
   | AST_ObjLiteral AST_Literal
   | AST_ObjSingle  AST_Single
-  | AST_Assign     AST_Single (Com UpdateOp)       AST_Object    Location
   | AST_ArithPfx   ArithPfxOp [Comment]            AST_Object    Location
-  | AST_Equation   AST_Object (Com InfixOp)        AST_Object    Location
   | AST_Init       AST_Ref         AST_OptObjList  AST_ObjList   Location
   | AST_Lambda                (Com AST_ParamList)  AST_CodeBlock Location
   | AST_Func [Comment] Name   (Com AST_ParamList)  AST_CodeBlock Location
@@ -4518,9 +4452,7 @@ instance NFData AST_Object where
   rnf AST_Void = ()
   rnf (AST_ObjLiteral a        ) = deepseq a ()
   rnf (AST_ObjSingle  a        ) = deepseq a ()
-  rnf (AST_Assign     a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_ArithPfx   a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_Equation   a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_Init       a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_Lambda     a b c    ) = deepseq a $! deepseq b $! deepseq c () 
   rnf (AST_Func       a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
@@ -4537,9 +4469,7 @@ instance HasLocation AST_Object where
     AST_Void               -> LocationUnknown
     AST_ObjLiteral       o -> getLocation o
     AST_ObjSingle        o -> getLocation o
-    AST_Assign   _ _ _   o -> o
     AST_ArithPfx _ _ _   o -> o
-    AST_Equation _ _ _   o -> o
     AST_Init     _ _ _   o -> o
     AST_Lambda   _ _     o -> o
     AST_Func     _ _ _ _ o -> o
@@ -4549,9 +4479,7 @@ instance HasLocation AST_Object where
     AST_Void                 -> AST_Void
     AST_ObjLiteral a         -> AST_ObjLiteral (setLocation a loc)
     AST_ObjSingle  a         -> AST_ObjSingle  (setLocation a loc)
-    AST_Assign     a b c   _ -> AST_Assign     a b c   loc
     AST_ArithPfx   a b c   _ -> AST_ArithPfx   a b c   loc
-    AST_Equation   a b c   _ -> AST_Equation   a b c   loc
     AST_Init       a b c   _ -> AST_Init       a b c   loc
     AST_Lambda     a b     _ -> AST_Lambda     a b     loc
     AST_Func       a b c d _ -> AST_Func       a b c d loc
@@ -4561,9 +4489,7 @@ instance HasLocation AST_Object where
     AST_Void                 -> AST_Void
     AST_ObjLiteral a         -> AST_ObjLiteral (fd  a)
     AST_ObjSingle  a         -> AST_ObjSingle  (fd  a)
-    AST_Assign     a b c   _ -> AST_Assign     (fd  a)      b  (fd  c)         lu
     AST_ArithPfx   a b c   _ -> AST_ArithPfx        a       b  (fd  c)         lu
-    AST_Equation   a b c   _ -> AST_Equation   (fd  a)      b  (fd  c)         lu
     AST_Init       a b c   _ -> AST_Init               (fd  a) (fd  b) (fd  c) lu
     AST_Lambda     a b     _ -> AST_Lambda     (fd  a) (fd  b)                 lu
     AST_Func       a b c d _ -> AST_Func            a       b  (fd  c) (fd  d) lu
@@ -4575,12 +4501,8 @@ instance PPrintable AST_Object where
     AST_Void                                 -> return ()
     AST_ObjLiteral   o                       -> pPrint o
     AST_ObjSingle    o                       -> pPrint o
-    AST_Assign   objXp1  comUpdOp  objXp2  _ -> pWrapIndent $
-      [pPrint objXp1, pPrint comUpdOp, pPrint objXp2]
     AST_ArithPfx     op      coms      objXp   _ -> pWrapIndent $
       [pPrint op, pPrint coms, pPrint objXp]
-    AST_Equation     objXp1  comAriOp  objXp2  _ -> pWrapIndent $
-      [pPrint objXp1, pPrint comAriOp, pPrint objXp2]
     AST_Init          ref objs     elems   _ ->
       pInline [pPrint ref, pPrintOptObjList "(" ", " ")" objs, pPrintObjList "{" ", " "}" elems]
     AST_Lambda         ccNmx   xcObjXp     _ ->
@@ -4595,27 +4517,21 @@ instance PrecedeWithSpace AST_Object where
     AST_Void                -> False
     AST_MetaEval{}          -> False
     AST_ObjSingle   o       -> precedeWithSpace o
-    AST_Assign      o _ _ _ -> precedeWithSpace o
-    AST_Equation    o _ _ _ -> precedeWithSpace o
     _                       -> True
 
-instance Structured AST_Object  Object where
+instance Structured AST_Object Object where
   dataToStruct a = deconstruct $ case a of
     AST_Void                   -> place ONull
     AST_ObjLiteral a           -> putData a
     AST_ObjSingle  a           -> putData a
-    AST_Assign     a b c   loc -> with "assign"    $ putDataAt "to"     a >> putDataAt "op"     b >> putDataAt "from"   c >> putData loc
     AST_ArithPfx   a b c   loc -> with "arithPfx"  $ putDataAt "op"     a >> putComments        b >> putDataAt "to"     c >> putData loc
-    AST_Equation   a b c   loc -> with "equation"  $ putDataAt "left"   a >> putDataAt "op"     b >> putDataAt "right"  c >> putData loc
     AST_Init       a b c   loc -> with "initExpr"  $ putDataAt "header" a >> putDataAt "params" b >> putDataAt "elems"  c >> putData loc
     AST_Lambda     a b     loc -> with "lambdaExpr"$                         putDataAt "params" a >> putDataAt "script" b >> putData loc
     AST_Func       a b c d loc -> with "funcExpr"  $ putComments        a >> putDataAt "name"   b >> putDataAt "params" c >> putDataAt "script" d >> putData loc
     AST_Rule       a b     loc -> with "ruleExpr"  $                         putDataAt "params" a >> putDataAt "script" b >> putData loc
     AST_MetaEval   a       loc -> with "metaEval"  $ putDataAt "inner"  a                                                 >> putData loc
   structToData =   reconstruct $ msum $
-    [ tryWith "assign"    $ pure AST_Assign      <*> getDataAt "to"     <*> getDataAt "op"     <*> getDataAt "from"   <*> getData
-    , tryWith "arithPfx"  $ pure AST_ArithPfx    <*> getDataAt "op"     <*> getComments        <*> getDataAt "to"     <*> getData
-    , tryWith "equation"  $ pure AST_Equation    <*> getDataAt "left"   <*> getDataAt "op"     <*> getDataAt "right"  <*> getData
+    [ tryWith "arithPfx"  $ pure AST_ArithPfx    <*> getDataAt "op"     <*> getComments        <*> getDataAt "to"     <*> getData
     , tryWith "initExpr"  $ pure AST_Init        <*> getDataAt "header" <*> getDataAt "params" <*> getDataAt "elems"  <*> getData
     , tryWith "lambdaExpr"$ pure AST_Lambda                             <*> getDataAt "params" <*> getDataAt "script" <*> getData
     , tryWith "funcExpr"  $ pure AST_Func        <*> getComments        <*> getDataAt "name"   <*> getDataAt "params" <*> getDataAt "script" <*> getData
@@ -4632,25 +4548,7 @@ instance HasRandGen AST_Object where
   randO = randChoice $
     [ AST_ObjLiteral <$> randO
     , AST_ObjSingle <$> randO
-    -- AST_Assign
-    , do  ox <- randListOf 0 3 (pure (,) <*> randO <*> randO)
-          o  <- randO
-          return (foldr (\(left, op) right -> AST_Assign left op right LocationUnknown) o ox)
-    -- AST_ArithPfx
     , pure AST_ArithPfx <*> randO <*> randO <*> randO <*> no
-    -- AST_Equation
-    , do  o  <- randO
-          ox <- randListOf 0 4 (pure (,) <*> randO <*> randInfixOp)
-          let bind right op left = AST_Equation right op left LocationUnknown
-          let loop prevPrec left opx = case opx of
-                []                                    -> (left, [])
-                -- (right, (op, _                )):[]   -> bind right op left
-                (right, (op, (prec, leftAssoc))):next ->
-                  if prevPrec<prec || (prevPrec==prec && not leftAssoc) -- ? If so, we should bind right
-                    then  let (right, next) = loop prec left opx in loop prevPrec right next
-                    else  loop prec (bind right op left) next
-          return (fst $ loop 0 o ox)
-    -- AST_Init
     , pure AST_Init     <*> randO <*> randO <*> randO <*> no
     , pure AST_Lambda   <*> randO <*> randO <*> no
     , pure AST_Func     <*> randO <*> randO <*> randO <*> randO <*> no
@@ -4665,9 +4563,7 @@ instance Intermediate ObjectExpr AST_Object where
     AST_Void                 -> return VoidExpr
     AST_ObjLiteral a         -> liftM  ObjLiteralExpr (ti  a)
     AST_ObjSingle  a         -> liftM  ObjSingleExpr  (ti  a)
-    AST_Assign     a b c loc -> liftM4 AssignExpr     (ti  a) (uc  b) (ti  c) [loc]
     AST_ArithPfx   a _ c loc -> liftM3 ArithPfxExpr       [a]         (ti  c) [loc]
-    AST_Equation   a b c loc -> liftM4 Equation       (ti  a) (uc  b) (ti  c) [loc]
     AST_Init       a b c loc -> liftM4 InitExpr       (ti  a) (ti  b) (ti  c) [loc]
     AST_Lambda     a b   loc -> liftM3 LambdaExpr     (uc0 a)         (ti  b) [loc]
     AST_Func     _ a b c loc -> liftM4 FuncExpr       [a]     (uc0 b) (ti  c) [loc]
@@ -4677,9 +4573,7 @@ instance Intermediate ObjectExpr AST_Object where
     VoidExpr                 -> return AST_Void
     ObjLiteralExpr a         -> liftM  AST_ObjLiteral (fi  a)
     ObjSingleExpr  a         -> liftM  AST_ObjSingle  (fi  a)
-    AssignExpr     a b c loc -> liftM4 AST_Assign     (fi  a) (nc  b) (fi  c) [loc]
     ArithPfxExpr   a b   loc -> liftM4 AST_ArithPfx       [a] [[]]    (fi  b) [loc]
-    Equation       a b c loc -> liftM4 AST_Equation   (fi  a) (nc  b) (fi  c) [loc]
     InitExpr       a b c loc -> liftM4 AST_Init       (fi  a) (fi  b) (fi  c) [loc]
     LambdaExpr     a b   loc -> liftM3 AST_Lambda             (nc0 a) (fi  b) [loc]
     FuncExpr       a b c loc -> liftM5 AST_Func  [[]]     [a] (nc0 b) (fi  c) [loc]
@@ -4688,35 +4582,307 @@ instance Intermediate ObjectExpr AST_Object where
 
 ----------------------------------------------------------------------------------------------------
 
+data ArithExpr
+  = ObjectExpr ObjectExpr
+  | ArithExpr  ArithExpr InfixOp ArithExpr Location
+  deriving (Eq, Ord, Typeable, Show)
+
+instance NFData ArithExpr where
+  rnf (ObjectExpr a      ) = deepseq a ()
+  rnf (ArithExpr  a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+
+instance HasNullValue ArithExpr where
+  nullValue = ObjectExpr nullValue
+  testNull (ObjectExpr a) = testNull a
+  testNull _ = False
+
+instance HasLocation ArithExpr where
+  getLocation o     = case o of
+    ObjectExpr      o -> getLocation o
+    ArithExpr _ _ _ o -> o
+  setLocation o loc = case o of
+    ObjectExpr  a     -> ObjectExpr (setLocation a loc)
+    ArithExpr a b c _ -> ArithExpr a b c loc
+  delLocation o     = case o of
+    ObjectExpr  a     -> ObjectExpr (delLocation a)
+    ArithExpr a b c _ -> ArithExpr (delLocation a) b (delLocation c) LocationUnknown
+
+instance PPrintable ArithExpr where { pPrint = pPrintInterm }
+
+instance B.Binary ArithExpr MTab where
+  put o = case o of
+    ObjectExpr  a     -> B.put a
+    ArithExpr a b c z -> B.prefixByte 0x29 $ B.put a >> B.put b >> B.put c >> B.put z
+  get = B.word8PrefixTable <|> fail "expecting arithmetic expression"
+
+instance B.HasPrefixTable ArithExpr B.Byte MTab where
+  prefixTable = mappend (ObjectExpr <$> B.prefixTable) $
+    B.mkPrefixTableWord8 "ObjectExpr" 0x29 0x29 $
+      [pure ArithExpr <*> B.get <*> B.get <*> B.get <*> B.get]
+
+instance Structured ArithExpr Object where
+  dataToStruct = putIntermediate "object intermedaite node"
+  structToData = getIntermediate "object intermedaite node"
+
+instance Executable ArithExpr (Maybe Object) where
+  execute o = case o of
+    ObjectExpr o -> execute o
+    ArithExpr left' op right' loc -> do
+      let err1 msg = msg++"-hand operand of "++show op++ "operator "
+          evalLeft   = execute left'  >>= checkVoid loc (err1 "left" )
+          evalRight  = execute right' >>= checkVoid loc (err1 "right")
+          derefLeft  = evalLeft  >>= derefObject
+          derefRight = evalRight >>= derefObject
+          logical isAndOp = fmap Just $ do
+            left <- derefLeft >>= objToBool
+            if left
+              then  if isAndOp then derefRight else return OTrue
+              else  if isAndOp then return ONull else derefRight
+      case op of
+        AND -> logical True
+        OR  -> logical False
+        op  -> do
+          (left, right) <- case op of
+          --DOT   -> liftM2 (,) evalLeft  evalRight
+            ARROW -> liftM2 (,) derefLeft evalRight
+            _     -> liftM2 (,) derefLeft derefRight
+          fmap Just ((infixOps!op) left right)
+
+instance ObjectClass ArithExpr where
+  objectMethods = defObjectInterface nullValue $
+    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt >> autoDefTreeFormat >> defDeref execute
+
+----------------------------------------------------------------------------------------------------
+
+data AST_Arith 
+  = AST_Object AST_Object
+  | AST_Arith  AST_Arith (Com InfixOp) AST_Arith Location
+  deriving (Eq, Ord, Typeable, Show)
+
+instance NFData AST_Arith where
+  rnf (AST_Object   a        ) = deepseq a ()
+  rnf (AST_Arith a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+
+instance HasNullValue AST_Arith where
+  nullValue = AST_Object nullValue
+  testNull (AST_Object a) = testNull a
+  testNull _ = False
+
+instance HasLocation AST_Arith where
+  getLocation o     = case o of
+    AST_Object      o -> getLocation o
+    AST_Arith _ _ _ o -> o
+  setLocation o loc = case o of
+    AST_Object   a    -> AST_Object (setLocation a loc)
+    AST_Arith a b c _ -> AST_Arith a b c loc
+  delLocation o     = case o of
+    AST_Object   a    -> AST_Object (delLocation a)
+    AST_Arith a b c _ -> AST_Arith (fd a) b (fd c) lu
+
+instance PPrintable AST_Arith where
+  pPrint o = case o of
+    AST_Object o -> pPrint o
+    AST_Arith objXp1 comAriOp objXp2 _ -> pWrapIndent [pPrint objXp1, pPrint comAriOp, pPrint objXp2]
+
+instance PrecedeWithSpace AST_Arith where
+  precedeWithSpace o = case o of
+    AST_Object o       -> precedeWithSpace o
+    AST_Arith  o _ _ _ -> precedeWithSpace o
+
+instance Structured AST_Arith Object where
+  dataToStruct a = deconstruct $ case a of
+    AST_Object a         -> putData a
+    AST_Arith  a b c loc -> with "equation" $ putDataAt "left" a >> putDataAt "op" b >> putDataAt "right" c >> putData loc
+  structToData =   reconstruct $ msum $
+    [ tryWith "equation" $ pure AST_Arith <*> getDataAt "left" <*> getDataAt "op" <*> getDataAt "right"  <*> getData
+    , AST_Object <$> getData
+    , fail "expecting arithmetic expression"
+    ]
+
+instance HasRandGen AST_Arith where
+  randO = randChoice $
+    [ AST_Object <$> randO
+    , do  o  <- randO
+          ox <- randListOf 0 4 (pure (,) <*> randO <*> randInfixOp)
+          let bind right op left = AST_Arith right op left LocationUnknown
+          let loop prevPrec left opx = case opx of
+                []                                    -> (left, [])
+                -- (right, (op, _                )):[]   -> bind right op left
+                (right, (op, (prec, leftAssoc))):next ->
+                  if prevPrec<prec || (prevPrec==prec && not leftAssoc) -- ? If so, we should bind right
+                    then  let (right, next) = loop prec left opx in loop prevPrec right next
+                    else  loop prec (bind right op left) next
+          return (fst $ loop 0 o ox)
+    ]
+
+instance Intermediate ArithExpr AST_Arith where
+  toInterm o = case o of
+    AST_Object  a       -> liftM  ObjectExpr (ti a)
+    AST_Arith a b c loc -> liftM4 ArithExpr  (ti a) (uc b) (ti c) [loc]
+  fromInterm o = case o of
+    ObjectExpr  a       -> liftM  AST_Object (fi a)
+    ArithExpr a b c loc -> liftM4 AST_Arith  (fi a) (nc b) (fi c) [loc]
+
+----------------------------------------------------------------------------------------------------
+
+data AssignExpr
+  = EvalExpr   ArithExpr
+  | AssignExpr ArithExpr UpdateOp AssignExpr Location
+  deriving (Eq, Ord, Typeable, Show)
+
+instance NFData AssignExpr where
+  rnf (EvalExpr   a      ) = deepseq a ()
+  rnf (AssignExpr a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+
+instance HasNullValue AssignExpr where
+  nullValue = EvalExpr nullValue
+  testNull (EvalExpr a) = testNull a
+  testNull _ = False
+
+instance HasLocation AssignExpr where
+  getLocation o     = case o of
+    EvalExpr         o -> getLocation o
+    AssignExpr _ _ _ o -> o
+  setLocation o loc = case o of
+    EvalExpr   a       -> EvalExpr  (setLocation a loc)
+    AssignExpr a b c _ -> AssignExpr a b c loc
+  delLocation o     = case o of
+    EvalExpr   a       -> EvalExpr   (delLocation a)
+    AssignExpr a b c _ -> AssignExpr (delLocation a) b (delLocation c) LocationUnknown
+
+instance PPrintable AssignExpr where { pPrint = pPrintInterm }
+
+instance B.Binary AssignExpr MTab where
+  put o = case o of
+    EvalExpr   a       -> B.put a
+    AssignExpr a b c z -> B.prefixByte 0x2A $ B.put a >> B.put b >> B.put c >> B.put z
+  get = B.word8PrefixTable <|> fail "expecting AssignExpr"
+
+instance B.HasPrefixTable AssignExpr B.Byte MTab where
+  prefixTable = mappend (EvalExpr <$> B.prefixTable) $
+    B.mkPrefixTableWord8 "AssignExpr" 0x30 0x30 $
+      [pure AssignExpr <*> B.get <*> B.get <*> B.get <*> B.get]
+
+instance Structured AssignExpr Object where
+  dataToStruct = putIntermediate "object intermedaite node"
+  structToData = getIntermediate "object intermedaite node"
+
+instance Executable AssignExpr (Maybe Object) where
+  execute o = case o of
+    EvalExpr   o -> execute o
+    AssignExpr nm op expr loc -> do
+      let lhs = "left-hand side of "++show op
+      nm <- msum $
+        [ execute nm >>= checkVoid (getLocation nm) (lhs++" evaluates to void") >>= asReference
+        , execThrow $ obj [obj $ lhs++" is not a reference value"]
+        ]
+      expr <- execute expr >>= checkVoid loc "right-hand side of assignment" >>= derefObject
+      updateReference nm $ \maybeObj -> case maybeObj of
+        Nothing      -> case op of
+          UCONST -> return (Just expr)
+          _      -> execThrow $ obj [obj "undefined refence", obj nm]
+        Just prevVal -> fmap Just $
+          checkPredicate "assignment expression" [prevVal, expr] $ (updatingOps!op) prevVal expr
+
+instance ObjectClass AssignExpr where
+  objectMethods = defObjectInterface nullValue $
+    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt >> autoDefTreeFormat >> defDeref execute
+
+----------------------------------------------------------------------------------------------------
+
+data AST_Assign
+  = AST_Eval   AST_Arith
+  | AST_Assign AST_Arith (Com UpdateOp) AST_Assign Location
+  deriving (Eq, Ord, Typeable, Show)
+
+instance NFData AST_Assign where
+  rnf (AST_Eval   a      ) = deepseq a ()
+  rnf (AST_Assign a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+
+instance HasNullValue AST_Assign where
+  nullValue = AST_Eval  nullValue
+  testNull (AST_Eval  a) = testNull a
+  testNull _ = False
+
+instance HasLocation AST_Assign where
+  getLocation o = case o of
+    AST_Eval      o -> getLocation o
+    AST_Assign _ _ _ o -> o
+  setLocation o loc = case o of
+    AST_Eval      o -> AST_Eval  (setLocation o loc)
+    AST_Assign a b c _ -> AST_Assign a b c loc
+  delLocation o = case o of                            
+    AST_Eval      o -> AST_Eval  (delLocation o)
+    AST_Assign a b c _ -> AST_Assign (delLocation a) b (delLocation c) lu
+
+instance PPrintable AST_Assign where
+  pPrint expr = case expr of
+    AST_Eval  eq -> pPrint eq
+    AST_Assign objXp1 comUpdOp objXp2 _ -> pWrapIndent $
+      [pPrint objXp1, pPrint comUpdOp, pPrint objXp2]
+
+instance PrecedeWithSpace AST_Assign where
+  precedeWithSpace o = case o of
+    AST_Eval   o       -> precedeWithSpace o
+    AST_Assign o _ _ _ -> precedeWithSpace o
+
+instance Structured AST_Assign Object where
+  dataToStruct a = deconstruct $ case a of
+    AST_Eval  o       -> putData o
+    AST_Assign a b c loc -> with "assign" $ putDataAt "to" a >> putDataAt "op" b >> putDataAt "from" c >> putData loc
+  structToData =   reconstruct $ msum $
+    [ tryWith "assign" $ pure AST_Assign <*> getDataAt "to" <*> getDataAt "op" <*> getDataAt "from" <*> getData
+    , AST_Eval <$> getData
+    , fail "expecting assignment expression"
+    ]
+
+instance HasRandGen AST_Assign where
+  randO = randChoice $
+    [ AST_Eval  <$> randO
+    , do ox <- randListOf 0 3 (pure (,) <*> randO <*> randO)
+         o  <- randO
+         return (foldr (\(left, op) right -> AST_Assign left op right LocationUnknown) o ox)
+    ]
+
+instance Intermediate AssignExpr AST_Assign where
+  toInterm ast = case ast of
+    AST_Eval   a         -> liftM  EvalExpr   (ti a)
+    AST_Assign a b c loc -> liftM4 AssignExpr (ti a) (uc b) (ti c) [loc]
+  fromInterm o = case o of
+    EvalExpr   a         -> liftM  AST_Eval   (fi a)
+    AssignExpr a b c loc -> liftM4 AST_Assign (fi a) (nc b) (fi c) [loc]
+
+----------------------------------------------------------------------------------------------------
+
 -- | A 'TopLevelExpr' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
 data TopLevelExpr
-  = Attribute Name              ObjectExpr Location
+  = Attribute Name              AssignExpr Location
   | TopScript ScriptExpr                   Location
   | EventExpr TopLevelEventType CodeBlock  Location
   deriving (Eq, Ord, Typeable, Show)
 
 instance NFData TopLevelExpr where
-  rnf (Attribute      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (TopScript      a b    ) = deepseq a $! deepseq b ()
-  rnf (EventExpr      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (Attribute      a b c) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (TopScript      a b  ) = deepseq a $! deepseq b ()
+  rnf (EventExpr      a b c) = deepseq a $! deepseq b $! deepseq c ()
 
 isAttribute :: TopLevelExpr -> Bool
 isAttribute toplevel = case toplevel of { Attribute _ _ _ -> True; _ -> False; }
 
 instance HasLocation TopLevelExpr where
   getLocation o = case o of
-    Attribute      _ _   o -> o
-    TopScript      _     o -> o
-    EventExpr      _ _   o -> o
+    Attribute _ _  o -> o
+    TopScript _    o -> o
+    EventExpr _ _  o -> o
   setLocation o loc = case o of
-    Attribute      a b   _ -> Attribute a b loc
-    TopScript      a     _ -> TopScript a   loc
-    EventExpr      a b   _ -> EventExpr a b loc
+    Attribute a b  _ -> Attribute a b loc
+    TopScript a    _ -> TopScript a   loc
+    EventExpr a b  _ -> EventExpr a b loc
   delLocation o = case o of
-    Attribute      a b   _ -> Attribute     a  (fd b) lu
-    TopScript      a     _ -> TopScript (fd a)        lu
-    EventExpr      a b   _ -> EventExpr     a  (fd b) lu
+    Attribute a b  _ -> Attribute     a  (fd b) lu
+    TopScript a    _ -> TopScript (fd a)        lu
+    EventExpr a b  _ -> EventExpr     a  (fd b) lu
     where
       lu = LocationUnknown
       fd :: HasLocation a => a -> a
@@ -4754,7 +4920,7 @@ instance Structured TopLevelExpr  Object where
 -- | A 'AST_TopLevel' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
 data AST_TopLevel
-  = AST_Attribute  Name                   (Com AST_Object)         Location
+  = AST_Attribute  Name                   (Com AST_Assign)         Location
   | AST_TopScript  AST_Script                                      Location
   | AST_Event      TopLevelEventType [Comment] AST_CodeBlock       Location
   | AST_TopComment [Comment]
@@ -4763,14 +4929,14 @@ data AST_TopLevel
 isAST_Attribute :: AST_TopLevel -> Bool
 isAST_Attribute o = case o of { AST_Attribute _ _ _ -> True; _ -> False; }
 
-attributeToList :: AST_TopLevel -> [(Name, Com AST_Object, Location)]
+attributeToList :: AST_TopLevel -> [(Name, Com AST_Assign, Location)]
 attributeToList o = case o of { AST_Attribute a b c -> return (a,b,c); _ -> mzero; }
 
 instance NFData AST_TopLevel where
-  rnf (AST_Attribute  a b c    ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_TopScript  a b      ) = deepseq a $! deepseq b ()
-  rnf (AST_Event      a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_TopComment a        ) = deepseq a ()
+  rnf (AST_Attribute  a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_TopScript  a b    ) = deepseq a $! deepseq b ()
+  rnf (AST_Event      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_TopComment a      ) = deepseq a ()
 
 instance HasNullValue AST_TopLevel where
   nullValue = AST_TopScript nullValue LocationUnknown
@@ -4779,34 +4945,34 @@ instance HasNullValue AST_TopLevel where
 
 instance HasLocation AST_TopLevel where
   getLocation o = case o of
-    AST_Attribute  _ _     o -> o
-    AST_TopScript  _       o -> o
-    AST_Event      _ _ _   o -> o
-    AST_TopComment _         -> lu
+    AST_Attribute  _ _   o -> o
+    AST_TopScript  _     o -> o
+    AST_Event      _ _ _ o -> o
+    AST_TopComment _       -> lu
   setLocation o loc = case o of
-    AST_Attribute  a b     _ -> AST_Attribute  a b     loc
-    AST_TopScript  a       _ -> AST_TopScript  a       loc
-    AST_Event      a b c   _ -> AST_Event      a b c   loc
-    AST_TopComment a         -> AST_TopComment a
+    AST_Attribute  a b    _ -> AST_Attribute  a b     loc
+    AST_TopScript  a      _ -> AST_TopScript  a       loc
+    AST_Event      a b c  _ -> AST_Event      a b c   loc
+    AST_TopComment a        -> AST_TopComment a
   delLocation o = case o of
-    AST_Attribute  a b     _ -> AST_Attribute       a (fd1 b)                 lu
-    AST_TopScript  a       _ -> AST_TopScript (fd   a)                        lu
-    AST_Event      a b c   _ -> AST_Event           a      b  (fd  c)         lu
-    AST_TopComment a         -> AST_TopComment      a
+    AST_Attribute  a b    _ -> AST_Attribute       a (fd1 b)                 lu
+    AST_TopScript  a      _ -> AST_TopScript (fd   a)                        lu
+    AST_Event      a b c  _ -> AST_Event           a      b  (fd  c)         lu
+    AST_TopComment a        -> AST_TopComment      a
 
 instance PPrintable AST_TopLevel where
   pPrint o = case o of
-    AST_Attribute a b     _ -> pInline [pPrint a, pString "  ", pPrint b, pString ";"]
-    AST_TopScript a       _ -> pPrint a
-    AST_Event     a b c   _ -> pClosure (pShow a >> mapM_ pPrint b) " { " " }" (map pPrint (getAST_CodeBlock c))
-    AST_TopComment a        -> mapM_ (\a -> pPrint a >> pNewLine) a
+    AST_Attribute a b    _ -> pInline [pPrint a, pString "  ", pPrint b, pString ";"]
+    AST_TopScript a      _ -> pPrint a
+    AST_Event     a b c  _ -> pClosure (pShow a >> mapM_ pPrint b) " { " " }" (map pPrint (getAST_CodeBlock c))
+    AST_TopComment a       -> mapM_ (\a -> pPrint a >> pNewLine) a
 
 instance Structured AST_TopLevel  Object where
   dataToStruct a = deconstruct $ case a of
-    AST_TopComment a           -> putComments a
-    AST_Attribute  a b     loc -> with "attribute" $ putDataAt "type" a >> putDataAt "value"    b                          >> putData loc
-    AST_TopScript  a       loc -> with "directive" $ putData          a                                                    >> putData loc
-    AST_Event      a b c   loc -> with "event"     $ putDataAt "type" a >> putComments          b >> putDataAt "script" c  >> putData loc
+    AST_TopComment a         -> putComments a
+    AST_Attribute  a b   loc -> with "attribute" $ putDataAt "type" a >> putDataAt "value"    b                          >> putData loc
+    AST_TopScript  a     loc -> with "directive" $ putData          a                                                    >> putData loc
+    AST_Event      a b c loc -> with "event"     $ putDataAt "type" a >> putComments          b >> putDataAt "script" c  >> putData loc
   structToData = reconstruct $ msum $
     [ pure AST_TopComment <*> getComments
     , with "attribute" $ pure AST_Attribute <*> getDataAt "type" <*> getDataAt "value" <*> getData
@@ -4817,28 +4983,24 @@ instance Structured AST_TopLevel  Object where
 
 instance HasRandGen AST_TopLevel where
   randO = randChoice $
-    [ do  req_ <- nextInt 2
-          let req = ustr $ if req_ == 0 then "require" else "import"
-              randItem = randChoice $
-                [ fmap (AST_ObjSingle . AST_Single . AST_PlainRef . AST_Unqualified) randO
-                , AST_ObjLiteral <$> (pure AST_Literal <*> (OString <$> randO) <*> no)
-                ]
-          item <- randComWith randItem
-          return (AST_Attribute req item LocationUnknown)
+    [ pure AST_Attribute
+        <*> (randChoice [return (ustr "import"), return (ustr "require")])
+        <*> randO
+        <*> no
     , pure AST_TopScript <*> randScript <*> no
-    , pure AST_Event     <*> randO <*> randO <*> randO <*> no
+    , pure AST_Event     <*> randO      <*> randO <*> randO <*> no
     ]
 
 instance Intermediate TopLevelExpr AST_TopLevel where
   toInterm   ast = case ast of
-    AST_Attribute  a b   loc -> liftM3 Attribute     [a]    (uc0 b)        (ll loc)
-    AST_TopScript  a     loc -> liftM2 TopScript     (ti a)                (ll loc)
-    AST_Event      a _ b loc -> liftM3 EventExpr     [a]    (ti  b)        (ll loc)
+    AST_Attribute a b   loc -> liftM3 Attribute [a]    (uc0 b) (ll loc)
+    AST_TopScript a     loc -> liftM2 TopScript (ti a)         (ll loc)
+    AST_Event     a _ b loc -> liftM3 EventExpr [a]    (ti  b) (ll loc)
     AST_TopComment _         -> mzero
   fromInterm obj = case obj of
-    Attribute a b loc -> liftM3 AST_Attribute [a]         (nc0 b)         [loc]
-    TopScript a   loc -> liftM2 AST_TopScript (fi a)                      [loc]
-    EventExpr a b loc -> liftM4 AST_Event     [a]    [[]] (fi  b)         [loc]
+    Attribute a b loc -> liftM3 AST_Attribute [a]         (nc0 b) [loc]
+    TopScript a   loc -> liftM2 AST_TopScript (fi a)              [loc]
+    EventExpr a b loc -> liftM4 AST_Event     [a]    [[]] (fi  b) [loc]
 
 ----------------------------------------------------------------------------------------------------
 

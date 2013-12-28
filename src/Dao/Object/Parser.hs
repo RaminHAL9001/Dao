@@ -355,8 +355,8 @@ numberPTabItems =
             astr = (' ':) . asString
             timeAndZone = maybe " 00:00:00" astr time ++ maybe "" astr zone
         case readsPrec 0 (asString date ++ timeAndZone) of
-          [(obj, "")] -> return (AST_Literal (OAbsTime obj) loc)
-          _           -> fail "invalid UTC-time expression"
+          [(o, "")] -> return (AST_Literal (OAbsTime o) loc)
+          _         -> fail "invalid UTC-time expression"
   , tableItemBy "time" $ \startTok -> expect "UTC-time value after \"time\" statement" $ do
       token SPACE as0
       tok  <- token TIME id
@@ -386,10 +386,10 @@ singletonPTab = table singletonPTabItems
 
 parenPTabItem :: DaoTableItem AST_Paren
 parenPTabItem = tableItemBy "(" $ \tok -> do
-  obj <- commented equation
+  o <- commented assignment
   expect "closing parentheses" $ do
     endloc <- tokenBy ")" asLocation
-    return (AST_Paren obj (asLocation tok <> endloc))
+    return (AST_Paren o (asLocation tok <> endloc))
 
 paren :: DaoParser AST_Paren
 paren = joinEvalPTableItem parenPTabItem
@@ -429,7 +429,7 @@ commaSepdObjList :: String -> String -> String -> DaoTableItem AST_ObjList
 commaSepdObjList msg open close = tableItemBy open $ \startTok -> do
   let startLoc = asLocation startTok
   coms <- optSpace -- the comments must have been buffered by this point, otherwise the parser behaves strangely.
-  (lst, endLoc) <- commaSepd ("arguments to "++msg) close (return . com [] AST_Void) equation id
+  (lst, endLoc) <- commaSepd ("arguments to "++msg) close (return . com [] nullValue) assignment id
   return (AST_ObjList coms lst (startLoc<>endLoc))
 
 -- Objects that are parsed as a single value but which are constructed from other object
@@ -468,7 +468,7 @@ typeCheckParser :: a -> DaoParser (AST_TyChk a)
 typeCheckParser a = flip mplus (return (AST_NotChecked a)) $ do
   com1 <- commented (tokenBy ":" id)
   let startLoc = asLocation (unComment com1)
-  expect "type expression after colon operator" $ equation >>= \obj -> return $
+  expect "type expression after colon operator" $ arithmetic >>= \obj -> return $
     AST_Checked a (fmap as0 com1) obj (startLoc <> getLocation obj)
 
 typeCheckedName :: DaoParser (AST_TyChk Name)
@@ -686,7 +686,7 @@ arithPrefixPTab = table $ (logicalNOT:) $ flip fmap ["~", "-", "+"] $ \pfxOp ->
     return (AST_ArithPfx (fromUStr (tokTypeToUStr (asTokType tok))) coms o (asLocation tok))
   where
     logicalNOT = tableItemBy "!" $ \op -> do
-      o <- arithmetic
+      o <- object
       coms <- optSpace
       return $ AST_ArithPfx (fromUStr $ tokTypeToUStr $ asTokType op) coms o (asLocation op)
 
@@ -700,47 +700,46 @@ objectPTab = mconcat [singletonOrContainerPTab, arithPrefixPTab, objLValuePTab]
 object :: DaoParser AST_Object
 object = joinEvalPTable objectPTab
 
--- A constructor that basically re-arranges the arguments to the 'Dao.Object.AST.AST_Equation'
+-- A constructor that basically re-arranges the arguments to the 'Dao.Object.AST.AST_Eval'
 -- constructor such that this function can be used as an argument to 'Dao.Parser.sinpleInfixed'
 -- or 'Dao.Parser.newOpTableParser'.
-equationConstructor :: AST_Object -> (Location, Com InfixOp) -> AST_Object -> DaoParser AST_Object
-equationConstructor left (loc, op) right = return $ AST_Equation left op right loc
+arithConstr :: AST_Arith -> (Location, Com InfixOp) -> AST_Arith -> DaoParser AST_Arith
+arithConstr left (loc, op) right = return $ AST_Arith left op right loc
 
 -- Parses a sequence of 'object' expressions interspersed with arithmetic infix opreators.
 -- All infixed logical operators are included, assignment operators are not. The only prefix logical
 -- operator. Logical NOT @(!)@ is not parsed here but in the 'arithmetic' function.
-arithOpTable :: OpTableParser DaoParState DaoTT (Location, Com InfixOp) AST_Object
+arithOpTable :: OpTableParser DaoParState DaoTT (Location, Com InfixOp) AST_Arith
 arithOpTable =
   newOpTableParser "arithmetic expression" False
     (\tok -> do
         op <- commented (shift (fromUStr . tokTypeToUStr . asTokType))
         return (asLocation tok, op)
     )
-    (object >>= \o -> bufferComments >> return o)
-    (\left (loc, op) right -> return $ AST_Equation left op right loc)
-    ( opRight ["->", "**"] equationConstructor
-    : fmap (\ops -> opLeft (words ops) equationConstructor)
+    (object >>= \o -> bufferComments >> return (AST_Object o))
+    arithConstr
+    ( opRight ["->", "**"] arithConstr
+    : fmap (\ops -> opLeft (words ops) arithConstr)
         ["* / %", "+ -", "<< >>", "&", "^", "|", "< <= >= >", "== !=", "&&", "||"]
     )
 
-arithmeticPTab :: DaoPTable AST_Object
-arithmeticPTab = bindPTable objectPTab $ \obj ->
-  evalOpTableParserWithInit (bufferComments >> return obj) arithOpTable
+arithmeticPTab :: DaoPTable AST_Arith
+arithmeticPTab = bindPTable objectPTab $ \o ->
+  evalOpTableParserWithInit (bufferComments >> return (AST_Object o)) arithOpTable
 
 -- Evalautes the 'arithOpTable' to a 'DaoParser'.
-arithmetic :: DaoParser AST_Object
+arithmetic :: DaoParser AST_Arith
 arithmetic = joinEvalPTable arithmeticPTab
 
-equationPTab :: DaoPTable AST_Object
-equationPTab = bindPTable arithmeticPTab $ \o ->
+assignmentPTab :: DaoPTable AST_Assign
+assignmentPTab = bindPTable arithmeticPTab $ \o ->
   simpleInfixedWithInit "object expression for assignment operator" rightAssoc
-    (\left (loc, op) right -> case left of
-        AST_ObjSingle left -> return $ AST_Assign left op right loc
-        _ -> fail $ "expression on left hand side of "++
-          prettyShow op++" operator does not evaluate to an updatable reference\n"++show left
+    (\left (loc, op) right -> return $ case left of
+        AST_Eval left -> AST_Assign left op right loc
+        left          -> left
     )
-    (bufferComments >> return o)
-    arithmetic
+    (bufferComments >> return (AST_Eval o))
+    (fmap AST_Eval arithmetic)
     (liftM2 (,) (look1 asLocation) (commented (joinEvalPTable opTab)))
   where
     opTab :: DaoPTable UpdateOp
@@ -748,8 +747,8 @@ equationPTab = bindPTable arithmeticPTab $ \o ->
       fmap (flip tableItemBy (return . fromUStr . tokTypeToUStr . asTokType)) (words allUpdateOpStrs)
 
 -- | Evaluates a sequence arithmetic expressions interspersed with assignment operators.
-equation :: DaoParser AST_Object
-equation = joinEvalPTable equationPTab
+assignment :: DaoParser AST_Assign
+assignment = joinEvalPTable assignmentPTab
 
 ----------------------------------------------------------------------------------------------------
 
@@ -767,9 +766,9 @@ script = joinEvalPTable scriptPTab
 
 ifWhilePTabItem :: String -> (AST_If -> a) -> DaoTableItem a
 ifWhilePTabItem keyword constr = tableItemBy keyword $ \tok -> do
-  obj <- commented paren
+  o <- commented paren
   (thn, loc) <- bracketed keyword
-  return $ constr $ AST_If obj thn (asLocation tok <> loc)
+  return $ constr $ AST_If o thn (asLocation tok <> loc)
 
 whilePTabItem :: DaoTableItem AST_While
 whilePTabItem = ifWhilePTabItem "while" AST_While
@@ -799,11 +798,11 @@ ifElsePTabItem = bindPTableItem ifPTabItem (loop []) where
 
 scriptPTab :: DaoPTable [AST_Script]
 scriptPTab = comments <> objExpr <> table exprs where
-  objExpr = bindPTable equationPTab $ \obj -> do
+  objExpr = bindPTable assignmentPTab $ \o -> do
     coms <- optSpace
     expect "semicolon after object expression" $ do
       endLoc <- tokenBy ";" asLocation
-      return [AST_EvalObject obj coms (getLocation obj <> endLoc)]
+      return [AST_EvalObject o coms (getLocation o <> endLoc)]
   comments = bindPTable spaceComPTab $ \c1 -> optSpace >>= \c2 ->
     let coms = c1++c2 in if null coms then return [] else return [AST_Comment coms]
   exprs =
@@ -836,35 +835,35 @@ scriptPTab = comments <> objExpr <> table exprs where
         expect "\"in\" statement after \"for\" statement" $ do
           tokenBy "in" as0
           expect "object expression over which to iterate of \"for-in\" statement" $ do
-            obj <- commented paren
+            o <- commented paren
             expect "bracketed script after \"for-in\" statement" $ do
               (for, endLoc) <- bracketed "\"for\" statement"
-              return [AST_ForLoop comName obj for (asLocation tok <> endLoc)]
+              return [AST_ForLoop comName o for (asLocation tok <> endLoc)]
     , tableItemBy "with"  $ \tok -> expect "reference expression after \"with\" statement" $ do
-        obj <- commented paren
+        o <- commented paren
         expect "bracketed script after \"with\" statement" $ do
           (with, endLoc) <- bracketed "\"with\" statement"
-          return [AST_WithDoc obj with (asLocation tok <> endLoc)]
+          return [AST_WithDoc o with (asLocation tok <> endLoc)]
     ]
   semicolon = tokenBy ";" asLocation
   returnExpr key isReturn = tableItemBy key $ \tok -> do
-    obj    <- commented (equation <|> return AST_Void)
+    o <- commented (assignment <|> return nullValue)
     expect ("semicolon after \""++key++"\" statement") $ do
       endLoc <- semicolon
-      return [AST_ReturnExpr isReturn obj (asLocation tok <> endLoc)]
+      return [AST_ReturnExpr isReturn o (asLocation tok <> endLoc)]
   continExpr key isContin = tableItemBy key $ \tok -> do
     let startLoc = asLocation tok
     let msg e = concat [e, " after \"", key, "-if\" statement"]
     coms <- optSpace
     msum $
       [do endLoc <- semicolon
-          return [AST_ContinueExpr isContin coms (Com AST_Void) (startLoc<>endLoc)]
+          return [AST_ContinueExpr isContin coms (Com nullValue) (startLoc<>endLoc)]
       ,do tokenBy "if" as0
           expect (msg "conditional expression") $ do
-            obj <- commented equation
+            o <- commented assignment
             expect (msg "semicolon") $ do
               endLoc <- semicolon
-              return [AST_ContinueExpr isContin coms obj (startLoc<>endLoc)]
+              return [AST_ContinueExpr isContin coms o (startLoc<>endLoc)]
       , fail (msg "expecting optional object expression followed by a semicolon")
       ]
 
@@ -874,7 +873,7 @@ toplevelPTab :: DaoPTable [AST_TopLevel]
 toplevelPTab = table expr <> comments <> scriptExpr where
   comments = bindPTable spaceComPTab $ \c1 -> optSpace >>= \c2 -> return $
     let coms = c1++c2 in if null coms then [] else [AST_TopComment (c1++c2)]
-  scriptExpr = bindPTable scriptPTab $ return . map (\obj -> AST_TopScript obj (getLocation obj))
+  scriptExpr = bindPTable scriptPTab $ return . map (\o -> AST_TopScript o (getLocation o))
   expr =
     [ event  "BEGIN"  , event  "END"   , event  "EXIT"
     , header "require", header "import"
@@ -885,15 +884,9 @@ toplevelPTab = table expr <> comments <> scriptExpr where
     expect ("bracketed script after \""++exprType++"\" statement") $ do
       (event, endLoc) <- bracketed ('"':exprType++"\" statement")
       return [AST_Event (read lbl) coms event (asLocation tok <> endLoc)]
-  strlit = table $
-    [ tableItemBy STRINGLIT $ \tok -> case readsPrec 0 (asString tok) of
-        [(sym, "")] -> return (AST_ObjLiteral $ AST_Literal (OString (ustr (sym::String))) (asLocation tok))
-        _           -> fail ("invalid string expression: "++show (asUStr tok))
-    , bindPTableItem referencePTabItem (return . AST_ObjSingle . AST_Single . AST_PlainRef . AST_Unqualified)
-    ]
   header lbl = tableItemBy lbl $ \startTok ->
     expect ("string literal or reference for \""++lbl++"\" statement") $ do
-      expr <- commented (joinEvalPTable strlit)
+      expr <- commented assignment
       expect ("semicolon after \""++lbl++"\" statement") $ do
         endLoc <- tokenBy ";" asLocation
         return $

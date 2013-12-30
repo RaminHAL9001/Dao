@@ -718,9 +718,11 @@ arithOpTable =
     )
     (object >>= \o -> bufferComments >> return (AST_Object o))
     arithConstr
-    ( opRight ["->", "**"] arithConstr
+    ( opRight ["->"] arithConstr
+    : opRight ["**"] arithConstr
     : fmap (\ops -> opLeft (words ops) arithConstr)
-        ["* / %", "+ -", "<< >>", "&", "^", "|", "< <= >= >", "== !=", "&&", "||"]
+        ["* / %", "+ -", "<< >>", "&", "^", "|", "< <= >= >", "== !="]
+    ++ [opRight ["&&"] arithConstr, opRight [ "||"] arithConstr]
     )
 
 arithmeticPTab :: DaoPTable AST_Arith

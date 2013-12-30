@@ -103,12 +103,12 @@ instance Show TestCase where
 
 data TestResult
   = TestResult
-    { testCase            :: TestCase
-    , testResult          :: UStr
-    , failedTestCount     :: Int
-    , getParserResult     :: (Bool, Maybe RandObj)
-    , getDecodedResult    :: (Bool, Maybe RandObj)
-    , getConstrResult     :: (Bool, Maybe RandObj)
+    { testCase         :: TestCase
+    , testResult       :: UStr
+    , failedTestCount  :: Int
+    , getParserResult  :: (Bool, Maybe RandObj)
+    , getDecodedResult :: (Bool, Maybe RandObj)
+    , getConstrResult  :: (Bool, Maybe RandObj)
     }
 -- Lens-like accessors for 'TestResult'
 data TRLens a
@@ -136,10 +136,8 @@ instance Show TestResult where
             guard (not passed)
             concat $
               [ [sep]
-              , ["### original "++msg1++" ###"]
-              , maybe [] (return . prin) src, [""]
-              , ["### "++msg2++" object ###"]
-              , maybe [] (\o -> [show o, "", prettyShow o]) item, [""]
+              , maybe [] (\src -> ["### original "++msg1++" ###", prin src]) src, [""]
+              , maybe [] (\o -> ["### "++msg2++" object ###", show o, "", prettyShow o]) item, [""]
               ]
       [ ["Test #"++show i++' ':uchars msg, show orig, ""]
         , o "pretty printed form:" ppr  uchars                "parsed"        parsd
@@ -155,8 +153,10 @@ getMethodTable = asksUnitEnv id
 -- failure message string. This function does not evaluate to 'Control.Monad.mzero' or
 -- 'Control.Monad.fail', either of those functions should be evaluated after this if you wish to
 -- halt testing.
-testFailed :: String -> DaoLangResultM ()
-testFailed msg = modify $ \r ->
+testFailed :: TRLens (Bool, Maybe a) -> String -> DaoLangResultM ()
+testFailed lens msg = do
+  setResult lens (\ (_, m) -> (False, m))
+  modify $ \r ->
    r{ testResult      = testResult r <> toUStr msg
     , failedTestCount = failedTestCount r + 1
     }
@@ -247,14 +247,14 @@ unitTester =
       --------------------------- (1) Test the parser ---------------------------
       tryTest parseString $ \str -> do
         let withPredicate p fn = case p of
-              Backtrack -> testFailed $ unlines ["Parser backtracked", uchars str]
-              PFail   b -> testFailed $ unlines ["Parser failed", show b, uchars str]
+              Backtrack -> testFailed parsing $ unlines ["Parser backtracked", uchars str]
+              PFail   b -> testFailed parsing $ unlines ["Parser failed", show b, uchars str]
               OK      a -> fn a
         case testObject tc of
           RandObject  _orig ->
             -- For ordinary Objects, we only test if the pretty-printed code can be parsed.
             withPredicate
-              (parse (daoGrammar{mainParser=equation}) mempty (uchars str))
+              (parse (daoGrammar{mainParser=assignment}) mempty (uchars str))
               (const testPassed)
           RandTopLevel orig -> withPredicate (parse daoGrammar mempty (uchars str)) $ \o -> do
             -- For AST objects, we also test if the data structure parsed is identical to the data
@@ -267,7 +267,7 @@ unitTester =
             if diro == [orig]
               then testPassed
               else do
-                testFailed "Parsed AST does not match original object"
+                testFailed parsing "Parsed AST does not match original object"
                 setResult parsing $
                   (const (False, if null diro then Nothing else Just $ RandTopLevel $ head diro))
       --
@@ -277,26 +277,26 @@ unitTester =
         unbin <- catchToResultM "binary deserialization" (return $! Right $! D.decode mtab binObj)
           `catchError` (\err -> return $ Left (show err))
         case unbin of
-          Left  msg   -> testFailed (uchars msg)
+          Left  msg   -> testFailed serializing (uchars msg)
           Right unbin -> case unbin of
-            Backtrack -> testFailed "Decoder backtracked"
-            PFail err -> testFailed ("Decoder failed: "++show err)
+            Backtrack -> testFailed serializing "Decoder backtracked"
+            PFail err -> testFailed serializing ("Decoder failed: "++show err)
             OK unbin | unbin == testObject tc -> testPassed
             OK unbin | otherwise -> do
-              setResult serializing (const $ (False, Just unbin))
-              testFailed "Original object does not match object deserialized from binary string"
+              testFailed serializing "Original object does not match object deserialized from binary string"
+              setResult serializing (\ (b, _) -> (b, Just unbin))
       --
       ---------------- (3) Test the intermediate tree structures ----------------
       tryTest treeStructure $ \o ->
         case structToData o :: Predicate UpdateErr RandObj of
-          Backtrack -> testFailed $
+          Backtrack -> testFailed structuring $
             "Backtracked while constructing a Haskell object from a Dao tree"
-          PFail err -> testFailed $ unlines [show err, prettyShow o]
+          PFail err -> testFailed structuring $ unlines [show err, prettyShow o]
           OK struct ->
             if testObject tc == struct
               then do
                 setResult structuring (const $ (False, Just struct))
-                testFailed $ unlines $
+                testFailed structuring $ unlines $
                   [ "Original object does not match Haskell object constructed from it's Dao tree"
                   , prettyShow struct
                   ]

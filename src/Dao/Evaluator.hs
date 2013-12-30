@@ -2405,24 +2405,6 @@ instance B.HasPrefixTable InfixOp B.Byte MTab where
 instance HasRandGen InfixOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::InfixOp)))
 
-randInfixOp :: RandO (Com InfixOp, (Int, Bool))
-randInfixOp = do
-  (op, prec) <- randChoice opGroups
-  op         <- randComWith (return op)
-  return (op, prec)
-  where
-    left  op = (op, True )
-    right op = (op, False)
-    opGroups = fmap return $ do
-      (precedence, operators) <- zip [1..] $ (++[[right POW]]) $ fmap (fmap left) $
-        [ [EQUL, NEQUL]
-        , [GTN, LTN, GTEQ, LTEQ], [SHL, SHR]
-        , [OR], [AND], [ORB], [XORB], [ANDB]
-        , [ADD, SUB], [DIV, MOD], [MULT], [ARROW]
-        ]
-      (operator, associativity) <- operators
-      return (operator, (precedence, associativity))
-
 allInfixOpChars :: String
 allInfixOpChars = "+-*/%<>^&|."
 
@@ -4702,18 +4684,39 @@ instance Structured AST_Arith Object where
 instance HasRandGen AST_Arith where
   randO = randChoice $
     [ AST_Object <$> randO
-    , do  o  <- randO
-          ox <- randListOf 0 4 (pure (,) <*> randO <*> randInfixOp)
-          let bind right op left = AST_Arith right op left LocationUnknown
+    , do  o  <- AST_Object <$> randO
+          ox <- randListOf 0 4 (pure (,) <*> randInfixOp <*> (AST_Object <$> randO))
+          let bind left op right = AST_Arith left op right LocationUnknown
           let loop prevPrec left opx = case opx of
-                []                                    -> (left, [])
-                -- (right, (op, _                )):[]   -> bind right op left
-                (right, (op, (prec, leftAssoc))):next ->
-                  if prevPrec<prec || (prevPrec==prec && not leftAssoc) -- ? If so, we should bind right
-                    then  let (right, next) = loop prec left opx in loop prevPrec right next
-                    else  loop prec (bind right op left) next
+                [] -> (left, [])
+                ((op, prec, leftAssoc), right):next ->
+                  if leftAssoc && prevPrec<prec || not leftAssoc && prevPrec<=prec
+                  then let (right', opx') = loop prec right next in case opx' of
+                         [] -> (bind left op right', [])
+                         _  -> loop prevPrec left $ ((op, prec, leftAssoc), right'):opx'
+                  else (bind left op right, opx)
           return (fst $ loop 0 o ox)
-    ]
+    ] where
+      randInfixOp :: RandO (Com InfixOp, Int, Bool)
+      randInfixOp = do
+        (op, prec, assoc) <- randChoice opGroups
+        op <- randComWith (return op)
+        return (op, prec, assoc)
+      left  op = (True , op)
+      right op = (False, op)
+      opGroups :: [RandO (InfixOp, Int, Bool)]
+      opGroups = map return $ do
+        (precedence, (associativity, operators)) <- zip [1..] $ concat $
+          [ map right [[OR], [AND], [EQUL, NEQUL]]
+          , map left $
+              [ [GTN, LTN, GTEQ, LTEQ], [SHL, SHR]
+              , [ORB], [XORB], [ANDB]
+              , [ADD, SUB], [MULT, DIV, MOD]
+              ]
+          , map right [[POW], [ARROW]]
+          ]
+        operator <- operators
+        return (operator, precedence, associativity)
 
 instance Intermediate ArithExpr AST_Arith where
   toInterm o = case o of
@@ -4755,7 +4758,7 @@ instance PPrintable AssignExpr where { pPrint = pPrintInterm }
 instance B.Binary AssignExpr MTab where
   put o = case o of
     EvalExpr   a       -> B.put a
-    AssignExpr a b c z -> B.prefixByte 0x2A $ B.put a >> B.put b >> B.put c >> B.put z
+    AssignExpr a b c z -> B.prefixByte 0x30 $ B.put a >> B.put b >> B.put c >> B.put z
   get = B.word8PrefixTable <|> fail "expecting AssignExpr"
 
 instance B.HasPrefixTable AssignExpr B.Byte MTab where

@@ -432,27 +432,23 @@ commaSepdObjList msg open close = tableItemBy open $ \startTok -> do
   (lst, endLoc) <- commaSepd ("arguments to "++msg) close (return . com [] nullValue) assignment id
   return (AST_ObjList coms lst (startLoc<>endLoc))
 
--- Objects that are parsed as a single value but which are constructed from other object
--- expressions. This table excludes 'singletonPTab'.
-containerPTab :: DaoPTable AST_Object
-containerPTab = table $
+ruleFuncPTab :: DaoPTable AST_RuleFunc
+ruleFuncPTab = table $
   [ tableItemBy "rule" $ \startTok ->
       expect "list of strings after \"rule\" statement" $ do
         lst <- commented $ joinEvalPTable $ table $
           [ tableItem STRINGLIT $ \str -> return $ AST_StringList [Com (asUStr str)] (asLocation str)
           , tableItemBy "(" $ \openTok -> do
               let lu = LocationUnknown
-              (lst, loc) <-
-                commaSepd "strings for rule header" ")"
-                  (flip AST_NoStrings lu) (token STRINGLIT asUStr)
-                  (\lst -> if null lst then AST_NoStrings [] lu else AST_StringList lst lu)
+              (lst, loc) <- commaSepd "strings for rule header" ")"
+                (flip AST_NoStrings lu) (token STRINGLIT asUStr)
+                (\lst -> if null lst then AST_NoStrings [] lu else AST_StringList lst lu)
               return (setLocation lst (asLocation openTok <> loc))
           ]
         expect "bracketed expression after rule header" $ do
           (scrpt, endLoc) <- bracketed ("script expression for \"rule\" statement")
           return $ AST_Rule lst scrpt (asLocation startTok <> endLoc)
   , lambdaFunc "func", lambdaFunc "function"
-  , metaEvalPTabItem
   ]
   where
     lambdaFunc lbl = tableItemBy lbl $ \startTok ->
@@ -461,6 +457,14 @@ containerPTab = table $
         params <- commented paramList
         (scrpt, endLoc) <- bracketed ("script expression after \""++lbl++"\" statement")
         return $ constr params scrpt (asLocation startTok <> endLoc)
+
+ruleFunc :: DaoParser AST_RuleFunc
+ruleFunc = joinEvalPTable ruleFuncPTab
+
+-- Objects that are parsed as a single value but which are constructed from other object
+-- expressions. This table excludes 'singletonPTab'.
+containerPTab :: DaoPTable AST_Object
+containerPTab = (fmap (fmap AST_ObjRuleFunc) ruleFuncPTab) <> table [metaEvalPTabItem]
 
 -- None of the functions related to parameters and type checking parse with tables because there is
 -- simply no need for it according to the Dao language syntax.
@@ -799,7 +803,13 @@ ifElsePTabItem = bindPTableItem ifPTabItem (loop []) where
       ]
 
 scriptPTab :: DaoPTable [AST_Script]
-scriptPTab = comments <> objExpr <> table exprs where
+scriptPTab = comments <> rulFun <> objExpr <> table exprs where
+  rulFun = bindPTable ruleFuncPTab $ \o -> msum $
+    [ do  coms <- optSpace
+          loc  <- tokenBy ";" asLocation
+          return [AST_EvalObject (AST_Eval $ AST_Object $ AST_ObjRuleFunc o) coms (getLocation o <> loc)]
+    , return [AST_RuleFunc o]
+    ]
   objExpr = bindPTable assignmentPTab $ \o -> do
     coms <- optSpace
     expect "semicolon after object expression" $ do

@@ -737,20 +737,23 @@ arithmeticPTab = bindPTable objectPTab $ \o ->
 arithmetic :: DaoParser AST_Arith
 arithmetic = joinEvalPTable arithmeticPTab
 
-assignmentPTab :: DaoPTable AST_Assign
-assignmentPTab = bindPTable arithmeticPTab $ \o ->
+assignmentWithInit :: DaoParser AST_Assign -> DaoParser AST_Assign
+assignmentWithInit init = 
   simpleInfixedWithInit "object expression for assignment operator" rightAssoc
     (\left (loc, op) right -> return $ case left of
         AST_Eval left -> AST_Assign left op right loc
         left          -> left
     )
-    (bufferComments >> return (AST_Eval o))
+    (bufferComments >> init)
     (fmap AST_Eval arithmetic)
     (liftM2 (,) (look1 asLocation) (commented (joinEvalPTable opTab)))
   where
     opTab :: DaoPTable UpdateOp
     opTab = table $
       fmap (flip tableItemBy (return . fromUStr . tokTypeToUStr . asTokType)) (words allUpdateOpStrs)
+
+assignmentPTab :: DaoPTable AST_Assign
+assignmentPTab = bindPTable arithmeticPTab (assignmentWithInit . return . AST_Eval)
 
 -- | Evaluates a sequence arithmetic expressions interspersed with assignment operators.
 assignment :: DaoParser AST_Assign
@@ -804,12 +807,16 @@ ifElsePTabItem = bindPTableItem ifPTabItem (loop []) where
 
 scriptPTab :: DaoPTable [AST_Script]
 scriptPTab = comments <> rulFun <> objExpr <> table exprs where
-  rulFun = bindPTable ruleFuncPTab $ \o -> msum $
-    [ do  coms <- optSpace
-          loc  <- tokenBy ";" asLocation
-          return [AST_EvalObject (AST_Eval $ AST_Object $ AST_ObjRuleFunc o) coms (getLocation o <> loc)]
-    , return [AST_RuleFunc o]
-    ]
+  rulFun = bindPTable ruleFuncPTab $ \o ->
+    assignmentWithInit (return $ AST_Eval $ AST_Object $ AST_ObjRuleFunc o) >>= \o -> case o of
+      AST_Eval (AST_Object (AST_ObjRuleFunc o)) -> flip mplus (return [AST_RuleFunc o]) $ do
+        coms <- optSpace
+        loc  <- tokenBy ";" asLocation
+        return [AST_EvalObject (AST_Eval $ AST_Object $ AST_ObjRuleFunc o) coms (getLocation o <> loc)]
+      o -> expect "semicolon after object expression" $ do
+        coms <- optSpace
+        loc  <- tokenBy ";" asLocation
+        return [AST_EvalObject o coms (getLocation o <> loc)]
   objExpr = bindPTable assignmentPTab $ \o -> do
     coms <- optSpace
     expect "semicolon after object expression" $ do

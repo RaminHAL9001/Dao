@@ -133,6 +133,11 @@ parsePattern ax = Glob{ getPatUnits = patrn, getGlobLength = foldl (+) 0 lenx } 
 -- have many patterns that start with similar sequences of 'GlobUnit's.
 type PatternTree a = T.Tree GlobUnit a
 
+-- | Insert an item at multiple points in the 'PatternTree'
+insertMultiPattern :: (a -> a -> a) -> [Glob] -> a -> PatternTree a -> PatternTree a
+insertMultiPattern plus pats o tree =
+  foldl (\tree pat -> T.update (getPatUnits pat) (maybe (Just o) (Just . flip plus o)) tree) tree pats
+
 -- | By converting an ordinary 'Glob' to a pattern tree, you are able to use all of the methods
 -- in the "Dao.Tree" module to modify the patterns in it.
 toTree :: Glob -> a -> PatternTree a

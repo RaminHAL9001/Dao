@@ -492,17 +492,17 @@ data ExecUnit
     , execOpenFiles      :: IORef (M.Map UPath ExecUnit)
     , recursiveInput     :: IORef [UStr]
     , uncaughtErrors     :: IORef [Object]
-    ---- used to be elements of Program ----
-    , programModuleName :: Maybe UPath
-    , programImports    :: [UPath]
-    , requiredBuiltins  :: [Name]
-    , programAttributes :: M.Map Name Name
-    , preExec           :: [Subroutine]
+    , programModuleName  :: Maybe UPath
+    , programImports     :: [UPath]
+    , requiredBuiltins   :: [Name]
+    , programAttributes  :: M.Map Name Name
+    , preExec            :: [Subroutine]
       -- ^ the "guard scripts" that are executed before every string execution.
-    , postExec          :: [Subroutine]
+    , postExec           :: [Subroutine]
       -- ^ the "guard scripts" that are executed after every string execution.
-    , quittingTime      :: [Subroutine]
-    , ruleSet           :: IORef (PatternTree [Subroutine])
+    , quittingTime       :: [Subroutine]
+    , ruleSet            :: IORef (PatternTree [Subroutine])
+    , lambdaSet          :: IORef [CallableCode]
     }
 
 initExecUnit :: Maybe UPath -> IO ExecUnit
@@ -517,6 +517,7 @@ initExecUnit modName = do
   xstack   <- newIORef emptyStack
   files    <- newIORef M.empty
   rules    <- newIORef T.Void
+  lambdas  <- newIORef []
   return $
     ExecUnit
     { globalMethodTable  = mempty
@@ -548,6 +549,7 @@ initExecUnit modName = do
 --    , programComparator = (==)
     , postExec          = []
     , ruleSet           = rules
+    , lambdaSet         = lambdas
     }
 
 -- | An 'Action' is the result of a pattern match that occurs during an input string query. It is a
@@ -1369,11 +1371,15 @@ newtype CodeBlock = CodeBlock { codeBlock :: [ScriptExpr] } deriving (Eq, Ord, S
 setupCodeBlock :: CodeBlock -> Exec Subroutine
 setupCodeBlock scrp = do
   -- create the 'Data.IORef.IORef' for storing static variables
-  staticRsrc <- liftIO (newIORef mempty)
+  statvars    <- liftIO (newIORef mempty)
+  statrules   <- liftIO (newIORef mempty)
+  statlambdas <- liftIO (newIORef mempty)
   return $
     Subroutine
     { origSourceCode = scrp
-    , staticVars     = staticRsrc
+    , staticVars     = statvars
+    , staticRules    = statrules
+    , staticLambdas  = statlambdas
     , executable     = execute scrp >> return Nothing
     }
 
@@ -1411,17 +1417,25 @@ data Subroutine
   = Subroutine
     { origSourceCode :: CodeBlock
     , staticVars     :: IORef (M.Map Name Object)
+    , staticRules    :: IORef (PatternTree [Subroutine])
+    , staticLambdas  :: IORef [CallableCode]
     , executable     :: Exec (Maybe Object)
     }
 
 instance Show Subroutine where { show o = "Subroutine "++show (codeBlock (origSourceCode o)) }
 
-instance NFData Subroutine    where { rnf (Subroutine    a _ _) = deepseq a () }
+instance NFData Subroutine where { rnf (Subroutine a _ _ _ _) = deepseq a () }
 
 instance HasNullValue Subroutine where
   nullValue =
-    Subroutine{origSourceCode=nullValue, staticVars=error "null Subroutine", executable=return Nothing}
-  testNull (Subroutine a _ _) = testNull a
+    Subroutine
+    { origSourceCode = nullValue
+    , staticVars = error "accessed staticVars or null Subroutine"
+    , staticRules = error "accessed staticRules of null Subroutine"
+    , staticLambdas = error "accessed staticLambdas of null Subroutine"
+    , executable = return Nothing
+    }
+  testNull (Subroutine a _ _ _ _) = testNull a
 
 instance PPrintable Subroutine where { pPrint = mapM_ pPrint . codeBlock . origSourceCode }
 
@@ -2372,7 +2386,7 @@ instance UStrType InfixOp where
     ; "||" -> Just OR   ; "&&" -> Just AND
     ; "==" -> Just EQUL ; "!=" -> Just NEQUL
     ; "<"  -> Just LTN  ; ">"  -> Just GTN
-    ; "<=" -> Just GTEQ ; ">=" -> Just GTEQ 
+    ; "<=" -> Just LTEQ ; ">=" -> Just GTEQ 
     ; _    -> Nothing
     }
   fromUStr str = maybe (error (show str++" is not an infix operator")) id (maybeFromUStr str)
@@ -3456,12 +3470,31 @@ localVarDefine nm obj = asks execStack >>= \sto -> storeDefine sto (Reference [n
 -- | Convert a single 'ScriptExpr' into a function of value @'Exec' 'Dao.Object.Object'@.
 instance Executable ScriptExpr () where
   execute script = updateExecError (\err->err{execErrScript=Just script}) $ case script of
-    IfThenElse   ifn     -> execute ifn
-    WhileLoop    ifn     -> execute ifn
-    EvalObject   o  _loc -> void (execute o :: Exec (Maybe Object))
-    RuleFuncExpr o       -> execute o >>= \o -> case o of
-      Nothing -> error "rule/function expression evaluated to void" -- error, not fail, that should not happen
-      Just  o -> error "TODO: place rule or function in appropriate place"
+    IfThenElse   ifn    -> execute ifn
+    WhileLoop    ifn    -> execute ifn
+    EvalObject   o _loc -> void (execute o :: Exec (Maybe Object))
+    RuleFuncExpr rulfn  -> do
+      o <- execute rulfn
+      (StaticStore sub) <- asks currentCodeBlock
+      let dyn o = case o of
+            OHaskell (HaskellData h _) -> fromDynamic h
+            _ -> Nothing
+      let pushItem insert = case o >>= dyn of
+            Just  o -> liftIO (insert o)
+            Nothing -> error "executing RuleFuncExpr does not produce object of correct data type"
+      case sub of
+        Nothing  -> case rulfn of
+          LambdaExpr{} -> asks lambdaSet >>= \s -> pushItem $ \o -> modifyIORef s (++[o])
+          RuleExpr{}   -> asks ruleSet >>= \s ->
+            pushItem $ \o -> modifyIORef s (insertMultiPattern (++) (globPattern o) [globSubroutine o])
+          FuncExpr{}   -> return ()
+            -- function expressions are placed in the correct store by 'execute'
+        Just sub -> case rulfn of
+          LambdaExpr{} -> pushItem $ \o -> modifyIORef (staticLambdas sub) (++[o])
+          RuleExpr{}   -> pushItem $ \o ->
+            modifyIORef (staticRules sub) (insertMultiPattern (++) (globPattern o) [globSubroutine o])
+          FuncExpr{}   -> return ()
+            -- function expressions are placed in the correct store by 'execute'
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     TryCatch try  name  catch _loc -> do
       ce <- catchPredicate (execNested T.Void $ execute try)
@@ -3561,7 +3594,7 @@ instance Executable ForLoopBlock (Bool, Maybe Object) where
 -- | Part of the Dao language abstract syntax tree: any expression that controls the flow of script
 -- exectuion.
 data AST_Script
-  = AST_Comment                 [Comment] 
+  = AST_Comment     [Comment] 
   | AST_IfThenElse  AST_IfElse
   | AST_WhileLoop   AST_While
   | AST_RuleFunc    AST_RuleFunc
@@ -4180,7 +4213,7 @@ instance Structured SingleExpr Object where
 ----------------------------------------------------------------------------------------------------
 
 data AST_Single
-  = AST_Single AST_RefOperand
+  = AST_Single !AST_RefOperand
   | AST_RefPfx RefPfxOp [Comment] AST_RefOperand Location
   deriving (Eq, Ord, Typeable, Show)
 

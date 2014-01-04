@@ -505,7 +505,7 @@ instance B.HasPrefixTable CoreType B.Byte mtab where
     , HaskellType
     ]
 
-instance HasRandGen CoreType   where { randO = toEnum     <$> nextInt (fromEnum (maxBound::CoreType)) }
+instance HasRandGen CoreType where { randO = toEnum <$> nextInt (fromEnum (maxBound::CoreType)) }
 
 objType :: Value o -> CoreType
 objType o = case o of
@@ -548,7 +548,8 @@ instance NFData TypeSym where
   rnf (TypeVar  a b) = deepseq a $! deepseq b ()
 
 instance HasRandGen TypeSym where
-  randO = randChoice [CoreType <$> randO, pure TypeVar <*> randO <*> randList 1 4]
+  randO = countRunRandChoice
+  randChoice = randChoiceList [CoreType <$> randO, pure TypeVar <*> randO <*> randList 1 4]
 
 instance PPrintable TypeSym where
   pPrint t = case t of
@@ -607,7 +608,7 @@ instance B.Binary ObjType mtab where
 instance B.HasPrefixTable ObjType B.Byte mtab where
   prefixTable = B.mkPrefixTableWord8 "ObjType" 0x1A 0x1A [ObjType <$> B.get]
 
-instance HasRandGen ObjType where { randO = ObjType    <$> randList 1 3 }
+instance HasRandGen ObjType where { randO = ObjType <$> randList 1 3 }
 
 ----------------------------------------------------------------------------------------------------
 

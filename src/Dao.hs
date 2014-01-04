@@ -232,7 +232,8 @@ completedThreadInTask task = liftIO (myThreadId >>= putMVar (taskWaitMVar task))
 
 -- | Evaluate an 'Dao.Object.Action' in the current thread.
 execAction :: ExecUnit -> Action -> Exec (Maybe Object)
-execAction xunit action = local (const xunit) $ runCodeBlock T.Void (actionCodeBlock action)
+execAction xunit act = local (const xunit) $
+  runCodeBlock (fmap (obj . fmap obj) $ actionMatch act) (actionCodeBlock act)
 
 -- | Create a new thread and evaluate an 'Dao.Object.Action' in that thread. This thread is defined
 -- such that when it completes, regardless of whether or not an exception occurred, it signals
@@ -294,21 +295,19 @@ makeActionsForQuery instr xunit = do
   --tokenizer instr >>= match -- TODO: put the customizable tokenizer back in place
   match (map toUStr $ words $ fromUStr instr)
   where
-    --eq = programComparator xunit
-    eq = (==)
     match tox = do
       --tree <- dReadMVar xloc (ruleSet xunit)
       tree <- liftIO $ readIORef (ruleSet xunit)
       return $
         ActionGroup
         { actionExecUnit = xunit
-        , getActionList = flip concatMap (matchTree eq tree tox) $ \ (patn, mtch, execs) ->
+        , getActionList = flip concatMap (matchTree False tree tox) $ \ (patn, mtch, execs) ->
             flip map execs $ \exec -> seq exec $! seq instr $! seq patn $! seq mtch $!
               Action
               { actionQuery      = Just instr
               , actionPattern    = Just patn
-              , actionMatch      = Just mtch
-              , actionCodeBlock = exec
+              , actionMatch      = mtch
+              , actionCodeBlock  = exec
               }
         }
 
@@ -323,8 +322,8 @@ getBeginEndScripts select xunit =
       Action
       { actionQuery      = Nothing
       , actionPattern    = Nothing
-      , actionMatch      = Nothing
-      , actionCodeBlock = exe
+      , actionMatch      = T.Void
+      , actionCodeBlock  = exe
       }
   }
 

@@ -14,8 +14,8 @@ rule("hello") {
 	catch err { print(err); }
 }
 
-rule "my name is $*." {
-	sayHello($1);
+rule "my name is $name*." {
+	sayHello(name);
 }
 
 func testFunc(a, b) {
@@ -23,9 +23,9 @@ func testFunc(a, b) {
 	print("I am a "+join(a)+" "+join(b)+"!!!");
 }
 
-rule "test toplevel $*" {
-	print("$0 = "+$0, "$1 = "+$1);
-	testFunc($1[0], $1[2]);
+rule "test toplevel $test*" {
+	print("test = "+test);
+	testFunc(test);
 }
 
 rule "test recurse" {
@@ -36,9 +36,9 @@ rule "test recurse" {
 	   });
 }
 
-rule "fact $*." {
-	const.ref = $1;
-	print("I understand the fact that "+join($1)+".");
+rule "fact $fact*." {
+	const.ref = fact;
+	print("I understand the fact that "+join(fact)+".");
 }
 
 rule "recall" {
@@ -69,17 +69,17 @@ rule "test ref" {
 	print(@a);
 }
 
-for a in list {"one", "two", "three"} {
+for a in (list {"one", "two", "three"}) {
 	print(global n.m);
 	global n.m = a;
 	print(a);
 }
 
-rule "file $*." {
+rule "file $fact*." {
 	try {
-		with "/home/ramin/main/dao/tests/1.idea" {
-			const.ref = $1;
-			print("I understand the fact that "+ join($1) +".");
+		with("/home/ramin/main/dao/tests/1.idea") {
+			const.ref = fact;
+			print("I understand the fact that "+ join(fact) +".");
 		}
 	}
 	catch err { print(err); }
@@ -101,7 +101,7 @@ rule "recall again" {
 rule "contents of file" {
 	print("Recall file...");
 	try {
-		with "/home/ramin/main/dao/tests/1.idea" {
+		with("/home/ramin/main/dao/tests/1.idea") {
 			print("I recall the fact that "+ join(const.ref) +".");
 		}
 	}
@@ -146,11 +146,11 @@ END {
 	print("(-0)");
 }
 
-rule ("test index $*", "test logic $*") {
+rule ("test index $test*", "test logic $test*") {
 	try {
-		a = $1[0];
-		b = $1[2];
-		c = $1[4];
+		a = test[0];
+		b = test[2];
+		c = test[4];
 		print("test index (1)");
 		if(a == "one" && b != "two" && c == "three") { print("(a == \"one\" && b != \"two\" && c == \"three\")"); }
 		print("test index (2)");
@@ -173,9 +173,9 @@ BEGIN {
 	print("(+1)");
 }
 
-rule "$? file $*" {
-	op = join("", $1);
-	a  = join("", $2);
+rule "$fileop* file $fact*" {
+	op = join("", fileop);
+	a  = join("", fact);
 	try {
 		if(op=="open" || op=="read")  {
 			a = read(a);  print("Read file "+a); use.file = a;
@@ -202,26 +202,26 @@ rule "which file" {
 	print(use.file);
 }
 
-rule "$* is a kind of $*" {
+rule "$what is a kind of $type" {
 	try {
 		a = use.file;
 		print("use file "+a);
-		with a { ref($1) = $2; print("OK"); }
+		with(a) { ref(what) = type; print("OK"); }
 	}
 	catch err {
-		try { ref($1) = $2; print("I guess so."); }
+		try { ref(what) = type; print("I guess so."); }
 		catch err { print(err); }
 	}
 }
 
 what.is.count = 0;
-rule ("what is an $*?") {
+rule ("what is an $type") {
 	unanswered = false;
 	try {
 		if(what.is.count == 0) {
-			with use.file {
-				a = join("", $1);
-				b = ref($1); b = join("", @b);
+			with(use.file) {
+				a = join("", type);
+				b = ref(type); b = join("", @b);
 				print(a+" is a kind of "+@b);
 			}
 		}
@@ -242,10 +242,6 @@ rule("list db", "list dbs") {
 
 func sayHello(a) {
 	print("Hi, "+ join("", a) +", nice to meet you.");
-}
-
-rule "$bad dollar sign" {
-	print("matched pattern with bad dollar sign.");
 }
 
 rule "infinite recursion" {

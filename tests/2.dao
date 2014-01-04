@@ -7,13 +7,13 @@ BEGIN {
 	print("--- RULES ---");
 }
 
-rule "$*, $*" {
+rule "$before*, $after*" {
 	d = doing();
-	a = join($1);
-	b = join($2);
+	a = join(before);
+	b = join(after);
 	print("query: " + d);
-	print("$1 = " + a + "\"");
-	print("$2 = " + b + "\"");
+	print("before = " + a + "\"");
+	print("after = " + b + "\"");
 	// Comment here
 	if(defined(static(lastQuery)) && static(lastQuery)==d) {
 		print("STOP ON: " + a);
@@ -24,13 +24,13 @@ rule "$*, $*" {
 		static(lastQuery) = d;
 		print("set lastQurey = \"" + d + "\" (OK)");
 	}
-	if($1) {
+	if(before) {
 		print("append \"" + a + "\" to list.");
 		qtime(comma) += list{a};
 		print("append \"" + a + "\" to list. (OK)");
 	}
 	else {
-		print(join($1) + " is null.");
+		print(join(before) + " is null.");
 	}
 	print("recurse? \"" + a + "\"");
 	if(a) {

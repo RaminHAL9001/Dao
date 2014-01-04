@@ -170,15 +170,15 @@ The Dao language and interpreter is designed for natural language
 understanding, and addresses all of the above mentioned shortcomings.
 The same program written in the Dao language would look like this:
 ```
-	rule "put $* in $*" {
-		what.to.put = $1;
-		print("> what to put: " + $1);
-		where.to.put = $2;
-		print("> where to put it: " + $2);
+	rule "put $what in $where" {
+		what.to.put = what;
+		print("> what to put: " + what);
+		where.to.put = where;
+		print("> where to put it: " + where);
 	}
-	rule "my name is $*" {
-		user.name = $1;
-		print("> Hello, " + $1);
+	rule "my name is $name" {
+		user.name = name;
+		print("> Hello, " + name);
 	}
 ```
 

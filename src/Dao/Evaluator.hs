@@ -347,24 +347,16 @@ instance (Ord a, Enum a, Bounded a, Es.InfBound a, Structured a Object) => Struc
   dataToStruct a = deconstruct (putData (Es.toList a))
   structToData = reconstruct (fmap Es.fromList getData)
 
-instance Structured Glob Object where
+instance Structured (Glob UStr) Object where
   dataToStruct a = deconstruct $ case a of
     Glob       a _   -> putData a
   structToData = reconstruct $ getData >>= \a -> return (Glob a (length a))
 
-instance Structured GlobUnit Object where
-  dataToStruct a = T.Leaf $ OString $ case a of
-    Wildcard -> ustr "$*"
-    AnyOne   -> ustr "$?"
-    Single s -> s
+instance Structured (GlobUnit UStr) Object where
+  dataToStruct a = T.Leaf $ obj (toUStr a)
   structToData = reconstruct $ do
-    str <- getUStrData "glob-unit"
-    return $ case uchars str of
-      "$*" -> Wildcard
-      "*"  -> Wildcard
-      "$?" -> AnyOne
-      "?"  -> AnyOne
-      str  -> Single (ustr str)
+    let errmsg = "expecting glob-unit item, string expression does not parse to valid glob-unit"
+    getUStrData "glob-unit" >>= maybe (fail errmsg) return . maybeFromUStr
 
 allStrings :: [Object] -> Predicate UpdateErr [UStr]
 allStrings ox = forM (zip [(0::Integer)..] ox) $ \ (i, o) -> case o of
@@ -475,8 +467,7 @@ data ExecUnit
     , taskForExecUnits   :: Task
     , taskForActions     :: Task
     , currentQuery       :: Maybe UStr
-    , currentPattern     :: Maybe Glob
-    , currentMatch       :: Maybe Match
+    , currentPattern     :: Maybe (Glob UStr)
     , currentCodeBlock   :: StaticStore
       -- ^ when evaluating a 'Subroutine' selected by a string query, the 'Action' resulting from
       -- that query is defnied here. It is only 'Data.Maybe.Nothing' when the module is first being
@@ -502,7 +493,7 @@ data ExecUnit
     , postExec           :: [Subroutine]
       -- ^ the "guard scripts" that are executed after every string execution.
     , quittingTime       :: [Subroutine]
-    , ruleSet            :: IORef (PatternTree [Subroutine])
+    , ruleSet            :: IORef (PatternTree UStr [Subroutine])
     , lambdaSet          :: IORef [CallableCode]
     }
 
@@ -528,7 +519,6 @@ initExecUnit modName = do
     , currentWithRef     = WithRefStore Nothing
     , currentQuery       = Nothing
     , currentPattern     = Nothing
-    , currentMatch       = Nothing
     , currentCodeBlock   = StaticStore Nothing
     , currentBranch      = []
     , importsTable       = []
@@ -560,8 +550,8 @@ initExecUnit modName = do
 data Action
   = Action
     { actionQuery      :: Maybe UStr
-    , actionPattern    :: Maybe Glob
-    , actionMatch      :: Maybe Match
+    , actionPattern    :: Maybe (Glob UStr)
+    , actionMatch      :: T.Tree Name [UStr]
     , actionCodeBlock  :: Subroutine
     }
 
@@ -1418,7 +1408,7 @@ data Subroutine
   = Subroutine
     { origSourceCode :: CodeBlock
     , staticVars     :: IORef (M.Map Name Object)
-    , staticRules    :: IORef (PatternTree [Subroutine])
+    , staticRules    :: IORef (PatternTree UStr [Subroutine])
     , staticLambdas  :: IORef [CallableCode]
     , executable     :: Exec (Maybe Object)
     }
@@ -1487,7 +1477,7 @@ instance Executable CallableCode (Maybe Object) where { execute = execute . code
 -- A subroutine that is executed when a query string matches it's @['Dao.Glob.Glob']@ expression.
 data GlobAction
   = GlobAction
-    { globPattern    :: [Glob]
+    { globPattern    :: [Glob UStr]
     , globSubroutine :: Subroutine
     }
   deriving (Show, Typeable)
@@ -1872,7 +1862,7 @@ instance Intermediate ParamListExpr AST_ParamList where
 ----------------------------------------------------------------------------------------------------
 
 -- | Convert an 'Dao.Object.ObjectExpr' to an 'Dao.Glob.Glob'.
-paramsToGlobExpr :: ObjectExpr -> Exec Glob
+paramsToGlobExpr :: ObjectExpr -> Exec (Glob UStr)
 paramsToGlobExpr o = case o of
   ObjLiteralExpr (LiteralExpr (OString str) _) -> return (read (uchars str))
   _ -> execThrow $ obj $ [obj "does not evaluate to a \"glob\" pattern"]
@@ -1938,7 +1928,7 @@ instance Structured AST_StringList Object where
 instance HasRandGen AST_StringList where
   randO = countRunRandChoice
   randChoice = randChoiceList $
-    [ pure AST_StringList <*> randListOf 1 4 (randComWith (fmap (ustr . show) (randO::RandO Glob))) <*> no
+    [ pure AST_StringList <*> randListOf 1 4 (randComWith (fmap (ustr . show) (randO::RandO (Glob UStr)))) <*> no
     , pure AST_NoStrings  <*> randO <*> no
     ]
 
@@ -4338,10 +4328,19 @@ instance Executable RuleFuncExpr (Maybe Object) where
       storeUpdate store (Reference [name]) (return . const o)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     RuleExpr (RuleStrings params _) scrpt _ -> do
-      exec <- setupCodeBlock scrpt
-      let globAction = GlobAction (fmap (parsePattern . uchars) params) exec
-      -- let fol tre pat = T.unionWith (++) tre (toTree pat [exec])
-      return $ Just $ new globAction
+      exec  <- setupCodeBlock scrpt
+      globs <- forM params $ \param -> case readsPrec 0 (uchars param) of
+        [(pat, "")] -> return pat
+        _           -> execThrow $ obj [obj "cannot parse pattern expression", obj param]
+      (StaticStore sub) <- asks currentCodeBlock
+      let insertGlobs tree =
+            foldl (\tree glob -> T.unionWith (++) tree (globTree glob [exec])) tree globs
+      case sub of
+        Just sub -> liftIO $ modifyIORef (staticRules sub) insertGlobs
+        Nothing  -> do
+          rules <- asks ruleSet
+          liftIO $ modifyIORef rules insertGlobs
+      return $ Just $ new $ GlobAction globs exec
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
 instance ObjectClass RuleFuncExpr where
@@ -5265,7 +5264,7 @@ instance ObjectClass CallableCode where
 instance ObjectClass GlobAction where
   objectMethods = defObjectInterface (GlobAction [] undefined) $ do
     defCallable $ \rule -> do
-      let vars o = case o of {Wildcard -> 1; AnyOne -> 1; Single _ -> 0; }
+      let vars o = case o of {Wildcard _ -> 1; AnyOne _ -> 1; Single _ -> 0; }
       let m = maximum $ map (sum . map vars . getPatUnits) $ globPattern rule
       let lu = LocationUnknown
       let params = flip ParamListExpr lu $ NotTypeChecked $

@@ -28,273 +28,203 @@ import qualified Dao.Tree as T
 import           Dao.PPrint
 import           Dao.Random
 
-import           Control.DeepSeq
+import           Control.Applicative
 import           Control.Monad
+import           Control.DeepSeq
 
 import           Data.Typeable
+import           Data.Function
+import           Data.Monoid
 import           Data.List
-import           Data.Maybe
 import           Data.Char
-import           Data.Word
-import           Data.Array.IArray
 import qualified Data.Set as S
 import qualified Data.Map as M
 
--- import Debug.Trace
+----------------------------------------------------------------------------------------------------
 
-type Tokens = [UStr]
-
--- | Tokenize a 'Prelude.String'.
-tokens :: String -> Tokens
-tokens ax = map ustr (loop ax) where
+-- | Tokenize a 'Prelude.String' grouping together whitespace, numbers, letters, and punctuation
+-- makrs, except for brackets and quote markers which will all be tokenized as single character
+-- strings.
+simpleTokenize :: String -> [UStr]
+simpleTokenize ax = map ustr (loop ax) where
   loop ax =
     case ax of
       [] -> []
-      a:ax | elem a "([{}])" -> [a] : loop ax
-      a:ax ->
-        case msum (map (check a ax) kinds) of
-          Nothing -> [a] : loop ax
-          Just (got, ax) -> got : loop ax
+      a:ax | elem a "([{}])\"'`" -> [a] : loop ax
+      a:ax -> case msum (map (check a ax) kinds) of
+        Nothing -> [a] : loop ax
+        Just (got, ax) -> got : loop ax
   check a ax fn = if fn a then let (got, ax') = span fn ax in Just (a:got, ax') else Nothing
   kinds = [isSpace, isAlpha, isNumber, isPunctuation, isAscii, not . isAscii]
 
--- | Contains information related to how a 'Glob' was matched to input 'Tokens' during the
--- 'runMatchPattern' function evaluation.
-data Match
-  = Match
-    { originalInput :: Tokens
-    , matchGaps :: Maybe (Array Word Tokens)
-    }
-    deriving Show
+----------------------------------------------------------------------------------------------------
 
-matchFromList :: Tokens -> Word -> [Tokens] -> Match
-matchFromList orig sz stk =
-  let arr = if sz==0 then Nothing else Just (listArray (1, sz) stk)
-  in  Match{ originalInput = orig, matchGaps = arr }
+-- | An alternative to 'Glob' expressions containing ordinary 'Dao.String.UStr's is a 'Glob'
+-- expression containing 'FuzzyStr's. These strings approximately match the input string, ignoring
+-- minor spelling errors and transposed characters.
+newtype FuzzyStr = FuzzyStr UStr deriving Ord
 
-getMatch :: Word -> Match -> Tokens
-getMatch i ma =
-  (fromMaybe (error "match retrieved from pattern which contained no wild-card symbols") $
-    (matchGaps ma)) ! i
+instance Eq FuzzyStr where
+  a==b = 
+    let ax = S.map toLower (S.fromList (uchars a))
+        bx = S.map toLower (S.fromList (uchars b))
+    in     a == b
+        || ax == bx
+        || S.size (S.difference (S.union ax bx) (if S.size ax < S.size bx then ax else bx)) <= 1
 
-data GlobUnit = Wildcard | AnyOne | Single UStr deriving (Eq, Ord, Show)
+instance Show FuzzyStr where { show (FuzzyStr str) = show str }
+
+instance Read FuzzyStr where
+  readsPrec p input = readsPrec p input >>= \ (s, rem) -> return (FuzzyStr (ustr s), rem)
+
+instance Monoid FuzzyStr where
+  mempty = FuzzyStr mempty
+  mappend (FuzzyStr a) (FuzzyStr b) = FuzzyStr (a<>b)
+
+instance HasNullValue FuzzyStr where
+  nullValue = FuzzyStr nullValue
+  testNull (FuzzyStr s) = testNull s
+
+instance UStrType FuzzyStr where { fromUStr = FuzzyStr; toUStr (FuzzyStr u) = u; }
+
+----------------------------------------------------------------------------------------------------
+
+-- | A general glob type, remeniscent of the good old-fashioned Unix glob expression. Actually, this
+-- is only a single unit of a full 'Glob' expression. The unit type need not be a string, but most
+-- the instances of 'GlobUnit' into 'Prelude.Show' and 'Prelude.Read' are only defined for
+-- 'GlobUnit's of 'Dao.String.UStr's.
+data GlobUnit o = Wildcard Name | AnyOne Name | Single o deriving (Eq, Ord, Typeable)
+
+instance Functor GlobUnit where
+  fmap f o = case o of
+    Single   o -> Single (f o)
+    Wildcard n -> Wildcard n
+    AnyOne   n -> AnyOne n
+
+instance Show (GlobUnit UStr) where
+  show a = case a of { Wildcard nm -> '$':show nm++"*" ; AnyOne nm -> '$':show nm ; Single a -> show a }
+
+instance Read (GlobUnit UStr) where
+  readsPrec _prec str = case str of
+    '$':c:str | c=='_' || isAlpha c -> [span isAlphaNum str] >>= \ (cx, str) -> case str of
+      '*':str -> [(Wildcard $ ustr (c:cx), str)]
+      str     -> [(AnyOne   $ ustr (c:cx), str)]
+    '$':c:str -> [(Single   $ ustr [c]   , str)]
+    _         -> []
+
+instance UStrType (GlobUnit UStr) where
+  maybeFromUStr str = case readsPrec 0 (uchars str) of { [(o, "")] -> Just o; _ -> Nothing; }
+  toUStr = ustr . show
+
+instance NFData o => NFData (GlobUnit o) where
+  rnf (Wildcard a) = deepseq a ()
+  rnf (AnyOne   a) = deepseq a ()
+  rnf (Single   a) = deepseq a ()
+
+instance HasRandGen o => HasRandGen (GlobUnit o) where
+  randO = countRunRandChoice
+  randChoice = randChoiceList [Single <$> randO, Wildcard <$> randO, AnyOne <$> randO]
+
+----------------------------------------------------------------------------------------------------
 
 -- | Patterns are lists of 'Data.Maybe.Maybe' elements, where constant strings are given by
 -- 'Data.Maybe.Just' or wildcards given by 'Data.Maybe.Nothing'. Wildcards runMatchPattern zero or more other
 -- Tokens when used as a 'Glob'.
-data Glob = Glob { getPatUnits :: [GlobUnit], getGlobLength :: Int } deriving (Eq, Ord, Typeable)
-instance Show Glob where
-  show pat = show (concatMap fn (getPatUnits pat)) where
-    fn a = case a of { Wildcard -> "$*" ; AnyOne -> "$?" ; Single a  -> uchars a }
-instance Read Glob where
-  readsPrec _ str = [(parsePattern str, "")]
+data Glob o = Glob { getPatUnits :: [GlobUnit o], getGlobLength :: Int }
+  deriving (Eq, Ord, Typeable)
 
-instance NFData Glob     where { rnf (Glob          a b  ) = deepseq a $! deepseq b () }
-instance NFData GlobUnit where { rnf a = seq a () }
-instance PPrintable Glob where { pPrint = pShow }
+instance Functor Glob where
+  fmap f g = g{ getPatUnits = fmap (fmap f) (getPatUnits g) }
 
-instance HasRandGen Glob where
-  randO = do
-    len <- fmap (+6) (nextInt 6)
-    i <- randInt
-    let loop len i =
-          if len<=1 then [] else let (i', n) = divMod i len 
-          in  (n+1) : loop (len-n-1) i'
-        cuts = loop len i
-    tx <- fmap (([]:) . map (\t -> if t==0 then [AnyOne] else [Wildcard]) . randToBase 2) randInt
-    let loop tx cuts ax = case cuts of
-          []       -> [ax]
-          cut:cuts ->
-            let (wx, ax') = splitAt cut ax
-                (t,  tx') = splitAt 1 tx
-            in  t ++ wx : loop tx' cuts ax'
-    patUnits <- fmap (concat . loop tx cuts . intersperse (Single (ustr " "))) $
-      replicateM len (fmap (Single . randUStr) randInt)
-    return (Glob{getPatUnits=patUnits, getGlobLength=length patUnits})
+instance Show (Glob UStr) where { show = concatMap show . getPatUnits }
 
--- | Create a 'Glob' from its string representation.
-parsePattern :: String -> Glob
-parsePattern ax = Glob{ getPatUnits = patrn, getGlobLength = foldl (+) 0 lenx } where
-  (lenx, patrn) = unzip (loop ax)
-  loop ax =
-    case ax of
-      []         -> []
-      '$':'*':ax -> (0, Wildcard) : loop ax
-      '$':'?':ax -> (1, AnyOne) : loop ax
-      '$':'$':ax -> (1, Single (ustr "$")) : loop ax
-      '$':ax     -> next "$" ax
-      ax         -> next "" ax
-      where
-        next pfx ax =
-          let (got, ax') = span(/='$') ax
-          in  map (\a -> (1, Single a)) (tokens (pfx++got)) ++ loop ax'
+instance Read (Glob UStr) where
+  readsPrec prec str = do
+    (units, str) <- loop [] str
+    return (Glob{ getPatUnits=units, getGlobLength=length units }, str)
+    where
+      loop units str = case break (=='$') str of
+        ("", "" ) -> return (units, "")
+        ("", str) -> readsPrec prec str >>= \ (unit, str) -> loop (units++[unit]) str
+        (cx, str) -> loop (units++[Single $ ustr cx]) str
+
+instance Monoid (Glob o) where
+  mempty = nullValue
+  mappend (Glob{ getPatUnits=a, getGlobLength=lenA }) (Glob{ getPatUnits=b, getGlobLength=lenB }) =
+    Glob{ getPatUnits=a++b, getGlobLength=lenA+lenB }
+
+instance NFData o => NFData (Glob o) where { rnf (Glob a b) = deepseq a $! deepseq b () }
+
+instance HasNullValue (Glob o) where
+  nullValue = Glob{ getPatUnits=[], getGlobLength=0 }
+  testNull (Glob{ getPatUnits=ax }) = null ax
+
+instance UStrType (Glob UStr) where
+  maybeFromUStr str = case readsPrec 0 (uchars str) of { [(o, "")] -> Just o; _ -> Nothing; }
+  toUStr = ustr . show
+
+instance PPrintable (Glob UStr) where { pPrint = pShow }
+
+instance HasRandGen o => HasRandGen (Glob o) where
+  randO = randList 1 6 >>= \o -> return $ Glob{ getPatUnits=o, getGlobLength=length o }
+
+instance Show (Glob FuzzyStr) where { show = show . fmap toUStr }
+
+instance Read (Glob FuzzyStr) where
+  readsPrec prec str = readsPrec prec str >>= \ (glob, str) -> [(fmap fromUStr glob, str)]
+
+----------------------------------------------------------------------------------------------------
 
 -- | 'PatternTree's contain many patterns in an tree structure, which is more efficient when you
 -- have many patterns that start with similar sequences of 'GlobUnit's.
-type PatternTree a = T.Tree GlobUnit a
+type PatternTree g o = T.Tree (GlobUnit g) o
 
 -- | Insert an item at multiple points in the 'PatternTree'
-insertMultiPattern :: (a -> a -> a) -> [Glob] -> a -> PatternTree a -> PatternTree a
+insertMultiPattern :: (Eq g, Ord g) => (o -> o -> o) -> [Glob g] -> o -> PatternTree g o -> PatternTree g o
 insertMultiPattern plus pats o tree =
   foldl (\tree pat -> T.update (getPatUnits pat) (maybe (Just o) (Just . flip plus o)) tree) tree pats
 
 -- | By converting an ordinary 'Glob' to a pattern tree, you are able to use all of the methods
 -- in the "Dao.Tree" module to modify the patterns in it.
-toTree :: Glob -> a -> PatternTree a
-toTree pat a = T.insert (getPatUnits pat) a T.Void
+globTree :: (Eq g, Ord g) => Glob g -> o -> PatternTree g o
+globTree pat a = T.insert (getPatUnits pat) a T.Void
 
--- | Intended to be used as the first argument to 'runMatchPattern'. Each segment of the 'Glob' is
--- matched *exactyl* to each input 'Token' exactly, same as 'Prelude.(==)'.
-exact :: UStr -> UStr -> Bool
-exact = (==)
+matchPattern :: (Eq g, Ord g) => Bool -> Glob g -> [g] -> [T.Tree Name [g]]
+matchPattern greedy pat tokx = matchTree greedy (globTree pat ()) tokx >>= \ (_, m, ()) -> [m]
 
--- | Intended to be used as the first argument to 'runMatchPattern'. Each segment of a 'Glob' is
--- matched to each input 'Token' *approximately* using a very simple heuristic. This will eliminate
--- some spelling errors, but may cause ambiguity amongst anagrams, for example "crash" will
--- runMatchPattern "chars", "ant" will runMatchPattern "tan", etc. Typing errors where letters are missing
--- or extra letters are insterted into a word from the input string will also runMatchPattern the given
--- runMatchString string, so the input "cany ou?" will runMatchPattern the runMatchString "can you?", and the
--- input "he found" will runMatchPattern the runMatchString "she fond". Use 'approx' in situations when you
--- expect typing errors, and ambiguity can be resolved from context.
-approx :: UStr -> UStr -> Bool
-approx a b =
-  let ax = S.map toLower (S.fromList (uchars a))
-      bx = S.map toLower (S.fromList (uchars b))
-  in     a == b
-      || ax == bx
-      || S.size (S.difference (S.union ax bx) (if S.size ax < S.size bx then ax else bx)) <= 1
-
--- | Takes a 'Dao.Types.UStr' matching function, usually 'exact' or 'approx', and tries to runMatchPattern a
--- string of 'Tokens' to a 'Glob', returning @'Data.Maybe.Just' 'Match'@ on a successful runMatchPattern
--- ('Data.Maybe.Nothing' on no runMatchPattern) with wildcards stored in an array in the 'Match' data
--- structure.
-matchPattern :: (UStr -> UStr -> Bool) -> Glob -> Tokens -> [Match]
-matchPattern eq pat tokx = matchTree eq (toTree pat ()) tokx >>= (\ (_,m,_) -> [m])
-----------------------------------------------------------------------------------------------------
--- This was the oringinal algorithm. It was tested, and it works well. I am keeping it here, just in
--- case it might come in useful some day.
---  matchPattern :: (UStr -> UStr -> Bool) -> Glob -> Tokens -> Maybe Match
---  matchPattern eq runMatchString ax = loop 0 [] pln (getPatUnits runMatchString) aln ax where
---    aln = length ax
---    pln = getGlobLength runMatchString
---    loop sz stk pln px aln ax =
---      case (px, ax) of
---        ([]           , []  )          -> done sz stk
---        ([Wildcard]   , ax  )          -> done (sz+1) (stk++[ax])
---        (Wildcard:px  , ax  )          -> msum (skip [] sz stk pln px aln ax)
---        ((Single p):px, a:ax) | eq p a -> loop sz stk (pln-1) px (aln-1) ax
---        (AnyOne:px    , a:ax)          -> loop (sz+1) (stk++[[a]]) (pln-1) px (aln-1) ax
---        _                              -> Nothing
---    skip gap sz stk pln px aln ax =
---      case ax of
---        a:ax | aln>=pln ->
---            loop (sz+1) (stk++[gap]) pln px aln (a:ax)
---          : skip (gap++[a]) sz stk pln px (aln-1) ax
---        _                         -> []
---    done sz stk = Just (matchFromList ax sz stk)
-----------------------------------------------------------------------------------------------------
-
--- | Takes a tree full of 'GlobUnit' objects, treating each path to a leaf as a list of 'GlobUnit'
--- objects that comopses a single pattern, then matches the input 'Tokens' to each pattern that was
--- composed from every path to every leaf in the given 'Dao.Tree' object. Evaluates every possible
--- match. This is actually the the more general algorithm, and the 'matchPattern' token is a special
--- condition of this algorithm where the 'matchTree' contains only one path to one Leaf.
--- NOTE: Rules that have multiple patterns may execute more than once if the input matches more than
--- one of the patterns associated with the rule. *This is not a bug.* Each pattern may produce a
--- different set of match results, it is up to the programmer of the rule to handle situations where
--- the action may execute many times for a single input.
-matchTree :: (UStr -> UStr -> Bool) -> PatternTree a -> Tokens -> [(Glob, Match, a)]
-matchTree eq matchTree tokx = loop 0 [] 0 [] matchTree tokx where
-  loop sz stk p path bx tokx =
-    case (bx, tokx) of
-      (T.Leaf       a  , []  ) -> done sz stk p path a
-      (T.LeafBranch a b, []  ) -> done sz stk p path a ++ branch sz stk p path b []
-      (T.Branch       b, tokx) -> branch sz stk p path b tokx
-      (T.LeafBranch a b, tokx) -> done sz stk p path a ++ branch sz stk p path b tokx
-      _                        -> []
-  branch sz stk p path b tokx = do
-    (pat, bx) <- M.assocs b
+-- | Match a list of token items to a set of 'Glob' expressions that have been combined into a
+-- single 'PatternTree', matching every possible pattern in the 'PatternTree' to the list of token
+-- items in depth-first order. The first boolean parameter indicates whether 'Wildcard's should be
+-- matched greedily (pass 'Prelude.False' for non-greedy matching). Be aware that greedy matching is
+-- /not lazy/ which could cause freezes if you are working with infinitely recursive data types.
+-- Non-greedy matching is lazy and works fine with everything.
+--
+-- Each match is returned as a triple indicating 1. the 'Glob' that matched the token list, 2. the
+-- token list items that were bound to the 'Dao.String.Name's in the 'Wildcard' and 'AnyOne'
+-- 'GlobUnit's, and 3. the item associated with the 'Glob' expression that matched.
+matchTree :: (Eq g, Ord g) => Bool -> PatternTree g o -> [g] -> [(Glob g, T.Tree Name [g], o)]
+matchTree greedy tree tokx = loop T.Void 0 [] tree tokx where
+  loop vars p path tree tokx = case (tree, tokx) of
+    (T.Leaf       a  , []  ) -> done vars p path a
+    (T.LeafBranch a _, []  ) -> done vars p path a
+    (T.Branch       b, tokx) -> branch vars p path b tokx
+    (T.LeafBranch _ b, tokx) -> branch vars p path b tokx
+    _                        -> []
+  done vars p path a = [(Glob{ getPatUnits = path, getGlobLength = p }, vars, a)]
+  partStep bind tokx = (if greedy then reverse else id) $ (bind, tokx) :
+    fix (\loop bind tokx -> if null tokx then [] else do
+            bind <- [bind++[head tokx]]
+            tokx <- [tail tokx]
+            ((bind, tokx) : loop bind tokx)
+        ) bind tokx
+  branch vars p path branch tokx = do
+    (pat, tree) <- M.assocs branch
+    let next vars = loop vars (p+1) (pat:path) tree
+    let defVar nm mkAssoc =
+          maybe (mkAssoc >>= \ (bind, tokx) -> next (T.insert [nm] bind vars) tokx) (next vars) $
+            T.lookup [nm] vars >>= flip stripPrefix tokx
     case pat of
-      Wildcard -> skip [] sz stk (p+1) (path++[pat]) bx tokx
-      AnyOne   ->
-        case tokx of
-          []       -> []
-          tok:tokx -> loop (sz+1) (stk++[[tok]]) (p+1) (path++[pat]) bx tokx
-      Single u ->
-        case tokx of
-          []       -> []
-          tok:tokx -> if eq u tok then loop sz stk (p+1) (path++[pat]) bx tokx else []
-  skip gap sz stk p path bx tokx =
-       loop (sz+1) (stk++[gap]) p path bx tokx
-    ++ if null tokx then [] else skip (gap++[head tokx]) sz stk p path bx (tail tokx)
-  done sz stk p path a =
-    [(Glob{ getPatUnits = path, getGlobLength = p }, matchFromList tokx sz stk, a)]
-
--- | Match a pattern to a simple 'Prelude.String' without tokenizing the string, but returning each
--- part that matched individually.
-stringMatch :: Glob -> String -> Maybe [UStr]
-stringMatch pat cx = loop [] (getPatUnits pat) cx where
-  loop retrn px cx = case cx of
-    ""    -> case px of
-      []          -> Just retrn
-      [Wildcard]  -> Just retrn
-      _           -> Nothing
-    c:cx  -> case px of
-      []               -> Nothing
-      AnyOne      : px -> loop (retrn++[ustr [c]]) px cx
-      Single ustr : px -> stripPrefix (uchars ustr) (c:cx) >>= loop (retrn++[ustr]) px
-      Wildcard    : px -> scan "" (c:cx) where
-        scan skipped cx = case cx of
-          ""   -> loop [] px cx
-          c:cx -> msum $
-            [ loop [] px (c:cx) >>= \match -> Just (retrn++[ustr skipped]++match)
-            , scan (skipped++[c]) cx
-            ]
-
-----------------------------------------------------------------------------------------------------
---import System.IO
---  
---  testPattern = loop where
---    input = "The quick fire fox jumped over the lazy brown dog."
---    outFile = "./testPattern.out"
---    tok = tokens input
---    strpats =
---      [ input
---      , "fox jumped over"
---      , "fire $* over"
---      , "fire $* over $* brown"
---      , "fire $? jumped"
---      , "fire $? jumped $* brown"
---      , "fire $* the $? brown"
---      , "fire time"
---      , "fire $? time"
---      , "fire $* over time"
---      , "fire $? jumped time"
---      , "fire $* over $* time"
---      , "fire $? jumped $* time"
---      , "fire $* the $? time"
---      ]
---    vary pat = map parsePattern $
---      pat ++ map ("$*"++) pat ++ map (++"$*") pat ++ map (\s -> "$*"++s++"$*") pat
---    pats = vary strpats
---    pprin itm = (++"\n") $
---      if null itm
---        then "(no match)"
---        else flip concatMap itm $ \itm ->
---          case matchGaps itm of
---             Nothing  -> "(no wildcards)"
---             Just arr -> concatMap (\ (i,tokx) -> show i++' ':show tokx++"\n") (assocs arr)
---    loop = do
---      h <- openFile outFile WriteMode
---      --let h = stdout
---      forM_ pats $ \pat -> do
---        let ex = matchPattern exact pat tok
---            ap = matchPattern approx pat tok
---        hPutStrLn h (show pat)
---        seq ex $ hPutStrLn h (pprin ex)
---        hPutStrLn h (show pat)
---        seq ap $ hPutStrLn h (pprin ap)
---      hFlush h
---      putStrLn ("Wrote test results to file "++show outFile++".\nDone.")
---      hClose h
+      Wildcard nm -> defVar nm (partStep [] tokx)
+      AnyOne   nm -> case tokx of { tok:tokx -> defVar nm [([tok], tokx)]; _ -> []; }
+      Single   u  -> case tokx of { tok:tokx | tok==u -> next vars tokx;   _ -> []; }
 

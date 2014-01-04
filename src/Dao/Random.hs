@@ -26,6 +26,7 @@ module Dao.Random where
 import           Dao.String
 import qualified Dao.Tree as T
 
+import           Control.Applicative
 import           Control.Monad.State
 
 import           Data.Char
@@ -46,8 +47,10 @@ data RandOState
   = RandOState
     { integerState :: Integer
     , stdGenState  :: StdGen
+    , nodeCounter  :: Int
     , subDepthLim  :: Int
     , subDepth     :: Int
+    , maxDepth     :: Int
     }
 
 -- | Initializes the 'RandOState' with two integer values: a maximium depth value (limits the number
@@ -58,9 +61,28 @@ initRandOState maxDepth seed =
   RandOState
   { integerState = fromIntegral seed
   , stdGenState  = mkStdGen seed
+  , nodeCounter  = 0     
   , subDepthLim  = maxDepth
   , subDepth     = 0
+  , maxDepth     = 0
   }
+
+-- | Increment the internal node counter of the random generator state. This is good for measuring
+-- the "weight" of randomly generated objects. /NOTE:/ do not use this if you also start your
+-- 'randO' instance with 'recurse', because 'recurse' also calls this function.
+countNode_ :: RandO Int
+countNode_ = gets nodeCounter >>= \i -> modify (\st -> st{nodeCounter=i+1}) >> return (i+1)
+
+-- | Algorithmically identical 'countNode_' but its function type is such that it can be written like so:
+-- > 'countNode' $ do ...
+-- whereas the 'countNode' function must be written like so:
+-- > do { 'countNode_'; ... }
+-- or
+-- > countNode_ >> ...
+-- /NOTE:/ do not use this if you also start your 'randO' instance with 'recurse', because 'recurse'
+-- also calls this function.
+countNode :: RandO a -> RandO a
+countNode fn = countNode_ >> fn
 
 -- | Instantiate your data types into this class if you can generate arbitrary objects from random
 -- numbers using the 'RandO' monad.
@@ -105,14 +127,25 @@ randInteger zero mkOther = do
   if r==0 then return zero else mkOther x
 
 -- | Generate a random object given a maximum recursion limit, a seed value, and a 'RandO' generator
--- function.
-genRandWith :: RandO a -> Int -> Int -> a
-genRandWith gen maxDepth seed = evalState gen (initRandOState maxDepth seed)
+-- function. The weight (meaning the number of calls to 'countNode', 'countNode_', or 'recurse') of
+-- the generated item is also returned.
+genRandWeightedWith :: RandO a -> Int -> Int -> (a, Int)
+genRandWeightedWith gen maxDepth seed = fmap nodeCounter $ runState gen (initRandOState maxDepth seed)
 
 -- | This function you probably will care most about. does the work of evaluating the
 -- 'Control.Monad.State.evalState' function with a 'RandOState' defined by the same two parameters
 -- you would pass to 'initRandOState'. In other words, arbitrary random values for any data type @a@
 -- that instantates 'HasRandGen' can be generated using two integer values passed to this function.
+genRandWeighted :: HasRandGen a => Int -> Int -> (a, Int)
+genRandWeighted maxDepth seed = genRandWeightedWith randO maxDepth seed
+
+-- | Like 'genRandWeightedWith' but the weight value is ignored, only being evaluated to the random
+-- object,
+genRandWith :: RandO a -> Int -> Int -> a
+genRandWith gen maxDepth seed = fst $ genRandWeightedWith gen maxDepth seed
+
+-- | Like 'genRandWeightedWith' but the weight value is ignored, only being evaluated to the random
+-- object,
 genRand :: HasRandGen a => Int -> Int -> a
 genRand maxDepth seed = genRandWith randO maxDepth seed
 
@@ -142,16 +175,22 @@ nextInt maxval = do
 randInt :: RandO Int
 randInt = state (\st -> let (i, gen) = next (stdGenState st) in (i, st{stdGenState=gen}))
 
--- | Mark a recursion point. The recusion depth limit set when evaluating a 'randO' computation will
--- not be exceeded. When the number of 'recurse' functions called without returning has reached this
--- limit and this function is evaluated again, the given 'RandO' generator will not be evaluated,
--- the default value will be returned.
+-- | Mark a recursion point, also increments the 'nodeCounter'. The recusion depth limit set when
+-- evaluating a 'randO' computation will not be exceeded.  When the number of 'recurse' functions
+-- called without returning has reached this limit and this function is evaluated again, the given
+-- 'RandO' generator will not be evaluated, the default value will be returned.
 recurse :: a -> RandO a -> RandO a
 recurse defaultVal fn = do
   st <- get
   if subDepth st > subDepthLim st
     then return defaultVal
-    else withState (\st -> st{subDepth = subDepth st + 1}) fn
+    else do
+      countNode_
+      i <- (+1) <$> gets subDepth
+      modify (\st -> st{subDepth = i, maxDepth = max (maxDepth st) i})
+      a <- fn
+      modify (\st -> st{subDepth = subDepth st - 1})
+      return a
 
 -- | The number of unique values a 'Prelude.Int' can be, which is @('Prelude.maxBound'+1)*2@.
 intBase :: Integer

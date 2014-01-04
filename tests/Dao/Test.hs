@@ -205,7 +205,7 @@ data GUnitTester config env stats test result
       -- a report file. The name of the report file will be the 'Preulde.Integer' of the test that
       -- was used to generate the @test@ that was evaluated with the string ".log" appended to it.
     , combineStats   :: result  -> stats -> GTest config env stats test result stats
-      -- Whenever a test is completed the @result@ data structure and the current @stats@ data
+      -- ^ Whenever a test is completed the @result@ data structure and the current @stats@ data
       -- structure are used to evaluate this function. This function should update the @stats@ data
       -- structure with statistical information about the tests, for example, execution time data.
       -- The number of tests completed thus far, the number of tests failed, and rate of test

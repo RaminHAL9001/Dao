@@ -51,7 +51,16 @@ import           System.IO
 ----------------------------------------------------------------------------------------------------
 
 type UnitEnv   = MethodTable
-type UnitStats = ()
+data UnitStats
+  = UnitStats
+    { maxNodeWeight   :: Int
+    , nodeWeightCount :: Int
+    , nodeWeightSum   :: Int
+    }
+
+instance HasNullValue UnitStats where
+  nullValue = UnitStats{ maxNodeWeight=0, nodeWeightCount=0, nodeWeightSum=0 }
+  testNull (UnitStats{ maxNodeWeight=a, nodeWeightCount=b, nodeWeightSum=c }) = a==0 && b==0 && c==0
 
 -- | See 'unitTester' in this module for detailed comments.
 type DaoLangUnit    = GUnitTester UnitConfig UnitEnv UnitStats TestCase TestResult
@@ -88,13 +97,14 @@ unitConfig =
 data TestCase
   = TestCase
     { testCaseID      :: Integer
+    , randGenStats    :: Int
     , testObject      :: RandObj
     , parseString     :: Maybe UStr
     , serializedBytes :: Maybe B.ByteString
     , treeStructure   :: Maybe T_tree
     }
 instance Show TestCase where
-  show (TestCase i o _str _bytes _tree) = unlines $ concat $
+  show (TestCase{testCaseID=i, testObject=o}) = unlines $ concat $
     [ ["TestID #"++show i]
     , case o of
         RandObject   _ -> ["Random Object:", prettyShow o]
@@ -130,7 +140,20 @@ setResult :: TRLens a -> (a -> a) -> DaoLangResultM ()
 setResult on f = modify (\r -> trLensSetter on (f $ trLensGetter on r) r)
 
 instance Show TestResult where
-  show (TestResult (TestCase i orig ppr enc tree) msg _count parsd decod struct) =
+  show (TestResult
+        { testCase =
+            TestCase
+            { testCaseID      = i
+            , testObject      = orig
+            , parseString     = ppr
+            , serializedBytes = enc
+            , treeStructure   = tree
+            }
+        , testResult       = msg
+        , getParserResult  = parsd
+        , getDecodedResult = decod
+        , getConstrResult  = struct
+        }) =
     unlines $ concat $ do
       let o msg1 src prin msg2 (passed, item) = do
             guard (not passed)
@@ -198,16 +221,27 @@ unitTester =
       if doTestParser o || doTestSerializer o || doTestStructizer o
       then return o
       else fail "Test configuration has disabled all test categories."
-  , showResult      = \r -> return (show r)
-  , combineStats    = \_ () -> return ()
+  , showResult     = \ r -> return (show r)
+  , combineStats   = \ r st -> do
+      let w = randGenStats (testCase r)
+      return $
+        st{ nodeWeightCount = nodeWeightCount st + 1
+          , maxNodeWeight   = max w (maxNodeWeight st)
+          , nodeWeightSum   = nodeWeightSum st + w
+          }
   , newEnvironment  = return . const mempty
-  , newStatistics   = return . const ()
-  , showStatistics  = const ""
-  , showTest        = Just show
-  , newResult       = return $
+  , newStatistics   = \ _ -> return nullValue
+  , showStatistics  = \ ustats -> unlines $
+      [ "max_node_weight     = "++show (maxNodeWeight ustats)
+      , "average_node_weight = "++
+          show (fromRational $
+            toRational (nodeWeightSum ustats) / toRational (nodeWeightCount ustats) :: Float)
+      ]
+  , showTest       = Just show
+  , newResult      = return $
       TestResult
-      { testCase = error "test result data not initialized with test case"
-      , testResult = nil
+      { testCase     = error "test result data not initialized with test case"
+      , testResult   = nil
       , failedTestCount  = 0
       , getParserResult  = (True, Nothing)
       , getDecodedResult = (True, Nothing)
@@ -219,18 +253,19 @@ unitTester =
       mtab <- getMethodTable
       cfg  <- asksUnitConfig id
       let maxDepth      = maxRecurseDepth cfg
-      let o             = genRandWith randO maxDepth (fromIntegral i)
+      let (o, weight)   = genRandWeighted maxDepth (fromIntegral i)
       let str           = prettyShow o
       let bin           = D.encode mtab o
       let tree          = dataToStruct o
       let setup isSet o = if isSet cfg then Just o else Nothing
-      return $
+      deepseq o $! seq weight $! return $!
         TestCase
-        { testCaseID       = i
-        , testObject       = o
-        , parseString      = setup doTestParser (ustr str)
-        , serializedBytes  = setup doTestSerializer bin
-        , treeStructure    = setup doTestStructizer tree
+        { testCaseID      = i
+        , randGenStats    = weight
+        , testObject      = o
+        , parseString     = setup doTestParser (ustr str)
+        , serializedBytes = setup doTestSerializer bin
+        , treeStructure   = setup doTestStructizer tree
         }
   --------------------------------------------------------------------------------------------------
 

@@ -430,7 +430,7 @@ instance Structured Location Object where
       return (Location a b c d)
 
 instance HasRandGen Object where
-  randO = randChoice $
+  randO = countNode $ randChoice $
     [ return ONull, return OTrue
     , fmap OInt randInt
     , fmap ORef   randO
@@ -1555,7 +1555,7 @@ instance Structured AST_CodeBlock Object where
   dataToStruct a = deconstruct (putDataAt "block" (getAST_CodeBlock a))
   structToData = reconstruct (fmap AST_CodeBlock (getDataAt "block"))
 
-instance HasRandGen AST_CodeBlock where { randO = recurse nullValue $ fmap AST_CodeBlock (randList 0 30) }
+instance HasRandGen AST_CodeBlock where { randO = countNode $ fmap AST_CodeBlock (randList 0 30) }
 
 instance Intermediate CodeBlock AST_CodeBlock where
   toInterm   (AST_CodeBlock ast) = return $ CodeBlock     (ast >>= toInterm  )
@@ -1689,7 +1689,7 @@ instance HasLocation a => HasLocation (AST_TyChk a) where
   delLocation       = astTyChkDelLocWith delLocation
 
 instance HasRandGen a => HasRandGen (AST_TyChk a) where
-  randO = AST_NotChecked <$> randO
+  randO = countNode $ AST_NotChecked <$> randO
   --randChoice [AST_NotChecked <$> randO, pure AST_Checked <*> randO <*> randO <*> randO <*> no]
 
 tyChkToInterm :: Intermediate a b => AST_TyChk b -> [TyChkExpr a]
@@ -1790,9 +1790,9 @@ instance Structured AST_Param  Object where
     ]
 
 instance HasRandGen AST_Param where
-  randO = pure AST_Param <*> randO <*> randO <*> no
+  randO = countNode $ pure AST_Param <*> randO <*> randO <*> no
 
-instance HasRandGen [Com AST_Param] where { randO = randList 0 8 }
+instance HasRandGen [Com AST_Param] where { randO = recurse [] $ randList 0 8 }
 
 instance Intermediate ParamExpr AST_Param where
   toInterm   a = case a of
@@ -1862,7 +1862,7 @@ instance Structured AST_ParamList  Object where
   dataToStruct (AST_ParamList lst loc) = deconstruct $ putData lst >> putData loc
   structToData = reconstruct $ liftM2 AST_ParamList getData getData
 
-instance HasRandGen AST_ParamList where { randO = pure AST_ParamList <*> randO <*> no }
+instance HasRandGen AST_ParamList where { randO = countNode $ pure AST_ParamList <*> randO <*> no }
 
 instance Intermediate ParamListExpr AST_ParamList where
   toInterm   (AST_ParamList ox loc) = liftM2 ParamListExpr (tyChkToInterm ox) [loc]
@@ -1935,7 +1935,7 @@ instance Structured AST_StringList Object where
     _     -> pure AST_StringList <*> getData <*> getData
 
 instance HasRandGen AST_StringList where
-  randO = randChoice $
+  randO = countNode $ randChoice $
     [ pure AST_StringList <*> randListOf 1 4 (randComWith (fmap (ustr . show) (randO::RandO Glob))) <*> no
     , pure AST_NoStrings  <*> randO <*> no
     ]
@@ -2941,6 +2941,7 @@ instance PPrintable RefExpr where pPrint = mapM_ pPrint . fromInterm
 
 instance HasRandGen AST_Ref where
   randO = do
+    countNode_
     r <- randList 1 6
     case r of
       []   -> return AST_RefNull
@@ -3000,6 +3001,7 @@ instance PrecedeWithSpace AST_QualRef where
 
 instance HasRandGen AST_QualRef where
   randO = do
+    countNode_
     n <- nextInt (fromEnum (maxBound::RefQualifier) - fromEnum (minBound::RefQualifier) + 1)
     if n==0
       then  AST_Unqualified <$> randO
@@ -3117,7 +3119,7 @@ instance Structured AST_Paren  Object where
   dataToStruct (AST_Paren a loc) = deconstruct $ with "paren" $ putData a >> putData loc
   structToData = reconstruct $ with "paren" $ pure AST_Paren <*> getData <*> getData
 
-instance HasRandGen AST_Paren  where { randO = pure AST_Paren  <*> randO <*> no }
+instance HasRandGen AST_Paren  where { randO = recurse nullValue $ pure AST_Paren  <*> randO <*> no }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3168,7 +3170,7 @@ instance Structured AST_If Object where
     with "ifExpr" $ putData ifn >> putDataAt "then" thn >> putData loc
   structToData = reconstruct $ with "ifExpr" $ liftM3 AST_If getData (getDataAt "then") getData
 
-instance HasRandGen AST_If     where { randO = pure AST_If     <*> randO <*> randO <*> no }
+instance HasRandGen AST_If     where { randO = countNode $ pure AST_If <*> randO <*> randO <*> no }
 
 instance Intermediate IfExpr AST_If where
   toInterm   (AST_If a b loc) = liftM3 IfExpr (uc0 a) (ti  b) [loc]
@@ -3220,7 +3222,7 @@ instance Structured AST_Else  Object where
     with "elseIfExpr" $ putData coms >> putData ifn >> putData loc
   structToData = reconstruct $ with "elseIfExpr" $ liftM3 AST_Else getData getData getData
 
-instance HasRandGen AST_Else where { randO = pure AST_Else   <*> randO <*> randO <*> no }
+instance HasRandGen AST_Else where { randO = countNode $ pure AST_Else <*> randO <*> randO <*> no }
 
 instance Intermediate ElseExpr AST_Else where
   toInterm   (AST_Else _ a loc) = liftM2 ElseExpr          (ti  a) [loc]
@@ -3295,7 +3297,7 @@ instance Structured AST_IfElse  Object where
   structToData = reconstruct $ with "ifExpr" $
     liftM5 AST_IfElse getData (getListWith getData) getData (optional (getDataAt "elseExpr")) getData
 
-instance HasRandGen AST_IfElse where { randO = pure AST_IfElse <*> randO <*> randList 0 4 <*> randO <*> randO <*> no }
+instance HasRandGen AST_IfElse where { randO = countNode $ pure AST_IfElse <*> randO <*> randList 0 4 <*> randO <*> randO <*> no }
 
 instance Intermediate IfElseExpr AST_IfElse where
   toInterm   (AST_IfElse a b _ c loc) = liftM4 IfElseExpr (ti  a) [b>>=ti]          (um1 c) [loc]
@@ -3355,7 +3357,7 @@ instance Structured AST_While  Object where
   structToData = reconstruct $ with "whileExpr" $
     liftM3 (\a b c -> AST_While (AST_If a b c)) getData (getDataAt "script") getData
 
-instance HasRandGen AST_While  where { randO = pure AST_While  <*> randO }
+instance HasRandGen AST_While  where { randO = AST_While <$> randO }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3726,24 +3728,18 @@ instance Structured AST_Script Object where
       getContinue tf = pure (AST_ContinueExpr tf) <*> getComments        <*> getDataAt "condition"     <*> getData
       getReturn   tf = pure (AST_ReturnExpr   tf) <*> getDataAt "object" <*> getData
 
-randScriptList :: [RandO AST_Script]
-randScriptList =
-  [ pure AST_EvalObject   <*> randO <*> randO <*> no
-  , pure AST_IfThenElse   <*> randO
-  , pure AST_WhileLoop    <*> randO
-  , pure AST_RuleFunc     <*> randO
-  , pure AST_TryCatch     <*> randO <*> randO <*> randO <*> no
-  , pure AST_ForLoop      <*> randO <*> randO <*> randO <*> no
-  , pure AST_ContinueExpr <*> randO <*> randO <*> randO <*> no
-  , pure AST_ReturnExpr   <*> randO <*> randO <*> no
-  , pure AST_WithDoc      <*> randO <*> randO <*> no
-  ]
-
-randScript :: RandO AST_Script
-randScript = randChoice randScriptList
-
 instance HasRandGen AST_Script where
-  randO = randChoice randScriptList
+  randO = recurse nullValue $ randChoice $
+    [ pure AST_EvalObject   <*> randO <*> randO <*> no
+    , pure AST_IfThenElse   <*> randO
+    , pure AST_WhileLoop    <*> randO
+    , pure AST_RuleFunc     <*> randO
+    , pure AST_TryCatch     <*> randO <*> randO <*> randO <*> no
+    , pure AST_ForLoop      <*> randO <*> randO <*> randO <*> no
+    , pure AST_ContinueExpr <*> randO <*> randO <*> randO <*> no
+    , pure AST_ReturnExpr   <*> randO <*> randO <*> no
+    , pure AST_WithDoc      <*> randO <*> randO <*> no
+    ]
 
 instance PPrintable ScriptExpr  where { pPrint = pPrintInterm }
 
@@ -3914,7 +3910,7 @@ instance Structured AST_OptObjList Object where
     ]
 
 instance HasRandGen AST_OptObjList where
-  randO = randChoice $
+  randO = countNode $ randChoice $
      [ pure AST_OptObjList <*> randO <*> pure Nothing
      , pure AST_OptObjList <*> randO <*> (Just <$> randO)
      ]
@@ -3981,7 +3977,7 @@ instance Structured AST_Literal Object where
     ]
 
 instance HasRandGen AST_Literal where
-  randO = randChoice $ fmap (\gen -> pure AST_Literal <*> gen <*> no) $
+  randO = countNode $ randChoice $ fmap (\gen -> pure AST_Literal <*> gen <*> no) $
     [ OString <$> randO
     , return ONull, return OTrue
     , randInteger (OInt   0) $ \i ->
@@ -4128,7 +4124,7 @@ instance Structured AST_RefOperand Object where
     ]
 
 instance HasRandGen AST_RefOperand where
-  randO = randChoice $
+  randO = countNode $ randChoice $
     [ AST_ObjParen <$> randO
     , AST_PlainRef <$> randO
     , pure AST_ArraySub <*> randO <*> randO <*> no
@@ -4253,7 +4249,7 @@ instance Structured AST_Single Object where
     ]
 
 instance HasRandGen AST_Single where
-  randO = randChoice $
+  randO = countNode $ randChoice $
     [ AST_Single <$> randO
     , pure (AST_RefPfx REF)   <*> randO <*> randO <*> no
     , pure (AST_RefPfx DEREF) <*> randO <*> randO <*> no
@@ -4397,10 +4393,10 @@ instance Structured AST_RuleFunc Object where
     ]
 
 instance HasRandGen AST_RuleFunc where
-  randO = randChoice $
-    [ pure AST_Lambda   <*> randO <*> randO <*> no
-    , pure AST_Func <*> randO <*> randO <*> randO <*> randO <*> no
-    , pure AST_Rule <*> randO <*> randO <*> no
+  randO = countNode $ randChoice $
+    [ pure AST_Lambda <*> randO <*> randO <*> no
+    , pure AST_Func   <*> randO <*> randO <*> randO <*> randO <*> no
+    , pure AST_Rule   <*> randO <*> randO <*> no
     ]
 
 instance Intermediate RuleFuncExpr AST_RuleFunc where
@@ -4671,7 +4667,7 @@ instance Structured AST_Object Object where
     ]
 
 instance HasRandGen AST_Object where
-  randO = randChoice $
+  randO = countNode $ randChoice $
     [ AST_ObjLiteral  <$> randO
     , AST_ObjSingle   <$> randO
     , AST_ObjRuleFunc <$> randO
@@ -4680,7 +4676,7 @@ instance HasRandGen AST_Object where
     , pure AST_MetaEval <*> randO <*> no
     ]
 
-instance HasRandGen [Com AST_Object] where { randO = randList 1 20 }
+instance HasRandGen [Com AST_Object] where { randO = countNode $ randList 1 20 }
 
 instance Intermediate ObjectExpr AST_Object where
   toInterm ast = case ast of
@@ -4820,7 +4816,7 @@ instance Structured AST_Arith Object where
     ]
 
 instance HasRandGen AST_Arith where
-  randO = randChoice $
+  randO = countNode $ randChoice $
     [ AST_Object <$> randO
     , do  o  <- AST_Object <$> randO
           ox <- randListOf 0 4 (pure (,) <*> randInfixOp <*> (AST_Object <$> randO))
@@ -4978,7 +4974,7 @@ instance Structured AST_Assign Object where
     ]
 
 instance HasRandGen AST_Assign where
-  randO = randChoice $
+  randO = recurse nullValue $ randChoice $
     [ AST_Eval  <$> randO
     , do ox <- randListOf 0 3 (pure (,) <*> randO <*> randO)
          o  <- randO
@@ -5123,13 +5119,13 @@ instance Structured AST_TopLevel  Object where
     ]
 
 instance HasRandGen AST_TopLevel where
-  randO = randChoice $
+  randO = countNode $ randChoice $
     [ pure AST_Attribute
         <*> (randChoice [return (ustr "import"), return (ustr "require")])
         <*> randO
         <*> no
-    , pure AST_TopScript <*> randScript <*> no
-    , pure AST_Event     <*> randO      <*> randO <*> randO <*> no
+    , pure AST_TopScript <*> randO <*> no
+    , pure AST_Event     <*> randO <*> randO <*> randO <*> no
     ]
 
 instance Intermediate TopLevelExpr AST_TopLevel where

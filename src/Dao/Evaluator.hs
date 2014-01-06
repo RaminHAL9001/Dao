@@ -1397,6 +1397,14 @@ instance B.Binary CodeBlock MTab where
 
 instance Executable CodeBlock () where { execute (CodeBlock ox) = mapM_ execute ox }
 
+instance ObjectClass CodeBlock where
+  objectMethods = defObjectInterface nullValue $ do
+    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt
+    defDeref $ \o -> catchError (execute o >> return Nothing) $ \e -> case e of
+      ExecReturn o -> return o
+      ExecError{}  -> throwError e
+    -- TODO: define autoDefIterator, defIndexer, autoDefTreeFormat
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A subroutine is contains a 'CodeBlock' and an 'Data.IORef.IORef' to it's own static data. It
@@ -2629,7 +2637,7 @@ builtin_join = DaoFunc True $ \ox -> case ox of
 builtin_check_ref :: DaoFunc
 builtin_check_ref = DaoFunc True $ \args -> do
   fmap (Just . oBool . and) $ forM args $ \arg -> case arg of
-    ORef o -> fmap (maybe False (const True)) (execute o :: Exec (Maybe Object))
+    ORef o -> fmap (maybe False (const True)) (execute o)
     _      -> return True
 
 builtin_delete :: DaoFunc
@@ -2751,7 +2759,7 @@ instance B.HasPrefixTable QualRefExpr B.Byte mtab where
         Qualified q o -> pure (\lo1 lo2 -> QualRefExpr q (RefExpr o lo1) lo2) <*> B.get <*> B.get
     ]
 
-instance Executable QualRefExpr (Maybe Object) where { execute = execute . qualRefFromExpr }
+instance Executable QualRefExpr (Maybe Object) where { execute = return . Just . ORef . qualRefFromExpr }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2824,26 +2832,26 @@ matchFuncParams (ParamListExpr params _) values = loop T.Void (tyChkItem params)
 execGuardBlock :: [ScriptExpr] -> Exec ()
 execGuardBlock block = void (execFuncPushStack T.Void (mapM_ execute block >> return Nothing) >> return ())
 
-callFunction :: QualRef -> [ParamValue] -> Exec (Maybe Object)
+callFunction :: QualRef -> ObjListExpr -> Exec (Maybe Object)
 callFunction qref params = do
   o <- execute qref
   o <- case o of
     Just  o -> return o
     Nothing -> execThrow $ obj $
       [ obj "function call on undefined reference", obj qref
-      , obj "called with parameters", obj (map paramValue params)
+      , obj "called with parameters", new params
       ]
   let err = execThrow $ obj $
         [ obj "reference does not point to callable object: ", ORef qref
-        , obj "called with parameters: ", obj (map paramValue params)
+        , obj "called with parameters: ", new params
         , obj "value of object at reference is: ", o
         ]
   case o of
     OHaskell (HaskellData o ifc) -> case objCallable ifc of
       Just fn  -> do
         callables <- fn o
-        msum $ flip fmap callables $ \code ->
-          matchFuncParams (argsPattern code) params >>= flip execFuncPushStack (execute code)
+        msum $ flip fmap callables $ \code -> execNested T.Void $
+          execute params >>= matchFuncParams (argsPattern code) >>= flip execFuncPushStack (execute code)
       Nothing -> err
     _ -> err
 
@@ -2864,7 +2872,7 @@ updateReference qref upd = do
       GLOBAL -> fn ref globalData
       GLODOT -> fn ref currentWithRef
 
-instance Executable ParamValue Object where { execute (ParamValue obj _) = derefObject obj }
+instance Executable ParamValue Object where { execute (ParamValue obj _) = return obj }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3563,9 +3571,14 @@ data ForLoopBlock = ForLoopBlock Name Object CodeBlock
 -- 'Dao.Object.Object' type. If the value of the 'Dao.Object.Object' is not constructed with
 -- 'Dao.Object.ORef', the object value is returned unmodified.
 derefObject :: Object -> Exec Object
-derefObject o = case o of
-  ORef ref -> execute ref >>= maybe (execThrow $ obj [obj "undefined reference", o]) return
-  o        -> return o
+derefObject o = do
+  let cantDeref msg = execThrow $ obj [obj msg, o]
+  maybe (cantDeref "undefined reference") return =<< case o of
+    ORef o -> execute o
+    OHaskell (HaskellData o ifc) -> case objDereferencer ifc of
+      Nothing    -> cantDeref "value cannot be used as reference"
+      Just deref -> deref o
+    o -> return (Just o)
 
 instance Executable ForLoopBlock (Bool, Maybe Object) where
   execute (ForLoopBlock name obj block) = 
@@ -3787,10 +3800,14 @@ instance B.Binary ObjListExpr MTab where
   get = (B.tryWord8 0x3B $ pure ObjListExpr <*> B.getUnwrapped <*> B.get) <|> fail "expecting ObjListExpr"
 
 instance Executable ObjListExpr [ParamValue] where
-  execute (ObjListExpr exprs _) = execNested T.Void $ do
+  execute (ObjListExpr exprs _) = do
     fmap concat $ forM exprs $ \expr -> execute expr >>= \val -> case val of
       Nothing  -> execThrow $ obj [obj "expression used in list evaluated to void"]
       Just val -> return [ParamValue{paramValue=val, paramOrigExpr=expr}]
+
+instance ObjectClass ObjListExpr where
+  objectMethods = defObjectInterface nullValue $ do
+    autoDefNullTest >> autoDefEquality >> autoDefOrdering
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4055,7 +4072,7 @@ instance Executable RefOpExpr (Maybe Object) where
       o  <- execute op >>= checkVoid loc "function selector evaluates to void"
       op <- mplus (asReference o) $ execThrow $ obj $
         [obj "function selector does not evaluate to reference", o]
-      execute args >>= callFunction op
+      callFunction op args
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
 ----------------------------------------------------------------------------------------------------
@@ -4181,21 +4198,13 @@ instance Executable SingleExpr (Maybe Object) where
         let evalRef o = execute o >>= \r -> case r of
               Nothing       -> return $ Just $ ORef $ Unqualified $ Reference []
               Just (ORef _) -> return r
-              Just  r       -> execThrow $ obj [obj "cannot use as reference", r]
+              Just  r       -> execThrow $ obj [obj "cannot use result as reference", r]
         case o of
           PlainRefExpr o -> return $ Just $ ORef $ qualRefFromExpr o
           ObjParenExpr o -> evalRef o
           ArraySubExpr{} -> evalRef o
           FuncCall{}     -> evalRef o
-      DEREF -> do
-        o <- execute o >>= checkVoid loc "dereferenced void value"
-        let cantDeref = fail "cannot deref value"
-        case o of
-          ORef o -> execute o
-          OHaskell (HaskellData o ifc) -> case objDereferencer ifc of
-            Nothing    -> cantDeref
-            Just deref -> deref o
-          _ -> cantDeref
+      DEREF -> fmap Just $ execute o >>= checkVoid loc "dereferenced void value"
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
 instance Structured SingleExpr Object where
@@ -4573,7 +4582,7 @@ instance Executable ObjectExpr (Maybe Object) where
               fmap (Just . OHaskell . flip HaskellData tab) $
                 execute initMap >>= mapM execute >>= init list
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    MetaEvalExpr expr _ -> catchReturn return ((execute expr :: Exec ()) >> return Nothing)
+    MetaEvalExpr expr _ -> return $ Just $ new expr
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
 instance ObjectClass ObjectExpr where
@@ -4922,7 +4931,7 @@ instance Executable AssignExpr (Maybe Object) where
         [ execute nm >>= checkVoid (getLocation nm) (lhs++" evaluates to void") >>= asReference
         , execThrow $ obj [obj $ lhs++" is not a reference value"]
         ]
-      expr <- execute expr >>= checkVoid loc "right-hand side of assignment" >>= derefObject
+      expr <- execute expr >>= checkVoid loc "right-hand side of assignment"
       updateReference nm $ \maybeObj -> case maybeObj of
         Nothing      -> case op of
           UCONST -> return (Just expr)

@@ -1,7 +1,7 @@
 -- "src/Dao/Ext/Parsers/C.hs"  An experimental C-language parser
 -- implemented using Dao's own parsing module.
 -- 
--- Copyright (C) 2008-2013  Ramin Honary.
+-- Copyright (C) 2008-2014  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

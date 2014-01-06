@@ -2,7 +2,7 @@
 -- with permissions to do so to compute syncrhonous and asyncrhonous
 -- function evaluation in parallel threads.
 -- 
--- Copyright (C) 2008-2013  Ramin Honary.
+-- Copyright (C) 2008-2014  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

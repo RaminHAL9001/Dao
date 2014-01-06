@@ -1,7 +1,7 @@
 -- "src/dao-main.hs"  the Main module for the "dao" executable program.
 -- Provides an interactive command line interface to the Dao System.
 -- 
--- Copyright (C) 2008-2013  Ramin Honary.
+-- Copyright (C) 2008-2014  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or
@@ -38,7 +38,7 @@ import           System.IO
 
 disclaimer :: String
 disclaimer = unlines $
-  [ "\"Dao\"  Copyright (C) 2008-2013  Ramin Honary."
+  [ "\"Dao\"  Copyright (C) 2008-2014  Ramin Honary."
   , "This program comes with ABSOLUTELY NO WARRANTY."
   , "This is free software, and you are welcome to redistribute it under"
   , "the terms and conditions of the GNU Affero General Public License."
@@ -80,7 +80,7 @@ main = do
 
 license_text :: String
 license_text = unlines $
-  [ "Copyright (C) 2008-2013  Ramin Honary"
+  [ "Copyright (C) 2008-2014  Ramin Honary"
   , ""
   , "This program is free software: you can redistribute it and/or modify"
   , "it under the terms of the GNU General Public License as published by"

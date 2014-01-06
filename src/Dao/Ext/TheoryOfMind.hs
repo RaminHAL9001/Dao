@@ -4,7 +4,7 @@
 -- that there are other people that behave autonomously and have
 -- different information than ones self.
 -- 
--- Copyright (C) 2008-2013  Ramin Honary.
+-- Copyright (C) 2008-2014  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

@@ -1,7 +1,7 @@
 -- "tests/Dao/Test.hs" tests the Dao program with randomly generated
 -- tests, like Haskell quick-check but in a more specialized way.
 -- 
--- Copyright (C) 2008-2013  Ramin Honary.
+-- Copyright (C) 2008-2014  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

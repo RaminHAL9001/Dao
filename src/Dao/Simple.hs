@@ -1,6 +1,6 @@
 -- "src/Dao/Simple.hs"  a simplified version of the Dao runtime.
 -- 
--- Copyright (C) 2008-2013  Ramin Honary.
+-- Copyright (C) 2008-2014  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

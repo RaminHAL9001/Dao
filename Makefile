@@ -1,7 +1,7 @@
 # "ghc-build-opts.mk": a GNU-Make script to build the "Dao" modules
 # and interactive program.
 # 
-# Copyright (C) 2008-2013  Ramin Honary.
+# Copyright (C) 2008-2014  Ramin Honary.
 # 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by

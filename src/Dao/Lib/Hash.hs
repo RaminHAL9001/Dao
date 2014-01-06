@@ -2,7 +2,7 @@
 -- serializable object to any other serializable object with a hash of
 -- the serialized form of the key object as the index.
 -- 
--- Copyright (C) 2008-2013  Ramin Honary.
+-- Copyright (C) 2008-2014  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

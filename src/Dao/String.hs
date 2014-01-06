@@ -1,7 +1,7 @@
 -- "src/Dao/String.hs"  provides the fundamental string data type
 -- called "UStr" which is used throughout the Dao System.
 -- 
--- Copyright (C) 2008-2013  Ramin Honary.
+-- Copyright (C) 2008-2014  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

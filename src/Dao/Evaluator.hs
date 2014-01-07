@@ -48,6 +48,7 @@ import           Control.Monad.Trans
 import           Control.Monad.Reader
 import           Control.Monad.State
 import           Control.Monad.Error
+import           Control.DeepSeq
 
 import           Data.Dynamic
 import           Data.Monoid
@@ -65,11 +66,7 @@ import qualified Data.IntMap as I
 import qualified Data.ByteString.Lazy as B
 import           Data.Binary (encode)
 
-import Control.DeepSeq
-import Debug.Trace
-
-tra :: Monad m => String -> r -> m r
-tra msg r = trace msg (return ()) >> return r
+import           System.IO
 
 -- not for export
 lu :: Location
@@ -78,6 +75,101 @@ fd :: HasLocation a => a -> a
 fd = delLocation
 fd1 :: (HasLocation a, Functor f) => f a -> f a
 fd1 = fmap delLocation
+
+----------------------------------------------------------------------------------------------------
+
+-- | This function is a placeholder used by the type system. The value of this function is
+-- undefined, so strictly evaluating it will throw an exception. Fortunately, the only time you will
+-- ever use this function is with the 'daoClass' function, which uses the type of this function but
+-- never it's value. Refer to the documentation on 'daoClass' to see how to properly use this
+-- function.
+haskellType :: ObjectClass o => o
+haskellType = error $ unwords $
+  [ "the Dao.Evaluator.haskellType function is just a placeholder"
+  , "used by the type system, it must not be evaluated."
+  ]
+
+data SetupModState
+  = SetupModState
+    { daoSatisfies     :: T.Tree Name ()
+      -- ^ a set of references that can satisfy "require" statements in Dao scripts.
+    , daoTopLevelFuncs :: M.Map Name DaoFunc
+    , daoClasses       :: MethodTable
+    , daoEntryPoint    :: Exec ()
+    }
+
+-- | This monadic type allows you to define a built-in module using procedural
+-- programming syntax. Simply define each addition to the module one line at a time. Functions that
+-- you can use include 'modProvides', 'modFunction', 'daoClass', and 'daoInitalize'.
+-- 
+-- Define clever names for every 'DaoSetup' you write, then 
+type DaoSetup = DaoSetupM ()
+newtype DaoSetupM a = DaoSetup{ daoSetupM :: State SetupModState a }
+  deriving (Functor, Applicative, Monad)
+
+-- not for export
+updateSetupModState :: (SetupModState -> SetupModState) -> DaoSetup
+updateSetupModState f = DaoSetup (modify f)
+
+-- | Dao programs can declare "requires" statements along with it's imports. If your built-in module
+-- provides what Dao programs might "require", then declare that this module provides that feature
+-- using this function.
+daoProvides :: UStrType s => s -> DaoSetup
+daoProvides label = updateSetupModState $ \st ->
+  st{ daoSatisfies = T.insert (refNameList $ read $ uchars label) () (daoSatisfies st) }
+
+-- | Associate an 'ObjectClass' with a 'Name'. This 'Name' will be callable from within Dao scripts.
+-- > newtype MyClass = MyClass { ... } deriving (Eq, Ord)
+-- >
+-- > instance 'ObjectClass' MyClass where
+-- >     'objectMethods' = 'defObjectInterface' $ do
+-- >         'autoDefEquality'
+-- >         'autoDefOrdering'
+-- >         ...
+-- >
+-- > setupDao :: 'DaoSetup'
+-- > setupDao = do
+-- >     daoClass "myClass" (haskellType::MyClass)
+-- >     ...
+daoClass :: (UStrType name, Typeable o, ObjectClass o) => name -> o -> DaoSetup
+daoClass name ~o = updateSetupModState $ \st ->
+    st{ daoClasses = insertMethodTable o (fromUStr $ toUStr name) objectMethods (daoClasses st) }
+
+-- | Define a built-in function. Examples of built-in functions provided in this module are
+-- "print()", "join()", and "exec()".
+daoFunction :: UStrType name => name -> DaoFunc -> DaoSetup
+daoFunction name func = updateSetupModState $ \st ->
+  st{ daoTopLevelFuncs = M.insert (fromUStr $ toUStr name) func (daoTopLevelFuncs st) }
+
+-- | Provide an 'Exec' monad to perform when 'setupDao' is evaluated. You may use this function as
+-- many times as you wish, every 'Exec' monad will be executed in the order they are specified. This
+-- is a good way to create a read-eval-print loop.
+daoInitialize :: Exec () -> DaoSetup
+daoInitialize f = updateSetupModState $ \st -> st{ daoEntryPoint = daoEntryPoint st >> f }
+
+-- | Use this function evaluate a 'DaoSetup' in the IO () monad. Use this to define the 'main'
+-- function of your program.
+setupDao :: DaoSetup -> IO ()
+setupDao setup0 = do
+  let setup = execState (daoSetupM (setup0 >> initBuiltinFuncs)) $
+        SetupModState
+        { daoSatisfies     = T.Void
+        , daoTopLevelFuncs = M.empty
+        , daoClasses       = mempty
+        , daoEntryPoint    = return ()
+        }
+  xunit  <- initExecUnit Nothing
+  result <- ioExec (daoEntryPoint setup) $
+    xunit
+    { providedAttributes = daoSatisfies setup
+    , builtinFunctions   = daoTopLevelFuncs setup
+    , globalMethodTable  = daoClasses setup
+    }
+  case result of
+    OK    ()                -> return ()
+    PFail (ExecReturn  obj) -> maybe (return ()) (putStrLn . prettyShow) obj
+    PFail (err@ExecError{}) -> hPutStrLn stderr (prettyShow err)
+    Backtrack               -> hPutStrLn stderr "(does not compute)"
 
 ----------------------------------------------------------------------------------------------------
 
@@ -147,7 +239,7 @@ instance B.Binary HaskellData MTab where
     maybe mzero id $ do
       tid <- tid
       fn  <- B.getDecoderForType tid mtab
-      tab <- lookupMethodTable tid mtab
+      tab <- lookupMethodTable (fromUStr tid) mtab
       return (flip HaskellData tab <$> B.getWithBlockStream1M fn)
 
 ----------------------------------------------------------------------------------------------------
@@ -480,14 +572,14 @@ data ExecUnit
     , execStack          :: LocalStore
       -- ^ stack of local variables used during evaluation
     , globalData         :: GlobalStore
+    , providedAttributes :: T.Tree Name ()
+    , builtinFunctions   :: M.Map Name DaoFunc
       -- ^ global variables cleared after every string execution
     , execOpenFiles      :: IORef (M.Map UPath ExecUnit)
     , recursiveInput     :: IORef [UStr]
     , uncaughtErrors     :: IORef [Object]
     , programModuleName  :: Maybe UPath
     , programImports     :: [UPath]
-    , requiredBuiltins   :: [Name]
-    , programAttributes  :: M.Map Name Name
     , preExec            :: [Subroutine]
       -- ^ the "guard scripts" that are executed before every string execution.
     , postExec           :: [Subroutine]
@@ -523,6 +615,8 @@ initExecUnit modName = do
     , currentBranch      = []
     , importsTable       = []
     , globalData         = GlobalStore global
+    , providedAttributes = T.Void
+    , builtinFunctions   = M.empty
     , taskForActions     = task
     , taskForExecUnits   = execTask
     , execStack          = LocalStore xstack
@@ -532,8 +626,6 @@ initExecUnit modName = do
       ---- items that were in the Program data structure ----
     , programModuleName = modName
     , programImports    = []
-    , requiredBuiltins  = []
-    , programAttributes = mempty
     , preExec           = []
     , quittingTime      = mempty
 --    , programTokenizer  = return . tokens . uchars
@@ -2602,6 +2694,18 @@ recurseGetAllStrings o = catch (loop [] o) where
 -- language.
 data DaoFunc = DaoFunc { autoDerefParams :: Bool, daoForeignCall :: [Object] -> Exec (Maybe Object) }
 
+-- | Execute a 'DaoFunc' 
+executeDaoFunc :: Name -> DaoFunc -> ObjListExpr -> Exec (Maybe Object)
+executeDaoFunc _op fn params = do
+  args <- execute params >>= mapM execute >>=
+    (if autoDerefParams fn then mapM derefObject else return)
+  pval <- catchPredicate (daoForeignCall fn args)
+  case pval of
+    OK                 obj  -> return obj
+    PFail (ExecReturn  obj) -> return obj
+    PFail (err@ExecError{}) -> throwError err
+    Backtrack               -> mzero
+
 execModifyTopStackItem :: Stack name obj -> (T.Tree name obj -> Exec (T.Tree name obj, a)) -> Exec (Stack name obj, a)
 execModifyTopStackItem (Stack stks) upd = case stks of
   []       -> execThrow $ obj [obj "execution stack empty"]
@@ -2649,13 +2753,12 @@ builtin_delete = DaoFunc True $ \args -> do
 
 -- | The map that contains the built-in functions that are used to initialize every
 -- 'Dao.Object.ExecUnit'.
-initBuiltinFuncs :: M.Map Name DaoFunc
-initBuiltinFuncs = let o a b = (ustr a, b) in M.fromList $
-  [ o "print"   builtin_print
-  , o "join"    builtin_join
-  , o "defined" builtin_check_ref
-  , o "delete"  builtin_delete
-  ]
+initBuiltinFuncs :: DaoSetup
+initBuiltinFuncs = do
+  daoFunction "print"   builtin_print
+  daoFunction "join"    builtin_join
+  daoFunction "defined" builtin_check_ref
+  daoFunction "delete"  builtin_delete
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2760,23 +2863,6 @@ instance B.HasPrefixTable QualRefExpr B.Byte mtab where
     ]
 
 instance Executable QualRefExpr (Maybe Object) where { execute = return . Just . ORef . qualRefFromExpr }
-
-----------------------------------------------------------------------------------------------------
-
--- | This data type is essentially a "thunk" used to store a 'DaoFunc' and a list of 'ParamValue's.
--- It is primarily used to instantiate the 'Executable' class. When evaluating this data type with
--- 'execute' the 'DaoFunc' is executed by passing it the list of 'ParamValues'.
-data ExecDaoFunc = MkExecDaoFunc Name [ParamValue] DaoFunc
-
-instance Executable ExecDaoFunc (Maybe Object) where
-  execute (MkExecDaoFunc _op params fn) = do
-    args <- if autoDerefParams fn then mapM execute params else return (fmap paramValue params)
-    pval <- catchPredicate (daoForeignCall fn args)
-    case pval of
-      OK                 obj  -> return obj
-      PFail (ExecReturn  obj) -> return obj
-      PFail (err@ExecError{}) -> throwError err
-      Backtrack               -> mzero
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4072,7 +4158,13 @@ instance Executable RefOpExpr (Maybe Object) where
       o  <- execute op >>= checkVoid loc "function selector evaluates to void"
       op <- mplus (asReference o) $ execThrow $ obj $
         [obj "function selector does not evaluate to reference", o]
-      callFunction op args
+      let nonBuiltin = callFunction op args
+      builtins <- asks builtinFunctions
+      case op of
+        Unqualified (Reference [name]) -> case M.lookup name builtins of
+          Just func -> executeDaoFunc name func args
+          Nothing   -> nonBuiltin
+        _ -> nonBuiltin
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
 ----------------------------------------------------------------------------------------------------
@@ -5332,6 +5424,17 @@ execGetObjTable nm = asks (lookupMethodTable nm . globalMethodTable)
 
 lookupMethodTable :: UStr -> MethodTable -> Maybe (ObjectInterface Dynamic)
 lookupMethodTable nm (MethodTable tab) = M.lookup nm tab
+
+-- not for export, use 'daoClass'
+insertMethodTable
+  :: (Typeable o, ObjectClass o)
+  => o
+  -> UStr
+  -> ObjectInterface o
+  -> MethodTable
+  -> MethodTable
+insertMethodTable _ nm ifc = flip mappend $
+  MethodTable (M.singleton nm (objectInterfaceToDynamic ifc))
 
 typeRepToUStr :: TypeRep -> UStr
 typeRepToUStr a = let con = typeRepTyCon a in ustr (tyConModule con ++ '.' : tyConName con)

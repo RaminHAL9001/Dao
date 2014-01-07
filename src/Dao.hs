@@ -19,9 +19,6 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
-
--- {-# LANGUAGE TemplateHaskell #-}
-
 -- | This module is pretty much where everything begins. It is the smallest interface that can be
 -- imported by any Haskell program making use of the Dao System. You can use the functions in this
 -- module to initialize a 'Dao.Object.Runtime' data structure, then use it to start an input query
@@ -31,10 +28,10 @@
 -- To have more control over execution of string queries, you will need to import the "Dao.Tasks"
 -- module and make use of those functions to create 'Dao.Object.Job's from string queries, then wait
 -- for those 'Dao.Object.Job's to complete.
-
 module Dao
   ( module Dao.String
   , module Dao.Object
+  , module Dao.Evaluator
   , module Dao
   ) where
 
@@ -64,8 +61,6 @@ import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.Reader.Class
 
-import           System.IO
-
 ----------------------------------------------------------------------------------------------------
 
 -- | The minimum amount of time allowable for a single input string to execute before timing out.
@@ -74,18 +69,6 @@ import           System.IO
 -- patience for.
 min_exec_time :: Int
 min_exec_time = 200000
-
--- | Create a new 'ExecUnit', optionally providing a file to which output debugging information, and
--- an 'Exec' monad to evalaute.
-daoRuntime :: Exec () -> IO ()
-daoRuntime daoMain = do
-  xunit    <- initExecUnit Nothing
-  result   <- ioExec daoMain xunit
-  case result of
-    OK    ()                -> return ()
-    PFail (ExecReturn  obj) -> maybe (return ()) (putStrLn . prettyShow) obj
-    PFail (err@ExecError{}) -> hPutStrLn stderr (prettyShow err)
-    Backtrack               -> hPutStrLn stderr "(does not compute)"
 
 singleThreaded :: [UStr] -> Exec ()
 singleThreaded args = do

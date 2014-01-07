@@ -74,7 +74,9 @@ main = do
   when (null q) (putStr disclaimer)
   --initialize -- initialize the ReadLine library
   args <- fmap (fmap ustr) getArgs
-  daoRuntime (singleThreaded args)
+  setupDao $ do
+    daoInitialize $ do
+      singleThreaded args
   --restorePrompt -- shut-down the ReadLine library
   hPutStrLn stderr "Dao has exited."
 

@@ -1,4 +1,39 @@
 TODO:
+* Create some decent example programs that demonstrate the expert system
+	functionality of the Dao language.
+
+	I recall the reason I wanted to invent Dao to begin with: I want an expert system that can
+	"understand" human knowledge to some degree, not just catalog it and index it, a system that can
+	actually model these ideas as code and associate natural language rules that can reasonable
+	retrieve this knowledge by a variety of search techniques, all within a single unified
+	programming language.
+	
+	Now I have almost completed the Dao language interpreter and I am seriously thinking about
+	trying out all these ideas I've had for about 10 years and never had any means to implement
+	them. But now that I've almost achieved my dream, I honestly have no clue where to begin, or
+	which idea I should try first.
+
+	I realized that probably the first thing I want to do is write a script that can "understand"
+	basic mathematics, concepts that we in well educated societies learn since we are extremely
+	young, like counting, the idea of lines and planes and spaces and time. Keeping things simple
+	and working up to more complex ideas in time, I want to start conceptualizing complex ideas like
+	sets, dimensions, logic, and probabilities, with very simple concrete examples that I program by
+	hand, in the same way I might explain to a child. From there maybe I can figure out how to
+	generalize knowledge programmed into a Dao script by performing some kind of analysis on the
+	code in the script.
+
+	The ultimate goal is to have some API for analyzing a Dao script, recognizing patterns in
+	language and the associated code, using the patterns to formulate a hypothetical law formulated
+	as a general more pattern that can generate working code, then test that hypothesis in
+	conversation by generating a response statement to the conversation partner using the
+	hypothetical law to see if a conversation partner understands the statement. If there is an
+	indication that the response was understood, the law is considered a verified law and added to a
+	"theory" database containing all the laws that have been verified.
+
+	But for now, lets keep things simple. Simple concepts modeled as code associated with simple
+	language rules with a goal of solving simple mathematical word problems. Then work up from
+	there.
+
 * Move the semantic data types 'Dao.Object.ObjectExpr', 'Dao.Object.ScriptExpr', and
 	'Dao.Object.TopLevelExpr' types into their own module.
 	EDIT: this may not be possible, although I will need to break-down the Dao.Evaluator module

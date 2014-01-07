@@ -1,4 +1,4 @@
-string.compare = approximate;
+string.compare = $approximate;
 
 BEGIN {
 	print("--- BEGIN ---");

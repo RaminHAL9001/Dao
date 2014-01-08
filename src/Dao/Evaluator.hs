@@ -219,8 +219,9 @@ instance PPrintable Object where
       if B.null o
         then  pString "data{}"
         else  pList (pString "data") "{" ", " "}" (map (pString . showHex) (B.unpack o))
-    OHaskell   (HaskellData _ ifc) ->
-      fail $ "cannot pretty print Haskell data type: "++show (objHaskellType ifc)
+    OHaskell   (HaskellData o ifc) -> case objPPrinter ifc of
+      Nothing -> fail $ "cannot pretty print Haskell data type: "++show (objHaskellType ifc)
+      Just pp -> pp o
 
 instance B.Binary HaskellData MTab where
   put (HaskellData o ifc) = do
@@ -950,7 +951,7 @@ instance Structured ExecControl Object where
 
 instance ObjectClass ExecControl where
   objectMethods = defObjectInterface nullValue $
-    autoDefNullTest >> autoDefTreeFormat
+    autoDefNullTest >> autoDefTreeFormat >> autoDefPPrinter
 
 setCtrlReturnValue :: Object -> ExecControl -> ExecControl
 setCtrlReturnValue obj ctrl = case ctrl of
@@ -1487,11 +1488,13 @@ instance B.Binary CodeBlock MTab where
   put (CodeBlock o) = B.prefixByte 0x3D $ B.put o
   get = B.tryWord8 0x3D $ CodeBlock <$> B.get
 
+instance PPrintable CodeBlock where { pPrint = pPrintInterm }
+
 instance Executable CodeBlock () where { execute (CodeBlock ox) = mapM_ execute ox }
 
 instance ObjectClass CodeBlock where
   objectMethods = defObjectInterface nullValue $ do
-    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt
+    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt >> autoDefPPrinter
     defDeref $ \o -> catchError (execute o >> return Nothing) $ \e -> case e of
       ExecReturn o -> return o
       ExecError{}  -> throwError e
@@ -3891,9 +3894,11 @@ instance Executable ObjListExpr [ParamValue] where
       Nothing  -> execThrow $ obj [obj "expression used in list evaluated to void"]
       Just val -> return [ParamValue{paramValue=val, paramOrigExpr=expr}]
 
+instance PPrintable ObjListExpr where { pPrint = pPrintInterm }
+
 instance ObjectClass ObjListExpr where
   objectMethods = defObjectInterface nullValue $ do
-    autoDefNullTest >> autoDefEquality >> autoDefOrdering
+    autoDefNullTest >> autoDefEquality >> autoDefOrdering >> autoDefPPrinter
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4446,7 +4451,7 @@ instance Executable RuleFuncExpr (Maybe Object) where
 
 instance ObjectClass RuleFuncExpr where
   objectMethods = defObjectInterface nullValue $
-    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt >> autoDefTreeFormat >> defDeref execute
+    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt >> autoDefTreeFormat >> defDeref execute >> autoDefPPrinter
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4679,7 +4684,7 @@ instance Executable ObjectExpr (Maybe Object) where
 
 instance ObjectClass ObjectExpr where
   objectMethods = defObjectInterface nullValue $
-    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt >> autoDefTreeFormat >> defDeref execute
+    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt >> autoDefTreeFormat >> defDeref execute >> autoDefPPrinter
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4875,7 +4880,7 @@ instance Executable ArithExpr (Maybe Object) where
 
 instance ObjectClass ArithExpr where
   objectMethods = defObjectInterface nullValue $
-    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt >> autoDefTreeFormat >> defDeref execute
+    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt >> autoDefTreeFormat >> defDeref execute >> autoDefPPrinter
 
 ----------------------------------------------------------------------------------------------------
 
@@ -5033,7 +5038,7 @@ instance Executable AssignExpr (Maybe Object) where
 
 instance ObjectClass AssignExpr where
   objectMethods = defObjectInterface nullValue $
-    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt >> autoDefTreeFormat >> defDeref execute
+    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt >> autoDefTreeFormat >> defDeref execute >> autoDefPPrinter
 
 ----------------------------------------------------------------------------------------------------
 
@@ -5360,7 +5365,7 @@ instance ObjectClass () where { objectMethods = defObjectInterface () (return ()
 instance ObjectClass CallableCode where
   objectMethods = defObjectInterface (CallableCode undefined undefined undefined) $ do
     defCallable $ return . return
-    autoDefNullTest
+    autoDefNullTest >> autoDefPPrinter
 
 instance ObjectClass GlobAction where
   objectMethods = defObjectInterface (GlobAction [] undefined) $ do
@@ -5542,6 +5547,7 @@ data ObjectInterface typ =
   , objOrdering      :: Maybe (typ -> typ -> Ordering)                                            -- ^ defined by 'defOrdering'
   , objBinaryFormat  :: Maybe (typ -> Put, Get typ)                                               -- ^ defined by 'defBinaryFmt'
   , objNullTest      :: Maybe (typ -> Bool)                                                       -- ^ defined by 'defNullTest'
+  , objPPrinter      :: Maybe (typ -> PPrint)                                                     -- ^ defined by 'defPPrinter'
   , objIterator      :: Maybe (typ -> Exec [Object], typ -> [Object] -> Exec typ)                 -- ^ defined by 'defIterator'
   , objIndexer       :: Maybe (typ -> Object -> Exec Object)                                      -- ^ defined by 'defIndexer'
   , objTreeFormat    :: Maybe (typ -> Exec T_tree, T_tree -> Exec typ)  -- ^ defined by 'defTreeFormat'
@@ -5579,6 +5585,7 @@ objectInterfaceAdapter a2b b2a ifc =
   , objOrdering      = let n="objOrdering"      in fmap (\ord _ b -> ord (b2a n b) (b2a n b)) (objOrdering ifc)
   , objBinaryFormat  = let n="objBinaryFormat"  in fmap (\ (toBin , fromBin) -> (toBin . b2a n, fmap (a2b n) fromBin)) (objBinaryFormat ifc)
   , objNullTest      = let n="objNullTest"      in fmap (\null b -> null (b2a n b)) (objNullTest ifc)
+  , objPPrinter      = let n="objPPrinter"      in fmap (\eval -> eval . b2a n) (objPPrinter ifc)
   , objIterator      = let n="objIterator"      in fmap (\ (iter, fold) -> (iter . b2a n, \typ -> fmap (a2b n) . fold (b2a n typ))) (objIterator ifc)
   , objIndexer       = let n="objIndexer"       in fmap (\indx b -> indx (b2a n b)) (objIndexer  ifc)
   , objTreeFormat    = let n="objTreeFormat"    in fmap (\ (toTree, fromTree) -> (toTree . b2a n, fmap (a2b n) . fromTree)) (objTreeFormat ifc)
@@ -5611,6 +5618,7 @@ data ObjIfc typ =
   , objIfcOrdering      :: Maybe (typ -> typ -> Ordering)
   , objIfcBinaryFormat  :: Maybe (typ -> Put, Get typ)
   , objIfcNullTest      :: Maybe (typ -> Bool)
+  , objIfcPPrinter      :: Maybe (typ -> PPrint)
   , objIfcIterator      :: Maybe (typ -> Exec [Object], typ -> [Object] -> Exec typ)
   , objIfcIndexer       :: Maybe (typ -> Object -> Exec Object)
   , objIfcTreeFormat    :: Maybe (typ -> Exec T_tree, T_tree -> Exec typ)
@@ -5630,6 +5638,7 @@ initObjIfc =
   , objIfcOrdering      = Nothing
   , objIfcBinaryFormat  = Nothing
   , objIfcNullTest      = Nothing
+  , objIfcPPrinter      = Nothing
   , objIfcIterator      = Nothing
   , objIfcIndexer       = Nothing
   , objIfcTreeFormat    = Nothing
@@ -5747,6 +5756,14 @@ autoDefNullTest = defNullTest testNull
 -- defined by this function, otherwise your object cannot be tested by @if@ or @while@ statements.
 defNullTest :: Typeable typ => (typ -> Bool) -> DaoClassDefM typ ()
 defNullTest fn = updObjIfc(\st->st{objIfcNullTest=Just fn})
+
+-- | The callback function to be called when the "print" built-in function is used.
+defPPrinter :: Typeable typ => (typ -> PPrint) -> DaoClassDefM typ ()
+defPPrinter fn = updObjIfc(\st->st{objIfcPPrinter=Just fn})
+
+-- | The callback function to be called when the "print" built-in function is used.
+autoDefPPrinter :: (Typeable typ, PPrintable typ) => DaoClassDefM typ ()
+autoDefPPrinter = defPPrinter pPrint
 
 -- | The callback function defined here is used if an object of your @typ@ is ever used in a @for@
 -- statement in a Dao program. However it is much better to instantiate your @typ@ into the
@@ -5903,6 +5920,7 @@ defObjectInterface init defIfc =
   , objOrdering       = objIfcOrdering     ifc
   , objBinaryFormat   = objIfcBinaryFormat ifc
   , objNullTest       = objIfcNullTest     ifc
+  , objPPrinter       = objIfcPPrinter     ifc
   , objIterator       = objIfcIterator     ifc
   , objIndexer        = objIfcIndexer      ifc
   , objTreeFormat     = objIfcTreeFormat   ifc

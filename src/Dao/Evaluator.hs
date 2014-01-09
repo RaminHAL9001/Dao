@@ -938,7 +938,8 @@ instance HasNullValue ExecControl where
 
 instance PPrintable ExecControl where
   pPrint err = case err of 
-    ExecError{ execReturnValue=o } -> maybe (return ()) pperr o where
+    ExecError{ execReturnValue=o, execUnitAtError=xunit } -> maybe (return ()) pperr o where
+      fileName = xunit >>= programModuleName
       apLabel which label =
         fmap (\o -> (pInline [pString label, pString " ", pPrint o], getLocation o)) (which err)
       info = msum
@@ -961,7 +962,8 @@ instance PPrintable ExecControl where
         pWrapIndent $
           [ case info of
               Nothing -> pString "Error: "
-              Just  o -> pString $ show (snd o) ++ ": "
+              Just  o -> pString $ concat $
+                [maybe "" ((++":") . uchars) fileName , show (snd o) ++ ": "]
           , pptree o
           ]
         pEndLine

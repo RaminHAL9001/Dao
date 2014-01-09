@@ -5209,6 +5209,50 @@ instance Structured TopLevelExpr  Object where
   dataToStruct = putIntermediate toplevel_intrm
   structToData = getIntermediate toplevel_intrm
 
+-- Since 'TopLevelExpr's can modify the 'ExecUnit', and since 'Exec' is not a stateful monad, a
+-- simple hack is used: every update that should occur on executing the expression is returned as a
+-- function which can be applied by the context which called it. Refer to the instance for
+-- 'Executable' for the 'Program' type to see how the calling context is used to update the state.
+instance Executable TopLevelExpr (ExecUnit -> ExecUnit) where
+  execute o = ask >>= \xunit -> case o of
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    Attribute a b c -> execThrow $ obj $ concat $
+      [ maybe [] ((:[]) . obj . (++(show c)) . uchars) (programModuleName xunit)
+      , [obj $ uchars a ++ " expression must occur only at the top of a dao script"]
+      , [obj $ prettyShow (Attribute a b c)]
+      ]
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    TopScript scrpt _ -> do
+      -- push a namespace onto the stack
+      --lift $ dModifyMVar_ xloc (execStack xunit) (return . stackPush T.Void)
+      let (LocalStore stor) = execStack xunit
+      liftIO $ modifyIORef stor (stackPush T.Void)
+      -- get the functions declared this far
+      pval <- catchPredicate $ execute scrpt
+      case pval of
+        OK                _  -> return ()
+        PFail (ExecReturn _) -> return ()
+        PFail           err  -> throwError err
+        Backtrack            -> return () -- do not backtrack at the top-level
+      -- pop the namespace, keep any local variable declarations
+      --tree <- lift $ dModifyMVar xloc (execStack xunit) (return . stackPop)
+      let (LocalStore stor) = execStack xunit
+      tree <- liftIO $ atomicModifyIORef stor stackPop
+      -- merge the local variables into the global varaibles resource.
+      --lift (modifyUnlocked_ (globalData xunit) (return . T.union tree))
+      let (GlobalStore stor) = globalData xunit
+      liftIO $ modifyMVar_ stor (return . T.union tree)
+      return id
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    EventExpr typ scrpt _ -> do
+      exec <- setupCodeBlock scrpt
+      let f = (++[exec])
+      return $ case typ of
+        BeginExprType -> \xunit -> xunit{ preExec      = f (preExec      xunit) }
+        EndExprType   -> \xunit -> xunit{ postExec     = f (postExec     xunit) }
+        ExitExprType  -> \xunit -> xunit{ quittingTime = f (quittingTime xunit) }
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A 'AST_TopLevel' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
@@ -5315,50 +5359,15 @@ instance HasLocation Program where
 -- 'Dao.Object.AST.AST_SourceCode'.
 instance Executable Program ExecUnit where
   execute (Program ast) = do
-    xunit  <- ask
-    pre    <- liftIO (newIORef [])
-    post   <- liftIO (newIORef [])
-    onExit <- liftIO (newIORef [])
-    forM_ (dropWhile isAttribute ast) $ \dirctv -> case dirctv of
-      --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-      Attribute a b c -> execThrow $ obj $ concat $
-        [ maybe [] ((:[]) . obj . (++(show c)) . uchars) (programModuleName xunit)
-        , [obj $ uchars a ++ " expression must occur only at the top of a dao script"]
-        , [obj $ prettyShow (Attribute a b c)]
-        ]
-      --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-      TopScript scrpt _ -> do
-        -- push a namespace onto the stack
-        --lift $ dModifyMVar_ xloc (execStack xunit) (return . stackPush T.Void)
-        let (LocalStore stor) = execStack xunit
-        liftIO $ modifyIORef stor (stackPush T.Void)
-        -- get the functions declared this far
-        pval <- catchPredicate $ execute scrpt
-        case pval of
-          OK                _  -> return ()
-          PFail (ExecReturn _) -> return ()
-          PFail           err  -> throwError err
-          Backtrack            -> return () -- do not backtrack at the top-level
-        -- pop the namespace, keep any local variable declarations
-        --tree <- lift $ dModifyMVar xloc (execStack xunit) (return . stackPop)
-        let (LocalStore stor) = execStack xunit
-        tree <- liftIO $ atomicModifyIORef stor stackPop
-        -- merge the local variables into the global varaibles resource.
-        --lift (modifyUnlocked_ (globalData xunit) (return . T.union tree))
-        let (GlobalStore stor) = globalData xunit
-        liftIO $ modifyMVar_ stor (return . T.union tree)
-      --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-      EventExpr typ scrpt _ -> do
-        exec   <- setupCodeBlock scrpt
-        liftIO $ flip modifyIORef (++[exec]) $ case typ of
-          BeginExprType -> pre
-          EndExprType   -> post
-          ExitExprType  -> onExit
-      --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    pre    <- liftIO (readIORef pre)
-    post   <- liftIO (readIORef post)
-    onExit <- liftIO (readIORef onExit)
-    return $ xunit{ preExec=pre, postExec=post, quittingTime=onExit }
+    (LocalStore stackRef) <- asks execStack
+    liftIO $ modifyIORef stackRef (stackPush T.Void)
+    updxunit  <- foldl (.) id <$> mapM execute (dropWhile isAttribute ast)
+    -- Now, the local variables that were defined in the top level need to be moved to the global
+    -- variable store.
+    localVars <- liftIO $ atomicModifyIORef stackRef stackPop
+    (GlobalStore globalVars) <- asks globalData
+    liftIO $ modifyMVar_ globalVars $ \tree -> return (T.union tree localVars)
+    fmap updxunit ask
 
 ----------------------------------------------------------------------------------------------------
 

@@ -28,6 +28,7 @@ import           Dao
 import           Data.List
 
 import           Control.Monad
+import           Control.Monad.IO.Class
 
 import           System.Environment
 import           System.IO
@@ -61,9 +62,9 @@ inputLoop = do
       --  Nothing  -> return Nothing
       --  Just str -> addHistory str >> return (Just str)
       case str of
-        str | str==":quit"    || str==":quit\n" -> return Nothing
+        str | str==":quit"    || str==":quit\n"    -> return Nothing
             | str==":license" || str==":license\n" -> putStrLn license_text >> inputLoop
-            | otherwise -> return (Just (toUStr str))
+            | otherwise                            -> return (Just (toUStr str))
 
 main :: IO ()
 main = do
@@ -77,6 +78,7 @@ main = do
   setupDao $ do
     daoInitialize $ do
       singleThreaded args
+      daoInputLoop (liftIO inputLoop)
   --restorePrompt -- shut-down the ReadLine library
   hPutStrLn stderr "Dao has exited."
 

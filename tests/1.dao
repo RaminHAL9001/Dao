@@ -48,10 +48,6 @@ rule "recall" {
 
 print("test module setup 1");
 
-if(a == 1) {
-	print("a == 1");
-}
-
 rule "recall another" {
 	print("I recall another.");
 }
@@ -67,12 +63,6 @@ rule "test ref" {
 	print(a);
 	ref(a) = "hello";
 	print(@a);
-}
-
-for a in (list {"one", "two", "three"}) {
-	print(global n.m);
-	global n.m = a;
-	print(a);
 }
 
 rule "file $fact*." {

@@ -733,7 +733,7 @@ instance Executable QualRef (Maybe Object) where
         _   -> badRef "local"
       GLODOT -> ask >>= \xunit -> case currentWithRef xunit of
         WithRefStore Nothing -> execThrow $ obj $
-          [ obj "cannot use reference prefixed with a dot unless in a \"with\" statement"
+          [ obj "cannot use reference prefixed with a dot unless in a \"with\" statement:"
           , obj $ show (Qualified q ref)
           ]
         store -> storeLookup store ref
@@ -743,8 +743,8 @@ instance Executable QualRef (Maybe Object) where
         _   -> badRef "static"
       GLOBAL -> asks globalData >>= flip storeLookup ref
     where
-      emptyRefErr = execThrow $ obj [obj "dereferenced empty reference", ORef ref]
-      badRef  typ = execThrow $ obj [obj "bad reference", obj typ, ORef ref]
+      emptyRefErr = execThrow $ obj [obj "dereferenced empty reference:", ORef ref]
+      badRef  typ = execThrow $ obj [obj "bad reference:", obj typ, ORef ref]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -767,9 +767,9 @@ instance ExecRef MVar where
     (>>=predicate) $ liftIO $ modifyMVar mvar $ \var -> do
       result <- flip ioExec xunit $ execCatchIO (upd var) $
         [ newExecIOHandler $ \e -> execThrow $ obj $
-            [obj "ErrorCall", obj (show (e::ErrorCall))]
+            [obj "ErrorCall:", obj (show (e::ErrorCall))]
         , newExecIOHandler $ \e -> execThrow $ obj $
-            [obj "IOException" , obj (show (e::IOException))]
+            [obj "IOException:" , obj (show (e::IOException))]
         ]
       return $ case result of
         Backtrack   -> (var, Backtrack )
@@ -800,7 +800,7 @@ class Store store where
 _checkRef :: [Name] -> Exec Name
 _checkRef nx = case nx of
   [n] -> return n
-  nx  -> execThrow $ OList [obj "bad reference", obj $ Unqualified $ Reference nx]
+  nx  -> execThrow $ OList [obj "bad reference:", obj $ Unqualified $ Reference nx]
 
 instance ExecRef ref => Store (ref (M.Map Name Object)) where
   storeLookup store (Reference ref)     = _checkRef ref >>= \ref -> fmap (M.lookup ref    ) (execReadRef    store)
@@ -889,7 +889,7 @@ withObject store upd = execModifyRef store $ \target -> case target of
       [ obj $ unwords $
           [ "no method defining how to use objects of type"
           , show (objHaskellType ifc)
-          , "in \"with\" statements"
+          , "in \"with\" statements:"
           ]
       , OHaskell (HaskellData o ifc)
       ]
@@ -938,13 +938,36 @@ instance HasNullValue ExecControl where
 
 instance PPrintable ExecControl where
   pPrint err = case err of 
-    ExecError{} -> do
-      maybe (return ()) (\o -> pInline [pString "error message: ", pPrint o]) (execReturnValue err)
-      let f get msg = maybe (return ()) (\o -> pString (msg++":") >> pPrint o) (get err)
-      f execErrExpr     "in expression" 
-      f execErrScript   "in statement"
-      f execErrTopLevel "in top-level directive"
-    ExecReturn{} -> maybe (return ()) pPrint (execReturnValue err)
+    ExecError{ execReturnValue=o } -> maybe (return ()) pperr o where
+      apLabel which label =
+        fmap (\o -> (pInline [pString label, pString " ", pPrint o], getLocation o)) (which err)
+      info = msum
+        [ apLabel execErrExpr     "in expression" 
+        , apLabel execErrScript   "in statement"
+        , apLabel execErrTopLevel "in top-level directive"
+        ]
+      unquot o = case o of
+        OString o -> pUStr o
+        o         -> pPrint o
+      pplist o = case o of
+        OList   o -> pInline $ intersperse (pString " ") (map unquot o)
+        o         -> unquot o
+      pptree o = case o of
+        OTree o -> forM_ (T.assocs o) $ \ (ref, o) -> do
+          ref <- return $ Unqualified $ Reference ref
+          pWrapIndent [pPrint ref, pplist o]
+        o -> pplist o
+      pperr o = do
+        pWrapIndent $
+          [ case info of
+              Nothing -> pString "Error: "
+              Just  o -> pString $ show (snd o) ++ ": "
+          , pptree o
+          ]
+        pEndLine
+        maybe (return ()) fst info
+    ExecReturn{ execReturnValue=o } ->
+      maybe (return ()) (\o -> pWrapIndent [pString "Evaluated to: ", pPrint o]) o
 
 instance Structured ExecControl Object where
   dataToStruct o = deconstruct $ do
@@ -2306,7 +2329,7 @@ eval_NOT o = (oBool . not) <$> objToBool o
 objToBool :: Object -> Exec Bool
 objToBool o = case o of
   OHaskell (HaskellData d ifc) -> case objNullTest ifc of
-    Nothing   -> execThrow $ obj [obj "cannot be used as a boolean value", o]
+    Nothing   -> execThrow $ obj [obj "cannot be used as a boolean value:", o]
     Just test -> return (test d)
   o -> return (testNull o)
 
@@ -2647,7 +2670,7 @@ requireAllStringArgs ox = case mapM check (zip (iterate (+(1::Integer)) 0) ox) o
       OString o -> return o
       _         -> throwError $
         execError
-        { execReturnValue = Just $ obj [obj "requires string parameter, param number", obj i] }
+        { execReturnValue = Just $ obj [obj "requires string parameter, param number:", obj i] }
 
 -- | Given an object, if it is a string return the string characters. If it not a string,
 -- depth-recurse into it and extract strings, or if there is an object into which recursion is not
@@ -2916,7 +2939,7 @@ checkType tychk val = case tychk of
     case verdict of
       Just typ -> return (a, typ)
       Nothing  -> execThrow $ obj $
-        [ obj "value does not match type", obj (prettyShow (paramValue val))]
+        [ obj "value does not match type:", obj (prettyShow (paramValue val))]
 
 matchFuncParams :: ParamListExpr -> [ParamValue] -> Exec T_tree
 matchFuncParams (ParamListExpr params _) values = loop T.Void (tyChkItem params) values where
@@ -2943,13 +2966,13 @@ callFunction qref params = do
   o <- case o of
     Just  o -> return o
     Nothing -> execThrow $ obj $
-      [ obj "function call on undefined reference", obj qref
-      , obj "called with parameters", new params
+      [ obj "function call on undefined reference:", obj qref
+      , obj "called with parameters:", new params
       ]
   let err = execThrow $ obj $
-        [ obj "reference does not point to callable object: ", ORef qref
-        , obj "called with parameters: ", new params
-        , obj "value of object at reference is: ", o
+        [ obj "reference does not point to callable object:", ORef qref
+        , obj "called with parameters:", new params
+        , obj "value of object at reference is:", o
         ]
   case o of
     OHaskell (HaskellData o ifc) -> case objCallable ifc of
@@ -3646,7 +3669,7 @@ instance Executable ScriptExpr () where
       ref <- mplus (asReference o) $ execThrow $ obj $
         [obj "expression in \"with\" statement does not evaluate to a reference, evaluates to a", o]
       updateReference ref $ \o -> case o of
-        Nothing -> execThrow $ obj [obj "undefined reference", ORef ref]
+        Nothing -> execThrow $ obj [obj "undefined reference:", ORef ref]
         Just o  -> do
           let ok = do
                 ioref <- liftIO (newIORef o)
@@ -3658,11 +3681,11 @@ instance Executable ScriptExpr () where
             OHaskell (HaskellData _ ifc) -> case objTreeFormat ifc of
               Just  _ -> ok
               Nothing -> execThrow $ obj $
-                [ obj "object of type", obj (toUStr (show (objHaskellType ifc)))
+                [ obj "object of type:", obj (toUStr (show (objHaskellType ifc)))
                 , obj "is not defined to be used in \"with\" statements"
                 ]
             _ -> execThrow $ obj $
-              [ obj "object value at reference", ORef ref
+              [ obj "object value at reference:", ORef ref
               , obj "has no method of being used in a \"with\" statement, value is", o
               ]
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
@@ -3678,10 +3701,10 @@ data ForLoopBlock = ForLoopBlock Name Object CodeBlock
 derefObject :: Object -> Exec Object
 derefObject o = do
   let cantDeref msg = execThrow $ obj [obj msg, o]
-  maybe (cantDeref "undefined reference") return =<< case o of
+  maybe (cantDeref "undefined reference:") return =<< case o of
     ORef o -> execute o
     OHaskell (HaskellData o ifc) -> case objDereferencer ifc of
-      Nothing    -> cantDeref "value cannot be used as reference"
+      Nothing    -> cantDeref "value cannot be used as reference:"
       Just deref -> deref o
     o -> return (Just o)
 
@@ -4178,7 +4201,7 @@ instance Executable RefOpExpr (Maybe Object) where
     FuncCall op args loc -> do -- a built-in function call
       o  <- execute op >>= checkVoid loc "function selector evaluates to void"
       op <- mplus (asReference o) $ execThrow $ obj $
-        [obj "function selector does not evaluate to reference", o]
+        [obj "function selector does not evaluate to reference:", o]
       let nonBuiltin = callFunction op args
       builtins <- asks builtinFunctions
       case op of
@@ -4311,7 +4334,7 @@ instance Executable SingleExpr (Maybe Object) where
         let evalRef o = execute o >>= \r -> case r of
               Nothing       -> return $ Just $ ORef $ Unqualified $ Reference []
               Just (ORef _) -> return r
-              Just  r       -> execThrow $ obj [obj "cannot use result as reference", r]
+              Just  r       -> execThrow $ obj [obj "cannot use result as reference:", r]
         case o of
           PlainRefExpr o -> return $ Just $ ORef $ qualRefFromExpr o
           ObjParenExpr o -> evalRef o
@@ -4453,7 +4476,7 @@ instance Executable RuleFuncExpr (Maybe Object) where
       exec  <- setupCodeBlock scrpt
       globs <- forM params $ \param -> case readsPrec 0 (uchars param) of
         [(pat, "")] -> return pat
-        _           -> execThrow $ obj [obj "cannot parse pattern expression", obj param]
+        _           -> execThrow $ obj [obj "cannot parse pattern expression:", obj param]
       (StaticStore sub) <- asks currentCodeBlock
       let insertGlobs tree =
             foldl (\tree glob -> T.unionWith (++) tree (globTree glob [exec])) tree globs
@@ -4628,27 +4651,27 @@ instance Structured ObjectExpr Object where
 
 indexObject :: Object -> Object -> Exec Object
 indexObject o idx = case o of
-  OList []  -> execThrow $ obj [obj "indexing empty list", o, idx]
+  OList []  -> execThrow $ obj [obj "indexing empty list:", o, idx]
   OList lst -> do
     i <- mplus (asInteger idx) $
-      execThrow (obj [obj "must index list with integer", idx, obj "indexing", o])
+      execThrow (obj [obj "must index list with integer:", idx, obj "indexing:", o])
     if i<0
-      then  execThrow $ obj [obj "list index value is negative", idx, obj "indexing", o]
+      then  execThrow $ obj [obj "list index value is negative:", idx, obj "indexing:", o]
       else  case dropWhile ((<i) . fst) (zip [0..] lst) of
-              []       -> execThrow $ obj [obj "index out of bounds", idx, obj "indexing", o]
+              []       -> execThrow $ obj [obj "index out of bounds:", idx, obj "indexing:", o]
               (_, o):_ -> return o
   OTree tree -> case idx of
     OString                      i   -> case maybeFromUStr i of
-      Nothing -> execThrow $ obj [obj "string does not form valid identifier", OString i]
+      Nothing -> execThrow $ obj [obj "string does not form valid identifier:", OString i]
       Just i  -> doIdx o idx [i] tree
     ORef (Unqualified (Reference r)) -> doIdx o idx  r  tree
-    _  -> execThrow $ obj [obj "cannot index tree with value", idx, obj "indexing", o]
+    _  -> execThrow $ obj [obj "cannot index tree with value:", idx, obj "indexing:", o]
     where
       doIdx o idx i t = case T.lookup i t of
         Nothing -> execThrow $ obj [obj "tree has no branch index: ", idx, obj "indexing", o]
         Just  o -> return o
   o         -> join $ fmap ($ idx) $ evalObjectMethod errmsg o objIndexer where
-    errmsg = obj [obj "cannot index object", o]
+    errmsg = obj [obj "cannot index object:", o]
 
 instance Executable ObjectExpr (Maybe Object) where
   execute o = (updateExecError (\err->err{execErrExpr=Just o}) :: Exec (Maybe Object) -> Exec (Maybe Object)) $ case o of
@@ -4687,9 +4710,9 @@ instance Executable ObjectExpr (Maybe Object) where
             (LocalStore stack) <- asks execStack
             liftIO $ (Just . OTree . putLeaf . head . mapList) <$> readIORef stack
         _ -> execGetObjTable ref >>= \tab -> case tab of
-          Nothing  -> execThrow $ obj [obj "object type is not available", erf]
+          Nothing  -> execThrow $ obj [obj "object type is not available:", erf]
           Just tab -> case objInitializer tab of
-            Nothing   -> execThrow $ obj [obj "object type cannot be used as initializer", erf]
+            Nothing   -> execThrow $ obj [obj "object type cannot be used as initializer:", erf]
             Just init -> do
               list <- execute initList >>= execNested T.Void . mapM execute
               fmap (Just . OHaskell . flip HaskellData tab) $
@@ -5048,7 +5071,7 @@ instance Executable AssignExpr (Maybe Object) where
       updateReference nm $ \maybeObj -> case maybeObj of
         Nothing      -> case op of
           UCONST -> return (Just expr)
-          _      -> execThrow $ obj [obj "undefined refence", obj nm]
+          _      -> execThrow $ obj [obj "undefined refence:", obj nm]
         Just prevVal -> fmap Just $
           checkPredicate "assignment expression" [prevVal, expr] $ (updatingOps!op) prevVal expr
 
@@ -5491,13 +5514,13 @@ instance HasIterator UStr where
     f str o = case o of
       OString o -> return (str++uchars o)
       OChar   o -> return (str++[o])
-      o         -> execThrow $ obj [obj "object cannot be used to construct string", o]
+      o         -> execThrow $ obj [obj "object cannot be used to construct string:", o]
 
 ----------------------------------------------------------------------------------------------------
 
 cant_iterate :: Object -> String -> Exec ig
 cant_iterate o ifc = execThrow $ obj
-  [obj $ "object of type "++ifc++" cannot be iterated in a \"for\" statement", o]
+  [obj $ "object of type "++ifc++" cannot be iterated in a \"for\" statement:", o]
 
 instance HasIterator HaskellData where
   iterateObject obj@(HaskellData o ifc) = case objIterator ifc of

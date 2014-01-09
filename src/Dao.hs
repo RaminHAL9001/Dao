@@ -117,21 +117,22 @@ loadModHeader path = do
       [obj path, obj "does not appear to be a valid Dao source file"]
     PFail err -> loadModParseFailed (Just path) err
 
--- | Lookup an 'Dao.Evaluator.ExecUnit' used by the current module by it's file path 'UPath'.
-childExecUnit :: Maybe UPath -> Exec ExecUnit
-childExecUnit path = liftIO (initExecUnit path)
-
 -- | Creates a child 'ExecUnit' for the current 'ExecUnit' and populates it with data by parsing and
--- evaluating the contents of a Dao script file at the given filesystem path.
+-- evaluating the contents of a Dao script file at the given filesystem path. If the module at the
+-- given path has already been loaded, the already loaded module 'ExecUnit' is returned.
 loadModule :: UPath -> Exec ExecUnit
 loadModule path = do
-  text <- liftIO (readFile (uchars path))
-  case parse daoGrammar mempty text of
-    OK    ast -> deepseq ast $! do
-      mod <- childExecUnit (Just path)
-      local (const mod) (evalTopLevelAST ast >>= execute) -- updates and returns 'mod' 
-    Backtrack -> execThrow $ obj [obj path, obj "does not appear to be a valid Dao source file"]
-    PFail err -> loadModParseFailed (Just path) err
+  xunit <- fmap (M.lookup path) (asks importGraph >>= liftIO . readMVar)
+  case xunit of
+    Just xunit -> return xunit
+    Nothing    ->  do
+      text <- liftIO (readFile (uchars path))
+      case parse daoGrammar mempty text of
+        OK    ast -> deepseq ast $! do
+          mod <- newExecUnit (Just path)
+          local (const mod) (evalTopLevelAST ast >>= execute) -- updates and returns 'mod' 
+        Backtrack -> execThrow $ obj [obj path, obj "does not appear to be a valid Dao source file"]
+        PFail err -> loadModParseFailed (Just path) err
 
 -- | Takes a non-dereferenced 'Dao.Object.Object' expression which was returned by 'execute'
 -- and converts it to a file path. This is how "import" statements in Dao scripts are evaluated.

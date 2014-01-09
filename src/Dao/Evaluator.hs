@@ -137,7 +137,7 @@ daoClass name ~o = updateSetupModState $ \st ->
 
 -- | Define a built-in function. Examples of built-in functions provided in this module are
 -- "print()", "join()", and "exec()".
-daoFunction :: UStrType name => name -> DaoFunc -> DaoSetup
+daoFunction :: (Show name, UStrType name) => name -> DaoFunc -> DaoSetup
 daoFunction name func = updateSetupModState $ \st ->
   st{ daoTopLevelFuncs = M.insert (fromUStr $ toUStr name) func (daoTopLevelFuncs st) }
 
@@ -158,7 +158,7 @@ setupDao setup0 = do
         , daoClasses       = mempty
         , daoEntryPoint    = return ()
         }
-  xunit  <- initExecUnit Nothing
+  xunit  <- initExecUnit
   result <- ioExec (daoEntryPoint setup) $
     xunit
     { providedAttributes = daoSatisfies setup
@@ -553,8 +553,6 @@ data ExecUnit
     , defaultTimeout     :: Maybe Int
       -- ^ the default time-out value to use when evaluating 'execInputString'
     , importGraph        :: MVar (M.Map UPath ExecUnit)
-      -- ^ a reference to the 'Runtime' that spawned this 'ExecUnit'. Some built-in functions in the
-      -- Dao scripting language may make calls that modify the state of the Runtime.
     , currentWithRef     :: WithRefStore
       -- ^ the current document is set by the @with@ statement during execution of a Dao script.
     , taskForExecUnits   :: Task
@@ -590,8 +588,10 @@ data ExecUnit
     , lambdaSet          :: IORef [CallableCode]
     }
 
-initExecUnit :: Maybe UPath -> IO ExecUnit
-initExecUnit modName = do
+-- not for export -- initializes a completely empty 'ExecUnit' and returns it wrapped up in a
+-- 'ParentExecUnit'.
+initExecUnit :: IO ExecUnit
+initExecUnit = do
   paths    <- newMVar mempty
   igraph   <- newMVar mempty
   unctErrs <- newIORef []
@@ -625,7 +625,7 @@ initExecUnit modName = do
     , recursiveInput     = recurInp
     , uncaughtErrors     = unctErrs
       ---- items that were in the Program data structure ----
-    , programModuleName = modName
+    , programModuleName = Nothing
     , programImports    = []
     , preExec           = []
     , quittingTime      = mempty
@@ -635,6 +635,22 @@ initExecUnit modName = do
     , ruleSet           = rules
     , lambdaSet         = lambdas
     }
+
+-- | Creates a new 'ExecUnit'. This is the only way to create a new 'ExecUnit', and it must be run
+-- within the 'Exec' monad. The 'ExecUnit' produced by this function will have it's parent
+-- 'ExecUnit' set to the value returned by the 'Control.Monad.Reader.Class.ask' instance of the
+-- 'Exec' monad.
+--
+-- The parent of all other 'ExecUnit's, the root of the family tree, is initalized internally by the
+-- 'startDao' function.
+newExecUnit :: Maybe UPath -> Exec ExecUnit
+newExecUnit modName = ask >>= \parent -> liftIO initExecUnit >>= \child -> return $
+  child
+  { programModuleName = modName
+  , builtinFunctions  = builtinFunctions  parent
+  , defaultTimeout    = defaultTimeout    parent
+  , globalMethodTable = globalMethodTable parent
+  }
 
 -- | An 'Action' is the result of a pattern match that occurs during an input string query. It is a
 -- data structure that contains all the information necessary to run an 'Subroutine' assocaited with

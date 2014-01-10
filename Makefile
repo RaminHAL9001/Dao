@@ -47,7 +47,7 @@ CHANGED_FILES := $(shell find $(SOURCE_DIRECTORIES) -name '[A-Z]*.hs' -newer ./M
 
 all: dao test
 
-dao: $(CHANGED_FILES)
+dao: $(CHANGED_FILES) src/dao-main.hs
 	$(GHC_BUILD) -o dao src/dao-main.hs $(CHANGED_FILES) $(LINKER_FLAGS)
 
 test: debug debug/test

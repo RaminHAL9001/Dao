@@ -151,7 +151,7 @@ daoInitialize f = updateSetupModState $ \st -> st{ daoEntryPoint = daoEntryPoint
 -- function of your program.
 setupDao :: DaoSetup -> IO ()
 setupDao setup0 = do
-  let setup = execState (daoSetupM (setup0 >> initBuiltinFuncs)) $
+  let setup = execState (daoSetupM setup0) $
         SetupModState
         { daoSatisfies     = T.Void
         , daoTopLevelFuncs = M.empty
@@ -556,11 +556,10 @@ data ExecUnit
     , currentWithRef     :: WithRefStore
       -- ^ the current document is set by the @with@ statement during execution of a Dao script.
     , taskForExecUnits   :: Task
-    , taskForActions     :: Task
     , currentQuery       :: Maybe UStr
     , currentPattern     :: Maybe (Glob UStr)
     , currentCodeBlock   :: StaticStore
-      -- ^ when evaluating a 'Subroutine' selected by a string query, the 'Action' resulting from
+      -- ^ when evaluating a 'Subroutine' selected by a string query, the action resulting from
       -- that query is defnied here. It is only 'Data.Maybe.Nothing' when the module is first being
       -- loaded from source code.
     , currentBranch      :: [Name]
@@ -575,7 +574,6 @@ data ExecUnit
     , builtinFunctions   :: M.Map Name DaoFunc
       -- ^ global variables cleared after every string execution
     , execOpenFiles      :: IORef (M.Map UPath ExecUnit)
-    , recursiveInput     :: IORef [UStr]
     , uncaughtErrors     :: IORef [Object]
     , programModuleName  :: Maybe UPath
     , programImports     :: [UPath]
@@ -595,9 +593,7 @@ initExecUnit = do
   paths    <- newMVar mempty
   igraph   <- newMVar mempty
   unctErrs <- newIORef []
-  recurInp <- newIORef []
   global   <- newMVar T.Void
-  task     <- initTask
   execTask <- initTask
   xstack   <- newIORef emptyStack
   files    <- newIORef M.empty
@@ -618,11 +614,9 @@ initExecUnit = do
     , globalData         = GlobalStore global
     , providedAttributes = T.Void
     , builtinFunctions   = M.empty
-    , taskForActions     = task
     , taskForExecUnits   = execTask
     , execStack          = LocalStore xstack
     , execOpenFiles      = files
-    , recursiveInput     = recurInp
     , uncaughtErrors     = unctErrs
       ---- items that were in the Program data structure ----
     , programModuleName = Nothing
@@ -652,42 +646,79 @@ newExecUnit modName = ask >>= \parent -> liftIO initExecUnit >>= \child -> retur
   , globalMethodTable = globalMethodTable parent
   }
 
--- | An 'Action' is the result of a pattern match that occurs during an input string query. It is a
--- data structure that contains all the information necessary to run an 'Subroutine' assocaited with
--- a 'Glob', including the parent 'ExecUnit', the 'Dao.Glob.Glob' and the
--- 'Dao.Glob.Match' objects, and the 'Executables'.
-data Action
-  = Action
-    { actionQuery      :: Maybe UStr
-    , actionPattern    :: Maybe (Glob UStr)
-    , actionMatch      :: T.Tree Name [UStr]
-    , actionCodeBlock  :: Subroutine
-    }
+----------------------------------------------------------------------------------------------------
 
--- | An 'ActionGroup' is a group of 'Action's created within a given 'ExecUnit', this data structure
--- contains both the list of 'Action's and the 'ExecUnit' from which the actions were generated. The
--- 'Action's within the group will all be evaluated inside of the 'ExecUnit'.
-data ActionGroup
-  = ActionGroup
-    { actionExecUnit :: ExecUnit
-    , getActionList  :: [Action]
-    }
-
--- | When an 'ActionGroup' is being executed, each 'Action' in the group is evaluated in it's own
--- thread. The 'Task' keeps track of which threads are running, and provides a 'Dao.Debug.DMVar' for
--- threads to register their completion. 'Dao.Evaluator.taskWaitThreadLoop' can be used to wait for
--- every thread associated with a 'Task' to complete before returning.
+-- | A 'Task' is simply a group of threads executing in parallel, but evaluating a task is still
+-- synchronous, i.e. evaluating 'taskLoop' on a 'Task' will block until every thread in the task has
+-- completed.
 data Task
   = Task
-    { taskWaitMVar       :: MVar ThreadId
+    { taskWaitChan       :: Chan (ThreadId, Int)
     , taskRunningThreads :: MVar (S.Set ThreadId)
     }
 
+-- | Create a new 'Task'.
 initTask :: IO Task
 initTask = do
-  wait    <- newEmptyMVar
+  wait    <- newChan
   running <- newMVar S.empty
-  return $ Task{taskWaitMVar=wait, taskRunningThreads=running}
+  return $ Task{ taskWaitChan=wait, taskRunningThreads=running }
+
+-- | To halt a single thread in a 'Task', simply signal it with 'Control.Concurrent.killThread'. But
+-- to halt everything the task is doing, use this function. Use of this function will never result in
+-- deadlocks (I hope).
+throwToTask :: Exception e => Task -> e -> IO ()
+throwToTask task e = do
+  let mvar = taskRunningThreads task
+  ((S.elems <$> readMVar mvar) >>= mapM_ (flip throwTo e))
+    `finally` getChanContents (taskWaitChan task) >> return ()
+
+-- | Like 'throwToTask', but throws 'Control.Exception.ThreadKilled'.
+killTask :: Task -> IO ()
+killTask = flip throwToTask ThreadKilled
+
+-- | This is a better way to manage a 'Task' because all tasks evaluated are waited for
+-- synchronously, but you can provide a callback that is evaluated after each task completes. This
+-- prevents exceptions from occurring, for example:
+-- > "thread blocked indefinitely in an MVar operation"
+-- 
+-- Provide a list of IO functions to be evaluated in parallel. Also provide a callback function
+-- that will be evaluated after each thread completes. This function should take two parameters and
+-- return a bool: the 'Control.Concurrent.ThreadId' of the thread that completed and a positive
+-- integer value indicating the number of threads that are still running, and the bool returned
+-- should indicate whether or not the loop should continue. If you should halt the loop by returning
+-- 'Prelude.False', the threads in the task that are still running will continue running, and you
+-- should call 'killTask' after 'taskLoop' to halt them if halting them should be necessary.
+-- 
+-- This function is also exception safe. All tasks evaluated in parallel will not fail to singal the
+-- callback, even if the thread halts with an exception or asynchronous signal like
+-- 'Control.Concurrent.killThread'. If the thread evaluating this function is halted by an
+-- exception, all threads in the 'Task' are also killed.
+taskLoop :: Task -> [IO ()] -> (ThreadId -> Int -> IO Bool) -> IO ()
+taskLoop task parallelIO threadHaltedEvent = unless (null parallelIO) $
+  (do mapM_ (forkInTask task) parallelIO
+      fix $ \loop -> waitFirst task >>= \ (thread, remain) ->
+        threadHaltedEvent thread remain >>= \contin -> unless (not contin || remain==0) loop
+  ) `onException` killTask task
+  where
+    waitFirst :: Task -> IO (ThreadId, Int)
+    waitFirst task = readChan (taskWaitChan task)
+    forkInTask :: Task -> IO () -> IO ThreadId
+    forkInTask task run = forkIO $ run `finally` do
+      self <- myThreadId
+      bracket
+        (modifyMVar (taskRunningThreads task) $ \s' -> do
+            let s = S.delete self s'
+            return (s, S.size s)
+        )
+        (\i -> writeChan (taskWaitChan task) (self, i))
+        (\ _i -> run)
+
+-- | Works exactly like 'taskLoop', except you do not need to provide a callback function to be
+-- evaluated after every task completes. Essentially, every IO function is evaluated in the 'Task'
+-- in parallel, and this function blocks until all tasks have completed.
+taskLoop_ :: Task -> [IO ()] -> IO ()
+taskLoop_ task inits = taskLoop task inits (\ _ _ -> return True)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2795,10 +2826,12 @@ builtin_delete = DaoFunc True $ \args -> do
     _      -> return ()
   return (Just ONull)
 
--- | The map that contains the built-in functions that are used to initialize every
--- 'Dao.Object.ExecUnit'.
-initBuiltinFuncs :: DaoSetup
-initBuiltinFuncs = do
+-- | Evaluate this function as one of the instructions in the monadic function passed to the
+-- 'setupDao' function in order to install the most fundamental functions into the Dao evaluator.
+-- This function must be evaluated in order to have access to the following functions:
+-- > print, join, defined, delete
+evalFuncs :: DaoSetup
+evalFuncs = do
   daoFunction "print"   builtin_print
   daoFunction "join"    builtin_join
   daoFunction "defined" builtin_check_ref

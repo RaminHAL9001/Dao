@@ -25,6 +25,7 @@ module Main where
 
 import           Dao
 
+import           Data.Char
 import           Data.List
 
 import           Control.Monad
@@ -47,24 +48,31 @@ disclaimer = unlines $
   , "-----------------------------------------------"
   ]
 
-inputLoop :: IO (Maybe UStr)
+inputLoop :: Exec (Maybe UStr)
 inputLoop = do
-  putStr "dao> " >> hFlush stdout
-  closed <- hIsClosed stdin
-  eof    <- isEOF
+  liftIO $ putStr "dao> " >> hFlush stdout
+  closed <- liftIO $ hIsClosed stdin
+  eof    <- liftIO isEOF
   if closed || eof
     then return Nothing
     else do
       -- hSetEcho stdin True
-      str <- getLine
+      str <- liftIO getLine
       ---------------------------------------------------
       --readline "dao> " >>= \str -> case str of
       --  Nothing  -> return Nothing
       --  Just str -> addHistory str >> return (Just str)
-      case str of
-        str | str==":quit"    || str==":quit\n"    -> return Nothing
-            | str==":license" || str==":license\n" -> putStrLn license_text >> inputLoop
-            | otherwise                            -> return (Just (toUStr str))
+      case words (uchars str) of
+        [":quit"   ]  -> return Nothing
+        [":license"]  -> liftIO (putStrLn license_text) >> inputLoop
+        (":" : _cmds) -> do
+          evalScriptString (dropWhile (\c -> isSpace c || c==':') str)
+          inputLoop
+        (a:cmds) | head a==':' -> do
+          liftIO $ hPutStr stderr $ unwords $
+            ["Error: unknown meta-command"] ++ if null cmds then [] else [show $ head cmds]
+          inputLoop
+        _ -> return $ Just $ toUStr str
 
 main :: IO ()
 main = do
@@ -76,9 +84,12 @@ main = do
   --initialize -- initialize the ReadLine library
   args <- fmap (fmap ustr) getArgs
   setupDao $ do
+    evalFuncs
+    daoFuncs
     daoInitialize $ do
-      singleThreaded args
-      daoInputLoop (liftIO inputLoop)
+      loadEveryModule args
+      daoInputLoop inputLoop
+      daoShutdown
   --restorePrompt -- shut-down the ReadLine library
   hPutStrLn stderr "Dao has exited."
 

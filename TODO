@@ -1,4 +1,11 @@
 TODO:
+* Implement an asynchronous function call interface, like a built-in "fork()" function. This
+	function should allow a programmer to fork a function call in the background.
+
+* Once the type system has been implemented, the Glob matching algorithm that matches strings should
+	be customizable with a type function, not an arbtrary function that can run in the Exec monad.
+	Type function will be pure and are therefore ideal for pattern matching.
+
 * Create some decent example programs that demonstrate the expert system
 	functionality of the Dao language.
 

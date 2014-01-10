@@ -35,6 +35,8 @@ module Dao
   , module Dao
   ) where
 
+import Debug.Trace
+
 import           Dao.String
 import qualified Dao.Tree as T
 import           Dao.Glob
@@ -48,18 +50,17 @@ import           Dao.Object.Parser
 
 import           Data.Function
 import           Data.Monoid
-import           Data.List (nub)
 import           Data.IORef
 import qualified Data.Map as M
-import qualified Data.Set as S
 
 import           Control.Applicative
 import           Control.Concurrent
-import           Control.Exception
 import           Control.DeepSeq
 import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.Reader.Class
+
+import           System.IO
 
 ----------------------------------------------------------------------------------------------------
 
@@ -70,12 +71,74 @@ import           Control.Monad.Reader.Class
 min_exec_time :: Int
 min_exec_time = 200000
 
-singleThreaded :: [UStr] -> Exec ()
-singleThreaded args = do
-  deps   <- importFullDepGraph args
-  mapM_ loadModule (getDepFiles deps)
+-- | Evaluate this function as one of the instructions in the monadic function passed to the
+-- 'setupDao' function in order to install the most fundamental functions into the Dao evaluator.
+-- This function must be evaluated in order to have access to the following functions:
+-- > exec, prove
+daoFuncs :: DaoSetup
+daoFuncs = return ()
 
 ----------------------------------------------------------------------------------------------------
+
+-- | An 'Action' is the result of a pattern match that occurs during an input string query. It is a
+-- data structure that contains all the information necessary to run an 'Subroutine' assocaited with
+-- a 'Glob', including the parent 'ExecUnit', the 'Dao.Glob.Glob' and the 'Dao.Glob.Match' objects,
+-- and the 'Executables'. Use 'Dao.Evaluator.execute' to evaluate a 'Dao.Action' in the current
+-- thread.
+-- 
+-- To execute an action in a separate thread, use 'forkExecAction'.
+data Action
+  = Action
+    { actionQuery     :: Maybe UStr
+    , actionPattern   :: Maybe (Glob UStr)
+    , actionMatch     :: T.Tree Name [UStr]
+    , actionCodeBlock :: Subroutine
+    }
+
+instance Executable Action (Maybe Object) where
+  execute act =
+    local
+      (\xunit ->
+          xunit
+          { currentQuery     = actionQuery act
+          , currentPattern   = actionPattern act
+          , currentCodeBlock = StaticStore (Just $ actionCodeBlock act)
+          }
+      )
+      (runCodeBlock (fmap (obj . fmap obj) $ actionMatch act) (actionCodeBlock act))
+
+-- | An 'ActionGroup' is a group of 'Action's created within a given 'ExecUnit', this data structure
+-- contains both the list of 'Action's and the 'ExecUnit' from which the actions were generated. The
+-- 'Action's within the group will all be evaluated inside of the 'ExecUnit'. Use
+-- 'Dao.Evaluator.execute' to execute an 'ActionGroup' in the current thread.
+-- 
+-- Instantiates 'Executable' such that for every 'Dao.Object.Action' in the
+-- 'Dao.Object.ActionGroup', evaluate that 'Dao.Object.Action' in a the current thread but in using
+-- the 'Dao.Object.ExecUnit' of the given 'Dao.Object.ActionGroup'.
+data ActionGroup
+  = ActionGroup
+    { actionExecUnit :: ExecUnit
+    , getActionList  :: [Action]
+    }
+
+instance Executable ActionGroup () where
+  execute o = local (const (actionExecUnit o)) $ do
+    xunit <- ask
+    mapM_ execute (preExec xunit)
+    mapM_ execute (getActionList o)
+    mapM_ execute (postExec xunit)
+
+----------------------------------------------------------------------------------------------------
+
+type DepGraph = M.Map UPath [UPath]
+
+getDepFiles :: DepGraph -> [UPath]
+getDepFiles = M.keys
+
+loadEveryModule :: [UPath] -> Exec ()
+loadEveryModule args = do
+  deps <- importFullDepGraph args
+  mapM_ loadModule (getDepFiles deps)
 
 -- | Simply converts an 'Dao.Object.AST.AST_SourceCode' directly to a list of
 -- 'Dao.Object.TopLevelExpr's.
@@ -122,15 +185,18 @@ loadModHeader path = do
 -- given path has already been loaded, the already loaded module 'ExecUnit' is returned.
 loadModule :: UPath -> Exec ExecUnit
 loadModule path = do
-  xunit <- fmap (M.lookup path) (asks importGraph >>= liftIO . readMVar)
-  case xunit of
-    Just xunit -> return xunit
-    Nothing    ->  do
+  xunit <- ask
+  mod   <- fmap (M.lookup path) (asks importGraph >>= liftIO . readMVar)
+  case mod of
+    Just mod -> return mod
+    Nothing  ->  do
       text <- liftIO (readFile (uchars path))
       case parse daoGrammar mempty text of
         OK    ast -> deepseq ast $! do
           mod <- newExecUnit (Just path)
-          local (const mod) (evalTopLevelAST ast >>= execute) -- updates and returns 'mod' 
+          mod <- local (const mod) (evalTopLevelAST ast >>= execute) -- modifeis and returns 'mod' 
+          liftIO $ modifyMVar_ (pathIndex xunit) (return . M.insert path mod)
+          return mod
         Backtrack -> execThrow $ obj [obj path, obj "does not appear to be a valid Dao source file"]
         PFail err -> loadModParseFailed (Just path) err
 
@@ -152,11 +218,6 @@ objectToRequirement file o lc = case o of
     [ obj (uchars file ++ show lc)
     , obj "contains import expression evaluating to an object that is not a file path", o
     ]
-
-type DepGraph = M.Map UPath [UPath]
-
-getDepFiles :: DepGraph -> [UPath]
-getDepFiles = M.keys
 
 -- | Calls 'loadModHeader' for several filesystem paths, creates a dependency graph for every import
 -- statement. This function is not recursive, it only gets the imports for the paths listed. It
@@ -188,103 +249,39 @@ importFullDepGraph = loop mempty where
 
 ----------------------------------------------------------------------------------------------------
 
--- | Blocks until every thread in the given 'Dao.Object.Task' completes evaluation.
-taskWaitThreadLoop :: Task -> Exec ()
-taskWaitThreadLoop task = do
-  threads <- liftIO $ readMVar (taskRunningThreads task)
-  if S.null threads then return () else liftIO loop
-  where 
-    loop = do
-      thread <- takeMVar (taskWaitMVar task)
-      isDone <- modifyMVar (taskRunningThreads task) $ \threads_ -> do
-        let threads = S.delete thread threads_
-        return (threads, S.null threads)
-      if isDone then return () else loop
+-- | This is the main input loop. Pass an input function callback to be called on every loop. This
+-- function should return strings to be evaluated, and return 'Data.Maybe.Nothing' to signal that
+-- this loop should break.
+daoInputLoop :: Exec (Maybe UStr) -> Exec ()
+daoInputLoop getString = fix $ \loop -> do
+  inputString <- getString
+  case inputString of
+    Nothing          -> return ()
+    Just inputString -> execStringQuery inputString >> loop
 
--- | Registers the threads created by 'runStringAgainstExecUnits' into the
--- 'Dao.Object.runningExecThreads' field of the 'Dao.Object.Runtime'.
-taskRegisterThreads :: Task -> Exec [ThreadId] -> Exec ()
-taskRegisterThreads task makeThreads =
-  execModifyRef_ (taskRunningThreads task) $ \threads ->
-    (flip S.union threads . S.fromList) <$> makeThreads
-    -- TODO: create versions of modifyMVar which work in the Exec monad.
-
--- | Signal to the 'Dao.Object.Task' that the task has completed. This must be the last thing a
--- thread does if it is registered into a 'Dao.Object.Task' using 'taskRegisterThreads'.
-completedThreadInTask :: Task -> Exec ()
-completedThreadInTask task = liftIO (myThreadId >>= putMVar (taskWaitMVar task))
-
--- | Evaluate an 'Dao.Object.Action' in the current thread.
-execAction :: ExecUnit -> Action -> Exec (Maybe Object)
-execAction xunit act = local (const xunit) $
-  runCodeBlock (fmap (obj . fmap obj) $ actionMatch act) (actionCodeBlock act)
-
--- | Create a new thread and evaluate an 'Dao.Object.Action' in that thread. This thread is defined
--- such that when it completes, regardless of whether or not an exception occurred, it signals
--- completion to the 'Dao.Object.waitForActions' 'Dao.Debug.DMVar' of the 'Dao.Object.ExecUnit'
--- associated with this 'Dao.Object.Action'.
-forkExecAction :: ExecUnit -> Action -> Exec ThreadId
-forkExecAction xunit act = liftIO $ forkIO $ void $ flip ioExec xunit $ do
-  execCatchIO (void $ execAction xunit act) [execErrorHandler, execIOHandler]
-  completedThreadInTask (taskForActions xunit)
-
--- | For every 'Dao.Object.Action' in the 'Dao.Object.ActionGroup', evaluate that
--- 'Dao.Object.Action' in a new thread in the 'Task' associated with the 'Dao.Object.ExecUnit' of
--- the 'Dao.Object.ActionGroup'.
-forkActionGroup :: ActionGroup -> Exec ()
-forkActionGroup actgrp = do
-  let xunit = actionExecUnit actgrp
-      task  = taskForActions xunit
-  taskRegisterThreads task (forM (getActionList actgrp) (forkExecAction (actionExecUnit actgrp)))
-  taskWaitThreadLoop task >>= liftIO . evaluate
-
--- | For every 'Dao.Object.Action' in the 'Dao.Object.ActionGroup', evaluate that
--- 'Dao.Object.Action' in a the current thread but in using the 'Dao.Object.ExecUnit' of the
--- given 'Dao.Object.ActionGroup'.
-execActionGroup :: ActionGroup -> Exec ()
-execActionGroup actgrp = mapM_ (execAction (actionExecUnit actgrp)) (getActionList actgrp)
-
--- | This is the most important algorithm of the Dao system, in that it matches strings to all
--- rule-patterns in the program that is associated with the 'Dao.Object.ExecUnit', and it dispatches
--- execution of the rule-actions associated with matched patterns. This is the function that runs in
--- the thread which manages all the other threads that are launched in response to a matching input
--- string. You could just run this loop in the current thread, if you only have one 'ExecUnit'.
-execInputStringsLoop :: ExecUnit -> Exec ()
-execInputStringsLoop xunit = do
-  execCatchIO loop [execIOHandler]
-  completedThreadInTask (taskForActions xunit)
-  where
-    loop = do
-      --instr <- dModifyMVar xloc (recursiveInput xunit) $ \ax -> return $ case nub ax of
-      instr <- liftIO $ atomicModifyIORef (recursiveInput xunit) $ \ax -> case nub ax of
-        []   -> ([], Nothing)
-        a:ax -> (ax, Just a)
-      case instr of
-        Nothing    -> return ()
-        Just instr -> waitAll (makeActionsForQuery instr xunit) >>= liftIO . evaluate >> loop
-
-waitAll :: Exec ActionGroup -> Exec ()
-waitAll getActionGroup = getActionGroup >>= forkActionGroup
-
--- | Given an input string, and a program, return all patterns and associated match results and
--- actions that matched the input string, but do not execute the actions. This is done by tokenizing
--- the input string and matching the tokens to the program using 'Dao.Glob.matchTree'.
--- NOTE: Rules that have multiple patterns may execute more than once if the input matches more than
--- one of the patterns associated with the rule. *This is not a bug.* Each pattern may produce a
--- different set of match results, it is up to the programmer of the rule to handle situations where
--- the action may execute many times for a single input.
-makeActionsForQuery :: UStr -> ExecUnit -> Exec ActionGroup
-makeActionsForQuery instr xunit = do
+-- | Match a given input string to the 'Dao.Evaluator.currentPattern' of the current 'ExecUnit'.
+-- Return all patterns and associated match results and actions that matched the input string, but
+-- do not execute the actions. This is done by tokenizing the input string and matching the tokens
+-- to the program using 'Dao.Glob.matchTree'. NOTE: Rules that have multiple patterns may execute
+-- more than once if the input matches more than one of the patterns associated with the rule. *This
+-- is not a bug.* Each pattern may produce a different set of match results, it is up to the
+-- programmer of the rule to handle situations where the action may execute many times for a single
+-- input.
+-- 
+-- Once you have created an action group, you can execute it with 'Dao.Evaluator.execute'.
+makeActionsForQuery :: UStr -> Exec ActionGroup
+makeActionsForQuery instr = do
   --tokenizer <- asks programTokenizer
   --tokenizer instr >>= match -- TODO: put the customizable tokenizer back in place
   match (map toUStr $ words $ fromUStr instr)
   where
     match tox = do
-      --tree <- dReadMVar xloc (ruleSet xunit)
-      tree <- liftIO $ readIORef (ruleSet xunit)
+      xunit <- ask
+      tree  <- liftIO $ readIORef (ruleSet xunit)
       return $
         ActionGroup
         { actionExecUnit = xunit
+          -- (\o -> trace ("matched: "++show (map (\ (a,_,_) -> a) o)) o) $ 
         , getActionList = flip concatMap (matchTree False tree tox) $ \ (patn, mtch, execs) ->
             flip map execs $ \exec -> seq exec $! seq instr $! seq patn $! seq mtch $!
               Action
@@ -295,75 +292,11 @@ makeActionsForQuery instr xunit = do
               }
         }
 
--- | Create a list of 'Dao.Object.Action's for every BEGIN or END statement in the Dao program. Pass
--- 'Dao.Object.preExec' as the first parameter to get the BEGIN scrpits, pass 'Dao.Object.postExec'
--- to get the END scripts.
-getBeginEndScripts :: (ExecUnit -> [Subroutine]) -> ExecUnit -> ActionGroup
-getBeginEndScripts select xunit =
-  ActionGroup
-  { actionExecUnit = xunit
-  , getActionList  = flip map (select xunit) $ \exe ->
-      Action
-      { actionQuery      = Nothing
-      , actionPattern    = Nothing
-      , actionMatch      = T.Void
-      , actionCodeBlock  = exe
-      }
-  }
-
--- | For each given execution unit, place the input string into the 'Dao.Object.recursiveInput'
--- queue of that 'Dao.Object.ExecUnit' and then start a thread running 'execInputStrinsLoop' for
--- that 'Dao.Object.ExecUnit'. This function evaluates syncrhonously, that is, you must wait for all
--- threads created by this string query to complete before this function evaluation returns.
--- The threads are created and registered into the 'Dao.Object.runningExecThreads' field of the
--- 'Dao.Object.Runtime' using 'taskRegisterThreads'. Then, 'taskWaitThreadLoop' is called to wait
--- for the string execution to complete.
-runStringQuery :: UStr -> [ExecUnit] -> Exec ()
-runStringQuery inputString xunits = do
-  task <- asks taskForExecUnits
-  taskRegisterThreads task $ do
-    forM xunits $ \xunit -> do
-      liftIO $ modifyIORef (recursiveInput xunit) (++[inputString])
-      liftIO $ forkIO $ void $ flip ioExec xunit $ do
-        execHandleIO [execErrorHandler, execIOHandler] $ do
-            waitAll (return (getBeginEndScripts preExec xunit)) >>= liftIO . evaluate
-            execInputStringsLoop xunit >>= liftIO . evaluate -- Exec RULES and PATTERNS
-            waitAll (return (getBeginEndScripts postExec xunit)) >>= liftIO . evaluate
-        completedThreadInTask task
-  taskWaitThreadLoop task
-
--- | Clears any string queries waiting in the 'Dao.Object.recurisveInput' of an
--- 'Dao.Object.ExecUnit'.
-clearStringQueries :: ExecUnit -> Exec ()
-clearStringQueries xunit = --dModifyMVar_ xloc (recursiveInput xunit) (\_ -> return [])
-  liftIO $ modifyIORef (recursiveInput xunit) (const [])
-
--- | This is the main input loop. Pass an input function callback to be called on every loop.
-daoInputLoop :: (Exec (Maybe UStr)) -> Exec ()
-daoInputLoop getString = fix $ \loop -> do
-  inputString <- getString
-  case inputString of
-    Nothing          -> return ()
-    Just inputString -> do
-      xunits <- asks pathIndex >>= liftIO . fmap M.elems . readMVar
-      mapM_ clearStringQueries xunits
-      runStringQuery inputString xunits
-      loop
-
--- | Evaluates the @EXIT@ scripts for every presently loaded dao program, and then clears the
--- 'Dao.Object.pathIndex', effectively removing every loaded dao program and idea file from memory.
-daoShutdown :: Exec ()
-daoShutdown = do
-  idx <- asks pathIndex
-  liftIO $ modifyMVar_ idx $ (\_ -> return (M.empty))
-  xunits <- liftIO $ fmap M.elems (readMVar idx)
-  forM_ xunits $ \xunit -> local (const xunit) $ asks quittingTime >>= mapM_ execute
-
 -- | When executing strings against Dao programs (e.g. using 'Dao.Tasks.execInputString'), you often
 -- want to execute the string against only a subset of the number of total programs. Pass the
 -- logical names of every module you want to execute strings against, and this function will return
 -- them.
-selectModules :: [Name] -> Exec [ExecUnit]
+selectModules :: [UStr] -> Exec [ExecUnit]
 selectModules names = do
   xunit <- ask
   ax <- case names of
@@ -375,10 +308,35 @@ selectModules names = do
       return (M.intersection pathTab request)
   return (M.elems ax)
 
--- | In the current thread parse an input string as 'Dao.Object.Script' and then evaluate it. This
--- is used for interactive evaluation. The parser used in this function will parse a block of Dao
--- source code, the opening and closing curly-braces are not necessary. Therefore you may enter a
--- semi-colon separated list of commands and all will be executed.
+-- | Like 'execStringQueryWith', but executes against every loaded module.
+execStringQuery :: UStr -> Exec ()
+execStringQuery instr =
+  asks pathIndex >>= liftIO . fmap M.elems . readMVar >>= execStringQueryWith instr
+
+-- | This is the most important function in the Dao universe. It executes a string query with the
+-- given module 'ExecUnit's. The string query is executed in each module, execution in each module
+-- runs in it's own thread. This function is syncrhonous; it blocks until all threads finish
+-- working.
+execStringQueryWith :: UStr -> [ExecUnit] -> Exec ()
+execStringQueryWith instr xunitList = do
+  task <- asks taskForExecUnits
+  liftIO $ taskLoop_ task $ flip map xunitList $ \xunit -> do
+    result <- flip ioExec xunit $ makeActionsForQuery instr >>= execute
+    -- TODO: this case statement should really call into some callback functions installed into the
+    -- root 'ExecUnit'.
+    case result of
+      PFail (ExecReturn{}) -> return ()
+      PFail err            -> liftIO $ hPutStrLn stderr (prettyShow err)
+      Backtrack            -> case programModuleName xunit of
+        Nothing   -> return ()
+        Just name -> liftIO $ hPutStrLn stderr $ '(' : uchars name ++ ": does not compute)"
+      OK                _  -> return ()
+
+-- | Runs a single line of Dao scripting language code. In the current thread parse an input string
+-- of type 'Dao.Evaluator.ScriptExpr' and then evaluate it. This is used for interactive evaluation.
+-- The parser used in this function will parse a block of Dao source code, the opening and closing
+-- curly-braces are not necessary. Therefore you may enter a semi-colon separated list of commands
+-- and all will be executed.
 evalScriptString :: String -> Exec ()
 evalScriptString instr =
   void $ execNested T.Void $ mapM_ execute $
@@ -387,13 +345,12 @@ evalScriptString instr =
       PFail tok -> error ("error: "++show tok)
       OK   expr -> concatMap toInterm expr
 
--- | This is the simplest form of string execution, everything happens in the current thread, no
--- "BEGIN" or "END" scripts are executed. Simply specify a list of programs (as file paths) and a
--- list of strings to be executed against each program.
-execStringsAgainst :: [Name] -> [UStr] -> Exec ()
-execStringsAgainst selectPrograms execStrings = do
-  otherXUnits <- selectModules selectPrograms
-  forM_ otherXUnits $ \xunit ->
-    forM_ execStrings $ \execString ->
-      makeActionsForQuery execString xunit >>= execActionGroup
+-- | Evaluates the @EXIT@ scripts for every presently loaded dao program, and then clears the
+-- 'Dao.Object.pathIndex', effectively removing every loaded dao program and idea file from memory.
+daoShutdown :: Exec ()
+daoShutdown = do
+  idx <- asks pathIndex
+  liftIO $ modifyMVar_ idx $ (\_ -> return (M.empty))
+  xunits <- liftIO $ fmap M.elems (readMVar idx)
+  forM_ xunits $ \xunit -> local (const xunit) $ asks quittingTime >>= mapM_ execute
 

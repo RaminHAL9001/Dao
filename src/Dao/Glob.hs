@@ -21,6 +21,106 @@
 
 {-# LANGUAGE DeriveDataTypeable #-}
 
+-- | The 'Glob' expression data type is constructed by parsing a string containing a 'Glob'
+-- expression. Reminscent of old-fashioned POSIX glob expressions that you would use in UNIX or
+-- Linux systems on the command line (@ls *.hs@).
+-- 
+-- Also of use is the 'PatternTree' type. This 'Dao.Tree.Tree' data type allows you to associate
+-- arbitrary object values with 'Glob' expressions. You can insert 'Glob' expressions into a
+-- 'PatternTree' with 'insertMultiPattern' and then use 'matchTree' to match a string expression.
+-- Every pattern that matches will return the object value associated with it along with a
+-- @'Dao.Tree.Tree' 'Dao.String.Name'@ mapping which substrings matched which wildcards.
+-- 
+-- The syntax for a glob expression is just an arbitrary string with '$' characters
+-- indicating variables. A '$' must be followed by at least one alphabetic or underscore character,
+-- and then zero or more alphanumeric characters or underschore characters. These characters may
+-- then be followed by a '?'. For example:
+-- > "some text $wildcard more text"
+-- > "some text $anyone? more text"
+-- 'Wildcard's match arbitrary-length sequences of string constants. For example, the above 'Glob'
+-- containing the variable called @wildcard@ will match the following strings:
+-- > "some text more text" -> a variable called "wildcard" is assigned an empty list
+-- > "some text a more text" -> a variable called "wildcard" is assigned the list [a]
+-- > "some text a b more text" -> a variable called "wildcard" is assigned the list [a b]
+-- > "some text a b c more text" -> a variable called "wildcard" is assigned the list [a b c]
+-- An 'AnyOne' variable matches any string constant, but one and only one. The following strings
+-- will match the above example:
+-- > "some text then more text" -> a variable called "anyone" is assigned the list [then]
+-- > "some text with more text" -> a variable called "anyone" is assigned the list [with]
+-- But the above exaple will not match:
+-- > "some text more text"
+-- > "some text then with more text"
+-- Variable matched are stored in @('Dao.Tree.Tree' 'Dao.String.Name')@ structures.
+-- 
+-- Glob expressions are wrappers around lists of 'GlobUnit's. Each 'GlobUnit' is a 'Wildcard',
+-- 'AnyOne' variable, or a string constant called a 'Single'. It is called 'Single' rather than
+-- 'Control.Applicative.Const' to avoid conflicting with the data type defined in the
+-- "Control.Applicative" module.
+-- 
+-- The data type used to store 'Single' string constants is polymorphic. So you can construct a
+-- 'Glob' containing 'Prelude.String's, 'Dao.String.UStr's, or anything that can be constructed from
+-- a 'Prelude.String'.
+-- 
+-- /NOTE:/ that when a 'Glob' is parsed using 'Prelude.read', the string constant is the substring
+-- of all characters between the variables. If there are no variables, the whole string will be
+-- stored into a list of just one 'Single' string constant. However this behavior may not be useful.
+-- It may be useful to break down string constants into smaller 'Single' string constants. To do
+-- this, use the 'parseOverSingles' function.
+-- 
+-- The following is a simple program you can use from the command line in GHCi to observe how to
+-- construct 'Glob' expressions and try matching strings to these 'Glob's to see the result.
+-- > -- Establish a global variable for GHCi.
+-- > testref :: IORef (PatternTree String String)
+-- > testref = unsafePerformIO (newIORef T.Void)
+-- > 
+-- > -- A function to break-up a string into clusters of spaces, numbers, or letters.
+-- > breakstr :: String -> [String]
+-- > breakstr cx = loop cx where
+-- >   check cx func = case cx of
+-- >     c:cx | func c -> Just $ span func (c:cx)
+-- >     _             -> Nothing
+-- >   loop cx =
+-- >     if null cx
+-- >     then  []
+-- >     else  maybe ([head cx] : loop (tail cx)) (\ (cx, rem) -> cx : loop rem) $
+-- >             foldl (\a -> mplus a . check cx) Nothing [isSpace, isAlpha, isDigit]
+-- > 
+-- > -- Use 'Prelude.read' to parse a 'Glob' expression with 'Prelude.String's as the constant
+-- values. Also, use 'parseOverSignles' to break-down the string constants using breakstr above.
+-- > parsepat :: String -> Glob String
+-- > parsepat = flip parseOverSingles breakstr . read
+-- > 
+-- > newpat :: String -> String -> IO ()
+-- > newpat pat act = do
+-- >   let glob = parsepat pat
+-- >   modifyIORef testref (insertMultiPattern (flip const) [glob] act)
+-- >   putStrLn $ "added pattern: "++show glob
+-- > 
+-- > delpat :: String -> IO ()
+-- > delpat str = modifyIORef testref (T.delete (getPatUnits $ parsepat str))
+-- > 
+-- > ls :: IO ()
+-- > ls = readIORef testref >>= putStrLn . disp "" where
+-- >   disp ind t = case t of
+-- >     T.Void           -> "()"
+-- >     T.Leaf       o   -> show o
+-- >     T.Branch       m -> dispMap ind m
+-- >     T.LeafBranch o m -> " = " ++ show o ++ " ..." ++ dispMap ind m
+-- >   dispMap ind m = (++(ind++"}")) $ ("{\n"++) $
+-- >     if M.null m
+-- >     then "(empty map)"
+-- >     else  unlines $ do
+-- >             (g, tree) <- M.assocs m
+-- >             ['\t':ind ++ unwords ['"':show g++"\"", "=", disp ('\t':ind) tree]]
+-- > 
+-- > trypat :: String -> IO ()
+-- > trypat instr = do
+-- >   tree <- readIORef testref
+-- >   forM_ (matchTree True tree (breakstr instr)) $ \ (glob, vars, o) -> do
+-- >     putStrLn $ "pattern: "++show glob
+-- >     putStrLn $ "action:  "++show o
+-- >     putStrLn $ ("vars assigned:\n"++) $ unlines $ flip map (T.assocs vars) $ \ (nm, o) -> unwords $
+-- >       ['\t':show nm, "=", show (unwords o)]
 module Dao.Glob where
 
 import           Dao.String
@@ -93,7 +193,21 @@ instance UStrType FuzzyStr where { fromUStr = FuzzyStr; toUStr (FuzzyStr u) = u;
 -- is only a single unit of a full 'Glob' expression. The unit type need not be a string, but most
 -- the instances of 'GlobUnit' into 'Prelude.Show' and 'Prelude.Read' are only defined for
 -- 'GlobUnit's of 'Dao.String.UStr's.
-data GlobUnit o = Wildcard Name | AnyOne Name | Single o deriving (Eq, Ord, Typeable)
+data GlobUnit o = Wildcard Name | AnyOne Name | Single o deriving (Eq, Typeable)
+
+-- Order such that sorting will group 'Wildcards' first, 'AnyOne's second, and 'Single's third.
+instance Ord o => Ord (GlobUnit o) where
+  compare a b = case a of
+    Wildcard a -> case b of
+      Wildcard b -> compare a b
+      _          -> LT
+    AnyOne   a -> case b of
+      Wildcard _ -> GT
+      AnyOne   b -> compare a b
+      Single   _ -> LT
+    Single   a -> case b of
+      Single   b -> compare a b
+      _          -> GT
 
 instance Functor GlobUnit where
   fmap f o = case o of
@@ -101,16 +215,44 @@ instance Functor GlobUnit where
     Wildcard n -> Wildcard n
     AnyOne   n -> AnyOne n
 
-instance Show (GlobUnit UStr) where
-  show a = case a of { Wildcard nm -> '$':show nm++"*" ; AnyOne nm -> '$':show nm ; Single a -> show a }
+isSingle :: GlobUnit o -> Bool
+isSingle o = case o of { Single _ -> True; _ -> False }
 
-instance Read (GlobUnit UStr) where
+isVariable :: GlobUnit o -> Bool
+isVariable = not . isSingle
+
+-- not for export -- strips the leadnig and trailing quote @'"'@ characters.
+toStringWithoutQuotes :: String -> String
+toStringWithoutQuotes cx = loop $ case cx of { '"':cx -> cx ; cx -> cx ; } where
+  loop cx = case cx of { '"':"" -> ""; "" -> ""; c:cx -> c : loop cx; }
+
+-- | Use this function to instantiate your version of 'GlobUnit' into the 'Prelude.Show' class. This
+-- function assumes your data type is a string-like type where evaluating 'Prelude.show' on your
+-- type produces a string of characters with a leading and trailing quote @'"'@ character.
+showGlobUnitOfStrings :: (g -> String) -> GlobUnit g -> String
+showGlobUnitOfStrings gshow g = case g of
+  Wildcard nm -> '$':uchars (toUStr nm)
+  AnyOne   nm -> '$':uchars (toUStr nm)++"?"
+  Single   g  -> toStringWithoutQuotes (gshow g)
+
+instance Show (GlobUnit UStr)   where { show = showGlobUnitOfStrings uchars }
+instance Show (GlobUnit String) where { show = showGlobUnitOfStrings id }
+
+-- | Use this function to instantiate your version of 'Glob' into the 'Prelude.Show' class. The
+-- function you pass to convert the 'Single' type to a string is passed to 'showGlobUnitOfStrings'.
+showGlobUnitList :: (g -> String) -> [GlobUnit g] -> String
+showGlobUnitList gshow gx = show $ concatMap (showGlobUnitOfStrings gshow) gx
+
+instance Read (GlobUnit String) where
   readsPrec _prec str = case str of
     '$':c:str | c=='_' || isAlpha c -> [span isAlphaNum str] >>= \ (cx, str) -> case str of
-      '*':str -> [(Wildcard $ ustr (c:cx), str)]
-      str     -> [(AnyOne   $ ustr (c:cx), str)]
+      '?':str -> [(AnyOne   $ ustr (c:cx), str)]
+      str     -> [(Wildcard $ ustr (c:cx), str)]
     '$':c:str -> [(Single   $ ustr [c]   , str)]
     _         -> []
+
+instance Read (GlobUnit UStr) where
+  readsPrec prec str = readsPrec prec str >>= \ (g, str) -> return (fmap ustr g, str)
 
 instance UStrType (GlobUnit UStr) where
   maybeFromUStr str = case readsPrec 0 (uchars str) of { [(o, "")] -> Just o; _ -> Nothing; }
@@ -136,9 +278,10 @@ data Glob o = Glob { getPatUnits :: [GlobUnit o], getGlobLength :: Int }
 instance Functor Glob where
   fmap f g = g{ getPatUnits = fmap (fmap f) (getPatUnits g) }
 
-instance Show (Glob UStr) where { show = concatMap show . getPatUnits }
+instance Show (Glob UStr)   where { show = showGlobUnitList uchars . getPatUnits }
+instance Show (Glob String) where { show = showGlobUnitList id     . getPatUnits }
 
-instance Read (Glob UStr) where
+instance Read (Glob String) where
   readsPrec prec str = do
     (units, str) <- loop [] str
     return (Glob{ getPatUnits=units, getGlobLength=length units }, str)
@@ -146,7 +289,10 @@ instance Read (Glob UStr) where
       loop units str = case break (=='$') str of
         ("", "" ) -> return (units, "")
         ("", str) -> readsPrec prec str >>= \ (unit, str) -> loop (units++[unit]) str
-        (cx, str) -> loop (units++[Single $ ustr cx]) str
+        (cx, str) -> loop (units++[Single cx]) str
+
+instance Read (Glob UStr) where
+  readsPrec prec str = readsPrec prec str >>= \ (g, str) -> return (fmap ustr g, str)
 
 instance Monoid (Glob o) where
   mempty = nullValue
@@ -178,6 +324,26 @@ instance Read (Glob FuzzyStr) where
 -- | 'PatternTree's contain many patterns in an tree structure, which is more efficient when you
 -- have many patterns that start with similar sequences of 'GlobUnit's.
 type PatternTree g o = T.Tree (GlobUnit g) o
+
+-- | When a 'Glob' is constructed with a function of the 'Prelude.Read' class, the 'Single' items
+-- produced are all contiguous characters in between 'Wildcard' and 'AnyOne' markers. For example
+-- the string:
+-- > read "$X will do $Y? too" :: 'Glob' 'Prelude.String'
+-- will parse to a 'Glob' where the 'getPatUnits' is the following list of items:
+-- > ['Wildcard' "X", 'Single' " will do ", 'AnyOne' "Y", 'Single' " too"]
+-- Notice how the 'Single' items contain spaces. This may or may not be desirable.
+--
+-- In the case that you would like to further parse the 'Single' strings, you can use the
+-- 'parseOverSingles' function, breaking a 'Single' down into a list of 'Single's.
+parseOverSingles :: Glob g -> (g -> [h]) -> Glob h
+parseOverSingles (Glob{ getPatUnits=gx }) convert =
+  Glob{ getPatUnits=patUnits, getGlobLength=length patUnits} where
+    patUnits = loop gx
+    loop gx = case gx of
+      []               -> []
+      Single   g  : gx -> map Single (convert g) ++ loop gx
+      AnyOne   nm : gx -> AnyOne nm : loop gx
+      Wildcard nm : gx -> Wildcard nm : loop gx
 
 -- | Insert an item at multiple points in the 'PatternTree'
 insertMultiPattern :: (Eq g, Ord g) => (o -> o -> o) -> [Glob g] -> o -> PatternTree g o -> PatternTree g o
@@ -217,14 +383,29 @@ matchTree greedy tree tokx = loop T.Void 0 [] tree tokx where
             tokx <- [tail tokx]
             ((bind, tokx) : loop bind tokx)
         ) bind tokx
-  branch vars p path branch tokx = do
-    (pat, tree) <- M.assocs branch
-    let next vars = loop vars (p+1) (pat:path) tree
-    let defVar nm mkAssoc =
-          maybe (mkAssoc >>= \ (bind, tokx) -> next (T.insert [nm] bind vars) tokx) (next vars) $
-            T.lookup [nm] vars >>= flip stripPrefix tokx
-    case pat of
-      Wildcard nm -> defVar nm (partStep [] tokx)
-      AnyOne   nm -> case tokx of { tok:tokx -> defVar nm [([tok], tokx)]; _ -> []; }
-      Single   u  -> case tokx of { tok:tokx | tok==u -> next vars tokx;   _ -> []; }
+  -- partStep takes a list of tokens, like [a,b,c] and returns a list for every possible
+  -- 2-way partition: [([],[a,b,c]), ([a],[b,c]), ([a,b],[c]), ([a,b,c],[])]
+  -- This forms a list of (bind, tokx) pairs where 'bind' will be assigned to a variable and 'tokx'
+  -- is the remaining tokens to be matched. So when a 'Wildcard' variable is matched, it tries every
+  -- possible ('bind', 'tokx') pair, binding the 'bind' to a variable and looping on 'tokx'.
+  branch vars p path branch tokx = case tokx of
+    []       -> []
+    tok:tokx -> let next pat vars tree = loop vars (p+1) (path++[pat]) tree in msum $
+      [ do  tree <- maybe [] (:[]) $ M.lookup (Single tok) branch
+            next (Single tok) vars tree tokx
+      , do -- Next we use 'takeWhile' because of how the 'Ord' instance of 'GlobUnit' is defined,
+           -- 'Wildcard's and 'AnyOne's are always first in the list of 'assocs'.
+           (pat, tree) <- takeWhile (isVariable . fst) (M.assocs branch)
+           let defVar nm mkAssoc = case T.lookup [nm] vars of
+                 Just pfx -> maybe [] (:[]) (stripPrefix pfx (tok:tokx)) >>= next pat vars tree
+                 Nothing  -> do
+                   (bind, tokx) <- mkAssoc
+                   next pat (T.insert [nm] bind vars) tree tokx
+           case pat of
+             Wildcard nm -> defVar nm (partStep [] (tok:tokx))
+             AnyOne   nm -> defVar nm [([tok], tokx)]
+             Single   _  -> error "undefined behavior in Dao.Glob.matchTree:branch: case Single"
+             -- 'Single' cases must not occur, they should have been filtered out by the code:
+             -- > takeWhile (isVariable . fst)
+      ]
 

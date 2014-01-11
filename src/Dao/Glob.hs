@@ -31,12 +31,15 @@
 -- Every pattern that matches will return the object value associated with it along with a
 -- @'Dao.Tree.Tree' 'Dao.String.Name'@ mapping which substrings matched which wildcards.
 -- 
--- The syntax for a glob expression is just an arbitrary string with '$' characters
--- indicating variables. A '$' must be followed by at least one alphabetic or underscore character,
--- and then zero or more alphanumeric characters or underschore characters. These characters may
--- then be followed by a '?'. For example:
+-- The syntax for a glob expression is just an arbitrary string with @'$'@ characters indicating
+-- variables. A @'$'@ must be followed by at least one alphabetic or underscore character, and then
+-- zero or more alphanumeric characters or underschore characters. These characters may then be
+-- followed by a @'?'@. For example:
 -- > "some text $wildcard more text"
+-- > "some text $wildcard* more text"
 -- > "some text $anyone? more text"
+-- The first and second forms are identical, you may choose to follow a wildcard with a @'*'@ if you
+-- want the 'Wildcard' variable to be followed by text with no space or punctuation in between.
 -- 'Wildcard's match arbitrary-length sequences of string constants. For example, the above 'Glob'
 -- containing the variable called @wildcard@ will match the following strings:
 -- > "some text more text" -> a variable called "wildcard" is assigned an empty list
@@ -137,7 +140,6 @@ import           Data.Function
 import           Data.Monoid
 import           Data.List
 import           Data.Char
-import qualified Data.Set as S
 import qualified Data.Map as M
 
 ----------------------------------------------------------------------------------------------------
@@ -156,36 +158,6 @@ simpleTokenize ax = map ustr (loop ax) where
         Just (got, ax) -> got : loop ax
   check a ax fn = if fn a then let (got, ax') = span fn ax in Just (a:got, ax') else Nothing
   kinds = [isSpace, isAlpha, isNumber, isPunctuation, isAscii, not . isAscii]
-
-----------------------------------------------------------------------------------------------------
-
--- | An alternative to 'Glob' expressions containing ordinary 'Dao.String.UStr's is a 'Glob'
--- expression containing 'FuzzyStr's. These strings approximately match the input string, ignoring
--- minor spelling errors and transposed characters.
-newtype FuzzyStr = FuzzyStr UStr deriving Ord
-
-instance Eq FuzzyStr where
-  a==b = 
-    let ax = S.map toLower (S.fromList (uchars a))
-        bx = S.map toLower (S.fromList (uchars b))
-    in     a == b
-        || ax == bx
-        || S.size (S.difference (S.union ax bx) (if S.size ax < S.size bx then ax else bx)) <= 1
-
-instance Show FuzzyStr where { show (FuzzyStr str) = show str }
-
-instance Read FuzzyStr where
-  readsPrec p input = readsPrec p input >>= \ (s, rem) -> return (FuzzyStr (ustr s), rem)
-
-instance Monoid FuzzyStr where
-  mempty = FuzzyStr mempty
-  mappend (FuzzyStr a) (FuzzyStr b) = FuzzyStr (a<>b)
-
-instance HasNullValue FuzzyStr where
-  nullValue = FuzzyStr nullValue
-  testNull (FuzzyStr s) = testNull s
-
-instance UStrType FuzzyStr where { fromUStr = FuzzyStr; toUStr (FuzzyStr u) = u; }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -231,7 +203,7 @@ toStringWithoutQuotes cx = loop $ case cx of { '"':cx -> cx ; cx -> cx ; } where
 -- type produces a string of characters with a leading and trailing quote @'"'@ character.
 showGlobUnitOfStrings :: (g -> String) -> GlobUnit g -> String
 showGlobUnitOfStrings gshow g = case g of
-  Wildcard nm -> '$':uchars (toUStr nm)
+  Wildcard nm -> '$':uchars (toUStr nm)++"*"
   AnyOne   nm -> '$':uchars (toUStr nm)++"?"
   Single   g  -> toStringWithoutQuotes (gshow g)
 
@@ -247,9 +219,10 @@ instance Read (GlobUnit String) where
   readsPrec _prec str = case str of
     '$':c:str | c=='_' || isAlpha c -> [span isAlphaNum str] >>= \ (cx, str) -> case str of
       '?':str -> [(AnyOne   $ ustr (c:cx), str)]
-      str     -> [(Wildcard $ ustr (c:cx), str)]
-    '$':c:str -> [(Single   $ ustr [c]   , str)]
-    _         -> []
+      '*':str -> [(Wildcard $ ustr (c:cx), str)]
+      _       -> [(Wildcard $ ustr (c:cx), str)]
+    '$':str -> [span (/='$') str] >>= \ (cx, str) -> [(Single ('$':cx), str)]
+    _       -> []
 
 instance Read (GlobUnit UStr) where
   readsPrec prec str = readsPrec prec str >>= \ (g, str) -> return (fmap ustr g, str)
@@ -282,7 +255,7 @@ instance Show (Glob UStr)   where { show = showGlobUnitList uchars . getPatUnits
 instance Show (Glob String) where { show = showGlobUnitList id     . getPatUnits }
 
 instance Read (Glob String) where
-  readsPrec prec str = do
+  readsPrec prec str = if null str then return mempty else do
     (units, str) <- loop [] str
     return (Glob{ getPatUnits=units, getGlobLength=length units }, str)
     where
@@ -313,11 +286,6 @@ instance PPrintable (Glob UStr) where { pPrint = pShow }
 
 instance HasRandGen o => HasRandGen (Glob o) where
   randO = randList 1 6 >>= \o -> return $ Glob{ getPatUnits=o, getGlobLength=length o }
-
-instance Show (Glob FuzzyStr) where { show = show . fmap toUStr }
-
-instance Read (Glob FuzzyStr) where
-  readsPrec prec str = readsPrec prec str >>= \ (glob, str) -> [(fmap fromUStr glob, str)]
 
 ----------------------------------------------------------------------------------------------------
 

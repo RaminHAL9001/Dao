@@ -35,8 +35,6 @@ module Dao
   , module Dao
   ) where
 
-import Debug.Trace
-
 import           Dao.String
 import qualified Dao.Tree as T
 import           Dao.Glob
@@ -90,8 +88,8 @@ daoFuncs = return ()
 data Action
   = Action
     { actionQuery     :: Maybe UStr
-    , actionPattern   :: Maybe (Glob UStr)
-    , actionMatch     :: T.Tree Name [UStr]
+    , actionPattern   :: Maybe (Glob Object)
+    , actionMatch     :: T.Tree Name [Object]
     , actionCodeBlock :: Subroutine
     }
 
@@ -271,9 +269,8 @@ daoInputLoop getString = fix $ \loop -> do
 -- Once you have created an action group, you can execute it with 'Dao.Evaluator.execute'.
 makeActionsForQuery :: UStr -> Exec ActionGroup
 makeActionsForQuery instr = do
-  --tokenizer <- asks programTokenizer
-  --tokenizer instr >>= match -- TODO: put the customizable tokenizer back in place
-  match (map toUStr $ words $ fromUStr instr)
+  -- TODO: need to make use of the programTokenizer set in the current 'ExecUnit'
+  match (map (OString . toUStr) $ simpleTokenizer $ fromUStr instr)
   where
     match tox = do
       xunit <- ask
@@ -281,7 +278,6 @@ makeActionsForQuery instr = do
       return $
         ActionGroup
         { actionExecUnit = xunit
-          -- (\o -> trace ("matched: "++show (map (\ (a,_,_) -> a) o)) o) $ 
         , getActionList = flip concatMap (matchTree False tree tox) $ \ (patn, mtch, execs) ->
             flip map execs $ \exec -> seq exec $! seq instr $! seq patn $! seq mtch $!
               Action

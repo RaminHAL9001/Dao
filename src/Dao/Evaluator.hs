@@ -27,6 +27,7 @@
 
 module Dao.Evaluator where
 
+
 import           Dao.String
 import qualified Dao.Tree as T
 import           Dao.Stack
@@ -75,6 +76,61 @@ fd :: HasLocation a => a -> a
 fd = delLocation
 fd1 :: (HasLocation a, Functor f) => f a -> f a
 fd1 = fmap delLocation
+
+----------------------------------------------------------------------------------------------------
+
+-- | An alternative to 'Glob' expressions containing ordinary 'Dao.String.UStr's is a 'Glob'
+-- expression containing 'FuzzyStr's. These strings approximately match the input string, ignoring
+-- minor spelling errors and transposed characters.
+newtype FuzzyStr = FuzzyStr UStr deriving (Ord, Typeable)
+
+instance Eq FuzzyStr where
+  a==b = 
+    let ax = S.map toLower (S.fromList (uchars a))
+        bx = S.map toLower (S.fromList (uchars b))
+    in     a == b
+        || ax == bx
+        || S.size (S.difference (S.union ax bx) (if S.size ax < S.size bx then ax else bx)) <= 1
+
+instance Show FuzzyStr where { show (FuzzyStr str) = show str }
+
+instance Read FuzzyStr where
+  readsPrec p input = readsPrec p input >>= \ (s, rem) -> return (FuzzyStr (ustr s), rem)
+
+instance Monoid FuzzyStr where
+  mempty = FuzzyStr mempty
+  mappend (FuzzyStr a) (FuzzyStr b) = FuzzyStr (a<>b)
+
+instance HasNullValue FuzzyStr where
+  nullValue = FuzzyStr nullValue
+  testNull (FuzzyStr s) = testNull s
+
+instance UStrType FuzzyStr where { fromUStr = FuzzyStr; toUStr (FuzzyStr u) = u; }
+
+instance Show (Glob FuzzyStr) where { show = show . fmap toUStr }
+
+instance Read (Glob FuzzyStr) where
+  readsPrec prec str = readsPrec prec str >>= \ (glob, str) -> [(fmap fromUStr glob, str)]
+
+instance Show (GlobUnit Object) where
+  show o = case o of
+    Single o -> show o
+    globunit -> show (fmap (const "") globunit)
+
+instance Show (Glob Object) where
+  show glob = (++"\"") $ ('"':) $ do
+    o <- getPatUnits glob
+    let other o = "$("++prettyShow o++")"
+    case o of
+      Single o -> case o of
+        OString  o -> uchars o
+        OHaskell (HaskellData dyn _ifc) -> case fromDynamic dyn of
+          Nothing           -> other o
+          Just (FuzzyStr o) -> uchars o
+        _ -> other o
+      globunit -> show (fmap (const "") globunit)
+
+instance PPrintable (Glob Object) where { pPrint = pShow }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -557,7 +613,7 @@ data ExecUnit
       -- ^ the current document is set by the @with@ statement during execution of a Dao script.
     , taskForExecUnits   :: Task
     , currentQuery       :: Maybe UStr
-    , currentPattern     :: Maybe (Glob UStr)
+    , currentPattern     :: Maybe (Glob Object)
     , currentCodeBlock   :: StaticStore
       -- ^ when evaluating a 'Subroutine' selected by a string query, the action resulting from
       -- that query is defnied here. It is only 'Data.Maybe.Nothing' when the module is first being
@@ -582,7 +638,8 @@ data ExecUnit
     , postExec           :: [Subroutine]
       -- ^ the "guard scripts" that are executed after every string execution.
     , quittingTime       :: [Subroutine]
-    , ruleSet            :: IORef (PatternTree UStr [Subroutine])
+    , programTokenizer   :: Object -- TODO: needs to be set after evaluating module top-level
+    , ruleSet            :: IORef (PatternTree Object [Subroutine])
     , lambdaSet          :: IORef [CallableCode]
     }
 
@@ -623,7 +680,7 @@ initExecUnit = do
     , programImports    = []
     , preExec           = []
     , quittingTime      = mempty
---    , programTokenizer  = return . tokens . uchars
+    , programTokenizer  = ONull
 --    , programComparator = (==)
     , postExec          = []
     , ruleSet           = rules
@@ -1583,7 +1640,7 @@ data Subroutine
   = Subroutine
     { origSourceCode :: CodeBlock
     , staticVars     :: IORef (M.Map Name Object)
-    , staticRules    :: IORef (PatternTree UStr [Subroutine])
+    , staticRules    :: IORef (PatternTree Object [Subroutine])
     , staticLambdas  :: IORef [CallableCode]
     , executable     :: Exec (Maybe Object)
     }
@@ -1652,12 +1709,12 @@ instance Executable CallableCode (Maybe Object) where { execute = execute . code
 -- A subroutine that is executed when a query string matches it's @['Dao.Glob.Glob']@ expression.
 data GlobAction
   = GlobAction
-    { globPattern    :: [Glob UStr]
+    { globPattern    :: [Glob Object]
     , globSubroutine :: Subroutine
     }
   deriving (Show, Typeable)
 
-instance NFData GlobAction    where { rnf (GlobAction    a b  ) = deepseq a $! deepseq b () }
+instance NFData GlobAction where { rnf (GlobAction a b) = deepseq a $! deepseq b () }
 
 instance HasNullValue GlobAction where
   nullValue = GlobAction{globPattern=[], globSubroutine=nullValue}
@@ -2794,6 +2851,8 @@ execReadTopStackItem :: Stack name obj -> (T.Tree name obj -> Exec a) -> Exec a
 execReadTopStackItem (Stack stks) lkup = case stks of
   []    -> execThrow $ obj [obj "execution stack empty"]
   stk:_ -> lkup stk
+
+----------------------------------------------------------------------------------------------------
 
 builtin_print :: DaoFunc
 builtin_print = DaoFunc True $ \ox_ -> do
@@ -4509,9 +4568,15 @@ instance Executable RuleFuncExpr (Maybe Object) where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     RuleExpr (RuleStrings params _) scrpt _ -> do
       exec  <- setupCodeBlock scrpt
-      globs <- forM params $ \param -> case readsPrec 0 (uchars param) of
-        [(pat, "")] -> return pat
-        _           -> execThrow $ obj [obj "cannot parse pattern expression:", obj param]
+      globs <- forM params $ \param -> do
+        let pars = do -- the string parameter is still a quoted
+              (str, rem) <- readsPrec 0 (uchars param) -- first parse a 'Prelude.String'
+              guard (null rem) >> readsPrec 0 (str::String) -- then parse a 'Dao.Glob.Glob'
+        case pars of
+          [(pat, "")] -> do
+            -- TODO: tokenize the pattern Single's with the 'programTokenizer'
+            return $ parseOverSingles pat (fmap (OString . ustr) . simpleTokenizer)
+          _           -> execThrow $ obj [obj "cannot parse pattern expression:", obj param]
       (StaticStore sub) <- asks currentCodeBlock
       let insertGlobs tree =
             foldl (\tree glob -> T.unionWith (++) tree (globTree glob [exec])) tree globs

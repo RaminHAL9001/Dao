@@ -1,4 +1,3 @@
 :set prompt "\x3BB "
 :set -i./src -i./test
-:set -XFlexibleContexts
-
+:set -XTemplateHaskell -XScopedTypeVariables -XRankNTypes -XMultiParamTypeClasses -XFunctionalDependencies -XFlexibleInstances -XFlexibleContexts -XDeriveDataTypeable -XGeneralizedNewtypeDeriving

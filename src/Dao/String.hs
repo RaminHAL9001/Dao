@@ -436,3 +436,18 @@ instance Show Base16String where
 showHex :: (Show i, Integral i) => i -> String
 showHex = ("0x"++) . map toUpper . flip Numeric.showHex ""
 
+----------------------------------------------------------------------------------------------------
+
+-- | This is a simlpe string tokenizer for breaking up strings into tokens that can be easily used
+-- in rules in Doa scripts.
+simpleTokenizer :: String -> [String]
+simpleTokenizer = fix $ \loop cx -> case cx of
+  ""   -> []
+  c:cx -> maybe ([c] : loop cx) (\ (cx, rem) -> cx : loop rem) $
+    foldl (\f split -> mplus f (split (c:cx))) Nothing $ concat $
+      [ fmap (\predicate (c:cx) -> guard (predicate c) >> Just (span predicate (c:cx))) $
+          [isSpace, isNumber, isAlpha]
+      , [\ (c:cx) -> guard (elem c "([{<>}])") >> Just ([c], cx)]
+      , [\ (c:cx) -> Just $ span (==c) (c:cx)]
+      ]
+

@@ -72,6 +72,9 @@
 -- 
 -- The following is a simple program you can use from the command line in GHCi to observe how to
 -- construct 'Glob' expressions and try matching strings to these 'Glob's to see the result.
+-- > import System.IO.Unsafe
+-- > import Data.IORef
+-- > 
 -- > -- Establish a global variable for GHCi.
 -- > testref :: IORef (PatternTree String String)
 -- > testref = unsafePerformIO (newIORef T.Void)

@@ -27,7 +27,6 @@
 
 module Dao.Evaluator where
 
-
 import           Dao.String
 import qualified Dao.Tree as T
 import           Dao.Stack
@@ -809,30 +808,32 @@ class Executable exec result | exec -> result where { execute :: exec -> Exec re
 instance Executable QualRef (Maybe Object) where
   -- | 'Dao.Object.execute'-ing a 'Dao.Object.QualRefExpr' will dereference it, essentially reading the
   -- value associated with that reference from the 'Dao.Object.ExecUnit'.
-  execute ref = case ref of
-    Unqualified ref -> case refNameList ref of
-      []  -> emptyRefErr
-      [_] -> asks execStack  >>= flip storeLookup ref
-      _   -> asks globalData >>= flip storeLookup ref
-    Qualified q ref -> case q of
-      LOCAL  -> case refNameList ref of
-        [ ] -> emptyRefErr
-        [_] -> asks execStack >>= flip storeLookup ref
-        _   -> badRef "local"
-      GLODOT -> ask >>= \xunit -> case currentWithRef xunit of
-        WithRefStore Nothing -> execThrow $ obj $
-          [ obj "cannot use reference prefixed with a dot unless in a \"with\" statement:"
-          , obj $ show (Qualified q ref)
+  execute qref = do
+    result <- catchPredicate $ msum $ case qref of
+      Unqualified ref -> [getLocal ref, getStatic ref, getGlobal ref]
+      Qualified q ref -> case q of
+        LOCAL  -> [getLocal ref]
+        STATIC -> [getStatic ref]
+        GLOBAL -> [getGlobal ref]
+        GLODOT ->
+          [asks currentWithRef >>= \store -> case store of
+             WithRefStore Nothing -> execThrow $ obj $
+               [ obj "cannot use reference prefixed with a dot unless in a \"with\" statement:"
+               , obj $ show (Qualified q ref)
+               ]
+             store -> doLookup ref store
+          , getGlobal ref
           ]
-        store -> storeLookup store ref
-      STATIC -> case refNameList ref of
-        [ ] -> emptyRefErr
-        [_] -> asks currentCodeBlock >>= flip storeLookup ref
-        _   -> badRef "static"
-      GLOBAL -> asks globalData >>= flip storeLookup ref
+    case result of
+      Backtrack -> return Nothing
+      PFail err -> throwError err
+      OK      o -> return $ Just o
     where
-      emptyRefErr = execThrow $ obj [obj "dereferenced empty reference:", ORef ref]
-      badRef  typ = execThrow $ obj [obj "bad reference:", obj typ, ORef ref]
+      doLookup :: Store store => Reference -> store -> Exec Object
+      doLookup  ref store = storeLookup store ref >>= maybe mzero return
+      getLocal  ref = asks execStack  >>= doLookup ref
+      getGlobal ref = asks globalData >>= doLookup ref
+      getStatic ref = asks currentCodeBlock >>= doLookup ref
 
 ----------------------------------------------------------------------------------------------------
 
@@ -912,16 +913,10 @@ instance ExecRef ref => Store (ref T_tree) where
       Just obj -> (T.insert ref obj tree, Just obj)
 
 instance ExecRef ref => Store (ref (Stack Name Object)) where
-  storeLookup store (Reference ref)     = execReadRef store >>= flip execReadTopStackItem (return . T.lookup ref)
-  storeDefine store (Reference ref) obj = execModifyRef_ store (flip execModifyTopStackItem_ (return . T.insert ref obj))
-  storeDelete store (Reference ref)     = execModifyRef_ store (flip execModifyTopStackItem_ (return . T.delete ref    ))
-  storeUpdate store (Reference ref) upd = execModifyRef  store $ \stk ->
-    execModifyTopStackItem stk $ \tree -> upd (T.lookup ref tree) >>= \obj -> return $ case obj of
-      Nothing  -> (T.delete ref     tree, Nothing)
-      Just obj -> (T.insert ref obj tree, Just obj)
-      -- FIXME: should scan the entire stack, if the reference is defined
-      -- anywhere, the variable needs to be updated in that layer of the stack.
-      -- If it is defined nowhere, it should be inserted in the top layer.
+  storeLookup store (Reference ref)     = execReadRef store >>= return . stackLookup ref
+  storeDefine store (Reference ref) obj = execModifyRef_ store (return . stackDefine ref (Just obj))
+  storeDelete store (Reference ref)     = execModifyRef_ store (return . stackDefine ref Nothing)
+  storeUpdate store (Reference ref) upd = execModifyRef  store (stackUpdateM upd ref)
 
 newtype LocalStore  = LocalStore  (IORef (Stack Name Object))
 
@@ -1239,10 +1234,8 @@ catchReturn catch f = catchPredicate f >>= \pval -> case pval of
 execNested :: T_tree -> Exec a -> Exec a
 execNested init exe = do
   (LocalStore stack) <- asks execStack
-  --lift $ dModifyMVar_ xloc stack (return . stackPush init)
   liftIO $ modifyIORef stack (stackPush init)
   result <- exe
-  --lift $ dModifyMVar xloc stack (return . stackPop)
   liftIO $ modifyIORef stack (fst . stackPop)
   return result
 
@@ -2837,20 +2830,6 @@ executeDaoFunc _op fn params = do
     PFail (ExecReturn  obj) -> return obj
     PFail (err@ExecError{}) -> throwError err
     Backtrack               -> mzero
-
-execModifyTopStackItem :: Stack name obj -> (T.Tree name obj -> Exec (T.Tree name obj, a)) -> Exec (Stack name obj, a)
-execModifyTopStackItem (Stack stks) upd = case stks of
-  []       -> execThrow $ obj [obj "execution stack empty"]
-  stk:stks -> upd stk >>= \ (stk, a) -> return (Stack (stk:stks), a)
-
-execModifyTopStackItem_ :: Stack name obj -> (T.Tree name obj -> Exec (T.Tree name obj)) -> Exec (Stack name obj)
-execModifyTopStackItem_ stack upd = fmap fst $
-  execModifyTopStackItem stack (\tree -> upd tree >>= \tree -> return (tree, ()))
-
-execReadTopStackItem :: Stack name obj -> (T.Tree name obj -> Exec a) -> Exec a
-execReadTopStackItem (Stack stks) lkup = case stks of
-  []    -> execThrow $ obj [obj "execution stack empty"]
-  stk:_ -> lkup stk
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4577,14 +4556,6 @@ instance Executable RuleFuncExpr (Maybe Object) where
             -- TODO: tokenize the pattern Single's with the 'programTokenizer'
             return $ parseOverSingles pat (fmap (OString . ustr) . simpleTokenizer)
           _           -> execThrow $ obj [obj "cannot parse pattern expression:", obj param]
-      (StaticStore sub) <- asks currentCodeBlock
-      let insertGlobs tree =
-            foldl (\tree glob -> T.unionWith (++) tree (globTree glob [exec])) tree globs
-      case sub of
-        Just sub -> liftIO $ modifyIORef (staticRules sub) insertGlobs
-        Nothing  -> do
-          rules <- asks ruleSet
-          liftIO $ modifyIORef rules insertGlobs
       return $ Just $ new $ GlobAction globs exec
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
@@ -5321,9 +5292,8 @@ instance Executable TopLevelExpr (ExecUnit -> ExecUnit) where
       ]
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     TopScript scrpt _ -> do
-      -- push a namespace onto the stack
-      --lift $ dModifyMVar_ xloc (execStack xunit) (return . stackPush T.Void)
       let (LocalStore stor) = execStack xunit
+      -- push a namespace onto the stack
       liftIO $ modifyIORef stor (stackPush T.Void)
       -- get the functions declared this far
       pval <- catchPredicate $ execute scrpt
@@ -5334,12 +5304,11 @@ instance Executable TopLevelExpr (ExecUnit -> ExecUnit) where
         Backtrack            -> return () -- do not backtrack at the top-level
       -- pop the namespace, keep any local variable declarations
       --tree <- lift $ dModifyMVar xloc (execStack xunit) (return . stackPop)
-      let (LocalStore stor) = execStack xunit
       tree <- liftIO $ atomicModifyIORef stor stackPop
       -- merge the local variables into the global varaibles resource.
       --lift (modifyUnlocked_ (globalData xunit) (return . T.union tree))
       let (GlobalStore stor) = globalData xunit
-      liftIO $ modifyMVar_ stor (return . T.union tree)
+      liftIO $ modifyMVar_ stor (return . flip T.union tree)
       return id
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     EventExpr typ scrpt _ -> do

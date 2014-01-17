@@ -18,15 +18,15 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE FlexibleInstances #-}
-
 module Dao.Random where
 
 import           Dao.String
 import qualified Dao.Tree as T
 
+import           Control.Exception
 import           Control.Applicative
+import           Control.Monad.Trans.Class
+import           Control.Monad.IO.Class
 import           Control.Monad.State
 
 import           Data.Monoid
@@ -37,12 +37,19 @@ import           Data.Array.IArray
 import qualified Data.ByteString.Char8 as B
 
 import           System.Random
+import           System.IO
 
 ----------------------------------------------------------------------------------------------------
 
 -- | A simple, stateful monad for generating arbitrary data types based on pseudo-random numbers
 -- without lifting the @IO@ or @ST@ monads, i.e. it can be evaluated in a pure way.
-type RandO a = State RandOState a
+newtype RandT m a = RandT { runRandT :: StateT RandOState m a }
+  deriving (Functor, Applicative, Monad, MonadPlus)
+
+instance MonadTrans RandT where { lift = RandT . lift }
+instance MonadIO m => MonadIO (RandT m) where { liftIO = RandT . liftIO }
+
+type RandO a = RandT IO a
 
 data RandOState
   = RandOState
@@ -52,6 +59,7 @@ data RandOState
     , subDepthLim  :: Int
     , subDepth     :: Int
     , maxDepth     :: Int
+    , traceLevel   :: Int
     }
 
 -- | Initializes the 'RandOState' with two integer values: a maximium depth value (limits the number
@@ -66,13 +74,18 @@ initRandOState maxDepth seed =
   , subDepthLim  = maxDepth
   , subDepth     = 0
   , maxDepth     = 0
+  , traceLevel   = 0
   }
 
 -- | Increment the internal node counter of the random generator state. This is good for measuring
 -- the "weight" of randomly generated objects. /NOTE:/ do not use this if you also start your
 -- 'randO' instance with 'recurse', because 'recurse' also calls this function.
 countNode_ :: RandO Int
-countNode_ = gets nodeCounter >>= \i -> modify (\st -> st{nodeCounter=i+1}) >> return (i+1)
+countNode_ = do
+  i' <- RandT $ gets nodeCounter
+  let i = i' + 1
+  RandT $ modify (\st -> st{nodeCounter=i})
+  return i
 
 -- | Algorithmically identical 'countNode_' but its function type is such that it can be written like so:
 -- > 'countNode' $ do ...
@@ -177,25 +190,39 @@ randInteger zero mkOther = do
 -- | Generate a random object given a maximum recursion limit, a seed value, and a 'RandO' generator
 -- function. The weight (meaning the number of calls to 'countNode', 'countNode_', or 'recurse') of
 -- the generated item is also returned.
-genRandWeightedWith :: RandO a -> Int -> Int -> (a, Int)
-genRandWeightedWith gen maxDepth seed = fmap nodeCounter $ runState gen (initRandOState maxDepth seed)
+genRandWeightedWith :: RandO a -> Int -> Int -> IO (a, Int)
+genRandWeightedWith (RandT gen) maxDepth seed =
+  fmap (fmap nodeCounter) $ runStateT gen (initRandOState maxDepth seed)
 
 -- | This function you probably will care most about. does the work of evaluating the
 -- 'Control.Monad.State.evalState' function with a 'RandOState' defined by the same two parameters
 -- you would pass to 'initRandOState'. In other words, arbitrary random values for any data type @a@
 -- that instantates 'HasRandGen' can be generated using two integer values passed to this function.
-genRandWeighted :: HasRandGen a => Int -> Int -> (a, Int)
+genRandWeighted :: HasRandGen a => Int -> Int -> IO (a, Int)
 genRandWeighted maxDepth seed = genRandWeightedWith randO maxDepth seed
 
 -- | Like 'genRandWeightedWith' but the weight value is ignored, only being evaluated to the random
 -- object,
-genRandWith :: RandO a -> Int -> Int -> a
-genRandWith gen maxDepth seed = fst $ genRandWeightedWith gen maxDepth seed
+genRandWith :: RandO a -> Int -> Int -> IO a
+genRandWith gen maxDepth seed = fmap fst $ genRandWeightedWith gen maxDepth seed
 
 -- | Like 'genRandWeightedWith' but the weight value is ignored, only being evaluated to the random
 -- object.
-genRand :: HasRandGen a => Int -> Int -> a
+genRand :: HasRandGen a => Int -> Int -> IO a
 genRand maxDepth seed = genRandWith randO maxDepth seed
+
+randTrace :: MonadIO m => String -> RandT m a -> RandT m a
+randTrace msg rand = do
+  trlev <- RandT $ gets traceLevel
+  let prin msg = liftIO $ do
+        hPutStrLn stderr (replicate trlev ' ' ++ msg)
+        hFlush stderr >>= evaluate
+  () <- prin $ "begin "++msg
+  RandT $ modify $ \st -> st{traceLevel=trlev+1}
+  a  <- rand >>= liftIO . evaluate
+  RandT $ modify $ \st -> st{traceLevel=trlev}
+  () <- prin $ "end   "++msg
+  return a
 
 -- | Take another integer from the seed value. Provide a maximum value, the pseudo-random integer
 -- returned will be the seed value modulo this maximum value (so passing 0 will result in a
@@ -214,14 +241,15 @@ genRand maxDepth seed = genRandWith randO maxDepth seed
 -- function named "a", but the arguments will be arbitrary because they were generated by 'randInt'.
 nextInt :: Int -> RandO Int
 nextInt maxval = if abs maxval==1 || maxval==0 then return 0 else do
-  st <- Control.Monad.State.get
+  st <- RandT $ get
   let (i, rem) = divMod (integerState st) (fromIntegral (abs maxval))
-  Control.Monad.State.put (st{integerState=i})
+  RandT $ put $ st{integerState=i}
   return (fromIntegral rem)
 
 -- | Generate a random integer from the pseudo-random number generator.
 randInt :: RandO Int
-randInt = state (\st -> let (i, gen) = next (stdGenState st) in (i, st{stdGenState=gen}))
+randInt = RandT $
+  state (\st -> let (i, gen) = next (stdGenState st) in (i, st{stdGenState=gen}))
 
 -- | Mark a recursion point, also increments the 'nodeCounter'. The recusion depth limit set when
 -- evaluating a 'randO' computation will not be exceeded.  When the number of 'recurse' functions
@@ -229,15 +257,15 @@ randInt = state (\st -> let (i, gen) = next (stdGenState st) in (i, st{stdGenSta
 -- 'RandO' generator will not be evaluated, the default value will be returned.
 recurse :: a -> RandO a -> RandO a
 recurse defaultVal fn = do
-  st <- get
+  st <- RandT get
   if subDepth st > subDepthLim st
     then return defaultVal
     else do
       countNode_
-      i <- (+1) <$> gets subDepth
-      modify (\st -> st{subDepth = i, maxDepth = max (maxDepth st) i})
+      i <- (+1) <$> (RandT $ gets subDepth)
+      RandT $ modify (\st -> st{subDepth = i, maxDepth = max (maxDepth st) i})
       a <- fn
-      modify (\st -> st{subDepth = subDepth st - 1})
+      RandT $ modify (\st -> st{subDepth = subDepth st - 1})
       return a
 
 -- | The number of unique values a 'Prelude.Int' can be, which is @('Prelude.maxBound'+1)*2@.

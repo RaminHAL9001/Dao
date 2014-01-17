@@ -74,7 +74,7 @@ data UnitConfig
       -- "Dao.Object.PPrintM" modules. The default value is 'Prelude.True'.
     , doTestSerializer  :: Bool
       -- ^ Enable testing of the "Dao.Object.Binary" module. The default value is 'Prelude.True'.
-    , doTestStructizer  :: Bool
+--  , doTestStructizer  :: Bool
       -- ^ Enable testing of the "Dao.Struct" and "Dao.Object.Struct" module. The default value is
       -- 'Prelude.True'.
     , maxRecurseDepth   :: Int
@@ -90,7 +90,7 @@ unitConfig =
   UnitConfig
   { doTestParser     = True
   , doTestSerializer = True
-  , doTestStructizer = True
+--  , doTestStructizer = True
   , maxRecurseDepth  = 5
   }
 
@@ -101,7 +101,7 @@ data TestCase
     , testObject      :: RandObj
     , parseString     :: Maybe UStr
     , serializedBytes :: Maybe B.ByteString
-    , treeStructure   :: Maybe T_tree
+--    , treeStructure   :: Maybe T_tree
     }
 instance Show TestCase where
   show (TestCase{testCaseID=i, testObject=o}) = unlines $ concat $
@@ -118,7 +118,7 @@ data TestResult
     , failedTestCount  :: Int
     , getParserResult  :: (Bool, Maybe RandObj)
     , getDecodedResult :: (Bool, Maybe RandObj)
-    , getConstrResult  :: (Bool, Maybe RandObj)
+--  , getConstrResult  :: (Bool, Maybe RandObj)
     }
 -- Lens-like accessors for 'TestResult'
 data TRLens a
@@ -133,8 +133,8 @@ parsing = TRLens getParserResult  (\a r -> r{getParserResult=a})
 serializing :: TRLens (Bool, Maybe RandObj)
 serializing = TRLens getDecodedResult (\a r -> r{getDecodedResult=a})
 
-structuring :: TRLens (Bool, Maybe RandObj)
-structuring = TRLens getConstrResult  (\a r -> r{getConstrResult=a})
+--structuring :: TRLens (Bool, Maybe RandObj)
+--structuring = TRLens getConstrResult  (\a r -> r{getConstrResult=a})
 
 setResult :: TRLens a -> (a -> a) -> DaoLangResultM ()
 setResult on f = modify (\r -> trLensSetter on (f $ trLensGetter on r) r)
@@ -147,12 +147,12 @@ instance Show TestResult where
             , testObject      = orig
             , parseString     = ppr
             , serializedBytes = enc
-            , treeStructure   = tree
+--            , treeStructure   = tree
             }
         , testResult       = msg
         , getParserResult  = parsd
         , getDecodedResult = decod
-        , getConstrResult  = struct
+--      , getConstrResult  = struct
         }) =
     unlines $ concat $ do
       let o msg1 src prin msg2 (passed, item) = do
@@ -165,7 +165,7 @@ instance Show TestResult where
       [ ["Test #"++show i++' ':uchars msg, show orig, ""]
         , o "pretty printed form:" ppr  uchars                "parsed"        parsd
         , o "encoded bytes:"       enc  (show . Base16String) "decoded"       decod
-        , o "tree structured:"     tree prettyShow            "reconstructed" struct
+--      , o "tree structured:"     tree prettyShow            "reconstructed" struct
         ]
 
 getMethodTable :: DaoLangTest MethodTable
@@ -217,8 +217,8 @@ unitTester =
             [if fn o then "(ENABLED)" else "(DISABLED)", msg, "Testing"]
       ifReportEnabled "Parser"        doTestParser
       ifReportEnabled "Serialization" doTestSerializer
-      ifReportEnabled "Structure"     doTestStructizer
-      if doTestParser o || doTestSerializer o || doTestStructizer o
+--    ifReportEnabled "Structure"     doTestStructizer
+      if doTestParser o || doTestSerializer o -- || doTestStructizer o
       then return o
       else fail "Test configuration has disabled all test categories."
   , showResult     = \ r -> return (show r)
@@ -245,7 +245,7 @@ unitTester =
       , failedTestCount  = 0
       , getParserResult  = (True, Nothing)
       , getDecodedResult = (True, Nothing)
-      , getConstrResult  = (True, Nothing)
+--    , getConstrResult  = (True, Nothing)
       }
   --------------------------------------------------------------------------------------------------
 
@@ -253,10 +253,11 @@ unitTester =
       mtab <- getMethodTable
       cfg  <- asksUnitConfig id
       let maxDepth      = maxRecurseDepth cfg
-      let (o, weight)   = genRandWeighted maxDepth (fromIntegral i)
+      --let (o, weight)   = genRandWeighted maxDepth (fromIntegral i)
+      (o, weight) <- liftIO $ genRandWeighted maxDepth (fromIntegral i)
       let str           = prettyShow o
       let bin           = D.encode mtab o
-      let tree          = dataToStruct o
+--    let tree          = dataToStruct o
       let setup isSet o = if isSet cfg then Just o else Nothing
       deepseq o $! seq weight $! return $!
         TestCase
@@ -265,7 +266,7 @@ unitTester =
         , testObject      = o
         , parseString     = setup doTestParser (ustr str)
         , serializedBytes = setup doTestSerializer bin
-        , treeStructure   = setup doTestStructizer tree
+--        , treeStructure   = setup doTestStructizer tree
         }
   --------------------------------------------------------------------------------------------------
 
@@ -321,22 +322,22 @@ unitTester =
               testFailed serializing "Original object does not match object deserialized from binary string"
               setResult serializing (\ (b, _) -> (b, Just unbin))
       --
-      ---------------- (3) Test the intermediate tree structures ----------------
-      tryTest treeStructure $ \o ->
-        case structToData o :: Predicate UpdateErr RandObj of
-          Backtrack -> testFailed structuring $
-            "Backtracked while constructing a Haskell object from a Dao tree"
-          PFail err -> testFailed structuring $ unlines [show err, prettyShow o]
-          OK struct ->
-            if testObject tc == struct
-              then do
-                setResult structuring (const $ (False, Just struct))
-                testFailed structuring $ unlines $
-                  [ "Original object does not match Haskell object constructed from it's Dao tree"
-                  , prettyShow struct
-                  ]
-              else  testPassed
-      --
+--    ---------------- (3) Test the intermediate tree structures ----------------
+--    tryTest treeStructure $ \o ->
+--      case structToData o :: Predicate UpdateErr RandObj of
+--        Backtrack -> testFailed structuring $
+--          "Backtracked while constructing a Haskell object from a Dao tree"
+--        PFail err -> testFailed structuring $ unlines [show err, prettyShow o]
+--        OK struct ->
+--          if testObject tc == struct
+--            then do
+--              setResult structuring (const $ (False, Just struct))
+--              testFailed structuring $ unlines $
+--                [ "Original object does not match Haskell object constructed from it's Dao tree"
+--                , prettyShow struct
+--                ]
+--            else  testPassed
+--    --
       gets failedTestCount >>= guard . (0==) -- mzero if the number of failed tests is more than zero
   }
 

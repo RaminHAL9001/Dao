@@ -64,7 +64,7 @@ daoTokenDB :: TokenDB DaoTT
 daoTokenDB = makeTokenDB daoTokenDef
 
 data DaoTokenLabel
-  = SPACE | INLINECOM | ENDLINECOM | COMMA | LABEL | STRINGLIT | CHARLIT | DATE | TIME
+  = SPACE | INLINECOM | ENDLINECOM | COMMA | LABEL | HASHLABEL | STRINGLIT | CHARLIT | DATE | TIME
   | BASE10 | DOTBASE10 | NUMTYPE | EXPONENT | BASE16 | BASE2
   deriving (Eq, Enum, Show, Read)
 instance UStrType DaoTokenLabel where { toUStr = derive_ustr; fromUStr = derive_fromUStr; }
@@ -85,6 +85,7 @@ daoTokenDef = do
   let alpha = [from 'A' to 'Z', from 'a' to 'z', ch '_']
       labelRX = rxRepeat1 alpha . rxRepeat(from '0' to '9' : alpha)
   label        <- fullToken  LABEL      $ labelRX
+  hashlabel    <- fullToken  HASHLABEL  $ rx '#' . labelRX
   
   ---------------------------------------- NUMERICAL TYPES ----------------------------------------
   let from0to9  = from '0' to '9'
@@ -111,7 +112,7 @@ daoTokenDef = do
   stringLit    <- fullToken  STRINGLIT $ litExpr '"'
   charLit      <- fullToken  CHARLIT   $ litExpr '\''
   -------------------------------------- KEYWORDS AND GROUPING ------------------------------------
-  openers      <- operatorTable $ words "( [ { @{"
+  openers      <- operatorTable $ words "( [ { ${"
   comma        <- emptyToken COMMA (rx ',')
   -- prefixers    <- operatorTable (words "$ @ -> . ! - ~")
   daoKeywords  <- keywordTable LABEL labelRX $ words $ unwords $
@@ -150,7 +151,7 @@ daoTokenDef = do
   return $ regexToTableLexer $
     [ space, inlineCom, endlineCom, comma
     , stringLit, charLit, base16, base2, base10Parser
-    , openers, operators, closers
+    , openers, hashlabel, operators, closers
     , date, time, daoKeywords
     ]
 
@@ -395,7 +396,7 @@ paren :: DaoParser AST_Paren
 paren = joinEvalPTableItem parenPTabItem
 
 metaEvalPTabItem :: DaoTableItem AST_Object
-metaEvalPTabItem = tableItemBy "@{" $ \startTok -> expect "object expression after open @{ meta-eval brace" $ do
+metaEvalPTabItem = tableItemBy "${" $ \startTok -> expect "object expression after open ${ meta-eval brace" $ do
   scrp <- fmap (AST_CodeBlock . concat) (many script)
   expect "closing } for meta-eval brace" $ do
     endLoc <- tokenBy "}" asLocation
@@ -576,6 +577,19 @@ commentedInPair parser = do
   let (a, loc) = unComment comntd
   return (fmap (const a) comntd, loc)
 
+structPTabItems :: [DaoTableItem AST_Object]
+structPTabItems = (:[]) $ tableItem HASHLABEL $ \nameTok -> do
+  bufferComments
+  let name = fromUStr $ ustr $ tail $ asString nameTok
+  let startLoc = asLocation nameTok
+  flip mplus (return $ AST_Struct name nullValue startLoc) $ do
+    objList <- joinEvalPTableItem $ commaSepdObjList "data structure initializer" "{" "}"
+    let objListLoc = getLocation objList
+    return $ AST_Struct name (AST_OptObjList [] (Just objList)) (startLoc<>objListLoc)
+
+structPTab :: DaoPTable AST_Object
+structPTab = table structPTabItems
+
 -- The Dao language has four overlapping expressions: 1. an ordinary qualified label or reference
 -- expression, 2. a function call expression, 3. an array subscript expression, and 4. initializer
 -- expressions. All of these expressions start with an ordinary qualified reference and then may or
@@ -607,7 +621,7 @@ commentedInPair parser = do
 -- If all of the above backtrack, the qualified reference wrapped in the 'AST_PlainRef' constructor
 -- is returned.
 funcCall_arraySub_initPTab :: DaoPTable AST_Object
-funcCall_arraySub_initPTab =
+funcCall_arraySub_initPTab = (<>structPTab) $
   bindPTable qualRef_parenPTab $ \qref -> do
     bufferComments
     flip mplus (return $ AST_ObjSingle $ AST_Single qref) $ case qref of
@@ -632,7 +646,7 @@ funcCall_arraySub_initPTab =
           AST_ArraySub qref params (getLocation qref <> getLocation params)
       , bindPTableItem curlyBracketsItem $ \initItems -> return $ \qref -> case qref of
           AST_PlainRef ref -> case ref of
-            AST_Unqualified ref -> optSpace >>= \coms ->
+            AST_Unqualified ref -> optSpace >>= \coms -> -- TODO: check if this 'coms' is redundant
               return $ return $ AST_Init ref (AST_OptObjList coms Nothing) initItems
                 (getLocation qref <> getLocation initItems)
             AST_Qualified q _ _ _ -> fail $ "cannot use "++show q++" reference as constructor"
@@ -643,9 +657,10 @@ funcCall_arraySub_initPTab =
                 AST_FuncCall qref params (getLocation qref <> getLocation params)
           case qref of
             AST_PlainRef (AST_Unqualified ref) -> flip mplus startLoop $ do
-              coms <- optSpace
+              -- coms <- optSpace -- was comments to AST_OptObjList, should have been taken already
+              --                  -- by 'roundBracketsItem' which calls 'commaSepdObjList'
               initItems <- curlyBrackets
-              return $ return $ AST_Init ref (AST_OptObjList coms $ Just params) initItems
+              return $ return $ AST_Init ref (AST_OptObjList [] $ Just params) initItems
                 (getLocation qref <> getLocation initItems)
             _ -> startLoop
       ]

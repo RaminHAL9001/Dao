@@ -24,17 +24,17 @@ module Dao.Object
   ) where
 
 import           Dao.String
+import           Dao.Predicate
 import qualified Dao.EnumSet   as Es
-import qualified Dao.Tree      as T
 import qualified Dao.Binary    as B
 import           Dao.PPrint
-import           Dao.Struct
 import           Dao.Random
 
 import           Data.Typeable
 import           Data.Monoid
 import           Data.List
 import qualified Data.Complex  as C
+import qualified Data.Map      as M
 import           Data.Ix
 import           Data.Char
 import           Data.Word
@@ -42,12 +42,340 @@ import           Data.Bits
 import           Data.Array.IArray
 import           Data.Time hiding (parseTime)
 
-import qualified Data.ByteString.Lazy      as B
+import qualified Data.ByteString.Lazy as B
 
 import           Control.Applicative
 import           Control.DeepSeq
 import           Control.Monad
+import           Control.Monad.Error
 import           Control.Monad.Reader
+import           Control.Monad.State
+
+----------------------------------------------------------------------------------------------------
+
+-- | This is the data type used as the intermediary between Haskell objects and Dao objects. If you
+-- would like your Haskell data type to be used as a non-opaque data type in a Dao language script,
+-- the first step is to instantiate your data type into this class. The next step would be to
+-- instantiate your object into the 'Dao.Evaluator.ObjectClass' class. Instantiating the
+-- 'Dao.Evaluator.ObjectClass' class alone will make your object usable in Dao language scripts, but
+-- it will be an opaque type. Instantiating 'Struct' and declaring 'autoDefStruct' in the
+-- 'defObjectInterface' will allow functions in the Dao language script to read and write
+-- information to your data structure, modifying it during runtime.
+-- 
+-- 'Struct' values are used lazily, so your data types will only be converted to and from 'Struct's
+-- when absolutely necessary. This helps to conserver memory usage.
+data Struct value
+  = Nullary{ structName :: Name }
+    -- ^ models a constructor with no fields, for example 'Prelude.EQ', 'Prelude.GT' and
+    -- 'Prelude.LT'.
+  | Struct
+    { structName :: Name -- ^ provide the name for this constructor.
+    , fieldMap   :: M.Map Name value
+    }
+  deriving (Eq, Ord, Show, Typeable)
+instance Functor Struct where
+  fmap f st = case st of
+    Nullary{ structName=name } -> Nullary{ structName=name }
+    Struct{ fieldMap=value   } -> st{ fieldMap = fmap f value }
+
+instance NFData value => NFData (Struct value) where
+  rnf (Nullary a  ) = deepseq a ()
+  rnf (Struct  a b) = deepseq a $! deepseq b ()
+
+instance HasNullValue value => HasNullValue (Struct value) where
+  nullValue = Nullary{ structName=ustr "NULL" }
+  testNull (Nullary{ structName=name }) = name == ustr "NULL"
+  testNull _ = False
+
+instance B.Binary o mtab => B.Binary (Struct (Value o)) mtab where
+  put o = case o of
+    Nullary  o -> B.putWord8 0x20 >> B.put o
+    Struct n o -> B.putWord8 0x21 >> B.put n >> B.put o
+  get = B.word8PrefixTable <|> fail "expecting Struct"
+
+instance B.Binary o mtab => B.HasPrefixTable (Struct (Value o)) B.Byte mtab where
+  prefixTable = B.mkPrefixTableWord8 "QualRef" 0x20 0x21 $
+    [ Nullary <$> B.get
+    , pure Struct <*> B.get <*> B.get
+    ]
+
+instance PPrintable value => PPrintable (Struct value) where
+  pPrint o = case o of
+    Nullary{ structName=name } -> pString ('#' : uchars (toUStr name))
+    Struct{ structName=name, fieldMap=dict } ->
+      pList (pString ('#' : uchars (toUStr name))) "{" ", " "}" $
+        flip map (M.assocs dict) $ \ (left, right) -> pInline $
+          [pPrint left, pString " = ", pPrint right]
+
+instance HasRandGen value => HasRandGen (Struct value) where
+  randO = countRunRandChoice 
+  randChoice = randChoiceList $
+    [ pure Struct <*> randO <*> (M.fromList <$> randListOf 1 4 (pure (,) <*> randO <*> randO))
+    , Nullary <$> randO
+    ]
+
+-- | You can make your data type readable but not writable in the Dao runtime. That means a Dao
+-- script can inspect elements of your data type, but not modify them As an example lets say you
+-- have a 3D-point data type you would like to use in your Dao script.
+-- > data Point =
+-- >     Point2D{ get_x::'T_float', get_y::'T_float' }
+-- >   | Point3D{ get_x::'T_float', get_y::'T_float', get_z::'T_float' }
+-- 
+-- Lets say you have already instantiated the 'ObjectClass' class and provided the Dao runtime with
+-- a 'Dao.Evaluator.DaoFunc' (via 'Dao.Evaluator.setupDao') that constructs a Point3D at runtime:
+-- > p = Point3D(1.9, 4.4, -2.1);
+-- Now you would like to extend the 'ObjectClass' of your Point3D to also be readable at runtime.
+-- If you instantiate 'RuntimeReadable' your Dao language script could also read elements from the
+-- point like so:
+-- > distFromOrigin = sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+-- However you cannot modify the point unless you also instantiate 'RuntimeWritable'. So a statement
+-- like this would result in an error:
+-- > p.x /= distFromOrigin;
+-- > p.y /= distFromOrigin;
+-- > p.z /= distFromOrigin;
+-- 
+-- You can convert this to a 'Struct' type using the 'toDaoStruct' function. There are many ways to
+-- define fields in a 'Struct', here are a few:
+-- > instance 'RuntimeReadable' Point3D 'Dao.Evaluator.Object' where
+-- >     'runtimeRead' = 'toDaoStruct' "@Point2D@" $ do
+-- >         'Dao.Evaluator.putPrimField' "x" get_x
+-- >         'Dao.Evaluator.putPrimField' "y" get_y
+-- >          obj <- 'Control.Monad.Reader.Class.ask'
+-- >          case obj of
+-- >             Point3D _ _ z -> do
+-- >                 'renameConstructor' "@Point3D@"
+-- >                 'define' "z" ('Dao.Evaluator.obj' z)
+-- >             _             -> return ()
+-- 
+-- Finally, you should define the instantiation of Point3D into the 'ObjectClass' class so it
+-- includes the directive 'Dao.Evaluator.autoDefToStruct'.
+class RuntimeReadable haskData value where
+  runtimeRead :: haskData -> Predicate (StructError value) (Struct value)
+
+-- | Continuing the example from above, if you do want your data type to be modifyable by functions
+-- running in the Dao language runtime, you must instantiate this class, which is facilitated by the
+-- 'fromDaoStruct' function.
+-- > instance 'RuntimeWritable' 'Point3D' 'Dao.Evaluator.Object' where
+-- >     runtimeWrite = 'fromDaoStruct' $ 'Control.Monad.msum' $
+-- >         [ do 'constructor' "@Point2D@"
+-- >              'Control.Applicative.pure' Point3D <*> 'Dao.Evaluator.?' "x" <*> 'Dao.Evaluator.?' "y"
+-- >         , do 'constructor' "@Point3D@"
+-- >              'Control.Applicative.pure' Point3D <*> 'Dao.Evaluator.?' "x" <*> 'Dao.Evaluator.?' "y" <*> 'Dao.Evaluator.@' "z"
+-- >         ]
+-- 
+-- Do not forget to define the instantiation of Point3D into the 'ObjectClass' class so it
+-- includes the directive 'Dao.Evaluator.autoDefFromStruct'.
+-- 
+-- Note that an instance of 'RuntimeWritable' must also instantiate 'RuntimeReadable'. I can see no
+-- use for objects that are only writable, that is they can be created at runtime but never
+-- inspected at runtime.
+class RuntimeReadable haskData value =>
+  RuntimeWritable haskData value where
+    runtimeWrite :: Struct value -> Predicate (StructError value) haskData
+
+-- | If there is ever an error converting to or from your Haskell data type, you can
+-- 'Control.Monad.Error.throwError' a 'StructError'.
+data StructError value
+  = StructError
+    { structErrMsg   :: Maybe UStr
+    , structErrName  :: Maybe UStr
+    , structErrField :: Maybe UStr
+    , structErrValue :: Maybe value
+    }
+  deriving (Eq, Ord, Typeable)
+
+instance HasNullValue (StructError value) where
+  nullValue =
+    StructError
+    { structErrMsg=Nothing
+    , structErrName=Nothing
+    , structErrField=Nothing
+    , structErrValue=Nothing
+    }
+  testNull
+    ( StructError
+      { structErrMsg=Nothing
+      , structErrName=Nothing
+      , structErrField=Nothing
+      , structErrValue=Nothing
+      }
+    ) = True
+  testNull _ = False
+
+-- | Used to convert a 'Prelude.String' to a 'Dao.String.Name' by functions like 'define' and
+-- 'setField'. Usually you will not need to use it.
+mkLabel :: (UStrType name, MonadPlus m) => name -> m Name
+mkLabel name = maybe mzero return $ maybeFromUStr (toUStr name)
+
+mkStructName :: (UStrType name, MonadPlus m) => name -> m Name
+mkStructName name = mplus (mkLabel name) $ fail "invalid constructor name"
+
+mkFieldName :: (UStrType name, MonadPlus m) => name -> m Name
+mkFieldName name = mplus (mkLabel name) $ fail "invalid field name"
+
+-- | This is a handy monadic and 'Data.Functor.Applicative' interface for instantiating
+-- 'runtimeRead' in the 'RuntimeReadable' class. It takes the form of a writer because what you
+-- /write/ to the 'Struct' here in the Haskell language will be /readable/ by the Dao language
+-- runtime. Think of it as "this is the function type used when the Dao runtime wants to read
+-- information from my data structure."
+newtype ToDaoStruct value haskData a
+  = ToDaoStruct{ structWriterPredicate :: PredicateT (StructError value) (State (Struct value, haskData)) a }
+  deriving (Functor, Applicative, Alternative, MonadPlus)
+
+instance Monad (ToDaoStruct value haskData) where
+  return = ToDaoStruct . return
+  m >>= f = ToDaoStruct $ structWriterPredicate m >>= structWriterPredicate . f
+  fail msg = throwError $ nullValue{ structErrMsg = Just $ ustr msg }
+
+instance MonadState (Struct value) (ToDaoStruct value haskData) where
+  state f = ToDaoStruct $ lift $ state $ \ (struct, haskData) ->
+    let (a, struct') = f struct in (a, (struct', haskData))
+
+instance MonadReader haskData (ToDaoStruct value haskData) where
+  ask = ToDaoStruct $ lift $ fmap snd get
+  local upd f = ToDaoStruct $ PredicateT $ do
+    haskData <- gets snd
+    modify (\ (struct, _) -> (struct, upd haskData))
+    a <- runPredicateT $ structWriterPredicate f
+    modify (\ (struct, _) -> (struct, haskData))
+    return a
+
+instance MonadError (StructError value) (ToDaoStruct value haskData) where
+  throwError err = get >>= \struct -> ToDaoStruct $ throwError $
+    err{ structErrName = structErrName err <|> (Just $ toUStr $ structName struct) }
+  catchError f catch = ToDaoStruct $ catchError (structWriterPredicate f) (structWriterPredicate . catch)
+
+instance MonadPlusError (StructError value) (ToDaoStruct value haskData) where
+  catchPredicate = ToDaoStruct . catchPredicate . structWriterPredicate
+  predicate      = ToDaoStruct . predicate
+
+-- | This function is typically used to instantiate 'runtimeRead'. It takes three parameters: first
+-- a string defining the label for the constructor, second a computation to convert your data type
+-- to the 'Struct' using the 'ToDaoStruct' monad, and third the data type you want to convert. You can
+-- use functions like 'defineWith' and 'setField' to build your 'ToDaoStruct' computation.
+toDaoStruct :: forall name value haskData x . UStrType name => name -> ToDaoStruct value haskData x -> haskData -> Predicate (StructError value) (Struct value)
+toDaoStruct name pred hask = mkStructName name >>= \name ->
+  evalState (runPredicateT $ structWriterPredicate $ pred >> get) $ (Struct{ structName=name, fieldMap=M.empty }, hask)
+
+-- | When you use 'toDaoStruct' you provide an initial constructor name. If you need to change the
+-- name of the constructor at some point, for example when you observe some condition of the
+-- @haskData@ type that merits an alternative constructor name.
+renameConstructor :: UStrType name => name -> ToDaoStruct value haskData ()
+renameConstructor name = mkStructName name >>= \name -> modify $ \struct -> struct{ structName=name }
+
+define :: UStrType name => name -> value -> ToDaoStruct value haskData value
+define name value = do
+  name <- mkFieldName name
+  modify $ \struct -> struct{ fieldMap = M.insert name value (fieldMap struct) }
+  return value
+
+-- | Defines an optional field. If the value given is 'Prelude.Nothing', nothing happens. Otherwise
+-- the value is placed into the 'Struct' at the given @name@d field. This is the inverse opreation
+-- of using 'Control.Applicative.optional' in the 'FromDaoStruct' monad.
+optionalField :: UStrType name => name -> Maybe value -> ToDaoStruct value haskData (Maybe value)
+optionalField name = maybe (return Nothing) (fmap Just . define name)
+
+setField :: UStrType name => name -> (haskData -> value) -> ToDaoStruct value haskData value
+setField name f = ask >>= define name . f
+
+-- | This is a handy monadic and 'Data.Functor.Applicative' interface for instantiating
+-- 'runtimeWrite' in the 'RuntimeWritable' class. It takes the form of a reader because what you
+-- /read/ from the 'Struct' here in the Haskell language was /written/ by the Dao language
+-- runtime. Think of it as "this is the data type used when the Dao runtime wants to write
+-- information to my data structure."
+-- 
+-- Because Dao is such a messy, fuzzy, not statically typed, interpreted language, the information
+-- coming in from the Dao runtime requires a lot of sanitization. Therefore this monad provides
+-- several functions for checking the type of information you are using to build your Haskell data
+-- type.
+--
+-- Be sure to make ample use of the 'Control.Monad.guard', 'Control.Monad.Error.throwError', and
+-- 'Control.Monad.fail' functions.
+-- 
+-- /NOTE:/ refer to the documentation of the 'constructor' monad for an important note on reading
+-- Haskell data types with multiple constructors.
+newtype FromDaoStruct value a =
+  FromDaoStruct{ structReaderPredicate :: PredicateT (StructError value) (Reader (Struct value)) a }
+  deriving (Functor, Applicative, Alternative, MonadPlus)
+
+instance Monad (FromDaoStruct value) where
+  return = FromDaoStruct . return
+  m >>= f = FromDaoStruct $ structReaderPredicate m >>= structReaderPredicate . f
+  fail msg = throwError $ nullValue{ structErrMsg = Just (ustr msg) }
+
+instance MonadReader (Struct value) (FromDaoStruct value) where
+  ask = FromDaoStruct $ lift ask
+  local upd f = FromDaoStruct $ PredicateT $ local upd (runPredicateT (structReaderPredicate f))
+
+instance MonadError (StructError value) (FromDaoStruct value) where
+  throwError err = ask >>= \struct -> FromDaoStruct $ throwError $
+    err { structErrName = structErrName err <|> (Just $ toUStr $ structName struct) }
+  catchError (FromDaoStruct f) catch = FromDaoStruct $ catchError f (structReaderPredicate . catch)
+
+instance MonadPlusError (StructError value) (FromDaoStruct value) where
+  catchPredicate = FromDaoStruct . catchPredicate . structReaderPredicate
+  predicate = FromDaoStruct . predicate
+
+-- | This function is typically used to instantiate 'runtimeWrite'. It takes three parameters: first
+-- a string defining the label for the constructor, second a computation to convert your data type
+-- to the 'Struct' using the 'ToDaoStruct' monad, and third the data type you want to convert. You can
+-- use functions like 'defineWith' and 'setField' to build your 'ToDaoStruct' computation.
+fromDaoStruct :: FromDaoStruct value haskData -> Struct value -> Predicate (StructError value) haskData
+fromDaoStruct (FromDaoStruct f) = runReader (runPredicateT f)
+
+-- | Checks if the 'structName' is equal to the given name, and if not then backtracks. This is
+-- important when constructing Haskell data types with multiple constructors.
+--
+-- A haskell data type with multiple constructors should be constructed with the
+-- 'Control.Monad.msum' function like so:
+-- > data MyData = A | B Int | C Int Int
+-- > instance 'FromDaoStruct' ('Dao.Evaluator.Object) where
+-- >     'runtimeWrite' = 'fromDaoStruct' $ 'Control.Monad.msum' $
+-- >         [ 'constructor' "A" >> return a,
+-- >           do 'constructor' "B"
+-- >              B 'Control.Applicative.<$>' ('field' "b1" >>= 'Dao.Evaluator.primType')
+-- >           do 'constructor' "C"
+-- >              'Control.Applicative.pure' C
+-- >                  'Control.Applicative.<*>' 'Dao.Evaluator.required' ('field' "c1" >>= 'Dao.Evaluator.primType')
+-- >                  'Control.Applicative.<*>' 'Dao.Evaluator.required' ('field' "c2" >>= 'Dao.Evaluator.primType')
+-- >         ]
+-- /NOTE/ that if all three 'constructor's backtrack (evaluate to 'Control.Monad.mzero') the whole
+-- monad will backtrack. By convention, you should let the monad backtrack, rather than writing a
+-- 'Control.Monad.fail' statement as the final item in the 'Control.Monad.msum' list.
+constructor :: UStrType name => name -> FromDaoStruct value ()
+constructor name = (pure (==) <*> mkStructName name <*> asks structName) >>= guard
+
+-- | Retrieves an arbitrary @value@ by it's field name, and backtraks if no such field is defined.
+tryField :: forall name value . UStrType name => name -> FromDaoStruct value value
+tryField name = (pure M.lookup <*> mkFieldName name <*> asks fieldMap) >>= maybe mzero return
+
+-- | Like 'field' but evaluates 'Control.Monad.Error.throwError' if the 'FromDaoStruct' function
+-- backtracks or throws it's own error.
+field :: UStrType name => name -> FromDaoStruct value value
+field name = mplus (tryField name) $ throwError $
+  nullValue
+  { structErrMsg   = Just $ ustr "missing required field"
+  , structErrField = Just $ toUStr name
+  }
+
+instance RuntimeReadable (StructError (Value any)) (Value any) where
+  runtimeRead = toDaoStruct "StructError" $ do
+    asks structErrMsg   >>= optionalField "message" . fmap OString
+    asks structErrName  >>= optionalField "structName" . fmap OString
+    asks structErrField >>= optionalField "field" . fmap OString
+    asks structErrValue >>= optionalField "value"
+
+instance RuntimeWritable (StructError (Value any)) (Value any) where
+  runtimeWrite = fromDaoStruct $ do
+    constructor "StructError"
+    let str o = case o of
+          OString o -> return o
+          _         -> fail "expecting string value"
+    pure StructError
+      <*> optional (tryField "message" >>= str)
+      <*> optional (tryField "structName" >>= str)
+      <*> optional (tryField "field" >>= str)
+      <*> optional (tryField "value")
 
 ----------------------------------------------------------------------------------------------------
 
@@ -69,7 +397,8 @@ data Value o
   | OString    T_string
   | ORef       T_ref
   | OList      [Value o]
-  | OTree      (T.Tree Name (Value o))
+  | ODict      (M.Map Name (Value o))
+  | OTree      (Struct (Value o))
   | OBytes     T_bytes
   | OHaskell   o
   deriving (Eq, Ord, Typeable, Show)
@@ -104,6 +433,7 @@ instance NFData obj => NFData (Value obj) where
   rnf (OString    a) = deepseq a ()
   rnf (ORef       a) = deepseq a ()
   rnf (OList      a) = deepseq a ()
+  rnf (ODict      a) = deepseq a ()
   rnf (OTree      a) = deepseq a ()
   rnf (OBytes     a) = seq a ()
   rnf (OHaskell   a) = deepseq a ()
@@ -121,6 +451,7 @@ instance HasNullValue obj => HasNullValue (Value obj) where
     OChar     c  -> testNull c
     ORelTime  s  -> testNull s
     OList     s  -> testNull s
+    ODict     m  -> testNull m
     OTree     t  -> testNull t
     OBytes    o  -> testNull o
     OHaskell  o  -> testNull o
@@ -128,7 +459,7 @@ instance HasNullValue obj => HasNullValue (Value obj) where
 
 instance B.Binary o mtab => B.Binary (Value o) mtab where
   put o = do
-    let t   = B.put (objType o)
+    let t   = B.put (typeOfObj o)
         p o = t >> B.put o
     case o of
       ONull      -> t
@@ -146,6 +477,7 @@ instance B.Binary o mtab => B.Binary (Value o) mtab where
       OString  o -> p o
       ORef     o -> p o
       OList    o -> t >> B.putUnwrapped o
+      ODict    o -> p o
       OTree    o -> p o
       OBytes   o -> p o
       OHaskell o -> B.put o
@@ -154,7 +486,7 @@ instance B.Binary o mtab => B.Binary (Value o) mtab where
 instance B.Binary o mtab => B.HasPrefixTable (Value o) B.Byte mtab where
   prefixTable =
     let g f = fmap f B.get
-    in  B.mkPrefixTableWord8 "Object" 0x08 0x19 $
+    in  mappend (OTree <$> B.prefixTable) $ B.mkPrefixTableWord8 "Object" 0x08 0x1A $
           [ return ONull
           , return OTrue
           , g OType
@@ -170,6 +502,7 @@ instance B.Binary o mtab => B.HasPrefixTable (Value o) B.Byte mtab where
           , g OString
           , g ORef
           , OList <$> B.getUnwrapped
+          , g ODict
           , g OTree
           , g OBytes
           , mplus (OHaskell <$> B.get)
@@ -221,7 +554,7 @@ objToRational :: Value o -> Maybe Rational
 objToRational o = case o of
   OWord     o -> return $ toRational o
   OInt      o -> return $ toRational o
-  ORelTime o -> return $ toRational o
+  ORelTime  o -> return $ toRational o
   OFloat    o -> return $ toRational o
   OLong     o -> return $ toRational o
   ORatio    o -> return o
@@ -255,6 +588,13 @@ objTestBit a i = objToInt i >>= \i -> case a of
   OLong a -> return (oBool (testBit a i))
   _       -> mzero
 
+-- | Create an 'Object' by stacking up 'ODict' constructors to create a directory-like structure,
+-- then store the Object at the top of the path, returning the directory-like object.
+insertAtPath :: [Name] -> Value o -> Value o
+insertAtPath px o = case px of
+  []   -> o
+  p:px -> ODict (M.singleton p (insertAtPath px o))
+
 ----------------------------------------------------------------------------------------------------
 
 -- | Direct a reference at a particular tree in the runtime.
@@ -271,6 +611,8 @@ data RefQualifier
   deriving (Eq, Ord, Typeable, Enum, Ix, Show)
 
 instance Bounded RefQualifier where { minBound=LOCAL; maxBound=GLOBAL; }
+
+instance NFData RefQualifier where { rnf a = seq a () }
 
 instance PPrintable RefQualifier where { pPrint = pUStr . toUStr }
 
@@ -327,16 +669,16 @@ instance B.Binary QualRef mtab where
     Unqualified ref -> B.put ref
     Qualified q ref -> B.prefixByte pfx $ B.put ref where
       pfx = case q of
-        LOCAL  -> 0x20
-        GLODOT -> 0x21
-        STATIC -> 0x22
-        GLOBAL -> 0x23
+        LOCAL  -> 0x22
+        GLODOT -> 0x23
+        STATIC -> 0x24
+        GLOBAL -> 0x25
   get = B.word8PrefixTable <|> fail "expecting QualRef"
 
 instance B.HasPrefixTable QualRef B.Byte mtab where
   prefixTable = mconcat $
     [ Unqualified <$> B.prefixTable
-    , B.mkPrefixTableWord8 "QualRef" 0x20 0x23 $
+    , B.mkPrefixTableWord8 "QualRef" 0x22 0x25 $
         [ Qualified LOCAL  <$> B.get
         , Qualified GLODOT <$> B.get
         , Qualified STATIC <$> B.get
@@ -344,20 +686,33 @@ instance B.HasPrefixTable QualRef B.Byte mtab where
         ]
     ]
 
-instance Structured QualRef (Value a) where
-  dataToStruct = deconstruct . place . ORef
-  structToData = reconstruct $ do
-    a <- this
-    case a of
-      ORef a -> return a
-      _      -> fail "reference"
-
 instance HasRandGen QualRef where
   randO = do
     let maxbnd = fromEnum(maxBound::RefQualifier)
     i   <- nextInt (2*(maxbnd-fromEnum(minBound::RefQualifier)))
     let (d, m) = divMod i 2
     if m==0 then Unqualified <$> randO else Qualified (toEnum d) <$> randO
+
+refNames :: UStrType str => [str] -> QualRef
+refNames nx = Unqualified $ Reference (fmap (fromUStr . toUStr) nx)
+
+maybeRefNames :: UStrType str => [str] -> Maybe QualRef
+maybeRefNames nx = fmap (Unqualified . Reference) $ sequence $ fmap (maybeFromUStr . toUStr) nx
+
+fmapQualRef :: (Reference -> Reference) -> QualRef -> QualRef
+fmapQualRef fn r = case r of
+  Unqualified r -> Unqualified (fn r)
+  Qualified q r -> Qualified q (fn r)
+
+setQualifier :: RefQualifier -> QualRef -> QualRef
+setQualifier q ref = case ref of
+  Unqualified ref -> Qualified q ref
+  Qualified _ ref -> Qualified q ref
+
+delQualifier :: QualRef -> QualRef
+delQualifier ref = case ref of
+  Unqualified r -> Unqualified r
+  Qualified _ r -> Unqualified r
 
 ----------------------------------------------------------------------------------------------------
 
@@ -382,6 +737,7 @@ data CoreType
   | StringType
   | RefType
   | ListType
+  | DictType
   | TreeType
   | BytesType
   | HaskellType
@@ -403,6 +759,7 @@ instance Show CoreType where
     StringType   -> "string"
     RefType      -> "ref"
     ListType     -> "list"
+    DictType     -> "dict"
     TreeType     -> "tree"
     BytesType    -> "bytes"
     ComplexType  -> "complex"
@@ -420,6 +777,7 @@ instance Read CoreType where
     "string"  -> [StringType]
     "ref"     -> [RefType]
     "list"    -> [ListType]
+    "dict"    -> [DictType]
     "tree"    -> [TreeType]
     "bytes"   -> [BytesType]
     "haskell" -> [HaskellType]
@@ -457,6 +815,7 @@ instance PPrintable CoreType where
     StringType   -> "String"
     RefType      -> "Ref"
     ListType     -> "List"
+    DictType     -> "Dict"
     TreeType     -> "Tree"
     BytesType    -> "Data"
     HaskellType  -> "Foreign"
@@ -478,13 +837,14 @@ instance B.Binary CoreType mtab where
     StringType   -> 0x14
     RefType      -> 0x15
     ListType     -> 0x16
-    TreeType     -> 0x17
-    BytesType    -> 0x18
-    HaskellType  -> 0x19
+    DictType     -> 0x17
+    TreeType     -> 0x18
+    BytesType    -> 0x19
+    HaskellType  -> 0x1A
   get = B.word8PrefixTable <|> fail "expecting CoreType"
 
 instance B.HasPrefixTable CoreType B.Byte mtab where
-  prefixTable = B.mkPrefixTableWord8 "CoreType" 0x08 0x19 $ map return $
+  prefixTable = B.mkPrefixTableWord8 "CoreType" 0x08 0x1A $ map return $
     [ NullType
     , TrueType
     , TypeType
@@ -500,6 +860,7 @@ instance B.HasPrefixTable CoreType B.Byte mtab where
     , StringType
     , RefType
     , ListType
+    , DictType
     , TreeType
     , BytesType
     , HaskellType
@@ -507,8 +868,8 @@ instance B.HasPrefixTable CoreType B.Byte mtab where
 
 instance HasRandGen CoreType where { randO = toEnum <$> nextInt (fromEnum (maxBound::CoreType)) }
 
-objType :: Value o -> CoreType
-objType o = case o of
+typeOfObj :: Value o -> CoreType
+typeOfObj o = case o of
   ONull      -> NullType
   OTrue      -> TrueType
   OType    _ -> TypeType
@@ -524,6 +885,7 @@ objType o = case o of
   OString  _ -> StringType
   ORef     _ -> RefType
   OList    _ -> ListType
+  ODict    _ -> DictType
   OTree    _ -> TreeType
   OBytes   _ -> BytesType
   OHaskell _ -> HaskellType
@@ -559,13 +921,13 @@ instance PPrintable TypeSym where
 
 instance B.Binary TypeSym mtab where
   put o = case o of
-    CoreType o       -> B.prefixByte 0x1C $ B.put o
-    TypeVar  ref ctx -> B.prefixByte 0x1D $ B.put ref >> B.put ctx
+    CoreType o       -> B.prefixByte 0x1D $ B.put o
+    TypeVar  ref ctx -> B.prefixByte 0x1E $ B.put ref >> B.put ctx
   get = B.word8PrefixTable <|> fail "expecting TypeSym"
 
 instance B.HasPrefixTable TypeSym B.Byte mtab where
   prefixTable =
-    B.mkPrefixTableWord8 "TypeSym" 0x1C 0x1D [CoreType <$> B.get, pure TypeVar <*> B.get <*> B.get]
+    B.mkPrefixTableWord8 "TypeSym" 0x1D 0x1E [CoreType <$> B.get, pure TypeVar <*> B.get <*> B.get]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -580,11 +942,11 @@ instance PPrintable TypeStruct where
   pPrint (TypeStruct tx) = pList (pString "type") "(" ", " ")" (map pPrint tx)
 
 instance B.Binary TypeStruct mtab where
-  put (TypeStruct o) = B.prefixByte 0x1B $ B.put o
+  put (TypeStruct o) = B.prefixByte 0x1C $ B.put o
   get = B.word8PrefixTable <|> fail "expecting TypeStruct"
 
 instance B.HasPrefixTable TypeStruct B.Byte mtab where
-  prefixTable = B.mkPrefixTableWord8 "TypeStruct" 0x1B 0x1B [TypeStruct <$> B.get]
+  prefixTable = B.mkPrefixTableWord8 "TypeStruct" 0x1C 0x1C [TypeStruct <$> B.get]
 
 instance HasRandGen TypeStruct where { randO = TypeStruct <$> randList 1 4 }
 
@@ -602,11 +964,11 @@ instance PPrintable ObjType where
   pPrint (ObjType tx) = pList (pString "anyOf") "(" ", " ")" (map pPrint tx)
 
 instance B.Binary ObjType mtab where
-  put (ObjType o) = B.prefixByte 0x1A $ B.put o
+  put (ObjType o) = B.prefixByte 0x1B $ B.put o
   get = B.word8PrefixTable <|> fail "expecting ObjType"
 
 instance B.HasPrefixTable ObjType B.Byte mtab where
-  prefixTable = B.mkPrefixTableWord8 "ObjType" 0x1A 0x1A [ObjType <$> B.get]
+  prefixTable = B.mkPrefixTableWord8 "ObjType" 0x1B 0x1B [ObjType <$> B.get]
 
 instance HasRandGen ObjType where { randO = ObjType <$> randList 1 3 }
 
@@ -652,11 +1014,11 @@ instance PPrintable Reference where
 instance HasRandGen Reference where { randO = fmap Reference (randList 1 6) }
 
 instance B.Binary Reference mtab where
-  put (Reference o) = B.prefixByte 0x1E $ B.put o
+  put (Reference o) = B.prefixByte 0x1F $ B.put o
   get = B.word8PrefixTable <|> fail "expecting Reference"
 
 instance B.HasPrefixTable Reference B.Byte mtab where
-  prefixTable = B.mkPrefixTableWord8 "Reference" 0x1E 0x1E [Reference <$> B.get]
+  prefixTable = B.mkPrefixTableWord8 "Reference" 0x1F 0x1F [Reference <$> B.get]
 
 ----------------------------------------------------------------------------------------------------
 

@@ -1,4 +1,17 @@
 TODO:
+* I would like to re-merge much of the "Dao.Evaluator" module back into the "Dao.Object" module, but
+	I cannot because of the 'Dao.Evaluator.ObjectClass' which requires the 'Exec' monad which
+	requires the 'ExecUnit' data type, which requires most of the data types defined in the
+	"Dao.Evaluator" module, especially rule and function related data structures. I would like to
+	find a way to break this dependency cycle and make the program more modular. That or just give
+	up on modularity and merge the "Dao.Object" and "Dao.Evauator" modules into a single massive
+	"god object" called "Dao.Interpreter". But it would probably be best to move every data type
+	back into the "Dao.Object" module, and then place each class, like 'Executable', into it's own
+	module.
+
+* Make the 'Exec' monad stateful over some of it's elemsnts, for example the current reference of
+	the "with" statement, keep the rest as a reader.
+
 * Implement an asynchronous function call interface, like a built-in "fork()" function. This
 	function should allow a programmer to fork a function call in the background.
 

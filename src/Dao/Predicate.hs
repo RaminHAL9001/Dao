@@ -84,12 +84,12 @@ data Predicate err ok
   | PFail { failedItem :: err }
     -- ^ use this constructor when you wish to throw an error catchable with 'catchPValue' or
     -- 'Control.Monad.Error.Class.catchError'. 'PFail' values cannot be "caught" by
-    -- 'Control.Monad.mplys', so it is possible to write a guard function like this:
+    -- 'Control.Monad.mplus', so it is possible to write a guard function like this:
     -- > commandValidElseFail :: String -> MyIO ()
     -- > commandValidElseFail cmd = 'Control.Monad.mplus' ('Control.Monad.guard' ('Prelude.notElem' cmd $ 'Prelude.words' "step next")) $
     -- >     'Control.Monad.fail' ("invalid command "++cmd)
     -- evaluates to 'PFail' so no characters will be parsed after that, unless the failure is caught
-    -- by 'Control.Monad.Error.catchError' or 'pcatch'.
+    -- by 'Control.Monad.Error.catchError' or 'catchPredicate'.
   | OK ok -- ^ A parser evaluates to 'OK' when it evaluates 'Control.Monad.return'.
   deriving (Eq, Ord, Show)
 
@@ -128,7 +128,7 @@ instance Monoid ok => Monoid (Predicate err ok) where
 ----------------------------------------------------------------------------------------------------
 
 -- | A monad transformer lifting 'Predicate' into an outer monad. Use 'runPreicateT' to remove the 
--- 'PredicateT' outer monad and retrieve the inner 'Preictate' value.
+-- 'PredicateT' outer monad and retrieve the inner 'Predictate' value.
 newtype PredicateT err m ok = PredicateT { runPredicateT :: m (Predicate err ok) }
 
 instance Monad m => Monad (PredicateT err m) where
@@ -211,35 +211,36 @@ class MonadPlusError err m where
 instance MonadPlusError err (Predicate err) where { catchPredicate = OK; predicate = id; }
 
 instance Monad m => MonadPlusError err (PredicateT err m) where
-  catchPredicate (PredicateT fn) = PredicateT{ runPredicateT = fn >>= \a -> return (OK a) }
+  catchPredicate (PredicateT fn) = PredicateT{ runPredicateT = fn >>= \o -> return (OK o) }
   predicate pval = PredicateT (return pval)
 
 -- | Evaluates to an empty list if the given 'Predicate' is 'Backtrack' or 'PFail', otherwise returns a
 -- list containing the value in the 'OK' value.
-okToList :: Predicate err a -> [a]
+okToList :: Predicate err o -> [o]
 okToList pval = case pval of
-  OK      a -> [a]
+  OK      o -> [o]
   Backtrack -> []
   PFail   _ -> []
 
 -- | Like 'okToList', but evaluates to 'Data.Maybe.Nothing' if the given 'Predicate' is 'Backtrack' or
 -- 'PFail', or 'Data.Maybe.Just' containing the value in the 'OK' value.
-okToMaybe :: Predicate err a -> Maybe a
+okToMaybe :: Predicate err o -> Maybe o
 okToMaybe pval = case pval of
-  OK      a -> Just a
+  OK      o -> Just o
   Backtrack -> Nothing
   PFail   _ -> Nothing
 
 -- | If given 'Data.Maybe.Nothing', evaluates to 'PFail' with the given error information.
 -- Otherwise, evaluates to 'OK'.
-maybeToPFail :: err -> Maybe a -> Predicate err a
-maybeToPFail err a = case a of
+maybeToPFail :: err -> Maybe o -> Predicate err o
+maybeToPFail err o = case o of
   Nothing -> PFail err
   Just ok -> OK    ok
 
-fmapPFail :: (errA -> errB) -> Predicate errA a -> Predicate errB a
+-- | Like 'Prelude.fmap' but operates on the error report data of the 'Predicate'.
+fmapPFail :: (errA -> errB) -> Predicate errA o -> Predicate errB o
 fmapPFail f pval = case pval of
-  OK      a -> OK a
+  OK      o -> OK o
   Backtrack -> Backtrack
   PFail err -> PFail (f err)
 

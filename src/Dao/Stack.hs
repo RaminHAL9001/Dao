@@ -20,48 +20,48 @@
 
 module Dao.Stack where
 
-import qualified Dao.Tree as T
+import qualified Data.Map as M
 
 import           Control.Monad
 import           Control.Monad.Identity
 
-newtype Stack key val = Stack { mapList :: [T.Tree key val] }
+newtype Stack key val = Stack { mapList :: [M.Map key val] }
 
 emptyStack :: Stack key val
 emptyStack = Stack []
 
-stackLookup :: Ord key => [key] -> Stack key val -> Maybe val
-stackLookup key stack = foldl (\f -> mplus f . (T.lookup key)) Nothing (mapList stack)
+stackLookup :: Ord key => key -> Stack key val -> Maybe val
+stackLookup key stack = foldl (\f -> mplus f . (M.lookup key)) Nothing (mapList stack)
 
 stackUpdateM
   :: (Monad m, Ord key)
-  => (Maybe val -> m (Maybe val)) -> [key] -> Stack key val -> m (Stack key val, Maybe val)
+  => (Maybe val -> m (Maybe val)) -> key -> Stack key val -> m (Stack key val, Maybe val)
 stackUpdateM updVal key stack = loop [] (mapList stack) where
   loop rx stack = case stack of
     []      -> atTop (reverse rx)
-    s:stack -> case T.lookup key s of
+    s:stack -> case M.lookup key s of
       Just  o -> updVal (Just o) >>= \o -> return $ case o of
-        Just  o -> (Stack (reverse rx ++ T.insert key o s : stack), Just  o)
-        Nothing -> (Stack (reverse rx ++ T.delete key   s : stack), Nothing)
+        Just  o -> (Stack (reverse rx ++ M.insert key o s : stack), Just  o)
+        Nothing -> (Stack (reverse rx ++ M.delete key   s : stack), Nothing)
       Nothing -> loop (s:rx) stack
   atTop stack = case stack of
     []      -> return (Stack [], Nothing)
     s:stack -> updVal Nothing >>= \o -> return $ case o of
-      Nothing -> (Stack (T.delete key   s : stack), Nothing)
-      Just  o -> (Stack (T.insert key o s : stack), Just  o)
+      Nothing -> (Stack (M.delete key   s : stack), Nothing)
+      Just  o -> (Stack (M.insert key o s : stack), Just  o)
 
-stackUpdate :: Ord key => (Maybe val -> Maybe val) -> [key] -> Stack key val -> (Stack key val, Maybe val)
+stackUpdate :: Ord key => (Maybe val -> Maybe val) -> key -> Stack key val -> (Stack key val, Maybe val)
 stackUpdate upd key = runIdentity . stackUpdateM (return . upd) key
 
 -- | Define or undefine a value at an address on the top tree in the stack.
-stackDefine :: Ord key => [key] -> Maybe val -> Stack key val -> Stack key val
+stackDefine :: Ord key => key -> Maybe val -> Stack key val -> Stack key val
 stackDefine key val = fst . stackUpdate (const val) key
 
-stackPush :: Ord key => T.Tree key val -> Stack key val -> Stack key val
+stackPush :: Ord key => M.Map key val -> Stack key val -> Stack key val
 stackPush init stack = stack{ mapList = init : mapList stack }
 
-stackPop :: Ord key => Stack key val -> (Stack key val, T.Tree key val)
+stackPop :: Ord key => Stack key val -> (Stack key val, M.Map key val)
 stackPop stack =
   let mx = mapList stack
-  in  if null mx then (stack, T.Void) else (stack{mapList=tail mx}, head mx)
+  in  if null mx then (stack, M.empty) else (stack{mapList=tail mx}, head mx)
 

@@ -545,7 +545,7 @@ uncaught msg err = ask >>= \env -> liftIO $
       [ concat $
           [ "Uncaught exception"
           , maybe "" (\i -> ", test case #"++show i) (currentTestID env)
-          , " while ", msg
+          , " during ", msg
           ]
       , err, sep
       ]

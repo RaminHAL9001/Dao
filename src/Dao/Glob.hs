@@ -326,7 +326,7 @@ insertMultiPattern plus pats o tree =
 globTree :: (Eq g, Ord g) => Glob g -> o -> PatternTree g o
 globTree pat a = T.insert (getPatUnits pat) a T.Void
 
-matchPattern :: (Eq g, Ord g) => Bool -> Glob g -> [g] -> [T.Tree Name [g]]
+matchPattern :: (Eq g, Ord g) => Bool -> Glob g -> [g] -> [M.Map Name [g]]
 matchPattern greedy pat tokx = matchTree greedy (globTree pat ()) tokx >>= \ (_, m, ()) -> [m]
 
 -- | Match a list of token items to a set of 'Glob' expressions that have been combined into a
@@ -339,8 +339,8 @@ matchPattern greedy pat tokx = matchTree greedy (globTree pat ()) tokx >>= \ (_,
 -- Each match is returned as a triple indicating 1. the 'Glob' that matched the token list, 2. the
 -- token list items that were bound to the 'Dao.String.Name's in the 'Wildcard' and 'AnyOne'
 -- 'GlobUnit's, and 3. the item associated with the 'Glob' expression that matched.
-matchTree :: (Eq g, Ord g) => Bool -> PatternTree g o -> [g] -> [(Glob g, T.Tree Name [g], o)]
-matchTree greedy tree tokx = loop T.Void 0 [] tree tokx where
+matchTree :: (Eq g, Ord g) => Bool -> PatternTree g o -> [g] -> [(Glob g, M.Map Name [g], o)]
+matchTree greedy tree tokx = loop M.empty 0 [] tree tokx where
   loop vars p path tree tokx = case (tree, tokx) of
     (T.Leaf       a  , []  ) -> done vars p path a
     (T.LeafBranch a _, []  ) -> done vars p path a
@@ -367,11 +367,11 @@ matchTree greedy tree tokx = loop T.Void 0 [] tree tokx where
       , do -- Next we use 'takeWhile' because of how the 'Ord' instance of 'GlobUnit' is defined,
            -- 'Wildcard's and 'AnyOne's are always first in the list of 'assocs'.
            (pat, tree) <- takeWhile (isVariable . fst) (M.assocs branch)
-           let defVar nm mkAssoc = case T.lookup [nm] vars of
+           let defVar nm mkAssoc = case M.lookup nm vars of
                  Just pfx -> maybe [] (:[]) (stripPrefix pfx (tok:tokx)) >>= next pat vars tree
                  Nothing  -> do
                    (bind, tokx) <- mkAssoc
-                   next pat (T.insert [nm] bind vars) tree tokx
+                   next pat (M.insert nm bind vars) tree tokx
            case pat of
              Wildcard nm -> defVar nm (partStep [] (tok:tokx))
              AnyOne   nm -> defVar nm [([tok], tokx)]

@@ -36,7 +36,6 @@ module Dao
   ) where
 
 import           Dao.String
-import qualified Dao.Tree as T
 import           Dao.Glob
 import           Dao.Object
 import           Dao.Predicate
@@ -89,7 +88,7 @@ data Action
   = Action
     { actionQuery     :: Maybe UStr
     , actionPattern   :: Maybe (Glob Object)
-    , actionMatch     :: T.Tree Name [Object]
+    , actionMatch     :: M.Map Name [Object]
     , actionCodeBlock :: Subroutine
     }
 
@@ -335,7 +334,7 @@ execStringQueryWith instr xunitList = do
 -- and all will be executed.
 evalScriptString :: String -> Exec ()
 evalScriptString instr =
-  void $ execNested T.Void $ mapM_ execute $
+  void $ execNested M.empty $ mapM_ execute $
     case parse (daoGrammar{mainParser = concat <$> (many script <|> return [])}) mempty instr of
       Backtrack -> error "cannot parse expression"
       PFail tok -> error ("error: "++show tok)

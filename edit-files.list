@@ -25,7 +25,7 @@ src/Dao/Struct.hs
 src/Dao/Glob.hs
 src/dao-main.hs
 
-tests/Dao/Tests.hs
+tests/Dao/Test.hs
 tests/Dao/CoreTests.hs
 tests/2.dao
 tests/1.dao

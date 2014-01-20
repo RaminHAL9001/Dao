@@ -177,10 +177,11 @@ class ToDaoStructClass haskData value =>
 -- 'Control.Monad.Error.throwError' a 'StructError'.
 data StructError value
   = StructError
-    { structErrMsg   :: Maybe UStr
-    , structErrName  :: Maybe UStr
-    , structErrField :: Maybe UStr
-    , structErrValue :: Maybe value
+    { structErrMsg    :: Maybe UStr
+    , structErrName   :: Maybe UStr
+    , structErrField  :: Maybe UStr
+    , structErrValue  :: Maybe value
+    , structErrExtras :: [Name]
     }
   deriving (Eq, Ord, Typeable)
 
@@ -191,6 +192,7 @@ instance HasNullValue (StructError value) where
     , structErrName=Nothing
     , structErrField=Nothing
     , structErrValue=Nothing
+    , structErrExtras=[]
     }
   testNull
     ( StructError
@@ -198,6 +200,7 @@ instance HasNullValue (StructError value) where
       , structErrName=Nothing
       , structErrField=Nothing
       , structErrValue=Nothing
+      , structErrExtras=[]
       }
     ) = True
   testNull _ = False
@@ -219,7 +222,8 @@ mkFieldName name = mplus (mkLabel name) $ fail "invalid field name"
 -- runtime. Think of it as "this is the function type used when the Dao runtime wants to read
 -- information from my data structure."
 newtype ToDaoStruct value haskData a
-  = ToDaoStruct{ structWriterPredicate :: PredicateT (StructError value) (State (Struct value, haskData)) a }
+  = ToDaoStruct
+    { structWriterPredicate :: PredicateT (StructError value) (State (Struct value, haskData)) a }
   deriving (Functor, Applicative, Alternative, MonadPlus)
 
 instance Monad (ToDaoStruct value haskData) where
@@ -295,7 +299,7 @@ setField name f = ask >>= define name . f
 -- /NOTE:/ refer to the documentation of the 'constructor' monad for an important note on reading
 -- Haskell data types with multiple constructors.
 newtype FromDaoStruct value a =
-  FromDaoStruct{ structReaderPredicate :: PredicateT (StructError value) (Reader (Struct value)) a }
+  FromDaoStruct{ structReaderPredicate :: PredicateT (StructError value) (State (Struct value)) a }
   deriving (Functor, Applicative, Alternative, MonadPlus)
 
 instance Monad (FromDaoStruct value) where
@@ -304,8 +308,9 @@ instance Monad (FromDaoStruct value) where
   fail msg = throwError $ nullValue{ structErrMsg = Just (ustr msg) }
 
 instance MonadReader (Struct value) (FromDaoStruct value) where
-  ask = FromDaoStruct $ lift ask
-  local upd f = FromDaoStruct $ PredicateT $ local upd (runPredicateT (structReaderPredicate f))
+  ask = FromDaoStruct $ lift get
+  local upd f = FromDaoStruct $ PredicateT $ get >>= \st ->
+   return $ evalState (runPredicateT $ structReaderPredicate f) (upd st)
 
 instance MonadError (StructError value) (FromDaoStruct value) where
   throwError err = ask >>= \struct -> FromDaoStruct $ throwError $
@@ -321,7 +326,7 @@ instance MonadPlusError (StructError value) (FromDaoStruct value) where
 -- to the 'Struct' using the 'ToDaoStruct' monad, and third the data type you want to convert. You can
 -- use functions like 'defineWith' and 'setField' to build your 'ToDaoStruct' computation.
 fromDaoStruct :: FromDaoStruct value haskData -> Struct value -> Predicate (StructError value) haskData
-fromDaoStruct (FromDaoStruct f) = runReader (runPredicateT f)
+fromDaoStruct (FromDaoStruct f) = evalState (runPredicateT f)
 
 -- | Checks if the 'structName' is equal to the given name, and if not then backtracks. This is
 -- important when constructing Haskell data types with multiple constructors.
@@ -345,25 +350,77 @@ fromDaoStruct (FromDaoStruct f) = runReader (runPredicateT f)
 constructor :: UStrType name => name -> FromDaoStruct value ()
 constructor name = (pure (==) <*> mkStructName name <*> asks structName) >>= guard
 
--- | Retrieves an arbitrary @value@ by it's field name, and backtraks if no such field is defined.
-tryField :: forall name value . UStrType name => name -> FromDaoStruct value value
-tryField name = (pure M.lookup <*> mkFieldName name <*> asks fieldMap) >>= maybe mzero return
+-- | If an error is thrown using 'Control.Monad.Error.throwError' or 'Control.Monad.fail' within the
+-- given 'FromDaoStruct' function, the 'structErrField' will automatically be set to the provided
+-- 'Name' value.
+structCurrentField :: Name -> FromDaoStruct value o -> FromDaoStruct value o
+structCurrentField name (FromDaoStruct f) = FromDaoStruct $ catchPredicate f >>= \o -> case o of
+  PFail err -> throwError $ err{ structErrField=Just (toUStr name) }
+  Backtrack -> mzero
+  OK      o -> return o
 
--- | Like 'field' but evaluates 'Control.Monad.Error.throwError' if the 'FromDaoStruct' function
--- backtracks or throws it's own error.
-field :: UStrType name => name -> FromDaoStruct value value
-field name = mplus (tryField name) $ throwError $
+-- | Retrieves an arbitrary @value@ by it's field name, and backtraks if no such field is defined.
+-- The value of the field is copied, and can be copied again after this operation. It is best not to
+-- use this function, rather use 'tryField' to make sure each field is retrieved exactly once, then
+-- use 'checkEmpty' to make sure there is no hidden extraneous data in the struct.
+tryCopyField :: UStrType name => name -> (value -> FromDaoStruct value o) -> FromDaoStruct value o
+tryCopyField name f = (pure M.lookup <*> mkFieldName name <*> asks fieldMap) >>=
+  maybe mzero return >>= structCurrentField (fromUStr $ toUStr name) . f
+
+-- | Like 'copyField', retrieves an arbitrary @value@ by it's field name, and backtraks if no such
+-- field is defined. However unlike 'tryCopyField', if the item is retrieved, it is deleted from the
+-- inner 'Struct' so that it may not be used again. The reason for this is to use 'checkEmpty' and
+-- 'requireEmpty', which can backtrack or fail if there are extraneous fields in the structure.
+tryField :: UStrType name => name -> (value -> FromDaoStruct value o) -> FromDaoStruct value o
+tryField name f = do
+  name <- mkFieldName name
+  o    <- tryCopyField name f
+  FromDaoStruct $ lift $ modify $ \st ->
+    case st of{ Struct{ fieldMap=m } -> st{ fieldMap=M.delete name m }; s -> s; }
+  return o
+
+_throwMissingFieldError :: Name -> FromDaoStruct value o
+_throwMissingFieldError name = throwError $
   nullValue
   { structErrMsg   = Just $ ustr "missing required field"
   , structErrField = Just $ toUStr name
   }
 
+-- | Like 'field' but evaluates 'Control.Monad.Error.throwError' if the 'FromDaoStruct' function
+-- backtracks or throws it's own error. Internally, this function makes use of 'copyField' and /not/
+-- 'tryField', so the field is preserved if it exists.
+copyField :: forall name value o . UStrType name => name -> (value -> FromDaoStruct value o) -> FromDaoStruct value o
+copyField name f = mkFieldName name >>= \name ->
+  mplus (tryCopyField name f) (_throwMissingFieldError name)
+
+-- | Like 'field' but evaluates 'Control.Monad.Error.throwError' if the 'FromDaoStruct' function
+-- backtracks or throws it's own error. Internally, this function makes use of 'tryField' and /not/
+-- 'tryCopyField', so the field is removed if it exists -- two consecutive calls to this function
+-- with the same key absolutely will fail.
+field :: UStrType name => name -> (value -> FromDaoStruct value o) -> FromDaoStruct value o
+field name f = mkFieldName name >>= \name -> mplus (tryField name f) (_throwMissingFieldError name)
+
+-- | As you make calls to 'field' and 'tryField', the items in these fields in the 'Struct' are
+-- being removed. Once you have all of the nata neccessary to construct the data @value@, you can
+-- check to make sure there are no extraneous unused data fields. If the 'Struct' is empty, this
+-- function evaluates to @return ()@. If there are extranous fields in the 'Struct', 'throwError' is
+-- evaluated.
+checkEmpty :: FromDaoStruct value ()
+checkEmpty = FromDaoStruct (lift get) >>= \st -> case st of
+  Struct{ fieldMap=m } -> if M.null m then return () else throwError $
+    nullValue
+    { structErrMsg    = Just $ ustr "extraneous data fields"
+    , structErrExtras = M.keys m
+    }
+  Nullary{} -> return ()
+
 instance ToDaoStructClass (StructError (Value any)) (Value any) where
   dataToStruct = toDaoStruct "StructError" $ do
-    asks structErrMsg   >>= optionalField "message" . fmap OString
-    asks structErrName  >>= optionalField "structName" . fmap OString
-    asks structErrField >>= optionalField "field" . fmap OString
-    asks structErrValue >>= optionalField "value"
+    asks structErrMsg    >>= optionalField "message" . fmap OString
+    asks structErrName   >>= optionalField "structName" . fmap OString
+    asks structErrField  >>= optionalField "field" . fmap OString
+    asks structErrValue  >>= optionalField "value"
+    asks structErrExtras >>= optionalField "extras" . Just . OList . fmap (ORef . Unqualified . Reference . (:[]))
 
 instance FromDaoStructClass (StructError (Value any)) (Value any) where
   dataFromStruct = fromDaoStruct $ do
@@ -371,11 +428,20 @@ instance FromDaoStructClass (StructError (Value any)) (Value any) where
     let str o = case o of
           OString o -> return o
           _         -> fail "expecting string value"
+    let ref o = case o of
+          ORef    o -> case o of
+            Unqualified (Reference [o]) -> return o
+            _ -> fail "not an unqualified reference singleton"
+          _ -> fail "not a reference type"
+    let lst o = case o of
+          OList   o -> forM o ref
+          _         -> fail "expecting list value"
     pure StructError
-      <*> optional (tryField "message" >>= str)
-      <*> optional (tryField "structName" >>= str)
-      <*> optional (tryField "field" >>= str)
-      <*> optional (tryField "value")
+      <*> optional (tryField "message" $ str)
+      <*> optional (tryField "structName" $ str)
+      <*> optional (tryField "field" $ str)
+      <*> optional (tryField "value" return)
+      <*> (tryField "extras" $ lst)
 
 ----------------------------------------------------------------------------------------------------
 

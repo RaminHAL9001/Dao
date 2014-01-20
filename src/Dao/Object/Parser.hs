@@ -705,8 +705,8 @@ arithPrefixPTab = table $ (logicalNOT:) $ flip fmap ["~", "-", "+"] $ \pfxOp ->
     return (AST_ArithPfx (fromUStr (tokTypeToUStr (asTokType tok))) coms o (asLocation tok))
   where
     logicalNOT = tableItemBy "!" $ \op -> do
-      o <- object
       coms <- optSpace
+      o <- object
       return $ AST_ArithPfx (fromUStr $ tokTypeToUStr $ asTokType op) coms o (asLocation op)
 
 -- This table extends the 'funcCallArraySubPTab' table with the 'arithPrefixPTab' table. The
@@ -761,7 +761,7 @@ assignmentWithInit init =
     )
     (bufferComments >> init)
     (fmap AST_Eval arithmetic)
-    (liftM2 (,) (look1 asLocation) (commented (joinEvalPTable opTab)))
+    (pure (,) <*> look1 asLocation <*> commented (joinEvalPTable opTab))
   where
     opTab :: DaoPTable UpdateOp
     opTab = table $
@@ -821,22 +821,19 @@ ifElsePTabItem = bindPTableItem ifPTabItem (loop []) where
       ]
 
 scriptPTab :: DaoPTable [AST_Script]
-scriptPTab = comments <> rulFun <> objExpr <> table exprs where
-  rulFun = bindPTable ruleFuncPTab $ \o ->
-    assignmentWithInit (return $ AST_Eval $ AST_Object $ AST_ObjRuleFunc o) >>= \o -> case o of
-      AST_Eval (AST_Object (AST_ObjRuleFunc o)) -> flip mplus (return [AST_RuleFunc o]) $ do
-        coms <- optSpace
-        loc  <- tokenBy ";" asLocation
-        return [AST_EvalObject (AST_Eval $ AST_Object $ AST_ObjRuleFunc o) coms (getLocation o <> loc)]
-      o -> expect "semicolon after object expression" $ do
-        coms <- optSpace
-        loc  <- tokenBy ";" asLocation
-        return [AST_EvalObject o coms (getLocation o <> loc)]
-  objExpr = bindPTable assignmentPTab $ \o -> do
-    coms <- optSpace
-    expect "semicolon after object expression" $ do
-      endLoc <- tokenBy ";" asLocation
-      return [AST_EvalObject o coms (getLocation o <> endLoc)]
+scriptPTab = comments <> objExpr <> table exprs where
+  -- Object expressions should end with a semi-colon. An exception to this rule is made for rule and
+  -- function constant expressions.
+  objExpr = bindPTable assignmentPTab $ \o -> case o of
+    AST_Eval (AST_Object (AST_ObjRuleFunc o)) -> flip mplus (return [AST_RuleFunc o]) $ do
+      coms <- optSpace
+      loc  <- tokenBy ";" asLocation
+      return [AST_EvalObject (AST_Eval $ AST_Object $ AST_ObjRuleFunc o) coms (getLocation o <> loc)]
+    o -> do
+      coms <- optSpace
+      expect "semicolon after object expression" $ do
+        endLoc <- tokenBy ";" asLocation
+        return [AST_EvalObject o coms (getLocation o <> endLoc)]
   comments = bindPTable spaceComPTab $ \c1 -> optSpace >>= \c2 ->
     let coms = c1++c2 in if null coms then return [] else return [AST_Comment coms]
   exprs =

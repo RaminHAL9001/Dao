@@ -84,8 +84,8 @@ instance ObjectClass (Struct Object) where
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
-instance RuntimeReadable (Struct Object) Object where { runtimeRead  = return }
-instance RuntimeWritable (Struct Object) Object where { runtimeWrite = return }
+instance ToDaoStructClass (Struct Object) Object where { dataToStruct  = return }
+instance FromDaoStructClass (Struct Object) Object where { dataFromStruct = return }
 
 instance ObjectClass (StructError Object) where
   objectMethods = defObjectInterface nullValue $ do
@@ -423,7 +423,7 @@ instance ObjectValue (Value HaskellData) where { obj = id; fromObj = Just; }
 required :: (Object -> FromDaoStruct Object o) -> Object -> FromDaoStruct Object o
 required f o = mplus (f o) $ throwError $ nullValue{ structErrValue=Just o }
 
--- | This is an important function for instantiating 'Dao.Object.RuntimeReadable'. It takes any
+-- | This is an important function for instantiating 'Dao.Object.ToDaoStructClass'. It takes any
 -- value instantiating 'Dao.Object.ObjectClass', converts it to an 'Object' using the 'new'
 -- function. It is the inverse of 'objType'.
 --
@@ -455,7 +455,7 @@ putObjField name which = asks which >>= defObjField name
 (.=@) = putObjField
 infixr 2 .=@
 
--- | This is an important function for instantiating 'Dao.Object.RuntimeWritable'. It is the inverse
+-- | This is an important function for instantiating 'Dao.Object.FromDaoStructClass'. It is the inverse
 -- of 'defObjField'. It retrieves an 'Object' field from a field in a 'Struct' and tries to convert
 -- St.this 'Object' to a value of the needed type by extracting it from the 'HaskellData' constructor.
 -- Of course the type of the value to which it is converting must instantiate the 'ObjectValue'
@@ -473,20 +473,20 @@ objType o = case o of
 (.??) :: (Typeable o, ObjectClass o) => Object -> FromDaoStruct Object o
 (.??) = objType
 
--- | Like 'defObjField' but places a data type instantiating the 'RuntimeReadable' class by
+-- | Like 'defObjField' but places a data type instantiating the 'ToDaoStructClass' class by
 -- converting the data type to another 'Dao.Object.Struct' and storing it into a 'OTree'
 -- constructor. This is the inverse of 'structType'.
 -- 
 -- It is recommended that St.this function be used for non-primitive types that do not instantiate the
 -- 'ObjectClass' class.
 defStructField
-  :: (UStrType name, RuntimeReadable o Object)
+  :: (UStrType name, ToDaoStructClass o Object)
   => name -> o -> ToDaoStruct Object haskData Object
-defStructField name innerObj = predicate (runtimeRead innerObj) >>= define name . OTree
+defStructField name innerObj = predicate (dataToStruct innerObj) >>= define name . OTree
 
 -- | Synonym for 'defStructField'
 (^=)
-  :: (UStrType name, RuntimeReadable o Object)
+  :: (UStrType name, ToDaoStructClass o Object)
   => name -> o -> ToDaoStruct Object haskData Object
 (^=) = defStructField
 infixr 2 ^=
@@ -495,31 +495,31 @@ infixr 2 ^=
 -- object being converted. This function is defined as:
 -- > \name accessor -> asks accessor >>= defStructField name
 putStructField
-  :: (UStrType name, RuntimeReadable o Object)
+  :: (UStrType name, ToDaoStructClass o Object)
   => name -> (haskData -> o) -> ToDaoStruct Object haskData Object
 putStructField name which = asks which >>= defStructField name
 
 -- | Synonym for 'putStructField'
 (^=@)
-  :: (UStrType name, RuntimeReadable o Object)
+  :: (UStrType name, ToDaoStructClass o Object)
   => name -> (haskData -> o) -> ToDaoStruct Object haskData Object
 (^=@) = putStructField
 infixr 2 ^=@
 
 -- | Like 'objType' but converts from the 'Object' value to the needed data type using
--- 'runtimeWrite', where the needed data type instantiates the 'RuntimeWritable' class using the
+-- 'dataFromStruct', where the needed data type instantiates the 'FromDaoStructClass' class using the
 -- 'new' function. This function backtracks on the incorrect data type.
-structType :: RuntimeWritable o Object => Object -> FromDaoStruct Object o
+structType :: FromDaoStructClass o Object => Object -> FromDaoStruct Object o
 structType o = case o of
-  OTree struct -> predicate (runtimeWrite struct)
+  OTree struct -> predicate (dataFromStruct struct)
   _            -> mzero
 
 -- | Synonym for @'required' 'structType'@
-(^?) :: RuntimeWritable o Object => Object -> FromDaoStruct Object o
+(^?) :: FromDaoStructClass o Object => Object -> FromDaoStruct Object o
 (^?) = required structType
 
 -- | Synonym for 'structType'
-(^??) :: RuntimeWritable o Object => Object -> FromDaoStruct Object o
+(^??) :: FromDaoStructClass o Object => Object -> FromDaoStruct Object o
 (^??) = structType
 
 -- | Like 'defObjField' but works on primitive values instantiating 'ObjectValue', values
@@ -528,7 +528,7 @@ structType o = case o of
 -- Since this data type is only possible for types which instantiate 'ObjectValue' it only works on
 -- primitive data types like 'Dao.String.UStr' and 'Prelude.Int', and it is the only function that
 -- can be used with these data types as primitive types should not instantiate 'ObjectClass' or
--- 'Dao.Object.RuntimeWritable'.
+-- 'Dao.Object.FromDaoStructClass'.
 defPrimField :: (UStrType name, ObjectValue o) => name -> o -> ToDaoStruct Object haskData Object
 defPrimField name o = define name (obj o)
 
@@ -600,16 +600,16 @@ dynType = maybe mzero return . (fromObj >=> fromDynamic)
 
 -- | Tries both 'objType' and 'structType'.
 daoType
-  :: (Typeable o, ObjectClass o, RuntimeWritable o Object)
+  :: (Typeable o, ObjectClass o, FromDaoStructClass o Object)
   => Object -> FromDaoStruct Object o
 daoType o = mplus (objType o) (structType o)
 
 -- | Synonym for 'daoType'
-(??) :: (Typeable o, ObjectClass o, RuntimeWritable o Object) => Object -> FromDaoStruct Object o
+(??) :: (Typeable o, ObjectClass o, FromDaoStructClass o Object) => Object -> FromDaoStruct Object o
 (??) = daoType
 
 -- | Synonym for @'required' 'daoType'@
-(?) :: (Typeable o, ObjectClass o, RuntimeWritable o Object) => Object -> FromDaoStruct Object o
+(?) :: (Typeable o, ObjectClass o, FromDaoStructClass o Object) => Object -> FromDaoStruct Object o
 (?) = required daoType
 
 ----------------------------------------------------------------------------------------------------
@@ -6220,9 +6220,9 @@ autoDefIterator = defIterator iterateObject foldObject
 defIndexer :: Typeable typ => (typ -> Object -> Exec Object) -> DaoClassDefM typ ()
 defIndexer fn = updObjIfc(\st->st{objIfcIndexer=Just fn})
 
--- | Use your data type's instantiation of 'RuntimeReadable' to call 'defToStruct'.
-autoDefToStruct :: forall typ . (Typeable typ, RuntimeReadable typ Object) => DaoClassDefM typ ()
-autoDefToStruct = defToStruct ((predicate :: Predicate ExecControl T_struct -> Exec T_struct) . fmapPFail ((\o -> execError{ execReturnValue=Just o}) . new) . runtimeRead)
+-- | Use your data type's instantiation of 'ToDaoStructClass' to call 'defToStruct'.
+autoDefToStruct :: forall typ . (Typeable typ, ToDaoStructClass typ Object) => DaoClassDefM typ ()
+autoDefToStruct = defToStruct ((predicate :: Predicate ExecControl T_struct -> Exec T_struct) . fmapPFail ((\o -> execError{ execReturnValue=Just o}) . new) . dataToStruct)
 
 -- | When a label referencing your object has a field record accessed, for example:
 -- > c = a.b;
@@ -6236,8 +6236,8 @@ defToStruct encode = updObjIfc (\st -> st{ objIfcToStruct=Just encode })
 -- if your object is referenced by @a@ and the script expression wants to update a record called @b@
 -- within it by assigning it the value referenced by @c@, then the function defined here will be
 -- used.
-autoDefFromStruct :: (Typeable typ, RuntimeWritable typ Object) => DaoClassDefM typ ()
-autoDefFromStruct = defFromStruct (predicate . fmapPFail ((\o -> execError{ execReturnValue=Just o }) . new) . runtimeWrite)
+autoDefFromStruct :: (Typeable typ, FromDaoStructClass typ Object) => DaoClassDefM typ ()
+autoDefFromStruct = defFromStruct (predicate . fmapPFail ((\o -> execError{ execReturnValue=Just o }) . new) . dataFromStruct)
 
 -- | If for some reason you need to define a tree encoder and decoder for the 'ObjectInterface' of
 -- your @typ@ without instnatiating 'St.Structured', use St.this function to define the tree encoder an

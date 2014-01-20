@@ -125,10 +125,10 @@ instance HasRandGen value => HasRandGen (Struct value) where
 -- a 'Dao.Evaluator.DaoFunc' (via 'Dao.Evaluator.setupDao') that constructs a Point3D at runtime:
 -- > p = Point3D(1.9, 4.4, -2.1);
 -- Now you would like to extend the 'ObjectClass' of your Point3D to also be readable at runtime.
--- If you instantiate 'RuntimeReadable' your Dao language script could also read elements from the
+-- If you instantiate 'ToDaoStructClass' your Dao language script could also read elements from the
 -- point like so:
 -- > distFromOrigin = sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
--- However you cannot modify the point unless you also instantiate 'RuntimeWritable'. So a statement
+-- However you cannot modify the point unless you also instantiate 'FromDaoStructClass'. So a statement
 -- like this would result in an error:
 -- > p.x /= distFromOrigin;
 -- > p.y /= distFromOrigin;
@@ -136,8 +136,8 @@ instance HasRandGen value => HasRandGen (Struct value) where
 -- 
 -- You can convert this to a 'Struct' type using the 'toDaoStruct' function. There are many ways to
 -- define fields in a 'Struct', here are a few:
--- > instance 'RuntimeReadable' Point3D 'Dao.Evaluator.Object' where
--- >     'runtimeRead' = 'toDaoStruct' "@Point2D@" $ do
+-- > instance 'ToDaoStructClass' Point3D 'Dao.Evaluator.Object' where
+-- >     'dataToStruct' = 'toDaoStruct' "@Point2D@" $ do
 -- >         'Dao.Evaluator.putPrimField' "x" get_x
 -- >         'Dao.Evaluator.putPrimField' "y" get_y
 -- >          obj <- 'Control.Monad.Reader.Class.ask'
@@ -149,14 +149,14 @@ instance HasRandGen value => HasRandGen (Struct value) where
 -- 
 -- Finally, you should define the instantiation of Point3D into the 'ObjectClass' class so it
 -- includes the directive 'Dao.Evaluator.autoDefToStruct'.
-class RuntimeReadable haskData value where
-  runtimeRead :: haskData -> Predicate (StructError value) (Struct value)
+class ToDaoStructClass haskData value where
+  dataToStruct :: haskData -> Predicate (StructError value) (Struct value)
 
 -- | Continuing the example from above, if you do want your data type to be modifyable by functions
 -- running in the Dao language runtime, you must instantiate this class, which is facilitated by the
 -- 'fromDaoStruct' function.
--- > instance 'RuntimeWritable' 'Point3D' 'Dao.Evaluator.Object' where
--- >     runtimeWrite = 'fromDaoStruct' $ 'Control.Monad.msum' $
+-- > instance 'FromDaoStructClass' 'Point3D' 'Dao.Evaluator.Object' where
+-- >     dataFromStruct = 'fromDaoStruct' $ 'Control.Monad.msum' $
 -- >         [ do 'constructor' "@Point2D@"
 -- >              'Control.Applicative.pure' Point3D <*> 'Dao.Evaluator.?' "x" <*> 'Dao.Evaluator.?' "y"
 -- >         , do 'constructor' "@Point3D@"
@@ -166,12 +166,12 @@ class RuntimeReadable haskData value where
 -- Do not forget to define the instantiation of Point3D into the 'ObjectClass' class so it
 -- includes the directive 'Dao.Evaluator.autoDefFromStruct'.
 -- 
--- Note that an instance of 'RuntimeWritable' must also instantiate 'RuntimeReadable'. I can see no
+-- Note that an instance of 'FromDaoStructClass' must also instantiate 'ToDaoStructClass'. I can see no
 -- use for objects that are only writable, that is they can be created at runtime but never
 -- inspected at runtime.
-class RuntimeReadable haskData value =>
-  RuntimeWritable haskData value where
-    runtimeWrite :: Struct value -> Predicate (StructError value) haskData
+class ToDaoStructClass haskData value =>
+  FromDaoStructClass haskData value where
+    dataFromStruct :: Struct value -> Predicate (StructError value) haskData
 
 -- | If there is ever an error converting to or from your Haskell data type, you can
 -- 'Control.Monad.Error.throwError' a 'StructError'.
@@ -214,7 +214,7 @@ mkFieldName :: (UStrType name, MonadPlus m) => name -> m Name
 mkFieldName name = mplus (mkLabel name) $ fail "invalid field name"
 
 -- | This is a handy monadic and 'Data.Functor.Applicative' interface for instantiating
--- 'runtimeRead' in the 'RuntimeReadable' class. It takes the form of a writer because what you
+-- 'dataToStruct' in the 'ToDaoStructClass' class. It takes the form of a writer because what you
 -- /write/ to the 'Struct' here in the Haskell language will be /readable/ by the Dao language
 -- runtime. Think of it as "this is the function type used when the Dao runtime wants to read
 -- information from my data structure."
@@ -249,7 +249,7 @@ instance MonadPlusError (StructError value) (ToDaoStruct value haskData) where
   catchPredicate = ToDaoStruct . catchPredicate . structWriterPredicate
   predicate      = ToDaoStruct . predicate
 
--- | This function is typically used to instantiate 'runtimeRead'. It takes three parameters: first
+-- | This function is typically used to instantiate 'dataToStruct'. It takes three parameters: first
 -- a string defining the label for the constructor, second a computation to convert your data type
 -- to the 'Struct' using the 'ToDaoStruct' monad, and third the data type you want to convert. You can
 -- use functions like 'defineWith' and 'setField' to build your 'ToDaoStruct' computation.
@@ -279,7 +279,7 @@ setField :: UStrType name => name -> (haskData -> value) -> ToDaoStruct value ha
 setField name f = ask >>= define name . f
 
 -- | This is a handy monadic and 'Data.Functor.Applicative' interface for instantiating
--- 'runtimeWrite' in the 'RuntimeWritable' class. It takes the form of a reader because what you
+-- 'dataFromStruct' in the 'FromDaoStructClass' class. It takes the form of a reader because what you
 -- /read/ from the 'Struct' here in the Haskell language was /written/ by the Dao language
 -- runtime. Think of it as "this is the data type used when the Dao runtime wants to write
 -- information to my data structure."
@@ -316,7 +316,7 @@ instance MonadPlusError (StructError value) (FromDaoStruct value) where
   catchPredicate = FromDaoStruct . catchPredicate . structReaderPredicate
   predicate = FromDaoStruct . predicate
 
--- | This function is typically used to instantiate 'runtimeWrite'. It takes three parameters: first
+-- | This function is typically used to instantiate 'dataFromStruct'. It takes three parameters: first
 -- a string defining the label for the constructor, second a computation to convert your data type
 -- to the 'Struct' using the 'ToDaoStruct' monad, and third the data type you want to convert. You can
 -- use functions like 'defineWith' and 'setField' to build your 'ToDaoStruct' computation.
@@ -330,7 +330,7 @@ fromDaoStruct (FromDaoStruct f) = runReader (runPredicateT f)
 -- 'Control.Monad.msum' function like so:
 -- > data MyData = A | B Int | C Int Int
 -- > instance 'FromDaoStruct' ('Dao.Evaluator.Object) where
--- >     'runtimeWrite' = 'fromDaoStruct' $ 'Control.Monad.msum' $
+-- >     'dataFromStruct' = 'fromDaoStruct' $ 'Control.Monad.msum' $
 -- >         [ 'constructor' "A" >> return a,
 -- >           do 'constructor' "B"
 -- >              B 'Control.Applicative.<$>' ('field' "b1" >>= 'Dao.Evaluator.primType')
@@ -358,15 +358,15 @@ field name = mplus (tryField name) $ throwError $
   , structErrField = Just $ toUStr name
   }
 
-instance RuntimeReadable (StructError (Value any)) (Value any) where
-  runtimeRead = toDaoStruct "StructError" $ do
+instance ToDaoStructClass (StructError (Value any)) (Value any) where
+  dataToStruct = toDaoStruct "StructError" $ do
     asks structErrMsg   >>= optionalField "message" . fmap OString
     asks structErrName  >>= optionalField "structName" . fmap OString
     asks structErrField >>= optionalField "field" . fmap OString
     asks structErrValue >>= optionalField "value"
 
-instance RuntimeWritable (StructError (Value any)) (Value any) where
-  runtimeWrite = fromDaoStruct $ do
+instance FromDaoStructClass (StructError (Value any)) (Value any) where
+  dataFromStruct = fromDaoStruct $ do
     constructor "StructError"
     let str o = case o of
           OString o -> return o

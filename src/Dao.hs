@@ -321,10 +321,11 @@ execStringQueryWith instr xunitList = do
     -- root 'ExecUnit'.
     case result of
       PFail (ExecReturn{}) -> return ()
-      PFail err            -> liftIO $ hPutStrLn stderr (prettyShow err)
+      PFail err            -> liftIO $ hPutStrLn stderr $ prettyShow err
       Backtrack            -> case programModuleName xunit of
         Nothing   -> return ()
-        Just name -> liftIO $ hPutStrLn stderr $ '(' : uchars name ++ ": does not compute)"
+        Just name -> liftIO $ hPutStrLn stderr $
+          uchars name ++ ": does not compute.\n\t"++show instr
       OK                _  -> return ()
 
 -- | Runs a single line of Dao scripting language code. In the current thread parse an input string

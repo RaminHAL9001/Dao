@@ -995,8 +995,8 @@ killTask = flip throwToTask ThreadKilled
 -- should call 'killTask' after 'taskLoop' to halt them if halting them should be necessary.
 -- 
 -- This function is also exception safe. All tasks evaluated in parallel will not fail to singal the
--- callback, even if the thread halts St.with an exception or asynchronous signal like
--- 'Control.Concurrent.killThread'. If the thread evaluating St.this function is halted by an
+-- callback, even if the thread halts with an exception or asynchronous signal from a function like
+-- 'Control.Concurrent.killThread'. If the thread evaluating this function is halted by an
 -- exception, all threads in the 'Task' are also killed.
 taskLoop :: Task -> [IO ()] -> (ThreadId -> Int -> IO Bool) -> IO ()
 taskLoop task parallelIO threadHaltedEvent = unless (null parallelIO) $
@@ -1008,7 +1008,7 @@ taskLoop task parallelIO threadHaltedEvent = unless (null parallelIO) $
     waitFirst :: Task -> IO (ThreadId, Int)
     waitFirst task = readChan (taskWaitChan task)
     forkInTask :: Task -> IO () -> IO ThreadId
-    forkInTask task run = forkIO $ run `finally` do
+    forkInTask task run = forkIO $ do
       self <- myThreadId
       bracket
         (modifyMVar (taskRunningThreads task) $ \s' -> do
@@ -1083,7 +1083,7 @@ qualRefUpdate qref upd = _doWithRefQualifier qref onLocal onStatic onGlobal onGl
   doUpdate :: Store store => Reference -> store -> Exec (Maybe Object)
   doUpdate (Reference rx) store = case rx of
     []   -> mzero
-    r:rx -> storeUpdate store r $ maybe mzero (_objectUpdate upd [r] rx . Just)
+    r:rx -> storeUpdate store r $ _objectUpdate upd [r] rx
       -- TODO: on exception, update the exception structure with information about the 'QualRef'
       -- given above.
 
@@ -1181,7 +1181,7 @@ instance ExecRef ref => Store (ref (Stack Name Object)) where
   storeLookup store ref     = execReadRef store >>= return . stackLookup ref
   storeDefine store ref obj = execModifyRef_ store (return . stackDefine ref (Just obj))
   storeDelete store ref     = execModifyRef_ store (return . stackDefine ref Nothing)
-  storeUpdate store ref upd = execModifyRef  store (stackUpdateM upd ref)
+  storeUpdate store ref upd = execModifyRef  store (stackUpdateTopM upd ref)
 
 newtype LocalStore  = LocalStore  (IORef (Stack Name Object))
 
@@ -1527,7 +1527,7 @@ catchReturn catch f = catchPredicate f >>= \pval -> case pval of
 -- used to push a new context for every level of nested if/else/for/try/catch statement, or to
 -- evaluate a macro, but not a function call. Use 'execFuncPushStack' to perform a function call within
 -- a function call.
-execNested :: T_dict -> Exec a -> Exec a
+execNested :: forall a . T_dict -> Exec a -> Exec a
 execNested init exe = do
   (LocalStore stack) <- asks execStack
   liftIO $ modifyIORef stack (stackPush init)
@@ -1543,8 +1543,8 @@ execNested init exe = do
 execFuncPushStack :: T_dict -> Exec (Maybe Object) -> Exec (Maybe Object)
 execFuncPushStack dict exe = do
   pval <- catchPredicate $ do
-    stackMVar <- liftIO (newIORef (Stack [dict]))
-    local (\xunit -> xunit{execStack=LocalStore stackMVar}) exe
+    stack <- liftIO (newIORef emptyStack)
+    local (\xunit -> xunit{execStack=LocalStore stack}) (execNested dict exe)
   case pval of
     OK                obj  -> return obj
     Backtrack              -> mzero
@@ -2726,13 +2726,11 @@ extractStringElems o = case o of
 
 data UpdateOp
   = UCONST | UADD | USUB | UMULT | UDIV | UMOD | UPOW | UORB | UANDB | UXORB | USHL | USHR | UARROW
-  deriving (Eq, Ord, Typeable, Enum, Ix, Show)
+  deriving (Eq, Ord, Typeable, Enum, Ix, Bounded, Show)
 instance NFData UpdateOp where { rnf a = seq a () }
 
 allUpdateOpStrs :: String
 allUpdateOpStrs = " = += -= *= /= %= **= |= &= ^= <<= >>= <- "
-
-instance Bounded UpdateOp where {minBound = UCONST; maxBound = UARROW}
 
 instance UStrType UpdateOp where
   toUStr a = ustr $ case a of
@@ -2794,9 +2792,7 @@ instance HasRandGen UpdateOp where
 
 ----------------------------------------------------------------------------------------------------
 
-data RefPfxOp = REF | DEREF deriving (Eq, Ord, Typeable, Enum, Ix, Show)
-
-instance Bounded RefPfxOp where { minBound=REF; maxBound=DEREF; }
+data RefPfxOp = REF | DEREF deriving (Eq, Ord, Typeable, Enum, Ix, Bounded, Show)
 
 instance NFData RefPfxOp where { rnf a = seq a () }
 
@@ -2825,9 +2821,7 @@ instance HasRandGen RefPfxOp where
 ----------------------------------------------------------------------------------------------------
 
 -- | Unary operators.
-data ArithPfxOp = INVB | NOT | NEGTIV | POSTIV deriving (Eq, Ord, Typeable, Enum, Ix, Show)
-
-instance Bounded  ArithPfxOp where { minBound=INVB; maxBound=POSTIV; }
+data ArithPfxOp = INVB | NOT | NEGTIV | POSTIV deriving (Eq, Ord, Typeable, Enum, Ix, Bounded, Show)
 
 instance NFData ArithPfxOp where { rnf a = seq a () }
 
@@ -2879,7 +2873,7 @@ data InfixOp
   | GTN   | LTN
   | GTEQ  | LTEQ
   | ARROW
-  deriving (Eq, Ord, Typeable, Enum, Ix, Show)
+  deriving (Eq, Ord, Typeable, Enum, Ix, Bounded, Show)
 
 instance UStrType InfixOp where
   toUStr a = ustr $ case a of
@@ -2902,11 +2896,10 @@ instance UStrType InfixOp where
     ; "==" -> Just EQUL ; "!=" -> Just NEQUL
     ; "<"  -> Just LTN  ; ">"  -> Just GTN
     ; "<=" -> Just LTEQ ; ">=" -> Just GTEQ 
+    ; "->" -> Just ARROW;
     ; _    -> Nothing
     }
   fromUStr str = maybe (error (show str++" is not an infix operator")) id (maybeFromUStr str)
-
-instance Bounded InfixOp where { minBound = ADD; maxBound = LTEQ; }
 
 instance NFData InfixOp  where { rnf a = seq a () }
 
@@ -5278,7 +5271,6 @@ instance Executable ArithExpr (Maybe Object) where
         OR  -> logical False
         op  -> do
           (left, right) <- case op of
-          --DOT   -> liftM2 (,) evalLeft  evalRight
             ARROW -> liftM2 (,) derefLeft evalRight
             _     -> liftM2 (,) derefLeft derefRight
           fmap Just ((infixOps!op) left right)
@@ -5606,7 +5598,6 @@ instance Executable TopLevelExpr (ExecUnit -> ExecUnit) where
         PFail           err  -> throwError err
         Backtrack            -> return () -- do not backtrack at the top-level
       -- pop the namespace, keep any local variable declarations
-      --dict <- lift $ dModifyMVar xloc (execStack xunit) (return . stackPop)
       dict <- liftIO $ atomicModifyIORef stor stackPop
       -- merge the local variables into the global varaibles resource.
       --lift (modifyUnlocked_ (globalData xunit) (return . T.union dict))

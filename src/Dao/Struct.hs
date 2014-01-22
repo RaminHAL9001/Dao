@@ -51,7 +51,7 @@ import           Control.Monad.Error
 -- labeled with 'Dao.String.Name's. It is an important interface for being able to maniuplate
 -- objects within a script written in the Dao language. 
 class Structured typ obj where
-  dataToStruct :: typ -> Tree Name obj
+  toDaoStruct :: typ -> Tree Name obj
   structToData :: Tree Name obj -> Predicate (GenUpdateErr obj) typ
 
 -- | This is the error type used to report errors that might occur while updating a 'Dao.Tree.Tree'
@@ -143,9 +143,9 @@ runUpdate upd = runUpdateTree (runPredicateT (updateToPredicateT upd))
 
 -- | GenUpdate a data type in the 'Structured' class using an 'GenUpdate' monadic function.
 onStruct :: Structured a obj => GenUpdate obj ig -> a -> Predicate (GenUpdateErr obj) a
-onStruct ufn a = (fst . runUpdate (ufn>>get)) (dataToStruct a) >>= structToData
+onStruct ufn a = (fst . runUpdate (ufn>>get)) (toDaoStruct a) >>= structToData
 
--- | Useful for instantiating the 'dataToStruct' function of the 'Structured' class, this is
+-- | Useful for instantiating the 'toDaoStruct' function of the 'Structured' class, this is
 -- essentially the same function as 'Control.Monad.State.execState'.
 deconstruct :: GenUpdate obj a -> Tree Name obj
 deconstruct fn = snd (runUpdate fn Void)
@@ -217,12 +217,12 @@ getMaybeAt addr = with addr $ getMaybe
 place :: obj -> GenUpdate obj ()
 place obj = placeWith (const (Just obj))
 
--- | Use 'dataToStruct' to convert a data type to a 'Structured' 'Dao.Tree.Tree' node, then union
+-- | Use 'toDaoStruct' to convert a data type to a 'Structured' 'Dao.Tree.Tree' node, then union
 -- it with the current node. If the current node is a 'Dao.Tree.Leaf', the leaf might be
 -- overwritten if you write a new 'Dao.Tree.Leaf'. This function is the couner operation of
 -- 'getData'.
 putData :: Structured a obj => a -> GenUpdate obj ()
-putData = putTree . dataToStruct
+putData = putTree . toDaoStruct
 
 -- | Shortcut for @'with' addr ('putData' a)@. This function is the counter opreation of
 -- 'getDataAt'.

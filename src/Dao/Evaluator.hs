@@ -16,7 +16,7 @@
 -- GNU General Public License for more details.
 -- 
 -- You should have received a copy of the GNU General Public License
--- along St.with St.this program (see the file called "LICENSE"). If not, see
+-- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 module Dao.Evaluator where
@@ -79,17 +79,17 @@ type T_list     = [Value Object]
 type T_dict     = M.Map Name Object
 type T_struct   = Struct Object
 
-instance ObjectClass (Struct Object) where
-  objectMethods = defObjectInterface nullValue $ do
-    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
+instance HaskellDataClass (Struct Object) where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
-instance ToDaoStructClass (Struct Object) Object where { dataToStruct  = return }
-instance FromDaoStructClass (Struct Object) Object where { dataFromStruct = return }
+instance ToDaoStructClass (Struct Object) Object where { toDaoStruct = return () }
+instance FromDaoStructClass (Struct Object) Object where { fromDaoStruct = FromDaoStruct $ lift get }
 
-instance ObjectClass (StructError Object) where
-  objectMethods = defObjectInterface nullValue $ do
-    autoDefEquality >> autoDefOrdering
+instance HaskellDataClass (StructError Object) where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest
     autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
@@ -149,12 +149,12 @@ instance PPrintable (Glob Object) where { pPrint = pShow }
 
 ----------------------------------------------------------------------------------------------------
 
--- | This function is a placeholder used by the type system. The value of St.this function is
+-- | This function is a placeholder used by the type system. The value of this function is
 -- undefined, so strictly evaluating it will throw an exception. Fortunately, the only time you will
--- ever use St.this function is St.with the 'daoClass' function, which uses the type of St.this function but
--- never it's value. Refer to the documentation on 'daoClass' to see how to properly use St.this
+-- ever use this function is with the 'daoClass' function, which uses the type of this function but
+-- never it's value. Refer to the documentation on 'daoClass' to see how to properly use this
 -- function.
-haskellType :: ObjectClass o => o
+haskellType :: HaskellDataClass o => o
 haskellType = error $ unwords $
   [ "the Dao.Evaluator.haskellType function is just a placeholder"
   , "used by the type system, it must not be evaluated."
@@ -182,18 +182,18 @@ newtype DaoSetupM a = DaoSetup{ daoSetupM :: State SetupModState a }
 updateSetupModState :: (SetupModState -> SetupModState) -> DaoSetup
 updateSetupModState f = DaoSetup (modify f)
 
--- | Dao programs can declare "requires" statements along St.with it's imports. If your built-in module
--- provides what Dao programs might "required", then declare that St.this module provides that feature
--- using St.this function.
+-- | Dao programs can declare "requires" statements along with it's imports. If your built-in module
+-- provides what Dao programs might "required", then declare that this module provides that feature
+-- using this function.
 daoProvides :: UStrType s => s -> DaoSetup
 daoProvides label = updateSetupModState $ \st ->
   st{ daoSatisfies = T.insert (refNameList $ read $ uchars label) () (daoSatisfies st) }
 
--- | Associate an 'ObjectClass' St.with a 'Name'. This 'Name' will be callable from within Dao scripts.
+-- | Associate an 'HaskellDataClass' with a 'Name'. This 'Name' will be callable from within Dao scripts.
 -- > newtype MyClass = MyClass { ... } deriving (Eq, Ord)
 -- >
--- > instance 'ObjectClass' MyClass where
--- >     'objectMethods' = 'defObjectInterface' $ do
+-- > instance 'HaskellDataClass' MyClass where
+-- >     'haskellDataInterface' = 'interface' $ do
 -- >         'autoDefEquality'
 -- >         'autoDefOrdering'
 -- >         ...
@@ -202,23 +202,23 @@ daoProvides label = updateSetupModState $ \st ->
 -- > setupDao = do
 -- >     daoClass "myClass" (haskellType::MyClass)
 -- >     ...
-daoClass :: (UStrType name, Typeable o, ObjectClass o) => name -> o -> DaoSetup
+daoClass :: (UStrType name, Typeable o, HaskellDataClass o) => name -> o -> DaoSetup
 daoClass name ~o = updateSetupModState $ \st ->
-    st{ daoClasses = insertMethodTable o (fromUStr $ toUStr name) objectMethods (daoClasses st) }
+    st{ daoClasses = insertMethodTable o (fromUStr $ toUStr name) haskellDataInterface (daoClasses st) }
 
--- | Define a built-in function. Examples of built-in functions provided in St.this module are
+-- | Define a built-in function. Examples of built-in functions provided in this module are
 -- "print()", "join()", and "exec()".
 daoFunction :: (Show name, UStrType name) => name -> DaoFunc -> DaoSetup
 daoFunction name func = updateSetupModState $ \st ->
   st{ daoTopLevelFuncs = M.insert (fromUStr $ toUStr name) func (daoTopLevelFuncs st) }
 
--- | Provide an 'Exec' monad to perform when 'setupDao' is evaluated. You may use St.this function as
+-- | Provide an 'Exec' monad to perform when 'setupDao' is evaluated. You may use this function as
 -- many times as you wish, every 'Exec' monad will be executed in the order they are specified. This
 -- is a good way to create a read-eval-print loop.
 daoInitialize :: Exec () -> DaoSetup
 daoInitialize f = updateSetupModState $ \st -> st{ daoEntryPoint = daoEntryPoint st >> f }
 
--- | Use St.this function evaluate a 'DaoSetup' in the IO () monad. Use St.this to define the 'main'
+-- | Use this function evaluate a 'DaoSetup' in the IO () monad. Use this to define the 'main'
 -- function of your program.
 setupDao :: DaoSetup -> IO ()
 setupDao setup0 = do
@@ -244,7 +244,7 @@ setupDao setup0 = do
 
 ----------------------------------------------------------------------------------------------------
 
-data HaskellData = HaskellData Dynamic (ObjectInterface Dynamic) deriving Typeable
+data HaskellData = HaskellData Dynamic (Interface Dynamic) deriving Typeable
 
 instance Eq HaskellData where
   HaskellData a ifcA == HaskellData b ifcB =
@@ -321,7 +321,7 @@ instance B.Binary HaskellData MTab where
 ----------------------------------------------------------------------------------------------------
 
 instance HasNullValue HaskellData where
-  nullValue = mkHaskellData ()
+  nullValue = toHaskellData ()
   testNull (HaskellData o ifc) = case objNullTest ifc of
     Nothing -> error ("to check whether objects of type "++show (objHaskellType ifc)++" are null is undefined behavior")
     Just fn -> fn o
@@ -333,59 +333,104 @@ showObj = prettyPrint 80 "    "
 
 -- | This class provides a consistent interface, the 'obj' function, for converting a wide range of
 -- types to an 'Object' type.
-class ObjectValue o where
+class ObjectClass o where
   obj   :: o -> Object
   fromObj :: Object -> Maybe o
 
-instance ObjectValue [Object] where
+instance ObjectClass () where
+  obj () = ONull
+  fromObj o = case o of { ONull -> return (); _ -> mzero; }
+
+instance ObjectClass Bool where
+  obj true = if true then OTrue else ONull
+  fromObj o = case o of { OTrue -> return True; ONull -> return False; _ -> mzero }
+
+instance ObjectClass [Object] where
   obj = OList
-  fromObj o = case o of { OList o -> Just o; _ -> Nothing; }
+  fromObj o = case o of { OList o -> return o; _ -> mzero; }
 
-instance ObjectValue QualRef where
+instance ObjectClass QualRef where
   obj = ORef
-  fromObj o = case o of { ORef o -> Just o; _ -> Nothing; }
+  fromObj o = case o of { ORef o -> return o; _ -> mzero; }
 
-instance ObjectValue (Struct Object) where
+instance ObjectClass (Struct Object) where
   obj = OTree
-  fromObj o = case o of { OTree o -> Just o; _ -> Nothing; }
+  fromObj o = case o of { OTree o -> return o; _ -> mzero; }
 
-instance ObjectValue UStr where
+instance ObjectClass UStr where
   obj = OString
-  fromObj o = case o of { OString o -> Just o; _ -> Nothing; }
+  fromObj o = case o of { OString o -> return o; _ -> mzero; }
 
-instance ObjectValue String where
+instance ObjectClass String where
   obj = obj . toUStr
   fromObj = fromObj >=> maybeFromUStr
 
-instance ObjectValue Int where
+instance ObjectClass Int where
   obj = OInt
-  fromObj o = case o of { OInt o -> Just o; _ -> Nothing; }
+  fromObj o = case o of { OInt o -> return o; _ -> mzero; }
 
-instance ObjectValue Name where
+instance ObjectClass Word where
+  obj = OWord . fromIntegral
+  fromObj o = case o of { OWord o -> return (fromIntegral o); _ -> mzero; }
+
+instance ObjectClass Word64 where
+  obj = OWord
+  fromObj o = case o of { OWord o -> return o; _ -> mzero; }
+
+instance ObjectClass Name where
   obj = ORef . Unqualified . Reference . return
   fromObj o = case o of
-    ORef (Unqualified (Reference [name])) -> Just name
-    _ -> Nothing
+    ORef (Unqualified (Reference [name])) -> return name
+    _ -> mzero
 
-instance ObjectValue Reference where
+instance ObjectClass Reference where
   obj = ORef . Unqualified
   fromObj o = case o of
-    ORef (Unqualified ref) -> Just ref
-    _ -> Nothing
+    ORef (Unqualified ref) -> return ref
+    _ -> mzero
 
-instance ObjectValue Double where
+instance ObjectClass Double where
   obj = OFloat
-  fromObj o = case o of { OFloat o -> Just o; _ -> Nothing; }
+  fromObj o = case o of { OFloat o -> return o; _ -> mzero; }
 
-instance ObjectValue Integer where
+instance ObjectClass Integer where
   obj = OLong
-  fromObj o = case o of { OLong o -> Just o; _ -> Nothing; }
+  fromObj o = case o of { OLong o -> return o; _ -> mzero; }
 
-instance ObjectValue Dynamic where
+instance ObjectClass HaskellData where
+  obj = OHaskell
+  fromObj o = case o of { OHaskell o -> return o; _ -> mzero; }
+
+instance ObjectClass Dynamic where
   obj = opaque
-  fromObj o = case o of { OHaskell (HaskellData o _) -> Just o; _ -> Nothing; }
+  fromObj o = case o of { OHaskell (HaskellData o _) -> return o; _ -> mzero; }
 
-instance ObjectValue (Value HaskellData) where { obj = id; fromObj = Just; }
+instance ObjectClass (Value HaskellData) where { obj = id; fromObj = return; }
+
+listToObj :: ObjectClass o => [o] -> Object
+listToObj = OList . map obj
+
+listFromObj :: ObjectClass o => Object -> Maybe [o]
+listFromObj o = case o of
+  OList o -> mapM fromObj o
+  _       -> mzero
+
+-- | Create a new 'Object' containing the original value and a reference to the 'Interface'
+-- retrieved by the instance of 'haskellDataInterface' for the data type.
+new :: (HaskellDataClass typ, Typeable typ) => typ -> Object
+new = OHaskell . toHaskellData
+
+-- | Create a completely opaque haskell data type that can be used stored to a Dao language
+-- variable, but never inspected or modified in any way.
+opaque :: Typeable typ => typ -> Object
+opaque o = OHaskell $ HaskellData (toDyn o) $
+  interfaceToDynamic $ interface o $ return ()
+
+-- | The inverse operation of 'new', uses 'fromObj' and 'fromHaskellData' to extract the data type
+-- wrapped up in the 'Object', assuming the 'Object' is the 'OHaskell' constructor holding a
+-- 'HaskellData' container.
+objFromHaskellData :: (Typeable o, HaskellDataClass o) => Object -> Maybe o
+objFromHaskellData = fromObj >=> fromHaskellData
 
 ----------------------------------------------------------------------------------------------------
 
@@ -408,32 +453,32 @@ instance ObjectValue (Value HaskellData) where { obj = id; fromObj = Just; }
 -- 
 -- > 'Dao.Object.field' "x" >>= 'objType'
 -- fails if the field does not exist, backtracks if it exists but is the wrong type
--- (you probably don't ever want to do St.this).
+-- (you probably don't ever want to do this).
 -- 
 -- > 'required' ('field' "x" >>= 'objType')
 -- > 'field' "x" >>= 'required' 'objType'
 -- These two forms are the same: fails if either the field does not exist or if 'objType'
 -- backtracks.
 
--- | This function is intended to be used St.with a type checking function 'objType', 'structType',
+-- | This function is intended to be used with a type checking function 'objType', 'structType',
 -- 'primType', and 'dynType' passed as the first parameter, and is intended to receive an object
 -- value from 'Dao.Object.field' or 'Dao.Object.tryField' computation. 'require' will pass the
 -- object value to the type checking function, and if the type checking function backtracks
--- 'required' will throw an error St.with the correct error information.
+-- 'required' will throw an error with the correct error information.
 required :: (Object -> FromDaoStruct Object o) -> Object -> FromDaoStruct Object o
 required f o = mplus (f o) $ throwError $ nullValue{ structErrValue=Just o }
 
 -- | This is an important function for instantiating 'Dao.Object.ToDaoStructClass'. It takes any
--- value instantiating 'Dao.Object.ObjectClass', converts it to an 'Object' using the 'new'
+-- value instantiating 'Dao.Object.HaskellDataClass', converts it to an 'Object' using the 'new'
 -- function. It is the inverse of 'objType'.
 --
--- It is recommended you use St.this function instead of 'defStructField', 'defPrimField', or
+-- It is recommended you use this function instead of 'defStructField', 'defPrimField', or
 -- 'defDynField' whenever it is possible, i.e. whenever the data type you are putting instantiated
--- the 'Dao.Object.ObjectClass' class.
+-- the 'Dao.Object.HaskellDataClass' class.
 defObjField
   :: (UStrType name, Typeable o, ObjectClass o)
   => name -> o -> ToDaoStruct Object haskData Object
-defObjField name o = define name (new o)
+defObjField name o = define name (obj o)
 
 -- | Synonym for 'defObjField'
 (.=) :: (UStrType name, Typeable o, ObjectClass o) => name -> o -> ToDaoStruct Object haskData Object
@@ -457,32 +502,41 @@ infixr 2 .=@
 
 -- | This is an important function for instantiating 'Dao.Object.FromDaoStructClass'. It is the inverse
 -- of 'defObjField'. It retrieves an 'Object' field from a field in a 'Struct' and tries to convert
--- St.this 'Object' to a value of the needed type by extracting it from the 'HaskellData' constructor.
--- Of course the type of the value to which it is converting must instantiate the 'ObjectValue'
+-- this 'Object' to a value of the needed type by extracting it from the 'HaskellData' constructor.
+-- Of course the type of the value to which it is converting must instantiate the 'ObjectClass'
 -- class. This function backtracks on the incorrect type.
 objType :: (Typeable o, ObjectClass o) => Object -> FromDaoStruct Object o
-objType o = case o of
-  OHaskell (HaskellData o _ifc) -> maybe mzero return $ fromDynamic o
-  _                             -> mzero
+objType = maybe mzero return . fromObj
 
--- | Synonym for @'required' 'objType'@
-(.?) :: (Typeable o, ObjectClass o) => Object -> FromDaoStruct Object o
-(.?) = required objType
+----------------------------------------------------------------------------------------------------
 
--- | Synonym for 'objType'
-(.??) :: (Typeable o, ObjectClass o) => Object -> FromDaoStruct Object o
-(.??) = objType
+-- | Like 'putObjField' but operates on an object wrapped in a 'Prelude.Maybe', not doing anything
+-- in the case of 'Prelude.Nothing'.
+defMaybeObjField
+  :: (UStrType name, Typeable o, ObjectClass o)
+  => name -> Maybe o -> ToDaoStruct Object haskData (Maybe Object)
+defMaybeObjField name = maybe (return Nothing) (fmap Just . defObjField name)
+
+(.=?) 
+  :: (UStrType name, Typeable o, ObjectClass o)
+  => name -> Maybe o -> ToDaoStruct Object haskData (Maybe Object)
+(.=?) = defMaybeObjField
+
+objMaybeType :: (Typeable o, ObjectClass o) => Maybe Object -> FromDaoStruct Object (Maybe o)
+objMaybeType = maybe (return Nothing) (flip mplus (return Nothing) . fmap Just . objType)
+
+----------------------------------------------------------------------------------------------------
 
 -- | Like 'defObjField' but places a data type instantiating the 'ToDaoStructClass' class by
 -- converting the data type to another 'Dao.Object.Struct' and storing it into a 'OTree'
 -- constructor. This is the inverse of 'structType'.
 -- 
--- It is recommended that St.this function be used for non-primitive types that do not instantiate the
+-- It is recommended that this function be used for non-primitive types that do not instantiate the
 -- 'ObjectClass' class.
 defStructField
   :: (UStrType name, ToDaoStructClass o Object)
   => name -> o -> ToDaoStruct Object haskData Object
-defStructField name innerObj = predicate (dataToStruct innerObj) >>= define name . OTree
+defStructField name innerObj = predicate (fromData toDaoStruct innerObj) >>= define name . OTree
 
 -- | Synonym for 'defStructField'
 (^=)
@@ -493,7 +547,7 @@ infixr 2 ^=
 
 -- | Like 'defStructField' but takes a field accessor to extract the data to be stored from the
 -- object being converted. This function is defined as:
--- > \name accessor -> asks accessor >>= defStructField name
+-- > \name accessor -> 'Control.Monad.Reader.asks' accessor >>= 'defStructField' name
 putStructField
   :: (UStrType name, ToDaoStructClass o Object)
   => name -> (haskData -> o) -> ToDaoStruct Object haskData Object
@@ -507,65 +561,18 @@ putStructField name which = asks which >>= defStructField name
 infixr 2 ^=@
 
 -- | Like 'objType' but converts from the 'Object' value to the needed data type using
--- 'dataFromStruct', where the needed data type instantiates the 'FromDaoStructClass' class using the
+-- 'fromDaoStruct', where the needed data type instantiates the 'FromDaoStructClass' class using the
 -- 'new' function. This function backtracks on the incorrect data type.
 structType :: FromDaoStructClass o Object => Object -> FromDaoStruct Object o
 structType o = case o of
-  OTree struct -> predicate (dataFromStruct struct)
+  OTree struct -> predicate (toData fromDaoStruct struct)
   _            -> mzero
 
--- | Synonym for @'required' 'structType'@
-(^?) :: FromDaoStructClass o Object => Object -> FromDaoStruct Object o
-(^?) = required structType
-
--- | Synonym for 'structType'
-(^??) :: FromDaoStructClass o Object => Object -> FromDaoStruct Object o
-(^??) = structType
-
--- | Like 'defObjField' but works on primitive values instantiating 'ObjectValue', values
--- that do not instantiate 'Dao.Object.RuntimeReader'. It is the inverse of 'primType'.
--- 
--- Since this data type is only possible for types which instantiate 'ObjectValue' it only works on
--- primitive data types like 'Dao.String.UStr' and 'Prelude.Int', and it is the only function that
--- can be used with these data types as primitive types should not instantiate 'ObjectClass' or
--- 'Dao.Object.FromDaoStructClass'.
-defPrimField :: (UStrType name, ObjectValue o) => name -> o -> ToDaoStruct Object haskData Object
-defPrimField name o = define name (obj o)
-
--- | Synonym for 'defPrimField'
-(#=) :: (UStrType name, ObjectValue o) => name -> o -> ToDaoStruct Object haskData Object
-(#=) = defPrimField
-infixr 2 #=
-
--- | Like 'defPrimField' but takes a field accessor to extract the data to be stored from the
--- object being converted. This function is defined as:
--- > \name accessor -> asks accessor >>= defPrimField name
-putPrimField :: (UStrType name, ObjectValue o) => name -> (haskData -> o) -> ToDaoStruct Object haskData Object
-putPrimField name which = asks which >>= defPrimField name
-
--- | Synonym for 'putPrimField'
-(#=@) :: (UStrType name, ObjectValue o) => name -> (haskData -> o) -> ToDaoStruct Object haskData Object
-(#=@) = putPrimField
-infixr 2 #=@
-
--- | Like 'objType' but works on primitive values instantiating 'ObjectValue', It is the inverse of
--- 'defPrimField'. This function backtracks on failure.
-primType :: ObjectValue o => Object -> FromDaoStruct Object o
-primType = maybe mzero return . fromObj
-
--- | Synonym for @'required' 'primType'@
-(#?):: ObjectValue o => Object -> FromDaoStruct Object o
-(#?) = required primType
-
--- | Synonym for 'primType'
-(#??) :: ObjectValue o => Object -> FromDaoStruct Object o
-(#??) = primType
-
--- | Like 'defObjField', but uses the data type's instantiation of 'Data.Typeable.Typable' to St.place
+-- | Like 'defObjField', but uses the data type's instantiation of 'Data.Typeable.Typable' to place
 -- a completely opaque 'Data.Dynamic.Dynamic' data type, converted to an 'Object' using the 'opaque'
 -- function. This function is the inverse of 'dynType'.
 --
--- It is strongly recommended St.this function never be used.
+-- It is strongly recommended this function never be used.
 defDynField :: (UStrType name, Typeable o) => name -> o -> ToDaoStruct Object haskData Object
 defDynField name o = define name (opaque o)
 
@@ -590,27 +597,11 @@ infixr 2 *=@
 dynType :: Typeable o => Object -> FromDaoStruct Object o
 dynType = maybe mzero return . (fromObj >=> fromDynamic)
 
--- | Synonym for @'required' 'dynType'@
-(*?) :: Typeable o => Object -> FromDaoStruct Object o
-(*?) = required dynType
-
--- | Synonym for 'dynType'
-(*??) :: Typeable o => Object -> FromDaoStruct Object o
-(*??) = dynType
-
 -- | Tries both 'objType' and 'structType'.
 daoType
   :: (Typeable o, ObjectClass o, FromDaoStructClass o Object)
   => Object -> FromDaoStruct Object o
 daoType o = mplus (objType o) (structType o)
-
--- | Synonym for 'daoType'
-(??) :: (Typeable o, ObjectClass o, FromDaoStructClass o Object) => Object -> FromDaoStruct Object o
-(??) = daoType
-
--- | Synonym for @'required' 'daoType'@
-(?) :: (Typeable o, ObjectClass o, FromDaoStructClass o Object) => Object -> FromDaoStruct Object o
-(?) = required daoType
 
 ----------------------------------------------------------------------------------------------------
 
@@ -658,13 +649,13 @@ getBoolData msg tru fals = do
       ]
 
 instance St.Structured () Object where
-  dataToStruct _ = St.deconstruct $ St.place ONull
+  toDaoStruct _ = St.deconstruct $ St.place ONull
   structToData = St.reconstruct $ St.this >>= \o -> case o of
     ONull -> return ()
     _     -> fail $ "expecting () as ONull value"
 
 instance St.Structured UStr Object where
-  dataToStruct a = St.deconstruct $ St.place (OString a)
+  toDaoStruct a = St.deconstruct $ St.place (OString a)
   structToData = St.reconstruct $ do
     a <- St.this
     case a of
@@ -672,20 +663,20 @@ instance St.Structured UStr Object where
       _         -> fail "expecing string constant"
 
 instance St.Structured Bool Object where
-  dataToStruct a = St.deconstruct $ St.place (if a then OTrue else ONull)
+  toDaoStruct a = St.deconstruct $ St.place (if a then OTrue else ONull)
   structToData = St.reconstruct $ getBoolData "strucutred boolean" "true" "false"
 
 instance St.Structured Word Object where
-  dataToStruct a = St.deconstruct $ St.place (OInt (fromIntegral a))
+  toDaoStruct a = St.deconstruct $ St.place (OInt (fromIntegral a))
   structToData = St.reconstruct (getIntegerData "unsigned integer")
 
 instance St.Structured Int Object where
-  dataToStruct a = St.deconstruct $ St.place (OInt (fromIntegral a))
+  toDaoStruct a = St.deconstruct $ St.place (OInt (fromIntegral a))
   structToData = St.reconstruct (getIntegerData "integer")
 
 newtype StructChar = StructChar Char
 instance St.Structured StructChar Object where
-  dataToStruct (StructChar c) = St.deconstruct (St.place (OChar c))
+  toDaoStruct (StructChar c) = St.deconstruct (St.place (OChar c))
   structToData = St.reconstruct $ St.this >>= \c -> case c of
     OChar c -> return (StructChar c)
     _       -> fail "singleton character"
@@ -703,15 +694,15 @@ getListWith _srct2dat = do
     _        -> fail "was expecting a list object"
 
 instance St.Structured a Object => St.Structured [a] Object where
-  dataToStruct ax = St.deconstruct (putListWith St.putData ax)
+  toDaoStruct ax = St.deconstruct (putListWith St.putData ax)
   structToData    = St.reconstruct (getListWith St.getData)
 
 instance St.Structured (T.Tree Name Object) Object where
-  dataToStruct _ = undefined
+  toDaoStruct _ = undefined
   structToData = undefined
 
 instance (Ord a, Enum a, St.Structured a Object) => St.Structured (Es.Inf a) Object where
-  dataToStruct a = St.deconstruct $ case a of
+  toDaoStruct a = St.deconstruct $ case a of
     Es.PosInf  -> putUStrData "+inf"
     Es.NegInf  -> putUStrData "-inf"
     Es.Point a -> St.putData a
@@ -726,7 +717,7 @@ instance (Ord a, Enum a, St.Structured a Object) => St.Structured (Es.Inf a) Obj
     where { msg = "unit of a segment of an enum set" }
 
 instance (Ord a, Enum a, Bounded a, St.Structured a Object) => St.Structured (Es.Segment a) Object where
-  dataToStruct a = St.deconstruct $
+  toDaoStruct a = St.deconstruct $
     mplus (maybe mzero return (Es.singular a) >>= St.putDataAt "at") $
       maybe mzero return (Es.plural a) >>= \ (a, b) -> St.putDataAt "to" a >> St.putDataAt "from" b
   structToData = St.reconstruct $ msum $
@@ -736,16 +727,16 @@ instance (Ord a, Enum a, Bounded a, St.Structured a Object) => St.Structured (Es
     ]
 
 instance (Ord a, Enum a, Bounded a, Es.InfBound a, St.Structured a Object) => St.Structured (Es.Set a) Object where
-  dataToStruct a = St.deconstruct (St.putData (Es.toList a))
+  toDaoStruct a = St.deconstruct (St.putData (Es.toList a))
   structToData = St.reconstruct (fmap Es.fromList St.getData)
 
 instance St.Structured (Glob UStr) Object where
-  dataToStruct a = St.deconstruct $ case a of
+  toDaoStruct a = St.deconstruct $ case a of
     Glob       a _   -> St.putData a
   structToData = St.reconstruct $ St.getData >>= \a -> return (Glob a (length a))
 
 instance St.Structured (GlobUnit UStr) Object where
-  dataToStruct a = T.Leaf $ obj (toUStr a)
+  toDaoStruct a = T.Leaf $ obj (toUStr a)
   structToData = St.reconstruct $ do
     let errmsg = "expecting glob-unit item, string expression does not parse to valid glob-unit"
     getUStrData "glob-unit" >>= maybe (fail errmsg) return . maybeFromUStr
@@ -767,34 +758,34 @@ getUStrList = do
     _        -> fail "expecting a list of strings of base64-encoded data"
 
 instance St.Structured Name Object where
-  dataToStruct = ustrToStruct
+  toDaoStruct = ustrToStruct
   structToData = fmap fromUStr . structToUStr "a valid label"
 
 instance St.Structured UpdateOp Object where
-  dataToStruct = ustrToStruct
+  toDaoStruct = ustrToStruct
   structToData = structToUStr "assignment operator"
 
 instance St.Structured RefPfxOp Object where
-  dataToStruct = ustrToStruct
+  toDaoStruct = ustrToStruct
   structToData = structToUStr "unary prefix operator"
 
 instance St.Structured ArithPfxOp Object where
-  dataToStruct = ustrToStruct
+  toDaoStruct = ustrToStruct
   structToData = structToUStr "unary prefix operator"
   
 instance St.Structured InfixOp Object where
-  dataToStruct = ustrToStruct
+  toDaoStruct = ustrToStruct
   structToData = structToUStr "binary infix operator"
 
 instance St.Structured CoreType Object where
-  dataToStruct = ustrToStruct
+  toDaoStruct = ustrToStruct
   structToData = structToUStr "type identifier"
 
--- This instance never places data in the immediate ('Data.Struct.St.this') node, so it is safe to call
--- 'St.putData' on a value of type 'Data.Token.Location' even if you have already placed data in the
--- immedate node St.with 'St.putData'.
+-- This instance never places data in the immediate ('Data.Struct.this') node, so it is safe to call
+-- 'putData' on a value of type 'Data.Token.Location' even if you have already placed data in the
+-- immedate node with 'putData'.
 instance St.Structured Location Object where
-  dataToStruct loc = case loc of
+  toDaoStruct loc = case loc of
     LocationUnknown  -> T.Void
     Location _ _ _ _ -> St.deconstruct $ St.with "location" $ do
       St.with "from" $ do
@@ -813,8 +804,26 @@ instance St.Structured Location Object where
       (c,d) <- getPos
       return (Location a b c d)
 
+instance ToDaoStructClass Location Object where
+  toDaoStruct = ask >>= \lo -> case lo of
+    LocationUnknown -> return ()
+    Location{} -> void $ do
+      renameConstructor "Location"
+      "startingLine"   .=@ startingLine
+      "startingColumn" .=@ startingColumn
+      "endingLine"     .=@ endingLine
+      "endingColumn"   .=@ endingColumn
+
+putLocation :: Location -> ToDaoStruct Object haskData ()
+putLocation loc = case loc of
+  LocationUnknown -> return ()
+  Location{} -> void $ "location" .= loc
+
+putComments :: [Comment] -> ToDaoStruct Object haskData ()
+putComments = void . defObjField "comments"
+
 instance St.Structured Object Object where
-  dataToStruct = St.deconstruct . St.place
+  toDaoStruct = St.deconstruct . St.place
   structToData = St.reconstruct St.this
 
 instance HasRandGen Object where
@@ -846,10 +855,10 @@ instance HasRandGen Object where
 data ExecUnit
   = ExecUnit
     { globalMethodTable  :: MethodTable
-      -- ^ In St.this slot will be stored a read-only @'Data.Map.Lazy.Map' 'Dao.String.UStr'
-      -- 'Dao.Object.ObjectInterface'@ object that will allow any method St.with access to St.this
-      -- 'GenRuntime' to retrieve a 'Dao.Object.ObjectInterface' by it's name string. Specifically,
-      -- St.this will be used by objects stored in the 'Dao.Object.OHaskell' constructor.
+      -- ^ In this slot will be stored a read-only @'Data.Map.Lazy.Map' 'Dao.String.UStr'
+      -- 'Dao.Object.Interface'@ object that will allow any method with access to this
+      -- 'GenRuntime' to retrieve a 'Dao.Object.Interface' by it's name string. Specifically,
+      -- this will be used by objects stored in the 'Dao.Object.OHaskell' constructor.
     , pathIndex          :: MVar (M.Map UPath ExecUnit)
       -- ^ every file opened, whether it is a data file or a program file, is registered here under
       -- it's file path (file paths map to 'File's).
@@ -857,7 +866,7 @@ data ExecUnit
       -- ^ the default time-out value to use when evaluating 'execInputString'
     , importGraph        :: MVar (M.Map UPath ExecUnit)
     , currentWithRef     :: WithRefStore
-      -- ^ the current document is set by the @St.with@ statement during execution of a Dao script.
+      -- ^ the current document is set by the @with@ statement during execution of a Dao script.
     , taskForExecUnits   :: Task
     , currentQuery       :: Maybe UStr
     , currentPattern     :: Maybe (Glob Object)
@@ -866,10 +875,10 @@ data ExecUnit
       -- that query is defnied here. It is only 'Data.Maybe.Nothing' when the module is first being
       -- loaded from source code.
     , currentBranch      :: [Name]
-      -- ^ set by the @St.with@ statement during execution of a Dao script. It is used to prefix St.this
+      -- ^ set by the @with@ statement during execution of a Dao script. It is used to prefix this
       -- to all global-dot references before reading from or writing to those references.
     , importsTable       :: [(Name, ExecUnit)]
-      -- ^ a pointer to the ExecUnit of every Dao program imported St.with the @import@ keyword.
+      -- ^ a pointer to the ExecUnit of every Dao program imported with the @import@ keyword.
     , execStack          :: LocalStore
       -- ^ stack of local variables used during evaluation
     , globalData         :: GlobalStore
@@ -935,7 +944,7 @@ initExecUnit = do
     }
 
 -- | Creates a new 'ExecUnit'. This is the only way to create a new 'ExecUnit', and it must be run
--- within the 'Exec' monad. The 'ExecUnit' produced by St.this function will have it's parent
+-- within the 'Exec' monad. The 'ExecUnit' produced by this function will have it's parent
 -- 'ExecUnit' set to the value returned by the 'Control.Monad.Reader.Class.ask' instance of the
 -- 'Exec' monad.
 --
@@ -968,8 +977,8 @@ initTask = do
   running <- newMVar S.empty
   return $ Task{ taskWaitChan=wait, taskRunningThreads=running }
 
--- | To halt a single thread in a 'Task', simply signal it St.with 'Control.Concurrent.killThread'. But
--- to halt everything the task is doing, use St.this function. Use of St.this function will never result in
+-- | To halt a single thread in a 'Task', simply signal it with 'Control.Concurrent.killThread'. But
+-- to halt everything the task is doing, use this function. Use of this function will never result in
 -- deadlocks (I hope).
 throwToTask :: Exception e => Task -> e -> IO ()
 throwToTask task e = do
@@ -1020,7 +1029,7 @@ taskLoop task parallelIO threadHaltedEvent = unless (null parallelIO) $
 
 -- | Works exactly like 'taskLoop', except you do not need to provide a callback function to be
 -- evaluated after every task completes. Essentially, every IO function is evaluated in the 'Task'
--- in parallel, and St.this function blocks until all tasks have completed.
+-- in parallel, and this function blocks until all tasks have completed.
 taskLoop_ :: Task -> [IO ()] -> IO ()
 taskLoop_ task inits = taskLoop task inits (\ _ _ -> return True)
 
@@ -1028,7 +1037,7 @@ taskLoop_ task inits = taskLoop task inits (\ _ _ -> return True)
 
 -- | This simple, humble little class is one of the most important in the Dao program because it
 -- defines the 'execute' function. Any data type that can result in procedural execution in the
--- 'Exec' monad can instantiate St.this class. This will allow the instnatiated data type to be used as
+-- 'Exec' monad can instantiate this class. This will allow the instnatiated data type to be used as
 -- a kind of executable code that can be passed around and evaluated at arbitrary points in your Dao
 -- program.
 -- 
@@ -1050,11 +1059,11 @@ taskLoop_ task inits = taskLoop task inits (\ _ _ -> return True)
 -- > instance Executable D     ()   -- COMPILER ERROR (same @exec@ parameters, different @result@ parameters)
 -- > instance Executable D     Int  -- COMPILER ERROR
 -- > instance Executable D     Char -- COMPILER ERROR
--- In St.this example, should D instantiate () or Int or Char as it's result? You must choose only one.
+-- In this example, should D instantiate () or Int or Char as it's result? You must choose only one.
 class Executable exec result | exec -> result where { execute :: exec -> Exec result }
 
 -- 'Dao.Object.execute'-ing a 'Dao.Object.QualRefExpr' will dereference it, essentially reading the
--- value associated St.with that reference from the 'Dao.Object.ExecUnit'.
+-- value associated with that reference from the 'Dao.Object.ExecUnit'.
 instance Executable QualRef (Maybe Object) where
   execute qref = _doWithRefQualifier qref getLocal getStatic getGlobal getGloDot where
     getLocal  ref = asks execStack  >>= doLookup ref
@@ -1116,9 +1125,9 @@ _doWithRefQualifier qref onLocal onStatic onGlobal onGloDot = do
 
 ----------------------------------------------------------------------------------------------------
 
--- | Since the 'ExecUnit' deals St.with a few different kinds of pointer values, namely
+-- | Since the 'ExecUnit' deals with a few different kinds of pointer values, namely
 -- 'Data.IORef.IORef' and 'MVar', which all have similar functions for reading and updating, I have
--- defined St.this class to provide a consistent set of functions for working St.with the various pointers
+-- defined this class to provide a consistent set of functions for working with the various pointers
 -- data types.
 class ExecRef var where
   execReadRef    :: var a -> Exec a
@@ -1293,9 +1302,9 @@ _objectUpdate upd back rx o = loop back rx o where
 ----------------------------------------------------------------------------------------------------
 
 -- | This data type is use to halt normal evaluation and force the result of evaluating the code to
--- be a particular value of St.this type. The 'Exec' monad instantiates
+-- be a particular value of this type. The 'Exec' monad instantiates
 -- 'Control.Monad.Error.Class.MonadError' such that 'Control.Monad.Error.Class.throwError' throws a
--- value of St.this type. However, it is not only used for exceptions. The Dao scripting language's
+-- value of this type. However, it is not only used for exceptions. The Dao scripting language's
 -- "return" statement throws an 'ExecReturn' value which is caught using
 -- 'Control.Monad.Error.Class.catchError' when evaluating function calls.
 data ExecControl
@@ -1351,7 +1360,7 @@ instance PPrintable ExecControl where
       maybe (return ()) (\o -> pWrapIndent [pString "Evaluated to: ", pPrint o]) o
 
 instance St.Structured ExecControl Object where
-  dataToStruct o = St.deconstruct $ do
+  toDaoStruct o = St.deconstruct $ do
     let put str = maybe (return ()) (St.putDataAt str)
     case o of
       ExecReturn o         -> put "return" o
@@ -1369,8 +1378,8 @@ instance St.Structured ExecControl Object where
     , fail "expecting ExecControl"
     ]
 
-instance ObjectClass ExecControl where
-  objectMethods = defObjectInterface nullValue $ do
+instance HaskellDataClass ExecControl where
+  haskellDataInterface = interface nullValue $ do
     autoDefPPrinter
     -- autoDefNullTest >> autoDefToStruct
 
@@ -1436,7 +1445,7 @@ setErrTopLevel expr ctrl = case ctrl of
 
 ----------------------------------------------------------------------------------------------------
 
--- | All evaluation of the Dao language takes St.place in the 'Exec' monad. It instantiates
+-- | All evaluation of the Dao language takes place in the 'Exec' monad. It instantiates
 -- 'Control.Monad.MonadIO.MonadIO' to allow @IO@ functions to be lifeted into it. It instantiates
 -- 'Control.Monad.Error.MonadError' and provides it's own exception handling mechanism completely
 -- different from the Haskell runtime, so as to allow for more control over exception handling in
@@ -1498,7 +1507,7 @@ execCatchIO tryFunc handlers = do
   ctrl  <- liftIO $ catches (ioExec tryFunc xunit) (fmap (\h -> execHandler h xunit) handlers)
   predicate ctrl
 
--- | Like 'execCatchIO' but St.with the arguments 'Prelude.flip'ped.
+-- | Like 'execCatchIO' but with the arguments 'Prelude.flip'ped.
 execHandleIO :: [ExecHandler a] -> Exec a -> Exec a
 execHandleIO = flip execCatchIO
 
@@ -1535,11 +1544,11 @@ execNested init exe = do
   liftIO $ modifyIORef stack (fst . stackPop)
   return result
 
--- | Keep the current 'execStack', but replace it St.with a new empty stack before executing the given
+-- | Keep the current 'execStack', but replace it with a new empty stack before executing the given
 -- function. This function is different from 'nestedExecStak' in that it acually removes the current
 -- execution stack so a function call cannot modify the local variables of the function which called
 -- it. Furthermore it catches evaluation of a "return" statement allowing the function which called
--- it to procede St.with execution after St.this call has returned.
+-- it to procede with execution after this call has returned.
 execFuncPushStack :: T_dict -> Exec (Maybe Object) -> Exec (Maybe Object)
 execFuncPushStack dict exe = do
   pval <- catchPredicate $ do
@@ -1554,15 +1563,15 @@ execFuncPushStack dict exe = do
 ----------------------------------------------------------------------------------------------------
 
 -- | Elements of the symantic data structures that instantiate 'Executable' and do not instantiate
--- 'Dao.PPrint.PPrintable', 'Dao.Struct.St.Structured', or any parsers. Elements of the abstract syntax
--- tree (AST) instantiate 'Dao.PPrint.PPrintable', 'Dao.Struct.St.Structured', and all of the parsers,
+-- 'Dao.PPrint.PPrintable', 'Dao.Struct.Structured', or any parsers. Elements of the abstract syntax
+-- tree (AST) instantiate 'Dao.PPrint.PPrintable', 'Dao.Struct.Structured', and all of the parsers,
 -- but are not executable and do not instantiate 'Executable'. This separates concerns pretty well,
--- but leaves us St.with the problem of having to convert back and forth between these various data
+-- but leaves us with the problem of having to convert back and forth between these various data
 -- types.
 --
 -- The 'Intermediate' class allows us to declare a one-to-one relationship between AST types and
 -- executable types. For example, 'Dao.Object.ObjectExpr' is the intermediate representation of
--- 'AST_Object', so our instance for St.this relationship is @instane 'Intermediate'
+-- 'AST_Object', so our instance for this relationship is @instane 'Intermediate'
 -- 'Dao.Object.ObjectExpr' 'AST_Object'@.
 class Intermediate obj ast | obj -> ast, ast -> obj where
   toInterm   :: ast -> [obj]
@@ -1635,15 +1644,15 @@ getAST = B.get >>= \obj -> case fromInterm obj of
     _     -> fail "binary decoder constructed object that could not be converted to an AST representation"
 
 -- | If there is a type that instantiates 'Intermediate', it can be converted to and from a type
--- that is 'Dao.Struct.St.Structured'.
+-- that is 'Dao.Struct.Structured'.
 putIntermediate :: (Intermediate obj ast, St.Structured ast Object) => String -> obj -> T.Tree Name Object
 putIntermediate typ a = St.deconstruct $ case fromInterm a of
   []  -> return ()
-  [a] -> St.putTree (St.dataToStruct a)
+  [a] -> St.putTree (St.toDaoStruct a)
   _   -> error ("fromInterm returned more than one possible intermediate data structure for "++typ)
 
 -- | If there is a type that instantiates 'Intermediate', it can be converted to and from a type
--- that is 'Dao.Struct.St.Structured'.
+-- that is 'Dao.Struct.Structured'.
 getIntermediate :: (Intermediate obj ast, St.Structured ast Object) => String -> T.Tree Name Object -> Predicate UpdateErr obj
 getIntermediate typ = St.reconstruct $ do
   a <- St.getData
@@ -1672,6 +1681,11 @@ instance NFData Comment where
   rnf (InlineComment  a) = seq a ()
   rnf (EndlineComment a) = seq a ()
 
+instance HasNullValue Comment where
+  nullValue = EndlineComment nil
+  testNull (EndlineComment c) = c==nil
+  testNull (InlineComment  c) = c==nil
+
 instance PPrintable Comment where
   pPrint com = do
     case com of
@@ -1687,8 +1701,15 @@ instance PrecedeWithSpace a => PrecedeWithSpace (Com a) where
     ComAround a b _ -> precedeWithSpace a || precedeWithSpace b
     -- there should always be a space before a comment.
 
+instance ToDaoStructClass Comment Object where
+  toDaoStruct = do
+    renameConstructor "Comment"
+    ask >>= \co -> void $ case co of
+      InlineComment  o -> "inline"  .= o
+      EndlineComment o -> "endline" .= o
+
 instance St.Structured Comment Object where
-  dataToStruct a = St.deconstruct $ case a of
+  toDaoStruct a = St.deconstruct $ case a of
     InlineComment  a -> St.putDataAt "inline"  (obj a)
     EndlineComment a -> St.putDataAt "endline" (obj a)
   structToData = St.reconstruct $ msum $
@@ -1696,6 +1717,12 @@ instance St.Structured Comment Object where
     , fmap EndlineComment (St.getDataAt "endline")
     , fail "must be a comment string or typed comment string"
     ]
+
+instance ObjectClass Comment where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass Comment where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    -- autoDefToStruct >> autoDefFromStruct
 
 instance PPrintable [Comment] where { pPrint = mapM_ pPrint }
 
@@ -1712,8 +1739,10 @@ instance HasRandGen [Comment] where { randO = return [] }
 --    forM (zip typx lenx) $ \ (typ, len) ->
 --      fmap (com typ . ustr . unwords . map (B.unpack . getRandomWord)) (replicateM len randInt)
 
-putComments :: [Comment] -> Update ()
-putComments coms = if null coms then return () else St.putDataAt "comments" coms
+instance ObjectClass [Comment] where { obj=listToObj; fromObj=listFromObj; }
+
+_putComments :: [Comment] -> Update ()
+_putComments coms = if null coms then return () else St.putDataAt "comments" coms
 
 getComments :: Update [Comment]
 getComments = mplus (St.tryGetDataAt "comments") (return [])
@@ -1721,7 +1750,7 @@ getComments = mplus (St.tryGetDataAt "comments") (return [])
 ----------------------------------------------------------------------------------------------------
 
 -- | Symbols in the Dao syntax tree that can actually be manipulated can be surrounded by comments.
--- The 'Com' structure represents a space-efficient means to surround each syntactic element St.with
+-- The 'Com' structure represents a space-efficient means to surround each syntactic element with
 -- comments that can be ignored without disgarding them.
 data Com a = Com a | ComBefore [Comment] a | ComAfter a [Comment] | ComAround [Comment] a [Comment]
   deriving (Eq, Ord, Typeable, Show)
@@ -1751,8 +1780,17 @@ instance HasLocation a => HasLocation (Com a) where
 
 instance PPrintable a => PPrintable (Com a) where { pPrint = pPrintComWith pPrint }
 
+instance (Typeable a, ObjectClass a) => ToDaoStructClass (Com a) Object where
+  toDaoStruct = do
+    renameConstructor "Commented"
+    ask >>= \co -> void $ case co of
+      Com          a    ->                   "data" .= a
+      ComBefore c1 a    -> "before" .= c1 >> "data" .= a
+      ComAfter     a c2 ->                   "data" .= a >> "after" .= c2
+      ComAround c1 a c2 -> "before" .= c1 >> "data" .= a >> "after" .= c2
+
 instance St.Structured a Object => St.Structured (Com a) Object where
-  dataToStruct a = St.deconstruct $ case a of
+  toDaoStruct a = St.deconstruct $ case a of
     Com         c   -> St.putData c
     ComBefore b c   -> St.putData c >> com "before" b
     ComAfter    c a -> St.putData c >> com "after"  a
@@ -1769,6 +1807,16 @@ instance St.Structured a Object => St.Structured (Com a) Object where
       (ax, bx) -> ComAround ax c bx
 
 instance HasRandGen a => HasRandGen (Com a) where { randO = randComWith randO }
+
+instance (Typeable a, ObjectClass a) =>
+  ObjectClass (Com a) where { obj=new; fromObj=objFromHaskellData; }
+instance Typeable a => HaskellDataClass (Com a) where
+  haskellDataInterface = interface (Com $ error "undefined Com") $ do
+    return ()
+    -- autoDefToStruct >> autoDefFromStruct
+
+instance (Typeable a, ObjectClass a) =>
+  ObjectClass [Com a] where { obj=listToObj; fromObj=listFromObj; }
 
 ustrToStruct :: UStrType a => a -> T.Tree Name Object
 ustrToStruct = St.deconstruct . St.place . obj . toUStr
@@ -1910,9 +1958,9 @@ instance PPrintable CodeBlock where { pPrint = pPrintInterm }
 
 instance Executable CodeBlock () where { execute (CodeBlock ox) = mapM_ execute ox }
 
-instance ObjectClass CodeBlock where
-  objectMethods = defObjectInterface nullValue $ do
-    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt >> autoDefPPrinter
+instance HaskellDataClass CodeBlock where
+  haskellDataInterface = interface nullValue $ do
+    autoDefNullTest >> autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt >> autoDefPPrinter
     defDeref $ \o -> catchError (execute o >> return Nothing) $ \e -> case e of
       ExecReturn o -> return o
       ExecError{}  -> throwError e
@@ -1922,7 +1970,7 @@ instance ObjectClass CodeBlock where
 
 -- | A subroutine is contains a 'CodeBlock' and an 'Data.IORef.IORef' to it's own static data. It
 -- also has a reference to the last evaluation of 'execute' over it's 'CodeBlock', which provides a
--- hint to the Haskell runtime system that St.this code can be cached rather than evaluating the
+-- hint to the Haskell runtime system that this code can be cached rather than evaluating the
 -- 'CodeBlock' fresh every time. In a sense, it is a "live" 'CodeBlock' that can actually be
 -- executed.
 data Subroutine
@@ -1955,7 +2003,7 @@ instance Executable Subroutine (Maybe Object) where
   execute sub = local (\x->x{currentCodeBlock=StaticStore(Just sub)}) $
     catchReturn return ((execute (origSourceCode sub) :: Exec ()) >> return Nothing) :: Exec (Maybe Object)
 
--- | Although 'Subroutine' instantiates 'Executable', St.this function allows you to easily St.place a
+-- | Although 'Subroutine' instantiates 'Executable', this function allows you to easily place a
 -- group of defined local variables onto the call stack before and the have the 'Subroutine'
 -- executed.
 runCodeBlock :: T_dict -> Subroutine -> Exec (Maybe Object)
@@ -1965,7 +2013,7 @@ runCodeBlock initStack exe = local (\xunit -> xunit{currentCodeBlock = StaticSto
 ----------------------------------------------------------------------------------------------------
 
 -- | A subroutine is specifically a callable function (but we don't use the name Function to avoid
--- confusion St.with Haskell's "Data.Function"). 
+-- confusion with Haskell's "Data.Function"). 
 data CallableCode
   = CallableCode
     { argsPattern    :: ParamListExpr
@@ -1991,8 +2039,8 @@ instance NFData CallableCode  where { rnf (CallableCode  a b _) = deepseq a $! d
 instance PPrintable CallableCode where 
   pPrint (CallableCode pats ty exe) = ppCallableAction "function" (pPrint pats) ty exe
 
-instance ObjectClass CallableCode where
-  objectMethods = defObjectInterface (CallableCode undefined undefined undefined) $ do
+instance HaskellDataClass CallableCode where
+  haskellDataInterface = interface (CallableCode undefined undefined undefined) $ do
     autoDefNullTest >> autoDefPPrinter
     defCallable (return . return)
 
@@ -2045,7 +2093,7 @@ instance HasLocation AST_CodeBlock where
   setLocation o _ = o
   delLocation o = AST_CodeBlock (fmap delLocation (getAST_CodeBlock o))
 
--- 'pPrintComWith' wasn't good enough for St.this, because the comments might occur after the header
+-- 'pPrintComWith' wasn't good enough for this, because the comments might occur after the header
 -- but before the opening bracket.
 pPrintComCodeBlock :: PPrint -> Com AST_CodeBlock -> PPrint
 pPrintComCodeBlock header c = case c of
@@ -2066,8 +2114,13 @@ pPrintSubBlock header px = pPrintComCodeBlock header (Com px)
 
 instance PPrintable AST_CodeBlock where { pPrint o = mapM_ pPrint (getAST_CodeBlock o) }
 
+instance ToDaoStructClass AST_CodeBlock Object where
+  toDaoStruct = void $ do
+    renameConstructor "CodeBlock"
+    "block" .=@ getAST_CodeBlock
+
 instance St.Structured AST_CodeBlock Object where
-  dataToStruct a = St.deconstruct (St.putDataAt "block" (getAST_CodeBlock a))
+  toDaoStruct a = St.deconstruct (St.putDataAt "block" (getAST_CodeBlock a))
   structToData = St.reconstruct (fmap AST_CodeBlock (St.getDataAt "block"))
 
 instance HasRandGen AST_CodeBlock where { randO = countNode $ fmap AST_CodeBlock (randList 0 30) }
@@ -2076,13 +2129,19 @@ instance Intermediate CodeBlock AST_CodeBlock where
   toInterm   (AST_CodeBlock ast) = return $ CodeBlock     (ast >>= toInterm  )
   fromInterm (CodeBlock     obj) = return $ AST_CodeBlock (obj >>= fromInterm)
 
+instance ObjectClass AST_CodeBlock where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_CodeBlock where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct -- >> autoDefFromStruct
+
 ----------------------------------------------------------------------------------------------------
 
 -- | Functions and function parameters can specify optional type-checking expressions. This is a
--- data type that wraps a dao-typeable expression St.with type information.
+-- data type that wraps a dao-typeable expression with type information.
 data TyChkExpr a
   = NotTypeChecked{tyChkItem::a}
-    -- ^ no type information was specified for St.this item
+    -- ^ no type information was specified for this item
   | TypeChecked   {tyChkItem::a, tyChkExpr::ArithExpr, tyChkLoc::Location}
     -- ^ type check information was specified and should be checked every time it is evaluated.
   | DisableCheck  {tyChkItem::a, tyChkExpr::ArithExpr, typChkResult::Object, tyChkLoc::Location}
@@ -2148,7 +2207,7 @@ instance B.Binary a MTab => B.HasPrefixTable (TyChkExpr a) B.Byte MTab where
 ----------------------------------------------------------------------------------------------------
 
 -- | This node can be found in a few different syntactic structures. When a name or function or
--- expression is followed by a colon and some type checking information, St.this node is used for that
+-- expression is followed by a colon and some type checking information, this node is used for that
 -- purpose.
 data AST_TyChk a
   = AST_NotChecked a
@@ -2185,8 +2244,17 @@ instance PPrintable a => PPrintable (AST_TyChk a) where
       , pPrint expr
       ]
 
+instance ObjectClass a => ToDaoStructClass (AST_TyChk a) Object where
+  toDaoStruct = ask >>= \o -> renameConstructor "TypeChecked" >> case o of
+    AST_NotChecked o              -> void $ define "data" (obj o)
+    AST_Checked    o coms typ loc -> do
+      define "data" (obj o)
+      "colon"    .= coms
+      "typeExpr" .= typ
+      putLocation loc
+
 instance St.Structured a Object => St.Structured (AST_TyChk a) Object where
-  dataToStruct o = St.deconstruct $ case o of
+  toDaoStruct o = St.deconstruct $ case o of
     AST_NotChecked o              -> St.putData o
     AST_Checked    o coms obj loc -> St.putData o >> St.putDataAt "colon" coms >> St.putDataAt "typeExpr" obj >> St.putData loc
   structToData   = St.reconstruct $ msum $
@@ -2206,6 +2274,13 @@ instance HasLocation a => HasLocation (AST_TyChk a) where
 instance HasRandGen a => HasRandGen (AST_TyChk a) where
   randO = countNode $ AST_NotChecked <$> randO
   --randChoice = randChoiceList [AST_NotChecked <$> randO, pure AST_Checked <*> randO <*> randO <*> randO <*> no]
+
+instance (Eq a, Ord a, PPrintable a, Typeable a, ObjectClass a) =>
+  ObjectClass (AST_TyChk a) where { obj=new; fromObj=objFromHaskellData; }
+instance (Eq a, Ord a, PPrintable a, Typeable a) => HaskellDataClass (AST_TyChk a) where
+  haskellDataInterface = interface (AST_NotChecked $ error "undefined AST_TyChk") $ do
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
+    -- autoDefToStruct >> autoDefFromStruct
 
 tyChkToInterm :: Intermediate a b => AST_TyChk b -> [TyChkExpr a]
 tyChkToInterm a = case a of
@@ -2287,11 +2362,19 @@ instance PPrintable AST_Param where
 instance PPrintable [Com AST_Param] where
   pPrint lst = pList_ "(" ", " ")" (fmap pPrint lst)
 
-instance St.Structured AST_Param  Object where
-  dataToStruct o = St.deconstruct $ case o of
+instance ToDaoStructClass AST_Param Object where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_NoParams             -> return ()
+    AST_Param coms tychk loc -> do
+      maybe (return ()) putComments coms
+      "typeCheck" .= tychk
+      putLocation loc
+
+instance St.Structured AST_Param Object where
+  toDaoStruct o = St.deconstruct $ case o of
     AST_NoParams          -> St.place ONull
     AST_Param coms nm loc -> do
-      St.with "passByRef" (maybe (St.place ONull) (putComments >=> \ () -> St.place OTrue) coms)
+      St.with "passByRef" (maybe (St.place ONull) (_putComments >=> \ () -> St.place OTrue) coms)
       St.putData nm >> St.putData loc
   structToData = St.reconstruct $ msum $
     [ let getfn = St.this >>= \o -> case o of
@@ -2319,6 +2402,12 @@ instance Intermediate ParamExpr AST_Param where
 instance Intermediate [ParamExpr] [Com AST_Param] where
   toInterm   ax = [ax >>= toInterm . unComment]
   fromInterm ax = [ax >>= fmap Com . fromInterm]
+
+instance ObjectClass AST_Param where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_Param where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    -- autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2373,8 +2462,15 @@ instance HasLocation AST_ParamList where
 instance PPrintable AST_ParamList where
   pPrint (AST_ParamList lst _) = pInline [pPrint lst]
 
+instance ToDaoStructClass AST_ParamList Object where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_ParamList tychk loc -> do
+      renameConstructor "ParamList"
+      "typeCheck" .= tychk
+      putLocation loc
+
 instance St.Structured AST_ParamList  Object where
-  dataToStruct (AST_ParamList lst loc) = St.deconstruct $ St.putData lst >> St.putData loc
+  toDaoStruct (AST_ParamList lst loc) = St.deconstruct $ St.putData lst >> St.putData loc
   structToData = St.reconstruct $ liftM2 AST_ParamList St.getData St.getData
 
 instance HasRandGen AST_ParamList where { randO = countNode $ pure AST_ParamList <*> randO <*> no }
@@ -2382,6 +2478,12 @@ instance HasRandGen AST_ParamList where { randO = countNode $ pure AST_ParamList
 instance Intermediate ParamListExpr AST_ParamList where
   toInterm   (AST_ParamList ox loc) = liftM2 ParamListExpr (tyChkToInterm ox) [loc]
   fromInterm (ParamListExpr ox loc) = liftM2 AST_ParamList (tyChkFromInterm ox) [loc]
+
+instance ObjectClass AST_ParamList where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_ParamList where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct -- >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2441,8 +2543,17 @@ instance PPrintable AST_StringList where
     AST_StringList [r]  _ -> pInline [pString "rule ", pPrint r]
     AST_StringList ruls _ -> pList (pString "rule") "(" ", " ")" (fmap pPrint ruls)
 
+instance ToDaoStructClass AST_StringList Object where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_NoStrings coms loc -> do
+      renameConstructor "NoStrings"
+      putComments coms >> putLocation loc
+    AST_StringList lst loc -> do
+      renameConstructor "StringList"
+      "items" .= lst >> putLocation loc
+
 instance St.Structured AST_StringList Object where
-  dataToStruct o = St.deconstruct $ case o of
+  toDaoStruct o = St.deconstruct $ case o of
     AST_NoStrings  coms loc -> St.place ONull >> St.putData coms >> St.putData loc
     AST_StringList strs loc -> St.putData strs >> St.putData loc
   structToData   = St.reconstruct $ St.this >>= \o -> case o of
@@ -2464,10 +2575,16 @@ instance Intermediate RuleStrings AST_StringList where
     RuleStrings [] loc -> liftM2 AST_NoStrings  [[]]         [loc]
     RuleStrings o  loc -> liftM2 AST_StringList [fmap Com o] [loc]
 
+instance ObjectClass AST_StringList where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_StringList where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    -- autoDefToStruct >> autoDefFromStruct
+
 ----------------------------------------------------------------------------------------------------
 
 -- $Exec_helpers
--- Functions for working St.with object values when building built-in functions callable from within a
+-- Functions for working with object values when building built-in functions callable from within a
 -- dao script.
 
 asReference :: Object -> Exec QualRef
@@ -2790,6 +2907,14 @@ instance B.HasPrefixTable UpdateOp B.Byte MTab where
 instance HasRandGen UpdateOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::UpdateOp)))
 
+instance ToDaoStructClass UpdateOp Object where { toDaoStruct = putNullaryUsingShow }
+
+instance ObjectClass UpdateOp where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass UpdateOp where
+  haskellDataInterface = interface UCONST $ do
+    autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt
+    -- autoDefToStruct >> autoDefFromStruct
+
 ----------------------------------------------------------------------------------------------------
 
 data RefPfxOp = REF | DEREF deriving (Eq, Ord, Typeable, Enum, Ix, Bounded, Show)
@@ -2817,6 +2942,14 @@ instance B.HasPrefixTable RefPfxOp B.Byte MTab where
 
 instance HasRandGen RefPfxOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::RefPfxOp)))
+
+instance ToDaoStructClass RefPfxOp Object where { toDaoStruct = putNullaryUsingShow }
+
+instance ObjectClass RefPfxOp where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass RefPfxOp where
+  haskellDataInterface = interface REF $ do
+    autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt
+    -- autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2851,6 +2984,14 @@ instance B.HasPrefixTable ArithPfxOp B.Byte MTab where
 
 instance HasRandGen ArithPfxOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::ArithPfxOp)))
+
+instance ToDaoStructClass ArithPfxOp Object where { toDaoStruct = putNullaryUsingShow }
+
+instance ObjectClass ArithPfxOp where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass ArithPfxOp where
+  haskellDataInterface = interface POSTIV $ do
+    autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt
+    -- autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2905,9 +3046,9 @@ instance NFData InfixOp  where { rnf a = seq a () }
 
 instance PPrintable InfixOp  where { pPrint = pUStr . toUStr }
 
--- The byte prefixes overlap St.with the update operators of similar function to
+-- The byte prefixes overlap with the update operators of similar function to
 -- the operators, except for the comparison opeators (EQUL, NEQUL, GTN, LTN,
--- GTEQ, LTEQ) which overlap St.with the prefix operators (INVB, NOT, NEGTIV, POSTIV, REF, DEREF)
+-- GTEQ, LTEQ) which overlap with the prefix operators (INVB, NOT, NEGTIV, POSTIV, REF, DEREF)
 instance B.Binary InfixOp MTab where
   put o = B.putWord8 $ case o of
     { EQUL -> 0x5A; NEQUL -> 0x5B; GTN -> 0x5C; LTN -> 0x5D; GTEQ -> 0x5E; LTEQ -> 0x5F
@@ -2926,6 +3067,14 @@ instance B.HasPrefixTable InfixOp B.Byte MTab where
 
 instance HasRandGen InfixOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::InfixOp)))
+
+instance ToDaoStructClass InfixOp Object where { toDaoStruct=putNullaryUsingShow; }
+
+instance ObjectClass InfixOp where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass InfixOp where
+  haskellDataInterface = interface ADD $ do
+    autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt
+    -- autoDefToStruct >> autoDefFromStruct
 
 allInfixOpChars :: String
 allInfixOpChars = "+-*/%<>^&|."
@@ -2955,7 +3104,7 @@ instance Read TopLevelEventType where
 instance NFData TopLevelEventType where { rnf a = seq a () }
 
 instance St.Structured TopLevelEventType  Object where
-  dataToStruct a = St.deconstruct $ St.place $ obj $ case a of
+  toDaoStruct a = St.deconstruct $ St.place $ obj $ case a of
     BeginExprType -> "BEGIN"
     EndExprType   -> "END"
     ExitExprType  -> "EXIT"
@@ -2968,6 +3117,14 @@ instance St.Structured TopLevelEventType  Object where
 
 instance HasRandGen TopLevelEventType where
   randO = fmap toEnum (nextInt 3)
+
+instance ToDaoStructClass TopLevelEventType Object where { toDaoStruct=putNullaryUsingShow; }
+
+instance ObjectClass TopLevelEventType where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass TopLevelEventType where
+  haskellDataInterface = interface BeginExprType $ do
+    autoDefEquality >> autoDefOrdering
+    -- autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3049,10 +3206,10 @@ requireAllStringArgs ox = case mapM check (zip (iterate (+(1::Integer)) 0) ox) o
 -- | Given an object, if it is a string return the string characters. If it not a string,
 -- depth-recurse into it and extract strings, or if there is an object into which recursion is not
 -- possible, pretty-print the object and return the pretty-printed string. The first integer
--- parameter is a depth limit, if recursion into the object exceeds St.this limit, recursion no longer
+-- parameter is a depth limit, if recursion into the object exceeds this limit, recursion no longer
 -- steps into these objects, the strings returned are the pretty-printed representation of the
 -- objects. A pair of 'Data.Either.Either's are returned, references are 'Data.Either.Left',
--- 'Prelude.String's are 'Data.Either.Right'. References are accompanied St.with their depth so you can
+-- 'Prelude.String's are 'Data.Either.Right'. References are accompanied with their depth so you can
 -- choose whether or not you want to dereference or pretty-print them.
 getStringsToDepth :: Int -> Object -> [Either (Int, QualRef) String]
 getStringsToDepth maxDepth o = loop (0::Int) maxDepth o where
@@ -3067,8 +3224,8 @@ getStringsToDepth maxDepth o = loop (0::Int) maxDepth o where
           else  ox >>= loop (depth+1) (if remDep>0 then remDep-1 else remDep)
 
 -- | Calls 'getStringsToDepth' and dereferences all 'Data.Either.Left' values below a depth limit,
--- St.this depth limit is specified by the first argument to St.this function. The second and third
--- argument to St.this function are passed directly to 'getStringsToDepth'. Pass a handler to handle
+-- this depth limit is specified by the first argument to this function. The second and third
+-- argument to this function are passed directly to 'getStringsToDepth'. Pass a handler to handle
 -- references that are undefined.
 derefStringsToDepth :: (QualRef -> Object -> Exec [String]) -> Int -> Int -> Object -> Exec [String]
 derefStringsToDepth handler maxDeref maxDepth o =
@@ -3105,8 +3262,8 @@ recurseGetAllStrings o = catch (loop [] o) where
 ----------------------------------------------------------------------------------------------------
 
 -- | All functions that are built-in to the Dao language, or built-in to a library extending the Dao
--- language, are stored in 'Data.Map.Map's from the functions name to an object of St.this type.
--- Functions of St.this type are called by 'evalObject' to evaluate expressions written in the Dao
+-- language, are stored in 'Data.Map.Map's from the functions name to an object of this type.
+-- Functions of this type are called by 'evalObject' to evaluate expressions written in the Dao
 -- language.
 data DaoFunc = DaoFunc { autoDerefParams :: Bool, daoForeignCall :: [Object] -> Exec (Maybe Object) }
 
@@ -3154,7 +3311,7 @@ builtin_delete = DaoFunc True $ \args -> do
     _      -> return ()
   return (Just ONull)
 
--- | Evaluate St.this function as one of the instructions in the monadic function passed to the
+-- | Evaluate this function as one of the instructions in the monadic function passed to the
 -- 'setupDao' function in order to install the most fundamental functions into the Dao evaluator.
 -- This function must be evaluated in order to have access to the following functions:
 -- > print, join, defined, delete
@@ -3283,7 +3440,7 @@ execGuardBlock :: [ScriptExpr] -> Exec ()
 execGuardBlock block = void (execFuncPushStack M.empty (mapM_ execute block >> return Nothing) >> return ())
 
 -- | Dereferences the give 'QualRef' and checks if the 'Object' returned has defined a calling
--- routine using 'defCallable' in it's 'objectMethods' table.
+-- routine using 'defCallable' in it's 'haskellDataInterface' table.
 callFunction :: QualRef -> ObjListExpr -> Exec (Maybe Object)
 callFunction qref params = do
   o <- execute qref
@@ -3310,7 +3467,7 @@ callFunction qref params = do
 
 ----------------------------------------------------------------------------------------------------
 
-data AST_Ref = AST_RefNull | AST_Ref  Name [Com Name] Location deriving (Eq, Ord, Typeable, Show)
+data AST_Ref = AST_RefNull | AST_Ref Name [Com Name] Location deriving (Eq, Ord, Typeable, Show)
 
 astRef :: [Name] -> AST_Ref
 astRef nx = if null nx then AST_RefNull else AST_Ref (head nx) (map Com (tail nx)) LocationUnknown
@@ -3346,8 +3503,13 @@ instance NFData AST_Ref where
   rnf  AST_RefNull    = ()
   rnf (AST_Ref a b c) = deepseq a $! deepseq b $! deepseq c ()
 
+instance ToDaoStructClass AST_Ref Object where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_RefNull -> makeNullary "Ref"
+    AST_Ref nm nms loc -> "head" .= nm >> "tail" .= nms >> putLocation loc
+
 instance St.Structured AST_Ref Object where
-  dataToStruct a = St.deconstruct $ case a of
+  toDaoStruct a = St.deconstruct $ case a of
     AST_RefNull          -> St.place ONull
     AST_Ref r comref loc -> St.putData r >>
       St.with "refExpr" (putListWith St.putData comref >> St.putData loc)
@@ -3368,6 +3530,12 @@ instance Intermediate RefExpr AST_Ref where
   fromInterm (RefExpr (Reference nx) _) = case nx of
     []   -> [AST_RefNull]
     n:nx -> [AST_Ref n (fmap Com nx) LocationUnknown]
+
+instance ObjectClass AST_Ref where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_Ref where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
+    -- autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3413,10 +3581,19 @@ instance PPrintable AST_QualRef where
     AST_Unqualified     r   -> pPrint r
     AST_Qualified q com r _ -> pInline [pPrint q, pString " ", pPrint com, pPrint r]
 
+instance ToDaoStructClass AST_QualRef Object where
+  toDaoStruct = renameConstructor "QualRef" >> ask >>= \o -> case o of
+    AST_Unqualified r -> void $ "ref" .= r
+    AST_Qualified q coms r loc -> do
+      "qualifier" .= q
+      putComments coms
+      "ref"       .= r
+      putLocation loc
+
 instance St.Structured AST_QualRef Object where
-  dataToStruct ref = St.deconstruct $ case ref of
+  toDaoStruct ref = St.deconstruct $ case ref of
     AST_Qualified q com ref loc -> do
-      let qref addr = St.with addr $ putComments com >> St.putData ref >> St.putData loc
+      let qref addr = St.with addr $ _putComments com >> St.putData ref >> St.putData loc
       qref $ case q of
         LOCAL  -> "local"
         GLODOT -> "globalDot"
@@ -3471,7 +3648,7 @@ errAt loc = case loc of
 --     This function should be used for cases when you have converted 'Dao.Object.Object' to a
 -- Haskell value, because 'Backtrack' values indicate type exceptions, and 'PFail' values indicate a
 -- value error (e.g. out of bounds, or some kind of assert exception), and the messages passed to
--- 'procErr' will indicate St.this.
+-- 'procErr' will indicate this.
 checkPredicate :: String -> [Object] -> Exec a -> Exec a
 checkPredicate altmsg tried f = do
   pval <- catchPredicate f
@@ -3487,10 +3664,10 @@ checkPredicate altmsg tried f = do
               Nothing         -> obj tried
          }
 
--- | 'evalObjectExprExpr' can return 'Data.Maybe.Nothing', and usually St.this happens when something has
+-- | 'evalObjectExprExpr' can return 'Data.Maybe.Nothing', and usually this happens when something has
 -- failed (e.g. reference lookups), but it is not always an error (e.g. a void list of argument to
 -- functions). If you want 'Data.Maybe.Nothing' to cause an error, evaluate your
--- @'Dao.Object.Exec' ('Data.Maybe.Maybe' 'Dao.Object.Object')@ as a parameter to St.this function.
+-- @'Dao.Object.Exec' ('Data.Maybe.Maybe' 'Dao.Object.Object')@ as a parameter to this function.
 checkVoid :: Location -> String -> Maybe a -> Exec a
 checkVoid loc msg fn = case fn of
   Nothing -> execThrow $ obj $ errAt loc ++ [obj msg, obj "evaluates to a void"]
@@ -3527,6 +3704,12 @@ instance B.HasPrefixTable ParenExpr B.Byte MTab where
 
 instance Executable ParenExpr (Maybe Object) where { execute (ParenExpr a _) = execute a }
 
+instance ObjectClass ParenExpr where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass ParenExpr where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
+    -- autoDefToStruct >> autoDefFromStruct
+
 ----------------------------------------------------------------------------------------------------
 
 data AST_Paren = AST_Paren (Com AST_Assign) Location deriving (Eq, Ord, Typeable, Show)
@@ -3549,11 +3732,21 @@ instance Intermediate ParenExpr AST_Paren where
   toInterm   (AST_Paren o loc) = liftM2 ParenExpr (uc0 o) [loc]
   fromInterm (ParenExpr o loc) = liftM2 AST_Paren (nc0 o) [loc]
 
-instance St.Structured AST_Paren  Object where
-  dataToStruct (AST_Paren a loc) = St.deconstruct $ St.with "paren" $ St.putData a >> St.putData loc
+instance ToDaoStructClass AST_Paren Object where
+  toDaoStruct = renameConstructor "Paren" >> ask >>= \o -> case o of
+    AST_Paren paren loc -> "inside" .= paren >> putLocation loc
+
+instance St.Structured AST_Paren Object where
+  toDaoStruct (AST_Paren a loc) = St.deconstruct $ St.with "paren" $ St.putData a >> St.putData loc
   structToData = St.reconstruct $ St.with "paren" $ pure AST_Paren <*> St.getData <*> St.getData
 
-instance HasRandGen AST_Paren  where { randO = recurse nullValue $ pure AST_Paren <*> randO <*> no }
+instance HasRandGen AST_Paren where { randO = recurse nullValue $ pure AST_Paren <*> randO <*> no }
+
+instance ObjectClass AST_Paren where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_Paren where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    -- autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3580,11 +3773,16 @@ instance Executable IfExpr Bool where
   execute (IfExpr ifn thn _) = execNested M.empty $
     evalConditional ifn >>= \test -> when test (execute thn) >> return test
 
+instance ObjectClass IfExpr where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass IfExpr where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
+
 ----------------------------------------------------------------------------------------------------
 
 data AST_If = AST_If (Com AST_Paren) AST_CodeBlock Location deriving (Eq, Ord, Typeable, Show)
 
-instance NFData AST_If where { rnf (AST_If     a b c) = deepseq a $! deepseq b $! deepseq c () }
+instance NFData AST_If where { rnf (AST_If a b c) = deepseq a $! deepseq b $! deepseq c () }
 
 instance HasLocation AST_If where
   getLocation (AST_If _ _ loc)     = loc
@@ -3599,8 +3797,12 @@ instance PPrintable AST_If where
   pPrint (AST_If ifn thn _) =
     pClosure (pString "if" >> pPrint ifn) "{" "}" [pPrint thn]
 
+instance ToDaoStructClass AST_If Object where
+  toDaoStruct = renameConstructor "Conditional" >> ask >>= \o -> case o of
+    AST_If ifn thn loc -> "condition" .= ifn >> "action" .= thn >> putLocation loc
+
 instance St.Structured AST_If Object where
-  dataToStruct (AST_If ifn thn loc) = St.deconstruct $
+  toDaoStruct (AST_If ifn thn loc) = St.deconstruct $
     St.with "ifExpr" $ St.putData ifn >> St.putDataAt "then" thn >> St.putData loc
   structToData = St.reconstruct $ St.with "ifExpr" $ liftM3 AST_If St.getData (St.getDataAt "then") St.getData
 
@@ -3609,6 +3811,12 @@ instance HasRandGen AST_If where { randO = countNode $ pure AST_If <*> randO <*>
 instance Intermediate IfExpr AST_If where
   toInterm   (AST_If a b loc) = liftM3 IfExpr (uc0 a) (ti  b) [loc]
   fromInterm (IfExpr a b loc) = liftM3 AST_If (nc0 a) (fi  b) [loc]
+
+instance ObjectClass AST_If where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_If where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct -- >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3631,12 +3839,17 @@ instance B.Binary ElseExpr MTab where
 
 instance Executable ElseExpr Bool where { execute (ElseExpr ifn _) = execute ifn }
 
+instance ObjectClass ElseExpr where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass ElseExpr where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
+
 ----------------------------------------------------------------------------------------------------
 
 data AST_Else = AST_Else (Com ()) AST_If Location deriving (Eq, Ord, Typeable, Show)
   -- ^ @/**/ else /**/ if /**/ obj /**/ {}@
 
-instance NFData AST_Else where { rnf (AST_Else   a b c) = deepseq a $! deepseq b $! deepseq c () }
+instance NFData AST_Else where { rnf (AST_Else a b c) = deepseq a $! deepseq b $! deepseq c () }
 
 instance HasNullValue AST_Else where
   nullValue = AST_Else nullValue nullValue LocationUnknown
@@ -3651,8 +3864,13 @@ instance PPrintable AST_Else where
   pPrint (AST_Else coms (AST_If ifn thn _) _) =
     pClosure (pPrintComWith (\ () -> pString "else ") coms >> pString "if" >> pPrint ifn) "{" "}" [pPrint thn]
 
-instance St.Structured AST_Else  Object where
-  dataToStruct (AST_Else coms ifn loc) = St.deconstruct $
+instance ToDaoStructClass AST_Else Object where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_Else coms ifn loc ->
+      renameConstructor "ElseIf" >> "comments" .= coms >> "test" .= ifn >> putLocation loc
+
+instance St.Structured AST_Else Object where
+  toDaoStruct (AST_Else coms ifn loc) = St.deconstruct $
     St.with "elseIfExpr" $ St.putData coms >> St.putData ifn >> St.putData loc
   structToData = St.reconstruct $ St.with "elseIfExpr" $ liftM3 AST_Else St.getData St.getData St.getData
 
@@ -3661,6 +3879,12 @@ instance HasRandGen AST_Else where { randO = countNode $ pure AST_Else <*> randO
 instance Intermediate ElseExpr AST_Else where
   toInterm   (AST_Else _ a loc) = liftM2 ElseExpr          (ti  a) [loc]
   fromInterm (ElseExpr   a loc) = liftM3 AST_Else [Com ()] (fi  a) [loc]
+
+instance ObjectClass AST_Else where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_Else where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct -- >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3698,6 +3922,11 @@ instance Executable IfElseExpr () where
                  if ok then return Nothing
                        else return final) >>= maybe (return ()) execute
 
+instance ObjectClass IfElseExpr where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass IfElseExpr where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
+
 ----------------------------------------------------------------------------------------------------
 
 data AST_IfElse = AST_IfElse AST_If [AST_Else] (Com ()) (Maybe AST_CodeBlock) Location
@@ -3725,8 +3954,16 @@ instance PPrintable AST_IfElse where
       Nothing    -> return ()
       Just deflt -> pClosure (pPrintComWith (\ () -> pString "else") coms) "{" "}" [pPrint deflt]
 
+instance ToDaoStructClass AST_IfElse Object where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_IfElse ifn els coms block loc -> do
+      renameConstructor "If"
+      "test" .= ifn >> "alt" .= (listToObj els) >> "comments" .= coms
+      maybe (return ()) (void . defObjField "finalElse") block
+      putLocation loc
+
 instance St.Structured AST_IfElse  Object where
-  dataToStruct (AST_IfElse ifn els coms deflt loc) = St.deconstruct $ St.with "ifExpr" $
+  toDaoStruct (AST_IfElse ifn els coms deflt loc) = St.deconstruct $ St.with "ifExpr" $
     St.putData ifn >> putListWith St.putData els >> St.putData coms >> maybe (return ()) (St.putDataAt "elseExpr") deflt >> St.putData loc
   structToData = St.reconstruct $ St.with "ifExpr" $
     liftM5 AST_IfElse St.getData (getListWith St.getData) St.getData (optional (St.getDataAt "elseExpr")) St.getData
@@ -3736,6 +3973,12 @@ instance HasRandGen AST_IfElse where { randO = countNode $ pure AST_IfElse <*> r
 instance Intermediate IfElseExpr AST_IfElse where
   toInterm   (AST_IfElse a b _ c loc) = liftM4 IfElseExpr (ti  a) [b>>=ti]          (um1 c) [loc]
   fromInterm (IfElseExpr a b   c loc) = liftM5 AST_IfElse (fi  a) [b>>=fi] [Com ()] (nm1 c) [loc]
+
+instance ObjectClass AST_IfElse where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_IfElse where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct -- >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3762,6 +4005,11 @@ instance B.HasPrefixTable WhileExpr B.Byte MTab where
 instance Executable WhileExpr () where
   execute (WhileExpr ifn) = let loop = execute ifn >>= flip when loop in loop
 
+instance ObjectClass WhileExpr where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass WhileExpr where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
+
 ----------------------------------------------------------------------------------------------------
 
 newtype AST_While = AST_While AST_If deriving (Eq, Ord, Typeable, Show)
@@ -3785,13 +4033,22 @@ instance Intermediate WhileExpr AST_While where
   toInterm   (AST_While a) = liftM WhileExpr (ti a)
   fromInterm (WhileExpr a) = liftM AST_While (fi a)
 
+instance ToDaoStructClass AST_While Object where
+  toDaoStruct = ask >>= \ (AST_While o) -> innerToStruct o >> renameConstructor "While"
+
 instance St.Structured AST_While  Object where
-  dataToStruct (AST_While (AST_If ifn thn loc)) = St.deconstruct $ St.with "whileExpr" $
+  toDaoStruct (AST_While (AST_If ifn thn loc)) = St.deconstruct $ St.with "whileExpr" $
     St.putData ifn >> St.putDataAt "script" thn >> St.putData loc
   structToData = St.reconstruct $ St.with "whileExpr" $
     liftM3 (\a b c -> AST_While (AST_If a b c)) St.getData (St.getDataAt "script") St.getData
 
 instance HasRandGen AST_While  where { randO = AST_While <$> randO }
+
+instance ObjectClass AST_While where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_While where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct -- >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3865,7 +4122,7 @@ script_intrm :: String
 script_intrm = "script intermedaite node"
 
 instance St.Structured ScriptExpr  Object where
-  dataToStruct = putIntermediate script_intrm
+  toDaoStruct = putIntermediate script_intrm
   structToData = getIntermediate script_intrm
 
 instance B.Binary ScriptExpr MTab where
@@ -3995,6 +4252,11 @@ instance Executable ScriptExpr () where
               , obj "has no method of being used in a \"with\" statement, value is", o
               ]
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+
+instance ObjectClass ScriptExpr where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass ScriptExpr where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4136,13 +4398,36 @@ instance PPrintable AST_Script where
     AST_WithDoc      cObjXp               xcScrpXp  _ ->
       pPrintSubBlock (pString "with " >> pPrint cObjXp) xcScrpXp
 
+instance ToDaoStructClass AST_Script Object where
+  toDaoStruct = let nm = renameConstructor in ask >>= \o -> case o of
+    AST_Comment      a         -> nm "Comment" >> putComments a
+    AST_IfThenElse   a         -> innerToStruct a
+    AST_WhileLoop    a         -> innerToStruct a
+    AST_RuleFunc     a         -> innerToStruct a
+    AST_EvalObject   a b   loc -> nm "ObjectExpr" >> "expr" .= a >> putComments b >> putLocation loc
+    AST_TryCatch     a b c loc -> do
+      nm "TryCatch" >> "tryBlock" .= a
+      maybe (return ()) (void . defObjField "varName") b
+      maybe (return ()) (void . defObjField "catchBlock") c
+      putLocation loc
+    AST_ForLoop      a b c loc -> do
+      nm "ForLoop" >> "varName" .= a >> "iterate" .= b >> "block" .= c
+      putLocation loc
+    AST_ContinueExpr a b c loc -> do
+      nm (if a then "Continue" else "Break")
+      putComments b >> "condition" .= c >> putLocation loc
+    AST_ReturnExpr   a b   loc -> do
+      nm (if a then "Return" else "Throw")
+      "expr" .= b >> putLocation loc
+    AST_WithDoc      a b   loc -> nm "WithDoc" >> "expr" .= a >> "block" .= b >> putLocation loc
+
 instance St.Structured AST_Script Object where
-  dataToStruct a = St.deconstruct $ case a of
-    AST_Comment      a         -> putComments a
-    AST_EvalObject   a b   loc -> St.with "equation"  $  St.putData a >> putComments           b                                      >> St.putData loc
+  toDaoStruct a = St.deconstruct $ case a of
+    AST_Comment      a         -> _putComments a
+    AST_EvalObject   a b   loc -> St.with "equation"  $  St.putData a >> _putComments           b                                      >> St.putData loc
     AST_TryCatch     a b c loc -> St.with "tryExpr"   $  St.putData a >> St.putMaybeAt "varName"  b >> St.putMaybeAt "catchBlock" c         >> St.putData loc
     AST_ForLoop      a b c loc -> St.with "forExpr"   $  St.putDataAt "varName"   a >> St.putDataAt "iterator" b >> St.putDataAt "script" c >> St.putData loc
-    AST_ContinueExpr a b c loc -> St.with (if a then "continueExpr" else "breakExpr") $ putComments b      >> St.putData c            >> St.putData loc
+    AST_ContinueExpr a b c loc -> St.with (if a then "continueExpr" else "breakExpr") $ _putComments b      >> St.putData c            >> St.putData loc
     AST_ReturnExpr   a b   loc -> St.with (if a then "returnExpr"   else "throwExpr") $ St.putData     b                              >> St.putData loc
     AST_WithDoc      a b   loc -> St.with "withExpr"  $  St.putDataAt  "reference" a >> St.putDataAt "script"   b                        >> St.putData loc
     AST_IfThenElse   a         -> St.putData a
@@ -4181,7 +4466,7 @@ instance HasRandGen AST_Script where
     , pure AST_WithDoc      <*> randO <*> randO <*> no
     ]
 
-instance PPrintable ScriptExpr  where { pPrint = pPrintInterm }
+instance PPrintable ScriptExpr where { pPrint = pPrintInterm }
 
 instance Intermediate ScriptExpr AST_Script where
   toInterm   ast = case ast of
@@ -4205,6 +4490,14 @@ instance Intermediate ScriptExpr AST_Script where
     ContinueExpr a b   loc -> liftM4 AST_ContinueExpr [a]     [[]]    (nc0 b) [loc]
     ReturnExpr   a b   loc -> liftM3 AST_ReturnExpr   [a]     (nc0 b)         [loc]
     WithDoc      a b   loc -> liftM3 AST_WithDoc      (nc0 a) (fi  b)         [loc]
+
+instance ObjectClass [AST_Script] where { obj=listToObj; fromObj=listFromObj; }
+
+instance ObjectClass AST_Script where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_Script where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    -- autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4242,9 +4535,10 @@ instance Executable ObjListExpr [Object] where
 
 instance PPrintable ObjListExpr where { pPrint = pPrintInterm }
 
-instance ObjectClass ObjListExpr where
-  objectMethods = defObjectInterface nullValue $ do
-    autoDefNullTest >> autoDefEquality >> autoDefOrdering >> autoDefPPrinter
+instance ObjectClass ObjListExpr where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass ObjListExpr where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4276,8 +4570,13 @@ instance PPrintable AST_ObjList where
 
 instance NFData AST_ObjList where { rnf (AST_ObjList a b c) = deepseq a $! deepseq b $! deepseq c () }
 
+instance ToDaoStructClass AST_ObjList Object where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_ObjList coms lst loc -> renameConstructor "ObjectList" >>
+      putComments coms >> defObjField "items" (listToObj lst) >> putLocation loc
+
 instance St.Structured AST_ObjList  Object where
-  dataToStruct (AST_ObjList coms lst loc) = St.deconstruct $ St.with "objList" (putComments coms >> St.putData lst >> St.putData loc)
+  toDaoStruct (AST_ObjList coms lst loc) = St.deconstruct $ St.with "objList" (_putComments coms >> St.putData lst >> St.putData loc)
   structToData = St.reconstruct $ St.with "objList" (pure AST_ObjList <*> getComments <*> St.getData <*> St.getData)
 
 instance HasRandGen AST_ObjList where
@@ -4286,6 +4585,12 @@ instance HasRandGen AST_ObjList where
 instance Intermediate ObjListExpr AST_ObjList where
   toInterm   (AST_ObjList _ lst loc) = liftM2 ObjListExpr      [lst>>=uc0] [loc]
   fromInterm (ObjListExpr   lst loc) = liftM3 AST_ObjList [[]] [lst>>=nc0] [loc]
+
+instance ObjectClass AST_ObjList where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_ObjList where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct -- >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4309,6 +4614,11 @@ instance B.Binary OptObjListExpr MTab where
 
 instance Executable OptObjListExpr [Object] where
   execute (OptObjListExpr lst) = maybe (return []) execute lst
+
+instance ObjectClass OptObjListExpr where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass OptObjListExpr where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 -- | Evaluate an 'Exec', but if it throws an exception, set record an 'Dao.Object.ObjectExpr' where
 -- the exception occurred in the exception information.
@@ -4340,17 +4650,13 @@ instance HasLocation AST_OptObjList where
 
 instance PPrintable AST_OptObjList where { pPrint o = pPrintOptObjList "{" ", " "}" o }
 
---instance St.Structured (Maybe AST_ObjList) Object where
---  St.dataToStruct a = St.deconstruct $ case a of
---    Nothing -> St.place ONull
---    Just  a -> St.putData a
---  St.structToData   = St.reconstruct $ mplus St.getData $ St.this >>= \a -> case a of
---    ONull -> return Nothing
---    _     -> fail "expecting either null value or optional AST_ObjList expression"
+instance ToDaoStructClass AST_OptObjList Object where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_OptObjList coms o -> renameConstructor "OptObjList" >> "params" .=? o >> putComments coms
 
 instance St.Structured AST_OptObjList Object where
-  dataToStruct (AST_OptObjList c o) = St.deconstruct $
-    St.with "initParams" $ maybe (return ()) St.putData o >> putComments c
+  toDaoStruct (AST_OptObjList c o) = St.deconstruct $
+    St.with "initParams" $ maybe (return ()) St.putData o >> _putComments c
   structToData   = St.reconstruct $ msum $
     [ St.with "initParams" $ pure AST_OptObjList <*> getComments <*> optional St.getData
     , fail "expecting initParams"
@@ -4366,6 +4672,12 @@ instance HasRandGen AST_OptObjList where
 instance Intermediate OptObjListExpr AST_OptObjList where
   toInterm   (AST_OptObjList _ o) = liftM OptObjListExpr (um1 o)
   fromInterm (OptObjListExpr   o) = liftM (AST_OptObjList []) (nm1 o)
+
+instance ObjectClass AST_OptObjList where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_OptObjList where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct -- >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4416,8 +4728,12 @@ instance PPrintable AST_Literal where
 instance PrecedeWithSpace AST_Literal where
   precedeWithSpace (AST_Literal _ _) = True
 
+instance ToDaoStructClass AST_Literal Object where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_Literal o loc -> renameConstructor "Literal" >> "obj" .= o >> putLocation loc
+
 instance St.Structured AST_Literal Object where
-  dataToStruct a = St.deconstruct $ case a of
+  toDaoStruct a = St.deconstruct $ case a of
     AST_Literal a loc -> St.with "literal"   $ St.place a >> St.putData loc
   structToData   = St.reconstruct $ msum $
     [ St.tryWith "literal" $ pure AST_Literal <*> St.this <*> St.getData
@@ -4446,6 +4762,12 @@ instance HasRandGen AST_Literal where
 instance Intermediate LiteralExpr AST_Literal where
   toInterm   (AST_Literal a loc) = liftM2 LiteralExpr [a] [loc]
   fromInterm (LiteralExpr a loc) = liftM2 AST_Literal [a] [loc]
+
+instance ObjectClass AST_Literal where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_Literal where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct -- >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4533,6 +4855,11 @@ instance NFData AST_RefOperand where
   rnf (AST_ArraySub a b c) = deepseq a $! deepseq b $! deepseq c ()
   rnf (AST_FuncCall a b c) = deepseq a $! deepseq b $! deepseq c ()
 
+instance HasNullValue AST_RefOperand where
+  nullValue = AST_ObjParen $ AST_Paren nullValue LocationUnknown
+  testNull (AST_ObjParen (AST_Paren a LocationUnknown)) = testNull a
+  testNull _ = False
+
 instance HasLocation AST_RefOperand where
   getLocation o     = case o of
     AST_ObjParen     o -> getLocation o
@@ -4564,8 +4891,17 @@ instance PrecedeWithSpace AST_RefOperand where
     AST_ArraySub  o _ _ -> precedeWithSpace o
     AST_FuncCall  o _ _ -> precedeWithSpace o
 
+instance ToDaoStructClass AST_RefOperand Object where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_ObjParen a       -> innerToStruct a
+    AST_PlainRef a       -> innerToStruct a
+    AST_ArraySub a b loc -> renameConstructor "Subscript" >>
+      "head" .= a >> "params" .= b >> putLocation loc
+    AST_FuncCall a b loc -> renameConstructor "FuncCall" >>
+      "head" .= a >> "params" .= b >> putLocation loc
+
 instance St.Structured AST_RefOperand Object where
-  dataToStruct o = St.deconstruct $ case o of
+  toDaoStruct o = St.deconstruct $ case o of
     AST_ObjParen   a     -> St.putData a
     AST_PlainRef   a     -> St.putData a
     AST_ArraySub a b loc -> St.with "subscript" $ St.putDataAt "header" a >> St.putDataAt "params" b >> St.putData loc
@@ -4599,6 +4935,12 @@ instance Intermediate RefOpExpr AST_RefOperand where
     ArraySubExpr  a b loc -> liftM3 AST_ArraySub  (fi a) (fi b) [loc]
     FuncCall      a b loc -> liftM3 AST_FuncCall  (fi a) (fi b) [loc]
 
+instance ObjectClass AST_RefOperand where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_RefOperand where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct -- >> autoDefFromStruct
+
 ----------------------------------------------------------------------------------------------------
 
 data SingleExpr
@@ -4609,6 +4951,11 @@ data SingleExpr
 instance NFData SingleExpr where
   rnf (SingleExpr a    ) = deepseq a ()
   rnf (RefPfxExpr a b c) = deepseq a $! deepseq b $! deepseq c ()
+
+instance HasNullValue SingleExpr where
+  nullValue = SingleExpr $ ObjParenExpr nullValue
+  testNull (SingleExpr (ObjParenExpr a)) = testNull a
+  testNull _ = False
 
 instance HasLocation SingleExpr where
   getLocation o     = case o of
@@ -4651,8 +4998,13 @@ instance Executable SingleExpr (Maybe Object) where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
 instance St.Structured SingleExpr Object where
-  dataToStruct = putIntermediate "LValue from intermediate"
+  toDaoStruct = putIntermediate "LValue from intermediate"
   structToData = getIntermediate "LValue from intermediate"
+
+instance ObjectClass SingleExpr where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass SingleExpr where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4664,6 +5016,11 @@ data AST_Single
 instance NFData AST_Single where
   rnf (AST_Single a      ) = deepseq a ()
   rnf (AST_RefPfx a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d  ()
+
+instance HasNullValue AST_Single where
+  nullValue = AST_Single nullValue
+  testNull (AST_Single a) = testNull a
+  testNull _ = False
 
 instance HasLocation AST_Single where
   getLocation o     = case o of
@@ -4686,10 +5043,16 @@ instance PrecedeWithSpace AST_Single where
     AST_Single o       -> precedeWithSpace o
     AST_RefPfx _ _ _ _ -> True
 
+instance ToDaoStructClass AST_Single Object where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_Single a         -> innerToStruct a
+    AST_RefPfx a b c loc -> renameConstructor "RefPrefix" >>
+      "op" .= a >> putComments b >> "expr" .= c >> putLocation loc
+
 instance St.Structured AST_Single Object where
-  dataToStruct o = St.deconstruct $ case o of
+  toDaoStruct o = St.deconstruct $ case o of
     AST_Single a         -> St.putData a
-    AST_RefPfx a b c loc -> St.with "refPrefix" $ St.putDataAt "op" a >> putComments b >> St.putDataAt "right"  c >> St.putData loc
+    AST_RefPfx a b c loc -> St.with "refPrefix" $ St.putDataAt "op" a >> _putComments b >> St.putDataAt "right"  c >> St.putData loc
   structToData = St.reconstruct $ msum $
     [ St.tryWith "refPrefix" $ pure AST_RefPfx <*> St.getDataAt "op" <*> getComments <*> St.getDataAt "right" <*> St.getData
     , AST_Single <$> St.getData
@@ -4711,6 +5074,12 @@ instance Intermediate SingleExpr AST_Single where
   fromInterm o = case o of
     SingleExpr a       -> liftM  AST_Single (fi a)
     RefPfxExpr a c loc -> liftM4 AST_RefPfx [a] [[]] (fi c) [loc]
+
+instance ObjectClass AST_Single where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_Single where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct -- >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4761,7 +5130,7 @@ instance B.HasPrefixTable RuleFuncExpr B.Byte MTab where
     ]
 
 instance St.Structured RuleFuncExpr Object where
-  dataToStruct = putIntermediate "object intermedaite node"
+  toDaoStruct = putIntermediate "object intermedaite node"
   structToData = getIntermediate "object intermedaite node"
 
 instance Executable RuleFuncExpr (Maybe Object) where
@@ -4793,9 +5162,9 @@ instance Executable RuleFuncExpr (Maybe Object) where
       return $ Just $ new $ GlobAction globs exec
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
-instance ObjectClass RuleFuncExpr where
-  objectMethods = defObjectInterface nullValue $
-    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt >> autoDefPPrinter
+instance HaskellDataClass RuleFuncExpr where
+  haskellDataInterface = interface nullValue $
+    autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt >> autoDefPPrinter
     -- autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
@@ -4838,10 +5207,17 @@ instance PPrintable AST_RuleFunc where
       pClosure (pInline [pString "function ", pPrint co, pPrint nm, pPrint ccNmx]) "{" "}" [pPrint xcObjXp]
     AST_Rule           ccNmx   xcObjXp     _ -> pClosure (pPrint ccNmx) "{" "}" [pPrint xcObjXp]
 
+instance ToDaoStructClass AST_RuleFunc Object where
+  toDaoStruct = let nm = renameConstructor in ask >>= \o -> case o of
+    AST_Lambda a b     loc -> nm "Lambda"   >> "params" .= a >> "block" .= b >> putLocation loc
+    AST_Func   a b c d loc -> nm "Function" >>
+      putComments a >> "name"  .= b >> "params" .= c >> "block" .= d >> putLocation loc
+    AST_Rule   a b     loc -> nm "Rule" >> "params" .= a >> "block" .= b >> putLocation loc
+
 instance St.Structured AST_RuleFunc Object where
-  dataToStruct a = St.deconstruct $ case a of
+  toDaoStruct a = St.deconstruct $ case a of
     AST_Lambda a b     loc -> St.with "lambdaExpr"$                  St.putDataAt "params" a >> St.putDataAt "script" b >> St.putData loc
-    AST_Func   a b c d loc -> St.with "funcExpr"  $ putComments a >> St.putDataAt "name"   b >> St.putDataAt "params" c >> St.putDataAt "script" d >> St.putData loc
+    AST_Func   a b c d loc -> St.with "funcExpr"  $ _putComments a >> St.putDataAt "name"   b >> St.putDataAt "params" c >> St.putDataAt "script" d >> St.putData loc
     AST_Rule   a b     loc -> St.with "ruleExpr"  $                  St.putDataAt "params" a >> St.putDataAt "script" b >> St.putData loc
   structToData =   St.reconstruct $ msum $
     [ St.tryWith "lambdaExpr"$ pure AST_Lambda                             <*> St.getDataAt "params" <*> St.getDataAt "script" <*> St.getData
@@ -4866,6 +5242,12 @@ instance Intermediate RuleFuncExpr AST_RuleFunc where
     LambdaExpr a b   loc -> liftM3 AST_Lambda              (nc0 a) (fi  b) [loc]
     FuncExpr   a b c loc -> liftM5 AST_Func [[]] [a] (nc0 b) (fi  c) [loc]
     RuleExpr   a b   loc -> liftM3 AST_Rule          (nc0 a) (fi  b) [loc]
+
+instance ObjectClass AST_RuleFunc where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_RuleFunc where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct -- >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4957,7 +5339,7 @@ instance B.HasPrefixTable ObjectExpr B.Byte MTab where
     ]
 
 instance St.Structured ObjectExpr Object where
-  dataToStruct = putIntermediate "object intermedaite node"
+  toDaoStruct = putIntermediate "object intermedaite node"
   structToData = getIntermediate "object intermedaite node"
 
 indexObject :: Object -> Object -> Exec Object
@@ -5061,9 +5443,9 @@ instance Executable ObjectExpr (Maybe Object) where
     MetaEvalExpr expr _ -> return $ Just $ new expr
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
-instance ObjectClass ObjectExpr where
-  objectMethods = defObjectInterface nullValue $ do
-    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt
+instance HaskellDataClass ObjectExpr where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt
     defDeref execute >> autoDefPPrinter
     -- autoDefToStruct >> autoDefFromStruct
 
@@ -5153,13 +5535,26 @@ instance PrecedeWithSpace AST_Object where
     AST_ObjSingle  o -> precedeWithSpace o
     _                -> True
 
+instance ToDaoStructClass AST_Object Object where
+  toDaoStruct = let nm = renameConstructor in ask >>= \o -> case o of
+    AST_Void                   -> makeNullary "Void"
+    AST_ObjLiteral   a         -> innerToStruct a
+    AST_ObjSingle    a         -> innerToStruct a
+    AST_ObjRuleFunc  a         -> innerToStruct a
+    AST_ArithPfx     a b c loc -> nm "ArithPrefix" >>
+      "op" .= a >> putComments b >> "expr" .= c >> putLocation loc
+    AST_Init         a b c loc -> nm "Init" >>
+      "name" .= a >> "params" .= b >> "initList" .= c >> putLocation loc
+    AST_Struct       a b   loc -> nm "Struct" >> "name" .= a >> "initList" .= b >> putLocation loc
+    AST_MetaEval     a     loc -> nm "MetaEval" >> "block" .= a >> putLocation loc
+
 instance St.Structured AST_Object Object where
-  dataToStruct a = St.deconstruct $ case a of
+  toDaoStruct a = St.deconstruct $ case a of
     AST_Void                    -> St.place ONull
     AST_ObjLiteral  a           -> St.putData a
     AST_ObjSingle   a           -> St.putData a
     AST_ObjRuleFunc a           -> St.putData a
-    AST_ArithPfx    a b c   loc -> St.with "arithPfx"  $ St.putDataAt "op"     a >> putComments        b >> St.putDataAt "to"     c >> St.putData loc
+    AST_ArithPfx    a b c   loc -> St.with "arithPfx"  $ St.putDataAt "op"     a >> _putComments        b >> St.putDataAt "to"     c >> St.putData loc
     AST_Init        a b c   loc -> St.with "initExpr"  $ St.putDataAt "header" a >> St.putDataAt "params" b >> St.putDataAt "elems"  c >> St.putData loc
     AST_Struct      _ _     _   -> undefined
     AST_MetaEval    a       loc -> St.with "metaEval"  $ St.putDataAt "inner"  a                                                 >> St.putData loc
@@ -5208,6 +5603,12 @@ instance Intermediate ObjectExpr AST_Object where
     StructExpr      a b   loc -> liftM3 AST_Struct          [a] (fi  b)         [loc]
     MetaEvalExpr    a     loc -> liftM2 AST_MetaEval    (fi  a)                 [loc]
 
+instance ObjectClass AST_Object where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_Object where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct -- >> autoDefFromStruct
+
 ----------------------------------------------------------------------------------------------------
 
 data ArithExpr
@@ -5249,7 +5650,7 @@ instance B.HasPrefixTable ArithExpr B.Byte MTab where
       [pure ArithExpr <*> B.get <*> B.get <*> B.get <*> B.get]
 
 instance St.Structured ArithExpr Object where
-  dataToStruct = putIntermediate "object intermedaite node"
+  toDaoStruct = putIntermediate "object intermedaite node"
   structToData = getIntermediate "object intermedaite node"
 
 instance Executable ArithExpr (Maybe Object) where
@@ -5275,9 +5676,9 @@ instance Executable ArithExpr (Maybe Object) where
             _     -> liftM2 (,) derefLeft derefRight
           fmap Just ((infixOps!op) left right)
 
-instance ObjectClass ArithExpr where
-  objectMethods = defObjectInterface nullValue $ do
-    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt
+instance HaskellDataClass ArithExpr where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt
     defDeref execute >> autoDefPPrinter
     -- autoDefToStruct >> autoDefFromStruct
 
@@ -5318,8 +5719,14 @@ instance PrecedeWithSpace AST_Arith where
     AST_Object o       -> precedeWithSpace o
     AST_Arith  o _ _ _ -> precedeWithSpace o
 
+instance ToDaoStructClass AST_Arith Object where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_Object a         -> innerToStruct a
+    AST_Arith  a b c loc -> renameConstructor "Arithmetic" >>
+      "left" .= a >> "op" .= b >> "right" .= c >> putLocation loc
+
 instance St.Structured AST_Arith Object where
-  dataToStruct a = St.deconstruct $ case a of
+  toDaoStruct a = St.deconstruct $ case a of
     AST_Object a         -> St.putData a
     AST_Arith  a b c loc -> St.with "equation" $ St.putDataAt "left" a >> St.putDataAt "op" b >> St.putDataAt "right" c >> St.putData loc
   structToData =   St.reconstruct $ msum $
@@ -5369,7 +5776,6 @@ instance HasRandGen AST_Arith where
                   (right, next) -> scanRight prevPrec (bind left op right) next
           else  (left, ops)
 
-
 instance Intermediate ArithExpr AST_Arith where
   toInterm o = case o of
     AST_Object  a       -> liftM  ObjectExpr (ti a)
@@ -5377,6 +5783,12 @@ instance Intermediate ArithExpr AST_Arith where
   fromInterm o = case o of
     ObjectExpr  a       -> liftM  AST_Object (fi a)
     ArithExpr a b c loc -> liftM4 AST_Arith  (fi a) (nc b) (fi c) [loc]
+
+instance ObjectClass AST_Arith where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_Arith where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    -- autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -5419,7 +5831,7 @@ instance B.HasPrefixTable AssignExpr B.Byte MTab where
       [pure AssignExpr <*> B.get <*> B.get <*> B.get <*> B.get]
 
 instance St.Structured AssignExpr Object where
-  dataToStruct = putIntermediate "object intermedaite node"
+  toDaoStruct = putIntermediate "object intermedaite node"
   structToData = getIntermediate "object intermedaite node"
 
 instance Executable AssignExpr (Maybe Object) where
@@ -5439,9 +5851,9 @@ instance Executable AssignExpr (Maybe Object) where
         Just prevVal -> fmap Just $
           checkPredicate "assignment expression" [prevVal, expr] $ (updatingOps!op) prevVal expr
 
-instance ObjectClass AssignExpr where
-  objectMethods = defObjectInterface nullValue $ do
-    autoDefNullTest >> autoDefEquality >> autoDefBinaryFmt
+instance HaskellDataClass AssignExpr where
+  haskellDataInterface = interface nullValue $ do
+    autoDefNullTest >> autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt
     defDeref execute >> autoDefPPrinter
     -- autoDefToStruct >> autoDefFromStruct
 
@@ -5483,8 +5895,13 @@ instance PrecedeWithSpace AST_Assign where
     AST_Eval   o       -> precedeWithSpace o
     AST_Assign o _ _ _ -> precedeWithSpace o
 
+instance ToDaoStructClass AST_Assign Object where
+  toDaoStruct = renameConstructor "Assign" >> ask >>= \o -> case o of
+    AST_Eval o -> void $ "to" .= o
+    AST_Assign to op from loc -> "to" .= to >> "op" .= op >> "from" .= from >> putLocation loc
+
 instance St.Structured AST_Assign Object where
-  dataToStruct a = St.deconstruct $ case a of
+  toDaoStruct a = St.deconstruct $ case a of
     AST_Eval  o       -> St.putData o
     AST_Assign a b c loc -> St.with "assign" $ St.putDataAt "to" a >> St.putDataAt "op" b >> St.putDataAt "from" c >> St.putData loc
   structToData =   St.reconstruct $ msum $
@@ -5509,6 +5926,12 @@ instance Intermediate AssignExpr AST_Assign where
   fromInterm o = case o of
     EvalExpr   a         -> liftM  AST_Eval   (fi a)
     AssignExpr a b c loc -> liftM4 AST_Assign (fi a) (nc b) (fi c) [loc]
+
+instance ObjectClass AST_Assign where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass AST_Assign where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    -- autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -5570,7 +5993,7 @@ instance B.HasPrefixTable TopLevelExpr B.Byte MTab where
     ]
 
 instance St.Structured TopLevelExpr  Object where
-  dataToStruct = putIntermediate toplevel_intrm
+  toDaoStruct = putIntermediate toplevel_intrm
   structToData = getIntermediate toplevel_intrm
 
 -- Since 'TopLevelExpr's can modify the 'ExecUnit', and since 'Exec' is not a stateful monad, a
@@ -5667,11 +6090,11 @@ instance PPrintable AST_TopLevel where
     AST_TopComment a       -> mapM_ (\a -> pPrint a >> pNewLine) a
 
 instance St.Structured AST_TopLevel  Object where
-  dataToStruct a = St.deconstruct $ case a of
-    AST_TopComment a         -> putComments a
+  toDaoStruct a = St.deconstruct $ case a of
+    AST_TopComment a         -> _putComments a
     AST_Attribute  a b   loc -> St.with "attribute" $ St.putDataAt "type" a >> St.putDataAt "value"    b                          >> St.putData loc
     AST_TopScript  a     loc -> St.with "directive" $ St.putData          a                                                    >> St.putData loc
-    AST_Event      a b c loc -> St.with "event"     $ St.putDataAt "type" a >> putComments          b >> St.putDataAt "script" c  >> St.putData loc
+    AST_Event      a b c loc -> St.with "event"     $ St.putDataAt "type" a >> _putComments          b >> St.putDataAt "script" c  >> St.putData loc
   structToData = St.reconstruct $ msum $
     [ pure AST_TopComment <*> getComments
     , St.with "attribute" $ pure AST_Attribute <*> St.getDataAt "type" <*> St.getDataAt "value" <*> St.getData
@@ -5771,10 +6194,10 @@ instance Intermediate Program AST_SourceCode where
 -- $Builtin_object_interfaces
 -- The following functions provide object interfaces for essential data types.
 
-instance ObjectClass () where { objectMethods = defObjectInterface () (return ()) }
+instance HaskellDataClass () where { haskellDataInterface = interface () (return ()) }
 
-instance ObjectClass GlobAction where
-  objectMethods = defObjectInterface (GlobAction [] undefined) $ do
+instance HaskellDataClass GlobAction where
+  haskellDataInterface = interface (GlobAction [] undefined) $ do
     defCallable $ \rule -> do
       let vars o = case o of {Wildcard _ -> 1; AnyOne _ -> 1; Single _ -> 0; }
       let m = maximum $ map (sum . map vars . getPatUnits) $ globPattern rule
@@ -5792,17 +6215,17 @@ instance ObjectClass GlobAction where
 
 ----------------------------------------------------------------------------------------------------
 
--- | Nearly every accesssor function in the 'ObjectInterface' data type take the form
--- > 'ObjectInterface' 'Data.Dynamic.Dynamic' -> Maybe ('Data.Dynamic.Dynamic' -> method)
+-- | Nearly every accesssor function in the 'Interface' data type take the form
+-- > 'Interface' 'Data.Dynamic.Dynamic' -> Maybe ('Data.Dynamic.Dynamic' -> method)
 -- where the first 'Data.Dynamic.Dynamic' value is analogous to the @St.this@" pointer in C++-like
 -- languages, and where @method@ is any function, for example an equality function @a -> a -> Bool@
 -- or an iterator function @Exec [Object]@. This function takes the @St.this@ value, an
--- 'ObjectInterface', and an 'ObjectInterface' accessor (for example 'objEquality' or
+-- 'Interface', and an 'Interface' accessor (for example 'objEquality' or
 -- 'objIterator') and if the accessor is not 'Prelude.Nothing', the @St.this@ object is applied to the
 -- method and the partial application is returned. If the accessor does evaluate to
 -- 'Prelude.Nothing' the exception value is thrown. If the @St.this@ object has not been constructed
 -- St.with 'OHaskell', the exception value is thrown.
-evalObjectMethod :: Object -> Object -> (ObjectInterface Dynamic -> Maybe (Dynamic -> method)) -> Exec method
+evalObjectMethod :: Object -> Object -> (Interface Dynamic -> Maybe (Dynamic -> method)) -> Exec method
 evalObjectMethod errmsg this getter = case this of
   OHaskell (HaskellData this ifc) -> case getter ifc of
     Nothing -> execThrow errmsg
@@ -5823,29 +6246,29 @@ type MTab = MethodTable
 
 ----------------------------------------------------------------------------------------------------
 
-newtype MethodTable = MethodTable (M.Map UStr (ObjectInterface Dynamic))
+newtype MethodTable = MethodTable (M.Map UStr (Interface Dynamic))
 
 instance Monoid MethodTable where
   mempty  = MethodTable mempty
   mappend (MethodTable a) (MethodTable b) = MethodTable (M.union b a)
 
--- | Lookup an 'ObjectInterface' by it's name from within the 'Exec' monad.
-execGetObjTable :: UStr -> Exec (Maybe (ObjectInterface Dynamic))
+-- | Lookup an 'Interface' by it's name from within the 'Exec' monad.
+execGetObjTable :: UStr -> Exec (Maybe (Interface Dynamic))
 execGetObjTable nm = asks (lookupMethodTable nm . globalMethodTable)
 
-lookupMethodTable :: UStr -> MethodTable -> Maybe (ObjectInterface Dynamic)
+lookupMethodTable :: UStr -> MethodTable -> Maybe (Interface Dynamic)
 lookupMethodTable nm (MethodTable tab) = M.lookup nm tab
 
 -- not for export, use 'daoClass'
 insertMethodTable
-  :: (Typeable o, ObjectClass o)
+  :: (Typeable o, HaskellDataClass o)
   => o
   -> UStr
-  -> ObjectInterface o
+  -> Interface o
   -> MethodTable
   -> MethodTable
 insertMethodTable _ nm ifc = flip mappend $
-  MethodTable (M.singleton nm (objectInterfaceToDynamic ifc))
+  MethodTable (M.singleton nm (interfaceToDynamic ifc))
 
 typeRepToUStr :: TypeRep -> UStr
 typeRepToUStr a = let con = typeRepTyCon a in ustr (tyConModule con ++ '.' : tyConName con)
@@ -5912,35 +6335,30 @@ instance HasIterator Object where
 ----------------------------------------------------------------------------------------------------
 
 -- | This class only exists to allow many different Haskell data types to declare their
--- 'ObjectInterface' under the same funcion name: 'objectMethods'. Instantiate St.this function St.with
--- the help of the 'defObjectInterface' function.
-class ObjectClass typ where { objectMethods :: ObjectInterface typ }
+-- 'Interface' under the same funcion name: 'haskellDataInterface'. Instantiate St.this function with
+-- the help of the 'interface' function.
+class HaskellDataClass typ where { haskellDataInterface :: Interface typ }
 
 -- | This is a convenience function for calling 'OHaskell' using just an initial value of type
--- @typ@. The 'ObjectInterface' is retrieved automatically using the instance of 'objectMethods' for
+-- @typ@. The 'Interface' is retrieved automatically using the instance of 'haskellDataInterface' for
 -- the @typ@.
-mkHaskellData :: (ObjectClass typ, Typeable typ) => typ -> HaskellData
-mkHaskellData t = HaskellData (toDyn t) (interfaceTo t objectMethods) where
-  interfaceTo :: Typeable typ => typ -> ObjectInterface typ -> ObjectInterface Dynamic
-  interfaceTo _ ifc = objectInterfaceToDynamic ifc
+toHaskellData :: (HaskellDataClass typ, Typeable typ) => typ -> HaskellData
+toHaskellData t = HaskellData (toDyn t) (interfaceTo t haskellDataInterface) where
+  interfaceTo :: Typeable typ => typ -> Interface typ -> Interface Dynamic
+  interfaceTo _ ifc = interfaceToDynamic ifc
 
--- | Create a new 'Object' containing the original value and a reference to the 'ObjectInterface'
--- retrieved by the instance of 'objectMethods' for the data type.
-new :: (ObjectClass typ, Typeable typ) => typ -> Object
-new = OHaskell . mkHaskellData
-
--- | Create a completely opaque haskell data type that can be used stored to a Dao language
--- variable, but never read or modified in any way.
-opaque :: Typeable typ => typ -> Object
-opaque o = OHaskell $ HaskellData (toDyn o) $
-  objectInterfaceToDynamic $ defObjectInterface o $ return ()
+-- | Inverse operation of 'toHaskellData', useful when instantiating 'ObjectClass', uses
+-- 'Data.Dynamic.fromDynamic' to extract the value that has been wrapped in up the 'HaskellData'
+-- constructor.
+fromHaskellData :: (HaskellDataClass typ, Typeable typ) => HaskellData -> Maybe typ
+fromHaskellData (HaskellData o _) = fromDynamic o
 
 -- | This is all of the functions used by the "Dao.Evaluator" when manipulating objects in a Dao
 -- program. Behavior of objects when they are used in "for" statements or "with" statements, or when
 -- they are dereferenced using the "@" operator, or when they are used in equations are all defined
 -- here.
 -- 
--- So St.this table is the reason you instantiate 'ObjectClass'.
+-- So this table is the reason you instantiate 'HaskellDataClass'.
 -- 
 -- @obj@ specifies the container type that will wrap-up data of type @typ@. @obj@ is the type used
 -- throughout the runtime system to symbolize the basic unit of information operated on by
@@ -5953,9 +6371,9 @@ opaque o = OHaskell $ HaskellData (toDyn o) $
 -- 
 -- @exec@ specifies a monad in which to evaluate functions which may need to cause side-effects.
 -- This should usually be a 'Control.Monad.Monad'ic type like @IO@ or 'Dao.Object.Exec'.
-data ObjectInterface typ =
-  ObjectInterface
-  { objHaskellType     :: TypeRep -- ^ St.this type is deduced from the initial value provided to the 'defObjectInterface'.
+data Interface typ =
+  Interface
+  { objHaskellType     :: TypeRep -- ^ St.this type is deduced from the initial value provided to the 'interface'.
   , objCastFrom        :: Maybe (Object -> typ)                                                     -- ^ defined by 'defCastFrom'
   , objEquality        :: Maybe (typ -> typ -> Bool)                                                -- ^ defined by 'defEquality'
   , objOrdering        :: Maybe (typ -> typ -> Ordering)                                            -- ^ defined by 'defOrdering'
@@ -5976,11 +6394,11 @@ data ObjectInterface typ =
   }
   deriving Typeable
 
-instance Eq  (ObjectInterface typ) where { a==b = objHaskellType a == objHaskellType b }
+instance Eq  (Interface typ) where { a==b = objHaskellType a == objHaskellType b }
 
-instance Ord (ObjectInterface typ) where { compare a b = compare (objHaskellType a) (objHaskellType b) }
+instance Ord (Interface typ) where { compare a b = compare (objHaskellType a) (objHaskellType b) }
 
--- | This function works a bit like 'Data.Functor.fmap', but maps an 'ObjectInterface' from one type
+-- | This function works a bit like 'Data.Functor.fmap', but maps an 'Interface' from one type
 -- to another. This requires two functions: one that can cast from the given type to the adapted
 -- type (to convert outputs of functions), and one that can cast back from the adapted type to the
 -- original type (to convert inputs of functions). Each coversion function takes a string as it's
@@ -5988,13 +6406,13 @@ instance Ord (ObjectInterface typ) where { compare a b = compare (objHaskellType
 -- use of the conversion operation. Should you need to use 'Prelude.error' or 'execError', St.this
 -- string will allow you to throw more informative error messages. WARNING: St.this function leaves
 -- 'objHaskellType' unchanged, the calling context must change it.
-objectInterfaceAdapter
+interfaceAdapter
   :: (Typeable typ_a, Typeable typ_b)
   => (String -> typ_a -> typ_b)
   -> (String -> typ_b -> typ_a)
-  -> ObjectInterface typ_a
-  -> ObjectInterface typ_b
-objectInterfaceAdapter a2b b2a ifc = 
+  -> Interface typ_a
+  -> Interface typ_b
+interfaceAdapter a2b b2a ifc = 
   ifc
   { objCastFrom        = let n="objCastFrom"      in fmap (fmap (a2b n)) (objCastFrom ifc)
   , objEquality        = let n="objEquality"      in fmap (\eq  a b -> eq  (b2a n a) (b2a n b)) (objEquality ifc)
@@ -6015,22 +6433,22 @@ objectInterfaceAdapter a2b b2a ifc =
   , objDereferencer    = let n="objDerferencer"   in fmap (\eval -> eval . b2a n) (objDereferencer ifc)
   }
 
-objectInterfaceToDynamic :: Typeable typ => ObjectInterface typ -> ObjectInterface Dynamic
-objectInterfaceToDynamic oi = objectInterfaceAdapter (\ _ -> toDyn) (from oi) oi where
-  from :: Typeable typ => ObjectInterface typ -> String -> Dynamic -> typ
+interfaceToDynamic :: Typeable typ => Interface typ -> Interface Dynamic
+interfaceToDynamic oi = interfaceAdapter (\ _ -> toDyn) (from oi) oi where
+  from :: Typeable typ => Interface typ -> String -> Dynamic -> typ
   from oi msg dyn = fromDyn dyn (dynErr oi msg dyn)
-  dynErr :: Typeable typ => ObjectInterface typ -> String -> Dynamic -> typ
+  dynErr :: Typeable typ => Interface typ -> String -> Dynamic -> typ
   dynErr oi msg dyn = error $ concat $
     [ "The 'Dao.Object.", msg
     , "' function defined for objects of type ", show (objHaskellType oi)
     , " was evaluated on an object of type ", show (dynTypeRep dyn)
     ]
 
--- Used to construct an 'ObjectInterface' in a "Control.Monad.State"-ful way. Instantiates
+-- Used to construct an 'Interface' in a "Control.Monad.State"-ful way. Instantiates
 -- 'Data.Monoid.Monoid' to provide 'Data.Monoid.mempty' an allows multiple inheritence by use of the
 -- 'Data.Monoid.mappend' function in the same way as
-data ObjIfc typ =
-  ObjIfc
+data HDIfcBuilder typ =
+  HDIfcBuilder
   { objIfcCastFrom      :: Maybe (Object -> typ)
   , objIfcEquality      :: Maybe (typ -> typ -> Bool)
   , objIfcOrdering      :: Maybe (typ -> typ -> Ordering)
@@ -6050,9 +6468,9 @@ data ObjIfc typ =
   , objIfcDerefer       :: Maybe (typ -> Exec (Maybe Object))
   }
 
-initObjIfc :: ObjIfc typ
-initObjIfc =
-  ObjIfc
+initHDIfcBuilder :: HDIfcBuilder typ
+initHDIfcBuilder =
+  HDIfcBuilder
   { objIfcCastFrom      = Nothing
   , objIfcEquality      = Nothing
   , objIfcOrdering      = Nothing
@@ -6072,10 +6490,10 @@ initObjIfc =
   , objIfcDerefer       = Nothing
   }
 
--- | A handy monadic interface for defining an 'ObjectInterface' using nice, clean procedural
+-- | A handy monadic interface for defining an 'Interface' using nice, clean procedural
 -- syntax.
 type    DaoClassDef typ = DaoClassDefM typ ()
-newtype DaoClassDefM typ a = DaoClassDefM { daoClassDefState :: State (ObjIfc typ) a }
+newtype DaoClassDefM typ a = DaoClassDefM { daoClassDefState :: State (HDIfcBuilder typ) a }
 instance Typeable typ => Functor (DaoClassDefM typ) where
   fmap f (DaoClassDefM m) = DaoClassDefM (fmap f m)
 instance Typeable typ => Monad (DaoClassDefM typ) where
@@ -6083,16 +6501,15 @@ instance Typeable typ => Monad (DaoClassDefM typ) where
   (DaoClassDefM m) >>= f = DaoClassDefM (m >>= daoClassDefState . f)
 instance Typeable typ => Applicative (DaoClassDefM typ) where { pure=return; (<*>)=ap; }
 
--- not for export
-updObjIfc :: Typeable typ => (ObjIfc typ -> ObjIfc typ) -> DaoClassDefM typ ()
-updObjIfc = DaoClassDefM . modify
+_updHDIfcBuilder :: Typeable typ => (HDIfcBuilder typ -> HDIfcBuilder typ) -> DaoClassDefM typ ()
+_updHDIfcBuilder = DaoClassDefM . modify
 
 -- | The callback function defined here is used when objects of your @typ@ can be constructed from
 -- some other 'Object'. This function is used to convert an 'Object' of another types to an data
 -- type of your @typ@ when it is necessary to do so (for example, evaluating the @==@ or @!=@
 -- operator).
 defCastFrom :: Typeable typ => (Object -> typ) -> DaoClassDefM typ ()
-defCastFrom fn = updObjIfc(\st->st{objIfcCastFrom=Just fn})
+defCastFrom fn = _updHDIfcBuilder(\st->st{objIfcCastFrom=Just fn})
 
 -- | The callback function defined here is used where objects of your @typ@ might be compared to
 -- other objects using the @==@ and @!=@ operators in Dao programs. However using St.this is slightly
@@ -6119,7 +6536,7 @@ autoDefEquality = defEquality (==)
 -- relation for your @typ@, if the 'autoDefEquality' and 'defCastFrom' functions are to be avoided
 -- for some reason.
 defEquality :: (Typeable typ, Eq typ) => (typ -> typ -> Bool) -> DaoClassDefM typ ()
-defEquality fn = updObjIfc(\st->st{objIfcEquality=Just fn})
+defEquality fn = _updHDIfcBuilder(\st->st{objIfcEquality=Just fn})
 
 -- | The callback function defined here is used where objects of your @typ@ might be compared to
 -- other objects using the @<@, @>@, @<=@, and @>=@ operators in Dao programs. However using St.this is
@@ -6145,7 +6562,7 @@ autoDefOrdering = defOrdering compare
 -- Define a customized ordering for your @typ@, if the 'autoDefEquality' and 'defCastFrom'
 -- functions are to be avoided for some reason.
 defOrdering :: (Typeable typ) => (typ -> typ -> Ordering) -> DaoClassDefM typ ()
-defOrdering fn = updObjIfc(\st->st{objIfcOrdering=Just fn})
+defOrdering fn = _updHDIfcBuilder(\st->st{objIfcOrdering=Just fn})
 
 -- | The callback function defined here is used if an object of your @typ@ should ever need to be
 -- stored into a binary file in persistent storage (like your filesystem) or sent across a channel
@@ -6162,11 +6579,11 @@ autoDefBinaryFmt = defBinaryFmt B.put B.get
 -- 
 -- If you have binary coding and decoding methods for your @typ@ but for some silly reason not
 -- instantiated your @typ@ into the 'Data.Binary.Binary' class, your @typ@ can still be used as a
--- binary formatted object by the Dao system if you define the encoder and decoder using St.this
+-- binary formatted object by the Dao system if you define the encoder and decoder using this
 -- function. However, it would be better if you instantiated 'Data.Binary.Binary' and used
 -- 'autoDefBinaryFmt' instead.
 defBinaryFmt :: (Typeable typ) => (typ -> Put) -> Get typ -> DaoClassDefM typ ()
-defBinaryFmt put get = updObjIfc(\st->st{objIfcBinaryFormat=Just(put,get)})
+defBinaryFmt put get = _updHDIfcBuilder(\st->st{objIfcBinaryFormat=Just(put,get)})
 
 autoDefNullTest :: (Typeable typ, HasNullValue typ) => DaoClassDefM typ ()
 autoDefNullTest = defNullTest testNull
@@ -6175,13 +6592,13 @@ autoDefNullTest = defNullTest testNull
 -- or @while@ statement in a Dao program. This function will return @Prelude.True@ if the object is
 -- of a null value, which will cause the @if@ or @while@ test to fail and execution of the Dao
 -- program will branch accordingly. There is no default method for St.this function so it must be
--- defined by St.this function, otherwise your object cannot be tested by @if@ or @while@ statements.
+-- defined by this function, otherwise your object cannot be tested by @if@ or @while@ statements.
 defNullTest :: Typeable typ => (typ -> Bool) -> DaoClassDefM typ ()
-defNullTest fn = updObjIfc(\st->st{objIfcNullTest=Just fn})
+defNullTest fn = _updHDIfcBuilder(\st->st{objIfcNullTest=Just fn})
 
 -- | The callback function to be called when the "print" built-in function is used.
 defPPrinter :: Typeable typ => (typ -> PPrint) -> DaoClassDefM typ ()
-defPPrinter fn = updObjIfc(\st->st{objIfcPPrinter=Just fn})
+defPPrinter fn = _updHDIfcBuilder(\st->st{objIfcPPrinter=Just fn})
 
 -- | The callback function to be called when the "print" built-in function is used.
 autoDefPPrinter :: (Typeable typ, PPrintable typ) => DaoClassDefM typ ()
@@ -6191,10 +6608,10 @@ autoDefPPrinter = defPPrinter pPrint
 -- statement in a Dao program. However it is much better to instantiate your @typ@ into the
 -- 'HasIterator' class and use 'autoDefIterator' instead.
 defIterator :: Typeable typ => (typ -> Exec [Object]) -> (typ -> [Object] -> Exec typ) -> DaoClassDefM typ ()
-defIterator iter fold = updObjIfc(\st->st{objIfcIterator=Just(iter,fold)})
+defIterator iter fold = _updHDIfcBuilder(\st->st{objIfcIterator=Just(iter,fold)})
 
 -- | Using the instantiation of the 'HasIterator' class for your @typ@, installs the necessary
--- callbacks into the 'ObjectInterface' to allow your data type to be iterated over in the Dao
+-- callbacks into the 'Interface' to allow your data type to be iterated over in the Dao
 -- programming language when it is used in a "for" statement.
 autoDefIterator :: (Typeable typ, HasIterator typ) => DaoClassDefM typ ()
 autoDefIterator = defIterator iterateObject foldObject
@@ -6204,11 +6621,11 @@ autoDefIterator = defIterator iterateObject foldObject
 -- @x[0] = t[1][A][B];@ The object passed to your callback function is the object containing the
 -- subscript value. So in the above example, if the local variables @x@ and @t@ are both values of
 -- your @typ@, St.this callback function will be evaluated four times:
--- 1.  St.with the given 'Object' parameter being @('OInt' 0)@ and the @typ@ parameter as the value stored in
+-- 1.  with the given 'Object' parameter being @('OInt' 0)@ and the @typ@ parameter as the value stored in
 --     the local variable @x@.
--- 2.  St.with the given 'Object' parameter being @('OInt' 1)@ and the @typ@ parameter as the value
+-- 2.  with the given 'Object' parameter being @('OInt' 1)@ and the @typ@ parameter as the value
 --     stored in the local variable @y@.
--- 3.  once St.with the 'Object' parameter being the result of dereferencing the local varaible @A@ and
+-- 3.  once with the 'Object' parameter being the result of dereferencing the local varaible @A@ and
 --     the @typ@ parameter as the value stored in the local variable @y@.
 -- 4.  once the given 'Object' parameter being the result of dereferencing the local variable @B@ and
 --     the @typ@ parameter as the value stored in the local variable @y@.
@@ -6218,18 +6635,18 @@ autoDefIterator = defIterator iterateObject foldObject
 -- are evaluated by the "Dao.Evaluator" module in the exact same way as statements like St.this:
 -- > a[0][1][2]
 defIndexer :: Typeable typ => (typ -> Object -> Exec Object) -> DaoClassDefM typ ()
-defIndexer fn = updObjIfc(\st->st{objIfcIndexer=Just fn})
+defIndexer fn = _updHDIfcBuilder(\st->st{objIfcIndexer=Just fn})
 
 -- | Use your data type's instantiation of 'ToDaoStructClass' to call 'defToStruct'.
 autoDefToStruct :: forall typ . (Typeable typ, ToDaoStructClass typ Object) => DaoClassDefM typ ()
-autoDefToStruct = defToStruct ((predicate :: Predicate ExecControl T_struct -> Exec T_struct) . fmapPFail ((\o -> execError{ execReturnValue=Just o}) . new) . dataToStruct)
+autoDefToStruct = defToStruct ((predicate :: Predicate ExecControl T_struct -> Exec T_struct) . fmapPFail ((\o -> execError{ execReturnValue=Just o}) . new) . fromData toDaoStruct)
 
 -- | When a label referencing your object has a field record accessed, for example:
 -- > c = a.b;
 -- if your object is referenced by @a@ and the script expression wants to access a record called @b@
 -- from within it, then function defined here will be used.
 defToStruct :: Typeable typ => (typ -> Exec T_struct) -> DaoClassDefM typ ()
-defToStruct encode = updObjIfc (\st -> st{ objIfcToStruct=Just encode })
+defToStruct encode = _updHDIfcBuilder (\st -> st{ objIfcToStruct=Just encode })
 
 -- | When a label referencing your object has a field record updated, for example:
 -- > a.b = c;
@@ -6237,31 +6654,31 @@ defToStruct encode = updObjIfc (\st -> st{ objIfcToStruct=Just encode })
 -- within it by assigning it the value referenced by @c@, then the function defined here will be
 -- used.
 autoDefFromStruct :: (Typeable typ, FromDaoStructClass typ Object) => DaoClassDefM typ ()
-autoDefFromStruct = defFromStruct (predicate . fmapPFail ((\o -> execError{ execReturnValue=Just o }) . new) . dataFromStruct)
+autoDefFromStruct = defFromStruct (predicate . fmapPFail ((\o -> execError{ execReturnValue=Just o }) . new) . toData fromDaoStruct)
 
--- | If for some reason you need to define a tree encoder and decoder for the 'ObjectInterface' of
--- your @typ@ without instnatiating 'St.Structured', use St.this function to define the tree encoder an
+-- | If for some reason you need to define a tree encoder and decoder for the 'Interface' of
+-- your @typ@ without instnatiating 'St.Structured', use this function to define the tree encoder an
 -- decoder directly
 defFromStruct :: Typeable typ => (T_struct -> Exec typ) -> DaoClassDefM typ ()
-defFromStruct decode = updObjIfc (\st -> st{ objIfcFromStruct=Just decode })
+defFromStruct decode = _updHDIfcBuilder (\st -> st{ objIfcFromStruct=Just decode })
 
 -- | The callback defined here is used when a Dao program makes use of the static initialization
 -- syntax of the Dao programming language, which are expression of this form:
 -- > a = MyType { paramA=initA, paramB=initB, .... };
 -- > a = MyType(param1, param2, ...., paramN) { paramA=initA, paramB=initB, .... };
--- When the interpreter sees St.this form of expression, it looks up the 'ObjectInterface' for your
+-- When the interpreter sees St.this form of expression, it looks up the 'Interface' for your
 -- @typ@ and checks if a callback has been defined by 'defDictInit'. If so, then the callback is
 -- evaluated St.with a list of object values passed as the first parameter which contain the object
 -- values written in the parentheses, and a 'T_dict' as the second paramter containing the tree
 -- structure that was constructed St.with the expression in the braces.
 defDictInit :: Typeable typ => ([Object] -> Exec typ) -> (typ -> [(Object, UpdateOp, Object)] -> Exec typ) -> DaoClassDefM typ ()
-defDictInit fa fb = updObjIfc(\st->st{objIfcDictInit=Just (fa, fb)})
+defDictInit fa fb = _updHDIfcBuilder(\st->st{objIfcDictInit=Just (fa, fb)})
 
 -- | The callback defined here is used when a Dao program makes use of the static initialization
 -- syntax of the Dao programming language, which are expression of this form:
 -- > a = MyType { initA, initB, .... };
 -- > a = MyType(param1, param2, ...., paramN) { initA, initB, .... };
--- When the interpreter sees St.this form of expression, it looks up the 'ObjectInterface' for your
+-- When the interpreter sees St.this form of expression, it looks up the 'Interface' for your
 -- @typ@ and checks if a callback has been defined by 'defDictInit'. If so, then the callback is
 -- evaluated St.with a list of object values passed as the first parameter which contain the object
 -- values written in the parentheses, and a 'T_dict' as the second paramter containing the tree
@@ -6270,36 +6687,36 @@ defDictInit fa fb = updObjIfc(\st->st{objIfcDictInit=Just (fa, fb)})
 -- You can define both 'defDictInit' and 'defListInit', but if both are defined, only 'defDictInit'
 -- will be used.
 defListInit :: Typeable typ => ([Object] -> Exec typ) -> (typ -> [Object] -> Exec typ) -> DaoClassDefM typ ()
-defListInit fa fb = updObjIfc(\st->st{objIfcListInit=Just(fa,fb)})
+defListInit fa fb = _updHDIfcBuilder(\st->st{objIfcListInit=Just(fa,fb)})
 
 -- | Overload update/assignment operators in the Dao programming language, for example @=@, @+=@,
--- @<<=@ and so on. Call St.this method as many times St.with as many different 'UpdateOp's as necessary.
+-- @<<=@ and so on. Call this method as many times with as many different 'UpdateOp's as necessary.
 -- 
--- Like St.with C++, the operator prescedence and associativity is permanently defined by the parser
+-- Like with C++, the operator prescedence and associativity is permanently defined by the parser
 -- and cannot be changed by the overloading mechanism. You can only change how the operator behaves
 -- based on the type of it's left and right hand parameters.
 -- 
--- If you define two callbacks for the same 'UpdateOp', St.this will result in a runtime error,
+-- If you define two callbacks for the same 'UpdateOp', this will result in a runtime error,
 -- hopefully the error will occur during the Dao runtime's object loading phase, and not while
 -- actually executing a program.
 defUpdateOp :: Typeable typ => UpdateOp -> (UpdateOp -> typ -> Object -> Exec Object) -> DaoClassDefM typ ()
-defUpdateOp op fn = updObjIfc(\st->st{objIfcUpdateOpTable=objIfcUpdateOpTable st++[(op, fn)]})
+defUpdateOp op fn = _updHDIfcBuilder(\st->st{objIfcUpdateOpTable=objIfcUpdateOpTable st++[(op, fn)]})
 
 -- | Overload infix operators in the Dao programming language, for example @+@, @*@, or @<<@.
 -- 
--- Like St.with C++, the operator prescedence and associativity is permanently defined by the parser
+-- Like with C++, the operator prescedence and associativity is permanently defined by the parser
 -- and cannot be changed by the overloading mechanism. You can only change how the operator behaves
 -- based on the type of it's left and right hand parameters.
 --
--- If you define two callbacks for the same 'UpdateOp', St.this will result in a runtime error,
+-- If you define two callbacks for the same 'UpdateOp', this will result in a runtime error,
 -- hopefully the error will occur during the Dao runtime's object loading phase, and not while
 -- actually executing a program.
 defInfixOp :: Typeable typ => InfixOp -> (InfixOp -> typ -> Object -> Exec Object) -> DaoClassDefM typ ()
-defInfixOp op fn = updObjIfc $ \st -> st{objIfcInfixOpTable  = objIfcInfixOpTable  st ++ [(op, fn)] }
+defInfixOp op fn = _updHDIfcBuilder $ \st -> st{objIfcInfixOpTable  = objIfcInfixOpTable  st ++ [(op, fn)] }
 
--- | Overload prefix operators in the Dao programming language, for example @@@, @$@, @-@, and @+@.
+-- | Overload prefix operators in the Dao programming language, for example @!@, @~@, @-@, and @+@.
 -- 
--- Like St.with C++, the operator prescedence and associativity is permanently defined by the parser
+-- Like with C++, the operator prescedence and associativity is permanently defined by the parser
 -- and cannot be changed by the overloading mechanism. You can only change how the operator behaves
 -- based on the type of it's left and right hand parameters.
 -- 
@@ -6307,32 +6724,13 @@ defInfixOp op fn = updObjIfc $ \st -> st{objIfcInfixOpTable  = objIfcInfixOpTabl
 -- hopefully the error will occur during the Dao runtime's object loading phase, and not while
 -- actually executing a program.
 defPrefixOp :: Typeable typ => ArithPfxOp -> (ArithPfxOp -> typ -> Exec Object) -> DaoClassDefM typ ()
-defPrefixOp op fn = updObjIfc $ \st -> st{objIfcPrefixOpTable = objIfcPrefixOpTable st ++ [(op, fn)] }
-
--- | Define static functions which can be called on objects of your @typ@. If you define a function here
--- St.with the string "funcName", then in a Dao program, you will be able to write an expression such
--- as: @myObj.funcName(param1, param2, ..., paramN);@.
---
--- It is also possible to instantiate your @typ@ into the 'St.Structured' class in such a way that the
--- dao expression: @myObj.name1.name2.name3@ evaluates to a 'DaoFunc', in which case that
--- 'DaoFunc' will be evaluated using parameters should a function expression be evaluated, such as:
--- @myObj.name1.name2.name3(param1, param2)@. This means if your 'St.Structured' instance
--- evaluates to a function for a label @"name1@", the expression @myObj.name1(param1, param2)@
--- will conflict St.with any method defined St.with 'defMethod'. Should St.this happen, the function returned
--- by the 'St.Structured' instance will be used, rather than the function defined St.with 'defMethod'. The
--- reasoning for St.this is that the Dao program may want to modify the functions of an object at
--- runtime, and so the functions defined at runtime should not be masked by functions defined by
--- 'defMethod'. The 'defMethod' functions, therefore, are the immutable default functions for those
--- function names.
---defMethod :: Typeable typ => Name -> (typ -> DaoFunc) -> DaoClassDefM typ ()
---defMethod nm fn = updObjIfc $ \st ->
---  st{objIfcMethods = T.execUpdateTree (T.goto [nm] >> T.modifyLeaf(<>(Just [fn]))) (objIfcMethods st)}
+defPrefixOp op fn = _updHDIfcBuilder $ \st -> st{objIfcPrefixOpTable = objIfcPrefixOpTable st ++ [(op, fn)] }
 
 defCallable :: Typeable typ => (typ -> Exec [CallableCode]) -> DaoClassDefM typ ()
-defCallable fn = updObjIfc (\st -> st{objIfcCallable=Just fn})
+defCallable fn = _updHDIfcBuilder (\st -> st{objIfcCallable=Just fn})
 
 defDeref :: Typeable typ => (typ -> Exec (Maybe Object)) -> DaoClassDefM typ ()
-defDeref  fn = updObjIfc (\st -> st{objIfcDerefer=Just fn})
+defDeref  fn = _updHDIfcBuilder (\st -> st{objIfcDerefer=Just fn})
 
 -- | Rocket. Yeah. Sail away with you.
 defLeppard :: Typeable typ => rocket -> yeah -> DaoClassDefM typ ()
@@ -6351,9 +6749,9 @@ defLeppard _ _ = return ()
 -- declare the functionality you would like to include in St.this object one line at a time using
 -- the procedural coding style. Each line in the "procedure" will be one of the @def*@ functions,
 -- for example 'autoDefEquality' or 'autoDefOrdering'.
-defObjectInterface :: Typeable typ => typ -> DaoClassDefM typ ig -> ObjectInterface typ
-defObjectInterface init defIfc =
-  ObjectInterface
+interface :: Typeable typ => typ -> DaoClassDefM typ ig -> Interface typ
+interface init defIfc =
+  Interface
   { objHaskellType     = typ
   , objCastFrom        = objIfcCastFrom     ifc
   , objEquality        = objIfcEquality     ifc
@@ -6375,7 +6773,7 @@ defObjectInterface init defIfc =
   }
   where
     typ               = typeOf init
-    ifc               = execState (daoClassDefState defIfc) initObjIfc
+    ifc               = execState (daoClassDefState defIfc) initHDIfcBuilder
     mkArray oiName elems =
       if null elems
         then  Nothing
@@ -6386,7 +6784,22 @@ defObjectInterface init defIfc =
     conflict oiName funcName = error $ concat $
       [ "'Dao.Object.", oiName
       , "' has conflicting functions for ", funcName
-      , " for the 'Dao.Object.ObjectClass' instantiation of the '", show typ
+      , " for the 'Dao.Object.HaskellDataClass' instantiation of the '", show typ
       , "' Haskell data type."
       ]
+
+----------------------------------------------------------------------------------------------------
+
+instance ObjectClass Location where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass Location where
+  haskellDataInterface = interface LocationUnknown $ do
+    autoDefEquality >> autoDefOrdering
+    autoDefToStruct -- >> autoDefFromStruct
+
+instance ToDaoStructClass RefQualifier Object where { toDaoStruct=putNullaryUsingShow; }
+instance ObjectClass      RefQualifier where { obj=new; fromObj=objFromHaskellData; }
+instance HaskellDataClass RefQualifier where
+  haskellDataInterface = interface LOCAL $ do
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
+    -- autoDefToStruct >> autoDefFromStruct
 

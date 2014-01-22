@@ -257,7 +257,7 @@ unitTester =
       (o, weight) <- liftIO $ genRandWeighted maxDepth (fromIntegral i)
       let str           = prettyShow o
       let bin           = D.encode mtab o
---    let tree          = dataToStruct o
+--    let tree          = toDaoStruct o
       let setup isSet o = if isSet cfg then Just o else Nothing
       deepseq o $! seq weight $! return $!
         TestCase
@@ -392,7 +392,7 @@ instance D.HasPrefixTable RandObj D.Byte MethodTable where
     , fmap RandObject D.get
     ]
 instance Structured RandObj Object where
-  dataToStruct o = deconstruct $ case o of
+  toDaoStruct o = deconstruct $ case o of
     RandTopLevel o -> putDataAt "ast" o
     RandObject   o -> putDataAt "obj" o
   structToData = reconstruct $ msum

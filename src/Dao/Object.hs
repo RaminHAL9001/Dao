@@ -56,8 +56,8 @@ import           Control.Monad.State
 -- | This is the data type used as the intermediary between Haskell objects and Dao objects. If you
 -- would like your Haskell data type to be used as a non-opaque data type in a Dao language script,
 -- the first step is to instantiate your data type into this class. The next step would be to
--- instantiate your object into the 'Dao.Evaluator.ObjectClass' class. Instantiating the
--- 'Dao.Evaluator.ObjectClass' class alone will make your object usable in Dao language scripts, but
+-- instantiate your object into the 'Dao.Evaluator.HaskellDataClass' class. Instantiating the
+-- 'Dao.Evaluator.HaskellDataClass' class alone will make your object usable in Dao language scripts, but
 -- it will be an opaque type. Instantiating 'Struct' and declaring 'autoDefStruct' in the
 -- 'defObjectInterface' will allow functions in the Dao language script to read and write
 -- information to your data structure, modifying it during runtime.
@@ -121,10 +121,10 @@ instance HasRandGen value => HasRandGen (Struct value) where
 -- >     Point2D{ get_x::'T_float', get_y::'T_float' }
 -- >   | Point3D{ get_x::'T_float', get_y::'T_float', get_z::'T_float' }
 -- 
--- Lets say you have already instantiated the 'ObjectClass' class and provided the Dao runtime with
+-- Lets say you have already instantiated the 'HaskellDataClass' class and provided the Dao runtime with
 -- a 'Dao.Evaluator.DaoFunc' (via 'Dao.Evaluator.setupDao') that constructs a Point3D at runtime:
 -- > p = Point3D(1.9, 4.4, -2.1);
--- Now you would like to extend the 'ObjectClass' of your Point3D to also be readable at runtime.
+-- Now you would like to extend the 'HaskellDataClass' of your Point3D to also be readable at runtime.
 -- If you instantiate 'ToDaoStructClass' your Dao language script could also read elements from the
 -- point like so:
 -- > distFromOrigin = sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
@@ -134,10 +134,10 @@ instance HasRandGen value => HasRandGen (Struct value) where
 -- > p.y /= distFromOrigin;
 -- > p.z /= distFromOrigin;
 -- 
--- You can convert this to a 'Struct' type using the 'toDaoStruct' function. There are many ways to
+-- You can convert this to a 'Struct' type using the 'fromData' function. There are many ways to
 -- define fields in a 'Struct', here are a few:
 -- > instance 'ToDaoStructClass' Point3D 'Dao.Evaluator.Object' where
--- >     'dataToStruct' = 'toDaoStruct' "@Point2D@" $ do
+-- >     'toDaoStruct' = 'fromData' "@Point2D@" $ do
 -- >         'Dao.Evaluator.putPrimField' "x" get_x
 -- >         'Dao.Evaluator.putPrimField' "y" get_y
 -- >          obj <- 'Control.Monad.Reader.Class.ask'
@@ -147,31 +147,30 @@ instance HasRandGen value => HasRandGen (Struct value) where
 -- >                 'define' "z" ('Dao.Evaluator.obj' z)
 -- >             _             -> return ()
 -- 
--- Finally, you should define the instantiation of Point3D into the 'ObjectClass' class so it
+-- Finally, you should define the instantiation of Point3D into the 'HaskellDataClass' class so it
 -- includes the directive 'Dao.Evaluator.autoDefToStruct'.
 class ToDaoStructClass haskData value where
-  dataToStruct :: haskData -> Predicate (StructError value) (Struct value)
+  toDaoStruct :: ToDaoStruct value haskData ()
 
 -- | Continuing the example from above, if you do want your data type to be modifyable by functions
 -- running in the Dao language runtime, you must instantiate this class, which is facilitated by the
--- 'fromDaoStruct' function.
+-- 'toData' function.
 -- > instance 'FromDaoStructClass' 'Point3D' 'Dao.Evaluator.Object' where
--- >     dataFromStruct = 'fromDaoStruct' $ 'Control.Monad.msum' $
+-- >     fromDaoStruct = 'toData' $ 'Control.Monad.msum' $
 -- >         [ do 'constructor' "@Point2D@"
 -- >              'Control.Applicative.pure' Point3D <*> 'Dao.Evaluator.?' "x" <*> 'Dao.Evaluator.?' "y"
 -- >         , do 'constructor' "@Point3D@"
 -- >              'Control.Applicative.pure' Point3D <*> 'Dao.Evaluator.?' "x" <*> 'Dao.Evaluator.?' "y" <*> 'Dao.Evaluator.@' "z"
 -- >         ]
 -- 
--- Do not forget to define the instantiation of Point3D into the 'ObjectClass' class so it
+-- Do not forget to define the instantiation of Point3D into the 'HaskellDataClass' class so it
 -- includes the directive 'Dao.Evaluator.autoDefFromStruct'.
 -- 
 -- Note that an instance of 'FromDaoStructClass' must also instantiate 'ToDaoStructClass'. I can see no
 -- use for objects that are only writable, that is they can be created at runtime but never
 -- inspected at runtime.
-class ToDaoStructClass haskData value =>
-  FromDaoStructClass haskData value where
-    dataFromStruct :: Struct value -> Predicate (StructError value) haskData
+class ToDaoStructClass haskData value => FromDaoStructClass haskData value where
+  fromDaoStruct :: FromDaoStruct value haskData
 
 -- | If there is ever an error converting to or from your Haskell data type, you can
 -- 'Control.Monad.Error.throwError' a 'StructError'.
@@ -217,18 +216,15 @@ mkFieldName :: (UStrType name, MonadPlus m) => name -> m Name
 mkFieldName name = mplus (mkLabel name) $ fail "invalid field name"
 
 -- | This is a handy monadic and 'Data.Functor.Applicative' interface for instantiating
--- 'dataToStruct' in the 'ToDaoStructClass' class. It takes the form of a writer because what you
--- /write/ to the 'Struct' here in the Haskell language will be /readable/ by the Dao language
--- runtime. Think of it as "this is the function type used when the Dao runtime wants to read
--- information from my data structure."
+-- 'toDaoStruct' in the 'ToDaoStructClass' class.
 newtype ToDaoStruct value haskData a
   = ToDaoStruct
-    { structWriterPredicate :: PredicateT (StructError value) (State (Struct value, haskData)) a }
+    { run_toDaoStruct :: PredicateT (StructError value) (State (Struct value, haskData)) a }
   deriving (Functor, Applicative, Alternative, MonadPlus)
 
 instance Monad (ToDaoStruct value haskData) where
   return = ToDaoStruct . return
-  m >>= f = ToDaoStruct $ structWriterPredicate m >>= structWriterPredicate . f
+  m >>= f = ToDaoStruct $ run_toDaoStruct m >>= run_toDaoStruct . f
   fail msg = throwError $ nullValue{ structErrMsg = Just $ ustr msg }
 
 instance MonadState (Struct value) (ToDaoStruct value haskData) where
@@ -240,32 +236,94 @@ instance MonadReader haskData (ToDaoStruct value haskData) where
   local upd f = ToDaoStruct $ PredicateT $ do
     haskData <- gets snd
     modify (\ (struct, _) -> (struct, upd haskData))
-    a <- runPredicateT $ structWriterPredicate f
+    a <- runPredicateT $ run_toDaoStruct f
     modify (\ (struct, _) -> (struct, haskData))
     return a
 
 instance MonadError (StructError value) (ToDaoStruct value haskData) where
   throwError err = get >>= \struct -> ToDaoStruct $ throwError $
     err{ structErrName = structErrName err <|> (Just $ toUStr $ structName struct) }
-  catchError f catch = ToDaoStruct $ catchError (structWriterPredicate f) (structWriterPredicate . catch)
+  catchError f catch = ToDaoStruct $ catchError (run_toDaoStruct f) (run_toDaoStruct . catch)
 
 instance MonadPlusError (StructError value) (ToDaoStruct value haskData) where
-  catchPredicate = ToDaoStruct . catchPredicate . structWriterPredicate
+  catchPredicate = ToDaoStruct . catchPredicate . run_toDaoStruct
   predicate      = ToDaoStruct . predicate
 
--- | This function is typically used to instantiate 'dataToStruct'. It takes three parameters: first
--- a string defining the label for the constructor, second a computation to convert your data type
--- to the 'Struct' using the 'ToDaoStruct' monad, and third the data type you want to convert. You can
--- use functions like 'defineWith' and 'setField' to build your 'ToDaoStruct' computation.
-toDaoStruct :: forall name value haskData x . UStrType name => name -> ToDaoStruct value haskData x -> haskData -> Predicate (StructError value) (Struct value)
-toDaoStruct name pred hask = mkStructName name >>= \name ->
-  evalState (runPredicateT $ structWriterPredicate $ pred >> get) $ (Struct{ structName=name, fieldMap=M.empty }, hask)
+-- | This function is typically used to evaluate the instantiation of 'toDaoStruct'. It takes two
+-- parameters: first a computation to convert your data type to the 'Struct' using the 'ToDaoStruct'
+-- monad, and second the data type you want to convert. You can use functions like 'defineWith' and
+-- 'setField' to build your 'ToDaoStruct' computation. For example, lets say you have a Haskell data
+-- type called @mydat::MyData@ where @MyData@ instantiates 'ToDaoStruct', you can convert it to a
+-- Dao 'Struct' like so:
+-- > 'fromData' 'toDaoStruct' mydat
+-- Notice how it reads similar to ordinary English, "convert from (Haskell) data to a Dao 'Struct'"
+fromData
+  :: ToDaoStruct value haskData x
+  -> haskData
+  -> Predicate (StructError value) (Struct value)
+fromData pred hask = evalState (runPredicateT $ run_toDaoStruct $ pred >> get) $
+  (Struct{ structName=nil, fieldMap=M.empty }, hask)
 
--- | When you use 'toDaoStruct' you provide an initial constructor name. If you need to change the
--- name of the constructor at some point, for example when you observe some condition of the
--- @haskData@ type that merits an alternative constructor name.
+-- | Overwrite the current 'Struct' with a 'Struct' produced by a 'toDaoStruct' instance of a
+-- different type. This is useful when instantiating a newtype or a data type constructor that
+-- contains only one item (the "inner" item), and the data type of the inner item instantiates
+-- 'ToDaoStructClass', you can simply use the instance of 'toDaoStruct' for that data type to
+-- instantiate 'toDaoStruct' for the outer data type. Just be sure that the constructor name for the
+-- inner type does not conflict with the constructor name for the outer data type. For example:
+-- > data X = X1 { ... } | X2 { ... }
+-- > instance 'DaoToStructClass' X ('Value' any) where { ... }
+-- > data Y = Y1 { ... } | Y2 { ... }
+-- > instance 'DaoToStructClass' Y ('Value' any) where { ... }
+-- > 
+-- > newtype WrapX = WrapX { unwrapX :: X }
+-- > instance 'DaoToStructClass' WrapX ('Value' any) where
+-- >     'toDaoStruct' = 'Control.Monad.Reader.ask' >>= 'innerToStruct' . unwrapX
+-- > 
+-- > data X_or_Y = Is_X { getX :: X } | Is_Y { getY :: Y }
+-- > instance 'DaoToStructClass' X_or_Y ('Value' any) where
+-- >     'toDaoStruct' = 'Control.Monad.Reader.ask' >>= \xy -> case xy of
+-- >         Is_X x -> 'innerToStruct' x
+-- >         Is_Y y -> 'innerToStruct' y
+-- 
+-- The inverse of this operation in the 'FromDaoStructClass' is 'Prelude.fmap', or equivalently the
+-- 'Control.Applicative.<$>' operator. Here is an example using 'Control.Applicative.<$>':
+-- > instance 'FromDaoStructClass' WrapX ('Value' any) where
+-- >     'fromDaoStruct' = WrapX <$> 'fromDaoStruct'
+-- > 
+-- > instance 'FromDaoStructClass' X_or_Y ('Value' any) where
+-- >     'fromDaoStruct' = Is_X <$> 'fromDaoStruct' <|> Is_Y <$> 'fromDaoStruct'
+-- 
+-- Another way to do exactly the same thing as the example above is:
+-- > instance 'FromDaoStructClass' WrapX ('Value' any) where
+-- >     'fromDaoStruct' = 'Prelude.fmap' WrapX 'fromDaoStruct'
+-- > 
+-- > instance 'FromDaoStructClass' X_or_Y ('Value' any) where
+-- >     'fromDaoStruct' = 'Prelude.fmap' Is_X 'fromDaoStruct' `'Control.Monad.mplus'` 'Prelude.fmap' Is_Y 'fromDaoStruct'
+-- 
+-- It is possible to use 'renameConstructor' after evaluating 'innerToStruct' to use a different
+-- constructor name while keeping all of the fields set by the evaluation of 'innerToStruct',
+-- however if this is done, 'Prelude.fmap' will backtrack, so you should use 'innerFromStruct'
+-- instead.
+innerToStruct :: ToDaoStructClass inner value => inner -> ToDaoStruct value haskData ()
+innerToStruct o = ask >>= \haskData ->
+  predicate (fromData toDaoStruct o) >>= ToDaoStruct . lift . put . flip (,) haskData
+
+-- | Use this function to set the 'structName' name of the constructor at some point, for example
+-- when you observe some condition of the @haskData@ type that merits an alternative constructor
+-- name.
 renameConstructor :: UStrType name => name -> ToDaoStruct value haskData ()
 renameConstructor name = mkStructName name >>= \name -> modify $ \struct -> struct{ structName=name }
+
+-- | Like 'renameConstructor' but deletes everything and makes the 'Struct' being constructed into a
+-- 'Nullary'. You would typically do this only when you are instantiating 'toDaoStruct' and you
+-- only have one constructor to define.
+makeNullary :: UStrType name => name -> ToDaoStruct value haskData ()
+makeNullary name = mkStructName name >>= \name -> put $ Nullary{ structName=name }
+
+-- | Use this when you have derived the "Prelude.Show" class for a data type where every constructor
+-- in that data type takes no parameters, for example, the 'Prelude.Ordering' data type.
+putNullaryUsingShow :: Show haskData => ToDaoStruct value haskData ()
+putNullaryUsingShow = ask >>= makeNullary . show
 
 define :: UStrType name => name -> value -> ToDaoStruct value haskData value
 define name value = do
@@ -283,7 +341,7 @@ setField :: UStrType name => name -> (haskData -> value) -> ToDaoStruct value ha
 setField name f = ask >>= define name . f
 
 -- | This is a handy monadic and 'Data.Functor.Applicative' interface for instantiating
--- 'dataFromStruct' in the 'FromDaoStructClass' class. It takes the form of a reader because what you
+-- 'fromDaoStruct' in the 'FromDaoStructClass' class. It takes the form of a reader because what you
 -- /read/ from the 'Struct' here in the Haskell language was /written/ by the Dao language
 -- runtime. Think of it as "this is the data type used when the Dao runtime wants to write
 -- information to my data structure."
@@ -299,34 +357,38 @@ setField name f = ask >>= define name . f
 -- /NOTE:/ refer to the documentation of the 'constructor' monad for an important note on reading
 -- Haskell data types with multiple constructors.
 newtype FromDaoStruct value a =
-  FromDaoStruct{ structReaderPredicate :: PredicateT (StructError value) (State (Struct value)) a }
+  FromDaoStruct{ run_fromDaoStruct :: PredicateT (StructError value) (State (Struct value)) a }
   deriving (Functor, Applicative, Alternative, MonadPlus)
 
 instance Monad (FromDaoStruct value) where
   return = FromDaoStruct . return
-  m >>= f = FromDaoStruct $ structReaderPredicate m >>= structReaderPredicate . f
+  m >>= f = FromDaoStruct $ run_fromDaoStruct m >>= run_fromDaoStruct . f
   fail msg = throwError $ nullValue{ structErrMsg = Just (ustr msg) }
 
 instance MonadReader (Struct value) (FromDaoStruct value) where
   ask = FromDaoStruct $ lift get
   local upd f = FromDaoStruct $ PredicateT $ get >>= \st ->
-   return $ evalState (runPredicateT $ structReaderPredicate f) (upd st)
+   return $ evalState (runPredicateT $ run_fromDaoStruct f) (upd st)
 
 instance MonadError (StructError value) (FromDaoStruct value) where
   throwError err = ask >>= \struct -> FromDaoStruct $ throwError $
     err { structErrName = structErrName err <|> (Just $ toUStr $ structName struct) }
-  catchError (FromDaoStruct f) catch = FromDaoStruct $ catchError f (structReaderPredicate . catch)
+  catchError (FromDaoStruct f) catch = FromDaoStruct $ catchError f (run_fromDaoStruct . catch)
 
 instance MonadPlusError (StructError value) (FromDaoStruct value) where
-  catchPredicate = FromDaoStruct . catchPredicate . structReaderPredicate
+  catchPredicate = FromDaoStruct . catchPredicate . run_fromDaoStruct
   predicate = FromDaoStruct . predicate
 
--- | This function is typically used to instantiate 'dataFromStruct'. It takes three parameters: first
--- a string defining the label for the constructor, second a computation to convert your data type
--- to the 'Struct' using the 'ToDaoStruct' monad, and third the data type you want to convert. You can
--- use functions like 'defineWith' and 'setField' to build your 'ToDaoStruct' computation.
-fromDaoStruct :: FromDaoStruct value haskData -> Struct value -> Predicate (StructError value) haskData
-fromDaoStruct (FromDaoStruct f) = evalState (runPredicateT f)
+-- | This function is typically used to evaluate the instantiation of 'fromDaoStruct'. It takes two
+-- parameters: first a computation to convert your data type to the Haskell data type from a
+-- 'Struct' using the 'FromDaoStruct' monad, and second the 'Struct' you want to convert. For
+-- example, if you have a Haskell data type 'MyData' which instantiates 'FromDaoStruct', you could
+-- construct it from a properly formatted Dao 'Struct' using this statement:
+-- > 'toData' 'fromDaoStruct' struct
+-- Notice that this reads similar to ordinary English: "convert to (Haskell) data from a dao
+-- struct."
+toData :: FromDaoStruct value haskData -> Struct value -> Predicate (StructError value) haskData
+toData (FromDaoStruct f) = evalState (runPredicateT f)
 
 -- | Checks if the 'structName' is equal to the given name, and if not then backtracks. This is
 -- important when constructing Haskell data types with multiple constructors.
@@ -335,7 +397,7 @@ fromDaoStruct (FromDaoStruct f) = evalState (runPredicateT f)
 -- 'Control.Monad.msum' function like so:
 -- > data MyData = A | B Int | C Int Int
 -- > instance 'FromDaoStruct' ('Dao.Evaluator.Object) where
--- >     'dataFromStruct' = 'fromDaoStruct' $ 'Control.Monad.msum' $
+-- >     'fromDaoStruct' = 'toData' $ 'Control.Monad.msum' $
 -- >         [ 'constructor' "A" >> return a,
 -- >           do 'constructor' "B"
 -- >              B 'Control.Applicative.<$>' ('field' "b1" >>= 'Dao.Evaluator.primType')
@@ -349,6 +411,58 @@ fromDaoStruct (FromDaoStruct f) = evalState (runPredicateT f)
 -- 'Control.Monad.fail' statement as the final item in the 'Control.Monad.msum' list.
 constructor :: UStrType name => name -> FromDaoStruct value ()
 constructor name = (pure (==) <*> mkStructName name <*> asks structName) >>= guard
+
+-- | The inverse operation of 'innerToStruct', but looks for a constructor of a different name. This
+-- is important because every 'toDaoStruct' should set it's own unique constructor name, and if you
+-- set a different constructor name while using the same 'fromDaoStruct' function to read the fields
+-- of the struct, the 'fromDaoStruct' function will backtrack seeing the wrong constructor name.
+-- If you have not renamed the constructor with 'renameConstructor' after using 'innerToStruct', do
+-- not use this function, simply use 'Prelude.fmap' or the 'Control.Applicative.<$>' operator
+-- instead.
+-- 
+-- This function temporarily changes the constructor name to the constructor set by the @inner@
+-- type, that way the 'fromDaoStruct' instance of the @inner@ type will be fooled and read the
+-- 'Struct' fields without backtracking. For example:
+-- > newtype X = X{ getX :: Int }
+-- > instance 'ToDataStruct' X where
+-- >     'toDaoStruct' = do
+-- >         'renameConstructor' "X"
+-- >         "getX" 'Dao.Object..=@' getX
+-- > 
+-- > newtype Y = Y{ innerX :: X }
+-- > instance 'ToDataStruct' Y where
+-- >     'toDaoStruct' = do
+-- >         -- the 'innerToStruct' function will use the 'toDaoStruct' for X
+-- >         'Control.Monad.Reader.ask' >>= 'innerToStruct' . innerX
+-- >         -- then rename the constructor from "X" to "Y"
+-- >         'renameConstructor' "Y"
+-- > 
+-- Now when we want to define the accompanying 'FromDaoStructClass', we need to remember that we
+-- used 'innerToStruct' and changed the 'structName' from "X" to "Y". Simply using 'Prelude.fmap'
+-- (or equivalently 'Control.Applicative.<$>') will not work because the instance of 'fromDaoStruct'
+-- for the @X@ data type will backtrack when it sees the 'structName' is "Y".
+-- > instance 'FromDaoStructClass' Y where
+-- >     'fromDaoStruct' = Y 'Control.Applicative.<$>' 'fromDaoStruct' -- /WRONG!/ This will always backtrack.
+-- 
+-- The correct way to do it is to use 'innerFromStruct' like so:
+-- > instance 'FromDaoStructClass' Y where
+-- >     'fromDaoStruct' = 'innerFromStruct' "X" Y -- CORRECT!
+-- 
+innerFromStruct
+  :: (UStrType name, FromDaoStructClass inner value)
+  => name -> (inner -> haskData) -> FromDaoStruct value haskData
+innerFromStruct tempName f = do
+  name     <- asks structName
+  tempName <- mkStructName tempName
+  let setname name = FromDaoStruct $ lift $ modify $ \struct -> struct{ structName=name }
+  setname tempName >> fromDaoStruct >>= \o -> setname name >> return (f o)
+
+-- | Succeeds if the current 'Struct' is a 'Nullary' where the 'structName' is equal to the name
+-- given to this function.
+nullary :: UStrType name => name -> FromDaoStruct value ()
+nullary name = ask >>= \struct -> case struct of
+  Nullary{} -> constructor name
+  _         -> mzero
 
 -- | If an error is thrown using 'Control.Monad.Error.throwError' or 'Control.Monad.fail' within the
 -- given 'FromDaoStruct' function, the 'structErrField' will automatically be set to the provided
@@ -415,15 +529,17 @@ checkEmpty = FromDaoStruct (lift get) >>= \st -> case st of
   Nullary{} -> return ()
 
 instance ToDaoStructClass (StructError (Value any)) (Value any) where
-  dataToStruct = toDaoStruct "StructError" $ do
+  toDaoStruct = do
     asks structErrMsg    >>= optionalField "message" . fmap OString
     asks structErrName   >>= optionalField "structName" . fmap OString
     asks structErrField  >>= optionalField "field" . fmap OString
     asks structErrValue  >>= optionalField "value"
-    asks structErrExtras >>= optionalField "extras" . Just . OList . fmap (ORef . Unqualified . Reference . (:[]))
+    asks structErrExtras >>= optionalField "extras" .
+      Just . OList . fmap (ORef . Unqualified . Reference . (:[]))
+    return ()
 
 instance FromDaoStructClass (StructError (Value any)) (Value any) where
-  dataFromStruct = fromDaoStruct $ do
+  fromDaoStruct = do
     constructor "StructError"
     let str o = case o of
           OString o -> return o

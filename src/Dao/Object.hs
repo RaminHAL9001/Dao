@@ -446,16 +446,15 @@ constructor name = (pure (==) <*> mkStructName name <*> asks structName) >>= gua
 -- 
 -- The correct way to do it is to use 'innerFromStruct' like so:
 -- > instance 'FromDaoStructClass' Y where
--- >     'fromDaoStruct' = 'innerFromStruct' "X" Y -- CORRECT!
+-- >     'fromDaoStruct' = Y 'Control.Applicative.<$> 'innerFromStruct' "X" -- CORRECT!
 -- 
-innerFromStruct
-  :: (UStrType name, FromDaoStructClass inner value)
-  => name -> (inner -> haskData) -> FromDaoStruct value haskData
-innerFromStruct tempName f = do
+innerFromStruct :: (UStrType name, FromDaoStructClass inner value) => name -> FromDaoStruct value inner
+innerFromStruct tempName = do
   name     <- asks structName
   tempName <- mkStructName tempName
   let setname name = FromDaoStruct $ lift $ modify $ \struct -> struct{ structName=name }
-  setname tempName >> fromDaoStruct >>= \o -> setname name >> return (f o)
+  o <- setname tempName >> mplus fromDaoStruct (setname name >> mzero)
+  setname name >> return o
 
 -- | Succeeds if the current 'Struct' is a 'Nullary' where the 'structName' is equal to the name
 -- given to this function.
@@ -463,6 +462,15 @@ nullary :: UStrType name => name -> FromDaoStruct value ()
 nullary name = ask >>= \struct -> case struct of
   Nullary{} -> constructor name
   _         -> mzero
+
+-- | Use the instantiation of 'Prelude.Read' derived for a type @haskData@ to construct the
+-- @haskData from the 'structName' stored in a 'Nullary' 'Struct'.
+getNullaryWithRead :: Read haskData => FromDaoStruct value haskData
+getNullaryWithRead = ask >>= \struct -> case struct of
+  Nullary{ structName=name } -> case readsPrec 0 (uchars name) of
+    [(haskData, "")] -> return haskData
+    _ -> mzero
+  _ -> mzero
 
 -- | If an error is thrown using 'Control.Monad.Error.throwError' or 'Control.Monad.fail' within the
 -- given 'FromDaoStruct' function, the 'structErrField' will automatically be set to the provided
@@ -790,7 +798,7 @@ data RefQualifier
   | STATIC -- ^ a local variable stack specific to a 'Subroutine' that lives on even after the
            -- subroutine has completed.
   | GLOBAL -- ^ the global variable space for the current module.
-  deriving (Eq, Ord, Typeable, Enum, Ix, Show)
+  deriving (Eq, Ord, Typeable, Enum, Ix, Show, Read)
 
 instance Bounded RefQualifier where { minBound=LOCAL; maxBound=GLOBAL; }
 

@@ -31,7 +31,6 @@ import           Dao.Token
 import           Dao.Predicate
 import           Dao.PPrint
 import           Dao.Parser  hiding (isEOF)
-import           Dao.Struct
 import           Dao.Random
 import qualified Dao.Binary        as D
 import           Dao.Evaluator
@@ -390,15 +389,6 @@ instance D.HasPrefixTable RandObj D.Byte MethodTable where
           , " to mulitple ambiguous data structures"
           ]
     , fmap RandObject D.get
-    ]
-instance Structured RandObj Object where
-  toDaoStruct o = deconstruct $ case o of
-    RandTopLevel o -> putDataAt "ast" o
-    RandObject   o -> putDataAt "obj" o
-  structToData = reconstruct $ msum
-    [ fmap RandTopLevel (tryGetDataAt "ast")
-    , fmap RandObject   (tryGetDataAt "obj")
-    , fail "Test program failed while trying to structure it's own test data"
     ]
 instance NFData RandObj where
   rnf (RandTopLevel a) = deepseq a ()

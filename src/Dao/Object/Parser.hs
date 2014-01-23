@@ -28,7 +28,7 @@ import           Dao.PPrint
 import           Dao.Object
 import           Dao.Predicate
 import           Dao.Parser
-import           Dao.Evaluator hiding (asString)
+import           Dao.Evaluator hiding (asString, opt)
 
 import           Control.Applicative
 import           Control.Monad

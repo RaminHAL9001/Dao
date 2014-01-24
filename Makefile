@@ -18,7 +18,7 @@
 # <http://www.gnu.org/licenses/agpl.html>.
 ####################################################################################################
 
-.PHONEY: all test clean update edit info
+.PHONEY: all test clean update edit info O3
 
 shell:=bash
 slash:=/
@@ -49,6 +49,9 @@ all: dao test
 
 dao: $(CHANGED_FILES) src/dao-main.hs
 	$(GHC_BUILD) -o dao src/dao-main.hs $(CHANGED_FILES) $(LINKER_FLAGS)
+
+O3: $(CHANGED_FILES) src/dao-main.hs
+	$(GHC_BUILD) -o dao src/dao-main.hs $(CHANGED_FILES) $(LINKER_FLAGS) -O3
 
 test: debug debug/test
 

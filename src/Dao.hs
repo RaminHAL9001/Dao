@@ -21,13 +21,13 @@
 
 -- | This module is pretty much where everything begins. It is the smallest interface that can be
 -- imported by any Haskell program making use of the Dao System. You can use the functions in this
--- module to initialize a 'Dao.Object.Runtime' data structure, then use it to start an input query
+-- module to initialize a 'Dao.Interpreter.Runtime' data structure, then use it to start an input query
 -- loop with 'inputQueryLoop'. The query loop requires you pass a callback function that, on each
--- evaluation, returns the next string to be used the query to the 'Dao.Object.Runtime'.
+-- evaluation, returns the next string to be used the query to the 'Dao.Interpreter.Runtime'.
 --
 -- To have more control over execution of string queries, you will need to import the "Dao.Tasks"
--- module and make use of those functions to create 'Dao.Object.Job's from string queries, then wait
--- for those 'Dao.Object.Job's to complete.
+-- module and make use of those functions to create 'Dao.Interpreter.Job's from string queries, then wait
+-- for those 'Dao.Interpreter.Job's to complete.
 module Dao
   ( module Dao.String
   , module Dao.Object
@@ -41,7 +41,7 @@ import           Dao.Predicate
 import           Dao.PPrint
 import           Dao.Token
 import           Dao.Parser
-import           Dao.Object.Parser
+import           Dao.Interpreter.Parser
 
 import           Data.Function
 import           Data.Monoid
@@ -107,9 +107,9 @@ instance Executable Action (Maybe Object) where
 -- 'Action's within the group will all be evaluated inside of the 'ExecUnit'. Use
 -- 'Dao.Evaluator.execute' to execute an 'ActionGroup' in the current thread.
 -- 
--- Instantiates 'Executable' such that for every 'Dao.Object.Action' in the
--- 'Dao.Object.ActionGroup', evaluate that 'Dao.Object.Action' in a the current thread but in using
--- the 'Dao.Object.ExecUnit' of the given 'Dao.Object.ActionGroup'.
+-- Instantiates 'Executable' such that for every 'Dao.Interpreter.Action' in the
+-- 'Dao.Interpreter.ActionGroup', evaluate that 'Dao.Interpreter.Action' in a the current thread but in using
+-- the 'Dao.Interpreter.ExecUnit' of the given 'Dao.Interpreter.ActionGroup'.
 data ActionGroup
   = ActionGroup
     { actionExecUnit :: ExecUnit
@@ -135,8 +135,8 @@ loadEveryModule args = do
   deps <- importFullDepGraph args
   mapM_ loadModule (getDepFiles deps)
 
--- | Simply converts an 'Dao.Object.AST.AST_SourceCode' directly to a list of
--- 'Dao.Object.TopLevelExpr's.
+-- | Simply converts an 'Dao.Interpreter.AST.AST_SourceCode' directly to a list of
+-- 'Dao.Interpreter.TopLevelExpr's.
 evalTopLevelAST :: AST_SourceCode -> Exec Program
 evalTopLevelAST ast = case toInterm ast of
   [o] -> return o
@@ -195,7 +195,7 @@ loadModule path = do
         Backtrack -> execThrow $ obj [obj path, obj "does not appear to be a valid Dao source file"]
         PFail err -> loadModParseFailed (Just path) err
 
--- | Takes a non-dereferenced 'Dao.Object.Object' expression which was returned by 'execute'
+-- | Takes a non-dereferenced 'Dao.Interpreter.Object' expression which was returned by 'execute'
 -- and converts it to a file path. This is how "import" statements in Dao scripts are evaluated.
 -- This function is called by 'importDepGraph', and 'importFullDepGraph'.
 objectToImport :: UPath -> Object -> Location -> Exec [UPath]
@@ -340,7 +340,7 @@ evalScriptString instr =
       OK   expr -> concatMap toInterm expr
 
 -- | Evaluates the @EXIT@ scripts for every presently loaded dao program, and then clears the
--- 'Dao.Object.pathIndex', effectively removing every loaded dao program and idea file from memory.
+-- 'Dao.Interpreter.pathIndex', effectively removing every loaded dao program and idea file from memory.
 daoShutdown :: Exec ()
 daoShutdown = do
   idx <- asks pathIndex

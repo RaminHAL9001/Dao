@@ -35,12 +35,12 @@
 -- no attempt to reduce data entropy.
 --
 -- Arbitrary data types can be encoded as long as they instantiate 'Data.Typeable.Typeable' and
--- 'Dao.Object.ObjectInterface' and have been made available to the 'Dao.Object.Runtime' during
+-- 'Dao.Interpreter.ObjectInterface' and have been made available to the 'Dao.Interpreter.Runtime' during
 -- initialization of the Dao program. Each new type placed in the stream creates an integer tag in
 -- an index with the 'Data.Typeable.TypeRep', and every item of the type that is placed after that
 -- tag is prefixed with the integer index value. When decoding, the index of tags is constructed on
 -- the fly as they are read from arbitrary points in the stream, and the index is used to select the
--- correct binary decoder from the 'Dao.Object.ObjectInterface' stored in the 'Dao.Object.Runtime'.
+-- correct binary decoder from the 'Dao.Interpreter.ObjectInterface' stored in the 'Dao.Interpreter.Runtime'.
 -- 
 -- Of course, this module is not a full re-writing of "Data.Binary", it relies heavily on the
 -- "Data.Binary" module, and provides a Dao-friendly wrapper around it.
@@ -245,10 +245,10 @@ newInStreamID typ = S.get >>= \st -> let idx = encodeIndex st in case M.lookup t
 
 -- | When decoding a byte stream, it is up to you to check for the 'InStreamIndex'ies that are
 -- scattered throughout. To do this, 'newInStreamID' is only called after a special escape byte
--- prefix is seen, for example, the byte prefix used when the 'Dao.Object.OHaskell' constructor is
+-- prefix is seen, for example, the byte prefix used when the 'Dao.Interpreter.OHaskell' constructor is
 -- to be encoded. Once this prefix is decoded you should call 'newInStreamID'. That way, when you
 -- are decoding the byte stream, you will know that 'updateTypes' must be called whenever you decode
--- the byte prefix for 'Dao.Object.OHaskell'.
+-- the byte prefix for 'Dao.Interpreter.OHaskell'.
 -- 
 -- This function simply checks if a 'InStreamIndex' exists at the current location in the byte
 -- stream. If it does not exist, this function simply returns and does nothing. If it does exist,

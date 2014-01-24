@@ -34,7 +34,7 @@ import           Dao.Parser  hiding (isEOF)
 import           Dao.Random
 import qualified Dao.Binary        as D
 import           Dao.Object
-import           Dao.Object.Parser
+import           Dao.Interpreter.Parser
 
 import           Control.Applicative
 import           Control.DeepSeq
@@ -69,12 +69,12 @@ type DaoLangResultM = GResultM    UnitConfig UnitEnv UnitStats TestCase TestResu
 data UnitConfig
   = UnitConfig
     { doTestParser      :: Bool
-      -- ^ Enable testing of the "Dao.Parser","Dao.Object.Parser", "Dao.PPrintM", and
-      -- "Dao.Object.PPrintM" modules. The default value is 'Prelude.True'.
+      -- ^ Enable testing of the "Dao.Parser","Dao.Interpreter.Parser", "Dao.PPrintM", and
+      -- "Dao.Interpreter.PPrintM" modules. The default value is 'Prelude.True'.
     , doTestSerializer  :: Bool
-      -- ^ Enable testing of the "Dao.Object.Binary" module. The default value is 'Prelude.True'.
+      -- ^ Enable testing of the "Dao.Interpreter.Binary" module. The default value is 'Prelude.True'.
 --  , doTestStructizer  :: Bool
-      -- ^ Enable testing of the "Dao.Struct" and "Dao.Object.Struct" module. The default value is
+      -- ^ Enable testing of the "Dao.Struct" and "Dao.Interpreter.Struct" module. The default value is
       -- 'Prelude.True'.
     , maxRecurseDepth   :: Int
     -- ^ The "Dao.Random" module generates objects within objects recursively. This parameter sets
@@ -203,7 +203,7 @@ tryTest getTestItem testFunc = get >>= \r -> maybe (return ()) testFunc (getTest
 -- | A 'UnitTester' for the Dao language. This does not merely test the parser, it also tests the pretty
 -- printer, the binary encoder/decoder, and the tree encoder/decoder, testing the full abstract
 -- syntax tree, semantics tree, and related encodings of these trees. Because the random syntax
--- generator in the "Dao.Object.Random" module is used to generate tests, this module is also
+-- generator in the "Dao.Interpreter.Random" module is used to generate tests, this module is also
 -- tested.
 unitTester :: DaoLangUnit
 unitTester =

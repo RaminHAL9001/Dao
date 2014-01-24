@@ -267,9 +267,9 @@ testInIO env test = runReaderT (testToReaderT test) env
 ----------------------------------------------------------------------------------------------------
 
 -- | This data strcture derives 'Prelude.Read' so the test program can be configured from a plain
--- text file. All of these tests randomly generate objects using the "Dao.Object.Random" module, so
--- this module is also being tested, as well as the "Dao.Object.Parser", "Dao.Object.Binary", and
--- "Dao.Object.Struct".
+-- text file. All of these tests randomly generate objects using the "Dao.Interpreter.Random" module, so
+-- this module is also being tested, as well as the "Dao.Interpreter.Parser", "Dao.Interpreter.Binary", and
+-- "Dao.Interpreter.Struct".
 data GTestConfig configuration
   = TestConfig
     { threadCount       :: Int

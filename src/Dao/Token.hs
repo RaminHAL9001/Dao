@@ -1,5 +1,5 @@
 -- "src/Dao/Token.hs"  Defines the 'Token' and 'Location' types
--- used by "src/Dao/Object.hs" and "src/Dao/Parser.hs".
+-- used by "src/Dao/Interpreter.hs" and "src/Dao/Parser.hs".
 -- 
 -- Copyright (C) 2008-2014  Ramin Honary.
 -- This file is part of the Dao System.
@@ -41,7 +41,7 @@ type TabWidth  = Word
 -- | If an object contains a location, it can instantiate this class to allow locations to be
 -- updated or deleted (deleted by converting it to 'LocationUnknown'. Only three types in this
 -- module instantiate this class, but any data type that makes up an Abstract Syntax Tree, for
--- example 'Dao.Object.ObjectExpr' or 'Dao.Object.AST.ObjectExrpr' also instantiate this class.
+-- example 'Dao.Interpreter.ObjectExpr' or 'Dao.Interpreter.AST.ObjectExrpr' also instantiate this class.
 class HasLocation a where
   getLocation :: a -> Location
   setLocation :: a -> Location -> a

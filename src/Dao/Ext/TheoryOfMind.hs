@@ -26,13 +26,13 @@
 
 -- | This module is pretty much where everything begins. It is the smallest interface that can be
 -- imported by any Haskell program making use of the Dao System. You can use the functions in this
--- module to initialize a 'Dao.Object.Runtime' data structure, then use it to start an input query
+-- module to initialize a 'Dao.Interpreter.Runtime' data structure, then use it to start an input query
 -- loop with 'inputQueryLoop'. The query loop requires you pass a callback function that, on each
--- evaluation, returns the next string to be used the query to the 'Dao.Object.Runtime'.
+-- evaluation, returns the next string to be used the query to the 'Dao.Interpreter.Runtime'.
 --
 -- To have more control over execution of string queries, you will need to import the "Dao.Tasks"
--- module and make use of those functions to create 'Dao.Object.Job's from string queries, then wait
--- for those 'Dao.Object.Job's to complete.
+-- module and make use of those functions to create 'Dao.Interpreter.Job's from string queries, then wait
+-- for those 'Dao.Interpreter.Job's to complete.
 
 module Dao.Ext.TheoryOfMind where
 

@@ -1,5 +1,5 @@
--- "src/Dao/Object/Parser.hs" makes use of "Dao.Parser" to parse
--- parse 'Dao.Object.AST_Object' expressions.
+-- "src/Dao/Interpreter/Parser.hs" makes use of "Dao.Parser" to parse
+-- parse 'Dao.Interpreter.AST_Object' expressions.
 -- 
 -- Copyright (C) 2008-2014  Ramin Honary.
 -- This file is part of the Dao System.
@@ -20,7 +20,7 @@
 
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Dao.Object.Parser where
+module Dao.Interpreter.Parser where
 
 import           Dao.String
 import           Dao.Token
@@ -209,7 +209,7 @@ optSpace :: DaoParser [Comment]
 optSpace = mplus space (return [])
 
 -- | Evaluates a 'DaoParser' within a cluster of optional spaces and comments, returning the result
--- of the parser wrapped in a 'Dao.Object.Com' constructor. If the given 'DaoParser' backtracks, the
+-- of the parser wrapped in a 'Dao.Interpreter.Com' constructor. If the given 'DaoParser' backtracks, the
 -- comments that were parsed before the 'DaoParser' was evaluated are buffered so a second call two
 -- successive calls to this function return immediately. For example in an expression like:
 -- > 'Control.Monad.msum' ['commented' p1, 'commented' p2, ... , 'commented' pN]
@@ -566,7 +566,7 @@ commaSepd errMsg close voidVal parser constr =
 
 -- More than one parser has need of 'commaSepd' as a parameter to 'commented', but passing
 -- 'commaSped' to 'commented' will return a value of type:
--- > 'Dao.Object.Com' (['Dao.Object.Com'], 'Dao.Parser.Location')
+-- > 'Dao.Interpreter.Com' (['Dao.Interpreter.Com'], 'Dao.Parser.Location')
 -- which is not useful for constructors of the abstract syntax tree. This function takes the
 -- comments around the pair and maps the first item of the pair to the comments, returning an
 -- uncommented pair.
@@ -718,7 +718,7 @@ objectPTab = mconcat [singletonOrContainerPTab, arithPrefixPTab, objLValuePTab]
 object :: DaoParser AST_Object
 object = joinEvalPTable objectPTab
 
--- A constructor that basically re-arranges the arguments to the 'Dao.Object.AST.AST_Eval'
+-- A constructor that basically re-arranges the arguments to the 'Dao.Interpreter.AST.AST_Eval'
 -- constructor such that this function can be used as an argument to 'Dao.Parser.sinpleInfixed'
 -- or 'Dao.Parser.newOpTableParser'.
 arithConstr :: AST_Arith -> (Location, Com InfixOp) -> AST_Arith -> DaoParser AST_Arith

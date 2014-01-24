@@ -1,4 +1,4 @@
--- "src/Dao/Object.hs"  declares the "Object" data type which is the
+-- "src/Dao/Interpreter.hs"  declares the "Object" data type which is the
 -- fundamental data type used througout the Dao System.
 -- 
 -- Copyright (C) 2008-2014  Ramin Honary.

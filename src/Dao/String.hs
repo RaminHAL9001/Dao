@@ -35,7 +35,7 @@
 --
 -- /NOTE:/ though this module is absolutely essential to every other module in the Dao system, not
 -- all data structures should need to instantiate 'UStrType'. By contrst, the
--- 'Dao.Object.Structured' (not defined in this module) should be instantiated by nearly all
+-- 'Dao.Interpreter.Structured' (not defined in this module) should be instantiated by nearly all
 -- data structures, especially if it is necessary to manipulate these structures within the Dao
 -- programming language.
 --
@@ -49,7 +49,7 @@
 -- However it is my opinion that use of strings as intermediate data structures is very poor design
 -- in any programming language; it is an anti-pattern. I believe the universal data type should the
 -- tree rather than the string. Therefore I have provided the "Dao.Tree" and "Dao.Struct" modules,
--- and the 'Dao.Object.Structured' type class which expand on the ideas of 'Prelude.Show' and
+-- and the 'Dao.Interpreter.Structured' type class which expand on the ideas of 'Prelude.Show' and
 -- 'Prelude.Read' by using a 'Dao.Tree.Tree' as the intermediate data structure, rather than a
 -- 'Dao.String.UStr'.
 module Dao.String where

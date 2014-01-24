@@ -1059,16 +1059,32 @@ _objectUpdate upd back rx o = loop back rx o where
 data ExecControl
   = ExecReturn { execReturnValue :: Maybe Object }
   | ExecError
-    { execReturnValue   :: Maybe Object
-    , execUnitAtError   :: Maybe ExecUnit
-    , execErrExpr       :: Maybe ObjectExpr
-    , execErrScript     :: Maybe ScriptExpr
-    , execErrTopLevel   :: Maybe TopLevelExpr
+    { execReturnValue :: Maybe Object
+    , execErrorInfo   :: ExecErrorInfo
     }
   deriving Typeable
 
-execError :: ExecControl
-execError = ExecError Nothing Nothing Nothing Nothing Nothing
+data ExecErrorInfo
+  = ExecErrorInfo
+    { execUnitAtError :: Maybe ExecUnit
+    , execErrExpr     :: Maybe ObjectExpr
+    , execErrScript   :: Maybe ScriptExpr
+    , execErrTopLevel :: Maybe TopLevelExpr
+    }
+  deriving Typeable
+
+mkExecErrorInfo :: ExecErrorInfo
+mkExecErrorInfo = ExecErrorInfo Nothing Nothing Nothing Nothing
+
+mkExecError :: ExecControl
+mkExecError = ExecError Nothing mkExecErrorInfo
+
+-- | Evaluate an 'Exec', but if it throws an exception, set record an 'Dao.Object.ObjectExpr' where
+-- the exception occurred in the exception information.
+updateExecErrorInfo :: (ExecErrorInfo -> ExecErrorInfo) -> Exec a -> Exec a
+updateExecErrorInfo upd fn = catchError fn $ \err -> case err of
+  ExecReturn{} -> throwError err
+  ExecError{ execErrorInfo=info } -> throwError $ err{ execErrorInfo = upd info }
 
 instance HasNullValue ExecControl where
   nullValue = ExecReturn Nothing
@@ -1077,11 +1093,11 @@ instance HasNullValue ExecControl where
 
 instance PPrintable ExecControl where
   pPrint err = case err of 
-    ExecError{ execReturnValue=o, execUnitAtError=xunit } -> maybe (return ()) pperr o where
-      fileName = xunit >>= programModuleName
+    ExecError{ execReturnValue=o, execErrorInfo=info } -> maybe (return ()) pperr o where
+      fileName = execUnitAtError info >>= programModuleName
       apLabel which label =
-        fmap (\o -> (pInline [pString label, pString " ", pPrint o], getLocation o)) (which err)
-      info = msum
+        fmap (\o -> (pInline [pString label, pString " ", pPrint o], getLocation o)) (which info)
+      errInfo = msum
         [ apLabel execErrExpr     "in expression" 
         , apLabel execErrScript   "in statement"
         , apLabel execErrTopLevel "in top-level directive"
@@ -1097,14 +1113,14 @@ instance PPrintable ExecControl where
         o -> pplist o
       pperr o = do
         pWrapIndent $
-          [ case info of
+          [ case errInfo of
               Nothing -> pString "Error: "
               Just  o -> pString $ concat $
                 [maybe "" ((++":") . uchars) fileName , show (snd o) ++ ": "]
           , ppmap o
           ]
         pEndLine
-        maybe (return ()) fst info
+        maybe (return ()) fst errInfo
     ExecReturn{ execReturnValue=o } ->
       maybe (return ()) (\o -> pWrapIndent [pString "Evaluated to: ", pPrint o]) o
 
@@ -1112,19 +1128,20 @@ instance ToDaoStructClass ExecControl Object where
   toDaoStruct = ask >>= \o -> case o of
     ExecReturn a -> flip (maybe (void $ makeNullary "ExecReturn")) a $ \a ->
       renameConstructor "ExecReturn" >> void ("value" .= a)
-    ExecError a _ c d e -> void $ renameConstructor "ExecError" >>
-      "value" .=? a >> "objectExpr" .=? c >> "scriptExpr" .=? d >> "topLevelExpr" .=? e
+    ExecError o (ExecErrorInfo _ a b c) -> void $ renameConstructor "ExecError" >>
+      "value" .=? o >> "objectExpr" .=? a >> "scriptExpr" .=? b >> "topLevelExpr" .=? c
 
 instance FromDaoStructClass ExecControl Object where
   fromDaoStruct = msum $
     [ constructor "ExecReturn" >> ExecReturn <$> opt "value"
     , do  constructor "ExecError"
-          pure ExecError
-            <*> opt "value"
-            <*> pure Nothing
-            <*> opt "objectExpr"
-            <*> opt "scriptExpr"
-            <*> opt "topLevelExpr"
+          pure ExecError <*> opt "value" <*>
+            (pure ExecErrorInfo
+              <*> pure Nothing
+              <*> opt "objectExpr"
+              <*> opt "scriptExpr"
+              <*> opt "topLevelExpr"
+            )
     ]
 
 instance HaskellDataClass ExecControl where
@@ -1134,63 +1151,25 @@ instance HaskellDataClass ExecControl where
 
 setCtrlReturnValue :: Object -> ExecControl -> ExecControl
 setCtrlReturnValue obj ctrl = case ctrl of
-  ExecReturn _         -> ExecReturn (Just obj)
-  ExecError  _ b c d e ->
-    ExecError
-    { execReturnValue = Just obj
-    , execUnitAtError = b
-    , execErrExpr     = c
-    , execErrScript   = d
-    , execErrTopLevel = e
-    }
+  ExecReturn{}   -> ExecReturn (Just obj)
+  ExecError{ execErrorInfo=info } -> ExecError{ execReturnValue=Just obj, execErrorInfo=info }
 
-setCtrlAtError :: ExecUnit -> ExecControl -> ExecControl
-setCtrlAtError xunit ctrl = case ctrl of
-  ExecReturn a         -> ExecReturn a
-  ExecError  a _ c d e ->
-    ExecError
-    { execReturnValue = a
-    , execUnitAtError = Just xunit
-    , execErrExpr     = c
-    , execErrScript   = d
-    , execErrTopLevel = e
-    }
+_setErrorInfoExpr :: (ExecErrorInfo -> ExecErrorInfo) -> Exec a -> Exec a
+_setErrorInfoExpr upd exec = catchPredicate exec >>= \a -> case a of
+  OK      a -> return a
+  Backtrack -> mzero
+  PFail err -> case err of
+    ExecReturn{} -> throwError err
+    ExecError{ execErrorInfo=info } -> throwError $ err{ execErrorInfo=upd info }
 
-setCtrlExpr :: ObjectExpr -> ExecControl -> ExecControl
-setCtrlExpr expr ctrl = case ctrl of
-  ExecReturn a         -> ExecReturn a
-  ExecError  a b _ d e ->
-    ExecError
-    { execReturnValue = a
-    , execUnitAtError = b
-    , execErrExpr     = Just expr
-    , execErrScript   = d
-    , execErrTopLevel = e
-    }
+_setObjectExprError :: ObjectExpr -> Exec (Maybe Object) -> Exec (Maybe Object)
+_setObjectExprError o = _setErrorInfoExpr (\info -> info{ execErrExpr=Just o })
 
-setErrScript :: ScriptExpr -> ExecControl -> ExecControl
-setErrScript expr ctrl = case ctrl of
-  ExecReturn a         -> ExecReturn a
-  ExecError  a b c _ e ->
-    ExecError
-    { execReturnValue = a
-    , execUnitAtError = b
-    , execErrExpr     = c
-    , execErrScript   = Just expr
-    , execErrTopLevel = e
-    }
+_setScriptExprError :: ScriptExpr -> Exec () -> Exec ()
+_setScriptExprError o = _setErrorInfoExpr (\info -> info{ execErrScript=Just o })
 
-setErrTopLevel :: TopLevelExpr -> ExecControl -> ExecControl
-setErrTopLevel expr ctrl = case ctrl of
-  ExecReturn a         -> ExecReturn a
-  ExecError  a b c d _ ->
-    ExecError
-    { execReturnValue = a
-    , execUnitAtError = b
-    , execErrExpr     = c
-    , execErrScript   = d
-    , execErrTopLevel = Just expr
-    }
+_setTopLevelExprError :: TopLevelExpr -> Exec (ExecUnit -> ExecUnit) -> Exec (ExecUnit ->ExecUnit)
+_setTopLevelExprError o = _setErrorInfoExpr (\info -> info{ execErrTopLevel=Just o })
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1216,16 +1195,18 @@ instance MonadPlusError ExecControl Exec where
 
 ----------------------------------------------------------------------------------------------------
 
-class ExecThrowable a where
-  toExecError :: a -> ExecControl
+class ExecThrowable o where
+  toExecError :: o -> ExecControl
   -- | Like 'Prelude.error' but works for the 'Exec' monad, throws an 'ExecControl' using
   -- 'Control.Monad.Error.throwError' constructed using the given 'Object' value as the
   -- 'execReturnValue'.
-  execThrow :: ExecThrowable a => a -> Exec ig
-  execThrow obj = ask >>= \xunit -> throwError $ (toExecError obj){execUnitAtError=Just xunit}
+  execThrow :: ExecThrowable o => o -> Exec ig
+  execThrow o = ask >>= \xunit -> throwError $
+    let err = toExecError o
+    in  err{execErrorInfo=(execErrorInfo err){execUnitAtError=Just xunit}}
 
 instance ExecThrowable Object where
-  toExecError err = setCtrlReturnValue err execError
+  toExecError err = setCtrlReturnValue err mkExecError
 
 instance ExecThrowable ExecControl where { toExecError = id }
 
@@ -2883,7 +2864,7 @@ requireAllStringArgs ox = case mapM check (zip (iterate (+(1::Integer)) 0) ox) o
     check (i, o) = case o of
       OString o -> return o
       _         -> throwError $
-        execError
+        mkExecError
         { execReturnValue = Just $ obj [obj "requires string parameter, param number:", obj i] }
 
 -- | Given an object, if it is a string return the string characters. If it not a string,
@@ -3823,7 +3804,7 @@ localVarDefine nm obj = asks execStack >>= \sto -> storeDefine sto nm obj
 
 -- | Convert a single 'ScriptExpr' into a function of value @'Exec' 'Dao.Object.Object'@.
 instance Executable ScriptExpr () where
-  execute script = updateExecError (\err->err{execErrScript=Just script}) $ case script of
+  execute script = _setScriptExprError script $ case script of
     IfThenElse   ifn    -> execute ifn
     WhileLoop    ifn    -> execute ifn
     EvalObject   o _loc -> void (execute o :: Exec (Maybe Object))
@@ -4997,7 +4978,7 @@ indexObject o idx = case o of
     errmsg = obj [obj "cannot index object:", o]
 
 instance Executable ObjectExpr (Maybe Object) where
-  execute o = (updateExecError (\err->err{execErrExpr=Just o}) :: Exec (Maybe Object) -> Exec (Maybe Object)) $ case o of
+  execute o = _setObjectExprError o $ case o of
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     VoidExpr -> return Nothing
       -- 'VoidExpr's only occur in return statements. Returning 'ONull' where nothing exists is
@@ -5611,7 +5592,7 @@ instance B.HasPrefixTable TopLevelExpr B.Byte MTab where
 -- function which can be applied by the context which called it. Refer to the instance for
 -- 'Executable' for the 'Program' type to see how the calling context is used to update the state.
 instance Executable TopLevelExpr (ExecUnit -> ExecUnit) where
-  execute o = ask >>= \xunit -> case o of
+  execute o = _setTopLevelExprError o $ ask >>= \xunit -> case o of
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     Attribute a b c -> execThrow $ obj $ concat $
       [ maybe [] ((:[]) . obj . (++(show c)) . uchars) (programModuleName xunit)
@@ -6066,7 +6047,7 @@ instance Ord (Interface typ) where { compare a b = compare (objHaskellType a) (o
 -- type (to convert outputs of functions), and one that can cast back from the adapted type to the
 -- original type (to convert inputs of functions). Each coversion function takes a string as it's
 -- first parameter, this is a string containing the name of the function that is currently making
--- use of the conversion operation. Should you need to use 'Prelude.error' or 'execError', this
+-- use of the conversion operation. Should you need to use 'Prelude.error' or 'mkExecError', this
 -- string will allow you to throw more informative error messages. WARNING: this function leaves
 -- 'objHaskellType' unchanged, the calling context must change it.
 interfaceAdapter
@@ -6302,7 +6283,7 @@ defIndexer fn = _updHDIfcBuilder(\st->st{objIfcIndexer=Just fn})
 
 -- | Use your data type's instantiation of 'ToDaoStructClass' to call 'defToStruct'.
 autoDefToStruct :: forall typ . (Typeable typ, ToDaoStructClass typ Object) => DaoClassDefM typ ()
-autoDefToStruct = defToStruct ((predicate :: Predicate ExecControl T_struct -> Exec T_struct) . fmapPFail ((\o -> execError{ execReturnValue=Just o}) . new) . fromData toDaoStruct)
+autoDefToStruct = defToStruct ((predicate :: Predicate ExecControl T_struct -> Exec T_struct) . fmapPFail ((\o -> mkExecError{ execReturnValue=Just o}) . new) . fromData toDaoStruct)
 
 -- | When a label referencing your object has a field record accessed, for example:
 -- > c = a.b;
@@ -6317,7 +6298,7 @@ defToStruct encode = _updHDIfcBuilder (\st -> st{ objIfcToStruct=Just encode })
 -- within it by assigning it the value referenced by @c@, then the function defined here will be
 -- used.
 autoDefFromStruct :: (Typeable typ, FromDaoStructClass typ Object) => DaoClassDefM typ ()
-autoDefFromStruct = defFromStruct (predicate . fmapPFail ((\o -> execError{ execReturnValue=Just o }) . new) . toData fromDaoStruct)
+autoDefFromStruct = defFromStruct (predicate . fmapPFail ((\o -> mkExecError{ execReturnValue=Just o }) . new) . toData fromDaoStruct)
 
 -- | If for some reason you need to define a tree encoder and decoder for the 'Interface' of your
 -- @typ@ without instnatiating 'Dao.Object.ToDaoStructClass' or 'Dao.Object.FromDaoStructClass', use

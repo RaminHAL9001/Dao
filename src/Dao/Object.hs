@@ -1288,38 +1288,3 @@ minAccumArray accfn deflt elems =
 minArray :: Ix i => e -> [(i, e)] -> Maybe (Array i e)
 minArray deflt elems = minAccumArray (flip const) deflt elems
 
-----------------------------------------------------------------------------------------------------
-
--- | This data type keeps track of information loaded from a file. It allows you to keep track of
--- how many times the object has been updated since it was loaded from disk, and how many times the
--- file has been requested to be opened (so it doesn't have to load the file twice). The real reason
--- this type exists is to make it easier to fit into the 'Dao.Types.Resource' data type, so I never
--- really intended this type to be used for anything other than that.
-data StoredFile stor ref dat
-  = NotStored { docRootObject :: stor ref dat }
-  | StoredFile
-    { docModified   :: Word64
-    , docInfo       :: UStr
-    , docVersion    :: Word64
-    , docRootObject :: stor ref dat
-    }
-
--- | The magic number is the first 8 bytes to every 'Document'. It is the ASCII value of the string
--- @"DaoData\0"@.
-document_magic_number :: Word64
-document_magic_number = 0x44616F4461746100
-
--- | This is the version number of the line protocol for transmitting document objects.
-document_data_version :: Word64
-document_data_version = 0
-
--- | The magic number is the first 8 bytes to every bytecode compiled object program. It is the
--- ASCII value of the string "DaoData\n".
-program_magic_number :: Word64
-program_magic_number = 0x44616f44617461A
-
--- | This is the version number of the line protocol for transmitting bytecode compiled program
--- objects.
-program_data_version :: Word64
-program_data_version = 1
-

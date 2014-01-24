@@ -490,20 +490,18 @@ instance (Num a, Bits a, Integral a, Binary a mtab) => Binary (Ratio a) mtab whe
 instance Binary Integer mtab where { put = putInteger; get = getInteger; }
 instance Binary Char    mtab where { put = putPosIntegral . ord; get = chr <$> getPosIntegral; }
 
-instance Binary UTCTime mtab where { serializer = fromDataBinary }
-instance B.Binary UTCTime where
+instance Binary UTCTime mtab where
   put t = do
-    B.put (toModifiedJulianDay (utctDay t))
-    B.put (toRational (utctDayTime t))
+    put (toModifiedJulianDay (utctDay t))
+    put (toRational (utctDayTime t))
   get = do
-    d <- fmap ModifiedJulianDay B.get
-    t <- fmap fromRational B.get
-    return (UTCTime{ utctDay = d, utctDayTime = t })
+    d <- fmap ModifiedJulianDay get
+    t <- fmap fromRational get
+    return (UTCTime{ utctDay=d, utctDayTime=t })
 
-instance Binary   NominalDiffTime mtab where { serializer = fromDataBinary }
-instance B.Binary NominalDiffTime where
-  put t = B.put (toRational t)
-  get = fmap fromRational B.get
+instance Binary NominalDiffTime mtab where
+  put t = put (toRational t)
+  get = fmap fromRational get
 
 instance Binary B.ByteString mtab where
   put o = putPosIntegral (B.length o) >> Dao.Binary.putByteString o

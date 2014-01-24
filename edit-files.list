@@ -1,15 +1,13 @@
 # A list of files you want to edit with Vim.
 # They will appear in the order specified.
 src/Dao.hs
-src/Dao/Evaluator.hs
 src/Dao/Object.hs
 src/Dao/Object/Parser.hs
+tests/Dao/CoreTests.hs
 
-src/Dao/Files.hs
 src/Dao/Random.hs
 src/Dao/Parser.hs
 src/Dao/Stack.hs
-src/Dao/DistVar.hs
 src/Dao/Prelude.hs
 src/Dao/StepList.hs
 src/Dao/Token.hs
@@ -21,12 +19,11 @@ src/Dao/String.hs
 src/Dao/Binary.hs
 src/Dao/PPrint.hs
 src/Dao/Predicate.hs
-src/Dao/Struct.hs
 src/Dao/Glob.hs
 src/dao-main.hs
 
-tests/Dao/Test.hs
 tests/Dao/CoreTests.hs
+tests/Dao/Test.hs
 tests/2.dao
 tests/1.dao
 
@@ -58,3 +55,7 @@ commit.txt
 src/Dao/Simple.hs
 src/Dao/Resource.hs
 src/Dao/Debug.hs
+src/Dao/Files.hs
+src/Dao/Evaluator.hs
+src/Dao/Struct.hs
+src/Dao/DistVar.hs

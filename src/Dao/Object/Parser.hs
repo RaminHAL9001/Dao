@@ -25,10 +25,9 @@ module Dao.Object.Parser where
 import           Dao.String
 import           Dao.Token
 import           Dao.PPrint
-import           Dao.Object
+import           Dao.Object    hiding (asString, opt)
 import           Dao.Predicate
 import           Dao.Parser
-import           Dao.Evaluator hiding (asString, opt)
 
 import           Control.Applicative
 import           Control.Monad

@@ -31,7 +31,6 @@
 module Dao
   ( module Dao.String
   , module Dao.Object
-  , module Dao.Evaluator
   , module Dao
   ) where
 
@@ -39,7 +38,6 @@ import           Dao.String
 import           Dao.Glob
 import           Dao.Object
 import           Dao.Predicate
-import           Dao.Evaluator
 import           Dao.PPrint
 import           Dao.Token
 import           Dao.Parser

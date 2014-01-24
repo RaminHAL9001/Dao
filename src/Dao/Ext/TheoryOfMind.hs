@@ -37,8 +37,7 @@
 module Dao.Ext.TheoryOfMind where
 
 import           Dao.String
-import           Dao.Object
-import           Dao.Struct
+import           Dao.Interpreter
 import qualified Dao.Tree as T
 
 import           Data.Monoid

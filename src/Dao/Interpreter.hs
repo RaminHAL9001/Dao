@@ -18,10 +18,7 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
-module Dao.Object
-  ( module Dao.String
-  , module Dao.Object
-  ) where
+module Dao.Interpreter where
 
 import           Dao.Glob
 import           Dao.PPrint
@@ -76,42 +73,38 @@ import           System.IO
 -- 
 -- 'Struct' values are used lazily, so your data types will only be converted to and from 'Struct's
 -- when absolutely necessary. This helps to conserver memory usage.
-data Struct value
+data Struct
   = Nullary{ structName :: Name }
     -- ^ models a constructor with no fields, for example 'Prelude.EQ', 'Prelude.GT' and
     -- 'Prelude.LT'.
   | Struct
     { structName :: Name -- ^ provide the name for this constructor.
-    , fieldMap   :: M.Map Name value
+    , fieldMap   :: M.Map Name Object
     }
   deriving (Eq, Ord, Show, Typeable)
-instance Functor Struct where
-  fmap f st = case st of
-    Nullary{ structName=name } -> Nullary{ structName=name }
-    Struct{ fieldMap=value   } -> st{ fieldMap = fmap f value }
 
-instance NFData value => NFData (Struct value) where
+instance NFData Struct where
   rnf (Nullary a  ) = deepseq a ()
   rnf (Struct  a b) = deepseq a $! deepseq b ()
 
-instance HasNullValue value => HasNullValue (Struct value) where
+instance HasNullValue Struct where
   nullValue = Nullary{ structName=ustr "NULL" }
   testNull (Nullary{ structName=name }) = name == ustr "NULL"
   testNull _ = False
 
-instance B.Binary o mtab => B.Binary (Struct (Value o)) mtab where
+instance B.Binary Struct MTab where
   put o = case o of
     Nullary  o -> B.putWord8 0x20 >> B.put o
     Struct n o -> B.putWord8 0x21 >> B.put n >> B.put o
   get = B.word8PrefixTable <|> fail "expecting Struct"
 
-instance B.Binary o mtab => B.HasPrefixTable (Struct (Value o)) B.Byte mtab where
+instance B.HasPrefixTable Struct B.Byte MTab where
   prefixTable = B.mkPrefixTableWord8 "QualRef" 0x20 0x21 $
     [ Nullary <$> B.get
     , pure Struct <*> B.get <*> B.get
     ]
 
-instance PPrintable value => PPrintable (Struct value) where
+instance PPrintable Struct where
   pPrint o = case o of
     Nullary{ structName=name } -> pString ('#' : uchars (toUStr name))
     Struct{ structName=name, fieldMap=dict } ->
@@ -119,7 +112,7 @@ instance PPrintable value => PPrintable (Struct value) where
         flip map (M.assocs dict) $ \ (left, right) -> pInline $
           [pPrint left, pString " = ", pPrint right]
 
-instance HasRandGen value => HasRandGen (Struct value) where
+instance HasRandGen Struct where
   randO = countRunRandChoice 
   randChoice = randChoiceList $
     [ pure Struct <*> randO <*> (M.fromList <$> randListOf 1 4 (pure (,) <*> randO <*> randO))
@@ -161,13 +154,12 @@ instance HasRandGen value => HasRandGen (Struct value) where
 -- 
 -- Finally, you should define the instantiation of Point3D into the 'HaskellDataClass' class so it
 -- includes the directive 'autoDefToStruct'.
-class ToDaoStructClass haskData value where
-  toDaoStruct :: ToDaoStruct value haskData ()
+class ToDaoStructClass haskData where { toDaoStruct :: ToDaoStruct haskData () }
 
 -- | Continuing the example from above, if you do want your data type to be modifyable by functions
 -- running in the Dao language runtime, you must instantiate this class, which is facilitated by the
 -- 'toData' function.
--- > instance 'FromDaoStructClass' 'Point3D' 'Object' where
+-- > instance 'FromDaoStructClass' 'Point3D' where
 -- >     fromDaoStruct = 'toData' $ 'Control.Monad.msum' $
 -- >         [ do 'constructor' "@Point2D@"
 -- >              'Control.Applicative.pure' Point3D <*> '?' "x" <*> '?' "y"
@@ -181,22 +173,22 @@ class ToDaoStructClass haskData value where
 -- Note that an instance of 'FromDaoStructClass' must also instantiate 'ToDaoStructClass'. I can see no
 -- use for objects that are only writable, that is they can be created at runtime but never
 -- inspected at runtime.
-class ToDaoStructClass haskData value => FromDaoStructClass haskData value where
-  fromDaoStruct :: FromDaoStruct value haskData
+class ToDaoStructClass haskData => FromDaoStructClass haskData where
+  fromDaoStruct :: FromDaoStruct haskData
 
 -- | If there is ever an error converting to or from your Haskell data type, you can
 -- 'Control.Monad.Error.throwError' a 'StructError'.
-data StructError value
+data StructError
   = StructError
     { structErrMsg    :: Maybe UStr
     , structErrName   :: Maybe UStr
     , structErrField  :: Maybe UStr
-    , structErrValue  :: Maybe value
+    , structErrValue  :: Maybe Object
     , structErrExtras :: [Name]
     }
   deriving (Eq, Ord, Typeable)
 
-instance HasNullValue (StructError value) where
+instance HasNullValue StructError where
   nullValue =
     StructError
     { structErrMsg=Nothing
@@ -229,21 +221,21 @@ mkFieldName name = mplus (mkLabel name) $ fail "invalid field name"
 
 -- | This is a handy monadic and 'Data.Functor.Applicative' interface for instantiating
 -- 'toDaoStruct' in the 'ToDaoStructClass' class.
-newtype ToDaoStruct value haskData a
+newtype ToDaoStruct haskData a
   = ToDaoStruct
-    { run_toDaoStruct :: PredicateT (StructError value) (State (Struct value, haskData)) a }
+    { run_toDaoStruct :: PredicateT StructError (State (Struct, haskData)) a }
   deriving (Functor, Applicative, Alternative, MonadPlus)
 
-instance Monad (ToDaoStruct value haskData) where
+instance Monad (ToDaoStruct haskData) where
   return = ToDaoStruct . return
   m >>= f = ToDaoStruct $ run_toDaoStruct m >>= run_toDaoStruct . f
   fail msg = throwError $ nullValue{ structErrMsg = Just $ ustr msg }
 
-instance MonadState (Struct value) (ToDaoStruct value haskData) where
+instance MonadState Struct (ToDaoStruct haskData) where
   state f = ToDaoStruct $ lift $ state $ \ (struct, haskData) ->
     let (a, struct') = f struct in (a, (struct', haskData))
 
-instance MonadReader haskData (ToDaoStruct value haskData) where
+instance MonadReader haskData (ToDaoStruct haskData) where
   ask = ToDaoStruct $ lift $ fmap snd get
   local upd f = ToDaoStruct $ PredicateT $ do
     haskData <- gets snd
@@ -252,12 +244,12 @@ instance MonadReader haskData (ToDaoStruct value haskData) where
     modify (\ (struct, _) -> (struct, haskData))
     return a
 
-instance MonadError (StructError value) (ToDaoStruct value haskData) where
+instance MonadError StructError (ToDaoStruct haskData) where
   throwError err = get >>= \struct -> ToDaoStruct $ throwError $
     err{ structErrName = structErrName err <|> (Just $ toUStr $ structName struct) }
   catchError f catch = ToDaoStruct $ catchError (run_toDaoStruct f) (run_toDaoStruct . catch)
 
-instance MonadPlusError (StructError value) (ToDaoStruct value haskData) where
+instance MonadPlusError StructError (ToDaoStruct haskData) where
   catchPredicate = ToDaoStruct . catchPredicate . run_toDaoStruct
   predicate      = ToDaoStruct . predicate
 
@@ -270,9 +262,9 @@ instance MonadPlusError (StructError value) (ToDaoStruct value haskData) where
 -- > 'fromData' 'toDaoStruct' mydat
 -- Notice how it reads similar to ordinary English, "convert from (Haskell) data to a Dao 'Struct'"
 fromData
-  :: ToDaoStruct value haskData x
+  :: ToDaoStruct haskData x
   -> haskData
-  -> Predicate (StructError value) (Struct value)
+  -> Predicate StructError Struct
 fromData pred hask = evalState (runPredicateT $ run_toDaoStruct $ pred >> get) $
   (Struct{ structName=nil, fieldMap=M.empty }, hask)
 
@@ -283,61 +275,61 @@ fromData pred hask = evalState (runPredicateT $ run_toDaoStruct $ pred >> get) $
 -- instantiate 'toDaoStruct' for the outer data type. Just be sure that the constructor name for the
 -- inner type does not conflict with the constructor name for the outer data type. For example:
 -- > data X = X1 { ... } | X2 { ... }
--- > instance 'DaoToStructClass' X ('Value' any) where { ... }
+-- > instance 'DaoToStructClass' X 'Object' where { ... }
 -- > data Y = Y1 { ... } | Y2 { ... }
--- > instance 'DaoToStructClass' Y ('Value' any) where { ... }
+-- > instance 'DaoToStructClass' Y 'Object' where { ... }
 -- > 
 -- > newtype WrapX = WrapX { unwrapX :: X }
--- > instance 'DaoToStructClass' WrapX ('Value' any) where
+-- > instance 'DaoToStructClass' WrapX 'Object' where
 -- >     'toDaoStruct' = 'Control.Monad.Reader.ask' >>= 'innerToStruct' . unwrapX
 -- > 
 -- > data X_or_Y = Is_X { getX :: X } | Is_Y { getY :: Y }
--- > instance 'DaoToStructClass' X_or_Y ('Value' any) where
+-- > instance 'DaoToStructClass' X_or_Y 'Object' where
 -- >     'toDaoStruct' = 'Control.Monad.Reader.ask' >>= \xy -> case xy of
 -- >         Is_X x -> 'innerToStruct' x
 -- >         Is_Y y -> 'innerToStruct' y
 -- 
 -- The inverse of this operation in the 'FromDaoStructClass' is 'Prelude.fmap', or equivalently the
 -- 'Control.Applicative.<$>' operator. Here is an example using 'Control.Applicative.<$>':
--- > instance 'FromDaoStructClass' WrapX ('Value' any) where
+-- > instance 'FromDaoStructClass' WrapX 'Object' where
 -- >     'fromDaoStruct' = WrapX <$> 'fromDaoStruct'
 -- > 
--- > instance 'FromDaoStructClass' X_or_Y ('Value' any) where
+-- > instance 'FromDaoStructClass' X_or_Y 'Object' where
 -- >     'fromDaoStruct' = Is_X <$> 'fromDaoStruct' <|> Is_Y <$> 'fromDaoStruct'
 -- 
 -- Another way to do exactly the same thing as the example above is:
--- > instance 'FromDaoStructClass' WrapX ('Value' any) where
+-- > instance 'FromDaoStructClass' WrapX 'Object' where
 -- >     'fromDaoStruct' = 'Prelude.fmap' WrapX 'fromDaoStruct'
 -- > 
--- > instance 'FromDaoStructClass' X_or_Y ('Value' any) where
+-- > instance 'FromDaoStructClass' X_or_Y 'Object' where
 -- >     'fromDaoStruct' = 'Prelude.fmap' Is_X 'fromDaoStruct' `'Control.Monad.mplus'` 'Prelude.fmap' Is_Y 'fromDaoStruct'
 -- 
 -- It is possible to use 'renameConstructor' after evaluating 'innerToStruct' to use a different
 -- constructor name while keeping all of the fields set by the evaluation of 'innerToStruct',
 -- however if this is done, 'Prelude.fmap' will backtrack, so you should use 'innerFromStruct'
 -- instead.
-innerToStruct :: ToDaoStructClass inner value => inner -> ToDaoStruct value haskData ()
+innerToStruct :: ToDaoStructClass inner => inner -> ToDaoStruct haskData ()
 innerToStruct o = ask >>= \haskData ->
   predicate (fromData toDaoStruct o) >>= ToDaoStruct . lift . put . flip (,) haskData
 
 -- | Use this function to set the 'structName' name of the constructor at some point, for example
 -- when you observe some condition of the @haskData@ type that merits an alternative constructor
 -- name.
-renameConstructor :: UStrType name => name -> ToDaoStruct value haskData ()
+renameConstructor :: UStrType name => name -> ToDaoStruct haskData ()
 renameConstructor name = mkStructName name >>= \name -> modify $ \struct -> struct{ structName=name }
 
 -- | Like 'renameConstructor' but deletes everything and makes the 'Struct' being constructed into a
 -- 'Nullary'. You would typically do this only when you are instantiating 'toDaoStruct' and you
 -- only have one constructor to define.
-makeNullary :: UStrType name => name -> ToDaoStruct value haskData ()
+makeNullary :: UStrType name => name -> ToDaoStruct haskData ()
 makeNullary name = mkStructName name >>= \name -> put $ Nullary{ structName=name }
 
 -- | Use this when you have derived the "Prelude.Show" class for a data type where every constructor
 -- in that data type takes no parameters, for example, the 'Prelude.Ordering' data type.
-putNullaryUsingShow :: Show haskData => ToDaoStruct value haskData ()
+putNullaryUsingShow :: Show haskData => ToDaoStruct haskData ()
 putNullaryUsingShow = ask >>= makeNullary . show
 
-define :: UStrType name => name -> value -> ToDaoStruct value haskData value
+define :: UStrType name => name -> Object -> ToDaoStruct haskData Object
 define name value = do
   name <- mkFieldName name
   modify $ \struct -> struct{ fieldMap = M.insert name value (fieldMap struct) }
@@ -346,10 +338,10 @@ define name value = do
 -- | Defines an optional field. If the value given is 'Prelude.Nothing', nothing happens. Otherwise
 -- the value is placed into the 'Struct' at the given @name@d field. This is the inverse opreation
 -- of using 'Control.Applicative.optional' in the 'FromDaoStruct' monad.
-optionalField :: UStrType name => name -> Maybe value -> ToDaoStruct value haskData (Maybe value)
+optionalField :: UStrType name => name -> Maybe Object -> ToDaoStruct haskData (Maybe Object)
 optionalField name = maybe (return Nothing) (fmap Just . define name)
 
-setField :: UStrType name => name -> (haskData -> value) -> ToDaoStruct value haskData value
+setField :: UStrType name => name -> (haskData -> Object) -> ToDaoStruct haskData Object
 setField name f = ask >>= define name . f
 
 -- | This is a handy monadic and 'Data.Functor.Applicative' interface for instantiating
@@ -368,26 +360,26 @@ setField name f = ask >>= define name . f
 -- 
 -- /NOTE:/ refer to the documentation of the 'constructor' monad for an important note on reading
 -- Haskell data types with multiple constructors.
-newtype FromDaoStruct value a =
-  FromDaoStruct{ run_fromDaoStruct :: PredicateT (StructError value) (State (Struct value)) a }
+newtype FromDaoStruct a =
+  FromDaoStruct{ run_fromDaoStruct :: PredicateT StructError (State Struct) a }
   deriving (Functor, Applicative, Alternative, MonadPlus)
 
-instance Monad (FromDaoStruct value) where
+instance Monad FromDaoStruct where
   return = FromDaoStruct . return
   m >>= f = FromDaoStruct $ run_fromDaoStruct m >>= run_fromDaoStruct . f
   fail msg = throwError $ nullValue{ structErrMsg = Just (ustr msg) }
 
-instance MonadReader (Struct value) (FromDaoStruct value) where
+instance MonadReader Struct FromDaoStruct where
   ask = FromDaoStruct $ lift get
   local upd f = FromDaoStruct $ PredicateT $ get >>= \st ->
    return $ evalState (runPredicateT $ run_fromDaoStruct f) (upd st)
 
-instance MonadError (StructError value) (FromDaoStruct value) where
+instance MonadError StructError FromDaoStruct where
   throwError err = ask >>= \struct -> FromDaoStruct $ throwError $
     err { structErrName = structErrName err <|> (Just $ toUStr $ structName struct) }
   catchError (FromDaoStruct f) catch = FromDaoStruct $ catchError f (run_fromDaoStruct . catch)
 
-instance MonadPlusError (StructError value) (FromDaoStruct value) where
+instance MonadPlusError StructError FromDaoStruct where
   catchPredicate = FromDaoStruct . catchPredicate . run_fromDaoStruct
   predicate = FromDaoStruct . predicate
 
@@ -399,7 +391,7 @@ instance MonadPlusError (StructError value) (FromDaoStruct value) where
 -- > 'toData' 'fromDaoStruct' struct
 -- Notice that this reads similar to ordinary English: "convert to (Haskell) data from a dao
 -- struct."
-toData :: FromDaoStruct value haskData -> Struct value -> Predicate (StructError value) haskData
+toData :: FromDaoStruct haskData -> Struct -> Predicate StructError haskData
 toData (FromDaoStruct f) = evalState (runPredicateT f)
 
 -- | Checks if the 'structName' is equal to the given name, and if not then backtracks. This is
@@ -421,7 +413,7 @@ toData (FromDaoStruct f) = evalState (runPredicateT f)
 -- /NOTE/ that if all three 'constructor's backtrack (evaluate to 'Control.Monad.mzero') the whole
 -- monad will backtrack. By convention, you should let the monad backtrack, rather than writing a
 -- 'Control.Monad.fail' statement as the final item in the 'Control.Monad.msum' list.
-constructor :: UStrType name => name -> FromDaoStruct value ()
+constructor :: UStrType name => name -> FromDaoStruct ()
 constructor name = (pure (==) <*> mkStructName name <*> asks structName) >>= guard
 
 -- | The inverse operation of 'innerToStruct', but looks for a constructor of a different name. This
@@ -460,7 +452,7 @@ constructor name = (pure (==) <*> mkStructName name <*> asks structName) >>= gua
 -- > instance 'FromDaoStructClass' Y where
 -- >     'fromDaoStruct' = Y 'Control.Applicative.<$> 'innerFromStruct' "X" -- CORRECT!
 -- 
-innerFromStruct :: (UStrType name, FromDaoStructClass inner value) => name -> FromDaoStruct value inner
+innerFromStruct :: (UStrType name, FromDaoStructClass inner) => name -> FromDaoStruct inner
 innerFromStruct tempName = do
   name     <- asks structName
   tempName <- mkStructName tempName
@@ -470,14 +462,14 @@ innerFromStruct tempName = do
 
 -- | Succeeds if the current 'Struct' is a 'Nullary' where the 'structName' is equal to the name
 -- given to this function.
-nullary :: UStrType name => name -> FromDaoStruct value ()
+nullary :: UStrType name => name -> FromDaoStruct ()
 nullary name = ask >>= \struct -> case struct of
   Nullary{} -> constructor name
   _         -> mzero
 
 -- | Use the instantiation of 'Prelude.Read' derived for a type @haskData@ to construct the
 -- @haskData from the 'structName' stored in a 'Nullary' 'Struct'.
-getNullaryWithRead :: Read haskData => FromDaoStruct value haskData
+getNullaryWithRead :: Read haskData => FromDaoStruct haskData
 getNullaryWithRead = ask >>= \struct -> case struct of
   Nullary{ structName=name } -> case readsPrec 0 (uchars name) of
     [(haskData, "")] -> return haskData
@@ -487,25 +479,25 @@ getNullaryWithRead = ask >>= \struct -> case struct of
 -- | If an error is thrown using 'Control.Monad.Error.throwError' or 'Control.Monad.fail' within the
 -- given 'FromDaoStruct' function, the 'structErrField' will automatically be set to the provided
 -- 'Name' value.
-structCurrentField :: Name -> FromDaoStruct value o -> FromDaoStruct value o
+structCurrentField :: Name -> FromDaoStruct o -> FromDaoStruct o
 structCurrentField name (FromDaoStruct f) = FromDaoStruct $ catchPredicate f >>= \o -> case o of
   PFail err -> throwError $ err{ structErrField=Just (toUStr name) }
   Backtrack -> mzero
   OK      o -> return o
 
--- | Retrieves an arbitrary @value@ by it's field name, and backtraks if no such field is defined.
+-- | Retrieves an arbitrary 'Object' by it's field name, and backtraks if no such field is defined.
 -- The value of the field is copied, and can be copied again after this operation. It is best not to
 -- use this function, rather use 'tryField' to make sure each field is retrieved exactly once, then
 -- use 'checkEmpty' to make sure there is no hidden extraneous data in the struct.
-tryCopyField :: UStrType name => name -> (value -> FromDaoStruct value o) -> FromDaoStruct value o
+tryCopyField :: UStrType name => name -> (Object -> FromDaoStruct o) -> FromDaoStruct o
 tryCopyField name f = (pure M.lookup <*> mkFieldName name <*> asks fieldMap) >>=
   maybe mzero return >>= structCurrentField (fromUStr $ toUStr name) . f
 
--- | Like 'copyField', retrieves an arbitrary @value@ by it's field name, and backtraks if no such
+-- | Like 'copyField', retrieves an arbitrary 'Object' by it's field name, and backtraks if no such
 -- field is defined. However unlike 'tryCopyField', if the item is retrieved, it is deleted from the
 -- inner 'Struct' so that it may not be used again. The reason for this is to use 'checkEmpty' and
 -- 'requireEmpty', which can backtrack or fail if there are extraneous fields in the structure.
-tryField :: UStrType name => name -> (value -> FromDaoStruct value o) -> FromDaoStruct value o
+tryField :: UStrType name => name -> (Object -> FromDaoStruct o) -> FromDaoStruct o
 tryField name f = do
   name <- mkFieldName name
   o    <- tryCopyField name f
@@ -513,7 +505,7 @@ tryField name f = do
     case st of{ Struct{ fieldMap=m } -> st{ fieldMap=M.delete name m }; s -> s; }
   return o
 
-_throwMissingFieldError :: Name -> FromDaoStruct value o
+_throwMissingFieldError :: Name -> FromDaoStruct o
 _throwMissingFieldError name = throwError $
   nullValue
   { structErrMsg   = Just $ ustr "missing required field"
@@ -523,7 +515,7 @@ _throwMissingFieldError name = throwError $
 -- | Like 'field' but evaluates 'Control.Monad.Error.throwError' if the 'FromDaoStruct' function
 -- backtracks or throws it's own error. Internally, this function makes use of 'copyField' and /not/
 -- 'tryField', so the field is preserved if it exists.
-copyField :: forall name value o . UStrType name => name -> (value -> FromDaoStruct value o) -> FromDaoStruct value o
+copyField :: UStrType name => name -> (Object -> FromDaoStruct o) -> FromDaoStruct o
 copyField name f = mkFieldName name >>= \name ->
   mplus (tryCopyField name f) (_throwMissingFieldError name)
 
@@ -531,15 +523,15 @@ copyField name f = mkFieldName name >>= \name ->
 -- backtracks or throws it's own error. Internally, this function makes use of 'tryField' and /not/
 -- 'tryCopyField', so the field is removed if it exists -- two consecutive calls to this function
 -- with the same key absolutely will fail.
-field :: UStrType name => name -> (value -> FromDaoStruct value o) -> FromDaoStruct value o
+field :: UStrType name => name -> (Object -> FromDaoStruct o) -> FromDaoStruct o
 field name f = mkFieldName name >>= \name -> mplus (tryField name f) (_throwMissingFieldError name)
 
 -- | As you make calls to 'field' and 'tryField', the items in these fields in the 'Struct' are
--- being removed. Once you have all of the nata neccessary to construct the data @value@, you can
+-- being removed. Once you have all of the nata neccessary to construct the data 'Object', you can
 -- check to make sure there are no extraneous unused data fields. If the 'Struct' is empty, this
 -- function evaluates to @return ()@. If there are extranous fields in the 'Struct', 'throwError' is
 -- evaluated.
-checkEmpty :: FromDaoStruct value ()
+checkEmpty :: FromDaoStruct ()
 checkEmpty = FromDaoStruct (lift get) >>= \st -> case st of
   Struct{ fieldMap=m } -> if M.null m then return () else throwError $
     nullValue
@@ -548,7 +540,7 @@ checkEmpty = FromDaoStruct (lift get) >>= \st -> case st of
     }
   Nullary{} -> return ()
 
-instance ToDaoStructClass (StructError (Value any)) (Value any) where
+instance ToDaoStructClass StructError where
   toDaoStruct = do
     asks structErrMsg    >>= optionalField "message" . fmap OString
     asks structErrName   >>= optionalField "structName" . fmap OString
@@ -558,7 +550,7 @@ instance ToDaoStructClass (StructError (Value any)) (Value any) where
       Just . OList . fmap (ORef . Unqualified . Reference . (:[]))
     return ()
 
-instance FromDaoStructClass (StructError (Value any)) (Value any) where
+instance FromDaoStructClass StructError where
   fromDaoStruct = do
     constructor "StructError"
     let str o = case o of
@@ -583,7 +575,7 @@ instance FromDaoStructClass (StructError (Value any)) (Value any) where
 
 -- | The 'Object' type extends the 'Data.Dynamic.Dynamic' data type with a few more constructors for
 -- data types that are fundamental to a programming language, like integers, strings, and lists.
-data Value o
+data Object
   = ONull
   | OTrue
   | OType      T_type
@@ -598,11 +590,11 @@ data Value o
   | OChar      T_char
   | OString    T_string
   | ORef       T_ref
-  | OList      [Value o]
-  | ODict      (M.Map Name (Value o))
-  | OTree      (Struct (Value o))
+  | OList      T_list
+  | ODict      T_dict
+  | OTree      T_struct
   | OBytes     T_bytes
-  | OHaskell   o
+  | OHaskell   HaskellData
   deriving (Eq, Ord, Typeable, Show)
 
 type T_type     = ObjType
@@ -618,8 +610,11 @@ type T_char     = Char
 type T_string   = UStr
 type T_ref      = QualRef
 type T_bytes    = B.ByteString
+type T_list     = [Object]
+type T_dict     = M.Map Name Object
+type T_struct   = Struct
 
-instance NFData obj => NFData (Value obj) where
+instance NFData Object where
   rnf  ONull         = ()
   rnf  OTrue         = ()
   rnf (OType      a) = deepseq a ()
@@ -640,7 +635,7 @@ instance NFData obj => NFData (Value obj) where
   rnf (OBytes     a) = seq a ()
   rnf (OHaskell   a) = deepseq a ()
 
-instance HasNullValue obj => HasNullValue (Value obj) where
+instance HasNullValue Object where
   nullValue = ONull
   testNull a = case a of
     ONull        -> True
@@ -659,7 +654,7 @@ instance HasNullValue obj => HasNullValue (Value obj) where
     OHaskell  o  -> testNull o
     _            -> False
 
-instance B.Binary o mtab => B.Binary (Value o) mtab where
+instance B.Binary Object MTab where
   put o = do
     let t   = B.put (typeOfObj o)
         p o = t >> B.put o
@@ -685,7 +680,7 @@ instance B.Binary o mtab => B.Binary (Value o) mtab where
       OHaskell o -> B.put o
   get = B.word8PrefixTable <|> fail "expecting Object"
 
-instance B.Binary o mtab => B.HasPrefixTable (Value o) B.Byte mtab where
+instance B.HasPrefixTable Object B.Byte MTab where
   prefixTable =
     let g f = fmap f B.get
     in  mappend (OTree <$> B.prefixTable) $ B.mkPrefixTableWord8 "Object" 0x08 0x1A $
@@ -711,7 +706,7 @@ instance B.Binary o mtab => B.HasPrefixTable (Value o) B.Byte mtab where
                   (B.get >>= \ (B.BlockStream1M bs1m) -> return (OBytes bs1m))
           ]
 
-isNumeric :: Value o -> Bool
+isNumeric :: Object -> Bool
 isNumeric o = case o of
   OWord     _ -> True
   OInt      _ -> True
@@ -722,14 +717,14 @@ isNumeric o = case o of
   OComplex  _ -> True
   _           -> False
 
-isIntegral :: Value o -> Bool
+isIntegral :: Object -> Bool
 isIntegral o = case o of
   OWord _ -> True
   OInt  _ -> True
   OLong _ -> True
   _       -> False
 
-isRational :: Value o -> Bool
+isRational :: Object -> Bool
 isRational o = case o of
   OWord     _ -> True
   OInt      _ -> True
@@ -739,20 +734,20 @@ isRational o = case o of
   ORatio    _ -> True
   _           -> False
 
-isFloating :: Value o -> Bool
+isFloating :: Object -> Bool
 isFloating o = case o of
   OFloat   _ -> True
   OComplex _ -> True
   _          -> False
 
-objToIntegral :: Value o -> Maybe Integer
+objToIntegral :: Object -> Maybe Integer
 objToIntegral o = case o of
   OWord o -> return $ toInteger o
   OInt  o -> return $ toInteger o
   OLong o -> return o
   _       -> mzero
 
-objToRational :: Value o -> Maybe Rational
+objToRational :: Object -> Maybe Rational
 objToRational o = case o of
   OWord     o -> return $ toRational o
   OInt      o -> return $ toRational o
@@ -762,7 +757,7 @@ objToRational o = case o of
   ORatio    o -> return o
   _           -> mzero
 
-objToInt :: Value o -> Maybe Int
+objToInt :: Object -> Maybe Int
 objToInt a = objToIntegral a >>= \a ->
   if minInt <= a && a <= maxInt then return (fromIntegral a) else mzero
   where
@@ -771,10 +766,10 @@ objToInt a = objToIntegral a >>= \a ->
 
 -- | Used to implement a version of 'Data.Bits.shift' and 'Data.Bits.rotate', but with an object as
 -- the second parameter to these functions.
-bitsMove :: (forall a . Bits a => a -> Int -> a) -> Value o -> Value o -> Maybe (Value o)
+bitsMove :: (forall a . Bits a => a -> Int -> a) -> Object -> Object -> Maybe Object
 bitsMove fn a b = objToInt b >>= \b -> bitsMoveInt fn a b
 
-bitsMoveInt :: (forall a . Bits a => a -> Int -> a) -> Value o -> Int -> Maybe (Value o)
+bitsMoveInt :: (forall a . Bits a => a -> Int -> a) -> Object -> Int -> Maybe Object
 bitsMoveInt fn a b = case a of
   OInt  a -> return (OInt  (fn a b))
   OWord a -> return (OWord (fn a b))
@@ -783,7 +778,7 @@ bitsMoveInt fn a b = case a of
 
 -- | Used to implement a version of 'Data.Bits.testBit' but with an object as the second parameter
 -- to these functions.
-objTestBit :: Value o -> Value o -> Maybe (Value o)
+objTestBit :: Object -> Object -> Maybe Object
 objTestBit a i = objToInt i >>= \i -> case a of
   OInt  a -> return (oBool (testBit a i))
   OWord a -> return (oBool (testBit a i))
@@ -792,7 +787,7 @@ objTestBit a i = objToInt i >>= \i -> case a of
 
 -- | Create an 'Object' by stacking up 'ODict' constructors to create a directory-like structure,
 -- then store the Object at the top of the path, returning the directory-like object.
-insertAtPath :: [Name] -> Value o -> Value o
+insertAtPath :: [Name] -> Object -> Object
 insertAtPath px o = case px of
   []   -> o
   p:px -> ODict (M.singleton p (insertAtPath px o))
@@ -842,11 +837,11 @@ instance UStrType RefQualifier where
 instance HasRandGen RefQualifier where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::RefQualifier)))
 
-instance ToDaoStructClass RefQualifier Object where { toDaoStruct=putNullaryUsingShow; }
+instance ToDaoStructClass RefQualifier where { toDaoStruct=putNullaryUsingShow; }
 
-instance FromDaoStructClass RefQualifier Object where { fromDaoStruct=getNullaryWithRead; }
+instance FromDaoStructClass RefQualifier where { fromDaoStruct=getNullaryWithRead; }
 
-instance ObjectClass      RefQualifier where { obj=new; fromObj=objFromHaskellData; }
+instance ObjectClass RefQualifier where { obj=new; fromObj=objFromHaskellData; }
 
 instance HaskellDataClass RefQualifier where
   haskellDataInterface = interface LOCAL $ do
@@ -1081,7 +1076,7 @@ instance B.HasPrefixTable CoreType B.Byte mtab where
 
 instance HasRandGen CoreType where { randO = toEnum <$> nextInt (fromEnum (maxBound::CoreType)) }
 
-typeOfObj :: Value o -> CoreType
+typeOfObj :: Object -> CoreType
 typeOfObj o = case o of
   ONull      -> NullType
   OTrue      -> TrueType
@@ -1103,7 +1098,7 @@ typeOfObj o = case o of
   OBytes   _ -> BytesType
   OHaskell _ -> HaskellType
 
-oBool :: Bool -> Value o
+oBool :: Bool -> Object
 oBool a = if a then OTrue else ONull
 
 ----------------------------------------------------------------------------------------------------
@@ -1344,22 +1339,15 @@ fd1 = fmap delLocation
 
 ----------------------------------------------------------------------------------------------------
 
--- | Object was originally it's own @data@ type, but now it is a synonym for a 'Value'
--- polymorphic over the 'HaskellData' @data@ type.
-type Object = Value HaskellData
-type T_list     = [Value Object]
-type T_dict     = M.Map Name Object
-type T_struct   = Struct Object
-
-instance HaskellDataClass (Struct Object) where
+instance HaskellDataClass Struct where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
-instance ToDaoStructClass (Struct Object) Object where { toDaoStruct = return () }
-instance FromDaoStructClass (Struct Object) Object where { fromDaoStruct = FromDaoStruct $ lift get }
+instance ToDaoStructClass Struct where { toDaoStruct = return () }
+instance FromDaoStructClass Struct where { fromDaoStruct = FromDaoStruct $ lift get }
 
-instance HaskellDataClass (StructError Object) where
+instance HaskellDataClass StructError where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest
     autoDefToStruct >> autoDefFromStruct
@@ -1629,7 +1617,7 @@ instance ObjectClass QualRef where
   obj = ORef
   fromObj o = case o of { ORef o -> return o; _ -> mzero; }
 
-instance ObjectClass (Struct Object) where
+instance ObjectClass Struct where
   obj = OTree
   fromObj o = case o of { OTree o -> return o; _ -> mzero; }
 
@@ -1681,7 +1669,7 @@ instance ObjectClass Dynamic where
   obj = opaque
   fromObj o = case o of { OHaskell (HaskellData o _) -> return o; _ -> mzero; }
 
-instance ObjectClass (Value HaskellData) where { obj = id; fromObj = return; }
+instance ObjectClass Object where { obj = id; fromObj = return; }
 
 instance ObjectClass Location where { obj=new; fromObj=objFromHaskellData; }
 
@@ -1743,28 +1731,28 @@ objFromHaskellData = fromObj >=> fromHaskellData
 -- backtracks, 'Control.Monad.Error.throwError' is evaluated with the appropriate error data set.
 -- This function should usually not be required, as it is called by functions like 'opt', 'req', and
 -- 'reqList'.
-convertFieldData :: (Object -> FromDaoStruct Object o) -> Object -> FromDaoStruct Object o
+convertFieldData :: (Object -> FromDaoStruct o) -> Object -> FromDaoStruct o
 convertFieldData f o = mplus (f o) $ throwError $ nullValue{ structErrValue=Just o }
 
 -- | A required 'Struct' 'field'. This function is defined as
-req :: (UStrType name, Typeable o, ObjectClass o) => name -> FromDaoStruct Object o
+req :: (UStrType name, Typeable o, ObjectClass o) => name -> FromDaoStruct o
 req name = field name (convertFieldData (maybe mzero return . fromObj))
 
 -- | Check if a 'Struct' field exists using 'tryField', if it exists, convert it to the necessary
 -- data type using 'fromObj' (which fails if an unexpected type is stored in that field).
-opt :: (UStrType name, Typeable o, ObjectClass o) => name -> FromDaoStruct Object (Maybe o)
+opt :: (UStrType name, Typeable o, ObjectClass o) => name -> FromDaoStruct (Maybe o)
 opt name = Just <$> tryField name (convertFieldData (maybe mzero return . fromObj)) <|> return Nothing
 
 -- | Like 'req' but internally uses 'listFromObj' instead of 'fromObj'. The field must exist, if it
 -- does not this function evaluates to 'Control.Monad.Error.throwError'. Use 'optList' instead if
 -- you can accept an empty list when the field is not defined.
-reqList :: (UStrType name, Typeable o, ObjectClass o) => name -> FromDaoStruct Object [o]
+reqList :: (UStrType name, Typeable o, ObjectClass o) => name -> FromDaoStruct [o]
 reqList name = field name $ convertFieldData (maybe mzero return . listFromObj)
 
 -- | Like 'opt' but internally uses 'listFromObj' instead of 'fromObj'. The field may not exist, and
 -- if it does not this function returns an empty list. Use 'reqList' to evaluate to
 -- 'Control.Monad.Error.throwError' in the case the field does not exist.
-optList :: (UStrType name, Typeable o, ObjectClass o) => name -> FromDaoStruct Object [o]
+optList :: (UStrType name, Typeable o, ObjectClass o) => name -> FromDaoStruct [o]
 optList name = tryField name $ convertFieldData (maybe (return []) return . listFromObj)
 
 -- | This is an important function for instantiating 'ToDaoStructClass'. It takes any
@@ -1776,11 +1764,11 @@ optList name = tryField name $ convertFieldData (maybe (return []) return . list
 -- the 'HaskellDataClass' class.
 defObjField
   :: (UStrType name, Typeable o, ObjectClass o)
-  => name -> o -> ToDaoStruct Object haskData Object
+  => name -> o -> ToDaoStruct haskData Object
 defObjField name o = define name (obj o)
 
 -- | Synonym for 'defObjField'
-(.=) :: (UStrType name, Typeable o, ObjectClass o) => name -> o -> ToDaoStruct Object haskData Object
+(.=) :: (UStrType name, Typeable o, ObjectClass o) => name -> o -> ToDaoStruct haskData Object
 (.=) = defObjField
 infixr 2 .=
 
@@ -1789,13 +1777,13 @@ infixr 2 .=
 -- > \name accessor -> asks accessor >>= defObjField name
 putObjField
   :: (UStrType name, Typeable o, ObjectClass o)
-  => name -> (haskData -> o) -> ToDaoStruct Object haskData Object
+  => name -> (haskData -> o) -> ToDaoStruct haskData Object
 putObjField name which = asks which >>= defObjField name
 
 -- | Synonym for 'putObjField'
 (.=@)
   :: (UStrType name, Typeable o, ObjectClass o)
-  => name -> (haskData -> o) -> ToDaoStruct Object haskData Object
+  => name -> (haskData -> o) -> ToDaoStruct haskData Object
 (.=@) = putObjField
 infixr 2 .=@
 
@@ -1803,17 +1791,17 @@ infixr 2 .=@
 -- in the case of 'Prelude.Nothing'.
 defMaybeObjField
   :: (UStrType name, Typeable o, ObjectClass o)
-  => name -> Maybe o -> ToDaoStruct Object haskData (Maybe Object)
+  => name -> Maybe o -> ToDaoStruct haskData (Maybe Object)
 defMaybeObjField name = maybe (return Nothing) (fmap Just . defObjField name)
 
 (.=?) 
   :: (UStrType name, Typeable o, ObjectClass o)
-  => name -> Maybe o -> ToDaoStruct Object haskData (Maybe Object)
+  => name -> Maybe o -> ToDaoStruct haskData (Maybe Object)
 (.=?) = defMaybeObjField
 
 ----------------------------------------------------------------------------------------------------
 
-instance ToDaoStructClass Location Object where
+instance ToDaoStructClass Location where
   toDaoStruct = ask >>= \lo -> case lo of
     LocationUnknown -> makeNullary "Void"
     Location{} -> void $ do
@@ -1823,7 +1811,7 @@ instance ToDaoStructClass Location Object where
       "endingLine"     .=@ endingLine
       "endingColumn"   .=@ endingColumn
 
-instance FromDaoStructClass Location Object where
+instance FromDaoStructClass Location where
   fromDaoStruct = msum $
     [ nullary "Void" >> return LocationUnknown
     , do  constructor "Location"
@@ -1834,21 +1822,21 @@ instance FromDaoStructClass Location Object where
             <*> req "endingColumn"
     ]
 
-putLocation :: Location -> ToDaoStruct Object haskData ()
+putLocation :: Location -> ToDaoStruct haskData ()
 putLocation loc = case loc of
   LocationUnknown -> return ()
   Location{} -> void $ "location" .= loc
 
-location :: FromDaoStruct Object Location
+location :: FromDaoStruct Location
 location = req "location"
 
-putComments :: [Comment] -> ToDaoStruct Object haskData ()
+putComments :: [Comment] -> ToDaoStruct haskData ()
 putComments = void . defObjField "comments"
 
-comments :: FromDaoStruct Object [Comment]
+comments :: FromDaoStruct [Comment]
 comments = req "comments"
 
-optComments :: FromDaoStruct Object (Maybe [Comment])
+optComments :: FromDaoStruct (Maybe [Comment])
 optComments = opt "comments"
 
 instance HasRandGen Object where
@@ -2400,14 +2388,14 @@ instance PPrintable ExecControl where
     ExecReturn{ execReturnValue=o } ->
       maybe (return ()) (\o -> pWrapIndent [pString "Evaluated to: ", pPrint o]) o
 
-instance ToDaoStructClass ExecControl Object where
+instance ToDaoStructClass ExecControl where
   toDaoStruct = ask >>= \o -> case o of
     ExecReturn a -> flip (maybe (void $ makeNullary "ExecReturn")) a $ \a ->
       renameConstructor "ExecReturn" >> void ("value" .= a)
     ExecError o (ExecErrorInfo _ a b c) -> void $ renameConstructor "ExecError" >>
       "value" .=? o >> "objectExpr" .=? a >> "scriptExpr" .=? b >> "topLevelExpr" .=? c
 
-instance FromDaoStructClass ExecControl Object where
+instance FromDaoStructClass ExecControl where
   fromDaoStruct = msum $
     [ constructor "ExecReturn" >> ExecReturn <$> opt "value"
     , do  constructor "ExecError"
@@ -2683,12 +2671,12 @@ instance PrecedeWithSpace a => PrecedeWithSpace (Com a) where
     ComAround a b _ -> precedeWithSpace a || precedeWithSpace b
     -- there should always be a space before a comment.
 
-instance ToDaoStructClass Comment Object where
+instance ToDaoStructClass Comment where
   toDaoStruct = let nm = renameConstructor in ask >>= \co -> void $ case co of
     InlineComment  o -> nm "InlineComment"  >> "comment" .= o
     EndlineComment o -> nm "EndlineComment" >> "comment" .= o
 
-instance FromDaoStructClass Comment Object where
+instance FromDaoStructClass Comment where
   fromDaoStruct = msum $
     [ constructor "InlineComment"  >> InlineComment  <$> req "comment"
     , constructor "EndlineComment" >> EndlineComment <$> req "comment"
@@ -2750,7 +2738,7 @@ instance HasLocation a => HasLocation (Com a) where
 
 instance PPrintable a => PPrintable (Com a) where { pPrint = pPrintComWith pPrint }
 
-instance (Typeable a, ObjectClass a) => ToDaoStructClass (Com a) Object where
+instance (Typeable a, ObjectClass a) => ToDaoStructClass (Com a) where
   toDaoStruct = do
     renameConstructor "Commented"
     ask >>= \co -> void $ case co of
@@ -3059,10 +3047,10 @@ pPrintSubBlock header px = pPrintComCodeBlock header (Com px)
 
 instance PPrintable AST_CodeBlock where { pPrint o = mapM_ pPrint (getAST_CodeBlock o) }
 
-instance ToDaoStructClass AST_CodeBlock Object where
+instance ToDaoStructClass AST_CodeBlock where
   toDaoStruct = void $ renameConstructor "CodeBlock" >> "block" .=@ getAST_CodeBlock
 
-instance FromDaoStructClass AST_CodeBlock Object where
+instance FromDaoStructClass AST_CodeBlock where
   fromDaoStruct = constructor "CodeBlock" >> AST_CodeBlock <$> req "block"
 
 instance HasRandGen AST_CodeBlock where { randO = countNode $ fmap AST_CodeBlock (randList 0 30) }
@@ -3193,7 +3181,7 @@ instance PPrintable a => PPrintable (AST_TyChk a) where
       , pPrint expr
       ]
 
-instance ObjectClass a => ToDaoStructClass (AST_TyChk a) Object where
+instance ObjectClass a => ToDaoStructClass (AST_TyChk a) where
   toDaoStruct = ask >>= \o -> renameConstructor "TypeChecked" >> case o of
     AST_NotChecked o              -> void $ define "data" (obj o)
     AST_Checked    o coms typ loc -> do
@@ -3307,7 +3295,7 @@ instance PPrintable AST_Param where
 instance PPrintable [Com AST_Param] where
   pPrint lst = pList_ "(" ", " ")" (fmap pPrint lst)
 
-instance ToDaoStructClass AST_Param Object where
+instance ToDaoStructClass AST_Param where
   toDaoStruct = ask >>= \o -> case o of
     AST_NoParams             -> makeNullary "Void"
     AST_Param coms tychk loc -> do
@@ -3316,7 +3304,7 @@ instance ToDaoStructClass AST_Param Object where
       "typeCheck" .= tychk
       putLocation loc
 
-instance FromDaoStructClass AST_Param Object where
+instance FromDaoStructClass AST_Param where
   fromDaoStruct = msum $
     [ nullary "Void" >> return AST_NoParams
     , constructor "Parameter" >> pure AST_Param <*> optComments <*> req "typeCheck" <*> location
@@ -3402,14 +3390,14 @@ instance HasLocation AST_ParamList where
 instance PPrintable AST_ParamList where
   pPrint (AST_ParamList lst _) = pInline [pPrint lst]
 
-instance ToDaoStructClass AST_ParamList Object where
+instance ToDaoStructClass AST_ParamList where
   toDaoStruct = ask >>= \o -> case o of
     AST_ParamList tychk loc -> do
       renameConstructor "ParamList"
       "typeCheck" .= tychk
       putLocation loc
 
-instance FromDaoStructClass AST_ParamList Object where
+instance FromDaoStructClass AST_ParamList where
   fromDaoStruct = constructor "ParamList" >> pure AST_ParamList <*> req "typeCheck" <*> location
 
 instance HasRandGen AST_ParamList where { randO = countNode $ pure AST_ParamList <*> randO <*> no }
@@ -3487,7 +3475,7 @@ instance PPrintable AST_StringList where
     AST_StringList [r]  _ -> pInline [pString "rule ", pPrint r]
     AST_StringList ruls _ -> pList (pString "rule") "(" ", " ")" (fmap pPrint ruls)
 
-instance ToDaoStructClass AST_StringList Object where
+instance ToDaoStructClass AST_StringList where
   toDaoStruct = ask >>= \o -> case o of
     AST_NoStrings coms loc -> do
       renameConstructor "NoStrings"
@@ -3496,7 +3484,7 @@ instance ToDaoStructClass AST_StringList Object where
       renameConstructor "StringList"
       "items" .= lst >> putLocation loc
 
-instance FromDaoStructClass AST_StringList Object where
+instance FromDaoStructClass AST_StringList where
   fromDaoStruct = msum $
     [ constructor "NoStrings"  >> pure AST_NoStrings  <*> comments <*> location
     , constructor "StringList" >> pure AST_StringList <*> reqList "items" <*> location
@@ -3849,9 +3837,9 @@ instance B.HasPrefixTable UpdateOp B.Byte MTab where
 instance HasRandGen UpdateOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::UpdateOp)))
 
-instance ToDaoStructClass UpdateOp Object where { toDaoStruct = putNullaryUsingShow }
+instance ToDaoStructClass UpdateOp where { toDaoStruct = putNullaryUsingShow }
 
-instance FromDaoStructClass UpdateOp Object where { fromDaoStruct = getNullaryWithRead }
+instance FromDaoStructClass UpdateOp where { fromDaoStruct = getNullaryWithRead }
 
 instance ObjectClass UpdateOp where { obj=new; fromObj=objFromHaskellData; }
 instance HaskellDataClass UpdateOp where
@@ -3887,9 +3875,9 @@ instance B.HasPrefixTable RefPfxOp B.Byte MTab where
 instance HasRandGen RefPfxOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::RefPfxOp)))
 
-instance ToDaoStructClass RefPfxOp Object where { toDaoStruct = putNullaryUsingShow }
+instance ToDaoStructClass RefPfxOp where { toDaoStruct = putNullaryUsingShow }
 
-instance FromDaoStructClass RefPfxOp Object where { fromDaoStruct = getNullaryWithRead }
+instance FromDaoStructClass RefPfxOp where { fromDaoStruct = getNullaryWithRead }
 
 instance ObjectClass RefPfxOp where { obj=new; fromObj=objFromHaskellData; }
 instance HaskellDataClass RefPfxOp where
@@ -3931,9 +3919,9 @@ instance B.HasPrefixTable ArithPfxOp B.Byte MTab where
 instance HasRandGen ArithPfxOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::ArithPfxOp)))
 
-instance ToDaoStructClass ArithPfxOp Object where { toDaoStruct = putNullaryUsingShow }
+instance ToDaoStructClass ArithPfxOp where { toDaoStruct = putNullaryUsingShow }
 
-instance FromDaoStructClass ArithPfxOp Object where { fromDaoStruct = getNullaryWithRead }
+instance FromDaoStructClass ArithPfxOp where { fromDaoStruct = getNullaryWithRead }
 
 instance ObjectClass ArithPfxOp where { obj=new; fromObj=objFromHaskellData; }
 instance HaskellDataClass ArithPfxOp where
@@ -4016,9 +4004,9 @@ instance B.HasPrefixTable InfixOp B.Byte MTab where
 instance HasRandGen InfixOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::InfixOp)))
 
-instance ToDaoStructClass InfixOp Object where { toDaoStruct=putNullaryUsingShow; }
+instance ToDaoStructClass InfixOp where { toDaoStruct=putNullaryUsingShow; }
 
-instance FromDaoStructClass InfixOp Object where { fromDaoStruct = getNullaryWithRead }
+instance FromDaoStructClass InfixOp where { fromDaoStruct = getNullaryWithRead }
 
 instance ObjectClass InfixOp where { obj=new; fromObj=objFromHaskellData; }
 instance HaskellDataClass InfixOp where
@@ -4056,9 +4044,9 @@ instance NFData TopLevelEventType where { rnf a = seq a () }
 instance HasRandGen TopLevelEventType where
   randO = fmap toEnum (nextInt 3)
 
-instance ToDaoStructClass TopLevelEventType Object where { toDaoStruct = putNullaryUsingShow }
+instance ToDaoStructClass TopLevelEventType where { toDaoStruct = putNullaryUsingShow }
 
-instance FromDaoStructClass TopLevelEventType Object where { fromDaoStruct = getNullaryWithRead }
+instance FromDaoStructClass TopLevelEventType where { fromDaoStruct = getNullaryWithRead }
 
 instance ObjectClass TopLevelEventType where { obj=new; fromObj=objFromHaskellData; }
 instance HaskellDataClass TopLevelEventType where
@@ -4443,13 +4431,13 @@ instance NFData AST_Ref where
   rnf  AST_RefNull    = ()
   rnf (AST_Ref a b c) = deepseq a $! deepseq b $! deepseq c ()
 
-instance ToDaoStructClass AST_Ref Object where
+instance ToDaoStructClass AST_Ref where
   toDaoStruct = ask >>= \o -> case o of
     AST_RefNull        -> makeNullary "Null"
     AST_Ref nm nms loc -> renameConstructor "Ref" >>
       "head" .= nm >> "tail" .= nms >> putLocation loc
 
-instance FromDaoStructClass AST_Ref Object where
+instance FromDaoStructClass AST_Ref where
   fromDaoStruct = msum
     [ constructor "Null" >> return AST_RefNull
     , constructor "Ref"  >> pure AST_Ref <*> req "head" <*> req "tail" <*> location
@@ -4513,7 +4501,7 @@ instance PPrintable AST_QualRef where
     AST_Unqualified     r   -> pPrint r
     AST_Qualified q com r _ -> pInline [pPrint q, pString " ", pPrint com, pPrint r]
 
-instance ToDaoStructClass AST_QualRef Object where
+instance ToDaoStructClass AST_QualRef where
   toDaoStruct = ask >>= \o -> case o of
     AST_Unqualified r -> innerToStruct r
     AST_Qualified q coms r loc -> do
@@ -4523,7 +4511,7 @@ instance ToDaoStructClass AST_QualRef Object where
       "ref"       .= r
       putLocation loc
 
-instance FromDaoStructClass AST_QualRef Object where
+instance FromDaoStructClass AST_QualRef where
   fromDaoStruct = msum $
     [ AST_Unqualified <$> mplus (innerFromStruct "Null") (innerFromStruct "Ref")
     , pure AST_Qualified <*> req "qualifier" <*> comments <*> req "ref" <*> location
@@ -4656,11 +4644,11 @@ instance Intermediate ParenExpr AST_Paren where
   toInterm   (AST_Paren o loc) = liftM2 ParenExpr (uc0 o) [loc]
   fromInterm (ParenExpr o loc) = liftM2 AST_Paren (nc0 o) [loc]
 
-instance ToDaoStructClass AST_Paren Object where
+instance ToDaoStructClass AST_Paren where
   toDaoStruct = renameConstructor "Paren" >> ask >>= \o -> case o of
     AST_Paren paren loc -> "inside" .= paren >> putLocation loc
 
-instance FromDaoStructClass AST_Paren Object where
+instance FromDaoStructClass AST_Paren where
   fromDaoStruct = constructor "Paren" >> pure AST_Paren <*> req "inside" <*> location
 
 instance HasRandGen AST_Paren where { randO = recurse nullValue $ pure AST_Paren <*> randO <*> no }
@@ -4720,11 +4708,11 @@ instance PPrintable AST_If where
   pPrint (AST_If ifn thn _) =
     pClosure (pString "if" >> pPrint ifn) "{" "}" [pPrint thn]
 
-instance ToDaoStructClass AST_If Object where
+instance ToDaoStructClass AST_If where
   toDaoStruct = renameConstructor "Conditional" >> ask >>= \o -> case o of
     AST_If ifn thn loc -> "condition" .= ifn >> "action" .= thn >> putLocation loc
 
-instance FromDaoStructClass AST_If Object where
+instance FromDaoStructClass AST_If where
   fromDaoStruct = constructor "Conditional" >>
     pure AST_If <*> req "condition" <*> req "action" <*> location
 
@@ -4786,12 +4774,12 @@ instance PPrintable AST_Else where
   pPrint (AST_Else coms (AST_If ifn thn _) _) =
     pClosure (pPrintComWith (\ () -> pString "else ") coms >> pString "if" >> pPrint ifn) "{" "}" [pPrint thn]
 
-instance ToDaoStructClass AST_Else Object where
+instance ToDaoStructClass AST_Else where
   toDaoStruct = ask >>= \o -> case o of
     AST_Else coms ifn loc ->
       renameConstructor "ElseIf" >> "comments" .= coms >> "elseIf" .= ifn >> putLocation loc
 
-instance FromDaoStructClass AST_Else Object where
+instance FromDaoStructClass AST_Else where
   fromDaoStruct = constructor "ElseIf" >>
     pure AST_Else <*> req "comments" <*> req "elseIf" <*> location
 
@@ -4876,7 +4864,7 @@ instance PPrintable AST_IfElse where
       Nothing    -> return ()
       Just deflt -> pClosure (pPrintComWith (\ () -> pString "else") coms) "{" "}" [pPrint deflt]
 
-instance ToDaoStructClass AST_IfElse Object where
+instance ToDaoStructClass AST_IfElse where
   toDaoStruct = ask >>= \o -> case o of
     AST_IfElse ifn els coms block loc -> do
       renameConstructor "If"
@@ -4884,7 +4872,7 @@ instance ToDaoStructClass AST_IfElse Object where
       maybe (return ()) (void . defObjField "finalElse") block
       putLocation loc
 
-instance FromDaoStructClass AST_IfElse Object where
+instance FromDaoStructClass AST_IfElse where
   fromDaoStruct = constructor "If" >>
     pure AST_IfElse
       <*> req "test"
@@ -4958,10 +4946,10 @@ instance Intermediate WhileExpr AST_While where
   toInterm   (AST_While a) = liftM WhileExpr (ti a)
   fromInterm (WhileExpr a) = liftM AST_While (fi a)
 
-instance ToDaoStructClass AST_While Object where
+instance ToDaoStructClass AST_While where
   toDaoStruct = ask >>= \ (AST_While o) -> innerToStruct o >> renameConstructor "While"
 
-instance FromDaoStructClass AST_While Object where
+instance FromDaoStructClass AST_While where
   fromDaoStruct = constructor "While" >> AST_While <$> innerFromStruct "Conditional"
 
 instance HasRandGen AST_While  where { randO = AST_While <$> randO }
@@ -5316,7 +5304,7 @@ instance PPrintable AST_Script where
     AST_WithDoc      cObjXp               xcScrpXp  _ ->
       pPrintSubBlock (pString "with " >> pPrint cObjXp) xcScrpXp
 
-instance ToDaoStructClass AST_Script Object where
+instance ToDaoStructClass AST_Script where
   toDaoStruct = let nm = renameConstructor in ask >>= \o -> case o of
     AST_Comment      a         -> nm "Comment" >> putComments a
     AST_IfThenElse   a         -> innerToStruct a
@@ -5335,7 +5323,7 @@ instance ToDaoStructClass AST_Script Object where
       "expr" .= b >> putLocation loc
     AST_WithDoc      a b   loc -> nm "WithDoc" >> "expr" .= a >> "block" .= b >> putLocation loc
 
-instance FromDaoStructClass AST_Script Object where
+instance FromDaoStructClass AST_Script where
   fromDaoStruct = msum $
     [ constructor "Comment" >> AST_Comment <$> comments
     , AST_IfThenElse <$> fromDaoStruct
@@ -5473,12 +5461,12 @@ instance PPrintable AST_ObjList where
 
 instance NFData AST_ObjList where { rnf (AST_ObjList a b c) = deepseq a $! deepseq b $! deepseq c () }
 
-instance ToDaoStructClass AST_ObjList Object where
+instance ToDaoStructClass AST_ObjList where
   toDaoStruct = ask >>= \o -> case o of
     AST_ObjList coms lst loc -> renameConstructor "ObjectList" >>
       putComments coms >> defObjField "items" (listToObj lst) >> putLocation loc
 
-instance FromDaoStructClass AST_ObjList Object where
+instance FromDaoStructClass AST_ObjList where
   fromDaoStruct = constructor "ObjectList" >>
     pure AST_ObjList <*> comments <*> reqList "items" <*> location
 
@@ -5553,11 +5541,11 @@ instance HasLocation AST_OptObjList where
 
 instance PPrintable AST_OptObjList where { pPrint o = pPrintOptObjList "{" ", " "}" o }
 
-instance ToDaoStructClass AST_OptObjList Object where
+instance ToDaoStructClass AST_OptObjList where
   toDaoStruct = ask >>= \o -> case o of
     AST_OptObjList coms o -> renameConstructor "OptObjList" >> "params" .=? o >> putComments coms
 
-instance FromDaoStructClass AST_OptObjList Object where
+instance FromDaoStructClass AST_OptObjList where
   fromDaoStruct = constructor "OptObjList" >> pure AST_OptObjList <*> comments <*> opt "params"
 
 instance HasRandGen AST_OptObjList where
@@ -5632,11 +5620,11 @@ instance PPrintable AST_Literal where
 instance PrecedeWithSpace AST_Literal where
   precedeWithSpace (AST_Literal _ _) = True
 
-instance ToDaoStructClass AST_Literal Object where
+instance ToDaoStructClass AST_Literal where
   toDaoStruct = ask >>= \o -> case o of
     AST_Literal o loc -> renameConstructor "Literal" >> "obj" .= o >> putLocation loc
 
-instance FromDaoStructClass AST_Literal Object where
+instance FromDaoStructClass AST_Literal where
   fromDaoStruct = constructor "Literal" >> pure AST_Literal <*> req "obj" <*> location
 
 instance HasRandGen AST_Literal where
@@ -5802,7 +5790,7 @@ instance PrecedeWithSpace AST_RefOperand where
     AST_ArraySub  o _ _ -> precedeWithSpace o
     AST_FuncCall  o _ _ -> precedeWithSpace o
 
-instance ToDaoStructClass AST_RefOperand Object where
+instance ToDaoStructClass AST_RefOperand where
   toDaoStruct = ask >>= \o -> case o of
     AST_ObjParen a       -> innerToStruct a
     AST_PlainRef a       -> innerToStruct a
@@ -5811,7 +5799,7 @@ instance ToDaoStructClass AST_RefOperand Object where
     AST_FuncCall a b loc -> renameConstructor "FuncCall" >>
       "head" .= a >> "params" .= b >> putLocation loc
 
-instance FromDaoStructClass AST_RefOperand Object where
+instance FromDaoStructClass AST_RefOperand where
   fromDaoStruct = msum $
     [ AST_ObjParen <$> fromDaoStruct
     , AST_PlainRef <$> fromDaoStruct
@@ -5944,13 +5932,13 @@ instance PrecedeWithSpace AST_Single where
     AST_Single o       -> precedeWithSpace o
     AST_RefPfx _ _ _ _ -> True
 
-instance ToDaoStructClass AST_Single Object where
+instance ToDaoStructClass AST_Single where
   toDaoStruct = ask >>= \o -> case o of
     AST_Single a         -> innerToStruct a
     AST_RefPfx a b c loc -> renameConstructor "RefPrefix" >>
       "op" .= a >> putComments b >> "expr" .= c >> putLocation loc
 
-instance FromDaoStructClass AST_Single Object where
+instance FromDaoStructClass AST_Single where
   fromDaoStruct = msum $
     [ AST_Single <$> fromDaoStruct
     , constructor "RefPrefix" >>
@@ -6101,14 +6089,14 @@ instance PPrintable AST_RuleFunc where
       pClosure (pInline [pString "function ", pPrint co, pPrint nm, pPrint ccNmx]) "{" "}" [pPrint xcObjXp]
     AST_Rule           ccNmx   xcObjXp     _ -> pClosure (pPrint ccNmx) "{" "}" [pPrint xcObjXp]
 
-instance ToDaoStructClass AST_RuleFunc Object where
+instance ToDaoStructClass AST_RuleFunc where
   toDaoStruct = let nm = renameConstructor in ask >>= \o -> case o of
     AST_Lambda a b     loc -> nm "Lambda"   >> "params" .= a >> "block" .= b >> putLocation loc
     AST_Func   a b c d loc -> nm "Function" >>
       putComments a >> "name"  .= b >> "params" .= c >> "block" .= d >> putLocation loc
     AST_Rule   a b     loc -> nm "Rule" >> "params" .= a >> "block" .= b >> putLocation loc
 
-instance FromDaoStructClass AST_RuleFunc Object where
+instance FromDaoStructClass AST_RuleFunc where
   fromDaoStruct = msum $
     [ constructor "Lambda" >> pure AST_Lambda <*> req "params" <*> req "block"  <*> location
     , constructor "Function" >>
@@ -6423,7 +6411,7 @@ instance PrecedeWithSpace AST_Object where
     AST_ObjSingle  o -> precedeWithSpace o
     _                -> True
 
-instance ToDaoStructClass AST_Object Object where
+instance ToDaoStructClass AST_Object where
   toDaoStruct = let nm = renameConstructor in ask >>= \o -> case o of
     AST_Void                   -> makeNullary "Void"
     AST_ObjLiteral   a         -> innerToStruct a
@@ -6436,7 +6424,7 @@ instance ToDaoStructClass AST_Object Object where
     AST_Struct       a b   loc -> nm "Struct" >> "name" .= a >> "initList" .= b >> putLocation loc
     AST_MetaEval     a     loc -> nm "MetaEval" >> "block" .= a >> putLocation loc
 
-instance FromDaoStructClass AST_Object Object where
+instance FromDaoStructClass AST_Object where
   fromDaoStruct = msum $
     [ nullary "Void" >> return AST_Void
     , AST_ObjLiteral  <$> fromDaoStruct
@@ -6595,13 +6583,13 @@ instance PrecedeWithSpace AST_Arith where
     AST_Object o       -> precedeWithSpace o
     AST_Arith  o _ _ _ -> precedeWithSpace o
 
-instance ToDaoStructClass AST_Arith Object where
+instance ToDaoStructClass AST_Arith where
   toDaoStruct = ask >>= \o -> case o of
     AST_Object a         -> innerToStruct a
     AST_Arith  a b c loc -> renameConstructor "Arithmetic" >>
       "left" .= a >> "op" .= b >> "right" .= c >> putLocation loc
 
-instance FromDaoStructClass AST_Arith Object where
+instance FromDaoStructClass AST_Arith where
   fromDaoStruct = msum $
     [ AST_Object <$> fromDaoStruct
     , constructor "Arithmetic" >>
@@ -6764,13 +6752,13 @@ instance PrecedeWithSpace AST_Assign where
     AST_Eval   o       -> precedeWithSpace o
     AST_Assign o _ _ _ -> precedeWithSpace o
 
-instance ToDaoStructClass AST_Assign Object where
+instance ToDaoStructClass AST_Assign where
   toDaoStruct = ask >>= \o -> case o of
     AST_Eval o ->  innerToStruct o
     AST_Assign to op from loc -> renameConstructor "Assign" >>
       "to" .= to >> "op" .= op >> "from" .= from >> putLocation loc
 
-instance FromDaoStructClass AST_Assign Object where
+instance FromDaoStructClass AST_Assign where
   fromDaoStruct = msum $
     [ AST_Eval <$> fromDaoStruct
     , pure AST_Assign <*> req "to" <*> req "op" <*> req "from" <*> location
@@ -6962,7 +6950,7 @@ instance PPrintable AST_TopLevel where
     AST_Event     a b c  _ -> pClosure (pShow a >> mapM_ pPrint b) " { " " }" (map pPrint (getAST_CodeBlock c))
     AST_TopComment a       -> mapM_ (\a -> pPrint a >> pNewLine) a
 
-instance ToDaoStructClass AST_TopLevel Object where
+instance ToDaoStructClass AST_TopLevel where
   toDaoStruct = let nm = renameConstructor in ask >>= \o -> case o of
     AST_Attribute  a b   loc -> nm "Attribute" >> "type" .= a >> "expr" .= b >> putLocation loc
     AST_TopScript  a     loc -> nm "TopLevel" >> "script" .= a >> putLocation loc
@@ -6970,7 +6958,7 @@ instance ToDaoStructClass AST_TopLevel Object where
       "type" .= a >> "block" .= c >> putComments b >> putLocation loc
     AST_TopComment a         -> nm "Comment" >> putComments a
 
-instance FromDaoStructClass AST_TopLevel Object where
+instance FromDaoStructClass AST_TopLevel where
   fromDaoStruct = msum $
     [ constructor "Attribute" >> pure AST_Attribute <*> req "type" <*> req "expr" <*> location
     , constructor "TopLevel" >> pure AST_TopScript <*> req "script" <*> location
@@ -7086,14 +7074,14 @@ instance PPrintable AST_SourceCode where
     pForceNewLine
     mapM_ (\dir -> pPrint dir >> pForceNewLine) dirs
 
-instance ToDaoStructClass AST_SourceCode Object where
+instance ToDaoStructClass AST_SourceCode where
   toDaoStruct = void $ do
     renameConstructor "SourceCode"
     "modified" .=@ sourceModified
     "path"     .=@ sourceFullPath
     asks directives >>= define "code" . listToObj
 
-instance FromDaoStructClass AST_SourceCode Object where
+instance FromDaoStructClass AST_SourceCode where
   fromDaoStruct = constructor "SourceCode" >>
     pure AST_SourceCode <*> req "modified" <*> req "path" <*> reqList "code"
 
@@ -7563,7 +7551,7 @@ defIndexer :: Typeable typ => (typ -> Object -> Exec Object) -> DaoClassDefM typ
 defIndexer fn = _updHDIfcBuilder(\st->st{objIfcIndexer=Just fn})
 
 -- | Use your data type's instantiation of 'ToDaoStructClass' to call 'defToStruct'.
-autoDefToStruct :: forall typ . (Typeable typ, ToDaoStructClass typ Object) => DaoClassDefM typ ()
+autoDefToStruct :: forall typ . (Typeable typ, ToDaoStructClass typ) => DaoClassDefM typ ()
 autoDefToStruct = defToStruct ((predicate :: Predicate ExecControl T_struct -> Exec T_struct) . fmapPFail ((\o -> mkExecError{ execReturnValue=Just o}) . new) . fromData toDaoStruct)
 
 -- | When a label referencing your object has a field record accessed, for example:
@@ -7578,7 +7566,7 @@ defToStruct encode = _updHDIfcBuilder (\st -> st{ objIfcToStruct=Just encode })
 -- if your object is referenced by @a@ and the script expression wants to update a record called @b@
 -- within it by assigning it the value referenced by @c@, then the function defined here will be
 -- used.
-autoDefFromStruct :: (Typeable typ, FromDaoStructClass typ Object) => DaoClassDefM typ ()
+autoDefFromStruct :: (Typeable typ, FromDaoStructClass typ) => DaoClassDefM typ ()
 autoDefFromStruct = defFromStruct (predicate . fmapPFail ((\o -> mkExecError{ execReturnValue=Just o }) . new) . toData fromDaoStruct)
 
 -- | If for some reason you need to define a tree encoder and decoder for the 'Interface' of your

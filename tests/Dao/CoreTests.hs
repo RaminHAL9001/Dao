@@ -33,7 +33,7 @@ import           Dao.PPrint
 import           Dao.Parser  hiding (isEOF)
 import           Dao.Random
 import qualified Dao.Binary        as D
-import           Dao.Object
+import           Dao.Interpreter
 import           Dao.Interpreter.Parser
 
 import           Control.Applicative

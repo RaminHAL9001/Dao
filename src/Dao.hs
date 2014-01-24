@@ -30,13 +30,13 @@
 -- for those 'Dao.Interpreter.Job's to complete.
 module Dao
   ( module Dao.String
-  , module Dao.Object
+  , module Dao.Interpreter
   , module Dao
   ) where
 
 import           Dao.String
 import           Dao.Glob
-import           Dao.Object
+import           Dao.Interpreter
 import           Dao.Predicate
 import           Dao.PPrint
 import           Dao.Token

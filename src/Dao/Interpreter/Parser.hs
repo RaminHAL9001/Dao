@@ -25,7 +25,7 @@ module Dao.Interpreter.Parser where
 import           Dao.String
 import           Dao.Token
 import           Dao.PPrint
-import           Dao.Object    hiding (asString, opt)
+import           Dao.Interpreter    hiding (asString, opt)
 import           Dao.Predicate
 import           Dao.Parser
 

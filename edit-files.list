@@ -51,11 +51,3 @@ edit-files.list
 TODO
 commit.txt
 
-### to be removed ###
-src/Dao/Simple.hs
-src/Dao/Resource.hs
-src/Dao/Debug.hs
-src/Dao/Files.hs
-src/Dao/Evaluator.hs
-src/Dao/Struct.hs
-src/Dao/DistVar.hs

@@ -1,0 +1,283 @@
+// Tests how conditional statements are evaluated in the top level as well as when evaluated in a
+// function call.
+
+//: test print
+print("test print");
+
+//: if(true) { ... } --> OK
+if(true) {
+	print("if(true) { ... } --> OK");
+}
+
+//: if(! false) { ... } -> OK
+if(! false) {
+	print("if(! false) { ... } -> OK");
+}
+
+//: if(0 == 0) { ... } --> OK
+if(0 == 0) {
+	print("if(0 == 0) { ... } --> OK");
+}
+
+//: if(true) { ... } --> OK
+if(true) {
+	print("if(true) { ... } --> OK");
+}
+else {
+	throw "if(true) { ... } else { ... } --> FAIL";
+}
+
+//: if(false) { ... } else { ... } --> OK
+if(false) {
+	throw "if(false) { ... } else { ... } --> FAIL";
+}
+else {
+	print("if(false) { ... } else { ... } --> OK");
+}
+
+//: if(0 == 0) { ... } else { ... } --> OK
+if(0 == 0) {
+	print("if(0 == 0) { ... } else { ... } --> OK");
+}
+else {
+	throw "if(0 != 0) { ... } else { ... } --> FAIL";
+}
+
+//: if(0 != 0) { ... } else { ... } --> OK
+if(0 != 0) {
+	throw "if(0 != 0) { ... } else { ... } --> FAIL";
+}
+else {
+	print("if(0 != 0) { ... } else { ... } --> OK");
+}
+
+//: if(! (0 == 0)) { ... } else { ... } --> OK
+if(! (0 == 0)) {
+	throw "if(! (0 == 0)) { ... } else { ... } --> FAIL";
+}
+else {
+	print("if(! (0 == 0)) { ... } else { ... } --> OK");
+}
+
+//: if(! (0 != 0)) { ... } else { ... } --> OK
+if(! (0 != 0)) {
+	print("if(! (0 != 0)) { ... } else { ... } --> OK");
+}
+else {
+	throw "if(! (0 != 0)) { ... } else { ... } --> FAIL";
+}
+
+//: top-level var assign
+a = "top-level var assign";
+print(a);
+
+//: re-assign
+a = "re-assign";
+print(a);
+
+//: if(a == a) { ... } else { ... } --> OK
+if(a == a) {
+	print("if(a == a) { ... } else { ... } --> OK");
+}
+else {
+	throw "if(a != a) { ... } else { ... } --> FAIL";
+}
+
+//: if(a != a) { ... } else { ... } --> OK
+if(a != a) {
+	throw "if(a != a) { ... } else { ... } --> FAIL";
+}
+else {
+	print("if(a != a) { ... } else { ... } --> OK");
+}
+
+//: if(! (a == a)) { ... } else { ... } --> OK
+if(! (a == a)) {
+	throw "if(! (a == a)) { ... } else { ... } --> FAIL";
+}
+else {
+	print("if(! (a == a)) { ... } else { ... } --> OK");
+}
+
+//: if(! (a != a)) { ... } else { ... } --> OK
+if(! (a != a)) {
+	print("if(! (a != a)) { ... } else { ... } --> OK");
+}
+else {
+	throw "if(! (a != a)) { ... } else { ... } --> FAIL";
+}
+
+func before() {
+	print("func before() { ... }");
+}
+//: func before() { ... }
+before();
+//: func after() { ... }
+after();
+func after() {
+	print("func after() { ... }");
+}
+
+func test01() {
+	if(true) {
+		print("if(true) { ... } --> OK");
+	}
+}
+
+func test02() {
+	if(! false) {
+		print("if(! false) { ... } -> OK");
+	}
+}
+
+func test03() {
+	if(0 == 0) {
+		print("if(0 == 0) { ... } --> OK");
+	}
+}
+
+func test04() {
+	if(true) {
+		print("if(true) { ... } --> OK");
+	}
+	else {
+		throw "if(true) { ... } else { ... } --> FAIL";
+	}
+}
+
+func test05() {
+	if(false) {
+		throw "if(false) { ... } else { ... } --> FAIL";
+	}
+	else {
+		print("if(false) { ... } else { ... } --> OK");
+	}
+}
+
+func test06() {
+	if(0 == 0) {
+		print("if(0 == 0) { ... } else { ... } --> OK");
+	}
+	else {
+		throw "if(0 != 0) { ... } else { ... } --> FAIL";
+	}
+}
+
+func test07() {
+	if(0 != 0) {
+		throw "if(0 != 0) { ... } else { ... } --> FAIL";
+	}
+	else {
+		print("if(0 != 0) { ... } else { ... } --> OK");
+	}
+}
+
+func test08() {
+	if(! (0 == 0)) {
+		throw "if(! (0 == 0)) { ... } else { ... } --> FAIL";
+	}
+	else {
+		print("if(! (0 == 0)) { ... } else { ... } --> OK");
+	}
+}
+
+func test09() {
+	if(! (0 != 0)) {
+		print("if(! (0 != 0)) { ... } else { ... } --> OK");
+	}
+	else {
+		throw "if(! (0 != 0)) { ... } else { ... } --> FAIL";
+	}
+}
+
+func test10() {
+	a = "top-level var assign";
+	print(a);
+}
+
+func test11() {
+	a = "re-assign";
+	print(a);
+}
+
+func test12() {
+	if(a == a) {
+		print("if(a == a) { ... } else { ... } --> OK");
+	}
+	else {
+		throw "if(a != a) { ... } else { ... } --> FAIL";
+	}
+}
+
+func test13() {
+	if(a != a) {
+		throw "if(a != a) { ... } else { ... } --> FAIL";
+	}
+	else {
+		print("if(a != a) { ... } else { ... } --> OK");
+	}
+}
+
+func test14() {
+	if(! (a == a)) {
+		throw "if(! (a == a)) { ... } else { ... } --> FAIL";
+	}
+	else {
+		print("if(! (a == a)) { ... } else { ... } --> OK");
+	}
+}
+
+func test15() {
+	if(! (a != a)) {
+		print("if(! (a != a)) { ... } else { ... } --> OK");
+	}
+	else {
+		throw "if(! (a != a)) { ... } else { ... } --> FAIL";
+	}
+}
+
+//: if(true) { ... } --> OK
+test01();
+
+//: if(! false) { ... } -> OK
+test02();
+
+//: if(0 == 0) { ... } --> OK
+test03();
+
+//: if(true) { ... } --> OK
+test04();
+
+//: if(false) { ... } else { ... } --> OK
+test05();
+
+//: if(0 == 0) { ... } else { ... } --> OK
+test06();
+
+//: if(0 != 0) { ... } else { ... } --> OK
+test07();
+
+//: if(! (0 == 0)) { ... } else { ... } --> OK
+test08();
+
+//: if(! (0 != 0)) { ... } else { ... } --> OK
+test09();
+
+//: top-level var assign
+test10();
+
+//: re-assign
+test11();
+
+//: if(a == a) { ... } else { ... } --> OK
+test12();
+
+//: if(a != a) { ... } else { ... } --> OK
+test13();
+
+//: if(! (a == a)) { ... } else { ... } --> OK
+test14();
+
+//: if(! (a != a)) { ... } else { ... } --> OK
+test15();
+

@@ -1,52 +1,5 @@
-string.compare = $approximate;
-
-BEGIN {
-	print("--- BEGIN ---");
-	qtime(comma) = list{};
-	//print("qtime(comma) = " + qtime(comma));
-	print("--- RULES ---");
+// tests if throwing an exception in a conditional block at the top level will behave correctly.
+if(true) {
+	print("throw message \"conditional throw test\"");
+	throw "conditional throw test";
 }
-
-rule "$before*, $after*" {
-	d = doing();
-	a = join(before);
-	b = join(after);
-	print("query: " + d);
-	print("before = " + a + "\"");
-	print("after = " + b + "\"");
-	// Comment here
-	if(defined(static(lastQuery)) && static(lastQuery)==d) {
-		print("STOP ON: " + a);
-		return;
-	}
-	else {
-		print("set lastQurey = \"" + d + "\"");
-		static(lastQuery) = d;
-		print("set lastQurey = \"" + d + "\" (OK)");
-	}
-	if(before) {
-		print("append \"" + a + "\" to list.");
-		qtime(comma) += list{a};
-		print("append \"" + a + "\" to list. (OK)");
-	}
-	else {
-		print(join(before) + " is null.");
-	}
-	print("recurse? \"" + a + "\"");
-	if(a) {
-		print("--- start recurse with \"" + a + "\" ---");
-		do(a);
-		print("---- end recurse with \"" + a + "\" ----");
-	}
-	else { print("\"" + a + "\" is null, no recurse."); }
-}
-
-END {
-	print("---- END ----");
-	a = 1;
-	for x in qtime(comma) {
-		print(a+": "+x);
-		a += 1;
-	}
-}
-

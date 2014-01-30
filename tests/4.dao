@@ -107,16 +107,47 @@ else {
 	throw "if(! (a != a)) { ... } else { ... } --> FAIL";
 }
 
-func before() {
-	print("func before() { ... }");
+a = 0;
+if(a == 0) {
+	print("if(a == 0) { ... } else { ... } --> OK");
 }
-//: func before() { ... }
-before();
-//: func after() { ... }
-after();
-func after() {
-	print("func after() { ... }");
+else {
+	throw "if(a == 0) { ... } else { ... } --> FAIL";
 }
+//: if(a == 0) { ... } else { ... } --> OK
+
+a = "Hello";
+if(a == "Hello") {
+	print("if(a == \"Hello\") { ... } else { ... } --> OK");
+}
+else {
+	throw "if(a == \"Hello\") { ... } else { ... } --> FAIL";
+}
+//: if(a == \"Hello\") { ... } else { ... } --> OK
+
+a += ", ";
+print(a + " world!");
+//: Hello, world!
+
+a = "assign a";
+//: before update: assign a
+print("before update: " + a);
+if(a == "assign a") {
+	a = "update a";
+//: update in condition: update a
+	print("update in condition: " + a);
+}
+else {
+	throw "if(a == \"assign a\") { ... } else { ... } --> FAIL";
+}
+//: after update: update a
+print("after update: " + a);
+
+func testFuncCall() {
+	print("function call --> OK");
+}
+
+testFuncCall();
 
 func test01() {
 	if(true) {

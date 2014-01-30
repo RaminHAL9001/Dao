@@ -209,6 +209,9 @@ import           Control.Monad.State
 
 import           System.IO
 
+dbg :: MonadIO m => String -> m ()
+dbg = liftIO . hPutStrLn stderr
+
 ----------------------------------------------------------------------------------------------------
 
 -- The stateful data for the 'DaoSetup' monad.
@@ -2686,7 +2689,7 @@ catchReturn catch f = catchPredicate f >>= \pval -> case pval of
 -- used to push a new context for every level of nested if/else/for/try/catch statement, or to
 -- evaluate a macro, but not a function call. Use 'execFuncPushStack' to perform a function call within
 -- a function call.
-execNested :: forall a . T_dict -> Exec a -> Exec a
+execNested :: T_dict -> Exec a -> Exec a
 execNested init exe = do
   (LocalStore stack) <- asks execStack
   liftIO $ modifyIORef stack (stackPush init)
@@ -3915,7 +3918,7 @@ objToBool o = case o of
   OHaskell (HaskellData d ifc) -> case objNullTest ifc of
     Nothing   -> execThrow $ obj [obj "cannot be used as a boolean value:", o]
     Just test -> return (test d)
-  o -> return (testNull o)
+  o -> return $ not $ testNull o
 
 -- | Traverse the entire object, returning a list of all 'OString' elements.
 extractStringElems :: Object -> [UStr]
@@ -4719,7 +4722,7 @@ evalConditional :: ParenExpr -> Exec Bool
 evalConditional obj =
   (execute obj :: Exec (Maybe Object)) >>=
     checkVoid (getLocation obj) "conditional expression to if statement" >>=
-      execHandleIO [fmap (const False) execIOHandler] . return . testNull
+      execHandleIO [fmap (const False) execIOHandler] . return . not . testNull
 
 instance HasLocation ParenExpr where
   getLocation (ParenExpr _ loc)     = loc
@@ -7016,9 +7019,8 @@ instance Executable TopLevelExpr (ExecUnit -> ExecUnit) where
       -- pop the namespace, keep any local variable declarations
       dict <- liftIO $ atomicModifyIORef stor stackPop
       -- merge the local variables into the global varaibles resource.
-      --lift (modifyUnlocked_ (globalData xunit) (return . T.union dict))
       let (GlobalStore stor) = globalData xunit
-      liftIO $ modifyMVar_ stor (return . flip M.union dict)
+      liftIO $ modifyMVar_ stor (return . M.union dict)
       return id
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     EventExpr typ scrpt _ -> do

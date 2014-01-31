@@ -194,7 +194,6 @@ import           Data.Time.Clock
 import           Data.Word
 import qualified Data.ByteString.Lazy as B
 import qualified Data.Complex         as C
-import qualified Data.IntMap          as I
 import qualified Data.Map             as M
 import qualified Data.Set             as S
 
@@ -3781,15 +3780,13 @@ eval_ADD a b = msum
   where
     timeAdd a b = case (a, b) of
       (OAbsTime a, ORelTime b) -> return (OAbsTime (addUTCTime b a))
---    (OAbsTime a, ORatio    b) -> return (OAbsTime (addUTCTime (fromRational (toRational b)) a))
---    (OAbsTime a, OFloat    b) -> return (OAbsTime (addUTCTime (fromRational (toRational b)) a))
-      _                      -> mzero
+      (OAbsTime a, ORatio   b) -> return (OAbsTime (addUTCTime (fromRational (toRational b)) a))
+      (OAbsTime a, OFloat   b) -> return (OAbsTime (addUTCTime (fromRational (toRational b)) a))
+      _                        -> mzero
     listAdd a b = do
       ax <- asListNoConvert a
       bx <- case b of
         OList  bx -> return bx
---      OSet   b  -> return (S.elems b)
---      OArray b  -> return (elems b)
         _         -> mzero
       return (objListAppend ax bx)
     stringAdd add a b = case a of
@@ -3802,10 +3799,10 @@ eval_SUB :: Object -> Object -> Exec Object
 eval_SUB a b = msum $
   [ evalNum (-) (-) a b
   , case (a, b) of
-      (OAbsTime a, OAbsTime     b) -> return (ORelTime (diffUTCTime a b))
+      (OAbsTime a, OAbsTime b) -> return (ORelTime (diffUTCTime a b))
       (OAbsTime a, ORelTime b) -> return (OAbsTime (addUTCTime (negate b) a))
---    (OAbsTime a, ORatio    b) -> return (OAbsTime (addUTCTime (fromRational (toRational (negate b))) a))
---    (OAbsTime a, OFloat    b) -> return (OAbsTime (addUTCTime (fromRational (toRational (negate b))) a))
+      (OAbsTime a, ORatio   b) -> return (OAbsTime (addUTCTime (fromRational (toRational (negate b))) a))
+      (OAbsTime a, OFloat   b) -> return (OAbsTime (addUTCTime (fromRational (toRational (negate b))) a))
       _                  -> mzero
   ]
 
@@ -3830,23 +3827,19 @@ eval_POW = evalNum (^) (\ a b -> toRational ((fromRational a :: Double) ** (from
 evalBitsOrSets
   :: ([Object]  -> Object)
   -> (([Object] -> [Object] -> [Object]) -> M.Map Name [Object] -> M.Map Name [Object] -> M.Map Name [Object])
-  -> (([Object] -> [Object] -> [Object]) -> I.IntMap   [Object] -> I.IntMap   [Object] -> I.IntMap   [Object])
--- -> (T_set -> T_set  -> T_set)
   -> (Integer -> Integer -> Integer)
   -> Object -> Object -> Exec Object
-evalBitsOrSets _combine _dict _intmap {-set-} num a b = evalInt num a b
+evalBitsOrSets _combine _dict num a b = evalInt num a b
 
 eval_ORB :: Object -> Object -> Exec Object
-eval_ORB  a b = evalBitsOrSets OList M.unionWith        I.unionWith        {-S.union-}        (.|.) a b
+eval_ORB  a b = evalBitsOrSets OList M.unionWith        (.|.) a b
 
 eval_ANDB :: Object -> Object -> Exec Object
-eval_ANDB a b = evalBitsOrSets OList M.intersectionWith I.intersectionWith {-S.intersection-} (.&.) a b
+eval_ANDB a b = evalBitsOrSets OList M.intersectionWith (.&.) a b
 
 eval_XORB :: Object -> Object -> Exec Object
-eval_XORB a b = evalBitsOrSets (\a -> head a) mfn ifn {-sfn-} xor a b where
---sfn = fn S.union S.intersection S.difference head
+eval_XORB a b = evalBitsOrSets (\a -> head a) mfn xor a b where
   mfn = fn M.union M.intersection M.difference
-  ifn = fn I.union I.intersection I.difference
   fn u n del _ a b = (a `u` b) `del` (a `n` b)
 
 evalShift :: (Int -> Int) -> Object -> Object -> Exec Object
@@ -3857,30 +3850,34 @@ evalShift fn a b = asHaskellInt b >>= \b -> case a of
   _       -> mzero
 
 evalCompare
-  :: (Integer -> Integer -> Bool) -> (Rational -> Rational -> Bool) -> Object -> Object -> Exec Object
-evalCompare compI compR a b = msum $
+  :: (Integer -> Integer -> Bool)
+  -> (Rational -> Rational -> Bool)
+  -> (Object -> Object -> Bool)
+  -> Object -> Object -> Exec Object
+evalCompare compI compR compO a b = msum $
   [ asInteger  a >>= \a -> asInteger  b >>= \b -> done (compI a b)
   , asRational a >>= \a -> asRational b >>= \b -> done (compR a b)
+  , execCatchIO (return $ obj $ compO a b) [newExecIOHandler $ \ (ErrorCall msg) -> fail msg]
   ]
   where { done true = if true then return OTrue else return ONull }
 
 eval_EQUL :: Object -> Object -> Exec Object
-eval_EQUL a b = evalCompare (==) (==) a b
+eval_EQUL = evalCompare (==) (==) (==)
 
 eval_NEQUL :: Object -> Object -> Exec Object
-eval_NEQUL a b = evalCompare (/=) (/=) a b
+eval_NEQUL = evalCompare (/=) (/=) (/=)
 
 eval_GTN :: Object -> Object -> Exec Object
-eval_GTN a b = evalCompare (>) (>) a b
+eval_GTN = evalCompare (>) (>) (>)
 
 eval_LTN :: Object -> Object -> Exec Object
-eval_LTN a b = evalCompare (<) (<) a b
+eval_LTN = evalCompare (<) (<) (<)
 
 eval_GTEQ :: Object -> Object -> Exec Object
-eval_GTEQ a b = evalCompare (>=) (>=) a b
+eval_GTEQ = evalCompare (>=) (>=) (>=)
 
 eval_LTEQ :: Object -> Object -> Exec Object
-eval_LTEQ a b = evalCompare (<=) (<=) a b
+eval_LTEQ = evalCompare (<=) (<=) (<=)
 
 eval_SHR :: Object -> Object -> Exec Object
 eval_SHR = evalShift negate
@@ -4302,7 +4299,9 @@ _arithPrefixOps = array (minBound, maxBound) $ defaults ++
       (op, \_ -> error $ "no builtin function for prefix "++show op++" operator")
 
 evalInfixOp :: InfixOp -> Object -> Object -> Exec Object
-evalInfixOp = (_infixOps!)
+evalInfixOp op a b = msum $ f a ++ f b ++ [(_infixOps!op) a b] where
+  f = maybe [] return . (fromObj >=> getOp)
+  getOp (HaskellData a ifc) = fmap (\f -> f op a b) $ objInfixOpTable ifc >>= (!op)
 
 _infixOps :: Array InfixOp (Object -> Object -> Exec Object)
 _infixOps = array (minBound, maxBound) $ defaults ++

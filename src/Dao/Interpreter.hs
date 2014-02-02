@@ -46,7 +46,7 @@ module Dao.Interpreter(
     objToInt, bitsMove, bitsMoveInt, objTestBit, insertAtPath,
     RefQualifier(LOCAL, GLODOT, STATIC, GLOBAL),
     QualRef(Unqualified, Qualified),
-    refNames, maybeRefNames, fmapQualRef, setQualifier, delQualifier, qualRefUpdate,
+    refNames, maybeRefNames, fmapQualRef, setQualifier, delQualifier, qualRefLookup, qualRefUpdate,
     CoreType(
       NullType, TrueType, TypeType, IntType, WordType, DiffTimeType, FloatType,
       LongType, RatioType, ComplexType, TimeType, CharType, StringType, RefType,
@@ -1560,12 +1560,11 @@ delQualifier ref = case ref of
   Unqualified r -> Unqualified r
   Qualified _ r -> Unqualified r
 
--- | This function performs an update on a 'QualRef', it is the complement to the instantiation of
--- 'QualRef' in the 'Executable' monad, that is to say evaluating 'execute' on a 'QualRef' will
--- "read" the value associated with it, evaluating 'qualRefUpdate' on a 'QualRef' will write/update
--- the value associated with it.
+-- | This function performs an update on a 'QualRef', it is the complement to the 'qualRefLookup'
+-- function. Evaluating 'qualRefUpdate' on a 'QualRef' will write/update the value associated with
+-- it.
 qualRefUpdate :: QualRef -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe Object)
-qualRefUpdate qref upd = _doWithRefQualifier qref onLocal onStatic onGlobal onGloDot where
+qualRefUpdate qref upd = fmap (fmap snd) $ _doWithRefQualifier qref onLocal onStatic onGlobal onGloDot where
   onLocal  ref = asks execStack >>= doUpdate ref
   onGlobal ref = asks globalData >>= doUpdate ref
   onStatic ref = asks currentCodeBlock >>= doUpdate ref
@@ -1590,19 +1589,20 @@ _doWithRefQualifier
   -> (Reference -> Exec (Maybe Object)) -- static store
   -> (Reference -> Exec (Maybe Object)) -- global store
   -> (Reference -> Exec (Maybe Object)) -- with-ref store
-  -> Exec (Maybe Object)
+  -> Exec (Maybe (QualRef, Object))
 _doWithRefQualifier qref onLocal onStatic onGlobal onGloDot = do
   result <- catchPredicate $ msum $ case qref of
-    Unqualified ref -> [onLocal ref, onStatic ref, onGlobal ref]
+    Unqualified ref -> [f LOCAL onLocal ref, f STATIC onStatic ref, f GLOBAL onGlobal ref]
     Qualified q ref -> case q of
-      LOCAL  -> [onLocal ref]
-      STATIC -> [onStatic ref]
-      GLOBAL -> [onGlobal ref]
-      GLODOT -> [onGloDot ref, onGlobal ref]
+      LOCAL  -> [f LOCAL  onLocal ref]
+      STATIC -> [f STATIC onStatic ref]
+      GLOBAL -> [f GLOBAL onGlobal ref]
+      GLODOT -> [f GLODOT onGloDot ref, f GLOBAL onGlobal ref]
   case result of
     Backtrack -> return Nothing
     PFail err -> throwError err
     OK      o -> return o
+  where { f q m ref = fmap (fmap (\o -> (Qualified q ref, o))) (m ref) }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2281,20 +2281,22 @@ class Executable exec result | exec -> result where { execute :: exec -> Exec re
 
 -- 'execute'-ing a 'QualRefExpr' will dereference it, essentially reading the
 -- value associated with that reference from the 'ExecUnit'.
-instance Executable QualRef (Maybe Object) where
-  execute qref = _doWithRefQualifier qref getLocal getStatic getGlobal getGloDot where
-    getLocal  ref = asks execStack  >>= doLookup ref
-    getGlobal ref = asks globalData >>= doLookup ref
-    getStatic ref = asks currentCodeBlock >>= doLookup ref
-    getGloDot ref = asks currentWithRef >>= doLookup ref
-    doLookup :: Store store => Reference -> store -> Exec (Maybe Object)
-    doLookup (Reference rx) store = case rx of
-      []   -> mzero
-      r:rx -> do
-        top <- storeLookup store r >>= maybe mzero return
-        _objectAccess [r] rx top
-      -- TODO: on exception, update the exception structure with information about the 'QualRef'
-      -- given above.
+instance Executable QualRef (Maybe (QualRef, Object)) where { execute qref = qualRefLookup qref }
+
+qualRefLookup :: QualRef -> Exec (Maybe (QualRef, Object))
+qualRefLookup qref = _doWithRefQualifier qref getLocal getStatic getGlobal getGloDot where
+  getLocal  ref = asks execStack  >>= doLookup ref
+  getGlobal ref = asks globalData >>= doLookup ref
+  getStatic ref = asks currentCodeBlock >>= doLookup ref
+  getGloDot ref = asks currentWithRef >>= doLookup ref
+  doLookup :: Store store => Reference -> store -> Exec (Maybe Object)
+  doLookup (Reference rx) store = case rx of
+    []   -> mzero
+    r:rx -> do
+      top <- storeLookup store r >>= maybe mzero return
+      _objectAccess [r] rx top
+    -- TODO: on exception, update the exception structure with information about the 'QualRef'
+    -- given above.
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3971,7 +3973,8 @@ derefStringsToDepth handler maxDeref maxDepth o =
           else  do
             let newMax = if maxDepth>=0 then (if i>=maxDepth then 0 else maxDepth-i) else (0-1)
                 recurse = fmap concat . mapM (derefStringsToDepth handler (maxDeref-i) newMax)
-            catchReturn (\ _ -> return Nothing) (execute ref) >>= recurse . maybe [] (:[])
+            catchReturn (\ _ -> return Nothing) (fmap (fmap snd) $ qualRefLookup ref) >>=
+              recurse . maybe [] (:[])
 
 -- | Returns a list of all string objects that can be found from within the given list of objects.
 -- This function might fail if objects exist that cannot resonably contain strings. If you want to
@@ -4348,8 +4351,17 @@ _infixOps = array (minBound, maxBound) $ defaults ++
     e msg = msg ++
       " operator should have been evaluated within the 'execute' function."
 
-evalUpdateOp :: UpdateOp -> Object -> Object -> Exec Object
-evalUpdateOp = (_updatingOps!)
+evalUpdateOp :: UpdateOp -> QualRef -> Object -> Exec (Maybe Object)
+evalUpdateOp op qref newObj = do
+  let upd qref o = qualRefUpdate qref (\ _ -> return (Just o))
+  oldObj <- qualRefLookup qref
+  case oldObj of
+    Nothing -> case op of
+      UCONST -> upd qref newObj
+      _      -> execThrow $ obj [obj "undefined refence:", obj qref]
+    Just (qref, oldObj) -> case op of
+      UCONST -> upd qref newObj
+      op     -> evalInfixOp (_updateToInfixOp op) oldObj newObj >>= upd qref 
 
 _updatingOps :: Array UpdateOp (Object -> Object -> Exec Object)
 _updatingOps = let o = (,) in array (minBound, maxBound) $ defaults ++
@@ -4392,7 +4404,7 @@ builtin_join = DaoFunc True $ \ox -> case ox of
 builtin_check_ref :: DaoFunc
 builtin_check_ref = DaoFunc True $ \args -> do
   fmap (Just . obj . and) $ forM args $ \arg -> case arg of
-    ORef o -> fmap (maybe False (const True)) (execute o)
+    ORef o -> fmap (maybe False (const True)) (fmap (fmap snd) $ qualRefLookup o)
     _      -> return True
 
 builtin_delete :: DaoFunc
@@ -4523,7 +4535,7 @@ execGuardBlock block = void (execFuncPushStack M.empty (mapM_ execute block >> r
 -- routine using 'defCallable' in it's 'haskellDataInterface' table.
 callFunction :: QualRef -> ObjListExpr -> Exec (Maybe Object)
 callFunction qref params = do
-  o <- execute qref
+  o <- fmap (fmap snd) $ qualRefLookup qref
   o <- case o of
     Just  o -> return o
     Nothing -> execThrow $ obj $
@@ -5266,7 +5278,7 @@ instance Executable ScriptExpr () where
       case objRef of
         ORef qref -> void $ qualRefUpdate qref $ \o -> case o of
           Nothing -> return Nothing
-          Just _o -> execute qref >>=
+          Just _o -> fmap (fmap snd) (qualRefLookup qref) >>=
             checkVoid (getLocation inObj) "reference over which to iterate evaluates to void" >>= \objRef ->
               fmap Just (iterateObject objRef >>= loop [] >>= foldObject objRef)
         o         -> void (iterateObject o >>= loop [])
@@ -5320,7 +5332,7 @@ derefObject :: Object -> Exec Object
 derefObject o = do
   let cantDeref msg = execThrow $ obj [obj msg, o]
   maybe (cantDeref "undefined reference:") return =<< case o of
-    ORef o -> execute o
+    ORef o -> fmap (fmap snd) $ qualRefLookup o
     OHaskell (HaskellData o ifc) -> case objDereferencer ifc of
       Nothing    -> cantDeref "value cannot be used as reference:"
       Just deref -> deref o
@@ -6851,17 +6863,12 @@ instance Executable AssignExpr (Maybe Object) where
     EvalExpr   o -> execute o
     AssignExpr nm op expr loc -> do
       let lhs = "left-hand side of "++show op
-      nm <- msum $
+      qref <- msum $
         [ execute nm >>= checkVoid (getLocation nm) (lhs++" evaluates to void") >>= asReference
         , execThrow $ obj [obj $ lhs++" is not a reference value"]
         ]
-      expr <- execute expr >>= checkVoid loc "right-hand side of assignment"
-      qualRefUpdate nm $ \maybeObj -> case maybeObj of
-        Nothing      -> case op of
-          UCONST -> return (Just expr)
-          _      -> execThrow $ obj [obj "undefined refence:", obj nm]
-        Just prevVal -> fmap Just $
-          checkPredicate "assignment expression" [prevVal, expr] $ (_updatingOps!op) prevVal expr
+      newObj <- execute expr >>= checkVoid loc "right-hand side of assignment"
+      evalUpdateOp op qref newObj
 
 instance ObjectClass AssignExpr where { obj=new; fromObj=objFromHaskellData; }
 

@@ -101,7 +101,7 @@ module Dao.Interpreter(
     asReference, asInteger, asRational, asComplex, asStringNoConvert, asString, asListNoConvert,
     asList, objListAppend, asHaskellInt, objToBool, extractStringElems,
     requireAllStringArgs, getStringsToDepth, derefStringsToDepth, recurseGetAllStrings, 
-    UpdateOp(UCONST, UADD, USUB, UMULT, UDIV, UMOD, UPOW, UORB, UANDB, UXORB, USHL, USHR, UARROW), 
+    UpdateOp(UCONST, UADD, USUB, UMULT, UDIV, UMOD, UPOW, UORB, UANDB, UXORB, USHL, USHR), 
     RefPfxOp(REF, DEREF), 
     ArithPfxOp(INVB, NOT, NEGTIV, POSTIV), 
     InfixOp(
@@ -158,13 +158,13 @@ module Dao.Interpreter(
     Interface(),
     objCastFrom, objEquality, objOrdering, objBinaryFormat, objNullTest, objPPrinter,
     objIterator, objIndexer, objToStruct, objFromStruct, objDictInit, objListInit,
-    objUpdateOpTable, objInfixOpTable, objArithPfxOpTable, objCallable, objDereferencer,
+    objInfixOpTable, objArithPfxOpTable, objCallable, objDereferencer,
     interfaceAdapter, interfaceToDynamic,
     DaoClassDefM(), interface, DaoClassDef,
     defCastFrom, autoDefEquality, defEquality, autoDefOrdering, defOrdering, autoDefBinaryFmt,
     defBinaryFmt, autoDefNullTest, defNullTest, defPPrinter, autoDefPPrinter, defIterator,
     autoDefIterator, defIndexer, autoDefToStruct, defToStruct, autoDefFromStruct, defFromStruct,
-    defDictInit, defListInit, defUpdateOp, defInfixOp, defPrefixOp, defCallable, defDeref,
+    defDictInit, defListInit, defInfixOp, defPrefixOp, defCallable, defDeref,
     defLeppard
   )
   where
@@ -3995,12 +3995,29 @@ recurseGetAllStrings o = catch (loop [] o) where
 ----------------------------------------------------------------------------------------------------
 
 data UpdateOp
-  = UCONST | UADD | USUB | UMULT | UDIV | UMOD | UPOW | UORB | UANDB | UXORB | USHL | USHR | UARROW
+  = UCONST | UADD | USUB | UMULT | UDIV | UMOD | UPOW | UORB | UANDB | UXORB | USHL | USHR
   deriving (Eq, Ord, Typeable, Enum, Ix, Bounded, Show, Read)
 instance NFData UpdateOp where { rnf a = seq a () }
 
+_updateToInfixOp :: UpdateOp -> InfixOp
+_updateToInfixOp = (arr!) where
+  arr :: Array UpdateOp InfixOp
+  arr = array (UADD, maxBound) $
+    [ (UADD  , ADD )
+    , (USUB  , SUB )
+    , (UMULT , MULT)
+    , (UDIV  , DIV )
+    , (UMOD  , MOD )
+    , (UPOW  , POW )
+    , (UORB  , ORB )
+    , (UANDB , ANDB)
+    , (UXORB , XORB)
+    , (USHL  , SHL )
+    , (USHR  , SHR )
+    ]
+
 allUpdateOpStrs :: String
-allUpdateOpStrs = " = += -= *= /= %= **= |= &= ^= <<= >>= <- "
+allUpdateOpStrs = " = += -= *= /= %= **= |= &= ^= <<= >>= "
 
 instance UStrType UpdateOp where
   toUStr a = ustr $ case a of
@@ -4016,7 +4033,6 @@ instance UStrType UpdateOp where
     UXORB  -> "^="
     USHL   -> "<<="
     USHR   -> ">>="
-    UARROW -> "<-"
   maybeFromUStr str = case uchars str of
     "="   -> Just UCONST
     "+="  -> Just UADD  
@@ -4030,7 +4046,6 @@ instance UStrType UpdateOp where
     "^="  -> Just UXORB 
     "<<=" -> Just USHL  
     ">>=" -> Just USHR  
-    "<-"  -> Just UARROW
     _     -> Nothing
   fromUStr str =
     maybe (error (show str++" is not an assignment/update operator")) id (maybeFromUStr str)
@@ -4051,11 +4066,10 @@ instance B.Binary UpdateOp MTab where
     UXORB  -> 0x6A
     USHL   -> 0x6B
     USHR   -> 0x6C
-    UARROW -> 0x6D
   get = B.word8PrefixTable <|> fail "expecting UpdateOp"
 instance B.HasPrefixTable UpdateOp B.Byte MTab where
   prefixTable = B.mkPrefixTableWord8 "UpdateOp" 0x61 0x6D $ map return $
-    [UCONST, UADD, USUB, UMULT, UDIV, UMOD, UPOW, UORB, UANDB, UXORB, USHL, USHR, UARROW]
+    [UCONST, UADD, USUB, UMULT, UDIV, UMOD, UPOW, UORB, UANDB, UXORB, USHL, USHR]
 
 instance HasRandGen UpdateOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::UpdateOp)))
@@ -7439,7 +7453,6 @@ data Interface typ =
   , objFromStruct      :: Maybe (T_struct -> Exec typ)                                              -- ^ defined by 'defStructFormat'
   , objDictInit        :: Maybe ([Object] -> Exec typ, typ -> [(Object, UpdateOp, Object)] -> Exec typ) -- ^ defined by 'defDictInit'
   , objListInit        :: Maybe ([Object] -> Exec typ, typ -> [Object] -> Exec typ)                     -- ^ defined by 'defDictInit'
-  , objUpdateOpTable   :: Maybe (Array UpdateOp (Maybe (UpdateOp -> typ -> Object -> Exec Object))) -- ^ defined by 'defUpdateOp'
   , objInfixOpTable    :: Maybe (Array InfixOp  (Maybe (InfixOp  -> typ -> Object -> Exec Object))) -- ^ defined by 'defInfixOp'
   , objArithPfxOpTable :: Maybe (Array ArithPfxOp (Maybe (ArithPfxOp -> typ -> Exec Object)))       -- ^ defined by 'defPrefixOp'
   , objCallable        :: Maybe (typ -> Exec [CallableCode])                                             -- ^ defined by 'defCallable'
@@ -7479,7 +7492,6 @@ interfaceAdapter a2b b2a ifc =
   , objFromStruct      = let n="objFromStruct"    in fmap (\fromTree -> fmap (a2b n) . fromTree) (objFromStruct ifc)
   , objDictInit        = let n="objDictInit"      in fmap (\ (init, eval) -> (\ox -> fmap (a2b n) (init ox), \typ ox -> fmap (a2b n) (eval (b2a n typ) ox))) (objDictInit ifc)
   , objListInit        = let n="objListInit"      in fmap (\ (init, eval) -> (\ox -> fmap (a2b n) (init ox), \typ ox -> fmap (a2b n) (eval (b2a n typ) ox))) (objListInit ifc)
-  , objUpdateOpTable   = let n="objUpdateOpTable" in fmap (fmap (fmap (\updt op b -> updt op (b2a n b)))) (objUpdateOpTable ifc)
   , objInfixOpTable    = let n="objInfixOpTable"  in fmap (fmap (fmap (\infx op b -> infx op (b2a n b)))) (objInfixOpTable  ifc)
   , objArithPfxOpTable = let n="objPrefixOpTabl"  in fmap (fmap (fmap (\prfx op b -> prfx op (b2a n b)))) (objArithPfxOpTable ifc)
   , objCallable        = let n="objCallable"      in fmap (\eval -> eval . b2a n) (objCallable ifc)
@@ -7742,19 +7754,6 @@ defDictInit fa fb = _updHDIfcBuilder(\st->st{objIfcDictInit=Just (fa, fb)})
 defListInit :: Typeable typ => ([Object] -> Exec typ) -> (typ -> [Object] -> Exec typ) -> DaoClassDefM typ ()
 defListInit fa fb = _updHDIfcBuilder(\st->st{objIfcListInit=Just(fa,fb)})
 
--- | Overload update/assignment operators in the Dao programming language, for example @=@, @+=@,
--- @<<=@ and so on. Call this method as many times with as many different 'UpdateOp's as necessary.
--- 
--- Like with C++, the operator prescedence and associativity is permanently defined by the parser
--- and cannot be changed by the overloading mechanism. You can only change how the operator behaves
--- based on the type of it's left and right hand parameters.
--- 
--- If you define two callbacks for the same 'UpdateOp', this will result in a runtime error,
--- hopefully the error will occur during the Dao runtime's object loading phase, and not while
--- actually executing a program.
-defUpdateOp :: Typeable typ => UpdateOp -> (UpdateOp -> typ -> Object -> Exec Object) -> DaoClassDefM typ ()
-defUpdateOp op fn = _updHDIfcBuilder(\st->st{objIfcUpdateOpTable=objIfcUpdateOpTable st++[(op, fn)]})
-
 -- | Overload infix operators in the Dao programming language, for example @+@, @*@, or @<<@.
 -- 
 -- Like with C++, the operator prescedence and associativity is permanently defined by the parser
@@ -7818,7 +7817,6 @@ interface init defIfc =
   , objFromStruct      = objIfcFromStruct   ifc
   , objDictInit        = objIfcDictInit     ifc
   , objListInit        = objIfcListInit     ifc
-  , objUpdateOpTable   = mkArray "defUpdateOp" $ objIfcUpdateOpTable ifc
   , objInfixOpTable    = mkArray "defInfixOp"  $ objIfcInfixOpTable  ifc
   , objArithPfxOpTable = mkArray "defPrefixOp" $ objIfcPrefixOpTable ifc
   , objCallable        = objIfcCallable     ifc

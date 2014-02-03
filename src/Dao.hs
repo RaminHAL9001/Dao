@@ -71,7 +71,9 @@ min_exec_time = 200000
 -- This function must be evaluated in order to have access to the following functions:
 -- > exec, prove
 daoFuncs :: DaoSetup
-daoFuncs = return ()
+daoFuncs = do
+  daoFunction "do"    $ DaoFunc{ autoDerefParams=True, daoForeignCall=queryDo }
+  daoFunction "doAll" $ DaoFunc{ autoDerefParams=True, daoForeignCall=queryDoAll }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -91,16 +93,13 @@ data Action
     }
 
 instance Executable Action (Maybe Object) where
-  execute act =
-    local
-      (\xunit ->
-          xunit
-          { currentQuery     = actionQuery act
-          , currentPattern   = actionPattern act
-          , currentCodeBlock = StaticStore (Just $ actionCodeBlock act)
-          }
-      )
-      (runCodeBlock (fmap (obj . fmap obj) $ actionMatch act) (actionCodeBlock act))
+  execute act = (flip local)
+    (runCodeBlock (fmap (obj . fmap obj) $ actionMatch act) (actionCodeBlock act)) $ \xunit ->
+      xunit
+      { currentQuery     = actionQuery act
+      , currentPattern   = actionPattern act
+      , currentCodeBlock = StaticStore (Just $ actionCodeBlock act)
+      }
 
 -- | An 'ActionGroup' is a group of 'Action's created within a given 'ExecUnit', this data structure
 -- contains both the list of 'Action's and the 'ExecUnit' from which the actions were generated. The
@@ -119,9 +118,10 @@ data ActionGroup
 instance Executable ActionGroup () where
   execute o = local (const (actionExecUnit o)) $ do
     xunit <- ask
-    mapM_ execute (preExec xunit)
-    mapM_ execute (getActionList o)
-    mapM_ execute (postExec xunit)
+    mapM_ execute $ preExec xunit
+    result <- catchPredicate $ mapM_ execute $ getActionList o
+    mapM_ execute $ postExec xunit
+    predicate result
 
 ----------------------------------------------------------------------------------------------------
 
@@ -135,7 +135,7 @@ loadEveryModule args = do
   deps <- importFullDepGraph args
   mapM_ loadModule (getDepFiles deps)
 
--- | Simply converts an 'Dao.Interpreter.AST.AST_SourceCode' directly to a list of
+-- | Simply converts an 'Dao.Interpreter.AST_SourceCode' directly to a list of
 -- 'Dao.Interpreter.TopLevelExpr's.
 evalTopLevelAST :: AST_SourceCode -> Exec Program
 evalTopLevelAST ast = case toInterm ast of
@@ -275,7 +275,7 @@ makeActionsForQuery instr = do
       return $
         ActionGroup
         { actionExecUnit = xunit
-        , getActionList = flip concatMap (matchTree False tree tox) $ \ (patn, mtch, execs) ->
+        , getActionList  = flip concatMap (matchTree False tree tox) $ \ (patn, mtch, execs) ->
             flip map execs $ \exec -> seq exec $! seq instr $! seq patn $! seq mtch $!
               Action
               { actionQuery      = Just instr
@@ -284,6 +284,55 @@ makeActionsForQuery instr = do
               , actionCodeBlock  = exec
               }
         }
+
+_getFuncStringParams :: [Object] -> Exec (Maybe [CallableCode], [UStr])
+_getFuncStringParams ox = case ox of
+  []   -> fail "no parameters passed to function"
+  [o]  -> (,) Nothing <$> oneOrMoreStrings [o]
+  o:lst -> do
+    calls <- (Just <$> objToCallable o) <|> return Nothing
+    (,) calls <$> oneOrMoreStrings lst
+  where
+    oneOrMoreStrings ox = case concatMap extractStringElems ox of
+      [] -> fail "parameter arguments contain no string values"
+      ox -> return ox
+
+-- | The 'queryDo' function maps to the built-in function "do()". It will try to execute every
+-- string query passed to it as a parameter, and return the return value of the first string query
+-- execution that does not backtrack or fail.  Passing a callable object as the first parameter asks
+-- this function to evaluate that object with the return value passed as the first parameter, and
+-- the evaluation of this function may backtrack to request further string queries be tried.
+-- Execution happens in the current thread. The return value is the value returned by the function
+-- passed as the first parameter. This function return "null" if none of the given strings matched.
+queryDo :: [Object] -> Exec (Maybe Object)
+queryDo ox = do
+  (calls, strs) <- _getFuncStringParams ox
+  let call o = maybe (return $ Just OTrue) (flip callCallables (maybe [] return o)) calls
+  flip mplus (return $ Just ONull) $ msum $ flip map strs $ \str -> do
+    actns <- makeActionsForQuery str
+    let xunit = actionExecUnit actns
+    local (const xunit) $ do
+      mapM_ execute $ preExec xunit
+      result <- catchPredicate $ msum $ map (execute >=> call) $ getActionList actns
+      mapM_ execute $ postExec xunit
+      predicate result
+
+-- | The 'queryDoAll' function maps to the "doAll()" built-in function. It works like the 'queryDo'
+-- function but executes as many matching patterns as possible, regardless of backtracking or
+-- exceptions thrown. Returns the number of successfully matched and evaluated pattern actions.  All
+-- execution happens in the current thread.
+queryDoAll :: [Object] -> Exec (Maybe Object)
+queryDoAll ox = do
+  (calls, strs) <- _getFuncStringParams ox
+  let call o = maybe (return ()) (void . flip callCallables (maybe [] return o)) calls
+  fmap (Just . OWord . sum) $ forM strs $ \str -> do
+    actns <- makeActionsForQuery str
+    let xunit = actionExecUnit actns
+    local (const xunit) $ do
+      mapM_ execute $ preExec xunit
+      result <- mapM (catchPredicate . (execute >=> call)) $ getActionList actns
+      mapM_ execute $ postExec xunit
+      return $ sum $ map (\o -> case o of { OK () -> 1; _ -> 0; }) result
 
 -- | When executing strings against Dao programs (e.g. using 'Dao.Tasks.execInputString'), you often
 -- want to execute the string against only a subset of the number of total programs. Pass the

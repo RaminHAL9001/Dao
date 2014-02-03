@@ -1,0 +1,91 @@
+rule "match $x*" {
+	print("match $x* --> x = "+x);
+}
+
+rule "overlap $x*" {
+	print("overlap $x* (1) --> x = "+x);
+}
+
+rule "overlap $x*" {
+	print("overlap $x* (2) --> x = "+x);
+}
+
+rule("shared $x*", "shared $x*") {
+	print("shared $x* --> x = "+x);
+}
+
+rule("first disjoint $x*", "second disjoint $x*") {
+	print("(first/second) disjoint $x --> x = "+x);
+}
+
+rule("multi $x*", "multi $x*") {
+	print("multi $x* (1) --> x = "+x);
+}
+
+rule("multi $x*", "multi $x*") {
+	print("multi $x* (2) --> x = "+x);
+}
+
+func test(str) {
+	count = doAll(str);
+	print("doAll() returned " + join(" ", count));
+}
+
+//: match $x* --> x = hello
+//: doAll() returned 1U
+test("match hello");
+
+//: match $x* --> x = one two three
+//: doAll() returned 1U
+test("match one two three");
+
+//: overlap $x* (1) --> x = hello
+//: overlap $x* (2) --> x = hello
+//: doAll() returned 2U
+test("overlap hello");
+
+//: overlap $x* (1) --> x = one two three
+//: overlap $x* (2) --> x = one two three
+//: doAll() returned 2U
+test("overlap one two three");
+
+//: shared $x* --> x = hello
+//: shared $x* --> x = hello
+//: doAll() returned 2U
+test("shared hello");
+
+//: shared $x* --> x = one two three
+//: shared $x* --> x = one two three
+//: doAll() returned 2U
+test("shared one two three");
+
+//: (first/second) disjoint $x --> x = hello
+//: doAll() returned 1U
+test("first disjoint hello");
+
+//: (first/second) disjoint $x --> x = hello
+//: doAll() returned 1U
+test("second disjoint hello");
+
+//: (first/second) disjoint $x --> x = one two three
+//: doAll() returned 1U
+test("first disjoint one two three");
+
+//: (first/second) disjoint $x --> x = one two three
+//: doAll() returned 1U
+test("second disjoint one two three");
+
+//: multi $x* (1) --> x = hello
+//: multi $x* (1) --> x = hello
+//: multi $x* (2) --> x = hello
+//: multi $x* (2) --> x = hello
+//: doAll() returned 4U
+test("multi hello");
+
+//: multi $x* (1) --> x = one two three
+//: multi $x* (1) --> x = one two three
+//: multi $x* (2) --> x = one two three
+//: multi $x* (2) --> x = one two three
+//: doAll() returned 4U
+test("multi one two three");
+

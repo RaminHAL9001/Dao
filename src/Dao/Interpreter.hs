@@ -113,7 +113,7 @@ module Dao.Interpreter(
     evalArithPrefixOp, evalInfixOp, evalUpdateOp, 
     RefExpr(RefExpr), refFromExpr, 
     QualRefExpr(UnqualRefExpr, QualRefExpr), qualRefFromExpr, 
-    matchFuncParams, execGuardBlock, callCallables,
+    matchFuncParams, execGuardBlock, objToCallable, callCallables,
     callObject, callFunction, checkPredicate, checkVoid,
     AST_Ref(AST_RefNull, AST_Ref), astRef,
     AST_QualRef(AST_Unqualified, AST_Qualified),

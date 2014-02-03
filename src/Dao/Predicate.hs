@@ -197,7 +197,7 @@ instance MonadIO m => MonadIO (PredicateT err m) where { liftIO = PredicateT . l
 -- class:
 -- > instance MonadPlusError MyErr MyIO where
 -- >     catchPredicate = WrapMyIO . catchPredicate . unwrapMyIO
-class MonadPlusError err m where
+class MonadPlusError err m | m -> err where
   -- | Unlifts the whole 'Predicate' value, unlike 'catchError' which only catches the value stored
   -- in a 'PFail' constructor.
   catchPredicate :: m a -> m (Predicate err a)

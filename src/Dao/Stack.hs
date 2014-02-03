@@ -33,6 +33,8 @@ emptyStack = Stack []
 stackLookup :: Ord key => key -> Stack key val -> Maybe val
 stackLookup key stack = foldl (\f -> mplus f . (M.lookup key)) Nothing (mapList stack)
 
+-- | Always update in the top of the stack, regardless of whether the key being updated has been
+-- defined at some lower level in the stack.
 stackUpdateTopM
   :: (Monad m, Ord key)
   => (Maybe val -> m (Maybe val)) -> key -> Stack key val -> m (Stack key val, Maybe val)
@@ -40,6 +42,9 @@ stackUpdateTopM updVal key (Stack stack) = case stack of
   []      -> return (Stack [], Nothing)
   s:stack -> updVal (M.lookup key s) >>= \o -> return (Stack $ M.alter (const o) key s : stack, o)
 
+-- | If the key does not exist, the update will occur in the top level of the stack. If the key does
+-- exist, regardless of whether the key exists in the top or in some lower level, the value at that
+-- key will be updated in the level in which it is defined.
 stackUpdateM
   :: (Monad m, Ord key)
   => (Maybe val -> m (Maybe val)) -> key -> Stack key val -> m (Stack key val, Maybe val)

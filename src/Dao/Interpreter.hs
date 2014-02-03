@@ -208,8 +208,8 @@ import           Control.Monad.State
 
 import           System.IO
 
-dbg :: MonadIO m => String -> m ()
-dbg = liftIO . hPutStrLn stderr
+--dbg :: MonadIO m => String -> m ()
+--dbg = liftIO . hPutStrLn stderr
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2365,7 +2365,7 @@ instance ExecRef ref => Store (ref (Stack Name Object)) where
   storeLookup store ref     = execReadRef store >>= return . stackLookup ref
   storeDefine store ref obj = execModifyRef_ store (return . stackDefine ref (Just obj))
   storeDelete store ref     = execModifyRef_ store (return . stackDefine ref Nothing)
-  storeUpdate store ref upd = execModifyRef  store (stackUpdateTopM upd ref)
+  storeUpdate store ref upd = execModifyRef  store (stackUpdateM upd ref)
 
 newtype LocalStore  = LocalStore  (IORef (Stack Name Object))
 
@@ -4342,7 +4342,6 @@ _infixOps = array (minBound, maxBound) $ defaults ++
   , o GTEQ  eval_GTEQ
   , o LTEQ  eval_LTEQ
   , o ARROW (error (e "ARROW"))
---  , o DOT   eval_DOT
   ]
   where
     o = (,)
@@ -4359,7 +4358,7 @@ evalUpdateOp op qref newObj = do
     Nothing -> case op of
       UCONST -> upd qref newObj
       _      -> execThrow $ obj [obj "undefined refence:", obj qref]
-    Just (qref, oldObj) -> case op of
+    Just (qref, ~oldObj) -> case op of
       UCONST -> upd qref newObj
       op     -> evalInfixOp (_updateToInfixOp op) oldObj newObj >>= upd qref 
 
@@ -6867,7 +6866,7 @@ instance Executable AssignExpr (Maybe Object) where
         [ execute nm >>= checkVoid (getLocation nm) (lhs++" evaluates to void") >>= asReference
         , execThrow $ obj [obj $ lhs++" is not a reference value"]
         ]
-      newObj <- execute expr >>= checkVoid loc "right-hand side of assignment"
+      newObj <- execute expr >>= checkVoid loc "right-hand side of assignment" >>= derefObject 
       evalUpdateOp op qref newObj
 
 instance ObjectClass AssignExpr where { obj=new; fromObj=objFromHaskellData; }

@@ -113,7 +113,8 @@ module Dao.Interpreter(
     evalArithPrefixOp, evalInfixOp, evalUpdateOp, 
     RefExpr(RefExpr), refFromExpr, 
     QualRefExpr(UnqualRefExpr, QualRefExpr), qualRefFromExpr, 
-    matchFuncParams, execGuardBlock, callFunction, checkPredicate, checkVoid,
+    matchFuncParams, execGuardBlock, callCallables,
+    callObject, callFunction, checkPredicate, checkVoid,
     AST_Ref(AST_RefNull, AST_Ref), astRef,
     AST_QualRef(AST_Unqualified, AST_Qualified),
     ParenExpr(ParenExpr), evalConditional, AST_Paren(AST_Paren), 
@@ -3926,17 +3927,17 @@ extractStringElems o = case o of
   OList    o   -> concatMap extractStringElems o
   _            -> []
 
-requireAllStringArgs :: [Object] -> Exec [UStr]
-requireAllStringArgs ox = case mapM check (zip (iterate (+(1::Integer)) 0) ox) of
+requireAllStringArgs :: String -> [Object] -> Exec [UStr]
+requireAllStringArgs msg ox = case mapM check (zip (iterate (+(1::Integer)) 0) ox) of
   OK      obj -> return obj
-  Backtrack   -> execThrow $ obj [obj "all input parameters must be strings"]
+  Backtrack   -> execThrow $ obj [obj msg]
   PFail   err -> execThrow err
   where
     check (i, o) = case o of
       OString o -> return o
       _         -> throwError $
         mkExecError
-        { execReturnValue = Just $ obj [obj "requires string parameter, param number:", obj i] }
+        { execReturnValue = Just $ obj [obj msg, obj "param number:", obj i] }
 
 -- | Given an object, if it is a string return the string characters. If it not a string,
 -- depth-recurse into it and extract strings, or if there is an object into which recursion is not
@@ -4528,33 +4529,58 @@ matchFuncParams (ParamListExpr params _) ox =
 -- | A guard script is some Dao script that is executed before or after some event, for example, the
 -- code found in the @BEGIN@ and @END@ blocks.
 execGuardBlock :: [ScriptExpr] -> Exec ()
-execGuardBlock block = void (execFuncPushStack M.empty (mapM_ execute block >> return Nothing) >> return ())
+execGuardBlock block = void $
+  execFuncPushStack M.empty (mapM_ execute block >> return Nothing) >> return ()
+
+-- | Takes two parameters: first is an error message parameter, the second is the 'Object' to be
+-- called. The 'Object' to be called should be an 'OHaskell' constructed value containing a
+-- 'HaskellData' where the 'interface' has defined 'defCallable'. If so, the 'CallableCode' objects
+-- returned by 'objCallable' will be returned by this function. If not, 
+objToCallable :: Object -> Exec [CallableCode]
+objToCallable o = case fromObj o >>= \ (HaskellData o ifc) -> fmap ($ o) (objCallable ifc) of
+  Nothing -> mzero
+  Just  f -> f
+
+-- | 'CallableCode' objects are usually stored in lists because of function overloading: e.g. a
+-- function with a single name but is defined with multiple parameter lists would have several
+-- 'CallableCode' objects associated with that function mame. This function tries to perform a
+-- function call with a list of parameters. The parameters are matched to each 'CallableCode'
+-- object's 'argsPattern', the first 'argsPattern' that matches without backtracking will evaluate
+-- the function body.
+callCallables :: [CallableCode] -> [Object] -> Exec (Maybe Object)
+callCallables funcs params = 
+  msum $ flip map funcs $ \f -> matchFuncParams (argsPattern f) params >>=
+    flip execFuncPushStack (execute $ codeSubroutine f)
+
+-- | If the given object provides a 'defCallable' callback, the object can be called with parameters
+-- as if it were a function.
+callObject :: Object -> [Object] -> Exec (Maybe Object)
+callObject o params = case o of
+  OHaskell (HaskellData o ifc) -> case objCallable ifc of
+    Just getFuncs -> getFuncs o >>= \funcs -> callCallables funcs params
+    Nothing -> err
+  _ -> err
+  where
+    err = execThrow $ obj $
+      [ obj "not a callable object", o
+      , obj "called with parameters:", obj params
+      , obj "value of object at reference is:", o
+      ]
 
 -- | Dereferences the give 'QualRef' and checks if the 'Object' returned has defined a calling
 -- routine using 'defCallable' in it's 'haskellDataInterface' table.
-callFunction :: QualRef -> ObjListExpr -> Exec (Maybe Object)
+callFunction :: QualRef -> [Object] -> Exec (Maybe Object)
 callFunction qref params = do
   o <- fmap (fmap snd) $ qualRefLookup qref
   o <- case o of
     Just  o -> return o
     Nothing -> execThrow $ obj $
       [ obj "function called on undefined reference:", obj qref
-      , obj "called with parameters:", new params
+      , obj "called with parameters:", obj params
       ]
-  let err = execThrow $ obj $
-        [ obj "reference does not point to callable object:", ORef qref
-        , obj "called with parameters:", new params
-        , obj "value of object at reference is:", o
-        ]
-  case o of
-    OHaskell (HaskellData o ifc) -> case objCallable ifc of
-      Just getFuncs -> do
-        params <- execute params
-        funcs  <- getFuncs o
-        msum $ flip map funcs $ \f -> matchFuncParams (argsPattern f) params >>=
-          flip execFuncPushStack (execute $ codeSubroutine f)
-      Nothing -> err
-    _ -> err
+  calls <- mplus (objToCallable o) $ execThrow $ obj
+    [obj "does not evaluate to a callable object:", ORef qref]
+  callCallables calls params
 
 -- | Evaluate to 'procErr' if the given 'Predicate' is 'Backtrack' or 'PFail'. You must pass a
 -- 'Prelude.String' as the message to be used when the given 'Predicate' is 'Backtrack'. You can also
@@ -5882,7 +5908,7 @@ instance Executable RefOpExpr (Maybe Object) where
       o  <- execute op >>= checkVoid loc "function selector evaluates to void"
       op <- mplus (asReference o) $ execThrow $ obj $
         [obj "function selector does not evaluate to reference:", o]
-      let nonBuiltin = callFunction op args
+      let nonBuiltin = execute args >>= callFunction op
       builtins <- asks builtinFunctions
       case op of
         Unqualified (Reference [name]) -> case M.lookup name builtins of

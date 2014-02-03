@@ -126,7 +126,7 @@ else {
 //: if(a == \"Hello\") { ... } else { ... } --> OK
 
 a += ", ";
-print(a + " world!");
+print(a + "world!");
 //: Hello, world!
 
 a = "assign a";
@@ -147,6 +147,7 @@ func testFuncCall() {
 	print("function call --> OK");
 }
 
+//: function call --> OK
 testFuncCall();
 
 func test01() {
@@ -267,6 +268,42 @@ func test15() {
 	}
 }
 
+func test16() {
+	a = "Hello";
+	if(a == "Hello") {
+		print("if(a == \"Hello\") { ... } else { ... } --> OK");
+	}
+	else {
+		throw "if(a == \"Hello\") { ... } else { ... } --> FAIL";
+	}
+	a += ", ";
+	print(a + "world!");
+}
+
+func test17() {
+	a = "assign a";
+	//: before update: assign a
+	print("before update: " + a);
+	if(a == "assign a") {
+		a = "update a";
+	//: update in condition: update a
+		print("update in condition: " + a);
+	}
+	else {
+		throw "if(a == \"assign a\") { ... } else { ... } --> FAIL";
+	}
+	//: after update: update a
+	print("after update: " + a);
+
+}
+
+func test18() {
+	func testFuncCall() {
+		print("local function call --> OK");
+	}
+	testFuncCall();
+}
+
 //: if(true) { ... } --> OK
 test01();
 
@@ -311,4 +348,16 @@ test14();
 
 //: if(! (a != a)) { ... } else { ... } --> OK
 test15();
+
+//: if(a == \"Hello\") { ... } else { ... } --> OK
+//: Hello, world!
+test16();
+
+//: before update: assign a
+//: update in condition: update a
+//: after update: update a
+test17();
+
+//: local function call --> OK
+test18();
 

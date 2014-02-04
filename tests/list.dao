@@ -1,0 +1,14 @@
+a = list { 1, "hello", 2, "world", 3 };
+b = list { 3.14159f, "OK", "please", 11, "thank you" };
+
+print("a = "+a);
+print("b = "+b);
+
+c = a + b;
+print("c = "+c);
+
+i = 0;
+for x in (c) {
+	print(i+": "+x); i += 1;
+}
+

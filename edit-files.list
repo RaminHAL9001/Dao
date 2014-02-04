@@ -24,8 +24,15 @@ src/dao-main.hs
 
 tests/Dao/CoreTests.hs
 tests/Dao/Test.hs
-tests/2.dao
 tests/1.dao
+tests/2.dao
+tests/3.dao
+tests/4.dao
+tests/5.dao
+tests/div_by_2_until.dao
+tests/collatz1.dao
+tests/collatz2.dao
+tests/list.dao
 
 src/Dao/Lib/DataFile.hs
 src/Dao/Lib/Array.hs

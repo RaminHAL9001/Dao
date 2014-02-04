@@ -154,19 +154,20 @@ module Dao.Interpreter(
     AST_SourceCode(AST_SourceCode), sourceModified, sourceFullPath, directives, 
     evalObjectMethod,
     MethodTable(), execGetObjTable, lookupMethodTable, typeRepToUStr,
-    HasIterator(iterateObject, foldObject), 
-    HaskellDataClass(haskellDataInterface), toHaskellData, fromHaskellData, 
+    ReadIterable(readIter, readForLoop), readForLoopWith,
+    UpdateIterable(updateIter, updateForLoop), updateForLoopWith,
+    HaskellDataClass(haskellDataInterface), toHaskellData, fromHaskellData,
     Interface(),
     objCastFrom, objEquality, objOrdering, objBinaryFormat, objNullTest, objPPrinter,
-    objIterator, objIndexer, objToStruct, objFromStruct, objDictInit, objListInit,
+    objIndexer, objToStruct, objFromStruct, objDictInit, objListInit,
     objInfixOpTable, objArithPfxOpTable, objCallable, objDereferencer,
     interfaceAdapter, interfaceToDynamic,
     DaoClassDefM(), interface, DaoClassDef,
     defCastFrom, autoDefEquality, defEquality, autoDefOrdering, defOrdering, autoDefBinaryFmt,
-    defBinaryFmt, autoDefNullTest, defNullTest, defPPrinter, autoDefPPrinter, defIterator,
-    autoDefIterator, defIndexer, autoDefToStruct, defToStruct, autoDefFromStruct, defFromStruct,
-    defDictInit, defListInit, defInfixOp, defPrefixOp, defCallable, defDeref,
-    defLeppard
+    defBinaryFmt, autoDefNullTest, defNullTest, defPPrinter, autoDefPPrinter, defReadIterable,
+    autoDefReadIterable, defUpdateIterable, autoDefUpdateIterable, defIndexer, autoDefToStruct,
+    defToStruct, autoDefFromStruct, defFromStruct, defDictInit, defListInit, defInfixOp,
+    defPrefixOp, defCallable, defDeref, defLeppard
   )
   where
 
@@ -1273,6 +1274,25 @@ instance NFData Object where
   rnf (OTree      a) = deepseq a ()
   rnf (OBytes     a) = seq a ()
   rnf (OHaskell   a) = deepseq a ()
+
+instance Monoid Object where
+  mempty = ONull
+  mappend a b = case a of
+    ONull     -> b
+    OString a -> case b of
+      OString b -> OString (a<>b)
+      _         -> err (OString a) b
+    OList   a -> case b of
+      OList   b -> OList (a<>b)
+      _         -> err (OList a) b
+    ODict   a -> case b of
+      ODict   b -> ODict (a<>b)
+      _         -> err (ODict a) b
+    _ -> case b of
+      ONull -> a
+      _     -> err a b
+    where
+      err a b = error $ "cannot append "++show(typeOfObj a)++" to "++show(typeOfObj b)
 
 instance HasNullValue Object where
   nullValue = ONull
@@ -5292,21 +5312,23 @@ instance Executable ScriptExpr () where
               Just catch -> execNested M.empty (localVarDefine nm (new err) >> execute catch)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ForLoop varName inObj thn _loc -> do
-      let loop newList ox = case ox of
-            []   -> return newList
-            o:ox -> do
-              (shouldContinue, o) <- execute (ForLoopBlock varName o thn)
-              let next = newList ++ maybe [] (:[]) o
-              if shouldContinue then loop next ox else return (next++ox)
-      objRef <- execute inObj >>=
-        checkVoid (getLocation inObj) "value over which to iterate \"for\" statement"
-      case objRef of
-        ORef qref -> void $ qualRefUpdate qref $ \o -> case o of
-          Nothing -> return Nothing
-          Just _o -> fmap (fmap snd) (qualRefLookup qref) >>=
-            checkVoid (getLocation inObj) "reference over which to iterate evaluates to void" >>= \objRef ->
-              fmap Just (iterateObject objRef >>= loop [] >>= foldObject objRef)
-        o         -> void (iterateObject o >>= loop [])
+      o <- execute inObj >>=
+        checkVoid (getLocation inObj) "value over which to iterate \"for\" statement" >>= derefObject
+      let nested o = execNested (M.singleton varName o)
+      let run = void $ execute thn
+      let getVar = asks execStack >>= \ (LocalStore sto) ->
+            fmap (stackLookup varName) (liftIO $ readIORef sto)
+      let upd = void $ updateForLoop o $ \o -> case o of
+            Nothing -> run >> getVar
+            Just  o -> nested o (run >> getVar)
+      case o of
+        OHaskell (HaskellData _ ifc) -> case objUpdateIterable ifc of
+          Just  _ -> upd
+          Nothing -> case objReadIterable ifc of
+            Just  _ -> readForLoop o (maybe run $ flip nested run)
+            Nothing -> execThrow $ obj $
+              [obj "cannot iterate over object", o, obj "from expression", new inObj]
+        _ -> upd
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ContinueExpr a    _      _loc -> execThrow $ obj $
       '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" or \"while\" loop"
@@ -7318,7 +7340,7 @@ instance HaskellDataClass GlobAction where
 -- languages, and where @method@ is any function, for example an equality function @a -> a -> Bool@
 -- or an iterator function @Exec [Object]@. This function takes the @this@ value, an
 -- 'Interface', and an 'Interface' accessor (for example 'objEquality' or
--- 'objIterator') and if the accessor is not 'Prelude.Nothing', the @this@ object is applied to the
+-- 'objUpdateIterable') and if the accessor is not 'Prelude.Nothing', the @this@ object is applied to the
 -- method and the partial application is returned. If the accessor does evaluate to
 -- 'Prelude.Nothing' the exception value is thrown. If the @this@ object has not been constructed
 -- with 'OHaskell', the exception value is thrown.
@@ -7373,58 +7395,101 @@ instance B.HasCoderTable MethodTable where
 
 ----------------------------------------------------------------------------------------------------
 
--- | Instantiate your data type into this class when it makes sense for your data type to be used in
--- a "for" statement in the Dao programming language.
-class HasIterator obj where
-  -- | This function converts your object to a list. Conversion is done as lazily as possible to
-  -- prevent "for" statements from eating up a huge amount of memory when iteration produces a large
-  -- number of objects. For example, lets say your @obj@ is an association list. This function
-  -- should return a list of every assocaition in the @obj@. Each association object will be stored
-  -- in a local variable and the body of the "for" statement will be evaluated with that local
-  -- variable.
-  iterateObject :: obj -> Exec [Object]
-  -- | This function takes the list of objects that was produced after evaluating the "for"
-  -- statement and uses it to create a new @obj@ data. For example, if your data type is an
-  -- association list and the "for" loop eliminates every 'Object' not satisfying a predicate, the
-  -- object list passed here will be the lists of 'Object's that did satisfy the predicate and you
-  -- should construct a new @obj@ using this new list of 'Object's.
-  foldObject :: obj -> [Object] -> Exec obj
+-- | This is a function very much like the 'readForLoop' function, but the @iter@ type does not need
+-- to instantiate the 'ReadIterable' class, instead the function that would be used to instantiate
+-- 'readIter' is provided to this function as the first function parameter.
+readForLoopWith :: (iter -> Exec (val, iter)) -> iter -> (val -> Exec ()) -> Exec ()
+readForLoopWith readIter iter f = do
+  iter <- mplus (Just <$> readIter iter) (return Nothing)
+  case iter of
+    Nothing          -> return ()
+    Just (val, iter) -> f val >> readForLoopWith readIter iter f
 
-instance HasIterator [Object] where { iterateObject = return; foldObject _ = return; }
+-- | A class that provides the 'readIter' function, which is a function that will iterate over types
+-- which can be read sequentially, but not modified. The minimal complete definition is 'readIter'.
+-- 
+-- Notice how the 'readIter' function type is defined such that it can be passed to the
+-- 'Control.Monad.State.Lazy.StateT' constructor to construct a monad of type:
+-- > 'Control.Monad.State.Lazy.StateT' iter 'Exec' val
+-- The value over which we are iterating is modified in a stateful way: after each iteration the
+-- iterator value is modified to remove the current item and set it to retrieve the next item for
+-- the next iteration.
+class ReadIterable iter val | iter -> val where
+  -- | 'readIter' takes an iterated value @iter@ and will return a value of type @val@ which will be
+  -- the next item retrieved from @iter@, returning the updated iterator @iter@ with the value of
+  -- type @val@ in a tuple. 'readIter' should evaluate to 'Control.Monad.mzero' when there are no
+  -- more items over which to iterate.
+  readIter :: iter -> Exec (val, iter)
+  -- | By default, implements a "for" loop using a 'ReadIterable' item. You can of course customize
+  -- this function if your iterator is a bit more complicated.
+  readForLoop :: iter -> (val -> Exec ()) -> Exec ()
+  readForLoop = readForLoopWith readIter
 
-instance HasIterator UStr where
-  iterateObject = return . fmap OChar . uchars
-  foldObject  _ = fmap toUStr . foldM f "" where
-    f str o = case o of
-      OString o -> return (str++uchars o)
-      OChar   o -> return (str++[o])
-      o         -> execThrow $ obj [obj "object cannot be used to construct string:", o]
+instance ReadIterable [Object] (Maybe Object) where
+  readIter ox = case ox of
+    []   -> mzero
+    o:ox -> return (Just o, ox)
+
+instance ReadIterable Object (Maybe Object) where
+  readIter o = case o of
+    OList []     -> mzero
+    OList (o:ox) -> return (Just o, OList ox)
+    OHaskell (HaskellData d ifc) -> case objReadIterable ifc of
+      Nothing -> execThrow $ obj [obj "cannot iterate over object", o]
+      Just  f -> f d >>= \ (o, d) -> return (o, OHaskell $ HaskellData d ifc)
+    _       -> execThrow $ obj [obj "cannot iterate over object", o]
 
 ----------------------------------------------------------------------------------------------------
 
-cant_iterate :: Object -> String -> Exec ig
-cant_iterate o ifc = execThrow $ obj
-  [obj $ "object of type "++ifc++" cannot be iterated in a \"for\" statement:", o]
+-- | This is a function very much like the 'updateForLoop' function, but the @iter@ type does not
+-- need to instantiate the 'ReadIterable' or 'UpdateIterable' class, instead the function that would
+-- be used to instantiate 'readIter' is provided to this function as the first function parameter,
+-- and the function that would be used to instantiate 'updateIter' is provided to this function as
+-- the second function parameter.
+updateForLoopWith
+  :: Monoid iter
+  => (iter -> Exec (val, iter))
+  -> (iter -> val -> Exec iter)
+  -> iter -> (val -> Exec val) -> Exec iter
+updateForLoopWith readIter updateIter iter f = loop iter mempty where
+  loop iter updated = do
+    next <- (Just <$> readIter iter) <|> return Nothing
+    case next of
+      Nothing          -> return $ updated<>iter
+      Just (val, iter) -> f val >>= updateIter updated >>= loop iter
 
-instance HasIterator HaskellData where
-  iterateObject obj@(HaskellData o ifc) = case objIterator ifc of
-    Just (iter, _) -> iter o
-    Nothing        -> cant_iterate (OHaskell obj) (show (objHaskellType ifc))
-  foldObject obj@(HaskellData o ifc) ox = case objIterator ifc of
-    Just (_, fold) -> fmap (flip HaskellData ifc) (fold o ox)
-    Nothing        -> cant_iterate (OHaskell obj) (show (objHaskellType ifc))
+-- | A class that provides the 'updateIter' function, which is a function that will iterate over
+-- types which can be read sequentially and modified as they are read. The minimal complete
+-- definition is 'updateIter'.
+-- 
+-- The iterator item must implement the 'Data.Monoid.Monoid' class, which makes 'UpdateIterable'
+-- just a little bit like the 'Data.Foldable.Foldable' class: iteration produces values which are
+-- folded back into an iterator.
+class (Monoid iter, ReadIterable iter val) => UpdateIterable iter val | iter -> val where
+  -- | 'updateIter' is a fold-like function that takes an iterator value @iter@ and an 'Object' that
+  -- have been returned by a single evaluation of 'readIter'. 'updateIter' must then perform some
+  -- modification to the iterator value @iter@ using the 'Object' value, for example it could place
+  -- items back into the iterator, or remove items from the iterator.
+  updateIter :: iter -> val -> Exec iter
+  -- | By default, implements a "for" loop using a 'UpdateIterable' item. You can of course
+  -- customize this function if your iterator is a bit more complicated.
+  updateForLoop :: iter -> (val -> Exec val) -> Exec iter
+  updateForLoop = updateForLoopWith readIter updateIter
 
-instance HasIterator Object where
-  iterateObject obj = case obj of
-    OString  o -> iterateObject o
-    OList    o -> iterateObject o
-    OHaskell o -> iterateObject o
-    _ -> cant_iterate obj (show $ typeOfObj obj)
-  foldObject obj ox = case obj of
-    OString  o -> fmap OString  (foldObject o ox)
-    OList    o -> fmap OList    (foldObject o ox)
-    OHaskell o -> fmap OHaskell (foldObject o ox)
-    _ -> cant_iterate obj (show $ typeOfObj obj)
+instance UpdateIterable [Object] (Maybe Object) where
+  updateIter iter val = return $ case val of
+    Just (OList val) -> iter++val
+    Just        val  -> iter++[val]
+    Nothing          -> iter
+
+instance UpdateIterable Object (Maybe Object) where
+  updateIter o val = case o of
+    ONull   -> return $ OList $ maybe [] return val
+    OList o -> OList <$> updateIter o val
+    OHaskell (HaskellData d ifc) -> case objUpdateIterable ifc of
+      Nothing -> execThrow $ obj [obj "cannot iterate over object", o]
+      Just  f -> f d val >>= \d -> return $ OHaskell $ HaskellData d ifc
+    o       -> return $ OList $ [o] ++ maybe [] return val
 
 ----------------------------------------------------------------------------------------------------
 
@@ -7479,7 +7544,8 @@ data Interface typ =
   , objBinaryFormat    :: Maybe (typ -> Put, Get typ)                                               -- ^ defined by 'defBinaryFmt'
   , objNullTest        :: Maybe (typ -> Bool)                                                       -- ^ defined by 'defNullTest'
   , objPPrinter        :: Maybe (typ -> PPrint)                                                     -- ^ defined by 'defPPrinter'
-  , objIterator        :: Maybe (typ -> Exec [Object], typ -> [Object] -> Exec typ)                 -- ^ defined by 'defIterator'
+  , objReadIterable    :: Maybe (typ -> Exec (Maybe Object, typ))                                   -- ^ defined by 'defReadIterator'
+  , objUpdateIterable  :: Maybe (typ -> Maybe Object -> Exec typ)                                   -- ^ defined by 'defUpdateIterator'
   , objIndexer         :: Maybe (typ -> Object -> Exec Object)                                      -- ^ defined by 'defIndexer'
   , objToStruct        :: Maybe (typ -> Exec T_struct)                                              -- ^ defined by 'defStructFormat'
   , objFromStruct      :: Maybe (T_struct -> Exec typ)                                              -- ^ defined by 'defStructFormat'
@@ -7503,7 +7569,7 @@ instance Ord (Interface typ) where { compare a b = compare (objHaskellType a) (o
 -- first parameter, this is a string containing the name of the function that is currently making
 -- use of the conversion operation. Should you need to use 'Prelude.error' or 'mkExecError', this
 -- string will allow you to throw more informative error messages. WARNING: this function leaves
--- 'objHaskellType' unchanged, the calling context must change it.
+-- 'objHaskellType' unchanged because the original type value should usually be preserved.
 interfaceAdapter
   :: (Typeable typ_a, Typeable typ_b)
   => (String -> typ_a -> typ_b)
@@ -7518,7 +7584,8 @@ interfaceAdapter a2b b2a ifc =
   , objBinaryFormat    = let n="objBinaryFormat"  in fmap (\ (toBin , fromBin) -> (toBin . b2a n, fmap (a2b n) fromBin)) (objBinaryFormat ifc)
   , objNullTest        = let n="objNullTest"      in fmap (\null b -> null (b2a n b)) (objNullTest ifc)
   , objPPrinter        = let n="objPPrinter"      in fmap (\eval -> eval . b2a n) (objPPrinter ifc)
-  , objIterator        = let n="objIterator"      in fmap (\ (iter, fold) -> (iter . b2a n, \typ -> fmap (a2b n) . fold (b2a n typ))) (objIterator ifc)
+  , objReadIterable    = let n="objReadIterable"  in fmap (\for -> fmap (fmap (a2b n)) . for . b2a n) (objReadIterable ifc)
+  , objUpdateIterable  = let n="objUpdateIterable" in fmap (\for i -> fmap (a2b n) . for (b2a n i)) (objUpdateIterable ifc)
   , objIndexer         = let n="objIndexer"       in fmap (\indx b -> indx (b2a n b)) (objIndexer  ifc)
   , objToStruct        = let n="objToStruct"      in fmap (\toTree -> toTree . b2a n) (objToStruct ifc)
   , objFromStruct      = let n="objFromStruct"    in fmap (\fromTree -> fmap (a2b n) . fromTree) (objFromStruct ifc)
@@ -7552,7 +7619,8 @@ data HDIfcBuilder typ =
   , objIfcBinaryFormat  :: Maybe (typ -> Put, Get typ)
   , objIfcNullTest      :: Maybe (typ -> Bool)
   , objIfcPPrinter      :: Maybe (typ -> PPrint)
-  , objIfcIterator      :: Maybe (typ -> Exec [Object], typ -> [Object] -> Exec typ)
+  , objIfcReadIterable  :: Maybe (typ -> Exec (Maybe Object, typ))
+  , objIfcUpdateIterable :: Maybe (typ -> Maybe Object -> Exec typ)
   , objIfcIndexer       :: Maybe (typ -> Object -> Exec Object)
   , objIfcToStruct      :: Maybe (typ -> Exec T_struct)
   , objIfcFromStruct    :: Maybe (T_struct -> Exec typ)
@@ -7574,7 +7642,8 @@ initHDIfcBuilder =
   , objIfcBinaryFormat  = Nothing
   , objIfcNullTest      = Nothing
   , objIfcPPrinter      = Nothing
-  , objIfcIterator      = Nothing
+  , objIfcReadIterable  = Nothing
+  , objIfcUpdateIterable = Nothing
   , objIfcIndexer       = Nothing
   , objIfcToStruct      = Nothing
   , objIfcFromStruct    = Nothing
@@ -7703,15 +7772,27 @@ autoDefPPrinter = defPPrinter pPrint
 
 -- | The callback function defined here is used if an object of your @typ@ is ever used in a @for@
 -- statement in a Dao program. However it is much better to instantiate your @typ@ into the
--- 'HasIterator' class and use 'autoDefIterator' instead.
-defIterator :: Typeable typ => (typ -> Exec [Object]) -> (typ -> [Object] -> Exec typ) -> DaoClassDefM typ ()
-defIterator iter fold = _updHDIfcBuilder(\st->st{objIfcIterator=Just(iter,fold)})
+-- 'ReadIterable' class and use 'autoDefIterator' instead. If 'defUpdateIterator' is also defined,
+-- the function defined here will never be used.
+defReadIterable :: Typeable typ => (typ -> Exec (Object, typ)) -> DaoClassDefM typ ()
+defReadIterable iter = _updHDIfcBuilder $ \st ->
+  st{ objIfcReadIterable=Just $ iter >=> \ (o, typ) -> return (Just o, typ) }
 
--- | Using the instantiation of the 'HasIterator' class for your @typ@, installs the necessary
--- callbacks into the 'Interface' to allow your data type to be iterated over in the Dao
--- programming language when it is used in a "for" statement.
-autoDefIterator :: (Typeable typ, HasIterator typ) => DaoClassDefM typ ()
-autoDefIterator = defIterator iterateObject foldObject
+-- | Define 'defReadIterable' automatically using the instance of @typ@ in the 'ReadIterable' class.
+autoDefReadIterable :: (Typeable typ, ReadIterable typ Object) => DaoClassDefM typ ()
+autoDefReadIterable = defReadIterable readIter
+
+-- | The callback function defined here is used if an object of your @typ@ is ever used in a @for@
+-- statement in a Dao program. However it is much better to instantiate your @typ@ into the
+-- 'UpdateIterable' class and use 'autoDefIterator' instead. If 'defReadIterator' is also defined,
+-- the read iterator is always ignored in favor of this function.
+defUpdateIterable :: Typeable typ => (typ -> Maybe Object -> Exec typ) -> DaoClassDefM typ ()
+defUpdateIterable iter = _updHDIfcBuilder(\st->st{objIfcUpdateIterable=Just iter})
+
+-- | Define 'defUpdateIterable' automatically using the instance of @typ@ in the 'ReadIterable'
+-- class.
+autoDefUpdateIterable :: (Typeable typ, UpdateIterable typ (Maybe Object)) => DaoClassDefM typ ()
+autoDefUpdateIterable = defUpdateIterable updateIter
 
 -- | The callback function defined here is used at any point in a Dao program where an expression
 -- containing your object typ is subscripted with square brackets, for example in the statement:
@@ -7843,7 +7924,8 @@ interface init defIfc =
   , objBinaryFormat    = objIfcBinaryFormat ifc
   , objNullTest        = objIfcNullTest     ifc
   , objPPrinter        = objIfcPPrinter     ifc
-  , objIterator        = objIfcIterator     ifc
+  , objReadIterable    = objIfcReadIterable ifc
+  , objUpdateIterable  = objIfcUpdateIterable ifc
   , objIndexer         = objIfcIndexer      ifc
   , objToStruct        = objIfcToStruct     ifc
   , objFromStruct      = objIfcFromStruct   ifc

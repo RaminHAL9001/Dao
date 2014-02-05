@@ -126,7 +126,8 @@ module Dao.Interpreter(
     ScriptExpr(
       IfThenElse, WhileLoop, RuleFuncExpr, EvalObject,
       TryCatch, ForLoop, ContinueExpr, ReturnExpr, WithDoc
-    ), localVarDefine, derefObject,
+    ),
+    localVarDefine, derefObjectGetQualRef, derefObject,
     AST_Script(
       AST_Comment, AST_IfThenElse, AST_WhileLoop, AST_RuleFunc, AST_EvalObject,
       AST_TryCatch, AST_ForLoop, AST_ContinueExpr, AST_ReturnExpr, AST_WithDoc
@@ -4450,9 +4451,9 @@ builtin_check_ref = DaoFunc (ustr "defined") True $ \args -> do
     _      -> return True
 
 builtin_delete :: DaoFunc
-builtin_delete = DaoFunc (ustr "delete") True $ \args -> do
+builtin_delete = DaoFunc (ustr "delete") False $ \args -> do
   forM_ args $ \arg -> case arg of
-    ORef o -> void $ qualRefUpdate o (const (return Nothing))
+    ORef o -> void $ qualRefUpdate o (const $ return Nothing)
     _      -> return ()
   return (Just ONull)
 
@@ -5341,23 +5342,27 @@ instance Executable ScriptExpr () where
               Just catch -> execNested M.empty (localVarDefine nm (new err) >> execute catch)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ForLoop varName inObj thn _loc -> do
-      o <- execute inObj >>=
-        checkVoid (getLocation inObj) "value over which to iterate \"for\" statement" >>= derefObject
-      let nested o = execNested (M.singleton varName o)
+      (qref, o) <- execute inObj >>=
+        checkVoid (getLocation inObj) "value over which to iterate \"for\" statement" >>=
+          derefObjectGetQualRef
+      let nested f o = execNested (M.singleton varName o) f
       let run = void $ execute thn
-      let getVar = asks execStack >>= \ (LocalStore sto) ->
+      let getvar = asks execStack >>= \ (LocalStore sto) ->
             fmap (stackLookup varName) (liftIO $ readIORef sto)
-      let upd = void $ updateForLoop o $ \o -> case o of
-            Nothing -> run >> getVar
-            Just  o -> nested o (run >> getVar)
-      case o of
-        OHaskell (HaskellData _ ifc) -> case objUpdateIterable ifc of
-          Just  _ -> upd
-          Nothing -> case objReadIterable ifc of
-            Just  _ -> readForLoop o (maybe run $ flip nested run)
-            Nothing -> execThrow $ obj $
-              [obj "cannot iterate over object", o, obj "from expression", new inObj]
-        _ -> upd
+      let readloop = readForLoop o (maybe run $ nested run)
+      let updateloop qref = void $
+            updateForLoop (OList []) o (maybe (run>>getvar) (nested $ run>>getvar)) >>=
+              qualRefUpdate qref . const . return . Just
+      case qref of
+        Nothing   -> readloop
+        Just qref -> case o of
+          OHaskell (HaskellData _ ifc) -> case objUpdateIterable ifc of
+            Just  _ -> updateloop qref
+            Nothing -> case objReadIterable ifc of
+              Just  _ -> readloop
+              Nothing -> execThrow $ obj $
+                [obj "cannot iterate over object", o, obj "from expression", new inObj]
+          _ -> updateloop qref
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ContinueExpr a    _      _loc -> execThrow $ obj $
       '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" or \"while\" loop"
@@ -5405,14 +5410,19 @@ localVarDefine nm obj = asks execStack >>= \sto -> storeDefine sto nm obj
 -- 'Object' type. If the value of the 'Object' is not constructed with
 -- 'ORef', the object value is returned unmodified.
 derefObject :: Object -> Exec Object
-derefObject o = do
+derefObject = fmap snd . derefObjectGetQualRef
+
+-- | Like 'derefObject' but also returns the 'QualRef' value that was stored in the 'Object' that
+-- was dereferenced, along with the dereferenced value. If the 'Object' is not constructed with
+-- 'ORef', 'Prelude.Nothing' is returned instead of a 'QualRef'.
+derefObjectGetQualRef :: Object -> Exec (Maybe QualRef, Object)
+derefObjectGetQualRef o = do
   let cantDeref msg = execThrow $ obj [obj msg, o]
-  maybe (cantDeref "undefined reference:") return =<< case o of
-    ORef o -> fmap (fmap snd) $ qualRefLookup o
-    OHaskell (HaskellData o ifc) -> case objDereferencer ifc of
-      Nothing    -> cantDeref "value cannot be used as reference:"
-      Just deref -> deref o
-    o -> return (Just o)
+  case o of
+    ORef r -> qualRefLookup r >>= \o -> case o of
+      Nothing     -> cantDeref "undefined reference:"
+      Just (r, o) -> return (Just r, o)
+    o      -> return (Nothing, o)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -7478,20 +7488,20 @@ instance ReadIterable Object (Maybe Object) where
 ----------------------------------------------------------------------------------------------------
 
 -- | This is a function very much like the 'updateForLoop' function, but the @iter@ type does not
--- need to instantiate the 'ReadIterable' or 'UpdateIterable' class, instead the function that would
--- be used to instantiate 'readIter' is provided to this function as the first function parameter,
--- and the function that would be used to instantiate 'updateIter' is provided to this function as
--- the second function parameter.
+-- need to instantiate the 'ReadIterable' or 'UpdateIterable' classes, instead pass the function
+-- that would be used to instantiate 'readIter' is provided to this function as the first function
+-- parameter, and the function that would be used to instantiate 'updateIter' is provided to this
+-- function as the second function parameter. The remaining parameters are the same as for
+-- 'updateForLoop'.
 updateForLoopWith
-  :: Monoid iter
-  => (iter -> Exec (val, iter))
+  :: (iter -> Exec (val, iter))
   -> (iter -> val -> Exec iter)
-  -> iter -> (val -> Exec val) -> Exec iter
-updateForLoopWith readIter updateIter iter f = loop iter mempty where
+  -> iter -> iter -> (val -> Exec val) -> Exec iter
+updateForLoopWith readIter updateIter mempty iter f = loop iter mempty where
   loop iter updated = do
     next <- (Just <$> readIter iter) <|> return Nothing
     case next of
-      Nothing          -> return $ updated<>iter
+      Nothing          -> return updated
       Just (val, iter) -> f val >>= updateIter updated >>= loop iter
 
 -- | A class that provides the 'updateIter' function, which is a function that will iterate over
@@ -7501,15 +7511,21 @@ updateForLoopWith readIter updateIter iter f = loop iter mempty where
 -- The iterator item must implement the 'Data.Monoid.Monoid' class, which makes 'UpdateIterable'
 -- just a little bit like the 'Data.Foldable.Foldable' class: iteration produces values which are
 -- folded back into an iterator.
-class (Monoid iter, ReadIterable iter val) => UpdateIterable iter val | iter -> val where
+class ReadIterable iter val => UpdateIterable iter val | iter -> val where
   -- | 'updateIter' is a fold-like function that takes an iterator value @iter@ and an 'Object' that
   -- have been returned by a single evaluation of 'readIter'. 'updateIter' must then perform some
   -- modification to the iterator value @iter@ using the 'Object' value, for example it could place
   -- items back into the iterator, or remove items from the iterator.
   updateIter :: iter -> val -> Exec iter
   -- | By default, implements a "for" loop using a 'UpdateIterable' item. You can of course
-  -- customize this function if your iterator is a bit more complicated.
-  updateForLoop :: iter -> (val -> Exec val) -> Exec iter
+  -- customize this function if your iterator is a bit more complicated. This function behaves
+  -- somewhat like a fold operation: the first parameter is an initial value (for example an empty
+  -- list) which will be passed to the 'updateIter' function after each iteration.  The second
+  -- parameter is the iterator value (for example, the list of elements over which to iterate) is
+  -- used to retrieve each next iterated item via the 'readIter' function. The third parameter is
+  -- the actual function to be evaluated on for each iteration, it should take the item to be
+  -- iterated, may upate the item, and should return it.
+  updateForLoop :: iter -> iter -> (val -> Exec val) -> Exec iter
   updateForLoop = updateForLoopWith readIter updateIter
 
 instance UpdateIterable [Object] (Maybe Object) where
@@ -7526,6 +7542,7 @@ instance UpdateIterable Object (Maybe Object) where
       Nothing -> execThrow $ obj [obj "cannot iterate over object", o]
       Just  f -> f d val >>= \d -> return $ OHaskell $ HaskellData d ifc
     o       -> return $ OList $ [o] ++ maybe [] return val
+  updateForLoop = updateForLoopWith readIter updateIter
 
 ----------------------------------------------------------------------------------------------------
 

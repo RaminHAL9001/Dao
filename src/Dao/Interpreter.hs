@@ -19,8 +19,9 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 module Dao.Interpreter(
-    DaoSetupM(), DaoSetup, haskellType, daoProvides, daoClass, daoFunction, daoInitialize, setupDao,
-    DaoFunc(DaoFunc), autoDerefParams, daoForeignCall, executeDaoFunc, evalFuncs,
+    DaoSetupM(), DaoSetup, haskellType, daoProvides, daoClass, daoConstant, daoFunction,
+    daoInitialize, setupDao, DaoFunc, daoFunc, autoDerefParams, daoForeignCall, executeDaoFunc,
+    evalFuncs,
     ObjectClass(obj, fromObj), listToObj, listFromObj, new, opaque, objFromHaskellData,
     HaskellData(),
     Struct(Nullary, Struct),
@@ -52,7 +53,7 @@ module Dao.Interpreter(
       LongType, RatioType, ComplexType, TimeType, CharType, StringType, RefType,
       ListType, DictType, TreeType, BytesType, HaskellType
     ),
-    typeOfObj,
+    typeOfObj, coreType,
     TypeSym(CoreType, TypeVar), TypeStruct(TypeStruct), ObjType(ObjType), typeChoices,
     Reference(Reference), refNameList,
     Complex(Complex),
@@ -218,11 +219,11 @@ import           System.IO
 -- The stateful data for the 'DaoSetup' monad.
 data SetupModState
   = SetupModState
-    { daoSatisfies     :: T.Tree Name ()
+    { daoSatisfies      :: T.Tree Name ()
       -- ^ a set of references that can satisfy "required" statements in Dao scripts.
-    , daoTopLevelFuncs :: M.Map Name DaoFunc
-    , daoClasses       :: MethodTable
-    , daoEntryPoint    :: Exec ()
+    , daoSetupConstants :: M.Map Name Object
+    , daoClasses        :: MethodTable
+    , daoEntryPoint     :: Exec ()
     }
 
 -- | This monadic type allows you to define a built-in module using procedural
@@ -275,8 +276,12 @@ daoClass name ~o = _updateSetupModState $ \st ->
 -- | Define a built-in function. Examples of built-in functions provided in this module are
 -- "print()", "join()", and "exec()".
 daoFunction :: (Show name, UStrType name) => name -> DaoFunc -> DaoSetup
-daoFunction name func = _updateSetupModState $ \st ->
-  st{ daoTopLevelFuncs = M.insert (fromUStr $ toUStr name) func (daoTopLevelFuncs st) }
+daoFunction name func = _updateSetupModState $ \st -> let nm = (fromUStr $ toUStr name) in
+  st{ daoSetupConstants = M.insert nm (new $ func{ daoFuncName=nm }) (daoSetupConstants st) }
+
+daoConstant :: (Show name, UStrType name) => name -> Object -> DaoSetup
+daoConstant name o = _updateSetupModState $ \st ->
+  st{ daoSetupConstants = M.insert (fromUStr $ toUStr name) o (daoSetupConstants st) }
 
 -- | Provide an 'Exec' monad to perform when 'setupDao' is evaluated. You may use this function as
 -- many times as you wish, every 'Exec' monad will be executed in the order they are specified. This
@@ -291,7 +296,7 @@ setupDao setup0 = do
   let setup = execState (daoSetupM setup0) $
         SetupModState
         { daoSatisfies     = T.Void
-        , daoTopLevelFuncs = M.empty
+        , daoSetupConstants = M.empty
         , daoClasses       = mempty
         , daoEntryPoint    = return ()
         }
@@ -299,7 +304,7 @@ setupDao setup0 = do
   result <- ioExec (daoEntryPoint setup) $
     xunit
     { providedAttributes = daoSatisfies setup
-    , builtinFunctions   = daoTopLevelFuncs setup
+    , builtinConstants   = daoSetupConstants setup
     , globalMethodTable  = daoClasses setup
     }
   case result of
@@ -314,7 +319,21 @@ setupDao setup0 = do
 -- language, are stored in 'Data.Map.Map's from the functions name to an object of this type.
 -- Functions of this type are called by 'evalObject' to evaluate expressions written in the Dao
 -- language.
-data DaoFunc = DaoFunc { autoDerefParams :: Bool, daoForeignCall :: [Object] -> Exec (Maybe Object) }
+data DaoFunc
+  = DaoFunc
+    { daoFuncName     :: Name
+    , autoDerefParams :: Bool
+    , daoForeignCall  :: [Object] -> Exec (Maybe Object)
+    }
+  deriving Typeable
+instance Eq   DaoFunc where { a == b = daoFuncName a == daoFuncName b; }
+instance Ord  DaoFunc where { compare a b = compare (daoFuncName a) (daoFuncName b) }
+instance Show DaoFunc where { show = show . daoFuncName }
+instance PPrintable DaoFunc where { pPrint = pShow }
+
+-- | Use this as the constructor of a 'DaoFunc'.
+daoFunc :: DaoFunc
+daoFunc = DaoFunc{ daoFuncName=nil, autoDerefParams=True, daoForeignCall = \_ -> return Nothing }
 
 -- | Execute a 'DaoFunc' 
 executeDaoFunc :: Name -> DaoFunc -> ObjListExpr -> Exec (Maybe Object)
@@ -337,6 +356,14 @@ evalFuncs = do
   daoFunction "join"    builtin_join
   daoFunction "defined" builtin_check_ref
   daoFunction "delete"  builtin_delete
+  daoFunction "typeof"  builtin_typeof
+  mapM_ (uncurry daoConstant) $ map (\t -> (toUStr (show t), OType (coreType t))) [minBound..maxBound]
+
+instance ObjectClass DaoFunc where { obj=new; fromObj=objFromHaskellData }
+
+instance HaskellDataClass DaoFunc where
+  haskellDataInterface = interface daoFunc $ do
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1613,7 +1640,7 @@ _doWithRefQualifier
   -> Exec (Maybe (QualRef, Object))
 _doWithRefQualifier qref onLocal onStatic onGlobal onGloDot = do
   result <- catchPredicate $ msum $ case qref of
-    Unqualified ref -> [f LOCAL onLocal ref, f STATIC onStatic ref, f GLOBAL onGlobal ref]
+    Unqualified ref -> [f LOCAL onLocal ref, getConst ref, f STATIC onStatic ref, f GLOBAL onGlobal ref]
     Qualified q ref -> case q of
       LOCAL  -> [f LOCAL  onLocal ref]
       STATIC -> [f STATIC onStatic ref]
@@ -1623,7 +1650,14 @@ _doWithRefQualifier qref onLocal onStatic onGlobal onGloDot = do
     Backtrack -> return Nothing
     PFail err -> throwError err
     OK      o -> return o
-  where { f q m ref = fmap (fmap (\o -> (Qualified q ref, o))) (m ref) }
+  where
+    f q m ref = fmap (fmap (\o -> (Qualified q ref, o))) (m ref)
+    getConst ref = case ref of
+      Reference [nm] -> do
+        sto <- ConstantStore <$> asks builtinConstants
+        o <- storeLookup sto nm >>= maybe mzero return
+        return $ Just (Unqualified ref, o)
+      _               -> mzero
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1656,42 +1690,42 @@ data CoreType
 
 instance Show CoreType where
   show t = case t of
-    NullType     -> "null"
-    TrueType     -> "true"
-    TypeType     -> "type"
-    IntType      -> "int"
-    WordType     -> "word"
-    FloatType    -> "float"
-    LongType     -> "long"
-    RatioType    -> "ratio"
-    DiffTimeType -> "diff"
-    TimeType     -> "time"
-    CharType     -> "char"
-    StringType   -> "string"
-    RefType      -> "ref"
-    ListType     -> "list"
-    DictType     -> "dict"
-    TreeType     -> "tree"
-    BytesType    -> "bytes"
-    ComplexType  -> "complex"
-    HaskellType  -> "haskell"
+    NullType     -> "Null"
+    TrueType     -> "True"
+    TypeType     -> "Type"
+    IntType      -> "Int"
+    WordType     -> "Word"
+    FloatType    -> "Float"
+    LongType     -> "Long"
+    RatioType    -> "Ratio"
+    DiffTimeType -> "Diff"
+    TimeType     -> "Time"
+    CharType     -> "Char"
+    StringType   -> "String"
+    RefType      -> "Ref"
+    ListType     -> "List"
+    DictType     -> "Dict"
+    TreeType     -> "Tree"
+    BytesType    -> "Bytes"
+    ComplexType  -> "Complex"
+    HaskellType  -> "Haskell"
 
 instance Read CoreType where
   readsPrec _ str = map (\a -> (a, "")) $ case str of
-    "null"    -> [NullType]
-    "true"    -> [TrueType]
-    "type"    -> [TypeType]
-    "int"     -> [IntType]
-    "diff"    -> [DiffTimeType]
-    "time"    -> [TimeType]
-    "char"    -> [CharType]
-    "string"  -> [StringType]
-    "ref"     -> [RefType]
-    "list"    -> [ListType]
-    "dict"    -> [DictType]
-    "tree"    -> [TreeType]
-    "bytes"   -> [BytesType]
-    "haskell" -> [HaskellType]
+    "Null"    -> [NullType]
+    "True"    -> [TrueType]
+    "Type"    -> [TypeType]
+    "Int"     -> [IntType]
+    "Diff"    -> [DiffTimeType]
+    "Time"    -> [TimeType]
+    "Char"    -> [CharType]
+    "String"  -> [StringType]
+    "Ref"     -> [RefType]
+    "List"    -> [ListType]
+    "Dict"    -> [DictType]
+    "Tree"    -> [TreeType]
+    "Bytes"   -> [BytesType]
+    "Haskell" -> [HaskellType]
     _         -> []
 
 instance NFData CoreType where { rnf a = seq a () }
@@ -1709,27 +1743,7 @@ instance Es.InfBound CoreType where
   minBoundInf = Es.Point minBound
   maxBoundInf = Es.Point maxBound
 
-instance PPrintable CoreType where
-  pPrint t = pString $ case t of
-    NullType     -> "Null"
-    TrueType     -> "True"
-    TypeType     -> "Type"
-    IntType      -> "Int"
-    WordType     -> "Word"
-    DiffTimeType -> "Difftime"
-    FloatType    -> "Float"
-    LongType     -> "Long"
-    RatioType    -> "Ratio"
-    ComplexType  -> "Complex"
-    TimeType     -> "Time"
-    CharType     -> "Char"
-    StringType   -> "String"
-    RefType      -> "Ref"
-    ListType     -> "List"
-    DictType     -> "Dict"
-    TreeType     -> "Tree"
-    BytesType    -> "Data"
-    HaskellType  -> "Foreign"
+instance PPrintable CoreType where { pPrint = pShow }
 
 instance B.Binary CoreType mtab where
   put t = B.putWord8 $ case t of
@@ -1879,6 +1893,9 @@ instance B.HasPrefixTable ObjType B.Byte mtab where
   prefixTable = B.mkPrefixTableWord8 "ObjType" 0x1B 0x1B [ObjType <$> B.get]
 
 instance HasRandGen ObjType where { randO = ObjType <$> randList 1 3 }
+
+coreType :: CoreType -> ObjType
+coreType = ObjType . return . TypeStruct . return . CoreType
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2130,7 +2147,7 @@ data ExecUnit
       -- ^ stack of local variables used during evaluation
     , globalData         :: GlobalStore
     , providedAttributes :: T.Tree Name ()
-    , builtinFunctions   :: M.Map Name DaoFunc
+    , builtinConstants   :: M.Map Name Object
     , execOpenFiles      :: IORef (M.Map UPath ExecUnit)
     , programModuleName  :: Maybe UPath
     , preExec            :: [Subroutine]
@@ -2167,7 +2184,7 @@ _initExecUnit = do
     , currentBranch      = []
     , globalData         = GlobalStore global
     , providedAttributes = T.Void
-    , builtinFunctions   = M.empty
+    , builtinConstants   = M.empty
     , taskForExecUnits   = execTask
     , execStack          = LocalStore xstack
     , execOpenFiles      = files
@@ -2192,7 +2209,7 @@ newExecUnit :: Maybe UPath -> Exec ExecUnit
 newExecUnit modName = ask >>= \parent -> liftIO _initExecUnit >>= \child -> return $
   child
   { programModuleName = modName
-  , builtinFunctions  = builtinFunctions  parent
+  , builtinConstants  = builtinConstants  parent
   , defaultTimeout    = defaultTimeout    parent
   , globalMethodTable = globalMethodTable parent
   }
@@ -2428,6 +2445,12 @@ instance Store WithRefStore where
     liftIO $ writeIORef sto $ maybe ONull id o
     return o
 
+newtype ConstantStore = ConstantStore T_dict
+
+instance Store ConstantStore where
+  storeLookup (ConstantStore sto) nm = return $ M.lookup nm sto
+  storeUpdate _ nm _ = execThrow $ obj [obj "cannot update constant value:", obj nm]
+
 -- | Read elements within a Dao 'Struct' with a 'Reference'. 
 objectAccess :: Reference -> Object -> Exec (Maybe Object)
 objectAccess (Reference rx) o = _objectAccess [] rx o
@@ -2593,8 +2616,7 @@ instance FromDaoStructClass ExecControl where
 
 instance HaskellDataClass ExecControl where
   haskellDataInterface = interface nullValue $ do
-    autoDefPPrinter
-    -- autoDefNullTest >> autoDefToStruct
+    autoDefPPrinter >> autoDefNullTest >> autoDefToStruct
 
 setCtrlReturnValue :: Object -> ExecControl -> ExecControl
 setCtrlReturnValue obj ctrl = case ctrl of
@@ -4404,7 +4426,7 @@ _updatingOps = let o = (,) in array (minBound, maxBound) $ defaults ++
 ----------------------------------------------------------------------------------------------------
 
 builtin_print :: DaoFunc
-builtin_print = DaoFunc True $ \ox_ -> do
+builtin_print = DaoFunc (ustr "print") True $ \ox_ -> do
   let ox = flip map ox_ $ \o -> case o of
         OString o -> o
         o         -> ustr (prettyShow o)
@@ -4413,7 +4435,7 @@ builtin_print = DaoFunc True $ \ox_ -> do
 
 -- join string elements of a container, pretty prints non-strings and joins those as well.
 builtin_join :: DaoFunc
-builtin_join = DaoFunc True $ \ox -> case ox of
+builtin_join = DaoFunc (ustr "join") True $ \ox -> case ox of
   [OString j, a] -> joinWith (uchars j) a
   [a]            -> joinWith "" a
   _ -> execThrow $ OList [OList ox, obj "join() function requires one or two parameters"]
@@ -4422,17 +4444,23 @@ builtin_join = DaoFunc True $ \ox -> case ox of
       fmap (Just . OString . ustr . intercalate j) . derefStringsToDepth (\ _ o -> execThrow o) 1 1
 
 builtin_check_ref :: DaoFunc
-builtin_check_ref = DaoFunc True $ \args -> do
+builtin_check_ref = DaoFunc (ustr "defined") True $ \args -> do
   fmap (Just . obj . and) $ forM args $ \arg -> case arg of
     ORef o -> fmap (maybe False (const True)) (fmap (fmap snd) $ qualRefLookup o)
     _      -> return True
 
 builtin_delete :: DaoFunc
-builtin_delete = DaoFunc True $ \args -> do
+builtin_delete = DaoFunc (ustr "delete") True $ \args -> do
   forM_ args $ \arg -> case arg of
     ORef o -> void $ qualRefUpdate o (const (return Nothing))
     _      -> return ()
   return (Just ONull)
+
+builtin_typeof :: DaoFunc
+builtin_typeof = DaoFunc (ustr "typeof") True $ \args -> case args of
+  []  -> return Nothing
+  [o] -> return $ Just $ OType $ coreType $ typeOfObj o
+  ox  -> return $ Just $ OList $ map (OType . coreType . typeOfObj) ox
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4574,17 +4602,18 @@ callCallables funcs params =
 
 -- | If the given object provides a 'defCallable' callback, the object can be called with parameters
 -- as if it were a function.
-callObject :: Object -> [Object] -> Exec (Maybe Object)
-callObject o params = case o of
+callObject :: Maybe QualRef -> Object -> [Object] -> Exec (Maybe Object)
+callObject qref o params = case o of
   OHaskell (HaskellData o ifc) -> case objCallable ifc of
     Just getFuncs -> getFuncs o >>= \funcs -> callCallables funcs params
     Nothing -> err
   _ -> err
   where
-    err = execThrow $ obj $
-      [ obj "not a callable object", o
-      , obj "called with parameters:", obj params
-      , obj "value of object at reference is:", o
+    err = execThrow $ obj $ concat $
+      [ maybe [] (return . ORef) qref
+      , [obj "not a callable object", o]
+      , [obj "called with parameters:", obj params]
+      , [obj "value of object at reference is:", o]
       ]
 
 -- | Dereferences the give 'QualRef' and checks if the 'Object' returned has defined a calling
@@ -5931,10 +5960,17 @@ instance Executable RefOpExpr (Maybe Object) where
       op <- mplus (asReference o) $ execThrow $ obj $
         [obj "function selector does not evaluate to reference:", o]
       let nonBuiltin = execute args >>= callFunction op
-      builtins <- asks builtinFunctions
+      -- Here we take care to always try to call a builtin if the reference is unqualified.
+      -- This means if somone defines their own local function with the same name as a builtin
+      -- function, for example "print()", the only way to invoke the local function is to qualify
+      -- the name with the keyword "local". "print()" always calls the builtin, "local print()" will
+      -- call the locally defined function "print()".
+      builtins <- asks builtinConstants
       case op of
         Unqualified (Reference [name]) -> case M.lookup name builtins of
-          Just func -> executeDaoFunc name func args
+          Just func -> case fromObj func >>= fromDynamic of
+            Just func -> executeDaoFunc name func args
+            Nothing   -> execute args >>= callObject (Just op) func
           Nothing   -> nonBuiltin
         _ -> nonBuiltin
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --

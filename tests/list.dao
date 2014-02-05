@@ -1,4 +1,4 @@
-a = list { 1, "hello", 2, "world", 3 };
+a = list { 1, "hello", 2, null, "world", 3 };
 b = list { 3.14159f, "OK", "please", 11, "thank you" };
 
 print("a = "+a);
@@ -8,7 +8,11 @@ c = a + b;
 print("c = "+c);
 
 i = 0;
-for x in (c) {
+for x in(c) {
 	print(i+": "+x); i += 1;
+}
+
+for x in(c) {
+	if(Int == typeof(x)) { delete(x); } else { x = list{x, 0}; }
 }
 

@@ -72,8 +72,8 @@ min_exec_time = 200000
 -- > exec, prove
 daoFuncs :: DaoSetup
 daoFuncs = do
-  daoFunction "do"    $ DaoFunc{ autoDerefParams=True, daoForeignCall=queryDo }
-  daoFunction "doAll" $ DaoFunc{ autoDerefParams=True, daoForeignCall=queryDoAll }
+  daoFunction "do"    $ daoFunc{ autoDerefParams=True, daoForeignCall=queryDo }
+  daoFunction "doAll" $ daoFunc{ autoDerefParams=True, daoForeignCall=queryDoAll }
 
 ----------------------------------------------------------------------------------------------------
 

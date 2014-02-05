@@ -1,34 +1,34 @@
 rule "match $x*" {
-	print("match $x* --> x = "+x);
+	println("match $x* --> x = "+x);
 }
 
 rule "overlap $x*" {
-	print("overlap $x* (1) --> x = "+x);
+	println("overlap $x* (1) --> x = "+x);
 }
 
 rule "overlap $x*" {
-	print("overlap $x* (2) --> x = "+x);
+	println("overlap $x* (2) --> x = "+x);
 }
 
 rule("shared $x*", "shared $x*") {
-	print("shared $x* --> x = "+x);
+	println("shared $x* --> x = "+x);
 }
 
 rule("first disjoint $x*", "second disjoint $x*") {
-	print("(first/second) disjoint $x --> x = "+x);
+	println("(first/second) disjoint $x --> x = "+x);
 }
 
 rule("multi $x*", "multi $x*") {
-	print("multi $x* (1) --> x = "+x);
+	println("multi $x* (1) --> x = "+x);
 }
 
 rule("multi $x*", "multi $x*") {
-	print("multi $x* (2) --> x = "+x);
+	println("multi $x* (2) --> x = "+x);
 }
 
 func test(str) {
 	count = doAll(str);
-	print("doAll() returned " + join(" ", count));
+	println("doAll() returned " + join(" ", count));
 }
 
 //: match $x* --> x = hello

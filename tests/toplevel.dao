@@ -14,10 +14,10 @@ BEGIN {
 }
 
 func hello(a, b) {
-	print("Hello, ", a, ", ", b);
+	println("Hello, ", a, ", ", b);
 }
 
 rule("hi, $*, how are you?", "how are you?") {
-	print($1+"? Who's name?");
+	println($1+"? Who's name?");
 }
 

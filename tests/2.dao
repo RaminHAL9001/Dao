@@ -1,5 +1,5 @@
 // tests if throwing an exception in a conditional block at the top level will behave correctly.
 if(true) {
-	print("throw message \"conditional throw test\"");
+	println("throw message \"conditional throw test\"");
 	throw "conditional throw test";
 }

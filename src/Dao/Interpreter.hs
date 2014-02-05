@@ -22,7 +22,8 @@ module Dao.Interpreter(
     DaoSetupM(), DaoSetup, haskellType, daoProvides, daoClass, daoConstant, daoFunction,
     daoInitialize, setupDao, DaoFunc, daoFunc, autoDerefParams, daoForeignCall, executeDaoFunc,
     evalFuncs,
-    ObjectClass(obj, fromObj), listToObj, listFromObj, new, opaque, objFromHaskellData,
+    ObjectClass(obj, fromObj, castToCoreType),
+    execCastToCoreType, listToObj, listFromObj, new, opaque, objFromHaskellData,
     HaskellData(),
     Struct(Nullary, Struct),
     ToDaoStructClass(toDaoStruct), FromDaoStructClass(fromDaoStruct),
@@ -99,8 +100,8 @@ module Dao.Interpreter(
     AST_ParamList(AST_ParamList), 
     RuleStrings(RuleStrings), 
     AST_StringList(AST_NoStrings, AST_StringList), 
-    asReference, asInteger, asRational, asComplex, asStringNoConvert, asString, asListNoConvert,
-    asList, objListAppend, asHaskellInt, objToBool, extractStringElems,
+    asReference, asInteger, asRational, asPositive, asComplex, asStringNoConvert, objConcat,
+    asListNoConvert, asList, objListAppend, asHaskellInt, objToBool, extractStringElems,
     requireAllStringArgs, getStringsToDepth, derefStringsToDepth, recurseGetAllStrings, 
     UpdateOp(UCONST, UADD, USUB, UMULT, UDIV, UMOD, UPOW, UORB, UANDB, UXORB, USHL, USHR), 
     RefPfxOp(REF, DEREF), 
@@ -180,7 +181,7 @@ import           Dao.Procedural
 import           Dao.Random
 import           Dao.Stack
 import           Dao.String
-import           Dao.Token hiding (asString)
+import           Dao.Token
 import qualified Dao.Binary  as B
 import qualified Dao.EnumSet as Es
 import qualified Dao.Tree    as T
@@ -197,6 +198,9 @@ import           Data.Ratio
 import           Data.Time.Clock
 import           Data.Word
 import qualified Data.ByteString.Lazy as B
+import qualified Data.Binary          as D
+import qualified Data.Binary.Put      as D
+import qualified Data.Binary.Get      as D
 import qualified Data.Complex         as C
 import qualified Data.Map             as M
 import qualified Data.Set             as S
@@ -353,11 +357,27 @@ executeDaoFunc _op fn params = do
 -- > print, join, defined, delete
 evalFuncs :: DaoSetup
 evalFuncs = do
-  daoFunction "print"   builtin_print
-  daoFunction "join"    builtin_join
-  daoFunction "defined" builtin_check_ref
-  daoFunction "delete"  builtin_delete
-  daoFunction "typeof"  builtin_typeof
+  daoFunction "print"    builtin_print
+  daoFunction "println"  builtin_println
+  daoFunction "join"     builtin_join
+  daoFunction "str"      builtin_str
+  daoFunction "quote"    builtin_quote
+  daoFunction "concat"   builtin_concat
+  daoFunction "concat1"  builtin_concat1
+  daoFunction "int"      builtin_int
+  daoFunction "long"     builtin_long
+  daoFunction "ratio"    builtin_ratio
+  daoFunction "float"    builtin_float
+  daoFunction "complex"  builtin_complex
+  daoFunction "imag"     builtin_imag
+  daoFunction "phase"    builtin_phase
+  daoFunction "conj"     builtin_conj
+  daoFunction "abs"      builtin_abs
+  daoFunction "time"     builtin_time
+  daoFunction "now"      builtin_now
+  daoFunction "defined"  builtin_check_if_defined
+  daoFunction "delete"   builtin_delete
+  daoFunction "typeof"   builtin_typeof
   mapM_ (uncurry daoConstant) $ map (\t -> (toUStr (show t), OType (coreType t))) [minBound..maxBound]
 
 instance ObjectClass DaoFunc where { obj=new; fromObj=objFromHaskellData }
@@ -373,46 +393,214 @@ instance HaskellDataClass DaoFunc where
 class ObjectClass o where
   obj   :: o -> Object
   fromObj :: Object -> Maybe o
+  castToCoreType :: CoreType -> o -> Predicate Object Object
+  castToCoreType _ _ = mzero
+
+execCastToCoreType :: ObjectClass o => CoreType -> o -> Exec Object
+execCastToCoreType t = predicate .
+  fmapPFail (\err -> mkExecError{ execReturnValue=Just err }) . castToCoreType t
 
 instance ObjectClass () where
   obj () = ONull
   fromObj o = case o of { ONull -> return (); _ -> mzero; }
+  castToCoreType t () = case t of
+    NullType     -> return ONull
+    StringType   -> return $ OString nil
+    CharType     -> return $ OChar '\0'
+    IntType      -> return $ OInt 0
+    WordType     -> return $ OWord 0
+    LongType     -> return $ OLong 0
+    FloatType    -> return $ OFloat 0
+    RatioType    -> return $ ORatio 0
+    DiffTimeType -> return $ ORelTime 0
+    ComplexType  -> return $ OComplex $ complex 0 0
+    BytesType    -> return $ OBytes mempty
+    DictType     -> return $ ODict mempty
+    ListType     -> return $ OList []
+    _            -> mzero
 
 instance ObjectClass Bool where
   obj true = if true then OTrue else ONull
   fromObj o = case o of { OTrue -> return True; ONull -> return False; _ -> mzero }
+  castToCoreType t o = case t of
+    NullType     -> guard (not o) >> return ONull
+    TrueType     -> guard o >> return OTrue
+    StringType   -> return $ obj      $ if o then "true" else "false"
+    CharType     -> return $ OChar    $ if o then '1' else '0'
+    IntType      -> return $ OInt     $ if o then 1 else 0
+    WordType     -> return $ OWord    $ if o then 1 else 0
+    LongType     -> return $ OLong    $ if o then 1 else 0
+    FloatType    -> return $ OFloat   $ if o then 1 else 0
+    RatioType    -> return $ ORatio   $ if o then 1 else 0
+    ComplexType  -> return $ OComplex $ if o then complex 1 0 else complex 0 0
+    DiffTimeType -> return $ ORelTime $ if o then 1 else 0
+    BytesType    -> return $ OBytes $ B.pack $ return $ if o then 1 else 0
+    _            -> mzero
 
 instance ObjectClass [Object] where
   obj = OList
   fromObj o = case o of { OList o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    ListType   -> return . OList
+    RefType    -> fmap (ORef . Unqualified . Reference) .
+      maybe mzero return . mapM (fromObj >=> maybeFromUStr)
+    StringType -> fmap OList . loop return
+    BytesType  -> fmap (OBytes . D.runPut . mapM_ D.putLazyByteString) . loop (\ (OBytes o) -> [o])
+    _          -> \ _ -> mzero
+    where
+      loop f = fmap concat .
+        mapM (\o -> (maybe mzero return (fromObj o) >>= loop f) <|> (f <$> castToCoreType t o))
+
+instance ObjectClass (M.Map Name Object) where
+  obj = ODict
+  fromObj o = case o of { ODict o -> return o; _ -> mzero; }
+  castToCoreType t o = case t of
+    NullType -> guard (M.null o) >> return ONull
+    DictType -> return $ ODict o
+    _        -> mzero
+
+instance ObjectClass Char where
+  obj = OChar
+  fromObj o = case o of { OChar o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    NullType     -> \o -> guard (o=='\0') >> return ONull
+    TrueType     -> \o -> case o of
+      '0' -> return ONull
+      '1' -> return OTrue
+      _   -> mzero
+    CharType     -> return . OChar
+    IntType      -> return . OInt     . ord
+    WordType     -> return . OWord    . fromIntegral . ord
+    LongType     -> return . OLong    . fromIntegral . ord
+    FloatType    -> return . OFloat   . fromRational . toRational . ord
+    RatioType    -> return . ORatio   . toRational   . ord
+    ComplexType  -> return . OComplex . flip complex 0 . fromRational . toRational . ord
+    DiffTimeType -> return . ORelTime . fromRational . toRational . ord
+    StringType   -> return . obj      . (:[])
+    BytesType    -> return . OBytes . D.runPut . D.putWord64le . fromIntegral . ord
+    _            -> \ _ -> mzero
 
 instance ObjectClass QualRef where
   obj = ORef
   fromObj o = case o of { ORef o -> return o; _ -> mzero; }
+  castToCoreType t o = case t of
+    StringType -> return $ obj $ '$':prettyShow o
+    RefType    -> return (ORef o)
+    ListType   -> (OList . map obj) <$> case o of
+      Unqualified (Reference r) -> return r
+      _                         -> mzero
+    TreeType -> case o of
+      Unqualified (Reference [r]) -> return $ OTree $ Nullary{ structName=r }
+      _                           -> mzero
+    _          -> mzero
+
+instance ObjectClass ObjType where
+  obj = OType
+  fromObj o = case o of { OType o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    TypeType   -> return . OType
+    StringType -> return . obj . prettyShow
+    _          -> \ _ -> mzero
 
 instance ObjectClass Struct where
   obj = OTree
   fromObj o = case o of { OTree o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    TreeType   -> return . OTree
+    RefType    -> return . obj . structName
+    StringType -> return . obj . prettyShow
+    _          -> \ _ -> mzero
 
 instance ObjectClass UStr where
   obj = OString
   fromObj o = case o of { OString o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    StringType -> return . OString
+    RefType    -> fmap obj . maybe mzero return . (maybeFromUStr :: UStr -> Maybe Name)
+    _          -> castToCoreType StringType . uchars
 
 instance ObjectClass String where
   obj = obj . toUStr
   fromObj = fromObj >=> maybeFromUStr
+  castToCoreType t = case t of
+      NullType  -> \o -> guard (o=="null") >> return ONull
+      TrueType  -> \o -> case map toLower o of
+        "true"  -> return OTrue
+        "yes"   -> return OTrue
+        "no"    -> return ONull
+        "false" -> return ONull
+        "null"  -> return ONull
+        _       -> mzero
+      IntType   -> pars OInt
+      WordType  -> pars OWord
+      LongType  -> pars OLong
+      FloatType -> pars OFloat
+      TimeType  -> pars OAbsTime
+      _         -> \ _ -> mzero
+    where
+      nospc = dropWhile isSpace
+      pars f str = case fmap (reverse . nospc . reverse) <$> readsPrec 0 (nospc str) of
+        [(o, "")] -> return (f o)
+        _         -> mzero
+
+charFromIntegral :: (MonadPlus m, Integral i) => i -> m Char
+charFromIntegral i0 =
+  let i = fromIntegral i0
+  in if ord(minBound::Char) <= i && i <= ord(maxBound::Char) then return (chr i) else mzero
 
 instance ObjectClass Int where
   obj = OInt
   fromObj o = case o of { OInt o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    NullType     -> \o -> guard (o==0) >> return ONull
+    TrueType     -> \o -> return $ if o==0 then ONull else OTrue
+    CharType     -> fmap OChar . charFromIntegral
+    IntType      -> return . OInt
+    WordType     -> return . OWord    . fromIntegral
+    LongType     -> return . OLong    . toInteger
+    FloatType    -> return . OFloat   . fromRational   . toRational
+    RatioType    -> return . ORatio   . toRational
+    ComplexType  -> return . OComplex . flip complex 0 . fromRational . toRational
+    DiffTimeType -> return . ORelTime . fromRational   . toRational
+    StringType   -> return . obj      . prettyShow     . obj
+    BytesType    -> return . OBytes . D.runPut . D.putWord64le . fromIntegral
+    _            -> \ _ -> mzero
 
 instance ObjectClass Word where
   obj = OWord . fromIntegral
   fromObj o = case o of { OWord o -> return (fromIntegral o); _ -> mzero; }
+  castToCoreType t = case t of
+    NullType     -> \o -> guard (o==0) >> return ONull
+    TrueType     -> \o -> return $ if o==0 then ONull else OTrue
+    CharType     -> fmap OChar . charFromIntegral
+    IntType      -> return . OInt     . fromIntegral
+    WordType     -> return . OWord    . fromIntegral
+    LongType     -> return . OLong    . toInteger
+    FloatType    -> return . OFloat   . fromRational . toRational
+    RatioType    -> return . ORatio   . toRational
+    ComplexType  -> return . OComplex . flip complex 0 . fromRational . toRational
+    DiffTimeType -> return . ORelTime . fromRational . toRational
+    StringType   -> return . obj      . prettyShow . obj
+    BytesType    -> return . OBytes . D.runPut . D.putWord64le . fromIntegral
+    _            -> \ _ -> mzero
 
 instance ObjectClass Word64 where
   obj = OWord
   fromObj o = case o of { OWord o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    NullType     -> \o -> guard (o==0) >> return ONull
+    TrueType     -> \o -> return $ if o==0 then ONull else OTrue
+    CharType     -> fmap OChar . charFromIntegral
+    IntType      -> return . OInt     . fromIntegral
+    WordType     -> return . OWord
+    LongType     -> return . OLong    . toInteger
+    FloatType    -> return . OFloat   . fromRational . toRational
+    RatioType    -> return . ORatio   . toRational
+    ComplexType  -> return . OComplex . flip complex 0 . fromRational . toRational
+    DiffTimeType -> return . ORelTime . fromRational . toRational
+    StringType   -> return . obj      . prettyShow . obj
+    BytesType    -> return . OBytes   . D.runPut . D.putWord64le . fromIntegral
+    _            -> \ _ -> mzero
 
 instance ObjectClass Name where
   obj = ORef . Unqualified . Reference . return
@@ -429,10 +617,113 @@ instance ObjectClass Reference where
 instance ObjectClass Double where
   obj = OFloat
   fromObj o = case o of { OFloat o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    NullType     -> \o -> guard (o==0) >> return ONull
+    TrueType     -> \o -> return $ if o==0 then ONull else OTrue
+    CharType     -> fmap OChar . charFromIntegral . (round :: Double -> Int)
+    IntType      -> return . OInt     . round
+    WordType     -> return . OWord    . round
+    LongType     -> return . OLong    . round
+    FloatType    -> return . OFloat
+    RatioType    -> return . ORatio   . toRational
+    ComplexType  -> return . OComplex . flip complex 0 . fromRational . toRational
+    DiffTimeType -> return . ORelTime . fromRational . toRational
+    StringType   -> return . obj      . show
+    BytesType    -> return . OBytes . D.encode
+    _            -> \ _ -> mzero
 
 instance ObjectClass Integer where
   obj = OLong
   fromObj o = case o of { OLong o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    NullType     -> \o -> guard (o==0) >> return ONull
+    TrueType     -> \o -> return $ if o==0 then ONull else OTrue
+    CharType     -> fmap OChar . charFromIntegral
+    IntType      -> return . OInt     . fromInteger
+    WordType     -> return . OWord    . fromInteger
+    LongType     -> return . OLong
+    FloatType    -> return . OFloat   . fromRational . toRational
+    RatioType    -> return . ORatio   . toRational
+    ComplexType  -> return . OComplex . flip complex 0 . fromRational . toRational
+    DiffTimeType -> return . ORelTime . fromRational . toRational
+    StringType   -> return . obj      . show
+    BytesType    -> return . OBytes . B.reverse . D.encode
+    _            -> \ _ -> mzero
+
+instance ObjectClass Rational where
+  obj = ORatio
+  fromObj o = case o of { ORatio o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    NullType     -> \o -> guard (o==0) >> return ONull
+    TrueType     -> \o -> return $ if o==0 then ONull else OTrue
+    CharType     -> fmap OChar . charFromIntegral . (round :: Rational -> Int)
+    IntType      -> return . OInt     . round
+    WordType     -> return . OWord    . round
+    LongType     -> return . OLong    . round
+    FloatType    -> return . OFloat   . fromRational
+    RatioType    -> return . ORatio
+    ComplexType  -> return . OComplex . flip complex 0 . fromRational
+    DiffTimeType -> return . ORelTime . fromRational . toRational
+    StringType   -> return . obj      . prettyShow . obj
+    _            -> \ _ -> mzero
+
+instance ObjectClass Complex where
+  obj = OComplex
+  fromObj o = case o of { OComplex o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    NullType     -> \o -> guard (complex 0 0 == o) >> return ONull
+    TrueType     -> \o -> return $ if complex 0 0 == o then ONull else OTrue
+    IntType      -> i OInt
+    WordType     -> return . OWord . round . magnitude
+    LongType     -> i OLong
+    FloatType    -> f OFloat
+    RatioType    -> f ORatio
+    DiffTimeType -> f ORelTime
+    StringType   -> return . obj . prettyShow
+    _            -> \ _ -> mzero
+    where
+      f constr o = guard (imagPart o == 0) >> return (constr $ fromRational $ toRational $ realPart o)
+      i constr = f (constr . fromInteger . (round :: Rational -> Integer))
+
+instance ObjectClass NominalDiffTime where
+  obj = ORelTime
+  fromObj o = case o of { ORelTime o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    NullType     -> \o -> guard (toRational o == 0) >> return ONull
+    TrueType     -> \o -> return $ if toRational o == 0 then ONull else OTrue
+    IntType      -> return . OInt . round
+    WordType     -> return . OWord . round
+    LongType     -> return . OLong . round
+    FloatType    -> return . OFloat . fromRational . toRational
+    DiffTimeType -> return . ORelTime
+    ComplexType  -> return . OComplex . flip complex 0 . fromRational . toRational
+    _            -> \ _ -> mzero
+
+instance ObjectClass UTCTime where
+  obj = OAbsTime
+  fromObj o = case o of { OAbsTime o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    StringType -> return . obj . prettyShow . obj
+    TimeType   -> return . OAbsTime
+    _          -> \ _ -> mzero
+
+instance ObjectClass B.ByteString where
+  obj = OBytes
+  fromObj o = case o of { OBytes o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    NullType  -> f (D.isEmpty >>= guard >> return ONull)
+    TrueType  ->
+      f (D.getWord8 >>= \w -> return $ case w of { 0->Just ONull; 1->Just OTrue; _->mzero; }) >=>
+        maybe mzero return
+    CharType  -> fmap OChar . (f D.getWord64le >=> charFromIntegral)
+    IntType   -> fmap (OInt . fromIntegral) . f D.getWord64le
+    WordType  -> fmap (OWord . fromIntegral) . f D.getWord64le
+    LongType  -> return . OLong . D.decode . B.reverse
+    FloatType -> return . OFloat . D.decode
+    _         -> \ _ -> mzero
+    where
+      f :: D.Get o -> B.ByteString -> Predicate Object o
+      f get = return . D.runGet get
 
 instance ObjectClass HaskellData where
   obj = OHaskell
@@ -442,7 +733,32 @@ instance ObjectClass Dynamic where
   obj = opaque
   fromObj o = case o of { OHaskell (HaskellData o _) -> return o; _ -> mzero; }
 
-instance ObjectClass Object where { obj = id; fromObj = return; }
+instance ObjectClass Object where
+  obj = id;
+  fromObj = return;
+  castToCoreType t o = case o of
+    ONull      ->  f False
+    OTrue      ->  f True
+    OType    o ->  f o
+    OInt     o ->  f o
+    OWord    o ->  f o
+    OLong    o ->  f o
+    OFloat   o ->  f o
+    ORatio   o ->  f o
+    OComplex o ->  f o
+    OAbsTime o ->  f o
+    ORelTime o ->  f o
+    OChar    o ->  f o
+    OString  o ->  f o
+    ORef     o ->  f o
+    OList    o ->  f o
+    ODict    o ->  f o
+    OTree    o ->  f o
+    OBytes   o ->  f o
+    OHaskell _ -> mzero
+    where
+      f :: ObjectClass o => o -> Predicate Object Object
+      f = castToCoreType t
 
 instance ObjectClass Location where { obj=new; fromObj=objFromHaskellData; }
 
@@ -1670,22 +1986,22 @@ _doWithRefQualifier qref onLocal onStatic onGlobal onGloDot = do
 data CoreType
   = NullType
   | TrueType
-  | TypeType
+  | CharType
   | IntType
   | WordType
-  | DiffTimeType
-  | FloatType
   | LongType
+  | FloatType
+  | DiffTimeType
   | RatioType
   | ComplexType
-  | TimeType
-  | CharType
   | StringType
-  | RefType
+  | BytesType
+  | TimeType
   | ListType
   | DictType
+  | RefType
+  | TypeType
   | TreeType
-  | BytesType
   | HaskellType
   deriving (Eq, Ord, Typeable, Enum, Bounded)
 
@@ -3752,6 +4068,18 @@ asRational o = case o of
   OComplex o | imagPart o == 0 -> return (toRational (realPart o))
   _          -> mzero
 
+-- | A function which is basically the absolute value function, except it also works on 'Complex'
+-- numbers, returning the magnitude of the number if it is 'Complex'.
+asPositive :: Object -> Exec Object
+asPositive o = case o of
+  OInt     o -> return (OInt     $ abs       o)
+  OWord    o -> return (OWord                o)
+  OLong    o -> return (OLong    $ abs       o)
+  OFloat   o -> return (OFloat   $ abs       o)
+  ORelTime o -> return (ORelTime $ abs       o)
+  OComplex o -> return (OFloat   $ magnitude o)
+  _          -> mzero
+
 asComplex :: Object -> Exec T_complex
 asComplex o = case o of
   OComplex o -> return o
@@ -3762,10 +4090,12 @@ asStringNoConvert o = case o of
   OString o -> return o
   _         -> mzero
 
-asString :: Object -> Exec UStr
-asString o = case o of
-  OString o -> return o
-  o         -> return (ustr (prettyShow o))
+-- | Remove one layer of 'OList' objects, i.e. any objects in the list that are 'OList' constructors
+-- will have the contents of those lists concatenated, and all non-'OList' constructors are treated
+-- as lists of single objects. Also returns the number of concatenations.
+objConcat :: [Object] -> (Int, [Object])
+objConcat ox = (sum a, concat b) where
+  (a, b) = unzip (ox >>= \o -> maybe [(0, [o])] (return . (,) 1) (fromObj o))
 
 asListNoConvert :: Object -> Exec [Object]
 asListNoConvert = maybe mzero return . fromObj
@@ -3836,9 +4166,7 @@ eval_ADD a b = msum
         _         -> mzero
       return (objListAppend ax bx)
     stringAdd add a b = case a of
-      OString a -> do
-        b <- asString b
-        return (obj (add (uchars a) (uchars b)))
+      OString a -> return $ obj $ add (uchars a) (maybe (prettyShow b) uchars (fromObj b :: Maybe UStr))
       _         -> mzero
 
 eval_SUB :: Object -> Object -> Exec Object
@@ -4426,26 +4754,88 @@ _updatingOps = let o = (,) in array (minBound, maxBound) $ defaults ++
 
 ----------------------------------------------------------------------------------------------------
 
+_strObjConcat :: [Object] -> String
+_strObjConcat ox = ox >>= \o -> maybe [toUStr $ prettyShow o] return (fromObj o) >>= uchars
+
+_builtin_print :: (String -> IO ()) -> DaoFunc
+_builtin_print print = DaoFunc nil True $ \ox -> liftIO (print $ _strObjConcat ox) >> return Nothing
+
 builtin_print :: DaoFunc
-builtin_print = DaoFunc (ustr "print") True $ \ox_ -> do
-  let ox = flip map ox_ $ \o -> case o of
-        OString o -> o
-        o         -> ustr (prettyShow o)
-  liftIO $ mapM_ (putStrLn . uchars) ox
-  return $ Just $ OList $ map OString ox
+builtin_print   = _builtin_print putStr
+
+builtin_println :: DaoFunc
+builtin_println = _builtin_print putStrLn
 
 -- join string elements of a container, pretty prints non-strings and joins those as well.
 builtin_join :: DaoFunc
-builtin_join = DaoFunc (ustr "join") True $ \ox -> case ox of
-  [OString j, a] -> joinWith (uchars j) a
-  [a]            -> joinWith "" a
-  _ -> execThrow $ OList [OList ox, obj "join() function requires one or two parameters"]
-  where
-    joinWith j =
-      fmap (Just . OString . ustr . intercalate j) . derefStringsToDepth (\ _ o -> execThrow o) 1 1
+builtin_join = DaoFunc (ustr "join") True $ \ox -> return $ Just $ obj $ case ox of
+  OString j : ox -> (>>=uchars) $
+    intersperse j $ snd (objConcat ox) >>= \o ->
+      [maybe (ustr $ prettyShow o) id (fromObj o :: Maybe UStr)]
+  ox -> _strObjConcat ox
 
-builtin_check_ref :: DaoFunc
-builtin_check_ref = DaoFunc (ustr "defined") True $ \args -> do
+builtin_str :: DaoFunc
+builtin_str = DaoFunc (ustr "str") True $ return . Just . obj . _strObjConcat
+
+builtin_quote :: DaoFunc
+builtin_quote = DaoFunc (ustr "quote") True $ return . Just . obj . show . _strObjConcat
+
+builtin_concat :: DaoFunc
+builtin_concat = DaoFunc (ustr "concat") True $ return . Just . obj .
+  fix (\loop ox -> ox >>= \o -> maybe [o] loop (fromObj o))
+
+builtin_concat1 :: DaoFunc
+builtin_concat1 = DaoFunc (ustr "concat1") True $ return . Just . obj . snd . objConcat
+
+_castNumerical :: String -> (Object -> Exec Object) -> DaoFunc
+_castNumerical name f = let n = ustr name :: Name in DaoFunc n True $ \ox -> do
+  case ox of
+    [o] -> (Just <$> f o) <|> execThrow (obj [obj n, obj "could not cast from value", o])
+    _   -> execThrow $ obj [obj n, obj "function should take only one parameter argument", OList ox]
+
+builtin_int :: DaoFunc
+builtin_int = _castNumerical "int" $ fmap (OInt . fromIntegral) . asInteger
+
+builtin_long :: DaoFunc
+builtin_long = _castNumerical "long" $ fmap obj . asInteger
+
+builtin_ratio :: DaoFunc
+builtin_ratio = _castNumerical "ratio" $ fmap obj . asRational
+
+builtin_float :: DaoFunc
+builtin_float = _castNumerical "float" $ fmap (OFloat . fromRational) . asRational
+
+builtin_complex :: DaoFunc
+builtin_complex = _castNumerical "complex" $ fmap OComplex . asComplex
+
+builtin_imag :: DaoFunc
+builtin_imag = _castNumerical "imag" $ fmap (OFloat . imagPart) . asComplex
+
+builtin_phase :: DaoFunc
+builtin_phase = _castNumerical "phase" $ fmap (OFloat . phase) . asComplex
+
+builtin_conj :: DaoFunc
+builtin_conj = _castNumerical "conj" $ fmap (OComplex . conjugate) . asComplex
+
+builtin_abs :: DaoFunc
+builtin_abs = _castNumerical "abs" asPositive
+
+builtin_time :: DaoFunc
+builtin_time = _castNumerical "time" $ \o -> case o of
+  ORelTime _ -> return o
+  o          -> (ORelTime . fromRational) <$> asRational o
+
+_funcWithoutParams :: String -> Exec (Maybe Object) -> DaoFunc
+_funcWithoutParams name f = let n = ustr name in DaoFunc n False $ \ox -> case ox of
+  [] -> f
+  ox -> execThrow $ obj $
+    [obj n, obj "should take no parameter arguments, but received: ", obj ox]
+
+builtin_now :: DaoFunc
+builtin_now = _funcWithoutParams "now" $ (Just . obj) <$> liftIO getCurrentTime
+
+builtin_check_if_defined :: DaoFunc
+builtin_check_if_defined = DaoFunc (ustr "defined") False $ \args -> do
   fmap (Just . obj . and) $ forM args $ \arg -> case arg of
     ORef o -> fmap (maybe False (const True)) (fmap (fmap snd) $ qualRefLookup o)
     _      -> return True
@@ -4458,10 +4848,10 @@ builtin_delete = DaoFunc (ustr "delete") False $ \args -> do
   return (Just ONull)
 
 builtin_typeof :: DaoFunc
-builtin_typeof = DaoFunc (ustr "typeof") True $ \args -> case args of
-  []  -> return Nothing
-  [o] -> return $ Just $ OType $ coreType $ typeOfObj o
-  ox  -> return $ Just $ OList $ map (OType . coreType . typeOfObj) ox
+builtin_typeof = DaoFunc (ustr "typeof") True $ \ox -> return $ case ox of
+  []  -> Nothing
+  [o] -> Just $ OType $ coreType $ typeOfObj o
+  ox  -> Just $ OList $ map (OType . coreType . typeOfObj) ox
 
 ----------------------------------------------------------------------------------------------------
 

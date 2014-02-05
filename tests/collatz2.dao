@@ -5,15 +5,15 @@ func doDivide()    { n /= 2; }
 func doMult3Add1() { n *= 3; n += 1; }
 
 func checkContinue() {
-	if(n <= 1) { print(1); return false; }
+	if(n <= 1) { println(1); return false; }
 	else if(checkValue()) { doDivide(); }
 	else { doMult3Add1(); }
-	print(n);
+	println(n);
 	return true;
 }
 
 func run() {
-	print(n);
+	println(n);
 	while(checkContinue()) {}
 }
 

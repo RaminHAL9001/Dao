@@ -1,7 +1,7 @@
 func div_by_2_until(i, n) {
 	global i = local i;
 	while(local n > 1 && global i > 0) {
-		print(global i + ": " + local n);
+		println(global i + ": " + local n);
 		local n /= 2;
 		global i -= 1;
 	}

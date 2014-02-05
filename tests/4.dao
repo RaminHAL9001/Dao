@@ -1,27 +1,27 @@
 // Tests how conditional statements are evaluated in the top level as well as when evaluated in a
 // function call.
 
-//: test print
-print("test print");
+//: test println
+println("test println");
 
 //: if(true) { ... } --> OK
 if(true) {
-	print("if(true) { ... } --> OK");
+	println("if(true) { ... } --> OK");
 }
 
 //: if(! false) { ... } -> OK
 if(! false) {
-	print("if(! false) { ... } -> OK");
+	println("if(! false) { ... } -> OK");
 }
 
 //: if(0 == 0) { ... } --> OK
 if(0 == 0) {
-	print("if(0 == 0) { ... } --> OK");
+	println("if(0 == 0) { ... } --> OK");
 }
 
 //: if(true) { ... } --> OK
 if(true) {
-	print("if(true) { ... } --> OK");
+	println("if(true) { ... } --> OK");
 }
 else {
 	throw "if(true) { ... } else { ... } --> FAIL";
@@ -32,12 +32,12 @@ if(false) {
 	throw "if(false) { ... } else { ... } --> FAIL";
 }
 else {
-	print("if(false) { ... } else { ... } --> OK");
+	println("if(false) { ... } else { ... } --> OK");
 }
 
 //: if(0 == 0) { ... } else { ... } --> OK
 if(0 == 0) {
-	print("if(0 == 0) { ... } else { ... } --> OK");
+	println("if(0 == 0) { ... } else { ... } --> OK");
 }
 else {
 	throw "if(0 != 0) { ... } else { ... } --> FAIL";
@@ -48,7 +48,7 @@ if(0 != 0) {
 	throw "if(0 != 0) { ... } else { ... } --> FAIL";
 }
 else {
-	print("if(0 != 0) { ... } else { ... } --> OK");
+	println("if(0 != 0) { ... } else { ... } --> OK");
 }
 
 //: if(! (0 == 0)) { ... } else { ... } --> OK
@@ -56,12 +56,12 @@ if(! (0 == 0)) {
 	throw "if(! (0 == 0)) { ... } else { ... } --> FAIL";
 }
 else {
-	print("if(! (0 == 0)) { ... } else { ... } --> OK");
+	println("if(! (0 == 0)) { ... } else { ... } --> OK");
 }
 
 //: if(! (0 != 0)) { ... } else { ... } --> OK
 if(! (0 != 0)) {
-	print("if(! (0 != 0)) { ... } else { ... } --> OK");
+	println("if(! (0 != 0)) { ... } else { ... } --> OK");
 }
 else {
 	throw "if(! (0 != 0)) { ... } else { ... } --> FAIL";
@@ -69,15 +69,15 @@ else {
 
 //: top-level var assign
 a = "top-level var assign";
-print(a);
+println(a);
 
 //: re-assign
 a = "re-assign";
-print(a);
+println(a);
 
 //: if(a == a) { ... } else { ... } --> OK
 if(a == a) {
-	print("if(a == a) { ... } else { ... } --> OK");
+	println("if(a == a) { ... } else { ... } --> OK");
 }
 else {
 	throw "if(a != a) { ... } else { ... } --> FAIL";
@@ -88,7 +88,7 @@ if(a != a) {
 	throw "if(a != a) { ... } else { ... } --> FAIL";
 }
 else {
-	print("if(a != a) { ... } else { ... } --> OK");
+	println("if(a != a) { ... } else { ... } --> OK");
 }
 
 //: if(! (a == a)) { ... } else { ... } --> OK
@@ -96,12 +96,12 @@ if(! (a == a)) {
 	throw "if(! (a == a)) { ... } else { ... } --> FAIL";
 }
 else {
-	print("if(! (a == a)) { ... } else { ... } --> OK");
+	println("if(! (a == a)) { ... } else { ... } --> OK");
 }
 
 //: if(! (a != a)) { ... } else { ... } --> OK
 if(! (a != a)) {
-	print("if(! (a != a)) { ... } else { ... } --> OK");
+	println("if(! (a != a)) { ... } else { ... } --> OK");
 }
 else {
 	throw "if(! (a != a)) { ... } else { ... } --> FAIL";
@@ -109,7 +109,7 @@ else {
 
 a = 0;
 if(a == 0) {
-	print("if(a == 0) { ... } else { ... } --> OK");
+	println("if(a == 0) { ... } else { ... } --> OK");
 }
 else {
 	throw "if(a == 0) { ... } else { ... } --> FAIL";
@@ -118,7 +118,7 @@ else {
 
 a = "Hello";
 if(a == "Hello") {
-	print("if(a == \"Hello\") { ... } else { ... } --> OK");
+	println("if(a == \"Hello\") { ... } else { ... } --> OK");
 }
 else {
 	throw "if(a == \"Hello\") { ... } else { ... } --> FAIL";
@@ -126,25 +126,25 @@ else {
 //: if(a == \"Hello\") { ... } else { ... } --> OK
 
 a += ", ";
-print(a + "world!");
+println(a + "world!");
 //: Hello, world!
 
 a = "assign a";
 //: before update: assign a
-print("before update: " + a);
+println("before update: " + a);
 if(a == "assign a") {
 	a = "update a";
 //: update in condition: update a
-	print("update in condition: " + a);
+	println("update in condition: " + a);
 }
 else {
 	throw "if(a == \"assign a\") { ... } else { ... } --> FAIL";
 }
 //: after update: update a
-print("after update: " + a);
+println("after update: " + a);
 
 func testFuncCall() {
-	print("function call --> OK");
+	println("function call --> OK");
 }
 
 //: function call --> OK
@@ -152,25 +152,25 @@ testFuncCall();
 
 func test01() {
 	if(true) {
-		print("if(true) { ... } --> OK");
+		println("if(true) { ... } --> OK");
 	}
 }
 
 func test02() {
 	if(! false) {
-		print("if(! false) { ... } -> OK");
+		println("if(! false) { ... } -> OK");
 	}
 }
 
 func test03() {
 	if(0 == 0) {
-		print("if(0 == 0) { ... } --> OK");
+		println("if(0 == 0) { ... } --> OK");
 	}
 }
 
 func test04() {
 	if(true) {
-		print("if(true) { ... } --> OK");
+		println("if(true) { ... } --> OK");
 	}
 	else {
 		throw "if(true) { ... } else { ... } --> FAIL";
@@ -182,13 +182,13 @@ func test05() {
 		throw "if(false) { ... } else { ... } --> FAIL";
 	}
 	else {
-		print("if(false) { ... } else { ... } --> OK");
+		println("if(false) { ... } else { ... } --> OK");
 	}
 }
 
 func test06() {
 	if(0 == 0) {
-		print("if(0 == 0) { ... } else { ... } --> OK");
+		println("if(0 == 0) { ... } else { ... } --> OK");
 	}
 	else {
 		throw "if(0 != 0) { ... } else { ... } --> FAIL";
@@ -200,7 +200,7 @@ func test07() {
 		throw "if(0 != 0) { ... } else { ... } --> FAIL";
 	}
 	else {
-		print("if(0 != 0) { ... } else { ... } --> OK");
+		println("if(0 != 0) { ... } else { ... } --> OK");
 	}
 }
 
@@ -209,13 +209,13 @@ func test08() {
 		throw "if(! (0 == 0)) { ... } else { ... } --> FAIL";
 	}
 	else {
-		print("if(! (0 == 0)) { ... } else { ... } --> OK");
+		println("if(! (0 == 0)) { ... } else { ... } --> OK");
 	}
 }
 
 func test09() {
 	if(! (0 != 0)) {
-		print("if(! (0 != 0)) { ... } else { ... } --> OK");
+		println("if(! (0 != 0)) { ... } else { ... } --> OK");
 	}
 	else {
 		throw "if(! (0 != 0)) { ... } else { ... } --> FAIL";
@@ -224,17 +224,17 @@ func test09() {
 
 func test10() {
 	a = "top-level var assign";
-	print(a);
+	println(a);
 }
 
 func test11() {
 	a = "re-assign";
-	print(a);
+	println(a);
 }
 
 func test12() {
 	if(a == a) {
-		print("if(a == a) { ... } else { ... } --> OK");
+		println("if(a == a) { ... } else { ... } --> OK");
 	}
 	else {
 		throw "if(a != a) { ... } else { ... } --> FAIL";
@@ -246,7 +246,7 @@ func test13() {
 		throw "if(a != a) { ... } else { ... } --> FAIL";
 	}
 	else {
-		print("if(a != a) { ... } else { ... } --> OK");
+		println("if(a != a) { ... } else { ... } --> OK");
 	}
 }
 
@@ -255,13 +255,13 @@ func test14() {
 		throw "if(! (a == a)) { ... } else { ... } --> FAIL";
 	}
 	else {
-		print("if(! (a == a)) { ... } else { ... } --> OK");
+		println("if(! (a == a)) { ... } else { ... } --> OK");
 	}
 }
 
 func test15() {
 	if(! (a != a)) {
-		print("if(! (a != a)) { ... } else { ... } --> OK");
+		println("if(! (a != a)) { ... } else { ... } --> OK");
 	}
 	else {
 		throw "if(! (a != a)) { ... } else { ... } --> FAIL";
@@ -271,35 +271,35 @@ func test15() {
 func test16() {
 	a = "Hello";
 	if(a == "Hello") {
-		print("if(a == \"Hello\") { ... } else { ... } --> OK");
+		println("if(a == \"Hello\") { ... } else { ... } --> OK");
 	}
 	else {
 		throw "if(a == \"Hello\") { ... } else { ... } --> FAIL";
 	}
 	a += ", ";
-	print(a + "world!");
+	println(a + "world!");
 }
 
 func test17() {
 	a = "assign a";
 	//: before update: assign a
-	print("before update: " + a);
+	println("before update: " + a);
 	if(a == "assign a") {
 		a = "update a";
 	//: update in condition: update a
-		print("update in condition: " + a);
+		println("update in condition: " + a);
 	}
 	else {
 		throw "if(a == \"assign a\") { ... } else { ... } --> FAIL";
 	}
 	//: after update: update a
-	print("after update: " + a);
+	println("after update: " + a);
 
 }
 
 func test18() {
 	func testFuncCall() {
-		print("local function call --> OK");
+		println("local function call --> OK");
 	}
 	testFuncCall();
 }

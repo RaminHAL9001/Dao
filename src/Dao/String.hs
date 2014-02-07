@@ -65,7 +65,7 @@ import           Data.Typeable
 import qualified Data.Binary               as B
 import           Data.Bits
 import           Data.Char
-import           Data.List (partition)
+import           Data.List (partition, stripPrefix)
 import           Data.Word
 import           Data.Array.Unboxed
 import qualified Data.ByteString.Lazy.UTF8 as U
@@ -157,6 +157,10 @@ instance UStrType UStr where { toUStr = id; fromUStr = id; }
 instance UStrType String where
   toUStr = UStr . U.fromString
   fromUStr = U.toString . toUTF8ByteString
+instance UStrType U.ByteString where
+  toUStr = UStr
+  fromUStr = toUTF8ByteString
+  maybeFromUStr = Just . fromUStr
 
 -- | This function lets you use the instantiation of 'Prelude.Show' to instantiate 'toUStr',
 -- typically used when your data type uses Haskell's @deriving@ keyword to derive 'Prelude.Show'.
@@ -221,6 +225,31 @@ utf8bytes = UTF8.encode . uchars . toUStr
 -- 'Prelude.error' (evaluates to the "bottom" value).
 upack :: [Word8] -> UStr
 upack ax = toUStr (UTF8.decode ax)
+
+-- | Modify a 'UStr' with the APIs provided in the "Data.ByteString.UTF8.Lazy" module.
+fmapUTF8String :: (U.ByteString -> U.ByteString) -> UStr -> UStr
+fmapUTF8String f = UStr . f . toUTF8ByteString
+
+-- | Split a longer string up by the shorter string, for example:
+-- > splitString (ustr "--") (one-one -- two-two -----> three-three -- four-four")
+-- will be split to
+-- > ["one-one ", " two-two ", "", "-> three-three ", " four-four"]
+splitString :: UStr -> UStr -> [UStr]
+splitString a b = case compare la lb of
+  EQ -> return $ if a==b then nil else a
+  LT -> delstr a b
+  GT -> delstr b a
+  where
+    la = ulength a
+    lb = ulength b
+    len = min la lb
+    loop ox str i ax bx =
+      if i>0
+      then case stripPrefix ax bx of
+        Nothing -> loop ox (head bx : str) (i-1) ax (tail bx)
+        Just bx -> loop (ustr (reverse str) : ox) "" (i-len) ax bx
+      else reverse $ ustr (reverse str ++ bx) : ox
+    delstr a b = loop [] "" (abs $ lb-la) (uchars a) (uchars b)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -328,6 +357,39 @@ decodeUStr = do
   if null undecoded
     then  fmap (toUStr . (UTF8.decode)) (replicateM strlen B.getWord8)
     else  fail "binary data decoder failed on UStr"
+
+----------------------------------------------------------------------------------------------------
+
+bytesBitArith :: (Word8 -> Word8 -> Word8) -> B.ByteString -> B.ByteString -> B.ByteString
+bytesBitArith f a b = B.pack $ map (uncurry f) $ B.zip a b
+
+bytesShift :: B.ByteString -> Int64 -> B.ByteString
+bytesShift str i = let (len, r) = fmap fromIntegral (divMod (abs i) 8) in case compare i 0 of
+  EQ -> str -- identity
+  LT -> mappend (B.replicate len 0) $ if r==0 then str else -- shift right
+    snd $ B.mapAccumL (\prev b -> (b, shiftR b r .|. rotateR ((2^r-1) .&. prev) r)) 0 str
+  GT -> -- shift left
+    (if r==0 then id else snd . B.mapAccumR (\prev b -> (b, shiftL b r .|. ((2^r-1) .&. prev))) 0
+    ) (B.drop len str)
+
+bytesRotate :: B.ByteString -> Int64 -> B.ByteString
+bytesRotate str i =
+  let { len = B.length str; (cur8, r) = fmap fromIntegral (divMod i (len*8)); cur = div cur8 8; }
+  in if r==0 then str else let { (a, b) = B.splitAt cur str; str = b<>a; } in
+    snd $ B.mapAccumL (\prev b -> (b, shiftL b r .|. ((2^r-1) .&. prev))) (B.last str) str
+
+bytesBit :: Int64 -> B.ByteString
+bytesBit i = let (len, r) = fmap fromIntegral (divMod i 8) in
+  if r==0 then B.snoc (B.replicate len 0) 1 else B.snoc (B.replicate (len-1) 0) (bit r)
+
+bytesTestBit :: B.ByteString -> Int64 -> Bool
+bytesTestBit str i = let (len, r) = fmap fromIntegral (divMod i 8) in testBit (B.index str len) r
+
+bytesBitSize :: B.ByteString -> Int64
+bytesBitSize = (8*) . B.length
+
+bytesPopCount :: B.ByteString -> Int64
+bytesPopCount = B.foldl (\count b -> count + fromIntegral (popCount b)) 0
 
 ----------------------------------------------------------------------------------------------------
 

@@ -126,22 +126,22 @@ else {
 //: if(a == \"Hello\") { ... } else { ... } --> OK
 
 a += ", ";
-println(a + "world!");
+println(a, "world!");
 //: Hello, world!
 
 a = "assign a";
 //: before update: assign a
-println("before update: " + a);
+println("before update: ", a);
 if(a == "assign a") {
 	a = "update a";
 //: update in condition: update a
-	println("update in condition: " + a);
+	println("update in condition: ", a);
 }
 else {
 	throw "if(a == \"assign a\") { ... } else { ... } --> FAIL";
 }
 //: after update: update a
-println("after update: " + a);
+println("after update: ", a);
 
 func testFuncCall() {
 	println("function call --> OK");
@@ -277,23 +277,23 @@ func test16() {
 		throw "if(a == \"Hello\") { ... } else { ... } --> FAIL";
 	}
 	a += ", ";
-	println(a + "world!");
+	println(a, "world!");
 }
 
 func test17() {
 	a = "assign a";
 	//: before update: assign a
-	println("before update: " + a);
+	println("before update: ", a);
 	if(a == "assign a") {
 		a = "update a";
 	//: update in condition: update a
-		println("update in condition: " + a);
+		println("update in condition: ", a);
 	}
 	else {
 		throw "if(a == \"assign a\") { ... } else { ... } --> FAIL";
 	}
 	//: after update: update a
-	println("after update: " + a);
+	println("after update: ", a);
 
 }
 

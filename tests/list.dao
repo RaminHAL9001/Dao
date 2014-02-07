@@ -1,7 +1,7 @@
 func show(c) {
 	i = 0;
 	for x in(c) {
-		println(i+": "+x); i += 1;
+		println(i, ": ", x); i += 1;
 	}
 	println("");
 }
@@ -9,8 +9,8 @@ func show(c) {
 a = list { 1, "hello", 2, null, "world", 3 };
 b = list { 3.14159f, "OK", "please", 11, "thank you" };
 
-println("a = "+a);
-println("b = "+b);
+println("a = ", a);
+println("b = ", b);
 
 c = a + b;
 d = c;

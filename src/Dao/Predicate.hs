@@ -224,8 +224,8 @@ okToList pval = case pval of
 
 -- | Like 'okToList', but evaluates to 'Data.Maybe.Nothing' if the given 'Predicate' is 'Backtrack' or
 -- 'PFail', or 'Data.Maybe.Just' containing the value in the 'OK' value.
-okToMaybe :: Predicate err o -> Maybe o
-okToMaybe pval = case pval of
+okToJust :: Predicate err o -> Maybe o
+okToJust pval = case pval of
   OK      o -> Just o
   Backtrack -> Nothing
   PFail   _ -> Nothing

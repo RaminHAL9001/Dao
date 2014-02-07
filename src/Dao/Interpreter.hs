@@ -24,7 +24,6 @@ module Dao.Interpreter(
     evalFuncs,
     ObjectClass(obj, fromObj, castToCoreType),
     execCastToCoreType, listToObj, listFromObj, new, opaque, objFromHaskellData,
-    HaskellData(),
     Struct(Nullary, Struct),
     ToDaoStructClass(toDaoStruct), FromDaoStructClass(fromDaoStruct),
     StructError(StructError),
@@ -44,7 +43,7 @@ module Dao.Interpreter(
     ),
     T_type, T_int, T_word, T_long, T_ratio, T_complex, T_float, T_time, T_diffTime,
     T_char, T_string, T_ref, T_bytes, T_list, T_dict, T_struct,
-    isNumeric, isIntegral, isRational, isFloating, objToIntegral, objToRational,
+    isNumeric, typeMismatchError, isIntegral, isRational, isFloating, objToIntegral, objToRational,
     objToInt, bitsMove, bitsMoveInt, objTestBit, insertAtPath,
     RefQualifier(LOCAL, GLODOT, STATIC, GLOBAL),
     QualRef(Unqualified, Qualified),
@@ -75,7 +74,7 @@ module Dao.Interpreter(
     ExecControl(ExecReturn, ExecError), execReturnValue, execErrorInfo,
     ExecErrorInfo(ExecErrorInfo), execUnitAtError, execErrExpr, execErrScript, execErrTopLevel,
     mkExecErrorInfo, mkExecError, updateExecErrorInfo, setCtrlReturnValue,
-    Exec(Exec), execToPredicate,
+    Exec(Exec), execToPredicate, XPure(XPure), xpureToState, runXPure, evalXPure, xpure, xobj, xnote, xonUTF8, xmaybe,
     ExecThrowable(toExecError, execThrow), ioExec,
     ExecHandler(ExecHandler), execHandler,
     newExecIOHandler, execCatchIO, execHandleIO, execIOHandler, execErrorHandler, catchReturn,
@@ -197,13 +196,14 @@ import           Data.Monoid
 import           Data.Ratio
 import           Data.Time.Clock
 import           Data.Word
-import qualified Data.ByteString.Lazy as B
-import qualified Data.Binary          as D
-import qualified Data.Binary.Put      as D
-import qualified Data.Binary.Get      as D
-import qualified Data.Complex         as C
-import qualified Data.Map             as M
-import qualified Data.Set             as S
+import qualified Data.ByteString.Lazy.UTF8 as U
+import qualified Data.ByteString.Lazy      as B
+import qualified Data.Binary               as D
+import qualified Data.Binary.Put           as D
+import qualified Data.Binary.Get           as D
+import qualified Data.Complex              as C
+import qualified Data.Map                  as M
+import qualified Data.Set                  as S
 
 import           Control.Applicative
 import           Control.Concurrent
@@ -393,30 +393,29 @@ instance HaskellDataClass DaoFunc where
 class ObjectClass o where
   obj   :: o -> Object
   fromObj :: Object -> Maybe o
-  castToCoreType :: CoreType -> o -> Predicate Object Object
+  castToCoreType :: CoreType -> o -> XPure Object
   castToCoreType _ _ = mzero
 
 execCastToCoreType :: ObjectClass o => CoreType -> o -> Exec Object
-execCastToCoreType t = predicate .
-  fmapPFail (\err -> mkExecError{ execReturnValue=Just err }) . castToCoreType t
+execCastToCoreType t = execute . castToCoreType t
 
 instance ObjectClass () where
   obj () = ONull
   fromObj o = case o of { ONull -> return (); _ -> mzero; }
   castToCoreType t () = case t of
     NullType     -> return ONull
-    StringType   -> return $ OString nil
     CharType     -> return $ OChar '\0'
     IntType      -> return $ OInt 0
     WordType     -> return $ OWord 0
     LongType     -> return $ OLong 0
+    DiffTimeType -> return $ ORelTime 0
     FloatType    -> return $ OFloat 0
     RatioType    -> return $ ORatio 0
-    DiffTimeType -> return $ ORelTime 0
     ComplexType  -> return $ OComplex $ complex 0 0
+    StringType   -> return $ OString nil
     BytesType    -> return $ OBytes mempty
-    DictType     -> return $ ODict mempty
     ListType     -> return $ OList []
+    DictType     -> return $ ODict mempty
     _            -> mzero
 
 instance ObjectClass Bool where
@@ -425,39 +424,17 @@ instance ObjectClass Bool where
   castToCoreType t o = case t of
     NullType     -> guard (not o) >> return ONull
     TrueType     -> guard o >> return OTrue
-    StringType   -> return $ obj      $ if o then "true" else "false"
     CharType     -> return $ OChar    $ if o then '1' else '0'
     IntType      -> return $ OInt     $ if o then 1 else 0
     WordType     -> return $ OWord    $ if o then 1 else 0
     LongType     -> return $ OLong    $ if o then 1 else 0
+    DiffTimeType -> return $ ORelTime $ if o then 1 else 0
     FloatType    -> return $ OFloat   $ if o then 1 else 0
     RatioType    -> return $ ORatio   $ if o then 1 else 0
     ComplexType  -> return $ OComplex $ if o then complex 1 0 else complex 0 0
-    DiffTimeType -> return $ ORelTime $ if o then 1 else 0
+    StringType   -> return $ obj      $ if o then "true" else "false"
     BytesType    -> return $ OBytes $ B.pack $ return $ if o then 1 else 0
     _            -> mzero
-
-instance ObjectClass [Object] where
-  obj = OList
-  fromObj o = case o of { OList o -> return o; _ -> mzero; }
-  castToCoreType t = case t of
-    ListType   -> return . OList
-    RefType    -> fmap (ORef . Unqualified . Reference) .
-      maybe mzero return . mapM (fromObj >=> maybeFromUStr)
-    StringType -> fmap OList . loop return
-    BytesType  -> fmap (OBytes . D.runPut . mapM_ D.putLazyByteString) . loop (\ (OBytes o) -> [o])
-    _          -> \ _ -> mzero
-    where
-      loop f = fmap concat .
-        mapM (\o -> (maybe mzero return (fromObj o) >>= loop f) <|> (f <$> castToCoreType t o))
-
-instance ObjectClass (M.Map Name Object) where
-  obj = ODict
-  fromObj o = case o of { ODict o -> return o; _ -> mzero; }
-  castToCoreType t o = case t of
-    NullType -> guard (M.null o) >> return ONull
-    DictType -> return $ ODict o
-    _        -> mzero
 
 instance ObjectClass Char where
   obj = OChar
@@ -472,76 +449,13 @@ instance ObjectClass Char where
     IntType      -> return . OInt     . ord
     WordType     -> return . OWord    . fromIntegral . ord
     LongType     -> return . OLong    . fromIntegral . ord
+    DiffTimeType -> return . ORelTime . fromRational . toRational . ord
     FloatType    -> return . OFloat   . fromRational . toRational . ord
     RatioType    -> return . ORatio   . toRational   . ord
     ComplexType  -> return . OComplex . flip complex 0 . fromRational . toRational . ord
-    DiffTimeType -> return . ORelTime . fromRational . toRational . ord
     StringType   -> return . obj      . (:[])
     BytesType    -> return . OBytes . D.runPut . D.putWord64le . fromIntegral . ord
     _            -> \ _ -> mzero
-
-instance ObjectClass QualRef where
-  obj = ORef
-  fromObj o = case o of { ORef o -> return o; _ -> mzero; }
-  castToCoreType t o = case t of
-    StringType -> return $ obj $ '$':prettyShow o
-    RefType    -> return (ORef o)
-    ListType   -> (OList . map obj) <$> case o of
-      Unqualified (Reference r) -> return r
-      _                         -> mzero
-    TreeType -> case o of
-      Unqualified (Reference [r]) -> return $ OTree $ Nullary{ structName=r }
-      _                           -> mzero
-    _          -> mzero
-
-instance ObjectClass ObjType where
-  obj = OType
-  fromObj o = case o of { OType o -> return o; _ -> mzero; }
-  castToCoreType t = case t of
-    TypeType   -> return . OType
-    StringType -> return . obj . prettyShow
-    _          -> \ _ -> mzero
-
-instance ObjectClass Struct where
-  obj = OTree
-  fromObj o = case o of { OTree o -> return o; _ -> mzero; }
-  castToCoreType t = case t of
-    TreeType   -> return . OTree
-    RefType    -> return . obj . structName
-    StringType -> return . obj . prettyShow
-    _          -> \ _ -> mzero
-
-instance ObjectClass UStr where
-  obj = OString
-  fromObj o = case o of { OString o -> return o; _ -> mzero; }
-  castToCoreType t = case t of
-    StringType -> return . OString
-    RefType    -> fmap obj . maybe mzero return . (maybeFromUStr :: UStr -> Maybe Name)
-    _          -> castToCoreType StringType . uchars
-
-instance ObjectClass String where
-  obj = obj . toUStr
-  fromObj = fromObj >=> maybeFromUStr
-  castToCoreType t = case t of
-      NullType  -> \o -> guard (o=="null") >> return ONull
-      TrueType  -> \o -> case map toLower o of
-        "true"  -> return OTrue
-        "yes"   -> return OTrue
-        "no"    -> return ONull
-        "false" -> return ONull
-        "null"  -> return ONull
-        _       -> mzero
-      IntType   -> pars OInt
-      WordType  -> pars OWord
-      LongType  -> pars OLong
-      FloatType -> pars OFloat
-      TimeType  -> pars OAbsTime
-      _         -> \ _ -> mzero
-    where
-      nospc = dropWhile isSpace
-      pars f str = case fmap (reverse . nospc . reverse) <$> readsPrec 0 (nospc str) of
-        [(o, "")] -> return (f o)
-        _         -> mzero
 
 charFromIntegral :: (MonadPlus m, Integral i) => i -> m Char
 charFromIntegral i0 =
@@ -602,17 +516,37 @@ instance ObjectClass Word64 where
     BytesType    -> return . OBytes   . D.runPut . D.putWord64le . fromIntegral
     _            -> \ _ -> mzero
 
-instance ObjectClass Name where
-  obj = ORef . Unqualified . Reference . return
-  fromObj o = case o of
-    ORef (Unqualified (Reference [name])) -> return name
-    _ -> mzero
+instance ObjectClass Integer where
+  obj = OLong
+  fromObj o = case o of { OLong o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    NullType     -> \o -> guard (o==0) >> return ONull
+    TrueType     -> \o -> return $ if o==0 then ONull else OTrue
+    CharType     -> fmap OChar . charFromIntegral
+    IntType      -> return . OInt     . fromInteger
+    WordType     -> return . OWord    . fromInteger
+    LongType     -> return . OLong
+    FloatType    -> return . OFloat   . fromRational . toRational
+    RatioType    -> return . ORatio   . toRational
+    ComplexType  -> return . OComplex . flip complex 0 . fromRational . toRational
+    DiffTimeType -> return . ORelTime . fromRational . toRational
+    StringType   -> return . obj      . show
+    BytesType    -> return . OBytes . B.reverse . D.encode
+    _            -> \ _ -> mzero
 
-instance ObjectClass Reference where
-  obj = ORef . Unqualified
-  fromObj o = case o of
-    ORef (Unqualified ref) -> return ref
-    _ -> mzero
+instance ObjectClass NominalDiffTime where
+  obj = ORelTime
+  fromObj o = case o of { ORelTime o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    NullType     -> \o -> guard (toRational o == 0) >> return ONull
+    TrueType     -> \o -> return $ if toRational o == 0 then ONull else OTrue
+    IntType      -> return . OInt . round
+    WordType     -> return . OWord . round
+    LongType     -> return . OLong . round
+    FloatType    -> return . OFloat . fromRational . toRational
+    DiffTimeType -> return . ORelTime
+    ComplexType  -> return . OComplex . flip complex 0 . fromRational . toRational
+    _            -> \ _ -> mzero
 
 instance ObjectClass Double where
   obj = OFloat
@@ -630,24 +564,6 @@ instance ObjectClass Double where
     DiffTimeType -> return . ORelTime . fromRational . toRational
     StringType   -> return . obj      . show
     BytesType    -> return . OBytes . D.encode
-    _            -> \ _ -> mzero
-
-instance ObjectClass Integer where
-  obj = OLong
-  fromObj o = case o of { OLong o -> return o; _ -> mzero; }
-  castToCoreType t = case t of
-    NullType     -> \o -> guard (o==0) >> return ONull
-    TrueType     -> \o -> return $ if o==0 then ONull else OTrue
-    CharType     -> fmap OChar . charFromIntegral
-    IntType      -> return . OInt     . fromInteger
-    WordType     -> return . OWord    . fromInteger
-    LongType     -> return . OLong
-    FloatType    -> return . OFloat   . fromRational . toRational
-    RatioType    -> return . ORatio   . toRational
-    ComplexType  -> return . OComplex . flip complex 0 . fromRational . toRational
-    DiffTimeType -> return . ORelTime . fromRational . toRational
-    StringType   -> return . obj      . show
-    BytesType    -> return . OBytes . B.reverse . D.encode
     _            -> \ _ -> mzero
 
 instance ObjectClass Rational where
@@ -685,19 +601,132 @@ instance ObjectClass Complex where
       f constr o = guard (imagPart o == 0) >> return (constr $ fromRational $ toRational $ realPart o)
       i constr = f (constr . fromInteger . (round :: Rational -> Integer))
 
-instance ObjectClass NominalDiffTime where
-  obj = ORelTime
-  fromObj o = case o of { ORelTime o -> return o; _ -> mzero; }
+instance ObjectClass UStr where
+  obj = OString
+  fromObj o = case o of { OString o -> return o; _ -> mzero; }
   castToCoreType t = case t of
-    NullType     -> \o -> guard (toRational o == 0) >> return ONull
-    TrueType     -> \o -> return $ if toRational o == 0 then ONull else OTrue
-    IntType      -> return . OInt . round
-    WordType     -> return . OWord . round
-    LongType     -> return . OLong . round
-    FloatType    -> return . OFloat . fromRational . toRational
-    DiffTimeType -> return . ORelTime
-    ComplexType  -> return . OComplex . flip complex 0 . fromRational . toRational
-    _            -> \ _ -> mzero
+    StringType -> return . OString
+    RefType    -> fmap obj . xmaybe . (maybeFromUStr :: UStr -> Maybe Name)
+    _          -> castToCoreType StringType . uchars
+
+instance ObjectClass String where
+  obj = obj . toUStr
+  fromObj = fromObj >=> maybeFromUStr
+  castToCoreType t = case t of
+      NullType  -> \o -> guard (o=="null") >> return ONull
+      TrueType  -> \o -> case map toLower o of
+        "true"  -> return OTrue
+        "yes"   -> return OTrue
+        "no"    -> return ONull
+        "false" -> return ONull
+        "null"  -> return ONull
+        _       -> mzero
+      IntType   -> pars OInt
+      WordType  -> pars OWord
+      LongType  -> pars OLong
+      FloatType -> pars OFloat
+      TimeType  -> pars OAbsTime
+      _         -> \ _ -> mzero
+    where
+      nospc = dropWhile isSpace
+      pars f str = case fmap (reverse . nospc . reverse) <$> readsPrec 0 (nospc str) of
+        [(o, "")] -> return (f o)
+        _         -> mzero
+
+instance ObjectClass B.ByteString where
+  obj = OBytes
+  fromObj o = case o of { OBytes o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    NullType  -> f (D.isEmpty >>= guard >> return ONull)
+    TrueType  ->
+      f (D.getWord8 >>= \w ->
+          return $ case w of { 0->Just ONull; 1->Just OTrue; _->mzero; }) >=> xmaybe
+    CharType  -> fmap OChar . (f D.getWord64le >=> charFromIntegral)
+    IntType   -> fmap (OInt . fromIntegral) . f D.getWord64le
+    WordType  -> fmap (OWord . fromIntegral) . f D.getWord64le
+    LongType  -> return . OLong . D.decode . B.reverse
+    FloatType -> return . OFloat . D.decode
+    _         -> \ _ -> mzero
+    where
+      f :: D.Get o -> B.ByteString -> XPure o
+      f get = return . D.runGet get
+
+instance ObjectClass [Object] where
+  obj = OList
+  fromObj o = case o of { OList o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    StringType -> fmap OList . loop return
+    BytesType  -> fmap (OBytes . D.runPut . mapM_ D.putLazyByteString) . loop (\ (OBytes o) -> [o])
+    ListType   -> return . OList
+    RefType    -> fmap (ORef . Unqualified . Reference) . xmaybe . mapM (fromObj >=> maybeFromUStr)
+    _          -> \ _ -> mzero
+    where
+      loop f = fmap concat .
+        mapM (\o -> (xmaybe (fromObj o) >>= loop f) <|> (f <$> castToCoreType t o))
+
+instance ObjectClass (M.Map Name Object) where
+  obj = ODict
+  fromObj o = case o of { ODict o -> return o; _ -> mzero; }
+  castToCoreType t o = case t of
+    NullType -> guard (M.null o) >> return ONull
+    DictType -> return $ ODict o
+    _        -> mzero
+
+instance ObjectClass QualRef where
+  obj = ORef
+  fromObj o = case o of { ORef o -> return o; _ -> mzero; }
+  castToCoreType t o = case t of
+    StringType -> return $ obj $ '$':prettyShow o
+    RefType    -> return (ORef o)
+    ListType   -> (OList . map obj) <$> case o of
+      Unqualified (Reference r) -> return r
+      _                         -> mzero
+    TreeType -> case o of
+      Unqualified (Reference [r]) -> return $ OTree $ Nullary{ structName=r }
+      _                           -> mzero
+    _          -> mzero
+
+instance ObjectClass Reference where
+  obj = ORef . Unqualified
+  fromObj o = case o of
+    ORef (Unqualified ref) -> return ref
+    _ -> mzero
+
+instance ObjectClass Name where
+  obj = ORef . Unqualified . Reference . return
+  fromObj o = case o of
+    ORef (Unqualified (Reference [name])) -> return name
+    _ -> mzero
+
+instance ObjectClass ObjType where
+  obj = OType
+  fromObj o = case o of { OType o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    TypeType   -> return . OType
+    StringType -> return . obj . prettyShow
+    _          -> \ _ -> mzero
+
+instance ObjectClass CoreType where
+  obj = OType . coreType
+  fromObj o = case o of
+    OType (ObjType [TypeStruct [CoreType o]]) -> return o
+    _ -> mzero
+  castToCoreType t = case t of
+    IntType    -> return . OInt  . fromIntegral . fromEnum
+    WordType   -> return . OWord . fromIntegral . fromEnum
+    LongType   -> return . OLong . fromIntegral . fromEnum
+    StringType -> return . obj   . show
+    TypeType   -> return . obj
+    _          -> \ _ -> mzero
+
+instance ObjectClass Struct where
+  obj = OTree
+  fromObj o = case o of { OTree o -> return o; _ -> mzero; }
+  castToCoreType t = case t of
+    TreeType   -> return . OTree
+    RefType    -> return . obj . structName
+    StringType -> return . obj . prettyShow
+    _          -> \ _ -> mzero
 
 instance ObjectClass UTCTime where
   obj = OAbsTime
@@ -706,24 +735,6 @@ instance ObjectClass UTCTime where
     StringType -> return . obj . prettyShow . obj
     TimeType   -> return . OAbsTime
     _          -> \ _ -> mzero
-
-instance ObjectClass B.ByteString where
-  obj = OBytes
-  fromObj o = case o of { OBytes o -> return o; _ -> mzero; }
-  castToCoreType t = case t of
-    NullType  -> f (D.isEmpty >>= guard >> return ONull)
-    TrueType  ->
-      f (D.getWord8 >>= \w -> return $ case w of { 0->Just ONull; 1->Just OTrue; _->mzero; }) >=>
-        maybe mzero return
-    CharType  -> fmap OChar . (f D.getWord64le >=> charFromIntegral)
-    IntType   -> fmap (OInt . fromIntegral) . f D.getWord64le
-    WordType  -> fmap (OWord . fromIntegral) . f D.getWord64le
-    LongType  -> return . OLong . D.decode . B.reverse
-    FloatType -> return . OFloat . D.decode
-    _         -> \ _ -> mzero
-    where
-      f :: D.Get o -> B.ByteString -> Predicate Object o
-      f get = return . D.runGet get
 
 instance ObjectClass HaskellData where
   obj = OHaskell
@@ -739,25 +750,25 @@ instance ObjectClass Object where
   castToCoreType t o = case o of
     ONull      ->  f False
     OTrue      ->  f True
-    OType    o ->  f o
+    OChar    o ->  f o
     OInt     o ->  f o
     OWord    o ->  f o
     OLong    o ->  f o
+    OAbsTime o ->  f o
     OFloat   o ->  f o
     ORatio   o ->  f o
     OComplex o ->  f o
-    OAbsTime o ->  f o
-    ORelTime o ->  f o
-    OChar    o ->  f o
     OString  o ->  f o
-    ORef     o ->  f o
+    OBytes   o ->  f o
     OList    o ->  f o
     ODict    o ->  f o
+    ORef     o ->  f o
+    OType    o ->  f o
     OTree    o ->  f o
-    OBytes   o ->  f o
+    ORelTime o ->  f o
     OHaskell _ -> mzero
     where
-      f :: ObjectClass o => o -> Predicate Object Object
+      f :: ObjectClass o => o -> XPure Object
       f = castToCoreType t
 
 instance ObjectClass Location where { obj=new; fromObj=objFromHaskellData; }
@@ -814,10 +825,11 @@ instance PPrintable Object where
   pPrint o = case o of
     ONull            -> pString "null"
     OTrue            -> pString "true"
-    OType      o     -> pPrint o
+    OChar      o     -> pShow o
     OInt       o     -> pShow o
     OWord      o     -> pString (show o++"U")
     OLong      o     -> pString (show o++"L")
+    ORelTime   o     -> pShow o
     OFloat     o     -> pString (show o++"f")
     ORatio     o     ->
       if denominator o == 1
@@ -827,21 +839,20 @@ instance PPrintable Object where
                 , pString (show (denominator o)++"R"), pString ")"
                 ]
     OComplex   o     -> pPrint o
-    ORelTime   o     -> pShow o
-    OAbsTime   o     -> pString ("date "++show o)
-    OChar      o     -> pShow o
     OString    o     -> pShow o
-    ORef       o     -> pPrint o
+    OBytes     o     ->
+      if B.null o
+        then  pString "data{}"
+        else  pList (pString "data") "{" ", " "}" (map (pString . showHex) (B.unpack o))
     OList      ox    -> if null ox then pString "list{}" else pContainer "list " pPrint ox
     ODict      o     ->
       if M.null o
       then pString "dict{}"
       else pContainer "dict " (\ (a, b) -> pWrapIndent [pPrint a, pString " = ", pPrint b]) (M.assocs o)
+    ORef       o     -> pPrint o
+    OType      o     -> pPrint o
     OTree      o     -> pPrint o
-    OBytes     o     ->
-      if B.null o
-        then  pString "data{}"
-        else  pList (pString "data") "{" ", " "}" (map (pString . showHex) (B.unpack o))
+    OAbsTime   o     -> pString ("date "++show o)
     OHaskell   (HaskellData o ifc) -> case objPPrinter ifc of
       Nothing -> fail $ "cannot pretty print Haskell data type: "++show (objHaskellType ifc)
       Just pp -> pp o
@@ -1096,7 +1107,7 @@ instance HaskellDataClass StructError where
 -- | Used to convert a 'Prelude.String' to a 'Dao.String.Name' by functions like 'define' and
 -- 'setField'. Usually you will not need to use it.
 mkLabel :: (UStrType name, MonadPlus m) => name -> m Name
-mkLabel name = maybe mzero return $ maybeFromUStr (toUStr name)
+mkLabel name = xmaybe $ maybeFromUStr (toUStr name)
 
 mkStructName :: (UStrType name, MonadPlus m) => name -> m Name
 mkStructName name = mplus (mkLabel name) $ fail "invalid constructor name"
@@ -1420,7 +1431,7 @@ structCurrentField name (FromDaoStruct f) = FromDaoStruct $ catchPredicate f >>=
 -- use 'checkEmpty' to make sure there is no hidden extraneous data in the struct.
 tryCopyField :: UStrType name => name -> (Object -> FromDaoStruct o) -> FromDaoStruct o
 tryCopyField name f = (pure M.lookup <*> mkFieldName name <*> asks fieldMap) >>=
-  maybe mzero return >>= structCurrentField (fromUStr $ toUStr name) . f
+  xmaybe >>= structCurrentField (fromUStr $ toUStr name) . f
 
 -- | Like 'copyField', retrieves an arbitrary 'Object' by it's field name, and backtraks if no such
 -- field is defined. However unlike 'tryCopyField', if the item is retrieved, it is deleted from the
@@ -1479,18 +1490,18 @@ convertFieldData f o = mplus (f o) $ throwError $ nullValue{ structErrValue=Just
 
 -- | A required 'Struct' 'field'. This function is defined as
 req :: (UStrType name, Typeable o, ObjectClass o) => name -> FromDaoStruct o
-req name = field name (convertFieldData (maybe mzero return . fromObj))
+req name = field name (convertFieldData (xmaybe . fromObj))
 
 -- | Check if a 'Struct' field exists using 'tryField', if it exists, convert it to the necessary
 -- data type using 'fromObj' (which fails if an unexpected type is stored in that field).
 opt :: (UStrType name, Typeable o, ObjectClass o) => name -> FromDaoStruct (Maybe o)
-opt name = Just <$> tryField name (convertFieldData (maybe mzero return . fromObj)) <|> return Nothing
+opt name = Just <$> tryField name (convertFieldData (xmaybe . fromObj)) <|> return Nothing
 
 -- | Like 'req' but internally uses 'listFromObj' instead of 'fromObj'. The field must exist, if it
 -- does not this function evaluates to 'Control.Monad.Error.throwError'. Use 'optList' instead if
 -- you can accept an empty list when the field is not defined.
 reqList :: (UStrType name, Typeable o, ObjectClass o) => name -> FromDaoStruct [o]
-reqList name = field name $ convertFieldData (maybe mzero return . listFromObj)
+reqList name = field name $ convertFieldData (xmaybe . listFromObj)
 
 -- | Like 'opt' but internally uses 'listFromObj' instead of 'fromObj'. The field may not exist, and
 -- if it does not this function returns an empty list. Use 'reqList' to evaluate to
@@ -1562,98 +1573,91 @@ instance HasRandGen Object where
 data Object
   = ONull
   | OTrue
-  | OType      T_type
+  | OChar      T_char
   | OInt       T_int
   | OWord      T_word
   | OLong      T_long
+  | ORelTime   T_diffTime
   | OFloat     T_float
   | ORatio     T_ratio
   | OComplex   T_complex
-  | OAbsTime   T_time
-  | ORelTime   T_diffTime
-  | OChar      T_char
   | OString    T_string
-  | ORef       T_ref
+  | OBytes     T_bytes
   | OList      T_list
   | ODict      T_dict
+  | ORef       T_ref
+  | OType      T_type
   | OTree      T_struct
-  | OBytes     T_bytes
+  | OAbsTime   T_time
   | OHaskell   HaskellData
   deriving (Eq, Ord, Typeable, Show)
 
-type T_type     = ObjType
+type T_char     = Char
 type T_int      = Int
 type T_word     = Word64
 type T_long     = Integer
+type T_diffTime = NominalDiffTime
+type T_float    = Double
 type T_ratio    = Rational
 type T_complex  = Complex
-type T_float    = Double
-type T_time     = UTCTime
-type T_diffTime = NominalDiffTime
-type T_char     = Char
 type T_string   = UStr
-type T_ref      = QualRef
 type T_bytes    = B.ByteString
 type T_list     = [Object]
 type T_dict     = M.Map Name Object
+type T_ref      = QualRef
+type T_type     = ObjType
 type T_struct   = Struct
+type T_time     = UTCTime
 
 instance NFData Object where
   rnf  ONull         = ()
   rnf  OTrue         = ()
-  rnf (OType      a) = deepseq a ()
+  rnf (OChar      a) = deepseq a ()
   rnf (OInt       a) = deepseq a ()
   rnf (OWord      a) = deepseq a ()
   rnf (OLong      a) = deepseq a ()
+  rnf (ORelTime   a) = deepseq a ()
   rnf (OFloat     a) = deepseq a ()
   rnf (ORatio     a) = deepseq a ()
   rnf (OComplex   a) = deepseq a ()
-  rnf (OAbsTime   a) = deepseq a ()
-  rnf (ORelTime   a) = deepseq a ()
-  rnf (OChar      a) = deepseq a ()
   rnf (OString    a) = deepseq a ()
-  rnf (ORef       a) = deepseq a ()
+  rnf (OBytes     a) = seq a ()
   rnf (OList      a) = deepseq a ()
   rnf (ODict      a) = deepseq a ()
+  rnf (ORef       a) = deepseq a ()
+  rnf (OType      a) = deepseq a ()
   rnf (OTree      a) = deepseq a ()
-  rnf (OBytes     a) = seq a ()
+  rnf (OAbsTime   a) = deepseq a ()
   rnf (OHaskell   a) = deepseq a ()
 
-instance Monoid Object where
-  mempty = ONull
-  mappend a b = case a of
-    ONull     -> b
-    OString a -> case b of
-      OString b -> OString (a<>b)
-      _         -> err (OString a) b
-    OList   a -> case b of
-      OList   b -> OList (a<>b)
-      _         -> err (OList a) b
-    ODict   a -> case b of
-      ODict   b -> ODict (a<>b)
-      _         -> err (ODict a) b
-    _ -> case b of
-      ONull -> a
-      _     -> err a b
-    where
-      err a b = error $ "cannot append "++show(typeOfObj a)++" to "++show(typeOfObj b)
+instance Monoid (XPure Object) where
+  mempty = return ONull
+  mappend a b = a >>= \a -> b >>= \b -> case a of
+    ONull     -> return b
+    OTrue     -> case b of
+      OTrue     -> return OTrue
+      _         -> mzero
+    a         -> case b of
+      ONull     -> return a
+      b         -> xpure a + xpure b
 
 instance HasNullValue Object where
   nullValue = ONull
   testNull a = case a of
     ONull        -> True
+    OChar     c  -> testNull c
     OInt      i  -> testNull i
     OWord     i  -> testNull i
     OLong     i  -> testNull i
+    OFloat    f  -> testNull f
+    ORelTime  s  -> testNull s
     ORatio    r  -> testNull r
     OComplex  c  -> testNull c
     OString   s  -> testNull s
-    OChar     c  -> testNull c
-    ORelTime  s  -> testNull s
+    OBytes    o  -> testNull o
     OList     s  -> testNull s
     ODict     m  -> testNull m
     OTree     t  -> testNull t
-    OBytes    o  -> testNull o
     OHaskell  o  -> testNull o
     _            -> False
 
@@ -1664,22 +1668,22 @@ instance B.Binary Object MTab where
     case o of
       ONull      -> t
       OTrue      -> t
-      OType    o -> p o
+      OChar    o -> p o
       OInt     o -> p o
       OWord    o -> p o
       OLong    o -> p o
+      ORelTime o -> p o
       OFloat   o -> p o
       ORatio   o -> p o
       OComplex o -> p o
-      OAbsTime o -> p o
-      ORelTime o -> p o
-      OChar    o -> p o
       OString  o -> p o
-      ORef     o -> p o
+      OBytes   o -> p o
       OList    o -> t >> B.putUnwrapped o
       ODict    o -> p o
+      ORef     o -> p o
+      OType    o -> p o
       OTree    o -> p o
-      OBytes   o -> p o
+      OAbsTime o -> p o
       OHaskell o -> B.put o
   get = B.word8PrefixTable <|> fail "expecting Object"
 
@@ -1689,37 +1693,27 @@ instance B.HasPrefixTable Object B.Byte MTab where
     in  mappend (OTree <$> B.prefixTable) $ B.mkPrefixTableWord8 "Object" 0x08 0x1A $
           [ return ONull
           , return OTrue
-          , g OType
+          , g OChar
           , g OInt
           , g OWord
           , g OLong
+          , g ORelTime
           , g OFloat
           , g ORatio
           , g OComplex
-          , g OAbsTime
-          , g ORelTime
-          , g OChar
           , g OString
-          , g ORef
+          , g OBytes
           , OList <$> B.getUnwrapped
           , g ODict
+          , g ORef
+          , g OType
           , g OTree
-          , g OBytes
+          , g OAbsTime
           , mplus (OHaskell <$> B.get)
                   (B.get >>= \ (B.BlockStream1M bs1m) -> return (OBytes bs1m))
           ]
 
-isNumeric :: Object -> Bool
-isNumeric o = case o of
-  OWord     _ -> True
-  OInt      _ -> True
-  OLong     _ -> True
-  ORelTime _ -> True
-  OFloat    _ -> True
-  ORatio    _ -> True
-  OComplex  _ -> True
-  _           -> False
-
+-- REMOVE
 isIntegral :: Object -> Bool
 isIntegral o = case o of
   OWord _ -> True
@@ -1727,6 +1721,7 @@ isIntegral o = case o of
   OLong _ -> True
   _       -> False
 
+-- REMOVE
 isRational :: Object -> Bool
 isRational o = case o of
   OWord     _ -> True
@@ -1737,12 +1732,14 @@ isRational o = case o of
   ORatio    _ -> True
   _           -> False
 
+-- REMOVE
 isFloating :: Object -> Bool
 isFloating o = case o of
   OFloat   _ -> True
   OComplex _ -> True
   _          -> False
 
+-- REMOVE
 objToIntegral :: Object -> Maybe Integer
 objToIntegral o = case o of
   OWord o -> return $ toInteger o
@@ -1750,6 +1747,7 @@ objToIntegral o = case o of
   OLong o -> return o
   _       -> mzero
 
+-- REMOVE
 objToRational :: Object -> Maybe Rational
 objToRational o = case o of
   OWord     o -> return $ toRational o
@@ -1760,6 +1758,7 @@ objToRational o = case o of
   ORatio    o -> return o
   _           -> mzero
 
+-- REMOVE
 objToInt :: Object -> Maybe Int
 objToInt a = objToIntegral a >>= \a ->
   if minInt <= a && a <= maxInt then return (fromIntegral a) else mzero
@@ -1767,11 +1766,13 @@ objToInt a = objToIntegral a >>= \a ->
     minInt = fromIntegral (minBound::Int)
     maxInt = fromIntegral (maxBound::Int)
 
+-- REMOVE
 -- | Used to implement a version of 'Data.Bits.shift' and 'Data.Bits.rotate', but with an object as
 -- the second parameter to these functions.
 bitsMove :: (forall a . Bits a => a -> Int -> a) -> Object -> Object -> Maybe Object
 bitsMove fn a b = objToInt b >>= \b -> bitsMoveInt fn a b
 
+-- REMOVE
 bitsMoveInt :: (forall a . Bits a => a -> Int -> a) -> Object -> Int -> Maybe Object
 bitsMoveInt fn a b = case a of
   OInt  a -> return (OInt  (fn a b))
@@ -1779,6 +1780,7 @@ bitsMoveInt fn a b = case a of
   OLong a -> return (OLong (fn a b))
   _       -> mzero
 
+-- REMOVE
 -- | Used to implement a version of 'Data.Bits.testBit' but with an object as the second parameter
 -- to these functions.
 objTestBit :: Object -> Object -> Maybe Object
@@ -1788,6 +1790,7 @@ objTestBit a i = objToInt i >>= \i -> case a of
   OLong a -> return (obj (testBit a i))
   _       -> mzero
 
+-- REMOVE
 -- | Create an 'Object' by stacking up 'ODict' constructors to create a directory-like structure,
 -- then store the Object at the top of the path, returning the directory-like object.
 insertAtPath :: [Name] -> Object -> Object
@@ -1904,6 +1907,25 @@ instance HasRandGen QualRef where
     let (d, m) = divMod i 2
     if m==0 then Unqualified <$> randO else Qualified (toEnum d) <$> randO
 
+-- 'execute'-ing a 'QualRefExpr' will dereference it, essentially reading the
+-- value associated with that reference from the 'ExecUnit'.
+instance Executable QualRef (Maybe (QualRef, Object)) where { execute qref = qualRefLookup qref }
+
+qualRefLookup :: QualRef -> Exec (Maybe (QualRef, Object))
+qualRefLookup qref = _doWithRefQualifier qref getLocal getStatic getGlobal getGloDot where
+  getLocal  ref = asks execStack  >>= doLookup ref
+  getGlobal ref = asks globalData >>= doLookup ref
+  getStatic ref = asks currentCodeBlock >>= doLookup ref
+  getGloDot ref = asks currentWithRef >>= doLookup ref
+  doLookup :: Store store => Reference -> store -> Exec (Maybe Object)
+  doLookup (Reference rx) store = case rx of
+    []   -> mzero
+    r:rx -> do
+      top <- storeLookup store r >>= xmaybe
+      _objectAccess [r] rx top
+    -- TODO: on exception, update the exception structure with information about the 'QualRef'
+    -- given above.
+
 refNames :: UStrType str => [str] -> QualRef
 refNames nx = Unqualified $ Reference (fmap (fromUStr . toUStr) nx)
 
@@ -1972,7 +1994,7 @@ _doWithRefQualifier qref onLocal onStatic onGlobal onGloDot = do
     getConst ref = case ref of
       Reference [nm] -> do
         sto <- ConstantStore <$> asks builtinConstants
-        o <- storeLookup sto nm >>= maybe mzero return
+        o <- storeLookup sto nm >>= xmaybe
         return $ Just (Unqualified ref, o)
       _               -> mzero
 
@@ -1990,18 +2012,18 @@ data CoreType
   | IntType
   | WordType
   | LongType
-  | FloatType
   | DiffTimeType
+  | FloatType
   | RatioType
   | ComplexType
   | StringType
   | BytesType
-  | TimeType
   | ListType
   | DictType
   | RefType
   | TypeType
   | TreeType
+  | TimeType
   | HaskellType
   deriving (Eq, Ord, Typeable, Enum, Bounded)
 
@@ -2009,39 +2031,44 @@ instance Show CoreType where
   show t = case t of
     NullType     -> "Null"
     TrueType     -> "True"
-    TypeType     -> "Type"
+    CharType     -> "Char"
     IntType      -> "Int"
     WordType     -> "Word"
-    FloatType    -> "Float"
     LongType     -> "Long"
-    RatioType    -> "Ratio"
     DiffTimeType -> "Diff"
-    TimeType     -> "Time"
-    CharType     -> "Char"
+    FloatType    -> "Float"
+    RatioType    -> "Ratio"
+    ComplexType  -> "Complex"
     StringType   -> "String"
-    RefType      -> "Ref"
+    BytesType    -> "Bytes"
     ListType     -> "List"
     DictType     -> "Dict"
+    RefType      -> "Ref"
+    TypeType     -> "Type"
     TreeType     -> "Tree"
-    BytesType    -> "Bytes"
-    ComplexType  -> "Complex"
+    TimeType     -> "Time"
     HaskellType  -> "Haskell"
 
 instance Read CoreType where
   readsPrec _ str = map (\a -> (a, "")) $ case str of
     "Null"    -> [NullType]
     "True"    -> [TrueType]
-    "Type"    -> [TypeType]
-    "Int"     -> [IntType]
-    "Diff"    -> [DiffTimeType]
-    "Time"    -> [TimeType]
     "Char"    -> [CharType]
+    "Int"     -> [IntType]
+    "Word"    -> [WordType]
+    "Long"    -> [LongType]
+    "Diff"    -> [DiffTimeType]
+    "Float"   -> [FloatType]
+    "Ratio"   -> [RatioType]
+    "Complex" -> [ComplexType]
     "String"  -> [StringType]
-    "Ref"     -> [RefType]
+    "Bytes"   -> [BytesType]
     "List"    -> [ListType]
     "Dict"    -> [DictType]
+    "Ref"     -> [RefType]
+    "Type"    -> [TypeType]
     "Tree"    -> [TreeType]
-    "Bytes"   -> [BytesType]
+    "Time"    -> [TimeType]
     "Haskell" -> [HaskellType]
     _         -> []
 
@@ -2066,22 +2093,22 @@ instance B.Binary CoreType mtab where
   put t = B.putWord8 $ case t of
     NullType     -> 0x08
     TrueType     -> 0x09
-    TypeType     -> 0x0A
+    CharType     -> 0x0A
     IntType      -> 0x0B
     WordType     -> 0x0C
     LongType     -> 0x0D
-    FloatType    -> 0x0E
-    RatioType    -> 0x0F
-    ComplexType  -> 0x10
-    TimeType     -> 0x11
-    DiffTimeType -> 0x12
-    CharType     -> 0x13
-    StringType   -> 0x14
-    RefType      -> 0x15
-    ListType     -> 0x16
-    DictType     -> 0x17
+    DiffTimeType -> 0x0E
+    FloatType    -> 0x0F
+    RatioType    -> 0x10
+    ComplexType  -> 0x11
+    StringType   -> 0x12
+    BytesType    -> 0x13
+    ListType     -> 0x14
+    DictType     -> 0x15
+    RefType      -> 0x16
+    TypeType     -> 0x17
     TreeType     -> 0x18
-    BytesType    -> 0x19
+    TimeType     -> 0x19
     HaskellType  -> 0x1A
   get = B.word8PrefixTable <|> fail "expecting CoreType"
 
@@ -2089,22 +2116,22 @@ instance B.HasPrefixTable CoreType B.Byte mtab where
   prefixTable = B.mkPrefixTableWord8 "CoreType" 0x08 0x1A $ map return $
     [ NullType
     , TrueType
-    , TypeType
+    , CharType
     , IntType
     , WordType
     , LongType
+    , DiffTimeType
     , FloatType
     , RatioType
     , ComplexType
-    , TimeType
-    , DiffTimeType
-    , CharType
     , StringType
-    , RefType
+    , BytesType
     , ListType
     , DictType
+    , RefType
+    , TypeType
     , TreeType
-    , BytesType
+    , TimeType
     , HaskellType
     ]
 
@@ -2114,22 +2141,22 @@ typeOfObj :: Object -> CoreType
 typeOfObj o = case o of
   ONull      -> NullType
   OTrue      -> TrueType
-  OType    _ -> TypeType
+  OChar    _ -> CharType
   OInt     _ -> IntType
   OWord    _ -> WordType
   OLong    _ -> LongType
+  ORelTime _ -> DiffTimeType
   OFloat   _ -> FloatType
   ORatio   _ -> RatioType
   OComplex _ -> ComplexType
-  OAbsTime _ -> TimeType
-  ORelTime _ -> DiffTimeType
-  OChar    _ -> CharType
   OString  _ -> StringType
-  ORef     _ -> RefType
+  OBytes   _ -> BytesType
   OList    _ -> ListType
   ODict    _ -> DictType
+  ORef     _ -> RefType
+  OType    _ -> TypeType
   OTree    _ -> TreeType
-  OBytes   _ -> BytesType
+  OAbsTime _ -> TimeType
   OHaskell _ -> HaskellType
 
 ----------------------------------------------------------------------------------------------------
@@ -2200,7 +2227,9 @@ instance NFData ObjType where { rnf (ObjType a) = deepseq a () }
 instance HasNullValue ObjType where { nullValue = ObjType []; testNull (ObjType a) = null a; }
 
 instance PPrintable ObjType where
-  pPrint (ObjType tx) = pList (pString "anyOf") "(" ", " ")" (map pPrint tx)
+  pPrint t@(ObjType tx) = case fromObj (obj t) of
+    Just  t -> pString $ show (t::CoreType)
+    Nothing -> pList (pString "anyOf") "(" ", " ")" (map pPrint tx)
 
 instance B.Binary ObjType mtab where
   put (ObjType o) = B.prefixByte 0x1B $ B.put o
@@ -2634,25 +2663,6 @@ taskLoop_ task inits = taskLoop task inits (\ _ _ -> return True)
 -- In this example, should D instantiate () or Int or Char as it's result? You must choose only one.
 class Executable exec result | exec -> result where { execute :: exec -> Exec result }
 
--- 'execute'-ing a 'QualRefExpr' will dereference it, essentially reading the
--- value associated with that reference from the 'ExecUnit'.
-instance Executable QualRef (Maybe (QualRef, Object)) where { execute qref = qualRefLookup qref }
-
-qualRefLookup :: QualRef -> Exec (Maybe (QualRef, Object))
-qualRefLookup qref = _doWithRefQualifier qref getLocal getStatic getGlobal getGloDot where
-  getLocal  ref = asks execStack  >>= doLookup ref
-  getGlobal ref = asks globalData >>= doLookup ref
-  getStatic ref = asks currentCodeBlock >>= doLookup ref
-  getGloDot ref = asks currentWithRef >>= doLookup ref
-  doLookup :: Store store => Reference -> store -> Exec (Maybe Object)
-  doLookup (Reference rx) store = case rx of
-    []   -> mzero
-    r:rx -> do
-      top <- storeLookup store r >>= maybe mzero return
-      _objectAccess [r] rx top
-    -- TODO: on exception, update the exception structure with information about the 'QualRef'
-    -- given above.
-
 ----------------------------------------------------------------------------------------------------
 
 -- | Since the 'ExecUnit' deals with a few different kinds of pointer values, namely
@@ -2978,6 +2988,82 @@ instance MonadError ExecControl Exec where
 instance MonadPlusError ExecControl Exec where
   catchPredicate (Exec f) = Exec (catchPredicate f)
   predicate = Exec . predicate
+
+----------------------------------------------------------------------------------------------------
+
+-- | The 'XPure' type is like 'Exec' but does not lift IO or contain any reference to any
+-- 'ExecUnit', so it is guaranteed to work without side-effects, but it also instantiates the
+-- 'Control.Monad.MonadPlus', 'Control.Applicative.Alternative', 'Control.Monad.Error.MonadError'
+-- and 'Dao.Predicate.MonadPlusError' classes so you can do computation with backtracking and
+-- exceptions. Although this monad evaluates to a pure function, it does have stateful data: a
+-- 'Dao.String.UStr' that will call a "print stream", which is provided for general purpose; a place
+-- to print information throughout evaluation like a "print()" statement.  The 'xnote' function
+-- serves as the "print()" function for this monad. Use the ordinary 'Control.Monad.State.get' and
+-- 'Control.Monad.State.modify' APIs for working with the print stream data.
+-- 
+-- You can also evaluate an 'XPure' monad within an 'Exec' monad by simply using the 'execute'
+-- function. This will automatically convert the internal 'Dao.Predicate.Predicate' of the 'XPure'
+-- monad to the 'Dao.Predicate.Predicate' of the 'Exec' monad, meaning if you 'execute' an 'XPure'
+-- monad that backtracks or throws an error, the 'Exec' monad will backtrack or throw the same
+-- error.
+newtype XPure a = XPure { xpureToState :: PredicateT Object (State UStr) a }
+  deriving (Functor, Applicative, Alternative, Monad, MonadPlus)
+
+-- | Convert a value wrapped in an XPure monad to a pair containing the internal state 'Dao.String.UStr' and
+-- 'Dao.Predicate.Predicate' value.
+runXPure :: XPure a -> (Predicate Object a, UStr)
+runXPure = flip runState nil . runPredicateT . xpureToState
+
+-- | Like 'Control.Monad.State.evalState', but works on the 'XPure' monad, i.e. it is defined as
+-- > 'Prelude.fst' . 'runXPure'
+evalXPure :: XPure a -> Predicate Object a
+evalXPure = fst . runXPure
+
+-- | Like 'evalXPure' but evaluates to 'Prelude.Maybe' instead of a 'Dao.Predicate.Predicate'.
+-- 'Dao.Predicate.Backtrack' and 'Dao.Predicate.PFail' both map to 'Prelude.Nothing',
+-- 'Dao.Predicate.OK' maps to 'Prelude.Just'.
+extractXPure :: XPure a -> Maybe a
+extractXPure = okToJust . evalXPure
+
+instance MonadError Object XPure where
+  throwError = XPure . throwError
+  catchError (XPure f) catch = XPure $ catchError f (xpureToState . catch)
+
+instance MonadPlusError Object XPure where
+  predicate = XPure . predicate
+  catchPredicate (XPure f) = XPure $ catchPredicate f
+
+instance MonadState UStr XPure where { state = XPure . lift . state }
+
+instance Executable (XPure a) a where
+  execute (XPure f) = predicate $ fmapPFail (\err -> mkExecError{ execReturnValue=Just err }) $
+    evalState (runPredicateT f) mempty
+
+-- | Like 'Control.Applicative.pure' or 'Control.Monad.return' but the type is not polymorphic so
+-- there is no need to annotate the monad to which you are 'Control.Monad.return'ing, which is
+-- helpful when using functions like 'exceute' to convert the 'XPure' monad to the 'Exec' monad.
+xpure :: a -> XPure a
+xpure = pure
+
+-- | Like 'xpure' but wraps any data type that instantiates the 'ObjectClass' class.
+xobj :: ObjectClass a => a -> XPure Object
+xobj = xpure . obj
+
+-- | Append a string of any 'UStrType' to the general-purpose print stream contained within the
+-- 'XPure' monad.
+xnote :: UStrType s => s -> XPure ()
+xnote = modify . flip mappend . toUStr
+
+-- | Like 'xnote' but lets you operate on the 'Data.ByteString.Lazy.UTF8.ByteString'.
+xonUTF8 :: (U.ByteString -> U.ByteString) -> XPure ()
+xonUTF8 = modify . fmapUTF8String
+
+-- | Works on any 'Control.Monad.MonadPlus' type, including 'Prelude.Maybe', 'Exec' and 'XPure', is
+-- defined as: > 'Prelude.maybe' 'Control.Monad.mzero' 'Control.Monad.return' which is useful
+-- shorthand for converting a value wrapped in a 'Prelude.Maybe' data type to a value wrapped in the
+-- 'Control.Monad.MonadPlus' type.
+xmaybe :: MonadPlus m => Maybe a -> m a
+xmaybe = maybe mzero return
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4045,8 +4131,9 @@ instance HaskellDataClass AST_StringList where
 -- dao script.
 
 asReference :: Object -> Exec QualRef
-asReference = maybe mzero return . fromObj
+asReference = xmaybe . fromObj
 
+-- REMOVE
 asInteger :: Object -> Exec Integer
 asInteger o = case o of
   OWord    o -> return (toInteger o)
@@ -4057,6 +4144,7 @@ asInteger o = case o of
   ORelTime o -> return (round (toRational o))
   _          -> mzero
 
+-- REMOVE
 asRational :: Object -> Exec Rational
 asRational o = case o of
   OInt     o -> return (toRational o)
@@ -4068,6 +4156,7 @@ asRational o = case o of
   OComplex o | imagPart o == 0 -> return (toRational (realPart o))
   _          -> mzero
 
+-- REMOVE
 -- | A function which is basically the absolute value function, except it also works on 'Complex'
 -- numbers, returning the magnitude of the number if it is 'Complex'.
 asPositive :: Object -> Exec Object
@@ -4080,11 +4169,13 @@ asPositive o = case o of
   OComplex o -> return (OFloat   $ magnitude o)
   _          -> mzero
 
+-- REMOVE
 asComplex :: Object -> Exec T_complex
 asComplex o = case o of
   OComplex o -> return o
   o          -> asRational o >>= return . flip complex 0 . fromRational
 
+-- REMOVE
 asStringNoConvert :: Object -> Exec UStr
 asStringNoConvert o = case o of
   OString o -> return o
@@ -4097,12 +4188,15 @@ objConcat :: [Object] -> (Int, [Object])
 objConcat ox = (sum a, concat b) where
   (a, b) = unzip (ox >>= \o -> maybe [(0, [o])] (return . (,) 1) (fromObj o))
 
+-- REMOVE
 asListNoConvert :: Object -> Exec [Object]
-asListNoConvert = maybe mzero return . fromObj
+asListNoConvert = xmaybe . fromObj
 
+-- REMOVE
 asList :: Object -> Exec [Object]
-asList = maybe mzero return . listFromObj
+asList = xmaybe . listFromObj
 
+-- REMOVE
 -- | Combines two lists of objects, then removes one "layer of lists", that is, if the combined
 -- lists are of the form:
 -- @list {a, b, ... , list {c, d, ... , list {e, f, ...}, ...} }@ 
@@ -4112,12 +4206,14 @@ objListAppend ax bx = OList $ flip concatMap (ax++bx) $ \a -> case a of
   OList ax -> ax
   a        -> [a]
 
+-- REMOVE
 asHaskellInt :: Object -> Exec Int
 asHaskellInt o = asInteger o >>= \o ->
   if (toInteger (minBound::Int)) <= o && o <= (toInteger (maxBound::Int))
     then return (fromIntegral o)
     else mzero
 
+-- REMOVE
 evalInt :: (Integer -> Integer -> Integer) -> Object -> Object -> Exec Object
 evalInt ifunc a b = do
   ia <- asInteger a
@@ -4129,6 +4225,7 @@ evalInt ifunc a b = do
     t | t == fromEnum LongType -> return $ OLong (fromIntegral x)
     _ -> fail "asInteger returned a value for an object of an unexpected type"
 
+-- REMOVE
 evalNum
   :: (Integer -> Integer -> Integer)
   -> (Rational -> Rational -> Rational)
@@ -4146,8 +4243,8 @@ evalNum ifunc rfunc a b = msum $
           _ -> fail "asRational returned a value for an object of an unexpected type"
   ]
 
-eval_ADD :: Object -> Object -> Exec Object
-eval_ADD a b = msum
+_eval_ADD :: Object -> Object -> Exec Object
+_eval_ADD a b = msum
   [ evalNum (+) (+) a b
   , timeAdd a b, timeAdd b a
   , listAdd a b, listAdd b a
@@ -4169,25 +4266,348 @@ eval_ADD a b = msum
       OString a -> return $ obj $ add (uchars a) (maybe (prettyShow b) uchars (fromObj b :: Maybe UStr))
       _         -> mzero
 
-eval_SUB :: Object -> Object -> Exec Object
-eval_SUB a b = msum $
-  [ evalNum (-) (-) a b
-  , case (a, b) of
-      (OAbsTime a, OAbsTime b) -> return (ORelTime (diffUTCTime a b))
-      (OAbsTime a, ORelTime b) -> return (OAbsTime (addUTCTime (negate b) a))
-      (OAbsTime a, ORatio   b) -> return (OAbsTime (addUTCTime (fromRational (toRational (negate b))) a))
-      (OAbsTime a, OFloat   b) -> return (OAbsTime (addUTCTime (fromRational (toRational (negate b))) a))
-      _                  -> mzero
+-- | Checks if an 'Object' is a numerical type, returns the numeric 'CoreType' if so, evaluates to
+-- 'Control.Monad.mzero' if not.
+isNumeric :: Object -> XPure CoreType
+isNumeric o = do
+  let t = typeOfObj o
+  guard (CharType <= t && t <= ComplexType)
+  return t
+
+eval_Prefix_op :: ArithPfxOp -> Object -> XPure Object
+eval_Prefix_op op o = join $ xmaybe $
+  fromObj o >>= \ (HaskellData o ifc) -> objArithPfxOpTable ifc >>= (! op) >>= \f -> return (f op o)
+
+-- Pass the 'InfixOp' associated with the 'Prelude.Num' function so it can check whether the
+-- 'defInfixOp' for that operator has been defined for objects of 'HaskellType'. Also pass a boolean
+-- indicating whether this operator is associative, which will determine whether or not the
+-- left-hand side may be swapped with the right-hand side when evaluating the 'InfixOp'.
+eval_Infix_op :: InfixOp -> Bool -> Object -> Object -> XPure Object
+eval_Infix_op op isAssoc a b = join $ xmaybe $ onhask a b <|> (guard isAssoc >> onhask b a) where
+  onhask a b = fromObj a >>= \ (HaskellData a ifc) ->
+    (\f -> f op a b) <$> (objInfixOpTable ifc >>= (! op))
+
+eval_Num_op1 :: (forall a . Num a => a -> a) -> Object -> XPure Object
+eval_Num_op1 f o = case o of
+  OChar    o -> return $ OChar    $ chr $ mod (f $ ord o) (ord maxBound)
+  OInt     o -> return $ OInt     $ f o
+  OWord    o -> return $ OWord    $ f o
+  OLong    o -> return $ OLong    $ f o
+  ORelTime o -> return $ ORelTime $ f o
+  OFloat   o -> return $ OFloat   $ f o
+  ORatio   o -> return $ ORatio   $ f o
+  OComplex o -> return $ OComplex $ f o
+  _          -> mzero
+
+-- Evaluate a 2-ary function for any core type that instantiates the 'Prelude.Num' class.
+eval_Num_op2 :: (forall a . Num a => a -> a -> a) -> Object -> Object -> XPure Object
+eval_Num_op2 f a b = do
+  t  <- pure (,) <*> isNumeric a <*> isNumeric b
+  let cast = castToCoreType (uncurry max t)
+  ab <- pure (,) <*> cast a <*> cast b
+  return $ case ab of
+    (OChar     a, OChar     b) -> OChar    $ chr $ mod (f (ord a) (ord b)) (ord maxBound)
+    (OInt      a, OInt      b) -> OInt     $ f a b
+    (OWord     a, OWord     b) -> OWord    $ f a b
+    (OLong     a, OLong     b) -> OLong    $ f a b
+    (ORelTime  a, ORelTime  b) -> ORelTime $ f a b
+    (OFloat    a, OFloat    b) -> OFloat   $ f a b
+    (ORatio    a, ORatio    b) -> ORatio   $ f a b
+    (OComplex  a, OComplex  b) -> OComplex $ f a b
+    _ -> error $ "expected ADD operator case for "++show t++" types"
+
+instance Num (XPure Object) where
+  a + b = a >>= \a -> b >>= \b -> case (a, b) of
+    (OString a, OString b) -> return $ OString $ a<>b
+    (OBytes  a, OBytes  b) -> return $ OBytes  $ a<>b
+    (OList   a, OList   b) -> return $ OList   $ a++b
+    (ODict   a, ODict   b) -> return $ ODict   $ M.union b a
+    (a, b) -> eval_Num_op2 (+) a b <|> eval_Infix_op ADD True a b
+  a * b = a >>= \a -> case a of
+    OList ax -> OList <$> mapM ((* b) . xpure) ax
+    ODict ax -> (ODict . M.fromList) <$>
+      mapM (\ (key, a) -> fmap ((,) key) (xpure a * b)) (M.assocs ax)
+    a        -> b >>= \b -> case b of
+      OList bx -> OList <$> mapM (((xpure a) *) . xpure) bx
+      ODict bx -> (ODict . M.fromList) <$>
+        mapM (\ (key, b) -> fmap ((,) key) (xpure a * xpure b)) (M.assocs bx)
+      b        -> eval_Num_op2 (*) a b <|> eval_Infix_op MULT True a b
+  a - b = a >>= \a -> b >>= \b -> case a of
+    -- on strings, the inverse operation of "join(b, a)", every occurence of b from a.
+    OString a -> case b of
+      OString b -> return $ OString $ mconcat $ splitString a b
+      _         -> mzero
+    -- on lists, removes the item b from the list a
+    OList   a -> return $ OList $ filter (/= b) a
+    ODict   a -> case b of
+      ORef (Unqualified (Reference [b])) -> return $ ODict $ M.delete b a
+      ORef                          _    -> throwError $ obj $
+        [ obj "cannot remove element from Dict:", b
+        , obj "reference must be a single unqualified name"
+        ]
+      _ -> mzero
+    a         -> eval_Num_op2 (-) a b <|> eval_Infix_op SUB False a b
+  negate a = (a >>= eval_Num_op1 negate) <|> (a >>= eval_Prefix_op NEGTIV)
+  abs    a = (a >>= eval_Num_op1 abs   ) <|> (a >>= eval_Prefix_op NEGTIV)
+  signum a = a >>= eval_Num_op1 signum
+  fromInteger = return . obj
+
+_xpureApplyError :: String -> String -> a
+_xpureApplyError name msg = error $ concat $ concat $
+  [["cannot evaluate ", name], guard (not $ null msg) >> [": ", msg]]
+
+_xpureApply2 :: String -> (Object -> Object -> a) -> XPure Object -> XPure Object -> a
+_xpureApply2 name f a b = case evalXPure $ a >>= \a -> b >>= \b -> return (f a b) of
+  PFail   e -> _xpureApplyError name (prettyShow e)
+  Backtrack -> _xpureApplyError name ""
+  OK      o -> o
+
+_xpureApplyM :: String -> (Object -> XPure a) -> XPure Object -> a
+_xpureApplyM name f o = case evalXPure $ o >>= f of
+  PFail   e -> _xpureApplyError name (prettyShow e)
+  Backtrack -> _xpureApplyError name ""
+  OK      o -> o
+
+instance Eq (XPure Object) where
+  (==) = _xpureApply2 "(==)" (==)
+  (/=) = _xpureApply2 "(/=)" (/=)
+
+instance Ord (XPure Object) where
+  compare = _xpureApply2 "compare" compare
+  (<)     = _xpureApply2 "(<)"  (<)
+  (<=)    = _xpureApply2 "(<=)" (<=)
+  (>)     = _xpureApply2 "(>)"  (>)
+  (>=)    = _xpureApply2 "(>=)" (>=)
+
+instance Real (XPure Object) where
+  toRational = _xpureApplyM "toRational" $ castToCoreType LongType >=> xmaybe . fromObj
+
+eval_Int_op1 :: String -> (forall a . Integral a => a -> a) -> XPure Object -> XPure Object
+eval_Int_op1 name f o = o >>= \o -> case o of
+  OChar o -> return $ OChar (chr $ flip mod (ord maxBound) $ f $ ord o)
+  OInt  o -> return $ OInt  (f o)
+  OWord o -> return $ OWord (f o)
+  OLong o -> return $ OLong (f o)
+  _       -> throwError $ obj [obj "cannot apply function", obj name, obj "on object", o]
+
+_xpureCastTo :: XPure CoreType -> XPure Object -> XPure Object
+_xpureCastTo typ a = join $ xpure castToCoreType <*> typ <*> a
+
+-- In order for @('XPure' 'Object')@ to be used with the 'Prelude.Div' and 'Prelude.mod' functions,
+-- it must instantiate 'Integral', which means it must instantiate 'Prelude.Enum'. This
+-- instantiation is an attempt at making the functions behave as they would for ordinary enumerated
+-- data types; it is /NOT/ pretty, but it basically works.
+instance Enum (XPure Object) where
+  succ = eval_Int_op1 "succ" succ
+  pred = eval_Int_op1 "pred" pred
+  toEnum = return . obj
+  fromEnum = _xpureApplyM "fromEnum" $ castToCoreType IntType >=> xmaybe . fromObj
+  enumFrom = fix (\loop o -> o : loop (succ o))
+  enumFromThen lo hi = fix (\loop o -> o : loop (hi-lo+o)) lo
+  enumFromTo a b =
+    if maybe False (const True) (extractXPure typ)
+    then  case compare aa bb of
+            EQ -> repeat aa
+            LT -> loop (<bb)         inc  aa
+            GT -> loop (>bb) (negate inc) aa
+    else  []
+    where
+      loop ok inc a = a : let b = a+inc in if ok b then loop ok inc b else []
+      typ   = a >>= \a -> b >>= \b -> do
+        let t = max (typeOfObj a) (typeOfObj b)
+        guard (CharType <= t && t <= ComplexType) >> xpure t
+      inc = typ >>= flip castToCoreType (OChar '\x01')
+      aa  = _xpureCastTo typ a
+      bb  = _xpureCastTo typ b
+  enumFromThenTo a b c =
+    if maybe False (const True) $ extractXPure typ
+    then  case compare aa bb of
+            EQ -> repeat aa
+            LT -> if aa<cc then loop (<cc) aa else []
+            GT -> if aa>cc then loop (>cc) aa else []
+    else  []
+    where
+      loop ok a = a : let b = a+inc in if ok b then loop ok b else []
+      typ = a >>= \a -> b >>= \b -> c >>= \c -> do
+        let t = max (typeOfObj a) $ max (typeOfObj b) $ (typeOfObj c)
+        guard (CharType <= t && t <= RatioType) >> xpure t
+      inc = bb-aa
+      aa  = _xpureCastTo typ a
+      bb  = _xpureCastTo typ b
+      cc  = _xpureCastTo typ c
+
+_xpureDivFunc
+  :: String
+  -> (forall a . Integral a => a -> a -> (a, a))
+  -> XPure Object -> XPure Object -> (XPure Object, XPure Object)
+_xpureDivFunc name div a b = _xpureApply2 name f aa bb where
+    f a b = case (a, b) of
+      (OChar a, OChar b) -> pair (ord a) (ord b) (OChar . chr)
+      (OInt  a, OInt  b) -> pair a b OInt
+      (OWord a, OWord b) -> pair a b OWord
+      (OLong a, OLong b) -> pair a b OLong
+      _                  -> (mzero, mzero)
+    pair a b constr = let (c, d) = div a b in (xpure $ constr c, xpure $ constr d)
+    typ = a >>= \a -> b >>= \b -> do
+      let t = max (typeOfObj a) (typeOfObj b)
+      guard (CharType <= t && t <= LongType) >> xpure t
+    aa = _xpureCastTo typ a
+    bb = _xpureCastTo typ b
+
+instance Integral (XPure Object) where
+  toInteger = _xpureApplyM "toInteger" (castToCoreType LongType >=> xmaybe . fromObj)
+  quotRem a b = _xpureDivFunc "quoteRem" quotRem a b
+  divMod  a b = _xpureDivFunc "divMod"   divMod  a b
+
+_xpureFrac :: (forall a . Floating a => a -> a) -> XPure Object -> XPure Object
+_xpureFrac f a = a >>= \a -> case a of
+  ORelTime a -> xpure $ ORelTime $ fromRational $ toRational $
+    f (fromRational (toRational a) :: Double)
+  OFloat   a -> xpure $ OFloat   $ f a
+  ORatio   a -> xpure $ ORatio   $ toRational $ f $ (fromRational a :: Double)
+  OComplex a -> xpure $ OComplex $ f a
+  _          -> mzero
+
+_xpureFrac2 :: (forall a . Floating a => a -> a -> a) -> XPure Object -> XPure Object -> XPure Object
+_xpureFrac2 f a b = a >>= \a -> b >>= \b -> do
+  let t = max (typeOfObj a) (typeOfObj b)
+  a <- castToCoreType t a
+  b <- castToCoreType t b
+  case (a, b) of
+    (ORelTime a, ORelTime b) -> xpure $ ORelTime $ fromRational $ toRational $
+      f (fromRational (toRational a) :: Double) (fromRational (toRational b) :: Double)
+    (OFloat   a, OFloat   b) -> xpure $ OFloat   $ f a b
+    (ORatio   a, ORatio   b) -> xpure $ ORatio   $ toRational $
+      f (fromRational a :: Double) (fromRational b :: Double)
+    (OComplex a, OComplex b) -> xpure $ OComplex $ f a b
+    _                        -> mzero
+
+instance Fractional (XPure Object) where
+  (/)   = _xpureFrac2 (/)
+  recip = _xpureFrac recip
+  fromRational = xpure . ORatio
+
+instance Floating (XPure Object) where
+  pi      = xpure $ OFloat pi
+  logBase = _xpureFrac2 logBase
+  (**)    = _xpureFrac2 (**)
+  exp     = _xpureFrac exp
+  sqrt    = _xpureFrac sqrt
+  log     = _xpureFrac log
+  sin     = _xpureFrac sin
+  tan     = _xpureFrac tan
+  cos     = _xpureFrac cos
+  asin    = _xpureFrac asin
+  atan    = _xpureFrac atan
+  acos    = _xpureFrac acos
+  sinh    = _xpureFrac sinh
+  tanh    = _xpureFrac tanh
+  cosh    = _xpureFrac cosh
+  asinh   = _xpureFrac asinh
+  atanh   = _xpureFrac atanh
+  acosh   = _xpureFrac acosh
+
+_xpureRealFrac :: Integral b => String -> (forall a . RealFrac a => a -> b) -> XPure Object -> b
+_xpureRealFrac name f = _xpureApplyM name $ \o -> case o of
+  ORelTime a -> xpure $ f a
+  OFloat   a -> xpure $ f a
+  ORatio   a -> xpure $ f a
+  _          -> mzero
+
+instance RealFrac (XPure Object) where
+  properFraction = let name = "properFraction" in _xpureApplyM name $ \o -> case o of
+    ORelTime o -> f ORelTime o
+    OFloat   o -> f OFloat   o
+    ORatio   o -> f ORatio   o
+    _          -> xpure (error $ "cannot evaluate properFraction on object "++prettyShow o, mzero)
+    where { f constr o = let (i, b) = properFraction o in xpure (i, xpure $ constr b) }
+  truncate = _xpureRealFrac "truncate" truncate
+  round    = _xpureRealFrac "round"    round
+  ceiling  = _xpureRealFrac "ceiling"  ceiling
+  floor    = _xpureRealFrac "floor"    floor
+
+_xpureBits :: (forall a . Bits a => a -> a) -> (B.ByteString -> B.ByteString) -> XPure Object -> XPure Object
+_xpureBits f g o = o >>= \o -> case o of
+  OChar  o -> return $ OChar  $ chr $ mod (f $ ord o) (ord maxBound)
+  OInt   o -> return $ OInt   $ f o
+  OWord  o -> return $ OWord  $ f o
+  OLong  o -> return $ OLong  $ f o
+  OBytes o -> return $ OBytes $ g o
+  _        -> mzero
+
+_xpureBits2 :: (forall a . Bits a => a -> a -> a) -> (B.ByteString -> B.ByteString -> B.ByteString) -> XPure Object -> XPure Object -> XPure Object
+_xpureBits2 f g a b = a >>= \a -> b >>= \b -> do
+  let t = max (typeOfObj a) (typeOfObj b)
+  a <- castToCoreType t a
+  b <- castToCoreType t a
+  case (a, b) of
+    (OChar  a, OChar  b) -> return $ OChar  $ chr $ mod (f (ord a) (ord b)) (ord maxBound)
+    (OInt   a, OInt   b) -> return $ OInt   $ f a b
+    (OWord  a, OWord  b) -> return $ OWord  $ f a b
+    (OLong  a, OLong  b) -> return $ OLong  $ f a b
+    (OBytes a, OBytes b) -> return $ OBytes $ g a b
+    _                    -> mzero
+
+instance Bits (XPure Object) where
+  (.&.) = _xpureBits2 (.&.) (bytesBitArith (.&.))
+  (.|.) = _xpureBits2 (.|.) (bytesBitArith (.|.))
+  xor   = _xpureBits2  xor  (bytesBitArith  xor )
+  complement  = _xpureBits complement (B.map complement)
+  shift   o i = _xpureBits (flip shift i) (flip bytesShift (fromIntegral i)) o
+  rotate  o i = _xpureBits (flip shift i) (flip bytesRotate (fromIntegral i)) o
+  bit       i = xpure $ if i<64 then OWord (bit i) else OBytes (bytesBit (fromIntegral i))
+  testBit o i = _xpureApplyM "testBit" testbit o where
+    testbit o = case o of
+      OChar  o -> xpure $ testBit (ord o) i
+      OInt   o -> xpure $ testBit o i
+      OWord  o -> xpure $ testBit o i
+      OLong  o -> xpure $ testBit o i
+      OBytes o -> xpure $ bytesTestBit o (fromIntegral i)
+      _        -> mzero
+  bitSize = _xpureApplyM "bitSize" $ \o -> case o of
+    OInt   o -> xpure $ bitSize o
+    OWord  o -> xpure $ bitSize o
+    OBytes o -> xpure $ fromIntegral $ bytesBitSize o
+    _        -> mzero
+  isSigned = _xpureApplyM "isSigned" $ \o -> case o of
+    OChar  _ -> xpure False
+    OInt   _ -> xpure True
+    OWord  _ -> xpure False
+    OLong  _ -> xpure True
+    OBytes _ -> xpure False
+    _        -> mzero
+  popCount = _xpureApplyM "popCount" $ \o -> case o of
+    OChar  o -> xpure $ popCount (ord o)
+    OInt   o -> xpure $ popCount o
+    OWord  o -> xpure $ popCount o
+    OLong  o -> xpure $ popCount o
+    OBytes o -> xpure $ fromIntegral $ bytesPopCount o
+    _        -> mzero
+
+-- | Throw an error declaring that the two types cannot be used together because their types are
+-- incompatible. Provide the a string describing the /what/ could not be done as a result of the
+-- type mismatch, it will be placed in the message string:
+-- > "could not <WHAT> the item <A> of type <A-TYPE> with the item <B> of type <B-TYPE>"
+typeMismatchError :: String -> Object -> Object -> Exec ig
+typeMismatchError msg a b = execThrow $ obj $
+  [ obj ("could not "++msg++" the item"), obj (prettyShow a), obj "of type", obj (typeOfObj a)
+  , obj "with the item"                 , obj (prettyShow b), obj "of type", obj (typeOfObj b)
   ]
+
+eval_ADD :: Object -> Object -> Exec Object
+eval_ADD a b = execute (xpure a + xpure b) <|> typeMismatchError "add" a b
+
+eval_SUB :: Object -> Object -> Exec Object
+eval_SUB a b = execute (xpure a - xpure b) <|> typeMismatchError "subtract" a b
+
+eval_MULT :: Object -> Object -> Exec Object
+eval_MULT a b = execute (xpure a * xpure b) <|> typeMismatchError "multiply" a b
 
 evalDistNum
   :: (Integer  -> Integer  -> Integer )
   -> (Rational -> Rational -> Rational) 
   -> Object -> Object -> Exec Object
 evalDistNum intFn rnlFn a b = evalNum intFn rnlFn a b
-
-eval_MULT :: Object -> Object -> Exec Object
-eval_MULT a b = evalDistNum (*) (*) a b
 
 eval_DIV :: Object -> Object -> Exec Object
 eval_DIV a b = evalDistNum div (/) a b
@@ -4690,7 +5110,7 @@ _arithPrefixOps = array (minBound, maxBound) $ defaults ++
 evalInfixOp :: InfixOp -> Object -> Object -> Exec Object
 evalInfixOp op a b = msum $ f a ++ f b ++ [(_infixOps!op) a b] where
   f = maybe [] return . (fromObj >=> getOp)
-  getOp (HaskellData a ifc) = fmap (\f -> f op a b) $ objInfixOpTable ifc >>= (!op)
+  getOp (HaskellData a ifc) = (\f -> execute $ f op a b) <$> (objInfixOpTable ifc >>= (! op))
 
 _infixOps :: Array InfixOp (Object -> Object -> Exec Object)
 _infixOps = array (minBound, maxBound) $ defaults ++
@@ -7981,22 +8401,22 @@ fromHaskellData (HaskellData o _) = fromDynamic o
 data Interface typ =
   Interface
   { objHaskellType     :: TypeRep -- ^ this type is deduced from the initial value provided to the 'interface'.
-  , objCastFrom        :: Maybe (Object -> typ)                                                     -- ^ defined by 'defCastFrom'
-  , objEquality        :: Maybe (typ -> typ -> Bool)                                                -- ^ defined by 'defEquality'
-  , objOrdering        :: Maybe (typ -> typ -> Ordering)                                            -- ^ defined by 'defOrdering'
-  , objBinaryFormat    :: Maybe (typ -> Put, Get typ)                                               -- ^ defined by 'defBinaryFmt'
-  , objNullTest        :: Maybe (typ -> Bool)                                                       -- ^ defined by 'defNullTest'
-  , objPPrinter        :: Maybe (typ -> PPrint)                                                     -- ^ defined by 'defPPrinter'
-  , objReadIterable    :: Maybe (typ -> Exec (Maybe Object, typ))                                   -- ^ defined by 'defReadIterator'
-  , objUpdateIterable  :: Maybe (typ -> Maybe Object -> Exec typ)                                   -- ^ defined by 'defUpdateIterator'
-  , objIndexer         :: Maybe (typ -> Object -> Exec Object)                                      -- ^ defined by 'defIndexer'
-  , objToStruct        :: Maybe (typ -> Exec T_struct)                                              -- ^ defined by 'defStructFormat'
-  , objFromStruct      :: Maybe (T_struct -> Exec typ)                                              -- ^ defined by 'defStructFormat'
+  , objCastFrom        :: Maybe (Object -> typ)                                                      -- ^ defined by 'defCastFrom'
+  , objEquality        :: Maybe (typ -> typ -> Bool)                                                 -- ^ defined by 'defEquality'
+  , objOrdering        :: Maybe (typ -> typ -> Ordering)                                             -- ^ defined by 'defOrdering'
+  , objBinaryFormat    :: Maybe (typ -> Put, Get typ)                                                -- ^ defined by 'defBinaryFmt'
+  , objNullTest        :: Maybe (typ -> Bool)                                                        -- ^ defined by 'defNullTest'
+  , objPPrinter        :: Maybe (typ -> PPrint)                                                      -- ^ defined by 'defPPrinter'
+  , objReadIterable    :: Maybe (typ -> Exec (Maybe Object, typ))                                    -- ^ defined by 'defReadIterator'
+  , objUpdateIterable  :: Maybe (typ -> Maybe Object -> Exec typ)                                    -- ^ defined by 'defUpdateIterator'
+  , objIndexer         :: Maybe (typ -> Object -> Exec Object)                                       -- ^ defined by 'defIndexer'
+  , objToStruct        :: Maybe (typ -> Exec T_struct)                                               -- ^ defined by 'defStructFormat'
+  , objFromStruct      :: Maybe (T_struct -> Exec typ)                                               -- ^ defined by 'defStructFormat'
   , objDictInit        :: Maybe ([Object] -> Exec typ, typ -> [(Object, UpdateOp, Object)] -> Exec typ) -- ^ defined by 'defDictInit'
-  , objListInit        :: Maybe ([Object] -> Exec typ, typ -> [Object] -> Exec typ)                     -- ^ defined by 'defDictInit'
-  , objInfixOpTable    :: Maybe (Array InfixOp  (Maybe (InfixOp  -> typ -> Object -> Exec Object))) -- ^ defined by 'defInfixOp'
-  , objArithPfxOpTable :: Maybe (Array ArithPfxOp (Maybe (ArithPfxOp -> typ -> Exec Object)))       -- ^ defined by 'defPrefixOp'
-  , objCallable        :: Maybe (typ -> Exec [CallableCode])                                             -- ^ defined by 'defCallable'
+  , objListInit        :: Maybe ([Object] -> Exec typ, typ -> [Object] -> Exec typ)                  -- ^ defined by 'defDictInit'
+  , objInfixOpTable    :: Maybe (Array InfixOp  (Maybe (InfixOp  -> typ -> Object -> XPure Object))) -- ^ defined by 'defInfixOp'
+  , objArithPfxOpTable :: Maybe (Array ArithPfxOp (Maybe (ArithPfxOp -> typ -> XPure Object)))       -- ^ defined by 'defPrefixOp'
+  , objCallable        :: Maybe (typ -> Exec [CallableCode])                                         -- ^ defined by 'defCallable'
   , objDereferencer    :: Maybe (typ -> Exec (Maybe Object))
   }
   deriving Typeable
@@ -8069,9 +8489,8 @@ data HDIfcBuilder typ =
   , objIfcFromStruct    :: Maybe (T_struct -> Exec typ)
   , objIfcDictInit      :: Maybe ([Object] -> Exec typ, typ -> [(Object, UpdateOp, Object)] -> Exec typ)
   , objIfcListInit      :: Maybe ([Object] -> Exec typ, typ -> [Object] -> Exec typ)
-  , objIfcUpdateOpTable :: [(UpdateOp, UpdateOp -> typ -> Object -> Exec Object)]
-  , objIfcInfixOpTable  :: [(InfixOp , InfixOp  -> typ -> Object -> Exec Object)]
-  , objIfcPrefixOpTable :: [(ArithPfxOp, ArithPfxOp -> typ -> Exec Object)]
+  , objIfcInfixOpTable  :: [(InfixOp , InfixOp  -> typ -> Object -> XPure Object)]
+  , objIfcPrefixOpTable :: [(ArithPfxOp, ArithPfxOp -> typ -> XPure Object)]
   , objIfcCallable      :: Maybe (typ -> Exec [CallableCode])
   , objIfcDerefer       :: Maybe (typ -> Exec (Maybe Object))
   }
@@ -8092,7 +8511,6 @@ initHDIfcBuilder =
   , objIfcFromStruct    = Nothing
   , objIfcDictInit      = Nothing
   , objIfcListInit      = Nothing
-  , objIfcUpdateOpTable = []
   , objIfcInfixOpTable  = []
   , objIfcPrefixOpTable = []
   , objIfcCallable      = Nothing
@@ -8319,7 +8737,7 @@ defListInit fa fb = _updHDIfcBuilder(\st->st{objIfcListInit=Just(fa,fb)})
 -- If you define two callbacks for the same 'UpdateOp', this will result in a runtime error,
 -- hopefully the error will occur during the Dao runtime's object loading phase, and not while
 -- actually executing a program.
-defInfixOp :: Typeable typ => InfixOp -> (InfixOp -> typ -> Object -> Exec Object) -> DaoClassDefM typ ()
+defInfixOp :: Typeable typ => InfixOp -> (InfixOp -> typ -> Object -> XPure Object) -> DaoClassDefM typ ()
 defInfixOp op fn = _updHDIfcBuilder $ \st -> st{objIfcInfixOpTable  = objIfcInfixOpTable  st ++ [(op, fn)] }
 
 -- | Overload prefix operators in the Dao programming language, for example @!@, @~@, @-@, and @+@.
@@ -8331,7 +8749,7 @@ defInfixOp op fn = _updHDIfcBuilder $ \st -> st{objIfcInfixOpTable  = objIfcInfi
 -- If you define two callbacks for the same 'UpdateOp', this will result in a runtime error,
 -- hopefully the error will occur during the Dao runtime's object loading phase, and not while
 -- actually executing a program.
-defPrefixOp :: Typeable typ => ArithPfxOp -> (ArithPfxOp -> typ -> Exec Object) -> DaoClassDefM typ ()
+defPrefixOp :: Typeable typ => ArithPfxOp -> (ArithPfxOp -> typ -> XPure Object) -> DaoClassDefM typ ()
 defPrefixOp op fn = _updHDIfcBuilder $ \st -> st{objIfcPrefixOpTable = objIfcPrefixOpTable st ++ [(op, fn)] }
 
 defCallable :: Typeable typ => (typ -> Exec [CallableCode]) -> DaoClassDefM typ ()

@@ -43,8 +43,7 @@ module Dao.Interpreter(
     ),
     T_type, T_int, T_word, T_long, T_ratio, T_complex, T_float, T_time, T_diffTime,
     T_char, T_string, T_ref, T_bytes, T_list, T_dict, T_struct,
-    isNumeric, typeMismatchError, isIntegral, isRational, isFloating, objToIntegral, objToRational,
-    objToInt, bitsMove, bitsMoveInt, objTestBit, insertAtPath,
+    isNumeric, typeMismatchError, insertAtPath,
     RefQualifier(LOCAL, GLODOT, STATIC, GLOBAL),
     QualRef(Unqualified, Qualified),
     refNames, maybeRefNames, fmapQualRef, setQualifier, delQualifier, qualRefLookup, qualRefUpdate,
@@ -99,9 +98,10 @@ module Dao.Interpreter(
     AST_ParamList(AST_ParamList), 
     RuleStrings(RuleStrings), 
     AST_StringList(AST_NoStrings, AST_StringList), 
-    asReference, asInteger, asRational, asPositive, asComplex, asStringNoConvert, objConcat,
-    asListNoConvert, asList, objListAppend, asHaskellInt, objToBool, extractStringElems,
+    asReference, asInteger, asRational, asPositive, asComplex, objConcat,
+    objToBool, extractStringElems,
     requireAllStringArgs, getStringsToDepth, derefStringsToDepth, recurseGetAllStrings, 
+    shiftLeft, shiftRight,
     UpdateOp(UCONST, UADD, USUB, UMULT, UDIV, UMOD, UPOW, UORB, UANDB, UXORB, USHL, USHR), 
     RefPfxOp(REF, DEREF), 
     ArithPfxOp(INVB, NOT, NEGTIV, POSTIV), 
@@ -1713,91 +1713,6 @@ instance B.HasPrefixTable Object B.Byte MTab where
                   (B.get >>= \ (B.BlockStream1M bs1m) -> return (OBytes bs1m))
           ]
 
--- REMOVE
-isIntegral :: Object -> Bool
-isIntegral o = case o of
-  OWord _ -> True
-  OInt  _ -> True
-  OLong _ -> True
-  _       -> False
-
--- REMOVE
-isRational :: Object -> Bool
-isRational o = case o of
-  OWord     _ -> True
-  OInt      _ -> True
-  OLong     _ -> True
-  ORelTime _ -> True
-  OFloat    _ -> True
-  ORatio    _ -> True
-  _           -> False
-
--- REMOVE
-isFloating :: Object -> Bool
-isFloating o = case o of
-  OFloat   _ -> True
-  OComplex _ -> True
-  _          -> False
-
--- REMOVE
-objToIntegral :: Object -> Maybe Integer
-objToIntegral o = case o of
-  OWord o -> return $ toInteger o
-  OInt  o -> return $ toInteger o
-  OLong o -> return o
-  _       -> mzero
-
--- REMOVE
-objToRational :: Object -> Maybe Rational
-objToRational o = case o of
-  OWord     o -> return $ toRational o
-  OInt      o -> return $ toRational o
-  ORelTime  o -> return $ toRational o
-  OFloat    o -> return $ toRational o
-  OLong     o -> return $ toRational o
-  ORatio    o -> return o
-  _           -> mzero
-
--- REMOVE
-objToInt :: Object -> Maybe Int
-objToInt a = objToIntegral a >>= \a ->
-  if minInt <= a && a <= maxInt then return (fromIntegral a) else mzero
-  where
-    minInt = fromIntegral (minBound::Int)
-    maxInt = fromIntegral (maxBound::Int)
-
--- REMOVE
--- | Used to implement a version of 'Data.Bits.shift' and 'Data.Bits.rotate', but with an object as
--- the second parameter to these functions.
-bitsMove :: (forall a . Bits a => a -> Int -> a) -> Object -> Object -> Maybe Object
-bitsMove fn a b = objToInt b >>= \b -> bitsMoveInt fn a b
-
--- REMOVE
-bitsMoveInt :: (forall a . Bits a => a -> Int -> a) -> Object -> Int -> Maybe Object
-bitsMoveInt fn a b = case a of
-  OInt  a -> return (OInt  (fn a b))
-  OWord a -> return (OWord (fn a b))
-  OLong a -> return (OLong (fn a b))
-  _       -> mzero
-
--- REMOVE
--- | Used to implement a version of 'Data.Bits.testBit' but with an object as the second parameter
--- to these functions.
-objTestBit :: Object -> Object -> Maybe Object
-objTestBit a i = objToInt i >>= \i -> case a of
-  OInt  a -> return (obj (testBit a i))
-  OWord a -> return (obj (testBit a i))
-  OLong a -> return (obj (testBit a i))
-  _       -> mzero
-
--- REMOVE
--- | Create an 'Object' by stacking up 'ODict' constructors to create a directory-like structure,
--- then store the Object at the top of the path, returning the directory-like object.
-insertAtPath :: [Name] -> Object -> Object
-insertAtPath px o = case px of
-  []   -> o
-  p:px -> ODict (M.singleton p (insertAtPath px o))
-
 ----------------------------------------------------------------------------------------------------
 
 -- | Direct a reference at a particular tree in the runtime.
@@ -2805,6 +2720,13 @@ _objectAccess back rx o = Just <$> loop back rx o <|> return Nothing where
 -- | Update elements within a Dao 'Struct' with a 'Reference'.
 objectUpdate :: (Maybe Object -> Exec (Maybe Object)) -> Reference -> Maybe Object -> Exec (Maybe Object)
 objectUpdate upd (Reference rx) o = _objectUpdate upd [] rx o
+
+-- | Create an 'Object' by stacking up 'ODict' constructors to create a directory-like structure,
+-- then store the Object at the top of the path, returning the directory-like object.
+insertAtPath :: [Name] -> Object -> Object
+insertAtPath px o = case px of
+  []   -> o
+  p:px -> ODict (M.singleton p (insertAtPath px o))
 
 -- Update elements within a Dao 'Struct' with a 'Reference'. The first @['Dao.String.Name']@
 -- parameter is the current path, the second @['Dao.String.Name']@ parameter is the reference to be
@@ -4133,8 +4055,7 @@ instance HaskellDataClass AST_StringList where
 asReference :: Object -> Exec QualRef
 asReference = xmaybe . fromObj
 
--- REMOVE
-asInteger :: Object -> Exec Integer
+asInteger :: Object -> XPure Integer
 asInteger o = case o of
   OWord    o -> return (toInteger o)
   OInt     o -> return (toInteger o)
@@ -4144,8 +4065,7 @@ asInteger o = case o of
   ORelTime o -> return (round (toRational o))
   _          -> mzero
 
--- REMOVE
-asRational :: Object -> Exec Rational
+asRational :: Object -> XPure Rational
 asRational o = case o of
   OInt     o -> return (toRational o)
   OWord    o -> return (toRational o)
@@ -4156,10 +4076,14 @@ asRational o = case o of
   OComplex o | imagPart o == 0 -> return (toRational (realPart o))
   _          -> mzero
 
--- REMOVE
+asComplex :: Object -> XPure T_complex
+asComplex o = case o of
+  OComplex o -> return o
+  o          -> asRational o >>= return . flip complex 0 . fromRational
+
 -- | A function which is basically the absolute value function, except it also works on 'Complex'
 -- numbers, returning the magnitude of the number if it is 'Complex'.
-asPositive :: Object -> Exec Object
+asPositive :: Object -> XPure Object
 asPositive o = case o of
   OInt     o -> return (OInt     $ abs       o)
   OWord    o -> return (OWord                o)
@@ -4169,102 +4093,12 @@ asPositive o = case o of
   OComplex o -> return (OFloat   $ magnitude o)
   _          -> mzero
 
--- REMOVE
-asComplex :: Object -> Exec T_complex
-asComplex o = case o of
-  OComplex o -> return o
-  o          -> asRational o >>= return . flip complex 0 . fromRational
-
--- REMOVE
-asStringNoConvert :: Object -> Exec UStr
-asStringNoConvert o = case o of
-  OString o -> return o
-  _         -> mzero
-
 -- | Remove one layer of 'OList' objects, i.e. any objects in the list that are 'OList' constructors
 -- will have the contents of those lists concatenated, and all non-'OList' constructors are treated
 -- as lists of single objects. Also returns the number of concatenations.
 objConcat :: [Object] -> (Int, [Object])
 objConcat ox = (sum a, concat b) where
   (a, b) = unzip (ox >>= \o -> maybe [(0, [o])] (return . (,) 1) (fromObj o))
-
--- REMOVE
-asListNoConvert :: Object -> Exec [Object]
-asListNoConvert = xmaybe . fromObj
-
--- REMOVE
-asList :: Object -> Exec [Object]
-asList = xmaybe . listFromObj
-
--- REMOVE
--- | Combines two lists of objects, then removes one "layer of lists", that is, if the combined
--- lists are of the form:
--- @list {a, b, ... , list {c, d, ... , list {e, f, ...}, ...} }@ 
--- the resulting list will be @list {a, b, ... , c, d, ... , list {e, f, ... }, ...}@
-objListAppend :: [Object] -> [Object] -> Object
-objListAppend ax bx = OList $ flip concatMap (ax++bx) $ \a -> case a of
-  OList ax -> ax
-  a        -> [a]
-
--- REMOVE
-asHaskellInt :: Object -> Exec Int
-asHaskellInt o = asInteger o >>= \o ->
-  if (toInteger (minBound::Int)) <= o && o <= (toInteger (maxBound::Int))
-    then return (fromIntegral o)
-    else mzero
-
--- REMOVE
-evalInt :: (Integer -> Integer -> Integer) -> Object -> Object -> Exec Object
-evalInt ifunc a b = do
-  ia <- asInteger a
-  ib <- asInteger b
-  let x = ifunc ia ib
-  case max (fromEnum (typeOfObj a)) (fromEnum (typeOfObj b)) of
-    t | t == fromEnum WordType -> return $ OWord (fromIntegral x)
-    t | t == fromEnum IntType  -> return $ OInt  (fromIntegral x)
-    t | t == fromEnum LongType -> return $ OLong (fromIntegral x)
-    _ -> fail "asInteger returned a value for an object of an unexpected type"
-
--- REMOVE
-evalNum
-  :: (Integer -> Integer -> Integer)
-  -> (Rational -> Rational -> Rational)
-  -> Object -> Object -> Exec Object
-evalNum ifunc rfunc a b = msum $
-  [ evalInt ifunc a b
-  , do  ia <- asRational a
-        ib <- asRational b
-        let x = rfunc ia ib
-        case (max (fromEnum (typeOfObj a)) (fromEnum (typeOfObj b))) of
-          t | t == fromEnum FloatType    -> return $ OFloat    (fromRational x)
-          t | t == fromEnum DiffTimeType -> return $ ORelTime (fromRational x)
-          t | t == fromEnum RatioType    -> return $ ORatio    (fromRational x)
-          t | t == fromEnum ComplexType  -> return $ OComplex  (fromRational x)
-          _ -> fail "asRational returned a value for an object of an unexpected type"
-  ]
-
-_eval_ADD :: Object -> Object -> Exec Object
-_eval_ADD a b = msum
-  [ evalNum (+) (+) a b
-  , timeAdd a b, timeAdd b a
-  , listAdd a b, listAdd b a
-  , stringAdd (++) a b, stringAdd (flip (++)) b a
-  ]
-  where
-    timeAdd a b = case (a, b) of
-      (OAbsTime a, ORelTime b) -> return (OAbsTime (addUTCTime b a))
-      (OAbsTime a, ORatio   b) -> return (OAbsTime (addUTCTime (fromRational (toRational b)) a))
-      (OAbsTime a, OFloat   b) -> return (OAbsTime (addUTCTime (fromRational (toRational b)) a))
-      _                        -> mzero
-    listAdd a b = do
-      ax <- asListNoConvert a
-      bx <- case b of
-        OList  bx -> return bx
-        _         -> mzero
-      return (objListAppend ax bx)
-    stringAdd add a b = case a of
-      OString a -> return $ obj $ add (uchars a) (maybe (prettyShow b) uchars (fromObj b :: Maybe UStr))
-      _         -> mzero
 
 -- | Checks if an 'Object' is a numerical type, returns the numeric 'CoreType' if so, evaluates to
 -- 'Control.Monad.mzero' if not.
@@ -4483,7 +4317,9 @@ _xpureFrac2 f a b = a >>= \a -> b >>= \b -> do
     _                        -> mzero
 
 instance Fractional (XPure Object) where
-  (/)   = _xpureFrac2 (/)
+  a / b  = a >>= \a -> b >>= \b -> case (a, b) of
+    (OString a, OString b) -> return $ OList $ map OString $ splitString a b
+    _ -> _xpureFrac2 (/) (xpure a) (xpure b)
   recip = _xpureFrac recip
   fromRational = xpure . ORatio
 
@@ -4584,6 +4420,21 @@ instance Bits (XPure Object) where
     OBytes o -> xpure $ fromIntegral $ bytesPopCount o
     _        -> mzero
 
+_shiftOp :: (Int -> Int) -> Object -> Object -> XPure Object
+_shiftOp neg a b = case b of
+  OInt  b -> shift (xpure a) (neg b)
+  OWord b -> shift (xpure a) (neg $ fromIntegral b)
+  OLong b -> shift (xpure a) (neg $ fromIntegral b)
+  _       -> mzero
+
+-- | Evaluate the shift-left operator in the 'XPure' monad.
+shiftLeft :: Object -> Object -> XPure Object
+shiftLeft a b = _shiftOp id a b
+
+-- | Evaluate the shift-right operator in the 'XPure' monad.
+shiftRight :: Object -> Object -> XPure Object
+shiftRight a b = _shiftOp negate a b
+
 -- | Throw an error declaring that the two types cannot be used together because their types are
 -- incompatible. Provide the a string describing the /what/ could not be done as a result of the
 -- type mismatch, it will be placed in the message string:
@@ -4603,111 +4454,73 @@ eval_SUB a b = execute (xpure a - xpure b) <|> typeMismatchError "subtract" a b
 eval_MULT :: Object -> Object -> Exec Object
 eval_MULT a b = execute (xpure a * xpure b) <|> typeMismatchError "multiply" a b
 
-evalDistNum
-  :: (Integer  -> Integer  -> Integer )
-  -> (Rational -> Rational -> Rational) 
-  -> Object -> Object -> Exec Object
-evalDistNum intFn rnlFn a b = evalNum intFn rnlFn a b
-
 eval_DIV :: Object -> Object -> Exec Object
-eval_DIV a b = evalDistNum div (/) a b
+eval_DIV a b = do
+  let { xa = xpure a; xb = xpure b; }
+  execute (div xa xb <|> xa/xb) <|> typeMismatchError "divide" a b
 
 eval_MOD :: Object -> Object -> Exec Object
-eval_MOD a b = evalDistNum mod (\a b -> let r = a/b in (abs r - abs (floor r % 1)) * signum r) a b
+eval_MOD a b = do
+  let { xa = xpure a; xb = xpure b; }
+  execute (mod xa xb) <|> typeMismatchError "modulus" a b
 
 eval_POW :: Object -> Object -> Exec Object
-eval_POW = evalNum (^) (\ a b -> toRational ((fromRational a :: Double) ** (fromRational b :: Double)))
-
-evalBitsOrSets
-  :: ([Object]  -> Object)
-  -> (([Object] -> [Object] -> [Object]) -> M.Map Name [Object] -> M.Map Name [Object] -> M.Map Name [Object])
-  -> (Integer -> Integer -> Integer)
-  -> Object -> Object -> Exec Object
-evalBitsOrSets _combine _dict num a b = evalInt num a b
+eval_POW a b = do
+  let { xa = xpure a; xb = xpure b; }
+  execute (xa^xb <|> xa**xb) <|> typeMismatchError "exponent" a b
 
 eval_ORB :: Object -> Object -> Exec Object
-eval_ORB  a b = evalBitsOrSets OList M.unionWith        (.|.) a b
+eval_ORB a b = do
+  let { xa = xpure a; xb = xpure b; }
+  execute (xa.|.xb) <|> typeMismatchError "bitwise-OR" a b
 
 eval_ANDB :: Object -> Object -> Exec Object
-eval_ANDB a b = evalBitsOrSets OList M.intersectionWith (.&.) a b
+eval_ANDB a b = do
+  let { xa = xpure a; xb = xpure b; }
+  execute (xa.&.xb) <|> typeMismatchError "bitwise-AND" a b
 
 eval_XORB :: Object -> Object -> Exec Object
-eval_XORB a b = evalBitsOrSets (\a -> head a) mfn xor a b where
-  mfn = fn M.union M.intersection M.difference
-  fn u n del _ a b = (a `u` b) `del` (a `n` b)
-
-evalShift :: (Int -> Int) -> Object -> Object -> Exec Object
-evalShift fn a b = asHaskellInt b >>= \b -> case a of
-  OInt  a -> return (OInt  (shift a (fn b)))
-  OWord a -> return (OWord (shift a (fn b)))
-  OLong a -> return (OLong (shift a (fn b)))
-  _       -> mzero
-
-evalCompare
-  :: (Integer -> Integer -> Bool)
-  -> (Rational -> Rational -> Bool)
-  -> (Object -> Object -> Bool)
-  -> Object -> Object -> Exec Object
-evalCompare compI compR compO a b = msum $
-  [ asInteger  a >>= \a -> asInteger  b >>= \b -> done (compI a b)
-  , asRational a >>= \a -> asRational b >>= \b -> done (compR a b)
-  , execCatchIO (return $ obj $ compO a b) [newExecIOHandler $ \ (ErrorCall msg) -> fail msg]
-  ]
-  where { done true = if true then return OTrue else return ONull }
+eval_XORB a b = do
+  let { xa = xpure a; xb = xpure b; }
+  execute (xor xa xb) <|> typeMismatchError "bitwise-XOR" a b
 
 eval_EQUL :: Object -> Object -> Exec Object
-eval_EQUL = evalCompare (==) (==) (==)
+eval_EQUL a b = return $ obj $ xpure a == xpure b
 
 eval_NEQUL :: Object -> Object -> Exec Object
-eval_NEQUL = evalCompare (/=) (/=) (/=)
+eval_NEQUL a b = return $ obj $ xpure a /= xpure b
 
 eval_GTN :: Object -> Object -> Exec Object
-eval_GTN = evalCompare (>) (>) (>)
+eval_GTN a b = return $ obj $ xpure a > xpure b
 
 eval_LTN :: Object -> Object -> Exec Object
-eval_LTN = evalCompare (<) (<) (<)
+eval_LTN a b = return $ obj $ xpure a < xpure b
 
 eval_GTEQ :: Object -> Object -> Exec Object
-eval_GTEQ = evalCompare (>=) (>=) (>=)
+eval_GTEQ a b = return $ obj $ xpure a >= xpure b
 
 eval_LTEQ :: Object -> Object -> Exec Object
-eval_LTEQ = evalCompare (<=) (<=) (<=)
+eval_LTEQ a b = return $ obj $ xpure a <= xpure b
 
 eval_SHR :: Object -> Object -> Exec Object
-eval_SHR = evalShift negate
+eval_SHR a b = execute $ shiftRight a b
 
 eval_SHL :: Object -> Object -> Exec Object
-eval_SHL = evalShift id
+eval_SHL a b = execute $ shiftLeft a b
 
 eval_NEG :: Object -> Exec Object
-eval_NEG o = case o of
-  OWord     o -> return $
-    let n = negate (toInteger o)
-    in  if n < toInteger (minBound::T_int)
-           then  OLong n
-           else  OInt (fromIntegral n)
-  OInt      o -> return $ OInt     (negate o)
-  OLong     o -> return $ OLong    (negate o)
-  ORelTime  o -> return $ ORelTime (negate o)
-  OFloat    o -> return $ OFloat   (negate o)
-  ORatio    o -> return $ ORatio   (negate o)
-  OComplex  o -> return $ OComplex (negate o)
-  _           -> mzero
+eval_NEG = execute . eval_Num_op1 negate
 
 eval_INVB :: Object -> Exec Object
-eval_INVB o = case o of
-  OWord o -> return $ OWord (complement o)
-  OInt  o -> return $ OInt  (complement o)
-  OLong o -> return $ OLong (complement o)
-  _       -> mzero
+eval_INVB = execute . complement . xpure
 
 eval_NOT :: Object -> Exec Object
-eval_NOT o = (obj . not) <$> objToBool o
+eval_NOT = execute . fmap (obj . not) . objToBool
 
-objToBool :: Object -> Exec Bool
+objToBool :: Object -> XPure Bool
 objToBool o = case o of
   OHaskell (HaskellData d ifc) -> case objNullTest ifc of
-    Nothing   -> execThrow $ obj [obj "cannot be used as a boolean value:", o]
+    Nothing   -> throwError $ obj [obj "cannot be used as a boolean value:", o]
     Just test -> return (test d)
   o -> return $ not $ testNull o
 
@@ -5214,36 +5027,36 @@ _castNumerical name f = let n = ustr name :: Name in DaoFunc n True $ \ox -> do
     _   -> execThrow $ obj [obj n, obj "function should take only one parameter argument", OList ox]
 
 builtin_int :: DaoFunc
-builtin_int = _castNumerical "int" $ fmap (OInt . fromIntegral) . asInteger
+builtin_int = _castNumerical "int" $ fmap (OInt . fromIntegral) . execute . asInteger
 
 builtin_long :: DaoFunc
-builtin_long = _castNumerical "long" $ fmap obj . asInteger
+builtin_long = _castNumerical "long" $ fmap obj . execute . asInteger
 
 builtin_ratio :: DaoFunc
-builtin_ratio = _castNumerical "ratio" $ fmap obj . asRational
+builtin_ratio = _castNumerical "ratio" $ fmap obj . execute . asRational
 
 builtin_float :: DaoFunc
-builtin_float = _castNumerical "float" $ fmap (OFloat . fromRational) . asRational
+builtin_float = _castNumerical "float" $ fmap (OFloat . fromRational) . execute . asRational
 
 builtin_complex :: DaoFunc
-builtin_complex = _castNumerical "complex" $ fmap OComplex . asComplex
+builtin_complex = _castNumerical "complex" $ fmap OComplex . execute . asComplex
 
 builtin_imag :: DaoFunc
-builtin_imag = _castNumerical "imag" $ fmap (OFloat . imagPart) . asComplex
+builtin_imag = _castNumerical "imag" $ fmap (OFloat . imagPart) . execute . asComplex
 
 builtin_phase :: DaoFunc
-builtin_phase = _castNumerical "phase" $ fmap (OFloat . phase) . asComplex
+builtin_phase = _castNumerical "phase" $ fmap (OFloat . phase) . execute . asComplex
 
 builtin_conj :: DaoFunc
-builtin_conj = _castNumerical "conj" $ fmap (OComplex . conjugate) . asComplex
+builtin_conj = _castNumerical "conj" $ fmap (OComplex . conjugate) . execute . asComplex
 
 builtin_abs :: DaoFunc
-builtin_abs = _castNumerical "abs" asPositive
+builtin_abs = _castNumerical "abs" $ execute . asPositive
 
 builtin_time :: DaoFunc
 builtin_time = _castNumerical "time" $ \o -> case o of
   ORelTime _ -> return o
-  o          -> (ORelTime . fromRational) <$> asRational o
+  o          -> (ORelTime . fromRational) <$> execute (asRational o)
 
 _funcWithoutParams :: String -> Exec (Maybe Object) -> DaoFunc
 _funcWithoutParams name f = let n = ustr name in DaoFunc n False $ \ox -> case ox of
@@ -6251,7 +6064,7 @@ instance Executable ForLoopBlock (Bool, Maybe Object) where
         e:ex -> case e of
           ContinueExpr a cond _loc -> case cond of
             EvalExpr (ObjectExpr VoidExpr) -> done a
-            cond -> execute cond >>= maybe err objToBool >>= done . (if a then id else not) where
+            cond -> execute cond >>= maybe err (execute . objToBool) >>= done . (if a then id else not) where
               err = fail "expression does not evaluate to boolean"
           e -> execute e >> loop ex
 
@@ -7288,7 +7101,7 @@ indexObject :: Object -> Object -> Exec Object
 indexObject o idx = case o of
   OList []  -> execThrow $ obj [obj "indexing empty list:", o, idx]
   OList lst -> do
-    i <- mplus (asInteger idx) $
+    i <- mplus (execute $ asInteger idx) $
       execThrow (obj [obj "must index list with integer:", idx, obj "indexing:", o])
     if i<0
       then  execThrow $ obj [obj "list index value is negative:", idx, obj "indexing:", o]
@@ -7595,7 +7408,7 @@ instance Executable ArithExpr (Maybe Object) where
           derefLeft  = evalLeft  >>= derefObject
           derefRight = evalRight >>= derefObject
           logical isAndOp = fmap Just $ do
-            left <- derefLeft >>= objToBool
+            left <- derefLeft >>= execute . objToBool
             if left
               then  if isAndOp then derefRight else return OTrue
               else  if isAndOp then return ONull else derefRight

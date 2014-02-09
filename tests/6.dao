@@ -1,0 +1,9 @@
+//: Hello, world!
+println("Hello, " + "world!");
+
+//: 2.0f
+println(1 + 1.0f);
+
+//: 3+3i
+println((1+1i) + (2+2i));
+

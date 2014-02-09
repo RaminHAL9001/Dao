@@ -594,6 +594,7 @@ instance ObjectClass Complex where
     LongType     -> i OLong
     FloatType    -> f OFloat
     RatioType    -> f ORatio
+    ComplexType  -> return . OComplex
     DiffTimeType -> f ORelTime
     StringType   -> return . obj . prettyShow
     _            -> \ _ -> mzero
@@ -4136,19 +4137,19 @@ _evalNumOp1 f o = case o of
 -- Evaluate a 2-ary function for any core type that instantiates the 'Prelude.Num' class.
 _evalNumOp2 :: (forall a . Num a => a -> a -> a) -> Object -> Object -> XPure Object
 _evalNumOp2 f a b = do
-  t  <- pure (,) <*> isNumeric a <*> isNumeric b
-  let cast = castToCoreType (uncurry max t)
-  ab <- pure (,) <*> cast a <*> cast b
-  return $ case ab of
-    (OChar     a, OChar     b) -> OChar    $ chr $ mod (f (ord a) (ord b)) (ord maxBound)
-    (OInt      a, OInt      b) -> OInt     $ f a b
-    (OWord     a, OWord     b) -> OWord    $ f a b
-    (OLong     a, OLong     b) -> OLong    $ f a b
-    (ORelTime  a, ORelTime  b) -> ORelTime $ f a b
-    (OFloat    a, OFloat    b) -> OFloat   $ f a b
-    (ORatio    a, ORatio    b) -> ORatio   $ f a b
-    (OComplex  a, OComplex  b) -> OComplex $ f a b
-    _ -> error $ "expected ADD operator case for "++show t++" types"
+  let t = max (typeOfObj a) (typeOfObj b)
+  a <- castToCoreType t a
+  b <- castToCoreType t b
+  case (a, b) of
+    (OChar     a, OChar     b) -> return $ OChar    $ chr $ mod (f (ord a) (ord b)) (ord maxBound)
+    (OInt      a, OInt      b) -> return $ OInt     $ f a b
+    (OWord     a, OWord     b) -> return $ OWord    $ f a b
+    (OLong     a, OLong     b) -> return $ OLong    $ f a b
+    (ORelTime  a, ORelTime  b) -> return $ ORelTime $ f a b
+    (OFloat    a, OFloat    b) -> return $ OFloat   $ f a b
+    (ORatio    a, ORatio    b) -> return $ ORatio   $ f a b
+    (OComplex  a, OComplex  b) -> return $ OComplex $ f a b
+    _ -> mzero
 
 instance Num (XPure Object) where
   a + b = a >>= \a -> b >>= \b -> case (a, b) of
@@ -4375,8 +4376,8 @@ _xpureBits f g o = o >>= \o -> case o of
   OBytes o -> return $ OBytes $ g o
   _        -> mzero
 
-_xpureBits2 :: (forall a . Bits a => a -> a -> a) -> (B.ByteString -> B.ByteString -> B.ByteString) -> XPure Object -> XPure Object -> XPure Object
-_xpureBits2 f g a b = a >>= \a -> b >>= \b -> do
+_xpureBits2 :: (forall a . Bits a => a -> a -> a) -> (T_dict -> T_dict -> T_dict) -> (B.ByteString -> B.ByteString -> B.ByteString) -> XPure Object -> XPure Object -> XPure Object
+_xpureBits2 f g h a b = a >>= \a -> b >>= \b -> do
   let t = max (typeOfObj a) (typeOfObj b)
   a <- castToCoreType t a
   b <- castToCoreType t a
@@ -4385,15 +4386,24 @@ _xpureBits2 f g a b = a >>= \a -> b >>= \b -> do
     (OInt   a, OInt   b) -> return $ OInt   $ f a b
     (OWord  a, OWord  b) -> return $ OWord  $ f a b
     (OLong  a, OLong  b) -> return $ OLong  $ f a b
-    (OBytes a, OBytes b) -> return $ OBytes $ g a b
+    (ODict  a, ODict  b) -> return $ ODict  $ g a b
+    (OTree  a, OTree  b) -> case (a, b) of
+      (Struct{ structName=na, fieldMap=ma }, Struct{ structName=nb, fieldMap=mb }) | na==nb ->
+        xpure $ OTree $ a{ fieldMap = g ma mb }
+      _ -> throwError $ obj $
+        [ obj "cannot operate on dissimilar struct types"
+        , obj (structName a), obj (structName b)
+        , OTree a, OTree b
+        ]
+    (OBytes a, OBytes b) -> return $ OBytes $ h a b
     _                    -> mzero
 
 instance Bits (XPure Object) where
-  a .&. b = _xpureBits2 (.&.) (bytesBitArith (.&.)) a b <|>
+  a .&. b = _xpureBits2 (.&.) M.union        (bytesBitArith (.&.)) a b <|>
     a >>= \a -> b >>= \b -> eval_Infix_op ANDB True a b
-  a .|. b = _xpureBits2 (.|.) (bytesBitArith (.|.)) a b <|>
+  a .|. b = _xpureBits2 (.|.) M.intersection (bytesBitArith (.|.)) a b <|>
     a >>= \a -> b >>= \b -> eval_Infix_op ORB  True a b
-  xor a b = _xpureBits2  xor  (bytesBitArith  xor ) a b <|>
+  xor a b = _xpureBits2  xor  M.difference   (bytesBitArith  xor ) a b <|>
     a >>= \a -> b >>= \b -> eval_Infix_op XORB True a b
   complement  = _xpureBits complement (B.map complement)
   shift   o i = o >>= \o -> case o of

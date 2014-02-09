@@ -4121,8 +4121,8 @@ eval_Infix_op op isAssoc a b = join $ xmaybe $ onhask a b <|> (guard isAssoc >> 
   onhask a b = fromObj a >>= \ (HaskellData a ifc) ->
     (\f -> f op a b) <$> (objInfixOpTable ifc >>= (! op))
 
-eval_Num_op1 :: (forall a . Num a => a -> a) -> Object -> XPure Object
-eval_Num_op1 f o = case o of
+_evalNumOp1 :: (forall a . Num a => a -> a) -> Object -> XPure Object
+_evalNumOp1 f o = case o of
   OChar    o -> return $ OChar    $ chr $ mod (f $ ord o) (ord maxBound)
   OInt     o -> return $ OInt     $ f o
   OWord    o -> return $ OWord    $ f o
@@ -4134,8 +4134,8 @@ eval_Num_op1 f o = case o of
   _          -> mzero
 
 -- Evaluate a 2-ary function for any core type that instantiates the 'Prelude.Num' class.
-eval_Num_op2 :: (forall a . Num a => a -> a -> a) -> Object -> Object -> XPure Object
-eval_Num_op2 f a b = do
+_evalNumOp2 :: (forall a . Num a => a -> a -> a) -> Object -> Object -> XPure Object
+_evalNumOp2 f a b = do
   t  <- pure (,) <*> isNumeric a <*> isNumeric b
   let cast = castToCoreType (uncurry max t)
   ab <- pure (,) <*> cast a <*> cast b
@@ -4156,7 +4156,7 @@ instance Num (XPure Object) where
     (OBytes  a, OBytes  b) -> return $ OBytes  $ a<>b
     (OList   a, OList   b) -> return $ OList   $ a++b
     (ODict   a, ODict   b) -> return $ ODict   $ M.union b a
-    (a, b) -> eval_Num_op2 (+) a b <|> eval_Infix_op ADD True a b
+    (a, b) -> _evalNumOp2 (+) a b <|> eval_Infix_op ADD True a b
   a * b = a >>= \a -> case a of
     OList ax -> OList <$> mapM ((* b) . xpure) ax
     ODict ax -> (ODict . M.fromList) <$>
@@ -4165,7 +4165,7 @@ instance Num (XPure Object) where
       OList bx -> OList <$> mapM (((xpure a) *) . xpure) bx
       ODict bx -> (ODict . M.fromList) <$>
         mapM (\ (key, b) -> fmap ((,) key) (xpure a * xpure b)) (M.assocs bx)
-      b        -> eval_Num_op2 (*) a b <|> eval_Infix_op MULT True a b
+      b        -> _evalNumOp2 (*) a b <|> eval_Infix_op MULT True a b
   a - b = a >>= \a -> b >>= \b -> case a of
     -- on strings, the inverse operation of "join(b, a)", every occurence of b from a.
     OString a -> case b of
@@ -4180,10 +4180,10 @@ instance Num (XPure Object) where
         , obj "reference must be a single unqualified name"
         ]
       _ -> mzero
-    a         -> eval_Num_op2 (-) a b <|> eval_Infix_op SUB False a b
-  negate a = (a >>= eval_Num_op1 negate) <|> (a >>= eval_Prefix_op NEGTIV)
-  abs    a = (a >>= eval_Num_op1 abs   ) <|> (a >>= eval_Prefix_op NEGTIV)
-  signum a = a >>= eval_Num_op1 signum
+    a         -> _evalNumOp2 (-) a b <|> eval_Infix_op SUB False a b
+  negate a = (a >>= _evalNumOp1 negate) <|> (a >>= eval_Prefix_op NEGTIV)
+  abs    a = (a >>= _evalNumOp1 abs   ) <|> (a >>= eval_Prefix_op NEGTIV)
+  signum a = a >>= _evalNumOp1 signum
   fromInteger = return . obj
 
 _xpureApplyError :: String -> String -> a
@@ -4292,6 +4292,12 @@ instance Integral (XPure Object) where
   toInteger = _xpureApplyM "toInteger" (castToCoreType LongType >=> xmaybe . fromObj)
   quotRem a b = _xpureDivFunc "quoteRem" quotRem a b
   divMod  a b = _xpureDivFunc "divMod"   divMod  a b
+  div     a b = a >>= \a -> b >>= \b -> case (a, b) of
+    (OString a, OString b) -> return $ OWord $ fromIntegral $ length $ splitString a b
+    _ -> fst (_xpureDivFunc "(/)" divMod (xpure a) (xpure b)) <|> eval_Infix_op DIV False a b
+  mod     a b = a >>= \a -> b >>= \b -> case (a, b) of
+    (OString a, OString b) -> return $ OList $ map OString $ splitString a b
+    _ -> snd (_xpureDivFunc "(%)" divMod (xpure a) (xpure b)) <|> eval_Infix_op MOD False a b
 
 _xpureFrac :: (forall a . Floating a => a -> a) -> XPure Object -> XPure Object
 _xpureFrac f a = a >>= \a -> case a of
@@ -4317,9 +4323,7 @@ _xpureFrac2 f a b = a >>= \a -> b >>= \b -> do
     _                        -> mzero
 
 instance Fractional (XPure Object) where
-  a / b  = a >>= \a -> b >>= \b -> case (a, b) of
-    (OString a, OString b) -> return $ OList $ map OString $ splitString a b
-    _ -> _xpureFrac2 (/) (xpure a) (xpure b)
+  a / b  = _xpureFrac2 (/) a b
   recip = _xpureFrac recip
   fromRational = xpure . ORatio
 
@@ -4385,11 +4389,19 @@ _xpureBits2 f g a b = a >>= \a -> b >>= \b -> do
     _                    -> mzero
 
 instance Bits (XPure Object) where
-  (.&.) = _xpureBits2 (.&.) (bytesBitArith (.&.))
-  (.|.) = _xpureBits2 (.|.) (bytesBitArith (.|.))
-  xor   = _xpureBits2  xor  (bytesBitArith  xor )
+  a .&. b = _xpureBits2 (.&.) (bytesBitArith (.&.)) a b <|>
+    a >>= \a -> b >>= \b -> eval_Infix_op ANDB True a b
+  a .|. b = _xpureBits2 (.|.) (bytesBitArith (.|.)) a b <|>
+    a >>= \a -> b >>= \b -> eval_Infix_op ORB  True a b
+  xor a b = _xpureBits2  xor  (bytesBitArith  xor ) a b <|>
+    a >>= \a -> b >>= \b -> eval_Infix_op XORB True a b
   complement  = _xpureBits complement (B.map complement)
-  shift   o i = _xpureBits (flip shift i) (flip bytesShift (fromIntegral i)) o
+  shift   o i = o >>= \o -> case o of
+    OList o -> xpure $ OList $ case compare i 0 of
+      EQ -> o
+      LT -> reverse $ drop i $ reverse o
+      GT -> drop i o
+    _ -> _xpureBits (flip shift i) (flip bytesShift (fromIntegral i)) (xpure o)
   rotate  o i = _xpureBits (flip shift i) (flip bytesRotate (fromIntegral i)) o
   bit       i = xpure $ if i<64 then OWord (bit i) else OBytes (bytesBit (fromIntegral i))
   testBit o i = _xpureApplyM "testBit" testbit o where
@@ -4429,93 +4441,93 @@ _shiftOp neg a b = case b of
 
 -- | Evaluate the shift-left operator in the 'XPure' monad.
 shiftLeft :: Object -> Object -> XPure Object
-shiftLeft a b = _shiftOp id a b
+shiftLeft a b = _shiftOp id a b <|> eval_Infix_op SHL False a b
 
 -- | Evaluate the shift-right operator in the 'XPure' monad.
 shiftRight :: Object -> Object -> XPure Object
-shiftRight a b = _shiftOp negate a b
+shiftRight a b = _shiftOp negate a b <|> eval_Infix_op SHR False a b
 
 -- | Throw an error declaring that the two types cannot be used together because their types are
 -- incompatible. Provide the a string describing the /what/ could not be done as a result of the
 -- type mismatch, it will be placed in the message string:
 -- > "could not <WHAT> the item <A> of type <A-TYPE> with the item <B> of type <B-TYPE>"
-typeMismatchError :: String -> Object -> Object -> Exec ig
-typeMismatchError msg a b = execThrow $ obj $
+typeMismatchError :: String -> Object -> Object -> XPure ig
+typeMismatchError msg a b = throwError $ obj $
   [ obj ("could not "++msg++" the item"), obj (prettyShow a), obj "of type", obj (typeOfObj a)
   , obj "with the item"                 , obj (prettyShow b), obj "of type", obj (typeOfObj b)
   ]
 
-eval_ADD :: Object -> Object -> Exec Object
-eval_ADD a b = execute (xpure a + xpure b) <|> typeMismatchError "add" a b
+eval_ADD :: Object -> Object -> XPure Object
+eval_ADD a b = (xpure a + xpure b) <|> typeMismatchError "add" a b
 
-eval_SUB :: Object -> Object -> Exec Object
-eval_SUB a b = execute (xpure a - xpure b) <|> typeMismatchError "subtract" a b
+eval_SUB :: Object -> Object -> XPure Object
+eval_SUB a b = (xpure a - xpure b) <|> typeMismatchError "subtract" a b
 
-eval_MULT :: Object -> Object -> Exec Object
-eval_MULT a b = execute (xpure a * xpure b) <|> typeMismatchError "multiply" a b
+eval_MULT :: Object -> Object -> XPure Object
+eval_MULT a b = (xpure a * xpure b) <|> typeMismatchError "multiply" a b
 
-eval_DIV :: Object -> Object -> Exec Object
+eval_DIV :: Object -> Object -> XPure Object
 eval_DIV a b = do
   let { xa = xpure a; xb = xpure b; }
-  execute (div xa xb <|> xa/xb) <|> typeMismatchError "divide" a b
+  (div xa xb <|> xa/xb) <|> typeMismatchError "divide" a b
 
-eval_MOD :: Object -> Object -> Exec Object
+eval_MOD :: Object -> Object -> XPure Object
 eval_MOD a b = do
   let { xa = xpure a; xb = xpure b; }
-  execute (mod xa xb) <|> typeMismatchError "modulus" a b
+  (mod xa xb) <|> typeMismatchError "modulus" a b
 
-eval_POW :: Object -> Object -> Exec Object
+eval_POW :: Object -> Object -> XPure Object
 eval_POW a b = do
   let { xa = xpure a; xb = xpure b; }
-  execute (xa^xb <|> xa**xb) <|> typeMismatchError "exponent" a b
+  (xa^xb <|> xa**xb) <|> typeMismatchError "exponent" a b
 
-eval_ORB :: Object -> Object -> Exec Object
+eval_ORB :: Object -> Object -> XPure Object
 eval_ORB a b = do
   let { xa = xpure a; xb = xpure b; }
-  execute (xa.|.xb) <|> typeMismatchError "bitwise-OR" a b
+  (xa.|.xb) <|> typeMismatchError "bitwise-OR" a b
 
-eval_ANDB :: Object -> Object -> Exec Object
+eval_ANDB :: Object -> Object -> XPure Object
 eval_ANDB a b = do
   let { xa = xpure a; xb = xpure b; }
-  execute (xa.&.xb) <|> typeMismatchError "bitwise-AND" a b
+  (xa.&.xb) <|> typeMismatchError "bitwise-AND" a b
 
-eval_XORB :: Object -> Object -> Exec Object
+eval_XORB :: Object -> Object -> XPure Object
 eval_XORB a b = do
   let { xa = xpure a; xb = xpure b; }
-  execute (xor xa xb) <|> typeMismatchError "bitwise-XOR" a b
+  (xor xa xb) <|> typeMismatchError "bitwise-XOR" a b
 
-eval_EQUL :: Object -> Object -> Exec Object
+eval_EQUL :: Object -> Object -> XPure Object
 eval_EQUL a b = return $ obj $ xpure a == xpure b
 
-eval_NEQUL :: Object -> Object -> Exec Object
+eval_NEQUL :: Object -> Object -> XPure Object
 eval_NEQUL a b = return $ obj $ xpure a /= xpure b
 
-eval_GTN :: Object -> Object -> Exec Object
+eval_GTN :: Object -> Object -> XPure Object
 eval_GTN a b = return $ obj $ xpure a > xpure b
 
-eval_LTN :: Object -> Object -> Exec Object
+eval_LTN :: Object -> Object -> XPure Object
 eval_LTN a b = return $ obj $ xpure a < xpure b
 
-eval_GTEQ :: Object -> Object -> Exec Object
+eval_GTEQ :: Object -> Object -> XPure Object
 eval_GTEQ a b = return $ obj $ xpure a >= xpure b
 
-eval_LTEQ :: Object -> Object -> Exec Object
+eval_LTEQ :: Object -> Object -> XPure Object
 eval_LTEQ a b = return $ obj $ xpure a <= xpure b
 
-eval_SHR :: Object -> Object -> Exec Object
-eval_SHR a b = execute $ shiftRight a b
+eval_SHR :: Object -> Object -> XPure Object
+eval_SHR a b = shiftRight a b
 
-eval_SHL :: Object -> Object -> Exec Object
-eval_SHL a b = execute $ shiftLeft a b
+eval_SHL :: Object -> Object -> XPure Object
+eval_SHL a b = shiftLeft a b
 
-eval_NEG :: Object -> Exec Object
-eval_NEG = execute . eval_Num_op1 negate
+eval_NEG :: Object -> XPure Object
+eval_NEG = _evalNumOp1 negate
 
-eval_INVB :: Object -> Exec Object
-eval_INVB = execute . complement . xpure
+eval_INVB :: Object -> XPure Object
+eval_INVB = complement . xpure
 
-eval_NOT :: Object -> Exec Object
-eval_NOT = execute . fmap (obj . not) . objToBool
+eval_NOT :: Object -> XPure Object
+eval_NOT = fmap (obj . not) . objToBool
 
 objToBool :: Object -> XPure Bool
 objToBool o = case o of
@@ -4905,27 +4917,27 @@ instance HaskellDataClass TopLevelEventType where
 
 ----------------------------------------------------------------------------------------------------
 
-evalArithPrefixOp :: ArithPfxOp -> Object -> Exec Object
+evalArithPrefixOp :: ArithPfxOp -> Object -> XPure Object
 evalArithPrefixOp = (_arithPrefixOps!)
 
-_arithPrefixOps :: Array ArithPfxOp (Object -> Exec Object)
+_arithPrefixOps :: Array ArithPfxOp (Object -> XPure Object)
 _arithPrefixOps = array (minBound, maxBound) $ defaults ++
   [ o NEGTIV eval_NEG
   , o POSTIV return
-  , o INVB  eval_INVB
-  , o NOT   eval_NOT
+  , o INVB   eval_INVB
+  , o NOT    eval_NOT
   ]
   where
     o = (,)
     defaults = flip map [minBound..maxBound] $ \op ->
       (op, \_ -> error $ "no builtin function for prefix "++show op++" operator")
 
-evalInfixOp :: InfixOp -> Object -> Object -> Exec Object
+evalInfixOp :: InfixOp -> Object -> Object -> XPure Object
 evalInfixOp op a b = msum $ f a ++ f b ++ [(_infixOps!op) a b] where
   f = maybe [] return . (fromObj >=> getOp)
-  getOp (HaskellData a ifc) = (\f -> execute $ f op a b) <$> (objInfixOpTable ifc >>= (! op))
+  getOp (HaskellData a ifc) = (\f -> f op a b) <$> (objInfixOpTable ifc >>= (! op))
 
-_infixOps :: Array InfixOp (Object -> Object -> Exec Object)
+_infixOps :: Array InfixOp (Object -> Object -> XPure Object)
 _infixOps = array (minBound, maxBound) $ defaults ++
   [ o ADD   eval_ADD
   , o SUB   eval_SUB
@@ -4965,9 +4977,9 @@ evalUpdateOp op qref newObj = do
       _      -> execThrow $ obj [obj "undefined refence:", obj qref]
     Just (qref, ~oldObj) -> case op of
       UCONST -> upd qref newObj
-      op     -> evalInfixOp (_updateToInfixOp op) oldObj newObj >>= upd qref 
+      op     -> execute (evalInfixOp (_updateToInfixOp op) oldObj newObj) >>= upd qref 
 
-_updatingOps :: Array UpdateOp (Object -> Object -> Exec Object)
+_updatingOps :: Array UpdateOp (Object -> Object -> XPure Object)
 _updatingOps = let o = (,) in array (minBound, maxBound) $ defaults ++
   [ o UCONST (\_ b -> return b)
   , o UADD   eval_ADD
@@ -7134,7 +7146,7 @@ instance Executable ObjectExpr (Maybe Object) where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ArithPfxExpr op expr loc -> do
       expr <- execute expr >>= checkVoid loc ("operand to prefix operator "++show op )
-      fmap Just (evalArithPrefixOp op expr)
+      execute $ fmap Just (evalArithPrefixOp op expr)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     InitExpr ref bnds initMap _ -> do
       let (ObjListExpr items _) = initMap
@@ -7419,7 +7431,7 @@ instance Executable ArithExpr (Maybe Object) where
           (left, right) <- case op of
             ARROW -> liftM2 (,) derefLeft evalRight
             _     -> liftM2 (,) derefLeft derefRight
-          fmap Just (evalInfixOp op left right)
+          execute $ fmap Just (evalInfixOp op left right)
 
 instance ObjectClass ArithExpr where { obj=new; fromObj=objFromHaskellData; }
 

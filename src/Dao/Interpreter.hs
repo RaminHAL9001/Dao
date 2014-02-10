@@ -2239,7 +2239,7 @@ instance PPrintable Complex where
     | a==0.0 && b==0.0 = pString "0i"
     | a==0.0           = pString (show b++"i")
     | b==0.0           = pShow a
-    | otherwise        = pInline [pShow a, pString (if b<0 then "-" else "+"), pShow b]
+    | otherwise        = pInline [pShow a, pString (if b<0 then "-" else "+"), pString (show b++"i")]
 
 realPart :: Complex -> Double
 realPart (Complex o) = C.realPart o

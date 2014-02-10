@@ -148,7 +148,7 @@ module Dao.Interpreter(
       AST_ArithPfx, AST_Init, AST_Struct, AST_MetaEval
     ),
     ArithExpr(ObjectExpr, ArithExpr), AST_Arith(AST_Object, AST_Arith), 
-    AssignExpr(EvalExpr, AssignExpr), AST_Assign(AST_Eval, AST_Assign),
+    AssignExpr(EvalExpr, AssignExpr), AST_Assign(AST_Eval, AST_Assign), assignUnqualifiedOnly,
     TopLevelExpr(Attribute, TopScript, EventExpr), isAttribute, 
     AST_TopLevel(AST_Attribute, AST_TopScript, AST_Event, AST_TopComment),
     isAST_Attribute, attributeToList,
@@ -216,6 +216,7 @@ import           Control.Monad.State
 
 import           System.IO
 
+--import Debug.Trace
 --dbg :: MonadIO m => String -> m ()
 --dbg = liftIO . hPutStrLn stderr
 
@@ -4175,6 +4176,7 @@ instance Num (XPure Object) where
     -- on lists, removes the item b from the list a
     OList   a -> return $ OList $ filter (/= b) a
     ODict   a -> case b of
+      ODict b -> return $ ODict $ M.difference a b
       ORef (Unqualified (Reference [b])) -> return $ ODict $ M.delete b a
       ORef                          _    -> throwError $ obj $
         [ obj "cannot remove element from Dict:", b
@@ -4377,34 +4379,37 @@ _xpureBits f g o = o >>= \o -> case o of
   _        -> mzero
 
 _xpureBits2 :: (forall a . Bits a => a -> a -> a) -> (T_dict -> T_dict -> T_dict) -> (B.ByteString -> B.ByteString -> B.ByteString) -> XPure Object -> XPure Object -> XPure Object
-_xpureBits2 f g h a b = a >>= \a -> b >>= \b -> do
+_xpureBits2 bits dict bytes a b = a >>= \a -> b >>= \b -> do
   let t = max (typeOfObj a) (typeOfObj b)
   a <- castToCoreType t a
-  b <- castToCoreType t a
+  b <- castToCoreType t b
   case (a, b) of
-    (OChar  a, OChar  b) -> return $ OChar  $ chr $ mod (f (ord a) (ord b)) (ord maxBound)
-    (OInt   a, OInt   b) -> return $ OInt   $ f a b
-    (OWord  a, OWord  b) -> return $ OWord  $ f a b
-    (OLong  a, OLong  b) -> return $ OLong  $ f a b
-    (ODict  a, ODict  b) -> return $ ODict  $ g a b
+    (OChar  a, OChar  b) -> return $ OChar  $ chr $ mod (bits (ord a) (ord b)) (ord maxBound)
+    (OInt   a, OInt   b) -> return $ OInt   $ bits a b
+    (OWord  a, OWord  b) -> return $ OWord  $ bits a b
+    (OLong  a, OLong  b) -> return $ OLong  $ bits a b
+    (ODict  a, ODict  b) -> return $ ODict  $ dict a b
     (OTree  a, OTree  b) -> case (a, b) of
       (Struct{ structName=na, fieldMap=ma }, Struct{ structName=nb, fieldMap=mb }) | na==nb ->
-        xpure $ OTree $ a{ fieldMap = g ma mb }
+        xpure $ OTree $ a{ fieldMap = dict ma mb }
       _ -> throwError $ obj $
         [ obj "cannot operate on dissimilar struct types"
         , obj (structName a), obj (structName b)
         , OTree a, OTree b
         ]
-    (OBytes a, OBytes b) -> return $ OBytes $ h a b
+    (OBytes a, OBytes b) -> return $ OBytes $ bytes a b
     _                    -> mzero
 
+_dict_XOR :: (Object -> Object -> Object) -> T_dict -> T_dict -> T_dict
+_dict_XOR f a b = M.difference (M.unionWith f a b) (M.intersectionWith f a b)
+
 instance Bits (XPure Object) where
-  a .&. b = _xpureBits2 (.&.) M.union        (bytesBitArith (.&.)) a b <|>
-    a >>= \a -> b >>= \b -> eval_Infix_op ANDB True a b
-  a .|. b = _xpureBits2 (.|.) M.intersection (bytesBitArith (.|.)) a b <|>
-    a >>= \a -> b >>= \b -> eval_Infix_op ORB  True a b
-  xor a b = _xpureBits2  xor  M.difference   (bytesBitArith  xor ) a b <|>
-    a >>= \a -> b >>= \b -> eval_Infix_op XORB True a b
+  a .&. b = _xpureBits2 (.&.) (M.intersectionWith (flip const)) (bytesBitArith (.&.)) a b <|>
+    (a >>= \a -> b >>= \b -> eval_Infix_op ANDB True a b)
+  a .|. b = _xpureBits2 (.|.) (M.unionWith (flip const))        (bytesBitArith (.|.)) a b <|>
+    (a >>= \a -> b >>= \b -> eval_Infix_op ORB  True a b)
+  xor a b = _xpureBits2  xor  (_dict_XOR (flip const))          (bytesBitArith  xor ) a b <|>
+    (a >>= \a -> b >>= \b -> eval_Infix_op XORB True a b)
   complement  = _xpureBits complement (B.map complement)
   shift   o i = o >>= \o -> case o of
     OList o -> xpure $ OList $ case compare i 0 of
@@ -7172,11 +7177,10 @@ instance Executable ObjectExpr (Maybe Object) where
           [] -> execNested M.empty $ fmap (Just . OList) $ execute initMap >>= mapM derefObject
           _  -> cantUseBounds "for list constructor"
         "dict" -> case bnds of
-          [] -> do
-            execNested M.empty $ do
-              mapM_ execute items
-              (LocalStore stack) <- asks execStack
-              liftIO $ (Just . ODict . head . mapList) <$> readIORef stack
+          [] -> execNested M.empty $ do
+            mapM_ assignUnqualifiedOnly items
+            (LocalStore stack) <- asks execStack
+            liftIO $ (Just . ODict . head . mapList) <$> readIORef stack
           _ -> cantUseBounds "for dict constructor"
         _ -> execGetObjTable ref >>= \tab -> case tab of
           Nothing  -> execThrow $ obj [obj "unknown object constructor", erf]
@@ -7596,17 +7600,34 @@ instance B.HasPrefixTable AssignExpr B.Byte MTab where
     B.mkPrefixTableWord8 "AssignExpr" 0x34 0x34 $
       [pure AssignExpr <*> B.get <*> B.get <*> B.get <*> B.get]
 
+_execAssignExpr :: (UpdateOp -> QualRef -> Object -> Exec (Maybe Object)) -> AssignExpr -> Exec (Maybe Object)
+_execAssignExpr updater o = case o of
+  EvalExpr   o -> execute o
+  AssignExpr nm op expr loc -> do
+    let lhs = "left-hand side of "++show op
+    qref <- msum $
+      [ execute nm >>= checkVoid (getLocation nm) (lhs++" evaluates to void") >>= asReference
+      , execThrow $ obj [obj $ lhs++" is not a reference value"]
+      ]
+    newObj <- execute expr >>= checkVoid loc "right-hand side of assignment" >>= derefObject 
+    updater op qref newObj
+
 instance Executable AssignExpr (Maybe Object) where
-  execute o = case o of
-    EvalExpr   o -> execute o
-    AssignExpr nm op expr loc -> do
-      let lhs = "left-hand side of "++show op
-      qref <- msum $
-        [ execute nm >>= checkVoid (getLocation nm) (lhs++" evaluates to void") >>= asReference
-        , execThrow $ obj [obj $ lhs++" is not a reference value"]
-        ]
-      newObj <- execute expr >>= checkVoid loc "right-hand side of assignment" >>= derefObject 
-      evalUpdateOp op qref newObj
+  execute = _execAssignExpr evalUpdateOp
+
+-- | This function works a bit like how 'execute' works on an 'AssignExpr' data type, however there
+-- is one important difference: it is specifically modified to work for evaluation of 'InitExpr'
+-- data types, for example in the Dao language expression: @a = dict {a=1, b=2};@ Using this
+-- function instead of 'execute' will always assign variables in the top of the local variable
+-- stack, regardless of whether the variable has been defined before. This makes it possible to
+-- write Dao language statements like this: @a=1; a = dict {a=a, b=2};@ which would create a
+-- dictionary @a = dict {a=1, b=2};@, because before the "dict{}" expression, "a" had a value of 1.
+assignUnqualifiedOnly :: AssignExpr -> Exec (Maybe Object)
+assignUnqualifiedOnly = _execAssignExpr $ \ _op qref newObj -> case qref of
+  Unqualified (Reference [r]) -> do
+    (LocalStore store) <- asks execStack
+    liftIO $ atomicModifyIORef store (stackUpdateTop (Just . const newObj) r)
+  _ -> execThrow $ obj $ [obj "cannot assign to reference", obj qref, obj "in current context"]
 
 instance ObjectClass AssignExpr where { obj=new; fromObj=objFromHaskellData; }
 
@@ -7936,7 +7957,8 @@ instance Executable Program ExecUnit where
     -- variable store.
     localVars <- liftIO $ atomicModifyIORef stackRef stackPop
     (GlobalStore globalVars) <- asks globalData
-    liftIO $ modifyMVar_ globalVars $ \dict -> return (M.union dict localVars)
+    liftIO $ modifyMVar_ globalVars $ \dict -> do
+      return (M.union dict localVars)
     fmap updxunit ask
 
 instance ObjectClass Program where { obj=new; fromObj=objFromHaskellData; }

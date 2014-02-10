@@ -65,6 +65,12 @@ stackUpdate
   -> key -> Stack key val -> (Stack key val, Maybe val)
 stackUpdate upd key = runIdentity . stackUpdateM (return . upd) key
 
+stackUpdateTop
+  :: Ord key
+  => (Maybe val -> Maybe val)
+  -> key -> Stack key val -> (Stack key val, Maybe val)
+stackUpdateTop upd key = runIdentity . stackUpdateTopM (return . upd) key
+
 -- | Define or undefine a value at an address on the top tree in the stack.
 stackDefine :: Ord key => key -> Maybe val -> Stack key val -> Stack key val
 stackDefine key val = fst . stackUpdate (const val) key

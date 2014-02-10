@@ -89,3 +89,12 @@ test("multi hello");
 //: doAll() returned 4U
 test("multi one two three");
 
+func testlocal() {
+	rule "local rule" { println("local rule --> OK"); }
+	count = doAll("local rule");
+	println("local rule count = ", count);
+}
+//: local rule --> OK
+//: local rule count = 1U
+testlocal();
+

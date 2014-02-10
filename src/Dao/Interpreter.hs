@@ -3439,6 +3439,7 @@ data Subroutine
     , staticLambdas  :: IORef [CallableCode]
     , executable     :: Exec (Maybe Object)
     }
+  deriving Typeable
 
 instance Show Subroutine where { show o = "Subroutine "++show (codeBlock (origSourceCode o)) }
 
@@ -3467,6 +3468,25 @@ instance Executable Subroutine (Maybe Object) where
 runCodeBlock :: T_dict -> Subroutine -> Exec (Maybe Object)
 runCodeBlock initStack exe = local (\xunit -> xunit{currentCodeBlock = StaticStore (Just exe)}) $!
   execFuncPushStack initStack (executable exe >>= liftIO . evaluate)
+
+----------------------------------------------------------------------------------------------------
+
+instance ObjectClass (PatternTree Object [Subroutine]) where { obj=new ; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass (PatternTree Object [Subroutine]) where
+  haskellDataInterface = interface mempty $ do
+    autoDefNullTest
+    let initParams ox = case ox of
+          [] -> return mempty
+          _  -> execThrow $ obj [obj "\"ruleset\" constructor takes no intializing parameters"]
+          -- TODO: ^ the constructor for a 'PatternTree' should take tokenizer function.
+    let listParams tree =
+          foldM (\ tree (i, o) -> case fromObj o >>= \ (HaskellData o _) -> fromDynamic o of
+            Nothing -> execThrow $ obj $
+              [obj "item #", obj (i::Int), obj "in the initializing list is not a rule object"]
+            Just (GlobAction{ globPattern=pat, globSubroutine=sub }) -> return $
+              insertMultiPattern (++) pat [sub] tree ) tree . zip [1..]
+    defListInit initParams listParams
 
 ----------------------------------------------------------------------------------------------------
 

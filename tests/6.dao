@@ -4,6 +4,6 @@ println("Hello, " + "world!");
 //: 2.0f
 println(1 + 1.0f);
 
-//: 3+3i
+//: 3.0+3.0i
 println((1+1i) + (2+2i));
 

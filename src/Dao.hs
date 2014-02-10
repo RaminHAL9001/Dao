@@ -72,6 +72,7 @@ min_exec_time = 200000
 -- > exec, prove
 daoFuncs :: DaoSetup
 daoFuncs = do
+  daoClass "ruleset" (haskellType :: PatternTree Object [Subroutine])
   daoFunction "do"    $ daoFunc{ autoDerefParams=True, daoForeignCall=queryDo }
   daoFunction "doAll" $ daoFunc{ autoDerefParams=True, daoForeignCall=queryDoAll }
 

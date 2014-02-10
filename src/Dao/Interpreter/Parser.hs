@@ -113,7 +113,6 @@ daoTokenDef = do
   -------------------------------------- KEYWORDS AND GROUPING ------------------------------------
   openers      <- operatorTable $ words "( [ { ${"
   comma        <- emptyToken COMMA (rx ',')
-  -- prefixers    <- operatorTable (words "$ @ -> . ! - ~")
   daoKeywords  <- keywordTable LABEL labelRX $ words $ unwords $
     [ "global local qtime static"
     , "null false true date time function func rule"

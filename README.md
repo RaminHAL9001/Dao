@@ -181,13 +181,13 @@ The same program written in the Dao language would look like this:
 ```
 	rule "put $what in $where" {
 		what.to.put = what;
-		print("> what to put: " + what);
+		println("> what to put: ", what);
 		where.to.put = where;
-		print("> where to put it: " + where);
+		println("> where to put it: ", where);
 	}
 	rule "my name is $name" {
 		user.name = name;
-		print("> Hello, " + name);
+		println("> Hello, ", name);
 	}
 ```
 

@@ -42,6 +42,7 @@ import           Dao.PPrint
 import           Dao.Token
 import           Dao.Parser
 import           Dao.Interpreter.Parser
+import qualified Dao.Tree as T
 
 import           Data.Function
 import           Data.Monoid
@@ -72,9 +73,16 @@ min_exec_time = 200000
 -- > exec, prove
 daoFuncs :: DaoSetup
 daoFuncs = do
-  daoClass "ruleset" (haskellType :: PatternTree Object [Subroutine])
-  daoFunction "do"    $ daoFunc{ autoDerefParams=True, daoForeignCall=queryDo }
-  daoFunction "doAll" $ daoFunc{ autoDerefParams=True, daoForeignCall=queryDoAll }
+  daoClass "RuleSet" (haskellType :: PatternTree Object [Subroutine])
+  let f x = daoFunc{ autoDerefParams=True, daoForeignCall=x }
+  daoFunction "do"          $ f queryDo
+  daoFunction "doAll"       $ f queryDoAll
+  daoFunction "doLocal"     $ f queryDoLocal
+  daoFunction "doLocalAll"  $ f queryDoLocalAll
+  daoFunction "doGlobal"    $ f queryDoGlobal
+  daoFunction "doGlobalAll" $ f queryDoGlobalAll
+  daoFunction "doIn"        $ f queryDoIn
+  daoFunction "doInAll"     $ f queryDoAllIn
 
 ----------------------------------------------------------------------------------------------------
 
@@ -94,8 +102,10 @@ data Action
     }
 
 instance Executable Action (Maybe Object) where
-  execute act = (flip local)
-    (runCodeBlock (fmap (obj . fmap obj) $ actionMatch act) (actionCodeBlock act)) $ \xunit ->
+  execute act = local setup $ runCodeBlock localVars (actionCodeBlock act) where
+    setThisVar = maybe id (M.union . (M.singleton (ustr "this") . obj)) (actionQuery act)
+    localVars  = setThisVar $ fmap (obj . fmap obj) (actionMatch act)
+    setup xunit =
       xunit
       { currentQuery     = actionQuery act
       , currentPattern   = actionPattern act
@@ -116,13 +126,14 @@ data ActionGroup
     , getActionList  :: [Action]
     }
 
-instance Executable ActionGroup () where
+instance Executable ActionGroup [Object] where
   execute o = local (const (actionExecUnit o)) $ do
     xunit <- ask
     mapM_ execute $ preExec xunit
-    result <- catchPredicate $ mapM_ execute $ getActionList o
+    result <- mapM (catchPredicate . execute) $ getActionList o
     mapM_ execute $ postExec xunit
-    predicate result
+    let f p = case p of { OK (Just o) -> [o]; _ -> [] }
+    return $ result>>=f
 
 ----------------------------------------------------------------------------------------------------
 
@@ -265,27 +276,28 @@ daoInputLoop getString = fix $ \loop -> do
 -- input.
 -- 
 -- Once you have created an action group, you can execute it with 'Dao.Evaluator.execute'.
-makeActionsForQuery :: UStr -> Exec ActionGroup
-makeActionsForQuery instr = do
+makeActionsForQuery :: [PatternTree Object [Subroutine]] -> UStr -> Exec ActionGroup
+makeActionsForQuery tree instr = do
   -- TODO: need to make use of the programTokenizer set in the current 'ExecUnit'
   match (map (OString . toUStr) $ simpleTokenizer $ fromUStr instr)
   where
-    match tox = do
-      xunit <- ask
-      tree  <- liftIO $ readIORef (ruleSet xunit)
-      return $
-        ActionGroup
-        { actionExecUnit = xunit
-        , getActionList  = flip concatMap (matchTree False tree tox) $ \ (patn, mtch, execs) ->
-            flip map execs $ \exec -> seq exec $! seq instr $! seq patn $! seq mtch $!
-              Action
-              { actionQuery      = Just instr
-              , actionPattern    = Just patn
-              , actionMatch      = mtch
-              , actionCodeBlock  = exec
-              }
-        }
+    match tox = ask >>= \xunit -> return $
+      ActionGroup
+      { actionExecUnit = xunit
+      , getActionList  = flip concatMap (matchTree False (T.unionsWith (++) tree) tox) $ \ (patn, mtch, execs) ->
+          flip map execs $ \exec -> seq exec $! seq instr $! seq patn $! seq mtch $!
+            Action
+            { actionQuery      = Just instr
+            , actionPattern    = Just patn
+            , actionMatch      = mtch
+            , actionCodeBlock  = exec
+            }
+      }
 
+-- Checks the list of parameters, and if there are more than one, checks if the first parameter is
+-- an 'OHaskell' object which can be converted to 'CallableCode' using 'objToCallable'. If so, the
+-- callables are returned and the results of pattern matching can be used as parameters to these
+-- functions.
 _getFuncStringParams :: [Object] -> Exec (Maybe [CallableCode], [UStr])
 _getFuncStringParams ox = case ox of
   []   -> fail "no parameters passed to function"
@@ -298,6 +310,53 @@ _getFuncStringParams ox = case ox of
       [] -> fail "parameter arguments contain no string values"
       ox -> return ox
 
+_getRuleSetParam :: [Object] -> Exec (Maybe (PatternTree Object [Subroutine]), [Object])
+_getRuleSetParam ox = return $ case ox of
+  []   -> (Nothing, [])
+  o:ox -> maybe ((Nothing, o:ox)) (\o -> (Just o, ox)) (fromObj o)
+
+-- Match the strings, collect the actions to evaluate, pass a list 'Exec' functions that are the
+-- actions to execute to the given handler function. Use the boolean parameters to declare whether
+-- or not the rule set supplied as the first parameter (if at all) should be used, whether or not
+-- locally defined rules should be used, and whether or not globally defined rules should be used,
+-- respectively.
+_queryFunc
+  :: Bool -> Bool -> Bool
+  -> ([Exec [Object]] -> Exec b)
+  -> [Object] -> Exec b
+_queryFunc useArgs useLocal useGlobal strLoop ox = do
+  (rulset,  ox) <- _getRuleSetParam ox
+  (calls, strs) <- _getFuncStringParams ox
+  rulset <- fmap concat $ sequence $
+    [ maybe (return []) (\o -> return $ if useArgs then [o] else []) rulset
+    , if useGlobal then asks ruleSet >>= liftIO . fmap (:[]) . readIORef else return []
+    , if useLocal
+      then do 
+        (StaticStore o) <- asks currentCodeBlock
+        maybe (return []) (liftIO . fmap (:[]) . readIORef . staticRules) o
+      else return []
+    ]
+  if and [null rulset, useArgs, not useLocal, not useGlobal]
+  then fail "expecting first argument to contain a ruleset"
+  else return ()
+  let call :: [Object] -> Exec [Object]
+      call o = maybe (return o) (fmap (maybe [] (:[])) . flip callCallables o) calls
+  strLoop $ flip map strs $ \str -> do
+    actns <- makeActionsForQuery rulset str
+    let xunit = actionExecUnit actns
+    local (const xunit) $ execute actns >>= call
+
+-- The general "do()" function, but you can customize whether or not it limits itself to rule sets
+-- passed as arguments, or local rule sets, or global rule sets, or all of the above.
+_queryDoFunc :: Bool -> Bool -> Bool -> [Object] -> Exec (Maybe Object)
+_queryDoFunc a b c ox = _queryFunc a b c (fmap (Just . OList) . msum) ox <|> return (Just ONull)
+
+-- The general "doAll()" function, but you can customize whether or not it limits itself to rule
+-- sets passed as arguments, or local rule sets, or global rule sets, or all of the above. 
+_queryDoAllFunc :: Bool -> Bool -> Bool -> [Object] -> Exec (Maybe Object)
+_queryDoAllFunc a b c = _queryFunc a b c $
+  fmap (Just . OList . concat . (>>=okToList)) . sequence . map catchPredicate
+
 -- | The 'queryDo' function maps to the built-in function "do()". It will try to execute every
 -- string query passed to it as a parameter, and return the return value of the first string query
 -- execution that does not backtrack or fail.  Passing a callable object as the first parameter asks
@@ -305,35 +364,80 @@ _getFuncStringParams ox = case ox of
 -- the evaluation of this function may backtrack to request further string queries be tried.
 -- Execution happens in the current thread. The return value is the value returned by the function
 -- passed as the first parameter. This function return "null" if none of the given strings matched.
+-- If the first parameter is a "ruleset" object, the string will be executed against those rules as
+-- well.
 queryDo :: [Object] -> Exec (Maybe Object)
-queryDo ox = do
-  (calls, strs) <- _getFuncStringParams ox
-  let call o = maybe (return $ Just OTrue) (flip callCallables (maybe [] return o)) calls
-  flip mplus (return $ Just ONull) $ msum $ flip map strs $ \str -> do
-    actns <- makeActionsForQuery str
-    let xunit = actionExecUnit actns
-    local (const xunit) $ do
-      mapM_ execute $ preExec xunit
-      result <- catchPredicate $ msum $ map (execute >=> call) $ getActionList actns
-      mapM_ execute $ postExec xunit
-      predicate result
+queryDo = _queryDoFunc True True True
 
 -- | The 'queryDoAll' function maps to the "doAll()" built-in function. It works like the 'queryDo'
 -- function but executes as many matching patterns as possible, regardless of backtracking or
 -- exceptions thrown. Returns the number of successfully matched and evaluated pattern actions.  All
--- execution happens in the current thread.
+-- execution happens in the current thread. Every rule action that does not fail and also returns a
+-- value will have the value placed in a list and returned as the result of this function.
 queryDoAll :: [Object] -> Exec (Maybe Object)
-queryDoAll ox = do
-  (calls, strs) <- _getFuncStringParams ox
-  let call o = maybe (return ()) (void . flip callCallables (maybe [] return o)) calls
-  fmap (Just . OWord . sum) $ forM strs $ \str -> do
-    actns <- makeActionsForQuery str
-    let xunit = actionExecUnit actns
-    local (const xunit) $ do
-      mapM_ execute $ preExec xunit
-      result <- mapM (catchPredicate . (execute >=> call)) $ getActionList actns
-      mapM_ execute $ postExec xunit
-      return $ sum $ map (\o -> case o of { OK () -> 1; _ -> 0; }) result
+queryDoAll = _queryDoAllFunc True True True
+
+-- | The 'queryDoLocal' function maps to the built-in function "doLocal()". It will try to execute
+-- every string query passed to it as a parameter /against only locally defined rules/, and return
+-- the return value of the first string query execution that does not backtrack or fail.  Passing a
+-- callable object as the first parameter asks this function to evaluate that object with the return
+-- value passed as the first parameter, and the evaluation of this function may backtrack to request
+-- further string queries be tried.  Execution happens in the current thread. The return value is
+-- the value returned by the function passed as the first parameter. This function return "null" if
+-- none of the given strings matched.  If the first parameter is a "ruleset" object, the string will
+-- be executed against those rules as well.
+queryDoLocal :: [Object] -> Exec (Maybe Object)
+queryDoLocal = _queryDoFunc True True False
+
+-- | The 'queryDoAllLocal' function maps to the "doAllLocal()" built-in function. It works like the
+-- 'queryDoLocal' function but executes as many matching patterns as possible, regardless of
+-- backtracking or exceptions thrown. Returns the number of successfully matched and evaluated
+-- pattern actions. All execution happens in the current thread. Every rule action that does not
+-- fail and also returns a value will have the value placed in a list and returned as the result of
+-- this function.
+queryDoLocalAll :: [Object] -> Exec (Maybe Object)
+queryDoLocalAll = _queryDoAllFunc True True False
+
+-- | The 'queryDoGlobal' function maps to the built-in function "doGlobal()". It will try to execute
+-- every string query passed to it as a parameter /against only globally defined rules/, and return
+-- the return value of the first string query execution that does not backtrack or fail.  Passing a
+-- callable object as the first parameter asks this function to evaluate that object with the return
+-- value passed as the first parameter, and the evaluation of this function may backtrack to request
+-- further string queries be tried.  Execution happens in the current thread. The return value is
+-- the value returned by the function passed as the first parameter. This function return "null" if
+-- none of the given strings matched.  If the first parameter is a "ruleset" object, the string will
+-- be executed against those rules as well.
+queryDoGlobal :: [Object] -> Exec (Maybe Object)
+queryDoGlobal = _queryDoFunc True False True
+
+-- | The 'queryDoAllGlobal' function maps to the "doAllGlobal()" built-in function. It works like
+-- the 'queryDoGlobal' function but executes as many matching patterns as possible, regardless of
+-- backtracking or exceptions thrown. Returns the number of successfully matched and evaluated
+-- pattern actions. All execution happens in the current thread. Every rule action that does not
+-- fail and also returns a value will have the value placed in a list and returned as the result of
+-- this function.
+queryDoGlobalAll :: [Object] -> Exec (Maybe Object)
+queryDoGlobalAll = _queryDoAllFunc True False True
+
+-- | The 'queryDoIn' function maps to the built-in function "doIn()". It will try to execute
+-- every string query passed to it as a parameter /against only the rule set passed as the first
+-- parameter argument/, and return the return value of the first string query execution that does
+-- not backtrack or fail.  Passing a callable object as the first parameter asks this function to
+-- evaluate that object with the return value passed as the first parameter, and the evaluation of
+-- this function may backtrack to request further string queries be tried.  Execution happens in the
+-- current thread. The return value is the value returned by the function passed as the first
+-- parameter. This function return "null" if none of the given strings matched.
+queryDoIn :: [Object] -> Exec (Maybe Object)
+queryDoIn = _queryDoFunc True False False
+
+-- | The 'queryDoAllIn' function maps to the "doInAll()" built-in function. It works like the
+-- 'queryDoIn' function but executes as many matching patterns as possible, regardless of
+-- backtracking or exceptions thrown. Returns the number of successfully matched and evaluated
+-- pattern actions. All execution happens in the current thread. Every rule action that does not
+-- fail and also returns a value will have the value placed in a list and returned as the result of
+-- this function.
+queryDoAllIn :: [Object] -> Exec (Maybe Object)
+queryDoAllIn = _queryDoAllFunc True False False
 
 -- | When executing strings against Dao programs (e.g. using 'Dao.Tasks.execInputString'), you often
 -- want to execute the string against only a subset of the number of total programs. Pass the
@@ -364,10 +468,11 @@ execStringQueryWith :: UStr -> [ExecUnit] -> Exec ()
 execStringQueryWith instr xunitList = do
   task <- asks taskForExecUnits
   liftIO $ taskLoop_ task $ flip map xunitList $ \xunit -> do
-    result <- flip ioExec xunit $ makeActionsForQuery instr >>= execute
+    rulset <- readIORef (ruleSet xunit)
+    pdicat <- flip ioExec xunit $ makeActionsForQuery [rulset] instr >>= execute
     -- TODO: this case statement should really call into some callback functions installed into the
     -- root 'ExecUnit'.
-    case result of
+    case pdicat of
       PFail (ExecReturn{}) -> return ()
       PFail err            -> liftIO $ hPutStrLn stderr $ prettyShow err
       Backtrack            -> case programModuleName xunit of

@@ -1,100 +1,146 @@
 rule "match $x*" {
-	println("match $x* --> x = ", x);
+	println("match $x* --> x = ", x); return true;
 }
 
 rule "overlap $x*" {
-	println("overlap $x* (1) --> x = ", x);
+	println("overlap $x* (1) --> x = ", x); return true;
 }
 
 rule "overlap $x*" {
-	println("overlap $x* (2) --> x = ", x);
+	println("overlap $x* (2) --> x = ", x); return true;
 }
 
 rule("shared $x*", "shared $x*") {
-	println("shared $x* --> x = ", x);
+	println("shared $x* --> x = ", x); return true;
 }
 
 rule("first disjoint $x*", "second disjoint $x*") {
-	println("(first/second) disjoint $x --> x = ", x);
+	println("(first/second) disjoint $x --> x = ", x); return true;
 }
 
 rule("multi $x*", "multi $x*") {
-	println("multi $x* (1) --> x = ", x);
+	println("multi $x* (1) --> x = ", x); return true;
 }
 
 rule("multi $x*", "multi $x*") {
-	println("multi $x* (2) --> x = ", x);
+	println("multi $x* (2) --> x = ", x); return true;
 }
 
 func test(str) {
-	count = doAll(str);
-	println("doAll() returned ", join(" ", count));
+	result = doAll(str);
+	println("doAll() returned ", join(" ", result));
 }
 
 //: match $x* --> x = hello
-//: doAll() returned 1U
+//: doAll() returned true
 test("match hello");
 
 //: match $x* --> x = one two three
-//: doAll() returned 1U
+//: doAll() returned true
 test("match one two three");
 
 //: overlap $x* (1) --> x = hello
 //: overlap $x* (2) --> x = hello
-//: doAll() returned 2U
+//: doAll() returned true true
 test("overlap hello");
 
 //: overlap $x* (1) --> x = one two three
 //: overlap $x* (2) --> x = one two three
-//: doAll() returned 2U
+//: doAll() returned true true
 test("overlap one two three");
 
 //: shared $x* --> x = hello
 //: shared $x* --> x = hello
-//: doAll() returned 2U
+//: doAll() returned true true
 test("shared hello");
 
 //: shared $x* --> x = one two three
 //: shared $x* --> x = one two three
-//: doAll() returned 2U
+//: doAll() returned true true
 test("shared one two three");
 
 //: (first/second) disjoint $x --> x = hello
-//: doAll() returned 1U
+//: doAll() returned true
 test("first disjoint hello");
 
 //: (first/second) disjoint $x --> x = hello
-//: doAll() returned 1U
+//: doAll() returned true
 test("second disjoint hello");
 
 //: (first/second) disjoint $x --> x = one two three
-//: doAll() returned 1U
+//: doAll() returned true
 test("first disjoint one two three");
 
 //: (first/second) disjoint $x --> x = one two three
-//: doAll() returned 1U
+//: doAll() returned true
 test("second disjoint one two three");
 
 //: multi $x* (1) --> x = hello
 //: multi $x* (1) --> x = hello
 //: multi $x* (2) --> x = hello
 //: multi $x* (2) --> x = hello
-//: doAll() returned 4U
+//: doAll() returned true true true true
 test("multi hello");
 
 //: multi $x* (1) --> x = one two three
 //: multi $x* (1) --> x = one two three
 //: multi $x* (2) --> x = one two three
 //: multi $x* (2) --> x = one two three
-//: doAll() returned 4U
+//: doAll() returned true true true true
 test("multi one two three");
 
 func testlocal() {
 	rule "local rule" { println("local rule --> OK"); }
-	count = doAll("local rule");
-	println("local rule count = ", count);
+	result = doAll("local rule");
+	println("local rule result = ", result);
 }
 //: local rule --> OK
-//: local rule count = 1U
+//: local rule result = list { true }
 testlocal();
+
+func testRuleSet(msg, R, str) {
+	println("testRuleSet ", msg, "...");
+	try {
+		result = doIn(R, str);
+		println("doIn() returned ", result);
+	}
+	catch err { println("doIn() backtracked with ", err); }
+	try {
+		result = doInAll(R, str);
+		println("doInAll() returned ", result);
+	}
+	catch err { println("doInAll() backtracked with", err); }
+}
+
+R1 = RuleSet {
+	rule "hello" { return "hi"; },
+	rule "my name is $name*." { return join(" ", "Hi", name, "how are you?"); }
+};
+
+R2 = RuleSet {
+	rule "a b $C" { return C; },
+	rule "a b c $D" { return D; }
+};
+
+//: doIn() returned hi
+//: doInAll() returned hi
+testRuleSet("R1", R1, "hello");
+
+//: doIn() returned list { "Hi Computer how are you?" }
+//: doInAll() returned list { "Hi Computer how are you?" }
+testRuleSet("R2", R1, "my name is Computer.");
+
+//: doIn() returned list {
+//:	    list { "d", " ", "e", " ", "f" }, list { "c", " ", "d", " ", "e", " ", "f" }
+//: }
+//: doInAll() returned list {
+//:	    list { "d", " ", "e", " ", "f" }, list { "c", " ", "d", " ", "e", " ", "f" }
+//: }
+testRuleSet("R2", R2, "a b c d e f");
+
+//: doAllIn() returned list{}
+testRuleSet("R1", R1, list{ "overlap x y z", "first disjoint X", "second disjoint X", "multi x y z" });
+
+//: doAllIn() returned list{}
+testRuleSet("R2", R2, list{ "overlap x y z", "first disjoint X", "second disjoint X", "multi x y z"});
 

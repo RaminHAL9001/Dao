@@ -5999,17 +5999,14 @@ instance Executable ScriptExpr () where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     TryCatch try  name  catch _loc -> do
       ce <- catchPredicate (execNested M.empty $ execute try)
+      let runCatch err = case pure (,,) <*> name <*> err <*> catch of
+            Nothing               -> maybe (return ()) (execNested M.empty . execute) catch
+            Just (nm, err, catch) -> execNested M.empty (localVarDefine nm (new err) >> execute catch)
       case ce of
         OK               ()  -> return ()
-        Backtrack            -> mzero
-        PFail (ExecReturn{}) -> return ()
-        PFail            err -> do
-          let tryCatch = maybe (return ()) (execNested M.empty . execute) catch
-          case name of
-            Nothing -> tryCatch
-            Just nm -> case catch of
-              Nothing    -> tryCatch
-              Just catch -> execNested M.empty (localVarDefine nm (new err) >> execute catch)
+        Backtrack            -> runCatch (Nothing :: Maybe ExecControl)
+        PFail (ExecReturn{}) -> predicate ce
+        PFail            err -> runCatch (Just err)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ForLoop varName inObj thn _loc -> do
       (qref, o) <- execute inObj >>=
@@ -6039,7 +6036,7 @@ instance Executable ScriptExpr () where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ReturnExpr returnStmt o _loc -> do
       o <- (execute o :: Exec (Maybe Object)) >>= maybe (return Nothing) (fmap Just . derefObject)
-      if returnStmt then throwError (ExecReturn o) else execThrow (maybe ONull id o)
+      if returnStmt then throwError (ExecReturn o) else maybe mzero execThrow o
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     WithDoc   expr   _thn    _loc -> void $ execNested M.empty $ do
       o   <- execute expr >>= checkVoid (getLocation expr) "expression in the focus of \"with\" statement"

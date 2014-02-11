@@ -1,8 +1,10 @@
 # The Dao Programming Language
 Copyright (C) 2008-2014, Ramin Honary, all rights reserved.
 
-THIS PROJECT IS NOT YET COMPLETE. It builds and runs, but it is still
-full of bugs, and it outputs considerable debugging information.
+*NOTICE:* This programming language is HIGHLY EXPERIMENTAL, and many major
+changes are being made to the language definition, the interpreter, the
+supporting libraries and functions, and it is all changing at a very rapid
+rate.
 
 The Dao System is a Haskell package (library), and an interactive
 command line interface to this library, designed for constructing simple

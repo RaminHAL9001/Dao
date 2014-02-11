@@ -5491,7 +5491,7 @@ data ParenExpr = ParenExpr AssignExpr Location deriving (Eq, Ord, Typeable, Show
 evalConditional :: ParenExpr -> Exec Bool
 evalConditional obj =
   (execute obj :: Exec (Maybe Object)) >>=
-    checkVoid (getLocation obj) "conditional expression to if statement" >>=
+    checkVoid (getLocation obj) "conditional expression to if statement" >>= derefObject >>=
       execHandleIO [fmap (const False) execIOHandler] . return . not . testNull
 
 instance HasLocation ParenExpr where

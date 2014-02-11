@@ -31,3 +31,7 @@ for x in(c) {
 println("----(after overwrites)-----------------------------------");
 show(c);
 
+a = list{};
+if(a) { throw "Empty list is does not evaluate to null."; }
+else { println("empty list evaluates to null"); }
+

@@ -1,7 +1,7 @@
 # The Dao Programming Language
 Copyright (C) 2008-2014, Ramin Honary, all rights reserved.
 
-*NOTICE:* This programming language is HIGHLY EXPERIMENTAL, and many major
+**NOTICE:** This programming language is HIGHLY EXPERIMENTAL, and many major
 changes are being made to the language definition, the interpreter, the
 supporting libraries and functions, and it is all changing at a very rapid
 rate.

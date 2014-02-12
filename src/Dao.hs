@@ -96,6 +96,7 @@ daoFuncs = do
 data Action
   = Action
     { actionQuery     :: Maybe UStr
+    , actionTokens    :: Maybe [Object]
     , actionPattern   :: Maybe (Glob Object)
     , actionMatch     :: M.Map Name [Object]
     , actionCodeBlock :: Subroutine
@@ -103,8 +104,12 @@ data Action
 
 instance Executable Action (Maybe Object) where
   execute act = local setup $ runCodeBlock localVars (actionCodeBlock act) where
-    setThisVar = maybe id (M.union . (M.singleton (ustr "this") . obj)) (actionQuery act)
-    localVars  = setThisVar $ fmap (obj . fmap obj) (actionMatch act)
+    setVar :: ObjectClass o => String -> (Action -> Maybe o) -> T_dict -> T_dict
+    setVar name f = maybe id (M.insert (ustr name) . obj) (f act)
+    setTokensVar  = setVar "tokens" actionTokens
+    setQueryVar   = setVar "query"  actionQuery
+    setThisVar    = M.union (M.singleton (ustr "this") (obj $ setTokensVar $ setQueryVar $ mempty))
+    localVars     = setThisVar $ fmap (obj . fmap obj) (actionMatch act)
     setup xunit =
       xunit
       { currentQuery     = actionQuery act
@@ -127,13 +132,29 @@ data ActionGroup
     }
 
 instance Executable ActionGroup [Object] where
-  execute o = local (const (actionExecUnit o)) $ do
-    xunit <- ask
-    mapM_ execute $ preExec xunit
-    result <- mapM (catchPredicate . execute) $ getActionList o
-    mapM_ execute $ postExec xunit
-    let f p = case p of { OK (Just o) -> [o]; _ -> [] }
-    return $ result>>=f
+  execute o = local (const (actionExecUnit o)) $ fmap concat $
+    forM (getActionList o) $ \o -> catchPredicate (execute o) >>= \p -> case p of
+      OK (Just o) -> return [o]
+      PFail  err  -> logUncaughtErrors [err] >> return []
+      _           -> return []
+
+-- | Evaluate an executable function between evaluating all of the "BEGIN{}" and "END{}" statements.
+betweenBeginAndEnd :: Exec a -> Exec a
+betweenBeginAndEnd runInBetween = ask >>= \xunit -> do
+  -- Run all "BEGIN{}" procedures.
+  mapM_ execute (preExec xunit)
+  clearUncaughtErrorLog
+  -- Run the given function, presumably it performs a string execution.
+  a <- runInBetween
+  -- Update the "global this" pointer to include the uncaught exceptions.
+  errs <- (OList . map new) <$> getUncaughtErrorLog
+  let ref = Qualified GLOBAL $ Reference [ustr "this"]
+  let upd = M.union (M.singleton (ustr "errors") errs)
+  clearUncaughtErrorLog
+  qualRefUpdate ref $ \o -> return $ Just $ ODict $ upd $ case o of { Just (ODict o) -> o; _ -> mempty; }
+  -- Run all "END{}" procedures.
+  mapM_ execute (postExec xunit)
+  return a
 
 ----------------------------------------------------------------------------------------------------
 
@@ -289,6 +310,7 @@ makeActionsForQuery tree instr = do
             Action
             { actionQuery      = Just instr
             , actionPattern    = Just patn
+            , actionTokens     = Just tox
             , actionMatch      = mtch
             , actionCodeBlock  = exec
             }
@@ -410,7 +432,7 @@ queryDoLocalAll = _queryDoAllFunc True True False
 queryDoGlobal :: [Object] -> Exec (Maybe Object)
 queryDoGlobal = _queryDoFunc True False True
 
--- | The 'queryDoAllGlobal' function maps to the "doAllGlobal()" built-in function. It works like
+-- | The 'queryDoAllGlobal' function maps to the "doGlobalAll()" built-in function. It works like
 -- the 'queryDoGlobal' function but executes as many matching patterns as possible, regardless of
 -- backtracking or exceptions thrown. Returns the number of successfully matched and evaluated
 -- pattern actions. All execution happens in the current thread. Every rule action that does not
@@ -469,7 +491,7 @@ execStringQueryWith instr xunitList = do
   task <- asks taskForExecUnits
   liftIO $ taskLoop_ task $ flip map xunitList $ \xunit -> do
     rulset <- readIORef (ruleSet xunit)
-    pdicat <- flip ioExec xunit $ makeActionsForQuery [rulset] instr >>= execute
+    pdicat <- flip ioExec xunit $ betweenBeginAndEnd $ makeActionsForQuery [rulset] instr >>= execute
     -- TODO: this case statement should really call into some callback functions installed into the
     -- root 'ExecUnit'.
     case pdicat of

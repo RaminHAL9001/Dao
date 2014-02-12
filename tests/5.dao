@@ -144,3 +144,12 @@ testRuleSet("R1", R1, list{ "overlap x y z", "first disjoint X", "second disjoin
 //: doAllIn() returned list{}
 testRuleSet("R2", R2, list{ "overlap x y z", "first disjoint X", "second disjoint X", "multi x y z"});
 
+rule "my name is $X" {
+	println("this.tokens = ", this.tokens);
+	println("this.query  = ", this.query);
+	println("join(\"\", this.tokens) = ", join("", this.tokens));
+}
+//: this.tokens = list { "my", " ", "name", " ", "is", " ", "Computer" }
+//: this.query  = my name is Computer
+//: join("", this.tokens)  = my name is Computer
+doGlobal("my name is Computer");

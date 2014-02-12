@@ -73,6 +73,7 @@ module Dao.Interpreter(
     ExecControl(ExecReturn, ExecError), execReturnValue, execErrorInfo,
     ExecErrorInfo(ExecErrorInfo), execUnitAtError, execErrExpr, execErrScript, execErrTopLevel,
     mkExecErrorInfo, mkExecError, updateExecErrorInfo, setCtrlReturnValue,
+    logUncaughtErrors, getUncaughtErrorLog, clearUncaughtErrorLog,
     Exec(Exec), execToPredicate, XPure(XPure), xpureToState, runXPure, evalXPure, xpure, xobj, xnote, xonUTF8, xmaybe,
     ExecThrowable(toExecError, execThrow), ioExec,
     ExecHandler(ExecHandler), execHandler,
@@ -2421,6 +2422,7 @@ data ExecUnit
     , programTokenizer   :: Object -- TODO: needs to be set after evaluating module top-level
     , ruleSet            :: IORef (PatternTree Object [Subroutine])
     , lambdaSet          :: IORef [CallableCode]
+    , uncaughtErrors     :: IORef [ExecControl]
     }
 
 -- Initializes a completely empty 'ExecUnit'
@@ -2434,6 +2436,7 @@ _initExecUnit = do
   files    <- newIORef M.empty
   rules    <- newIORef T.Void
   lambdas  <- newIORef []
+  uncaught <- newIORef []
   return $
     ExecUnit
     { globalMethodTable  = mempty
@@ -2459,6 +2462,7 @@ _initExecUnit = do
     , postExec          = []
     , ruleSet           = rules
     , lambdaSet         = lambdas
+    , uncaughtErrors    = uncaught
     }
 
 -- | Creates a new 'ExecUnit'. This is the only way to create a new 'ExecUnit', and it must be run
@@ -2890,6 +2894,21 @@ _setScriptExprError o = _setErrorInfoExpr (\info -> info{ execErrScript=Just o }
 
 _setTopLevelExprError :: TopLevelExpr -> Exec (ExecUnit -> ExecUnit) -> Exec (ExecUnit ->ExecUnit)
 _setTopLevelExprError o = _setErrorInfoExpr (\info -> info{ execErrTopLevel=Just o })
+
+-- | If an error has not been caught, log it in the module where it can be retrieved later. This
+-- function only stores errors constructed with 'ExecError', the 'ExecReturn' constructed objects
+-- are ignored.
+logUncaughtErrors :: [ExecControl] -> Exec ()
+logUncaughtErrors errs = asks uncaughtErrors >>= \ioref -> liftIO $ modifyIORef ioref $
+  (++(errs >>= \e -> case e of { ExecReturn{} -> []; ExecError{} -> [e]; }))
+
+-- | Retrieve all the logged uncaught 'ExecError' values stored by 'logUncaughtErrors'.
+getUncaughtErrorLog :: Exec [ExecControl]
+getUncaughtErrorLog = asks uncaughtErrors >>= liftIO . readIORef 
+
+-- | Clear the log of uncaught 'ExecError' values stored by 'logUncaughtErrors'.
+clearUncaughtErrorLog :: Exec ()
+clearUncaughtErrorLog = asks uncaughtErrors >>= \ioref -> liftIO $ modifyIORef ioref $ const []
 
 ----------------------------------------------------------------------------------------------------
 

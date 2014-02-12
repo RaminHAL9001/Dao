@@ -33,3 +33,12 @@ println("a&b = ", a&b);
 println("a^b = ", a^b);
 println("a-b = ", a-b);
 
+println("a.a = ", a.a);
+a.a = "OK";
+println("a.a = ", a.a);
+println("defined(a.a) = ", defined(a.a));
+println("defined(a.z) = ", defined(a.z));
+
+a[$a] = "YES";
+println("a[$a] = ", a[$a]);
+

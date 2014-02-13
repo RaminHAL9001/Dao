@@ -113,22 +113,25 @@ func testRuleSet(msg, R, str) {
 }
 
 R1 = RuleSet {
-	rule "hello" { return "hi"; },
-	rule "my name is $name*." { return join(" ", "Hi", name, "how are you?"); }
+	rule "hello" { println("R1 rule \"hello\" success"); return "hi"; },
+	rule "my name is $name*." {
+		println("R1 rule \"my name is $name.\" success");
+		return join(" ", "Hi", name, "how are you?");
+	}
 };
 
 R2 = RuleSet {
-	rule "a b $C" { return C; },
-	rule "a b c $D" { return D; }
+	rule "a b $C" { println("R2 rule \"a b $C\" success"); return C; },
+	rule "a b c $D" { println("R2 rule \"a b c $D\" success"); return D; }
 };
 
 //: doIn() returned hi
 //: doInAll() returned hi
-testRuleSet("R1", R1, "hello");
+testRuleSet("R1 \"hello\"", R1, "hello");
 
 //: doIn() returned list { "Hi Computer how are you?" }
 //: doInAll() returned list { "Hi Computer how are you?" }
-testRuleSet("R2", R1, "my name is Computer.");
+testRuleSet("R2 \"my name is Computer\"", R1, "my name is Computer.");
 
 //: doIn() returned list {
 //:	    list { "d", " ", "e", " ", "f" }, list { "c", " ", "d", " ", "e", " ", "f" }
@@ -136,13 +139,29 @@ testRuleSet("R2", R1, "my name is Computer.");
 //: doInAll() returned list {
 //:	    list { "d", " ", "e", " ", "f" }, list { "c", " ", "d", " ", "e", " ", "f" }
 //: }
-testRuleSet("R2", R2, "a b c d e f");
+testRuleSet("R2 \"a b c d e f\"", R2, "a b c d e f");
 
 //: doAllIn() returned list{}
-testRuleSet("R1", R1, list{ "overlap x y z", "first disjoint X", "second disjoint X", "multi x y z" });
+testRuleSet("R1 with many non-matching items", R1, list{ "overlap x y z", "first disjoint X", "second disjoint X", "multi x y z" });
 
 //: doAllIn() returned list{}
-testRuleSet("R2", R2, list{ "overlap x y z", "first disjoint X", "second disjoint X", "multi x y z"});
+testRuleSet("R2 with many non-matching items", R2, list{ "overlap x y z", "first disjoint X", "second disjoint X", "multi x y z"});
+
+R3 = R1 | R2;
+println("\ntypeof(R1|R2) = ", typeof(R3), "\n");
+
+//: doAllIn() returned list{}
+try {
+	testRuleSet("R1|R2 \"hello\", \"my name is computer\", \"a b c d e f\"", R3, "hello", "my name is Computer.", "a b c d e f");
+}
+catch err {
+	msg = "";
+	if(defined(err)) { msg = join("", ": ", err); }
+	println("testRuleset R1|R2 failed", msg);
+}
+
+//: doAllIn() returned list{}
+testRuleSet("R1|R2 with many non-matching items", R3, list{ "overlap x y z", "first disjoint X", "second disjoint X", "multi x y z"});
 
 rule "my name is $X" {
 	println("this.tokens = ", this.tokens);
@@ -159,5 +178,7 @@ rule(p) { println("test-pattern: ", X); }
 
 doGlobal("test one two three pattern");
 doGlobal("test pattern");
+
+
 
 

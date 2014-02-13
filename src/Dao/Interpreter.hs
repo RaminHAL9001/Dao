@@ -3506,6 +3506,7 @@ instance HaskellDataClass (PatternTree Object [Subroutine]) where
             Just (GlobAction{ globPattern=pat, globSubroutine=sub }) -> return $
               insertMultiPattern (++) pat [sub] tree ) tree . zip [1..]
     defListInit initParams listParams
+    defInfixOp ORB $ \ _ tree o -> (new . T.unionWith (++) tree) <$> xmaybe (fromObj o)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4457,8 +4458,8 @@ _xpureBits f g o = o >>= \o -> case o of
   OBytes o -> return $ OBytes $ g o
   _        -> mzero
 
-_xpureBits2 :: (forall a . Bits a => a -> a -> a) -> (T_dict -> T_dict -> T_dict) -> (B.ByteString -> B.ByteString -> B.ByteString) -> XPure Object -> XPure Object -> XPure Object
-_xpureBits2 bits dict bytes a b = a >>= \a -> b >>= \b -> do
+_xpureBits2 :: InfixOp -> (forall a . Bits a => a -> a -> a) -> (T_dict -> T_dict -> T_dict) -> (B.ByteString -> B.ByteString -> B.ByteString) -> XPure Object -> XPure Object -> XPure Object
+_xpureBits2 op bits dict bytes a b = a >>= \a -> b >>= \b -> do
   let t = max (typeOfObj a) (typeOfObj b)
   a <- castToCoreType t a
   b <- castToCoreType t b
@@ -4477,17 +4478,17 @@ _xpureBits2 bits dict bytes a b = a >>= \a -> b >>= \b -> do
         , OTree a, OTree b
         ]
     (OBytes a, OBytes b) -> return $ OBytes $ bytes a b
-    _                    -> mzero
+    _                    -> eval_Infix_op op True a b
 
 _dict_XOR :: (Object -> Object -> Object) -> T_dict -> T_dict -> T_dict
 _dict_XOR f a b = M.difference (M.unionWith f a b) (M.intersectionWith f a b)
 
 instance Bits (XPure Object) where
-  a .&. b = _xpureBits2 (.&.) (M.intersectionWith (flip const)) (bytesBitArith (.&.)) a b <|>
+  a .&. b = _xpureBits2 AND (.&.) (M.intersectionWith (flip const)) (bytesBitArith (.&.)) a b <|>
     (a >>= \a -> b >>= \b -> eval_Infix_op ANDB True a b)
-  a .|. b = _xpureBits2 (.|.) (M.unionWith (flip const))        (bytesBitArith (.|.)) a b <|>
+  a .|. b = _xpureBits2 ORB (.|.) (M.unionWith (flip const))        (bytesBitArith (.|.)) a b <|>
     (a >>= \a -> b >>= \b -> eval_Infix_op ORB  True a b)
-  xor a b = _xpureBits2  xor  (_dict_XOR (flip const))          (bytesBitArith  xor ) a b <|>
+  xor a b = _xpureBits2 XORB xor  (_dict_XOR (flip const))          (bytesBitArith  xor ) a b <|>
     (a >>= \a -> b >>= \b -> eval_Infix_op XORB True a b)
   complement  = _xpureBits complement (B.map complement)
   shift   o i = o >>= \o -> case o of
@@ -7519,7 +7520,7 @@ instance Executable ArithExpr (Maybe Object) where
           (left, right) <- case op of
             ARROW -> liftM2 (,) derefLeft evalRight
             _     -> liftM2 (,) derefLeft derefRight
-          execute $ fmap Just (evalInfixOp op left right)
+          execute (fmap Just $ evalInfixOp op left right)
 
 instance ObjectClass ArithExpr where { obj=new; fromObj=objFromHaskellData; }
 
@@ -8732,12 +8733,10 @@ interface init defIfc =
     typ               = typeOf init
     ifc               = execState (daoClassDefState defIfc) initHDIfcBuilder
     mkArray oiName elems =
-      if null elems
-        then  Nothing
-        else  minAccumArray (onlyOnce oiName) Nothing $ map (\ (i, e) -> (i, (i, Just e))) elems
-    onlyOnce oiName a b  = case b of
-      (_, Nothing) -> a
-      (i, Just  _) -> conflict oiName ("the "++show i++" operator")
+      minAccumArray (onlyOnce oiName) Nothing $ map (\ (i, e) -> (i, (i, Just e))) elems
+    onlyOnce oiName a (i, b)  = case a of
+      Nothing -> b
+      Just  _ -> conflict oiName ("the "++show i++" operator")
     conflict oiName funcName = error $ concat $
       [ "'", oiName
       , "' has conflicting functions for ", funcName

@@ -1,29 +1,29 @@
-rule "match $x*" {
-	println("match $x* --> x = ", x); return true;
+rule "match $X" {
+	println("match $X --> x = ", x); return true;
 }
 
-rule "overlap $x*" {
-	println("overlap $x* (1) --> x = ", x); return true;
+rule "overlap $X" {
+	println("overlap $X (1) --> x = ", x); return true;
 }
 
-rule "overlap $x*" {
-	println("overlap $x* (2) --> x = ", x); return true;
+rule "overlap $X" {
+	println("overlap $X (2) --> x = ", x); return true;
 }
 
-rule("shared $x*", "shared $x*") {
-	println("shared $x* --> x = ", x); return true;
+rule("shared $X", "shared $X") {
+	println("shared $X --> x = ", x); return true;
 }
 
-rule("first disjoint $x*", "second disjoint $x*") {
+rule("first disjoint $X", "second disjoint $X") {
 	println("(first/second) disjoint $x --> x = ", x); return true;
 }
 
-rule("multi $x*", "multi $x*") {
-	println("multi $x* (1) --> x = ", x); return true;
+rule("multi $X", "multi $X") {
+	println("multi $X (1) --> x = ", x); return true;
 }
 
-rule("multi $x*", "multi $x*") {
-	println("multi $x* (2) --> x = ", x); return true;
+rule("multi $X", "multi $X") {
+	println("multi $X (2) --> x = ", x); return true;
 }
 
 func test(str) {
@@ -31,31 +31,31 @@ func test(str) {
 	println("doAll() returned ", join(" ", result));
 }
 
-//: match $x* --> x = hello
+//: match $X --> x = hello
 //: doAll() returned true
 test("match hello");
 
-//: match $x* --> x = one two three
+//: match $X --> x = one two three
 //: doAll() returned true
 test("match one two three");
 
-//: overlap $x* (1) --> x = hello
-//: overlap $x* (2) --> x = hello
+//: overlap $X (1) --> x = hello
+//: overlap $X (2) --> x = hello
 //: doAll() returned true true
 test("overlap hello");
 
-//: overlap $x* (1) --> x = one two three
-//: overlap $x* (2) --> x = one two three
+//: overlap $X (1) --> x = one two three
+//: overlap $X (2) --> x = one two three
 //: doAll() returned true true
 test("overlap one two three");
 
-//: shared $x* --> x = hello
-//: shared $x* --> x = hello
+//: shared $X --> x = hello
+//: shared $X --> x = hello
 //: doAll() returned true true
 test("shared hello");
 
-//: shared $x* --> x = one two three
-//: shared $x* --> x = one two three
+//: shared $X --> x = one two three
+//: shared $X --> x = one two three
 //: doAll() returned true true
 test("shared one two three");
 
@@ -75,17 +75,17 @@ test("first disjoint one two three");
 //: doAll() returned true
 test("second disjoint one two three");
 
-//: multi $x* (1) --> x = hello
-//: multi $x* (1) --> x = hello
-//: multi $x* (2) --> x = hello
-//: multi $x* (2) --> x = hello
+//: multi $X (1) --> x = hello
+//: multi $X (1) --> x = hello
+//: multi $X (2) --> x = hello
+//: multi $X (2) --> x = hello
 //: doAll() returned true true true true
 test("multi hello");
 
-//: multi $x* (1) --> x = one two three
-//: multi $x* (1) --> x = one two three
-//: multi $x* (2) --> x = one two three
-//: multi $x* (2) --> x = one two three
+//: multi $X (1) --> x = one two three
+//: multi $X (1) --> x = one two three
+//: multi $X (2) --> x = one two three
+//: multi $X (2) --> x = one two three
 //: doAll() returned true true true true
 test("multi one two three");
 
@@ -153,3 +153,11 @@ rule "my name is $X" {
 //: this.query  = my name is Computer
 //: join("", this.tokens)  = my name is Computer
 doGlobal("my name is Computer");
+
+p = "test$X pattern";
+rule(p) { println("test-pattern: ", X); }
+
+doGlobal("test one two three pattern");
+doGlobal("test pattern");
+
+

@@ -39,3 +39,11 @@ a = list{};
 if(a) { throw "Empty list is does not evaluate to null."; }
 else { println("empty list evaluates to null"); }
 
+//: a = list { "hello", "world" }
+a = list{ "hello", "world" };
+println("a = ", a);
+
+//: a <<= 1; a = list { "world" }
+a <<= 1;
+println("a <<= 1; a = ", a);
+

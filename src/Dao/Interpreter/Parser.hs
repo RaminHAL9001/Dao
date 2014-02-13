@@ -436,13 +436,10 @@ ruleFuncPTab = table $
   [ tableItemBy "rule" $ \startTok ->
       expect "list of strings after \"rule\" statement" $ do
         lst <- commented $ joinEvalPTable $ table $
-          [ tableItem STRINGLIT $ \str -> return $ AST_StringList [Com (asUStr str)] (asLocation str)
-          , tableItemBy "(" $ \openTok -> do
-              let lu = LocationUnknown
-              (lst, loc) <- commaSepd "strings for rule header" ")"
-                (flip AST_NoStrings lu) (token STRINGLIT asUStr)
-                (\lst -> if null lst then AST_NoStrings [] lu else AST_StringList lst lu)
-              return (setLocation lst (asLocation openTok <> loc))
+          [ tableItem STRINGLIT $ \str -> return $ AST_RuleString (Com $ read $ uchars $ asUStr str) (asLocation str)
+          , fmap (\ (AST_ObjList coms lst loc) ->
+                  if null lst then AST_NullRules coms loc else AST_RuleHeader lst loc
+              ) <$> commaSepdObjList "rule header" "(" ")"
           ]
         expect "bracketed expression after rule header" $ do
           (scrpt, endLoc) <- bracketed ("script expression for \"rule\" statement")

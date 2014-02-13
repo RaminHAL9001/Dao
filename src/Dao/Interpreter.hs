@@ -97,8 +97,8 @@ module Dao.Interpreter(
     AST_Param(AST_NoParams, AST_Param), 
     ParamListExpr(ParamListExpr), getTypeCheckList, paramsToGlobExpr,
     AST_ParamList(AST_ParamList), 
-    RuleStrings(RuleStrings), 
-    AST_StringList(AST_NoStrings, AST_StringList), 
+    RuleHeadExpr(RuleStringExpr, RuleHeadExpr), 
+    AST_RuleHeader(AST_NullRules, AST_RuleString, AST_RuleHeader), 
     asReference, asInteger, asRational, asPositive, asComplex, objConcat,
     objToBool, extractStringElems,
     requireAllStringArgs, getStringsToDepth, derefStringsToDepth, recurseGetAllStrings, 
@@ -3426,8 +3426,8 @@ instance HasLocation CodeBlock where
   delLocation o = CodeBlock (fmap delLocation (codeBlock o))
 
 instance B.Binary CodeBlock MTab where
-  put (CodeBlock o) = B.prefixByte 0x3D $ B.put o
-  get = B.tryWord8 0x3D $ CodeBlock <$> B.get
+  put (CodeBlock o) = B.prefixByte 0x3E $ B.put o
+  get = B.tryWord8 0x3E $ CodeBlock <$> B.get
 
 instance PPrintable CodeBlock where { pPrint = pPrintInterm }
 
@@ -3994,95 +3994,135 @@ instance HaskellDataClass AST_ParamList where
 
 ----------------------------------------------------------------------------------------------------
 
-data RuleStrings = RuleStrings [UStr] Location deriving (Eq, Ord, Typeable, Show)
+data RuleHeadExpr
+  = RuleStringExpr  UStr      Location
+  | RuleHeadExpr [AssignExpr] Location
+  deriving (Eq, Ord, Typeable, Show)
 
-instance HasNullValue RuleStrings where
-  nullValue = RuleStrings [] LocationUnknown
-  testNull (RuleStrings a _) = null a
+instance HasNullValue RuleHeadExpr where
+  nullValue = RuleStringExpr nil LocationUnknown
+  testNull (RuleStringExpr a _) = a==nil
+  testNull _ = False
 
-instance HasLocation RuleStrings where
-  getLocation (RuleStrings _ o)     = o
-  setLocation (RuleStrings a _) loc = RuleStrings a loc
-  delLocation (RuleStrings a _)     = RuleStrings a LocationUnknown
+instance HasLocation RuleHeadExpr where
+  getLocation o     = case o of
+    RuleStringExpr _ o -> o
+    RuleHeadExpr   _ o -> o
+  setLocation o loc = case o of
+    RuleStringExpr o _ -> RuleStringExpr o loc
+    RuleHeadExpr   o _ -> RuleHeadExpr o loc
+  delLocation o     = case o of
+    RuleStringExpr o _ -> RuleStringExpr o LocationUnknown
+    RuleHeadExpr   o _ -> RuleHeadExpr (fmap delLocation o) LocationUnknown
 
-instance NFData RuleStrings where { rnf (RuleStrings a b) = deepseq a $! deepseq b () }
+instance NFData RuleHeadExpr where
+  rnf (RuleStringExpr a b) = deepseq a $! deepseq b ()
+  rnf (RuleHeadExpr     a b) = deepseq a $! deepseq b ()
 
-instance B.Binary RuleStrings MTab where
-  put (RuleStrings a b) = B.prefixByte 0x3A $ B.put a >> B.put b
-  get = (B.tryWord8 0x3A $ pure RuleStrings <*> B.get <*> B.get) <|> fail "expecting RuleStrings"
+instance B.Binary RuleHeadExpr MTab where
+  put o = case o of
+    RuleStringExpr a b -> B.prefixByte 0x3A $ B.put a >> B.put b
+    RuleHeadExpr     a b -> B.prefixByte 0x3B $ B.put a >> B.put b
+  get = B.word8PrefixTable <|> fail "expecting RuleHeadExpr"
 
-instance ObjectClass RuleStrings where { obj=new; fromObj=objFromHaskellData; }
+instance B.HasPrefixTable RuleHeadExpr B.Byte MTab where
+  prefixTable = B.mkPrefixTableWord8 "RuleHeadExpr" 0x3A 0x3B
+    [ pure RuleStringExpr <*> B.get <*> B.get
+    , pure RuleHeadExpr     <*> B.get <*> B.get
+    ]
 
-instance HaskellDataClass RuleStrings where
+instance Executable RuleHeadExpr [UStr] where
+  execute o = case o of
+    RuleStringExpr r _ -> return [r]
+    RuleHeadExpr   r _ ->
+      forM r (\o ->
+          execute o >>= checkVoid (getLocation o) "item in rule header" >>= derefObject
+        ) >>= requireAllStringArgs "in rule header"
+
+instance ObjectClass RuleHeadExpr where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass RuleHeadExpr where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
 
-data AST_StringList
-  = AST_NoStrings  [Comment]  Location
-  | AST_StringList [Com UStr] Location
+data AST_RuleHeader
+  = AST_NullRules  [Comment]  Location
+  | AST_RuleString (Com UStr) Location
+  | AST_RuleHeader [Com AST_Assign] Location
   deriving (Eq, Ord, Typeable, Show)
 
-instance NFData AST_StringList where
-  rnf (AST_NoStrings  a b) = deepseq a $! deepseq b ()
-  rnf (AST_StringList a b) = deepseq a $! deepseq b ()
+instance NFData AST_RuleHeader where
+  rnf (AST_NullRules  a b) = deepseq a $! deepseq b ()
+  rnf (AST_RuleString a b) = deepseq a $! deepseq b ()
+  rnf (AST_RuleHeader a b) = deepseq a $! deepseq b ()
 
-instance HasNullValue AST_StringList where
-  nullValue = AST_NoStrings [] LocationUnknown
-  testNull (AST_NoStrings _ _) = True
+instance HasNullValue AST_RuleHeader where
+  nullValue = AST_NullRules [] LocationUnknown
+  testNull (AST_NullRules _ _) = True
   testNull _ = False
 
-instance HasLocation AST_StringList where
+instance HasLocation AST_RuleHeader where
   getLocation o     = case o of
-    AST_NoStrings  _ o -> o
-    AST_StringList _ o -> o
+    AST_NullRules  _ o -> o
+    AST_RuleString _ o -> o
+    AST_RuleHeader _ o -> o
   setLocation o loc = case o of
-    AST_NoStrings  a _ -> AST_NoStrings  a loc
-    AST_StringList a _ -> AST_StringList a loc
+    AST_NullRules  a _ -> AST_NullRules  a loc
+    AST_RuleString a _ -> AST_RuleString a loc
+    AST_RuleHeader a _ -> AST_RuleHeader a loc
   delLocation o     = case o of
-    AST_NoStrings  a _ -> AST_NoStrings  a LocationUnknown
-    AST_StringList a _ -> AST_StringList a LocationUnknown
+    AST_NullRules  a _ -> AST_NullRules  a LocationUnknown
+    AST_RuleString a _ -> AST_RuleString a LocationUnknown
+    AST_RuleHeader a _ -> AST_RuleHeader (fmap delLocation a) LocationUnknown
 
-instance PPrintable AST_StringList where
+instance PPrintable AST_RuleHeader where
   pPrint o = case o of
-    AST_NoStrings  coms _ -> pInline [pString "rule(", pPrint coms, pString ")"]
-    AST_StringList [r]  _ -> pInline [pString "rule ", pPrint r]
-    AST_StringList ruls _ -> pList (pString "rule") "(" ", " ")" (fmap pPrint ruls)
+    AST_NullRules  coms _ -> pInline [pString "rule(", pPrint coms, pString ")"]
+    AST_RuleString r    _ -> pInline [pString "rule ", pPrintComWith pShow r, pString " "]
+    AST_RuleHeader ruls _ -> pList (pString "rule") "(" ", " ")" (fmap pPrint ruls)
 
-instance ToDaoStructClass AST_StringList where
+instance ToDaoStructClass AST_RuleHeader where
   toDaoStruct = ask >>= \o -> case o of
-    AST_NoStrings coms loc -> do
+    AST_NullRules coms loc -> do
       renameConstructor "NoStrings"
       putComments coms >> putLocation loc
-    AST_StringList lst loc -> do
-      renameConstructor "StringList"
+    AST_RuleString itm loc -> do
+      renameConstructor "StringItem"
+      "items" .= itm >> putLocation loc
+    AST_RuleHeader lst loc -> do
+      renameConstructor "ValuesList"
       "items" .= lst >> putLocation loc
 
-instance FromDaoStructClass AST_StringList where
+instance FromDaoStructClass AST_RuleHeader where
   fromDaoStruct = msum $
-    [ constructor "NoStrings"  >> pure AST_NoStrings  <*> comments <*> location
-    , constructor "StringList" >> pure AST_StringList <*> reqList "items" <*> location
+    [ constructor "NoStrings"  >> pure AST_NullRules  <*> comments <*> location
+    , constructor "StringItem" >> pure AST_RuleString <*> req "items" <*> location
+    , constructor "ValuesList" >> pure AST_RuleHeader <*> reqList "items" <*> location
     ]
 
-instance HasRandGen AST_StringList where
+instance HasRandGen AST_RuleHeader where
   randO = countRunRandChoice
   randChoice = randChoiceList $
-    [ pure AST_StringList <*> randListOf 1 4 (randComWith (fmap (ustr . show) (randO::RandO (Glob UStr)))) <*> no
-    , pure AST_NoStrings  <*> randO <*> no
+    [ pure AST_RuleHeader <*> randListOf 1 4 randO <*> no
+    , pure AST_RuleString <*> randO <*> no
+    , pure AST_NullRules  <*> randO <*> no
     ]
 
-instance Intermediate RuleStrings AST_StringList where
+instance Intermediate RuleHeadExpr AST_RuleHeader where
   toInterm   o = case o of
-    AST_NoStrings  _ loc -> liftM2 RuleStrings [[]] [loc]
-    AST_StringList o loc -> liftM2 RuleStrings [fmap unComment o] [loc]
+    AST_NullRules  _ loc -> [RuleHeadExpr [] loc]
+    AST_RuleString o loc -> [RuleStringExpr (unComment o) loc]
+    AST_RuleHeader o loc -> liftM2 RuleHeadExpr [o>>=uc0]  [loc]
   fromInterm o = case o of
-    RuleStrings [] loc -> liftM2 AST_NoStrings  [[]]         [loc]
-    RuleStrings o  loc -> liftM2 AST_StringList [fmap Com o] [loc]
+    RuleHeadExpr [] loc     -> [AST_NullRules              []   loc]
+    RuleStringExpr o  loc -> [AST_RuleString       (Com   o)  loc]
+    RuleHeadExpr o  loc     -> liftM2 AST_RuleHeader [o>>=nc0] [loc]
 
-instance ObjectClass AST_StringList where { obj=new; fromObj=objFromHaskellData; }
+instance ObjectClass AST_RuleHeader where { obj=new; fromObj=objFromHaskellData; }
 
-instance HaskellDataClass AST_StringList where
+instance HaskellDataClass AST_RuleHeader where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     -- autoDefToStruct >> autoDefFromStruct
@@ -5665,8 +5705,8 @@ instance HasLocation ElseExpr where
   delLocation (ElseExpr a _  )     = ElseExpr (delLocation a) LocationUnknown
 
 instance B.Binary ElseExpr MTab where
-  put (ElseExpr a b) = B.prefixByte 0x3C $ B.put a >> B.put b
-  get = (B.tryWord8 0x3C $ pure ElseExpr <*> B.get <*> B.get) <|> fail "expecting ElseExpr"
+  put (ElseExpr a b) = B.prefixByte 0x3D $ B.put a >> B.put b
+  get = (B.tryWord8 0x3D $ pure ElseExpr <*> B.get <*> B.get) <|> fail "expecting ElseExpr"
 
 instance Executable ElseExpr Bool where { execute (ElseExpr ifn _) = execute ifn }
 
@@ -6348,8 +6388,8 @@ instance HasLocation ObjListExpr where
   delLocation (ObjListExpr a _  )     = ObjListExpr (fmap delLocation a) LocationUnknown
 
 instance B.Binary ObjListExpr MTab where
-  put (ObjListExpr lst loc) = B.prefixByte 0x3B $ B.putUnwrapped lst >> B.put loc
-  get = (B.tryWord8 0x3B $ pure ObjListExpr <*> B.getUnwrapped <*> B.get) <|> fail "expecting ObjListExpr"
+  put (ObjListExpr lst loc) = B.prefixByte 0x3C $ B.putUnwrapped lst >> B.put loc
+  get = (B.tryWord8 0x3C $ pure ObjListExpr <*> B.getUnwrapped <*> B.get) <|> fail "expecting ObjListExpr"
 
 instance Executable ObjListExpr [Object] where
   execute (ObjListExpr exprs _) = do
@@ -6913,7 +6953,7 @@ instance HaskellDataClass AST_Single where
 data RuleFuncExpr
   = LambdaExpr    ParamListExpr CodeBlock Location
   | FuncExpr Name ParamListExpr CodeBlock Location
-  | RuleExpr RuleStrings        CodeBlock Location
+  | RuleExpr RuleHeadExpr       CodeBlock Location
   deriving (Eq, Ord, Typeable, Show)
 
 instance NFData RuleFuncExpr where
@@ -6971,13 +7011,11 @@ instance Executable RuleFuncExpr (Maybe Object) where
       store <- asks execStack
       storeUpdate store name (return . const o)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    RuleExpr (RuleStrings params _) scrpt _ -> do
-      exec  <- setupCodeBlock scrpt
-      globs <- forM params $ \param -> do
-        let pars = do -- the string parameter is still a quoted
-              (str, rem) <- readsPrec 0 (uchars param) -- first parse a 'Prelude.String'
-              guard (null rem) >> readsPrec 0 (str::String) -- then parse a 'Dao.Glob.Glob'
-        case pars of
+    RuleExpr rs scrpt _ -> do
+      params <- execute rs
+      exec   <- setupCodeBlock scrpt
+      globs  <- forM params $ \param -> do
+        case readsPrec 0 $ uchars param of
           [(pat, "")] -> do
             -- TODO: tokenize the pattern Single's with the 'programTokenizer'
             return $ parseOverSingles pat (fmap (OString . ustr) . simpleTokenizer)
@@ -6996,7 +7034,7 @@ instance HaskellDataClass RuleFuncExpr where
 data AST_RuleFunc
   = AST_Lambda              (Com AST_ParamList)  AST_CodeBlock Location
   | AST_Func [Comment] Name (Com AST_ParamList)  AST_CodeBlock Location
-  | AST_Rule                (Com AST_StringList) AST_CodeBlock Location
+  | AST_Rule                (Com AST_RuleHeader) AST_CodeBlock Location
   deriving (Eq, Ord, Typeable, Show)
 
 instance NFData AST_RuleFunc where

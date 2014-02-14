@@ -510,11 +510,10 @@ execStringQueryWith instr xunitList = do
 -- and all will be executed.
 evalScriptString :: String -> Exec ()
 evalScriptString instr =
-  void $ execNested M.empty $ mapM_ execute $
-    case parse (daoGrammar{mainParser = concat <$> (many script <|> return [])}) mempty instr of
-      Backtrack -> error "cannot parse expression"
-      PFail tok -> error ("error: "++show tok)
-      OK   expr -> concatMap toInterm expr
+  execNested M.empty $ case concat <$> parse (daoGrammar{ mainParser=many script }) mempty instr of
+    Backtrack -> liftIO $ hPutStrLn stderr "backtracking on malformed expression" >> return mempty
+    PFail tok -> liftIO $ hPutStrLn stderr ("error: "++show tok) >> return mempty
+    OK   expr -> mapM_ execute (expr >>= toInterm >>= \scrpt -> [TopScript scrpt $ getLocation scrpt])
 
 -- | Evaluates the @EXIT@ scripts for every presently loaded dao program, and then clears the
 -- 'Dao.Interpreter.pathIndex', effectively removing every loaded dao program and idea file from memory.

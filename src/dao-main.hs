@@ -63,9 +63,9 @@ inputLoop = do
       --  Nothing  -> return Nothing
       --  Just str -> addHistory str >> return (Just str)
       case words (uchars str) of
-        [":quit"   ]  -> return Nothing
-        [":license"]  -> liftIO (putStrLn license_text) >> inputLoop
-        (":" : _cmds) -> do
+        o | o==[":quit"   ] || o==[":", "quit"   ] -> return Nothing
+        o | o==[":license"] || o==[":", "license"] -> liftIO (putStrLn license_text) >> inputLoop
+        ((':':_) : _) -> do
           evalScriptString (dropWhile (\c -> isSpace c || c==':') str)
           inputLoop
         (a:cmds) | head a==':' -> do

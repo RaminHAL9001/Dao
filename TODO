@@ -1,4 +1,7 @@
 TODO:
+* Built-in functions should take type signatures, non-built-in functions should have a way to take
+	an unspecified number of parameters.
+
 * I would like to re-merge much of the "Dao.Evaluator" module back into the "Dao.Object" module, but
 	I cannot because of the 'Dao.Evaluator.ObjectClass' which requires the 'Exec' monad which
 	requires the 'ExecUnit' data type, which requires most of the data types defined in the

@@ -152,16 +152,16 @@ println("\ntypeof(R1|R2) = ", typeof(R3), "\n");
 
 //: doAllIn() returned list{}
 try {
-	testRuleSet("R1|R2 \"hello\", \"my name is computer\", \"a b c d e f\"", R3, "hello", "my name is Computer.", "a b c d e f");
+	testRuleSet("R1|R2 \"hello\", \"my name is computer\", \"a b c d e f\"", R3, list{"hello", "my name is Computer.", "a b c d e f"});
 }
 catch err {
-	msg = "";
-	if(defined(err)) { msg = join("", ": ", err); }
-	println("testRuleset R1|R2 failed", msg);
+	msg = "failed";
+	if(defined(err)) { msg = join("", "failed: ", err); }
+	println("testRuleset R1|R2 ", msg);
 }
 
 //: doAllIn() returned list{}
-testRuleSet("R1|R2 with many non-matching items", R3, list{ "overlap x y z", "first disjoint X", "second disjoint X", "multi x y z"});
+testRuleSet("R1|R2 with many non-matching items", R3, list{"overlap x y z", "first disjoint X", "second disjoint X", "multi x y z"});
 
 rule "my name is $X" {
 	println("this.tokens = ", this.tokens);

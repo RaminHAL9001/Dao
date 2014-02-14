@@ -18,6 +18,8 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
+{-# LANGUAGE CPP #-}
+
 module Dao.Interpreter(
     DaoSetupM(), DaoSetup, haskellType, daoProvides, daoClass, daoConstant, daoFunction,
     daoInitialize, setupDao, DaoFunc, daoFunc, autoDerefParams, daoForeignCall, executeDaoFunc,
@@ -217,9 +219,19 @@ import           Control.Monad.State
 
 import           System.IO
 
---import Debug.Trace
---dbg :: MonadIO m => String -> m ()
---dbg = liftIO . hPutStrLn stderr
+#if 0
+import Debug.Trace
+dbg :: MonadIO m => String -> m ()
+dbg = liftIO . hPutStrLn stderr
+dbg' :: MonadIO m => String -> m a -> m a
+dbg' msg f = f >>= \a -> dbg msg >> return a
+dbg0 :: (MonadPlus m, MonadIO m, MonadError e m) => String -> m a -> m a
+dbg0 msg f = do
+  dbg ("(BEGIN) "++msg)
+  catchError
+    (mplus (f >>= \a -> dbg (msg++" (DONE)") >> return a) (dbg (msg++" (BACKTRACKED)") >> mzero))
+    (\e -> dbg (msg++" (ERROR)") >> throwError e)
+#endif
 
 ----------------------------------------------------------------------------------------------------
 

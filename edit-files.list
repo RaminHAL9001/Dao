@@ -34,6 +34,7 @@ tests/collatz1.dao
 tests/collatz2.dao
 tests/list.dao
 
+src/Dao/Lib/WordNet.hs
 src/Dao/Lib/DataFile.hs
 src/Dao/Lib/Array.hs
 src/Dao/Lib/Dict.hs

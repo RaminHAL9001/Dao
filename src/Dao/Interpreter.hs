@@ -164,15 +164,15 @@ module Dao.Interpreter(
     HaskellDataClass(haskellDataInterface), toHaskellData, fromHaskellData,
     Interface(),
     objCastFrom, objEquality, objOrdering, objBinaryFormat, objNullTest, objPPrinter,
-    objIndexer, objToStruct, objFromStruct, objDictInit, objListInit,
+    objSizer, objIndexer, objIndexUpdater, objToStruct, objFromStruct, objDictInit, objListInit,
     objInfixOpTable, objArithPfxOpTable, objCallable, objDereferencer,
     interfaceAdapter, interfaceToDynamic,
     DaoClassDefM(), interface, DaoClassDef,
     defCastFrom, autoDefEquality, defEquality, autoDefOrdering, defOrdering, autoDefBinaryFmt,
     defBinaryFmt, autoDefNullTest, defNullTest, defPPrinter, autoDefPPrinter, defReadIterable,
-    autoDefReadIterable, defUpdateIterable, autoDefUpdateIterable, defIndexer, autoDefToStruct,
-    defToStruct, autoDefFromStruct, defFromStruct, defDictInit, defListInit, defInfixOp,
-    defPrefixOp, defCallable, defDeref, defLeppard
+    autoDefReadIterable, defUpdateIterable, autoDefUpdateIterable, defIndexer, defIndexUpdater,
+    defSizer, autoDefToStruct, defToStruct, autoDefFromStruct, defFromStruct, defDictInit,
+    defListInit, defInfixOp, defPrefixOp, defCallable, defDeref, defLeppard
   )
   where
 
@@ -6702,7 +6702,7 @@ instance Executable RefOpExpr (Maybe Object) where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ArraySubExpr o i loc -> do
       o <- execute o >>= checkVoid loc "operand of subscript expression" >>= derefObject
-      fmap Just $ execute i >>= mapM derefObject >>= foldM indexObject o
+      fmap Just $ execute i >>= foldM indexObject o
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     FuncCall op args loc -> do -- a built-in function call
       o  <- execute op >>= checkVoid loc "function selector evaluates to void"
@@ -7215,6 +7215,7 @@ indexObject :: Object -> Object -> Exec Object
 indexObject o idx = case o of
   OList []  -> execThrow $ obj [obj "indexing empty list:", o, idx]
   OList lst -> do
+    idx <- derefObject idx
     i <- mplus (execute $ asInteger idx) $
       execThrow (obj [obj "must index list with integer:", idx, obj "indexing:", o])
     if i<0
@@ -8345,22 +8346,24 @@ fromHaskellData (HaskellData o _) = fromDynamic o
 data Interface typ =
   Interface
   { objHaskellType     :: TypeRep -- ^ this type is deduced from the initial value provided to the 'interface'.
-  , objCastFrom        :: Maybe (Object -> typ)                                                      -- ^ defined by 'defCastFrom'
-  , objEquality        :: Maybe (typ -> typ -> Bool)                                                 -- ^ defined by 'defEquality'
-  , objOrdering        :: Maybe (typ -> typ -> Ordering)                                             -- ^ defined by 'defOrdering'
-  , objBinaryFormat    :: Maybe (typ -> Put, Get typ)                                                -- ^ defined by 'defBinaryFmt'
-  , objNullTest        :: Maybe (typ -> Bool)                                                        -- ^ defined by 'defNullTest'
-  , objPPrinter        :: Maybe (typ -> PPrint)                                                      -- ^ defined by 'defPPrinter'
-  , objReadIterable    :: Maybe (typ -> Exec (Maybe Object, typ))                                    -- ^ defined by 'defReadIterator'
-  , objUpdateIterable  :: Maybe (typ -> Maybe Object -> Exec typ)                                    -- ^ defined by 'defUpdateIterator'
-  , objIndexer         :: Maybe (typ -> Object -> Exec Object)                                       -- ^ defined by 'defIndexer'
-  , objToStruct        :: Maybe (typ -> Exec T_struct)                                               -- ^ defined by 'defStructFormat'
-  , objFromStruct      :: Maybe (T_struct -> Exec typ)                                               -- ^ defined by 'defStructFormat'
+  , objCastFrom        :: Maybe (Object -> typ)                                                         -- ^ defined by 'defCastFrom'
+  , objEquality        :: Maybe (typ -> typ -> Bool)                                                    -- ^ defined by 'defEquality'
+  , objOrdering        :: Maybe (typ -> typ -> Ordering)                                                -- ^ defined by 'defOrdering'
+  , objBinaryFormat    :: Maybe (typ -> Put, Get typ)                                                   -- ^ defined by 'defBinaryFmt'
+  , objNullTest        :: Maybe (typ -> Bool)                                                           -- ^ defined by 'defNullTest'
+  , objPPrinter        :: Maybe (typ -> PPrint)                                                         -- ^ defined by 'defPPrinter'
+  , objReadIterable    :: Maybe (typ -> Exec (Maybe Object, typ))                                       -- ^ defined by 'defReadIterator'
+  , objUpdateIterable  :: Maybe (typ -> Maybe Object -> Exec typ)                                       -- ^ defined by 'defUpdateIterator'
+  , objIndexer         :: Maybe (typ -> Object -> Exec Object)                                          -- ^ defined by 'defIndexer'
+  , objIndexUpdater    :: Maybe (typ -> Maybe Object -> Exec (Object, typ))                             -- ^ defined by 'defIndexUpdater'
+  , objSizer           :: Maybe (typ -> Exec Object)                                                    -- ^ defined by 'defSizer'
+  , objToStruct        :: Maybe (typ -> Exec T_struct)                                                  -- ^ defined by 'defStructFormat'
+  , objFromStruct      :: Maybe (T_struct -> Exec typ)                                                  -- ^ defined by 'defStructFormat'
   , objDictInit        :: Maybe ([Object] -> Exec typ, typ -> [(Object, UpdateOp, Object)] -> Exec typ) -- ^ defined by 'defDictInit'
-  , objListInit        :: Maybe ([Object] -> Exec typ, typ -> [Object] -> Exec typ)                  -- ^ defined by 'defDictInit'
-  , objInfixOpTable    :: Maybe (Array InfixOp  (Maybe (InfixOp  -> typ -> Object -> XPure Object))) -- ^ defined by 'defInfixOp'
-  , objArithPfxOpTable :: Maybe (Array ArithPfxOp (Maybe (ArithPfxOp -> typ -> XPure Object)))       -- ^ defined by 'defPrefixOp'
-  , objCallable        :: Maybe (typ -> Exec [CallableCode])                                         -- ^ defined by 'defCallable'
+  , objListInit        :: Maybe ([Object] -> Exec typ, typ -> [Object] -> Exec typ)                     -- ^ defined by 'defDictInit'
+  , objInfixOpTable    :: Maybe (Array InfixOp  (Maybe (InfixOp  -> typ -> Object -> XPure Object)))    -- ^ defined by 'defInfixOp'
+  , objArithPfxOpTable :: Maybe (Array ArithPfxOp (Maybe (ArithPfxOp -> typ -> XPure Object)))          -- ^ defined by 'defPrefixOp'
+  , objCallable        :: Maybe (typ -> Exec [CallableCode])                                            -- ^ defined by 'defCallable'
   , objDereferencer    :: Maybe (typ -> Exec (Maybe Object))
   }
   deriving Typeable
@@ -8385,23 +8388,25 @@ interfaceAdapter
   -> Interface typ_b
 interfaceAdapter a2b b2a ifc = 
   ifc
-  { objCastFrom        = let n="objCastFrom"      in fmap (fmap (a2b n)) (objCastFrom ifc)
-  , objEquality        = let n="objEquality"      in fmap (\eq  a b -> eq  (b2a n a) (b2a n b)) (objEquality ifc)
-  , objOrdering        = let n="objOrdering"      in fmap (\ord a b -> ord (b2a n a) (b2a n b)) (objOrdering ifc)
-  , objBinaryFormat    = let n="objBinaryFormat"  in fmap (\ (toBin , fromBin) -> (toBin . b2a n, fmap (a2b n) fromBin)) (objBinaryFormat ifc)
-  , objNullTest        = let n="objNullTest"      in fmap (\null b -> null (b2a n b)) (objNullTest ifc)
-  , objPPrinter        = let n="objPPrinter"      in fmap (\eval -> eval . b2a n) (objPPrinter ifc)
-  , objReadIterable    = let n="objReadIterable"  in fmap (\for -> fmap (fmap (a2b n)) . for . b2a n) (objReadIterable ifc)
+  { objCastFrom        = let n="objCastFrom"       in fmap (fmap (a2b n)) (objCastFrom ifc)
+  , objEquality        = let n="objEquality"       in fmap (\eq  a b -> eq  (b2a n a) (b2a n b)) (objEquality ifc)
+  , objOrdering        = let n="objOrdering"       in fmap (\ord a b -> ord (b2a n a) (b2a n b)) (objOrdering ifc)
+  , objBinaryFormat    = let n="objBinaryFormat"   in fmap (\ (toBin , fromBin) -> (toBin . b2a n, fmap (a2b n) fromBin)) (objBinaryFormat ifc)
+  , objNullTest        = let n="objNullTest"       in fmap (\null b -> null (b2a n b)) (objNullTest ifc)
+  , objPPrinter        = let n="objPPrinter"       in fmap (\eval -> eval . b2a n) (objPPrinter ifc)
+  , objReadIterable    = let n="objReadIterable"   in fmap (\for -> fmap (fmap (a2b n)) . for . b2a n) (objReadIterable ifc)
   , objUpdateIterable  = let n="objUpdateIterable" in fmap (\for i -> fmap (a2b n) . for (b2a n i)) (objUpdateIterable ifc)
-  , objIndexer         = let n="objIndexer"       in fmap (\indx b -> indx (b2a n b)) (objIndexer  ifc)
-  , objToStruct        = let n="objToStruct"      in fmap (\toTree -> toTree . b2a n) (objToStruct ifc)
-  , objFromStruct      = let n="objFromStruct"    in fmap (\fromTree -> fmap (a2b n) . fromTree) (objFromStruct ifc)
-  , objDictInit        = let n="objDictInit"      in fmap (\ (init, eval) -> (\ox -> fmap (a2b n) (init ox), \typ ox -> fmap (a2b n) (eval (b2a n typ) ox))) (objDictInit ifc)
-  , objListInit        = let n="objListInit"      in fmap (\ (init, eval) -> (\ox -> fmap (a2b n) (init ox), \typ ox -> fmap (a2b n) (eval (b2a n typ) ox))) (objListInit ifc)
-  , objInfixOpTable    = let n="objInfixOpTable"  in fmap (fmap (fmap (\infx op b -> infx op (b2a n b)))) (objInfixOpTable  ifc)
-  , objArithPfxOpTable = let n="objPrefixOpTabl"  in fmap (fmap (fmap (\prfx op b -> prfx op (b2a n b)))) (objArithPfxOpTable ifc)
-  , objCallable        = let n="objCallable"      in fmap (\eval -> eval . b2a n) (objCallable ifc)
-  , objDereferencer    = let n="objDerferencer"   in fmap (\eval -> eval . b2a n) (objDereferencer ifc)
+  , objIndexer         = let n="objIndexer"        in fmap (\f i -> f (b2a n i)) (objIndexer ifc)
+  , objIndexUpdater    = let n="objIndexUpdater"   in fmap (\f o -> fmap (fmap (a2b n)) . f (b2a n o)) (objIndexUpdater ifc)
+  , objSizer           = let n="objSizer"          in fmap (\f o -> f (b2a n o)) (objSizer ifc)
+  , objToStruct        = let n="objToStruct"       in fmap (\toTree -> toTree . b2a n) (objToStruct ifc)
+  , objFromStruct      = let n="objFromStruct"     in fmap (\fromTree -> fmap (a2b n) . fromTree) (objFromStruct ifc)
+  , objDictInit        = let n="objDictInit"       in fmap (\ (init, eval) -> (\ox -> fmap (a2b n) (init ox), \typ ox -> fmap (a2b n) (eval (b2a n typ) ox))) (objDictInit ifc)
+  , objListInit        = let n="objListInit"       in fmap (\ (init, eval) -> (\ox -> fmap (a2b n) (init ox), \typ ox -> fmap (a2b n) (eval (b2a n typ) ox))) (objListInit ifc)
+  , objInfixOpTable    = let n="objInfixOpTable"   in fmap (fmap (fmap (\infx op b -> infx op (b2a n b)))) (objInfixOpTable  ifc)
+  , objArithPfxOpTable = let n="objPrefixOpTabl"   in fmap (fmap (fmap (\prfx op b -> prfx op (b2a n b)))) (objArithPfxOpTable ifc)
+  , objCallable        = let n="objCallable"       in fmap (\eval -> eval . b2a n) (objCallable ifc)
+  , objDereferencer    = let n="objDerferencer"    in fmap (\eval -> eval . b2a n) (objDereferencer ifc)
   }
 
 interfaceToDynamic :: Typeable typ => Interface typ -> Interface Dynamic
@@ -8420,45 +8425,49 @@ interfaceToDynamic oi = interfaceAdapter (\ _ -> toDyn) (from oi) oi where
 -- 'Data.Monoid.mappend' function in the same way as
 data HDIfcBuilder typ =
   HDIfcBuilder
-  { objIfcCastFrom      :: Maybe (Object -> typ)
-  , objIfcEquality      :: Maybe (typ -> typ -> Bool)
-  , objIfcOrdering      :: Maybe (typ -> typ -> Ordering)
-  , objIfcBinaryFormat  :: Maybe (typ -> Put, Get typ)
-  , objIfcNullTest      :: Maybe (typ -> Bool)
-  , objIfcPPrinter      :: Maybe (typ -> PPrint)
-  , objIfcReadIterable  :: Maybe (typ -> Exec (Maybe Object, typ))
+  { objIfcCastFrom       :: Maybe (Object -> typ)
+  , objIfcEquality       :: Maybe (typ -> typ -> Bool)
+  , objIfcOrdering       :: Maybe (typ -> typ -> Ordering)
+  , objIfcBinaryFormat   :: Maybe (typ -> Put, Get typ)
+  , objIfcNullTest       :: Maybe (typ -> Bool)
+  , objIfcPPrinter       :: Maybe (typ -> PPrint)
+  , objIfcReadIterable   :: Maybe (typ -> Exec (Maybe Object, typ))
   , objIfcUpdateIterable :: Maybe (typ -> Maybe Object -> Exec typ)
-  , objIfcIndexer       :: Maybe (typ -> Object -> Exec Object)
-  , objIfcToStruct      :: Maybe (typ -> Exec T_struct)
-  , objIfcFromStruct    :: Maybe (T_struct -> Exec typ)
-  , objIfcDictInit      :: Maybe ([Object] -> Exec typ, typ -> [(Object, UpdateOp, Object)] -> Exec typ)
-  , objIfcListInit      :: Maybe ([Object] -> Exec typ, typ -> [Object] -> Exec typ)
-  , objIfcInfixOpTable  :: [(InfixOp , InfixOp  -> typ -> Object -> XPure Object)]
-  , objIfcPrefixOpTable :: [(ArithPfxOp, ArithPfxOp -> typ -> XPure Object)]
-  , objIfcCallable      :: Maybe (typ -> Exec [CallableCode])
-  , objIfcDerefer       :: Maybe (typ -> Exec (Maybe Object))
+  , objIfcIndexer        :: Maybe (typ -> Object -> Exec Object)
+  , objIfcIndexUpdater   :: Maybe (typ -> Maybe Object -> Exec (Object, typ))
+  , objIfcSizer          :: Maybe (typ -> Exec Object)
+  , objIfcToStruct       :: Maybe (typ -> Exec T_struct)
+  , objIfcFromStruct     :: Maybe (T_struct -> Exec typ)
+  , objIfcDictInit       :: Maybe ([Object] -> Exec typ, typ -> [(Object, UpdateOp, Object)] -> Exec typ)
+  , objIfcListInit       :: Maybe ([Object] -> Exec typ, typ -> [Object] -> Exec typ)
+  , objIfcInfixOpTable   :: [(InfixOp , InfixOp  -> typ -> Object -> XPure Object)]
+  , objIfcPrefixOpTable  :: [(ArithPfxOp, ArithPfxOp -> typ -> XPure Object)]
+  , objIfcCallable       :: Maybe (typ -> Exec [CallableCode])
+  , objIfcDerefer        :: Maybe (typ -> Exec (Maybe Object))
   }
 
 initHDIfcBuilder :: HDIfcBuilder typ
 initHDIfcBuilder =
   HDIfcBuilder
-  { objIfcCastFrom      = Nothing
-  , objIfcEquality      = Nothing
-  , objIfcOrdering      = Nothing
-  , objIfcBinaryFormat  = Nothing
-  , objIfcNullTest      = Nothing
-  , objIfcPPrinter      = Nothing
-  , objIfcReadIterable  = Nothing
+  { objIfcCastFrom       = Nothing
+  , objIfcEquality       = Nothing
+  , objIfcOrdering       = Nothing
+  , objIfcBinaryFormat   = Nothing
+  , objIfcNullTest       = Nothing
+  , objIfcPPrinter       = Nothing
+  , objIfcReadIterable   = Nothing
   , objIfcUpdateIterable = Nothing
-  , objIfcIndexer       = Nothing
-  , objIfcToStruct      = Nothing
-  , objIfcFromStruct    = Nothing
-  , objIfcDictInit      = Nothing
-  , objIfcListInit      = Nothing
-  , objIfcInfixOpTable  = []
-  , objIfcPrefixOpTable = []
-  , objIfcCallable      = Nothing
-  , objIfcDerefer       = Nothing
+  , objIfcIndexer        = Nothing
+  , objIfcIndexUpdater   = Nothing
+  , objIfcSizer          = Nothing
+  , objIfcToStruct       = Nothing
+  , objIfcFromStruct     = Nothing
+  , objIfcDictInit       = Nothing
+  , objIfcListInit       = Nothing
+  , objIfcInfixOpTable   = []
+  , objIfcPrefixOpTable  = []
+  , objIfcCallable       = Nothing
+  , objIfcDerefer        = Nothing
   }
 
 -- | A handy monadic interface for defining an 'Interface' using nice, clean procedural
@@ -8601,16 +8610,14 @@ autoDefUpdateIterable = defUpdateIterable updateIter
 
 -- | The callback function defined here is used at any point in a Dao program where an expression
 -- containing your object typ is subscripted with square brackets, for example in the statement:
--- @x[0] = t[1][A][B];@ The object passed to your callback function is the object containing the
--- subscript value. So in the above example, if the local variables @x@ and @t@ are both values of
--- your @typ@, this callback function will be evaluated four times:
--- 1.  with the given 'Object' parameter being @('OInt' 0)@ and the @typ@ parameter as the value stored in
---     the local variable @x@.
--- 2.  with the given 'Object' parameter being @('OInt' 1)@ and the @typ@ parameter as the value
+-- @x = t[0][A][B];@ The object passed to your callback function is the object containing the
+-- subscript value. So in the above example, if the local variable @t@ is a value of
+-- your @typ@, this callback function will be evaluated three times:
+-- 1.  with the given 'Object' parameter being @('OInt' 0)@ and the @typ@ parameter as the value
 --     stored in the local variable @y@.
--- 3.  once with the 'Object' parameter being the result of dereferencing the local varaible @A@ and
+-- 2.  once with the 'Object' parameter being the result of dereferencing the local varaible @A@ and
 --     the @typ@ parameter as the value stored in the local variable @y@.
--- 4.  once the given 'Object' parameter being the result of dereferencing the local variable @B@ and
+-- 3.  once the given 'Object' parameter being the result of dereferencing the local variable @B@ and
 --     the @typ@ parameter as the value stored in the local variable @y@.
 -- 
 -- Statements like this:
@@ -8619,6 +8626,33 @@ autoDefUpdateIterable = defUpdateIterable updateIter
 -- > a[0][1][2]
 defIndexer :: Typeable typ => (typ -> Object -> Exec Object) -> DaoClassDefM typ ()
 defIndexer fn = _updHDIfcBuilder(\st->st{objIfcIndexer=Just fn})
+
+-- | The callback function defined here is used at any point in a Dao program where an expression
+-- containing your object typ is subscripted with square brackets on the left-hand side of an
+-- assignment expression:
+-- @x[0][A][B] = t;@
+-- This function must take the original object of your @typ@ and return the updated object along
+-- with the value used to updated it.  The object passed to your callback function is the object
+-- containing the subscript value. So in the above example, if the local variables @x@ is a value of
+-- your @typ@, this callback function will be evaluated three times:
+-- 1.  with the given 'Object' parameter being @('OInt' 0)@ and the @typ@ parameter as the value
+--     stored in the local variable @y@.
+-- 2.  once with the 'Object' parameter being the result of dereferencing the local varaible @A@ and
+--     the @typ@ parameter as the value stored in the local variable @y@.
+-- 3.  once the given 'Object' parameter being the result of dereferencing the local variable @B@ and
+--     the @typ@ parameter as the value stored in the local variable @y@.
+-- 
+-- Statements like this:
+-- > a[0,1,2]
+-- are evaluated by the "Dao.Evaluator" module in the exact same way as statements like this:
+-- > a[0][1][2]
+defIndexUpdater :: Typeable typ => (typ -> Maybe Object -> Exec (Object, typ)) -> DaoClassDefM typ ()
+defIndexUpdater fn = _updHDIfcBuilder(\st->st{objIfcIndexUpdater=Just fn})
+
+-- | Define a function used by the built-in "size()" function to return an value indicating the size
+-- of your @typ@ object.
+defSizer :: Typeable typ => (typ -> Exec Object) -> DaoClassDefM typ ()
+defSizer fn = _updHDIfcBuilder(\st->st{objIfcSizer=Just fn})
 
 -- | Use your data type's instantiation of 'ToDaoStructClass' to call 'defToStruct'.
 autoDefToStruct :: forall typ . (Typeable typ, ToDaoStructClass typ) => DaoClassDefM typ ()
@@ -8723,23 +8757,25 @@ interface :: Typeable typ => typ -> DaoClassDefM typ ig -> Interface typ
 interface init defIfc =
   Interface
   { objHaskellType     = typ
-  , objCastFrom        = objIfcCastFrom     ifc
-  , objEquality        = objIfcEquality     ifc
-  , objOrdering        = objIfcOrdering     ifc
-  , objBinaryFormat    = objIfcBinaryFormat ifc
-  , objNullTest        = objIfcNullTest     ifc
-  , objPPrinter        = objIfcPPrinter     ifc
-  , objReadIterable    = objIfcReadIterable ifc
+  , objCastFrom        = objIfcCastFrom       ifc
+  , objEquality        = objIfcEquality       ifc
+  , objOrdering        = objIfcOrdering       ifc
+  , objBinaryFormat    = objIfcBinaryFormat   ifc
+  , objNullTest        = objIfcNullTest       ifc
+  , objPPrinter        = objIfcPPrinter       ifc
+  , objReadIterable    = objIfcReadIterable   ifc
   , objUpdateIterable  = objIfcUpdateIterable ifc
-  , objIndexer         = objIfcIndexer      ifc
-  , objToStruct        = objIfcToStruct     ifc
-  , objFromStruct      = objIfcFromStruct   ifc
-  , objDictInit        = objIfcDictInit     ifc
-  , objListInit        = objIfcListInit     ifc
+  , objIndexer         = objIfcIndexer        ifc
+  , objIndexUpdater    = objIfcIndexUpdater   ifc
+  , objSizer           = objIfcSizer          ifc
+  , objToStruct        = objIfcToStruct       ifc
+  , objFromStruct      = objIfcFromStruct     ifc
+  , objDictInit        = objIfcDictInit       ifc
+  , objListInit        = objIfcListInit       ifc
+  , objCallable        = objIfcCallable       ifc
+  , objDereferencer    = objIfcDerefer        ifc
   , objInfixOpTable    = mkArray "defInfixOp"  $ objIfcInfixOpTable  ifc
   , objArithPfxOpTable = mkArray "defPrefixOp" $ objIfcPrefixOpTable ifc
-  , objCallable        = objIfcCallable     ifc
-  , objDereferencer    = objIfcDerefer      ifc
   }
   where
     typ               = typeOf init

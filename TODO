@@ -1,19 +1,22 @@
 TODO:
+* Modify the 'Dao.Interpreter.QualRef' data type to include square-bracketed index values so they
+	can be used in the left-hand side of assignment expressions.
+
 * Built-in functions should take type signatures, non-built-in functions should have a way to take
 	an unspecified number of parameters.
 
-* I would like to re-merge much of the "Dao.Evaluator" module back into the "Dao.Object" module, but
-	I cannot because of the 'Dao.Evaluator.ObjectClass' which requires the 'Exec' monad which
-	requires the 'ExecUnit' data type, which requires most of the data types defined in the
-	"Dao.Evaluator" module, especially rule and function related data structures. I would like to
-	find a way to break this dependency cycle and make the program more modular. That or just give
-	up on modularity and merge the "Dao.Object" and "Dao.Evauator" modules into a single massive
-	"god object" called "Dao.Interpreter". But it would probably be best to move every data type
-	back into the "Dao.Object" module, and then place each class, like 'Executable', into it's own
-	module.
+* If possible (and this may not be possible), make the "Dao.Interpreter" module SMALLER!!! I would
+	love to break it down into smaller, more modular pieces, but all of the data types in that
+	module are so inter-dependent that the only way to break it up is to make things more
+	polymorphic, which complicates everything.
 
 * Make the 'Exec' monad stateful over some of it's elemsnts, for example the current reference of
-	the "with" statement, keep the rest as a reader.
+	the "with" statement, keep the rest as a reader. This will be extremely difficult and may not
+	even be desirable, because right now many important functions assume the ExecUnit data type is
+	is immutable. Every module tracks child modules in a dictionary, and every time a child is
+	updated, the dictionary of the parent module must also be updated, and all the parents of the
+	parents must be updated all the way up to the main module. It might be better to keep everything
+	immutable and just use IORefs.
 
 * Implement an asynchronous function call interface, like a built-in "fork()" function. This
 	function should allow a programmer to fork a function call in the background.
@@ -22,8 +25,7 @@ TODO:
 	be customizable with a type function, not an arbtrary function that can run in the Exec monad.
 	Type function will be pure and are therefore ideal for pattern matching.
 
-* Create some decent example programs that demonstrate the expert system
-	functionality of the Dao language.
+* Create some decent example programs that demonstrate the expert system functionality of the Dao language.
 
 	I recall the reason I wanted to invent Dao to begin with: I want an expert system that can
 	"understand" human knowledge to some degree, not just catalog it and index it, a system that can
@@ -57,12 +59,12 @@ TODO:
 	language rules with a goal of solving simple mathematical word problems. Then work up from
 	there.
 
-* Move the semantic data types 'Dao.Object.ObjectExpr', 'Dao.Object.ScriptExpr', and
-	'Dao.Object.TopLevelExpr' types into their own module.
-	EDIT: this may not be possible, although I will need to break-down the Dao.Evaluator module
+* Move the semantic data types 'Dao.Interpreter.ObjectExpr', 'Dao.Interpreter.ScriptExpr', and
+	'Dao.Interpreter.TopLevelExpr' types into their own module.
+	EDIT: this may not be possible, although I will need to break-down the Dao.Interpreter module
 	somehow because I really think 5000 lines of code is too large for a Haskell module.
 
-* Define as many of the data types in "Dao.Object" and "Dao.Object.AST" to make use of
+* Define as many of the data types in "Dao.Interpreter" and "Dao.Interpreter.AST" to make use of
 	"Data.Generic" functions to program as many of the instances of the 'Dao.Token.HasLocation'
 	class as possible. I have been doing everything by hand, it has proven to be very error-prone.
 
@@ -78,13 +80,13 @@ TODO:
 
 * Implement predicates on variables. (Started)
 * (related) create a new primitive for type values, perhaps add a constructor for it in the
-	'Dao.Object.Object' data type.
+	'Dao.Interpreter.Object' data type.
 
 * Modify the Exec monad so that IO operations have it's own constructor. That way it will be easier
 	to automatically detect whether or not a given function might cause side-effects.
 
 * Create a linting pass, which occurs after parsing but before evaluation, that transforms a
-	'Dao.Object.TopLevelExpr' data structure to a data structure that is optimized to avoid type
+	'Dao.Interpreter.TopLevelExpr' data structure to a data structure that is optimized to avoid type
 	checking during runtime.
 
 * The Regex API is somewhat counter intuitive and complicated. I would like to make it more elegant.
@@ -98,16 +100,16 @@ TODO:
 
 * Fix this design flaw:
 	The abstract syntax tree can produce expressions that cannot be parsed. For example,
-	'Dao.Object.AST.AST_Prefix' contains an arbitrary (commented) 'Dao.Object.AST.AST_Object'
+	'Dao.Interpreter.AST.AST_Prefix' contains an arbitrary (commented) 'Dao.Interpreter.AST.AST_Object'
 	expression, but the parser does not allow arbitrary expressions to be parsed after a prefix
 	operator (the prefix operators are "$", "@", ".", "~", "-", "!"). This simplifies the abstract
-	syntax tree. The "Dao.Evaluator" module should have no problem evaluating expressions regardless
+	syntax tree. The "Dao.Interpreter" module should have no problem evaluating expressions regardless
 	of whether or not the syntax of the language can construct these expressions.  But might cause
 	problems if the abstract syntax tree is produced programmatically for example, using the
 	functions in the "Dao.Struct" or "Dao.Random" modules, and then that abstract syntax tree is
 	used to generate code, the code generated will not be parsable. I have corrected the
-	"Dao.Object.Random" module so that this is not a problem, but this could cause problems with
-	"Dao.Object.Struct". For now, the AST is simplified and I would prefer it to stay that way, even
+	"Dao.Interpreter.Random" module so that this is not a problem, but this could cause problems with
+	"Dao.Interpreter.Struct". For now, the AST is simplified and I would prefer it to stay that way, even
 	if it is not modeled well enough to prevent potential problems like this one.
 
 * Unioning 'Dao.Enum.SetM' data types should produce a list of segments where not every item is
@@ -129,17 +131,11 @@ refactoring everything that broke. I would like to re-affirm my love of Haskell'
 finding errors, and my love of the old UNIX "Sed" program, which in spite of all its primitive
 simplicity, still happens to be extremely useful for refactoring.
 
-*	Now that 'Dao.Predicate.PValue' has been modified such that it no longer contains a required
-'Dao.String.UStr' message, many functions which used it now simply use 'Dao.String.UStr' as the type
-for 'Dao.Predicate.PFail'. Other functions do not use 'Dao.String.UStr'. I need to do a review of
-all code in the "Dao.Evaluator" module that makes use of 'Dao.Predicate.PValue' and make sure the
-failures contain useful information. If a 'Dao.String.UStr' is good enough, no change will be
-necessary. However it might be better to use 'Dao.Object.Object' instead, in most situations.
+*	Need to introduce constructors for 'Dao.EnumSet.EnumSet' and 'Dao.Interpreter.Pattern' into the
+'Dao.Interpreter.Object' data type. This will be important when implementing predicates on variables.
 
-*	Need to introduce constructors for 'Dao.EnumSet.EnumSet' and 'Dao.Object.Pattern' into the
-'Dao.Object.Object' data type. This will be important when implementing predicates on variables.
-
-*	Parse each input file in a separate thread, deep-sequence the parsed structures.
+*	Parse each input file in a separate thread. Implement a type-checking phase and a lazy linting
+	phase in the interpreter.
 
 *	Some inlining pretty-printers are still messing up the indentation.
 
@@ -156,10 +152,10 @@ returned value. There should also be a "testSource()" built-in function for eval
 source code into a working module object, and executing strings against that, all done so
 programmatically within the running Dao program.
 
-*	'Dao.Object.Subroutine' is a data structure representing a function that takes a list of
-'Dao.Object.ObjPat's, and when it is executed, it will resolve all Reference parameters passed to
+*	'Dao.Interpreter.Subroutine' is a data structure representing a function that takes a list of
+'Dao.Interpreter.ObjPat's, and when it is executed, it will resolve all Reference parameters passed to
 them to create a list of parameters, match this list of parameter arguments to this list of
-'Dao.Object.ObjPat's, then run the associated 'Dao.Object.Executable'.
+'Dao.Interpreter.ObjPat's, then run the associated 'Dao.Interpreter.Executable'.
 	It might be a good idea to allow other kinds of 'Subroutine's, including "pure" subroutines that
 simply evaluate to (CEError Object), functions take a list of Objects that do not automatically
 resolve references passed to them. Since built-in operators are pure subroutines, an API for
@@ -176,217 +172,16 @@ matching values of referenecs, which needs to be the default pattern that binds 
 
 ----------------------------------------------------------------------------------------------------
 SOLVED:
-* Line-up the code in each module, try to get the order of declaration of semantic data types and
-	the abstract syntax tree so the declarations occur in the order in their respective module
-	files. Also order the instantation of these data types into the various classes in their various
-	like PPrint, HasRandGen, and the binary and code Parsers, should also be in relatively the same
-	order they occur in the semantic data types module.
-	NOTE: I did this now but I had to move everything into the "Dao.Evaluator" which makes the
-	module huge. I need to break things down, so I have created a new to-do item for that.
+*	Now that 'Dao.Predicate.Predicate' has been modified such that it no longer contains a required
+'Dao.String.UStr' message, many functions which used it now simply use 'Dao.String.UStr' as the type
+for 'Dao.Predicate.PFail'. Other functions do not use 'Dao.String.UStr'. I need to do a review of
+all code in the "Dao.Interpreter" module that makes use of 'Dao.Predicate.Predicate' and make sure the
+failures contain useful information. If a 'Dao.String.UStr' is good enough, no change will be
+necessary. However it might be better to use 'Dao.Interpreter.Object' instead, in most situations.
+--
+Completion notes: This was done a long time ago, now instead of an Object or UStr, the error type is
+called 'Dao.Interpreter.ExecControl' which contains special information about errors, and it can be
+converted to an 'Dao.Interpreter.Object' at any time using the 'Dao.Interpreter.new' function.
 
-* I should probably separate the 'Dao.Object.OHaskell' constructor from the 'Object' data type so I
-	can go back to using the "deriving" feature to derive 'Prelude.Show', 'Prelude.Eq', and
-	'Prelude.Ord' for the 'Object' data type, then just instantiate the data type with the single
-	'OHaskell' constructor into the 'Prelude.Eq', 'Prelude.Ord', and 'Prelude.Show' classes by hand
-	as is written now.
-	NOTE: the Object data type was renamed to the "Dao.Object.Value" data type and the 'OHaskell'
-	constructor was made polymorphic. A new type called 'HaskellData' was defined which contains the
-	Dynamic value and the ObjectInterface value that used to be part of the 'OHaskell' constructor.
-	Finally, a type synonym called "Dao.Evaluator.Object" was defined as a "Value HaskellData" type.
-
-* I need a customized monad for binary serialization. The 'Data.Binary.Binary' monad does not let
-	you retrieve data from outside of the monad. This is a problem when parsing dynamic objects
-	constructed with the 'Dao.Object.OHaskell' constructor. We may receive a byte in the byte stream
-	when parsing an 'Dao.Object.Object' indicating that the following bytes construct a dynamic
-	type, but which 'Dao.Object.ObjectInterface' should be used to parse the following bytes? We can
-	write type information into the stream to indicate which 'Dao.Object.ObjectInterface' to use,
-	but when reading the byte stream, there is no way to retrieve the 'Dao.Object.ObjectInterface'
-	unless I lift the 'Dao.Binary.Get.GetM' into a 'Control.Monad.Reader.ReaderT' monad containing a
-	list of 'Dao.Object.ObjectInterface's.
-	NOTE: this was solved a little while ago with the addition of the "Dao.Binary" module.
-
-* Modify the abismal function for converting top-level expressions to 'ExecUnit's. In fact, I would
-	like to move all execution into 'ExecUnit'. The 'Run' monad should be phased out, and the
-	'Runtime' data structure should simply be constructed in the IO monad and used to create every
-	'ExecUnit'.
-	NOTE: I think the 'Runtime' type is probably going to be essential. It should contain the
-	whole-program data which can be configured for each install site.
-
-* Fix the bugs introduced into the "Dao.EnumSet" module after this last bout of sweeping changes. (DONE)
-
-* Complex numbers are not being parsed correctly by the new parser. (DONE)
-
-*	Try to make the new parser more efficient. Here is the results from the old parser:
-	576 tests completed at the rate of 144.00 tests per second
-	1036 tests completed at the rate of 115.00 tests per second
-	1515 tests completed at the rate of 119.75 tests per second
-	1974 tests completed at the rate of 114.75 tests per second
-	2507 tests completed at the rate of 133.25 tests per second
-	3026 tests completed at the rate of 129.75 tests per second
-	3488 tests completed at the rate of 115.50 tests per second
-	3966 tests completed at the rate of 119.50 tests per second
-	4436 tests completed at the rate of 117.50 tests per second
-	4922 tests completed at the rate of 121.50 tests per second
-	5383 tests completed at the rate of 115.25 tests per second
-	5911 tests completed at the rate of 132.00 tests per second
-	------
-	Done. Here are some of the new results:
-	348355 tests completed at the rate of 249.75 tests per second
-	349350 tests completed at the rate of 248.75 tests per second
-	350291 tests completed at the rate of 235.25 tests per second
-	351152 tests completed at the rate of 215.25 tests per second
-	352096 tests completed at the rate of 236.00 tests per second
-	353030 tests completed at the rate of 233.50 tests per second
-	353982 tests completed at the rate of 238.00 tests per second
-	354894 tests completed at the rate of 228.00 tests per second
-	355821 tests completed at the rate of 231.75 tests per second
-	356780 tests completed at the rate of 239.75 tests per second
-	357676 tests completed at the rate of 224.00 tests per second
-
-*	There is an infinite loop in the "Dao.Struct" module caused on certain occasions where the
-'Dao.Struct.atAddress' is called. I've tracked the problem down to 'Dao.Object.AST.AST_Assign'
-expressions, although I am still not clear as to why it is looping infinitely.
-[Solution] it was actually a problem with the instantiation of 'Dao.Token.Location' into the
-'Dao.Structured.Struct' monad. It evaluated 'Dao.Struct.getData' in a place where it should have
-evaluated 'Dao.Struct.getDataAt', which was causing it to call a function that would eventually call
-itself wihtout ever stepping into a field of a sub-structure.
-
-*	Need to implement the evaluator for the "meta-dereference" operator, and make sure it is placed
-in the 'Dao.Evaluator.setupExecutable' function.
-
-*	Really need to modify the parser so variable scoping is parsed with a higher presecedence than
-arithmetic or assignment operators. As of right now, expressions do not parse as one would expect. I
-can work around this issue by putting parentheses around qualified variables:
-	global a = 1;   // Fails, parses as global (a = 1);
-	(global a) = 1; // Success.
-	DONE: this was solved by the new parser.
-
-*	Listable parsers that end in a comma on their last item, with the comma followed by a closing
-brace instead of another item, will return a null list. This should not happen.
-	DONE: this was solved by the new parser.
-
-*	Bug: item number 147555 generated by the random object generator seems to be resulting in either
-an infinite loop, or an inordinate amount of memory consumption.
-	No need to fix, the complete re-writing of major chunks of code have made this bug irrelevant.
-
-*	Bug: the instantiation for many of the nodes in the "Dao.Object.AST" module for
-'Dao.Struct.fromStruct' are not correctly constructing AST nodes with comments. This might be
-related to the above bug.
-
-*	Change the 'evalObjectExpr' function so it always returns a location, it's type should be:
-@evalObjectExpr :: ObjectExpr -> Exec (Location, Maybe Object)@
-Then if it ever incorrectly evaluates to a pair where the second value is 'Nothing', the location
-can still be used to report where the failed evaluation occurs.
-[Solution] It wasn't challenging but it was tedius, and I've now made it work exactly as described.
-
-*	Need to change the types of @'Dao.Object.Exec' a@ and 'Dao.Object.Run' so they can more easily
-be evaluated with one-another.
-[Solution] I already did this a while ago, I forgot about it.
-
-*	Break the abstract syntax tree off into it's own module, keeing the byte-code-like object as
-part of the "Dao.Object" module.
-[Solution] The abstract syntax tree I was using before has been copied into the "Dao.Object.AST"
-module and every data type and constructor has been renamed to have the @AST_@ prefix, with the
-suffix "Expr" removed from many of the constrcutors to shorten the name. The original names for the
-data types and constructors have been kept in the "Dao.Object" module, but these data types and
-constructors now have a different type: the comments have been removed, and thus these old names now
-refer to a new "Intermediate" data type. There is an 'Dao.Object.AST.Intermediate' class in the
-"Dao.Object.Intermediate" module which uses functional dependencies to associate the intermedaite
-types with the abstract syntax tree types, and this class provides methods for converting between
-these types ('Dao.Object.AST.toInterm' and 'Dao.Object.AST.fromInterm'). The evaluator and
-binary serialization now make use the intermediate types. The pretty printer, random object
-generator, the "Dao.Struct" interface, and the parser make use of the "Dao.Object.AST" types. Where
-an intermediate structure needs to be treated as an abstract syntax tree, for example in the
-instantiation of the intermediate type into the pretty printer class, the intermediate type is
-simply converted to it's abstract syntax tree form using 'Dao.Object.AST.fromInterm' and the
-instantiation for the abstract syntax tree is then called.
-
-*	Need to change "Dao.Parser", eliminate the 'Dao.Parser.Regex' data type and make the parser
-comibators themselves a datatype. There needs to be a metric for sorting how strict a regular
-expression is, with /.*/ being the least strict (matches anything), and long strings of characters
-being most strict (the longer, the more strict they are), and when parsers choices are summed using
-'Control.Monad.mplus', the choices are sorted from greatest to least strict and applied in that
-order.
-	DONE: this was actually a problem of the old parser, and that problem was solved, and then
-solved again in the new parser. Now the Regex type is completely different and an indispensible part
-of the new parser.
-
-*	Need a class for converting data types to 'Dao.Tree.Tree's, with functions like "dataToStruct" and
-"structToData". Also in this module, there should be a State monad for building trees and updating
-trees, preferably a state that lifts the 'PValue' monad so you can throw errors.
-[Solution] This is the "Dao.Struct" and "Dao.Object.Struct" modules.
-
-*	Need a new element of the abstract syntax tree for parsing 'Dao.Object.Pattern's.
-[Soltuion] This will be done with the function call notation, or with the "Dao.Struct" interface.
-
-*	Allow "catch" statements in the top level, which are a LambdaExprType expression that only
-respond to uncaught errors. Modify the "catch" statement to allow pattern expressions that only
-catch errors that match.
-
-*	Rename "Dao.Object.Show" to "Dao.Object.PPrint". [Done]
-
-*	Rename 'Dao.Glob.PatUnit' to 'GlobUnit'. [Done]
-
-*	Need to provide a "meta-dereference" operator (kind of like macros in the C preprocessor) for
-constant script and rule object declarations in code. These objects treat all references as unbound.
-Binding values are only resolved when the script code is evaluated, even if the context of variables
-is completely different from the time it was defined at the time it is evaluated. It might be handy
-to programmers if they had a means to tell Dao to "replace the variable name in this line of code
-with the value the variable has right now, and construct the script or rule object with that value
-instead of a reference in that point in the abstract syntax tree."
-[Solution] the data type is there, but it has still not been implemented in the "Dao.Evaluator".
-
-*	Need to define a second rule table for rules that respond to 'Dao.Object.ObjPat's.
-Completed: this is called 'patternTable' and is a list of patterns in an 'Dao.Object.ExecUnit'.
-
-*	Need a parser for "Dao.Object.ObjPat". Rename 'Dao.Pattern.Pattern' to "Dao.Glob.Glob' and
-rename 'Dao.Object.ObjPat' to 'Dao.Object.Pattern'.
-	I have decided that the word 'Glob' is a better term for what I was calling a 'Pattern'. A glob
-is an old idea from UNIX where you can match arbitrary strings with wildcards, like writing "*.hs"
-in the command line and the command line automatically detects the "*" as a wildcard and expands the
-word to the list of all files matching the glob expression. This is in fact the very idea that
-inspired my 'Pattern' data type. But the word 'Pattern' was too general, so why not just call it a
-'Glob'? So that is what I have done.
-
-*	Investigate the pathalogical memory usage of the random test generator and parser.
-	SOLUTION: I will never use 'Control.Concurrent.Chan.Chan' ever again. I was generating integer
-values and passing them down a channel to several worker threads which would then take these
-integers from the channel and use them to generate random objects for testing the parser and
-serializer. Obviously the thread producing these integer values would run faster than the worker
-threads. What I didn't know was that channels will never block a 'writeChan' operation, and they
-have no limit on the number of items they can buffer, which means the integer generating thread
-which was designed to generate integers non-stop, would fill the channel, and the channel would
-buffer them until all memory was used up and the kernel killed the process. There must some some
-reason channel to have these properties, but I think it is just stupid.
-
-*	Need to modify the parser test program to generate entire source files, not just individual
-object expressions, so the whole parser can be tested.
-
-*	The "Dao.Object.Show" module is dreadfully out of date, it needs to be cleaned up for all the
-changes made to the abstract syntax tree.
-
-*	Re-write most of "Dao.Object.Binary". There needs to be a way to define the byte-prefix of
-important object nodes using Haskell. Right now I am doing it by hand with case statements, and I
-need to go and change everything by hand (introducing many errors) every time I modify the abstract
-syntax tree. Once Dao version 1.0 is released, I can freeze the instantiation of "Dao.Object" into
-the Binary class, but until then there is too much flux in the code.
-	COMPLETION NOTE: turns out I didn't need to completely rewrite it, but it did need a lot of
-cleaning up. I would like to, someday, instantiate the entire abstract syntax tree into the
-'Data.Data.Data' class, and make use of generic functions like "gfoldl" and "gmapM" to define the
-serialization coder/decoders, parsers, and pretty printers, but that may never happen.
-
-*	Need to implement the "while" statement.
-
-*	Need to left-factor the 'Dao.Object.Parser.parseDirective' parsers.
-
-*	There seems to be a bug with the 'Dao.Objcet.IfThenElse' branch of the abstract syntax tree. I
-	am having difficulty getting if expressions to evaluate correctly.
-	For the 'Dao.Object.ObjectExpr' instantiation of 'HasLocation', I forgot to write a pattern for
-	the 'Dao.Object.PrefixExpr' data constructor in the case statement, and Haskell found a way to
-	evaluate the 'Dao.Object.ObjectExpr' without evaluating that case statement which involved
-	entirely ignoring the evaluation of the Dao script "if" statement, which is not what I expected
-	to happen. The correct behavior (what I was expecting) was evaluation of any
-	'Dao.Object.ObjectExpr' would necessarily evaluate the entire expression, however it seems I
-	have not defined my progam in such a way that this will happen. I might need to make the
-	evaluator a bit more strict.
+NOTES: this was done a long
 

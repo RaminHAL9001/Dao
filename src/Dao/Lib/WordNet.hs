@@ -19,5 +19,5 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
-
+module Dao.Lib.WordNet where
 

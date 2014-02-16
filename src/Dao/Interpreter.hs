@@ -374,6 +374,7 @@ executeDaoFunc _op fn params = do
 -- > print, join, defined, delete
 evalFuncs :: DaoSetup
 evalFuncs = do
+  daoClass "HashMap" (haskellType :: H.HashMap Object Object)
   daoFunction "print"    builtin_print
   daoFunction "println"  builtin_println
   daoFunction "join"     builtin_join

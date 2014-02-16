@@ -43,7 +43,6 @@ import           Dao.Token
 import           Dao.Parser
 import           Dao.Interpreter.Parser
 import qualified Dao.Tree    as T
-import qualified Dao.HashMap as H
 
 import           Data.Function
 import           Data.Monoid
@@ -75,7 +74,6 @@ min_exec_time = 200000
 daoFuncs :: DaoSetup
 daoFuncs = do
   daoClass "RuleSet" (haskellType :: PatternTree Object [Subroutine])
-  daoClass "HashMap" (haskellType :: H.HashMap Object Object)
   let f x = daoFunc{ autoDerefParams=True, daoForeignCall=x }
   daoFunction "do"          $ f queryDo
   daoFunction "doAll"       $ f queryDoAll

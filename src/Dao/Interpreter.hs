@@ -46,6 +46,7 @@ module Dao.Interpreter(
     T_type, T_int, T_word, T_long, T_ratio, T_complex, T_float, T_time, T_diffTime,
     T_char, T_string, T_ref, T_bytes, T_list, T_dict, T_struct,
     isNumeric, typeMismatchError, insertAtPath,
+    initializeGlobalKey, destroyGlobalKey,
     RefQualifier(LOCAL, GLODOT, STATIC, GLOBAL),
     QualRef(Unqualified, Qualified),
     refNames, maybeRefNames, fmapQualRef, setQualifier, delQualifier, qualRefLookup, qualRefUpdate,
@@ -184,6 +185,8 @@ import           Dao.Random
 import           Dao.Stack
 import           Dao.String
 import           Dao.Token
+import           Dao.RefTable
+import qualified Dao.HashMap as H
 import qualified Dao.Binary  as B
 import qualified Dao.EnumSet as Es
 import qualified Dao.Tree    as T
@@ -392,6 +395,7 @@ evalFuncs = do
   daoFunction "defined"  builtin_check_if_defined
   daoFunction "delete"   builtin_delete
   daoFunction "typeof"   builtin_typeof
+  daoFunction "sizeof"   builtin_sizeof
   mapM_ (uncurry daoConstant) $ map (\t -> (toUStr (show t), OType (coreType t))) [minBound..maxBound]
 
 instance ObjectClass DaoFunc where { obj=new; fromObj=objFromHaskellData }
@@ -897,6 +901,39 @@ instance HasNullValue HaskellData where
   testNull (HaskellData o ifc) = case objNullTest ifc of
     Nothing -> error ("to check whether objects of type "++show (objHaskellType ifc)++" are null is undefined behavior")
     Just fn -> fn o
+
+----------------------------------------------------------------------------------------------------
+
+class Sizeable o where { getSizeOf :: o -> Exec Object  }
+
+instance Sizeable Char where { getSizeOf = return . obj . ord }
+instance Sizeable Word64 where { getSizeOf = return . obj }
+instance Sizeable Int where { getSizeOf = return . obj . abs }
+instance Sizeable Double where { getSizeOf = return . obj . abs }
+instance Sizeable Integer where { getSizeOf = return . obj . abs }
+instance Sizeable NominalDiffTime where { getSizeOf = return . obj . abs }
+instance Sizeable Rational where { getSizeOf = return . obj . abs }
+instance Sizeable Complex where { getSizeOf = return . obj . magnitude }
+instance Sizeable UStr where { getSizeOf = return . obj . ulength }
+instance Sizeable [Object] where { getSizeOf = return . obj . length }
+instance Sizeable (M.Map Name Object) where { getSizeOf = return . obj . M.size }
+instance Sizeable HaskellData where { getSizeOf (HaskellData o ifc) = maybe mzero ($ o) (objSizer ifc) }
+
+instance Sizeable Object where
+  getSizeOf o = case o of
+    OChar    o -> getSizeOf o
+    OWord    o -> getSizeOf o
+    OInt     o -> getSizeOf o
+    OLong    o -> getSizeOf o
+    ORelTime o -> getSizeOf o
+    OFloat   o -> getSizeOf o
+    ORatio   o -> getSizeOf o
+    OComplex o -> getSizeOf o
+    OString  o -> getSizeOf o
+    OList    o -> getSizeOf o
+    ODict    o -> getSizeOf o
+    OHaskell o -> getSizeOf o
+    _          -> mzero
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2435,6 +2472,7 @@ data ExecUnit
     , ruleSet            :: IORef (PatternTree Object [Subroutine])
     , lambdaSet          :: IORef [CallableCode]
     , uncaughtErrors     :: IORef [ExecControl]
+    , runtimeRefTable    :: RefTable Object Dynamic
     }
 
 -- Initializes a completely empty 'ExecUnit'
@@ -2449,6 +2487,7 @@ _initExecUnit = do
   rules    <- newIORef T.Void
   lambdas  <- newIORef []
   uncaught <- newIORef []
+  reftable <- newRefTable
   return $
     ExecUnit
     { globalMethodTable  = mempty
@@ -2466,15 +2505,15 @@ _initExecUnit = do
     , taskForExecUnits   = execTask
     , execStack          = LocalStore xstack
     , execOpenFiles      = files
-    , programModuleName = Nothing
-    , preExec           = []
-    , quittingTime      = mempty
-    , programTokenizer  = ONull
---    , programComparator = (==)
-    , postExec          = []
-    , ruleSet           = rules
-    , lambdaSet         = lambdas
-    , uncaughtErrors    = uncaught
+    , programModuleName  = Nothing
+    , preExec            = []
+    , quittingTime       = mempty
+    , programTokenizer   = ONull
+    , postExec           = []
+    , ruleSet            = rules
+    , lambdaSet          = lambdas
+    , uncaughtErrors     = uncaught
+    , runtimeRefTable    = reftable
     }
 
 -- | Creates a new 'ExecUnit'. This is the only way to create a new 'ExecUnit', and it must be run
@@ -2491,6 +2530,7 @@ newExecUnit modName = ask >>= \parent -> liftIO _initExecUnit >>= \child -> retu
   , builtinConstants  = builtinConstants  parent
   , defaultTimeout    = defaultTimeout    parent
   , globalMethodTable = globalMethodTable parent
+  , runtimeRefTable   = runtimeRefTable   parent
   }
 
 ----------------------------------------------------------------------------------------------------
@@ -2784,6 +2824,28 @@ _objectUpdate upd back rx o = loop back rx o where
   updDict   back r rx o = do
     o <- (\item -> M.alter (const item) r o) <$> loop (back++[r]) rx (M.lookup r o)
     return (if M.null o then Nothing else Just o)
+
+----------------------------------------------------------------------------------------------------
+
+_withGlobalKey :: Object -> (H.Index Object -> RefMonad Object Dynamic a) -> Exec a
+_withGlobalKey idx f = asks globalMethodTable >>= \mt -> 
+  asks runtimeRefTable >>= liftIO . runReaderT (f $ H.hashNewIndex (H.deriveHash128_DaoBinary mt) idx)
+
+-- | Some objects may refer to an object that serves as a unique identifier created by the system,
+-- for example objects refereing to file handles. These unique identifying objects should always be
+-- stored in this table. The Dao 'Object' wrapper should be used as the index to retrieve the Object
+-- in the table. This function takes the object to be stored, a destructor function to be called on
+-- releasing the object, and an indexing object used to identify the stored object in the table.
+initializeGlobalKey :: Typeable o => o -> (o -> IO ()) -> Object -> Exec (H.Index Object)
+initializeGlobalKey o destructor idx = _withGlobalKey idx $ \key ->
+  initializeWithKey (toDyn o) (destructor o) key >> return key
+
+-- | Destroy an object that was stored into the global key table using 'initializeGlobalKey'. The
+-- destructor function passed to the 'initializeGlobalKey' will be evaluated, and the object will
+-- be removed from the table. This function takes an indexing object used to select the stored
+-- object from the table.
+destroyGlobalKey :: Object -> Exec ()
+destroyGlobalKey = flip _withGlobalKey destroyWithKey
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3509,7 +3571,7 @@ instance HaskellDataClass (PatternTree Object [Subroutine]) where
     autoDefNullTest
     let initParams ox = case ox of
           [] -> return mempty
-          _  -> execThrow $ obj [obj "\"ruleset\" constructor takes no intializing parameters"]
+          _  -> execThrow $ obj [obj "\"RuleSet\" constructor takes no intializing parameters"]
           -- TODO: ^ the constructor for a 'PatternTree' should take tokenizer function.
     let listParams tree =
           foldM (\ tree (i, o) -> case fromObj o >>= \ (HaskellData o _) -> fromDynamic o of
@@ -3519,6 +3581,7 @@ instance HaskellDataClass (PatternTree Object [Subroutine]) where
               insertMultiPattern (++) pat [sub] tree ) tree . zip [1..]
     defListInit initParams listParams
     defInfixOp ORB $ \ _ tree o -> (new . T.unionWith (++) tree) <$> xmaybe (fromObj o)
+    defSizer $ return . obj . T.size
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4207,11 +4270,10 @@ eval_Prefix_op op o = join $ xmaybe $
   fromObj o >>= \ (HaskellData o ifc) -> objArithPfxOpTable ifc >>= (! op) >>= \f -> return (f op o)
 
 -- Pass the 'InfixOp' associated with the 'Prelude.Num' function so it can check whether the
--- 'defInfixOp' for that operator has been defined for objects of 'HaskellType'. Also pass a boolean
--- indicating whether this operator is associative, which will determine whether or not the
--- left-hand side may be swapped with the right-hand side when evaluating the 'InfixOp'.
-eval_Infix_op :: InfixOp -> Bool -> Object -> Object -> XPure Object
-eval_Infix_op op isAssoc a b = join $ xmaybe $ onhask a b <|> (guard isAssoc >> onhask b a) where
+-- 'defInfixOp' for that operator has been defined for objects of 'HaskellType'.
+eval_Infix_op :: InfixOp -> Object -> Object -> XPure Object
+eval_Infix_op op a b = join $ xmaybe $ onhask a b <|> (guard isCommut >> onhask b a) where
+  isCommut = infixOpCommutativity op
   onhask a b = fromObj a >>= \ (HaskellData a ifc) ->
     (\f -> f op a b) <$> (objInfixOpTable ifc >>= (! op))
 
@@ -4250,7 +4312,7 @@ instance Num (XPure Object) where
     (OBytes  a, OBytes  b) -> return $ OBytes  $ a<>b
     (OList   a, OList   b) -> return $ OList   $ a++b
     (ODict   a, ODict   b) -> return $ ODict   $ M.union b a
-    (a, b) -> _evalNumOp2 (+) a b <|> eval_Infix_op ADD True a b
+    (a, b) -> _evalNumOp2 (+) a b <|> eval_Infix_op ADD a b
   a * b = a >>= \a -> case a of
     OList ax -> OList <$> mapM ((* b) . xpure) ax
     ODict ax -> (ODict . M.fromList) <$>
@@ -4259,7 +4321,7 @@ instance Num (XPure Object) where
       OList bx -> OList <$> mapM (((xpure a) *) . xpure) bx
       ODict bx -> (ODict . M.fromList) <$>
         mapM (\ (key, b) -> fmap ((,) key) (xpure a * xpure b)) (M.assocs bx)
-      b        -> _evalNumOp2 (*) a b <|> eval_Infix_op MULT True a b
+      b        -> _evalNumOp2 (*) a b <|> eval_Infix_op MULT a b
   a - b = a >>= \a -> b >>= \b -> case a of
     -- on strings, the inverse operation of "join(b, a)", every occurence of b from a.
     OString a -> case b of
@@ -4275,7 +4337,7 @@ instance Num (XPure Object) where
         , obj "reference must be a single unqualified name"
         ]
       _ -> mzero
-    a         -> _evalNumOp2 (-) a b <|> eval_Infix_op SUB False a b
+    a         -> _evalNumOp2 (-) a b <|> eval_Infix_op SUB a b
   negate a = (a >>= _evalNumOp1 negate) <|> (a >>= eval_Prefix_op NEGTIV)
   abs    a = (a >>= _evalNumOp1 abs   ) <|> (a >>= eval_Prefix_op NEGTIV)
   signum a = a >>= _evalNumOp1 signum
@@ -4389,10 +4451,10 @@ instance Integral (XPure Object) where
   divMod  a b = _xpureDivFunc "divMod"   divMod  a b
   div     a b = a >>= \a -> b >>= \b -> case (a, b) of
     (OString a, OString b) -> return $ OWord $ fromIntegral $ length $ splitString a b
-    _ -> fst (_xpureDivFunc "(/)" divMod (xpure a) (xpure b)) <|> eval_Infix_op DIV False a b
+    _ -> fst (_xpureDivFunc "(/)" divMod (xpure a) (xpure b)) <|> eval_Infix_op DIV a b
   mod     a b = a >>= \a -> b >>= \b -> case (a, b) of
     (OString a, OString b) -> return $ OList $ map OString $ splitString a b
-    _ -> snd (_xpureDivFunc "(%)" divMod (xpure a) (xpure b)) <|> eval_Infix_op MOD False a b
+    _ -> snd (_xpureDivFunc "(%)" divMod (xpure a) (xpure b)) <|> eval_Infix_op MOD a b
 
 _xpureFrac :: (forall a . Floating a => a -> a) -> XPure Object -> XPure Object
 _xpureFrac f a = a >>= \a -> case a of
@@ -4490,18 +4552,18 @@ _xpureBits2 op bits dict bytes a b = a >>= \a -> b >>= \b -> do
         , OTree a, OTree b
         ]
     (OBytes a, OBytes b) -> return $ OBytes $ bytes a b
-    _                    -> eval_Infix_op op True a b
+    _                    -> eval_Infix_op op a b
 
 _dict_XOR :: (Object -> Object -> Object) -> T_dict -> T_dict -> T_dict
 _dict_XOR f a b = M.difference (M.unionWith f a b) (M.intersectionWith f a b)
 
 instance Bits (XPure Object) where
   a .&. b = _xpureBits2 AND (.&.) (M.intersectionWith (flip const)) (bytesBitArith (.&.)) a b <|>
-    (a >>= \a -> b >>= \b -> eval_Infix_op ANDB True a b)
+    (a >>= \a -> b >>= \b -> eval_Infix_op ANDB a b)
   a .|. b = _xpureBits2 ORB (.|.) (M.unionWith (flip const))        (bytesBitArith (.|.)) a b <|>
-    (a >>= \a -> b >>= \b -> eval_Infix_op ORB  True a b)
+    (a >>= \a -> b >>= \b -> eval_Infix_op ORB  a b)
   xor a b = _xpureBits2 XORB xor  (_dict_XOR (flip const))          (bytesBitArith  xor ) a b <|>
-    (a >>= \a -> b >>= \b -> eval_Infix_op XORB True a b)
+    (a >>= \a -> b >>= \b -> eval_Infix_op XORB a b)
   complement  = _xpureBits complement (B.map complement)
   shift   o i = o >>= \o -> case o of
     OList o -> xpure $ OList $ case compare i 0 of
@@ -4548,11 +4610,11 @@ _shiftOp neg a b = case b of
 
 -- | Evaluate the shift-left operator in the 'XPure' monad.
 shiftLeft :: Object -> Object -> XPure Object
-shiftLeft a b = _shiftOp id a b <|> eval_Infix_op SHL False a b
+shiftLeft a b = _shiftOp id a b <|> eval_Infix_op SHL a b
 
 -- | Evaluate the shift-right operator in the 'XPure' monad.
 shiftRight :: Object -> Object -> XPure Object
-shiftRight a b = _shiftOp negate a b <|> eval_Infix_op SHR False a b
+shiftRight a b = _shiftOp negate a b <|> eval_Infix_op SHR a b
 
 -- | Throw an error declaring that the two types cannot be used together because their types are
 -- incompatible. Provide the a string describing the /what/ could not be done as a result of the
@@ -4681,6 +4743,8 @@ getStringsToDepth maxDepth o = loop (0::Int) maxDepth o where
         if remDep==0
           then  return (Right (prettyShow o))
           else  ox >>= loop (depth+1) (if remDep>0 then remDep-1 else remDep)
+
+----------------------------------------------------------------------------------------------------
 
 -- | Calls 'getStringsToDepth' and dereferences all 'Data.Either.Left' values below a depth limit,
 -- this depth limit is specified by the first argument to this function. The second and third
@@ -4948,6 +5012,16 @@ instance NFData InfixOp  where { rnf a = seq a () }
 
 instance PPrintable InfixOp  where { pPrint = pUStr . toUStr }
 
+infixOpCommutativity :: InfixOp -> Bool
+infixOpCommutativity = (arr !) where
+  arr :: Array InfixOp Bool
+  arr = array (minBound, maxBound) $
+    [ (ADD, True), (SUB, False), (MULT, True), (DIV, False), (MOD, False), (POW, False)
+    , (ORB, True), (ANDB, True), (XORB, True), (SHL, False), (SHR, False), (OR, False), (AND, False)
+    , (EQUL, True), (NEQUL, True), (LTN, False), (GTN, False), (LTEQ, False), (GTEQ, False)
+    , (ARROW, False)
+    ]
+
 -- The byte prefixes overlap with the update operators of similar function to
 -- the operators, except for the comparison opeators (EQUL, NEQUL, GTN, LTN,
 -- GTEQ, LTEQ) which overlap with the prefix operators (INVB, NOT, NEGTIV, POSTIV, REF, DEREF)
@@ -5204,6 +5278,12 @@ builtin_typeof = DaoFunc (ustr "typeof") True $ \ox -> return $ case ox of
   []  -> Nothing
   [o] -> Just $ OType $ coreType $ typeOfObj o
   ox  -> Just $ OList $ map (OType . coreType . typeOfObj) ox
+
+builtin_sizeof :: DaoFunc
+builtin_sizeof = DaoFunc (ustr "sizeof") True $ \ox -> case ox of
+  [o] -> Just <$> getSizeOf o
+  _   -> execThrow $ obj $
+    [obj "sizeof() function must take exactly one parameter argument, instead got", obj ox]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -8310,6 +8390,33 @@ instance HaskellDataClass Location where
   haskellDataInterface = interface LocationUnknown $ do
     autoDefEquality >> autoDefOrdering
     autoDefToStruct -- >> autoDefFromStruct
+
+instance ObjectClass (H.HashMap Object Object) where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass (H.HashMap Object Object) where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt >> autoDefPPrinter
+    defSizer $ return . obj . H.size
+    let un _ a b = xmaybe (fromObj b) >>= \b -> return $ new $ H.union b a
+    defInfixOp ADD  un
+    defInfixOp ORB  un
+    defInfixOp ANDB $ \ _ a b -> xmaybe (fromObj b) >>= \b -> return $ new $ (H.intersection b a :: H.HashMap Object Object)
+    defInfixOp SUB  $ \ _ a b -> xmaybe (fromObj b) >>= \b -> return $ new $ (H.difference b a :: H.HashMap Object Object)
+    let initParams ox = case ox of
+          [] -> return H.empty
+          _  -> execThrow $ obj [obj "\"HashMap\" constructor takes no initializing parameters"]
+    let dictParams hmap ox = do
+          mt <- asks globalMethodTable
+          let hash128 = H.deriveHash128_DaoBinary mt
+          let f hmap (i, op, o) = let idx = H.hashNewIndex hash128 i in case op of
+                UCONST -> return $ H.hashInsert idx o hmap
+                op     -> case H.hashLookup idx hmap of
+                  Nothing -> execThrow $ obj [obj "item", i, obj "is undefined, cannot update"]
+                  Just  n -> do
+                    o <- execute $ (_updatingOps!op) n o
+                    return $ H.hashInsert idx o hmap
+          foldM f hmap ox
+    defDictInit initParams dictParams
 
 -- | This is a convenience function for calling 'OHaskell' using just an initial value of type
 -- @typ@. The 'Interface' is retrieved automatically using the instance of 'haskellDataInterface' for

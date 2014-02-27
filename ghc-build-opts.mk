@@ -47,7 +47,7 @@ LINK_FLAGS := # -dynamic # -shared
 USE_PKGS := base mtl transformers \
 	deepseq containers time utf8-string \
 	bytestring array binary random \
-	data-binary-ieee754 Crypto
+	data-binary-ieee754 Crypto SafeSemaphore
 
 ifdef BUILTIN_RTS_OPTIONS
 RTS_OPTS := -with-rtsopts="$(BUILTIN_RTS_OPTIONS)"

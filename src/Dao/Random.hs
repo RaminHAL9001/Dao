@@ -215,10 +215,12 @@ genRand maxDepth seed = genRandWith randO maxDepth seed
 randTrace :: MonadIO m => String -> RandT m a -> RandT m a
 randTrace msg rand = do
   trlev <- RandT $ gets traceLevel
+  nc <- RandT $ gets nodeCounter
+  sd <- RandT $ gets subDepth
   let prin msg = liftIO $ do
         hPutStrLn stderr (replicate trlev ' ' ++ msg)
         hFlush stderr >>= evaluate
-  () <- prin $ "begin "++msg
+  () <- prin $ "begin "++msg++" c="++show nc++" d="++show sd
   RandT $ modify $ \st -> st{traceLevel=trlev+1}
   a  <- rand >>= liftIO . evaluate
   RandT $ modify $ \st -> st{traceLevel=trlev}
@@ -268,19 +270,6 @@ recurse defaultVal fn = do
       a <- fn
       RandT $ modify (\st -> st{subDepth = subDepth st - 1})
       return a
-
--- | Some objects are inherently small. Even if you were to completely randomly generating the
--- object without a depth limit, the odds that the object will grow larger decreases as the object
--- grows larger. This is almost always true of objects that only contain zero or one recursive
--- fields. For these kinds of objects, you can reset the depth limit and let the object grow
--- without bound. This is useful because it reduces the number of nodes that default to null and can
--- produce a more varied set of random objects.
-resetDepthLim :: RandO a -> RandO a
-resetDepthLim fn = do
-  oldMaxDepth <- RandT (gets maxDepth)
-  a <- RandT (modify $ \st -> st{ subDepth=0 }) >> fn
-  RandT (modify $ \st -> st{ maxDepth = oldMaxDepth + maxDepth st })
-  return a
 
 -- | The 'nextInt' function lets you derive objects from a non-random seed value internal to the
 -- state of the 'RandT' monad. This is useful for random objects that have multiple constructors,

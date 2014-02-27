@@ -28,18 +28,10 @@ hash:=\#
 
 include ghc-build-opts.mk
 
-ifdef BUILTIN_RTS_OPTIONS
-RTS_OPTS := -with-rtsopts="$(BUILTIN_RTS_OPTIONS)"
-endif
-
-ifeq ($(ALLOW_CHANGE_RTS_OPTIONS),true)
-RTS_OPTS += -rtsopts
-endif
-
 SRC_DIRS = $(foreach i,$(SOURCE_DIRECTORIES),-i'$i')
 LANG_EXTS = $(foreach X,$(LANGUAGE_EXTENSIONS),-X$X)
 GHC_CMD = ghc
-GHC_BUILD = $(GHC_CMD) --make $(SRC_DIRS) $(GHC_FLAGS) $(RTS_OPTS) $(LINKER_FLAGS) $(LANG_EXTS)
+GHC_BUILD = $(GHC_CMD) --make $(SRC_DIRS) $(GHC_FLAGS)
 
 CHANGED_FILES := $(shell find $(SOURCE_DIRECTORIES) -name '[A-Z]*.hs' -newer ./Makefile)
 
@@ -48,10 +40,10 @@ CHANGED_FILES := $(shell find $(SOURCE_DIRECTORIES) -name '[A-Z]*.hs' -newer ./M
 all: dao test
 
 dao: $(CHANGED_FILES) src/dao-main.hs
-	$(GHC_BUILD) -o dao src/dao-main.hs $(CHANGED_FILES) $(LINKER_FLAGS)
+	$(GHC_BUILD) -o dao src/dao-main.hs $(CHANGED_FILES)
 
 O3: $(CHANGED_FILES) src/dao-main.hs
-	$(GHC_BUILD) -o dao src/dao-main.hs $(CHANGED_FILES) $(LINKER_FLAGS) -O3
+	$(GHC_BUILD) -o dao src/dao-main.hs $(CHANGED_FILES) -O3
 
 test: debug debug/test
 

@@ -36,11 +36,31 @@ LANGUAGE_EXTENSIONS =          \
 	DeriveDataTypeable         \
 	GeneralizedNewtypeDeriving \
 
-BUILTIN_RTS_OPTIONS = -M8G -N4
+BUILTIN_RTS_OPTIONS := -M8G -N4
 
-ALLOW_CHANGE_RTS_OPTIONS = true
+ALLOW_CHANGE_RTS_OPTIONS := true
 
-GHC_FLAGS = -threaded -Wall -fno-warn-name-shadowing -fno-warn-unused-do-bind -fno-warn-auto-orphans
+PROF_FLAGS := -prof -fprof-auto
 
-LINKER_FLAGS = # -dynamic # -shared
+LINK_FLAGS := # -dynamic # -shared
+
+USE_PKGS := base mtl transformers \
+	deepseq containers time utf8-string \
+	bytestring array binary random \
+	data-binary-ieee754 Crypto
+
+ifdef BUILTIN_RTS_OPTIONS
+RTS_OPTS := -with-rtsopts="$(BUILTIN_RTS_OPTIONS)"
+endif
+
+ifeq ($(ALLOW_CHANGE_RTS_OPTIONS),true)
+RTS_OPTS += -rtsopts
+endif
+
+ifdef USE_PKGS
+USE_PKGS := -hide-all-packages $(foreach p,$(USE_PKGS),-package $p)
+endif
+
+GHC_FLAGS = $(USE_PKGS) $(PROF_FLAGS) $(RTS_OPTS) $(LINK_FLAGS) $(LANG_EXTS) \
+	-threaded -Wall -fno-warn-name-shadowing -fno-warn-unused-do-bind -fno-warn-auto-orphans
 

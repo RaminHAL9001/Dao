@@ -22,7 +22,8 @@
 
 module Dao.Token where
 
-import Dao.String
+import           Dao.String
+import           Dao.PPrint
 
 import           Data.Monoid
 import           Data.Word
@@ -129,6 +130,11 @@ instance HasNullValue Location where
   nullValue = LocationUnknown
   testNull LocationUnknown = True
   testNull _ = False
+
+instance PPrintable Location where
+  pPrint o = case o of
+    LocationUnknown  -> pString "srcLoc()"
+    Location a b c d -> pList (pString "srcLoc") "(" ", " ")" [pShow a, pShow b, pShow c, pShow d]
 
 instance NFData Location where
   rnf LocationUnknown = ()

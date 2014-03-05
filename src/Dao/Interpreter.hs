@@ -32,8 +32,8 @@ module Dao.Interpreter(
     structErrMsg, structErrName, structErrField, structErrValue, structErrExtras,
     mkLabel, mkStructName, mkFieldName,
     ToDaoStruct(),
-    fromData, innerToStruct, renameConstructor, makeNullary, putNullaryUsingShow, define,
-    optionalField, setField, defObjField, (.=), putObjField, (.=@), defMaybeObjField, (.=?),
+    fromData, innerToStruct, innerToStructWith, renameConstructor, makeNullary, putNullaryUsingShow,
+    define, optionalField, setField, defObjField, (.=), putObjField, (.=@), defMaybeObjField, (.=?),
     FromDaoStruct(),
     toData, constructor, innerFromStruct, nullary, getNullaryWithRead, structCurrentField,
     tryCopyField, tryField, copyField, field, checkEmpty,
@@ -45,11 +45,12 @@ module Dao.Interpreter(
     ),
     T_type, T_int, T_word, T_long, T_ratio, T_complex, T_float, T_time, T_diffTime,
     T_char, T_string, T_ref, T_bytes, T_list, T_dict, T_struct,
-    isNumeric, typeMismatchError, insertAtPath,
+    isNumeric, typeMismatchError,
     initializeGlobalKey, destroyGlobalKey,
-    RefQualifier(LOCAL, GLODOT, STATIC, GLOBAL),
-    QualRef(Unqualified, Qualified),
-    refNames, maybeRefNames, fmapQualRef, setQualifier, delQualifier, qualRefLookup, qualRefUpdate,
+    RefQualifier(UNQUAL, LOCAL, CONST, STATIC, GLOBAL, GLODOT),
+    Reference(Reference, RefObject), reference, refObject,
+    refNames, referenceFromUStr, fmapReference, setQualifier, modRefObject,
+    refAppendSuffix, referenceLookup, referenceUpdate,
     CoreType(
       NullType, TrueType, TypeType, IntType, WordType, DiffTimeType, FloatType,
       LongType, RatioType, ComplexType, TimeType, CharType, StringType, RefType,
@@ -57,7 +58,8 @@ module Dao.Interpreter(
     ),
     typeOfObj, coreType,
     TypeSym(CoreType, TypeVar), TypeStruct(TypeStruct), ObjType(ObjType), typeChoices,
-    Reference(Reference), refNameList,
+    RefSuffix(NullRef, DotRef, Subscript, FuncCall),
+    dotRef, subscript, funcCall,
     Complex(Complex),
     realPart, imagPart, mkPolar, cis, polar, magnitude, phase, conjugate, complex,
     minAccumArray, minArray,
@@ -69,10 +71,10 @@ module Dao.Interpreter(
     preExec, postExec, quittingTime, programTokenizer, currentCodeBlock, ruleSet,
     newExecUnit,
     Task(), initTask, throwToTask, killTask, taskLoop, taskLoop_,
-    Executable(execute),
+    Executable(execute), RefReducible(reduceToRef),
     ExecRef(execReadRef, execTakeRef, execPutRef, execSwapRef, execModifyRef, execModifyRef_),
     Store(storeLookup, storeUpdate, storeDefine, storeDelete),
-    objectAccess, objectUpdate, 
+    objectReferenceAccess, objectReferenceUpdate, 
     ExecControl(ExecReturn, ExecError), execReturnValue, execErrorInfo,
     ExecErrorInfo(ExecErrorInfo), execUnitAtError, execErrExpr, execErrScript, execErrTopLevel,
     mkExecErrorInfo, mkExecError, updateExecErrorInfo, setCtrlReturnValue,
@@ -116,12 +118,12 @@ module Dao.Interpreter(
     allUpdateOpStrs, allPrefixOpChars, allPrefixOpStrs, allInfixOpChars, allInfixOpStrs,
     TopLevelEventType(BeginExprType, EndExprType, ExitExprType), 
     evalArithPrefixOp, evalInfixOp, evalUpdateOp, 
-    RefExpr(RefExpr), refFromExpr, 
-    QualRefExpr(UnqualRefExpr, QualRefExpr), qualRefFromExpr, 
+    RefSuffixExpr(NullRefExpr, DotRefExpr, SubscriptExpr, FuncCallExpr),
+    ReferenceExpr(ReferenceExpr, RefObjectExpr),
     matchFuncParams, execGuardBlock, objToCallable, callCallables,
-    callObject, callFunction, checkPredicate, checkVoid,
-    AST_Ref(AST_RefNull, AST_Ref), astRef,
-    AST_QualRef(AST_Unqualified, AST_Qualified),
+    callObject, checkPredicate, checkVoid,
+    AST_RefSuffix(AST_RefNull, AST_DotRef, AST_Subscript, AST_FuncCall),
+    AST_Reference(AST_Reference, AST_RefObject),
     ParenExpr(ParenExpr), evalConditional, AST_Paren(AST_Paren), 
     IfExpr(IfExpr), AST_If(AST_If), 
     ElseExpr(ElseExpr), AST_Else(AST_Else), 
@@ -131,7 +133,7 @@ module Dao.Interpreter(
       IfThenElse, WhileLoop, RuleFuncExpr, EvalObject,
       TryCatch, ForLoop, ContinueExpr, ReturnExpr, WithDoc
     ),
-    localVarDefine, derefObjectGetQualRef, derefObject,
+    localVarDefine, maybeDerefObject, derefObjectGetReference, derefObject,
     AST_Script(
       AST_Comment, AST_IfThenElse, AST_WhileLoop, AST_RuleFunc, AST_EvalObject,
       AST_TryCatch, AST_ForLoop, AST_ContinueExpr, AST_ReturnExpr, AST_WithDoc
@@ -139,26 +141,26 @@ module Dao.Interpreter(
     ObjListExpr(ObjListExpr), AST_ObjList(AST_ObjList),
     OptObjListExpr(OptObjListExpr), updateExecError, AST_OptObjList(AST_OptObjList),
     LiteralExpr(LiteralExpr), AST_Literal(AST_Literal),
-    RefOpExpr(ObjParenExpr, PlainRefExpr, ArraySubExpr, FuncCall),
-    AST_RefOperand(AST_ObjParen, AST_PlainRef, AST_ArraySub, AST_FuncCall),
-    SingleExpr(SingleExpr, RefPfxExpr), AST_Single(AST_Single, AST_RefPfx),
+    RefPrefixExpr(PlainRefExpr, RefPrefixExpr), cleanupRefPrefixExpr,
+    AST_RefPrefix(AST_RefPrefix, AST_PlainRef),
     RuleFuncExpr(LambdaExpr, FuncExpr, RuleExpr), AST_RuleFunc(AST_Lambda, AST_Func, AST_Rule),
     ObjectExpr(
       VoidExpr, ObjLiteralExpr, ObjSingleExpr, ObjRuleFuncExpr,
       ArithPfxExpr, InitExpr, StructExpr, MetaEvalExpr
-    ), indexObject,
+    ), objectIndexAccess, objectIndexUpdate,
     AST_Object(
       AST_Void, AST_ObjLiteral, AST_ObjSingle, AST_ObjRuleFunc,
       AST_ArithPfx, AST_Init, AST_Struct, AST_MetaEval
     ),
-    ArithExpr(ObjectExpr, ArithExpr), AST_Arith(AST_Object, AST_Arith), 
-    AssignExpr(EvalExpr, AssignExpr), AST_Assign(AST_Eval, AST_Assign), assignUnqualifiedOnly,
+    ArithExpr(ObjectExpr, ArithExpr),
+    AST_Arith(AST_Object, AST_Arith), 
+    AssignExpr(EvalExpr, AssignExpr),
+    AST_Assign(AST_Eval, AST_Assign), assignUnqualifiedOnly,
     TopLevelExpr(Attribute, TopScript, EventExpr), isAttribute, 
     AST_TopLevel(AST_Attribute, AST_TopScript, AST_Event, AST_TopComment),
     isAST_Attribute, attributeToList,
     Program(Program), topLevelExprs, program_magic_number, 
     AST_SourceCode(AST_SourceCode), sourceModified, sourceFullPath, directives, 
-    evalObjectMethod,
     MethodTable(), execGetObjTable, lookupMethodTable, typeRepToUStr,
     ReadIterable(readIter, readForLoop), readForLoopWith,
     UpdateIterable(updateIter, updateForLoop), updateForLoopWith,
@@ -224,24 +226,75 @@ import           System.IO
 
 #if 0
 import Debug.Trace
+strace :: PPrintable s => String -> s -> s
+strace msg s = trace (msg++": "++prettyShow s) s
 dbg :: MonadIO m => String -> m ()
-dbg = liftIO . hPutStrLn stderr
+dbg = liftIO . hPutStrLn stderr . ("(DEBUG) "++) . (>>=(\c -> if c=='\n' then "\n(DEBUG) " else [c]))
 dbg' :: MonadIO m => String -> m a -> m a
 dbg' msg f = f >>= \a -> dbg msg >> return a
 dbg0 :: (MonadPlus m, MonadIO m, MonadError e m) => String -> m a -> m a
 dbg0 msg f = do
-  dbg ("(BEGIN) "++msg)
+  dbg (msg++" (BEGIN)")
   catchError
     (mplus (f >>= \a -> dbg (msg++" (DONE)") >> return a) (dbg (msg++" (BACKTRACKED)") >> mzero))
     (\e -> dbg (msg++" (ERROR)") >> throwError e)
+updbg :: MonadIO m => String -> (Maybe Object -> m (Maybe Object)) -> Maybe Object -> m (Maybe Object)
+updbg msg f o = dbg ("(update with "++msg++")") >> f o >>= \o -> dbg ("(update complete "++show o++")") >> return o
 #endif
+
+----------------------------------------------------------------------------------------------------
+
+-- A note on the binary format.
+--     Most constructors have a unique prefix byte, and this allows more efficient encoding because
+-- it is not necessary to place null terminators everywhere and you can determine exactly which
+-- constructor is under the decoder cursor just from the byte prefix. This means there is an
+-- address space for constructors between 0x00 and 0xFF. This is an overview of that address space
+-- 
+-- 00..07 > The "Dao.Binary" module declares a few unique prefixes of its own for booleans,
+--        variable-length integers, and maybe types, and of course the null terminator.
+-- 08..1A > Each prefix here used alone indicates a 'CoreType's. But each prefix may be followed by
+--        data which indicates that it is actuall one of the constructors for the 'Object' data
+--        type.
+-- 
+-- 22..23 'Struct'
+-- 2B..2C 'TypeSym'
+-- 2D     'TypeStruct'
+-- 2E     'ObjType' (T_type)
+-- 
+-- 35..38 > The 'RefSuffix' data type. These prefixes are re-used for the 'ReferenceExpr' data type
+--        because there is a one-to-one mapping between these two data types.
+-- 39..3F > The 'Reference' data type. These prefixes are re-used for the 'ReferenceExpr' data type
+--        execpt for the 'RefWrapper' constructor which is mapped to @'RefPrefixExpr' 'REF'@.
+-- 
+-- -- the abstract syntax tree -- --
+-- 
+-- 40..41 'RefPrefixExpr'
+-- 44     'ParenExpr'
+-- 48..4D 'ObjectExpr'
+-- 4F     'ArithExpr'
+-- 51     'AssignExpr'
+-- 53..55 'RuleFuncExpr'
+-- 56..57 'RuleHeadExpr'
+-- 5C     'ObjListExpr'
+-- 60..73 'InfixOp'
+-- 60..70 'UpdateOp' -- Partially overlaps with 'InfixOp'
+-- 61..6E 'ArithPfxOp' -- Partially overlaps with 'InfixOp'
+-- 78..7F 'ScriptExpr'
+-- 83     'ElseExpr'
+-- 84     'IfElseExpr'
+-- 85     'WhileExpr'
+-- 89..8B 'TyChkExpr'
+-- 90..91 'ParamExpr'
+-- 94     'ParamListExpr'
+-- 98     'CodeBlock'
+-- A1..A5 'TopLevelExpr'
 
 ----------------------------------------------------------------------------------------------------
 
 -- The stateful data for the 'DaoSetup' monad.
 data SetupModState
   = SetupModState
-    { daoSatisfies      :: T.Tree Name ()
+    { daoSatisfies      :: M.Map UStr ()
       -- ^ a set of references that can satisfy "required" statements in Dao scripts.
     , daoSetupConstants :: M.Map Name Object
     , daoClasses        :: MethodTable
@@ -276,7 +329,7 @@ _updateSetupModState f = DaoSetup (modify f)
 -- using this function.
 daoProvides :: UStrType s => s -> DaoSetup
 daoProvides label = _updateSetupModState $ \st ->
-  st{ daoSatisfies = T.insert (refNameList $ read $ uchars label) () (daoSatisfies st) }
+  st{ daoSatisfies = M.insert (toUStr label) () $ daoSatisfies st }
 
 -- | Associate an 'HaskellDataClass' with a 'Name'. This 'Name' will be callable from within Dao scripts.
 -- > newtype MyClass = MyClass { ... } deriving (Eq, Ord)
@@ -317,10 +370,10 @@ setupDao :: DaoSetup -> IO ()
 setupDao setup0 = do
   let setup = execState (daoSetupM setup0) $
         SetupModState
-        { daoSatisfies     = T.Void
+        { daoSatisfies      = M.empty
         , daoSetupConstants = M.empty
-        , daoClasses       = mempty
-        , daoEntryPoint    = return ()
+        , daoClasses        = mempty
+        , daoEntryPoint     = return ()
         }
   xunit  <- _initExecUnit
   result <- ioExec (daoEntryPoint setup) $
@@ -358,14 +411,20 @@ daoFunc :: DaoFunc
 daoFunc = DaoFunc{ daoFuncName=nil, autoDerefParams=True, daoForeignCall = \_ -> return Nothing }
 
 -- | Execute a 'DaoFunc' 
-executeDaoFunc :: Name -> DaoFunc -> ObjListExpr -> Exec (Maybe Object)
-executeDaoFunc _op fn params = do
-  args <- execute params >>= (if autoDerefParams fn then mapM derefObject else return)
+executeDaoFunc :: Maybe Reference -> DaoFunc -> [Object] -> Exec (Maybe Object)
+executeDaoFunc qref fn params = do
+  args <- (if autoDerefParams fn then mapM derefObject else return) params
   pval <- catchPredicate (daoForeignCall fn args)
   case pval of
     OK                 obj  -> return obj
     PFail (ExecReturn  obj) -> return obj
-    PFail (err@ExecError{}) -> throwError err
+    PFail (err@ExecError{}) -> throwError $ case qref of
+      Nothing -> err
+      Just qref -> err{
+        execReturnValue = let e = [obj "error in function", obj qref] in Just $
+          flip (maybe (obj e)) (execReturnValue err) $ \ret -> OList $ case ret of
+            OList ox -> e++ox
+            o        -> e++[o] }
     Backtrack               -> mzero
 
 -- | Evaluate this function as one of the instructions in the monadic function passed to the
@@ -678,7 +737,6 @@ instance ObjectClass [Object] where
     StringType -> fmap OList . loop return
     BytesType  -> fmap (OBytes . D.runPut . mapM_ D.putLazyByteString) . loop (\ (OBytes o) -> [o])
     ListType   -> return . OList
-    RefType    -> fmap (ORef . Unqualified . Reference) . xmaybe . mapM (fromObj >=> maybeFromUStr)
     _          -> \ _ -> mzero
     where
       loop f = fmap concat .
@@ -692,30 +750,18 @@ instance ObjectClass (M.Map Name Object) where
     DictType -> return $ ODict o
     _        -> mzero
 
-instance ObjectClass QualRef where
+instance ObjectClass Reference where
   obj = ORef
   fromObj o = case o of { ORef o -> return o; _ -> mzero; }
   castToCoreType t o = case t of
     StringType -> return $ obj $ '$':prettyShow o
     RefType    -> return (ORef o)
-    ListType   -> (OList . map obj) <$> case o of
-      Unqualified (Reference r) -> return r
-      _                         -> mzero
-    TreeType -> case o of
-      Unqualified (Reference [r]) -> return $ OTree $ Nullary{ structName=r }
-      _                           -> mzero
     _          -> mzero
 
-instance ObjectClass Reference where
-  obj = ORef . Unqualified
-  fromObj o = case o of
-    ORef (Unqualified ref) -> return ref
-    _ -> mzero
-
 instance ObjectClass Name where
-  obj = ORef . Unqualified . Reference . return
+  obj n = ORef $ Reference UNQUAL n NullRef
   fromObj o = case o of
-    ORef (Unqualified (Reference [name])) -> return name
+    ORef (Reference UNQUAL name NullRef) -> return name
     _ -> mzero
 
 instance ObjectClass ObjType where
@@ -994,14 +1040,15 @@ instance HasNullValue Struct where
   testNull (Nullary{ structName=name }) = name == ustr "NULL"
   testNull _ = False
 
+-- binary 22 23
 instance B.Binary Struct MTab where
   put o = case o of
-    Nullary  o -> B.putWord8 0x20 >> B.put o
-    Struct n o -> B.putWord8 0x21 >> B.put n >> B.put o
+    Nullary  o -> B.putWord8 0x22 >> B.put o
+    Struct n o -> B.putWord8 0x23 >> B.put n >> B.put o
   get = B.word8PrefixTable <|> fail "expecting Struct"
 
 instance B.HasPrefixTable Struct B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "QualRef" 0x20 0x21 $
+  prefixTable = B.mkPrefixTableWord8 "Struct" 0x22 0x23 $
     [ Nullary <$> B.get
     , pure Struct <*> B.get <*> B.get
     ]
@@ -1125,8 +1172,7 @@ instance ToDaoStructClass StructError where
     asks structErrName   >>= optionalField "structName" . fmap OString
     asks structErrField  >>= optionalField "field" . fmap OString
     asks structErrValue  >>= optionalField "value"
-    asks structErrExtras >>= optionalField "extras" .
-      Just . OList . fmap (ORef . Unqualified . Reference . (:[]))
+    asks structErrExtras >>= optionalField "extras" . fmap obj . refNames
     return ()
 
 instance FromDaoStructClass StructError where
@@ -1137,7 +1183,7 @@ instance FromDaoStructClass StructError where
           _         -> fail "expecting string value"
     let ref o = case o of
           ORef    o -> case o of
-            Unqualified (Reference [o]) -> return o
+            Reference UNQUAL o NullRef -> return o
             _ -> fail "not an unqualified reference singleton"
           _ -> fail "not a reference type"
     let lst o = case o of
@@ -1258,7 +1304,12 @@ fromData pred hask = evalState (runPredicateT $ run_toDaoStruct $ pred >> get) $
 -- however if this is done, 'Prelude.fmap' will backtrack, so you should use 'innerFromStruct'
 -- instead.
 innerToStruct :: ToDaoStructClass inner => inner -> ToDaoStruct haskData ()
-innerToStruct o = ask >>= \haskData ->
+innerToStruct = innerToStructWith toDaoStruct
+
+-- | Like 'innerToStruct' but lets you supply a 'ToDaoStruct' function for an arbitrary data type,
+-- not just one that instantiates 'ToDaoStructClass'.
+innerToStructWith :: ToDaoStruct inner () -> inner -> ToDaoStruct haskData ()
+innerToStructWith toDaoStruct o = ask >>= \haskData ->
   predicate (fromData toDaoStruct o) >>= ToDaoStruct . lift . put . flip (,) haskData
 
 -- | Use this function to set the 'structName' name of the constructor at some point, for example
@@ -1657,7 +1708,7 @@ type T_string   = UStr
 type T_bytes    = B.ByteString
 type T_list     = [Object]
 type T_dict     = M.Map Name Object
-type T_ref      = QualRef
+type T_ref      = Reference
 type T_type     = ObjType
 type T_struct   = Struct
 type T_time     = UTCTime
@@ -1714,6 +1765,7 @@ instance HasNullValue Object where
     OHaskell  o  -> testNull o
     _            -> False
 
+-- binary 08 1A Object-->CoreType
 instance B.Binary Object MTab where
   put o = do
     let t   = B.put (typeOfObj o)
@@ -1770,18 +1822,18 @@ instance B.HasPrefixTable Object B.Byte MTab where
 
 -- | Direct a reference at a particular tree in the runtime.
 data RefQualifier
-  = LOCAL -- ^ the default unless in a "with" statement, refers to the current local variable stack
+  = UNQUAL -- ^ unqualified
+  | LOCAL  -- ^ refers to the current local variable stack
+  | CONST  -- ^ refers to a built-in constant
+  | STATIC -- ^ a local variable stack specific to a 'Subroutine' that lives on even after the
+           -- subroutine has completed.
+  | GLOBAL -- ^ the global variable space for the current module.
   | GLODOT -- ^ a relative reference, gets it's name because it begins with a dot (".") character.
            -- Similar to the "this" keyword in C++ and Java, refers to the object of the current
            -- context set by the "with" statement, but defaults to the global variable space when
            -- not within a "with" statement. This is necessary to differentiate between local
            -- variables and references to the "with" context.
-  | STATIC -- ^ a local variable stack specific to a 'Subroutine' that lives on even after the
-           -- subroutine has completed.
-  | GLOBAL -- ^ the global variable space for the current module.
-  deriving (Eq, Ord, Typeable, Enum, Ix, Show, Read)
-
-instance Bounded RefQualifier where { minBound=LOCAL; maxBound=GLOBAL; }
+  deriving (Eq, Ord, Typeable, Enum, Ix, Bounded, Show, Read)
 
 instance NFData RefQualifier where { rnf a = seq a () }
 
@@ -1789,27 +1841,32 @@ instance PPrintable RefQualifier where { pPrint = pUStr . toUStr }
 
 instance PrecedeWithSpace RefQualifier where
    precedeWithSpace o = case o of
-     LOCAL    -> True
-     STATIC   -> True
-     GLOBAL   -> True
-     _        -> False
+     LOCAL  -> True
+     CONST  -> True
+     STATIC -> True
+     GLOBAL -> True
+     _      -> False
 
 instance UStrType RefQualifier where
   toUStr a = ustr $ case a of
+    UNQUAL -> ""
     LOCAL  -> "local"
+    CONST  -> "const"
     STATIC -> "static"
     GLOBAL -> "global"
     GLODOT -> "."
   maybeFromUStr str = case uchars str of
     "local"  -> Just LOCAL
+    "const"  -> Just CONST
     "static" -> Just STATIC
     "global" -> Just GLOBAL
     "."      -> Just GLODOT
+    ""       -> Just UNQUAL
     _        -> Nothing
   fromUStr str = maybe (error (show str++" is not a reference qualifier")) id (maybeFromUStr str)
 
 instance HasRandGen RefQualifier where
-  randO = fmap toEnum (nextInt (1+fromEnum (maxBound::RefQualifier)))
+  randO = fmap toEnum (nextInt (1+fromEnum (minBound::RefQualifier)))
 
 instance ToDaoStructClass RefQualifier where { toDaoStruct=putNullaryUsingShow; }
 
@@ -1824,147 +1881,187 @@ instance HaskellDataClass RefQualifier where
 
 ----------------------------------------------------------------------------------------------------
 
-data QualRef
-  = Unqualified Reference
-  | Qualified RefQualifier Reference
+data Reference
+  = Reference  RefQualifier Name RefSuffix
+  | RefObject  Object RefSuffix
+  | RefWrapper Reference
   deriving (Eq, Ord, Typeable, Show)
 
-instance NFData QualRef where
-  rnf (Unqualified r) = deepseq r $! ()
-  rnf (Qualified q r) = seq q $! deepseq r ()
+reference :: RefQualifier -> Name -> Reference
+reference q name = Reference q name NullRef
 
-instance HasNullValue QualRef where
-  nullValue = Unqualified (Reference [])
-  testNull o = case o of
-    Unqualified     r -> testNull r
-    Qualified LOCAL r -> testNull r
-    _                 -> False
+refObject :: Object -> Reference
+refObject = flip RefObject NullRef
 
-instance PPrintable QualRef where
-  pPrint o = case o of
-    Unqualified r -> pInline $ dots r
-    Qualified q r -> pInline $ ([pPrint q, pString " "]++) $ dots r
-    where { dots r = intercalate [pString "."] $ map (return . pPrint) $ refNameList r }
+instance NFData Reference where
+  rnf (Reference q n r) = deepseq q $! deepseq n $! deepseq r ()
+  rnf (RefObject o r  ) = deepseq o $! deepseq r ()
+  rnf (RefWrapper  r  ) = deepseq r ()
 
-instance B.Binary QualRef mtab where
-  put o = case o of
-    Unqualified ref -> B.put ref
-    Qualified q ref -> B.prefixByte pfx $ B.put ref where
-      pfx = case q of
-        LOCAL  -> 0x22
-        GLODOT -> 0x23
-        STATIC -> 0x24
-        GLOBAL -> 0x25
-  get = B.word8PrefixTable <|> fail "expecting QualRef"
+instance PPrintable Reference where
+  pPrint qref = case qref of
+    Reference q n r -> case q of
+      UNQUAL -> pInline [pPrint n, pPrint r]
+      q      -> pInline [pPrint q, pString " ", pPrint n, pPrint r]
+    RefObject o r -> pInline [pString "(", pPrint o, pString ")", pPrint r]
+    RefWrapper  r -> pInline [pString "$", pPrint r]
 
-instance B.HasPrefixTable QualRef B.Byte mtab where
-  prefixTable = mconcat $
-    [ Unqualified <$> B.prefixTable
-    , B.mkPrefixTableWord8 "QualRef" 0x22 0x25 $
-        [ Qualified LOCAL  <$> B.get
-        , Qualified GLODOT <$> B.get
-        , Qualified STATIC <$> B.get
-        , Qualified GLOBAL <$> B.get
-        ]
+-- binary 39 3F
+instance B.Binary Reference MTab where
+  put qref = case qref of
+    Reference q n r -> prefix q $ B.put n >> B.put r where
+      prefix q = B.prefixByte $ case q of
+        { UNQUAL -> 0x39; LOCAL -> 0x3A; CONST -> 0x3B; STATIC -> 0x3C; GLOBAL -> 0x3D; GLODOT -> 0x3E; }
+    RefObject o r -> B.prefixByte 0x3F $ B.put o >> B.put r
+    RefWrapper  r -> B.prefixByte 0x3F $ B.put r
+  get = B.word8PrefixTable <|> fail "expecting Reference"
+
+instance B.HasPrefixTable Reference B.Byte MTab where
+  prefixTable = B.mkPrefixTableWord8 "Reference" 0x39 0x3F $
+    [ f UNQUAL, f LOCAL, f CONST, f STATIC, f GLOBAL, f GLODOT
+    , return RefObject  <*> B.get <*> B.get
+    , return RefWrapper <*> B.get
+    ] where { f q = return (Reference q) <*> B.get <*> B.get }
+
+instance HasRandGen Reference where
+  randO = countRunRandChoice
+  randChoice = randChoiceList $
+    [ return Reference <*> randO <*> randO <*> scrambO
+    , return RefObject <*> scrambO <*> scrambO
     ]
 
-instance HasRandGen QualRef where
-  randO = do
-    let maxbnd = fromEnum(maxBound::RefQualifier)
-    i   <- nextInt (2*(maxbnd-fromEnum(minBound::RefQualifier)))
-    let (d, m) = divMod i 2
-    if m==0 then Unqualified <$> randO else Qualified (toEnum d) <$> randO
-
--- 'execute'-ing a 'QualRefExpr' will dereference it, essentially reading the
+-- 'execute'-ing a 'Reference' will dereference it, essentially reading the
 -- value associated with that reference from the 'ExecUnit'.
-instance Executable QualRef (Maybe (QualRef, Object)) where { execute qref = qualRefLookup qref }
+instance Executable Reference (Maybe (Reference, Object)) where { execute qref = referenceLookup qref }
 
-qualRefLookup :: QualRef -> Exec (Maybe (QualRef, Object))
-qualRefLookup qref = _doWithRefQualifier qref getLocal getStatic getGlobal getGloDot where
-  getLocal  ref = asks execStack  >>= doLookup ref
-  getGlobal ref = asks globalData >>= doLookup ref
-  getStatic ref = asks currentCodeBlock >>= doLookup ref
-  getGloDot ref = asks currentWithRef >>= doLookup ref
-  doLookup :: Store store => Reference -> store -> Exec (Maybe Object)
-  doLookup (Reference rx) store = case rx of
-    []   -> mzero
-    r:rx -> do
-      top <- storeLookup store r >>= xmaybe
-      _objectAccess [r] rx top
-    -- TODO: on exception, update the exception structure with information about the 'QualRef'
+instance RefReducible Reference where { reduceToRef = return }
+
+refAppendSuffix :: Reference -> RefSuffix -> Reference
+refAppendSuffix qref appref = case qref of
+  Reference q name ref -> Reference q name (ref<>appref)
+  RefObject   o    ref -> RefObject   o    (ref<>appref)
+  RefWrapper      qref -> RefWrapper $ refAppendSuffix qref appref
+
+referenceLookup :: Reference -> Exec (Maybe (Reference, Object))
+referenceLookup qref = mplus resolve voidAccess where
+  resolve = _resolveRefQualifier qref access getLocal getConst getStatic getGlobal getGloDot
+  voidAccess = execThrow $ obj [obj "cannot access, reference evaluates to void", obj qref]
+  access ref = maybe mzero (objectReferenceAccess (Just qref) ref)
+  getLocal  nm ref = asks execStack        >>= doLookup nm ref
+  getConst  nm ref = (ConstantStore <$> asks builtinConstants) >>= doLookup nm ref
+  getStatic nm ref = asks currentCodeBlock >>= doLookup nm ref
+  getGlobal nm ref = asks globalData       >>= doLookup nm ref
+  getGloDot nm ref = asks currentWithRef   >>= doLookup nm ref
+  doLookup :: Store store => Name -> RefSuffix -> store -> Exec (Maybe Object)
+  doLookup nm ref store = storeLookup store nm >>= xmaybe >>=
+    objectReferenceAccess (Just qref) ref
+    -- TODO: on exception, update the exception structure with information about the 'Reference'
     -- given above.
 
-refNames :: UStrType str => [str] -> QualRef
-refNames nx = Unqualified $ Reference (fmap (fromUStr . toUStr) nx)
+refNames :: [Name] -> Maybe Reference
+refNames nx = case nx of
+  []   -> Nothing
+  n:nx -> Just $ Reference UNQUAL n $ refSuffixFromNames nx
 
-maybeRefNames :: UStrType str => [str] -> Maybe QualRef
-maybeRefNames nx = fmap (Unqualified . Reference) $ sequence $ fmap (maybeFromUStr . toUStr) nx
+referenceFromUStr :: UStr -> Maybe Reference
+referenceFromUStr s = breakup [] $ uchars s where
+  breakup refs s = case break (=='.') s of
+    (n, '.':s) -> breakup (refs++[ustr n]) s
+    (n, ""   ) -> refNames $ refs++[ustr n]
+    _          -> Nothing
 
-fmapQualRef :: (Reference -> Reference) -> QualRef -> QualRef
-fmapQualRef fn r = case r of
-  Unqualified r -> Unqualified (fn r)
-  Qualified q r -> Qualified q (fn r)
+fmapReference :: (RefSuffix -> RefSuffix) -> Reference -> Reference
+fmapReference fn ref = case ref of
+  Reference q nm ref -> Reference q nm (fn ref)
+  RefObject   o  ref -> RefObject   o  (fn ref)
+  RefWrapper    qref -> RefWrapper $ fmapReference fn qref
 
-setQualifier :: RefQualifier -> QualRef -> QualRef
+setQualifier :: RefQualifier -> Reference -> Reference
 setQualifier q ref = case ref of
-  Unqualified ref -> Qualified q ref
-  Qualified _ ref -> Qualified q ref
+  Reference _ name ref -> Reference q name ref
+  RefObject   o    ref -> RefObject   o    ref
+  RefWrapper      qref -> RefWrapper $ setQualifier q qref
 
-delQualifier :: QualRef -> QualRef
-delQualifier ref = case ref of
-  Unqualified r -> Unqualified r
-  Qualified _ r -> Unqualified r
+modRefObject :: (Object -> Object) -> Reference -> Reference
+modRefObject mod ref = case ref of
+  RefObject o ref -> RefObject (mod o) ref
+  ref             -> ref
 
--- | This function performs an update on a 'QualRef', it is the complement to the 'qualRefLookup'
--- function. Evaluating 'qualRefUpdate' on a 'QualRef' will write/update the value associated with
+-- | This function performs an update on a 'Reference', it is the complement to the 'referenceLookup'
+-- function. Evaluating 'referenceUpdate' on a 'Reference' will write/update the value associated with
 -- it.
-qualRefUpdate :: QualRef -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe Object)
-qualRefUpdate qref upd = fmap (fmap snd) $ _doWithRefQualifier qref onLocal onStatic onGlobal onGloDot where
-  onLocal  ref = asks execStack >>= doUpdate ref
-  onGlobal ref = asks globalData >>= doUpdate ref
-  onStatic ref = asks currentCodeBlock >>= doUpdate ref
-  onGloDot ref = asks currentWithRef >>= doUpdate ref
-  doUpdate :: Store store => Reference -> store -> Exec (Maybe Object)
-  doUpdate (Reference rx) store = case rx of
-    []   -> mzero
-    r:rx -> storeUpdate store r $ _objectUpdate upd [r] rx
-      -- TODO: on exception, update the exception structure with information about the 'QualRef'
-      -- given above.
+referenceUpdate :: Reference -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe Object)
+referenceUpdate qref upd = fmap snd <$> checkUNQUAL where
+  checkUNQUAL = case qref of
+    Reference UNQUAL _ _ -> mplus (resolve False qref) (resolve True $ setQualifier LOCAL qref)
+    _                    -> resolve True qref
+  onLocal  force nm ref = asks execStack        >>= doUpdate force nm ref
+  onConst  force nm ref = if not force then mzero else execThrow $ obj $
+    [obj "cannot modify constant variable", obj (Reference UNQUAL nm ref)]
+  onStatic force nm ref = asks currentCodeBlock >>= doUpdate force nm ref
+  onGlobal force nm ref = asks globalData       >>= doUpdate force nm ref
+  onGloDot force nm ref = asks currentWithRef   >>= doUpdate force nm ref
+  doUpdate :: Store store => Bool -> Name -> RefSuffix -> store -> Exec (Maybe Object)
+  doUpdate force nm ref store = storeUpdate store nm $
+    maybe (if force then return Nothing else mzero) (return . Just) >=>
+      objectReferenceUpdate upd (Just qref) ref
+    -- if 'force' is False, produce an update function that backtracks if the input is 'Nothing',
+    -- otherwise produe an update function that never backtracks.
+  access a b = objectReferenceUpdate upd (Just qref) a b
+  resolve f qref =
+    _resolveRefQualifier qref access (onLocal f) (onConst f) (onStatic f) (onGlobal f) (onGloDot f)
+  -- TODO: on exception, update the exception structure with information about the 'Reference'
+  -- given above.
 
--- Pass a 'QualRef' and four functions, a function to be evaluated in the case of a 'LOCAL' ref, a
--- function to be evaluated in case of a 'STATIC' ref, a function to be evaluated in the case of a
--- 'GLOBAL' ref, and a function to be evaluated in the case of a 'GLODOT' ref. Based on the
--- 'RefQualifier' of the 'QualRef', the appropriate actions are evaluated. In the case of an
--- 'Unqualified' reference, the actions associated with 'LOCAL', 'STATIC', and 'GLOBAL' qualifiers
--- are evaluated in that order, so these functions should all evaluated to 'Control.Monad.mzero' if
--- the 'Reference' is not defined.
-_doWithRefQualifier
-  :: QualRef
-  -> (Reference -> Exec (Maybe Object)) -- local store
-  -> (Reference -> Exec (Maybe Object)) -- static store
-  -> (Reference -> Exec (Maybe Object)) -- global store
-  -> (Reference -> Exec (Maybe Object)) -- with-ref store
-  -> Exec (Maybe (QualRef, Object))
-_doWithRefQualifier qref onLocal onStatic onGlobal onGloDot = do
-  result <- catchPredicate $ msum $ case qref of
-    Unqualified ref -> [f LOCAL onLocal ref, getConst ref, f STATIC onStatic ref, f GLOBAL onGlobal ref]
-    Qualified q ref -> case q of
-      LOCAL  -> [f LOCAL  onLocal ref]
-      STATIC -> [f STATIC onStatic ref]
-      GLOBAL -> [f GLOBAL onGlobal ref]
-      GLODOT -> [f GLODOT onGloDot ref, f GLOBAL onGlobal ref]
-  case result of
-    Backtrack -> return Nothing
-    PFail err -> throwError err
-    OK      o -> return o
+-- Used by 'referenceUpdate' and 'referenceLookup': given a 'Reference' and six functions, resolves
+-- which object store to be used based on the 'RefQualifier' in a 'Reference', and evaluates the
+-- appropriate function. Unqualified references (marked with 'UNQUAL') will attempt to evaluate
+-- several of the given functions in a particular order and returns the value returned by the first
+-- function that does not backtrack, therfore 'referenceLookup' passes functions that backtrack when
+-- the input is 'Nothing'.
+-- The functions parameters passed will be evaluated in this order
+-- 1. The function to be evaluated when a reference is not qualified but an object value constructed
+--       with 'RefObject'.
+-- 2. The function to be evaluated when the 'Reference' is a 'LOCAL' ref.
+-- 3. The function to be evaluated when the 'Reference' is a 'CONST' ref.
+-- 4. The function to be evaluated when the 'Reference' is a 'STATIC' ref.
+-- 5. The function to be evaluated when the 'Reference' is a 'GLOBAL' ref.
+-- 6. The function to be evaluated when the 'Reference' is a 'GLODOT' ref.
+-- In the case of a 'Reference' marked with 'UNQUAL', four of the above functions are tried in this
+-- order: the function for 'LOCAL's, the function for 'CONST's, the function for 'STATIC's, and
+-- finally, the functionf for 'GLOBAL's. Each function is tried in an 'Control.Monad.msum' sequence,
+-- so the first function that does notbacktrack has it's return value returned. If all functions
+-- backtrack, 'Prelude.Nothing' is returned. Otherwise, the 'Reference' value used to select the
+-- 'Object' value is returned with the selected 'Object' value. If the 'Reference' is marked
+-- 'UNQUAL', this mark is modified to reflect which function returned the value. For example, if
+-- every function backtracked except for the function one evaluated for 'GLOBAL' expressions, the
+-- returned 'Reference' value is marked with the 'GLOBAL' qualifier.
+_resolveRefQualifier
+  :: Reference
+  -> (RefSuffix -> Maybe Object -> Exec (Maybe Object)) -- parens optionally followed by dot
+  -> (Name -> RefSuffix -> Exec (Maybe Object)) -- local store
+  -> (Name -> RefSuffix -> Exec (Maybe Object)) -- const store
+  -> (Name -> RefSuffix -> Exec (Maybe Object)) -- static store
+  -> (Name -> RefSuffix -> Exec (Maybe Object)) -- global store
+  -> (Name -> RefSuffix -> Exec (Maybe Object)) -- with-ref store
+  -> Exec (Maybe (Reference, Object))
+_resolveRefQualifier qref onObj onLocal onConst onStatic onGlobal onGloDot = case qref of
+  RefWrapper    qref -> attachRef $ onObj NullRef $ Just $ obj qref
+  RefObject o    ref -> attachRef $ onObj ref $ Just o
+  Reference q nm ref -> msum $ case q of
+    LOCAL  -> [f LOCAL  onLocal  nm ref]
+    CONST  -> [f CONST  onConst  nm ref]
+    STATIC -> [f STATIC onStatic nm ref]
+    GLOBAL -> [f GLOBAL onGlobal nm ref]
+    GLODOT -> [f GLODOT onGloDot nm ref, f GLOBAL onGlobal nm ref]
+    UNQUAL ->
+      [ f LOCAL  onLocal  nm ref, f CONST  onConst nm ref
+      , f STATIC onStatic nm ref, f GLOBAL onGlobal nm ref
+      ] -- The order of this list determines in what order the various variables stores should be
+        -- searched when resolving an unqualified variable.
   where
-    f q m ref = fmap (fmap (\o -> (Qualified q ref, o))) (m ref)
-    getConst ref = case ref of
-      Reference [nm] -> do
-        sto <- ConstantStore <$> asks builtinConstants
-        o <- storeLookup sto nm >>= xmaybe
-        return $ Just (Unqualified ref, o)
-      _               -> mzero
+    f q m nm ref = fmap (\o -> (Reference q nm ref, o)) <$> m nm ref
+    attachRef = fmap (fmap (\o -> (qref, o)))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2057,6 +2154,7 @@ instance Es.InfBound CoreType where
 
 instance PPrintable CoreType where { pPrint = pShow }
 
+-- binary 08 1A CoreType
 instance B.Binary CoreType mtab where
   put t = B.putWord8 $ case t of
     NullType     -> 0x08
@@ -2135,7 +2233,7 @@ data TypeSym
     -- ^ used when the type of an object is equal to it's value, for example Null and True,
     -- or in situations where the type of an object has a value, for example the dimentions of a
     -- matrix.
-  | TypeVar  Reference [ObjType]
+  | TypeVar  Name [ObjType]
     -- ^ a polymorphic type, like 'AnyType' but has a name.
   deriving (Eq, Ord, Show, Typeable)
 
@@ -2153,19 +2251,21 @@ instance PPrintable TypeSym where
     TypeVar  t ctx -> pInline $
       concat [[pPrint t], guard (not (null ctx)) >> [pList_ "[" ", " "]" (map pPrint ctx)]]
 
+-- binary 2B 2C
 instance B.Binary TypeSym mtab where
   put o = case o of
-    CoreType o       -> B.prefixByte 0x1D $ B.put o
-    TypeVar  ref ctx -> B.prefixByte 0x1E $ B.put ref >> B.put ctx
+    CoreType o       -> B.prefixByte 0x2B $ B.put o
+    TypeVar  ref ctx -> B.prefixByte 0x2C $ B.put ref >> B.put ctx
   get = B.word8PrefixTable <|> fail "expecting TypeSym"
 
 instance B.HasPrefixTable TypeSym B.Byte mtab where
   prefixTable =
-    B.mkPrefixTableWord8 "TypeSym" 0x1D 0x1E [CoreType <$> B.get, pure TypeVar <*> B.get <*> B.get]
+    B.mkPrefixTableWord8 "TypeSym" 0x2B 0x2C [CoreType <$> B.get, pure TypeVar <*> B.get <*> B.get]
 
 ----------------------------------------------------------------------------------------------------
 
--- | Complex type structures can be programmed by combining 'ObjSimpleType's.
+-- | Complex type structures can be programmed by combining 'ObjSimpleType's. An empty 'TypeStruct'
+-- is the "any-type", which matches anything.
 newtype TypeStruct = TypeStruct [TypeSym] deriving (Eq, Ord, Show, Typeable)
 
 instance NFData TypeStruct where { rnf (TypeStruct a) = deepseq a () }
@@ -2173,21 +2273,24 @@ instance NFData TypeStruct where { rnf (TypeStruct a) = deepseq a () }
 instance HasNullValue TypeStruct where { nullValue = TypeStruct []; testNull (TypeStruct a) = null a; }
 
 instance PPrintable TypeStruct where
-  pPrint (TypeStruct tx) = pList (pString "type") "(" ", " ")" (map pPrint tx)
+  pPrint (TypeStruct tx) = case tx of
+    [] -> pString "AnyType"
+    tx -> pList (pString "type") "(" ", " ")" (map pPrint tx)
 
+-- binary 2D
 instance B.Binary TypeStruct mtab where
-  put (TypeStruct o) = B.prefixByte 0x1C $ B.put o
+  put (TypeStruct o) = B.prefixByte 0x2D $ B.put o
   get = B.word8PrefixTable <|> fail "expecting TypeStruct"
 
 instance B.HasPrefixTable TypeStruct B.Byte mtab where
-  prefixTable = B.mkPrefixTableWord8 "TypeStruct" 0x1C 0x1C [TypeStruct <$> B.get]
+  prefixTable = B.mkPrefixTableWord8 "TypeStruct" 0x2D 0x2D [TypeStruct <$> B.get]
 
-instance HasRandGen TypeStruct where { randO = TypeStruct <$> randList 1 4 }
+instance HasRandGen TypeStruct where { randO = recurse nullValue $ TypeStruct <$> randList 1 4 }
 
 ----------------------------------------------------------------------------------------------------
 
 -- | The fundamental 'Type' used to reason about whether an object is fit to be used for a
--- particular function.
+-- particular function. Any empty 'ObjType' is the "void-type" which matches nothing.
 newtype ObjType = ObjType { typeChoices :: [TypeStruct] } deriving (Eq, Ord, Show, Typeable)
 
 instance NFData ObjType where { rnf (ObjType a) = deepseq a () }
@@ -2197,67 +2300,114 @@ instance HasNullValue ObjType where { nullValue = ObjType []; testNull (ObjType 
 instance PPrintable ObjType where
   pPrint t@(ObjType tx) = case fromObj (obj t) of
     Just  t -> pString $ show (t::CoreType)
-    Nothing -> pList (pString "anyOf") "(" ", " ")" (map pPrint tx)
+    Nothing -> case tx of
+      [] -> pString "VoidType"
+      tx -> pList (pString "anyOf") "(" ", " ")" (map pPrint tx)
 
+-- binary 2E
 instance B.Binary ObjType mtab where
-  put (ObjType o) = B.prefixByte 0x1B $ B.put o
+  put (ObjType o) = B.prefixByte 0x2E $ B.put o
   get = B.word8PrefixTable <|> fail "expecting ObjType"
 
 instance B.HasPrefixTable ObjType B.Byte mtab where
-  prefixTable = B.mkPrefixTableWord8 "ObjType" 0x1B 0x1B [ObjType <$> B.get]
+  prefixTable = B.mkPrefixTableWord8 "ObjType" 0x2E 0x2E [ObjType <$> B.get]
 
-instance HasRandGen ObjType where { randO = ObjType <$> randList 1 3 }
+instance HasRandGen ObjType where { randO = recurse nullValue $ ObjType <$> randList 1 3 }
 
 coreType :: CoreType -> ObjType
 coreType = ObjType . return . TypeStruct . return . CoreType
 
 ----------------------------------------------------------------------------------------------------
 
--- | A 'Reference' is basically an address that can be used to lookup and update various objects in
--- the runtime.
-newtype Reference = Reference { refNameList :: [Name] } deriving (Eq, Ord, Typeable, Show)
+-- | This is actually a part of the 'Reference' constructor, and 'Reference' is one of the built-in
+-- 'Object' data types.  There is a one-to-one mapping from this type to the 'RefSuffixExpr' and
+-- 'AST_Ref' data types produced by the parser.
+data RefSuffix
+  = NullRef
+  | DotRef     Name    RefSuffix
+  | Subscript [Object] RefSuffix
+  | FuncCall  [Object] RefSuffix
+  deriving (Eq, Ord, Typeable, Show)
 
-instance Monoid Reference where
-  mempty = Reference []
-  mappend (Reference a) (Reference b) = Reference (a++b)
+-- | Construct a 'DotRef' with a 'NullRef' suffix.
+dotRef :: Name -> RefSuffix
+dotRef = flip DotRef NullRef
 
-instance HasNullValue Reference where
-  nullValue = mempty
-  testNull (Reference a) = null a
+-- | Construct a 'Subscript' with a 'NullRef' suffix.
+subscript :: [Object] -> RefSuffix
+subscript = flip Subscript NullRef
 
-instance Read Reference where
+-- | Construct a 'FuncCall' with a 'NullRef' suffix.
+funcCall :: [Object] -> RefSuffix
+funcCall = flip FuncCall NullRef
+
+instance Monoid RefSuffix where
+  mempty = NullRef
+  mappend left right = case left of
+    NullRef           -> right
+    DotRef    nm left -> DotRef    nm $ left<>right
+    Subscript ox left -> Subscript ox $ left<>right
+    FuncCall  ox left -> FuncCall  ox $ left<>right
+
+instance HasNullValue RefSuffix where
+  nullValue = NullRef
+  testNull r = case r of { NullRef -> True; _ -> False }
+
+refSuffixFromNames :: [Name] -> RefSuffix
+refSuffixFromNames nx = case nx of { [] -> NullRef; n:nx -> DotRef n $ refSuffixFromNames nx; }
+
+instance Read RefSuffix where
   readsPrec _ str = case str of
-    c:_  | isAlpha c ->
-      case break (\c -> c=='.' || isAlphaNum c) str of
+    '.':c:str  | isAlpha c ->
+      case break (\c -> c=='.' || isAlphaNum c) (c:str) of
         (cx, str) ->
-          maybe [] (return . (\ref -> (Reference ref, str))) $ sequence $
+          maybe [] (return . (\ref -> (refSuffixFromNames ref, str))) $ sequence $
             fix (\loop str -> case break (=='.') str of
                     (cx, str) -> case cx of
                       [] -> []
                       cx -> maybeFromUStr (ustr (dropWhile (=='.') cx)) : loop str
                 ) cx
-    _ -> mzero
+    str -> [(NullRef, str)]
 
-instance UStrType Reference where
-  toUStr (Reference nx) = ustr $ intercalate "." $ map uchars nx
-  maybeFromUStr str = case readsPrec 0 (uchars str) of
-    [(ref, "")] -> Just ref
-    _           -> Nothing
-  nil = mempty
+instance NFData RefSuffix where
+  rnf  NullRef        = ()
+  rnf (DotRef    a b) = deepseq a $! deepseq b ()
+  rnf (Subscript a b) = deepseq a $! deepseq b ()
+  rnf (FuncCall  a b) = deepseq a $! deepseq b ()
 
-instance NFData Reference where { rnf (Reference  a) = deepseq a () }
+instance PPrintable RefSuffix where
+  pPrint = pWrapIndent . loop where 
+    loop r = case r of
+      NullRef       -> []
+      DotRef    a b -> pString "." : pUStr (toUStr a) : loop b
+      Subscript a b -> pList_ "[" ", " "]" (map pPrint a) : loop b
+      FuncCall  a b -> pList_ "(" ", " ")" (map pPrint a) : loop b
 
-instance PPrintable Reference where
-  pPrint (Reference r) = pInline $ intercalate [pString "."] (fmap (return . pPrint) r)
+instance HasRandGen RefSuffix where
+  randO = countRunRandChoice
+  randChoice = randChoiceList $
+    [ return NullRef
+    , scramble $ return DotRef    <*> randO <*> randO
+    , return Subscript <*> randList 1 6 <*> randO
+    , return FuncCall  <*> randList 1 6 <*> scrambO
+    ]
 
-instance HasRandGen Reference where { randO = fmap Reference (randList 1 6) }
+-- binary 36 39
+instance B.Binary RefSuffix MTab where
+  put r = case r of
+    NullRef       -> B.putWord8   0x36
+    DotRef    a b -> B.prefixByte 0x37 $ B.put a >> B.put b
+    Subscript a b -> B.prefixByte 0x38 $ B.put a >> B.put b
+    FuncCall  a b -> B.prefixByte 0x39 $ B.put a >> B.put b
+  get = B.word8PrefixTable <|> fail "expecting RefSuffix"
 
-instance B.Binary Reference mtab where
-  put (Reference o) = B.prefixByte 0x1F $ B.put o
-  get = B.word8PrefixTable <|> fail "expecting Reference"
-
-instance B.HasPrefixTable Reference B.Byte mtab where
-  prefixTable = B.mkPrefixTableWord8 "Reference" 0x1F 0x1F [Reference <$> B.get]
+instance B.HasPrefixTable RefSuffix B.Byte MTab where
+  prefixTable = B.mkPrefixTableWord8 "RefSuffix" 0x36 0x39 $
+    [ return NullRef
+    , pure DotRef    <*> B.get <*> B.get
+    , pure Subscript <*> B.get <*> B.get
+    , pure FuncCall  <*> B.get <*> B.get
+    ]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2338,27 +2488,6 @@ minArray :: Ix i => e -> [(i, e)] -> Maybe (Array i e)
 minArray deflt elems = minAccumArray (flip const) deflt elems
 
 ----------------------------------------------------------------------------------------------------
-
--- "src/Dao/Evaluator.hs"  provides functions for executing the Dao
--- scripting language, i.e. functions evaluating the parsed abstract
--- syntax tree.
--- 
--- Copyright (C) 2008-2014  Ramin Honary.
--- This file is part of the Dao System.
---
--- The Dao System is free software: you can redistribute it and/or
--- modify it under the terms of the GNU General Public License as
--- published by the Free Software Foundation, either version 3 of the
--- License, or (at your option) any later version.
--- 
--- The Dao System is distributed in the hope that it will be useful,
--- but WITHOUT ANY WARRANTY; without even the implied warranty of
--- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
--- GNU General Public License for more details.
--- 
--- You should have received a copy of the GNU General Public License
--- along with this program (see the file called "LICENSE"). If not, see
--- <http://www.gnu.org/licenses/agpl.html>.
 
 -- not for export
 lu :: Location
@@ -2460,7 +2589,7 @@ data ExecUnit
     , execStack          :: LocalStore
       -- ^ stack of local variables used during evaluation
     , globalData         :: GlobalStore
-    , providedAttributes :: T.Tree Name ()
+    , providedAttributes :: M.Map UStr ()
     , builtinConstants   :: M.Map Name Object
     , execOpenFiles      :: IORef (M.Map UPath ExecUnit)
     , programModuleName  :: Maybe UPath
@@ -2501,7 +2630,7 @@ _initExecUnit = do
     , currentCodeBlock   = StaticStore Nothing
     , currentBranch      = []
     , globalData         = GlobalStore global
-    , providedAttributes = T.Void
+    , providedAttributes = M.empty
     , builtinConstants   = M.empty
     , taskForExecUnits   = execTask
     , execStack          = LocalStore xstack
@@ -2637,6 +2766,24 @@ taskLoop_ task inits = taskLoop task inits (\ _ _ -> return True)
 -- In this example, should D instantiate () or Int or Char as it's result? You must choose only one.
 class Executable exec result | exec -> result where { execute :: exec -> Exec result }
 
+-- | This class provides a function that allows a executable expression to possibly be reduced to a
+-- 'Reference'. This is used on the expressions to the left of an assignment operator. This is very
+-- different from 'asReference', which is a function for checking if a given 'Object' was
+-- constructed with the 'ORef' constructor containing a 'Reference' value. 'Refereneable' actually
+-- converts a data type to a 'Reference' through a series of reduction steps.
+-- > refToORef :: 'ObjectExpr' -> 'Exec' 'Object'
+-- > refToORef = 'Prelude.fmap' 'ORef' . 'reduceToRef'
+-- > 
+-- > refFromORef :: 'Object' -> 'Exec' Reference
+-- > refFromORef = 'execute' . 'asReference'
+-- This function will backtrack when the data type cannot be converted to a 'Reference'.
+class RefReducible o where { reduceToRef :: o -> Exec Reference }
+
+instance RefReducible Object where
+  reduceToRef o = return $ case o of
+    ORef r -> r
+    o      -> RefObject o NullRef
+
 ----------------------------------------------------------------------------------------------------
 
 -- | Since the 'ExecUnit' deals with a few different kinds of pointer values, namely
@@ -2712,27 +2859,27 @@ instance Store LocalStore where
   storeLookup (LocalStore  store) = storeLookup store
   storeDefine (LocalStore  store) = storeDefine store
   storeDelete (LocalStore  store) = storeDelete store
-  storeUpdate (LocalStore  store) = storeUpdate store
+  storeUpdate (LocalStore  store) ref upd = storeUpdate store ref upd
 
 newtype GlobalStore = GlobalStore (MVar T_dict)
 
 instance Store GlobalStore where
-  storeLookup (GlobalStore store) = storeLookup store
+  storeLookup (GlobalStore store) nm = storeLookup store nm
   storeDefine (GlobalStore store) = storeDefine store
   storeDelete (GlobalStore store) = storeDelete store
-  storeUpdate (GlobalStore store) = storeUpdate store
+  storeUpdate (GlobalStore store) ref upd = storeUpdate store ref upd
 
 newtype StaticStore = StaticStore (Maybe Subroutine)
 
 instance Store StaticStore where
   storeLookup (StaticStore store) ref     =
-    maybe (return Nothing) (\store -> storeLookup store ref    ) (fmap staticVars store)
+    maybe mzero (\store -> storeLookup store ref    ) (fmap staticVars store)
   storeDefine (StaticStore store) ref obj =
-    maybe (return ())      (\store -> storeDefine store ref obj) (fmap staticVars store)
+    maybe mzero (\store -> storeDefine store ref obj) (fmap staticVars store)
   storeDelete (StaticStore store) ref     =
-    maybe (return ())      (\store -> storeDelete store ref    ) (fmap staticVars store)
+    maybe mzero (\store -> storeDelete store ref    ) (fmap staticVars store)
   storeUpdate (StaticStore store) ref upd =
-    maybe (return Nothing) (\store -> storeUpdate store ref upd) (fmap staticVars store)
+    maybe mzero (\store -> storeUpdate store ref upd) (fmap staticVars store)
 
 newtype WithRefStore = WithRefStore (Maybe (IORef Object))
 
@@ -2740,9 +2887,11 @@ _withRefStore :: WithRefStore -> (IORef Object -> Exec b) -> Exec b
 _withRefStore (WithRefStore o) upd = maybe mzero upd o
 
 instance Store WithRefStore where
-  storeLookup sto ref     = _withRefStore sto (liftIO . readIORef >=> _objectAccess [] [ref])
-  storeUpdate sto ref upd = _withRefStore sto $ \sto -> do
-    o <- liftIO (readIORef sto) >>= _objectUpdate upd [] [ref] . Just
+  storeLookup sto name     = _withRefStore sto $ -- this is such an incredibly point-free function!
+    liftIO . readIORef >=> objectReferenceAccess (Just $ Reference GLODOT name NullRef) NullRef
+  storeUpdate sto name upd = _withRefStore sto $ \sto -> do
+    let ref = Reference GLODOT name NullRef
+    o <- liftIO (readIORef sto) >>= objectReferenceUpdate upd (Just ref) NullRef . Just
     liftIO $ writeIORef sto $ maybe ONull id o
     return o
 
@@ -2752,79 +2901,196 @@ instance Store ConstantStore where
   storeLookup (ConstantStore sto) nm = return $ M.lookup nm sto
   storeUpdate _ nm _ = execThrow $ obj [obj "cannot update constant value:", obj nm]
 
--- | Read elements within a Dao 'Struct' with a 'Reference'. 
-objectAccess :: Reference -> Object -> Exec (Maybe Object)
-objectAccess (Reference rx) o = _objectAccess [] rx o
 
--- Read elements within a Dao 'Struct' with a 'Reference'. The 'QualRef' parameter is only for
--- error reporting purposes, passing 'nullValue' will not cause any problems. The first
--- @['Dao.String.Name']@ parameter is the current path, the second @['Dao.String.Name']@ parameter
--- is the reference to be accessed.
-_objectAccess :: [Name] -> [Name] -> Object -> Exec (Maybe Object)
-_objectAccess back rx o = Just <$> loop back rx o <|> return Nothing where
-  loop :: [Name] -> [Name] -> Object -> Exec Object
-  loop back rx o = case rx of
-    []   -> return o
-    r:rx -> case o of
-      ODict   o -> dictLookup   back r rx o
-      OTree   o -> structLookup back r rx o
-      OHaskell (HaskellData o ifc) ->
-        maybe mzero (\read -> read o >>= structLookup back r rx) (objToStruct ifc)
-      _         -> mzero
-  structLookup back r rx o = case o of
-    Struct{ fieldMap=o } -> dictLookup back r rx o
-    Nullary{} -> mzero
-  dictLookup back r rx o = maybe mzero (loop (back++[r]) rx) (M.lookup r o)
+_appRef :: Maybe Reference -> RefSuffix -> Maybe Reference
+_appRef back ref = pure refAppendSuffix <*> back <*> pure ref
 
--- | Update elements within a Dao 'Struct' with a 'Reference'.
-objectUpdate :: (Maybe Object -> Exec (Maybe Object)) -> Reference -> Maybe Object -> Exec (Maybe Object)
-objectUpdate upd (Reference rx) o = _objectUpdate upd [] rx o
+_objMaybeRef :: Maybe Reference -> [Object]
+_objMaybeRef = maybe [] (return . obj)
 
--- | Create an 'Object' by stacking up 'ODict' constructors to create a directory-like structure,
--- then store the Object at the top of the path, returning the directory-like object.
-insertAtPath :: [Name] -> Object -> Object
-insertAtPath px o = case px of
-  []   -> o
-  p:px -> ODict (M.singleton p (insertAtPath px o))
+-- | Read elements within a Dao 'Object' using a 'RefSuffix'. This works on 'ODict' and 'OTree'
+-- constructed types and any 'OHaskell' data which provided a function for 'defToStruct' in it's
+-- instantiation of 'HaskellDataClass'. Supply an optional 'Reference' that indicates where the
+-- 'Object' was retrieved from, this 'Reference' can be used to construct more helpful error
+-- messages.
+objectReferenceAccess :: Maybe Reference -> RefSuffix -> Object -> Exec (Maybe Object)
+objectReferenceAccess = loop where
+  loop back suf o = flip mplus (cantAccess back) $ case suf of
+    NullRef -> return $ Just o
+    DotRef name suf -> pure (_appRef back $ dotRef name) >>= \back -> case o of
+      ODict o -> Just <$> _dictReferenceAccess   back name suf o
+      OTree o -> Just <$> _structReferenceAccess back name suf o
+      OHaskell (HaskellData o ifc) -> case objToStruct ifc of
+        Nothing     -> opaqueObj back
+        Just access -> access o >>= fmap Just . _structReferenceAccess back name suf
+      _                            -> mzero
+    Subscript idx suf -> objectIndexAccess o idx >>= loop (_appRef back $ subscript idx) suf
+    FuncCall args suf -> do
+      result <- callObject back o args
+      case suf of
+        NullRef -> return result
+        suf     -> maybe (funcEvaldNull back) (loop (_appRef back $ funcCall args) suf) result
+  opaqueObj     qref = execThrow $ obj $ [obj "cannot inspect opaque value"] ++ _objMaybeRef qref
+  cantAccess    qref = execThrow $ obj $ [obj "undefined reference"] ++ _objMaybeRef qref
+  funcEvaldNull qref = execThrow $ obj $
+    [obj "function call evaluation returned void"] ++ _objMaybeRef qref
 
--- Update elements within a Dao 'Struct' with a 'Reference'. The first @['Dao.String.Name']@
--- parameter is the current path, the second @['Dao.String.Name']@ parameter is the reference to be
--- accessed.
-_objectUpdate
+_dictReferenceAccess :: Maybe Reference -> Name -> RefSuffix -> T_dict -> Exec Object
+_dictReferenceAccess back name suf o =
+  maybe mzero (objectReferenceAccess back suf) (M.lookup name o) >>= maybe mzero return
+
+_structReferenceAccess :: Maybe Reference -> Name -> RefSuffix -> Struct -> Exec Object
+_structReferenceAccess back name suf o = case o of
+  Struct{ fieldMap=fm } -> _dictReferenceAccess back name suf fm
+  Nullary{}             -> mzero
+
+-- | Update elements within a Dao 'Object' using a 'RefSuffix'. This works on 'ODict' and 'OTree'
+-- constructed types and any 'OHaskell' data which provided functions for both 'defToStruct' and
+-- 'defFromStruct' in it's instantiation of 'HaskellDataClass'.
+objectReferenceUpdate
   :: (Maybe Object -> Exec (Maybe Object))
-  -> [Name] -> [Name] -> Maybe Object -> Exec (Maybe Object)
-_objectUpdate upd back rx o = loop back rx o where
-  atRef = obj . Unqualified . Reference
-  loop back rx o = case o of
-    Nothing -> upd Nothing >>= maybe (return Nothing) (return . Just . insertAtPath rx)
-    Just  o -> case rx of
-      []   -> upd (Just o)
-      r:rx -> updObj back r rx o
+  -> Maybe Reference -> RefSuffix -> Maybe Object -> Exec (Maybe Object)
+objectReferenceUpdate upd = loop where
+  loop back suf o = case suf of
+    NullRef               -> upd o
+    DotRef         nm suf -> pure (_appRef back $ dotRef nm) >>= \back -> case o of
+      Nothing -> execThrow $ obj $ [obj "undefined reference"] ++ _objMaybeRef back
+      Just  o -> case o of
+        OTree   o -> _structReferenceUpdate upd back nm suf o >>= putBack OTree
+        ODict   o -> _dictReferenceUpdate   upd back nm suf o >>= putBack ODict
+        OHaskell (HaskellData o ifc) -> case pure (,) <*> objToStruct ifc <*> objFromStruct ifc of
+          Just (toStruct, fromStruct) -> toStruct o >>= _structReferenceUpdate upd back nm suf >>=
+            maybe (return Nothing) (fmap (Just . OHaskell . flip HaskellData ifc) . fromStruct)
+          Nothing -> execThrow $ obj $
+            [ obj "cannot update opaque data type"
+            , obj $ Reference UNQUAL nm suf
+            ]
+        o -> execThrow $ obj $
+          [ obj "cannot update atomic data type", obj o
+          , obj "at reference", obj $ Reference UNQUAL nm suf
+          ]
+    Subscript idx suf -> case o of
+      Nothing -> execThrow $ obj $ concat $
+        [[obj "indexed undefined reference"], maybe [] (return . obj) back]
+      Just  o ->
+        let step = (objectReferenceUpdate upd (_appRef back $ subscript idx) suf)
+        in  objectIndexUpdate step o idx
+    FuncCall args suf -> do
+      back <- pure (_appRef back $ funcCall args)
+      case o of
+        Nothing -> execThrow $ obj $ [obj "called undefined function"] ++ _objMaybeRef back
+        Just  o -> callObject back o args >>=
+          objectReferenceUpdate upd (_appRef back $ funcCall args) suf
   putBack constr = maybe (return Nothing) (return . Just . constr)
-  updObj back r rx o = case o of
-    OTree   o -> updStruct back r rx o >>= putBack OTree
-    ODict   o -> updDict   back r rx o >>= putBack ODict
-    OHaskell (HaskellData o ifc) -> case pure (,) <*> objToStruct ifc <*> objFromStruct ifc of
-      Just (toStruct, fromStruct) -> toStruct o >>= updStruct back r rx >>=
-        maybe (return Nothing) (fmap (Just . OHaskell . flip HaskellData ifc) . fromStruct)
-      Nothing -> execThrow $ obj $
-        [ obj "cannot update opaque data type"
-        , obj $ Unqualified $ Reference back
-        ]
-    o -> execThrow $ obj $
-      [ obj "cannot update atomic data type", obj o
-      , obj "at reference", atRef back
-      ]
-  updStruct back r rx o = case o of
-    Nullary{ structName=name } -> execThrow $ obj $
-      [ obj "on structure", obj name
-      , obj "no element named", atRef $ back++[r]
-      ]
-    Struct{ fieldMap=inner } -> updDict back r rx inner >>=
-      maybe (return Nothing) (\inner -> return $ Just $ o{ fieldMap=inner })
-  updDict   back r rx o = do
-    o <- (\item -> M.alter (const item) r o) <$> loop (back++[r]) rx (M.lookup r o)
-    return (if M.null o then Nothing else Just o)
+
+_structReferenceUpdate
+  :: (Maybe Object -> Exec (Maybe Object))
+  -> Maybe Reference -> Name -> RefSuffix -> Struct -> Exec (Maybe Struct)
+_structReferenceUpdate upd back suf name o = case o of
+  Nullary{ structName=name } -> execThrow $ obj $ concat $
+    [ [obj "on structure", obj name]
+    , maybe [] (\back -> [obj "no element named", obj back]) back
+    ]
+  Struct{ fieldMap=inner } -> _dictReferenceUpdate upd back suf name inner >>=
+    maybe (return Nothing) (\inner -> return $ Just $ o{ fieldMap=inner })
+
+_dictReferenceUpdate
+  :: (Maybe Object -> Exec (Maybe Object))
+  -> Maybe Reference -> Name -> RefSuffix -> T_dict -> Exec (Maybe T_dict)
+_dictReferenceUpdate upd back name suf o = do
+  o <- (\item -> M.alter (const item) name o) <$>
+    objectReferenceUpdate upd back suf (M.lookup name o)
+  return (if M.null o then Nothing else Just o)
+
+_check1D :: [Object] -> String -> (Object -> Exec a) -> Exec a
+_check1D idx typ f = case idx of
+  [i] -> f i
+  _   -> execThrow $ obj $
+    [ obj (typ++" object is 1-dimensional, but is subscripted with")
+    , obj (length idx), obj "dimensional index", obj idx
+    ]
+
+_badRefIndex :: Reference -> Exec ig
+_badRefIndex i = execThrow $ obj $
+  [obj "qualified reference is undefined when used as subscript", ORef i]
+
+-- | Read elements within a Dao 'Object' using an index value. This is the function used to
+-- implement Dao language expressions of the form:
+-- > ... = item[i1, i2, ..., iN];
+-- This works on 'OList' data with 'OInt' indecies, 'ODict' and 'OTree' data with 'ORef' indecies,
+-- and any 'OHaskell' data which provided a function for 'defIndexer' in it's instantiation of
+-- 'HaskellDataClass'.
+objectIndexAccess :: Object -> [Object] -> Exec Object
+objectIndexAccess o idx = case o of
+  OList []  -> execThrow $ obj $ [obj "indexing empty list with", obj idx]
+  OList lst -> _check1D idx "list" $ \i -> do
+    idx <- derefObject i
+    idx <- execute (asInteger idx) <|>
+      execThrow (obj $ [obj "must index list with integer, instead used", i])
+    if idx<0
+      then  execThrow $ obj [obj "list index value is negative:", i, obj "indexing:", o]
+      else  case dropWhile ((<idx) . fst) (zip [0..] lst) of
+              []       -> execThrow $ obj [obj "index out of bounds:", i, obj "indexing:", o]
+              (_, o):_ -> return o
+  ODict dict -> lookupDict (obj "dictionary") dict
+  OTree (Struct{ structName=n, fieldMap=dict }) -> lookupDict (obj n) dict
+  OHaskell (HaskellData d ifc) -> case objIndexer ifc of
+    Nothing    -> _check1D idx "data structure" $ \i -> do
+      i <- execute (asReference i) <|> errmsg i
+      case i of
+        Reference UNQUAL name suf ->
+          objectReferenceAccess (Just $ RefObject o $ subscript idx) (DotRef name suf) o >>=
+            maybe (fail "reference evaluated to void") return
+        _ -> _badRefIndex i
+    Just index -> index d idx
+  _         -> errmsg $ obj idx
+  where
+    errmsg i = execThrow $ obj [obj "incorrect type used as index", i]
+    lookupDict typ dict = _check1D idx "dict" $ \i -> do
+      i <- execute (asReference i) <|>
+        execThrow (obj [obj "cannot index", typ, obj "with value", i])
+      case i of
+        Reference UNQUAL name suf -> _dictReferenceAccess (Just i) name suf dict
+        _ -> _badRefIndex i
+
+-- | Read elements within a Dao 'Object' using an index value. This is the function used to
+-- implement Dao language expressions of the form:
+-- > item[i1, i2, ..., iN] += ... ;
+-- This works on 'OList' data with 'OInt' indecies, 'ODict' and 'OTree' data with 'ORef' indecies,
+-- and any 'OHaskell' data which provided a function for both 'defIndexer' and 'defIndexUpdater' in
+-- it's instantiation of 'HaskellDataClass'.
+objectIndexUpdate
+  :: (Maybe Object -> Exec (Maybe Object))
+  -> Object -> [Object] -> Exec (Maybe Object)
+objectIndexUpdate upd o idx = case o of 
+  OList ox -> _check1D idx "list" $ \i -> do
+    idx <- execute (fromIntegral <$> asInteger i) <|>
+      execThrow (obj [obj "cannot index object", o, obj "with value", i])
+    if idx == negate 1
+    then upd Nothing >>= return . Just . OList . (++ox) . maybe [] return
+    else do
+      let (lo, hi) = splitAt idx ox
+      if length lo == idx
+      then
+        if null hi
+        then upd Nothing >>= return . Just . OList . (ox++) . maybe [] return
+        else upd (Just $ head hi) >>= return . Just . OList . (lo++) . (++(tail hi)) . maybe [] return
+      else execThrow $ obj $ [obj "index out of bounds", i]
+  ODict dict -> _check1D idx "dictionary" $ updRef $ \name suf ->
+    fmap ODict <$> _dictReferenceUpdate upd (Just $ refObject o) name suf dict
+  OTree struct -> _check1D idx (uchars $ structName struct) $ updRef $ \name suf ->
+    fmap OTree <$> _structReferenceUpdate upd (Just $ refObject o) name suf struct
+  OHaskell (HaskellData d ifc) -> case objIndexUpdater ifc of
+    Nothing -> _check1D idx "structure" $ updRef $ \name suf ->
+      objectReferenceUpdate upd (Just $ refObject o) (DotRef name suf) (Just o)
+    Just index -> fmap (OHaskell . flip HaskellData ifc) <$> index d upd idx
+  _ -> execThrow $ obj $ [obj "cannot update object type", obj (typeOfObj o), obj "at index", obj idx]
+  where
+    updRef upd i = do
+      i <- execute (asReference i) <|> execThrow (obj [obj "cannot access index", obj idx])
+      case i of
+        Reference UNQUAL name suf -> upd name suf
+        i -> _badRefIndex i
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2961,10 +3227,10 @@ _setErrorInfoExpr upd exec = catchPredicate exec >>= \a -> case a of
     ExecReturn{} -> throwError err
     ExecError{ execErrorInfo=info } -> throwError $ err{ execErrorInfo=upd info }
 
-_setObjectExprError :: ObjectExpr -> Exec (Maybe Object) -> Exec (Maybe Object)
+_setObjectExprError :: ObjectExpr -> Exec a -> Exec a
 _setObjectExprError o = _setErrorInfoExpr (\info -> info{ execErrExpr=Just o })
 
-_setScriptExprError :: ScriptExpr -> Exec () -> Exec ()
+_setScriptExprError :: ScriptExpr -> Exec a -> Exec a
 _setScriptExprError o = _setErrorInfoExpr (\info -> info{ execErrScript=Just o })
 
 _setTopLevelExprError :: TopLevelExpr -> Exec (ExecUnit -> ExecUnit) -> Exec (ExecUnit ->ExecUnit)
@@ -3357,16 +3623,35 @@ instance HasLocation a => HasLocation (Com a) where
 
 instance PPrintable a => PPrintable (Com a) where { pPrint = pPrintComWith pPrint }
 
-instance (Typeable a, ObjectClass a) => ToDaoStructClass (Com a) where
-  toDaoStruct = do
-    renameConstructor "Commented"
-    ask >>= \co -> void $ case co of
-      Com          a    ->                   "data" .= a
-      ComBefore c1 a    -> "before" .= c1 >> "data" .= a
-      ComAfter     a c2 ->                   "data" .= a >> "after" .= c2
-      ComAround c1 a c2 -> "before" .= c1 >> "data" .= a >> "after" .= c2
+comToDaoStruct :: (ToDaoStruct a ()) -> ToDaoStruct (Com a) ()
+comToDaoStruct toDaoStruct = do
+  co <- ask
+  let put = innerToStructWith toDaoStruct
+  case co of
+    Com          a    ->                   put a >> return ()
+    ComBefore c1 a    -> "before" .= c1 >> put a >> return ()
+    ComAfter     a c2 ->                   put a >> "after" .= c2 >> return ()
+    ComAround c1 a c2 -> "before" .= c1 >> put a >> "after" .= c2 >> return ()
 
-instance HasRandGen a => HasRandGen (Com a) where { randO = randComWith randO }
+comFromDaoStruct :: FromDaoStruct a -> FromDaoStruct (Com a)
+comFromDaoStruct fromStruct = do
+  let f name = tryField name (maybe (fail name) return . fromObj)
+  before <- optional $ f "before"
+  after  <- optional $ f "after"
+  a      <- fromStruct 
+  return $ maybe (Com a) id $ msum $
+    [ return ComAround <*> before <*> pure a <*> after
+    , return ComBefore <*> before <*> pure a
+    , return ComAfter  <*> pure a <*> after
+    ]
+
+instance (Typeable a, ObjectClass a, ToDaoStructClass a) => ToDaoStructClass (Com a) where
+  toDaoStruct = comToDaoStruct toDaoStruct
+
+instance (Typeable a, ObjectClass a, ToDaoStructClass a, FromDaoStructClass a) => FromDaoStructClass (Com a) where
+  fromDaoStruct = comFromDaoStruct fromDaoStruct
+
+instance HasRandGen a => HasRandGen (Com a) where { randO = Com <$> randO }
 
 instance (Typeable a, ObjectClass a) =>
   ObjectClass (Com a) where { obj=new; fromObj=objFromHaskellData; }
@@ -3500,9 +3785,10 @@ instance HasLocation CodeBlock where
   setLocation o _ = o
   delLocation o = CodeBlock (fmap delLocation (codeBlock o))
 
+-- binary 98
 instance B.Binary CodeBlock MTab where
-  put (CodeBlock o) = B.prefixByte 0x3E $ B.put o
-  get = B.tryWord8 0x3E $ CodeBlock <$> B.get
+  put (CodeBlock o) = B.prefixByte 0x98 $ B.put o
+  get = B.tryWord8 0x98 $ CodeBlock <$> B.get
 
 instance PPrintable CodeBlock where { pPrint = pPrintInterm }
 
@@ -3765,15 +4051,16 @@ instance PPrintable a => PPrintable (TyChkExpr a) where
     TypeChecked    a expr _ -> pInline [pPrint a, pString ": ", pPrint expr]
     DisableCheck   a  _ _ _ -> pInline [pPrint a]
 
+-- binary 89 8B
 instance B.Binary a MTab => B.Binary (TyChkExpr a) MTab where
   put o = case o of
-    NotTypeChecked a       -> B.prefixByte 0x4B $ B.put a
-    TypeChecked    a b c   -> B.prefixByte 0x4C $ B.put a >> B.put b >> B.put c
-    DisableCheck   a b c d -> B.prefixByte 0x4D $ B.put a >> B.put b >> B.put c >> B.put d
+    NotTypeChecked a       -> B.prefixByte 0x89 $ B.put a
+    TypeChecked    a b c   -> B.prefixByte 0x8A $ B.put a >> B.put b >> B.put c
+    DisableCheck   a b c d -> B.prefixByte 0x8B $ B.put a >> B.put b >> B.put c >> B.put d
   get = B.word8PrefixTable <|> fail "expecting TyChkExpr"
 
 instance B.Binary a MTab => B.HasPrefixTable (TyChkExpr a) B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "TyChkExpr" 0x4B 0x4D $
+  prefixTable = B.mkPrefixTableWord8 "TyChkExpr" 0x89 0x8B $
     [ NotTypeChecked <$> B.get
     , pure TypeChecked  <*> B.get <*> B.get <*> B.get
     , pure DisableCheck <*> B.get <*> B.get <*> B.get <*> B.get
@@ -3857,16 +4144,16 @@ instance (Eq a, Ord a, PPrintable a, Typeable a) => HaskellDataClass (AST_TyChk 
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     -- autoDefToStruct >> autoDefFromStruct
 
-tyChkToInterm :: Intermediate a b => AST_TyChk b -> [TyChkExpr a]
-tyChkToInterm a = case a of
-  AST_NotChecked a         -> liftM  NotTypeChecked (ti a)
-  AST_Checked    a _ b loc -> liftM3 TypeChecked (ti a) (ti b) [loc]
+tyChkToInterm :: (b -> [a]) -> AST_TyChk b -> [TyChkExpr a]
+tyChkToInterm ti a = case a of
+  AST_NotChecked a         -> NotTypeChecked <$> ti a
+  AST_Checked    a _ b loc -> [TypeChecked] <*> ti a <*> toInterm b <*> [loc]
 
-tyChkFromInterm :: Intermediate a b => TyChkExpr a -> [AST_TyChk b]
-tyChkFromInterm a = case a of
-    NotTypeChecked a         -> liftM  AST_NotChecked (fi a)
-    TypeChecked    a b   loc -> liftM4 AST_Checked (fi a) [Com ()] (fi b) [loc]
-    DisableCheck   a b _ loc -> liftM4 AST_Checked (fi a) [Com ()] (fi b) [loc]
+tyChkFromInterm :: (a -> [b]) -> TyChkExpr a -> [AST_TyChk b]
+tyChkFromInterm fi a = case a of
+  NotTypeChecked a         -> AST_NotChecked <$> fi a
+  TypeChecked    a b   loc -> [AST_Checked] <*> fi a <*> [Com ()] <*> fromInterm b <*> [loc]
+  DisableCheck   a b _ loc -> [AST_Checked] <*> fi a <*> [Com ()] <*> fromInterm b <*> [loc]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3888,13 +4175,14 @@ instance PPrintable ParamExpr where
 
 instance PPrintable [ParamExpr] where { pPrint lst = pList_ "(" ", " ")" (fmap pPrint lst) }
 
+-- binary 90 91
 instance B.Binary ParamExpr MTab where
-  put (ParamExpr True  a b) = B.prefixByte 0x4E $ B.put a >> B.put b
-  put (ParamExpr False a b) = B.prefixByte 0x4F $ B.put a >> B.put b
+  put (ParamExpr True  a b) = B.prefixByte 0x90 $ B.put a >> B.put b
+  put (ParamExpr False a b) = B.prefixByte 0x91 $ B.put a >> B.put b
   get = B.word8PrefixTable <|> fail "expecting ParamExpr"
 
 instance B.HasPrefixTable ParamExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "ParamExpr" 0x4E 0x4F $
+  prefixTable = B.mkPrefixTableWord8 "ParamExpr" 0x90 0x91 $
     [ pure (ParamExpr True ) <*> B.get <*> B.get
     , pure (ParamExpr False) <*> B.get <*> B.get
     ]
@@ -3966,9 +4254,9 @@ instance HasRandGen [Com AST_Param] where { randO = recurse [] $ randList 0 8 }
 instance Intermediate ParamExpr AST_Param where
   toInterm   a = case a of
     AST_NoParams      -> []
-    AST_Param a b loc -> liftM3 ParamExpr [maybe False (const True) a] (tyChkToInterm b) [loc]
+    AST_Param a b loc -> [ParamExpr] <*> [maybe False (const True) a] <*> tyChkToInterm return b <*> [loc]
   fromInterm o = case o of
-    ParamExpr a b loc -> liftM3 AST_Param [if a then Just [] else Nothing] (tyChkFromInterm b) [loc]
+    ParamExpr a b loc -> [AST_Param] <*> [if a then Just [] else Nothing] <*> tyChkFromInterm return b <*> [loc]
 
 instance Intermediate [ParamExpr] [Com AST_Param] where
   toInterm   ax = [ax >>= toInterm . unComment]
@@ -3998,14 +4286,13 @@ instance HasNullValue ParamListExpr where
   testNull (ParamListExpr (NotTypeChecked []) _) = True
   testNull _ = False
 
--- Here there is a gap of 3 prefix bytes (from 0x36 to 0x38) where the 'ObjectExpr' 
--- data type may be expanded to include more nodes.
+-- binary 94
 instance B.Binary ParamListExpr MTab where
-  put (ParamListExpr tyChk loc) = B.prefixByte 0x39 $ B.put tyChk >> B.put loc
+  put (ParamListExpr tyChk loc) = B.prefixByte 0x94 $ B.put tyChk >> B.put loc
   get = B.word8PrefixTable <|> fail "expecting ParamListExpr"
 
 instance B.HasPrefixTable ParamListExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "ParamListExpr" 0x39 0x39 $ [pure ParamListExpr <*> B.get <*> B.get]
+  prefixTable = B.mkPrefixTableWord8 "ParamListExpr" 0x94 0x94 $ [pure ParamListExpr <*> B.get <*> B.get]
 
 instance HasLocation ParamListExpr where
   getLocation (ParamListExpr _ loc)     = loc
@@ -4059,8 +4346,8 @@ instance FromDaoStructClass AST_ParamList where
 instance HasRandGen AST_ParamList where { randO = countNode $ pure AST_ParamList <*> randO <*> no }
 
 instance Intermediate ParamListExpr AST_ParamList where
-  toInterm   (AST_ParamList ox loc) = liftM2 ParamListExpr (tyChkToInterm ox) [loc]
-  fromInterm (ParamListExpr ox loc) = liftM2 AST_ParamList (tyChkFromInterm ox) [loc]
+  toInterm   (AST_ParamList ox loc) = [ParamListExpr] <*> tyChkToInterm   toInterm   ox <*> [loc]
+  fromInterm (ParamListExpr ox loc) = [AST_ParamList] <*> tyChkFromInterm fromInterm ox <*> [loc]
 
 instance ObjectClass AST_ParamList where { obj=new; fromObj=objFromHaskellData; }
 
@@ -4096,16 +4383,17 @@ instance NFData RuleHeadExpr where
   rnf (RuleStringExpr a b) = deepseq a $! deepseq b ()
   rnf (RuleHeadExpr     a b) = deepseq a $! deepseq b ()
 
+-- binary 56 57
 instance B.Binary RuleHeadExpr MTab where
   put o = case o of
-    RuleStringExpr a b -> B.prefixByte 0x3A $ B.put a >> B.put b
-    RuleHeadExpr     a b -> B.prefixByte 0x3B $ B.put a >> B.put b
+    RuleStringExpr a b -> B.prefixByte 0x56 $ B.put a >> B.put b
+    RuleHeadExpr   a b -> B.prefixByte 0x57 $ B.put a >> B.put b
   get = B.word8PrefixTable <|> fail "expecting RuleHeadExpr"
 
 instance B.HasPrefixTable RuleHeadExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "RuleHeadExpr" 0x3A 0x3B
+  prefixTable = B.mkPrefixTableWord8 "RuleHeadExpr" 0x56 0x57
     [ pure RuleStringExpr <*> B.get <*> B.get
-    , pure RuleHeadExpr     <*> B.get <*> B.get
+    , pure RuleHeadExpr   <*> B.get <*> B.get
     ]
 
 instance Executable RuleHeadExpr [UStr] where
@@ -4210,7 +4498,7 @@ instance HaskellDataClass AST_RuleHeader where
 -- Functions for working with object values when building built-in functions callable from within a
 -- dao script.
 
-asReference :: Object -> Exec QualRef
+asReference :: Object -> XPure Reference
 asReference = xmaybe . fromObj
 
 asInteger :: Object -> XPure Integer
@@ -4332,9 +4620,9 @@ instance Num (XPure Object) where
     OList   a -> return $ OList $ filter (/= b) a
     ODict   a -> case b of
       ODict b -> return $ ODict $ M.difference a b
-      ORef (Unqualified (Reference [b])) -> return $ ODict $ M.delete b a
-      ORef                          _    -> throwError $ obj $
-        [ obj "cannot remove element from Dict:", b
+      ORef (Reference UNQUAL b NullRef) -> return $ ODict $ M.delete b a
+      ORef _                             -> throwError $ obj $
+        [ obj "cannot remove element from dictionary", b
         , obj "reference must be a single unqualified name"
         ]
       _ -> mzero
@@ -4733,7 +5021,7 @@ requireAllStringArgs msg ox = case mapM check (zip (iterate (+(1::Integer)) 0) o
 -- objects. A pair of 'Data.Either.Either's are returned, references are 'Data.Either.Left',
 -- 'Prelude.String's are 'Data.Either.Right'. References are accompanied with their depth so you can
 -- choose whether or not you want to dereference or pretty-print them.
-getStringsToDepth :: Int -> Object -> [Either (Int, QualRef) String]
+getStringsToDepth :: Int -> Object -> [Either (Int, Reference) String]
 getStringsToDepth maxDepth o = loop (0::Int) maxDepth o where
   loop depth remDep o = case o of
     OString   o -> return (Right (uchars o))
@@ -4751,7 +5039,7 @@ getStringsToDepth maxDepth o = loop (0::Int) maxDepth o where
 -- this depth limit is specified by the first argument to this function. The second and third
 -- argument to this function are passed directly to 'getStringsToDepth'. Pass a handler to handle
 -- references that are undefined.
-derefStringsToDepth :: (QualRef -> Object -> Exec [String]) -> Int -> Int -> Object -> Exec [String]
+derefStringsToDepth :: (Reference -> Object -> Exec [String]) -> Int -> Int -> Object -> Exec [String]
 derefStringsToDepth handler maxDeref maxDepth o =
   fmap concat (mapM deref (getStringsToDepth maxDepth o)) where
     deref o = case o of
@@ -4762,7 +5050,7 @@ derefStringsToDepth handler maxDeref maxDepth o =
           else  do
             let newMax = if maxDepth>=0 then (if i>=maxDepth then 0 else maxDepth-i) else (0-1)
                 recurse = fmap concat . mapM (derefStringsToDepth handler (maxDeref-i) newMax)
-            catchReturn (\ _ -> return Nothing) (fmap (fmap snd) $ qualRefLookup ref) >>=
+            catchReturn (\ _ -> return Nothing) (fmap (fmap snd) $ referenceLookup ref) >>=
               recurse . maybe [] (:[])
 
 -- | Returns a list of all string objects that can be found from within the given list of objects.
@@ -4844,24 +5132,29 @@ instance UStrType UpdateOp where
 
 instance PPrintable UpdateOp where { pPrint op = pString (' ':uchars op++" ") }
 
+-- binary 60 70 UpdateOp-->InfixOp
 instance B.Binary UpdateOp MTab where
   put o = B.putWord8 $ case o of
-    UCONST -> 0x61
-    UADD   -> 0x62
-    USUB   -> 0x63
-    UMULT  -> 0x64
-    UDIV   -> 0x65
-    UMOD   -> 0x66
-    UPOW   -> 0x67
-    UORB   -> 0x68
-    UANDB  -> 0x69
-    UXORB  -> 0x6A
-    USHL   -> 0x6B
-    USHR   -> 0x6C
+    UCONST -> 0x60
+    UADD   -> 0x66
+    USUB   -> 0x67
+    UMULT  -> 0x68
+    UDIV   -> 0x69
+    UMOD   -> 0x6A
+    UPOW   -> 0x6B
+    UORB   -> 0x6C
+    UANDB  -> 0x6D
+    UXORB  -> 0x6E
+    USHL   -> 0x6F
+    USHR   -> 0x70
   get = B.word8PrefixTable <|> fail "expecting UpdateOp"
 instance B.HasPrefixTable UpdateOp B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "UpdateOp" 0x61 0x6D $ map return $
-    [UCONST, UADD, USUB, UMULT, UDIV, UMOD, UPOW, UORB, UANDB, UXORB, USHL, USHR]
+  prefixTable = B.mkPrefixTableWord8 "UpdateOp" 0x60 0x70 $ let {r=return;z=mzero} in
+    [ r UCONST -- 60
+    , z, z, z, z, z -- 61,62,63,64,65
+    , r UADD, r USUB, r UMULT, r UDIV, r UMOD -- 66..6A
+    , r UPOW, r UORB, r UANDB, r UXORB, r USHL, r USHR -- 6B..70
+    ]
 
 instance HasRandGen UpdateOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::UpdateOp)))
@@ -4885,8 +5178,8 @@ instance NFData RefPfxOp where { rnf a = seq a () }
 
 instance UStrType RefPfxOp where
   toUStr op = ustr $ case op of
-    REF    -> "$"
-    DEREF  -> "@"
+    REF         -> "$"
+    DEREF       -> "@"
   maybeFromUStr str = case uchars str of
     "$" -> Just REF
     "@" -> Just DEREF
@@ -4894,13 +5187,6 @@ instance UStrType RefPfxOp where
   fromUStr str = maybe (error (show str++" is not a prefix opretor")) id (maybeFromUStr str)
 
 instance PPrintable RefPfxOp where { pPrint = pUStr . toUStr }
-
-instance B.Binary RefPfxOp MTab where
-  put o = B.putWord8 $ case o of { REF -> 0x5E; DEREF  -> 0x5F }
-  get = B.word8PrefixTable <|> fail "expecting RefPfxOp"
-
-instance B.HasPrefixTable RefPfxOp B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "RefPfxOp" 0x5E 0x5F $ map return [REF, DEREF]
 
 instance HasRandGen RefPfxOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::RefPfxOp)))
@@ -4913,7 +5199,7 @@ instance ObjectClass RefPfxOp where { obj=new; fromObj=objFromHaskellData; }
 
 instance HaskellDataClass RefPfxOp where
   haskellDataInterface = interface REF $ do
-    autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt
+    autoDefEquality >> autoDefOrdering
     autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
@@ -4939,13 +5225,19 @@ instance UStrType ArithPfxOp where
 
 instance PPrintable ArithPfxOp where { pPrint = pUStr . toUStr }
 
+-- binary 61 6E
 instance B.Binary ArithPfxOp MTab where
-  put o = B.putWord8 $ case o of { INVB -> 0x5A; NOT -> 0x5B; NEGTIV -> 0x5C; POSTIV -> 0x5D }
+  put o = B.putWord8 $ case o of { INVB -> 0x6E; NOT -> 0x61; NEGTIV -> 0x67; POSTIV -> 0x66 }
   get = B.word8PrefixTable <|> fail "expecting ArithPfxOp"
 
 instance B.HasPrefixTable ArithPfxOp B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "ArithPfxOp" 0x5A 0x5D $
-    map return [INVB, NOT, NEGTIV, POSTIV]
+  prefixTable = B.mkPrefixTableWord8 "ArithPfxOp" 0x61 0x72 $ let {r=return;z=mzero} in
+    [ r NOT -- 61
+    , z, z, z, z -- 62,63,64,65
+    , r POSTIV, r NEGTIV -- 66,67
+    , z, z, z, z, z, z -- 68,69,6A,6B,6C,6D
+    , r INVB -- 6E
+    ]
 
 instance HasRandGen ArithPfxOp where
   randO = fmap toEnum (nextInt (1+fromEnum (maxBound::ArithPfxOp)))
@@ -5023,20 +5315,21 @@ infixOpCommutativity = (arr !) where
     , (ARROW, False)
     ]
 
+-- binary 60 73
+instance B.Binary InfixOp MTab where
+  put o = B.putWord8 $ case o of
+    { EQUL -> 0x60; NEQUL -> 0x61; GTN  -> 0x62; LTN   -> 0x63; GTEQ -> 0x64; LTEQ -> 0x65
+    ; ADD  -> 0x66; SUB   -> 0x67; MULT -> 0x68; DIV   -> 0x69
+    ; MOD  -> 0x6A; POW   -> 0x6B; ORB  -> 0x6C; ANDB  -> 0x6D
+    ; XORB -> 0x6E; SHL   -> 0x6F; SHR  -> 0x70; ARROW -> 0x71
+    ; OR   -> 0x72; AND   -> 0x73 } 
+  get = B.word8PrefixTable <|> fail "expecting InfixOp"
+
 -- The byte prefixes overlap with the update operators of similar function to
 -- the operators, except for the comparison opeators (EQUL, NEQUL, GTN, LTN,
 -- GTEQ, LTEQ) which overlap with the prefix operators (INVB, NOT, NEGTIV, POSTIV, REF, DEREF)
-instance B.Binary InfixOp MTab where
-  put o = B.putWord8 $ case o of
-    { EQUL -> 0x5A; NEQUL -> 0x5B; GTN -> 0x5C; LTN -> 0x5D; GTEQ -> 0x5E; LTEQ -> 0x5F
-    ; ADD  -> 0x62; SUB -> 0x63; MULT -> 0x64; DIV   -> 0x65
-    ; MOD  -> 0x66; POW -> 0x67; ORB  -> 0x68; ANDB  -> 0x69
-    ; XORB -> 0x6A; SHL -> 0x6B; SHR  -> 0x6C; ARROW -> 0x6D
-    ; OR   -> 0x6E; AND -> 0x6F } 
-  get = B.word8PrefixTable <|> fail "expecting InfixOp"
-
 instance B.HasPrefixTable InfixOp B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "InfixOp" 0x5A 0x6F $ let {r=return; z=mzero} in
+  prefixTable = B.mkPrefixTableWord8 "InfixOp" 0x60 0x73 $ let {r=return; z=mzero} in
     [ r EQUL , r NEQUL, r GTN , r LTN, r GTEQ , r LTEQ , z, z
     , r ADD  , r SUB  , r MULT, r DIV, r MOD  , r POW  , r ORB
     , r ANDB , r XORB , r SHL , r SHR, r ARROW, r OR   , r AND
@@ -5149,17 +5442,15 @@ _infixOps = array (minBound, maxBound) $ defaults ++
     e msg = msg ++
       " operator should have been evaluated within the 'execute' function."
 
-evalUpdateOp :: UpdateOp -> QualRef -> Object -> Exec (Maybe Object)
-evalUpdateOp op qref newObj = do
-  let upd qref o = qualRefUpdate qref (\ _ -> return (Just o))
-  oldObj <- qualRefLookup qref
-  case oldObj of
-    Nothing -> case op of
-      UCONST -> upd qref newObj
-      _      -> execThrow $ obj [obj "undefined refence:", obj qref]
-    Just (qref, ~oldObj) -> case op of
-      UCONST -> upd qref newObj
-      op     -> execute (evalInfixOp (_updateToInfixOp op) oldObj newObj) >>= upd qref 
+evalUpdateOp :: Maybe Reference -> UpdateOp -> Object -> Maybe Object -> Exec (Maybe Object)
+evalUpdateOp qref op newObj oldObj = case op of
+  UCONST -> return $ Just newObj
+  op     -> case oldObj of
+    Nothing     -> execThrow $ obj $ concat $
+      [ [obj "cannot update undefined reference"], maybe [] (return . obj) qref
+      , [obj "with operator", obj (prettyShow op)]
+      ]
+    Just oldObj -> Just <$> execute (evalInfixOp (_updateToInfixOp op) oldObj newObj)
 
 _updatingOps :: Array UpdateOp (Object -> Object -> XPure Object)
 _updatingOps = let o = (,) in array (minBound, maxBound) $ defaults ++
@@ -5264,13 +5555,13 @@ builtin_now = _funcWithoutParams "now" $ (Just . obj) <$> liftIO getCurrentTime
 builtin_check_if_defined :: DaoFunc
 builtin_check_if_defined = DaoFunc (ustr "defined") False $ \args -> do
   fmap (Just . obj . and) $ forM args $ \arg -> case arg of
-    ORef o -> fmap (maybe False (const True)) (fmap (fmap snd) $ qualRefLookup o)
+    ORef o -> fmap (maybe False (const True)) (fmap (fmap snd) $ referenceLookup o)
     _      -> return True
 
 builtin_delete :: DaoFunc
 builtin_delete = DaoFunc (ustr "delete") False $ \args -> do
   forM_ args $ \arg -> case arg of
-    ORef o -> void $ qualRefUpdate o (const $ return Nothing)
+    ORef o -> void $ referenceUpdate o (const $ return Nothing)
     _      -> return ()
   return (Just ONull)
 
@@ -5288,82 +5579,64 @@ builtin_sizeof = DaoFunc (ustr "sizeof") True $ \ox -> case ox of
 
 ----------------------------------------------------------------------------------------------------
 
-data RefExpr = RefExpr Reference Location deriving (Eq, Ord, Typeable, Show)
-
-refFromExpr :: RefExpr -> Reference
-refFromExpr (RefExpr ref _) = ref
-
-instance Read RefExpr where
-  readsPrec prec = readsPrec prec >=> (\ (ref, str) -> return (RefExpr ref LocationUnknown, str))
-
-instance NFData RefExpr where { rnf (RefExpr a b) = deepseq a $! deepseq b () }
-
-instance HasNullValue RefExpr where
-  nullValue = RefExpr nullValue LocationUnknown
-  testNull (RefExpr a _) = testNull a
-
-instance HasLocation RefExpr where
-  getLocation (RefExpr _ loc)     = loc
-  setLocation (RefExpr o _  ) loc = RefExpr o loc
-  delLocation (RefExpr o _  )     = RefExpr o LocationUnknown
-
-instance UStrType RefExpr where
-  toUStr (RefExpr ref _) = toUStr ref
-  maybeFromUStr str = fmap (flip RefExpr LocationUnknown) (maybeFromUStr str)
-  nil = RefExpr nil LocationUnknown
-
-instance B.Binary RefExpr MTab where
-  put (RefExpr a b) = B.put a >> B.put b
-  get = pure RefExpr <*> B.get <*> B.get
-
-----------------------------------------------------------------------------------------------------
-
--- | Serves mostly as the 'Intermediate' expression for 'AST_QualRef'. Otherwise, it is immediately
--- converted to a 'QualRef', and as such this data type is not directly used in the interpreter
--- except immediately after parsing.
-data QualRefExpr
-  = UnqualRefExpr            RefExpr
-  | QualRefExpr RefQualifier RefExpr Location
+data RefSuffixExpr
+  = NullRefExpr
+  | DotRefExpr    Name        RefSuffixExpr Location
+  | SubscriptExpr ObjListExpr RefSuffixExpr
+  | FuncCallExpr  ObjListExpr RefSuffixExpr
   deriving (Eq, Ord, Typeable, Show)
 
-qualRefFromExpr :: QualRefExpr -> QualRef
-qualRefFromExpr o = case o of
-  UnqualRefExpr r   -> Unqualified (refFromExpr r)
-  QualRefExpr q r _ -> Qualified q (refFromExpr r)
+instance NFData RefSuffixExpr where
+  rnf  NullRefExpr          = ()
+  rnf (DotRefExpr    a b c) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (SubscriptExpr a b  ) = deepseq a $! deepseq b ()
+  rnf (FuncCallExpr  a b  ) = deepseq a $! deepseq b ()
 
-instance NFData QualRefExpr where
-  rnf (UnqualRefExpr b  ) = deepseq b ()
-  rnf (QualRefExpr a b c) = seq a $! deepseq b $! deepseq c ()
+instance HasNullValue RefSuffixExpr where
+  nullValue = NullRefExpr
+  testNull NullRefExpr = True
+  testNull _           = False
 
-instance HasNullValue QualRefExpr where
-  nullValue = UnqualRefExpr nullValue
-  testNull (UnqualRefExpr a) = testNull a
-  testNull (QualRefExpr _ a _) = testNull a
-
-instance HasLocation QualRefExpr where
-  getLocation o     = case o of
-    UnqualRefExpr r     -> getLocation r
-    QualRefExpr _ _ loc -> loc
+instance HasLocation RefSuffixExpr where
+  getLocation o = case o of
+    NullRefExpr           -> LocationUnknown
+    DotRefExpr    _ _ loc -> loc
+    SubscriptExpr a _     -> getLocation a
+    FuncCallExpr  a _     -> getLocation a
   setLocation o loc = case o of
-    UnqualRefExpr r     -> UnqualRefExpr (setLocation r loc)
-    QualRefExpr q r _   -> QualRefExpr q r loc
+    NullRefExpr           -> NullRefExpr
+    DotRefExpr    a b _   -> DotRefExpr    a b loc
+    SubscriptExpr a b     -> SubscriptExpr (setLocation a loc) b
+    FuncCallExpr  a b     -> FuncCallExpr  (setLocation a loc) b
   delLocation o     = case o of
-    UnqualRefExpr r     -> UnqualRefExpr (delLocation r)
-    QualRefExpr q r _   -> QualRefExpr q r LocationUnknown
+    NullRefExpr           -> NullRefExpr
+    DotRefExpr    a b _   -> DotRefExpr    a (delLocation b) LocationUnknown
+    SubscriptExpr a b     -> SubscriptExpr a (delLocation b)
+    FuncCallExpr  a b     -> FuncCallExpr  a (delLocation b)
 
-instance B.Binary QualRefExpr mtab where
-  put o = B.prefixByte 0x26 $ case o of
-    UnqualRefExpr (RefExpr o loc)     -> B.put (Unqualified o) >> B.put loc
-    QualRefExpr q (RefExpr o lo1) lo2 -> B.put (Qualified q o) >> B.put lo1 >> B.put lo2
-  get = B.word8PrefixTable <|> fail "expecting QualRefExpr"
-instance B.HasPrefixTable QualRefExpr B.Byte mtab where
-  prefixTable = B.mkPrefixTableWord8 "QualRefExpr" 0x26 0x26 $
-    [ B.get >>= \q -> case q of
-        Unqualified o -> UnqualRefExpr . RefExpr o <$> B.get
-        Qualified q o -> pure (\lo1 lo2 -> QualRefExpr q (RefExpr o lo1) lo2) <*> B.get <*> B.get
+-- binary 36 39 RefSuffixExpr-->RefSuffix
+instance B.Binary RefSuffixExpr MTab where
+  put o = case o of
+    NullRefExpr         -> B.putWord8   0x36
+    DotRefExpr    a b c -> B.prefixByte 0x37 $ B.put a >> B.put b >> B.put c
+    SubscriptExpr a b   -> B.prefixByte 0x38 $ B.put a >> B.put b
+    FuncCallExpr  a b   -> B.prefixByte 0x39 $ B.put a >> B.put b
+  get = B.word8PrefixTable <|> fail "expecting RefSuffixExpr"
+
+instance B.HasPrefixTable RefSuffixExpr B.Byte MTab where
+  prefixTable = B.mkPrefixTableWord8 "RefSuffixExpr" 0x36 0x39 $
+    [ return NullRefExpr
+    , return DotRefExpr    <*> B.get <*> B.get <*> B.get
+    , return SubscriptExpr <*> B.get <*> B.get
+    , return FuncCallExpr  <*> B.get <*> B.get
     ]
 
-instance Executable QualRefExpr (Maybe Object) where { execute = return . Just . ORef . qualRefFromExpr }
+instance Executable RefSuffixExpr RefSuffix where
+  execute o = let execargs = fmap (fmap $ ORef . snd) . execute in case o of
+    NullRefExpr              -> return NullRef
+    DotRefExpr    name ref _ -> DotRef name <$> execute ref
+    SubscriptExpr args ref   -> return Subscript <*> execargs args <*> execute ref
+    FuncCallExpr  args ref   -> return FuncCall  <*> execargs args <*> execute ref
 
 ----------------------------------------------------------------------------------------------------
 
@@ -5426,11 +5699,13 @@ callCallables funcs params =
 
 -- | If the given object provides a 'defCallable' callback, the object can be called with parameters
 -- as if it were a function.
-callObject :: Maybe QualRef -> Object -> [Object] -> Exec (Maybe Object)
+callObject :: Maybe Reference -> Object -> [Object] -> Exec (Maybe Object)
 callObject qref o params = case o of
   OHaskell (HaskellData o ifc) -> case objCallable ifc of
     Just getFuncs -> getFuncs o >>= \funcs -> callCallables funcs params
-    Nothing -> err
+    Nothing -> case fromDynamic o of
+      Just func -> executeDaoFunc qref func params
+      Nothing -> err
   _ -> err
   where
     err = execThrow $ obj $ concat $
@@ -5439,21 +5714,6 @@ callObject qref o params = case o of
       , [obj "called with parameters:", obj params]
       , [obj "value of object at reference is:", o]
       ]
-
--- | Dereferences the give 'QualRef' and checks if the 'Object' returned has defined a calling
--- routine using 'defCallable' in it's 'haskellDataInterface' table.
-callFunction :: QualRef -> [Object] -> Exec (Maybe Object)
-callFunction qref params = do
-  o <- fmap (fmap snd) $ qualRefLookup qref
-  o <- case o of
-    Just  o -> return o
-    Nothing -> execThrow $ obj $
-      [ obj "function called on undefined reference:", obj qref
-      , obj "called with parameters:", obj params
-      ]
-  calls <- mplus (objToCallable o) $ execThrow $ obj
-    [obj "does not evaluate to a callable object:", ORef qref]
-  callCallables calls params
 
 -- | Evaluate to 'procErr' if the given 'Predicate' is 'Backtrack' or 'PFail'. You must pass a
 -- 'Prelude.String' as the message to be used when the given 'Predicate' is 'Backtrack'. You can also
@@ -5489,149 +5749,104 @@ checkVoid loc msg fn = case fn of
 
 ----------------------------------------------------------------------------------------------------
 
-data AST_Ref = AST_RefNull | AST_Ref Name [Com Name] Location deriving (Eq, Ord, Typeable, Show)
+-- | Anything that follows a reference, which could be square-bracketed indecies, function
+-- parameters, or a dot and another reference. This is actually only a partial reference. The
+-- 'Reference' is the full reference. The item selected by the 'Reference' is then further inspected
+-- using a 'RefSuffix'; a 'RefSuffix' may be null, but a 'Reference' is never null.
+data AST_RefSuffix
+  = AST_RefNull
+  | AST_DotRef    (Com ()) Name AST_RefSuffix Location
+  | AST_Subscript AST_ObjList   AST_RefSuffix
+  | AST_FuncCall  AST_ObjList   AST_RefSuffix
+  deriving (Eq, Ord, Typeable, Show)
 
-astRef :: [Name] -> AST_Ref
-astRef nx = if null nx then AST_RefNull else AST_Ref (head nx) (map Com (tail nx)) LocationUnknown
-
-instance HasNullValue AST_Ref where
+instance HasNullValue AST_RefSuffix where
   nullValue = AST_RefNull
   testNull AST_RefNull = True
   testNull _ = False
 
-instance HasLocation AST_Ref where
+instance HasLocation AST_RefSuffix where
   getLocation o     = case o of
-    AST_RefNull     -> LocationUnknown
-    AST_Ref _ _ loc -> loc
+    AST_RefNull             -> LocationUnknown
+    AST_DotRef    _ _ _ loc -> loc
+    AST_Subscript a _       -> getLocation a
+    AST_FuncCall  a _       -> getLocation a
   setLocation o loc = case o of
-    AST_RefNull   -> AST_RefNull
-    AST_Ref a b _ -> AST_Ref a b loc
+    AST_RefNull           -> AST_RefNull
+    AST_DotRef    a b c _ -> AST_DotRef  a b c loc
+    AST_Subscript a b     -> AST_Subscript (setLocation a loc) b
+    AST_FuncCall  a b     -> AST_FuncCall  (setLocation a loc) b
   delLocation o     = case o of
-    AST_RefNull   -> AST_RefNull
-    AST_Ref a b _ -> AST_Ref a b lu
+    AST_RefNull           -> AST_RefNull
+    AST_DotRef    a b c _ -> AST_DotRef  a b (delLocation c) LocationUnknown
+    AST_Subscript a b     -> AST_Subscript (delLocation a) (delLocation b)
+    AST_FuncCall  a b     -> AST_FuncCall  (delLocation a) (delLocation b)
 
-instance PPrintable AST_Ref where
-  pPrint ref = case ref of
-    AST_RefNull    -> return ()
-    AST_Ref n nx _ -> pInline $ pPrint n :
-      fmap (\n -> pPrintComWith (\ () -> pString ".") (fmap (const ()) n) >> pPrint (unComment n)) nx
+instance PPrintable AST_RefSuffix where
+  pPrint = pWrapIndent . loop where
+    loop ref = case ref of
+      AST_RefNull                  -> []
+      AST_DotRef    dot name ref _ -> pPrintComWith (\ () -> pString ".") dot : pUStr (toUStr name) : loop ref
+      AST_Subscript args     ref   -> pArgs "[]" args ++ loop ref
+      AST_FuncCall  args     ref   -> pArgs "()" args ++ loop ref
+      where
+        pArgs str args = case str of
+          (open:close:_) -> [pString [open], pPrint args, pString [close]]
+          _              -> error "INTERNAL: bad instance definition of PPrintable AST_RefSuffix"
 
-instance PrecedeWithSpace AST_Ref where
-  precedeWithSpace r = case r of
-    AST_RefNull   -> False
-    AST_Ref _ _ _ -> True
+instance NFData AST_RefSuffix where
+  rnf  AST_RefNull            = ()
+  rnf (AST_DotRef    a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_Subscript a b    ) = deepseq a $! deepseq b ()
+  rnf (AST_FuncCall  a b    ) = deepseq a $! deepseq b ()
 
-instance NFData AST_Ref where
-  rnf  AST_RefNull    = ()
-  rnf (AST_Ref a b c) = deepseq a $! deepseq b $! deepseq c ()
-
-instance ToDaoStructClass AST_Ref where
+instance ToDaoStructClass AST_RefSuffix where
   toDaoStruct = ask >>= \o -> case o of
-    AST_RefNull        -> makeNullary "Null"
-    AST_Ref nm nms loc -> renameConstructor "Ref" >>
-      "head" .= nm >> "tail" .= nms >> putLocation loc
+    AST_RefNull                 -> makeNullary "Null"
+    AST_DotRef dot name ref loc -> do
+      renameConstructor "DotRef"
+      predicate (fromData (comToDaoStruct $ renameConstructor "Com") dot) >>= defObjField "dot" . obj
+      "name" .= name >> "tail" .= ref >> putLocation loc
+    AST_Subscript  args ref -> renameConstructor "Subscript" >>
+      "args" .= args >> "tail" .= ref >> return ()
+    AST_FuncCall   args ref -> renameConstructor "FuncCall" >>
+      "args" .= args >> "tail" .= ref >> return ()
 
-instance FromDaoStructClass AST_Ref where
-  fromDaoStruct = msum
-    [ constructor "Null" >> return AST_RefNull
-    , constructor "Ref"  >> pure AST_Ref <*> req "head" <*> req "tail" <*> location
+instance FromDaoStructClass AST_RefSuffix where
+  fromDaoStruct = msum $
+    [ constructor "Null"   >> return AST_RefNull
+    , constructor "DotRef" >> return AST_DotRef <*> getDot <*> req "head" <*> req "tail" <*> location
+    , constructor "Subscript" >> return AST_Subscript <*> req "args" <*> req "tail"
+    , constructor "FuncCall"  >> return AST_FuncCall  <*> req "args" <*> req "tail"
+    ] where { getDot = structCurrentField (fromUStr $ ustr "dot") $ comFromDaoStruct (return ()) }
+
+instance HasRandGen AST_RefSuffix where
+  randO = countRunRandChoice
+  randChoice = randChoiceList $
+    [ return AST_RefNull
+    , scramble $ return AST_DotRef    <*> randO <*> randO <*> randO <*> no
+    , scramble $ return AST_Subscript <*> randO <*> randO
+    , scramble $ return AST_FuncCall  <*> randO <*> randO
     ]
 
-instance Intermediate RefExpr AST_Ref where
+instance Intermediate RefSuffixExpr AST_RefSuffix where
   toInterm   ast = case ast of
-    AST_RefNull             -> [RefExpr (Reference []) LocationUnknown]
-    AST_Ref  n nx  loc -> [RefExpr (Reference (n : fmap unComment nx)) loc]
-  fromInterm (RefExpr (Reference nx) _) = case nx of
-    []   -> [AST_RefNull]
-    n:nx -> [AST_Ref n (fmap Com nx) LocationUnknown]
+    AST_RefNull                -> [NullRefExpr]
+    AST_DotRef  _ name ref loc -> [DotRefExpr]    <*> [name]        <*> toInterm ref <*> [loc]
+    AST_Subscript args ref     -> [SubscriptExpr] <*> toInterm args <*> toInterm ref
+    AST_FuncCall  args ref     -> [FuncCallExpr]  <*> toInterm args <*> toInterm ref
+  fromInterm obj = case obj of
+    NullRefExpr                -> [AST_RefNull]
+    DotRefExpr    name ref loc -> [AST_DotRef] <*> [Com ()] <*> [name] <*> fromInterm ref <*> [loc]
+    SubscriptExpr args ref     -> [AST_Subscript] <*> fromInterm args <*> fromInterm ref
+    FuncCallExpr  args ref     -> [AST_FuncCall]  <*> fromInterm args <*> fromInterm ref
 
-instance ObjectClass AST_Ref where { obj=new; fromObj=objFromHaskellData; }
+instance ObjectClass AST_RefSuffix where { obj=new; fromObj=objFromHaskellData; }
 
-instance HaskellDataClass AST_Ref where
+instance HaskellDataClass AST_RefSuffix where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
-
-----------------------------------------------------------------------------------------------------
-
-instance PPrintable RefExpr where pPrint = mapM_ pPrint . fromInterm
-
-instance HasRandGen AST_Ref where
-  randO = do
-    countNode_
-    r <- randList 1 6
-    case r of
-      []   -> return AST_RefNull
-      r:rx -> mapM (randComWith . return) rx >>= \rx -> return (AST_Ref r rx LocationUnknown)
-
-----------------------------------------------------------------------------------------------------
-
-data AST_QualRef
-  = AST_Unqualified                      AST_Ref
-  | AST_Qualified RefQualifier [Comment] AST_Ref Location
-  deriving (Eq, Ord, Typeable, Show)
-
-instance NFData AST_QualRef where
-  rnf (AST_Unqualified   c  ) = deepseq c ()
-  rnf (AST_Qualified a b c d) = seq a $! deepseq b $! deepseq c $! deepseq d ()
-
-instance HasNullValue AST_QualRef where
-  nullValue = AST_Unqualified nullValue
-  testNull (AST_Unqualified a    ) = testNull a
-  testNull (AST_Qualified q a _ _) = case q of { LOCAL -> null a; _ -> False; }
-
-instance HasLocation AST_QualRef where
-  getLocation o     = case o of
-    AST_Unqualified   r     -> getLocation r
-    AST_Qualified _ _ _ loc -> loc
-  setLocation o loc = case o of
-    AST_Unqualified   r     -> AST_Unqualified (setLocation r loc)
-    AST_Qualified q c r _   -> AST_Qualified q c r loc
-  delLocation o     = case o of
-    AST_Unqualified   r     -> AST_Unqualified   (fd r)
-    AST_Qualified q c r _   -> AST_Qualified q c (fd r) LocationUnknown
-
-instance PPrintable AST_QualRef where
-  pPrint ref = case ref of
-    AST_Unqualified     r   -> pPrint r
-    AST_Qualified q com r _ -> pInline [pPrint q, pString " ", pPrint com, pPrint r]
-
-instance ToDaoStructClass AST_QualRef where
-  toDaoStruct = ask >>= \o -> case o of
-    AST_Unqualified r -> innerToStruct r
-    AST_Qualified q coms r loc -> do
-      renameConstructor "QualRef"
-      "qualifier" .= q
-      putComments coms
-      "ref"       .= r
-      putLocation loc
-
-instance FromDaoStructClass AST_QualRef where
-  fromDaoStruct = msum $
-    [ AST_Unqualified <$> mplus (innerFromStruct "Null") (innerFromStruct "Ref")
-    , pure AST_Qualified <*> req "qualifier" <*> comments <*> req "ref" <*> location
-    ]
-
-instance PrecedeWithSpace AST_QualRef where
-  precedeWithSpace r = case r of
-    AST_Unqualified   r   -> precedeWithSpace r
-    AST_Qualified _ _ r _ -> precedeWithSpace r
-
-instance HasRandGen AST_QualRef where
-  randO = do
-    countNode_
-    n <- nextInt (fromEnum (maxBound::RefQualifier) - fromEnum (minBound::RefQualifier) + 1)
-    if n==0
-      then  AST_Unqualified <$> randO
-      else  pure (AST_Qualified (toEnum (n-1))) <*> randO <*> randO <*> no
-
-instance Intermediate QualRefExpr AST_QualRef where
-  toInterm   ast = case ast of
-    AST_Unqualified   r     -> liftM  UnqualRefExpr   (ti r)
-    AST_Qualified q _ r loc -> liftM3 QualRefExpr [q] (ti r) [loc]
-  fromInterm obj = case obj of
-    UnqualRefExpr r     -> liftM  AST_Unqualified        (fi r)
-    QualRefExpr q r loc -> liftM4 AST_Qualified [q] [[]] (fi r) [loc]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -5642,9 +5857,9 @@ data ParenExpr = ParenExpr AssignExpr Location deriving (Eq, Ord, Typeable, Show
 -- an @if@ or @while@ statement, this function evaluates the expression to a 'Prelude.Bool' value
 -- used to determine if the conditional expression should be 'execute'd.
 evalConditional :: ParenExpr -> Exec Bool
-evalConditional obj =
-  (execute obj :: Exec (Maybe Object)) >>=
-    checkVoid (getLocation obj) "conditional expression to if statement" >>= derefObject >>=
+evalConditional o =
+  (execute o :: Exec (Maybe Object)) >>=
+    checkVoid (getLocation o) "conditional expression to if statement" >>= derefObject >>=
       execHandleIO [fmap (const False) execIOHandler] . return . not . testNull
 
 instance HasLocation ParenExpr where
@@ -5658,14 +5873,19 @@ instance HasNullValue ParenExpr where
 
 instance NFData ParenExpr where { rnf (ParenExpr a b) = deepseq a $! deepseq b () }
 
+instance PPrintable ParenExpr where { pPrint = pPrintInterm }
+
+-- binary 44
 instance B.Binary ParenExpr MTab where
-  put (ParenExpr a b) = B.prefixByte 0x27 $ B.put a >> B.put b
+  put (ParenExpr a b) = B.prefixByte 0x44 $ B.put a >> B.put b
   get = B.word8PrefixTable <|> fail "expecting ParenExpr"
 instance B.HasPrefixTable ParenExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "ParenExpr" 0x27 0x27 $
+  prefixTable = B.mkPrefixTableWord8 "ParenExpr" 0x44 0x44 $
     [pure ParenExpr <*> B.get <*> B.get]
 
 instance Executable ParenExpr (Maybe Object) where { execute (ParenExpr a _) = execute a }
+
+instance RefReducible ParenExpr where { reduceToRef (ParenExpr a _) = reduceToRef a }
 
 instance ObjectClass ParenExpr where { obj=new; fromObj=objFromHaskellData; }
 
@@ -5798,9 +6018,10 @@ instance HasLocation ElseExpr where
   setLocation (ElseExpr a _  ) loc = ElseExpr a loc
   delLocation (ElseExpr a _  )     = ElseExpr (delLocation a) LocationUnknown
 
+-- binary 83
 instance B.Binary ElseExpr MTab where
-  put (ElseExpr a b) = B.prefixByte 0x3D $ B.put a >> B.put b
-  get = (B.tryWord8 0x3D $ pure ElseExpr <*> B.get <*> B.get) <|> fail "expecting ElseExpr"
+  put (ElseExpr a b) = B.prefixByte 0x83 $ B.put a >> B.put b
+  get = (B.tryWord8 0x83 $ pure ElseExpr <*> B.get <*> B.get) <|> fail "expecting ElseExpr"
 
 instance Executable ElseExpr Bool where { execute (ElseExpr ifn _) = execute ifn }
 
@@ -5870,12 +6091,13 @@ instance HasLocation IfElseExpr where
   delLocation (IfElseExpr a b c _  )     =
     IfElseExpr (delLocation a) (fmap delLocation b) (fmap delLocation c) LocationUnknown
 
+-- binary 84
 instance B.Binary IfElseExpr MTab where
-  put (IfElseExpr a b c d) = B.prefixByte 0x41 $ B.put a >> B.put b >> B.put c >> B.put d
+  put (IfElseExpr a b c d) = B.prefixByte 0x84 $ B.put a >> B.put b >> B.put c >> B.put d
   get = B.word8PrefixTable <|> fail "expecting IfElseExpr"
 
 instance B.HasPrefixTable IfElseExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "IfElseExpr" 0x41 0x41 $
+  prefixTable = B.mkPrefixTableWord8 "IfElseExpr" 0x84 0x84 $
     [pure IfElseExpr <*> B.get <*> B.get <*> B.get <*> B.get]
 
 instance Executable IfElseExpr () where
@@ -5967,12 +6189,13 @@ instance HasLocation WhileExpr where
   setLocation (WhileExpr a) loc = WhileExpr (setLocation a loc)
   delLocation (WhileExpr a)     = WhileExpr (delLocation a)
 
+-- binary 85
 instance B.Binary WhileExpr MTab where
-  put (WhileExpr o) = B.prefixByte 0x42 $ B.put o
+  put (WhileExpr o) = B.prefixByte 0x85 $ B.put o
   get = B.word8PrefixTable <|> fail "expecting WhileExpr"
 
 instance B.HasPrefixTable WhileExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "WhileExpr" 0x42 0x42 [WhileExpr <$> B.get]
+  prefixTable = B.mkPrefixTableWord8 "WhileExpr" 0x85 0x85 [WhileExpr <$> B.get]
 
 instance Executable WhileExpr () where
   execute (WhileExpr ifn) = let loop = execute ifn >>= flip when loop in loop
@@ -6029,12 +6252,12 @@ data ScriptExpr
   = IfThenElse   IfElseExpr
   | WhileLoop    WhileExpr
   | RuleFuncExpr RuleFuncExpr
-  | EvalObject   AssignExpr                               Location -- location of the semicolon
-  | TryCatch     CodeBlock (Maybe Name) (Maybe CodeBlock) Location
-  | ForLoop      Name       ParenExpr    CodeBlock        Location
-  | ContinueExpr Bool       AssignExpr                    Location
-  | ReturnExpr   Bool       AssignExpr                    Location
-  | WithDoc      ParenExpr  CodeBlock                     Location
+  | EvalObject   AssignExpr                                 Location -- location of the semicolon
+  | TryCatch     CodeBlock (Maybe Name)   (Maybe CodeBlock) Location
+  | ForLoop      Name       RefPrefixExpr CodeBlock         Location
+  | ContinueExpr Bool       AssignExpr                      Location
+  | ReturnExpr   Bool       AssignExpr                      Location
+  | WithDoc      ParenExpr  CodeBlock                       Location
   deriving (Eq, Ord, Typeable, Show)
 
 instance NFData ScriptExpr where
@@ -6089,19 +6312,20 @@ instance HasLocation ScriptExpr where
       fd :: HasLocation a => a -> a
       fd = delLocation
 
+-- binary 78 7F
 instance B.Binary ScriptExpr MTab where
   put o = case o of
     IfThenElse   a           -> B.put a
     WhileLoop    a           -> B.put a
     RuleFuncExpr a           -> B.put a
-    EvalObject   a         z -> B.prefixByte 0x43 $ B.put a >> B.put z
-    TryCatch     a     b c z -> B.prefixByte 0x44 $ B.put a >> B.put b >> B.put c >> B.put z
-    ForLoop      a     b c z -> B.prefixByte 0x45 $ B.put a >> B.put b >> B.put c >> B.put z
-    ContinueExpr True  b   z -> B.prefixByte 0x46 $ B.put b >> B.put z
-    ContinueExpr False b   z -> B.prefixByte 0x47 $ B.put b >> B.put z
-    ReturnExpr   True  b   z -> B.prefixByte 0x48 $ B.put b >> B.put z
-    ReturnExpr   False b   z -> B.prefixByte 0x49 $ B.put b >> B.put z
-    WithDoc      a     b   z -> B.prefixByte 0x4A $ B.put a >> B.put b >> B.put z
+    EvalObject   a         z -> B.prefixByte 0x78 $ B.put a >> B.put z
+    TryCatch     a     b c z -> B.prefixByte 0x79 $ B.put a >> B.put b >> B.put c >> B.put z
+    ForLoop      a     b c z -> B.prefixByte 0x7A $ B.put a >> B.put b >> B.put c >> B.put z
+    ContinueExpr True  b   z -> B.prefixByte 0x7B $ B.put b >> B.put z
+    ContinueExpr False b   z -> B.prefixByte 0x7C $ B.put b >> B.put z
+    ReturnExpr   True  b   z -> B.prefixByte 0x7D $ B.put b >> B.put z
+    ReturnExpr   False b   z -> B.prefixByte 0x7E $ B.put b >> B.put z
+    WithDoc      a     b   z -> B.prefixByte 0x7F $ B.put a >> B.put b >> B.put z
   get = B.word8PrefixTable <|> fail "expecting ScriptExpr"
 
 instance B.HasPrefixTable ScriptExpr B.Byte MTab where
@@ -6109,7 +6333,7 @@ instance B.HasPrefixTable ScriptExpr B.Byte MTab where
     [ fmap IfThenElse B.prefixTable
     , fmap WhileLoop  B.prefixTable
     , fmap RuleFuncExpr B.prefixTable
-    , B.mkPrefixTableWord8 "ScriptExpr" 0x43 0x4A $
+    , B.mkPrefixTableWord8 "ScriptExpr" 0x78 0x7F $ -- 59 5A 5B 5C 5D 5E 5F 60
         [ pure EvalObject   <*> B.get <*> B.get
         , pure TryCatch     <*> B.get <*> B.get <*> B.get <*> B.get
         , pure ForLoop      <*> B.get <*> B.get <*> B.get <*> B.get
@@ -6162,27 +6386,27 @@ instance Executable ScriptExpr () where
         PFail            err -> runCatch (Just err)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ForLoop varName inObj thn _loc -> do
-      (qref, o) <- execute inObj >>=
-        checkVoid (getLocation inObj) "value over which to iterate \"for\" statement" >>=
-          derefObjectGetQualRef
+      qref <- reduceToRef inObj
       let nested f o = execNested (M.singleton varName o) f
       let run = void $ execute thn
       let getvar = asks execStack >>= \ (LocalStore sto) ->
             fmap (stackLookup varName) (liftIO $ readIORef sto)
-      let readloop = readForLoop o (maybe run $ nested run)
-      let updateloop qref = void $
-            updateForLoop (OList []) o (maybe (run>>getvar) (nested $ run>>getvar)) >>=
-              qualRefUpdate qref . const . return . Just
+      let readLoop   o = readForLoop o (maybe run $ nested run)
+      let updateLoop o = updateForLoop (OList []) o (maybe (run>>getvar) (nested $ run>>getvar))
       case qref of
-        Nothing   -> readloop
-        Just qref -> case o of
-          OHaskell (HaskellData _ ifc) -> case objUpdateIterable ifc of
-            Just  _ -> updateloop qref
-            Nothing -> case objReadIterable ifc of
-              Just  _ -> readloop
-              Nothing -> execThrow $ obj $
-                [obj "cannot iterate over object", o, obj "from expression", new inObj]
-          _ -> updateloop qref
+        RefWrapper{}        -> execThrow $ obj $
+          [obj "cannot iterate over value of type reference", obj qref]
+        RefObject o NullRef -> readLoop o
+        _                   -> void $ referenceUpdate qref $ \o -> case o of
+          Nothing -> execThrow $ obj [obj "cannot iterate over undefined reference", obj qref]
+          Just  o -> case o of -- determine wheter this is an OHaskell object that can be updated
+            OHaskell (HaskellData _ ifc) -> case objUpdateIterable ifc of
+              Just  _ -> Just <$> updateLoop o
+              Nothing -> case objReadIterable ifc of -- if it's not updatable but readable
+                Just  _ -> readLoop o >> return (Just o)
+                Nothing -> execThrow $ obj $
+                  [obj "cannot iterate over value for reference", obj qref]
+            _ -> Just <$> (updateLoop o >>= \o -> return o)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ContinueExpr a    _      _loc -> execThrow $ obj $
       '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" or \"while\" loop"
@@ -6193,9 +6417,9 @@ instance Executable ScriptExpr () where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     WithDoc   expr   _thn    _loc -> void $ execNested M.empty $ do
       o   <- execute expr >>= checkVoid (getLocation expr) "expression in the focus of \"with\" statement"
-      ref <- mplus (asReference o) $ execThrow $ obj $
+      ref <- mplus (execute $ asReference o) $ execThrow $ obj $
         [obj "expression in \"with\" statement does not evaluate to a reference, evaluates to a", o]
-      qualRefUpdate ref $ \o -> case o of
+      referenceUpdate ref $ \o -> case o of
         Nothing -> execThrow $ obj [obj "undefined reference:", ORef ref]
         Just o  -> do
           let ok = do
@@ -6226,23 +6450,32 @@ instance HaskellDataClass ScriptExpr where
 localVarDefine :: Name -> Object -> Exec ()
 localVarDefine nm obj = asks execStack >>= \sto -> storeDefine sto nm obj
 
--- | Like evaluating 'execute' on a value of 'QualRefExpr', except the you are evaluating an
+-- | Like evaluating 'execute' on a value of 'Reference', except the you are evaluating an
 -- 'Object' type. If the value of the 'Object' is not constructed with
 -- 'ORef', the object value is returned unmodified.
 derefObject :: Object -> Exec Object
-derefObject = fmap snd . derefObjectGetQualRef
+derefObject = fmap snd . derefObjectGetReference
 
--- | Like 'derefObject' but also returns the 'QualRef' value that was stored in the 'Object' that
+-- | Like 'derefObject' but also returns the 'Reference' value that was stored in the 'Object' that
 -- was dereferenced, along with the dereferenced value. If the 'Object' is not constructed with
--- 'ORef', 'Prelude.Nothing' is returned instead of a 'QualRef'.
-derefObjectGetQualRef :: Object -> Exec (Maybe QualRef, Object)
-derefObjectGetQualRef o = do
-  let cantDeref msg = execThrow $ obj [obj msg, o]
-  case o of
-    ORef r -> qualRefLookup r >>= \o -> case o of
-      Nothing     -> cantDeref "undefined reference:"
-      Just (r, o) -> return (Just r, o)
-    o      -> return (Nothing, o)
+-- 'ORef', 'Prelude.Nothing' is returned instead of a 'Reference'.
+derefObjectGetReference :: Object -> Exec (Maybe Reference, Object)
+derefObjectGetReference o = maybeDerefObject (Just o) >>= \ (r, derefd) -> case derefd of
+  Nothing     -> execThrow $ obj [obj "reference evaluated to void", o]
+  Just derefd -> return (r, derefd)
+
+-- | Tries to dereference an 'Object'. If the 'Object' is an 'ORef' constructed 'Reference', the
+-- reference is de-referenced, which may evaluate to 'Prelude.Nothing'. The dereferenced value is
+-- returned in the 'Prelude.snd' of the pair. If the given 'Object' is an 'ORef', regardless of the
+-- dereferenced value, the 'Reference' is returned in the 'Prelude.fst' of the pair. If the given
+-- 'Object' is not an 'ORef' constructed 'Object', it is returned unmodified along with
+-- 'Prelude.Nothing' in the 'Prelude.fst' of the pair.
+maybeDerefObject :: Maybe Object -> Exec (Maybe Reference, Maybe Object)
+maybeDerefObject = maybe (return (Nothing, Nothing)) $ \o -> case o of
+  ORef r -> referenceLookup r >>= \o -> case o of
+    Nothing     -> return (Just r, Nothing)
+    Just (r, o) -> return (Just r, Just o)
+  o      -> return (Nothing, Just o)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -6278,7 +6511,7 @@ data AST_Script
     -- ^ @some.object.expression = for.example - equations || function(calls) /**/ ;@
   | AST_TryCatch     (Com AST_CodeBlock)     (Maybe (Com Name)) (Maybe AST_CodeBlock)  Location
     -- ^ @try /**/ {} /**/ catch /**/ errVar /**/ {}@              
-  | AST_ForLoop      (Com Name)              (Com AST_Paren)           AST_CodeBlock   Location
+  | AST_ForLoop      (Com Name)              (Com AST_RefPrefix)       AST_CodeBlock   Location
     -- ^ @for /**/ var /**/ in /**/ objExpr /**/ {}@
   | AST_ContinueExpr Bool  [Comment]         (Com AST_Assign)                          Location
     -- ^ The boolean parameter is True for a "continue" statement, False for a "break" statement.
@@ -6363,7 +6596,9 @@ instance PPrintable AST_Script where
     AST_ContinueExpr contin     coms      cObjXp    _ -> pWrapIndent $
       [ pString (if contin then "continue" else "break")
       , pInline (map pPrint coms)
-      , pString " if" >> when (precedeWithSpace cObjXp) (pString " ") >> pPrint cObjXp
+      , case unComment cObjXp of
+          AST_Eval (AST_Object AST_Void) -> return ()
+          _ -> pString " if" >> when (precedeWithSpace cObjXp) (pString " ") >> pPrint cObjXp
       , pString ";"
       ]
     AST_ReturnExpr   retrn                cObjXp    _ -> pWrapIndent $
@@ -6481,16 +6716,16 @@ instance HasLocation ObjListExpr where
   setLocation (ObjListExpr a _  ) loc = ObjListExpr (fmap delLocation a) loc
   delLocation (ObjListExpr a _  )     = ObjListExpr (fmap delLocation a) LocationUnknown
 
+-- binary 5C
 instance B.Binary ObjListExpr MTab where
-  put (ObjListExpr lst loc) = B.prefixByte 0x3C $ B.putUnwrapped lst >> B.put loc
-  get = (B.tryWord8 0x3C $ pure ObjListExpr <*> B.getUnwrapped <*> B.get) <|> fail "expecting ObjListExpr"
+  put (ObjListExpr lst loc) = B.prefixByte 0x5C $ B.putUnwrapped lst >> B.put loc
+  get = (B.tryWord8 0x5C $ pure ObjListExpr <*> B.getUnwrapped <*> B.get) <|> fail "expecting ObjListExpr"
 
-instance Executable ObjListExpr [Object] where
-  execute (ObjListExpr exprs _) = do
-    fmap concat $ forM (zip [1..] exprs) $ \ (i, expr) -> execute expr >>= \o -> case o of
-      Nothing -> execThrow $ obj $
-        [obj "expression used in list evaluated to void", obj "function parameter index", obj (i::Int)]
-      Just  o -> return [o]
+instance Executable ObjListExpr [(Location, Reference)] where
+  execute (ObjListExpr exprs loc) = mapM (fmap ((,) loc) . reduceToRef) exprs
+
+_reduceArgs :: String -> [(Location, Reference)] -> Exec [Object]
+_reduceArgs msg = mapM $ \ (loc, ref) -> fmap snd <$> referenceLookup ref >>= checkVoid loc msg
 
 instance PPrintable ObjListExpr where { pPrint = pPrintInterm }
 
@@ -6564,10 +6799,10 @@ instance HasNullValue OptObjListExpr where
   testNull _ = False
 
 instance B.Binary OptObjListExpr MTab where
-  put (OptObjListExpr o) = B.put o
-  get = OptObjListExpr <$> B.get
+  put (OptObjListExpr o) = maybe (return ()) B.put o
+  get = OptObjListExpr <$> optional B.get
 
-instance Executable OptObjListExpr [Object] where
+instance Executable OptObjListExpr [(Location, Reference)] where
   execute (OptObjListExpr lst) = maybe (return []) execute lst
 
 instance ObjectClass OptObjListExpr where { obj=new; fromObj=objFromHaskellData; }
@@ -6656,6 +6891,8 @@ instance B.HasPrefixTable LiteralExpr B.Byte MTab where
 
 instance Executable LiteralExpr (Maybe Object) where { execute (LiteralExpr o _) = return (Just o) }
 
+instance RefReducible LiteralExpr where { reduceToRef (LiteralExpr o _) = reduceToRef o }
+
 instance ObjectClass LiteralExpr where { obj=new; fromObj=objFromHaskellData; }
 
 instance HaskellDataClass LiteralExpr where
@@ -6724,323 +6961,298 @@ instance HaskellDataClass AST_Literal where
 
 ----------------------------------------------------------------------------------------------------
 
-data RefOpExpr
-  = ObjParenExpr  ParenExpr
-  | PlainRefExpr  QualRefExpr
-  | ArraySubExpr  RefOpExpr ObjListExpr Location
-  | FuncCall      RefOpExpr ObjListExpr Location
+data ReferenceExpr
+  = RefObjectExpr ParenExpr         RefSuffixExpr Location
+  | ReferenceExpr RefQualifier Name RefSuffixExpr Location
+    -- ^ reference suffixed by square brackets or round brackets. If the 3rd parameter is False, it
+    -- is suffixed by square brackets, and True means suffixed by round brackets. Square brackets
+    -- indicates an indexing expression, round brackets indicates a function call.
   deriving (Eq, Ord, Show, Typeable)
 
-instance NFData RefOpExpr where
-  rnf (ObjParenExpr a    ) = deepseq a ()
-  rnf (PlainRefExpr a    ) = deepseq a ()
-  rnf (ArraySubExpr a b c) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (FuncCall     a b c) = deepseq a $! deepseq b $! deepseq c ()
+instance NFData ReferenceExpr where
+  rnf (RefObjectExpr a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (ReferenceExpr a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
 
-instance HasNullValue RefOpExpr where
-  nullValue = ObjParenExpr nullValue
-  testNull (ObjParenExpr a) = testNull a
-  testNull _                = False
+instance HasNullValue ReferenceExpr where
+  nullValue = RefObjectExpr nullValue NullRefExpr LocationUnknown
+  testNull (RefObjectExpr a NullRefExpr LocationUnknown) = testNull a
+  testNull _                                             = False
 
-instance HasLocation RefOpExpr where
+instance HasLocation ReferenceExpr where
   getLocation o     = case o of
-    ObjParenExpr     o -> getLocation o
-    PlainRefExpr     o -> getLocation o
-    ArraySubExpr _ _ o -> o
-    FuncCall     _ _ o -> o
+    RefObjectExpr _ _   loc -> loc
+    ReferenceExpr _ _ _ loc -> loc
   setLocation o loc = case o of
-    ObjParenExpr   a     -> ObjParenExpr (setLocation a loc)
-    PlainRefExpr   a     -> PlainRefExpr (setLocation a loc)
-    ArraySubExpr   a b _ -> ArraySubExpr a b loc
-    FuncCall       a b _ -> FuncCall     a b loc
-  delLocation o     = case o of
-    ObjParenExpr  a     -> ObjParenExpr (delLocation a)
-    PlainRefExpr  a     -> PlainRefExpr (fd a)
-    ArraySubExpr  a b _ -> ArraySubExpr a b lu
-    FuncCall      a b _ -> FuncCall     a b lu
+    RefObjectExpr a b _     -> RefObjectExpr a b   loc
+    ReferenceExpr a b c loc -> ReferenceExpr a b c loc
+  delLocation o    = case o of
+    RefObjectExpr a b _     -> RefObjectExpr (delLocation a) b   LocationUnknown
+    ReferenceExpr a b c _   -> ReferenceExpr              a  b c LocationUnknown
 
-instance B.Binary RefOpExpr MTab where
-  put o = case o of
-    ObjParenExpr a     -> B.put a
-    PlainRefExpr a     -> B.put a
-    ArraySubExpr a b z -> B.prefixByte 0x29 $ B.put a >> B.put b >> B.put z
-    FuncCall     a b z -> B.prefixByte 0x2A $ B.put a >> B.put b >> B.put z
-  get = B.word8PrefixTable <|> fail "expecting SingleExpr"
+instance PPrintable ReferenceExpr where { pPrint = pPrintInterm }
 
-instance B.HasPrefixTable RefOpExpr Word8 MTab where
-  prefixTable = fmap ObjParenExpr B.prefixTable <> fmap PlainRefExpr B.prefixTable <>
-    B.mkPrefixTableWord8 "RefOpExpr" 0x29 0x2A
-      [ pure ArraySubExpr <*> B.get <*> B.get <*> B.get
-      , pure FuncCall     <*> B.get <*> B.get <*> B.get
-      ]
+-- binary 39 3F ReferenceExpr-->Reference
+instance B.Binary ReferenceExpr MTab where
+  put qref = case qref of
+    ReferenceExpr q n r loc -> prefix q $ B.put n >> B.put r >> B.put loc where
+      prefix q = B.prefixByte $ case q of
+        { UNQUAL -> 0x39; LOCAL -> 0x3A; CONST -> 0x3B; STATIC -> 0x3C; GLOBAL -> 0x3D; GLODOT -> 0x3E; }
+    RefObjectExpr o r loc -> B.putWord8 0x3F >> B.put o >> B.put r >> B.put loc
+  get = B.word8PrefixTable <|> fail "expecting Reference"
 
-instance Executable RefOpExpr (Maybe Object) where
-  execute o = case o of
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    ObjParenExpr  o -> execute o
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    PlainRefExpr  r -> execute r
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    ArraySubExpr o i loc -> do
-      o <- execute o >>= checkVoid loc "operand of subscript expression" >>= derefObject
-      fmap Just $ execute i >>= foldM indexObject o
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    FuncCall op args loc -> do -- a built-in function call
-      o  <- execute op >>= checkVoid loc "function selector evaluates to void"
-      op <- mplus (asReference o) $ execThrow $ obj $
-        [obj "function selector does not evaluate to reference:", o]
-      let nonBuiltin = execute args >>= callFunction op
-      -- Here we take care to always try to call a builtin if the reference is unqualified.
-      -- This means if somone defines their own local function with the same name as a builtin
-      -- function, for example "print()", the only way to invoke the local function is to qualify
-      -- the name with the keyword "local". "print()" always calls the builtin, "local print()" will
-      -- call the locally defined function "print()".
-      builtins <- asks builtinConstants
-      case op of
-        Unqualified (Reference [name]) -> case M.lookup name builtins of
-          Just func -> case fromObj func >>= fromDynamic of
-            Just func -> executeDaoFunc name func args
-            Nothing   -> execute args >>= callObject (Just op) func
-          Nothing   -> nonBuiltin
-        _ -> nonBuiltin
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+instance B.HasPrefixTable ReferenceExpr Word8 MTab where
+  prefixTable = B.mkPrefixTableWord8 "ReferenceExpr" 0x3A 0x3F $
+    [ f UNQUAL, f LOCAL, f CONST, f STATIC, f GLOBAL, f GLODOT
+    , return RefObjectExpr <*> B.get <*> B.get <*> B.get
+    ] where { f q = return (ReferenceExpr q) <*> B.get <*> B.get <*> B.get }
 
-instance ObjectClass RefOpExpr where { obj=new; fromObj=objFromHaskellData; }
+instance Executable ReferenceExpr (Maybe Object) where
+  execute = reduceToRef >=> fmap (fmap snd) . referenceLookup
 
-instance HaskellDataClass RefOpExpr where
+instance RefReducible ReferenceExpr where
+  reduceToRef o = _setObjectExprError (ObjSingleExpr $ PlainRefExpr o) $ case o of
+    RefObjectExpr o ref    _ -> return refAppendSuffix <*> reduceToRef o <*> execute ref
+    ReferenceExpr q nm ref _ -> return (Reference q nm) <*> execute ref
+
+instance ObjectClass ReferenceExpr where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass ReferenceExpr where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt >> defDeref execute
 
 ----------------------------------------------------------------------------------------------------
 
-data AST_RefOperand
-  = AST_ObjParen  AST_Paren 
-  | AST_PlainRef  AST_QualRef
-  | AST_ArraySub  AST_RefOperand AST_ObjList Location
-  | AST_FuncCall  AST_RefOperand AST_ObjList Location
+data AST_Reference
+  = AST_RefObject AST_Paren                   AST_RefSuffix Location
+  | AST_Reference RefQualifier [Comment] Name AST_RefSuffix Location
   deriving (Eq, Ord, Show, Typeable)
 
-instance NFData AST_RefOperand where
-  rnf (AST_ObjParen   a) = deepseq a ()
-  rnf (AST_PlainRef   a  ) = deepseq a ()
-  rnf (AST_ArraySub a b c) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_FuncCall a b c) = deepseq a $! deepseq b $! deepseq c ()
+instance NFData AST_Reference where
+  rnf (AST_RefObject a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_Reference a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
 
-instance HasNullValue AST_RefOperand where
-  nullValue = AST_ObjParen $ AST_Paren nullValue LocationUnknown
-  testNull (AST_ObjParen (AST_Paren a LocationUnknown)) = testNull a
-  testNull _ = False
-
-instance HasLocation AST_RefOperand where
+instance HasLocation AST_Reference where
   getLocation o     = case o of
-    AST_ObjParen     o -> getLocation o
-    AST_PlainRef     o -> getLocation o
-    AST_ArraySub _ _ o -> o
-    AST_FuncCall _ _ o -> o
+    AST_RefObject _ _     loc -> loc
+    AST_Reference _ _ _ _ loc -> loc
   setLocation o loc = case o of
-    AST_ObjParen   a   -> AST_ObjParen   (setLocation a loc)
-    AST_PlainRef   a   -> AST_PlainRef  (setLocation a loc)
-    AST_ArraySub a b _ -> AST_ArraySub a b loc
-    AST_FuncCall a b _ -> AST_FuncCall a b loc
+    AST_RefObject a b     _   -> AST_RefObject a b     loc
+    AST_Reference a b c d _   -> AST_Reference  a b c d loc
   delLocation o     = case o of
-    AST_ObjParen   a   -> AST_ObjParen   (fd  a)
-    AST_PlainRef   a   -> AST_PlainRef  (fd a)
-    AST_ArraySub a b _ -> AST_ArraySub (fd a) (fd b) lu
-    AST_FuncCall a b _ -> AST_FuncCall (fd a) (fd b) lu
+    AST_RefObject a b     _   -> AST_RefObject (delLocation a) (delLocation b) LocationUnknown
+    AST_Reference a b c d _   -> AST_Reference a b c (delLocation d) LocationUnknown
 
-instance PPrintable AST_RefOperand where
-  pPrint o = case o of
-    AST_ObjParen  paren           -> pPrint paren
-    AST_PlainRef  ref             -> pPrint ref
-    AST_ArraySub  objXp xcObjXp _ -> pInline [pPrint objXp, pPrintObjList "[" ", " "]" xcObjXp]
-    AST_FuncCall  objXp xcObjXp _ -> pInline [pPrint objXp, pPrintObjList "(" ", " ")" xcObjXp]
+instance PPrintable AST_Reference where
+  pPrint o = pInline $ case o of
+    AST_RefObject  o           ref _ -> [pPrint o, pPrint ref]
+    AST_Reference  q coms name ref _ -> concat $
+      [ if q==UNQUAL then [] else [pPrint q, pString " "]
+      , [pPrint coms, pUStr (toUStr name), pPrint ref]
+      ]
 
-instance PrecedeWithSpace AST_RefOperand where
-  precedeWithSpace o = case o of
-    AST_ObjParen  _     -> False
-    AST_PlainRef  o     -> precedeWithSpace o
-    AST_ArraySub  o _ _ -> precedeWithSpace o
-    AST_FuncCall  o _ _ -> precedeWithSpace o
+instance PrecedeWithSpace AST_Reference where { precedeWithSpace _ = True }
 
-instance ToDaoStructClass AST_RefOperand where
+instance ToDaoStructClass AST_Reference where
   toDaoStruct = ask >>= \o -> case o of
-    AST_ObjParen a       -> innerToStruct a
-    AST_PlainRef a       -> innerToStruct a
-    AST_ArraySub a b loc -> renameConstructor "Subscript" >>
-      "head" .= a >> "params" .= b >> putLocation loc
-    AST_FuncCall a b loc -> renameConstructor "FuncCall" >>
-      "head" .= a >> "params" .= b >> putLocation loc
+    AST_RefObject o           ref loc -> renameConstructor "ParenExpr" >>
+      "paren" .= o >> "suffix" .= ref >> putLocation loc
+    AST_Reference  q coms name ref loc -> renameConstructor "Reference" >>
+      "qualifier" .= q >> putComments coms >> "name" .= name >> "suffix" .= ref >> putLocation loc
 
-instance FromDaoStructClass AST_RefOperand where
+instance FromDaoStructClass AST_Reference where
   fromDaoStruct = msum $
-    [ AST_ObjParen <$> fromDaoStruct
-    , AST_PlainRef <$> fromDaoStruct
-    , constructor "Subscript" >> pure AST_ArraySub <*> req "head" <*> req "params" <*> location
-    , constructor "FuncCall"  >> pure AST_FuncCall <*> req "head" <*> req "params" <*> location
+    [ constructor "ParenExpr" >>
+        return AST_RefObject <*> req "paren" <*> req "suffix" <*> location
+    , constructor "Reference" >>
+        return AST_Reference <*> req "qualifier"
+          <*> comments <*> req "name" <*> req "suffix" <*> location
     ]
 
-instance HasRandGen AST_RefOperand where
+instance HasRandGen AST_Reference where
   randO = countRunRandChoice
   randChoice = randChoiceList $
-    [ AST_ObjParen <$> randO
-    , AST_PlainRef <$> randO
-    , pure AST_ArraySub <*> randO <*> randO <*> no
-    , pure AST_FuncCall <*> randO <*> randO <*> no
+    [ scramble $ return AST_RefObject <*> randO <*> randO <*> pure LocationUnknown
+    , scramble $ return AST_Reference <*> randO <*> randO <*> randO <*> randO <*> pure LocationUnknown
     ]
 
-instance Intermediate RefOpExpr AST_RefOperand where
+instance Intermediate ReferenceExpr AST_Reference where
   toInterm ast = case ast of
-    AST_ObjParen  a       -> liftM  ObjParenExpr   (ti  a)
-    AST_PlainRef  a       -> liftM  PlainRefExpr  (ti a)
-    AST_ArraySub  a b loc -> liftM3 ArraySubExpr  (ti a) (ti b) [loc]
-    AST_FuncCall  a b loc -> liftM3 FuncCall      (ti a) (ti b) [loc]
+    AST_RefObject paren    ref loc -> [RefObjectExpr] <*> toInterm paren <*> toInterm ref <*> [loc]
+    AST_Reference q _ name ref loc -> [ReferenceExpr] <*> [q] <*> [name] <*> toInterm ref <*> [loc]
   fromInterm o = case o of
-    ObjParenExpr  a       -> liftM  AST_ObjParen  (fi  a)
-    PlainRefExpr  a       -> liftM  AST_PlainRef  (fi a)
-    ArraySubExpr  a b loc -> liftM3 AST_ArraySub  (fi a) (fi b) [loc]
-    FuncCall      a b loc -> liftM3 AST_FuncCall  (fi a) (fi b) [loc]
+    RefObjectExpr paren  ref loc -> [AST_RefObject] <*> fromInterm paren <*> fromInterm ref <*> [loc]
+    ReferenceExpr q name ref loc ->
+      [AST_Reference] <*> [q] <*> [[]] <*> [name]  <*> fromInterm ref <*> [loc]
 
-instance ObjectClass AST_RefOperand where { obj=new; fromObj=objFromHaskellData; }
+instance ObjectClass AST_Reference where { obj=new; fromObj=objFromHaskellData; }
 
-instance HaskellDataClass AST_RefOperand where
-  haskellDataInterface = interface nullValue $ do
-    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
-    autoDefToStruct >> autoDefFromStruct
+instance HaskellDataClass AST_Reference where
+  haskellDataInterface = interface (AST_RefObject nullValue nullValue nullValue) $ do
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
+    autoDefToStruct >> autoDefFromStruct >> defDeref (msum . map execute . toInterm)
 
 ----------------------------------------------------------------------------------------------------
 
-data SingleExpr
-  = SingleExpr RefOpExpr
-  | RefPfxExpr RefPfxOp RefOpExpr Location
+data RefPrefixExpr
+  = PlainRefExpr  ReferenceExpr
+  | RefPrefixExpr RefPfxOp RefPrefixExpr Location
   deriving (Eq, Ord, Typeable, Show)
 
-instance NFData SingleExpr where
-  rnf (SingleExpr a    ) = deepseq a ()
-  rnf (RefPfxExpr a b c) = deepseq a $! deepseq b $! deepseq c ()
+-- | Eliminate composed DEREF-REF operations
+-- > @$a == a
+cleanupRefPrefixExpr :: RefPrefixExpr -> RefPrefixExpr
+cleanupRefPrefixExpr o =
+  case o of { RefPrefixExpr DEREF (RefPrefixExpr REF o _) _ -> cleanupRefPrefixExpr o; _ -> o; }
 
-instance HasNullValue SingleExpr where
-  nullValue = SingleExpr $ ObjParenExpr nullValue
-  testNull (SingleExpr (ObjParenExpr a)) = testNull a
+instance NFData RefPrefixExpr where
+  rnf (RefPrefixExpr a b c) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (PlainRefExpr  a    ) = deepseq a ()
+
+instance HasNullValue RefPrefixExpr where
+  nullValue = PlainRefExpr nullValue
+  testNull (PlainRefExpr a) = testNull a
   testNull _ = False
 
-instance HasLocation SingleExpr where
+instance HasLocation RefPrefixExpr where
   getLocation o     = case o of
-    SingleExpr     o -> getLocation o
-    RefPfxExpr _ _ o -> o
+    PlainRefExpr      o -> getLocation o
+    RefPrefixExpr _ _ o -> o
   setLocation o loc = case o of
-    SingleExpr a      -> SingleExpr (setLocation a loc)
-    RefPfxExpr a b  _ -> RefPfxExpr a b loc
+    PlainRefExpr  a     -> PlainRefExpr $ setLocation a loc
+    RefPrefixExpr a b _ -> RefPrefixExpr a b loc
   delLocation o     = case o of
-    SingleExpr a      -> SingleExpr (fd a)
-    RefPfxExpr a b  _ -> RefPfxExpr a (fd b) lu
+    PlainRefExpr  a     -> PlainRefExpr $ delLocation a
+    RefPrefixExpr a b _ -> RefPrefixExpr a (delLocation b) lu
 
-instance B.Binary SingleExpr MTab where
+-- binary 40 41
+instance B.Binary RefPrefixExpr MTab where
   put o = case o of
-    SingleExpr     a       -> B.put a
-    RefPfxExpr     a b   z -> B.prefixByte 0x28 $ B.put a >> B.put b >> B.put z
-  get = B.word8PrefixTable <|> fail "expecting SingleExpr"
+    PlainRefExpr  a     -> B.put a
+    RefPrefixExpr a b z -> let f = B.put b >> B.put z in case a of
+      REF   -> B.prefixByte 0x40 f
+      DEREF -> B.prefixByte 0x41 f
+  get = B.word8PrefixTable <|> fail "expecting RefPrefixExpr"
 
-instance B.HasPrefixTable SingleExpr Word8 MTab where
-  prefixTable = fmap SingleExpr B.prefixTable <>
-    B.mkPrefixTableWord8 "SingleExpr" 0x28 0x28 [pure RefPfxExpr <*> B.get <*> B.get <*> B.get]
+instance B.HasPrefixTable RefPrefixExpr Word8 MTab where
+  prefixTable = fmap PlainRefExpr B.prefixTable <>
+    (B.mkPrefixTableWord8 "RefPrefixExpr" 0x40 0x41 $
+      let f q = return (RefPrefixExpr q) <*> B.get <*> B.get in [f REF, f DEREF])
 
-instance Executable SingleExpr (Maybe Object) where
-  execute o = case o of
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    SingleExpr o -> execute o
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    RefPfxExpr op o loc -> case op of
-      REF   -> do
-        let evalRef o = execute o >>= \r -> case r of
-              Nothing       -> return $ Just $ ORef $ Unqualified $ Reference []
-              Just (ORef _) -> return r
-              Just  r       -> execThrow $ obj [obj "cannot use result as reference:", r]
-        case o of
-          PlainRefExpr o -> return $ Just $ ORef $ qualRefFromExpr o
-          ObjParenExpr o -> evalRef o
-          ArraySubExpr{} -> evalRef o
-          FuncCall{}     -> evalRef o
-      DEREF -> fmap Just $ execute o >>= checkVoid loc "dereferenced void value"
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+instance Executable RefPrefixExpr (Maybe Object) where
+  execute o = _setObjectExprError (ObjSingleExpr o) $ do
+    o <- reduceToRef o <|>
+      execThrow (obj [obj "expression does not reduce to valid reference value"])
+    fmap snd <$> referenceLookup o
 
-instance ObjectClass SingleExpr where { obj=new; fromObj=objFromHaskellData; }
+instance RefReducible RefPrefixExpr where
+  reduceToRef expr = _setObjectExprError (ObjSingleExpr expr) $ loop expr where
+    err = execThrow . OList
+    loop o = case o of
+      PlainRefExpr o         -> reduceToRef o >>= \o -> case o of
+        RefObject  o NullRef -> case o of
+          ORef r -> return r
+          o      -> return (RefObject o NullRef)
+        o -> return o
+      RefPrefixExpr op o _ -> case op of
+        REF   -> loop o >>= \o -> case o of
+          RefObject o NullRef  -> case o of
+            OString s -> refStr s
+            ORef    r -> return (RefWrapper r) 
+            r         -> return (RefObject  r NullRef)
+          o -> return (RefWrapper o)
+        DEREF -> loop o >>= \r -> case r of
+          RefWrapper r    -> return r
+          RefObject o NullRef -> case o of
+            OString s -> refStr s >>= deref
+            ORef    r -> deref r
+            OHaskell (HaskellData d ifc) -> case objDereferencer ifc of
+              Nothing    -> err [obj "cannot dereference", o]
+              Just deref -> do
+                o <- deref d >>= maybe (err [obj "reference object evaluates to void", o]) return
+                case o of
+                  ORef r -> return r
+                  o      -> return (RefObject o NullRef)
+            o -> err [obj "cannot dereference object of type", obj (typeOfObj o)]
+          o -> deref o
+    deref r = do
+      (r, o) <- fmap (maybe (Just r, Nothing) (\ (r, o) -> (Just r, Just o))) $ referenceLookup r
+      let cantDeref msg = err $
+            concat [[obj "cannot dereference"], maybe [] (return . obj) r, [obj msg]]
+      case o of
+        Nothing -> cantDeref "evaluates to void"
+        Just  o -> execute (asReference o) <|> return (RefObject o NullRef)
+    refStr s = case referenceFromUStr s of
+      Nothing -> err [obj "string value cannot be parsed as reference", obj s]
+      Just  r -> return r
 
-instance HaskellDataClass SingleExpr where
+instance ObjectClass RefPrefixExpr where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass RefPrefixExpr where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
 
-data AST_Single
-  = AST_Single !AST_RefOperand
-  | AST_RefPfx RefPfxOp [Comment] AST_RefOperand Location
+data AST_RefPrefix
+  = AST_PlainRef  AST_Reference
+  | AST_RefPrefix RefPfxOp [Comment] AST_RefPrefix Location
   deriving (Eq, Ord, Typeable, Show)
 
-instance NFData AST_Single where
-  rnf (AST_Single a      ) = deepseq a ()
-  rnf (AST_RefPfx a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d  ()
+instance NFData AST_RefPrefix where
+  rnf (AST_PlainRef  a      ) = deepseq a ()
+  rnf (AST_RefPrefix a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d  ()
 
-instance HasNullValue AST_Single where
-  nullValue = AST_Single nullValue
-  testNull (AST_Single a) = testNull a
-  testNull _ = False
-
-instance HasLocation AST_Single where
+instance HasLocation AST_RefPrefix where
   getLocation o     = case o of
-    AST_Single       o -> getLocation o
-    AST_RefPfx _ _ _ o -> o
+    AST_PlainRef  a         -> getLocation a
+    AST_RefPrefix _ _ _ loc -> loc
   setLocation o loc = case o of
-    AST_Single a       -> AST_Single (setLocation a loc)
-    AST_RefPfx a b c _ -> AST_RefPfx   a b c loc
+    AST_PlainRef  a         -> AST_PlainRef $ setLocation a loc
+    AST_RefPrefix a b c _   -> AST_RefPrefix a b c loc
   delLocation o     = case o of
-    AST_Single a       -> AST_Single (fd a)
-    AST_RefPfx a b c _ -> AST_RefPfx a b (fd c) lu
+    AST_PlainRef  a         -> AST_PlainRef $ delLocation a
+    AST_RefPrefix a b c _   -> AST_RefPrefix a b (delLocation c) LocationUnknown
 
-instance PPrintable AST_Single where
+instance PPrintable AST_RefPrefix where
   pPrint o = case o of
-    AST_Single refOp              -> pPrint refOp
-    AST_RefPfx ariOp coms objXp _ -> pWrapIndent [pPrint ariOp, pPrint coms, pPrint objXp]
+    AST_PlainRef o                   -> pPrint o
+    AST_RefPrefix ariOp coms objXp _ -> pWrapIndent [pPrint ariOp, pPrint coms, pPrint objXp]
 
-instance PrecedeWithSpace AST_Single where
+instance PrecedeWithSpace AST_RefPrefix where
   precedeWithSpace o = case o of
-    AST_Single o       -> precedeWithSpace o
-    AST_RefPfx _ _ _ _ -> True
+    AST_PlainRef _ -> True
+    _              -> False
 
-instance ToDaoStructClass AST_Single where
-  toDaoStruct = ask >>= \o -> case o of
-    AST_Single a         -> innerToStruct a
-    AST_RefPfx a b c loc -> renameConstructor "RefPrefix" >>
-      "op" .= a >> putComments b >> "expr" .= c >> putLocation loc
+instance ToDaoStructClass AST_RefPrefix where
+  toDaoStruct = ask >>= \ (AST_RefPrefix a b c loc) -> renameConstructor "RefPrefix" >>
+    "op" .= a >> putComments b >> "expr" .= c >> putLocation loc
 
-instance FromDaoStructClass AST_Single where
-  fromDaoStruct = msum $
-    [ AST_Single <$> fromDaoStruct
-    , constructor "RefPrefix" >>
-        pure AST_RefPfx <*> req "op" <*> req "expr" <*> req "expr" <*> location
-    ]
+instance FromDaoStructClass AST_RefPrefix where
+  fromDaoStruct = constructor "RefPrefix" >>
+    return AST_RefPrefix <*> req "op" <*> req "expr" <*> req "expr" <*> location
 
-instance HasRandGen AST_Single where
+instance HasRandGen AST_RefPrefix where
   randO = countRunRandChoice
   randChoice = randChoiceList $
-    [ AST_Single <$> randO
-    , pure (AST_RefPfx REF)   <*> randO <*> randO <*> no
-    , pure (AST_RefPfx DEREF) <*> randO <*> randO <*> no
+    [ return AST_PlainRef  <*> randO
+    , return AST_RefPrefix <*> randO <*> randO <*> randO <*> no
     ]
 
-instance Intermediate SingleExpr AST_Single where
+instance Intermediate RefPrefixExpr AST_RefPrefix where
   toInterm ast = case ast of
-    AST_Single a         -> liftM  SingleExpr (ti a)
-    AST_RefPfx a _ c loc -> liftM3 RefPfxExpr [a] (ti c) [loc]
+    AST_PlainRef  a         -> [PlainRefExpr]  <*> toInterm a
+    AST_RefPrefix a _ c loc -> [RefPrefixExpr] <*> [a] <*> toInterm c <*> [loc]
   fromInterm o = case o of
-    SingleExpr a       -> liftM  AST_Single (fi a)
-    RefPfxExpr a c loc -> liftM4 AST_RefPfx [a] [[]] (fi c) [loc]
+    PlainRefExpr  a       -> [AST_PlainRef]  <*> fromInterm a
+    RefPrefixExpr a c loc -> [AST_RefPrefix] <*> [a] <*> [[]] <*> fromInterm c <*> [loc]
 
-instance ObjectClass AST_Single where { obj=new; fromObj=objFromHaskellData; }
+instance ObjectClass AST_RefPrefix where { obj=new; fromObj=objFromHaskellData; }
 
-instance HaskellDataClass AST_Single where
-  haskellDataInterface = interface nullValue $ do
-    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
-    autoDefToStruct >> autoDefFromStruct
+instance HaskellDataClass AST_RefPrefix where
+  haskellDataInterface =
+    interface (AST_PlainRef $ AST_RefObject nullValue nullValue nullValue) $ do
+      autoDefEquality >> autoDefOrdering >> autoDefPPrinter
+      autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -7066,25 +7278,26 @@ instance HasLocation RuleFuncExpr where
     FuncExpr   _ _ _ o -> o
     RuleExpr   _ _   o -> o
   setLocation o loc = case o of
-    LambdaExpr a b   _ -> LambdaExpr      a b   loc
-    FuncExpr   a b c _ -> FuncExpr       a b c loc
-    RuleExpr   a b   _ -> RuleExpr       a b   loc
+    LambdaExpr a b   _ -> LambdaExpr a b   loc
+    FuncExpr   a b c _ -> FuncExpr   a b c loc
+    RuleExpr   a b   _ -> RuleExpr   a b   loc
   delLocation o = case o of
-    LambdaExpr a b   _ -> LambdaExpr      (fd a) (fd b)        lu
-    FuncExpr   a b c _ -> FuncExpr           a  (fd b) (fd c) lu
-    RuleExpr   a b   _ -> RuleExpr           a  (fd b)        lu
+    LambdaExpr a b   _ -> LambdaExpr (fd a) (fd b)        lu
+    FuncExpr   a b c _ -> FuncExpr       a  (fd b) (fd c) lu
+    RuleExpr   a b   _ -> RuleExpr       a  (fd b)        lu
 
 instance PPrintable RuleFuncExpr where { pPrint = pPrintInterm }
 
+-- binary 53 55
 instance B.Binary RuleFuncExpr MTab where
   put o = case o of
-    LambdaExpr a b   z -> B.prefixByte 0x2B $ B.put a >> B.put b >> B.put z
-    FuncExpr   a b c z -> B.prefixByte 0x2C $ B.put a >> B.put b >> B.put c >> B.put z
-    RuleExpr   a b   z -> B.prefixByte 0x2D $ B.put a >> B.put b >> B.put z
+    LambdaExpr a b   z -> B.prefixByte 0x53 $ B.put a >> B.put b >> B.put z
+    FuncExpr   a b c z -> B.prefixByte 0x54 $ B.put a >> B.put b >> B.put c >> B.put z
+    RuleExpr   a b   z -> B.prefixByte 0x55 $ B.put a >> B.put b >> B.put z
   get = B.word8PrefixTable <|> fail "expecting RuleFuncExpr"
 
 instance B.HasPrefixTable RuleFuncExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "RuleFuncExpr" 0x2B 0x2D $
+  prefixTable = B.mkPrefixTableWord8 "RuleFuncExpr" 0x53 0x55 $
     [ pure LambdaExpr <*> B.get <*> B.get <*> B.get
     , pure FuncExpr   <*> B.get <*> B.get <*> B.get <*> B.get
     , pure RuleExpr   <*> B.get <*> B.get <*> B.get
@@ -7208,12 +7421,12 @@ instance HaskellDataClass AST_RuleFunc where
 data ObjectExpr
   = VoidExpr
   | ObjLiteralExpr  LiteralExpr
-  | ObjSingleExpr   SingleExpr
+  | ObjSingleExpr   RefPrefixExpr
   | ObjRuleFuncExpr RuleFuncExpr
-  | ArithPfxExpr                 ArithPfxOp      ObjectExpr   Location
-  | InitExpr        RefExpr      OptObjListExpr  ObjListExpr  Location
-  | StructExpr      Name         OptObjListExpr               Location
-  | MetaEvalExpr                                 CodeBlock    Location
+  | ArithPfxExpr                  ArithPfxOp      ObjectExpr   Location
+  | InitExpr        ReferenceExpr OptObjListExpr  ObjListExpr  Location
+  | StructExpr      Name          OptObjListExpr               Location
+  | MetaEvalExpr                                  CodeBlock    Location
   deriving (Eq, Ord, Typeable, Show)
 
 instance NFData ObjectExpr where
@@ -7266,56 +7479,34 @@ instance HasLocation ObjectExpr where
 
 instance PPrintable ObjectExpr where { pPrint = pPrintInterm }
 
+-- binary 48 4D
 instance B.Binary ObjectExpr MTab where
   put o = case o of
     ObjSingleExpr   a       -> B.put a
     ObjLiteralExpr  a       -> B.put a
     ObjRuleFuncExpr a       -> B.put a
-    VoidExpr                -> B.putWord8   0x2E
-    ArithPfxExpr    a b   z -> B.prefixByte 0x2F $ B.put a >> B.put b >> B.put z
-    InitExpr        a b c z -> B.prefixByte 0x30 $ B.put a >> B.put b >> B.put c >> B.put z
-    StructExpr      a b   z -> B.prefixByte 0x31 $ B.put a >> B.put b >> B.put z
-    MetaEvalExpr    a     z -> B.prefixByte 0x32 $ B.put a >> B.put z
+    VoidExpr                -> B.putWord8   0x48
+    ArithPfxExpr    a b   z -> B.prefixByte 0x49 $ B.put a >> B.put b >> B.put z
+    --ConditionExpr
+    InitExpr        a b c z -> B.prefixByte 0x4B $ B.put a >> B.put b >> B.put c >> B.put z
+    StructExpr      a b   z -> B.prefixByte 0x4C $ B.put a >> B.put b >> B.put z
+    MetaEvalExpr    a     z -> B.prefixByte 0x4D $ B.put a >> B.put z
   get = B.word8PrefixTable <|> fail "expecting ObjectExpr"
 
 instance B.HasPrefixTable ObjectExpr B.Byte MTab where
   prefixTable = mconcat $
-    [ ObjSingleExpr   <$> B.prefixTable
-    , ObjLiteralExpr  <$> B.prefixTable
+    [ ObjLiteralExpr  <$> B.prefixTable
+    , ObjSingleExpr   <$> B.prefixTable
     , ObjRuleFuncExpr <$> B.prefixTable
-    , B.mkPrefixTableWord8 "ObjectExpr" 0x2E 0x32 $
+    , B.mkPrefixTableWord8 "ObjectExpr" 0x48 0x4D $
         [ return VoidExpr
         , pure ArithPfxExpr <*> B.get <*> B.get <*> B.get
+        , mzero -- ConditionExpr
         , pure InitExpr     <*> B.get <*> B.get <*> B.get <*> B.get
         , pure StructExpr   <*> B.get <*> B.get <*> B.get
         , pure MetaEvalExpr <*> B.get <*> B.get
         ]
     ]
-
-indexObject :: Object -> Object -> Exec Object
-indexObject o idx = case o of
-  OList []  -> execThrow $ obj [obj "indexing empty list:", o, idx]
-  OList lst -> do
-    idx <- derefObject idx
-    i <- mplus (execute $ asInteger idx) $
-      execThrow (obj [obj "must index list with integer:", idx, obj "indexing:", o])
-    if i<0
-      then  execThrow $ obj [obj "list index value is negative:", idx, obj "indexing:", o]
-      else  case dropWhile ((<i) . fst) (zip [0..] lst) of
-              []       -> execThrow $ obj [obj "index out of bounds:", idx, obj "indexing:", o]
-              (_, o):_ -> return o
-  ODict dict -> case idx of
-    OString                      i   -> case maybeFromUStr i of
-      Nothing -> execThrow $ obj [obj "string does not form valid identifier:", OString i]
-      Just  i -> doIdx o idx i dict
-    ORef (Unqualified (Reference [r])) -> doIdx o idx r dict
-    _  -> execThrow $ obj [obj "cannot index dict with value:", idx, obj "indexing:", o]
-    where
-      doIdx o idx i t = case M.lookup i t of
-        Nothing -> execThrow $ obj [obj "dict has no branch index: ", idx, obj "indexing", o]
-        Just  o -> return o
-  o         -> join $ fmap ($ idx) $ evalObjectMethod errmsg o objIndexer where
-    errmsg = obj [obj "cannot index object:", o]
 
 instance Executable ObjectExpr (Maybe Object) where
   execute o = _setObjectExprError o $ case o of
@@ -7329,69 +7520,88 @@ instance Executable ObjectExpr (Maybe Object) where
     ObjRuleFuncExpr o -> execute o
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ArithPfxExpr op expr loc -> do
-      expr <- execute expr >>= checkVoid loc ("operand to prefix operator "++show op )
+      expr <- execute expr >>= fmap snd . maybeDerefObject >>=
+        checkVoid loc ("operand to prefix operator "++show op)
       execute $ fmap Just (evalArithPrefixOp op expr)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    InitExpr ref bnds initMap _ -> do
-      let (ObjListExpr items _) = initMap
-      let (RefExpr erf _) = ref
-      erf <- pure $ obj erf
-      ref <- pure $ toUStr ref
-      bnds <- execute bnds
-      let cantUseBounds msg = execThrow $ obj $
-            [obj msg, obj "must be defined without bounds parameters", OList bnds]
-      let initBacktracked = fail "backtracked during initialization"
-      case uchars ref of
-        "list" -> case bnds of
-          [] -> execNested M.empty $ fmap (Just . OList) $ execute initMap >>= mapM derefObject
-          _  -> cantUseBounds "for list constructor"
-        "dict" -> case bnds of
-          [] -> execNested M.empty $ do
-            mapM_ assignUnqualifiedOnly items
-            (LocalStore stack) <- asks execStack
-            liftIO $ (Just . ODict . head . mapList) <$> readIORef stack
-          _ -> cantUseBounds "for dict constructor"
-        _ -> execGetObjTable ref >>= \tab -> case tab of
-          Nothing  -> execThrow $ obj [obj "unknown object constructor", erf]
-          Just tab -> do
-            let make = Just . OHaskell . flip HaskellData tab
-            execNested M.empty $ msum $
-              [ case objDictInit tab of
-                  Nothing           -> mzero
-                  Just (init, fold) -> init bnds >>= \o -> flip mplus initBacktracked $ do
-                    items <- forM items $ \item -> case item of
-                      AssignExpr a op b _ -> do
-                        let check msg expr = do
-                              o <- execute expr
-                              case o of
-                                Just  o -> return o
-                                Nothing -> execThrow $ obj $
-                                  [ obj $ msg++
-                                      "-hand side of initalizer expression evaluates to void"
-                                  , new expr
-                                  ]
-                        pure (,,) <*> check "left" a <*> pure op <*> check "right" b
-                      EvalExpr arith -> execThrow $ obj $
-                        [obj "expression does not assign a value to a key", new arith]
-                    make <$> fold o items
-              , case objListInit tab of
-                  Nothing           -> mzero
-                  Just (init, fold) -> init bnds >>= \o -> flip mplus initBacktracked $
-                    fmap make (execute initMap >>= mapM derefObject >>= fold o)
-              , execThrow $ obj [obj "cannot declare constant object of type", erf]
-              ]
+    InitExpr ref bnds initMap _ -> Just <$> _evalInit ref bnds initMap
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    StructExpr name items _ -> execNested M.empty $ do
-      execute items
-      (LocalStore stack) <- asks execStack
-      items <- liftIO $ (head . mapList) <$> readIORef stack
-      return $ Just $ OTree $
-        if M.null items
-        then Nullary{ structName=name }
-        else Struct{ fieldMap=items, structName=name }
+    StructExpr name (OptObjListExpr items) _ -> case items of
+      Nothing -> return (Just $ OTree $ Nullary{ structName=name })
+      Just (ObjListExpr items _) -> execNested M.empty $ do
+        forM_ items $ \item -> case item of 
+          AssignExpr{} -> execute item -- fill the local stack by executing each assignment
+          _            -> _setScriptExprError (EvalObject item LocationUnknown) $
+            fail "struct initializer is not an assignment expression"
+        (LocalStore stack) <- asks execStack
+        items <- liftIO $ (head . mapList) <$> readIORef stack
+        return $ Just $ OTree $
+          if M.null items
+          then Nullary{ structName=name }
+          else Struct{ fieldMap=items, structName=name }
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     MetaEvalExpr expr _ -> return $ Just $ new expr
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+
+_evalInit :: ReferenceExpr -> OptObjListExpr -> ObjListExpr -> Exec Object
+_evalInit ref bnds initMap = do
+  let (ObjListExpr items _) = initMap
+  ref <- reduceToRef ref
+  ref <- case ref of
+    Reference UNQUAL name NullRef -> pure name
+    ref -> execThrow $ obj [obj "cannot use reference as initializer", obj ref]
+  ref <- pure $ toUStr ref
+  bnds <- execute bnds >>= _reduceArgs "initializer parameters"
+  let cantUseBounds msg = execThrow $ obj $
+        [obj msg, obj "must be defined without bounds parameters", OList bnds]
+  let initBacktracked = fail "backtracked during initialization"
+  case uchars ref of
+    "list" -> case bnds of
+      [] -> execNested M.empty $ fmap OList $ execute initMap >>= _reduceArgs "list item"
+      _  -> cantUseBounds "for list constructor"
+    "dict" -> case bnds of
+      [] -> execNested M.empty $ do
+        mapM_ assignUnqualifiedOnly items
+        (LocalStore stack) <- asks execStack
+        liftIO $ (ODict . head . mapList) <$> readIORef stack
+      _ -> cantUseBounds "for dict constructor"
+    _ -> execGetObjTable ref >>= \tab -> case tab of
+      Nothing  -> execThrow $ obj [obj "unknown object constructor", obj ref]
+      Just tab -> do
+        let make = OHaskell . flip HaskellData tab
+        execNested M.empty $ msum $
+          [ case objDictInit tab of
+              Nothing           -> mzero
+              Just (init, fold) -> init bnds >>= \o -> flip mplus initBacktracked $ do
+                items <- forM items $ \item -> case item of
+                  AssignExpr a op b _ -> do
+                    let check msg expr = do
+                          o <- execute expr
+                          case o of
+                            Just  o -> return o
+                            Nothing -> execThrow $ obj $
+                              [ obj $ msg++
+                                  "-hand side of initalizer expression evaluates to void"
+                              , new expr
+                              ]
+                    pure (,,) <*> check "left" a <*> pure op <*> check "right" b
+                  EvalExpr arith -> execThrow $ obj $
+                    [obj "expression does not assign a value to a key", new arith]
+                make <$> fold o items
+          , case objListInit tab of
+              Nothing           -> mzero
+              Just (init, fold) -> init bnds >>= \o -> flip mplus initBacktracked $ fmap make $
+                execute initMap >>= _reduceArgs "initializer list" >>= fold o
+          , execThrow $ obj [obj "cannot declare constant object of type", obj ref]
+          ]
+
+
+instance RefReducible ObjectExpr where
+  reduceToRef o = _setObjectExprError o $ case o of
+    ObjLiteralExpr r -> reduceToRef r
+    ObjSingleExpr  r -> reduceToRef r
+    o                -> execute o >>=
+      maybe (fail "evaluates to null") (return . flip RefObject NullRef)
 
 instance ObjectClass ObjectExpr where { obj=new; fromObj=objFromHaskellData; }
 
@@ -7406,12 +7616,12 @@ instance HaskellDataClass ObjectExpr where
 data AST_Object
   = AST_Void -- ^ Not a language construct, but used where an object expression is optional.
   | AST_ObjLiteral  AST_Literal
-  | AST_ObjSingle   AST_Single
+  | AST_ObjSingle   AST_RefPrefix
   | AST_ObjRuleFunc AST_RuleFunc
-  | AST_ArithPfx    ArithPfxOp [Comment]       AST_Object    Location
-  | AST_Init        AST_Ref    AST_OptObjList  AST_ObjList   Location
-  | AST_Struct      Name       AST_OptObjList                Location
-  | AST_MetaEval                               AST_CodeBlock Location
+  | AST_ArithPfx    ArithPfxOp    [Comment]       AST_Object    Location
+  | AST_Init        AST_Reference AST_OptObjList  AST_ObjList   Location
+  | AST_Struct      Name          AST_OptObjList                Location
+  | AST_MetaEval                                  AST_CodeBlock Location
   deriving (Eq, Ord, Typeable, Show)
 
 instance NFData AST_Object where
@@ -7582,15 +7792,16 @@ instance HasLocation ArithExpr where
 
 instance PPrintable ArithExpr where { pPrint = pPrintInterm }
 
+-- binary 4F
 instance B.Binary ArithExpr MTab where
   put o = case o of
     ObjectExpr  a     -> B.put a
-    ArithExpr a b c z -> B.prefixByte 0x33 $ B.put a >> B.put b >> B.put c >> B.put z
+    ArithExpr a b c z -> B.prefixByte 0x4F $ B.put a >> B.put b >> B.put c >> B.put z
   get = B.word8PrefixTable <|> fail "expecting arithmetic expression"
 
 instance B.HasPrefixTable ArithExpr B.Byte MTab where
   prefixTable = mappend (ObjectExpr <$> B.prefixTable) $
-    B.mkPrefixTableWord8 "ObjectExpr" 0x33 0x33 $
+    B.mkPrefixTableWord8 "ArithExpr" 0x4F 0x4F $
       [pure ArithExpr <*> B.get <*> B.get <*> B.get <*> B.get]
 
 instance Executable ArithExpr (Maybe Object) where
@@ -7615,6 +7826,13 @@ instance Executable ArithExpr (Maybe Object) where
             ARROW -> liftM2 (,) derefLeft evalRight
             _     -> liftM2 (,) derefLeft derefRight
           execute (fmap Just $ evalInfixOp op left right)
+
+instance RefReducible ArithExpr where
+  reduceToRef o = case o of
+    ObjectExpr o -> reduceToRef o
+    o            -> _setScriptExprError (EvalObject (EvalExpr o) LocationUnknown) $ do
+      exp <- execute o >>= maybe (fail "evaluates to null") return
+      return $ RefObject exp NullRef
 
 instance ObjectClass ArithExpr where { obj=new; fromObj=objFromHaskellData; }
 
@@ -7758,33 +7976,43 @@ instance HasLocation AssignExpr where
 
 instance PPrintable AssignExpr where { pPrint = pPrintInterm }
 
+-- binary 51
 instance B.Binary AssignExpr MTab where
   put o = case o of
     EvalExpr   a       -> B.put a
-    AssignExpr a b c z -> B.prefixByte 0x34 $ B.put a >> B.put b >> B.put c >> B.put z
+    AssignExpr a b c z -> B.prefixByte 0x51 $ B.put a >> B.put b >> B.put c >> B.put z
   get = B.word8PrefixTable <|> fail "expecting AssignExpr"
 
 instance B.HasPrefixTable AssignExpr B.Byte MTab where
   prefixTable = mappend (EvalExpr <$> B.prefixTable) $
-    B.mkPrefixTableWord8 "AssignExpr" 0x34 0x34 $
+    B.mkPrefixTableWord8 "AssignExpr" 0x51 0x51 $
       [pure AssignExpr <*> B.get <*> B.get <*> B.get <*> B.get]
 
-_execAssignExpr :: (UpdateOp -> QualRef -> Object -> Exec (Maybe Object)) -> AssignExpr -> Exec (Maybe Object)
-_execAssignExpr updater o = case o of
+_executeAssignExpr
+  :: (Reference -> UpdateOp -> Object -> Exec (Maybe Object))
+  -> AssignExpr -> Exec (Maybe Object)
+_executeAssignExpr update o = case o of
   EvalExpr   o -> execute o
   AssignExpr nm op expr loc -> do
-    let lhs = "left-hand side of "++show op
-    qref <- msum $
-      [ execute nm >>= checkVoid (getLocation nm) (lhs++" evaluates to void") >>= asReference
-      , execThrow $ obj [obj $ lhs++" is not a reference value"]
-      ]
+    qref <- mplus (reduceToRef nm) $ execThrow $
+      obj [obj $ "left-hand side of assignment expression is not a reference value"]
     newObj <- execute expr >>= checkVoid loc "right-hand side of assignment" >>= derefObject 
-    updater op qref newObj
+    update qref op newObj
 
 instance Executable AssignExpr (Maybe Object) where
-  execute = _execAssignExpr evalUpdateOp
+  execute = _executeAssignExpr $ \qref op newObj ->
+    referenceUpdate qref (evalUpdateOp (Just qref) op newObj)
 
--- | This function works a bit like how 'execute' works on an 'AssignExpr' data type, however there
+instance RefReducible AssignExpr where
+  reduceToRef o = case o of
+    EvalExpr   o -> reduceToRef o
+    AssignExpr{} -> execute o >>=
+      maybe (fail "left-hand side of assignment evaluates to null") reduceToRef
+
+-- | This function works a bit like how 'execute' works on an 'AssignExpr' data type, but every
+-- assignment is checked to make sure it is local or unqualified. Furthurmore, all assignments are
+-- forced into the top of the local variable stack, already-defined vairables at higher points in
+-- the local variable stack are not updated in place. This function is used to define items in
 -- is one important difference: it is specifically modified to work for evaluation of 'InitExpr'
 -- data types, for example in the Dao language expression: @a = dict {a=1, b=2};@ Using this
 -- function instead of 'execute' will always assign variables in the top of the local variable
@@ -7792,11 +8020,13 @@ instance Executable AssignExpr (Maybe Object) where
 -- write Dao language statements like this: @a=1; a = dict {a=a, b=2};@ which would create a
 -- dictionary @a = dict {a=1, b=2};@, because before the "dict{}" expression, "a" had a value of 1.
 assignUnqualifiedOnly :: AssignExpr -> Exec (Maybe Object)
-assignUnqualifiedOnly = _execAssignExpr $ \ _op qref newObj -> case qref of
-  Unqualified (Reference [r]) -> do
+assignUnqualifiedOnly = _executeAssignExpr $ \qref op newObj -> case qref of
+  Reference UNQUAL r NullRef -> do
     (LocalStore store) <- asks execStack
-    liftIO $ atomicModifyIORef store (stackUpdateTop (Just . const newObj) r)
-  _ -> execThrow $ obj $ [obj "cannot assign to reference", obj qref, obj "in current context"]
+    oldObj <- liftIO $ stackLookup r <$> readIORef store
+    newObj <- evalUpdateOp (Just qref) op newObj oldObj
+    liftIO $ atomicModifyIORef store (stackUpdateTop (const newObj) r)
+  _ -> execThrow $ obj [obj "cannot assign to reference", obj qref , obj "in current context"]
 
 instance ObjectClass AssignExpr where { obj=new; fromObj=objFromHaskellData; }
 
@@ -7922,17 +8152,18 @@ instance HasLocation TopLevelExpr where
 
 instance PPrintable TopLevelExpr where { pPrint = pPrintInterm }
 
+-- binary A1 A5
 instance B.Binary TopLevelExpr MTab where
   put o = case o of
-    Attribute a             b z -> B.prefixByte 0x51 $ B.put a >> B.put b >> B.put z
-    TopScript a               z -> B.prefixByte 0x52 $ B.put a >> B.put z
-    EventExpr BeginExprType b z -> B.prefixByte 0x53 $ B.put b >> B.put z
-    EventExpr ExitExprType  b z -> B.prefixByte 0x54 $ B.put b >> B.put z
-    EventExpr EndExprType   b z -> B.prefixByte 0x55 $ B.put b >> B.put z
+    Attribute a             b z -> B.prefixByte 0xA1 $ B.put a >> B.put b >> B.put z
+    TopScript a               z -> B.prefixByte 0xA2 $ B.put a >> B.put z
+    EventExpr BeginExprType b z -> B.prefixByte 0xA3 $ B.put b >> B.put z
+    EventExpr ExitExprType  b z -> B.prefixByte 0xA4 $ B.put b >> B.put z
+    EventExpr EndExprType   b z -> B.prefixByte 0xA5 $ B.put b >> B.put z
   get = B.word8PrefixTable <|> fail "expecting TopLevelExpr"
 
 instance B.HasPrefixTable TopLevelExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "TopLevelExpr" 0x51 0x55 $
+  prefixTable = B.mkPrefixTableWord8 "TopLevelExpr" 0xA1 0xA5 $
     [ pure Attribute <*> B.get <*> B.get <*> B.get
     , pure TopScript <*> B.get <*> B.get
     , pure (EventExpr BeginExprType) <*> B.get <*> B.get
@@ -8216,25 +8447,6 @@ instance HaskellDataClass GlobAction where
 
 ----------------------------------------------------------------------------------------------------
 
--- | Nearly every accesssor function in the 'Interface' data type take the form
--- > 'Interface' 'Data.Dynamic.Dynamic' -> Maybe ('Data.Dynamic.Dynamic' -> method)
--- where the first 'Data.Dynamic.Dynamic' value is analogous to the @this@" pointer in C++-like
--- languages, and where @method@ is any function, for example an equality function @a -> a -> Bool@
--- or an iterator function @Exec [Object]@. This function takes the @this@ value, an
--- 'Interface', and an 'Interface' accessor (for example 'objEquality' or
--- 'objUpdateIterable') and if the accessor is not 'Prelude.Nothing', the @this@ object is applied to the
--- method and the partial application is returned. If the accessor does evaluate to
--- 'Prelude.Nothing' the exception value is thrown. If the @this@ object has not been constructed
--- with 'OHaskell', the exception value is thrown.
-evalObjectMethod :: Object -> Object -> (Interface Dynamic -> Maybe (Dynamic -> method)) -> Exec method
-evalObjectMethod errmsg this getter = case this of
-  OHaskell (HaskellData this ifc) -> case getter ifc of
-    Nothing -> execThrow errmsg
-    Just fn -> return (fn this)
-  _ -> execThrow errmsg
-
-----------------------------------------------------------------------------------------------------
-
 type Get     a = B.GGet  MethodTable a
 type Put       = B.GPut  MethodTable
 
@@ -8335,10 +8547,11 @@ updateForLoopWith
   -> iter -> iter -> (val -> Exec val) -> Exec iter
 updateForLoopWith readIter updateIter mempty iter f = loop iter mempty where
   loop iter updated = do
-    next <- (Just <$> readIter iter) <|> return Nothing
+    next <- optional (readIter iter) -- catch backtracking of the iterator as an end-of-loop signal
     case next of
       Nothing          -> return updated
       Just (val, iter) -> f val >>= updateIter updated >>= loop iter
+        -- if backtracking occurs here in the for-loop body, it is not caught.
 
 -- | A class that provides the 'updateIter' function, which is a function that will iterate over
 -- types which can be read sequentially and modified as they are read. The minimal complete
@@ -8353,7 +8566,7 @@ class ReadIterable iter val => UpdateIterable iter val | iter -> val where
   -- modification to the iterator value @iter@ using the 'Object' value, for example it could place
   -- items back into the iterator, or remove items from the iterator.
   updateIter :: iter -> val -> Exec iter
-  -- | By default, implements a "for" loop using a 'UpdateIterable' item. You can of course
+  -- | By default, implements a "for" loop using an 'UpdateIterable' item. You can of course
   -- customize this function if your iterator is a bit more complicated. This function behaves
   -- somewhat like a fold operation: the first parameter is an initial value (for example an empty
   -- list) which will be passed to the 'updateIter' function after each iteration.  The second
@@ -8390,7 +8603,8 @@ class HaskellDataClass typ where { haskellDataInterface :: Interface typ }
 instance HaskellDataClass Location where
   haskellDataInterface = interface LocationUnknown $ do
     autoDefEquality >> autoDefOrdering
-    autoDefToStruct -- >> autoDefFromStruct
+    autoDefToStruct >> autoDefFromStruct
+    autoDefPPrinter
 
 instance ObjectClass (H.HashMap Object Object) where { obj=new; fromObj=objFromHaskellData; }
 
@@ -8454,24 +8668,24 @@ fromHaskellData (HaskellData o _) = fromDynamic o
 data Interface typ =
   Interface
   { objHaskellType     :: TypeRep -- ^ this type is deduced from the initial value provided to the 'interface'.
-  , objCastFrom        :: Maybe (Object -> typ)                                                         -- ^ defined by 'defCastFrom'
-  , objEquality        :: Maybe (typ -> typ -> Bool)                                                    -- ^ defined by 'defEquality'
-  , objOrdering        :: Maybe (typ -> typ -> Ordering)                                                -- ^ defined by 'defOrdering'
-  , objBinaryFormat    :: Maybe (typ -> Put, Get typ)                                                   -- ^ defined by 'defBinaryFmt'
-  , objNullTest        :: Maybe (typ -> Bool)                                                           -- ^ defined by 'defNullTest'
-  , objPPrinter        :: Maybe (typ -> PPrint)                                                         -- ^ defined by 'defPPrinter'
-  , objReadIterable    :: Maybe (typ -> Exec (Maybe Object, typ))                                       -- ^ defined by 'defReadIterator'
-  , objUpdateIterable  :: Maybe (typ -> Maybe Object -> Exec typ)                                       -- ^ defined by 'defUpdateIterator'
-  , objIndexer         :: Maybe (typ -> Object -> Exec Object)                                          -- ^ defined by 'defIndexer'
-  , objIndexUpdater    :: Maybe (typ -> Maybe Object -> Exec (Object, typ))                             -- ^ defined by 'defIndexUpdater'
-  , objSizer           :: Maybe (typ -> Exec Object)                                                    -- ^ defined by 'defSizer'
-  , objToStruct        :: Maybe (typ -> Exec T_struct)                                                  -- ^ defined by 'defStructFormat'
-  , objFromStruct      :: Maybe (T_struct -> Exec typ)                                                  -- ^ defined by 'defStructFormat'
-  , objDictInit        :: Maybe ([Object] -> Exec typ, typ -> [(Object, UpdateOp, Object)] -> Exec typ) -- ^ defined by 'defDictInit'
-  , objListInit        :: Maybe ([Object] -> Exec typ, typ -> [Object] -> Exec typ)                     -- ^ defined by 'defDictInit'
-  , objInfixOpTable    :: Maybe (Array InfixOp  (Maybe (InfixOp  -> typ -> Object -> XPure Object)))    -- ^ defined by 'defInfixOp'
-  , objArithPfxOpTable :: Maybe (Array ArithPfxOp (Maybe (ArithPfxOp -> typ -> XPure Object)))          -- ^ defined by 'defPrefixOp'
-  , objCallable        :: Maybe (typ -> Exec [CallableCode])                                            -- ^ defined by 'defCallable'
+  , objCastFrom        :: Maybe (Object -> typ)                                                                -- ^ defined by 'defCastFrom'
+  , objEquality        :: Maybe (typ -> typ -> Bool)                                                           -- ^ defined by 'defEquality'
+  , objOrdering        :: Maybe (typ -> typ -> Ordering)                                                       -- ^ defined by 'defOrdering'
+  , objBinaryFormat    :: Maybe (typ -> Put, Get typ)                                                          -- ^ defined by 'defBinaryFmt'
+  , objNullTest        :: Maybe (typ -> Bool)                                                                  -- ^ defined by 'defNullTest'
+  , objPPrinter        :: Maybe (typ -> PPrint)                                                                -- ^ defined by 'defPPrinter'
+  , objReadIterable    :: Maybe (typ -> Exec (Maybe Object, typ))                                              -- ^ defined by 'defReadIterator'
+  , objUpdateIterable  :: Maybe (typ -> Maybe Object -> Exec typ)                                              -- ^ defined by 'defUpdateIterator'
+  , objIndexer         :: Maybe (typ -> [Object] -> Exec Object)                                               -- ^ defined by 'defIndexer'
+  , objIndexUpdater    :: Maybe (typ -> (Maybe Object -> Exec (Maybe Object)) -> [Object] -> Exec (Maybe typ)) -- ^ defined by 'defIndexUpdater'
+  , objSizer           :: Maybe (typ -> Exec Object)                                                           -- ^ defined by 'defSizer'
+  , objToStruct        :: Maybe (typ -> Exec T_struct)                                                         -- ^ defined by 'defStructFormat'
+  , objFromStruct      :: Maybe (T_struct -> Exec typ)                                                         -- ^ defined by 'defStructFormat'
+  , objDictInit        :: Maybe ([Object] -> Exec typ, typ -> [(Object, UpdateOp, Object)] -> Exec typ)        -- ^ defined by 'defDictInit'
+  , objListInit        :: Maybe ([Object] -> Exec typ, typ -> [Object] -> Exec typ)                            -- ^ defined by 'defDictInit'
+  , objInfixOpTable    :: Maybe (Array InfixOp  (Maybe (InfixOp  -> typ -> Object -> XPure Object)))           -- ^ defined by 'defInfixOp'
+  , objArithPfxOpTable :: Maybe (Array ArithPfxOp (Maybe (ArithPfxOp -> typ -> XPure Object)))                 -- ^ defined by 'defPrefixOp'
+  , objCallable        :: Maybe (typ -> Exec [CallableCode])                                                   -- ^ defined by 'defCallable'
   , objDereferencer    :: Maybe (typ -> Exec (Maybe Object))
   }
   deriving Typeable
@@ -8505,7 +8719,7 @@ interfaceAdapter a2b b2a ifc =
   , objReadIterable    = let n="objReadIterable"   in fmap (\for -> fmap (fmap (a2b n)) . for . b2a n) (objReadIterable ifc)
   , objUpdateIterable  = let n="objUpdateIterable" in fmap (\for i -> fmap (a2b n) . for (b2a n i)) (objUpdateIterable ifc)
   , objIndexer         = let n="objIndexer"        in fmap (\f i -> f (b2a n i)) (objIndexer ifc)
-  , objIndexUpdater    = let n="objIndexUpdater"   in fmap (\f o -> fmap (fmap (a2b n)) . f (b2a n o)) (objIndexUpdater ifc)
+  , objIndexUpdater    = let n="objIndexUpdater"   in fmap (\f o u i -> fmap (fmap (a2b n)) $ f (b2a n o) u i) (objIndexUpdater ifc)
   , objSizer           = let n="objSizer"          in fmap (\f o -> f (b2a n o)) (objSizer ifc)
   , objToStruct        = let n="objToStruct"       in fmap (\toTree -> toTree . b2a n) (objToStruct ifc)
   , objFromStruct      = let n="objFromStruct"     in fmap (\fromTree -> fmap (a2b n) . fromTree) (objFromStruct ifc)
@@ -8541,8 +8755,8 @@ data HDIfcBuilder typ =
   , objIfcPPrinter       :: Maybe (typ -> PPrint)
   , objIfcReadIterable   :: Maybe (typ -> Exec (Maybe Object, typ))
   , objIfcUpdateIterable :: Maybe (typ -> Maybe Object -> Exec typ)
-  , objIfcIndexer        :: Maybe (typ -> Object -> Exec Object)
-  , objIfcIndexUpdater   :: Maybe (typ -> Maybe Object -> Exec (Object, typ))
+  , objIfcIndexer        :: Maybe (typ -> [Object] -> Exec Object)
+  , objIfcIndexUpdater   :: Maybe (typ -> (Maybe Object -> Exec (Maybe Object)) -> [Object] -> Exec (Maybe typ))
   , objIfcSizer          :: Maybe (typ -> Exec Object)
   , objIfcToStruct       :: Maybe (typ -> Exec T_struct)
   , objIfcFromStruct     :: Maybe (T_struct -> Exec typ)
@@ -8729,10 +8943,13 @@ autoDefUpdateIterable = defUpdateIterable updateIter
 --     the @typ@ parameter as the value stored in the local variable @y@.
 -- 
 -- Statements like this:
--- > a[0,1,2]
--- are evaluated by the "Dao.Evaluator" module in the exact same way as statements like this:
--- > a[0][1][2]
-defIndexer :: Typeable typ => (typ -> Object -> Exec Object) -> DaoClassDefM typ ()
+-- > ... = a[0,1,2]
+-- access a single multi-dimensional index, in this case 3-dimensions with the tuple [0,1,2].
+-- > ... = a[0][1][2]
+-- accesses a sequence of single-dimensional elements, each element being accessed by the next
+-- snigle-dimensional index in the sequence. Although this is one method of programming
+-- multi-dimensional data types, it is evaluated differently than an index expressed as a tuple.
+defIndexer :: Typeable typ => (typ -> [Object] -> Exec Object) -> DaoClassDefM typ ()
 defIndexer fn = _updHDIfcBuilder(\st->st{objIfcIndexer=Just fn})
 
 -- | The callback function defined here is used at any point in a Dao program where an expression
@@ -8751,11 +8968,17 @@ defIndexer fn = _updHDIfcBuilder(\st->st{objIfcIndexer=Just fn})
 --     the @typ@ parameter as the value stored in the local variable @y@.
 -- 
 -- Statements like this:
--- > a[0,1,2]
--- are evaluated by the "Dao.Evaluator" module in the exact same way as statements like this:
--- > a[0][1][2]
-defIndexUpdater :: Typeable typ => (typ -> Maybe Object -> Exec (Object, typ)) -> DaoClassDefM typ ()
-defIndexUpdater fn = _updHDIfcBuilder(\st->st{objIfcIndexUpdater=Just fn})
+-- > a[0,1,2] = ...
+-- access a single multi-dimensional index, in this case 3-dimensions with the tuple [0,1,2].
+-- > a[0][1][2] = ...
+-- accesses a sequence of single-dimensional elements, each element being accessed by the next
+-- snigle-dimensional index in the sequence. Although this is one method of programming
+-- multi-dimensional data types, it is evaluated differently than an index expressed as a tuple.
+defIndexUpdater
+  :: Typeable typ
+  => (typ -> (Maybe Object -> Exec (Maybe Object)) -> [Object] -> Exec (Maybe typ))
+  -> DaoClassDefM typ ()
+defIndexUpdater fn = _updHDIfcBuilder(\st->st{ objIfcIndexUpdater=Just fn })
 
 -- | Define a function used by the built-in "size()" function to return an value indicating the size
 -- of your @typ@ object.

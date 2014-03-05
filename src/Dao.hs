@@ -148,10 +148,10 @@ betweenBeginAndEnd runInBetween = ask >>= \xunit -> do
   a <- runInBetween
   -- Update the "global this" pointer to include the uncaught exceptions.
   errs <- (OList . map new) <$> getUncaughtErrorLog
-  let ref = Qualified GLOBAL $ Reference [ustr "this"]
+  let ref = Dao.Interpreter.reference GLOBAL (ustr "this")
   let upd = M.union (M.singleton (ustr "errors") errs)
   clearUncaughtErrorLog
-  qualRefUpdate ref $ \o -> return $ Just $ ODict $ upd $ case o of { Just (ODict o) -> o; _ -> mempty; }
+  referenceUpdate ref $ \o -> return $ Just $ ODict $ upd $ case o of { Just (ODict o) -> o; _ -> mempty; }
   -- Run all "END{}" procedures.
   mapM_ execute (postExec xunit)
   return a

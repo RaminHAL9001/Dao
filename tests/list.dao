@@ -24,7 +24,7 @@ show(c);
 
 
 for x in(c) {
-	if(Int == typeof(x)) { delete(x); } else { x = list{x, 0}; }
+	if(Int == typeof(x)) { println("delete: ", x); delete(x); } else { x = list{x, 0}; }
 }
 println("----(after deletions)-----------------------------------");
 show(c);

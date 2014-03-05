@@ -240,7 +240,7 @@ instance NFData o => NFData (GlobUnit o) where
   rnf (Single   a) = deepseq a ()
 
 instance HasRandGen o => HasRandGen (GlobUnit o) where
-  randO = countRunRandChoice
+  randO = countNode $ runRandChoice
   randChoice = randChoiceList [Single <$> randO, Wildcard <$> randO, AnyOne <$> randO]
 
 ----------------------------------------------------------------------------------------------------

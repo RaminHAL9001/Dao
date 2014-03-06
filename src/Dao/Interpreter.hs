@@ -224,7 +224,7 @@ import           Control.Monad.State
 
 import           System.IO
 
-#if 0
+#if 1
 import Debug.Trace
 strace :: PPrintable s => String -> s -> s
 strace msg s = trace (msg++": "++prettyShow s) s
@@ -240,6 +240,13 @@ dbg0 msg f = do
     (\e -> dbg (msg++" (ERROR)") >> throwError e)
 updbg :: MonadIO m => String -> (Maybe Object -> m (Maybe Object)) -> Maybe Object -> m (Maybe Object)
 updbg msg f o = dbg ("(update with "++msg++")") >> f o >>= \o -> dbg ("(update complete "++show o++")") >> return o
+#endif
+#if 0
+_randTrace :: String -> RandO a -> RandO a
+_randTrace = Dao.Random.randTrace
+#else
+_randTrace :: String -> RandO a -> RandO a
+_randTrace _ = id
 #endif
 
 ----------------------------------------------------------------------------------------------------
@@ -1062,13 +1069,13 @@ instance PPrintable Struct where
           [pPrint left, pString " = ", pPrint right]
 
 instance HasRandGen Struct where
-  randO = countNode $ runRandChoice 
+  randO = _randTrace "Struct" $ countNode $ runRandChoice 
   randChoice = randChoiceList $
     [ scramble $
         pure Struct <*> randO <*> (M.fromList <$> randListOf 1 4 (pure (,) <*> randO <*> randO))
     , Nullary <$> randO
     ]
-  defaultO = Nullary <$> defaultO
+  defaultO = _randTrace "D.Struct" $ Nullary <$> defaultO
 
 instance ToDaoStructClass Struct where { toDaoStruct = return () }
 
@@ -1656,7 +1663,7 @@ optComments :: FromDaoStruct (Maybe [Comment])
 optComments = opt "comments"
 
 instance HasRandGen Object where
-  randO = countNode $ recurse $ runRandChoice
+  randO = _randTrace "Object" $ countNode $ recurse $ runRandChoice
   randChoice = mappend defaultChoice $ randChoiceList $
     [ ORef  <$> randO
     , scramble $ OList <$> randList 0 20
@@ -1666,6 +1673,7 @@ instance HasRandGen Object where
     , ORatio <$> randO
     , OComplex <$> randO
     ]
+  defaultO = _randTrace "D.Object" runDefaultChoice
   defaultChoice = randChoiceList $
     [ return ONull, return OTrue
     , OInt     <$> defaultO
@@ -1879,7 +1887,7 @@ instance UStrType RefQualifier where
 
 instance HasRandGen RefQualifier where
   randO = fmap toEnum (nextInt (1+fromEnum (minBound::RefQualifier)))
-  defaultO = randO;
+  defaultO = randO
 
 instance ToDaoStructClass RefQualifier where { toDaoStruct=putNullaryUsingShow; }
 
@@ -1937,12 +1945,13 @@ instance B.HasPrefixTable Reference B.Byte MTab where
     ] where { f q = return (Reference q) <*> B.get <*> B.get }
 
 instance HasRandGen Reference where
-  randO = recurse $ countNode $ runRandChoice
+  randO = _randTrace "Reference" $ recurse $ countNode $ runRandChoice
   randChoice = randChoiceList $
     [ return Reference <*> randO   <*> randO <*> randO
     , return RefObject <*> scrambO <*> randO
     , RefWrapper <$> scrambO
     ]
+  defaultO = _randTrace "D.Reference" runDefaultChoice
   defaultChoice = randChoiceList $
     [ return Reference <*> defaultO <*> defaultO <*> defaultO
     , return RefObject <*> defaultO <*> defaultO
@@ -2262,10 +2271,10 @@ instance NFData TypeSym where
   rnf (TypeVar  a b) = deepseq a $! deepseq b ()
 
 instance HasRandGen TypeSym where
-  randO = countNode $ runRandChoice
+  randO = _randTrace "TypeSym" $ countNode $ runRandChoice
   randChoice = randChoiceList $
     [CoreType <$> randO, scramble $ pure TypeVar <*> randO <*> randList 1 4]
-  defaultO = CoreType <$> defaultO
+  defaultO = _randTrace "D.TypeSym" $ CoreType <$> defaultO
 
 instance PPrintable TypeSym where
   pPrint t = case t of
@@ -2308,8 +2317,8 @@ instance B.HasPrefixTable TypeStruct B.Byte mtab where
   prefixTable = B.mkPrefixTableWord8 "TypeStruct" 0x2D 0x2D [TypeStruct <$> B.get]
 
 instance HasRandGen TypeStruct where
-  randO    = TypeStruct <$> randList 0 4
-  defaultO = TypeStruct <$> defaultList 0 4
+  randO    = _randTrace "TypeStruct" $ TypeStruct <$> randList 0 4
+  defaultO = _randTrace "D.TypeStruct" $ TypeStruct <$> defaultList 0 4
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2337,8 +2346,8 @@ instance B.HasPrefixTable ObjType B.Byte mtab where
   prefixTable = B.mkPrefixTableWord8 "ObjType" 0x2E 0x2E [ObjType <$> B.get]
 
 instance HasRandGen ObjType where
-  randO = recurse $ ObjType <$> randList 0 3
-  defaultO = ObjType <$> defaultList 1 4
+  randO = _randTrace "ObjType" $ recurse $ ObjType <$> randList 0 3
+  defaultO = _randTrace "D.ObjType" $ ObjType <$> defaultList 1 4
 
 coreType :: CoreType -> ObjType
 coreType = ObjType . return . TypeStruct . return . CoreType
@@ -2410,13 +2419,14 @@ instance PPrintable RefSuffix where
       FuncCall  a b -> pList_ "(" ", " ")" (map pPrint a) : loop b
 
 instance HasRandGen RefSuffix where
-  randO = recurse $ countNode $ runRandChoice
+  randO = _randTrace "RefSuffix" $ recurse $ countNode $ runRandChoice
   randChoice = randChoiceList $
     [ return NullRef
     , scramble $ return DotRef <*> randO <*> randO
     , return Subscript <*> randList 0 3 <*> scrambO
     , return FuncCall  <*> randList 0 3 <*> scrambO
     ]
+  defaultO = _randTrace "D.RefSuffix" runDefaultChoice
   defaultChoice = randChoiceList $ 
     [ return NullRef
     , return Subscript <*> defaultList 0 6 <*> pure NullRef
@@ -3610,7 +3620,7 @@ instance PPrintable [Comment] where { pPrint = mapM_ pPrint }
 
 instance PrecedeWithSpace [Comment] where { precedeWithSpace = not . null }
 
-instance HasRandGen [Comment] where { randO = return [] }
+instance HasRandGen [Comment] where { randO = return []; defaultO = return []; }
 --  randO = do
 --    i0 <- randInt
 --    let (i1, many) = divMod i0 4
@@ -4019,8 +4029,8 @@ instance FromDaoStructClass AST_CodeBlock where
   fromDaoStruct = constructor "CodeBlock" >> AST_CodeBlock <$> req "block"
 
 instance HasRandGen AST_CodeBlock where
-  randO = countNode $ AST_CodeBlock . concat <$> sequence [return <$> scrambO, randList 0 9]
-  defaultO = return $ AST_CodeBlock []
+  randO = _randTrace "AST_CodeBlock" $ countNode $ AST_CodeBlock . concat <$> sequence [return <$> scrambO, randList 0 9]
+  defaultO = _randTrace "D.AST_CodeBlock" $ return $ AST_CodeBlock []
 
 instance Intermediate CodeBlock AST_CodeBlock where
   toInterm   (AST_CodeBlock ast) = return $ CodeBlock     (ast >>= toInterm  )
@@ -4170,9 +4180,9 @@ instance HasLocation a => HasLocation (AST_TyChk a) where
   delLocation       = astTyChkDelLocWith delLocation
 
 instance HasRandGen a => HasRandGen (AST_TyChk a) where
-  randO = countNode $ AST_NotChecked <$> randO
+  randO = _randTrace "(AST_TyChk a)" $ countNode $ AST_NotChecked <$> randO
   --randChoice = randChoiceList [AST_NotChecked <$> randO, pure AST_Checked <*> randO <*> randO <*> randO <*> no]
-  defaultO = AST_NotChecked <$> defaultO
+  defaultO = _randTrace "D.(AST_TyChk a)" $ AST_NotChecked <$> defaultO
 
 instance (Eq a, Ord a, PPrintable a, Typeable a, ObjectClass a) =>
   ObjectClass (AST_TyChk a) where { obj=new; fromObj=objFromHaskellData; }
@@ -4285,12 +4295,12 @@ instance FromDaoStructClass AST_Param where
     ]
 
 instance HasRandGen AST_Param where
-  randO = countNode $ pure AST_Param <*> randO <*> randO <*> no
-  defaultO = randO
+  randO = _randTrace "AST_Param" $ countNode $ pure AST_Param <*> randO <*> randO <*> no
+  defaultO = _randTrace "D.AST_Param" $ randO
 
 instance HasRandGen [Com AST_Param] where
-  randO = recurse $ randListOf 0 3 scrambO
-  defaultO = defaultList 0 8
+  randO = _randTrace "[Com AST_Param]" $ recurse $ randListOf 0 3 scrambO
+  defaultO = _randTrace "D.[Com AST_Param]" $ defaultList 0 8
 
 instance Intermediate ParamExpr AST_Param where
   toInterm   a = case a of
@@ -4385,8 +4395,8 @@ instance FromDaoStructClass AST_ParamList where
   fromDaoStruct = constructor "ParamList" >> pure AST_ParamList <*> req "typeCheck" <*> location
 
 instance HasRandGen AST_ParamList where
-  randO = countNode $ pure AST_ParamList <*> randO <*> no
-  defaultO = return $ AST_ParamList nullValue LocationUnknown
+  randO = _randTrace "AST_ParamList" $ countNode $ return AST_ParamList <*> randO <*> no
+  defaultO = _randTrace "D.AST_ParamList" $ return $ AST_ParamList nullValue LocationUnknown
 
 instance Intermediate ParamListExpr AST_ParamList where
   toInterm   (AST_ParamList ox loc) = [ParamListExpr] <*> tyChkToInterm   toInterm   ox <*> [loc]
@@ -4511,15 +4521,16 @@ instance FromDaoStructClass AST_RuleHeader where
     ]
 
 instance HasRandGen AST_RuleHeader where
-  randO = countNode $ runRandChoice
+  randO = _randTrace "AST_RuleHeader" $ countNode $ runRandChoice
   randChoice = randChoiceList $
     [ return AST_RuleHeader <*> randList 0 3 <*> no
     , return AST_RuleString <*> randO   <*> no
     , return AST_NullRules  <*> scrambO <*> no
     ]
+  defaultO = _randTrace "D.AST_RuleHeader" runDefaultChoice
   defaultChoice = randChoiceList $
-    [ return AST_NullRules  <*> randO <*> no
-    , return AST_RuleString <*> randO <*> no
+    [ return AST_NullRules  <*> defaultO <*> no
+    , return AST_RuleString <*> defaultO <*> no
     ]
 
 instance Intermediate RuleHeadExpr AST_RuleHeader where
@@ -5199,8 +5210,8 @@ instance B.HasPrefixTable UpdateOp B.Byte MTab where
   prefixTable = B.mkPrefixTableWord8 "UpdateOp" 0x60 0x70 $ let {r=return;z=mzero} in
     [ r UCONST -- 60
     , z, z, z, z, z -- 61,62,63,64,65
-    , r UADD, r USUB, r UMULT, r UDIV, r UMOD -- 66..6A
-    , r UPOW, r UORB, r UANDB, r UXORB, r USHL, r USHR -- 6B..70
+    , r UADD, r USUB, r UMULT, r UDIV, r UMOD, r UPOW, r UORB -- 66,67,68,69,6A,6B,6C
+    , r UANDB, r UXORB, r USHL, r USHR -- 6D,6E,6F,70
     ]
 
 instance HasRandGen UpdateOp where
@@ -5379,10 +5390,10 @@ instance B.Binary InfixOp MTab where
 -- the operators, except for the comparison opeators (EQUL, NEQUL, GTN, LTN,
 -- GTEQ, LTEQ) which overlap with the prefix operators (INVB, NOT, NEGTIV, POSTIV, REF, DEREF)
 instance B.HasPrefixTable InfixOp B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "InfixOp" 0x60 0x73 $ let {r=return; z=mzero} in
-    [ r EQUL , r NEQUL, r GTN , r LTN, r GTEQ , r LTEQ , z, z
-    , r ADD  , r SUB  , r MULT, r DIV, r MOD  , r POW  , r ORB
-    , r ANDB , r XORB , r SHL , r SHR, r ARROW, r OR   , r AND
+  prefixTable = B.mkPrefixTableWord8 "InfixOp" 0x60 0x73 $ let {r=return} in
+    [ r EQUL , r NEQUL, r GTN , r LTN, r GTEQ , r LTEQ -- 60,61,62,63,64,65
+    , r ADD  , r SUB  , r MULT, r DIV, r MOD  , r POW  , r ORB -- 66,67,68,69,6A,6B,6C
+    , r ANDB , r XORB , r SHL , r SHR, r ARROW, r OR   , r AND -- 6D,6E,6F,70,71,72,73
     ]
 
 instance HasRandGen InfixOp where
@@ -5873,13 +5884,14 @@ instance FromDaoStructClass AST_RefSuffix where
     ] where { getDot = structCurrentField (fromUStr $ ustr "dot") $ comFromDaoStruct (return ()) }
 
 instance HasRandGen AST_RefSuffix where
-  randO = recurse $ countNode $ runRandChoice
+  randO = _randTrace "AST_RefSuffix" $ recurse $ countNode $ runRandChoice
   randChoice = randChoiceList $
     [ return AST_RefNull
     , scramble $ return AST_DotRef    <*> randO <*> randO <*> randO <*> no
     , scramble $ return AST_Subscript <*> randO <*> randO
     , scramble $ return AST_FuncCall  <*> randO <*> randO
     ]
+  defaultO = _randTrace "D.AST_RefSuffix" runDefaultChoice
   defaultChoice = randChoiceList $
     [ return AST_RefNull
     , return AST_DotRef <*> defaultO <*> randO <*> pure AST_RefNull <*> no
@@ -5982,8 +5994,8 @@ instance FromDaoStructClass AST_Paren where
   fromDaoStruct = constructor "Paren" >> pure AST_Paren <*> req "inside" <*> location
 
 instance HasRandGen AST_Paren where
-  randO = recurse $ pure AST_Paren <*> randO <*> no
-  defaultO = return AST_Paren <*> defaultO <*> no
+  randO = _randTrace "AST_Paren" $ recurse $ pure AST_Paren <*> randO <*> no
+  defaultO = _randTrace "D.AST_Paren" $ return AST_Paren <*> defaultO <*> no
 
 instance ObjectClass AST_Paren where { obj=new; fromObj=objFromHaskellData; }
 
@@ -6051,8 +6063,8 @@ instance FromDaoStructClass AST_If where
     pure AST_If <*> req "condition" <*> req "action" <*> location
 
 instance HasRandGen AST_If where
-  randO = countNode $ return AST_If <*> randO <*> randO <*> no
-  defaultO = return AST_If <*> defaultO <*> defaultO <*> no
+  randO = _randTrace "AST_If" $ countNode $ return AST_If <*> randO <*> randO <*> no
+  defaultO = _randTrace "D.AST_If" $ return AST_If <*> defaultO <*> defaultO <*> no
 
 instance Intermediate IfExpr AST_If where
   toInterm   (AST_If a b loc) = liftM3 IfExpr (uc0 a) (ti  b) [loc]
@@ -6123,8 +6135,8 @@ instance FromDaoStructClass AST_Else where
     pure AST_Else <*> req "comments" <*> req "elseIf" <*> location
 
 instance HasRandGen AST_Else where
-  randO = countNode $ return AST_Else <*> randO <*> randO <*> no
-  defaultO = return AST_Else <*> defaultO <*> defaultO <*> no
+  randO = _randTrace "AST_Else" $ countNode $ return AST_Else <*> randO <*> randO <*> no
+  defaultO = _randTrace "D.AST_Else" $ return AST_Else <*> defaultO <*> defaultO <*> no
 
 instance Intermediate ElseExpr AST_Else where
   toInterm   (AST_Else _ a loc) = liftM2 ElseExpr          (ti  a) [loc]
@@ -6226,8 +6238,8 @@ instance FromDaoStructClass AST_IfElse where
       <*> location
 
 instance HasRandGen AST_IfElse where
-  randO = countNode $ return AST_IfElse <*> randO <*> randList 0 3 <*> randO <*> scrambO <*> no
-  defaultO = return AST_IfElse <*> defaultO <*> defaultList 1 9 <*> randO <*> randO <*> no
+  randO = _randTrace "AST_IfElse" $ countNode $ return AST_IfElse <*> randO <*> randList 0 3 <*> randO <*> scrambO <*> no
+  defaultO = _randTrace "D.AST_IfElse" $ return AST_IfElse <*> defaultO <*> defaultList 1 9 <*> randO <*> randO <*> no
 
 instance Intermediate IfElseExpr AST_IfElse where
   toInterm   (AST_IfElse a b _ c loc) = liftM4 IfElseExpr (ti  a) [b>>=ti]          (um1 c) [loc]
@@ -6302,8 +6314,8 @@ instance FromDaoStructClass AST_While where
   fromDaoStruct = constructor "While" >> AST_While <$> innerFromStruct "Conditional"
 
 instance HasRandGen AST_While  where
-  randO    = AST_While <$> randO
-  defaultO = AST_While <$> defaultO
+  randO    = _randTrace "AST_While" $ AST_While <$> randO
+  defaultO = _randTrace "D.AST_While" $ AST_While <$> defaultO
 
 instance ObjectClass AST_While where { obj=new; fromObj=objFromHaskellData; }
 
@@ -6714,7 +6726,7 @@ instance FromDaoStructClass AST_Script where
     ]
 
 instance HasRandGen AST_Script where
-  randO = countNode $ recurse $ runRandChoice
+  randO = _randTrace "AST_Script" $ countNode $ recurse $ runRandChoice
   randChoice = randChoiceList $
     [ return AST_EvalObject   <*> randO <*> randO <*> no
     , return AST_IfThenElse   <*> randO
@@ -6726,6 +6738,7 @@ instance HasRandGen AST_Script where
     , scramble $ return AST_ReturnExpr   <*> randO <*> randO <*> no
     , scramble $ return AST_WithDoc      <*> randO <*> randO <*> no
     ]
+  defaultO = _randTrace "D.AST_Script" runDefaultChoice
   defaultChoice = randChoiceList $
     [ AST_IfThenElse <$> defaultO
     , AST_WhileLoop  <$> defaultO
@@ -6842,8 +6855,8 @@ instance FromDaoStructClass AST_ObjList where
     pure AST_ObjList <*> comments <*> reqList "items" <*> location
 
 instance HasRandGen AST_ObjList where
-  randO = recurse $ AST_ObjList <$> randO <*> randListOf 0 5 (randComWith randO) <*> no
-  defaultO = return AST_ObjList <*> defaultO <*> pure [] <*> no
+  randO = _randTrace "AST_ObjList" $ recurse $ AST_ObjList <$> randO <*> randListOf 0 5 (randComWith randO) <*> no
+  defaultO = _randTrace "D.ObjList" $ return AST_ObjList <*> defaultO <*> pure [] <*> no
 
 instance Intermediate ObjListExpr AST_ObjList where
   toInterm   (AST_ObjList _ lst loc) = liftM2 ObjListExpr      [lst>>=uc0] [loc]
@@ -6923,8 +6936,8 @@ instance FromDaoStructClass AST_OptObjList where
   fromDaoStruct = constructor "OptObjList" >> pure AST_OptObjList <*> comments <*> opt "params"
 
 instance HasRandGen AST_OptObjList where
-  randO = countNode $ return AST_OptObjList <*> randO <*> randO
-  defaultO = return AST_OptObjList <*> defaultO <*> defaultO
+  randO = _randTrace "AST_OptObjList" $ countNode $ return AST_OptObjList <*> randO <*> randO
+  defaultO = _randTrace "D.AST_OptObjList" $ return AST_OptObjList <*> defaultO <*> defaultO
 
 instance Intermediate OptObjListExpr AST_OptObjList where
   toInterm   (AST_OptObjList _ o) = liftM OptObjListExpr (um1 o)
@@ -7001,7 +7014,7 @@ instance FromDaoStructClass AST_Literal where
   fromDaoStruct = constructor "Literal" >> pure AST_Literal <*> req "obj" <*> location
 
 instance HasRandGen AST_Literal where
-  randO = scramble $ return AST_Literal <*> defaultO <*> no
+  randO = _randTrace "AST_Literal" $ scramble $ return AST_Literal <*> defaultO <*> no
   defaultO = randO
 
 instance Intermediate LiteralExpr AST_Literal where
@@ -7057,7 +7070,7 @@ instance B.Binary ReferenceExpr MTab where
   get = B.word8PrefixTable <|> fail "expecting Reference"
 
 instance B.HasPrefixTable ReferenceExpr Word8 MTab where
-  prefixTable = B.mkPrefixTableWord8 "ReferenceExpr" 0x3A 0x3F $
+  prefixTable = B.mkPrefixTableWord8 "ReferenceExpr" 0x39 0x3F $
     [ f UNQUAL, f LOCAL, f CONST, f STATIC, f GLOBAL, f GLODOT
     , return RefObjectExpr <*> B.get <*> B.get <*> B.get
     ] where { f q = return (ReferenceExpr q) <*> B.get <*> B.get <*> B.get }
@@ -7125,11 +7138,12 @@ instance FromDaoStructClass AST_Reference where
     ]
 
 instance HasRandGen AST_Reference where
-  randO = countNode $ runRandChoice
+  randO = _randTrace "AST_Reference" $ countNode $ runRandChoice
   randChoice = randChoiceList $
     [ scramble $ return AST_RefObject <*> randO <*> randO <*> no
     , scramble $ return AST_Reference <*> randO <*> randO <*> randO <*> randO <*> no
     ]
+  defaultO = _randTrace "D.AST_Reference" runDefaultChoice
   defaultChoice = randChoiceList $
     [ return AST_RefObject <*> defaultO <*> pure AST_RefNull <*> no
     , return AST_Reference <*> defaultO <*> defaultO <*> defaultO <*> defaultO <*> no
@@ -7292,11 +7306,12 @@ instance FromDaoStructClass AST_RefPrefix where
     return AST_RefPrefix <*> req "op" <*> req "expr" <*> req "expr" <*> location
 
 instance HasRandGen AST_RefPrefix where
-  randO = recurse $ countNode $ runRandChoice
+  randO = _randTrace "AST_RefPrefix" $ recurse $ countNode $ runRandChoice
   randChoice = randChoiceList $
     [ return AST_PlainRef  <*> randO
     , return AST_RefPrefix <*> randO <*> randO <*> randO <*> no
     ]
+  defaultO = _randTrace "D.AST_RefPrefix" runDefaultChoice
   defaultChoice = randChoiceList $
     [ AST_PlainRef <$> defaultO
     , return AST_RefPrefix <*> defaultO <*> defaultO <*> (AST_PlainRef <$> defaultO) <*> no
@@ -7456,12 +7471,13 @@ instance FromDaoStructClass AST_RuleFunc where
     ]
 
 instance HasRandGen AST_RuleFunc where
-  randO = recurse $ countNode $ runRandChoice
+  randO = _randTrace "AST_RuleFunc" $ recurse $ countNode $ runRandChoice
   randChoice = randChoiceList $
     [ scramble $ pure AST_Lambda <*> randO <*> randO <*> no
     , scramble $ pure AST_Func   <*> randO <*> randO <*> randO <*> randO <*> no
     , scramble $ pure AST_Rule   <*> randO <*> randO <*> no
     ]
+  defaultO = _randTrace "D.AST_RuleFunc" runDefaultChoice
   defaultChoice = randChoiceList $
     [ scramble $ pure AST_Lambda <*> defaultO <*> defaultO <*> no
     , scramble $ pure AST_Func   <*> defaultO <*> defaultO <*> defaultO <*> defaultO <*> no
@@ -7793,7 +7809,7 @@ instance FromDaoStructClass AST_Object where
     ]
 
 instance HasRandGen AST_Object where
-  randO = countNode $ runRandChoice
+  randO = _randTrace "AST_Object" $ countNode $ runRandChoice
   randChoice = randChoiceList $
     [ AST_ObjLiteral  <$> randO
     , AST_ObjSingle   <$> randO
@@ -7802,6 +7818,7 @@ instance HasRandGen AST_Object where
     , pure AST_Init     <*> randO <*> randO <*> randO <*> no
     , pure AST_MetaEval <*> randO <*> no
     ]
+  defaultO = _randTrace "D.AST_Object" runDefaultChoice
   defaultChoice = randChoiceList $
     [ AST_ObjLiteral  <$> defaultO
     , AST_ObjSingle   <$> defaultO
@@ -7969,11 +7986,12 @@ instance FromDaoStructClass AST_Arith where
     ]
 
 instance HasRandGen AST_Arith where
-  randO = countNode $ runRandChoice
+  randO = _randTrace "AST_Arith" $ countNode $ runRandChoice
   defaultChoice = randChoiceList $
     [ AST_Object <$> defaultO
     , return AST_Arith <*> (AST_Object <$> defaultO) <*> defaultO <*> (AST_Object <$> defaultO) <*> no
     ]
+  defaultO = _randTrace "AST_Arith" runDefaultChoice
   randChoice = randChoiceList $
     [ AST_Object <$> randO
     , do  left  <- AST_Object <$> randO
@@ -8167,13 +8185,14 @@ instance FromDaoStructClass AST_Assign where
     ]
 
 instance HasRandGen AST_Assign where
-  randO = countNode $ recurse $ runRandChoice
+  randO = _randTrace "AST_Assign" $ countNode $ recurse $ runRandChoice
   randChoice = randChoiceList $
     [ AST_Eval  <$> randO
     , do ox <- randListOf 0 3 (pure (,) <*> randO <*> randO)
          o  <- randO
          return (foldr (\(left, op) right -> AST_Assign left op right LocationUnknown) o ox)
     ]
+  defaultO = _randTrace "D.AST_Assign" runDefaultChoice
   defaultChoice = randChoiceList $
     [ AST_Eval <$> defaultO
     , return AST_Assign <*> defaultO <*> defaultO <*> (AST_Eval <$> defaultO) <*> no
@@ -8371,7 +8390,7 @@ instance FromDaoStructClass AST_TopLevel where
     ]
 
 instance HasRandGen AST_TopLevel where
-  randO = countNode $ runRandChoice
+  randO = _randTrace "AST_TopLevel" $ countNode $ runRandChoice
   randChoice = randChoiceList $
     [ return AST_Attribute <*> pure (ustr "import")  <*> randO <*> no
     , return AST_Attribute <*> pure (ustr "require") <*> randO <*> no
@@ -8379,6 +8398,7 @@ instance HasRandGen AST_TopLevel where
     , return AST_Event     <*> randO <*> randO <*> randO <*> no
     , AST_TopComment <$> defaultO
     ]
+  defaultO = _randTrace "D.AST_TopLevel" runDefaultChoice
   defaultChoice = randChoiceList $
     [ return AST_Attribute <*> defaultO <*> defaultO <*> no
     , return AST_TopScript <*> defaultO <*> no

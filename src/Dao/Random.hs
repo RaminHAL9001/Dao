@@ -144,7 +144,7 @@ class HasRandGen o where
   -- constructor. You must define either this or 'randChoice' or both. The 'randChoice' will be
   -- defined as @('randChoiceList' ['randO'])@.
   randO :: RandO o
-  randO = runRandChoiceOf randChoice
+  randO = runRandChoice
   -- | This is the function used to generate a random object of a data type that has multiple
   -- constructors. Use 'randChoiceList' to build a list of 'RandO' data types, each item producing
   -- an object with a different constructor. You must define either this or 'randO' or both. The
@@ -171,7 +171,7 @@ class HasRandGen o where
   -- 
   -- Either this function or 'defaultChoice' must be defined.
   defaultO :: RandO o
-  defaultO = runRandChoiceOf defaultChoice
+  defaultO = runDefaultChoice
   -- | This function is to 'defaultO' what 'randChoice' is to 'randO': it lets you construct a
   -- random object from a list of choices, but like 'defaultO' every choice provided here must NOT
   -- be a recursive function.
@@ -186,8 +186,11 @@ runRandChoiceOf (RandChoice{ getChoiceArray=arr }) = case arr of
 runRandChoice :: HasRandGen o => RandO o
 runRandChoice = runRandChoiceOf randChoice
 
+runDefaultChoice :: HasRandGen o => RandO o
+runDefaultChoice = runRandChoiceOf defaultChoice
+
 randChoiceList :: forall o . [RandO o] -> RandChoice o
-randChoiceList items = RandChoice{ getChoiceArray = Just arr } where
+randChoiceList items = RandChoice{ getChoiceArray = guard (not $ null items) >> (Just arr) } where
   len = length items
   arr :: Array Int (RandO o)
   arr = listArray (0, len) items

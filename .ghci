@@ -1,3 +1,4 @@
 :set prompt "\x3BB "
-:set -i./src -i./test
+:set -i./src -i./tests
+:set -fbreak-on-error -fbreak-on-exception
 :set -XTemplateHaskell -XScopedTypeVariables -XRankNTypes -XMultiParamTypeClasses -XFunctionalDependencies -XFlexibleInstances -XFlexibleContexts -XDeriveDataTypeable -XGeneralizedNewtypeDeriving

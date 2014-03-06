@@ -51,7 +51,6 @@ import qualified Dao.Tree             as T
 import           Dao.Token
 import           Dao.Predicate
 
-import           Control.Exception (assert)
 import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Error
@@ -319,14 +318,22 @@ bindPrefixTable (PrefixTable msg getIdx arr) fn = PrefixTable msg getIdx (fmap (
 -- | Construct a 'Serializer' from a list of serializers, and each list item will be prefixed with a
 -- byte in the range given. It is necesary for the data type to instantiate 'Data.Typeable.Typeable'
 -- in order to 
-mkPrefixTable :: (Integral i, Show i, Ix i, Num i) => String -> GGet mtab i -> i -> i -> [GGet mtab a] -> PrefixTable mtab i a
+mkPrefixTable
+  :: (Integral i, Show i, Ix i, Num i)
+  => String -> GGet mtab i -> i -> i -> [GGet mtab a] -> PrefixTable mtab i a
 mkPrefixTable msg getIdx lo' hi' ser =
-  if null ser then PrefixTable msg (Just getIdx) Nothing else assert (0<len && len<=hi-lo+1) table where
-    len   = fromIntegral (length ser)
-    lo    = min lo' hi'
-    hi    = max lo' hi'
-    idxs  = takeWhile (<=hi) (iterate (+1) lo)
-    table = PrefixTable msg (Just getIdx) $ Just $ accumArray (flip const) (fail ("in "++msg++" table")) (lo, hi) (zip idxs ser)
+  let len   = fromIntegral (length ser)
+      lo    = min lo' hi'
+      hi    = max lo' hi'
+      idxs  = takeWhile (<=hi) (iterate (+1) lo)
+      table = PrefixTable msg (Just getIdx) $ Just $
+        accumArray (flip const) (fail ("in "++msg++" table")) (lo, hi) (zip idxs ser)
+  in  if null ser
+      then PrefixTable msg (Just getIdx) Nothing
+      else
+        if 0<len && len<=hi-lo+1
+        then table
+        else error ("too many prefix table items for mkPrefixTable for "++msg) where
 
 mkPrefixTableWord8 :: String -> Byte -> Byte -> [GGet mtab a] -> PrefixTable mtab Byte a
 mkPrefixTableWord8 msg = mkPrefixTable msg getWord8

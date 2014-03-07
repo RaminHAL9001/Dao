@@ -141,6 +141,8 @@ module Dao.Interpreter(
     ObjListExpr(ObjListExpr), AST_ObjList(AST_ObjList),
     OptObjListExpr(OptObjListExpr), updateExecError, AST_OptObjList(AST_OptObjList),
     LiteralExpr(LiteralExpr), AST_Literal(AST_Literal),
+    DotLabelExpr(DotLabelExpr), dotLabelToRefExpr, refToDotLabelExpr,
+    AST_DotLabel(AST_DotLabel), dotLabelToRefAST, refToDotLabelAST,
     RefPrefixExpr(PlainRefExpr, RefPrefixExpr), cleanupRefPrefixExpr,
     AST_RefPrefix(AST_RefPrefix, AST_PlainRef),
     RuleFuncExpr(LambdaExpr, FuncExpr, RuleExpr), AST_RuleFunc(AST_Lambda, AST_Func, AST_Rule),
@@ -224,7 +226,7 @@ import           Control.Monad.State
 
 import           System.IO
 
-#if 1
+#if 0
 import Debug.Trace
 strace :: PPrintable s => String -> s -> s
 strace msg s = trace (msg++": "++prettyShow s) s
@@ -255,46 +257,47 @@ _randTrace _ = id
 --     Most constructors have a unique prefix byte, and this allows more efficient encoding because
 -- it is not necessary to place null terminators everywhere and you can determine exactly which
 -- constructor is under the decoder cursor just from the byte prefix. This means there is an
--- address space for constructors between 0x00 and 0xFF. This is an overview of that address space
+-- address space for prefix bytes between 0x00 and 0xFF. This is an overview of that address space.
 -- 
--- 00..07 > The "Dao.Binary" module declares a few unique prefixes of its own for booleans,
---        variable-length integers, and maybe types, and of course the null terminator.
--- 08..1A > Each prefix here used alone indicates a 'CoreType's. But each prefix may be followed by
---        data which indicates that it is actuall one of the constructors for the 'Object' data
---        type.
+-- 0x00..0x07 > The "Dao.Binary" module declares a few unique prefixes of its own for booleans,
+--              variable-length integers, and maybe types, and of course the null terminator.
+-- 0x08..0x1A > Each prefix here used alone indicates a 'CoreType's. But each prefix may be followed
+--              by data which indicates that it is actuall one of the constructors for the 'Object'
+--              data type.
 -- 
--- 22..23 'Struct'
--- 2B..2C 'TypeSym'
--- 2D     'TypeStruct'
--- 2E     'ObjType' (T_type)
+-- 0x22..0x23 'Struct'
+-- 0x2B..0x2C 'TypeSym'
+-- 0x2D       'TypeStruct'
+-- 0x2E       'ObjType' (T_type)
 -- 
--- 35..38 > The 'RefSuffix' data type. These prefixes are re-used for the 'ReferenceExpr' data type
---        because there is a one-to-one mapping between these two data types.
--- 39..3F > The 'Reference' data type. These prefixes are re-used for the 'ReferenceExpr' data type
---        execpt for the 'RefWrapper' constructor which is mapped to @'RefPrefixExpr' 'REF'@.
+-- 0x35..0x38 > The 'RefSuffix' data type. These prefixes are re-used for the 'ReferenceExpr' data type
+--              because there is a one-to-one mapping between these two data types.
+-- 0x39..0x3F > The 'Reference' data type. These prefixes are re-used for the 'ReferenceExpr' data type
+--              execpt for the 'RefWrapper' constructor which is mapped to @'RefPrefixExpr' 'REF'@.
 -- 
 -- -- the abstract syntax tree -- --
 -- 
--- 40..41 'RefPrefixExpr'
--- 44     'ParenExpr'
--- 48..4D 'ObjectExpr'
--- 4F     'ArithExpr'
--- 51     'AssignExpr'
--- 53..55 'RuleFuncExpr'
--- 56..57 'RuleHeadExpr'
--- 5C     'ObjListExpr'
--- 60..73 'InfixOp'
--- 60..70 'UpdateOp' -- Partially overlaps with 'InfixOp'
--- 61..6E 'ArithPfxOp' -- Partially overlaps with 'InfixOp'
--- 78..7F 'ScriptExpr'
--- 83     'ElseExpr'
--- 84     'IfElseExpr'
--- 85     'WhileExpr'
--- 89..8B 'TyChkExpr'
--- 90..91 'ParamExpr'
--- 94     'ParamListExpr'
--- 98     'CodeBlock'
--- A1..A5 'TopLevelExpr'
+-- 0x40..0x41 'RefPrefixExpr'
+-- 0x44       'ParenExpr'
+-- 0x48..0x4D 'ObjectExpr'
+-- 0x4F       'ArithExpr'
+-- 0x51       'AssignExpr'
+-- 0x53..0x55 'RuleFuncExpr'
+-- 0x56..0x57 'RuleHeadExpr'
+-- 0x5A       'DotLabelExpr'
+-- 0x5C       'ObjListExpr'
+-- 0x60..0x73 'InfixOp'
+-- 0x60..0x70 'UpdateOp' -- Partially overlaps with 'InfixOp'
+-- 0x61..0x6E 'ArithPfxOp' -- Partially overlaps with 'InfixOp'
+-- 0x78..0x7F 'ScriptExpr'
+-- 0x83       'ElseExpr'
+-- 0x84       'IfElseExpr'
+-- 0x85       'WhileExpr'
+-- 0x89..0x8B 'TyChkExpr'
+-- 0x90..0x91 'ParamExpr'
+-- 0x94       'ParamListExpr'
+-- 0x98       'CodeBlock'
+-- 0xA1..0xA5 'TopLevelExpr'
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1047,7 +1050,7 @@ instance HasNullValue Struct where
   testNull (Nullary{ structName=name }) = name == ustr "NULL"
   testNull _ = False
 
--- binary 22 23
+-- binary 0x22 0x23
 instance B.Binary Struct MTab where
   put o = case o of
     Nullary  o -> B.putWord8 0x22 >> B.put o
@@ -1664,7 +1667,7 @@ optComments = opt "comments"
 
 instance HasRandGen Object where
   randO = _randTrace "Object" $ countNode $ recurse $ runRandChoice
-  randChoice = mappend defaultChoice $ randChoiceList $
+  randChoice = mappend (fmap unlimitObject defaultChoice) $ randChoiceList $
     [ ORef  <$> randO
     , scramble $ OList <$> randList 0 20
     , scramble $ ODict . M.fromList <$> randListOf 0 20 (return (,) <*> randO <*> randO)
@@ -1675,6 +1678,16 @@ instance HasRandGen Object where
     ]
   defaultO = _randTrace "D.Object" runDefaultChoice
   defaultChoice = randChoiceList $
+    [ do  i <- nextInt 10 -- OBytes
+          fmap (OBytes . B.concat) $ replicateM i $
+            fmap (encode . (\i -> fromIntegral i :: Word32)) randInt
+    ]
+
+newtype LimitedObject = LimitedObject { unlimitObject :: Object }
+
+instance HasRandGen LimitedObject where
+  randO =  _randTrace "LimitedObject" $ countNode $ runRandChoice
+  randChoice = fmap LimitedObject $ randChoiceList $
     [ return ONull, return OTrue
     , OInt     <$> defaultO
     , OWord    <$> defaultO
@@ -1684,11 +1697,8 @@ instance HasRandGen Object where
     , OAbsTime <$> defaultO
     , ORelTime <$> defaultO
     , OChar . chr . flip mod (ord(maxBound::Char)) <$> defaultO
-      -- OBytes
-    , do  i <- nextInt 10
-          fmap (OBytes . B.concat) $ replicateM i $
-            fmap (encode . (\i -> fromIntegral i :: Word32)) randInt
     ]
+  defaultO = randO
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1785,7 +1795,7 @@ instance HasNullValue Object where
     OHaskell  o  -> testNull o
     _            -> False
 
--- binary 08 1A Object-->CoreType
+-- binary 0x08 0x1A Object-->CoreType
 instance B.Binary Object MTab where
   put o = do
     let t   = B.put (typeOfObj o)
@@ -1927,7 +1937,7 @@ instance PPrintable Reference where
     RefObject o r -> pInline [pString "(", pPrint o, pString ")", pPrint r]
     RefWrapper  r -> pInline [pString "$", pPrint r]
 
--- binary 39 3F
+-- binary 0x39 0x3F
 instance B.Binary Reference MTab where
   put qref = case qref of
     Reference q n r -> prefix q $ B.put n >> B.put r where
@@ -2181,7 +2191,7 @@ instance Es.InfBound CoreType where
 
 instance PPrintable CoreType where { pPrint = pShow }
 
--- binary 08 1A CoreType
+-- binary 0x08 0x1A CoreType
 instance B.Binary CoreType mtab where
   put t = B.putWord8 $ case t of
     NullType     -> 0x08
@@ -2282,7 +2292,7 @@ instance PPrintable TypeSym where
     TypeVar  t ctx -> pInline $
       concat [[pPrint t], guard (not (null ctx)) >> [pList_ "[" ", " "]" (map pPrint ctx)]]
 
--- binary 2B 2C
+-- binary 0x2B 0x2C
 instance B.Binary TypeSym mtab where
   put o = case o of
     CoreType o       -> B.prefixByte 0x2B $ B.put o
@@ -2308,7 +2318,7 @@ instance PPrintable TypeStruct where
     [] -> pString "AnyType"
     tx -> pList (pString "type") "(" ", " ")" (map pPrint tx)
 
--- binary 2D
+-- binary 0x2D 
 instance B.Binary TypeStruct mtab where
   put (TypeStruct o) = B.prefixByte 0x2D $ B.put o
   get = B.word8PrefixTable <|> fail "expecting TypeStruct"
@@ -2337,7 +2347,7 @@ instance PPrintable ObjType where
       [] -> pString "VoidType"
       tx -> pList (pString "anyOf") "(" ", " ")" (map pPrint tx)
 
--- binary 2E
+-- binary 0x2E 
 instance B.Binary ObjType mtab where
   put (ObjType o) = B.prefixByte 0x2E $ B.put o
   get = B.word8PrefixTable <|> fail "expecting ObjType"
@@ -2433,7 +2443,7 @@ instance HasRandGen RefSuffix where
     , return FuncCall  <*> defaultList 0 6 <*> pure NullRef
     ]
 
--- binary 36 39
+-- binary 0x36 0x39
 instance B.Binary RefSuffix MTab where
   put r = case r of
     NullRef       -> B.putWord8   0x36
@@ -3830,7 +3840,7 @@ instance HasLocation CodeBlock where
   setLocation o _ = o
   delLocation o = CodeBlock (fmap delLocation (codeBlock o))
 
--- binary 98
+-- binary 0x98 
 instance B.Binary CodeBlock MTab where
   put (CodeBlock o) = B.prefixByte 0x98 $ B.put o
   get = B.tryWord8 0x98 $ CodeBlock <$> B.get
@@ -4098,7 +4108,7 @@ instance PPrintable a => PPrintable (TyChkExpr a) where
     TypeChecked    a expr _ -> pInline [pPrint a, pString ": ", pPrint expr]
     DisableCheck   a  _ _ _ -> pInline [pPrint a]
 
--- binary 89 8B
+-- binary 0x89 0x8B
 instance B.Binary a MTab => B.Binary (TyChkExpr a) MTab where
   put o = case o of
     NotTypeChecked a       -> B.prefixByte 0x89 $ B.put a
@@ -4223,7 +4233,7 @@ instance PPrintable ParamExpr where
 
 instance PPrintable [ParamExpr] where { pPrint lst = pList_ "(" ", " ")" (fmap pPrint lst) }
 
--- binary 90 91
+-- binary 0x90 0x91
 instance B.Binary ParamExpr MTab where
   put (ParamExpr True  a b) = B.prefixByte 0x90 $ B.put a >> B.put b
   put (ParamExpr False a b) = B.prefixByte 0x91 $ B.put a >> B.put b
@@ -4337,7 +4347,7 @@ instance HasNullValue ParamListExpr where
   testNull (ParamListExpr (NotTypeChecked []) _) = True
   testNull _ = False
 
--- binary 94
+-- binary 0x94 
 instance B.Binary ParamListExpr MTab where
   put (ParamListExpr tyChk loc) = B.prefixByte 0x94 $ B.put tyChk >> B.put loc
   get = B.word8PrefixTable <|> fail "expecting ParamListExpr"
@@ -4436,7 +4446,7 @@ instance NFData RuleHeadExpr where
   rnf (RuleStringExpr a b) = deepseq a $! deepseq b ()
   rnf (RuleHeadExpr     a b) = deepseq a $! deepseq b ()
 
--- binary 56 57
+-- binary 0x56 0x57
 instance B.Binary RuleHeadExpr MTab where
   put o = case o of
     RuleStringExpr a b -> B.prefixByte 0x56 $ B.put a >> B.put b
@@ -5190,7 +5200,7 @@ instance UStrType UpdateOp where
 
 instance PPrintable UpdateOp where { pPrint op = pString (' ':uchars op++" ") }
 
--- binary 60 70 UpdateOp-->InfixOp
+-- binary 0x60 0x70 UpdateOp-->InfixOp
 instance B.Binary UpdateOp MTab where
   put o = B.putWord8 $ case o of
     UCONST -> 0x60
@@ -5285,7 +5295,7 @@ instance UStrType ArithPfxOp where
 
 instance PPrintable ArithPfxOp where { pPrint = pUStr . toUStr }
 
--- binary 61 6E
+-- binary 0x61 0x6E
 instance B.Binary ArithPfxOp MTab where
   put o = B.putWord8 $ case o of { INVB -> 0x6E; NOT -> 0x61; NEGTIV -> 0x67; POSTIV -> 0x66 }
   get = B.word8PrefixTable <|> fail "expecting ArithPfxOp"
@@ -5376,7 +5386,7 @@ infixOpCommutativity = (arr !) where
     , (ARROW, False)
     ]
 
--- binary 60 73
+-- binary 0x60 0x73
 instance B.Binary InfixOp MTab where
   put o = B.putWord8 $ case o of
     { EQUL -> 0x60; NEQUL -> 0x61; GTN  -> 0x62; LTN   -> 0x63; GTEQ -> 0x64; LTEQ -> 0x65
@@ -5677,7 +5687,7 @@ instance HasLocation RefSuffixExpr where
     SubscriptExpr a b     -> SubscriptExpr a (delLocation b)
     FuncCallExpr  a b     -> FuncCallExpr  a (delLocation b)
 
--- binary 36 39 RefSuffixExpr-->RefSuffix
+-- binary 0x36 0x39 RefSuffixExpr-->RefSuffix
 instance B.Binary RefSuffixExpr MTab where
   put o = case o of
     NullRefExpr         -> B.putWord8   0x36
@@ -5945,7 +5955,7 @@ instance NFData ParenExpr where { rnf (ParenExpr a b) = deepseq a $! deepseq b (
 
 instance PPrintable ParenExpr where { pPrint = pPrintInterm }
 
--- binary 44
+-- binary 0x44 
 instance B.Binary ParenExpr MTab where
   put (ParenExpr a b) = B.prefixByte 0x44 $ B.put a >> B.put b
   get = B.word8PrefixTable <|> fail "expecting ParenExpr"
@@ -6092,7 +6102,7 @@ instance HasLocation ElseExpr where
   setLocation (ElseExpr a _  ) loc = ElseExpr a loc
   delLocation (ElseExpr a _  )     = ElseExpr (delLocation a) LocationUnknown
 
--- binary 83
+-- binary 0x83 
 instance B.Binary ElseExpr MTab where
   put (ElseExpr a b) = B.prefixByte 0x83 $ B.put a >> B.put b
   get = (B.tryWord8 0x83 $ pure ElseExpr <*> B.get <*> B.get) <|> fail "expecting ElseExpr"
@@ -6167,7 +6177,7 @@ instance HasLocation IfElseExpr where
   delLocation (IfElseExpr a b c _  )     =
     IfElseExpr (delLocation a) (fmap delLocation b) (fmap delLocation c) LocationUnknown
 
--- binary 84
+-- binary 0x84 
 instance B.Binary IfElseExpr MTab where
   put (IfElseExpr a b c d) = B.prefixByte 0x84 $ B.put a >> B.put b >> B.put c >> B.put d
   get = B.word8PrefixTable <|> fail "expecting IfElseExpr"
@@ -6267,7 +6277,7 @@ instance HasLocation WhileExpr where
   setLocation (WhileExpr a) loc = WhileExpr (setLocation a loc)
   delLocation (WhileExpr a)     = WhileExpr (delLocation a)
 
--- binary 85
+-- binary 0x85 
 instance B.Binary WhileExpr MTab where
   put (WhileExpr o) = B.prefixByte 0x85 $ B.put o
   get = B.word8PrefixTable <|> fail "expecting WhileExpr"
@@ -6392,7 +6402,7 @@ instance HasLocation ScriptExpr where
       fd :: HasLocation a => a -> a
       fd = delLocation
 
--- binary 78 7F
+-- binary 0x78 0x7F
 instance B.Binary ScriptExpr MTab where
   put o = case o of
     IfThenElse   a           -> B.put a
@@ -6802,7 +6812,7 @@ instance HasLocation ObjListExpr where
   setLocation (ObjListExpr a _  ) loc = ObjListExpr (fmap delLocation a) loc
   delLocation (ObjListExpr a _  )     = ObjListExpr (fmap delLocation a) LocationUnknown
 
--- binary 5C
+-- binary 0x5C 
 instance B.Binary ObjListExpr MTab where
   put (ObjListExpr lst loc) = B.prefixByte 0x5C $ B.putUnwrapped lst >> B.put loc
   get = (B.tryWord8 0x5C $ pure ObjListExpr <*> B.getUnwrapped <*> B.get) <|> fail "expecting ObjListExpr"
@@ -7014,7 +7024,8 @@ instance FromDaoStructClass AST_Literal where
   fromDaoStruct = constructor "Literal" >> pure AST_Literal <*> req "obj" <*> location
 
 instance HasRandGen AST_Literal where
-  randO = _randTrace "AST_Literal" $ scramble $ return AST_Literal <*> defaultO <*> no
+  randO = _randTrace "AST_Literal" $ scramble $
+    return AST_Literal <*> fmap unlimitObject defaultO <*> no
   defaultO = randO
 
 instance Intermediate LiteralExpr AST_Literal where
@@ -7027,6 +7038,100 @@ instance HaskellDataClass AST_Literal where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
+
+----------------------------------------------------------------------------------------------------
+
+-- | The intermediate form of 'AST_DotLabel'.
+data DotLabelExpr = DotLabelExpr Name [Name] Location deriving (Eq, Ord, Show, Typeable)
+
+instance NFData DotLabelExpr where
+  rnf (DotLabelExpr n nm loc) = deepseq n $! deepseq nm $! deepseq loc ()
+
+instance HasLocation DotLabelExpr where
+  getLocation (DotLabelExpr _ _  loc)     = loc
+  setLocation (DotLabelExpr n nx _  ) loc = DotLabelExpr n nx loc
+  delLocation (DotLabelExpr n nx _  )     = DotLabelExpr n nx LocationUnknown
+
+instance B.Binary DotLabelExpr MTab where
+  put (DotLabelExpr n nx loc) = B.prefixByte 0x5A $ B.put n >> B.put nx >> B.put loc
+  get = B.word8PrefixTable <|> fail "expecting DotLabelExpr"
+
+instance B.HasPrefixTable DotLabelExpr Word8 MTab where
+  prefixTable = B.mkPrefixTableWord8 "DotLabelExpr" 0x5A 0x5A $
+    [return DotLabelExpr <*> B.get <*> B.get <*> B.get]
+
+instance PPrintable DotLabelExpr where { pPrint = pPrintInterm }
+
+dotLabelToRefExpr :: DotLabelExpr -> ReferenceExpr
+dotLabelToRefExpr (DotLabelExpr n nx loc) = ReferenceExpr UNQUAL n (loop nx) loc where
+  loop nx = case nx of { [] -> NullRefExpr; n:nx -> DotRefExpr n (loop nx) LocationUnknown; }
+
+refToDotLabelExpr :: ReferenceExpr -> Maybe (DotLabelExpr, Maybe ObjListExpr)
+refToDotLabelExpr o = case o of
+  ReferenceExpr UNQUAL n suf loc -> loop (\nx loc ol -> (DotLabelExpr n nx loc, ol)) [] loc suf
+  _                              -> mzero
+  where
+    loop f nx loc suf = case suf of
+      NullRefExpr                 -> return (f nx loc Nothing)
+      DotRefExpr   n  suf    loc' -> loop f (nx++[n]) (loc<>loc') suf
+      FuncCallExpr ol NullRefExpr -> return (f nx loc (Just ol))
+      _                           -> mzero
+
+instance ObjectClass DotLabelExpr where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass DotLabelExpr where
+  haskellDataInterface = interface (DotLabelExpr undefined [] LocationUnknown) $ do
+    autoDefEquality >> autoDefBinaryFmt >> autoDefPPrinter
+
+----------------------------------------------------------------------------------------------------
+
+-- | This is a list of 'Dao.String.Name's separated by dots. It is a pseudo-reference used to denote
+-- things like constructor names in 'InitExpr', or setting the logical names of "import" modules
+-- statements. It is basically a list of 'Dao.String.Name's that always has at least one element.
+data AST_DotLabel = AST_DotLabel Name [(Com (), Name)] Location deriving (Eq, Ord, Show, Typeable)
+
+instance NFData AST_DotLabel where
+  rnf (AST_DotLabel n nx loc) = deepseq n $! deepseq nx $! deepseq loc ()
+
+instance HasLocation AST_DotLabel where
+  getLocation (AST_DotLabel _ _  loc)     = loc
+  setLocation (AST_DotLabel n nx _  ) loc = AST_DotLabel n nx loc
+  delLocation (AST_DotLabel n nx _  )     = AST_DotLabel n nx LocationUnknown
+
+instance PPrintable AST_DotLabel where
+  pPrint (AST_DotLabel n nx _) = pInline $
+    pPrint n : (nx >>= \ (c, n) -> [pPrintComWith (\ () -> pString ".") c, pPrint n])
+
+instance HasRandGen AST_DotLabel where
+  randO = return AST_DotLabel <*> randO <*> randListOf 0 3 (return (,) <*> randO <*> randO) <*> no
+  defaultO = randO
+
+instance Intermediate DotLabelExpr AST_DotLabel where
+  toInterm   (AST_DotLabel n nx loc) = [DotLabelExpr] <*> [n] <*> [map snd             nx] <*> [loc]
+  fromInterm (DotLabelExpr n nx loc) = [AST_DotLabel] <*> [n] <*> [map (\n->(Com(),n)) nx] <*> [loc]
+
+dotLabelToRefAST :: AST_DotLabel -> AST_Reference
+dotLabelToRefAST (AST_DotLabel n nx loc) = AST_Reference UNQUAL [] n (loop nx) loc where
+  loop nx = case nx of
+    []        -> AST_RefNull
+    (c, n):nx -> AST_DotRef c n (loop nx) LocationUnknown
+
+refToDotLabelAST :: AST_Reference -> Maybe (AST_DotLabel, Maybe AST_ObjList)
+refToDotLabelAST o = case o of
+  AST_Reference UNQUAL _ n suf loc -> loop (\nx loc ol -> (AST_DotLabel n nx loc, ol)) [] loc suf
+  _                                -> mzero
+  where
+    loop f nx loc suf = case suf of
+      AST_RefNull                 -> return (f nx loc Nothing)
+      AST_DotRef c n  suf    loc' -> loop f (nx++[(c, n)]) (loc<>loc') suf
+      AST_FuncCall ol AST_RefNull -> return (f nx loc (Just ol))
+      _                           -> mzero
+
+instance ObjectClass AST_DotLabel where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass AST_DotLabel where
+  haskellDataInterface = interface (AST_DotLabel undefined [] LocationUnknown) $ do
+    autoDefEquality >> autoDefPPrinter
 
 ----------------------------------------------------------------------------------------------------
 
@@ -7060,7 +7165,7 @@ instance HasLocation ReferenceExpr where
 
 instance PPrintable ReferenceExpr where { pPrint = pPrintInterm }
 
--- binary 39 3F ReferenceExpr-->Reference
+-- binary 0x39 0x3F ReferenceExpr-->Reference
 instance B.Binary ReferenceExpr MTab where
   put qref = case qref of
     ReferenceExpr q n r loc -> prefix q $ B.put n >> B.put r >> B.put loc where
@@ -7198,7 +7303,7 @@ instance HasLocation RefPrefixExpr where
     PlainRefExpr  a     -> PlainRefExpr $ delLocation a
     RefPrefixExpr a b _ -> RefPrefixExpr a (delLocation b) lu
 
--- binary 40 41
+-- binary 0x40 0x41
 instance B.Binary RefPrefixExpr MTab where
   put o = case o of
     PlainRefExpr  a     -> B.put a
@@ -7338,7 +7443,7 @@ instance HaskellDataClass AST_RefPrefix where
 data RuleFuncExpr
   = LambdaExpr    ParamListExpr CodeBlock Location
   | FuncExpr Name ParamListExpr CodeBlock Location
-  | RuleExpr RuleHeadExpr       CodeBlock Location
+  | RuleExpr      RuleHeadExpr  CodeBlock Location
   deriving (Eq, Ord, Typeable, Show)
 
 instance NFData RuleFuncExpr where
@@ -7367,7 +7472,7 @@ instance HasLocation RuleFuncExpr where
 
 instance PPrintable RuleFuncExpr where { pPrint = pPrintInterm }
 
--- binary 53 55
+-- binary 0x53 0x55
 instance B.Binary RuleFuncExpr MTab where
   put o = case o of
     LambdaExpr a b   z -> B.prefixByte 0x53 $ B.put a >> B.put b >> B.put z
@@ -7486,13 +7591,13 @@ instance HasRandGen AST_RuleFunc where
 
 instance Intermediate RuleFuncExpr AST_RuleFunc where
   toInterm ast = case ast of
-    AST_Lambda a b   loc -> liftM3 LambdaExpr      (uc0 a)         (ti  b) [loc]
-    AST_Func _ a b c loc -> liftM4 FuncExpr [a] (uc0 b) (ti  c) [loc]
-    AST_Rule   a b   loc -> liftM3 RuleExpr     (uc0 a) (ti  b) [loc]
+    AST_Lambda a b   loc -> [LambdaExpr]       <*> uc0 a <*> ti b <*> [loc]
+    AST_Func _ a b c loc -> [FuncExpr] <*> [a] <*> uc0 b <*> ti c <*> [loc]
+    AST_Rule   a b   loc -> [RuleExpr]         <*> uc0 a <*> ti b <*> [loc]
   fromInterm o = case o of
-    LambdaExpr a b   loc -> liftM3 AST_Lambda              (nc0 a) (fi  b) [loc]
-    FuncExpr   a b c loc -> liftM5 AST_Func [[]] [a] (nc0 b) (fi  c) [loc]
-    RuleExpr   a b   loc -> liftM3 AST_Rule          (nc0 a) (fi  b) [loc]
+    LambdaExpr a b   loc -> [AST_Lambda]                <*> nc0 a <*> fi b <*> [loc]
+    FuncExpr   a b c loc -> [AST_Func] <*> [[]] <*> [a] <*> nc0 b <*> fi c <*> [loc]
+    RuleExpr   a b   loc -> [AST_Rule]                  <*> nc0 a <*> fi b <*> [loc]
 
 instance ObjectClass AST_RuleFunc where { obj=new; fromObj=objFromHaskellData; }
 
@@ -7509,7 +7614,7 @@ data ObjectExpr
   | ObjSingleExpr   RefPrefixExpr
   | ObjRuleFuncExpr RuleFuncExpr
   | ArithPfxExpr                  ArithPfxOp      ObjectExpr   Location
-  | InitExpr        ReferenceExpr OptObjListExpr  ObjListExpr  Location
+  | InitExpr        DotLabelExpr  OptObjListExpr  ObjListExpr  Location
   | StructExpr      Name          OptObjListExpr               Location
   | MetaEvalExpr                                  CodeBlock    Location
   deriving (Eq, Ord, Typeable, Show)
@@ -7564,7 +7669,7 @@ instance HasLocation ObjectExpr where
 
 instance PPrintable ObjectExpr where { pPrint = pPrintInterm }
 
--- binary 48 4D
+-- binary 0x48 0x4D
 instance B.Binary ObjectExpr MTab where
   put o = case o of
     ObjSingleExpr   a       -> B.put a
@@ -7609,7 +7714,7 @@ instance Executable ObjectExpr (Maybe Object) where
         checkVoid loc ("operand to prefix operator "++show op)
       execute $ fmap Just (evalArithPrefixOp op expr)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    InitExpr ref bnds initMap _ -> Just <$> _evalInit ref bnds initMap
+    InitExpr ref bnds initMap _ -> Just <$> _evalInit (dotLabelToRefExpr ref) bnds initMap
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     StructExpr name (OptObjListExpr items) _ -> case items of
       Nothing -> return (Just $ OTree $ Nullary{ structName=name })
@@ -7704,7 +7809,7 @@ data AST_Object
   | AST_ObjSingle   AST_RefPrefix
   | AST_ObjRuleFunc AST_RuleFunc
   | AST_ArithPfx    ArithPfxOp    [Comment]       AST_Object    Location
-  | AST_Init        AST_Reference AST_OptObjList  AST_ObjList   Location
+  | AST_Init        AST_DotLabel  AST_OptObjList  AST_ObjList   Location
   | AST_Struct      Name          AST_OptObjList                Location
   | AST_MetaEval                                  AST_CodeBlock Location
   deriving (Eq, Ord, Typeable, Show)
@@ -7803,7 +7908,7 @@ instance FromDaoStructClass AST_Object where
     , constructor "ArithPrefix" >>
         pure AST_ArithPfx <*> req "op" <*> comments <*> req "expr" <*> location
     , constructor "Init" >>
-        pure AST_Init <*> req "name" <*> req "params" <*> req "initList" <*> location
+        pure AST_Init     <*> req "name" <*> req "params" <*> req "initList" <*> location
     , constructor "Struct" >> pure AST_Struct <*> req "name" <*> req "initList" <*> location
     , constructor "MetaEval" >> pure AST_MetaEval <*> req "block" <*> location
     ]
@@ -7824,31 +7929,31 @@ instance HasRandGen AST_Object where
     , AST_ObjSingle   <$> defaultO
     , AST_ObjRuleFunc <$> defaultO
     , return AST_ArithPfx <*> defaultO <*> defaultO <*> (AST_ObjLiteral <$> defaultO) <*> no
-    , return AST_Init <*> defaultO <*> defaultO <*> defaultO <*> no
-    , return AST_Struct <*> defaultO <*> defaultO <*> no
+    , return AST_Init     <*> defaultO <*> defaultO <*> defaultO <*> no
+    , return AST_Struct   <*> defaultO <*> defaultO <*> no
     ]
 
 instance HasRandGen [Com AST_Object] where { randO = countNode $ randList 1 20 }
 
 instance Intermediate ObjectExpr AST_Object where
   toInterm ast = case ast of
-    AST_Void                  -> return VoidExpr
-    AST_ObjLiteral  a         -> liftM  ObjLiteralExpr  (ti  a)
-    AST_ObjSingle   a         -> liftM  ObjSingleExpr   (ti  a)
-    AST_ObjRuleFunc a         -> liftM  ObjRuleFuncExpr (ti  a)
-    AST_ArithPfx    a _ c loc -> liftM3 ArithPfxExpr        [a]         (ti  c) [loc]
-    AST_Init        a b c loc -> liftM4 InitExpr        (ti  a) (ti  b) (ti  c) [loc]
-    AST_Struct      a b   loc -> liftM3 StructExpr          [a] (ti  b)         [loc]
-    AST_MetaEval    a     loc -> liftM2 MetaEvalExpr                    (ti  a) [loc]
+    AST_Void                  -> [VoidExpr]
+    AST_ObjLiteral  a         -> [ObjLiteralExpr]  <*> ti a
+    AST_ObjSingle   a         -> [ObjSingleExpr]   <*> ti a
+    AST_ObjRuleFunc a         -> [ObjRuleFuncExpr] <*> ti a
+    AST_ArithPfx    a _ c loc -> [ArithPfxExpr]    <*> [a]           <*> ti c <*> [loc]
+    AST_Init        a b c loc -> [InitExpr]        <*> ti a <*> ti b <*> ti c <*> [loc]
+    AST_Struct      a b   loc -> [StructExpr]      <*> [a]  <*> ti b          <*> [loc]
+    AST_MetaEval    a     loc -> [MetaEvalExpr]    <*> ti a                   <*> [loc]
   fromInterm o = case o of
-    VoidExpr                  -> return AST_Void
-    ObjLiteralExpr  a         -> liftM  AST_ObjLiteral  (fi  a)
-    ObjSingleExpr   a         -> liftM  AST_ObjSingle   (fi  a)
-    ObjRuleFuncExpr a         -> liftM  AST_ObjRuleFunc (fi  a)
-    ArithPfxExpr    a b   loc -> liftM4 AST_ArithPfx        [a] [[]]    (fi  b) [loc]
-    InitExpr        a b c loc -> liftM4 AST_Init        (fi  a) (fi  b) (fi  c) [loc]
-    StructExpr      a b   loc -> liftM3 AST_Struct          [a] (fi  b)         [loc]
-    MetaEvalExpr    a     loc -> liftM2 AST_MetaEval    (fi  a)                 [loc]
+    VoidExpr                  -> [AST_Void]
+    ObjLiteralExpr  a         -> [AST_ObjLiteral]  <*> fi a
+    ObjSingleExpr   a         -> [AST_ObjSingle]   <*> fi a
+    ObjRuleFuncExpr a         -> [AST_ObjRuleFunc] <*> fi a
+    ArithPfxExpr    a b   loc -> [AST_ArithPfx]    <*>   [a] <*> [[]] <*> fi b <*> [loc]
+    InitExpr        a b c loc -> [AST_Init]        <*> fi a  <*> fi b <*> fi c <*> [loc]
+    StructExpr      a b   loc -> [AST_Struct]      <*>   [a] <*> fi b          <*> [loc]
+    MetaEvalExpr    a     loc -> [AST_MetaEval]    <*> fi a                    <*> [loc]
 
 instance ObjectClass AST_Object where { obj=new; fromObj=objFromHaskellData; }
 
@@ -7886,7 +7991,7 @@ instance HasLocation ArithExpr where
 
 instance PPrintable ArithExpr where { pPrint = pPrintInterm }
 
--- binary 4F
+-- binary 0x4F 
 instance B.Binary ArithExpr MTab where
   put o = case o of
     ObjectExpr  a     -> B.put a
@@ -8075,7 +8180,7 @@ instance HasLocation AssignExpr where
 
 instance PPrintable AssignExpr where { pPrint = pPrintInterm }
 
--- binary 51
+-- binary 0x51 
 instance B.Binary AssignExpr MTab where
   put o = case o of
     EvalExpr   a       -> B.put a
@@ -8256,7 +8361,7 @@ instance HasLocation TopLevelExpr where
 
 instance PPrintable TopLevelExpr where { pPrint = pPrintInterm }
 
--- binary A1 A5
+-- binary 0xA1 0xA5
 instance B.Binary TopLevelExpr MTab where
   put o = case o of
     Attribute a             b z -> B.prefixByte 0xA1 $ B.put a >> B.put b >> B.put z

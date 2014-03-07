@@ -587,25 +587,14 @@ refPrefixParser :: DaoParser AST_RefPrefix
 refPrefixParser = joinEvalPTable refPrefixPTab
 
 initPTab :: DaoPTable AST_Object
-initPTab = bindPTable refPrefixPTab $ \o -> do
-  let single = return (AST_ObjSingle o)
-  case o of
-    AST_PlainRef ref -> case ref of
-      AST_Reference UNQUAL _ _ suf _ -> case testSuffix suf of
-        Just inits -> do
-          bufferComments
-          flip mplus single $ do
-            olst <- joinEvalPTableItem $ commaSepdObjList "initializing expression" "{" "}"
-            return $ AST_Init ref inits olst (getLocation o <> getLocation olst)
-        Nothing -> single
-      _ -> single
-    AST_RefPrefix _ _ _ _ -> single
-  where
-    testSuffix suf = case suf of
-      AST_DotRef _ _ suf _           -> testSuffix suf
-      AST_FuncCall  olst AST_RefNull -> Just $ AST_OptObjList [] $ Just olst
-      AST_RefNull                    -> Just nullValue
-      _                              -> Nothing
+initPTab = bindPTable refPrefixPTab $ \o -> let single = return (AST_ObjSingle o) in case o of
+  AST_PlainRef ref -> case refToDotLabelAST ref of
+    Just (ref, inits) -> (bufferComments>>) $ flip mplus single $ do
+      olst <- joinEvalPTableItem $ commaSepdObjList "initializing expression" "{" "}"
+      coms <- optSpace
+      return $ AST_Init ref (AST_OptObjList coms inits) olst (getLocation o <> getLocation olst)
+    Nothing           -> single
+  AST_RefPrefix{}  -> single
 
 structPTabItems :: [DaoTableItem AST_Object]
 structPTabItems = (:[]) $ tableItem HASHLABEL $ \nameTok -> do

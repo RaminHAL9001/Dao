@@ -265,39 +265,39 @@ _randTrace _ = id
 --              by data which indicates that it is actuall one of the constructors for the 'Object'
 --              data type.
 -- 
--- 0x22..0x23 'Struct'
--- 0x2B..0x2C 'TypeSym'
--- 0x2D       'TypeStruct'
--- 0x2E       'ObjType' (T_type)
+-- 0x25..0x26 'Struct'
+-- 0x2E..0x2F 'TypeSym'
+-- 0x33       'TypeStruct'
+-- 0x37       'ObjType' (T_type)
 -- 
--- 0x35..0x38 > The 'RefSuffix' data type. These prefixes are re-used for the 'ReferenceExpr' data type
+-- 0x42..0x45 > The 'RefSuffix' data type. These prefixes are re-used for the 'ReferenceExpr' data type
 --              because there is a one-to-one mapping between these two data types.
--- 0x39..0x3F > The 'Reference' data type. These prefixes are re-used for the 'ReferenceExpr' data type
+-- 0x48..0x4F > The 'Reference' data type. These prefixes are re-used for the 'ReferenceExpr' data type
 --              execpt for the 'RefWrapper' constructor which is mapped to @'RefPrefixExpr' 'REF'@.
 -- 
 -- -- the abstract syntax tree -- --
 -- 
--- 0x40..0x41 'RefPrefixExpr'
--- 0x44       'ParenExpr'
--- 0x48..0x4D 'ObjectExpr'
--- 0x4F       'ArithExpr'
--- 0x51       'AssignExpr'
--- 0x53..0x55 'RuleFuncExpr'
--- 0x56..0x57 'RuleHeadExpr'
--- 0x5A       'DotLabelExpr'
--- 0x5C       'ObjListExpr'
--- 0x60..0x73 'InfixOp'
--- 0x60..0x70 'UpdateOp' -- Partially overlaps with 'InfixOp'
--- 0x61..0x6E 'ArithPfxOp' -- Partially overlaps with 'InfixOp'
--- 0x78..0x7F 'ScriptExpr'
--- 0x83       'ElseExpr'
--- 0x84       'IfElseExpr'
--- 0x85       'WhileExpr'
--- 0x89..0x8B 'TyChkExpr'
--- 0x90..0x91 'ParamExpr'
--- 0x94       'ParamListExpr'
--- 0x98       'CodeBlock'
--- 0xA1..0xA5 'TopLevelExpr'
+-- 0x52..0x53 'RefPrefixExpr'
+-- 0x59       'ParenExpr'
+-- 0x60..0x65 'ObjectExpr'
+-- 0x6A       'ArithExpr'
+-- 0x6F       'AssignExpr'
+-- 0x74..0x76 'RuleFuncExpr'
+-- 0x7A..0x7B 'RuleHeadExpr'
+-- 0x81       'DotLabelExpr'
+-- 0x86       'ObjListExpr'
+-- 0xBA..0xCD 'InfixOp'
+-- 0x8D..0x9D 'UpdateOp' -- Partially overlaps with 'InfixOp'
+-- 0x8E..0x9B 'ArithPfxOp' -- Partially overlaps with 'InfixOp'
+-- 0xA8..0xAF 'ScriptExpr'
+-- 0xB6       'ElseExpr'
+-- 0xBA       'IfElseExpr'
+-- 0xBE       'WhileExpr'
+-- 0xC5..0xC7 'TyChkExpr'
+-- 0xCF..0xD0 'ParamExpr'
+-- 0xD6       'ParamListExpr'
+-- 0xDD       'CodeBlock'
+-- 0xE9..0xED 'TopLevelExpr'
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1050,15 +1050,15 @@ instance HasNullValue Struct where
   testNull (Nullary{ structName=name }) = name == ustr "NULL"
   testNull _ = False
 
--- binary 0x22 0x23
+-- binary 0x25 0x26
 instance B.Binary Struct MTab where
   put o = case o of
-    Nullary  o -> B.putWord8 0x22 >> B.put o
-    Struct n o -> B.putWord8 0x23 >> B.put n >> B.put o
+    Nullary  o -> B.putWord8 0x25 >> B.put o
+    Struct n o -> B.putWord8 0x26 >> B.put n >> B.put o
   get = B.word8PrefixTable <|> fail "expecting Struct"
 
 instance B.HasPrefixTable Struct B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "Struct" 0x22 0x23 $
+  prefixTable = B.mkPrefixTableWord8 "Struct" 0x25 0x26 $
     [ Nullary <$> B.get
     , pure Struct <*> B.get <*> B.get
     ]
@@ -1937,18 +1937,18 @@ instance PPrintable Reference where
     RefObject o r -> pInline [pString "(", pPrint o, pString ")", pPrint r]
     RefWrapper  r -> pInline [pString "$", pPrint r]
 
--- binary 0x39 0x3F
+-- binary 0x48 0x4E
 instance B.Binary Reference MTab where
   put qref = case qref of
     Reference q n r -> prefix q $ B.put n >> B.put r where
       prefix q = B.prefixByte $ case q of
-        { UNQUAL -> 0x39; LOCAL -> 0x3A; CONST -> 0x3B; STATIC -> 0x3C; GLOBAL -> 0x3D; GLODOT -> 0x3E; }
-    RefObject o r -> B.prefixByte 0x3F $ B.put o >> B.put r
-    RefWrapper  r -> B.prefixByte 0x3F $ B.put r
+        { UNQUAL -> 0x48; LOCAL -> 0x49; CONST -> 0x4A; STATIC -> 0x4B; GLOBAL -> 0x4C; GLODOT -> 0x4D; }
+    RefObject o r -> B.prefixByte 0x4E $ B.put o >> B.put r
+    RefWrapper  r -> B.prefixByte 0x4F $ B.put r
   get = B.word8PrefixTable <|> fail "expecting Reference"
 
 instance B.HasPrefixTable Reference B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "Reference" 0x39 0x3F $
+  prefixTable = B.mkPrefixTableWord8 "Reference" 0x48 0x4F $
     [ f UNQUAL, f LOCAL, f CONST, f STATIC, f GLOBAL, f GLODOT
     , return RefObject  <*> B.get <*> B.get
     , return RefWrapper <*> B.get
@@ -2292,16 +2292,16 @@ instance PPrintable TypeSym where
     TypeVar  t ctx -> pInline $
       concat [[pPrint t], guard (not (null ctx)) >> [pList_ "[" ", " "]" (map pPrint ctx)]]
 
--- binary 0x2B 0x2C
+-- binary 0x2E 0x2F
 instance B.Binary TypeSym mtab where
   put o = case o of
-    CoreType o       -> B.prefixByte 0x2B $ B.put o
-    TypeVar  ref ctx -> B.prefixByte 0x2C $ B.put ref >> B.put ctx
+    CoreType o       -> B.prefixByte 0x2E $ B.put o
+    TypeVar  ref ctx -> B.prefixByte 0x2F $ B.put ref >> B.put ctx
   get = B.word8PrefixTable <|> fail "expecting TypeSym"
 
 instance B.HasPrefixTable TypeSym B.Byte mtab where
   prefixTable =
-    B.mkPrefixTableWord8 "TypeSym" 0x2B 0x2C [CoreType <$> B.get, pure TypeVar <*> B.get <*> B.get]
+    B.mkPrefixTableWord8 "TypeSym" 0x2E 0x2F [CoreType <$> B.get, pure TypeVar <*> B.get <*> B.get]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2318,13 +2318,13 @@ instance PPrintable TypeStruct where
     [] -> pString "AnyType"
     tx -> pList (pString "type") "(" ", " ")" (map pPrint tx)
 
--- binary 0x2D 
+-- binary 0x33 
 instance B.Binary TypeStruct mtab where
-  put (TypeStruct o) = B.prefixByte 0x2D $ B.put o
+  put (TypeStruct o) = B.prefixByte 0x33 $ B.put o
   get = B.word8PrefixTable <|> fail "expecting TypeStruct"
 
 instance B.HasPrefixTable TypeStruct B.Byte mtab where
-  prefixTable = B.mkPrefixTableWord8 "TypeStruct" 0x2D 0x2D [TypeStruct <$> B.get]
+  prefixTable = B.mkPrefixTableWord8 "TypeStruct" 0x33 0x33 [TypeStruct <$> B.get]
 
 instance HasRandGen TypeStruct where
   randO    = _randTrace "TypeStruct" $ TypeStruct <$> randList 0 4
@@ -2347,13 +2347,13 @@ instance PPrintable ObjType where
       [] -> pString "VoidType"
       tx -> pList (pString "anyOf") "(" ", " ")" (map pPrint tx)
 
--- binary 0x2E 
+-- binary 0x37 
 instance B.Binary ObjType mtab where
-  put (ObjType o) = B.prefixByte 0x2E $ B.put o
+  put (ObjType o) = B.prefixByte 0x37 $ B.put o
   get = B.word8PrefixTable <|> fail "expecting ObjType"
 
 instance B.HasPrefixTable ObjType B.Byte mtab where
-  prefixTable = B.mkPrefixTableWord8 "ObjType" 0x2E 0x2E [ObjType <$> B.get]
+  prefixTable = B.mkPrefixTableWord8 "ObjType" 0x37 0x37 [ObjType <$> B.get]
 
 instance HasRandGen ObjType where
   randO = _randTrace "ObjType" $ recurse $ ObjType <$> randList 0 3
@@ -2443,17 +2443,17 @@ instance HasRandGen RefSuffix where
     , return FuncCall  <*> defaultList 0 6 <*> pure NullRef
     ]
 
--- binary 0x36 0x39
+-- binary 0x42 0x45
 instance B.Binary RefSuffix MTab where
   put r = case r of
-    NullRef       -> B.putWord8   0x36
-    DotRef    a b -> B.prefixByte 0x37 $ B.put a >> B.put b
-    Subscript a b -> B.prefixByte 0x38 $ B.put a >> B.put b
-    FuncCall  a b -> B.prefixByte 0x39 $ B.put a >> B.put b
+    NullRef       -> B.putWord8   0x42
+    DotRef    a b -> B.prefixByte 0x43 $ B.put a >> B.put b
+    Subscript a b -> B.prefixByte 0x44 $ B.put a >> B.put b
+    FuncCall  a b -> B.prefixByte 0x45 $ B.put a >> B.put b
   get = B.word8PrefixTable <|> fail "expecting RefSuffix"
 
 instance B.HasPrefixTable RefSuffix B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "RefSuffix" 0x36 0x39 $
+  prefixTable = B.mkPrefixTableWord8 "RefSuffix" 0x42 0x45 $
     [ return NullRef
     , pure DotRef    <*> B.get <*> B.get
     , pure Subscript <*> B.get <*> B.get
@@ -3840,10 +3840,10 @@ instance HasLocation CodeBlock where
   setLocation o _ = o
   delLocation o = CodeBlock (fmap delLocation (codeBlock o))
 
--- binary 0x98 
+-- binary 0xDD 
 instance B.Binary CodeBlock MTab where
-  put (CodeBlock o) = B.prefixByte 0x98 $ B.put o
-  get = B.tryWord8 0x98 $ CodeBlock <$> B.get
+  put (CodeBlock o) = B.prefixByte 0xDD $ B.put o
+  get = B.tryWord8 0xDD $ CodeBlock <$> B.get
 
 instance PPrintable CodeBlock where { pPrint = pPrintInterm }
 
@@ -4108,16 +4108,16 @@ instance PPrintable a => PPrintable (TyChkExpr a) where
     TypeChecked    a expr _ -> pInline [pPrint a, pString ": ", pPrint expr]
     DisableCheck   a  _ _ _ -> pInline [pPrint a]
 
--- binary 0x89 0x8B
+-- binary 0xC5 0xC7
 instance B.Binary a MTab => B.Binary (TyChkExpr a) MTab where
   put o = case o of
-    NotTypeChecked a       -> B.prefixByte 0x89 $ B.put a
-    TypeChecked    a b c   -> B.prefixByte 0x8A $ B.put a >> B.put b >> B.put c
-    DisableCheck   a b c d -> B.prefixByte 0x8B $ B.put a >> B.put b >> B.put c >> B.put d
+    NotTypeChecked a       -> B.prefixByte 0xC5 $ B.put a
+    TypeChecked    a b c   -> B.prefixByte 0xC6 $ B.put a >> B.put b >> B.put c
+    DisableCheck   a b c d -> B.prefixByte 0xC7 $ B.put a >> B.put b >> B.put c >> B.put d
   get = B.word8PrefixTable <|> fail "expecting TyChkExpr"
 
 instance B.Binary a MTab => B.HasPrefixTable (TyChkExpr a) B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "TyChkExpr" 0x89 0x8B $
+  prefixTable = B.mkPrefixTableWord8 "TyChkExpr" 0xC5 0xC7 $
     [ NotTypeChecked <$> B.get
     , pure TypeChecked  <*> B.get <*> B.get <*> B.get
     , pure DisableCheck <*> B.get <*> B.get <*> B.get <*> B.get
@@ -4233,14 +4233,14 @@ instance PPrintable ParamExpr where
 
 instance PPrintable [ParamExpr] where { pPrint lst = pList_ "(" ", " ")" (fmap pPrint lst) }
 
--- binary 0x90 0x91
+-- binary 0xCF 0xD0
 instance B.Binary ParamExpr MTab where
-  put (ParamExpr True  a b) = B.prefixByte 0x90 $ B.put a >> B.put b
-  put (ParamExpr False a b) = B.prefixByte 0x91 $ B.put a >> B.put b
+  put (ParamExpr True  a b) = B.prefixByte 0xCF $ B.put a >> B.put b
+  put (ParamExpr False a b) = B.prefixByte 0xD0 $ B.put a >> B.put b
   get = B.word8PrefixTable <|> fail "expecting ParamExpr"
 
 instance B.HasPrefixTable ParamExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "ParamExpr" 0x90 0x91 $
+  prefixTable = B.mkPrefixTableWord8 "ParamExpr" 0xCF 0xD0 $
     [ pure (ParamExpr True ) <*> B.get <*> B.get
     , pure (ParamExpr False) <*> B.get <*> B.get
     ]
@@ -4347,13 +4347,13 @@ instance HasNullValue ParamListExpr where
   testNull (ParamListExpr (NotTypeChecked []) _) = True
   testNull _ = False
 
--- binary 0x94 
+-- binary 0xD6 
 instance B.Binary ParamListExpr MTab where
-  put (ParamListExpr tyChk loc) = B.prefixByte 0x94 $ B.put tyChk >> B.put loc
+  put (ParamListExpr tyChk loc) = B.prefixByte 0xD6 $ B.put tyChk >> B.put loc
   get = B.word8PrefixTable <|> fail "expecting ParamListExpr"
 
 instance B.HasPrefixTable ParamListExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "ParamListExpr" 0x94 0x94 $ [pure ParamListExpr <*> B.get <*> B.get]
+  prefixTable = B.mkPrefixTableWord8 "ParamListExpr" 0xD6 0xD6 $ [pure ParamListExpr <*> B.get <*> B.get]
 
 instance HasLocation ParamListExpr where
   getLocation (ParamListExpr _ loc)     = loc
@@ -4446,15 +4446,15 @@ instance NFData RuleHeadExpr where
   rnf (RuleStringExpr a b) = deepseq a $! deepseq b ()
   rnf (RuleHeadExpr     a b) = deepseq a $! deepseq b ()
 
--- binary 0x56 0x57
+-- binary 0x7A 0x7B
 instance B.Binary RuleHeadExpr MTab where
   put o = case o of
-    RuleStringExpr a b -> B.prefixByte 0x56 $ B.put a >> B.put b
-    RuleHeadExpr   a b -> B.prefixByte 0x57 $ B.put a >> B.put b
+    RuleStringExpr a b -> B.prefixByte 0x7A $ B.put a >> B.put b
+    RuleHeadExpr   a b -> B.prefixByte 0x7B $ B.put a >> B.put b
   get = B.word8PrefixTable <|> fail "expecting RuleHeadExpr"
 
 instance B.HasPrefixTable RuleHeadExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "RuleHeadExpr" 0x56 0x57
+  prefixTable = B.mkPrefixTableWord8 "RuleHeadExpr" 0x7A 0x7B
     [ pure RuleStringExpr <*> B.get <*> B.get
     , pure RuleHeadExpr   <*> B.get <*> B.get
     ]
@@ -5200,28 +5200,28 @@ instance UStrType UpdateOp where
 
 instance PPrintable UpdateOp where { pPrint op = pString (' ':uchars op++" ") }
 
--- binary 0x60 0x70 UpdateOp-->InfixOp
+-- binary 0x8D 0x9D UpdateOp-->InfixOp
 instance B.Binary UpdateOp MTab where
   put o = B.putWord8 $ case o of
-    UCONST -> 0x60
-    UADD   -> 0x66
-    USUB   -> 0x67
-    UMULT  -> 0x68
-    UDIV   -> 0x69
-    UMOD   -> 0x6A
-    UPOW   -> 0x6B
-    UORB   -> 0x6C
-    UANDB  -> 0x6D
-    UXORB  -> 0x6E
-    USHL   -> 0x6F
-    USHR   -> 0x70
+    UCONST -> 0x8D
+    UADD   -> 0x93
+    USUB   -> 0x94
+    UMULT  -> 0x95
+    UDIV   -> 0x96
+    UMOD   -> 0x97
+    UPOW   -> 0x98
+    UORB   -> 0x99
+    UANDB  -> 0x9A
+    UXORB  -> 0x9B
+    USHL   -> 0x9C
+    USHR   -> 0x9D
   get = B.word8PrefixTable <|> fail "expecting UpdateOp"
 instance B.HasPrefixTable UpdateOp B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "UpdateOp" 0x60 0x70 $ let {r=return;z=mzero} in
-    [ r UCONST -- 60
-    , z, z, z, z, z -- 61,62,63,64,65
-    , r UADD, r USUB, r UMULT, r UDIV, r UMOD, r UPOW, r UORB -- 66,67,68,69,6A,6B,6C
-    , r UANDB, r UXORB, r USHL, r USHR -- 6D,6E,6F,70
+  prefixTable = B.mkPrefixTableWord8 "UpdateOp" 0x8D 0x9D $ let {r=return;z=mzero} in
+    [ r UCONST -- 0x8D
+    , z, z, z, z, z -- 0x8E,0x8F,0x90,0x91,0x92
+    , r UADD, r USUB, r UMULT, r UDIV, r UMOD, r UPOW, r UORB -- 0x93,0x94,0x95,0x96,0x97,0x98,0x99
+    , r UANDB, r UXORB, r USHL, r USHR -- 0x9A,0x9B,0x9C,0x9D
     ]
 
 instance HasRandGen UpdateOp where
@@ -5295,18 +5295,18 @@ instance UStrType ArithPfxOp where
 
 instance PPrintable ArithPfxOp where { pPrint = pUStr . toUStr }
 
--- binary 0x61 0x6E
+-- binary 0x8E 0x9B
 instance B.Binary ArithPfxOp MTab where
-  put o = B.putWord8 $ case o of { INVB -> 0x6E; NOT -> 0x61; NEGTIV -> 0x67; POSTIV -> 0x66 }
+  put o = B.putWord8 $ case o of { INVB -> 0x9B; NOT -> 0x8E; NEGTIV -> 0x94; POSTIV -> 0x93 }
   get = B.word8PrefixTable <|> fail "expecting ArithPfxOp"
 
 instance B.HasPrefixTable ArithPfxOp B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "ArithPfxOp" 0x61 0x72 $ let {r=return;z=mzero} in
-    [ r NOT -- 61
-    , z, z, z, z -- 62,63,64,65
-    , r POSTIV, r NEGTIV -- 66,67
-    , z, z, z, z, z, z -- 68,69,6A,6B,6C,6D
-    , r INVB -- 6E
+  prefixTable = B.mkPrefixTableWord8 "ArithPfxOp" 0x8E 0x9F $ let {r=return;z=mzero} in
+    [ r NOT -- 0x8E
+    , z, z, z, z -- 0x8F,0x90,0x91,0x92
+    , r POSTIV, r NEGTIV -- 0x93,0x94
+    , z, z, z, z, z, z -- 0x95,0x96,0x97,0x98,0x99,0x9A
+    , r INVB -- 0x9B
     ]
 
 instance HasRandGen ArithPfxOp where
@@ -5386,24 +5386,24 @@ infixOpCommutativity = (arr !) where
     , (ARROW, False)
     ]
 
--- binary 0x60 0x73
+-- binary 0x8D 0xA0
 instance B.Binary InfixOp MTab where
   put o = B.putWord8 $ case o of
-    { EQUL -> 0x60; NEQUL -> 0x61; GTN  -> 0x62; LTN   -> 0x63; GTEQ -> 0x64; LTEQ -> 0x65
-    ; ADD  -> 0x66; SUB   -> 0x67; MULT -> 0x68; DIV   -> 0x69
-    ; MOD  -> 0x6A; POW   -> 0x6B; ORB  -> 0x6C; ANDB  -> 0x6D
-    ; XORB -> 0x6E; SHL   -> 0x6F; SHR  -> 0x70; ARROW -> 0x71
-    ; OR   -> 0x72; AND   -> 0x73 } 
+    { EQUL -> 0x8D; NEQUL -> 0x8E; GTN  -> 0x8F; LTN   -> 0x90; GTEQ -> 0x91; LTEQ -> 0x92
+    ; ADD  -> 0x93; SUB   -> 0x94; MULT -> 0x95; DIV   -> 0x96
+    ; MOD  -> 0x97; POW   -> 0x98; ORB  -> 0x99; ANDB  -> 0x9A
+    ; XORB -> 0x9B; SHL   -> 0x9C; SHR  -> 0x9D; ARROW -> 0x9E
+    ; OR   -> 0x9F; AND   -> 0xA0 } 
   get = B.word8PrefixTable <|> fail "expecting InfixOp"
 
 -- The byte prefixes overlap with the update operators of similar function to
 -- the operators, except for the comparison opeators (EQUL, NEQUL, GTN, LTN,
 -- GTEQ, LTEQ) which overlap with the prefix operators (INVB, NOT, NEGTIV, POSTIV, REF, DEREF)
 instance B.HasPrefixTable InfixOp B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "InfixOp" 0x60 0x73 $ let {r=return} in
-    [ r EQUL , r NEQUL, r GTN , r LTN, r GTEQ , r LTEQ -- 60,61,62,63,64,65
-    , r ADD  , r SUB  , r MULT, r DIV, r MOD  , r POW  , r ORB -- 66,67,68,69,6A,6B,6C
-    , r ANDB , r XORB , r SHL , r SHR, r ARROW, r OR   , r AND -- 6D,6E,6F,70,71,72,73
+  prefixTable = B.mkPrefixTableWord8 "InfixOp" 0x8D 0xA0 $ let {r=return} in
+    [ r EQUL , r NEQUL, r GTN , r LTN, r GTEQ , r LTEQ -- 0x8D,0x8E,0x8F,0x90,0x91,0x92
+    , r ADD  , r SUB  , r MULT, r DIV, r MOD  , r POW  , r ORB -- 0x93,0x94,0x95,0x96,0x97,0x98,0x99
+    , r ANDB , r XORB , r SHL , r SHR, r ARROW, r OR   , r AND -- 0x9A,0x9B,0x9C,0x9D,0x9E,0x9F,0xA0
     ]
 
 instance HasRandGen InfixOp where
@@ -5687,17 +5687,17 @@ instance HasLocation RefSuffixExpr where
     SubscriptExpr a b     -> SubscriptExpr a (delLocation b)
     FuncCallExpr  a b     -> FuncCallExpr  a (delLocation b)
 
--- binary 0x36 0x39 RefSuffixExpr-->RefSuffix
+-- binary 0x42 0x45 RefSuffixExpr-->RefSuffix
 instance B.Binary RefSuffixExpr MTab where
   put o = case o of
-    NullRefExpr         -> B.putWord8   0x36
-    DotRefExpr    a b c -> B.prefixByte 0x37 $ B.put a >> B.put b >> B.put c
-    SubscriptExpr a b   -> B.prefixByte 0x38 $ B.put a >> B.put b
-    FuncCallExpr  a b   -> B.prefixByte 0x39 $ B.put a >> B.put b
+    NullRefExpr         -> B.putWord8   0x42
+    DotRefExpr    a b c -> B.prefixByte 0x43 $ B.put a >> B.put b >> B.put c
+    SubscriptExpr a b   -> B.prefixByte 0x44 $ B.put a >> B.put b
+    FuncCallExpr  a b   -> B.prefixByte 0x45 $ B.put a >> B.put b
   get = B.word8PrefixTable <|> fail "expecting RefSuffixExpr"
 
 instance B.HasPrefixTable RefSuffixExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "RefSuffixExpr" 0x36 0x39 $
+  prefixTable = B.mkPrefixTableWord8 "RefSuffixExpr" 0x42 0x45 $
     [ return NullRefExpr
     , return DotRefExpr    <*> B.get <*> B.get <*> B.get
     , return SubscriptExpr <*> B.get <*> B.get
@@ -5955,12 +5955,12 @@ instance NFData ParenExpr where { rnf (ParenExpr a b) = deepseq a $! deepseq b (
 
 instance PPrintable ParenExpr where { pPrint = pPrintInterm }
 
--- binary 0x44 
+-- binary 0x59 
 instance B.Binary ParenExpr MTab where
-  put (ParenExpr a b) = B.prefixByte 0x44 $ B.put a >> B.put b
+  put (ParenExpr a b) = B.prefixByte 0x59 $ B.put a >> B.put b
   get = B.word8PrefixTable <|> fail "expecting ParenExpr"
 instance B.HasPrefixTable ParenExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "ParenExpr" 0x44 0x44 $
+  prefixTable = B.mkPrefixTableWord8 "ParenExpr" 0x59 0x59 $
     [pure ParenExpr <*> B.get <*> B.get]
 
 instance Executable ParenExpr (Maybe Object) where { execute (ParenExpr a _) = execute a }
@@ -6102,10 +6102,10 @@ instance HasLocation ElseExpr where
   setLocation (ElseExpr a _  ) loc = ElseExpr a loc
   delLocation (ElseExpr a _  )     = ElseExpr (delLocation a) LocationUnknown
 
--- binary 0x83 
+-- binary 0xB6 
 instance B.Binary ElseExpr MTab where
-  put (ElseExpr a b) = B.prefixByte 0x83 $ B.put a >> B.put b
-  get = (B.tryWord8 0x83 $ pure ElseExpr <*> B.get <*> B.get) <|> fail "expecting ElseExpr"
+  put (ElseExpr a b) = B.prefixByte 0xB6 $ B.put a >> B.put b
+  get = (B.tryWord8 0xB6 $ pure ElseExpr <*> B.get <*> B.get) <|> fail "expecting ElseExpr"
 
 instance Executable ElseExpr Bool where { execute (ElseExpr ifn _) = execute ifn }
 
@@ -6177,13 +6177,13 @@ instance HasLocation IfElseExpr where
   delLocation (IfElseExpr a b c _  )     =
     IfElseExpr (delLocation a) (fmap delLocation b) (fmap delLocation c) LocationUnknown
 
--- binary 0x84 
+-- binary 0xBA 
 instance B.Binary IfElseExpr MTab where
-  put (IfElseExpr a b c d) = B.prefixByte 0x84 $ B.put a >> B.put b >> B.put c >> B.put d
+  put (IfElseExpr a b c d) = B.prefixByte 0xBA $ B.put a >> B.put b >> B.put c >> B.put d
   get = B.word8PrefixTable <|> fail "expecting IfElseExpr"
 
 instance B.HasPrefixTable IfElseExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "IfElseExpr" 0x84 0x84 $
+  prefixTable = B.mkPrefixTableWord8 "IfElseExpr" 0xBA 0xBA $
     [pure IfElseExpr <*> B.get <*> B.get <*> B.get <*> B.get]
 
 instance Executable IfElseExpr () where
@@ -6283,7 +6283,7 @@ instance B.Binary WhileExpr MTab where
   get = B.word8PrefixTable <|> fail "expecting WhileExpr"
 
 instance B.HasPrefixTable WhileExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "WhileExpr" 0x85 0x85 [WhileExpr <$> B.get]
+  prefixTable = B.mkPrefixTableWord8 "WhileExpr" 0xBE 0xBE [WhileExpr <$> B.get]
 
 instance Executable WhileExpr () where
   execute (WhileExpr ifn) = let loop = execute ifn >>= flip when loop in loop
@@ -6402,20 +6402,20 @@ instance HasLocation ScriptExpr where
       fd :: HasLocation a => a -> a
       fd = delLocation
 
--- binary 0x78 0x7F
+-- binary 0xA8 0xAF
 instance B.Binary ScriptExpr MTab where
   put o = case o of
     IfThenElse   a           -> B.put a
     WhileLoop    a           -> B.put a
     RuleFuncExpr a           -> B.put a
-    EvalObject   a         z -> B.prefixByte 0x78 $ B.put a >> B.put z
-    TryCatch     a     b c z -> B.prefixByte 0x79 $ B.put a >> B.put b >> B.put c >> B.put z
-    ForLoop      a     b c z -> B.prefixByte 0x7A $ B.put a >> B.put b >> B.put c >> B.put z
-    ContinueExpr True  b   z -> B.prefixByte 0x7B $ B.put b >> B.put z
-    ContinueExpr False b   z -> B.prefixByte 0x7C $ B.put b >> B.put z
-    ReturnExpr   True  b   z -> B.prefixByte 0x7D $ B.put b >> B.put z
-    ReturnExpr   False b   z -> B.prefixByte 0x7E $ B.put b >> B.put z
-    WithDoc      a     b   z -> B.prefixByte 0x7F $ B.put a >> B.put b >> B.put z
+    EvalObject   a         z -> B.prefixByte 0xA8 $ B.put a >> B.put z
+    TryCatch     a     b c z -> B.prefixByte 0xA9 $ B.put a >> B.put b >> B.put c >> B.put z
+    ForLoop      a     b c z -> B.prefixByte 0xAA $ B.put a >> B.put b >> B.put c >> B.put z
+    ContinueExpr True  b   z -> B.prefixByte 0xAB $ B.put b >> B.put z
+    ContinueExpr False b   z -> B.prefixByte 0xAC $ B.put b >> B.put z
+    ReturnExpr   True  b   z -> B.prefixByte 0xAD $ B.put b >> B.put z
+    ReturnExpr   False b   z -> B.prefixByte 0xAE $ B.put b >> B.put z
+    WithDoc      a     b   z -> B.prefixByte 0xAF $ B.put a >> B.put b >> B.put z
   get = B.word8PrefixTable <|> fail "expecting ScriptExpr"
 
 instance B.HasPrefixTable ScriptExpr B.Byte MTab where
@@ -6423,7 +6423,7 @@ instance B.HasPrefixTable ScriptExpr B.Byte MTab where
     [ fmap IfThenElse B.prefixTable
     , fmap WhileLoop  B.prefixTable
     , fmap RuleFuncExpr B.prefixTable
-    , B.mkPrefixTableWord8 "ScriptExpr" 0x78 0x7F $ -- 59 5A 5B 5C 5D 5E 5F 60
+    , B.mkPrefixTableWord8 "ScriptExpr" 0xA8 0xAF $ -- 0x89 0x8A 0x8B 0x8C 0x8D 0x8E 0x8F 0x90
         [ pure EvalObject   <*> B.get <*> B.get
         , pure TryCatch     <*> B.get <*> B.get <*> B.get <*> B.get
         , pure ForLoop      <*> B.get <*> B.get <*> B.get <*> B.get
@@ -6812,10 +6812,10 @@ instance HasLocation ObjListExpr where
   setLocation (ObjListExpr a _  ) loc = ObjListExpr (fmap delLocation a) loc
   delLocation (ObjListExpr a _  )     = ObjListExpr (fmap delLocation a) LocationUnknown
 
--- binary 0x5C 
+-- binary 0x86 
 instance B.Binary ObjListExpr MTab where
-  put (ObjListExpr lst loc) = B.prefixByte 0x5C $ B.putUnwrapped lst >> B.put loc
-  get = (B.tryWord8 0x5C $ pure ObjListExpr <*> B.getUnwrapped <*> B.get) <|> fail "expecting ObjListExpr"
+  put (ObjListExpr lst loc) = B.prefixByte 0x86 $ B.putUnwrapped lst >> B.put loc
+  get = (B.tryWord8 0x86 $ pure ObjListExpr <*> B.getUnwrapped <*> B.get) <|> fail "expecting ObjListExpr"
 
 instance Executable ObjListExpr [(Location, Reference)] where
   execute (ObjListExpr exprs loc) = mapM (fmap ((,) loc) . reduceToRef) exprs
@@ -7053,11 +7053,11 @@ instance HasLocation DotLabelExpr where
   delLocation (DotLabelExpr n nx _  )     = DotLabelExpr n nx LocationUnknown
 
 instance B.Binary DotLabelExpr MTab where
-  put (DotLabelExpr n nx loc) = B.prefixByte 0x5A $ B.put n >> B.put nx >> B.put loc
+  put (DotLabelExpr n nx loc) = B.prefixByte 0x81 $ B.put n >> B.put nx >> B.put loc
   get = B.word8PrefixTable <|> fail "expecting DotLabelExpr"
 
 instance B.HasPrefixTable DotLabelExpr Word8 MTab where
-  prefixTable = B.mkPrefixTableWord8 "DotLabelExpr" 0x5A 0x5A $
+  prefixTable = B.mkPrefixTableWord8 "DotLabelExpr" 0x81 0x81 $
     [return DotLabelExpr <*> B.get <*> B.get <*> B.get]
 
 instance PPrintable DotLabelExpr where { pPrint = pPrintInterm }
@@ -7165,17 +7165,17 @@ instance HasLocation ReferenceExpr where
 
 instance PPrintable ReferenceExpr where { pPrint = pPrintInterm }
 
--- binary 0x39 0x3F ReferenceExpr-->Reference
+-- binary 0x3C 0x42 ReferenceExpr-->Reference
 instance B.Binary ReferenceExpr MTab where
   put qref = case qref of
     ReferenceExpr q n r loc -> prefix q $ B.put n >> B.put r >> B.put loc where
       prefix q = B.prefixByte $ case q of
-        { UNQUAL -> 0x39; LOCAL -> 0x3A; CONST -> 0x3B; STATIC -> 0x3C; GLOBAL -> 0x3D; GLODOT -> 0x3E; }
-    RefObjectExpr o r loc -> B.putWord8 0x3F >> B.put o >> B.put r >> B.put loc
+        { UNQUAL -> 0x48; LOCAL -> 0x49; CONST -> 0x4A; STATIC -> 0x4B; GLOBAL -> 0x4C; GLODOT -> 0x4D; }
+    RefObjectExpr o r loc -> B.putWord8 0x4E >> B.put o >> B.put r >> B.put loc
   get = B.word8PrefixTable <|> fail "expecting Reference"
 
 instance B.HasPrefixTable ReferenceExpr Word8 MTab where
-  prefixTable = B.mkPrefixTableWord8 "ReferenceExpr" 0x39 0x3F $
+  prefixTable = B.mkPrefixTableWord8 "ReferenceExpr" 0x48 0x4E $
     [ f UNQUAL, f LOCAL, f CONST, f STATIC, f GLOBAL, f GLODOT
     , return RefObjectExpr <*> B.get <*> B.get <*> B.get
     ] where { f q = return (ReferenceExpr q) <*> B.get <*> B.get <*> B.get }
@@ -7303,18 +7303,18 @@ instance HasLocation RefPrefixExpr where
     PlainRefExpr  a     -> PlainRefExpr $ delLocation a
     RefPrefixExpr a b _ -> RefPrefixExpr a (delLocation b) lu
 
--- binary 0x40 0x41
+-- binary 0x52 0x53
 instance B.Binary RefPrefixExpr MTab where
   put o = case o of
     PlainRefExpr  a     -> B.put a
     RefPrefixExpr a b z -> let f = B.put b >> B.put z in case a of
-      REF   -> B.prefixByte 0x40 f
-      DEREF -> B.prefixByte 0x41 f
+      REF   -> B.prefixByte 0x52 f
+      DEREF -> B.prefixByte 0x53 f
   get = B.word8PrefixTable <|> fail "expecting RefPrefixExpr"
 
 instance B.HasPrefixTable RefPrefixExpr Word8 MTab where
   prefixTable = fmap PlainRefExpr B.prefixTable <>
-    (B.mkPrefixTableWord8 "RefPrefixExpr" 0x40 0x41 $
+    (B.mkPrefixTableWord8 "RefPrefixExpr" 0x52 0x53 $
       let f q = return (RefPrefixExpr q) <*> B.get <*> B.get in [f REF, f DEREF])
 
 instance Executable RefPrefixExpr (Maybe Object) where
@@ -7472,16 +7472,16 @@ instance HasLocation RuleFuncExpr where
 
 instance PPrintable RuleFuncExpr where { pPrint = pPrintInterm }
 
--- binary 0x53 0x55
+-- binary 0x74 0x76
 instance B.Binary RuleFuncExpr MTab where
   put o = case o of
-    LambdaExpr a b   z -> B.prefixByte 0x53 $ B.put a >> B.put b >> B.put z
-    FuncExpr   a b c z -> B.prefixByte 0x54 $ B.put a >> B.put b >> B.put c >> B.put z
-    RuleExpr   a b   z -> B.prefixByte 0x55 $ B.put a >> B.put b >> B.put z
+    LambdaExpr a b   z -> B.prefixByte 0x74 $ B.put a >> B.put b >> B.put z
+    FuncExpr   a b c z -> B.prefixByte 0x75 $ B.put a >> B.put b >> B.put c >> B.put z
+    RuleExpr   a b   z -> B.prefixByte 0x76 $ B.put a >> B.put b >> B.put z
   get = B.word8PrefixTable <|> fail "expecting RuleFuncExpr"
 
 instance B.HasPrefixTable RuleFuncExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "RuleFuncExpr" 0x53 0x55 $
+  prefixTable = B.mkPrefixTableWord8 "RuleFuncExpr" 0x74 0x76 $
     [ pure LambdaExpr <*> B.get <*> B.get <*> B.get
     , pure FuncExpr   <*> B.get <*> B.get <*> B.get <*> B.get
     , pure RuleExpr   <*> B.get <*> B.get <*> B.get
@@ -7669,18 +7669,18 @@ instance HasLocation ObjectExpr where
 
 instance PPrintable ObjectExpr where { pPrint = pPrintInterm }
 
--- binary 0x48 0x4D
+-- binary 0x60 0x65
 instance B.Binary ObjectExpr MTab where
   put o = case o of
     ObjSingleExpr   a       -> B.put a
     ObjLiteralExpr  a       -> B.put a
     ObjRuleFuncExpr a       -> B.put a
-    VoidExpr                -> B.putWord8   0x48
-    ArithPfxExpr    a b   z -> B.prefixByte 0x49 $ B.put a >> B.put b >> B.put z
+    VoidExpr                -> B.putWord8   0x60
+    ArithPfxExpr    a b   z -> B.prefixByte 0x61 $ B.put a >> B.put b >> B.put z
     --ConditionExpr
-    InitExpr        a b c z -> B.prefixByte 0x4B $ B.put a >> B.put b >> B.put c >> B.put z
-    StructExpr      a b   z -> B.prefixByte 0x4C $ B.put a >> B.put b >> B.put z
-    MetaEvalExpr    a     z -> B.prefixByte 0x4D $ B.put a >> B.put z
+    InitExpr        a b c z -> B.prefixByte 0x63 $ B.put a >> B.put b >> B.put c >> B.put z
+    StructExpr      a b   z -> B.prefixByte 0x64 $ B.put a >> B.put b >> B.put z
+    MetaEvalExpr    a     z -> B.prefixByte 0x65 $ B.put a >> B.put z
   get = B.word8PrefixTable <|> fail "expecting ObjectExpr"
 
 instance B.HasPrefixTable ObjectExpr B.Byte MTab where
@@ -7688,7 +7688,7 @@ instance B.HasPrefixTable ObjectExpr B.Byte MTab where
     [ ObjLiteralExpr  <$> B.prefixTable
     , ObjSingleExpr   <$> B.prefixTable
     , ObjRuleFuncExpr <$> B.prefixTable
-    , B.mkPrefixTableWord8 "ObjectExpr" 0x48 0x4D $
+    , B.mkPrefixTableWord8 "ObjectExpr" 0x60 0x65 $
         [ return VoidExpr
         , pure ArithPfxExpr <*> B.get <*> B.get <*> B.get
         , mzero -- ConditionExpr
@@ -7991,16 +7991,16 @@ instance HasLocation ArithExpr where
 
 instance PPrintable ArithExpr where { pPrint = pPrintInterm }
 
--- binary 0x4F 
+-- binary 0x6A 
 instance B.Binary ArithExpr MTab where
   put o = case o of
     ObjectExpr  a     -> B.put a
-    ArithExpr a b c z -> B.prefixByte 0x4F $ B.put a >> B.put b >> B.put c >> B.put z
+    ArithExpr a b c z -> B.prefixByte 0x6A $ B.put a >> B.put b >> B.put c >> B.put z
   get = B.word8PrefixTable <|> fail "expecting arithmetic expression"
 
 instance B.HasPrefixTable ArithExpr B.Byte MTab where
   prefixTable = mappend (ObjectExpr <$> B.prefixTable) $
-    B.mkPrefixTableWord8 "ArithExpr" 0x4F 0x4F $
+    B.mkPrefixTableWord8 "ArithExpr" 0x6A 0x6A $
       [pure ArithExpr <*> B.get <*> B.get <*> B.get <*> B.get]
 
 instance Executable ArithExpr (Maybe Object) where
@@ -8180,16 +8180,16 @@ instance HasLocation AssignExpr where
 
 instance PPrintable AssignExpr where { pPrint = pPrintInterm }
 
--- binary 0x51 
+-- binary 0x6F 
 instance B.Binary AssignExpr MTab where
   put o = case o of
     EvalExpr   a       -> B.put a
-    AssignExpr a b c z -> B.prefixByte 0x51 $ B.put a >> B.put b >> B.put c >> B.put z
+    AssignExpr a b c z -> B.prefixByte 0x6F $ B.put a >> B.put b >> B.put c >> B.put z
   get = B.word8PrefixTable <|> fail "expecting AssignExpr"
 
 instance B.HasPrefixTable AssignExpr B.Byte MTab where
   prefixTable = mappend (EvalExpr <$> B.prefixTable) $
-    B.mkPrefixTableWord8 "AssignExpr" 0x51 0x51 $
+    B.mkPrefixTableWord8 "AssignExpr" 0x6F 0x6F $
       [pure AssignExpr <*> B.get <*> B.get <*> B.get <*> B.get]
 
 _executeAssignExpr
@@ -8361,18 +8361,18 @@ instance HasLocation TopLevelExpr where
 
 instance PPrintable TopLevelExpr where { pPrint = pPrintInterm }
 
--- binary 0xA1 0xA5
+-- binary 0xE9 0xED
 instance B.Binary TopLevelExpr MTab where
   put o = case o of
-    Attribute a             b z -> B.prefixByte 0xA1 $ B.put a >> B.put b >> B.put z
-    TopScript a               z -> B.prefixByte 0xA2 $ B.put a >> B.put z
-    EventExpr BeginExprType b z -> B.prefixByte 0xA3 $ B.put b >> B.put z
-    EventExpr ExitExprType  b z -> B.prefixByte 0xA4 $ B.put b >> B.put z
-    EventExpr EndExprType   b z -> B.prefixByte 0xA5 $ B.put b >> B.put z
+    Attribute a             b z -> B.prefixByte 0xE9 $ B.put a >> B.put b >> B.put z
+    TopScript a               z -> B.prefixByte 0xEA $ B.put a >> B.put z
+    EventExpr BeginExprType b z -> B.prefixByte 0xEB $ B.put b >> B.put z
+    EventExpr ExitExprType  b z -> B.prefixByte 0xEC $ B.put b >> B.put z
+    EventExpr EndExprType   b z -> B.prefixByte 0xED $ B.put b >> B.put z
   get = B.word8PrefixTable <|> fail "expecting TopLevelExpr"
 
 instance B.HasPrefixTable TopLevelExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "TopLevelExpr" 0xA1 0xA5 $
+  prefixTable = B.mkPrefixTableWord8 "TopLevelExpr" 0xE9 0xED $
     [ pure Attribute <*> B.get <*> B.get <*> B.get
     , pure TopScript <*> B.get <*> B.get
     , pure (EventExpr BeginExprType) <*> B.get <*> B.get

@@ -662,6 +662,22 @@ arithmeticPTab = bindPTable objectPTab $ \o ->
 arithmetic :: DaoParser AST_Arith
 arithmetic = joinEvalPTable arithmeticPTab
 
+objTestPTab :: DaoPTable AST_ObjTest
+objTestPTab = bindPTable arithmeticPTab $ \a -> do
+  bufferComments
+  flip mplus (return $ AST_ObjArith a) $ do
+    qmark <- commented (tokenBy "?" as0)
+    expect "arithmetic expression after (?) operator" $ do
+      b <- arithmetic
+      bufferComments
+      expect "(:) operator and arithmetic expression after (?) operator" $ do
+        coln <- commented (tokenBy ":" as0)
+        c <- arithmetic
+        return $ AST_ObjTest a qmark b coln c (getLocation a <> getLocation c)
+
+objTest :: DaoParser AST_ObjTest
+objTest = joinEvalPTable objTestPTab
+
 assignmentWithInit :: DaoParser AST_Assign -> DaoParser AST_Assign
 assignmentWithInit init = 
   simpleInfixedWithInit "object expression for assignment operator" rightAssoc
@@ -670,7 +686,7 @@ assignmentWithInit init =
         left          -> left
     )
     (bufferComments >> init)
-    (fmap AST_Eval arithmetic)
+    (fmap AST_Eval objTest)
     (pure (,) <*> look1 asLocation <*> commented (joinEvalPTable opTab))
   where
     opTab :: DaoPTable UpdateOp
@@ -678,7 +694,7 @@ assignmentWithInit init =
       fmap (flip tableItemBy (return . fromUStr . tokTypeToUStr . asTokType)) (words allUpdateOpStrs)
 
 assignmentPTab :: DaoPTable AST_Assign
-assignmentPTab = bindPTable arithmeticPTab (assignmentWithInit . return . AST_Eval)
+assignmentPTab = bindPTable objTestPTab (assignmentWithInit . return . AST_Eval)
 
 -- | Evaluates a sequence arithmetic expressions interspersed with assignment operators.
 assignment :: DaoParser AST_Assign
@@ -735,10 +751,15 @@ scriptPTab = comments <> objExpr <> table exprs where
   -- Object expressions should end with a semi-colon. An exception to this rule is made for rule and
   -- function constant expressions.
   objExpr = bindPTable assignmentPTab $ \o -> case o of
-    AST_Eval (AST_Object (AST_ObjRuleFunc o)) -> flip mplus (return [AST_RuleFunc o]) $ do
-      coms <- optSpace
-      loc  <- tokenBy ";" asLocation
-      return [AST_EvalObject (AST_Eval $ AST_Object $ AST_ObjRuleFunc o) coms (getLocation o <> loc)]
+    AST_Eval (AST_ObjArith (AST_Object (AST_ObjRuleFunc o))) ->
+      flip mplus (return [AST_RuleFunc o]) $ do
+        coms <- optSpace
+        loc  <- tokenBy ";" asLocation
+        return $
+          [ AST_EvalObject
+              (AST_Eval $ AST_ObjArith $ AST_Object $ AST_ObjRuleFunc o)
+                coms (getLocation o <> loc)
+          ]
     o -> do
       coms <- optSpace
       expect "semicolon after object expression" $ do

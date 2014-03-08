@@ -333,7 +333,7 @@ mkPrefixTable msg getIdx lo' hi' ser =
       else
         if 0<len && len<=hi-lo+1
         then table
-        else error ("too many prefix table items for mkPrefixTable for "++msg) where
+        else error ("too many prefix table items for mkPrefixTable for "++msg)
 
 mkPrefixTableWord8 :: String -> Byte -> Byte -> [GGet mtab a] -> PrefixTable mtab Byte a
 mkPrefixTableWord8 msg = mkPrefixTable msg getWord8

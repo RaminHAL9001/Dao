@@ -141,6 +141,7 @@ module Dao.Interpreter(
     ObjListExpr(ObjListExpr), AST_ObjList(AST_ObjList),
     OptObjListExpr(OptObjListExpr), updateExecError, AST_OptObjList(AST_OptObjList),
     LiteralExpr(LiteralExpr), AST_Literal(AST_Literal),
+    DotNameExpr(DotNameExpr), AST_DotName(AST_DotName), getDotNameAST,
     DotLabelExpr(DotLabelExpr), dotLabelToRefExpr, refToDotLabelExpr,
     AST_DotLabel(AST_DotLabel), dotLabelToRefAST, refToDotLabelAST,
     RefPrefixExpr(PlainRefExpr, RefPrefixExpr), cleanupRefPrefixExpr,
@@ -158,6 +159,8 @@ module Dao.Interpreter(
     AST_Arith(AST_Object, AST_Arith), 
     AssignExpr(EvalExpr, AssignExpr),
     AST_Assign(AST_Eval, AST_Assign), assignUnqualifiedOnly,
+    ObjTestExpr(ObjArithExpr, ObjTestExpr),
+    AST_ObjTest(AST_ObjArith, AST_ObjTest),
     TopLevelExpr(Attribute, TopScript, EventExpr), isAttribute, 
     AST_TopLevel(AST_Attribute, AST_TopScript, AST_Event, AST_TopComment),
     isAST_Attribute, attributeToList,
@@ -282,6 +285,7 @@ _randTrace _ = id
 -- 0x60..0x65 'ObjectExpr'
 -- 0x6A       'ArithExpr'
 -- 0x6F       'AssignExpr'
+-- 0x73       'ObjTestExpr'
 -- 0x74..0x76 'RuleFuncExpr'
 -- 0x7A..0x7B 'RuleHeadExpr'
 -- 0x81       'DotLabelExpr'
@@ -6584,7 +6588,7 @@ instance Executable ForLoopBlock (Bool, Maybe Object) where
         []   -> done True
         e:ex -> case e of
           ContinueExpr a cond _loc -> case cond of
-            EvalExpr (ObjectExpr VoidExpr) -> done a
+            EvalExpr (ObjArithExpr (ObjectExpr VoidExpr)) -> done a
             cond -> execute cond >>= maybe err (execute . objToBool) >>= done . (if a then id else not) where
               err = fail "expression does not evaluate to boolean"
           e -> execute e >> loop ex
@@ -6688,7 +6692,7 @@ instance PPrintable AST_Script where
       [ pString (if contin then "continue" else "break")
       , pInline (map pPrint coms)
       , case unComment cObjXp of
-          AST_Eval (AST_Object AST_Void) -> return ()
+          AST_Eval (AST_ObjArith (AST_Object AST_Void)) -> return ()
           _ -> pString " if" >> when (precedeWithSpace cObjXp) (pString " ") >> pPrint cObjXp
       , pString ";"
       ]
@@ -7042,8 +7046,58 @@ instance HaskellDataClass AST_Literal where
 
 ----------------------------------------------------------------------------------------------------
 
+newtype DotNameExpr = DotNameExpr Name deriving (Eq, Ord, Show, Typeable)
+
+instance NFData DotNameExpr where { rnf (DotNameExpr n) = deepseq n () }
+
+instance B.Binary DotNameExpr MTab where { put (DotNameExpr n) = B.put n; get = DotNameExpr <$> B.get; }
+
+instance PPrintable DotNameExpr where { pPrint (DotNameExpr n) = pPrint n }
+
+instance ObjectClass DotNameExpr where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass DotNameExpr where
+  haskellDataInterface = interface (DotNameExpr undefined) $ do
+    autoDefEquality >> autoDefBinaryFmt >> autoDefPPrinter
+
+-- | A 'DotName' is simply a ".name" expression in the Dao language. It is a component of the
+-- 'DotLabelExpr' and 'AST_DotLabel' data types.
+data AST_DotName = AST_DotName (Com ()) Name deriving (Eq, Ord, Show, Typeable)
+
+getDotNameAST :: AST_DotName -> Name
+getDotNameAST (AST_DotName _ n) = n
+
+instance NFData AST_DotName where { rnf (AST_DotName a b) = deepseq a $! deepseq b () }
+
+instance PPrintable AST_DotName where
+  pPrint (AST_DotName c n) = pInline [pPrintComWith (\ () -> pString ".") c, pPrint n]
+
+instance ToDaoStructClass AST_DotName where
+  toDaoStruct = ask >>= \ (AST_DotName coms n) -> do
+    renameConstructor "DotName"
+    void $ case coms of
+      Com () -> "name" .= n
+      coms   -> "comments" .= coms >> "name" .= n
+
+instance FromDaoStructClass AST_DotName where
+  fromDaoStruct = constructor "DotName" >>
+    return AST_DotName <*> (maybe (Com ()) id <$> opt "comments") <*> req "name"
+
+instance Intermediate DotNameExpr AST_DotName where
+  toInterm   (AST_DotName _ n) = [DotNameExpr n]
+  fromInterm (DotNameExpr   n) = [AST_DotName (Com ()) n]
+
+instance ObjectClass AST_DotName where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass AST_DotName where
+  haskellDataInterface = interface (AST_DotName (Com ()) undefined) $ do
+    autoDefEquality >> autoDefPPrinter >> autoDefToStruct >> autoDefFromStruct
+
+----------------------------------------------------------------------------------------------------
+
 -- | The intermediate form of 'AST_DotLabel'.
-data DotLabelExpr = DotLabelExpr Name [Name] Location deriving (Eq, Ord, Show, Typeable)
+data DotLabelExpr = DotLabelExpr DotNameExpr [DotNameExpr] Location 
+  deriving (Eq, Ord, Show, Typeable)
 
 instance NFData DotLabelExpr where
   rnf (DotLabelExpr n nm loc) = deepseq n $! deepseq nm $! deepseq loc ()
@@ -7064,17 +7118,21 @@ instance B.HasPrefixTable DotLabelExpr Word8 MTab where
 instance PPrintable DotLabelExpr where { pPrint = pPrintInterm }
 
 dotLabelToRefExpr :: DotLabelExpr -> ReferenceExpr
-dotLabelToRefExpr (DotLabelExpr n nx loc) = ReferenceExpr UNQUAL n (loop nx) loc where
-  loop nx = case nx of { [] -> NullRefExpr; n:nx -> DotRefExpr n (loop nx) LocationUnknown; }
+dotLabelToRefExpr (DotLabelExpr (DotNameExpr n) nx loc) =
+  ReferenceExpr UNQUAL n (loop nx) loc where
+    loop nx = case nx of
+      []                 -> NullRefExpr
+      (DotNameExpr n):nx -> DotRefExpr n (loop nx) LocationUnknown
 
 refToDotLabelExpr :: ReferenceExpr -> Maybe (DotLabelExpr, Maybe ObjListExpr)
 refToDotLabelExpr o = case o of
-  ReferenceExpr UNQUAL n suf loc -> loop (\nx loc ol -> (DotLabelExpr n nx loc, ol)) [] loc suf
-  _                              -> mzero
+  ReferenceExpr UNQUAL n suf loc ->
+    loop (\nx loc ol -> (DotLabelExpr (DotNameExpr n) nx loc, ol)) [] loc suf
+  _ -> mzero
   where
     loop f nx loc suf = case suf of
       NullRefExpr                 -> return (f nx loc Nothing)
-      DotRefExpr   n  suf    loc' -> loop f (nx++[n]) (loc<>loc') suf
+      DotRefExpr   n  suf    loc' -> loop f (nx++[DotNameExpr n]) (loc<>loc') suf
       FuncCallExpr ol NullRefExpr -> return (f nx loc (Just ol))
       _                           -> mzero
 
@@ -7089,7 +7147,7 @@ instance HaskellDataClass DotLabelExpr where
 -- | This is a list of 'Dao.String.Name's separated by dots. It is a pseudo-reference used to denote
 -- things like constructor names in 'InitExpr', or setting the logical names of "import" modules
 -- statements. It is basically a list of 'Dao.String.Name's that always has at least one element.
-data AST_DotLabel = AST_DotLabel Name [(Com (), Name)] Location deriving (Eq, Ord, Show, Typeable)
+data AST_DotLabel = AST_DotLabel Name [AST_DotName] Location deriving (Eq, Ord, Show, Typeable)
 
 instance NFData AST_DotLabel where
   rnf (AST_DotLabel n nx loc) = deepseq n $! deepseq nx $! deepseq loc ()
@@ -7100,22 +7158,33 @@ instance HasLocation AST_DotLabel where
   delLocation (AST_DotLabel n nx _  )     = AST_DotLabel n nx LocationUnknown
 
 instance PPrintable AST_DotLabel where
-  pPrint (AST_DotLabel n nx _) = pInline $
-    pPrint n : (nx >>= \ (c, n) -> [pPrintComWith (\ () -> pString ".") c, pPrint n])
+  pPrint (AST_DotLabel n nx _) = pWrapIndent $ pPrint n : map pPrint nx
 
 instance HasRandGen AST_DotLabel where
-  randO = return AST_DotLabel <*> randO <*> randListOf 0 3 (return (,) <*> randO <*> randO) <*> no
+  randO = return AST_DotLabel <*> randO <*> randListOf 0 3 (return AST_DotName <*> randO <*> randO) <*> no
   defaultO = randO
 
 instance Intermediate DotLabelExpr AST_DotLabel where
-  toInterm   (AST_DotLabel n nx loc) = [DotLabelExpr] <*> [n] <*> [map snd             nx] <*> [loc]
-  fromInterm (DotLabelExpr n nx loc) = [AST_DotLabel] <*> [n] <*> [map (\n->(Com(),n)) nx] <*> [loc]
+  toInterm   (AST_DotLabel              n  nx loc) = [DotLabelExpr] <*> [DotNameExpr n] <*> [nx >>= ti] <*> [loc]
+  fromInterm (DotLabelExpr (DotNameExpr n) nx loc) = [AST_DotLabel] <*>             [n] <*> [nx >>= fi] <*> [loc]
+
+instance ToDaoStructClass AST_DotLabel where
+  toDaoStruct = ask >>= \ (AST_DotLabel n nx loc) -> renameConstructor "DotLabel" >>
+    "head" .= n >> "tail" .= OList (map obj nx) >> putLocation loc >> return ()
+
+instance FromDaoStructClass AST_DotLabel where
+  fromDaoStruct = do
+    constructor "DotLabel"
+    let convert o = case sequence (map fromObj o) of
+          Nothing -> fail "\"tail\" field must contain a list of \"#DotName\" data types."
+          Just ox -> return ox
+    return AST_DotLabel <*> req "head" <*> (req "tail" >>= convert) <*> location
 
 dotLabelToRefAST :: AST_DotLabel -> AST_Reference
 dotLabelToRefAST (AST_DotLabel n nx loc) = AST_Reference UNQUAL [] n (loop nx) loc where
   loop nx = case nx of
-    []        -> AST_RefNull
-    (c, n):nx -> AST_DotRef c n (loop nx) LocationUnknown
+    []                   -> AST_RefNull
+    (AST_DotName c n):nx -> AST_DotRef c n (loop nx) LocationUnknown
 
 refToDotLabelAST :: AST_Reference -> Maybe (AST_DotLabel, Maybe AST_ObjList)
 refToDotLabelAST o = case o of
@@ -7124,7 +7193,7 @@ refToDotLabelAST o = case o of
   where
     loop f nx loc suf = case suf of
       AST_RefNull                 -> return (f nx loc Nothing)
-      AST_DotRef c n  suf    loc' -> loop f (nx++[(c, n)]) (loc<>loc') suf
+      AST_DotRef c n  suf    loc' -> loop f (nx++[AST_DotName c n]) (loc<>loc') suf
       AST_FuncCall ol AST_RefNull -> return (f nx loc (Just ol))
       _                           -> mzero
 
@@ -7132,7 +7201,7 @@ instance ObjectClass AST_DotLabel where { obj=new; fromObj=objFromHaskellData; }
 
 instance HaskellDataClass AST_DotLabel where
   haskellDataInterface = interface (AST_DotLabel undefined [] LocationUnknown) $ do
-    autoDefEquality >> autoDefPPrinter
+    autoDefEquality >> autoDefPPrinter >> autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -8030,7 +8099,7 @@ instance Executable ArithExpr (Maybe Object) where
 instance RefReducible ArithExpr where
   reduceToRef o = case o of
     ObjectExpr o -> reduceToRef o
-    o            -> _setScriptExprError (EvalObject (EvalExpr o) LocationUnknown) $ do
+    o            -> _setScriptExprError (EvalObject (EvalExpr $ ObjArithExpr o) LocationUnknown) $ do
       exp <- execute o >>= maybe (fail "evaluates to null") return
       return $ RefObject exp NullRef
 
@@ -8155,8 +8224,8 @@ instance HaskellDataClass AST_Arith where
 ----------------------------------------------------------------------------------------------------
 
 data AssignExpr
-  = EvalExpr   ArithExpr
-  | AssignExpr ArithExpr UpdateOp AssignExpr Location
+  = EvalExpr   ObjTestExpr
+  | AssignExpr ObjTestExpr UpdateOp AssignExpr Location
   deriving (Eq, Ord, Typeable, Show)
 
 instance NFData AssignExpr where
@@ -8243,8 +8312,8 @@ instance HaskellDataClass AssignExpr where
 ----------------------------------------------------------------------------------------------------
 
 data AST_Assign
-  = AST_Eval   AST_Arith
-  | AST_Assign AST_Arith (Com UpdateOp) AST_Assign Location
+  = AST_Eval   AST_ObjTest
+  | AST_Assign AST_ObjTest (Com UpdateOp) AST_Assign Location
   deriving (Eq, Ord, Typeable, Show)
 
 instance NFData AST_Assign where
@@ -8258,13 +8327,13 @@ instance HasNullValue AST_Assign where
 
 instance HasLocation AST_Assign where
   getLocation o = case o of
-    AST_Eval      o -> getLocation o
+    AST_Eval         o -> getLocation o
     AST_Assign _ _ _ o -> o
   setLocation o loc = case o of
-    AST_Eval      o -> AST_Eval  (setLocation o loc)
+    AST_Eval         o -> AST_Eval  (setLocation o loc)
     AST_Assign a b c _ -> AST_Assign a b c loc
   delLocation o = case o of                            
-    AST_Eval      o -> AST_Eval  (delLocation o)
+    AST_Eval         o -> AST_Eval  (delLocation o)
     AST_Assign a b c _ -> AST_Assign (delLocation a) b (delLocation c) lu
 
 instance PPrintable AST_Assign where
@@ -8293,10 +8362,10 @@ instance FromDaoStructClass AST_Assign where
 instance HasRandGen AST_Assign where
   randO = _randTrace "AST_Assign" $ countNode $ recurse $ runRandChoice
   randChoice = randChoiceList $
-    [ AST_Eval  <$> randO
+    [ AST_Eval <$> randO
     , do ox <- randListOf 0 3 (pure (,) <*> randO <*> randO)
          o  <- randO
-         return (foldr (\(left, op) right -> AST_Assign left op right LocationUnknown) o ox)
+         return (foldr (\ (left, op) right -> AST_Assign left op right LocationUnknown) o ox)
     ]
   defaultO = _randTrace "D.AST_Assign" runDefaultChoice
   defaultChoice = randChoiceList $
@@ -8315,6 +8384,158 @@ instance Intermediate AssignExpr AST_Assign where
 instance ObjectClass AST_Assign where { obj=new; fromObj=objFromHaskellData; }
 
 instance HaskellDataClass AST_Assign where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct >> autoDefFromStruct
+
+----------------------------------------------------------------------------------------------------
+
+-- | A conditional expression of the form @a==b ? "yes" : "no"@
+data ObjTestExpr
+  = ObjArithExpr ArithExpr
+  | ObjTestExpr  ArithExpr ArithExpr ArithExpr Location
+  deriving (Eq, Ord, Show, Typeable)
+
+instance NFData ObjTestExpr where
+  rnf (ObjArithExpr  a    ) = deepseq a ()
+  rnf (ObjTestExpr a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+
+instance HasNullValue ObjTestExpr where
+  nullValue = ObjArithExpr nullValue
+  testNull (ObjArithExpr a) = testNull a
+  testNull _ = False
+
+instance HasLocation ObjTestExpr where
+  getLocation o = case o of
+    ObjArithExpr      a   -> getLocation a
+    ObjTestExpr _ _ _ loc -> loc
+  setLocation o loc = case o of
+    ObjArithExpr      a   -> ObjArithExpr (setLocation a loc)
+    ObjTestExpr a b c _   -> ObjTestExpr a b c loc
+  delLocation o     = case o of
+    ObjArithExpr      a   -> ObjArithExpr (delLocation a)
+    ObjTestExpr a b c _   ->
+      ObjTestExpr (delLocation a) (delLocation b) (delLocation c) LocationUnknown
+
+instance PPrintable ObjTestExpr where { pPrint = pPrintInterm }
+
+instance B.Binary ObjTestExpr MTab where
+  put o = case o of
+    ObjArithExpr      a -> B.put a
+    ObjTestExpr a b c d -> B.prefixByte 0x73 $ B.put a >> B.put b >> B.put c >> B.put d
+  get = B.word8PrefixTable <|> fail "expecting ObjTestExpr"
+
+instance B.HasPrefixTable ObjTestExpr Word8 MTab where
+  prefixTable = fmap ObjArithExpr B.prefixTable <>
+    (B.mkPrefixTableWord8 "ObjTestExpr" 0x73 0x73 $
+      [return ObjTestExpr <*> B.get <*> B.get <*> B.get <*> B.get])
+
+instance Executable ObjTestExpr (Maybe Object) where
+  execute o = case o of
+    ObjArithExpr      a -> execute a
+    ObjTestExpr a b c _ ->
+      execute a >>= checkVoid (getLocation a) "conditional expression evaluates to void" >>=
+        execute . objToBool >>= \ok -> if ok then execute b else execute c
+
+instance RefReducible ObjTestExpr where
+  reduceToRef o = case o of
+    ObjArithExpr o -> reduceToRef o
+    ObjTestExpr{}  -> fmap (flip RefObject NullRef) $ execute o >>=
+      checkVoid (getLocation o) "conditional expression assignment evaluates to void, not reference"
+
+instance ObjectClass ObjTestExpr where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass ObjTestExpr where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+
+----------------------------------------------------------------------------------------------------
+
+-- | A conditional expression of the form @a==b ? "yes" : "no"@
+data AST_ObjTest
+  = AST_ObjArith AST_Arith
+  | AST_ObjTest  AST_Arith (Com ()) AST_Arith (Com ()) AST_Arith Location
+  deriving (Eq, Ord, Show, Typeable)
+
+instance NFData AST_ObjTest where
+  rnf (AST_ObjArith  a        ) = deepseq a ()
+  rnf (AST_ObjTest a b c d e f) =
+    deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e $! deepseq f ()
+
+instance HasNullValue AST_ObjTest where
+  nullValue = AST_ObjArith nullValue
+  testNull (AST_ObjArith a) = testNull a
+  testNull _ = False
+
+instance HasLocation AST_ObjTest where
+  getLocation o     = case o of
+    AST_ObjArith          a   -> getLocation a
+    AST_ObjTest _ _ _ _ _ loc -> loc
+  setLocation o loc = case o of
+    AST_ObjArith          a   -> AST_ObjArith (setLocation a loc)
+    AST_ObjTest a b c d e _   -> AST_ObjTest a b c d e loc
+  delLocation o     = case o of
+    AST_ObjArith          a   -> AST_ObjArith (delLocation a)
+    AST_ObjTest a b c d e _   -> 
+      AST_ObjTest (delLocation a) b (delLocation c) d (delLocation e) LocationUnknown
+
+instance PPrintable AST_ObjTest where
+  pPrint o = case o of
+    AST_ObjArith  a         -> pPrint a
+    AST_ObjTest a b c d e _ -> pWrapIndent $
+      [ pPrint a
+      , pPrintComWith (\ () -> pString " ? ") b, pPrint c
+      , pPrintComWith (\ () -> pString " : ") d, pPrint e
+      ]
+
+instance PrecedeWithSpace AST_ObjTest where
+  precedeWithSpace o = case o of
+    AST_ObjArith          o -> precedeWithSpace o
+    AST_ObjTest o _ _ _ _ _ -> precedeWithSpace o
+
+instance HasRandGen AST_ObjTest where
+  randO = _randTrace "AST_ObjTest" $ countNode $ runRandChoice
+  randChoice = randChoiceList $
+    [ AST_ObjArith <$> randO
+    , let p = pure (Com ()) in
+        recurse $ scramble $ return AST_ObjTest <*> randO <*> p <*> randO <*> p <*> randO <*> no
+    ]
+  defaultO = randTrace "D.AST_ObjTest" $ AST_ObjArith <$> defaultO
+  defaultChoice = randChoiceList [defaultO]
+
+instance ToDaoStructClass AST_ObjTest where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_ObjArith  a -> innerToStruct a
+    AST_ObjTest a b c d e f -> do
+      renameConstructor "ObjTest"
+      "condition" .= a
+      "quesMarkComs" .= b >> "action" .= c
+      "colonComs"    .= d >> "alt"    .= e
+      putLocation f
+
+instance FromDaoStructClass AST_ObjTest where
+  fromDaoStruct = msum $
+    [ AST_ObjArith <$> fromDaoStruct
+    , do  constructor "ObjTest"
+          return AST_ObjTest
+            <*> req "condition" 
+            <*> (maybe (Com ()) id <$> opt "quesMarkComs") <*> req "action"
+            <*> (maybe (Com ()) id <$> opt "colonComs"   ) <*> req "alt"
+            <*> location
+    ]
+
+instance Intermediate ObjTestExpr AST_ObjTest where
+  toInterm   o = case o of
+    AST_ObjArith    o         ->  ObjArithExpr <$> ti o
+    AST_ObjTest a _ b _ c loc -> [ObjTestExpr] <*> ti a <*> ti b <*> ti c <*> [loc]
+  fromInterm o = case o of
+    ObjArithExpr  o       -> AST_ObjArith <$> fi o
+    ObjTestExpr a b c loc ->
+      [AST_ObjTest] <*> fi a <*> [Com ()] <*> fi b <*> [Com ()] <*> fi c <*> [loc]
+
+instance ObjectClass AST_ObjTest where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass AST_ObjTest where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct

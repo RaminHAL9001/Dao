@@ -3546,9 +3546,6 @@ nm0 = maybe [Nothing] (return . Just . Com)
 nm1 :: Intermediate obj ast => Maybe obj -> [Maybe ast]
 nm1 = maybe [Nothing] (fmap Just . fromInterm)
 
-ll :: Location -> [Location]
-ll = return
-
 -- | If there is a type that instantiates 'Intermediate', it can be converted to and from a type
 -- that is pretty-printable ('Dao.PPrint.PPrintable').
 pPrintInterm :: (Intermediate o ast, PPrintable ast) => o -> PPrint
@@ -4043,8 +4040,8 @@ instance HasRandGen AST_CodeBlock where
   defaultO = _randTrace "D.AST_CodeBlock" $ return $ AST_CodeBlock []
 
 instance Intermediate CodeBlock AST_CodeBlock where
-  toInterm   (AST_CodeBlock ast) = return $ CodeBlock     (ast >>= toInterm  )
-  fromInterm (CodeBlock     obj) = return $ AST_CodeBlock (obj >>= fromInterm)
+  toInterm   (AST_CodeBlock ast) = [CodeBlock     $ ast >>= toInterm  ]
+  fromInterm (CodeBlock     obj) = [AST_CodeBlock $ obj >>= fromInterm]
 
 instance ObjectClass AST_CodeBlock where { obj=new; fromObj=objFromHaskellData; }
 
@@ -4315,9 +4312,11 @@ instance HasRandGen [Com AST_Param] where
 instance Intermediate ParamExpr AST_Param where
   toInterm   a = case a of
     AST_NoParams      -> []
-    AST_Param a b loc -> [ParamExpr] <*> [maybe False (const True) a] <*> tyChkToInterm return b <*> [loc]
+    AST_Param a b loc ->
+      [ParamExpr] <*> [maybe False (const True) a]     <*> tyChkToInterm   return b <*> [loc]
   fromInterm o = case o of
-    ParamExpr a b loc -> [AST_Param] <*> [if a then Just [] else Nothing] <*> tyChkFromInterm return b <*> [loc]
+    ParamExpr a b loc ->
+      [AST_Param] <*> [if a then Just [] else Nothing] <*> tyChkFromInterm return b <*> [loc]
 
 instance Intermediate [ParamExpr] [Com AST_Param] where
   toInterm   ax = [ax >>= toInterm . unComment]
@@ -4545,13 +4544,13 @@ instance HasRandGen AST_RuleHeader where
 
 instance Intermediate RuleHeadExpr AST_RuleHeader where
   toInterm   o = case o of
-    AST_NullRules  _ loc -> [RuleHeadExpr [] loc]
-    AST_RuleString o loc -> [RuleStringExpr (unComment o) loc]
-    AST_RuleHeader o loc -> liftM2 RuleHeadExpr [o>>=uc0]  [loc]
+    AST_NullRules  _ loc -> [RuleHeadExpr              []     loc]
+    AST_RuleString o loc -> [RuleStringExpr (unComment o)     loc]
+    AST_RuleHeader o loc -> [RuleHeadExpr] <*> [o>>=uc0] <*> [loc]
   fromInterm o = case o of
-    RuleHeadExpr [] loc     -> [AST_NullRules              []   loc]
-    RuleStringExpr o  loc -> [AST_RuleString       (Com   o)  loc]
-    RuleHeadExpr o  loc     -> liftM2 AST_RuleHeader [o>>=nc0] [loc]
+    RuleHeadExpr   [] loc -> [AST_NullRules               []     loc]
+    RuleStringExpr o  loc -> [AST_RuleString       (Com   o)     loc]
+    RuleHeadExpr   o  loc -> [AST_RuleHeader] <*> [o>>=nc0] <*> [loc]
 
 instance ObjectClass AST_RuleHeader where { obj=new; fromObj=objFromHaskellData; }
 
@@ -5993,8 +5992,8 @@ instance PPrintable AST_Paren where
   pPrint (AST_Paren o _) = pInline [pString "(", pPrint o, pString ")"]
 
 instance Intermediate ParenExpr AST_Paren where
-  toInterm   (AST_Paren o loc) = liftM2 ParenExpr (uc0 o) [loc]
-  fromInterm (ParenExpr o loc) = liftM2 AST_Paren (nc0 o) [loc]
+  toInterm   (AST_Paren o loc) = [ParenExpr] <*> uc0 o <*> [loc]
+  fromInterm (ParenExpr o loc) = [AST_Paren] <*> nc0 o <*> [loc]
 
 instance ToDaoStructClass AST_Paren where
   toDaoStruct = renameConstructor "Paren" >> ask >>= \o -> case o of
@@ -6077,8 +6076,8 @@ instance HasRandGen AST_If where
   defaultO = _randTrace "D.AST_If" $ return AST_If <*> defaultO <*> defaultO <*> no
 
 instance Intermediate IfExpr AST_If where
-  toInterm   (AST_If a b loc) = liftM3 IfExpr (uc0 a) (ti  b) [loc]
-  fromInterm (IfExpr a b loc) = liftM3 AST_If (nc0 a) (fi  b) [loc]
+  toInterm   (AST_If a b loc) = [IfExpr] <*> uc0 a <*> ti b <*> [loc]
+  fromInterm (IfExpr a b loc) = [AST_If] <*> nc0 a <*> fi b <*> [loc]
 
 instance ObjectClass AST_If where { obj=new; fromObj=objFromHaskellData; }
 
@@ -6149,8 +6148,8 @@ instance HasRandGen AST_Else where
   defaultO = _randTrace "D.AST_Else" $ return AST_Else <*> defaultO <*> defaultO <*> no
 
 instance Intermediate ElseExpr AST_Else where
-  toInterm   (AST_Else _ a loc) = liftM2 ElseExpr          (ti  a) [loc]
-  fromInterm (ElseExpr   a loc) = liftM3 AST_Else [Com ()] (fi  a) [loc]
+  toInterm   (AST_Else _ a loc) = [ElseExpr]              <*> ti a <*> [loc]
+  fromInterm (ElseExpr   a loc) = [AST_Else] <*> [Com ()] <*> fi a <*> [loc]
 
 instance ObjectClass AST_Else where { obj=new; fromObj=objFromHaskellData; }
 
@@ -6252,8 +6251,10 @@ instance HasRandGen AST_IfElse where
   defaultO = _randTrace "D.AST_IfElse" $ return AST_IfElse <*> defaultO <*> defaultList 1 9 <*> randO <*> randO <*> no
 
 instance Intermediate IfElseExpr AST_IfElse where
-  toInterm   (AST_IfElse a b _ c loc) = liftM4 IfElseExpr (ti  a) [b>>=ti]          (um1 c) [loc]
-  fromInterm (IfElseExpr a b   c loc) = liftM5 AST_IfElse (fi  a) [b>>=fi] [Com ()] (nm1 c) [loc]
+  toInterm   (AST_IfElse a b _ c loc) =
+    [IfElseExpr] <*> ti a <*> [b>>=ti]              <*> um1 c <*> [loc]
+  fromInterm (IfElseExpr a b   c loc) =
+    [AST_IfElse] <*> fi a <*> [b>>=fi] <*> [Com ()] <*> nm1 c <*> [loc]
 
 instance ObjectClass AST_IfElse where { obj=new; fromObj=objFromHaskellData; }
 
@@ -6314,8 +6315,8 @@ instance PPrintable AST_While where
     pClosure (pInline [pString "while", pPrint ifn]) "{" "}" [pPrint thn]
 
 instance Intermediate WhileExpr AST_While where
-  toInterm   (AST_While a) = liftM WhileExpr (ti a)
-  fromInterm (WhileExpr a) = liftM AST_While (fi a)
+  toInterm   (AST_While a) = WhileExpr <$> ti a
+  fromInterm (WhileExpr a) = AST_While <$> fi a
 
 instance ToDaoStructClass AST_While where
   toDaoStruct = ask >>= \ (AST_While o) -> innerToStruct o >> renameConstructor "While"
@@ -6760,25 +6761,25 @@ instance PPrintable ScriptExpr where { pPrint = pPrintInterm }
 instance Intermediate ScriptExpr AST_Script where
   toInterm   ast = case ast of
     AST_Comment      _         -> mzero
-    AST_EvalObject   a _   loc -> liftM2 EvalObject   (ti  a)                 [loc]
-    AST_IfThenElse   a         -> liftM  IfThenElse   (ti  a)
-    AST_WhileLoop    a         -> liftM  WhileLoop    (ti  a)
-    AST_RuleFunc     a         -> liftM  RuleFuncExpr (ti  a)
-    AST_TryCatch     a b c loc -> liftM4 TryCatch     (uc0 a) (um0 b) (um1 c) [loc]
-    AST_ForLoop      a b c loc -> liftM4 ForLoop      (uc  a) (uc0 b) (ti  c) [loc]
-    AST_ContinueExpr a _ c loc -> liftM3 ContinueExpr [a]             (uc0 c) [loc]
-    AST_ReturnExpr   a b   loc -> liftM3 ReturnExpr   [a]     (uc0 b)         [loc]
-    AST_WithDoc      a b   loc -> liftM3 WithDoc      (uc0 a) (ti  b)         [loc]
+    AST_EvalObject   a _   loc -> [EvalObject  ] <*> ti  a                     <*> [loc]
+    AST_IfThenElse   a         -> [IfThenElse  ] <*> ti  a
+    AST_WhileLoop    a         -> [WhileLoop   ] <*> ti  a
+    AST_RuleFunc     a         -> [RuleFuncExpr] <*> ti  a
+    AST_TryCatch     a b c loc -> [TryCatch    ] <*> uc0 a <*> um0 b <*> um1 c <*> [loc]
+    AST_ForLoop      a b c loc -> [ForLoop     ] <*> uc  a <*> uc0 b <*> ti  c <*> [loc]
+    AST_ContinueExpr a _ c loc -> [ContinueExpr] <*> [a]   <*> uc0 c           <*> [loc]
+    AST_ReturnExpr   a b   loc -> [ReturnExpr  ] <*> [a]   <*> uc0 b           <*> [loc]
+    AST_WithDoc      a b   loc -> [WithDoc     ] <*> uc0 a <*> ti  b           <*> [loc]
   fromInterm obj = case obj of
-    EvalObject   a     loc -> liftM3 AST_EvalObject   (fi  a) [[]]            [loc]
-    IfThenElse   a         -> liftM  AST_IfThenElse   (fi  a)
-    WhileLoop    a         -> liftM  AST_WhileLoop    (fi  a)
-    RuleFuncExpr a         -> liftM  AST_RuleFunc     (fi  a)
-    TryCatch     a b c loc -> liftM4 AST_TryCatch     (nc0 a) (nm0 b) (nm1 c) [loc]
-    ForLoop      a b c loc -> liftM4 AST_ForLoop      (nc  a) (nc0 b) (fi  c) [loc]
-    ContinueExpr a b   loc -> liftM4 AST_ContinueExpr [a]     [[]]    (nc0 b) [loc]
-    ReturnExpr   a b   loc -> liftM3 AST_ReturnExpr   [a]     (nc0 b)         [loc]
-    WithDoc      a b   loc -> liftM3 AST_WithDoc      (nc0 a) (fi  b)         [loc]
+    EvalObject   a     loc -> [AST_EvalObject  ] <*> fi  a  <*> [[]]           <*> [loc]
+    IfThenElse   a         ->  AST_IfThenElse    <$> fi  a
+    WhileLoop    a         ->  AST_WhileLoop     <$> fi  a
+    RuleFuncExpr a         ->  AST_RuleFunc      <$> fi  a
+    TryCatch     a b c loc -> [AST_TryCatch    ] <*> nc0 a  <*> nm0 b <*> nm1 c <*> [loc]
+    ForLoop      a b c loc -> [AST_ForLoop     ] <*> nc  a  <*> nc0 b <*> fi  c <*> [loc]
+    ContinueExpr a b   loc -> [AST_ContinueExpr] <*>    [a] <*> [[]]  <*> nc0 b <*> [loc]
+    ReturnExpr   a b   loc -> [AST_ReturnExpr  ] <*>    [a] <*> nc0 b           <*> [loc]
+    WithDoc      a b   loc -> [AST_WithDoc     ] <*> nc0 a  <*> fi  b           <*> [loc]
 
 instance ObjectClass [AST_Script] where { obj=listToObj; fromObj=listFromObj; }
 
@@ -6869,8 +6870,8 @@ instance HasRandGen AST_ObjList where
   defaultO = _randTrace "D.ObjList" $ return AST_ObjList <*> defaultO <*> pure [] <*> no
 
 instance Intermediate ObjListExpr AST_ObjList where
-  toInterm   (AST_ObjList _ lst loc) = liftM2 ObjListExpr      [lst>>=uc0] [loc]
-  fromInterm (ObjListExpr   lst loc) = liftM3 AST_ObjList [[]] [lst>>=nc0] [loc]
+  toInterm   (AST_ObjList _ lst loc) = [ObjListExpr]          <*> [lst>>=uc0] <*> [loc]
+  fromInterm (ObjListExpr   lst loc) = [AST_ObjList] <*> [[]] <*> [lst>>=nc0] <*> [loc]
 
 instance ObjectClass AST_ObjList where { obj=new; fromObj=objFromHaskellData; }
 
@@ -6950,8 +6951,8 @@ instance HasRandGen AST_OptObjList where
   defaultO = _randTrace "D.AST_OptObjList" $ return AST_OptObjList <*> defaultO <*> defaultO
 
 instance Intermediate OptObjListExpr AST_OptObjList where
-  toInterm   (AST_OptObjList _ o) = liftM OptObjListExpr (um1 o)
-  fromInterm (OptObjListExpr   o) = liftM (AST_OptObjList []) (nm1 o)
+  toInterm   (AST_OptObjList _ o) = OptObjListExpr    <$> um1 o
+  fromInterm (OptObjListExpr   o) = AST_OptObjList [] <$> nm1 o
 
 instance ObjectClass AST_OptObjList where { obj=new; fromObj=objFromHaskellData; }
 instance HaskellDataClass AST_OptObjList where
@@ -7029,8 +7030,8 @@ instance HasRandGen AST_Literal where
   defaultO = randO
 
 instance Intermediate LiteralExpr AST_Literal where
-  toInterm   (AST_Literal a loc) = liftM2 LiteralExpr [a] [loc]
-  fromInterm (LiteralExpr a loc) = liftM2 AST_Literal [a] [loc]
+  toInterm   (AST_Literal a loc) = [LiteralExpr] <*> [a] <*> [loc]
+  fromInterm (LiteralExpr a loc) = [AST_Literal] <*> [a] <*> [loc]
 
 instance ObjectClass AST_Literal where { obj=new; fromObj=objFromHaskellData; }
 
@@ -7256,12 +7257,12 @@ instance HasRandGen AST_Reference where
 
 instance Intermediate ReferenceExpr AST_Reference where
   toInterm ast = case ast of
-    AST_RefObject paren    ref loc -> [RefObjectExpr] <*> toInterm paren <*> toInterm ref <*> [loc]
-    AST_Reference q _ name ref loc -> [ReferenceExpr] <*> [q] <*> [name] <*> toInterm ref <*> [loc]
+    AST_RefObject paren    ref loc -> [RefObjectExpr] <*> ti paren <*> ti ref            <*> [loc]
+    AST_Reference q _ name ref loc -> [ReferenceExpr] <*> [q]      <*> [name] <*> ti ref <*> [loc]
   fromInterm o = case o of
-    RefObjectExpr paren  ref loc -> [AST_RefObject] <*> fromInterm paren <*> fromInterm ref <*> [loc]
+    RefObjectExpr paren  ref loc -> [AST_RefObject] <*> fi paren <*> fi ref <*> [loc]
     ReferenceExpr q name ref loc ->
-      [AST_Reference] <*> [q] <*> [[]] <*> [name]  <*> fromInterm ref <*> [loc]
+      [AST_Reference] <*> [q] <*> [[]] <*> [name]  <*> fi ref <*> [loc]
 
 instance ObjectClass AST_Reference where { obj=new; fromObj=objFromHaskellData; }
 
@@ -7424,10 +7425,10 @@ instance HasRandGen AST_RefPrefix where
 
 instance Intermediate RefPrefixExpr AST_RefPrefix where
   toInterm ast = case ast of
-    AST_PlainRef  a         -> [PlainRefExpr]  <*> toInterm a
+    AST_PlainRef  a         -> PlainRefExpr <$> toInterm a
     AST_RefPrefix a _ c loc -> [RefPrefixExpr] <*> [a] <*> toInterm c <*> [loc]
   fromInterm o = case o of
-    PlainRefExpr  a       -> [AST_PlainRef]  <*> fromInterm a
+    PlainRefExpr  a       -> AST_PlainRef <$> fromInterm a
     RefPrefixExpr a c loc -> [AST_RefPrefix] <*> [a] <*> [[]] <*> fromInterm c <*> [loc]
 
 instance ObjectClass AST_RefPrefix where { obj=new; fromObj=objFromHaskellData; }
@@ -7937,23 +7938,23 @@ instance HasRandGen [Com AST_Object] where { randO = countNode $ randList 1 20 }
 
 instance Intermediate ObjectExpr AST_Object where
   toInterm ast = case ast of
-    AST_Void                  -> [VoidExpr]
-    AST_ObjLiteral  a         -> [ObjLiteralExpr]  <*> ti a
-    AST_ObjSingle   a         -> [ObjSingleExpr]   <*> ti a
+    AST_Void                  -> [VoidExpr       ]
+    AST_ObjLiteral  a         ->  ObjLiteralExpr   <$> ti a
+    AST_ObjSingle   a         -> [ObjSingleExpr  ] <*> ti a
     AST_ObjRuleFunc a         -> [ObjRuleFuncExpr] <*> ti a
-    AST_ArithPfx    a _ c loc -> [ArithPfxExpr]    <*> [a]           <*> ti c <*> [loc]
-    AST_Init        a b c loc -> [InitExpr]        <*> ti a <*> ti b <*> ti c <*> [loc]
-    AST_Struct      a b   loc -> [StructExpr]      <*> [a]  <*> ti b          <*> [loc]
-    AST_MetaEval    a     loc -> [MetaEvalExpr]    <*> ti a                   <*> [loc]
+    AST_ArithPfx    a _ c loc -> [ArithPfxExpr   ] <*>   [a]          <*> ti c <*> [loc]
+    AST_Init        a b c loc -> [InitExpr       ] <*> ti a  <*> ti b <*> ti c <*> [loc]
+    AST_Struct      a b   loc -> [StructExpr     ] <*>   [a] <*> ti b          <*> [loc]
+    AST_MetaEval    a     loc -> [MetaEvalExpr   ] <*> ti a                    <*> [loc]
   fromInterm o = case o of
-    VoidExpr                  -> [AST_Void]
-    ObjLiteralExpr  a         -> [AST_ObjLiteral]  <*> fi a
-    ObjSingleExpr   a         -> [AST_ObjSingle]   <*> fi a
-    ObjRuleFuncExpr a         -> [AST_ObjRuleFunc] <*> fi a
-    ArithPfxExpr    a b   loc -> [AST_ArithPfx]    <*>   [a] <*> [[]] <*> fi b <*> [loc]
-    InitExpr        a b c loc -> [AST_Init]        <*> fi a  <*> fi b <*> fi c <*> [loc]
-    StructExpr      a b   loc -> [AST_Struct]      <*>   [a] <*> fi b          <*> [loc]
-    MetaEvalExpr    a     loc -> [AST_MetaEval]    <*> fi a                    <*> [loc]
+    VoidExpr                  -> [AST_Void       ]
+    ObjLiteralExpr  a         ->  AST_ObjLiteral   <$> fi a
+    ObjSingleExpr   a         ->  AST_ObjSingle    <$> fi a
+    ObjRuleFuncExpr a         ->  AST_ObjRuleFunc  <$> fi a
+    ArithPfxExpr    a b   loc -> [AST_ArithPfx   ] <*>   [a] <*> [[]] <*> fi b <*> [loc]
+    InitExpr        a b c loc -> [AST_Init       ] <*> fi a  <*> fi b <*> fi c <*> [loc]
+    StructExpr      a b   loc -> [AST_Struct     ] <*>   [a] <*> fi b          <*> [loc]
+    MetaEvalExpr    a     loc -> [AST_MetaEval   ] <*> fi a                    <*> [loc]
 
 instance ObjectClass AST_Object where { obj=new; fromObj=objFromHaskellData; }
 
@@ -8138,11 +8139,11 @@ instance HasRandGen AST_Arith where
 
 instance Intermediate ArithExpr AST_Arith where
   toInterm o = case o of
-    AST_Object  a       -> liftM  ObjectExpr (ti a)
-    AST_Arith a b c loc -> liftM4 ArithExpr  (ti a) (uc b) (ti c) [loc]
+    AST_Object  a       -> ObjectExpr <$> ti a
+    AST_Arith a b c loc -> [ArithExpr ] <*> ti a <*> uc b <*> ti c <*> [loc]
   fromInterm o = case o of
-    ObjectExpr  a       -> liftM  AST_Object (fi a)
-    ArithExpr a b c loc -> liftM4 AST_Arith  (fi a) (nc b) (fi c) [loc]
+    ObjectExpr  a       -> AST_Object <$> fi a
+    ArithExpr a b c loc -> [AST_Arith ] <*> fi a <*> nc b <*> fi c <*> [loc]
 
 instance ObjectClass AST_Arith where { obj=new; fromObj=objFromHaskellData; }
 
@@ -8305,11 +8306,11 @@ instance HasRandGen AST_Assign where
 
 instance Intermediate AssignExpr AST_Assign where
   toInterm ast = case ast of
-    AST_Eval   a         -> liftM  EvalExpr   (ti a)
-    AST_Assign a b c loc -> liftM4 AssignExpr (ti a) (uc b) (ti c) [loc]
+    AST_Eval   a         -> EvalExpr <$> ti a
+    AST_Assign a b c loc -> [AssignExpr] <*> ti a <*> uc b <*> ti c <*> [loc]
   fromInterm o = case o of
-    EvalExpr   a         -> liftM  AST_Eval   (fi a)
-    AssignExpr a b c loc -> liftM4 AST_Assign (fi a) (nc b) (fi c) [loc]
+    EvalExpr   a         -> AST_Eval <$> fi a
+    AssignExpr a b c loc -> [AST_Assign] <*> fi a <*> nc b <*> fi c <*> [loc]
 
 instance ObjectClass AST_Assign where { obj=new; fromObj=objFromHaskellData; }
 
@@ -8512,14 +8513,14 @@ instance HasRandGen AST_TopLevel where
 
 instance Intermediate TopLevelExpr AST_TopLevel where
   toInterm   ast = case ast of
-    AST_Attribute a b   loc -> liftM3 Attribute [a]    (uc0 b) (ll loc)
-    AST_TopScript a     loc -> liftM2 TopScript (ti a)         (ll loc)
-    AST_Event     a _ b loc -> liftM3 EventExpr [a]    (ti  b) (ll loc)
-    AST_TopComment _         -> mzero
+    AST_Attribute a b   loc -> [Attribute] <*>   [a] <*> uc0 b <*> [loc]
+    AST_TopScript a     loc -> [TopScript] <*> ti a            <*> [loc]
+    AST_Event     a _ b loc -> [EventExpr] <*>   [a] <*> ti  b <*> [loc]
+    AST_TopComment _        -> mzero
   fromInterm obj = case obj of
-    Attribute a b loc -> liftM3 AST_Attribute [a]         (nc0 b) [loc]
-    TopScript a   loc -> liftM2 AST_TopScript (fi a)              [loc]
-    EventExpr a b loc -> liftM4 AST_Event     [a]    [[]] (fi  b) [loc]
+    Attribute a b loc -> [AST_Attribute] <*>   [a]          <*> nc0 b <*> [loc]
+    TopScript a   loc -> [AST_TopScript] <*> fi a                     <*> [loc]
+    EventExpr a b loc -> [AST_Event    ] <*>   [a] <*> [[]] <*> fi  b <*> [loc]
 
 instance ObjectClass AST_TopLevel where { obj=new; fromObj=objFromHaskellData; }
 
@@ -8623,7 +8624,7 @@ instance FromDaoStructClass AST_SourceCode where
     pure AST_SourceCode <*> req "modified" <*> req "path" <*> reqList "code"
 
 instance Intermediate Program AST_SourceCode where
-  toInterm   ast = return $ Program (directives ast >>= toInterm)
+  toInterm   ast = [Program $ directives ast >>= toInterm]
   fromInterm obj = return $
     AST_SourceCode
     { sourceModified = 0

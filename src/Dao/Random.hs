@@ -181,7 +181,7 @@ class HasRandGen o where
 runRandChoiceOf :: RandChoice o -> RandO o
 runRandChoiceOf (RandChoice{ getChoiceArray=arr }) = case arr of
   Nothing  -> fail "null RandChoice"
-  Just arr -> let (lo, hi) = bounds arr in join $ ((arr!) . (lo+)) <$> nextInt (hi-lo)
+  Just arr -> let (lo, hi) = bounds arr in join $ (arr!) . (lo+) <$> nextInt (hi-lo)
 
 runRandChoice :: HasRandGen o => RandO o
 runRandChoice = runRandChoiceOf randChoice
@@ -193,7 +193,7 @@ randChoiceList :: forall o . [RandO o] -> RandChoice o
 randChoiceList items = RandChoice{ getChoiceArray = guard (not $ null items) >> (Just arr) } where
   len = length items
   arr :: Array Int (RandO o)
-  arr = listArray (0, len) items
+  arr = listArray (0, len-1) items
 
 instance HasRandGen ()       where { randO = return (); defaultO = randO; }
 instance HasRandGen Int      where { randO = randInt; defaultO = randO; }
@@ -437,7 +437,7 @@ getRandomWord :: Int -> B.ByteString
 getRandomWord i = randomWords ! (mod i (rangeSize (bounds randomWords) - 1))
 
 randomWords :: Array Int B.ByteString
-randomWords = listArray (0, length list) (map B.pack list) where
+randomWords = listArray (0, length list - 1) (map B.pack list) where
   list = words $ unwords $
     [ "a academia accomplished added also an analysis and application applications apply are arent slim"
     , "argument arguments as at avoids be because been behavior between book both by calculus plus were"

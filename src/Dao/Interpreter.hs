@@ -3057,7 +3057,7 @@ _dictReferenceUpdate upd back name suf o = do
 
 _check1D :: [Object] -> String -> (Object -> Exec a) -> Exec a
 _check1D idx typ f = case idx of
-  [i] -> f i
+  [i] -> derefObject i >>= f
   _   -> execThrow $ obj $
     [ obj (typ++" object is 1-dimensional, but is subscripted with")
     , obj (length idx), obj "dimensional index", obj idx
@@ -8516,7 +8516,7 @@ instance Intermediate TopLevelExpr AST_TopLevel where
     AST_Attribute a b   loc -> [Attribute] <*>   [a] <*> uc0 b <*> [loc]
     AST_TopScript a     loc -> [TopScript] <*> ti a            <*> [loc]
     AST_Event     a _ b loc -> [EventExpr] <*>   [a] <*> ti  b <*> [loc]
-    AST_TopComment _        -> mzero
+    AST_TopComment     _loc -> mzero
   fromInterm obj = case obj of
     Attribute a b loc -> [AST_Attribute] <*>   [a]          <*> nc0 b <*> [loc]
     TopScript a   loc -> [AST_TopScript] <*> fi a                     <*> [loc]

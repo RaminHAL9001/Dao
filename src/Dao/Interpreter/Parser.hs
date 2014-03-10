@@ -464,7 +464,7 @@ containerPTab = (fmap (fmap AST_ObjRuleFunc) ruleFuncPTab) <> table [metaEvalPTa
 -- simply no need for it according to the Dao language syntax.
 typeCheckParser :: a -> DaoParser (AST_TyChk a)
 typeCheckParser a = flip mplus (return (AST_NotChecked a)) $ do
-  com1 <- commented (tokenBy ":" id)
+  com1 <- commented (tokenBy "::" id)
   let startLoc = asLocation (unComment com1)
   expect "type expression after colon operator" $ arithmetic >>= \obj -> return $
     AST_Checked a (fmap as0 com1) obj (startLoc <> getLocation obj)
@@ -669,11 +669,11 @@ objTestPTab = bindPTable arithmeticPTab $ \a -> do
     qmark <- commented (tokenBy "?" as0)
     expect "arithmetic expression after (?) operator" $ do
       b <- arithmetic
-      bufferComments
       expect "(:) operator and arithmetic expression after (?) operator" $ do
         coln <- commented (tokenBy ":" as0)
-        c <- arithmetic
-        return $ AST_ObjTest a qmark b coln c (getLocation a <> getLocation c)
+        expect "arithmetic expression after (:) operator" $ do
+          c <- arithmetic
+          return $ AST_ObjTest a qmark b coln c (getLocation a <> getLocation c)
 
 objTest :: DaoParser AST_ObjTest
 objTest = joinEvalPTable objTestPTab

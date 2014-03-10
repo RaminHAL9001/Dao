@@ -5425,10 +5425,10 @@ instance HaskellDataClass InfixOp where
     autoDefToStruct >> autoDefFromStruct
 
 allInfixOpChars :: String
-allInfixOpChars = "+-*/%<>^&|."
+allInfixOpChars = "+-*/%<>^&|.?:"
 
 allInfixOpStrs :: String
-allInfixOpStrs = " + - * / % ** -> . || && == != | & ^ << >> < > <= >= . -> <- "
+allInfixOpStrs = " + - * / % ** -> . || && == != | & ^ << >> < > <= >= . -> <- ? : :: "
 
 ----------------------------------------------------------------------------------------------------
 

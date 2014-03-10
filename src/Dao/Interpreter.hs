@@ -1984,9 +1984,8 @@ refAppendSuffix qref appref = case qref of
   RefWrapper      qref -> RefWrapper $ refAppendSuffix qref appref
 
 referenceLookup :: Reference -> Exec (Maybe (Reference, Object))
-referenceLookup qref = mplus resolve voidAccess where
+referenceLookup qref = mplus resolve (return Nothing) where
   resolve = _resolveRefQualifier qref access getLocal getConst getStatic getGlobal getGloDot
-  voidAccess = execThrow $ obj [obj "cannot access, reference evaluates to void", obj qref]
   access ref = maybe mzero (objectReferenceAccess (Just qref) ref)
   getLocal  nm ref = asks execStack        >>= doLookup nm ref
   getConst  nm ref = (ConstantStore <$> asks builtinConstants) >>= doLookup nm ref

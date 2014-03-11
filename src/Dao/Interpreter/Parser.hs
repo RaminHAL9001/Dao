@@ -831,6 +831,30 @@ scriptPTab = comments <> objExpr <> table exprs where
 
 ----------------------------------------------------------------------------------------------------
 
+dotName :: DaoParser AST_DotName
+dotName = return AST_DotName <*> commented (tokenBy "." as0) <*> token LABEL asName
+
+dotLabelTableItem :: DaoTableItem AST_DotLabel
+dotLabelTableItem = tableItem LABEL $ \tok ->
+  return (AST_DotLabel (asName tok)) <*> many dotName <*> pure (asLocation tok)
+
+attributePTab :: DaoPTable AST_Attribute
+attributePTab = table $
+  [ fmap AST_AttribDotName <$> dotLabelTableItem
+  , tableItem STRINGLIT $ \tok -> return $ AST_AttribString (asUStr tok) (asLocation tok)
+  ]
+
+attribute :: DaoParser AST_Attribute
+attribute = joinEvalPTable attributePTab
+
+namespace :: DaoParser AST_Namespace
+namespace = do
+  tokenBy "as" as0
+  nm <- commented $ token LABEL id
+  return $ AST_Namespace (fmap asName nm) (unComment $ fmap asLocation nm)
+
+----------------------------------------------------------------------------------------------------
+
 toplevelPTab :: DaoPTable [AST_TopLevel]
 toplevelPTab = table expr <> comments <> scriptExpr where
   comments = bindPTable spaceComPTab $ \c1 -> optSpace >>= \c2 -> return $
@@ -838,21 +862,30 @@ toplevelPTab = table expr <> comments <> scriptExpr where
   scriptExpr = bindPTable scriptPTab $ return . map (\o -> AST_TopScript o (getLocation o))
   expr =
     [ event  "BEGIN"  , event  "END"   , event  "EXIT"
-    , header "require", header "import"
+    , tableItemBy "require" $ \startTok -> needAttrib "require" $ do
+        attrib <- commented attribute
+        endTok <- needSemicolon "require"
+        return [AST_Require attrib $ asLocation startTok <> endTok]
+    , tableItemBy "import" $ \startTok -> needAttrib "import" $ do
+        attrib <- commented attribute
+        mplus
+          (do namesp <- namespace
+              endTok <- needSemicolon "import"
+              return [AST_Import attrib namesp $ asLocation startTok <> endTok]
+          )
+          (return . AST_Import attrib nullValue .
+            mappend (asLocation startTok) <$> needSemicolon "import")
     ]
+  needSemicolon msg =
+    expect ("expecting semicolon after \""++msg++"\" statement") $ tokenBy ";" asLocation
+  needAttrib msg =
+    expect ("expect string literal or logical module name after \""++msg++"\" statement")
   event   lbl = tableItemBy lbl $ \tok -> do
     let exprType = show (asTokType tok)
     coms <- optSpace
     expect ("bracketed script after \""++exprType++"\" statement") $ do
       (event, endLoc) <- bracketed ('"':exprType++"\" statement")
       return [AST_Event (read lbl) coms event (asLocation tok <> endLoc)]
-  header lbl = tableItemBy lbl $ \startTok ->
-    expect ("string literal or reference for \""++lbl++"\" statement") $ do
-      expr <- commented assignment
-      expect ("semicolon after \""++lbl++"\" statement") $ do
-        endLoc <- tokenBy ";" asLocation
-        return $
-          [AST_Attribute (ustr lbl) expr $ asLocation startTok <> endLoc]
 
 toplevel :: DaoParser [AST_TopLevel]
 toplevel = joinEvalPTable toplevelPTab

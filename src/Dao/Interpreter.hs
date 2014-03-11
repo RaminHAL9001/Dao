@@ -141,8 +141,8 @@ module Dao.Interpreter(
     ObjListExpr(ObjListExpr), AST_ObjList(AST_ObjList),
     OptObjListExpr(OptObjListExpr), updateExecError, AST_OptObjList(AST_OptObjList),
     LiteralExpr(LiteralExpr), AST_Literal(AST_Literal),
-    DotNameExpr(DotNameExpr), AST_DotName(AST_DotName), getDotNameAST,
-    DotLabelExpr(DotLabelExpr), dotLabelToRefExpr, refToDotLabelExpr,
+    DotNameExpr(DotNameExpr), AST_DotName(AST_DotName), getDotNameAST, undotNameExpr,
+    DotLabelExpr(DotLabelExpr), dotLabelToRefExpr, refToDotLabelExpr, dotLabelToNameList,
     AST_DotLabel(AST_DotLabel), dotLabelToRefAST, refToDotLabelAST,
     RefPrefixExpr(PlainRefExpr, RefPrefixExpr), cleanupRefPrefixExpr,
     AST_RefPrefix(AST_RefPrefix, AST_PlainRef),
@@ -161,9 +161,12 @@ module Dao.Interpreter(
     AST_Assign(AST_Eval, AST_Assign), assignUnqualifiedOnly,
     ObjTestExpr(ObjArithExpr, ObjTestExpr),
     AST_ObjTest(AST_ObjArith, AST_ObjTest),
-    TopLevelExpr(Attribute, TopScript, EventExpr), isAttribute, 
-    AST_TopLevel(AST_Attribute, AST_TopScript, AST_Event, AST_TopComment),
-    isAST_Attribute, attributeToList,
+    TopLevelExpr(RequireExpr, ImportExpr, TopScript, EventExpr), isAttribute, 
+    AST_TopLevel(AST_Require, AST_Import, AST_TopScript, AST_Event, AST_TopComment),
+    isAST_Attribute, getRequiresAndImports,
+    AttributeExpr(AttribDotNameExpr, AttribStringExpr),
+    AST_Attribute(AST_AttribDotName, AST_AttribString),
+    NamespaceExpr(NamespaceExpr), AST_Namespace(AST_NoNamespace, AST_Namespace),
     Program(Program), topLevelExprs, program_magic_number, 
     AST_SourceCode(AST_SourceCode), sourceModified, sourceFullPath, directives, 
     MethodTable(), execGetObjTable, lookupMethodTable, typeRepToUStr,
@@ -282,13 +285,14 @@ _randTrace _ = id
 -- 
 -- 0x52..0x53 'RefPrefixExpr'
 -- 0x59       'ParenExpr'
--- 0x60..0x65 'ObjectExpr'
+-- 0x60..0x64 'ObjectExpr'
 -- 0x6A       'ArithExpr'
 -- 0x6F       'AssignExpr'
 -- 0x73       'ObjTestExpr'
 -- 0x74..0x76 'RuleFuncExpr'
 -- 0x7A..0x7B 'RuleHeadExpr'
 -- 0x81       'DotLabelExpr'
+-- 0x82       'AttributeExpr'
 -- 0x86       'ObjListExpr'
 -- 0xBA..0xCD 'InfixOp'
 -- 0x8D..0x9D 'UpdateOp' -- Partially overlaps with 'InfixOp'
@@ -301,7 +305,7 @@ _randTrace _ = id
 -- 0xCF..0xD0 'ParamExpr'
 -- 0xD6       'ParamListExpr'
 -- 0xDD       'CodeBlock'
--- 0xE9..0xED 'TopLevelExpr'
+-- 0xE9..0xEE 'TopLevelExpr'
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1064,7 +1068,7 @@ instance B.Binary Struct MTab where
 instance B.HasPrefixTable Struct B.Byte MTab where
   prefixTable = B.mkPrefixTableWord8 "Struct" 0x25 0x26 $
     [ Nullary <$> B.get
-    , pure Struct <*> B.get <*> B.get
+    , return Struct <*> B.get <*> B.get
     ]
 
 instance PPrintable Struct where
@@ -1079,7 +1083,7 @@ instance HasRandGen Struct where
   randO = _randTrace "Struct" $ countNode $ runRandChoice 
   randChoice = randChoiceList $
     [ scramble $
-        pure Struct <*> randO <*> (M.fromList <$> randListOf 1 4 (pure (,) <*> randO <*> randO))
+        return Struct <*> randO <*> (M.fromList <$> randListOf 1 4 (pure (,) <*> randO <*> randO))
     , Nullary <$> randO
     ]
   defaultO = _randTrace "D.Struct" $ Nullary <$> defaultO
@@ -1136,9 +1140,9 @@ class ToDaoStructClass haskData where { toDaoStruct :: ToDaoStruct haskData () }
 -- > instance 'FromDaoStructClass' 'Point3D' where
 -- >     fromDaoStruct = 'toData' $ 'Control.Monad.msum' $
 -- >         [ do 'constructor' "@Point2D@"
--- >              'Control.Applicative.pure' Point3D <*> '?' "x" <*> '?' "y"
+-- >              return Point3D 'Control.Applicative.<*>' 'req' "x" 'Control.Applicative.<*>' 'req' "y"
 -- >         , do 'constructor' "@Point3D@"
--- >              'Control.Applicative.pure' Point3D <*> '?' "x" <*> '?' "y" <*> '@' "z"
+-- >              return Point3D 'Control.Applicative.<*>' 'req' "x" 'Control.Applicative.<*>' 'req' "y" 'Control.Applicative.<*>' 'req' "z"
 -- >         ]
 -- 
 -- Do not forget to define the instantiation of Point3D into the 'HaskellDataClass' class so it
@@ -1205,7 +1209,7 @@ instance FromDaoStructClass StructError where
     let lst o = case o of
           OList   o -> forM o ref
           _         -> fail "expecting list value"
-    pure StructError
+    return StructError
       <*> optional (tryField "message" $ str)
       <*> optional (tryField "structName" $ str)
       <*> optional (tryField "field" $ str)
@@ -1466,7 +1470,7 @@ toData (FromDaoStruct f) = evalState (runPredicateT f)
 -- >           do 'constructor' "B"
 -- >              B 'Control.Applicative.<$>' ('field' "b1" >>= 'primType')
 -- >           do 'constructor' "C"
--- >              'Control.Applicative.pure' C
+-- >              'Control.Applicative.return' C
 -- >                  'Control.Applicative.<*>' 'required' ('field' "c1" >>= 'primType')
 -- >                  'Control.Applicative.<*>' 'required' ('field' "c2" >>= 'primType')
 -- >         ]
@@ -1474,7 +1478,7 @@ toData (FromDaoStruct f) = evalState (runPredicateT f)
 -- monad will backtrack. By convention, you should let the monad backtrack, rather than writing a
 -- 'Control.Monad.fail' statement as the final item in the 'Control.Monad.msum' list.
 constructor :: UStrType name => name -> FromDaoStruct ()
-constructor name = (pure (==) <*> mkStructName name <*> asks structName) >>= guard
+constructor name = (return (==) <*> mkStructName name <*> asks structName) >>= guard
 
 -- | The inverse operation of 'innerToStruct', but looks for a constructor of a different name. This
 -- is important because every 'toDaoStruct' should set it's own unique constructor name, and if you
@@ -1550,7 +1554,7 @@ structCurrentField name (FromDaoStruct f) = FromDaoStruct $ catchPredicate f >>=
 -- use this function, rather use 'tryField' to make sure each field is retrieved exactly once, then
 -- use 'checkEmpty' to make sure there is no hidden extraneous data in the struct.
 tryCopyField :: UStrType name => name -> (Object -> FromDaoStruct o) -> FromDaoStruct o
-tryCopyField name f = (pure M.lookup <*> mkFieldName name <*> asks fieldMap) >>=
+tryCopyField name f = (return M.lookup <*> mkFieldName name <*> asks fieldMap) >>=
   xmaybe >>= structCurrentField (fromUStr $ toUStr name) . f
 
 -- | Like 'copyField', retrieves an arbitrary 'Object' by it's field name, and backtraks if no such
@@ -1645,7 +1649,7 @@ instance FromDaoStructClass Location where
   fromDaoStruct = msum $
     [ nullary "Void" >> return LocationUnknown
     , do  constructor "Location"
-          pure Location
+          return Location
             <*> req "startingLine"
             <*> req "startingColumn"
             <*> req "endingLine"
@@ -2286,7 +2290,7 @@ instance NFData TypeSym where
 instance HasRandGen TypeSym where
   randO = _randTrace "TypeSym" $ countNode $ runRandChoice
   randChoice = randChoiceList $
-    [CoreType <$> randO, scramble $ pure TypeVar <*> randO <*> randList 1 4]
+    [CoreType <$> randO, scramble $ return TypeVar <*> randO <*> randList 1 4]
   defaultO = _randTrace "D.TypeSym" $ CoreType <$> defaultO
 
 instance PPrintable TypeSym where
@@ -2304,7 +2308,7 @@ instance B.Binary TypeSym mtab where
 
 instance B.HasPrefixTable TypeSym B.Byte mtab where
   prefixTable =
-    B.mkPrefixTableWord8 "TypeSym" 0x2E 0x2F [CoreType <$> B.get, pure TypeVar <*> B.get <*> B.get]
+    B.mkPrefixTableWord8 "TypeSym" 0x2E 0x2F [CoreType <$> B.get, return TypeVar <*> B.get <*> B.get]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2458,9 +2462,9 @@ instance B.Binary RefSuffix MTab where
 instance B.HasPrefixTable RefSuffix B.Byte MTab where
   prefixTable = B.mkPrefixTableWord8 "RefSuffix" 0x42 0x45 $
     [ return NullRef
-    , pure DotRef    <*> B.get <*> B.get
-    , pure Subscript <*> B.get <*> B.get
-    , pure FuncCall  <*> B.get <*> B.get
+    , return DotRef    <*> B.get <*> B.get
+    , return Subscript <*> B.get <*> B.get
+    , return FuncCall  <*> B.get <*> B.get
     ]
 
 ----------------------------------------------------------------------------------------------------
@@ -2487,7 +2491,7 @@ instance HasNullValue Complex where
 
 instance B.Binary Complex mtab where
   put o = B.put (realPart o) >> B.put (imagPart o)
-  get   = pure complex <*> B.get <*> B.get
+  get   = return complex <*> B.get <*> B.get
 
 instance PPrintable Complex where
   pPrint (Complex (a C.:+ b))
@@ -2959,7 +2963,7 @@ instance Store ConstantStore where
 
 
 _appRef :: Maybe Reference -> RefSuffix -> Maybe Reference
-_appRef back ref = pure refAppendSuffix <*> back <*> pure ref
+_appRef back ref = return refAppendSuffix <*> back <*> pure ref
 
 _objMaybeRef :: Maybe Reference -> [Object]
 _objMaybeRef = maybe [] (return . obj)
@@ -2973,7 +2977,7 @@ objectReferenceAccess :: Maybe Reference -> RefSuffix -> Object -> Exec (Maybe O
 objectReferenceAccess = loop where
   loop back suf o = flip mplus (cantAccess back) $ case suf of
     NullRef -> return $ Just o
-    DotRef name suf -> pure (_appRef back $ dotRef name) >>= \back -> case o of
+    DotRef name suf -> return (_appRef back $ dotRef name) >>= \back -> case o of
       ODict o -> Just <$> _dictReferenceAccess   back name suf o
       OTree o -> Just <$> _structReferenceAccess back name suf o
       OHaskell (HaskellData o ifc) -> case objToStruct ifc of
@@ -3009,12 +3013,12 @@ objectReferenceUpdate
 objectReferenceUpdate upd = loop where
   loop back suf o = case suf of
     NullRef               -> upd o
-    DotRef         nm suf -> pure (_appRef back $ dotRef nm) >>= \back -> case o of
+    DotRef         nm suf -> return (_appRef back $ dotRef nm) >>= \back -> case o of
       Nothing -> execThrow $ obj $ [obj "undefined reference"] ++ _objMaybeRef back
       Just  o -> case o of
         OTree   o -> _structReferenceUpdate upd back nm suf o >>= putBack OTree
         ODict   o -> _dictReferenceUpdate   upd back nm suf o >>= putBack ODict
-        OHaskell (HaskellData o ifc) -> case pure (,) <*> objToStruct ifc <*> objFromStruct ifc of
+        OHaskell (HaskellData o ifc) -> case return (,) <*> objToStruct ifc <*> objFromStruct ifc of
           Just (toStruct, fromStruct) -> toStruct o >>= _structReferenceUpdate upd back nm suf >>=
             maybe (return Nothing) (fmap (Just . OHaskell . flip HaskellData ifc) . fromStruct)
           Nothing -> execThrow $ obj $
@@ -3032,7 +3036,7 @@ objectReferenceUpdate upd = loop where
         let step = (objectReferenceUpdate upd (_appRef back $ subscript idx) suf)
         in  objectIndexUpdate step o idx
     FuncCall args suf -> do
-      back <- pure (_appRef back $ funcCall args)
+      back <- return (_appRef back $ funcCall args)
       case o of
         Nothing -> execThrow $ obj $ [obj "called undefined function"] ++ _objMaybeRef back
         Just  o -> callObject back o args >>=
@@ -3257,8 +3261,8 @@ instance FromDaoStructClass ExecControl where
   fromDaoStruct = msum $
     [ constructor "ExecReturn" >> ExecReturn <$> opt "value"
     , do  constructor "ExecError"
-          pure ExecError <*> opt "value" <*>
-            (pure ExecErrorInfo
+          return ExecError <*> opt "value" <*>
+            (return ExecErrorInfo
               <*> pure Nothing
               <*> opt "objectExpr"
               <*> opt "scriptExpr"
@@ -4119,8 +4123,8 @@ instance B.Binary a MTab => B.Binary (TyChkExpr a) MTab where
 instance B.Binary a MTab => B.HasPrefixTable (TyChkExpr a) B.Byte MTab where
   prefixTable = B.mkPrefixTableWord8 "TyChkExpr" 0xC5 0xC7 $
     [ NotTypeChecked <$> B.get
-    , pure TypeChecked  <*> B.get <*> B.get <*> B.get
-    , pure DisableCheck <*> B.get <*> B.get <*> B.get <*> B.get
+    , return TypeChecked  <*> B.get <*> B.get <*> B.get
+    , return DisableCheck <*> B.get <*> B.get <*> B.get <*> B.get
     ]
 
 instance (Eq a, Ord a, Typeable a, ObjectClass a) =>
@@ -4191,7 +4195,7 @@ instance HasLocation a => HasLocation (AST_TyChk a) where
 
 instance HasRandGen a => HasRandGen (AST_TyChk a) where
   randO = _randTrace "(AST_TyChk a)" $ countNode $ AST_NotChecked <$> randO
-  --randChoice = randChoiceList [AST_NotChecked <$> randO, pure AST_Checked <*> randO <*> randO <*> randO <*> no]
+  --randChoice = randChoiceList [AST_NotChecked <$> randO, return AST_Checked <*> randO <*> randO <*> randO <*> no]
   defaultO = _randTrace "D.(AST_TyChk a)" $ AST_NotChecked <$> defaultO
 
 instance (Eq a, Ord a, PPrintable a, Typeable a, ObjectClass a) =>
@@ -4241,8 +4245,8 @@ instance B.Binary ParamExpr MTab where
 
 instance B.HasPrefixTable ParamExpr B.Byte MTab where
   prefixTable = B.mkPrefixTableWord8 "ParamExpr" 0xCF 0xD0 $
-    [ pure (ParamExpr True ) <*> B.get <*> B.get
-    , pure (ParamExpr False) <*> B.get <*> B.get
+    [ return (ParamExpr True ) <*> B.get <*> B.get
+    , return (ParamExpr False) <*> B.get <*> B.get
     ]
 
 instance ObjectClass ParamExpr where { obj=new; fromObj=objFromHaskellData; }
@@ -4301,11 +4305,11 @@ instance ToDaoStructClass AST_Param where
 instance FromDaoStructClass AST_Param where
   fromDaoStruct = msum $
     [ nullary "Void" >> return AST_NoParams
-    , constructor "Parameter" >> pure AST_Param <*> optComments <*> req "typeCheck" <*> location
+    , constructor "Parameter" >> return AST_Param <*> optComments <*> req "typeCheck" <*> location
     ]
 
 instance HasRandGen AST_Param where
-  randO = _randTrace "AST_Param" $ countNode $ pure AST_Param <*> randO <*> randO <*> no
+  randO = _randTrace "AST_Param" $ countNode $ return AST_Param <*> randO <*> randO <*> no
   defaultO = _randTrace "D.AST_Param" $ randO
 
 instance HasRandGen [Com AST_Param] where
@@ -4355,7 +4359,7 @@ instance B.Binary ParamListExpr MTab where
   get = B.word8PrefixTable <|> fail "expecting ParamListExpr"
 
 instance B.HasPrefixTable ParamListExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "ParamListExpr" 0xD6 0xD6 $ [pure ParamListExpr <*> B.get <*> B.get]
+  prefixTable = B.mkPrefixTableWord8 "ParamListExpr" 0xD6 0xD6 $ [return ParamListExpr <*> B.get <*> B.get]
 
 instance HasLocation ParamListExpr where
   getLocation (ParamListExpr _ loc)     = loc
@@ -4404,7 +4408,7 @@ instance ToDaoStructClass AST_ParamList where
       putLocation loc
 
 instance FromDaoStructClass AST_ParamList where
-  fromDaoStruct = constructor "ParamList" >> pure AST_ParamList <*> req "typeCheck" <*> location
+  fromDaoStruct = constructor "ParamList" >> return AST_ParamList <*> req "typeCheck" <*> location
 
 instance HasRandGen AST_ParamList where
   randO = _randTrace "AST_ParamList" $ countNode $ return AST_ParamList <*> randO <*> no
@@ -4457,8 +4461,8 @@ instance B.Binary RuleHeadExpr MTab where
 
 instance B.HasPrefixTable RuleHeadExpr B.Byte MTab where
   prefixTable = B.mkPrefixTableWord8 "RuleHeadExpr" 0x7A 0x7B
-    [ pure RuleStringExpr <*> B.get <*> B.get
-    , pure RuleHeadExpr   <*> B.get <*> B.get
+    [ return RuleStringExpr <*> B.get <*> B.get
+    , return RuleHeadExpr   <*> B.get <*> B.get
     ]
 
 instance Executable RuleHeadExpr [UStr] where
@@ -4527,9 +4531,9 @@ instance ToDaoStructClass AST_RuleHeader where
 
 instance FromDaoStructClass AST_RuleHeader where
   fromDaoStruct = msum $
-    [ constructor "NoStrings"  >> pure AST_NullRules  <*> comments <*> location
-    , constructor "StringItem" >> pure AST_RuleString <*> req "items" <*> location
-    , constructor "ValuesList" >> pure AST_RuleHeader <*> reqList "items" <*> location
+    [ constructor "NoStrings"  >> return AST_NullRules  <*> comments <*> location
+    , constructor "StringItem" >> return AST_RuleString <*> req "items" <*> location
+    , constructor "ValuesList" >> return AST_RuleHeader <*> reqList "items" <*> location
     ]
 
 instance HasRandGen AST_RuleHeader where
@@ -5963,7 +5967,7 @@ instance B.Binary ParenExpr MTab where
   get = B.word8PrefixTable <|> fail "expecting ParenExpr"
 instance B.HasPrefixTable ParenExpr B.Byte MTab where
   prefixTable = B.mkPrefixTableWord8 "ParenExpr" 0x59 0x59 $
-    [pure ParenExpr <*> B.get <*> B.get]
+    [return ParenExpr <*> B.get <*> B.get]
 
 instance Executable ParenExpr (Maybe Object) where { execute (ParenExpr a _) = execute a }
 
@@ -6003,10 +6007,10 @@ instance ToDaoStructClass AST_Paren where
     AST_Paren paren loc -> "inside" .= paren >> putLocation loc
 
 instance FromDaoStructClass AST_Paren where
-  fromDaoStruct = constructor "Paren" >> pure AST_Paren <*> req "inside" <*> location
+  fromDaoStruct = constructor "Paren" >> return AST_Paren <*> req "inside" <*> location
 
 instance HasRandGen AST_Paren where
-  randO = _randTrace "AST_Paren" $ recurse $ pure AST_Paren <*> randO <*> no
+  randO = _randTrace "AST_Paren" $ recurse $ return AST_Paren <*> randO <*> no
   defaultO = _randTrace "D.AST_Paren" $ return AST_Paren <*> defaultO <*> no
 
 instance ObjectClass AST_Paren where { obj=new; fromObj=objFromHaskellData; }
@@ -6035,7 +6039,7 @@ instance HasLocation IfExpr where
 
 instance B.Binary IfExpr MTab where
   put (IfExpr a b c) = B.put a >> B.put b >> B.put c
-  get = pure IfExpr <*> B.get <*> B.get <*> B.get
+  get = return IfExpr <*> B.get <*> B.get <*> B.get
 
 instance Executable IfExpr Bool where
   execute (IfExpr ifn thn _) = execNested M.empty $
@@ -6072,7 +6076,7 @@ instance ToDaoStructClass AST_If where
 
 instance FromDaoStructClass AST_If where
   fromDaoStruct = constructor "Conditional" >>
-    pure AST_If <*> req "condition" <*> req "action" <*> location
+    return AST_If <*> req "condition" <*> req "action" <*> location
 
 instance HasRandGen AST_If where
   randO = _randTrace "AST_If" $ countNode $ return AST_If <*> randO <*> randO <*> no
@@ -6107,7 +6111,7 @@ instance HasLocation ElseExpr where
 -- binary 0xB6 
 instance B.Binary ElseExpr MTab where
   put (ElseExpr a b) = B.prefixByte 0xB6 $ B.put a >> B.put b
-  get = (B.tryWord8 0xB6 $ pure ElseExpr <*> B.get <*> B.get) <|> fail "expecting ElseExpr"
+  get = (B.tryWord8 0xB6 $ return ElseExpr <*> B.get <*> B.get) <|> fail "expecting ElseExpr"
 
 instance Executable ElseExpr Bool where { execute (ElseExpr ifn _) = execute ifn }
 
@@ -6144,7 +6148,7 @@ instance ToDaoStructClass AST_Else where
 
 instance FromDaoStructClass AST_Else where
   fromDaoStruct = constructor "ElseIf" >>
-    pure AST_Else <*> req "comments" <*> req "elseIf" <*> location
+    return AST_Else <*> req "comments" <*> req "elseIf" <*> location
 
 instance HasRandGen AST_Else where
   randO = _randTrace "AST_Else" $ countNode $ return AST_Else <*> randO <*> randO <*> no
@@ -6186,7 +6190,7 @@ instance B.Binary IfElseExpr MTab where
 
 instance B.HasPrefixTable IfElseExpr B.Byte MTab where
   prefixTable = B.mkPrefixTableWord8 "IfElseExpr" 0xBA 0xBA $
-    [pure IfElseExpr <*> B.get <*> B.get <*> B.get <*> B.get]
+    [return IfElseExpr <*> B.get <*> B.get <*> B.get <*> B.get]
 
 instance Executable IfElseExpr () where
   execute (IfElseExpr ifn elsx final _loc) = do
@@ -6242,7 +6246,7 @@ instance ToDaoStructClass AST_IfElse where
 
 instance FromDaoStructClass AST_IfElse where
   fromDaoStruct = constructor "If" >>
-    pure AST_IfElse
+    return AST_IfElse
       <*> req "test"
       <*> reqList "alt"
       <*> req "comments"
@@ -6428,14 +6432,14 @@ instance B.HasPrefixTable ScriptExpr B.Byte MTab where
     , fmap WhileLoop  B.prefixTable
     , fmap RuleFuncExpr B.prefixTable
     , B.mkPrefixTableWord8 "ScriptExpr" 0xA8 0xAF $ -- 0x89 0x8A 0x8B 0x8C 0x8D 0x8E 0x8F 0x90
-        [ pure EvalObject   <*> B.get <*> B.get
-        , pure TryCatch     <*> B.get <*> B.get <*> B.get <*> B.get
-        , pure ForLoop      <*> B.get <*> B.get <*> B.get <*> B.get
-        , pure (ContinueExpr True ) <*> B.get <*> B.get
-        , pure (ContinueExpr False) <*> B.get <*> B.get
-        , pure (ReturnExpr   True ) <*> B.get <*> B.get
-        , pure (ReturnExpr   False) <*> B.get <*> B.get
-        , pure WithDoc      <*> B.get <*> B.get <*> B.get
+        [ return EvalObject   <*> B.get <*> B.get
+        , return TryCatch     <*> B.get <*> B.get <*> B.get <*> B.get
+        , return ForLoop      <*> B.get <*> B.get <*> B.get <*> B.get
+        , return (ContinueExpr True ) <*> B.get <*> B.get
+        , return (ContinueExpr False) <*> B.get <*> B.get
+        , return (ReturnExpr   True ) <*> B.get <*> B.get
+        , return (ReturnExpr   False) <*> B.get <*> B.get
+        , return WithDoc      <*> B.get <*> B.get <*> B.get
         ]
     ]
 
@@ -6470,7 +6474,7 @@ instance Executable ScriptExpr () where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     TryCatch try  name  catch _loc -> do
       ce <- catchPredicate (execNested M.empty $ execute try)
-      let runCatch err = case pure (,,) <*> name <*> err <*> catch of
+      let runCatch err = case return (,,) <*> name <*> err <*> catch of
             Nothing               -> maybe (return ()) (execNested M.empty . execute) catch
             Just (nm, err, catch) -> execNested M.empty (localVarDefine nm (new err) >> execute catch)
       case ce of
@@ -6725,18 +6729,18 @@ instance FromDaoStructClass AST_Script where
     , AST_IfThenElse <$> fromDaoStruct
     , AST_WhileLoop  <$> fromDaoStruct
     , AST_RuleFunc   <$> fromDaoStruct
-    , constructor "ObjectExpr" >> pure AST_EvalObject <*> req "expr" <*> comments <*> location
+    , constructor "ObjectExpr" >> return AST_EvalObject <*> req "expr" <*> comments <*> location
     , constructor "TryCatch" >>
-        pure AST_TryCatch <*> req "tryBlock" <*> opt "varName" <*> opt "catchBlock" <*> location
+        return AST_TryCatch <*> req "tryBlock" <*> opt "varName" <*> opt "catchBlock" <*> location
     , constructor "ForLoop" >>
-        pure AST_ForLoop <*> req "varName" <*> req "iterate" <*> req "block" <*> location
+        return AST_ForLoop <*> req "varName" <*> req "iterate" <*> req "block" <*> location
     , constructor "Continue" >>
-        pure (AST_ContinueExpr True ) <*> comments <*> req "condition" <*> location
+        return (AST_ContinueExpr True ) <*> comments <*> req "condition" <*> location
     , constructor "Break" >>
-        pure (AST_ContinueExpr False) <*> comments <*> req "condition" <*> location
-    , constructor "Return" >> pure (AST_ReturnExpr True ) <*> req "expr" <*> location
-    , constructor "Throw"  >> pure (AST_ReturnExpr False) <*> req "expr" <*> location
-    , constructor "WithDoc" >> pure AST_WithDoc <*> req "expr" <*> req "block" <*> location
+        return (AST_ContinueExpr False) <*> comments <*> req "condition" <*> location
+    , constructor "Return" >> return (AST_ReturnExpr True ) <*> req "expr" <*> location
+    , constructor "Throw"  >> return (AST_ReturnExpr False) <*> req "expr" <*> location
+    , constructor "WithDoc" >> return AST_WithDoc <*> req "expr" <*> req "block" <*> location
     ]
 
 instance HasRandGen AST_Script where
@@ -6819,7 +6823,7 @@ instance HasLocation ObjListExpr where
 -- binary 0x86 
 instance B.Binary ObjListExpr MTab where
   put (ObjListExpr lst loc) = B.prefixByte 0x86 $ B.putUnwrapped lst >> B.put loc
-  get = (B.tryWord8 0x86 $ pure ObjListExpr <*> B.getUnwrapped <*> B.get) <|> fail "expecting ObjListExpr"
+  get = (B.tryWord8 0x86 $ return ObjListExpr <*> B.getUnwrapped <*> B.get) <|> fail "expecting ObjListExpr"
 
 instance Executable ObjListExpr [(Location, Reference)] where
   execute (ObjListExpr exprs loc) = mapM (fmap ((,) loc) . reduceToRef) exprs
@@ -6866,11 +6870,11 @@ instance ToDaoStructClass AST_ObjList where
 
 instance FromDaoStructClass AST_ObjList where
   fromDaoStruct = constructor "ObjectList" >>
-    pure AST_ObjList <*> comments <*> reqList "items" <*> location
+    return AST_ObjList <*> comments <*> reqList "items" <*> location
 
 instance HasRandGen AST_ObjList where
   randO = _randTrace "AST_ObjList" $ recurse $ AST_ObjList <$> randO <*> randListOf 0 5 (randComWith randO) <*> no
-  defaultO = _randTrace "D.ObjList" $ return AST_ObjList <*> defaultO <*> pure [] <*> no
+  defaultO = _randTrace "D.ObjList" $ return AST_ObjList <*> defaultO <*> return [] <*> no
 
 instance Intermediate ObjListExpr AST_ObjList where
   toInterm   (AST_ObjList _ lst loc) = [ObjListExpr]          <*> [lst>>=uc0] <*> [loc]
@@ -6947,7 +6951,7 @@ instance ToDaoStructClass AST_OptObjList where
     AST_OptObjList coms o -> renameConstructor "OptObjList" >> "params" .=? o >> putComments coms
 
 instance FromDaoStructClass AST_OptObjList where
-  fromDaoStruct = constructor "OptObjList" >> pure AST_OptObjList <*> comments <*> opt "params"
+  fromDaoStruct = constructor "OptObjList" >> return AST_OptObjList <*> comments <*> opt "params"
 
 instance HasRandGen AST_OptObjList where
   randO = _randTrace "AST_OptObjList" $ countNode $ return AST_OptObjList <*> randO <*> randO
@@ -7025,7 +7029,7 @@ instance ToDaoStructClass AST_Literal where
     AST_Literal o loc -> renameConstructor "Literal" >> "obj" .= o >> putLocation loc
 
 instance FromDaoStructClass AST_Literal where
-  fromDaoStruct = constructor "Literal" >> pure AST_Literal <*> req "obj" <*> location
+  fromDaoStruct = constructor "Literal" >> return AST_Literal <*> req "obj" <*> location
 
 instance HasRandGen AST_Literal where
   randO = _randTrace "AST_Literal" $ scramble $
@@ -7045,7 +7049,7 @@ instance HaskellDataClass AST_Literal where
 
 ----------------------------------------------------------------------------------------------------
 
-newtype DotNameExpr = DotNameExpr Name deriving (Eq, Ord, Show, Typeable)
+newtype DotNameExpr = DotNameExpr{ undotNameExpr :: Name } deriving (Eq, Ord, Show, Typeable)
 
 instance NFData DotNameExpr where { rnf (DotNameExpr n) = deepseq n () }
 
@@ -7134,6 +7138,9 @@ refToDotLabelExpr o = case o of
       DotRefExpr   n  suf    loc' -> loop f (nx++[DotNameExpr n]) (loc<>loc') suf
       FuncCallExpr ol NullRefExpr -> return (f nx loc (Just ol))
       _                           -> mzero
+
+dotLabelToNameList :: DotLabelExpr -> [Name]
+dotLabelToNameList (DotLabelExpr n nx _) = map undotNameExpr (n:nx)
 
 instance ObjectClass DotLabelExpr where { obj=new; fromObj=objFromHaskellData; }
 
@@ -7319,7 +7326,7 @@ instance HasRandGen AST_Reference where
     ]
   defaultO = _randTrace "D.AST_Reference" runDefaultChoice
   defaultChoice = randChoiceList $
-    [ return AST_RefObject <*> defaultO <*> pure AST_RefNull <*> no
+    [ return AST_RefObject <*> defaultO <*> return AST_RefNull <*> no
     , return AST_Reference <*> defaultO <*> defaultO <*> defaultO <*> defaultO <*> no
     ]
 
@@ -7551,9 +7558,9 @@ instance B.Binary RuleFuncExpr MTab where
 
 instance B.HasPrefixTable RuleFuncExpr B.Byte MTab where
   prefixTable = B.mkPrefixTableWord8 "RuleFuncExpr" 0x74 0x76 $
-    [ pure LambdaExpr <*> B.get <*> B.get <*> B.get
-    , pure FuncExpr   <*> B.get <*> B.get <*> B.get <*> B.get
-    , pure RuleExpr   <*> B.get <*> B.get <*> B.get
+    [ return LambdaExpr <*> B.get <*> B.get <*> B.get
+    , return FuncExpr   <*> B.get <*> B.get <*> B.get <*> B.get
+    , return RuleExpr   <*> B.get <*> B.get <*> B.get
     ]
 
 instance Executable RuleFuncExpr (Maybe Object) where
@@ -7638,24 +7645,24 @@ instance ToDaoStructClass AST_RuleFunc where
 
 instance FromDaoStructClass AST_RuleFunc where
   fromDaoStruct = msum $
-    [ constructor "Lambda" >> pure AST_Lambda <*> req "params" <*> req "block"  <*> location
+    [ constructor "Lambda" >> return AST_Lambda <*> req "params" <*> req "block"  <*> location
     , constructor "Function" >>
-        pure AST_Func <*> comments <*> req "name" <*> req "params" <*> req "block" <*> location
-    , constructor "Rule" >> pure AST_Rule <*> req "params" <*> req "block" <*> location
+        return AST_Func <*> comments <*> req "name" <*> req "params" <*> req "block" <*> location
+    , constructor "Rule" >> return AST_Rule <*> req "params" <*> req "block" <*> location
     ]
 
 instance HasRandGen AST_RuleFunc where
   randO = _randTrace "AST_RuleFunc" $ recurse $ countNode $ runRandChoice
   randChoice = randChoiceList $
-    [ scramble $ pure AST_Lambda <*> randO <*> randO <*> no
-    , scramble $ pure AST_Func   <*> randO <*> randO <*> randO <*> randO <*> no
-    , scramble $ pure AST_Rule   <*> randO <*> randO <*> no
+    [ scramble $ return AST_Lambda <*> randO <*> randO <*> no
+    , scramble $ return AST_Func   <*> randO <*> randO <*> randO <*> randO <*> no
+    , scramble $ return AST_Rule   <*> randO <*> randO <*> no
     ]
   defaultO = _randTrace "D.AST_RuleFunc" runDefaultChoice
   defaultChoice = randChoiceList $
-    [ scramble $ pure AST_Lambda <*> defaultO <*> defaultO <*> no
-    , scramble $ pure AST_Func   <*> defaultO <*> defaultO <*> defaultO <*> defaultO <*> no
-    , scramble $ pure AST_Rule   <*> defaultO <*> defaultO <*> no
+    [ scramble $ return AST_Lambda <*> defaultO <*> defaultO <*> no
+    , scramble $ return AST_Func   <*> defaultO <*> defaultO <*> defaultO <*> defaultO <*> no
+    , scramble $ return AST_Rule   <*> defaultO <*> defaultO <*> no
     ]
 
 instance Intermediate RuleFuncExpr AST_RuleFunc where
@@ -7746,10 +7753,9 @@ instance B.Binary ObjectExpr MTab where
     ObjRuleFuncExpr a       -> B.put a
     VoidExpr                -> B.putWord8   0x60
     ArithPfxExpr    a b   z -> B.prefixByte 0x61 $ B.put a >> B.put b >> B.put z
-    --ConditionExpr
-    InitExpr        a b c z -> B.prefixByte 0x63 $ B.put a >> B.put b >> B.put c >> B.put z
-    StructExpr      a b   z -> B.prefixByte 0x64 $ B.put a >> B.put b >> B.put z
-    MetaEvalExpr    a     z -> B.prefixByte 0x65 $ B.put a >> B.put z
+    InitExpr        a b c z -> B.prefixByte 0x62 $ B.put a >> B.put b >> B.put c >> B.put z
+    StructExpr      a b   z -> B.prefixByte 0x63 $ B.put a >> B.put b >> B.put z
+    MetaEvalExpr    a     z -> B.prefixByte 0x64 $ B.put a >> B.put z
   get = B.word8PrefixTable <|> fail "expecting ObjectExpr"
 
 instance B.HasPrefixTable ObjectExpr B.Byte MTab where
@@ -7757,13 +7763,12 @@ instance B.HasPrefixTable ObjectExpr B.Byte MTab where
     [ ObjLiteralExpr  <$> B.prefixTable
     , ObjSingleExpr   <$> B.prefixTable
     , ObjRuleFuncExpr <$> B.prefixTable
-    , B.mkPrefixTableWord8 "ObjectExpr" 0x60 0x65 $
+    , B.mkPrefixTableWord8 "ObjectExpr" 0x60 0x64 $
         [ return VoidExpr
-        , pure ArithPfxExpr <*> B.get <*> B.get <*> B.get
-        , mzero -- ConditionExpr
-        , pure InitExpr     <*> B.get <*> B.get <*> B.get <*> B.get
-        , pure StructExpr   <*> B.get <*> B.get <*> B.get
-        , pure MetaEvalExpr <*> B.get <*> B.get
+        , return ArithPfxExpr <*> B.get <*> B.get <*> B.get
+        , return InitExpr     <*> B.get <*> B.get <*> B.get <*> B.get
+        , return StructExpr   <*> B.get <*> B.get <*> B.get
+        , return MetaEvalExpr <*> B.get <*> B.get
         ]
     ]
 
@@ -8541,18 +8546,212 @@ instance HaskellDataClass AST_ObjTest where
 
 ----------------------------------------------------------------------------------------------------
 
+data AttributeExpr
+  = AttribDotNameExpr DotLabelExpr
+  | AttribStringExpr  UStr        Location
+  deriving (Eq, Ord, Show, Typeable)
+
+instance NFData AttributeExpr where
+  rnf (AttribDotNameExpr a  ) = deepseq a ()
+  rnf (AttribStringExpr  a b) = deepseq a $! deepseq b ()
+
+instance HasNullValue AttributeExpr where
+  nullValue = AttribStringExpr nil LocationUnknown
+  testNull (AttribStringExpr a _) = a==nil
+  testNull _ = False
+
+instance HasLocation AttributeExpr where
+  getLocation o     = case o of
+    AttribDotNameExpr   o   -> getLocation o
+    AttribStringExpr  _ loc -> loc
+  setLocation o loc = case o of
+    AttribDotNameExpr o     -> AttribDotNameExpr (setLocation o loc)
+    AttribStringExpr  o _   -> AttribStringExpr o loc
+  delLocation o     = case o of
+    AttribDotNameExpr o     -> AttribDotNameExpr (delLocation o)
+    AttribStringExpr  o _   -> AttribStringExpr o LocationUnknown
+
+instance PPrintable AttributeExpr where { pPrint = pPrintInterm }
+
+-- binary 0x81 0x82 -- placed next to with 'DotNameExpr'
+instance B.Binary AttributeExpr MTab where
+  put o = case o of
+    AttribDotNameExpr a     -> B.put a
+    AttribStringExpr  a loc -> B.prefixByte 0x82 $ B.put a >> B.put loc
+  get = B.word8PrefixTable <|> fail "expecting AttributeExpr"
+
+instance B.HasPrefixTable AttributeExpr Word8 MTab where
+  prefixTable = (AttribDotNameExpr <$> B.prefixTable) <>
+    B.mkPrefixTableWord8 "AttributeExpr" 0x82 0x82 [return AttribStringExpr <*> B.get <*> B.get]
+
+----------------------------------------------------------------------------------------------------
+
+data AST_Attribute
+  = AST_AttribDotName AST_DotLabel
+  | AST_AttribString  UStr        Location
+  deriving (Eq, Ord, Show, Typeable)
+
+instance NFData AST_Attribute where
+  rnf (AST_AttribDotName a  ) = deepseq a ()
+  rnf (AST_AttribString  a b) = deepseq a $! deepseq b ()
+
+instance HasNullValue AST_Attribute where
+  nullValue = AST_AttribString nil LocationUnknown
+  testNull (AST_AttribString a _) = a==nil
+  testNull _ = False
+
+instance HasLocation AST_Attribute where
+  getLocation o     = case o of
+    AST_AttribDotName   o   -> getLocation o
+    AST_AttribString  _ loc -> loc
+  setLocation o loc = case o of
+    AST_AttribDotName o     -> AST_AttribDotName (setLocation o loc)
+    AST_AttribString  o _   -> AST_AttribString o loc
+  delLocation o     = case o of
+    AST_AttribDotName o     -> AST_AttribDotName (delLocation o)
+    AST_AttribString  o _   -> AST_AttribString o LocationUnknown
+
+instance PPrintable AST_Attribute where
+  pPrint o = case o of
+    AST_AttribDotName nm    -> pPrint nm
+    AST_AttribString  str _ -> pPrint str
+
+instance HasRandGen AST_Attribute where
+  randChoice = randChoiceList $
+    [ AST_AttribDotName <$> randO
+    , return AST_AttribString  <*> randO <*> no
+    ]
+  randO = _randTrace "AST_Attribute" $ countNode $ runRandChoice
+  defaultO = randO
+  defaultChoice = randChoiceList [defaultO]
+
+instance ToDaoStructClass AST_Attribute where
+  toDaoStruct = ask >>= \o -> case o of
+    AST_AttribDotName str     -> innerToStruct str >> renameConstructor "AttributeDotName"
+    AST_AttribString  str loc ->
+      renameConstructor "AttributeString"  >> "value" .= str >> putLocation loc
+
+instance FromDaoStructClass AST_Attribute where
+  fromDaoStruct = msum $
+    [ constructor "AttributeDotName" >> AST_AttribDotName <$> innerFromStruct "DotLabel"
+    , constructor "AttributeString"  >> return AST_AttribString  <*> req "value" <*> location
+    ]
+
+instance Intermediate AttributeExpr AST_Attribute where
+  toInterm o   = case o of
+    AST_AttribDotName a     -> AttribDotNameExpr <$> ti a
+    AST_AttribString  a loc -> [AttribStringExpr a loc]
+  fromInterm o = case o of
+    AttribDotNameExpr a     -> AST_AttribDotName <$> fi a
+    AttribStringExpr  a loc -> [AST_AttribString  a loc]
+
+instance ObjectClass AST_Attribute where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass AST_Attribute where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct >> autoDefFromStruct
+
+----------------------------------------------------------------------------------------------------
+
+data NamespaceExpr = NamespaceExpr (Maybe Name) Location deriving (Eq, Ord, Show, Typeable)
+
+instance NFData NamespaceExpr where { rnf (NamespaceExpr a b) = deepseq a $! deepseq b () }
+
+instance HasNullValue NamespaceExpr where
+  nullValue = NamespaceExpr Nothing LocationUnknown
+  testNull (NamespaceExpr Nothing _) = True
+  testNull _ = False
+
+instance HasLocation NamespaceExpr where
+  getLocation (NamespaceExpr _ loc)     = loc
+  setLocation (NamespaceExpr a _  ) loc = NamespaceExpr a loc
+  delLocation (NamespaceExpr a _  )     = NamespaceExpr a LocationUnknown
+
+instance PPrintable NamespaceExpr where { pPrint = pPrintInterm }
+
+instance B.Binary NamespaceExpr MTab where
+  put (NamespaceExpr a loc) = B.put a >> B.put loc
+  get = return NamespaceExpr <*> B.get <*> B.get
+
+----------------------------------------------------------------------------------------------------
+
+data AST_Namespace
+  = AST_NoNamespace
+  | AST_Namespace (Com Name) Location
+  deriving (Eq, Ord, Show, Typeable)
+
+instance NFData AST_Namespace where
+  rnf  AST_NoNamespace    = ()
+  rnf (AST_Namespace a b) = deepseq a $! deepseq b ()
+
+instance HasNullValue AST_Namespace where
+  nullValue = AST_NoNamespace
+  testNull AST_NoNamespace = True
+  testNull _ = False
+
+instance HasLocation AST_Namespace where
+  getLocation o     = case o of
+    AST_NoNamespace     -> LocationUnknown
+    AST_Namespace _ loc -> loc
+  setLocation o loc = case o of
+    AST_NoNamespace     -> AST_NoNamespace
+    AST_Namespace a _   -> AST_Namespace a loc
+  delLocation o     = case o of
+    AST_NoNamespace     -> AST_NoNamespace
+    AST_Namespace a _   -> AST_Namespace a LocationUnknown
+
+instance PPrintable AST_Namespace where
+  pPrint o = case o of { AST_NoNamespace -> return (); AST_Namespace a _ -> pPrint a; }
+
+instance HasRandGen AST_Namespace where
+  randO = _randTrace "AST_Namespace" $ countNode $ runRandChoice
+  randChoice = randChoiceList [return AST_NoNamespace, return AST_Namespace <*> randO <*> no]
+  defaultO = randO
+  defaultChoice = randChoiceList [defaultO]
+
+instance ToDaoStructClass AST_Namespace where
+  toDaoStruct = ask >>= \a -> case a of
+    AST_NoNamespace     -> makeNullary "NoNamespace"
+    AST_Namespace n loc -> renameConstructor "Namespace" >> "name" .= n >> putLocation loc
+
+instance FromDaoStructClass AST_Namespace where
+  fromDaoStruct = msum $
+    [ nullary "NoNamespace" >> return AST_NoNamespace
+    , constructor "Namespace" >> return AST_Namespace <*> req "name" <*> location
+    ]
+
+instance Intermediate NamespaceExpr AST_Namespace where
+  toInterm o = case o of
+    AST_NoNamespace     -> [nullValue]
+    AST_Namespace n loc -> [NamespaceExpr (Just $ unComment n) loc]
+  fromInterm (NamespaceExpr n loc) = case n of
+    Nothing -> [nullValue]
+    Just  n -> [AST_Namespace (Com n) loc]
+
+instance ObjectClass AST_Namespace where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass AST_Namespace where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct >> autoDefFromStruct
+
+----------------------------------------------------------------------------------------------------
+
 -- | A 'TopLevelExpr' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
 data TopLevelExpr
-  = Attribute Name              AssignExpr Location
-  | TopScript ScriptExpr                   Location
-  | EventExpr TopLevelEventType CodeBlock  Location
+  = RequireExpr AttributeExpr                   Location
+  | ImportExpr  AttributeExpr     NamespaceExpr Location
+  | TopScript   ScriptExpr                      Location
+  | EventExpr   TopLevelEventType CodeBlock     Location
   deriving (Eq, Ord, Typeable, Show)
 
 instance NFData TopLevelExpr where
-  rnf (Attribute      a b c) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (TopScript      a b  ) = deepseq a $! deepseq b ()
-  rnf (EventExpr      a b c) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (RequireExpr a b  ) = deepseq a $! deepseq b ()
+  rnf (ImportExpr  a b c) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (TopScript   a b  ) = deepseq a $! deepseq b ()
+  rnf (EventExpr   a b c) = deepseq a $! deepseq b $! deepseq c ()
 
 instance HasNullValue TopLevelExpr where
   nullValue = TopScript nullValue LocationUnknown
@@ -8560,45 +8759,46 @@ instance HasNullValue TopLevelExpr where
   testNull _ = False
 
 isAttribute :: TopLevelExpr -> Bool
-isAttribute toplevel = case toplevel of { Attribute _ _ _ -> True; _ -> False; }
+isAttribute toplevel = case toplevel of { RequireExpr{} -> True; ImportExpr{} -> True; _ -> False; }
 
 instance HasLocation TopLevelExpr where
   getLocation o = case o of
-    Attribute _ _  o -> o
-    TopScript _    o -> o
-    EventExpr _ _  o -> o
+    RequireExpr _   o -> o
+    ImportExpr  _ _ o -> o
+    TopScript   _   o -> o
+    EventExpr   _ _ o -> o
   setLocation o loc = case o of
-    Attribute a b  _ -> Attribute a b loc
-    TopScript a    _ -> TopScript a   loc
-    EventExpr a b  _ -> EventExpr a b loc
+    RequireExpr a    _ -> RequireExpr a loc
+    ImportExpr  a b  _ -> ImportExpr  a b loc
+    TopScript   a    _ -> TopScript   a   loc
+    EventExpr   a b  _ -> EventExpr   a b loc
   delLocation o = case o of
-    Attribute a b  _ -> Attribute     a  (fd b) lu
-    TopScript a    _ -> TopScript (fd a)        lu
-    EventExpr a b  _ -> EventExpr     a  (fd b) lu
-    where
-      lu = LocationUnknown
-      fd :: HasLocation a => a -> a
-      fd = delLocation
+    RequireExpr a    _ -> RequireExpr (delLocation a) LocationUnknown
+    ImportExpr  a b  _ -> ImportExpr  (delLocation a) (delLocation b) LocationUnknown
+    TopScript   a    _ -> TopScript   (delLocation a) LocationUnknown
+    EventExpr   a b  _ -> EventExpr a (delLocation b) LocationUnknown
 
 instance PPrintable TopLevelExpr where { pPrint = pPrintInterm }
 
--- binary 0xE9 0xED
+-- binary 0xE9 0xEE
 instance B.Binary TopLevelExpr MTab where
   put o = case o of
-    Attribute a             b z -> B.prefixByte 0xE9 $ B.put a >> B.put b >> B.put z
-    TopScript a               z -> B.prefixByte 0xEA $ B.put a >> B.put z
-    EventExpr BeginExprType b z -> B.prefixByte 0xEB $ B.put b >> B.put z
-    EventExpr ExitExprType  b z -> B.prefixByte 0xEC $ B.put b >> B.put z
-    EventExpr EndExprType   b z -> B.prefixByte 0xED $ B.put b >> B.put z
+    RequireExpr a               z -> B.prefixByte 0xE9 $ B.put a >> B.put z
+    ImportExpr  a             b z -> B.prefixByte 0xEA $ B.put a >> B.put b >> B.put z
+    TopScript   a               z -> B.prefixByte 0xEB $ B.put a >> B.put z
+    EventExpr   BeginExprType b z -> B.prefixByte 0xEC $ B.put b >> B.put z
+    EventExpr   ExitExprType  b z -> B.prefixByte 0xED $ B.put b >> B.put z
+    EventExpr   EndExprType   b z -> B.prefixByte 0xEE $ B.put b >> B.put z
   get = B.word8PrefixTable <|> fail "expecting TopLevelExpr"
 
 instance B.HasPrefixTable TopLevelExpr B.Byte MTab where
-  prefixTable = B.mkPrefixTableWord8 "TopLevelExpr" 0xE9 0xED $
-    [ pure Attribute <*> B.get <*> B.get <*> B.get
-    , pure TopScript <*> B.get <*> B.get
-    , pure (EventExpr BeginExprType) <*> B.get <*> B.get
-    , pure (EventExpr ExitExprType ) <*> B.get <*> B.get
-    , pure (EventExpr EndExprType  ) <*> B.get <*> B.get
+  prefixTable = B.mkPrefixTableWord8 "TopLevelExpr" 0xE9 0xEE $
+    [ return RequireExpr <*> B.get <*> B.get
+    , return ImportExpr  <*> B.get <*> B.get <*> B.get
+    , return TopScript   <*> B.get <*> B.get
+    , return (EventExpr BeginExprType) <*> B.get <*> B.get
+    , return (EventExpr ExitExprType ) <*> B.get <*> B.get
+    , return (EventExpr EndExprType  ) <*> B.get <*> B.get
     ]
 
 -- Since 'TopLevelExpr's can modify the 'ExecUnit', and since 'Exec' is not a stateful monad, a
@@ -8608,11 +8808,8 @@ instance B.HasPrefixTable TopLevelExpr B.Byte MTab where
 instance Executable TopLevelExpr (ExecUnit -> ExecUnit) where
   execute o = _setTopLevelExprError o $ ask >>= \xunit -> case o of
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    Attribute a b c -> execThrow $ obj $ concat $
-      [ maybe [] ((:[]) . obj . (++(show c)) . uchars) (programModuleName xunit)
-      , [obj $ uchars a ++ " expression must occur only at the top of a dao script"]
-      , [obj $ prettyShow (Attribute a b c)]
-      ]
+    RequireExpr{} -> attrib "require"
+    ImportExpr{}  -> attrib "import"
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     TopScript scrpt _ -> do
       let (LocalStore stor) = execStack xunit
@@ -8640,6 +8837,8 @@ instance Executable TopLevelExpr (ExecUnit -> ExecUnit) where
         EndExprType   -> \xunit -> xunit{ postExec     = f (postExec     xunit) }
         ExitExprType  -> \xunit -> xunit{ quittingTime = f (quittingTime xunit) }
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    where
+      attrib a = fail $ a++" expression must occur only at the top of a dao script file"
 
 instance ObjectClass TopLevelExpr where { obj=new; fromObj=objFromHaskellData; }
 
@@ -8652,20 +8851,35 @@ instance HaskellDataClass TopLevelExpr where
 -- | A 'AST_TopLevel' is a single declaration for the top-level of the program file. A Dao 'SourceCode'
 -- is a list of these directives.
 data AST_TopLevel
-  = AST_Attribute  Name                   (Com AST_Assign)         Location
-  | AST_TopScript  AST_Script                                      Location
-  | AST_Event      TopLevelEventType [Comment] AST_CodeBlock       Location
+  = AST_Require    (Com AST_Attribute)                       Location
+  | AST_Import     (Com AST_Attribute)         AST_Namespace Location
+  | AST_TopScript  AST_Script                                Location
+  | AST_Event      TopLevelEventType [Comment] AST_CodeBlock Location
   | AST_TopComment [Comment]
   deriving (Eq, Ord, Typeable, Show)
 
 isAST_Attribute :: AST_TopLevel -> Bool
-isAST_Attribute o = case o of { AST_Attribute _ _ _ -> True; _ -> False; }
+isAST_Attribute o = case o of { AST_Require{} -> True; AST_Import{} -> True; _ -> False; }
 
-attributeToList :: AST_TopLevel -> [(Name, Com AST_Assign, Location)]
-attributeToList o = case o of { AST_Attribute a b c -> return (a,b,c); _ -> mzero; }
+-- | Split a list of 'AST_TopLevel' items into a tripple, the "require" statements, the "import"
+-- statements. This function scans the list lazily and returns as soon as an 'AST_TopLevel' item in
+-- the list is found that is not one of 'AST_Require', 'AST_Import' or 'AST_TopComment'.
+-- 
+-- Notice that this function takes an 'AST_TopLevel' and returns a list of 'AttributeExpr's, not a
+-- list of 'AST_Attribute's. This is because this function is designed for assisting in evaluation
+-- of the import statements of a Dao script file, specifically in order to generate a dependency
+-- graph.
+getRequiresAndImports :: [AST_TopLevel] -> ([AttributeExpr], [(AttributeExpr, NamespaceExpr)])
+getRequiresAndImports = loop [] [] where
+  loop requires imports ox = case ox of
+    AST_Require a   _ : ox -> loop (requires ++ uc0 a) imports ox
+    AST_Import  a b _ : ox -> loop requires (imports ++ (pure (,) <*> uc0 a <*> toInterm b)) ox
+    AST_TopComment{}  : ox -> loop requires imports ox
+    _                      -> (requires, imports)
 
 instance NFData AST_TopLevel where
-  rnf (AST_Attribute  a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_Require    a b    ) = deepseq a $! deepseq b ()
+  rnf (AST_Import     a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (AST_TopScript  a b    ) = deepseq a $! deepseq b ()
   rnf (AST_Event      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_TopComment a      ) = deepseq a ()
@@ -8677,70 +8891,79 @@ instance HasNullValue AST_TopLevel where
 
 instance HasLocation AST_TopLevel where
   getLocation o = case o of
-    AST_Attribute  _ _   o -> o
+    AST_Require    _     o -> o
+    AST_Import     _ _   o -> o
     AST_TopScript  _     o -> o
     AST_Event      _ _ _ o -> o
     AST_TopComment _       -> lu
   setLocation o loc = case o of
-    AST_Attribute  a b    _ -> AST_Attribute  a b     loc
+    AST_Require    a      _ -> AST_Require    a       loc
+    AST_Import     a b    _ -> AST_Import     a b     loc
     AST_TopScript  a      _ -> AST_TopScript  a       loc
     AST_Event      a b c  _ -> AST_Event      a b c   loc
     AST_TopComment a        -> AST_TopComment a
   delLocation o = case o of
-    AST_Attribute  a b    _ -> AST_Attribute     a (fd1 b)                lu
-    AST_TopScript  a      _ -> AST_TopScript (fd a)                       lu
-    AST_Event      a b c  _ -> AST_Event         a      b  (fd c)         lu
-    AST_TopComment a        -> AST_TopComment    a
+    AST_Require    a      _ -> AST_Require        (delLocation a) LocationUnknown
+    AST_Import     a b    _ -> AST_Import     a   (delLocation b) LocationUnknown
+    AST_TopScript  a      _ -> AST_TopScript      (delLocation a) LocationUnknown
+    AST_Event      a b c  _ -> AST_Event      a b (delLocation c) LocationUnknown
+    AST_TopComment a        -> AST_TopComment a  
 
 instance PPrintable AST_TopLevel where
   pPrint o = case o of
-    AST_Attribute a b    _ -> pInline [pPrint a, pString "  ", pPrint b, pString ";"]
+    AST_Require   a      _ -> pWrapIndent [pString "require ", pPrint a, pString ";"]
+    AST_Import    a b    _ -> pWrapIndent [pString "import  ", pPrint a, pPrint b, pString ";"]
     AST_TopScript a      _ -> pPrint a
     AST_Event     a b c  _ -> pClosure (pShow a >> mapM_ pPrint b) " { " " }" (map pPrint (getAST_CodeBlock c))
     AST_TopComment a       -> mapM_ (\a -> pPrint a >> pNewLine) a
 
 instance ToDaoStructClass AST_TopLevel where
   toDaoStruct = let nm = renameConstructor in ask >>= \o -> case o of
-    AST_Attribute  a b   loc -> nm "Attribute" >> "type" .= a >> "expr" .= b >> putLocation loc
+    AST_Require    a     loc -> nm "Require" >> "attribute" .= a >> putLocation loc
+    AST_Import     a b   loc -> nm "Import" >> "attribute" .= a >> "namespace" .= b >> putLocation loc
     AST_TopScript  a     loc -> nm "TopLevel" >> "script" .= a >> putLocation loc
-    AST_Event      a b c loc -> nm "Event" >>
-      "type" .= a >> "block" .= c >> putComments b >> putLocation loc
     AST_TopComment a         -> nm "Comment" >> putComments a
+    AST_Event      a b c loc ->
+      nm "Event" >> "type" .= a >> "block" .= c >> putComments b >> putLocation loc
 
 instance FromDaoStructClass AST_TopLevel where
   fromDaoStruct = msum $
-    [ constructor "Attribute" >> pure AST_Attribute <*> req "type" <*> req "expr" <*> location
-    , constructor "TopLevel" >> pure AST_TopScript <*> req "script" <*> location
-    , constructor "Event" >> pure AST_Event <*> req "type" <*> comments <*> req "block" <*> location
-    , constructor "Comment" >> AST_TopComment <$> comments
+    [ constructor "Import"   >> return AST_Import    <*> req "attribute" <*> req "namespace" <*> location
+    , constructor "Require"  >> return AST_Require   <*> req "attribute" <*> location
+    , constructor "TopLevel" >> return AST_TopScript <*> req "script"    <*> location
+    , constructor "Event"    >> return AST_Event     <*> req "type"      <*> comments <*> req "block" <*> location
+    , constructor "Comment"  >> AST_TopComment     <$> comments
     ]
 
 instance HasRandGen AST_TopLevel where
   randO = _randTrace "AST_TopLevel" $ countNode $ runRandChoice
   randChoice = randChoiceList $
-    [ return AST_Attribute <*> pure (ustr "import")  <*> randO <*> no
-    , return AST_Attribute <*> pure (ustr "require") <*> randO <*> no
+    [ return AST_Require   <*> randO <*> no
+    , return AST_Import    <*> randO <*> randO <*> no
     , return AST_TopScript <*> randO <*> no
     , return AST_Event     <*> randO <*> randO <*> randO <*> no
     , AST_TopComment <$> defaultO
     ]
   defaultO = _randTrace "D.AST_TopLevel" runDefaultChoice
   defaultChoice = randChoiceList $
-    [ return AST_Attribute <*> defaultO <*> defaultO <*> no
+    [ return AST_Import <*> defaultO <*> defaultO <*> no
+    , return AST_Require <*> defaultO <*> no
     , return AST_TopScript <*> defaultO <*> no
     , return AST_Event <*> defaultO <*> defaultO <*> defaultO <*> no
     ]
 
 instance Intermediate TopLevelExpr AST_TopLevel where
   toInterm   ast = case ast of
-    AST_Attribute a b   loc -> [Attribute] <*>   [a] <*> uc0 b <*> [loc]
-    AST_TopScript a     loc -> [TopScript] <*> ti a            <*> [loc]
-    AST_Event     a _ b loc -> [EventExpr] <*>   [a] <*> ti  b <*> [loc]
+    AST_Require   a     loc -> [RequireExpr] <*> uc0 a           <*> [loc]
+    AST_Import    a   b loc -> [ImportExpr ] <*> uc0 a  <*> ti b <*> [loc]
+    AST_TopScript a     loc -> [TopScript  ] <*> ti  a           <*> [loc]
+    AST_Event     a _ b loc -> [EventExpr  ] <*>    [a] <*> ti b <*> [loc]
     AST_TopComment     _loc -> mzero
   fromInterm obj = case obj of
-    Attribute a b loc -> [AST_Attribute] <*>   [a]          <*> nc0 b <*> [loc]
-    TopScript a   loc -> [AST_TopScript] <*> fi a                     <*> [loc]
-    EventExpr a b loc -> [AST_Event    ] <*>   [a] <*> [[]] <*> fi  b <*> [loc]
+    RequireExpr a   loc -> [AST_Require  ] <*> nc0 a                    <*> [loc]
+    ImportExpr  a b loc -> [AST_Import   ] <*> nc0 a           <*> fi b <*> [loc]
+    TopScript   a   loc -> [AST_TopScript] <*> fi  a                    <*> [loc]
+    EventExpr   a b loc -> [AST_Event    ] <*>    [a] <*> [[]] <*> fi b <*> [loc]
 
 instance ObjectClass AST_TopLevel where { obj=new; fromObj=objFromHaskellData; }
 
@@ -8841,7 +9064,7 @@ instance ToDaoStructClass AST_SourceCode where
 
 instance FromDaoStructClass AST_SourceCode where
   fromDaoStruct = constructor "SourceCode" >>
-    pure AST_SourceCode <*> req "modified" <*> req "path" <*> reqList "code"
+    return AST_SourceCode <*> req "modified" <*> req "path" <*> reqList "code"
 
 instance Intermediate Program AST_SourceCode where
   toInterm   ast = [Program $ directives ast >>= toInterm]

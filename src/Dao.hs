@@ -192,18 +192,17 @@ loadModHeader path = do
   text <- liftIO (readFile (uchars path))
   case parse daoGrammar mempty text of
     OK    ast -> do
-      let attribs = takeWhile isAST_Attribute (directives ast) >>= attributeToList
-      forM attribs $ \ (attrib, astobj, loc) -> case toInterm (unComment astobj) of
-        []  -> execThrow $ obj $
-          [obj ("bad "++uchars attrib++" statement"), obj (prettyShow astobj)]
-        o:_ -> do
-          o <- execute o
-          case o of
-            Nothing -> execThrow $ obj $
-              [ obj $ "parameter to "++uchars attrib++" evaluated to void"
-              , obj (prettyShow astobj)
-              ]
-            Just  o -> return (attrib, o, loc)
+      let (requires, imports) = getRequiresAndImports (directives ast)
+      forM_ requires $ \attrib -> do -- TODO: check require statements
+        return ()
+      forM imports $ \ (attrib, namesp) -> case namesp of
+        NamespaceExpr (Just nm) _ -> case attrib of
+          AttribStringExpr str loc -> return (nm, obj str, loc)
+          AttribDotNameExpr dots -> do -- TODO: resolve logical module names properly
+            let path = foldl (\s t -> s++"/"++t) "." $ map uchars $ dotLabelToNameList dots
+            return (nm, obj path, getLocation dots)
+        _ -> execThrow $ obj $ -- TODO: actually do something useful when a namespace is NOT specified
+          [obj "import string", obj (prettyShow attrib), obj "specified without namespace"]
     Backtrack -> execThrow $ obj $
       [obj path, obj "does not appear to be a valid Dao source file"]
     PFail err -> loadModParseFailed (Just path) err

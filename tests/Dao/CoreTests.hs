@@ -273,7 +273,7 @@ unitTester =
       ------------------- (0) Canonicalize the original object ------------------
       modify (\r->r{testCase=tc})
       tc <- case testObject tc of
-        RandTopLevel o -> case canonicalize o of
+        RandTopLevel o -> case toInterm o >>= fromInterm of
           [o] -> return $ tc{testObject = RandTopLevel o}
           [ ] -> fail "could not canonicalize original object"
           _   -> fail "original object canonicalized to multiple possible values"

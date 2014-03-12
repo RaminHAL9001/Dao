@@ -1,187 +1,30 @@
 TODO:
-* Modify the 'Dao.Interpreter.QualRef' data type to include square-bracketed index values so they
-	can be used in the left-hand side of assignment expressions.
 
-* Built-in functions should take type signatures, non-built-in functions should have a way to take
-	an unspecified number of parameters.
+* Improve the testing suite.
 
-* If possible (and this may not be possible), make the "Dao.Interpreter" module SMALLER!!! I would
-	love to break it down into smaller, more modular pieces, but all of the data types in that
-	module are so inter-dependent that the only way to break it up is to make things more
-	polymorphic, which complicates everything.
+* Find and correct as many bugs as possible.
 
-* Make the 'Exec' monad stateful over some of it's elemsnts, for example the current reference of
-	the "with" statement, keep the rest as a reader. This will be extremely difficult and may not
-	even be desirable, because right now many important functions assume the ExecUnit data type is
-	is immutable. Every module tracks child modules in a dictionary, and every time a child is
-	updated, the dictionary of the parent module must also be updated, and all the parents of the
-	parents must be updated all the way up to the main module. It might be better to keep everything
-	immutable and just use IORefs.
+* Create a nice library of example code which can also serve as testing
+	code.
 
-* Implement an asynchronous function call interface, like a built-in "fork()" function. This
-	function should allow a programmer to fork a function call in the background.
+* Document all public APIs. Try to re-arrange the code to make it more
+	literate, make sure Haddock produces very nice, easy-to-read
+	documentation for everything.
 
-* Once the type system has been implemented, the Glob matching algorithm that matches strings should
-	be customizable with a type function, not an arbtrary function that can run in the Exec monad.
-	Type function will be pure and are therefore ideal for pattern matching.
+* Clean-up exception objects and the error reporting mechanism. The
+	various exception objects that can be thrown by the interpreter
+	need to be much better organized than they are now.
 
-* Create some decent example programs that demonstrate the expert system functionality of the Dao language.
+* Implement the type checking system.
 
-	I recall the reason I wanted to invent Dao to begin with: I want an expert system that can
-	"understand" human knowledge to some degree, not just catalog it and index it, a system that can
-	actually model these ideas as code and associate natural language rules that can reasonable
-	retrieve this knowledge by a variety of search techniques, all within a single unified
-	programming language.
-	
-	Now I have almost completed the Dao language interpreter and I am seriously thinking about
-	trying out all these ideas I've had for about 10 years and never had any means to implement
-	them. But now that I've almost achieved my dream, I honestly have no clue where to begin, or
-	which idea I should try first.
+* Once the type checking system is working, allow Dao programs to be
+	type-checked, optimized, converted to the built-in binary format,
+	and stored in an object file which can be loaded more efficiently
+	than interpreted code.
 
-	I realized that probably the first thing I want to do is write a script that can "understand"
-	basic mathematics, concepts that we in well educated societies learn since we are extremely
-	young, like counting, the idea of lines and planes and spaces and time. Keeping things simple
-	and working up to more complex ideas in time, I want to start conceptualizing complex ideas like
-	sets, dimensions, logic, and probabilities, with very simple concrete examples that I program by
-	hand, in the same way I might explain to a child. From there maybe I can figure out how to
-	generalize knowledge programmed into a Dao script by performing some kind of analysis on the
-	code in the script.
+* Add more Dao language bindings to useful Haskell data types.
 
-	The ultimate goal is to have some API for analyzing a Dao script, recognizing patterns in
-	language and the associated code, using the patterns to formulate a hypothetical law formulated
-	as a general more pattern that can generate working code, then test that hypothesis in
-	conversation by generating a response statement to the conversation partner using the
-	hypothetical law to see if a conversation partner understands the statement. If there is an
-	indication that the response was understood, the law is considered a verified law and added to a
-	"theory" database containing all the laws that have been verified.
+* Provide a larger variety of useful built-in functions.
 
-	But for now, lets keep things simple. Simple concepts modeled as code associated with simple
-	language rules with a goal of solving simple mathematical word problems. Then work up from
-	there.
-
-* Move the semantic data types 'Dao.Interpreter.ObjectExpr', 'Dao.Interpreter.ScriptExpr', and
-	'Dao.Interpreter.TopLevelExpr' types into their own module.
-	EDIT: this may not be possible, although I will need to break-down the Dao.Interpreter module
-	somehow because I really think 5000 lines of code is too large for a Haskell module.
-
-* Define as many of the data types in "Dao.Interpreter" and "Dao.Interpreter.AST" to make use of
-	"Data.Generic" functions to program as many of the instances of the 'Dao.Token.HasLocation'
-	class as possible. I have been doing everything by hand, it has proven to be very error-prone.
-
-* It may be a good idea to simply never store any reference to the prefix parser in the
-	'Dao.Binary.PrefixTable' data type and always infer the prefix parser from the type when
-	evaluating 'Dao.Binary.runPrefixTable'.
-
-* Implement the ObjectInterface for the abstract syntax tree and fundamental data types like Maps
-	and Sets.
-
-* Clean up the "Dao.Parser" module.
-	EDIT: lets also move the tokenizer to the "Dao.Token" module.
-
-* Implement predicates on variables. (Started)
-* (related) create a new primitive for type values, perhaps add a constructor for it in the
-	'Dao.Interpreter.Object' data type.
-
-* Modify the Exec monad so that IO operations have it's own constructor. That way it will be easier
-	to automatically detect whether or not a given function might cause side-effects.
-
-* Create a linting pass, which occurs after parsing but before evaluation, that transforms a
-	'Dao.Interpreter.TopLevelExpr' data structure to a data structure that is optimized to avoid type
-	checking during runtime.
-
-* The Regex API is somewhat counter intuitive and complicated. I would like to make it more elegant.
-
-* The lexical analysis phase of the parse allows Base-64 data with equals "=" signs at any point in
-	the data expression. However equals signs must only occur at the end of a Base-64 data
-	expression. There is no need to make this a lexical analysis error, let the lexer pass arbitrary
-	equals signs anywhere. However there should be a quick pass over the tokens during the syntactic
-	analysis phase to check if equals signs occur anywhere other than at the end of the input and
-	throw a compile-time error if there are.
-
-* Fix this design flaw:
-	The abstract syntax tree can produce expressions that cannot be parsed. For example,
-	'Dao.Interpreter.AST.AST_Prefix' contains an arbitrary (commented) 'Dao.Interpreter.AST.AST_Object'
-	expression, but the parser does not allow arbitrary expressions to be parsed after a prefix
-	operator (the prefix operators are "$", "@", ".", "~", "-", "!"). This simplifies the abstract
-	syntax tree. The "Dao.Interpreter" module should have no problem evaluating expressions regardless
-	of whether or not the syntax of the language can construct these expressions.  But might cause
-	problems if the abstract syntax tree is produced programmatically for example, using the
-	functions in the "Dao.Struct" or "Dao.Random" modules, and then that abstract syntax tree is
-	used to generate code, the code generated will not be parsable. I have corrected the
-	"Dao.Interpreter.Random" module so that this is not a problem, but this could cause problems with
-	"Dao.Interpreter.Struct". For now, the AST is simplified and I would prefer it to stay that way, even
-	if it is not modeled well enough to prevent potential problems like this one.
-
-* Unioning 'Dao.Enum.SetM' data types should produce a list of segments where not every item is
-	associated with the same return value. I will need to modify the 'Dao.EnumSet.SetM' data type to
-	have a fifth constructor 'MultiSet' which contains a list of pairs of the type:
-		('Dao.EnumSet.Segment c', x)
-	where @x@ is the return value contained within constructor. Unioning sets should work a bit more
-	like 'Prelude.concatMap' does when a list is treated as a monad. However intersecting
-	'Dao.EnumSet.SetM' types is the operation to be used for monadic bind.
-
-* TODO AFTER the new parser is fully functioning and the old parser has been deleted:
-the "Dao.EnumSet" exposes many functions for manipulating 'Dao.EnumSet.Segment's. I would like to
-keep 'Dao.EnumSet.Segment' exposed, but have all of the functions which manipulate it directly
-(apart from it's constructor) to no longer be exported, and instead make everything which imoprts
-the "Dao.EnumSet" module make use of the 'Dao.EnumSet.EnumSet' data type exclusively.
-[Solution] It turns out I needed it sooner rather than later. So I just went ahead and changed
-everything in the "Dao.EnumSet" module, and then I had to go through the old parser modules,
-refactoring everything that broke. I would like to re-affirm my love of Haskell's propensity for
-finding errors, and my love of the old UNIX "Sed" program, which in spite of all its primitive
-simplicity, still happens to be extremely useful for refactoring.
-
-*	Need to introduce constructors for 'Dao.EnumSet.EnumSet' and 'Dao.Interpreter.Pattern' into the
-'Dao.Interpreter.Object' data type. This will be important when implementing predicates on variables.
-
-*	Parse each input file in a separate thread. Implement a type-checking phase and a lazy linting
-	phase in the interpreter.
-
-*	Some inlining pretty-printers are still messing up the indentation.
-
-*	Need to create a means to track which modules have "open()"-ed and "close()"-ed which files. Like
-reference counting with sets, each file will have a set of module references with an element for
-every module that has "open()"-ed it without yet "close()"-ing it. Files loaded from the command
-line might be represented by "Nothing" where files loaded by a module migh be represented by
-"Just moduleName".
-
-*	Implement the "editSource()" built-in function for loading Dao scripts into memory and allowing
-the abstract syntax tree to be modified. There need to be editor functions, like "updateWith()",
-which takes a source function and a lambda that traverses the AST and replaces matching nodes with a
-returned value. There should also be a "testSource()" built-in function for evaluating an edited
-source code into a working module object, and executing strings against that, all done so
-programmatically within the running Dao program.
-
-*	'Dao.Interpreter.Subroutine' is a data structure representing a function that takes a list of
-'Dao.Interpreter.ObjPat's, and when it is executed, it will resolve all Reference parameters passed to
-them to create a list of parameters, match this list of parameter arguments to this list of
-'Dao.Interpreter.ObjPat's, then run the associated 'Dao.Interpreter.Executable'.
-	It might be a good idea to allow other kinds of 'Subroutine's, including "pure" subroutines that
-simply evaluate to (CEError Object), functions take a list of Objects that do not automatically
-resolve references passed to them. Since built-in operators are pure subroutines, an API for
-evaluating these operator functions could be constructed to evaluate both built-in operators and
-custom native functions. Also, right now the evaluator checks if an operator is an assignment or
-update operator, and treats these as special cases. However, if there is a "pure" subroutine that
-takes parameters that are not resolved automatically, the update operators can be defined as
-object instances of this type of "pure" subroutine.
-	Because the 'ObjPat's (now called 'Pattern's) are matched in a pure function,
-there is no way to indicate whether or not you want to match the pattern against a reference or the
-value to which the reference is pointing like in C++. The pattern matching function needs to be
-lifted into IO so that dereferencing is possible, and there needs to be a separate pattern for
-matching values of referenecs, which needs to be the default pattern that binds values to labels.
-
-----------------------------------------------------------------------------------------------------
-SOLVED:
-*	Now that 'Dao.Predicate.Predicate' has been modified such that it no longer contains a required
-'Dao.String.UStr' message, many functions which used it now simply use 'Dao.String.UStr' as the type
-for 'Dao.Predicate.PFail'. Other functions do not use 'Dao.String.UStr'. I need to do a review of
-all code in the "Dao.Interpreter" module that makes use of 'Dao.Predicate.Predicate' and make sure the
-failures contain useful information. If a 'Dao.String.UStr' is good enough, no change will be
-necessary. However it might be better to use 'Dao.Interpreter.Object' instead, in most situations.
---
-Completion notes: This was done a long time ago, now instead of an Object or UStr, the error type is
-called 'Dao.Interpreter.ExecControl' which contains special information about errors, and it can be
-converted to an 'Dao.Interpreter.Object' at any time using the 'Dao.Interpreter.new' function.
-
-NOTES: this was done a long
+* Make the interpreter smaller and more efficient.
 

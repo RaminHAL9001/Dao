@@ -72,27 +72,28 @@ type RandO a = RandT IO a
 
 data RandOState
   = RandOState
-    { integerState :: Integer
-    , stdGenState  :: StdGen
-    , nodeCounter  :: Int
-    , subDepthLim  :: Int
-    , subDepth     :: Int
-    , maxDepth     :: Int
-    , traceLevel   :: Int
+    { integerState :: Integer -- ^ the predictable random generator
+    , stdGenState  :: StdGen  -- ^ the unpredictable random generator
+    , nodeCounter  :: Int     -- ^ counts how many nodes have been created for this particular run
+    , depthLimit   :: Int     -- ^ sets the limit of the recursion depth
+    , currentDepth :: Int     -- ^ counts the current recursion depth for this particular run
+    , deepestSoFar :: Int     -- ^ keeps track of how deep the deepest recursion has gone
+    , traceLevel   :: Int   
+      -- ^ when performing a trace, keeps track of how many trace recursions there have been
     }
 
--- | Initializes the 'RandOState' with two integer values: a maximium depth value (limits the number
--- of times you can recursively call 'limSubRandO') and the seed value passed to
+-- | Initializes the 'RandOState' with two integer values: a maximium recursion depth value (limits
+-- the number of times you can recursively call 'limSubRandO') and the seed value passed to
 -- 'System.Random.mkStdGen'.
 initRandOState :: Int -> Int -> RandOState
-initRandOState maxDepth seed =
+initRandOState subdepthlim seed =
   RandOState
   { integerState = fromIntegral seed
   , stdGenState  = mkStdGen seed
   , nodeCounter  = 0     
-  , subDepthLim  = maxDepth
-  , subDepth     = 0
-  , maxDepth     = 0
+  , depthLimit   = subdepthlim
+  , currentDepth = 0
+  , deepestSoFar = 0
   , traceLevel   = 0
   }
 
@@ -247,31 +248,31 @@ randInteger zero mkOther = do
 -- function. The weight (meaning the number of calls to 'countNode', 'countNode_', or 'recurse') of
 -- the generated item is also returned.
 genRandWeightedWith :: RandO a -> Int -> Int -> IO (a, Int)
-genRandWeightedWith (RandT gen) maxDepth seed =
-  fmap (fmap nodeCounter) $ runStateT gen (initRandOState maxDepth seed)
+genRandWeightedWith (RandT gen) subdepthlim seed =
+  fmap (fmap nodeCounter) $ runStateT gen (initRandOState subdepthlim seed)
 
 -- | This function you probably will care most about. does the work of evaluating the
 -- 'Control.Monad.State.evalState' function with a 'RandOState' defined by the same two parameters
 -- you would pass to 'initRandOState'. In other words, arbitrary random values for any data type @a@
 -- that instantates 'HasRandGen' can be generated using two integer values passed to this function.
 genRandWeighted :: HasRandGen a => Int -> Int -> IO (a, Int)
-genRandWeighted maxDepth seed = genRandWeightedWith randO maxDepth seed
+genRandWeighted subdepthlim seed = genRandWeightedWith randO subdepthlim seed
 
 -- | Like 'genRandWeightedWith' but the weight value is ignored, only being evaluated to the random
 -- object,
 genRandWith :: RandO a -> Int -> Int -> IO a
-genRandWith gen maxDepth seed = fmap fst $ genRandWeightedWith gen maxDepth seed
+genRandWith gen subdepthlim seed = fmap fst $ genRandWeightedWith gen subdepthlim seed
 
 -- | Like 'genRandWeightedWith' but the weight value is ignored, only being evaluated to the random
 -- object.
 genRand :: HasRandGen a => Int -> Int -> IO a
-genRand maxDepth seed = genRandWith randO maxDepth seed
+genRand subdepthlim seed = genRandWith randO subdepthlim seed
 
 randTrace :: MonadIO m => String -> RandT m a -> RandT m a
 randTrace msg rand = do
   trlev <- RandT $ gets traceLevel
   nc <- RandT $ gets nodeCounter
-  sd <- RandT $ gets subDepth
+  sd <- RandT $ gets currentDepth
   let prin msg = liftIO $ do
         hPutStrLn stderr (replicate trlev ' ' ++ msg)
         hFlush stderr >>= evaluate
@@ -316,14 +317,14 @@ randInt = RandT $
 recurse :: HasRandGen a => RandO a -> RandO a
 recurse fn = do
   st <- RandT get
-  if subDepth st > subDepthLim st
+  if currentDepth st > depthLimit st
     then defaultO
     else do
       countNode_
-      i <- (+1) <$> (RandT $ gets subDepth)
-      RandT $ modify (\st -> st{subDepth = i, maxDepth = max (maxDepth st) i})
+      i <- (+1) <$> (RandT $ gets currentDepth)
+      RandT $ modify (\st -> st{currentDepth = i, deepestSoFar = max (deepestSoFar st) i})
       a <- fn
-      RandT $ modify (\st -> st{subDepth = subDepth st - 1})
+      RandT $ modify (\st -> st{currentDepth = currentDepth st - 1})
       return a
 
 -- | The 'nextInt' function lets you derive objects from a non-random seed value internal to the
@@ -406,6 +407,27 @@ randMultiName = do
   i0 <- randInt
   let (i1, len) = divMod i0 4
   fmap ((randUStr i1 :) . map randUStr) (replicateM len randInt)
+
+-- | When you want to use 'randList' or 'randListOf', you must provide a maximum bound for the
+-- number of values generated for the list. Lets say you want a maximum bound of 20 items for your
+-- data types. It sounds reasonable, but if your data type is recursive, and your recursion depth
+-- limit 'depthLimit' is set to 4, your data type has a chance of creating 20^4 or 160000 nodes! You
+-- may want to call 'randListOf' or 'randList' with a diminishing upper bound, a bound which gets
+-- lower and lower as the recursion depth increases.
+--
+-- That is the purpose of this function. You provide an initial integer value (like 24) and this
+-- value will be logarithmically scaled based on the 'currentDepth' value. The scaling equation is:
+-- > \x -> 'Prelude.floor' (x / 2^'depthLimit')
+-- So if you provide a value of 24 to this function, the value returned will be:
+-- > 'Prelude.floor' (24 / 2^'depthLimit')
+-- And if the 'depthLimit' is 4 then @'Prelude.floor' (2 / 2^4) == 'Prelude.floor' (2/16) == 1@. So
+-- for passing a value of 24 means the maximum number of nodes will be @24*12*6*3*1 == 5184@ nodes,
+-- which is large, but considerably smaller than 160000 nodes.
+depthLimitedInt :: Int -> RandO Int
+depthLimitedInt x = getCurrentDepth >>= \d -> return (div x (2^d))
+
+getCurrentDepth :: Monad m => RandT m Int
+getCurrentDepth = RandT $ gets currentDepth
 
 randListOf :: Int -> Int -> RandO a -> RandO [a]
 randListOf minlen maxlen rando = do

@@ -458,7 +458,7 @@ ruleFunc = joinEvalPTable ruleFuncPTab
 -- Objects that are parsed as a single value but which are constructed from other object
 -- expressions. This table excludes 'singletonPTab'.
 containerPTab :: DaoPTable AST_Object
-containerPTab = (fmap (fmap AST_ObjRuleFunc) ruleFuncPTab) <> table [metaEvalPTabItem]
+containerPTab = table [metaEvalPTabItem]
 
 -- None of the functions related to parameters and type checking parse with tables because there is
 -- simply no need for it according to the Dao language syntax.
@@ -663,7 +663,7 @@ arithmetic :: DaoParser AST_Arith
 arithmetic = joinEvalPTable arithmeticPTab
 
 objTestPTab :: DaoPTable AST_ObjTest
-objTestPTab = bindPTable arithmeticPTab $ \a -> do
+objTestPTab = mappend (fmap AST_ObjRuleFunc <$> ruleFuncPTab) $ bindPTable arithmeticPTab $ \a -> do
   bufferComments
   flip mplus (return $ AST_ObjArith a) $ do
     qmark <- commented (tokenBy "?" as0)
@@ -751,15 +751,11 @@ scriptPTab = comments <> objExpr <> table exprs where
   -- Object expressions should end with a semi-colon. An exception to this rule is made for rule and
   -- function constant expressions.
   objExpr = bindPTable assignmentPTab $ \o -> case o of
-    AST_Eval (AST_ObjArith (AST_Object (AST_ObjRuleFunc o))) ->
+    AST_Eval (AST_ObjRuleFunc o) ->
       flip mplus (return [AST_RuleFunc o]) $ do
         coms <- optSpace
-        loc  <- tokenBy ";" asLocation
-        return $
-          [ AST_EvalObject
-              (AST_Eval $ AST_ObjArith $ AST_Object $ AST_ObjRuleFunc o)
-                coms (getLocation o <> loc)
-          ]
+        loc  <- mappend (getLocation o) <$> tokenBy ";" asLocation
+        return [AST_EvalObject (AST_Eval $ AST_ObjRuleFunc o) coms loc]
     o -> do
       coms <- optSpace
       expect "semicolon after object expression" $ do

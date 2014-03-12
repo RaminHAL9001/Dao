@@ -1,5 +1,4 @@
--- "src/Dao/Interpreter.hs"  declares the "Object" data type which is the
--- fundamental data type used througout the Dao System.
+-- "src/Dao/Interpreter.hs"  defines the Dao programming language semantics.
 -- 
 -- Copyright (C) 2008-2014  Ramin Honary.
 -- This file is part of the Dao System.
@@ -149,19 +148,19 @@ module Dao.Interpreter(
     AST_RefPrefix(AST_RefPrefix, AST_PlainRef),
     RuleFuncExpr(LambdaExpr, FuncExpr, RuleExpr), AST_RuleFunc(AST_Lambda, AST_Func, AST_Rule),
     ObjectExpr(
-      VoidExpr, ObjLiteralExpr, ObjSingleExpr, ObjRuleFuncExpr,
+      VoidExpr, ObjLiteralExpr, ObjSingleExpr,
       ArithPfxExpr, InitExpr, StructExpr, MetaEvalExpr
     ), objectIndexAccess, objectIndexUpdate,
     AST_Object(
-      AST_Void, AST_ObjLiteral, AST_ObjSingle, AST_ObjRuleFunc,
+      AST_Void, AST_ObjLiteral, AST_ObjSingle,
       AST_ArithPfx, AST_Init, AST_Struct, AST_MetaEval
     ),
     ArithExpr(ObjectExpr, ArithExpr),
     AST_Arith(AST_Object, AST_Arith), 
     AssignExpr(EvalExpr, AssignExpr),
     AST_Assign(AST_Eval, AST_Assign), assignUnqualifiedOnly,
-    ObjTestExpr(ObjArithExpr, ObjTestExpr),
-    AST_ObjTest(AST_ObjArith, AST_ObjTest),
+    ObjTestExpr(ObjArithExpr, ObjTestExpr, ObjRuleFuncExpr),
+    AST_ObjTest(AST_ObjArith, AST_ObjTest, AST_ObjRuleFunc),
     TopLevelExpr(RequireExpr, ImportExpr, TopScript, EventExpr), isAttribute, 
     AST_TopLevel(AST_Require, AST_Import, AST_TopScript, AST_Event, AST_TopComment),
     isAST_Attribute, getRequiresAndImports,
@@ -7697,7 +7696,6 @@ data ObjectExpr
   = VoidExpr
   | ObjLiteralExpr  LiteralExpr
   | ObjSingleExpr   RefPrefixExpr
-  | ObjRuleFuncExpr RuleFuncExpr
   | ArithPfxExpr                  ArithPfxOp      ObjectExpr   Location
   | InitExpr        DotLabelExpr  OptObjListExpr  ObjListExpr  Location
   | StructExpr      Name          OptObjListExpr               Location
@@ -7708,7 +7706,6 @@ instance NFData ObjectExpr where
   rnf  VoidExpr                 = ()
   rnf (ObjLiteralExpr  a      ) = deepseq a ()
   rnf (ObjSingleExpr   a      ) = deepseq a $! ()
-  rnf (ObjRuleFuncExpr a      ) = deepseq a $! ()
   rnf (ArithPfxExpr    a b c  ) = deepseq a $! deepseq b $! deepseq c ()
   rnf (InitExpr        a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (StructExpr      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
@@ -7724,7 +7721,6 @@ instance HasLocation ObjectExpr where
     VoidExpr                -> LocationUnknown
     ObjLiteralExpr        o -> getLocation o
     ObjSingleExpr         o -> getLocation o
-    ObjRuleFuncExpr       o -> getLocation o
     ArithPfxExpr    _ _   o -> o
     InitExpr        _ _ _ o -> o
     StructExpr      _ _   o -> o
@@ -7733,7 +7729,6 @@ instance HasLocation ObjectExpr where
     VoidExpr                -> VoidExpr
     ObjLiteralExpr  a       -> ObjLiteralExpr  (setLocation a loc)
     ObjSingleExpr   a       -> ObjSingleExpr   (setLocation a loc)
-    ObjRuleFuncExpr a       -> ObjRuleFuncExpr (setLocation a loc)
     ArithPfxExpr    a b   _ -> ArithPfxExpr    a b   loc
     InitExpr        a b c _ -> InitExpr        a b c loc
     StructExpr      a b   _ -> StructExpr      a b   loc
@@ -7742,7 +7737,6 @@ instance HasLocation ObjectExpr where
     VoidExpr                -> VoidExpr
     ObjLiteralExpr  a       -> ObjLiteralExpr  (fd a)
     ObjSingleExpr   a       -> ObjSingleExpr   (fd a)
-    ObjRuleFuncExpr a       -> ObjRuleFuncExpr (fd a)
     ArithPfxExpr    a b   _ -> ArithPfxExpr        a  (fd b)        lu
     InitExpr        a b c _ -> InitExpr        (fd a) (fd b) (fd c) lu
     StructExpr      a b   _ -> StructExpr      (fd a) (fd b)        lu
@@ -7759,7 +7753,6 @@ instance B.Binary ObjectExpr MTab where
   put o = case o of
     ObjSingleExpr   a       -> B.put a
     ObjLiteralExpr  a       -> B.put a
-    ObjRuleFuncExpr a       -> B.put a
     VoidExpr                -> B.putWord8   0x60
     ArithPfxExpr    a b   z -> B.prefixByte 0x61 $ B.put a >> B.put b >> B.put z
     InitExpr        a b c z -> B.prefixByte 0x62 $ B.put a >> B.put b >> B.put c >> B.put z
@@ -7771,7 +7764,6 @@ instance B.HasPrefixTable ObjectExpr B.Byte MTab where
   prefixTable = mconcat $
     [ ObjLiteralExpr  <$> B.prefixTable
     , ObjSingleExpr   <$> B.prefixTable
-    , ObjRuleFuncExpr <$> B.prefixTable
     , B.mkPrefixTableWord8 "ObjectExpr" 0x60 0x64 $
         [ return VoidExpr
         , return ArithPfxExpr <*> B.get <*> B.get <*> B.get
@@ -7789,8 +7781,8 @@ instance Executable ObjectExpr (Maybe Object) where
       -- probably the most intuitive thing to do on an empty return statement.
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ObjLiteralExpr  o -> execute o
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ObjSingleExpr   o -> execute o
-    ObjRuleFuncExpr o -> execute o
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ArithPfxExpr op expr loc -> do
       expr <- execute expr >>= fmap snd . maybeDerefObject >>=
@@ -7890,7 +7882,6 @@ data AST_Object
   = AST_Void -- ^ Not a language construct, but used where an object expression is optional.
   | AST_ObjLiteral  AST_Literal
   | AST_ObjSingle   AST_RefPrefix
-  | AST_ObjRuleFunc AST_RuleFunc
   | AST_ArithPfx    ArithPfxOp    [Comment]       AST_Object    Location
   | AST_Init        AST_DotLabel  AST_OptObjList  AST_ObjList   Location
   | AST_Struct      Name          AST_OptObjList                Location
@@ -7901,7 +7892,6 @@ instance NFData AST_Object where
   rnf AST_Void = ()
   rnf (AST_ObjLiteral  a      ) = deepseq a ()
   rnf (AST_ObjSingle   a      ) = deepseq a ()
-  rnf (AST_ObjRuleFunc a      ) = deepseq a ()
   rnf (AST_ArithPfx    a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_Init        a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
   rnf (AST_Struct      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
@@ -7917,7 +7907,6 @@ instance HasLocation AST_Object where
     AST_Void               -> LocationUnknown
     AST_ObjLiteral       o -> getLocation o
     AST_ObjSingle        o -> getLocation o
-    AST_ObjRuleFunc      o -> getLocation o
     AST_ArithPfx _ _ _   o -> o
     AST_Init     _ _ _   o -> o
     AST_Struct   _ _     o -> o
@@ -7926,7 +7915,6 @@ instance HasLocation AST_Object where
     AST_Void                  -> AST_Void
     AST_ObjLiteral  a         -> AST_ObjLiteral  (setLocation a loc)
     AST_ObjSingle   a         -> AST_ObjSingle   (setLocation a loc)
-    AST_ObjRuleFunc a         -> AST_ObjRuleFunc (setLocation a loc)
     AST_ArithPfx    a b c   _ -> AST_ArithPfx    a b c   loc
     AST_Init        a b c   _ -> AST_Init        a b c   loc
     AST_Struct      a b     _ -> AST_Struct      a b     loc
@@ -7935,7 +7923,6 @@ instance HasLocation AST_Object where
     AST_Void                  -> AST_Void
     AST_ObjLiteral  a         -> AST_ObjLiteral  (fd  a)
     AST_ObjSingle   a         -> AST_ObjSingle   (fd  a)
-    AST_ObjRuleFunc a         -> AST_ObjRuleFunc (fd  a)
     AST_ArithPfx    a b c   _ -> AST_ArithPfx         a       b  (fd  c)         lu
     AST_Init        a b c   _ -> AST_Init                (fd  a) (fd  b) (fd  c) lu
     AST_Struct      a b     _ -> AST_Struct           a  (fd  b)                 lu
@@ -7946,7 +7933,6 @@ instance PPrintable AST_Object where
     AST_Void                         -> return ()
     AST_ObjLiteral  o                -> pPrint o
     AST_ObjSingle   o                -> pPrint o
-    AST_ObjRuleFunc o                -> pPrint o
     AST_ArithPfx    op coms objXp  _ -> pWrapIndent $
       [pPrint op, pPrint coms, pPrint objXp]
     AST_Init          ref objs     elems   _ ->
@@ -7974,7 +7960,6 @@ instance ToDaoStructClass AST_Object where
     AST_Void                   -> makeNullary "Void"
     AST_ObjLiteral   a         -> innerToStruct a
     AST_ObjSingle    a         -> innerToStruct a
-    AST_ObjRuleFunc  a         -> innerToStruct a
     AST_ArithPfx     a b c loc -> nm "ArithPrefix" >>
       "op" .= a >> putComments b >> "expr" .= c >> putLocation loc
     AST_Init         a b c loc -> nm "Init" >>
@@ -7987,7 +7972,6 @@ instance FromDaoStructClass AST_Object where
     [ nullary "Void" >> return AST_Void
     , AST_ObjLiteral  <$> fromDaoStruct
     , AST_ObjSingle   <$> fromDaoStruct
-    , AST_ObjRuleFunc <$> fromDaoStruct
     , constructor "ArithPrefix" >>
         pure AST_ArithPfx <*> req "op" <*> comments <*> req "expr" <*> location
     , constructor "Init" >>
@@ -8001,7 +7985,6 @@ instance HasRandGen AST_Object where
   randChoice = randChoiceList $
     [ AST_ObjLiteral  <$> randO
     , AST_ObjSingle   <$> randO
-    , AST_ObjRuleFunc <$> randO
     , pure AST_ArithPfx <*> randO <*> randO <*> randO <*> no
     , pure AST_Init     <*> randO <*> randO <*> randO <*> no
     , pure AST_MetaEval <*> randO <*> no
@@ -8010,7 +7993,6 @@ instance HasRandGen AST_Object where
   defaultChoice = randChoiceList $
     [ AST_ObjLiteral  <$> defaultO
     , AST_ObjSingle   <$> defaultO
-    , AST_ObjRuleFunc <$> defaultO
     , return AST_ArithPfx <*> defaultO <*> defaultO <*> (AST_ObjLiteral <$> defaultO) <*> no
     , return AST_Init     <*> defaultO <*> defaultO <*> defaultO <*> no
     , return AST_Struct   <*> defaultO <*> defaultO <*> no
@@ -8024,7 +8006,6 @@ instance Intermediate ObjectExpr AST_Object where
     AST_Void                  -> [VoidExpr       ]
     AST_ObjLiteral  a         ->  ObjLiteralExpr   <$> ti a
     AST_ObjSingle   a         -> [ObjSingleExpr  ] <*> ti a
-    AST_ObjRuleFunc a         -> [ObjRuleFuncExpr] <*> ti a
     AST_ArithPfx    a _ c loc -> [ArithPfxExpr   ] <*>   [a]          <*> ti c <*> [loc]
     AST_Init        a b c loc -> [InitExpr       ] <*> ti a  <*> ti b <*> ti c <*> [loc]
     AST_Struct      a b   loc -> [StructExpr     ] <*>   [a] <*> ti b          <*> [loc]
@@ -8033,7 +8014,6 @@ instance Intermediate ObjectExpr AST_Object where
     VoidExpr                  -> [AST_Void       ]
     ObjLiteralExpr  a         ->  AST_ObjLiteral   <$> fi a
     ObjSingleExpr   a         ->  AST_ObjSingle    <$> fi a
-    ObjRuleFuncExpr a         ->  AST_ObjRuleFunc  <$> fi a
     ArithPfxExpr    a b   loc -> [AST_ArithPfx   ] <*>   [a] <*> [[]] <*> fi b <*> [loc]
     InitExpr        a b c loc -> [AST_Init       ] <*> fi a  <*> fi b <*> fi c <*> [loc]
     StructExpr      a b   loc -> [AST_Struct     ] <*>   [a] <*> fi b          <*> [loc]
@@ -8410,11 +8390,13 @@ instance HaskellDataClass AST_Assign where
 data ObjTestExpr
   = ObjArithExpr ArithExpr
   | ObjTestExpr  ArithExpr ArithExpr ArithExpr Location
+  | ObjRuleFuncExpr RuleFuncExpr
   deriving (Eq, Ord, Show, Typeable)
 
 instance NFData ObjTestExpr where
   rnf (ObjArithExpr  a    ) = deepseq a ()
   rnf (ObjTestExpr a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (ObjRuleFuncExpr a      ) = deepseq a $! ()
 
 instance HasNullValue ObjTestExpr where
   nullValue = ObjArithExpr nullValue
@@ -8425,13 +8407,16 @@ instance HasLocation ObjTestExpr where
   getLocation o = case o of
     ObjArithExpr      a   -> getLocation a
     ObjTestExpr _ _ _ loc -> loc
+    ObjRuleFuncExpr       o -> getLocation o
   setLocation o loc = case o of
     ObjArithExpr      a   -> ObjArithExpr (setLocation a loc)
     ObjTestExpr a b c _   -> ObjTestExpr a b c loc
+    ObjRuleFuncExpr a       -> ObjRuleFuncExpr (setLocation a loc)
   delLocation o     = case o of
     ObjArithExpr      a   -> ObjArithExpr (delLocation a)
     ObjTestExpr a b c _   ->
       ObjTestExpr (delLocation a) (delLocation b) (delLocation c) LocationUnknown
+    ObjRuleFuncExpr a       -> ObjRuleFuncExpr (fd a)
 
 instance PPrintable ObjTestExpr where { pPrint = pPrintInterm }
 
@@ -8439,12 +8424,16 @@ instance B.Binary ObjTestExpr MTab where
   put o = case o of
     ObjArithExpr      a -> B.put a
     ObjTestExpr a b c d -> B.prefixByte 0x73 $ B.put a >> B.put b >> B.put c >> B.put d
+    ObjRuleFuncExpr a       -> B.put a
   get = B.word8PrefixTable <|> fail "expecting ObjTestExpr"
 
 instance B.HasPrefixTable ObjTestExpr Word8 MTab where
-  prefixTable = fmap ObjArithExpr B.prefixTable <>
-    (B.mkPrefixTableWord8 "ObjTestExpr" 0x73 0x73 $
-      [return ObjTestExpr <*> B.get <*> B.get <*> B.get <*> B.get])
+  prefixTable = mconcat $ 
+    [ ObjArithExpr <$> B.prefixTable
+    , ObjRuleFuncExpr <$> B.prefixTable
+    , B.mkPrefixTableWord8 "ObjTestExpr" 0x73 0x73 $
+        [return ObjTestExpr <*> B.get <*> B.get <*> B.get <*> B.get]
+    ]
 
 instance Executable ObjTestExpr (Maybe Object) where
   execute o = case o of
@@ -8452,12 +8441,15 @@ instance Executable ObjTestExpr (Maybe Object) where
     ObjTestExpr a b c _ ->
       execute a >>= checkVoid (getLocation a) "conditional expression evaluates to void" >>=
         execute . objToBool >>= \ok -> if ok then execute b else execute c
+    ObjRuleFuncExpr o -> execute o
 
 instance RefReducible ObjTestExpr where
   reduceToRef o = case o of
     ObjArithExpr o -> reduceToRef o
     ObjTestExpr{}  -> fmap (flip RefObject NullRef) $ execute o >>=
       checkVoid (getLocation o) "conditional expression assignment evaluates to void, not reference"
+    ObjRuleFuncExpr{} -> execute o >>=
+      maybe (fail "lambda expression evaluated to void") (return . flip RefObject NullRef)
 
 instance ObjectClass ObjTestExpr where { obj=new; fromObj=objFromHaskellData; }
 
@@ -8471,12 +8463,14 @@ instance HaskellDataClass ObjTestExpr where
 data AST_ObjTest
   = AST_ObjArith AST_Arith
   | AST_ObjTest  AST_Arith (Com ()) AST_Arith (Com ()) AST_Arith Location
+  | AST_ObjRuleFunc AST_RuleFunc
   deriving (Eq, Ord, Show, Typeable)
 
 instance NFData AST_ObjTest where
   rnf (AST_ObjArith  a        ) = deepseq a ()
   rnf (AST_ObjTest a b c d e f) =
     deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e $! deepseq f ()
+  rnf (AST_ObjRuleFunc a      ) = deepseq a ()
 
 instance HasNullValue AST_ObjTest where
   nullValue = AST_ObjArith nullValue
@@ -8487,13 +8481,16 @@ instance HasLocation AST_ObjTest where
   getLocation o     = case o of
     AST_ObjArith          a   -> getLocation a
     AST_ObjTest _ _ _ _ _ loc -> loc
+    AST_ObjRuleFunc      o -> getLocation o
   setLocation o loc = case o of
     AST_ObjArith          a   -> AST_ObjArith (setLocation a loc)
     AST_ObjTest a b c d e _   -> AST_ObjTest a b c d e loc
+    AST_ObjRuleFunc a         -> AST_ObjRuleFunc (setLocation a loc)
   delLocation o     = case o of
     AST_ObjArith          a   -> AST_ObjArith (delLocation a)
     AST_ObjTest a b c d e _   -> 
       AST_ObjTest (delLocation a) b (delLocation c) d (delLocation e) LocationUnknown
+    AST_ObjRuleFunc a         -> AST_ObjRuleFunc (fd  a)
 
 instance PPrintable AST_ObjTest where
   pPrint o = case o of
@@ -8503,11 +8500,13 @@ instance PPrintable AST_ObjTest where
       , pPrintComWith (\ () -> pString " ? ") b, pPrint c
       , pPrintComWith (\ () -> pString " : ") d, pPrint e
       ]
+    AST_ObjRuleFunc o                -> pPrint o
 
 instance PrecedeWithSpace AST_ObjTest where
   precedeWithSpace o = case o of
     AST_ObjArith          o -> precedeWithSpace o
     AST_ObjTest o _ _ _ _ _ -> precedeWithSpace o
+    AST_ObjRuleFunc       _ -> True
 
 instance HasRandGen AST_ObjTest where
   randO = _randTrace "AST_ObjTest" $ countNode $ runRandChoice
@@ -8515,6 +8514,7 @@ instance HasRandGen AST_ObjTest where
     [ AST_ObjArith <$> randO
     , let p = pure (Com ()) in
         recurse $ scramble $ return AST_ObjTest <*> randO <*> p <*> randO <*> p <*> randO <*> no
+    , AST_ObjRuleFunc <$> randO
     ]
   defaultO = _randTrace "D.AST_ObjTest" $ AST_ObjArith <$> defaultO
   defaultChoice = randChoiceList [defaultO]
@@ -8528,6 +8528,7 @@ instance ToDaoStructClass AST_ObjTest where
       "quesMarkComs" .= b >> "action" .= c
       "colonComs"    .= d >> "alt"    .= e
       putLocation f
+    AST_ObjRuleFunc  a         -> innerToStruct a
 
 instance FromDaoStructClass AST_ObjTest where
   fromDaoStruct = msum $
@@ -8538,16 +8539,19 @@ instance FromDaoStructClass AST_ObjTest where
             <*> (maybe (Com ()) id <$> opt "quesMarkComs") <*> req "action"
             <*> (maybe (Com ()) id <$> opt "colonComs"   ) <*> req "alt"
             <*> location
+    , AST_ObjRuleFunc <$> fromDaoStruct
     ]
 
 instance Intermediate ObjTestExpr AST_ObjTest where
   toInterm   o = case o of
     AST_ObjArith    o         ->  ObjArithExpr <$> ti o
     AST_ObjTest a _ b _ c loc -> [ObjTestExpr] <*> ti a <*> ti b <*> ti c <*> [loc]
+    AST_ObjRuleFunc a         -> [ObjRuleFuncExpr] <*> ti a
   fromInterm o = case o of
     ObjArithExpr  o       -> AST_ObjArith <$> fi o
     ObjTestExpr a b c loc ->
       [AST_ObjTest] <*> fi a <*> [Com ()] <*> fi b <*> [Com ()] <*> fi c <*> [loc]
+    ObjRuleFuncExpr a         ->  AST_ObjRuleFunc  <$> fi a
 
 instance ObjectClass AST_ObjTest where { obj=new; fromObj=objFromHaskellData; }
 

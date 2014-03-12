@@ -3,6 +3,7 @@
 src/Dao.hs
 src/Dao/Interpreter.hs
 src/Dao/Interpreter/Parser.hs
+src/Dao/Interpreter/AST.hs
 tests/Dao/CoreTests.hs
 
 src/Dao/RefTable.hs

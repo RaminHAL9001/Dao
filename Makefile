@@ -33,7 +33,7 @@ LANG_EXTS = $(foreach X,$(LANGUAGE_EXTENSIONS),-X$X)
 GHC_CMD = ghc
 GHC_BUILD = $(GHC_CMD) --make $(SRC_DIRS) $(GHC_FLAGS)
 
-CHANGED_FILES := $(shell find $(SOURCE_DIRECTORIES) -name '[A-Z]*.hs' -newer ./Makefile)
+CHANGED_FILES := $(shell find $(SOURCE_DIRECTORIES) -name '[A-Z]*.hs' -newer ./Makefile | grep 'main.hs$$')
 
 ####################################################################################################
 

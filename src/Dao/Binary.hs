@@ -312,7 +312,7 @@ instance (Integral i, Show i, Ix i, Binary a mtab) => Monoid (PrefixTable mtab i
 -- | For each 'GGet' function stored in the 'PrefixTable', bind it to the function provided here and
 -- store the bound functions back into the table. It works similar to the 'Control.Monad.>>='
 -- function.
-bindPrefixTable :: (Ix i, Binary b mtab) => PrefixTable mtab i a -> (a -> GGet mtab b) -> PrefixTable mtab i b
+bindPrefixTable :: Ix i => PrefixTable mtab i a -> (a -> GGet mtab b) -> PrefixTable mtab i b
 bindPrefixTable (PrefixTable msg getIdx arr) fn = PrefixTable msg getIdx (fmap (amap (>>=fn)) arr)
 
 -- | Construct a 'Serializer' from a list of serializers, and each list item will be prefixed with a
@@ -591,6 +591,11 @@ instance Binary a mtab => Binary [a] mtab where
       , optional get >>= maybe (fail "expecting list element") (loop . (ox++) . (:[]))
       ]
 
+-- | Like 'putUnwrapped' but takes an arbitrary binary encoder for encoding individual list
+-- parameters.
+putUnwrappedWith :: (a -> GPut mtab) -> [a] -> GPut mtab
+putUnwrappedWith put list = mapM_ put list >> putNullTerm
+
 -- | The inverse of 'getUnwrapped', this function is simply defined as:
 -- > \list -> 'Control.Monad.mapM_' 'put' list >> 'putNullterm'
 -- This is useful when you want to place a list of items, but you dont want to waste space on a
@@ -598,7 +603,12 @@ instance Binary a mtab => Binary [a] mtab where
 -- of space, but placing any elements which are prefixed with a null byte will result in undefined
 -- behavior when decoding.
 putUnwrapped :: Binary a mtab => [a] -> GPut mtab
-putUnwrapped list = mapM_ put list >> putNullTerm
+putUnwrapped = putUnwrappedWith put
+
+-- | Like 'getUnwrapped' but takes an arbitrary binary decoder for encoding individual list
+-- parameters.
+getUnwrappedWith :: GGet mtab a -> GGet mtab [a]
+getUnwrappedWith get = fix (\loop ox -> (getNullTerm >> return ox) <|> (get >>= \o -> loop (ox++[o]))) []
 
 -- | The inverse of 'putUnwrapped', this function is simply defined as: 'Control.Applicative.many'
 -- 'get' >>= \list -> 'getNullTerm' >> 'Control.Monad.return' list This assumes that
@@ -608,7 +618,7 @@ putUnwrapped list = mapM_ put list >> putNullTerm
 -- looping which results in undefined behavior. Examples of elements that may start with null @0x00@
 -- bytes are 'Dao.String.UStr', 'Dao.String.Name', 'Prelude.Integer', or any 'Prelude.Integral' type.
 getUnwrapped :: Binary a mtab => GGet mtab [a]
-getUnwrapped = fix (\loop ox -> (getNullTerm >> return ox) <|> (get >>= \o -> loop (ox++[o]))) []
+getUnwrapped = getUnwrappedWith get
 
 instance Binary UStr mtab where
   put o = dataBinaryPut (B.put o)

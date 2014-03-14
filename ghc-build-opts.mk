@@ -33,6 +33,7 @@ LANGUAGE_EXTENSIONS =          \
 	FunctionalDependencies     \
 	FlexibleInstances          \
 	FlexibleContexts           \
+	DeriveFunctor              \
 	DeriveDataTypeable         \
 	GeneralizedNewtypeDeriving \
 
@@ -40,7 +41,7 @@ BUILTIN_RTS_OPTIONS := -M8G -N4
 
 ALLOW_CHANGE_RTS_OPTIONS := true
 
-PROF_FLAGS := -prof -fprof-auto
+#PROF_FLAGS := -prof -fprof-auto
 
 LINK_FLAGS := # -dynamic # -shared
 

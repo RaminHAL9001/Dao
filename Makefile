@@ -33,17 +33,17 @@ LANG_EXTS = $(foreach X,$(LANGUAGE_EXTENSIONS),-X$X)
 GHC_CMD = ghc
 GHC_BUILD = $(GHC_CMD) --make $(SRC_DIRS) $(GHC_FLAGS)
 
-CHANGED_FILES := $(shell find $(SOURCE_DIRECTORIES) -name '[A-Z]*.hs' -newer ./Makefile | grep 'main.hs$$')
+CHANGED_FILES := $(shell find $(SOURCE_DIRECTORIES) -name '[A-Z]*.hs' -newer ./Makefile | grep -v 'main.hs$$')
 
 ####################################################################################################
 
 all: dao test
 
 dao: $(CHANGED_FILES) src/dao-main.hs
-	$(GHC_BUILD) -o dao src/dao-main.hs $(CHANGED_FILES)
+	$(GHC_BUILD) -o dao src/dao-main.hs
 
 O3: $(CHANGED_FILES) src/dao-main.hs
-	$(GHC_BUILD) -o dao src/dao-main.hs $(CHANGED_FILES) -O3
+	$(GHC_BUILD) -o dao src/dao-main.hs -O3
 
 test: debug debug/test
 
@@ -51,10 +51,11 @@ debug:
 	mkdir -p debug
 
 debug/test: tests/main.hs debug $(CHANGED_FILES)
-	$(GHC_BUILD) -o debug/test tests/main.hs $(CHANGED_FILES)
+	$(GHC_BUILD) -o debug/test tests/main.hs
 
 clean:
 	find $(SOURCE_DIRECTORIES) \( -name '*.o' -o -name '*.hi' \) -printf 'rm %p;\n' -delete;
+	rm -f dao debug/dao;
 
 listfile = grep -v '^[[:space:]]*$(hash).*$$' $1
 

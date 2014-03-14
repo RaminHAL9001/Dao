@@ -42,6 +42,7 @@ import           Dao.PPrint
 import           Dao.Token
 import           Dao.Parser
 import           Dao.Interpreter.Parser
+import           Dao.Interpreter.AST
 import qualified Dao.Tree    as T
 
 import           Data.Function
@@ -170,7 +171,7 @@ loadEveryModule args = do
 
 -- | Simply converts an 'Dao.Interpreter.AST_SourceCode' directly to a list of
 -- 'Dao.Interpreter.TopLevelExpr's.
-evalTopLevelAST :: AST_SourceCode -> Exec Program
+evalTopLevelAST :: AST_SourceCode Object -> Exec (Program Object)
 evalTopLevelAST ast = case toInterm ast of
   [o] -> return o
   []  -> fail "converting AST_SourceCode to Program by 'toInterm' returned null value"

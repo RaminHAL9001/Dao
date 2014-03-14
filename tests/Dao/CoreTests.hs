@@ -34,6 +34,7 @@ import           Dao.Parser  hiding (isEOF)
 import           Dao.Random
 import qualified Dao.Binary        as D
 import           Dao.Interpreter
+import           Dao.Interpreter.AST
 import           Dao.Interpreter.Parser
 
 import           Control.Applicative
@@ -340,15 +341,18 @@ unitTester =
       gets failedTestCount >>= guard . (0==) -- mzero if the number of failed tests is more than zero
   }
 
+----------------------------------------------------------------------------------------------------
+
 -- There are actually two kinds of object tests I need to perform. First is the ordinary parser
 -- test, which generates a random, syntactically correct abstract syntax tree in such a way that the
 -- pretty-printed AST object will can be parsed back to exactly the same AST object. The second kind
 -- of test simply generates a random object, not an AST, and tests if it's pretty-printed form can
 -- be parsed without errors. For both types of object, serialization and strcutization are tested.
 data RandObj
-  = RandTopLevel AST_TopLevel
+  = RandTopLevel (AST_TopLevel Object)
   | RandObject   Object
   deriving (Eq, Ord, Show)
+
 instance HasLocation RandObj where
   getLocation a     = case a of
     RandTopLevel a -> getLocation a
@@ -359,14 +363,20 @@ instance HasLocation RandObj where
   delLocation a     = case a of
     RandTopLevel a -> RandTopLevel (delLocation a)
     RandObject   a -> RandObject a
+
 instance HasRandGen RandObj where
   randO = do
     i <- nextInt 2
-    if i==0 then fmap RandTopLevel randO else fmap RandObject randO
+    if i==0 then RandTopLevel . fmap unlimitObject <$> randO else RandObject <$> randO
+      -- Here a random object of type (AST_TopLevel LimitedObject) is generated and converted to a
+      -- data type of (AST_TopLevel Object) immediately after. This is how the randomly generated
+      -- AST_TopLevel data types are restricted.
+
 instance PPrintable RandObj where
   pPrint o = case o of
     RandTopLevel o -> pPrint o
     RandObject   o -> pPrint o
+
 instance D.Binary RandObj MethodTable where
   put o = case o of
     RandTopLevel o -> case toInterm o of
@@ -379,6 +389,7 @@ instance D.Binary RandObj MethodTable where
     RandObject   o -> D.prefixByte 0xFE $ D.put o
   get = D.word8PrefixTable
     <|> fail "Test program failed while trying to de-serialize it's own test data"
+
 instance D.HasPrefixTable RandObj D.Byte MethodTable where
   prefixTable = D.mkPrefixTableWord8 "RandObj" 0xFD 0xFE $
     [ D.get >>= \o -> case fromInterm o of
@@ -390,6 +401,7 @@ instance D.HasPrefixTable RandObj D.Byte MethodTable where
           ]
     , fmap RandObject D.get
     ]
+
 instance NFData RandObj where
   rnf (RandTopLevel a) = deepseq a ()
   rnf (RandObject   a) = deepseq a ()

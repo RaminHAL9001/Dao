@@ -37,13 +37,15 @@ LANGUAGE_EXTENSIONS =          \
 	DeriveDataTypeable         \
 	GeneralizedNewtypeDeriving \
 
-BUILTIN_RTS_OPTIONS := -M8G -N4
+BUILTIN_RTS_OPTIONS := -M5G -N4
 
 ALLOW_CHANGE_RTS_OPTIONS := true
 
 #PROF_FLAGS := -prof -fprof-auto
 
 LINK_FLAGS := # -dynamic # -shared
+
+DEBUG_FLAGS := -dcore-lint
 
 USE_PKGS := base mtl transformers \
 	deepseq containers time utf8-string \
@@ -62,6 +64,6 @@ ifdef USE_PKGS
 USE_PKGS := -hide-all-packages $(foreach p,$(USE_PKGS),-package $p)
 endif
 
-GHC_FLAGS = $(USE_PKGS) $(PROF_FLAGS) $(RTS_OPTS) $(LINK_FLAGS) $(LANG_EXTS) \
+GHC_FLAGS = $(USE_PKGS) $(PROF_FLAGS) $(RTS_OPTS) $(LINK_FLAGS) $(DEBUG_FLAGS) $(LANG_EXTS) \
 	-threaded -Wall -fno-warn-name-shadowing -fno-warn-unused-do-bind -fno-warn-auto-orphans
 

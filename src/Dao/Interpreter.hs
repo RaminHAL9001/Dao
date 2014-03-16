@@ -229,7 +229,6 @@ _randTrace _ = id
 -- 0x8E..0x9B 'ArithPfxOp' -- Partially overlaps with 'InfixOp'
 -- 0xA8..0xAF 'ScriptExpr'
 -- 0xB6       'ElseExpr'
--- 0xB7       'ElseExpr'
 -- 0xBA       'IfElseExpr'
 -- 0xBE       'WhileExpr'
 -- 0xC5..0xC7 'TyChkExpr'
@@ -5032,10 +5031,10 @@ instance HaskellDataClass (AST_IfElse Object) where
 
 ----------------------------------------------------------------------------------------------------
 
--- binary 0xB7
+-- binary (not prefixed, always occurs within a list)
 instance B.Binary (LastElseExpr Object) MTab where
-  put (LastElseExpr a loc) = B.prefixByte 0xB7 $ B.put a >> B.put loc
-  get = (B.tryWord8 0xB7 $ return LastElseExpr <*> B.get <*> B.get) <|> fail "expecting LastElseExpr"
+  put (LastElseExpr a loc) = B.put a >> B.put loc
+  get = (return LastElseExpr <*> B.get <*> B.get) <|> fail "expecting LastElseExpr"
 
 instance Executable (LastElseExpr Object) () where { execute (LastElseExpr code _) = execute code }
 
@@ -5049,7 +5048,7 @@ instance HaskellDataClass (LastElseExpr Object) where
 
 instance ToDaoStructClass (AST_LastElse Object) where
   toDaoStruct = ask >>= \ (AST_LastElse coms code loc) -> renameConstructor "LastElse" >>
-    "coms" .= coms >> "action" .= code >> putLocation loc
+    "comments" .= coms >> "action" .= code >> putLocation loc
 
 instance FromDaoStructClass (AST_LastElse Object) where
   fromDaoStruct = constructor "LastElse" >>
@@ -5060,6 +5059,49 @@ instance ObjectClass (AST_LastElse Object) where { obj=new; fromObj=objFromHaske
 instance HaskellDataClass (AST_LastElse Object) where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct >> autoDefFromStruct
+
+----------------------------------------------------------------------------------------------------
+
+-- binary (not prefixed, always occurs within a list)
+instance B.Binary (CatchExpr Object) MTab where
+  put (CatchExpr a b loc) = B.put a >> B.put b >> B.put loc
+  get = return CatchExpr <*> B.get <*> B.get <*> B.get
+
+instance ObjectClass (CatchExpr Object) where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass (CatchExpr Object) where
+  haskellDataInterface =
+    interface (CatchExpr (ParamExpr False (NotTypeChecked nil) LocationUnknown) nullValue LocationUnknown) $ do
+      autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt
+
+-- | Returns the 'Exec' function to be evaluated if the 'ExecControl' matches the 'CatchExpr' type
+-- constraint. If the type constraint does not match, this function evaluates to
+-- 'Control.Monad.mzero'.
+executeCatchExpr :: ExecControl -> CatchExpr Object -> Exec (Exec ())
+executeCatchExpr err (CatchExpr (ParamExpr _refd param _) catch _loc) = case param of -- TODO: do something with _refd
+  NotTypeChecked name             -> ex name catch
+  TypeChecked    name _check _loc -> ex name catch -- TODO: do something with _check
+  DisableCheck   name _  _   _    -> ex name catch
+  where
+    ex name catch = return $ execNested M.empty $ localVarDefine name (new err) >> execute catch
+
+----------------------------------------------------------------------------------------------------
+
+instance ToDaoStructClass (AST_Catch Object) where
+  toDaoStruct = ask >>= \ (AST_Catch coms param action loc) -> do
+    renameConstructor "Catch"
+    "comments" .= coms >> "test" .= param >> "action" .= action >> putLocation loc
+
+instance FromDaoStructClass (AST_Catch Object) where
+  fromDaoStruct = constructor "Catch" >>
+    return AST_Catch <*> req "comments" <*> req "test" <*> req "action" <*> location
+
+instance ObjectClass (AST_Catch Object) where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass (AST_Catch Object) where
+  haskellDataInterface = interface (AST_Catch [] (Com AST_NoParams) nullValue LocationUnknown) $ do
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
@@ -5101,17 +5143,17 @@ instance HaskellDataClass (AST_While Object) where
 -- binary 0xA8 0xAF
 instance B.Binary (ScriptExpr Object) MTab where
   put o = case o of
-    IfThenElse   a             -> B.put a
-    WhileLoop    a             -> B.put a
-    RuleFuncExpr a             -> B.put a
-    EvalObject   a           z -> B.prefixByte 0xA8 $ B.put a >> B.put z
-    TryCatch     a     b c d z -> B.prefixByte 0xA9 $ B.put a >> B.put b >> B.put c >> B.put d >> B.put z
-    ForLoop      a     b c   z -> B.prefixByte 0xAA $ B.put a >> B.put b >> B.put c >> B.put z
-    ContinueExpr True  b     z -> B.prefixByte 0xAB $ B.put b >> B.put z
-    ContinueExpr False b     z -> B.prefixByte 0xAC $ B.put b >> B.put z
-    ReturnExpr   True  b     z -> B.prefixByte 0xAD $ B.put b >> B.put z
-    ReturnExpr   False b     z -> B.prefixByte 0xAE $ B.put b >> B.put z
-    WithDoc      a     b     z -> B.prefixByte 0xAF $ B.put a >> B.put b >> B.put z
+    IfThenElse   a           -> B.put a
+    WhileLoop    a           -> B.put a
+    RuleFuncExpr a           -> B.put a
+    EvalObject   a         z -> B.prefixByte 0xA8 $ B.put a >> B.put z
+    TryCatch     a     b c z -> B.prefixByte 0xA9 $ B.put a >> B.put b >> B.put c >> B.put z
+    ForLoop      a     b c z -> B.prefixByte 0xAA $ B.put a >> B.put b >> B.put c >> B.put z
+    ContinueExpr True  b   z -> B.prefixByte 0xAB $ B.put b >> B.put z
+    ContinueExpr False b   z -> B.prefixByte 0xAC $ B.put b >> B.put z
+    ReturnExpr   True  b   z -> B.prefixByte 0xAD $ B.put b >> B.put z
+    ReturnExpr   False b   z -> B.prefixByte 0xAE $ B.put b >> B.put z
+    WithDoc      a     b   z -> B.prefixByte 0xAF $ B.put a >> B.put b >> B.put z
   get = B.word8PrefixTable <|> fail "expecting ScriptExpr"
 
 instance B.HasPrefixTable (ScriptExpr Object) B.Byte MTab where
@@ -5121,7 +5163,7 @@ instance B.HasPrefixTable (ScriptExpr Object) B.Byte MTab where
     , fmap RuleFuncExpr B.prefixTable
     , B.mkPrefixTableWord8 "ScriptExpr" 0xA8 0xAF $ -- 0x89 0x8A 0x8B 0x8C 0x8D 0x8E 0x8F 0x90
         [ return EvalObject   <*> B.get <*> B.get
-        , return TryCatch     <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get
+        , return TryCatch     <*> B.get <*> B.get <*> B.get <*> B.get
         , return ForLoop      <*> B.get <*> B.get <*> B.get <*> B.get
         , return (ContinueExpr True ) <*> B.get <*> B.get
         , return (ContinueExpr False) <*> B.get <*> B.get
@@ -5160,15 +5202,13 @@ instance Executable (ScriptExpr Object) () where
           FuncExpr{}   -> return ()
             -- function expressions are placed in the correct store by 'execute'
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    TryCatch try els name catch _loc -> do
+    TryCatch try els catchers _loc -> do
       ce <- catchPredicate $ execNested M.empty (execute try) <|> msum (fmap execute els)
       case ce of
         OK               ()  -> return ()
         Backtrack            -> mzero
         PFail (ExecReturn{}) -> predicate ce
-        PFail            err -> execNested M.empty $ do
-          maybe (return ()) (flip localVarDefine (new err)) name
-          maybe (return ()) execute catch
+        PFail            err -> join $ msum $ fmap (executeCatchExpr err) catchers
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ForLoop varName inObj thn _loc -> do
       qref <- reduceToRef inObj
@@ -5287,15 +5327,15 @@ instance Executable ForLoopBlock (Bool, Maybe Object) where
 
 instance ToDaoStructClass (AST_Script Object) where
   toDaoStruct = let nm = renameConstructor in ask >>= \o -> case o of
-    AST_Comment      a             -> nm "Comment" >> putComments a
-    AST_IfThenElse   a             -> innerToStruct a
-    AST_WhileLoop    a             -> innerToStruct a
-    AST_RuleFunc     a             -> innerToStruct a
-    AST_EvalObject   a b       loc -> nm "ObjectExpr" >> "expr" .= a >> putComments b >> putLocation loc
-    AST_TryCatch     a b c d e loc -> do
+    AST_Comment      a           -> nm "Comment" >> putComments a
+    AST_IfThenElse   a           -> innerToStruct a
+    AST_WhileLoop    a           -> innerToStruct a
+    AST_RuleFunc     a           -> innerToStruct a
+    AST_EvalObject   a b     loc -> nm "ObjectExpr" >> "expr" .= a >> putComments b >> putLocation loc
+    AST_TryCatch     a b c d loc -> do
       nm "TryCatch"
-      "comments" .= a >> "tryBlock" .= b >> "elseExprs" .= listToObj c
-      "varName" .=? d >> "catchBlock" .=? e >> putLocation loc
+      "comments" .= a >> "tryBlock" .= b >> "elseBlocks" .= listToObj c
+      "catchBlocks" .= listToObj d >> putLocation loc
     AST_ForLoop      a b c loc -> nm "ForLoop" >>
       "varName" .= a >> "iterate" .= b >> "block" .= c >> putLocation loc
     AST_ContinueExpr a b c     loc -> do
@@ -5317,9 +5357,8 @@ instance FromDaoStructClass (AST_Script Object) where
         return AST_TryCatch
           <*> comments
           <*> req "tryBlock"
-          <*> reqList "elseExprs"
-          <*> opt "varName"
-          <*> opt "catchBlock"
+          <*> reqList "elseBlocks"
+          <*> reqList "catchBlocks"
           <*> location
     , constructor "ForLoop" >>
         return AST_ForLoop <*> req "varName" <*> req "iterate" <*> req "block" <*> location

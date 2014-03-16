@@ -736,6 +736,16 @@ lastElseParser = do
   (els, endLoc) <- bracketed "else statement"
   return $ AST_LastElse (fmap (const ()) comTok) els (unComment comTok <> endLoc)
 
+catchExprParser :: DaoParser (AST_Catch Object)
+catchExprParser = do
+  bufferComments
+  startLoc <- tokenBy "catch" asLocation
+  expect "parameter variable name/type after \"catch\" statement" $ do
+    coms  <- optSpace
+    param <- commented parameter
+    (scrpt, endLoc) <- bracketed "\"catch\" statement"
+    return $ AST_Catch coms param scrpt (startLoc <> endLoc)
+
 ifElsePTabItem :: DaoTableItem (AST_IfElse Object)
 ifElsePTabItem = bindPTableItem ifPTabItem (loop []) where
   loop elsx ifExpr = msum $
@@ -780,24 +790,15 @@ scriptPTab = comments <> objExpr <> table exprs where
     , returnExpr "throw"    False
     , continExpr "continue" True
     , continExpr "break"    False
-    , tableItemBy "try"   $ \tok -> expect "bracketed script after \"try\" statement" $ do
+    , tableItemBy "try" $ \tok -> expect "bracketed script after \"try\" statement" $ do
         coms <- optSpace
         (try, endLoc) <- bracketed "\"try\" statement"
-        elsExprs <- many lastElseParser
-        let done comName catch endLoc = return $
-              [AST_TryCatch coms try elsExprs comName catch (asLocation tok <> endLoc)]
-        flip mplus (done Nothing mempty endLoc) $ do
-          endLoc  <- tokenBy "catch" asLocation
-          comName <- optional $ commented $ token LABEL asName
-          scrpt   <- optional $ bracketed "\"catch\" statement"
-          case scrpt of
-            Just (catch, endLoc) -> done comName (Just catch) endLoc
-            Nothing              -> case comName of
-              Just comName ->
-                expect "semicolon after \"catch\" statement without catch block" $ do
-                  endLoc <- tokenBy ";" asLocation
-                  done (Just comName) Nothing endLoc
-              Nothing      -> done Nothing Nothing endLoc
+        elsExprs   <- many lastElseParser
+        catchExprs <- many catchExprParser
+        let finalLoc :: forall a . HasLocation a => [a] -> Location
+            finalLoc = foldl (\_ a -> getLocation a) endLoc
+        let loc = asLocation tok <> finalLoc elsExprs <> finalLoc catchExprs
+        return [AST_TryCatch coms try elsExprs catchExprs loc]
     , tableItemBy "for"   $ \tok -> expect "iterator label after \"for statement\"" $ do
         comName <- commented (token LABEL asName)
         expect "\"in\" statement after \"for\" statement" $ do

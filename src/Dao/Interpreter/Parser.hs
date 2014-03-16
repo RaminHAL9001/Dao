@@ -730,22 +730,31 @@ ifPTabItem = ifWhilePTabItem "if" id
 ifStatement :: DaoParser (AST_If Object)
 ifStatement = joinEvalPTableItem ifPTabItem
 
+lastElseParser :: DaoParser (AST_LastElse Object)
+lastElseParser = do
+  comTok <- commented $ tokenBy "else" asLocation
+  (els, endLoc) <- bracketed "else statement"
+  return $ AST_LastElse (fmap (const ()) comTok) els (unComment comTok <> endLoc)
+
 ifElsePTabItem :: DaoTableItem (AST_IfElse Object)
 ifElsePTabItem = bindPTableItem ifPTabItem (loop []) where
-  loop elsx ifExpr = do
-    msum $
-      [ do  com1   <- optSpace
-            elsLoc <- tokenBy "else" asLocation
-            expect "bracketed expression, or another \"if\" expression after \"else\" statement" $ do
-              com2 <- optSpace
-              msum $
-                [ do  nextIf <- ifStatement
-                      loop (elsx++[AST_Else (com com1 () com2) nextIf (elsLoc <> getLocation nextIf)]) ifExpr
-                , do  (els, endLoc) <- bracketed "else statement"
-                      return (AST_IfElse ifExpr elsx (com com1 () com2) (Just els) (getLocation ifExpr <> endLoc))
-                ]
-      , return (AST_IfElse ifExpr elsx (Com ()) Nothing (getLocation ifExpr))
-      ]
+  loop elsx ifExpr = msum $
+    [ do  com1   <- optSpace
+          elsLoc <- tokenBy "else" asLocation
+          expect "bracketed expression, or another \"if\" expression after \"else\" statement" $ do
+            com2 <- optSpace
+            msum $
+              [ do  nextIf <- ifStatement
+                    loop (elsx++[AST_Else (com com1 () com2) nextIf (elsLoc <> getLocation nextIf)]
+                          ) ifExpr
+              , do  (els, endLoc) <- bracketed "else statement"
+                    return $
+                      AST_IfElse ifExpr elsx
+                        (Just $ AST_LastElse (com com1 () com2) els (getLocation els <> endLoc))
+                        (getLocation ifExpr <> endLoc)
+              ]
+    , return (AST_IfElse ifExpr elsx Nothing (getLocation ifExpr))
+    ]
 
 scriptPTab :: DaoPTable [AST_Script Object]
 scriptPTab = comments <> objExpr <> table exprs where
@@ -772,11 +781,11 @@ scriptPTab = comments <> objExpr <> table exprs where
     , continExpr "continue" True
     , continExpr "break"    False
     , tableItemBy "try"   $ \tok -> expect "bracketed script after \"try\" statement" $ do
-        tryCom <- commented (bracketed "\"try\" statement")
-        let (try, endLoc) = unComment tryCom
-        tryCom <- return (fmap (const try) tryCom)
+        coms <- optSpace
+        (try, endLoc) <- bracketed "\"try\" statement"
+        elsExprs <- many lastElseParser
         let done comName catch endLoc = return $
-              [AST_TryCatch tryCom comName catch (asLocation tok <> endLoc)]
+              [AST_TryCatch coms try elsExprs comName catch (asLocation tok <> endLoc)]
         flip mplus (done Nothing mempty endLoc) $ do
           endLoc  <- tokenBy "catch" asLocation
           comName <- optional $ commented $ token LABEL asName

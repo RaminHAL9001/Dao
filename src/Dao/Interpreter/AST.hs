@@ -78,6 +78,7 @@ module Dao.Interpreter.AST
     IfExpr(IfExpr), AST_If(AST_If), 
     ElseExpr(ElseExpr), AST_Else(AST_Else), 
     IfElseExpr(IfElseExpr), AST_IfElse(AST_IfElse), 
+    LastElseExpr(LastElseExpr), AST_LastElse(AST_LastElse),
     WhileExpr(WhileExpr), AST_While(AST_While), 
     AST_Script(
       AST_Comment, AST_IfThenElse, AST_WhileLoop, AST_RuleFunc, AST_EvalObject,
@@ -2430,7 +2431,7 @@ instance Intermediate (ElseExpr o) (AST_Else o) where
 
 ----------------------------------------------------------------------------------------------------
 
-data IfElseExpr o = IfElseExpr (IfExpr o) [ElseExpr o] (Maybe (CodeBlock o)) Location
+data IfElseExpr o = IfElseExpr (IfExpr o) [ElseExpr o] (Maybe (LastElseExpr o)) Location
   deriving (Eq, Ord, Typeable, Show, Functor)
 
 instance NFData o => NFData (IfElseExpr o) where
@@ -2449,41 +2450,87 @@ instance HasLocation (IfElseExpr o) where
 
 ----------------------------------------------------------------------------------------------------
 
-data AST_IfElse o = AST_IfElse (AST_If o) [AST_Else o] (Com ()) (Maybe (AST_CodeBlock o)) Location
+data AST_IfElse o = AST_IfElse (AST_If o) [AST_Else o] (Maybe (AST_LastElse o)) Location
   -- ^ @if /**/ obj /**/ {} /**/ else /**/ if /**/ obj /**/ {} /**/ else {}@
   deriving (Eq, Ord, Typeable, Show, Functor)
 
 instance NFData o => NFData (AST_IfElse o) where
-  rnf (AST_IfElse a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
+  rnf (AST_IfElse a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
 
 instance HasNullValue (AST_IfElse o) where
-  nullValue = AST_IfElse nullValue [] nullValue Nothing LocationUnknown
-  testNull (AST_IfElse a [] (Com ()) Nothing _) = testNull a
+  nullValue = AST_IfElse nullValue [] Nothing LocationUnknown
+  testNull (AST_IfElse a [] Nothing _) = testNull a
   testNull _ = False
 
 instance HasLocation (AST_IfElse o) where
-  getLocation (AST_IfElse _ _ _ _ loc)     = loc
-  setLocation (AST_IfElse a b c d _  ) loc = AST_IfElse a b c d loc
-  delLocation (AST_IfElse a b c d _  )     = AST_IfElse (delLocation a) (fmap delLocation b) c (fmap delLocation d) LocationUnknown
+  getLocation (AST_IfElse _ _ _ loc)     = loc
+  setLocation (AST_IfElse a b c _  ) loc = AST_IfElse a b c loc
+  delLocation (AST_IfElse a b c _  )     = AST_IfElse (delLocation a) (fmap delLocation b) (fmap delLocation c) LocationUnknown
 
 instance PPrintable o => PPrintable (AST_IfElse o) where
-  pPrint (AST_IfElse ifn els coms deflt _) = do
+  pPrint (AST_IfElse ifn els deflt _) = do
     pPrint ifn >> pNewLine
     mapM_ pPrint els >> pNewLine
-    case deflt of
-      Nothing    -> return ()
-      Just deflt -> pClosure (pPrintComWith (\ () -> pString "else") coms) "{" "}" [pPrint deflt]
+    maybe (return ()) pPrint deflt
 
 instance (HasNullValue o, HasRandGen o) => HasRandGen (AST_IfElse o) where
   randO    = countNode $ depthLimitedInt 8 >>= \x ->
-    return AST_IfElse <*> randO <*> randList 0 x <*> randO <*> scrambO <*> no
-  defaultO = return AST_IfElse <*> defaultO <*> defaultList 0 1 <*> randO <*> randO <*> no
+    return AST_IfElse <*> randO <*> randList 0 x <*> randO <*> no
+  defaultO = return AST_IfElse <*> defaultO <*> defaultList 0 1 <*> randO <*> no
 
 instance Intermediate (IfElseExpr o) (AST_IfElse o) where
-  toInterm   (AST_IfElse a b _ c loc) =
-    [IfElseExpr] <*> ti a <*> [b>>=ti]              <*> um1 c <*> [loc]
-  fromInterm (IfElseExpr a b   c loc) =
-    [AST_IfElse] <*> fi a <*> [b>>=fi] <*> [Com ()] <*> nm1 c <*> [loc]
+  toInterm   (AST_IfElse a b c loc) =
+    [IfElseExpr] <*> ti a <*> [b>>=ti] <*> um1 c <*> [loc]
+  fromInterm (IfElseExpr a b c loc) =
+    [AST_IfElse] <*> fi a <*> [b>>=fi] <*> nm1 c <*> [loc]
+
+----------------------------------------------------------------------------------------------------
+
+data LastElseExpr o = LastElseExpr (CodeBlock o) Location
+  deriving (Eq, Ord, Show, Typeable, Functor)
+
+instance NFData o => NFData (LastElseExpr o) where
+  rnf (LastElseExpr a b) = deepseq a $! deepseq b ()
+
+instance HasNullValue (LastElseExpr o) where
+  nullValue = LastElseExpr nullValue LocationUnknown
+  testNull (LastElseExpr o _) = testNull o
+
+instance HasLocation (LastElseExpr o) where
+  getLocation (LastElseExpr _ loc)     = loc
+  setLocation (LastElseExpr a _  ) loc = LastElseExpr a loc
+  delLocation (LastElseExpr a _  )     = LastElseExpr (delLocation a) LocationUnknown
+
+----------------------------------------------------------------------------------------------------
+
+data AST_LastElse o = AST_LastElse (Com ()) (AST_CodeBlock o) Location
+  deriving (Eq, Ord, Show, Typeable, Functor)
+
+instance NFData o => NFData (AST_LastElse o) where
+  rnf (AST_LastElse a b c) = deepseq a $! deepseq b $! deepseq c ()
+
+instance HasNullValue (AST_LastElse o) where
+  nullValue = AST_LastElse (Com ()) nullValue LocationUnknown
+  testNull (AST_LastElse a b _) = testNull a && testNull b
+
+instance HasLocation (AST_LastElse o) where
+  getLocation (AST_LastElse _ _ loc)     = loc
+  setLocation (AST_LastElse a b _  ) loc = AST_LastElse a b loc
+  delLocation (AST_LastElse a b _  )     = AST_LastElse a (delLocation b) LocationUnknown
+
+instance PPrintable o => PPrintable (AST_LastElse o) where
+  pPrint (AST_LastElse coms code _) =
+    pClosure (pPrintComWith (\ () -> pString "else") coms) "{" "}" [pPrint code]
+
+instance (HasNullValue o, HasRandGen o) => HasRandGen (AST_LastElse o) where
+  randO         = countNode $ return AST_LastElse <*> randO <*> randO <*> no
+  randChoice    = randChoiceList [randO]
+  defaultO      = return AST_LastElse <*> defaultO <*> defaultO <*> no
+  defaultChoice = randChoiceList [defaultO]
+
+instance Intermediate (LastElseExpr o) (AST_LastElse o) where
+  toInterm   (AST_LastElse _ o loc) = [LastElseExpr] <*>              toInterm   o <*> [loc]
+  fromInterm (LastElseExpr   o loc) = [AST_LastElse] <*> [Com ()] <*> fromInterm o <*> [loc]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2535,24 +2582,24 @@ data ScriptExpr o
   = IfThenElse   (IfElseExpr   o)
   | WhileLoop    (WhileExpr    o)
   | RuleFuncExpr (RuleFuncExpr o)
-  | EvalObject   (AssignExpr   o)                                    Location -- location of the semicolon
-  | TryCatch     (CodeBlock    o) (Maybe Name) (Maybe (CodeBlock o)) Location
-  | ForLoop      Name          (RefPrefixExpr o)      (CodeBlock o)  Location
-  | ContinueExpr Bool          (AssignExpr    o)                     Location
-  | ReturnExpr   Bool          (AssignExpr    o)                     Location
-  | WithDoc      (ParenExpr o) (CodeBlock     o)                     Location
+  | EvalObject   (AssignExpr   o)                                                      Location -- location of the semicolon
+  | TryCatch     (CodeBlock    o) [LastElseExpr  o] (Maybe Name) (Maybe (CodeBlock o)) Location
+  | ForLoop       Name            (RefPrefixExpr o)                     (CodeBlock o)  Location
+  | ContinueExpr  Bool            (AssignExpr    o)                                    Location
+  | ReturnExpr    Bool            (AssignExpr    o)                                    Location
+  | WithDoc      (ParenExpr    o) (CodeBlock     o)                                    Location
   deriving (Eq, Ord, Typeable, Show, Functor)
 
 instance NFData o => NFData (ScriptExpr o) where
-  rnf (IfThenElse   a      ) = deepseq a ()
-  rnf (WhileLoop    a      ) = deepseq a ()
-  rnf (RuleFuncExpr a      ) = deepseq a ()
-  rnf (EvalObject   a b    ) = deepseq a $! deepseq b ()
-  rnf (TryCatch     a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (ForLoop      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (ContinueExpr a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (ReturnExpr   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (WithDoc      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (IfThenElse   a        ) = deepseq a ()
+  rnf (WhileLoop    a        ) = deepseq a ()
+  rnf (RuleFuncExpr a        ) = deepseq a ()
+  rnf (EvalObject   a b      ) = deepseq a $! deepseq b ()
+  rnf (TryCatch     a b c d e) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e ()
+  rnf (ForLoop      a b c d  ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (ContinueExpr a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (ReturnExpr   a b c    ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (WithDoc      a b c    ) = deepseq a $! deepseq b $! deepseq c ()
 
 instance HasNullValue o => HasNullValue (ScriptExpr o) where
   nullValue = EvalObject nullValue LocationUnknown
@@ -2561,39 +2608,35 @@ instance HasNullValue o => HasNullValue (ScriptExpr o) where
 
 instance HasLocation (ScriptExpr o) where
   getLocation o = case o of
-    EvalObject   _     o -> o
-    IfThenElse         o -> getLocation o
-    RuleFuncExpr       o -> getLocation o
-    WhileLoop          o -> getLocation o
-    TryCatch     _ _ _ o -> o
-    ForLoop      _ _ _ o -> o
-    ContinueExpr _ _   o -> o
-    ReturnExpr   _ _   o -> o
-    WithDoc      _ _   o -> o
+    EvalObject   _       o -> o
+    IfThenElse           o -> getLocation o
+    RuleFuncExpr         o -> getLocation o
+    WhileLoop            o -> getLocation o
+    TryCatch     _ _ _ _ o -> o
+    ForLoop      _ _ _   o -> o
+    ContinueExpr _ _     o -> o
+    ReturnExpr   _ _     o -> o
+    WithDoc      _ _     o -> o
   setLocation o loc = case o of
-    EvalObject   a     _ -> EvalObject   a     loc
-    IfThenElse   a       -> IfThenElse   (setLocation a loc)
-    WhileLoop    a       -> WhileLoop    (setLocation a loc)
-    RuleFuncExpr a       -> RuleFuncExpr (setLocation a loc)
-    TryCatch     a b c _ -> TryCatch     a b c loc
-    ForLoop      a b c _ -> ForLoop      a b c loc
-    ContinueExpr a b   _ -> ContinueExpr a b   loc
-    ReturnExpr   a b   _ -> ReturnExpr   a b   loc
-    WithDoc      a b   _ -> WithDoc      a b   loc
+    EvalObject   a       _ -> EvalObject   a     loc
+    IfThenElse   a         -> IfThenElse   (setLocation a loc)
+    WhileLoop    a         -> WhileLoop    (setLocation a loc)
+    RuleFuncExpr a         -> RuleFuncExpr (setLocation a loc)
+    TryCatch     a b c d _ -> TryCatch     a b c d loc
+    ForLoop      a b c   _ -> ForLoop      a b c   loc
+    ContinueExpr a b     _ -> ContinueExpr a b     loc
+    ReturnExpr   a b     _ -> ReturnExpr   a b     loc
+    WithDoc      a b     _ -> WithDoc      a b     loc
   delLocation o = case o of
-    EvalObject   a     _ -> EvalObject   (fd a)                   lu
-    IfThenElse   a       -> IfThenElse   (fd a)
-    WhileLoop    a       -> WhileLoop    (fd a)
-    RuleFuncExpr a       -> RuleFuncExpr (fd a)
-    TryCatch     a b c _ -> TryCatch     (fd a)     b (fmap fd c) lu
-    ForLoop      a b c _ -> ForLoop          a  (fd b)     (fd c) lu
-    ContinueExpr a b   _ -> ContinueExpr     a  (fd b)            lu
-    ReturnExpr   a b   _ -> ReturnExpr       a  (fd b)            lu
-    WithDoc      a b   _ -> WithDoc      (fd a) (fd b)            lu
-    where
-      lu = LocationUnknown
-      fd :: HasLocation a => a -> a
-      fd = delLocation
+    EvalObject   a       _ -> EvalObject   (delLocation a)                    LocationUnknown
+    IfThenElse   a         -> IfThenElse   (delLocation a)
+    WhileLoop    a         -> WhileLoop    (delLocation a)
+    RuleFuncExpr a         -> RuleFuncExpr (delLocation a)
+    TryCatch     a b c d _ -> TryCatch     (delLocation a) (fmap delLocation b) c (fmap delLocation d) LocationUnknown
+    ForLoop      a b c   _ -> ForLoop      a (delLocation b) (delLocation c) LocationUnknown
+    ContinueExpr a b     _ -> ContinueExpr a (delLocation b)                 LocationUnknown
+    ReturnExpr   a b     _ -> ReturnExpr   a (delLocation b)                 LocationUnknown
+    WithDoc      a b     _ -> WithDoc      (delLocation a) (delLocation b)   LocationUnknown
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2604,33 +2647,33 @@ data AST_Script o
   | AST_IfThenElse  (AST_IfElse o)
   | AST_WhileLoop   (AST_While o)
   | AST_RuleFunc    (AST_RuleFunc o)
-  | AST_EvalObject  (AST_Assign o)  [Comment]                                                 Location
+  | AST_EvalObject  (AST_Assign o)  [Comment]                                                                 Location
     -- ^ @some.object.expression = for.example - equations || function(calls) /**/ ;@
-  | AST_TryCatch     (Com (AST_CodeBlock o))     (Maybe (Com Name)) (Maybe (AST_CodeBlock o)) Location
-    -- ^ @try /**/ {} /**/ catch /**/ errVar /**/ {}@              
-  | AST_ForLoop      (Com Name)              (Com (AST_RefPrefix o))       (AST_CodeBlock o)  Location
+  | AST_TryCatch    [Comment] (AST_CodeBlock o) [AST_LastElse o] (Maybe (Com Name)) (Maybe (AST_CodeBlock o)) Location
+    -- ^ @try /**/ {} /**/ else /**/ {} /**/ catch /**/ errVar /**/ {}@              
+  | AST_ForLoop     (Com Name)               (Com (AST_RefPrefix o))                       (AST_CodeBlock o)  Location
     -- ^ @for /**/ var /**/ in /**/ objExpr /**/ {}@
-  | AST_ContinueExpr Bool  [Comment]         (Com (AST_Assign o))                             Location
+  | AST_ContinueExpr Bool  [Comment]         (Com (AST_Assign    o))                                          Location
     -- ^ The boolean parameter is True for a "continue" statement, False for a "break" statement.
     -- @continue /**/ ;@ or @continue /**/ if /**/ objExpr /**/ ;@
-  | AST_ReturnExpr   Bool                    (Com (AST_Assign o))                             Location
+  | AST_ReturnExpr   Bool                    (Com (AST_Assign    o))                                          Location
     -- ^ The boolean parameter is True for a "return" statement, False for a "throw" statement.
     -- ^ @return /**/ ;@ or @return /**/ objExpr /**/ ;@
-  | AST_WithDoc      (Com (AST_Paren o))         (AST_CodeBlock o)                            Location
+  | AST_WithDoc      (Com (AST_Paren o))          (AST_CodeBlock o)                                           Location
     -- ^ @with /**/ objExpr /**/ {}@
   deriving (Eq, Ord, Typeable, Show, Functor)
 
 instance NFData o => NFData (AST_Script o) where
-  rnf (AST_Comment      a      ) = deepseq a ()
-  rnf (AST_IfThenElse   a      ) = deepseq a ()
-  rnf (AST_WhileLoop    a      ) = deepseq a ()
-  rnf (AST_RuleFunc     a      ) = deepseq a ()
-  rnf (AST_EvalObject   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_TryCatch     a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_ForLoop      a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_ContinueExpr a b c d) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
-  rnf (AST_ReturnExpr   a b c  ) = deepseq a $! deepseq b $! deepseq c ()
-  rnf (AST_WithDoc      a b c  ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_Comment      a          ) = deepseq a ()
+  rnf (AST_IfThenElse   a          ) = deepseq a ()
+  rnf (AST_WhileLoop    a          ) = deepseq a ()
+  rnf (AST_RuleFunc     a          ) = deepseq a ()
+  rnf (AST_EvalObject   a b c      ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_TryCatch     a b c d e f) = deepseq a $! deepseq b $! deepseq c $! deepseq d $! deepseq e $! deepseq f ()
+  rnf (AST_ForLoop      a b c d    ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_ContinueExpr a b c d    ) = deepseq a $! deepseq b $! deepseq c $! deepseq d ()
+  rnf (AST_ReturnExpr   a b c      ) = deepseq a $! deepseq b $! deepseq c ()
+  rnf (AST_WithDoc      a b c      ) = deepseq a $! deepseq b $! deepseq c ()
 
 instance HasNullValue (AST_Script o) where
   nullValue = AST_EvalObject nullValue [] LocationUnknown
@@ -2639,56 +2682,57 @@ instance HasNullValue (AST_Script o) where
 
 instance HasLocation (AST_Script o) where
   getLocation o = case o of
-    AST_Comment      _       -> LocationUnknown
-    AST_EvalObject   _   _ o -> o
-    AST_IfThenElse         o -> getLocation o
-    AST_WhileLoop          o -> getLocation o
-    AST_RuleFunc           o -> getLocation o
-    AST_TryCatch     _ _ _ o -> o
-    AST_ForLoop      _ _ _ o -> o
-    AST_ContinueExpr _ _ _ o -> o
-    AST_ReturnExpr   _ _   o -> o
-    AST_WithDoc      _ _   o -> o
+    AST_Comment      _           -> LocationUnknown
+    AST_EvalObject   _   _     o -> o
+    AST_IfThenElse             o -> getLocation o
+    AST_WhileLoop              o -> getLocation o
+    AST_RuleFunc               o -> getLocation o
+    AST_TryCatch     _ _ _ _ _ o -> o
+    AST_ForLoop      _ _ _     o -> o
+    AST_ContinueExpr _ _ _     o -> o
+    AST_ReturnExpr   _ _       o -> o
+    AST_WithDoc      _ _       o -> o
   setLocation o loc = case o of
-    AST_Comment      a       -> AST_Comment      a
-    AST_EvalObject   a b   _ -> AST_EvalObject   a b   loc
-    AST_IfThenElse   a       -> AST_IfThenElse   (setLocation a loc)
-    AST_WhileLoop    a       -> AST_WhileLoop    (setLocation a loc)
-    AST_RuleFunc     a       -> AST_RuleFunc     (setLocation a loc)
-    AST_TryCatch     a b c _ -> AST_TryCatch     a b c loc
-    AST_ForLoop      a b c _ -> AST_ForLoop      a b c loc
-    AST_ContinueExpr a b c _ -> AST_ContinueExpr a b c loc
-    AST_ReturnExpr   a b   _ -> AST_ReturnExpr   a b   loc
-    AST_WithDoc      a b   _ -> AST_WithDoc      a b   loc
+    AST_Comment      a           -> AST_Comment      a
+    AST_EvalObject   a b       _ -> AST_EvalObject   a b   loc
+    AST_IfThenElse   a           -> AST_IfThenElse   (setLocation a loc)
+    AST_WhileLoop    a           -> AST_WhileLoop    (setLocation a loc)
+    AST_RuleFunc     a           -> AST_RuleFunc     (setLocation a loc)
+    AST_TryCatch     a b c d e _ -> AST_TryCatch     a b c d e loc
+    AST_ForLoop      a b c     _ -> AST_ForLoop      a b c     loc
+    AST_ContinueExpr a b c     _ -> AST_ContinueExpr a b c     loc
+    AST_ReturnExpr   a b       _ -> AST_ReturnExpr   a b       loc
+    AST_WithDoc      a b       _ -> AST_WithDoc      a b       loc
   delLocation o = case o of
-    AST_Comment      a       -> AST_Comment           a
-    AST_EvalObject   a b   _ -> AST_EvalObject   (delLocation  a)      b              LocationUnknown
-    AST_IfThenElse   a       -> AST_IfThenElse   (delLocation  a)
-    AST_WhileLoop    a       -> AST_WhileLoop    (delLocation  a)
-    AST_RuleFunc     a       -> AST_RuleFunc     (delLocation  a)
-    AST_TryCatch     a b c _ -> AST_TryCatch     (fmap delLocation a)      b  (fmap delLocation c) LocationUnknown
-    AST_ForLoop      a b c _ -> AST_ForLoop           a  (fmap delLocation b) (delLocation c)      LocationUnknown
-    AST_ContinueExpr a b c _ -> AST_ContinueExpr      a       b  (fmap delLocation c) LocationUnknown
-    AST_ReturnExpr   a b   _ -> AST_ReturnExpr        a  (fmap delLocation b)         LocationUnknown
-    AST_WithDoc      a b   _ -> AST_WithDoc      (fmap delLocation a) (delLocation  b)             LocationUnknown
+    AST_Comment      a           -> AST_Comment      a
+    AST_EvalObject   a b       _ -> AST_EvalObject   (delLocation  a) b LocationUnknown
+    AST_IfThenElse   a           -> AST_IfThenElse   (delLocation  a)
+    AST_WhileLoop    a           -> AST_WhileLoop    (delLocation  a)
+    AST_RuleFunc     a           -> AST_RuleFunc     (delLocation  a)
+    AST_TryCatch     a b c d e _ -> AST_TryCatch     a (delLocation b) (fmap delLocation c) (fmap delLocation d) (fmap delLocation e) LocationUnknown
+    AST_ForLoop      a b c     _ -> AST_ForLoop      a (fmap delLocation b) (delLocation c) LocationUnknown
+    AST_ContinueExpr a b c     _ -> AST_ContinueExpr a b (fmap delLocation c) LocationUnknown
+    AST_ReturnExpr   a b       _ -> AST_ReturnExpr   a (fmap delLocation b) LocationUnknown
+    AST_WithDoc      a b       _ -> AST_WithDoc      (fmap delLocation a) (delLocation b) LocationUnknown
 
 instance PPrintable o => PPrintable (AST_Script o) where
   pPrint expr = pGroup True $ case expr of
     AST_Comment             coms -> mapM_ pPrint coms
-    AST_EvalObject   objXp  coms                    _ ->
+    AST_EvalObject   objXp  coms                      _ ->
       pPrint objXp >> mapM_ pPrint coms >> pString ";"
-    AST_IfThenElse   ifXp                             -> pPrint ifXp
-    AST_WhileLoop    whileLoop                        -> pPrint whileLoop
-    AST_RuleFunc     ruleOrFunc                       -> pPrint ruleOrFunc
-    AST_TryCatch     cxcScrpXp  cQRef     xcScrpXp  _ -> do
-      pClosure (pString "try") "{" "}" [pPrint cxcScrpXp]
+    AST_IfThenElse   ifXp                               -> pPrint ifXp
+    AST_WhileLoop    whileLoop                          -> pPrint whileLoop
+    AST_RuleFunc     ruleOrFunc                         -> pPrint ruleOrFunc
+    AST_TryCatch     coms scrpXp elsXp cQRef xcScrpXp _ -> do
+      pClosure (pString "try" >> pPrint coms) "{" "}" [pPrint scrpXp]
+      mapM_ pPrint elsXp
       maybe (return ()) id $ msum $
         [ cQRef >>= \qref -> xcScrpXp >>= \xscrp -> Just $
             pClosure (pString "catch " >> pPrint qref) "{" "}" [pPrint xscrp]
         , cQRef    >>= \qref  -> Just $ pString "catch " >> pPrint qref >> pString ";"
         , xcScrpXp >>= \xscrp -> Just $ pClosure (pString "catch ") "{" "}" [pPrint xscrp]
         ]
-    AST_ForLoop      cNm        cObjXp    xcScrpXp  _ ->
+    AST_ForLoop      cNm        cObjXp    xcScrpXp    _ ->
       pPrintSubBlock (pString "for " >> pPrint cNm >> pString " in " >> pPrint cObjXp) xcScrpXp
     AST_ContinueExpr contin     coms      cObjXp    _ -> pWrapIndent $
       [ pString (if contin then "continue" else "break")
@@ -2698,9 +2742,9 @@ instance PPrintable o => PPrintable (AST_Script o) where
           _ -> pString " if" >> when (precedeWithSpace cObjXp) (pString " ") >> pPrint cObjXp
       , pString ";"
       ]
-    AST_ReturnExpr   retrn                cObjXp    _ -> pWrapIndent $
+    AST_ReturnExpr   retrn                cObjXp      _ -> pWrapIndent $
       [pString (if retrn then "return " else "throw "), pPrint cObjXp, pString ";"]
-    AST_WithDoc      cObjXp               xcScrpXp  _ ->
+    AST_WithDoc      cObjXp               xcScrpXp    _ ->
       pPrintSubBlock (pString "with " >> pPrint cObjXp) xcScrpXp
 
 instance (HasNullValue o, HasRandGen o) => HasRandGen (AST_Script o) where
@@ -2710,7 +2754,8 @@ instance (HasNullValue o, HasRandGen o) => HasRandGen (AST_Script o) where
     , return AST_IfThenElse   <*> randO
     , return AST_WhileLoop    <*> randO
     , return AST_RuleFunc     <*> randO
-    , scramble $ return AST_TryCatch     <*> randO <*> randO <*> randO <*> no
+    , scramble $ depthLimitedInt 4 >>= \x ->
+        return AST_TryCatch <*> randO <*> randO <*> randList 0 x <*> randO <*> randO <*> no
     , scramble $ return AST_ForLoop      <*> randO <*> randO <*> randO <*> no
     , scramble $ return AST_ContinueExpr <*> randO <*> randO <*> randO <*> no
     , scramble $ return AST_ReturnExpr   <*> randO <*> randO <*> no
@@ -2721,33 +2766,49 @@ instance (HasNullValue o, HasRandGen o) => HasRandGen (AST_Script o) where
     [ AST_IfThenElse <$> defaultO
     , AST_WhileLoop  <$> defaultO
     , AST_RuleFunc   <$> defaultO
+    , return AST_TryCatch
+        <*> pure []
+        <*> defaultO
+        <*> defaultList 0 1
+        <*> (return <$> defaultO)
+        <*> (return <$> defaultO)
+        <*> no
+    , return AST_ContinueExpr
+        <*> randO -- not a mistake, this is a boolean value
+        <*> defaultO
+        <*> defaultO
+        <*> no
+    , return AST_ReturnExpr
+        <*> randO -- not a mistake, this is a boolean value
+        <*> defaultO
+        <*> no
     ]
 
 instance PPrintable o => PPrintable (ScriptExpr o) where { pPrint = pPrintInterm }
 
 instance Intermediate (ScriptExpr o) (AST_Script o) where
   toInterm   ast = case ast of
-    AST_Comment      _         -> mzero
-    AST_EvalObject   a _   loc -> [EvalObject  ] <*> ti  a                     <*> [loc]
-    AST_IfThenElse   a         -> [IfThenElse  ] <*> ti  a
-    AST_WhileLoop    a         -> [WhileLoop   ] <*> ti  a
-    AST_RuleFunc     a         -> [RuleFuncExpr] <*> ti  a
-    AST_TryCatch     a b c loc -> [TryCatch    ] <*> uc0 a <*> um0 b <*> um1 c <*> [loc]
-    AST_ForLoop      a b c loc -> [ForLoop     ] <*> uc  a <*> uc0 b <*> ti  c <*> [loc]
-    AST_ContinueExpr a _ c loc -> [ContinueExpr] <*> [a]   <*> uc0 c           <*> [loc]
-    AST_ReturnExpr   a b   loc -> [ReturnExpr  ] <*> [a]   <*> uc0 b           <*> [loc]
-    AST_WithDoc      a b   loc -> [WithDoc     ] <*> uc0 a <*> ti  b           <*> [loc]
+    AST_Comment      _             -> mzero
+    AST_EvalObject   a _       loc -> [EvalObject  ] <*> ti  a                     <*> [loc]
+    AST_IfThenElse   a             -> [IfThenElse  ] <*> ti  a
+    AST_WhileLoop    a             -> [WhileLoop   ] <*> ti  a
+    AST_RuleFunc     a             -> [RuleFuncExpr] <*> ti  a
+    AST_TryCatch     _ a b c d loc -> [TryCatch    ] <*> ti  a <*> mapM ti b <*> um0 c <*> um1 d <*> [loc]
+    AST_ForLoop      a b c     loc -> [ForLoop     ] <*> uc  a <*> uc0 b <*> ti  c <*> [loc]
+    AST_ContinueExpr a _ c     loc -> [ContinueExpr] <*> [a]   <*> uc0 c           <*> [loc]
+    AST_ReturnExpr   a b       loc -> [ReturnExpr  ] <*> [a]   <*> uc0 b           <*> [loc]
+    AST_WithDoc      a b       loc -> [WithDoc     ] <*> uc0 a <*> ti  b           <*> [loc]
   fromInterm obj = case obj of
-    EvalObject   a     loc -> [AST_EvalObject  ] <*> fi  a  <*> [[]]           <*> [loc]
-    IfThenElse   a         ->  AST_IfThenElse    <$> fi  a
-    WhileLoop    a         ->  AST_WhileLoop     <$> fi  a
-    RuleFuncExpr a         ->  AST_RuleFunc      <$> fi  a
-    TryCatch     a b c loc -> [AST_TryCatch    ] <*> nc0 a  <*> nm0 b <*> nm1 c <*> [loc]
-    ForLoop      a b c loc -> [AST_ForLoop     ] <*> nc  a  <*> nc0 b <*> fi  c <*> [loc]
-    ContinueExpr a b   loc -> [AST_ContinueExpr] <*>    [a] <*> [[]]  <*> nc0 b <*> [loc]
-    ReturnExpr   a b   loc -> [AST_ReturnExpr  ] <*>    [a] <*> nc0 b           <*> [loc]
-    WithDoc      a b   loc -> [AST_WithDoc     ] <*> nc0 a  <*> fi  b           <*> [loc]
-
+    EvalObject   a       loc -> [AST_EvalObject  ] <*> fi  a  <*> [[]]           <*> [loc]
+    IfThenElse   a           ->  AST_IfThenElse    <$> fi  a
+    WhileLoop    a           ->  AST_WhileLoop     <$> fi  a
+    RuleFuncExpr a           ->  AST_RuleFunc      <$> fi  a
+    TryCatch     a b c d loc -> [AST_TryCatch    ] <*> [[]]   <*> fi  a <*> mapM fi b <*> nm0 c <*> nm1 d <*> [loc]
+    ForLoop      a b c   loc -> [AST_ForLoop     ] <*> nc  a  <*> nc0 b <*> fi  c <*> [loc]
+    ContinueExpr a b     loc -> [AST_ContinueExpr] <*>    [a] <*> [[]]  <*> nc0 b <*> [loc]
+    ReturnExpr   a b     loc -> [AST_ReturnExpr  ] <*>    [a] <*> nc0 b           <*> [loc]
+    WithDoc      a b     loc -> [AST_WithDoc     ] <*> nc0 a  <*> fi  b           <*> [loc]
+                         
 ----------------------------------------------------------------------------------------------------
 
 data AttributeExpr

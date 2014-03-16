@@ -1979,8 +1979,7 @@ referenceLookup qref = mplus resolve (return Nothing) where
   getGlobal nm ref = asks globalData       >>= doLookup nm ref
   getGloDot nm ref = asks currentWithRef   >>= doLookup nm ref
   doLookup :: Store store => Name -> RefSuffix -> store -> Exec (Maybe Object)
-  doLookup nm ref store = storeLookup store nm >>= xmaybe >>=
-    objectReferenceAccess (Just qref) ref
+  doLookup nm ref store = storeLookup store nm >>= xmaybe >>= objectReferenceAccess (Just qref) ref
     -- TODO: on exception, update the exception structure with information about the 'Reference'
     -- given above.
 
@@ -2947,7 +2946,7 @@ _objMaybeRef = maybe [] (return . obj)
 -- messages.
 objectReferenceAccess :: Maybe Reference -> RefSuffix -> Object -> Exec (Maybe Object)
 objectReferenceAccess = loop where
-  loop back suf o = flip mplus (cantAccess back) $ case suf of
+  loop back suf o = case suf of
     NullRef -> return $ Just o
     DotRef name suf -> return (_appRef back $ dotRef name) >>= \back -> case o of
       ODict o -> Just <$> _dictReferenceAccess   back name suf o
@@ -2963,7 +2962,6 @@ objectReferenceAccess = loop where
         NullRef -> return result
         suf     -> maybe (funcEvaldNull back) (loop (_appRef back $ funcCall args) suf) result
   opaqueObj     qref = execThrow $ obj $ [obj "cannot inspect opaque value"] ++ _objMaybeRef qref
-  cantAccess    qref = execThrow $ obj $ [obj "undefined reference"] ++ _objMaybeRef qref
   funcEvaldNull qref = execThrow $ obj $
     [obj "function call evaluation returned void"] ++ _objMaybeRef qref
 

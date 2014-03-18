@@ -37,6 +37,8 @@ module Dao.Interpreter(
     toData, constructor, innerFromStruct, nullary, getNullaryWithRead, structCurrentField,
     tryCopyField, tryField, copyField, field, checkEmpty,
     convertFieldData, req, opt, reqList, optList, 
+    ObjectLensError(ObjectLensError), mapStructErrorMessage, failedOnReference, mapStructError,
+    ObjectLensT, runObjectLensT, runObjectLensExec, focusObjectClass,
     Object(
       ONull, OTrue, OType, OInt, OWord, OLong,
       OFloat, ORatio, OComplex, OAbsTime, ORelTime,
@@ -1127,6 +1129,109 @@ instance HasNullValue StructError where
       }
     ) = True
   testNull _ = False
+
+----------------------------------------------------------------------------------------------------
+
+data ObjectLensError
+  = ObjectLensError
+    { mapStructErrorMessage :: Maybe UStr
+    , failedOnReference     :: Reference
+    , mapStructError        :: Maybe StructError
+    }
+  deriving (Eq, Ord, Typeable)
+
+instance ToDaoStructClass ObjectLensError where
+  toDaoStruct = ask >>= \o -> void $ do
+    renameConstructor "ObjectLensError"
+    "message"   .=? mapStructErrorMessage o
+    "reference" .=  failedOnReference o
+    "structure" .=? mapStructError o
+
+instance FromDaoStructClass ObjectLensError where
+  fromDaoStruct = constructor "ObjectLensError" >>
+    return ObjectLensError <*> opt "message" <*> req "reference" <*> opt "structure"
+
+instance ObjectClass ObjectLensError where { obj=new; fromObj=objFromHaskellData; }
+
+instance HaskellDataClass ObjectLensError where
+  haskellDataInterface = interface (ObjectLensError Nothing (RefObject ONull NullRef) Nothing) $ do
+    autoDefEquality >> autoDefOrdering
+    autoDefToStruct >> autoDefFromStruct
+
+data ObjectLensState o
+  = ObjectLensState
+    { mapStructReference :: Reference
+    , mappingOnStruct    :: o
+    }
+
+-- | Provides a nice monadic interface for performing updates over 'Struct' data.
+newtype ObjectLensT o m a
+  = ObjectLens{ mapStructToPredicateT :: PredicateT ObjectLensError (StateT (ObjectLensState o) m) a }
+  deriving (Functor, Applicative, MonadPlus)
+
+instance Monad m => Monad (ObjectLensT o m) where
+  return = ObjectLens . return
+  (ObjectLens m) >>= f = ObjectLens $ m >>= mapStructToPredicateT . f
+  fail msg = ObjectLens $ lift (gets mapStructReference) >>= \ref -> throwError $
+    ObjectLensError
+    { mapStructErrorMessage = Just (ustr msg)
+    , failedOnReference     = ref
+    , mapStructError        = Nothing
+    }
+
+instance Monad m => MonadPlusError ObjectLensError (ObjectLensT o m) where
+  catchPredicate (ObjectLens f) = ObjectLens (catchPredicate f)
+  predicate = ObjectLens . predicate
+
+instance MonadTrans (ObjectLensT o) where { lift = ObjectLens . lift . lift }
+
+instance Monad m => MonadState o (ObjectLensT o m) where
+  state f = _mapStructState $ state $ \st ->
+    let (a, o) = f (mappingOnStruct st) in (a, st{ mappingOnStruct=o })
+
+_mapStructState :: Monad m => StateT (ObjectLensState o) m a -> ObjectLensT o m a
+_mapStructState = ObjectLens . lift
+
+_wrapObjectLensErr :: Reference -> StructError -> ObjectLensError
+_wrapObjectLensErr qref err =
+  ObjectLensError
+  { mapStructErrorMessage = Nothing
+  , failedOnReference     = qref
+  , mapStructError        = Just err
+  }
+
+_stepRefLens :: Monad m => RefSuffix -> ObjectLensT o m a -> ObjectLensT o m a
+_stepRefLens suf f = do
+  r <- _mapStructState $ get >>= \st -> do
+    let r = mapStructReference st
+    put (st{ mapStructReference=refAppendSuffix r suf }) >> return r
+  f >>= \a -> _mapStructState (modify $ \st -> st{ mapStructReference=r }) >> return a
+
+_withSubLens :: Monad m => sub -> ObjectLensT sub m a -> ObjectLensT o m (a, sub)
+_withSubLens sub f = _mapStructState (gets mapStructReference) >>= \qref ->
+  lift (runObjectLensT qref sub f) >>= predicate
+
+-- | Given a data type in the classs 'ToDaoStructClass', convert the object to a Struct, and perform
+-- a transformation on every entry in the struct. The transform function takes a 'Reference' value
+-- that acts as the current path to the object, which can be used to build-up 
+runObjectLensT
+  :: Monad m
+  => Reference -> o -> ObjectLensT o m a -> m (Predicate ObjectLensError (a, o))
+runObjectLensT qref o f =
+  flip evalStateT (ObjectLensState{ mapStructReference=qref, mappingOnStruct=o })
+    (runPredicateT $ mapStructToPredicateT $
+      f >>= \a -> _mapStructState (gets mappingOnStruct) >>= \o -> return (a, o))
+
+runObjectLensExec :: Reference -> o -> ObjectLensT o Exec a -> Exec (a, o)
+runObjectLensExec qref o f = runObjectLensT qref o f >>=
+  predicate . fmapPFail (\err -> mkExecError{ execReturnValue=Just (obj err) })
+
+focusObjectClass :: (Monad m, ObjectClass o) => ObjectLensT o m a -> ObjectLensT Object m a
+focusObjectClass f = do
+  (a, o) <- get >>= xmaybe . fromObj >>= flip _withSubLens f
+  put (obj o) >> return a
+
+----------------------------------------------------------------------------------------------------
 
 instance ToDaoStructClass StructError where
   toDaoStruct = do
@@ -2931,7 +3036,6 @@ newtype ConstantStore = ConstantStore T_dict
 instance Store ConstantStore where
   storeLookup (ConstantStore sto) nm = return $ M.lookup nm sto
   storeUpdate _ nm _ = execThrow $ obj [obj "cannot update constant value:", obj nm]
-
 
 _appRef :: Maybe Reference -> RefSuffix -> Maybe Reference
 _appRef back ref = return refAppendSuffix <*> back <*> pure ref

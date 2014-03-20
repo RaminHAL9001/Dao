@@ -363,20 +363,18 @@ daoFunc :: DaoFunc
 daoFunc = DaoFunc{ daoFuncName=nil, autoDerefParams=True, daoForeignCall = \_ -> return Nothing }
 
 -- | Execute a 'DaoFunc' 
-executeDaoFunc :: Maybe Reference -> DaoFunc -> [Object] -> Exec (Maybe Object)
+executeDaoFunc :: Reference -> DaoFunc -> [Object] -> Exec (Maybe Object)
 executeDaoFunc qref fn params = do
   args <- (if autoDerefParams fn then mapM derefObject else return) params
   pval <- catchPredicate (daoForeignCall fn args)
   case pval of
     OK                 obj  -> return obj
     PFail (ExecReturn  obj) -> return obj
-    PFail (err@ExecError{}) -> throwError $ case qref of
-      Nothing -> err
-      Just qref -> err{
-        execReturnValue = let e = [obj "error in function", obj qref] in Just $
-          flip (maybe (obj e)) (execReturnValue err) $ \ret -> OList $ case ret of
-            OList ox -> e++ox
-            o        -> e++[o] }
+    PFail (err@ExecError{}) -> throwError $ err{
+      execReturnValue = let e = [obj "error in function", obj qref] in Just $
+        flip (maybe (obj e)) (execReturnValue err) $ \ret -> OList $ case ret of
+          OList ox -> e++ox
+          o        -> e++[o] }
     Backtrack               -> mzero
 
 -- | Evaluate this function as one of the instructions in the monadic function passed to the
@@ -1991,14 +1989,14 @@ refAppendSuffix qref appref = case qref of
 referenceLookup :: Reference -> Exec (Maybe (Reference, Object))
 referenceLookup qref = mplus resolve (return Nothing) where
   resolve = _resolveRefQualifier qref access getLocal getConst getStatic getGlobal getGloDot
-  access ref = maybe mzero (objectReferenceAccess (Just qref) ref)
+  access ref = maybe mzero (objectReferenceAccess qref ref)
   getLocal  nm ref = asks execStack        >>= doLookup nm ref
   getConst  nm ref = (ConstantStore <$> asks builtinConstants) >>= doLookup nm ref
   getStatic nm ref = asks currentCodeBlock >>= doLookup nm ref
   getGlobal nm ref = asks globalData       >>= doLookup nm ref
   getGloDot nm ref = asks currentWithRef   >>= doLookup nm ref
   doLookup :: Store store => Name -> RefSuffix -> store -> Exec (Maybe Object)
-  doLookup nm ref store = storeLookup store nm >>= xmaybe >>= objectReferenceAccess (Just qref) ref
+  doLookup nm ref store = storeLookup store nm >>= xmaybe >>= objectReferenceAccess qref ref
     -- TODO: on exception, update the exception structure with information about the 'Reference'
     -- given above.
 
@@ -2048,10 +2046,10 @@ referenceUpdate qref upd = fmap snd <$> checkUNQUAL where
   doUpdate :: Store store => Bool -> Name -> RefSuffix -> store -> Exec (Maybe Object)
   doUpdate force nm ref store = storeUpdate store nm $
     maybe (if force then return Nothing else mzero) (return . Just) >=>
-      objectReferenceUpdate upd (Just qref) ref
+      objectReferenceUpdate upd qref ref
     -- if 'force' is False, produce an update function that backtracks if the input is 'Nothing',
     -- otherwise produe an update function that never backtracks.
-  access a b = objectReferenceUpdate upd (Just qref) a b
+  access a b = objectReferenceUpdate upd qref a b
   resolve f qref =
     _resolveRefQualifier qref access (onLocal f) (onConst f) (onStatic f) (onGlobal f) (onGloDot f)
   -- TODO: on exception, update the exception structure with information about the 'Reference'
@@ -3190,7 +3188,7 @@ instance IndexedObject (Maybe Object) RefSuffix where
     FuncCall  ix suf -> case o of
       Nothing -> fail "function call on undefined reference"
       Just  o -> getCurrentRef >>= \qref ->
-        _lensLiftExec (callObject (Just qref) o ix) >>= put >> updateIndex suf f
+        _lensLiftExec (callObject qref o ix) >>= put >> updateIndex suf f
   lookupIndex suf = _stepRefLens suf $ get >>= xmaybe >>= \o -> case suf of
     NullRef         -> return o
     DotRef name suf -> case o of
@@ -3205,7 +3203,7 @@ instance IndexedObject (Maybe Object) RefSuffix where
       OHaskell o -> _lensRefSuffixLookup o ix suf
       _          -> mzero
     FuncCall ix suf -> getCurrentRef >>= \qref ->
-      _lensLiftExec (callObject (Just qref) o ix) >>= put >> lookupIndex suf
+      _lensLiftExec (callObject qref o ix) >>= put >> lookupIndex suf
   objectFMap f = get >>= \o -> case o of
     Nothing -> return ()
     Just  o -> case o of
@@ -3289,10 +3287,10 @@ _withRefStore (WithRefStore o) upd = maybe mzero upd o
 
 instance Store WithRefStore where
   storeLookup sto name     = _withRefStore sto $ -- this is such an incredibly point-free function!
-    liftIO . readIORef >=> objectReferenceAccess (Just $ Reference GLODOT name NullRef) NullRef
+    liftIO . readIORef >=> objectReferenceAccess (Reference GLODOT name NullRef) NullRef
   storeUpdate sto name upd = _withRefStore sto $ \sto -> do
     let ref = Reference GLODOT name NullRef
-    o <- liftIO (readIORef sto) >>= objectReferenceUpdate upd (Just ref) NullRef . Just
+    o <- liftIO (readIORef sto) >>= objectReferenceUpdate upd ref NullRef . Just
     liftIO $ writeIORef sto $ maybe ONull id o
     return o
 
@@ -3302,43 +3300,37 @@ instance Store ConstantStore where
   storeLookup (ConstantStore sto) nm = return $ M.lookup nm sto
   storeUpdate _ nm _ = execThrow $ obj [obj "cannot update constant value:", obj nm]
 
-_appRef :: Maybe Reference -> RefSuffix -> Maybe Reference
-_appRef back ref = return refAppendSuffix <*> back <*> pure ref
-
-_objMaybeRef :: Maybe Reference -> [Object]
-_objMaybeRef = maybe [] (return . obj)
-
 -- | Read elements within a Dao 'Object' using a 'RefSuffix'. This works on 'ODict' and 'OTree'
 -- constructed types and any 'OHaskell' data which provided a function for 'defToStruct' in it's
 -- instantiation of 'HataClass'. Supply an optional 'Reference' that indicates where the
 -- 'Object' was retrieved from, this 'Reference' can be used to construct more helpful error
 -- messages.
-objectReferenceAccess :: Maybe Reference -> RefSuffix -> Object -> Exec (Maybe Object)
+objectReferenceAccess :: Reference -> RefSuffix -> Object -> Exec (Maybe Object)
 objectReferenceAccess = loop where
   loop back suf o = case suf of
     NullRef -> return $ Just o
-    DotRef name suf -> return (_appRef back $ dotRef name) >>= \back -> case o of
+    DotRef name suf -> return (refAppendSuffix back $ dotRef name) >>= \back -> case o of
       ODict o -> Just <$> _dictReferenceAccess   back name suf o
       OTree o -> Just <$> _structReferenceAccess back name suf o
       OHaskell (Hata ifc o) -> case objToStruct ifc of
         Nothing     -> opaqueObj back
         Just access -> toDaoStructExec access o >>= fmap Just . _structReferenceAccess back name suf
       _                            -> mzero
-    Subscript idx suf -> objectIndexAccess o idx >>= loop (_appRef back $ subscript idx) suf
+    Subscript idx suf -> objectIndexAccess o idx >>= loop (refAppendSuffix back $ subscript idx) suf
     FuncCall args suf -> do
       result <- callObject back o args
       case suf of
         NullRef -> return result
-        suf     -> maybe (funcEvaldNull back) (loop (_appRef back $ funcCall args) suf) result
-  opaqueObj     qref = execThrow $ obj $ [obj "cannot inspect opaque value"] ++ _objMaybeRef qref
+        suf     -> maybe (funcEvaldNull back) (loop (refAppendSuffix back $ funcCall args) suf) result
+  opaqueObj     qref = execThrow $ obj $ [obj "cannot inspect opaque value",  obj qref]
   funcEvaldNull qref = execThrow $ obj $
-    [obj "function call evaluation returned void"] ++ _objMaybeRef qref
+    [obj "function call evaluation returned void", obj qref]
 
-_dictReferenceAccess :: Maybe Reference -> Name -> RefSuffix -> T_dict -> Exec Object
+_dictReferenceAccess :: Reference -> Name -> RefSuffix -> T_dict -> Exec Object
 _dictReferenceAccess back name suf o =
   maybe mzero (objectReferenceAccess back suf) (M.lookup name o) >>= maybe mzero return
 
-_structReferenceAccess :: Maybe Reference -> Name -> RefSuffix -> Struct -> Exec Object
+_structReferenceAccess :: Reference -> Name -> RefSuffix -> Struct -> Exec Object
 _structReferenceAccess back name suf o = case o of
   Struct{ fieldMap=fm } -> _dictReferenceAccess back name suf fm
   Nullary{}             -> mzero
@@ -3348,12 +3340,12 @@ _structReferenceAccess back name suf o = case o of
 -- 'defFromStruct' in it's instantiation of 'HataClass'.
 objectReferenceUpdate
   :: (Maybe Object -> Exec (Maybe Object))
-  -> Maybe Reference -> RefSuffix -> Maybe Object -> Exec (Maybe Object)
+  -> Reference -> RefSuffix -> Maybe Object -> Exec (Maybe Object)
 objectReferenceUpdate upd = loop where
   loop back suf o = case suf of
     NullRef               -> upd o
-    DotRef         nm suf -> return (_appRef back $ dotRef nm) >>= \back -> case o of
-      Nothing -> execThrow $ obj $ [obj "undefined reference"] ++ _objMaybeRef back
+    DotRef         nm suf -> return (refAppendSuffix back $ dotRef nm) >>= \back -> case o of
+      Nothing -> execThrow $ obj $ [obj "undefined reference", obj back]
       Just  o -> case o of
         OTree   o -> _structReferenceUpdate upd back nm suf o >>= putBack OTree
         ODict   o -> _dictReferenceUpdate   upd back nm suf o >>= putBack ODict
@@ -3369,33 +3361,32 @@ objectReferenceUpdate upd = loop where
           , obj "at reference", obj $ Reference UNQUAL nm suf
           ]
     Subscript idx suf -> case o of
-      Nothing -> execThrow $ obj $ concat $
-        [[obj "indexed undefined reference"], maybe [] (return . obj) back]
+      Nothing -> execThrow $ obj [obj "indexed undefined reference", obj back]
       Just  o ->
-        let step = (objectReferenceUpdate upd (_appRef back $ subscript idx) suf)
+        let step = (objectReferenceUpdate upd (refAppendSuffix back $ subscript idx) suf)
         in  objectIndexUpdate step o idx
     FuncCall args suf -> do
-      back <- return (_appRef back $ funcCall args)
+      back <- return (refAppendSuffix back $ funcCall args)
       case o of
-        Nothing -> execThrow $ obj $ [obj "called undefined function"] ++ _objMaybeRef back
+        Nothing -> execThrow $ obj $ [obj "called undefined function", obj back]
         Just  o -> callObject back o args >>=
-          objectReferenceUpdate upd (_appRef back $ funcCall args) suf
+          objectReferenceUpdate upd (refAppendSuffix back $ funcCall args) suf
   putBack constr = maybe (return Nothing) (return . Just . constr)
 
 _structReferenceUpdate
   :: (Maybe Object -> Exec (Maybe Object))
-  -> Maybe Reference -> Name -> RefSuffix -> Struct -> Exec (Maybe Struct)
+  -> Reference -> Name -> RefSuffix -> Struct -> Exec (Maybe Struct)
 _structReferenceUpdate upd back suf name o = case o of
-  Nullary{ structName=name } -> execThrow $ obj $ concat $
-    [ [obj "on structure", obj name]
-    , maybe [] (\back -> [obj "no element named", obj back]) back
+  Nullary{ structName=name } -> execThrow $ obj $
+    [ obj "on structure", obj name
+    , obj "no element named", obj back
     ]
   Struct{ fieldMap=inner } -> _dictReferenceUpdate upd back suf name inner >>=
     maybe (return Nothing) (\inner -> return $ Just $ o{ fieldMap=inner })
 
 _dictReferenceUpdate
   :: (Maybe Object -> Exec (Maybe Object))
-  -> Maybe Reference -> Name -> RefSuffix -> T_dict -> Exec (Maybe T_dict)
+  -> Reference -> Name -> RefSuffix -> T_dict -> Exec (Maybe T_dict)
 _dictReferenceUpdate upd back name suf o = do
   o <- (\item -> M.alter (const item) name o) <$>
     objectReferenceUpdate upd back suf (M.lookup name o)
@@ -3438,7 +3429,7 @@ objectIndexAccess o idx = case o of
       i <- execute (asReference i) <|> errmsg i
       case i of
         Reference UNQUAL name suf ->
-          objectReferenceAccess (Just $ RefObject o $ subscript idx) (DotRef name suf) o >>=
+          objectReferenceAccess (RefObject o $ subscript idx) (DotRef name suf) o >>=
             maybe (fail "reference evaluated to void") return
         _ -> _badRefIndex i
     Just index -> index d idx
@@ -3449,7 +3440,7 @@ objectIndexAccess o idx = case o of
       i <- execute (asReference i) <|>
         execThrow (obj [obj "cannot index", typ, obj "with value", i])
       case i of
-        Reference UNQUAL name suf -> _dictReferenceAccess (Just i) name suf dict
+        Reference UNQUAL name suf -> _dictReferenceAccess i name suf dict
         _ -> _badRefIndex i
 
 -- | Read elements within a Dao 'Object' using an index value. This is the function used to
@@ -3476,12 +3467,12 @@ objectIndexUpdate upd o idx = case o of
         else upd (Just $ head hi) >>= return . Just . OList . (lo++) . (++(tail hi)) . maybe [] return
       else execThrow $ obj $ [obj "index out of bounds", i]
   ODict dict -> _check1D idx "dictionary" $ updRef $ \name suf ->
-    fmap ODict <$> _dictReferenceUpdate upd (Just $ refObject o) name suf dict
+    fmap ODict <$> _dictReferenceUpdate upd (refObject o) name suf dict
   OTree struct -> _check1D idx (uchars $ structName struct) $ updRef $ \name suf ->
-    fmap OTree <$> _structReferenceUpdate upd (Just $ refObject o) name suf struct
+    fmap OTree <$> _structReferenceUpdate upd (refObject o) name suf struct
   OHaskell (Hata ifc d) -> case objIndexUpdater ifc of
     Nothing -> _check1D idx "structure" $ updRef $ \name suf ->
-      objectReferenceUpdate upd (Just $ refObject o) (DotRef name suf) (Just o)
+      objectReferenceUpdate upd (refObject o) (DotRef name suf) (Just o)
     Just index -> Just . OHaskell . Hata ifc <$> index d upd idx
   _ -> execThrow $ obj $ [obj "cannot update object type", obj (typeOfObj o), obj "at index", obj idx]
   where
@@ -5157,7 +5148,7 @@ callCallables funcs params =
 
 -- | If the given object provides a 'defCallable' callback, the object can be called with parameters
 -- as if it were a function.
-callObject :: Maybe Reference -> Object -> [Object] -> Exec (Maybe Object)
+callObject :: Reference -> Object -> [Object] -> Exec (Maybe Object)
 callObject qref o params = case o of
   OHaskell (Hata ifc o) -> case objCallable ifc of
     Just getFuncs -> getFuncs o >>= \funcs -> callCallables funcs params
@@ -5166,11 +5157,11 @@ callObject qref o params = case o of
       Nothing -> err
   _ -> err
   where
-    err = execThrow $ obj $ concat $
-      [ maybe [] (return . ORef) qref
-      , [obj "not a callable object", o]
-      , [obj "called with parameters:", obj params]
-      , [obj "value of object at reference is:", o]
+    err = execThrow $ obj $
+      [ ORef qref
+      , obj "not a callable object", o
+      , obj "called with parameters:", obj params
+      , obj "value of object at reference is:", o
       ]
 
 -- | Evaluate to 'procErr' if the given 'Predicate' is 'Backtrack' or 'PFail'. You must pass a

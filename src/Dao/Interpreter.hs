@@ -39,8 +39,9 @@ module Dao.Interpreter(
     tryCopyField, tryField, copyField, field, checkEmpty,
     convertFieldData, req, opt, reqList, optList, 
     ObjectLensError(ObjectLensError), mapStructErrorMessage, failedOnReference, mapStructError,
-    ObjectLens, runObjectLens, getCurrentRef, withSubObjectLens, runObjectLensExec,
-    focusObjectClass, focusStructAsDict, guardStructName, updateHataAsStruct,
+    ObjectLens, ObjectLensState(), getObjectLensState, runObjectLens, getCurrentRef,
+    makeLensUpdater, withSubObjectLens, runObjectLensExec, focusObjectClass, focusStructAsDict,
+    lensLiftExec, lensPathRefSuffix, guardStructName, updateHataAsStruct,
     Object(
       ONull, OTrue, OType, OInt, OWord, OLong,
       OFloat, ORatio, OComplex, OAbsTime, ORelTime,
@@ -50,7 +51,7 @@ module Dao.Interpreter(
     T_char, T_string, T_ref, T_bytes, T_list, T_dict, T_struct,
     isNumeric, typeMismatchError,
     initializeGlobalKey, destroyGlobalKey,
-    Reference(Reference, RefObject), reference, refObject,
+    Reference(Reference, RefObject), reference, refObject, referenceHead,
     refNames, referenceFromUStr, fmapReference, setQualifier, modRefObject,
     refAppendSuffix, referenceLookup, referenceUpdate,
     CoreType(
@@ -61,7 +62,7 @@ module Dao.Interpreter(
     typeOfObj, coreType,
     TypeSym(CoreType, TypeVar), TypeStruct(TypeStruct), ObjType(ObjType), typeChoices,
     RefSuffix(NullRef, DotRef, Subscript, FuncCall),
-    dotRef, subscript, funcCall,
+    refSuffixHead, refSuffixToList, dotRef, subscript, funcCall,
     Complex(Complex),
     realPart, imagPart, mkPolar, cis, polar, magnitude, phase, conjugate, complex,
     minAccumArray, minArray,
@@ -166,10 +167,12 @@ import           Control.Monad.State
 
 import           System.IO
 
-#if 0
+#if 1
 import Debug.Trace
 strace :: PPrintable s => String -> s -> s
 strace msg s = trace (msg++": "++prettyShow s) s
+#endif
+#if 0
 dbg :: MonadIO m => String -> m ()
 dbg = liftIO . hPutStrLn stderr . ("(DEBUG) "++) . (>>=(\c -> if c=='\n' then "\n(DEBUG) " else [c]))
 dbg' :: MonadIO m => String -> m a -> m a
@@ -1111,6 +1114,18 @@ data StructError
     }
   deriving (Eq, Ord, Typeable)
 
+instance PPrintable StructError where
+  pPrint err = do
+    let pp p msg f = case f err of
+          Nothing -> return ()
+          Just  o -> (if null msg then return () else pString (msg++": ")) >> p o >> pNewLine
+    pp pUStr "" structErrMsg
+    pp pUStr "on constructor" structErrName
+    pp pUStr "on field" structErrField
+    pp pPrint "with value" structErrValue
+    let extras = structErrExtras err
+    if null extras then return () else pString ("unused fields: "++show extras)
+
 instance HasNullValue StructError where
   nullValue =
     StructError
@@ -1925,11 +1940,22 @@ data Reference
   | RefWrapper Reference
   deriving (Eq, Ord, Typeable, Show)
 
+-- | Construct a 'Reference' with a 'RefQualifier' and a 'Name'.
 reference :: RefQualifier -> Name -> Reference
 reference q name = Reference q name NullRef
 
+-- | Construct a 'Reference' with an object.
 refObject :: Object -> Reference
 refObject = flip RefObject NullRef
+
+-- | Strip the 'RefSuffix' from the given 'Reference', changing it 'NullRef' and returning the
+-- updated 'Referene' along with the 'RefSuffix' that was removed. If the 'Reference' is a
+-- 'RefWrapper', nothing is changed.
+referenceHead :: Reference -> (Reference, Maybe RefSuffix)
+referenceHead qref = case qref of
+  Reference q name suf -> (Reference q name NullRef, Just suf)
+  RefObject   o    suf -> (RefObject   o    NullRef, Just suf)
+  RefWrapper  r        -> (RefWrapper  r           , Nothing )
 
 instance NFData Reference where
   rnf (Reference q n r) = deepseq q $! deepseq n $! deepseq r ()
@@ -2046,7 +2072,7 @@ referenceUpdate qref upd = fmap snd <$> checkUNQUAL where
   doUpdate :: Store store => Bool -> Name -> RefSuffix -> store -> Exec (Maybe Object)
   doUpdate force nm ref store = storeUpdate store nm $
     maybe (if force then return Nothing else mzero) (return . Just) >=>
-      objectReferenceUpdate upd qref ref
+      trace ("objectReferenceUpdate "++show qref) (objectReferenceUpdate upd qref ref)
     -- if 'force' is False, produce an update function that backtracks if the input is 'Nothing',
     -- otherwise produe an update function that never backtracks.
   access a b = objectReferenceUpdate upd qref a b
@@ -2379,6 +2405,31 @@ data RefSuffix
   | FuncCall  [Object] RefSuffix
   deriving (Eq, Ord, Typeable, Show)
 
+instance Monoid RefSuffix where
+  mempty = NullRef
+  mappend left right = case left of
+    NullRef           -> right
+    DotRef    nm left -> DotRef    nm $ left<>right
+    Subscript ox left -> Subscript ox $ left<>right
+    FuncCall  ox left -> FuncCall  ox $ left<>right
+
+-- | If the 'RefSuffix' is 'DotRef', 'Subscript', or 'FuncCall', the second parameter to these
+-- constructors is overwritten with 'NullRef' so only the first parameter remains.
+refSuffixHead :: RefSuffix -> RefSuffix
+refSuffixHead suf = let lst = refSuffixToList suf in if null lst then NullRef else head lst
+
+-- | The 'RefSuffix' is a list-like data type, where most of the constructors may contain another
+-- 'RefSuffix' structure as the "tail" of the list. This function "explodes" a 'RefSuffix' into a
+-- list of 'RefSuffix's where "tail" is 'NullRef'. This is the inverse operation of
+-- 'Data.Monoid.mconcat', so the following equality is always True:
+-- > \r -> mconcat (refSuffixToList r) == r
+refSuffixToList :: RefSuffix -> [RefSuffix]
+refSuffixToList suf = case suf of
+  NullRef         -> []
+  DotRef    a suf -> DotRef    a NullRef : refSuffixToList suf
+  Subscript a suf -> Subscript a NullRef : refSuffixToList suf
+  FuncCall  a suf -> FuncCall  a NullRef : refSuffixToList suf
+
 -- | Construct a 'DotRef' with a 'NullRef' suffix.
 dotRef :: Name -> RefSuffix
 dotRef = flip DotRef NullRef
@@ -2390,14 +2441,6 @@ subscript = flip Subscript NullRef
 -- | Construct a 'FuncCall' with a 'NullRef' suffix.
 funcCall :: [Object] -> RefSuffix
 funcCall = flip FuncCall NullRef
-
-instance Monoid RefSuffix where
-  mempty = NullRef
-  mappend left right = case left of
-    NullRef           -> right
-    DotRef    nm left -> DotRef    nm $ left<>right
-    Subscript ox left -> Subscript ox $ left<>right
-    FuncCall  ox left -> FuncCall  ox $ left<>right
 
 instance HasNullValue RefSuffix where
   nullValue = NullRef
@@ -2893,6 +2936,12 @@ mkObjectLensError qref =
   , mapStructError        = Nothing
   }
 
+instance PPrintable ObjectLensError where
+  pPrint err = do
+    pPrint (failedOnReference err)
+    maybe (return ()) (\o -> pString " " >> pUStr o >> pNewLine)  (mapStructErrorMessage err)
+    maybe (return ()) pPrint (mapStructError err)
+
 instance ToDaoStructClass ObjectLensError where
   toDaoStruct = ask >>= \o -> void $ do
     renameConstructor "ObjectLensError"
@@ -2908,7 +2957,7 @@ instance ObjectClass ObjectLensError where { obj=new; fromObj=objFromHata; }
 
 instance HataClass ObjectLensError where
   haskellDataInterface = interface (ObjectLensError Nothing (RefObject ONull NullRef) Nothing) $ do
-    autoDefEquality >> autoDefOrdering
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
 data ObjectLensState o
@@ -2963,39 +3012,63 @@ class IndexedObject o index where
 _mapStructState :: StateT (ObjectLensState o) Exec a -> ObjectLens o a
 _mapStructState = ObjectLens . lift
 
+-- | When you need to "unlift" a 'ObjectLens' function to an 'Exec' function that can be composed
+-- with other 'Exec' functions, you can use this function to get the 'ObjectLensState' and use it
+-- with 'runObjectLens'.
+getObjectLensState :: ObjectLens o (ObjectLensState o)
+getObjectLensState = _mapStructState get
+
 _wrapObjectLensErr :: Reference -> StructError -> ObjectLensError
 _wrapObjectLensErr qref err =
   (mkObjectLensError qref){ mapStructError=Just err }
 
-_stepRefLens :: RefSuffix -> ObjectLens o a -> ObjectLens o a
-_stepRefLens suf f = do
+-- | When instantiating the 'IndexedObject' class with a 'RefSuffix' index type, it is useful to
+-- record the head of the 'RefSuffix' that is being used to resolve the index. When an
+-- 'Control.Monad.fail' is evaluated, the current path (the 'RefSuffix') to the part of the object
+-- where the failure occurred will be used in the error report. Bracketing your 'ObjectLens'
+-- evaluation in this function will help create better error reports.
+lensPathRefSuffix :: RefSuffix -> ObjectLens o a -> ObjectLens o a
+lensPathRefSuffix suf f = do
   r <- _mapStructState $ get >>= \st -> do
     let r = mapStructReference st
     put (st{ mapStructReference=refAppendSuffix r suf }) >> return r
   f >>= \a -> _mapStructState (modify $ \st -> st{ mapStructReference=r }) >> return a
 
-_lensLiftExec :: Exec a -> ObjectLens o a
-_lensLiftExec = ObjectLens . lift . lift
+lensLiftExec :: Exec a -> ObjectLens o a
+lensLiftExec = ObjectLens . lift . lift
+
+makeLensUpdater :: (Maybe Object -> Exec (Maybe Object)) -> ObjectLens (Maybe Object) ()
+makeLensUpdater f = get >>= lensLiftExec . f >>= put
 
 getCurrentRef :: ObjectLens o Reference
 getCurrentRef = _mapStructState (gets mapStructReference)
 
--- | Given a data type in the classs 'ToDaoStructClass', convert the object to a Struct, and perform
--- a transformation on every entry in the struct. The transform function takes a 'Reference' value
--- that acts as the current path to the object, which can be used to build-up 
-runObjectLens :: Reference -> o -> ObjectLens o a -> Exec (Predicate ObjectLensError (a, o))
-runObjectLens qref o f =
-  flip evalStateT (ObjectLensState{ mapStructReference=qref, mappingOnStruct=o })
-    (runPredicateT $ mapStructToPredicateT $
-      f >>= \a -> _mapStructState (gets mappingOnStruct) >>= \o -> return (a, o))
+-- | This is a kind of entry-point to the 'ObjectLens' group of functions. First provide a
+-- 'Reference' value for error reporting, to indicate where a 'lookupIndex' or 'updateIndex'
+-- function failed.  Note that using 'lookupIndex' and 'updateIndex' functions instantiated for
+-- 'RefSuffix' indicies will append these indicies to the 'Reference', so it might be better to pass
+-- the 'referenceHead' of the 'Reference'. Then supply an object upon which the 'lookupIndex',
+-- 'updateIndex', or 'objectFMap' functions will be evaluating.
+runObjectLensExec :: ObjectLens o a -> Reference -> o -> Exec (a, o)
+runObjectLensExec f qref o =
+  runObjectLens f (ObjectLensState{ mapStructReference=qref, mappingOnStruct=o }) >>=
+    predicate . fmapPFail (\err -> mkExecError{ execReturnValue=Just (obj err) })
+
+-- | This is not an entry-point to the 'ObjectLens' monadic functions. This function should be used
+-- when you are writing a function of type 'ObjectLens' and one of the lines of code in this
+-- function should "unlift" an 'ObjectLens' function so it can be composed with an 'Exec' function,
+-- and the resulting 'Exec' function should then be "re-lifted" back into your 'ObjectLens' monadic
+-- function using 'lensLiftExec'.
+runObjectLens :: ObjectLens o a -> ObjectLensState o -> Exec (Predicate ObjectLensError (a, o))
+runObjectLens f st = flip evalStateT st $ runPredicateT $ mapStructToPredicateT $
+  f >>= \a -> _mapStructState (gets mappingOnStruct) >>= \o -> return (a, o)
 
 withSubObjectLens :: sub -> ObjectLens sub a -> ObjectLens o (a, sub)
-withSubObjectLens sub f = getCurrentRef >>= \qref ->
-  (_lensLiftExec $ runObjectLens qref sub f) >>= predicate
-
-runObjectLensExec :: Reference -> o -> ObjectLens o a -> Exec (a, o)
-runObjectLensExec qref o f = runObjectLens qref o f >>=
-  predicate . fmapPFail (\err -> mkExecError{ execReturnValue=Just (obj err) })
+withSubObjectLens sub f = do
+  qref <- getCurrentRef
+  o <- lensLiftExec $ runObjectLens f $
+    (ObjectLensState{ mapStructReference=qref, mappingOnStruct=sub })
+  predicate o
 
 focusObjectClass :: ObjectClass o => ObjectLens o a -> ObjectLens Object a
 focusObjectClass f = do
@@ -3007,7 +3080,7 @@ instance IndexedObject T_dict Name where
     flip withSubObjectLens f . (M.lookup name) >>= \ ((), o) -> modify $ M.alter (const o) name
   lookupIndex name = get >>= xmaybe . M.lookup name
   objectFMap f = get >>=
-    mapM (\ (name, o) -> _stepRefLens (DotRef name NullRef) $ withSubObjectLens [] $ f name o
+    mapM (\ (name, o) -> lensPathRefSuffix (DotRef name NullRef) $ withSubObjectLens [] $ f name o
           ) . M.assocs >>= put . M.fromList . concatMap snd
 
 guardStructName :: Name -> ObjectLens T_struct ()
@@ -3078,7 +3151,7 @@ instance IndexedObject [Object] Integer where
                 (i, o):_ | i==idx -> return o
                 _ -> error "instance IndexedObject [Object] Integer { lookupIndex = ... }"
   objectFMap f = get >>=
-    mapM (\ (idx, o) -> _stepRefLens (Subscript [obj idx] NullRef) $ withSubObjectLens [] $ f idx o
+    mapM (\ (idx, o) -> lensPathRefSuffix (Subscript [obj idx] NullRef) $ withSubObjectLens [] $ f idx o
           ) . zip [0..] >>= put . map snd . sortBy (\a b -> compare (fst a) (fst b)) . concatMap snd
 
 _lensRefSuffixUpdate
@@ -3092,14 +3165,14 @@ _lensRefSuffixLookup o i suf = withSubObjectLens o (lookupIndex i) >>=
   fmap fst . flip withSubObjectLens (lookupIndex suf) . Just . fst
 
 _dictSubscriptUpdate :: IndexedObject o Name => String -> [Object] -> ObjectLens (Maybe Object) () -> ObjectLens o ()
-_dictSubscriptUpdate msg ix f = case ix of
+_dictSubscriptUpdate msg ix f = lensLiftExec (mapM derefObject ix) >>= \ix -> case ix of
   []  -> fail $ "void subscript used to index "++msg
   [ORef (Reference UNQUAL name suf)] -> updateIndex name $ updateIndex suf f
   [_] -> fail $ "non-reference subscript used to update index of "++msg
   _   -> fail $ "multi-dimensional subscript used to update index of "++msg
 
 _dictSubscriptLookup :: IndexedObject o Name => String -> [Object] -> ObjectLens o Object
-_dictSubscriptLookup msg ix = case ix of
+_dictSubscriptLookup msg ix = lensLiftExec (mapM derefObject ix) >>= \ix -> case ix of
   []  -> fail $ "void subscript used to index "++msg++" item"
   [ORef (Reference UNQUAL name suf)] -> lookupIndex name >>=
     fmap fst . flip withSubObjectLens (lookupIndex suf) . Just
@@ -3114,8 +3187,8 @@ _lensFMapConvert
   -> (fi -> Object -> ObjectLens [(fi, Object)] ())
   -> i -> Object
   -> ObjectLens [(i, Object)] ()
-_lensFMapConvert i2fi fi2i f i o = getCurrentRef >>= \qref -> do
-  _lensLiftExec (runObjectLensExec qref [] $ i2fi i >>= flip f o) >>=
+_lensFMapConvert i2fi fi2i f i o = getCurrentRef >>= \qref ->
+  lensLiftExec (runObjectLensExec (i2fi i >>= flip f o) qref []) >>=
     mapM (\ (fi, o) -> fi2i fi >>= \i -> return (i, o)) . snd >>= put
 
 _dictSubscriptFMap
@@ -3129,8 +3202,8 @@ _dictSubscriptFMap msg f = objectFMap $ _lensFMapConvert i2fi fi2i f where
     [ORef (Reference UNQUAL name NullRef)] -> return name
     _ -> fail $ "improper index value used to update field while traversing "++msg
 
-_index1DIntegral :: String -> String -> [Object] -> (Integer -> ObjectLens o a) -> ObjectLens o a
-_index1DIntegral msg1 msg2 ix f = case ix of
+_index1DIntegral :: Show a => String -> String -> [Object] -> (Integer -> ObjectLens o a) -> ObjectLens o a
+_index1DIntegral msg1 msg2 ix f = lensLiftExec (mapM derefObject ix) >>= \ix -> case ix of
   []  -> fail $ "void subscript used to "++msg1++" list"++msg2
   [i] -> case extractXPure (castToCoreType LongType i) >>= fromObj of
     Nothing -> fail $ "non-integer subscript used to "++msg1++" list"++msg2
@@ -3169,7 +3242,7 @@ instance IndexedObject Hata [Object] where
   objectFMap     f = _hataUpdateSubscript $ \msg -> _dictSubscriptFMap   msg    f
 
 instance IndexedObject (Maybe Object) RefSuffix where
-  updateIndex suf f = _stepRefLens suf $ get >>= \o -> case suf of
+  updateIndex suf f = lensPathRefSuffix suf $ get >>= \o -> case suf of
     NullRef         -> get >>= flip withSubObjectLens f >>= put . snd
     DotRef name suf -> case o of
       Nothing -> fail "undefined reference"
@@ -3181,6 +3254,7 @@ instance IndexedObject (Maybe Object) RefSuffix where
     Subscript ix suf -> case o of
       Nothing -> fail "subscripted undefined reference"
       Just  o -> case o of
+        OList    o -> _lensRefSuffixUpdate o ix suf f
         ODict    o -> _lensRefSuffixUpdate o ix suf f
         OTree    o -> _lensRefSuffixUpdate o ix suf f
         OHaskell o -> _lensRefSuffixUpdate o ix suf f
@@ -3188,8 +3262,8 @@ instance IndexedObject (Maybe Object) RefSuffix where
     FuncCall  ix suf -> case o of
       Nothing -> fail "function call on undefined reference"
       Just  o -> getCurrentRef >>= \qref ->
-        _lensLiftExec (callObject qref o ix) >>= put >> updateIndex suf f
-  lookupIndex suf = _stepRefLens suf $ get >>= xmaybe >>= \o -> case suf of
+        lensLiftExec (callObject qref o ix) >>= put >> updateIndex suf f
+  lookupIndex suf = lensPathRefSuffix suf $ get >>= xmaybe >>= \o -> case suf of
     NullRef         -> return o
     DotRef name suf -> case o of
       ODict    o -> _lensRefSuffixLookup o name suf
@@ -3203,7 +3277,7 @@ instance IndexedObject (Maybe Object) RefSuffix where
       OHaskell o -> _lensRefSuffixLookup o ix suf
       _          -> mzero
     FuncCall ix suf -> getCurrentRef >>= \qref ->
-      _lensLiftExec (callObject qref o ix) >>= put >> lookupIndex suf
+      lensLiftExec (callObject qref o ix) >>= put >> lookupIndex suf
   objectFMap f = get >>= \o -> case o of
     Nothing -> return ()
     Just  o -> case o of
@@ -3307,6 +3381,7 @@ instance Store ConstantStore where
 -- messages.
 objectReferenceAccess :: Reference -> RefSuffix -> Object -> Exec (Maybe Object)
 objectReferenceAccess = loop where
+  _experimental qref suf o = Just . fst <$> runObjectLensExec (lookupIndex suf) (fst $ referenceHead qref) (Just o)
   loop back suf o = case suf of
     NullRef -> return $ Just o
     DotRef name suf -> return (refAppendSuffix back $ dotRef name) >>= \back -> case o of
@@ -3342,6 +3417,7 @@ objectReferenceUpdate
   :: (Maybe Object -> Exec (Maybe Object))
   -> Reference -> RefSuffix -> Maybe Object -> Exec (Maybe Object)
 objectReferenceUpdate upd = loop where
+  _experimental qref suf = fmap snd . runObjectLensExec (updateIndex suf (makeLensUpdater upd)) (fst $ referenceHead qref)
   loop back suf o = case suf of
     NullRef               -> upd o
     DotRef         nm suf -> return (refAppendSuffix back $ dotRef nm) >>= \back -> case o of

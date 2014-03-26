@@ -167,7 +167,7 @@ import           Control.Monad.State
 
 import           System.IO
 
-#if 1
+#if 0
 import Debug.Trace
 strace :: PPrintable s => String -> s -> s
 strace msg s = trace (msg++": "++prettyShow s) s
@@ -2071,8 +2071,7 @@ referenceUpdate qref upd = fmap snd <$> checkUNQUAL where
   onGloDot force nm ref = asks currentWithRef   >>= doUpdate force nm ref
   doUpdate :: Store store => Bool -> Name -> RefSuffix -> store -> Exec (Maybe Object)
   doUpdate force nm ref store = storeUpdate store nm $
-    maybe (if force then return Nothing else mzero) (return . Just) >=>
-      trace ("objectReferenceUpdate "++show qref) (objectReferenceUpdate upd qref ref)
+    maybe (if force then return Nothing else mzero) (return . Just) >=> objectReferenceUpdate upd qref ref
     -- if 'force' is False, produce an update function that backtracks if the input is 'Nothing',
     -- otherwise produe an update function that never backtracks.
   access a b = objectReferenceUpdate upd qref a b
@@ -2968,14 +2967,19 @@ data ObjectLensState o
 
 -- | Provides a nice monadic interface for performing updates over 'Struct' data.
 newtype ObjectLens o a
-  = ObjectLens{ mapStructToPredicateT :: PredicateT ObjectLensError (StateT (ObjectLensState o) Exec) a }
+  = ObjectLens{ mapObjectLensToPredicate :: PredicateT ObjectLensError (StateT (ObjectLensState o) Exec) a }
   deriving (Functor, Applicative, Alternative, MonadPlus)
 
 instance Monad (ObjectLens o) where
   return = ObjectLens . return
-  (ObjectLens m) >>= f = ObjectLens $ m >>= mapStructToPredicateT . f
+  (ObjectLens m) >>= f = ObjectLens $ m >>= mapObjectLensToPredicate . f
   fail msg = ObjectLens $ lift (gets mapStructReference) >>= \ref -> throwError $
     (mkObjectLensError ref){ mapStructErrorMessage=Just (ustr msg) }
+
+instance MonadError ObjectLensError (ObjectLens o) where
+  throwError = ObjectLens . throwError
+  catchError (ObjectLens f) catch =
+    ObjectLens (catchError f (mapObjectLensToPredicate . catch))
 
 instance MonadPlusError ObjectLensError (ObjectLens o) where
   catchPredicate (ObjectLens f) = ObjectLens (catchPredicate f)
@@ -3060,7 +3064,7 @@ runObjectLensExec f qref o =
 -- and the resulting 'Exec' function should then be "re-lifted" back into your 'ObjectLens' monadic
 -- function using 'lensLiftExec'.
 runObjectLens :: ObjectLens o a -> ObjectLensState o -> Exec (Predicate ObjectLensError (a, o))
-runObjectLens f st = flip evalStateT st $ runPredicateT $ mapStructToPredicateT $
+runObjectLens f st = flip evalStateT st $ runPredicateT $ mapObjectLensToPredicate $
   f >>= \a -> _mapStructState (gets mappingOnStruct) >>= \o -> return (a, o)
 
 withSubObjectLens :: sub -> ObjectLens sub a -> ObjectLens o (a, sub)
@@ -3133,7 +3137,7 @@ instance IndexedObject [Object] Integer where
     else do
       let splitlen i rx ox = case ox of
             []   -> (i, rx, [])
-            o:ox -> if i<idx then splitlen (i+1) (rx++[o]) ox else (i, rx, ox)
+            o:ox -> if i<idx then splitlen (i+1) (rx++[o]) ox else (i, rx, o:ox)
       let (len, lo, hi) = splitlen 0 [] ox
       if len==idx
       then
@@ -3332,7 +3336,7 @@ instance Store LocalStore where
   storeLookup (LocalStore  store) = storeLookup store
   storeDefine (LocalStore  store) = storeDefine store
   storeDelete (LocalStore  store) = storeDelete store
-  storeUpdate (LocalStore  store) ref upd = storeUpdate store ref upd
+  storeUpdate (LocalStore  store) = storeUpdate store
 
 newtype GlobalStore = GlobalStore (MVar T_dict)
 
@@ -3380,7 +3384,7 @@ instance Store ConstantStore where
 -- 'Object' was retrieved from, this 'Reference' can be used to construct more helpful error
 -- messages.
 objectReferenceAccess :: Reference -> RefSuffix -> Object -> Exec (Maybe Object)
-objectReferenceAccess = loop where
+objectReferenceAccess = _experimental where
   _experimental qref suf o = Just . fst <$> runObjectLensExec (lookupIndex suf) (fst $ referenceHead qref) (Just o)
   loop back suf o = case suf of
     NullRef -> return $ Just o
@@ -3416,7 +3420,7 @@ _structReferenceAccess back name suf o = case o of
 objectReferenceUpdate
   :: (Maybe Object -> Exec (Maybe Object))
   -> Reference -> RefSuffix -> Maybe Object -> Exec (Maybe Object)
-objectReferenceUpdate upd = loop where
+objectReferenceUpdate upd = _experimental where
   _experimental qref suf = fmap snd . runObjectLensExec (updateIndex suf (makeLensUpdater upd)) (fst $ referenceHead qref)
   loop back suf o = case suf of
     NullRef               -> upd o
@@ -5658,16 +5662,16 @@ instance Executable (ScriptExpr Object) () where
         RefWrapper{}        -> execThrow $ obj $
           [obj "cannot iterate over value of type reference", obj qref]
         RefObject o NullRef -> readLoop o
-        _                   -> void $ referenceUpdate qref $ \o -> case o of
-          Nothing -> execThrow $ obj [obj "cannot iterate over undefined reference", obj qref]
-          Just  o -> case o of -- determine wheter this is an OHaskell object that can be updated
+        _                   -> referenceLookup qref >>= \o -> case o of
+          Nothing        -> execThrow $ obj [obj "cannot iterate over undefined reference", obj qref]
+          Just (_qref, o) -> case o of -- determine wheter this is an OHaskell object that can be updated
             OHaskell (Hata ifc _) -> case objUpdateIterable ifc of
-              Just  _ -> Just <$> updateLoop o
+              Just  _ -> updateLoop o >>= void . referenceUpdate qref . const . return . Just
               Nothing -> case objReadIterable ifc of -- if it's not updatable but readable
-                Just  _ -> readLoop o >> return (Just o)
+                Just  _ -> void $ readLoop o
                 Nothing -> execThrow $ obj $
                   [obj "cannot iterate over value for reference", obj qref]
-            _ -> Just <$> (updateLoop o >>= \o -> return o)
+            _ -> updateLoop o >>= void . referenceUpdate qref . const . return . Just
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ContinueExpr a    _      _loc -> execThrow $ obj $
       '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" or \"while\" loop"
@@ -6847,10 +6851,10 @@ instance ReadIterable Object (Maybe Object) where
 ----------------------------------------------------------------------------------------------------
 
 -- | This is a function very much like the 'updateForLoop' function, but the @iter@ type does not
--- need to instantiate the 'ReadIterable' or 'UpdateIterable' classes, instead pass the function
--- that would be used to instantiate 'readIter' is provided to this function as the first function
--- parameter, and the function that would be used to instantiate 'updateIter' is provided to this
--- function as the second function parameter. The remaining parameters are the same as for
+-- need to instantiate the 'ReadIterable' or 'UpdateIterable' classes, instead the function that
+-- would be used to instantiate 'readIter' should be provided to this function as the first function
+-- parameter, and the function that would be used to instantiate 'updateIter' should be provided to
+-- this function as the second function parameter. The remaining parameters are the same as for
 -- 'updateForLoop'.
 updateForLoopWith
   :: (iter -> Exec (val, iter))

@@ -43,3 +43,8 @@ println("a[$a] = ", a[$a]);
 a[$a] = "OK";
 println("a[$a] = ", a[$a]);
 
+println(a);
+println("delete(a[$b]);");
+delete(a[$b]);
+println(a);
+

@@ -13,7 +13,7 @@ b = list { 3.14159f, "OK", "please", 11, "thank you" };
 println("a = ", a);
 println("b = ", b);
 
-//: "a[1] = hello
+//: a[1] = hello
 println("a[1] = ", a[1]);
 
 c = a + b;

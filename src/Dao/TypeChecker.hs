@@ -1,4 +1,5 @@
--- "src/Dao/Lib/Parser.hs"  built-in objects related to parsing
+-- "src/Dao/TypeChecker.hs"  is a mini-programming language
+-- interpreting the "Dao.Interpreter.AST" to check data types.
 -- 
 -- Copyright (C) 2008-2014  Ramin Honary.
 -- This file is part of the Dao System.

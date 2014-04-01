@@ -6,6 +6,7 @@ src/Dao/Interpreter/Parser.hs
 src/Dao/Interpreter/AST.hs
 tests/Dao/CoreTests.hs
 
+src/Dao/TypeChecker.hs
 src/Dao/RefTable.hs
 src/Dao/HashMap.hs
 src/Dao/Random.hs

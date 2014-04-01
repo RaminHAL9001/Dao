@@ -33,18 +33,22 @@ println("a&b = ", a&b);
 println("a^b = ", a^b);
 println("a-b = ", a-b);
 
+//: a.a = 100
 println("a.a = ", a.a);
 a.a = "OK";
+//: a.a = OK
 println("a.a = ", a.a);
 println("defined(a.a) = ", defined(a.a));
 println("defined(a.z) = ", defined(a.z));
 
-println("a[$a] = ", a[$a]);
 a[$a] = "OK";
+//: a[$a] = "OK"
 println("a[$a] = ", a[$a]);
 
-println(a);
+//: delete(a[$b]);
 println("delete(a[$b]);");
+
+//: dict { a = "OK", c = "sea, see", d = "dee, di" }
 delete(a[$b]);
 println(a);
 

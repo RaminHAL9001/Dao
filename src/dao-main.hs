@@ -35,7 +35,6 @@ import           System.Environment
 import           System.IO
 --import           System.Console.Readline
 
-
 ----------------------------------------------------------------------------------------------------
 
 disclaimer :: String
@@ -82,10 +81,9 @@ main = do
   let (q, _) = partition (\a -> a=="-q" || a=="--dont-show-license") argv
   when (null q) (putStr disclaimer)
   --initialize -- initialize the ReadLine library
-  args <- fmap (fmap ustr) getArgs
-  setupDao $ do
+  args   <- fmap (fmap ustr) getArgs
+  _xunit <- setupDao $ do
     evalFuncs
-    daoFuncs
     daoInitialize $ do
       loadEveryModule args
       daoInputLoop inputLoop
@@ -98,12 +96,12 @@ license_text = unlines $
   [ "Copyright (C) 2008-2014  Ramin Honary"
   , ""
   , "This program is free software: you can redistribute it and/or modify"
-  , "it under the terms of the GNU General Public License as published by"
-  , "the Free Software Foundation, either version 3 of the License, or"
-  , "(at your option) any later version."
+  , "it under the terms and conditions of the GNU General Public License as"
+  , "published by the Free Software Foundation, either version 3 of the"
+  , "license, or (at your option) any later version."
   , ""
-  , "This program is distributed in the hope that it will be useful,"
-  , "but WITHOUT ANY WARRANTY; without even the implied warranty of"
+  , "This program is distributed in the hope that it will be useful"
+  , "WITHOUT ANY WARRANTY; without even the implied warranty of"
   , "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the"
   , "GNU General Public License for more details."
   , ""

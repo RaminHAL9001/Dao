@@ -47,3 +47,9 @@ println("a = ", a);
 a <<= 1;
 println("a <<= 1; a = ", a);
 
+//: set a[0] to "OK"
+println("set a[0] to \"OK\"");
+a[0] = "OK";
+//: a = list { "OK" }
+println("a = ", a);
+

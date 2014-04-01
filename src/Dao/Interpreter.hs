@@ -21,7 +21,7 @@
 
 module Dao.Interpreter(
     DaoSetupM(), DaoSetup, haskellType, daoProvides, daoClass, daoConstant, daoFunction,
-    daoInitialize, setupDao, DaoFunc, daoFunc, funcAutoDerefParams, daoForeignFunc,
+    daoInitialize, setupDao, evalDao, DaoFunc, daoFunc, funcAutoDerefParams, daoForeignFunc,
     executeDaoFunc, evalFuncs,
     ObjectClass(obj, fromObj, castToCoreType),
     execCastToCoreType, listToObj, listFromObj, new, opaque, objFromHata,
@@ -37,7 +37,7 @@ module Dao.Interpreter(
     objMethod,
     FromDaoStruct(),
     toData, constructor, innerFromStruct, nullary, getNullaryWithRead, structCurrentField,
-    tryCopyField, tryField, copyField, field, checkEmpty,
+    tryCopyField, tryField, copyField, field,
     convertFieldData, req, opt, reqList, optList, method,
     ObjLensError(ObjLensError), mapStructErrorMessage, failedOnReference, mapStructError,
     ObjectLens(updateIndex, lookupIndex), ObjectFunctor(objectFMap),
@@ -166,8 +166,6 @@ import           Control.Monad
 import           Control.Monad.Error
 import           Control.Monad.Reader
 import           Control.Monad.State
-
-import           System.IO
 
 #if 0
 import Debug.Trace
@@ -324,7 +322,7 @@ daoInitialize f = _updateSetupModState $ \st -> st{ daoEntryPoint = daoEntryPoin
 
 -- | Use this function evaluate a 'DaoSetup' in the IO () monad. Use this to define the 'main'
 -- function of your program.
-setupDao :: DaoSetup -> IO ExecUnit
+setupDao :: DaoSetup -> IO (Predicate ExecControl ())
 setupDao setup0 = do
   let setup = execState (daoSetupM setup0) $
         SetupModState
@@ -333,19 +331,20 @@ setupDao setup0 = do
         , daoClasses        = mempty
         , daoEntryPoint     = return ()
         }
-  xunit           <- _initExecUnit
-  (result, xunit) <- ioExec (daoEntryPoint setup) $
+  xunit  <- _initExecUnit
+  fmap fst $ ioExec (daoEntryPoint setup) $
     xunit
     { providedAttributes = daoSatisfies setup
     , builtinConstants   = daoSetupConstants setup
     , globalMethodTable  = daoClasses setup
     }
-  case result of
-    OK    ()                -> return ()
-    PFail (ExecReturn    o) -> maybe (return ()) (putStrLn . prettyShow) o
-    PFail (err@ExecError{}) -> hPutStrLn stderr (prettyShow err)
-    Backtrack               -> hPutStrLn stderr "(does not compute)"
-  return xunit
+
+-- | Simply run a single 'Exec' function in a fresh environment with no setup, and delete the
+-- envrionment when finished returning only the 'Dao.Predicate.Predicate' result of the 'Exec'
+-- evaluation. If you want to have more control over the runtime in which the 'Exec' function runs,
+-- use 'setupDao' with 'daoInitialize'.
+evalDao :: Exec a -> IO (Predicate ExecControl a)
+evalDao f = _initExecUnit >>= fmap fst . ioExec f
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1526,7 +1525,7 @@ instance MonadPlusError StructError FromDaoStruct where
 -- Notice that this reads similar to ordinary English: "convert to (Haskell) data from a dao
 -- struct."
 toData :: FromDaoStruct haskData -> Struct -> Predicate StructError haskData
-toData (FromDaoStruct f) = evalState (runPredicateT f)
+toData f = evalState (runPredicateT $ run_fromDaoStruct $ f >>= \o -> checkEmpty >> return o)
 
 fromDaoStructExec :: FromDaoStruct typ -> Struct -> Exec typ
 fromDaoStructExec fromDaoStruct =
@@ -1664,7 +1663,7 @@ copyField name f = mkFieldName name >>= \name ->
 field :: UStrType name => name -> (Object -> FromDaoStruct o) -> FromDaoStruct o
 field name f = mkFieldName name >>= \name -> mplus (tryField name f) (_throwMissingFieldError name)
 
--- | As you make calls to 'field' and 'tryField', the items in these fields in the 'Struct' are
+-- As you make calls to 'field' and 'tryField', the items in these fields in the 'Struct' are
 -- being removed. Once you have all of the nata neccessary to construct the data 'Object', you can
 -- check to make sure there are no extraneous unused data fields. If the 'Struct' is empty, this
 -- function evaluates to @return ()@. If there are extranous fields in the 'Struct', 'throwError' is
@@ -3331,28 +3330,29 @@ instance ObjectLens (Maybe Object) RefSuffix where
     FuncCall ix suf -> getFocalReference >>= \qref ->
       focusLiftExec (callObject qref o ix) >>= put >> lookupIndex suf
 
-instance ObjectFunctor (Maybe Object) RefSuffix where
+instance ObjectFunctor Object RefSuffix where
   objectFMap f = get >>= \o -> case o of
-    Nothing -> return ()
-    Just  o -> case o of
-      OList    o -> travers o int2subs subs2int OList
-      ODict    o -> travers o ref2subs subs2ref ODict
-      OTree    o -> travers o ref2subs subs2ref OTree
-      OHaskell o -> travers o ref2subs subs2ref OHaskell
-      _          -> return ()
-      where
-        int2subs i = return $ Subscript [OLong i] NullRef
-        subs2int i = case i of
-          Subscript [o] NullRef -> case extractXPure (castToCoreType LongType o) >>= fromObj of
-            Nothing -> fail "while traversing list, updating function returned non-integer index value"
-            Just  i -> return i
-          _ -> fail "while traversing list, updating function returned non-subscript reference as index"
-        ref2subs i = return $ DotRef i NullRef
-        subs2ref i = case i of
-          DotRef name NullRef -> return name
-          _ -> fail "while traversing structure, updating function returned invalid reference"
-        travers o to from constr =
-          withInnerLens o (objectFMap $ objectFMapConvert to from f) >>= put . Just . constr . snd
+    OList    o -> travers o int2subs subs2int OList
+    ODict    o -> travers o ref2subs subs2ref ODict
+    OTree    o -> travers o ref2subs subs2ref OTree
+    OHaskell o -> travers o ref2subs subs2ref OHaskell
+    _          -> return ()
+    where
+      int2subs i = return $ Subscript [OLong i] NullRef
+      subs2int i = case i of
+        Subscript [o] NullRef -> case extractXPure (castToCoreType LongType o) >>= fromObj of
+          Nothing -> fail "while traversing list, updating function returned non-integer index value"
+          Just  i -> return i
+        _ -> fail "while traversing list, updating function returned non-subscript reference as index"
+      ref2subs i = return $ DotRef i NullRef
+      subs2ref i = case i of
+        DotRef name NullRef -> return name
+        _ -> fail "while traversing structure, updating function returned invalid reference"
+      travers o to from constr =
+        withInnerLens o (objectFMap $ objectFMapConvert to from f) >>= put . constr . snd
+
+instance ObjectFunctor (Maybe Object) RefSuffix where
+  objectFMap f = get >>= maybe (return ()) (fmap fst . flip withInnerLens (objectFMap f))
 
 -- | If you have a data type @o@ instantiating @'ObjectLens' o index@ with a given index type, and
 -- this data type @o@ is a field of another @data@ type, you can instantiate 'updateIndex' for this

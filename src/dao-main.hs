@@ -24,6 +24,8 @@
 module Main where
 
 import           Dao
+import           Dao.Predicate
+import           Dao.PPrint
 
 import           Data.Char
 import           Data.List
@@ -82,12 +84,17 @@ main = do
   when (null q) (putStr disclaimer)
   --initialize -- initialize the ReadLine library
   args   <- fmap (fmap ustr) getArgs
-  _xunit <- setupDao $ do
+  result <- setupDao $ do
     evalFuncs
     daoInitialize $ do
       loadEveryModule args
       daoInputLoop inputLoop
       daoShutdown
+  case result of
+    OK    ()                -> return ()
+    PFail (ExecReturn    o) -> maybe (return ()) (putStrLn . prettyShow) o
+    PFail (err@ExecError{}) -> hPutStrLn stderr (prettyShow err)
+    Backtrack               -> hPutStrLn stderr "(does not compute)"
   --restorePrompt -- shut-down the ReadLine library
   hPutStrLn stderr "Dao has exited."
 

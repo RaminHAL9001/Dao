@@ -1138,13 +1138,13 @@ instance PPrintable StructError where
   pPrint err = do
     let pp p msg f = case f err of
           Nothing -> return ()
-          Just  o -> (if null msg then return () else pString (msg++": ")) >> p o >> pNewLine
+          Just  o -> pString (msg++": ") >> p o >> pNewLine
     pp pUStr "" structErrMsg
     pp pUStr "on constructor" structErrName
     pp pUStr "on field" structErrField
     pp pPrint "with value" structErrValue
     let extras = structErrExtras err
-    if null extras then return () else pString ("unused fields: "++show extras)
+    if null extras then return () else pString ("non-member fields: "++show extras)
 
 instance HasNullValue StructError where
   nullValue =
@@ -1231,28 +1231,6 @@ instance FromDaoStructClass AST_DotLabel where
           Nothing -> fail "\"tail\" field must contain a list of \"#DotName\" data types."
           Just ox -> return ox
     return AST_DotLabel <*> req "head" <*> (req "tail" >>= convert) <*> location
-
-comToDaoStruct :: (ToDaoStruct a ()) -> ToDaoStruct (Com a) ()
-comToDaoStruct toDaoStruct = do
-  co <- ask
-  let put = innerToStructWith toDaoStruct
-  case co of
-    Com          a    ->                   put a >> return ()
-    ComBefore c1 a    -> "before" .= c1 >> put a >> return ()
-    ComAfter     a c2 ->                   put a >> "after" .= c2 >> return ()
-    ComAround c1 a c2 -> "before" .= c1 >> put a >> "after" .= c2 >> return ()
-
-comFromDaoStruct :: FromDaoStruct a -> FromDaoStruct (Com a)
-comFromDaoStruct fromStruct = do
-  let f name = tryField name (maybe (fail name) return . fromObj)
-  before <- optional $ f "before"
-  after  <- optional $ f "after"
-  a      <- fromStruct 
-  return $ maybe (Com a) id $ msum $
-    [ return ComAround <*> before <*> pure a <*> after
-    , return ComBefore <*> before <*> pure a
-    , return ComAfter  <*> pure a <*> after
-    ]
 
 instance ObjectClass StructError where { obj=new; fromObj=objFromHata; }
 
@@ -1673,7 +1651,7 @@ checkEmpty :: FromDaoStruct ()
 checkEmpty = FromDaoStruct (lift get) >>= \st -> case st of
   Struct{ fieldMap=m } -> if M.null m then return () else throwError $
     nullValue
-    { structErrMsg    = Just $ ustr "extraneous data fields"
+    { structErrMsg    = Just $ ustr "assigned to non-member fields of structure"
     , structErrExtras = M.keys m
     }
   Nullary{} -> return ()
@@ -1748,7 +1726,7 @@ putLocation loc = case loc of
   Location{} -> void $ "location" .= loc
 
 location :: FromDaoStruct Location
-location = req "location"
+location = opt "location" >>= maybe (return LocationUnknown) return
 
 putComments :: [Comment] -> ToDaoStruct haskData ()
 putComments = void . defObjField "comments"
@@ -1986,7 +1964,7 @@ instance ObjectClass RefQualifier where { obj=new; fromObj=objFromHata; }
 instance HataClass RefQualifier where
   haskellDataInterface = interface LOCAL $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
-    -- autoDefToStruct >> autoDefFromStruct
+    autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3126,7 +3104,7 @@ updateHataAsStruct f = do
   let lift = predicate . fmapPFail (_wrapObjectLensErr qref)
   (Hata ifc o) <- get
   (fromStruct, toStruct) <- xmaybe (return (,) <*> objFromStruct ifc <*> objToStruct ifc)
-    <|> fail "cannot modify field"
+    -- here ^ evaluation backtracks if the field cannot be accessed
   struct <- lift $ fromData toStruct o
   (a, struct) <- withInnerLens struct f
   lift (toData fromStruct struct) >>= put . Hata ifc >> return a
@@ -3140,11 +3118,11 @@ lookupHataAsStruct f = do
   fst <$> withInnerLens struct f
 
 instance ObjectLens Hata Name where
-  updateIndex name = updateHataAsStruct . updateIndex name
+  updateIndex name = flip mplus (fail "cannot modify field") . updateHataAsStruct . updateIndex name
   lookupIndex      = lookupHataAsStruct . lookupIndex
 
 instance ObjectFunctor Hata Name where
-  objectFMap = updateHataAsStruct . focusStructAsDict . objectFMap
+  objectFMap = flip mplus (return ()) . updateHataAsStruct . focusStructAsDict . objectFMap
 
 instance ObjectLens [Object] Integer where
   updateIndex idx f = get >>= \ox ->
@@ -3276,7 +3254,7 @@ _hataUpdateSubscript
   -> ObjectFocus Hata (Maybe Object)
 _hataUpdateSubscript f = do
   (Hata ifc _) <- get
-  updateHataAsStruct $ f $ show $ objHaskellType ifc
+  updateHataAsStruct (f $ show $ objHaskellType ifc) <|> fail "cannot update field"
 
 _hataLookupSubscript :: (String -> ObjectFocus T_struct Object) -> ObjectFocus Hata Object
 _hataLookupSubscript f = do
@@ -3288,8 +3266,8 @@ instance ObjectLens Hata [Object] where
   lookupIndex ix   = _hataLookupSubscript $ \msg -> _dictSubscriptLookup msg ix
 
 instance ObjectFunctor Hata [Object] where
-  objectFMap f = get >>= \ (Hata ifc _) -> updateHataAsStruct $
-    _dictSubscriptFMap (show $ objHaskellType ifc) f
+  objectFMap f = get >>= \ (Hata ifc _) ->
+    updateHataAsStruct (_dictSubscriptFMap (show $ objHaskellType ifc) f) <|> fail "cannot update field"
 
 instance ObjectLens (Maybe Object) RefSuffix where
   updateIndex suf f = focalPathSuffix suf $ get >>= \o -> case suf of
@@ -3917,18 +3895,30 @@ execWithWithRefStore o exe = do
 
 ----------------------------------------------------------------------------------------------------
 
-instance (Typeable a, ObjectClass a, ToDaoStructClass a) => ToDaoStructClass (Com a) where
-  toDaoStruct = comToDaoStruct toDaoStruct
+instance (Typeable a, ObjectClass a) => ToDaoStructClass (Com a) where
+  toDaoStruct = ask >>= \co -> let put o = "com" .= obj o in case co of
+    Com          o    ->                   put o >> return ()
+    ComBefore c1 o    -> "before" .= c1 >> put o >> return ()
+    ComAfter     o c2 ->                   put o >> "after" .= c2 >> return ()
+    ComAround c1 o c2 -> "before" .= c1 >> put o >> "after" .= c2 >> return ()
 
-instance (Typeable a, ObjectClass a, ToDaoStructClass a, FromDaoStructClass a) => FromDaoStructClass (Com a) where
-  fromDaoStruct = comFromDaoStruct fromDaoStruct
+instance (Typeable a, ObjectClass a) => FromDaoStructClass (Com a) where
+  fromDaoStruct = do
+    let f name = tryField name (maybe (fail name) return . fromObj)
+    before <- optional $ f "before"
+    after  <- optional $ f "after"
+    o      <- req "com"
+    return $ maybe (Com o) id $ msum $
+      [ return ComAround <*> before <*> pure o <*> after
+      , return ComBefore <*> before <*> pure o
+      , return ComAfter  <*> pure o <*> after
+      ]
 
 instance (Typeable a, ObjectClass a) =>
   ObjectClass (Com a) where { obj=new; fromObj=objFromHata; }
-instance Typeable a => HataClass (Com a) where
+instance (Typeable a, ObjectClass a) => HataClass (Com a) where
   haskellDataInterface = interface (Com $ error "undefined Com") $ do
-    return ()
-    -- autoDefToStruct >> autoDefFromStruct
+    autoDefToStruct >> autoDefFromStruct
 
 instance (Typeable a, ObjectClass a) =>
   ObjectClass [Com a] where { obj=listToObj; fromObj=listFromObj; }
@@ -4108,10 +4098,10 @@ instance HataClass GlobAction where
 ----------------------------------------------------------------------------------------------------
 
 instance ToDaoStructClass (AST_CodeBlock Object) where
-  toDaoStruct = void $ renameConstructor "CodeBlock" >> "block" .=@ getAST_CodeBlock
+  toDaoStruct = void $ renameConstructor "CodeBlock" >> "list" .=@ getAST_CodeBlock
 
 instance FromDaoStructClass (AST_CodeBlock Object) where
-  fromDaoStruct = constructor "CodeBlock" >> AST_CodeBlock <$> req "block"
+  fromDaoStruct = constructor "CodeBlock" >> AST_CodeBlock <$> req "list"
 
 instance ObjectClass (AST_CodeBlock Object) where { obj=new; fromObj=objFromHata; }
 
@@ -4206,7 +4196,7 @@ instance ObjectClass (AST_Param Object) where { obj=new; fromObj=objFromHata; }
 instance HataClass (AST_Param Object) where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
-    -- autoDefToStruct >> autoDefFromStruct
+    autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4242,7 +4232,7 @@ instance ObjectClass (AST_ParamList Object) where { obj=new; fromObj=objFromHata
 instance HataClass (AST_ParamList Object) where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
-    autoDefToStruct -- >> autoDefFromStruct
+    autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4299,7 +4289,7 @@ instance ObjectClass (AST_RuleHeader Object) where { obj=new; fromObj=objFromHat
 instance HataClass (AST_RuleHeader Object) where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
-    -- autoDefToStruct >> autoDefFromStruct
+    autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4956,7 +4946,7 @@ instance ObjectClass ArithPfxOp where { obj=new; fromObj=objFromHata; }
 instance HataClass ArithPfxOp where
   haskellDataInterface = interface POSTIV $ do
     autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt
-    -- autoDefToStruct >> autoDefFromStruct
+    autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -5317,8 +5307,7 @@ instance ToDaoStructClass (AST_RefSuffix Object) where
     AST_RefNull                 -> makeNullary "Null"
     AST_DotRef dot name ref loc -> do
       renameConstructor "DotRef"
-      predicate (fromData (comToDaoStruct $ renameConstructor "Com") dot) >>= defObjField "dot" . obj
-      "name" .= name >> "tail" .= ref >> putLocation loc
+      "dot" .= dot >> "head" .= name >> "tail" .= ref >> putLocation loc
     AST_Subscript  args ref -> renameConstructor "Subscript" >>
       "args" .= args >> "tail" .= ref >> return ()
     AST_FuncCall   args ref -> renameConstructor "FuncCall" >>
@@ -5327,10 +5316,10 @@ instance ToDaoStructClass (AST_RefSuffix Object) where
 instance FromDaoStructClass (AST_RefSuffix Object) where
   fromDaoStruct = msum $
     [ constructor "Null"   >> return AST_RefNull
-    , constructor "DotRef" >> return AST_DotRef <*> getDot <*> req "head" <*> req "tail" <*> location
+    , constructor "DotRef" >> return AST_DotRef <*> req "dot" <*> req "head" <*> req "tail" <*> location
     , constructor "Subscript" >> return AST_Subscript <*> req "args" <*> req "tail"
     , constructor "FuncCall"  >> return AST_FuncCall  <*> req "args" <*> req "tail"
-    ] where { getDot = structCurrentField (fromUStr $ ustr "dot") $ comFromDaoStruct (return ()) }
+    ]
 
 instance ObjectClass (AST_RefSuffix Object) where { obj=new; fromObj=objFromHata; }
 
@@ -5450,7 +5439,7 @@ instance ObjectClass (AST_Else Object) where { obj=new; fromObj=objFromHata; }
 instance HataClass (AST_Else Object) where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
-    autoDefToStruct -- >> autoDefFromStruct
+    autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -5503,7 +5492,7 @@ instance ObjectClass (AST_IfElse Object) where { obj=new; fromObj=objFromHata; }
 instance HataClass (AST_IfElse Object) where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
-    autoDefToStruct -- >> autoDefFromStruct
+    autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -5528,7 +5517,7 @@ instance ToDaoStructClass (AST_LastElse Object) where
 
 instance FromDaoStructClass (AST_LastElse Object) where
   fromDaoStruct = constructor "LastElse" >>
-    return AST_LastElse <*> req "coms" <*> req "action" <*> location
+    return AST_LastElse <*> req "comments" <*> req "action" <*> location
 
 instance ObjectClass (AST_LastElse Object) where { obj=new; fromObj=objFromHata; }
 
@@ -5861,7 +5850,7 @@ instance ObjectClass (AST_Script Object) where { obj=new; fromObj=objFromHata; }
 instance HataClass (AST_Script Object) where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
-    -- autoDefToStruct >> autoDefFromStruct
+    autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -5936,7 +5925,7 @@ instance ObjectClass (AST_OptObjList Object) where { obj=new; fromObj=objFromHat
 instance HataClass (AST_OptObjList Object) where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
-    autoDefToStruct -- >> autoDefFromStruct
+    autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -6101,12 +6090,17 @@ instance HataClass (RefPrefixExpr Object) where
 ----------------------------------------------------------------------------------------------------
 
 instance ToDaoStructClass (AST_RefPrefix Object) where
-  toDaoStruct = ask >>= \ (AST_RefPrefix a b c loc) -> renameConstructor "RefPrefix" >>
-    "op" .= a >> putComments b >> "expr" .= c >> putLocation loc
+  toDaoStruct = ask >>= \o -> case o of
+    AST_PlainRef  a         -> renameConstructor "PlainRef" >> "ref" .= a >> return ()
+    AST_RefPrefix a b c loc -> renameConstructor "RefPrefix" >>
+      "op" .= a >> putComments b >> "expr" .= c >> putLocation loc
 
 instance FromDaoStructClass (AST_RefPrefix Object) where
-  fromDaoStruct = constructor "RefPrefix" >>
-    return AST_RefPrefix <*> req "op" <*> req "expr" <*> req "expr" <*> location
+  fromDaoStruct = msum $
+    [ constructor "RefPrefix" >>
+        return AST_RefPrefix <*> req "op" <*> req "expr" <*> req "expr" <*> location
+    , constructor "PlainRef" >> AST_PlainRef <$> req "ref"
+    ]
 
 instance ObjectClass (AST_RefPrefix Object) where { obj=new; fromObj=objFromHata; }
 
@@ -6951,7 +6945,7 @@ instance HataClass Location where
 instance HataClass Comment where
   haskellDataInterface = interface nullValue $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
-    -- autoDefToStruct >> autoDefFromStruct
+    autoDefToStruct >> autoDefFromStruct
 
 instance HataClass DotNameExpr where
   haskellDataInterface = interface (DotNameExpr undefined) $ do

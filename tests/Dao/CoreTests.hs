@@ -74,7 +74,7 @@ data UnitConfig
       -- "Dao.Interpreter.PPrintM" modules. The default value is 'Prelude.True'.
     , doTestSerializer  :: Bool
       -- ^ Enable testing of the "Dao.Interpreter.Binary" module. The default value is 'Prelude.True'.
---  , doTestStructizer  :: Bool
+    , doTestStructizer  :: Bool
       -- ^ Enable testing of the "Dao.Struct" and "Dao.Interpreter.Struct" module. The default value is
       -- 'Prelude.True'.
     , maxRecurseDepth   :: Int
@@ -90,8 +90,8 @@ unitConfig =
   UnitConfig
   { doTestParser     = True
   , doTestSerializer = True
---  , doTestStructizer = True
-  , maxRecurseDepth  = 5
+  , doTestStructizer = True
+  , maxRecurseDepth  = 4
   }
 
 data TestCase
@@ -101,8 +101,8 @@ data TestCase
     , testObject      :: RandObj
     , parseString     :: Maybe UStr
     , serializedBytes :: Maybe B.ByteString
---    , treeStructure   :: Maybe T_tree
     }
+
 instance Show TestCase where
   show (TestCase{testCaseID=i, testObject=o}) = unlines $ concat $
     [ ["TestID #"++show i]
@@ -111,16 +111,19 @@ instance Show TestCase where
         RandTopLevel _ -> ["Random Top-Level Expression:", prettyShow o]
     ]
 
+----------------------------------------------------------------------------------------------------
+
 data TestResult
   = TestResult
-    { testCase         :: TestCase
-    , testResult       :: UStr
-    , failedTestCount  :: Int
-    , getParserResult  :: (Bool, Maybe RandObj)
-    , getDecodedResult :: (Bool, Maybe RandObj)
---  , getConstrResult  :: (Bool, Maybe RandObj)
+    { testCase             :: TestCase
+    , testResult           :: UStr
+    , failedTestCount      :: Int
+    , getParserResult      :: (Bool, Maybe RandObj)
+    , getDecodedResult     :: (Bool, Maybe RandObj)
+    , getStructureResults  :: (Bool, Maybe RandObj)
     }
--- Lens-like accessors for 'TestResult'
+
+-- ! A Lens-like accessors for 'TestResult'
 data TRLens a
   = TRLens
     { trLensGetter :: TestResult -> a
@@ -133,8 +136,8 @@ parsing = TRLens getParserResult  (\a r -> r{getParserResult=a})
 serializing :: TRLens (Bool, Maybe RandObj)
 serializing = TRLens getDecodedResult (\a r -> r{getDecodedResult=a})
 
---structuring :: TRLens (Bool, Maybe RandObj)
---structuring = TRLens getConstrResult  (\a r -> r{getConstrResult=a})
+structuring :: TRLens (Bool, Maybe RandObj)
+structuring = TRLens getStructureResults  (\a r -> r{getStructureResults=a})
 
 setResult :: TRLens a -> (a -> a) -> DaoLangResultM ()
 setResult on f = modify (\r -> trLensSetter on (f $ trLensGetter on r) r)
@@ -147,12 +150,11 @@ instance Show TestResult where
             , testObject      = orig
             , parseString     = ppr
             , serializedBytes = enc
---            , treeStructure   = tree
             }
-        , testResult       = msg
-        , getParserResult  = parsd
-        , getDecodedResult = decod
---      , getConstrResult  = struct
+        , testResult          = msg
+        , getParserResult     = parsd
+        , getDecodedResult    = decod
+        , getStructureResults = struct
         }) =
     unlines $ concat $ do
       let o msg1 src prin msg2 (passed, item) = do
@@ -165,15 +167,15 @@ instance Show TestResult where
       [ ["Test #"++show i++' ':uchars msg, show orig, ""]
         , o "pretty printed form:" ppr  uchars                "parsed"        parsd
         , o "encoded bytes:"       enc  (show . Base16String) "decoded"       decod
---      , o "tree structured:"     tree prettyShow            "reconstructed" struct
+        , o "tree structured:"     (Just())   (\ () -> "")    "reconstructed" struct
         ]
 
 getMethodTable :: DaoLangTest MethodTable
 getMethodTable = asksUnitEnv id
 
--- Every 'TestCase' stores information as to whether or not the case has passed or failed. Use this
--- function to update the 'TestCase' with information indicating that the test failed, including a
--- failure message string. This function does not evaluate to 'Control.Monad.mzero' or
+-- | Every 'TestCase' stores information as to whether or not the case has passed or failed. Use
+-- this function to update the 'TestCase' with information indicating that the test failed,
+-- including a failure message string. This function does not evaluate to 'Control.Monad.mzero' or
 -- 'Control.Monad.fail', either of those functions should be evaluated after this if you wish to
 -- halt testing.
 testFailed :: TRLens (Bool, Maybe a) -> String -> DaoLangResultM ()
@@ -184,22 +186,19 @@ testFailed lens msg = do
     , failedTestCount = failedTestCount r + 1
     }
 
--- This is just @'Prelude.return' ()@ by another name, but it is helpful to indicate where a test
+-- | This is just @'Prelude.return' ()@ by another name, but it is helpful to indicate where a test
 -- passes.
 testPassed :: DaoLangResultM ()
 testPassed = return ()
 
--- Every test is wrapped in this error handler (which calls to 'errHandler' above), and the test is
--- considered a failure if an 'Control.Exception.Error' or 'Control.Exception.IOException' is
+-- | Every test is wrapped in this error handler (which calls to 'errHandler' above), and the test
+-- is considered a failure if an 'Control.Exception.Error' or 'Control.Exception.IOException' is
 -- caught. Pass a test case, a selector for selecting the object generated (Maybe) by 'newTestCase',
 -- and a function for checking the value of that generated object. If the object was not generated,
 -- the 'TestCase' is returned unmodified. If an exception is thrown, the test case is returned with
 -- a failure indicated.
 tryTest :: (TestCase -> Maybe item) -> (item -> DaoLangResultM ()) -> DaoLangResultM ()
 tryTest getTestItem testFunc = get >>= \r -> maybe (return ()) testFunc (getTestItem $ testCase r)
-
--- newtype GResultM c e s t r a = ResultM { resultMtoStateT :: PredicateT (StateT TestResult (GTest c e s t r)) a }
---  deriving (Functor, Applicative, MonadPlus, MonadIO)
 
 -- | A 'UnitTester' for the Dao language. This does not merely test the parser, it also tests the pretty
 -- printer, the binary encoder/decoder, and the tree encoder/decoder, testing the full abstract
@@ -217,8 +216,8 @@ unitTester =
             [if fn o then "(ENABLED)" else "(DISABLED)", msg, "Testing"]
       ifReportEnabled "Parser"        doTestParser
       ifReportEnabled "Serialization" doTestSerializer
---    ifReportEnabled "Structure"     doTestStructizer
-      if doTestParser o || doTestSerializer o -- || doTestStructizer o
+      ifReportEnabled "Structure"     doTestStructizer
+      if doTestParser o || doTestSerializer o || doTestStructizer o
       then return o
       else fail "Test configuration has disabled all test categories."
   , showResult     = \ r -> return (show r)
@@ -229,9 +228,9 @@ unitTester =
           , maxNodeWeight   = max w (maxNodeWeight st)
           , nodeWeightSum   = nodeWeightSum st + w
           }
-  , newEnvironment  = return . const mempty
-  , newStatistics   = \ _ -> return nullValue
-  , showStatistics  = \ ustats -> unlines $
+  , newEnvironment = return . const mempty
+  , newStatistics  = \ _ -> return nullValue
+  , showStatistics = \ ustats -> unlines $
       [ "max_node_weight     = "++show (maxNodeWeight ustats)
       , "average_node_weight = "++
           show (fromRational $
@@ -240,24 +239,22 @@ unitTester =
   , showTest       = Just show
   , newResult      = return $
       TestResult
-      { testCase     = error "test result data not initialized with test case"
-      , testResult   = nil
-      , failedTestCount  = 0
-      , getParserResult  = (True, Nothing)
-      , getDecodedResult = (True, Nothing)
---    , getConstrResult  = (True, Nothing)
+      { testCase            = error "test result data not initialized with test case"
+      , testResult          = nil
+      , failedTestCount     = 0
+      , getParserResult     = (True, Nothing)
+      , getDecodedResult    = (True, Nothing)
+      , getStructureResults = (True, Nothing)
       }
   --------------------------------------------------------------------------------------------------
 
-  , generateTest    = \i -> do
+  , generateTest   = \i -> do
       mtab <- getMethodTable
       cfg  <- asksUnitConfig id
       let maxDepth      = maxRecurseDepth cfg
-      --let (o, weight)   = genRandWeighted maxDepth (fromIntegral i)
       (o, weight) <- liftIO $ genRandWeighted maxDepth (fromIntegral i)
       let str           = prettyShow o
       let bin           = D.encode mtab o
---    let tree          = toDaoStruct o
       let setup isSet o = if isSet cfg then Just o else Nothing
       deepseq o $! seq weight $! return $!
         TestCase
@@ -266,19 +263,18 @@ unitTester =
         , testObject      = o
         , parseString     = setup doTestParser (ustr str)
         , serializedBytes = setup doTestSerializer bin
---        , treeStructure   = setup doTestStructizer tree
         }
   --------------------------------------------------------------------------------------------------
 
   , evaluateTest   = \tc -> do
       ------------------- (0) Canonicalize the original object ------------------
-      modify (\r->r{testCase=tc})
       tc <- case testObject tc of
         RandTopLevel o -> case toInterm o >>= fromInterm of
           [o] -> return $ tc{testObject = RandTopLevel o}
           [ ] -> fail "could not canonicalize original object"
           _   -> fail "original object canonicalized to multiple possible values"
         RandObject   _ -> return tc
+      modify (\r->r{testCase=tc})
       --
       --------------------------- (1) Test the parser ---------------------------
       tryTest parseString $ \str -> do
@@ -322,22 +318,15 @@ unitTester =
               testFailed serializing "Original object does not match object deserialized from binary string"
               setResult serializing (\ (b, _) -> (b, Just unbin))
       --
---    ---------------- (3) Test the intermediate tree structures ----------------
---    tryTest treeStructure $ \o ->
---      case structToData o :: Predicate UpdateErr RandObj of
---        Backtrack -> testFailed structuring $
---          "Backtracked while constructing a Haskell object from a Dao tree"
---        PFail err -> testFailed structuring $ unlines [show err, prettyShow o]
---        OK struct ->
---          if testObject tc == struct
---            then do
---              setResult structuring (const $ (False, Just struct))
---              testFailed structuring $ unlines $
---                [ "Original object does not match Haskell object constructed from it's Dao tree"
---                , prettyShow struct
---                ]
---            else  testPassed
---    --
+    ---------------- (3) Test the intermediate tree structures ----------------
+      tryTest (Just . testObject) $ \o -> case o of
+        RandTopLevel o -> liftIO (testStruct $ obj o) >>= \result -> case result of
+          Backtrack -> testFailed structuring $
+            "Backtracked while constructing a Haskell object from a Dao tree"
+          PFail err -> testFailed structuring $ unlines [prettyShow err, prettyShow o]
+          OK     () -> testPassed
+        RandObject{} -> return ()
+    --
       gets failedTestCount >>= guard . (0==) -- mzero if the number of failed tests is more than zero
   }
 
@@ -405,4 +394,19 @@ instance D.HasPrefixTable RandObj D.Byte MethodTable where
 instance NFData RandObj where
   rnf (RandTopLevel a) = deepseq a ()
   rnf (RandObject   a) = deepseq a ()
+
+-- | Convert a data type in the 'Dao.Interpreter.ToDaoStructClass' class to a
+-- 'Dao.Interpreter.Struct', and recurse through the resulting structure converting every child data
+-- type to a 'Dao.Interpreter.Struct' as well, if it has defined the 'Dao.Interpreter.defToStruct'
+-- and 'Dao.Interpreter.defFromStruct' if the child data types are objects which have instantiated
+-- the 'Dao.Interpreter.HataClass' class.
+testStruct :: Object -> IO (Predicate ExecControl ())
+testStruct before = setupDao $ daoInitialize $ do
+  let loop i o = withInnerLens o (objectFMap loop) >>= \ ((), o) -> modify ((i::RefSuffix, o):) <|>
+        modify ((i::RefSuffix, o):)
+  after <- snd . snd <$>
+    runObjectFocusExec (objectFMap loop) (Reference UNQUAL (ustr "this") NullRef) before
+  if before==after
+  then return ()
+  else fail "original object does not match object produced from Struct"
 

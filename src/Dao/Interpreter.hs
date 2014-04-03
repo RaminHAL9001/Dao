@@ -91,7 +91,7 @@ module Dao.Interpreter(
     execNested, execNested_, execFuncPushStack, execWithStaticStore, execWithWithRefStore, setupCodeBlock,
     Subroutine(Subroutine),
     origSourceCode, staticVars, staticRules, staticLambdas, executable, runCodeBlock,
-    CallableCode(CallableCode), argsPattern, returnType, codeSubroutine, 
+    RuleSet(), CallableCode(CallableCode), argsPattern, returnType, codeSubroutine, 
     GlobAction(GlobAction), globPattern, globSubroutine, 
     asReference, asInteger, asRational, asPositive, asComplex, objConcat,
     objToBool, extractStringElems,
@@ -109,17 +109,18 @@ module Dao.Interpreter(
     ReadIterable(readIter, readForLoop), readForLoopWith,
     UpdateIterable(updateIter, updateForLoop), updateForLoopWith,
     HataClass(haskellDataInterface), toHata, fromHata,
+    InitItem(InitSingle, InitAssign),
     Interface(),
     objCastFrom, objEquality, objOrdering, objBinaryFormat, objNullTest, objPPrinter,
-    objSizer, objIndexer, objIndexUpdater, objToStruct, objFromStruct, objDictInit, objListInit,
+    objSizer, objIndexer, objIndexUpdater, objToStruct, objFromStruct, objInitializer, objTraverse,
     objInfixOpTable, objArithPfxOpTable, objCallable, objDereferencer,
     interfaceAdapter, interfaceToDynamic,
     DaoClassDefM(), interface, DaoClassDef,
     defCastFrom, autoDefEquality, defEquality, autoDefOrdering, defOrdering, autoDefBinaryFmt,
     defBinaryFmt, autoDefNullTest, defNullTest, defPPrinter, autoDefPPrinter, defReadIterable,
     autoDefReadIterable, defUpdateIterable, autoDefUpdateIterable, defIndexer, defIndexUpdater,
-    defSizer, autoDefToStruct, defToStruct, autoDefFromStruct, defFromStruct, defDictInit,
-    defListInit, defInfixOp, defPrefixOp, defCallable, defDeref, defLeppard
+    defSizer, autoDefToStruct, defToStruct, autoDefFromStruct, defFromStruct, defInitializer,
+    defTraverse, autoDefTraverse, defInfixOp, defPrefixOp, defCallable, defDeref, defLeppard
   )
   where
 
@@ -406,7 +407,7 @@ executeDaoFunc qref fn this params = do
 evalFuncs :: DaoSetup
 evalFuncs = do
   daoClass "HashMap" (haskellType :: H.HashMap Object Object)
-  daoClass "RuleSet" (haskellType :: PatternTree Object [Subroutine])
+  daoClass "RuleSet" (haskellType :: RuleSet)
   daoFunction "print"    builtin_print
   daoFunction "println"  builtin_println
   daoFunction "join"     builtin_join
@@ -3060,6 +3061,10 @@ withInnerLens sub f = do
     (ObjFocusState{ targetReference=targref, focalReference=qref, objectInFocus=sub })
   predicate (fmap (fmap snd) o)
 
+-- Used in the 'Interface' table to convert between a @typ@ and 'Data.Dynamic.Dynamic' value.
+convertFocus :: (a -> b) -> (b -> a) -> ObjectFocus a x -> ObjectFocus b x
+convertFocus a2b b2a f = get >>= flip withInnerLens f . b2a >>= \ (x, a) -> put (a2b a) >> return x
+
 focusObjectClass :: ObjectClass o => ObjectFocus o a -> ObjectFocus Object a
 focusObjectClass f = do
   (a, o) <- get >>= xmaybe . fromObj >>= flip withInnerLens f
@@ -3999,9 +4004,20 @@ runCodeBlock initStack sub = execWithStaticStore sub $
 
 ----------------------------------------------------------------------------------------------------
 
-instance ObjectClass (PatternTree Object [Subroutine]) where { obj=new ; fromObj=objFromHata; }
+newtype RuleSet = RuleSet { ruleSetRules  :: PatternTree Object [Subroutine] }
+  deriving Typeable
 
-instance HataClass (PatternTree Object [Subroutine]) where
+instance HasNullValue RuleSet where
+  nullValue = RuleSet nullValue
+  testNull (RuleSet r) = testNull r
+
+instance Monoid RuleSet where
+  mempty = RuleSet mempty
+  mappend (RuleSet a) (RuleSet b) = RuleSet (mappend a b)
+
+instance ObjectClass RuleSet where { obj=new ; fromObj=objFromHata; }
+
+instance HataClass RuleSet where
   haskellDataInterface = interface mempty $ do
     autoDefNullTest
     let initParams ox = case ox of
@@ -4009,14 +4025,18 @@ instance HataClass (PatternTree Object [Subroutine]) where
           _  -> execThrow $ obj [obj "\"RuleSet\" constructor takes no intializing parameters"]
           -- TODO: ^ the constructor for a 'PatternTree' should take tokenizer function.
     let listParams tree =
-          foldM (\ tree (i, o) -> case fromObj o >>= \ (Hata _ o) -> fromDynamic o of
-            Nothing -> execThrow $ obj $
-              [obj "item #", obj (i::Int), obj "in the initializing list is not a rule object"]
-            Just (GlobAction{ globPattern=pat, globSubroutine=sub }) -> return $
-              insertMultiPattern (++) pat [sub] tree ) tree . zip [1..]
-    defListInit initParams listParams
-    defInfixOp ORB $ \ _ tree o -> (new . T.unionWith (++) tree) <$> xmaybe (fromObj o)
-    defSizer $ return . obj . T.size
+          foldM (\ (RuleSet tree) (i, o) -> case o of
+            InitSingle o -> case fromObj o >>= \ (Hata _ o) -> fromDynamic o of
+              Nothing -> execThrow $ obj $
+                [obj "item #", obj (i::Int), obj "in the initializing list is not a rule object"]
+              Just (GlobAction{ globPattern=pat, globSubroutine=sub }) -> return $ RuleSet $
+                insertMultiPattern (++) pat [sub] tree
+            InitAssign{} -> fail "cannot use assignment expression in initializer of RuleSet"
+                ) tree . zip [1..]
+    defInitializer initParams listParams
+    defInfixOp ORB $ \ _ (RuleSet tree) o ->
+      (new . RuleSet . T.unionWith (++) tree . ruleSetRules ) <$> xmaybe (fromObj o)
+    defSizer $ return . obj . T.size . ruleSetRules
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4300,7 +4320,7 @@ instance HataClass (AST_RuleHeader Object) where
 asReference :: Object -> XPure Reference
 asReference = xmaybe . fromObj
 
-_getRuleSetParam :: [Object] -> Exec (Maybe (PatternTree Object [Subroutine]), [Object])
+_getRuleSetParam :: [Object] -> Exec (Maybe RuleSet, [Object])
 _getRuleSetParam ox = return $ case ox of
   []   -> (Nothing, [])
   o:ox -> maybe ((Nothing, o:ox)) (\o -> (Just o, ox)) (fromObj o)
@@ -5026,6 +5046,14 @@ _infixOps = array (minBound, maxBound) $ defaults ++
     e msg = msg ++
       " operator should have been evaluated within the 'execute' function."
 
+-- | Evaluate an 'UpdateOp' operator. Provide an optional 'Reference' indicating the reference
+-- location of the value being updated, then the 'UpdateOp' operator, the right-hand side 'Object'
+-- value, and finally the current value stored at the 'Reference' location that needs to be updated.
+-- If the 'UpdateOp' is 'UCONST', the current value may be 'Prelude.Nothing' as any current value
+-- will be overwritten. If the 'UpdateOp' is not 'UCONST' and the current value is
+-- 'Prelude.Nothing', this is an error. Otherwise the current value is removed from the
+-- 'Prelude.Just' constructor and used as the left-hand operand with the right-hand operand of the
+-- appropriate arithmetic function associated with the 'UpdateOp'.
 evalUpdateOp :: Maybe Reference -> UpdateOp -> Object -> Maybe Object -> Exec (Maybe Object)
 evalUpdateOp qref op newObj oldObj = case op of
   UCONST -> return $ Just newObj
@@ -6253,47 +6281,37 @@ _evalInit ref bnds initMap = do
   ref <- case ref of
     Reference UNQUAL name NullRef -> pure name
     ref -> execThrow $ obj [obj "cannot use reference as initializer", obj ref]
-  ref <- pure $ toUStr ref
+  ref  <- pure $ toUStr ref
   bnds <- execute bnds >>= _reduceArgs "initializer parameters"
   let cantUseBounds msg = execThrow $ obj $
         [obj msg, obj "must be defined without bounds parameters", OList bnds]
-  let initBacktracked = fail "backtracked during initialization"
+  let list = case bnds of
+        [] -> execNested_ M.empty $ fmap OList $ execute initMap >>= _reduceArgs "list item"
+        _  -> cantUseBounds "for list constructor"
+  let dict = case bnds of
+        [] -> (ODict . snd) <$> execNested M.empty (mapM_ assignUnqualifiedOnly items)
+        _  -> cantUseBounds "for dict constructor"
   case uchars ref of
-    "list" -> case bnds of
-      [] -> execNested_ M.empty $ fmap OList $ execute initMap >>= _reduceArgs "list item"
-      _  -> cantUseBounds "for list constructor"
-    "dict" -> case bnds of
-      [] -> (ODict . snd) <$> execNested M.empty (mapM_ assignUnqualifiedOnly items)
-      _  -> cantUseBounds "for dict constructor"
+    "list"       -> list
+    "List"       -> list
+    "dict"       -> dict
+    "Dict"       -> dict
+    "Dictionary" -> dict
     _ -> execGetObjTable ref >>= \tab -> case tab of
       Nothing  -> execThrow $ obj [obj "unknown object constructor", obj ref]
-      Just tab -> do
-        let make = OHaskell . Hata tab
-        execNested_ M.empty $ msum $
-          [ case objDictInit tab of
-              Nothing           -> mzero
-              Just (init, fold) -> init bnds >>= \o -> flip mplus initBacktracked $ do
-                items <- forM items $ \item -> case item of
-                  AssignExpr a op b _ -> do
-                    let check msg expr = do
-                          o <- execute expr
-                          case o of
-                            Just  o -> return o
-                            Nothing -> execThrow $ obj $
-                              [ obj $ msg++
-                                  "-hand side of initalizer expression evaluates to void"
-                              , new expr
-                              ]
-                    pure (,,) <*> check "left" a <*> pure op <*> check "right" b
-                  EvalExpr arith -> execThrow $ obj $
-                    [obj "expression does not assign a value to a key", new arith]
-                make <$> fold o items
-          , case objListInit tab of
-              Nothing           -> mzero
-              Just (init, fold) -> init bnds >>= \o -> flip mplus initBacktracked $ fmap make $
-                execute initMap >>= _reduceArgs "initializer list" >>= fold o
-          , execThrow $ obj [obj "cannot declare constant object of type", obj ref]
-          ]
+      Just tab -> execNested_ M.empty $ case objInitializer tab of
+        Nothing           -> execThrow $
+          obj [obj "cannot declare constant object of type", obj ref]
+        Just (init, fold) -> do
+          o     <- init bnds
+          items <- forM items $ \item -> case item of
+            AssignExpr a op b loc -> do
+              a <- reduceToRef a
+              b <- execute b >>= checkVoid loc "right-hand side of initializer assignment"
+              return $ InitAssign a op b
+            EvalExpr arith -> fmap InitSingle $
+              execute arith >>= checkVoid (getLocation arith) "initializer item evaluates to void"
+          OHaskell . Hata tab <$> fold o items
 
 instance RefReducible (ObjectExpr Object) where
   reduceToRef o = _setObjectExprError o $ case o of
@@ -6977,18 +6995,26 @@ instance HataClass (H.HashMap Object Object) where
     let initParams ox = case ox of
           [] -> return H.empty
           _  -> execThrow $ obj [obj "\"HashMap\" constructor takes no initializing parameters"]
-    let dictParams hmap ox = do
+    let initItems hmap ox = do
           mt <- gets globalMethodTable
           let hash128 = H.deriveHash128_DaoBinary mt
-          let f hmap (i, op, o) = let idx = H.hashNewIndex hash128 i in case op of
-                UCONST -> return $ H.hashInsert idx o hmap
-                op     -> case H.hashLookup idx hmap of
-                  Nothing -> execThrow $ obj [obj "item", i, obj "is undefined, cannot update"]
-                  Just  n -> do
-                    o <- execute $ (_updatingOps!op) n o
-                    return $ H.hashInsert idx o hmap
+          let f hmap o = case o of
+                InitSingle o -> do
+                  let idx = H.hashNewIndex hash128 o
+                  return $ H.hashInsert idx o hmap
+                InitAssign ref op o -> do
+                  i <- referenceLookup ref
+                  case i of
+                    Nothing -> execThrow $ obj $
+                      [obj "could not assign to undefined reference", obj ref]
+                    Just (ref, i) -> do
+                      let idx = H.hashNewIndex hash128 i
+                      o <- evalUpdateOp (Just ref) op o (H.hashLookup idx hmap)
+                      return $ case o of
+                        Nothing -> H.hashDelete idx hmap
+                        Just  o -> H.hashInsert idx o hmap
           foldM f hmap ox
-    defDictInit initParams dictParams
+    defInitializer initParams initItems
 
 -- | This is a convenience function for calling 'OHaskell' using just an initial value of type
 -- @typ@. The 'Interface' is retrieved automatically using the instance of 'haskellDataInterface' for
@@ -7003,6 +7029,21 @@ toHata t = flip Hata (toDyn t) (interfaceTo t haskellDataInterface) where
 -- constructor.
 fromHata :: (HataClass typ, Typeable typ) => Hata -> Maybe typ
 fromHata (Hata _ o) = fromDynamic o
+
+----------------------------------------------------------------------------------------------------
+
+-- | When defining the function used by the Dao interpreter to construct your object from an
+-- initializer statement, a statement which looks like the following code:
+-- > MyObj(0, a) { item = 1, item += 3, x, y };
+-- you will need to receive the list of items expressed in curly-brackets, which could be an
+-- assignment operation, or a single object value expression. This data type provides the necessary
+-- data to your initializer function.
+data InitItem
+  = InitSingle Object
+  | InitAssign Reference UpdateOp Object
+  deriving (Eq, Ord, Typeable)
+
+----------------------------------------------------------------------------------------------------
 
 -- | This is all of the functions used by the "Dao.Evaluator" when manipulating objects in a Dao
 -- program. Behavior of objects when they are used in "for" statements or "with" statements, or when
@@ -7025,24 +7066,24 @@ fromHata (Hata _ o) = fromDynamic o
 data Interface typ =
   Interface
   { objHaskellType     :: TypeRep -- ^ this type is deduced from the initial value provided to the 'interface'.
-  , objCastFrom        :: Maybe (Object -> typ)                                                         -- ^ defined by 'defCastFrom'
-  , objEquality        :: Maybe (typ -> typ -> Bool)                                                    -- ^ defined by 'defEquality'
-  , objOrdering        :: Maybe (typ -> typ -> Ordering)                                                -- ^ defined by 'defOrdering'
-  , objBinaryFormat    :: Maybe (typ -> Put, Get typ)                                                   -- ^ defined by 'defBinaryFmt'
-  , objNullTest        :: Maybe (typ -> Bool)                                                           -- ^ defined by 'defNullTest'
-  , objPPrinter        :: Maybe (typ -> PPrint)                                                         -- ^ defined by 'defPPrinter'
-  , objReadIterable    :: Maybe (typ -> Exec (Maybe Object, typ))                                       -- ^ defined by 'defReadIterator'
-  , objUpdateIterable  :: Maybe (typ -> Maybe Object -> Exec typ)                                       -- ^ defined by 'defUpdateIterator'
-  , objIndexer         :: Maybe (typ -> [Object] -> Exec Object)                                        -- ^ defined by 'defIndexer'
-  , objIndexUpdater    :: Maybe (typ -> (Maybe Object -> Exec (Maybe Object)) -> [Object] -> Exec typ)  -- ^ defined by 'defIndexUpdater'
-  , objSizer           :: Maybe (typ -> Exec Object)                                                    -- ^ defined by 'defSizer'
-  , objToStruct        :: Maybe (ToDaoStruct typ ())                                                    -- ^ defined by 'defStructFormat'
-  , objFromStruct      :: Maybe (FromDaoStruct typ)                                                     -- ^ defined by 'defStructFormat'
-  , objDictInit        :: Maybe ([Object] -> Exec typ, typ -> [(Object, UpdateOp, Object)] -> Exec typ) -- ^ defined by 'defDictInit'
-  , objListInit        :: Maybe ([Object] -> Exec typ, typ -> [Object] -> Exec typ)                     -- ^ defined by 'defDictInit'
-  , objInfixOpTable    :: Maybe (Array InfixOp  (Maybe (InfixOp  -> typ -> Object -> XPure Object)))    -- ^ defined by 'defInfixOp'
-  , objArithPfxOpTable :: Maybe (Array ArithPfxOp (Maybe (ArithPfxOp -> typ -> XPure Object)))          -- ^ defined by 'defPrefixOp'
-  , objCallable        :: Maybe (typ -> Exec [CallableCode])                                            -- ^ defined by 'defCallable'
+  , objCastFrom        :: Maybe (Object -> typ)                                                                     -- ^ defined by 'defCastFrom'
+  , objEquality        :: Maybe (typ -> typ -> Bool)                                                                -- ^ defined by 'defEquality'
+  , objOrdering        :: Maybe (typ -> typ -> Ordering)                                                            -- ^ defined by 'defOrdering'
+  , objBinaryFormat    :: Maybe (typ -> Put, Get typ)                                                               -- ^ defined by 'defBinaryFmt'
+  , objNullTest        :: Maybe (typ -> Bool)                                                                       -- ^ defined by 'defNullTest'
+  , objPPrinter        :: Maybe (typ -> PPrint)                                                                     -- ^ defined by 'defPPrinter'
+  , objReadIterable    :: Maybe (typ -> Exec (Maybe Object, typ))                                                   -- ^ defined by 'defReadIterator'
+  , objUpdateIterable  :: Maybe (typ -> Maybe Object -> Exec typ)                                                   -- ^ defined by 'defUpdateIterator'
+  , objIndexer         :: Maybe (typ -> [Object] -> Exec Object)                                                    -- ^ defined by 'defIndexer'
+  , objIndexUpdater    :: Maybe (typ -> (Maybe Object -> Exec (Maybe Object)) -> [Object] -> Exec typ)              -- ^ defined by 'defIndexUpdater'
+  , objSizer           :: Maybe (typ -> Exec Object)                                                                -- ^ defined by 'defSizer'
+  , objToStruct        :: Maybe (ToDaoStruct typ ())                                                                -- ^ defined by 'defStructFormat'
+  , objFromStruct      :: Maybe (FromDaoStruct typ)                                                                 -- ^ defined by 'defStructFormat'
+  , objInitializer     :: Maybe ([Object] -> Exec typ, typ -> [InitItem] -> Exec typ)                               -- ^ defined by 'defDictInit'
+  , objTraverse        :: Maybe (([Object] -> Object -> ObjectFocus [([Object], Object)] ()) -> ObjectFocus typ ()) -- ^ defined by 'defTraverse'
+  , objInfixOpTable    :: Maybe (Array InfixOp  (Maybe (InfixOp  -> typ -> Object -> XPure Object)))                -- ^ defined by 'defInfixOp'
+  , objArithPfxOpTable :: Maybe (Array ArithPfxOp (Maybe (ArithPfxOp -> typ -> XPure Object)))                      -- ^ defined by 'defPrefixOp'
+  , objCallable        :: Maybe (typ -> Exec [CallableCode])                                                        -- ^ defined by 'defCallable'
   , objDereferencer    :: Maybe (typ -> Exec (Maybe Object))
   }
   deriving Typeable
@@ -7080,8 +7121,8 @@ interfaceAdapter a2b b2a ifc =
   , objSizer           = let n="objSizer"          in fmap (\f o -> f (b2a n o)) (objSizer ifc)
   , objToStruct        = let n="objToStruct"       in fmap (fmapHaskDataToStruct (a2b n) (b2a n)) (objToStruct ifc)
   , objFromStruct      = let n="objFromStruct"     in fmap (fmap (a2b n)) (objFromStruct ifc)
-  , objDictInit        = let n="objDictInit"       in fmap (\ (init, eval) -> (\ox -> fmap (a2b n) (init ox), \typ ox -> fmap (a2b n) (eval (b2a n typ) ox))) (objDictInit ifc)
-  , objListInit        = let n="objListInit"       in fmap (\ (init, eval) -> (\ox -> fmap (a2b n) (init ox), \typ ox -> fmap (a2b n) (eval (b2a n typ) ox))) (objListInit ifc)
+  , objInitializer     = let n="objInitializer"    in fmap (\ (init, eval) -> (\ox -> fmap (a2b n) (init ox), \typ ox -> fmap (a2b n) (eval (b2a n typ) ox))) (objInitializer ifc)
+  , objTraverse        = let n="objTraverse"       in fmap (\focus f -> convertFocus (a2b n) (b2a n) (focus f)) (objTraverse ifc)
   , objInfixOpTable    = let n="objInfixOpTable"   in fmap (fmap (fmap (\infx op b -> infx op (b2a n b)))) (objInfixOpTable  ifc)
   , objArithPfxOpTable = let n="objPrefixOpTabl"   in fmap (fmap (fmap (\prfx op b -> prfx op (b2a n b)))) (objArithPfxOpTable ifc)
   , objCallable        = let n="objCallable"       in fmap (\eval -> eval . b2a n) (objCallable ifc)
@@ -7117,8 +7158,8 @@ data HDIfcBuilder typ =
   , objIfcSizer          :: Maybe (typ -> Exec Object)
   , objIfcToStruct       :: Maybe (ToDaoStruct typ ())
   , objIfcFromStruct     :: Maybe (FromDaoStruct typ)
-  , objIfcDictInit       :: Maybe ([Object] -> Exec typ, typ -> [(Object, UpdateOp, Object)] -> Exec typ)
-  , objIfcListInit       :: Maybe ([Object] -> Exec typ, typ -> [Object] -> Exec typ)
+  , objIfcInitializer    :: Maybe ([Object] -> Exec typ, typ -> [InitItem] -> Exec typ)
+  , objIfcTraverse       :: Maybe (([Object] -> Object -> ObjectFocus [([Object], Object)] ()) -> ObjectFocus typ ())
   , objIfcInfixOpTable   :: [(InfixOp , InfixOp  -> typ -> Object -> XPure Object)]
   , objIfcPrefixOpTable  :: [(ArithPfxOp, ArithPfxOp -> typ -> XPure Object)]
   , objIfcCallable       :: Maybe (typ -> Exec [CallableCode])
@@ -7141,8 +7182,8 @@ initHDIfcBuilder =
   , objIfcSizer          = Nothing
   , objIfcToStruct       = Nothing
   , objIfcFromStruct     = Nothing
-  , objIfcDictInit       = Nothing
-  , objIfcListInit       = Nothing
+  , objIfcInitializer    = Nothing
+  , objIfcTraverse       = Nothing
   , objIfcInfixOpTable   = []
   , objIfcPrefixOpTable  = []
   , objIfcCallable       = Nothing
@@ -7374,25 +7415,20 @@ defFromStruct decode = _updHDIfcBuilder (\st -> st{ objIfcFromStruct=Just decode
 -- When the interpreter sees this form of expression, it looks up the 'Interface' for your
 -- @typ@ and checks if a callback has been defined by 'defDictInit'. If so, then the callback is
 -- evaluated with a list of object values passed as the first parameter which contain the object
--- values written in the parentheses, and a 'T_dict' as the second paramter containing the tree
--- structure that was constructed with the expression in the braces.
-defDictInit :: Typeable typ => ([Object] -> Exec typ) -> (typ -> [(Object, UpdateOp, Object)] -> Exec typ) -> DaoClassDefM typ ()
-defDictInit fa fb = _updHDIfcBuilder(\st->st{objIfcDictInit=Just (fa, fb)})
+-- values written in the parentheses, and a list of 'InitItem's as the second parameter containing
+-- the contents of the curly-brackets.
+defInitializer :: Typeable typ => ([Object] -> Exec typ) -> (typ -> [InitItem] -> Exec typ) -> DaoClassDefM typ ()
+defInitializer fa fb = _updHDIfcBuilder(\st->st{objIfcInitializer=Just (fa, fb)})
 
--- | The callback defined here is used when a Dao program makes use of the static initialization
--- syntax of the Dao programming language, which are expression of this form:
--- > a = MyType { initA, initB, .... };
--- > a = MyType(param1, param2, ...., paramN) { initA, initB, .... };
--- When the interpreter sees this form of expression, it looks up the 'Interface' for your
--- @typ@ and checks if a callback has been defined by 'defDictInit'. If so, then the callback is
--- evaluated with a list of object values passed as the first parameter which contain the object
--- values written in the parentheses, and a 'T_dict' as the second paramter containing the tree
--- structure that was constructed with the expression in the braces.
--- 
--- You can define both 'defDictInit' and 'defListInit', but if both are defined, only 'defDictInit'
--- will be used.
-defListInit :: Typeable typ => ([Object] -> Exec typ) -> (typ -> [Object] -> Exec typ) -> DaoClassDefM typ ()
-defListInit fa fb = _updHDIfcBuilder(\st->st{objIfcListInit=Just(fa,fb)})
+-- | Data structures in the Dao programming language can be traversed if you provide a function that
+-- can update every 'Object' contained wihtin the data structure.
+defTraverse :: Typeable typ => (([Object] -> Object -> ObjectFocus [([Object], Object)] ()) -> ObjectFocus typ ()) -> DaoClassDefM typ ()
+defTraverse f = _updHDIfcBuilder(\st->st{objIfcTraverse=Just f})
+
+-- | Define the 'defTraverse' function using the instance of 'objectFMap' for your @typ@ in the
+-- @('ObjectFunctor' ['Object'] typ)@ class.
+autoDefTraverse :: (Typeable typ, ObjectFunctor typ [Object]) => DaoClassDefM typ ()
+autoDefTraverse = defTraverse objectFMap
 
 -- | Overload infix operators in the Dao programming language, for example @+@, @*@, or @<<@.
 -- 
@@ -7458,8 +7494,8 @@ interface init defIfc =
   , objSizer           = objIfcSizer          ifc
   , objToStruct        = objIfcToStruct       ifc
   , objFromStruct      = objIfcFromStruct     ifc
-  , objDictInit        = objIfcDictInit       ifc
-  , objListInit        = objIfcListInit       ifc
+  , objInitializer     = objIfcInitializer    ifc
+  , objTraverse        = objIfcTraverse       ifc
   , objCallable        = objIfcCallable       ifc
   , objDereferencer    = objIfcDerefer        ifc
   , objInfixOpTable    = mkArray "defInfixOp"  $ objIfcInfixOpTable  ifc

@@ -40,6 +40,7 @@ module Dao.Interpreter(
     tryCopyField, tryField, copyField, field,
     convertFieldData, req, opt, reqList, optList, method,
     ObjLensError(ObjLensError), mapStructErrorMessage, failedOnReference, mapStructError,
+    ObjectUpdate, ObjectLookup, ObjectTraverse,
     ObjectLens(updateIndex, lookupIndex), ObjectFunctor(objectFMap),
     ObjectFocus, ObjFocusState(), getObjFocusState, runObjectFocus, getFocalReference,
     execToFocusUpdater, withInnerLens, runObjectFocusExec, focusObjectClass, focusStructAsDict,
@@ -2964,34 +2965,40 @@ instance MonadState o (ObjectFocus o) where
   state f = _mapStructState $ state $ \st ->
     let (a, o) = f (objectInFocus st) in (a, st{ objectInFocus=o })
 
+-- | An 'ObjectFocus' function that updates a value within the data of type @o@ in focus at a given
+-- @index@ using an inner 'ObjectFocus' function that focuses on the 'Object' value at the index if
+-- it exists. The type of the inner 'ObjectFocus' is @('Prelude.Maybe' 'Object')@ because there may
+-- be no value defined at the given index.
+type ObjectUpdate o index = index -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus o (Maybe Object)
+
+-- | An 'ObjectFocus' function that looks-up a value within the data of type @o@ in focus at a given
+-- index.
+type ObjectLookup o index = index -> ObjectFocus o Object
+
+-- | An 'ObjectFocus' that traverses the 'Object' in the focus by calling the provided traversal
+-- function for every @index -> 'Object'@ relation defined within the data of type @o@. The
+-- traversal function is an inner focus of type @[(index, 'Object')]@. The list in focus should
+-- initially be empty when the inner traversal function is called. When the inner traversal function
+-- is completed, it should contain every @(index, 'Object')@ that is intended to be stored back into
+-- the data of type @o@. The outer 'ObjectFocus' should retrieve this list of pairs and determine
+-- how to update the data of type @o@ accordingly.
+type ObjectTraverse o index = (index -> Object -> ObjectFocus [(index, Object)] ()) -> ObjectFocus o ()
+
 -- | This class provides functions that can be used to establish 'ObjectFocus' for various data
 -- types. The class allows you to define an association between an index and and object type o, and
 -- how the index is used to read and update the object o.
 -- There are no functional dependencies between the object type and the index type, so using these
 -- function may require type annotation.
 class ObjectLens o index where
-  -- | This function looks inside the 'Object' in the focus of the 'ObjectFocus' by converting the
-  -- 'Object' to a data type @o@. Then lookup an item with the given @index@, and then update it
-  -- with the given function.  The updating function should take and return an 'Object' wrapped in a
-  -- 'Prelude.Maybe', where 'Prelude.Nothing' indicates that nothing exists at the given @index@,
-  -- and returning 'Prelude.Nothing' to indicate the 'Object' at the given @index@ should be
-  -- deleted.
-  updateIndex :: index -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus o (Maybe Object)
-  -- | This function looks inside the data type @o@ that is in the focus of the 'ObjectFocus' and
-  -- retrieves an 'Object' value stored at the given @index@, or else backtrakcs (evaluates to
-  -- 'Control.Monad.mzero') if there is no value at that index.
-  lookupIndex :: index -> ObjectFocus o Object
+  updateIndex :: ObjectUpdate o index
+  lookupIndex :: ObjectLookup o index
 
 -- | This class provides the 'objectFMap' function for evaluating a functor over every item in an
 -- 'bject in the focus of an 'ObjectFocus'. The function that maps to the functor object takes a
 -- polymorphic index type and the 'Object' associated with that index. For example, in the case of a
 -- 'T_dict' type, the index would be a 'Dao.String.Name', in the case of a 'T_list' type, the index
 -- would be a 'Prelude.Integer'.
-class ObjectFunctor o index where
-  -- | Traverse the 'Object' in the focus by converting it to data of type @o@ and then for every
-  -- @(index, 'Object')@ relation, apply the given updating function. The updating function can
-  -- return a list of new @(index, 'Object')@ relations for insertion into the 'Object' in focus.
-  objectFMap :: (index -> Object -> ObjectFocus [(index, Object)] ()) -> ObjectFocus o ()
+class ObjectFunctor o index where { objectFMap :: ObjectTraverse o index }
 
 _mapStructState :: StateT (ObjFocusState o) Exec a -> ObjectFocus o a
 _mapStructState = ObjectFocus . lift
@@ -3175,8 +3182,7 @@ _refSuffixUpdate
   -> ObjectFocus (Maybe Object) (Maybe Object)
 _refSuffixUpdate o i suf f = do
   (result, o) <- withInnerLens o $ updateIndex i $ updateIndex suf f
-  put (Just $ obj o)
-  return result
+  put (Just $ obj o) >> return result
 
 _refSuffixLookup :: ObjectLens o i => o -> i -> RefSuffix -> ObjectFocus (Maybe Object) Object
 _refSuffixLookup o i suf = withInnerLens o (lookupIndex i) >>=
@@ -3267,12 +3273,20 @@ _hataLookupSubscript f = do
   lookupHataAsStruct $ f $ show $ objHaskellType ifc
 
 instance ObjectLens Hata [Object] where
-  updateIndex ix f = _hataUpdateSubscript $ \msg -> _dictSubscriptUpdate msg ix f
-  lookupIndex ix   = _hataLookupSubscript $ \msg -> _dictSubscriptLookup msg ix
+  updateIndex ix f = get >>= \ (Hata ifc o) -> case objIndexUpdater ifc of
+    Nothing     -> _hataUpdateSubscript $ \msg -> _dictSubscriptUpdate msg ix f
+    Just update -> do
+      (result, o) <- withInnerLens o $ update ix f
+      put (Hata ifc o) >> return result
+  lookupIndex ix   = get >>= \ (Hata ifc o) -> case objIndexer ifc of
+    Nothing     -> _hataLookupSubscript $ \msg -> _dictSubscriptLookup msg ix
+    Just lookup -> focusLiftExec (lookup o ix)
 
 instance ObjectFunctor Hata [Object] where
-  objectFMap f = get >>= \ (Hata ifc _) ->
-    updateHataAsStruct (_dictSubscriptFMap (show $ objHaskellType ifc) f) <|> fail "cannot update field"
+  objectFMap f = get >>= \ (Hata ifc o) -> case objTraverse ifc of
+    Nothing       -> updateHataAsStruct (_dictSubscriptFMap (show $ objHaskellType ifc) f) <|>
+      fail "cannot update field"
+    Just traverse -> withInnerLens o (traverse f) >>= \ ((), o) -> put (Hata ifc o)
 
 instance ObjectLens (Maybe Object) RefSuffix where
   updateIndex suf f = focalPathSuffix suf $ get >>= \o -> case suf of
@@ -7066,24 +7080,24 @@ data InitItem
 data Interface typ =
   Interface
   { objHaskellType     :: TypeRep -- ^ this type is deduced from the initial value provided to the 'interface'.
-  , objCastFrom        :: Maybe (Object -> typ)                                                                     -- ^ defined by 'defCastFrom'
-  , objEquality        :: Maybe (typ -> typ -> Bool)                                                                -- ^ defined by 'defEquality'
-  , objOrdering        :: Maybe (typ -> typ -> Ordering)                                                            -- ^ defined by 'defOrdering'
-  , objBinaryFormat    :: Maybe (typ -> Put, Get typ)                                                               -- ^ defined by 'defBinaryFmt'
-  , objNullTest        :: Maybe (typ -> Bool)                                                                       -- ^ defined by 'defNullTest'
-  , objPPrinter        :: Maybe (typ -> PPrint)                                                                     -- ^ defined by 'defPPrinter'
-  , objReadIterable    :: Maybe (typ -> Exec (Maybe Object, typ))                                                   -- ^ defined by 'defReadIterator'
-  , objUpdateIterable  :: Maybe (typ -> Maybe Object -> Exec typ)                                                   -- ^ defined by 'defUpdateIterator'
-  , objIndexer         :: Maybe (typ -> [Object] -> Exec Object)                                                    -- ^ defined by 'defIndexer'
-  , objIndexUpdater    :: Maybe (typ -> (Maybe Object -> Exec (Maybe Object)) -> [Object] -> Exec typ)              -- ^ defined by 'defIndexUpdater'
-  , objSizer           :: Maybe (typ -> Exec Object)                                                                -- ^ defined by 'defSizer'
-  , objToStruct        :: Maybe (ToDaoStruct typ ())                                                                -- ^ defined by 'defStructFormat'
-  , objFromStruct      :: Maybe (FromDaoStruct typ)                                                                 -- ^ defined by 'defStructFormat'
-  , objInitializer     :: Maybe ([Object] -> Exec typ, typ -> [InitItem] -> Exec typ)                               -- ^ defined by 'defDictInit'
-  , objTraverse        :: Maybe (([Object] -> Object -> ObjectFocus [([Object], Object)] ()) -> ObjectFocus typ ()) -- ^ defined by 'defTraverse'
-  , objInfixOpTable    :: Maybe (Array InfixOp  (Maybe (InfixOp  -> typ -> Object -> XPure Object)))                -- ^ defined by 'defInfixOp'
-  , objArithPfxOpTable :: Maybe (Array ArithPfxOp (Maybe (ArithPfxOp -> typ -> XPure Object)))                      -- ^ defined by 'defPrefixOp'
-  , objCallable        :: Maybe (typ -> Exec [CallableCode])                                                        -- ^ defined by 'defCallable'
+  , objCastFrom        :: Maybe (Object -> typ)                                                      -- ^ defined by 'defCastFrom'
+  , objEquality        :: Maybe (typ -> typ -> Bool)                                                 -- ^ defined by 'defEquality'
+  , objOrdering        :: Maybe (typ -> typ -> Ordering)                                             -- ^ defined by 'defOrdering'
+  , objBinaryFormat    :: Maybe (typ -> Put, Get typ)                                                -- ^ defined by 'defBinaryFmt'
+  , objNullTest        :: Maybe (typ -> Bool)                                                        -- ^ defined by 'defNullTest'
+  , objPPrinter        :: Maybe (typ -> PPrint)                                                      -- ^ defined by 'defPPrinter'
+  , objReadIterable    :: Maybe (typ -> Exec (Maybe Object, typ))                                    -- ^ defined by 'defReadIterator'
+  , objUpdateIterable  :: Maybe (typ -> Maybe Object -> Exec typ)                                    -- ^ defined by 'defUpdateIterator'
+  , objIndexer         :: Maybe (typ -> [Object] -> Exec Object)                                     -- ^ defined by 'defIndexer'
+  , objIndexUpdater    :: Maybe (ObjectUpdate typ [Object])                                          -- ^ defined by 'defIndexUpdater'
+  , objSizer           :: Maybe (typ -> Exec Object)                                                 -- ^ defined by 'defSizer'
+  , objToStruct        :: Maybe (ToDaoStruct typ ())                                                 -- ^ defined by 'defStructFormat'
+  , objFromStruct      :: Maybe (FromDaoStruct typ)                                                  -- ^ defined by 'defStructFormat'
+  , objInitializer     :: Maybe ([Object] -> Exec typ, typ -> [InitItem] -> Exec typ)                -- ^ defined by 'defDictInit'
+  , objTraverse        :: Maybe (ObjectTraverse typ [Object])                                        -- ^ defined by 'defTraverse'
+  , objInfixOpTable    :: Maybe (Array InfixOp  (Maybe (InfixOp  -> typ -> Object -> XPure Object))) -- ^ defined by 'defInfixOp'
+  , objArithPfxOpTable :: Maybe (Array ArithPfxOp (Maybe (ArithPfxOp -> typ -> XPure Object)))       -- ^ defined by 'defPrefixOp'
+  , objCallable        :: Maybe (typ -> Exec [CallableCode])                                         -- ^ defined by 'defCallable'
   , objDereferencer    :: Maybe (typ -> Exec (Maybe Object))
   }
   deriving Typeable
@@ -7117,7 +7131,7 @@ interfaceAdapter a2b b2a ifc =
   , objReadIterable    = let n="objReadIterable"   in fmap (\for -> fmap (fmap (a2b n)) . for . b2a n) (objReadIterable ifc)
   , objUpdateIterable  = let n="objUpdateIterable" in fmap (\for i -> fmap (a2b n) . for (b2a n i)) (objUpdateIterable ifc)
   , objIndexer         = let n="objIndexer"        in fmap (\f i -> f (b2a n i)) (objIndexer ifc)
-  , objIndexUpdater    = let n="objIndexUpdater"   in fmap (\f o u i -> fmap (a2b n) $ f (b2a n o) u i) (objIndexUpdater ifc)
+  , objIndexUpdater    = let n="objIndexUpdater"   in fmap (\upd i f -> convertFocus (a2b n) (b2a n) (upd i f)) (objIndexUpdater ifc)
   , objSizer           = let n="objSizer"          in fmap (\f o -> f (b2a n o)) (objSizer ifc)
   , objToStruct        = let n="objToStruct"       in fmap (fmapHaskDataToStruct (a2b n) (b2a n)) (objToStruct ifc)
   , objFromStruct      = let n="objFromStruct"     in fmap (fmap (a2b n)) (objFromStruct ifc)
@@ -7154,12 +7168,12 @@ data HDIfcBuilder typ =
   , objIfcReadIterable   :: Maybe (typ -> Exec (Maybe Object, typ))
   , objIfcUpdateIterable :: Maybe (typ -> Maybe Object -> Exec typ)
   , objIfcIndexer        :: Maybe (typ -> [Object] -> Exec Object)
-  , objIfcIndexUpdater   :: Maybe (typ -> (Maybe Object -> Exec (Maybe Object)) -> [Object] -> Exec typ)
+  , objIfcIndexUpdater   :: Maybe (ObjectUpdate typ [Object])
   , objIfcSizer          :: Maybe (typ -> Exec Object)
   , objIfcToStruct       :: Maybe (ToDaoStruct typ ())
   , objIfcFromStruct     :: Maybe (FromDaoStruct typ)
   , objIfcInitializer    :: Maybe ([Object] -> Exec typ, typ -> [InitItem] -> Exec typ)
-  , objIfcTraverse       :: Maybe (([Object] -> Object -> ObjectFocus [([Object], Object)] ()) -> ObjectFocus typ ())
+  , objIfcTraverse       :: Maybe (ObjectTraverse typ [Object])
   , objIfcInfixOpTable   :: [(InfixOp , InfixOp  -> typ -> Object -> XPure Object)]
   , objIfcPrefixOpTable  :: [(ArithPfxOp, ArithPfxOp -> typ -> XPure Object)]
   , objIfcCallable       :: Maybe (typ -> Exec [CallableCode])
@@ -7372,10 +7386,7 @@ defIndexer fn = _updHDIfcBuilder(\st->st{objIfcIndexer=Just fn})
 -- accesses a sequence of single-dimensional elements, each element being accessed by the next
 -- snigle-dimensional index in the sequence. Although this is one method of programming
 -- multi-dimensional data types, it is evaluated differently than an index expressed as a tuple.
-defIndexUpdater
-  :: Typeable typ
-  => (typ -> (Maybe Object -> Exec (Maybe Object)) -> [Object] -> Exec typ)
-  -> DaoClassDefM typ ()
+defIndexUpdater :: Typeable typ => ObjectUpdate typ [Object] -> DaoClassDefM typ ()
 defIndexUpdater fn = _updHDIfcBuilder(\st->st{ objIfcIndexUpdater=Just fn })
 
 -- | Define a function used by the built-in "size()" function to return an value indicating the size

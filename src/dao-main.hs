@@ -85,7 +85,7 @@ main = do
   --initialize -- initialize the ReadLine library
   args   <- fmap (fmap ustr) getArgs
   result <- setupDao $ do
-    evalFuncs
+    loadDaoStandardLibrary
     daoInitialize $ do
       loadEveryModule args
       daoInputLoop inputLoop

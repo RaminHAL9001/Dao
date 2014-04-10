@@ -43,7 +43,9 @@ import           Dao.Token
 import           Dao.Parser
 import           Dao.Interpreter.Parser
 import           Dao.Interpreter.AST
-import qualified Dao.Tree    as T
+import qualified Dao.Tree as T
+
+import qualified Dao.Lib.Array as Dao
 
 import           Data.Function
 import           Data.Monoid
@@ -65,6 +67,10 @@ import           System.IO
 -- patience for.
 min_exec_time :: Int
 min_exec_time = 200000
+
+loadDaoStandardLibrary :: DaoSetup
+loadDaoStandardLibrary = do
+  Dao.loadLibrary_Array
 
 ----------------------------------------------------------------------------------------------------
 

@@ -120,7 +120,8 @@ module Dao.Interpreter(
     defBinaryFmt, autoDefNullTest, defNullTest, defPPrinter, autoDefPPrinter, defReadIterable,
     autoDefReadIterable, defUpdateIterable, autoDefUpdateIterable, defIndexer, defIndexUpdater,
     defSizer, autoDefToStruct, defToStruct, autoDefFromStruct, defFromStruct, defInitializer,
-    defTraverse, autoDefTraverse, defInfixOp, defPrefixOp, defCallable, defDeref, defLeppard
+    defTraverse, autoDefTraverse, defInfixOp, defPrefixOp, defCallable, defDeref, defMethod,
+    defLeppard
   )
   where
 
@@ -3129,8 +3130,19 @@ lookupHataAsStruct f = do
   fst <$> withInnerLens struct f
 
 instance ObjectLens Hata Name where
-  updateIndex name = flip mplus (fail "cannot modify field") . updateHataAsStruct . updateIndex name
-  lookupIndex      = lookupHataAsStruct . lookupIndex
+  updateIndex name f = do
+    o@(Hata ifc d) <- get
+    case M.lookup name (objMethodTable ifc) of
+      Nothing   -> flip mplus (fail "cannot modify field") $ updateHataAsStruct $ updateIndex name f
+      Just func -> do
+        result <- fst <$>
+          withInnerLens (Just $ obj $ func{ daoForeignFunc = \ () -> daoForeignFunc func d }) f
+        put o >> return result
+  lookupIndex name   = do
+    (Hata ifc d) <- get
+    case M.lookup name (objMethodTable ifc) of
+      Nothing   -> lookupHataAsStruct $ lookupIndex name
+      Just func -> return $ obj (func{ daoForeignFunc = \ () -> daoForeignFunc func d })
 
 instance ObjectFunctor Hata Name where
   objectFMap = flip mplus (return ()) . updateHataAsStruct . focusStructAsDict . objectFMap
@@ -7046,6 +7058,7 @@ data Interface typ =
   , objArithPfxOpTable :: Maybe (Array ArithPfxOp (Maybe (ArithPfxOp -> typ -> XPure Object)))       -- ^ defined by 'defPrefixOp'
   , objCallable        :: Maybe (typ -> Exec [CallableCode])                                         -- ^ defined by 'defCallable'
   , objDereferencer    :: Maybe (typ -> Exec (Maybe Object))
+  , objMethodTable     :: M.Map Name (DaoFunc typ)
   }
   deriving Typeable
 
@@ -7085,7 +7098,8 @@ interfaceAdapter a2b b2a ifc =
   , objInitializer     = let n="objInitializer"    in fmap (\ (init, eval) -> (\ox -> fmap (a2b n) (init ox), \typ ox -> fmap (a2b n) (eval (b2a n typ) ox))) (objInitializer ifc)
   , objTraverse        = let n="objTraverse"       in fmap (\focus f -> convertFocus (a2b n) (b2a n) (focus f)) (objTraverse ifc)
   , objInfixOpTable    = let n="objInfixOpTable"   in fmap (fmap (fmap (\infx op b -> infx op (b2a n b)))) (objInfixOpTable  ifc)
-  , objArithPfxOpTable = let n="objPrefixOpTabl"   in fmap (fmap (fmap (\prfx op b -> prfx op (b2a n b)))) (objArithPfxOpTable ifc)
+  , objArithPfxOpTable = let n="objPrefixOpTable"  in fmap (fmap (fmap (\prfx op b -> prfx op (b2a n b)))) (objArithPfxOpTable ifc)
+  , objMethodTable     = let n="objMethodTable"    in fmap (\func -> func{ daoForeignFunc = \t -> daoForeignFunc func (b2a n t) }) (objMethodTable ifc)
   , objCallable        = let n="objCallable"       in fmap (\eval -> eval . b2a n) (objCallable ifc)
   , objDereferencer    = let n="objDerferencer"    in fmap (\eval -> eval . b2a n) (objDereferencer ifc)
   }
@@ -7106,7 +7120,8 @@ interfaceToDynamic oi = interfaceAdapter (\ _ -> toDyn) (from oi) oi where
 -- 'Data.Monoid.mappend' function in the same way as
 data HDIfcBuilder typ =
   HDIfcBuilder
-  { objIfcCastFrom       :: Maybe (Object -> typ)
+  { objIfcHaskellType    :: TypeRep
+  , objIfcCastFrom       :: Maybe (Object -> typ)
   , objIfcEquality       :: Maybe (typ -> typ -> Bool)
   , objIfcOrdering       :: Maybe (typ -> typ -> Ordering)
   , objIfcBinaryFormat   :: Maybe (typ -> Put, Get typ)
@@ -7123,14 +7138,16 @@ data HDIfcBuilder typ =
   , objIfcTraverse       :: Maybe (ObjectTraverse typ [Object])
   , objIfcInfixOpTable   :: [(InfixOp , InfixOp  -> typ -> Object -> XPure Object)]
   , objIfcPrefixOpTable  :: [(ArithPfxOp, ArithPfxOp -> typ -> XPure Object)]
+  , objIfcMethodTable    :: M.Map Name (DaoFunc typ)
   , objIfcCallable       :: Maybe (typ -> Exec [CallableCode])
   , objIfcDerefer        :: Maybe (typ -> Exec (Maybe Object))
   }
 
-initHDIfcBuilder :: HDIfcBuilder typ
-initHDIfcBuilder =
+initHDIfcBuilder :: TypeRep -> HDIfcBuilder typ
+initHDIfcBuilder typ =
   HDIfcBuilder
-  { objIfcCastFrom       = Nothing
+  { objIfcHaskellType    = typ
+  , objIfcCastFrom       = Nothing
   , objIfcEquality       = Nothing
   , objIfcOrdering       = Nothing
   , objIfcBinaryFormat   = Nothing
@@ -7147,6 +7164,7 @@ initHDIfcBuilder =
   , objIfcTraverse       = Nothing
   , objIfcInfixOpTable   = []
   , objIfcPrefixOpTable  = []
+  , objIfcMethodTable    = mempty
   , objIfcCallable       = Nothing
   , objIfcDerefer        = Nothing
   }
@@ -7417,6 +7435,16 @@ defCallable fn = _updHDIfcBuilder (\st -> st{objIfcCallable=Just fn})
 defDeref :: Typeable typ => (typ -> Exec (Maybe Object)) -> DaoClassDefM typ ()
 defDeref  fn = _updHDIfcBuilder (\st -> st{objIfcDerefer=Just fn})
 
+defMethod :: Typeable typ => DaoFunc typ -> DaoClassDefM typ ()
+defMethod fn = do
+  let name = daoFuncName fn
+  let dupname st _  = error $ concat $ 
+        [ "Internal error: duplicate method name \"", show name
+        , "\" for data type ", show (objIfcHaskellType st)
+        ] 
+  _updHDIfcBuilder $ \st ->
+    st{ objIfcMethodTable = M.alter (maybe (Just fn) (dupname st)) name $ objIfcMethodTable st }
+
 -- | Rocket. Yeah. Sail away with you.
 defLeppard :: Typeable typ => rocket -> yeah -> DaoClassDefM typ ()
 defLeppard _ _ = return ()
@@ -7457,10 +7485,11 @@ interface init defIfc =
   , objDereferencer    = objIfcDerefer        ifc
   , objInfixOpTable    = mkArray "defInfixOp"  $ objIfcInfixOpTable  ifc
   , objArithPfxOpTable = mkArray "defPrefixOp" $ objIfcPrefixOpTable ifc
+  , objMethodTable     = objIfcMethodTable    ifc
   }
   where
-    typ               = typeOf init
-    ifc               = execState (daoClassDefState defIfc) initHDIfcBuilder
+    typ = typeOf init
+    ifc = execState (daoClassDefState defIfc) (initHDIfcBuilder typ)
     mkArray oiName elems =
       minAccumArray (onlyOnce oiName) Nothing $ map (\ (i, e) -> (i, (i, Just e))) elems
     onlyOnce oiName a (i, b)  = case a of

@@ -12,5 +12,5 @@ Makefile.bak
 .*.sw*
 *.hi
 *.o
-*.hi_dyn
-*.o_dyn
+*.dyn_hi
+*.dyn_o

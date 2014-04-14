@@ -63,7 +63,7 @@ import           System.IO
 -- | A simple, stateful monad for generating arbitrary data types based on pseudo-random numbers
 -- without lifting the @IO@ or @ST@ monads, i.e. it can be evaluated in a pure way.
 newtype RandT m a = RandT { runRandT :: StateT RandOState m a }
-  deriving (Functor, Applicative, Monad, MonadPlus)
+  deriving (Functor, Applicative, Monad, MonadPlus, Alternative)
 
 instance MonadTrans RandT where { lift = RandT . lift }
 instance MonadIO m => MonadIO (RandT m) where { liftIO = RandT . liftIO }

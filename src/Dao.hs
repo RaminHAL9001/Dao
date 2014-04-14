@@ -50,12 +50,15 @@ import qualified Dao.Lib.Array as Dao
 import           Data.Function
 import           Data.Monoid
 import qualified Data.Map as M
+import           Data.Typeable
 
 import           Control.Applicative
+import           Control.Concurrent.MVar
 import           Control.DeepSeq
 import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.State
+import           Control.Monad.Error
 
 import           System.IO
 
@@ -200,28 +203,59 @@ importFullDepGraph = loop mempty where
 -- To execute an action in a separate thread, use 'forkExecAction'.
 data Action
   = Action
-    { actionQuery     :: Maybe UStr
-    , actionTokens    :: Maybe [Object]
-    , actionPattern   :: Maybe (Glob Object)
+    { actionTokens    :: [Object]
+    , actionPattern   :: Glob Object
     , actionMatch     :: M.Map Name [Object]
     , actionCodeBlock :: Subroutine
     }
+  deriving (Eq, Typeable)
+
+instance PPrintable Action where { pPrint = pPrintStructForm }
+
+instance ToDaoStructClass Action where
+  toDaoStruct = void $ do
+    renameConstructor "Action"
+    "tokens"  .=@ actionTokens
+    "pattern" .=@ actionPattern
+    "match"   .=@ fmap obj . actionMatch
+    "code"    .=@ actionCodeBlock
+
+instance FromDaoStructClass Action where
+  fromDaoStruct = do
+    constructor "Action"
+    let err name o = throwError $
+          StructError
+          { structErrMsg    = Just $ ustr "match dictionary items must contain lists of tokens"
+          , structErrName   = Nothing
+          , structErrField  = Just (toUStr name)
+          , structErrValue  = Just $ obj (typeOfObj o)
+          , structErrExtras = []
+          }
+    let fmtMatches = fmap M.fromList .
+          mapM (\ (name, o) -> xmaybe (fromObj o) <|> err name o >>= return . (,) name) . M.assocs
+    return Action <*> req "tokens" <*> req "pattern" <*> (req "match" >>= fmtMatches) <*> req "code"
+
+instance ObjectClass Action where { obj=new; fromObj=objFromHata; }
+
+instance HataClass Action where
+  haskellDataInterface = interface (Action [] nullValue M.empty nullValue) $ do
+    autoDefEquality >> autoDefPPrinter
+    autoDefToStruct >> autoDefFromStruct
 
 instance Executable Action (Maybe Object) where
   execute act = do
     cq  <- gets currentQuery
     cp  <- gets currentPattern
     ccb <- gets currentCodeBlock
-    let setVar :: ObjectClass o => String -> (Action -> Maybe o) -> T_dict -> T_dict
-        setVar name f = maybe id (M.insert (ustr name) . obj) (f act)
+    let setVar :: ObjectClass o => String -> (Action -> o) -> T_dict -> T_dict
+        setVar name f = M.insert (ustr name) (obj $ f act)
     let setTokensVar = setVar "tokens" actionTokens
-    let setQueryVar = setVar "query"  actionQuery
-    let setThisVar = M.union (M.singleton (ustr "this") (obj $ setTokensVar $ setQueryVar $ mempty))
+    let setThisVar = M.union (M.singleton (ustr "this") (obj $ setTokensVar $ mempty))
     let localVars = setThisVar $ fmap (obj . fmap obj) (actionMatch act)
     modify $ \xunit -> 
       xunit
-      { currentQuery     = actionQuery act
-      , currentPattern   = actionPattern act
+      { currentQuery     = Just $ actionTokens act
+      , currentPattern   = Just $ actionPattern act
       , currentCodeBlock = StaticStore (Just $ actionCodeBlock act)
       }
     success <- optional $ runCodeBlock localVars (actionCodeBlock act)
@@ -264,21 +298,28 @@ betweenBeginAndEnd runInBetween = get >>= \xunit -> do
 -- input.
 -- 
 -- Once you have created an action group, you can execute it with 'Dao.Evaluator.execute'.
-makeActionsForQuery :: [PatternTree Object [Subroutine]] -> UStr -> Exec [Action]
-makeActionsForQuery tree instr = do
-  -- TODO: need to make use of the programTokenizer set in the current 'ExecUnit'
-  match (map (OString . toUStr) $ simpleTokenizer $ fromUStr instr)
-  where
-    match tox = return $
-      flip concatMap (matchTree False (T.unionsWith (++) tree) tox) $ \ (patn, mtch, execs) ->
-        flip map execs $ \exec -> seq exec $! seq instr $! seq patn $! seq mtch $!
-          Action
-          { actionQuery      = Just instr
-          , actionPattern    = Just patn
-          , actionTokens     = Just tox
-          , actionMatch      = mtch
-          , actionCodeBlock  = exec
-          }
+makeActionsForQuery :: [PatternTree Object [Subroutine]] -> [UStr] -> Exec [Action]
+makeActionsForQuery tree tokens = return $
+  flip concatMap (matchTree False (T.unionsWith (++) tree) (map OString tokens)) $ \ (patn, mtch, execs) ->
+    flip map execs $ \exec -> seq exec $! seq tokens $! seq patn $! seq mtch $!
+      Action
+      { actionPattern   = patn
+      , actionTokens    = fmap obj tokens
+      , actionMatch     = mtch
+      , actionCodeBlock = exec
+      }
+
+-- This is the global function that executes a query string against every rule in the current
+-- module. It returns every 'Action' object that matched.
+builtin_query :: DaoFunc ()
+builtin_query =
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc      = \ () ox -> do
+      rules  <- gets ruleSet
+      tokens <- runTokenizer ox
+      Just . obj . map obj <$> makeActionsForQuery [rules] tokens
+  }
 
 -- | This is the most important function in the Dao universe. It executes a string query with the
 -- given module 'ExecUnit's. The string query is executed in each module, execution in each module
@@ -287,16 +328,18 @@ makeActionsForQuery tree instr = do
 -- 'Prelude.Nothing' to execute the string against all modules.
 execStringQuery :: UStr -> Maybe [UPath] -> Exec ()
 execStringQuery instr modnames = do
-  let select names = concat . M.elems .
-        M.intersectionWith (++) (M.fromList $ zip names $ repeat []) . fmap (:[])
-  xunits <- maybe M.elems select modnames <$> gets importGraph
-  task   <- gets taskForExecUnits
-  liftIO $ taskLoop_ task $ flip map xunits $ \xunit -> do
-    let rulset = ruleSet xunit
-    pdicat <- flip ioExec xunit $ betweenBeginAndEnd $ makeActionsForQuery [rulset] instr >>= execute
-    -- TODO: this case statement should really call into some callback functions installed into the
-    -- root 'ExecUnit'.
-    case fst pdicat of
+  let select names = M.assocs .
+        M.intersectionWith (flip const) (M.fromList $ zip names $ repeat ())
+  xunits  <- maybe M.assocs select modnames <$> gets importGraph
+  task    <- gets taskForExecUnits
+  updates <- liftIO $ newMVar M.empty
+  liftIO $ taskLoop_ task $ flip map xunits $ \ (modname, xunit) -> do
+    (result, xunit) <- flip ioExec xunit $ do
+      let rulset = ruleSet xunit
+      tokens <- runTokenizer [obj instr]
+      betweenBeginAndEnd $ makeActionsForQuery [rulset] tokens >>= execute
+    modifyMVar_ updates (return . M.insert modname xunit)
+    case result of
       PFail (ExecReturn{}) -> return ()
       PFail err            -> liftIO $ hPutStrLn stderr $ prettyShow err
       Backtrack            -> case programModuleName xunit of
@@ -304,6 +347,8 @@ execStringQuery instr modnames = do
         Just name -> liftIO $ hPutStrLn stderr $
           uchars name ++ ": does not compute.\n\t"++show instr
       OK                _  -> return ()
+  updated <- liftIO (takeMVar updates)
+  modify $ \xunit -> xunit{ importGraph = M.union updated (importGraph xunit) }
 
 -- | Evaluates the @EXIT@ scripts for every presently loaded dao program, and then clears the
 -- 'Dao.Interpreter.importGraph', effectively removing every loaded dao program and idea file from memory.

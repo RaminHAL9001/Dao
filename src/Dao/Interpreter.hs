@@ -26,7 +26,7 @@ module Dao.Interpreter(
     ObjectClass(obj, fromObj, castToCoreType),
     execCastToCoreType, listToObj, listFromObj, new, opaque, objFromHata,
     Struct(Nullary, Struct),
-    ToDaoStructClass(toDaoStruct), toDaoStructExec,
+    ToDaoStructClass(toDaoStruct), toDaoStructExec, pPrintStructForm,
     FromDaoStructClass(fromDaoStruct), fromDaoStructExec,
     StructError(StructError),
     structErrMsg, structErrName, structErrField, structErrValue, structErrExtras,
@@ -85,11 +85,13 @@ module Dao.Interpreter(
     ExecErrorInfo(ExecErrorInfo), execUnitAtError, execErrExpr, execErrScript, execErrTopLevel,
     mkExecErrorInfo, mkExecError, updateExecErrorInfo, setCtrlReturnValue,
     logUncaughtErrors, getUncaughtErrorLog, clearUncaughtErrorLog,
-    Exec(Exec), execToPredicate, XPure(XPure), xpureToState, runXPure, evalXPure, xpure, xobj, xnote, xonUTF8, xmaybe,
+    Exec(Exec), execToPredicate, XPure(XPure), xpureToState, runXPure, evalXPure, xpure, xobj,
+    xnote, xonUTF8, xmaybe,
     ExecThrowable(toExecError, execThrow), ioExec,
     ExecHandler(ExecHandler), execHandler,
     newExecIOHandler, execCatchIO, execHandleIO, execIOHandler, execErrorHandler, catchReturn,
-    execNested, execNested_, execFuncPushStack, execWithStaticStore, execWithWithRefStore, setupCodeBlock,
+    execNested, execNested_, execFuncPushStack, execWithStaticStore, execWithWithRefStore,
+    setupCodeBlock,
     Subroutine(Subroutine),
     origSourceCode, staticVars, staticRules, staticLambdas, executable, runCodeBlock,
     RuleSet(), CallableCode(CallableCode), argsPattern, returnType, codeSubroutine, 
@@ -98,7 +100,7 @@ module Dao.Interpreter(
     objToBool, extractStringElems,
     requireAllStringArgs, getStringsToDepth, derefStringsToDepth, recurseGetAllStrings, 
     shiftLeft, shiftRight,
-    evalArithPrefixOp, evalInfixOp, evalUpdateOp, 
+    evalArithPrefixOp, evalInfixOp, evalUpdateOp, runTokenizer,
     paramsToGlobExpr, matchFuncParams, execGuardBlock, objToCallable, callCallables,
     callObject, checkPredicate, checkVoid,
     evalConditional,
@@ -245,6 +247,11 @@ _randTrace _ = id
 -- 0xD6       'ParamListExpr'
 -- 0xDD       'CodeBlock'
 -- 0xE9..0xEE 'TopLevelExpr'
+
+----------------------------------------------------------------------------------------------------
+
+newtype ExecTokenizer = ExecTokenizer { runExecTokenizer :: UStr -> Exec [UStr] }
+  deriving Typeable
 
 ----------------------------------------------------------------------------------------------------
 
@@ -431,6 +438,7 @@ loadEssentialFunctions = do
   daoFunction "delete"   builtin_delete
   daoFunction "typeof"   builtin_typeof
   daoFunction "sizeof"   builtin_sizeof
+  daoFunction "tokenize" builtin_tokenize
   mapM_ (uncurry daoConstant) $ map (\t -> (toUStr (show t), OType (coreType t))) [minBound..maxBound]
 
 instance ObjectClass (DaoFunc ()) where { obj=new; fromObj=objFromHata }
@@ -1167,6 +1175,12 @@ instance HasNullValue StructError where
       }
     ) = True
   testNull _ = False
+
+pPrintStructForm :: ToDaoStructClass o => o -> PPrint
+pPrintStructForm o = case fromData toDaoStruct o of
+  PFail err -> pPrint err
+  Backtrack -> pString "(### FAILED TO CONVERT OBJECT TO STRUCT ###)"
+  OK struct -> pPrint struct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2596,6 +2610,8 @@ instance Show (GlobUnit Object) where
     Single o -> show o
     globunit -> show (fmap (const "") globunit)
 
+instance PPrintable (GlobUnit Object) where { pPrint = pShow }
+
 instance Show (Glob Object) where
   show glob = (++"\"") $ ('"':) $ do
     o <- getPatUnits glob
@@ -2610,6 +2626,44 @@ instance Show (Glob Object) where
       globunit -> show (fmap (const "") globunit)
 
 instance PPrintable (Glob Object) where { pPrint = pShow }
+
+instance ToDaoStructClass (GlobUnit Object) where
+  toDaoStruct = ask >>= \o -> void $ case o of
+    Wildcard a -> renameConstructor "Wildcard" >> "name" .= reference UNQUAL a
+    AnyOne   a -> renameConstructor "AnyOne"   >> "name" .= reference UNQUAL a
+    Single   a -> renameConstructor "Single"   >> "item" .= a
+
+instance FromDaoStructClass (GlobUnit Object) where
+  fromDaoStruct = msum $
+    [ constructor "Wildcard" >> Wildcard <$> req "name"
+    , constructor "AnyOne"   >> AnyOne   <$> req "name"
+    , constructor "Single"   >> Single   <$> req "item"
+    ]
+
+instance ObjectClass (GlobUnit Object) where { obj=new; fromObj=objFromHata; }
+
+instance HataClass (GlobUnit Object) where
+  haskellDataInterface = interface (Single ONull) $ do
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
+    autoDefFromStruct >> autoDefToStruct
+
+instance ToDaoStructClass (Glob Object) where
+  toDaoStruct = void $ do
+    renameConstructor "GlobPattern"
+    "items" .=@ obj . map obj . getPatUnits
+
+instance FromDaoStructClass (Glob Object) where
+  fromDaoStruct = do
+    constructor "GlobPattern"
+    items <- reqList "items"
+    return (Glob{ getPatUnits=items, getGlobLength=length items })
+
+instance ObjectClass (Glob Object) where { obj=new; fromObj=objFromHata; }
+
+instance HataClass (Glob Object) where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2635,7 +2689,7 @@ data ExecUnit
     , currentWithRef     :: WithRefStore
       -- ^ the current document is set by the @with@ statement during execution of a Dao script.
     , taskForExecUnits   :: Task
-    , currentQuery       :: Maybe UStr
+    , currentQuery       :: Maybe [Object]
     , currentPattern     :: Maybe (Glob Object)
     , currentCodeBlock   :: StaticStore
       -- ^ when evaluating a 'Subroutine' selected by a string query, the action resulting from
@@ -2656,7 +2710,7 @@ data ExecUnit
     , postExec           :: [Subroutine]
       -- ^ the "guard scripts" that are executed after every string execution.
     , quittingTime       :: [Subroutine]
-    , programTokenizer   :: Object -- TODO: needs to be set after evaluating module top-level
+    , programTokenizer   :: ExecTokenizer
     , ruleSet            :: PatternTree Object [Subroutine]
     , lambdaSet          :: [CallableCode]
     , uncaughtErrors     :: [ExecControl]
@@ -2687,7 +2741,7 @@ _initExecUnit = do
     , programModuleName  = Nothing
     , preExec            = []
     , quittingTime       = mempty
-    , programTokenizer   = ONull
+    , programTokenizer   = ExecTokenizer $ return . map ustr . simpleTokenizer . uchars
     , postExec           = []
     , ruleSet            = T.Void
     , lambdaSet          = []
@@ -3999,6 +4053,10 @@ data Subroutine
     }
   deriving Typeable
 
+instance Eq Subroutine where { a==b = origSourceCode a == origSourceCode b }
+
+instance Ord Subroutine where { compare a b = compare (origSourceCode a) (origSourceCode b) }
+
 instance Show Subroutine where { show o = "Subroutine "++show (codeBlock (origSourceCode o)) }
 
 instance NFData Subroutine where { rnf (Subroutine a _ _ _ _) = deepseq a () }
@@ -4016,9 +4074,33 @@ instance HasNullValue Subroutine where
 
 instance PPrintable Subroutine where { pPrint = mapM_ pPrint . codeBlock . origSourceCode }
 
+instance ToDaoStructClass Subroutine where
+  toDaoStruct = void $ do
+    renameConstructor "Subroutine"
+    "code"    .=@ origSourceCode
+    "vars"    .=@ staticVars
+    "rules"   .=@ RuleSet . staticRules
+    "lambdas" .=@ map obj . staticLambdas
+
+instance FromDaoStructClass Subroutine where
+  fromDaoStruct = do
+    constructor "Subroutine"
+    sub <- setupCodeBlock <$> req "code"
+    vars <- req "vars"
+    (RuleSet rules) <- req "rules"
+    lambdas <- reqList "lambdas"
+    return $ sub{ staticVars=vars, staticRules=rules, staticLambdas=lambdas }
+
 instance Executable Subroutine (Maybe Object) where
   execute sub = execWithStaticStore sub $
     catchReturn return ((execute (origSourceCode sub) :: Exec ()) >> return Nothing) :: Exec (Maybe Object)
+
+instance ObjectClass Subroutine where { obj=new; fromObj=objFromHata; }
+
+instance HataClass Subroutine where
+  haskellDataInterface = interface nullValue $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
+    autoDefToStruct >> autoDefFromStruct
 
 -- | Although 'Subroutine' instantiates 'Executable', this function allows you to easily place a
 -- group of defined local variables onto the call stack before and the have the 'Subroutine'
@@ -5213,6 +5295,28 @@ builtin_sizeof = DaoFunc [] (ustr "sizeof") True $ \ () ox -> case ox of
   [o] -> Just <$> getSizeOf o
   _   -> execThrow $ obj $
     [obj "sizeof() function must take exactly one parameter argument, instead got", obj ox]
+
+-- | Using the tokenizer function set for this module, break up a string into a list of tokens,
+-- returning them as a 'TokenList' object. Input paramaters can be strings or lists of strings. If
+-- an input paramter is a string, it is tokenized to a list of strings. If an input parameter is a
+-- list of strings, it is considered to be already tokenized and simply appended to list of tokens
+-- produced by previous parameters.
+runTokenizer :: [Object] -> Exec [UStr]
+runTokenizer ox =
+  fmap concat $ forM (zip [(1::Int)..] ox) $ \ (i, o) ->
+    maybe (execThrow $ obj [obj "cannot tokenize item passed as paramter", obj i]) id $ msum $
+      [ fromObj o >>= \o -> Just $ do
+          tok <- gets programTokenizer 
+          runExecTokenizer tok o
+      , fromObj o >>= Just .
+          mapM (\o -> xmaybe (fromObj o) <|>
+            (execThrow $
+              obj [obj "parameter", obj i, obj "is a list which contains a non-string item"]))
+      ]
+
+builtin_tokenize :: DaoFunc ()
+builtin_tokenize = DaoFunc [] (ustr "tokenize") True $ \ () ->
+  fmap (Just . obj . map obj) . runTokenizer
 
 ----------------------------------------------------------------------------------------------------
 

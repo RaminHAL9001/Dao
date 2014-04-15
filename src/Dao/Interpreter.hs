@@ -378,7 +378,7 @@ _mkDoFunc selectors = (mkDo False, mkDo True, mkQuery) where
     , daoForeignFunc      = \ () ox -> do
         rules  <- getGlobalRuleSet
         tokens <- runTokenizer ox
-        Just . obj . map obj <$> makeActionsForQuery rules tokens
+        makeActionsForQuery rules tokens >>= throwError . ExecReturn . Just . obj . map obj
     }
 
 builtin_do    :: DaoFunc ()
@@ -4301,11 +4301,26 @@ instance HataClass RuleSet where
     defInfixOp ORB $ \ _ (RuleSet tree) o ->
       (new . RuleSet . T.unionWith (++) tree . ruleSetRules ) <$> xmaybe (fromObj o)
     defSizer $ return . obj . T.size . ruleSetRules
+    defMethod "query" $
+      daoFunc
+      { funcAutoDerefParams = True
+      , daoForeignFunc = \rs ox -> do
+          tokens <- runTokenizer ox
+          Just . obj . map obj <$> makeActionsForQuery [ruleSetRules rs] tokens
+      }
     defMethod "do" $
       daoFunc
       { funcAutoDerefParams = True
       , daoForeignFunc = \rs ox -> do
           tokens <- runTokenizer ox
+          makeActionsForQuery [ruleSetRules rs] tokens >>= msum . map execute
+      }
+    defMethod "doAll" $
+      daoFunc
+      { funcAutoDerefParams = True
+      , daoForeignFunc = \rs ox -> do
+          tokens <- runTokenizer ox
+          fmap (Just . obj . map obj) $ makeActionsForQuery [ruleSetRules rs] tokens >>= execute
       }
 
 ----------------------------------------------------------------------------------------------------
@@ -7703,8 +7718,9 @@ defDeref :: Typeable typ => (typ -> Exec (Maybe Object)) -> DaoClassDefM typ ()
 defDeref  fn = _updHDIfcBuilder (\st -> st{objIfcDerefer=Just fn})
 
 defMethod :: (UStrType name, Typeable typ) => name -> DaoFunc typ -> DaoClassDefM typ ()
-defMethod name infn = do
-  let fn = infn{ daoFuncName=fn (ustr name) }
+defMethod inname infn = do
+  let name = fromUStr $ toUStr inname
+  let fn = infn{ daoFuncName=name }
   let dupname st _  = error $ concat $ 
         [ "Internal error: duplicate method name \"", show name
         , "\" for data type ", show (objIfcHaskellType st)

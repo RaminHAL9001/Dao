@@ -20,6 +20,8 @@
 {-# LANGUAGE CPP #-}
 
 module Dao.Interpreter(
+    Action(Action), actionTokens, actionPattern, actionMatch, actionCodeBlock,
+    makeActionsForQuery, getLocalRuleSet, getGlobalRuleSet,
     DaoSetupM(), DaoSetup, haskellType, daoProvides, daoClass, daoConstant, daoFunction,
     daoInitialize, setupDao, evalDao, DaoFunc, daoFunc, funcAutoDerefParams, daoForeignFunc,
     executeDaoFunc,
@@ -250,8 +252,149 @@ _randTrace _ = id
 
 ----------------------------------------------------------------------------------------------------
 
-newtype ExecTokenizer = ExecTokenizer { runExecTokenizer :: UStr -> Exec [UStr] }
-  deriving Typeable
+-- | An 'Action' is the result of a pattern match that occurs during an input string query. It is a
+-- data structure that contains all the information necessary to run an 'Subroutine' assocaited with
+-- a 'Glob', including the parent 'ExecUnit', the 'Dao.Glob.Glob' and the 'Dao.Glob.Match' objects,
+-- and the 'Executables'. Use 'execute' to evaluate a 'Action' in the current thread.
+-- 
+-- To execute an action in a separate thread, use 'forkExecAction'.
+data Action
+  = Action
+    { actionTokens    :: [Object]
+    , actionPattern   :: Glob Object
+    , actionMatch     :: M.Map Name [Object]
+    , actionCodeBlock :: Subroutine
+    }
+  deriving (Eq, Typeable)
+
+instance PPrintable Action where { pPrint = pPrintStructForm }
+
+instance ToDaoStructClass Action where
+  toDaoStruct = void $ do
+    renameConstructor "Action"
+    "tokens"  .=@ actionTokens
+    "pattern" .=@ actionPattern
+    "match"   .=@ fmap obj . actionMatch
+    "code"    .=@ actionCodeBlock
+
+instance FromDaoStructClass Action where
+  fromDaoStruct = do
+    constructor "Action"
+    let err name o = throwError $
+          StructError
+          { structErrMsg    = Just $ ustr "match dictionary items must contain lists of tokens"
+          , structErrName   = Nothing
+          , structErrField  = Just (toUStr name)
+          , structErrValue  = Just $ obj (typeOfObj o)
+          , structErrExtras = []
+          }
+    let fmtMatches = fmap M.fromList .
+          mapM (\ (name, o) -> xmaybe (fromObj o) <|> err name o >>= return . (,) name) . M.assocs
+    return Action <*> req "tokens" <*> req "pattern" <*> (req "match" >>= fmtMatches) <*> req "code"
+
+instance ObjectClass Action where { obj=new; fromObj=objFromHata; }
+
+instance HataClass Action where
+  haskellDataInterface = interface (Action [] nullValue M.empty nullValue) $ do
+    autoDefEquality >> autoDefPPrinter
+    autoDefToStruct >> autoDefFromStruct
+
+instance Executable Action (Maybe Object) where
+  execute act = do
+    cq  <- gets currentQuery
+    cp  <- gets currentPattern
+    ccb <- gets currentCodeBlock
+    let setVar :: ObjectClass o => String -> (Action -> o) -> T_dict -> T_dict
+        setVar name f = M.insert (ustr name) (obj $ f act)
+    let setTokensVar = setVar "tokens" actionTokens
+    let setThisVar = M.union (M.singleton (ustr "this") (obj $ setTokensVar $ mempty))
+    let localVars = setThisVar $ fmap (obj . fmap obj) (actionMatch act)
+    modify $ \xunit -> 
+      xunit
+      { currentQuery     = Just $ actionTokens act
+      , currentPattern   = Just $ actionPattern act
+      , currentCodeBlock = StaticStore (Just $ actionCodeBlock act)
+      }
+    success <- optional $ runCodeBlock localVars (actionCodeBlock act)
+    modify (\xunit -> xunit{ currentQuery=cq, currentPattern=cp, currentCodeBlock=ccb })
+    xmaybe success
+
+instance Executable [Action] [Object] where
+  execute = fmap concat .
+    mapM (\act -> catchPredicate (execute act) >>= \p -> case p of
+             OK (Just o) -> return [o]
+             PFail  err  -> logUncaughtErrors [err] >> return []
+             _           -> return []
+         )
+
+-- | Match a given input string to the 'Dao.Evaluator.currentPattern' of the current 'ExecUnit'.
+-- Return all patterns and associated match results and actions that matched the input string, but
+-- do not execute the actions. This is done by tokenizing the input string and matching the tokens
+-- to the program using 'Dao.Glob.matchTree'. NOTE: Rules that have multiple patterns may execute
+-- more than once if the input matches more than one of the patterns associated with the rule. *This
+-- is not a bug.* Each pattern may produce a different set of match results, it is up to the
+-- programmer of the rule to handle situations where the action may execute many times for a single
+-- input.
+-- 
+-- Once you have created an action group, you can execute it with 'Dao.Evaluator.execute'.
+makeActionsForQuery :: [PatternTree Object [Subroutine]] -> [UStr] -> Exec [Action]
+makeActionsForQuery tree tokens = return $
+  flip concatMap (matchTree False (T.unionsWith (++) tree) (map OString tokens)) $ \ (patn, mtch, execs) ->
+    flip map execs $ \exec -> seq exec $! seq tokens $! seq patn $! seq mtch $!
+      Action
+      { actionPattern   = patn
+      , actionTokens    = fmap obj tokens
+      , actionMatch     = mtch
+      , actionCodeBlock = exec
+      }
+
+-- | Returns a list of @'PatternTree' 'Object' ['Subroutine']@ objects from the global rule set and
+-- the local rule set.
+getLocalRuleSet :: Exec [PatternTree Object [Subroutine]]
+getLocalRuleSet = do
+  (StaticStore sub) <- gets currentCodeBlock
+  return $ maybe [] (return . staticRules) sub
+
+-- | Returns a list of @'PatternTree' 'Object' ['Subroutine']@ objects from the global rule set and
+-- the local rule set.
+getGlobalRuleSet :: Exec [PatternTree Object [Subroutine]]
+getGlobalRuleSet = return <$> gets ruleSet
+
+_mkDoFunc :: [Exec [PatternTree Object [Subroutine]]] -> (DaoFunc (), DaoFunc (), DaoFunc ())
+_mkDoFunc selectors = (mkDo False, mkDo True, mkQuery) where
+  run doAll = \rules tokens ->
+    if doAll
+    then fmap (Just . OList) $ makeActionsForQuery rules tokens >>= execute
+    else makeActionsForQuery rules tokens >>= msum . map execute
+  select = concat <$> sequence selectors
+  mkDo doAll =
+    daoFunc
+    { funcAutoDerefParams = True
+    , daoForeignFunc = \ () ox -> join $ pure (run doAll) <*> select <*> runTokenizer ox
+    }
+  mkQuery =
+    daoFunc
+    { funcAutoDerefParams = True
+    , daoForeignFunc      = \ () ox -> do
+        rules  <- getGlobalRuleSet
+        tokens <- runTokenizer ox
+        Just . obj . map obj <$> makeActionsForQuery rules tokens
+    }
+
+builtin_do    :: DaoFunc ()
+builtin_doAll :: DaoFunc ()
+builtin_query :: DaoFunc ()
+(builtin_do, builtin_doAll, builtin_query) = _mkDoFunc [getLocalRuleSet, getGlobalRuleSet]
+
+builtin_doLocal    :: DaoFunc ()
+builtin_doAllLocal :: DaoFunc ()
+builtin_queryLocal :: DaoFunc ()
+(builtin_doLocal, builtin_doAllLocal, builtin_queryLocal) = _mkDoFunc [getLocalRuleSet]
+
+builtin_doGlobal    :: DaoFunc ()
+builtin_doAllGlobal :: DaoFunc ()
+builtin_queryGlobal :: DaoFunc ()
+(builtin_doGlobal, builtin_doAllGlobal, builtin_queryGlobal) = _mkDoFunc [getGlobalRuleSet]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -439,6 +582,15 @@ loadEssentialFunctions = do
   daoFunction "typeof"   builtin_typeof
   daoFunction "sizeof"   builtin_sizeof
   daoFunction "tokenize" builtin_tokenize
+  daoFunction "query"    builtin_query
+  daoFunction "doAll"    builtin_doAll
+  daoFunction "do"       builtin_do
+  daoFunction "queryGlobal" builtin_queryGlobal
+  daoFunction "doAllGlobal" builtin_doAllGlobal
+  daoFunction "doGlobal"    builtin_doGlobal
+  daoFunction "queryLocal"  builtin_queryLocal
+  daoFunction "doAllLocal"  builtin_doAllLocal
+  daoFunction "doLocal"     builtin_doLocal
   mapM_ (uncurry daoConstant) $ map (\t -> (toUStr (show t), OType (coreType t))) [minBound..maxBound]
 
 instance ObjectClass (DaoFunc ()) where { obj=new; fromObj=objFromHata }
@@ -2667,6 +2819,11 @@ instance HataClass (Glob Object) where
 
 ----------------------------------------------------------------------------------------------------
 
+newtype ExecTokenizer = ExecTokenizer { runExecTokenizer :: UStr -> Exec [UStr] }
+  deriving Typeable
+
+----------------------------------------------------------------------------------------------------
+
 -- | This is the state that is used to run the evaluation algorithm. Every Dao program file that has
 -- been loaded will have a single 'ExecUnit' assigned to it. Parameters that are stored in
 -- 'Dao.Debug.DMVar's or 'Dao.Type.Resource's will be shared across all rules which are executed in
@@ -4144,6 +4301,12 @@ instance HataClass RuleSet where
     defInfixOp ORB $ \ _ (RuleSet tree) o ->
       (new . RuleSet . T.unionWith (++) tree . ruleSetRules ) <$> xmaybe (fromObj o)
     defSizer $ return . obj . T.size . ruleSetRules
+    defMethod "do" $
+      daoFunc
+      { funcAutoDerefParams = True
+      , daoForeignFunc = \rs ox -> do
+          tokens <- runTokenizer ox
+      }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -7539,9 +7702,9 @@ defCallable fn = _updHDIfcBuilder (\st -> st{objIfcCallable=Just fn})
 defDeref :: Typeable typ => (typ -> Exec (Maybe Object)) -> DaoClassDefM typ ()
 defDeref  fn = _updHDIfcBuilder (\st -> st{objIfcDerefer=Just fn})
 
-defMethod :: Typeable typ => DaoFunc typ -> DaoClassDefM typ ()
-defMethod fn = do
-  let name = daoFuncName fn
+defMethod :: (UStrType name, Typeable typ) => name -> DaoFunc typ -> DaoClassDefM typ ()
+defMethod name infn = do
+  let fn = infn{ daoFuncName=fn (ustr name) }
   let dupname st _  = error $ concat $ 
         [ "Internal error: duplicate method name \"", show name
         , "\" for data type ", show (objIfcHaskellType st)

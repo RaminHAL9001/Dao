@@ -4247,7 +4247,8 @@ instance HasNullValue Subroutine where
     }
   testNull (Subroutine a _ _ _ _) = testNull a
 
-instance PPrintable Subroutine where { pPrint = mapM_ pPrint . codeBlock . origSourceCode }
+instance PPrintable Subroutine where
+  pPrint = pPrint . flip MetaEvalExpr LocationUnknown . origSourceCode
 
 instance ToDaoStructClass Subroutine where
   toDaoStruct = void $ do

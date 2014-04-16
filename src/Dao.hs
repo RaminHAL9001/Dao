@@ -44,6 +44,7 @@ import           Dao.Interpreter.Parser
 import           Dao.Interpreter.AST
 
 import qualified Dao.Lib.Array as Dao
+import qualified Dao.Lib.File  as Dao
 
 import           Data.Function
 import           Data.Monoid
@@ -70,6 +71,7 @@ min_exec_time = 200000
 loadDaoStandardLibrary :: DaoSetup
 loadDaoStandardLibrary = do
   Dao.loadLibrary_Array
+  Dao.loadLibrary_File
 
 ----------------------------------------------------------------------------------------------------
 

@@ -17,5 +17,97 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
+module Dao.Lib.File where
 
+import           Dao.String
+import           Dao.PPrint
+import qualified Dao.Binary as B
+import           Dao.Interpreter
+
+import           Data.Typeable
+
+import           Control.Applicative
+import           Control.Exception
+import           Control.Monad
+import           Control.Monad.IO.Class
+
+import           System.IO
+
+data File = File { filePath :: UStr, fileHandle :: Maybe Handle } deriving Typeable
+
+instance Eq File where { a==b = filePath a == filePath b }
+
+instance Ord File where { compare a b = compare (filePath a) (filePath b) }
+
+instance Show File where { show a = "File("++show (filePath a)++")" }
+
+instance HasNullValue File where
+  nullValue = File{ filePath=nil, fileHandle=Nothing }
+  testNull (File{ filePath=name, fileHandle=Nothing }) = nil==name
+  testNull (File{}) = False
+
+instance PPrintable File where { pPrint = pShow }
+
+instance B.Binary File MethodTable where
+  get    = return File <*> B.get <*> pure Nothing
+  put f = B.put (filePath f)
+
+_openParamFail :: String -> Exec ig
+_openParamFail func = fail ("the "++func++"() function expects a file path as the only paremeter")
+
+_paramPath :: String -> [Object] -> Exec UStr
+_paramPath func ox = case ox of
+  [path] -> xmaybe (fromObj path <|> (filePath <$> fromObj path)) <|> _openParamFail func
+  _      -> _openParamFail func
+
+_openFile :: String -> UStr -> IOMode -> Exec File
+_openFile func path mode =
+  fmap (File path . Just) $ execCatchIO (liftIO $ openFile (uchars path) mode) $
+    [ newExecIOHandler $ \e -> execThrow $ obj $
+        [obj "in function", obj func, obj path, obj (show (e::IOException))]
+    ]
+
+loadLibrary_File :: DaoSetup
+loadLibrary_File = do
+  let fileOpener func mode = daoFunction func $
+        daoFunc
+        { funcAutoDerefParams = True
+        , daoForeignFunc = \ () -> _paramPath func >=> fmap (Just . obj) . flip (_openFile func) mode
+        }
+  fileOpener "readFile"   ReadMode
+  fileOpener "writeFile"  WriteMode
+  fileOpener "appendFile" AppendMode
+  daoFunction "File" $
+    daoFunc
+    { funcAutoDerefParams = True
+    , daoForeignFunc = \ () -> fmap (Just . obj . flip File Nothing) . _paramPath "File"
+    }
+
+instance ObjectClass File where { obj=new; fromObj=objFromHata; }
+
+instance HataClass File where
+  haskellDataInterface = interface (File nil Nothing) $ do
+    autoDefEquality >> autoDefOrdering >> autoDefNullTest
+    autoDefPPrinter >> autoDefBinaryFmt
+    let fileOpener func mode = defMethod func $
+          daoFunc
+          { funcAutoDerefParams = False
+          , daoForeignFunc = \typ ox -> case ox of
+              [] -> case fileHandle typ of
+                Nothing -> Just . obj <$> _openFile func (filePath typ) mode
+                Just  _ -> execThrow $ obj [obj "file already open", obj typ]
+              _  -> fail (func++"() method must be passed no parameters")
+          }
+    fileOpener "openRead"   ReadMode
+    fileOpener "openWrite"  WriteMode
+    fileOpener "openAppend" AppendMode
+    defMethod "close" $
+      daoFunc
+      { funcAutoDerefParams = False
+      , daoForeignFunc = \typ ox -> case ox of
+          [] -> case fileHandle typ of
+            Nothing -> execThrow $ obj [obj typ, obj "not open, cannot close"]
+            Just  h -> execHandleIO [execIOHandler] (liftIO $ hClose h) >> return Nothing
+          _  -> fail "close() method must be passed no parameters"
+      }
 

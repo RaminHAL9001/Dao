@@ -35,7 +35,6 @@ module Dao
   ) where
 
 import           Dao.String
-import           Dao.Glob
 import           Dao.Interpreter
 import           Dao.Predicate
 import           Dao.PPrint
@@ -43,14 +42,12 @@ import           Dao.Token
 import           Dao.Parser
 import           Dao.Interpreter.Parser
 import           Dao.Interpreter.AST
-import qualified Dao.Tree as T
 
 import qualified Dao.Lib.Array as Dao
 
 import           Data.Function
 import           Data.Monoid
 import qualified Data.Map as M
-import           Data.Typeable
 
 import           Control.Applicative
 import           Control.Concurrent.MVar
@@ -58,7 +55,6 @@ import           Control.DeepSeq
 import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.State
-import           Control.Monad.Error
 
 import           System.IO
 
@@ -203,7 +199,7 @@ betweenBeginAndEnd runInBetween = get >>= \xunit -> do
   a <- runInBetween
   -- Update the "global this" pointer to include the uncaught exceptions.
   errs <- (OList . map new) <$> getUncaughtErrorLog
-  let ref = Dao.Interpreter.reference GLOBAL (ustr "this")
+  let ref = Dao.Interpreter.reference GLOBAL (ustr "self")
   let upd = M.union (M.singleton (ustr "errors") errs)
   clearUncaughtErrorLog
   referenceUpdate ref $ \o -> return $ Just $ ODict $ upd $ case o of { Just (ODict o) -> o; _ -> mempty; }

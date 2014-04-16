@@ -101,15 +101,15 @@ testlocal();
 func testRuleSet(msg, R, str) {
 	println("testRuleSet ", msg, "...");
 	try {
-		result = doIn(R, str);
-		println("doIn() returned ", result);
+		result = R.do(str);
+		println("R.do(\"", str, "\") returned ", result);
 	}
-	catch err { println("doIn() backtracked with ", err); }
+	catch err { println("R.doAll(\"", str, "\") backtracked with ", err); }
 	try {
-		result = doInAll(R, str);
-		println("doInAll() returned ", result);
+		result = R.doAll(str);
+		println("R.doAll(\"", str, "\") returned ", result);
 	}
-	catch err { println("doInAll() backtracked with", err); }
+	catch err { println("R.doAll(\"", str, "\") backtracked with", err); }
 }
 
 R1 = RuleSet {
@@ -133,24 +133,24 @@ testRuleSet("R1 \"hello\"", R1, "hello");
 //: doInAll() returned list { "Hi Computer how are you?" }
 testRuleSet("R2 \"my name is Computer\"", R1, "my name is Computer.");
 
-//: doIn() returned list {
+//: R.do() returned list {
 //:	    list { "d", " ", "e", " ", "f" }, list { "c", " ", "d", " ", "e", " ", "f" }
 //: }
-//: doInAll() returned list {
+//: R.doAll() returned list {
 //:	    list { "d", " ", "e", " ", "f" }, list { "c", " ", "d", " ", "e", " ", "f" }
 //: }
 testRuleSet("R2 \"a b c d e f\"", R2, "a b c d e f");
 
-//: doAllIn() returned list{}
+//: R.doAll() returned list{}
 testRuleSet("R1 with many non-matching items", R1, list{ "overlap x y z", "first disjoint X", "second disjoint X", "multi x y z" });
 
-//: doAllIn() returned list{}
+//: R.doAll() returned list{}
 testRuleSet("R2 with many non-matching items", R2, list{ "overlap x y z", "first disjoint X", "second disjoint X", "multi x y z"});
 
 R3 = R1 | R2;
 println("\ntypeof(R1|R2) = ", typeof(R3), "\n");
 
-//: doAllIn() returned list{}
+//: R.doAll() returned list{}
 try {
 	testRuleSet("R1|R2 \"hello\", \"my name is computer\", \"a b c d e f\"", R3, list{"hello", "my name is Computer.", "a b c d e f"});
 }
@@ -160,17 +160,15 @@ catch err {
 	println("testRuleset R1|R2 ", msg);
 }
 
-//: doAllIn() returned list{}
+//: R.doAll() returned list{}
 testRuleSet("R1|R2 with many non-matching items", R3, list{"overlap x y z", "first disjoint X", "second disjoint X", "multi x y z"});
 
 rule "my name is $X" {
-	println("this.tokens = ", this.tokens);
-	println("this.query  = ", this.query);
-	println("join(\"\", this.tokens) = ", join("", this.tokens));
+	println("self.tokens = ", self.tokens);
+	println("join(\"\", self.tokens) = ", join("", self.tokens));
 }
-//: this.tokens = list { "my", " ", "name", " ", "is", " ", "Computer" }
-//: this.query  = my name is Computer
-//: join("", this.tokens)  = my name is Computer
+//: self.tokens = list { "my", " ", "name", " ", "is", " ", "Computer" }
+//: join("", self.tokens)  = my name is Computer
 doGlobal("my name is Computer");
 
 p = "test$X pattern";
@@ -178,7 +176,4 @@ rule(p) { println("test-pattern: ", X); }
 
 doGlobal("test one two three pattern");
 doGlobal("test pattern");
-
-
-
 

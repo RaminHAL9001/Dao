@@ -307,8 +307,8 @@ instance Executable Action (Maybe Object) where
     let setVar :: ObjectClass o => String -> (Action -> o) -> T_dict -> T_dict
         setVar name f = M.insert (ustr name) (obj $ f act)
     let setTokensVar = setVar "tokens" actionTokens
-    let setThisVar = M.union (M.singleton (ustr "this") (obj $ setTokensVar $ mempty))
-    let localVars = setThisVar $ fmap (obj . fmap obj) (actionMatch act)
+    let setSelfVar = M.union (M.singleton (ustr "self") (obj $ setTokensVar $ mempty))
+    let localVars = setSelfVar $ fmap (obj . fmap obj) (actionMatch act)
     modify $ \xunit -> 
       xunit
       { currentQuery     = Just $ actionTokens act
@@ -326,6 +326,24 @@ instance Executable [Action] [Object] where
              PFail  err  -> logUncaughtErrors [err] >> return []
              _           -> return []
          )
+
+-- | Using the tokenizer function set for this module, break up a string into a list of tokens,
+-- returning them as a 'TokenList' object. Input paramaters can be strings or lists of strings. If
+-- an input paramter is a string, it is tokenized to a list of strings. If an input parameter is a
+-- list of strings, it is considered to be already tokenized and simply appended to list of tokens
+-- produced by previous parameters.
+runTokenizer :: [Object] -> Exec [UStr]
+runTokenizer ox =
+  fmap concat $ forM (zip [(1::Int)..] ox) $ \ (i, o) ->
+    maybe (execThrow $ obj [obj "cannot tokenize item passed as paramter", obj i]) id $ msum $
+      [ fromObj o >>= \o -> Just $ do
+          tok <- gets programTokenizer 
+          runExecTokenizer tok o
+      , fromObj o >>= Just .
+          mapM (\o -> xmaybe (fromObj o) <|>
+            (execThrow $
+              obj [obj "parameter", obj i, obj "is a list which contains a non-string item"]))
+      ]
 
 -- | Match a given input string to the 'Dao.Evaluator.currentPattern' of the current 'ExecUnit'.
 -- Return all patterns and associated match results and actions that matched the input string, but
@@ -360,8 +378,8 @@ getLocalRuleSet = do
 getGlobalRuleSet :: Exec [PatternTree Object [Subroutine]]
 getGlobalRuleSet = return <$> gets ruleSet
 
-_mkDoFunc :: [Exec [PatternTree Object [Subroutine]]] -> (DaoFunc (), DaoFunc (), DaoFunc ())
-_mkDoFunc selectors = (mkDo False, mkDo True, mkQuery) where
+_mkDoFunc :: String -> [Exec [PatternTree Object [Subroutine]]] -> (DaoFunc (), DaoFunc (), DaoFunc ())
+_mkDoFunc name selectors = (mkDo False, mkDo True, mkQuery) where
   run doAll = \rules tokens ->
     if doAll
     then fmap (Just . OList) $ makeActionsForQuery rules tokens >>= execute
@@ -369,32 +387,32 @@ _mkDoFunc selectors = (mkDo False, mkDo True, mkQuery) where
   select = concat <$> sequence selectors
   mkDo doAll =
     daoFunc
-    { funcAutoDerefParams = True
+    { daoFuncName = ustr $ "do"++(if doAll then "All" else "")++name
+    , funcAutoDerefParams = True
     , daoForeignFunc = \ () ox -> join $ pure (run doAll) <*> select <*> runTokenizer ox
     }
   mkQuery =
     daoFunc
-    { funcAutoDerefParams = True
-    , daoForeignFunc      = \ () ox -> do
-        rules  <- getGlobalRuleSet
-        tokens <- runTokenizer ox
-        makeActionsForQuery rules tokens >>= throwError . ExecReturn . Just . obj . map obj
+    { daoFuncName = ustr $ "query"++name
+    , funcAutoDerefParams = True
+    , daoForeignFunc = \ () ox -> fmap (Just . obj . map obj) $
+        join $ pure makeActionsForQuery <*> select <*> runTokenizer ox
     }
 
 builtin_do    :: DaoFunc ()
 builtin_doAll :: DaoFunc ()
 builtin_query :: DaoFunc ()
-(builtin_do, builtin_doAll, builtin_query) = _mkDoFunc [getLocalRuleSet, getGlobalRuleSet]
+(builtin_do, builtin_doAll, builtin_query) = _mkDoFunc "" [getLocalRuleSet, getGlobalRuleSet]
 
 builtin_doLocal    :: DaoFunc ()
 builtin_doAllLocal :: DaoFunc ()
 builtin_queryLocal :: DaoFunc ()
-(builtin_doLocal, builtin_doAllLocal, builtin_queryLocal) = _mkDoFunc [getLocalRuleSet]
+(builtin_doLocal, builtin_doAllLocal, builtin_queryLocal) = _mkDoFunc "Local" [getLocalRuleSet]
 
 builtin_doGlobal    :: DaoFunc ()
 builtin_doAllGlobal :: DaoFunc ()
 builtin_queryGlobal :: DaoFunc ()
-(builtin_doGlobal, builtin_doAllGlobal, builtin_queryGlobal) = _mkDoFunc [getGlobalRuleSet]
+(builtin_doGlobal, builtin_doAllGlobal, builtin_queryGlobal) = _mkDoFunc "Global" [getGlobalRuleSet]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -505,7 +523,7 @@ evalDao f = _initExecUnit >>= fmap fst . ioExec f
 -- an object of this type.
 --
 -- The @this@ of this function is the data type of what languages like C++ or Java would call the
--- "this" variable. 'DaoFunc's where the @this@ is () are considered ordinary functions that do not
+-- "self" variable. 'DaoFunc's where the @this@ is () are considered ordinary functions that do not
 -- operate on any object apart from their input parameters.
 data DaoFunc this
   = DaoFunc
@@ -5473,24 +5491,6 @@ builtin_sizeof = DaoFunc [] (ustr "sizeof") True $ \ () ox -> case ox of
   [o] -> Just <$> getSizeOf o
   _   -> execThrow $ obj $
     [obj "sizeof() function must take exactly one parameter argument, instead got", obj ox]
-
--- | Using the tokenizer function set for this module, break up a string into a list of tokens,
--- returning them as a 'TokenList' object. Input paramaters can be strings or lists of strings. If
--- an input paramter is a string, it is tokenized to a list of strings. If an input parameter is a
--- list of strings, it is considered to be already tokenized and simply appended to list of tokens
--- produced by previous parameters.
-runTokenizer :: [Object] -> Exec [UStr]
-runTokenizer ox =
-  fmap concat $ forM (zip [(1::Int)..] ox) $ \ (i, o) ->
-    maybe (execThrow $ obj [obj "cannot tokenize item passed as paramter", obj i]) id $ msum $
-      [ fromObj o >>= \o -> Just $ do
-          tok <- gets programTokenizer 
-          runExecTokenizer tok o
-      , fromObj o >>= Just .
-          mapM (\o -> xmaybe (fromObj o) <|>
-            (execThrow $
-              obj [obj "parameter", obj i, obj "is a list which contains a non-string item"]))
-      ]
 
 builtin_tokenize :: DaoFunc ()
 builtin_tokenize = DaoFunc [] (ustr "tokenize") True $ \ () ->

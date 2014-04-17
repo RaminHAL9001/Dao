@@ -20,16 +20,19 @@
 module Dao.Lib.File where
 
 import           Dao.String
+import           Dao.Predicate
 import           Dao.PPrint
 import qualified Dao.Binary as B
 import           Dao.Interpreter
 
+import qualified Data.ByteString.Lazy as B
 import           Data.Typeable
 
 import           Control.Applicative
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class
+import           Control.Monad.State
 
 import           System.IO
 
@@ -60,19 +63,44 @@ _paramPath func ox = case ox of
   [path] -> xmaybe (fromObj path <|> (filePath <$> fromObj path)) <|> _openParamFail func
   _      -> _openParamFail func
 
-_openFile :: String -> UStr -> IOMode -> Exec File
-_openFile func path mode =
-  fmap (File path . Just) $ execCatchIO (liftIO $ openFile (uchars path) mode) $
-    [ newExecIOHandler $ \e -> execThrow $ obj $
-        [obj "in function", obj func, obj path, obj (show (e::IOException))]
-    ]
+_catchIOException :: String -> File -> IO a -> Exec a
+_catchIOException func file f = execCatchIO (liftIO f) $
+  [ newExecIOHandler $ \e -> execThrow $ obj $
+      [ obj "in function", obj func, obj "while reading file"
+      , obj (filePath file), obj (show (e::IOException))
+      ]
+  ]
+
+_openFile :: String -> File -> IOMode -> Exec File
+_openFile func file mode = _catchIOException func file $
+  (\o -> file{ fileHandle=Just o}) <$> openFile (uchars $ filePath file) mode
+
+_getHandle :: String -> File -> Exec Handle
+_getHandle func file = case fileHandle file of
+  Just  h -> return h
+  Nothing -> execThrow $ obj $
+    [obj func, obj "function evaluated on a file handle which has not been opened", obj file]
+
+_withClosedHandle :: String -> File -> Exec ()
+_withClosedHandle func file = case fileHandle file of
+  Nothing -> return ()
+  Just  _ -> execThrow $ obj $
+    [obj func, obj "function cannot operate on open file handle", obj (filePath file)]
+
+gGetErrToExecError :: B.GGetErr -> ExecControl
+gGetErrToExecError (B.GetErr{ B.gGetErrOffset=offset, B.gGetErrMsg=msg }) =
+  mkExecError
+  { execReturnValue = Just $ obj $
+      [obj "failed decoding binary file", obj msg, obj "offset", obj (toInteger offset)]
+  }
 
 loadLibrary_File :: DaoSetup
 loadLibrary_File = do
   let fileOpener func mode = daoFunction func $
         daoFunc
         { funcAutoDerefParams = True
-        , daoForeignFunc = \ () -> _paramPath func >=> fmap (Just . obj) . flip (_openFile func) mode
+        , daoForeignFunc = \ () ->
+            _paramPath func >=> fmap (Just . obj) . flip (_openFile func . flip File Nothing) mode
         }
   fileOpener "readFile"   ReadMode
   fileOpener "writeFile"  WriteMode
@@ -92,11 +120,12 @@ instance HataClass File where
     let fileOpener func mode = defMethod func $
           daoFunc
           { funcAutoDerefParams = False
-          , daoForeignFunc = \typ ox -> case ox of
-              [] -> case fileHandle typ of
-                Nothing -> Just . obj <$> _openFile func (filePath typ) mode
-                Just  _ -> execThrow $ obj [obj "file already open", obj typ]
-              _  -> fail (func++"() method must be passed no parameters")
+          , daoForeignFunc = \file ox ->
+              case ox of
+                [] -> do
+                  _withClosedHandle func file
+                  Just . obj <$> _openFile func file mode
+                _  -> execThrow $ obj [obj func, obj "method must be passed no parameters"]
           }
     fileOpener "openRead"   ReadMode
     fileOpener "openWrite"  WriteMode
@@ -104,10 +133,78 @@ instance HataClass File where
     defMethod "close" $
       daoFunc
       { funcAutoDerefParams = False
-      , daoForeignFunc = \typ ox -> case ox of
-          [] -> case fileHandle typ of
-            Nothing -> execThrow $ obj [obj typ, obj "not open, cannot close"]
-            Just  h -> execHandleIO [execIOHandler] (liftIO $ hClose h) >> return Nothing
-          _  -> fail "close() method must be passed no parameters"
+      , daoForeignFunc = \file ox -> do
+          case ox of
+            [] -> _getHandle "close" file >>=
+              _catchIOException "close" file . liftIO . hClose >> return Nothing
+            _  -> execThrow $ obj $
+              [obj "close", obj file, obj "function must be passed no parameters"]
       }
+    defMethod "writeBinary" $
+      daoFunc
+      { funcAutoDerefParams = True
+      , daoForeignFunc = \file ox -> do
+          mtab  <- gets globalMethodTable
+          handl <- _getHandle "writeBinary" file
+          forM_ ox $ \o -> do
+            bin <- execCatchIO (liftIO $ return (B.encode mtab o)) $
+              [ newExecIOHandler $ \e -> execThrow $ obj $
+                  [ obj "in function", obj "writeBinary", obj file
+                  , obj "while encoding object", obj (show (e::ErrorCall))
+                  ]
+              ]
+            _catchIOException "writeBinary" file (B.hPutStr handl bin)
+          return Nothing
+      }
+    defMethod "readBinary" $
+      daoFunc
+      { funcAutoDerefParams = True
+      , daoForeignFunc = \file ox -> case ox of
+          [] -> do
+            _withClosedHandle "readBinary" file
+            mtab <- gets globalMethodTable
+            bin <- _catchIOException "readBinary" file (liftIO $ B.readFile $ uchars $ filePath file)
+            result <- execCatchIO (return $ fmapPFail gGetErrToExecError $ B.decode mtab bin) $
+              [ newExecIOHandler $ \e -> execThrow $ obj $
+                  [ obj "in function", obj "readBinary"
+                  , obj "while decoding binary data", obj (show (e::ErrorCall))
+                  ]
+              ]
+            predicate result
+          _ -> execThrow $ obj [obj "readBinary", obj file, obj "function must be passed no parameter"]
+      }
+    let writeFunc func putstr = defMethod "write" $
+          daoFunc
+          { funcAutoDerefParams = True
+          , daoForeignFunc = \file ox -> do
+              ox <- requireAllStringArgs func ox
+              handl <- _getHandle func file
+              forM_ ox $ _catchIOException "write" file . putstr handl . uchars
+              return Nothing
+          }
+    writeFunc "write" hPutStr
+    defMethod "read" $
+      daoFunc
+      { funcAutoDerefParams = True
+      , daoForeignFunc = \file ox -> case ox of
+          [] -> do
+            _withClosedHandle "read" file
+            _catchIOException "read" file (Just . obj <$> readFile (uchars $ filePath file))
+          _ -> execThrow $ obj [obj "read", obj file, obj "function must be passed no parameter"]
+      }
+    writeFunc "writeLine" hPutStrLn
+    defMethod "readLine" $
+      daoFunc
+      { funcAutoDerefParams = True
+      , daoForeignFunc = \file ox -> case ox of
+          [] -> do
+            handl <- _getHandle "readLine" file
+            _catchIOException "readLine" file (Just . obj <$> hGetLine handl)
+          _  -> execThrow $ obj $
+            [obj "readLine", obj file, obj "function must be passed no parameters"]
+      }
+    let defPrinter func print = defMethod func $
+          makePrintFunc $ \file str -> _getHandle func file >>= \h -> liftIO (print h str)
+    defPrinter "print"   hPutStr
+    defPrinter "println" hPutStrLn
 

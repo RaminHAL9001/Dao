@@ -100,9 +100,9 @@ module Dao.Interpreter(
     GlobAction(GlobAction), globPattern, globSubroutine, 
     asReference, asInteger, asRational, asPositive, asComplex, objConcat,
     objToBool, extractStringElems,
-    requireAllStringArgs, getStringsToDepth, derefStringsToDepth, recurseGetAllStrings, 
+    requireAllStringArgs, getStringsToDepth, derefStringsToDepth, recurseGetAllStrings,
     shiftLeft, shiftRight,
-    evalArithPrefixOp, evalInfixOp, evalUpdateOp, runTokenizer,
+    evalArithPrefixOp, evalInfixOp, evalUpdateOp, runTokenizer, makePrintFunc,
     paramsToGlobExpr, matchFuncParams, execGuardBlock, objToCallable, callCallables,
     callObject, checkPredicate, checkVoid,
     evalConditional,
@@ -5145,6 +5145,8 @@ extractStringElems o = case o of
   OList    o   -> concatMap extractStringElems o
   _            -> []
 
+-- | Useful for building 'DaoFunc' objects, checks every parameter in a list of 'Object's to be a
+-- string, and throws an exception if one of the 'Object's is not a string.
 requireAllStringArgs :: String -> [Object] -> Exec [UStr]
 requireAllStringArgs msg ox = case mapM check (zip (iterate (+(1::Integer)) 0) ox) of
   OK      obj -> return obj
@@ -5391,14 +5393,14 @@ _updatingOps = let o = (,) in array (minBound, maxBound) $ defaults ++
 _strObjConcat :: [Object] -> String
 _strObjConcat ox = ox >>= \o -> maybe [toUStr $ prettyShow o] return (fromObj o) >>= uchars
 
-_builtin_print :: (String -> IO ()) -> DaoFunc ()
-_builtin_print print = DaoFunc [] nil True $ \ () ox -> liftIO (print $ _strObjConcat ox) >> return Nothing
+makePrintFunc :: (typ -> String -> Exec ()) -> DaoFunc typ
+makePrintFunc print = DaoFunc [] nil True $ \typ ox -> print typ (_strObjConcat ox) >> return Nothing
 
 builtin_print :: DaoFunc ()
-builtin_print   = _builtin_print putStr
+builtin_print   = makePrintFunc (\ () -> liftIO . putStr)
 
 builtin_println :: DaoFunc ()
-builtin_println = _builtin_print putStrLn
+builtin_println = makePrintFunc (\ () -> liftIO . putStrLn)
 
 -- join string elements of a container, pretty prints non-strings and joins those as well.
 builtin_join :: DaoFunc ()

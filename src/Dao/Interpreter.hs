@@ -27,7 +27,7 @@ module Dao.Interpreter(
     executeDaoFunc,
     ObjectClass(obj, fromObj, castToCoreType),
     execCastToCoreType, listToObj, listFromObj, new, opaque, objFromHata,
-    Struct(Nullary, Struct),
+    Struct(Nullary, Struct), structLookup,
     ToDaoStructClass(toDaoStruct), toDaoStructExec, pPrintStructForm,
     FromDaoStructClass(fromDaoStruct), fromDaoStructExec,
     StructError(StructError),
@@ -36,17 +36,16 @@ module Dao.Interpreter(
     ToDaoStruct(),
     fromData, innerToStruct, innerToStructWith, renameConstructor, makeNullary, putNullaryUsingShow,
     define, optionalField, setField, defObjField, (.=), putObjField, (.=@), defMaybeObjField, (.=?),
-    objMethod,
     FromDaoStruct(),
     toData, constructor, innerFromStruct, nullary, getNullaryWithRead, structCurrentField,
     tryCopyField, tryField, copyField, field,
-    convertFieldData, req, opt, reqList, optList, method,
+    convertFieldData, req, opt, reqList, optList,
     ObjLensError(ObjLensError), mapStructErrorMessage, failedOnReference, mapStructError,
     ObjectUpdate, ObjectLookup, ObjectTraverse,
     ObjectLens(updateIndex, lookupIndex), ObjectFunctor(objectFMap),
     ObjectFocus, ObjFocusState(), getObjFocusState, runObjectFocus, getFocalReference,
     execToFocusUpdater, withInnerLens, runObjectFocusExec, focusObjectClass, focusStructAsDict,
-    focusLiftExec, focalPathSuffix, focusGuardStructName, updateHataAsStruct,
+    focusLiftExec, focalPathSuffix, focusGuardStructName, updateHataAsStruct, callMethod,
     innerDataUpdateIndex, innerDataLookupIndex,
     referenceUpdateIndex, referenceLookupIndex,
     Object(
@@ -91,11 +90,12 @@ module Dao.Interpreter(
     xnote, xonUTF8, xmaybe,
     ExecThrowable(toExecError, execThrow), ioExec,
     ExecHandler(ExecHandler), execHandler,
-    newExecIOHandler, execCatchIO, execHandleIO, execIOHandler, execErrorHandler, catchReturn,
-    execNested, execNested_, execFuncPushStack, execWithStaticStore, execWithWithRefStore,
+    newExecIOHandler, execCatchIO, execHandleIO, execIOHandler,
+    execErrorHandler, catchReturn, execNested, execNested_, execFuncPushStack,
+    execFuncPushStack_, execWithStaticStore, execWithWithRefStore,
     setupCodeBlock,
     Subroutine(Subroutine),
-    origSourceCode, staticVars, staticRules, staticLambdas, executable, runCodeBlock,
+    origSourceCode, staticVars, staticRules, staticLambdas, executable, runCodeBlock, runCodeBlock_,
     RuleSet(), CallableCode(CallableCode), argsPattern, returnType, codeSubroutine, 
     GlobAction(GlobAction), globPattern, globSubroutine, 
     asReference, asInteger, asRational, asPositive, asComplex, objConcat,
@@ -315,7 +315,7 @@ instance Executable Action (Maybe Object) where
       , currentPattern   = Just $ actionPattern act
       , currentCodeBlock = StaticStore (Just $ actionCodeBlock act)
       }
-    success <- optional $ runCodeBlock localVars (actionCodeBlock act)
+    success <- optional $ runCodeBlock_ localVars (actionCodeBlock act)
     modify (\xunit -> xunit{ currentQuery=cq, currentPattern=cp, currentCodeBlock=ccb })
     xmaybe success
 
@@ -389,13 +389,14 @@ _mkDoFunc name selectors = (mkDo False, mkDo True, mkQuery) where
     daoFunc
     { daoFuncName = ustr $ "do"++(if doAll then "All" else "")++name
     , funcAutoDerefParams = True
-    , daoForeignFunc = \ () ox -> join $ pure (run doAll) <*> select <*> runTokenizer ox
+    , daoForeignFunc = \ () ox -> fmap (flip (,) ()) $ join $
+        pure (run doAll) <*> select <*> runTokenizer ox
     }
   mkQuery =
     daoFunc
     { daoFuncName = ustr $ "query"++name
     , funcAutoDerefParams = True
-    , daoForeignFunc = \ () ox -> fmap (Just . obj . map obj) $
+    , daoForeignFunc = \ () ox -> fmap (flip (,) () . Just . obj . map obj) $
         join $ pure makeActionsForQuery <*> select <*> runTokenizer ox
     }
 
@@ -530,7 +531,7 @@ data DaoFunc this
     { daoFuncClass        :: [Name]
     , daoFuncName         :: Name
     , funcAutoDerefParams :: Bool
-    , daoForeignFunc      :: this -> [Object] -> Exec (Maybe Object)
+    , daoForeignFunc      :: this -> [Object] -> Exec (Maybe Object, this)
     }
   deriving Typeable
 instance Eq   (DaoFunc this) where { a == b = daoFuncName a == daoFuncName b; }
@@ -545,23 +546,23 @@ instance PPrintable (DaoFunc this) where { pPrint = pShow }
 -- | Use this as the constructor of a 'DaoFunc'. By default the @this@ type is (). To change the
 -- @this@ type, simply supply a different function type for the 'daoForeignFunc' field. For example:
 -- > daoFunc{ daoFuncName=ustr "add", daoForeignFunc = retrun . (+1) } :: DaoFunc Int
-daoFunc :: DaoFunc ()
+daoFunc :: DaoFunc typ
 daoFunc =
   DaoFunc
   { daoFuncClass        = []
   , daoFuncName         = nil
   , funcAutoDerefParams = True
-  , daoForeignFunc      = \ () _ -> return Nothing
+  , daoForeignFunc      = \typ _ -> return (Nothing, typ)
   }
 
 -- | Execute a 'DaoFunc' 
-executeDaoFunc :: Reference -> DaoFunc this -> this -> [Object] -> Exec (Maybe Object)
+executeDaoFunc :: Reference -> DaoFunc this -> this -> [Object] -> Exec (Maybe Object, this)
 executeDaoFunc qref fn this params = do
   args <- (if funcAutoDerefParams fn then mapM derefObject else return) params
   pval <- catchPredicate (daoForeignFunc fn this args)
   case pval of
-    OK                 obj  -> return obj
-    PFail (ExecReturn  obj) -> return obj
+    OK            (o, this) -> return (o, this)
+    PFail (ExecReturn    o) -> return (o, this)
     PFail (err@ExecError{}) -> throwError $ err{
       execReturnValue = let e = [obj "error in function", obj qref] in Just $
         flip (maybe (obj e)) (execReturnValue err) $ \ret -> OList $ case ret of
@@ -611,9 +612,24 @@ loadEssentialFunctions = do
   daoFunction "doLocal"     builtin_doLocal
   mapM_ (uncurry daoConstant) $ map (\t -> (toUStr (show t), OType (coreType t))) [minBound..maxBound]
 
-instance ObjectClass (DaoFunc ()) where { obj=new; fromObj=objFromHata }
+instance ObjectClass (DaoFunc ())      where { obj=new; fromObj=objFromHata; }
+instance ObjectClass (DaoFunc Dynamic) where { obj=new; fromObj=objFromHata; }
+instance ObjectClass (DaoFunc Hata)    where { obj=new; fromObj=objFromHata; }
+instance ObjectClass (DaoFunc Object)  where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (DaoFunc ()) where
+  haskellDataInterface = interface daoFunc $ do
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
+
+instance HataClass (DaoFunc Dynamic) where
+  haskellDataInterface = interface daoFunc $ do
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
+
+instance HataClass (DaoFunc Hata) where
+  haskellDataInterface = interface daoFunc $ do
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
+
+instance HataClass (DaoFunc Object) where
   haskellDataInterface = interface daoFunc $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
 
@@ -1197,6 +1213,11 @@ data Struct
     }
   deriving (Eq, Ord, Show, Typeable)
 
+structLookup :: Name -> Struct -> Maybe Object
+structLookup name struct = case struct of
+  Nullary{}            -> Nothing
+  Struct{ fieldMap=m } -> M.lookup name m
+
 instance NFData Struct where
   rnf (Nullary a  ) = deepseq a ()
   rnf (Struct  a b) = deepseq a $! deepseq b ()
@@ -1618,29 +1639,6 @@ defMaybeObjField name = maybe (return Nothing) (fmap Just . defObjField name)
   => name -> Maybe o -> ToDaoStruct haskData (Maybe Object)
 (.=?) = defMaybeObjField
 
--- | The Dao programming language uses the 'ToDaoStruct' monad to access the various fields of the
--- underlying Haskell data type, mapping 'Dao.String.Name's to fields of a Haskell data constructor.
--- But you can also map 'Dao.String.Name's to functions that operate on the object, even if they are
--- not defined as fields of the Haskell data constructor. This allows you to create a "method" for
--- the object, i.e. a function that operates on the object by passing the object as a parameter
--- called the "this" variable (similar to value of the C++ or Java "this" variable). The 'objMethod'
--- function allows you to provide a 'DaoFunc' method that will be returned when a field of the given
--- name is accessed, and when this function is called by passing a round-bracketed list of
--- arguments, the object is also provided as the "this" pointer automatically.
-objMethod
-  :: (ObjectClass haskData, UStrType name)
-  => name -> DaoFunc haskData -> ToDaoStruct haskData Object
-objMethod name func = do
-  clas <- gets structName
-  name <- mkStructName name
-  this <- ask
-  define name $ obj $
-    func
-    { daoFuncClass   = [clas]
-    , daoFuncName    = name
-    , daoForeignFunc = \ () args -> daoForeignFunc func this args
-    }
-
 -- | This is a handy monadic and 'Data.Functor.Applicative' interface for instantiating
 -- 'fromDaoStruct' in the 'FromDaoStructClass' class. It takes the form of a reader because what you
 -- /read/ from the 'Struct' here in the Haskell language was /written/ by the Dao language
@@ -1870,18 +1868,6 @@ reqList name = field name $ convertFieldData (xmaybe . listFromObj)
 -- 'Control.Monad.Error.throwError' in the case the field does not exist.
 optList :: (UStrType name, Typeable o, ObjectClass o) => name -> FromDaoStruct [o]
 optList name = tryField name $ convertFieldData (maybe (return []) return . listFromObj)
-
--- | When converting from a Haskell data type to a 'Struct', it is possible to declare method fields
--- of the 'Struct' that do not exist in the 'Haskell' data type using 'objMethod'. To check that
--- these method fields exist and have not been changed to some other data type, use this function.
-method :: UStrType name => name -> FromDaoStruct ()
-method name = do
-  name <- mkFieldName name
-  clas <- asks structName
-  func <- field name (return . fromObj) :: FromDaoStruct (Maybe (DaoFunc ()))
-  case func of
-    Just func | daoFuncName func == name && daoFuncClass func == [clas] -> return ()
-    _ -> fail $ "cannot modify member function of object "++uchars clas++'.':uchars name
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3359,19 +3345,8 @@ lookupHataAsStruct f = do
   fst <$> withInnerLens struct f
 
 instance ObjectLens Hata Name where
-  updateIndex name f = do
-    o@(Hata ifc d) <- get
-    case M.lookup name (objMethodTable ifc) of
-      Nothing   -> flip mplus (fail "cannot modify field") $ updateHataAsStruct $ updateIndex name f
-      Just func -> do
-        result <- fst <$>
-          withInnerLens (Just $ obj $ func{ daoForeignFunc = \ () -> daoForeignFunc func d }) f
-        put o >> return result
-  lookupIndex name   = do
-    (Hata ifc d) <- get
-    case M.lookup name (objMethodTable ifc) of
-      Nothing   -> lookupHataAsStruct $ lookupIndex name
-      Just func -> return $ obj (func{ daoForeignFunc = \ () -> daoForeignFunc func d })
+  updateIndex name f = flip mplus (fail "cannot modify field") $ updateHataAsStruct $ updateIndex name f
+  lookupIndex name = lookupHataAsStruct $ lookupIndex name
 
 instance ObjectFunctor Hata Name where
   objectFMap = flip mplus (return ()) . updateHataAsStruct . focusStructAsDict . objectFMap
@@ -3528,10 +3503,87 @@ instance ObjectFunctor Hata [Object] where
       fail "cannot update field"
     Just traverse -> withInnerLens o (traverse f) >>= \ ((), o) -> put (Hata ifc o)
 
+_tryFuncCall
+  :: Maybe Object -> [Object]
+  -> ObjectFocus (Maybe Object) (Maybe Object)
+  -> ObjectFocus (Maybe Object) (Maybe Object)
+  -> ObjectFocus (Maybe Object) (Maybe Object)
+_tryFuncCall o args try els = maybe els id $ do
+  (Hata ifc d) <- o >>= fromObj
+  calls <- objCallable ifc
+  return $ do
+    -- Get the result of the function call, the result of the operation will become the focus.
+    (result, o) <- focusLiftExec (calls d >>= flip (callCallables o) args)
+    -- Focus on the result of the function call and evaluate an update on it.
+    -- The updated function result is ignored, any changes made to it are lost.
+    (result, _) <- put o >> withInnerLens result try
+    -- The function call may have updated the "this" value, place this updated value back into the focus.
+    return result
+
+-- | This is an 'ObjectUpdate' function which operates in the monad
+-- > 'ObjectFocus' (Maybe 'Object') (Maybe 'Object')
+-- If the object in the focus is an object constructed with 'ODict', 'OTree', or 'OHaskell', then
+-- the 'Name' parameter passed to this function is used to lookup a function stored in the object in
+-- focus. This function sets the object in focus to the "this" variable in the Dao runtime and then
+-- calls the function with the given @['Object']@ arguments. The object in focus is updated by the
+-- function call and the result of the function call is placed in the focus and updated by the next
+-- update function with the next 'RefSuffix' provided (as the arguments to the 'ObjectUpdate'). This
+-- is the sematnics for Dao language expressions of the kind:
+-- a.b(c).d(e)
+-- that is, an objet stored in the variable "a" has a method "b" called with a parameter "(c)" and
+-- the result of this call is an object with a method "d" that is called with the parameter "(e)".
+-- Of course if the 'RefSuffix' is 'NullRef', the result of the method call is simply returned.  The
+-- result of "a.b(c)" is stored on the stack and used to select and evaluate the method "d(e)",
+-- however if "d(e)" modified the value on the stack, this modified value is lost when it is popped
+-- off of the stack after evaluation completes. There is currently no way to update objects in this
+-- way, as the Dao runtime does not have a way to update arbitrary points in it's working memory.
+-- This will hopefully be improved in future versions.
+callMethod :: Name -> [Object] -> ObjectUpdate (Maybe Object) RefSuffix
+callMethod name args suf f = do
+  qref <- flip refAppendSuffix (DotRef name $ FuncCall args NullRef) <$> _getTargetRefInfo
+  o <- get
+  let err msg1 msg2 = throwError $
+        ObjLensError
+        { mapStructErrorMessage = Just $ ustr msg1
+        , failedOnReference     = qref
+        , mapStructError        = Just $
+            nullValue
+            { structErrMsg   = Just $ ustr msg2
+            , structErrField = Just $ toUStr name
+            , structErrValue = o
+            }
+        }
+  case o of
+    Nothing -> err "method call on undefined reference" "attempted access of field in null object"
+    Just  o -> case o of
+      ODict    d -> _tryFuncCall (M.lookup     name d) args (updateIndex suf f) (_refSuffixUpdate d name suf f)
+      OTree    d -> _tryFuncCall (structLookup name d) args (updateIndex suf f) (_refSuffixUpdate d name suf f)
+      OHaskell (Hata ifc d) -> do
+        case M.lookup name (objMethodTable ifc) of
+          Just func -> do
+            (result, d) <- focusLiftExec $ executeDaoFunc qref func d args
+            put (Just $ OHaskell $ Hata ifc d)
+            -- Like _tryFuncCall, ignore changes made to the result of the function call.
+            (result, _) <- withInnerLens result (updateIndex suf f)
+            return result
+          Nothing   -> case objToStruct ifc of
+            Just toStruct -> do
+              let err structerr =
+                    ObjLensError
+                    { mapStructErrorMessage = Just $ ustr "failed to convert data type to strcuture"
+                    , failedOnReference = qref
+                    , mapStructError = Just structerr
+                    }
+              struct <- predicate (fmapPFail err $ fromData toStruct d)
+              _tryFuncCall (structLookup name struct) args (updateIndex suf f) (_refSuffixUpdate (Hata ifc d) name suf f)
+            Nothing       -> focusLiftExec $ execThrow $ obj $ [obj "field", obj name, obj "is not a method"]
+      _ -> err "method call on atomic object" "atomic objects have no methods"
+            -- TODO: provide a set of built-in methods available to every object.
+
 instance ObjectLens (Maybe Object) RefSuffix where
   updateIndex suf f = focalPathSuffix suf $ get >>= \o -> case suf of
-    NullRef         ->
-      get >>= flip withInnerLens f >>= \ (result, o) -> put o >> return result
+    NullRef         -> get >>= flip withInnerLens f >>= \ (result, o) -> put o >> return result
+    DotRef name (FuncCall args suf) -> callMethod name args suf f
     DotRef name suf -> case o of
       Nothing -> fail "undefined reference"
       Just  o -> case o of
@@ -3547,12 +3599,18 @@ instance ObjectLens (Maybe Object) RefSuffix where
         OTree    o -> _refSuffixUpdate o ix suf f
         OHaskell o -> _refSuffixUpdate o ix suf f
         _          -> fail "cannot subscript"
-    FuncCall  ix suf -> case o of
+    FuncCall  args suf -> case o of
       Nothing -> fail "function call on undefined reference"
-      Just  o -> getFocalReference >>= \qref ->
-        focusLiftExec (callObject qref o ix) >>= put >> updateIndex suf f
+      Just  o -> do
+        qref <- getFocalReference
+        (result, o) <- focusLiftExec (callObject qref o args)
+        (result, _) <- put o >> withInnerLens result (updateIndex suf f)
+        return result
   lookupIndex suf = focalPathSuffix suf $ get >>= xmaybe >>= \o -> case suf of
     NullRef         -> return o
+    DotRef name (FuncCall args suf) -> do
+      (result, _) <- callMethod name args suf get >>= flip withInnerLens (lookupIndex suf)
+      return result -- The object by the method call is lost.
     DotRef name suf -> case o of
       ODict    o -> _refSuffixLookup o name suf
       OTree    o -> _refSuffixLookup o name suf
@@ -3564,8 +3622,11 @@ instance ObjectLens (Maybe Object) RefSuffix where
       OTree    o -> _refSuffixLookup o ix suf
       OHaskell o -> _refSuffixLookup o ix suf
       _          -> mzero
-    FuncCall ix suf -> getFocalReference >>= \qref ->
-      focusLiftExec (callObject qref o ix) >>= put >> lookupIndex suf
+    FuncCall args suf -> do
+      qref <- getFocalReference
+      (result, o) <- focusLiftExec (callObject qref o args)
+      (result, _) <- put o >> withInnerLens result (lookupIndex suf)
+      return result
 
 instance ObjectFunctor Object RefSuffix where
   objectFMap f = get >>= \o -> case o of
@@ -4129,12 +4190,15 @@ execNested_ init = fmap fst . execNested init
 -- execution stack so a function call cannot modify the local variables of the function which called
 -- it. Furthermore it catches evaluation of a "return" statement allowing the function which called
 -- it to procede with execution after this call has returned.
-execFuncPushStack :: T_dict -> Exec (Maybe Object) -> Exec (Maybe Object)
-execFuncPushStack dict exe = catchPredicate (execNested_ dict exe) >>= \pval -> case pval of
-  OK                obj  -> return obj
-  Backtrack              -> mzero
-  PFail (ExecReturn obj) -> return obj
-  PFail             err  -> throwError err
+execFuncPushStack :: T_dict -> Exec (Maybe Object) -> Exec (Maybe Object, T_dict)
+execFuncPushStack dict exe = execNested dict (catchPredicate exe) >>= \ (pval, dict) -> case pval of
+  OK                o  -> return (o, dict)
+  Backtrack            -> mzero
+  PFail (ExecReturn o) -> return (o, dict)
+  PFail           err  -> throwError err
+
+execFuncPushStack_ :: T_dict -> Exec (Maybe Object) -> Exec (Maybe Object)
+execFuncPushStack_ dict = fmap fst . execFuncPushStack dict
 
 execWithStaticStore :: Subroutine -> Exec a -> Exec a
 execWithStaticStore sub exe = do
@@ -4281,9 +4345,12 @@ instance HataClass Subroutine where
 -- | Although 'Subroutine' instantiates 'Executable', this function allows you to easily place a
 -- group of defined local variables onto the call stack before and the have the 'Subroutine'
 -- executed.
-runCodeBlock :: T_dict -> Subroutine -> Exec (Maybe Object)
+runCodeBlock :: T_dict -> Subroutine -> Exec (Maybe Object, T_dict)
 runCodeBlock initStack sub = execWithStaticStore sub $
   execFuncPushStack initStack (executable sub >>= liftIO . evaluate)
+
+runCodeBlock_ :: T_dict -> Subroutine -> Exec (Maybe Object)
+runCodeBlock_ initStack = fmap fst . runCodeBlock initStack
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4325,21 +4392,22 @@ instance HataClass RuleSet where
       { funcAutoDerefParams = True
       , daoForeignFunc = \rs ox -> do
           tokens <- runTokenizer ox
-          Just . obj . map obj <$> makeActionsForQuery [ruleSetRules rs] tokens
+          flip (,) rs . Just . obj . map obj <$> makeActionsForQuery [ruleSetRules rs] tokens
       }
     defMethod "do" $
       daoFunc
       { funcAutoDerefParams = True
       , daoForeignFunc = \rs ox -> do
           tokens <- runTokenizer ox
-          makeActionsForQuery [ruleSetRules rs] tokens >>= msum . map execute
+          makeActionsForQuery [ruleSetRules rs] tokens >>= fmap (flip (,) rs) . msum . map execute
       }
     defMethod "doAll" $
       daoFunc
       { funcAutoDerefParams = True
       , daoForeignFunc = \rs ox -> do
           tokens <- runTokenizer ox
-          fmap (Just . obj . map obj) $ makeActionsForQuery [ruleSetRules rs] tokens >>= execute
+          fmap (flip (,) rs . Just . obj . map obj) $
+            makeActionsForQuery [ruleSetRules rs] tokens >>= execute
       }
 
 ----------------------------------------------------------------------------------------------------
@@ -5394,7 +5462,11 @@ _strObjConcat :: [Object] -> String
 _strObjConcat ox = ox >>= \o -> maybe [toUStr $ prettyShow o] return (fromObj o) >>= uchars
 
 makePrintFunc :: (typ -> String -> Exec ()) -> DaoFunc typ
-makePrintFunc print = DaoFunc [] nil True $ \typ ox -> print typ (_strObjConcat ox) >> return Nothing
+makePrintFunc print =
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc = \typ ox -> print typ (_strObjConcat ox) >> return (Nothing, typ)
+  }
 
 builtin_print :: DaoFunc ()
 builtin_print   = makePrintFunc (\ () -> liftIO . putStr)
@@ -5404,30 +5476,52 @@ builtin_println = makePrintFunc (\ () -> liftIO . putStrLn)
 
 -- join string elements of a container, pretty prints non-strings and joins those as well.
 builtin_join :: DaoFunc ()
-builtin_join = DaoFunc [] (ustr "join") True $ \ () ox -> return $ Just $ obj $ case ox of
-  OString j : ox -> (>>=uchars) $
-    intersperse j $ snd (objConcat ox) >>= \o ->
-      [maybe (ustr $ prettyShow o) id (fromObj o :: Maybe UStr)]
-  ox -> _strObjConcat ox
+builtin_join =
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc = \ () ox -> return $ flip (,) () $ Just $ obj $ case ox of
+      OString j : ox -> (>>=uchars) $
+        intersperse j $ snd (objConcat ox) >>= \o ->
+          [maybe (ustr $ prettyShow o) id (fromObj o :: Maybe UStr)]
+      ox -> _strObjConcat ox
+  }
 
 builtin_str :: DaoFunc ()
-builtin_str = DaoFunc [] (ustr "str") True $ \ () -> return . Just . obj . _strObjConcat
+builtin_str =
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc = \ () -> return . flip (,) () . Just . obj . _strObjConcat
+  }
 
 builtin_quote :: DaoFunc ()
-builtin_quote = DaoFunc [] (ustr "quote") True $ \ () -> return . Just . obj . show . _strObjConcat
+builtin_quote =
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc = \ () -> return . flip (,) () . Just . obj . show . _strObjConcat
+  }
 
 builtin_concat :: DaoFunc ()
-builtin_concat = DaoFunc [] (ustr "concat") True $ \ () -> return . Just . obj .
-  fix (\loop ox -> ox >>= \o -> maybe [o] loop (fromObj o))
+builtin_concat =
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc = \ () -> return . flip (,) () . Just . obj . fix (\loop ox -> ox >>= \o -> maybe [o] loop (fromObj o))
+  }
 
 builtin_concat1 :: DaoFunc ()
-builtin_concat1 = DaoFunc [] (ustr "concat1") True $ \ () -> return . Just . obj . snd . objConcat
+builtin_concat1 =
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc = \ () -> return . flip (,) () . Just . obj . snd . objConcat
+  }
 
 _castNumerical :: String -> (Object -> Exec Object) -> DaoFunc ()
-_castNumerical name f = let n = ustr name :: Name in DaoFunc [] n True $ \ () ox -> do
-  case ox of
-    [o] -> (Just <$> f o) <|> execThrow (obj [obj n, obj "could not cast from value", o])
-    _   -> execThrow $ obj [obj n, obj "function should take only one parameter argument", OList ox]
+_castNumerical name f = let n = ustr name :: Name in
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc = \ () ox -> case ox of
+      [o] -> (flip (,) () . Just <$> f o) <|> execThrow (obj [obj n, obj "could not cast from value", o])
+      _   -> execThrow $ obj [obj n, obj "function should take only one parameter argument", OList ox]
+  }
 
 builtin_int :: DaoFunc ()
 builtin_int = _castNumerical "int" $ fmap (OInt . fromIntegral) . execute . asInteger
@@ -5462,42 +5556,64 @@ builtin_time = _castNumerical "time" $ \o -> case o of
   o          -> (ORelTime . fromRational) <$> execute (asRational o)
 
 _funcWithoutParams :: String -> Exec (Maybe Object) -> DaoFunc ()
-_funcWithoutParams name f = let n = ustr name in DaoFunc [] n False $ \ () ox -> case ox of
-  [] -> f
-  ox -> execThrow $ obj $
-    [obj n, obj "should take no parameter arguments, but received: ", obj ox]
+_funcWithoutParams name f = let n = toUStr name in
+  daoFunc
+  { funcAutoDerefParams = False
+  , daoForeignFunc = \ () ox -> case ox of
+      [] -> flip (,) () <$> f
+      ox -> execThrow $ obj $
+        [obj n, obj "should take no parameter arguments, but received: ", obj ox]
+  }
 
 builtin_now :: DaoFunc ()
 builtin_now = _funcWithoutParams "now" $ (Just . obj) <$> liftIO getCurrentTime
 
 builtin_check_if_defined :: DaoFunc ()
-builtin_check_if_defined = DaoFunc [] (ustr "defined") False $ \ () args -> do
-  fmap (Just . obj . and) $ forM args $ \arg -> case arg of
-    ORef o -> fmap (maybe False (const True)) (fmap (fmap snd) $ referenceLookup o)
-    _      -> return True
+builtin_check_if_defined =
+  daoFunc
+  { funcAutoDerefParams = False
+  , daoForeignFunc = \ () args -> fmap (flip (,) () . Just . obj . and) $ forM args $ \arg -> case arg of
+      ORef o -> fmap (maybe False (const True)) (fmap (fmap snd) $ referenceLookup o)
+      _      -> return True
+  }
 
 builtin_delete :: DaoFunc ()
-builtin_delete = DaoFunc [] (ustr "delete") False $ \ () args -> do
-  forM_ args $ \arg -> case arg of
-    ORef o -> void $ referenceUpdate o (const $ return Nothing)
-    _      -> return ()
-  return (Just ONull)
+builtin_delete =
+  daoFunc
+  { funcAutoDerefParams = False
+  , daoForeignFunc = \ () args -> do
+      forM_ args $ \arg -> case arg of
+        ORef o -> void $ referenceUpdate o (const $ return Nothing)
+        _      -> return ()
+      return (Nothing, ())
+  }
 
 builtin_typeof :: DaoFunc ()
-builtin_typeof = DaoFunc [] (ustr "typeof") True $ \ () ox -> return $ case ox of
-  []  -> Nothing
-  [o] -> Just $ OType $ coreType $ typeOfObj o
-  ox  -> Just $ OList $ map (OType . coreType . typeOfObj) ox
+builtin_typeof =
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc = \ () ox -> return $ flip (,) () $ case ox of
+      []  -> Nothing
+      [o] -> Just $ OType $ coreType $ typeOfObj o
+      ox  -> Just $ OList $ map (OType . coreType . typeOfObj) ox
+  }
 
 builtin_sizeof :: DaoFunc ()
-builtin_sizeof = DaoFunc [] (ustr "sizeof") True $ \ () ox -> case ox of
-  [o] -> Just <$> getSizeOf o
-  _   -> execThrow $ obj $
-    [obj "sizeof() function must take exactly one parameter argument, instead got", obj ox]
+builtin_sizeof =
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc = \ () ox -> case ox of
+      [o] -> flip (,) () . Just <$> getSizeOf o
+      _   -> execThrow $ obj $
+        [obj "sizeof() function must take exactly one parameter argument, instead got", obj ox]
+  }
 
 builtin_tokenize :: DaoFunc ()
-builtin_tokenize = DaoFunc [] (ustr "tokenize") True $ \ () ->
-  fmap (Just . obj . map obj) . runTokenizer
+builtin_tokenize =
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc = \ () -> fmap (flip (,) () . Just . obj . map obj) . runTokenizer
+  }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -5584,20 +5700,21 @@ objToCallable o = case fromObj o >>= \ (Hata ifc o) -> fmap ($ o) (objCallable i
 -- 'CallableCode' objects associated with that function mame. This function tries to perform a
 -- function call with a list of parameters. The parameters are matched to each 'CallableCode'
 -- object's 'argsPattern', the first 'argsPattern' that matches without backtracking will evaluate
--- the function body.
-callCallables :: [CallableCode] -> [Object] -> Exec (Maybe Object)
-callCallables funcs params = 
+-- the function body. The value returned is a pair containing the result of the function call as the
+-- 'Prelude.fst', and update "this" value as 'Prelude.snd'
+callCallables :: Maybe Object -> [CallableCode] -> [Object] -> Exec (Maybe Object, Maybe Object)
+callCallables this funcs params = fmap (fmap (M.lookup (ustr "this"))) $
   msum $ flip map funcs $ \f -> matchFuncParams (argsPattern f) params >>=
-    flip execFuncPushStack (execute $ codeSubroutine f)
+    flip execFuncPushStack (execute $ codeSubroutine f) . M.alter (const this) (ustr "this")
 
 -- | If the given object provides a 'defCallable' callback, the object can be called with parameters
 -- as if it were a function.
-callObject :: Reference -> Object -> [Object] -> Exec (Maybe Object)
+callObject :: Reference -> Object -> [Object] -> Exec (Maybe Object, Maybe Object)
 callObject qref o params = case o of
-  OHaskell (Hata ifc o) -> case objCallable ifc of
-    Just getFuncs -> getFuncs o >>= \funcs -> callCallables funcs params
-    Nothing -> case fromDynamic o of
-      Just func -> executeDaoFunc qref func () params -- try calling an ordinary function
+  OHaskell (Hata ifc d) -> case objCallable ifc of
+    Just getFuncs -> getFuncs d >>= \funcs -> callCallables (Just o) funcs params
+    Nothing -> case fromDynamic d of
+      Just func -> flip (,) Nothing . fst <$> executeDaoFunc qref func () params -- try calling an ordinary function
       Nothing   -> err
   _ -> err
   where
@@ -7384,7 +7501,7 @@ interfaceAdapter a2b b2a ifc =
   , objTraverse        = let n="objTraverse"       in fmap (\focus f -> convertFocus (a2b n) (b2a n) (focus f)) (objTraverse ifc)
   , objInfixOpTable    = let n="objInfixOpTable"   in fmap (fmap (fmap (\infx op b -> infx op (b2a n b)))) (objInfixOpTable  ifc)
   , objArithPfxOpTable = let n="objPrefixOpTable"  in fmap (fmap (fmap (\prfx op b -> prfx op (b2a n b)))) (objArithPfxOpTable ifc)
-  , objMethodTable     = let n="objMethodTable"    in fmap (\func -> func{ daoForeignFunc = \t -> daoForeignFunc func (b2a n t) }) (objMethodTable ifc)
+  , objMethodTable     = let n="objMethodTable"    in fmap (\func -> func{ daoForeignFunc = \t -> fmap (fmap (a2b n)) . daoForeignFunc func (b2a n t) }) (objMethodTable ifc)
   , objCallable        = let n="objCallable"       in fmap (\eval -> eval . b2a n) (objCallable ifc)
   , objDereferencer    = let n="objDerferencer"    in fmap (\eval -> eval . b2a n) (objDereferencer ifc)
   }

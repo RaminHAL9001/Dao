@@ -100,7 +100,7 @@ loadLibrary_File = do
         daoFunc
         { funcAutoDerefParams = True
         , daoForeignFunc = \ () ->
-            _paramPath func >=> fmap (Just . obj) . flip (_openFile func . flip File Nothing) mode
+            _paramPath func >=> fmap (flip (,) () . Just . obj) . flip (_openFile func . flip File Nothing) mode
         }
   fileOpener "readFile"   ReadMode
   fileOpener "writeFile"  WriteMode
@@ -108,7 +108,7 @@ loadLibrary_File = do
   daoFunction "File" $
     daoFunc
     { funcAutoDerefParams = True
-    , daoForeignFunc = \ () -> fmap (Just . obj . flip File Nothing) . _paramPath "File"
+    , daoForeignFunc = \ () -> fmap (flip (,) () . Just . obj . flip File Nothing) . _paramPath "File"
     }
 
 instance ObjectClass File where { obj=new; fromObj=objFromHata; }
@@ -124,7 +124,7 @@ instance HataClass File where
               case ox of
                 [] -> do
                   _withClosedHandle func file
-                  Just . obj <$> _openFile func file mode
+                  flip (,) file . Just . obj <$> _openFile func file mode
                 _  -> execThrow $ obj [obj func, obj "method must be passed no parameters"]
           }
     fileOpener "openRead"   ReadMode
@@ -133,7 +133,7 @@ instance HataClass File where
     defMethod "close" $
       daoFunc
       { funcAutoDerefParams = False
-      , daoForeignFunc = \file ox -> do
+      , daoForeignFunc = \file ox -> fmap (flip (,) (file{ fileHandle=Nothing })) $ do
           case ox of
             [] -> _getHandle "close" file >>=
               _catchIOException "close" file . liftIO . hClose >> return Nothing
@@ -154,7 +154,7 @@ instance HataClass File where
                   ]
               ]
             _catchIOException "writeBinary" file (B.hPutStr handl bin)
-          return Nothing
+          return (Nothing, file)
       }
     defMethod "readBinary" $
       daoFunc
@@ -173,14 +173,14 @@ instance HataClass File where
             predicate result
           _ -> execThrow $ obj [obj "readBinary", obj file, obj "function must be passed no parameter"]
       }
-    let writeFunc func putstr = defMethod "write" $
+    let writeFunc func putstr = defMethod func $
           daoFunc
           { funcAutoDerefParams = True
           , daoForeignFunc = \file ox -> do
               ox <- requireAllStringArgs func ox
               handl <- _getHandle func file
               forM_ ox $ _catchIOException "write" file . putstr handl . uchars
-              return Nothing
+              return (Nothing, file)
           }
     writeFunc "write" hPutStr
     defMethod "read" $
@@ -189,7 +189,7 @@ instance HataClass File where
       , daoForeignFunc = \file ox -> case ox of
           [] -> do
             _withClosedHandle "read" file
-            _catchIOException "read" file (Just . obj <$> readFile (uchars $ filePath file))
+            _catchIOException "read" file (flip (,) file . Just . obj <$> readFile (uchars $ filePath file))
           _ -> execThrow $ obj [obj "read", obj file, obj "function must be passed no parameter"]
       }
     writeFunc "writeLine" hPutStrLn
@@ -199,7 +199,7 @@ instance HataClass File where
       , daoForeignFunc = \file ox -> case ox of
           [] -> do
             handl <- _getHandle "readLine" file
-            _catchIOException "readLine" file (Just . obj <$> hGetLine handl)
+            _catchIOException "readLine" file (flip (,) file . Just . obj <$> hGetLine handl)
           _  -> execThrow $ obj $
             [obj "readLine", obj file, obj "function must be passed no parameters"]
       }

@@ -19,5 +19,33 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
+module Dao.Lib.Program where
+
+import           Dao.String
+import           Dao.Predicate
+import           Dao.PPrint
+import qualified Dao.Binary as B
+import           Dao.Interpreter
+import           Dao.Interpreter.AST
+
+import qualified Data.ByteString.Lazy as B
+import           Data.Typeable
+
+import           Control.Applicative
+import           Control.Exception
+import           Control.Monad
+import           Control.Monad.IO.Class
+import           Control.Monad.State
+
+import           System.IO
+
+----------------------------------------------------------------------------------------------------
+
+data DaoProgram
+  = DaoProgram
+    { programExecUnit   :: ExecUnit
+    , programSourceCode :: AST_SourceCode Object
+    }
+  deriving Typeable
 
 

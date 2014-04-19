@@ -122,7 +122,7 @@ loadLibrary_Array = do
   daoFunction "Array" $
     daoFunc
     { funcAutoDerefParams=True
-    , daoForeignFunc = \ () -> fmap (Just . obj) . liftIO . arrayFromArgs
+    , daoForeignFunc = \ () -> fmap (flip (,) () . Just . obj) . liftIO . arrayFromArgs
     }
 
 instance ObjectClass Array where { obj=new; fromObj=objFromHata; }

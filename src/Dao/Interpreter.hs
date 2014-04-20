@@ -132,7 +132,6 @@ module Dao.Interpreter(
 import           Dao.Glob
 import           Dao.PPrint
 import           Dao.Predicate
-import           Dao.Procedural
 import           Dao.Random
 import           Dao.Stack
 import           Dao.String
@@ -5292,20 +5291,12 @@ derefStringsToDepth handler maxDeref maxDepth o =
 -- This function might fail if objects exist that cannot resonably contain strings. If you want to
 -- pretty-print non-string objects, try using 'getStringsToDepth'.
 recurseGetAllStrings :: Object -> Exec [UStr]
-recurseGetAllStrings o = catch (loop [] o) where
-  loop ix o = case o of
+recurseGetAllStrings o = loop [] o where
+  loop ix o = let next fn = fmap concat . mapM (\ (i, o) -> loop (fn i : ix) o) in case o of
     OString  o   -> return [o]
     OList    o   -> next OInt (zip [0..] o)
-    o            -> throwError $ OList $
-      [ obj "object at index", OList ix
-      , obj "cannot be evaluated to a string", o
-      ]
-    where
-      next fn = fmap concat . mapM (\ (i, o) -> loop (fn i : ix) o)
-  catch ox = case ox of
-    FlowErr  err -> execThrow err
-    FlowOK    ox -> return ox
-    FlowReturn _ -> undefined
+    o            -> execThrow $ OList $
+      [obj "object at index", OList ix, obj "cannot be evaluated to a string", o]
 
 ----------------------------------------------------------------------------------------------------
 

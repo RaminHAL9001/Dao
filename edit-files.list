@@ -16,7 +16,6 @@ src/Dao/Prelude.hs
 src/Dao/StepList.hs
 src/Dao/Token.hs
 src/Dao/Simple.hs
-src/Dao/Procedural.hs
 src/Dao/EnumSet.hs
 src/Dao/Tree.hs
 src/Dao/String.hs

@@ -124,7 +124,8 @@ instance HataClass File where
               case ox of
                 [] -> do
                   _withClosedHandle func file
-                  flip (,) file . Just . obj <$> _openFile func file mode
+                  f <- _openFile func file mode
+                  return (Just $ obj f, f)
                 _  -> execThrow $ obj [obj func, obj "method must be passed no parameters"]
           }
     fileOpener "openRead"   ReadMode

@@ -1,0 +1,8 @@
+a = File("./b.txt");
+a.openWrite();
+a.println("Hello, world!");
+a.close();
+try {
+	a.println("Hello, world!");
+}
+catch err { println("Error occured as expected: ", err); }

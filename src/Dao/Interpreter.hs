@@ -58,7 +58,7 @@ module Dao.Interpreter(
     isNumeric, typeMismatchError,
     initializeGlobalKey, destroyGlobalKey,
     Reference(Reference, RefObject), reference, refObject, referenceHead, refUnwrap,
-    refNames, referenceFromUStr, fmapReference, setQualifier, modRefObject,
+    refNames, referenceFromUStr, fmapReference, setQualifier, modRefObject, refHasFuncCall,
     refAppendSuffix, referenceLookup, referenceUpdate,
     CoreType(
       NullType, TrueType, TypeType, IntType, WordType, DiffTimeType, FloatType,
@@ -68,7 +68,7 @@ module Dao.Interpreter(
     typeOfObj, coreType,
     TypeSym(CoreType, TypeVar), TypeStruct(TypeStruct), ObjType(ObjType), typeChoices,
     RefSuffix(NullRef, DotRef, Subscript, FuncCall),
-    refSuffixHead, refSuffixToList, dotRef, subscript, funcCall,
+    refSuffixHead, refSuffixHasFuncCall, refSuffixToList, dotRef, subscript, funcCall,
     Complex(Complex),
     realPart, imagPart, mkPolar, cis, polar, magnitude, phase, conjugate, complex,
     minAccumArray, minArray,
@@ -2224,12 +2224,17 @@ refAppendSuffix qref appref = case qref of
   RefObject   o    ref -> RefObject   o    (ref<>appref)
   RefWrapper      qref -> RefWrapper $ refAppendSuffix qref appref
 
+-- | This is an important function used throughout most of the intepreter to
+-- lookup 'Object's associated with 'Reference's.
 referenceLookup :: Reference -> Exec (Maybe (Reference, Object))
 referenceLookup qref = case qref of
-  RefWrapper qref -> return $ Just (qref, obj qref)
-  qref            -> flip mplus (return Nothing) $ do
-    (a, (qref, _)) <- get >>= runObjectFocusExec (lookupIndex qref) (fst $ referenceHead qref)
-    return $ Just (qref, a)
+  RefWrapper ref -> return $ Just (qref, obj ref)
+  qref           ->
+    if refHasFuncCall qref -- function calls must always perform an update, not just a lookup
+    then referenceUpdate qref return
+    else flip mplus (return Nothing) $ do
+      (a, (qref, _)) <- get >>= runObjectFocusExec (lookupIndex qref) (fst $ referenceHead qref)
+      return $ Just (qref, a)
 
 refNames :: [Name] -> Maybe Reference
 refNames nx = case nx of
@@ -2260,14 +2265,22 @@ modRefObject mod ref = case ref of
   RefObject o ref -> RefObject (mod o) ref
   ref             -> ref
 
+-- | Evaluates to 'Prelude.True' if this reference will evaluate a function
+-- call when the reference is evaluated.
+refHasFuncCall :: Reference -> Bool
+refHasFuncCall qref = case qref of
+  Reference _ _ suf -> refSuffixHasFuncCall suf
+  RefObject   _ suf -> refSuffixHasFuncCall suf
+  RefWrapper  _     -> False
+
 -- | This function performs an update on a 'Reference', it is the complement to the 'referenceLookup'
 -- function. Evaluating 'referenceUpdate' on a 'Reference' will write/update the value associated with
 -- it.
-referenceUpdate :: Reference -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe Object)
+referenceUpdate :: Reference -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe (Reference, Object))
 referenceUpdate qref upd = do
-  (result, (_, xunit)) <- get >>=
+  (result, (qref, xunit)) <- get >>=
     runObjectFocusExec (updateIndex qref (execToFocusUpdater upd)) (fst $ referenceHead qref)
-  put xunit >> return result
+  put xunit >> return (fmap ((,) qref) result)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2555,6 +2568,14 @@ instance Monoid RefSuffix where
 -- constructors is overwritten with 'NullRef' so only the first parameter remains.
 refSuffixHead :: RefSuffix -> RefSuffix
 refSuffixHead suf = let lst = refSuffixToList suf in if null lst then NullRef else head lst
+
+-- | Evaluates to 'Prelude.True' if ay of the constructors within the 'RefSuffix' are 'FuncCall'.
+refSuffixHasFuncCall :: RefSuffix -> Bool
+refSuffixHasFuncCall suf = case suf of
+  NullRef         -> False
+  DotRef    _ suf -> refSuffixHasFuncCall suf
+  Subscript _ suf -> refSuffixHasFuncCall suf
+  FuncCall  _ _   -> True
 
 -- | The 'RefSuffix' is a list-like data type, where most of the constructors may contain another
 -- 'RefSuffix' structure as the "tail" of the list. This function "explodes" a 'RefSuffix' into a
@@ -3767,6 +3788,10 @@ instance ObjectLens WithRefStore Reference where
 
 ----------------------------------------------------------------------------------------------------
 
+-- | Because all built-in functions are stored in the 'ConstantStore' and since all function calls
+-- perform updates, an update must be allowed to occur in the 'ConstantStore' without throwing an
+-- exception. What really happens is, if an update is performed an update occurs on a copy of the
+-- value in the store, then the store silently disgards the updated copy.
 newtype ConstantStore = ConstantStore T_dict
 
 instance ObjectLens ConstantStore Name where
@@ -3804,11 +3829,7 @@ _lookupLocal :: ObjectLens LocalStore i => i -> ObjectFocus ExecUnit Object
 _lookupLocal = _lookupSetQual LOCAL $ innerDataLookupIndex execStack
 
 _updateConst :: ObjectLens ConstantStore i => i -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
-_updateConst = _updateSetQual LOCAL $ \i upd ->
-  innerDataUpdateIndex
-    (ConstantStore . builtinConstants)
-    (\n (ConstantStore o) -> n{builtinConstants=o})
-    i (upd >> fail "cannot update constant reference")
+_updateConst = _updateSetQual CONST $ \i upd -> innerDataUpdateIndex (ConstantStore . builtinConstants) const i upd
 
 _lookupConst :: ObjectLens ConstantStore i => i -> ObjectFocus ExecUnit Object
 _lookupConst = _lookupSetQual CONST $ innerDataLookupIndex (ConstantStore . builtinConstants)
@@ -6177,7 +6198,7 @@ instance Executable (ScriptExpr Object) () where
       o   <- execute expr >>= checkVoid (getLocation expr) "expression in the focus of \"with\" statement"
       ref <- mplus (execute $ asReference o) $ execThrow $ obj $
         [obj "expression in \"with\" statement does not evaluate to a reference, evaluates to a", o]
-      referenceUpdate ref $ \o -> case o of
+      fmap (fmap snd) $ referenceUpdate ref $ \o -> case o of
         Nothing -> execThrow $ obj [obj "undefined reference:", ORef ref]
         Just o  -> do
           let ok = do
@@ -6897,7 +6918,7 @@ instance B.HasPrefixTable (AssignExpr Object) B.Byte MTab where
 
 instance Executable (AssignExpr Object) (Maybe Object) where
   execute = _executeAssignExpr $ \qref op newObj ->
-    referenceUpdate qref (evalUpdateOp (Just qref) op newObj)
+    fmap snd <$> referenceUpdate qref (evalUpdateOp (Just qref) op newObj)
 
 instance RefReducible (AssignExpr Object) where
   reduceToRef o = case o of

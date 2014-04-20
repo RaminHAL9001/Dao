@@ -43,8 +43,9 @@ import           Dao.Parser
 import           Dao.Interpreter.Parser
 import           Dao.Interpreter.AST
 
-import qualified Dao.Lib.Array as Dao
-import qualified Dao.Lib.File  as Dao
+import qualified Dao.Lib.Array       as Dao
+import qualified Dao.Lib.File        as Dao
+import qualified Dao.Lib.ListEditor  as Dao
 
 import           Data.Function
 import           Data.Monoid
@@ -72,6 +73,7 @@ loadDaoStandardLibrary :: DaoSetup
 loadDaoStandardLibrary = do
   Dao.loadLibrary_Array
   Dao.loadLibrary_File
+  Dao.loadLibrary_ListEditor
 
 ----------------------------------------------------------------------------------------------------
 

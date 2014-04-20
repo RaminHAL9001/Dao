@@ -24,11 +24,17 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
--- | This module provides a basic lits cursor interface, that is, a list that you can step through
+-- | This is a line-editor object, but it works with arbitrary lists of objects, but this will work
+-- for editing arbitrary lists. You could use it to create an ordinary line editor by representing a
+-- file as be a list of strings representing a file. each string could further be converted to a
+-- StepList containing characters to edit the line. 
+--
+-- This module provides a basic list cursor interface, that is, a list that you can step through
 -- forward or backward, item by item. This is useful for building line editors. This module export
 -- operators, so it is best not to import this module qualified. Therefore functions similar to
 -- 'Data.Set.empty' or 'Data.Set.singleton' are named 'slEmpty' and 'slSingleton' to prevent name
 -- conflicts without using qualified importing.
+--
 module Dao.StepList where
 
 import           Control.Applicative

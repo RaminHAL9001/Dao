@@ -87,6 +87,17 @@ _withClosedHandle func file = case fileHandle file of
   Just  _ -> execThrow $ obj $
     [obj func, obj "function cannot operate on open file handle", obj (filePath file)]
 
+_withContents :: (String -> IO Object) -> DaoFunc File
+_withContents f =
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc = \file ox -> case ox of
+      [] -> do
+        _withClosedHandle "read" file
+        _catchIOException "read" file $ fmap (flip (,) file . Just) $ readFile (uchars $ filePath file) >>= f
+      _ -> execThrow $ obj [obj "read", obj file, obj "function must be passed no parameter"]
+  }
+
 gGetErrToExecError :: B.GGetErr -> ExecControl
 gGetErrToExecError (B.GetErr{ B.gGetErrOffset=offset, B.gGetErrMsg=msg }) =
   mkExecError
@@ -184,15 +195,8 @@ instance HataClass File where
               return (Nothing, file)
           }
     writeFunc "write" hPutStr
-    defMethod "read" $
-      daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \file ox -> case ox of
-          [] -> do
-            _withClosedHandle "read" file
-            _catchIOException "read" file (flip (,) file . Just . obj <$> readFile (uchars $ filePath file))
-          _ -> execThrow $ obj [obj "read", obj file, obj "function must be passed no parameter"]
-      }
+    defMethod "read" $ _withContents (return . obj)
+    defMethod "readAllLines" $ _withContents (return . obj . fmap obj . lines)
     writeFunc "writeLine" hPutStrLn
     defMethod "readLine" $
       daoFunc

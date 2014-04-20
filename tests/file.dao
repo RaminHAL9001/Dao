@@ -1,8 +1,17 @@
-a = File("./b.txt");
-a.openWrite();
-a.println("Hello, world!");
-a.close();
+f = File("./b.txt");
+f.openWrite();
+f.println("Hi, I'm Mr. Meeseeks!");
+f.println("Look at me!!!");
+f.close();
+
 try {
-	a.println("Hello, world!");
+	f.println("Hello, world!");
 }
 catch err { println("Error occured as expected: ", err); }
+
+i = 0;
+f = File("./b.txt");
+for line in f.readAllLines() {
+	i += 1;
+	println(i, ": ", line);
+}

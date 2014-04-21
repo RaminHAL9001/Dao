@@ -41,8 +41,10 @@ import           Control.Applicative
 import           Control.Monad
 
 import           Data.Array.IArray
-import           Data.Typeable
+import qualified Data.IntMap as I
+import           Data.List
 import           Data.Monoid
+import           Data.Typeable
 
 ----------------------------------------------------------------------------------------------------
 
@@ -79,6 +81,10 @@ instance Monad       StepList where
   -- function.
   (>>=) = flip slConcatMap
 
+-- | Test if the 'StepList' contains no elements.
+slNull :: StepList a -> Bool
+slNull sl = null (slLeftOfCursor sl) && null (slRightOfCursor sl)
+
 -- | Create an empty 'StepList'.
 slEmpty :: StepList a
 slEmpty = StepList 0 0 [] []
@@ -104,6 +110,28 @@ slFromList i lst =
       , slLeftOfCursor  = left
       , slRightOfCursor = right
       }
+
+-- | Create a 'StepList' with two lists, the items to the left of the cursor, and the items to the
+-- right of the cursor. The elements of the list to the left of the cursor are not reversed when
+-- constructing the 'StepList' with this constructor. When the cursor is moved back to the
+-- beginning of the list, the items will be reversed, i.e.
+-- > slToList (slFromList [0,1,2,3] [4,5,6,7])
+-- will evaluate to the list:
+-- > [3,2,1,0,4,5,6,7]
+slFromLeftRight :: [a] -> [a] -> StepList a
+slFromLeftRight left right =
+  StepList{ slCursor=cur, slLength=cur+rightlen, slLeftOfCursor=left, slRightOfCursor=right } where
+    cur      = length left
+    rightlen = length right
+
+-- | Assign values to integer indicies in the 'Data.IntMap.IntMap' data type, and this function will
+-- convert the 'Data.IntMap.IntMap' to a 'StepList'. Negative indicies will be placed to the left of
+-- the cursor, with the lowest value being furthest left, positive indicies will be placed to the
+-- right of the cursor with the highest value being furthest right.
+slFromIntMap :: I.IntMap a -> StepList a
+slFromIntMap im = slFromLeftRight (fmap snd $ sortfst left) (fmap snd $ sortfst right) where
+  sortfst = sortBy (\a b -> compare (fst a) (fst b))
+  (left, right) = partition ((<0) . fst) $ I.assocs im
 
 slToArray :: StepList a -> Maybe (Array Int a)
 slToArray (StepList cur len left right) =
@@ -217,6 +245,12 @@ slCursorShift delta a@(StepList cur len left right)
 -- | Place the cursor at an index position.
 slCursorTo :: Int -> StepList a -> StepList a
 slCursorTo i a@(StepList cur _ _ _) = slCursorShift (i-cur) a
+
+-- | Lookup a value at an absolute index (not relative to the cursor).
+slIndex :: Int -> StepList a -> Maybe a
+slIndex i sl =
+  let (StepList _ _ _ right) = slCursorShift i sl
+  in case right of { [] -> Nothing; o:_ -> return o; }
 
 -- | A bounds value expressed as a pair of indicies relative to the current cursor position can be
 -- converted to an bounds value expressed as a pair of indicies relative to the 0th element in the

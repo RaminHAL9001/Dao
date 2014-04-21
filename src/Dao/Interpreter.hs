@@ -25,6 +25,7 @@ module Dao.Interpreter(
     DaoSetupM(), DaoSetup, haskellType, daoProvides, daoClass, daoConstant, daoFunction,
     daoInitialize, setupDao, evalDao, DaoFunc, daoFunc, funcAutoDerefParams, daoForeignFunc,
     executeDaoFunc,
+    Sizeable(getSizeOf),
     ObjectClass(obj, fromObj, castToCoreType),
     execCastToCoreType, listToObj, listFromObj, new, opaque, objFromHata,
     Struct(Nullary, Struct), structLookup,
@@ -123,9 +124,9 @@ module Dao.Interpreter(
     defCastFrom, autoDefEquality, defEquality, autoDefOrdering, defOrdering, autoDefBinaryFmt,
     defBinaryFmt, autoDefNullTest, defNullTest, defPPrinter, autoDefPPrinter, defReadIterable,
     autoDefReadIterable, defUpdateIterable, autoDefUpdateIterable, defIndexer, defIndexUpdater,
-    defSizer, autoDefToStruct, defToStruct, autoDefFromStruct, defFromStruct, defInitializer,
-    defTraverse, autoDefTraverse, defInfixOp, defPrefixOp, defCallable, defDeref, defMethod,
-    defLeppard
+    defSizer, autoDefSizeable, autoDefToStruct, defToStruct, autoDefFromStruct, defFromStruct,
+    defInitializer, defTraverse, autoDefTraverse, defInfixOp, defPrefixOp, defCallable, defDeref,
+    defMethod, defLeppard
   )
   where
 
@@ -1145,6 +1146,7 @@ instance Sizeable Complex where { getSizeOf = return . obj . magnitude }
 instance Sizeable UStr where { getSizeOf = return . obj . ulength }
 instance Sizeable [Object] where { getSizeOf = return . obj . length }
 instance Sizeable (M.Map Name Object) where { getSizeOf = return . obj . M.size }
+instance Sizeable (H.HashMap Object Object) where { getSizeOf = return . obj . H.size }
 instance Sizeable Hata where { getSizeOf (Hata ifc o) = maybe mzero ($ o) (objSizer ifc) }
 
 instance Sizeable Object where
@@ -3295,6 +3297,14 @@ runObjectFocus :: ObjectFocus o a -> ObjFocusState o -> Exec (Predicate ObjLensE
 runObjectFocus f st = flip evalStateT st $ runPredicateT $ mapObjectLensToPredicate $ f >>= \a ->
   _mapStructState (return (,) <*> gets targetReference <*> gets objectInFocus) >>= \o -> return (a, o)
 
+-- | This is a very important function because it allows you to evaluate an inner 'ObjectFocus'
+-- monad that is focused on a different type from the type focus of the monad in the context in
+-- which this function is evaluated. It allows you to select a sub-field of the current focus (for
+-- example using 'Control.Monad.State.gets') and evaluate an updating function or lookup function
+-- that uses value of the sub-field. This function returns the result of the evaluation, and the
+-- updated value which can then be placed back into the sub-field if necessary. By composing
+-- 'withInnerLens' functions, it is possible to construct a lens that can read and update any value
+-- in arbitrarily complex data types.
 withInnerLens :: sub -> ObjectFocus sub a -> ObjectFocus o (a, sub)
 withInnerLens sub f = do
   targref <- _getTargetRefInfo
@@ -4385,11 +4395,13 @@ instance Monoid RuleSet where
   mempty = RuleSet mempty
   mappend (RuleSet a) (RuleSet b) = RuleSet (mappend a b)
 
+instance Sizeable RuleSet where { getSizeOf = return . obj . T.size . ruleSetRules }
+
 instance ObjectClass RuleSet where { obj=new ; fromObj=objFromHata; }
 
 instance HataClass RuleSet where
   haskellDataInterface = interface mempty $ do
-    autoDefNullTest
+    autoDefNullTest >> autoDefSizeable
     let initParams ox = case ox of
           [] -> return mempty
           _  -> execThrow $ obj [obj "\"RuleSet\" constructor takes no intializing parameters"]
@@ -4406,7 +4418,6 @@ instance HataClass RuleSet where
     defInitializer initParams listParams
     defInfixOp ORB $ \ _ (RuleSet tree) o ->
       (new . RuleSet . T.unionWith (++) tree . ruleSetRules ) <$> xmaybe (fromObj o)
-    defSizer $ return . obj . T.size . ruleSetRules
     defMethod "query" $
       daoFunc
       { funcAutoDerefParams = True
@@ -7372,8 +7383,7 @@ instance ObjectClass (H.HashMap Object Object) where { obj=new; fromObj=objFromH
 
 instance HataClass (H.HashMap Object Object) where
   haskellDataInterface = interface nullValue $ do
-    autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt >> autoDefPPrinter
-    defSizer $ return . obj . H.size
+    autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt >> autoDefPPrinter >> autoDefSizeable
     let un _ a b = xmaybe (fromObj b) >>= \b -> return $ new $ H.union b a
     defInfixOp ADD  un
     defInfixOp ORB  un
@@ -7771,6 +7781,9 @@ defIndexUpdater fn = _updHDIfcBuilder(\st->st{ objIfcIndexUpdater=Just fn })
 -- of your @typ@ object.
 defSizer :: Typeable typ => (typ -> Exec Object) -> DaoClassDefM typ ()
 defSizer fn = _updHDIfcBuilder(\st->st{objIfcSizer=Just fn})
+
+autoDefSizeable :: (Typeable typ, Sizeable typ) => DaoClassDefM typ ()
+autoDefSizeable = defSizer getSizeOf
 
 -- | Use your data type's instantiation of 'ToDaoStructClass' to call 'defToStruct'.
 autoDefToStruct :: forall typ . (Typeable typ, ToDaoStructClass typ) => DaoClassDefM typ ()

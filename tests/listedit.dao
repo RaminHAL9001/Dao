@@ -1,0 +1,17 @@
+global LE = ListEditor{};
+global saved = Dict{};
+
+rule "ls" { println(global LE); }
+rule "<+ $left" { global LE.insertLeft(left); }
+rule "$right +>" { global LE.insertRight(right); }
+
+rule "cd $i?" { global LE.cursorTo(int(i)); }
+rule "<."     { global LE.shift(-1); }
+rule "<. $i?" { global LE.shift(int(-i)); }
+rule ".>"     { global LE.shift(+1); }
+rule ".> $i?" { global LE.shift(int(i)); }
+
+rule "cp $lo? $hi? -> $dest?" { global saved[$dest] = global LE.copy(int(lo), int(hi)); }
+rule "rm $lo? $hi?" { global LE.cut(int(lo), int(hi)); }
+rule "rm $lo? $hi? -> $dest?" { global saved[$dest] = global LE.cut(int(lo), int(hi)); }
+

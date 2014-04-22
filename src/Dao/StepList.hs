@@ -210,7 +210,7 @@ infixr 5 |>
 -- > [a0, a1, a2] <++ ([b0, b1, b2] <> [b3, b4])
 -- >                  ([b0, ab, b2, a0, a1, a2] <> [b3, b4])
 (<++) :: [a] -> StepList a -> StepList a
-(<++) = flip (foldr (<|))
+(<++) ox sl = sl{ slLeftOfCursor = slLeftOfCursor sl ++ reverse ox }
 infixr 5 <++
 
 -- | Place an item to the right of the cursor. This operator binds to the right with a precedence of
@@ -218,7 +218,7 @@ infixr 5 <++
 -- > [a0, a1, a2] ++> ([b0, b1, b2] <> [b3, b4])
 -- >                  ([b0, b1, b2] <> [a0, a1, a2, b3, b4])
 (++>) :: [a] -> StepList a -> StepList a
-(++>) = flip (foldr (|>))
+(++>) ox sl = sl{ slRightOfCursor = ox ++ slRightOfCursor sl }
 infixr 5 ++>
 
 -- | Returns 'Prelude.True' if it is possible to move the cursor left or right by @n@ steps.
@@ -232,15 +232,17 @@ slIndexCheck i (StepList _ len _ _) = inRange (0, len) i
 -- | Shift the cursor @delta@ elements to the left if @delta@ is negative, or @delta@ elements to
 -- the right if @delta@ is positive.
 slCursorShift :: Int -> StepList a -> StepList a
-slCursorShift delta a@(StepList cur len left right)
-  | delta==0 = a
-  | delta<0 && abs delta <= cur =
-      let (middle, left') = splitAt (abs delta) left
+slCursorShift delta0 a@(StepList cur len left right)
+  | delta0==0 = a
+  | delta0< 0 =
+      let delta = max delta0 (negate cur)
+          (middle, left') = splitAt (abs delta) left
       in StepList (cur+delta) len left' (reverse middle ++ right)
-  | delta>0 && delta <= len-cur =
-      let (middle, right') = splitAt delta right
+  | delta0> 0 =
+      let delta = min delta0 (len-cur)
+          (middle, right') = splitAt delta right
       in StepList (cur+delta) len (left ++ reverse middle) right'
-  | otherwise = error "moved cursor past end of list"
+  | otherwise = error "case statement of Dao.StepList.slCursorShift"
 
 -- | Place the cursor at an index position.
 slCursorTo :: Int -> StepList a -> StepList a

@@ -596,6 +596,7 @@ loadEssentialFunctions = do
   daoFunction "abs"      builtin_abs
   daoFunction "time"     builtin_time
   daoFunction "now"      builtin_now
+  daoFunction "ref"      builtin_ref
   daoFunction "defined"  builtin_check_if_defined
   daoFunction "delete"   builtin_delete
   daoFunction "typeof"   builtin_typeof
@@ -854,27 +855,28 @@ instance ObjectClass UStr where
   fromObj o = case o of { OString o -> return o; _ -> mzero; }
   castToCoreType t = case t of
     StringType -> return . OString
-    RefType    -> fmap obj . xmaybe . (maybeFromUStr :: UStr -> Maybe Name)
-    _          -> castToCoreType StringType . uchars
+    _          -> castToCoreType t . uchars
 
 instance ObjectClass String where
   obj = obj . toUStr
   fromObj = fromObj >=> maybeFromUStr
   castToCoreType t = case t of
-      NullType  -> \o -> guard (o=="null") >> return ONull
-      TrueType  -> \o -> case map toLower o of
-        "true"  -> return OTrue
-        "yes"   -> return OTrue
-        "no"    -> return ONull
-        "false" -> return ONull
-        "null"  -> return ONull
-        _       -> mzero
-      IntType   -> pars OInt
-      WordType  -> pars OWord
-      LongType  -> pars OLong
-      FloatType -> pars OFloat
-      TimeType  -> pars OAbsTime
-      _         -> \ _ -> mzero
+      NullType   -> \o -> guard (o=="null") >> return ONull
+      TrueType   -> \o -> case map toLower o of
+        "true"   -> return OTrue
+        "yes"    -> return OTrue
+        "no"     -> return ONull
+        "false"  -> return ONull
+        "null"   -> return ONull
+        _        -> mzero
+      IntType    -> pars OInt
+      WordType   -> pars OWord
+      LongType   -> pars OLong
+      FloatType  -> pars OFloat
+      TimeType   -> pars OAbsTime
+      StringType -> return . OString . ustr
+      RefType    -> pars ORef
+      _          -> \ _ -> mzero
     where
       nospc = dropWhile isSpace
       pars f str = case fmap (reverse . nospc . reverse) <$> readsPrec 0 (nospc str) of
@@ -2146,6 +2148,35 @@ data Reference
   | RefObject  Object RefSuffix
   | RefWrapper Reference
   deriving (Eq, Ord, Typeable, Show)
+
+instance Monoid (XPure Reference) where
+  mempty = mzero
+  mappend a b = msum $
+    [ a >>= \a -> b >>= \b -> case b of
+        Reference UNQUAL name suf -> let suf2 = DotRef name suf in case a of
+          Reference  q name suf1 -> return $ Reference q name (suf1 <> suf2)
+          RefObject  o      suf1 -> return $ RefObject   o    (suf1 <> suf2)
+          RefWrapper a           -> return a <> return b
+        _ -> throwError $ obj $
+          [ obj "appending to first reference", obj a
+          , obj "a second reference that is not a simple reference", obj b
+          ]
+    , a, b
+    ]
+
+instance Read Reference where
+  readsPrec _ str = loop [] (sp str) where
+    sp = dropWhile isSpace
+    loop rx str = do
+      (a,  str) <- pure (span (\c -> isAlpha    c && c=='_') str)
+      guard (not $ null a)
+      (ax, str) <- pure (span (\c -> isAlphaNum c && c=='_') str)
+      str <- pure (sp str)
+      case str of
+        '.':str -> loop (rx++[fromUStr $ toUStr $ a++ax]) (sp str)
+        ""      -> guard (not $ null rx) >>
+          [(Reference UNQUAL (head rx) $ refSuffixFromNames (tail rx), "")]
+        _       -> []
 
 -- | Construct a 'Reference' with a 'RefQualifier' and a 'Name'.
 reference :: RefQualifier -> Name -> Reference
@@ -5547,28 +5578,36 @@ _castNumerical name f = let n = ustr name :: Name in
   }
 
 builtin_int :: DaoFunc ()
-builtin_int = _castNumerical "int" $ fmap (OInt . fromIntegral) . execute . asInteger
+builtin_int = _castNumerical "int" $
+  fmap OInt . (execute . castToCoreType IntType >=> xmaybe . fromObj)
 
 builtin_long :: DaoFunc ()
-builtin_long = _castNumerical "long" $ fmap obj . execute . asInteger
+builtin_long = _castNumerical "long" $
+  fmap OLong . (execute . castToCoreType LongType >=> xmaybe . fromObj)
 
 builtin_ratio :: DaoFunc ()
-builtin_ratio = _castNumerical "ratio" $ fmap obj . execute . asRational
+builtin_ratio = _castNumerical "ratio" $
+  fmap ORatio . (execute . castToCoreType RatioType >=> xmaybe . fromObj)
 
 builtin_float :: DaoFunc ()
-builtin_float = _castNumerical "float" $ fmap (OFloat . fromRational) . execute . asRational
+builtin_float = _castNumerical "float" $
+  fmap OFloat . (execute . castToCoreType FloatType >=> xmaybe . fromObj)
 
 builtin_complex :: DaoFunc ()
-builtin_complex = _castNumerical "complex" $ fmap OComplex . execute . asComplex
+builtin_complex = _castNumerical "complex" $
+  fmap OComplex . (execute . castToCoreType ComplexType >=> xmaybe . fromObj)
 
 builtin_imag :: DaoFunc ()
-builtin_imag = _castNumerical "imag" $ fmap (OFloat . imagPart) . execute . asComplex
+builtin_imag = _castNumerical "imag" $
+  fmap (OFloat . imagPart) . (execute . castToCoreType ComplexType >=> xmaybe . fromObj)
 
 builtin_phase :: DaoFunc ()
-builtin_phase = _castNumerical "phase" $ fmap (OFloat . phase) . execute . asComplex
+builtin_phase = _castNumerical "phase" $
+  fmap (OFloat . phase) . (execute . castToCoreType ComplexType >=> xmaybe . fromObj)
 
 builtin_conj :: DaoFunc ()
-builtin_conj = _castNumerical "conj" $ fmap (OComplex . conjugate) . execute . asComplex
+builtin_conj = _castNumerical "conj" $
+  fmap (OComplex . conjugate) . (execute . castToCoreType ComplexType >=> xmaybe . fromObj)
 
 builtin_abs :: DaoFunc ()
 builtin_abs = _castNumerical "abs" $ execute . asPositive
@@ -5590,6 +5629,13 @@ _funcWithoutParams name f = let n = toUStr name in
 
 builtin_now :: DaoFunc ()
 builtin_now = _funcWithoutParams "now" $ (Just . obj) <$> liftIO getCurrentTime
+
+builtin_ref :: DaoFunc ()
+builtin_ref =
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc = \ () -> fmap (flip (,) () . Just) . execute . mconcat . fmap xpure
+  }
 
 builtin_check_if_defined :: DaoFunc ()
 builtin_check_if_defined =

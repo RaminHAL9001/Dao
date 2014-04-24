@@ -173,13 +173,13 @@ instance HataClass ListEditor where
     defMethod "insertLeft" $
       daoFunc
       { funcAutoDerefParams = True
-      , daoForeignFunc = \ (ListEditor sl) ox -> pure (ox<++sl) >>= \sl -> return $
+      , daoForeignFunc = \ (ListEditor sl) ox -> pure (snd (objConcat ox) <++ sl) >>= \sl -> return $
           (Just $ obj $ ListEditor sl, ListEditor sl)
       }
     defMethod "insertRight" $
       daoFunc
       { funcAutoDerefParams = True
-      , daoForeignFunc = \ (ListEditor sl) ox -> pure (ox++>sl) >>= \sl -> return $
+      , daoForeignFunc = \ (ListEditor sl) ox -> pure (snd (objConcat ox) ++> sl) >>= \sl -> return $
           (Just $ obj $ ListEditor sl, ListEditor sl)
       }
     defMethod "cursorTo" $

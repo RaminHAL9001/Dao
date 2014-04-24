@@ -210,7 +210,11 @@ infixr 5 |>
 -- > [a0, a1, a2] <++ ([b0, b1, b2] <> [b3, b4])
 -- >                  ([b0, ab, b2, a0, a1, a2] <> [b3, b4])
 (<++) :: [a] -> StepList a -> StepList a
-(<++) ox sl = sl{ slLeftOfCursor = slLeftOfCursor sl ++ reverse ox }
+(<++) ox sl = let len = length ox in
+  sl{ slLeftOfCursor = slLeftOfCursor sl ++ reverse ox
+    , slCursor = slCursor sl + len
+    , slLength = slLength sl + len
+    }
 infixr 5 <++
 
 -- | Place an item to the right of the cursor. This operator binds to the right with a precedence of
@@ -218,7 +222,10 @@ infixr 5 <++
 -- > [a0, a1, a2] ++> ([b0, b1, b2] <> [b3, b4])
 -- >                  ([b0, b1, b2] <> [a0, a1, a2, b3, b4])
 (++>) :: [a] -> StepList a -> StepList a
-(++>) ox sl = sl{ slRightOfCursor = ox ++ slRightOfCursor sl }
+(++>) ox sl = let len = length ox in
+  sl{ slRightOfCursor = ox ++ slRightOfCursor sl
+    , slLength = slLength sl + len
+    }
 infixr 5 ++>
 
 -- | Returns 'Prelude.True' if it is possible to move the cursor left or right by @n@ steps.

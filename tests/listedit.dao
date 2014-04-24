@@ -1,17 +1,109 @@
 global LE = ListEditor{};
 global saved = Dict{};
 
+func delSpaces(list) { for item in list { if(item==" ") { delete(item); } } return list; }
+
 rule "ls" { println(global LE); }
-rule "<+ $left" { global LE.insertLeft(left); }
-rule "$right +>" { global LE.insertRight(right); }
+rule "ls $list" {
+	try {
+		list = delSpaces(list);
+		for item in list {
+			try {
+				println(global saved[item]);
+			}
+			catch err {
+				println("no such list ", item);
+			}
+		}
+	}
+	catch err { println(err); }
+}
 
-rule "cd $i?" { global LE.cursorTo(int(i)); }
-rule "<."     { global LE.shift(-1); }
-rule "<. $i?" { global LE.shift(int(-i)); }
-rule ".>"     { global LE.shift(+1); }
-rule ".> $i?" { global LE.shift(int(i)); }
+rule "<+ $left" {
+	try {
+		global LE.insertLeft(delSpaces(left));
+		println("inserted items");
+	}
+	catch err { println(err); }
+}
 
-rule "cp $lo? $hi? -> $dest?" { global saved[$dest] = global LE.copy(int(lo), int(hi)); }
-rule "rm $lo? $hi?" { global LE.cut(int(lo), int(hi)); }
-rule "rm $lo? $hi? -> $dest?" { global saved[$dest] = global LE.cut(int(lo), int(hi)); }
+rule "+> $right" {
+	try {
+		global LE.insertRight(delSpaces(right));
+		println("inserted items");
+	}
+	catch err { println(err); }
+}
+
+rule "$list? <+" {
+	try {
+		global LE.insertLeft(global saved[list]);
+		println("inserted items");
+	}
+	catch err { println(err); }
+}
+
+rule "$list? +>" {
+	try {
+		global LE.insertRight(global saved[list]);
+		println("inserted items");
+	}
+	catch err { println(err); }
+}
+
+rule "cd $i?" {
+	try { i = int(join("", i)); global LE.cursorTo(i); println("cursor to index ", i); }
+	catch err { println(err); }
+}
+
+rule "<." {
+	try { global LE.shift(-1); println("shift cursor left 1", i); }
+	catch err { println(err); }
+}
+
+rule "<. $i?" {
+	try { i = int(join("", i)); global LE.shift(-i); println("shift cursor left ", -i); }
+	catch err { println(err); }
+}
+
+rule ".>" {
+	try { global LE.shift(+1); println("shift cursor right 1"); }
+	catch err { println(err); }
+}
+
+rule ".> $i?" {
+	try { i = int(join("", i)); global LE.shift(+i); println("shift cursor left ", i); }
+	catch err { println(err); }
+}
+
+rule "cut $lo? $hi?" {
+	try {
+		lo = int(join("", lo)); hi = int(join("", hi));
+		items = global LE.cut(lo, hi);
+		println("deleted items: ", items);
+	}
+	catch err { println(err); }
+}
+
+rule "cut $lo? $hi? -> $dest?" {
+	try {
+		lo = int(join("", lo)); hi = int(join("", hi));
+		items = global LE.cut(lo, hi);
+		global saved[$dest] = items;
+		println("cut range of items ", lo, "..", hi, " and moved them into ", dest);
+	}
+	catch err { println(err); }
+}
+
+rule "cp $lo? $hi? -> $dest?" {
+	try {
+		lo = int(lo); hi = int(hi);
+		items = global LE.copy(lo, hi);
+		global saved[$dest] = items;
+		println("copied range of items ", lo, "..", hi, " into ", dest);
+	}
+	catch err { println(err); }
+}
+
+rule "rm $x?" { delete(global saved[$x]); println("deleted ", $x); }
 

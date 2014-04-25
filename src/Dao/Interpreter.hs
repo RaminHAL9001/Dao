@@ -601,6 +601,7 @@ loadEssentialFunctions = do
   daoFunction "delete"   builtin_delete
   daoFunction "typeof"   builtin_typeof
   daoFunction "sizeof"   builtin_sizeof
+  daoFunction "call"     builtin_call
   daoFunction "tokenize" builtin_tokenize
   daoFunction "query"    builtin_query
   daoFunction "doAll"    builtin_doAll
@@ -5677,6 +5678,32 @@ builtin_sizeof =
         [obj "sizeof() function must take exactly one parameter argument, instead got", obj ox]
   }
 
+builtin_call :: DaoFunc ()
+builtin_call =
+  daoFunc
+  { funcAutoDerefParams = False
+  , daoForeignFunc = \ () ox -> case ox of
+      [func, params] -> do
+        let nonlist_err = fail "second parameter to \"call()\" function is not a list of arguments"
+        params <- case params of
+          OList params -> return params
+          ORef  params -> referenceLookup params >>= \params -> case params of
+            Nothing -> fail "second parameter parameter to \"call()\" function evaluated to null"
+            Just (_, params) -> xmaybe (fromObj params) <|> nonlist_err
+          _ -> nonlist_err
+        qref <- xmaybe (fromObj func)
+          <|> fail "first parameter to \"call()\" function is not a reference to a function"
+        func <- referenceLookup qref
+        case func of
+          Nothing -> fail "first parameter to \"call()\" function evaluated to null"
+          Just (qref, func) -> fmap (const ()) <$> callObject qref func params
+      _ -> fail $ unwords $
+        [ "the \"call()\" function was evaluated with incorrect arguments."
+        , "Expecting a reference to function as first parameter"
+        , "and a list of arguments as the second parameter."
+        ]
+  }
+
 builtin_tokenize :: DaoFunc ()
 builtin_tokenize =
   daoFunc
@@ -5776,15 +5803,19 @@ callCallables this funcs params = fmap (fmap (M.lookup (ustr "this"))) $
   msum $ flip map funcs $ \f -> matchFuncParams (argsPattern f) params >>=
     flip execFuncPushStack (execute $ codeSubroutine f) . M.alter (const this) (ustr "this")
 
--- | If the given object provides a 'defCallable' callback, the object can be called with parameters
--- as if it were a function.
+-- | This function assumes you have retrieved a callable function-like 'Object' using a 'Reference'.
+-- This function evaluates 'callCallables', and extracts the 'CallableCode' from the 'Object'
+-- provided as the second parameter using 'objToCallable'. The 'Reference' passed as the first
+-- parameter should be the reference used to retrieve the function 'Object'. If the given object
+-- provides a 'defCallable' callback, the object can be called with parameters as if it were a
+-- function.
 callObject :: Reference -> Object -> [Object] -> Exec (Maybe Object, Maybe Object)
 callObject qref o params = case o of
-  OHaskell (Hata ifc d) -> case objCallable ifc of
-    Just getFuncs -> getFuncs d >>= \funcs -> callCallables (Just o) funcs params
-    Nothing -> case fromDynamic d of
-      Just func -> flip (,) Nothing . fst <$> executeDaoFunc qref func () params -- try calling an ordinary function
-      Nothing   -> err
+  OHaskell (Hata ifc d) -> case fromDynamic d of
+    Just func -> fmap (const Nothing) <$> executeDaoFunc qref func () params -- try calling an ordinary function
+    Nothing   -> case objCallable ifc of
+      Just getFuncs -> getFuncs d >>= \func -> callCallables (Just o) func params
+      Nothing       -> err
   _ -> err
   where
     err = execThrow $ obj $

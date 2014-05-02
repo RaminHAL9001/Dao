@@ -2895,7 +2895,6 @@ data ExecUnit
       -- 'Interface'@ object that will allow any method with access to this
       -- 'GenRuntime' to retrieve a 'Interface' by it's name string. Specifically,
       -- this will be used by objects stored in the 'OHaskell' constructor.
-    , debugIndent :: Int
     , importGraph        :: M.Map UPath ExecUnit
       -- ^ every file opened, whether it is a data file or a program file, is registered here under
       -- it's file path (file paths map to 'File's).
@@ -2940,7 +2939,6 @@ _initExecUnit = do
   return $
     ExecUnit
     { globalMethodTable  = mempty
-    , debugIndent = 0
     , defaultTimeout     = Nothing
     , importGraph        = mempty
     , currentWithRef     = WithRefStore Nothing
@@ -3724,11 +3722,8 @@ innerDataUpdateIndex
   :: (Show o, ObjectLens o index)
   => (dt -> o) -> (dt -> o -> dt)
   -> index -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus dt (Maybe Object)
-innerDataUpdateIndex unwrap wrap i upd = do
-  dt <- get
-  let o = unwrap dt
-  (result, o) <- withInnerLens o (updateIndex i upd)
-  tab <- concat . flip replicate "  " <$> focusLiftExec (gets debugIndent)
+innerDataUpdateIndex unwrap wrap i upd = get >>= \dt -> do
+  (result, o) <- withInnerLens (unwrap dt) (updateIndex i upd)
   put (wrap dt o) >> return result
 
 -- This function is a special case of 'innerDataUpdateIndex' where the object in focus is an
@@ -3823,7 +3818,6 @@ instance ObjectLens (Stack Name Object) Reference where
 ----------------------------------------------------------------------------------------------------
 
 newtype LocalStore = LocalStore (Stack Name Object)
-  deriving Show
 
 instance ObjectLens LocalStore Name where
   updateIndex = innerDataUpdateIndex (\ (LocalStore o) -> o) (\_ -> LocalStore)
@@ -3836,7 +3830,6 @@ instance ObjectLens LocalStore Reference where
 ----------------------------------------------------------------------------------------------------
 
 newtype GlobalStore = GlobalStore T_dict
-  deriving Show
 
 instance ObjectLens GlobalStore Name where
   updateIndex = innerDataUpdateIndex (\ (GlobalStore o) -> o) (\_ -> GlobalStore)
@@ -3849,7 +3842,6 @@ instance ObjectLens GlobalStore Reference where
 ----------------------------------------------------------------------------------------------------
 
 newtype StaticStore = StaticStore (Maybe Subroutine)
-  deriving Show
 
 instance ObjectLens Subroutine Name where
   updateIndex = innerDataUpdateIndex staticVars (\d o -> d{staticVars=o})
@@ -3873,7 +3865,6 @@ instance ObjectLens StaticStore Reference where
 ----------------------------------------------------------------------------------------------------
 
 newtype WithRefStore = WithRefStore (Maybe Object)
-  deriving Show
 
 instance ObjectLens WithRefStore Name where
   updateIndex name =
@@ -3892,7 +3883,6 @@ instance ObjectLens WithRefStore Reference where
 -- exception. What really happens is, if an update is performed an update occurs on a copy of the
 -- value in the store, then the store silently disgards the updated copy.
 newtype ConstantStore = ConstantStore T_dict
-  deriving Show
 
 instance ObjectLens ConstantStore Name where
   updateIndex = innerDataUpdateIndex (\ (ConstantStore o) -> o) (\_ -> ConstantStore)
@@ -3923,7 +3913,7 @@ _updateSetQual q update i upd = do
   update i upd <|> (_setTargetRefInfo targref >> mzero)
 
 _updateLocal :: ObjectLens LocalStore i => i -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
-_updateLocal = _updateSetQual LOCAL $ innerDataUpdateIndex execStack (\n o -> n{execStack=o})
+_updateLocal = _updateSetQual LOCAL $ execUnitUpdateRef execStack (\n o -> n{execStack=o})
 
 _lookupLocal :: ObjectLens LocalStore i => i -> ObjectFocus ExecUnit Object
 _lookupLocal = _lookupSetQual LOCAL $ innerDataLookupIndex execStack

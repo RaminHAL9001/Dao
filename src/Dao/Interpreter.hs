@@ -48,7 +48,7 @@ module Dao.Interpreter(
     execToFocusUpdater, withInnerLens, runObjectFocusExec, focusObjectClass, focusStructAsDict,
     focusLiftExec, focalPathSuffix, focusGuardStructName, updateHataAsStruct, callMethod,
     innerDataUpdateIndex, innerDataLookupIndex,
-    referenceUpdateIndex, referenceLookupIndex,
+    referenceUpdateName, referenceLookupName,
     Object(
       ONull, OTrue, OType, OInt, OWord, OLong,
       OFloat, ORatio, OComplex, OAbsTime, ORelTime,
@@ -175,10 +175,9 @@ import           Control.Monad.State
 
 #if 0
 import Debug.Trace
+import System.IO
 strace :: PPrintable s => String -> s -> s
 strace msg s = trace (msg++": "++prettyShow s) s
-#endif
-#if 0
 dbg :: MonadIO m => String -> m ()
 dbg = liftIO . hPutStrLn stderr . ("(DEBUG) "++) . (>>=(\c -> if c=='\n' then "\n(DEBUG) " else [c]))
 dbg' :: MonadIO m => String -> m a -> m a
@@ -2266,8 +2265,8 @@ referenceLookup qref = case qref of
     if refHasFuncCall qref -- function calls must always perform an update, not just a lookup
     then referenceUpdate qref return
     else flip mplus (return Nothing) $ do
-      (a, (qref, _)) <- get >>= runObjectFocusExec (lookupIndex qref) (fst $ referenceHead qref)
-      return $ Just (qref, a)
+      (a, (qref, xunit)) <- get >>= runObjectFocusExec (lookupIndex qref) (fst $ referenceHead qref)
+      put xunit >> return (Just (qref, a))
 
 refNames :: [Name] -> Maybe Reference
 refNames nx = case nx of
@@ -2311,9 +2310,9 @@ refHasFuncCall qref = case qref of
 -- it.
 referenceUpdate :: Reference -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe (Reference, Object))
 referenceUpdate qref upd = do
-  (result, (qref, xunit)) <- get >>=
+  (result, (qref, _oldxunit)) <- get >>=
     runObjectFocusExec (updateIndex qref (execToFocusUpdater upd)) (fst $ referenceHead qref)
-  put xunit >> return (fmap ((,) qref) result)
+  return (fmap ((,) qref) result)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2896,6 +2895,7 @@ data ExecUnit
       -- 'Interface'@ object that will allow any method with access to this
       -- 'GenRuntime' to retrieve a 'Interface' by it's name string. Specifically,
       -- this will be used by objects stored in the 'OHaskell' constructor.
+    , debugIndent :: Int
     , importGraph        :: M.Map UPath ExecUnit
       -- ^ every file opened, whether it is a data file or a program file, is registered here under
       -- it's file path (file paths map to 'File's).
@@ -2940,6 +2940,7 @@ _initExecUnit = do
   return $
     ExecUnit
     { globalMethodTable  = mempty
+    , debugIndent = 0
     , defaultTimeout     = Nothing
     , importGraph        = mempty
     , currentWithRef     = WithRefStore Nothing
@@ -3720,13 +3721,66 @@ instance ObjectFunctor (Maybe Object) RefSuffix where
 -- @newtype@s, the wrapper function can be given as @('Prelude.const' MyNewtype)@ where
 -- @MyNewtype@ is the newtype constructor.
 innerDataUpdateIndex
-  :: ObjectLens o index
+  :: (Show o, ObjectLens o index)
   => (dt -> o) -> (dt -> o -> dt)
   -> index -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus dt (Maybe Object)
 innerDataUpdateIndex unwrap wrap i upd = do
   dt <- get
-  (result, o) <- withInnerLens (unwrap dt) (updateIndex i upd)
+  let o = unwrap dt
+  (result, o) <- withInnerLens o (updateIndex i upd)
+  tab <- concat . flip replicate "  " <$> focusLiftExec (gets debugIndent)
   put (wrap dt o) >> return result
+
+-- This function is a special case of 'innerDataUpdateIndex' where the object in focus is an
+-- 'ExecUnit'. The 'ExecUnit' in focus is actually ignored, and all updates are made to the
+-- 'ExecUnit' in the inner 'Exec' monad contained within the 'ObjectFocus' monad. This function is
+-- necessary to prevent confusion between two different 'ExecUnit' values available to the
+-- 'ObjectFocus' monad. There are two completely different 'ExecUnit' values available in the state
+-- of the polymorphic 'ObjectFocus' monad when the focus of the 'ObjectFocus' is the 'ExecUnit' data
+-- type. These two 'ExecUnit's are:
+--     1. The 'ExecUnit' in the focus which can be modified with 'Control.Monad.State.put' and
+--     'Control.Monad.State.update' functions. I shall refer to this 'ExecUnit' as the "focused
+--     ExecUnit".
+--     2. The 'ExecUnit' value used as the state of the 'Exec' monad, which can be modified by
+--     evaluating 'Control.Monad.State.modify' or 'Control.Monad.State.put' when passed to the
+--     'focusLiftExec' function. I shall refer to this 'ExecUnit' as the "working ExecUnit".
+-- 
+-- The important thing to remember is that the "focused ExecUnit" is completely disgarded by this
+-- function, it is immediately overwritten by the "working ExecUnit". All updates are made to the
+-- "working ExecUnit". The reason is that the 'ObjectFocus' monad can lift 'Exec' monadic functions
+-- into it to update the "working ExecUnit", and it is important that these updates not be lost by
+-- overwriting them with the "focused ExecUnit".
+-- 
+-- This is very different behavior from simply using the polymorphic 'innerDataUpdateIndex' function
+-- with an 'ExecUnit' as the "focused" object, because 'innerDataUpdateIndex' applies all updates to
+-- the "focused" object (the "focused ExecUnit") only, whereas 'Exec' monadic functions evaluated
+-- within the 'focusLiftExec' function would operate on the "working ExecUnit".
+--
+-- If you started evaluation of 'innerDataUpdateIndex' with a copy of the same 'ExecUnit' as both
+-- the "focused" and "working" objects, by the time 'innerDataUpdateIndex' returned there would be
+-- two different 'ExecUnit' objects with a different set of revisions made to each copy, revisions
+-- which you would not be able to reconcile. For example if the update function deleted a variable
+-- while simultaneously assigning to another variable, as in this Dao programming language
+-- expression:
+-- >    x = 1; y = 1;
+-- >    x = f(delete(y), x+1);
+-- The @y@ variable would be deleted from the "working ExecUnit" by the "delete()" function, but
+-- would remain unchanged in the "focused ExecUnit", and then @x@ would be incremented in the
+-- "focused ExecUnit". By the time 'innerDataUpdateIndex' returns, you have two completely different
+-- 'ExecUnit's, one where @y@ exists and @x@ is not incremenetd, and one where @y@ does not exist and
+-- "x" has not been incremented.
+-- 
+-- This is why it is necessary to have a special case of 'innerDataUpdateIndex' function that is
+-- speically designed to evaluate updates only on the "working ExecUnit".
+execUnitUpdateRef
+  :: ObjectLens o ref
+  => (ExecUnit -> o) -> (ExecUnit -> o -> ExecUnit)
+  -> ref -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
+execUnitUpdateRef unwrap wrap ref upd = do
+  o <- focusLiftExec $ gets unwrap
+  (result, o) <- withInnerLens o $ updateIndex ref upd
+  focusLiftExec $ modify $ flip wrap o
+  return result
 
 -- | If you have a data type @o@ instantiating @'ObjectLens' o index@ with a given index, and you
 -- have a @newtype@ wrapping this data type @o@, you can instantiate 'lookupIndex' for this newtype
@@ -3744,55 +3798,58 @@ instance ObjectLens (Stack Name Object) Name where
 
 -- | This function can be used to automatically instantiate 'updateIndex' for any type @o@ that also
 -- instantiates @'ObjectLens' o 'Dao.String.Name'@.
-referenceUpdateIndex :: ObjectLens o Name => Reference -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus o (Maybe Object)
-referenceUpdateIndex qref upd = case qref of
+referenceUpdateName :: ObjectLens o Name => Reference -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus o (Maybe Object)
+referenceUpdateName qref upd = case qref of
   Reference _ name suf -> updateIndex name $ updateIndex suf upd
   RefObject o suf -> case o of
-    ORef o -> referenceUpdateIndex (refAppendSuffix o suf) upd
+    ORef o -> referenceUpdateName (refAppendSuffix o suf) upd
     _      -> fail "cannot update reference"
   RefWrapper _ -> fail "cannot update reference"
 
 -- | This function can be used to automatically instantiate 'lookupIndex' for any type @o@ that also
 -- instantiates @'ObjectLens' o 'Dao.String.Name'@.
-referenceLookupIndex :: ObjectLens o Name => Reference -> ObjectFocus o Object
-referenceLookupIndex qref = case qref of
+referenceLookupName :: ObjectLens o Name => Reference -> ObjectFocus o Object
+referenceLookupName qref = case qref of
   Reference _ name suf -> lookupIndex name >>= fmap fst . flip withInnerLens (lookupIndex suf) . Just
   RefObject o      suf -> case o of
-    ORef o -> referenceLookupIndex (refAppendSuffix o suf)
+    ORef o -> referenceLookupName (refAppendSuffix o suf)
     _      -> fail "cannot update reference"
   RefWrapper _ -> fail "cannot update reference"
 
 instance ObjectLens (Stack Name Object) Reference where
-  updateIndex = referenceUpdateIndex
-  lookupIndex = referenceLookupIndex
+  updateIndex = referenceUpdateName
+  lookupIndex = referenceLookupName
 
 ----------------------------------------------------------------------------------------------------
 
 newtype LocalStore = LocalStore (Stack Name Object)
+  deriving Show
 
 instance ObjectLens LocalStore Name where
-  updateIndex = innerDataUpdateIndex (\ (LocalStore o) -> o) (const LocalStore)
+  updateIndex = innerDataUpdateIndex (\ (LocalStore o) -> o) (\_ -> LocalStore)
   lookupIndex = innerDataLookupIndex (\ (LocalStore o) -> o)
 
 instance ObjectLens LocalStore Reference where
-  updateIndex = referenceUpdateIndex
-  lookupIndex = referenceLookupIndex
+  updateIndex = referenceUpdateName
+  lookupIndex = referenceLookupName
 
 ----------------------------------------------------------------------------------------------------
 
 newtype GlobalStore = GlobalStore T_dict
+  deriving Show
 
 instance ObjectLens GlobalStore Name where
-  updateIndex = innerDataUpdateIndex (\ (GlobalStore o) -> o) (const GlobalStore)
+  updateIndex = innerDataUpdateIndex (\ (GlobalStore o) -> o) (\_ -> GlobalStore)
   lookupIndex = innerDataLookupIndex (\ (GlobalStore o) -> o)
 
 instance ObjectLens GlobalStore Reference where
-  updateIndex = referenceUpdateIndex
-  lookupIndex = referenceLookupIndex
+  updateIndex = referenceUpdateName
+  lookupIndex = referenceLookupName
 
 ----------------------------------------------------------------------------------------------------
 
 newtype StaticStore = StaticStore (Maybe Subroutine)
+  deriving Show
 
 instance ObjectLens Subroutine Name where
   updateIndex = innerDataUpdateIndex staticVars (\d o -> d{staticVars=o})
@@ -3810,22 +3867,23 @@ instance ObjectLens StaticStore Name where
     Just  o -> fst <$> withInnerLens o (lookupIndex name)
 
 instance ObjectLens StaticStore Reference where
-  updateIndex = referenceUpdateIndex
-  lookupIndex = referenceLookupIndex
+  updateIndex = referenceUpdateName
+  lookupIndex = referenceLookupName
 
 ----------------------------------------------------------------------------------------------------
 
 newtype WithRefStore = WithRefStore (Maybe Object)
+  deriving Show
 
 instance ObjectLens WithRefStore Name where
   updateIndex name =
-    innerDataUpdateIndex (\ (WithRefStore o) -> o) (const WithRefStore) (DotRef name NullRef)
+    innerDataUpdateIndex (\ (WithRefStore o) -> o) (\_ -> WithRefStore) (DotRef name NullRef)
   lookupIndex name =
     innerDataLookupIndex (\ (WithRefStore o) -> o) (DotRef name NullRef)
 
 instance ObjectLens WithRefStore Reference where
-  updateIndex = referenceUpdateIndex
-  lookupIndex = referenceLookupIndex
+  updateIndex = referenceUpdateName
+  lookupIndex = referenceLookupName
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3834,14 +3892,15 @@ instance ObjectLens WithRefStore Reference where
 -- exception. What really happens is, if an update is performed an update occurs on a copy of the
 -- value in the store, then the store silently disgards the updated copy.
 newtype ConstantStore = ConstantStore T_dict
+  deriving Show
 
 instance ObjectLens ConstantStore Name where
-  updateIndex = innerDataUpdateIndex (\ (ConstantStore o) -> o) (const ConstantStore)
+  updateIndex = innerDataUpdateIndex (\ (ConstantStore o) -> o) (\_ -> ConstantStore)
   lookupIndex = innerDataLookupIndex (\ (ConstantStore o) -> o)
 
 instance ObjectLens ConstantStore Reference where
-  updateIndex = referenceUpdateIndex
-  lookupIndex = referenceLookupIndex
+  updateIndex = referenceUpdateName
+  lookupIndex = referenceLookupName
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3870,25 +3929,25 @@ _lookupLocal :: ObjectLens LocalStore i => i -> ObjectFocus ExecUnit Object
 _lookupLocal = _lookupSetQual LOCAL $ innerDataLookupIndex execStack
 
 _updateConst :: ObjectLens ConstantStore i => i -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
-_updateConst = _updateSetQual CONST $ \i upd -> innerDataUpdateIndex (ConstantStore . builtinConstants) const i upd
+_updateConst = _updateSetQual CONST $ \i upd -> execUnitUpdateRef (ConstantStore . builtinConstants) const i upd
 
 _lookupConst :: ObjectLens ConstantStore i => i -> ObjectFocus ExecUnit Object
 _lookupConst = _lookupSetQual CONST $ innerDataLookupIndex (ConstantStore . builtinConstants)
 
 _updateStatic :: ObjectLens StaticStore i => i -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
-_updateStatic = _updateSetQual STATIC $ innerDataUpdateIndex currentCodeBlock (\n o -> n{currentCodeBlock=o})
+_updateStatic = _updateSetQual STATIC $ execUnitUpdateRef currentCodeBlock (\n o -> n{currentCodeBlock=o})
 
 _lookupStatic :: ObjectLens StaticStore i => i -> ObjectFocus ExecUnit Object
 _lookupStatic = _lookupSetQual STATIC $ innerDataLookupIndex currentCodeBlock
 
 _updateGlobal :: ObjectLens GlobalStore i => i -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
-_updateGlobal = _updateSetQual GLOBAL $ innerDataUpdateIndex globalData (\n o -> n{globalData=o})
+_updateGlobal = _updateSetQual GLOBAL $ execUnitUpdateRef globalData (\n o -> n{globalData=o})
 
 _lookupGlobal :: ObjectLens GlobalStore i => i -> ObjectFocus ExecUnit Object
 _lookupGlobal = _lookupSetQual GLOBAL $ innerDataLookupIndex globalData
 
 _updateWithRef :: ObjectLens WithRefStore i => i -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
-_updateWithRef = _updateSetQual GLODOT $ innerDataUpdateIndex currentWithRef (\n o -> n{currentWithRef=o})
+_updateWithRef = _updateSetQual GLODOT $ execUnitUpdateRef currentWithRef (\n o -> n{currentWithRef=o})
 
 _lookupWithRef :: ObjectLens WithRefStore i => i -> ObjectFocus ExecUnit Object
 _lookupWithRef = _lookupSetQual GLODOT $ innerDataLookupIndex currentWithRef
@@ -3907,7 +3966,7 @@ instance ObjectLens ExecUnit Name where
 instance ObjectLens ExecUnit Reference where
   updateIndex qref upd = case qref of
     Reference q _ _ -> case q of
-      UNQUAL -> referenceUpdateIndex qref upd
+      UNQUAL -> referenceUpdateName qref upd
       LOCAL  -> _updateLocal  qref upd
       CONST  -> _updateConst  qref upd
       STATIC -> _updateStatic qref upd
@@ -3916,7 +3975,7 @@ instance ObjectLens ExecUnit Reference where
     _ -> fail "cannot update reference"
   lookupIndex qref = case qref of
     Reference q _ _ -> case q of
-      UNQUAL -> referenceLookupIndex qref
+      UNQUAL -> referenceLookupName qref
       LOCAL  -> _lookupLocal qref
       CONST  -> _lookupConst qref
       STATIC -> _lookupStatic qref

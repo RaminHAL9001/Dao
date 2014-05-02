@@ -248,7 +248,7 @@ slCursorShift delta0 a@(StepList cur len left right)
   | delta0> 0 =
       let delta = min delta0 (len-cur)
           (middle, right') = splitAt delta right
-      in StepList (cur+delta) len (left ++ reverse middle) right'
+      in StepList (cur+delta) len (reverse middle ++ left) right'
   | otherwise = error "case statement of Dao.StepList.slCursorShift"
 
 -- | Place the cursor at an index position.

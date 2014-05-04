@@ -64,6 +64,9 @@ edit: $(EDIT_FILES_LIST)
 		$(EDIT_FILES_LIST) \
 		$(shell $(call listfile,$(EDIT_FILES_LIST)))
 
+scratch: scratch.hs src/Dao/Interpreter.hs
+	$(GHC_BUILD) scratch.hs -o scratch
+
 NOTE := $(hash)$(hash)$(hash)
 
 info:

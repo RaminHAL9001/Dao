@@ -3,17 +3,16 @@ global saved = Dict{};
 
 func delSpaces(list) { for item in list { if(item==" ") { delete(item); } } return list; }
 
+rule "vars" { println(global saved); }
+
 rule "ls" { println(global LE); }
 rule "ls $list" {
 	try {
 		list = delSpaces(list);
 		for item in list {
-			try {
-				println(global saved[item]);
-			}
-			catch err {
-				println("no such list ", item);
-			}
+			item = ref(item);
+			try { println(global saved[item]); }
+			catch err { println("no such list ", item, " ", err); }
 		}
 	}
 	catch err { println(err); }
@@ -57,7 +56,7 @@ rule "cd $i?" {
 }
 
 rule "<." {
-	try { global LE.shift(-1); println("shift cursor left 1", i); }
+	try { global LE.shift(-1); println("shift cursor left 1"); }
 	catch err { println(err); }
 }
 
@@ -87,9 +86,10 @@ rule "cut $lo? $hi?" {
 
 rule "cut $lo? $hi? -> $dest?" {
 	try {
+		dest = ref(join("", dest));
 		lo = int(join("", lo)); hi = int(join("", hi));
 		items = global LE.cut(lo, hi);
-		global saved[$dest] = items;
+		global saved[dest] = items;
 		println("cut range of items ", lo, "..", hi, " and moved them into ", dest);
 	}
 	catch err { println(err); }

@@ -932,6 +932,7 @@ instance ObjectClass Reference where
 instance ObjectClass Name where
   obj n = ORef $ Reference UNQUAL n NullRef
   fromObj o = case o of
+    OString o -> maybeFromUStr o
     ORef (Reference UNQUAL name NullRef) -> return name
     _ -> mzero
 
@@ -2168,15 +2169,16 @@ instance Read Reference where
   readsPrec _ str = loop [] (sp str) where
     sp = dropWhile isSpace
     loop rx str = do
-      (a,  str) <- pure (span (\c -> isAlpha    c && c=='_') str)
+      (a,  str) <- pure (span (\c -> isAlpha    c || c=='_') str)
       guard (not $ null a)
-      (ax, str) <- pure (span (\c -> isAlphaNum c && c=='_') str)
+      (ax, str) <- pure (span (\c -> isAlphaNum c || c=='_') str)
+      ax  <- pure (fromUStr $ toUStr $ a++ax)
       str <- pure (sp str)
       case str of
-        '.':str -> loop (rx++[fromUStr $ toUStr $ a++ax]) (sp str)
-        ""      -> guard (not $ null rx) >>
-          [(Reference UNQUAL (head rx) $ refSuffixFromNames (tail rx), "")]
-        _       -> []
+        '.':str            -> loop (rx++[ax]) (sp str)
+        "" | not $ null rx -> [(Reference UNQUAL (head rx) $ refSuffixFromNames (tail $ rx++[ax]), "")]
+        ""                 -> [(Reference UNQUAL ax NullRef, "")]
+        _                  -> error $ concat ["a=", show a, "ax=", show ax, "str=", show str]
 
 -- | Construct a 'Reference' with a 'RefQualifier' and a 'Name'.
 reference :: RefQualifier -> Name -> Reference
@@ -5684,7 +5686,12 @@ builtin_ref :: DaoFunc ()
 builtin_ref =
   daoFunc
   { funcAutoDerefParams = True
-  , daoForeignFunc = \ () -> fmap (flip (,) () . Just) . execute . mconcat . fmap xpure
+  , daoForeignFunc = \ () -> fmap (flip (,) () . Just . ORef . RefWrapper) . execute . mconcat .
+      ( let err o = throwError $ obj $
+              [obj "could not convert parameter of type", obj (typeOfObj o), obj "to Reference"]
+        in  fmap (\o -> mplus (castToCoreType RefType o) (err o) >>=
+                          (castToCoreType RefType >=> xmaybe . fromObj))
+      )
   }
 
 builtin_check_if_defined :: DaoFunc ()

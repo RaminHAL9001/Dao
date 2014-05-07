@@ -172,50 +172,44 @@ instance HataClass ListEditor where
       return $ obj $ ListEditor (a<>b)
     defMethod "insertLeft" $
       daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \ (ListEditor sl) ox -> pure (snd (objConcat ox) <++ sl) >>= \sl -> return $
+      { daoForeignFunc = \ (ListEditor sl) ox -> pure (snd (objConcat ox) <++ sl) >>= \sl -> return $
           (Just $ obj $ ListEditor sl, ListEditor sl)
       }
     defMethod "insertRight" $
       daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \ (ListEditor sl) ox -> pure (snd (objConcat ox) ++> sl) >>= \sl -> return $
+      { daoForeignFunc = \ (ListEditor sl) ox -> pure (snd (objConcat ox) ++> sl) >>= \sl -> return $
           (Just $ obj $ ListEditor sl, ListEditor sl)
       }
     defMethod "cursorTo" $
       daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \ (ListEditor sl) ox -> predicate (_getIndex ox) >>= \i ->
+      { daoForeignFunc = \ (ListEditor sl) ox -> predicate (_getIndex ox) >>= \i ->
           pure (slCursorTo i sl) >>= \sl -> return (deref sl, ListEditor sl)
       }
     defMethod "shift" $
       daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \ (ListEditor sl) ox -> predicate (_getIndex ox) >>= \i ->
+      { daoForeignFunc = \ (ListEditor sl) ox -> predicate (_getIndex ox) >>= \i ->
           pure (slCursorShift i sl) >>= \sl -> return (deref sl, ListEditor sl)
       }
     defMethod "copy" $
       daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \ (ListEditor sl) -> _withRange "copy" $ \a b -> return $
+      { daoForeignFunc = \ (ListEditor sl) -> _withRange "copy" $ \a b -> return $
           (Just $ obj $ ListEditor $ slCopyRelRange (a, b) sl, ListEditor sl)
       }
     defMethod "cut" $
       daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \ (ListEditor sl) -> _withRange "cut" $ \a b -> return $
+      { daoForeignFunc = \ (ListEditor sl) -> _withRange "cut" $ \a b -> return $
           (Just $ obj $ ListEditor $ slCopyRelRange (a, b) sl, ListEditor $ slDeleteRelRange (a, b) sl)
       }
     defMethod "copyRange" $
       daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \ (ListEditor sl) -> _withRange "copyRange" $ \a b -> return $
+      { daoForeignFunc = \ (ListEditor sl) -> _withRange "copyRange" $ \a b -> return $
           (Just $ obj $ ListEditor $ slCopyAbsRange (a, b) sl, ListEditor sl)
       }
     defMethod "cutRange" $
       daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \ (ListEditor sl) -> _withRange "cut" $ \a b -> return $
+      { daoForeignFunc = \ (ListEditor sl) -> _withRange "cut" $ \a b -> return $
           (Just $ obj $ ListEditor $ slCopyAbsRange (a, b) sl, ListEditor $ slDeleteAbsRange (a, b) sl)
       }
+    defInfixOp ADD $ \ _ (ListEditor sl) ->
+      xmaybe . fromObj >=> \ (ListEditor o) -> return (obj $ ListEditor $ sl <> o)
 

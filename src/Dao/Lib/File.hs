@@ -90,8 +90,7 @@ _withClosedHandle func file = case fileHandle file of
 _withContents :: (String -> IO Object) -> DaoFunc File
 _withContents f =
   daoFunc
-  { funcAutoDerefParams = True
-  , daoForeignFunc = \file ox -> case ox of
+  { daoForeignFunc = \file ox -> case ox of
       [] -> do
         _withClosedHandle "read" file
         _catchIOException "read" file $ fmap (flip (,) file . Just) $ readFile (uchars $ filePath file) >>= f
@@ -109,8 +108,7 @@ loadLibrary_File :: DaoSetup
 loadLibrary_File = do
   let fileOpener func mode = daoFunction func $
         daoFunc
-        { funcAutoDerefParams = True
-        , daoForeignFunc = \ () ->
+        { daoForeignFunc = \ () ->
             _paramPath func >=> fmap (flip (,) () . Just . obj) . flip (_openFile func . flip File Nothing) mode
         }
   fileOpener "readFile"   ReadMode
@@ -118,8 +116,7 @@ loadLibrary_File = do
   fileOpener "appendFile" AppendMode
   daoFunction "File" $
     daoFunc
-    { funcAutoDerefParams = True
-    , daoForeignFunc = \ () -> fmap (flip (,) () . Just . obj . flip File Nothing) . _paramPath "File"
+    { daoForeignFunc = \ () -> fmap (flip (,) () . Just . obj . flip File Nothing) . _paramPath "File"
     }
 
 instance ObjectClass File where { obj=new; fromObj=objFromHata; }
@@ -154,8 +151,7 @@ instance HataClass File where
       }
     defMethod "writeBinary" $
       daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \file ox -> do
+      { daoForeignFunc = \file ox -> do
           mtab  <- gets globalMethodTable
           handl <- _getHandle "writeBinary" file
           forM_ ox $ \o -> do
@@ -170,8 +166,7 @@ instance HataClass File where
       }
     defMethod "readBinary" $
       daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \file ox -> case ox of
+      { daoForeignFunc = \file ox -> case ox of
           [] -> do
             _withClosedHandle "readBinary" file
             mtab <- gets globalMethodTable
@@ -187,8 +182,7 @@ instance HataClass File where
       }
     let writeFunc func putstr = defMethod func $
           daoFunc
-          { funcAutoDerefParams = True
-          , daoForeignFunc = \file ox -> do
+          { daoForeignFunc = \file ox -> do
               ox <- requireAllStringArgs func ox
               handl <- _getHandle func file
               forM_ ox $ _catchIOException "write" file . putstr handl . uchars
@@ -200,8 +194,7 @@ instance HataClass File where
     writeFunc "writeLine" hPutStrLn
     defMethod "readLine" $
       daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \file ox -> case ox of
+      { daoForeignFunc = \file ox -> case ox of
           [] -> do
             handl <- _getHandle "readLine" file
             _catchIOException "readLine" file (flip (,) file . Just . obj <$> hGetLine handl)

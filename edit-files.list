@@ -46,7 +46,6 @@ src/Dao/Lib/IntMap.hs
 src/Dao/Lib/ListEditor.hs
 src/Dao/Lib/Parser.hs
 src/Dao/Lib/Process.hs
-src/Dao/Lib/Program.hs
 src/Dao/Lib/Set.hs
 src/Dao/Lib/Thread.hs
 

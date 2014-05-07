@@ -23,8 +23,8 @@ module Dao.Interpreter(
     Action(Action), actionTokens, actionPattern, actionMatch, actionCodeBlock,
     makeActionsForQuery, getLocalRuleSet, getGlobalRuleSet,
     DaoSetupM(), DaoSetup, haskellType, daoProvides, daoClass, daoConstant, daoFunction,
-    daoInitialize, setupDao, evalDao, DaoFunc, daoFunc, funcAutoDerefParams, daoForeignFunc,
-    executeDaoFunc,
+    daoFunction0, daoInitialize, setupDao, evalDao, DaoFunc, daoFunc, funcAutoDerefParams,
+    daoForeignFunc, executeDaoFunc,
     Sizeable(getSizeOf),
     ObjectClass(obj, fromObj, castToCoreType),
     execCastToCoreType, listToObj, listFromObj, new, opaque, objFromHata,
@@ -57,7 +57,7 @@ module Dao.Interpreter(
     T_type, T_int, T_word, T_long, T_ratio, T_complex, T_float, T_time, T_diffTime,
     T_char, T_string, T_ref, T_bytes, T_list, T_dict, T_struct,
     isNumeric, typeMismatchError,
-    initializeGlobalKey, destroyGlobalKey,
+    initializeGlobalKey, destroyGlobalKey, evalTopLevelAST,
     Reference(Reference, RefObject), reference, refObject, referenceHead, refUnwrap,
     refNames, referenceFromUStr, fmapReference, setQualifier, modRefObject, refHasFuncCall,
     refAppendSuffix, referenceLookup, referenceUpdate,
@@ -126,7 +126,7 @@ module Dao.Interpreter(
     autoDefReadIterable, defUpdateIterable, autoDefUpdateIterable, defIndexer, defIndexUpdater,
     defSizer, autoDefSizeable, autoDefToStruct, defToStruct, autoDefFromStruct, defFromStruct,
     defInitializer, defTraverse, autoDefTraverse, defInfixOp, defPrefixOp, defCallable, defDeref,
-    defMethod, defLeppard
+    defMethod, defMethod0, defLeppard
   )
   where
 
@@ -332,16 +332,14 @@ instance Executable [Action] [Object] where
 -- list of strings, it is considered to be already tokenized and simply appended to list of tokens
 -- produced by previous parameters.
 runTokenizer :: [Object] -> Exec [UStr]
-runTokenizer ox =
+runTokenizer ox = gets programTokenizer >>= \tok ->
   fmap concat $ forM (zip [(1::Int)..] ox) $ \ (i, o) ->
     maybe (execThrow $ obj [obj "cannot tokenize item passed as paramter", obj i]) id $ msum $
-      [ fromObj o >>= \o -> Just $ do
-          tok <- gets programTokenizer 
-          runExecTokenizer tok o
+      [ fromObj o >>= \o -> Just $ runExecTokenizer tok o
       , fromObj o >>= Just .
           mapM (\o -> xmaybe (fromObj o) <|>
-            (execThrow $
-              obj [obj "parameter", obj i, obj "is a list which contains a non-string item"]))
+            (execThrow $ obj $
+              [obj "parameter", obj i, obj "is a list which contains a non-string item"]))
       ]
 
 -- | Match a given input string to the 'Dao.Evaluator.currentPattern' of the current 'ExecUnit'.
@@ -378,26 +376,15 @@ getGlobalRuleSet :: Exec [PatternTree Object [Subroutine]]
 getGlobalRuleSet = return <$> gets ruleSet
 
 _mkDoFunc :: String -> [Exec [PatternTree Object [Subroutine]]] -> (DaoFunc (), DaoFunc (), DaoFunc ())
-_mkDoFunc name selectors = (mkDo False, mkDo True, mkQuery) where
-  run doAll = \rules tokens ->
-    if doAll
-    then fmap (Just . OList) $ makeActionsForQuery rules tokens >>= execute
-    else makeActionsForQuery rules tokens >>= msum . map execute
-  select = concat <$> sequence selectors
-  mkDo doAll =
-    daoFunc
-    { daoFuncName = ustr $ "do"++(if doAll then "All" else "")++name
-    , funcAutoDerefParams = True
-    , daoForeignFunc = \ () ox -> fmap (flip (,) ()) $ join $
-        pure (run doAll) <*> select <*> runTokenizer ox
-    }
-  mkQuery =
-    daoFunc
-    { daoFuncName = ustr $ "query"++name
-    , funcAutoDerefParams = True
-    , daoForeignFunc = \ () ox -> fmap (flip (,) () . Just . obj . map obj) $
-        join $ pure makeActionsForQuery <*> select <*> runTokenizer ox
-    }
+_mkDoFunc name selectors = (mkDo, mkDoAll, mkQuery) where
+  run f () ox =
+    join (return makeActionsForQuery
+           <*> (concat <$> sequence selectors)
+           <*> runTokenizer ox
+         ) >>= fmap (flip (,) ()) . f
+  mkQuery = daoFunc{daoFuncName=ustr("query"++name), daoForeignFunc=run(return . Just . obj . fmap obj)}
+  mkDo    = daoFunc{daoFuncName=ustr("do"   ++name), daoForeignFunc=run(msum . fmap execute)}
+  mkDoAll = daoFunc{daoFuncName=ustr("doAll"++name), daoForeignFunc=run(fmap (Just . obj) . execute)}
 
 builtin_do    :: DaoFunc ()
 builtin_doAll :: DaoFunc ()
@@ -478,6 +465,23 @@ daoClass name ~o = _updateSetupModState $ \st ->
 daoFunction :: (Show name, UStrType name) => name -> DaoFunc () -> DaoSetup
 daoFunction name func = _updateSetupModState $ \st -> let nm = (fromUStr $ toUStr name) in
   st{ daoSetupConstants = M.insert nm (new $ func{ daoFuncName=nm }) (daoSetupConstants st) }
+
+-- | Like 'daoFunction' but creates a function that takes no parameters.
+daoFunction0 :: Name -> Exec (Maybe Object) -> DaoSetup
+daoFunction0 name f = daoFunction name $
+  DaoFunc
+  { daoFuncClass = []
+  , daoFuncName  = nil
+  , funcAutoDerefParams = False
+  , daoForeignFunc = \ () ox -> case ox of
+      [] -> flip (,) () <$> f
+      _  -> execThrow $ obj $
+        [ obj "function", obj name, obj "takes no parameters but was passed"
+        , let (before, after) = splitAt 100 ox
+          in if null after then obj (length before) else obj "over 100"
+        , obj "arguments"
+        ]
+  }
 
 -- | Define a constant value for any arbitrary 'Object'.
 daoConstant :: (Show name, UStrType name) => name -> Object -> DaoSetup
@@ -2493,8 +2497,8 @@ data TypeSym
   deriving (Eq, Ord, Show, Typeable)
 
 instance NFData TypeSym where
-  rnf (CoreType a  ) = deepseq a ()
-  rnf (TypeVar  a b) = deepseq a $! deepseq b ()
+  rnf (CoreType     a  ) = deepseq a ()
+  rnf (TypeVar      a b) = deepseq a $! deepseq b ()
 
 instance HasRandGen TypeSym where
   randO = _randTrace "TypeSym" $ countNode $ runRandChoice
@@ -2982,6 +2986,9 @@ newExecUnit modName = get >>= \parent -> liftIO _initExecUnit >>= \child -> retu
   , runtimeRefTable   = runtimeRefTable   parent
   }
 
+-- | Execute an 'Exec' monadic function within a different 'ExecUnit' module. The result of the
+-- 'Exec' monadic function is the first value in the tuple returned, any modifications to the given
+-- 'ExecUnit' module are stored as the second value of the tuple returned.
 inModule :: ExecUnit -> Exec a -> Exec (a, ExecUnit)
 inModule subxunit exe = do
   xunit    <- get
@@ -4501,28 +4508,14 @@ instance HataClass RuleSet where
     defInitializer initParams listParams
     defInfixOp ORB $ \ _ (RuleSet tree) o ->
       (new . RuleSet . T.unionWith (++) tree . ruleSetRules ) <$> xmaybe (fromObj o)
-    defMethod "query" $
-      daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \rs ox -> do
-          tokens <- runTokenizer ox
-          flip (,) rs . Just . obj . map obj <$> makeActionsForQuery [ruleSetRules rs] tokens
-      }
-    defMethod "do" $
-      daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \rs ox -> do
-          tokens <- runTokenizer ox
-          makeActionsForQuery [ruleSetRules rs] tokens >>= fmap (flip (,) rs) . msum . map execute
-      }
-    defMethod "doAll" $
-      daoFunc
-      { funcAutoDerefParams = True
-      , daoForeignFunc = \rs ox -> do
-          tokens <- runTokenizer ox
-          fmap (flip (,) rs . Just . obj . map obj) $
-            makeActionsForQuery [ruleSetRules rs] tokens >>= execute
-      }
+    let run f =
+          daoFunc
+          { daoForeignFunc = \rs ->
+              runTokenizer >=> makeActionsForQuery [ruleSetRules rs] >=> fmap (flip (,) rs) . f
+          }
+    defMethod "query" $ run $ return . Just . obj . fmap obj
+    defMethod "do"    $ run $ msum . fmap execute
+    defMethod "doAll" $ run $ fmap (Just . obj . fmap obj) . execute
 
 ----------------------------------------------------------------------------------------------------
 
@@ -7387,14 +7380,22 @@ instance HataClass (AST_SourceCode Object) where
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
+-- | Simply converts an 'Dao.Interpreter.AST_SourceCode' directly to a list of
+-- 'Dao.Interpreter.TopLevelExpr's.
+evalTopLevelAST :: AST_SourceCode Object -> Exec (Program Object)
+evalTopLevelAST ast = case toInterm ast of
+  [o] -> return o
+  []  -> fail "converting AST_SourceCode to Program by 'toInterm' returned null value"
+  _   -> fail "convertnig AST_SourceCode to Program by 'toInterm' returned ambiguous value"
+
 ----------------------------------------------------------------------------------------------------
 -- $Builtin_object_interfaces
 -- The following functions provide object interfaces for essential data types.
 
 instance HataClass () where { haskellDataInterface = interface () (return ()) }
 
-type Get     a = B.GGet  MethodTable a
-type Put       = B.GPut  MethodTable
+type Get a = B.GGet  MethodTable a
+type Put   = B.GPut  MethodTable
 
 -- This is only necessary to shorten the name 'MethodTable' because it is used throughout so many
 -- instance declarations and type contexts.
@@ -8005,6 +8006,22 @@ defMethod inname infn = do
         ] 
   _updHDIfcBuilder $ \st ->
     st{ objIfcMethodTable = M.alter (maybe (Just fn) (dupname st)) name $ objIfcMethodTable st }
+
+-- | Like 'detMethod' but creates a function that takes no parameters.
+defMethod0 :: (UStrType name, Typeable this) => name -> (this -> Exec (Maybe Object, this)) -> DaoClassDefM this ()
+defMethod0 name f = defMethod name $
+  daoFunc
+  { funcAutoDerefParams = False
+  , daoForeignFunc = \this ox -> case ox of
+      [] -> f this
+      _  -> execThrow $ obj $
+        [ obj "method", obj (toUStr name), obj "to object of type", obj (show $ typeOf this)
+        , obj "takes no parameters but was passed"
+        , let (before, after) = splitAt 100 ox
+          in if null after then obj (length before) else obj "over 100"
+        , obj "arguments"
+        ]
+  }
 
 -- | Rocket. Yeah. Sail away with you.
 defLeppard :: Typeable typ => rocket -> yeah -> DaoClassDefM typ ()

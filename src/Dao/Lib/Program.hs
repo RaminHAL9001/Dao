@@ -39,13 +39,3 @@ import           Control.Monad.State
 
 import           System.IO
 
-----------------------------------------------------------------------------------------------------
-
-data DaoProgram
-  = DaoProgram
-    { programExecUnit   :: ExecUnit
-    , programSourceCode :: AST_SourceCode Object
-    }
-  deriving Typeable
-
-

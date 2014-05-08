@@ -100,8 +100,7 @@ module Dao.Interpreter(
     RuleSet(), CallableCode(CallableCode), argsPattern, returnType, codeSubroutine, 
     GlobAction(GlobAction), globPattern, globSubroutine, 
     asReference, asInteger, asRational, asPositive, asComplex, objConcat,
-    objToBool, extractStringElems,
-    requireAllStringArgs, getStringsToDepth, derefStringsToDepth, recurseGetAllStrings,
+    objToBool, extractStringElems, requireAllStringArgs,
     shiftLeft, shiftRight,
     evalArithPrefixOp, evalInfixOp, evalUpdateOp, runTokenizer, makePrintFunc,
     paramsToGlobExpr, matchFuncParams, execGuardBlock, objToCallable, callCallables,
@@ -4487,11 +4486,23 @@ instance Monoid RuleSet where
 
 instance Sizeable RuleSet where { getSizeOf = return . obj . T.size . ruleSetRules }
 
+instance PPrintable RuleSet where
+  pPrint (RuleSet{ ruleSetRules=tree }) = pList (pString "RuleSet") "{ " ", " "}" $
+    T.assocs tree >>= \ (ix, subs) -> do
+      let rule ix = case ix of
+            []                      -> ""
+            Single (OString s) : ix -> uchars s ++ rule ix
+            Single o           : ix -> prettyShow o ++ rule ix
+            i                  : ix -> show i ++ rule ix
+      sub <- subs
+      [ pClosure (pString "rule " >> pShow (rule ix)) "{" "}" $
+          map pPrint $ codeBlock $ origSourceCode sub ]
+
 instance ObjectClass RuleSet where { obj=new ; fromObj=objFromHata; }
 
 instance HataClass RuleSet where
   haskellDataInterface = interface mempty $ do
-    autoDefNullTest >> autoDefSizeable
+    autoDefNullTest >> autoDefSizeable >> autoDefPPrinter
     let initParams ox = case ox of
           [] -> return mempty
           _  -> execThrow $ obj [obj "\"RuleSet\" constructor takes no intializing parameters"]
@@ -5333,57 +5344,6 @@ requireAllStringArgs msg ox = case mapM check (zip (iterate (+(1::Integer)) 0) o
       _         -> throwError $
         mkExecError
         { execReturnValue = Just $ obj [obj msg, obj "param number:", obj i] }
-
--- | Given an object, if it is a string return the string characters. If it not a string,
--- depth-recurse into it and extract strings, or if there is an object into which recursion is not
--- possible, pretty-print the object and return the pretty-printed string. The first integer
--- parameter is a depth limit, if recursion into the object exceeds this limit, recursion no longer
--- steps into these objects, the strings returned are the pretty-printed representation of the
--- objects. A pair of 'Data.Either.Either's are returned, references are 'Data.Either.Left',
--- 'Prelude.String's are 'Data.Either.Right'. References are accompanied with their depth so you can
--- choose whether or not you want to dereference or pretty-print them.
-getStringsToDepth :: Int -> Object -> [Either (Int, Reference) String]
-getStringsToDepth maxDepth o = loop (0::Int) maxDepth o where
-  loop depth remDep o = case o of
-    OString   o -> return (Right (uchars o))
-    OList    ox -> recurse o ox
-    o           -> return (Right (prettyShow o))
-    where
-      recurse o ox =
-        if remDep==0
-          then  return (Right (prettyShow o))
-          else  ox >>= loop (depth+1) (if remDep>0 then remDep-1 else remDep)
-
-----------------------------------------------------------------------------------------------------
-
--- | Calls 'getStringsToDepth' and dereferences all 'Data.Either.Left' values below a depth limit,
--- this depth limit is specified by the first argument to this function. The second and third
--- argument to this function are passed directly to 'getStringsToDepth'. Pass a handler to handle
--- references that are undefined.
-derefStringsToDepth :: (Reference -> Object -> Exec [String]) -> Int -> Int -> Object -> Exec [String]
-derefStringsToDepth handler maxDeref maxDepth o =
-  fmap concat (mapM deref (getStringsToDepth maxDepth o)) where
-    deref o = case o of
-      Right    o    -> return [o]
-      Left (i, ref) ->
-        if i>=maxDeref
-          then  return [prettyShow ref]
-          else  do
-            let newMax = if maxDepth>=0 then (if i>=maxDepth then 0 else maxDepth-i) else (0-1)
-                recurse = fmap concat . mapM (derefStringsToDepth handler (maxDeref-i) newMax)
-            catchReturn (\ _ -> return Nothing) (fmap (fmap snd) $ referenceLookup ref) >>=
-              recurse . maybe [] (:[])
-
--- | Returns a list of all string objects that can be found from within the given list of objects.
--- This function might fail if objects exist that cannot resonably contain strings. If you want to
--- pretty-print non-string objects, try using 'getStringsToDepth'.
-recurseGetAllStrings :: Object -> Exec [UStr]
-recurseGetAllStrings o = loop [] o where
-  loop ix o = let next fn = fmap concat . mapM (\ (i, o) -> loop (fn i : ix) o) in case o of
-    OString  o   -> return [o]
-    OList    o   -> next OInt (zip [0..] o)
-    o            -> execThrow $ OList $
-      [obj "object at index", OList ix, obj "cannot be evaluated to a string", o]
 
 ----------------------------------------------------------------------------------------------------
 

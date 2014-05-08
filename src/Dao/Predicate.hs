@@ -72,25 +72,24 @@ import           Control.Monad.Error
 
 import           Data.Monoid
 
--- | 'Predicate' is a "predicate value" data type allows a monadic computation to backtrack and try
--- another branch of computation, or to fail without causing backtracking. As an example, lets
--- consider a simple string command evaluator which can run a function @doStep@ when given an input
--- string @"step"@, and a function @doJump@ when given a string "jump".
+-- | 'Predicate' is a data type that combines 'Prelude.Maybe' and 'Prelude.Either' into a single
+-- type. The 'Predicate' monad allows you to construct predicate functions that evaluate to 'OK'
+-- (true) 'Backtrack' (false), and also provides a 'PFail' constructor for indicating a "does not
+-- make sense" condition.
+--
+-- The truth condition 'OK' can 'Control.Monad.return' a value which makes it a 'Data.Functor', an
+-- 'Control.Applicative.Applicative', and a 'Control.Monad.Monad'. The false condition 'Backtrack'
+-- serves as the 'Control.Monad.mzero' for 'Control.Monad.MonadPlus' and 'Control.Applicative.empty'
+-- value for 'Control.Applicative.Alternative'. The 'PFail' condition, like 'Prelude.Left', can be
+-- used as an error condition in the 'Control.Monad.Error.ErrorClass' which can be caught by
+-- 'Control.Monad.Error.catchError'.
+--
+-- This data type was originally intended for use in the Dao parser, but it is now used in several
+-- contexts throughout the program.
 data Predicate err ok
-  = Backtrack 
-    -- ^ analogous to 'Prelude.Nothing', therefore it is possible to make a function like so:
-    -- > doStepOrJump :: 'Prelude.String' -> MyIO ()
-    -- > doStepOrJump cmd = mplus (doStep cmd) (doJump cmd)
-  | PFail { failedItem :: err }
-    -- ^ use this constructor when you wish to throw an error catchable with 'catchPValue' or
-    -- 'Control.Monad.Error.Class.catchError'. 'PFail' values cannot be "caught" by
-    -- 'Control.Monad.mplus', so it is possible to write a guard function like this:
-    -- > commandValidElseFail :: String -> MyIO ()
-    -- > commandValidElseFail cmd = 'Control.Monad.mplus' ('Control.Monad.guard' ('Prelude.notElem' cmd $ 'Prelude.words' "step next")) $
-    -- >     'Control.Monad.fail' ("invalid command "++cmd)
-    -- evaluates to 'PFail' so no characters will be parsed after that, unless the failure is caught
-    -- by 'Control.Monad.Error.catchError' or 'catchPredicate'.
-  | OK ok -- ^ A parser evaluates to 'OK' when it evaluates 'Control.Monad.return'.
+  = Backtrack -- ^ analogous to 'Prelude.Nothing'
+  | PFail err -- ^ analogous to 'Prelude.Left'
+  | OK    ok  -- ^ OK is "just right" i.e. it is analogous to 'Prelude.Just' and 'Prelude.Right'.
   deriving (Eq, Ord, Show)
 
 instance Functor (Predicate err) where
@@ -127,7 +126,7 @@ instance Monoid ok => Monoid (Predicate err ok) where
 
 ----------------------------------------------------------------------------------------------------
 
--- | A monad transformer lifting 'Predicate' into an outer monad. Use 'runPreicateT' to remove the 
+-- | A monad transformer lifting 'Predicate' into an outer monad. Use 'runPreicateT' to remove the
 -- 'PredicateT' outer monad and retrieve the inner 'Predictate' value.
 newtype PredicateT err m ok = PredicateT { runPredicateT :: m (Predicate err ok) }
 
@@ -178,25 +177,24 @@ instance MonadIO m => MonadIO (PredicateT err m) where { liftIO = PredicateT . l
 
 ----------------------------------------------------------------------------------------------------
 
--- |  If you want to analyze the 'Predicate' value of a 'PredicateT' computation, or any coputation
--- which lifts 'PredicateT' you can use the instances of this class to do so. For example, lets say
--- you have a computation @couldFailOrBacktrack :: MyIO ()@. You can check if the computation failed
--- or backtracked without unlifting the inner monad:
+-- | Often it is necessary to evaluate a sub-predicate monad within the 'Predicate' or 'PredicateT'
+-- monads within the current 'Predicate' monad. Simply evaluating the sub-predicate would cause the
+-- current predicate monad to evaluates to 'PFail' or 'Backtrack' if the sub-predicate evaluates to
+-- either of these values. But using 'catchPredicate', it is possible to safely evaluate the
+-- sub-predicate and capture it's 'Predicate' result, where you can then make a decision on how to
+-- behave.
 -- > do p <- 'catchPredicate' couldFailOrBacktrack
 -- >    case p of
 -- >        'OK'    rval -> useReturnValue rval -- use the return value from couldFailOrBacktrack
--- >        'PFail' msg  -> showMyError msg     -- report the error from couldFailOrBacktrack
+-- >        'PFail' msg  -> printMyError msg    -- report the error from couldFailOrBacktrack
 -- >        'Backtrack'  -> return ()           -- ignore backtracking
+-- The above procedure prints the error message created if the sub-predicate evaluated to 'PFail'.
 -- If you would like to "re-throw" a 'Predicate' that you have received you can use the 'predicate'
 -- function. For example, this line of code could be added to the above procedure:
 -- >    predicate p
 -- and the function will evaluate to the same exact 'Predicate' value that @couldFailOrBacktrack@
--- had produced.
--- 
--- Here is an example of how you would instantiate the 'MyIO' type in the example above into this
--- class:
--- > instance MonadPlusError MyErr MyIO where
--- >     catchPredicate = WrapMyIO . catchPredicate . unwrapMyIO
+-- had produced after the necessary response to the failure has been made, e.g. after the error
+-- message has been printed.
 class MonadPlusError err m | m -> err where
   -- | Unlifts the whole 'Predicate' value, unlike 'catchError' which only catches the value stored
   -- in a 'PFail' constructor.
@@ -243,4 +241,13 @@ fmapPFail f pval = case pval of
   OK      o -> OK o
   Backtrack -> Backtrack
   PFail err -> PFail (f err)
+
+-- | Like 'Data.Either.partitionEithers', but operates on a list of 'Predicates'.
+partitionPredicates :: [Predicate err o] -> ([err], [o])
+partitionPredicates = loop [] [] where
+  loop errs oks ox = case ox of
+    []             -> (errs, oks)
+    OK    o   : ox -> loop  errs        (oks++[o]) ox
+    PFail err : ox -> loop (errs++[err]) oks       ox
+    Backtrack : ox -> loop  errs         oks       ox
 

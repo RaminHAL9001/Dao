@@ -110,7 +110,8 @@ instance Monad (GResultM c e s t r) where
 instance MonadPlus (GResultM c e s t r) where
   mzero = ResultM mzero
   mplus (ResultM a) (ResultM b) = ResultM (mplus a b)
-instance Applicative (GResultM c e s t r) where { pure = return; (<*>) = ap; }
+instance Alternative (GResultM c e s t r) where { empty=mzero; (<|>)=mplus; }
+instance Applicative (GResultM c e s t r) where { pure=return; (<*>)=ap; }
 instance MonadState r (GResultM c e s t r) where { state f = ResultM (lift (state f)) }
 instance MonadError (String, SomeException) (GResultM c e s t r) where
   throwError e = ResultM (predicate $ PFail e)

@@ -34,46 +34,49 @@ stackLookup :: Ord key => key -> Stack key val -> Maybe val
 stackLookup key stack = foldl (\f -> mplus f . (M.lookup key)) Nothing (mapList stack)
 
 -- | Always update in the top of the stack, regardless of whether the key being updated has been
--- defined at some lower level in the stack.
+-- defined at some lower level in the stack. If the stack is empty, the update function is evaluated
+-- with 'Prelude.Nothing' and the result @a@ is returned, but the updated @val@ is disgarded.
 stackUpdateTopM
   :: (Monad m, Ord key)
-  => (Maybe val -> m (Maybe val)) -> key -> Stack key val -> m (Stack key val, Maybe val)
+  => (Maybe val -> m (a, Maybe val)) -> key -> Stack key val -> m (a, Stack key val)
 stackUpdateTopM updVal key (Stack stack) = case stack of
-  []      -> return (Stack [], Nothing)
-  s:stack -> updVal (M.lookup key s) >>= \o -> return (Stack $ M.alter (const o) key s : stack, o)
+  []      -> updVal Nothing >>= \ (a, _) -> return (a, Stack [])
+  s:stack -> updVal (M.lookup key s) >>= \ (a, o) -> return (a, Stack $ M.alter (const o) key s : stack)
 
 -- | If the key does not exist, the update will occur in the top level of the stack. If the key does
 -- exist, regardless of whether the key exists in the top or in some lower level, the value at that
--- key will be updated in the level in which it is defined.
+-- key will be updated in the level in which it is defined. If the stack is empty, the update
+-- function is evaluated with 'Prelude.Nothing' and the result @a@ is returned, but the updated
+-- @val@ is disgarded.
 stackUpdateM
   :: (Monad m, Ord key)
-  => (Maybe val -> m (Maybe val)) -> key -> Stack key val -> m (Stack key val, Maybe val)
+  => (Maybe val -> m (a, Maybe val)) -> key -> Stack key val -> m (a, Stack key val)
 stackUpdateM updVal key (Stack stack) = loop [] stack where
   loop rx stack = case stack of
     []      -> atTop (reverse rx)
     s:stack -> case M.lookup key s of
-      Just  o -> updVal (Just o) >>= \o -> return $
-        (Stack $ reverse rx ++ M.alter (const o) key s : stack, o)
+      Just  o -> updVal (Just o) >>= \ (a, o) ->
+        return (a, Stack $ reverse rx ++ M.alter (const o) key s : stack)
       Nothing -> loop (s:rx) stack
   atTop stack = case stack of
-    []      -> return (Stack [], Nothing)
-    s:stack -> updVal Nothing >>= \o -> return $ (Stack $ M.alter (const o) key s : stack, o)
+    []      -> updVal Nothing >>= \ (a, _) -> return (a, Stack [])
+    s:stack -> updVal Nothing >>= \ (a, o) -> return (a, Stack $ M.alter (const o) key s : stack)
 
 stackUpdate
   :: Ord key
-  => (Maybe val -> Maybe val)
-  -> key -> Stack key val -> (Stack key val, Maybe val)
+  => (Maybe val -> (a, Maybe val))
+  -> key -> Stack key val -> (a, Stack key val)
 stackUpdate upd key = runIdentity . stackUpdateM (return . upd) key
 
 stackUpdateTop
   :: Ord key
-  => (Maybe val -> Maybe val)
-  -> key -> Stack key val -> (Stack key val, Maybe val)
+  => (Maybe val -> (a, Maybe val))
+  -> key -> Stack key val -> (a, Stack key val)
 stackUpdateTop upd key = runIdentity . stackUpdateTopM (return . upd) key
 
 -- | Define or undefine a value at an address on the top tree in the stack.
 stackDefine :: Ord key => key -> Maybe val -> Stack key val -> Stack key val
-stackDefine key val = fst . stackUpdate (const val) key
+stackDefine key val = snd . stackUpdate (const ((), val)) key
 
 stackPush :: Ord key => M.Map key val -> Stack key val -> Stack key val
 stackPush init stack = stack{ mapList = init : mapList stack }

@@ -3795,7 +3795,7 @@ innerDataLookupIndex unwrap i = get >>= \dt -> fst <$> withInnerLens (unwrap dt)
 
 instance ObjectLens (Stack Name Object) Name where
   updateIndex name upd = do
-    (stack, result) <- get >>= stackUpdateM (fmap snd . flip withInnerLens upd) name
+    (result, stack) <- get >>= stackUpdateM (flip withInnerLens upd) name
     put stack >> return result
   lookupIndex name = get >>= xmaybe . stackLookup name
 
@@ -7030,7 +7030,7 @@ assignUnqualifiedOnly = _executeAssignExpr $ \qref op newObj -> case qref of
     (LocalStore store) <- gets execStack
     let oldObj = stackLookup r store
     newObj <- evalUpdateOp (Just qref) op newObj oldObj
-    (store, result) <- pure $ stackUpdateTop (const newObj) r store
+    (result, store) <- pure $ stackUpdateTop (const (newObj, newObj)) r store
     modify $ \xunit -> xunit{ execStack = LocalStore store }
     return result
   _ -> execThrow $ obj [obj "cannot assign to reference", obj qref , obj "in current context"]

@@ -114,6 +114,7 @@ loadLibrary_File = do
   fileOpener "readFile"   ReadMode
   fileOpener "writeFile"  WriteMode
   fileOpener "appendFile" AppendMode
+  daoClass "File" (haskellType::File)
   daoFunction "File" $
     daoFunc
     { daoForeignFunc = \ () -> fmap (flip (,) () . Just . obj . flip File Nothing) . _paramPath "File"

@@ -315,6 +315,7 @@ instance FromDaoStructClass DaoProgram where
 
 loadLibrary_Program :: DaoSetup
 loadLibrary_Program = do
+  daoClass "Program" (haskellType::DaoProgram)
   daoFunction "loadProgram" $
     daoFunc
     { daoForeignFunc = \ () ox -> case ox of

@@ -30,7 +30,7 @@ module Dao.Interpreter(
     execCastToCoreType, listToObj, listFromObj, new, opaque, objFromHata,
     Struct(Nullary, Struct), structLookup,
     ToDaoStructClass(toDaoStruct), toDaoStructExec, pPrintStructForm,
-    FromDaoStructClass(fromDaoStruct), fromDaoStructExec,
+    FromDaoStructClass(fromDaoStruct), withFromDaoStructExec, fromDaoStructExec,
     StructError(StructError),
     structErrMsg, structErrName, structErrField, structErrValue, structErrExtras,
     mkLabel, mkStructName, mkFieldName,
@@ -66,8 +66,8 @@ module Dao.Interpreter(
       LongType, RatioType, ComplexType, TimeType, CharType, StringType, RefType,
       ListType, DictType, TreeType, BytesType, HaskellType
     ),
-    typeOfObj, coreType,
-    TypeSym(CoreType, TypeVar), TypeStruct(TypeStruct), ObjType(ObjType), typeChoices,
+    typeOfObj, coreType, hataType, objTypeFromCoreType,
+    TypeSym(CoreType, TypeSym, TypeVar), TypeStruct(TypeStruct), ObjType(ObjType), typeChoices,
     RefSuffix(NullRef, DotRef, Subscript, FuncCall),
     refSuffixHead, refSuffixHasFuncCall, refSuffixToList, dotRef, subscript, funcCall,
     Complex(Complex),
@@ -604,6 +604,8 @@ loadEssentialFunctions = do
   daoFunction "typeof"   builtin_typeof
   daoFunction "sizeof"   builtin_sizeof
   daoFunction "call"     builtin_call
+  daoFunction "toHash"   builtin_toHash
+  daoFunction "fromHash" builtin_fromHash
   daoFunction "tokenize" builtin_tokenize
   daoFunction "query"    builtin_query
   daoFunction "doAll"    builtin_doAll
@@ -614,7 +616,8 @@ loadEssentialFunctions = do
   daoFunction "queryLocal"  builtin_queryLocal
   daoFunction "doAllLocal"  builtin_doAllLocal
   daoFunction "doLocal"     builtin_doLocal
-  mapM_ (uncurry daoConstant) $ map (\t -> (toUStr (show t), OType (coreType t))) [minBound..maxBound]
+  mapM_ (uncurry daoConstant) $ flip fmap [minBound..maxBound] $ \t ->
+    (toUStr $ show t, OType $ objTypeFromCoreType t)
 
 instance ObjectClass (DaoFunc ())      where { obj=new; fromObj=objFromHata; }
 instance ObjectClass (DaoFunc Dynamic) where { obj=new; fromObj=objFromHata; }
@@ -948,7 +951,7 @@ instance ObjectClass ObjType where
     _          -> \ _ -> mzero
 
 instance ObjectClass CoreType where
-  obj = OType . coreType
+  obj = OType . objTypeFromCoreType
   fromObj o = case o of
     OType (ObjType [TypeStruct [CoreType o]]) -> return o
     _ -> mzero
@@ -1646,6 +1649,8 @@ defMaybeObjField name = maybe (return Nothing) (fmap Just . defObjField name)
   => name -> Maybe o -> ToDaoStruct haskData (Maybe Object)
 (.=?) = defMaybeObjField
 
+----------------------------------------------------------------------------------------------------
+
 -- | This is a handy monadic and 'Data.Functor.Applicative' interface for instantiating
 -- 'fromDaoStruct' in the 'FromDaoStructClass' class. It takes the form of a reader because what you
 -- /read/ from the 'Struct' here in the Haskell language was /written/ by the Dao language
@@ -1696,9 +1701,23 @@ instance MonadPlusError StructError FromDaoStruct where
 toData :: FromDaoStruct haskData -> Struct -> Predicate StructError haskData
 toData f = evalState (runPredicateT $ run_fromDaoStruct $ f >>= \o -> checkEmpty >> return o)
 
-fromDaoStructExec :: FromDaoStruct typ -> Struct -> Exec typ
-fromDaoStructExec fromDaoStruct =
+-- | Using a 'FromDaoStruct' monadic function, convert a given 'Struct' to a Haskell data type
+-- @typ@.
+withFromDaoStructExec :: FromDaoStruct typ -> Struct -> Exec typ
+withFromDaoStructExec fromDaoStruct =
   predicate . fmapPFail ((\o -> mkExecError{ execReturnValue=Just o }) . new) .  toData fromDaoStruct
+
+-- | Given a 'Struct', use the 'structName' to lookup a 'FromDaoStruct' monadic function in the
+-- current 'ExecUnit' suitable for constructing a 'Hata' Haskell data type.
+fromDaoStructExec :: Struct -> Exec Hata
+fromDaoStructExec struct = do
+  let name = structName struct
+  (MethodTable mtab) <- gets globalMethodTable
+  case M.lookup (toUStr $ structName struct) mtab of
+    Nothing  -> execThrow $ obj [obj "no available built-in data type", obj name]
+    Just ifc -> case objFromStruct ifc of
+      Nothing   -> execThrow $ obj [obj name, obj "data type cannot be constructed from hashed structure"]
+      Just from -> Hata ifc <$> withFromDaoStructExec from struct
 
 -- | Checks if the 'structName' is equal to the given name, and if not then backtracks. This is
 -- important when constructing Haskell data types with multiple constructors.
@@ -2461,8 +2480,9 @@ instance HasRandGen CoreType where
   randO = toEnum <$> nextInt (fromEnum (maxBound::CoreType))
   defaultO = randO
 
-typeOfObj :: Object -> CoreType
-typeOfObj o = case o of
+-- | Get the 'CoreType' o an 'Object'.
+coreType :: Object -> CoreType
+coreType o = case o of
   ONull      -> NullType
   OTrue      -> TrueType
   OChar    _ -> CharType
@@ -2491,36 +2511,40 @@ data TypeSym
     -- ^ used when the type of an object is equal to it's value, for example Null and True,
     -- or in situations where the type of an object has a value, for example the dimentions of a
     -- matrix.
+  | TypeSym  Name
   | TypeVar  Name [ObjType]
     -- ^ a polymorphic type, like 'AnyType' but has a name.
   deriving (Eq, Ord, Show, Typeable)
 
 instance NFData TypeSym where
-  rnf (CoreType     a  ) = deepseq a ()
-  rnf (TypeVar      a b) = deepseq a $! deepseq b ()
+  rnf (CoreType a  ) = deepseq a ()
+  rnf (TypeSym  a  ) = deepseq a ()
+  rnf (TypeVar  a b) = deepseq a $! deepseq b ()
 
 instance HasRandGen TypeSym where
   randO = _randTrace "TypeSym" $ countNode $ runRandChoice
   randChoice = randChoiceList $
-    [CoreType <$> randO, scramble $ return TypeVar <*> randO <*> randList 1 4]
+    [CoreType <$> randO, TypeSym <$> randO, scramble $ return TypeVar <*> randO <*> randList 1 4]
   defaultO = _randTrace "D.TypeSym" $ CoreType <$> defaultO
 
 instance PPrintable TypeSym where
   pPrint t = case t of
     CoreType t     -> pPrint t
+    TypeSym  t     -> pPrint t
     TypeVar  t ctx -> pInline $
       concat [[pPrint t], guard (not (null ctx)) >> [pList_ "[" ", " "]" (map pPrint ctx)]]
 
 -- binary 0x2E 0x2F
 instance B.Binary TypeSym mtab where
   put o = case o of
-    CoreType o       -> B.prefixByte 0x2E $ B.put o
-    TypeVar  ref ctx -> B.prefixByte 0x2F $ B.put ref >> B.put ctx
+    CoreType o      -> B.prefixByte 0x2D $ B.put o
+    TypeSym  o      -> B.prefixByte 0x2E $ B.put o
+    TypeVar ref ctx -> B.prefixByte 0x2F $ B.put ref >> B.put ctx
   get = B.word8PrefixTable <|> fail "expecting TypeSym"
 
 instance B.HasPrefixTable TypeSym B.Byte mtab where
   prefixTable =
-    B.mkPrefixTableWord8 "TypeSym" 0x2E 0x2F [CoreType <$> B.get, return TypeVar <*> B.get <*> B.get]
+    B.mkPrefixTableWord8 "TypeSym" 0x2D 0x2F [CoreType <$> B.get, return TypeVar <*> B.get <*> B.get]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2578,8 +2602,16 @@ instance HasRandGen ObjType where
   randO = _randTrace "ObjType" $ recurse $ ObjType <$> randList 0 3
   defaultO = _randTrace "D.ObjType" $ ObjType <$> defaultList 1 4
 
-coreType :: CoreType -> ObjType
-coreType = ObjType . return . TypeStruct . return . CoreType
+typeOfObj :: Object -> ObjType
+typeOfObj o = case o of
+  OHaskell o -> hataType o
+  o          -> ObjType [TypeStruct [CoreType $ coreType o]]
+
+hataType :: Hata -> ObjType
+hataType (Hata ifc _) = ObjType [TypeStruct [TypeSym $ objInterfaceName ifc]]
+
+objTypeFromCoreType :: CoreType -> ObjType
+objTypeFromCoreType = ObjType . return . TypeStruct . return . CoreType
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3810,7 +3842,9 @@ referenceUpdateName qref upd = case qref of
   RefWrapper _ -> fail "cannot update reference"
 
 -- | This function can be used to automatically instantiate 'lookupIndex' for any type @o@ that also
--- instantiates @'ObjectLens' o 'Dao.String.Name'@.
+-- instantiates @'ObjectLens' o 'Dao.String.Name'@. This function may also performs updates on variables
+-- in place if the variable contains an object and the reference is a method call which updates the
+-- object.
 referenceLookupName :: ObjectLens o Name => Reference -> ObjectFocus o Object
 referenceLookupName qref = case qref of
   Reference _ name suf -> lookupIndex name >>= fmap fst . flip withInnerLens (lookupIndex suf) . Just
@@ -4880,7 +4914,7 @@ objConcat ox = (sum a, concat b) where
 -- 'Control.Monad.mzero' if not.
 isNumeric :: Object -> XPure CoreType
 isNumeric o = do
-  let t = typeOfObj o
+  let t = coreType o
   guard (CharType <= t && t <= ComplexType)
   return t
 
@@ -4911,7 +4945,7 @@ _evalNumOp1 f o = case o of
 -- Evaluate a 2-ary function for any core type that instantiates the 'Prelude.Num' class.
 _evalNumOp2 :: (forall a . Num a => a -> a -> a) -> Object -> Object -> XPure Object
 _evalNumOp2 f a b = do
-  let t = max (typeOfObj a) (typeOfObj b)
+  let t = max (coreType a) (coreType b)
   a <- castToCoreType t a
   b <- castToCoreType t b
   case (a, b) of
@@ -5024,7 +5058,7 @@ instance Enum (XPure Object) where
     where
       loop ok inc a = a : let b = a+inc in if ok b then loop ok inc b else []
       typ   = a >>= \a -> b >>= \b -> do
-        let t = max (typeOfObj a) (typeOfObj b)
+        let t = max (coreType a) (coreType b)
         guard (CharType <= t && t <= ComplexType) >> xpure t
       inc = typ >>= flip castToCoreType (OChar '\x01')
       aa  = _xpureCastTo typ a
@@ -5039,7 +5073,7 @@ instance Enum (XPure Object) where
     where
       loop ok a = a : let b = a+inc in if ok b then loop ok b else []
       typ = a >>= \a -> b >>= \b -> c >>= \c -> do
-        let t = max (typeOfObj a) $ max (typeOfObj b) $ (typeOfObj c)
+        let t = max (coreType a) $ max (coreType b) $ (coreType c)
         guard (CharType <= t && t <= RatioType) >> xpure t
       inc = bb-aa
       aa  = _xpureCastTo typ a
@@ -5059,7 +5093,7 @@ _xpureDivFunc name div a b = _xpureApply2 name f aa bb where
       _                  -> (mzero, mzero)
     pair a b constr = let (c, d) = div a b in (xpure $ constr c, xpure $ constr d)
     typ = a >>= \a -> b >>= \b -> do
-      let t = max (typeOfObj a) (typeOfObj b)
+      let t = max (coreType a) (coreType b)
       guard (CharType <= t && t <= LongType) >> xpure t
     aa = _xpureCastTo typ a
     bb = _xpureCastTo typ b
@@ -5086,7 +5120,7 @@ _xpureFrac f a = a >>= \a -> case a of
 
 _xpureFrac2 :: (forall a . Floating a => a -> a -> a) -> XPure Object -> XPure Object -> XPure Object
 _xpureFrac2 f a b = a >>= \a -> b >>= \b -> do
-  let t = max (typeOfObj a) (typeOfObj b)
+  let t = max (coreType a) (coreType b)
   a <- castToCoreType t a
   b <- castToCoreType t b
   case (a, b) of
@@ -5153,7 +5187,7 @@ _xpureBits f g o = o >>= \o -> case o of
 
 _xpureBits2 :: InfixOp -> (forall a . Bits a => a -> a -> a) -> (T_dict -> T_dict -> T_dict) -> (B.ByteString -> B.ByteString -> B.ByteString) -> XPure Object -> XPure Object -> XPure Object
 _xpureBits2 op bits dict bytes a b = a >>= \a -> b >>= \b -> do
-  let t = max (typeOfObj a) (typeOfObj b)
+  let t = max (coreType a) (coreType b)
   a <- castToCoreType t a
   b <- castToCoreType t b
   case (a, b) of
@@ -5625,8 +5659,7 @@ builtin_time = _castNumerical "time" $ \o -> case o of
 _funcWithoutParams :: String -> Exec (Maybe Object) -> DaoFunc ()
 _funcWithoutParams name f = let n = toUStr name in
   daoFunc
-  { funcAutoDerefParams = False
-  , daoForeignFunc = \ () ox -> case ox of
+  { daoForeignFunc = \ () ox -> case ox of
       [] -> flip (,) () <$> f
       ox -> execThrow $ obj $
         [obj n, obj "should take no parameter arguments, but received: ", obj ox]
@@ -5638,8 +5671,7 @@ builtin_now = _funcWithoutParams "now" $ (Just . obj) <$> liftIO getCurrentTime
 builtin_ref :: DaoFunc ()
 builtin_ref =
   daoFunc
-  { funcAutoDerefParams = True
-  , daoForeignFunc = \ () -> fmap (flip (,) () . Just . ORef . RefWrapper) . execute . mconcat .
+  { daoForeignFunc = \ () -> fmap (flip (,) () . Just . ORef . RefWrapper) . execute . mconcat .
       ( let err o = throwError $ obj $
               [obj "could not convert parameter of type", obj (typeOfObj o), obj "to Reference"]
         in  fmap (\o -> mplus (castToCoreType RefType o) (err o) >>=
@@ -5670,18 +5702,16 @@ builtin_delete =
 builtin_typeof :: DaoFunc ()
 builtin_typeof =
   daoFunc
-  { funcAutoDerefParams = True
-  , daoForeignFunc = \ () ox -> return $ flip (,) () $ case ox of
+  { daoForeignFunc = \ () ox -> return $ flip (,) () $ case ox of
       []  -> Nothing
-      [o] -> Just $ OType $ coreType $ typeOfObj o
-      ox  -> Just $ OList $ map (OType . coreType . typeOfObj) ox
+      [o] -> Just $ OType $ typeOfObj o
+      ox  -> Just $ OList $ map (OType . typeOfObj) ox
   }
 
 builtin_sizeof :: DaoFunc ()
 builtin_sizeof =
   daoFunc
-  { funcAutoDerefParams = True
-  , daoForeignFunc = \ () ox -> case ox of
+  { daoForeignFunc = \ () ox -> case ox of
       [o] -> flip (,) () . Just <$> getSizeOf o
       _   -> execThrow $ obj $
         [obj "sizeof() function must take exactly one parameter argument, instead got", obj ox]
@@ -5713,12 +5743,43 @@ builtin_call =
         ]
   }
 
+builtin_toHash :: DaoFunc ()
+builtin_toHash =
+  daoFunc
+  { daoForeignFunc = \ () ox -> do
+      let err = execThrow $ obj $
+            [ obj "toHash"
+            , obj "function requires exactly one hashed Struct parameter"
+            ]
+      case ox of
+        [o] -> case o of
+          OTree              _  -> return (Just o, ())
+          OHaskell (Hata ifc d) -> case objToStruct ifc of
+            Just to -> flip (,) () . Just . OTree <$> toDaoStructExec to d
+            Nothing -> execThrow $ obj $
+              [ obj "toHash", obj "function cannot operate on opaque built-in data type"
+              , obj (typeOfObj o)
+              ]
+          _                     -> err
+        _   -> err
+  }
+
+builtin_fromHash :: DaoFunc ()
+builtin_fromHash =
+  daoFunc
+  { daoForeignFunc = \ () ox -> case ox of
+      [o] -> do
+        let err = obj $
+              [ obj "fromHash", obj "function requires exactly one hashed Struct parameter"
+              , obj "received a parameter of type", obj (typeOfObj o)
+              ]
+        xmaybe (fromObj o) <|> execThrow err >>= fmap (flip (,) () . Just . obj) . fromDaoStructExec 
+      _   -> execThrow $ obj [obj "fromHash", obj "function requires exactly one parameter"]
+  }
+
 builtin_tokenize :: DaoFunc ()
 builtin_tokenize =
-  daoFunc
-  { funcAutoDerefParams = True
-  , daoForeignFunc = \ () -> fmap (flip (,) () . Just . obj . map obj) . runTokenizer
-  }
+  daoFunc{ daoForeignFunc = \ () -> fmap (flip (,) () . Just . obj . map obj) . runTokenizer }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -7385,7 +7446,7 @@ _insertMethodTable
   -> MethodTable
   -> MethodTable
 _insertMethodTable _ nm ifc = flip mappend $
-  MethodTable (M.singleton nm (interfaceToDynamic ifc))
+  MethodTable (M.singleton nm ((interfaceToDynamic ifc){ objInterfaceName=fromUStr (toUStr nm) }))
 
 typeRepToUStr :: TypeRep -> UStr
 typeRepToUStr a = let con = typeRepTyCon a in ustr (tyConModule con ++ '.' : tyConName con)
@@ -7556,7 +7617,8 @@ data InitItem
 -- This should usually be a 'Control.Monad.Monad'ic type like @IO@ or 'Exec'.
 data Interface typ =
   Interface
-  { objHaskellType     :: TypeRep -- ^ this type is deduced from the initial value provided to the 'interface'.
+  { objInterfaceName   :: Name
+  , objHaskellType     :: TypeRep -- ^ this type is deduced from the initial value provided to the 'interface'.
   , objCastFrom        :: Maybe (Object -> typ)                                                      -- ^ defined by 'defCastFrom'
   , objEquality        :: Maybe (typ -> typ -> Bool)                                                 -- ^ defined by 'defEquality'
   , objOrdering        :: Maybe (typ -> typ -> Ordering)                                             -- ^ defined by 'defOrdering'
@@ -8004,6 +8066,7 @@ interface :: Typeable typ => typ -> DaoClassDefM typ ig -> Interface typ
 interface init defIfc =
   Interface
   { objHaskellType     = typ
+  , objInterfaceName   = nil
   , objCastFrom        = objIfcCastFrom       ifc
   , objEquality        = objIfcEquality       ifc
   , objOrdering        = objIfcOrdering       ifc

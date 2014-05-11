@@ -413,8 +413,9 @@ instance UStrType Name where
     in  case str of 
           c:cx | ck isAlpha c || and (fmap (ck isAlphaNum) cx) -> Just (Name nm)
           _ -> Nothing
-  fromUStr = maybe (error msg) id . maybeFromUStr where
-    msg = "'Dao.String.Name' object must be constructed from alpha-numeric and underscore characters only"
+  fromUStr str = maybe (error msg) id $ maybeFromUStr str where
+    msg = "'Dao.String.Name' object must be constructed from alpha-numeric and underscore characters only:\n"
+      ++ take 256 (uchars str)
 instance IsString Name where { fromString = ustr }
 instance B.Binary Name where
   put (Name u) = encodeUStr u

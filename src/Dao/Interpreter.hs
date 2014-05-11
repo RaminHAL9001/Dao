@@ -21,7 +21,7 @@
 
 module Dao.Interpreter(
     Action(Action), actionTokens, actionPattern, actionMatch, actionCodeBlock,
-    makeActionsForQuery, getLocalRuleSet, getGlobalRuleSet,
+    makeActionsForQuery, betweenBeginAndEnd, daoShutdown, getLocalRuleSet, getGlobalRuleSet,
     DaoSetupM(), DaoSetup, haskellType, daoProvides, daoClass, daoConstant, daoFunction,
     daoFunction0, daoInitialize, setupDao, evalDao, DaoFunc, daoFunc, funcAutoDerefParams,
     daoForeignFunc, executeDaoFunc,
@@ -86,7 +86,7 @@ module Dao.Interpreter(
     ExecControl(ExecReturn, ExecError), execReturnValue, execErrorInfo,
     ExecErrorInfo(ExecErrorInfo), execUnitAtError, execErrExpr, execErrScript, execErrTopLevel,
     mkExecErrorInfo, mkExecError, updateExecErrorInfo, setCtrlReturnValue,
-    logUncaughtErrors, getUncaughtErrorLog, clearUncaughtErrorLog,
+    logUncaughtErrors, clearUncaughtErrorLog,
     Exec(Exec), execToPredicate, XPure(XPure), xpureToState, runXPure, evalXPure, xpure, xobj,
     xnote, xonUTF8, xmaybe,
     ExecThrowable(toExecError, execThrow), ioExec,
@@ -320,9 +320,10 @@ instance Executable Action (Maybe Object) where
 instance Executable [Action] [Object] where
   execute = fmap concat .
     mapM (\act -> catchPredicate (execute act) >>= \p -> case p of
-             OK (Just o) -> return [o]
-             PFail  err  -> logUncaughtErrors [err] >> return []
-             _           -> return []
+             OK                (Just o)  -> return [o]
+             PFail (ExecReturn (Just o)) -> return [o]
+             PFail              err      -> logUncaughtErrors [err] >> return []
+             _                           -> return []
          )
 
 -- | Using the tokenizer function set for this module, break up a string into a list of tokens,
@@ -362,6 +363,29 @@ makeActionsForQuery tree tokens = return $
       , actionCodeBlock = exec
       }
 
+-- | Evaluate an executable function between evaluating all of the "BEGIN{}" and "END{}" statements.
+betweenBeginAndEnd :: Exec a -> Exec a
+betweenBeginAndEnd runInBetween = get >>= \xunit -> do
+  -- Run all "BEGIN{}" procedures.
+  mapM_ execute (preExec xunit)
+  clearUncaughtErrorLog
+  -- Run the given function, presumably it performs a string execution.
+  a <- runInBetween
+  -- Update the "global this" pointer to include the uncaught exceptions.
+  errs <- OList . map new <$> clearUncaughtErrorLog
+  let upd = M.union (M.singleton (ustr "errors") errs)
+  referenceUpdate (Dao.Interpreter.reference GLOBAL (ustr "self")) $ \o ->
+    return $ Just $ ODict $ upd $ case o of { Just (ODict o) -> o; _ -> mempty; }
+  -- Run all "END{}" procedures.
+  mapM_ execute (postExec xunit)
+  return a
+
+-- | Evaluates the @EXIT@ scripts for every presently loaded dao program, and then clears the
+-- 'Dao.Interpreter.importGraph', effectively removing every loaded dao program and idea file from memory.
+daoShutdown :: Exec ()
+daoShutdown = (M.elems <$> gets importGraph) >>=
+  mapM_ (\xunit -> inModule xunit $ gets quittingTime >>= mapM_ execute)
+
 -- | Returns a list of @'PatternTree' 'Object' ['Subroutine']@ objects from the global rule set and
 -- the local rule set.
 getLocalRuleSet :: Exec [PatternTree Object [Subroutine]]
@@ -382,8 +406,8 @@ _mkDoFunc name selectors = (mkDo, mkDoAll, mkQuery) where
            <*> runTokenizer ox
          ) >>= fmap (flip (,) ()) . f
   mkQuery = daoFunc{daoFuncName=ustr("query"++name), daoForeignFunc=run(return . Just . obj . fmap obj)}
-  mkDo    = daoFunc{daoFuncName=ustr("do"   ++name), daoForeignFunc=run(msum . fmap execute)}
-  mkDoAll = daoFunc{daoFuncName=ustr("doAll"++name), daoForeignFunc=run(fmap (Just . obj) . execute)}
+  mkDo    = daoFunc{daoFuncName=ustr("do"   ++name), daoForeignFunc=run(betweenBeginAndEnd . msum . fmap execute)}
+  mkDoAll = daoFunc{daoFuncName=ustr("doAll"++name), daoForeignFunc=run(betweenBeginAndEnd . fmap (Just . obj) . execute)}
 
 builtin_do    :: DaoFunc ()
 builtin_doAll :: DaoFunc ()
@@ -4146,13 +4170,12 @@ logUncaughtErrors errs = modify $ \xunit ->
   xunit{ uncaughtErrors = uncaughtErrors xunit ++
     (errs >>= \e -> case e of { ExecReturn{} -> []; ExecError{} -> [e]; }) }
 
--- | Retrieve all the logged uncaught 'ExecError' values stored by 'logUncaughtErrors'.
-getUncaughtErrorLog :: Exec [ExecControl]
-getUncaughtErrorLog = gets uncaughtErrors
-
 -- | Clear the log of uncaught 'ExecError' values stored by 'logUncaughtErrors'.
-clearUncaughtErrorLog :: Exec ()
-clearUncaughtErrorLog = modify $ \xunit -> xunit{ uncaughtErrors = [] }
+clearUncaughtErrorLog :: Exec [ExecControl]
+clearUncaughtErrorLog = do
+  errs <- gets uncaughtErrors
+  modify $ \xunit -> xunit{ uncaughtErrors = [] }
+  return errs
 
 ----------------------------------------------------------------------------------------------------
 

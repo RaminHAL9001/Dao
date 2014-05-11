@@ -64,6 +64,37 @@ import           System.IO
 
 ----------------------------------------------------------------------------------------------------
 
+-- | This is the most important function in the Dao universe. It executes a string query with the
+-- given module 'ExecUnit's. The string query is executed in each module, execution in each module
+-- runs in it's own thread. This function is syncrhonous; it blocks until all threads finish
+-- working. Pass a list of modules against which you want to execute the string, or
+-- 'Prelude.Nothing' to execute the string against all modules.
+execStringQuery :: UStr -> Maybe [UPath] -> Exec ()
+execStringQuery instr modnames = do
+  let select names = M.assocs .
+        M.intersectionWith (flip const) (M.fromList $ zip names $ repeat ())
+  xunits  <- maybe M.assocs select modnames <$> gets importGraph
+  task    <- gets taskForExecUnits
+  updates <- liftIO $ newMVar M.empty
+  liftIO $ taskLoop_ task $ flip map xunits $ \ (modname, xunit) -> do
+    (result, xunit) <- flip ioExec xunit $ do
+      let rulset = ruleSet xunit
+      tokens <- runTokenizer [obj instr]
+      betweenBeginAndEnd $ makeActionsForQuery [rulset] tokens >>= execute
+    modifyMVar_ updates (return . M.insert modname xunit)
+    case result of
+      PFail (ExecReturn{}) -> return ()
+      PFail err            -> liftIO $ hPutStrLn stderr $ prettyShow err
+      Backtrack            -> case programModuleName xunit of
+        Nothing   -> return ()
+        Just name -> liftIO $ hPutStrLn stderr $
+          uchars name ++ ": does not compute.\n\t"++show instr
+      OK                _  -> return ()
+  updated <- liftIO (takeMVar updates)
+  modify $ \xunit -> xunit{ importGraph = M.union updated (importGraph xunit) }
+
+----------------------------------------------------------------------------------------------------
+
 -- | This is a 'DaoSetup' function used to install the standard library into the runtime.
 loadDaoStandardLibrary :: DaoSetup
 loadDaoStandardLibrary = do
@@ -112,59 +143,6 @@ compileSource path ast = do
   mod <- newExecUnit (Just path)
   ((), mod) <- inModule (mod{programModuleName=Just path}) $ evalTopLevelAST ast >>= execute
   return mod
-
--- | Evaluate an executable function between evaluating all of the "BEGIN{}" and "END{}" statements.
-betweenBeginAndEnd :: Exec a -> Exec a
-betweenBeginAndEnd runInBetween = get >>= \xunit -> do
-  -- Run all "BEGIN{}" procedures.
-  mapM_ execute (preExec xunit)
-  clearUncaughtErrorLog
-  -- Run the given function, presumably it performs a string execution.
-  a <- runInBetween
-  -- Update the "global this" pointer to include the uncaught exceptions.
-  errs <- (OList . map new) <$> getUncaughtErrorLog
-  let ref = Dao.Interpreter.reference GLOBAL (ustr "self")
-  let upd = M.union (M.singleton (ustr "errors") errs)
-  clearUncaughtErrorLog
-  referenceUpdate ref $ \o -> return $ Just $ ODict $ upd $ case o of { Just (ODict o) -> o; _ -> mempty; }
-  -- Run all "END{}" procedures.
-  mapM_ execute (postExec xunit)
-  return a
-
--- | This is the most important function in the Dao universe. It executes a string query with the
--- given module 'ExecUnit's. The string query is executed in each module, execution in each module
--- runs in it's own thread. This function is syncrhonous; it blocks until all threads finish
--- working. Pass a list of modules against which you want to execute the string, or
--- 'Prelude.Nothing' to execute the string against all modules.
-execStringQuery :: UStr -> Maybe [UPath] -> Exec ()
-execStringQuery instr modnames = do
-  let select names = M.assocs .
-        M.intersectionWith (flip const) (M.fromList $ zip names $ repeat ())
-  xunits  <- maybe M.assocs select modnames <$> gets importGraph
-  task    <- gets taskForExecUnits
-  updates <- liftIO $ newMVar M.empty
-  liftIO $ taskLoop_ task $ flip map xunits $ \ (modname, xunit) -> do
-    (result, xunit) <- flip ioExec xunit $ do
-      let rulset = ruleSet xunit
-      tokens <- runTokenizer [obj instr]
-      betweenBeginAndEnd $ makeActionsForQuery [rulset] tokens >>= execute
-    modifyMVar_ updates (return . M.insert modname xunit)
-    case result of
-      PFail (ExecReturn{}) -> return ()
-      PFail err            -> liftIO $ hPutStrLn stderr $ prettyShow err
-      Backtrack            -> case programModuleName xunit of
-        Nothing   -> return ()
-        Just name -> liftIO $ hPutStrLn stderr $
-          uchars name ++ ": does not compute.\n\t"++show instr
-      OK                _  -> return ()
-  updated <- liftIO (takeMVar updates)
-  modify $ \xunit -> xunit{ importGraph = M.union updated (importGraph xunit) }
-
--- | Evaluates the @EXIT@ scripts for every presently loaded dao program, and then clears the
--- 'Dao.Interpreter.importGraph', effectively removing every loaded dao program and idea file from memory.
-daoShutdown :: Exec ()
-daoShutdown = (M.elems <$> gets importGraph) >>=
-  mapM_ (\xunit -> inModule xunit $ gets quittingTime >>= mapM_ execute)
 
 ----------------------------------------------------------------------------------------------------
 

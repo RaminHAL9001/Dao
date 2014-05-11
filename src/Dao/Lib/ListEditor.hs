@@ -46,7 +46,7 @@ newtype ListEditor = ListEditor { listEditor :: StepList Object } deriving (Eq, 
 
 loadLibrary_ListEditor :: DaoSetup
 loadLibrary_ListEditor = do
-  daoClass "ListEditor" (haskellType::ListEditor)
+  daoClass (haskellType::ListEditor)
 
 instance Monoid ListEditor where
   mempty = ListEditor mempty
@@ -135,7 +135,7 @@ instance ObjectFunctor ListEditor [Object] where { objectFMap f = objectFMap (\i
 instance Sizeable ListEditor where { getSizeOf = return . obj . slLength . listEditor }
 
 instance HataClass ListEditor where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ListEditor" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest
     autoDefPPrinter >> autoDefToStruct >> autoDefFromStruct
     autoDefSizeable >> return ()

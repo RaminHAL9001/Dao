@@ -114,7 +114,7 @@ loadLibrary_File = do
   fileOpener "readFile"   ReadMode
   fileOpener "writeFile"  WriteMode
   fileOpener "appendFile" AppendMode
-  daoClass "File" (haskellType::File)
+  daoClass (haskellType::File)
   daoFunction "File" $
     daoFunc
     { daoForeignFunc = \ () -> fmap (flip (,) () . Just . obj . flip File Nothing) . _paramPath "File"
@@ -123,7 +123,7 @@ loadLibrary_File = do
 instance ObjectClass File where { obj=new; fromObj=objFromHata; }
 
 instance HataClass File where
-  haskellDataInterface = interface (File nil Nothing) $ do
+  haskellDataInterface = interface "File" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest
     autoDefPPrinter >> autoDefBinaryFmt
     let fileOpener func mode = defMethod func $

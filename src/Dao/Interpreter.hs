@@ -110,7 +110,7 @@ module Dao.Interpreter(
     updateExecError,
     assignUnqualifiedOnly,
     LimitedObject(LimitedObject, unlimitObject),
-    MethodTable(), execGetObjTable, lookupMethodTable, typeRepToUStr,
+    MethodTable(), execGetObjTable, lookupMethodTable,
     ReadIterable(readForLoop), UpdateIterable(updateForLoop),
     HataClass(haskellDataInterface), toHata, fromHata,
     InitItem(InitSingle, InitAssign),
@@ -293,7 +293,7 @@ instance FromDaoStructClass Action where
 instance ObjectClass Action where { obj=new; fromObj=objFromHata; }
 
 instance HataClass Action where
-  haskellDataInterface = interface (Action [] nullValue M.empty nullValue) $ do
+  haskellDataInterface = interface "Action" $ do
     autoDefEquality >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -479,9 +479,9 @@ daoProvides label = _updateSetupModState $ \st ->
 -- > setupDao = do
 -- >     daoClass "myClass" (haskellType::MyClass)
 -- >     ...
-daoClass :: (UStrType name, Typeable o, HataClass o) => name -> o -> DaoSetup
-daoClass name ~o = _updateSetupModState $ \st ->
-    st{ daoClasses = _insertMethodTable o (fromUStr $ toUStr name) haskellDataInterface (daoClasses st) }
+daoClass :: (Typeable o, HataClass o) => o -> DaoSetup
+daoClass ~o = _updateSetupModState $ \st ->
+  st{ daoClasses = _insertMethodTable o haskellDataInterface (daoClasses st) }
 
 -- | Define a built-in top-level function that is not a member method of any object. Examples of
 -- built-in functions provided in this module are "println()" and "typeof()".
@@ -602,8 +602,8 @@ executeDaoFunc qref fn this params = do
 -- > print, join, defined, delete
 loadEssentialFunctions :: DaoSetup
 loadEssentialFunctions = do
-  daoClass "HashMap" (haskellType :: H.HashMap Object Object)
-  daoClass "RuleSet" (haskellType :: RuleSet)
+  daoClass (haskellType :: H.HashMap Object Object)
+  daoClass (haskellType :: RuleSet)
   daoFunction "print"    builtin_print
   daoFunction "println"  builtin_println
   daoFunction "join"     builtin_join
@@ -649,19 +649,19 @@ instance ObjectClass (DaoFunc Hata)    where { obj=new; fromObj=objFromHata; }
 instance ObjectClass (DaoFunc Object)  where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (DaoFunc ()) where
-  haskellDataInterface = interface daoFunc $ do
+  haskellDataInterface = interface "Builtin_Function" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
 
 instance HataClass (DaoFunc Dynamic) where
-  haskellDataInterface = interface daoFunc $ do
+  haskellDataInterface = interface "Builtin_Dynamic_Method" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
 
 instance HataClass (DaoFunc Hata) where
-  haskellDataInterface = interface daoFunc $ do
+  haskellDataInterface = interface "Builtin_Haskell_Data_Method" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
 
 instance HataClass (DaoFunc Object) where
-  haskellDataInterface = interface daoFunc $ do
+  haskellDataInterface = interface "Builtin_Object_Method" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
 
 ----------------------------------------------------------------------------------------------------
@@ -1068,9 +1068,9 @@ new = OHaskell . toHata
 
 -- | Create a completely opaque haskell data type that can be used stored to a Dao language
 -- variable, but never inspected or modified in any way.
-opaque :: Typeable typ => typ -> Object
+opaque :: forall typ . Typeable typ => typ -> Object
 opaque o = OHaskell $ flip Hata (toDyn o) $
-  interfaceToDynamic $ interface o $ return ()
+  interfaceToDynamic (interface (show $ typeOf o) (return ()) :: Interface typ)
 
 -- | The inverse operation of 'new', uses 'fromObj' and 'fromHata' to extract the data type
 -- wrapped up in the 'Object', assuming the 'Object' is the 'OHaskell' constructor holding a
@@ -1140,14 +1140,13 @@ instance PPrintable Object where
 
 instance B.Binary Hata MTab where
   put (Hata ifc o) = do
-    let typ = objHaskellType ifc 
-    let tid = typeRepToUStr typ
+    let typeName = objInterfaceName ifc 
     mtab <- B.getCoderTable
-    case B.getEncoderForType tid mtab of
+    case B.getEncoderForType typeName mtab of
       Just fn -> do
-        tid  <- B.newInStreamID tid
+        tid  <- B.newInStreamID typeName
         B.put tid >> B.putWithBlockStream1M (fn o)
-      Nothing -> fail $ unwords ["no binary format method defied for Haskell type", show typ]
+      Nothing -> fail $ unwords ["no binary format method defied for Haskell type", uchars (toUStr typeName)]
   get = do
     B.updateTypes
     mtab <- B.getCoderTable
@@ -1155,7 +1154,7 @@ instance B.Binary Hata MTab where
     maybe mzero id $ do
       tid <- tid
       fn  <- B.getDecoderForType tid mtab
-      tab <- lookupMethodTable (fromUStr tid) mtab
+      tab <- lookupMethodTable tid mtab
       return (Hata tab <$> B.getWithBlockStream1M fn)
 
 instance HasNullValue Hata where
@@ -1296,7 +1295,7 @@ instance ToDaoStructClass Struct where { toDaoStruct = return () }
 instance FromDaoStructClass Struct where { fromDaoStruct = FromDaoStruct $ lift get }
 
 instance HataClass Struct where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "Struct" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -1476,7 +1475,7 @@ instance FromDaoStructClass AST_DotLabel where
 instance ObjectClass StructError where { obj=new; fromObj=objFromHata; }
 
 instance HataClass StructError where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "StructError" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest
     autoDefToStruct >> autoDefFromStruct
 
@@ -1737,7 +1736,7 @@ fromDaoStructExec :: Struct -> Exec Hata
 fromDaoStructExec struct = do
   let name = structName struct
   (MethodTable mtab) <- gets globalMethodTable
-  case M.lookup (toUStr $ structName struct) mtab of
+  case M.lookup (structName struct) mtab of
     Nothing  -> execThrow $ obj [obj "no available built-in data type", obj name]
     Just ifc -> case objFromStruct ifc of
       Nothing   -> execThrow $ obj [obj name, obj "data type cannot be constructed from hashed structure"]
@@ -1923,7 +1922,7 @@ optList name = tryField name $ convertFieldData (maybe (return []) return . list
 
 instance ToDaoStructClass Location where
   toDaoStruct = ask >>= \lo -> case lo of
-    LocationUnknown -> makeNullary "Void"
+    LocationUnknown -> makeNullary "NoLocation"
     Location{} -> void $ do
       renameConstructor "Location"
       "startingLine"   .=@ startingLine
@@ -1933,7 +1932,7 @@ instance ToDaoStructClass Location where
 
 instance FromDaoStructClass Location where
   fromDaoStruct = msum $
-    [ nullary "Void" >> return LocationUnknown
+    [ nullary "NoLocation" >> return LocationUnknown
     , do  constructor "Location"
           return Location
             <*> req "startingLine"
@@ -2184,7 +2183,7 @@ instance FromDaoStructClass RefQualifier where { fromDaoStruct=getNullaryWithRea
 instance ObjectClass RefQualifier where { obj=new; fromObj=objFromHata; }
 
 instance HataClass RefQualifier where
-  haskellDataInterface = interface LOCAL $ do
+  haskellDataInterface = interface "RefQualifier" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -2913,7 +2912,7 @@ instance FromDaoStructClass (GlobUnit Object) where
 instance ObjectClass (GlobUnit Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (GlobUnit Object) where
-  haskellDataInterface = interface (Single ONull) $ do
+  haskellDataInterface = interface "GlobUnit" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefFromStruct >> autoDefToStruct
 
@@ -2931,7 +2930,7 @@ instance FromDaoStructClass (Glob Object) where
 instance ObjectClass (Glob Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (Glob Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "GlobPattern" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -3255,7 +3254,7 @@ instance FromDaoStructClass ObjLensError where
 instance ObjectClass ObjLensError where { obj=new; fromObj=objFromHata; }
 
 instance HataClass ObjLensError where
-  haskellDataInterface = interface (ObjLensError Nothing (RefObject ONull NullRef) Nothing) $ do
+  haskellDataInterface = interface "ObjLensError" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -4137,7 +4136,7 @@ instance FromDaoStructClass ExecControl where
     ]
 
 instance HataClass ExecControl where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ExecControl" $ do
     autoDefPPrinter >> autoDefNullTest >> autoDefToStruct
 
 setCtrlReturnValue :: Object -> ExecControl -> ExecControl
@@ -4395,14 +4394,19 @@ execWithWithRefStore o exe = do
 ----------------------------------------------------------------------------------------------------
 
 instance (Typeable a, ObjectClass a) => ToDaoStructClass (Com a) where
-  toDaoStruct = ask >>= \co -> let put o = "com" .= obj o in case co of
-    Com          o    ->                   put o >> return ()
-    ComBefore c1 o    -> "before" .= c1 >> put o >> return ()
-    ComAfter     o c2 ->                   put o >> "after" .= c2 >> return ()
-    ComAround c1 o c2 -> "before" .= c1 >> put o >> "after" .= c2 >> return ()
+  toDaoStruct = do
+    co <- ask
+    renameConstructor "Com"
+    let put o = "com" .= obj o
+    case co of
+      Com          o    ->                   put o >> return ()
+      ComBefore c1 o    -> "before" .= c1 >> put o >> return ()
+      ComAfter     o c2 ->                   put o >> "after" .= c2 >> return ()
+      ComAround c1 o c2 -> "before" .= c1 >> put o >> "after" .= c2 >> return ()
 
 instance (Typeable a, ObjectClass a) => FromDaoStructClass (Com a) where
   fromDaoStruct = do
+    constructor "Com"
     let f name = tryField name (maybe (fail name) return . fromObj)
     before <- optional $ f "before"
     after  <- optional $ f "after"
@@ -4416,7 +4420,7 @@ instance (Typeable a, ObjectClass a) => FromDaoStructClass (Com a) where
 instance (Typeable a, ObjectClass a) =>
   ObjectClass (Com a) where { obj=new; fromObj=objFromHata; }
 instance (Typeable a, ObjectClass a) => HataClass (Com a) where
-  haskellDataInterface = interface (Com $ error "undefined Com") $ do
+  haskellDataInterface = interface "Com" $ do
     autoDefToStruct >> autoDefFromStruct
 
 instance (Typeable a, ObjectClass a) =>
@@ -4444,7 +4448,7 @@ instance Executable (CodeBlock Object) () where { execute (CodeBlock ox) = mapM_
 instance ObjectClass (CodeBlock Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (CodeBlock Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "CodeBlock" $ do
     autoDefNullTest >> autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt >> autoDefPPrinter
     defDeref $ \o -> catchError (execute o >> return Nothing) $ \e -> case e of
       ExecReturn o -> return o
@@ -4514,7 +4518,7 @@ instance Executable Subroutine (Maybe Object) where
 instance ObjectClass Subroutine where { obj=new; fromObj=objFromHata; }
 
 instance HataClass Subroutine where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "Subroutine" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -4558,7 +4562,7 @@ instance PPrintable RuleSet where
 instance ObjectClass RuleSet where { obj=new ; fromObj=objFromHata; }
 
 instance HataClass RuleSet where
-  haskellDataInterface = interface mempty $ do
+  haskellDataInterface = interface "RuleSet" $ do
     autoDefNullTest >> autoDefSizeable >> autoDefPPrinter
     let initParams ox = case ox of
           [] -> return mempty
@@ -4617,7 +4621,7 @@ instance PPrintable CallableCode where
 instance ObjectClass CallableCode where { obj=new; fromObj=objFromHata; }
 
 instance HataClass CallableCode where
-  haskellDataInterface = interface (CallableCode undefined undefined undefined) $ do
+  haskellDataInterface = interface "Function" $ do
     autoDefNullTest >> autoDefPPrinter
     defCallable (return . return)
 
@@ -4646,7 +4650,7 @@ instance PPrintable GlobAction where
 instance ObjectClass GlobAction where { obj=new; fromObj=objFromHata; }
 
 instance HataClass GlobAction where
-  haskellDataInterface = interface (GlobAction [] undefined) $ do
+  haskellDataInterface = interface "GlobAction" $ do
     defCallable $ \rule -> do
       let vars o = case o of {Wildcard _ -> 1; AnyOne _ -> 1; Single _ -> 0; }
       let m = maximum $ map (sum . map vars . getPatUnits) $ globPattern rule
@@ -4673,7 +4677,7 @@ instance FromDaoStructClass (AST_CodeBlock Object) where
 instance ObjectClass (AST_CodeBlock Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_CodeBlock Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "CodeBlockExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -4699,25 +4703,36 @@ instance (Eq a, Ord a, Typeable a, ObjectClass a) =>
 
 instance (Eq a, Ord a, Typeable a, ObjectClass a) =>
   HataClass (TyChkExpr Object a) where
-    haskellDataInterface = interface (NotTypeChecked $ error "undefined TyChkExpr") $ do
+    haskellDataInterface = interface "TypedExec" $ do
       autoDefEquality >> autoDefOrdering
 
 ----------------------------------------------------------------------------------------------------
 
 instance ObjectClass a => ToDaoStructClass (AST_TyChk a Object) where
-  toDaoStruct = ask >>= \o -> renameConstructor "TypeChecked" >> case o of
-    AST_NotChecked o              -> void $ define "data" (obj o)
+  toDaoStruct = ask >>= \o -> case o of
+    AST_NotChecked o              -> do
+      renameConstructor "UntypedExpression"
+      void $ define "expr" (obj o)
     AST_Checked    o coms typ loc -> do
-      define "data" (obj o)
+      renameConstructor "TypedExpression"
+      define "expr" (obj o)
       "colon"    .= coms
       "typeExpr" .= typ
       putLocation loc
+
+instance (Typeable a, ObjectClass a) => FromDaoStructClass (AST_TyChk a Object) where
+  fromDaoStruct = msum $
+    [do constructor "UntypedExpression"
+        AST_NotChecked <$> req "expr"
+    ,do constructor "TypedExpression"
+        return AST_Checked <*> req "expr" <*> req "colon" <*> req "typeExpr" <*> location
+    ]
 
 instance (Eq a, Ord a, PPrintable a, Typeable a, ObjectClass a) =>
   ObjectClass (AST_TyChk a Object) where { obj=new; fromObj=objFromHata; }
 
 instance (Eq a, Ord a, PPrintable a, Typeable a) => HataClass (AST_TyChk a Object) where
-  haskellDataInterface = interface (AST_NotChecked $ error "undefined AST_TyChk") $ do
+  haskellDataInterface = interface "TypedExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     -- autoDefToStruct >> autoDefFromStruct
 
@@ -4738,14 +4753,14 @@ instance B.HasPrefixTable (ParamExpr Object) B.Byte MTab where
 instance ObjectClass (ParamExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (ParamExpr Object) where
-  haskellDataInterface = interface (ParamExpr False (error "undefined ParamExpr") LocationUnknown) $ do
+  haskellDataInterface = interface "ParamExpr" $ do
     autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
 
 instance ToDaoStructClass (AST_Param Object) where
   toDaoStruct = ask >>= \o -> case o of
-    AST_NoParams             -> makeNullary "Void"
+    AST_NoParams             -> makeNullary "NoParameters"
     AST_Param coms tychk loc -> do
       renameConstructor "Parameter"
       maybe (return ()) putComments coms
@@ -4754,14 +4769,14 @@ instance ToDaoStructClass (AST_Param Object) where
 
 instance FromDaoStructClass (AST_Param Object) where
   fromDaoStruct = msum $
-    [ nullary "Void" >> return AST_NoParams
+    [ nullary "NoParameters" >> return AST_NoParams
     , constructor "Parameter" >> return AST_Param <*> optComments <*> req "typeCheck" <*> location
     ]
 
 instance ObjectClass (AST_Param Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_Param Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ParameterExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -4779,7 +4794,7 @@ instance B.HasPrefixTable (ParamListExpr Object) B.Byte MTab where
 instance ObjectClass (ParamListExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (ParamListExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ParameterList" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
@@ -4797,7 +4812,7 @@ instance FromDaoStructClass (AST_ParamList Object) where
 instance ObjectClass (AST_ParamList Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_ParamList Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ParameterListExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -4827,7 +4842,7 @@ instance Executable (RuleHeadExpr Object) [UStr] where
 instance ObjectClass (RuleHeadExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (RuleHeadExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "RuleHeader" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
@@ -4854,7 +4869,7 @@ instance FromDaoStructClass (AST_RuleHeader Object) where
 instance ObjectClass (AST_RuleHeader Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_RuleHeader Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "RuleHeaderExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -5428,7 +5443,7 @@ instance FromDaoStructClass UpdateOp where { fromDaoStruct = getNullaryWithRead 
 instance ObjectClass UpdateOp where { obj=new; fromObj=objFromHata; }
 
 instance HataClass UpdateOp where
-  haskellDataInterface = interface UCONST $ do
+  haskellDataInterface = interface "UpdateOperator" $ do
     autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt
     autoDefToStruct >> autoDefFromStruct
 
@@ -5441,7 +5456,7 @@ instance FromDaoStructClass RefPfxOp where { fromDaoStruct = getNullaryWithRead 
 instance ObjectClass RefPfxOp where { obj=new; fromObj=objFromHata; }
 
 instance HataClass RefPfxOp where
-  haskellDataInterface = interface REF $ do
+  haskellDataInterface = interface "ReferenceOperator" $ do
     autoDefEquality >> autoDefOrdering
     autoDefToStruct >> autoDefFromStruct
 
@@ -5454,7 +5469,7 @@ instance FromDaoStructClass ArithPfxOp where { fromDaoStruct = getNullaryWithRea
 instance ObjectClass ArithPfxOp where { obj=new; fromObj=objFromHata; }
 
 instance HataClass ArithPfxOp where
-  haskellDataInterface = interface POSTIV $ do
+  haskellDataInterface = interface "ArithmeticPrefixOperator" $ do
     autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt
     autoDefToStruct >> autoDefFromStruct
 
@@ -5467,7 +5482,7 @@ instance FromDaoStructClass InfixOp where { fromDaoStruct = getNullaryWithRead }
 instance ObjectClass InfixOp where { obj=new; fromObj=objFromHata; }
 
 instance HataClass InfixOp where
-  haskellDataInterface = interface ADD $ do
+  haskellDataInterface = interface "ArithmeticInfixOperator" $ do
     autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt
     autoDefToStruct >> autoDefFromStruct
 
@@ -5480,7 +5495,7 @@ instance FromDaoStructClass TopLevelEventType where { fromDaoStruct = getNullary
 instance ObjectClass TopLevelEventType where { obj=new; fromObj=objFromHata; }
 
 instance HataClass TopLevelEventType where
-  haskellDataInterface = interface BeginExprType $ do
+  haskellDataInterface = interface "TopLevelEventType" $ do
     autoDefEquality >> autoDefOrdering
     autoDefToStruct >> autoDefFromStruct
 
@@ -5972,7 +5987,7 @@ instance FromDaoStructClass (AST_RefSuffix Object) where
 instance ObjectClass (AST_RefSuffix Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_RefSuffix Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "RefSuffixExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -6003,7 +6018,7 @@ instance RefReducible (ParenExpr Object) where { reduceToRef (ParenExpr a _) = r
 instance ObjectClass (ParenExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (ParenExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "Parentheses" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
     -- autoDefToStruct >> autoDefFromStruct
 
@@ -6019,7 +6034,7 @@ instance FromDaoStructClass (AST_Paren Object) where
 instance ObjectClass (AST_Paren Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_Paren Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ParenthesesExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -6036,7 +6051,7 @@ instance Executable (IfExpr Object) Bool where
 instance ObjectClass (IfExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (IfExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "Conditional" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
@@ -6052,7 +6067,7 @@ instance FromDaoStructClass (AST_If Object) where
 instance ObjectClass (AST_If Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_If Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ConditionalExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -6068,7 +6083,7 @@ instance Executable (ElseExpr Object) Bool where { execute (ElseExpr ifn _) = ex
 instance ObjectClass (ElseExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (ElseExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "Else" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
@@ -6085,7 +6100,7 @@ instance FromDaoStructClass (AST_Else Object) where
 instance ObjectClass (AST_Else Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_Else Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ElseExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -6114,7 +6129,7 @@ instance Executable (IfElseExpr Object) () where
 instance ObjectClass (IfElseExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (IfElseExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "IfElse" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
@@ -6138,7 +6153,7 @@ instance FromDaoStructClass (AST_IfElse Object) where
 instance ObjectClass (AST_IfElse Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_IfElse Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "IfElseExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -6154,7 +6169,7 @@ instance Executable (LastElseExpr Object) () where { execute (LastElseExpr code 
 instance ObjectClass (LastElseExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (LastElseExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "FinalElse" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
@@ -6170,7 +6185,7 @@ instance FromDaoStructClass (AST_LastElse Object) where
 instance ObjectClass (AST_LastElse Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_LastElse Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "FinalElseExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -6184,9 +6199,8 @@ instance B.Binary (CatchExpr Object) MTab where
 instance ObjectClass (CatchExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (CatchExpr Object) where
-  haskellDataInterface =
-    interface (CatchExpr (ParamExpr False (NotTypeChecked nil) LocationUnknown) nullValue LocationUnknown) $ do
-      autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt
+  haskellDataInterface = interface "CatchExpr" $ do
+    autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt
 
 -- | Returns the 'Exec' function to be evaluated if the 'ExecControl' matches the 'CatchExpr' type
 -- constraint. If the type constraint does not match, this function evaluates to
@@ -6213,7 +6227,7 @@ instance FromDaoStructClass (AST_Catch Object) where
 instance ObjectClass (AST_Catch Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_Catch Object) where
-  haskellDataInterface = interface (AST_Catch [] (Com AST_NoParams) nullValue LocationUnknown) $ do
+  haskellDataInterface = interface "CatchExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -6233,7 +6247,7 @@ instance Executable (WhileExpr Object) () where
 instance ObjectClass (WhileExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (WhileExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "While" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
@@ -6247,7 +6261,7 @@ instance FromDaoStructClass (AST_While Object) where
 instance ObjectClass (AST_While Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_While Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "WhileExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -6394,7 +6408,7 @@ instance Executable (ScriptExpr Object) () where
 instance ObjectClass (ScriptExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (ScriptExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "Script" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 localVarDefine :: Name -> Object -> Exec ()
@@ -6505,7 +6519,7 @@ instance ObjectClass [AST_Script Object] where { obj=listToObj; fromObj=listFrom
 instance ObjectClass (AST_Script Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_Script Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ScriptExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -6527,24 +6541,24 @@ instance PPrintable (ObjListExpr Object) where { pPrint = pPrintInterm }
 instance ObjectClass (ObjListExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (ObjListExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ListLiteral" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
 
 instance ToDaoStructClass (AST_ObjList Object) where
   toDaoStruct = ask >>= \o -> case o of
-    AST_ObjList coms lst loc -> renameConstructor "ObjectList" >>
+    AST_ObjList coms lst loc -> renameConstructor "ListLiteralExpression" >>
       putComments coms >> defObjField "items" (listToObj lst) >> putLocation loc
 
 instance FromDaoStructClass (AST_ObjList Object) where
-  fromDaoStruct = constructor "ObjectList" >>
+  fromDaoStruct = constructor "ListLiteralExpression" >>
     return AST_ObjList <*> comments <*> reqList "items" <*> location
 
 instance ObjectClass (AST_ObjList Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_ObjList Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ListLiteralExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -6560,7 +6574,7 @@ instance Executable (OptObjListExpr Object) [(Location, Reference)] where
 instance ObjectClass (OptObjListExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (OptObjListExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "OptionalListLiteral" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 -- | Evaluate an 'Exec', but if it throws an exception, set record an 'ObjectExpr' where
@@ -6580,7 +6594,7 @@ instance FromDaoStructClass (AST_OptObjList Object) where
 instance ObjectClass (AST_OptObjList Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_OptObjList Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "OptionalListLiteralExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -6600,7 +6614,7 @@ instance RefReducible (LiteralExpr Object) where { reduceToRef (LiteralExpr o _)
 instance ObjectClass (LiteralExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (LiteralExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "Literal" $ do
     autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt >> defDeref execute
 
 ----------------------------------------------------------------------------------------------------
@@ -6615,7 +6629,7 @@ instance FromDaoStructClass (AST_Literal Object) where
 instance ObjectClass (AST_Literal Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_Literal Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "LiteralExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -6647,7 +6661,7 @@ instance RefReducible (ReferenceExpr Object) where
 instance ObjectClass (ReferenceExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (ReferenceExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ReferenceLiteral" $ do
     autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt >> defDeref execute
 
 ----------------------------------------------------------------------------------------------------
@@ -6671,7 +6685,7 @@ instance FromDaoStructClass (AST_Reference Object) where
 instance ObjectClass (AST_Reference Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_Reference Object) where
-  haskellDataInterface = interface (AST_RefObject nullValue nullValue nullValue) $ do
+  haskellDataInterface = interface "ReferenceExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct >> defDeref (msum . map execute . toInterm)
 
@@ -6741,7 +6755,7 @@ instance RefReducible (RefPrefixExpr Object) where
 instance ObjectClass (RefPrefixExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (RefPrefixExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "RefPrefixLiteral" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
@@ -6762,10 +6776,9 @@ instance FromDaoStructClass (AST_RefPrefix Object) where
 instance ObjectClass (AST_RefPrefix Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_RefPrefix Object) where
-  haskellDataInterface =
-    interface (AST_PlainRef $ AST_RefObject nullValue nullValue nullValue) $ do
-      autoDefEquality >> autoDefOrdering >> autoDefPPrinter
-      autoDefToStruct >> autoDefFromStruct
+  haskellDataInterface = interface "ReferencePrefixExpression" $ do
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
+    autoDefToStruct >> autoDefFromStruct
 
 ----------------------------------------------------------------------------------------------------
 
@@ -6814,7 +6827,7 @@ instance Executable (RuleFuncExpr Object) (Maybe Object) where
 instance ObjectClass (RuleFuncExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (RuleFuncExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "FunctionLiteral" $ do
     autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt >> autoDefPPrinter
 
 ----------------------------------------------------------------------------------------------------
@@ -6837,7 +6850,7 @@ instance FromDaoStructClass (AST_RuleFunc Object) where
 instance ObjectClass (AST_RuleFunc Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_RuleFunc Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "FunctionLiteralExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -6910,7 +6923,6 @@ _evalInit ref bnds initMap = do
   ref <- case ref of
     Reference UNQUAL name NullRef -> pure name
     ref -> execThrow $ obj [obj "cannot use reference as initializer", obj ref]
-  ref  <- pure $ toUStr ref
   bnds <- execute bnds >>= _reduceArgs "initializer parameters"
   let cantUseBounds msg = execThrow $ obj $
         [obj msg, obj "must be defined without bounds parameters", OList bnds]
@@ -6952,7 +6964,7 @@ instance RefReducible (ObjectExpr Object) where
 instance ObjectClass (ObjectExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (ObjectExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ObjectLiteral" $ do
     autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt
     defDeref execute >> autoDefPPrinter
 
@@ -6986,7 +6998,7 @@ instance FromDaoStructClass (AST_Object Object) where
 instance ObjectClass (AST_Object Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_Object Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ObjectLiteralExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -7037,7 +7049,7 @@ instance RefReducible (ArithExpr Object) where
 instance ObjectClass (ArithExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (ArithExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "Arithmetic" $ do
     autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt
     defDeref execute >> autoDefPPrinter
 
@@ -7059,7 +7071,7 @@ instance FromDaoStructClass (AST_Arith Object) where
 instance ObjectClass (AST_Arith Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_Arith Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ArithmeticExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -7122,7 +7134,7 @@ assignUnqualifiedOnly = _executeAssignExpr $ \qref op newObj -> case qref of
 instance ObjectClass (AssignExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AssignExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "Assignment" $ do
     autoDefNullTest >> autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt
     defDeref execute >> autoDefPPrinter
 
@@ -7143,7 +7155,7 @@ instance FromDaoStructClass (AST_Assign Object) where
 instance ObjectClass (AST_Assign Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_Assign Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "AssignmentExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -7183,7 +7195,7 @@ instance RefReducible (ObjTestExpr Object) where
 instance ObjectClass (ObjTestExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (ObjTestExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ObjectTest" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
 
 ----------------------------------------------------------------------------------------------------
@@ -7214,7 +7226,7 @@ instance FromDaoStructClass (AST_ObjTest Object) where
 instance ObjectClass (AST_ObjTest Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_ObjTest Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ObjectTestExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -7234,7 +7246,7 @@ instance FromDaoStructClass AST_Namespace where
 instance ObjectClass AST_Namespace where { obj=new; fromObj=objFromHata; }
 
 instance HataClass AST_Namespace where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "NamespaceExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -7301,7 +7313,7 @@ instance Executable (TopLevelExpr Object) () where
 instance ObjectClass (TopLevelExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (TopLevelExpr Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "TopLevel" $ do
     autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt >> autoDefPPrinter
 
 ----------------------------------------------------------------------------------------------------
@@ -7321,7 +7333,7 @@ instance FromDaoStructClass AST_Attribute where
 instance ObjectClass AST_Attribute where { obj=new; fromObj=objFromHata; }
 
 instance HataClass AST_Attribute where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "AttributeExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -7346,7 +7358,7 @@ instance FromDaoStructClass (AST_TopLevel Object) where
 instance ObjectClass (AST_TopLevel Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_TopLevel Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "TopLevelExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -7379,7 +7391,7 @@ instance Executable (Program Object) () where
 instance ObjectClass (Program Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (Program Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "ProgramData" $ do
     autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt
 
 ----------------------------------------------------------------------------------------------------
@@ -7420,7 +7432,7 @@ instance FromDaoStructClass (AST_SourceCode Object) where
 instance ObjectClass (AST_SourceCode Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (AST_SourceCode Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "SourceCode" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
@@ -7436,7 +7448,7 @@ evalTopLevelAST ast = case toInterm ast of
 -- $Builtin_object_interfaces
 -- The following functions provide object interfaces for essential data types.
 
-instance HataClass () where { haskellDataInterface = interface () (return ()) }
+instance HataClass () where { haskellDataInterface = interface "HaskellNullValue" (return ()) }
 
 type Get a = B.GGet  MethodTable a
 type Put   = B.GPut  MethodTable
@@ -7447,32 +7459,26 @@ type MTab = MethodTable
 
 ----------------------------------------------------------------------------------------------------
 
-newtype MethodTable = MethodTable (M.Map UStr (Interface Dynamic))
+newtype MethodTable = MethodTable (M.Map Name (Interface Dynamic))
 
 instance Monoid MethodTable where
   mempty  = MethodTable mempty
-  mappend (MethodTable a) (MethodTable b) = MethodTable (M.union b a)
+  mappend (MethodTable a) (MethodTable b) = let dups = M.intersection a b in
+    if M.null dups
+    then MethodTable (M.union b a)
+    else error ("Namespace conflict when installing built-in data type interfaces: "++show (M.keys dups))
 
 -- | Lookup an 'Interface' by it's name from within the 'Exec' monad.
-execGetObjTable :: UStr -> Exec (Maybe (Interface Dynamic))
+execGetObjTable :: Name -> Exec (Maybe (Interface Dynamic))
 execGetObjTable nm = gets (lookupMethodTable nm . globalMethodTable)
 
-lookupMethodTable :: UStr -> MethodTable -> Maybe (Interface Dynamic)
+lookupMethodTable :: Name -> MethodTable -> Maybe (Interface Dynamic)
 lookupMethodTable nm (MethodTable tab) = M.lookup nm tab
 
 -- not for export, use 'daoClass'
-_insertMethodTable
-  :: (Typeable o, HataClass o)
-  => o
-  -> UStr
-  -> Interface o
-  -> MethodTable
-  -> MethodTable
-_insertMethodTable _ nm ifc = flip mappend $
-  MethodTable (M.singleton nm ((interfaceToDynamic ifc){ objInterfaceName=fromUStr (toUStr nm) }))
-
-typeRepToUStr :: TypeRep -> UStr
-typeRepToUStr a = let con = typeRepTyCon a in ustr (tyConModule con ++ '.' : tyConName con)
+_insertMethodTable :: (Typeable o, HataClass o) => o -> Interface o -> MethodTable -> MethodTable
+_insertMethodTable _ ifc = flip mappend $
+  MethodTable (M.singleton (objInterfaceName ifc) (interfaceToDynamic ifc))
 
 instance B.HasCoderTable MethodTable where
   getEncoderForType nm mtab = fmap fst $ lookupMethodTable nm mtab >>= objBinaryFormat
@@ -7531,36 +7537,36 @@ instance UpdateIterable Object (Maybe Object) where
 class HataClass typ where { haskellDataInterface :: Interface typ }
 
 instance HataClass Location where
-  haskellDataInterface = interface LocationUnknown $ do
+  haskellDataInterface = interface "Location" $ do
     autoDefEquality >> autoDefOrdering
     autoDefToStruct >> autoDefFromStruct
     autoDefPPrinter
 
 instance HataClass Comment where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "Comment" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
 instance HataClass DotNameExpr where
-  haskellDataInterface = interface (DotNameExpr undefined) $ do
+  haskellDataInterface = interface "DotName" $ do
     autoDefEquality >> autoDefBinaryFmt >> autoDefPPrinter
 
 instance HataClass AST_DotName where
-  haskellDataInterface = interface (AST_DotName (Com ()) undefined) $ do
+  haskellDataInterface = interface "DotNameExpression" $ do
     autoDefEquality >> autoDefPPrinter >> autoDefToStruct >> autoDefFromStruct
 
 instance HataClass DotLabelExpr where
-  haskellDataInterface = interface (DotLabelExpr undefined [] LocationUnknown) $ do
+  haskellDataInterface = interface "DotLabel" $ do
     autoDefEquality >> autoDefBinaryFmt >> autoDefPPrinter
 
 instance HataClass AST_DotLabel where
-  haskellDataInterface = interface (AST_DotLabel undefined [] LocationUnknown) $ do
+  haskellDataInterface = interface "DotLabelExpression" $ do
     autoDefEquality >> autoDefPPrinter >> autoDefToStruct >> autoDefFromStruct
 
 instance ObjectClass (H.HashMap Object Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (H.HashMap Object Object) where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "HashMap" $ do
     autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt >> autoDefPPrinter >> autoDefSizeable
     let un _ a b = xmaybe (fromObj b) >>= \b -> return $ new $ H.union b a
     defInfixOp ADD  un
@@ -8085,34 +8091,40 @@ defLeppard _ _ = return ()
 -- declare the functionality you would like to include in this object one line at a time using
 -- the procedural coding style. Each line in the "procedure" will be one of the @def*@ functions,
 -- for example 'autoDefEquality' or 'autoDefOrdering'.
-interface :: Typeable typ => typ -> DaoClassDefM typ ig -> Interface typ
-interface init defIfc =
-  Interface
-  { objHaskellType     = typ
-  , objInterfaceName   = nil
-  , objCastFrom        = objIfcCastFrom       ifc
-  , objEquality        = objIfcEquality       ifc
-  , objOrdering        = objIfcOrdering       ifc
-  , objBinaryFormat    = objIfcBinaryFormat   ifc
-  , objNullTest        = objIfcNullTest       ifc
-  , objPPrinter        = objIfcPPrinter       ifc
-  , objReadIterable    = objIfcReadIterable   ifc
-  , objUpdateIterable  = objIfcUpdateIterable ifc
-  , objIndexer         = objIfcIndexer        ifc
-  , objIndexUpdater    = objIfcIndexUpdater   ifc
-  , objSizer           = objIfcSizer          ifc
-  , objToStruct        = objIfcToStruct       ifc
-  , objFromStruct      = objIfcFromStruct     ifc
-  , objInitializer     = objIfcInitializer    ifc
-  , objTraverse        = objIfcTraverse       ifc
-  , objCallable        = objIfcCallable       ifc
-  , objDereferencer    = objIfcDerefer        ifc
-  , objInfixOpTable    = mkArray "defInfixOp"  $ objIfcInfixOpTable  ifc
-  , objArithPfxOpTable = mkArray "defPrefixOp" $ objIfcPrefixOpTable ifc
-  , objMethodTable     = objIfcMethodTable    ifc
-  }
+interface :: (UStrType name, Typeable typ) => name -> DaoClassDefM typ ig -> Interface typ
+interface nm defIfc = let name = toUStr nm in case maybeFromUStr name of
+  Nothing   -> error $
+    "Failed to install built-in data type interface, invalid type name provided: "++uchars nm
+  Just name ->
+    Interface
+    { objHaskellType     = typ
+    , objInterfaceName   = name
+    , objCastFrom        = objIfcCastFrom       ifc
+    , objEquality        = objIfcEquality       ifc
+    , objOrdering        = objIfcOrdering       ifc
+    , objBinaryFormat    = objIfcBinaryFormat   ifc
+    , objNullTest        = objIfcNullTest       ifc
+    , objPPrinter        = objIfcPPrinter       ifc
+    , objReadIterable    = objIfcReadIterable   ifc
+    , objUpdateIterable  = objIfcUpdateIterable ifc
+    , objIndexer         = objIfcIndexer        ifc
+    , objIndexUpdater    = objIfcIndexUpdater   ifc
+    , objSizer           = objIfcSizer          ifc
+    , objToStruct        = objIfcToStruct       ifc
+    , objFromStruct      = objIfcFromStruct     ifc
+    , objInitializer     = objIfcInitializer    ifc
+    , objTraverse        = objIfcTraverse       ifc
+    , objCallable        = objIfcCallable       ifc
+    , objDereferencer    = objIfcDerefer        ifc
+    , objInfixOpTable    = mkArray "defInfixOp"  $ objIfcInfixOpTable  ifc
+    , objArithPfxOpTable = mkArray "defPrefixOp" $ objIfcPrefixOpTable ifc
+    , objMethodTable     = objIfcMethodTable    ifc
+    }
   where
-    typ = typeOf init
+    mktyp :: Typeable typ => DaoClassDefM typ ig -> typ -> TypeRep
+    mktyp _ undefd = typeOf undefd
+    typ = mktyp defIfc $
+      error "'Dao.Interpreter.interface' evaluated 'Data.Typeable.typeOf' on undefined value"
     ifc = execState (daoClassDefState defIfc) (initHDIfcBuilder typ)
     mkArray oiName elems =
       minAccumArray (onlyOnce oiName) Nothing $ map (\ (i, e) -> (i, (i, Just e))) elems

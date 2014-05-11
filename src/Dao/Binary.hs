@@ -102,8 +102,8 @@ class Binary a mtab where
   serializer = Serializer{serializeGet=Dao.Binary.get,serializePut=Dao.Binary.put}
 
 class HasCoderTable mtab where
-  getEncoderForType :: UStr -> mtab -> Maybe (Dynamic -> GPut mtab)
-  getDecoderForType :: UStr -> mtab -> Maybe (GGet mtab Dynamic)
+  getEncoderForType :: Name -> mtab -> Maybe (Dynamic -> GPut mtab)
+  getDecoderForType :: Name -> mtab -> Maybe (GGet mtab Dynamic)
 
 -- | To evaluate a 'GPut' or 'GGet' function without providing any coder table, simply pass @()@.
 instance HasCoderTable () where
@@ -113,13 +113,13 @@ instance HasCoderTable () where
 data EncodeIndex mtab
   = EncodeIndex
     { indexCounter :: InStreamID
-    , encodeIndex  :: M.Map UStr InStreamID
+    , encodeIndex  :: M.Map Name InStreamID
     , encMTabRef   :: mtab
     }
 
 data DecodeIndex mtab
   = DecodeIndex
-    { decodeIndex  :: M.Map InStreamID UStr
+    { decodeIndex  :: M.Map InStreamID Name
     , decMTabRef   :: mtab
     }
 
@@ -167,7 +167,7 @@ class HasCoderTable mtab => ProvidesCoderTable m mtab where { getCoderTable :: m
 instance HasCoderTable mtab => ProvidesCoderTable (GPutM mtab) mtab where { getCoderTable = S.gets encMTabRef }
 instance HasCoderTable mtab => ProvidesCoderTable (GGet  mtab) mtab where { getCoderTable = S.gets decMTabRef }
 
-data InStreamIndex = InStreamIndex{ inStreamIndexID :: InStreamID, inStreamIndexLabel :: UStr }
+data InStreamIndex = InStreamIndex{ inStreamIndexID :: InStreamID, inStreamIndexLabel :: Name }
   deriving (Eq, Ord, Show)
 instance HasCoderTable mtab => Binary InStreamIndex mtab where
   put (InStreamIndex a b) = prefixByte 0x01 $ put a >> put b
@@ -175,7 +175,7 @@ instance HasCoderTable mtab => Binary InStreamIndex mtab where
 
 -- | Find the 'Dao.String.UStr' that was associated with this 'InStreamID' when the byte stream was
 -- constructed when 'newInStreamID' was called.
-decodeIndexLookup :: HasCoderTable mtab => InStreamID -> GGet mtab (Maybe UStr)
+decodeIndexLookup :: HasCoderTable mtab => InStreamID -> GGet mtab (Maybe Name)
 decodeIndexLookup tid = M.lookup tid <$> S.gets decodeIndex
 
 -- | Given an 'Data.Int.Int64' length value, compute how many VLI bytes of hash code should be
@@ -233,7 +233,7 @@ instance Binary BlockStream1M mtab where
 -- encoder table, the existing ID is returned rather than creating a new one, and nothing changes.
 -- If a new ID is created, the 'Dao.String.UStr' is paired with the new ID and written to the byte
 -- stream.
-newInStreamID :: HasCoderTable mtab => UStr -> GPutM mtab InStreamID
+newInStreamID :: HasCoderTable mtab => Name -> GPutM mtab InStreamID
 newInStreamID typ = S.get >>= \st -> let idx = encodeIndex st in case M.lookup typ idx of
   Nothing  -> do
     let nextID = indexCounter st + 1

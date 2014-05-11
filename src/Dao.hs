@@ -293,7 +293,7 @@ instance FromDaoStructClass DaoProgram where
 
 loadLibrary_Program :: DaoSetup
 loadLibrary_Program = do
-  daoClass "Program" (haskellType::DaoProgram)
+  daoClass (haskellType::DaoProgram)
   daoFunction "loadProgram" $
     daoFunc
     { daoForeignFunc = \ () ox -> case ox of
@@ -316,7 +316,7 @@ loadLibrary_Program = do
 instance ObjectClass DaoProgram where { obj=new; fromObj=objFromHata; }
 
 instance HataClass DaoProgram where
-  haskellDataInterface = interface nullValue $ do
+  haskellDataInterface = interface "Program" $ do
     autoDefPPrinter >> autoDefFromStruct >> autoDefToStruct >> autoDefNullTest
     defMethod0 "isModified" $ \prog -> return (Just $ obj $ programModified prog, prog)
     defMethod0 "isCompiled" $ \prog -> return (Just $ obj $ maybe False (const True) (programExecUnit prog), prog)

@@ -118,7 +118,7 @@ arrayFromArgs lists =
 
 loadLibrary_Array :: DaoSetup
 loadLibrary_Array = do
-  daoClass "Array" (haskellType::Array)
+  daoClass (haskellType::Array)
   daoFunction "Array" $
     daoFunc
     { funcAutoDerefParams=True
@@ -128,7 +128,7 @@ loadLibrary_Array = do
 instance ObjectClass Array where { obj=new; fromObj=objFromHata; }
 
 instance HataClass Array where
-  haskellDataInterface = interface (Array $ error "uninitialized Array") $ do
+  haskellDataInterface = interface "Array" $ do
     autoDefEquality >> autoDefReadIterable >> autoDefUpdateIterable >> autoDefTraverse
     defSizer (fmap OInt . liftIO . arraySize)
     defIndexer $ \arr i -> _objToInt i >>= liftIO . arrayLookup arr >>= predicate

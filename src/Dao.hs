@@ -294,7 +294,7 @@ instance FromDaoStructClass DaoProgram where
 loadLibrary_Program :: DaoSetup
 loadLibrary_Program = do
   daoClass (haskellType::DaoProgram)
-  daoFunction "loadProgram" $
+  daoFunction "DaoProgram" $
     daoFunc
     { daoForeignFunc = \ () ox -> case ox of
         [path] -> do
@@ -316,7 +316,7 @@ loadLibrary_Program = do
 instance ObjectClass DaoProgram where { obj=new; fromObj=objFromHata; }
 
 instance HataClass DaoProgram where
-  haskellDataInterface = interface "Program" $ do
+  haskellDataInterface = interface "DaoProgram" $ do
     autoDefPPrinter >> autoDefFromStruct >> autoDefToStruct >> autoDefNullTest
     defMethod0 "isModified" $ \prog -> return (Just $ obj $ programModified prog, prog)
     defMethod0 "isCompiled" $ \prog -> return (Just $ obj $ maybe False (const True) (programExecUnit prog), prog)
@@ -324,11 +324,24 @@ instance HataClass DaoProgram where
     defMethod  "query"   $ daoFunc{ daoForeignFunc = makeEvalActions $ return . Just . obj . fmap obj }
     defMethod  "do"      $ daoFunc{ daoForeignFunc = makeEvalActions $ msum . fmap execute }
     defMethod  "doAll"   $ daoFunc{ daoForeignFunc = makeEvalActions $ fmap (Just . obj) . execute }
+    defMethod0 "save"    $ fmap ((,) Nothing) . programSave
 
 programCompile :: DaoProgram -> Exec DaoProgram
 programCompile prog = do
-  subxunit <- compileSource (programPath prog) (programSourceCode prog)
-  return $ prog{ programExecUnit=Just subxunit }
+  if maybe True (const $ programModified prog) (programExecUnit prog)
+  then do
+    subxunit <- compileSource (programPath prog) (programSourceCode prog)
+    return $ prog{ programExecUnit=Just subxunit }
+  else return prog
+
+programSave :: DaoProgram -> Exec DaoProgram
+programSave prog =
+  if programModified prog
+  then do
+    prog <- programCompile prog
+    liftIO $ writeFile (uchars $ programPath prog) (prettyShow $ programSourceCode prog)
+    return $ prog{ programModified=False }
+  else return prog
 
 makeEvalActions :: ([Action] -> Exec (Maybe Object)) -> DaoProgram -> [Object] -> Exec (Maybe Object, DaoProgram)
 makeEvalActions f prog ox = do 

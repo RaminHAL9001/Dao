@@ -135,11 +135,10 @@ import           Dao.PPrint
 import           Dao.Random
 
 import           Control.Applicative
-import           Control.Monad
+import           Control.Monad.Identity
 import           Control.DeepSeq
 
 import           Data.Typeable
-import           Data.Function
 import           Data.Monoid
 import           Data.List
 import           Data.Char
@@ -152,13 +151,12 @@ import qualified Data.Map as M
 -- strings.
 simpleTokenize :: String -> [UStr]
 simpleTokenize ax = map ustr (loop ax) where
-  loop ax =
-    case ax of
-      [] -> []
-      a:ax | elem a "([{}])\"'`" -> [a] : loop ax
-      a:ax -> case msum (map (check a ax) kinds) of
-        Nothing -> [a] : loop ax
-        Just (got, ax) -> got : loop ax
+  loop ax = case ax of
+    [] -> []
+    a:ax | elem a "([{}])\"'`" -> [a] : loop ax
+    a:ax -> case msum (map (check a ax) kinds) of
+      Nothing -> [a] : loop ax
+      Just (got, ax) -> got : loop ax
   check a ax fn = if fn a then let (got, ax') = span fn ax in Just (a:got, ax') else Nothing
   kinds = [isSpace, isAlpha, isNumber, isPunctuation, isAscii, not . isAscii]
 
@@ -168,27 +166,31 @@ simpleTokenize ax = map ustr (loop ax) where
 -- is only a single unit of a full 'Glob' expression. The unit type need not be a string, but most
 -- the instances of 'GlobUnit' into 'Prelude.Show' and 'Prelude.Read' are only defined for
 -- 'GlobUnit's of 'Dao.String.UStr's.
-data GlobUnit o = Wildcard Name | AnyOne Name | Single o deriving (Eq, Typeable)
+data GlobUnit o
+  = Wildcard Name (Maybe Name)
+  | AnyOne   Name (Maybe Name)
+  | Single o
+  deriving (Eq, Typeable)
 
 -- Order such that sorting will group 'Wildcards' first, 'AnyOne's second, and 'Single's third.
 instance Ord o => Ord (GlobUnit o) where
   compare a b = case a of
-    Wildcard a -> case b of
-      Wildcard b -> compare a b
+    Wildcard a a1 -> case b of
+      Wildcard b b1 -> compare a b <> compare a1 b1
       _          -> LT
-    AnyOne   a -> case b of
-      Wildcard _ -> GT
-      AnyOne   b -> compare a b
-      Single   _ -> LT
+    AnyOne   a a1 -> case b of
+      Wildcard{} -> GT
+      AnyOne   b b1 -> compare a b <> compare a1 b1
+      Single{}   -> LT
     Single   a -> case b of
       Single   b -> compare a b
       _          -> GT
 
 instance Functor GlobUnit where
   fmap f o = case o of
-    Single   o -> Single (f o)
-    Wildcard n -> Wildcard n
-    AnyOne   n -> AnyOne n
+    Single   o   -> Single (f o)
+    Wildcard n t -> Wildcard n t
+    AnyOne   n t -> AnyOne   n t
 
 isSingle :: GlobUnit o -> Bool
 isSingle o = case o of { Single _ -> True; _ -> False }
@@ -205,10 +207,10 @@ toStringWithoutQuotes cx = loop $ case cx of { '"':cx -> cx ; cx -> cx ; } where
 -- function assumes your data type is a string-like type where evaluating 'Prelude.show' on your
 -- type produces a string of characters with a leading and trailing quote @'"'@ character.
 showGlobUnitOfStrings :: (g -> String) -> GlobUnit g -> String
-showGlobUnitOfStrings gshow g = case g of
-  Wildcard nm -> '$':uchars (toUStr nm)++"*"
-  AnyOne   nm -> '$':uchars (toUStr nm)++"?"
-  Single   g  -> toStringWithoutQuotes (gshow g)
+showGlobUnitOfStrings gshow g = let printyp = maybe "" (\n -> "::"++uchars n) in case g of
+  Wildcard nm t -> '$':uchars (toUStr nm)++printyp t
+  AnyOne   nm t -> '$':uchars (toUStr nm)++printyp t++"?"
+  Single   g    -> toStringWithoutQuotes (gshow g)
 
 instance Show (GlobUnit UStr)   where { show = showGlobUnitOfStrings uchars }
 instance Show (GlobUnit String) where { show = showGlobUnitOfStrings id }
@@ -219,11 +221,22 @@ showGlobUnitList :: (g -> String) -> [GlobUnit g] -> String
 showGlobUnitList gshow gx = show $ concatMap (showGlobUnitOfStrings gshow) gx
 
 instance Read (GlobUnit String) where
-  readsPrec _prec str = case str of
-    '$':c:str | c=='_' || isAlpha c -> [span isAlphaNum str] >>= \ (cx, str) -> case str of
-      '?':str -> [(AnyOne   $ ustr (c:cx), str)]
-      '*':str -> [(Wildcard $ ustr (c:cx), str)]
-      _       -> [(Wildcard $ ustr (c:cx), str)]
+  readsPrec _prec str = let init c = c=='_' || isAlpha c in case str of
+    '$':c:str | init c -> do
+      (cx, str) <- [span isAlphaNum str]
+      (typfunc, str) <- case str of
+        ':':':':str -> return $ head $ concat $
+          [ case str of
+              c:str | init c -> do
+                (cx, str) <- [span isAlphaNum str]
+                [(Just $ ustr $ c:cx, str)]
+              _ -> []
+          , [(Nothing, str)]
+          ]
+        str         -> [(Nothing, str)]
+      case str of
+        '?':str -> [(AnyOne   (ustr $ c:cx) typfunc, str)]
+        _       -> [(Wildcard (ustr $ c:cx) typfunc, str)]
     '$':str -> [span (/='$') str] >>= \ (cx, str) -> [(Single ('$':cx), str)]
     _       -> []
 
@@ -235,13 +248,17 @@ instance UStrType (GlobUnit UStr) where
   toUStr = ustr . show
 
 instance NFData o => NFData (GlobUnit o) where
-  rnf (Wildcard a) = deepseq a ()
-  rnf (AnyOne   a) = deepseq a ()
-  rnf (Single   a) = deepseq a ()
+  rnf (Wildcard a b) = deepseq a $! deepseq b ()
+  rnf (AnyOne   a b) = deepseq a $! deepseq b ()
+  rnf (Single   a  ) = deepseq a ()
 
 instance HasRandGen o => HasRandGen (GlobUnit o) where
   randO = countNode $ runRandChoice
-  randChoice = randChoiceList [Single <$> randO, Wildcard <$> randO, AnyOne <$> randO]
+  randChoice = randChoiceList $
+    [ Single <$> randO
+    , return Wildcard <*> randO <*> randO
+    , return AnyOne   <*> randO <*> randO
+    ]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -250,6 +267,9 @@ instance HasRandGen o => HasRandGen (GlobUnit o) where
 -- Tokens when used as a 'Glob'.
 data Glob o = Glob { getPatUnits :: [GlobUnit o], getGlobLength :: Int }
   deriving (Eq, Ord, Typeable)
+
+makeGlob :: [GlobUnit o] -> Glob o
+makeGlob ox = Glob{ getPatUnits=ox, getGlobLength=length ox }
 
 instance Functor Glob where
   fmap f g = g{ getPatUnits = fmap (fmap f) (getPatUnits g) }
@@ -306,15 +326,18 @@ type PatternTree g o = T.Tree (GlobUnit g) o
 --
 -- In the case that you would like to further parse the 'Single' strings, you can use the
 -- 'parseOverSingles' function, breaking a 'Single' down into a list of 'Single's.
+parseOverSinglesM :: Monad m => Glob g -> (g -> m [h]) -> m (Glob h)
+parseOverSinglesM g convert =
+  forM (getPatUnits g)
+    (\u -> case u of
+        Single   u    -> convert u >>= mapM (return . Single)
+        AnyOne   nm t -> return [AnyOne   nm t]
+        Wildcard nm t -> return [Wildcard nm t]
+    ) >>= return . makeGlob . concat
+
+-- | Like 'parseOverSinglesM' but is a pure function.
 parseOverSingles :: Glob g -> (g -> [h]) -> Glob h
-parseOverSingles (Glob{ getPatUnits=gx }) convert =
-  Glob{ getPatUnits=patUnits, getGlobLength=length patUnits} where
-    patUnits = loop gx
-    loop gx = case gx of
-      []               -> []
-      Single   g  : gx -> map Single (convert g) ++ loop gx
-      AnyOne   nm : gx -> AnyOne nm : loop gx
-      Wildcard nm : gx -> Wildcard nm : loop gx
+parseOverSingles g = runIdentity . parseOverSinglesM g . (return.)
 
 -- | Insert an item at multiple points in the 'PatternTree'
 insertMultiPattern :: (Eq g, Ord g) => (o -> o -> o) -> [Glob g] -> o -> PatternTree g o -> PatternTree g o
@@ -326,7 +349,7 @@ insertMultiPattern plus pats o tree =
 globTree :: (Eq g, Ord g) => Glob g -> o -> PatternTree g o
 globTree pat a = T.insert (getPatUnits pat) a T.Void
 
-matchPattern :: (Eq g, Ord g) => Bool -> Glob g -> [g] -> [M.Map Name [g]]
+matchPattern :: (Eq g, Ord g) => Bool -> Glob g -> [g] -> [M.Map Name (Maybe Name, [g])]
 matchPattern greedy pat tokx = matchTree greedy (globTree pat ()) tokx >>= \ (_, m, ()) -> [m]
 
 -- | Match a list of token items to a set of 'Glob' expressions that have been combined into a
@@ -339,7 +362,7 @@ matchPattern greedy pat tokx = matchTree greedy (globTree pat ()) tokx >>= \ (_,
 -- Each match is returned as a triple indicating 1. the 'Glob' that matched the token list, 2. the
 -- token list items that were bound to the 'Dao.String.Name's in the 'Wildcard' and 'AnyOne'
 -- 'GlobUnit's, and 3. the item associated with the 'Glob' expression that matched.
-matchTree :: (Eq g, Ord g) => Bool -> PatternTree g o -> [g] -> [(Glob g, M.Map Name [g], o)]
+matchTree :: (Eq g, Ord g) => Bool -> PatternTree g o -> [g] -> [(Glob g, M.Map Name (Maybe Name, [g]), o)]
 matchTree greedy tree tokx = loop M.empty 0 [] tree tokx where
   loop vars p path tree tokx = case (tree, tokx) of
     (T.Leaf       a  , []  ) -> done vars p path a
@@ -367,15 +390,15 @@ matchTree greedy tree tokx = loop M.empty 0 [] tree tokx where
       , do -- Next we use 'takeWhile' because of how the 'Ord' instance of 'GlobUnit' is defined,
            -- 'Wildcard's and 'AnyOne's are always first in the list of 'assocs'.
            (pat, tree) <- takeWhile (isVariable . fst) (M.assocs branch)
-           let defVar nm mkAssoc = case M.lookup nm vars of
-                 Just pfx -> maybe [] (:[]) (stripPrefix pfx (tok:tokx)) >>= next pat vars tree
-                 Nothing  -> do
+           let defVar nm t mkAssoc = case M.lookup nm vars of
+                 Just (_, pfx) -> maybe [] (:[]) (stripPrefix pfx (tok:tokx)) >>= next pat vars tree
+                 Nothing       -> do
                    (bind, tokx) <- mkAssoc
-                   next pat (M.insert nm bind vars) tree tokx
+                   next pat (M.insert nm (t, bind) vars) tree tokx
            case pat of
-             Wildcard nm -> defVar nm (partStep [] (tok:tokx))
-             AnyOne   nm -> defVar nm [([tok], tokx)]
-             Single   _  -> error "undefined behavior in Dao.Glob.matchTree:branch: case Single"
+             Wildcard nm t -> defVar nm t (partStep [] (tok:tokx))
+             AnyOne   nm t -> defVar nm t [([tok], tokx)]
+             Single   _    -> error "undefined behavior in Dao.Glob.matchTree:branch: case Single"
              -- 'Single' cases must not occur, they should have been filtered out by the code:
              -- > takeWhile (isVariable . fst)
       ]

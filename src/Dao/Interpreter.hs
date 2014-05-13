@@ -21,7 +21,8 @@
 
 module Dao.Interpreter(
     Action(Action), actionTokens, actionPattern, actionMatch, actionCodeBlock,
-    makeActionsForQuery, betweenBeginAndEnd, daoShutdown, getLocalRuleSet, getGlobalRuleSet,
+    makeActionsForQuery, betweenBeginAndEnd, daoShutdown, getLocalRuleSet,
+    getGlobalRuleSet, constructPattern,
     DaoSetupM(), DaoSetup, haskellType, daoProvides, daoClass, daoConstant, daoFunction,
     daoFunction0, daoInitialize, setupDao, evalDao, DaoFunc, daoFunc, funcAutoDerefParams,
     daoForeignFunc, executeDaoFunc,
@@ -94,8 +95,7 @@ module Dao.Interpreter(
     newExecIOHandler, execCatchIO, execHandleIO, execIOHandler,
     execErrorHandler, catchReturn, execNested, execNested_, execFuncPushStack,
     execFuncPushStack_, execWithStaticStore, execWithWithRefStore,
-    setupCodeBlock,
-    Subroutine(Subroutine),
+    Subroutine(Subroutine), setupCodeBlock,
     origSourceCode, staticVars, staticRules, staticLambdas, executable, runCodeBlock, runCodeBlock_,
     RuleSet(), CallableCode(CallableCode), argsPattern, returnType, codeSubroutine, 
     GlobAction(GlobAction), globPattern, globSubroutine, 
@@ -260,7 +260,7 @@ data Action
   = Action
     { actionTokens    :: [Object]
     , actionPattern   :: Glob Object
-    , actionMatch     :: M.Map Name [Object]
+    , actionMatch     :: M.Map Name Object
     , actionCodeBlock :: Subroutine
     }
   deriving (Eq, Typeable)
@@ -272,7 +272,7 @@ instance ToDaoStructClass Action where
     renameConstructor "Action"
     "tokens"  .=@ actionTokens
     "pattern" .=@ actionPattern
-    "match"   .=@ fmap obj . actionMatch
+    "match"   .=@ actionMatch
     "code"    .=@ actionCodeBlock
 
 instance FromDaoStructClass Action where
@@ -306,7 +306,7 @@ instance Executable Action (Maybe Object) where
         setVar name f = M.insert (ustr name) (obj $ f act)
     let setTokensVar = setVar "tokens" actionTokens
     let setSelfVar = M.union (M.singleton (ustr "self") (obj $ setTokensVar $ mempty))
-    let localVars = setSelfVar $ fmap (obj . fmap obj) (actionMatch act)
+    let localVars = setSelfVar $ actionMatch act
     modify $ \xunit -> 
       xunit
       { currentQuery     = Just $ actionTokens act
@@ -331,16 +331,13 @@ instance Executable [Action] [Object] where
 -- an input paramter is a string, it is tokenized to a list of strings. If an input parameter is a
 -- list of strings, it is considered to be already tokenized and simply appended to list of tokens
 -- produced by previous parameters.
-runTokenizer :: [Object] -> Exec [UStr]
-runTokenizer ox = gets programTokenizer >>= \tok ->
-  fmap concat $ forM (zip [(1::Int)..] ox) $ \ (i, o) ->
-    maybe (execThrow $ obj [obj "cannot tokenize item passed as paramter", obj i]) id $ msum $
-      [ fromObj o >>= \o -> Just $ runExecTokenizer tok o
-      , fromObj o >>= Just .
-          mapM (\o -> xmaybe (fromObj o) <|>
-            (execThrow $ obj $
-              [obj "parameter", obj i, obj "is a list which contains a non-string item"]))
-      ]
+runTokenizer :: [Object] -> Exec [Object]
+runTokenizer ox = do
+  tok <- gets programTokenizer
+  fmap concat $ forM ox $ \o -> case o of
+    OString o -> fmap obj <$> runExecTokenizer tok o
+    OList  ox -> return ox
+    o         -> return [o]
 
 -- | Match a given input string to the 'Dao.Evaluator.currentPattern' of the current 'ExecUnit'.
 -- Return all patterns and associated match results and actions that matched the input string, but
@@ -352,16 +349,33 @@ runTokenizer ox = gets programTokenizer >>= \tok ->
 -- input.
 -- 
 -- Once you have created an action group, you can execute it with 'Dao.Evaluator.execute'.
-makeActionsForQuery :: [PatternTree Object [Subroutine]] -> [UStr] -> Exec [Action]
-makeActionsForQuery tree tokens = return $
-  flip concatMap (matchTree False (T.unionsWith (++) tree) (map OString tokens)) $ \ (patn, mtch, execs) ->
-    flip map execs $ \exec -> seq exec $! seq tokens $! seq patn $! seq mtch $!
-      Action
-      { actionPattern   = patn
-      , actionTokens    = fmap obj tokens
-      , actionMatch     = mtch
-      , actionCodeBlock = exec
-      }
+makeActionsForQuery :: [PatternTree Object [Subroutine]] -> [Object] -> Exec [Action]
+makeActionsForQuery tree tokens = do
+  let match = matchTree False (T.unionsWith (++) tree) tokens
+  fmap concat $ forM match $ \ (patn, match, execs) -> do
+    match <- catchPredicate $ fmap M.fromList $ -- evaluate pattern type checkers
+      forM (M.assocs match) $ \ (name, (vartyp, ox)) -> case vartyp of
+        Nothing     -> return (name, obj ox)
+        Just vartyp -> do
+          match <- catchPredicate $ referenceLookup $ Reference UNQUAL vartyp $ FuncCall ox NullRef
+          case match of
+            OK Nothing                  -> return (name, obj ox)
+            OK (Just (_, o))            -> return (name, o)
+            PFail (ExecReturn Nothing)  -> return (name, obj ox)
+            PFail (ExecReturn (Just o)) -> return (name, o)
+            PFail err                   -> throwError err
+            Backtrack                   -> mzero
+    case match of
+      Backtrack -> return []
+      PFail err -> logUncaughtErrors [err] >> return []
+      OK  match -> return $
+        flip fmap execs $ \exec -> deepseq exec $! deepseq tokens $! deepseq patn $! deepseq match $!
+          Action
+          { actionPattern   = patn
+          , actionTokens    = fmap obj tokens
+          , actionMatch     = match
+          , actionCodeBlock = exec
+          }
 
 -- | Evaluate an executable function between evaluating all of the "BEGIN{}" and "END{}" statements.
 betweenBeginAndEnd :: Exec a -> Exec a
@@ -398,13 +412,36 @@ getLocalRuleSet = do
 getGlobalRuleSet :: Exec [PatternTree Object [Subroutine]]
 getGlobalRuleSet = return <$> gets ruleSet
 
+-- | This function takes a list of objects and constructs a list of @('Dao.Glob.Glob' 'Object')@s to
+-- be inserted into a 'Dao.Glob.PatternTree' object. The input list of @['Object']@s will each form
+-- a single pattern, then all of the patterns are unioned together to form the pattern tree. This
+-- means token strings matched against the resulting @('Dao.Glob.Glob' 'Object')@ constructed by
+-- this function will match any and all of the patterns.  If any of the objects in the input list
+-- are strings, the strings will be parsed into 'Dao.Glob.Glob' objects, and each string constant
+-- within the 'Dao.Glob.Glob' object will be further tokenized with the 'programTokenizer'.
+constructPattern :: [Object] -> Exec [Glob Object]
+constructPattern = (\f ox -> concat <$> mapM f ox) $ \o -> case o of
+  OString o -> case readsPrec 0 (uchars o) of
+    [(glob, "")] -> do
+      tok <- gets programTokenizer
+      fmap return $ parseOverSinglesM glob $ \str -> case str of
+        ""  -> return []
+        str -> fmap obj <$> runExecTokenizer tok (ustr str)
+    _ -> execThrow $ obj [obj "unable to parse pattern", obj o]
+  OList ox -> return [makeGlob $ fmap Single ox]
+  OHaskell (Hata _ d) -> do
+    let err = execThrow $ obj $
+          [obj "could not use data of type", obj (typeOfObj o), obj "as pattern expression"]
+    maybe err (return . fmap (makeGlob . fst) . T.assocs) $
+      msum [fromDynamic d, ruleSetRules <$> fromDynamic d]
+  _ -> execThrow $ obj $
+    [obj "could not create pattern from data of type", obj (typeOfObj o)]
+
 _mkDoFunc :: String -> [Exec [PatternTree Object [Subroutine]]] -> (DaoFunc (), DaoFunc (), DaoFunc ())
 _mkDoFunc name selectors = (mkDo, mkDoAll, mkQuery) where
-  run f () ox =
-    join (return makeActionsForQuery
-           <*> (concat <$> sequence selectors)
-           <*> runTokenizer ox
-         ) >>= fmap (flip (,) ()) . f
+  run f () ox = do
+    inTrees <- concat <$> sequence selectors
+    flip (,) () <$> (runTokenizer ox >>= makeActionsForQuery inTrees >>= f)
   mkQuery = daoFunc{daoFuncName=ustr("query"++name), daoForeignFunc=run(return . Just . obj . fmap obj)}
   mkDo    = daoFunc{daoFuncName=ustr("do"   ++name), daoForeignFunc=run(betweenBeginAndEnd . msum . fmap execute)}
   mkDoAll = daoFunc{daoFuncName=ustr("doAll"++name), daoForeignFunc=run(betweenBeginAndEnd . fmap (Just . obj) . execute)}
@@ -2897,16 +2934,16 @@ instance Show (Glob Object) where
 instance PPrintable (Glob Object) where { pPrint = pShow }
 
 instance ToDaoStructClass (GlobUnit Object) where
-  toDaoStruct = ask >>= \o -> void $ case o of
-    Wildcard a -> renameConstructor "Wildcard" >> "name" .= reference UNQUAL a
-    AnyOne   a -> renameConstructor "AnyOne"   >> "name" .= reference UNQUAL a
-    Single   a -> renameConstructor "Single"   >> "item" .= a
+  toDaoStruct = ask >>= \o -> case o of
+    Wildcard a t -> void $ renameConstructor "Wildcard" >> "name" .= reference UNQUAL a >> "type" .=? t
+    AnyOne   a t -> void $ renameConstructor "AnyOne"   >> "name" .= reference UNQUAL a >> "type" .=? t
+    Single   a   -> void $ renameConstructor "Single"   >> "item" .= a
 
 instance FromDaoStructClass (GlobUnit Object) where
   fromDaoStruct = msum $
-    [ constructor "Wildcard" >> Wildcard <$> req "name"
-    , constructor "AnyOne"   >> AnyOne   <$> req "name"
-    , constructor "Single"   >> Single   <$> req "item"
+    [ constructor "Wildcard" >> return Wildcard <*> req "name" <*> opt "type"
+    , constructor "AnyOne"   >> return AnyOne   <*> req "name" <*> opt "type"
+    , constructor "Single"   >>        Single   <$> req "item"
     ]
 
 instance ObjectClass (GlobUnit Object) where { obj=new; fromObj=objFromHata; }
@@ -4652,7 +4689,7 @@ instance ObjectClass GlobAction where { obj=new; fromObj=objFromHata; }
 instance HataClass GlobAction where
   haskellDataInterface = interface "GlobAction" $ do
     defCallable $ \rule -> do
-      let vars o = case o of {Wildcard _ -> 1; AnyOne _ -> 1; Single _ -> 0; }
+      let vars o = case o of {Wildcard{} -> 1; AnyOne{} -> 1; Single _ -> 0; }
       let m = maximum $ map (sum . map vars . getPatUnits) $ globPattern rule
       let params = flip ParamListExpr LocationUnknown $ NotTypeChecked $
             map (flip (ParamExpr False) LocationUnknown . NotTypeChecked .
@@ -4831,13 +4868,11 @@ instance B.HasPrefixTable (RuleHeadExpr Object) B.Byte MTab where
     , return RuleHeadExpr   <*> B.get <*> B.get
     ]
 
-instance Executable (RuleHeadExpr Object) [UStr] where
+instance Executable (RuleHeadExpr Object) [Object] where
   execute o = case o of
-    RuleStringExpr r _ -> return [r]
-    RuleHeadExpr   r _ ->
-      forM r (\o ->
-          execute o >>= checkVoid (getLocation o) "item in rule header" >>= derefObject
-        ) >>= requireAllStringArgs "in rule header"
+    RuleStringExpr r _ -> return [obj r]
+    RuleHeadExpr   r _ -> forM r $ \o ->
+      execute o >>= checkVoid (getLocation o) "item in rule header" >>= derefObject
 
 instance ObjectClass (RuleHeadExpr Object) where { obj=new; fromObj=objFromHata; }
 
@@ -6813,15 +6848,9 @@ instance Executable (RuleFuncExpr Object) (Maybe Object) where
       return (Just o)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     RuleExpr rs scrpt _ -> do
-      let exec = setupCodeBlock scrpt
-      params <- execute rs
-      globs  <- forM params $ \param -> do
-        case readsPrec 0 $ uchars param of
-          [(pat, "")] -> do
-            -- TODO: tokenize the pattern Single's with the 'programTokenizer'
-            return $ parseOverSingles pat (fmap (OString . ustr) . simpleTokenizer)
-          _           -> execThrow $ obj [obj "cannot parse pattern expression:", obj param]
-      return $ Just $ new $ GlobAction globs exec
+      let sub = setupCodeBlock scrpt
+      let mkGlobAct pats = GlobAction{ globPattern=pats, globSubroutine=sub }
+      Just . new . mkGlobAct <$> (execute rs >>= constructPattern)
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
 instance ObjectClass (RuleFuncExpr Object) where { obj=new; fromObj=objFromHata; }

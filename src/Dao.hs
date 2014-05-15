@@ -35,13 +35,13 @@ module Dao
   ) where
 
 import           Dao.String
-import           Dao.Interpreter
 import           Dao.Predicate
 import           Dao.PPrint
 import           Dao.Token
 import           Dao.Parser
 import           Dao.Interpreter.Parser
 import           Dao.Interpreter.AST
+import           Dao.Interpreter
 
 import qualified Dao.Lib.Array       as Dao
 import qualified Dao.Lib.File        as Dao
@@ -102,6 +102,10 @@ loadDaoStandardLibrary = do
   Dao.loadLibrary_Array
   Dao.loadLibrary_File
   Dao.loadLibrary_ListEditor
+  daoFunction "Pattern"       builtin_Pattern
+  daoFunction "DaoPattern"    builtin_DaoPattern
+  daoFunction "SimplePattern" builtin_SimplePattern
+  daoFunction "FuzzyPattern"  builtin_FuzzyPattern
 
 ----------------------------------------------------------------------------------------------------
 
@@ -355,4 +359,30 @@ makeEvalActions f prog ox = do
   (o, subxunit) <- inModule subxunit $
     join (return makeActionsForQuery <*> getGlobalRuleSet <*> runTokenizer ox) >>= f
   return (o, prog{ programExecUnit=Just subxunit })
+
+----------------------------------------------------------------------------------------------------
+
+_makePatternizerFunc :: ExecTokenizer -> () -> [Object] -> Exec (Maybe Object, ())
+_makePatternizerFunc tok () = fmap (flip (,) () . Just . obj) . constructPatternWith tok
+
+builtin_Pattern :: DaoFunc ()
+builtin_Pattern =
+  daoFunc
+  { daoForeignFunc = \ () ox -> gets programTokenizer >>= \tok -> _makePatternizerFunc tok () ox }
+
+builtin_DaoPattern :: DaoFunc ()
+builtin_DaoPattern = 
+  daoFunc
+  { daoForeignFunc = _makePatternizerFunc $ ExecTokenizer $ \strs -> do
+      let (success, (toks, rem)) = runLexer (tokenDBLexer daoTokenDB) (uchars strs)
+      if success
+      then return $ fmap (obj . tokenToUStr) toks
+      else execThrow $ obj [ obj "could not tokenizer string", obj rem]
+  }
+
+builtin_SimplePattern :: DaoFunc ()
+builtin_SimplePattern = daoFunc{ daoForeignFunc = _makePatternizerFunc defaultTokenizer }
+
+builtin_FuzzyPattern :: DaoFunc ()
+builtin_FuzzyPattern = daoFunc{ daoForeignFunc = _makePatternizerFunc defaultTokenizer }
 

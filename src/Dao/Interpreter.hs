@@ -22,7 +22,7 @@
 module Dao.Interpreter(
     Action(Action), actionTokens, actionPattern, actionMatch, actionCodeBlock,
     makeActionsForQuery, betweenBeginAndEnd, daoShutdown, getLocalRuleSet,
-    getGlobalRuleSet, constructPattern,
+    getGlobalRuleSet, defaultTokenizer, constructPatternWith, constructPattern,
     DaoSetupM(), DaoSetup, haskellType, daoProvides, daoClass, daoConstant, daoFunction,
     daoFunction0, daoInitialize, setupDao, evalDao, DaoFunc, daoFunc, funcAutoDerefParams,
     daoForeignFunc, executeDaoFunc,
@@ -76,7 +76,7 @@ module Dao.Interpreter(
     minAccumArray, minArray,
     FuzzyStr(FuzzyStr),
     StaticStore(StaticStore),
-    ExecUnit(),
+    ExecUnit(), ExecTokenizer(ExecTokenizer), runExecTokenizer,
     globalMethodTable, defaultTimeout, importGraph, currentWithRef, taskForExecUnits,
     currentQuery, currentPattern, currentBranch, providedAttributes, programModuleName,
     preExec, postExec, quittingTime, programTokenizer, currentCodeBlock, ruleSet,
@@ -98,11 +98,11 @@ module Dao.Interpreter(
     Subroutine(Subroutine), setupCodeBlock,
     origSourceCode, staticVars, staticRules, staticLambdas, executable, runCodeBlock, runCodeBlock_,
     RuleSet(), CallableCode(CallableCode), argsPattern, returnType, codeSubroutine, 
-    GlobAction(GlobAction), globPattern, globSubroutine, 
+    PatternRule(PatternRule), rulePatterns, ruleAction, 
     asReference, asInteger, asRational, asPositive, asComplex, objConcat,
     objToBool, extractStringElems, requireAllStringArgs,
     shiftLeft, shiftRight,
-    evalArithPrefixOp, evalInfixOp, evalUpdateOp, runTokenizer, makePrintFunc,
+    evalArithPrefixOp, evalInfixOp, evalUpdateOp, runTokenizerWith, runTokenizer, makePrintFunc,
     paramsToGlobExpr, matchFuncParams, execGuardBlock, objToCallable, callCallables,
     callObject, checkPredicate, checkVoid,
     evalConditional,
@@ -326,18 +326,20 @@ instance Executable [Action] [Object] where
              _                           -> return []
          )
 
--- | Using the tokenizer function set for this module, break up a string into a list of tokens,
--- returning them as a 'TokenList' object. Input paramaters can be strings or lists of strings. If
--- an input paramter is a string, it is tokenized to a list of strings. If an input parameter is a
--- list of strings, it is considered to be already tokenized and simply appended to list of tokens
--- produced by previous parameters.
+-- | Using an 'ExecTokenizer' function, break up a string into a list of tokens, returning them as a
+-- 'TokenList' object. Input paramaters can be strings or lists of strings. If an input paramter is
+-- a string, it is tokenized to a list of strings. If an input parameter is a list of strings, it is
+-- considered to be already tokenized and simply appended to list of tokens produced by previous
+-- parameters.
+runTokenizerWith :: ExecTokenizer -> [Object] -> Exec [Object]
+runTokenizerWith tok ox = fmap concat $ forM ox $ \o -> case o of
+  OString o -> fmap obj <$> runExecTokenizer tok o
+  OList  ox -> return ox
+  o         -> return [o]
+
+-- | Like 'runTokenizerWith', but uses the default tokenizer function set for this module.
 runTokenizer :: [Object] -> Exec [Object]
-runTokenizer ox = do
-  tok <- gets programTokenizer
-  fmap concat $ forM ox $ \o -> case o of
-    OString o -> fmap obj <$> runExecTokenizer tok o
-    OList  ox -> return ox
-    o         -> return [o]
+runTokenizer ox = gets programTokenizer >>= \tok -> runTokenizerWith tok ox
 
 -- | Match a given input string to the 'Dao.Evaluator.currentPattern' of the current 'ExecUnit'.
 -- Return all patterns and associated match results and actions that matched the input string, but
@@ -412,31 +414,6 @@ getLocalRuleSet = do
 getGlobalRuleSet :: Exec [PatternTree Object [Subroutine]]
 getGlobalRuleSet = return <$> gets ruleSet
 
--- | This function takes a list of objects and constructs a list of @('Dao.Glob.Glob' 'Object')@s to
--- be inserted into a 'Dao.Glob.PatternTree' object. The input list of @['Object']@s will each form
--- a single pattern, then all of the patterns are unioned together to form the pattern tree. This
--- means token strings matched against the resulting @('Dao.Glob.Glob' 'Object')@ constructed by
--- this function will match any and all of the patterns.  If any of the objects in the input list
--- are strings, the strings will be parsed into 'Dao.Glob.Glob' objects, and each string constant
--- within the 'Dao.Glob.Glob' object will be further tokenized with the 'programTokenizer'.
-constructPattern :: [Object] -> Exec [Glob Object]
-constructPattern = (\f ox -> concat <$> mapM f ox) $ \o -> case o of
-  OString o -> case readsPrec 0 (uchars o) of
-    [(glob, "")] -> do
-      tok <- gets programTokenizer
-      fmap return $ parseOverSinglesM glob $ \str -> case str of
-        ""  -> return []
-        str -> fmap obj <$> runExecTokenizer tok (ustr str)
-    _ -> execThrow $ obj [obj "unable to parse pattern", obj o]
-  OList ox -> return [makeGlob $ fmap Single ox]
-  OHaskell (Hata _ d) -> do
-    let err = execThrow $ obj $
-          [obj "could not use data of type", obj (typeOfObj o), obj "as pattern expression"]
-    maybe err (return . fmap (makeGlob . fst) . T.assocs) $
-      msum [fromDynamic d, ruleSetRules <$> fromDynamic d]
-  _ -> execThrow $ obj $
-    [obj "could not create pattern from data of type", obj (typeOfObj o)]
-
 _mkDoFunc :: String -> [Exec [PatternTree Object [Subroutine]]] -> (DaoFunc (), DaoFunc (), DaoFunc ())
 _mkDoFunc name selectors = (mkDo, mkDoAll, mkQuery) where
   run f () ox = do
@@ -460,6 +437,89 @@ builtin_doGlobal    :: DaoFunc ()
 builtin_doAllGlobal :: DaoFunc ()
 builtin_queryGlobal :: DaoFunc ()
 (builtin_doGlobal, builtin_doAllGlobal, builtin_queryGlobal) = _mkDoFunc "Global" [getGlobalRuleSet]
+
+----------------------------------------------------------------------------------------------------
+
+-- | When a 'Dao.Interpreter.AST.RuleExpr' is evaluated to an 'Object', it takes this form.
+data PatternRule
+  = PatternRule{ rulePatterns :: [Object], ruleAction  :: Subroutine }
+  deriving (Show, Typeable)
+
+instance NFData PatternRule where { rnf (PatternRule a b) = deepseq a $! deepseq b () }
+
+instance HasNullValue PatternRule where
+  nullValue = PatternRule{rulePatterns=[], ruleAction=nullValue}
+  testNull (PatternRule a b) = null a && testNull b
+
+instance PPrintable PatternRule where
+  pPrint (PatternRule pats exe) = (\a -> ppCallableAction "rule" a nullValue exe) $ case pats of
+    []    -> pString "()"
+    [pat] -> pPrint pat
+    pats  -> pList (pString "rule") "(" ", " ")" (map pPrint pats)
+
+instance ToDaoStructClass PatternRule where
+  toDaoStruct = void $ do
+    renameConstructor "PatternRule"
+    "patterns" .=@ rulePatterns
+    "action"   .=@ ruleAction
+
+instance FromDaoStructClass PatternRule where
+  fromDaoStruct = return PatternRule <*> req "patterns" <*> req "action"
+
+instance ObjectClass PatternRule where { obj=new; fromObj=objFromHata; }
+
+instance HataClass PatternRule where
+  haskellDataInterface = interface "PatternRule" $ do
+    autoDefPPrinter >> autoDefToStruct >> autoDefFromStruct
+  --defCallable $ \rule -> do
+  --  glob <- maybe constructPattern constructPatternWith (ruleSetTokenizer rule) $ 
+  --  let vars o = case o of {Wildcard{} -> 1; AnyOne{} -> 1; Single _ -> 0; }
+  --  let m = maximum $ map (sum . map vars . getPatUnits) $ rulePatterns rule
+  --  let params = flip ParamListExpr LocationUnknown $ NotTypeChecked $
+  --        map (flip (ParamExpr False) LocationUnknown . NotTypeChecked .
+  --          ustr . ("var"++) . show) [(1::Int)..m]
+  --  return $ return $
+  --    CallableCode
+  --    { argsPattern    = params
+  --    , returnType     = nullValue
+  --    , codeSubroutine = ruleAction rule
+  --        -- TODO: the subroutine should be scanned for integer references and replaced with local
+  --        -- variables called "varN" where N is the number of the integer reference.
+  --    }
+
+defaultTokenizer :: ExecTokenizer
+defaultTokenizer = ExecTokenizer $ return . fmap obj . simpleTokenizer . uchars
+
+-- | This function takes a list of objects and constructs a list of @('Dao.Glob.Glob' 'Object')@s to
+-- be inserted into a 'Dao.Glob.PatternTree' object. The input list of @['Object']@s will each form
+-- a single pattern, then all of the patterns are unioned together to form the pattern tree. This
+-- means token strings matched against the resulting @('Dao.Glob.Glob' 'Object')@ constructed by
+-- this function will match any and all of the patterns.  If any of the objects in the input list
+-- are strings, the strings will be parsed into 'Dao.Glob.Glob' objects, and each string constant
+-- within the 'Dao.Glob.Glob' object will be further tokenized with the 'programTokenizer'.
+constructPatternWith :: ExecTokenizer -> [Object] -> Exec (Glob Object)
+constructPatternWith tok = fmap (mconcat . mconcat) . mapM (derefObject>=>construct) where
+  construct o = case o of
+    OString o -> case readsPrec 0 (uchars o) of
+      [(glob, "")] -> fmap return $ parseOverSinglesM glob $ \str -> case str of
+        ""  -> return []
+        str -> fmap obj <$> runExecTokenizer tok (ustr str)
+      _ -> execThrow $ obj [obj "unable to parse pattern", obj o]
+    OList ox -> return [makeGlob $ fmap Single ox]
+    OHaskell (Hata _ d) -> do
+      let err = execThrow $ obj $
+            [obj "could not use data of type", obj (typeOfObj o), obj "as pattern expression"]
+      maybe err return $ msum $
+        [ return <$> fromDynamic d
+        , fmap (makeGlob . fst) . T.assocs . ruleSetRules <$> fromDynamic d
+        ]
+    _ -> execThrow $ obj $
+      [obj "could not create pattern from data of type", obj (typeOfObj o)]
+
+-- | Like 'constructPatternWith' but uses the default 'ExecTokenizer' that has been set for the
+-- current 'ExecUnit'.
+constructPattern :: [Object] -> Exec (Glob Object)
+constructPattern ox = gets programTokenizer >>= flip constructPatternWith ox
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2970,10 +3030,27 @@ instance HataClass (Glob Object) where
   haskellDataInterface = interface "GlobPattern" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
+    defMethod "match" $
+      daoFunc
+      { daoForeignFunc = \glob ox -> fmap (flip (,) glob . Just . obj) $
+          forM (matchPattern False glob ox) $ \match -> fmap (obj . M.fromList . concat) $
+            forM (M.assocs match) $ \ (name, (vartyp, ox)) -> case vartyp of
+              Nothing     -> return [(name, obj ox)]
+              Just vartyp -> do
+                match <- catchPredicate $ referenceLookup $ Reference UNQUAL vartyp $ FuncCall ox NullRef
+                case match of
+                  Backtrack        -> return []
+                  OK Nothing       -> return [(name, obj ox)]
+                  OK (Just (_, o)) -> return [(name, obj o)]
+                  PFail err        -> throwError err
+      }
 
 ----------------------------------------------------------------------------------------------------
 
-newtype ExecTokenizer = ExecTokenizer { runExecTokenizer :: UStr -> Exec [UStr] }
+-- | This is a newtype wrapper around a function that tokenizes a 'UStr' into smaller 'UStr's used
+-- for constructing rule patterns, and also for tokenizing input strings into objects that can be
+-- matched against rule patterns.
+newtype ExecTokenizer = ExecTokenizer { runExecTokenizer :: UStr -> Exec [Object] }
   deriving Typeable
 
 ----------------------------------------------------------------------------------------------------
@@ -3052,7 +3129,7 @@ _initExecUnit = do
     , programModuleName  = Nothing
     , preExec            = []
     , quittingTime       = mempty
-    , programTokenizer   = ExecTokenizer $ return . map ustr . simpleTokenizer . uchars
+    , programTokenizer   = defaultTokenizer
     , postExec           = []
     , ruleSet            = T.Void
     , lambdaSet          = []
@@ -4536,7 +4613,7 @@ instance ToDaoStructClass Subroutine where
     renameConstructor "Subroutine"
     "code"    .=@ origSourceCode
     "vars"    .=@ staticVars
-    "rules"   .=@ RuleSet . staticRules
+    "rules"   .=@ (\rs -> RuleSet{ ruleSetRules=rs, ruleSetTokenizer=Nothing }) . staticRules
     "lambdas" .=@ map obj . staticLambdas
 
 instance FromDaoStructClass Subroutine where
@@ -4544,7 +4621,7 @@ instance FromDaoStructClass Subroutine where
     constructor "Subroutine"
     sub <- setupCodeBlock <$> req "code"
     vars <- req "vars"
-    (RuleSet rules) <- req "rules"
+    (RuleSet{ ruleSetRules=rules }) <- req "rules"
     lambdas <- reqList "lambdas"
     return $ sub{ staticVars=vars, staticRules=rules, staticLambdas=lambdas }
 
@@ -4571,16 +4648,22 @@ runCodeBlock_ initStack = fmap fst . runCodeBlock initStack
 
 ----------------------------------------------------------------------------------------------------
 
-newtype RuleSet = RuleSet { ruleSetRules  :: PatternTree Object [Subroutine] }
+data RuleSet
+  = RuleSet
+    { ruleSetRules     :: PatternTree Object [Subroutine]
+    , ruleSetTokenizer :: Maybe ExecTokenizer
+    }
   deriving Typeable
 
 instance HasNullValue RuleSet where
-  nullValue = RuleSet nullValue
-  testNull (RuleSet r) = testNull r
+  nullValue = RuleSet{ ruleSetRules=nullValue, ruleSetTokenizer=Nothing }
+  testNull (RuleSet{ruleSetRules=r, ruleSetTokenizer=tok}) =
+    testNull r && maybe True (const False) tok
 
 instance Monoid RuleSet where
-  mempty = RuleSet mempty
-  mappend (RuleSet a) (RuleSet b) = RuleSet (mappend a b)
+  mempty = nullValue
+  mappend (RuleSet{ruleSetRules=a, ruleSetTokenizer=tokA}) (RuleSet{ruleSetRules=b, ruleSetTokenizer=tokB}) =
+    RuleSet{ ruleSetRules=mappend a b, ruleSetTokenizer=mplus tokA tokB }
 
 instance Sizeable RuleSet where { getSizeOf = return . obj . T.size . ruleSetRules }
 
@@ -4602,21 +4685,38 @@ instance HataClass RuleSet where
   haskellDataInterface = interface "RuleSet" $ do
     autoDefNullTest >> autoDefSizeable >> autoDefPPrinter
     let initParams ox = case ox of
-          [] -> return mempty
-          _  -> execThrow $ obj [obj "\"RuleSet\" constructor takes no intializing parameters"]
+          []  -> return $ RuleSet{ ruleSetRules=mempty, ruleSetTokenizer=Nothing }
+          [o] -> do
+            let err = execThrow $ obj $
+                  [ obj $ "\"RuleSet\" constructor requires a tokenizer function parameter, "++
+                      "but received an object of type"
+                  , obj (typeOfObj o)
+                  ]
+            maybe err return $ do
+              fromObj o >>= \ (Hata ifc _) -> objCallable ifc
+              let tok = ExecTokenizer $ \ox -> do
+                    toks <- fst <$> callObject (RefObject o NullRef) o [obj ox]
+                    mplus (xmaybe $ toks >>= fromObj) $ execThrow $ obj $
+                      [obj "tokenizer for rule function did not return a list of objects"]
+              return $ RuleSet{ ruleSetRules=mempty, ruleSetTokenizer=Just tok }
+          _  -> execThrow $ obj $
+            [obj "\"RuleSet\" constructor was given more than one intializing parameters"]
           -- TODO: ^ the constructor for a 'PatternTree' should take tokenizer function.
     let listParams tree =
-          foldM (\ (RuleSet tree) (i, o) -> case o of
-            InitSingle o -> case fromObj o >>= \ (Hata _ o) -> fromDynamic o of
+          foldM (\ rs@(RuleSet{ruleSetRules=tree, ruleSetTokenizer=maybeTok}) (i, o) -> case o of
+            InitSingle o -> case fromObj o >>= \ (Hata _ d) -> fromDynamic d of
               Nothing -> execThrow $ obj $
                 [obj "item #", obj (i::Int), obj "in the initializing list is not a rule object"]
-              Just (GlobAction{ globPattern=pat, globSubroutine=sub }) -> return $ RuleSet $
-                insertMultiPattern (++) pat [sub] tree
+              Just (PatternRule{ rulePatterns=pat, ruleAction=sub }) -> do
+                glob <- maybe constructPattern constructPatternWith maybeTok $ pat
+                return $ rs{ ruleSetRules=insertMultiPattern (++) [glob] [sub] tree }
             InitAssign{} -> fail "cannot use assignment expression in initializer of RuleSet"
                 ) tree . zip [1..]
     defInitializer initParams listParams
-    defInfixOp ORB $ \ _ (RuleSet tree) o ->
-      (new . RuleSet . T.unionWith (++) tree . ruleSetRules ) <$> xmaybe (fromObj o)
+    defInfixOp ORB $ \op rs o -> fmap (obj . mappend rs) $ mplus (xmaybe $ fromObj o) $ throwError $ obj $
+      [ obj "the left-hand side of a", obj (show op)
+      , obj "operator is not a rule set, but the right-hand side is not"
+      ]
     let run f =
           daoFunc
           { daoForeignFunc = \rs ->
@@ -4625,6 +4725,11 @@ instance HataClass RuleSet where
     defMethod "query" $ run $ return . Just . obj . fmap obj
     defMethod "do"    $ run $ msum . fmap execute
     defMethod "doAll" $ run $ fmap (Just . obj . fmap obj) . execute
+    defMethod "tokenize" $
+      daoFunc
+      { daoForeignFunc = \rs -> fmap (flip (,) rs . Just . obj) .
+          maybe runTokenizer runTokenizerWith (ruleSetTokenizer rs)
+      }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4638,7 +4743,7 @@ data CallableCode
     }
   deriving (Show, Typeable)
 
--- Used by the instantiation of CallableCode and GlobAction into the PPrintable class.
+-- Used by the instantiation of CallableCode and PatternRule into the PPrintable class.
 ppCallableAction :: String -> PPrint -> ObjType -> Subroutine -> PPrint
 ppCallableAction what pats typ exe =
   pClosure (pString what >> pats >> pPrint typ) "{" "}" (map pPrint (codeBlock (origSourceCode exe)))
@@ -4661,47 +4766,6 @@ instance HataClass CallableCode where
   haskellDataInterface = interface "Function" $ do
     autoDefNullTest >> autoDefPPrinter
     defCallable (return . return)
-
-----------------------------------------------------------------------------------------------------
-
--- A subroutine that is executed when a query string matches it's @['Dao.Glob.Glob']@ expression.
-data GlobAction
-  = GlobAction
-    { globPattern    :: [Glob Object]
-    , globSubroutine :: Subroutine
-    }
-  deriving (Show, Typeable)
-
-instance NFData GlobAction where { rnf (GlobAction a b) = deepseq a $! deepseq b () }
-
-instance HasNullValue GlobAction where
-  nullValue = GlobAction{globPattern=[], globSubroutine=nullValue}
-  testNull (GlobAction a b) = null a && testNull b
-
-instance PPrintable GlobAction where
-  pPrint (GlobAction pats exe) = (\a -> ppCallableAction "rule" a nullValue exe) $ case pats of
-    []    -> pString "()"
-    [pat] -> pPrint pat
-    pats  -> pList_ "(" ", " ")" (map pPrint pats)
-
-instance ObjectClass GlobAction where { obj=new; fromObj=objFromHata; }
-
-instance HataClass GlobAction where
-  haskellDataInterface = interface "GlobAction" $ do
-    defCallable $ \rule -> do
-      let vars o = case o of {Wildcard{} -> 1; AnyOne{} -> 1; Single _ -> 0; }
-      let m = maximum $ map (sum . map vars . getPatUnits) $ globPattern rule
-      let params = flip ParamListExpr LocationUnknown $ NotTypeChecked $
-            map (flip (ParamExpr False) LocationUnknown . NotTypeChecked .
-              ustr . ("var"++) . show) [(1::Int)..m]
-      return $ return $
-        CallableCode
-        { argsPattern    = params
-        , returnType     = nullValue
-        , codeSubroutine = globSubroutine rule
-            -- TODO: the subroutine should be scanned for integer references and replaced with local
-            -- variables called "varN" where N is the number of the integer reference.
-        }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -6357,15 +6421,19 @@ instance Executable (ScriptExpr Object) () where
         Nothing  -> case rulfn of
           LambdaExpr{} -> getObj >>= \o ->
             modify $ \xunit -> xunit{ lambdaSet = lambdaSet xunit ++ [o] }
-          RuleExpr{}   -> getObj >>= \o -> modify $ \xunit ->
-            xunit{ ruleSet =
-              insertMultiPattern (++) (globPattern o) [globSubroutine o] (ruleSet xunit) }
+          RuleExpr{}   -> do
+            patrule <- getObj
+            glob    <- constructPattern (rulePatterns patrule)
+            modify $ \xunit ->
+              xunit{ ruleSet = insertMultiPattern (++) [glob] [ruleAction patrule] (ruleSet xunit) }
           FuncExpr{}   -> return ()
             -- function expressions are placed in the correct store by the above 'execute'
         Just sub -> case rulfn of
           LambdaExpr{} -> getObj >>= \o -> fsub $ sub{ staticLambdas = staticLambdas sub ++ [o] }
-          RuleExpr{}   -> getObj >>= \o -> fsub $ sub{ staticRules = 
-            insertMultiPattern (++) (globPattern o) [globSubroutine o] (staticRules sub) }
+          RuleExpr{}   -> do
+            patrule <- getObj
+            glob    <- constructPattern (rulePatterns patrule)
+            fsub $ sub{ staticRules = insertMultiPattern (++) [glob] [ruleAction patrule] (staticRules sub) }
           FuncExpr{}   -> return ()
             -- function expressions are placed in the correct store by the above 'execute'
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
@@ -6849,8 +6917,8 @@ instance Executable (RuleFuncExpr Object) (Maybe Object) where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     RuleExpr rs scrpt _ -> do
       let sub = setupCodeBlock scrpt
-      let mkGlobAct pats = GlobAction{ globPattern=pats, globSubroutine=sub }
-      Just . new . mkGlobAct <$> (execute rs >>= constructPattern)
+      pats <- execute rs
+      return $ Just $ obj $ PatternRule{ rulePatterns=pats, ruleAction=sub }
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
 instance ObjectClass (RuleFuncExpr Object) where { obj=new; fromObj=objFromHata; }

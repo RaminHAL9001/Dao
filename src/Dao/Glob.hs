@@ -349,6 +349,8 @@ insertMultiPattern plus pats o tree =
 globTree :: (Eq g, Ord g) => Glob g -> o -> PatternTree g o
 globTree pat a = T.insert (getPatUnits pat) a T.Void
 
+-- | Calls 'matchTree' with the 'PatternTree' stored within the given 'Glob' object, and returns
+-- only the matching results.
 matchPattern :: (Eq g, Ord g) => Bool -> Glob g -> [g] -> [M.Map Name (Maybe Name, [g])]
 matchPattern greedy pat tokx = matchTree greedy (globTree pat ()) tokx >>= \ (_, m, ()) -> [m]
 
@@ -362,6 +364,11 @@ matchPattern greedy pat tokx = matchTree greedy (globTree pat ()) tokx >>= \ (_,
 -- Each match is returned as a triple indicating 1. the 'Glob' that matched the token list, 2. the
 -- token list items that were bound to the 'Dao.String.Name's in the 'Wildcard' and 'AnyOne'
 -- 'GlobUnit's, and 3. the item associated with the 'Glob' expression that matched.
+--
+-- The 'Data.Map.Map' objects returned map which variable names matched to pairs containing in the
+-- 'Prelude.fst' slot the type of the token that the variable expects (the type is the part of the
+-- pattern variable after the "::" symbol), and in the 'Prelude.snd' slot contains the tokens that
+-- matched in that variable position.
 matchTree :: (Eq g, Ord g) => Bool -> PatternTree g o -> [g] -> [(Glob g, M.Map Name (Maybe Name, [g]), o)]
 matchTree greedy tree tokx = loop M.empty 0 [] tree tokx where
   loop vars p path tree tokx = case (tree, tokx) of

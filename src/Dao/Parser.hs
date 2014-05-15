@@ -282,6 +282,18 @@ tokTypeToUStr tok =
 tokTypeToString :: (TokenType tok, HasTokenDB tok) => tok -> String
 tokTypeToString = uchars . tokTypeToUStr
 
+tokenToUStr :: (TokenType tok, HasTokenDB tok) => TokenAt tok -> UStr
+tokenToUStr tok = case asToken tok of
+  EmptyToken t   -> tokTypeToUStr t
+  CharToken  _ c -> ustr [c]
+  Token      _ u -> u
+
+tokenToString :: (TokenType tok, HasTokenDB tok) => TokenAt tok -> String
+tokenToString tok = case asToken tok of
+  EmptyToken t   -> uchars (tokTypeToUStr t)
+  CharToken  _ c -> [c]
+  Token      _ u -> uchars u
+
 -- | Get token from a 'TokenDB' that was associated with the 'Dao.String.UStrType'.
 maybeLookupToken :: (UStrType str, TokenType tok) => TokenDB tok -> str -> Maybe tok
 maybeLookupToken tokenDB = fmap wrapTT . flip M.lookup (tableUStrToTT tokenDB) . toUStr

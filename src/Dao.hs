@@ -384,5 +384,9 @@ builtin_SimplePattern :: DaoFunc ()
 builtin_SimplePattern = daoFunc{ daoForeignFunc = _makePatternizerFunc defaultTokenizer }
 
 builtin_FuzzyPattern :: DaoFunc ()
-builtin_FuzzyPattern = daoFunc{ daoForeignFunc = _makePatternizerFunc defaultTokenizer }
+builtin_FuzzyPattern =
+  daoFunc
+  { daoForeignFunc = _makePatternizerFunc $ ExecTokenizer $
+      return . fmap (obj . FuzzyStr . ustr) . simpleTokenizer . uchars
+  }
 

@@ -731,6 +731,8 @@ loadEssentialFunctions = do
   daoFunction "query"    builtin_query
   daoFunction "doAll"    builtin_doAll
   daoFunction "do"       builtin_do
+  daoFunction "fromStruct"  builtin_fromStruct
+  daoFunction "toStruct"    builtin_toStruct
   daoFunction "queryGlobal" builtin_queryGlobal
   daoFunction "doAllGlobal" builtin_doAllGlobal
   daoFunction "doGlobal"    builtin_doGlobal
@@ -2017,6 +2019,35 @@ optList name = tryField name $ convertFieldData (maybe (return []) return . list
 
 ----------------------------------------------------------------------------------------------------
 
+builtin_toStruct :: DaoFunc ()
+builtin_toStruct =
+  daoFunc
+  { daoForeignFunc = \ () ox -> do
+      let wrongTypeErr o = execThrow $ obj $
+            [obj "cannot convert object of type", obj (typeOfObj o), obj "to a struct"]
+      case ox of
+        [o] -> case o of
+          OTree              _  -> return (Just o, ())
+          OHaskell (Hata ifc d) -> case objToStruct ifc of
+            Just to -> flip (,) () . Just . obj <$> toDaoStructExec to d
+            Nothing -> wrongTypeErr o
+          o                     -> wrongTypeErr o
+        _ -> execThrow $ obj $ [obj "toStruct", obj "function requires exactly 1 parameter"]
+  }
+
+builtin_fromStruct :: DaoFunc ()
+builtin_fromStruct =
+  daoFunc
+  { daoForeignFunc = \ () ox -> case ox of
+      [o] -> case o of
+        OTree o -> flip (,) () . Just . OHaskell <$> fromDaoStructExec o
+        o       -> execThrow $ obj $
+          [obj "fromStruct", obj "function must operate on a struct data type, received", obj (typeOfObj o)]
+      _ -> execThrow $ obj $ [obj "fromStruct", obj "function requires exactyl 1 parameter"]
+  }
+
+----------------------------------------------------------------------------------------------------
+
 instance ToDaoStructClass Location where
   toDaoStruct = ask >>= \lo -> case lo of
     LocationUnknown -> makeNullary "NoLocation"
@@ -2966,10 +2997,18 @@ instance HasNullValue FuzzyStr where
 
 instance UStrType FuzzyStr where { fromUStr = FuzzyStr; toUStr (FuzzyStr u) = u; }
 
-instance Show (Glob FuzzyStr) where { show = show . fmap toUStr }
+instance PPrintable FuzzyStr where { pPrint (FuzzyStr str) = pShow str }
 
-instance Read (Glob FuzzyStr) where
-  readsPrec prec str = readsPrec prec str >>= \ (glob, str) -> [(fmap fromUStr glob, str)]
+instance ObjectClass FuzzyStr where { obj=new; fromObj=objFromHata; }
+
+instance HataClass FuzzyStr where
+  haskellDataInterface = interface "FuzzyStr" $ do
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter 
+
+--instance Show (Glob FuzzyStr) where { show = show . fmap toUStr }
+
+--instance Read (Glob FuzzyStr) where
+--  readsPrec prec str = readsPrec prec str >>= \ (glob, str) -> [(fmap fromUStr glob, str)]
 
 instance Show (GlobUnit Object) where
   show o = case o of

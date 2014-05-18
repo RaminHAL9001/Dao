@@ -739,6 +739,8 @@ loadEssentialFunctions = do
   daoFunction "queryLocal"  builtin_queryLocal
   daoFunction "doAllLocal"  builtin_doAllLocal
   daoFunction "doLocal"     builtin_doLocal
+  daoFunction "HashMap"     builtin_HashMap
+  daoFunction "assocs"      builtin_assocs
   mapM_ (uncurry daoConstant) $ flip fmap [minBound..maxBound] $ \t ->
     (toUStr $ show t, OType $ objTypeFromCoreType t)
 
@@ -1261,6 +1263,20 @@ instance HasNullValue Hata where
   testNull (Hata ifc o) = case objNullTest ifc of
     Nothing -> error ("to check whether objects of type "++show (objHaskellType ifc)++" are null is undefined behavior")
     Just fn -> fn o
+
+-- | This is a convenience function for calling 'OHaskell' using just an initial value of type
+-- @typ@. The 'Interface' is retrieved automatically using the instance of 'haskellDataInterface' for
+-- the @typ@.
+toHata :: (HataClass typ, Typeable typ) => typ -> Hata
+toHata t = flip Hata (toDyn t) (interfaceTo t haskellDataInterface) where
+  interfaceTo :: Typeable typ => typ -> Interface typ -> Interface Dynamic
+  interfaceTo _ ifc = interfaceToDynamic ifc
+
+-- | Inverse operation of 'toHata', useful when instantiating 'ObjectClass', uses
+-- 'Data.Dynamic.fromDynamic' to extract the value that has been wrapped in up the 'Hata'
+-- constructor.
+fromHata :: (HataClass typ, Typeable typ) => Hata -> Maybe typ
+fromHata (Hata _ o) = fromDynamic o
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3083,6 +3099,56 @@ instance HataClass (Glob Object) where
                   OK (Just (_, o)) -> return [(name, obj o)]
                   PFail err        -> throwError err
       }
+
+----------------------------------------------------------------------------------------------------
+
+newtype Pair = Pair (Object, Object) deriving (Eq, Ord, Show, Typeable)
+
+instance PPrintable Pair where
+  pPrint (Pair (a,b)) = pList (pString "Pair") "(" ", " ")" [pPrint a, pPrint b]
+
+instance ToDaoStructClass Pair where
+  toDaoStruct = ask >>= \ (Pair (a, b)) -> do
+    renameConstructor "Pair"
+    "fst" .= a >> "snd" .= b >> return ()
+
+instance FromDaoStructClass Pair where
+  fromDaoStruct = constructor "Pair" >> Pair <$> (return (,) <*> req "fst" <*> req "snd")
+
+instance ObjectClass Pair where { obj=new; fromObj=objFromHata; }
+
+instance HataClass Pair where
+  haskellDataInterface = interface "Pair" $ do
+    autoDefEquality >> autoDefOrdering >> autoDefPPrinter
+    autoDefToStruct >> autoDefFromStruct
+    defIndexer $ \ (Pair (a,b)) ix -> do
+      let badindex = fail "index for Pair data type must be a either 0 or 1"
+          getit i = case i::Int of
+            0 -> return a
+            1 -> return b
+            i -> execThrow $ obj [obj "bad index to Pair data type", obj i]
+      case ix of
+        [i] -> maybe badindex getit (fromObj i)
+        _   -> badindex
+
+builtin_assocs :: DaoFunc ()
+builtin_assocs =
+  daoFunc
+  { daoForeignFunc = \ () ox -> case ox of
+      [o] -> do
+        let fromDict o = return $
+              (Just $ obj $ fmap (\ (a,b) -> obj $ Pair (obj a, obj b)) $ M.assocs o, ())
+        let badtype = execThrow $ obj $
+              [obj "assocs", obj "function cannot evaluate on data of type", obj (typeOfObj o)]
+        case o of
+          ODict                  d   -> fromDict d
+          OTree (Struct{fieldMap=d}) -> fromDict d
+          OHaskell               _   -> maybe badtype (return . flip (,) () . Just) $ msum $
+            [ fromObj o >>= return . obj . fmap (\ (ix, o) -> obj $ Pair (H.indexKey ix, o)) . H.assocs
+            ]
+          _ -> badtype
+      _ -> execThrow $ obj [obj "assocs", obj "function requires exactly one paramter"]
+  }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -7659,6 +7725,25 @@ instance UpdateIterable Hata (Maybe Object) where
     Nothing  -> execThrow $ obj [obj "cannot iterate over object", obj (show $ objHaskellType ifc)]
     Just for -> Hata ifc <$> for d f
 
+instance UpdateIterable T_dict (Maybe Object) where
+  updateForLoop m f = fmap (M.fromList . concat) $ forM (M.assocs m) $ \ (i, o) -> do
+    p <- f (Just $ obj $ Pair (obj i, o))
+    case p of
+      Nothing -> return []
+      Just  p -> case fromObj p of
+        Just (Pair (ref, o)) -> case fromObj o of
+          Just ref -> return [(ref, o)]
+          Nothing -> execThrow $ obj $
+            [ obj "could not update iterator for", obj DictType
+            , obj "with Pair data type where the first element of the pair is an object of data type"
+            , obj (typeOfObj ref), obj "-- expecting the first element of the pair to be a simple reference"
+            ]
+        Nothing -> execThrow $ obj $
+          [ obj "could not update iterator for", obj DictType, obj "with object of type"
+          , obj (typeOfObj p), obj "-- expecting object of data type", obj "Pair"
+          , obj "where the first element in the pair is a simple reference"
+          ]
+
 instance UpdateIterable Object (Maybe Object) where
   updateForLoop o f = case o of
     OList    o -> OList    <$> updateForLoop o f
@@ -7699,22 +7784,41 @@ instance HataClass AST_DotLabel where
   haskellDataInterface = interface "DotLabelExpression" $ do
     autoDefEquality >> autoDefPPrinter >> autoDefToStruct >> autoDefFromStruct
 
+----------------------------------------------------------------------------------------------------
+
+instance UpdateIterable (H.HashMap Object Object) (Maybe Object) where
+  updateForLoop hm f = fmap (H.fromList . concat) $ forM (H.assocs hm) $ \ (ix, o) -> do
+    hash128 <- getObjectHash128
+    p <- f (Just $ obj $ Pair (H.indexKey ix, o))
+    case p of
+      Nothing -> return []
+      Just  p -> do
+        let badtype = execThrow $ obj $
+              [ obj "could not update iterator for", obj "HashMap", obj "with object of type"
+              , obj (typeOfObj p), obj "-- expecting object of data type", obj "Pair"
+              ]
+        maybe badtype (\ (Pair(a,b)) -> return [(H.hashNewIndex hash128 a, b)]) (fromObj p)
+
 instance ObjectClass (H.HashMap Object Object) where { obj=new; fromObj=objFromHata; }
+
+-- | The hash function for 'Object's relies on the binary serialization of the object, which
+-- requires access to the 'MethodTable' of the current 'ExecUnit'. Therefore the hash function must
+-- be derived from the 'Exec' monad, the 'Object' data type unfortunately cannot simply derive the
+-- 'Data.HashMap.Int128Hashable' class.
+getObjectHash128 :: Exec (Object -> H.Hash128)
+getObjectHash128 = gets globalMethodTable >>= \mt -> return (H.deriveHash128_DaoBinary mt)
 
 instance HataClass (H.HashMap Object Object) where
   haskellDataInterface = interface "HashMap" $ do
-    autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt >> autoDefPPrinter >> autoDefSizeable
+    autoDefEquality >> autoDefOrdering >> autoDefBinaryFmt >> autoDefPPrinter
+    autoDefSizeable >> autoDefUpdateIterable
     let un _ a b = xmaybe (fromObj b) >>= \b -> return $ new $ H.union b a
     defInfixOp ADD  un
     defInfixOp ORB  un
     defInfixOp ANDB $ \ _ a b -> xmaybe (fromObj b) >>= \b -> return $ new $ (H.intersection b a :: H.HashMap Object Object)
     defInfixOp SUB  $ \ _ a b -> xmaybe (fromObj b) >>= \b -> return $ new $ (H.difference b a :: H.HashMap Object Object)
-    let initParams ox = case ox of
-          [] -> return H.empty
-          _  -> execThrow $ obj [obj "\"HashMap\" constructor takes no initializing parameters"]
     let initItems hmap ox = do
-          mt <- gets globalMethodTable
-          let hash128 = H.deriveHash128_DaoBinary mt
+          hash128 <- getObjectHash128
           let f hmap o = case o of
                 InitSingle o -> do
                   let idx = H.hashNewIndex hash128 o
@@ -7731,21 +7835,37 @@ instance HataClass (H.HashMap Object Object) where
                         Nothing -> H.hashDelete idx hmap
                         Just  o -> H.hashInsert idx o hmap
           foldM f hmap ox
-    defInitializer initParams initItems
+    defInitializer hashMapFromList initItems
 
--- | This is a convenience function for calling 'OHaskell' using just an initial value of type
--- @typ@. The 'Interface' is retrieved automatically using the instance of 'haskellDataInterface' for
--- the @typ@.
-toHata :: (HataClass typ, Typeable typ) => typ -> Hata
-toHata t = flip Hata (toDyn t) (interfaceTo t haskellDataInterface) where
-  interfaceTo :: Typeable typ => typ -> Interface typ -> Interface Dynamic
-  interfaceTo _ ifc = interfaceToDynamic ifc
+hashMapFromList :: [Object] -> Exec (H.HashMap Object Object)
+hashMapFromList ox = do
+  hash128 <- getObjectHash128
+  let fromDict = fmap (\ (i, o) -> (H.hashNewIndex hash128 (obj i), o)) . M.assocs
+      f (a, o) = case o of
+        OList ox -> case mapM (\ (i, o) -> maybe (Left (i, o)) Right (fromObj o)) (zip [0..] ox) of
+          Left (i, t) -> execThrow $ obj $
+            [ obj "in initializer for data of type", obj "HashMap"
+            , obj "argument number", obj (a::Int), obj "is a list where item number"
+            , obj (i::Int), obj "is not an object of data type", obj (typeOfObj t)
+            , obj "-- expecting an object of data type", obj "Pair"
+            ]
+          Right ox -> return $ fmap (\ (Pair(a,b)) -> (H.hashNewIndex hash128 a, b)) ox
+        OTree (Struct{fieldMap=ox}) -> return $ fromDict ox
+        ODict   ox -> return $ fromDict ox
+        o -> do
+          let badtype = execThrow $ obj $
+                [ obj "initializer to", obj "HashMap", obj "requires a single list of Pair objects"
+                , obj "received object of type", obj (typeOfObj o)
+                ]
+          maybe badtype return $ msum $
+            [ fromObj o >>= \ (Pair(a,b)) -> Just [(H.hashNewIndex hash128 a, b)]
+            , H.assocs <$> fromObj o
+            ]
+  H.fromList . concat <$> mapM f (zip [1..] ox)
 
--- | Inverse operation of 'toHata', useful when instantiating 'ObjectClass', uses
--- 'Data.Dynamic.fromDynamic' to extract the value that has been wrapped in up the 'Hata'
--- constructor.
-fromHata :: (HataClass typ, Typeable typ) => Hata -> Maybe typ
-fromHata (Hata _ o) = fromDynamic o
+builtin_HashMap :: DaoFunc ()
+builtin_HashMap =
+  daoFunc{ daoForeignFunc = \ () -> fmap (flip (,) () . Just . obj) . hashMapFromList }
 
 ----------------------------------------------------------------------------------------------------
 

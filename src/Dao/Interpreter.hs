@@ -3122,14 +3122,16 @@ instance HataClass Pair where
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
     defIndexer $ \ (Pair (a,b)) ix -> do
-      let badindex = fail "index for Pair data type must be a either 0 or 1"
-          getit i = case i::Int of
-            0 -> return a
-            1 -> return b
-            i -> execThrow $ obj [obj "bad index to Pair data type", obj i]
+      let badindex i = execThrow $ obj $
+            [ obj "index for Pair data type must be a either 0 or 1, recieved object of type"
+            , obj (typeOfObj i)
+            ]
       case ix of
-        [i] -> maybe badindex getit (fromObj i)
-        _   -> badindex
+        [i] -> do
+          i <- derefObject i
+          i <- execute (castToCoreType IntType i >>= maybe mzero return . fromObj) <|> badindex i
+          case i::Int of { 0 -> return a; 1 -> return b; i -> badindex (obj i); }
+        _   -> execThrow $ obj [obj "bad index value to Pair", obj ix]
 
 builtin_assocs :: DaoFunc ()
 builtin_assocs =
@@ -7731,7 +7733,7 @@ instance UpdateIterable T_dict (Maybe Object) where
     case p of
       Nothing -> return []
       Just  p -> case fromObj p of
-        Just (Pair (ref, o)) -> case fromObj o of
+        Just (Pair (ref, o)) -> case fromObj ref of
           Just ref -> return [(ref, o)]
           Nothing -> execThrow $ obj $
             [ obj "could not update iterator for", obj DictType
@@ -7747,6 +7749,7 @@ instance UpdateIterable T_dict (Maybe Object) where
 instance UpdateIterable Object (Maybe Object) where
   updateForLoop o f = case o of
     OList    o -> OList    <$> updateForLoop o f
+    ODict    o -> ODict    <$> updateForLoop o f
     OHaskell o -> OHaskell <$> updateForLoop o f
     o          -> execThrow $ obj [obj "cannot iterate over object of type", obj (typeOfObj o)]
 

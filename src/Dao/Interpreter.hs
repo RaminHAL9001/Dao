@@ -7839,6 +7839,22 @@ instance HataClass (H.HashMap Object Object) where
                         Just  o -> H.hashInsert idx o hmap
           foldM f hmap ox
     defInitializer hashMapFromList initItems
+    let single_index :: Monad m => (Object -> m a) -> [Object] -> m a
+        single_index f ix = case ix of
+          [i] -> f i
+          []  -> fail "no index value provided in subscript to HashMap data type"
+          _   -> fail "HashMap is a one-dimensional data type, indexed with multi-dimesional subscript"
+    defIndexer $ \hm -> single_index $ \i -> do
+      hash128 <- getObjectHash128
+      i <- derefObject i
+      xmaybe (H.hashLookup (H.hashNewIndex hash128 i) hm)
+    defIndexUpdater $ \ix upd -> flip single_index ix $ \i -> do
+      hash128 <- focusLiftExec getObjectHash128
+      i <- pure (H.hashNewIndex hash128 i)
+      hm <- get
+      (result, o) <- withInnerLens (H.hashLookup i hm) upd
+      put (H.hashAlter (const o) i hm)
+      return result
 
 hashMapFromList :: [Object] -> Exec (H.HashMap Object Object)
 hashMapFromList ox = do

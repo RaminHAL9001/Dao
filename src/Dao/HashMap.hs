@@ -58,7 +58,9 @@ _lookup (h1, h2) = I.lookup (fromIntegral h1) >=> I.lookup (fromIntegral h2)
 
 _alter :: (Maybe a -> Maybe a) -> Hash128 -> Int128Map a -> Int128Map a
 _alter alt (h1, h2) =
-  I.alter ((\m -> if I.null m then Nothing else Just m) . maybe mempty (I.alter alt (fromIntegral h2))) (fromIntegral h1)
+  I.alter
+    ((\m -> if I.null m then Nothing else Just m) . I.alter alt (fromIntegral h2) . maybe mempty id)
+    (fromIntegral h1)
 
 _unionWith :: (a -> a -> a) -> Int128Map a -> Int128Map a -> Int128Map a
 _unionWith f = I.unionWith (I.unionWith f)
@@ -169,9 +171,11 @@ lookup :: Int128Hashable key => key -> HashMap key a -> (Index key, Maybe a)
 lookup key hmap = let i = Index{ indexHash=hash128 key, indexKey=key } in (i, hashLookup i hmap)
 
 hashAlter :: Ord key => (Maybe a -> Maybe a) -> Index key -> HashMap key a -> HashMap key a
-hashAlter alt key (HashMap intmap) =
-  let altMap = (\m -> guard (not $ M.null m) >> Just m) . maybe mempty (M.alter alt (indexKey key))
-  in  HashMap $ _alter altMap (indexHash key) intmap
+hashAlter alt key (HashMap intmap) = HashMap $
+  _alter
+    ((\m -> guard (not $ M.null m) >> Just m) . M.alter alt (indexKey key) . maybe mempty id)
+    (indexHash key)
+    intmap
 
 alter :: Int128Hashable key => (Maybe a -> Maybe a) -> key -> HashMap key a -> HashMap key a
 alter f key = hashAlter f (Index{ indexHash=hash128 key, indexKey=key })

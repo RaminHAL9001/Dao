@@ -152,10 +152,14 @@ instance HataClass ListEditor where
           let loop im ox = case ox of
                 [] -> return $ ListEditor $ slCursorTo (slCursor sl) $ slFromIntMap im
                 (i, o):ox -> case o of
-                  InitSingle         o -> loop (I.insert i o im) ox
-                  InitAssign qref op o -> do
-                    i <- (fmap snd >=> fromObj) <$> referenceLookup qref >>= xmaybe
-                    o <- evalUpdateOp (Just qref) op o (I.lookup i im)
+                  InitSingle        o -> loop (I.insert i o im) ox
+                  InitAssign ref op o -> do
+                    i <- (fromObj <$> derefObject ref >>= xmaybe) <|>
+                      execThrow
+                        (obj [ obj "ListEditor constructor assigns value to non-integer type"
+                             , obj (typeOfObj ref)
+                             ])
+                    o <- evalUpdateOp (Just $ RefObject ref NullRef) op o (I.lookup i im)
                     loop (I.alter (const o) i im) ox
           loop mempty (zip [(slCursor sl)..] ox)
       )

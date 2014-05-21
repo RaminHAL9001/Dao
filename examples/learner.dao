@@ -66,21 +66,28 @@ function checkCurrentProgram() {
 }
 
 function listCurrent() {
+	println("hello");
 	try {
 		if(! checkCurrentProgram()) { return; }
-		showStruct(toStruct(@@ref("currentProgram"+currentPath)));
+		showStruct(toStruct(@ref("currentProgram"+currentPath)));
+	}
+	else {
+		println("nothing to list");
 	}
 	catch err { println(err); }
 }
 function listCurrent(REF) {
 	try {
 		if(! checkCurrentProgram()) { return; }
-		showStruct(@@ref("currentProgram"+join("", REF)));
+		showStruct(@ref("currentProgram"+join("", REF)));
+	}
+	else {
+		println("nothing to list");
 	}
 	catch err { println(err); }
 }
-rule "ls" { listCurrent(); }
-rule "ls $REF" { listCurrent($REF); }
+rule "ls" { println("ls"); listCurrent(); }
+rule "ls $REF" { println("ls ", join("", REF)); listCurrent(REF); }
 
 function changeCurrentPath() { currentPath = ""; }
 function changeCurrentPath(REF) {

@@ -145,23 +145,21 @@ instance HataClass Array where
     let fromList m i maxbnd arr ox = case ox of
           []   -> liftIO $ arrayFromList maxbnd (I.assocs m)
           o:ox -> case o of
-            InitAssign ref op o -> referenceLookup ref >>= \i -> case i of
-              Nothing -> execThrow $ obj $
-                [obj "assigning to array index", obj ref, obj "index evaluated to null"]
-              Just (ref, i) -> do
-                i <- _objToInt [i]
-                if i<0
-                then execThrow $ obj [obj "assigned to negative index value", obj i]
-                else do
-                  o <- evalUpdateOp (Just ref) op o (I.lookup i m)
-                  case o of
-                    Just  o -> do
-                      a <- fromList (I.insert i o m) (i+1) (max i maxbnd) arr ox
-                      return $ arr{ toObjArray=toObjArray a }
-                    Nothing -> fail $ concat $
-                      [ "evaluating assignment operation ", show op
-                      , "resulted in void value, cannot be used to initialized Array"
-                      ]
+            InitAssign ref op o -> do
+              i <- derefObject ref >>= _objToInt . return
+              if i<0
+              then execThrow $ obj [obj "assigned to negative index value", obj i]
+              else do
+                ref <- pure $ fromObj ref <|> Just (RefObject ref NullRef)
+                o <- evalUpdateOp ref op o (I.lookup i m)
+                case o of
+                  Just  o -> do
+                    a <- fromList (I.insert i o m) (i+1) (max i maxbnd) arr ox
+                    return $ arr{ toObjArray=toObjArray a }
+                  Nothing -> fail $ concat $
+                    [ "evaluating assignment operation ", show op
+                    , "resulted in void value, cannot be used to initialized Array"
+                    ]
             InitSingle o -> fromList (I.insert i o m) (i+1) (max i maxbnd) arr ox
     defInitializer init (fromList mempty 0 0)
 

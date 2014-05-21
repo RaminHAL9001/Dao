@@ -82,7 +82,7 @@ module Dao.Interpreter(
     preExec, postExec, quittingTime, programTokenizer, currentCodeBlock, ruleSet,
     newExecUnit, inModule,
     Task(), initTask, throwToTask, killTask, taskLoop, taskLoop_,
-    Executable(execute), RefReducible(reduceToRef),
+    Executable(execute),
     ExecRef(execReadRef, execTakeRef, execPutRef, execSwapRef, execModifyRef, execModifyRef_),
     ExecControl(ExecReturn, ExecError), execReturnValue, execErrorInfo,
     ExecErrorInfo(ExecErrorInfo), execUnitAtError, execErrExpr, execErrScript, execErrTopLevel,
@@ -2439,8 +2439,6 @@ instance HasRandGen Reference where
 -- value associated with that reference from the 'ExecUnit'.
 instance Executable Reference (Maybe (Reference, Object)) where { execute qref = referenceLookup qref }
 
-instance RefReducible Reference where { reduceToRef = return }
-
 refAppendSuffix :: Reference -> RefSuffix -> Reference
 refAppendSuffix qref appref = case qref of
   Reference q name ref -> Reference q name (ref<>appref)
@@ -3375,24 +3373,6 @@ taskLoop_ task inits = taskLoop task inits (\ _ _ -> return True)
 -- > instance Executable D     Char -- COMPILER ERROR
 -- In this example, should D instantiate () or Int or Char as it's result? You must choose only one.
 class Executable exec result | exec -> result where { execute :: exec -> Exec result }
-
--- | This class provides a function that allows a executable expression to possibly be reduced to a
--- 'Reference'. This is used on the expressions to the left of an assignment operator. This is very
--- different from 'asReference', which is a function for checking if a given 'Object' was
--- constructed with the 'ORef' constructor containing a 'Reference' value. 'Refereneable' actually
--- converts a data type to a 'Reference' through a series of reduction steps.
--- > refToORef :: 'ObjectExpr' -> 'Exec' 'Object'
--- > refToORef = 'Prelude.fmap' 'ORef' . 'reduceToRef'
--- > 
--- > refFromORef :: 'Object' -> 'Exec' Reference
--- > refFromORef = 'execute' . 'asReference'
--- This function will backtrack when the data type cannot be converted to a 'Reference'.
-class RefReducible o where { reduceToRef :: o -> Exec Reference }
-
-instance RefReducible Object where
-  reduceToRef o = return $ case o of
-    ORef r -> r
-    o      -> RefObject o NullRef
 
 ----------------------------------------------------------------------------------------------------
 
@@ -5915,7 +5895,7 @@ builtin_now = _funcWithoutParams "now" $ (Just . obj) <$> liftIO getCurrentTime
 builtin_ref :: DaoFunc ()
 builtin_ref =
   daoFunc
-  { daoForeignFunc = \ () -> fmap (flip (,) () . Just . ORef . RefWrapper) . execute . mconcat .
+  { daoForeignFunc = \ () -> fmap (flip (,) () . Just . ORef) . execute . mconcat .
       ( let err o = throwError $ obj $
               [obj "could not convert parameter of type", obj (typeOfObj o), obj "to Reference"]
         in  fmap (\o -> mplus (castToCoreType RefType o) (err o) >>=
@@ -6045,11 +6025,11 @@ instance B.HasPrefixTable (RefSuffixExpr Object) B.Byte MTab where
     ]
 
 instance Executable (RefSuffixExpr Object) RefSuffix where
-  execute o = let execargs = fmap (fmap $ ORef . snd) . execute in case o of
+  execute o = case o of
     NullRefExpr              -> return NullRef
     DotRefExpr    name ref _ -> DotRef name <$> execute ref
-    SubscriptExpr args ref   -> return Subscript <*> execargs args <*> execute ref
-    FuncCallExpr  args ref   -> return FuncCall  <*> execargs args <*> execute ref
+    SubscriptExpr args ref   -> return Subscript <*> execute args <*> execute ref
+    FuncCallExpr  args ref   -> return FuncCall  <*> execute args <*> execute ref
 
 ----------------------------------------------------------------------------------------------------
 
@@ -6218,8 +6198,6 @@ instance B.HasPrefixTable (ParenExpr Object) B.Byte MTab where
     [return ParenExpr <*> B.get <*> B.get]
 
 instance Executable (ParenExpr Object) (Maybe Object) where { execute (ParenExpr a _) = execute a }
-
-instance RefReducible (ParenExpr Object) where { reduceToRef (ParenExpr a _) = reduceToRef a }
 
 instance ObjectClass (ParenExpr Object) where { obj=new; fromObj=objFromHata; }
 
@@ -6511,7 +6489,9 @@ instance Executable (ScriptExpr Object) () where
   execute script = _setScriptExprError script $ case script of
     IfThenElse   ifn    -> execute ifn
     WhileLoop    ifn    -> execute ifn
-    EvalObject   o _loc -> void (execute o :: Exec (Maybe Object))
+    EvalObject   o _loc -> case o of
+      EvalExpr{}   -> execute o >>= maybeDerefObject >>= \ (ref, o) -> seq ref $! seq o $! return ()
+      AssignExpr{} -> execute o >>= maybe (return ()) (\o -> seq o $! return ())
     RuleFuncExpr rulfn  -> do
       o <- execute rulfn -- this 'execute' handles function expressions
       let dyn o = case o of
@@ -6553,35 +6533,37 @@ instance Executable (ScriptExpr Object) () where
         PFail            err -> join $ msum $ fmap (executeCatchExpr err) catchers
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ForLoop varName inObj thn _loc -> do
-      qref <- reduceToRef inObj
+      iter <- execute inObj
       let run     = void $ execute thn
       let readIter   o = execNested_ (M.singleton varName o) run
       let updateIter o = M.lookup varName . snd <$> execNested (maybe M.empty (M.singleton varName) o) run
       let readLoop   o = void $ readForLoop o readIter
       let updateLoop o = updateForLoop o updateIter >>=
-            void . referenceUpdate qref . const . return . Just
-      case qref of
-        RefWrapper{}        -> execThrow $ obj $
-          [obj "cannot iterate over value of type reference", obj qref]
-        RefObject o NullRef -> readLoop o
-        _                   -> referenceLookup qref >>= \o -> case o of
-          Nothing        -> execThrow $ obj [obj "cannot iterate over undefined reference", obj qref]
-          Just (_qref, o) -> case o of -- determine wheter this is an OHaskell object that can be updated
-            OHaskell (Hata ifc _) -> case objUpdateIterable ifc of
-              Just  _ -> updateLoop o
-                -- NOTE: the for loop iterator IS NOT passed to the 'referenceUpdate' function to be
-                -- evaluated. This is to avoid introducing deadlocks in data types that may store
-                -- their values in an MVar. The 'referenceLookup' function first evaluates the
-                -- reference, creating a copy in the current thread, the for loop is evaluated, and
-                -- THEN the 'referenceUpdate' function is evaluated, in those three discrete steps.
-                -- It is not possible to evaluate a for loop in the dao programming language as an
-                -- atomic action, so race conditions may occur when updating MVars -- but deadlocks
-                -- will not occur.
-              Nothing -> case objReadIterable ifc of -- if it's not updatable but readable
-                Just  _ -> readLoop o
-                Nothing -> execThrow $ obj $
-                  [obj "cannot iterate over value for reference", obj qref]
-            _ -> updateLoop o
+            void . referenceUpdate (Reference UNQUAL varName NullRef) . const . return . Just
+      case iter of
+        ORef qref -> case qref of
+          RefWrapper{}        -> execThrow $ obj $
+            [obj "cannot iterate over value of type reference", obj qref]
+          RefObject o NullRef -> readLoop o
+          _                   -> referenceLookup qref >>= \o -> case o of
+            Nothing        -> execThrow $ obj [obj "cannot iterate over undefined reference", obj qref]
+            Just (_qref, o) -> case o of -- determine wheter this is an OHaskell object that can be updated
+              OHaskell (Hata ifc _) -> case objUpdateIterable ifc of
+                Just  _ -> updateLoop o
+                  -- NOTE: the for loop iterator IS NOT passed to the 'referenceUpdate' function to be
+                  -- evaluated. This is to avoid introducing deadlocks in data types that may store
+                  -- their values in an MVar. The 'referenceLookup' function first evaluates the
+                  -- reference, creating a copy in the current thread, the for loop is evaluated, and
+                  -- THEN the 'referenceUpdate' function is evaluated, in those three discrete steps.
+                  -- It is not possible to evaluate a for loop in the dao programming language as an
+                  -- atomic action, so race conditions may occur when updating MVars -- but deadlocks
+                  -- will not occur.
+                Nothing -> case objReadIterable ifc of -- if it's not updatable but readable
+                  Just  _ -> readLoop o
+                  Nothing -> execThrow $ obj $
+                    [obj "cannot iterate over value for reference", obj qref]
+              _ -> updateLoop o
+        iter -> readLoop iter
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ContinueExpr a    _      _loc -> execThrow $ obj $
       '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" or \"while\" loop"
@@ -6740,11 +6722,9 @@ instance B.Binary (ObjListExpr Object) MTab where
   put (ObjListExpr lst loc) = B.prefixByte 0x86 $ B.putUnwrapped lst >> B.put loc
   get = (B.tryWord8 0x86 $ return ObjListExpr <*> B.getUnwrapped <*> B.get) <|> fail "expecting ObjListExpr"
 
-instance Executable (ObjListExpr Object) [(Location, Reference)] where
-  execute (ObjListExpr exprs loc) = mapM (fmap ((,) loc) . reduceToRef) exprs
-
-_reduceArgs :: String -> [(Location, Reference)] -> Exec [Object]
-_reduceArgs msg = mapM $ \ (loc, ref) -> fmap snd <$> referenceLookup ref >>= checkVoid loc msg
+instance Executable (ObjListExpr Object) [Object] where
+  execute (ObjListExpr exprs _) = forM (zip exprs [1..]) $ \ (a, i) -> execute a >>=
+    maybe (execThrow $ obj $ [obj "list item", obj (i::Int), obj "evaluates to void"]) return
 
 instance PPrintable (ObjListExpr Object) where { pPrint = pPrintInterm }
 
@@ -6778,7 +6758,7 @@ instance B.Binary (OptObjListExpr Object) MTab where
   put (OptObjListExpr o) = B.put o
   get = OptObjListExpr <$> B.get
 
-instance Executable (OptObjListExpr Object) [(Location, Reference)] where
+instance Executable (OptObjListExpr Object) [Object] where
   execute (OptObjListExpr lst) = maybe (return []) execute lst
 
 instance ObjectClass (OptObjListExpr Object) where { obj=new; fromObj=objFromHata; }
@@ -6819,8 +6799,6 @@ instance B.HasPrefixTable (LiteralExpr Object) B.Byte MTab where
 
 instance Executable (LiteralExpr Object) (Maybe Object) where { execute (LiteralExpr o _) = return (Just o) }
 
-instance RefReducible (LiteralExpr Object) where { reduceToRef (LiteralExpr o _) = reduceToRef o }
-
 instance ObjectClass (LiteralExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (LiteralExpr Object) where
@@ -6860,19 +6838,21 @@ instance B.HasPrefixTable (ReferenceExpr Object) Word8 MTab where
     , return RefObjectExpr <*> B.get <*> B.get <*> B.get
     ] where { f q = return (ReferenceExpr q) <*> B.get <*> B.get <*> B.get }
 
-instance Executable (ReferenceExpr Object) (Maybe Object) where
-  execute = reduceToRef >=> fmap (fmap snd) . referenceLookup
-
-instance RefReducible (ReferenceExpr Object) where
-  reduceToRef o = _setObjectExprError (ObjSingleExpr $ PlainRefExpr o) $ case o of
-    RefObjectExpr o ref    _ -> return refAppendSuffix <*> reduceToRef o <*> execute ref
-    ReferenceExpr q nm ref _ -> return (Reference q nm) <*> execute ref
+instance Executable (ReferenceExpr Object) Reference where
+  execute qref = case qref of
+    RefObjectExpr o suf _ -> do
+      o <- execute o >>=
+        checkVoid (getLocation o) "function call on item in parentheses which evaluated to a void value"
+      suf <- execute suf
+      return $ RefObject o suf
+    ReferenceExpr q ref suf _loc -> execute suf >>= return . Reference q ref
 
 instance ObjectClass (ReferenceExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (ReferenceExpr Object) where
   haskellDataInterface = interface "ReferenceLiteral" $ do
-    autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt >> defDeref execute
+    autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt
+    defDeref (execute >=> fmap (fmap snd) . referenceLookup)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -6897,7 +6877,8 @@ instance ObjectClass (AST_Reference Object) where { obj=new; fromObj=objFromHata
 instance HataClass (AST_Reference Object) where
   haskellDataInterface = interface "ReferenceExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
-    autoDefToStruct >> autoDefFromStruct >> defDeref (msum . map execute . toInterm)
+    autoDefToStruct >> autoDefFromStruct
+    defDeref (msum . map (execute >=> fmap (fmap snd) . referenceLookup) . toInterm)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -6915,52 +6896,14 @@ instance B.HasPrefixTable (RefPrefixExpr Object) B.Byte MTab where
     (B.mkPrefixTableWord8 "RefPrefixExpr" 0x52 0x53 $
       let f q = return (RefPrefixExpr q) <*> B.get <*> B.get in [f REF, f DEREF])
 
-instance Executable (RefPrefixExpr Object) (Maybe Object) where
-  execute o = _setObjectExprError (ObjSingleExpr o) $ do
-    o <- reduceToRef o <|>
-      execThrow (obj [obj "expression does not reduce to valid reference value"])
-    fmap snd <$> referenceLookup o
-
-instance RefReducible (RefPrefixExpr Object) where
-  reduceToRef expr = _setObjectExprError (ObjSingleExpr expr) $ loop expr where
-    err = execThrow . OList
-    loop o = case o of
-      PlainRefExpr o         -> reduceToRef o >>= \o -> case o of
-        RefObject  o NullRef -> case o of
-          ORef r -> return r
-          o      -> return (RefObject o NullRef)
-        o -> return o
-      RefPrefixExpr op o _ -> case op of
-        REF   -> loop o >>= \o -> case o of
-          RefObject o NullRef  -> case o of
-            OString s -> refStr s
-            ORef    r -> return (RefWrapper r) 
-            r         -> return (RefObject  r NullRef)
-          o -> return (RefWrapper o)
-        DEREF -> loop o >>= \r -> case r of
-          RefWrapper r    -> return r
-          RefObject o NullRef -> case o of
-            OString s -> refStr s >>= deref
-            ORef    r -> deref r
-            OHaskell (Hata ifc d) -> case objDereferencer ifc of
-              Nothing    -> err [obj "cannot dereference", o]
-              Just deref -> do
-                o <- deref d >>= maybe (err [obj "reference object evaluates to void", o]) return
-                case o of
-                  ORef r -> return r
-                  o      -> return (RefObject o NullRef)
-            o -> err [obj "cannot dereference object of type", obj (typeOfObj o)]
-          o -> deref o
-    deref r = do
-      (r, o) <- fmap (maybe (Just r, Nothing) (\ (r, o) -> (Just r, Just o))) $ referenceLookup r
-      let cantDeref msg = err $
-            concat [[obj "cannot dereference"], maybe [] (return . obj) r, [obj msg]]
-      case o of
-        Nothing -> cantDeref "evaluates to void"
-        Just  o -> execute (asReference o) <|> return (RefObject o NullRef)
-    refStr s = case referenceFromUStr s of
-      Nothing -> err [obj "string value cannot be parsed as reference", obj s]
-      Just  r -> return r
+instance Executable (RefPrefixExpr Object) Object where
+  execute ref = _setObjectExprError (ObjSingleExpr ref) $ case ref of
+    PlainRefExpr     ref   -> ORef <$> execute ref
+    RefPrefixExpr op ref _ -> case op of
+      REF   -> execute ref >>= \ref -> case ref of
+        ORef ref -> return $ ORef $ RefWrapper ref
+        ref      -> return $ ORef $ RefObject ref NullRef
+      DEREF -> execute ref >>= derefObject
 
 instance ObjectClass (RefPrefixExpr Object) where { obj=new; fromObj=objFromHata; }
 
@@ -7094,7 +7037,7 @@ instance Executable (ObjectExpr Object) (Maybe Object) where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ObjLiteralExpr  o -> execute o
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    ObjSingleExpr   o -> execute o
+    ObjSingleExpr   o -> Just <$> execute o
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ArithPfxExpr op expr loc -> do
       expr <- execute expr >>= fmap snd . maybeDerefObject >>=
@@ -7122,17 +7065,17 @@ instance Executable (ObjectExpr Object) (Maybe Object) where
 
 _evalInit :: ReferenceExpr Object -> OptObjListExpr Object -> ObjListExpr Object -> Exec Object
 _evalInit ref bnds initMap = do
-  let (ObjListExpr items _) = initMap
-  ref <- reduceToRef ref
+  ref <- execute ref
   ref <- case ref of
     Reference UNQUAL name NullRef -> pure name
     ref -> execThrow $ obj [obj "cannot use reference as initializer", obj ref]
-  bnds <- execute bnds >>= _reduceArgs "initializer parameters"
+  bnds <- execute bnds >>= mapM derefObject
   let cantUseBounds msg = execThrow $ obj $
         [obj msg, obj "must be defined without bounds parameters", OList bnds]
   let list = case bnds of
-        [] -> execNested_ M.empty $ fmap OList $ execute initMap >>= _reduceArgs "list item"
+        [] -> execNested_ M.empty $ fmap OList $ execute initMap >>= mapM derefObject
         _  -> cantUseBounds "for list constructor"
+  let (ObjListExpr items _) = initMap
   let dict = case bnds of
         [] -> (ODict . snd) <$> execNested M.empty (mapM_ assignUnqualifiedOnly items)
         _  -> cantUseBounds "for dict constructor"
@@ -7150,20 +7093,13 @@ _evalInit ref bnds initMap = do
         Just (init, fold) -> do
           o     <- init bnds
           items <- forM items $ \item -> case item of
-            AssignExpr a op b loc -> do
-              a <- reduceToRef a
-              b <- execute b >>= checkVoid loc "right-hand side of initializer assignment"
+            AssignExpr a op b _ -> do
+              a <- execute a >>= checkVoid (getLocation a) "left-hand side of initializer assignemt"
+              b <- execute b >>= checkVoid (getLocation b) "right-hand side of initializer assignment" >>= derefObject
               return $ InitAssign a op b
             EvalExpr arith -> fmap InitSingle $
-              execute arith >>= checkVoid (getLocation arith) "initializer item evaluates to void"
+              execute arith >>= checkVoid (getLocation arith) "initializer item"
           OHaskell . Hata tab <$> fold o items
-
-instance RefReducible (ObjectExpr Object) where
-  reduceToRef o = _setObjectExprError o $ case o of
-    ObjLiteralExpr r -> reduceToRef r
-    ObjSingleExpr  r -> reduceToRef r
-    o                -> execute o >>=
-      maybe (fail "evaluates to null") (return . flip RefObject NullRef)
 
 instance ObjectClass (ObjectExpr Object) where { obj=new; fromObj=objFromHata; }
 
@@ -7243,13 +7179,6 @@ instance Executable (ArithExpr Object) (Maybe Object) where
             _     -> liftM2 (,) derefLeft derefRight
           execute (fmap Just $ evalInfixOp op left right)
 
-instance RefReducible (ArithExpr Object) where
-  reduceToRef o = case o of
-    ObjectExpr o -> reduceToRef o
-    o            -> _setScriptExprError (EvalObject (EvalExpr $ ObjArithExpr o) LocationUnknown) $ do
-      exp <- execute o >>= maybe (fail "evaluates to null") return
-      return $ RefObject exp NullRef
-
 instance ObjectClass (ArithExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (ArithExpr Object) where
@@ -7287,10 +7216,13 @@ _executeAssignExpr
 _executeAssignExpr update o = case o of
   EvalExpr   o -> execute o
   AssignExpr nm op expr loc -> do
-    qref <- mplus (reduceToRef nm) $ execThrow $
-      obj [obj $ "left-hand side of assignment expression is not a reference value"]
-    newObj <- execute expr >>= checkVoid loc "right-hand side of assignment" >>= derefObject 
-    update qref op newObj
+    qref <- execute nm >>=
+      checkVoid (getLocation nm) "left-hand side of assignment expression evaluated to void"
+    case qref of
+      ORef qref -> do
+        newObj <- execute expr >>= checkVoid loc "right-hand side of assignment" >>= derefObject 
+        update qref op newObj
+      _    -> fail "left-hand side of assignment expression is not a reference value"
 
 -- binary 0x6F 
 instance B.Binary (AssignExpr Object) MTab where
@@ -7307,12 +7239,6 @@ instance B.HasPrefixTable (AssignExpr Object) B.Byte MTab where
 instance Executable (AssignExpr Object) (Maybe Object) where
   execute = _executeAssignExpr $ \qref op newObj ->
     fmap snd <$> referenceUpdate qref (evalUpdateOp (Just qref) op newObj)
-
-instance RefReducible (AssignExpr Object) where
-  reduceToRef o = case o of
-    EvalExpr   o -> reduceToRef o
-    AssignExpr{} -> execute o >>=
-      maybe (fail "left-hand side of assignment evaluates to null") reduceToRef
 
 -- | This function works a bit like how 'execute' works on an 'AssignExpr' data type, but every
 -- assignment is checked to make sure it is local or unqualified. Furthurmore, all assignments are
@@ -7387,14 +7313,6 @@ instance Executable (ObjTestExpr Object) (Maybe Object) where
       execute a >>= checkVoid (getLocation a) "conditional expression evaluates to void" >>=
         execute . objToBool >>= \ok -> if ok then execute b else execute c
     ObjRuleFuncExpr o -> execute o
-
-instance RefReducible (ObjTestExpr Object) where
-  reduceToRef o = case o of
-    ObjArithExpr o -> reduceToRef o
-    ObjTestExpr{}  -> fmap (flip RefObject NullRef) $ execute o >>=
-      checkVoid (getLocation o) "conditional expression assignment evaluates to void, not reference"
-    ObjRuleFuncExpr{} -> execute o >>=
-      maybe (fail "lambda expression evaluated to void") (return . flip RefObject NullRef)
 
 instance ObjectClass (ObjTestExpr Object) where { obj=new; fromObj=objFromHata; }
 
@@ -7826,17 +7744,14 @@ instance HataClass (H.HashMap Object Object) where
                 InitSingle o -> do
                   let idx = H.hashNewIndex hash128 o
                   return $ H.hashInsert idx o hmap
-                InitAssign ref op o -> do
-                  i <- referenceLookup ref
-                  case i of
-                    Nothing -> execThrow $ obj $
-                      [obj "could not assign to undefined reference", obj ref]
-                    Just (ref, i) -> do
-                      let idx = H.hashNewIndex hash128 i
-                      o <- evalUpdateOp (Just ref) op o (H.hashLookup idx hmap)
-                      return $ case o of
-                        Nothing -> H.hashDelete idx hmap
-                        Just  o -> H.hashInsert idx o hmap
+                InitAssign i op o -> do
+                  i <- derefObject i
+                  let idx = H.hashNewIndex hash128 i
+                  let ref = Just (RefObject i NullRef) <|> fromObj i
+                  o <- evalUpdateOp ref op o (H.hashLookup idx hmap)
+                  return $ case o of
+                    Nothing -> H.hashDelete idx hmap
+                    Just  o -> H.hashInsert idx o hmap
           foldM f hmap ox
     defInitializer hashMapFromList initItems
     let single_index :: Monad m => (Object -> m a) -> [Object] -> m a
@@ -7896,7 +7811,7 @@ builtin_HashMap =
 -- data to your initializer function.
 data InitItem
   = InitSingle Object
-  | InitAssign Reference UpdateOp Object
+  | InitAssign Object UpdateOp Object
   deriving (Eq, Ord, Typeable)
 
 ----------------------------------------------------------------------------------------------------

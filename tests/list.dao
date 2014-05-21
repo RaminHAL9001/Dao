@@ -1,6 +1,6 @@
 func show(c) {
 	i = 0;
-	for x in(c) {
+	for x in c {
 		println(i, ": ", x); i += 1;
 	}
 	println("");
@@ -23,13 +23,13 @@ println("----(original list)-----------------------------------");
 show(c);
 
 
-for x in(c) {
+for x in c {
 	if(Int == typeof(x)) { println("delete: ", x); delete(x); } else { x = list{x, 0}; }
 }
 println("----(after deletions)-----------------------------------");
 show(c);
 
-for x in(c) {
+for x in (c) {
 	if(Int == typeof(x)) { x = list{}; } else { x = list{x, 0}; }
 }
 println("----(after overwrites)-----------------------------------");

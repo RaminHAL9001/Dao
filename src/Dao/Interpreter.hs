@@ -106,7 +106,7 @@ module Dao.Interpreter(
     paramsToGlobExpr, matchFuncParams, execGuardBlock, objToCallable, callCallables,
     callObject, checkPredicate, checkVoid,
     evalConditional,
-    localVarDefine, maybeDerefObject, derefObjectGetReference, derefObject,
+    localVarDefine, localVarUpdate, maybeDerefObject, derefObjectGetReference, derefObject,
     updateExecError,
     assignUnqualifiedOnly,
     LimitedObject(LimitedObject, unlimitObject),
@@ -4701,7 +4701,7 @@ instance ToDaoStructClass Subroutine where
     "code"    .=@ origSourceCode
     "vars"    .=@ staticVars
     "rules"   .=@ (\rs -> RuleSet{ ruleSetRules=rs, ruleSetTokenizer=Nothing }) . staticRules
-    "lambdas" .=@ map obj . staticLambdas
+    "lambdas" .=@ staticLambdas
 
 instance FromDaoStructClass Subroutine where
   fromDaoStruct = do
@@ -4709,7 +4709,7 @@ instance FromDaoStructClass Subroutine where
     sub <- setupCodeBlock <$> req "code"
     vars <- req "vars"
     (RuleSet{ ruleSetRules=rules }) <- req "rules"
-    lambdas <- reqList "lambdas"
+    lambdas <- req "lambdas"
     return $ sub{ staticVars=vars, staticRules=rules, staticLambdas=lambdas }
 
 instance Executable Subroutine (Maybe Object) where
@@ -4844,15 +4844,19 @@ instance HasNullValue CallableCode where
 
 instance NFData CallableCode  where { rnf (CallableCode  a b _) = deepseq a $! deepseq b () }
 
-instance PPrintable CallableCode where 
-  pPrint (CallableCode pats ty exe) = ppCallableAction "function" (pPrint pats) ty exe
+instance PPrintable [CallableCode] where 
+  pPrint = sequence_ . intersperse (pString " ^ ") .
+    fmap (\ (CallableCode pats ty exe) -> ppCallableAction "function" (pPrint pats) ty exe >> pEndLine)
 
-instance ObjectClass CallableCode where { obj=new; fromObj=objFromHata; }
+instance ObjectClass [CallableCode] where { obj=new; fromObj=objFromHata; }
 
-instance HataClass CallableCode where
+instance HataClass [CallableCode] where
   haskellDataInterface = interface "Function" $ do
     autoDefNullTest >> autoDefPPrinter
-    defCallable (return . return)
+    defCallable return
+    defInfixOp XORB $ \ _ a o -> case fromObj o of
+      Just  b -> return $ obj (a++b)
+      Nothing -> fail "left-hand side of bitwise-XOR operator (^) is a Function, right hand side is not"
 
 ----------------------------------------------------------------------------------------------------
 
@@ -5445,7 +5449,7 @@ instance Bits (XPure Object) where
   shift   o i = o >>= \o -> case o of
     OList o -> xpure $ OList $ case compare i 0 of
       EQ -> o
-      LT -> reverse $ drop i $ reverse o
+      LT -> reverse $ drop (negate i) $ reverse o
       GT -> drop i o
     _ -> _xpureBits (flip shift i) (flip bytesShift (fromIntegral i)) (xpure o)
   rotate  o i = _xpureBits (flip shift i) (flip bytesRotate (fromIntegral i)) o
@@ -6093,9 +6097,9 @@ objToCallable o = case fromObj o >>= \ (Hata ifc o) -> fmap ($ o) (objCallable i
 -- the function body. The value returned is a pair containing the result of the function call as the
 -- 'Prelude.fst', and update "this" value as 'Prelude.snd'
 callCallables :: Maybe Object -> [CallableCode] -> [Object] -> Exec (Maybe Object, Maybe Object)
-callCallables this funcs params = fmap (fmap (M.lookup (ustr "this"))) $
-  msum $ flip map funcs $ \f -> matchFuncParams (argsPattern f) params >>=
-    flip execFuncPushStack (execute $ codeSubroutine f) . M.alter (const this) (ustr "this")
+callCallables this funcs params = fmap (fmap (M.lookup (ustr "this"))) $ join $
+  msum $ flip fmap funcs $ \call -> matchFuncParams (argsPattern call) params >>=
+    return . flip execFuncPushStack (execute $ codeSubroutine call) . M.alter (const this) (ustr "this")
 
 -- | This function assumes you have retrieved a callable function-like 'Object' using a 'Reference'.
 -- This function evaluates 'callCallables', and extracts the 'CallableCode' from the 'Object'
@@ -6507,7 +6511,7 @@ instance Executable (ScriptExpr Object) () where
       case sub of
         Nothing  -> case rulfn of
           LambdaExpr{} -> getObj >>= \o ->
-            modify $ \xunit -> xunit{ lambdaSet = lambdaSet xunit ++ [o] }
+            modify $ \xunit -> xunit{ lambdaSet = lambdaSet xunit ++ o }
           RuleExpr{}   -> do
             patrule <- getObj
             glob    <- constructPattern (rulePatterns patrule)
@@ -6516,7 +6520,7 @@ instance Executable (ScriptExpr Object) () where
           FuncExpr{}   -> return ()
             -- function expressions are placed in the correct store by the above 'execute'
         Just sub -> case rulfn of
-          LambdaExpr{} -> getObj >>= \o -> fsub $ sub{ staticLambdas = staticLambdas sub ++ [o] }
+          LambdaExpr{} -> getObj >>= \o -> fsub $ sub{ staticLambdas = staticLambdas sub ++ o }
           RuleExpr{}   -> do
             patrule <- getObj
             glob    <- constructPattern (rulePatterns patrule)
@@ -6533,7 +6537,7 @@ instance Executable (ScriptExpr Object) () where
         PFail            err -> join $ msum $ fmap (executeCatchExpr err) catchers
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ForLoop varName inObj thn _loc -> do
-      iter <- execute inObj
+      iter <- execute inObj >>= checkVoid (getLocation inObj) "iterator of for-loop expression"
       let run     = void $ execute thn
       let readIter   o = execNested_ (M.singleton varName o) run
       let updateIter o = M.lookup varName . snd <$> execNested (maybe M.empty (M.singleton varName) o) run
@@ -6604,10 +6608,13 @@ instance HataClass (ScriptExpr Object) where
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
 localVarDefine :: Name -> Object -> Exec ()
-localVarDefine nm o = do
-  let jo = Just o
-  let qref = Reference LOCAL nm NullRef
-  (_, (_, store)) <- gets execStack >>= runObjectFocusExec (updateIndex nm $ state $ const (jo, jo)) qref
+localVarDefine name = localVarUpdate name . const . Just
+
+localVarUpdate :: Name -> (Maybe Object -> Maybe Object) -> Exec ()
+localVarUpdate name f = do
+  let qref = Reference LOCAL name NullRef
+  (_, (_, store)) <- gets execStack >>=
+    runObjectFocusExec (updateIndex name $ state $ \a -> let b = f a in (b, b)) qref
   modify (\xunit -> xunit{ execStack=store })
 
 -- | Like evaluating 'execute' on a value of 'Reference', except the you are evaluating an
@@ -6838,21 +6845,22 @@ instance B.HasPrefixTable (ReferenceExpr Object) Word8 MTab where
     , return RefObjectExpr <*> B.get <*> B.get <*> B.get
     ] where { f q = return (ReferenceExpr q) <*> B.get <*> B.get <*> B.get }
 
-instance Executable (ReferenceExpr Object) Reference where
+instance Executable (ReferenceExpr Object) (Maybe Object) where
   execute qref = case qref of
+    RefObjectExpr o NullRefExpr _ -> execute o
     RefObjectExpr o suf _ -> do
       o <- execute o >>=
         checkVoid (getLocation o) "function call on item in parentheses which evaluated to a void value"
       suf <- execute suf
-      return $ RefObject o suf
-    ReferenceExpr q ref suf _loc -> execute suf >>= return . Reference q ref
+      return $ Just $ obj $ RefObject o suf
+    ReferenceExpr q ref suf _loc -> execute suf >>= return . Just . ORef . Reference q ref
 
 instance ObjectClass (ReferenceExpr Object) where { obj=new; fromObj=objFromHata; }
 
 instance HataClass (ReferenceExpr Object) where
   haskellDataInterface = interface "ReferenceLiteral" $ do
     autoDefEquality >> autoDefNullTest >> autoDefBinaryFmt
-    defDeref (execute >=> fmap (fmap snd) . referenceLookup)
+    defDeref (execute >=> fmap snd . maybeDerefObject)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -6878,7 +6886,7 @@ instance HataClass (AST_Reference Object) where
   haskellDataInterface = interface "ReferenceExpression" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
-    defDeref (msum . map (execute >=> fmap (fmap snd) . referenceLookup) . toInterm)
+    defDeref (msum . map (execute >=> fmap snd . maybeDerefObject) . toInterm)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -6896,14 +6904,17 @@ instance B.HasPrefixTable (RefPrefixExpr Object) B.Byte MTab where
     (B.mkPrefixTableWord8 "RefPrefixExpr" 0x52 0x53 $
       let f q = return (RefPrefixExpr q) <*> B.get <*> B.get in [f REF, f DEREF])
 
-instance Executable (RefPrefixExpr Object) Object where
+instance Executable (RefPrefixExpr Object) (Maybe Object) where
   execute ref = _setObjectExprError (ObjSingleExpr ref) $ case ref of
-    PlainRefExpr     ref   -> ORef <$> execute ref
-    RefPrefixExpr op ref _ -> case op of
-      REF   -> execute ref >>= \ref -> case ref of
-        ORef ref -> return $ ORef $ RefWrapper ref
-        ref      -> return $ ORef $ RefObject ref NullRef
-      DEREF -> execute ref >>= derefObject
+    PlainRefExpr     ref     -> execute ref
+    RefPrefixExpr op ref loc -> case op of
+      REF   -> do
+        ref <- execute ref >>= checkVoid loc "operand of referencing operator ($)"
+        case ref of
+          ORef ref -> return $ Just $ ORef $ RefWrapper ref
+          ref      -> return $ Just $ ORef $ RefObject ref NullRef
+      DEREF -> execute ref >>= checkVoid loc "operand of dereferencing operator (@)" >>=
+        fmap Just . derefObject
 
 instance ObjectClass (RefPrefixExpr Object) where { obj=new; fromObj=objFromHata; }
 
@@ -6955,15 +6966,16 @@ instance Executable (RuleFuncExpr Object) (Maybe Object) where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     LambdaExpr params scrpt _ -> do
       let exec = setupCodeBlock scrpt
-      let callableCode = CallableCode{argsPattern=params, codeSubroutine=exec, returnType=nullValue}
-      return $ Just $ new callableCode
+      return $ Just $ new $
+        [CallableCode{argsPattern=params, codeSubroutine=exec, returnType=nullValue}]
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     FuncExpr name params scrpt _ -> do
       let exec = setupCodeBlock scrpt
       let callableCode = CallableCode{argsPattern=params, codeSubroutine=exec, returnType=nullValue}
-      let o = new callableCode
-      localVarDefine name o
-      return (Just o)
+      localVarUpdate name $ \o -> case o>>=fromObj of
+        Nothing -> Just $ obj [callableCode]
+        Just cc -> Just $ obj $ cc++[callableCode]
+      return (Just $ obj [callableCode])
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     RuleExpr rs scrpt _ -> do
       let sub = setupCodeBlock scrpt
@@ -7037,7 +7049,7 @@ instance Executable (ObjectExpr Object) (Maybe Object) where
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ObjLiteralExpr  o -> execute o
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    ObjSingleExpr   o -> Just <$> execute o
+    ObjSingleExpr   o -> execute o
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ArithPfxExpr op expr loc -> do
       expr <- execute expr >>= fmap snd . maybeDerefObject >>=
@@ -7065,9 +7077,9 @@ instance Executable (ObjectExpr Object) (Maybe Object) where
 
 _evalInit :: ReferenceExpr Object -> OptObjListExpr Object -> ObjListExpr Object -> Exec Object
 _evalInit ref bnds initMap = do
-  ref <- execute ref
+  ref <- execute ref >>= checkVoid (getLocation ref) "initializer label"
   ref <- case ref of
-    Reference UNQUAL name NullRef -> pure name
+    ORef (Reference UNQUAL name NullRef) -> pure name
     ref -> execThrow $ obj [obj "cannot use reference as initializer", obj ref]
   bnds <- execute bnds >>= mapM derefObject
   let cantUseBounds msg = execThrow $ obj $
@@ -7419,7 +7431,10 @@ instance Executable (TopLevelExpr Object) () where
         PFail           err  -> throwError err
         Backtrack            -> return () -- do not backtrack at the top-level
       (GlobalStore store) <- gets globalData
-      modify $ \xunit -> xunit{ globalData = GlobalStore $ M.union dict store }
+      let addIfFuncs a b = maybe b id $ do -- overwrite previously declared variables...
+            (a, b) <- Just (,) <*> fromObj a <*> fromObj b
+            Just $ obj ((a++b)::[CallableCode]) -- ...unless both variables are [CallableCode]
+      modify $ \xunit -> xunit{ globalData = GlobalStore $ M.unionWith addIfFuncs store dict }
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     EventExpr typ scrpt _ -> do
       let exec = setupCodeBlock scrpt

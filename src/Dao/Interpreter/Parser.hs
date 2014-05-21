@@ -27,6 +27,7 @@ import           Dao.Token
 import           Dao.PPrint
 import           Dao.Interpreter     hiding (opt)
 import           Dao.Interpreter.AST
+import           Dao.Interpreter.Tokenizer
 import           Dao.Predicate
 import           Dao.Parser
 
@@ -46,112 +47,10 @@ import           Data.Array.IArray
 maxYears :: Integer
 maxYears = 99999
 
-----------------------------------------------------------------------------------------------------
-
-newtype DaoTT = DaoTT{ unwrapDaoTT :: TT } deriving (Eq, Ord, Ix)
-instance TokenType  DaoTT where { unwrapTT = unwrapDaoTT; wrapTT = DaoTT }
-instance HasTokenDB DaoTT where { tokenDB  = daoTokenDB }
-instance MetaToken DaoTokenLabel DaoTT  where { tokenDBFromMetaValue _ = tokenDB }
-instance Show DaoTT where { show = deriveShowFromTokenDB daoTokenDB }
-
-type DaoLexer       = Lexer DaoTT ()
 type DaoParser    a = Parser    DaoParState DaoTT a
 type DaoTableItem a = TableItem DaoTT (DaoParser a)
 type DaoPTable    a = PTable    DaoTT (DaoParser a)
 type DaoParseErr    = Error     DaoParState DaoTT
-
-daoTokenDB :: TokenDB DaoTT
-daoTokenDB = makeTokenDB daoTokenDef
-
-data DaoTokenLabel
-  = SPACE | INLINECOM | ENDLINECOM | COMMA | LABEL | HASHLABEL | STRINGLIT | CHARLIT | DATE | TIME
-  | BASE10 | DOTBASE10 | NUMTYPE | EXPONENT | BASE16 | BASE2
-  deriving (Eq, Enum, Show, Read)
-instance UStrType DaoTokenLabel where { toUStr = derive_ustr; fromUStr = derive_fromUStr; }
-
-daoTokenDef :: LexBuilder DaoTT
-daoTokenDef = do
-  ------------------------------------------ WHITESPACE -------------------------------------------
-  let spaceRX = rxRepeat1(map ch "\t\n\r\f\v ")
-  space        <- emptyToken SPACE      $ spaceRX
-  
-  ------------------------------------------- COMMENTS --------------------------------------------
-  closeInliner <- fullToken  INLINECOM  $ rxRepeat1(ch '*') . rx '/'
-  inlineCom    <- fullToken  INLINECOM  $ rx "/*" .
-    fix (\loop -> closeInliner <> rxRepeat1(invert[ch '*']) . loop)
-  endlineCom   <- fullToken  ENDLINECOM $ rx "//" . rxRepeat(invert[ch '\n'])
-  
-  -------------------------------------------- LABELS ---------------------------------------------
-  let alpha = [from 'A' to 'Z', from 'a' to 'z', ch '_']
-      labelRX = rxRepeat1 alpha . rxRepeat(from '0' to '9' : alpha)
-  label        <- fullToken  LABEL      $ labelRX
-  hashlabel    <- fullToken  HASHLABEL  $ rx '#' . labelRX
-  
-  ---------------------------------------- NUMERICAL TYPES ----------------------------------------
-  let from0to9  = from '0' to '9'
-      plusMinus = rx[ch '+', ch '-']
-      dot       = rx '.'
-      number    = rxRepeat1 from0to9
-  base10       <- fullToken  BASE10     $ number
-  dotBase10    <- fullToken  DOTBASE10  $ dot . base10
-  exponent     <- fullToken  EXPONENT   $ rx[ch 'e', ch 'E'] .
-    cantFail "expecting exponent value after 'e' or 'E' character" . opt plusMinus . base10
-  base2        <- fullToken  BASE2      $ (rx "0b" <> rx "0B") . base10
-  base16       <- fullToken  BASE16     $ (rx "0x" <> rx "0X") .
-    rxRepeat[from0to9, from 'A' to 'F', from 'a' to 'f']
-  numType      <- fullToken  NUMTYPE    $ rx (map ch "UILRFfijs")
-  let base10Parser = mconcat $
-        [ dotBase10 . opt exponent . opt numType
-        , base10 . opt dotBase10 . opt exponent . opt numType
-        , base10 . dot . exponent . opt numType
-        , base10 . opt exponent . opt numType
-        ]
-  ---------------------------------------- STRING  LITERAL ----------------------------------------
-  let litExpr op =  rx op . (fix $ \loop ->
-        rxRepeat(invert [ch op, ch '\\']) . (rx "\\" . rx anyChar . loop <> rx op))
-  stringLit    <- fullToken  STRINGLIT $ litExpr '"'
-  charLit      <- fullToken  CHARLIT   $ litExpr '\''
-  -------------------------------------- KEYWORDS AND GROUPING ------------------------------------
-  openers      <- operatorTable $ words "( [ { ${"
-  comma        <- emptyToken COMMA (rx ',')
-  daoKeywords  <- keywordTable LABEL labelRX $ words $ unwords $
-    [ "local const static global"
-    , "null false true date time function func rule"
-    , "if else for in while with try catch continue break return throw"
-    , "BEGIN END EXIT import require"
-    , "struct union operator public private" -- other reserved keywords, but they don't do anything yet.
-    ]
-  let withKeyword key func = do
-        tok <- getTokID key :: LexBuilderM DaoTT
-        return (rx key . (label <> rxEmptyToken tok . func))
-  closers <- operatorTable $ words "} ] )"
-  
-  ------------------------------------------- OPERATORS -------------------------------------------
-  operators    <- operatorTable $ words $ unwords $
-    [allUpdateOpStrs, allPrefixOpStrs, allInfixOpStrs, ": ;"]
-  
-  ------------------------------------ DATE/TIME SPECIAL SYNTAX -----------------------------------
-  -- makes use of token types that have already been created above
-  let year = rxLimitMinMax 4 5 from0to9
-      dd   = rxLimitMinMax 1 2 from0to9
-      col  = rx ':'
-      hy   = rx '-'
-      timeRX = dd . col . dd . col . dd . opt(dot . number)
-  timeExpr <- fullToken TIME timeRX
-  -- time <- withKeyword "time" $ cantFail "time expression" . space . timeExpr
-  time <- withKeyword "time" $ space . timeExpr
-  dateExpr <- fullToken DATE $ year . hy . dd . hy . dd
-  -- date <- withKeyword "date" $ cantFail "date expression" .
-  date <- withKeyword "date" $ space . dateExpr . opt(space . timeExpr) . opt(space . label)
-  
-  ------------------------------------------- ACTIVATE --------------------------------------------
-  -- activate $
-  return $ regexToTableLexer $
-    [ space, inlineCom, endlineCom, comma
-    , stringLit, charLit, base16, base2, base10Parser
-    , openers, hashlabel, operators, closers
-    , date, time, daoKeywords
-    ]
 
 ----------------------------------------------------------------------------------------------------
 

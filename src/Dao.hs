@@ -39,6 +39,7 @@ import           Dao.Predicate
 import           Dao.PPrint
 import           Dao.Token
 import           Dao.Parser
+import           Dao.Interpreter.Tokenizer
 import           Dao.Interpreter.Parser
 import           Dao.Interpreter.AST
 import           Dao.Interpreter

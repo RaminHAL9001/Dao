@@ -6,6 +6,12 @@ src/Dao/Interpreter/Parser.hs
 src/Dao/Interpreter/AST.hs
 tests/Dao/CoreTests.hs
 
+src/dao-main.hs
+src/Dao.hs
+src/Dao/Interpreter.hs
+src/Dao/Interpreter/Parser.hs
+src/Dao/Interpreter/AST.hs
+src/Dao/Interpreter/Tokenizer.hs
 src/Dao/TypeChecker.hs
 src/Dao/RefTable.hs
 src/Dao/HashMap.hs
@@ -23,7 +29,6 @@ src/Dao/Binary.hs
 src/Dao/PPrint.hs
 src/Dao/Predicate.hs
 src/Dao/Glob.hs
-src/dao-main.hs
 
 tests/Dao/CoreTests.hs
 tests/Dao/Test.hs

@@ -28,7 +28,6 @@ import           Dao.Predicate
 import           Dao.PPrint
 
 import           Data.Char
-import           Data.List
 
 import           Control.Monad
 import           Control.Monad.IO.Class
@@ -39,9 +38,13 @@ import           System.IO
 
 ----------------------------------------------------------------------------------------------------
 
+version :: String
+version = "0.0 (experimental)"
+
 disclaimer :: String
 disclaimer = unlines $
-  [ "\"Dao\"  Copyright (C) 2008-2014  Ramin Honary."
+  [ "\"Dao\" version "++version
+  , "Copyright (C) 2008-2014  Ramin Honary."
   , "This program comes with ABSOLUTELY NO WARRANTY."
   , "This is free software, and you are welcome to redistribute it under"
   , "the terms and conditions of the GNU Affero General Public License."
@@ -80,14 +83,13 @@ main = do
   hSetBuffering stderr LineBuffering
   hSetBuffering stdout LineBuffering
   argv <- getArgs
-  let (q, _) = partition (\a -> a=="-q" || a=="--dont-show-license") argv
-  when (null q) (putStr disclaimer)
+  when (elem "--version" argv) (putStr disclaimer)
+  argv <- return $ fmap ustr $ filter (/="--version") argv
   --initialize -- initialize the ReadLine library
-  args   <- fmap (fmap ustr) getArgs
   result <- setupDao $ do
     loadDaoStandardLibrary
     daoInitialize $ do
-      loadEveryModule args
+      loadEveryModule argv
       daoInputLoop inputLoop
       daoShutdown
   case result of
@@ -100,7 +102,8 @@ main = do
 
 license_text :: String
 license_text = unlines $
-  [ "Copyright (C) 2008-2014  Ramin Honary"
+  [ "Dao version: "++version
+  , "Copyright (C) 2008-2014  Ramin Honary"
   , ""
   , "This program is free software: you can redistribute it and/or modify"
   , "it under the terms and conditions of the GNU General Public License as"

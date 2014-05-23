@@ -82,7 +82,7 @@ module Dao.Interpreter(
     preExec, postExec, quittingTime, programTokenizer, currentCodeBlock, ruleSet,
     newExecUnit, inModule,
     Task(), initTask, throwToTask, killTask, taskLoop, taskLoop_,
-    Executable(execute),
+    Executable(execute), DerefAssignExpr,
     ExecRef(execReadRef, execTakeRef, execPutRef, execSwapRef, execModifyRef, execModifyRef_),
     ExecControl(ExecReturn, ExecError), execReturnValue, execErrorInfo,
     ExecErrorInfo(ExecErrorInfo), execUnitAtError, execErrExpr, execErrScript, execErrTopLevel,
@@ -94,7 +94,7 @@ module Dao.Interpreter(
     ExecHandler(ExecHandler), execHandler,
     newExecIOHandler, execCatchIO, execHandleIO, execIOHandler,
     execErrorHandler, catchReturn, execNested, execNested_, execFuncPushStack,
-    execFuncPushStack_, execWithStaticStore, execWithWithRefStore,
+    execFuncPushStack_, execWithStaticStore, execWithWithRefStore, withExecTokenizer,
     Subroutine(Subroutine), setupCodeBlock,
     origSourceCode, staticVars, staticRules, staticLambdas, executable, runCodeBlock, runCodeBlock_,
     RuleSet(), CallableCode(CallableCode), argsPattern, returnType, codeSubroutine, 
@@ -441,8 +441,9 @@ builtin_queryGlobal :: DaoFunc ()
 ----------------------------------------------------------------------------------------------------
 
 -- | When a 'Dao.Interpreter.AST.RuleExpr' is evaluated to an 'Object', it takes this form.
+-- 'PatternRule' instantiats 'Executable' such that 'execute' converts it to a 'PatternTree'.
 data PatternRule
-  = PatternRule{ rulePatterns :: [Object], ruleAction  :: Subroutine }
+  = PatternRule{ rulePatterns :: [Object], ruleAction :: Subroutine }
   deriving (Show, Typeable)
 
 instance NFData PatternRule where { rnf (PatternRule a b) = deepseq a $! deepseq b () }
@@ -466,26 +467,16 @@ instance ToDaoStructClass PatternRule where
 instance FromDaoStructClass PatternRule where
   fromDaoStruct = return PatternRule <*> req "patterns" <*> req "action"
 
+instance Executable PatternRule (PatternTree Object [Subroutine]) where
+  execute (PatternRule{ rulePatterns=pats, ruleAction=sub }) = do
+    globs <- mapM (constructPattern . return) pats
+    return $ insertMultiPattern (++) globs [sub] mempty
+
 instance ObjectClass PatternRule where { obj=new; fromObj=objFromHata; }
 
 instance HataClass PatternRule where
   haskellDataInterface = interface "PatternRule" $ do
     autoDefPPrinter >> autoDefToStruct >> autoDefFromStruct
-  --defCallable $ \rule -> do
-  --  glob <- maybe constructPattern constructPatternWith (ruleSetTokenizer rule) $ 
-  --  let vars o = case o of {Wildcard{} -> 1; AnyOne{} -> 1; Single _ -> 0; }
-  --  let m = maximum $ map (sum . map vars . getPatUnits) $ rulePatterns rule
-  --  let params = flip ParamListExpr LocationUnknown $ NotTypeChecked $
-  --        map (flip (ParamExpr False) LocationUnknown . NotTypeChecked .
-  --          ustr . ("var"++) . show) [(1::Int)..m]
-  --  return $ return $
-  --    CallableCode
-  --    { argsPattern    = params
-  --    , returnType     = nullValue
-  --    , codeSubroutine = ruleAction rule
-  --        -- TODO: the subroutine should be scanned for integer references and replaced with local
-  --        -- variables called "varN" where N is the number of the integer reference.
-  --    }
 
 defaultTokenizer :: ExecTokenizer
 defaultTokenizer = ExecTokenizer $ return . fmap obj . simpleTokenizer . uchars
@@ -4643,6 +4634,14 @@ execWithWithRefStore o exe = do
   modify (\st -> st{ currentWithRef=store })
   predicate result
 
+withExecTokenizer :: ExecTokenizer -> Exec a -> Exec a
+withExecTokenizer newtokzer f = do
+  oldtokzer <- gets programTokenizer
+  modify $ \xunit -> xunit{ programTokenizer=newtokzer }
+  p <- catchPredicate f
+  modify $ \xunit -> xunit{ programTokenizer=oldtokzer }
+  predicate p
+
 ----------------------------------------------------------------------------------------------------
 
 instance (Typeable a, ObjectClass a) => ToDaoStructClass (Com a) where
@@ -4845,9 +4844,9 @@ instance HataClass RuleSet where
             InitSingle o -> case fromObj o >>= \ (Hata _ d) -> fromDynamic d of
               Nothing -> execThrow $ obj $
                 [obj "item #", obj (i::Int), obj "in the initializing list is not a rule object"]
-              Just (PatternRule{ rulePatterns=pat, ruleAction=sub }) -> do
-                glob <- maybe constructPattern constructPatternWith maybeTok $ pat
-                return $ rs{ ruleSetRules=insertMultiPattern (++) [glob] [sub] tree }
+              Just  p -> do
+                newtree <- maybe id withExecTokenizer maybeTok $ execute (p::PatternRule)
+                return $ rs{ ruleSetRules=T.unionWith (++) tree newtree }
             InitAssign{} -> fail "cannot use assignment expression in initializer of RuleSet"
                 ) tree . zip [1..]
     defInitializer initParams listParams
@@ -5077,8 +5076,8 @@ instance B.HasPrefixTable (RuleHeadExpr Object) B.Byte MTab where
 instance Executable (RuleHeadExpr Object) [Object] where
   execute o = case o of
     RuleStringExpr r _ -> return [obj r]
-    RuleHeadExpr   r _ -> forM r $ \o ->
-      execute o >>= checkVoid (getLocation o) "item in rule header" >>= derefObject
+    RuleHeadExpr   r _ -> forM r $
+      execute . DerefAssignExpr >=> checkVoid (getLocation o) "item in rule header"
 
 instance ObjectClass (RuleHeadExpr Object) where { obj=new; fromObj=objFromHata; }
 
@@ -6544,9 +6543,7 @@ instance Executable (ScriptExpr Object) () where
   execute script = _setScriptExprError script $ case script of
     IfThenElse   ifn    -> execute ifn
     WhileLoop    ifn    -> execute ifn
-    EvalObject   o _loc -> case o of
-      EvalExpr{}   -> execute o >>= maybeDerefObject >>= \ (ref, o) -> seq ref $! seq o $! return ()
-      AssignExpr{} -> execute o >>= maybe (return ()) (\o -> seq o $! return ())
+    EvalObject   o _loc -> execute (DerefAssignExpr o) >>= return . maybe () (`seq` ())
     RuleFuncExpr rulfn  -> do
       o <- execute rulfn -- this 'execute' handles function expressions
       let dyn o = case o of
@@ -6564,18 +6561,15 @@ instance Executable (ScriptExpr Object) () where
           LambdaExpr{} -> getObj >>= \o ->
             modify $ \xunit -> xunit{ lambdaSet = lambdaSet xunit ++ o }
           RuleExpr{}   -> do
-            patrule <- getObj
-            glob    <- constructPattern (rulePatterns patrule)
-            modify $ \xunit ->
-              xunit{ ruleSet = insertMultiPattern (++) [glob] [ruleAction patrule] (ruleSet xunit) }
+            newtree <- getObj >>= \p -> execute (p::PatternRule)
+            modify $ \xunit -> xunit{ ruleSet=T.unionWith (++) (ruleSet xunit) newtree }
           FuncExpr{}   -> return ()
             -- function expressions are placed in the correct store by the above 'execute'
         Just sub -> case rulfn of
           LambdaExpr{} -> getObj >>= \o -> fsub $ sub{ staticLambdas = staticLambdas sub ++ o }
           RuleExpr{}   -> do
-            patrule <- getObj
-            glob    <- constructPattern (rulePatterns patrule)
-            fsub $ sub{ staticRules = insertMultiPattern (++) [glob] [ruleAction patrule] (staticRules sub) }
+            newtree <- getObj >>= \p -> execute (p::PatternRule)
+            fsub $ sub{ staticRules=T.unionWith (++) (staticRules sub) newtree }
           FuncExpr{}   -> return ()
             -- function expressions are placed in the correct store by the above 'execute'
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
@@ -7273,14 +7267,33 @@ instance HataClass (AST_Arith Object) where
 
 ----------------------------------------------------------------------------------------------------
 
+newtype DerefAssignExpr = DerefAssignExpr (AssignExpr Object)
+-- ^ This data type instantiates 'Executable' such that the result is always dereference once. This
+-- is necessary because an 'AssignExpr' always evaluates to an 'Object' literal expression, meaning
+-- if the 'AssignExpr' contains  'ReferenceExpr', it will evaluate to an 'Object' constructing a
+-- literal 'Reference' (using the 'ORef' constructor). Sometimes this is desirable, sometimes it is
+-- not. It is desirable when evaluating arguments for a function call that requests it's arguments
+-- not be dereferenced. It is not desirable when evaluating an arithmetic equation and the integer
+-- value stored at a 'Reference' variable is required, and not the 'Reference' value itself.
+--     The calling context cannot know what the result will be, or whether or not it is necessary to
+-- call 'derefObject' on the result unless the calling context inspects the 'AssignExpr' value with
+-- a case statement. By wrapping the 'AssignExpr' in this data type first and then evaluating
+-- 'execute', you are guranteed that any 'ReferenceExpr' will evaluate to the value stored at the
+-- resulting 'Reference' literal, and not the 'Reference' literal itself.
+
+instance Executable DerefAssignExpr (Maybe Object) where
+  execute (DerefAssignExpr o) = case o of
+    EvalExpr{}   -> execute o >>= fmap snd . maybeDerefObject
+    AssignExpr{} -> execute o
+
 _executeAssignExpr
   :: (Reference -> UpdateOp -> Object -> Exec (Maybe Object))
   -> AssignExpr Object -> Exec (Maybe Object)
 _executeAssignExpr update o = case o of
-  EvalExpr   o -> execute o
-  AssignExpr nm op expr loc -> do
-    qref <- execute nm >>=
-      checkVoid (getLocation nm) "left-hand side of assignment expression evaluated to void"
+  EvalExpr           expr     -> execute expr
+  AssignExpr qref op expr loc -> do
+    qref <- execute qref >>=
+      checkVoid (getLocation qref) "left-hand side of assignment expression evaluated to void"
     case qref of
       ORef qref -> do
         newObj <- execute expr >>= checkVoid loc "right-hand side of assignment" >>= derefObject 

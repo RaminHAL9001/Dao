@@ -1,0 +1,22 @@
+function checkG(code) {
+	if(G != "yes") { throw (code+" //should have changed global variable G to \"yes\""); }
+}
+G = "no";
+G = "yes";
+checkG("G = \"yes\"");
+G = "no";
+function f() {
+	G = "yes";
+	checkG("f() { G = \"yes\"; }");
+	G = "no";
+	G = "yes";
+	checkG("f() { G = \"no\"; G = \"yes\"; }");
+}
+f();
+checkG("f();");
+
+G = "no";
+a = list{f};
+a[0]();
+checkG("a[0]();");
+println("all tests passed");

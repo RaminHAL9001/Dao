@@ -60,7 +60,7 @@ module Dao.Interpreter(
     isNumeric, typeMismatchError,
     initializeGlobalKey, destroyGlobalKey, evalTopLevelAST,
     Reference(Reference, RefObject), reference, refObject, referenceHead, refUnwrap,
-    refNames, referenceFromUStr, fmapReference, setQualifier, modRefObject, refHasFuncCall,
+    refNames, referenceFromUStr, fmapReference, setQualifier, modRefObject, refIsMethodCall,
     refAppendSuffix, referenceLookup, referenceUpdate,
     CoreType(
       NullType, TrueType, TypeType, IntType, WordType, DiffTimeType, FloatType,
@@ -2451,11 +2451,19 @@ referenceLookup :: Reference -> Exec (Maybe (Reference, Object))
 referenceLookup qref = case qref of
   RefWrapper ref -> return $ Just (qref, obj ref)
   qref           ->
-    if refHasFuncCall qref -- function calls must always perform an update, not just a lookup
+    if refIsMethodCall qref -- function calls must always perform an update, not just a lookup
     then referenceUpdate qref return
     else flip mplus (return Nothing) $ do
       (a, (qref, xunit)) <- get >>= runObjectFocusExec (lookupIndex qref) (fst $ referenceHead qref)
       put xunit >> return (Just (qref, a))
+  -- WARNING: this function can be responsible for some very odd behavior by virtue of the fact that
+  -- it may perform an update rather than a lookup when evaluating 'Reference's with 'FuncCall's as
+  -- its 'RefSuffix's. Since the 'updateIndex' member function of the 'ObjectLens' class stores
+  -- temporary copies of the objects being updated, for example the 'GlobalStore', the function call
+  -- may make several changes to the 'GlobalStore' during evaluation which will all be lost when the
+  -- temporary copy of the 'GlobalStore' is placed back into the 'ExecUnit'. There is a more
+  -- detailed explanation of this problem written in the comments below the 'refIsMethodCall'
+  -- predicate below.
 
 refNames :: [Name] -> Maybe Reference
 refNames nx = case nx of
@@ -2486,13 +2494,56 @@ modRefObject mod ref = case ref of
   RefObject o ref -> RefObject (mod o) ref
   ref             -> ref
 
--- | Evaluates to 'Prelude.True' if this reference will evaluate a function
--- call when the reference is evaluated.
-refHasFuncCall :: Reference -> Bool
-refHasFuncCall qref = case qref of
-  Reference _ _ suf -> refSuffixHasFuncCall suf
-  RefObject   _ suf -> refSuffixHasFuncCall suf
-  RefWrapper  _     -> False
+-- | A method call is a function call that can update the object that contains it. So if a function
+-- call is a method call, this reference must be evaluated by 'referenceUpdate' rather than
+-- 'referenceLookup', even if it is simply being dereferenced for a lookup. 'refIsMethodCall'
+-- evaluates to 'Prelude.True' if this reference is in fact a method call, and not just an ordinary
+-- referene or an ordinary function call.
+refIsMethodCall :: Reference -> Bool
+refIsMethodCall qref = case qref of
+  Reference _ _ (FuncCall _ _) -> False
+  Reference _ _           suf  -> refSuffixHasFuncCall suf
+  RefObject   _           suf  -> refSuffixHasFuncCall suf
+  RefWrapper  _                -> False
+  -- NOTE: this function is used by 'referenceLookup' which makes a very specific assumption about
+  -- whether or not a reference is a plain function call or an actual method call. So how this
+  -- function is defined here is /VERY IMPORTANT/ for the correct behavior of that function.
+  --     When a global variable is updated, the update is evaluated through a sequence of
+  -- 'ObjectFocus' calls, starting with the @('ObjectLens' 'ExecUnit' 'Reference')@ instance and
+  -- working it's way down to the @('ObjectLens' 'GlobalStore' 'Name')@ instance, each call making a
+  -- temporary copy of the object to be updated on the stack before updating the object, replacing
+  -- the temporary item on the stack, and then returning. Each update makes exactly one change to a
+  -- single address in each object.
+  --     However when a function object exists in the 'GlobalStore' and it is called with a
+  -- @('FuncCall'::'RefSuffix')@, the function call does not modify the actual function object
+  -- stored at that 'Reference' address of the 'GlobalStore', rather the evaluation of the function
+  -- object itself may make several updates to the 'GlobalStore'.
+  --     This lead to a bug in the 'referenceLookup' function. The 'referenceLookup' function relies
+  -- on the result of the 'refIsMethodCall' predicate to make a decision whether or not to evaluate
+  -- 'updateIndex' or 'lookupIndex'. If this function returns 'True' for ordinary functions,
+  -- 'referenceLookup' will evaluate 'updateIndex', which will expect to make a single update the
+  -- 'GlobalStore'. The @('ObjectLens' 'GlobalStore' 'Name')@ instance of the 'updateIndex' function
+  -- will make a temporary copy of the 'GlobalStore' on the stack, then procede with evaluation of
+  -- the function. The function evaluation may then update several global variables in the
+  -- 'ExecUnit', but the temporary copy of the 'GlobalStore' made by 'updateIndex' will /NOT/ be
+  -- updated. When function evaluation completes, 'updateIndex' will then update it's still
+  -- unmodified temporary copy of the 'GlobalStore' with an identical copy of the function object
+  -- because it was instructed to modify the function object at the given global 'Reference'
+  -- address, and this function is updated in the unmodified temporary copy of the 'GlobalStore'. So
+  -- the only item modified in the temporary copy of the 'GlobalStore' is the function itself, which
+  -- is only modified with an identical copy of itself, levaing the entire 'GlobalStore' essentially
+  -- unmodified. Finally, the unmodified 'GlobalStore' is placed back into the 'ExecUnit',
+  -- overwriting all of the changes that were made to the 'GlobalStore' in the 'ExecUnit' during
+  -- evaluation of the function, and setting the 'GlobalStore' back to the state it was in before
+  -- function evaluation. So for example, the program:
+  --     global a=0;
+  --     function f() { global a+=1; print("inside f() global a=", global a); }
+  --     f();
+  --     println(", after f() global a=", a);
+  -- would output:
+  --     in f() global a=1, after f() global a=0
+  -- Therefore it is /VERY IMPORTANT/ that the 'refIsMethodCall' function not return 'True' for
+  -- ordinary function calls on functions defined in the global store.
 
 -- | This function performs an update on a 'Reference', it is the complement to the 'referenceLookup'
 -- function. Evaluating 'referenceUpdate' on a 'Reference' will write/update the value associated with
@@ -6964,21 +7015,21 @@ instance B.HasPrefixTable (RuleFuncExpr Object) B.Byte MTab where
 instance Executable (RuleFuncExpr Object) (Maybe Object) where
   execute o = case o of
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    LambdaExpr params scrpt _ -> do
-      let exec = setupCodeBlock scrpt
+    LambdaExpr params script _ -> do
+      let exec = setupCodeBlock script
       return $ Just $ new $
         [CallableCode{argsPattern=params, codeSubroutine=exec, returnType=nullValue}]
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    FuncExpr name params scrpt _ -> do
-      let exec = setupCodeBlock scrpt
+    FuncExpr name params script _ -> do
+      let exec = setupCodeBlock script
       let callableCode = CallableCode{argsPattern=params, codeSubroutine=exec, returnType=nullValue}
       localVarUpdate name $ \o -> case o>>=fromObj of
         Nothing -> Just $ obj [callableCode]
         Just cc -> Just $ obj $ cc++[callableCode]
       return (Just $ obj [callableCode])
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    RuleExpr rs scrpt _ -> do
-      let sub = setupCodeBlock scrpt
+    RuleExpr rs script _ -> do
+      let sub = setupCodeBlock script
       pats <- execute rs
       return $ Just $ obj $ PatternRule{ rulePatterns=pats, ruleAction=sub }
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
@@ -7424,20 +7475,24 @@ instance Executable (TopLevelExpr Object) () where
     RequireExpr{} -> attrib "require"
     ImportExpr{}  -> attrib "import"
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    TopScript scrpt _ -> do
-      ((), dict) <- execNested mempty $ catchPredicate (execute scrpt) >>= \pval -> case pval of
+    TopScript script _ -> do
+      ((), dict) <- execNested mempty $ catchPredicate (execute script) >>= \pval -> case pval of
         OK                _  -> return ()
         PFail (ExecReturn _) -> return ()
         PFail           err  -> throwError err
         Backtrack            -> return () -- do not backtrack at the top-level
-      (GlobalStore store) <- gets globalData
       let addIfFuncs a b = maybe b id $ do -- overwrite previously declared variables...
             (a, b) <- Just (,) <*> fromObj a <*> fromObj b
             Just $ obj ((a++b)::[CallableCode]) -- ...unless both variables are [CallableCode]
-      modify $ \xunit -> xunit{ globalData = GlobalStore $ M.unionWith addIfFuncs store dict }
+      modify $ \xunit ->
+        xunit
+        { globalData =
+            let (GlobalStore store) = globalData xunit
+            in  GlobalStore $ M.unionWith addIfFuncs store dict
+        }
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    EventExpr typ scrpt _ -> do
-      let exec = setupCodeBlock scrpt
+    EventExpr typ script _ -> do
+      let exec = setupCodeBlock script
       let f = (++[exec])
       modify $ \xunit -> case typ of
         BeginExprType -> xunit{ preExec      = f (preExec      xunit) }
@@ -7522,8 +7577,12 @@ instance Executable (Program Object) () where
     ((), localVars) <- execNested mempty $ mapM_ execute (dropWhile isAttribute ast)
     -- Now, the local variables that were defined in the top level need to be moved to the global
     -- variable store.
-    (GlobalStore globalVars) <- gets globalData
-    modify $ \xunit -> xunit{ globalData = GlobalStore $ M.union localVars globalVars }
+    modify $ \xunit ->
+      xunit
+      { globalData =
+          let (GlobalStore globalVars) = globalData xunit
+          in  GlobalStore $ M.union localVars globalVars
+      }
 
 instance ObjectClass (Program Object) where { obj=new; fromObj=objFromHata; }
 

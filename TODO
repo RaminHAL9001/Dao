@@ -28,3 +28,26 @@ TODO:
 
 * Make the interpreter smaller and more efficient.
 
+----------------------------------------------------------------------------------------------------
+
+BUG FIX NEEDED:
+Side effects, specifically modifications to global variables made by functions
+evaluated from the top level are not persistent, changes to the global
+variables made during function evaluation are lost once the function returns.
+The 'Dao.Interpreter.referenceLookup' function is calling
+'Dao.Interpeter.updateIndex' which creates a temporary copy of the
+'Dao.Interpreter.GlobalStore', the function is evaluated makes updates to
+global variables in the 'Dao.Interpreter.GlobalStore' in the
+'Dao.Interpreter.ExecUnit', 'Dao.Interpreter.updateIndex' replaces the changes
+made during function evaluation with the temporary copy of the 'GlobalStore' on
+the assumption that the function object itself was the only object updated
+(which it was not) and that the update occurred essentially atomically (which
+it did not as function evaluation performs many evaluation steps).
+
+My current solution is to look ahead at the kind of object
+'Dao.Interpreter.Reference' value being looked-up and if it is a
+function call, do not perform an update. This is a terrible solution,
+because whether or not an update occurs should be defined in the
+instance of 'Dao.Interpreter.ObjectLens' for that particular storage
+object. I will need to work on this later
+

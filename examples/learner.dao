@@ -57,37 +57,23 @@ function showStruct(S) {
 currentPath = "";
 
 function checkCurrentProgram() {
-	try {
-		if(currentProgram) { return true; }
-		println("no current program");
-		return false;
-	}
-	catch err { println(err); }
+	if(currentProgram) { return true; }
+	throw "no current program";
 }
 
 function listCurrent() {
-	println("hello");
 	try {
-		if(! checkCurrentProgram()) { return; }
+		checkCurrentProgram();
 		showStruct(toStruct(@ref("currentProgram"+currentPath)));
-	}
-	else {
-		println("nothing to list");
 	}
 	catch err { println(err); }
 }
 function listCurrent(REF) {
-	try {
-		if(! checkCurrentProgram()) { return; }
-		showStruct(@ref("currentProgram"+join("", REF)));
-	}
-	else {
-		println("nothing to list");
-	}
-	catch err { println(err); }
+	checkCurrentProgram();
+	showStruct(@ref("currentProgram"+join("", REF)));
 }
-rule "ls" { println("ls"); listCurrent(); }
-rule "ls $REF" { println("ls ", join("", REF)); listCurrent(REF); }
+rule "ls" { listCurrent(); }
+rule "ls $REF" { listCurrent(REF); }
 
 function changeCurrentPath() { currentPath = ""; }
 function changeCurrentPath(REF) {

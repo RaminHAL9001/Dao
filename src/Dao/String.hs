@@ -499,6 +499,11 @@ instance Show Base16String where
 showHex :: (Show i, Integral i) => i -> String
 showHex = ("0x"++) . map toUpper . flip Numeric.showHex ""
 
+showOrdinal :: (Show n, Integral n) => n -> String
+showOrdinal n = show n ++ case mod n 100 of
+  n | 11<=n||n<=13 -> "th"
+  n -> case mod n 10 of { 1 -> "st"; 2 -> "nd"; 3 -> "rd"; _ -> "th"; }
+
 ----------------------------------------------------------------------------------------------------
 
 -- | This is a simlpe string tokenizer for breaking up strings into tokens that can be easily used

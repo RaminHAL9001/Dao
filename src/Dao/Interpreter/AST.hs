@@ -1895,7 +1895,7 @@ instance (PPrintable o, PPrintable a) => PPrintable (AST_TyChk a o) where
     AST_NotChecked a          -> pPrint a
     AST_Checked    a coms expr _ -> pInline $
       [ pPrint a
-      , pPrintComWith (\ () -> pString ": ") coms
+      , pPrintComWith (\ () -> pString "::") coms
       , pPrint expr
       ]
 

@@ -83,8 +83,7 @@ instance HasLocation Location where
 instance Show Location where
   show t = case t of
     LocationUnknown  -> ""
-    Location a b c d -> show a ++ ':' : show b ++
-      if a==c && b==d then "" else " to " ++ show c ++ ':' : show d
+    Location a b _ _ -> show a ++ ':' : show b
 instance Monoid Location where
   mempty = LocationUnknown
 --  Location

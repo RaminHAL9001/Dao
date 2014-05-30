@@ -42,14 +42,13 @@ module Dao.Interpreter(
     toData, constructor, innerFromStruct, nullary, getNullaryWithRead, structCurrentField,
     tryCopyField, tryField, copyField, field,
     convertFieldData, req, opt, reqList, optList,
-    ObjLensError(ObjLensError), mapStructErrorMessage, failedOnReference, mapStructError,
-    ObjectUpdate, ObjectLookup, ObjectTraverse,
-    ObjectLens(updateIndex, lookupIndex), ObjectFunctor(objectFMap),
+    UndefinedRef(UndefinedRef), mapStructErrorMessage, failedOnReference, mapStructError,
+    ObjectUpdate, ObjectTraverse,
+    ObjectLens(updateIndex), ObjectFunctor(objectFMap),
     ObjectFocus, ObjFocusState(), getObjFocusState, runObjectFocus, getFocalReference,
     execToFocusUpdater, withInnerLens, runObjectFocusExec, focusObjectClass, focusStructAsDict,
     focusLiftExec, focalPathSuffix, focusGuardStructName, updateHataAsStruct, callMethod,
-    innerDataUpdateIndex, innerDataLookupIndex,
-    referenceUpdateName, referenceLookupName,
+    innerDataUpdateIndex, referenceUpdateName, referenceLookupName,
     Object(
       ONull, OTrue, OType, OInt, OWord, OLong,
       OFloat, ORatio, OComplex, OAbsTime, ORelTime,
@@ -85,12 +84,12 @@ module Dao.Interpreter(
     Executable(execute), DerefAssignExpr,
     ExecRef(execReadRef, execTakeRef, execPutRef, execSwapRef, execModifyRef, execModifyRef_),
     ExecControl(ExecReturn, ExecError), execReturnValue, execErrorInfo,
-    ExecErrorInfo(ExecErrorInfo), execUnitAtError, execErrExpr, execErrScript, execErrTopLevel,
-    mkExecErrorInfo, mkExecError, updateExecErrorInfo, setCtrlReturnValue,
+    ExecErrorInfo(ExecErrorInfo), execErrorInModule, execErrExpr, execErrScript, execErrTopLevel,
+    mkExecErrorInfo, mkExecError, throwArityError, updateExecErrorInfo, setCtrlReturnValue,
     logUncaughtErrors, clearUncaughtErrorLog,
     Exec(Exec), execToPredicate, XPure(XPure), xpureToState, runXPure, evalXPure, xpure, xobj,
     xnote, xonUTF8, xmaybe,
-    ExecThrowable(toExecError, execThrow), ioExec,
+    ExecThrowable(toExecErrorInfo, execThrow), ioExec,
     ExecHandler(ExecHandler), execHandler,
     newExecIOHandler, execCatchIO, execHandleIO, execIOHandler,
     execErrorHandler, catchReturn, execNested, execNested_, execFuncPushStack,
@@ -268,8 +267,7 @@ data Action
 instance PPrintable Action where { pPrint = pPrintStructForm }
 
 instance ToDaoStructClass Action where
-  toDaoStruct = void $ do
-    renameConstructor "Action"
+  toDaoStruct = renameConstructor "Action" $ do
     "tokens"  .=@ actionTokens
     "pattern" .=@ actionPattern
     "match"   .=@ actionMatch
@@ -278,10 +276,9 @@ instance ToDaoStructClass Action where
 instance FromDaoStructClass Action where
   fromDaoStruct = do
     constructor "Action"
-    let err name o = throwError $
+    let err name o = execThrow "match dictionary items must contain lists of tokens" $
           StructError
-          { structErrMsg    = Just $ ustr "match dictionary items must contain lists of tokens"
-          , structErrName   = Nothing
+          { structErrName   = Nothing
           , structErrField  = Just (toUStr name)
           , structErrValue  = Just $ obj (typeOfObj o)
           , structErrExtras = []
@@ -361,8 +358,8 @@ makeActionsForQuery tree tokens = do
         Just vartyp -> do
           match <- catchPredicate $ referenceLookup $ Reference UNQUAL vartyp $ FuncCall ox NullRef
           case match of
-            OK Nothing                  -> return (name, obj ox)
-            OK (Just (_, o))            -> return (name, o)
+            OK (_, Nothing)             -> return (name, obj ox)
+            OK (_, Just  o)             -> return (name, o)
             PFail (ExecReturn Nothing)  -> return (name, obj ox)
             PFail (ExecReturn (Just o)) -> return (name, o)
             PFail err                   -> throwError err
@@ -459,8 +456,7 @@ instance PPrintable PatternRule where
     pats  -> pList (pString "rule") "(" ", " ")" (map pPrint pats)
 
 instance ToDaoStructClass PatternRule where
-  toDaoStruct = void $ do
-    renameConstructor "PatternRule"
+  toDaoStruct = renameConstructor "PatternRule" $ do
     "patterns" .=@ rulePatterns
     "action"   .=@ ruleAction
 
@@ -495,17 +491,15 @@ constructPatternWith tok = fmap (mconcat . mconcat) . mapM (derefObject>=>constr
       [(glob, "")] -> fmap return $ parseOverSinglesM glob $ \str -> case str of
         ""  -> return []
         str -> fmap obj <$> runExecTokenizer tok (ustr str)
-      _ -> execThrow $ obj [obj "unable to parse pattern", obj o]
+      _ -> execThrow "unable to parse pattern" ExecErrorNoInfo
     OList ox -> return [makeGlob $ fmap Single ox]
     OHaskell (Hata _ d) -> do
-      let err = execThrow $ obj $
-            [obj "could not use data of type", obj (typeOfObj o), obj "as pattern expression"]
+      let err = execThrow "could not use as pattern expression" $ ExecErrorBadType (typeOfObj o)
       maybe err return $ msum $
         [ return <$> fromDynamic d
         , fmap (makeGlob . fst) . T.assocs . ruleSetRules <$> fromDynamic d
         ]
-    _ -> execThrow $ obj $
-      [obj "could not create pattern from data of type", obj (typeOfObj o)]
+    _ -> execThrow "could not create pattern from data of type" $ ExecErrorBadType (typeOfObj o)
 
 -- | Like 'constructPatternWith' but uses the default 'ExecTokenizer' that has been set for the
 -- current 'ExecUnit'.
@@ -586,12 +580,7 @@ daoFunction0 name f = daoFunction name $
   , funcAutoDerefParams = False
   , daoForeignFunc = \ () ox -> case ox of
       [] -> flip (,) () <$> f
-      _  -> execThrow $ obj $
-        [ obj "function", obj name, obj "takes no parameters but was passed"
-        , let (before, after) = splitAt 100 ox
-          in if null after then obj (length before) else obj "over 100"
-        , obj "arguments"
-        ]
+      _  -> throwArityError "to function" Nothing (Just $ Reference UNQUAL name NullRef) ox
   }
 
 -- | Define a constant value for any arbitrary 'Object'.
@@ -1433,8 +1422,7 @@ instance HataClass Struct where
 -- >         'putPrimField' "y" get_y
 -- >          obj <- 'Control.Monad.Reader.Class.ask'
 -- >          case obj of
--- >             Point3D _ _ z -> do
--- >                 'renameConstructor' "@Point3D@"
+-- >             Point3D _ _ z -> 'renameConstructor' "@Point3D@" $ do
 -- >                 'define' "z" ('obj' z)
 -- >             _             -> return ()
 -- 
@@ -1466,8 +1454,7 @@ class ToDaoStructClass haskData => FromDaoStructClass haskData where
 -- 'Control.Monad.Error.throwError' a 'StructError'.
 data StructError
   = StructError
-    { structErrMsg    :: Maybe UStr
-    , structErrName   :: Maybe UStr
+    { structErrName   :: Maybe UStr
     , structErrField  :: Maybe UStr
     , structErrValue  :: Maybe Object
     , structErrExtras :: [Name]
@@ -1479,7 +1466,6 @@ instance PPrintable StructError where
     let pp p msg f = case f err of
           Nothing -> return ()
           Just  o -> pString (msg++": ") >> p o >> pNewLine
-    pp pUStr "" structErrMsg
     pp pUStr "on constructor" structErrName
     pp pUStr "on field" structErrField
     pp pPrint "with value" structErrValue
@@ -1489,16 +1475,14 @@ instance PPrintable StructError where
 instance HasNullValue StructError where
   nullValue =
     StructError
-    { structErrMsg=Nothing
-    , structErrName=Nothing
+    { structErrName=Nothing
     , structErrField=Nothing
     , structErrValue=Nothing
     , structErrExtras=[]
     }
   testNull
     ( StructError
-      { structErrMsg=Nothing
-      , structErrName=Nothing
+      { structErrName=Nothing
       , structErrField=Nothing
       , structErrValue=Nothing
       , structErrExtras=[]
@@ -1514,9 +1498,21 @@ pPrintStructForm o = case fromData toDaoStruct o of
 
 ----------------------------------------------------------------------------------------------------
 
+-- Used to instantiate 'MonadError.throwError' by both the 'ToDaoStruct' and 'FromDaoStruct' monads.
+_structThrowError
+  :: (MonadError ExecControl m)
+  => (forall a . PredicateT ExecControl (State st) a -> m a) -> (st -> Struct) -> ExecControl -> m b
+_structThrowError constr inside err =
+  constr (lift $ gets inside) >>= \struct -> constr $ throwError $ case err of
+    ExecError{execErrorInfo = ExecStructError info} ->
+      err { execErrorInfo = ExecStructError $
+              info{ structErrName = structErrName info <|> Just (toUStr $ structName struct) } }
+    err -> err
+
+----------------------------------------------------------------------------------------------------
+
 instance ToDaoStructClass StructError where
   toDaoStruct = do
-    asks structErrMsg    >>= optionalField "message" . fmap OString
     asks structErrName   >>= optionalField "structName" . fmap OString
     asks structErrField  >>= optionalField "field" . fmap OString
     asks structErrValue  >>= optionalField "value"
@@ -1538,16 +1534,15 @@ instance FromDaoStructClass StructError where
           OList   o -> forM o ref
           _         -> fail "expecting list value"
     return StructError
-      <*> optional (tryField "message" $ str)
       <*> optional (tryField "structName" $ str)
       <*> optional (tryField "field" $ str)
       <*> optional (tryField "value" return)
       <*> (tryField "extras" $ lst)
 
 instance ToDaoStructClass Comment where
-  toDaoStruct = let nm = renameConstructor in ask >>= \co -> void $ case co of
-    InlineComment  o -> nm "InlineComment"  >> "comment" .= o
-    EndlineComment o -> nm "EndlineComment" >> "comment" .= o
+  toDaoStruct = ask >>= \co -> case co of
+    InlineComment  o -> renameConstructor "InlineComment"  $ "comment" .= o
+    EndlineComment o -> renameConstructor "EndlineComment" $ "comment" .= o
 
 instance FromDaoStructClass Comment where
   fromDaoStruct = msum $
@@ -1556,19 +1551,20 @@ instance FromDaoStructClass Comment where
     ]
 
 instance ToDaoStructClass AST_DotName where
-  toDaoStruct = ask >>= \ (AST_DotName coms n) -> do
-    renameConstructor "DotName"
-    void $ case coms of
-      Com () -> "name" .= n
-      coms   -> "comments" .= coms >> "name" .= n
+  toDaoStruct = renameConstructor "DotName" $ ask >>= \ (AST_DotName coms n) -> case coms of
+    Com () -> "name"     .= n
+    coms   -> "comments" .= coms >> "name" .= n
 
 instance FromDaoStructClass AST_DotName where
   fromDaoStruct = constructor "DotName" >>
     return AST_DotName <*> (maybe (Com ()) id <$> opt "comments") <*> req "name"
 
 instance ToDaoStructClass AST_DotLabel where
-  toDaoStruct = ask >>= \ (AST_DotLabel n nx loc) -> renameConstructor "DotLabel" >>
-    "head" .= n >> "tail" .= OList (map obj nx) >> putLocation loc >> return ()
+  toDaoStruct = renameConstructor "DotLabel" $ do
+    (AST_DotLabel n nx loc) <- ask
+    "head" .= n
+    "tail" .= OList (map obj nx)
+    putLocation loc
 
 instance FromDaoStructClass AST_DotLabel where
   fromDaoStruct = do
@@ -1600,13 +1596,13 @@ mkFieldName name = mplus (mkLabel name) $ fail "invalid field name"
 -- 'toDaoStruct' in the 'ToDaoStructClass' class.
 newtype ToDaoStruct haskData a
   = ToDaoStruct
-    { run_toDaoStruct :: PredicateT StructError (State (Struct, haskData)) a }
+    { _runToDaoStruct :: PredicateT ExecControl (State (Struct, haskData)) a }
   deriving (Functor, Applicative, Alternative, MonadPlus)
 
 instance Monad (ToDaoStruct haskData) where
   return = ToDaoStruct . return
-  m >>= f = ToDaoStruct $ run_toDaoStruct m >>= run_toDaoStruct . f
-  fail msg = throwError $ nullValue{ structErrMsg = Just $ ustr msg }
+  m >>= f = ToDaoStruct $ _runToDaoStruct m >>= _runToDaoStruct . f
+  fail msg = execThrow msg $ ExecStructError nullValue
 
 instance MonadState Struct (ToDaoStruct haskData) where
   state f = ToDaoStruct $ lift $ state $ \ (struct, haskData) ->
@@ -1617,17 +1613,16 @@ instance MonadReader haskData (ToDaoStruct haskData) where
   local upd f = ToDaoStruct $ PredicateT $ do
     haskData <- gets snd
     modify (\ (struct, _) -> (struct, upd haskData))
-    a <- runPredicateT $ run_toDaoStruct f
+    a <- runPredicateT $ _runToDaoStruct f
     modify (\ (struct, _) -> (struct, haskData))
     return a
 
-instance MonadError StructError (ToDaoStruct haskData) where
-  throwError err = get >>= \struct -> ToDaoStruct $ throwError $
-    err{ structErrName = structErrName err <|> (Just $ toUStr $ structName struct) }
-  catchError f catch = ToDaoStruct $ catchError (run_toDaoStruct f) (run_toDaoStruct . catch)
+instance MonadError ExecControl (ToDaoStruct haskData) where
+  throwError = _structThrowError ToDaoStruct fst
+  catchError f catch = ToDaoStruct $ catchError (_runToDaoStruct f) (_runToDaoStruct . catch)
 
-instance MonadPlusError StructError (ToDaoStruct haskData) where
-  catchPredicate = ToDaoStruct . catchPredicate . run_toDaoStruct
+instance MonadPlusError ExecControl (ToDaoStruct haskData) where
+  catchPredicate = ToDaoStruct . catchPredicate . _runToDaoStruct
   predicate      = ToDaoStruct . predicate
 
 -- | This function is typically used to evaluate the instantiation of 'toDaoStruct'. It takes two
@@ -1641,8 +1636,8 @@ instance MonadPlusError StructError (ToDaoStruct haskData) where
 fromData
   :: ToDaoStruct haskData x
   -> haskData
-  -> Predicate StructError Struct
-fromData pred hask = evalState (runPredicateT $ run_toDaoStruct $ pred >> get) $
+  -> Predicate ExecControl Struct
+fromData pred hask = evalState (runPredicateT $ _runToDaoStruct $ pred >> get) $
   (Struct{ structName=nil, fieldMap=M.empty }, hask)
 
 toDaoStructExec :: ToDaoStruct typ x -> typ -> Exec Struct
@@ -1705,8 +1700,11 @@ fmapHaskDataToStruct to from (ToDaoStruct (PredicateT f)) =
 -- | Use this function to set the 'structName' name of the constructor at some point, for example
 -- when you observe some condition of the @haskData@ type that merits an alternative constructor
 -- name.
-renameConstructor :: UStrType name => name -> ToDaoStruct haskData ()
-renameConstructor name = mkStructName name >>= \name -> modify $ \struct -> struct{ structName=name }
+renameConstructor :: UStrType name => name -> ToDaoStruct haskData ig -> ToDaoStruct haskData ()
+renameConstructor name f = do
+  name <- mkStructName name
+  modify $ \struct -> struct{ structName=name }
+  void f
 
 -- | Like 'renameConstructor' but deletes everything and makes the 'Struct' being constructed into a
 -- 'Nullary'. You would typically do this only when you are instantiating 'toDaoStruct' and you
@@ -1797,27 +1795,27 @@ defMaybeObjField name = maybe (return Nothing) (fmap Just . defObjField name)
 -- /NOTE:/ refer to the documentation of the 'constructor' monad for an important note on reading
 -- Haskell data types with multiple constructors.
 newtype FromDaoStruct a =
-  FromDaoStruct{ run_fromDaoStruct :: PredicateT StructError (State Struct) a }
+  FromDaoStruct{ _runFromDaoStruct :: PredicateT ExecControl (State Struct) a }
   deriving (Functor, Applicative, Alternative, MonadPlus)
 
 instance Monad FromDaoStruct where
   return = FromDaoStruct . return
-  m >>= f = FromDaoStruct $ run_fromDaoStruct m >>= run_fromDaoStruct . f
-  fail msg = throwError $ nullValue{ structErrMsg = Just (ustr msg) }
+  m >>= f = FromDaoStruct $ _runFromDaoStruct m >>= _runFromDaoStruct . f
+  fail msg = FromDaoStruct (lift $ gets structName) >>= \name ->
+    execThrow msg $ ExecStructError $ nullValue{ structErrName = Just $ toUStr name }
 
 instance MonadReader Struct FromDaoStruct where
   ask = FromDaoStruct $ lift get
   local upd f = FromDaoStruct $ PredicateT $ get >>= \st ->
-   return $ evalState (runPredicateT $ run_fromDaoStruct f) (upd st)
+   return $ evalState (runPredicateT $ _runFromDaoStruct f) (upd st)
 
-instance MonadError StructError FromDaoStruct where
-  throwError err = ask >>= \struct -> FromDaoStruct $ throwError $
-    err { structErrName = structErrName err <|> (Just $ toUStr $ structName struct) }
-  catchError (FromDaoStruct f) catch = FromDaoStruct $ catchError f (run_fromDaoStruct . catch)
+instance MonadError ExecControl FromDaoStruct where
+  throwError = _structThrowError FromDaoStruct id
+  catchError (FromDaoStruct f) catch = FromDaoStruct $ catchError f (_runFromDaoStruct . catch)
 
-instance MonadPlusError StructError FromDaoStruct where
-  catchPredicate = FromDaoStruct . catchPredicate . run_fromDaoStruct
-  predicate = FromDaoStruct . predicate
+instance MonadPlusError ExecControl FromDaoStruct where
+  catchPredicate = FromDaoStruct . catchPredicate . _runFromDaoStruct
+  predicate      = FromDaoStruct . predicate
 
 -- | This function is typically used to evaluate the instantiation of 'fromDaoStruct'. It takes two
 -- parameters: first a computation to convert your data type to the Haskell data type from a
@@ -1827,8 +1825,8 @@ instance MonadPlusError StructError FromDaoStruct where
 -- > 'toData' 'fromDaoStruct' struct
 -- Notice that this reads similar to ordinary English: "convert to (Haskell) data from a dao
 -- struct."
-toData :: FromDaoStruct haskData -> Struct -> Predicate StructError haskData
-toData f = evalState (runPredicateT $ run_fromDaoStruct $ f >>= \o -> checkEmpty >> return o)
+toData :: FromDaoStruct haskData -> Struct -> Predicate ExecControl haskData
+toData f = evalState (runPredicateT $ _runFromDaoStruct $ f >>= \o -> checkEmpty >> return o)
 
 -- | Using a 'FromDaoStruct' monadic function, convert a given 'Struct' to a Haskell data type
 -- @typ@.
@@ -1843,9 +1841,9 @@ fromDaoStructExec struct = do
   let name = structName struct
   (MethodTable mtab) <- gets globalMethodTable
   case M.lookup (structName struct) mtab of
-    Nothing  -> execThrow $ obj [obj "no available built-in data type", obj name]
+    Nothing  -> execThrow "no available built-in data type" $ obj name
     Just ifc -> case objFromStruct ifc of
-      Nothing   -> execThrow $ obj [obj name, obj "data type cannot be constructed from hashed structure"]
+      Nothing   -> execThrow "data type cannot be constructed from hashed structure" (obj name)
       Just from -> Hata ifc <$> withFromDaoStructExec from struct
 
 -- | Checks if the 'structName' is equal to the given name, and if not then backtracks. This is
@@ -1935,9 +1933,11 @@ getNullaryWithRead = ask >>= \struct -> case struct of
 -- 'Name' value.
 structCurrentField :: Name -> FromDaoStruct o -> FromDaoStruct o
 structCurrentField name (FromDaoStruct f) = FromDaoStruct $ catchPredicate f >>= \o -> case o of
-  PFail err -> throwError $ err{ structErrField=Just (toUStr name) }
-  Backtrack -> mzero
+  PFail (err@(ExecError{execErrorInfo=ExecStructError info})) -> throwError $ 
+    err{ execErrorInfo = ExecStructError $ info{ structErrField = Just (toUStr name) } }
+  PFail err -> throwError err
   OK      o -> return o
+  Backtrack -> mzero
 
 -- | Retrieves an arbitrary 'Object' by it's field name, and backtraks if no such field is defined.
 -- The value of the field is copied, and can be copied again after this operation. It is best not to
@@ -1961,10 +1961,7 @@ tryField name f = do
 
 _throwMissingFieldError :: Name -> FromDaoStruct o
 _throwMissingFieldError name = throwError $
-  nullValue
-  { structErrMsg   = Just $ ustr "missing required field"
-  , structErrField = Just $ toUStr name
-  }
+  mkExecError{ execErrorInfo = ExecStructError $ nullValue{ structErrField = Just $ toUStr name } }
 
 -- | Like 'field' but evaluates 'Control.Monad.Error.throwError' if the 'FromDaoStruct' function
 -- backtracks or throws it's own error. Internally, this function makes use of 'copyField' and /not/
@@ -1988,11 +1985,9 @@ field name f = mkFieldName name >>= \name -> mplus (tryField name f) (_throwMiss
 -- evaluated in the 'FromDaoStruct' monadic function.
 checkEmpty :: FromDaoStruct ()
 checkEmpty = FromDaoStruct (lift get) >>= \st -> case st of
-  Struct{ fieldMap=m } -> if M.null m then return () else throwError $
-    nullValue
-    { structErrMsg    = Just $ ustr "assigned to non-member fields of structure"
-    , structErrExtras = M.keys m
-    }
+  Struct{ fieldMap=m } -> when (not $ M.null m) $
+    execThrow "assigned to non-member fields of structure" $
+      ExecStructError $ nullValue{ structErrExtras = M.keys m }
   Nullary{} -> return ()
 
 -- | Takes a conversion as the first parameter. The second parameter will be provided by 'field' or
@@ -2001,7 +1996,8 @@ checkEmpty = FromDaoStruct (lift get) >>= \st -> case st of
 -- This function should usually not be required, as it is called by functions like 'opt', 'req', and
 -- 'reqList'.
 convertFieldData :: (Object -> FromDaoStruct o) -> Object -> FromDaoStruct o
-convertFieldData f o = mplus (f o) $ throwError $ nullValue{ structErrValue=Just o }
+convertFieldData f o = mplus (f o) $ throwError $
+  mkExecError{ execErrorInfo = ExecStructError $ nullValue{ structErrValue=Just o } }
 
 -- | A required 'Struct' 'field'. This function is defined as
 req :: (UStrType name, Typeable o, ObjectClass o) => name -> FromDaoStruct o
@@ -2030,8 +2026,8 @@ builtin_toStruct :: DaoFunc ()
 builtin_toStruct =
   daoFunc
   { daoForeignFunc = \ () ox -> do
-      let wrongTypeErr o = execThrow $ obj $
-            [obj "cannot convert object of type", obj (typeOfObj o), obj "to a struct"]
+      let wrongTypeErr o = execThrow "cannot convert to a struct from object of the given type" $
+            ExecErrorBadType (typeOfObj o)
       case ox of
         [o] -> case o of
           OTree              _  -> return (Just o, ())
@@ -2039,7 +2035,7 @@ builtin_toStruct =
             Just to -> flip (,) () . Just . obj <$> toDaoStructExec to d
             Nothing -> wrongTypeErr o
           o                     -> wrongTypeErr o
-        _ -> execThrow $ obj $ [obj "toStruct", obj "function requires exactly 1 parameter"]
+        ox  -> throwArityError "to function" (Just 1) (Just $ Reference UNQUAL (fromUStr $ ustr "toStruct") NullRef) ox
   }
 
 builtin_fromStruct :: DaoFunc ()
@@ -2048,9 +2044,8 @@ builtin_fromStruct =
   { daoForeignFunc = \ () ox -> case ox of
       [o] -> case o of
         OTree o -> flip (,) () . Just . OHaskell <$> fromDaoStructExec o
-        o       -> execThrow $ obj $
-          [obj "fromStruct", obj "function must operate on a struct data type, received", obj (typeOfObj o)]
-      _ -> execThrow $ obj $ [obj "fromStruct", obj "function requires exactyl 1 parameter"]
+        o       -> execThrow "argument parameter is not a struct data type" obj $ ExecErrorBadType (typeOfObj o)
+      _ -> throwArityError "to function" (Just 1) (Just $ Reference UNQUAL (fromUStr $ ustr "fromStruct") NullRef) ox
   }
 
 ----------------------------------------------------------------------------------------------------
@@ -2058,8 +2053,7 @@ builtin_fromStruct =
 instance ToDaoStructClass Location where
   toDaoStruct = ask >>= \lo -> case lo of
     LocationUnknown -> makeNullary "NoLocation"
-    Location{} -> void $ do
-      renameConstructor "Location"
+    Location{} -> renameConstructor "Location" $ do
       "startingLine"   .=@ startingLine
       "startingColumn" .=@ startingColumn
       "endingLine"     .=@ endingLine
@@ -2428,7 +2422,7 @@ instance HasRandGen Reference where
 
 -- 'execute'-ing a 'Reference' will dereference it, essentially reading the
 -- value associated with that reference from the 'ExecUnit'.
-instance Executable Reference (Maybe (Reference, Object)) where { execute qref = referenceLookup qref }
+instance Executable Reference (Reference, Maybe Object) where { execute qref = referenceLookup qref }
 
 refAppendSuffix :: Reference -> RefSuffix -> Reference
 refAppendSuffix qref appref = case qref of
@@ -2438,15 +2432,18 @@ refAppendSuffix qref appref = case qref of
 
 -- | This is an important function used throughout most of the intepreter to
 -- lookup 'Object's associated with 'Reference's.
-referenceLookup :: Reference -> Exec (Maybe (Reference, Object))
+referenceLookup :: Reference -> Exec (Reference, Maybe Object)
 referenceLookup qref = case qref of
-  RefWrapper ref -> return $ Just (qref, obj ref)
-  qref           ->
-    if refIsMethodCall qref -- function calls must always perform an update, not just a lookup
-    then referenceUpdate qref return
-    else flip mplus (return Nothing) $ do
-      (a, (qref, xunit)) <- get >>= runObjectFocusExec (lookupIndex qref) (fst $ referenceHead qref)
-      put xunit >> return (Just (qref, a))
+  RefWrapper ref -> return $ (qref, Just (obj ref))
+  qref           -> do
+    (a, (qref, changed, xunit)) <- get >>=
+      runObjectFocusExec (updateIndex qref get) (fst $ referenceHead qref)
+    return (qref, a)
+--  if refIsMethodCall qref -- function calls must always perform an update, not just a lookup
+--  then referenceUpdate qref return
+--  else flip mplus (return Nothing) $ do
+--    (a, (qref, xunit)) <- get >>= runObjectFocusExec (lookupIndex qref) (fst $ referenceHead qref)
+--    put xunit >> return (Just (qref, a))
   -- WARNING: this function can be responsible for some very odd behavior by virtue of the fact that
   -- it may perform an update rather than a lookup when evaluating 'Reference's with 'FuncCall's as
   -- its 'RefSuffix's. Since the 'updateIndex' member function of the 'ObjectLens' class stores
@@ -2539,11 +2536,12 @@ refIsMethodCall qref = case qref of
 -- | This function performs an update on a 'Reference', it is the complement to the 'referenceLookup'
 -- function. Evaluating 'referenceUpdate' on a 'Reference' will write/update the value associated with
 -- it.
-referenceUpdate :: Reference -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Maybe (Reference, Object))
+referenceUpdate :: Reference -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Reference, Maybe Object)
 referenceUpdate qref upd = do
-  (result, (qref, _oldxunit)) <- get >>=
-    runObjectFocusExec (updateIndex qref (execToFocusUpdater upd)) (fst $ referenceHead qref)
-  return (fmap ((,) qref) result)
+  (result, (qref, changed, xunit)) <- get >>=
+    runObjectFocusExec (updateIndex qref $ execToFocusUpdater upd) (fst $ referenceHead qref)
+  when changed (put xunit)
+  return (qref, result)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -3090,9 +3088,9 @@ instance PPrintable (Glob Object) where { pPrint = pShow }
 
 instance ToDaoStructClass (GlobUnit Object) where
   toDaoStruct = ask >>= \o -> case o of
-    Wildcard a t -> void $ renameConstructor "Wildcard" >> "name" .= reference UNQUAL a >> "type" .=? t
-    AnyOne   a t -> void $ renameConstructor "AnyOne"   >> "name" .= reference UNQUAL a >> "type" .=? t
-    Single   a   -> void $ renameConstructor "Single"   >> "item" .= a
+    Wildcard a t -> renameConstructor "Wildcard" $ "name" .= reference UNQUAL a >> "type" .=? t
+    AnyOne   a t -> renameConstructor "AnyOne"   $ "name" .= reference UNQUAL a >> "type" .=? t
+    Single   a   -> renameConstructor "Single"   $ "item" .= a
 
 instance FromDaoStructClass (GlobUnit Object) where
   fromDaoStruct = msum $
@@ -3109,9 +3107,7 @@ instance HataClass (GlobUnit Object) where
     autoDefFromStruct >> autoDefToStruct
 
 instance ToDaoStructClass (Glob Object) where
-  toDaoStruct = void $ do
-    renameConstructor "GlobPattern"
-    "items" .=@ obj . map obj . getPatUnits
+  toDaoStruct = renameConstructor "GlobPattern" $ "items" .=@ obj . map obj . getPatUnits
 
 instance FromDaoStructClass (Glob Object) where
   fromDaoStruct = do
@@ -3134,10 +3130,10 @@ instance HataClass (Glob Object) where
               Just vartyp -> do
                 match <- catchPredicate $ referenceLookup $ Reference UNQUAL vartyp $ FuncCall ox NullRef
                 case match of
-                  Backtrack        -> return []
-                  OK Nothing       -> return [(name, obj ox)]
-                  OK (Just (_, o)) -> return [(name, obj o)]
-                  PFail err        -> throwError err
+                  Backtrack       -> return []
+                  OK (_, Nothing) -> return [(name, obj ox)]
+                  OK (_, Just  o) -> return [(name, obj o)]
+                  PFail err       -> throwError err
       }
 
 ----------------------------------------------------------------------------------------------------
@@ -3148,9 +3144,7 @@ instance PPrintable Pair where
   pPrint (Pair (a,b)) = pList (pString "Pair") "(" ", " ")" [pPrint a, pPrint b]
 
 instance ToDaoStructClass Pair where
-  toDaoStruct = ask >>= \ (Pair (a, b)) -> do
-    renameConstructor "Pair"
-    "fst" .= a >> "snd" .= b >> return ()
+  toDaoStruct = renameConstructor "Pair" $ ask >>= \ (Pair (a, b)) -> "fst" .= a >> "snd" .= b
 
 instance FromDaoStructClass Pair where
   fromDaoStruct = constructor "Pair" >> Pair <$> (return (,) <*> req "fst" <*> req "snd")
@@ -3162,16 +3156,13 @@ instance HataClass Pair where
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
     defIndexer $ \ (Pair (a,b)) ix -> do
-      let badindex i = execThrow $ obj $
-            [ obj "index for Pair data type must be a either 0 or 1, recieved object of type"
-            , obj (typeOfObj i)
-            ]
+      let casti = extractXPure . castToCoreType IntType >=> fromObj
+      let badindex = execThrow "index for Pair data type must be a either 0 or 1"
       case ix of
         [i] -> do
-          i <- derefObject i
-          i <- execute (castToCoreType IntType i >>= maybe mzero return . fromObj) <|> badindex i
-          case i::Int of { 0 -> return a; 1 -> return b; i -> badindex (obj i); }
-        _   -> execThrow $ obj [obj "bad index value to Pair", obj ix]
+          i <- derefObject i >>= maybe (badindex $ ExecErrorBadType $ typeOfObj i) return . casti
+          case i of { 0 -> return a; 1 -> return b; i -> badindex (ExecErrorBadValue $ OInt i); }
+        _   -> throwArityError "for subscript to Pair data type" (Just 1) Nothing ix
 
 builtin_assocs :: DaoFunc ()
 builtin_assocs =
@@ -3180,8 +3171,7 @@ builtin_assocs =
       [o] -> do
         let fromDict o = return $
               (Just $ obj $ fmap (\ (a,b) -> obj $ Pair (obj a, obj b)) $ M.assocs o, ())
-        let badtype = execThrow $ obj $
-              [obj "assocs", obj "function cannot evaluate on data of type", obj (typeOfObj o)]
+        let badtype = execThrow "is not a container of associations" (ExecErrorBadType $ typeOfObj o)
         case o of
           ODict                  d   -> fromDict d
           OTree (Struct{fieldMap=d}) -> fromDict d
@@ -3189,7 +3179,7 @@ builtin_assocs =
             [ fromObj o >>= return . obj . fmap (\ (ix, o) -> obj $ Pair (H.indexKey ix, o)) . H.assocs
             ]
           _ -> badtype
-      _ -> execThrow $ obj [obj "assocs", obj "function requires exactly one paramter"]
+      _ -> throwArityError "to function" (Just 1) (Just $ Reference UNQUAL (fromUStr $ ustr "assocs") NullRef) ox
   }
 
 ----------------------------------------------------------------------------------------------------
@@ -3435,10 +3425,8 @@ instance ExecRef MVar where
   execModifyRef mvar upd =
     Exec $ PredicateT $ StateT $ \xunit -> modifyMVar mvar $ \var -> do
       (result, xunit) <- flip ioExec xunit $ execCatchIO (upd var) $
-        [ newExecIOHandler $ \e -> execThrow $ obj $
-            [obj "ErrorCall:", obj (show (e::ErrorCall))]
-        , newExecIOHandler $ \e -> execThrow $ obj $
-            [obj "IOException:" , obj (show (e::IOException))]
+        [ newExecIOHandler $ execThrow "" . ExecHaskellError
+        , newExecIOHandler $ execThrow "" . ExecIOException
         ]
       let x var p = return (var, (p, xunit))
       case result of
@@ -3461,53 +3449,33 @@ instance ExecRef IORef where
 
 ----------------------------------------------------------------------------------------------------
 
-data ObjLensError
-  = ObjLensError
-    { mapStructErrorMessage :: Maybe UStr
-    , failedOnReference     :: Reference
-    , mapStructError        :: Maybe StructError
-    }
-  deriving (Eq, Ord, Typeable)
+newtype UndefinedRef = UndefinedRef { failedOnReference :: Reference }
+  deriving (Eq, Ord, Show, Typeable)
 
-mkObjectLensError :: Reference -> ObjLensError
-mkObjectLensError qref =
-  ObjLensError
-  { mapStructErrorMessage = Nothing
-  , failedOnReference     = qref
-  , mapStructError        = Nothing
-  }
+instance PPrintable UndefinedRef where
+  pPrint (UndefinedRef r) = pString "on reference " >> pPrint r
 
-instance PPrintable ObjLensError where
-  pPrint err = do
-    pPrint (failedOnReference err)
-    maybe (return ()) (\o -> pString " " >> pUStr o >> pNewLine)  (mapStructErrorMessage err)
-    maybe (return ()) pPrint (mapStructError err)
+instance ToDaoStructClass UndefinedRef where
+  toDaoStruct = renameConstructor "UndefinedRef" $ "reference" .=@ failedOnReference
 
-instance ToDaoStructClass ObjLensError where
-  toDaoStruct = ask >>= \o -> void $ do
-    renameConstructor "ObjLensError"
-    "message"   .=? mapStructErrorMessage o
-    "reference" .=  failedOnReference o
-    "structure" .=? mapStructError o
+instance FromDaoStructClass UndefinedRef where
+  fromDaoStruct = constructor "UndefinedRef" >> return UndefinedRef <*> req "reference"
 
-instance FromDaoStructClass ObjLensError where
-  fromDaoStruct = constructor "ObjLensError" >>
-    return ObjLensError <*> opt "message" <*> req "reference" <*> opt "structure"
+instance ObjectClass UndefinedRef where { obj=new; fromObj=objFromHata; }
 
-instance ObjectClass ObjLensError where { obj=new; fromObj=objFromHata; }
-
-instance HataClass ObjLensError where
-  haskellDataInterface = interface "ObjLensError" $ do
+instance HataClass UndefinedRef where
+  haskellDataInterface = interface "UndefinedRef" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
 
 data ObjFocusState o
   = ObjFocusState
-    { targetReference :: Reference
+    { targetReference      :: Reference
       -- ^ the whole reference we intend to use
-    , focalReference  :: Reference
+    , focalReference       :: Reference
       -- ^ the reference that is constructed piecewise as each part of the 'targetReference' is resolved.
-    , objectInFocus   :: o
+    , objectInFocus        :: o
+    , objectInFocusChanged :: Bool
     }
 
 -- | This is the stateful monad used by the 'ObjectLens' and 'ObjectFunctor' classes. It is called a
@@ -3515,39 +3483,34 @@ data ObjFocusState o
 -- indicies) is stored in the state of the monad. The 'Control.Monad.State.modify' function modifies
 -- the object in the focus.
 newtype ObjectFocus o a
-  = ObjectFocus{ mapObjectLensToPredicate :: PredicateT ObjLensError (StateT (ObjFocusState o) Exec) a }
+  = ObjectFocus{ mapObjectLensToPredicate :: PredicateT ExecControl (StateT (ObjFocusState o) Exec) a }
   deriving (Functor, Applicative, Alternative, MonadPlus)
 
 instance Monad (ObjectFocus o) where
   return = ObjectFocus . return
   (ObjectFocus m) >>= f = ObjectFocus $ m >>= mapObjectLensToPredicate . f
-  fail msg = ObjectFocus $ lift (gets focalReference) >>= \ref -> throwError $
-    (mkObjectLensError ref){ mapStructErrorMessage=Just (ustr msg) }
+  fail msg = _mapStructState (gets focalReference) >>= execThrow msg . UndefinedRef
 
-instance MonadError ObjLensError (ObjectFocus o) where
+instance MonadError ExecControl (ObjectFocus o) where
   throwError = ObjectFocus . throwError
   catchError (ObjectFocus f) catch =
     ObjectFocus (catchError f (mapObjectLensToPredicate . catch))
 
-instance MonadPlusError ObjLensError (ObjectFocus o) where
+instance MonadPlusError ExecControl (ObjectFocus o) where
   catchPredicate (ObjectFocus f) = ObjectFocus (catchPredicate f)
   predicate = ObjectFocus . predicate
 
 instance MonadIO (ObjectFocus o) where { liftIO = ObjectFocus . liftIO }
 
 instance MonadState o (ObjectFocus o) where
-  state f = _mapStructState $ state $ \st ->
-    let (a, o) = f (objectInFocus st) in (a, st{ objectInFocus=o })
+  get   = _mapStructState $ gets objectInFocus
+  put o = _mapStructState $ modify $ \st -> st{objectInFocus=o, objectInFocusChanged=True}
 
 -- | An 'ObjectFocus' function that updates a value within the data of type @o@ in focus at a given
 -- @index@ using an inner 'ObjectFocus' function that focuses on the 'Object' value at the index if
 -- it exists. The type of the inner 'ObjectFocus' is @('Prelude.Maybe' 'Object')@ because there may
 -- be no value defined at the given index.
 type ObjectUpdate o index = index -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus o (Maybe Object)
-
--- | An 'ObjectFocus' function that looks-up a value within the data of type @o@ in focus at a given
--- index.
-type ObjectLookup o index = index -> ObjectFocus o Object
 
 -- | An 'ObjectFocus' that traverses the 'Object' in the focus by calling the provided traversal
 -- function for every @index -> 'Object'@ relation defined within the data of type @o@. The
@@ -3563,9 +3526,7 @@ type ObjectTraverse o index = (index -> Object -> ObjectFocus [(index, Object)] 
 -- how the index is used to read and update the object o.
 -- There are no functional dependencies between the object type and the index type, so using these
 -- function may require type annotation.
-class ObjectLens o index where
-  updateIndex :: ObjectUpdate o index
-  lookupIndex :: ObjectLookup o index
+class ObjectLens o index where { updateIndex :: ObjectUpdate o index }
 
 -- | This class provides the 'objectFMap' function for evaluating a functor over every item in an
 -- 'bject in the focus of an 'ObjectFocus'. The function that maps to the functor object takes a
@@ -3582,10 +3543,6 @@ _mapStructState = ObjectFocus . lift
 -- with 'runObjectFocus'.
 getObjFocusState :: ObjectFocus o (ObjFocusState o)
 getObjFocusState = _mapStructState get
-
-_wrapObjectLensErr :: Reference -> StructError -> ObjLensError
-_wrapObjectLensErr qref err =
-  (mkObjectLensError qref){ mapStructError=Just err }
 
 _getTargetRefInfo :: ObjectFocus o Reference
 _getTargetRefInfo = _mapStructState $ gets targetReference
@@ -3620,19 +3577,25 @@ getFocalReference = _mapStructState (gets focalReference)
 -- 'RefSuffix' indicies will append these indicies to the 'Reference', so it might be better to pass
 -- the 'referenceHead' of the 'Reference'. Then supply an object upon which the 'lookupIndex',
 -- 'updateIndex', or 'objectFMap' functions will be evaluating.
-runObjectFocusExec :: ObjectFocus o a -> Reference -> o -> Exec (a, (Reference, o))
-runObjectFocusExec f qref o =
-  runObjectFocus f (ObjFocusState{ targetReference=qref, focalReference=qref, objectInFocus=o }) >>=
-    predicate . fmapPFail (\err -> mkExecError{ execReturnValue=Just (obj err) })
+runObjectFocusExec :: ObjectFocus o a -> Reference -> o -> Exec (a, (Reference, Bool, o))
+runObjectFocusExec f qref o = runObjectFocus f st >>= predicate where
+   st = ObjFocusState
+        { targetReference      = qref
+        , focalReference       = qref
+        , objectInFocus        = o
+        , objectInFocusChanged = False
+        }
+  
 
 -- | This is not an entry-point to the 'ObjectFocus' monadic functions. This function should be used
 -- when you are writing a function of type 'ObjectFocus' and one of the lines of code in this
 -- function should "unlift" an 'ObjectFocus' function so it can be composed with an 'Exec' function,
 -- and the resulting 'Exec' function should then be "re-lifted" back into your 'ObjectFocus' monadic
 -- function using 'focusLiftExec'.
-runObjectFocus :: ObjectFocus o a -> ObjFocusState o -> Exec (Predicate ObjLensError (a, (Reference, o)))
-runObjectFocus f st = flip evalStateT st $ runPredicateT $ mapObjectLensToPredicate $ f >>= \a ->
-  _mapStructState (return (,) <*> gets targetReference <*> gets objectInFocus) >>= \o -> return (a, o)
+runObjectFocus :: ObjectFocus o a -> ObjFocusState o -> Exec (Predicate ExecControl (a, (Reference, Bool, o)))
+runObjectFocus (ObjectFocus f) st = flip evalStateT st $ runPredicateT $ f >>= \a -> do
+  o <- lift $ return (,,) <*> gets targetReference <*> gets objectInFocusChanged <*> gets objectInFocus
+  return (a, o)
 
 -- | This is a very important function because it allows you to evaluate an inner 'ObjectFocus'
 -- monad that is focused on a different type from the type focus of the monad in the context in
@@ -3642,34 +3605,39 @@ runObjectFocus f st = flip evalStateT st $ runPredicateT $ mapObjectLensToPredic
 -- updated value which can then be placed back into the sub-field if necessary. By composing
 -- 'withInnerLens' functions, it is possible to construct a lens that can read and update any value
 -- in arbitrarily complex data types.
-withInnerLens :: sub -> ObjectFocus sub a -> ObjectFocus o (a, sub)
+withInnerLens :: sub -> ObjectFocus sub a -> ObjectFocus o (a, (Bool, sub))
 withInnerLens sub f = do
   targref <- _getTargetRefInfo
   qref <- getFocalReference
   o <- focusLiftExec $ runObjectFocus f $
-    (ObjFocusState{ targetReference=targref, focalReference=qref, objectInFocus=sub })
-  predicate (fmap (fmap snd) o)
+    ObjFocusState
+    { targetReference      = targref
+    , focalReference       = qref
+    , objectInFocus        = sub
+    , objectInFocusChanged = False
+    }
+  predicate (o >>= \ (a, (_ref, changed, o)) -> return (a, (changed, o)))
 
 -- Used in the 'Interface' table to convert between a @typ@ and 'Data.Dynamic.Dynamic' value.
 convertFocus :: (a -> b) -> (b -> a) -> ObjectFocus a x -> ObjectFocus b x
-convertFocus a2b b2a f = get >>= flip withInnerLens f . b2a >>= \ (x, a) -> put (a2b a) >> return x
+convertFocus a2b b2a f = get >>= flip withInnerLens f . b2a >>= \ (x, (changed, a)) ->
+  when changed (put $ a2b a) >> return x
 
 focusObjectClass :: ObjectClass o => ObjectFocus o a -> ObjectFocus Object a
 focusObjectClass f = do
-  (a, o) <- get >>= xmaybe . fromObj >>= flip withInnerLens f
-  put (obj o) >> return a
+  (a, (changed, o)) <- get >>= xmaybe . fromObj >>= flip withInnerLens f
+  when changed (put $ obj o) >> return a
 
 instance ObjectLens T_dict Name where
   updateIndex name f = do
-    (result, o) <- get >>= flip withInnerLens f . (M.lookup name)
-    modify (M.alter (const o) name)
+    (result, (changed, o)) <- get >>= flip withInnerLens f . (M.lookup name)
+    when changed (modify $ M.alter (const o) name)
     return result
-  lookupIndex name = get >>= xmaybe . M.lookup name
 
 instance ObjectFunctor T_dict Name where
   objectFMap f = get >>=
-    mapM (\ (name, o) -> focalPathSuffix (DotRef name NullRef) $ withInnerLens [] $ f name o
-          ) . M.assocs >>= put . M.fromList . concatMap snd
+     mapM (\ (name, o) -> focalPathSuffix (DotRef name NullRef) $ withInnerLens [] $ f name o
+          ) . M.assocs >>= put . M.fromList . concatMap (snd . snd)
 
 focusGuardStructName :: Name -> ObjectFocus T_struct ()
 focusGuardStructName name = get >>= guard . (==name) . structName
@@ -3677,17 +3645,21 @@ focusGuardStructName name = get >>= guard . (==name) . structName
 focusStructAsDict :: ObjectFocus T_dict a -> ObjectFocus T_struct a
 focusStructAsDict f = get >>= \struct -> case struct of
   Nullary{ structName=name } -> do
-    (a, sub) <- withInnerLens M.empty f
-    if M.null sub then return () else put (Struct{ structName=name, fieldMap=sub })
+    (a, (changed, sub)) <- withInnerLens M.empty f
+    if M.null sub
+    then return ()
+    else when changed (put $ Struct{ structName=name, fieldMap=sub })
     return a
   Struct{ structName=name, fieldMap=sub } -> do
-    (a, sub) <- withInnerLens sub f
-    if M.null sub then put (Nullary{ structName=name }) else put (struct{ fieldMap=sub })
+    (a, (changed, sub)) <- withInnerLens sub f
+    when changed $ do
+      if M.null sub
+      then put (Nullary{ structName=name })
+      else put (struct{ fieldMap=sub })
     return a
 
 instance ObjectLens T_struct Name where
   updateIndex name f = focusStructAsDict $ updateIndex name f
-  lookupIndex name   = focusStructAsDict $ lookupIndex name
 
 instance ObjectFunctor T_struct Name where
   objectFMap f = focusStructAsDict $ objectFMap f
@@ -3695,25 +3667,24 @@ instance ObjectFunctor T_struct Name where
 updateHataAsStruct :: ObjectFocus T_struct a -> ObjectFocus Hata a
 updateHataAsStruct f = do
   qref <- getFocalReference
-  let lift = predicate . fmapPFail (_wrapObjectLensErr qref)
   (Hata ifc o) <- get
   (fromStruct, toStruct) <- xmaybe (return (,) <*> objFromStruct ifc <*> objToStruct ifc)
     -- here ^ evaluation backtracks if the field cannot be accessed
-  struct <- lift $ fromData toStruct o
-  (a, struct) <- withInnerLens struct f
-  lift (toData fromStruct struct) >>= put . Hata ifc >> return a
+  struct <- predicate $ fromData toStruct o
+  (a, (changed, struct)) <- withInnerLens struct f
+  when changed (predicate (toData fromStruct struct) >>= put . Hata ifc)
+  return a
 
 lookupHataAsStruct :: ObjectFocus T_struct a -> ObjectFocus Hata a
 lookupHataAsStruct f = do
   qref <- getFocalReference
   (Hata ifc o) <- get
   toStruct <- xmaybe (objToStruct ifc)
-  struct <- predicate $ predicate $ fmapPFail (_wrapObjectLensErr qref) $ fromData toStruct o
+  struct <- predicate $ fromData toStruct o
   fst <$> withInnerLens struct f
 
 instance ObjectLens Hata Name where
   updateIndex name f = flip mplus (fail "cannot modify field") $ updateHataAsStruct $ updateIndex name f
-  lookupIndex name = lookupHataAsStruct $ lookupIndex name
 
 instance ObjectFunctor Hata Name where
   objectFMap = flip mplus (return ()) . updateHataAsStruct . focusStructAsDict . objectFMap
@@ -3722,8 +3693,8 @@ instance ObjectLens [Object] Integer where
   updateIndex idx f = get >>= \ox ->
     if idx == negate 1
     then do
-      (result, o) <- withInnerLens Nothing f
-      put (maybe ox (:ox) o)
+      (result, (changed, o)) <- withInnerLens Nothing f
+      when changed (put $ maybe ox (:ox) o)
       return result
     else do
       let splitlen i rx ox = case ox of
@@ -3734,28 +3705,19 @@ instance ObjectLens [Object] Integer where
       then
         if null hi
         then do
-          (result, o) <- withInnerLens Nothing f
-          put (maybe ox ((ox++) . return) o)
+          (result, (changed, o)) <- withInnerLens Nothing f
+          when changed (put $ maybe ox ((ox++) . return) o)
           return result
         else do
-          (result, o) <- withInnerLens (Just $ head hi) f
-          put (lo ++ maybe [] return o ++ tail hi)
+          (result, (changed, o)) <- withInnerLens (Just $ head hi) f
+          when changed (put $ lo ++ maybe [] return o ++ tail hi)
           return result
       else fail "index ouf of bounds"
-  lookupIndex idx = get >>= \ox -> case ox of
-    [] -> fail "indexing empty list"
-    ox -> 
-      if idx<0
-        then  fail "list index value is negative"
-        else  case dropWhile ((<idx) . fst) (zip [0..] ox) of
-                []                -> fail "index out of bounds"
-                (i, o):_ | i==idx -> return o
-                _ -> error "instance ObjectLens [Object] Integer { lookupIndex = ... }"
 
 instance ObjectFunctor [Object] Integer where
   objectFMap f = get >>=
-    mapM (\ (idx, o) -> focalPathSuffix (Subscript [obj idx] NullRef) $ withInnerLens [] $ f idx o
-          ) . zip [0..] >>= put . map snd . sortBy (\a b -> compare (fst a) (fst b)) . concatMap snd
+     mapM (\ (idx, o) -> focalPathSuffix (Subscript [obj idx] NullRef) $ withInnerLens [] $ f idx o
+          ) . zip [0..] >>= put . map snd . sortBy (\a b -> compare (fst a) (fst b)) . concatMap (snd . snd)
 
 _refSuffixUpdate
   :: (ObjectClass o, ObjectLens o i)
@@ -3763,12 +3725,8 @@ _refSuffixUpdate
   -> ObjectFocus (Maybe Object) (Maybe Object)
   -> ObjectFocus (Maybe Object) (Maybe Object)
 _refSuffixUpdate o i suf f = do
-  (result, o) <- withInnerLens o $ updateIndex i $ updateIndex suf f
-  put (Just $ obj o) >> return result
-
-_refSuffixLookup :: ObjectLens o i => o -> i -> RefSuffix -> ObjectFocus (Maybe Object) Object
-_refSuffixLookup o i suf = withInnerLens o (lookupIndex i) >>=
-  fmap fst . flip withInnerLens (lookupIndex suf) . Just . fst
+  (result, (changed, o)) <- withInnerLens o $ updateIndex i $ updateIndex suf f
+  when changed (put $ Just $ obj o) >> return result
 
 _dictSubscriptUpdate
   :: ObjectLens o Name
@@ -3781,14 +3739,6 @@ _dictSubscriptUpdate msg ix f = focusLiftExec (mapM derefObject ix) >>= \ix -> c
   [_] -> fail $ "non-reference subscript used to update index of "++msg
   _   -> fail $ "multi-dimensional subscript used to update index of "++msg
 
-_dictSubscriptLookup :: ObjectLens o Name => String -> [Object] -> ObjectFocus o Object
-_dictSubscriptLookup msg ix = focusLiftExec (mapM derefObject ix) >>= \ix -> case ix of
-  []  -> fail $ "void subscript used to index "++msg++" item"
-  [ORef (Reference UNQUAL name suf)] -> lookupIndex name >>=
-    fmap fst . flip withInnerLens (lookupIndex suf) . Just
-  [_] -> fail $ "non-reference subscript used to index "++msg++" item"
-  _   -> fail $ "multi-dimensional subscript used to index "++msg++" item"
-
 -- Converts the function @f@ that is passed to an 'objectFMap' which takes an index value of type
 -- @i@ to a value suitable for invoking an 'objectFMap' function instantiated for a different type
 -- @fi@.
@@ -3797,9 +3747,10 @@ objectFMapConvert
   -> (fi -> Object -> ObjectFocus [(fi, Object)] ())
   -> i -> Object
   -> ObjectFocus [(i, Object)] ()
-objectFMapConvert i2fi fi2i f i o = getFocalReference >>= \qref ->
-  focusLiftExec (runObjectFocusExec (i2fi i >>= flip f o) qref []) >>=
-    mapM (\ (fi, o) -> fi2i fi >>= \i -> return (i, o)) . snd . snd >>= put
+objectFMapConvert i2fi fi2i f i o = getFocalReference >>= \qref -> do
+  (_, (_, changed, o)) <- focusLiftExec (runObjectFocusExec (i2fi i >>= flip f o) qref [])
+  o <- forM o (\ (fi, o) -> fi2i fi >>= \i -> return (i, o))
+  _mapStructState $ modify $ \st -> st{objectInFocusChanged=changed, objectInFocus=o}
 
 _dictSubscriptFMap
   :: ObjectFunctor o Name
@@ -3822,7 +3773,6 @@ _index1DIntegral msg1 msg2 ix f = focusLiftExec (mapM derefObject ix) >>= \ix ->
 
 instance ObjectLens [Object] [Object] where
   updateIndex ix f = _index1DIntegral "update" "" ix $ flip updateIndex f
-  lookupIndex ix   = _index1DIntegral "lookup" " item" ix $ lookupIndex
 
 instance ObjectFunctor [Object] [Object] where
   objectFMap = objectFMap .
@@ -3830,14 +3780,12 @@ instance ObjectFunctor [Object] [Object] where
 
 instance ObjectLens T_dict [Object] where
   updateIndex = _dictSubscriptUpdate "dictionary"
-  lookupIndex = _dictSubscriptLookup "dictionary"
 
 instance ObjectFunctor T_dict [Object] where
   objectFMap = _dictSubscriptFMap   "dictionary"
 
 instance ObjectLens T_struct [Object] where
   updateIndex = _dictSubscriptUpdate "struct"
-  lookupIndex = _dictSubscriptLookup "struct"
 
 instance ObjectFunctor T_struct [Object] where
   objectFMap = _dictSubscriptFMap "struct"
@@ -3858,17 +3806,16 @@ instance ObjectLens Hata [Object] where
   updateIndex ix f = get >>= \ (Hata ifc o) -> case objIndexUpdater ifc of
     Nothing     -> _hataUpdateSubscript $ \msg -> _dictSubscriptUpdate msg ix f
     Just update -> do
-      (result, o) <- withInnerLens o $ update ix f
-      put (Hata ifc o) >> return result
-  lookupIndex ix   = get >>= \ (Hata ifc o) -> case objIndexer ifc of
-    Nothing     -> _hataLookupSubscript $ \msg -> _dictSubscriptLookup msg ix
-    Just lookup -> focusLiftExec (lookup o ix)
+      (result, (changed, o)) <- withInnerLens o $ update ix f
+      when changed (put $ Hata ifc o) >> return result
 
 instance ObjectFunctor Hata [Object] where
   objectFMap f = get >>= \ (Hata ifc o) -> case objTraverse ifc of
     Nothing       -> updateHataAsStruct (_dictSubscriptFMap (show $ objHaskellType ifc) f) <|>
       fail "cannot update field"
-    Just traverse -> withInnerLens o (traverse f) >>= \ ((), o) -> put (Hata ifc o)
+    Just traverse -> do
+      ((), (changed, o)) <- withInnerLens o (traverse f)
+      when changed (put $ Hata ifc o)
 
 _tryFuncCall
   :: Maybe Object -> [Object]
@@ -3909,19 +3856,9 @@ callMethod :: Name -> [Object] -> ObjectUpdate (Maybe Object) RefSuffix
 callMethod name args suf f = do
   qref <- flip refAppendSuffix (DotRef name $ FuncCall args NullRef) <$> _getTargetRefInfo
   o <- get
-  let err msg1 msg2 = throwError $
-        ObjLensError
-        { mapStructErrorMessage = Just $ ustr msg1
-        , failedOnReference     = qref
-        , mapStructError        = Just $
-            nullValue
-            { structErrMsg   = Just $ ustr msg2
-            , structErrField = Just $ toUStr name
-            , structErrValue = o
-            }
-        }
+  let err msg = execThrow msg (UndefinedRef qref)
   case o of
-    Nothing -> err "method call on undefined reference" "attempted access of field in null object"
+    Nothing -> err "method call on undefined reference"
     Just  o -> case o of
       ODict    d -> _tryFuncCall (M.lookup     name d) args (updateIndex suf f) (_refSuffixUpdate d name suf f)
       OTree    d -> _tryFuncCall (structLookup name d) args (updateIndex suf f) (_refSuffixUpdate d name suf f)
@@ -3935,21 +3872,16 @@ callMethod name args suf f = do
             return result
           Nothing   -> case objToStruct ifc of
             Just toStruct -> do
-              let err structerr =
-                    ObjLensError
-                    { mapStructErrorMessage = Just $ ustr "failed to convert data type to strcuture"
-                    , failedOnReference = qref
-                    , mapStructError = Just structerr
-                    }
-              struct <- predicate (fmapPFail err $ fromData toStruct d)
+              struct <- predicate (fromData toStruct d)
               _tryFuncCall (structLookup name struct) args (updateIndex suf f) (_refSuffixUpdate (Hata ifc d) name suf f)
-            Nothing       -> focusLiftExec $ execThrow $ obj $ [obj "field", obj name, obj "is not a method"]
-      _ -> err "method call on atomic object" "atomic objects have no methods"
+            Nothing       -> fail "not a callable method function"
+      _ -> fail "method call on atomic object"
             -- TODO: provide a set of built-in methods available to every object.
 
 instance ObjectLens (Maybe Object) RefSuffix where
   updateIndex suf f = focalPathSuffix suf $ get >>= \o -> case suf of
-    NullRef         -> get >>= flip withInnerLens f >>= \ (result, o) -> put o >> return result
+    NullRef         -> get >>= flip withInnerLens f >>= \ (result, (changed, o)) ->
+      when changed (put o) >> return result
     DotRef name (FuncCall args suf) -> callMethod name args suf f
     DotRef name suf -> case o of
       Nothing -> fail "undefined reference"
@@ -3973,27 +3905,6 @@ instance ObjectLens (Maybe Object) RefSuffix where
         (result, o) <- focusLiftExec (callObject qref o args)
         (result, _) <- put o >> withInnerLens result (updateIndex suf f)
         return result
-  lookupIndex suf = focalPathSuffix suf $ get >>= xmaybe >>= \o -> case suf of
-    NullRef         -> return o
-    DotRef name (FuncCall args suf) -> do
-      (result, _) <- callMethod name args suf get >>= flip withInnerLens (lookupIndex suf)
-      return result -- The object by the method call is lost.
-    DotRef name suf -> case o of
-      ODict    o -> _refSuffixLookup o name suf
-      OTree    o -> _refSuffixLookup o name suf
-      OHaskell o -> _refSuffixLookup o name suf
-      _          -> mzero
-    Subscript ix suf -> case o of
-      OList    o -> _refSuffixLookup o ix suf
-      ODict    o -> _refSuffixLookup o ix suf
-      OTree    o -> _refSuffixLookup o ix suf
-      OHaskell o -> _refSuffixLookup o ix suf
-      _          -> mzero
-    FuncCall args suf -> do
-      qref <- getFocalReference
-      (result, o) <- focusLiftExec (callObject qref o args)
-      (result, _) <- put o >> withInnerLens result (lookupIndex suf)
-      return result
 
 instance ObjectFunctor Object RefSuffix where
   objectFMap f = get >>= \o -> case o of
@@ -4013,8 +3924,9 @@ instance ObjectFunctor Object RefSuffix where
       subs2ref i = case i of
         DotRef name NullRef -> return name
         _ -> fail "while traversing structure, updating function returned invalid reference"
-      travers o to from constr =
-        withInnerLens o (objectFMap $ objectFMapConvert to from f) >>= put . constr . snd
+      travers o to from constr = do
+        (_, (changed, o)) <- withInnerLens o (objectFMap $ objectFMapConvert to from f)
+        when changed (put $ constr o)
 
 instance ObjectFunctor (Maybe Object) RefSuffix where
   objectFMap f = get >>= maybe (return ()) (fmap fst . flip withInnerLens (objectFMap f))
@@ -4029,8 +3941,8 @@ innerDataUpdateIndex
   => (dt -> o) -> (dt -> o -> dt)
   -> index -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus dt (Maybe Object)
 innerDataUpdateIndex unwrap wrap i upd = get >>= \dt -> do
-  (result, o) <- withInnerLens (unwrap dt) (updateIndex i upd)
-  put (wrap dt o) >> return result
+  (result, (changed, o)) <- withInnerLens (unwrap dt) (updateIndex i upd)
+  when changed (modify $ flip wrap o) >> return result
 
 -- This function is a special case of 'innerDataUpdateIndex' where the object in focus is an
 -- 'ExecUnit'. The 'ExecUnit' in focus is actually ignored, and all updates are made to the
@@ -4079,23 +3991,17 @@ execUnitUpdateRef
   -> ref -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
 execUnitUpdateRef unwrap wrap ref upd = do
   o <- focusLiftExec $ gets unwrap
-  (result, o) <- withInnerLens o $ updateIndex ref upd
-  focusLiftExec $ modify $ flip wrap o
+  (result, (changed, o)) <- withInnerLens o $ updateIndex ref upd
+  when changed $ focusLiftExec $ modify $ flip wrap o
   return result
-
--- | If you have a data type @o@ instantiating @'ObjectLens' o index@ with a given index, and you
--- have a @newtype@ wrapping this data type @o@, you can instantiate 'lookupIndex' for this newtype
--- by providing the newtype unwrapper.
-innerDataLookupIndex :: ObjectLens o index => (nt -> o) -> index -> ObjectFocus nt Object
-innerDataLookupIndex unwrap i = get >>= \dt -> fst <$> withInnerLens (unwrap dt) (lookupIndex i)
 
 ----------------------------------------------------------------------------------------------------
 
 instance ObjectLens (Stack Name Object) Name where
   updateIndex name upd = do
-    (result, stack) <- get >>= stackUpdateM (flip withInnerLens upd) name
-    put stack >> return result
-  lookupIndex name = get >>= xmaybe . stackLookup name
+    ((result, changed), stack) <- get >>=
+      stackUpdateM (flip withInnerLens upd >=> \ (result, (changed, o)) -> return ((result, changed), o)) name
+    when changed (put stack) >> return result
 
 -- | This function can be used to automatically instantiate 'updateIndex' for any type @o@ that also
 -- instantiates @'ObjectLens' o 'Dao.String.Name'@.
@@ -4113,7 +4019,9 @@ referenceUpdateName qref upd = case qref of
 -- object.
 referenceLookupName :: ObjectLens o Name => Reference -> ObjectFocus o Object
 referenceLookupName qref = case qref of
-  Reference _ name suf -> lookupIndex name >>= fmap fst . flip withInnerLens (lookupIndex suf) . Just
+  Reference _ name suf -> updateIndex name get >>=
+    fmap fst . flip withInnerLens (updateIndex suf get) >>=
+      maybe (fail "undefined reference") return
   RefObject o      suf -> case o of
     ORef o -> referenceLookupName (refAppendSuffix o suf)
     _      -> fail "cannot update reference"
@@ -4121,7 +4029,6 @@ referenceLookupName qref = case qref of
 
 instance ObjectLens (Stack Name Object) Reference where
   updateIndex = referenceUpdateName
-  lookupIndex = referenceLookupName
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4129,11 +4036,9 @@ newtype LocalStore = LocalStore (Stack Name Object)
 
 instance ObjectLens LocalStore Name where
   updateIndex = innerDataUpdateIndex (\ (LocalStore o) -> o) (\_ -> LocalStore)
-  lookupIndex = innerDataLookupIndex (\ (LocalStore o) -> o)
 
 instance ObjectLens LocalStore Reference where
   updateIndex = referenceUpdateName
-  lookupIndex = referenceLookupName
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4141,11 +4046,9 @@ newtype GlobalStore = GlobalStore T_dict
 
 instance ObjectLens GlobalStore Name where
   updateIndex = innerDataUpdateIndex (\ (GlobalStore o) -> o) (\_ -> GlobalStore)
-  lookupIndex = innerDataLookupIndex (\ (GlobalStore o) -> o)
 
 instance ObjectLens GlobalStore Reference where
   updateIndex = referenceUpdateName
-  lookupIndex = referenceLookupName
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4153,22 +4056,17 @@ newtype StaticStore = StaticStore (Maybe Subroutine)
 
 instance ObjectLens Subroutine Name where
   updateIndex = innerDataUpdateIndex staticVars (\d o -> d{staticVars=o})
-  lookupIndex = innerDataLookupIndex staticVars
 
 instance ObjectLens StaticStore Name where
   updateIndex name upd = get >>= \ (StaticStore o) -> case o of
     Nothing -> fmap fst $ withInnerLens (nullValue::Subroutine) $
       updateIndex name (upd >> fail "static variables must be defined within a function")
     Just  o -> do
-      (result, o) <- withInnerLens o (updateIndex name upd)
-      put (StaticStore $ Just o) >> return result
-  lookupIndex name = get >>= \ (StaticStore o) -> case o of
-    Nothing -> mzero
-    Just  o -> fst <$> withInnerLens o (lookupIndex name)
+      (result, (changed, o)) <- withInnerLens o (updateIndex name upd)
+      when changed (put $ StaticStore $ Just o) >> return result
 
 instance ObjectLens StaticStore Reference where
   updateIndex = referenceUpdateName
-  lookupIndex = referenceLookupName
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4177,12 +4075,9 @@ newtype WithRefStore = WithRefStore (Maybe Object)
 instance ObjectLens WithRefStore Name where
   updateIndex name =
     innerDataUpdateIndex (\ (WithRefStore o) -> o) (\_ -> WithRefStore) (DotRef name NullRef)
-  lookupIndex name =
-    innerDataLookupIndex (\ (WithRefStore o) -> o) (DotRef name NullRef)
 
 instance ObjectLens WithRefStore Reference where
   updateIndex = referenceUpdateName
-  lookupIndex = referenceLookupName
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4194,11 +4089,9 @@ newtype ConstantStore = ConstantStore T_dict
 
 instance ObjectLens ConstantStore Name where
   updateIndex = innerDataUpdateIndex (\ (ConstantStore o) -> o) (\_ -> ConstantStore)
-  lookupIndex = innerDataLookupIndex (\ (ConstantStore o) -> o)
 
 instance ObjectLens ConstantStore Reference where
   updateIndex = referenceUpdateName
-  lookupIndex = referenceLookupName
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4223,43 +4116,26 @@ _updateSetQual q update i upd = do
 _updateLocal :: ObjectLens LocalStore i => i -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
 _updateLocal = _updateSetQual LOCAL $ execUnitUpdateRef execStack (\n o -> n{execStack=o})
 
-_lookupLocal :: ObjectLens LocalStore i => i -> ObjectFocus ExecUnit Object
-_lookupLocal = _lookupSetQual LOCAL $ innerDataLookupIndex execStack
-
 _updateConst :: ObjectLens ConstantStore i => i -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
 _updateConst = _updateSetQual CONST $ \i upd -> execUnitUpdateRef (ConstantStore . builtinConstants) const i upd
-
-_lookupConst :: ObjectLens ConstantStore i => i -> ObjectFocus ExecUnit Object
-_lookupConst = _lookupSetQual CONST $ innerDataLookupIndex (ConstantStore . builtinConstants)
 
 _updateStatic :: ObjectLens StaticStore i => i -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
 _updateStatic = _updateSetQual STATIC $ execUnitUpdateRef currentCodeBlock (\n o -> n{currentCodeBlock=o})
 
-_lookupStatic :: ObjectLens StaticStore i => i -> ObjectFocus ExecUnit Object
-_lookupStatic = _lookupSetQual STATIC $ innerDataLookupIndex currentCodeBlock
-
 _updateGlobal :: ObjectLens GlobalStore i => i -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
 _updateGlobal = _updateSetQual GLOBAL $ execUnitUpdateRef globalData (\n o -> n{globalData=o})
-
-_lookupGlobal :: ObjectLens GlobalStore i => i -> ObjectFocus ExecUnit Object
-_lookupGlobal = _lookupSetQual GLOBAL $ innerDataLookupIndex globalData
 
 _updateWithRef :: ObjectLens WithRefStore i => i -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
 _updateWithRef = _updateSetQual GLODOT $ execUnitUpdateRef currentWithRef (\n o -> n{currentWithRef=o})
 
-_lookupWithRef :: ObjectLens WithRefStore i => i -> ObjectFocus ExecUnit Object
-_lookupWithRef = _lookupSetQual GLODOT $ innerDataLookupIndex currentWithRef
-
 instance ObjectLens ExecUnit Name where
-  updateIndex name upd = let xupd = get >>= xmaybe >> upd in msum $
-    [ _updateLocal  name xupd
-    , _updateConst  name xupd
-    , _updateStatic name xupd
-    , _updateGlobal name xupd
+  updateIndex name upd =
+    [ _updateLocal  name upd
+    , _updateConst  name upd
+    , _updateStatic name upd
+    , _updateGlobal name upd
     , _updateLocal  name upd
     ]
-  lookupIndex name = msum $
-    [ _lookupLocal name, _lookupConst name, _lookupStatic name, _lookupGlobal name]
 
 instance ObjectLens ExecUnit Reference where
   updateIndex qref upd = case qref of
@@ -4271,16 +4147,6 @@ instance ObjectLens ExecUnit Reference where
       GLOBAL -> _updateGlobal qref upd
       GLODOT -> _updateWithRef qref (get>>=xmaybe>>upd) <|> _updateGlobal qref upd
     _ -> fail "cannot update reference"
-  lookupIndex qref = case qref of
-    Reference q _ _ -> case q of
-      UNQUAL -> referenceLookupName qref
-      LOCAL  -> _lookupLocal qref
-      CONST  -> _lookupConst qref
-      STATIC -> _lookupStatic qref
-      GLOBAL -> _lookupGlobal qref
-      GLODOT -> _lookupWithRef qref <|> _lookupGlobal qref
-    RefObject o suf -> fst <$> withInnerLens (Just o) (lookupIndex suf)
-    _ -> fail "cannot lookup reference"
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4293,25 +4159,49 @@ instance ObjectLens ExecUnit Reference where
 data ExecControl
   = ExecReturn { execReturnValue :: Maybe Object }
   | ExecError
-    { execReturnValue :: Maybe Object
-    , execErrorInfo   :: ExecErrorInfo
+    { execErrorMessage  :: UStr
+    , execErrorInModule :: Maybe UStr
+    , execErrorLocation :: Location
+    , execErrorInfo     :: ExecErrorInfo
     }
   deriving Typeable
 
 data ExecErrorInfo
-  = ExecErrorInfo
-    { execUnitAtError :: Maybe ExecUnit
-    , execErrExpr     :: Maybe (ObjectExpr Object)
-    , execErrScript   :: Maybe (ScriptExpr Object)
-    , execErrTopLevel :: Maybe (TopLevelExpr Object)
+  = ExecErrorNoInfo
+  | ExecThrow         Object
+  | ExecErrorBadValue Object
+  | ExecStructError   StructError
+  | ExecUndefinedRef  UndefinedRef
+  | ExecIOException   IOException
+  | ExecHaskellError  ErrorCall
+  | ExecErrorBadType{ execErrorActualType :: ObjType }
+  | ExecErrorTypeMismatch
+    { execErrorActualType   :: ObjType
+    , execErrorExpectedType :: ObjType
+    }
+  | ExecErrorArity
+    { execErrorReference       :: Maybe Reference
+    , execErrorNumArgs         :: Maybe Int
+    , execErrorExpectedNumArgs :: Maybe Int
     }
   deriving Typeable
 
-mkExecErrorInfo :: ExecErrorInfo
-mkExecErrorInfo = ExecErrorInfo Nothing Nothing Nothing Nothing
-
 mkExecError :: ExecControl
-mkExecError = ExecError Nothing mkExecErrorInfo
+mkExecError =
+  ExecError{execErrorMessage=nil, execErrorLocation=LocationUnknown, execErrorInfo=ExecErrorNoInfo}
+
+throwArityError :: MonadError ExecControl m => String -> Maybe Int -> Maybe Reference -> [o] -> m ig
+throwArityError msg expc ref ox = execThrow msg err where
+  (before, after) = splitAt 100 ox
+  msg = (++(if null msg then "" else ' ':msg)) $
+    if not (null after)
+    then "over 100 arguments given"
+    else "incorrect number of argument parameters given"
+  err = ExecErrorArity
+        { execErrorReference       = ref
+        , execErrorNumArgs         = if null after then Just (length before) else Nothing
+        , execErrorExpectedNumArgs = Nothing
+        }
 
 -- | Evaluate an 'Exec', but if it throws an exception, set record an 'ObjectExpr' where
 -- the exception occurred in the exception information.
@@ -4327,82 +4217,42 @@ instance HasNullValue ExecControl where
 
 instance PPrintable ExecControl where
   pPrint err = case err of 
-    ExecError{ execReturnValue=o, execErrorInfo=info } -> maybe (return ()) pperr o where
-      fileName = execUnitAtError info >>= programModuleName
-      apLabel which label =
-        fmap (\o -> (pInline [pString label, pString " ", pPrint o], getLocation o)) (which info)
-      errInfo = msum
-        [ apLabel execErrExpr     "in expression" 
-        , apLabel execErrScript   "in statement"
-        , apLabel execErrTopLevel "in top-level directive"
-        ]
-      unquot o = case o of
-        OString o -> pUStr o
-        o         -> pPrint o
-      pplist o = case o of
-        OList   o -> pInline $ intersperse (pString " ") (map unquot o)
-        o         -> unquot o
-      ppmap o = case o of
-        ODict o -> forM_ (M.assocs o) $ \ (ref, o) -> pWrapIndent [pPrint ref, pplist o]
-        o -> pplist o
-      pperr o = do
-        pWrapIndent $
-          [ case errInfo of
-              Nothing -> pString "Error: "
-              Just  o -> pString $ concat $
-                [maybe "" ((++":") . uchars) fileName , show (snd o) ++ ": "]
-          , ppmap o
-          ]
-        pEndLine
-        maybe (return ()) fst errInfo
-    ExecReturn{ execReturnValue=o } ->
-      maybe (return ()) (\o -> pWrapIndent [pString "Evaluated to: ", pPrint o]) o
+    ExecError{ execErrorMessage=msg, execErrorLocation=loc, execErrorInfo=info } -> do
+      pPrint loc
+      when (not $ testNull loc) (pString ": ")
+      when (not $ msg==nil) (pUStr msg >> pEndLine)
+      pIndent (pPrint info)
+    ExecReturn{ execReturnValue=o } -> maybe (return ()) pPrint o
 
 instance ToDaoStructClass ExecControl where
   toDaoStruct = ask >>= \o -> case o of
-    ExecReturn a -> flip (maybe (void $ makeNullary "ExecReturn")) a $ \a ->
-      renameConstructor "ExecReturn" >> void ("value" .= a)
-    ExecError o (ExecErrorInfo _ a b c) -> void $ renameConstructor "ExecError" >>
-      "value" .=? o >> "objectExpr" .=? a >> "scriptExpr" .=? b >> "topLevelExpr" .=? c
+    ExecReturn{} -> renameConstructor "ExecReturn" $ asks execReturnValue >>= ("value" .=?)
+    ExecError {} -> renameConstructor "ExecError" $ do
+      asks execErrorInModule >>= ("inModule" .=?)
+      "message"    .=  execErrorMessage
+      "location"   .=  execErrorLocation
+      "info"       .=? execErrorInfo
 
 instance FromDaoStructClass ExecControl where
   fromDaoStruct = msum $
     [ constructor "ExecReturn" >> ExecReturn <$> opt "value"
     , do  constructor "ExecError"
-          return ExecError <*> opt "value" <*>
-            (return ExecErrorInfo
-              <*> pure Nothing
-              <*> opt "objectExpr"
-              <*> opt "scriptExpr"
-              <*> opt "topLevelExpr"
-            )
+          return ExecError <*> req "message" <*> opt "inModule" <*> req "location" <*> req "info"
     ]
 
 instance HataClass ExecControl where
   haskellDataInterface = interface "ExecControl" $ do
     autoDefPPrinter >> autoDefNullTest >> autoDefToStruct
 
+instance HasNullValue ExecErrorInfo where
+  nullValue = ExecErrorNoInfo
+  testNull ExecErrorNoInfo = True
+  testNull _               = False
+
 setCtrlReturnValue :: Object -> ExecControl -> ExecControl
 setCtrlReturnValue obj ctrl = case ctrl of
   ExecReturn{}   -> ExecReturn (Just obj)
   ExecError{ execErrorInfo=info } -> ExecError{ execReturnValue=Just obj, execErrorInfo=info }
-
-_setErrorInfoExpr :: (ExecErrorInfo -> ExecErrorInfo) -> Exec a -> Exec a
-_setErrorInfoExpr upd exec = catchPredicate exec >>= \a -> case a of
-  OK      a -> return a
-  Backtrack -> mzero
-  PFail err -> case err of
-    ExecReturn{} -> throwError err
-    ExecError{ execErrorInfo=info } -> throwError $ err{ execErrorInfo=upd info }
-
-_setObjectExprError :: ObjectExpr Object -> Exec a -> Exec a
-_setObjectExprError o = _setErrorInfoExpr (\info -> info{ execErrExpr=Just o })
-
-_setScriptExprError :: ScriptExpr Object -> Exec a -> Exec a
-_setScriptExprError o = _setErrorInfoExpr (\info -> info{ execErrScript=Just o })
-
-_setTopLevelExprError :: TopLevelExpr Object -> Exec () -> Exec ()
-_setTopLevelExprError o = _setErrorInfoExpr (\info -> info{ execErrTopLevel=Just o })
 
 -- | If an error has not been caught, log it in the module where it can be retrieved later. This
 -- function only stores errors constructed with 'ExecError', the 'ExecReturn' constructed objects
@@ -4457,7 +4307,12 @@ instance MonadPlusError ExecControl Exec where
 -- monad that backtracks or throws an error, the 'Exec' monad will backtrack or throw the same
 -- error.
 newtype XPure a = XPure { xpureToState :: PredicateT Object (State UStr) a }
-  deriving (Functor, Applicative, Alternative, Monad, MonadPlus)
+  deriving (Functor, Applicative, Alternative, MonadPlus)
+
+instance Monad XPure where
+  return = XPure . return
+  (XPure a) >>= f = XPure $ a >>= xpureToState . f
+  fail msg = execThrow msg ExecErrorNoInfo
 
 -- | Convert a value wrapped in an XPure monad to a pair containing the internal state 'Dao.String.UStr' and
 -- 'Dao.Predicate.Predicate' value.
@@ -4475,7 +4330,7 @@ evalXPure = fst . runXPure
 extractXPure :: XPure a -> Maybe a
 extractXPure = okToJust . evalXPure
 
-instance MonadError Object XPure where
+instance MonadError ExecControl XPure where
   throwError = XPure . throwError
   catchError (XPure f) catch = XPure $ catchError f (xpureToState . catch)
 
@@ -4518,19 +4373,24 @@ xmaybe = maybe mzero return
 ----------------------------------------------------------------------------------------------------
 
 class ExecThrowable o where
-  toExecError :: o -> ExecControl
+  toExecErrorInfo :: o -> ExecErrorInfo
   -- | Like 'Prelude.error' but works for the 'Exec' monad, throws an 'ExecControl' using
   -- 'Control.Monad.Error.throwError' constructed using the given 'Object' value as the
   -- 'execReturnValue'.
-  execThrow :: ExecThrowable o => o -> Exec ig
-  execThrow o = get >>= \xunit -> throwError $
-    let err = toExecError o
-    in  err{execErrorInfo=(execErrorInfo err){execUnitAtError=Just xunit}}
+  execThrow :: (Monad m, MonadError ExecControl m, ExecThrowable o, UStrType msg) => msg -> o -> m ig
+  execThrow msg o = execThrow $
+    ExecError
+    { execErrorMessage  = toUStr msg
+    , execErrorLocation = LocationUnknown
+    , execErrorInfo     = toExecErrorInfo 
+    }
 
-instance ExecThrowable Object where
-  toExecError err = setCtrlReturnValue err mkExecError
-
-instance ExecThrowable ExecControl where { toExecError = id }
+instance ExecThrowable ExecErrorInfo where { toExecErrorInfo = id }
+instance ExecThrowable Object        where { toExecErrorInfo = ExecThrow }
+instance ExecThrowable StructError   where { toExecErrorInfo = ExecStructError }
+instance ExecThrowable UndefinedRef  where { toExecErrorInfo = ExecUndefinedRef }
+instance ExecThrowable IOException   where { toExecErrorInfo = ExecIOException }
+instance ExecThrowable ErrorCall     where { toExecErrorInfo = ExecHaskellError }
 
 ioExec :: Exec a -> ExecUnit -> IO (Predicate ExecControl a, ExecUnit)
 ioExec func xunit = runStateT (runPredicateT (execToPredicate func)) xunit
@@ -6658,9 +6518,9 @@ localVarDefine name = localVarUpdate name . const . Just
 localVarUpdate :: Name -> (Maybe Object -> Maybe Object) -> Exec ()
 localVarUpdate name f = do
   let qref = Reference LOCAL name NullRef
-  (_, (_, store)) <- gets execStack >>=
+  (_, (_, changed, store)) <- gets execStack >>=
     runObjectFocusExec (updateIndex name $ state $ \a -> let b = f a in (b, b)) qref
-  modify (\xunit -> xunit{ execStack=store })
+  when changed (modify $ \xunit -> xunit{ execStack=store })
 
 -- | Like evaluating 'execute' on a value of 'Reference', except the you are evaluating an
 -- 'Object' type. If the value of the 'Object' is not constructed with
@@ -6673,7 +6533,9 @@ derefObject = fmap snd . derefObjectGetReference
 -- 'ORef', 'Prelude.Nothing' is returned instead of a 'Reference'.
 derefObjectGetReference :: Object -> Exec (Maybe Reference, Object)
 derefObjectGetReference o = maybeDerefObject (Just o) >>= \ (r, derefd) -> case derefd of
-  Nothing     -> execThrow $ obj [obj "reference evaluated to void", o]
+  Nothing -> case r of
+    Nothing -> execThrow "dereferenced a non-reference value" (ExecErrorBadType $ typeOfObj o)
+    Just  r -> execThrow "reference evaluated to void" (UndefinedRef $ obj r)
   Just derefd -> return (r, derefd)
 
 -- | Tries to dereference an 'Object'. If the 'Object' is an 'ORef' constructed 'Reference', the
@@ -7854,8 +7716,8 @@ instance HataClass (H.HashMap Object Object) where
       hash128 <- focusLiftExec getObjectHash128
       i <- pure (H.hashNewIndex hash128 i)
       hm <- get
-      (result, o) <- withInnerLens (H.hashLookup i hm) upd
-      put (H.hashAlter (const o) i hm)
+      (result, (changed, o)) <- withInnerLens (H.hashLookup i hm) upd
+      when changed (put $ H.hashAlter (const o) i hm)
       return result
 
 hashMapFromList :: [Object] -> Exec (H.HashMap Object Object)

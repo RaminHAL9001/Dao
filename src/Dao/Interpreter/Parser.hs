@@ -42,7 +42,6 @@ import           Data.List
 import           Data.Char
 import           Data.Ratio
 import           Data.Complex
-import           Data.Array.IArray
 
 maxYears :: Integer
 maxYears = 99999

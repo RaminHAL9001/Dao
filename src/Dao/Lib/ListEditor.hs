@@ -111,24 +111,25 @@ instance ObjectLens ListEditor Int where
     (o, right) <- pure $ case slRightOfCursor sl of
       []   -> (Nothing, [])
       o:ox -> (Just  o, ox)
-    (result, o) <- withInnerLens o f
-    put $ ListEditor $ case o of
-      Nothing -> sl{ slRightOfCursor =   right, slLength = slLength sl - 1 }
-      Just  o -> sl{ slRightOfCursor = o:right }
+    (result, (changed, o)) <- withInnerLens o f
+    when changed $ put $ ListEditor $ case o of
+      Nothing -> sl{slRightOfCursor=right, slLength=slLength sl - 1}
+      Just  o -> sl{slRightOfCursor=o:right }
     return result
-  lookupIndex i = (slIndex i . listEditor <$> get) >>= xmaybe
 
 instance ObjectFunctor ListEditor Int where
   objectFMap f = do
     (ListEditor sl) <- get
-    (>>=put) $ fmap (ListEditor . slCursorTo (slCursor sl) . slFromIntMap . I.fromList . concat) $
-      mapM (fmap snd . withInnerLens [] . uncurry f) $ concat $
+    o <- mapM (fmap snd . withInnerLens [] . uncurry f) $ concat $
         [ reverse $
             if slCursor sl > 0
             then zip (map negate [1..slCursor sl]) (slLeftOfCursor sl)
             else []
         , zip [0..] (slRightOfCursor sl)
         ]
+    (changed, o) <- return $ unzip o
+    when (or changed) $
+      put $ ListEditor $ slCursorTo (slCursor sl) $ slFromIntMap $ I.fromList $ concat o
 
 instance ObjectFunctor ListEditor [Object] where { objectFMap f = objectFMap (\i -> f [obj i]) }
 

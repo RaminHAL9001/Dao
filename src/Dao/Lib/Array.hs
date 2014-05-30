@@ -96,8 +96,8 @@ instance ObjectFunctor Array Int where
     let a = toObjArray arr
     (bounds, elems) <- liftIO $ return (,) <*> getBounds a <*> getElems a
     forM_ (zip (range bounds) elems) $ \ (i, o) -> focalPathSuffix (Subscript [obj i] NullRef) $
-      withInnerLens [] (f i o) >>=
-        mapM_ (liftIO . uncurry (writeArray $ toObjArray arr)) . snd
+      withInnerLens [] (f i o) >>= \ (_, (changed, ox)) ->
+        when changed $ forM_ ox (liftIO . uncurry (writeArray $ toObjArray arr))
 
 instance ObjectFunctor Array  Object  where { objectFMap f = objectFMap (\i -> f (obj i)) }
 instance ObjectFunctor Array [Object] where { objectFMap f = objectFMap (\i -> f [obj i]) }
@@ -134,11 +134,11 @@ instance HataClass Array where
     defIndexer $ \arr i -> _objToInt i >>= liftIO . arrayLookup arr >>= predicate
     defIndexUpdater $ \i f -> focusLiftExec (_objToInt i) >>= \i -> do
       arr <- get
-      (_arr, o) <- focusLiftExec (liftIO (arrayLookup arr i) >>= predicate) >>=
+      (_arr, (changed, o)) <- focusLiftExec (liftIO (arrayLookup arr i) >>= predicate) >>=
         flip withInnerLens f . Just
       case o of
         Nothing -> fail "cannot delete items from array"
-        Just  o -> liftIO (writeArray (toObjArray arr) i o) >> return (Just o)
+        Just  o -> when changed (liftIO $ writeArray (toObjArray arr) i o) >> return (Just o)
     let init ox = case ox of -- initializer list in round-brackets must be empty
           [] -> return (Array $ error "uninitialized Array") -- SUCCESS: return an uninitialized Array
           _  -> execThrow $ obj "cannot initialize array with parameters" -- FAIL

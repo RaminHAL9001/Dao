@@ -57,8 +57,7 @@ instance HasNullValue ListEditor where
   testNull (ListEditor sl) = slNull sl
 
 instance ToDaoStructClass ListEditor where
-  toDaoStruct = void $ do
-    renameConstructor "ListEditor"
+  toDaoStruct = renameConstructor "ListEditor" $ do
     "left"  .=@ slLeftOfCursor  . listEditor
     "right" .=@ slRightOfCursor . listEditor
 
@@ -91,19 +90,23 @@ _getIndex ix = case ix of
   _   -> fail "must index ListEditor with a 1-dimentional integer value"
 
 _withRange :: String -> (Int -> Int -> Exec a) -> [Object] -> Exec a
-_withRange func f ox = case ox of
-  []  -> execThrow $ obj $ [obj func, obj "expects one or two integer paramters for range selection"]
-  [a] -> do
-    a <- xmaybe (fromObj a) <|>
-      execThrow (obj $ [obj func, obj "index parameter received is not an integer value"])
-    f (min 0 a) (max 0 a)
-  [a, b] -> do
-    let param msg a = xmaybe (fromObj a) <|>
-          (execThrow $ obj $
-            [obj func, obj $ msg++" range parameter received is not of an integer type"])
-    param "first" a >>= \a -> param "second" b >>= \b -> f (min a b) (max a b)
-  _ -> execThrow $
-    obj [obj func, obj "received parameters which are neither an integer index nor a range"]
+_withRange func f ox = do
+  let err = throwArityError "expecting one or two integer parameters" 2 ox $
+        [(errInFunc, obj (ustr func :: Name))]
+  case ox of
+    []  -> err
+    [a] -> do
+      a <- xmaybe (fromObj a) <|>
+        throwBadTypeError "index parameter received is not an integer value" a
+          [(errInFunc, obj (ustr func :: Name))]
+      f (min 0 a) (max 0 a)
+    [a, b] -> do
+      let param n a = xmaybe (fromObj a) <|>
+            (throwBadTypeError "in range to ListEditor" a $
+              [(errInConstr, obj (ustr func :: Name)), (argNum, OInt n)]
+            )
+      param 1 a >>= \a -> param 2 b >>= \b -> f (min a b) (max a b)
+    _ -> err
 
 instance ObjectLens ListEditor Int where
   updateIndex i f = do
@@ -156,10 +159,9 @@ instance HataClass ListEditor where
                   InitSingle        o -> loop (I.insert i o im) ox
                   InitAssign ref op o -> do
                     i <- (fromObj <$> derefObject ref >>= xmaybe) <|>
-                      execThrow
-                        (obj [ obj "ListEditor constructor assigns value to non-integer type"
-                             , obj (typeOfObj ref)
-                             ])
+                      (throwBadTypeError "ListEditor constructor assigns value to non-integer type" ref $
+                        [(errInFunc, obj (ustr "ListEditor" :: Name))]
+                      )
                     o <- evalUpdateOp (Just $ RefObject ref NullRef) op o (I.lookup i im)
                     loop (I.alter (const o) i im) ox
           loop mempty (zip [(slCursor sl)..] ox)

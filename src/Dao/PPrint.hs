@@ -104,6 +104,7 @@ pIndent indentedPrinter = do
   indentedPrinter
   modify (\st -> st{nextTab=tab})
 
+instance PPrintable ()   where { pPrint = return }
 instance PPrintable UStr where { pPrint = pUStr }
 instance PPrintable Name where { pPrint = pUStr . toUStr }
 instance PPrintable t => PPrintable (T.Tree Name t) where

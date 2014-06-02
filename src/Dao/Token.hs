@@ -31,6 +31,7 @@ import           Data.List (intercalate)
 import           Data.Typeable
 import           Data.Data
 
+import           Control.Monad
 import           Control.DeepSeq
 
 ----------------------------------------------------------------------------------------------------
@@ -76,14 +77,17 @@ data Location
     , endingColumn   :: ColumnNum
     }
   deriving (Eq, Typeable, Data)
+
 instance HasLocation Location where
   getLocation = id
   setLocation = flip const
   delLocation = const LocationUnknown
+
 instance Show Location where
   show t = case t of
     LocationUnknown  -> ""
     Location a b _ _ -> show a ++ ':' : show b
+
 instance Monoid Location where
   mempty = LocationUnknown
 --  Location
@@ -182,10 +186,13 @@ data Token tok
   | Token      { tokType :: tok, tokUStr :: UStr }
     -- ^ Constructs tokens that contain a copy of the text extracted by the lexical analyzer to
     -- create the token.
+  deriving (Eq, Typeable)
+
 instance Show tok => Show (Token tok) where
   show tok =
     let cont = tokToStr tok
     in  show (tokType tok) ++ (if null cont then "" else ' ':show cont)
+
 instance Functor Token where
   fmap f t = case t of
     EmptyToken t   -> EmptyToken (f t)
@@ -215,12 +222,17 @@ data TokenAt tok
     , tokenAtColumnNumber :: ColumnNum
     , getTokenValue       :: Token tok
     }
+
 instance Show tok =>
   Show (TokenAt tok) where
     show tok = let (a,b,c) = asTriple tok in show a++':':show b++' ':show c
+
 instance HasLineNumber   (TokenAt tok) where { lineNumber   = tokenAtLineNumber }
+
 instance HasColumnNumber (TokenAt tok) where { columnNumber = tokenAtColumnNumber }
+
 instance HasToken TokenAt where { getToken = getTokenValue }
+
 instance Functor  TokenAt where
   fmap f t =
     TokenAt
@@ -295,13 +307,16 @@ data Line tok
     , lineTokens     :: [(ColumnNum, Token tok)]
       -- ^ a list of tokens, each with an associated column number.
     }
+
 instance HasLineNumber (Line tok) where { lineNumber = lineLineNumber }
+
 instance Show tok => Show (Line tok) where
   show line = concat $
     [ "Line ", show (lineLineNumber line), ":\n"
     , intercalate ", " $
         map (\ (col, tok) -> show col++" "++show tok) (lineTokens line)
     ]
+
 instance Functor Line where
   fmap f t =
     Line
@@ -322,51 +337,64 @@ lineToTokensAt line = map f (lineTokens line) where
 ----------------------------------------------------------------------------------------------------
 -- $Error_handling
 -- The lexical analyzer and syntactic analysis monads all instantiate
--- 'Control.Monad.Error.Class.MonadError' in the Monad Transformer Library ("mtl" package). This is
--- the type used for 'Control.Monad.Error.Class.throwError' and
--- 'Control.Monad.Error.Class.catchError'.
+-- 'Control.Monad.ParseError.Class.MonadError' in the Monad Transformer Library ("mtl" package). This is
+-- the type used for 'Control.Monad.ParseError.Class.throwError' and
+-- 'Control.Monad.ParseError.Class.catchError'.
 
 -- | This data structure is used by both the lexical analysis and the syntactic analysis phase.
-data Error st tok
-  = Error
-    { parseErrLoc     :: Maybe Location
+data ParseError st tok
+  = ParseError
+    { parseErrLoc     :: Location
     , parseErrMsg     :: Maybe UStr
     , parseErrTok     :: Maybe (Token tok)
     , parseStateAtErr :: Maybe st
     }
-instance Show tok => Show (Error st tok) where
-  show err =
-    let msg = concat $ map (maybe "" id) $
-          [ fmap ((':':) . (++":") . show) (parseErrLoc err)
-          , fmap ((" (on token "++) . (++")") . show) (parseErrTok err)
-          , fmap ((" "++) . uchars) (parseErrMsg err)
-          ]
-    in  if null msg then "Unknown parser error" else msg
-instance Functor (Error st) where
+  deriving (Eq, Typeable)
+
+instance (PPrintable st, Show tok) => Show (ParseError st tok) where { show err = prettyShow err }
+
+instance Functor (ParseError st) where
   fmap f e =
-    Error
+    ParseError
     { parseErrLoc     = parseErrLoc e
     , parseErrMsg     = parseErrMsg e
     , parseErrTok     = fmap (fmap f) (parseErrTok e)
     , parseStateAtErr = parseStateAtErr e
     }
 
+instance (PPrintable st, Show tok) => PPrintable (ParseError st tok) where
+  pPrint err = do
+    pString (show (parseErrLoc err)++": ")
+    sp <-
+      maybe
+        (return False)
+        (\tok -> pString ("(on token: "++show tok++")") >> return True)
+        (parseErrTok err)
+    maybe
+      (return False)
+      (\msg -> when sp (pString " ") >> pUStr msg >> return True)
+      (parseErrMsg err)
+    maybe (return ()) (\st -> pEndLine >> pIndent (pPrint st)) (parseStateAtErr err)
+
+fmapParseErrorState :: (stA -> stB) -> ParseError stA tok -> ParseError stB tok
+fmapParseErrorState f err@(ParseError{ parseStateAtErr=st }) = err{parseStateAtErr=fmap f st}
+
 -- | An initial blank parser error you can use to construct more detailed error messages.
-parserErr :: Location -> Error st tok
+parserErr :: Location -> ParseError st tok
 parserErr loc =
-  Error
-  { parseErrLoc = Just loc
+  ParseError
+  { parseErrLoc = loc
   , parseErrMsg = Nothing
   , parseErrTok = Nothing
   , parseStateAtErr = Nothing
   }
 
-newError :: Error st tok
-newError =
-  Error
-  { parseErrLoc=Nothing
-  , parseErrMsg=Nothing
-  , parseErrTok=Nothing
-  , parseStateAtErr=Nothing
+newParseError :: ParseError st tok
+newParseError =
+  ParseError
+  { parseErrLoc     = LocationUnknown
+  , parseErrMsg     = Nothing
+  , parseErrTok     = Nothing
+  , parseStateAtErr = Nothing
   }
 

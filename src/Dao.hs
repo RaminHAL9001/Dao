@@ -137,7 +137,7 @@ readSource path = do
   text <- liftIO $ readFile (uchars path)
   case parse daoGrammar mempty text of
     OK    ast -> deepseq ast $! return ast
-    Backtrack -> execThrow $ obj [obj path, obj "does not appear to be a valid Dao source file"]
+    Backtrack -> execThrow "does not appear to be a valid Dao source file" ExecErrorUntyped []
     PFail err -> loadModParseFailed (Just path) err
 
 -- | Create a new 'ExecUnit' from a 'AST_SourceCode' object that was produced by 'readSource'. The
@@ -164,52 +164,47 @@ loadEveryModule args = do
 -- Called by 'loadModHeader' and 'loadModule', throws a Dao exception if the source file could not
 -- be parsed.
 loadModParseFailed :: Maybe UPath -> DaoParseErr -> Exec ig
-loadModParseFailed path err = execThrow $ obj $ concat $
-  [ maybe [] (\path -> [obj $ uchars path ++ maybe "" show (parseErrLoc err)]) path
-  , maybe [] (return . obj) (parseErrMsg err)
-  , maybe [] (\tok -> [obj "on token", obj (show tok)]) (parseErrTok err)
-  ]
+loadModParseFailed path err =
+  throwParseError "syntax error" path (fmapParseErrorState (const ()) err) []
 
 -- | Load only the "require" and "import" statements from a Dao script file at the given filesystem
 -- path. Called by 'importDepGraph'.
 loadModHeader :: UPath -> Exec [(Name, Object, Location)]
 loadModHeader path = do
   text <- liftIO (readFile (uchars path))
-  case parse daoGrammar mempty text of
+  errModule path $ case parse daoGrammar mempty text of
     OK    ast -> do
       let (requires, imports) = getRequiresAndImports (directives ast)
       forM_ requires $ \_attrib -> do -- TODO: check require statements
         return ()
-      forM imports $ \ (attrib, namesp) -> case namesp of
-        NamespaceExpr (Just nm) _ -> case attrib of
-          AttribStringExpr str loc -> return (nm, obj str, loc)
-          AttribDotNameExpr dots -> do -- TODO: resolve logical module names properly
-            let path = foldl (\s t -> s++"/"++t) "." (map uchars $ dotLabelToNameList dots)++".dao"
-            return (nm, obj path, getLocation dots)
-        _ -> execThrow $ obj $ -- TODO: actually do something useful when a namespace is NOT specified
-          [obj "import string", obj (prettyShow attrib), obj "specified without namespace"]
-    Backtrack -> execThrow $ obj $
-      [obj path, obj "does not appear to be a valid Dao source file"]
+      forM imports $ \ (attrib, namesp) -> do
+        let loc = getLocation attrib
+        importstr <- pure $ case attrib of
+          AttribStringExpr str _ -> uchars str
+          AttribDotNameExpr dots -> foldl (\s t -> s++"/"++t) "." (map uchars $ dotLabelToNameList dots)++".dao"
+        errLocation loc $ case namesp of
+          NamespaceExpr nm _ -> case nm of
+            Nothing -> -- TODO: actually do something useful when a namespace is NOT specified
+              execThrow "import without \"as\" namespace specified"
+                ExecErrorUntyped [(ustr "forImport", obj importstr)]
+            Just nm -> return (nm, obj importstr, loc)
+    Backtrack -> execThrow "does not appear to be a valid source file" ExecErrorUntyped []
     PFail err -> loadModParseFailed (Just path) err
 
 -- | Takes a non-dereferenced 'Dao.Interpreter.Object' expression which was returned by 'execute'
 -- and converts it to a file path. This is how "import" statements in Dao scripts are evaluated.
 -- This function is called by 'importDepGraph', and 'importFullDepGraph'.
 objectToImport :: UPath -> Object -> Location -> Exec [UPath]
-objectToImport file o lc = case o of
+objectToImport file o loc = errModule file $ errLocation loc $ case o of
   OString str -> return [str]
-  o           -> execThrow $ obj $ 
-    [ obj (uchars file ++ show lc)
-    , obj "contains import expression evaluating to an object that is not a file path", o
-    ]
+  o           ->
+    throwBadTypeError "contains import expression evaluating to an object that is not a file path" o []
 
 objectToRequirement :: UPath -> Object -> Location -> Exec UStr
-objectToRequirement file o lc = case o of
+objectToRequirement file o loc = errModule file $ errLocation loc $ case o of
   OString str -> return str
-  o           -> execThrow $ obj $ 
-    [ obj (uchars file ++ show lc)
-    , obj "contains import expression evaluating to an object that is not a file path", o
-    ]
+  o           ->
+    throwBadTypeError "contains import expression evaluating to an object that is not a file path" o []
 
 -- | Calls 'loadModHeader' for several filesystem paths, creates a dependency graph for every import
 -- statement. This function is not recursive, it only gets the imports for the paths listed. It
@@ -288,8 +283,7 @@ instance HasNullValue DaoProgram where
 instance PPrintable DaoProgram where { pPrint = pPrint . programSourceCode }
 
 instance ToDaoStructClass DaoProgram where
-  toDaoStruct = void $ do
-    renameConstructor "DaoProgram"
+  toDaoStruct = renameConstructor "DaoProgram" $ do
     "path" .=@ programPath
     "AST"  .=@ programSourceCode
 
@@ -314,8 +308,7 @@ loadLibrary_Program = do
             { programPath       = path, programModified = isNew
             , programSourceCode = src , programExecUnit = Nothing
             }
-        _ -> execThrow $ obj $
-          [obj "loadProgram", obj "function requires a single file path parameter"]
+        ox -> throwArityError "" 1 ox [(errInFunc, obj (ustr "loadProgram" :: Name))]
     }
 
 instance ObjectClass DaoProgram where { obj=new; fromObj=objFromHata; }
@@ -375,10 +368,11 @@ builtin_DaoPattern :: DaoFunc ()
 builtin_DaoPattern = 
   daoFunc
   { daoForeignFunc = _makePatternizerFunc $ ExecTokenizer $ \strs -> do
-      let (success, (toks, rem)) = runLexer (tokenDBLexer daoTokenDB) (uchars strs)
+      let (success, (toks, _rem)) = runLexer (tokenDBLexer daoTokenDB) (uchars strs)
       if success
-      then return $ fmap (obj . tokenToUStr) toks
-      else execThrow $ obj [ obj "could not tokenizer string", obj rem]
+      then  return $ fmap (obj . tokenToUStr) toks
+      else  execThrow "could not tokenize string to pattern expression"
+              ExecErrorUntyped [(errInConstr, obj (ustr "DaoPattern" :: Name))]
   }
 
 builtin_SimplePattern :: DaoFunc ()

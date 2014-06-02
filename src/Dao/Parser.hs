@@ -30,7 +30,7 @@ import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Cont
 import           Control.Monad.State
-import           Control.Monad.Error.Class hiding (Error)
+import           Control.Monad.Error.Class
 
 import           Data.Data
 import           Data.Tuple
@@ -856,11 +856,11 @@ newLexerState input =
 -- > case tokenizerResult of
 -- >    'Dao.Predicate.PFail' lexErr -> 'Dao.Predicate.PFail' (('lexErrToParseErr' lexErr){'parseStateAtErr' = Nothing})
 -- >    ....
-lexErrToParseErr :: TokenType tok => Error (LexerState tok) tok -> Error (TokStreamState st tok) tok
-lexErrToParseErr lexErr =
+lexErrToParseErr :: TokenType tok => ParseError (LexerState tok) tok -> ParseError (TokStreamState st tok) tok
+lexErrToParseErr (lexErr@ParseError{parseStateAtErr=st}) =
   lexErr
   { parseStateAtErr = mzero
-  , parseErrLoc = st >>= \st -> return (atPoint (lexCurrentLine st) (lexCurrentColumn st))
+  , parseErrLoc = maybe LocationUnknown (\st -> atPoint (lexCurrentLine st) (lexCurrentColumn st)) st
   , parseErrMsg = return (ustr "Lexical analysis failed on ") <> parseErrMsg lexErr <>
       (do st <- st
           return $ ustr $ concat $ concat $
@@ -870,7 +870,6 @@ lexErrToParseErr lexErr =
             ]
       )
   }
-  where { st = parseStateAtErr lexErr }
 
 lexCurrentLocation :: LexerState tok -> Location
 lexCurrentLocation st = atPoint (lineNumber st) (columnNumber st)
@@ -893,7 +892,7 @@ lexCurrentLocation st = atPoint (lineNumber st) (columnNumber st)
 -- 'Lexer' backtracks while being evaluated in lexical analysis the 'lexInput' will not be
 -- affected at all and the 'lexBuffer' is ingored entirely.
 newtype Lexer tok a = Lexer{
-    lexerToPredicateT :: PredicateT (Error (LexerState tok) tok) (State (LexerState tok)) a
+    lexerToPredicateT :: PredicateT (ParseError (LexerState tok) tok) (State (LexerState tok)) a
   }
   deriving (Functor, Applicative, Alternative, MonadPlus)
 
@@ -910,11 +909,11 @@ instance TokenType tok => MonadState (LexerState tok) (Lexer tok) where
   get = Lexer (lift get)
   put = Lexer . lift . put
 
-instance TokenType tok => MonadError (Error (LexerState tok) tok) (Lexer tok) where
+instance TokenType tok => MonadError (ParseError (LexerState tok) tok) (Lexer tok) where
   throwError                     = Lexer . throwError
   catchError (Lexer try) catcher = Lexer (catchError try (lexerToPredicateT . catcher))
 
-instance TokenType tok => MonadPlusError (Error (LexerState tok) tok) (Lexer tok) where
+instance TokenType tok => MonadPlusError (ParseError (LexerState tok) tok) (Lexer tok) where
   catchPredicate (Lexer try) = Lexer (catchPredicate try)
   predicate            = Lexer . predicate
 
@@ -1059,7 +1058,7 @@ tokenStreamToLines toks = loop toks where
 -- 'LexerState'.
 lexicalAnalysis
   :: TokenType tok
-  => Lexer tok a -> LexerState tok -> (Predicate (Error (LexerState tok) tok) a, LexerState tok)
+  => Lexer tok a -> LexerState tok -> (Predicate (ParseError (LexerState tok) tok) a, LexerState tok)
 lexicalAnalysis lexer st = runState (runPredicateT (lexerToPredicateT lexer)) st
 
 -- | Perform a simple evaluation of a 'Lexer' against the beginning of a string, returning the
@@ -1090,7 +1089,7 @@ testLexicalAnalysis_withFilePath tokenizer filepath tablen input = putStrLn repo
   report = (++remain) $ intercalate "\n" (map showLine lines) ++ '\n' : case result of
     OK      _ -> "No failures during lexical analysis."
     Backtrack -> reportFilepath ++ ": lexical analysis evalauted to \"Backtrack\""
-    PFail err -> reportFilepath ++ show err
+    PFail err -> show (fmapParseErrorState (const ()) err)
   showLine line = unlines $ ["----------", show line]
   reportFilepath = (if null filepath then "" else filepath)++":"++loc
 
@@ -1179,7 +1178,7 @@ newTokStreamFromLexer userState lexerState =
 newtype TokStream st tok a
   = TokStream{
       parserToPredicateT ::
-        PredicateT (Error (TokStreamState st tok) tok) (State (TokStreamState st tok)) a
+        PredicateT (ParseError (TokStreamState st tok) tok) (State (TokStreamState st tok)) a
     }
 instance Functor (TokStream st tok) where { fmap f (TokStream a) = TokStream (fmap f a) }
 instance TokenType tok =>
@@ -1190,8 +1189,8 @@ instance TokenType tok =>
       tok <- optional (nextToken False)
       st  <- get
       throwError $
-        Error
-        { parseErrLoc     = fmap asLocation tok
+        ParseError
+        { parseErrLoc     = maybe LocationUnknown asLocation tok
         , parseErrMsg     = Just (ustr msg)
         , parseErrTok     = fmap getToken tok
         , parseStateAtErr = Just st
@@ -1209,7 +1208,7 @@ instance TokenType tok =>
     get = TokStream (PredicateT (fmap OK get))
     put = TokStream . PredicateT . fmap OK . put
 instance TokenType tok =>
-  MonadError (Error (TokStreamState st tok) tok) (TokStream st tok) where
+  MonadError (ParseError (TokStreamState st tok) tok) (TokStream st tok) where
     throwError err = do
       st <- get
       predicate (PFail (err{parseStateAtErr=Just st}))
@@ -1220,7 +1219,7 @@ instance TokenType tok =>
         Backtrack -> mzero
         PFail err -> parserToPredicateT (catcher err)
 instance TokenType tok =>
-  MonadPlusError (Error (TokStreamState st tok) tok) (TokStream st tok) where
+  MonadPlusError (ParseError (TokStreamState st tok) tok) (TokStream st tok) where
     catchPredicate (TokStream ptrans) = TokStream (catchPredicate ptrans)
     predicate                   = TokStream . predicate
 instance (TokenType tok, Monoid a) =>
@@ -1282,12 +1281,12 @@ instance TokenType tok => MonadState st (Parser st tok) where
   get     = Parser (gets userState)
   put ust = Parser (modify (\st -> st{userState=ust}))
 instance TokenType tok =>
-  MonadError (Error (TokStreamState st tok) tok) (Parser st tok) where
+  MonadError (ParseError (TokStreamState st tok) tok) (Parser st tok) where
     throwError = Parser . throwError
     catchError trial catcher = Parser $
       catchError (parserToTokStream trial) (\err -> parserToTokStream (catcher err))
 instance TokenType tok =>
-  MonadPlusError (Error (TokStreamState st tok) tok) (Parser st tok) where
+  MonadPlusError (ParseError (TokStreamState st tok) tok) (Parser st tok) where
     catchPredicate ptrans = Parser (catchPredicate (parserToTokStream ptrans))
     predicate       = Parser . predicate
 instance TokenType tok => Monoid (Parser st tok a) where {mempty=mzero; mappend=mplus; }
@@ -1366,7 +1365,7 @@ defaultTo defaultValue parser = mplus parser (return defaultValue)
 -- >         exponentPart <- parseSignedInteger
 -- >         return (makeFracWithExp fractionalPart exponentPart :: 'Prelude.Double')
 expect
-  :: (TokenType tok, UStrType str, MonadError (Error (TokStreamState st tok) tok) (Parser st tok))
+  :: (TokenType tok, UStrType str, MonadError (ParseError (TokStreamState st tok) tok) (Parser st tok))
   => str -> Parser st tok a -> Parser st tok a
 expect errMsg parser = do
   loc <- mplus (look1 asLocation) (Parser (gets finalLocation))
@@ -1444,8 +1443,7 @@ marker parser = do
   before <- mplus (look1 asLocation) (Parser (gets finalLocation))
   pval <- catchPredicate parser
   case pval of
-    PFail err -> throwError $
-      err{parseErrLoc = parseErrLoc err >>= \after -> return(before<>after)}
+    PFail err -> throwError $ err{parseErrLoc = before <> parseErrLoc err}
     pval      -> predicate pval
 
 -- | The 'Parser's analogue of 'Control.Monad.State.runState', runs the parser using an existing
@@ -1454,7 +1452,7 @@ runParserState
   :: TokenType tok
   => Parser st tok a
   -> TokStreamState st tok
-  -> (Predicate (Error (TokStreamState st tok) tok) a, TokStreamState st tok)
+  -> (Predicate (ParseError (TokStreamState st tok) tok) a, TokStreamState st tok)
 runParserState parser initTokSt = case parser of
   ParserNull                -> (Backtrack, initTokSt)
   Parser (TokStream parser) -> runState (runPredicateT parser) initTokSt
@@ -1466,7 +1464,7 @@ syntacticAnalysis
   :: TokenType tok
   => Parser st tok synTree
   -> TokStreamState st tok
-  -> (Predicate (Error (TokStreamState st tok) tok) synTree, TokStreamState st tok)
+  -> (Predicate (ParseError (TokStreamState st tok) tok) synTree, TokStreamState st tok)
 syntacticAnalysis = runParserState
 
 getNullToken :: TokenType tok => Parser st tok tok
@@ -1898,7 +1896,7 @@ newLanguage tabw parser =
 
 -- | This is /the function that parses/ an input string according to a given 'Language'.
 parse :: TokenType tok =>
-  Language st tok synTree -> st -> String -> Predicate (Error st tok) synTree
+  Language st tok synTree -> st -> String -> Predicate (ParseError st tok) synTree
 parse lang st input = case lexicalResult of
   OK     () -> case parserResult of
     OK     a  -> OK a

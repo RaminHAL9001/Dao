@@ -33,7 +33,7 @@ import           Dao.Parser
 
 import           Control.Applicative
 import           Control.Monad
-import           Control.Monad.Error hiding (Error)
+import           Control.Monad.Error
 import           Control.Monad.State
 
 import           Data.Monoid
@@ -46,10 +46,10 @@ import           Data.Complex
 maxYears :: Integer
 maxYears = 99999
 
-type DaoParser    a = Parser    DaoParState DaoTT a
-type DaoTableItem a = TableItem DaoTT (DaoParser a)
-type DaoPTable    a = PTable    DaoTT (DaoParser a)
-type DaoParseErr    = Error     DaoParState DaoTT
+type DaoParser    a = Parser     DaoParState DaoTT a
+type DaoTableItem a = TableItem  DaoTT (DaoParser a)
+type DaoPTable    a = PTable     DaoTT (DaoParser a)
+type DaoParseErr    = ParseError DaoParState DaoTT
 
 ----------------------------------------------------------------------------------------------------
 
@@ -59,6 +59,7 @@ data DaoParState
     , nonHaltingErrors :: [DaoParseErr]
     , internalState    :: Maybe (TokStreamState DaoParState DaoTT)
     }
+
 instance Monoid DaoParState where
   mappend a b =
      b{ bufferedComments = bufferedComments a >>= \a -> bufferedComments b >>= \b -> return (a++b)
@@ -72,6 +73,8 @@ instance Monoid DaoParState where
     , internalState = Nothing
     }
 
+instance PPrintable DaoParState where { pPrint _ = return () }
+
 setCommentBuffer :: [Comment] -> DaoParser ()
 setCommentBuffer coms = modify $ \st ->
   st{ bufferedComments = (if null coms then mzero else return coms) <> bufferedComments st }
@@ -79,7 +82,7 @@ setCommentBuffer coms = modify $ \st ->
 failLater :: String -> Location -> DaoParser ()
 failLater msg loc = catchError (fail msg) $ \err -> modify $ \st ->
   st{nonHaltingErrors =
-      nonHaltingErrors st ++ [err{parseStateAtErr=Nothing, parseErrLoc = Just loc}]}
+      nonHaltingErrors st ++ [err{parseStateAtErr=Nothing, parseErrLoc=loc}]}
 
 ----------------------------------------------------------------------------------------------------
 

@@ -22,6 +22,7 @@
 -- Reads and updates are O(n). Resizing an array is not possible.
 module Dao.Lib.Array where
 
+import           Dao.String
 import           Dao.Predicate
 import           Dao.Interpreter
 
@@ -64,7 +65,7 @@ arrayCheckIndex arr i = do
   return $
     if inRange bounds i
     then OK ()
-    else PFail $ mkExecError{ execReturnValue=Just $ obj "array index out of bounds" }
+    else PFail $ newError{ execErrorMessage=ustr "array index out of bounds" }
 
 arrayLookup :: Array -> Int -> IO (Predicate ExecControl Object)
 arrayLookup arr i = arrayCheckIndex arr i >>= \result -> case result of
@@ -103,9 +104,10 @@ instance ObjectFunctor Array  Object  where { objectFMap f = objectFMap (\i -> f
 instance ObjectFunctor Array [Object] where { objectFMap f = objectFMap (\i -> f [obj i]) }
 
 _objToInt :: [Object] -> Exec Int
-_objToInt i = case i of
-  [i] -> (derefObject i >>= xmaybe . fromObj) <|> fail "Array index value cannot be cast to integer"
-  _   -> fail "Array index is not one-dimensional"
+_objToInt ix = case ix of
+  [i] -> (derefObject i >>= xmaybe . fromObj) <|>
+    throwBadTypeError "Array index value cannot be cast to integer" i []
+  ix  -> throwArityError "Array index is not one-dimensional" 1 ix []
 
 arrayFromArgs :: [Object] -> IO Array
 arrayFromArgs lists =
@@ -141,14 +143,14 @@ instance HataClass Array where
         Just  o -> when changed (liftIO $ writeArray (toObjArray arr) i o) >> return (Just o)
     let init ox = case ox of -- initializer list in round-brackets must be empty
           [] -> return (Array $ error "uninitialized Array") -- SUCCESS: return an uninitialized Array
-          _  -> execThrow $ obj "cannot initialize array with parameters" -- FAIL
+          _  -> execThrow "cannot initialize array with parameters" ExecErrorUntyped [] -- FAIL
     let fromList m i maxbnd arr ox = case ox of
           []   -> liftIO $ arrayFromList maxbnd (I.assocs m)
           o:ox -> case o of
             InitAssign ref op o -> do
               i <- derefObject ref >>= _objToInt . return
               if i<0
-              then execThrow $ obj [obj "assigned to negative index value", obj i]
+              then execThrow "assigned to negative index value" op [(assertFailed, OInt i)]
               else do
                 ref <- pure $ fromObj ref <|> Just (RefObject ref NullRef)
                 o <- evalUpdateOp ref op o (I.lookup i m)
@@ -156,10 +158,8 @@ instance HataClass Array where
                   Just  o -> do
                     a <- fromList (I.insert i o m) (i+1) (max i maxbnd) arr ox
                     return $ arr{ toObjArray=toObjArray a }
-                  Nothing -> fail $ concat $
-                    [ "evaluating assignment operation ", show op
-                    , "resulted in void value, cannot be used to initialized Array"
-                    ]
+                  Nothing -> execThrow "index to Array evaluated to void" op $
+                    maybe [] (\ref -> [(errOfReference, obj ref)]) ref
             InitSingle o -> fromList (I.insert i o m) (i+1) (max i maxbnd) arr ox
     defInitializer init (fromList mempty 0 0)
 

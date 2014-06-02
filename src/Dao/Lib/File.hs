@@ -26,10 +26,10 @@ import qualified Dao.Binary as B
 import           Dao.Interpreter
 
 import qualified Data.ByteString.Lazy as B
+import qualified Data.Map.Lazy        as M
 import           Data.Typeable
 
 import           Control.Applicative
-import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.State
@@ -55,20 +55,22 @@ instance B.Binary File MethodTable where
   get    = return File <*> B.get <*> pure Nothing
   put f = B.put (filePath f)
 
-_openParamFail :: String -> Exec ig
-_openParamFail func = fail ("the "++func++"() function expects a file path as the only paremeter")
+errFilePath :: Name
+errFilePath = ustr "filePath"
+
+_openParamFail :: String -> [Object] -> Exec ig
+_openParamFail func ox =
+  throwArityError "expecting a file path as the only parameter" 1 ox [(errInFunc, obj (ustr func :: Name))]
 
 _paramPath :: String -> [Object] -> Exec UStr
 _paramPath func ox = case ox of
-  [path] -> xmaybe (fromObj path <|> (filePath <$> fromObj path)) <|> _openParamFail func
-  _      -> _openParamFail func
+  [path] -> xmaybe (fromObj path <|> (filePath <$> fromObj path)) <|> _openParamFail func ox
+  ox     -> _openParamFail func ox
 
 _catchIOException :: String -> File -> IO a -> Exec a
 _catchIOException func file f = execCatchIO (liftIO f) $
-  [ newExecIOHandler $ \e -> execThrow $ obj $
-      [ obj "in function", obj func, obj "while reading file"
-      , obj (filePath file), obj (show (e::IOException))
-      ]
+  [ newExecIOHandler $ \e -> execThrow "" (ExecIOException e) $
+      [(errInFunc, obj (ustr func :: Name)), (errFilePath, obj $ filePath file)]
   ]
 
 _openFile :: String -> File -> IOMode -> Exec File
@@ -78,14 +80,15 @@ _openFile func file mode = _catchIOException func file $
 _getHandle :: String -> File -> Exec Handle
 _getHandle func file = case fileHandle file of
   Just  h -> return h
-  Nothing -> execThrow $ obj $
-    [obj func, obj "function evaluated on a file handle which has not been opened", obj file]
+  Nothing ->
+    execThrow "function evaluated on a file handle which has not been opened" ExecErrorUntyped
+      [(errInFunc, obj (ustr func :: Name)), (errFilePath, obj $ filePath file)]
 
 _withClosedHandle :: String -> File -> Exec ()
 _withClosedHandle func file = case fileHandle file of
   Nothing -> return ()
-  Just  _ -> execThrow $ obj $
-    [obj func, obj "function cannot operate on open file handle", obj (filePath file)]
+  Just  _ -> execThrow "function cannot operate on open file handle" ExecErrorUntyped
+    [(errInFunc, obj (ustr func :: Name)), (errFilePath, obj $ filePath file)]
 
 _withContents :: (String -> IO Object) -> DaoFunc File
 _withContents f =
@@ -94,14 +97,14 @@ _withContents f =
       [] -> do
         _withClosedHandle "read" file
         _catchIOException "read" file $ fmap (flip (,) file . Just) $ readFile (uchars $ filePath file) >>= f
-      _ -> execThrow $ obj [obj "read", obj file, obj "function must be passed no parameter"]
+      ox -> throwArityError "" 0 ox [(errInFunc, obj (ustr "read" :: Name))]
   }
 
 gGetErrToExecError :: B.GGetErr -> ExecControl
 gGetErrToExecError (B.GetErr{ B.gGetErrOffset=offset, B.gGetErrMsg=msg }) =
-  mkExecError
-  { execReturnValue = Just $ obj $
-      [obj "failed decoding binary file", obj msg, obj "offset", obj (toInteger offset)]
+  newError
+  { execErrorMessage = msg
+  , execErrorInfo    = M.fromList [(ustr "byteOffset", OLong (toInteger offset))]
   }
 
 loadLibrary_File :: DaoSetup
@@ -135,7 +138,7 @@ instance HataClass File where
                   _withClosedHandle func file
                   f <- _openFile func file mode
                   return (Just $ obj f, f)
-                _  -> execThrow $ obj [obj func, obj "method must be passed no parameters"]
+                ox -> throwArityError "" 0 ox [(errInFunc, obj (ustr "File" :: Name))]
           }
     fileOpener "openRead"   ReadMode
     fileOpener "openWrite"  WriteMode
@@ -147,8 +150,7 @@ instance HataClass File where
           case ox of
             [] -> _getHandle "close" file >>=
               _catchIOException "close" file . liftIO . hClose >> return Nothing
-            _  -> execThrow $ obj $
-              [obj "close", obj file, obj "function must be passed no parameters"]
+            ox -> throwArityError "" 0 ox [(errInFunc, obj (ustr "close" :: Name))]
       }
     defMethod "writeBinary" $
       daoFunc
@@ -157,9 +159,9 @@ instance HataClass File where
           handl <- _getHandle "writeBinary" file
           forM_ ox $ \o -> do
             bin <- execCatchIO (liftIO $ return (B.encode mtab o)) $
-              [ newExecIOHandler $ \e -> execThrow $ obj $
-                  [ obj "in function", obj "writeBinary", obj file
-                  , obj "while encoding object", obj (show (e::ErrorCall))
+              [ newExecIOHandler $ \e -> execThrow "while encoding object" (ExecHaskellError e) $
+                  [ (errInFunc, obj (ustr "writeBinary" :: Name))
+                  , (errFilePath, obj $ filePath file)
                   ]
               ]
             _catchIOException "writeBinary" file (B.hPutStr handl bin)
@@ -170,16 +172,14 @@ instance HataClass File where
       { daoForeignFunc = \file ox -> case ox of
           [] -> do
             _withClosedHandle "readBinary" file
-            mtab <- gets globalMethodTable
-            bin <- _catchIOException "readBinary" file (liftIO $ B.readFile $ uchars $ filePath file)
+            mtab   <- gets globalMethodTable
+            bin    <- _catchIOException "readBinary" file (liftIO $ B.readFile $ uchars $ filePath file)
             result <- execCatchIO (return $ fmapPFail gGetErrToExecError $ B.decode mtab bin) $
-              [ newExecIOHandler $ \e -> execThrow $ obj $
-                  [ obj "in function", obj "readBinary"
-                  , obj "while decoding binary data", obj (show (e::ErrorCall))
-                  ]
+              [ newExecIOHandler $ \e -> execThrow "while decoding object" (ExecHaskellError e) $
+                  [(errInFunc, obj (ustr "readBinary" :: Name)), (errFilePath, obj $ filePath file)]
               ]
             predicate result
-          _ -> execThrow $ obj [obj "readBinary", obj file, obj "function must be passed no parameter"]
+          ox -> throwArityError "" 0 ox [(errInFunc, obj (ustr "readBinary" :: Name))]
       }
     let writeFunc func putstr = defMethod func $
           daoFunc
@@ -199,8 +199,7 @@ instance HataClass File where
           [] -> do
             handl <- _getHandle "readLine" file
             _catchIOException "readLine" file (flip (,) file . Just . obj <$> hGetLine handl)
-          _  -> execThrow $ obj $
-            [obj "readLine", obj file, obj "function must be passed no parameters"]
+          ox -> throwArityError "" 0 ox [(errInFunc, obj (ustr "readLine" :: Name))]
       }
     let defPrinter func print = defMethod func $
           makePrintFunc $ \file str -> _getHandle func file >>= \h -> liftIO (print h str)

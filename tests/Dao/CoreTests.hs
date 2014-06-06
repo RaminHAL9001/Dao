@@ -405,7 +405,7 @@ testStruct before = setupDao $ daoInitialize $ do
   let loop i o = withInnerLens o (objectFMap loop) >>= \ ((), (_, o)) -> modify ((i::RefSuffix, o):) <|>
         modify ((i::RefSuffix, o):)
   after <- (\ (_, _, o) -> o) . snd <$>
-    runObjectFocusExec (objectFMap loop) (Reference UNQUAL (ustr "this") NullRef) before
+    runObjectFocus (objectFMap loop) False (Reference UNQUAL (ustr "this") NullRef) before
   if before==after
   then return ()
   else fail "original object does not match object produced from Struct"

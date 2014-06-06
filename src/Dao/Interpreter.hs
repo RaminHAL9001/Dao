@@ -44,8 +44,8 @@ module Dao.Interpreter(
     convertFieldData, req, opt, reqList, optList,
     ObjectUpdate, ObjectTraverse,
     ObjectLens(updateIndex), ObjectFunctor(objectFMap),
-    ObjectFocus, ObjFocusState(), getObjFocusState, runObjectFocus, getFocalReference,
-    execToFocusUpdater, withInnerLens, runObjectFocusExec, focusObjectClass, focusStructAsDict,
+    ObjectFocus, ObjFocusState(), getFocalReference,
+    execToFocusUpdater, withInnerLens, runObjectFocus, focusObjectClass, focusStructAsDict,
     focusLiftExec, focalPathSuffix, focusGuardStructName, updateHataAsStruct, callMethod,
     innerDataUpdateIndex, referenceUpdateName, referenceLookupName,
     Object(
@@ -58,7 +58,7 @@ module Dao.Interpreter(
     isNumeric, typeMismatchError,
     initializeGlobalKey, destroyGlobalKey, evalTopLevelAST,
     Reference(Reference, RefObject), reference, refObject, referenceHead, refUnwrap,
-    refNames, referenceFromUStr, fmapReference, setQualifier, modRefObject, refIsMethodCall,
+    refNames, referenceFromUStr, fmapReference, setQualifier, modRefObject,
     refAppendSuffix, referenceLookup, referenceUpdate,
     CoreType(
       NullType, TrueType, TypeType, IntType, WordType, DiffTimeType, FloatType,
@@ -73,7 +73,6 @@ module Dao.Interpreter(
     realPart, imagPart, mkPolar, cis, polar, magnitude, phase, conjugate, complex,
     minAccumArray, minArray,
     FuzzyStr(FuzzyStr),
-    StaticStore(StaticStore),
     ExecUnit(), ExecTokenizer(ExecTokenizer), runExecTokenizer,
     globalMethodTable, defaultTimeout, importGraph, currentWithRef, taskForExecUnits,
     currentQuery, currentPattern, currentBranch, providedAttributes, programModuleName,
@@ -92,8 +91,7 @@ module Dao.Interpreter(
     expectNumArgs, exectDimension, expectType, actualType, leftSideType, rightSideType,
     modifiedConst, assertFailed, returnedVoid, errorDict,
     newError, throwArityError, throwParseError, throwBadTypeError, errLocation, errModule,
-    errCurrentModule, errInfo, updateExecErrorInfo, mplusUndefinedRef, logUncaughtErrors,
-    clearUncaughtErrorLog,
+    errCurrentModule, errInfo, updateExecErrorInfo, logUncaughtErrors, clearUncaughtErrorLog,
     Exec(Exec), execToPredicate, XPure(XPure), xpureToState, runXPure, evalXPure, xpure, xobj,
     xnote, xonUTF8, xmaybe,
     ExecThrowable(toExecErrorInfo, execThrow), ioExec,
@@ -112,7 +110,7 @@ module Dao.Interpreter(
     paramsToGlobExpr, matchFuncParams, execGuardBlock, objToCallable, callCallables,
     callObject, checkPredicate, checkVoid,
     evalConditional,
-    localVarDefine, localVarUpdate, maybeDerefObject, derefObjectGetReference, derefObject,
+    localVarDefine, localVarUpdate, localVarLookup, maybeDerefObject, derefObjectGetReference, derefObject,
     updateExecError,
     assignUnqualifiedOnly,
     LimitedObject(LimitedObject, unlimitObject),
@@ -188,12 +186,12 @@ dbg :: MonadIO m => String -> m ()
 dbg = liftIO . hPutStrLn stderr . ("(DEBUG) "++) . (>>=(\c -> if c=='\n' then "\n(DEBUG) " else [c]))
 dbg' :: MonadIO m => String -> m a -> m a
 dbg' msg f = f >>= \a -> dbg msg >> return a
-dbg0 :: (MonadPlus m, MonadIO m, MonadError e m) => String -> m a -> m a
+dbg0 :: (MonadPlus m, MonadIO m, MonadError e m, PPrintable e) => String -> m a -> m a
 dbg0 msg f = do
   dbg (msg++" (BEGIN)")
   catchError
     (mplus (f >>= \a -> dbg (msg++" (DONE)") >> return a) (dbg (msg++" (BACKTRACKED)") >> mzero))
-    (\e -> dbg (msg++" (ERROR)") >> throwError e)
+    (\e -> dbg (msg++" (ERROR) "++prettyShow e) >> throwError e)
 updbg :: MonadIO m => String -> (Maybe Object -> m (Maybe Object)) -> Maybe Object -> m (Maybe Object)
 updbg msg f o = dbg ("(update with "++msg++")") >> f o >>= \o -> dbg ("(update complete "++show o++")") >> return o
 #endif
@@ -316,7 +314,7 @@ instance Executable Action (Maybe Object) where
       xunit
       { currentQuery     = Just $ actionTokens act
       , currentPattern   = Just $ actionPattern act
-      , currentCodeBlock = StaticStore (Just $ actionCodeBlock act)
+      , currentCodeBlock = Just $ actionCodeBlock act
       }
     success <- optional $ runCodeBlock_ localVars (actionCodeBlock act)
     modify (\xunit -> xunit{ currentQuery=cq, currentPattern=cp, currentCodeBlock=ccb })
@@ -395,7 +393,7 @@ betweenBeginAndEnd runInBetween = get >>= \xunit -> do
   -- Update the "global this" pointer to include the uncaught exceptions.
   errs <- OList . map new <$> clearUncaughtErrorLog
   let upd = M.union (M.singleton (ustr "errors") errs)
-  referenceUpdate (Dao.Interpreter.reference GLOBAL (ustr "self")) $ \o ->
+  referenceUpdate (Dao.Interpreter.reference GLOBAL (ustr "self")) False $ \o ->
     return $ Just $ ODict $ upd $ case o of { Just (ODict o) -> o; _ -> mempty; }
   -- Run all "END{}" procedures.
   mapM_ execute (postExec xunit)
@@ -411,7 +409,7 @@ daoShutdown = (M.elems <$> gets importGraph) >>=
 -- the local rule set.
 getLocalRuleSet :: Exec [PatternTree Object [Subroutine]]
 getLocalRuleSet = do
-  (StaticStore sub) <- gets currentCodeBlock
+  sub <- gets currentCodeBlock
   return $ maybe [] (return . staticRules) sub
 
 -- | Returns a list of @'PatternTree' 'Object' ['Subroutine']@ objects from the global rule set and
@@ -2435,8 +2433,8 @@ instance HasRandGen Reference where
     , return RefObject <*> defaultO <*> defaultO
     ]
 
--- 'execute'-ing a 'Reference' will dereference it, essentially reading the
--- value associated with that reference from the 'ExecUnit'.
+-- 'execute'-ing a 'Reference' will dereference it, essentially reading the value associated with
+-- that reference from the 'ExecUnit'.
 instance Executable Reference (Reference, Maybe Object) where { execute qref = referenceLookup qref }
 
 refAppendSuffix :: Reference -> RefSuffix -> Reference
@@ -2445,28 +2443,22 @@ refAppendSuffix qref appref = case qref of
   RefObject   o    ref -> RefObject   o    (ref<>appref)
   RefWrapper      qref -> RefWrapper $ refAppendSuffix qref appref
 
--- | This is an important function used throughout most of the intepreter to
--- lookup 'Object's associated with 'Reference's.
+-- | This is an important function used throughout most of the intepreter to lookup 'Object's
+-- associated with 'Reference's. It returns a a pair containing updated copy of the given
+-- 'Reference' and the 'Object' that was looked-up. The 'Reference' returned is a copy of the
+-- 'Reference' parameter given but updated with information about where the reference was looked up.
+-- For example, if you pass an 'UNQUAL' (unqualified) reference, it may be looked up in the local,
+-- global, or const variable tables.  The reference returned will not be 'UNQUAL', it will be either
+-- 'GLOBAL', 'LOCAL', or 'CONST', depending on where the 'Object' returned was found.
+--
+-- If the 'Reference' is a function call, the object returned will be the evaluation of the function
+-- call, which may be void (a.k.a. 'Prelude.Nothing').
 referenceLookup :: Reference -> Exec (Reference, Maybe Object)
 referenceLookup qref = case qref of
   RefWrapper ref -> return $ (qref, Just (obj ref))
   qref           -> do
-    (a, (qref, _, _)) <- get >>=
-      runObjectFocusExec (updateIndex qref get) (fst $ referenceHead qref)
+    (a, (qref, _, _)) <- runObjectFocus (updateIndex qref get) True qref ()
     return (qref, a)
---  if refIsMethodCall qref -- function calls must always perform an update, not just a lookup
---  then referenceUpdate qref return
---  else flip mplus (return Nothing) $ do
---    (a, (qref, xunit)) <- get >>= runObjectFocusExec (lookupIndex qref) (fst $ referenceHead qref)
---    put xunit >> return (Just (qref, a))
-  -- WARNING: this function can be responsible for some very odd behavior by virtue of the fact that
-  -- it may perform an update rather than a lookup when evaluating 'Reference's with 'FuncCall's as
-  -- its 'RefSuffix's. Since the 'updateIndex' member function of the 'ObjectLens' class stores
-  -- temporary copies of the objects being updated, for example the 'GlobalStore', the function call
-  -- may make several changes to the 'GlobalStore' during evaluation which will all be lost when the
-  -- temporary copy of the 'GlobalStore' is placed back into the 'ExecUnit'. There is a more
-  -- detailed explanation of this problem written in the comments below the 'refIsMethodCall'
-  -- predicate below.
 
 refNames :: [Name] -> Maybe Reference
 refNames nx = case nx of
@@ -2497,65 +2489,17 @@ modRefObject mod ref = case ref of
   RefObject o ref -> RefObject (mod o) ref
   ref             -> ref
 
--- | A method call is a function call that can update the object that contains it. So if a function
--- call is a method call, this reference must be evaluated by 'referenceUpdate' rather than
--- 'referenceLookup', even if it is simply being dereferenced for a lookup. 'refIsMethodCall'
--- evaluates to 'Prelude.True' if this reference is in fact a method call, and not just an ordinary
--- referene or an ordinary function call.
-refIsMethodCall :: Reference -> Bool
-refIsMethodCall qref = case qref of
-  Reference _ _ (FuncCall _ _) -> False
-  Reference _ _           suf  -> refSuffixHasFuncCall suf
-  RefObject   _           suf  -> refSuffixHasFuncCall suf
-  RefWrapper  _                -> False
-  -- NOTE: this function is used by 'referenceLookup' which makes a very specific assumption about
-  -- whether or not a reference is a plain function call or an actual method call. So how this
-  -- function is defined here is /VERY IMPORTANT/ for the correct behavior of that function.
-  --     When a global variable is updated, the update is evaluated through a sequence of
-  -- 'ObjectFocus' calls, starting with the @('ObjectLens' 'ExecUnit' 'Reference')@ instance and
-  -- working it's way down to the @('ObjectLens' 'GlobalStore' 'Name')@ instance, each call making a
-  -- temporary copy of the object to be updated on the stack before updating the object, replacing
-  -- the temporary item on the stack, and then returning. Each update makes exactly one change to a
-  -- single address in each object.
-  --     However when a function object exists in the 'GlobalStore' and it is called with a
-  -- @('FuncCall'::'RefSuffix')@, the function call does not modify the actual function object
-  -- stored at that 'Reference' address of the 'GlobalStore', rather the evaluation of the function
-  -- object itself may make several updates to the 'GlobalStore'.
-  --     This lead to a bug in the 'referenceLookup' function. The 'referenceLookup' function relies
-  -- on the result of the 'refIsMethodCall' predicate to make a decision whether or not to evaluate
-  -- 'updateIndex' or 'lookupIndex'. If this function returns 'True' for ordinary functions,
-  -- 'referenceLookup' will evaluate 'updateIndex', which will expect to make a single update the
-  -- 'GlobalStore'. The @('ObjectLens' 'GlobalStore' 'Name')@ instance of the 'updateIndex' function
-  -- will make a temporary copy of the 'GlobalStore' on the stack, then procede with evaluation of
-  -- the function. The function evaluation may then update several global variables in the
-  -- 'ExecUnit', but the temporary copy of the 'GlobalStore' made by 'updateIndex' will /NOT/ be
-  -- updated. When function evaluation completes, 'updateIndex' will then update it's still
-  -- unmodified temporary copy of the 'GlobalStore' with an identical copy of the function object
-  -- because it was instructed to modify the function object at the given global 'Reference'
-  -- address, and this function is updated in the unmodified temporary copy of the 'GlobalStore'. So
-  -- the only item modified in the temporary copy of the 'GlobalStore' is the function itself, which
-  -- is only modified with an identical copy of itself, levaing the entire 'GlobalStore' essentially
-  -- unmodified. Finally, the unmodified 'GlobalStore' is placed back into the 'ExecUnit',
-  -- overwriting all of the changes that were made to the 'GlobalStore' in the 'ExecUnit' during
-  -- evaluation of the function, and setting the 'GlobalStore' back to the state it was in before
-  -- function evaluation. So for example, the program:
-  --     global a=0;
-  --     function f() { global a+=1; print("inside f() global a=", global a); }
-  --     f();
-  --     println(", after f() global a=", a);
-  -- would output:
-  --     in f() global a=1, after f() global a=0
-  -- Therefore it is /VERY IMPORTANT/ that the 'refIsMethodCall' function not return 'True' for
-  -- ordinary function calls on functions defined in the global store.
-
 -- | This function performs an update on a 'Reference', it is the complement to the 'referenceLookup'
 -- function. Evaluating 'referenceUpdate' on a 'Reference' will write/update the value associated with
--- it.
-referenceUpdate :: Reference -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Reference, Maybe Object)
-referenceUpdate qref upd = do
-  (result, (qref, changed, xunit)) <- get >>=
-    runObjectFocusExec (updateIndex qref $ execToFocusUpdater upd) (fst $ referenceHead qref)
-  when changed (put xunit)
+-- it. If the boolean parameter is 'Prelude.True' it indicates that the value updated must already
+-- exist, and an undefined reference error will be thrown if it does not exist.
+referenceUpdate :: Reference -> Bool -> (Maybe Object -> Exec (Maybe Object)) -> Exec (Reference, Maybe Object)
+referenceUpdate qref mustExist upd = do
+  -- The 'ExecUnit' is not actually modified in any way by 'updateIndex'. It is only used to
+  -- instruct Haskell's type system to select the class instance of 'updateIndex' for the data type:
+  -- > 'ObjectLens' 'ExecUnit' 'Reference'
+  (result, (qref, _, _)) <-
+    runObjectFocus (updateIndex qref $ execToFocusUpdater upd) mustExist (fst $ referenceHead qref) ()
   return (qref, result)
 
 ----------------------------------------------------------------------------------------------------
@@ -3237,18 +3181,18 @@ data ExecUnit
     , taskForExecUnits   :: Task
     , currentQuery       :: Maybe [Object]
     , currentPattern     :: Maybe (Glob Object)
-    , currentCodeBlock   :: StaticStore
+    , currentCodeBlock   :: Maybe Subroutine
       -- ^ when evaluating a 'Subroutine' selected by a string query, the action resulting from
       -- that query is defnied here. It is only 'Data.Maybe.Nothing' when the module is first being
       -- loaded from source code.
     , currentBranch      :: [Name]
       -- ^ set by the @with@ statement during execution of a Dao script. It is used to prefix this
       -- to all global-dot references before reading from or writing to those references.
-    , execStack          :: LocalStore
+    , execStack          :: Stack Name Object
       -- ^ stack of local variables used during evaluation
-    , globalData         :: GlobalStore
+    , globalData         :: T_dict
     , providedAttributes :: M.Map UStr ()
-    , builtinConstants   :: M.Map Name Object
+    , builtinConstants   :: T_dict
     , execOpenFiles      :: M.Map UPath ExecUnit
     , programModuleName  :: Maybe UPath
     , preExec            :: [Subroutine]
@@ -3276,13 +3220,13 @@ _initExecUnit = do
     , currentWithRef     = Nothing
     , currentQuery       = Nothing
     , currentPattern     = Nothing
-    , currentCodeBlock   = StaticStore Nothing
+    , currentCodeBlock   = Nothing
     , currentBranch      = []
-    , globalData         = GlobalStore mempty
+    , globalData         = mempty
     , providedAttributes = mempty
     , builtinConstants   = mempty
     , taskForExecUnits   = execTask
-    , execStack          = LocalStore emptyStack
+    , execStack          = emptyStack
     , execOpenFiles      = mempty
     , programModuleName  = Nothing
     , preExec            = []
@@ -3478,14 +3422,43 @@ data ObjFocusState o
       -- ^ the reference that is constructed piecewise as each part of the 'targetReference' is resolved.
     , objectInFocus        :: o
     , objectInFocusChanged :: Bool
+      -- ^ this value is automatically set whenever the 'Control.Monad.State.put' function, or
+      -- 'Control.Monad.State.modify' functions are evaluated. This value is returned by functions
+      -- like 'withInnerFocus' and 'runObjectFocus' to indicate when the item being modified was
+      -- actually modified.
+    , focusLookup          :: Bool
+      -- ^ when true, indicates that the current focus operation is a lookup. Lookups are different
+      -- from updates in that an update can continue recursive searching through an object tree even
+      -- if the reference to be updated is void. Assignment operations, for example, update void
+      -- references by writing to the reference. Lookup operations, on the other hand, will always
+      -- fail as soon as a void is encountered.
     }
+
+-- Although the 'ObjectFocus' monad is a wrapper around a 'Dao.Predicate.PredicateT' monad
+-- transformer that lifts the 'Exec' monad, backtracking (the instantiation  of
+-- 'Control.Monad.mzero') has a very different semantical meaning from the 'Exec' monad's semantical
+-- meaning of backtracking. In the case of 'ObjectFocus', evaluating 'Control.Monad.mzero' indicates
+-- a refernece being looked-up is undefined. To allow for 'Exec' to be lifted into 'ObjectFocus' and
+-- also possibly evaluate to 'Control.Monad.mzero' without triggering a backtracking in the
+-- 'ObjectFocus' monad, backtracking in the 'Exec' monad needs to be "caught" and re-thrown as an
+-- error using 'Control.Monad.Error.throwError' wrapped up in the 'ObjFocusError' data type. However
+-- this is all done "under the hood," the public API of the 'ObjectFocus' monad still has
+-- 'Control.Monad.Error.throwError' instantiated to throw 'ExecControl' just like the 'Exec' monad:
+-- > 'Control.Monad.Error.Class.MonadError' 'ExecControl' 'ObjectFocus'
+-- and when evaluting the 'ObjectFocus' monad in the 'Exec' monad using 'runObjectFocus', this
+-- error type is automatically caught again and converted back to 'Control.Monad.mzero', initiating
+-- ordinary backtracking in the 'Exec' monad.
+data ObjFocusError
+  = InnerExecBacktrack -- ^ a lifted 'Exec' monad evaluated to 'Control.Monad.mzero'
+  | InnerExecPFail ExecControl
+    -- ^ a lifted 'Exec' monad evaluated to 'Control.Monad.Error.throwError'
 
 -- | This is the stateful monad used by the 'ObjectLens' and 'ObjectFunctor' classes. It is called a
 -- "focus" because the object we are focused on (on which we are looking up indicies or modifying
 -- indicies) is stored in the state of the monad. The 'Control.Monad.State.modify' function modifies
 -- the object in the focus.
 newtype ObjectFocus o a
-  = ObjectFocus{ mapObjectLensToPredicate :: PredicateT ExecControl (StateT (ObjFocusState o) Exec) a }
+  = ObjectFocus{ mapObjectLensToPredicate :: PredicateT ObjFocusError (StateT (ObjFocusState o) Exec) a }
   deriving (Functor, Applicative, Alternative, MonadPlus)
 
 instance Monad (ObjectFocus o) where
@@ -3494,13 +3467,18 @@ instance Monad (ObjectFocus o) where
   fail msg = _mapStructState (gets focalReference) >>= flip (execThrow msg) []
 
 instance MonadError ExecControl (ObjectFocus o) where
-  throwError = ObjectFocus . throwError
-  catchError (ObjectFocus f) catch =
-    ObjectFocus (catchError f (mapObjectLensToPredicate . catch))
+  throwError = ObjectFocus . throwError . InnerExecPFail
+  catchError (ObjectFocus f) catch = ObjectFocus $ catchError f $ \err -> case err of
+    InnerExecPFail err -> mapObjectLensToPredicate (catch err)
+    InnerExecBacktrack -> throwError InnerExecBacktrack
 
 instance MonadPlusError ExecControl (ObjectFocus o) where
-  catchPredicate (ObjectFocus f) = ObjectFocus (catchPredicate f)
-  predicate = ObjectFocus . predicate
+  catchPredicate (ObjectFocus f) = ObjectFocus $ catchPredicate f >>= \p -> case p of
+    OK                    o  -> return $ OK o
+    PFail (InnerExecPFail e) -> return $ PFail e
+    PFail InnerExecBacktrack -> throwError InnerExecBacktrack
+    Backtrack                -> return Backtrack
+  predicate = ObjectFocus . predicate . fmapPFail InnerExecPFail
 
 instance MonadIO (ObjectFocus o) where { liftIO = ObjectFocus . liftIO }
 
@@ -3540,17 +3518,19 @@ class ObjectFunctor o index where { objectFMap :: ObjectTraverse o index }
 _mapStructState :: StateT (ObjFocusState o) Exec a -> ObjectFocus o a
 _mapStructState = ObjectFocus . lift
 
--- | When you need to "unlift" a 'ObjectFocus' function to an 'Exec' function that can be composed
--- with other 'Exec' functions, you can use this function to get the 'ObjFocusState' and use it
--- with 'runObjectFocus'.
-getObjFocusState :: ObjectFocus o (ObjFocusState o)
-getObjFocusState = _mapStructState get
-
 _getTargetRefInfo :: ObjectFocus o Reference
 _getTargetRefInfo = _mapStructState $ gets targetReference
 
 _setTargetRefInfo :: Reference -> ObjectFocus o ()
 _setTargetRefInfo qref = _mapStructState $ modify $ \st -> st{targetReference=qref}
+
+-- | This function will check if the 'focusLookup' boolean is set. If it is set, it checks if the
+-- current 'objectInFocus' is 'Prelude.Nothing' and backtracks if it is. Otherwise it evaluates the
+-- given function.
+focusNext :: ObjectFocus (Maybe o) a -> ObjectFocus (Maybe o) a
+focusNext f = do
+  isLookup <- _mapStructState (gets focusLookup)
+  if isLookup then get >>= maybe mzero (const f) else f
 
 -- | When instantiating the 'ObjectLens' class with a 'RefSuffix' index type, it is useful to
 -- record the head of the 'RefSuffix' that is being used to resolve the index. When an
@@ -3565,7 +3545,12 @@ focalPathSuffix suf f = do
   f >>= \a -> _mapStructState (modify $ \st -> st{ focalReference=r }) >> return a
 
 focusLiftExec :: Exec a -> ObjectFocus o a
-focusLiftExec = ObjectFocus . lift . lift
+focusLiftExec exec = ObjectFocus $ do
+  p <- lift $ lift $ catchPredicate exec
+  case p of
+    Backtrack -> throwError InnerExecBacktrack
+    PFail err -> throwError $ InnerExecPFail err
+    OK    o   -> return o
 
 execToFocusUpdater :: (Maybe Object -> Exec (Maybe Object)) -> ObjectFocus (Maybe Object) (Maybe Object)
 execToFocusUpdater f = get >>= focusLiftExec . f >>= \o -> put o >> return o
@@ -3573,28 +3558,31 @@ execToFocusUpdater f = get >>= focusLiftExec . f >>= \o -> put o >> return o
 getFocalReference :: ObjectFocus o Reference
 getFocalReference = _mapStructState (gets focalReference)
 
--- | This is a kind of entry-point to the 'ObjectFocus' group of functions. First provide a
--- 'Reference' value for error reporting, to indicate where a 'lookupIndex' or 'updateIndex'
--- function failed.  Note that using 'lookupIndex' and 'updateIndex' functions instantiated for
--- 'RefSuffix' indicies will append these indicies to the 'Reference', so it might be better to pass
--- the 'referenceHead' of the 'Reference'. Then supply an object upon which the 'lookupIndex',
--- 'updateIndex', or 'objectFMap' functions will be evaluating.
-runObjectFocusExec :: ObjectFocus o a -> Reference -> o -> Exec (a, (Reference, Bool, o))
-runObjectFocusExec f qref o = runObjectFocus f st >>= predicate where
-   st = ObjFocusState
+-- | This is a kind of entry-point to the 'ObjectFocus' group of functions. First provide a boolean
+-- value indicating whether this operation is a ('Prelude.True') lookup and should fail as soon as a
+-- void address is encountered, or ('Prelude.False') an update that may insert a value at a void
+-- address rather than failing. Second, provide a 'Reference' value for error reporting, to indicate
+-- where a 'lookupIndex' or 'updateIndex' function failed. Note that using 'lookupIndex' and
+-- 'updateIndex' functions instantiated for 'RefSuffix' indicies will append these indicies to the
+-- 'Reference', so it might be better to pass the 'referenceHead' of the 'Reference'. Then supply an
+-- object upon which the 'lookupIndex', 'updateIndex', or 'objectFMap' functions will be evaluating.
+runObjectFocus :: ObjectFocus o a -> Bool -> Reference -> o -> Exec (a, (Reference, Bool, o))
+runObjectFocus f isLookup qref o = _runObjectFocus f st >>= \p -> case p of
+  OK                    o  -> return o
+  PFail (InnerExecPFail e) -> throwError e
+  PFail InnerExecBacktrack -> mzero
+  Backtrack                -> execThrow "undefined reference" qref []
+  where
+    st= ObjFocusState
         { targetReference      = qref
         , focalReference       = fst (referenceHead qref)
         , objectInFocus        = o
         , objectInFocusChanged = False
+        , focusLookup          = isLookup
         }
 
--- | This is not an entry-point to the 'ObjectFocus' monadic functions. This function should be used
--- when you are writing a function of type 'ObjectFocus' and one of the lines of code in this
--- function should "unlift" an 'ObjectFocus' function so it can be composed with an 'Exec' function,
--- and the resulting 'Exec' function should then be "re-lifted" back into your 'ObjectFocus' monadic
--- function using 'focusLiftExec'.
-runObjectFocus :: ObjectFocus o a -> ObjFocusState o -> Exec (Predicate ExecControl (a, (Reference, Bool, o)))
-runObjectFocus (ObjectFocus f) st = flip evalStateT st $ runPredicateT $ f >>= \a -> do
+_runObjectFocus :: ObjectFocus o a -> ObjFocusState o -> Exec (Predicate ObjFocusError (a, (Reference, Bool, o)))
+_runObjectFocus (ObjectFocus f) st = flip evalStateT st $ runPredicateT $ f >>= \a -> do
   o <- lift $ return (,,) <*> gets targetReference <*> gets objectInFocusChanged <*> gets objectInFocus
   return (a, o)
 
@@ -3608,16 +3596,9 @@ runObjectFocus (ObjectFocus f) st = flip evalStateT st $ runPredicateT $ f >>= \
 -- in arbitrarily complex data types.
 withInnerLens :: sub -> ObjectFocus sub a -> ObjectFocus o (a, (Bool, sub))
 withInnerLens sub f = do
-  targref <- _getTargetRefInfo
-  qref <- getFocalReference
-  o <- focusLiftExec $ runObjectFocus f $
-    ObjFocusState
-    { targetReference      = targref
-    , focalReference       = qref
-    , objectInFocus        = sub
-    , objectInFocusChanged = False
-    }
-  predicate (o >>= \ (a, (_ref, changed, o)) -> return (a, (changed, o)))
+  st <- _mapStructState get
+  o  <- focusLiftExec $ _runObjectFocus f $ st{objectInFocus=sub}
+  ObjectFocus $ predicate $ o >>= \ (a, (_ref, changed, o)) -> return (a, (changed, o))
 
 -- Used in the 'Interface' table to convert between a @typ@ and 'Data.Dynamic.Dynamic' value.
 convertFocus :: (a -> b) -> (b -> a) -> ObjectFocus a x -> ObjectFocus b x
@@ -3631,7 +3612,7 @@ focusObjectClass f = do
 
 instance ObjectLens T_dict Name where
   updateIndex name f = do
-    (result, (changed, o)) <- get >>= flip withInnerLens f . (M.lookup name)
+    (result, (changed, o)) <- get >>= flip withInnerLens (focusNext f) . (M.lookup name)
     when changed (modify $ M.alter (const o) name)
     return result
 
@@ -3711,7 +3692,7 @@ instance ObjectLens [Object] Integer where
           (result, (changed, o)) <- withInnerLens (Just $ head hi) f
           when changed (put $ lo ++ maybe [] return o ++ tail hi)
           return result
-      else fail "index ouf of bounds"
+      else execThrow "index ouf of bounds" ExecErrorUntyped [(assertFailed, OLong idx)]
 
 instance ObjectFunctor [Object] Integer where
   objectFMap f = get >>=
@@ -3747,7 +3728,7 @@ objectFMapConvert
   -> i -> Object
   -> ObjectFocus [(i, Object)] ()
 objectFMapConvert i2fi fi2i f i o = getFocalReference >>= \qref -> do
-  (_, (_, changed, o)) <- focusLiftExec (runObjectFocusExec (i2fi i >>= flip f o) qref [])
+  (_, (_, changed, o)) <- focusLiftExec (runObjectFocus (i2fi i >>= flip f o) False qref [])
   o <- forM o (\ (fi, o) -> fi2i fi >>= \i -> return (i, o))
   _mapStructState $ modify $ \st -> st{objectInFocusChanged=changed, objectInFocus=o}
 
@@ -3841,7 +3822,7 @@ _tryFuncCall o args try els = maybe els id $ do
 -- calls the function with the given @['Object']@ arguments. The object in focus is updated by the
 -- function call and the result of the function call is placed in the focus and updated by the next
 -- update function with the next 'RefSuffix' provided (as the arguments to the 'ObjectUpdate'). This
--- is the sematnics for Dao language expressions of the kind:
+-- is the semantics for Dao language expressions of the kind:
 -- a.b(c).d(e)
 -- that is, an objet stored in the variable "a" has a method "b" called with a parameter "(c)" and
 -- the result of this call is an object with a method "d" that is called with the parameter "(e)".
@@ -3853,9 +3834,9 @@ _tryFuncCall o args try els = maybe els id $ do
 -- This will hopefully be improved in future versions.
 callMethod :: Name -> [Object] -> ObjectUpdate (Maybe Object) RefSuffix
 callMethod name args suf f = do
-  qref <- flip refAppendSuffix (DotRef name $ FuncCall args NullRef) <$> _getTargetRefInfo
-  o <- get
+  qref <- _getTargetRefInfo
   let err msg = execThrow msg qref []
+  o <- get
   case o of
     Nothing -> err "method call on undefined reference"
     Just  o -> case o of
@@ -3873,37 +3854,46 @@ callMethod name args suf f = do
             Just toStruct -> do
               struct <- predicate (fromData toStruct d)
               _tryFuncCall (structLookup name struct) args (updateIndex suf f) (_refSuffixUpdate (Hata ifc d) name suf f)
-            Nothing       -> fail "not a callable method function"
-      _ -> fail "method call on atomic object"
+            Nothing       -> err "not a callable method function"
+      _ -> err "method call on atomic object"
             -- TODO: provide a set of built-in methods available to every object.
 
 instance ObjectLens (Maybe Object) RefSuffix where
-  updateIndex suf f = focalPathSuffix suf $ get >>= \o -> case suf of
+  updateIndex suf f = focusNext $ focalPathSuffix suf $ get >>= \o -> case suf of
     NullRef         -> get >>= flip withInnerLens f >>= \ (result, (changed, o)) ->
       when changed (put o) >> return result
     DotRef name (FuncCall args suf) -> callMethod name args suf f
     DotRef name suf -> case o of
-      Nothing -> fail "undefined reference"
+      Nothing -> mzero
       Just  o -> case o of
         ODict    o -> _refSuffixUpdate o name suf f
         OTree    o -> _refSuffixUpdate o name suf f
         OHaskell o -> _refSuffixUpdate o name suf f
-        _          -> fail "undefined reference"
+        _          -> throwBadTypeError "referenced element of non-container object" o []
     Subscript ix suf -> case o of
-      Nothing -> fail "subscripted undefined reference"
+      Nothing -> mzero
       Just  o -> case o of
         OList    o -> _refSuffixUpdate o ix suf f
         ODict    o -> _refSuffixUpdate o ix suf f
         OTree    o -> _refSuffixUpdate o ix suf f
         OHaskell o -> _refSuffixUpdate o ix suf f
-        _          -> fail "cannot subscript"
+        _          -> throwBadTypeError "cannot subscript of non-indexed object" o []
     FuncCall  args suf -> case o of
-      Nothing -> fail "function call on undefined reference"
+      Nothing -> mzero
       Just  o -> do
         qref <- getFocalReference
         (result, o) <- focusLiftExec (callObject qref o args)
-        (result, _) <- put o >> withInnerLens result (updateIndex suf f)
-        return result
+        _mapStructState $ modify $ \st -> st{ objectInFocus=o }
+        -- -^ Here we put the updated function back (it may have had it's static var table updated),
+        -- but we use '_mapStructState' to do it. This is because using 'modify' or 'put' will
+        -- automatically set the 'objectInFocusChanged' flag. Since many functions 'CONST' and we
+        -- would like to update the function's static table without modifying the function itself
+        -- without also triggering the exception thrown when a const variable is modified, we must
+        -- make sure we update it in a way that would not indicate that the function object itself
+        -- has been modified.
+        fst <$> case suf of
+          NullRef -> withInnerLens result f
+          suf     -> withInnerLens result (updateIndex suf f)
 
 instance ObjectFunctor Object RefSuffix where
   objectFMap f = get >>= \o -> case o of
@@ -3943,57 +3933,6 @@ innerDataUpdateIndex unwrap wrap i upd = get >>= \dt -> do
   (result, (changed, o)) <- withInnerLens (unwrap dt) (updateIndex i upd)
   when changed (modify $ flip wrap o) >> return result
 
--- This function is a special case of 'innerDataUpdateIndex' where the object in focus is an
--- 'ExecUnit'. The 'ExecUnit' in focus is actually ignored, and all updates are made to the
--- 'ExecUnit' in the inner 'Exec' monad contained within the 'ObjectFocus' monad. This function is
--- necessary to prevent confusion between two different 'ExecUnit' values available to the
--- 'ObjectFocus' monad. There are two completely different 'ExecUnit' values available in the state
--- of the polymorphic 'ObjectFocus' monad when the focus of the 'ObjectFocus' is the 'ExecUnit' data
--- type. These two 'ExecUnit's are:
---     1. The 'ExecUnit' in the focus which can be modified with 'Control.Monad.State.put' and
---     'Control.Monad.State.update' functions. I shall refer to this 'ExecUnit' as the "focused
---     ExecUnit".
---     2. The 'ExecUnit' value used as the state of the 'Exec' monad, which can be modified by
---     evaluating 'Control.Monad.State.modify' or 'Control.Monad.State.put' when passed to the
---     'focusLiftExec' function. I shall refer to this 'ExecUnit' as the "working ExecUnit".
--- 
--- The important thing to remember is that the "focused ExecUnit" is completely disgarded by this
--- function, it is immediately overwritten by the "working ExecUnit". All updates are made to the
--- "working ExecUnit". The reason is that the 'ObjectFocus' monad can lift 'Exec' monadic functions
--- into it to update the "working ExecUnit", and it is important that these updates not be lost by
--- overwriting them with the "focused ExecUnit".
--- 
--- This is very different behavior from simply using the polymorphic 'innerDataUpdateIndex' function
--- with an 'ExecUnit' as the "focused" object, because 'innerDataUpdateIndex' applies all updates to
--- the "focused" object (the "focused ExecUnit") only, whereas 'Exec' monadic functions evaluated
--- within the 'focusLiftExec' function would operate on the "working ExecUnit".
---
--- If you started evaluation of 'innerDataUpdateIndex' with a copy of the same 'ExecUnit' as both
--- the "focused" and "working" objects, by the time 'innerDataUpdateIndex' returned there would be
--- two different 'ExecUnit' objects with a different set of revisions made to each copy, revisions
--- which you would not be able to reconcile. For example if the update function deleted a variable
--- while simultaneously assigning to another variable, as in this Dao programming language
--- expression:
--- >    x = 1; y = 1;
--- >    x = f(delete(y), x+1);
--- The @y@ variable would be deleted from the "working ExecUnit" by the "delete()" function, but
--- would remain unchanged in the "focused ExecUnit", and then @x@ would be incremented in the
--- "focused ExecUnit". By the time 'innerDataUpdateIndex' returns, you have two completely different
--- 'ExecUnit's, one where @y@ exists and @x@ is not incremenetd, and one where @y@ does not exist and
--- "x" has not been incremented.
--- 
--- This is why it is necessary to have a special case of 'innerDataUpdateIndex' function that is
--- speically designed to evaluate updates only on the "working ExecUnit".
-execUnitUpdateRef
-  :: ObjectLens o ref
-  => (ExecUnit -> o) -> (ExecUnit -> o -> ExecUnit)
-  -> ref -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus ExecUnit (Maybe Object)
-execUnitUpdateRef unwrap wrap ref upd = do
-  o <- focusLiftExec $ gets unwrap
-  (result, (changed, o)) <- withInnerLens o $ updateIndex ref upd
-  when changed $ focusLiftExec $ modify $ flip wrap o
-  return result
-
 ----------------------------------------------------------------------------------------------------
 
 instance ObjectLens (Stack Name Object) Name where
@@ -4019,148 +3958,90 @@ referenceUpdateName qref upd = case qref of
 referenceLookupName :: ObjectLens o Name => Reference -> ObjectFocus o Object
 referenceLookupName qref = case qref of
   Reference _ name suf -> updateIndex name get >>=
-    fmap fst . flip withInnerLens (updateIndex suf get) >>=
-      maybe (fail "undefined reference") return
+    fmap fst . flip withInnerLens (updateIndex suf get) >>= maybe (execThrow "" qref []) return
   RefObject o      suf -> case o of
     ORef o -> referenceLookupName (refAppendSuffix o suf)
     _      -> fail "cannot update reference"
   RefWrapper _ -> fail "cannot update reference"
 
-instance ObjectLens (Stack Name Object) Reference where
-  updateIndex = referenceUpdateName
+instance ObjectLens (Stack Name Object) Reference where { updateIndex = referenceUpdateName }
 
 ----------------------------------------------------------------------------------------------------
 
-newtype LocalStore = LocalStore (Stack Name Object)
-
-instance ObjectLens LocalStore Name where
-  updateIndex = innerDataUpdateIndex (\ (LocalStore o) -> o) (\_ -> LocalStore)
-
-instance ObjectLens LocalStore Reference where
-  updateIndex = referenceUpdateName
-
-----------------------------------------------------------------------------------------------------
-
-newtype GlobalStore = GlobalStore T_dict
-
-instance ObjectLens GlobalStore Name where
-  updateIndex = innerDataUpdateIndex (\ (GlobalStore o) -> o) (\_ -> GlobalStore)
-
-instance ObjectLens GlobalStore Reference where
-  updateIndex = referenceUpdateName
-
-----------------------------------------------------------------------------------------------------
-
-newtype StaticStore = StaticStore (Maybe Subroutine)
-
-instance ObjectLens Subroutine Name where
-  updateIndex = innerDataUpdateIndex staticVars (\d o -> d{staticVars=o})
-
-instance ObjectLens StaticStore Name where
-  updateIndex name upd = get >>= \ (StaticStore o) -> case o of
-    Nothing -> fmap fst $ withInnerLens (nullValue::Subroutine) $
-      updateIndex name (upd >> fail "static variables must be defined within a function")
-    Just  o -> do
-      (result, (changed, o)) <- withInnerLens o (updateIndex name upd)
-      when changed (put $ StaticStore $ Just o) >> return result
-
-instance ObjectLens StaticStore Reference where
-  updateIndex = referenceUpdateName
-
-----------------------------------------------------------------------------------------------------
-
--- | Because all built-in functions are stored in the 'ConstantStore' and since all function calls
--- perform updates, an update must be allowed to occur in the 'ConstantStore' without throwing an
--- exception. What really happens is, if an update is performed an update occurs on a copy of the
--- value in the store, then the store silently disgards the updated copy.
-newtype ConstantStore = ConstantStore T_dict
-
-instance ObjectLens ConstantStore Name where
-  updateIndex = innerDataUpdateIndex (\ (ConstantStore o) -> o) (\_ -> ConstantStore)
-
-instance ObjectLens ConstantStore Reference where
-  updateIndex = referenceUpdateName
-
-----------------------------------------------------------------------------------------------------
-
-updateLocal :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> Exec (Reference, Maybe Object)
+updateLocal :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus () (Reference, Maybe Object)
 updateLocal name suf upd = do
-  let qref = Reference LOCAL name suf
-  let getstack = gets execStack >>= \ (LocalStore stack) -> return stack
-  stack <- getstack
-  (result, (_, changed, o)) <- runObjectFocusExec (updateIndex suf upd) qref (stackLookup name stack)
+  stack <- focusLiftExec (gets execStack)
+  (result, (changed, o)) <- withInnerLens (stackLookup name stack) (updateIndex suf upd)
   -- The updateIndex function may have performed a function call that updated the local stack so we
   -- need to get the (possibly) updated stack from the 'ExecUnit' once again and operate on that.
-  when changed $ getstack >>= \stack -> modify $ \xunit ->
-    xunit{ execStack = LocalStore $ snd $ stackUpdate (const ((), o)) name stack }
-  return (qref, result)
+  when changed $ focusLiftExec (gets execStack) >>= \stack -> focusLiftExec $ modify $ \xunit ->
+    xunit{ execStack = snd $ stackUpdate (const ((), o)) name stack }
+  return (Reference LOCAL name suf, result)
 
-updateConst :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> Exec (Reference, Maybe Object)
+updateConst :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus () (Reference, Maybe Object)
 updateConst name suf upd = do
   let qref = Reference CONST name suf
-  consts <- gets builtinConstants
-  (result, (_, changed, _)) <- runObjectFocusExec (updateIndex suf upd) qref (M.lookup name consts)
-  when changed $ execThrow "attempted modification of immutable value" ExecErrorUntyped [(modifiedConst, obj qref)]
+  consts <- focusLiftExec (gets builtinConstants)
+  (result, (changed, _)) <- withInnerLens (M.lookup name consts) (updateIndex suf upd)
+  when changed $ case suf of -- Modifying a const variable directly fails.
+    NullRef -> execThrow "attempted modification of immutable value" ExecErrorUntyped [(modifiedConst, obj qref)]
+    _       -> return () -- modifying a member of a const value is OK but the updated value is disgarded.
   return (qref, result)
 
-updateStatic :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> Exec (Reference, Maybe Object)
+updateStatic :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus () (Reference, Maybe Object)
 updateStatic name suf upd = do
-  let qref = Reference CONST name suf
-  let getstore = gets currentCodeBlock >>= \ (StaticStore store) -> return store
-  store <- getstore
-  case store of
-    Nothing    -> execThrow "" qref []
-    Just store -> do
-      (result, (_, changed, o)) <-
-        runObjectFocusExec (updateIndex suf upd) qref (M.lookup name $ staticVars store)
-      when changed $ getstore >>= \store -> case store of
-        Nothing    -> return ()
-        Just store -> modify $ \xunit ->
-          xunit
-          { currentCodeBlock = StaticStore $ Just $
-              store{ staticVars = M.alter (const o) name (staticVars store) }
-          }
-      return (qref, result)
-
-updateGlobal :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> Exec (Reference, Maybe Object)
-updateGlobal name suf upd = do
-  let qref = Reference CONST name suf
-  let getstore = gets globalData >>= \ (GlobalStore store) -> return store
-  store <- getstore
-  (result, (_, changed, o)) <-
-    runObjectFocusExec (updateIndex suf upd) qref (M.lookup name store)
-  when changed $ getstore >>= \store -> modify $ \xunit ->
-    xunit{ globalData = GlobalStore $ M.alter (const o) name store }
+  let qref = Reference STATIC name suf
+  store <- focusLiftExec (gets currentCodeBlock) >>= maybe mzero return
+  (result, (changed, o)) <- withInnerLens (M.lookup name $ staticVars store) (updateIndex suf upd)
+  when changed $ focusLiftExec (gets currentCodeBlock) >>= \store -> case store of
+    Nothing    -> return ()
+    Just store -> focusLiftExec $ modify $ \xunit ->
+      xunit
+      { currentCodeBlock = Just $
+          store{ staticVars = M.alter (const o) name (staticVars store) }
+      }
   return (qref, result)
 
-updateWithRef :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> Exec (Reference, Maybe Object)
+updateGlobal :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus () (Reference, Maybe Object)
+updateGlobal name suf upd = do
+  let qref = Reference GLOBAL name suf
+  store <- focusLiftExec (gets globalData)
+  (result, (changed, o)) <- withInnerLens (M.lookup name store) (updateIndex suf upd)
+  when changed $ focusLiftExec (gets globalData) >>= \store -> focusLiftExec $ modify $ \xunit ->
+    xunit{ globalData = M.alter (const o) name store }
+  return (qref, result)
+
+updateWithRef :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus () (Reference, Maybe Object)
 updateWithRef name suf upd = do
   let qref = Reference GLODOT name suf
-  store <- gets currentWithRef
+  store <- focusLiftExec (gets currentWithRef)
   case store of
     Nothing -> updateGlobal name suf upd
     Just  o -> do
-      (result, (_, changed, o)) <- runObjectFocusExec (updateIndex suf upd) qref (Just o)
-      when changed $ modify $ \xunit -> xunit{ currentWithRef=o }
+      (result, (changed, o)) <- withInnerLens (Just o) (updateIndex suf upd)
+      when changed $ focusLiftExec $ modify $ \xunit -> xunit{ currentWithRef=o }
       return (qref, result)
 
-instance ObjectLens ExecUnit Name where
+instance ObjectLens () Name where
   updateIndex name = updateIndex (Reference UNQUAL name NullRef)
 
-instance ObjectLens ExecUnit Reference where
+instance ObjectLens () Reference where
   updateIndex qref upd = do
-    (qref, result) <- focusLiftExec $ case qref of
+    (qref, result) <- case qref of
       Reference q name suf -> case q of
-        UNQUAL -> foldl1 mplusUndefinedRef $
-          [ updateLocal   name suf upd, updateConst   name suf upd, updateStatic  name suf upd
-          , updateGlobal  name suf upd, updateWithRef name suf upd
+        UNQUAL -> fmap fst $ withInnerLens () $ msum $
+          [ updateLocal   name suf upd
+          , updateConst   name suf upd
+          , updateStatic  name suf upd
+          , updateGlobal  name suf upd
+          , updateWithRef name suf upd
           ]
         LOCAL  -> updateLocal   name suf upd
         CONST  -> updateConst   name suf upd
         STATIC -> updateStatic  name suf upd
         GLOBAL -> updateGlobal  name suf upd
         GLODOT -> updateWithRef name suf upd
-      _ -> fail "cannot update reference"
+      _ -> execThrow "cannot update reference" qref []
     _setTargetRefInfo qref >> return result
 
 ----------------------------------------------------------------------------------------------------
@@ -4276,10 +4157,11 @@ instance PPrintable ExecControl where
     ExecError{ execErrorMessage=msg, execErrorLocation=loc } -> do
       maybe (return ()) (pString . (++":") . uchars) (execErrorInModule err)
       pShow loc >> pString (if testNull loc then " " else ": ")
-      when (not $ msg==nil) (pUStr msg >> pEndLine)
+      when (not $ msg==nil) (pUStr msg)
       pIndent $ do
-        pPrint (execErrorSubtype err)
+        pEndLine >> pPrint (execErrorSubtype err)
         forM_ (M.assocs $ execErrorInfo err) $ \ (key, val) -> do
+          pEndLine
           maybe (pPrint key >> pString ": ") (pString . (++" ") . uchars) (M.lookup key errorDict)
           pPrint val
     ExecReturn{ execReturnValue=o } -> maybe (return ()) pPrint o
@@ -4293,18 +4175,6 @@ instance ToDaoStructClass ExecControl where
       "location" .=@ execErrorLocation
       "subtype"  .=@ execErrorSubtype
       "info"     .=@ execErrorInfo
-
-instance FromDaoStructClass ExecControl where
-  fromDaoStruct = msum $
-    [ constructor "ExecReturn" >> ExecReturn <$> opt "value"
-    , do  constructor "ExecError"
-          return ExecError
-            <*> req "message"
-            <*> opt "inModule"
-            <*> req "location"
-            <*> req "subtype"
-            <*> req "info"
-    ]
 
 instance HataClass ExecControl where
   haskellDataInterface = interface "ExecControl" $ do
@@ -4356,22 +4226,21 @@ throwParseError msg mod err info = throwError $
 -- provided. If the evaluation failed and has already set an error location, the location is not
 -- modified by this function, which guarantees the inner-most call to 'errLocation' will set the
 -- location of the error.
-errLocation :: (MonadPlusError ExecControl m, Monad m, HasLocation o) => o -> m a -> m a
-errLocation o f = catchPredicate f >>= \p -> case p of
-  PFail (err@(ExecError{execErrorLocation=LocationUnknown})) ->
-    predicate $ PFail $ err{execErrorLocation=getLocation o}
-  p -> predicate p
+errLocation :: (MonadError ExecControl m, HasLocation o) => o -> m a -> m a
+errLocation o f = catchError f $ \err -> case err of
+  ExecError{execErrorLocation=LocationUnknown} ->
+    throwError $ err{execErrorLocation=getLocation o}
+  err -> throwError err
 
 -- | Evaluate a monadic function which may throw an 'ExecControl' 'Dao.Predicate.PFail' predicate
 -- value. If the monadic function does fail, the 'Doa.Predicate.PFail' value will be updated with
 -- the given module name. If the evaluation failed and has already set an error module, the module
 -- is not modified by this function, which guarantees the inner-most call to 'errModule' will set
 -- the module of the error.
-errModule :: (MonadPlusError ExecControl m, Monad m) => UPath -> m a -> m a
-errModule path f = catchPredicate f >>= \p -> case p of
-  PFail (err@(ExecError{execErrorInModule=mod})) ->
-    predicate $ PFail $ err{execErrorInModule=mplus mod (Just path)}
-  p -> predicate p
+errModule :: MonadError ExecControl m => UPath -> m a -> m a
+errModule path f = catchError f $ \err -> case err of
+  ExecError{execErrorInModule=mod} -> throwError $ err{execErrorInModule=mplus mod (Just path)}
+  err -> throwError err
 
 -- | Like 'errModule' but sets the module reported by the error to be the current module of the
 -- 'ExecUnit' if it is defined. If it is not defined, this function is equivalent to 'Prelude.id'.
@@ -4382,28 +4251,17 @@ errCurrentModule f = gets programModuleName >>= \mod -> maybe id errModule mod $
 -- value. If the monadic function does fail, the 'execErrorInfo' field of the 'ExecError' value in
 -- the 'Dao.Predicate.PFail' predicate will be updated with the field 'Name' and 'Object' value
 -- provided here.
-errInfo :: (MonadPlusError ExecControl m, Monad m) => Name -> Object -> m a -> m a
-errInfo name o f = catchPredicate f >>= \p -> case p of
-  PFail (err@(ExecError{execErrorInfo=info})) ->
-    predicate $ PFail $ err{execErrorInfo=M.insert name o info}
-  p -> predicate p
+errInfo :: MonadError ExecControl m => Name -> Object -> m a -> m a
+errInfo name o f = catchError f $ \err -> case err of
+  ExecError{execErrorInfo=info} -> throwError $ err{execErrorInfo=M.insert name o info}
+  err -> throwError err
 
 -- | Evaluate an 'Exec', but if it throws an exception, set record an 'ObjectExpr' where
 -- the exception occurred in the exception information.
 updateExecErrorInfo :: Name -> Object -> Exec a -> Exec a
 updateExecErrorInfo name o fn = catchError fn $ \err -> case err of
-  ExecReturn{}                    -> throwError err
-  ExecError{ execErrorInfo=info } -> throwError $ err{ execErrorInfo = M.insert name o info }
-
--- | Like 'Control.Monad.mplus' but instead of backtracking on 'Control.Monad.mzero', it backtracks
--- when an 'ExecUndefinedRef' error value is thrown by 'Control.Monad.Error.throwError'. In the case of
--- the first function parameter evaluating to 'Control.Monad.mzero' or any other error value will
--- halts ordinary program flow and does not backtrack to evaluate the next item, 'mplusUndefinedRef'
--- evaluates to 'Control.Monad.mzero' or the non 'ExecUndefinedRef' error value.
-mplusUndefinedRef :: MonadError ExecControl m => m a -> m a -> m a
-mplusUndefinedRef fa fb = catchError fa $ \err -> case err of
-  ExecError{ execErrorSubtype=ExecUndefinedRef _ } -> fb
-  err                                           -> throwError err
+  ExecReturn{}                  -> throwError err
+  ExecError{execErrorInfo=info} -> throwError $ err{ execErrorInfo = M.insert name o info }
 
 -- | If an error has not been caught, log it in the module where it can be retrieved later. This
 -- function only stores errors constructed with 'ExecError', the 'ExecReturn' constructed objects
@@ -4425,13 +4283,14 @@ clearUncaughtErrorLog = do
 data ExecErrorSubtype
   = ExecErrorUntyped
   | ExecThrow         Object
-  | ExecStructError   StructError
-  | ExecUndefinedRef  Reference
-  | ExecTypeError     ObjType
-  | ExecUpdateOpError UpdateOp
-  | ExecInfixOpError  InfixOp
-  | ExecIOException   IOException
-  | ExecHaskellError  ErrorCall
+    -- ^ thrown when evaluating a "throw" statement, that is 'Dao.Interpreter.AST.ReturnExpr'
+  | ExecStructError   StructError -- ^ thrown by 'toDaoStruct' or 'fromDaoStruct'
+  | ExecUndefinedRef  Reference   -- ^ signals reference lookup failed
+  | ExecTypeError     ObjType     -- ^ catch-all exception thrown when wrong data type is used.
+  | ExecUpdateOpError UpdateOp    -- ^ thrown when an update operator fails
+  | ExecInfixOpError  InfixOp     -- ^ thrown when an infix operator fails
+  | ExecIOException   IOException -- ^ re-thrown when caught from the IO monad
+  | ExecHaskellError  ErrorCall   -- ^ re-thrown when caught from the IO monad
   | ExecParseError    (ParseError () DaoTT)
   deriving (Eq, Typeable)
 
@@ -4440,7 +4299,7 @@ instance ToDaoStructClass ExecErrorSubtype where
     ExecErrorUntyped    -> makeNullary "Error"
     ExecThrow         o -> renameConstructor "Exception"          $ "threw"     .= o
     ExecStructError   o -> innerToStruct o
-    ExecUndefinedRef  o -> renameConstructor "Undefined"          $ "reference" .= o
+    ExecUndefinedRef  o -> renameConstructor "UndefinedRef"       $ "reference" .= o
     ExecTypeError     o -> renameConstructor "TypeMismatch"       $ "usedType"  .= o
     ExecUpdateOpError o -> renameConstructor "UpdateOpError"      $ "operator"  .= o
     ExecInfixOpError  o -> renameConstructor "InfixOpError"       $ "operator"  .= o
@@ -4651,12 +4510,12 @@ catchReturn catch f = catchPredicate f >>= \pval -> case pval of
 -- given 'Exec' function evaluates to 'Control.Monad.mzero' or 'Control.Monad.Error.throwError'.
 execNested :: T_dict -> Exec a -> Exec (a, T_dict)
 execNested init exe = do
-  (LocalStore store) <- gets execStack
-  modify $ \xunit -> xunit{ execStack = LocalStore $ stackPush init store }
+  store <- gets execStack
+  modify $ \xunit -> xunit{ execStack = stackPush init store }
   result <- catchPredicate exe
-  (LocalStore store) <- gets execStack
+  store <- gets execStack
   (store, dict) <- pure (stackPop store)
-  modify $ \xunit -> xunit{ execStack = LocalStore store }
+  modify $ \xunit -> xunit{ execStack = store }
   result <- predicate result
   return (result, dict)
 
@@ -4683,7 +4542,7 @@ execFuncPushStack_ dict = fmap fst . execFuncPushStack dict
 execWithStaticStore :: Subroutine -> Exec a -> Exec a
 execWithStaticStore sub exe = do
   store <- gets currentCodeBlock
-  modify (\st -> st{ currentCodeBlock=StaticStore(Just sub) })
+  modify (\st -> st{ currentCodeBlock=Just sub })
   result <- catchPredicate exe
   modify (\st -> st{ currentCodeBlock=store })
   predicate result
@@ -6015,7 +5874,9 @@ builtin_check_if_defined =
   daoFunc
   { funcAutoDerefParams = False
   , daoForeignFunc = \ () args -> fmap (flip (,) () . Just . obj . and) $ forM args $ \arg -> case arg of
-      ORef o -> mplusUndefinedRef (referenceLookup o >> return True) (return False)
+      ORef o -> catchError (referenceLookup o >> return True) $ \err -> case err of
+        ExecError{ execErrorSubtype=ExecUndefinedRef _ } -> return False
+        err                                              -> throwError err
       _      -> return True
   }
 
@@ -6025,7 +5886,7 @@ builtin_delete =
   { funcAutoDerefParams = False
   , daoForeignFunc = \ () args -> do
       forM_ args $ \arg -> case arg of
-        ORef o -> void $ referenceUpdate o (const $ return Nothing)
+        ORef o -> void $ referenceUpdate o True (const $ return Nothing)
         _      -> return ()
       return (Nothing, ())
   }
@@ -6158,18 +6019,17 @@ paramsToGlobExpr o = case o of
 -- or if there are an incorrect number of parameters. Backtracking is important because of function
 -- overloading.
 matchFuncParams :: ParamListExpr Object -> [Object] -> Exec T_dict
-matchFuncParams (ParamListExpr params _) ox =
-  loop (0::Int) M.empty (tyChkItem params) ox where
-    loop i dict params ox = case ox of
-      [] | null params -> return dict
-      [] -> mzero -- not enough parameters passed to function
-      o:ox -> case params of
-        [] -> mzero -- too many parameters passed to function
-        ParamExpr passByRef tychk _ : params -> do
-          let name = tyChkItem tychk
-          execute $ fmapCheckedValueExpr (const o) tychk -- execute (TyChkExpr Object)
-          o <- if passByRef then (case o of { ORef _ -> return o; _ -> mzero }) else derefObject o
-          loop (i+1) (M.insert name o dict) params ox
+matchFuncParams (ParamListExpr params _) ox = loop (0::Int) M.empty (tyChkItem params) ox where
+  loop i dict params ox = case ox of
+    [] | null params -> return dict
+    [] -> mzero -- not enough parameters passed to function
+    o:ox -> case params of
+      [] -> mzero -- too many parameters passed to function
+      ParamExpr passByRef tychk _ : params -> do
+        let name = tyChkItem tychk
+        execute $ fmapCheckedValueExpr (const o) tychk -- execute (TyChkExpr Object)
+        o <- if passByRef then (case o of { ORef _ -> return o; _ -> mzero }) else derefObject o
+        loop (i+1) (M.insert name o dict) params ox
 
 -- | A guard script is some Dao script that is executed before or after some event, for example, the
 -- code found in the @BEGIN@ and @END@ blocks.
@@ -6596,8 +6456,8 @@ instance Executable (ScriptExpr Object) () where
           getObj = mplus (xmaybe $ o >>= dyn) $ case o of
             Nothing -> fail "RuleFuncExpr evaluated to void"
             Just  o -> throwBadTypeError "RuleFuncExpr evaluated to object of incorrect data type" o []
-      let fsub sub = modify $ \xunit -> xunit{ currentCodeBlock = StaticStore $ Just sub }
-      (StaticStore sub) <- gets currentCodeBlock
+      let fsub sub = modify $ \xunit -> xunit{currentCodeBlock=Just sub}
+      sub <- gets currentCodeBlock
       case sub of
         Nothing  -> case rulfn of
           LambdaExpr{} -> getObj >>= \o ->
@@ -6630,7 +6490,7 @@ instance Executable (ScriptExpr Object) () where
       let updateIter o = M.lookup varName . snd <$> execNested (maybe M.empty (M.singleton varName) o) run
       let readLoop   o = void $ readForLoop o readIter
       let updateLoop o = updateForLoop o updateIter >>=
-            void . referenceUpdate (Reference UNQUAL varName NullRef) . const . return . Just
+            void . referenceUpdate (Reference UNQUAL varName NullRef) True . const . return . Just
       errLocation inObj $ case iter of
         ORef qref -> case qref of
           RefWrapper{}        -> throwBadTypeError "cannot iterate over value of type reference" iter []
@@ -6672,15 +6532,18 @@ instance HataClass (ScriptExpr Object) where
   haskellDataInterface = interface "Script" $ do
     autoDefEquality >> autoDefOrdering >> autoDefNullTest >> autoDefBinaryFmt
 
-localVarDefine :: Name -> Object -> Exec ()
-localVarDefine name = localVarUpdate name . const . Just
+localVarDefine :: Name -> Object -> Exec (Maybe Object)
+localVarDefine name o = fmap (snd . fst) $
+  runObjectFocus (updateLocal name NullRef $ modify (const $ Just o) >> get) False (reference UNQUAL name) ()
 
-localVarUpdate :: Name -> (Maybe Object -> Maybe Object) -> Exec ()
-localVarUpdate name f = do
-  let qref = Reference LOCAL name NullRef
-  (_, (_, changed, store)) <- gets execStack >>=
-    runObjectFocusExec (updateIndex name $ state $ \a -> let b = f a in (b, b)) qref
-  when changed (modify $ \xunit -> xunit{ execStack=store })
+localVarUpdate :: Name -> (Maybe Object -> Maybe Object) -> Exec (Maybe Object)
+localVarUpdate name f = fmap (snd . fst) $
+  runObjectFocus (updateLocal name NullRef $ modify f >> get) False (reference UNQUAL name) ()
+
+localVarLookup :: Name -> Exec Object
+localVarLookup name = 
+  (snd . fst) <$> runObjectFocus (updateLocal name NullRef get) True (reference UNQUAL name) () >>=
+    maybe mzero return
 
 -- | Like evaluating 'execute' on a value of 'Reference', except the you are evaluating an
 -- 'Object' type. If the value of the 'Object' is not constructed with
@@ -6720,7 +6583,7 @@ instance Executable ForLoopBlock (Bool, Maybe Object) where
   execute (ForLoopBlock name o block) = 
     execNested_ (M.singleton name o) $ loop (codeBlock block) where
       done cont = do
-        (LocalStore ref) <- gets execStack
+        ref <- gets execStack
         newValue <- return $ M.lookup name $ head $ mapList ref
         return (cont, newValue)
       loop ex = case ex of
@@ -7128,7 +6991,7 @@ instance Executable (ObjectExpr Object) (Maybe Object) where
         forM_ items $ \item -> case item of 
           AssignExpr{} -> execute item -- fill the local stack by executing each assignment
           _            -> fail "struct initializer is not an assignment expression"
-        (LocalStore stack) <- gets execStack
+        stack <- gets execStack
         let items = head $ mapList stack
         return $ Just $ OTree $
           if M.null items
@@ -7335,7 +7198,7 @@ instance B.HasPrefixTable (AssignExpr Object) B.Byte MTab where
 
 instance Executable (AssignExpr Object) (Maybe Object) where
   execute = _executeAssignExpr $ \qref op newObj ->
-    snd <$> referenceUpdate qref (evalUpdateOp (Just qref) op newObj)
+    snd <$> referenceUpdate qref (op/=UCONST) (evalUpdateOp (Just qref) op newObj)
 
 -- | This function works a bit like how 'execute' works on an 'AssignExpr' data type, but every
 -- assignment is checked to make sure it is local or unqualified. Furthurmore, all assignments are
@@ -7350,13 +7213,13 @@ instance Executable (AssignExpr Object) (Maybe Object) where
 assignUnqualifiedOnly :: AssignExpr Object -> Exec (Maybe Object)
 assignUnqualifiedOnly = _executeAssignExpr $ \qref op newObj -> case qref of
   Reference UNQUAL r NullRef -> do
-    (LocalStore store) <- gets execStack
+    store <- gets execStack
     let oldObj = stackLookup r store
     newObj <- evalUpdateOp (Just qref) op newObj oldObj
     (result, store) <- pure $ stackUpdateTop (const (newObj, newObj)) r store
-    modify $ \xunit -> xunit{ execStack = LocalStore store }
+    modify $ \xunit -> xunit{ execStack = store }
     return result
-  _ -> execThrow "assignment mut be unqualified" ExecErrorUntyped [(errOfReference, obj qref)]
+  _ -> execThrow "assignment must be unqualified" ExecErrorUntyped [(errOfReference, obj qref)]
 
 instance ObjectClass (AssignExpr Object) where { obj=new; fromObj=objFromHata; }
 
@@ -7517,12 +7380,7 @@ instance Executable (TopLevelExpr Object) () where
       let addIfFuncs a b = maybe b id $ do -- overwrite previously declared variables...
             (a, b) <- Just (,) <*> fromObj a <*> fromObj b
             Just $ obj ((a++b)::[CallableCode]) -- ...unless both variables are [CallableCode]
-      modify $ \xunit ->
-        xunit
-        { globalData =
-            let (GlobalStore store) = globalData xunit
-            in  GlobalStore $ M.unionWith addIfFuncs store dict
-        }
+      modify $ \xunit -> xunit{ globalData = M.unionWith addIfFuncs (globalData xunit) dict }
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     EventExpr typ script _ -> do
       let exec = setupCodeBlock script
@@ -7610,12 +7468,7 @@ instance Executable (Program Object) () where
     ((), localVars) <- execNested mempty $ mapM_ execute (dropWhile isAttribute ast)
     -- Now, the local variables that were defined in the top level need to be moved to the global
     -- variable store.
-    modify $ \xunit ->
-      xunit
-      { globalData =
-          let (GlobalStore globalVars) = globalData xunit
-          in  GlobalStore $ M.union localVars globalVars
-      }
+    modify $ \xunit -> xunit{ globalData = M.union localVars (globalData xunit) }
 
 instance ObjectClass (Program Object) where { obj=new; fromObj=objFromHata; }
 

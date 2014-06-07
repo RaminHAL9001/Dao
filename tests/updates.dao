@@ -51,7 +51,7 @@ println("before D.f() started, X was 1: X = ", X);
 //: D.f() then incremented X: X = 2
 try { D.f("D.f"); }
 else { println("D.f() backtracked"); }
-//: after D.f() finished, X should be 2: X = 3
+//: after D.f() finished, X should be 2: X = 2
 println("after D.f() finished, X should be 2: X = ", X);
 if(X!=2) { throw ("fail: X != 2"); }
 

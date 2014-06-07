@@ -177,7 +177,7 @@ import           Control.Monad.Error
 import           Control.Monad.Reader
 import           Control.Monad.State
 
-#if 0
+#if 1
 import Debug.Trace
 import System.IO
 strace :: PPrintable s => String -> s -> s
@@ -3699,15 +3699,6 @@ instance ObjectFunctor [Object] Integer where
      mapM (\ (idx, o) -> focalPathSuffix (Subscript [obj idx] NullRef) $ withInnerLens [] $ f idx o
           ) . zip [0..] >>= put . map snd . sortBy (\a b -> compare (fst a) (fst b)) . concatMap (snd . snd)
 
-_refSuffixUpdate
-  :: (ObjectClass o, ObjectLens o i)
-  => o -> i -> RefSuffix
-  -> ObjectFocus (Maybe Object) (Maybe Object)
-  -> ObjectFocus (Maybe Object) (Maybe Object)
-_refSuffixUpdate o i suf f = do
-  (result, (changed, o)) <- withInnerLens o $ updateIndex i $ updateIndex suf f
-  when changed (put $ Just $ obj o) >> return result
-
 _dictSubscriptUpdate
   :: ObjectLens o Name
   => String -> [Object]
@@ -3798,11 +3789,11 @@ instance ObjectFunctor Hata [Object] where
       when changed (put $ Hata ifc o)
 
 _tryFuncCall
-  :: Maybe Object -> [Object]
+  :: Maybe Object -> [Object] -> RefSuffix
   -> ObjectFocus (Maybe Object) (Maybe Object)
   -> ObjectFocus (Maybe Object) (Maybe Object)
   -> ObjectFocus (Maybe Object) (Maybe Object)
-_tryFuncCall o args try els = maybe els id $ do
+_tryFuncCall o args suf f els = maybe els id $ do
   (Hata ifc d) <- o >>= fromObj
   calls <- objCallable ifc
   return $ do
@@ -3810,9 +3801,20 @@ _tryFuncCall o args try els = maybe els id $ do
     (result, o) <- focusLiftExec (calls d >>= flip (callCallables o) args)
     -- Focus on the result of the function call and evaluate an update on it.
     -- The updated function result is ignored, any changes made to it are lost.
-    (result, _) <- put o >> withInnerLens result try
+    (result, _) <- put o >> case suf of
+      NullRef -> withInnerLens result f
+      _       -> withInnerLens result (updateIndex suf f)
     -- The function call may have updated the "this" value, place this updated value back into the focus.
     return result
+
+_refSuffixUpdate
+  :: (ObjectClass o, ObjectLens o i)
+  => o -> i -> RefSuffix
+  -> ObjectFocus (Maybe Object) (Maybe Object)
+  -> ObjectFocus (Maybe Object) (Maybe Object)
+_refSuffixUpdate o i suf f = do
+  (result, (changed, o)) <- withInnerLens o $ updateIndex i $ updateIndex suf f
+  when changed (put $ Just $ obj o) >> return result
 
 -- | This is an 'ObjectUpdate' function which operates in the monad
 -- > 'ObjectFocus' (Maybe 'Object') (Maybe 'Object')
@@ -3840,29 +3842,31 @@ callMethod name args suf f = do
   case o of
     Nothing -> err "method call on undefined reference"
     Just  o -> case o of
-      ODict    d -> _tryFuncCall (M.lookup     name d) args (updateIndex suf f) (_refSuffixUpdate d name suf f)
-      OTree    d -> _tryFuncCall (structLookup name d) args (updateIndex suf f) (_refSuffixUpdate d name suf f)
+      ODict    d -> _tryFuncCall (M.lookup     name d) args suf f (_refSuffixUpdate d name suf f)
+      OTree    d -> _tryFuncCall (structLookup name d) args suf f (_refSuffixUpdate d name suf f)
       OHaskell (Hata ifc d) -> do
         case M.lookup name (objMethodTable ifc) of
           Just func -> do
             (result, d) <- focusLiftExec $ executeDaoFunc qref func d args
             put (Just $ OHaskell $ Hata ifc d)
             -- Like _tryFuncCall, ignore changes made to the result of the function call.
-            (result, _) <- withInnerLens result (updateIndex suf f)
+            (result, _) <- case suf of
+              NullRef -> withInnerLens result f
+              _       -> withInnerLens result (updateIndex suf f)
             return result
           Nothing   -> case objToStruct ifc of
             Just toStruct -> do
               struct <- predicate (fromData toStruct d)
-              _tryFuncCall (structLookup name struct) args (updateIndex suf f) (_refSuffixUpdate (Hata ifc d) name suf f)
+              _tryFuncCall (structLookup name struct) args suf f (_refSuffixUpdate (Hata ifc d) name suf f)
             Nothing       -> err "not a callable method function"
       _ -> err "method call on atomic object"
             -- TODO: provide a set of built-in methods available to every object.
 
 instance ObjectLens (Maybe Object) RefSuffix where
-  updateIndex suf f = focusNext $ focalPathSuffix suf $ get >>= \o -> case suf of
+  updateIndex suf f = _getTargetRefInfo >>= \qref -> focalPathSuffix suf $ get >>= \o -> dbg0 ("updateIndex ("++show qref++") ("++show o++")") $ focusNext $ case suf of
     NullRef         -> get >>= flip withInnerLens f >>= \ (result, (changed, o)) ->
       when changed (put o) >> return result
-    DotRef name (FuncCall args suf) -> callMethod name args suf f
+    DotRef name (FuncCall args suf) -> dbg0 ("callMethod ("++show name++") ("++show o++")") $ callMethod name args suf f
     DotRef name suf -> case o of
       Nothing -> mzero
       Just  o -> case o of
@@ -3881,8 +3885,7 @@ instance ObjectLens (Maybe Object) RefSuffix where
     FuncCall  args suf -> case o of
       Nothing -> mzero
       Just  o -> do
-        qref <- getFocalReference
-        (result, o) <- focusLiftExec (callObject qref o args)
+        (result, o) <- dbg0 "callObject" $ focusLiftExec (callObject qref o args)
         _mapStructState $ modify $ \st -> st{ objectInFocus=o }
         -- -^ Here we put the updated function back (it may have had it's static var table updated),
         -- but we use '_mapStructState' to do it. This is because using 'modify' or 'put' will
@@ -3891,9 +3894,10 @@ instance ObjectLens (Maybe Object) RefSuffix where
         -- without also triggering the exception thrown when a const variable is modified, we must
         -- make sure we update it in a way that would not indicate that the function object itself
         -- has been modified.
-        fst <$> case suf of
+        (result, _) <- case suf of
           NullRef -> withInnerLens result f
           suf     -> withInnerLens result (updateIndex suf f)
+        return result
 
 instance ObjectFunctor Object RefSuffix where
   objectFMap f = get >>= \o -> case o of
@@ -3944,10 +3948,10 @@ instance ObjectLens (Stack Name Object) Name where
 -- | This function can be used to automatically instantiate 'updateIndex' for any type @o@ that also
 -- instantiates @'ObjectLens' o 'Dao.String.Name'@.
 referenceUpdateName :: ObjectLens o Name => Reference -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus o (Maybe Object)
-referenceUpdateName qref upd = case qref of
-  Reference _ name suf -> updateIndex name $ updateIndex suf upd
+referenceUpdateName qref f = case qref of
+  Reference _ name suf -> updateIndex name $ updateIndex suf f
   RefObject o suf -> case o of
-    ORef o -> referenceUpdateName (refAppendSuffix o suf) upd
+    ORef o -> referenceUpdateName (refAppendSuffix o suf) f
     _      -> fail "cannot update reference"
   RefWrapper _ -> fail "cannot update reference"
 
@@ -3969,9 +3973,9 @@ instance ObjectLens (Stack Name Object) Reference where { updateIndex = referenc
 ----------------------------------------------------------------------------------------------------
 
 updateLocal :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus () (Reference, Maybe Object)
-updateLocal name suf upd = do
+updateLocal name suf f = do
   stack <- focusLiftExec (gets execStack)
-  (result, (changed, o)) <- withInnerLens (stackLookup name stack) (updateIndex suf upd)
+  (result, (changed, o)) <- withInnerLens (stackLookup name stack) (updateIndex suf f)
   -- The updateIndex function may have performed a function call that updated the local stack so we
   -- need to get the (possibly) updated stack from the 'ExecUnit' once again and operate on that.
   when changed $ focusLiftExec (gets execStack) >>= \stack -> focusLiftExec $ modify $ \xunit ->
@@ -3979,20 +3983,20 @@ updateLocal name suf upd = do
   return (Reference LOCAL name suf, result)
 
 updateConst :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus () (Reference, Maybe Object)
-updateConst name suf upd = do
+updateConst name suf f = do
   let qref = Reference CONST name suf
   consts <- focusLiftExec (gets builtinConstants)
-  (result, (changed, _)) <- withInnerLens (M.lookup name consts) (updateIndex suf upd)
+  (result, (changed, _)) <- withInnerLens (M.lookup name consts) (updateIndex suf f)
   when changed $ case suf of -- Modifying a const variable directly fails.
     NullRef -> execThrow "attempted modification of immutable value" ExecErrorUntyped [(modifiedConst, obj qref)]
     _       -> return () -- modifying a member of a const value is OK but the updated value is disgarded.
   return (qref, result)
 
 updateStatic :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus () (Reference, Maybe Object)
-updateStatic name suf upd = do
+updateStatic name suf f = do
   let qref = Reference STATIC name suf
   store <- focusLiftExec (gets currentCodeBlock) >>= maybe mzero return
-  (result, (changed, o)) <- withInnerLens (M.lookup name $ staticVars store) (updateIndex suf upd)
+  (result, (changed, o)) <- withInnerLens (M.lookup name $ staticVars store) (updateIndex suf f)
   when changed $ focusLiftExec (gets currentCodeBlock) >>= \store -> case store of
     Nothing    -> return ()
     Just store -> focusLiftExec $ modify $ \xunit ->
@@ -4003,22 +4007,22 @@ updateStatic name suf upd = do
   return (qref, result)
 
 updateGlobal :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus () (Reference, Maybe Object)
-updateGlobal name suf upd = do
+updateGlobal name suf f = do
   let qref = Reference GLOBAL name suf
   store <- focusLiftExec (gets globalData)
-  (result, (changed, o)) <- withInnerLens (M.lookup name store) (updateIndex suf upd)
+  (result, (changed, o)) <- withInnerLens (M.lookup name store) (updateIndex suf f)
   when changed $ focusLiftExec (gets globalData) >>= \store -> focusLiftExec $ modify $ \xunit ->
     xunit{ globalData = M.alter (const o) name store }
   return (qref, result)
 
 updateWithRef :: Name -> RefSuffix -> ObjectFocus (Maybe Object) (Maybe Object) -> ObjectFocus () (Reference, Maybe Object)
-updateWithRef name suf upd = do
+updateWithRef name suf f = do
   let qref = Reference GLODOT name suf
   store <- focusLiftExec (gets currentWithRef)
   case store of
-    Nothing -> updateGlobal name suf upd
+    Nothing -> updateGlobal name suf f
     Just  o -> do
-      (result, (changed, o)) <- withInnerLens (Just o) (updateIndex suf upd)
+      (result, (changed, o)) <- withInnerLens (Just o) (updateIndex suf f)
       when changed $ focusLiftExec $ modify $ \xunit -> xunit{ currentWithRef=o }
       return (qref, result)
 
@@ -4026,21 +4030,21 @@ instance ObjectLens () Name where
   updateIndex name = updateIndex (Reference UNQUAL name NullRef)
 
 instance ObjectLens () Reference where
-  updateIndex qref upd = do
+  updateIndex qref f = do
     (qref, result) <- case qref of
       Reference q name suf -> case q of
         UNQUAL -> fmap fst $ withInnerLens () $ msum $
-          [ updateLocal   name suf upd
-          , updateConst   name suf upd
-          , updateStatic  name suf upd
-          , updateGlobal  name suf upd
-          , updateWithRef name suf upd
+          [ dbg0 ("local "++show name) $ updateLocal   name suf f
+          , dbg0 ("const "++show name) $ updateConst   name suf f
+          , dbg0 ("static "++show name) $ updateStatic  name suf f
+          , dbg0 ("global "++show name) $ updateGlobal  name suf f
+          , dbg0 ("withref "++show name) $ updateWithRef name suf f
           ]
-        LOCAL  -> updateLocal   name suf upd
-        CONST  -> updateConst   name suf upd
-        STATIC -> updateStatic  name suf upd
-        GLOBAL -> updateGlobal  name suf upd
-        GLODOT -> updateWithRef name suf upd
+        LOCAL  -> updateLocal   name suf f
+        CONST  -> updateConst   name suf f
+        STATIC -> updateStatic  name suf f
+        GLOBAL -> updateGlobal  name suf f
+        GLODOT -> updateWithRef name suf f
       _ -> execThrow "cannot update reference" qref []
     _setTargetRefInfo qref >> return result
 

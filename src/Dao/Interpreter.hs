@@ -177,7 +177,7 @@ import           Control.Monad.Error
 import           Control.Monad.Reader
 import           Control.Monad.State
 
-#if 1
+#if 0
 import Debug.Trace
 import System.IO
 strace :: PPrintable s => String -> s -> s
@@ -665,18 +665,14 @@ daoFunc =
   }
 
 -- | Execute a 'DaoFunc' 
-executeDaoFunc :: Reference -> DaoFunc this -> this -> [Object] -> Exec (Maybe Object, this)
-executeDaoFunc qref fn this params = do
+executeDaoFunc :: DaoFunc this -> this -> [Object] -> Exec (Maybe Object, this)
+executeDaoFunc fn this params = do
   args <- (if funcAutoDerefParams fn then mapM derefObject else return) params
   pval <- catchPredicate (daoForeignFunc fn this args)
   case pval of
     OK            (o, this) -> return (o, this)
     PFail (ExecReturn    o) -> return (o, this)
-    PFail (err@ExecError{}) -> throwError $ err{
-      execReturnValue = let e = [obj "error in function", obj qref] in Just $
-        flip (maybe (obj e)) (execReturnValue err) $ \ret -> OList $ case ret of
-          OList ox -> e++ox
-          o        -> e++[o] }
+    PFail              err  -> throwError err
     Backtrack               -> mzero
 
 -- Evaluate this function as one of the instructions in the monadic function passed to the
@@ -3664,7 +3660,7 @@ lookupHataAsStruct f = do
   fst <$> withInnerLens struct f
 
 instance ObjectLens Hata Name where
-  updateIndex name f = flip mplus (fail "cannot modify field") $ updateHataAsStruct $ updateIndex name f
+  updateIndex name f = updateHataAsStruct $ updateIndex name f
 
 instance ObjectFunctor Hata Name where
   objectFMap = flip mplus (return ()) . updateHataAsStruct . focusStructAsDict . objectFMap
@@ -3793,15 +3789,17 @@ _tryFuncCall
   -> ObjectFocus (Maybe Object) (Maybe Object)
   -> ObjectFocus (Maybe Object) (Maybe Object)
   -> ObjectFocus (Maybe Object) (Maybe Object)
-_tryFuncCall o args suf f els = maybe els id $ do
-  (Hata ifc d) <- o >>= fromObj
+_tryFuncCall func args suf f els = maybe els id $ do
+  (Hata ifc d) <- func >>= fromObj
   calls <- objCallable ifc
   return $ do
     -- Get the result of the function call, the result of the operation will become the focus.
-    (result, o) <- focusLiftExec (calls d >>= flip (callCallables o) args)
+    this <- get
+    (result, this) <- focusLiftExec (calls d >>= flip (callCallables this) args)
+    put this
     -- Focus on the result of the function call and evaluate an update on it.
     -- The updated function result is ignored, any changes made to it are lost.
-    (result, _) <- put o >> case suf of
+    (result, _) <- case suf of
       NullRef -> withInnerLens result f
       _       -> withInnerLens result (updateIndex suf f)
     -- The function call may have updated the "this" value, place this updated value back into the focus.
@@ -3844,29 +3842,30 @@ callMethod name args suf f = do
     Just  o -> case o of
       ODict    d -> _tryFuncCall (M.lookup     name d) args suf f (_refSuffixUpdate d name suf f)
       OTree    d -> _tryFuncCall (structLookup name d) args suf f (_refSuffixUpdate d name suf f)
-      OHaskell (Hata ifc d) -> do
-        case M.lookup name (objMethodTable ifc) of
-          Just func -> do
-            (result, d) <- focusLiftExec $ executeDaoFunc qref func d args
-            put (Just $ OHaskell $ Hata ifc d)
-            -- Like _tryFuncCall, ignore changes made to the result of the function call.
-            (result, _) <- case suf of
-              NullRef -> withInnerLens result f
-              _       -> withInnerLens result (updateIndex suf f)
-            return result
-          Nothing   -> case objToStruct ifc of
-            Just toStruct -> do
-              struct <- predicate (fromData toStruct d)
-              _tryFuncCall (structLookup name struct) args suf f (_refSuffixUpdate (Hata ifc d) name suf f)
-            Nothing       -> err "not a callable method function"
+      OHaskell (Hata ifc d) -> case M.lookup name (objMethodTable ifc) of
+        Just func -> do
+          (result, d) <- focusLiftExec $ executeDaoFunc func d args
+          put (Just $ OHaskell $ Hata ifc d)
+          -- Next we take the result of this method call and let any 'RefSuffix's that may exist to
+          -- operate on it. Like _tryFuncCall, this will ignore changes made to the result of the
+          -- function call.
+          (result, _) <- case suf of
+            NullRef -> withInnerLens result f
+            _       -> withInnerLens result (updateIndex suf f)
+          return result
+        Nothing   -> case objToStruct ifc of
+          Just toStruct -> do
+            struct <- predicate (fromData toStruct d)
+            _tryFuncCall (structLookup name struct) args suf f (_refSuffixUpdate (Hata ifc d) name suf f)
+          Nothing       -> err "not a callable method function"
       _ -> err "method call on atomic object"
             -- TODO: provide a set of built-in methods available to every object.
 
 instance ObjectLens (Maybe Object) RefSuffix where
-  updateIndex suf f = _getTargetRefInfo >>= \qref -> focalPathSuffix suf $ get >>= \o -> dbg0 ("updateIndex ("++show qref++") ("++show o++")") $ focusNext $ case suf of
-    NullRef         -> get >>= flip withInnerLens f >>= \ (result, (changed, o)) ->
+  updateIndex suf f = _getTargetRefInfo >>= \qref -> focalPathSuffix suf $ get >>= \o -> case suf of
+    NullRef         -> focusNext $ get >>= flip withInnerLens f >>= \ (result, (changed, o)) ->
       when changed (put o) >> return result
-    DotRef name (FuncCall args suf) -> dbg0 ("callMethod ("++show name++") ("++show o++")") $ callMethod name args suf f
+    DotRef name (FuncCall args suf) -> focusNext $ callMethod name args suf f
     DotRef name suf -> case o of
       Nothing -> mzero
       Just  o -> case o of
@@ -3874,7 +3873,7 @@ instance ObjectLens (Maybe Object) RefSuffix where
         OTree    o -> _refSuffixUpdate o name suf f
         OHaskell o -> _refSuffixUpdate o name suf f
         _          -> throwBadTypeError "referenced element of non-container object" o []
-    Subscript ix suf -> case o of
+    Subscript ix suf -> focusNext $ case o of
       Nothing -> mzero
       Just  o -> case o of
         OList    o -> _refSuffixUpdate o ix suf f
@@ -3882,10 +3881,10 @@ instance ObjectLens (Maybe Object) RefSuffix where
         OTree    o -> _refSuffixUpdate o ix suf f
         OHaskell o -> _refSuffixUpdate o ix suf f
         _          -> throwBadTypeError "cannot subscript of non-indexed object" o []
-    FuncCall  args suf -> case o of
+    FuncCall  args suf -> focusNext $ case o of
       Nothing -> mzero
       Just  o -> do
-        (result, o) <- dbg0 "callObject" $ focusLiftExec (callObject qref o args)
+        (result, o) <- focusLiftExec (callObject qref o args)
         _mapStructState $ modify $ \st -> st{ objectInFocus=o }
         -- -^ Here we put the updated function back (it may have had it's static var table updated),
         -- but we use '_mapStructState' to do it. This is because using 'modify' or 'put' will
@@ -4034,11 +4033,11 @@ instance ObjectLens () Reference where
     (qref, result) <- case qref of
       Reference q name suf -> case q of
         UNQUAL -> fmap fst $ withInnerLens () $ msum $
-          [ dbg0 ("local "++show name) $ updateLocal   name suf f
-          , dbg0 ("const "++show name) $ updateConst   name suf f
-          , dbg0 ("static "++show name) $ updateStatic  name suf f
-          , dbg0 ("global "++show name) $ updateGlobal  name suf f
-          , dbg0 ("withref "++show name) $ updateWithRef name suf f
+          [ updateLocal   name suf f
+          , updateConst   name suf f
+          , updateStatic  name suf f
+          , updateGlobal  name suf f
+          , updateWithRef name suf f
           ]
         LOCAL  -> updateLocal   name suf f
         CONST  -> updateConst   name suf f
@@ -6071,7 +6070,7 @@ callCallables this funcs params = fmap (fmap (M.lookup (ustr "this"))) $ join $
 callObject :: Reference -> Object -> [Object] -> Exec (Maybe Object, Maybe Object)
 callObject qref o params = case o of
   OHaskell (Hata ifc d) -> case fromDynamic d of
-    Just func -> fmap (const Nothing) <$> executeDaoFunc qref func () params -- try calling an ordinary function
+    Just func -> fmap (const Nothing) <$> executeDaoFunc func () params -- try calling an ordinary function
     Nothing   -> case objCallable ifc of
       Just getFuncs -> getFuncs d >>= \func -> callCallables (Just o) func params
       Nothing       -> err
@@ -6485,38 +6484,33 @@ instance Executable (ScriptExpr Object) () where
         OK               ()  -> return ()
         Backtrack            -> mzero
         PFail (ExecReturn{}) -> predicate ce
-        PFail            err -> join $ msum $ fmap (executeCatchExpr err) catchers
+        PFail           err  -> join $ msum $ fmap (executeCatchExpr err) catchers
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ForLoop varName inObj thn _loc -> do
-      iter <- execute inObj >>= checkVoid (getLocation inObj) "iterator of for-loop expression"
       let run     = void $ execute thn
       let readIter   o = execNested_ (M.singleton varName o) run
       let updateIter o = M.lookup varName . snd <$> execNested (maybe M.empty (M.singleton varName) o) run
       let readLoop   o = void $ readForLoop o readIter
-      let updateLoop o = updateForLoop o updateIter >>=
-            void . referenceUpdate (Reference UNQUAL varName NullRef) True . const . return . Just
-      errLocation inObj $ case iter of
-        ORef qref -> case qref of
-          RefWrapper{}        -> throwBadTypeError "cannot iterate over value of type reference" iter []
-          RefObject o NullRef -> readLoop o
-          _                   -> referenceLookup qref >>= \ (_qref, o) -> case o of
-            Nothing -> throwBadTypeError "iterated over void value" iter [(errOfReference, obj qref)]
-            Just  o -> case o of -- determine wheter this is an OHaskell object that can be updated
-              OHaskell (Hata ifc _) -> case objUpdateIterable ifc of
-                Just  _ -> updateLoop o
-                  -- NOTE: the for loop iterator IS NOT passed to the 'referenceUpdate' function to be
-                  -- evaluated. This is to avoid introducing deadlocks in data types that may store
-                  -- their values in an MVar. The 'referenceLookup' function first evaluates the
-                  -- reference, creating a copy in the current thread, the for loop is evaluated, and
-                  -- THEN the 'referenceUpdate' function is evaluated, in those three discrete steps.
-                  -- It is not possible to evaluate a for loop in the dao programming language as an
-                  -- atomic action, so race conditions may occur when updating MVars -- but deadlocks
-                  -- will not occur.
-                Nothing -> case objReadIterable ifc of -- if it's not updatable but readable
-                  Just  _ -> readLoop o
-                  Nothing -> throwBadTypeError "data type not iterable" o [(errOfReference, obj qref)]
-              _ -> updateLoop o
-        iter -> readLoop iter
+      let updateLoop qref o = void $ fmap snd $
+            updateForLoop o updateIter >>= referenceUpdate qref False . const . return . Just
+      errLocation inObj $ execute inObj >>= maybeDerefObject >>= \ (qref, iter) -> case iter of
+        Nothing   -> fail "iterator of for-loop expression evaluated to void"
+        Just iter -> case qref of
+          Nothing   -> void $ readLoop iter
+          Just qref -> case iter of
+            OHaskell (Hata ifc _) -> case objUpdateIterable ifc of
+              Just  _ -> void $ updateLoop qref iter
+              Nothing -> case objReadIterable ifc of
+                Just  _ -> void $ readLoop iter
+                Nothing -> throwBadTypeError "data type not iterable" iter [(errOfReference, obj qref)]
+            _                     -> void $ updateLoop qref iter
+      -- NOTE: the for loop iterator IS NOT passed to the 'referenceUpdate' function to be
+      -- evaluated. This is to avoid introducing deadlocks in data types that may store their values
+      -- in an MVar. The 'referenceLookup' function first evaluates the reference, creating a copy
+      -- in the current thread, the for loop is evaluated, and THEN the 'referenceUpdate' function
+      -- is evaluated, in those three discrete steps.  It is not possible to evaluate a for loop in
+      -- the dao programming language as an atomic action, so race conditions may occur when
+      -- updating MVars -- but deadlocks will not occur.
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ContinueExpr a    _      _loc -> fail $
       '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" or \"while\" loop"
@@ -7600,8 +7594,8 @@ class UpdateIterable iter val | iter -> val where
   updateForLoop :: iter -> (val -> Exec val) -> Exec iter
 
 instance UpdateIterable [Object] (Maybe Object) where
-  updateForLoop iter f = concat <$>
-    forM iter (fmap (\o -> maybe [] id (mplus (o>>=fromObj) (fmap (:[]) o))) . (f . Just))
+  updateForLoop iter f =
+    fmap (concatMap $ \o -> maybe [] id $ (o>>=fromObj) <|> fmap return o) (forM iter $ f . Just)
 
 instance UpdateIterable Hata (Maybe Object) where
   updateForLoop h@(Hata ifc d) f = case objUpdateIterable ifc of

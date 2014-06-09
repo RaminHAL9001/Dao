@@ -61,7 +61,7 @@ println("before D.g() started, D.X was 1, D.Y was 1: D.X = ", D.X, ", D.Y = ", D
 //: in function D.g(), this.Y should be 2: this.Y = 1
 //: in function D.g(), this.X was changed to 2: this.X = 2
 //: in function D.g(), this.Y was deleted (YES)
-try { D.g("D.g()"); }
+try { D.g("D.g"); }
 else { println("D.g() backtracked"); }
 //: after D.g() finished, D.X should be 2, D.X = 1
 println("after D.g() finished, D.X should be 2, D.X = ", D.X);

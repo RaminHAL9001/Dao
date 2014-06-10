@@ -362,7 +362,7 @@ makeActionsForQuery tree tokens = do
       forM (M.assocs match) $ \ (name, (vartyp, ox)) -> case vartyp of
         Nothing     -> return (name, obj ox)
         Just vartyp -> do
-          match <- catchPredicate $ referenceLookup $ Reference UNQUAL vartyp $ FuncCall ox NullRef
+          match <- catchPredicate $ referenceLookup $ Reference UNQUAL vartyp $ FuncCall [OList ox] NullRef
           case match of
             OK (_, Nothing)             -> return (name, obj ox)
             OK (_, Just  o)             -> return (name, o)
@@ -4291,10 +4291,10 @@ data ExecErrorSubtype
   | ExecUndefinedRef  Reference   -- ^ signals reference lookup failed
   | ExecTypeError     ObjType     -- ^ catch-all exception thrown when wrong data type is used.
   | ExecUpdateOpError UpdateOp    -- ^ thrown when an update operator fails
-  | ExecInfixOpError  InfixOp     -- ^ thrown when an infix operator fails
   | ExecIOException   IOException -- ^ re-thrown when caught from the IO monad
   | ExecHaskellError  ErrorCall   -- ^ re-thrown when caught from the IO monad
   | ExecParseError    (ParseError () DaoTT)
+  | ExecInfixOpError  ObjType InfixOp ObjType -- ^ thrown when an infix operator fails
   deriving (Eq, Typeable)
 
 instance ToDaoStructClass ExecErrorSubtype where
@@ -4305,10 +4305,11 @@ instance ToDaoStructClass ExecErrorSubtype where
     ExecUndefinedRef  o -> renameConstructor "UndefinedRef"       $ "reference" .= o
     ExecTypeError     o -> renameConstructor "TypeMismatch"       $ "usedType"  .= o
     ExecUpdateOpError o -> renameConstructor "UpdateOpError"      $ "operator"  .= o
-    ExecInfixOpError  o -> renameConstructor "InfixOpError"       $ "operator"  .= o
     ExecIOException   o -> renameConstructor "HaskellIOException" $ "message"   .= obj (show o)
     ExecHaskellError  o -> renameConstructor "HaskellError"       $ "message"   .= obj (show o)
     ExecParseError    o -> innerToStruct o
+    ExecInfixOpError  a o b -> renameConstructor "InfixOpError" $
+      "operator" .= o >> "left" .= a >> "right" .= b
 
 instance PPrintable ExecErrorSubtype where
   pPrint o = case o of
@@ -4318,10 +4319,14 @@ instance PPrintable ExecErrorSubtype where
     ExecUndefinedRef  o -> pString "undefined reference " >> pPrint o
     ExecTypeError     o -> pString "cannot use value of type " >> pPrint o
     ExecUpdateOpError o -> pString "cannot apply update with operator " >> pPrint o
-    ExecInfixOpError  o -> pString "for " >> pPrint o >> pString " operator"
     ExecIOException   o -> pString (show o)
     ExecHaskellError  o -> pString (show o)
     ExecParseError    o -> pPrint o
+    ExecInfixOpError  a o b -> do
+      pString "incompatible types on either side of operator " >> pPrint o
+      pIndent $ do
+        pEndLine >> pString "left-hand side of operator is value of type: "  >> pPrint a
+        pEndLine >> pString "right-hand side of operator is value of type: " >> pPrint b
 
 instance ObjectClass ExecErrorSubtype where { obj=new; fromObj=objFromHata; }
 
@@ -4368,6 +4373,12 @@ instance MonadPlusError ExecControl Exec where
 -- error.
 newtype XPure a = XPure { xpureToState :: PredicateT ExecControl (State UStr) a }
   deriving (Functor, Applicative, Alternative, MonadPlus)
+
+instance Show a => Show (XPure a) where
+  show (XPure p) = case evalState (runPredicateT p) nil of
+    Backtrack -> "(BACKTRACK)"
+    PFail err -> "(PFAIL "++prettyShow err++")"
+    OK     o  -> "(OK "++show o++")"
 
 instance Monad XPure where
   return = XPure . return
@@ -4452,7 +4463,6 @@ instance ExecThrowable StructError           where { toExecErrorInfo = ExecStruc
 instance ExecThrowable Reference             where { toExecErrorInfo = ExecUndefinedRef  }
 instance ExecThrowable IOException           where { toExecErrorInfo = ExecIOException   }
 instance ExecThrowable ErrorCall             where { toExecErrorInfo = ExecHaskellError  }
-instance ExecThrowable InfixOp               where { toExecErrorInfo = ExecInfixOpError  }
 instance ExecThrowable UpdateOp              where { toExecErrorInfo = ExecUpdateOpError }
 instance ExecThrowable (ParseError () DaoTT) where { toExecErrorInfo = ExecParseError    }
 
@@ -5178,7 +5188,7 @@ instance Num (XPure Object) where
     a         -> _evalNumOp2 (-) a b <|> eval_Infix_op SUB a b
   negate a = (a >>= _evalNumOp1 negate) <|> (a >>= eval_Prefix_op NEGTIV)
   abs    a = (a >>= _evalNumOp1 abs   ) <|> (a >>= eval_Prefix_op NEGTIV)
-  signum a = a >>= _evalNumOp1 signum
+  signum a =  a >>= _evalNumOp1 signum
   fromInteger = return . obj
 
 _xpureApplyError :: String -> String -> a
@@ -5186,10 +5196,18 @@ _xpureApplyError name msg = error $ concat $ concat $
   [["cannot evaluate ", name], guard (not $ null msg) >> [": ", msg]]
 
 _xpureApply2 :: String -> (Object -> Object -> a) -> XPure Object -> XPure Object -> a
-_xpureApply2 name f a b = case evalXPure $ a >>= \a -> b >>= \b -> return (f a b) of
+_xpureApply2 name f a b = case evalXPure ab of
   PFail   e -> _xpureApplyError name (prettyShow e)
   Backtrack -> _xpureApplyError name ""
   OK      o -> o
+  where
+    ab = do
+      ta <- coreType <$> a
+      tb <- coreType <$> b
+      let t = max ta tb
+      a <- a >>= castToCoreType t
+      b <- b >>= castToCoreType t
+      return (f a b)
 
 _xpureApply1 :: String -> (Object -> XPure a) -> XPure Object -> a
 _xpureApply1 name f o = case evalXPure $ o >>= f of
@@ -5332,7 +5350,7 @@ instance Fractional (XPure Object) where
 instance Floating (XPure Object) where
   pi      = xpure $ OFloat pi
   logBase = _xpureFrac2 logBase
-  (**)    = _xpureFrac2 (**)
+  (**)    a b = _xpureFrac2 (**) a b
   exp     = _xpureFrac exp
   sqrt    = _xpureFrac sqrt
   log     = _xpureFrac log
@@ -5467,53 +5485,48 @@ shiftRight a b = _shiftOp negate a b <|> eval_Infix_op SHR a b
 -- incompatible. Provide the a string describing the /what/ could not be done as a result of the
 -- type mismatch, it will be placed in the message string:
 -- > "could not <WHAT> the item <A> of type <A-TYPE> with the item <B> of type <B-TYPE>"
-typeMismatchError :: String -> Object -> Object -> XPure ig
-typeMismatchError msg a b = throwError $
-  newError
-  { execErrorSubtype = ExecThrow $ obj $
-      [ obj ("could not "++msg++" the item"), obj (prettyShow a), obj "of type", obj (typeOfObj a)
-      , obj "with the item"                 , obj (prettyShow b), obj "of type", obj (typeOfObj b)
-      ]
-  }
+typeMismatchError :: InfixOp -> Object -> Object -> XPure ig
+typeMismatchError op a b = throwError $
+  newError{ execErrorSubtype = ExecInfixOpError (typeOfObj a) op (typeOfObj b) }
 
 eval_ADD :: Object -> Object -> XPure Object
-eval_ADD a b = (xpure a + xpure b) <|> typeMismatchError "add" a b
+eval_ADD a b = (xpure a + xpure b) <|> typeMismatchError ADD a b
 
 eval_SUB :: Object -> Object -> XPure Object
-eval_SUB a b = (xpure a - xpure b) <|> typeMismatchError "subtract" a b
+eval_SUB a b = (xpure a - xpure b) <|> typeMismatchError SUB a b
 
 eval_MULT :: Object -> Object -> XPure Object
-eval_MULT a b = (xpure a * xpure b) <|> typeMismatchError "multiply" a b
+eval_MULT a b = (xpure a * xpure b) <|> typeMismatchError MULT a b
 
 eval_DIV :: Object -> Object -> XPure Object
 eval_DIV a b = do
   let { xa = xpure a; xb = xpure b; }
-  (div xa xb <|> xa/xb) <|> typeMismatchError "divide" a b
+  (div xa xb <|> xa/xb) <|> typeMismatchError DIV a b
 
 eval_MOD :: Object -> Object -> XPure Object
 eval_MOD a b = do
   let { xa = xpure a; xb = xpure b; }
-  (mod xa xb) <|> typeMismatchError "modulus" a b
+  (mod xa xb) <|> typeMismatchError MOD a b
 
 eval_POW :: Object -> Object -> XPure Object
 eval_POW a b = do
   let { xa = xpure a; xb = xpure b; }
-  (xa^xb <|> xa**xb) <|> typeMismatchError "exponent" a b
+  xa^^xb <|> xa**xb <|> typeMismatchError POW a b
 
 eval_ORB :: Object -> Object -> XPure Object
 eval_ORB a b = do
   let { xa = xpure a; xb = xpure b; }
-  (xa.|.xb) <|> typeMismatchError "bitwise-OR" a b
+  (xa.|.xb) <|> typeMismatchError ORB a b
 
 eval_ANDB :: Object -> Object -> XPure Object
 eval_ANDB a b = do
   let { xa = xpure a; xb = xpure b; }
-  (xa.&.xb) <|> typeMismatchError "bitwise-AND" a b
+  (xa.&.xb) <|> typeMismatchError ANDB a b
 
 eval_XORB :: Object -> Object -> XPure Object
 eval_XORB a b = do
   let { xa = xpure a; xb = xpure b; }
-  (xor xa xb) <|> typeMismatchError "bitwise-XOR" a b
+  (xor xa xb) <|> typeMismatchError XORB a b
 
 eval_EQUL :: Object -> Object -> XPure Object
 eval_EQUL a b = return $ obj $ xpure a == xpure b
@@ -5756,10 +5769,10 @@ makePrintFunc print =
   }
 
 builtin_print :: DaoFunc ()
-builtin_print   = makePrintFunc (\ () -> liftIO . putStr)
+builtin_print   = makePrintFunc (\ () -> liftIO . (putStr >=> evaluate))
 
 builtin_println :: DaoFunc ()
-builtin_println = makePrintFunc (\ () -> liftIO . putStrLn)
+builtin_println = makePrintFunc (\ () -> liftIO . (putStrLn >=> evaluate))
 
 -- join string elements of a container, pretty prints non-strings and joins those as well.
 builtin_join :: DaoFunc ()

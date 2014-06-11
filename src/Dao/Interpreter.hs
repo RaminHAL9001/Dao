@@ -683,6 +683,7 @@ loadEssentialFunctions :: DaoSetup
 loadEssentialFunctions = do
   daoClass (haskellType :: H.HashMap Object Object)
   daoClass (haskellType :: RuleSet)
+  daoClass (haskellType :: Pair)
   daoFunction "print"    builtin_print
   daoFunction "println"  builtin_println
   daoFunction "join"     builtin_join
@@ -723,6 +724,7 @@ loadEssentialFunctions = do
   daoFunction "doLocal"     builtin_doLocal
   daoFunction "HashMap"     builtin_HashMap
   daoFunction "assocs"      builtin_assocs
+  daoFunction "Pair"        builtin_Pair
   mapM_ (uncurry daoConstant) $ flip fmap [minBound..maxBound] $ \t ->
     (toUStr $ show t, OType $ objTypeFromCoreType t)
 
@@ -3141,6 +3143,14 @@ builtin_assocs =
               ]
             _ -> badtype
         ox -> throwArityError "" 1 ox [(errInFunc, obj qref)]
+  }
+
+builtin_Pair :: DaoFunc ()
+builtin_Pair =
+  daoFunc
+  { daoForeignFunc = \ () ox -> case ox of
+      [a, b] -> return $ (Just $ obj $ Pair(a, b), ())
+      ox -> throwArityError "Pair() constructor requires exactly two arguments" 2 ox []
   }
 
 ----------------------------------------------------------------------------------------------------

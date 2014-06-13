@@ -691,6 +691,7 @@ loadEssentialFunctions = do
   daoFunction "quote"    builtin_quote
   daoFunction "concat"   builtin_concat
   daoFunction "concat1"  builtin_concat1
+  daoFunction "reverse"  builtin_reverse
   daoFunction "int"      builtin_int
   daoFunction "long"     builtin_long
   daoFunction "ratio"    builtin_ratio
@@ -5822,6 +5823,13 @@ builtin_concat1 =
   daoFunc
   { funcAutoDerefParams = True
   , daoForeignFunc = \ () -> return . flip (,) () . Just . obj . snd . objConcat
+  }
+
+builtin_reverse :: DaoFunc ()
+builtin_reverse =
+  daoFunc
+  { funcAutoDerefParams = True
+  , daoForeignFunc = \ () -> return . flip (,) () . Just . obj . reverse . snd . objConcat
   }
 
 _castNumerical :: String -> (Object -> Exec Object) -> DaoFunc ()

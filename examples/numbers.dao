@@ -1,16 +1,60 @@
-BEGIN { global no_match = true; }
+// "examples/numbers.dao"  this is a demo program written in the Dao
+// programming lagnuage that will convert numbers expressed as English
+// language to integers.
+// 
+// Copyright (C) 2008-2014  Ramin Honary.
+// This file is part of the Dao System.
+//
+// The Dao System is free software: you can redistribute it and/or
+// modify it under the terms of the GNU General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+// 
+// The Dao System is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+// 
+// You should have received a copy of the GNU General Public License
+// along with this program (see the file called "LICENSE"). If not, see
+// <http://www.gnu.org/licenses/agpl.html>.
 
+//--------------------------------------------------------------------------------------------------
+// I have written this program with efficiency in mind. Every variable reference is qualified.
+
+DEBUG = false;
+BEGIN { global no_match = true; }
+rule("show work", "verbose") {
+	global DEBUG = true; global no_match = false;
+	const println("will think out loud");
+}
+rule("quiet", "silent") {
+	global DEBUG = false; global no_match = false;
+	const println("will think quietly");
+}
+
+global tab = list{};
 function wordSet($SET, words) {
-	set = @SET;
-	println("wordSet(", SET, "::", typeof(set), ", ", words, ")");
-	try{ return local set.do(join("", words)); } catch err{ println("ERROR: ", err); }
-	println("(backtrack)");
+	local set = @SET;
+	local tab = "";
+	if(global DEBUG) {
+		local tab = join("", global tab);
+		global tab = global tab + list{"  "};
+		const println(local tab, "wordSet(", local SET, "::", const typeof(local set), ", ", local words, ")");
+	}
+	try{ local x = local set.do(local words); global tab <<= 1; return local x; }
+	else{} catch err{ const println(local err); }
+	if(global DEBUG) { const println(local tab, "BACKTRACK"); }
+	global tab <<= 1;
 	throw;
 }
 
-function Numeral(x) { try { return int(join("", x)); } else {} catch err {} }
-
 //--------------------------------------------------------------------------------------------------
+
+function Numeral(x) {
+	try{ return const int(const join("", x)); }
+	else{} catch err{} throw;
+}
 
 function Digit(words) { return global wordSet(global digitSet, words); }
 digitSet = RuleSet {
@@ -21,7 +65,6 @@ digitSet = RuleSet {
 	rule "$x::Numeral?" { try{ x=int(join("",x)); if(x<999) {return x;} } catch err{} throw; }
 };
 
-
 function Umpteen(words) { return global wordSet(global umpteenSet, words); }
 umpteenSet = RuleSet {
 	rule "ten"      {return 10;},
@@ -30,23 +73,26 @@ umpteenSet = RuleSet {
 	rule "seventeen"{return 17;}, rule "eighteen"{return 18;}, rule "nineteen"{return 19;}
 };
 
-function Umpty(words) { return dictWord(global umptySet, words); }
-umptySet = dict {
+function SubTwenty(words) { return global wordSet(global subTwentySet, words); }
+subTwentySet = umpteenSet | digitSet;
+
+function Umpty(words) { return wordSet(global umptySet, words); }
+umptySet = RuleSet {
 	rule "twenty" {return 20;}, rule "thirty"{return 30;}, rule "fourty" {return 40;},
 	rule "fifty"  {return 50;}, rule "sixty" {return 60;}, rule "seventy"{return 70;},
 	rule "eighty" {return 80;}, rule "ninety"{return 90;}
 };
 
-function Illion(words) { return dictWord(global illionSet, words); }
+function Illion(words) { return wordSet(global illionSet, words); }
 illionSet = RuleSet {
 	rule "thousand"          { return 10**3; },
 	rule "million"           { return 10**6; },
 	rule "billion"           { return 10**9; },
 	rule "trillion"          { return 10**12; },
 	rule "quadrillion"       { return 10**15; },
-	rule "quintillion"       { return 10**18; },
-	rule "sextillion"        { return 10**21; },
-	rule "setptillion"       { return 10**24; },
+	rule "quintillion"       { return 10L**18; },
+	rule "sextillion"        { return 10L**21; },
+	rule "septillion"        { return 10L**24; },
 	rule "octillion"         { return 10L**27; },
 	rule "nonillion"         { return 10L**30; },
 	rule "decillion"         { return 10L**33; },
@@ -62,59 +108,161 @@ illionSet = RuleSet {
 	rule "vigintillion"      { return 10L**63; }
 };
 
-function Hundred(words) { return global wordSet(global hundredSet, words); }
-hundredSet = RuleSet {
-	rule "hundred" { return null; },
-	rule("hundred $H", "hundred and $H") { return H; }
+function AnyNumberWord(words) { try{ global anyNumberWordSet.do(words); return words; } catch err{ println(err); } }
+anyNumberWordSet = global subTwentySet | global umptySet | global illionSet | RuleSet {
+	rule "hundred" { return 100; }
 };
 
-function multIllion(d, words) {
-	if(words) {
+function splitNumberWords(w) {
+	local accum = list{};
+	local breaker = false;
+	while(local w) {
 		try{
-			p = global multIllionSet.do(words);
-			return global subThousand(d*p.fst, p.snd);
+			local p = global splitNumberWordsSet.do(local w);
+			local accum = const concat(local accum, local p.fst);
+			local w = local p.snd;
 		}
-		else{}
+		else{ local breaker = true; }
+		catch err{ println(err); local breaker = true; }
+		if(breaker) { return Pair(local accum, local w); }
 	}
-	return Pair(d, words);
+	return Pair(local accum, local w);
 }
-multIllionSet = RuleSet {
-	rule "$i::Illion?" { return Pair(i, null); },
-	rule "$i::Illion? $X" { return Pair(i, X); }
+splitNumberWordsSet = RuleSet {
+	rule "" { return Pair(list{}, list{}); },
+	rule "$a::AnyNumberWord?" {
+		return Pair(list{local a}, list{});
+	},
+	rule("$a::AnyNumberWord? $b", "$a::AnyNumberWord?-$b") {
+		return Pair(list{local a, " "}, local b);
+	},
+	rule("$a::AnyNumberWord?, $b", "$a::AnyNumberWord?$b") {
+		return Pair(list{local a, " "}, local b);
+	},
+	rule( "$a::AnyNumberWord? and $b", "$a::AnyNumberWord?-and-$b"
+		, "$a::AnyNumberWord?-and $b", "$a::AnyNumberWord? and-$b") {
+		return Pair(list{local a, " ", "and", " "}, local b);
+	}
 };
 
-function subHundred(h, words) {
-	if(words) {
-		try{
-			p = global subHundredSet.do(words);
-			return global multIllion(h+p.fst, p.snd);
-		}
-		else{}
-	}
-	return Pair(h, words);
-}
+function SubHundred(words) { return global wordSet(global subHundredSet, words); }
 subHundredSet = RuleSet {
-	rule("$d::Digit?",    "$d::Umpteen?",    "$d::Umpty?"   )    { return Pair(d, null); },
-	rule("$d::Digit? $X", "$d::Umpteen? $X", "$d::Umpty? $X")    { return Pair(d, X); },
-	rule("$u::Umpty? $d::Digit?", "$u::Umpty?-$d::Digit?")       { return Pair(u+d, null); },
-	rule("$u::Umpty? $d::Digit? $X", "$u::Umpty?-$d::Digit? $X") { return Pair(u+d, X); }
+	rule("$d::Digit?", "$d::Umpteen?", "$d::Umpty?") { return local d; },
+	rule "$u::Umpty? $d::Digit?" { return local u + local d; }
 };
 
-function SubThousand(words) { return global wordSet(global subThousandSet, words); }
+function SubThousand(words) { return global wordSet(global subThousandSet, local words); }
 subThousandSet = RuleSet {
-	rule "$d::Digit?" { return Pair(d, null); },
-	rule "$d::Digit? $H::Hundred" { return global subHundred(d*100, H); }
+	rule "hundred" { return 100; },
+	rule "$h::SubHundred hundred" { return local h * 100; },
+	rule("$h::SubHundred hundred $n::SubHundred", "$h::SubHundred hundred and $n::SubHundred") {
+		return local h * 100 + local n;
+	},
+	rule "$h::SubHundred" { return local h; },
+	rule "$d::SubTwenty? hundred" { return local d*100; },
+	rule("$d::SubTwenty? hundred $h::SubHundred",
+		 "$d::SubTwenty? hundred and $h::SubHundred") { return local d*100 + local h; }
 };
 
-function Number(words) { return global wordSet(global numberSet, words); }
-numberSet = RuleSet {
-	rule "$n::SubThousand" { return n; },
-	rule("negative $n::SubThousand", "minus $n::SubThousand") { return Pair(-n.fst, n.snd); }
+function Natural(words) { return global wordSet(global naturalSet, local words); }
+naturalSet = RuleSet {
+	rule "$h::SubThousand" { return local h; },
+	rule "$h::SubThousand $m::Illion?" { return local h * local m; },
+	rule "$h::SubThousand $m::Illion? and $n::SubHundred" { return local h * local m + local n; },
+	rule "$h::SubThousand $m::Illion? $n::Natural" { return local h * local m + local n; },
+	rule "$m::Illion? $n::Natural" { return local m + local n; }
+} | illionSet;
+
+function Integer(words) { return global wordSet(global integerSet, local words); }
+integerSet = RuleSet {
+	rule "$n::Natural" { return local n; },
+	rule("negative $n::Natural", "minus $n::Natural") { return -(local n); }
 };
 
-rule "$n::Number" {
-	if(n.snd) { println(n.fst, " ", join("", n.snd)); }
-	else { println(n.fst); }
-	return n;
+//--------------------------------------------------------------------------------------------------
+
+global sayNums = HashMap {
+	0L=null, 1L="one", 2L="two", 3L="three", 4L="four",
+	5L="five", 6L="six", 7L="seven", 8L="eight", 9L="nine",
+	10L="ten", 11L="eleven", 12L="twelve", 13L="thirteen",
+	14L="fourteen", 15L="fifteen", 16L="sixteen", 17L="seventeen",
+	18L="eighteen", 19L="nineteen", 20L="twenty", 30L="thirty",
+	40L="fourty", 50L="fifty", 60L="sixy", 70L="seventy", 80L="eighty",
+	90L="ninety"
+};
+
+global powersOfThousand = list {
+	null, "thousand", "million", "billion", "trillion",
+	"quadrillion", "quintillion", "sextillion",
+	"septillion", "octillion", "nonillion",
+	"decillion", "undecillion", "dodecillion",
+	"tredecillion", "quattuordecillion", "quinquadecillion",
+	"sexdecillion", "septdecillion", "octdecillion",
+	"novendecillion", "vigintillion"
+};
+
+function numToWords(n) {
+	local n = long(n);
+	local neg = local n < 0;
+	local result = list{};
+	try {
+		local thousands = global powersOfThousand;
+		if(n==0) { return "zero"; }
+		while(local n) {
+			local th = null;
+			if(! local thousands) {
+				return str(n) + " " + join(" ", reverse(local result));
+			}
+			else{ local th = local thousands[0]; local thousands <<= 1; }
+			local abc = local n%1000;
+			local n = long(local n / 1000L);
+			local a = global sayNums[long(local n / 100L)];
+			local b = global sayNums[long(local n / 10L) % 10L];
+			local c = global sayNums[long(local n % 10L)];
+			if(local a || local b || local c) {
+				local temp = list{};
+				if(local a) { local temp = list{a, "hundred"}; }
+				if(local b || local c) {
+					local temp = const concat(local temp, "and");
+					if(local b) {
+						local temp = const concat(local c ? (local b+"-"+local c) : b, local temp);
+					}
+					else if(local c) { local temp = const concat(local c, local temp); }
+				}
+				if(local th) { local result = const concat(local th+",", local result); }
+				local result = const concat(local temp, local result);
+			}
+		}
+		return const join(" ", local result);
+	}
+	else{ const println("numToWords(", local n, ") backtracked"); }
+	catch err{ const println(local err); }
+}
+
+rule("say $i::Numeral", "speak $i::Numeral") {
+	try{ const println(global numToWords(local i)); }
+	catch err{ println(err); }
+}
+
+//--------------------------------------------------------------------------------------------------
+
+rule "$x" {
+	try{
+		local w = global splitNumberWords(local x);
+		if(global DEBUG) { println("split number words: ", local w); }
+		if(w.fst) {
+			local i = Integer(local w.fst);
+			const println(local i, " ", const join("", w.snd));
+			global no_match = false;
+		}
+	}
+	catch err{ println(local err); }
+}
+
+//--------------------------------------------------------------------------------------------------
+
+END{
+	if(global no_match) { println("what?"); }
+	for err in self.errors { println(local err); }
 }
 

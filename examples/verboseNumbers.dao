@@ -132,7 +132,7 @@ illionWords = RuleSet {
 	rule "quadrillion"       { return 10**15; },
 	rule "quintillion"       { return 10**18; },
 	rule "sextillion"        { return 10**21; },
-	rule "setptillion"       { return 10**24; },
+	rule "septillion"        { return 10**24; },
 	rule "octillion"         { return 10L**27; },
 	rule "nonillion"         { return 10L**30; },
 	rule "decillion"         { return 10L**33; },

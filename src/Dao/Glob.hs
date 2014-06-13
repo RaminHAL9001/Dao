@@ -162,18 +162,20 @@ simpleTokenize ax = map ustr (loop ax) where
 
 ----------------------------------------------------------------------------------------------------
 
--- | A general glob type, remeniscent of the good old-fashioned Unix glob expression. Actually, this
--- is only a single unit of a full 'Glob' expression. The unit type need not be a string, but most
--- the instances of 'GlobUnit' into 'Prelude.Show' and 'Prelude.Read' are only defined for
--- 'GlobUnit's of 'Dao.String.UStr's.
-data GlobUnit o
+-- | A 'GlobUnit' is a single unit of a 'Glob' pattern, which is either a constant token value (a
+-- 'Single'), a wildcard matching a single token (an 'AnyOne') or a 'Wildcard' matching zero or more
+-- tokens. This is a very glob data type, remeniscent of the good old-fashioned Unix glob expression
+-- but not restricted to single-character tokens. The unit token type need not be a string, but most the
+-- instances of 'GlobUnit' into 'Prelude.Show' and 'Prelude.Read' are only defined for 'GlobUnit's
+-- of 'Dao.String.UStr's.
+data GlobUnit tok
   = Wildcard Name (Maybe Name)
   | AnyOne   Name (Maybe Name)
-  | Single o
+  | Single   tok
   deriving (Eq, Typeable)
 
 -- Order such that sorting will group 'Wildcards' first, 'AnyOne's second, and 'Single's third.
-instance Ord o => Ord (GlobUnit o) where
+instance Ord tok => Ord (GlobUnit tok) where
   compare a b = case a of
     Wildcard a a1 -> case b of
       Wildcard b b1 -> compare a b <> compare a1 b1
@@ -206,18 +208,18 @@ toStringWithoutQuotes cx = loop $ case cx of { '"':cx -> cx ; cx -> cx ; } where
 -- | Use this function to instantiate your version of 'GlobUnit' into the 'Prelude.Show' class. This
 -- function assumes your data type is a string-like type where evaluating 'Prelude.show' on your
 -- type produces a string of characters with a leading and trailing quote @'"'@ character.
-showGlobUnitOfStrings :: (g -> String) -> GlobUnit g -> String
-showGlobUnitOfStrings gshow g = let printyp = maybe "" (\n -> "::"++uchars n) in case g of
+showGlobUnitOfStrings :: (tok -> String) -> GlobUnit tok -> String
+showGlobUnitOfStrings gshow tok = let printyp = maybe "" (\n -> "::"++uchars n) in case tok of
   Wildcard nm t -> '$':uchars (toUStr nm)++printyp t
   AnyOne   nm t -> '$':uchars (toUStr nm)++printyp t++"?"
-  Single   g    -> toStringWithoutQuotes (gshow g)
+  Single   tok  -> toStringWithoutQuotes (gshow tok)
 
 instance Show (GlobUnit UStr)   where { show = showGlobUnitOfStrings uchars }
 instance Show (GlobUnit String) where { show = showGlobUnitOfStrings id }
 
 -- | Use this function to instantiate your version of 'Glob' into the 'Prelude.Show' class. The
 -- function you pass to convert the 'Single' type to a string is passed to 'showGlobUnitOfStrings'.
-showGlobUnitList :: (g -> String) -> [GlobUnit g] -> String
+showGlobUnitList :: (tok -> String) -> [GlobUnit tok] -> String
 showGlobUnitList gshow gx = show $ concatMap (showGlobUnitOfStrings gshow) gx
 
 instance Read (GlobUnit String) where
@@ -241,7 +243,7 @@ instance Read (GlobUnit String) where
     _       -> []
 
 instance Read (GlobUnit UStr) where
-  readsPrec prec str = readsPrec prec str >>= \ (g, str) -> return (fmap ustr g, str)
+  readsPrec prec str = readsPrec prec str >>= \ (tok, str) -> return (fmap ustr tok, str)
 
 instance UStrType (GlobUnit UStr) where
   maybeFromUStr str = case readsPrec 0 (uchars str) of { [(o, "")] -> Just o; _ -> Nothing; }
@@ -262,13 +264,16 @@ instance HasRandGen o => HasRandGen (GlobUnit o) where
 
 ----------------------------------------------------------------------------------------------------
 
--- | Patterns are lists of 'Data.Maybe.Maybe' elements, where constant strings are given by
--- 'Data.Maybe.Just' or wildcards given by 'Data.Maybe.Nothing'. Wildcards runMatchPattern zero or more other
--- Tokens when used as a 'Glob'.
-data Glob o = Glob { getPatUnits :: [GlobUnit o], getGlobLength :: Int }
+-- | A 'Glob' is a kind of pattern that can be matched against tokens. A 'Glob' pattern contains a
+-- list of 'GlobUnit's, and a 'GlobUnit' is either a constant (a 'Single') token, or variable (a
+-- 'Wildcard' or 'AnyOne') that can be matched against a list constant tokens using 'matchPattern'.
+-- When you have a large number of 'Glob' patterns and you would like to match any of them to a list
+-- of tokens, merge the 'Glob' patterns together into a 'PatternTree' using the 'globTree' function,
+-- and match them all at once using the 'matchTree' function.
+data Glob tok = Glob { getPatUnits :: [GlobUnit tok], getGlobLength :: Int }
   deriving (Eq, Ord, Typeable)
 
-makeGlob :: [GlobUnit o] -> Glob o
+makeGlob :: [GlobUnit tok] -> Glob tok
 makeGlob ox = Glob{ getPatUnits=ox, getGlobLength=length ox }
 
 instance Functor Glob where
@@ -312,9 +317,15 @@ instance HasRandGen o => HasRandGen (Glob o) where
 
 ----------------------------------------------------------------------------------------------------
 
--- | 'PatternTree's contain many patterns in an tree structure, which is more efficient when you
--- have many patterns that start with similar sequences of 'GlobUnit's.
-type PatternTree g o = T.Tree (GlobUnit g) o
+-- | A pattern is a list of tokens/variables that can be compared to a token list using
+-- 'matchPattern' or 'matchTree'. A 'PatternTree' contains many patterns which have been merged into
+-- a tree structure, which can match N patterns of maximum length M to a token list of L tokens in
+-- O(L*log(M*N)) time, making it a much more efficient data structure for matching against a large
+-- database of patterns. Every 'Glob' pattern in the tree is mapped to result value called an
+-- "action", which is the polymorphic type @act@. Every pattern in the tree that matches a list of
+-- tokens produces an "action" and also contains a list of associations of which labeled wildcards
+-- matched which substring of tokens.
+type PatternTree tok act = T.Tree (GlobUnit tok) act
 
 -- | When a 'Glob' is constructed with a function of the 'Prelude.Read' class, the 'Single' items
 -- produced are all contiguous characters in between 'Wildcard' and 'AnyOne' markers. For example
@@ -326,7 +337,7 @@ type PatternTree g o = T.Tree (GlobUnit g) o
 --
 -- In the case that you would like to further parse the 'Single' strings, you can use the
 -- 'parseOverSingles' function, breaking a 'Single' down into a list of 'Single's.
-parseOverSinglesM :: Monad m => Glob g -> (g -> m [h]) -> m (Glob h)
+parseOverSinglesM :: Monad m => Glob tokA -> (tokA -> m [tokB]) -> m (Glob tokB)
 parseOverSinglesM g convert =
   forM (getPatUnits g)
     (\u -> case u of
@@ -336,22 +347,22 @@ parseOverSinglesM g convert =
     ) >>= return . makeGlob . concat
 
 -- | Like 'parseOverSinglesM' but is a pure function.
-parseOverSingles :: Glob g -> (g -> [h]) -> Glob h
+parseOverSingles :: Glob tokA -> (tokA -> [tokB]) -> Glob tokB
 parseOverSingles g = runIdentity . parseOverSinglesM g . (return.)
 
 -- | Insert an item at multiple points in the 'PatternTree'
-insertMultiPattern :: (Eq g, Ord g) => (o -> o -> o) -> [Glob g] -> o -> PatternTree g o -> PatternTree g o
-insertMultiPattern plus pats o tree =
-  foldl (\tree pat -> T.update (getPatUnits pat) (maybe (Just o) (Just . flip plus o)) tree) tree pats
+insertMultiPattern :: (Eq tok, Ord tok) => (act -> act -> act) -> [Glob tok] -> act -> PatternTree tok act -> PatternTree tok act
+insertMultiPattern plus pats act tree =
+  foldl (\tree pat -> T.update (getPatUnits pat) (maybe (Just act) (Just . flip plus act)) tree) tree pats
 
 -- | By converting an ordinary 'Glob' to a pattern tree, you are able to use all of the methods
 -- in the "Dao.Tree" module to modify the patterns in it.
-globTree :: (Eq g, Ord g) => Glob g -> o -> PatternTree g o
+globTree :: (Eq tok, Ord tok) => Glob tok -> act -> PatternTree tok act
 globTree pat a = T.insert (getPatUnits pat) a T.Void
 
 -- | Calls 'matchTree' with the 'PatternTree' stored within the given 'Glob' object, and returns
 -- only the matching results.
-matchPattern :: (Eq g, Ord g) => Bool -> Glob g -> [g] -> [M.Map Name (Maybe Name, [g])]
+matchPattern :: (Eq tok, Ord tok) => Bool -> Glob tok -> [tok] -> [M.Map Name (Maybe Name, [tok])]
 matchPattern greedy pat tokx = matchTree greedy (globTree pat ()) tokx >>= \ (_, m, ()) -> [m]
 
 -- | Match a list of token items to a set of 'Glob' expressions that have been combined into a
@@ -369,15 +380,16 @@ matchPattern greedy pat tokx = matchTree greedy (globTree pat ()) tokx >>= \ (_,
 -- 'Prelude.fst' slot the type of the token that the variable expects (the type is the part of the
 -- pattern variable after the "::" symbol), and in the 'Prelude.snd' slot contains the tokens that
 -- matched in that variable position.
-matchTree :: (Eq g, Ord g) => Bool -> PatternTree g o -> [g] -> [(Glob g, M.Map Name (Maybe Name, [g]), o)]
+matchTree
+  :: (Eq tok, Ord tok)
+  => Bool -> PatternTree tok act -> [tok] -> [(Glob tok, M.Map Name (Maybe Name, [tok]), act)]
 matchTree greedy tree tokx = loop M.empty 0 [] tree tokx where
-  loop vars p path tree tokx = case (tree, tokx) of
-    (T.Leaf       a  , []  ) -> done vars p path a
-    (T.LeafBranch a _, []  ) -> done vars p path a
-    (T.Branch       b, tokx) -> branch vars p path b tokx
-    (T.LeafBranch _ b, tokx) -> branch vars p path b tokx
-    _                        -> []
-  done vars p path a = [(Glob{ getPatUnits = path, getGlobLength = p }, vars, a)]
+  loop vars p path tree tokx = case tree of
+    T.Void           -> []
+    T.Leaf       a   -> guard (null tokx) >> done vars p path a
+    T.Branch       b -> branch vars p path []  b tokx
+    T.LeafBranch a b -> branch vars p path [a] b tokx
+  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
   partStep bind tokx = (if greedy then reverse else id) $ (bind, tokx) :
     fix (\loop bind tokx -> if null tokx then [] else do
             bind <- [bind++[head tokx]]
@@ -389,24 +401,39 @@ matchTree greedy tree tokx = loop M.empty 0 [] tree tokx where
   -- This forms a list of (bind, tokx) pairs where 'bind' will be assigned to a variable and 'tokx'
   -- is the remaining tokens to be matched. So when a 'Wildcard' variable is matched, it tries every
   -- possible ('bind', 'tokx') pair, binding the 'bind' to a variable and looping on 'tokx'.
-  branch vars p path branch tokx = case tokx of
-    []       -> []
+  done vars p path a = [(Glob{ getPatUnits=path, getGlobLength=p }, vars, a)]
+  branch vars p path a b tokx = case tokx of
+    []       -> msum $
+      [a >>= \a -> done vars p path a
+      ,do (pat, tree) <- M.assocs b
+          a <- case tree of
+            T.Void           -> []
+            T.Branch       _ -> []
+            T.Leaf       a   -> [a]
+            T.LeafBranch a _ -> [a]
+          case pat of
+            Wildcard nm t -> case M.lookup nm vars of
+              Nothing       -> done (M.insert nm (t, []) vars) p path a
+              Just (_, pfx) -> guard (null pfx) >> done vars p path a
+            AnyOne{}      -> []
+            Single{}      -> []
+      ]
     tok:tokx -> let next pat vars tree = loop vars (p+1) (path++[pat]) tree in msum $
-      [ do  tree <- maybe [] (:[]) $ M.lookup (Single tok) branch
-            next (Single tok) vars tree tokx
-      , do -- Next we use 'takeWhile' because of how the 'Ord' instance of 'GlobUnit' is defined,
-           -- 'Wildcard's and 'AnyOne's are always first in the list of 'assocs'.
-           (pat, tree) <- takeWhile (isVariable . fst) (M.assocs branch)
-           let defVar nm t mkAssoc = case M.lookup nm vars of
-                 Just (_, pfx) -> maybe [] (:[]) (stripPrefix pfx (tok:tokx)) >>= next pat vars tree
-                 Nothing       -> do
-                   (bind, tokx) <- mkAssoc
-                   next pat (M.insert nm (t, bind) vars) tree tokx
-           case pat of
-             Wildcard nm t -> defVar nm t (partStep [] (tok:tokx))
-             AnyOne   nm t -> defVar nm t [([tok], tokx)]
-             Single   _    -> error "undefined behavior in Dao.Glob.matchTree:branch: case Single"
-             -- 'Single' cases must not occur, they should have been filtered out by the code:
-             -- > takeWhile (isVariable . fst)
+      [do tree <- maybe [] (:[]) $ M.lookup (Single tok) b
+          next (Single tok) vars tree tokx
+      ,do -- Next we use 'takeWhile' because of how the 'Ord' instance of 'GlobUnit' is defined,
+          -- 'Wildcard's and 'AnyOne's are always first in the list of 'assocs'.
+          (pat, tree) <- takeWhile (isVariable . fst) (M.assocs b)
+          let defVar nm t mkAssoc = case M.lookup nm vars of
+                Just (_, pfx) -> maybe [] (:[]) (stripPrefix pfx (tok:tokx)) >>= next pat vars tree
+                Nothing       -> do
+                  (bind, tokx) <- mkAssoc
+                  next pat (M.insert nm (t, bind) vars) tree tokx
+          case pat of
+            Wildcard nm t -> defVar nm t (partStep [] (tok:tokx))
+            AnyOne   nm t -> defVar nm t [([tok], tokx)]
+            Single{}      -> error "undefined behavior in Dao.Glob.matchTree:branch: case Single"
+            -- 'Single' cases must not occur, they should have been filtered out by the code:
+            -- > takeWhile (isVariable . fst)
       ]
 

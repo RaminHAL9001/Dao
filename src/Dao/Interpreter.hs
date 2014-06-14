@@ -6936,12 +6936,12 @@ instance B.HasPrefixTable (RuleFuncExpr Object) B.Byte MTab where
 
 instance Executable (RuleFuncExpr Object) (Maybe Object) where
   execute o = case o of
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     LambdaExpr params script _ -> do
       let exec = setupCodeBlock script
       return $ Just $ new $
         [CallableCode{argsPattern=params, codeSubroutine=exec, returnType=nullValue}]
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     FuncExpr name params script _ -> do
       let exec = setupCodeBlock script
       let callableCode = CallableCode{argsPattern=params, codeSubroutine=exec, returnType=nullValue}
@@ -6954,7 +6954,7 @@ instance Executable (RuleFuncExpr Object) (Maybe Object) where
       let sub = setupCodeBlock script
       pats <- execute rs
       return $ Just $ obj $ PatternRule{ rulePatterns=pats, ruleAction=sub }
-    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+    --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
 instance ObjectClass (RuleFuncExpr Object) where { obj=new; fromObj=objFromHata; }
 
@@ -7316,7 +7316,7 @@ instance Executable (ObjTestExpr Object) (Maybe Object) where
   execute o = errCurrentModule $ case o of
     ObjArithExpr      a -> execute a
     ObjTestExpr a b c _ ->
-      execute a >>= checkVoid (getLocation a) "conditional expression evaluates to void" >>=
+      execute a >>= checkVoid (getLocation a) "conditional expression evaluates to void" >>= derefObject >>=
         execute . objToBool >>= \ok -> if ok then execute b else execute c
     ObjRuleFuncExpr o -> execute o
 

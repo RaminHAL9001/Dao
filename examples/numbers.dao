@@ -110,7 +110,7 @@ illionSet = RuleSet {
 
 function AnyNumberWord(words) { try{ global anyNumberWordSet.do(words); return words; } catch err{ println(err); } }
 anyNumberWordSet = global subTwentySet | global umptySet | global illionSet | RuleSet {
-	rule "hundred" { return 100; }
+	rule "hundred" { return 100; }, rule("negative", "minus") { return -1; }
 };
 
 function splitNumberWords(w) {
@@ -173,6 +173,7 @@ naturalSet = RuleSet {
 	rule "$m::Illion? $n::Natural" { return local m + local n; }
 } | illionSet;
 
+// Convert words to an integer value.
 function Integer(words) { return global wordSet(global integerSet, local words); }
 integerSet = RuleSet {
 	rule "$n::Natural" { return local n; },
@@ -187,7 +188,7 @@ global sayNums = HashMap {
 	10L="ten", 11L="eleven", 12L="twelve", 13L="thirteen",
 	14L="fourteen", 15L="fifteen", 16L="sixteen", 17L="seventeen",
 	18L="eighteen", 19L="nineteen", 20L="twenty", 30L="thirty",
-	40L="fourty", 50L="fifty", 60L="sixy", 70L="seventy", 80L="eighty",
+	40L="fourty", 50L="fifty", 60L="sixty", 70L="seventy", 80L="eighty",
 	90L="ninety"
 };
 
@@ -201,65 +202,112 @@ global powersOfThousand = list {
 	"novendecillion", "vigintillion"
 };
 
+// Convert a long integer to words.
 function numToWords(n) {
+	local neg = list{};
+	if(local n < 0) { local n = const abs(n); local neg = list{"negative"}; }
 	local n = long(n);
-	local neg = local n < 0;
 	local result = list{};
-	try {
+	try{
 		local thousands = global powersOfThousand;
 		if(n==0) { return "zero"; }
 		while(local n) {
 			local th = null;
 			if(! local thousands) {
-				return str(n) + " " + join(" ", reverse(local result));
+				return str(n) + " " + join(" ", const concat(local neg, local result));
 			}
 			else{ local th = local thousands[0]; local thousands <<= 1; }
-			local abc = local n%1000;
+			local abc = local n%1000L;
 			local n = long(local n / 1000L);
-			local a = global sayNums[long(local n / 100L)];
-			local b = global sayNums[long(local n / 10L) % 10L];
-			local c = global sayNums[long(local n % 10L)];
+			local a = long(local abc / 100L);
+			local b = local abc % 100L;
+			local b = local b<20 ? local b : local b - local b % 10L;
+			local c = local b<20 ? 0L : local abc % 10L;
+			local a = global sayNums[local a];
+			local b = global sayNums[local b];
+			local c = global sayNums[local c];
 			if(local a || local b || local c) {
 				local temp = list{};
 				if(local a) { local temp = list{a, "hundred"}; }
 				if(local b || local c) {
-					local temp = const concat(local temp, "and");
+					if(local a) { local temp = const concat(local temp, "and"); }
 					if(local b) {
-						local temp = const concat(local c ? (local b+"-"+local c) : b, local temp);
+						local temp = const concat(local temp, local c ? local b+"-"+local c : local b);
 					}
-					else if(local c) { local temp = const concat(local c, local temp); }
+					else if(local c) { local temp = const concat(local temp, local c); }
 				}
-				if(local th) { local result = const concat(local th+",", local result); }
+				if(local th) { local result = const concat(local th, local result); }
 				local result = const concat(local temp, local result);
 			}
 		}
-		return const join(" ", local result);
+		return const join(" ", const concat(local neg, local result));
 	}
 	else{ const println("numToWords(", local n, ") backtracked"); }
 	catch err{ const println(local err); }
 }
 
+//--------------------------------------------------------------------------------------------------
+
+// Convert to words from a number expressed as a string of digits (a numeral).
 rule("say $i::Numeral", "speak $i::Numeral") {
-	try{ const println(global numToWords(local i)); }
+	global no_match = false;
+	try{
+		global last_result = global numToWords(local i);
+		const println(global last_result);
+	}
 	catch err{ println(err); }
 }
 
-//--------------------------------------------------------------------------------------------------
-
-rule "$x" {
+// Convert the previous result:
+// if it was an integer converted from words, convert it back to words.
+// If it was words converted from an integer, convert it back to an integer.
+rule("say last", "say it", "speak last", "speak it", "convert", "convert it", "convert last") {
+	global no_match = false;
 	try{
-		local w = global splitNumberWords(local x);
-		if(global DEBUG) { println("split number words: ", local w); }
-		if(w.fst) {
-			local i = Integer(local w.fst);
-			const println(local i, " ", const join("", w.snd));
-			global no_match = false;
+		local t = typeof(global last_result);
+		if(t==Long || t==Int || t==Word) {
+			global last_result = global numToWords(global last_result);
+			const println(global last_result);
 		}
+		else if(typeof(global last_result) == String) {
+			local last_result = global last_result;
+			try{ global last_result = global interactiveWordsToNum(const tokenize(global last_result)); }
+			else{ const println("couldn't convert to an integer, the words: ", global last_result); }
+		}
+		else{ const println("There is no previous result, we haven't done anything yet."); }
 	}
-	catch err{ println(local err); }
+	else{ const println("what?"); }
+	catch err{ const println(err); }
 }
 
+// Display the previous result.
+rule("last", "it") {
+	global no_match = false;
+	if(const defined(global last_result) && global last_result != null) { const println(global last_result); }
+	else{ const println("There is no previous result, we haven't done anything yet."); }
+}
+
+// This is an interactive function that performs an Integer() conversion and prints out the results.
+function interactiveWordsToNum(words) {
+	try{
+		local words = global splitNumberWords(local words);
+		if(global DEBUG) { const println("split number words: ", local words); }
+		if(words.fst) {
+			global last_result = global Integer(local words.fst);
+			const println(global last_result , " ", const join("", words.snd));
+			global no_match = false;
+			return global last_result;
+		}
+	}
+	catch err{ const println(local err); }
+}
+
+// Call "interactiveWordsToNum()", converts wors to an integer value and displays the result.
+rule "$x" { global interactiveWordsToNum(local x); }
+
 //--------------------------------------------------------------------------------------------------
+
+global last_result = null;
 
 END{
 	if(global no_match) { println("what?"); }

@@ -186,12 +186,12 @@ dbg :: MonadIO m => String -> m ()
 dbg = liftIO . hPutStrLn stderr . ("(DEBUG) "++) . (>>=(\c -> if c=='\n' then "\n(DEBUG) " else [c]))
 dbg' :: MonadIO m => String -> m a -> m a
 dbg' msg f = f >>= \a -> dbg msg >> return a
-dbg0 :: (MonadPlus m, MonadIO m, MonadError e m, PPrintable e) => String -> m a -> m a
+dbg0 :: (MonadPlus m, MonadIO m, MonadError e m, Show e) => String -> m a -> m a
 dbg0 msg f = do
   dbg (msg++" (BEGIN)")
   catchError
     (mplus (f >>= \a -> dbg (msg++" (DONE)") >> return a) (dbg (msg++" (BACKTRACKED)") >> mzero))
-    (\e -> dbg (msg++" (ERROR) "++prettyShow e) >> throwError e)
+    (\e -> dbg (msg++" (ERROR) "++show e) >> throwError e)
 updbg :: MonadIO m => String -> (Maybe Object -> m (Maybe Object)) -> Maybe Object -> m (Maybe Object)
 updbg msg f o = dbg ("(update with "++msg++")") >> f o >>= \o -> dbg ("(update complete "++show o++")") >> return o
 #endif
@@ -3116,14 +3116,27 @@ instance HataClass Pair where
   haskellDataInterface = interface "Pair" $ do
     autoDefEquality >> autoDefOrdering >> autoDefPPrinter
     autoDefToStruct >> autoDefFromStruct
-    defIndexer $ \ (Pair (a,b)) ix -> do
+    defIndexUpdater $ \ix upd -> do
+      (Pair (a,b)) <- get
       let casti = extractXPure . castToCoreType IntType >=> fromObj
       let badindex = execThrow "index for Pair data type must be a either 0 or 1" ExecErrorUntyped
       let qref = reference UNQUAL (ustr "Pair")
       case ix of
         [i] -> do
-          i <- derefObject i >>= maybe (badindex [(actualType, obj (typeOfObj i))]) return . casti
-          case i of { 0 -> return a; 1 -> return b; i -> badindex [(assertFailed, OInt i)]; }
+          i <- focusLiftExec (derefObject i) >>=
+            maybe (badindex [(actualType, obj (typeOfObj i))]) return . casti
+          (o, setter) <- case i of
+            0 -> pure (a, \a -> (a, b))
+            1 -> pure (b, \b -> (a, b))
+            i -> badindex [(assertFailed, OInt i)]
+          (result, (changed, o)) <- withInnerLens (Just o) upd
+          if changed
+          then
+            case o of
+              Nothing ->
+                execThrow "item in Pair object updated with void" ExecErrorUntyped [(ustr "index", obj i)]
+              Just  o -> put (Pair $ setter o) >> return result
+          else  return result
         ix  -> throwArityError "for subscript to Pair data type" 1 ix [(errInConstr, obj qref)]
 
 builtin_assocs :: DaoFunc ()
@@ -4161,6 +4174,8 @@ data ExecControl
     }
   deriving Typeable
 
+instance Show ExecControl where { show=prettyShow }
+
 instance HasNullValue ExecControl where
   nullValue = ExecReturn Nothing
   testNull (ExecReturn Nothing) = True
@@ -4307,6 +4322,8 @@ data ExecErrorSubtype
   | ExecParseError    (ParseError () DaoTT)
   | ExecInfixOpError  ObjType InfixOp ObjType -- ^ thrown when an infix operator fails
   deriving (Eq, Typeable)
+
+instance Show ExecErrorSubtype where { show=prettyShow }
 
 instance ToDaoStructClass ExecErrorSubtype where
   toDaoStruct = ask >>= \o -> case o of
@@ -7742,6 +7759,7 @@ instance HataClass (H.HashMap Object Object) where
       xmaybe (H.hashLookup (H.hashNewIndex hash128 i) hm)
     defIndexUpdater $ \ix upd -> flip single_index ix $ \i -> do
       hash128 <- focusLiftExec getObjectHash128
+      i <- focusLiftExec $ derefObject i
       i <- pure (H.hashNewIndex hash128 i)
       hm <- get
       (result, (changed, o)) <- withInnerLens (H.hashLookup i hm) upd

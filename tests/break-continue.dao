@@ -1,0 +1,88 @@
+function makeList(i) {
+	local L = list{local i};
+	while(local i > 0) {
+		local i -= 1;
+		local L = const concat(local i, local L);
+	}
+	return L;
+}
+
+function A(n) {
+	local i = 0;
+	while(local i < 20) {
+		local i += 1;
+		if(local i % 2 == 1) { continue; }
+		const print(local i);
+		if(local i >= local n) { break; }
+		const print(" ");
+	}
+}
+
+function B(n) {
+	local i = 0;
+	while(local i < 20) {
+		local i += 1;
+		continue if(local i % 2 == 1);
+		const print(local i);
+		break if(local i >= local n);
+		const print(" ");
+	}
+}
+
+function C(n) {
+	for i in makeList(n) {
+		if(local i % 2 == 1) { continue; }
+		const print(local i);
+		if(local i >= local n) { break; }
+		const print(" ");
+	}
+}
+
+function D(n) {
+	for i in makeList(n) {
+		continue if(local i % 2 == 1);
+		const print(local i);
+		break if(local i >= local n);
+		const print(" ");
+	}
+}
+
+function all(ns) {
+	for n in ns {
+		const println(n);
+		try{ @local n; } catch err{ const println(err); }
+		const println("\n----------");
+	}
+}
+
+//: A(10)
+//: 2 4 6 8 10
+//: ----------
+//: A(30)
+//: 2 4 6 8 10 12 14 16 18 20
+//: ----------
+//: B(10)
+//: 2 4 6 8 10
+//: ----------
+//: B(30)
+//: 2 4 6 8 10 12 14 16 18 20
+//: ----------
+//: C(10)
+//: make list...
+//: 0 2 4 6 8 10
+//: ----------
+//: C(20)
+//: make list...
+//: 0 2 4 6 8 10 12 14 16 18 20
+//: ----------
+//: D(10)
+//: make list...
+//: 0 2 4 6 8 10
+//: ----------
+//: D(20)
+//: make list...
+//: 0 2 4 6 8 10 12 14 16 18 20
+//: ----------
+
+global all(list{ $A(10), $A(30), $B(10), $B(30), $C(10), $C(20), $D(10), $D(20) });
+

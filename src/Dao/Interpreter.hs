@@ -92,6 +92,7 @@ module Dao.Interpreter(
     modifiedConst, assertFailed, returnedVoid, errorDict,
     newError, throwArityError, throwParseError, throwBadTypeError, errLocation, errModule,
     errCurrentModule, errInfo, updateExecErrorInfo, logUncaughtErrors, clearUncaughtErrorLog,
+    execForM, execForM_,
     Exec(Exec), execToPredicate, XPure(XPure), xpureToState, runXPure, evalXPure, xpure, xobj,
     xnote, xonUTF8, xmaybe,
     ExecThrowable(toExecErrorInfo, execThrow), ioExec,
@@ -4321,6 +4322,8 @@ data ExecErrorSubtype
   | ExecHaskellError  ErrorCall   -- ^ re-thrown when caught from the IO monad
   | ExecParseError    (ParseError () DaoTT)
   | ExecInfixOpError  ObjType InfixOp ObjType -- ^ thrown when an infix operator fails
+  | ExecLoopCtrl      LoopCtrl
+    -- ^ inspired by the Python language, break and continue loop control statements are exceptions.
   deriving (Eq, Typeable)
 
 instance Show ExecErrorSubtype where { show=prettyShow }
@@ -4338,6 +4341,7 @@ instance ToDaoStructClass ExecErrorSubtype where
     ExecParseError    o -> innerToStruct o
     ExecInfixOpError  a o b -> renameConstructor "InfixOpError" $
       "operator" .= o >> "left" .= a >> "right" .= b
+    ExecLoopCtrl      o -> innerToStruct o
 
 instance PPrintable ExecErrorSubtype where
   pPrint o = case o of
@@ -4355,12 +4359,59 @@ instance PPrintable ExecErrorSubtype where
       pIndent $ do
         pEndLine >> pString "left-hand side of operator is value of type: "  >> pPrint a
         pEndLine >> pString "right-hand side of operator is value of type: " >> pPrint b
+    ExecLoopCtrl      o -> pPrint o
 
 instance ObjectClass ExecErrorSubtype where { obj=new; fromObj=objFromHata; }
 
 instance HataClass ExecErrorSubtype where
   haskellDataInterface = interface "ErrorSubtype" $ do
     autoDefEquality >> autoDefPPrinter >> autoDefToStruct
+
+----------------------------------------------------------------------------------------------------
+
+data LoopCtrl
+  = LoopCtrl
+    { loopCtrlEscaped  :: Bool
+      -- ^ Has this exception gone past a function call context boundary?
+    , loopCtrlContinue :: Bool
+      -- ^ Is this control expression a continue statement? (if not it is a break statement)
+    }
+  deriving (Eq, Typeable)
+
+loopCtrl :: Bool -> LoopCtrl
+loopCtrl contin = LoopCtrl{ loopCtrlEscaped=False, loopCtrlContinue=contin }
+
+instance PPrintable LoopCtrl where  
+  pPrint ctrl = pString $ concat $
+    [ if loopCtrlContinue ctrl then "continue" else "break"
+    , " statement evaluated is not within a loop"
+    ]
+
+instance ToDaoStructClass LoopCtrl where
+  toDaoStruct = renameConstructor "LoopCtrl" $ "isContinue" .=@ loopCtrlContinue
+
+catchLoopCtrl :: Exec a -> (Bool -> Exec a) -> Exec a
+catchLoopCtrl try catch = catchError try $ \err -> case err of
+  ExecError{ execErrorSubtype =
+    ExecLoopCtrl (LoopCtrl{ loopCtrlEscaped=False, loopCtrlContinue=contin }) } -> catch contin
+  _ -> throwError err
+
+-- | When defining an iterator, you should catch break and continue statements. This function is a
+-- replacement for 'Control.Monad.forM' that handles break and continue statements correctly.
+execForM :: [o] -> (o -> Exec a) -> Exec [a]
+execForM ox f = loop ox [] where
+  loop ox rev = case ox of
+    []   -> return rev
+    o:ox -> do
+      (contin, r) <- catchLoopCtrl ((,) True . return <$> f o) (return . flip (,) [])
+      (if contin then loop ox else return) (rev++r)
+
+-- | Like 'execForM' but ignores the values returned by the iterating function.
+execForM_ :: [o] -> (o -> Exec a) -> Exec ()
+execForM_ ox f = loop ox where
+  loop ox = case ox of
+    []   -> return ()
+    o:ox -> catchLoopCtrl (void $ f o) (flip when (loop ox))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -4493,6 +4544,7 @@ instance ExecThrowable IOException           where { toExecErrorInfo = ExecIOExc
 instance ExecThrowable ErrorCall             where { toExecErrorInfo = ExecHaskellError  }
 instance ExecThrowable UpdateOp              where { toExecErrorInfo = ExecUpdateOpError }
 instance ExecThrowable (ParseError () DaoTT) where { toExecErrorInfo = ExecParseError    }
+instance ExecThrowable LoopCtrl              where { toExecErrorInfo = ExecLoopCtrl      }
 
 ioExec :: Exec a -> ExecUnit -> IO (Predicate ExecControl a, ExecUnit)
 ioExec func xunit = runStateT (runPredicateT (execToPredicate func)) xunit
@@ -4572,10 +4624,13 @@ execNested_ init = fmap fst . execNested init
 -- it to procede with execution after this call has returned.
 execFuncPushStack :: T_dict -> Exec (Maybe Object) -> Exec (Maybe Object, T_dict)
 execFuncPushStack dict exe = execNested dict (catchPredicate exe) >>= \ (pval, dict) -> case pval of
-  OK                o  -> return (o, dict)
-  Backtrack            -> mzero
-  PFail (ExecReturn o) -> return (o, dict)
-  PFail           err  -> throwError err
+  OK     o  -> return (o, dict)
+  Backtrack -> mzero
+  PFail err -> case err of
+    ExecReturn o -> return (o, dict)
+    ExecError{execErrorSubtype=ExecLoopCtrl ctrl} -> throwError $
+      err{execErrorSubtype=ExecLoopCtrl $ ctrl{loopCtrlEscaped=False}}
+    err          -> throwError err
 
 execFuncPushStack_ :: T_dict -> Exec (Maybe Object) -> Exec (Maybe Object)
 execFuncPushStack_ dict = fmap fst . execFuncPushStack dict
@@ -6434,7 +6489,7 @@ instance B.HasPrefixTable (WhileExpr Object) B.Byte MTab where
   prefixTable = B.mkPrefixTableWord8 "WhileExpr" 0x85 0x85 [WhileExpr <$> B.get]
 
 instance Executable (WhileExpr Object) () where
-  execute (WhileExpr ifn) = let loop = execute ifn >>= flip when loop in loop
+  execute (WhileExpr ifn) = fix $ \loop -> catchLoopCtrl (execute ifn) return >>= flip when loop
 
 instance ObjectClass (WhileExpr Object) where { obj=new; fromObj=objFromHata; }
 
@@ -6529,13 +6584,15 @@ instance Executable (ScriptExpr Object) () where
     TryCatch try els catchers _loc -> do
       ce <- catchPredicate $ execNested_ M.empty (execute try) <|> msum (fmap execute els)
       case ce of
-        OK               ()  -> return ()
-        Backtrack            -> mzero
-        PFail (ExecReturn{}) -> predicate ce
-        PFail           err  -> join $ msum $ fmap (executeCatchExpr err) catchers
+        OK     () -> return ()
+        Backtrack -> mzero
+        PFail err -> case err of
+          ExecReturn{} -> predicate ce
+          ExecError{execErrorSubtype=ExecLoopCtrl{}} -> predicate ce
+          ExecError{}  -> join $ msum $ fmap (executeCatchExpr err) catchers
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ForLoop varName inObj thn _loc -> do
-      let run     = void $ execute thn
+      let run = void $ execute thn
       let readIter   o = execNested_ (M.singleton varName o) run
       let updateIter o = M.lookup varName . snd <$> execNested (maybe M.empty (M.singleton varName) o) run
       let readLoop   o = void $ readForLoop o readIter
@@ -6560,8 +6617,12 @@ instance Executable (ScriptExpr Object) () where
       -- the dao programming language as an atomic action, so race conditions may occur when
       -- updating MVars -- but deadlocks will not occur.
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
-    ContinueExpr a    _      _loc -> fail $
-      '"':(if a then "continue" else "break")++"\" expression is not within a \"for\" or \"while\" loop"
+    ContinueExpr a    test   _loc -> do
+      test <- execute test
+      let signal = execThrow "" (loopCtrl a) []
+      case test of
+        Nothing -> signal
+        Just  o -> derefObject o >>= execute . objToBool >>= flip when signal
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     ReturnExpr returnStmt o _loc -> do
       o <- (execute o :: Exec (Maybe Object)) >>= maybe (return Nothing) (fmap Just . derefObject)
@@ -7618,10 +7679,13 @@ instance B.HasCoderTable MethodTable where
 -- 'val' and a function that is evaluated using a 'val' on every iteration of the loop.
 -- 'readForLoop' should be defined call the given function as many times as necessary to
 -- exaust the 'val's in the 'iter'.
+--
+-- /NOTE:/ When defining iterators, it is important to use 'execForM' or 'execForM_' to properly
+-- handle "break" and "catch" statements.
 class ReadIterable iter val | iter -> val where
   readForLoop :: iter -> (val -> Exec ()) -> Exec ()
 
-instance ReadIterable [Object] Object where { readForLoop iter = forM_ iter }
+instance ReadIterable [Object] Object where { readForLoop iter = execForM_ iter }
 
 instance ReadIterable Hata Object where
   readForLoop h@(Hata ifc d) f = case objReadIterable ifc of
@@ -7638,12 +7702,15 @@ instance ReadIterable Object Object where
 
 -- | A class that provides the 'updateForLoop' function, which is a function that will iterate over
 -- types which can be read sequentially and modified as they are read.
+--
+-- /NOTE:/ When defining iterators, it is important to use 'execForM' or 'execForM_' to properly
+-- handle "break" and "catch" statements.
 class UpdateIterable iter val | iter -> val where
   updateForLoop :: iter -> (val -> Exec val) -> Exec iter
 
 instance UpdateIterable [Object] (Maybe Object) where
   updateForLoop iter f =
-    fmap (concatMap $ \o -> maybe [] id $ (o>>=fromObj) <|> fmap return o) (forM iter $ f . Just)
+    fmap (concatMap $ \o -> maybe [] id $ (o>>=fromObj) <|> fmap return o) (execForM iter $ f . Just)
 
 instance UpdateIterable Hata (Maybe Object) where
   updateForLoop h@(Hata ifc d) f = case objUpdateIterable ifc of
@@ -7651,7 +7718,7 @@ instance UpdateIterable Hata (Maybe Object) where
     Just for -> Hata ifc <$> for d f
 
 instance UpdateIterable T_dict (Maybe Object) where
-  updateForLoop m f = fmap (M.fromList . concat) $ forM (M.assocs m) $ \ (i, o) -> do
+  updateForLoop m f = fmap (M.fromList . concat) $ execForM (M.assocs m) $ \ (i, o) -> do
     p <- f (Just $ obj $ Pair (obj i, o))
     case p of
       Nothing -> return []
@@ -7705,7 +7772,7 @@ instance HataClass AST_DotLabel where
 ----------------------------------------------------------------------------------------------------
 
 instance UpdateIterable (H.HashMap Object Object) (Maybe Object) where
-  updateForLoop hm f = fmap (H.fromList . concat) $ forM (H.assocs hm) $ \ (ix, o) -> do
+  updateForLoop hm f = fmap (H.fromList . concat) $ execForM (H.assocs hm) $ \ (ix, o) -> do
     hash128 <- getObjectHash128
     p <- f (Just $ obj $ Pair (H.indexKey ix, o))
     case p of
@@ -8074,10 +8141,16 @@ autoDefPPrinter = defPPrinter pPrint
 -- statement in a Dao program. However it is much better to instantiate your @typ@ into the
 -- 'ReadIterable' class and use 'autoDefIterator' instead. If 'defUpdateIterator' is also defined,
 -- the function defined here will never be used.
+--
+-- /NOTE:/ When defining iterators, it is important to use 'execForM' or 'execForM_' to properly
+-- handle "break" and "catch" statements.
 defReadIterable :: Typeable typ => (typ -> (Object -> Exec ()) -> Exec ()) -> DaoClassDefM typ ()
 defReadIterable iter = _updHDIfcBuilder $ \st -> st{ objIfcReadIterable=Just iter }
 
 -- | Define 'defReadIterable' automatically using the instance of @typ@ in the 'ReadIterable' class.
+--
+-- /NOTE:/ When defining iterators, it is important to use 'execForM' or 'execForM_' to properly
+-- handle "break" and "catch" statements.
 autoDefReadIterable :: (Typeable typ, ReadIterable typ Object) => DaoClassDefM typ ()
 autoDefReadIterable = defReadIterable readForLoop
 
@@ -8085,11 +8158,17 @@ autoDefReadIterable = defReadIterable readForLoop
 -- statement in a Dao program. However it is much better to instantiate your @typ@ into the
 -- 'UpdateIterable' class and use 'autoDefIterator' instead. If 'defReadIterator' is also defined,
 -- the read iterator is always ignored in favor of this function.
+--
+-- /NOTE:/ When defining iterators, it is important to use 'execForM' or 'execForM_' to properly
+-- handle "break" and "catch" statements.
 defUpdateIterable :: Typeable typ => (typ -> (Maybe Object -> Exec (Maybe Object)) -> Exec typ) -> DaoClassDefM typ ()
 defUpdateIterable iter = _updHDIfcBuilder(\st->st{objIfcUpdateIterable=Just iter})
 
 -- | Define 'defUpdateIterable' automatically using the instance of @typ@ in the 'ReadIterable'
 -- class.
+--
+-- /NOTE:/ When defining iterators, it is important to use 'execForM' or 'execForM_' to properly
+-- handle "break" and "catch" statements.
 autoDefUpdateIterable :: (Typeable typ, UpdateIterable typ (Maybe Object)) => DaoClassDefM typ ()
 autoDefUpdateIterable = defUpdateIterable updateForLoop
 

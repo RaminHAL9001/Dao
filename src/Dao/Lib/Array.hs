@@ -81,13 +81,13 @@ arrayUpdate arr i o = arrayCheckIndex arr i >>= \result -> case result of
 
 instance ReadIterable Array Object where
   readForLoop (Array arr) f = liftIO (getBounds arr) >>=
-    mapM_ (liftIO . readArray arr >=> f) . range
+    flip execForM_ (liftIO . readArray arr >=> f) . range
 
 instance UpdateIterable Array (Maybe Object) where
   updateForLoop a@(Array arr) f = do
     let err = "for loop iteration attempted to delete an item from an Array"
     liftIO (getBounds arr) >>=
-      mapM_ (\i -> liftIO (readArray arr i) >>= f . Just >>=
+      flip execForM_ (\i -> liftIO (readArray arr i) >>= f . Just >>=
               maybe (fail err) return >>= liftIO . writeArray arr i) . range
     return a
 

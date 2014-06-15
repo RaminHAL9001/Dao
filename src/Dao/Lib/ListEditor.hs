@@ -76,11 +76,11 @@ instance B.Binary ListEditor MethodTable where
     ListEditor . slCursorTo cur . uncurry slFromLeftRight . splitAt cur <$> B.get
 
 instance ReadIterable ListEditor Object where
-  readForLoop (ListEditor sl) = forM_ (slToList sl)
+  readForLoop (ListEditor sl) = execForM_ (slToList sl)
 
 instance UpdateIterable ListEditor (Maybe Object) where
   updateForLoop (ListEditor sl) = fmap (ListEditor . slFromList (slCursor sl) .
-    concatMap (maybe [] return)) . forM (fmap Just $ slToList sl)
+    concatMap (maybe [] return)) . execForM (fmap Just $ slToList sl)
 
 instance ObjectClass ListEditor where { obj=new; fromObj=objFromHata; }
 

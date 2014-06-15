@@ -115,16 +115,14 @@ anyNumberWordSet = global subTwentySet | global umptySet | global illionSet | Ru
 
 function splitNumberWords(w) {
 	local accum = list{};
-	local breaker = false;
 	while(local w) {
 		try{
 			local p = global splitNumberWordsSet.do(local w);
 			local accum = const concat(local accum, local p.fst);
 			local w = local p.snd;
 		}
-		else{ local breaker = true; }
-		catch err{ println(err); local breaker = true; }
-		if(breaker) { return Pair(local accum, local w); }
+		else{ break; }
+		catch err{ const println(err); break; }
 	}
 	return Pair(local accum, local w);
 }

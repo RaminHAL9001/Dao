@@ -1,5 +1,4 @@
-# "ghc-build-opts.mk": a GNU-Make script to build the "Dao" modules
-# and interactive program.
+# "ghc-build-opts.mk": a trivial GNU-Make script that calls 'cabal configure' and 'cabal build'.
 # 
 # Copyright (C) 2008-2014  Ramin Honary.
 # 
@@ -18,58 +17,15 @@
 # <http://www.gnu.org/licenses/agpl.html>.
 ####################################################################################################
 
-.PHONEY: all test clean update edit info O3
+.PHONEY: all edit
 
-shell:=bash
-slash:=/
-dot:=.
-star:=*
-hash:=\#
+all: dist
+	cabal build
 
-include ghc-build-opts.mk
+dist: dao.cabal
+	cabal configure
+	@echo '----------------------------------------------------------------------------------------------------'
 
-SRC_DIRS = $(foreach i,$(SOURCE_DIRECTORIES),-i'$i')
-LANG_EXTS = $(foreach X,$(LANGUAGE_EXTENSIONS),-X$X)
-GHC_CMD = ghc
-GHC_BUILD = $(GHC_CMD) --make $(SRC_DIRS) $(GHC_FLAGS)
-
-CHANGED_FILES := $(shell find $(SOURCE_DIRECTORIES) -name '[A-Z]*.hs' -newer ./Makefile | grep -v 'main.hs$$')
-
-####################################################################################################
-
-all: dao test
-
-dao: $(CHANGED_FILES) src/dao-main.hs
-	$(GHC_BUILD) -o dao src/dao-main.hs
-
-O3: $(CHANGED_FILES) src/dao-main.hs
-	$(GHC_BUILD) -o dao src/dao-main.hs -O3
-
-test: debug debug/test
-
-debug:
-	mkdir -p debug
-
-debug/test: tests/main.hs debug $(CHANGED_FILES)
-	$(GHC_BUILD) -o debug/test tests/main.hs
-
-clean:
-	find $(SOURCE_DIRECTORIES) \( -name '*.o' -o -name '*.hi' \) -printf 'rm %p;\n' -delete;
-	rm -f dao debug/dao;
-
-listfile = grep -v '^[[:space:]]*$(hash).*$$' $1
-
-edit: $(EDIT_FILES_LIST)
-	vim -p$(NUMBER_OF_TABS) \
-		$(EDIT_FILES_LIST) \
-		$(shell $(call listfile,$(EDIT_FILES_LIST)))
-
-scratch: scratch.hs src/Dao/Interpreter.hs
-	$(GHC_BUILD) scratch.hs -o scratch
-
-NOTE := $(hash)$(hash)$(hash)
-
-info:
-	@echo '$(NOTE) GHC Build command is:'
-	@echo '$(NOTE) $(GHC_BUILD)'
+edit:
+	vim dao.cabal $$( find . -type f -name '*.hs' )
 

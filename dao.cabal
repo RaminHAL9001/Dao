@@ -18,45 +18,78 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
-Name:             dao
-Version:          0.1.0.0
-Cabal-Version:    >= 1.10
-License:          GPL-3
-Copyright:	  (C) 2008-2012 Ramin Honary, all rights reserved.
-Author:           Ramin Honary
-Maintainer:	  ramin.honary@gmail.com
-Build-Type:       Simple
-Synopsis:         Dao is an expert system with its own built-in
-				  interpreted language built with artificial
-				  intelligence applications in mind.
+Name:          dao
+Version:       0.1.0.0
+Cabal-Version: >= 1.10
+License:       GPL-3
+Copyright:     (C) 2008-2014 Ramin Honary, all rights reserved.
+Author:        Ramin Honary
+Maintainer:    ramin.honary@gmail.com
+Build-Type:    Simple
+Synopsis:      Dao is meta programming language with its own built-in
+               interpreted language, designed with artificial
+               intelligence applications in mind.
 Description:
-	 The Dao modules and interactive program is an expert system
-	 intended for artificial intelligence uses. Dao has it's own,
-	 built-in interpreted scripting language designed with artificial
-	 intelligence and natural language understanding applications in
-	 mind. It is very much like the classic UNIX "AWK" scripting
-	 language, but instead of using POSIX-style regular epxressions, the
-	 patterns used in Dao are designed to more easily match natural
-	 language input. Several improvements are made over the classic
-	 "AWK" execution algrotihm, in particular, Dao uses Haskell's
-	 "forkIO" to execute every action in a separate thread. Many
-	 improvements are made to the scripting language as well, including
-	 exception handling and a rich set of built-in data types.
-
+     The Dao modules and interactive program is a meta programming language
+     intended for artificial intelligence uses. It is very much like the
+     classic UNIX "AWK" scripting language, but instead of using POSIX-style
+     regular epxressions, the patterns used in Dao are designed to more easily
+     match natural language input.
 Library
+  HS-source-dirs:   src
   Default-Language: Haskell2010
-  GHC-options:	    -threaded
+  GHC-options:      -threaded -Wall
+    -fno-warn-name-shadowing
+    -fno-warn-unused-do-bind
   Build-Depends:
-    base         >= 4.3.1.0,  mtl        >= 2.0.1.0,  random     >= 1.0.0.1,
-    old-time     >= 1.0.0.2,  directory  >= 1.1.0.0,  filepath   >= 1.2.0.0,
-    process      >= 1.0.1.2,  array      >= 0.3.0.2,  bytestring >= 0.9.1.2,
-    utf8-string  >= 0.3.2  ,  binary     >= 0.5.0.2,
-    transformers >= 0.2.2.0,  containers >= 0.4.0.0
+    base                >= 4.3.1.0,  mtl        >= 2.0.1.0,  random     >= 1.0.0.1,
+    time                >= 1.4.2  ,  directory  >= 1.1.0.0,  filepath   >= 1.2.0.0,
+    process             >= 1.0.1.2,  array      >= 0.3.0.2,  bytestring >= 0.9.1.2,
+    utf8-string         >= 0.3.2  ,  binary     >= 0.5.0.2,  Crypto     >= 4.0.0.0,
+    transformers        >= 0.2.2.0,  containers >= 0.4.0.0,  deepseq    >= 1.0.0.0,
+    data-binary-ieee754 >= 0.4.4
+  Extensions:
+    TemplateHaskell            ScopedTypeVariables        RankNTypes                 
+    MultiParamTypeClasses      FunctionalDependencies     FlexibleInstances          
+    FlexibleContexts           DeriveFunctor              DeriveDataTypeable         
+    GeneralizedNewtypeDeriving 
   Exposed-Modules:
-   Dao/Builtins.hs   ,  Dao/Evaluator.hs    , Dao/Object/Monad.hs  , Dao/Runtime.hs
-   Dao/Combination.hs,  Dao/Files.hs        , Dao/Object/Parsers.hs, Dao/String.hs
-   Dao/Debug.hs      ,  Dao.hs              , Dao/Object/Show.hs   , Dao/Tree.hs
-   Dao/Debug/OFF.hs  ,  Dao/Object/Binary.hs, Dao/Parser.hs        , Dao/Types.hs
-   Dao/Debug/ON.hs   ,  Dao/Object/Data.hs  , Dao/Pattern.hs       , Dao/Tasks.hs
-   Dao/Document.hs   ,  Dao/Object.hs       , Dao/Predicate.hs
-
+    Dao.EnumSet , Dao.Tree     , Dao.RefTable   , Dao.Random  ,
+    Dao.StepList, Dao.Predicate, Dao.Binary     , Dao.HashMap ,
+    Dao.String  , Dao.Stack    , Dao.PPrint     , Dao.Parser  ,
+    Dao.Token   , Dao.Glob     , Dao.Interpreter, Dao.Lib.File,
+    Dao.Lib.ListEditor, Dao.Lib.Array                ,
+    Dao.Interpreter.Tokenizer, Dao.Interpreter.AST, Dao.Interpreter.Parser
+Executable dao
+  HS-source-dirs: src
+  Main-is: dao-main.hs
+  Default-language: Haskell2010
+  Build-Depends:
+    base                >= 4.3.1.0,  mtl        >= 2.0.1.0,  random     >= 1.0.0.1,
+    time                >= 1.4.2  ,  directory  >= 1.1.0.0,  filepath   >= 1.2.0.0,
+    process             >= 1.0.1.2,  array      >= 0.3.0.2,  bytestring >= 0.9.1.2,
+    utf8-string         >= 0.3.2  ,  binary     >= 0.5.0.2,  Crypto     >= 4.0.0.0,
+    transformers        >= 0.2.2.0,  containers >= 0.4.0.0,  deepseq    >= 1.0.0.0,
+    data-binary-ieee754 >= 0.4.4
+  Extensions:
+    TemplateHaskell            ScopedTypeVariables        RankNTypes                 
+    MultiParamTypeClasses      FunctionalDependencies     FlexibleInstances          
+    FlexibleContexts           DeriveFunctor              DeriveDataTypeable         
+    GeneralizedNewtypeDeriving 
+Test-suite main
+  HS-source-dirs:   tests
+  Main-is:          main.hs
+  Default-language: Haskell2010
+  Type: exitcode-stdio-1.0
+  Build-Depends:
+    base                >= 4.3.1.0,  mtl        >= 2.0.1.0,  random     >= 1.0.0.1,
+    time                >= 1.4.2  ,  directory  >= 1.1.0.0,  filepath   >= 1.2.0.0,
+    process             >= 1.0.1.2,  array      >= 0.3.0.2,  bytestring >= 0.9.1.2,
+    utf8-string         >= 0.3.2  ,  binary     >= 0.5.0.2,  Crypto     >= 4.0.0.0,
+    transformers        >= 0.2.2.0,  containers >= 0.4.0.0,  deepseq    >= 1.0.0.0,
+    data-binary-ieee754 >= 0.4.4
+  Extensions:
+    TemplateHaskell            ScopedTypeVariables        RankNTypes                 
+    MultiParamTypeClasses      FunctionalDependencies     FlexibleInstances          
+    FlexibleContexts           DeriveFunctor              DeriveDataTypeable         
+    GeneralizedNewtypeDeriving 

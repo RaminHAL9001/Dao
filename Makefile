@@ -17,10 +17,13 @@
 # <http://www.gnu.org/licenses/agpl.html>.
 ####################################################################################################
 
-.PHONEY: all edit
+.PHONEY: all edit test
 
 all: dist
 	cabal build
+
+test: dist
+	cabal test
 
 dist: dao.cabal
 	cabal configure

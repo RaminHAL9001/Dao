@@ -19,7 +19,7 @@
 
 
 Name:          dao
-Version:       0.1.0.0
+Version:       0.1.0.1
 Cabal-Version: >= 1.10
 License:       GPL-3
 Copyright:     (C) 2008-2014 Ramin Honary, all rights reserved.
@@ -58,7 +58,7 @@ Library
     Dao.StepList, Dao.Predicate, Dao.Binary     , Dao.HashMap ,
     Dao.String  , Dao.Stack    , Dao.PPrint     , Dao.Parser  ,
     Dao.Token   , Dao.Glob     , Dao.Interpreter, Dao.Lib.File,
-    Dao.Lib.ListEditor, Dao.Lib.Array                ,
+    Dao.Lib.ListEditor, Dao.Lib.Array,
     Dao.Interpreter.Tokenizer, Dao.Interpreter.AST, Dao.Interpreter.Parser
 Executable dao
   HS-source-dirs: src

@@ -1,6 +1,6 @@
 module Dao.Tests.I where
 
--- | This test suite tests the "Dao.Es.Set" algorithms by creating a new integer type 'I' which has
+-- | This test suite tests the "Dao.Iv.Set" algorithms by creating a new integer type 'I' which has
 -- only 8 values, [0,1,2,3,4,5,6,7], and creating a new set type 'ISet' which is simply a
 -- 'Data.Word.Word8', but it is treated as a set that can contain all possible 'I' values.
 
@@ -9,7 +9,7 @@ import           Data.Bits
 import           Data.Word
 import           Data.List
 import           Data.Maybe
-import qualified Dao.EnumSet as Es
+import qualified Dao.Interval as Es
 import           Control.Monad
 import           Control.Concurrent
 import           Control.Exception
@@ -23,7 +23,7 @@ instance Enum I where
   succ (I i) = I (if i >= 7 then error "succ :: I" else i+1)
   pred (I i) = I (if i <= 0 then error "pred :: I" else i-1)
 instance Bounded I where { minBound = I 0; maxBound = I 7 }
-instance Es.InfBound I where { minBoundInf = Es.Point minBound; maxBoundInf = Es.Point maxBound }
+instance Iv.InfBound I where { minBoundInf = Iv.Finite minBound; maxBoundInf = Iv.Finite maxBound }
 instance Show I where { show (I i) = show i }
 instance Read I where { readsPrec p str = map (\ (i, str) -> (I i, str)) (readsPrec p str) }
 
@@ -75,22 +75,22 @@ iList2ISet ix = ISet (foldl (.|.) 0 (map (shiftL 1 . fromEnum) ix))
 iPair2ISet :: (I, I) -> ISet
 iPair2ISet (i, j) = iList2ISet [min i j .. max i j]
 
--- | *This is the important function,* it applies 'Dao.Es.Set.Es.member' to a set for *every
+-- | *This is the important function,* it applies 'Dao.Iv.Set.Iv.member' to a set for *every
 -- possible 'I'* to create a 'ISet' equivalent set of bits. Because there are only 8 elements in the
--- set of all 'I's, we can test every possible 'I' against the 'Dao.Es.Set.Es.Set' that was
--- constructed by any equation over 'Dao.Es.Set.Es.Set's. Ie check that any constructed
--- 'Dao.Es.Set.Es.Set' contains the exact same elements as expected when compared to bitwise
+-- set of all 'I's, we can test every possible 'I' against the 'Dao.Iv.Set.Iv.Set' that was
+-- constructed by any equation over 'Dao.Iv.Set.Iv.Set's. Ie check that any constructed
+-- 'Dao.Iv.Set.Iv.Set' contains the exact same elements as expected when compared to bitwise
 -- equivalent over 'Data.Word.Word8's.
-enumSet2ISet :: Es.Set I -> ISet
-enumSet2ISet set = iList2ISet (everyI >>= \i -> if Es.member set i then [i] else [])
+enumSet2ISet :: Iv.Set I -> ISet
+enumSet2ISet set = iList2ISet (everyI >>= \i -> if Iv.member set i then [i] else [])
 
 -- | For every pair of 'I's given, create a pair of items from each: a Word8 created by wPair2Word,
--- and a @('Dao.Es.Set.Es.Set' 'I')@.
-iSetAndEnumSet :: (I, I) -> (ISet, Es.Set I)
-iSetAndEnumSet ww@(w, x) = (iPair2ISet ww, Es.fromList [Es.segment w x])
+-- and a @('Dao.Iv.Set.Iv.Set' 'I')@.
+iSetAndEnumSet :: (I, I) -> (ISet, Iv.Set I)
+iSetAndEnumSet ww@(w, x) = (iPair2ISet ww, Iv.fromList [Iv.segment w x])
 
--- | Inverts each of the items in the pair of @('Data.Word.Word8', 'Dao.Es.Set.Es.Set' 'I')@.
-invertISetAndEnumSet :: (ISet, Es.Set I) -> (ISet, Es.Set I)
-invertISetAndEnumSet (i, e) = (complement i, Es.invert e)
+-- | Inverts each of the items in the pair of @('Data.Word.Word8', 'Dao.Iv.Set.Iv.Set' 'I')@.
+invertISetAndEnumSet :: (ISet, Iv.Set I) -> (ISet, Iv.Set I)
+invertISetAndEnumSet (i, e) = (complement i, Iv.invert e)
 
 

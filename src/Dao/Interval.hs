@@ -1,4 +1,4 @@
--- "src/Dao/SetM.hs"  defines the Segment data type used to denote
+-- "src/Dao/SetM.hs"  defines the Interval data type used to denote
 -- a possibly infinite subset of contiguous elements of an Enum data type.
 -- 
 -- Copyright (C) 2008-2014  Ramin Honary.
@@ -21,15 +21,28 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 
-module Dao.EnumSet
+-- | This module provides what I believe to be a better implementation of mathematical intervals
+-- than what is provided by the "interval" and "data-interval" packages, although more work has yet
+-- to be done instantiating all of the classes in the "latices" package.
+--
+-- This module improves on the concept of intervals by making them more general, specifically in
+-- that intervals need only instantiate 'Prelude.Enum' rather than 'Prelude.Num'. This means
+-- 'Prelude.Char' can now be used to create intervals, which is highly useful for constructing and
+-- reasoning about regular expressions and parsers.
+--
+-- Another improvement provided by this module over other interval modules is that non-contiguous
+-- interval sets can be constructed. Thus there are two data types, 'Interval' which is never empty
+-- and can be used to construct 'Set's, and 'Set's which may or may not be empty or infinite, and do
+-- the work of what the @Data.Interval.Interval@ data type would otherwise do.
+module Dao.Interval
   ( -- * The 'Inf' data type
-    Inf(NegInf, PosInf, Point)
+    Inf(NegInf, PosInf, Finite)
   , stepDown, stepUp, toPoint, enumIsInf
   , InfBound, minBoundInf, maxBoundInf
-    -- * the 'Segment' data type
-  , Segment, startPoint, endPoint, segment, single, inf, negInfTo, toPosInf, enumInfSeg
+    -- * the 'Interval' data type
+  , Interval, startPoint, endPoint, segment, single, wholeInterval, negInfTo, toPosInf, enumInfSeg
   , toBounded, toBoundedPair, segmentMember, singular, plural, segmentNub, segmentInvert
-    -- * Predicates on 'Segment's
+    -- * Predicates on 'Interval's
   , containingSet, numElems, isWithin, segmentHasEnumInf, segmentIsInfinite
     -- * The 'SetM' monadic data type
   , SetM, infiniteM, fromListM, rangeM, pointM
@@ -38,10 +51,10 @@ module Dao.EnumSet
   , sieveM, invertM, setXUnionM, unionM, intersectM, deleteM
   , setToSetM, setMtoSet
     -- * The 'Set' non-monadic data type
-  , Set, infinite, fromList, fromPairs, range, point
-  , toList, elems, member, Dao.EnumSet.null, isSingleton
+  , Set, whole, fromList, fromPairs, range, point
+  , toList, elems, member, Dao.Interval.null, isSingleton
     -- * Set Operators for non-monadic 'Set's
-  , Dao.EnumSet.invert, setXUnion, Dao.EnumSet.union, Dao.EnumSet.intersect, Dao.EnumSet.delete
+  , Dao.Interval.invert, setXUnion, Dao.Interval.union, Dao.Interval.intersect, Dao.Interval.delete
     -- * Miscelaneous
   , upperTriangular, nonAssociativeProduct
   )
@@ -62,9 +75,9 @@ class InfBound c where
   minBoundInf :: Inf c
   maxBoundInf :: Inf c
 
-instance InfBound ()              where { minBoundInf = Point (); maxBoundInf = Point (); }
-instance InfBound Int             where { minBoundInf = Point minBound; maxBoundInf = Point maxBound; }
-instance InfBound Char            where { minBoundInf = Point minBound; maxBoundInf = Point maxBound; }
+instance InfBound ()              where { minBoundInf = Finite (); maxBoundInf = Finite (); }
+instance InfBound Int             where { minBoundInf = Finite minBound; maxBoundInf = Finite maxBound; }
+instance InfBound Char            where { minBoundInf = Finite minBound; maxBoundInf = Finite maxBound; }
 instance InfBound Integer         where { minBoundInf = NegInf; maxBoundInf = PosInf; }
 instance InfBound (Ratio Integer) where { minBoundInf = NegInf; maxBoundInf = PosInf; }
 instance InfBound Float           where { minBoundInf = NegInf; maxBoundInf = PosInf; }
@@ -74,7 +87,7 @@ instance InfBound Double          where { minBoundInf = NegInf; maxBoundInf = Po
 data Inf c
   = NegInf -- ^ negative infinity
   | PosInf -- ^ positive infinity
-  | Point c -- ^ a single pointM
+  | Finite c -- ^ a single pointM
   deriving Eq
 
 enumIsInf :: Inf c -> Bool
@@ -90,11 +103,11 @@ instance Ord c => Ord (Inf c) where
     f _ NegInf = GT
     f PosInf _ = GT
     f _ PosInf = LT
-    f (Point a) (Point b) = compare a b
+    f (Finite a) (Finite b) = compare a b
 
 instance Show c => Show (Inf c) where
   show e = case e of
-    Point c -> show c
+    Finite c -> show c
     NegInf  -> "-infnt"
     PosInf  -> "+infnt"
 
@@ -102,7 +115,7 @@ instance Functor Inf where
   fmap f e = case e of
     NegInf  -> NegInf
     PosInf  -> PosInf
-    Point e -> Point (f e)
+    Finite e -> Finite (f e)
 
 -- | Increment a given value, but if the value is 'Prelude.maxBound', return 'PosInf'. In some
 -- circumstances this is better than incrementing with @'Data.Functor.fmap' 'Prelude.succ'@ because
@@ -121,76 +134,76 @@ stepDown x = if x==minBoundInf then NegInf else fmap pred x
 -- | Retrieve the value contained in an 'Inf', if it exists.
 toPoint :: Inf c -> Maybe c
 toPoint c = case c of
-  Point c -> Just c
+  Finite c -> Just c
   _           -> Nothing
 
 -- | A enumInfSeg of 'Inf' items is a subset of consectutive items in the set of all @c@ where @c@
--- is any type satisfying the 'Prelude.Ix' class. To construct a 'Segment' object, use 'enumInfSeg'.
-data Segment c
+-- is any type satisfying the 'Prelude.Ix' class. To construct a 'Interval' object, use 'enumInfSeg'.
+data Interval c
   = Single  { startPoint :: Inf c }
-  | Segment { startPoint :: Inf c, endPoint :: Inf c }
+  | Interval { startPoint :: Inf c, endPoint :: Inf c }
   deriving Eq
   -- NOTE: the constructor for this data type is not exported because all of the functions in this
-  -- module that operate on 'Segment's make the assumption that the first parameter *less than* the
+  -- module that operate on 'Interval's make the assumption that the first parameter *less than* the
   -- second parameter. To prevent anyone from screwing it up, the constructor is hidden and
-  -- constructing a 'Segment' must be done with the 'enumInfSeg' function which checks the parameters.
+  -- constructing a 'Interval' must be done with the 'enumInfSeg' function which checks the parameters.
 
-instance Ord c => Ord (Segment c) where
+instance Ord c => Ord (Interval c) where
   compare x y = case x of
     Single    a    -> case y of
       Single  b      -> compare a b
-      Segment b  _   -> if a==b then LT else compare a b
-    Segment   a  b -> case y of
+      Interval b  _   -> if a==b then LT else compare a b
+    Interval   a  b -> case y of
       Single  a'     -> if a==b then GT else compare a a'
-      Segment a' b'  -> if a==a' then compare b' b else compare a a'
+      Interval a' b'  -> if a==a' then compare b' b else compare a a'
 
 -- not exported
-mkSegment :: Eq c => Inf c -> Inf c -> Segment c
+mkSegment :: Eq c => Inf c -> Inf c -> Interval c
 mkSegment a b
   | a==b      = Single  a
-  | otherwise = Segment a b
+  | otherwise = Interval a b
 
--- | If the 'Segment' was constructed with 'single', return the pointM (possibly 'PosInf' or
+-- | If the 'Interval' was constructed with 'single', return the pointM (possibly 'PosInf' or
 -- 'NegInf') value used to construct it, otherwise return 'Data.Maybe.Nothing'.
-singular :: Segment a -> Maybe (Inf a)
+singular :: Interval a -> Maybe (Inf a)
 singular seg = case seg of
-  Segment _ _ -> mzero
+  Interval _ _ -> mzero
   Single  a   -> return a
 
--- | If the 'Segment' was constructed with 'segment', return a pair of points (possibly 'PosInf'
+-- | If the 'Interval' was constructed with 'segment', return a pair of points (possibly 'PosInf'
 -- or 'NegInf') value used to construct it, otherwise return 'Data.Maybe.Nothing'.
-plural :: Segment a -> Maybe (Inf a, Inf a)
+plural :: Interval a -> Maybe (Inf a, Inf a)
 plural a = case a of
-  Segment a b -> return (a, b)
+  Interval a b -> return (a, b)
   Single  _   -> mzero
 
-showSegment :: Show c => Segment c -> String
+showSegment :: Show c => Interval c -> String
 showSegment seg = case seg of
   Single  a   -> "at "++show a
-  Segment a b -> "from "++show a++" to "++show b
+  Interval a b -> "from "++show a++" to "++show b
 
 -- | This gets rid of as many infiniteM elements as possible. All @'Single' 'PosInf'@ and
 -- @'Single' 'NegInf'@ points are eliminated, and if an 'NegInf' or 'PosInf' can be
 -- replaced with a corresponding 'minBoundInf' or 'maxBoundInf', then it is. This function is
 -- intended to be used as a list monadic function, so use it like so:
 -- @let myListOfSegments = [...] in myListOfSegments >>= 'delInfPoints'@
-canonicalSegment :: (Eq c, InfBound c) => Segment c -> [Segment c]
+canonicalSegment :: (Eq c, InfBound c) => Interval c -> [Interval c]
 canonicalSegment seg = nonInf seg >>= \seg -> case seg of
   Single  a   -> [Single a]
-  Segment a b -> nonInf (mkSegment (bounds a) (bounds b))
+  Interval a b -> nonInf (mkSegment (bounds a) (bounds b))
   where
     nonInf seg = case seg of
       Single  NegInf -> []
       Single  PosInf -> []
       Single  a          -> [Single  a  ]
-      Segment a b        -> [Segment a b]
+      Interval a b        -> [Interval a b]
     bounds x = case x of
       NegInf -> minBoundInf
       PosInf -> maxBoundInf
       x          -> x
 
 instance Show c =>
-  Show (Segment c) where { show seg = showSegment seg }
+  Show (Interval c) where { show seg = showSegment seg }
 
 -- | A predicate evaluating whether or not a segment includes an 'PosInf' or 'NegInf' value.
 -- This should not be confused with a predicate evaluating whether the set of elements included by
@@ -198,234 +211,234 @@ instance Show c =>
 -- 'PosInf' or 'NegInf' elements, values of these types may be evaluated as "infintie" by
 -- this function, even though they are 'Prelude.Bounded'. To check if a segment is infiniteM, use
 -- 'segmentIsInfinite' instead.
-segmentHasEnumInf :: Segment c -> Bool
+segmentHasEnumInf :: Interval c -> Bool
 segmentHasEnumInf seg = case seg of
   Single  c   -> enumIsInf c
-  Segment a b -> enumIsInf a || enumIsInf b
+  Interval a b -> enumIsInf a || enumIsInf b
 
 -- | A predicate evaluating whether or not a segment is infiniteM. Types that are 'Prelude.Bounded'
 -- are always finite, and thus this function will always evaluate to 'Prelude.False' for these
 -- types.
-segmentIsInfinite :: InfBound c => Segment c -> Bool
+segmentIsInfinite :: InfBound c => Interval c -> Bool
 segmentIsInfinite seg = case [Single minBoundInf, Single maxBoundInf, seg] of
   [Single a, Single b, c] | enumIsInf a || enumIsInf b -> case c of
     Single  c   -> enumIsInf c
-    Segment a b -> enumIsInf a || enumIsInf b
+    Interval a b -> enumIsInf a || enumIsInf b
   _ -> False
 
--- | Construct a 'Segment' from two 'Inf' items. /NOTE/ if the 'Inf' type you are
+-- | Construct a 'Interval' from two 'Inf' items. /NOTE/ if the 'Inf' type you are
 -- constructing is an instance of 'Prelude.Bounded', use the 'boundedSegment' constructor instead of
 -- this function.
-enumInfSeg :: (Ord c, Enum c, InfBound c) => Inf c -> Inf c -> Segment c
+enumInfSeg :: (Ord c, Enum c, InfBound c) => Inf c -> Inf c -> Interval c
 enumInfSeg a b = seg a b where
   seg a b = construct (ck minBoundInf NegInf a) (ck maxBoundInf PosInf b)
   ck infnt subst ab = if infnt==ab then subst else ab
   construct a b
     | a == b    = Single  a
-    | a < b     = Segment a b
-    | otherwise = Segment b a
+    | a < b     = Interval a b
+    | otherwise = Interval b a
 
--- | Construct a 'Segment' from two values.
-segment :: Ord c => c -> c -> Segment c
-segment a b = mkSegment (Point (min a b)) (Point (max a b))
+-- | Construct a 'Interval' from two values.
+segment :: Ord c => c -> c -> Interval c
+segment a b = mkSegment (Finite (min a b)) (Finite (max a b))
 
--- | Construct a 'Segment' that is only a single unit, i.e. it starts at X and ends at X.
-single :: Ord c => c -> Segment c
+-- | Construct a 'Interval' that is only a single unit, i.e. it starts at X and ends at X.
+single :: Ord c => c -> Interval c
 single a = segment a a
 
--- | Construct a 'Segment' from negative infinity to a given value.
-negInfTo :: InfBound c => c -> Segment c
-negInfTo a = Segment minBoundInf (Point a)
+-- | Construct a 'Interval' from negative infinity to a given value.
+negInfTo :: InfBound c => c -> Interval c
+negInfTo a = Interval minBoundInf (Finite a)
 
--- | Construct a 'Segment' from a given value to positive infinity.
-toPosInf :: InfBound c => c -> Segment c
-toPosInf a = Segment (Point a) maxBoundInf
+-- | Construct a 'Interval' from a given value to positive infinity.
+toPosInf :: InfBound c => c -> Interval c
+toPosInf a = Interval (Finite a) maxBoundInf
 
--- | Construct the infiniteM 'Segment'
-inf :: Segment c
-inf = Segment NegInf PosInf
+-- | Construct the infiniteM 'Interval'
+wholeInterval :: Interval c
+wholeInterval = Interval NegInf PosInf
 
--- | Tests whether an element is a memberM is enclosed by the 'Segment'.
-segmentMember :: Ord c => Segment c -> c -> Bool
+-- | Tests whether an element is a memberM is enclosed by the 'Interval'.
+segmentMember :: Ord c => Interval c -> c -> Bool
 segmentMember seg c = case seg of
-  Single  (Point d) -> c == d
-  Segment lo hi         -> let e = Point c in lo <= e && e <= hi
+  Single  (Finite d) -> c == d
+  Interval lo hi         -> let e = Finite c in lo <= e && e <= hi
   _                     -> False
 
--- | Construct a 'Segment', like the 'enumInfSeg' constructor above, however does not require 'Inf'
+-- | Construct a 'Interval', like the 'enumInfSeg' constructor above, however does not require 'Inf'
 -- parameters as inputs. This function performs the additional check of testing whether or not a
 -- value is equivalent to 'Prelude.minBound' or 'Prelude.maxBound', and if it is, replaces that
 -- value with 'NegInf' or 'PosInf' respectively. In other words, you can use
 -- 'Prelude.minBound' in place of NegInf and 'Prelude.maxBound' in place of 'PosInf' without
 -- changing the semantics of the data structure as it is used throughout the program.
--- boundedSegment :: (Ord c, Enum c, Bounded c) => c -> c -> Segment c
+-- boundedSegment :: (Ord c, Enum c, Bounded c) => c -> c -> Interval c
 -- boundedSegment a b = if a>b then co b a else co a b where
 --    co a b = enumInfSeg (f a minBound NegInf) (f b maxBound PosInf)
---    f x bound infnt = if x==bound then infnt else Point x
+--    f x bound infnt = if x==bound then infnt else Finite x
 
 -- | If an 'Inf' is also 'Prelude.Bounded' then you can convert it to some value in the set of
 -- 'Prelude.Bounded' items. 'NegInf' translates to 'Prelude.minBound', 'PosInf' translates
--- to 'Prelude.maxBound', and 'Point' translates to the value at that pointM.
+-- to 'Prelude.maxBound', and 'Finite' translates to the value at that pointM.
 toBounded :: Bounded c => Inf c -> c
 toBounded r = case r of
   NegInf  -> minBound
   PosInf  -> maxBound
-  Point c -> c
+  Finite c -> c
 
 -- | Like 'toBounded', but operates on a segment and returns a pair of values.
-toBoundedPair :: (Enum c, Bounded c) => Segment c -> (c, c)
+toBoundedPair :: (Enum c, Bounded c) => Interval c -> (c, c)
 toBoundedPair r = case r of
   Single  c   -> (toBounded c, toBounded c)
-  Segment c d -> (toBounded c, toBounded d)
+  Interval c d -> (toBounded c, toBounded d)
 
-enumBoundedPair :: (Enum c, Bounded c) => Segment c -> [c]
+enumBoundedPair :: (Enum c, Bounded c) => Interval c -> [c]
 enumBoundedPair seg = let (lo, hi) = toBoundedPair seg in [lo..hi]
 
--- | Computes the minimum 'Segment' that can contain the list of all given 'EnumRanges'.
+-- | Computes the minimum 'Interval' that can contain the list of all given 'EnumRanges'.
 -- 'Data.Maybe.Nothing' indicates the empty set.
-containingSet :: (Ord c, Enum c, InfBound c) => [Segment c] -> Maybe (Segment c)
+containingSet :: (Ord c, Enum c, InfBound c) => [Interval c] -> Maybe (Interval c)
 containingSet ex = foldl fe Nothing ex where
   fe Nothing a  = Just a
   fe (Just a) c = Just $ case a of
     Single  a   -> case c of
       Single   c   -> enumInfSeg (min a c) (max a c)
-      Segment  c d -> enumInfSeg (min a c) (max a d)
-    Segment a b -> case c of
+      Interval  c d -> enumInfSeg (min a c) (max a d)
+    Interval a b -> case c of
       Single   c   -> enumInfSeg (min a b) (max b c)
-      Segment  c d -> enumInfSeg (min a c) (max b d)
+      Interval  c d -> enumInfSeg (min a c) (max b d)
 
 -- | Evaluates to the number of elements covered by this region. Returns 'Prelude.Nothing' if there
 -- are an infiniteM number of elements. For data of a type that is not an instance of 'Prelude.Num',
--- for example @'Segment' 'Data.Char.Char'@, it is recommended you first convert to the type
--- @'Segment' 'Data.Int.Int'@ using @'Control.Functor.fmap' 'Prelude.fromEnum'@ before using this
+-- for example @'Interval' 'Data.Char.Char'@, it is recommended you first convert to the type
+-- @'Interval' 'Data.Int.Int'@ using @'Control.Functor.fmap' 'Prelude.fromEnum'@ before using this
 -- function, then convert the result back using @'Control.Functor.fmap' 'Prelude.toEnum'@ if
 -- necessary.
-numElems :: (Integral c, Enum c) => Segment c -> Maybe Integer
+numElems :: (Integral c, Enum c) => Interval c -> Maybe Integer
 numElems seg = case seg of
-  Single  (Point _)               -> Just 1
-  Segment (Point a) (Point b) -> Just (fromIntegral a - fromIntegral b + 1)
+  Single  (Finite _)               -> Just 1
+  Interval (Finite a) (Finite b) -> Just (fromIntegral a - fromIntegral b + 1)
   _                                   -> Nothing
 
 -- | Tests whether an 'Inf' is within the enumInfSeg. It is handy when used with backquote noation:
 -- @enumInf `isWithin` enumInfSeg@
-isWithin :: (Ord c, Enum c) => Inf c -> Segment c -> Bool
+isWithin :: (Ord c, Enum c) => Inf c -> Interval c -> Bool
 isWithin pointM seg = case seg of
   Single x              -> pointM == x
-  Segment NegInf hi -> pointM <= hi
-  Segment lo PosInf -> lo <= pointM
-  Segment lo hi         -> lo <= pointM && pointM <= hi
+  Interval NegInf hi -> pointM <= hi
+  Interval lo PosInf -> lo <= pointM
+  Interval lo hi         -> lo <= pointM && pointM <= hi
 
--- | Returns true if two 'Segment's are intersecting.
-areIntersecting :: (Ord c, Enum c) => Segment c -> Segment c -> Bool
+-- | Returns true if two 'Interval's are intersecting.
+areIntersecting :: (Ord c, Enum c) => Interval c -> Interval c -> Bool
 areIntersecting a b = case a of
   Single  aa  -> case b of
     Single  bb    -> aa == bb
-    Segment _  _  -> aa `isWithin` b
-  Segment x y -> case b of
+    Interval _  _  -> aa `isWithin` b
+  Interval x y -> case b of
     Single  bb    -> bb `isWithin` a
-    Segment x' y' -> x' `isWithin` a || y' `isWithin` a || x `isWithin` b || y `isWithin` b
+    Interval x' y' -> x' `isWithin` a || y' `isWithin` a || x `isWithin` b || y `isWithin` b
 
--- | Returns true if two 'Segment's are consecutive, that is, if the end is the 'Prelude.pred'essor
+-- | Returns true if two 'Interval's are consecutive, that is, if the end is the 'Prelude.pred'essor
 -- of the start of the other.
-areConsecutive :: (Ord c, Enum c, InfBound c) => Segment c -> Segment c -> Bool
+areConsecutive :: (Ord c, Enum c, InfBound c) => Interval c -> Interval c -> Bool
 areConsecutive a b = case a of
   Single  a   -> case b of
     Single  b
       | a < b     -> consec a  b
       | otherwise -> consec b  a
-    Segment x  y
+    Interval x  y
       | a < x     -> consec a  x
       | otherwise -> consec y  a
-  Segment x y -> case b of    
+  Interval x y -> case b of    
     Single  a
       | a < x     -> consec a  x
       | otherwise -> consec y  a
-    Segment x' y'
+    Interval x' y'
       | y < x'    -> consec y  x'
       | otherwise -> consec y' x
   where { consec a b = stepUp a == b || a == stepDown b }
 
--- | Performs a set union on two 'Segment's of elements to create a new enumInfSeg. If the elements of
+-- | Performs a set union on two 'Interval's of elements to create a new enumInfSeg. If the elements of
 -- the new enumInfSeg are not contiguous, each enumInfSeg is returned separately and unchanged. The first
 -- item in the pair of items returned is 'Prelude.True' if any of the items were modified.
-segmentUnion :: (Ord c, Enum c, InfBound c) => Segment c -> Segment c -> (Bool, [Segment c])
+segmentUnion :: (Ord c, Enum c, InfBound c) => Interval c -> Interval c -> (Bool, [Interval c])
 segmentUnion a b
   | areIntersecting a b = case a of
       Single  _   -> case b of
         Single  _      -> (True, [a])
-        Segment _  _   -> (True, [b])
-      Segment x y -> case b of
+        Interval _  _   -> (True, [b])
+      Interval x y -> case b of
         Single  _      -> (True, [a])
-        Segment x' y'  -> (True, [enumInfSeg (min x x') (max y y')])
+        Interval x' y'  -> (True, [enumInfSeg (min x x') (max y y')])
   | areConsecutive a b = case a of
       Single  aa  -> case b of
         Single  bb     -> (True, [enumInfSeg      aa         bb   ])
-        Segment x  y   -> (True, [enumInfSeg (min aa x) (max aa y)])
-      Segment x y -> case b of
+        Interval x  y   -> (True, [enumInfSeg (min aa x) (max aa y)])
+      Interval x y -> case b of
         Single  bb     -> (True, [enumInfSeg (min bb x) (max bb y)])
-        Segment x' y'  -> (True, [enumInfSeg (min x x') (max y y')])
+        Interval x' y'  -> (True, [enumInfSeg (min x x') (max y y')])
   | otherwise = (False, [a, b])
 
--- | Performs a set intersection on two 'Segment's of elements to create a new enumInfSeg. If the
+-- | Performs a set intersection on two 'Interval's of elements to create a new enumInfSeg. If the
 -- elements of the new enumInfSeg are not contiguous, this function evaluates to an empty list.
-segmentIntersect :: (Ord c, Enum c, InfBound c) => Segment c -> Segment c -> (Bool, [Segment c])
+segmentIntersect :: (Ord c, Enum c, InfBound c) => Interval c -> Interval c -> (Bool, [Interval c])
 segmentIntersect a b = if areIntersecting a b then joined else (False, []) where
   joined = case a of
     Single  aa    -> case b of
       Single  aa    -> (True, [Single aa])
-      Segment _  _  -> (True, [Single aa])
-    Segment x  y  -> case b of
+      Interval _  _  -> (True, [Single aa])
+    Interval x  y  -> case b of
       Single  aa    -> (True, [Single aa])
-      Segment x' y' -> (True, [enumInfSeg (max x x') (min y y')]) 
+      Interval x' y' -> (True, [enumInfSeg (max x x') (min y y')]) 
 
 -- | Performs a set "delete" operation, deleteing any elements selected by the first enumInfSeg if
 -- they are contained in the second enumInfSeg. This operation is not associative, i.e.
 -- @'segmentDelete' a b /= 'segmentDelete' b a@.
 segmentDelete :: (Ord c, Enum c, InfBound c) =>
-  Segment c -> Segment c -> (Bool, [Segment c])
+  Interval c -> Interval c -> (Bool, [Interval c])
 segmentDelete a b = if not (areIntersecting a b) then (False, [a]) else del where
   del = case a of
     Single  _   -> case b of
       Single  _     -> (True, [])
-      Segment _  _  -> (True, [])
-    Segment x y -> case b of
+      Interval _  _  -> (True, [])
+    Interval x y -> case b of
       Single  x'
         | x==x'     -> (True, [enumInfSeg (stepUp x)  y ])
         | y==x'     -> (True, [enumInfSeg x (stepDown y)])
         | otherwise -> (True, [enumInfSeg x (stepDown x'), enumInfSeg (stepUp x') y])
-      Segment x' y'
+      Interval x' y'
         | x' >  x && y' <  y -> (True, [enumInfSeg x (stepDown x'), enumInfSeg (stepUp y') y])
         | x' <= x && y' >= y -> (True, [])
         | x' <= x && y' <  y -> (True, [enumInfSeg (stepUp y') y])
         | x' >  x && y' >= y -> (True, [enumInfSeg x (stepDown x')])
         | otherwise          -> error "segmentDelete"
 
--- | Evaluates to the set of all elements not selected by the given 'Segment'.
-segmentInvert :: (Ord c, Enum c, InfBound c) => Segment c -> [Segment c]
+-- | Evaluates to the set of all elements not selected by the given 'Interval'.
+segmentInvert :: (Ord c, Enum c, InfBound c) => Interval c -> [Interval c]
 segmentInvert seg = canonicalSegment =<< case seg of
   Single  x   -> case x of
     NegInf  -> [] -- [Single PosInf]
     PosInf  -> [] -- [Single NegInf]
-    Point _ -> [mkSegment NegInf (stepDown x), mkSegment (stepUp x) PosInf]
-  Segment x y -> case x of
+    Finite _ -> [mkSegment NegInf (stepDown x), mkSegment (stepUp x) PosInf]
+  Interval x y -> case x of
     NegInf  -> case y of
       NegInf  -> [] -- [Single  PosInf]
       PosInf  -> [] -- []
-      Point _ -> [mkSegment (stepUp y) PosInf]
+      Finite _ -> [mkSegment (stepUp y) PosInf]
     PosInf  -> case y of
       PosInf  -> [] -- [Single  NegInf]
       NegInf  -> [] -- []
-      Point _ -> [mkSegment NegInf (stepDown y)]
-    Point _ -> case y of
+      Finite _ -> [mkSegment NegInf (stepDown y)]
+    Finite _ -> case y of
       NegInf  -> [mkSegment (stepUp x) PosInf  ]
       PosInf  -> [mkSegment NegInf (stepDown x)]
-      Point _ ->
+      Finite _ ->
         [ mkSegment NegInf (min (stepDown x) (stepDown y))
         , mkSegment (max (stepUp x) (stepUp y))  PosInf
         ]
 
--- | Eliminate overlapping and duplicate 'Segment's from a list of segments.
-segmentNub :: (Ord c, Enum c, InfBound c) => [Segment c] -> [Segment c]
+-- | Eliminate overlapping and duplicate 'Interval's from a list of segments.
+segmentNub :: (Ord c, Enum c, InfBound c) => [Interval c] -> [Interval c]
 segmentNub ax = loop (sort ax) >>= canonicalSegment where
   loop ax = case ax of
     []     -> []
@@ -440,7 +453,7 @@ segmentNub ax = loop (sort ax) >>= canonicalSegment where
 
 -- | This function is used by 'associativeProduct' to generate the list of pairs on which to execute the
 -- inner production function. It is a general function that may come in handy, but otherwise does
--- not specifically relate to 'SetM' or 'Segment' types.
+-- not specifically relate to 'SetM' or 'Interval' types.
 --
 -- What it does is, Given two lists of items, returns every possible unique combination of two
 -- items. For example the pair (1,2) and (2,1) are considered to be the same combination, so only
@@ -457,15 +470,15 @@ upperTriangular mainDiag ax bx = do
   map (\b -> (a, b)) bx
 
 -- Used by the various set operations, including 'unionWithM', 'intersectWithM', and 'deleteWithM', to
--- compute a new set from two parameter sets and a single operation on the compnent 'Segment's. What
+-- compute a new set from two parameter sets and a single operation on the compnent 'Interval's. What
 -- it does is, given two lists of elements, the largest possible upper triangular matrix (using
 -- 'upperTriangular') of all possible pairs of elements from a and b is formed, and on each pair a
 -- given inner product function is executed. The first parameter, the product function, is intended
 -- to be a function like 'segmentUnion', 'segmentIntersect', or 'segmentDelete'.
 associativeProduct
   :: (Ord c, Enum c, InfBound c)
-  => (Segment c -> Segment c -> (Bool, [Segment c]))
-  -> [Segment c] -> [Segment c] -> [Segment c]
+  => (Interval c -> Interval c -> (Bool, [Interval c]))
+  -> [Interval c] -> [Interval c] -> [Interval c]
 associativeProduct reduce a b =
   let f a b = upperTriangular True a b >>= snd . uncurry reduce
   in  segmentNub (if length b > length a then f a b else f b a)
@@ -507,13 +520,13 @@ nonAssociativeProduct product ax bx = exclusiveProduct product (sort ax) (sort b
 
 ----------------------------------------------------------------------------------------------------
 
--- | A set-union of serveral 'Segment's, each segment being paired with a list of arbitrary value
+-- | A set-union of serveral 'Interval's, each segment being paired with a list of arbitrary value
 -- @x@. It is like an extension of the list monad, except lists may be divided up and assigned to
 -- ranges of integral values (or any type that instantiates 'InfBound').
 data SetM c x
   = EmptySetM    
   | InfiniteM{ setValue :: [x] }
-  | SetM     { setSegmentsM :: [(Segment c, [x])], setValue :: [x] }
+  | SetM     { setSegmentsM :: [(Interval c, [x])], setValue :: [x] }
   deriving Eq
 instance (Ord c, Enum c, InfBound c, Monoid x) =>
   Monoid (SetM c x) where
@@ -545,14 +558,14 @@ instance (Ord c, Enum c, InfBound c) =>
   Alternative (SetM c) where { empty = mzero; (<|>) = mplus; }
 
 -- | Remove any component segment within the set that does not intersect with the given segment.
-sieveM :: (Ord c, Enum c, InfBound c) => Segment c -> SetM c x -> SetM c x
+sieveM :: (Ord c, Enum c, InfBound c) => Interval c -> SetM c x -> SetM c x
 sieveM b a = case a of
   EmptySetM   -> EmptySetM
   InfiniteM x -> SetM [(b, x)] []
   SetM    a x -> case filter (areIntersecting b . fst) a of
-    []                            -> EmptySetM
-    [(a, x)] | a==inf -> InfiniteM x
-    a                             -> SetM    a x
+    []                -> EmptySetM
+    [(a, x)] | a==wholeInterval -> InfiniteM x
+    a                 -> SetM    a x
 
 -- | 'SetM' monads contain values accumulate into lists. This function will reduce these lists to a
 -- single element using a folding function.
@@ -581,9 +594,9 @@ foldValueSetM f s = case s of
 -- overlapping part) is returned. In the case of 'unionM', (1) (2) and (3) are simply concatenated.
 joinSegments
   :: (Ord c, Enum c, InfBound c)
-  => ([(Segment c, [x])] -> [(Segment c, [x])] -> [(Segment c, [x])] -> [(Segment c, [x])])
-  ->  (Segment c, [x])  ->  (Segment c, [x])
-  -> (Bool, [(Segment c, [x])])
+  => ([(Interval c, [x])] -> [(Interval c, [x])] -> [(Interval c, [x])] -> [(Interval c, [x])])
+  ->  (Interval c, [x])  ->  (Interval c, [x])
+  -> (Bool, [(Interval c, [x])])
 joinSegments joiner (a, ax) (b, bx) =
   let (isecting, andAB) = segmentIntersect a b
       (_       , delAB) = segmentDelete    a b
@@ -652,13 +665,13 @@ invertM a y = case a of
 infiniteM :: (Ord c, Enum c, InfBound c) => [x] -> SetM c x
 infiniteM = InfiniteM
 
--- | Initialize a new 'SetM' object with a list of 'Segment's, which are 'segmentUnion'ed
+-- | Initialize a new 'SetM' object with a list of 'Interval's, which are 'segmentUnion'ed
 -- together to create the set.
-fromListM :: (Ord c, Enum c, InfBound c) => [Segment c] -> [x] -> SetM c x
+fromListM :: (Ord c, Enum c, InfBound c) => [Interval c] -> [x] -> SetM c x
 fromListM a ax = case segmentNub a of
-  [a] | a==inf -> InfiniteM ax
-  []                       -> EmptySetM
-  a                        -> SetM (map (flip (,) ax) a) []
+  [a] | a==wholeInterval -> InfiniteM ax
+  []           -> EmptySetM
+  a            -> SetM (map (flip (,) ax) a) []
 
 -- | Create a set with a single rangeM of elements, no gaps.
 rangeM :: (Ord c, Enum c, InfBound c) => c -> c -> [x] -> SetM c x
@@ -679,7 +692,7 @@ memberM a c = case a of
 isSingletonM :: (Ord c, Enum c, InfBound c) => SetM c x -> Maybe (c, [x])
 isSingletonM a = case a of
   SetM a _ -> case a of
-    [(Single (Point a), x)] -> Just (a, x)
+    [(Single (Finite a), x)] -> Just (a, x)
     _                       -> Nothing
   _        -> Nothing
 
@@ -694,9 +707,9 @@ lookupM :: (Ord c, Enum c, InfBound c) => SetM c x -> c -> [x]
 lookupM a c = case a of
   EmptySetM   -> []
   InfiniteM x -> x
-  SetM    a x -> case concatMap snd (filter (isWithin (Point c) . fst) a) of { [] -> x; x -> x; }
+  SetM    a x -> case concatMap snd (filter (isWithin (Finite c) . fst) a) of { [] -> x; x -> x; }
 
-toListM :: SetM c x -> [(Segment c, [x])]
+toListM :: SetM c x -> [(Interval c, [x])]
 toListM set = case set of
   EmptySetM   -> []
   InfiniteM _ -> []
@@ -727,7 +740,7 @@ data Set c
   = EmptySet    
   | InfiniteSet
   | InverseSet  (Set c)
-  | Set         [Segment c]
+  | Set         [Interval c]
 instance (Ord c, Enum c, InfBound c) => Eq (Set c) where
   a == b = case a of
     EmptySet     -> case b of
@@ -736,7 +749,7 @@ instance (Ord c, Enum c, InfBound c) => Eq (Set c) where
       _             -> False
     InfiniteSet  -> case b of
       InfiniteSet                  -> True
-      Set [s] | s==inf -> True
+      Set [s] | s==wholeInterval -> True
       _                            -> False
     InverseSet a -> case b of
       InverseSet b -> a==b
@@ -747,7 +760,7 @@ instance (Ord c, Enum c, InfBound c) => Eq (Set c) where
 
 instance (Ord c, Enum c, InfBound c) => Monoid (Set c) where
   mempty  = EmptySet
-  mappend = Dao.EnumSet.union
+  mappend = Dao.Interval.union
 
 instance Show c => Show (Set c) where
   show s = case s of
@@ -756,17 +769,17 @@ instance Show c => Show (Set c) where
     InverseSet s -> "!enumSet("++show s++")"
     Set        s -> "enumSet("++intercalate ", " (map show s)++")"
 
-infinite :: Set c
-infinite = InfiniteSet
+whole :: Set c
+whole = InfiniteSet
 
 -- not exported, creates a list from segments, but does not clean it with 'segmentNub'
-fromListNoNub :: (Ord c, Enum c, InfBound c) => [Segment c] -> Set c
+fromListNoNub :: (Ord c, Enum c, InfBound c) => [Interval c] -> Set c
 fromListNoNub a =
   if Data.List.null a
     then EmptySet    
-    else if a==[inf] then InfiniteSet else Set a
+    else if a==[wholeInterval] then InfiniteSet else Set a
 
-fromList :: (Ord c, Enum c, InfBound c) => [Segment c] -> Set c
+fromList :: (Ord c, Enum c, InfBound c) => [Interval c] -> Set c
 fromList a = if Data.List.null a then EmptySet     else fromListNoNub a
 
 fromPairs :: (Ord c, Enum c, InfBound c) => [(c, c)] -> Set c
@@ -778,10 +791,10 @@ range a b = Set [segment a b]
 point :: (Ord c, Enum c, InfBound c) => c -> Set c
 point a = Set [single a]
 
-toList :: (Ord c, Enum c, InfBound c) => Set c -> [Segment c]
+toList :: (Ord c, Enum c, InfBound c) => Set c -> [Interval c]
 toList s = case s of
   EmptySet     -> []
-  InfiniteSet  -> [inf]
+  InfiniteSet  -> [wholeInterval]
   InverseSet s -> toList (forceInvert s)
   Set        s -> s
 
@@ -800,7 +813,7 @@ null :: Set c -> Bool
 null s = case s of
   EmptySet     -> True
   InfiniteSet  -> False
-  InverseSet s -> not (Dao.EnumSet.null s)
+  InverseSet s -> not (Dao.Interval.null s)
   Set       [] -> True
   Set        _ -> False
 
@@ -824,28 +837,28 @@ forceInvert s = case s of
   InfiniteSet  -> EmptySet    
   InverseSet s -> s
   Set      []  -> InfiniteSet
-  Set     [s] | s==inf -> EmptySet    
+  Set     [s] | s==wholeInterval -> EmptySet    
   Set       s  -> fromListNoNub (loop NegInf s >>= canonicalSegment) where
     loop mark s = case s of
       []                   -> [mkSegment (stepUp mark) PosInf]
-      [Segment a PosInf]   -> [mkSegment (stepUp mark) (stepDown a)]
-      Segment NegInf b : s -> loop b s
-      Segment a      b : s -> mkSegment (stepUp mark) (stepDown a) : loop b s
+      [Interval a PosInf]   -> [mkSegment (stepUp mark) (stepDown a)]
+      Interval NegInf b : s -> loop b s
+      Interval a      b : s -> mkSegment (stepUp mark) (stepDown a) : loop b s
       Single  a        : s -> mkSegment (stepUp mark) (stepDown a) : loop a s
 
 setXUnion :: (Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
-setXUnion a b = Dao.EnumSet.delete (Dao.EnumSet.union a b) (Dao.EnumSet.intersect a b)
+setXUnion a b = Dao.Interval.delete (Dao.Interval.union a b) (Dao.Interval.intersect a b)
 
 union :: (Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
 union a b = case a of
   EmptySet     -> b
   InfiniteSet  -> InfiniteSet
-  InverseSet a -> Dao.EnumSet.union (forceInvert a) b
+  InverseSet a -> Dao.Interval.union (forceInvert a) b
   Set       [] -> b
   Set        a -> case b of
     EmptySet     -> Set a
     InfiniteSet  -> InfiniteSet
-    InverseSet b -> Dao.EnumSet.union (Set a) (forceInvert b)
+    InverseSet b -> Dao.Interval.union (Set a) (forceInvert b)
     Set       [] -> Set a
     Set        b -> fromListNoNub (associativeProduct segmentUnion a b)
 
@@ -853,12 +866,12 @@ intersect :: (Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
 intersect a b = case a of
   EmptySet     -> EmptySet    
   InfiniteSet  -> b
-  InverseSet a -> Dao.EnumSet.intersect (forceInvert a) b
+  InverseSet a -> Dao.Interval.intersect (forceInvert a) b
   Set       [] -> EmptySet    
   Set        a -> case b of
     EmptySet     -> EmptySet    
     InfiniteSet  -> Set a
-    InverseSet b -> Dao.EnumSet.intersect (Set a) (forceInvert b)
+    InverseSet b -> Dao.Interval.intersect (Set a) (forceInvert b)
     Set       [] -> EmptySet    
     Set        b -> fromListNoNub (associativeProduct segmentIntersect a b)
 
@@ -866,12 +879,12 @@ delete :: (Ord c, Enum c, InfBound c) => Set c -> Set c -> Set c
 delete a b = case b of
   EmptySet     -> a
   InfiniteSet  -> EmptySet    
-  InverseSet b -> Dao.EnumSet.delete a (forceInvert b)
+  InverseSet b -> Dao.Interval.delete a (forceInvert b)
   Set       [] -> a
   Set        b -> case a of
     EmptySet     -> EmptySet    
     InfiniteSet  -> forceInvert (Set b)
-    InverseSet a -> Dao.EnumSet.delete (forceInvert a) (Set b)
+    InverseSet a -> Dao.Interval.delete (forceInvert a) (Set b)
     Set       [] -> EmptySet    
     Set        a -> fromList (exclusiveProduct segmentDelete a b)
       -- Here we call 'fromList' instead of 'fromListNoNub' because an additional 'segmentNub'
@@ -883,12 +896,12 @@ instance NFData a =>
   NFData (Inf a) where
     rnf  NegInf   = ()
     rnf  PosInf   = ()
-    rnf (Point c) = deepseq c ()
+    rnf (Finite c) = deepseq c ()
 
 instance NFData a =>
-  NFData (Segment a) where
+  NFData (Interval a) where
     rnf (Single  a  ) = deepseq a ()
-    rnf (Segment a b) = deepseq a $! deepseq b ()
+    rnf (Interval a b) = deepseq a $! deepseq b ()
 
 instance (NFData a, NFData x) =>
   NFData (SetM a x) where

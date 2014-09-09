@@ -1,26 +1,26 @@
--- | This test suite tests the "Dao.Es.Set" algorithms by creating a new integer type 'I' which has
+-- | This test suite tests the "Dao.Iv.Set" algorithms by creating a new integer type 'I' which has
 -- only 8 values, [0,1,2,3,4,5,6,7], and creating a new set type 'ISet' which is simply a
 -- 'Data.Word.Word8', but it is treated as a set that can contain all possible 'I' values.
 --
--- The "Dao.Es.Set.Es.Set' type containing 'I' values should behave exactly like an 'ISet'. A
+-- The "Dao.Iv.Set.Iv.Set' type containing 'I' values should behave exactly like an 'ISet'. A
 -- function for producing every possible equation of the form
 -- @(neg1 i1) op1 (neg2 i2) op2 (neg3 i3) op3 ...  (negN iN)@
--- generates equations where the @op1, op2, op3...@ are 'Dao.Es.Set.Es.unionWith' with
--- 'Data.Bits.(.|.), Es.intersectWith with 'Data.Bits.(.&.)', or 'Es.deleteWith' with the equation
+-- generates equations where the @op1, op2, op3...@ are 'Dao.Iv.Set.Iv.unionWith' with
+-- 'Data.Bits.(.|.), Iv.intersectWith with 'Data.Bits.(.&.)', or 'Iv.deleteWith' with the equation
 --  @\a b -> a 'Data.Bits.(.&.)' 'Data.Bits.complement' b@. The terms
 --  @i1, i2, --  i3...@ are values of both types 'ISet' and the equivalent
---  @'Dao.Es.Set.Es.Set' 'I'@, and the operators @neg1, neg2, neg3, ..., negN@ are either
---  'Prelude.id', or are 'Data.Bits.complement' with 'Data.Es.Set.Es.invert'.
+--  @'Dao.Iv.Set.Iv.Set' 'I'@, and the operators @neg1, neg2, neg3, ..., negN@ are either
+--  'Prelude.id', or are 'Data.Bits.complement' with 'Data.Iv.Set.Iv.invert'.
 --  The equations are then evaluated using their respective operators, order of operations is
 --  preserved, set negate is of a prescedence lower than set intersect, but greater than set union.
 --  
---  Once each equation is evaluated, the resulting 'Dao.Es.Set.Es.Set' is "converted" to an
---  'ISet'; the 'Dao.Enum.Es.Set' is checked against every possible 'I' value to see if that 'I' is
+--  Once each equation is evaluated, the resulting 'Dao.Iv.Set.Iv.Set' is "converted" to an
+--  'ISet'; the 'Dao.Enum.Iv.Set' is checked against every possible 'I' value to see if that 'I' is
 --  in the set, and the 'I's that are in the set are then unioned into an 'ISet'. If the 'ISet'
---  produced from the 'Dao.Es.Set.Es.Set' is identical to the 'ISet' evaluated by the same
---  equation, then the test passes. If not, there is a bug in the implementation of "Dao.Es.Set".
+--  produced from the 'Dao.Iv.Set.Iv.Set' is identical to the 'ISet' evaluated by the same
+--  equation, then the test passes. If not, there is a bug in the implementation of "Dao.Iv.Set".
 
-import qualified Dao.EnumSet as Es
+import qualified Dao.Interval as Es
 import           Dao.Tests.I
 import           Dao.Tests.EQN
 
@@ -34,17 +34,17 @@ import           Control.Exception
 import           System.IO
 import           Numeric
 
-seg (a,b) = Es.segment (I a) (I b)
+seg (a,b) = Iv.segment (I a) (I b)
 
-setInvertTest :: Es.Set I -> IO (Es.Set I)
+setInvertTest :: Iv.Set I -> IO (Iv.Set I)
 setInvertTest ax0 = do
-  -- The 'Es.invert' function has been "exploded" to this series of steps, where we can see the
-  -- result of each step. Use this function to see how the 'Es.invert' function works.
+  -- The 'Iv.invert' function has been "exploded" to this series of steps, where we can see the
+  -- result of each step. Use this function to see how the 'Iv.invert' function works.
   let prinlst msg ax = putStrLn $ intercalate "\n" $
         (msg++":") :
-          map (\ (i, a) -> show i++": "++show a) (zip (iterate (+1) 0) (Es.toList ax))
+          map (\ (i, a) -> show i++": "++show a) (zip (iterate (+1) 0) (Iv.toList ax))
   prinlst "original" ax0
-  let ax1 = Es.invert ax0
+  let ax1 = Iv.invert ax0
   prinlst "inverted" ax1
   return ax1
 
@@ -64,14 +64,14 @@ pretest = do
   mapM_ (\ (i, e) -> putStrLn (show i++" -> "++show e)) es
   putStrLn "* test segmentNub"
   let perms = permutations [seg(0,0), seg(1,1), seg(3,4), seg(6,7)]
-      pairs = map (\p -> (p, Es.segmentNub p)) perms
-      f x y = compare (Es.toBoundedPair x) (Es.toBoundedPair y)
+      pairs = map (\p -> (p, Iv.segmentNub p)) perms
+      f x y = compare (Iv.toBoundedPair x) (Iv.toBoundedPair y)
       ax    = nub (map (sortBy f . snd) pairs)
   mapM_ (\ (a, b) -> putStrLn (show a++" -> "++show b)) pairs
   if length ax /= 1
     then error ("ERROR: received conflicting results for segmentNub\n"++intercalate "\n" (map show ax))
     else putStrLn ("segmentNub result: "++show ax)
-  putStrLn "* test Es.invert"
+  putStrLn "* test Iv.invert"
   let invTest1 = ([seg(0,1), seg(3,3), seg(5,5), seg(7,7)] , [seg(2,2), seg(4,4), seg(6,6)])
       invTest2 = ([seg(0,1), seg(3,4), seg(6,7)]           , [seg(2,2), seg(5,5)]          )
       invTest3 = ([seg(2,2), seg(5,7)]                     , [seg(0,1), seg(3,4)]          )
@@ -79,10 +79,10 @@ pretest = do
       invTest5 = ([seg(0,0), seg(3,3), seg(5,7)]           , [seg(1,2), seg(4,4)]          )
       check a b = if a==b then return () else error ("was expecting: "++show b)
       run (a,b) = do
-        inv <- setInvertTest (Es.fromList a)
-        check inv (Es.fromList b)
+        inv <- setInvertTest (Iv.fromList a)
+        check inv (Iv.fromList b)
         inv <- setInvertTest inv
-        check inv (Es.fromList a)
+        check inv (Iv.fromList a)
   run invTest1 >> run invTest2 >> run invTest3 >> run invTest4 >> run invTest5
   putStrLn "\n---- Pre-Test Completed ----\n"
 

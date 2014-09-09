@@ -144,7 +144,7 @@ import           Dao.Token
 import           Dao.RefTable
 import qualified Dao.HashMap as H
 import qualified Dao.Binary  as B
-import qualified Dao.EnumSet as Es
+import qualified Dao.Interval as Iv
 import qualified Dao.Tree    as T
 import           Dao.Interpreter.Tokenizer
 import           Dao.Interpreter.AST
@@ -1403,7 +1403,7 @@ instance HataClass Struct where
 -- | You can make your data type readable but not writable in the Dao runtime. That means a Dao
 -- script can inspect elements of your data type, but not modify them As an example lets say you
 -- have a 3D-point data type you would like to use in your Dao script.
--- > data Point =
+-- > data Finite =
 -- >     Point2D{ get_x::'T_float', get_y::'T_float' }
 -- >   | Point3D{ get_x::'T_float', get_y::'T_float', get_z::'T_float' }
 -- 
@@ -2587,9 +2587,9 @@ instance UStrType CoreType where
     Nothing -> error (show a++" is not a valid type identifier")
     Just  a -> a
 
-instance Es.InfBound CoreType where
-  minBoundInf = Es.Point minBound
-  maxBoundInf = Es.Point maxBound
+instance Iv.InfBound CoreType where
+  minBoundInf = Iv.Finite minBound
+  maxBoundInf = Iv.Finite maxBound
 
 instance PPrintable CoreType where { pPrint = pShow }
 

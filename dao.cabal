@@ -54,7 +54,7 @@ Library
     FlexibleContexts           DeriveFunctor              DeriveDataTypeable         
     GeneralizedNewtypeDeriving 
   Exposed-Modules:
-    Dao.EnumSet , Dao.Tree     , Dao.RefTable   , Dao.Random  ,
+    Dao.Interval, Dao.Tree     , Dao.RefTable   , Dao.Random  ,
     Dao.StepList, Dao.Predicate, Dao.Binary     , Dao.HashMap ,
     Dao.String  , Dao.Stack    , Dao.PPrint     , Dao.Parser  ,
     Dao.Token   , Dao.Glob     , Dao.Interpreter, Dao.Lib.File,

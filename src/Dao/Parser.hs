@@ -24,7 +24,7 @@ module Dao.Parser where
 import           Dao.String
 import           Dao.Token
 import           Dao.Predicate
-import qualified Dao.EnumSet  as Es
+import qualified Dao.Interval  as Iv
 
 import           Control.Applicative
 import           Control.Monad
@@ -135,8 +135,8 @@ class RegexType rx where { toRegex :: rx -> Regex }
 instance RegexType  Char          where { toRegex = rx }
 instance RegexType  String        where { toRegex = rx }
 instance RegexType  UStr          where { toRegex = rx }
-instance RegexType (Es.Set Char)  where { toRegex = rx }
-instance RegexType [Es.Set Char]  where { toRegex = rx }
+instance RegexType (Iv.Set Char)  where { toRegex = rx }
+instance RegexType [Iv.Set Char]  where { toRegex = rx }
 instance RegexType  Regex         where { toRegex = id }
 instance RegexType [Regex]        where { toRegex = mconcat }
 instance RegexType (Char, Char)   where { toRegex = rx }
@@ -544,7 +544,7 @@ regexToLexer re = loop (re RxSuccess) where
 
 -- Evaluate a 'Regex' to a 'Lexer' using 'regexToLexer', but also create a list of pairs, every pair
 -- containing a character in the set of characters that this 'Regex' accepts. So, for example, if
--- the 'Regex' passed to this function is created from an 'Dao.EnumSet.EnumSet' with characters from
+-- the 'Regex' passed to this function is created from an 'Dao.Interval.EnumSet' with characters from
 -- @a@ to @z@, this function will evaluate to a list of 26 pairs with every character from @a@ to
 -- @z@ as the first element and the 'Lexer' as the second element. Every pair has the exact same
 -- lexer function. This function returns 'Data.Maybe.Nothing' if the 'Regex' given does not evaluate
@@ -579,7 +579,7 @@ regexToLexerPairs regex = case regex RxSuccess of
             RxString  u      -> case uchars u of
               ""  -> done (pre<>RxSuccess) stk
               c:_ -> loop mempty (create pre stk [c] r) rx
-            RxCharSet cs     -> case Es.elems cs of
+            RxCharSet cs     -> case Iv.elems cs of
               [] -> loop pre stk rx
               cx -> loop mempty (create pre stk cx r) rx
             RxRepeat _  _  p -> loopStep r p
@@ -590,8 +590,8 @@ regexToLexerPairs regex = case regex RxSuccess of
 data RxPrimitive
   = RxDelete
   | RxString   { rxString   :: UStr }
-  | RxCharSet  { rxCharSet  :: Es.Set Char }
-  | RxRepeat   { rxLowerLim :: Es.Inf Int, rxUpperLim :: Es.Inf Int, subRegexUnit :: RxPrimitive }
+  | RxCharSet  { rxCharSet  :: Iv.Set Char }
+  | RxRepeat   { rxLowerLim :: Iv.Inf Int, rxUpperLim :: Iv.Inf Int, subRegexUnit :: RxPrimitive }
   deriving Eq
 
 showRegexPrim :: RxPrimitive -> String
@@ -605,19 +605,19 @@ regexPrimToLexer :: TokenType tok => RxPrimitive -> Lexer tok ()
 regexPrimToLexer re = case re of
   RxDelete          -> clearBuffer
   RxString  str     -> lexString (uchars str)
-  RxCharSet set     -> lexCharP (Es.member set)
+  RxCharSet set     -> lexCharP (Iv.member set)
   RxRepeat lo hi re -> rept lo hi re
   where
     rept lo hi re = fromMaybe (seq (error "internal error") $! return ()) $ do
-      getLo <- mplus (Es.toPoint lo >>= return . lowerLim re) (return (return ()))
-      getHi <- mplus (Es.toPoint hi >>= return . upperLim re) (return (noLimit re))
+      getLo <- mplus (Iv.toPoint lo >>= return . lowerLim re) (return (return ()))
+      getHi <- mplus (Iv.toPoint hi >>= return . upperLim re) (return (noLimit re))
       return (getLo >> mplus getHi (return ()))
     lowerLim re lo = case re of
       RxDelete            -> clearBuffer
       RxString  str       -> lowerLimLex lo (lexString (uchars str))
       RxCharSet set       -> do
         keep <- gets lexBuffer
-        clearBuffer >> lexWhile (Es.member set)
+        clearBuffer >> lexWhile (Iv.member set)
         got <- gets lexBuffer
         if length got < lo
           then  do
@@ -629,19 +629,19 @@ regexPrimToLexer re = case re of
     upperLim re hi = case re of
       RxDelete            -> clearBuffer
       RxString  str       -> replicateM_ hi (lexString (uchars str))
-      RxCharSet set       -> lexWhile       (Es.member set)
+      RxCharSet set       -> lexWhile       (Iv.member set)
       RxRepeat lo' hi' re -> replicateM_ hi (rept lo' hi' re)
     noLimit re = case re of
       RxDelete            -> clearBuffer
       RxString  str       -> forever  (lexString (uchars str))
-      RxCharSet set       -> lexWhile (Es.member set)
+      RxCharSet set       -> lexWhile (Iv.member set)
       RxRepeat lo  hi  re -> forever  (rept lo hi re)
 
 -- | Any type which instantiates the 'RegexBaseType' class can be used to with the 'rx' function to
 -- construct a part of a 'Regex' which can be used in a sequence of 'Regex's.
 --
 -- Probably the most useful instance of this class apart from that of 'Prelude.String' is the
--- instance for the type @['Dao.EnumSet.Set' 'Data.Char.Char']@, which allows you to union ranges of
+-- instance for the type @['Dao.Interval.Set' 'Data.Char.Char']@, which allows you to union ranges of
 -- character sets like so:
 -- > 'rx'['from' '0' 'to' '9', from @'A'@ 'to' @'Z'@, 'from' '@a@' 'to' '@z@', 'ch' '@_@']
 -- which would be equivalent to the POSIX regular expression @[0-9A-Za-z_]@, a regular expression
@@ -650,13 +650,13 @@ class RegexBaseType t where
   rxPrim :: t -> RxPrimitive
   rx :: t -> Regex
   rx = RxStep . rxPrim
-instance RegexBaseType  Char          where { rxPrim = RxCharSet . Es.point }
+instance RegexBaseType  Char          where { rxPrim = RxCharSet . Iv.point }
 instance RegexBaseType  String        where { rxPrim = RxString  . ustr     }
 instance RegexBaseType  UStr          where { rxPrim = RxString  }
-instance RegexBaseType (Es.Set Char)  where { rxPrim = RxCharSet }
-instance RegexBaseType [Es.Set Char]  where { rxPrim = RxCharSet . foldl Es.union mempty }
-instance RegexBaseType (Char, Char)   where { rxPrim = RxCharSet . Es.fromPairs . (:[]) }
-instance RegexBaseType [(Char, Char)] where { rxPrim = RxCharSet . Es.fromPairs }
+instance RegexBaseType (Iv.Set Char)  where { rxPrim = RxCharSet }
+instance RegexBaseType [Iv.Set Char]  where { rxPrim = RxCharSet . foldl Iv.union mempty }
+instance RegexBaseType (Char, Char)   where { rxPrim = RxCharSet . Iv.fromPairs . (:[]) }
+instance RegexBaseType [(Char, Char)] where { rxPrim = RxCharSet . Iv.fromPairs }
 
 -- | The type of the 'from' and 'to' functions are specially defined so that you can write ranges of
 -- characters. For example, if you want to match upper-case characters, you would simply write:
@@ -665,7 +665,7 @@ instance RegexBaseType [(Char, Char)] where { rxPrim = RxCharSet . Es.fromPairs 
 -- > 'A' `to` 'Z'
 -- but I prefer to use 'from' because the use of single quotes and back-quotes together in the same
 -- expression is tedius. This would be equivalent to the POSIX regular expressions: @[A-Z]@
-from :: Char -> (Char -> Char -> Es.Set Char) -> Char -> Es.Set Char
+from :: Char -> (Char -> Char -> Iv.Set Char) -> Char -> Iv.Set Char
 from a to b = to a b
 
 -- | The type of the 'from' and 'to' functions are specially defined so that you can write ranges of
@@ -675,8 +675,8 @@ from a to b = to a b
 -- > 'A' `to` 'Z'
 -- but I prefer to use 'from' because the use of single quotes and back-quotes together in the same
 -- expression is tedius. This would be equivalent to the POSIX regular expressions: @[A-Z]@
-to :: Char -> Char -> Es.Set Char
-to toch frch = Es.range frch toch
+to :: Char -> Char -> Iv.Set Char
+to toch frch = Iv.range frch toch
 
 -- | Create a character set that matches only a single character. For example if you want to match
 -- just a single lowercase letter-A character:
@@ -684,7 +684,7 @@ to toch frch = Es.range frch toch
 -- This would b equivalent to the POSIX regular expression @[a]@
 -- Be careful not to confuse this function with the 'rx' function, which is instantiated to create
 -- 'Regex' functions from 'Prelude.Char's. The expression @'rx' @'@@a@@'@ cannot be used in a
--- set of other @'Dao.EnumSet.Set' 'Prelude.Char'@ types to create a larger set:
+-- set of other @'Dao.Interval.Set' 'Prelude.Char'@ types to create a larger set:
 -- > badRegex = 'repeat' ['from' '0' 'to' '9', 'rx' @'@.@'@] -- /COMPILE-TIME ERROR!!!/
 -- >
 -- > -- This matches strings ending in dots, like "98765.", "123.", and "0."
@@ -696,19 +696,19 @@ to toch frch = Es.range frch toch
 -- This function is also useful with the 'Prelude.map' function to create a set of characters from a
 -- 'Prelude.String':
 -- > stringOfVowels = 'rxRepeat' ('Prelude.map' 'ch' "AEIOUaeiou")
-ch :: Char -> Es.Set Char
-ch = Es.point
+ch :: Char -> Iv.Set Char
+ch = Iv.point
 
 -- | Produces a character set that matches any character, like the POSIX regular expression dot
 -- (@.@). /NEVER use this in a 'rxRepeat' function/ unless you really want to dump the entire
 -- remainder of the input string into the 'lexBuffer'.
-anyChar :: Es.Set Char
-anyChar = Es.infinite
+anyChar :: Iv.Set Char
+anyChar = Iv.whole
 
 -- | Invert a character set: this 'Regex' will match any characters not in the union of the sets
 -- provided.
-invert :: [Es.Set Char] -> Es.Set Char
-invert = Es.invert . foldl Es.union mempty
+invert :: [Iv.Set Char] -> Iv.Set Char
+invert = Iv.invert . foldl Iv.union mempty
 
 -- | An optional regex, tries to match, but succeeds regardless of whether or not the given
 -- actually matches. In fact, this 'Regex' is exactly identical to the equation:
@@ -754,23 +754,23 @@ rxErr msg = cantFail msg . mempty
 -- occurences cannot be matched, otherwise continues to repeat as many times as possible (greedily)
 -- but not exceeding the upper bound given.
 rxLimitMinMax :: RegexBaseType rx => Int -> Int -> rx -> Regex
-rxLimitMinMax lo hi = RxStep . RxRepeat (Es.Point lo) (Es.Point hi) . rxPrim
+rxLimitMinMax lo hi = RxStep . RxRepeat (Iv.Finite lo) (Iv.Finite hi) . rxPrim
 
 -- | Repeats greedily, matching the 'RegexBaseType' regular expression as many times as possible,
 -- but backtracks if the regex cannot be matched a minimum of the given number of times.
 rxLimitMin :: RegexBaseType rx => Int -> rx -> Regex
-rxLimitMin lo = RxStep . RxRepeat (Es.Point lo) Es.PosInf . rxPrim
+rxLimitMin lo = RxStep . RxRepeat (Iv.Finite lo) Iv.PosInf . rxPrim
 
 -- | Match a 'RegexBaseType' regex as many times as possible (greedily) but never exceeding the
 -- maximum number of times given. Must match at least one character, or else backtracks.
 rxLimitMax :: RegexBaseType rx => Int -> rx -> Regex
-rxLimitMax hi = RxStep . RxRepeat Es.NegInf (Es.Point hi) . rxPrim
+rxLimitMax hi = RxStep . RxRepeat Iv.NegInf (Iv.Finite hi) . rxPrim
 
 -- | Like 'rx' but repeats, but must match at least one character. It is similar to the @*@ operator
 -- in POSIX regular expressions. /WARNING:/ do not create regex loops using only regexs of this
 -- type, your regex will loop indefinitely.
 rxRepeat :: RegexBaseType rx => rx -> Regex
-rxRepeat = RxStep . RxRepeat Es.NegInf Es.PosInf . rxPrim
+rxRepeat = RxStep . RxRepeat Iv.NegInf Iv.PosInf . rxPrim
 
 -- | Defined as @'rxLimitMin' 1@, matches a primitive 'RegexBaseType' one or more times, rather than
 -- zero or more times. It is imilar to the @+@ operator in POSIX regular expressions.

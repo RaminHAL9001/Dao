@@ -1,0 +1,15 @@
+dao-0.1.0.0
+
+This is a pre-release of Dao. Some major changes are in the works and
+I would like to begin committing these changes to the master
+repository.
+
+The full release of Dao will be pretty unrecognizable from the state
+it is in now. The most important algorithms, namely "Dao.Interval"
+(previously "Dao.EnumSet"), "Dao.Tree", and "Dao.Predicate" are all
+mostly the same as before. However "Dao.Parser" is going to be
+completely revamped. And the entire language specification will
+probably change. I will make the current JavaScript-like language an
+optional module, and remove it from the main Dao library. The new Dao
+programming language will be more like typed Bash (Bourne Shell,
+similar to Lisp or Scheme). None of these changes are in this release.

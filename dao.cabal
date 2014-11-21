@@ -19,7 +19,7 @@
 
 
 Name:          dao
-Version:       0.1.0.1
+Version:       0.1.0.2
 Cabal-Version: >= 1.10
 License:       GPL-3
 Copyright:     (C) 2008-2014 Ramin Honary, all rights reserved.
@@ -42,7 +42,7 @@ Library
     -fno-warn-name-shadowing
     -fno-warn-unused-do-bind
   Build-Depends:
-    base                == 4.*,  mtl        >= 2.0.1.0,  random     >= 1.0.0.1,
+    base                == 4.*    ,  mtl        >= 2.0.1.0,  random     >= 1.0.0.1,
     time                >= 1.4.2  ,  directory  >= 1.1.0.0,  filepath   >= 1.2.0.0,
     process             >= 1.0.1.2,  array      >= 0.3.0.2,  bytestring >= 0.9.1.2,
     utf8-string         >= 0.3.2  ,  binary     >= 0.5.0.2,  Crypto     >= 4.0.0.0,

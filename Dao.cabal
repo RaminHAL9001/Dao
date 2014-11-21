@@ -18,8 +18,8 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 
-Name:          dao
-Version:       0.1.0.2
+Name:          Dao
+Version:       0.1.0.3
 Cabal-Version: >= 1.10
 License:       GPL-3
 Copyright:     (C) 2008-2014 Ramin Honary, all rights reserved.

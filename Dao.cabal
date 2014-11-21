@@ -34,7 +34,8 @@ Description:
      intended for artificial intelligence uses. It is very much like the
      classic UNIX "AWK" scripting language, but instead of using POSIX-style
      regular epxressions, the patterns used in Dao are designed to more easily
-     match natural language input.
+     match natural language input.  The source repository is available at
+     GitHub: https://github.com/RaminHAL9001/Dao
 Library
   HS-source-dirs:   src
   Default-Language: Haskell2010

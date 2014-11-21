@@ -439,15 +439,7 @@ segmentInvert seg = canonicalSegment =<< case seg of
 
 -- | Eliminate overlapping and duplicate 'Interval's from a list of segments.
 segmentNub :: (Ord c, Enum c, InfBound c) => [Interval c] -> [Interval c]
-segmentNub ax = loop (sort ax) >>= canonicalSegment where
-  loop ax = case ax of
-    []     -> []
-    [a]    -> [a]
-    a:b:ax ->
-      let (changed, bx) = segmentUnion a b
-      in  if changed
-            then loop (bx++ax)
-            else if Data.List.null bx then loop ax else head bx : loop (tail bx ++ ax)
+segmentNub = toList . fromList
 
 ----------------------------------------------------------------------------------------------------
 

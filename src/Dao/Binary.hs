@@ -53,7 +53,7 @@ import           Dao.Predicate
 
 import           Control.Applicative
 import           Control.Monad
-import           Control.Monad.Error
+import           Control.Monad.Except
 import qualified Control.Monad.State  as S
 
 import           Data.Monoid

@@ -26,7 +26,7 @@ import           Dao.String
 import           Dao.Interpreter.AST
 import           Dao.Parser
 
-import           Control.Monad.Except hiding (Error)
+import           Control.Monad.Except
 
 import           Data.Monoid
 import           Data.Ix

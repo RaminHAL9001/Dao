@@ -913,9 +913,9 @@ instance TokenType tok => MonadError (ParseError (LexerState tok) tok) (Lexer to
   throwError                     = Lexer . throwError
   catchError (Lexer try) catcher = Lexer (catchError try (lexerToPredicateT . catcher))
 
-instance TokenType tok => MonadPlusError (ParseError (LexerState tok) tok) (Lexer tok) where
-  catchPredicate (Lexer try) = Lexer (catchPredicate try)
-  predicate            = Lexer . predicate
+instance TokenType tok => PredicateClass (ParseError (LexerState tok) tok) (Lexer tok) where
+  returnPredicate (Lexer try) = Lexer (returnPredicate try)
+  predicate                   = Lexer . predicate
 
 instance (TokenType tok, Monoid a) => Monoid (Lexer tok a) where
   mempty      = return mempty
@@ -1169,7 +1169,7 @@ newTokStreamFromLexer userState lexerState =
 --
 -- This function instantiates all the useful monad transformers, including 'Data.Functor.Functor',
 -- 'Control.Monad.Monad', 'Control.MonadPlus', 'Control.Monad.State.MonadState',
--- 'Control.Monad.Error.MonadError' and 'Dao.Predicate.MonadPlusError'. Backtracking can be done
+-- 'Control.Monad.Error.MonadError' and 'Dao.Predicate.PredicateClass'. Backtracking can be done
 -- with 'Control.Monad.mzero' and "caught" with 'Control.Monad.mplus'. 'Control.Monad.fail' and
 -- 'Control.Monad.Error.throwError' evaluate to a control value containing a 'Error' value
 -- which can be caught by 'Control.Monad.Error.catchError', and which automatically contain
@@ -1213,15 +1213,15 @@ instance TokenType tok =>
       st <- get
       predicate (PFail (err{parseStateAtErr=Just st}))
     catchError (TokStream ptrans) catcher = TokStream $ do
-      pval <- catchPredicate ptrans
+      pval <- returnPredicate ptrans
       case pval of
         OK      a -> return a
         Backtrack -> mzero
         PFail err -> parserToPredicateT (catcher err)
 instance TokenType tok =>
-  MonadPlusError (ParseError (TokStreamState st tok) tok) (TokStream st tok) where
-    catchPredicate (TokStream ptrans) = TokStream (catchPredicate ptrans)
-    predicate                   = TokStream . predicate
+  PredicateClass (ParseError (TokStreamState st tok) tok) (TokStream st tok) where
+    returnPredicate (TokStream ptrans) = TokStream (returnPredicate ptrans)
+    predicate                          = TokStream . predicate
 instance (TokenType tok, Monoid a) =>
   Monoid (TokStream st tok a) where { mempty = return mempty; mappend a b = liftM2 mappend a b; }
 
@@ -1286,9 +1286,9 @@ instance TokenType tok =>
     catchError trial catcher = Parser $
       catchError (parserToTokStream trial) (\err -> parserToTokStream (catcher err))
 instance TokenType tok =>
-  MonadPlusError (ParseError (TokStreamState st tok) tok) (Parser st tok) where
-    catchPredicate ptrans = Parser (catchPredicate (parserToTokStream ptrans))
-    predicate       = Parser . predicate
+  PredicateClass (ParseError (TokStreamState st tok) tok) (Parser st tok) where
+    returnPredicate ptrans = Parser (returnPredicate (parserToTokStream ptrans))
+    predicate              = Parser . predicate
 instance TokenType tok => Monoid (Parser st tok a) where {mempty=mzero; mappend=mplus; }
 
 ----------------------------------------------------------------------------------------------------
@@ -1441,7 +1441,7 @@ tokenBy name as = do
 marker :: TokenType tok => Parser st tok a -> Parser st tok a
 marker parser = do
   before <- mplus (look1 asLocation) (Parser (gets finalLocation))
-  pval <- catchPredicate parser
+  pval <- returnPredicate parser
   case pval of
     PFail err -> throwError $ err{parseErrLoc = before <> parseErrLoc err}
     pval      -> predicate pval

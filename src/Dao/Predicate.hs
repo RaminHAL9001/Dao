@@ -1,28 +1,21 @@
--- "src/Dao/Predicate.hs"  provides 'PredicateT' which combines the
--- Maybe and Either types into a single monad.
+-- "Dao/Predicate.hs"  provides 'PredicateT' which combines the Maybe and
+-- Either types into a single monad.
 -- 
 -- Copyright (C) 2008-2015  Ramin Honary.
--- This file is part of the Dao System.
 --
--- The Dao System is free software: you can redistribute it and/or
--- modify it under the terms of the GNU General Public License as
--- published by the Free Software Foundation, either version 3 of the
--- License, or (at your option) any later version.
+-- Dao is free software: you can redistribute it and/or modify it under the
+-- terms of the GNU General Public License as published by the Free Software
+-- Foundation, either version 3 of the License, or (at your option) any later
+-- version.
 -- 
--- The Dao System is distributed in the hope that it will be useful,
--- but WITHOUT ANY WARRANTY; without even the implied warranty of
--- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
--- GNU General Public License for more details.
+-- The Dao System is distributed in the hope that it will be useful, but
+-- WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+-- or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+-- more details.
 -- 
--- You should have received a copy of the GNU General Public License
--- along with this program (see the file called "LICENSE"). If not, see
+-- You should have received a copy of the GNU General Public License along with
+-- this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
-
-
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FunctionalDependencies #-}
 
 -- | Provides a monad that essentially combines the monadic functionality of 'Prelude.Maybe' and
 -- 'Prelude.Either' into a single monad 'Predicate. Both the 'Prelude.Maybe' and 'Prelude.Either'
@@ -31,18 +24,19 @@
 -- @'Prelude.Right' $ 'Prelude.Nothing'@, and 'OK' is analogous to
 -- @'Prelude.Right' . 'Prelude.Just'@. All relevant monad transformers are instnatiated, including
 -- 'Control.Applicative.Applicative', 'Control.Applicative.Alternative', 'Control.Monad.MonadPlus',
--- and 'Control.Monad.Error.MonadError'. 
+-- and 'Control.Monad.Except.MonadError'. 
 --
 -- A new monad transformer 'PredicateT' is also introduced which lifts the 'Predicate' monad into
 -- another monad and wraps it into the 'PredicateT' data type which instantiates the
--- 'Control.Monad.Trans.MonadTrans' class. Further, a new class 'MonadPlusError' is defined which
+-- 'Control.Monad.Trans.MonadTrans' class. Further, a new class 'PredicateClass' is defined which
 -- allows you to directly manipulate the 'Predicate' value of a 'PredicateT' transformer.
 -- 
 -- Here is a simple example of how to use this module.
+--
 -- > newtype MyErr = MyErr String
 -- > newtype MyIO a = WrapMyIO { unwrapMyIO :: 'PredicateT' MyErr IO a }
 -- >         deriving (Functor, Applicative, Alternative)
--- >
+-- > 
 -- > instance 'Control.Monad.Monad' MyIO where -- this instance can also be derived
 -- >     'Control.Monad.return' = WrapMyIO . 'Control.Monad.return'
 -- >     f 'Control.Monad.>>= bindTo    =    WrapMyIO $ unwrapMyIO f 'Control.Monad.>>=' unwrapMyIO . bindTo
@@ -51,10 +45,10 @@
 -- > instance 'Control.Monad.MonadPlus' MyIO where -- this instance can also be derived
 -- >     'Control.Monad.mzero' = WrapMyIO 'mzero'
 -- >     'Control.Monad.mplus' (WrapMyIO try1) (WrapMyIO try2) = WrapMyIO ('mplus' try1 try2)
--- >
--- > instance 'Control.Monad.Error.Class.MonadError' MyErr MyIO where
--- >     'Control.Monad.Error.Class.MonadError.throwError' = WrapMyIO . 'Control.Monad.Error.Class.MonadError.throwError'
--- >     'Control.Monad.Error.Class.MonadError.catchError' (WrapMyIO try) catch = WrapMyIO ('catchError' try (unwrapMyIO . catch))
+-- > 
+-- > instance 'Control.Monad.Except.Class.MonadError' MyErr MyIO where
+-- >     'Control.Monad.Except.Class.MonadError.throwError' = WrapMyIO . 'Control.Monad.Except.Class.MonadError.throwError'
+-- >     'Control.Monad.Except.Class.MonadError.catchError' (WrapMyIO try) catch = WrapMyIO ('catchError' try (unwrapMyIO . catch))
 -- > 
 -- > instance 'Control.Monad.IO.Class.MonadIO' MyIO where
 -- >     'Control.Monad.IO.Class.liftIO' = WrapMyIO . 'liftIO'
@@ -64,11 +58,14 @@
 -- > 
 -- > doJump :: MyIO ()
 -- > doJump = ...
+--
 module Dao.Predicate where
 
 import           Control.Applicative
 import           Control.Monad
-import           Control.Monad.Error
+import           Control.Monad.Except
+import           Control.Monad.Reader
+import           Control.Monad.State
 
 import           Data.Monoid
 
@@ -81,11 +78,8 @@ import           Data.Monoid
 -- 'Control.Applicative.Applicative', and a 'Control.Monad.Monad'. The false condition 'Backtrack'
 -- serves as the 'Control.Monad.mzero' for 'Control.Monad.MonadPlus' and 'Control.Applicative.empty'
 -- value for 'Control.Applicative.Alternative'. The 'PFail' condition, like 'Prelude.Left', can be
--- used as an error condition in the 'Control.Monad.Error.ErrorClass' which can be caught by
--- 'Control.Monad.Error.catchError'.
---
--- This data type was originally intended for use in the Dao parser, but it is now used in several
--- contexts throughout the program.
+-- used as an error condition in the 'Control.Monad.Except.ErrorClass' which can be caught by
+-- 'Control.Monad.Except.catchError'.
 data Predicate err ok
   = Backtrack -- ^ analogous to 'Prelude.Nothing'
   | PFail err -- ^ analogous to 'Prelude.Left'
@@ -144,7 +138,7 @@ instance Monad m => Monad (PredicateT err m) where
       Backtrack -> return Backtrack
       PFail   u -> return (PFail u)
       OK      _ -> mb
-  fail msg = PredicateT{ runPredicateT = return (PFail (error msg)) }
+  fail _ = mzero
 
 instance Functor m => Functor (PredicateT err m) where
   fmap f (PredicateT ma) = PredicateT (fmap (fmap f) ma)
@@ -183,34 +177,54 @@ instance MonadIO m => MonadIO (PredicateT err m) where { liftIO = PredicateT . l
 -- either of these values. But using 'catchPredicate', it is possible to safely evaluate the
 -- sub-predicate and capture it's 'Predicate' result, where you can then make a decision on how to
 -- behave.
+--
 -- > do p <- 'catchPredicate' couldFailOrBacktrack
 -- >    case p of
 -- >        'OK'    rval -> useReturnValue rval -- use the return value from couldFailOrBacktrack
 -- >        'PFail' msg  -> printMyError msg    -- report the error from couldFailOrBacktrack
 -- >        'Backtrack'  -> return ()           -- ignore backtracking
+--
 -- The above procedure prints the error message created if the sub-predicate evaluated to 'PFail'.
 -- If you would like to "re-throw" a 'Predicate' that you have received you can use the 'predicate'
 -- function. For example, this line of code could be added to the above procedure:
+--
 -- >    predicate p
+--
 -- and the function will evaluate to the same exact 'Predicate' value that @couldFailOrBacktrack@
 -- had produced after the necessary response to the failure has been made, e.g. after the error
 -- message has been printed.
-class MonadPlusError err m | m -> err where
+--
+-- Minimal complete definition is 'predicate' and 'returnPredicate'.
+class Monad m => PredicateClass err m | m -> err where
+  -- | Catches the predicate value of a monadic function @m@ and returns it.
+  returnPredicate :: m a -> m (Predicate err a)
   -- | Unlifts the whole 'Predicate' value, unlike 'catchError' which only catches the value stored
   -- in a 'PFail' constructor.
-  catchPredicate :: m a -> m (Predicate err a)
+  catchPredicate :: m a -> (Predicate err a -> m a) -> m a
+  catchPredicate try catch = returnPredicate try >>= catch
   -- | This will force the 'Predicate' value of the current computation. The following should
-  -- generally be true for all instances of 'MonadPlusError'.
+  -- generally be true for all instances of 'PredicateClass'.
   -- > 'Control.Monad.return' = 'predicate' . 'OK'
-  -- > 'Control.Monad.Error.State.throwError' = 'predicate' . 'PFail'
+  -- > 'Control.Monad.Except.State.throwError' = 'predicate' . 'PFail'
   -- > 'Control.Monad.mzero' = 'predicate' 'Backtrack'
   predicate :: Predicate err a -> m a
 
-instance MonadPlusError err (Predicate err) where { catchPredicate = OK; predicate = id; }
+instance Monad m => MonadReader env (PredicateT err (ReaderT env m)) where
+  local f (PredicateT o) = PredicateT $ ReaderT $ runReaderT o . f
+  ask = PredicateT $ ask >>= return . OK
 
-instance Monad m => MonadPlusError err (PredicateT err m) where
-  catchPredicate (PredicateT fn) = PredicateT{ runPredicateT = fn >>= \o -> return (OK o) }
-  predicate pval = PredicateT (return pval)
+instance Monad m => MonadState st (PredicateT err (StateT st m)) where
+  state f = PredicateT $ StateT $ \st -> let (o, st') = f st in return (OK o, st')
+
+instance PredicateClass err (Predicate err) where
+  returnPredicate = OK
+  catchPredicate = flip ($)
+  predicate = id
+
+instance Monad m => PredicateClass err (PredicateT err m) where
+  predicate = PredicateT . return
+  returnPredicate (PredicateT try) = PredicateT $ try >>= return . OK
+  catchPredicate try catch = returnPredicate try >>= catch
 
 -- | Evaluates to an empty list if the given 'Predicate' is 'Backtrack' or 'PFail', otherwise returns a
 -- list containing the value in the 'OK' value.

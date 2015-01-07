@@ -323,7 +323,7 @@ instance Executable Action (Maybe Object) where
 
 instance Executable [Action] [Object] where
   execute = fmap concat .
-    mapM (\act -> catchPredicate (execute act) >>= \p -> case p of
+    mapM (\act -> returnPredicate (execute act) >>= \p -> case p of
              OK                (Just o)  -> return [o]
              PFail (ExecReturn (Just o)) -> return [o]
              PFail              err      -> logUncaughtErrors [err] >> return []
@@ -359,11 +359,11 @@ makeActionsForQuery :: [PatternTree Object [Subroutine]] -> [Object] -> Exec [Ac
 makeActionsForQuery tree tokens = do
   let match = matchTree False (T.unionsWith (++) tree) tokens
   fmap concat $ forM match $ \ (patn, match, execs) -> do
-    match <- catchPredicate $ fmap M.fromList $ -- evaluate pattern type checkers
+    match <- returnPredicate $ fmap M.fromList $ -- evaluate pattern type checkers
       forM (M.assocs match) $ \ (name, (vartyp, ox)) -> case vartyp of
         Nothing     -> return (name, obj ox)
         Just vartyp -> do
-          match <- catchPredicate $ referenceLookup $ Reference UNQUAL vartyp $ FuncCall [OList ox] NullRef
+          match <- returnPredicate $ referenceLookup $ Reference UNQUAL vartyp $ FuncCall [OList ox] NullRef
           case match of
             OK (_, Nothing)             -> return (name, obj ox)
             OK (_, Just  o)             -> return (name, o)
@@ -669,7 +669,7 @@ daoFunc =
 executeDaoFunc :: DaoFunc this -> this -> [Object] -> Exec (Maybe Object, this)
 executeDaoFunc fn this params = do
   args <- (if funcAutoDerefParams fn then mapM derefObject else return) params
-  pval <- catchPredicate (daoForeignFunc fn this args)
+  pval <- returnPredicate (daoForeignFunc fn this args)
   case pval of
     OK            (o, this) -> return (o, this)
     PFail (ExecReturn    o) -> return (o, this)
@@ -1632,9 +1632,9 @@ instance MonadError ExecControl (ToDaoStruct haskData) where
   throwError = _structThrowError ToDaoStruct fst
   catchError f catch = ToDaoStruct $ catchError (_runToDaoStruct f) (_runToDaoStruct . catch)
 
-instance MonadPlusError ExecControl (ToDaoStruct haskData) where
-  catchPredicate = ToDaoStruct . catchPredicate . _runToDaoStruct
-  predicate      = ToDaoStruct . predicate
+instance PredicateClass ExecControl (ToDaoStruct haskData) where
+  returnPredicate = ToDaoStruct . returnPredicate . _runToDaoStruct
+  predicate       = ToDaoStruct . predicate
 
 -- | This function is typically used to evaluate the instantiation of 'toDaoStruct'. It takes two
 -- parameters: first a computation to convert your data type to the 'Struct' using the 'ToDaoStruct'
@@ -1824,9 +1824,9 @@ instance MonadError ExecControl FromDaoStruct where
   throwError = _structThrowError FromDaoStruct id
   catchError (FromDaoStruct f) catch = FromDaoStruct $ catchError f (_runFromDaoStruct . catch)
 
-instance MonadPlusError ExecControl FromDaoStruct where
-  catchPredicate = FromDaoStruct . catchPredicate . _runFromDaoStruct
-  predicate      = FromDaoStruct . predicate
+instance PredicateClass ExecControl FromDaoStruct where
+  returnPredicate = FromDaoStruct . returnPredicate . _runFromDaoStruct
+  predicate       = FromDaoStruct . predicate
 
 -- | This function is typically used to evaluate the instantiation of 'fromDaoStruct'. It takes two
 -- parameters: first a computation to convert your data type to the Haskell data type from a
@@ -1944,7 +1944,7 @@ getNullaryWithRead = ask >>= \struct -> case struct of
 -- given 'FromDaoStruct' function, the 'structErrField' will automatically be set to the provided
 -- 'Name' value.
 structCurrentField :: Name -> FromDaoStruct o -> FromDaoStruct o
-structCurrentField name (FromDaoStruct f) = FromDaoStruct $ catchPredicate f >>= \o -> case o of
+structCurrentField name (FromDaoStruct f) = FromDaoStruct $ returnPredicate f >>= \o -> case o of
   PFail (err@(ExecError{execErrorSubtype=ExecStructError info})) -> throwError $ 
     err{ execErrorSubtype = ExecStructError $ info{ structErrField = Just (toUStr name) } }
   PFail err -> throwError err
@@ -3090,7 +3090,7 @@ instance HataClass (Glob Object) where
             forM (M.assocs match) $ \ (name, (vartyp, ox)) -> case vartyp of
               Nothing     -> return [(name, obj ox)]
               Just vartyp -> do
-                match <- catchPredicate $ referenceLookup $ Reference UNQUAL vartyp $ FuncCall ox NullRef
+                match <- returnPredicate $ referenceLookup $ Reference UNQUAL vartyp $ FuncCall ox NullRef
                 case match of
                   Backtrack       -> return []
                   OK (_, Nothing) -> return [(name, obj ox)]
@@ -3283,7 +3283,7 @@ newExecUnit modName = get >>= \parent -> liftIO _initExecUnit >>= \child -> retu
 inModule :: ExecUnit -> Exec a -> Exec (a, ExecUnit)
 inModule subxunit exe = do
   xunit    <- get
-  result   <- put subxunit >> catchPredicate exe
+  result   <- put subxunit >> returnPredicate exe
   subxunit <- get
   put    xunit
   result   <- predicate result
@@ -3493,8 +3493,8 @@ instance MonadError ExecControl (ObjectFocus o) where
     InnerExecPFail err -> mapObjectLensToPredicate (catch err)
     InnerExecBacktrack -> throwError InnerExecBacktrack
 
-instance MonadPlusError ExecControl (ObjectFocus o) where
-  catchPredicate (ObjectFocus f) = ObjectFocus $ catchPredicate f >>= \p -> case p of
+instance PredicateClass ExecControl (ObjectFocus o) where
+  returnPredicate (ObjectFocus f) = ObjectFocus $ returnPredicate f >>= \p -> case p of
     OK                    o  -> return $ OK o
     PFail (InnerExecPFail e) -> return $ PFail e
     PFail InnerExecBacktrack -> throwError InnerExecBacktrack
@@ -3567,7 +3567,7 @@ focalPathSuffix suf f = do
 
 focusLiftExec :: Exec a -> ObjectFocus o a
 focusLiftExec exec = ObjectFocus $ do
-  p <- lift $ lift $ catchPredicate exec
+  p <- lift $ lift $ returnPredicate exec
   case p of
     Backtrack -> throwError InnerExecBacktrack
     PFail err -> throwError $ InnerExecPFail err
@@ -4429,8 +4429,8 @@ instance MonadError ExecControl Exec where
   throwError = Exec . throwError
   catchError (Exec try) catch = Exec (catchError try (execToPredicate . catch))
 
-instance MonadPlusError ExecControl Exec where
-  catchPredicate (Exec f) = Exec (catchPredicate f)
+instance PredicateClass ExecControl Exec where
+  returnPredicate (Exec f) = Exec (returnPredicate f)
   predicate = Exec . predicate
 
 ----------------------------------------------------------------------------------------------------
@@ -4438,7 +4438,7 @@ instance MonadPlusError ExecControl Exec where
 -- | The 'XPure' type is like 'Exec' but does not lift IO or contain any reference to any
 -- 'ExecUnit', so it is guaranteed to work without side-effects, but it also instantiates the
 -- 'Control.Monad.MonadPlus', 'Control.Applicative.Alternative', 'Control.Monad.Error.MonadError'
--- and 'Dao.Predicate.MonadPlusError' classes so you can do computation with backtracking and
+-- and 'Dao.Predicate.PredicateClass' classes so you can do computation with backtracking and
 -- exceptions. Although this monad evaluates to a pure function, it does have stateful data: a
 -- 'Dao.String.UStr' that will call a "print stream", which is provided for general purpose; a place
 -- to print information throughout evaluation like a "print()" statement.  The 'xnote' function
@@ -4484,9 +4484,9 @@ instance MonadError ExecControl XPure where
   throwError = XPure . throwError
   catchError (XPure f) catch = XPure $ catchError f (xpureToState . catch)
 
-instance MonadPlusError ExecControl XPure where
+instance PredicateClass ExecControl XPure where
   predicate = XPure . predicate
-  catchPredicate (XPure f) = XPure $ catchPredicate f
+  returnPredicate (XPure f) = XPure $ returnPredicate f
 
 instance MonadState UStr XPure where { state = XPure . lift . state }
 
@@ -4588,7 +4588,7 @@ execErrorHandler = newExecIOHandler $ flip (execThrow "") [] . ExecHaskellError
 -- | This will catch an 'ExecControl' thrown by 'Control.Monad.Error.throwError', but re-throw
 -- 'ExecError's.
 catchReturn :: (Maybe Object -> Exec a) -> Exec a -> Exec a
-catchReturn catch f = catchPredicate f >>= \pval -> case pval of
+catchReturn catch f = returnPredicate f >>= \pval -> case pval of
   PFail (ExecReturn a) -> catch a
   pval                 -> predicate pval
 
@@ -4605,7 +4605,7 @@ execNested :: T_dict -> Exec a -> Exec (a, T_dict)
 execNested init exe = do
   store <- gets execStack
   modify $ \xunit -> xunit{ execStack = stackPush init store }
-  result <- catchPredicate exe
+  result <- returnPredicate exe
   store <- gets execStack
   (store, dict) <- pure (stackPop store)
   modify $ \xunit -> xunit{ execStack = store }
@@ -4623,7 +4623,7 @@ execNested_ init = fmap fst . execNested init
 -- it. Furthermore it catches evaluation of a "return" statement allowing the function which called
 -- it to procede with execution after this call has returned.
 execFuncPushStack :: T_dict -> Exec (Maybe Object) -> Exec (Maybe Object, T_dict)
-execFuncPushStack dict exe = execNested dict (catchPredicate exe) >>= \ (pval, dict) -> case pval of
+execFuncPushStack dict exe = execNested dict (returnPredicate exe) >>= \ (pval, dict) -> case pval of
   OK     o  -> return (o, dict)
   Backtrack -> mzero
   PFail err -> case err of
@@ -4639,7 +4639,7 @@ execWithStaticStore :: Subroutine -> Exec a -> Exec a
 execWithStaticStore sub exe = do
   store <- gets currentCodeBlock
   modify (\st -> st{ currentCodeBlock=Just sub })
-  result <- catchPredicate exe
+  result <- returnPredicate exe
   modify (\st -> st{ currentCodeBlock=store })
   predicate result
 
@@ -4647,7 +4647,7 @@ execWithWithRefStore :: Object -> Exec a -> Exec a
 execWithWithRefStore o exe = do
   store <- gets currentWithRef
   modify (\st -> st{ currentWithRef=Just o })
-  result <- catchPredicate exe
+  result <- returnPredicate exe
   modify (\st -> st{ currentWithRef=store })
   predicate result
 
@@ -4655,7 +4655,7 @@ withExecTokenizer :: ExecTokenizer -> Exec a -> Exec a
 withExecTokenizer newtokzer f = do
   oldtokzer <- gets programTokenizer
   modify $ \xunit -> xunit{ programTokenizer=newtokzer }
-  p <- catchPredicate f
+  p <- returnPredicate f
   modify $ \xunit -> xunit{ programTokenizer=oldtokzer }
   predicate p
 
@@ -6190,7 +6190,7 @@ callObject qref o params = case o of
 -- 'procErr' will indicate this.
 checkPredicate :: String -> [Object] -> Exec a -> Exec a
 checkPredicate altmsg tried f = do
-  pval <- catchPredicate f
+  pval <- returnPredicate f
   let err = fail (altmsg++" evaulated to void expression")
   case pval of
     OK    a                     -> return a
@@ -6582,7 +6582,7 @@ instance Executable (ScriptExpr Object) () where
             -- function expressions are placed in the correct store by the above 'execute'
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     TryCatch try els catchers _loc -> do
-      ce <- catchPredicate $ execNested_ M.empty (execute try) <|> msum (fmap execute els)
+      ce <- returnPredicate $ execNested_ M.empty (execute try) <|> msum (fmap execute els)
       case ce of
         OK     () -> return ()
         Backtrack -> mzero
@@ -7479,7 +7479,7 @@ instance Executable (TopLevelExpr Object) () where
     ImportExpr{}  -> attrib "import"
     --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
     TopScript script _ -> do
-      ((), dict) <- execNested mempty $ catchPredicate (execute script) >>= \pval -> case pval of
+      ((), dict) <- execNested mempty $ returnPredicate (execute script) >>= \pval -> case pval of
         OK                _  -> return ()
         PFail (ExecReturn _) -> return ()
         PFail           err  -> throwError err

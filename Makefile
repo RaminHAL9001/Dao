@@ -25,10 +25,10 @@ all: dist
 test: dist
 	cabal test
 
-dist: dao.cabal
+dist: Dao.cabal
 	cabal configure
 	@echo '----------------------------------------------------------------------------------------------------'
 
 edit:
-	vim dao.cabal $$( find . -type f -name '*.hs' )
+	vim Dao.cabal $$( find . -type f -name '*.hs' )
 

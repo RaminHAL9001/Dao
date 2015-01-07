@@ -174,7 +174,7 @@ import           Control.Concurrent
 import           Control.DeepSeq
 import           Control.Exception
 import           Control.Monad
-import           Control.Monad.Error
+import           Control.Monad.Except
 import           Control.Monad.Reader
 import           Control.Monad.State
 

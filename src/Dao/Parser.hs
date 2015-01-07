@@ -609,8 +609,8 @@ regexPrimToLexer re = case re of
   RxRepeat lo hi re -> rept lo hi re
   where
     rept lo hi re = fromMaybe (seq (error "internal error") $! return ()) $ do
-      getLo <- mplus (Iv.toPoint lo >>= return . lowerLim re) (return (return ()))
-      getHi <- mplus (Iv.toPoint hi >>= return . upperLim re) (return (noLimit re))
+      getLo <- mplus (Iv.toFinite lo >>= return . lowerLim re) (return (return ()))
+      getHi <- mplus (Iv.toFinite hi >>= return . upperLim re) (return (noLimit re))
       return (getLo >> mplus getHi (return ()))
     lowerLim re lo = case re of
       RxDelete            -> clearBuffer
@@ -650,7 +650,7 @@ class RegexBaseType t where
   rxPrim :: t -> RxPrimitive
   rx :: t -> Regex
   rx = RxStep . rxPrim
-instance RegexBaseType  Char          where { rxPrim = RxCharSet . Iv.point }
+instance RegexBaseType  Char          where { rxPrim = RxCharSet . Iv.singleton }
 instance RegexBaseType  String        where { rxPrim = RxString  . ustr     }
 instance RegexBaseType  UStr          where { rxPrim = RxString  }
 instance RegexBaseType (Iv.Set Char)  where { rxPrim = RxCharSet }
@@ -697,7 +697,7 @@ to toch frch = Iv.range frch toch
 -- 'Prelude.String':
 -- > stringOfVowels = 'rxRepeat' ('Prelude.map' 'ch' "AEIOUaeiou")
 ch :: Char -> Iv.Set Char
-ch = Iv.point
+ch = Iv.singleton
 
 -- | Produces a character set that matches any character, like the POSIX regular expression dot
 -- (@.@). /NEVER use this in a 'rxRepeat' function/ unless you really want to dump the entire
@@ -721,10 +721,10 @@ opt = (<>id)
 halt :: Regex
 halt = const RxSuccess
 
--- | Marks a point in a 'Regex' sequence where the matching must not fail, and if it does fail, the
+-- | Marks a singleton in a 'Regex' sequence where the matching must not fail, and if it does fail, the
 -- resulting 'Lexer' to which this 'Regex' evaluates will evaluate to 'Control.Monad.fail' with an
 -- error message provided as a paramater to this function. For example:
--- > decimalPoint = digits . 'rx' '.' . 'cantFail' "must have digits after a decimal point" . digits
+-- > decimalPoint = digits . 'rx' '.' . 'cantFail' "must have digits after a decimal singleton" . digits
 cantFail :: String -> Regex
 cantFail msg = RxExpect (ustr msg)
 
@@ -777,12 +777,12 @@ rxRepeat = RxStep . RxRepeat Iv.NegInf Iv.PosInf . rxPrim
 rxRepeat1 :: RegexBaseType rx => rx -> Regex
 rxRepeat1 = rxLimitMin 1
 
--- | Create a token, keep the portion of the string that has matched the regex up to this point, but
+-- | Create a token, keep the portion of the string that has matched the regex up to this singleton, but
 -- clear the match buffer once the token has been created.
 rxToken :: TokenType tok => tok -> Regex
 rxToken tok = RxMakeToken (ConstToken True $ unwrapTT tok)
 
--- | Create a token, disgarding the portion of the string that has matched the regex up to this point.
+-- | Create a token, disgarding the portion of the string that has matched the regex up to this singleton.
 rxEmptyToken :: TokenType tok => tok -> Regex
 rxEmptyToken tok = RxMakeToken (ConstToken False $ unwrapTT tok)
 
@@ -1072,7 +1072,7 @@ runLexer lexer inputStr =
   in  (case lexResult of { OK _ -> True; _ -> False; }, (tokenStream st, lexInput st))
 
 -- | Convert a 'Regex' to a 'Lexer' and match a string against it using 'runLexer', so it only
--- matches at the beginning of a string, not at any arbitrary point in the middle of the string.
+-- matches at the beginning of a string, not at any arbitrary singleton in the middle of the string.
 runRegex :: TokenType tok => Regex -> String -> (Bool, ([TokenAt tok], String))
 runRegex lexer inputStr =
   let (a, (b, c)) = runLexer (regexToLexer lexer) inputStr in (a, (fmap (fmap wrapTT) b, c))
@@ -1435,7 +1435,7 @@ tokenBy name as = do
 
 -- | A 'marker' immediately stores the cursor onto the runtime call stack. It then evaluates the
 -- given 'Parser'. If the given 'Parser' fails, the position of the failure (stored in a
--- 'Dao.Token.Location') is updated such that the starting point of the failure points to the cursor
+-- 'Dao.Token.Location') is updated such that the starting singleton of the failure points to the cursor
 -- stored on the stack by this 'marker'. When used correctly, this function makes error reporting a
 -- bit more helpful.
 marker :: TokenType tok => Parser st tok a -> Parser st tok a
@@ -1877,7 +1877,7 @@ data Language st tok synTree
       -- ^ *the order of these tokenizers is important,* these are the tokenizers passed to the
       -- 'lexicalAnalysis' phase to generate the stream of tokens for the 'syntacticAnalysis' phase.
     , mainParser    :: Parser st tok synTree
-      -- ^ this is the parser entry-point which is used to evaluate the 'syntacticAnalysis' phase.
+      -- ^ this is the parser entry-singleton which is used to evaluate the 'syntacticAnalysis' phase.
     }
 
 -- | Construct a 'Language' from a 'Parser'. This defines a complete parser that can be used

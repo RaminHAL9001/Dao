@@ -38,7 +38,8 @@
 -- types, but /BE VERY CAREFUL/ not to call 'defaultO' for another non-recursive type.
 module Dao.Random where
 
-import           Dao.String
+import           Dao.String hiding (nullValue)
+import           Dao.TestNull
 import qualified Dao.Tree as T
 
 import           Control.Exception
@@ -226,7 +227,7 @@ instance HasRandGen a => HasRandGen (Maybe a) where
   defaultO = return Nothing
 
 instance (Ord p, HasRandGen p, HasRandGen o) => HasRandGen (T.Tree p o) where
-  defaultO = return T.Void
+  defaultO = return nullValue
   randO = recurse $ do
     branchCount <- nextInt 4
     cuts <- fmap (map (+1) . randToBase 6) randInt

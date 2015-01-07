@@ -48,7 +48,7 @@ Library
     process             >= 1.0.1.2,  array      >= 0.3.0.2,  bytestring >= 0.9.1.2,
     utf8-string         >= 0.3.2  ,  binary     >= 0.5.0.2,  Crypto     >= 4.0.0.0,
     transformers        >= 0.2.2.0,  containers >= 0.4.0.0,  deepseq    >= 1.0.0.0,
-    data-binary-ieee754 >= 0.4.4
+    data-binary-ieee754 >= 0.4.4  ,  text       >= 1.1.0.1
   Default-Extensions:
     TemplateHaskell            ScopedTypeVariables        RankNTypes                 
     MultiParamTypeClasses      FunctionalDependencies     FlexibleInstances          
@@ -59,7 +59,7 @@ Library
     Dao.StepList, Dao.Predicate, Dao.Binary     , Dao.HashMap ,
     Dao.String  , Dao.Stack    , Dao.PPrint     , Dao.Parser  ,
     Dao.Token   , Dao.Glob     , Dao.Interpreter, Dao.Lib.File,
-    Dao.Lib.ListEditor, Dao.Lib.Array,
+    Dao.Lib.ListEditor, Dao.Lib.Array, Dao.Text, Dao.TestNull, Dao.Array, Dao.Object, Dao.Lens, Dao.Int,
     Dao.Interpreter.Tokenizer, Dao.Interpreter.AST, Dao.Interpreter.Parser
 
 Executable dao

@@ -1,7 +1,7 @@
 -- "src/Dao/Interpreter/AST.hs"  defines the data types for the Dao
 -- programming language abstract syntax tree and related type classes.
 -- 
--- Copyright (C) 2008-2014  Ramin Honary.
+-- Copyright (C) 2008-2015  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

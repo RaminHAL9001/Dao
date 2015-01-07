@@ -1,7 +1,7 @@
 -- "src/Dao/RefTable.hs"  a data type which maps opaque reference
 -- handles to 'Dynamic' objects.
 -- 
--- Copyright (C) 2008-2014  Ramin Honary.
+-- Copyright (C) 2008-2015  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

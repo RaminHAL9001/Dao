@@ -1,7 +1,7 @@
 -- "src/Dao/Random.hs"  generates objects from integers that can be used
 -- to test the parsers/pretty-printer, and the binary encoder/decoder.
 -- 
--- Copyright (C) 2008-2014  Ramin Honary.
+-- Copyright (C) 2008-2015  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

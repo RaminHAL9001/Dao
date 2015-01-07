@@ -1,7 +1,7 @@
 -- "src/Dao/Lib/ListEditor.hs"  built-in object for Dao programs that can
 -- functions like a line editor, but for arbitrary types, not just strings.
 -- 
--- Copyright (C) 2008-2014  Ramin Honary.
+-- Copyright (C) 2008-2015  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

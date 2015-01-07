@@ -1,7 +1,7 @@
 -- "src/Dao/Lib/WordNet.hs"  a Dao interface that treats the Princeton
 -- WordNet(TM) as an Object which can accessed in the Dao runtime.
 -- 
--- Copyright (C) 2008-2014  Ramin Honary.
+-- Copyright (C) 2008-2015  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

@@ -1,7 +1,7 @@
 -- "src/Dao/Tree.hs"  provides a fundamental data type used in the Dao
 -- System, the "Tree", which is similar to the "Data.Map" data type.
 -- 
--- Copyright (C) 2008-2014  Ramin Honary.
+-- Copyright (C) 2008-2015  Ramin Honary.
 -- This file is part of the Dao System.
 --
 -- The Dao System is free software: you can redistribute it and/or

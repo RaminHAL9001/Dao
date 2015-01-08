@@ -1,15 +1,19 @@
-dao-0.1.0.1
+Dao-1.0.0.0
 
-This is a pre-release of Dao. Some major changes are in the works and
-I would like to begin committing these changes to the master
-repository.
+A pure-Haskell dynamically-typed DSL for production rule-based logic programming and AI.
 
-The full release of Dao will be pretty unrecognizable from the state
-it is in now. The most important algorithms, namely "Dao.Interval"
-(previously "Dao.EnumSet"), "Dao.Tree", and "Dao.Predicate" are all
-mostly the same as before. However "Dao.Parser" is going to be
-completely revamped. And the entire language specification will
-probably change. I will make the current JavaScript-like language an
-optional module, and remove it from the main Dao library. The new Dao
-programming language will be more like typed Bash (Bourne Shell,
-similar to Lisp or Scheme). None of these changes are in this release.
+Dao is a Domain Specific Language (DSL) intended providing tools
+for logic programming and constructing knowledge bases, with a
+focus on artificial intelligence. Reminiscient of the PROLOG
+programming language, but made better with Haskell's static
+type checking and clean semantics, Dao is well suited for
+things like type checking, computing build dependencies,
+whole-program analysis, rapid prototyping of parsers, and
+Read-Eval-Print Loop-based (REPL-based) source code
+development, as well as natural language comprehension.
+
+Dao originally defined a JavaScript-like programming
+language for defining production rule databases suited to
+natural language understanding, but now it is just a DSL with
+tools for defining grammars and parsers, where all production
+rules are defined in a Haskell program using the Dao APIs.

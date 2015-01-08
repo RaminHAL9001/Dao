@@ -1,4 +1,4 @@
-# "ghc-build-opts.mk": a trivial GNU-Make script that calls 'cabal configure' and 'cabal build'.
+# "Makefile": a trivial GNU-Make script that calls 'cabal configure' and 'cabal build'.
 #
 # Copyright (C) 2008-2015  Ramin Honary.
 #
@@ -20,41 +20,21 @@
 .PHONEY: all ghci test install edit clean
 
 GHC_FLAGS := \
-	-threaded                    \
-	-Wall                        \
+	-threaded -Wall              \
 	-fno-warn-name-shadowing     \
 	-fno-warn-unused-do-bind     \
-	-XDeriveDataTypeable         \
-	-XExistentialQuantification  \
-	-XFlexibleContexts           \
-	-XFlexibleInstances          \
-	-XFunctionalDependencies     \
-	-XGeneralizedNewtypeDeriving \
-	-XMultiParamTypeClasses      \
-	-XOverlappingInstances       \
-	-XRankNTypes                 \
-	-XScopedTypeVariables        \
-	-XStandaloneDeriving         \
-	-XTemplateHaskell            \
-	-XTypeFamilies               \
+    -XDeriveDataTypeable    -XExistentialQuantification -XFlexibleContexts           \
+    -XFlexibleInstances     -XFunctionalDependencies    -XGeneralizedNewtypeDeriving \
+    -XMultiParamTypeClasses -XOverlappingInstances      -XRankNTypes                 \
+    -XScopedTypeVariables   -XStandaloneDeriving        -XTemplateHaskell            \
+    -XTypeFamilies          -XImplicitParams
 
 GHC_SOURCES = -i./src -i./tests -i./
-
-GHC_MODULES = \
-	Dao.Array    Dao.Interval   Dao.Eval          Dao.Glob        \
-	Dao.IOArray  Dao.Grammar    Dao.Predicate     Dao.Ref         \
-	Dao.TestNull Dao.Text       Dao.Tree          Dao.Object      \
-	Dao.Lang     Dao.EnumMap    Dao.SparseArray   Dao.Text.Parser \
-	Dao.Range    Dao.Count      Dao.Text.Builder  Dao.Int         \
-	Dao.Check    Dao.Concurrent Dao.Grammar.Debug Dao.PPrint      \
-	Dao.Computer
 
 GHC := ghc --make $(GHC_FLAGS) $(GHC_SOURCES)
 
 all: dist
 	cabal build
-#all:
-#	ghc --make -i./src Dao.Lens -XMultiParamTypeClasses -XFlexibleInstances -XFlexibleContexts
 
 dist: Dao.cabal
 	cabal configure
@@ -64,7 +44,7 @@ test:
 	cabal test
 
 edit:
-	vim Dao.cabal $$( find . -type f -name '*.hs' )
+	vim Dao.cabal $$( find . -type f -name '*.hs' ) README.md scratch.hs
 
 ghci:
 	ghci $(GHC_FLAGS) $(GHC_SOURCES) $(GHC_MODULES)

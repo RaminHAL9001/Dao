@@ -20,6 +20,19 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
+-- | A "trie" based on 'Data.Map.Map' where you can store objects @o@ to an arbitrary path
+-- constructed of paths-segments @p@. The idea of the 'Tree' data structure is that it behaves
+-- exctly like a 'Data.Map.Map' where the keys of the map are of type @[p]@, but internally, similar
+-- paths are merged together to save memory and 'Data.Traversable.traverse' time.
+--
+-- Because of the way similar paths @[p]@ are merged, when you perform a 'Data.Foldable.foldr',
+-- 'mergeWithKey', or 'Data.Traversable.traverse' operation, you have a choice of how to order the
+-- objects @o@, with 'DepthFirst' or 'BreadthFirst'. Functions like 'elems' and 'assocs' require an
+-- additional 'RunTree' parameter to decide the ordering of the objects @o@.
+--
+-- Therefore, this data type instantiates 'Data.Foldable.Foldable' only when
+-- it is paired with a 'RunTree' to determine if the 'Data.Foldable.foldr' will occur in
+-- 'DepthFirst' or 'BreadthFirst' order.
 module Dao.Tree where
 
 import           Prelude hiding (id, (.), mapM, foldr, foldl, sum, concat)
@@ -42,21 +55,15 @@ import qualified Data.Map as M
 import           Data.Traversable
 import           Data.Word
 
--- | This data type controls algorithms like 'mergeWithKeyM' where monadic evaluation needs to occur
--- in a certain order. This simple operation code decides whether evaluation of leaves happens
--- before evaluation of sub-'Tree's ('BreadthFirst') or whether evaluation of leaves happens after
--- evaluation of sub-'Tree's ('DepthFirst').
-data RunTree
-  = DepthFirst
-    -- ^ will have the 'Rule' 'Dao.Tree.Leaf's evaluated such that the longest branches evaluate
-    -- first.
-  | BreadthFirst
-    -- ^ will have the 'Rule' 'Dao.Tree.Leaf's evaluated such that the shortest branches evaluate
-    -- first.
-  deriving (Eq, Ord, Show, Typeable, Enum, Bounded)
-
 ----------------------------------------------------------------------------------------------------
 
+-- | A 'Tree' is just a @newtype@ around a pair of two elements forming a node, the first being the
+-- leaf of the node, and the second being the branches of the node. The leaf may or may not exist,
+-- so it is wrapped in a 'Prelude.Maybe' data structure.
+--
+-- When you associate an object @o@ at a path @[p]@, a walk is performed, with each segment of the
+-- path @[p]@ selecting a branch that contains another sub-node. When the path @[p]@ is empty, the
+-- walk stops and the object @o@ is placed into the current sub-node.
 newtype Tree p o = Tree (Maybe o, M.Map p (Tree p o)) deriving (Eq, Ord, Show, Typeable)
 
 instance TestNull (Tree p o) where
@@ -80,11 +87,39 @@ instance Ord p => Contains (M.Map p (Tree p o)) (Tree p o) where { lens=branches
 
 instance (Ord p, Monad m) => FocusesWith [p] m (Tree p o) (Maybe o) where { focus=focusLeaf; }
 
-instance Foldable (Tree p) where
-  foldr f b (Tree (a, m)) = foldr (flip $ foldr f) (maybe b (flip f b) a) m
+instance Foldable (ReduceTree p) where
+  foldr f b (ReduceTree control tree) = foldr f b $ elems control tree
 
-instance Traversable (Tree p) where
-  traverse f (Tree (t, m)) = curry Tree <$> traverse f t <*> traverse (traverse f) m
+instance Ord p => Traversable (ReduceTree p) where
+  traverse f (ReduceTree control tree) = fmap (ReduceTree control . fromList) $
+    traverse (\ (p, o) -> (,) <$> pure p <*> f o) $ assocs control tree
+
+----------------------------------------------------------------------------------------------------
+
+-- | This data type controls algorithms like 'mergeWithKeyM' where monadic evaluation needs to occur
+-- in a certain order. This simple operation code decides whether evaluation of leaves happens
+-- before evaluation of sub-'Tree's ('BreadthFirst') or whether evaluation of leaves happens after
+-- evaluation of sub-'Tree's ('DepthFirst').
+data RunTree
+  = DepthFirst
+    -- ^ will have the 'Rule' 'Dao.Tree.Leaf's evaluated such that the longest branches evaluate
+    -- first.
+  | BreadthFirst
+    -- ^ will have the 'Rule' 'Dao.Tree.Leaf's evaluated such that the shortest branches evaluate
+    -- first.
+  deriving (Eq, Ord, Show, Typeable, Enum, Bounded)
+
+-- | Like 'RunTree', but pairs the 'RunTree' value with the 'Tree' data type itself. This is used to
+-- instantiate 'Data.Foldable.Foldable' and 'Data.Traversable.Traversable', which means in order to
+-- use 'Data.Foldable.foldr' or 'Data.Traversable.traverse', it is first necessary to store the tree
+-- in this data type along with the 'RunTree' operator indicating the order in which the leaf
+-- objects @o@ will be retrieved.
+data ReduceTree p o = ReduceTree RunTree (Tree p o) deriving (Eq, Ord, Show, Typeable)
+
+instance Functor (ReduceTree p) where
+  fmap f (ReduceTree control tree) = ReduceTree control $ fmap f tree
+
+----------------------------------------------------------------------------------------------------
 
 treePair :: (Monad m, Ord p) => Lens m (Tree p o) (Maybe o, M.Map p (Tree p o))
 treePair = newLens (\ (Tree t) -> t) (\t (Tree _) -> Tree t)
@@ -105,19 +140,21 @@ branches = newLens (\ (Tree (_, m)) -> m) (\m (Tree (o, _)) -> Tree (o, m))
 -- When 'Dao.Lens.update'ing or 'Dao.Lens.alter'ing, the tree in the focus of the 'Dao.Lens.Lens' is
 -- passed as the first (left-hand) argument to the given altering function, and the sub-'Tree' found
 -- at the path @[p]@ is passed as the second (right-hand) argument.
+--
+-- For most purposes, the 'Dao.Lens.alter'ing function you want to use is the 'union' function.
 focusSubTree
   :: (Monad m, Ord p)
-  => [p] -> (Tree p o -> Tree p o -> m (Tree p o)) -> Lens m (Tree p o) (Tree p o)
-focusSubTree px alt =
+  => (Tree p o -> Tree p o -> m (Tree p o)) -> [p] -> Lens m (Tree p o) (Tree p o)
+focusSubTree alt px =
   newLensM
     (\  target@(Tree (_, map)) -> case px of
       []    -> return target
-      p:px  -> maybe (return nullValue) (fetch $ focusSubTree px alt) (M.lookup p map)
+      p:px  -> maybe (return nullValue) (fetch $ focusSubTree alt px) (M.lookup p map)
     )
     (case px of
       []    -> flip alt
       p:px  -> Dao.Lens.update $
-        branches >>> mapLens p >>> maybeLens True (return nullValue) >>> focusSubTree px alt
+        branches >>> mapLens p >>> maybeLens True (return nullValue) >>> focusSubTree alt px
     )
 
 -- | Focuses on an individual leaf at the given path.
@@ -228,6 +265,39 @@ blankTree = fromList . fmap (id &&& const ())
 -- leaf, or nothing if there is no leaf at the given path.
 lookup :: Ord p => [p] -> Tree p a -> Maybe a
 lookup px = pureFetch (focusLeaf px)
+
+-- | Get all items and their associated path.
+assocs :: RunTree -> Tree p a -> [([p], a)]
+assocs control t = loop [] t where
+  loop px (Tree (o, m)) =
+    ((if control==BreadthFirst then id else flip) (++))
+      (maybe [] (return . (,) px) o)
+      (M.assocs m >>= \ (p, o) -> loop (px++[p]) o)
+
+-- | Apply @'Prelude.map' 'Prelude.snd'@ to the result of 'assocs', behaves just like how
+-- 'Data.Map.elems' or 'Data.Array.IArray.elems' works.
+elems :: RunTree -> Tree p a -> [a]
+elems control = loop where
+  append = (case control of{ DepthFirst -> flip; BreadthFirst -> id; }) (++)
+  loop (Tree (a, m)) = append (maybe [] return a) $ M.elems m >>= loop
+  -- This function is not implemented in terms of 'assocs' to avoid stacking the paths, as the paths
+  -- will be ignored.
+
+-- | Counts the number of *nodes*, which includes the number of 'Branch'es and 'Leaf's.
+size :: Tree p a -> Word64
+size (Tree (o, m)) = maybe 0 (const 1) o + sum (fmap size $ M.elems m)
+
+leafCount :: Tree p a -> Word64
+leafCount = foldr (+) 0 . fmap (const 1) . ReduceTree DepthFirst
+
+-- | Counts the number of branches, not leaves.
+branchCount :: Tree p a -> Word64
+branchCount (Tree (_, m)) = fromIntegral (M.size m) + sum (fmap branchCount $ M.elems m)
+
+null :: Tree p a -> Bool
+null = testNull
+
+----------------------------------------------------------------------------------------------------
 
 -- | Since this function does not merge trees monadically, it is not important whether merging
 -- happens in 'DepthFirst' or 'BreadthFirst' order.
@@ -345,35 +415,6 @@ differences = differencesWith (\ _ _ -> Nothing)
 
 ----------------------------------------------------------------------------------------------------
 
--- | Get all items and their associated path.
-assocs :: RunTree -> Tree p a -> [([p], a)]
-assocs control t = loop [] t where
-  loop px (Tree (o, m)) =
-    ((if control==BreadthFirst then id else flip) (++))
-      (maybe [] (return . (,) px) o)
-      (M.assocs m >>= \ (p, o) -> loop (px++[p]) o)
-
--- | Apply @'Prelude.map' 'Prelude.snd'@ to the result of 'assocs', behaves just like how
--- 'Data.Map.elems' or 'Data.Array.IArray.elems' works.
-elems :: RunTree -> Tree p a -> [a]
-elems control = fmap snd . assocs control
-
--- | Counts the number of *nodes*, which includes the number of 'Branch'es and 'Leaf's.
-size :: Tree p a -> Word64
-size (Tree (o, m)) = maybe 0 (const 1) o + sum (fmap size $ M.elems m)
-
-leafCount :: Tree p a -> Word64
-leafCount = foldr (+) 0 . fmap (const 1)
-
--- | Counts the number of branches, not leaves.
-branchCount :: Tree p a -> Word64
-branchCount (Tree (_, m)) = fromIntegral (M.size m) + sum (fmap branchCount $ M.elems m)
-
-null :: Tree p a -> Bool
-null = testNull
-
-----------------------------------------------------------------------------------------------------
-
 -- | If you have read the chapter about zippers in "Learn You a Haskell for Great Good", you might
 -- appreciate that a zipper is provided for 'Tree' in this module, and a number of useful
 -- "Control.Monad.State"ful APIs are also provided, namely 'goto' and 'back'.
@@ -381,6 +422,7 @@ null = testNull
 -- Although it should be noted usually, 'Dao.Lens.Lens'es, 'Data.Foldable.fold's,
 -- 'Data.Traversable.traversal's, and 'mergeWithKeyM' are all you will need.
 data ZipTree p o = ZipTree { zipperSubTree :: Tree p o, zipperHistory :: [(p, Tree p o)] }
+  deriving (Eq, Ord, Typeable)
 
 -- | A monadic function type that keeps the 'ZipTree' in a 'Control.Monad.State.StateT' for you, and
 -- instantiates 'Control.Monad.State.MonadState' such that 'Control.Monad.State.get' and

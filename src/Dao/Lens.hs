@@ -40,6 +40,79 @@ import           Data.Array.Unboxed
 import qualified Data.IntMap as I
 import           Data.IORef
 import qualified Data.Map    as M
+import           Data.Monoid
+
+-- | This is defined as @('Prelude.flip' 'pureFetch')@ a left-associative infix operator of
+-- precedence 1. On the right of this infix operator is the data from which you want to fetch, on
+-- the right is a 'Lens' used to retrieve the data from within it. For example, say you have a
+-- large, complicated data type @complicated@ which contains a @Foo@ accessibly by the 'Lens' @foo@,
+-- and @Foo@ contains a @Bar@ accessible by the 'Lens' @bar@, and all you want to do is get the
+-- value @Bar@ from @complicated@. To do that you simply write:
+--
+-- @
+-- complicated 'Dao.Lens.&' foo 'Dao.Lens.&' bar
+-- @
+--
+-- This function requires a 'PureLens', but of course any 'Lens' polymorphic over the monadic type
+-- @m@ can be used.
+(&) :: c -> PureLens c e -> e
+(&) = flip pureFetch
+infixl 1 &
+
+-- | Apply a sequence of 'Data.Monoid.Endo'functors (updating functions) to a container @c@. The
+-- 'Data.Monoid.Endo'functors are applied in the order they appear in the list from left-to-right.
+--
+-- In category theory jargon, the 'Data.Monoid.mconcat'enation of the 'Data.Monoid.Dual' of each
+-- 'Data.Monoid.Endo'functor in the list @[c -> c]@ is applied to the container @c@.
+--
+-- This function is useful for applying a series of updates on a container @c@, where each update is
+-- constructed as pure 'Lens' function with the '($=)' or '($$)' operators.
+--
+-- @
+-- data Item = Item Int Int deriving Show
+--
+-- foo :: 'Control.Monad.Monad' m => 'Lens' m Item Int
+-- foo = 'newLens' (\\ (Item foo _) -> foo) (\\foo (Item _ bar) -> Item foo bar)
+--
+-- bar :: 'Control.Monad.Monad' m => 'Lens' m Item Int
+-- bar = 'newLens' (\\ (Item _ bar) -> bar) (\\bar (Item foo _) -> Item foo bar)
+--
+-- theItem :: Item
+-- theItem = Item 0 0
+--
+-- -- Now lets try this 'on' function with theItem...
+-- main :: IO ()
+-- main = 'System.IO.print' $
+--     'on' theItem [foo 'Dao.Lens.$=' 25, bar 'Dao.Lens.$=' 200, foo 'Dao.Lens.$$' (* 4)]
+-- @
+--
+-- The output of the above program will be:
+--
+-- > Item 100 200
+on :: c -> [c -> c] -> c
+on c fx = appEndo (getDual $ mconcat $ Dual . Endo <$> fx) c
+
+-- | This is a function used for constructing a simple updating 'Data.Monoid.Endo'functor (updating
+-- function) that simply stores the element @e@ into a container @c@ using 'pureUpdate'. You would
+-- use this operator when building a list of updates to pass to the 'on' function.
+--
+-- This function requires a 'PureLens', but of course any 'Lens' polymorphic over the monadic type
+-- @m@ can be used.
+($=) :: PureLens c e -> e -> c -> c
+($=) = pureUpdate
+infixr 0 $=
+
+-- | This is a function used for constructing a simple updating 'Data.Monoid.Endo'functor (updating
+-- function) that updates element @e@ inside of a container @c@ using 'pureAlter'. You would use
+-- this operator when building a list of updates to pass to the 'on' function.
+--
+-- This function requires a 'PureLens', but of course any 'Lens' polymorphic over the monadic type
+-- @m@ can be used.
+($$) :: PureLens c e -> (e -> e) -> c -> c
+($$) lens f c = snd (pureAlter lens f c)
+infixr 0 $$
+
+----------------------------------------------------------------------------------------------------
 
 -- | A 'Lens' is a 'Control.Monad.State.StateT' monadic function that 'Control.Monad.Trans.lift's a
 -- monad @m@, and can perform an update on an element @e@ stored within a container @c@. The

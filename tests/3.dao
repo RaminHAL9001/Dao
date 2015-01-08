@@ -1,7 +1,0 @@
-// tests if throwing an exception from within a function called from the top level will behave
-// correctly.
-func test() {
-	throw "thrown from within \"test()\"";
-}
-
-test();

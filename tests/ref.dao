@@ -1,8 +1,0 @@
-hello = "Hello, world!";
-a = ref("hello");
-println(a);
-println(typeof(a));
-println(@a);
-d = Dict{};
-d[a] = "I'm Mr. Meeseeks! Look at me!";
-println(d);

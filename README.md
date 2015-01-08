@@ -1,5 +1,5 @@
 # The Dao Programming Language
-Copyright (C) 2008-2014, Ramin Honary, all rights reserved.
+Copyright (C) 2008-2015, Ramin Honary, all rights reserved.
 
 ## A pure Haskell dynamically typed DSL for production-rule-based logic programming and AI.
 

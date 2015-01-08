@@ -1,6 +1,6 @@
 -- "dao.cabal" build configuration for this project.
 --
--- Copyright (C) 2014  Ramin Honary.
+-- Copyright (C) 2015  Ramin Honary.
 --
 -- Dao is free software: you can redistribute it and/or modify it under
 -- the terms of the GNU General Public License as published by the Free
@@ -20,7 +20,7 @@ Name:           Dao
 Version:        1.0.0.0
 Cabal-Version:  >= 1.18
 License:        GPL-3
-Copyright:      (C) 2014 Ramin Honary, all rights reserved.
+Copyright:      (C) 2015 Ramin Honary, all rights reserved.
 Author:         Ramin Honary
 Maintainer:     ramin.honary@gmail.com
 Build-Type:     Simple

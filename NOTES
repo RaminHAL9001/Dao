@@ -1,6 +1,6 @@
 Dao-1.0.0.0
 
-A pure-Haskell dynamically-typed DSL for production rule-based logic programming and AI.
+A pure Haskell dynamically typed DSL for production rule-based-logic programming and AI.
 
 Dao is a Domain Specific Language (DSL) intended providing tools
 for logic programming and constructing knowledge bases, with a

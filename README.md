@@ -1,7 +1,7 @@
 # The Dao Programming Language
 Copyright (C) 2008-2014, Ramin Honary, all rights reserved.
 
-## A pure-Haskell dynamically-typed DSL for production rule-based logic programming and AI.
+## A pure Haskell dynamically typed DSL for production-rule-based logic programming and AI.
 
 Dao is a Haskell package (library), designed for constructing simple artificial
 intelligence programs that can understand natural (human) languages, and is

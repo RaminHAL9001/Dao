@@ -24,7 +24,7 @@ Copyright:      (C) 2014 Ramin Honary, all rights reserved.
 Author:         Ramin Honary
 Maintainer:     ramin.honary@gmail.com
 Build-Type:     Simple
-Synopsis:       A pure-Haskell dynamically-typed DSL for production rule-based logic programming and AI.
+Synopsis:       A pure Haskell dynamically typed DSL for production-rule-based logic programming and AI.
 Description:    Dao is a Domain Specific Language (DSL) intended providing tools
                 for logic programming and constructing knowledge bases, with a
                 focus on artificial intelligence. Reminiscient of the PROLOG

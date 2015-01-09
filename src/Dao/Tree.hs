@@ -415,6 +415,33 @@ differences = differencesWith (\ _ _ -> Nothing)
 
 ----------------------------------------------------------------------------------------------------
 
+-- | In the sense of algebraic data types, this is the "power" operation on 'Tree's. That is, if two
+-- 'Tree's are like sets, then the 'powerTree' is the power set of the two trees. You could also
+-- think of this as a concatenation of all possible combinations of branches.
+--
+-- For example, if the 'assocs' of two trees are:
+--
+-- > [( [a, b, c], t ),  [( [b, c], w ),
+-- >  ( [a, b   ], u ),   ( [a   ], x )]
+-- >  ( [b      ], v )]
+--
+-- Then the 'powerTree' of these two trees is the evaluation of 'fromList' on,
+--
+-- > [( [a, b, c] ++ [b, c], t<>w ),
+-- >  ( [a, b, c] ++ [a   ], t<>x ),
+-- >  ( [a, b,  ] ++ [b, c], u<>w ),
+-- >  ( [a, b,  ] ++ [a,  ], u<>x ),
+-- >  ( [b,     ] ++ [b, c], v<>w ),
+-- >  ( [b,     ] ++ [a   ], v<>x )]
+--
+powerTree :: Ord p => (a -> b -> c) -> Tree p a -> Tree p b -> Tree p c
+powerTree append a b = fromList $ do
+  (pA, oA) <- assocs BreadthFirst a
+  (pB, oB) <- assocs BreadthFirst b
+  [(pA++pB, append oA oB)]
+
+----------------------------------------------------------------------------------------------------
+
 -- | If you have read the chapter about zippers in "Learn You a Haskell for Great Good", you might
 -- appreciate that a zipper is provided for 'Tree' in this module, and a number of useful
 -- "Control.Monad.State"ful APIs are also provided, namely 'goto' and 'back'.

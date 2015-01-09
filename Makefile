@@ -17,7 +17,7 @@
 # <http://www.gnu.org/licenses/agpl.html>.
 ####################################################################################################
 
-.PHONEY: all ghci test install edit clean
+.PHONEY: all ghci test install doc edit clean
 
 GHC_FLAGS := \
 	-threaded -Wall              \
@@ -46,8 +46,8 @@ test:
 edit:
 	vim Dao.cabal $$( find . -type f -name '*.hs' ) README.md scratch.hs
 
-ghci:
-	ghci $(GHC_FLAGS) $(GHC_SOURCES) $(GHC_MODULES)
+doc:
+	cabal haddock
 
 clean:
 	cabal clean

@@ -157,6 +157,13 @@ instance (Functor m, Applicative m, Monad m) => Monad (Rule m) where
   rule >>= f = case rule of
     Rule     n a   -> Rule n $ a >>= return . Left ||| evalRuleLogic . f
     RuleTree n x y -> let t = fmap (fmap (>>= f)) in RuleTree n (t x) (t y)
+  a >> b = let n a b = getProduct $ Product a <> Product b in case a of
+    Rule     nA xA    -> case b of
+      Rule     nB xB    -> Rule     (n nA nB) (xA >> xB)
+      RuleTree nB xB yB -> RuleTree (n nA nB) (fmap (fmap (a >>)) xB) (fmap (fmap (a >>)) yB)
+    RuleTree nA xA yA -> case b of
+      Rule     nB _     -> RuleTree (n nA nB) (fmap (fmap (>> b)) xA) (fmap (fmap (>> b)) yA)
+      RuleTree nB xB yB -> RuleTree (n nA nB) (T.powerTree (>>) xA xB) (T.powerTree (>>) yA yB)
   fail msg = Rule (NoteError $ return $ obj msg) mzero
 
 instance (Functor m, Applicative m, Monad m) => MonadPlus (Rule m) where

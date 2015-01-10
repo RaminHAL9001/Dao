@@ -42,8 +42,10 @@ module Dao.Object
     Foreign, toForeign, fromForeign, objDynamic, objEquality, objOrdering, objPrinting,
     objSimplifying,
     printable, simplifyable, matchable,
-    -- * Object: Union of 'Simple' and 'Foreign'
-    Object(OSimple, OForeign), ObjectPattern(objMatch), ObjectData(obj, fromObj), defaultFromObj,
+    -- * 'Object': Union Type of 'Simple' and 'Foreign'
+    Object(OSimple, OForeign),
+    ObjectPattern(objMatch), Similarity(Dissimilar, Similar, ExactlyEqual), boolSimilar,
+    ObjectData(obj, fromObj), defaultFromObj,
     objectMapUnion, objectMapIntersection,
     -- * Working with Void (undefined) Values
     MaybeVoid(voidValue, testVoid), firstNonVoid, allNonVoids
@@ -95,18 +97,47 @@ instance HasTypeRep Dynamic where { objTypeOf = dynTypeRep; }
 
 ----------------------------------------------------------------------------------------------------
 
--- | This class allows you to define a pattern matching predicate for your data type. The data type
--- must take an 'Object' as input and use data of your custom pattern type to decide whether your
--- pattern matches the 'Object'. You usually make use of 'fromObj' to convert the 'Object' to a type
--- which you can actually evaluate.
+-- | This is a fuzzy logic value which must be returned by 'objMatch' in the 'ObjectPattern' class.
+-- In the 'Rule' monad, 'objMatch' is used to select a branch of execution, and multiple branch
+-- choices may exist. If any branches are 'ExactlyEqual', then only those 'ExactlyEqual' branches
+-- will be chosen to continue execution. If there are no 'ExactlyEqual' choices then all 'Similar'
+-- branches will be chosen to continue execution. If all branches are 'Dissimilar', execution
+-- backtracks.
+data Similarity
+  = Dissimilar
+    -- ^ return this value if two 'Object's are below the threshold of what is considered "similar."
+  | Similar
+    -- ^ return this value if two 'Object's are not equal, but above the threshold of what is
+    -- considered "similar."
+  | ExactlyEqual
+    -- ^ return this value if two 'Object's are equal such that @('Prelude.==')@ would evaluate to
+    -- 'Prelude.True'. *Consider that to be a law:* if @('Prelude.==')@ evaluates to true for two
+    -- 'Object's, then 'objMatch' must evaluate to 'ExactlyEqual' for these two 'Object's. The
+    -- 'ExactlyEqual' value may be returned for dissimilar types as well, for example:
+    --
+    -- * 'Prelude.String's and 'Data.Text.Text's
+    -- * 'Prelude.Integer's and 'Prelude.Int's
+    -- * 'Prelude.Rational's and 'Prelude.Double's
+    -- * lists and 'Dao.Array.Array's
+  deriving (Eq, Ord, Show, Typeable, Enum, Bounded)
+
+boolSimilar :: Bool -> Similarity
+boolSimilar b = if b then ExactlyEqual else Dissimilar
+
+-- | This class allows you to define a fuzzy logic pattern matching predicate for your data type.
+-- The data type must take an 'Object' as input and use data of your custom pattern type to decide
+-- whether your pattern matches the 'Object'. You usually make use of 'fromObj' to convert the
+-- 'Object' to a type which you can actually evaluate.
 --
 -- The 'Object' data type itself instantiates this class, in which case if 'matchable' has not been
 -- defined for the data type stored in the 'Dao.Object.Object', 'objMatch' evaluates to
 -- @('Prelude.==')@
-class ObjectPattern o where { objMatch :: o -> Object -> Bool; }
+class ObjectPattern o where { objMatch :: o -> Object -> Similarity; }
 
 instance ObjectPattern Object where
-  objMatch a b = case a of { OForeign a' -> maybe (a==b) ($ b) (objPatternMatch a'); a -> a==b; }
+  objMatch a b = case a of
+    OForeign a' -> maybe (boolSimilar $ a==b) ($ b) (objPatternMatch a')
+    a           -> boolSimilar $ a==b
 
 ----------------------------------------------------------------------------------------------------
 
@@ -127,7 +158,7 @@ data Foreign
     , objOrdering     :: Dynamic -> Ordering
     , objPrinting     :: [PPrint]
     , objSimplifying  :: Simple
-    , objPatternMatch :: Maybe (Object -> Bool)
+    , objPatternMatch :: Maybe (Object -> Similarity)
     }
   deriving Typeable
 

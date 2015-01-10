@@ -75,6 +75,7 @@ import           Control.Monad.Except
 
 import           Data.Dynamic
 import           Data.Either (partitionEithers)
+import           Data.List   (partition)
 import           Data.Monoid
 import qualified Data.Map as M
 
@@ -214,8 +215,15 @@ evalRuleLogic
 evalRuleLogic rule = case rule of
   Rule     _ x   -> x
   RuleTree _ x y -> evalRuleLogic $ loop T.DepthFirst [] x <|> loop T.BreadthFirst [] y where
-    runMap control qx map = msum $ flip fmap (M.assocs map) $ \ (o, tree) ->
-      next >>= \q -> guard (objMatch o q) >> loop control (qx++[q]) tree
+    runMap control qx map = do
+      q <- next
+      let (equal, similar) = fmap snd *** fmap snd $ partition ((ExactlyEqual ==) . fst) $
+            (do (o, tree) <- M.assocs map
+                let result = objMatch o q
+                if result==Dissimilar then [] else [(result, tree)]
+            )
+      tree <- superState $ \st -> zip (if null equal then similar else equal) (repeat st)
+      loop control (qx++[q]) tree
     loop control qx (T.Tree (rule, map)) =
       ((if control==T.DepthFirst then id else flip) mplus)
         (runMap control qx map)
@@ -412,17 +420,21 @@ instance SimpleData TypePattern where
   simple (TypePattern o) = simple o
   fromSimple = fmap TypePattern . fromSimple
 
-instance ObjectPattern TypePattern where { objMatch (TypePattern p) o = p == objTypeOf o; }
+instance ObjectPattern TypePattern where
+  objMatch (TypePattern p) o = if p==objTypeOf o then Similar else Dissimilar
 
 instance ObjectData TypePattern where
   obj p = obj $ printable p $ matchable p $ simplifyable p $ toForeign p
   fromObj = defaultFromObj
 
--- | Infer the type of the 'next' 'Dao.Object.Object' in the current 'Query', if the type inference
--- succeeds, evaluate a function on it. This function makes a new 'RuleTree' where the pattern in
--- the branch is a 'TypePattern'. For example, if you pass a function to 'infer' which is of the
--- type @('Prelude.String' -> 'Rule' m a)@, 'infer' will create a 'RuleTree' that matches if the
--- 'Dao.Object.Object' returned by 'next' can be cast to a value of 'Prelude.String'.
+-- | Use 'next' to take the next item from the current 'Query', evaluate the 'Data.Typeable.TypeRep'
+-- of the 'next' 'Dao.Object.Object' using 'objTypeOf', compare this to the to the
+-- 'Data.Typeable.TypeRep' of @t@ inferred by 'Data.Typeable.typeOf'. Compare these two types using
+-- @('Prelude.==')@, and if 'Prelude.True' evaluate a function on it.  This function makes a new
+-- 'RuleTree' where the pattern in the branch is a 'TypePattern'. For example, if you pass a
+-- function to 'infer' which is of the type @('Prelude.String' -> 'Rule' m a)@, 'infer' will create
+-- a 'RuleTree' that matches if the 'Dao.Object.Object' returned by 'next' can be cast to a value of
+-- 'Prelude.String'.
 infer
   :: forall m t a . (Functor m, Applicative m, Monad m, Typeable t, ObjectData t)
   => (t -> Rule m a) -> Rule m a

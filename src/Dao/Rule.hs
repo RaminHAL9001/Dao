@@ -168,7 +168,7 @@ instance (Functor m, Applicative m, Monad m) => Monad (Rule m) where
   fail msg = Rule (NoteError $ return $ obj msg) mzero
 
 instance (Functor m, Applicative m, Monad m) => MonadPlus (Rule m) where
-  mzero = Rule (getSum mempty) mzero
+  mzero = RuleTree NoteBacktrack T.empty T.empty
   mplus a b = let n a b = getSum $ Sum a <> Sum b in case a of
     Rule     nA xA    -> case b of
       Rule     nB xB    -> Rule (n nA nB) (mplus xA xB)
@@ -210,12 +210,13 @@ instance (Functor m, Applicative m, Monad m) => Monoid (Rule m o) where
 -- | Evaluate a 'Rule' by flattening it's internal 'Dao.Tree.Tree' structure to a 'Dao.Logic.LogicT'
 -- monad. This is probably not as useful of a function as 'queryAll' or 'query'.
 evalRuleLogic
-  :: (Functor m, Applicative m, Monad m)
+  :: forall m a . (Functor m, Applicative m, Monad m)
   => Rule m a -> LogicT Query m (Either ErrorObject a)
 evalRuleLogic rule = case rule of
   Rule     _ x   -> x
-  RuleTree _ x y -> evalRuleLogic $ loop T.DepthFirst [] x <|> loop T.BreadthFirst [] y where
-    runMap control qx map = do
+  RuleTree _ x y -> loop T.DepthFirst [] x <|> loop T.BreadthFirst [] y where
+    runMap :: T.RunTree -> Query -> M.Map Object (T.Tree Object (Query -> Rule m a)) -> LogicT Query m (Either ErrorObject a)
+    runMap control qx map = if M.null map then mzero else do
       q <- next
       let (equal, similar) = fmap snd *** fmap snd $ partition ((ExactlyEqual ==) . fst) $
             (do (o, tree) <- M.assocs map
@@ -224,10 +225,11 @@ evalRuleLogic rule = case rule of
             )
       tree <- superState $ \st -> zip (if null equal then similar else equal) (repeat st)
       loop control (qx++[q]) tree
-    loop control qx (T.Tree (rule, map)) =
+    loop :: T.RunTree -> Query -> T.Tree Object (Query -> Rule m a) -> LogicT Query m (Either ErrorObject a)
+    loop control qx tree@(T.Tree (rule, map)) = if T.null tree then mzero else
       ((if control==T.DepthFirst then id else flip) mplus)
         (runMap control qx map)
-        (maybe mzero ($ qx) rule)
+        (maybe mzero (evalRuleLogic . ($ qx)) rule)
 
 -- | Run a 'Rule' against an @['Dao.Object.Object']@ query, return all successful results and all
 -- exceptions that may have been thrown by 'Control.Monad.Except.throwError'.
@@ -252,25 +254,50 @@ note txt rule = case rule of
     f = getProduct . mappend (Product $ NoteObject $ obj txt) . Product
 
 -- | Take the next item from the query input, backtrack if there is no input remaining.
-next :: (Functor m, Applicative m, Monad m) => Rule m Object
+--
+-- This function is polymorphic over a monadic type that instantiates 'Dao.Logic.MonadLogic',
+-- however consider the type of this function to be
+--
+-- @
+-- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
+-- @
+next :: (Functor m, Applicative m, Monad m, MonadLogic Query m) => m Object
 next = superState $ \ox -> if null ox then [] else [(head ox, tail ox)]
 
 -- | Take as many of next items from the query input as necessary to make the reset of the 'Rule'
 -- match the input query. This acts as kind of a Kleene star.
-part :: (Functor m, Applicative m, Monad m) => Rule m Query
+--
+-- This function is polymorphic over a monadic type that instantiates 'Dao.Logic.MonadLogic',
+-- however consider the type of this function to be:
+--
+-- @
+-- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
+-- @
+part :: (Functor m, Applicative m, Monad m, MonadLogic Query m) => m Query
 part = superState $ loop . flip (,) [] where
   loop (lo, ox) = case ox of { [] -> [(lo, [])]; o:ox -> (lo, ox) : loop (lo++[o], ox) }
 
+-- | Match when there are no more arguments, backtrack if there are.
+--
+-- This function is polymorphic over a monadic type that instantiates 'Dao.Logic.MonadLogic',
+-- however consider the type of this function to be:
+--
+-- @
+-- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
+-- @
+done :: (Functor m, Applicative m, Monad m, MonadLogic Query m) => m ()
+done = superState $ \ox -> if null ox then [((), [])] else []
+
 -- | If a given 'Rule' successfully matches, evaluate to 'Control.Monad.mzero', otherwise evaluate
 -- to @return ()@.
-failIf :: (Functor m, Applicative m, Monad m) => Rule m a -> Rule m ()
-failIf m = (m >> mzero) <|> done
+failIf :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadLogic st m) => m a -> m ()
+failIf m = (m >> mzero) <|> return ()
 
 -- | Logical exclusive-OR, matches one rule or the other, but not both. This function uses
 -- 'Dao.Logic.entangle', so there is a small performance penalty as the lazy state must be evaluated
 -- strictly, but this loss in performance could be regained by reducing the number of branches of
 -- logic evaluation.
-exclusive :: (Functor m, Applicative m, Monad m) => [Rule m a] -> Rule m a
+exclusive :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadLogic st m) => [m a] -> m a
 exclusive = entangle . msum >=> \matched ->
   case matched of { [o] -> superState $ const [o]; _ -> mzero; }
 
@@ -278,12 +305,8 @@ exclusive = entangle . msum >=> \matched ->
 -- function uses 'Dao.Logic.entangle', so there is a small performance penalty as the lazy state
 -- must be evaluated strictly, but this loss in performance could be regained by reducing the number
 -- of branches of logic evaluation.
-chooseOnly :: (Functor m, Applicative m, Monad m) => Int -> Rule m a -> Rule m a
+chooseOnly :: (Functor m, Applicative m, Monad m, MonadLogic st m) => Int -> m a -> m a
 chooseOnly n = entangle >=> superState . const . take n
-
--- | Match when there are no more arguments, backtrack if there are.
-done :: (Functor m, Applicative m, Monad m) => Rule m ()
-done = superState $ \ox -> if null ox then [((), [])] else []
 
 -- | When an error is thrown using 'Control.Monad.Except.throwError', the error is not caught right
 -- away, rather it lingers in the internal state until it can be caught while branches of execution
@@ -298,8 +321,7 @@ done = superState $ \ox -> if null ox then [((), [])] else []
 -- This function is defined as:
 --
 -- @'Prelude.flip' 'Control.Monad.Except.catchError' ('Prelude.const' 'Control.Monad.mzero')@
---
-dropErrors :: (Functor m, Applicative m, Monad m) => Rule m a -> Rule m a
+dropErrors :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadError err m, MonadLogic st m) => m a -> m a
 dropErrors = flip catchError (const mzero)
 
 ----------------------------------------------------------------------------------------------------
@@ -371,7 +393,7 @@ struct control tree rule =
 -- @('Control.Monad.>>=')@, @('Control.Applicative.<*>')@, 'Control.Monad.State.state',
 -- 'Control.Monad.Trans.lift', and others all introduce opaque function data types into the leaves
 -- which cannot be 'Data.Traversal.traverse'd.
-getRuleStruct :: Functor m => Rule m o -> RuleStruct
+getRuleStruct :: Rule m o -> RuleStruct
 getRuleStruct rule = case rule of
   RuleTree _ x y -> let tree o = fmap (const ()) o in T.union (tree x) (tree y)
   Rule     _ _   -> nullValue

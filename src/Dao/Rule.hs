@@ -48,15 +48,16 @@ module Dao.Rule
   ( -- * The 'Query' type
     Query,
     -- * Production Rules: the 'Rule' Monad
-    Rule, evalRuleLogic, queryAll, query, query1, note, next, part, failIf, exclusive, chooseOnly,
-    done, dropErrors,
+    Rule, evalRuleLogic, queryAll, query, query1, note, next, part, done,
     -- * Commenting Your 'Rule's with 'Note's
     Note(NoteBacktrack, NoteSuccess, NoteObject, NoteError, NoteSequence, NoteChoice),
     -- * The Branch Structure of a Rule
     -- $Structure_of_a_rule
     RuleStruct, tree, struct, getRuleStruct, prune, mask,
     -- * Convenient Rule Trees
-    TypePattern(TypePattern), patternTypeRep, infer
+    TypePattern(TypePattern), patternTypeRep, infer,
+    -- * Re-export the "Dao.Logic" module.
+    module Dao.Logic
   )
   where
 
@@ -287,42 +288,6 @@ part = superState $ loop . flip (,) [] where
 -- @
 done :: (Functor m, Applicative m, Monad m, MonadLogic Query m) => m ()
 done = superState $ \ox -> if null ox then [((), [])] else []
-
--- | If a given 'Rule' successfully matches, evaluate to 'Control.Monad.mzero', otherwise evaluate
--- to @return ()@.
-failIf :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadLogic st m) => m a -> m ()
-failIf m = (m >> mzero) <|> return ()
-
--- | Logical exclusive-OR, matches one rule or the other, but not both. This function uses
--- 'Dao.Logic.entangle', so there is a small performance penalty as the lazy state must be evaluated
--- strictly, but this loss in performance could be regained by reducing the number of branches of
--- logic evaluation.
-exclusive :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadLogic st m) => [m a] -> m a
-exclusive = entangle . msum >=> \matched ->
-  case matched of { [o] -> superState $ const [o]; _ -> mzero; }
-
--- | Given an 'Prelude.Int' value @n@, take only the first @n@ branches of logic evaluation. This
--- function uses 'Dao.Logic.entangle', so there is a small performance penalty as the lazy state
--- must be evaluated strictly, but this loss in performance could be regained by reducing the number
--- of branches of logic evaluation.
-chooseOnly :: (Functor m, Applicative m, Monad m, MonadLogic st m) => Int -> m a -> m a
-chooseOnly n = entangle >=> superState . const . take n
-
--- | When an error is thrown using 'Control.Monad.Except.throwError', the error is not caught right
--- away, rather it lingers in the internal state until it can be caught while branches of execution
--- that have not thrown any errors are evaluated. As evaluation progresses and more and more errors
--- are thrown, the amount of space taken by errors in the internal state starts to grow. When using
--- 'Control.Monad.Except.catchError', all of these errors are applied to the given catching
--- function.
---
--- If you know you never want to catch any errors from a function that throws errors, and you just
--- want to delete them from the internal state, you can call this function.
---
--- This function is defined as:
---
--- @'Prelude.flip' 'Control.Monad.Except.catchError' ('Prelude.const' 'Control.Monad.mzero')@
-dropErrors :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadError err m, MonadLogic st m) => m a -> m a
-dropErrors = flip catchError (const mzero)
 
 ----------------------------------------------------------------------------------------------------
 

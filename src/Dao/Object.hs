@@ -44,7 +44,11 @@ module Dao.Object
     printable, simplifyable, matchable,
     -- * 'Object': Union Type of 'Simple' and 'Foreign'
     Object(OSimple, OForeign),
-    ObjectPattern(objMatch), Similarity(Dissimilar, Similar, ExactlyEqual), boolSimilar,
+    -- * 'Object's as Matchable Patterns
+    ObjectPattern(objMatch),
+    Similarity(Dissimilar, Similar, ExactlyEqual), boolSimilar, similarButNotEqual, isSimilar,
+    Dissimilarity(Dissimilarity), getSimilarity,
+    -- * Custom data types as 'Object's
     ObjectData(obj, fromObj), defaultFromObj,
     objectMapUnion, objectMapIntersection,
     -- * Working with Void (undefined) Values
@@ -103,12 +107,29 @@ instance HasTypeRep Dynamic where { objTypeOf = dynTypeRep; }
 -- will be chosen to continue execution. If there are no 'ExactlyEqual' choices then all 'Similar'
 -- branches will be chosen to continue execution. If all branches are 'Dissimilar', execution
 -- backtracks.
+--
+-- 'Similarity' instantiates 'Data.Monoid.Monoid' such that 'Data.Monoid.mappend' will multiply
+-- 'Similar' values together.
+--
+-- ### A note about sorting
+--
+-- When 'Prelude.Ordering' 'Similarity' values, items that are more 'Similar' are greater than those
+-- that are less similar. This is good when you use functions like 'Prelude.maximum', but not so
+-- good when you use functions like 'Data.List.sort'. When you 'Data.List.sort' a list of
+-- 'Similarity' values, the list will be ordered from least similar to most similar, with the most
+-- similar items towards the end of the resultant list. This is usually not what you want. You
+-- usually want the most similar items at the 'Prelude.head' of the resultant list. To solve this
+-- problem, you can wrap 'Similarity' in a 'Dissimilarity' wrapper and then 'Data.List.sort', or
+-- just use @('Data.List.sortBy' ('Prelude.flip' 'Prelude.compare'))@
 data Similarity
   = Dissimilar
     -- ^ return this value if two 'Object's are below the threshold of what is considered "similar."
-  | Similar
+  | Similar Double
     -- ^ return this value if two 'Object's are not equal, but above the threshold of what is
-    -- considered "similar."
+    -- considered "similar." The 'Prelude.Double' value is used to further prioritize which branches
+    -- to evaluate first, with values closer to @1.0@ having higher priority. If you are not sure
+    -- what value to set, set it to @0.0@; a similarity of @0.0@ is still more similar than
+    -- 'Dissimilar'.
   | ExactlyEqual
     -- ^ return this value if two 'Object's are equal such that @('Prelude.==')@ would evaluate to
     -- 'Prelude.True'. *Consider that to be a law:* if @('Prelude.==')@ evaluates to true for two
@@ -119,10 +140,61 @@ data Similarity
     -- * 'Prelude.Integer's and 'Prelude.Int's
     -- * 'Prelude.Rational's and 'Prelude.Double's
     -- * lists and 'Dao.Array.Array's
-  deriving (Eq, Ord, Show, Typeable, Enum, Bounded)
+  deriving (Eq, Show, Typeable)
 
+-- | This data type is defined for 'Data.List.sort'ing purposes. Usually you want to sort a list of
+-- matches such that the most similar items are towards the 'Prelude.head' of the list, but
+-- 'Similarity' is defined such that more similar values are greater than less similar values, and
+-- as such 'Data.List.sort'ing 'Similarity' values places the most 'Similar' items towards the
+-- 'Prelude.tail' end of the resultant list. Wrapping 'Similarity' values in this data type reverses
+-- the 'Prelude.Ordering' so that more 'Dissimilar' items have a higher value and are placed towards
+-- the 'Prelude.tail' end of the 'Data.List.sort'ed list.
+newtype Dissimilarity = Dissimilarity { getSimilarity :: Similarity }
+  deriving (Eq, Show, Typeable)
+
+instance Monoid Similarity where
+  mempty = Dissimilar
+  mappend a b = case a of
+    Dissimilar   -> Dissimilar
+    ExactlyEqual -> b
+    Similar    a -> case b of
+      Dissimilar   -> Dissimilar
+      ExactlyEqual -> Similar a
+      Similar    b -> Similar $ a*b
+
+instance Ord Similarity where
+  compare a b = case a of
+    Dissimilar   -> case b of
+      Dissimilar   -> EQ
+      _            -> LT
+    Similar    a -> case b of
+      Dissimilar   -> GT
+      Similar    b -> compare a b
+      ExactlyEqual -> LT
+    ExactlyEqual -> case b of
+      ExactlyEqual -> EQ
+      _            -> LT
+
+instance Ord Dissimilarity where { compare (Dissimilarity a) (Dissimilarity b) = compare b a; }
+
+instance Monoid Dissimilarity where
+  mempty = Dissimilarity mempty
+  mappend (Dissimilarity a) (Dissimilarity b) = Dissimilarity $ mappend a b
+
+-- | Convert a 'Prelude.Bool' value to a 'Similarity' value. 'Prelude.True' is 'ExactlyEqual', and
+-- 'Prelude.False' is 'Dissimilar'.
 boolSimilar :: Bool -> Similarity
 boolSimilar b = if b then ExactlyEqual else Dissimilar
+
+-- | Evaluates to 'Prelude.True' only if the 'Similarity' value is 'Similar', and not 'ExactlyEqual'
+-- or 'Dissimilar'.
+similarButNotEqual :: Similarity -> Bool
+similarButNotEqual o = case o of { Similar _ -> True; _ -> False; }
+
+-- | Evaluates to 'Prelude.True' if the 'Similarity' valus is not 'Dissimilar', both 'Similar' and
+-- 'ExactlyEqual' evaluate to 'Prelude.True'.
+isSimilar :: Similarity -> Bool
+isSimilar o = case o of { Dissimilar -> False; _ -> True; }
 
 -- | This class allows you to define a fuzzy logic pattern matching predicate for your data type.
 -- The data type must take an 'Object' as input and use data of your custom pattern type to decide

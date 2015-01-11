@@ -76,7 +76,7 @@ import           Control.Monad.Except
 
 import           Data.Dynamic
 import           Data.Either (partitionEithers)
-import           Data.List   (partition)
+import           Data.List   (partition, sortBy)
 import           Data.Monoid
 import qualified Data.Map as M
 
@@ -219,12 +219,15 @@ evalRuleLogic rule = case rule of
     runMap :: T.RunTree -> Query -> M.Map Object (T.Tree Object (Query -> Rule m a)) -> LogicT Query m (Either ErrorObject a)
     runMap control qx map = if M.null map then mzero else do
       q <- next
-      let (equal, similar) = fmap snd *** fmap snd $ partition ((ExactlyEqual ==) . fst) $
+      let (equal, similar) = partition ((ExactlyEqual ==) . fst) $
             (do (o, tree) <- M.assocs map
                 let result = objMatch o q
                 if result==Dissimilar then [] else [(result, tree)]
             )
-      tree <- superState $ \st -> zip (if null equal then similar else equal) (repeat st)
+      tree <- superState $ \st -> flip zip (repeat st) $
+        if null equal
+        then snd <$> sortBy (\a b -> compare (fst b) (fst a)) similar
+        else snd <$> equal
       loop control (qx++[q]) tree
     loop :: T.RunTree -> Query -> T.Tree Object (Query -> Rule m a) -> LogicT Query m (Either ErrorObject a)
     loop control qx tree@(T.Tree (rule, map)) = if T.null tree then mzero else
@@ -408,7 +411,7 @@ instance SimpleData TypePattern where
   fromSimple = fmap TypePattern . fromSimple
 
 instance ObjectPattern TypePattern where
-  objMatch (TypePattern p) o = if p==objTypeOf o then Similar else Dissimilar
+  objMatch (TypePattern p) o = if p==objTypeOf o then Similar 0.0 else Dissimilar
 
 instance ObjectData TypePattern where
   obj p = obj $ printable p $ matchable p $ simplifyable p $ toForeign p

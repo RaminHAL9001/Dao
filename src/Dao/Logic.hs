@@ -32,6 +32,7 @@ module Dao.Logic where
 import           Control.Arrow
 import           Control.Applicative
 import           Control.Monad
+import           Control.Monad.Identity
 import           Control.Monad.Except
 import           Control.Monad.State.Class
 
@@ -44,6 +45,11 @@ import           Control.Monad.State.Class
 -- mututally exclusive values. If the monadic function backtracks using 'Control.Applicative.empty'
 -- or 'Control.Monad.mzero', the state is reverted.
 newtype LogicT st m a = LogicT{ runLogicT :: st -> m [(a, st)] }
+
+type Logic st a = LogicT st Identity a
+
+logic :: (st -> [(a, st)]) -> Logic st a
+logic = LogicT . fmap Identity
 
 instance Functor m => Functor (LogicT st m) where
   fmap f (LogicT p) = LogicT $ fmap (fmap (first f)) . p
@@ -77,9 +83,15 @@ instance MonadTrans (LogicT st) where
 evalLogicT :: Functor m => LogicT st m a -> st -> m [a]
 evalLogicT f = fmap (fmap fst) . runLogicT f
 
+evalLogic :: Logic st a -> st -> [a]
+evalLogic f = runIdentity . evalLogicT f
+
 -- | Similar to 'Control.Monad.State.execStateT'.
 execLogicT :: Functor m => LogicT st m a -> st -> m [st]
 execLogicT f = fmap (fmap snd) . runLogicT f
+
+execLogic :: Logic st a -> st -> [st]
+execLogic f = runIdentity . execLogicT f
 
 ----------------------------------------------------------------------------------------------------
 

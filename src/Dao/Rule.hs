@@ -48,12 +48,10 @@ module Dao.Rule
   ( -- * The 'Query' type
     Query,
     -- * Production Rules: the 'Rule' Monad
-    Rule, evalRuleLogic, queryAll, query, query1, note, next, part, done,
-    -- * Commenting Your 'Rule's with 'Note's
-    Note(NoteBacktrack, NoteSuccess, NoteObject, NoteError, NoteSequence, NoteChoice),
+    Rule, evalRuleLogic, queryAll, query, query1, next, part, done,
     -- * The Branch Structure of a Rule
     -- $Structure_of_a_rule
-    RuleStruct, tree, struct, getRuleStruct, prune, mask,
+    RuleStruct, tree, struct, getRuleStruct, trim, mask,
     -- * Convenient Rule Trees
     TypePattern(TypePattern), patternTypeRep, infer,
     -- * Re-export the "Dao.Logic" module.
@@ -75,7 +73,6 @@ import           Control.Monad.Reader.Class
 import           Control.Monad.Except
 
 import           Data.Dynamic
-import           Data.Either (partitionEithers)
 import           Data.List   (partition, sortBy)
 import           Data.Monoid
 import qualified Data.Map as M
@@ -87,37 +84,6 @@ import qualified Data.Map as M
 -- 'Rule' monad, and every 'Rule' takes turns observing portions of the query and constructing a
 -- reply.
 type Query = [Object]
-
-----------------------------------------------------------------------------------------------------
-
--- | 'Note's are structured comments that you can embed into your 'Rule's. This can be helpful for
--- debugging, and can also provied for a bit of meta-programming.
-data Note
-  = NoteBacktrack
-  | NoteSuccess
-  | NoteObject   Object
-  | NoteError    ErrorObject
-  | NoteSequence Note Note
-  | NoteChoice   Note Note
-  deriving (Eq, Ord, Show, Typeable)
-
-instance Monoid (Sum Note) where
-  mempty = Sum NoteBacktrack
-  mappend (Sum a) (Sum b) = Sum $ case a of
-    NoteBacktrack   -> b
-    NoteChoice a a' -> NoteChoice a $ getSum $ Sum a' <> Sum b
-    a               -> case b of
-      NoteBacktrack   -> a
-      b               -> NoteChoice a b
-
-instance Monoid (Product Note) where
-  mempty = Product NoteSuccess
-  mappend (Product a) (Product b) = Product $ case a of
-    NoteSuccess       -> b
-    NoteSequence a a' -> NoteSequence a $ getProduct $ Product a' <> Product b
-    a                 -> case b of
-      NoteSuccess       -> a
-      b                 -> NoteSequence a b
 
 ----------------------------------------------------------------------------------------------------
 
@@ -141,55 +107,92 @@ instance Monoid (Product Note) where
 -- 'Control.Monad.Reader.Class.local' function can be used to execute rules with a different input
 -- in a different context without altering the current context.
 data Rule m a
-  = Rule Note (LogicT Query m (Either ErrorObject a))
-  | RuleTree Note (T.Tree Object (Query -> Rule m a)) (T.Tree Object (Query -> Rule m a))
+  = RuleEmpty
+  | RuleReturn a
+  | RuleLift (m (Rule m a))
+  | RuleLogic (T.Tree Object ()) (LogicT Query m (Either ErrorObject (Rule m a)))
+  | RuleChoice (Rule m a) (Rule m a)
+  | RuleError ErrorObject
+  | RuleTree  (M.Map Object (T.Tree Object (Query -> Rule m a)))
+              (M.Map Object (T.Tree Object (Query -> Rule m a)))
     -- DepthFirst and BreadthFirst rule trees are kept separate.
 
 instance Functor m => Functor (Rule m) where
   fmap f rule = case rule of
-    Rule     n o   -> Rule n $ fmap (fmap f) o
-    RuleTree n x y -> let map o = fmap (fmap (fmap f)) o in RuleTree n (map x) (map y)
+    RuleEmpty      -> RuleEmpty
+    RuleReturn   o -> RuleReturn $ f o
+    RuleLift     o -> RuleLift $ fmap (fmap f) o
+    RuleLogic  t o -> RuleLogic t $ fmap (fmap (fmap f)) o
+    RuleChoice x y -> RuleChoice (fmap f x) (fmap f y)
+    RuleError  err -> RuleError err
+    RuleTree   x y -> let map = fmap (fmap (fmap (fmap f))) in RuleTree (map x) (map y)
 
 instance (Applicative m, Monad m) => Applicative (Rule m) where { pure = return; (<*>) = ap; }
 
 instance (Applicative m, Monad m) => Alternative (Rule m) where { empty = mzero; (<|>) = mplus; }
 
 instance (Functor m, Applicative m, Monad m) => Monad (Rule m) where
-  return = Rule (getProduct mempty) . return . Right
+  return = RuleReturn
   rule >>= f = case rule of
-    Rule     n a   -> Rule n $ a >>= return . Left ||| evalRuleLogic . f
-    RuleTree n x y -> let t = fmap (fmap (>>= f)) in RuleTree n (t x) (t y)
-  a >> b = let n a b = getProduct $ Product a <> Product b in case a of
-    Rule     nA xA    -> case b of
-      Rule     nB xB    -> Rule     (n nA nB) (xA >> xB)
-      RuleTree nB xB yB -> RuleTree (n nA nB) (fmap (fmap (a >>)) xB) (fmap (fmap (a >>)) yB)
-    RuleTree nA xA yA -> case b of
-      Rule     nB _     -> RuleTree (n nA nB) (fmap (fmap (>> b)) xA) (fmap (fmap (>> b)) yA)
-      RuleTree nB xB yB -> RuleTree (n nA nB) (T.powerTree (>>) xA xB) (T.powerTree (>>) yA yB)
-  fail msg = Rule (NoteError $ return $ obj msg) mzero
+    RuleEmpty      -> RuleEmpty
+    RuleReturn   o -> f o
+    RuleLift     o -> RuleLift $ fmap (>>= f) o
+    RuleLogic  t o -> RuleLogic t $ fmap (fmap (>>= f)) o
+    RuleChoice x y -> RuleChoice (x >>= f) (y >>= f)
+    RuleError  err -> RuleError err
+    RuleTree   x y -> let map = fmap $ fmap $ fmap (>>= f) in RuleTree (map x) (map y)
+  a >> b = case a of
+    RuleEmpty        -> RuleEmpty
+    RuleReturn _     -> b
+    RuleLift   a     -> RuleLift $ fmap (>> b) a
+    RuleLogic  tA a  -> case b of
+      RuleLogic tB b   -> RuleLogic (T.powerTree const tA tB) (a >> b)
+      b                -> RuleLogic tA $ fmap (fmap (>> b)) a
+    RuleChoice a1 a2 -> RuleChoice (a1 >> b) (a2 >> b)
+    RuleError  err   -> RuleError err
+    RuleTree   a1 a2 -> case b of
+      RuleEmpty        -> RuleEmpty
+      RuleError  err   -> RuleError err
+      RuleTree   b1 b2 ->
+        let wrap map = T.Tree (Nothing, map)
+            unwrap (T.Tree (_, tree)) = tree
+            power a b = unwrap $ T.powerTree (>>) (wrap a) (wrap b)
+        in  RuleTree (power a1 b1) (power a2 b2)
+      b                -> let bind = fmap $ fmap $ fmap (>> b) in RuleTree (bind a1) (bind a2)
+  fail = RuleError . return . obj
 
 instance (Functor m, Applicative m, Monad m) => MonadPlus (Rule m) where
-  mzero = RuleTree NoteBacktrack T.empty T.empty
-  mplus a b = let n a b = getSum $ Sum a <> Sum b in case a of
-    Rule     nA xA    -> case b of
-      Rule     nB xB    -> Rule (n nA nB) (mplus xA xB)
-      RuleTree nB xB yB ->
-        let t = fmap (fmap $ mplus a) in RuleTree (n nA nB) (t xB) (t yB)
-    RuleTree nA xA yA -> case b of
-      Rule     nB _     ->
-        let t = fmap (fmap $ flip mplus b) in RuleTree (n nA nB) (t xA) (t yA)
-      RuleTree nB xB yB ->
-        let t = T.unionWith (\a b q -> mplus (a q) (b q))
-        in  RuleTree (n nA nB) (t xA xB) (t yA yB)
+  mzero = RuleEmpty
+  mplus a b = case a of
+    RuleEmpty        -> b
+    RuleChoice (RuleChoice a1 a2) a3 -> mplus a1 $ mplus a2 $ mplus a3 b
+    RuleChoice a1 (RuleChoice a2 a3) -> RuleChoice a1 $ RuleChoice a2 $ mplus a3 b
+    RuleChoice a1 a2 -> case b of
+      RuleEmpty        -> a
+      b                -> RuleChoice a1 $ RuleChoice a2 b
+    RuleTree   a1 a2 -> case b of
+      RuleEmpty        -> a
+      RuleChoice b1 b2 -> RuleChoice (mplus a b1) b2
+      RuleTree   b1 b2 ->
+        let plus = T.unionWith (\a b q -> mplus (a q) (b q))
+        in  RuleTree (M.unionWith plus a1 b1) (M.unionWith plus a2 b2)
+      b                -> RuleChoice a b
+    RuleLogic  tA a  -> case b of
+      RuleEmpty        -> RuleLogic tA a
+      RuleLogic  tB b  -> RuleLogic (T.union tA tB) $ mplus a b
+      b                -> RuleChoice (RuleLogic tA a) b
+    a                -> case b of
+      RuleEmpty        -> a
+      b                -> RuleChoice a b
 
 instance (Functor m, Applicative m, Monad m) => MonadError ErrorObject (Rule m) where
-  throwError o          = Rule (NoteError o) $ return $ Left o
+  throwError            = RuleError
   catchError rule catch = case rule of
-    Rule     n x   -> Rule n $ x >>= (\ (Rule _ x) -> x) . catch ||| return . Right
-    RuleTree n x y -> let c t = fmap (fmap (flip catchError catch)) t in RuleTree n (c x) (c y)
+    RuleError o -> catch o
+    _           -> rule
 
 instance (Functor m, Applicative m, Monad m) => MonadState Query (Rule m) where
-  state = Rule (getProduct mempty) . state . fmap (first Right)
+  state = RuleLogic nullValue . state . fmap (first $ Right . return)
 
 instance (Functor m, Applicative m, Monad m) => MonadReader Query (Rule m) where
   ask = get;
@@ -197,15 +200,14 @@ instance (Functor m, Applicative m, Monad m) => MonadReader Query (Rule m) where
     mplus (sub >>= \o -> state (const (o, st))) (put st >> mzero)
 
 instance (Functor m, Applicative m, Monad m) => MonadLogic Query (Rule m) where
-  superState          = Rule (getProduct mempty) . superState . fmap (fmap (first Right))
-  entangle rule = case rule of
-    Rule     n x   -> Rule n $
-      partitionEithers . fmap (\ (x, st) -> flip (,) st +++ flip (,) st $ x) <$>
-        entangle x >>= \ (err, ok) -> superState (\st -> (Right ok, st) : (first Left <$> err))
-    RuleTree n x y -> let e t = fmap (fmap entangle) t in RuleTree n (e x) (e y)
+  superState    = RuleLogic nullValue . superState . fmap (fmap $ first $ Right . return)
+  entangle rule = RuleLogic (getRuleStruct rule) $ do
+    let lrzip (o, qx) = (\err -> ([(err, qx)], [])) ||| (\o -> ([], [(o, qx)])) $ o
+    (errs, ox) <- (concat *** concat) . unzip . fmap lrzip <$> entangle (evalRuleLogic rule)
+    superState $ \st -> (Right $ return ox, st) : fmap (first Left) errs
 
 instance (Functor m, Applicative m, Monad m) => Monoid (Rule m o) where
-  mempty = mzero
+  mempty  = mzero
   mappend = mplus
 
 -- | Evaluate a 'Rule' by flattening it's internal 'Dao.Tree.Tree' structure to a 'Dao.Logic.LogicT'
@@ -214,8 +216,13 @@ evalRuleLogic
   :: forall m a . (Functor m, Applicative m, Monad m)
   => Rule m a -> LogicT Query m (Either ErrorObject a)
 evalRuleLogic rule = case rule of
-  Rule     _ x   -> x
-  RuleTree _ x y -> loop T.DepthFirst [] x <|> loop T.BreadthFirst [] y where
+  RuleEmpty      -> mzero
+  RuleReturn   o -> return $ Right o
+  RuleLift     o -> lift o >>= evalRuleLogic
+  RuleLogic  _ o -> o >>= return . Left ||| evalRuleLogic
+  RuleChoice x y -> evalRuleLogic x <|> evalRuleLogic y
+  RuleError  err -> return $ Left err
+  RuleTree   x y -> runMap T.DepthFirst [] x <|> runMap T.BreadthFirst [] y where
     runMap :: T.RunTree -> Query -> M.Map Object (T.Tree Object (Query -> Rule m a)) -> LogicT Query m (Either ErrorObject a)
     runMap control qx map = if M.null map then mzero else do
       q <- next
@@ -247,15 +254,6 @@ query r = fmap (>>= (const [] ||| return)) . queryAll r
 -- | Like 'query', but only returns the first successful result, if any.
 query1 :: (Functor m, Applicative m, Monad m) => Rule m a -> Query -> m (Maybe a)
 query1 r = fmap (\ox -> if null ox then Nothing else Just $ head ox) . query r
-
--- | You can write comments into your 'Rule'. This allows for a bit of meta-programming, where you
--- can run queries on rules, which search through the comments.
-note :: ObjectData note => note -> Rule m a -> Rule m a
-note txt rule = case rule of
-  Rule     n x   -> Rule     (f n) x
-  RuleTree n x y -> RuleTree (f n) x y
-  where
-    f = getProduct . mappend (Product $ NoteObject $ obj txt) . Product
 
 -- | Take the next item from the query input, backtrack if there is no input remaining.
 --
@@ -326,7 +324,7 @@ done = superState $ \ox -> if null ox then [((), [])] else []
 
 -- | This is the data type that models the branch structure of a 'Rule'. It is a 'Dao.Tree.Tree'
 -- with 'Dao.Object.Object' paths and @()@ leaves. It is possible to perform modifications to some
--- 'Rule's, for example 'prune'-ing of branches, using a 'RuleStruct'.
+-- 'Rule's, for example 'trim'-ing of branches, using a 'RuleStruct'.
 type RuleStruct = T.Tree Object ()
 
 -- | Take a list of lists of a type of 'Dao.Object.ObjectData' and construct a 'Rule' tree that will
@@ -339,10 +337,7 @@ type RuleStruct = T.Tree Object ()
 tree
   :: (Functor m, Applicative m, Monad m, ObjectData a)
   => T.RunTree -> [[a]] -> (Query -> Rule m b) -> Rule m b
-tree control branches f =
-  ((if control==T.DepthFirst then id else flip) $ RuleTree NoteBacktrack)
-    (T.fromList $ zip (fmap (fmap obj) branches) $ repeat f)
-    mempty
+tree control branches f = struct control (T.fromList $ zip (fmap obj <$> branches) $ repeat ()) f
 
 -- | Construct a 'Rule' tree from a 'Dao.Tree.Tree' data type and a 'Rule' function. The 'Rule' will
 -- be copied to every single 'Dao.Tree.Leaf' in the given 'Dao.Tree.Tree'.
@@ -350,9 +345,11 @@ struct
   :: (Functor m, Applicative m, Monad m)
   => T.RunTree -> RuleStruct -> (Query -> Rule m a) -> Rule m a
 struct control tree rule =
-  ((if control==T.DepthFirst then id else flip) $ RuleTree NoteBacktrack)
-    (fmap (\ () -> rule) tree)
-    mempty
+  let df = control==T.DepthFirst
+      (T.Tree (leaf, map)) = fmap (\ () -> rule) tree 
+  in  maybe id ((if df then flip else id) mplus . ($ [])) leaf $
+        ((if df then id else flip) RuleTree) map nullValue
+    
 
 -- | Remove all of the 'Rule's and return only the 'Dao.Tree.Tree' structure. This function cannot
 -- retrieve the entire 'Dao.Tree.Tree', it can only see the 'Dao.Tree.Tree' created by the 'tree'
@@ -363,35 +360,42 @@ struct control tree rule =
 -- which cannot be 'Data.Traversal.traverse'd.
 getRuleStruct :: Rule m o -> RuleStruct
 getRuleStruct rule = case rule of
-  RuleTree _ x y -> let tree o = fmap (const ()) o in T.union (tree x) (tree y)
-  Rule     _ _   -> nullValue
+  RuleEmpty      -> T.empty
+  RuleTree   x y ->
+    let blank o = fmap (fmap (const ())) o
+    in  T.Tree (Nothing, M.union (blank x) (blank y))
+  RuleChoice x y -> T.union (getRuleStruct x) (getRuleStruct y)
+  _              -> T.Tree (Just (), M.empty)
 
 -- | With a 'RuleStruct' delete any of the matching branches from the 'Rule' tree. Branch matching
 -- uses the @('Prelude.==')@ predicate, not 'Dao.Object.objMatch'. This is the dual of 'mask' in
--- that @'prune' struct t 'Data.Monoid.<>' 'mask' struct t == t@ is always true.
+-- that @'trim' struct t 'Data.Monoid.<>' 'mask' struct t == t@ is always true.
 -- This function works by calling 'Dao.Tree.difference' on the 'Rule' and the 'Dao.Tree.Tree'
 -- constructed by the 'Dao.Tree.blankTree' of the given list of 'Dao.Object.ObjectData' branches.
---
--- This function will delve very deeply into the 'Rule', even 'prune'-ing sub-'Dao.Tree.Tree's that
--- are invisible to 'getRuleStruct'
-prune :: RuleStruct -> Rule m a -> Rule m a
-prune st rule = let del = fmap (fmap (prune st)) . flip T.difference st in case rule of
-  Rule     n x   -> Rule     n x
-  RuleTree n x y -> RuleTree n (del x) (del y)
+trim :: (Functor m, Applicative m, Monad m) => RuleStruct -> Rule m a -> Rule m a
+trim tree@(T.Tree (leaf, map)) rule = case rule of
+  RuleEmpty      -> RuleEmpty
+  RuleTree   x y -> RuleTree (del x) (del y)
+  RuleChoice x y -> RuleChoice (trim tree x) (trim tree y)
+  rule           -> maybe rule (\ () -> mzero) leaf
+  where
+    treeDiff a b = let c = T.difference a b in guard (not $ T.null c) >> return c
+    del          = flip (M.differenceWith treeDiff) map
 
 -- | With 'RuleStruct' and delete any of the branches from the 'Rule' tree that do *not* match the
--- 'RuleStruct' This is the dual of 'prune' in that
--- @'prune' struct t 'Data.Monoid.<>' 'mask' struct t == t@ is always true. Branch matching uses the
+-- 'RuleStruct' This is the dual of 'trim' in that
+-- @'trim' struct t 'Data.Monoid.<>' 'mask' struct t == t@ is always true. Branch matching uses the
 -- @('Prelude.==')@ predicate, not 'Dao.Object.objMatch'. This function works by calling
 -- 'Dao.Tree.intersection' on the 'Rule' and the 'Dao.Tree.Tree' constructed by the
 -- 'Dao.Tree.blankTree' of the given list of 'Dao.Object.ObjectData' branches.
---
--- This function will delve very deeply into the 'Rule', even 'mask'ing sub-'Dao.Tree.Tree's that
--- are invisible to 'getRuleStruct'
-mask :: RuleStruct -> Rule m a -> Rule m a
-mask st rule = let del = fmap (fmap (mask st)) . flip T.intersection st in case rule of
-  Rule     n x   -> Rule     n x
-  RuleTree n x y -> RuleTree n (del x) (del y)
+mask :: (Functor m, Applicative m, Monad m) => RuleStruct -> Rule m a -> Rule m a
+mask tree@(T.Tree (leaf, map)) rule = case rule of
+  RuleEmpty      -> RuleEmpty
+  RuleTree   x y -> RuleTree (del x) (del y)
+  RuleChoice x y -> RuleChoice (mask tree x) (mask tree y)
+  rule           -> maybe mzero (\ () -> rule) leaf
+  where
+    del = flip (M.intersectionWith T.intersection) map
 
 ----------------------------------------------------------------------------------------------------
 

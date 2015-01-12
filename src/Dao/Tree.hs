@@ -415,17 +415,19 @@ differences = differencesWith (\ _ _ -> Nothing)
 
 ----------------------------------------------------------------------------------------------------
 
--- | In the sense of algebraic data types, this is the "power" operation on 'Tree's. That is, if two
--- 'Tree's are like sets, then the 'powerTree' is the power set of the two trees. You could also
--- think of this as a concatenation of all possible combinations of branches.
+-- | The "power set" of two trees. That is, if two 'Tree's are like sets, then the 'powerTree' is
+-- the power set of the two trees. In the sense of algebraic data types, this is the "power"
+-- operation on 'Tree's. You could also think of this as a concatenation of all possible
+-- combinations of branches.
 --
 -- For example, if the 'assocs' of two trees are:
 --
+-- > -- tree X              tree Y
 -- > [( [a, b, c], t ),  [( [b, c], w ),
 -- >  ( [a, b   ], u ),   ( [a   ], x )]
 -- >  ( [b      ], v )]
 --
--- Then the 'powerTree' of these two trees is the evaluation of 'fromList' on,
+-- Then the 'powerTree' of these two trees X and Y is the evaluation of 'fromList' on:
 --
 -- > [( [a, b, c] ++ [b, c], t<>w ),
 -- >  ( [a, b, c] ++ [a   ], t<>x ),

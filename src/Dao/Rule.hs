@@ -46,9 +46,10 @@
 -- such restriction in the "Dao.Rule".
 module Dao.Rule
   ( -- * The 'Query' type
-    Query,
+    Query, QueryState(QueryState), queryScore, queryInput,
     -- * Production Rules: the 'Rule' Monad
     Rule, evalRuleLogic, queryAll, query, query1, next, part, done,
+    limitByScore, bestMatch, resetScore,
     -- * The Branch Structure of a Rule
     -- $Structure_of_a_rule
     RuleStruct, tree, struct, getRuleStruct, trim, mask,
@@ -59,6 +60,7 @@ module Dao.Rule
   )
   where
 
+import           Dao.Lens
 import           Dao.Logic
 import           Dao.Object
 import           Dao.PPrint
@@ -73,17 +75,31 @@ import           Control.Monad.Reader.Class
 import           Control.Monad.Except
 
 import           Data.Dynamic
-import           Data.List   (partition, sortBy)
+import           Data.List   (partition, sortBy, groupBy)
 import           Data.Monoid
 import qualified Data.Map as M
 
 ----------------------------------------------------------------------------------------------------
 
--- | The 'Query' type synonym is simply a list of 'Dao.Object.Object's, this is how queries to a
--- knowledge base are modeled. When a 'Query' is evaluated, it is placed into the state of the
--- 'Rule' monad, and every 'Rule' takes turns observing portions of the query and constructing a
--- reply.
+-- | A 'Query' is the list of 'Dao.Object.Object's input by the end user to the knowledge base. Your
+-- program will construct a 'Query' and use 'queryAll', 'query', or 'query1' with a 'Rule' monad to
+-- perform a logical computation.
 type Query = [Object]
+
+-- | The 'Query' type synonym is simply a list of 'Dao.Object.Object's paird with an integer score.
+-- When evaluating a 'Rule' monad, the 'queryInput' is tested by various 'Rule' functions to produce
+-- a result, and the result is 'Control.Monad.return'ed when all the 'Rule's that can possibly match
+-- have matched against the 'queryInput', and all possible results that have been successfully
+-- 'Control.Monad.return'ed. A 'queryScore' is kept, which counts how many 'Dao.Object.Object' items
+-- from the 'queryInput' have matched so far. This 'queryScore' can be helpful in narrowing the list
+-- of potential results.
+data QueryState = QueryState Int Query deriving (Eq, Ord, Show, Typeable)
+
+queryInput :: Monad m => Lens m QueryState Query
+queryInput = newLens (\ (QueryState _ q) -> q) (\q (QueryState i _) -> QueryState i q)
+
+queryScore :: Monad m => Lens m QueryState Int
+queryScore = newLens (\ (QueryState i _) -> i) (\i (QueryState _ q) -> QueryState i q)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -110,7 +126,7 @@ data Rule m a
   = RuleEmpty
   | RuleReturn a
   | RuleLift (m (Rule m a))
-  | RuleLogic (T.Tree Object ()) (LogicT Query m (Either ErrorObject (Rule m a)))
+  | RuleLogic (T.Tree Object ()) (LogicT QueryState m (Either ErrorObject (Rule m a)))
   | RuleChoice (Rule m a) (Rule m a)
   | RuleError ErrorObject
   | RuleTree  (M.Map Object (T.Tree Object (Query -> Rule m a)))
@@ -191,15 +207,15 @@ instance (Functor m, Applicative m, Monad m) => MonadError ErrorObject (Rule m) 
     RuleError o -> catch o
     _           -> rule
 
-instance (Functor m, Applicative m, Monad m) => MonadState Query (Rule m) where
+instance (Functor m, Applicative m, Monad m) => MonadState QueryState (Rule m) where
   state = RuleLogic nullValue . state . fmap (first $ Right . return)
 
-instance (Functor m, Applicative m, Monad m) => MonadReader Query (Rule m) where
+instance (Functor m, Applicative m, Monad m) => MonadReader QueryState (Rule m) where
   ask = get;
   local f sub = state (\st -> (st, f st)) >>= \st ->
     mplus (sub >>= \o -> state (const (o, st))) (put st >> mzero)
 
-instance (Functor m, Applicative m, Monad m) => MonadLogic Query (Rule m) where
+instance (Functor m, Applicative m, Monad m) => MonadLogic QueryState (Rule m) where
   superState    = RuleLogic nullValue . superState . fmap (fmap $ first $ Right . return)
   entangle rule = RuleLogic (getRuleStruct rule) $ do
     let lrzip (o, qx) = (\err -> ([(err, qx)], [])) ||| (\o -> ([], [(o, qx)])) $ o
@@ -210,11 +226,13 @@ instance (Functor m, Applicative m, Monad m) => Monoid (Rule m o) where
   mempty  = mzero
   mappend = mplus
 
+----------------------------------------------------------------------------------------------------
+
 -- | Evaluate a 'Rule' by flattening it's internal 'Dao.Tree.Tree' structure to a 'Dao.Logic.LogicT'
 -- monad. This is probably not as useful of a function as 'queryAll' or 'query'.
 evalRuleLogic
   :: forall m a . (Functor m, Applicative m, Monad m)
-  => Rule m a -> LogicT Query m (Either ErrorObject a)
+  => Rule m a -> LogicT QueryState m (Either ErrorObject a)
 evalRuleLogic rule = case rule of
   RuleEmpty      -> mzero
   RuleReturn   o -> return $ Right o
@@ -223,7 +241,7 @@ evalRuleLogic rule = case rule of
   RuleChoice x y -> evalRuleLogic x <|> evalRuleLogic y
   RuleError  err -> return $ Left err
   RuleTree   x y -> runMap T.DepthFirst [] x <|> runMap T.BreadthFirst [] y where
-    runMap :: T.RunTree -> Query -> M.Map Object (T.Tree Object (Query -> Rule m a)) -> LogicT Query m (Either ErrorObject a)
+    runMap :: T.RunTree -> Query -> M.Map Object (T.Tree Object (Query -> Rule m a)) -> LogicT QueryState m (Either ErrorObject a)
     runMap control qx map = if M.null map then mzero else do
       q <- next
       let (equal, similar) = partition ((ExactlyEqual ==) . fst) $
@@ -236,7 +254,7 @@ evalRuleLogic rule = case rule of
         then snd <$> sortBy (\a b -> compare (fst b) (fst a)) similar
         else snd <$> equal
       loop control (qx++[q]) tree
-    loop :: T.RunTree -> Query -> T.Tree Object (Query -> Rule m a) -> LogicT Query m (Either ErrorObject a)
+    loop :: T.RunTree -> Query -> T.Tree Object (Query -> Rule m a) -> LogicT QueryState m (Either ErrorObject a)
     loop control qx tree@(T.Tree (rule, map)) = if T.null tree then mzero else
       ((if control==T.DepthFirst then id else flip) mplus)
         (runMap control qx map)
@@ -245,7 +263,7 @@ evalRuleLogic rule = case rule of
 -- | Run a 'Rule' against an @['Dao.Object.Object']@ query, return all successful results and all
 -- exceptions that may have been thrown by 'Control.Monad.Except.throwError'.
 queryAll :: (Functor m, Applicative m, Monad m) => Rule m a -> Query -> m [Either ErrorObject a]
-queryAll rule = fmap (fmap fst) . runLogicT (evalRuleLogic rule)
+queryAll rule = fmap (fmap fst) . runLogicT (evalRuleLogic rule) . QueryState 0
 
 -- | Run a 'Rule' against an @['Dao.Object.Object']@ query, return all successful results.
 query :: (Functor m, Applicative m, Monad m) => Rule m a -> Query -> m [a]
@@ -263,8 +281,9 @@ query1 r = fmap (\ox -> if null ox then Nothing else Just $ head ox) . query r
 -- @
 -- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
 -- @
-next :: (Functor m, Applicative m, Monad m, MonadLogic Query m) => m Object
-next = superState $ \ox -> if null ox then [] else [(head ox, tail ox)]
+next :: (Functor m, Applicative m, Monad m, MonadLogic QueryState m) => m Object
+next = superState $ \q ->
+  if null $ q & queryInput then [] else [(head $ q & queryInput, on q [queryInput $$ tail])]
 
 -- | Take as many of next items from the query input as necessary to make the reset of the 'Rule'
 -- match the input query. This acts as kind of a Kleene star.
@@ -275,9 +294,11 @@ next = superState $ \ox -> if null ox then [] else [(head ox, tail ox)]
 -- @
 -- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
 -- @
-part :: (Functor m, Applicative m, Monad m, MonadLogic Query m) => m Query
-part = superState $ loop . flip (,) [] where
-  loop (lo, ox) = case ox of { [] -> [(lo, [])]; o:ox -> (lo, ox) : loop (lo++[o], ox) }
+part :: (Functor m, Applicative m, Monad m, MonadLogic QueryState m) => m Query
+part = superState $ loop [] where
+  loop lo q = case q & queryInput of
+    []   -> [(lo, q)]
+    o:ox -> let q' = on q [queryInput $= ox] in (lo, q') : loop (lo++[o]) q'
 
 -- | Match when there are no more arguments, backtrack if there are.
 --
@@ -287,8 +308,46 @@ part = superState $ loop . flip (,) [] where
 -- @
 -- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
 -- @
-done :: (Functor m, Applicative m, Monad m, MonadLogic Query m) => m ()
-done = superState $ \ox -> if null ox then [((), [])] else []
+done :: (Functor m, Applicative m, Monad m, MonadLogic QueryState m) => m ()
+done = superState $ \q -> if null $ q & queryInput then [((), q)] else []
+
+-- | Fully evaluate a 'Rule', and collect all possible results along with their 'queryScore's. Pass
+-- these results to a filter function, and procede with 'Rule' evaluation using only the results
+-- allowed by the filter function. This function uses the 'Dao.Logic.entangle' operation, so it will
+-- fully evaluate the given monadic function before returning.
+--
+-- This function is polymorphic over a monadic type that instantiates 'Dao.Logic.MonadLogic',
+-- however consider the type of this function to be:
+--
+-- @
+-- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
+-- @
+limitByScore
+  :: (Functor m, Applicative m, Monad m, MonadLogic QueryState m)
+  => ([(a, QueryState)] -> [(a, QueryState)])
+  -> m a -> m a
+limitByScore filter f = entangle f >>= superState . const . filter
+
+-- | Like 'limitByScore' but the filter function simply selects the results with the highet
+-- 'queryScore'.
+bestMatch :: (Functor m, Applicative m, Monad m, MonadLogic QueryState m) => m a -> m a
+bestMatch = let score = (& queryScore) . snd in limitByScore $ concat .
+  take 1 . groupBy (\a b -> score a == score b) . sortBy (\a b -> score b `compare` score a)
+
+-- | Evaluate a monadic function with the 'queryScore' reset to zero, and when evaluation of the
+-- monadic function completes, set the score back to the value it was before.
+--
+-- This function is polymorphic over a monadic type that instantiates 'Dao.Logic.MonadLogic',
+-- however consider the type of this function to be:
+--
+-- @
+-- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
+-- @
+resetScore
+  :: (Functor m, Applicative m, Monad m, MonadState QueryState m)
+  => m a -> m a
+resetScore f = state (\q -> (q & queryScore, on q [queryScore $= 0])) >>= \score ->
+  f <* modify (flip on [queryScore $= score])
 
 ----------------------------------------------------------------------------------------------------
 
@@ -320,7 +379,11 @@ done = superState $ \ox -> if null ox then [((), [])] else []
 ----------------------------------------------------------------------------------------------------
 
 -- $Structure_of_a_rule
--- A 'Rule' is constructed from 'Dao.Tree.Tree' data types and functions. Some 
+-- A 'Rule' is constructed from 'Dao.Tree.Tree' data types and functions. Some 'Rule's form empty
+-- trees, for example 'Control.Monad.return' or 'Control.Monad.State.state'. However 'Rule's
+-- constructed with functions like 'tree' or 'struct' produce a 'Dao.Tree.Tree' structure internal
+-- to the 'Rule' function which can be retrieved and manipulated. This is useful for
+-- meta-programming 'Rule's, for example predictive input applications.
 
 -- | This is the data type that models the branch structure of a 'Rule'. It is a 'Dao.Tree.Tree'
 -- with 'Dao.Object.Object' paths and @()@ leaves. It is possible to perform modifications to some

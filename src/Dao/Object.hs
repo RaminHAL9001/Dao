@@ -32,7 +32,7 @@
 -- types an 'Object' by instantiating your object into this class. To define an instance of
 -- 'ObjectData', the 'toForeign' function will be useful.
 module Dao.Object
-  ( ErrorObject, throwObject,
+  ( ErrorObject, throwObject, errorToString,
     -- * Improving on 'Data.Dynamic.Dynamic'
     HasTypeRep(objTypeOf),
     -- * Simple Data Modeling
@@ -58,11 +58,13 @@ module Dao.Object
 
 import           Dao.Array
 import           Dao.PPrint
+import           Dao.Predicate
 import           Dao.TestNull
 
 import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Except
+import           Control.Monad.Identity
 
 import           Data.Bits
 import           Data.Dynamic
@@ -299,8 +301,27 @@ matchable o dat = dat{ objPatternMatch=Just (objMatch o) }
 -- is descriptive of the problem that occurred.
 type ErrorObject = [Object]
 
+-- | Using this might be more convenient than always writing
+-- @'Control.Monad.Error.throwError' $ 'obj' ...)@.
 throwObject :: MonadError ErrorObject m => ObjectData o => o -> m err
 throwObject = throwError . return . obj
+
+-- | 'ErrorObject's thrown are usually error messages. This is a very simple kind of pretty-printer
+-- for printing 'ErrorObject's where strings are not quoted. That is, if you catch an error thrown
+-- by an expression like @('Control.Monad.Error.throwError' ["Error message\n..."])@, using
+-- 'Prelude.show' will output a string like this:
+--
+-- > ["Error message\n..."]
+--
+-- But if you use 'errorToString' instead of 'Prelude.show' to formulate the output, it will look
+-- like this:
+--
+-- > Error message
+-- > ...
+errorToString :: ErrorObject -> String
+errorToString ox = ox >>= \o -> case runIdentity $ runPredicateT $ fromObj o of
+  OK o -> Strict.unpack o
+  _    -> show o
 
 type T_int    = Int
 type T_long   = Integer

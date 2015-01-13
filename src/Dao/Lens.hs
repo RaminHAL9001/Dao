@@ -92,9 +92,10 @@ infixl 1 &
 on :: c -> [c -> c] -> c
 on c fx = appEndo (getDual $ mconcat $ Dual . Endo <$> fx) c
 
--- | This is a function used for constructing a simple updating 'Data.Monoid.Endo'functor (updating
--- function) that simply stores the element @e@ into a container @c@ using 'pureUpdate'. You would
--- use this operator when building a list of updates to pass to the 'on' function.
+-- | This is a function intended to be used with the 'on' function. It is used for constructing a
+-- simple updating 'Data.Monoid.Endo'functor (updating function) that simply stores the element @e@
+-- into a container @c@ using 'pureUpdate'. You would use this operator when building a list of
+-- updates to pass to the 'on' function.
 --
 -- This function requires a 'PureLens', but of course any 'Lens' polymorphic over the monadic type
 -- @m@ can be used.
@@ -102,9 +103,10 @@ on c fx = appEndo (getDual $ mconcat $ Dual . Endo <$> fx) c
 ($=) = pureUpdate
 infixr 0 $=
 
--- | This is a function used for constructing a simple updating 'Data.Monoid.Endo'functor (updating
--- function) that updates element @e@ inside of a container @c@ using 'pureAlter'. You would use
--- this operator when building a list of updates to pass to the 'on' function.
+-- | This is a function intended to be used with the 'on' function. It is used for constructing a
+-- simple updating 'Data.Monoid.Endo'functor (updating function) that updates element @e@ inside of
+-- a container @c@ using 'pureAlter'. You would use this operator when building a list of updates to
+-- pass to the 'on' function.
 --
 -- This function requires a 'PureLens', but of course any 'Lens' polymorphic over the monadic type
 -- @m@ can be used.

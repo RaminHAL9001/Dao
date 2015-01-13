@@ -147,6 +147,9 @@ levenshteinDistance s t = let m = levenshteinDistanceMatrix s t in m ! (snd $ bo
 -- let maxLen = 'Prelude.max' ('Data.Text.length' s) ('Data.Text.length' t)
 -- in  (maxLen - 'levenshteinDistance' s t) / maxLen
 -- @
+--
+-- **NOTE:** This function does not modify the strings in any way, for example converting to
+-- lower-case. The caller of this function is responsible for such preprocessing.
 fuzzyCompare :: ToText t => t -> t -> Rational
 fuzzyCompare s' t' =
   let (s, t) = (toText s', toText t')

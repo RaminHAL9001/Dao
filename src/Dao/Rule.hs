@@ -325,14 +325,20 @@ done = superState $ \q -> if null $ q & queryInput then [((), q)] else []
 -- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
 -- @
 limitByScore
-  :: (Functor m, Applicative m, Monad m, MonadLogic QueryState m)
+  :: (Functor m, Applicative m, Monad m)
   => ([(a, QueryState)] -> [(a, QueryState)])
-  -> m a -> m a
-limitByScore filter f = entangle f >>= superState . const . filter
+  -> Rule m a -> Rule m a
+limitByScore filter f = do
+  (err, ox) <-
+    ( (concat *** concat) . unzip
+    . fmap (\ (o, qs) -> (\o -> ([(Left o, qs)], [])) ||| (\o -> ([], [(o, qs)])) $ o)
+    ) <$> RuleLogic (getRuleStruct f) (fmap (Right . return) $ entangle $ evalRuleLogic f)
+  -- ox <- filter <$> forM ox (\ (o, qs) -> flip (,) qs <$> o)
+  RuleLogic nullValue $ superState $ const $ (first (Right . return) <$> filter ox) ++ err
 
 -- | Like 'limitByScore' but the filter function simply selects the results with the highet
 -- 'queryScore'.
-bestMatch :: (Functor m, Applicative m, Monad m, MonadLogic QueryState m) => m a -> m a
+bestMatch :: (Functor m, Applicative m, Monad m) => Rule m a -> Rule m a
 bestMatch = let score = (& queryScore) . snd in limitByScore $ concat .
   take 1 . groupBy (\a b -> score a == score b) . sortBy (\a b -> score b `compare` score a)
 
@@ -345,11 +351,11 @@ bestMatch = let score = (& queryScore) . snd in limitByScore $ concat .
 -- @
 -- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
 -- @
-resetScore
-  :: (Functor m, Applicative m, Monad m, MonadState QueryState m)
-  => m a -> m a
-resetScore f = state (\q -> (q & queryScore, on q [queryScore <~ 0])) >>= \score ->
-  f <* modify (by [queryScore <~ score])
+resetScore :: (Functor m, Applicative m, Monad m) => Rule m a -> Rule m a
+resetScore f = do
+  score <- RuleLogic (getRuleStruct f) $ state $ \q ->
+    (Right . return $ q & queryScore, on q [queryScore <~ 0])
+  f <* RuleLogic nullValue (fmap (Right . return) $ modify $ by [queryScore <~ score])
 
 ----------------------------------------------------------------------------------------------------
 

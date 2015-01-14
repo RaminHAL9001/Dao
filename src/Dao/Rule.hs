@@ -207,20 +207,23 @@ instance (Functor m, Applicative m, Monad m) => MonadError ErrorObject (Rule m) 
     RuleError o -> catch o
     _           -> rule
 
-instance (Functor m, Applicative m, Monad m) => MonadState QueryState (Rule m) where
-  state = RuleLogic nullValue . state . fmap (first $ Right . return)
+instance (Functor m, Applicative m, Monad m) => MonadState Query (Rule m) where
+  state f = RuleLogic nullValue $ state $ \st ->
+    let (o, q) = f $ st & queryInput in (Right $ return o, on st [queryInput <~ q])
 
-instance (Functor m, Applicative m, Monad m) => MonadReader QueryState (Rule m) where
+instance (Functor m, Applicative m, Monad m) => MonadReader Query (Rule m) where
   ask = get;
-  local f sub = state (\st -> (st, f st)) >>= \st ->
-    mplus (sub >>= \o -> state (const (o, st))) (put st >> mzero)
+  local f sub = RuleLogic (getRuleStruct sub) $ do
+    st <- state $ \st -> (st, on st [queryInput $= f])
+    evalRuleLogic sub >>= return . Left ||| state . const . flip (,) st . Right . return
 
-instance (Functor m, Applicative m, Monad m) => MonadLogic QueryState (Rule m) where
-  superState    = RuleLogic nullValue . superState . fmap (fmap $ first $ Right . return)
+instance (Functor m, Applicative m, Monad m) => MonadLogic Query (Rule m) where
+  superState  f = RuleLogic nullValue $ superState $ \st ->
+    fmap (\ (o, q) -> (Right $ return o, on st [queryInput <~ q])) $ f $ st & queryInput
   entangle rule = RuleLogic (getRuleStruct rule) $ do
     let lrzip (o, qx) = (\err -> ([(err, qx)], [])) ||| (\o -> ([], [(o, qx)])) $ o
     (errs, ox) <- (concat *** concat) . unzip . fmap lrzip <$> entangle (evalRuleLogic rule)
-    superState $ \st -> (Right $ return ox, st) : fmap (first Left) errs
+    superState $ \st -> (Right $ return $ second (& queryInput) <$> ox, st) : fmap (first Left) errs
 
 instance (Functor m, Applicative m, Monad m) => Monoid (Rule m o) where
   mempty  = mzero
@@ -241,7 +244,6 @@ evalRuleLogic rule = case rule of
   RuleChoice x y -> evalRuleLogic x <|> evalRuleLogic y
   RuleError  err -> return $ Left err
   RuleTree   x y -> runMap T.DepthFirst [] x <|> runMap T.BreadthFirst [] y where
-    runMap :: T.RunTree -> Query -> M.Map Object (T.Tree Object (Query -> Rule m a)) -> LogicT QueryState m (Either ErrorObject a)
     runMap control qx map = if M.null map then mzero else do
       q <- next
       let (equal, similar) = partition ((ExactlyEqual ==) . fst) $
@@ -254,7 +256,6 @@ evalRuleLogic rule = case rule of
         then snd <$> sortBy (\a b -> compare (fst b) (fst a)) similar
         else snd <$> equal
       loop control (qx++[q]) tree
-    loop :: T.RunTree -> Query -> T.Tree Object (Query -> Rule m a) -> LogicT QueryState m (Either ErrorObject a)
     loop control qx tree@(T.Tree (rule, map)) = if T.null tree then mzero else
       ((if control==T.DepthFirst then id else flip) mplus)
         (runMap control qx map)
@@ -282,8 +283,8 @@ query1 r = fmap (\ox -> if null ox then Nothing else Just $ head ox) . query r
 -- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
 -- @
 next :: (Functor m, Applicative m, Monad m, MonadLogic QueryState m) => m Object
-next = superState $ \q ->
-  if null $ q & queryInput then [] else [(head $ q & queryInput, on q [queryInput $$ tail])]
+next = superState $ \q -> if null $ q & queryInput then [] else
+  [(head $ q & queryInput, on q [queryInput $= tail, queryScore $= (+ 1)])]
 
 -- | Take as many of next items from the query input as necessary to make the reset of the 'Rule'
 -- match the input query. This acts as kind of a Kleene star.
@@ -295,10 +296,11 @@ next = superState $ \q ->
 -- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
 -- @
 part :: (Functor m, Applicative m, Monad m, MonadLogic QueryState m) => m Query
-part = superState $ loop [] where
-  loop lo q = case q & queryInput of
-    []   -> [(lo, q)]
-    o:ox -> let q' = on q [queryInput $= ox] in (lo, q') : loop (lo++[o]) q'
+part = superState $ loop 0 [] where
+  loop score lo q = case q & queryInput of
+    []   -> [(lo, on q [queryScore <~ score])]
+    o:ox -> let q' = on q [queryInput <~ ox, queryScore <~ score]
+            in (lo, q') : loop (score+1) (lo++[o]) q'
 
 -- | Match when there are no more arguments, backtrack if there are.
 --
@@ -346,8 +348,8 @@ bestMatch = let score = (& queryScore) . snd in limitByScore $ concat .
 resetScore
   :: (Functor m, Applicative m, Monad m, MonadState QueryState m)
   => m a -> m a
-resetScore f = state (\q -> (q & queryScore, on q [queryScore $= 0])) >>= \score ->
-  f <* modify (flip on [queryScore $= score])
+resetScore f = state (\q -> (q & queryScore, on q [queryScore <~ 0])) >>= \score ->
+  f <* modify (flip on [queryScore <~ score])
 
 ----------------------------------------------------------------------------------------------------
 

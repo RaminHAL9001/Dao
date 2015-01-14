@@ -99,9 +99,18 @@ on c fx = appEndo (getDual $ mconcat $ Dual . Endo <$> fx) c
 --
 -- This function requires a 'PureLens', but of course any 'Lens' polymorphic over the monadic type
 -- @m@ can be used.
-($=) :: PureLens c e -> e -> c -> c
-($=) = pureUpdate
-infixr 0 $=
+--
+-- This operator is visually similar to the bind operator used in Haskell's "do" notation @(<-)@.
+-- Visually, it looks like you are writing a value into a lens, like in a procedural programming
+-- language where the field you want to modify is on the left of the assignment operator, and the
+-- value you want to write is on the right.
+--
+-- @
+-- 'on' myData [fieldInData 'Dao.Lens.<~' 0]
+-- @
+(<~) :: PureLens c e -> e -> c -> c
+(<~) = pureUpdate
+infixr 0 <~
 
 -- | This is a function intended to be used with the 'on' function. It is used for constructing a
 -- simple updating 'Data.Monoid.Endo'functor (updating function) that updates element @e@ inside of
@@ -110,9 +119,22 @@ infixr 0 $=
 --
 -- This function requires a 'PureLens', but of course any 'Lens' polymorphic over the monadic type
 -- @m@ can be used.
-($$) :: PureLens c e -> (e -> e) -> c -> c
-($$) lens f c = snd (pureAlter lens f c)
-infixr 0 $$
+--
+-- This operator is visually similar to updating operators in popular C/C++ family of programming
+-- languages. In this languages, to do an in-place update on a variable "x", for example to
+-- increment an integer "x" by 5, you would write:
+--
+-- > x += 5;
+--
+-- Likewise this operator does an "in-place update." However you must provide a function on the
+-- right-hand side of this operator that will perform the update:
+--
+-- @
+-- 'on' myData [x 'Dao.Lens.$=' (+ 5)]
+-- @
+($=) :: PureLens c e -> (e -> e) -> c -> c
+($=) lens f c = snd (pureAlter lens f c)
+infixr 0 $=
 
 ----------------------------------------------------------------------------------------------------
 

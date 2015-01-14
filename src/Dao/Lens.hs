@@ -92,6 +92,10 @@ infixl 1 &
 on :: c -> [c -> c] -> c
 on c fx = appEndo (getDual $ mconcat $ Dual . Endo <$> fx) c
 
+-- | This is the 'on' function with the parameters 'Prelude.flip'ped.
+by :: [c -> c] -> c -> c
+by = flip on
+
 -- | This is a function intended to be used with the 'on' function. It is used for constructing a
 -- simple updating 'Data.Monoid.Endo'functor (updating function) that simply stores the element @e@
 -- into a container @c@ using 'pureUpdate'. You would use this operator when building a list of

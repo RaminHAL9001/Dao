@@ -349,7 +349,7 @@ resetScore
   :: (Functor m, Applicative m, Monad m, MonadState QueryState m)
   => m a -> m a
 resetScore f = state (\q -> (q & queryScore, on q [queryScore <~ 0])) >>= \score ->
-  f <* modify (flip on [queryScore <~ score])
+  f <* modify (by [queryScore <~ score])
 
 ----------------------------------------------------------------------------------------------------
 

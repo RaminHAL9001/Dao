@@ -450,8 +450,13 @@ powerTree append a b = fromList $ do
 -- 
 -- Although it should be noted usually, 'Dao.Lens.Lens'es, 'Data.Foldable.fold's,
 -- 'Data.Traversable.traversal's, and 'mergeWithKeyM' are all you will need.
-data ZipTree p o = ZipTree { zipperSubTree :: Tree p o, zipperHistory :: [(p, Tree p o)] }
-  deriving (Eq, Ord, Typeable)
+data ZipTree p o = ZipTree (Tree p o) [(p, Tree p o)] deriving (Eq, Ord, Typeable)
+
+zipperSubTree :: Monad m => Lens m (ZipTree p o) (Tree p o)
+zipperSubTree = newLens (\ (ZipTree t _) -> t) (\t (ZipTree _ h) -> ZipTree t h)
+
+zipperHistory :: Monad m => Lens m (ZipTree p o) [(p, Tree p o)]
+zipperHistory = newLens (\ (ZipTree _ h) -> h) (\h (ZipTree t _) -> ZipTree t h)
 
 -- | A monadic function type that keeps the 'ZipTree' in a 'Control.Monad.State.StateT' for you, and
 -- instantiates 'Control.Monad.State.MonadState' such that 'Control.Monad.State.get' and
@@ -471,16 +476,17 @@ instance Monad m => Monad (UpdateTreeT p o m) where
 
 instance (Ord p, Monad m) => MonadState (Maybe o) (UpdateTreeT p o m) where
   state f = UpdateTreeT $ StateT $ \st -> do
-    (a, l) <- return $ f $ pureFetch leaf $ zipperSubTree st
-    return (a, st{ zipperSubTree=pureUpdate leaf l $ zipperSubTree st })
+    -- (a, l) <- return $ f $ pureFetch leaf $ zipperSubTree st
+    (a, l) <- return $ f $ st & zipperSubTree & leaf
+    -- return (a, st{ zipperSubTree=pureUpdate leaf l $ zipperSubTree st })
+    return (a, on st [zipperSubTree >>> leaf <~ l])
 
 -- | Run the 'UpdateTreeT' function, returning the modified 'Tree' and the last result returned by
 -- the 'UpdateTreeT' function.
 runUpdateTreeT :: (Functor m, Applicative m, Monad m, Ord p) => UpdateTreeT p o m a -> Tree p o -> m (a, Tree p o)
 runUpdateTreeT f tree = do
-  (a, z) <- runStateT ((\ (UpdateTreeT f) -> f) $ f <* home) $
-    ZipTree{ zipperSubTree=tree, zipperHistory=[] }
-  return (a, zipperSubTree z)
+  (a, z) <- runStateT ((\ (UpdateTreeT f) -> f) $ f <* home) $ ZipTree tree []
+  return (a, z & zipperSubTree)
 
 -- | Analogous to 'Control.Monad.State.execStateT', does the same thing as 'runUpdateTreeT' but
 -- disgards the final return value of the 'UpdateTreeT' function.
@@ -498,24 +504,24 @@ goto path = case path of
   []       -> return ()
   (p:path) -> do
     UpdateTreeT $ do
-      t <- maybe nullValue id . M.lookup p . pureFetch branches <$> gets zipperSubTree
-      modify $ \st -> st{ zipperSubTree=t, zipperHistory=(p, zipperSubTree st):zipperHistory st }
+      t <- gets $ maybe nullValue id . M.lookup p . (& (branches . zipperSubTree))
+      modify (\st -> on st [zipperSubTree <~ t, zipperHistory $= ((p, st & zipperSubTree) :)])
     goto path
 
 -- | Go up one level in the tree, storing the current sub-tree into the upper tree, unless the
 -- current tree is 'Void', in which case it is deleted from the upper tree. Returns 'Prelude.False'
 -- if we are already at the root of the 'Tree' and could not go back.
 back :: (Functor m, Applicative m, Monad m, Ord p) => UpdateTreeT p o m Bool
-back = UpdateTreeT $ state $ \st -> case zipperHistory st of
+back = UpdateTreeT $ state $ \st -> case st & zipperHistory of
   []                    -> (False, st)
-  (p, Tree (t, m)):hist -> (,) True $ let u = zipperSubTree st in
-    st{ zipperSubTree = Tree (t, (if testNull u then id else M.insert p u) m)
-      , zipperHistory = hist
-      }
+  (p, Tree (t, m)):hist -> (,) True $ let u = st & zipperSubTree in on st $
+    [ zipperSubTree <~ Tree (t, (if testNull u then id else M.insert p u) m)
+    , zipperHistory <~ hist
+    ]
 
 -- | Returns 'Prelude.True' if we are at the top level of the tree.
 atTop :: (Functor m, Applicative m, Monad m) => UpdateTreeT p o m Bool
-atTop = Prelude.null <$> UpdateTreeT (gets zipperHistory)
+atTop = Prelude.null <$> UpdateTreeT (gets (& zipperHistory))
 
 -- | Go back to the top level of the tree.
 home :: (Functor m, Applicative m, Monad m, Ord p) => UpdateTreeT p o m ()
@@ -523,7 +529,7 @@ home = atTop >>= flip unless (back >> home)
 
 -- | Return the current path.
 getPath :: (Functor m, Applicative m, Monad m, Ord p) => UpdateTreeT p o m [p]
-getPath = reverse . fmap fst <$> UpdateTreeT (gets zipperHistory)
+getPath = reverse . fmap fst <$> UpdateTreeT (gets (& zipperHistory))
 
 ----------------------------------------------------------------------------------------------------
 

@@ -4,9 +4,10 @@ Copyright (C) 2008-2015, Ramin Honary, all rights reserved.
 ### A pure Haskell dynamically typed EDSL for production-rule-based logic programming and AI.
 
 Dao is a Haskell package providing an Embedded Domain Specific
-Language (EDSL) designed for constructing simple, knowledge bases,
+Language (EDSL) designed for constructing simple knowledge bases,
 artificial intelligence programs, and programs for understanding
 natural language.
+
 Dao is licensed under the GNU Affero General Public License:
 	http://www.gnu.org/licenses/agpl.html
 

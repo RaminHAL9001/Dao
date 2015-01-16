@@ -18,11 +18,60 @@
 
 -- | This module defines a very simple 'Lens' data type inspired by Job Varnish's "lenses" package.
 --
+-- The 'Lens' type aims to provide a very simple improvement on Haskell's record syntax: the idea of
+-- composable record accessors called 'Lens'es. With record syntax you can fetch and update a data
+-- type like so:
+-- 
+-- @
+-- let previousValue = record1 dat in
+--     dat{ record1 = newValue1, record2 = newValue2 }
+-- @
+--
+-- With Dao 'Lens'es, it is possible to achieve the same thing with the following expression:
+--
+-- @
+-- let previousValue = dat 'Dao.Lens.&' recordName in
+--     'on' dat [ record1 'Dao.Lens.<~' newValue1, record2 'Dao.Lens.<~' newValue2 ]
+-- @
+--
+-- Dao 'Lens'es can be composed with the 'Control.Category.Category' operators @(.)@,
+-- @('Control.Category.<<<')@ and @('Control.Category.>>>')@ so something like this:
+--
+-- @
+-- return $ dat{ record = (\dat' -> dat'{ subRecord = newValue }) (record dat) }
+-- @
+--
+-- can be simplified to this:
+--
+-- @
+-- return $ 'on' dat [ record 'Control.Category.>>>' subRecord 'Dao.Lens.<~' newValue ]
+-- @
+--
+-- or equivalently with the dot operator, which is identical to @('Control.Category.>>>')@ with the
+-- arguments flipped:
+--
+-- @
+-- return $ 'on' dat [ subRecord . record 'Dao.Lens.<~' newValue ]
+-- @
+--
+-- Fetching values is done with @('Dao.Lens.&')@, which is a left-handed infix operator of
+-- precedence 1 so that you can compose 'Lens'es for fetching. The above example with @record@ and
+-- @subRecord@ could be fetched like so:
+--
+-- @
+-- return (dat & record & subRecord)
+-- @
+--
+-- This is reminiscient of popular languages like C/C++ in which you could write the above with a
+-- similar expression:
+--
+-- > return (dat.record.subRecord); // the dot operator in C is of course completely different from Haskell.
+--
 -- In the hopes of trying to be somewhat consistent with work that has come before mine, I borrowed
 -- the terminology for some of these API functions from the "lenses" library, in particular the
--- 'fetch', 'update', and 'alter' functions. However what is called @fromGetSet@ in Varnish's Lens
--- library, in this module this function is simply called 'newLens', and has a the monadic version
--- 'newLensM'.
+-- 'fetch', 'update', and 'alter' functions. However what is called @fromGetSet@ in Job Varnish's
+-- Lens library, in this module this function is simply called 'newLens', and has a the monadic
+-- version 'newLensM'.
 module Dao.Lens where
 
 import           Prelude hiding ((.), id)

@@ -279,11 +279,11 @@ lookup px = pureFetch (focusLeaf px)
 -- actual branches @b@ that matched the path @p@, not the path @p@ itself.
 slowLookup :: Ord b => (p -> b -> Bool) -> [p] -> Tree b a -> [([b], a)]
 slowLookup f px t = loop [] px t where
-  loop path px t = case px of
-    []   -> maybe [] (\o -> [(path, o)]) $ t & leaf
+  loop branchPath px t = case px of
+    []   -> maybe [] (\o -> [(branchPath, o)]) $ t & leaf
     p:px -> do
-      (p, t) <- filter (f p . fst) (M.assocs $ t & branches)
-      loop (path++[p]) px t
+      (b, t) <- filter (f p . fst) (M.assocs $ t & branches)
+      loop (branchPath++[b]) px t
 
 -- | This function calls 'slowLookup' and returns only the first result. This can be used to take
 -- advantage of Haskell's laziness and save time by halting the search for matching paths as soon as

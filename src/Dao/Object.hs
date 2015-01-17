@@ -39,9 +39,8 @@ module Dao.Object
     Simple(OVoid, ONull), SimpleData(simple, fromSimple), simpleNumInfixOp, simpleSetInfixOp,
     T_int, T_long, T_float, T_string, T_char, T_list, T_map,
     -- * Wrapping 'Data.Dynamic.Dynamic' Data Types
-    Foreign, toForeign, fromForeign, objDynamic, objEquality, objOrdering, objPrinting,
-    objSimplifying,
-    printable, simplifyable, matchable,
+    Foreign, toForeign, fromForeign, objDynamic, objEquality, objOrdering, objPrinted,
+    printable, matchable,
     -- * 'Object': Union Type of 'Simple' and 'Foreign'
     Object(OSimple, OForeign),
     -- * 'Object's as Matchable Patterns
@@ -230,8 +229,8 @@ data Foreign
     { objDynamic      :: Dynamic
     , objEquality     :: Dynamic -> Bool
     , objOrdering     :: Dynamic -> Ordering
-    , objPrinting     :: [PPrint]
-    , objSimplifying  :: Simple
+    , objPrinted      :: [PPrint]
+    , objSimplified   :: Simple
     , objPatternMatch :: Maybe (Object -> Similarity)
     }
   deriving Typeable
@@ -240,11 +239,24 @@ instance Eq  Foreign where { a == b = objEquality a $ objDynamic b; }
 
 instance Ord Foreign where { compare a b = objOrdering a $ objDynamic b; }
 
-instance PPrintable Foreign where { pPrint o = objPrinting o; }
+instance PPrintable Foreign where { pPrint o = objPrinted o; }
 
 instance Show Foreign where { show = Lazy.unpack . runTextPPrinter 4 80 . pPrint; }
 
 instance HasTypeRep Foreign where { objTypeOf = objTypeOf . objDynamic }
+
+instance SimpleData Foreign where
+  simple = objSimplified
+  fromSimple s = return $
+    Foreign
+    { objDynamic      = toDyn s
+    , objEquality     = maybe False (s ==) . fromDynamic
+    , objOrdering     = \d ->
+        maybe (compare (typeOf s) (dynTypeRep d)) (compare s) (fromDynamic d)
+    , objPrinted      = pPrint s
+    , objSimplified   = s
+    , objPatternMatch = Nothing
+    }
 
 -- | Construct an arbitrary 'Data.Typeable.Typeable' data type into a 'Foreign' data type along with
 -- the 'Prelude.==' and 'Prelude.compare' instances for this data type. Use this function with
@@ -255,14 +267,14 @@ instance HasTypeRep Foreign where { objTypeOf = objTypeOf . objDynamic }
 -- as the 'obj' function can convert a 'Foreign' data type to an 'Object'. Likewise, to define an
 -- instance of 'fromObj' for you own custom data type, use 'fromForeign' with 'fromObj', as the
 -- 'fromObj' function can convert a 'Foreign' data type to an 'Object' data type.
-toForeign :: (Eq o, Ord o, Typeable o) => o -> Foreign
+toForeign :: (Eq o, Ord o, Typeable o, SimpleData o) => o -> Foreign
 toForeign o = let d = toDyn o in
   Foreign
-  { objDynamic  = d
-  , objEquality = maybe False (o ==) . fromDynamic
-  , objOrdering = \p -> maybe (compare (dynTypeRep d) (dynTypeRep p)) (compare o) (fromDynamic p)
-  , objPrinting = []
-  , objSimplifying = OVoid
+  { objDynamic      = d
+  , objEquality     = maybe False (o ==) . fromDynamic
+  , objOrdering     = \p -> maybe (compare (dynTypeRep d) (dynTypeRep p)) (compare o) (fromDynamic p)
+  , objPrinted      = []
+  , objSimplified   = simple o
   , objPatternMatch = Nothing
   }
 
@@ -271,21 +283,16 @@ toForeign o = let d = toDyn o in
 -- define an instance of 'fromObj' for you own custom data type, use 'fromForeign' with 'fromObj',
 -- as the 'fromObj' function can convert a 'Foreign' data type to an 'Object' data type.
 fromForeign
-  :: (Eq o, Ord o, Typeable o,
+  :: (Eq o, Ord o, Typeable o, SimpleData o,
       Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadError ErrorObject m)
   => Foreign -> m o
-fromForeign = maybe mzero return . fromDynamic . objDynamic
+fromForeign f = maybe mzero return (fromDynamic $ objDynamic f) <|> fromSimple (objSimplified f)
 
 -- | *'Foriegn' data, optional property.* If your data type instantiates 'Dao.PPrint.PPrintable',
 -- you can use 'printable' to store the 'Dao.PPrint.pPrint' instance with this 'Foreign' data
 -- constructor.
 printable :: PPrintable o => o -> Foreign -> Foreign
-printable o dat = dat{ objPrinting=pPrint o }
-
--- | *'Foriegn' data, optional property.* If your data type instantiates 'SimpleData', you can use
--- 'simplifyable' to store the 'simple' instance with this 'Foreign' data constructor.
-simplifyable :: SimpleData o => o -> Foreign -> Foreign
-simplifyable o dat = dat{ objSimplifying=simple o }
+printable o dat = dat{ objPrinted=pPrint o }
 
 -- | *'Foriegn' data, optional property.* If your data type can act as a pattern that can match
 -- arbitrary objects using 'objMatch', consider modifying your instance of 'obj' to make use of this
@@ -579,6 +586,10 @@ instance SimpleData T_type   where
   simple       = OType
   fromSimple o = case o of { OType o -> return o; _ -> mzero; }
 
+instance SimpleData Simple   where
+  simple       = id
+  fromSimple   = return
+
 ----------------------------------------------------------------------------------------------------
 
 -- | An 'Object' is either a 'Simple' data type or a 'Foreign' data type. Since 'Foreign' lets you
@@ -609,6 +620,12 @@ instance PPrintable Object where
 
 instance Show Object where { show = Lazy.unpack . runTextPPrinter 4 80 . pPrint; }
 
+instance SimpleData Object   where
+  fromSimple = return . OSimple
+  simple   o = case o of
+    OForeign o -> objSimplified o
+    OSimple  o -> o
+
 instance Monoid Object where
   mempty = OSimple ONull
   mappend a b = case a of
@@ -638,7 +655,12 @@ instance Monoid (Product Object) where
 -- | The 'ObjectData' type class is almost identical to the 'SimpleData' type class, you use 'obj'
 -- to wrap an arbitrary 'Data.Typeable.Typeable' data type into an 'Object' constructor, and
 -- 'fromObj' to unwrap the data type from the 'Object' constructor.
-class (Eq o, Ord o, Typeable o) => ObjectData o where
+--
+-- The custom data must be expressible as a 'Simple' data type, and this is necessary for
+-- serialization. When writing an 'Object' as a bit stream, the 'Simple' form of the 'Object' is
+-- used, and it is expected that when reading from a bit stream, the 'Simple' form of the 'Object'
+-- is just as good as having created the 'Object' in memory in the local program.
+class (Eq o, Ord o, Typeable o, SimpleData o) => ObjectData o where
   obj :: o -> Object
   fromObj
     :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadError ErrorObject m)
@@ -648,7 +670,7 @@ class (Eq o, Ord o, Typeable o) => ObjectData o where
 -- data type.
 defaultFromObj
   :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadError ErrorObject m,
-      Eq o, Ord o, Typeable o)
+      Eq o, Ord o, Typeable o, SimpleData o)
   => Object -> m o
 defaultFromObj = fromObj >=> fromForeign
 
@@ -660,7 +682,9 @@ instance ObjectData Foreign  where
 
 instance ObjectData Simple   where
   obj       = OSimple
-  fromObj o = case o of { OSimple o -> return o; _ -> mzero; }
+  fromObj o = return $ case o of
+    OForeign o -> objSimplified o
+    OSimple  o -> o
 
 instance ObjectData ()       where
   obj       = OSimple . simple

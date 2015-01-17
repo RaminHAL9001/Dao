@@ -469,7 +469,7 @@ instance ObjectPattern TypePattern where
   objMatch (TypePattern p) o = if p==objTypeOf o then Similar 0.0 else Dissimilar
 
 instance ObjectData TypePattern where
-  obj p = obj $ printable p $ matchable p $ simplifyable p $ toForeign p
+  obj p = obj $ printable p $ matchable p $ toForeign p
   fromObj = defaultFromObj
 
 -- | Use 'next' to take the next item from the current 'Query', evaluate the 'Data.Typeable.TypeRep'

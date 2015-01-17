@@ -57,27 +57,29 @@ module Dao.Object
 
 import           Dao.Array
 import           Dao.Int
+import           Dao.Lens
 import           Dao.PPrint
 import           Dao.Predicate
 import           Dao.TestNull
 import           Dao.Text
+import qualified Dao.Tree       as T
 
 import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Except
 import           Control.Monad.Identity
 
-import qualified Data.Array as A
+import qualified Data.Array     as A
 import           Data.Binary
 import           Data.Binary.IEEE754
 import           Data.Bits
 import           Data.Char
 import           Data.Dynamic
 import           Data.List (intercalate)
-import qualified Data.Map  as M
+import qualified Data.Map       as M
 import           Data.Monoid
-import qualified Data.Text          as Strict
-import qualified Data.Text.Lazy     as Lazy
+import qualified Data.Text      as Strict
+import qualified Data.Text.Lazy as Lazy
 
 -- | Void values are undefined values. Unliked Haskell's 'Prelude.undefined', 'voidValue' is a concrete
 -- value you can test for.
@@ -343,6 +345,7 @@ type T_string = Strict.Text
 type T_char   = Char
 type T_list   = Array Object
 type T_map    = M.Map Object Object
+type T_tree   = T.Tree Object Object
 type T_type   = TypeRep
 
 -- | A 'Simple' object is a essentially a model of JSON data types. It models any data type that
@@ -362,6 +365,7 @@ data Simple
   | OString  T_string
   | OList    T_list
   | OMap     T_map
+  | OTree    T_tree
   | OType    T_type
   deriving (Eq, Ord, Typeable)
 
@@ -377,6 +381,7 @@ instance HasTypeRep Simple where
     OString ~o -> typeOf o
     OList   ~o -> typeOf o
     OMap    ~o -> typeOf o
+    OTree   ~o -> typeOf o
     OType   ~o -> typeOf o
 
 instance TestNull Simple where
@@ -404,32 +409,11 @@ instance PPrintable Simple where
       , pIndent $ intercalate [pText ",", pSpace, pNewLine] $ fmap pPrint $ elems o
       , pText "]"
       ]
-    OMap    o ->
-      [ pText "{"
-      , pIndent $ intercalate [pText ",", pSpace, pNewLine] $
-          fmap (\ (a, b) -> pPrint a ++ [pText ":", pSpace, pIndent (pPrint b)]) (M.assocs o)
-      , pText "}"
-      ]
+    OMap    o -> pPrintMap pPrint o
+    OTree   o -> pPrintTree o
     OType   o -> [pShow o]
 
 instance Show Simple where { show = Lazy.unpack . runTextPPrinter 4 80 . pPrint; }
-
-decoderArray :: A.Array Word8 (Get Simple)
-decoderArray = A.array (0, 9) $
-  [(0, return ONull)
-  ,(1, return OTrue)
-  ,(2, (OInt    <$> get) <|> fail "expecting Int")
-  ,(3, (OLong   <$> vlGetInteger) <|> fail "expecting Integer")
-  ,(4, (OFloat  <$> getFloat64be) <|> fail "expecting Double")
-  ,(5, (OChar . chr . fromIntegral <$> vlGetInteger) <|> fail "expecting Char")
-  ,(6, (OString <$> binaryGetText) <|> fail "expecting string")
-  ,(7, (OList   <$> (vlGetInteger >>= getList [])) <|> fail "expecting Array")
-  ,(8, (OMap    <$> (vlGetInteger >>= getMap  [])) <|> fail "expecting Map")
-  ,(9, (return $ OType (typeOf OVoid)))
-  ]
-  where
-    getList ox i = if i==0 then return $ array ox      else get >>= \o -> getList (ox++[o]) (i-1)
-    getMap  ox i = if i==0 then return $ M.fromList ox else get >>= \o -> getMap  (ox++[o]) (i-1)
 
 instance Binary Simple where
   put o = let w = putWord8 in case o of
@@ -443,7 +427,8 @@ instance Binary Simple where
     OString o -> w 6 >> binaryPutText o
     OList   o -> w 7 >> vlPutInteger (toInteger $ size o) >> mapM_ put (elems o)
     OMap    o -> w 8 >> vlPutInteger (toInteger $ M.size o) >> mapM_ put (M.assocs o)
-    OType   _ -> w 9
+    OTree   o -> w 9 >> encodeTree o
+    OType   _ -> w 10
   get = do
     w <- getWord8
     guard $ A.inRange (A.bounds decoderArray) w
@@ -496,6 +481,66 @@ instance Monoid (Product Simple) where
           OTrue  -> case b of { OTrue -> OTrue; ONull -> ONull ; OMap b -> OMap b; _ -> f a b; }
           OMap a -> case b of { ONull -> ONull; OTrue -> OMap a;                   _ -> f (OMap a) b; }
           _      -> f a b
+
+pPrintMap :: (o -> [PPrint]) -> M.Map Object o -> [PPrint]
+pPrintMap pprin o = 
+  [ pText "{"
+  , pIndent $ intercalate [pText ",", pSpace, pNewLine] $
+      fmap (\ (a, b) -> pPrint a ++ [pText ":", pSpace, pIndent (pprin b)]) (M.assocs o)
+  , pText "}"
+  ]
+
+pPrintTree :: T_tree -> [PPrint]
+pPrintTree o = concat $
+  [ maybe [pText "()"] (\o -> [pText "(", pIndent (pPrint o), pNewLine, pText ")"]) (o & T.leaf)
+  , [pSpace, pText "->", pSpace]
+  , pPrintMap pPrintTree (o & T.branches)
+  ]
+
+decoderArray :: A.Array Word8 (Get Simple)
+decoderArray = A.array (0, 9) $
+  [( 0, return ONull)
+  ,( 1, return OTrue)
+  ,( 2, (OInt    <$> get) <|> fail "expecting Int")
+  ,( 3, (OLong   <$> vlGetInteger) <|> fail "expecting Integer")
+  ,( 4, (OFloat  <$> getFloat64be) <|> fail "expecting Double")
+  ,( 5, (OChar . chr . fromIntegral <$> vlGetInteger) <|> fail "expecting Char")
+  ,( 6, (OString <$> binaryGetText) <|> fail "expecting string")
+  ,( 7, (OList   <$> decodeArray  ) <|> fail "expecting Array")
+  ,( 8, (OMap    <$> decodeMap get) <|> fail "expecting Map")
+  ,( 9, (OTree   <$> decodeTree 9 ) <|> _tree_err)
+  ,(10, (OTree   <$> decodeTree 10) <|> _tree_err)
+  ,(11, (return $ OType (typeOf OVoid)))
+  ]
+
+_tree_err :: Get ig
+_tree_err = fail "expecting Tree"
+
+decodeArray :: Get (Array Object)
+decodeArray = vlGetInteger >>= loop [] where
+  loop ox i = if i==0 then return $ array ox else get >>= \o -> loop (ox++[o]) (i-1)
+
+decodeMap :: Get o -> Get (M.Map Object o)
+decodeMap get1 = vlGetInteger >>= loop [] where
+  loop ox i =
+    if i==0
+    then return $ M.fromList ox
+    else (,) <$> get <*> get1 >>= \o -> loop (ox++[o]) (i-1)
+
+decodeTree :: Word8 -> Get (T.Tree Object Object)
+decodeTree w = let f = decodeMap (getWord8 >>= decodeTree) in case w of
+  9  -> T.Tree . (,) Nothing <$> f
+  10 -> T.Tree <$> ((,) <$> (Just <$> get) <*> f)
+  _  -> _tree_err
+
+encodeTree :: T.Tree Object Object -> Put
+encodeTree o = case o of
+  T.Tree (Nothing, map) -> putWord8  9 >> f map
+  T.Tree (Just  o, map) -> putWord8 10 >> put o >> f map
+  where
+    f map = do
+      vlPutInteger (fromIntegral $ M.size map)
+      mapM_ (\ (a, b) -> put a >> encodeTree b) (M.assocs map)
 
 -- | Apply a numerical infix operator function to two 'Simple' data types.
 simpleNumInfixOp :: (forall a . Num a => a -> a -> a) -> Simple -> Simple -> Simple

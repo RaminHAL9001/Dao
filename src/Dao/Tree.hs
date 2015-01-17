@@ -415,19 +415,15 @@ differences = differencesWith (\ _ _ -> Nothing)
 
 ----------------------------------------------------------------------------------------------------
 
--- | The "power set" of two trees. That is, if two 'Tree's are like sets, then the 'powerTree' is
--- the power set of the two trees. In the sense of algebraic data types, this is the "power"
--- operation on 'Tree's. You could also think of this as a concatenation of all possible
--- combinations of branches.
---
--- For example, if the 'assocs' of two trees are:
+-- | This function computes the cartesian of two trees. For example, if the 'assocs' of two trees
+-- are:
 --
 -- > -- tree X              tree Y
 -- > [( [a, b, c], t ),  [( [b, c], w ),
 -- >  ( [a, b   ], u ),   ( [a   ], x )]
 -- >  ( [b      ], v )]
 --
--- Then the 'powerTree' of these two trees X and Y is the evaluation of 'fromList' on:
+-- Then the 'product' of these two trees X and Y is the evaluation of 'fromList' on:
 --
 -- > [( [a, b, c] ++ [b, c], t<>w ),
 -- >  ( [a, b, c] ++ [a   ], t<>x ),
@@ -436,11 +432,16 @@ differences = differencesWith (\ _ _ -> Nothing)
 -- >  ( [b,     ] ++ [b, c], v<>w ),
 -- >  ( [b,     ] ++ [a   ], v<>x )]
 --
-powerTree :: Ord p => (a -> b -> c) -> Tree p a -> Tree p b -> Tree p c
-powerTree append a b = fromList $ do
+productWith :: Ord p => (a -> b -> c) -> Tree p a -> Tree p b -> Tree p c
+productWith append a b = fromList $ do
   (pA, oA) <- assocs BreadthFirst a
   (pB, oB) <- assocs BreadthFirst b
   [(pA++pB, append oA oB)]
+
+-- | Like 'productWith' but uses 'Data.Monoid.mappend' as the function that computes the product of
+-- each element.
+product :: (Ord p, Monoid a) => Tree p a -> Tree p a -> Tree p a
+product = productWith mappend
 
 ----------------------------------------------------------------------------------------------------
 

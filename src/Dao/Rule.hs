@@ -171,7 +171,7 @@ instance (Functor m, Applicative m, Monad m) => Monad (Rule m) where
     RuleError  err   -> RuleError err
     RuleLift   a     -> RuleLift $ fmap (>> b) a
     RuleLogic  tA a  -> case b of
-      RuleLogic tB b   -> RuleLogic (T.powerTree const tA tB) (a >> b)
+      RuleLogic tB b   -> RuleLogic (T.product tA tB) (a >> b)
       b                -> RuleLogic tA $ fmap (fmap (>> b)) a
     RuleChoice a1 a2 -> RuleChoice (a1 >> b) (a2 >> b)
     RuleTree   a1 a2 -> case b of
@@ -180,7 +180,7 @@ instance (Functor m, Applicative m, Monad m) => Monad (Rule m) where
       RuleTree   b1 b2 ->
         let wrap map = T.Tree (Nothing, map)
             unwrap (T.Tree (_, tree)) = tree
-            power a b = unwrap $ T.powerTree (>>) (wrap a) (wrap b)
+            power a b = unwrap $ T.productWith (>>) (wrap a) (wrap b)
         in  RuleTree (power a1 b1) (power a2 b2)
       b                -> let bind = fmap $ fmap $ fmap (>> b) in RuleTree (bind a1) (bind a2)
   fail = RuleError . return . obj

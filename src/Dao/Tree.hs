@@ -266,6 +266,31 @@ blankTree = fromList . fmap (id &&& const ())
 lookup :: Ord p => [p] -> Tree p a -> Maybe a
 lookup px = pureFetch (focusLeaf px)
 
+-- | This function works like 'lookup', but takes a key predicate to match keys of the tree, rather
+-- than using @('Prelude.==')@. This means the efficient O(log n) 'Data.Map.Map' 'Data.Map.lookup'
+-- function in the "Data.Map" module cannot be used, each key must be inspected one-by-one making
+-- this algorithm O(n^2). This also means multiple values may match the given key predicate. Lookups
+-- are always performed in 'DepthFirst' order, this helps improve efficiency a little bit, as the
+-- matches nearest the beggining of each list of 'Data.Map.assocs' are chosen first, and lazily
+-- taking only the first few matches will save us from searching the entire tree.
+--
+-- Take note of the different types @p@ and @b@. This means the path @p@ you use to search the
+-- 'Tree' need not be the same type as the branches @b@ of the 'Tree', and what is returned are the
+-- actual branches @b@ that matched the path @p@, not the path @p@ itself.
+slowLookup :: Ord b => (p -> b -> Bool) -> [p] -> Tree b a -> [([b], a)]
+slowLookup f px t = loop [] px t where
+  loop path px t = case px of
+    []   -> maybe [] (\o -> [(path, o)]) $ t & leaf
+    p:px -> do
+      (p, t) <- filter (f p . fst) (M.assocs $ t & branches)
+      loop (path++[p]) px t
+
+-- | This function calls 'slowLookup' and returns only the first result. This can be used to take
+-- advantage of Haskell's laziness and save time by halting the search for matching paths as soon as
+-- the first match is found.
+slowLookup1 :: Ord b => (p -> b -> Bool) -> [p] -> Tree b a -> Maybe ([b], a)
+slowLookup1 f p t = case slowLookup f p t of { [] -> Nothing; o:_ -> Just o; }
+
 -- | Get all items and their associated path.
 assocs :: RunTree -> Tree p a -> [([p], a)]
 assocs control t = loop [] t where

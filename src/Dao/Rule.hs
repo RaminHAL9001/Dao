@@ -254,7 +254,7 @@ evalRuleLogic rule = case rule of
   RuleTree   x y -> runMap T.DepthFirst [] x <|> runMap T.BreadthFirst [] y where
     runMap control qx map = if M.null map then mzero else do
       q <- next
-      let (equal, similar) = partition (isSimilar . fst) $
+      let (equal, similar) = partition ((ExactlyEqual ==) . fst) $
             (do (o, tree) <- M.assocs map
                 let result = objMatch o q
                 if result==Dissimilar then [] else [(result, tree)]

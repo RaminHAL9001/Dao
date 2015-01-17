@@ -254,7 +254,7 @@ evalRuleLogic rule = case rule of
   RuleTree   x y -> runMap T.DepthFirst [] x <|> runMap T.BreadthFirst [] y where
     runMap control qx map = if M.null map then mzero else do
       q <- next
-      let (equal, similar) = partition ((ExactlyEqual ==) . fst) $
+      let (equal, similar) = partition (isSimilar . fst) $
             (do (o, tree) <- M.assocs map
                 let result = objMatch o q
                 if result==Dissimilar then [] else [(result, tree)]
@@ -501,40 +501,29 @@ infer f = tree T.BreadthFirst [[typ f err]] $ msum . fmap (fromObj >=> f) where
 -- key on the keyboard, the key event can be bound to a callback that tokenizes the input and feeds
 -- it into your 'Rule' knowledge base via the 'continueQuery' function, pausing at the end of the
 -- input 'Query' to retrieve predictions for what the end user may enter next.
-data Predictor m a
-  = Predictor QueryState (Rule m a) [(QueryState, Rule m a)] [Either ErrorObject a]
-  deriving Typeable
+data Predictor m a = Predictor QueryState (Rule m a) [(QueryState, Rule m a)] deriving Typeable
 
 instance TestNull (Predictor m a) where
-  nullValue = Predictor nullValue RuleEmpty [] []
-  testNull (Predictor qs RuleEmpty [] []) = testNull qs
-  testNull _                              = False
+  nullValue = Predictor nullValue RuleEmpty []
+  testNull (Predictor qs RuleEmpty []) = testNull qs
+  testNull _                           = False
 
 -- This is the input 'Query'. It is best not to modify this directly. Use 'startGuess' and
 -- 'changeGuess' instead.
 _predictorQueryState :: Monad l => Lens l (Predictor m a) QueryState
 _predictorQueryState =
-  newLens (\ (Predictor q _ _ _) -> q) (\q (Predictor _ r s t) -> Predictor q r s t)
+  newLens (\ (Predictor q _ _) -> q) (\q (Predictor _ r s) -> Predictor q r s)
 
 -- This is the current 'Rule' that will be evaluated using the '_predictorQueryState'.
 _predictorRule  :: Monad l => Lens l (Predictor m a) (Rule m a)
 _predictorRule  =
-  newLens (\ (Predictor _ r _ _) -> r) (\r (Predictor q _ s t) -> Predictor q r s t)
+  newLens (\ (Predictor _ r _) -> r) (\r (Predictor q _ s) -> Predictor q r s)
 
 -- This is the stack which contains all of the 'Rule' branches not taken. You can pop the stack and
 -- try alternate branches of evaluation.
 _predictorStack :: Monad l => Lens l (Predictor m a) [(QueryState, Rule m a)]
 _predictorStack =
-  newLens (\ (Predictor _ _ s _) -> s) (\s (Predictor q r _ t) -> Predictor q r s t)
-
--- This is the 'Predictor' that will be evaluated next.
-_predictorReturns :: Monad l => Lens l (Predictor m a) [Either ErrorObject a]
-_predictorReturns =
-  newLens (\ (Predictor _ _ _ t) -> t) (\t (Predictor q r s _) -> Predictor q r s t)
-
--- | This is the list of guesses for what the next input might be.
-predictorGuesses :: Predictor m a -> [Query]
-predictorGuesses = fmap fst . T.assocs T.BreadthFirst . getRuleStruct . (& _predictorRule)
+  newLens (\ (Predictor _ _ s) -> s) (\s (Predictor q r _) -> Predictor q r s)
 
 -- | This is the 'Query' that has been input by the user so far. This 'Dao.Lens.Lens' may be useful
 -- in tab-completion, where every time the end user presses the "tab" key, the entire line of input
@@ -542,30 +531,30 @@ predictorGuesses = fmap fst . T.assocs T.BreadthFirst . getRuleStruct . (& _pred
 -- the 'Rule' as possible by comparing the current 'predictorQuery' to the 'Query' assigned to it
 -- with the @('Dao.Lens.<~')@ operator. But if the end user has completely deleted the input and
 -- started with something new, it is unavoidable that the 'Predictor' simply must be fully reset.
-predictorQuery :: Monad l => Lens l (Predictor m a) Query
-predictorQuery = newLens fetch update where
-  fetch (Predictor q _ s _) =
+predictorQuery :: (Functor m, Applicative m, Monad m) => Lens m (Predictor m a) Query
+predictorQuery = newLensM fetch update where
+  fetch (Predictor q _ s) = return $
     concat $ reverse $ ((q & queryInput) :) $ fmap ((& queryInput) . fst) s
-  update ox (Predictor q r s t) =
-    let loop qs r s' s ox = let done = Predictor (on q [queryInput <~ ox]) r s' t in case s of
+  update ox (Predictor q r s) = predictorStep $
+    let loop qs r s' s ox = let done = Predictor (on q [queryInput <~ ox]) r s' in case s of
           []          -> done
           (qs', r'):s -> case stripPrefix (qs & queryInput) ox of
             Nothing -> done
             Just ox -> loop qs' r' ((qs, r):s') s ox
     in  case reverse s of
-          []        -> Predictor (on q [queryInput <~ ox]) r [] []
+          []        -> Predictor (on q [queryInput <~ ox]) r []
           (qs, r):s -> loop qs r [] s ox
 
 ----------------------------------------------------------------------------------------------------
 
 -- | This function is similar to the 'queryAll' function, except evaluation occurs in steps that can
 -- be controlled by 'predictorStep', 'predictorBack', and 'changeGuess'.
-startGuess :: (Functor m, Applicative m, Monad m) => Rule m a -> Query -> Predictor m a
-startGuess r q = Predictor (QueryState 0 q) r [] []
+startGuess :: (Functor m, Applicative m, Monad m) => Rule m a -> Query -> m (Predictor m a)
+startGuess r q = predictorStep $ Predictor (QueryState 0 q) r []
 
 -- | Append more of a 'Query' to the current 'Predictor's 'QueryState'.
-continueGuess :: (Functor m, Applicative m, Monad m) => Query -> Predictor m a -> Predictor m a
-continueGuess q p = on p [_predictorQueryState >>> queryInput $= (++ q)]
+continueGuess :: (Functor m, Applicative m, Monad m) => Query -> Predictor m a -> m (Predictor m a)
+continueGuess q p = predictorStep $ on p [_predictorQueryState >>> queryInput $= (++ q)]
 
 -- | A predicate indicating whether it is possible for the 'Predictor' to be stepped by
 -- 'predictorStep'.
@@ -581,47 +570,45 @@ predictorCanStep p = case p & _predictorRule of
 -- evaluation has completed, check the '_predictorGuesses' for possible completions. It is then
 -- possible to append these completions to the 'predictorQuery' and evaluate 'predictorStep' again.
 predictorStep :: (Functor m, Applicative m, Monad m) => Predictor m a -> m (Predictor m a)
-predictorStep p = case p & _predictorRule of
-  RuleLift     o -> o >>= \rule -> predictorStep $ on p [_predictorRule <~ rule]
-  RuleLogic  _ o -> do
-    (errs, rules) <- logic o
-    return $ update errs $ on p $ [_predictorRule <~ msum rules]
-  RuleTree   a b -> evalTree [] $ union (mkT a) (mkT b)
-  RuleChoice a b -> do
-    let uw = unwrap [] nullValue
-    (errsA, tA) <- uw a
-    (errsB, tB) <- uw b
-    evalTree (errsA++errsB) (union tA tB)
-  _              -> return p
-  where
-    mkT t = T.Tree (Nothing, t)
-    union = T.unionWith (\a b q -> mplus (a q) (b q))
-    logic o = first (fmap Left) . partitionEithers <$> evalLogicT o (p & _predictorQueryState) 
-    evalTree errs t = do
-      let q = p & _predictorQueryState & queryInput
-      return $ update errs $ on p $
-        [ _predictorRule <~ maybe RuleEmpty ($ q) $ T.lookup q $ t
-        , _predictorQueryState >>> queryScore $= (+ (length q))
-        ]
-    leaf errs t o = return (errs, union t $ T.Tree (Just $ const o, nullValue))
-    unwrap errs t a = case a of
-      RuleEmpty      -> return (errs, t)
-      RuleReturn   a -> leaf errs t (return a)
-      RuleError    a -> leaf errs t (RuleError a)
-      RuleLift     a -> a >>= unwrap errs t
-      RuleLogic  _ a -> do
-        (errs', rules) <- logic a
-        leaf (errs++errs') t (msum rules)
-      RuleChoice a b -> unwrap errs t a >>= \ (errs, t) -> unwrap errs t b
-      RuleTree   a b -> return (errs, union (mkT a) (mkT b))
-    update errs p = on p $ case p & _predictorRule of
-      RuleEmpty      -> [_predictorReturns <~ errs          ]
-      RuleReturn   o -> [_predictorReturns <~ Right o : errs]
-      RuleError    o -> [_predictorReturns <~ Left  o : errs]
-      RuleLift     _ -> []
-      rule           ->
-        [ _predictorStack   $= ((p & _predictorQueryState, p & _predictorRule) :)
-        , _predictorRule    <~ rule
-        , _predictorReturns <~ errs
-        ]
+predictorStep = fmap snd . curry loop nullValue where
+  step t p rule = (t, on p [_predictorRule <~ rule])
+  loop (t, p) = let rule = p & _predictorRule in case rule of
+    RuleLift     o -> o >>= loop . step t p
+    RuleLogic  _ o ->
+      rights <$> evalLogicT o (p & _predictorQueryState) >>= loop . step t p . msum
+    RuleChoice a b -> loop (step t p a) >>= \ (t, p) -> loop $ step t p b
+    RuleTree   a b -> done (union t $ union (mkT a) (mkT b)) p
+    _              -> return (t, p)
+  mkT = T.Tree . (,) Nothing
+  union = T.unionWith (\a b q -> mplus (a q) (b q))
+  done t p = do
+    let qs = p & _predictorQueryState
+    let qi = qs & queryInput
+    case T.slowLookup1 (\a b -> isSimilar $ objMatch b a) qi t of
+      Nothing         -> return (t, p)
+      Just (_, qRule) -> let rule = qRule qi in return $ (,) t $ on p $
+        [_predictorStack $= ((on qs [queryInput <~ qi], rule) :), _predictorRule  <~ rule]
+
+-- | This will compute a pair of two results at once:
+--
+-- 1. a number of possible results if the current 'predictorInput' would have been input into
+--    'queryAll', what would be the result returned, or the error thrown. 
+-- 2. a list of guesses that might be next input by an end user that would be valid in the current
+--    context of the current production 'Rule'.
+predictorGuesses
+  :: (Functor m, Applicative m, Monad m)
+  => Predictor m a -> m ([Either ErrorObject a], [Query])
+predictorGuesses = fmap (second $ fmap fst . T.assocs T.BreadthFirst) . loop [] nullValue where
+  step p rule = on p [_predictorRule <~ rule]
+  loop ax t p = case p & _predictorRule of
+    RuleLift     o -> o >>= loop ax t . step p
+    RuleLogic  u o -> do
+      (errs, rules) <- partitionEithers <$> evalLogicT o (p & _predictorQueryState)
+      loop (ax ++ fmap Left errs) (T.union t u) $ step p (msum rules)
+    RuleTree   a b -> let mkT o = T.Tree (Nothing, fmap (fmap (const ())) o) in
+      return (ax, T.union t $ T.union (mkT a) (mkT b))
+    RuleChoice a b -> loop ax t (step p a) >>= \ (ax, t) -> loop ax t (step p b)
+    RuleReturn a   -> return (ax++[Right  a], t)
+    RuleError  err -> return (ax++[Left err], t)
+    RuleEmpty      -> return (ax, t)
 

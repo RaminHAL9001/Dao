@@ -56,22 +56,28 @@ module Dao.Object
   where
 
 import           Dao.Array
+import           Dao.Int
 import           Dao.PPrint
 import           Dao.Predicate
 import           Dao.TestNull
+import           Dao.Text
 
 import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Except
 import           Control.Monad.Identity
 
+import qualified Data.Array as A
+import           Data.Binary
+import           Data.Binary.IEEE754
 import           Data.Bits
+import           Data.Char
 import           Data.Dynamic
 import           Data.List (intercalate)
 import qualified Data.Map  as M
 import           Data.Monoid
-import qualified Data.Text      as Strict
-import qualified Data.Text.Lazy as Lazy
+import qualified Data.Text          as Strict
+import qualified Data.Text.Lazy     as Lazy
 
 -- | Void values are undefined values. Unliked Haskell's 'Prelude.undefined', 'voidValue' is a concrete
 -- value you can test for.
@@ -408,6 +414,41 @@ instance PPrintable Simple where
 
 instance Show Simple where { show = Lazy.unpack . runTextPPrinter 4 80 . pPrint; }
 
+decoderArray :: A.Array Word8 (Get Simple)
+decoderArray = A.array (0, 9) $
+  [(0, return ONull)
+  ,(1, return OTrue)
+  ,(2, (OInt    <$> get) <|> fail "expecting Int")
+  ,(3, (OLong   <$> vlGetInteger) <|> fail "expecting Integer")
+  ,(4, (OFloat  <$> getFloat64be) <|> fail "expecting Double")
+  ,(5, (OChar . chr . fromIntegral <$> vlGetInteger) <|> fail "expecting Char")
+  ,(6, (OString <$> binaryGetText) <|> fail "expecting string")
+  ,(7, (OList   <$> (vlGetInteger >>= getList [])) <|> fail "expecting Array")
+  ,(8, (OMap    <$> (vlGetInteger >>= getMap  [])) <|> fail "expecting Map")
+  ,(9, (return $ OType (typeOf OVoid)))
+  ]
+  where
+    getList ox i = if i==0 then return $ array ox      else get >>= \o -> getList (ox++[o]) (i-1)
+    getMap  ox i = if i==0 then return $ M.fromList ox else get >>= \o -> getMap  (ox++[o]) (i-1)
+
+instance Binary Simple where
+  put o = let w = putWord8 in case o of
+    OVoid     -> return ()
+    ONull     -> w 0
+    OTrue     -> w 1
+    OInt    o -> w 2 >> put o
+    OLong   o -> w 3 >> vlPutInteger o
+    OFloat  o -> w 4 >> putFloat64be o
+    OChar   o -> w 5 >> vlPutInteger (toInteger $ ord o)
+    OString o -> w 6 >> binaryPutText o
+    OList   o -> w 7 >> vlPutInteger (toInteger $ size o) >> mapM_ put (elems o)
+    OMap    o -> w 8 >> vlPutInteger (toInteger $ M.size o) >> mapM_ put (M.assocs o)
+    OType   _ -> w 9
+  get = do
+    w <- getWord8
+    guard $ A.inRange (A.bounds decoderArray) w
+    decoderArray A.! w
+
 instance Monoid Simple where
   mempty = ONull
   mappend a b = case a of
@@ -625,6 +666,12 @@ instance SimpleData Object   where
   simple   o = case o of
     OForeign o -> objSimplified o
     OSimple  o -> o
+
+instance Binary Object where
+  put o = case o of
+    OSimple  o -> put o
+    OForeign o -> put $ objSimplified o
+  get = OSimple <$> get
 
 instance Monoid Object where
   mempty = OSimple ONull

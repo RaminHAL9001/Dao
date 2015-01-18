@@ -668,6 +668,10 @@ instance SimpleData T_map    where
   simple       = OMap
   fromSimple o = case o of { OMap o -> return o; _ -> mzero; }
 
+instance SimpleData T_tree   where
+  simple       = OTree
+  fromSimple o = case o of { OTree o -> return o; _ -> mzero; }
+
 instance SimpleData T_type   where
   simple       = OType
   fromSimple o = case o of { OType o -> return o; _ -> mzero; }

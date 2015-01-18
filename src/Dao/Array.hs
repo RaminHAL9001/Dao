@@ -27,10 +27,12 @@ import           Dao.TestNull
 
 import           Control.Applicative
 import           Control.DeepSeq
-import           Control.Monad
+import           Control.Monad hiding (mapM, msum)
 
 import qualified Data.Array.IArray as A
+import           Data.Foldable
 import           Data.Monoid
+import           Data.Traversable
 import           Data.Typeable
 
 ----------------------------------------------------------------------------------------------------
@@ -50,6 +52,10 @@ instance MonadPlus Array where { mzero=mempty; mplus=mappend; }
 instance Applicative Array where { pure=return; (<*>)=ap; }
 
 instance Alternative Array where { empty=mzero; (<|>)=mplus; }
+
+instance Traversable Array where { traverse f = fmap array . traverse f . elems; }
+
+instance Foldable Array where { foldr f i = Data.Foldable.foldr f i . elems; }
 
 instance Monoid (Array o) where
   mempty = Array Nothing
@@ -71,7 +77,7 @@ instance ToText o => ToText (Array o) where
 instance ToTextIO o => ToTextIO (Array o) where
   toTextIO (Array o) = case o of
     Nothing -> return $ toText "()"
-    Just  o -> listToText <$> mapM toTextIO (A.elems o)
+    Just  o -> listToText <$> traverse toTextIO (A.elems o)
 
 -- | Returns the minimum bounds that contains the bounds for both given 'Data.Array.IArray.Array's.
 -- *NOTE* that this operates on arrays from the "Data.Array.IArray" module.

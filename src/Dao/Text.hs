@@ -41,6 +41,7 @@ import qualified Data.Text.Lazy     as Lazy
 import qualified Data.Text.Encoding as T
 
 import qualified Data.Binary     as B
+import qualified Data.Binary.Put as B
 import qualified Data.Binary.Get as B
 
 ----------------------------------------------------------------------------------------------------
@@ -105,7 +106,7 @@ listToTextIO = listToTextWithIO toTextIO
 ----------------------------------------------------------------------------------------------------
 
 binaryPutText :: Strict.Text -> B.Put
-binaryPutText o = vlPutInteger (toInteger $ Strict.length o) >> B.put (T.encodeUtf8 o)
+binaryPutText o = vlPutInteger (toInteger $ Strict.length o) >> B.putByteString (T.encodeUtf8 o)
 
 binaryGetText :: B.Get Strict.Text
 binaryGetText = fmap fromInteger B.get >>= fmap T.decodeUtf8 . B.getByteString

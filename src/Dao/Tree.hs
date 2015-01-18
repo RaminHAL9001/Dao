@@ -114,7 +114,8 @@ data RunTree
 -- use 'Data.Foldable.foldr' or 'Data.Traversable.traverse', it is first necessary to store the tree
 -- in this data type along with the 'RunTree' operator indicating the order in which the leaf
 -- objects @o@ will be retrieved.
-data ReduceTree p o = ReduceTree RunTree (Tree p o) deriving (Eq, Ord, Show, Typeable)
+data ReduceTree p o = ReduceTree{ reduceTreeBy :: RunTree, getReduced :: Tree p o }
+  deriving (Eq, Ord, Show, Typeable)
 
 instance Functor (ReduceTree p) where
   fmap f (ReduceTree control tree) = ReduceTree control $ fmap f tree

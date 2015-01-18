@@ -318,7 +318,7 @@ type ErrorObject = [Object]
 
 -- | Using this might be more convenient than always writing
 -- @'Control.Monad.Error.throwError' $ 'obj' ...)@.
-throwObject :: MonadError ErrorObject m => ObjectData o => o -> m err
+throwObject :: (MonadError ErrorObject m, ObjectData o) => o -> m err
 throwObject = throwError . return . obj
 
 -- | 'ErrorObject's thrown are usually error messages. This is a very simple kind of pretty-printer

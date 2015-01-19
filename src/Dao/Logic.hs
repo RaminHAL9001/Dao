@@ -54,27 +54,28 @@ logic = LogicT . fmap Identity
 instance Functor m => Functor (LogicT st m) where
   fmap f (LogicT p) = LogicT $ fmap (fmap (first f)) . p
 
-instance (Functor m, Applicative m, Monad m) => Applicative (LogicT st m) where
+instance (Functor m, Monad m) => Applicative (LogicT st m) where
   pure = return
   (<*>) = ap
 
-instance (Functor m, Applicative m, Monad m) => Alternative (LogicT st m) where
+instance (Functor m, Monad m) => Alternative (LogicT st m) where
   empty = mzero
   (<|>) = mplus
 
-instance (Functor m, Applicative m, Monad m) => Monad (LogicT st m) where
+instance Monad m => Monad (LogicT st m) where
   return o = LogicT $ \st -> return [(o, st)]
-  (LogicT o) >>= f = LogicT $ \st -> o st >>= fmap concat .  mapM (\ (o, st) -> runLogicT (f o) st)
+  (LogicT o) >>= f = LogicT $ \st -> o st >>=
+    mapM (\ (o, st) -> runLogicT (f o) st) >>= return . concat
 
-instance (Functor m, Applicative m, Monad m) => MonadPlus (LogicT st m) where
+instance Monad m => MonadPlus (LogicT st m) where
   mzero                       = LogicT $ const $ return []
-  mplus (LogicT a) (LogicT b) = LogicT $ \st -> (++) <$> a st <*> b st
+  mplus (LogicT a) (LogicT b) = LogicT $ \st -> ap (ap (return (++)) (a st)) (b st)
 
-instance (Functor m, Applicative m, Monad m) => MonadState st (LogicT st m) where
+instance Monad m => MonadState st (LogicT st m) where
   state f = LogicT $ \st -> return [f st]
 
-instance (Functor m, Applicative m, Monad m, MonadIO m) => MonadIO (LogicT st m) where
-  liftIO f = LogicT $ \st -> (\a -> [(a, st)]) <$> liftIO f
+instance (Monad m, MonadIO m) => MonadIO (LogicT st m) where
+  liftIO f = LogicT $ \st -> liftIO f >>= \a -> return [(a, st)]
 
 instance MonadTrans (LogicT st) where
   lift f = LogicT $ \st -> f >>= \a -> return [(a, st)]
@@ -95,32 +96,32 @@ execLogic f = runIdentity . execLogicT f
 
 ----------------------------------------------------------------------------------------------------
 
-class (Functor m, Applicative m, Monad m) => MonadLogic st m | m -> st where
+class Monad m => MonadLogic st m | m -> st where
   -- | Like 'Control.Monad.State.Class.state', but return multiple possible states and outcomes.
   -- Think of this as creating a computation that is in an uncertain superposition, with many
   -- possible states and outcomes.
   --
   -- There is a law for 'superState' requiring that if the function @(st -> [(a, st)])@ that was
   -- passed to 'superState' evaluates to an empty list, then 'superState' must evaluate to
-  -- 'Control.Applicative.empty' and/or 'Control.Monad.mzero'.
+  -- 'Control.Monad.mzero'.
   superState :: (st -> [(a, st)]) -> m a
   -- | Given a 'LogicT' monadic function, use the current state with 'runLogicT' to evaluate this
   -- function, producing a list of all possible (outcome,state) pairs. Place the current state back
   -- into the 'runLogicT' monad and return the list of all possible (outcome,state) pairs.
   --
   -- There is a law for 'entangle' requiring that if the function @(m a)@ that was passed to
-  -- 'entangle' evaluates to 'Control.Applicative.empty' and/or 'Control.Monad.mzero', then
+  -- 'entangle' evaluates to 'Control.Monad.mzero', then
   -- 'entangle' must evaluate to @'Control.Monad.return' []@.
   entangle :: m a -> m [(a, st)]
 
-instance (Functor m, Applicative m, Monad m) => MonadLogic st (LogicT st m) where
+instance Monad m => MonadLogic st (LogicT st m) where
   superState f = LogicT $ \st -> return (f st)
-  entangle (LogicT f) = LogicT $ \st -> fmap (\all -> [(all, st)]) (f st)
+  entangle (LogicT f) = LogicT $ \st -> f st >>= \all -> return [(all, st)]
 
 -- | Like 'Control.Monad.State.modify', but puts the current state of the computation into an
 -- uncertain superposition, with many possible states.
 superModify :: MonadLogic st m => (st -> [st]) -> LogicT st m ()
-superModify f = superState (fmap ((,) ()) . f)
+superModify f = superState (f >=> return . ((,) ()))
 
 -- | Return many possible results.
 possibly :: MonadLogic st m => [a] -> LogicT st m a
@@ -131,25 +132,25 @@ possibly o = superState $ \st -> fmap (\o -> (o, st)) o
 -- @\\f -> 'Control.Applicative.fmap' 'Prelude.fst' 'Control.Applicative.<$>' 'entangle' f@
 --
 outcomes :: MonadLogic st m => LogicT st m a -> LogicT st m [a]
-outcomes = fmap (fmap fst) . entangle
+outcomes = entangle >=> return . fmap fst
 
 -- | Equivalent to:
 --
 -- @\\f -> 'Control.Applicative.fmap' 'Prelude.snd' 'Control.Applicative.<$>' 'entangle' f@
 --
 states :: MonadLogic st m => LogicT st m a -> LogicT st m [st]
-states = fmap (fmap snd) . entangle
+states = entangle >=> return . fmap snd
 
 -- | If a given 'LogicT' monad evaluates successfully, make that success a failure by evaluating to
 -- 'Control.Monad.mzero', otherwise evaluate to @return ()@.
-failIf :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadLogic st m) => m a -> m ()
-failIf m = (m >> mzero) <|> return ()
+failIf :: (Monad m, MonadPlus m, MonadLogic st m) => m a -> m ()
+failIf m = mplus (m >> mzero) (return ())
 
 -- | Logical exclusive-OR, matches one rule or the other, but not both. This function uses
 -- 'Dao.Logic.entangle', so there is a small performance penalty as the lazy state must be evaluated
 -- strictly, but this loss in performance could be regained by reducing the number of branches of
 -- logic evaluation.
-exclusive :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadLogic st m) => [m a] -> m a
+exclusive :: (Monad m, MonadPlus m, MonadLogic st m) => [m a] -> m a
 exclusive = entangle . msum >=> \matched ->
   case matched of { [o] -> superState $ const [o]; _ -> mzero; }
 
@@ -157,7 +158,7 @@ exclusive = entangle . msum >=> \matched ->
 -- function uses 'Dao.Logic.entangle', so there is a small performance penalty as the lazy state
 -- must be evaluated strictly, but this loss in performance could be regained by reducing the number
 -- of branches of logic evaluation.
-chooseOnly :: (Functor m, Applicative m, Monad m, MonadLogic st m) => Int -> m a -> m a
+chooseOnly :: (Monad m, MonadLogic st m) => Int -> m a -> m a
 chooseOnly n = entangle >=> superState . const . take n
 
 -- | When an error is thrown using 'Control.Monad.Except.throwError', the error is not caught right
@@ -173,6 +174,6 @@ chooseOnly n = entangle >=> superState . const . take n
 -- This function is defined as:
 --
 -- @'Prelude.flip' 'Control.Monad.Except.catchError' ('Prelude.const' 'Control.Monad.mzero')@
-dropErrors :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadError err m, MonadLogic st m) => m a -> m a
+dropErrors :: (Monad m, MonadPlus m, MonadError err m, MonadLogic st m) => m a -> m a
 dropErrors = flip catchError (const mzero)
 

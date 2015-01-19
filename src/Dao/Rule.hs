@@ -141,38 +141,38 @@ data Rule m a
               (M.Map Object (T.Tree Object (Query -> Rule m a)))
     -- DepthFirst and BreadthFirst rule trees are kept separate.
 
-instance Functor m => Functor (Rule m) where
-  fmap f rule = case rule of
+instance Monad m => Functor (Rule m) where
+  fmap f rule = let ffmap f o = o >>= return . f in case rule of
     RuleEmpty      -> RuleEmpty
     RuleReturn   o -> RuleReturn $ f o
     RuleError  err -> RuleError err
-    RuleLift     o -> RuleLift $ fmap (fmap f) o
-    RuleLogic  t o -> RuleLogic t $ fmap (fmap (fmap f)) o
-    RuleChoice x y -> RuleChoice (fmap f x) (fmap f y)
+    RuleLift     o -> RuleLift $ ffmap (ffmap f) o
+    RuleLogic  t o -> RuleLogic t $ ffmap (ffmap (ffmap f)) o
+    RuleChoice x y -> RuleChoice (ffmap f x) (ffmap f y)
     RuleTree   x y -> let map = fmap (fmap (fmap (fmap f))) in RuleTree (map x) (map y)
 
-instance (Applicative m, Monad m) => Applicative (Rule m) where { pure = return; (<*>) = ap; }
+instance (Functor m, Monad m) => Applicative (Rule m) where { pure = return; (<*>) = ap; }
 
-instance (Applicative m, Monad m) => Alternative (Rule m) where { empty = mzero; (<|>) = mplus; }
+instance (Functor m, Monad m) => Alternative (Rule m) where { empty = mzero; (<|>) = mplus; }
 
-instance (Functor m, Applicative m, Monad m) => Monad (Rule m) where
+instance Monad m => Monad (Rule m) where
   return = RuleReturn
-  rule >>= f = case rule of
+  rule >>= f = let ffmap f o = o >>= return . f in case rule of
     RuleEmpty      -> RuleEmpty
     RuleReturn   o -> f o
     RuleError  err -> RuleError err
-    RuleLift     o -> RuleLift $ fmap (>>= f) o
-    RuleLogic  t o -> RuleLogic t $ fmap (fmap (>>= f)) o
+    RuleLift     o -> RuleLift $ ffmap (>>= f) o
+    RuleLogic  t o -> RuleLogic t $ ffmap (ffmap (>>= f)) o
     RuleChoice x y -> RuleChoice (x >>= f) (y >>= f)
     RuleTree   x y -> let map = fmap $ fmap $ fmap (>>= f) in RuleTree (map x) (map y)
-  a >> b = case a of
+  a >> b = let ffmap f o = o >>= return . f in case a of
     RuleEmpty        -> RuleEmpty
     RuleReturn _     -> b
     RuleError  err   -> RuleError err
-    RuleLift   a     -> RuleLift $ fmap (>> b) a
+    RuleLift   a     -> RuleLift $ ffmap (>> b) a
     RuleLogic  tA a  -> case b of
       RuleLogic tB b   -> RuleLogic (T.product tA tB) (a >> b)
-      b                -> RuleLogic tA $ fmap (fmap (>> b)) a
+      b                -> RuleLogic tA $ ffmap (fmap (>> b)) a
     RuleChoice a1 a2 -> RuleChoice (a1 >> b) (a2 >> b)
     RuleTree   a1 a2 -> case b of
       RuleEmpty        -> RuleEmpty
@@ -185,7 +185,7 @@ instance (Functor m, Applicative m, Monad m) => Monad (Rule m) where
       b                -> let bind = fmap $ fmap $ fmap (>> b) in RuleTree (bind a1) (bind a2)
   fail = RuleError . return . obj
 
-instance (Functor m, Applicative m, Monad m) => MonadPlus (Rule m) where
+instance Monad m => MonadPlus (Rule m) where
   mzero = RuleEmpty
   mplus a b = case a of
     RuleEmpty        -> b
@@ -209,31 +209,34 @@ instance (Functor m, Applicative m, Monad m) => MonadPlus (Rule m) where
       RuleEmpty        -> a
       b                -> RuleChoice a b
 
-instance (Functor m, Applicative m, Monad m) => MonadError ErrorObject (Rule m) where
+instance Monad m => MonadError ErrorObject (Rule m) where
   throwError            = RuleError
   catchError rule catch = case rule of
     RuleError o -> catch o
     _           -> rule
 
-instance (Functor m, Applicative m, Monad m) => MonadState Query (Rule m) where
+instance Monad m => MonadState Query (Rule m) where
   state f = RuleLogic nullValue $ state $ \st ->
     let (o, q) = f $ st & queryInput in (Right $ return o, on st [queryInput <~ q])
 
-instance (Functor m, Applicative m, Monad m) => MonadReader Query (Rule m) where
+instance Monad m => MonadReader Query (Rule m) where
   ask = get;
   local f sub = RuleLogic (getRuleStruct sub) $ do
     st <- state $ \st -> (st, on st [queryInput $= f])
     evalRuleLogic sub >>= return . Left ||| state . const . flip (,) st . Right . return
 
-instance (Functor m, Applicative m, Monad m) => MonadLogic Query (Rule m) where
+instance Monad m => MonadLogic Query (Rule m) where
   superState  f = RuleLogic nullValue $ superState $ \st ->
-    fmap (\ (o, q) -> (Right $ return o, on st [queryInput <~ q])) $ f $ st & queryInput
+    f (st & queryInput) >>= \ (o, q) -> return (Right $ return o, on st [queryInput <~ q])
   entangle rule = RuleLogic (getRuleStruct rule) $ do
     let lrzip (o, qx) = (\err -> ([(err, qx)], [])) ||| (\o -> ([], [(o, qx)])) $ o
-    (errs, ox) <- (concat *** concat) . unzip . fmap lrzip <$> entangle (evalRuleLogic rule)
+    (errs, ox) <- entangle (evalRuleLogic rule) >>= return . (concat *** concat) . unzip . fmap lrzip
     superState $ \st -> (Right $ return $ second (& queryInput) <$> ox, st) : fmap (first Left) errs
 
-instance (Functor m, Applicative m, Monad m) => Monoid (Rule m o) where
+instance MonadTrans Rule where
+  lift f = RuleLift $ f >>= return . return
+
+instance (Functor m, Monad m) => Monoid (Rule m o) where
   mempty  = mzero
   mappend = mplus
 
@@ -242,7 +245,7 @@ instance (Functor m, Applicative m, Monad m) => Monoid (Rule m o) where
 -- | Evaluate a 'Rule' by flattening it's internal 'Dao.Tree.Tree' structure to a 'Dao.Logic.LogicT'
 -- monad. This is probably not as useful of a function as 'queryAll' or 'query'.
 evalRuleLogic
-  :: forall m a . (Functor m, Applicative m, Monad m)
+  :: forall m a . Monad m
   => Rule m a -> LogicT QueryState m (Either ErrorObject a)
 evalRuleLogic rule = case rule of
   RuleEmpty      -> mzero
@@ -250,20 +253,23 @@ evalRuleLogic rule = case rule of
   RuleError  err -> return $ Left err
   RuleLift     o -> lift o >>= evalRuleLogic
   RuleLogic  _ o -> o >>= return . Left ||| evalRuleLogic
-  RuleChoice x y -> evalRuleLogic x <|> evalRuleLogic y
-  RuleTree   x y -> runMap T.DepthFirst [] x <|> runMap T.BreadthFirst [] y where
+  RuleChoice x y -> mplus (evalRuleLogic x) (evalRuleLogic y)
+  RuleTree   x y -> mplus (runMap T.DepthFirst [] x) (runMap T.BreadthFirst [] y) where
     runMap control qx map = if M.null map then mzero else do
-      q <- next
-      let (equal, similar) = partition ((ExactlyEqual ==) . fst) $
-            (do (o, tree) <- M.assocs map
-                let result = objMatch o q
-                if result==Dissimilar then [] else [(result, tree)]
-            )
-      tree <- superState $ \st -> flip zip (repeat st) $
-        if null equal
-        then snd <$> sortBy (\a b -> compare (fst b) (fst a)) similar
-        else snd <$> equal
-      loop control (qx++[q]) tree
+      q <- evalRuleLogic next
+      case q of
+        Left  q -> return $ Left q
+        Right q -> do
+          let (equal, similar) = partition ((ExactlyEqual ==) . fst) $
+                (do (o, tree) <- M.assocs map
+                    let result = objMatch o q
+                    if result==Dissimilar then [] else [(result, tree)]
+                )
+          tree <- superState $ \st -> flip zip (repeat st) $
+            if null equal
+            then snd <$> sortBy (\a b -> compare (fst b) (fst a)) similar
+            else snd <$> equal
+          loop control (qx++[q]) tree
     loop control qx tree@(T.Tree (rule, map)) = if T.null tree then mzero else
       ((if control==T.DepthFirst then id else flip) mplus)
         (runMap control qx map)
@@ -271,44 +277,30 @@ evalRuleLogic rule = case rule of
 
 -- | Run a 'Rule' against an @['Dao.Object.Object']@ query, return all successful results and all
 -- exceptions that may have been thrown by 'Control.Monad.Except.throwError'.
-queryAll :: (Functor m, Applicative m, Monad m) => Rule m a -> Query -> m [Either ErrorObject a]
-queryAll rule = fmap (fmap fst) . runLogicT (evalRuleLogic rule) . QueryState 0
+queryAll :: Monad m => Rule m a -> Query -> m [Either ErrorObject a]
+queryAll rule = runLogicT (evalRuleLogic rule) . QueryState 0 >=> return . fmap fst
 
 -- | Run a 'Rule' against an @['Dao.Object.Object']@ query, return all successful results.
-query :: (Functor m, Applicative m, Monad m) => Rule m a -> Query -> m [a]
-query r = fmap (>>= (const [] ||| return)) . queryAll r
+query :: Monad m => Rule m a -> Query -> m [a]
+query r = queryAll r >=> return . (>>= (const [] ||| return))
 
 -- | Like 'query', but only returns the first successful result, if any.
-query1 :: (Functor m, Applicative m, Monad m) => Rule m a -> Query -> m (Maybe a)
-query1 r = fmap (\ox -> if null ox then Nothing else Just $ head ox) . query r
+query1 :: Monad m => Rule m a -> Query -> m (Maybe a)
+query1 r = query r >=> \ox -> return $ if null ox then Nothing else Just $ head ox
 
 -- | Take the next item from the query input, backtrack if there is no input remaining.
---
--- This function is polymorphic over a monadic type that instantiates 'Dao.Logic.MonadLogic',
--- however consider the type of this function to be
---
--- @
--- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
--- @
-next :: (Functor m, Applicative m, Monad m, MonadLogic QueryState m) => m Object
-next = superState $ \q -> if null $ q & queryInput then [] else
-  [(head $ q & queryInput, on q [queryInput $= tail, queryScore $= (+ 1)])]
+next :: Monad m => Rule m Object
+next = RuleLogic nullValue $ superState $ \q -> if null $ q & queryInput then [] else
+  [(Right $ return $ head $ q & queryInput, on q [queryInput $= tail, queryScore $= (+ 1)])]
 
--- | Take as many of next items from the query input as necessary to make the reset of the 'Rule'
+-- | Take as many of next items from the query input as necessary to make the rest of the 'Rule'
 -- match the input query. This acts as kind of a Kleene star.
---
--- This function is polymorphic over a monadic type that instantiates 'Dao.Logic.MonadLogic',
--- however consider the type of this function to be:
---
--- @
--- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
--- @
-part :: (Functor m, Applicative m, Monad m, MonadLogic QueryState m) => m Query
-part = superState $ loop 0 [] where
+part :: Monad m => Rule m Query
+part = RuleLogic nullValue $ superState $ loop 0 [] where
   loop score lo q = case q & queryInput of
-    []   -> [(lo, on q [queryScore <~ score])]
+    []   -> [(Right $ return lo, on q [queryScore <~ score])]
     o:ox -> let q' = on q [queryInput <~ ox, queryScore <~ score]
-            in (lo, q') : loop (score+1) (lo++[o]) q'
+            in (Right $ return lo, q') : loop (score+1) (lo++[o]) q'
 
 -- | Match when there are no more arguments, backtrack if there are.
 --
@@ -316,10 +308,10 @@ part = superState $ loop 0 [] where
 -- however consider the type of this function to be:
 --
 -- @
--- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
+-- ('Data.Functor.Functor' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
 -- @
-done :: (Functor m, Applicative m, Monad m, MonadLogic QueryState m) => m ()
-done = superState $ \q -> if null $ q & queryInput then [((), q)] else []
+done :: Monad m => Rule m ()
+done = RuleLogic nullValue $ superState $ \q -> if null $ q & queryInput then [(Right $ return (), q)] else []
 
 -- | Fully evaluate a 'Rule', and collect all possible results along with their 'queryScore's. Pass
 -- these results to a filter function, and procede with 'Rule' evaluation using only the results
@@ -330,23 +322,18 @@ done = superState $ \q -> if null $ q & queryInput then [((), q)] else []
 -- however consider the type of this function to be:
 --
 -- @
--- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
+-- ('Data.Functor.Functor' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
 -- @
-limitByScore
-  :: (Functor m, Applicative m, Monad m)
-  => ([(a, QueryState)] -> [(a, QueryState)])
-  -> Rule m a -> Rule m a
+limitByScore :: Monad m => ([(a, QueryState)] -> [(a, QueryState)]) -> Rule m a -> Rule m a
 limitByScore filter f = do
-  (err, ox) <-
-    ( (concat *** concat) . unzip
-    . fmap (\ (o, qs) -> (\o -> ([(Left o, qs)], [])) ||| (\o -> ([], [(o, qs)])) $ o)
-    ) <$> RuleLogic (getRuleStruct f) (fmap (Right . return) $ entangle $ evalRuleLogic f)
-  -- ox <- filter <$> forM ox (\ (o, qs) -> flip (,) qs <$> o)
+  a <- RuleLogic (getRuleStruct f) (entangle (evalRuleLogic f) >>= return . Right . return)
+  let (err, ox) = (concat *** concat) $ unzip $
+        fmap (\ (o, qs) -> (\o -> ([(Left o, qs)], [])) ||| (\o -> ([], [(o, qs)])) $ o) $ a
   RuleLogic nullValue $ superState $ const $ (first (Right . return) <$> filter ox) ++ err
 
 -- | Like 'limitByScore' but the filter function simply selects the results with the highet
 -- 'queryScore'.
-bestMatch :: (Functor m, Applicative m, Monad m) => Rule m a -> Rule m a
+bestMatch :: Monad m => Rule m a -> Rule m a
 bestMatch = let score = (& queryScore) . snd in limitByScore $ concat .
   take 1 . groupBy (\a b -> score a == score b) . sortBy (\a b -> score b `compare` score a)
 
@@ -357,13 +344,15 @@ bestMatch = let score = (& queryScore) . snd in limitByScore $ concat .
 -- however consider the type of this function to be:
 --
 -- @
--- ('Data.Functor.Functor' m, 'Control.Applicative.Applicative' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
+-- ('Data.Functor.Functor' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
 -- @
-resetScore :: (Functor m, Applicative m, Monad m) => Rule m a -> Rule m a
+resetScore :: Monad m => Rule m a -> Rule m a
 resetScore f = do
   score <- RuleLogic (getRuleStruct f) $ state $ \q ->
     (Right . return $ q & queryScore, on q [queryScore <~ 0])
-  f <* RuleLogic nullValue (fmap (Right . return) $ modify $ by [queryScore <~ score])
+  a <- f
+  RuleLogic nullValue (modify (by [queryScore <~ score]) >>= return . Right . return)
+  return a
 
 ----------------------------------------------------------------------------------------------------
 
@@ -387,14 +376,14 @@ type RuleStruct = T.Tree Object ()
 -- 'Dao.Object.ObjectData', the portion of the 'Query' that matched will be passed to this 'Rule'
 -- function when it is evaluated.
 tree
-  :: (Functor m, Applicative m, Monad m, ObjectData a)
+  :: (Functor m, Monad m, ObjectData a)
   => T.RunTree -> [[a]] -> (Query -> Rule m b) -> Rule m b
 tree control branches f = struct control (T.fromList $ zip (fmap obj <$> branches) $ repeat ()) f
 
 -- | Construct a 'Rule' tree from a 'Dao.Tree.Tree' data type and a 'Rule' function. The 'Rule' will
 -- be copied to every single 'Dao.Tree.Leaf' in the given 'Dao.Tree.Tree'.
 struct
-  :: (Functor m, Applicative m, Monad m)
+  :: (Functor m, Monad m)
   => T.RunTree -> RuleStruct -> (Query -> Rule m a) -> Rule m a
 struct control tree rule =
   let df = control==T.DepthFirst
@@ -423,7 +412,7 @@ getRuleStruct rule = case rule of
 -- that @'trim' struct t 'Data.Monoid.<>' 'mask' struct t == t@ is always true.
 -- This function works by calling 'Dao.Tree.difference' on the 'Rule' and the 'Dao.Tree.Tree'
 -- constructed by the 'Dao.Tree.blankTree' of the given list of 'Dao.Object.ObjectData' branches.
-trim :: (Functor m, Applicative m, Monad m) => RuleStruct -> Rule m a -> Rule m a
+trim :: (Functor m, Monad m) => RuleStruct -> Rule m a -> Rule m a
 trim tree@(T.Tree (leaf, map)) rule = case rule of
   RuleEmpty      -> RuleEmpty
   RuleTree   x y -> RuleTree (del x) (del y)
@@ -439,7 +428,7 @@ trim tree@(T.Tree (leaf, map)) rule = case rule of
 -- @('Prelude.==')@ predicate, not 'Dao.Object.objMatch'. This function works by calling
 -- 'Dao.Tree.intersection' on the 'Rule' and the 'Dao.Tree.Tree' constructed by the
 -- 'Dao.Tree.blankTree' of the given list of 'Dao.Object.ObjectData' branches.
-mask :: (Functor m, Applicative m, Monad m) => RuleStruct -> Rule m a -> Rule m a
+mask :: (Functor m, Monad m) => RuleStruct -> Rule m a -> Rule m a
 mask tree@(T.Tree (leaf, map)) rule = case rule of
   RuleEmpty      -> RuleEmpty
   RuleTree   x y -> RuleTree (del x) (del y)
@@ -481,7 +470,7 @@ instance ObjectData TypePattern where
 -- a 'RuleTree' that matches if the 'Dao.Object.Object' returned by 'next' can be cast to a value of
 -- 'Prelude.String'.
 infer
-  :: forall m t a . (Functor m, Applicative m, Monad m, Typeable t, ObjectData t)
+  :: forall m t a . (Functor m, Monad m, Typeable t, ObjectData t)
   => (t -> Rule m a) -> Rule m a
 infer f = tree T.BreadthFirst [[typ f err]] $ msum . fmap (fromObj >=> f) where
   typ :: (t -> Rule m a) -> t -> TypePattern
@@ -531,7 +520,7 @@ _predictorStack =
 -- the 'Rule' as possible by comparing the current 'predictorQuery' to the 'Query' assigned to it
 -- with the @('Dao.Lens.<~')@ operator. But if the end user has completely deleted the input and
 -- started with something new, it is unavoidable that the 'Predictor' simply must be fully reset.
-predictorQuery :: (Functor m, Applicative m, Monad m) => Lens m (Predictor m a) Query
+predictorQuery :: (Functor m, Monad m) => Lens m (Predictor m a) Query
 predictorQuery = newLensM fetch update where
   fetch (Predictor q _ s) = return $
     concat $ reverse $ ((q & queryInput) :) $ fmap ((& queryInput) . fst) s
@@ -549,11 +538,11 @@ predictorQuery = newLensM fetch update where
 
 -- | This function is similar to the 'queryAll' function, except evaluation occurs in steps that can
 -- be controlled by 'predictorStep', 'predictorBack', and 'changeGuess'.
-startGuess :: (Functor m, Applicative m, Monad m) => Rule m a -> Query -> m (Predictor m a)
+startGuess :: (Functor m, Monad m) => Rule m a -> Query -> m (Predictor m a)
 startGuess r q = predictorStep $ Predictor (QueryState 0 q) r []
 
 -- | Append more of a 'Query' to the current 'Predictor's 'QueryState'.
-continueGuess :: (Functor m, Applicative m, Monad m) => Query -> Predictor m a -> m (Predictor m a)
+continueGuess :: (Functor m, Monad m) => Query -> Predictor m a -> m (Predictor m a)
 continueGuess q p = predictorStep $ on p [_predictorQueryState >>> queryInput $= (++ q)]
 
 -- | A predicate indicating whether it is possible for the 'Predictor' to be stepped by
@@ -569,7 +558,7 @@ predictorCanStep p = case p & _predictorRule of
 -- step of the '_predictorRule' consuming as much of the input 'Query' in 'predictorQuery'. Once this
 -- evaluation has completed, check the '_predictorGuesses' for possible completions. It is then
 -- possible to append these completions to the 'predictorQuery' and evaluate 'predictorStep' again.
-predictorStep :: (Functor m, Applicative m, Monad m) => Predictor m a -> m (Predictor m a)
+predictorStep :: (Functor m, Monad m) => Predictor m a -> m (Predictor m a)
 predictorStep = fmap snd . curry loop nullValue where
   step t p rule = (t, on p [_predictorRule <~ rule])
   loop (t, p) = let rule = p & _predictorRule in case rule of
@@ -596,7 +585,7 @@ predictorStep = fmap snd . curry loop nullValue where
 -- 2. a list of guesses that might be next input by an end user that would be valid in the current
 --    context of the current production 'Rule'.
 predictorGuesses
-  :: (Functor m, Applicative m, Monad m)
+  :: (Functor m, Monad m)
   => Predictor m a -> m ([Either ErrorObject a], [Query])
 predictorGuesses = fmap (second $ fmap fst . T.assocs T.BreadthFirst) . loop [] nullValue where
   step p rule = on p [_predictorRule <~ rule]

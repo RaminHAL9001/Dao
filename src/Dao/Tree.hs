@@ -85,7 +85,7 @@ instance Ord p => Contains (Maybe o) (Tree p o) where { lens=leaf; }
 
 instance Ord p => Contains (M.Map p (Tree p o)) (Tree p o) where { lens=branches; }
 
-instance (Ord p, Monad m) => FocusesWith [p] m (Tree p o) (Maybe o) where { focus=focusLeaf; }
+instance (Ord p, Monad m) => FocusesWith [p] m (Tree p o) (Maybe o) where { focus=path; }
 
 instance Foldable (ReduceTree p) where
   foldr f b (ReduceTree control tree) = foldr f b $ elems control tree
@@ -159,17 +159,17 @@ focusSubTree alt px =
     )
 
 -- | Focuses on an individual leaf at the given path.
-focusLeaf :: (Monad m, Ord p) => [p] -> Lens m (Tree p o) (Maybe o)
-focusLeaf px =
+path :: (Monad m, Ord p) => [p] -> Lens m (Tree p o) (Maybe o)
+path px =
   newLensM
     (\  (Tree (o, map)) -> case px of
       []    -> return o
-      p:px  -> maybe (return Nothing) (fetch $ focusLeaf px) (M.lookup p map)
+      p:px  -> maybe (return Nothing) (fetch $ path px) (M.lookup p map)
     )
     (\o (Tree (n, map)) -> case px of
       []    -> return $ Tree (o, map)
       p:px  -> do
-        t <- Dao.Lens.update (focusLeaf px) o $ maybe nullValue id $ M.lookup p map
+        t <- Dao.Lens.update (path px) o $ maybe nullValue id $ M.lookup p map
         return $ Tree (n, M.alter (const $ if testNull t then Nothing else Just t) p map)
     )
 
@@ -227,26 +227,26 @@ mergeWithKeyM control = loop [] where
 ----------------------------------------------------------------------------------------------------
 
 alter :: Ord p => (Maybe o -> Maybe o) -> [p] -> Tree p o -> Tree p o
-alter f path = runIdentity . alterM (return . f) path
+alter f p = runIdentity . alterM (return . f) p
 
 alterM :: (Monad m, Ord p) => (Maybe o -> m (Maybe o)) -> [p] -> Tree p o -> m (Tree p o)
-alterM f path = Dao.Lens.alter (focusLeaf path) f >=> return . snd
+alterM f p = Dao.Lens.alter (path p) f >=> return . snd
 
 -- | Insert a leaf at a given address, updating it with the combining function if it already exist.
 insertWith :: Ord p => (o -> o -> o) -> [p] -> o -> Tree p o -> Tree p o
-insertWith append path o = Dao.Tree.alter (Just . maybe o (flip append o)) path 
+insertWith append p o = Dao.Tree.alter (Just . maybe o (flip append o)) p 
 
 -- | Insert a leaf at a given address.
 insert :: Ord p => [p] -> o -> Tree p o -> Tree p o
-insert path n = insertWith (flip const) path n
+insert p n = insertWith (flip const) p n
 
 -- | Update a leaf at a given address.
 update :: Ord p => (o -> Maybe o) -> [p] -> Tree p o -> Tree p o
-update f path = Dao.Tree.alter (maybe Nothing f) path
+update f p = Dao.Tree.alter (maybe Nothing f) p
 
 -- | Delete a leaf or 'Branch' at a given address.
 delete :: Ord p => [p] -> Tree p o -> Tree p o
-delete path = Dao.Tree.alter (const Nothing) path
+delete p = Dao.Tree.alter (const Nothing) p
 
 -- | Create a 'Tree' from a list of associationes, the 'Prelude.fst' element containing the branches,
 -- the 'Prelude.snd' element containing the leaf value. This is the inverse operation of 'assocs'.
@@ -262,10 +262,14 @@ fromList = fromListWith (flip const)
 blankTree :: Ord p => [[p]] -> Tree p ()
 blankTree = fromList . fmap (id &&& const ())
 
+-- | Create a 'Tree' containing only a single 'path' to a single element.
+singleton :: Ord p => [p] -> a -> Tree p a
+singleton p o = on nullValue [path p <~ Just o]
+
 -- | This function analogous to the 'Data.Map.lookup' function, which returns a value stored in a
 -- leaf, or nothing if there is no leaf at the given path.
 lookup :: Ord p => [p] -> Tree p a -> Maybe a
-lookup px = pureFetch (focusLeaf px)
+lookup px = (& (path px))
 
 -- | This function works like 'lookup', but takes a key predicate to match keys of the tree, rather
 -- than using @('Prelude.==')@. This means the efficient O(log n) 'Data.Map.Map' 'Data.Map.lookup'
@@ -503,9 +507,7 @@ instance Monad m => Monad (UpdateTreeT p o m) where
 
 instance (Ord p, Monad m) => MonadState (Maybe o) (UpdateTreeT p o m) where
   state f = UpdateTreeT $ StateT $ \st -> do
-    -- (a, l) <- return $ f $ pureFetch leaf $ zipperSubTree st
     (a, l) <- return $ f $ st & zipperSubTree & leaf
-    -- return (a, st{ zipperSubTree=pureUpdate leaf l $ zipperSubTree st })
     return (a, on st [zipperSubTree >>> leaf <~ l])
 
 -- | Run the 'UpdateTreeT' function, returning the modified 'Tree' and the last result returned by
@@ -527,13 +529,13 @@ evalUpdateTreeT f = runUpdateTreeT f >=> return . fst
 
 -- | Go to the node with the given path. If the path does not exist, it is created.
 goto :: (Functor m, Applicative m, Monad m, Ord p) => [p] -> UpdateTreeT p o m ()
-goto path = case path of
+goto px = case px of
   []       -> return ()
-  (p:path) -> do
+  (p:px) -> do
     UpdateTreeT $ do
       t <- gets $ maybe nullValue id . M.lookup p . (& (branches . zipperSubTree))
       modify (\st -> on st [zipperSubTree <~ t, zipperHistory $= ((p, st & zipperSubTree) :)])
-    goto path
+    goto px
 
 -- | Go up one level in the tree, storing the current sub-tree into the upper tree, unless the
 -- current tree is 'Void', in which case it is deleted from the upper tree. Returns 'Prelude.False'

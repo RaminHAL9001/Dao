@@ -97,8 +97,8 @@ instance ToTextIO Strict.Text where { toTextIO = return }
 instance ToTextIO String      where { toTextIO = return . toText }
 
 listToTextWithIO :: (o -> IO Strict.Text) -> [o] -> IO Strict.Text
-listToTextWithIO toTextIO ox = let ts = return . Strict.singleton in fmap mconcat $ sequence $
-  [ts '(', Strict.intercalate <$> (ts ' ') <*> mapM toTextIO ox, ts ')']
+listToTextWithIO toTextIO ox = let ts = return . Strict.singleton in mconcat <$> sequence
+  [ts '(', Strict.intercalate <$> ts ' ' <*> mapM toTextIO ox, ts ')']
 
 listToTextIO :: ToTextIO o => [o] -> IO Strict.Text
 listToTextIO = listToTextWithIO toTextIO
@@ -122,7 +122,7 @@ levenshteinDistanceMatrix s' t' = array (bounds d) $ assocs d where
   (s, t) = (toText s', toText t')
   (m, n) = (length s , length t )
   d :: Array(Int,Int) Int
-  d = array ((0, 0), (m, n)) $ concat $
+  d = array ((0, 0), (m, n)) $ concat
     [ [((0, 0), 0)]
     , zip (zip [1..m] $ repeat 0) [1..m]
     , zip (zip (repeat 0) [1..n]) [1..n] ,
@@ -130,7 +130,7 @@ levenshteinDistanceMatrix s' t' = array (bounds d) $ assocs d where
         [ ( (i, j)
           , if index s i0 == index t j0
             then d!(i0, j0)
-            else minimum $ fmap (+ 1) $ [d!(i0, j), d!(i, j0), d!(i0, j0)]
+            else minimum $ (+ 1) <$> [d!(i0, j), d!(i, j0), d!(i0, j0)]
           )
         ]
     ]
@@ -138,7 +138,7 @@ levenshteinDistanceMatrix s' t' = array (bounds d) $ assocs d where
 -- | This function efficiently computes the Levenshtein distance between any two strings.
 -- <http://en.wikipedia.org/wiki/Levenshtein_distance>
 levenshteinDistance :: ToText t => t -> t -> Int
-levenshteinDistance s t = let m = levenshteinDistanceMatrix s t in m ! (snd $ bounds m)
+levenshteinDistance s t = let m = levenshteinDistanceMatrix s t in m ! snd (bounds m)
 
 -- | Use the 'levenshteinDistance' function to compute the difference value between two strings @s@
 -- and @t@, return a 'Prelude.Rational' value such that equal strings evaluate to a value of @1.0@,
@@ -160,8 +160,8 @@ fuzzyCompare s' t' =
 showMatrix :: forall array i o . (Ix i, Show o, IArray array o) => array(i,i) o -> Strict.Text
 showMatrix arr = Strict.intercalate (Strict.singleton '\n') $ do
   let strArr :: Array(i,i) Strict.Text
-      strArr = array (bounds arr) $ fmap (fmap $ toText . show) $ assocs arr
-  let maxLen = 1 + maximum (fmap Strict.length $ elems strArr)
+      strArr = array (bounds arr) $ fmap (toText . show) <$> assocs arr
+  let maxLen = 1 + maximum (Strict.length <$> elems strArr)
   let sp   t = Strict.pack (replicate (max 2 $ maxLen - Strict.length t) ' ') <> t
   let ((loX, loY), (hiX, hiY)) = bounds strArr
   range (loY, hiY) >>= \y -> [Strict.concat $ (\x -> sp $ strArr!(x, y)) <$> range (loX, hiX)]

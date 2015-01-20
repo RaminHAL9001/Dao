@@ -49,6 +49,7 @@ import           Control.Monad.Identity hiding (mapM, msum)
 import           Control.Monad.State    hiding (mapM, msum)
 
 import           Data.Foldable
+import           Data.Maybe
 import           Data.Monoid
 import           Data.Typeable
 import qualified Data.Map as M
@@ -68,7 +69,7 @@ newtype Tree p o = Tree (Maybe o, M.Map p (Tree p o)) deriving (Eq, Ord, Show, T
 
 instance TestNull (Tree p o) where
   nullValue = Tree (Nothing, M.empty)
-  testNull (Tree (o, m)) = M.null m && maybe True (const False) o
+  testNull (Tree (o, m)) = M.null m && isNothing o
 
 instance Functor (Tree p) where { fmap f (Tree (o, m)) = Tree (fmap f o, fmap (fmap f) m); }
 
@@ -169,7 +170,7 @@ path px =
     (\o (Tree (n, map)) -> case px of
       []    -> return $ Tree (o, map)
       p:px  -> do
-        t <- Dao.Lens.update (path px) o $ maybe nullValue id $ M.lookup p map
+        t <- Dao.Lens.update (path px) o $ fromMaybe nullValue $ M.lookup p map
         return $ Tree (n, M.alter (const $ if testNull t then Nothing else Just t) p map)
     )
 
@@ -208,14 +209,15 @@ mergeWithKeyM
 mergeWithKeyM control = loop [] where
   loop px merge left right (Tree (leftLeaf, leftBranches)) (Tree (rightLeaf, rightBranches)) = do
     let leaf = merge px leftLeaf rightLeaf
-    let map  = mapM (\ (p, leftIfPaired) -> do
-                      tree <- uncurry (loop (px++[p]) merge left right) ||| id $ leftIfPaired
-                      return $ if testNull tree then [] else [(p, tree)]
-                    )
-                    ( let wrap f = fmap (Right . f) in M.assocs $ 
-                        M.mergeWithKey (\ _ a b -> Just $ Left $ (a, b))
-                          (wrap left) (wrap right) leftBranches rightBranches
-                    ) >>= return . M.fromList . concat
+    let map  = liftM (M.fromList . concat) $
+           mapM (\ (p, leftIfPaired) -> do
+                  tree <- uncurry (loop (px++[p]) merge left right) ||| id $ leftIfPaired
+                  return $ if testNull tree then [] else [(p, tree)]
+                )
+                ( let wrap f = fmap (Right . f) in M.assocs $ 
+                    M.mergeWithKey (\ _ a b -> Just $ Left (a, b))
+                      (wrap left) (wrap right) leftBranches rightBranches
+                )
     if control==BreadthFirst
     then ap (ap (return $        curry Tree) leaf) map
     else ap (ap (return $ flip $ curry Tree) map) leaf
@@ -234,24 +236,24 @@ alterM f p = Dao.Lens.alter (path p) f >=> return . snd
 
 -- | Insert a leaf at a given address, updating it with the combining function if it already exist.
 insertWith :: Ord p => (o -> o -> o) -> [p] -> o -> Tree p o -> Tree p o
-insertWith append p o = Dao.Tree.alter (Just . maybe o (flip append o)) p 
+insertWith append p o = Dao.Tree.alter (Just . maybe o (`append` o)) p 
 
 -- | Insert a leaf at a given address.
 insert :: Ord p => [p] -> o -> Tree p o -> Tree p o
-insert p n = insertWith (flip const) p n
+insert = insertWith (flip const)
 
 -- | Update a leaf at a given address.
 update :: Ord p => (o -> Maybe o) -> [p] -> Tree p o -> Tree p o
-update f p = Dao.Tree.alter (maybe Nothing f) p
+update = Dao.Tree.alter . maybe Nothing
 
 -- | Delete a leaf or 'Branch' at a given address.
 delete :: Ord p => [p] -> Tree p o -> Tree p o
-delete p = Dao.Tree.alter (const Nothing) p
+delete = Dao.Tree.alter (const Nothing)
 
 -- | Create a 'Tree' from a list of associationes, the 'Prelude.fst' element containing the branches,
 -- the 'Prelude.snd' element containing the leaf value. This is the inverse operation of 'assocs'.
 fromListWith :: Ord p => (o -> o -> o) -> [([p], o)] -> Tree p o
-fromListWith append = foldr (\ (px, o) -> insertWith append px o) nullValue
+fromListWith append = foldr (uncurry $ insertWith append) nullValue
 
 -- | Like 'fromListWith' but called with @('Prelude.flip' 'Prelude.const')@.
 fromList :: Ord p => [([p], o)] -> Tree p o
@@ -269,7 +271,7 @@ singleton p o = on nullValue [path p <~ Just o]
 -- | This function analogous to the 'Data.Map.lookup' function, which returns a value stored in a
 -- leaf, or nothing if there is no leaf at the given path.
 lookup :: Ord p => [p] -> Tree p a -> Maybe a
-lookup px = (& (path px))
+lookup px = (& path px)
 
 -- | This function works like 'lookup', but takes a key predicate to match keys of the tree, rather
 -- than using @('Prelude.==')@. This means the efficient O(log n) 'Data.Map.Map' 'Data.Map.lookup'
@@ -283,7 +285,7 @@ lookup px = (& (path px))
 -- 'Tree' need not be the same type as the branches @b@ of the 'Tree', and what is returned are the
 -- actual branches @b@ that matched the path @p@, not the path @p@ itself.
 slowLookup :: Ord b => (p -> b -> Bool) -> [p] -> Tree b a -> [([b], a)]
-slowLookup f px t = loop [] px t where
+slowLookup f = loop [] where
   loop branchPath px t = case px of
     []   -> maybe [] (\o -> [(branchPath, o)]) $ t & leaf
     p:px -> do
@@ -298,9 +300,9 @@ slowLookup1 f p t = case slowLookup f p t of { [] -> Nothing; o:_ -> Just o; }
 
 -- | Get all items and their associated path.
 assocs :: RunTree -> Tree p a -> [([p], a)]
-assocs control t = loop [] t where
+assocs control = loop [] where
   loop px (Tree (o, m)) =
-    ((if control==BreadthFirst then id else flip) (++))
+    (if control==BreadthFirst then id else flip) (++)
       (maybe [] (return . (,) px) o)
       (M.assocs m >>= \ (p, o) -> loop (px++[p]) o)
 
@@ -315,14 +317,14 @@ elems control = loop where
 
 -- | Counts the number of *nodes*, which includes the number of 'Branch'es and 'Leaf's.
 size :: Tree p a -> Word64
-size (Tree (o, m)) = maybe 0 (const 1) o + sum (fmap size $ M.elems m)
+size (Tree (o, m)) = maybe 0 (const 1) o + sum (size <$> M.elems m)
 
 leafCount :: Tree p a -> Word64
-leafCount = foldr (+) 0 . fmap (const 1) . ReduceTree DepthFirst
+leafCount = sum . fmap (const 1) . ReduceTree DepthFirst
 
 -- | Counts the number of branches, not leaves.
 branchCount :: Tree p a -> Word64
-branchCount (Tree (_, m)) = fromIntegral (M.size m) + sum (fmap branchCount $ M.elems m)
+branchCount (Tree (_, m)) = fromIntegral (M.size m) + sum (branchCount <$> M.elems m)
 
 null :: Tree p a -> Bool
 null = testNull
@@ -347,10 +349,10 @@ mergeWithM
   -> (Tree p a -> m (Tree p c))
   -> (Tree p b -> m (Tree p c))
   -> Tree p a -> Tree p b -> m (Tree p c)
-mergeWithM control f = mergeWithKeyM control (\ _key -> f)
+mergeWithM control f = mergeWithKeyM control (const f)
 
 mergeWith :: Ord p => (Maybe a -> Maybe b -> Maybe c) -> (Tree p a -> Tree p c) -> (Tree p b -> Tree p c) -> Tree p a -> Tree p b -> Tree p c
-mergeWith f = mergeWithKey (\ _ -> f)
+mergeWith f = mergeWithKey (const f)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -422,7 +424,7 @@ differenceWithKeyM
   -> Tree p a -> Tree p b -> m (Tree p a)
 differenceWithKeyM control f =
   mergeWithKeyM control
-    (\k a b -> maybe (return Nothing) id $ (f <$> pure k <*> a <*> b) <|> fmap (return . Just) a)
+    (\k a b -> fromMaybe (return Nothing) $ (f <$> pure k <*> a <*> b) <|> fmap (return . Just) a)
       return (return . const nullValue)
 
 differenceWithKey :: Ord p => ([p] -> a -> b -> Maybe a) -> Tree p a -> Tree p b -> Tree p a
@@ -533,7 +535,7 @@ goto px = case px of
   []       -> return ()
   (p:px) -> do
     UpdateTreeT $ do
-      t <- gets $ maybe nullValue id . M.lookup p . (& (branches . zipperSubTree))
+      t <- gets $ fromMaybe nullValue . M.lookup p . (& (branches . zipperSubTree))
       modify (\st -> on st [zipperSubTree <~ t, zipperHistory $= ((p, st & zipperSubTree) :)])
     goto px
 
@@ -543,7 +545,7 @@ goto px = case px of
 back :: (Functor m, Applicative m, Monad m, Ord p) => UpdateTreeT p o m Bool
 back = UpdateTreeT $ state $ \st -> case st & zipperHistory of
   []                    -> (False, st)
-  (p, Tree (t, m)):hist -> (,) True $ let u = st & zipperSubTree in on st $
+  (p, Tree (t, m)):hist -> (,) True $ let u = st & zipperSubTree in on st
     [ zipperSubTree <~ Tree (t, (if testNull u then id else M.insert p u) m)
     , zipperHistory <~ hist
     ]
@@ -583,14 +585,12 @@ treeDiffWithM
   -> Tree p a -> Tree p b -> m (Tree p (TreeDiff a b))
 treeDiffWithM control compare =
   mergeWithKeyM control merge (return . fmap LeftOnly) (return . fmap RightOnly) where
-    merge p a b =
-      maybe (return Nothing) id
-        (msum [ a >>= \a -> b >>= \b -> return $
-                  (compare p a b >>= \same ->
-                      return $ if same then Nothing else return $ TreeDiff a b)
-              , a >>= Just . return . Just . LeftOnly
-              , b >>= Just . return . Just . RightOnly
-              ])
+    merge p a b = fromMaybe (return Nothing) $ msum
+      [ a >>= \a -> b >>= \b -> return $
+          compare p a b >>= \same -> return $ if same then Nothing else return $ TreeDiff a b
+      , a >>= Just . return . Just . LeftOnly
+      , b >>= Just . return . Just . RightOnly
+      ]
 
 treeDiffWith :: Ord p => ([p] -> a -> b -> Bool) -> Tree p a -> Tree p b -> Tree p (TreeDiff a b)
 treeDiffWith f a = runIdentity . treeDiffWithM BreadthFirst (\p a -> return . f p a) a

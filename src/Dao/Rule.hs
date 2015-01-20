@@ -142,13 +142,13 @@ data Rule m a
     -- DepthFirst and BreadthFirst rule trees are kept separate.
 
 instance Monad m => Functor (Rule m) where
-  fmap f rule = let ffmap f o = o >>= return . f in case rule of
+  fmap f rule = case rule of
     RuleEmpty      -> RuleEmpty
     RuleReturn   o -> RuleReturn $ f o
     RuleError  err -> RuleError err
-    RuleLift     o -> RuleLift $ ffmap (ffmap f) o
-    RuleLogic  t o -> RuleLogic t $ ffmap (ffmap (ffmap f)) o
-    RuleChoice x y -> RuleChoice (ffmap f x) (ffmap f y)
+    RuleLift     o -> RuleLift $ liftM (liftM f) o
+    RuleLogic  t o -> RuleLogic t $ liftM (liftM (liftM f)) o
+    RuleChoice x y -> RuleChoice (liftM f x) (liftM f y)
     RuleTree   x y -> let map = fmap (fmap (fmap (fmap f))) in RuleTree (map x) (map y)
 
 instance (Functor m, Monad m) => Applicative (Rule m) where { pure = return; (<*>) = ap; }
@@ -157,22 +157,22 @@ instance (Functor m, Monad m) => Alternative (Rule m) where { empty = mzero; (<|
 
 instance Monad m => Monad (Rule m) where
   return = RuleReturn
-  rule >>= f = let ffmap f o = o >>= return . f in case rule of
+  rule >>= f = case rule of
     RuleEmpty      -> RuleEmpty
     RuleReturn   o -> f o
     RuleError  err -> RuleError err
-    RuleLift     o -> RuleLift $ ffmap (>>= f) o
-    RuleLogic  t o -> RuleLogic t $ ffmap (ffmap (>>= f)) o
+    RuleLift     o -> RuleLift $ liftM (>>= f) o
+    RuleLogic  t o -> RuleLogic t $ liftM (liftM (>>= f)) o
     RuleChoice x y -> RuleChoice (x >>= f) (y >>= f)
     RuleTree   x y -> let map = fmap $ fmap $ fmap (>>= f) in RuleTree (map x) (map y)
-  a >> b = let ffmap f o = o >>= return . f in case a of
+  a >> b = case a of
     RuleEmpty        -> RuleEmpty
     RuleReturn _     -> b
     RuleError  err   -> RuleError err
-    RuleLift   a     -> RuleLift $ ffmap (>> b) a
+    RuleLift   a     -> RuleLift $ liftM (>> b) a
     RuleLogic  tA a  -> case b of
       RuleLogic tB b   -> RuleLogic (T.product tA tB) (a >> b)
-      b                -> RuleLogic tA $ ffmap (fmap (>> b)) a
+      b                -> RuleLogic tA $ liftM (fmap (>> b)) a
     RuleChoice a1 a2 -> RuleChoice (a1 >> b) (a2 >> b)
     RuleTree   a1 a2 -> case b of
       RuleEmpty        -> RuleEmpty
@@ -230,11 +230,11 @@ instance Monad m => MonadLogic Query (Rule m) where
     f (st & queryInput) >>= \ (o, q) -> return (Right $ return o, on st [queryInput <~ q])
   entangle rule = RuleLogic (getRuleStruct rule) $ do
     let lrzip (o, qx) = (\err -> ([(err, qx)], [])) ||| (\o -> ([], [(o, qx)])) $ o
-    (errs, ox) <- entangle (evalRuleLogic rule) >>= return . (concat *** concat) . unzip . fmap lrzip
+    (errs, ox) <- liftM ((concat *** concat) . unzip . fmap lrzip) $ entangle (evalRuleLogic rule)
     superState $ \st -> (Right $ return $ second (& queryInput) <$> ox, st) : fmap (first Left) errs
 
 instance MonadTrans Rule where
-  lift f = RuleLift $ f >>= return . return
+  lift f = RuleLift $ liftM return f
 
 instance (Functor m, Monad m) => Monoid (Rule m o) where
   mempty  = mzero
@@ -260,7 +260,7 @@ evalRuleLogic rule = case rule of
       case q of
         Left  q -> return $ Left q
         Right q -> do
-          let (equal, similar) = partition ((ExactlyEqual ==) . fst) $
+          let (equal, similar) = partition ((ExactlyEqual ==) . fst)
                 (do (o, tree) <- M.assocs map
                     let result = objMatch o q
                     if result==Dissimilar then [] else [(result, tree)]
@@ -271,7 +271,7 @@ evalRuleLogic rule = case rule of
             else snd <$> equal
           loop control (qx++[q]) tree
     loop control qx tree@(T.Tree (rule, map)) = if T.null tree then mzero else
-      ((if control==T.DepthFirst then id else flip) mplus)
+      (if control==T.DepthFirst then id else flip) mplus
         (runMap control qx map)
         (maybe mzero (evalRuleLogic . ($ qx)) rule)
 
@@ -311,7 +311,7 @@ part = RuleLogic nullValue $ superState $ loop 0 [] where
 -- ('Data.Functor.Functor' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
 -- @
 done :: Monad m => Rule m ()
-done = RuleLogic nullValue $ superState $ \q -> if null $ q & queryInput then [(Right $ return (), q)] else []
+done = RuleLogic nullValue $ superState $ \q -> [(Right $ return (), q) | null $ q & queryInput]
 
 -- | Fully evaluate a 'Rule', and collect all possible results along with their 'queryScore's. Pass
 -- these results to a filter function, and procede with 'Rule' evaluation using only the results
@@ -326,9 +326,9 @@ done = RuleLogic nullValue $ superState $ \q -> if null $ q & queryInput then [(
 -- @
 limitByScore :: Monad m => ([(a, QueryState)] -> [(a, QueryState)]) -> Rule m a -> Rule m a
 limitByScore filter f = do
-  a <- RuleLogic (getRuleStruct f) (entangle (evalRuleLogic f) >>= return . Right . return)
+  a <- RuleLogic (getRuleStruct f) $ liftM (Right . return) $ entangle $ evalRuleLogic f
   let (err, ox) = (concat *** concat) $ unzip $
-        fmap (\ (o, qs) -> (\o -> ([(Left o, qs)], [])) ||| (\o -> ([], [(o, qs)])) $ o) $ a
+        (\ (o, qs) -> (\o -> ([(Left o, qs)], [])) ||| (\o -> ([], [(o, qs)])) $ o) <$> a
   RuleLogic nullValue $ superState $ const $ (first (Right . return) <$> filter ox) ++ err
 
 -- | Like 'limitByScore' but the filter function simply selects the results with the highet
@@ -351,7 +351,7 @@ resetScore f = do
   score <- RuleLogic (getRuleStruct f) $ state $ \q ->
     (Right . return $ q & queryScore, on q [queryScore <~ 0])
   a <- f
-  RuleLogic nullValue (modify (by [queryScore <~ score]) >>= return . Right . return)
+  RuleLogic nullValue (liftM (Right . return) $ modify (by [queryScore <~ score]))
   return a
 
 ----------------------------------------------------------------------------------------------------
@@ -378,7 +378,7 @@ type RuleStruct = T.Tree Object ()
 tree
   :: (Monad m, ObjectData a)
   => T.RunTree -> [[a]] -> (Query -> Rule m b) -> Rule m b
-tree control branches f = struct control (T.fromList $ zip (fmap obj <$> branches) $ repeat ()) f
+tree control branches = struct control $ T.fromList $ zip (fmap obj <$> branches) $ repeat ()
 
 -- | Construct a 'Rule' tree from a 'Dao.Tree.Tree' data type and a 'Rule' function. The 'Rule' will
 -- be copied to every single 'Dao.Tree.Leaf' in the given 'Dao.Tree.Tree'.
@@ -389,14 +389,14 @@ struct control tree rule =
   let df = control==T.DepthFirst
       (T.Tree (leaf, map)) = fmap (\ () -> rule) tree 
   in  maybe id ((if df then flip else id) mplus . ($ [])) leaf $
-        ((if df then id else flip) RuleTree) map nullValue
+        (if df then id else flip) RuleTree map nullValue
 
 -- | Take a 'Dao.Tree.Tree' and turn it into a 'Rule' where every 'Dao.Tree.leaf' becomes a 'Rule'
 -- that simply 'Control.Monad.return's the 'Dao.Tree.leaf' value.
 ruleTree :: Monad m => T.RunTree -> T.Tree Object a -> Rule m a
 ruleTree control (T.Tree (leaf, map)) = maybe id (flip mplus . return) leaf $
-  ((if control==T.DepthFirst then flip else id) RuleTree) nullValue $
-    (fmap (fmap (const . return)) map)
+  (if control==T.DepthFirst then flip else id) RuleTree nullValue $
+    fmap (fmap (const . return)) map
 
 -- | Remove all of the 'Rule's and return only the 'Dao.Tree.Tree' structure. This function cannot
 -- retrieve the entire 'Dao.Tree.Tree', it can only see the 'Dao.Tree.Tree' created by the 'tree'
@@ -408,9 +408,7 @@ ruleTree control (T.Tree (leaf, map)) = maybe id (flip mplus . return) leaf $
 getRuleStruct :: Rule m o -> RuleStruct
 getRuleStruct rule = case rule of
   RuleEmpty      -> T.empty
-  RuleTree   x y ->
-    let blank o = fmap (fmap (const ())) o
-    in  T.Tree (Nothing, M.union (blank x) (blank y))
+  RuleTree   x y -> T.Tree (Nothing, M.union (fmap void x) (fmap void y))
   RuleChoice x y -> T.union (getRuleStruct x) (getRuleStruct y)
   _              -> T.Tree (Just (), M.empty)
 
@@ -585,8 +583,8 @@ predictorStep = curry loop nullValue >=> return . snd where
     let qi = qs & queryInput
     case T.slowLookup1 (\a b -> isSimilar $ objMatch b a) qi t of
       Nothing         -> return (t, p)
-      Just (_, qRule) -> let rule = qRule qi in return $ (,) t $ on p $
-        [_predictorStack $= ((on qs [queryInput <~ qi], rule) :), _predictorRule  <~ rule]
+      Just (_, qRule) -> let rule = qRule qi in return $ (,) t $
+        on p [_predictorStack $= ((on qs [queryInput <~ qi], rule) :), _predictorRule  <~ rule]
 
 -- | This will compute a pair of two results at once:
 --
@@ -595,15 +593,15 @@ predictorStep = curry loop nullValue >=> return . snd where
 -- 2. a list of guesses that might be next input by an end user that would be valid in the current
 --    context of the current production 'Rule'.
 predictorGuesses :: forall m a . Monad m => Predictor m a -> m ([Either ErrorObject a], [Query])
-predictorGuesses = loop [] nullValue >=> return . (second $ fmap fst . T.assocs T.BreadthFirst) where
+predictorGuesses = liftM (second $ fmap fst . T.assocs T.BreadthFirst) . loop [] nullValue where
   step p rule = on p [_predictorRule <~ rule]
   loop :: [Either ErrorObject a] -> T.Tree Object () -> Predictor m a -> m ([Either ErrorObject a], T.Tree Object ())
   loop ax t p = case p & _predictorRule of
     RuleLift     o -> o >>= loop ax t . step p
     RuleLogic  u o -> do
-      (errs, rules) <- evalLogicT o (p & _predictorQueryState) >>= return . partitionEithers
+      (errs, rules) <- liftM partitionEithers $ evalLogicT o $ p & _predictorQueryState
       loop (ax ++ fmap Left errs) (T.union t u) $ step p (msum rules)
-    RuleTree   a b -> let mkT o = T.Tree (Nothing, fmap (fmap (const ())) o) in
+    RuleTree   a b -> let mkT o = T.Tree (Nothing, fmap void o) in
       return (ax, T.union t $ T.union (mkT a) (mkT b))
     RuleChoice a b -> loop ax t (step p a) >>= \ (ax, t) -> loop ax t (step p b)
     RuleReturn a   -> return (ax++[Right  a], t)

@@ -30,6 +30,7 @@ import           Control.DeepSeq
 import           Control.Monad hiding (mapM, msum)
 
 import qualified Data.Array.IArray as A
+import           Data.Maybe
 import           Data.Foldable
 import           Data.Monoid
 import           Data.Traversable
@@ -59,7 +60,7 @@ instance Foldable Array where { foldr f i = Data.Foldable.foldr f i . elems; }
 
 instance Monoid (Array o) where
   mempty = Array Nothing
-  mappend a@(Array arrA) b@(Array arrB) = Array $ msum $
+  mappend a@(Array arrA) b@(Array arrB) = Array $ msum
     [ (\arrA arrB -> A.listArray (0, size a + size b - 1) $ A.elems arrA ++ A.elems arrB)
         <$> arrA <*> arrB
     , arrA, arrB
@@ -67,7 +68,7 @@ instance Monoid (Array o) where
 
 instance TestNull (Array o) where
   nullValue = mempty
-  testNull (Array o) = maybe False (const True) o
+  testNull (Array o) = isJust o
 
 instance ToText o => ToText (Array o) where
   toText (Array o) = case o of
@@ -96,7 +97,7 @@ elems :: Array o -> [o]
 elems (Array o) = maybe [] A.elems o
 
 lastElem :: Array o -> Maybe o
-lastElem (Array o) = o >>= \o -> Just $ o A.! (snd $ A.bounds o)
+lastElem (Array o) = o >>= \o -> Just $ o A.! snd (A.bounds o)
 
 size :: Array o -> Int
 size (Array a) = maybe 0 ((1+) . uncurry subtract . A.bounds) a
@@ -105,7 +106,7 @@ indexOK :: Array o -> Int -> Bool
 indexOK (Array o) i = maybe False (flip A.inRange i . A.bounds) o
 
 (!) :: Array o -> Int -> Maybe o
-arr@(Array o) ! i = guard (indexOK arr i) >> (A.! i) <$> o
+(!) arr@(Array o) i = guard (indexOK arr i) >> (A.! i) <$> o
 infixr 8 !
 
 toIArray :: Array o -> Maybe (A.Array Int o)

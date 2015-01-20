@@ -165,7 +165,7 @@ instance (Functor m, Monad m) => Applicative (PredicateT err m) where { pure = r
 
 instance (Functor m, Monad m) => Alternative (PredicateT err m) where { empty = mzero; (<|>) = mplus; }
 
-instance MonadTrans (PredicateT err) where { lift m = PredicateT(m >>= return . OK) }
+instance MonadTrans (PredicateT err) where { lift m = PredicateT $ liftM OK m; }
 
 instance MonadIO m => MonadIO (PredicateT err m) where { liftIO = PredicateT . liftIO . fmap OK }
 
@@ -211,7 +211,7 @@ class Monad m => PredicateClass err m | m -> err where
 
 instance Monad m => MonadReader env (PredicateT err (ReaderT env m)) where
   local f (PredicateT o) = PredicateT $ ReaderT $ runReaderT o . f
-  ask = PredicateT $ ask >>= return . OK
+  ask = PredicateT $ liftM OK ask
 
 instance Monad m => MonadState st (PredicateT err (StateT st m)) where
   state f = PredicateT $ StateT $ \st -> let (o, st') = f st in return (OK o, st')
@@ -223,7 +223,7 @@ instance PredicateClass err (Predicate err) where
 
 instance Monad m => PredicateClass err (PredicateT err m) where
   predicate = PredicateT . return
-  returnPredicate (PredicateT try) = PredicateT $ try >>= return . OK
+  returnPredicate (PredicateT try) = PredicateT $ liftM OK try
   catchPredicate try catch = returnPredicate try >>= catch
 
 -- | Evaluates to an empty list if the given 'Predicate' is 'Backtrack' or 'PFail', otherwise returns a

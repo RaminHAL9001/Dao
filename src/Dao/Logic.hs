@@ -64,8 +64,7 @@ instance (Functor m, Monad m) => Alternative (LogicT st m) where
 
 instance Monad m => Monad (LogicT st m) where
   return o = LogicT $ \st -> return [(o, st)]
-  (LogicT o) >>= f = LogicT $ \st -> o st >>=
-    mapM (\ (o, st) -> runLogicT (f o) st) >>= return . concat
+  (LogicT o) >>= f = LogicT $ o >=> liftM concat . mapM (uncurry $ runLogicT . f)
 
 instance Monad m => MonadPlus (LogicT st m) where
   mzero                       = LogicT $ const $ return []
@@ -121,7 +120,7 @@ instance Monad m => MonadLogic st (LogicT st m) where
 -- | Like 'Control.Monad.State.modify', but puts the current state of the computation into an
 -- uncertain superposition, with many possible states.
 superModify :: MonadLogic st m => (st -> [st]) -> LogicT st m ()
-superModify f = superState (f >=> return . ((,) ()))
+superModify f = superState (f >=> return . (,) ())
 
 -- | Return many possible results.
 possibly :: MonadLogic st m => [a] -> LogicT st m a

@@ -247,7 +247,7 @@ instance Eq  Foreign where { a == b = objEquality a $ objDynamic b; }
 
 instance Ord Foreign where { compare a b = objOrdering a $ objDynamic b; }
 
-instance PPrintable Foreign where { pPrint o = objPrinted o; }
+instance PPrintable Foreign where { pPrint = objPrinted; }
 
 instance Show Foreign where { show = Lazy.unpack . runTextPPrinter 4 80 . pPrint; }
 
@@ -255,7 +255,7 @@ instance HasTypeRep Foreign where { objTypeOf = objTypeOf . objDynamic }
 
 instance SimpleData Foreign where
   simple = objSimplified
-  fromSimple s = return $
+  fromSimple s = return
     Foreign
     { objDynamic      = toDyn s
     , objEquality     = maybe False (s ==) . fromDynamic
@@ -406,7 +406,7 @@ instance PPrintable Simple where
     OString o -> [pShow o]
     OList   o ->
       [ pText "["
-      , pIndent $ intercalate [pText ",", pSpace, pNewLine] $ fmap pPrint $ elems o
+      , pIndent $ intercalate [pText ",", pSpace, pNewLine] $ pPrint <$> elems o
       , pText "]"
       ]
     OMap    o -> pPrintMap pPrint o
@@ -458,7 +458,7 @@ instance Monoid Simple where
 instance Monoid (Sum Simple) where
   mempty = Sum ONull
   mappend (Sum a) (Sum b) =
-    let f a b = firstNonVoid $
+    let f a b = firstNonVoid
           [ simpleNumInfixOp (+) a b
           , simpleSetInfixOp (.|.) objectMapUnion a b
           , a <> b
@@ -472,7 +472,7 @@ instance Monoid (Sum Simple) where
 instance Monoid (Product Simple) where
   mempty = Product OTrue
   mappend (Product a) (Product b) =
-    let f a b = firstNonVoid $
+    let f a b = firstNonVoid
           [ simpleNumInfixOp (*) a b
           , simpleSetInfixOp (.&.) objectMapIntersection a b
           ]
@@ -491,14 +491,14 @@ pPrintMap pprin o =
   ]
 
 pPrintTree :: T_tree -> [PPrint]
-pPrintTree o = concat $
+pPrintTree o = concat
   [ maybe [pText "()"] (\o -> [pText "(", pIndent (pPrint o), pNewLine, pText ")"]) (o & T.leaf)
   , [pSpace, pText "->", pSpace]
   , pPrintMap pPrintTree (o & T.branches)
   ]
 
 decoderArray :: A.Array Word8 (Get Simple)
-decoderArray = A.array (0, 9) $
+decoderArray = A.array (0, 9)
   [( 0, return ONull)
   ,( 1, return OTrue)
   ,( 2, (OInt    <$> get) <|> fail "expecting Int")
@@ -510,7 +510,7 @@ decoderArray = A.array (0, 9) $
   ,( 8, (OMap    <$> decodeMap get) <|> fail "expecting Map")
   ,( 9, (OTree   <$> decodeTree 9 ) <|> _tree_err)
   ,(10, (OTree   <$> decodeTree 10) <|> _tree_err)
-  ,(11, (return $ OType (typeOf OVoid)))
+  ,(11, return $ OType (typeOf OVoid))
   ]
 
 _tree_err :: Get ig
@@ -567,7 +567,7 @@ simpleNumInfixOp num a b = case a of
     ONull     -> OFloat $ num a 0
     OInt    b -> OFloat $ num a $ fromRational (toRational b)
     OLong   b -> OFloat $ num a $ fromRational (toRational b)
-    OFloat  b -> OFloat $ num a $ b
+    OFloat  b -> OFloat $ num a b
     _         -> OVoid
   _         -> OVoid
 

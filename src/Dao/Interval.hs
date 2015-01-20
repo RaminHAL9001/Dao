@@ -52,6 +52,7 @@ import           Data.Monoid
 import           Data.List
 import           Data.Ratio
 
+import           Control.Arrow
 import           Control.Monad
 import           Control.Applicative
 import           Control.DeepSeq
@@ -285,7 +286,7 @@ intervalIsInfinite seg = case [Single minBoundInf, Single maxBoundInf, seg] of
 -- | Construct a 'Interval' from two 'Inf' items. *NOTE* if the 'Inf' type you are constructing is
 -- an instance of 'Prelude.Bounded', use the 'boundedInterval' constructor instead of this function.
 _interval :: (Eq c, Ord c, InfBound c) => Inf c -> Inf c -> Interval c
-_interval lo hi = seg lo hi where
+_interval = seg where
   seg lo hi          = construct (ck minBoundInf NegInf lo) (ck maxBoundInf PosInf hi)
   ck infnt subst seg = if infnt==seg then subst else seg
   construct lo hi
@@ -368,7 +369,7 @@ numElems seg = case seg of
 -- | Return the number of points included the set for sets of points that are both 'Prelude.Bounded'
 -- and 'Prelude.Integral'.
 intervalSize :: (Bounded c, Integral c) => Interval c -> Integer
-intervalSize = pred . uncurry subtract . (\ (a,b) -> (toInteger a, toInteger b)) . toBoundedPair
+intervalSize = pred . uncurry subtract . (toInteger *** toInteger) . toBoundedPair
 
 -- | Tests whether an 'Inf' is within the _interval. It is handy when used with backquote noation:
 -- @enumInf `isWithin` _interval@
@@ -616,10 +617,10 @@ whole = InfiniteSet
 
 -- Creates a list from segments, but does not clean it with 'intervalNub'
 _fromList :: (Ord c, Enum c, InfBound c) => [Interval c] -> Set c
-_fromList a =
-  if Data.List.null a
-    then EmptySet    
-    else if a==[wholeInterval] then InfiniteSet else Set a
+_fromList a
+  | Data.List.null a   = EmptySet
+  | a==[wholeInterval] = InfiniteSet
+  | otherwise          = Set a
 
 fromList :: (Ord c, Enum c, InfBound c) => [Interval c] -> Set c
 fromList a = if Data.List.null a then EmptySet else _fromList (intervalNub a)
@@ -655,7 +656,7 @@ member s b = case s of
   InfiniteSet  -> True
   InverseSet s -> not (member s b)
   Set       [] -> False
-  Set        s -> or (map (flip intervalMember b) s)
+  Set        s -> any (`intervalMember` b) s
 
 -- | 'Prelude.True' if the 'Set' is null.
 null :: (Ord c, Enum c, InfBound c) => Set c -> Bool

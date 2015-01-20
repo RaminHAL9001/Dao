@@ -180,7 +180,7 @@ class (Monad m, MonadPlus m, TextBuilder text) => MonadParser text m | m -> text
   -- predicate at all.
   munch :: Iv.Set Char -> m text
   munch p =
-    let loop cx = mplus (satisfy p >>= return . Just) (return Nothing) >>=
+    let loop cx = mplus (liftM Just $ satisfy p) (return Nothing) >>=
           maybe (return cx) (loop . snocChar cx) in loop mempty
   -- | Consume and return all characters from the head of the input text that match the given
   -- predicate, but backtracks if no characters from the head of the input text match.
@@ -190,9 +190,8 @@ class (Monad m, MonadPlus m, TextBuilder text) => MonadParser text m | m -> text
   -- consuming more than the specified amount.
   noMoreThan :: Count -> Iv.Set Char -> m text
   noMoreThan lim p =
-    let loop lim cx = case lim<=0 of
-          True  -> return cx
-          False -> mplus (satisfy p >>= return . Just) (return Nothing) >>=
+    let loop lim cx = if lim<=0 then return cx else
+          mplus (liftM Just $ satisfy p) (return Nothing) >>=
             maybe (return cx) (loop (pred lim) . snocChar cx)
     in  loop lim mempty
   -- | Consumes the next character only if it satisfies the given predicate.
@@ -312,15 +311,15 @@ data LexerError
   deriving (Eq, Ord, Show, Typeable)
 
 instance PPrintable LexerError where
-  pPrint p = let ml o f = maybe [] f o in return $ pSpan (toText "LexerError") $ concat $
+  pPrint p = let ml o f = maybe [] f o in return $ pSpan (toText "LexerError") $ concat
     [ [pText "lexer error:"]
     , ml (lexErrorText p) $ \o -> let t = Strict.take 10 o in
         pShow t : (guard (Strict.length t < Strict.length o) >> [pShow t, pText "...", PSpace])
     , ml (lexErrorMessage p) $ \o -> [pText o, PNewLine]
-    , return $ pIndent $ concat $
+    , return $ pIndent $ concat
         [ ml (lexErrorType p) $ \o ->
             [pText "while lexing data of type", pSpace, pShow o]
-        , ml (lexError     p) $ \o -> concat $
+        , ml (lexError     p) $ \o -> concat
             [ [pText "should have matched regular expression:", pSpace], pPrint o,
               [PNewLine]
             ]
@@ -456,13 +455,13 @@ instance NFData Probability where
 
 -- | Compute the natural logarithm of a probability.
 computeLogProb :: Probability -> Double
-computeLogProb o = let fac o = if o<=1 then 0 else (o+1)*(div o 2) in case o of
+computeLogProb o = let fac o = if o<=1 then 0 else (o+1) * div o 2 in case o of
   P_Coeff  o -> log (fromRational (o % 1))
   P_Prob   o -> negate (log (fromRational (o % 1)))
   P_Fac    o -> fromRational (fac o % 1)
   P_DivFac o -> fromRational (1 % fac o)
   P_Mult a b -> computeLogProb a + computeLogProb b
-  P_Pow  a b -> computeLogProb a * (fromRational (b % 1))
+  P_Pow  a b -> computeLogProb a * fromRational (b % 1)
 
 -- | Compute a probability. *WARNING:* for most data types in this module, computing this function
 -- produces *enormous* numbers. Use 'computeLogProb' instead.
@@ -760,13 +759,11 @@ instance PPrintable RegexUnit where
 _rxUnit_shadowsParallel :: Bool -> RegexUnit -> RegexUnit -> Bool
 _rxUnit_shadowsParallel isFinalItem a b = case a of
   RxString tA opA -> case b of
-    RxString tB opB -> compLo opA opB && case isFinalItem of
-      False -> tA==tB
-      True  -> case opA of
-        RxSingle -> case opB of
-          RxSingle -> Strict.isPrefixOf tA tB
-          _        -> False
+    RxString tB opB -> compLo opA opB && if not isFinalItem then tA==tB else case opA of
+      RxSingle -> case opB of
+        RxSingle -> Strict.isPrefixOf tA tB
         _        -> False
+      _        -> False
     _               -> False
   RxChar   tA opA -> case b of
     RxChar   tB opB -> Iv.null (Iv.delete tB tA) && compLo opA opB
@@ -793,13 +790,13 @@ regexUnitToParser o = do
         pfail $
           lexerError
           { lexErrorUnit = Just o
-          , lexErrorText = Just $ toText $ toLazyText $ got
+          , lexErrorText = Just $ toText $ toLazyText got
           }
-        fail $ concat $
+        fail $ concat
           [ "failed after text: ", show (toLazyText got)
           , "\nexpecting text matching regular expression: ", show o
           ]
-  let optional f = mplus (f >>= return . Just) (return Nothing) -- redefined to avoid using Alternative
+  let optional f = mplus (liftM Just f) (return Nothing) -- redefined to avoid using Alternative
   let run get add op = do
         let (lo, hi) = lexRepeaterToPair op
             req i got = if i>=lo then return (i, got) else
@@ -858,7 +855,7 @@ instance PPrintable InvalidGrammar where
     CutSomeBranches
       { regexTypeA=typA
       , cutBranches=units
-      } -> concat $
+      } -> concat
         [ maybe []
             (\t -> pSentence "the regular expression for the type" ++
                     [pSpace, pShow t, pText "guarantees"])
@@ -869,20 +866,19 @@ instance PPrintable InvalidGrammar where
     InvalidGrammar
       { regexTypeA=typA
       , invalidGrammarMessage=msg
-      } -> concat $
-        [ maybe
-            (pSentence "Some grammars were invalid:")
-            (\t -> pSentence "The grammar for the type" ++
-                    pSpace : pShow t : pSpace : pSentence "is invalid:")
-            typA
-        , [pNewLine, pText msg]
-        ]
+      } ->
+        maybe
+          (pSentence "Some grammars were invalid:")
+          (\t -> pSentence "The grammar for the type" ++
+                  pSpace : pShow t : pSpace : pSentence "is invalid:")
+          typA
+        ++ [pNewLine, pText msg]
 
 instance Exception InvalidGrammar where {}
 
 instance NFData InvalidGrammar where
   rnf (InvalidRegex a b c d e f g) =
-    let dseq a () = seq a $! maybe () (\a -> seq a ()) a
+    let dseq a () = seq a $! maybe () (`seq` ()) a
     in  dseq a $! dseq b $! deepseq c $! deepseq d $! deepseq e $! deepseq f $! deepseq g ()
   rnf (CutSomeBranches _ _) = ()
   rnf (InvalidGrammar  _ _) = ()
@@ -892,7 +888,7 @@ invalidGrammar = InvalidRegex Nothing Nothing Nothing Nothing Nothing Nothing Fa
 
 _invalidSetType :: TypeRep -> InvalidGrammar -> InvalidGrammar
 _invalidSetType typ err = 
-    let goodType typ = and $ fmap (typ /=) $ -- we like types more specific than () and String
+    let goodType typ = and $ (typ /=) <$> -- we like types more specific than () and String
           [typeOf (), typeOf (mempty::LazyText), typeOf (mempty::StrictText), typeOf ""]
         setType getFrom err t = maybe (return t) return $
           getFrom err >>= \t -> guard (goodType t) >> return t
@@ -925,13 +921,13 @@ instance Monoid (Either InvalidGrammar Regex) where
   mempty = Right $ Regex mempty
   mappend a@(Left _) _ = a
   mappend _ b@(Left _) = b
-  mappend (Right seqA@(Regex a)) (Right seqB@(Regex b)) = maybe (Right _emptyRegexSeq) id $ msum
+  mappend (Right seqA@(Regex a)) (Right seqB@(Regex b)) = fromMaybe (Right _emptyRegexSeq) $ msum
     [do unitA <- lastElem a -- If a is empty, we stop here.
         unitB <- b!0 -- If b is empty, we stop here.
         -- a and b are not empty, we can safely assume at least one element can be indexed
         let items arr = concat . fmap (maybe [] return . (arr !))
         Just $ case _rxSeq unitA unitB of
-          Right rxAB -> Right $ Regex $ array $ concat $
+          Right rxAB -> Right $ Regex $ array $ concat
             [items a [0 .. size a - 1], maybe [unitA, unitB] return rxAB, items b [1 .. size b]]
           Left  err  -> Left $ case err of
             InvalidRegex{} -> err{ regexSeqA=Just seqA, regexSeqB=Just seqB }
@@ -951,7 +947,7 @@ instance ShadowsParallel Regex where
         b:bx -> _rxUnit_shadowsParallel (null ax) a b && loop ax bx
 
 instance ShadowsSeries Regex where
-  shadowsSeries (Regex a) (Regex b) = maybe False id $
+  shadowsSeries (Regex a) (Regex b) = fromMaybe False $
    lastElem a >>= \rxA -> b ! 0 >>= \rxB -> Just $ shadowsSeries rxA rxB
 
 instance TestNull Regex where
@@ -959,13 +955,13 @@ instance TestNull Regex where
   testNull (Regex a) = testNull a
 
 instance RxMinLength Regex where
-  rxMinLength (Regex o) = sum $ fmap rxMinLength $ elems o
+  rxMinLength (Regex o) = sum $ rxMinLength <$> elems o
 
 instance RxMaxLength Regex where
-  rxMaxLength (Regex o) = fmap sum $ sequence $ fmap rxMaxLength $ elems o
+  rxMaxLength (Regex o) = fmap sum $ sequence $ rxMaxLength <$> elems o
 
 instance InitialCharSetOf Regex where
-  initialCharSetOf (Regex o) = maybe (Iv.empty) initialCharSetOf (o ! 0)
+  initialCharSetOf (Regex o) = maybe Iv.empty initialCharSetOf (o ! 0)
 
 _emptyRegexSeq :: Regex
 _emptyRegexSeq = Regex mempty
@@ -982,9 +978,8 @@ _rxSeq :: RegexUnit -> RegexUnit -> Either InvalidGrammar (Maybe RegexUnit)
 _rxSeq a b = case a of
   RxString tA RxSingle -> case b of
     RxString tB RxSingle -> return $ Just $ RxString (tA<>tB) RxSingle
-    _                    -> case shadowsSeries a b of
-      False -> return Nothing
-      True  -> Left $ invalidGrammar{ regexUnitA=Just a, regexUnitB=Just b, regexBadSequence=True }
+    _                    -> if not (shadowsSeries a b) then return Nothing else
+      Left $ invalidGrammar{ regexUnitA=Just a, regexUnitB=Just b, regexBadSequence=True }
   _                      -> return Nothing
 
 -- | Construct a 'Regex' from a list of 'RegexUnit'.
@@ -1010,21 +1005,17 @@ regexToParser
 regexToParser rx@(Regex sq) = loop (elems sq) mempty where
   loop ox t = case ox of
     []   -> return t
-    o:ox ->
-      (mplus
-        (regexUnitToParser o)
-        (do pfail $ lexerError{ lexError=Just rx, lexErrorUnit=Just o, lexErrorText=Just $ toText $ toLazyText t }
-            fail $ concat $
-              ["failed after text: ", show (toLazyText t)
-              , "\nwas expecting text matching: ", show o
-              ]
-        )
+    o:ox -> mplus (regexUnitToParser o) $
+      (do pfail $ lexerError{ lexError=Just rx, lexErrorUnit=Just o, lexErrorText=Just $ toText $ toLazyText t }
+          fail $ concat
+            ["failed after text: ", show (toLazyText t)
+            , "\nwas expecting text matching: ", show o
+            ]
       ) >>= loop ox . mappend t
 
 _rxPrim :: ToRegexRepeater rep => (o -> RegexRepeater -> RegexUnit) -> rep -> o -> Regex
-_rxPrim f rep o = let unit = f o (toRegexRepeater rep) in case testNull unit of
-  True  -> Regex mempty
-  False -> Regex $ array [unit]
+_rxPrim f rep o = let unit = f o (toRegexRepeater rep) in
+  if testNull unit then Regex mempty else Regex $ array [unit]
 
 -- | This primitive 'Regex' matches a single character.
 rxChar :: ToRegexRepeater rep => rep -> Char -> Regex
@@ -1065,7 +1056,7 @@ rxString = _rxPrim $ RxString . toText . toLazyText
 
 -- | Create a 'Regex' from any 'Dao.Interval.Set' of 'Prelude.Char's.
 rxCharSet :: ToRegexRepeater rep => rep -> CharSet -> Regex
-rxCharSet = _rxPrim $ RxChar
+rxCharSet = _rxPrim RxChar
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1184,7 +1175,7 @@ lexerToParser o =
   in  case o of
         LxIden    o -> return o
         LxStep rx o -> loop mempty rx o where
-          loop buf rx o = regex rx >>= return . ((buf <>) . toLazyText) >>= \buf -> case o of
+          loop buf rx o = liftM ((buf <>) . toLazyText) (regex rx) >>= \buf -> case o of
             LxIden    o  -> return o
             LxStep rx o  -> loop buf rx o
             LxTake    o  -> lexerToParser $ o buf
@@ -1381,14 +1372,12 @@ instance (Functor m, MonadPlus m) => MonadPlus (Grammar m) where
         Nothing   -> GrTable tabA
         Just rxB  -> case lastElem tabA of
           Nothing   -> GrTable tabB
-          Just rxA  -> case shadowsParallel rxA rxB of
-            False     -> GrTable $ tabA<>tabB
-            True      -> GrReject $
-              invalidGrammar
-              { regexSeqA = Just $ regexOfLexer rxA
-              , regexSeqB = Just $ regexOfLexer rxB
-              , regexBadSequence = False
-              }
+          Just rxA  -> if not $ shadowsParallel rxA rxB then GrTable $ tabA<>tabB else GrReject
+            invalidGrammar
+            { regexSeqA = Just $ regexOfLexer rxA
+            , regexSeqB = Just $ regexOfLexer rxB
+            , regexBadSequence = False
+            }
       GrChoice  next alt -> mplus (mplus (GrTable tabA) next) alt
       GrType    typ next -> GrChoice (GrTable tabA) (GrType  typ next)
       GrComment lbl next -> GrChoice (GrTable tabA) (GrComment lbl next)
@@ -1406,7 +1395,7 @@ instance (Applicative m, Monad m) => Applicative (Grammar m) where { pure = retu
 
 instance (Alternative m, MonadPlus m) => Alternative (Grammar m) where { empty = mzero; (<|>) = mplus; }
 
-instance MonadTrans Grammar where { lift o = GrLift $ o >>= return . GrReturn; }
+instance MonadTrans Grammar where { lift o = GrLift $ liftM GrReturn o; }
 
 instance MonadIO (Grammar IO) where { liftIO = lift; }
 
@@ -1417,7 +1406,7 @@ class HasGrammar o m where { theGrammar :: Grammar m o }
 _grammarToParser
   :: (Functor m, Monad m, MonadPlus m, MonadParser text m, TextBuilder text)
   => (Grammar m o -> m ()) -> Grammar m o -> m o
-_grammarToParser f o = loop o where
+_grammarToParser f = loop where
   loop o = f o >> case o of
     GrEmpty            -> mzero
     GrReturn  o        -> return o
@@ -1443,7 +1432,7 @@ grammarToParser = _grammarToParser (const $ return ())
 grammarToVerboseParser
   :: (Functor m, Monad m, MonadPlus m, MonadParser text m, TextBuilder text)
   => (GrammarSignature m o -> m ()) -> Grammar m o -> m o
-grammarToVerboseParser f = _grammarToParser (\g -> f (grammarSignature g))
+grammarToVerboseParser f = _grammarToParser $ f . grammarSignature
 
 -- Construct a 'Grammar' from a 'Lexer'.
 _rxGrammar :: Lexer a -> Grammar m a
@@ -1575,7 +1564,7 @@ grammarSignature o = case o of
   GrEmpty       -> GrammarEmpty
   GrReturn    o -> GrammarReturn o
   GrLift      o -> GrammarLift (fmap grammarSignature o)
-  GrTable     o -> GrammarTable $ fmap (lexerSignature . fmap grammarSignature) $ elems o
+  GrTable     o -> GrammarTable $ lexerSignature . fmap grammarSignature <$> elems o
   GrChoice  a b ->
     let loop o = case o of
           GrChoice a b -> loop a ++ loop b
@@ -1632,7 +1621,7 @@ pprintGrammarSignature txt txtm depth o =
       list prin title ox = section [pText title, pSpace] $ case ox of
         []   -> [pText "[]"]
         o:ox -> return $
-          if depth<=0 then pText "[ .... ]" else pInline $ concat $
+          if depth<=0 then pText "[ .... ]" else pInline $ concat
             [ [pText "[", pSpace], prin o, [pNewLine]
             , ox >>= \o -> [pText ",", pSpace] ++ prin o ++ [pNewLine]
             , [pText "]"]

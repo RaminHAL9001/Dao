@@ -221,7 +221,7 @@ newtype Lens m c e =
 type PureLens c e = Lens Identity c e
 
 instance Monad m => Category (Lens m) where
-  id = newLens id (\o -> const o)
+  id = newLens id const
   (Lens bc) . (Lens ab) = Lens $ \c -> StateT $ \a -> case c of
     Nothing -> evalStateT (ab Nothing) a >>= evalStateT (bc Nothing) >>= \c -> return (c, a)
     Just  c -> do
@@ -448,10 +448,9 @@ instance (Monad m, Ix i, IArray UArray o) => FocusesWith i m (UArray i o) o wher
 maybeArrayLens :: (Monad m, Ix i, IArray arr o) => i -> Lens m (arr i o) (Maybe o)
 maybeArrayLens i = let lens = arrayLens i in Lens $ \o -> get >>= \arr ->
   if inRange (bounds arr) i
-  then (case o of
+  then liftM Just $ case o of
           Nothing -> getWithLens lens
           Just  o -> modifyWithLens lens (o . Just >=> maybe (return $ arr!i) return)
-       ) >>= return . Just
   else return Nothing
 
 instance (Monad m, Ix i, IArray Array o) =>
@@ -475,13 +474,10 @@ instance (Monad m, Applicative m, MonadIO m, Ix i, MArray IOUArray o IO) =>
 ioMaybeArrayLens :: (Monad m, MonadIO m, Ix i, MArray arr o IO) => i -> Lens m (arr i o) (Maybe o)
 ioMaybeArrayLens i = let lens = ioArrayLens i in Lens $ \o -> do
   arr      <- get
-  inBounds <- liftIO (getBounds arr) >>= return . flip inRange i
-  if inBounds
-  then (case o of
-          Nothing -> getWithLens lens
-          Just  o -> modifyWithLens lens (o . Just >=> maybe (liftIO $ readArray arr i) return)
-       ) >>= return . Just
-  else return Nothing
+  inBounds <- liftM (`inRange` i) $ liftIO $ getBounds arr
+  if not inBounds then return Nothing else liftM Just $ case o of
+    Nothing -> getWithLens lens
+    Just  o -> modifyWithLens lens (o . Just >=> maybe (liftIO $ readArray arr i) return)
 
 instance (Monad m, MonadIO m, Ix i, MArray IOArray o IO) =>
   FocusesWith i m (IOArray i o) (Maybe o) where { focus=ioMaybeArrayLens; }

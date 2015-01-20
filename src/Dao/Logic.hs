@@ -81,8 +81,8 @@ instance MonadTrans (LogicT st) where
   lift f = LogicT $ \st -> f >>= \a -> return [(a, st)]
 
 -- | Similar to 'Control.Monad.State.evalStateT'.
-evalLogicT :: Functor m => LogicT st m a -> st -> m [a]
-evalLogicT f = fmap (fmap fst) . runLogicT f
+evalLogicT :: Monad m => LogicT st m a -> st -> m [a]
+evalLogicT f = runLogicT f >=> return . fmap fst
 
 evalLogic :: Logic st a -> st -> [a]
 evalLogic f = runIdentity . evalLogicT f

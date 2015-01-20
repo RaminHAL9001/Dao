@@ -52,7 +52,7 @@ module Dao.Rule
     limitByScore, bestMatch, resetScore,
     -- * The Branch Structure of a Rule
     -- $Structure_of_a_rule
-    RuleStruct, tree, struct, getRuleStruct, trim, mask,
+    RuleStruct, tree, struct, ruleTree, getRuleStruct, trim, mask,
     -- * Convenient Rule Trees
     TypePattern(TypePattern), patternTypeRep, infer,
     -- * Predicting User Input
@@ -376,20 +376,27 @@ type RuleStruct = T.Tree Object ()
 -- 'Dao.Object.ObjectData', the portion of the 'Query' that matched will be passed to this 'Rule'
 -- function when it is evaluated.
 tree
-  :: (Functor m, Monad m, ObjectData a)
+  :: (Monad m, ObjectData a)
   => T.RunTree -> [[a]] -> (Query -> Rule m b) -> Rule m b
 tree control branches f = struct control (T.fromList $ zip (fmap obj <$> branches) $ repeat ()) f
 
 -- | Construct a 'Rule' tree from a 'Dao.Tree.Tree' data type and a 'Rule' function. The 'Rule' will
 -- be copied to every single 'Dao.Tree.Leaf' in the given 'Dao.Tree.Tree'.
 struct
-  :: (Functor m, Monad m)
+  :: Monad m
   => T.RunTree -> RuleStruct -> (Query -> Rule m a) -> Rule m a
 struct control tree rule =
   let df = control==T.DepthFirst
       (T.Tree (leaf, map)) = fmap (\ () -> rule) tree 
   in  maybe id ((if df then flip else id) mplus . ($ [])) leaf $
         ((if df then id else flip) RuleTree) map nullValue
+
+-- | Take a 'Dao.Tree.Tree' and turn it into a 'Rule' where every 'Dao.Tree.leaf' becomes a 'Rule'
+-- that simply 'Control.Monad.return's the 'Dao.Tree.leaf' value.
+ruleTree :: Monad m => T.RunTree -> T.Tree Object a -> Rule m a
+ruleTree control (T.Tree (leaf, map)) = maybe id (flip mplus . return) leaf $
+  ((if control==T.DepthFirst then flip else id) RuleTree) nullValue $
+    (fmap (fmap (const . return)) map)
 
 -- | Remove all of the 'Rule's and return only the 'Dao.Tree.Tree' structure. This function cannot
 -- retrieve the entire 'Dao.Tree.Tree', it can only see the 'Dao.Tree.Tree' created by the 'tree'
@@ -412,7 +419,7 @@ getRuleStruct rule = case rule of
 -- that @'trim' struct t 'Data.Monoid.<>' 'mask' struct t == t@ is always true.
 -- This function works by calling 'Dao.Tree.difference' on the 'Rule' and the 'Dao.Tree.Tree'
 -- constructed by the 'Dao.Tree.blankTree' of the given list of 'Dao.Object.ObjectData' branches.
-trim :: (Functor m, Monad m) => RuleStruct -> Rule m a -> Rule m a
+trim :: Monad m => RuleStruct -> Rule m a -> Rule m a
 trim tree@(T.Tree (leaf, map)) rule = case rule of
   RuleEmpty      -> RuleEmpty
   RuleTree   x y -> RuleTree (del x) (del y)
@@ -428,7 +435,7 @@ trim tree@(T.Tree (leaf, map)) rule = case rule of
 -- @('Prelude.==')@ predicate, not 'Dao.Object.objMatch'. This function works by calling
 -- 'Dao.Tree.intersection' on the 'Rule' and the 'Dao.Tree.Tree' constructed by the
 -- 'Dao.Tree.blankTree' of the given list of 'Dao.Object.ObjectData' branches.
-mask :: (Functor m, Monad m) => RuleStruct -> Rule m a -> Rule m a
+mask :: Monad m => RuleStruct -> Rule m a -> Rule m a
 mask tree@(T.Tree (leaf, map)) rule = case rule of
   RuleEmpty      -> RuleEmpty
   RuleTree   x y -> RuleTree (del x) (del y)
@@ -472,7 +479,10 @@ instance ObjectData TypePattern where
 infer
   :: forall m t a . (Functor m, Monad m, Typeable t, ObjectData t)
   => (t -> Rule m a) -> Rule m a
-infer f = tree T.BreadthFirst [[typ f err]] $ msum . fmap (fromObj >=> f) where
+infer f = tree T.BreadthFirst [[typ f err]] just1 where
+  just1 ox = case ox of
+    [o] -> fromObj o >>= f
+    _   -> mzero
   typ :: (t -> Rule m a) -> t -> TypePattern
   typ _ ~t = TypePattern $ typeOf t
   err :: t
@@ -520,7 +530,7 @@ _predictorStack =
 -- the 'Rule' as possible by comparing the current 'predictorQuery' to the 'Query' assigned to it
 -- with the @('Dao.Lens.<~')@ operator. But if the end user has completely deleted the input and
 -- started with something new, it is unavoidable that the 'Predictor' simply must be fully reset.
-predictorQuery :: (Functor m, Monad m) => Lens m (Predictor m a) Query
+predictorQuery :: Monad m => Lens m (Predictor m a) Query
 predictorQuery = newLensM fetch update where
   fetch (Predictor q _ s) = return $
     concat $ reverse $ ((q & queryInput) :) $ fmap ((& queryInput) . fst) s
@@ -538,11 +548,11 @@ predictorQuery = newLensM fetch update where
 
 -- | This function is similar to the 'queryAll' function, except evaluation occurs in steps that can
 -- be controlled by 'predictorStep', 'predictorBack', and 'changeGuess'.
-startGuess :: (Functor m, Monad m) => Rule m a -> Query -> m (Predictor m a)
+startGuess :: Monad m => Rule m a -> Query -> m (Predictor m a)
 startGuess r q = predictorStep $ Predictor (QueryState 0 q) r []
 
 -- | Append more of a 'Query' to the current 'Predictor's 'QueryState'.
-continueGuess :: (Functor m, Monad m) => Query -> Predictor m a -> m (Predictor m a)
+continueGuess :: Monad m => Query -> Predictor m a -> m (Predictor m a)
 continueGuess q p = predictorStep $ on p [_predictorQueryState >>> queryInput $= (++ q)]
 
 -- | A predicate indicating whether it is possible for the 'Predictor' to be stepped by
@@ -558,13 +568,13 @@ predictorCanStep p = case p & _predictorRule of
 -- step of the '_predictorRule' consuming as much of the input 'Query' in 'predictorQuery'. Once this
 -- evaluation has completed, check the '_predictorGuesses' for possible completions. It is then
 -- possible to append these completions to the 'predictorQuery' and evaluate 'predictorStep' again.
-predictorStep :: (Functor m, Monad m) => Predictor m a -> m (Predictor m a)
-predictorStep = fmap snd . curry loop nullValue where
+predictorStep :: Monad m => Predictor m a -> m (Predictor m a)
+predictorStep = curry loop nullValue >=> return . snd where
   step t p rule = (t, on p [_predictorRule <~ rule])
   loop (t, p) = let rule = p & _predictorRule in case rule of
     RuleLift     o -> o >>= loop . step t p
     RuleLogic  _ o ->
-      rights <$> evalLogicT o (p & _predictorQueryState) >>= loop . step t p . msum
+      evalLogicT o (p & _predictorQueryState) >>= loop . step t p . msum . rights
     RuleChoice a b -> loop (step t p a) >>= \ (t, p) -> loop $ step t p b
     RuleTree   a b -> done (union t $ union (mkT a) (mkT b)) p
     _              -> return (t, p)
@@ -584,15 +594,14 @@ predictorStep = fmap snd . curry loop nullValue where
 --    'queryAll', what would be the result returned, or the error thrown. 
 -- 2. a list of guesses that might be next input by an end user that would be valid in the current
 --    context of the current production 'Rule'.
-predictorGuesses
-  :: (Functor m, Monad m)
-  => Predictor m a -> m ([Either ErrorObject a], [Query])
-predictorGuesses = fmap (second $ fmap fst . T.assocs T.BreadthFirst) . loop [] nullValue where
+predictorGuesses :: forall m a . Monad m => Predictor m a -> m ([Either ErrorObject a], [Query])
+predictorGuesses = loop [] nullValue >=> return . (second $ fmap fst . T.assocs T.BreadthFirst) where
   step p rule = on p [_predictorRule <~ rule]
+  loop :: [Either ErrorObject a] -> T.Tree Object () -> Predictor m a -> m ([Either ErrorObject a], T.Tree Object ())
   loop ax t p = case p & _predictorRule of
     RuleLift     o -> o >>= loop ax t . step p
     RuleLogic  u o -> do
-      (errs, rules) <- partitionEithers <$> evalLogicT o (p & _predictorQueryState)
+      (errs, rules) <- evalLogicT o (p & _predictorQueryState) >>= return . partitionEithers
       loop (ax ++ fmap Left errs) (T.union t u) $ step p (msum rules)
     RuleTree   a b -> let mkT o = T.Tree (Nothing, fmap (fmap (const ())) o) in
       return (ax, T.union t $ T.union (mkT a) (mkT b))

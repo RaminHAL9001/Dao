@@ -92,3 +92,48 @@ Test-Suite dao-tests
     TypeFamilies
   Default-Language: Haskell2010
 
+----------------------------------------------------------------------------
+--- A note on versioning:
+--- The version numbers is a 4-tuple: "major . minor . update . revision",
+--- proceding from greatest to least significance e.g. "major" is more
+--- significant than "minor". Each element is updated according to the
+--- following rules:
+---
+--- major: incremented when an API function is removed or an API
+---     function's type or name is changed. The only exception is when a
+---     non-class-member function has it's context (the polymorphic type
+---     constraints) reduced to be less constrained than the previous
+---     version, only in this case the "update" number should be incremented
+---     instead. The major number must also be incremented when the
+---     dependencies of the whole package are modified (e.g. we remove
+---     depency on Crypto or add dependency on Pipes), or if any change to
+---     the binary serialization of any data type has been made that would
+---     make it not backward compatible with previous version. 
+---
+--- minor: incremented when an API function is moved from one module to
+---     another but has not had it's type or name changed, or when a new
+---     module is added, or when binary serialization has been modified
+---     such that it is still backwards compatible with previous versions.
+---     The minor number must also be updated if the algorithm of an API
+---     function fundamentally changes, specifically when a monadic or
+---     applicative algorithm that produces side-effects (one that could
+---     possibly be used in the IO or ST monads) has it's evaluation
+---     changed such that the order in which these side effects occur is
+---     different from previous versions.
+---
+--- update: incremented when a new API function is added. The update
+---     number is also incremented when a bug is fixed which has not changed
+---     the types of any previously existing API functions, and has not
+---     removed any API functions, and has not effected binary
+---     serialization, and has not modified the order in which side-effects
+---     occur in a monadic function. The minor number must also be
+---     incremented when an API function's context (the polymorphic type
+---     constraints) has been reduced to be less constrained than previous
+---     version.
+---
+--- revision: the documentation has been changed, or some ancillary file
+---     in the package not related to any API function has been updated.
+---
+--- Of course incrementing a number of higher significance must reset
+--- every number of lower significance to zero.
+

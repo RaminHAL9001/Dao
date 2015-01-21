@@ -32,7 +32,7 @@
 -- types an 'Object' by instantiating your object into this class. To define an instance of
 -- 'ObjectData', the 'toForeign' function will be useful.
 module Dao.Object
-  ( ErrorObject, throwObject, errorToString,
+  ( ErrorObject, throwObject, showUnquoted, pprintUnquoted,
     -- * Improving on 'Data.Dynamic.Dynamic'
     HasTypeRep(objTypeOf),
     -- * Simple Data Modeling
@@ -328,15 +328,20 @@ throwObject = throwError . return . obj
 --
 -- > ["Error message\n..."]
 --
--- But if you use 'errorToString' instead of 'Prelude.show' to formulate the output, it will look
+-- But if you use 'showUnquoted' instead of 'Prelude.show' to formulate the output, it will look
 -- like this:
 --
 -- > Error message
 -- > ...
-errorToString :: ErrorObject -> String
-errorToString ox = ox >>= \o -> case runIdentity $ runPredicateT $ fromObj o of
-  OK o -> Strict.unpack o
-  _    -> show o
+showUnquoted :: ErrorObject -> String
+showUnquoted = showPPrint 4 100 . pprintUnquoted
+
+-- | Like 'showUnquoted' but outputs the error message as a more structured @['Dao.PPrint.PPrint']@
+-- value.
+pprintUnquoted :: ErrorObject -> [PPrint]
+pprintUnquoted ox = cleanSpaces False $ ox >>= \o -> case runIdentity $ runPredicateT $ fromObj o of
+  OK o -> [pSpace, pText (o::Strict.Text), pSpace]
+  _    -> pPrint o
 
 type T_int    = Int
 type T_long   = Integer

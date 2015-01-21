@@ -68,14 +68,18 @@ import           Data.Word
 newtype Tree p o = Tree (Maybe o, M.Map p (Tree p o)) deriving (Eq, Ord, Show, Typeable)
 
 instance TestNull (Tree p o) where
-  nullValue = Tree (Nothing, M.empty)
+  nullValue = Dao.Tree.empty
   testNull (Tree (o, m)) = M.null m && isNothing o
 
 instance Functor (Tree p) where { fmap f (Tree (o, m)) = Tree (fmap f o, fmap (fmap f) m); }
 
-instance (Ord p, Monoid o) => Monoid (Tree p o) where
-  mempty  = nullValue
-  mappend = unionWith mappend
+instance (Ord p, Monoid o) => Monoid (Sum (Tree p o)) where
+  mempty  = Sum nullValue
+  mappend (Sum a) (Sum b) = Sum $ unionWith mappend a b
+
+instance (Ord p, Monoid o) => Monoid (Product (Tree p o)) where
+  mempty  = Product nullValue
+  mappend (Product a) (Product b) = Product $ intersectionWith mappend a b
 
 instance (NFData a, NFData b) => NFData (Tree a b) where
   rnf (Tree (o, m)) = deepseq o $! deepseq m ()
@@ -126,7 +130,7 @@ instance Functor (ReduceTree p) where
 treePair :: (Monad m, Ord p) => Lens m (Tree p o) (Maybe o, M.Map p (Tree p o))
 treePair = newLens (\ (Tree t) -> t) (\t (Tree _) -> Tree t)
 
-empty :: Ord p => Tree p o
+empty :: Tree p o
 empty = Tree (Nothing, M.empty)
 
 leaf :: (Monad m, Ord p) => Lens m (Tree p o) (Maybe o)

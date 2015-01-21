@@ -576,9 +576,13 @@ instance (Eq c, Ord c, Enum c, InfBound c) => Eq (Set c) where
 instance (Ord c, Enum c, InfBound c, Bounded c, Integral c) => Ord (Set c) where
   compare a b = compare (size a) (size b)
 
-instance (Ord c, Enum c, InfBound c) => Monoid (Set c) where
-  mempty  = EmptySet
-  mappend = Dao.Interval.union
+instance (Ord c, Enum c, InfBound c) => Monoid (Sum (Set c)) where
+  mempty  = Sum EmptySet
+  mappend (Sum a) (Sum b) = Sum $ Dao.Interval.union a b
+
+instance (Ord c, Enum c, InfBound c) => Monoid (Product (Set c)) where
+  mempty  = Product EmptySet
+  mappend (Product a) (Product b) = Product $ Dao.Interval.union a b
 
 instance (Eq c, Ord c, Enum c, Show c, InfBound c) => Show (Set c) where
   show s = case s of

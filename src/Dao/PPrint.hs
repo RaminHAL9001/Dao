@@ -69,54 +69,16 @@ import           Data.Typeable
 sp :: StrictText
 sp = Strict.singleton ' '
 
-----------------------------------------------------------------------------------------------------
+-- | Calls 'textPPrinter' with a new empty 'PPrintState' and 'tabWidth' and 'wrapWidth'
+-- (respectively) each set with the first two given integer parameters.
+runTextPPrinter :: Int -> Int -> [PPrint] -> LazyText
+runTextPPrinter tabs wraps tx =
+  evalState (mapM_ textPPrinter tx >> gets outputText) (mempty{ tabWidth=tabs, wrapWidth=wraps })
 
----- | Indent by prefixing every line with an arbitrary string @i@ number of times.
---indent :: Int64 -> LazyText -> [LazyText] -> [LazyText]
---indent i tab = fmap ((Lazy.replicate i tab) <>)
-
----- | Indent with @i@ number of tabs prepended to each line.
---tabIndent :: Int64 -> [LazyText] -> [LazyText]
---tabIndent i = indent i (Lazy.singleton '\t')
-
----- | Indent with @sp@ number of spaces prepnded to each line @i@ number of times.
---spaceIndent :: Int64 -> Int64 -> [LazyText] -> [LazyText]
---spaceIndent sp i = indent i (Lazy.replicate sp sp)
-
----- | Given 4 parameters: 1. an indentation function, 2. an initial 'LazyText' heading, 3. a spacer
----- 'LazyText' heading, 4. and a section of 'LazyText'. If the list of 'LazyText' is empty, or only
----- contains one element, the spacer and the single line is appended to the initial 'LazyText'. But
----- if there is more than one 'LazyText' given, they are indented using the given indentation
----- function and will follow the initial 'LazyText', and the spacer is not used.
---section :: ([LazyText] -> [LazyText]) -> LazyText -> LazyText -> [LazyText] -> [LazyText]
---section indent init sp tx = case tx of
---  []  -> [init]
---  [t] -> [init <> sp <> t]
---  tx  -> init : indent tx
-
----- | Prepends a bullet point string to every item in the list, the first item gets a special bullet
----- point. This is good for showing lists where a comma is used to start each line:
----- > \tx -> 'bulletList' (Data.Text.Lazy.pack "[ ") (Data.text.Lazy.pack ", ") tx ++ [Data.Text.Lazy.pack "]")
----- Would print a list of items like so:
----- > [ one
----- > , two
----- > , three
----- > ]
---bulletList :: LazyText -> LazyText -> [LazyText] -> [LazyText]
---bulletList init point tx = case tx of
---  []   -> []
---  t:tx -> init <> t : fmap (point <>) tx
-
----- | Given 4 parameters: 1. an indentation function, 2. an initial string, 3. a closing string, and
----- 4. a list of text. If there are zero or one items in the list of text, the initial string, the
----- list items, and the closing string are simply concatenated (inline using 'Data.Monoid.<>'). If
----- there are more than one items, the initial string and final string are each on their own separate
----- line, and the list of items are indented in between.
---closure :: ([LazyText] -> [LazyText]) -> LazyText -> LazyText -> [LazyText] -> [LazyText]
---closure indent init close tx = case tx of
---  []  -> [init <> close]
---  [t] -> [init <> t <> close]
---  tx  -> init : indent tx ++ [close]
+-- | Calls 'runTextPPrinter' and converts the result to a 'Prelude.String', convenient for
+-- instantiating 'PPRintable' objects into the 'Prelude.Show' class.
+showPPrint :: Int -> Int -> [PPrint] -> String
+showPPrint t w = Lazy.unpack . runTextPPrinter t w
 
 ----------------------------------------------------------------------------------------------------
 
@@ -273,12 +235,6 @@ instance Monoid PPrintState where
     , outputText    = mempty
     }
   mappend a b = b{ outputText = mappend (outputText a) (outputText b) }
-
--- | Calls 'textPPrinter' with a new empty 'PPrintState' and 'tabWidth' and 'wrapWidth'
--- (respectively) each set with the first two given integer parameters.
-runTextPPrinter :: Int -> Int -> [PPrint] -> LazyText
-runTextPPrinter tabs wraps tx =
-  evalState (mapM_ textPPrinter tx >> gets outputText) (mempty{ tabWidth=tabs, wrapWidth=wraps })
 
 data TextStatistics
   = TextStatistics

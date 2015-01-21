@@ -113,6 +113,8 @@ instance Applicative (Predicate err) where { pure  = return; (<*>) = ap;    }
 
 instance Alternative (Predicate err) where { empty = mzero;  (<|>) = mplus; }
 
+instance MonadFix (Predicate err) where { mfix f = let m = m >>= f in m; }
+
 instance Monoid ok => Monoid (Predicate err ok) where
   mempty                = Backtrack
   mappend (OK a) (OK b) = OK(a<>b)
@@ -164,6 +166,12 @@ instance Monad m => MonadError err (PredicateT err m) where
 instance (Functor m, Monad m) => Applicative (PredicateT err m) where { pure = return; (<*>) = ap; }
 
 instance (Functor m, Monad m) => Alternative (PredicateT err m) where { empty = mzero; (<|>) = mplus; }
+
+instance MonadFix m => MonadFix (PredicateT err m) where
+  mfix f = PredicateT $ mfix $ \a -> case a of
+    Backtrack -> return Backtrack
+    PFail   a -> return $ PFail a
+    OK      a -> runPredicateT $ f a
 
 instance MonadTrans (PredicateT err) where { lift m = PredicateT $ liftM OK m; }
 

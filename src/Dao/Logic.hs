@@ -73,6 +73,9 @@ instance Monad m => MonadPlus (LogicT st m) where
 instance Monad m => MonadState st (LogicT st m) where
   state f = LogicT $ \st -> return [f st]
 
+instance MonadFix m => MonadFix (LogicT st m) where
+  mfix f = LogicT $ \st -> mfix $ liftM concat . mapM (\ ~(a, _) -> runLogicT (f a) st)
+
 instance (Monad m, MonadIO m) => MonadIO (LogicT st m) where
   liftIO f = LogicT $ \st -> liftIO f >>= \a -> return [(a, st)]
 

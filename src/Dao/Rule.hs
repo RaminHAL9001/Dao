@@ -236,6 +236,10 @@ instance Monad m => MonadLogic Query (Rule m) where
 instance MonadTrans Rule where
   lift f = RuleLift $ liftM return f
 
+instance MonadIO m => MonadIO (Rule m) where { liftIO = RuleLift . liftM return . liftIO; }
+
+instance MonadFix m => MonadFix (Rule m) where { mfix f = RuleLift $ mfix (return . (>>= f)); }
+
 instance (Functor m, Monad m) => Monoid (Rule m o) where
   mempty  = mzero
   mappend = mplus

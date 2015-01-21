@@ -122,6 +122,7 @@ import           Control.Applicative
 import           Control.DeepSeq
 import           Control.Exception
 import           Control.Monad
+import           Control.Monad.Fix
 import           Control.Monad.Trans
 
 import qualified Data.Array.IArray as A
@@ -1314,25 +1315,27 @@ data Grammar m o
   | GrReject  InvalidGrammar
   deriving Typeable
 
-instance Functor m => Functor (Grammar m) where
+instance MonadFix m => MonadFix (Grammar m) where { mfix f = GrLift $ mfix $ return . (>>= f); }
+
+instance Monad m => Functor (Grammar m) where
   fmap f o = case o of
     GrEmpty            -> GrEmpty
     GrReturn  o        -> GrReturn  $ f o
-    GrLift    next     -> GrLift  $       fmap (fmap f) next
-    GrTable   next     -> GrTable  (fmap (fmap (fmap f)) next)
-    GrChoice  next alt -> GrChoice (fmap f next) (fmap f alt)
-    GrType    typ next -> GrType  typ $ fmap f next
-    GrComment lbl next -> GrComment lbl $ fmap f next
+    GrLift    next     -> GrLift  $       liftM (liftM f) next
+    GrTable   next     -> GrTable  (liftM (liftM (liftM f)) next)
+    GrChoice  next alt -> GrChoice (liftM f next) (liftM f alt)
+    GrType    typ next -> GrType  typ $ liftM f next
+    GrComment lbl next -> GrComment lbl $ liftM f next
     GrFail    err      -> GrFail   err
     GrReject  err      -> GrReject err
 
-instance (Functor m, Monad m) => Monad (Grammar m) where
+instance Monad m => Monad (Grammar m) where
   return = GrReturn
   o >>= f = case o of
     GrEmpty            -> GrEmpty
     GrReturn  o        -> f o
-    GrLift    next     -> GrLift  $ fmap (>>= f) next
-    GrTable   next     -> GrTable $ fmap (fmap (>>= f)) next
+    GrLift    next     -> GrLift  $ liftM (>>= f) next
+    GrTable   next     -> GrTable $ liftM (liftM (>>= f)) next
     GrChoice  next alt -> GrChoice (next >>= f) (alt >>= f)
     GrType    typ next -> GrType  typ $ next >>= f
     GrComment lbl next -> GrComment lbl $ next >>= f
@@ -1340,14 +1343,14 @@ instance (Functor m, Monad m) => Monad (Grammar m) where
     GrReject  err      -> GrReject err
   fail = GrFail . Strict.pack
 
-instance (Functor m, MonadPlus m) => MonadPlus (Grammar m) where
+instance MonadPlus m => MonadPlus (Grammar m) where
   mzero = GrEmpty
   mplus a b = case a of
     GrEmpty            -> b
     GrReturn  a        -> case b of
       GrEmpty            -> GrReturn a
       GrReturn  _        -> GrReturn a
-      GrLift    b        -> GrLift   $ fmap (mplus $ GrReturn a) b
+      GrLift    b        -> GrLift   $ liftM (mplus $ GrReturn a) b
       GrTable   tabB     -> GrReject $ CutSomeBranches Nothing $ regexOfLexer <$> elems tabB
       GrChoice  next alt -> mplus (mplus (GrReturn a) next) alt
       GrType    _    _   -> GrReturn a
@@ -1356,9 +1359,9 @@ instance (Functor m, MonadPlus m) => MonadPlus (Grammar m) where
       GrReject  err      -> GrReject err
     GrLift    a        -> case b of
       GrEmpty            -> GrLift a
-      GrReturn  next     -> GrLift  $ fmap (flip mplus $ GrReturn next) a
+      GrReturn  next     -> GrLift  $ liftM (flip mplus $ GrReturn next) a
       GrLift    next     -> GrLift  $ mplus a next
-      GrTable   next     -> GrLift  $ fmap (flip mplus $ GrTable next) a
+      GrTable   next     -> GrLift  $ liftM (flip mplus $ GrTable next) a
       GrChoice  next alt -> mplus (mplus (GrLift a) next) alt
       GrType    typ next -> GrChoice (GrLift a) (GrType  typ next)
       GrComment lbl next -> GrChoice (GrLift a) (GrComment lbl next)
@@ -1367,7 +1370,7 @@ instance (Functor m, MonadPlus m) => MonadPlus (Grammar m) where
     GrTable   tabA     -> case b of
       GrEmpty            -> GrTable tabA
       GrReturn  b        -> GrChoice (GrTable tabA) (GrReturn b)
-      GrLift    next     -> GrLift  $ fmap (mplus $ GrTable tabA) next
+      GrLift    next     -> GrLift  $ liftM (mplus $ GrTable tabA) next
       GrTable   tabB     -> case tabB ! 0 of
         Nothing   -> GrTable tabA
         Just rxB  -> case lastElem tabA of

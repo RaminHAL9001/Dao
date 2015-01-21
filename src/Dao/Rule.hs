@@ -240,9 +240,7 @@ instance MonadIO m => MonadIO (Rule m) where { liftIO = RuleLift . liftM return 
 
 instance MonadFix m => MonadFix (Rule m) where { mfix f = RuleLift $ mfix (return . (>>= f)); }
 
-instance (Functor m, Monad m) => Monoid (Rule m o) where
-  mempty  = mzero
-  mappend = mplus
+instance Monad m => Monoid (Rule m o) where { mempty=mzero; mappend=mplus; }
 
 ----------------------------------------------------------------------------------------------------
 

@@ -146,23 +146,23 @@ pText = PText . toText
 
 -- | Like 'PInline', but automatically calls 'cleanSpaces' on the input parameter.
 pInline :: [PPrint] -> PPrint
-pInline = PInline . cleanSpaces False
+pInline = PInline . cleanSpaces
 
 -- | Like 'PIndent', but automatically calls 'cleanSpaces' on the input parameter.
 pIndent :: [PPrint] -> PPrint
-pIndent = PIndent . cleanSpaces False
+pIndent = PIndent . cleanSpaces
 
 -- | Like 'PSpan', but automatically calls 'cleanSpaces' on the input 'PPrint' list.
 pSpan :: HtmlClass -> [PPrint] -> PPrint
-pSpan c = PSpan c . cleanSpaces False
+pSpan c = PSpan c . cleanSpaces
 
 -- | Like 'PSpan', but automatically calls 'cleanSpaces' on the input 'PPrint' list.
 pDiv :: HtmlClass -> [PPrint] -> PPrint
-pDiv c = PDiv c . cleanSpaces False
+pDiv c = PDiv c . cleanSpaces
 
 -- | Like 'PSpan', but automatically calls 'cleanSpaces' on the input 'PPrint' list.
 pQuote :: HtmlClass -> [PPrint] -> PPrint
-pQuote c = PQuote c . cleanSpaces False
+pQuote c = PQuote c . cleanSpaces
 
 -- | Synonym for 'PNewLine', but with a lowercase leading @p@ so you don't get confused.
 pNewLine :: PPrint
@@ -319,38 +319,34 @@ textPPrintBreakLine i =
 -- 'PNewLine's or 'PForceLine's are removed. Pass a 'Prelude.Bool' value indicating whether you want
 -- the space cleaning to recurse into all 'PPrint' instructions, you should almost never need to
 -- pass 'Prelude.True'.
-cleanSpaces :: Bool -> [PPrint] -> [PPrint]
-cleanSpaces recursive = loop where
-  recurse = if recursive then loop else id
+cleanSpaces :: [PPrint] -> [PPrint]
+cleanSpaces = loop where
   loop tx = case tx of
-    []                           -> []
-    PSpace                  : _  -> joinSpaces False 0 tx
-    PForceSpace _           : _  -> joinSpaces True  0 tx
-    PNewLine                : _  -> joinLines        0 tx
-    PForceLine  _           : _  -> joinLines        0 tx
-    PText       t           : tx -> PText        t : loop tx
-    PSetTabStop             : tx -> PSetTabStop    : loop tx
-    PTabToStop              : tx -> PTabToStop     : loop tx
-    PClearTabStops          : tx -> PClearTabStops : loop tx
-    PInline           ux    : tx -> PInline  (recurse ux) : loop tx
-    PIndent           ux    : tx -> PIndent  (recurse ux) : loop tx
-    PMaxColumns c     ux vx : tx -> PMaxColumns c (recurse ux) (recurse vx) : loop tx
-    PMaxRows    c     ux vx : tx -> PMaxRows    c (recurse ux) (recurse vx) : loop tx
-    PSpan       c     ux    : tx -> PSpan  c (recurse ux) : loop tx
-    PDiv        c     ux    : tx -> PDiv   c (recurse ux) : loop tx
-    PQuote      c     ux    : tx -> PQuote c (recurse ux) : loop tx
-    PTable      c w   ux    : tx -> PTable c w ((if recursive then (fmap tableRow) else id) ux) : loop tx
-    PParagraph  c     ux    : tx -> PParagraph c (recurse ux) : loop tx
-    PNumbered   c     ux    : tx -> PNumbered  c (fmap cells ux) : loop tx
-    PBulleted   c     ux    : tx -> PBulleted  c (fmap cells ux) : loop tx
-    PHeader1    c     ux    : tx -> PHeader1   c (recurse ux) : loop tx
-    PHeader2    c     ux    : tx -> PHeader2   c (recurse ux) : loop tx
-    PHeader3    c     ux    : tx -> PHeader3   c (recurse ux) : loop tx
-    PHeader4    c     ux    : tx -> PHeader3   c (recurse ux) : loop tx
-  tableRow t = case t of
-    HtmlTableHeader c ux -> HtmlTableHeader c $ fmap cells ux
-    HtmlTableRow    c ux -> HtmlTableRow    c $ fmap cells ux
-  cells (HtmlCell c tx) = HtmlCell c $ recurse tx
+    []                         -> []
+    PSpace                : _  -> joinSpaces False 0 tx
+    PForceSpace _         : _  -> joinSpaces True  0 tx
+    PNewLine              : _  -> joinLines        0 tx
+    PForceLine  _         : _  -> joinLines        0 tx
+    PText       t         : tx -> PText        t : loop tx
+    PSetTabStop           : tx -> PSetTabStop    : loop tx
+    PTabToStop            : tx -> PTabToStop     : loop tx
+    PClearTabStops        : tx -> PClearTabStops : loop tx
+    PInline         ux    : tx -> PInline  ux : loop tx
+    PIndent         ux    : tx -> PIndent  ux : loop tx
+    PMaxColumns c   ux vx : tx -> PMaxColumns c ux vx : loop tx
+    PMaxRows    c   ux vx : tx -> PMaxRows    c ux vx : loop tx
+    PSpan       c   ux    : tx -> PSpan  c ux : loop tx
+    PDiv        c   ux    : tx -> PDiv   c ux : loop tx
+    PQuote      c   ux    : tx -> PQuote c ux : loop tx
+    PTable      c w ux    : tx -> PTable c w ux : loop tx
+    PParagraph  c   ux    : tx -> PParagraph c ux : loop tx
+    PNumbered   c   ux    : tx -> PNumbered  c (fmap cells ux) : loop tx
+    PBulleted   c   ux    : tx -> PBulleted  c (fmap cells ux) : loop tx
+    PHeader1    c   ux    : tx -> PHeader1   c ux : loop tx
+    PHeader2    c   ux    : tx -> PHeader2   c ux : loop tx
+    PHeader3    c   ux    : tx -> PHeader3   c ux : loop tx
+    PHeader4    c   ux    : tx -> PHeader3   c ux : loop tx
+  cells (HtmlCell c tx) = HtmlCell c tx
   make forcedConstr constr len tx =
     if len==1 then constr : loop tx else if len>0 then forcedConstr len : loop tx else loop tx
   makeSpace = make PForceSpace PSpace
@@ -375,11 +371,11 @@ cleanSpaces recursive = loop where
 -- to honor 'PNewLine' formatters; passing 'Prelude.False' for the second parameter will replace
 -- 'PNewLine's with 'PSpace's.
 textPPrintInline :: Bool -> Bool -> [PPrint] -> [PPrint]
-textPPrintInline keepIndents keepNewLines tx = cleanSpaces True $ do
+textPPrintInline keepIndents keepNewLines tx = do
   let loop = textPPrintInline keepIndents keepNewLines
   let cell (HtmlCell _ tx) = loop tx
   let q = [PText $ Strict.singleton '"']
-  t <- tx
+  t <- cleanSpaces tx
   case t of
     PNewLine           -> guard keepNewLines >> return PNewLine
     PForceLine  i      -> return $ PForceLine i

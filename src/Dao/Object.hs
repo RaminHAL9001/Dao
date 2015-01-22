@@ -339,7 +339,7 @@ showUnquoted = showPPrint 4 100 . pprintUnquoted
 -- | Like 'showUnquoted' but outputs the error message as a more structured @['Dao.PPrint.PPrint']@
 -- value.
 pprintUnquoted :: ErrorObject -> [PPrint]
-pprintUnquoted ox = cleanSpaces False $ ox >>= \o -> case runIdentity $ runPredicateT $ fromObj o of
+pprintUnquoted ox = cleanSpaces $ ox >>= \o -> case runIdentity $ runPredicateT $ fromObj o of
   OK o -> [pSpace, pText (o::Strict.Text), pSpace]
   _    -> pPrint o
 

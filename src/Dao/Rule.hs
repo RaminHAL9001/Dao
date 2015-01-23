@@ -298,11 +298,11 @@ next = RuleLogic nullValue $ superState $ \q -> if null $ q & queryInput then []
 -- | Take as many of next items from the query input as necessary to make the rest of the 'Rule'
 -- match the input query. This acts as kind of a Kleene star.
 part :: Monad m => Rule m Query
-part = RuleLogic nullValue $ superState $ loop 0 [] where
-  loop score lo q = case q & queryInput of
-    []   -> [(Right $ return lo, on q [queryScore <~ score])]
-    o:ox -> let q' = on q [queryInput <~ ox, queryScore <~ score]
-            in (Right $ return lo, q') : loop (score+1) (lo++[o]) q'
+part = RuleLogic nullValue $ superState $ \q -> loop (q & queryScore) [] (q & queryInput) where
+  out  score lo ox = (Right $ return lo, on nullValue [queryScore <~ score, queryInput <~ ox])
+  loop score lo ox = case ox of
+    []   -> [out score lo []]
+    o:ox -> out score lo (o:ox) : loop (score+1) (lo++[o]) ox
 
 -- | Match when there are no more arguments, backtrack if there are.
 --

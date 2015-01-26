@@ -835,3 +835,7 @@ instance ObjectData T_type   where
   obj       = OSimple . simple
   fromObj o = case o of { OSimple (OType o) -> return o; _ -> mzero; }
 
+instance ObjectData T_tree   where
+  obj       = OSimple . simple
+  fromObj o = case o of { OSimple (OTree o) -> return o; _ -> mzero; }
+

@@ -35,6 +35,7 @@
 --
 module Dao
   ( module Dao.Array,
+    module Dao.Certainty,
     module Dao.Count,
     module Dao.Lens,
     module Dao.Logic,
@@ -47,6 +48,7 @@ module Dao
   where
 
 import Dao.Array
+import Dao.Certainty
 import Dao.Count
 import Dao.Lens
 import Dao.Logic

@@ -18,11 +18,7 @@
 
 -- | 'TestNull' is a class used to test whether data types being evaluated in
 -- the Dao runtime are null or not, especially in conditional statements.
-module Dao.TestNull
-  ( TestNull(testNull, nullValue),
-    TestNullIO(testNullIO, nullValueIO)
-  )
-  where
+module Dao.TestNull( TestNull(testNull, nullValue) ) where
 
 import qualified Dao.Interval   as Iv
 
@@ -49,17 +45,39 @@ instance (Ord o, Enum o, Iv.InfBound o) =>
 
 ----------------------------------------------------------------------------------------------------
 
-class TestNullIO o where { testNullIO :: o -> IO Bool; nullValueIO :: IO o; }
+instance (TestNull a, TestNull b) => TestNull (a, b) where
+  nullValue = (nullValue, nullValue)
+  testNull (a, b) = testNull a && testNull b
 
-instance TestNullIO ()          where { testNullIO = return . testNull; nullValueIO = return nullValue; }
-instance TestNullIO [o]         where { testNullIO = return . testNull; nullValueIO = return nullValue; }
-instance TestNullIO T.Text      where { testNullIO = return . testNull; nullValueIO = return nullValue; }
-instance TestNullIO Strict.Text where { testNullIO = return . testNull; nullValueIO = return nullValue; }
-instance TestNullIO (M.Map i o) where { testNullIO = return . testNull; nullValueIO = return nullValue; }
-instance TestNullIO (S.Set   o) where { testNullIO = return . testNull; nullValueIO = return nullValue; }
-instance TestNullIO Int         where { testNullIO = return . testNull; nullValueIO = return nullValue; }
-instance TestNullIO Integer     where { testNullIO = return . testNull; nullValueIO = return nullValue; }
-instance TestNullIO Double      where { testNullIO = return . testNull; nullValueIO = return nullValue; }
-instance (Eq o, Ord o, Enum o, Iv.InfBound o) =>
-  TestNullIO (Iv.Set  o) where { testNullIO = return . testNull; nullValueIO = return nullValue; }
+instance (TestNull a, TestNull b, TestNull c) => TestNull (a, b, c) where
+  nullValue = (nullValue, nullValue, nullValue)
+  testNull (a, b, c) = testNull a && testNull b && testNull c
+
+instance (TestNull a, TestNull b, TestNull c, TestNull d) => TestNull (a, b, c, d) where
+  nullValue = (nullValue, nullValue, nullValue, nullValue)
+  testNull (a, b, c, d) = testNull a && testNull b && testNull c && testNull d
+
+instance (TestNull a, TestNull b, TestNull c, TestNull d, TestNull e) => TestNull (a, b, c, d, e) where
+  nullValue = (nullValue, nullValue, nullValue, nullValue, nullValue)
+  testNull (a, b, c, d, e) = testNull a && testNull b && testNull c && testNull d && testNull e
+
+instance (TestNull a, TestNull b, TestNull c, TestNull d, TestNull e, TestNull f) => TestNull (a, b, c, d, e, f) where
+  nullValue = (nullValue, nullValue, nullValue, nullValue, nullValue, nullValue)
+  testNull (a, b, c, d, e, f) = testNull a && testNull b && testNull c && testNull d && testNull e && testNull f
+
+instance (TestNull a, TestNull b, TestNull c, TestNull d, TestNull e, TestNull f, TestNull g) => TestNull (a, b, c, d, e, f, g) where
+  nullValue = (nullValue, nullValue, nullValue, nullValue, nullValue, nullValue, nullValue)
+  testNull (a, b, c, d, e, f, g) = testNull a && testNull b && testNull c && testNull d && testNull e && testNull f && testNull g
+
+instance (TestNull a, TestNull b, TestNull c, TestNull d, TestNull e, TestNull f, TestNull g, TestNull h) => TestNull (a, b, c, d, e, f, g, h) where
+  nullValue = (nullValue, nullValue, nullValue, nullValue, nullValue, nullValue, nullValue, nullValue)
+  testNull (a, b, c, d, e, f, g, h) = testNull a && testNull b && testNull c && testNull d && testNull e && testNull f && testNull g && testNull h
+
+instance (TestNull a, TestNull b, TestNull c, TestNull d, TestNull e, TestNull f, TestNull g, TestNull h, TestNull i) => TestNull (a, b, c, d, e, f, g, h, i) where
+  nullValue = (nullValue, nullValue, nullValue, nullValue, nullValue, nullValue, nullValue, nullValue, nullValue)
+  testNull (a, b, c, d, e, f, g, h, i) = testNull a && testNull b && testNull c && testNull d && testNull e && testNull f && testNull g && testNull h && testNull i
+
+instance (TestNull a, TestNull b, TestNull c, TestNull d, TestNull e, TestNull f, TestNull g, TestNull h, TestNull i, TestNull j) => TestNull (a, b, c, d, e, f, g, h, i, j) where
+  nullValue = (nullValue, nullValue, nullValue, nullValue, nullValue, nullValue, nullValue, nullValue, nullValue, nullValue)
+  testNull (a, b, c, d, e, f, g, h, i, j) = testNull a && testNull b && testNull c && testNull d && testNull e && testNull f && testNull g && testNull h && testNull i && testNull j
 

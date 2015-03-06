@@ -134,10 +134,10 @@ empty :: Tree p o
 empty = Tree (Nothing, M.empty)
 
 leaf :: (Monad m, Ord p) => Lens m (Tree p o) (Maybe o)
-leaf = newLens (\ (Tree (o, _)) -> o) (\o (Tree (_, m)) -> Tree (o, m))
+leaf = treePair >>> tuple0
 
 branches :: (Monad m, Ord p) => Lens m (Tree p o) (M.Map p (Tree p o))
-branches = newLens (\ (Tree (_, m)) -> m) (\m (Tree (o, _)) -> Tree (o, m))
+branches = treePair >>> tuple1
 
 -- | This is a focusing lens that focuses on a sub-'Tree' at a given path @[p]@. A function that
 -- takes two 'Tree's and returns a 'Tree' is required for performing 'Dao.Lens.alter' or
@@ -355,7 +355,12 @@ mergeWithM
   -> Tree p a -> Tree p b -> m (Tree p c)
 mergeWithM control f = mergeWithKeyM control (const f)
 
-mergeWith :: Ord p => (Maybe a -> Maybe b -> Maybe c) -> (Tree p a -> Tree p c) -> (Tree p b -> Tree p c) -> Tree p a -> Tree p b -> Tree p c
+mergeWith
+  :: Ord p
+  => (Maybe a -> Maybe b -> Maybe c)
+  -> (Tree p a -> Tree p c)
+  -> (Tree p b -> Tree p c)
+  -> Tree p a -> Tree p b -> Tree p c
 mergeWith f = mergeWithKey (const f)
 
 ----------------------------------------------------------------------------------------------------

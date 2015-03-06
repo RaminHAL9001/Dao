@@ -141,7 +141,13 @@ infixl 1 &
 on :: c -> [c -> c] -> c
 on c fx = appEndo (getDual $ mconcat $ Dual . Endo <$> fx) c
 
--- | This is the 'on' function with the parameters 'Prelude.flip'ped.
+-- | This is the 'on' function with the parameters 'Prelude.flip'ped. It is convenient when used
+-- with 'Control.Monad.State.Class.modify' when you want to update the state of a
+-- 'Control.Monad.State.Lazy.StateT' monad using a lens:
+--
+-- @
+-- 'Control.Monad.State.Class.modify' $ 'by' [lensA 'Dao.Lens.<~' newValue, lensB 'Dao.Lens.$=' (+ 1)]
+-- @
 by :: [c -> c] -> c -> c
 by = flip on
 
@@ -316,6 +322,10 @@ fetch (Lens lens) = evalStateT (lens Nothing)
 pureFetch :: PureLens c e -> c -> e
 pureFetch lens = runIdentity . fetch lens
 
+-- | Defined as @(\lens -> 'Control.Monad.State.Class.get' >>= 'fetch' lens)@
+lensGet :: (Monad m, MonadState c m) => Lens m c e -> m e
+lensGet lens = get >>= fetch lens
+
 -- | Use a 'Lens' to write an element @e@ within a container @c@.
 --
 -- Notice that the type signature of this function is defined such that multiple 'alter' functions
@@ -334,6 +344,14 @@ update (Lens lens) o = execStateT (lens $ Just $ const $ return o)
 pureUpdate :: PureLens c e -> e -> c -> c
 pureUpdate lens o = runIdentity . update lens o
 
+-- | Defined as
+--
+-- @
+-- (\lens elem -> 'Control.Monad.State.Class.get' >>= 'update' lens elem >>= \e -> 'Control.Monad.State.Class.put' e >> return e)
+-- @
+lensPut :: (Monad m, MonadState c m) => Lens m c e -> e -> m e
+lensPut lens e = get >>= update lens e >>= \c -> put c >> return e
+
 -- | Uses 'fetch' to take an element @e@ from the container @c@, modifies the element @e@ using the
 -- given function, then puts the element @e@ back into the container @c@ using 'update'.
 alter :: Monad m => Lens m c e -> (e -> m e) -> c -> m (e, c)
@@ -342,6 +360,10 @@ alter (Lens lens) f = runStateT (lens $ Just f)
 -- | Similar to 'alter' but requires a 'PureLens' and performs an update with a pure function.
 pureAlter :: PureLens c e -> (e -> e) -> c -> (e, c)
 pureAlter lens f = runIdentity . alter lens (return . f)
+
+-- | Defined as @(\lens f -> 'Control.Monad.State.Class.get' >>= 'alter' lens f >>= 'Control.Monad.State.Class.state' . 'Prelude.const')@.
+lensModify :: (Monad m, MonadState c m) => Lens m c e -> (e -> m e) -> m (e, c)
+lensModify lens f = get >>= alter lens f >>= \ (e, c) -> put c >> return (e, c)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -493,4 +515,188 @@ ioRefLens = newLensM (liftIO . readIORef) (\o ref -> liftIO $ writeIORef ref o >
 mVarLens :: (Monad m, MonadIO m) => Lens m (MVar o) o
 mVarLens = newLensM (liftIO . readMVar) $ \o mvar ->
   liftIO $ modifyMVar_ mvar (const $ return o) >> return mvar
+
+----------------------------------------------------------------------------------------------------
+
+class TupleLens0 a o where { tuple0 :: Monad m => Lens m a o }
+class TupleLens1 a o where { tuple1 :: Monad m => Lens m a o }
+class TupleLens2 a o where { tuple2 :: Monad m => Lens m a o }
+class TupleLens3 a o where { tuple3 :: Monad m => Lens m a o }
+class TupleLens4 a o where { tuple4 :: Monad m => Lens m a o }
+class TupleLens5 a o where { tuple5 :: Monad m => Lens m a o }
+class TupleLens6 a o where { tuple6 :: Monad m => Lens m a o }
+class TupleLens7 a o where { tuple7 :: Monad m => Lens m a o }
+class TupleLens8 a o where { tuple8 :: Monad m => Lens m a o }
+class TupleLens9 a o where { tuple9 :: Monad m => Lens m a o }
+
+instance TupleLens0 (o, b, c, d, e, f, g, h, i, j) o where
+  tuple0 = newLens (\ (o, _, _, _, _, _, _, _, _, _) -> o) (\o (_, b, c, d, e, f, g, h, i, j) -> (o, b, c, d, e, f, g, h, i, j))
+
+instance TupleLens0 (o, b, c, d, e, f, g, h, i) o where
+  tuple0 = newLens (\ (o, _, _, _, _, _, _, _, _) -> o) (\o (_, b, c, d, e, f, g, h, i) -> (o, b, c, d, e, f, g, h, i))
+
+instance TupleLens0 (o, b, c, d, e, f, g, h) o where
+  tuple0 = newLens (\ (o, _, _, _, _, _, _, _) -> o) (\o (_, b, c, d, e, f, g, h) -> (o, b, c, d, e, f, g, h))
+
+instance TupleLens0 (o, b, c, d, e, f, g) o where
+  tuple0 = newLens (\ (o, _, _, _, _, _, _) -> o) (\o (_, b, c, d, e, f, g) -> (o, b, c, d, e, f, g))
+
+instance TupleLens0 (o, b, c, d, e, f) o where
+  tuple0 = newLens (\ (o, _, _, _, _, _) -> o) (\o (_, b, c, d, e, f) -> (o, b, c, d, e, f))
+
+instance TupleLens0 (o, b, c, d, e) o where
+  tuple0 = newLens (\ (o, _, _, _, _) -> o) (\o (_, b, c, d, e) -> (o, b, c, d, e))
+
+instance TupleLens0 (o, b, c, d) o where
+  tuple0 = newLens (\ (o, _, _, _) -> o) (\o (_, b, c, d) -> (o, b, c, d))
+
+instance TupleLens0 (o, b, c) o where
+  tuple0 = newLens (\ (o, _, _) -> o) (\o (_, b, c) -> (o, b, c))
+
+instance TupleLens0 (o, b) o where
+  tuple0 = newLens (\ (o, _) -> o) (\o (_, b) -> (o, b))
+
+
+instance TupleLens1 (a, o, c, d, e, f, g, h, i, j) o where
+  tuple1 = newLens (\ (_, o, _, _, _, _, _, _, _, _) -> o) (\o (a, _, c, d, e, f, g, h, i, j) -> (a, o, c, d, e, f, g, h, i, j))
+
+instance TupleLens1 (a, o, c, d, e, f, g, h, i) o where
+  tuple1 = newLens (\ (_, o, _, _, _, _, _, _, _) -> o) (\o (a, _, c, d, e, f, g, h, i) -> (a, o, c, d, e, f, g, h, i))
+
+instance TupleLens1 (a, o, c, d, e, f, g, h) o where
+  tuple1 = newLens (\ (_, o, _, _, _, _, _, _) -> o) (\o (a, _, c, d, e, f, g, h) -> (a, o, c, d, e, f, g, h))
+
+instance TupleLens1 (a, o, c, d, e, f, g) o where
+  tuple1 = newLens (\ (_, o, _, _, _, _, _) -> o) (\o (a, _, c, d, e, f, g) -> (a, o, c, d, e, f, g))
+
+instance TupleLens1 (a, o, c, d, e, f) o where
+  tuple1 = newLens (\ (_, o, _, _, _, _) -> o) (\o (a, _, c, d, e, f) -> (a, o, c, d, e, f))
+
+instance TupleLens1 (a, o, c, d, e) o where
+  tuple1 = newLens (\ (_, o, _, _, _) -> o) (\o (a, _, c, d, e) -> (a, o, c, d, e))
+
+instance TupleLens1 (a, o, c, d) o where
+  tuple1 = newLens (\ (_, o, _, _) -> o) (\o (a, _, c, d) -> (a, o, c, d))
+
+instance TupleLens1 (a, o, c) o where
+  tuple1 = newLens (\ (_, o, _) -> o) (\o (a, _, c) -> (a, o, c))
+
+instance TupleLens1 (a, o) o where
+  tuple1 = newLens (\ (_, o) -> o) (\o (a, _) -> (a, o))
+
+
+instance TupleLens2 (a, b, o, d, e, f, g, h, i, j) o where
+  tuple2 = newLens (\ (_, _, o, _, _, _, _, _, _, _) -> o) (\o (a, b, _, d, e, f, g, h, i, j) -> (a, b, o, d, e, f, g, h, i, j))
+
+instance TupleLens2 (a, b, o, d, e, f, g, h, i) o where
+  tuple2 = newLens (\ (_, _, o, _, _, _, _, _, _) -> o) (\o (a, b, _, d, e, f, g, h, i) -> (a, b, o, d, e, f, g, h, i))
+
+instance TupleLens2 (a, b, o, d, e, f, g, h) o where
+  tuple2 = newLens (\ (_, _, o, _, _, _, _, _) -> o) (\o (a, b, _, d, e, f, g, h) -> (a, b, o, d, e, f, g, h))
+
+instance TupleLens2 (a, b, o, d, e, f, g) o where
+  tuple2 = newLens (\ (_, _, o, _, _, _, _) -> o) (\o (a, b, _, d, e, f, g) -> (a, b, o, d, e, f, g))
+
+instance TupleLens2 (a, b, o, d, e, f) o where
+  tuple2 = newLens (\ (_, _, o, _, _, _) -> o) (\o (a, b, _, d, e, f) -> (a, b, o, d, e, f))
+
+instance TupleLens2 (a, b, o, d, e) o where
+  tuple2 = newLens (\ (_, _, o, _, _) -> o) (\o (a, b, _, d, e) -> (a, b, o, d, e))
+
+instance TupleLens2 (a, b, o, d) o where
+  tuple2 = newLens (\ (_, _, o, _) -> o) (\o (a, b, _, d) -> (a, b, o, d))
+
+instance TupleLens2 (a, b, o) o where
+  tuple2 = newLens (\ (_, _, o) -> o) (\o (a, b, _) -> (a, b, o))
+
+
+instance TupleLens3 (a, b, c, o, e, f, g, h, i, j) o where
+  tuple3 = newLens (\ (_, _, _, o, _, _, _, _, _, _) -> o) (\o (a, b, c, _, e, f, g, h, i, j) -> (a, b, c, o, e, f, g, h, i, j))
+
+instance TupleLens3 (a, b, c, o, e, f, g, h, i) o where
+  tuple3 = newLens (\ (_, _, _, o, _, _, _, _, _) -> o) (\o (a, b, c, _, e, f, g, h, i) -> (a, b, c, o, e, f, g, h, i))
+
+instance TupleLens3 (a, b, c, o, e, f, g, h) o where
+  tuple3 = newLens (\ (_, _, _, o, _, _, _, _) -> o) (\o (a, b, c, _, e, f, g, h) -> (a, b, c, o, e, f, g, h))
+
+instance TupleLens3 (a, b, c, o, e, f, g) o where
+  tuple3 = newLens (\ (_, _, _, o, _, _, _) -> o) (\o (a, b, c, _, e, f, g) -> (a, b, c, o, e, f, g))
+
+instance TupleLens3 (a, b, c, o, e, f) o where
+  tuple3 = newLens (\ (_, _, _, o, _, _) -> o) (\o (a, b, c, _, e, f) -> (a, b, c, o, e, f))
+
+instance TupleLens3 (a, b, c, o, e) o where
+  tuple3 = newLens (\ (_, _, _, o, _) -> o) (\o (a, b, c, _, e) -> (a, b, c, o, e))
+
+instance TupleLens3 (a, b, c, o) o where
+  tuple3 = newLens (\ (_, _, _, o) -> o) (\o (a, b, c, _) -> (a, b, c, o))
+
+
+instance TupleLens4 (a, b, c, d, o, f, g, h, i, j) o where
+  tuple4 = newLens (\ (_, _, _, _, o, _, _, _, _, _) -> o) (\o (a, b, c, d, _, f, g, h, i, j) -> (a, b, c, d, o, f, g, h, i, j))
+
+instance TupleLens4 (a, b, c, d, o, f, g, h, i) o where
+  tuple4 = newLens (\ (_, _, _, _, o, _, _, _, _) -> o) (\o (a, b, c, d, _, f, g, h, i) -> (a, b, c, d, o, f, g, h, i))
+
+instance TupleLens4 (a, b, c, d, o, f, g, h) o where
+  tuple4 = newLens (\ (_, _, _, _, o, _, _, _) -> o) (\o (a, b, c, d, _, f, g, h) -> (a, b, c, d, o, f, g, h))
+
+instance TupleLens4 (a, b, c, d, o, f, g) o where
+  tuple4 = newLens (\ (_, _, _, _, o, _, _) -> o) (\o (a, b, c, d, _, f, g) -> (a, b, c, d, o, f, g))
+
+instance TupleLens4 (a, b, c, d, o, f) o where
+  tuple4 = newLens (\ (_, _, _, _, o, _) -> o) (\o (a, b, c, d, _, f) -> (a, b, c, d, o, f))
+
+instance TupleLens4 (a, b, c, d, o) o where
+  tuple4 = newLens (\ (_, _, _, _, o) -> o) (\o (a, b, c, d, _) -> (a, b, c, d, o))
+
+
+instance TupleLens5 (a, b, c, d, e, o, g, h, i, j) o where
+  tuple5 = newLens (\ (_, _, _, _, _, o, _, _, _, _) -> o) (\o (a, b, c, d, e, _, g, h, i, j) -> (a, b, c, d, e, o, g, h, i, j))
+
+instance TupleLens5 (a, b, c, d, e, o, g, h, i) o where
+  tuple5 = newLens (\ (_, _, _, _, _, o, _, _, _) -> o) (\o (a, b, c, d, e, _, g, h, i) -> (a, b, c, d, e, o, g, h, i))
+
+instance TupleLens5 (a, b, c, d, e, o, g, h) o where
+  tuple5 = newLens (\ (_, _, _, _, _, o, _, _) -> o) (\o (a, b, c, d, e, _, g, h) -> (a, b, c, d, e, o, g, h))
+
+instance TupleLens5 (a, b, c, d, e, o, g) o where
+  tuple5 = newLens (\ (_, _, _, _, _, o, _) -> o) (\o (a, b, c, d, e, _, g) -> (a, b, c, d, e, o, g))
+
+instance TupleLens5 (a, b, c, d, e, o) o where
+  tuple5 = newLens (\ (_, _, _, _, _, o) -> o) (\o (a, b, c, d, e, _) -> (a, b, c, d, e, o))
+
+
+instance TupleLens6 (a, b, c, d, e, f, o, h, i, j) o where
+  tuple6 = newLens (\ (_, _, _, _, _, _, o, _, _, _) -> o) (\o (a, b, c, d, e, f, _, h, i, j) -> (a, b, c, d, e, f, o, h, i, j))
+
+instance TupleLens6 (a, b, c, d, e, f, o, h, i) o where
+  tuple6 = newLens (\ (_, _, _, _, _, _, o, _, _) -> o) (\o (a, b, c, d, e, f, _, h, i) -> (a, b, c, d, e, f, o, h, i))
+
+instance TupleLens6 (a, b, c, d, e, f, o, h) o where
+  tuple6 = newLens (\ (_, _, _, _, _, _, o, _) -> o) (\o (a, b, c, d, e, f, _, h) -> (a, b, c, d, e, f, o, h))
+
+instance TupleLens6 (a, b, c, d, e, f, o) o where
+  tuple6 = newLens (\ (_, _, _, _, _, _, o) -> o) (\o (a, b, c, d, e, f, _) -> (a, b, c, d, e, f, o))
+
+
+instance TupleLens7 (a, b, c, d, e, f, g, o, i, j) o where
+  tuple7 = newLens (\ (_, _, _, _, _, _, _, o, _, _) -> o) (\o (a, b, c, d, e, f, g, _, i, j) -> (a, b, c, d, e, f, g, o, i, j))
+
+instance TupleLens7 (a, b, c, d, e, f, g, o, i) o where
+  tuple7 = newLens (\ (_, _, _, _, _, _, _, o, _) -> o) (\o (a, b, c, d, e, f, g, _, i) -> (a, b, c, d, e, f, g, o, i))
+
+instance TupleLens7 (a, b, c, d, e, f, g, o) o where
+  tuple7 = newLens (\ (_, _, _, _, _, _, _, o) -> o) (\o (a, b, c, d, e, f, g, _) -> (a, b, c, d, e, f, g, o))
+
+
+instance TupleLens8 (a, b, c, d, e, f, g, h, o, j) o where
+  tuple8 = newLens (\ (_, _, _, _, _, _, _, _, o, _) -> o) (\o (a, b, c, d, e, f, g, h, _, j) -> (a, b, c, d, e, f, g, h, o, j))
+
+instance TupleLens8 (a, b, c, d, e, f, g, h, o) o where
+  tuple8 = newLens (\ (_, _, _, _, _, _, _, _, o) -> o) (\o (a, b, c, d, e, f, g, h, _) -> (a, b, c, d, e, f, g, h, o))
+
+
+instance TupleLens9 (a, b, c, d, e, f, g, h, i, o) o where
+  tuple9 = newLens (\ (_, _, _, _, _, _, _, _, _, o) -> o) (\o (a, b, c, d, e, f, g, h, i, _) -> (a, b, c, d, e, f, g, h, i, o))
 

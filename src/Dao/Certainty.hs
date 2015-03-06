@@ -24,20 +24,22 @@
 -- The purpose of the 'Certainty' value, however, is not to simply store an arbitrary rational
 -- number value, but also to provides a method of converting this 'Certainty' value to
 -- 'Prelude.Double' data type that is always between @0.0@ and @1.0@. This is accomplished by
--- applying the rational number value in the 'Certainty' value to the sigmoidal function.
+-- applying the rational number value in the 'Certainty' value to the 'sigmoidal' function defined
+-- in this module. You can define your own sigmoidal for the 'Certainty' value by creating a
+-- @newtype@ of 'Certainty' and instantiating the 'CertaintyClass' with your own 'certainty'
+-- 'Dao.Lens.Lens'.
 --
 -- The utility of the 'Certainty' data type mostly comes from it's ability to keep a running
 -- 'average' value through use of 'Data.Monoid.mconcat'. It is easy to convert a list of
--- 'Prelude.Double' values to a list of 'Certainty' values, 'Data.Monoid.mconcat' them together,
--- retrieve the 'average', continue 'Data.Monoid.mconcat'ing the values, and retrieve the new
--- 'average'.
+-- 'Prelude.Double' values to a list of 'Certainty' values using 'Prelude.fromRational',
+-- 'Data.Monoid.mconcat' them together, retrieve the 'average', and then continue
+-- 'Data.Monoid.mconcat'ing values and retrieving updated 'average' values.
 --
--- while the instantiation of 'Prelude.Num'
--- and 'Prelude.Fractional' otherwise allows for treating the 'Certainty' data type as ordinary
--- 'Prelude.Double'-percsion number data.
+-- The instantiation of 'Prelude.Num' and 'Prelude.Fractional' otherwise allows for treating the
+-- 'Certainty' data type as ordinary 'Prelude.Double'-percsion number data.
 module Dao.Certainty
-  ( Certainty, sumTotal, sampleSize, average, certainty, onTotals,
-    sigmoidal, invSigmoidal
+  ( Certainty, certaintyRatio, sumTotal, sampleSize, average, onTotals,
+    CertaintyClass(certainty), sigmoidal, invSigmoidal
   )
   where
 
@@ -50,6 +52,9 @@ import           Data.Typeable
 -- not exported
 i2d :: Integer -> Double
 i2d = fromRational . toRational
+
+fourPi :: Floating t => t
+fourPi = 4.0*pi
 
 ----------------------------------------------------------------------------------------------------
 
@@ -88,13 +93,10 @@ i2d = fromRational . toRational
 -- networks.
 data Certainty = Certainty { _total :: Double, sampleSize :: Integer } deriving Typeable
 
--- | Use this 'Dao.Lens.Lens' to get the value of the sigmoidal of the inner rational value of the
--- 'Certainty', or to set what the value of the sigmoidal should be given the 'sampleSize' and
--- 'sumTotal' value of the 'Certainty' value.
-certainty :: Monad m => Lens m Certainty Double
-certainty =
-  newLens (\  (Certainty a b) -> sigmoidal $ a / i2d b)
-          (\a (Certainty _ b) -> Certainty (invSigmoidal a * i2d b) b)
+-- | Create a new 'Certainty' value from a ratio expressed as a 'Prelude.Double' divided by an
+-- 'Prelude.Integer'.
+certaintyRatio :: Double -> Integer -> Certainty
+certaintyRatio = Certainty
 
 -- | Use this 'Dao.Lens.Lens' to get the value of the average of this 'Certainty' value, which is
 -- computed by dividing the 'sumTotal' by the 'sampleSize'.
@@ -112,6 +114,8 @@ instance Eq Certainty where { (==) a b = EQ == compare a b; }
 
 instance Ord Certainty where
   compare a b = compare (a & certainty) (b & certainty)
+
+instance Show Certainty where { show c = "Certainty{ average="++show (c & average)++" }"; }
 
 instance TestNull Certainty where
   nullValue = Certainty 0.0 1
@@ -133,6 +137,27 @@ instance Fractional Certainty where
   (/) = onTotals (/)
   fromRational = flip Certainty 1 . fromRational
 
+----------------------------------------------------------------------------------------------------
+
+-- | This class defines a way to convert the 'average' 'Certainty' value to some
+-- 'Prelude.Double'-precision number (which should be between 0.0 and 1.0). The default certainty
+-- used, the instantiation of this class that the 'Certainty' data type defines, is a sigmoidal
+-- function.
+--
+-- When developing Artificial Neural Network models, you can use the 'Certainty' type's default
+-- instnatiation of the 'certainty' function which uses the 'sigmoidal' function defined in this
+-- module. But to define your own sigmoidal function, you can create a @newtype@ of 'Certainty' and
+-- define your own sigmoidal to 'Dao.Lens.fetch' or 'Dao.Lens.alter' the 'certainty' of the
+-- 'Certainty' data type.
+class CertaintyClass o where { certainty :: Monad m => Lens m o Double; }
+
+instance CertaintyClass Certainty where
+  certainty =
+    newLens (\  (Certainty a b) -> sigmoidal $ a / i2d b)
+            (\a (Certainty _ b) -> Certainty (invSigmoidal a * i2d b) b)
+
+----------------------------------------------------------------------------------------------------
+
 -- | Apply a binary infix operator, or any function on two 'Prelude.Double' values, to two
 -- 'Certainty' values. If the 'sampleSize' of the two 'Certainty' values are not equal, the 'sumTotal'
 -- value of the 'Certainty' with the larger sample size is scaled-down such that it's 'sampleSize'
@@ -145,10 +170,27 @@ onTotals f (Certainty a x) (Certainty b y) = case compare x y of
   LT -> Certainty (f a (b * i2d x / i2d y)) x
   GT -> Certainty (f (a * i2d y / i2d x) b) y
 
+-- | This is a computationally expensive but highly accurate sigmoidal function tailored to produce
+-- a certainty value between 0 and 1 from the 'average' value of a 'Certainty' data type. This
+-- computation is tailored to compute a 'sigmoidal' function that evaluates @0.5@ to exactly @0.5@,
+-- evaluates @0.0@ to a value close to @0.0@, and evaluates @1.0@ to a value close to @1.0@. This
+-- function is defined as:
+--
+-- @
+-- 1 / (1 + 'Prelude.exp'( -4*'Prelude.pi'*( -1/2 + x)))
+-- @
+--
+-- Where @x@ is the 'average' of the 'Certainty'.
+--
+-- The instantiation of the 'Certainty' data type into the 'CertaintyClass' uses this function for
+-- 'Dao.Lens.fetch'ing the 'certainty' value, and 'invSigmoidal' for 'Dao.Lens.alter'ing the
+-- 'certainty' value.
 sigmoidal :: Floating t => t -> t
-sigmoidal t = recip $ 1.0 + exp (negate t)
+sigmoidal t = recip $ 1.0 + exp (negate $ fourPi * (t-0.5))
 
+-- | This is the inverse of the above 'sigmoidal' function. Since the image of 'sigmoidal' is
+-- between 0 and 1, this function is 'Prelude.undefined' for values outside of this range.
 invSigmoidal :: (Ord t, Floating t, Fractional t) => t -> t
-invSigmoidal t = if 0.0 <= t && t <= 1.0 then negate $ log $ recip t - 1.0 else
-  error "Dao.Certainty.invSigmoidal input value out of bounds (must be betwee 0.0 and 1.0)"
+invSigmoidal t = if 0.0 <= t && t <= 1.0 then log (recip t - 1.0) / negate fourPi + 0.5 else
+  error "Dao.Certainty.invSigmoidal input value out of bounds (must be between 0.0 and 1.0)"
 

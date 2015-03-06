@@ -24,10 +24,17 @@
 -- pattern matching. Like the 'Prelude.Maybe' monad, pattern matching on bind, evaluates to
 -- 'Control.Monad.mzero', resulting in backtracking.
 --
+-- Also provided are the 'Conjunction', 'Statement', and 'Satisfy' monads for constraint logic
+-- computations.
+--
 -- 'LogicT' and transformers deriving from it are excellent for parsing command line arguments, but
 -- should be avoided for designing parsers of strings, because every branch lazily creates a copy of
 -- the state. Use "Dao.Grammar" for defining string parsers.
 module Dao.Logic where
+
+import           Dao.Array
+import           Dao.Lens
+import           Dao.TestNull
 
 import           Control.Arrow
 import           Control.Applicative
@@ -35,6 +42,10 @@ import           Control.Monad
 import           Control.Monad.Identity
 import           Control.Monad.Except
 import           Control.Monad.State.Class
+
+import           Data.List (nub)
+import           Data.Monoid
+import           Data.Typeable
 
 ----------------------------------------------------------------------------------------------------
 
@@ -178,4 +189,147 @@ chooseOnly n = entangle >=> superState . const . take n
 -- @'Prelude.flip' 'Control.Monad.Except.catchError' ('Prelude.const' 'Control.Monad.mzero')@
 dropErrors :: (Monad m, MonadPlus m, MonadError err m, MonadLogic st m) => m a -> m a
 dropErrors = flip catchError (const mzero)
+
+----------------------------------------------------------------------------------------------------
+
+-- | Functions for running a proof and evaluating whether the proof result is 'Prelude.True' or
+-- 'Prelude.False'.
+class Provable expr where
+  -- | Prove using a monadic predicate.
+  prove :: (Monad m, MonadPlus m) => (pat -> m Bool) -> expr pat -> m Bool
+  -- | Prove using a pure predicate.
+  provePure :: (pat -> Bool) -> expr pat -> Bool
+
+-- | A logical statement, where @pat@ can evaluate to some boolean value depending on whether it
+-- matches or "satisfies" some condition given in a 'proof' or 'pureProof'.
+newtype Satisfy pat = Satisfy (Bool, pat) deriving (Eq, Ord, Show, Typeable)
+
+instance Functor Satisfy where { fmap f (Satisfy a) = Satisfy $ fmap f a; }
+
+instance TestNull (Conjunction pat) where
+  nullValue = Conjunction nullValue
+  testNull (Conjunction o) = testNull o
+
+instance Provable Satisfy where
+  prove predicate (Satisfy (true, statement)) = liftM (true ==) $ predicate statement
+  provePure predicate (Satisfy (true, statement)) = true == predicate statement
+
+satisfyLens :: Monad m => Lens m (Satisfy pat) (Bool, pat)
+satisfyLens = newLens (\ (Satisfy a) -> a) (\a _ -> Satisfy a)
+
+shouldBe :: Monad m => Lens m (Satisfy pat) Bool
+shouldBe = satisfyLens >>> tuple0
+
+satisfyStatement :: Monad m => Lens m (Satisfy pat) pat
+satisfyStatement = satisfyLens >>> tuple1
+
+-- | Logical inverse of a 'Satisfy' statement.
+inverseSatisfy :: Satisfy pat -> Satisfy pat
+inverseSatisfy (Satisfy (true, statement)) = Satisfy (not true, statement)
+
+-- | Conjoint logical expressions (logical-AND). During a 'proof' or 'pureProof', a 'Conjunction' is
+-- true only if all of the conditions within it are satisfied.
+newtype Conjunction pat = Conjunction (Array (Satisfy pat)) deriving (Eq, Ord, Show, Typeable)
+
+instance Functor Conjunction where { fmap f (Conjunction o) = Conjunction $ fmap (fmap f) o; }
+
+instance Provable Conjunction where
+  prove predicate (Conjunction statements) =
+    let loop statement = case statement of
+          []             -> return True
+          next:statement -> prove predicate next >>= guard >> loop statement
+    in  loop $ elems statements
+  provePure predicate (Conjunction statements) = and $ provePure predicate <$> elems statements
+
+instance Monoid (Conjunction a) where
+  mempty = Conjunction mempty
+  mappend (Conjunction a) (Conjunction b) = Conjunction $ a<>b
+
+conjunctionLens :: Monad m => Lens m (Conjunction pat) (Array (Satisfy pat))
+conjunctionLens = newLens (\ (Conjunction a) -> a) (\a _ -> Conjunction a)
+
+-- | Logical inverse of a conjunction that produces a 'Statement'.
+inverseConjunction :: Eq pat => Conjunction pat -> Statement pat
+inverseConjunction (Conjunction o) = Statement $ if testNull o then mempty else array $
+  fmap (Conjunction . array . pure . inverseSatisfy) $ elems o
+
+-- | Canonical form for disjoint logical expressions (logical-OR). During a 'proof' or 'pureProof',
+-- a 'Statement' is true if any one of the conditions within it are satisfied.
+--
+-- This data type instantiates 'Dao.Object.ObjectData' so that it can be serialized and transmitted
+-- to and from files.
+newtype Statement pat = Statement (Array (Conjunction pat)) deriving (Eq, Ord, Show, Typeable)
+
+instance Functor Statement where { fmap f (Statement o) = Statement $ fmap (fmap f) o; }
+
+instance Monoid (Sum (Statement a)) where
+  mempty = Sum $ Statement mempty
+  mappend (Sum (Statement a)) (Sum (Statement b)) = Sum $ Statement $ a<>b
+
+instance Monoid (Product (Statement a)) where
+  mempty = Product $ Statement mempty
+  mappend (Product (Statement a)) (Product (Statement b)) =
+    Product $ Statement $ array $ filter (not . testNull) $ mappend <$> elems a <*> elems b
+
+instance TestNull (Statement pat) where
+  nullValue = Statement nullValue
+  testNull (Statement o) = testNull o
+
+instance Provable Statement where
+  prove predicate (Statement statements) =
+    mplus (msum $ prove predicate <$> elems statements) $ return False
+  provePure predicate (Statement statements) = or $ provePure predicate <$> elems statements
+
+-- | The disjunction of all 'Conjunction' data types forms the 'Statement'. You can operate on the
+-- disjunction directly using this lens.
+disjunctionLens :: Monad m => Lens m (Statement pat) (Array (Conjunction pat))
+disjunctionLens = newLens (\ (Statement a) -> a) (\a _ -> Statement a)
+
+-- | Construct a provable statement which asserts that an expression @pat@ is true or that it is
+-- false.
+posit :: Bool -> pat -> Statement pat
+posit that o = Statement $ array [Conjunction $ array [Satisfy (that, o)]]
+
+-- | Simplify a 'Statement' expression. This will remove duplicates, and if there are any empty
+-- 'Conjunctions', the whole expression is replaced with a single empty 'Conjunction' to indicate
+-- that the 'proof' of the expression is always 'Prelude.True'.
+simplify :: Eq pat => Statement pat -> Statement pat
+simplify (Statement o) = let ox = elems o in Statement $ array $
+  if or (testNull <$> ox) then [nullValue] else nub ox
+
+-- | Invert the logic of the expression. This function satisfies the following law:
+-- @
+-- 'provePure' predicate ('logicalInverse' statement) == 'Prelude.not' ('provePure' predicate statement)
+-- @
+--
+-- For every possible @predicate@ and @expression@.
+logicalInverse :: Eq pat => Statement pat -> Statement pat
+logicalInverse (Statement o) =
+  case inverseConjunction <$> elems o of
+    []                        -> Statement $ array [mempty]
+    ox | or (testNull <$> ox) -> Statement $ mempty
+    o:ox                      -> by [disjunctionLens $= array . nub . elems] $
+      foldl (\ (Statement a) (Statement b) -> Statement $ array $ mappend <$> elems a <*> elems b) o ox
+
+-- | Infix operator with the same fixity as 'Prelude.&&', but evaluates to:
+--
+-- @
+-- 'Data.Monoid.getProduct' (Data.Monoid.Product' a 'Data.Monoid.<>' 'Data.Monoid.Product' b)
+-- @
+--
+-- Useful for combining 'Statement's.
+(<>&&) :: Monoid (Product a) => a -> a -> a
+(<>&&) a b = getProduct $ Product a <> Product b
+infixl 3 <>&&
+
+-- | Infix operator with the same fixity as 'Prelude.||', but evaluates to:
+--
+-- @
+-- 'Data.Monoid.getSum' (Data.Monoid.Sum' a 'Data.Monoid.<>' 'Data.Monoid.Sum' b)
+-- @
+--
+-- Useful for combining 'Statement's.
+(<>||) :: Monoid (Sum a) => a -> a -> a
+(<>||) a b = getSum $ Sum a <> Sum b
+infixl 2 <>||
 

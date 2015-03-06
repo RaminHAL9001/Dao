@@ -58,6 +58,7 @@ module Dao.Object
 import           Dao.Array
 import           Dao.Int
 import           Dao.Lens
+import           Dao.Logic
 import           Dao.PPrint
 import           Dao.Predicate
 import           Dao.TestNull
@@ -75,7 +76,7 @@ import           Data.Binary.IEEE754
 import           Data.Bits
 import           Data.Char
 import           Data.Dynamic
-import           Data.List (intercalate)
+import           Data.List (intercalate, nub)
 import qualified Data.Map       as M
 import           Data.Monoid
 import qualified Data.Text      as Strict
@@ -685,6 +686,26 @@ instance SimpleData Simple   where
   simple       = id
   fromSimple   = return
 
+instance (Eq pat, ObjectData pat) => SimpleData (Satisfy pat) where
+  simple (Satisfy (a, b)) = simple $ array [obj a, obj b]
+  fromSimple = fmap elems . fromSimple >=> \pair -> case pair of
+    [a, b] -> Satisfy <$> ((,) <$> (fromObj a >>= fromSimple) <*> (fromObj b >>= fromSimple))
+    _      -> mzero
+
+instance (Eq pat, ObjectData pat) => SimpleData (Conjunction pat) where
+  simple (Conjunction ox) = simple $ array $ obj "AND" : (obj . simple <$> elems ox)
+  fromSimple = fmap elems . fromSimple >=> \list -> case list of
+    header:list | header == obj "AND" ->
+      Conjunction . array . nub <$> mapM (fromObj >=> fromSimple) list
+    _                                 -> mzero
+
+instance (Eq pat, ObjectData pat) => SimpleData (Disjunction pat) where
+  simple (Disjunction ox) = simple $ array $ obj "OR" : (obj . simple <$> elems ox)
+  fromSimple = fmap elems . fromSimple >=> \list -> case list of
+    header:list | header == obj "OR" ->
+      Disjunction . array . nub <$> mapM (fromObj >=> fromSimple) list
+    _                                -> mzero
+
 ----------------------------------------------------------------------------------------------------
 
 -- | An 'Object' is either a 'Simple' data type or a 'Foreign' data type. Since 'Foreign' lets you
@@ -838,4 +859,16 @@ instance ObjectData T_type   where
 instance ObjectData T_tree   where
   obj       = OSimple . simple
   fromObj o = case o of { OSimple (OTree o) -> return o; _ -> mzero; }
+
+instance ObjectData pat => ObjectData (Satisfy pat) where
+  obj     = OSimple . simple
+  fromObj = fromObj >=> fromSimple
+
+instance ObjectData pat => ObjectData (Conjunction pat) where
+  obj     = OSimple . simple
+  fromObj = fromObj >=> fromSimple
+
+instance ObjectData pat => ObjectData (Disjunction pat) where
+  obj     = OSimple . simple
+  fromObj = fromObj >=> fromSimple
 

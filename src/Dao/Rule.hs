@@ -90,10 +90,10 @@ import qualified Data.Map as M
 -- perform a logical computation.
 type Query = [Object]
 
--- | The 'Query' type synonym is simply a list of 'Dao.Object.Object's paird with an integer score.
--- When evaluating a 'Rule' monad, the 'queryInput' is tested by various 'Rule' functions to produce
--- a result, and the result is 'Control.Monad.return'ed when all the 'Rule's that can possibly match
--- have matched against the 'queryInput', and all possible results that have been successfully
+-- | The 'Query' a list of 'Dao.Object.Object's each paired with an integer score. When evaluating a
+-- 'Rule' monad, the 'queryInput' is tested by various 'Rule' functions to produce a result, and the
+-- result is 'Control.Monad.return'ed when all the 'Rule's that can possibly match have matched
+-- against the 'queryInput', and all possible results that have been successfully
 -- 'Control.Monad.return'ed. A 'queryScore' is kept, which counts how many 'Dao.Object.Object' items
 -- from the 'queryInput' have matched so far. This 'queryScore' can be helpful in narrowing the list
 -- of potential results.

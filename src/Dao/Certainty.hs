@@ -39,13 +39,22 @@
 -- 'Certainty' data type as ordinary 'Prelude.Double'-percsion number data.
 module Dao.Certainty
   ( Certainty, certaintyRatio, sumTotal, sampleSize, average, onTotals,
-    CertaintyClass(certainty), sigmoidal, invSigmoidal
+    CertaintyClass(certainty), sigmoidal, invSigmoidal,
+    MatchDistance(MatchDistance), exactSame, distanceSimilarity,
+    matchPermutationPattern, similarTrees,
+    MatchByDistance(matchDistance)
   )
   where
 
+import           Prelude hiding (id, (.))
+
 import           Dao.Lens
 import           Dao.TestNull
+import qualified Dao.Tree as T
 
+import           Control.Category
+
+import           Data.List (sortBy)
 import           Data.Monoid
 import           Data.Typeable
 
@@ -193,4 +202,98 @@ sigmoidal t = recip $ 1.0 + exp (negate $ fourPi * (t-0.5))
 invSigmoidal :: (Ord t, Floating t, Fractional t) => t -> t
 invSigmoidal t = if 0.0 <= t && t <= 1.0 then log (recip t - 1.0) / negate fourPi + 0.5 else
   error "Dao.Certainty.invSigmoidal input value out of bounds (must be between 0.0 and 1.0)"
+
+----------------------------------------------------------------------------------------------------
+
+-- | Sometimes a 'Certainty' value could be used when comparing two objects using a fuzzy logic
+-- comparison algorithm. But usually the more different the objects are the larger the fuzzy value
+-- grows, and the more similar the objects are, the closer the 'Certainty' value is to zero. This
+-- inverts the fuzzy logic: zero values do match, non-zero values do not match. This data type wraps
+-- a 'MatchDistance' but has redefined the ordering and matching logic
+newtype MatchDistance = MatchDistance Certainty deriving (Eq, Ord, Typeable)
+
+instance Show MatchDistance where
+  show (MatchDistance s) = "(MatchDistance "++show (s & average)++")"
+
+_matchDist2 :: (Certainty -> Certainty -> Certainty) -> MatchDistance -> MatchDistance -> MatchDistance
+_matchDist2 f (MatchDistance a) (MatchDistance b) = MatchDistance $ f a b
+
+_matchDist1 :: (Certainty -> Certainty) -> MatchDistance -> MatchDistance
+_matchDist1 f (MatchDistance a) = MatchDistance $ f a
+
+instance Num MatchDistance where
+  (+) = _matchDist2 (+)
+  (-) = _matchDist2 (-)
+  (*) = _matchDist2 (*)
+  abs = _matchDist1 abs
+  negate = _matchDist1 negate
+  signum = _matchDist1 signum
+  fromInteger = MatchDistance . fromInteger
+
+instance Fractional MatchDistance where
+  fromRational = MatchDistance . fromRational
+  (/) = _matchDist2 (/)
+
+instance Monoid MatchDistance where
+  mempty = MatchDistance 1.0
+  mappend (MatchDistance a) (MatchDistance b) = MatchDistance $ a <> b
+
+exactSame :: MatchDistance
+exactSame = MatchDistance 0.0
+
+distanceSimilarity :: Monad m => Lens m MatchDistance Certainty
+distanceSimilarity = newLens (\ (MatchDistance a) -> a) (\a (MatchDistance _) -> MatchDistance a)
+
+-- | Matches a permutation pattern using 'MatchDistance's evaluated by a given distance function to
+-- determine whether a pattern element @a@ matches a target element @b@, and sorted with the closest
+-- 'MatchDistance's first. It is an ordinary permutation pattern matching function except the given
+-- distance function is used to compare elements, rather than an equality function @('Prelude.==')@.
+-- The 'distanceSimilarity' function is used internally to decide whether the distance computed
+-- between a pattern element @a@ and a target element @b@ are close enough to consider the two
+-- elements to be similar.
+--
+-- The first parameter to this function is a 'Prelude.Double'-percision value indicating the
+-- threshold for similarity. If the distance function provided returns a 'MatchDistance' value who's
+-- 'average' value is greater than this threshold, the item is not returned to the resulting list.
+-- The resulting list contains all matching values where the 'average' 'distanceSimilarity' are
+-- within the threshold value, and the list is also sorted so more similar items appear towards the
+-- head of the list.
+--
+-- This function evaluates to an empty list if it is not possible to match every single pattern
+-- element @a@. If every single pattern element @a@ does match some target element @b@, the
+-- 'Data.Monoid.mappend'ed 'MatchDistance' for each element match is returned, paired with the
+-- portion of the target list @[b]@ split into two parts: the part that matched @[a]@ and the part
+-- remaining that has not yet matched @[a]@.
+matchPermutationPattern
+  :: Double
+  -> (a -> b -> MatchDistance)
+  -> [a] -> [b] -> [(MatchDistance, ([b], [b]))]
+matchPermutationPattern threshold diff ax = sortBy compareFirst . loop exactSame [] ax where
+  compareFirst a = compare (fst a) . fst
+  scan ax bx = case bx of
+    []   -> [(ax, [])]
+    b:bx -> let rev = ax++[b] in (rev, bx) : scan rev bx
+  loop c keep ax bx = case ax of
+    []   -> [(c, (keep, bx))]
+    a:ax -> case bx of
+      []   -> []
+      b:bx -> let d = diff a b in
+        if abs (d & average . distanceSimilarity) < abs threshold
+        then loop (c <> d) (keep ++ [b]) ax bx
+        else scan [b] bx >>= \ (skip, bx) -> loop c (keep++skip) (a:ax) bx
+
+-- | This function is useful for comparing patterns in 'Dao.Tree.Tree's to data types in
+-- 'Dao.Tree.Tree's. Provide a function for matching a @pat@ pattern to a @dat@ data type that
+-- evaluates a 'Dao.Certainty.Certainty' value.
+similarTrees :: (Eq p, Ord p) => (a -> b -> MatchDistance) -> T.Tree p a -> T.Tree p b -> MatchDistance
+similarTrees match pat dat = let t = T.intersectionWith match pat dat in
+  if T.size t == T.size pat then mconcat $ T.elems T.DepthFirst t else mempty
+
+----------------------------------------------------------------------------------------------------
+
+-- | Many data types in this module can do partial comparisons, where a function 'matchDistance' can
+-- take a "pattern" parameter and use it to match a "target" parameter. For most data types in this
+-- module, 'similarTree's is used to define the 'matchDistance' instance, so expect this function to
+-- never be commutative. The first parameter must always be a subset of the second.
+class MatchByDistance o where { matchDistance :: o -> o -> MatchDistance; }
 

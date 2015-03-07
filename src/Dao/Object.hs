@@ -699,11 +699,11 @@ instance (Eq pat, ObjectData pat) => SimpleData (Conjunction pat) where
       Conjunction . array . nub <$> mapM (fromObj >=> fromSimple) list
     _                                 -> mzero
 
-instance (Eq pat, ObjectData pat) => SimpleData (Disjunction pat) where
-  simple (Disjunction ox) = simple $ array $ obj "OR" : (obj . simple <$> elems ox)
+instance (Eq pat, ObjectData pat) => SimpleData (Statement pat) where
+  simple (Statement ox) = simple $ array $ obj "OR" : (obj . simple <$> elems ox)
   fromSimple = fmap elems . fromSimple >=> \list -> case list of
     header:list | header == obj "OR" ->
-      Disjunction . array . nub <$> mapM (fromObj >=> fromSimple) list
+      Statement . array . nub <$> mapM (fromObj >=> fromSimple) list
     _                                -> mzero
 
 ----------------------------------------------------------------------------------------------------
@@ -868,7 +868,7 @@ instance ObjectData pat => ObjectData (Conjunction pat) where
   obj     = OSimple . simple
   fromObj = fromObj >=> fromSimple
 
-instance ObjectData pat => ObjectData (Disjunction pat) where
+instance ObjectData pat => ObjectData (Statement pat) where
   obj     = OSimple . simple
   fromObj = fromObj >=> fromSimple
 

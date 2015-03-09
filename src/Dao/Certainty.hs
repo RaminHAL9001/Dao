@@ -40,19 +40,23 @@
 module Dao.Certainty
   ( Certainty, certaintyRatio, sumTotal, sampleSize, average, onTotals,
     CertaintyClass(certainty), sigmoidal, invSigmoidal,
-    MatchDistance(MatchDistance), exactSame, distanceSimilarity,
-    matchPermutationPattern, similarTrees,
+    MatchDistance(MatchDistance), exactSame, distanceSimilarity, invertDistance,
+    matchPermutationPattern, matchStatement, treeDistanceWith,
     MatchByDistance(matchDistance)
   )
   where
 
 import           Prelude hiding (id, (.))
 
+import           Dao.Array
 import           Dao.Lens
+import           Dao.Logic
 import           Dao.TestNull
 import qualified Dao.Tree as T
 
+import           Control.Applicative
 import           Control.Category
+import           Control.Monad
 
 import           Data.List (sortBy)
 import           Data.Monoid
@@ -238,11 +242,30 @@ instance Monoid MatchDistance where
   mempty = MatchDistance 1.0
   mappend (MatchDistance a) (MatchDistance b) = MatchDistance $ a <> b
 
+-- | A lens to access the 'Certainty' value within the 'MatchDistance'.
+distanceSimilarity :: Monad m => Lens m MatchDistance Certainty
+distanceSimilarity = newLens (\ (MatchDistance a) -> a) (\a (MatchDistance _) -> MatchDistance a)
+
+-- | This is the 'MatchDistance' value that indicates two matched data values are exactly the same.
 exactSame :: MatchDistance
 exactSame = MatchDistance 0.0
 
-distanceSimilarity :: Monad m => Lens m MatchDistance Certainty
-distanceSimilarity = newLens (\ (MatchDistance a) -> a) (\a (MatchDistance _) -> MatchDistance a)
+-- | A 'MatchDistance' is often used as a fuzzy predicate, where a value closer to zero is
+-- 'Prelude.True'. Sometimes it is useful to invert this logic, as in logical-'Prelude.not'. This
+-- function inverts a 'MatchDistance' so things that are different are more 'Prelude.True', and
+-- things that are more similar are less 'Prelude.True'.
+invertDistance :: MatchDistance -> MatchDistance
+invertDistance (MatchDistance (Certainty a b)) = MatchDistance $
+  let scale = fromRational (toRational b) in Certainty (scale - a) b
+
+-- | This function is useful for comparing patterns in 'Dao.Tree.Tree's to data types in
+-- 'Dao.Tree.Tree's. Provide a function for matching a @pat@ pattern to a @dat@ data type that
+-- evaluates a 'Dao.Certainty.Certainty' value.
+treeDistanceWith
+  :: (Eq p, Ord p)
+  => (a -> b -> MatchDistance) -> T.Tree p a -> T.Tree p b -> MatchDistance
+treeDistanceWith match pat dat = let t = T.intersectionWith match pat dat in
+  if T.size t == T.size pat then mconcat $ T.elems T.BreadthFirst t else mempty
 
 -- | Matches a permutation pattern using 'MatchDistance's evaluated by a given distance function to
 -- determine whether a pattern element @a@ matches a target element @b@, and sorted with the closest
@@ -265,29 +288,29 @@ distanceSimilarity = newLens (\ (MatchDistance a) -> a) (\a (MatchDistance _) ->
 -- portion of the target list @[b]@ split into two parts: the part that matched @[a]@ and the part
 -- remaining that has not yet matched @[a]@.
 matchPermutationPattern
-  :: Double
-  -> (a -> b -> MatchDistance)
-  -> [a] -> [b] -> [(MatchDistance, ([b], [b]))]
+  :: Double -> (a -> b -> MatchDistance) -> [a] -> [b] -> [(MatchDistance, ([b], [b]))]
 matchPermutationPattern threshold diff ax = sortBy compareFirst . loop exactSame [] ax where
   compareFirst a = compare (fst a) . fst
   scan ax bx = case bx of
-    []   -> [(ax, [])]
-    b:bx -> let rev = ax++[b] in (rev, bx) : scan rev bx
+    []   -> return (ax, [])
+    b:bx -> let rev = ax++[b] in mplus (return (rev, bx)) (scan rev bx)
   loop c keep ax bx = case ax of
-    []   -> [(c, (keep, bx))]
+    []   -> return (c, (keep, bx))
     a:ax -> case bx of
-      []   -> []
+      []   -> mzero
       b:bx -> let d = diff a b in
         if abs (d & average . distanceSimilarity) < abs threshold
         then loop (c <> d) (keep ++ [b]) ax bx
         else scan [b] bx >>= \ (skip, bx) -> loop c (keep++skip) (a:ax) bx
 
--- | This function is useful for comparing patterns in 'Dao.Tree.Tree's to data types in
--- 'Dao.Tree.Tree's. Provide a function for matching a @pat@ pattern to a @dat@ data type that
--- evaluates a 'Dao.Certainty.Certainty' value.
-similarTrees :: (Eq p, Ord p) => (a -> b -> MatchDistance) -> T.Tree p a -> T.Tree p b -> MatchDistance
-similarTrees match pat dat = let t = T.intersectionWith match pat dat in
-  if T.size t == T.size pat then mconcat $ T.elems T.DepthFirst t else mempty
+-- | Create a 'MatchDistance' value using the 'Dao.Logic.prove' function to prove a
+-- 'Dao.Logic.Statement' containing pattern expressions, and a given 'matchDistance' function
+matchStatement :: (a -> b -> MatchDistance) -> Statement a -> b -> MatchDistance
+matchStatement diff (Statement p) o = loop (elems p) mempty where
+  loop px md = case px of
+    []                 -> md
+    (Conjunction p):px -> loop px $ max md $ mconcat $
+      (\ (Satisfy (pos, p)) -> (if pos then id else invertDistance) $ diff p o) <$> elems p
 
 ----------------------------------------------------------------------------------------------------
 

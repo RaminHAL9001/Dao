@@ -17,22 +17,21 @@
 -- this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
--- | 'TestNull' is a class used to test whether data types being evaluated in
--- the Dao runtime are null or not, especially in conditional statements.
+-- | 'TestNull' is a class used to test whether data types being evaluated in the Dao runtime are
+-- null or not, especially in conditional statements.
+--
+-- This module may seem like a good place to find the 'Dao.Array.levenshteinStringDistance', but
+-- that function is actually in the "Dao.Array" module because the algorithm requires arrays in
+-- order to compute efficiently.
 module Dao.Text
   ( StrictText, LazyText,
     FromText(maybeFromText, fromText),
     ToText(toText), listToTextWith, listToText,
-    ToTextIO(toTextIO), listToTextWithIO, listToTextIO,
     binaryPutText, binaryGetText, isAlphaNum_, lazyLengthCompare,
-    levenshteinDistanceMatrix, levenshteinDistance, fuzzyCompare, showMatrix
   ) where
 
 import           Dao.Int
 
-import           Control.Applicative
-
-import           Data.Array.Unboxed
 import           Data.Char
 import           Data.Int
 import           Data.Monoid
@@ -91,78 +90,9 @@ listToText = listToTextWith toText
 
 ----------------------------------------------------------------------------------------------------
 
-class ToTextIO o where { toTextIO :: o -> IO Strict.Text }
-
-instance ToTextIO Strict.Text where { toTextIO = return }
-instance ToTextIO String      where { toTextIO = return . toText }
-
-listToTextWithIO :: (o -> IO Strict.Text) -> [o] -> IO Strict.Text
-listToTextWithIO toTextIO ox = let ts = return . Strict.singleton in mconcat <$> sequence
-  [ts '(', Strict.intercalate <$> ts ' ' <*> mapM toTextIO ox, ts ')']
-
-listToTextIO :: ToTextIO o => [o] -> IO Strict.Text
-listToTextIO = listToTextWithIO toTextIO
-
-----------------------------------------------------------------------------------------------------
-
 binaryPutText :: Strict.Text -> B.Put
 binaryPutText o = vlPutInteger (toInteger $ Strict.length o) >> B.putByteString (T.encodeUtf8 o)
 
 binaryGetText :: B.Get Strict.Text
 binaryGetText = fmap fromInteger B.get >>= fmap T.decodeUtf8 . B.getByteString
-
-----------------------------------------------------------------------------------------------------
-
--- | This function efficiently computes the Levenshtein distance matrix for any two strings.
--- <http://en.wikipedia.org/wiki/Levenshtein_distance>
-levenshteinDistanceMatrix :: ToText t => t -> t -> UArray(Int,Int) Int
-levenshteinDistanceMatrix s' t' = array (bounds d) $ assocs d where
-  index  = Strict.index
-  length = Strict.length
-  (s, t) = (toText s', toText t')
-  (m, n) = (length s , length t )
-  d :: Array(Int,Int) Int
-  d = array ((0, 0), (m, n)) $ concat
-    [ [((0, 0), 0)]
-    , zip (zip [1..m] $ repeat 0) [1..m]
-    , zip (zip (repeat 0) [1..n]) [1..n] ,
-      (,) <$> [1..n] <*> [1..m] >>= \ (j, i) -> let { i0 = pred i; j0 = pred j; } in
-        [ ( (i, j)
-          , if index s i0 == index t j0
-            then d!(i0, j0)
-            else minimum $ (+ 1) <$> [d!(i0, j), d!(i, j0), d!(i0, j0)]
-          )
-        ]
-    ]
-
--- | This function efficiently computes the Levenshtein distance between any two strings.
--- <http://en.wikipedia.org/wiki/Levenshtein_distance>
-levenshteinDistance :: ToText t => t -> t -> Int
-levenshteinDistance s t = let m = levenshteinDistanceMatrix s t in m ! snd (bounds m)
-
--- | Use the 'levenshteinDistance' function to compute the difference value between two strings @s@
--- and @t@, return a 'Prelude.Rational' value such that equal strings evaluate to a value of @1.0@,
--- and different strings evaluate to some value between @1.0@ and @0.0@, computed by:
---
--- @
--- let maxLen = 'Prelude.max' ('Data.Text.length' s) ('Data.Text.length' t)
--- in  (maxLen - 'levenshteinDistance' s t) / maxLen
--- @
---
--- **NOTE:** This function does not modify the strings in any way, for example converting to
--- lower-case. The caller of this function is responsible for such preprocessing.
-fuzzyCompare :: ToText t => t -> t -> Rational
-fuzzyCompare s' t' =
-  let (s, t) = (toText s', toText t')
-      maxLen = max (Strict.length s) (Strict.length t)
-  in toRational (maxLen - levenshteinDistance s t) / toRational maxLen
-
-showMatrix :: forall array i o . (Ix i, Show o, IArray array o) => array(i,i) o -> Strict.Text
-showMatrix arr = Strict.intercalate (Strict.singleton '\n') $ do
-  let strArr :: Array(i,i) Strict.Text
-      strArr = array (bounds arr) $ fmap (toText . show) <$> assocs arr
-  let maxLen = 1 + maximum (Strict.length <$> elems strArr)
-  let sp   t = Strict.pack (replicate (max 2 $ maxLen - Strict.length t) ' ') <> t
-  let ((loX, loY), (hiX, hiY)) = bounds strArr
-  range (loY, hiY) >>= \y -> [Strict.concat $ (\x -> sp $ strArr!(x, y)) <$> range (loX, hiX)]
 

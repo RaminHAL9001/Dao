@@ -320,3 +320,10 @@ matchStatement diff (Statement p) o = loop (elems p) mempty where
 -- never be commutative. The first parameter must always be a subset of the second.
 class MatchByDistance o where { matchDistance :: o -> o -> MatchDistance; }
 
+instance MatchByDistance MatchDistance where { matchDistance a b = abs $ a-b; }
+
+instance MatchByDistance Certainty where { matchDistance a b = MatchDistance $ abs $ a-b; }
+
+instance (Ord p, MatchByDistance o) => MatchByDistance (T.Tree p o) where
+  matchDistance = treeDistanceWith matchDistance
+

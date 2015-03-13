@@ -238,8 +238,12 @@ instance Fractional MatchDistance where
   fromRational = MatchDistance . fromRational
   (/) = _matchDist2 (/)
 
+instance TestNull MatchDistance where
+  nullValue = MatchDistance 1.0
+  testNull (MatchDistance o) = not $ testNull o
+
 instance Monoid MatchDistance where
-  mempty = MatchDistance 1.0
+  mempty = nullValue
   mappend (MatchDistance a) (MatchDistance b) = MatchDistance $ a <> b
 
 -- | A lens to access the 'Certainty' value within the 'MatchDistance'.

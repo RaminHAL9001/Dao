@@ -128,12 +128,12 @@ levenshteinDistanceMatrix
     . (Ord dist, Enum dist, Num dist, Enum i, A.Ix i,
         A.IArray array a, A.IArray array b, A.IArray A.UArray dist)
   => (a -> b -> dist) -> array i a -> array i b -> A.UArray(Int,Int) dist
-levenshteinDistanceMatrix diff s t = arr where
+levenshteinDistanceMatrix diff s t = A.array (A.bounds arr) (A.assocs arr) where
   bs = A.bounds s :: (i, i)
   bt = A.bounds t :: (i, i)
   m = A.rangeSize bs :: Int
   n = A.rangeSize bt :: Int
-  arr :: A.UArray(Int,Int) dist
+  arr :: A.Array(Int,Int) dist
   arr = A.array ((0, 0), (m, n)) $ Data.Foldable.concat
     [ [((0, 0), 0)]
     , ([1..m] `zip` repeat 0) `zip` (toEnum . succ . A.index bs <$> A.range bs)

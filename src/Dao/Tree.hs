@@ -270,7 +270,7 @@ blankTree = fromList . fmap (id &&& const ())
 
 -- | Create a 'Tree' containing only a single 'path' to a single element.
 singleton :: Ord p => [p] -> a -> Tree p a
-singleton p o = on nullValue [path p <~ Just o]
+singleton p o = new [path p <~ Just o]
 
 -- | This function analogous to the 'Data.Map.lookup' function, which returns a value stored in a
 -- leaf, or nothing if there is no leaf at the given path.

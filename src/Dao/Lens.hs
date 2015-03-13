@@ -75,6 +75,9 @@
 module Dao.Lens where
 
 import           Prelude hiding ((.), id)
+
+import           Dao.TestNull
+
 import           Control.Applicative
 import           Control.Category
 import           Control.Concurrent.MVar
@@ -150,6 +153,21 @@ on c fx = appEndo (getDual $ mconcat $ Dual . Endo <$> fx) c
 -- @
 by :: [c -> c] -> c -> c
 by = flip on
+
+-- | Like 'on' but passes 'Dao.TestNull.nullValue' as the first parameter, so instead of writing
+-- something like:
+--
+-- @
+-- on nullValue [foo 'Dao.Lens.<~' 0, bar 'Dao.Lens.<~' 1]
+-- @
+-- 
+-- All you have to write is:
+--
+-- @
+-- new [foo 'Dao.Lens.<~' 0, bar 'Dao.Lens.<~' 1]
+-- @
+new :: TestNull c => [c -> c] -> c
+new = on nullValue
 
 -- | This is a function intended to be used with the 'on' function. It is used for constructing a
 -- simple updating 'Data.Monoid.Endo'functor (updating function) that simply stores the element @e@

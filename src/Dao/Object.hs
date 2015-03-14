@@ -30,7 +30,7 @@
 --
 -- Both 'obj' and 'fromObj' are members of the class 'ObjectData'. You can make any of your own data
 -- types an 'Object' by instantiating your object into this class. To define an instance of
--- 'ObjectData', the 'toForeign' function will be useful.
+-- 'ObjectData', the 'fromForeign' function will be useful.
 module Dao.Object
   ( ErrorObject, throwObject, showUnquoted, pprintUnquoted,
     -- * Improving on 'Data.Dynamic.Dynamic'
@@ -39,9 +39,9 @@ module Dao.Object
     Simple(OVoid, ONull), SimpleData(simple, fromSimple), simpleNumInfixOp, simpleSetInfixOp,
     T_int, T_long, T_float, T_string, T_char, T_list, T_map,
     -- * Wrapping 'Data.Dynamic.Dynamic' Data Types
-    Foreign, toForeign, fromForeign, objDynamic, objEquality, objOrdering, objPrinted,
+    Passport, fromForeign, toForeign, objDynamic, objEquality, objOrdering, objPrinted,
     printable, matchable,
-    -- * 'Object': Union Type of 'Simple' and 'Foreign'
+    -- * 'Object': Union Type of 'Simple' and 'Passport'
     Object(OSimple, OForeign),
     -- * 'Object's as Matchable Patterns
     ObjectPattern(objMatch),
@@ -223,18 +223,18 @@ instance ObjectPattern Object where
 
 ----------------------------------------------------------------------------------------------------
 
--- | This data type wraps an object in a 'Data.Dynamic.Dynamic' data type along with it's
--- 'Prelude.Eq' and 'Prelude.Ord' instance functions. This allows 'Foreign' to itself be
--- instantiated into 'Prelude.==' and 'Prelude.compare'. To create a foreign data type, use the
--- 'toForeign' function.
+-- | This data type wraps a value of a foreign data type in a 'Data.Dynamic.Dynamic' data type along
+-- with it's 'Prelude.Eq' and 'Prelude.Ord' instance functions. This allows 'Passport' to itself be
+-- instantiated into 'Prelude.==' and 'Prelude.compare'. To retrieve the foreign data type contained
+-- within, use the 'fromForeign' function.
 --
 -- If your data type instantiates 'Dao.PPrint.PPrintable', you can use 'printable' to store the
--- 'Dao.PPrint.pPrint' instance with this 'Foreign' data constructor.
+-- 'Dao.PPrint.pPrint' instance with this 'Passport' data constructor.
 --
 -- If your data type instantiates 'SimpleData', you can use 'simplifyable' to store the 'simple'
--- instance with this 'Foreign' data constructor.
-data Foreign
-  = Foreign
+-- instance with this 'Passport' data constructor.
+data Passport
+  = Passport
     { objDynamic      :: Dynamic
     , objEquality     :: Dynamic -> Bool
     , objOrdering     :: Dynamic -> Ordering
@@ -244,20 +244,20 @@ data Foreign
     }
   deriving Typeable
 
-instance Eq  Foreign where { a == b = objEquality a $ objDynamic b; }
+instance Eq  Passport where { a == b = objEquality a $ objDynamic b; }
 
-instance Ord Foreign where { compare a b = objOrdering a $ objDynamic b; }
+instance Ord Passport where { compare a b = objOrdering a $ objDynamic b; }
 
-instance PPrintable Foreign where { pPrint = objPrinted; }
+instance PPrintable Passport where { pPrint = objPrinted; }
 
-instance Show Foreign where { show = Lazy.unpack . runTextPPrinter 4 80 . pPrint; }
+instance Show Passport where { show = Lazy.unpack . runTextPPrinter 4 80 . pPrint; }
 
-instance HasTypeRep Foreign where { objTypeOf = objTypeOf . objDynamic }
+instance HasTypeRep Passport where { objTypeOf = objTypeOf . objDynamic }
 
-instance SimpleData Foreign where
+instance SimpleData Passport where
   simple = objSimplified
   fromSimple s = return
-    Foreign
+    Passport
     { objDynamic      = toDyn s
     , objEquality     = maybe False (s ==) . fromDynamic
     , objOrdering     = \d ->
@@ -267,18 +267,18 @@ instance SimpleData Foreign where
     , objPatternMatch = Nothing
     }
 
--- | Construct an arbitrary 'Data.Typeable.Typeable' data type into a 'Foreign' data type along with
+-- | Construct an arbitrary 'Data.Typeable.Typeable' data type into a 'Passport' data type along with
 -- the 'Prelude.==' and 'Prelude.compare' instances for this data type. Use this function with
 -- 'printable' and 'simplifyable' to extend this foreign data type with instances for
 -- 'Dao.PPrintable' and 'SimpleData'.
 --
 -- To define an instance of 'obj' for you own custom data type, use this function along with 'obj',
--- as the 'obj' function can convert a 'Foreign' data type to an 'Object'. Likewise, to define an
--- instance of 'fromObj' for you own custom data type, use 'fromForeign' with 'fromObj', as the
--- 'fromObj' function can convert a 'Foreign' data type to an 'Object' data type.
-toForeign :: (Eq o, Ord o, Typeable o, SimpleData o) => o -> Foreign
-toForeign o = let d = toDyn o in
-  Foreign
+-- as the 'obj' function can convert a 'Passport' data type to an 'Object'. Likewise, to define an
+-- instance of 'fromObj' for you own custom data type, use 'toForeign' with 'fromObj', as the
+-- 'fromObj' function can convert a 'Passport' data type to an 'Object' data type.
+fromForeign :: (Eq o, Ord o, Typeable o, SimpleData o) => o -> Passport
+fromForeign o = let d = toDyn o in
+  Passport
   { objDynamic      = d
   , objEquality     = maybe False (o ==) . fromDynamic
   , objOrdering     = \p -> maybe (compare (dynTypeRep d) (dynTypeRep p)) (compare o) (fromDynamic p)
@@ -288,19 +288,19 @@ toForeign o = let d = toDyn o in
   }
 
 -- | To define an instance of 'obj' for you own custom data type, use this function along with
--- 'obj', as the 'obj' function can convert a 'Foreign' data type to an 'Object'. Likewise, to
--- define an instance of 'fromObj' for you own custom data type, use 'fromForeign' with 'fromObj',
--- as the 'fromObj' function can convert a 'Foreign' data type to an 'Object' data type.
-fromForeign
+-- 'obj', as the 'obj' function can convert a 'Passport' data type to an 'Object'. Likewise, to
+-- define an instance of 'fromObj' for you own custom data type, use 'toForeign' with 'fromObj',
+-- as the 'fromObj' function can convert a 'Passport' data type to an 'Object' data type.
+toForeign
   :: (Eq o, Ord o, Typeable o, SimpleData o,
       Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadError ErrorObject m)
-  => Foreign -> m o
-fromForeign f = maybe mzero return (fromDynamic $ objDynamic f) <|> fromSimple (objSimplified f)
+  => Passport -> m o
+toForeign f = maybe mzero return (fromDynamic $ objDynamic f) <|> fromSimple (objSimplified f)
 
 -- | *'Foriegn' data, optional property.* If your data type instantiates 'Dao.PPrint.PPrintable',
--- you can use 'printable' to store the 'Dao.PPrint.pPrint' instance with this 'Foreign' data
+-- you can use 'printable' to store the 'Dao.PPrint.pPrint' instance with this 'Passport' data
 -- constructor.
-printable :: PPrintable o => o -> Foreign -> Foreign
+printable :: PPrintable o => o -> Passport -> Passport
 printable o dat = dat{ objPrinted=pPrint o }
 
 -- | *'Foriegn' data, optional property.* If your data type can act as a pattern that can match
@@ -308,7 +308,7 @@ printable o dat = dat{ objPrinted=pPrint o }
 -- function. The 'matchable' function lets you define a predicate that can match an arbitrary
 -- 'Object'. Specifying 'matchable' will only make use of 'objMatch' for pattern matching, it will
 -- not be used for equality testing ('Prelude.==').
-matchable :: ObjectPattern o => o -> Foreign -> Foreign
+matchable :: ObjectPattern o => o -> Passport -> Passport
 matchable o dat = dat{ objPatternMatch=Just (objMatch o) }
 
 ----------------------------------------------------------------------------------------------------
@@ -708,13 +708,13 @@ instance (Eq pat, ObjectData pat) => SimpleData (Statement pat) where
 
 ----------------------------------------------------------------------------------------------------
 
--- | An 'Object' is either a 'Simple' data type or a 'Foreign' data type. Since 'Foreign' lets you
+-- | An 'Object' is either a 'Simple' data type or a 'Passport' data type. Since 'Passport' lets you
 -- store any arbitrary Haskell data type (so long as it instantiates 'Prelude.Eq', 'Prelude.Ord',
 -- and 'Data.Typeable.Typeable'), 'Object's provide much more flexibility in the kinds of data that
 -- can be used at runtime. The drawback to using 'Object' as opposed to 'Simple' is that 'Object's
 -- may not serialize very well, and thus you may have difficulty transmitting 'Object's to other
 -- processes.
-data Object = OSimple Simple | OForeign Foreign deriving (Eq, Ord, Typeable) 
+data Object = OSimple Simple | OForeign Passport deriving (Eq, Ord, Typeable) 
 
 instance HasTypeRep Object where
   objTypeOf o = case o of
@@ -794,11 +794,11 @@ defaultFromObj
   :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadError ErrorObject m,
       Eq o, Ord o, Typeable o, SimpleData o)
   => Object -> m o
-defaultFromObj = fromObj >=> fromForeign
+defaultFromObj = fromObj >=> toForeign
 
 instance ObjectData Object   where { obj = id; fromObj = return; }
 
-instance ObjectData Foreign  where
+instance ObjectData Passport  where
   obj       = OForeign
   fromObj o = case o of { OForeign o -> return o; _ -> mzero; }
 

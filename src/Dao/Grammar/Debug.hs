@@ -25,6 +25,7 @@ import           Dao.Count
 import qualified Dao.Computer as Eval
 import           Dao.Grammar
 import qualified Dao.Interval as Iv
+import           Dao.Lens
 import           Dao.Predicate
 import           Dao.PPrint
 import           Dao.Text.Parser
@@ -284,10 +285,10 @@ instance PPrintable st => PPrintable (VisualParserState st) where
     , [pText "textPoint =", pSpace, pShow (textPoint par)]
     , [pText "charCount =", pSpace, pShow (charCount par)]
     , [pText "inputString =", pSpace] ++ do
-        let s = inputString par
+        let s = par & inputString
             t = Lazy.take 10 s
         [pShow t] <|> (guard (Lazy.length t < Lazy.length s) >> [pText "..."])
-    , let msg = pPrint (userState par) in  
+    , let msg = pPrint (par & userState) in  
         if null msg then [] else [pText "userState =", pNewLine, pIndent msg]
     ]
 
@@ -333,7 +334,7 @@ initGrammarDebugger prin prinSig gram st instr =
   { grammarDebugPrinter      = prin
   , grammarDebugParserState  =
       VisualParserState
-      { visualParserState = (parserState st){ inputString=instr }
+      { visualParserState = on (parserState st) [inputString <~ instr]
       , visualParserLog   = []
       }
   , grammarDebugVisualParser = grammarToVerboseParser (visualParserAppendLog . prinSig) gram

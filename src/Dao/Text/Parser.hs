@@ -22,15 +22,18 @@ module Dao.Text.Parser
   ( ParseInput, Parser, runParser, getCharCount, parser_to_S,
     ParserError(ParserError), parserError, parserErrorAt, parserErrorMsg, minPrec,
     ParserState(ParserState), parserState, inputString, userState, textPoint, charCount,
-    precedence
+    precedence,
+    lexerSpan, lexerBreak, lexerMatch
   )
   where
 
 import           Dao.Count
 import qualified Dao.Interval as Iv
 import           Dao.Grammar
+import           Dao.Lens
 import           Dao.Predicate
 import           Dao.PPrint
+import           Dao.TestNull
 import           Dao.Text
 import           Dao.Text.Builder
 
@@ -76,22 +79,33 @@ parserError = ParserError{ parserErrorMsg=mempty, parserErrorAt=Nothing, parserL
 -- | Construct this type with 'parserState' and pass the value to 'runParser'.
 data ParserState st
   = ParserState
-    { inputString :: LazyText
-    , userState   :: st
-    , textPoint   :: TextPoint
-    , charCount   :: CharCount
-    , precedence  :: Int
+    { _inputString :: LazyText
+    , _userState   :: st
+    , textPoint    :: TextPoint
+    , charCount    :: CharCount
+    , precedence   :: Int
     }
 
 instance Functor ParserState where
   fmap f st =
     ParserState
-    { inputString = inputString st
-    , userState   = f $ userState st
-    , textPoint   = textPoint st
-    , charCount   = charCount st
-    , precedence  = precedence st
+    { _inputString = _inputString st
+    , _userState   = f $ _userState st
+    , textPoint    = textPoint st
+    , charCount    = charCount st
+    , precedence   = precedence st
     }
+
+instance TestNull st => TestNull (ParserState st) where
+  nullValue = parserState nullValue
+  testNull o = Lazy.null (_inputString o) && (testNull $ _userState o) &&
+    TextPoint 1 1 == textPoint o && 0 == charCount o && 0 == precedence o
+
+inputString :: Monad m => Lens m (ParserState st) LazyText
+inputString = newLens _inputString (\instr pst -> pst{ _inputString=instr })
+
+userState :: Monad m => Lens m (ParserState st) st
+userState = newLens _userState (\ust pst -> pst{ _userState=ust })
 
 -- | Define a 'ParserState' that can be used to evaluate a 'Parser' monad. The state value can be
 -- anything you choose. 'Parser' instantiates the 'Control.Monad.State.MonadState' class so you can
@@ -99,11 +113,11 @@ instance Functor ParserState where
 parserState :: st -> ParserState st
 parserState st =
   ParserState
-  { inputString = mempty
-  , userState   = st
-  , textPoint   = TextPoint 1 1
-  , charCount   = 0
-  , precedence  = 0
+  { _inputString = mempty
+  , _userState   = st
+  , textPoint    = TextPoint 1 1
+  , charCount    = 0
+  , precedence   = 0
   }
 
 ----------------------------------------------------------------------------------------------------
@@ -138,10 +152,10 @@ instance PredicateClass ParserError (Parser st) where
 
 instance MonadState st (Parser st) where
   state f = Parser $ lift $ state $ \st ->
-    let (a, ust) = f (userState st) in (a, st{ userState=ust })
+    let (a, ust) = f (_userState st) in (a, st{ _userState=ust })
 
 instance MonadParser Lazy.Text (Parser st) where
-  look      = Parser $ lift $ gets inputString
+  look      = Parser $ lift $ gets _inputString
   look1     = look >>= \t -> guard (not $ Lazy.null t) >> return (Lazy.head t)
   get1      = _take $ \t -> guard (not $ Lazy.null t) >> return (Lazy.head t, Lazy.tail t)
   string  s = pure (toLazyText s) >>= \s ->
@@ -200,7 +214,7 @@ minPrec = 0
 _take :: (Lazy.Text -> Maybe (a, Lazy.Text)) -> Parser st a
 _take f =
   (Parser $ lift $ state $ \st ->
-    maybe (Nothing, st) (\ (a, rem) -> (Just a, st{ inputString=rem })) $ f $ inputString st
+    maybe (Nothing, st) (\ (a, rem) -> (Just a, st{ _inputString=rem })) $ f $ _inputString st
   ) >>= maybe mzero return
 
 -- | Run the parser with a given 'ParserState' containing the input to be parsed and the
@@ -233,9 +247,36 @@ _modPrecedence f p = do
 parser_to_S :: MonadPlus m => Parser st a -> st -> Int -> String -> m (a, String)
 parser_to_S (Parser p) init prec instr = do
   let (result, st) = runState (runPredicateT p) $
-        (parserState init){ precedence=prec, inputString=toLazyText instr }
+        (parserState init){ precedence=prec, _inputString=toLazyText instr }
   case result of
     PFail err -> fail (show err)
     Backtrack -> mzero
-    OK     a  -> return (a, Lazy.unpack $ inputString st)
+    OK     a  -> return (a, Lazy.unpack $ _inputString st)
+
+----------------------------------------------------------------------------------------------------
+
+-- | Like 'Prelude.span' but uses a 'Dao.Grammar.Lexer' to match from the start of the string.
+lexerSpan :: Lexer o -> LazyText -> Maybe (o, LazyText)
+lexerSpan lexer str =
+  let (result, st) = runParser (lexerToParser lexer) $ ((parserState ()){ _inputString=str }) in
+  case result of
+    OK o -> Just (o, _inputString st)
+    _    -> Nothing
+
+-- | Uses 'lexerSpan' and a given lexer to breaks a string into portions that match wrapped in a
+-- 'Prelude.Right' constructor, and portions that do not match wrapped into a 'Prelude.Left'
+-- constructor.
+lexerBreak :: Lexer o -> LazyText -> [Either StrictText o]
+lexerBreak lexer str = loop Lazy.empty str where
+  loop keep str = case lexerSpan lexer str of
+    Nothing       -> loop (Lazy.snoc keep $ Lazy.head str) (Lazy.tail str)
+    Just (o, str) -> (guard (not $ Lazy.null keep) >> [Left $ Lazy.toStrict keep]) ++
+      Right o : loop (Lazy.empty) str
+
+-- | Uses 'lexerSpan' to check whether a given 'Dao.Grammar.Lexer' matches the entire input string
+-- or not.
+lexerMatch :: Lexer o -> LazyText -> Bool
+lexerMatch lexer str = case lexerSpan lexer str of
+  Nothing       -> False
+  Just (_, str) -> Lazy.null str
 

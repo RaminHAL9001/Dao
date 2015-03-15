@@ -60,7 +60,7 @@ module Dao.Grammar
     probRepeater,
     -- * Combinators for Building 'Grammar's and 'Lexer's
     Lexer, typeOfLexer, regexOfLexer, lexer, lexConst,
-    Grammar, typeOfGrammar, choice, elseFail, (<?>),
+    Grammar, typeOfGrammar, grammar, elseFail, (<?>),
     HasLexer(theLexer), HasGrammar(theGrammar),
     TypeableGrammar(informType), doReadsPrec,
     -- * Working with source locations.
@@ -1450,12 +1450,15 @@ typeOfGrammar = typ undefined where
   typ :: t -> Grammar m t -> TypeRep
   typ ~t _ = typeOf t
 
--- | Construct a 'Grammar' from a finite list of 'Lexer' choices. When this 'Grammar' is converted
--- to a 'MonadParser', each 'Lexer' will be tried in turn. If any 'Lexer' occuring earlier in the
--- list 'shadowParallel's any 'Lexer' occuring later in the list (which is checked by
--- 'shadowsParallel'), then this 'Grammar' evaluates to an 'InvalidGramar'.
-choice :: (Functor m, Monad m) => [Lexer o] -> Grammar m o
-choice lexers = if null lexers then GrEmpty else loop lexers where
+-- | Construct a 'Grammar' from a list of 'Lexer' choices. This list of choices must be finite, or
+-- the process of converting to a 'MonadParser' will loop infinitely. When this 'Grammar' is
+-- converted to a 'MonadParser', each 'Lexer' will be tried in turn. If any 'Lexer' occuring earlier
+-- in the list 'shadowParallel's any 'Lexer' occuring later in the list (which is checked by
+-- 'shadowsParallel'), then this 'Grammar' evaluates to an 'InvalidGramar'. Of course, passing an
+-- empty list will create a 'Grammar' equivalent to 'Control.Applicative.empty' which alwasy
+-- backtracaks.
+grammar :: (Functor m, Monad m) => [Lexer o] -> Grammar m o
+grammar lexers = if null lexers then GrEmpty else loop lexers where
   loop ox = case ox of
     (a:b:ox) ->
       if not $ shadowsParallel a b
@@ -1529,7 +1532,7 @@ data GrammarSignature m o
     -- ^ This 'GrammarSignature' marks a point in the 'Grammar' where a 'MonadParser' has been
     -- lifted directly into the 'Grammar'.
   | GrammarTable   [LexerSignature (GrammarSignature m o)]
-    -- ^ This is a 'Grammar' constructed where there is a choice of many 'Lexer's that could define
+    -- ^ This is a 'Grammar' constructed where there is a grammar of many 'Lexer's that could define
     -- the 'Grammar' for the input text. Any of the 'Lexer's may match the input text, the first to
     -- match defines the 'Grammar' of that position in the text.
   | GrammarChoice  [GrammarSignature m o]
@@ -1852,7 +1855,7 @@ moveCursor toPoint f = do
 --
 -- > 'Prelude.fmap' 'Data.Monoid.mconcat' $ 'Control.Monad.sequence' $
 -- >     [str "hello", 'Dao.Text.toText' 'Control.Applicative.<$>' 'space', str "world"] where
--- >          str s = 'choice' ['lexer' 'Dao.Text.toText' ['rxString' s]]
+-- >          str s = 'grammar' ['lexer' 'Dao.Text.toText' ['rxString' s]]
 --
 -- If this 'Grammar' were converted to a parser, it would match the input string "hello world". But
 -- if someone input "hello darkness my old friend", the parser would match "hello", then the space

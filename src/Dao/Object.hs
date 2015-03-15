@@ -689,21 +689,19 @@ instance SimpleData Simple   where
 instance (Eq pat, ObjectData pat) => SimpleData (Satisfy pat) where
   simple (Satisfy (a, b)) = simple $ array [obj a, obj b]
   fromSimple = fmap elems . fromSimple >=> \pair -> case pair of
-    [a, b] -> Satisfy <$> ((,) <$> (fromObj a >>= fromSimple) <*> (fromObj b >>= fromSimple))
+    [a, b] -> Satisfy <$> ((,) <$> fromObj a <*> fromObj b)
     _      -> mzero
 
 instance (Eq pat, ObjectData pat) => SimpleData (Conjunction pat) where
-  simple (Conjunction ox) = simple $ array $ obj "AND" : (obj . simple <$> elems ox)
+  simple (Conjunction ox) = simple $ array $ obj "AND" : (obj <$> elems ox)
   fromSimple = fmap elems . fromSimple >=> \list -> case list of
-    header:list | header == obj "AND" ->
-      Conjunction . array . nub <$> mapM (fromObj >=> fromSimple) list
+    header:list | header == obj "AND" -> Conjunction . array . nub <$> mapM fromObj list
     _                                 -> mzero
 
 instance (Eq pat, ObjectData pat) => SimpleData (Statement pat) where
-  simple (Statement ox) = simple $ array $ obj "OR" : (obj . simple <$> elems ox)
+  simple (Statement ox) = simple $ array $ obj "OR" : (obj <$> elems ox)
   fromSimple = fmap elems . fromSimple >=> \list -> case list of
-    header:list | header == obj "OR" ->
-      Statement . array . nub <$> mapM (fromObj >=> fromSimple) list
+    header:list | header == obj "OR" -> Statement . array . nub <$> mapM fromObj list
     _                                -> mzero
 
 ----------------------------------------------------------------------------------------------------
@@ -865,10 +863,10 @@ instance ObjectData pat => ObjectData (Satisfy pat) where
   fromObj = fromObj >=> fromSimple
 
 instance ObjectData pat => ObjectData (Conjunction pat) where
-  obj     = OSimple . simple
+  obj     = obj . fromForeign
   fromObj = fromObj >=> fromSimple
 
 instance ObjectData pat => ObjectData (Statement pat) where
-  obj     = OSimple . simple
+  obj     = obj . fromForeign
   fromObj = fromObj >=> fromSimple
 

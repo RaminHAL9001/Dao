@@ -62,7 +62,7 @@ module Dao.Grammar
     Lexer, typeOfLexer, regexOfLexer, lexer, lexConst,
     Grammar, typeOfGrammar, choice, elseFail, (<?>),
     HasLexer(theLexer), HasGrammar(theGrammar),
-    TypeableGrammar(informType),
+    TypeableGrammar(informType), doReadsPrec,
     -- * Working with source locations.
     Location(NoLocation, StartLocation, EndLocation, Location),
     LocationFunctor(fmapLocation),
@@ -1498,6 +1498,16 @@ elseFail p = mplus p . GrFail . Strict.pack
 (<?>) :: (Functor m, Monad m, MonadPlus m) => Grammar m o -> String -> Grammar m o
 (<?>) = elseFail
 infix 0 <?>
+
+-- | A 'Dao.Grammar.Grammar' that takes the result of some other 'Dao.Grammar.Grammar' and uses the
+-- instantiation of the 'Prelude.readsPrec' function in the 'Prelude.Read' class to generate a data
+-- type from a 'Dao.Text.LazyText' value. Pass an integer precedence value as the first parameter.
+-- This parser only succeeds if the whole 'LazyText' is consumed by the 'Prelude.readsPrec'
+-- function.
+doReadsPrec :: (Functor m, Monad m, MonadPlus m, Read o) => Int -> LazyText -> Grammar m o
+doReadsPrec prec t = case readsPrec prec $ Lazy.unpack t of
+  [(o, "")] -> return o
+  _         -> mzero
 
 instance TypeableGrammar (Grammar m) where
   informType o = let typ = typeOfGrammar o in case o of

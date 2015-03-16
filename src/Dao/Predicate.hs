@@ -61,9 +61,11 @@
 --
 module Dao.Predicate where
 
+import           Control.Arrow
 import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Except
+import           Control.Monad.Identity
 import           Control.Monad.Reader
 import           Control.Monad.State
 
@@ -272,4 +274,112 @@ partitionPredicates = loop [] [] where
     OK    o   : ox -> loop  errs        (oks++[o]) ox
     PFail err : ox -> loop (errs++[err]) oks       ox
     Backtrack : ox -> loop  errs         oks       ox
+
+----------------------------------------------------------------------------------------------------
+
+-- | A stateful 'PredicateT' monad that remembers state data before 'Control.Monad.mplus',
+-- 'Control.Monad.msum', or @('Control.Applicative.<|>')@ is evaluated, and if any branches result
+-- in 'Backtrack'ing (result in evaluting 'Control.Monad.mzero' or 'Control.Applicative.empty'), the
+-- state before the branch is restored.
+--
+-- This monad takes advantage of the fact that the Haskell runtime's uses copy-on-write to
+-- efficiently make many copys of the state when evaluating multiple branches. Obviously, if the
+-- state data structure is heavily modified during evaluation of many branches, use of this monad
+-- will consume quite a lot of memory. However if the state data is lightweight, for example
+-- containing only integer indicies to an immutable array, 'PredicateStateT' can be a valuable, easy
+-- to use interface for constructing logic and querying functions.
+--
+-- The original use case for this monad was to construct a parser that analyzed a stream of tokens,
+-- where the tokens were contained in an immutable array. The state data was simply a pair: an
+-- integer index to the array and the array itself, and the array was never modified, only the
+-- integer index was modified. This allowed for very fast backtracking, even if a parsing branch
+-- would backtrack after hundreds of tokens in the stream had been consumed. Every branch
+-- essentially would push a single integer index on the stack, and backtracking would unwind the
+-- stack, so memory useage remained nearly constant (apart from stack space usage) and the only
+-- inefficiency was the computational time lost to backtracking.
+--
+-- 'PredicateStateT' instantiates all of the necessary monad transformer classes, so use of it is
+-- done exclusively through interfaces like 'Control.Monad.State.get', 'Control.Monad.State.put',
+-- 'Control.Monad.Except.throwError', 'Control.Monad.Except.catchError', 'Control.Monad.mzero',
+-- 'Control.Monad.mplus', 'Control.Monad.msum', 'Control.Applicative.empty',
+-- @('Control.Applicative.<|>')@, 'returnPredicate', 'predicate', and so on.
+newtype PredicateStateT st err m o =
+  PredicateStateT { runPredicateStateT :: st -> m (Predicate (err, st) (o, st)) }
+
+type PredicateState st err = PredicateStateT st err Identity
+
+instance Monad m => Functor (PredicateStateT st err m) where
+  fmap f (PredicateStateT o) = PredicateStateT $ fmap (liftM (fmap (first f))) o
+
+instance Monad m => Monad (PredicateStateT st err m) where
+  return o = PredicateStateT $ \st -> return $ OK (o, st)
+  (PredicateStateT o) >>= f = PredicateStateT $ \st -> o st >>= \o -> case o of
+    OK (o, st) -> (\ (PredicateStateT o) -> o st) $ f o
+    Backtrack  -> return $ Backtrack
+    PFail err  -> return $ PFail err
+
+instance Monad m => Applicative (PredicateStateT st err m) where { pure=return; (<*>) = ap; }
+
+instance Monad m => MonadPlus (PredicateStateT st err m) where
+  mzero = PredicateStateT $ const $ return Backtrack
+  mplus (PredicateStateT a) (PredicateStateT b) = PredicateStateT $ \st -> a st >>= \a -> case a of
+    OK      o -> return $ OK o
+    Backtrack -> b st
+    PFail err -> return $ PFail err
+
+instance Monad m => Alternative (PredicateStateT st err m) where { empty=mzero; (<|>) = mplus; }
+
+instance Monad m => MonadError err (PredicateStateT st err m) where
+  throwError err = PredicateStateT $ \st -> return $ PFail (err, st)
+  catchError (PredicateStateT try) catch =
+    PredicateStateT $ \st -> try st >>= \o -> case o of
+      PFail (err, _) -> (\ (PredicateStateT o) -> o st) (catch err)
+      Backtrack      -> return Backtrack
+      OK      o      -> return $ OK o
+
+instance Monad m => MonadState st (PredicateStateT st err m) where
+  state f = PredicateStateT $ \st -> return $ OK $ f st
+
+instance Monad m => PredicateClass err (PredicateStateT st err m) where
+  returnPredicate (PredicateStateT o) = PredicateStateT $ \st -> o st >>= \o -> return $ case o of
+    OK    (o,  st) -> OK (OK      o, st)
+    Backtrack      -> OK (Backtrack, st)
+    PFail (err, _) -> OK (PFail err, st)
+  predicate p = PredicateStateT $ \st -> return $ case p of
+    PFail err -> PFail (err, st)
+    Backtrack -> Backtrack
+    OK      o -> OK (o, st)
+
+instance MonadTrans (PredicateStateT st err) where
+  lift f = PredicateStateT $ \st -> f >>= \o -> return (OK (o, st))
+
+instance (Monad m, MonadIO m) => MonadIO (PredicateStateT st err m) where
+  liftIO f = PredicateStateT $ \st -> liftIO f >>= \o -> return (OK (o, st))
+
+-- | Like 'catchError' but lets you see what the value of the state data was at the time the error
+-- was thrown.
+catchErrorState
+  :: Monad m
+  => PredicateStateT st err m o
+  -> ((err, st) -> PredicateStateT st err m o)
+  -> PredicateStateT st err m o
+catchErrorState (PredicateStateT try) catch = PredicateStateT $ \st -> try st >>= \o -> case o of
+  PFail errst -> (\ (PredicateStateT o) -> o st) (catch errst)
+  Backtrack   -> return Backtrack
+  OK        o -> return $ OK o
+
+runPredicateState :: PredicateState st err o -> st -> Predicate (err, st) (o, st)
+runPredicateState f = runIdentity . runPredicateStateT f
+
+evalPredicateStateT :: Monad m => PredicateStateT st err m o -> st -> m (Predicate (err, st) o)
+evalPredicateStateT f = liftM (fmap fst) . runPredicateStateT f
+
+evalPredicateState :: PredicateState st err o -> st -> (Predicate (err, st) o)
+evalPredicateState f = runIdentity . evalPredicateStateT f
+
+execPredicateStateT :: Monad m => PredicateStateT st err m o -> st -> m (Predicate (err, st) st)
+execPredicateStateT f = liftM (fmap snd) . runPredicateStateT f
+
+execPredicateState :: PredicateState st err o -> st -> (Predicate (err, st) st)
+execPredicateState f = runIdentity . execPredicateStateT f
 

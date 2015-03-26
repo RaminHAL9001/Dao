@@ -30,11 +30,11 @@ module Dao.Interval
     areIntersecting, areConsecutive,
     SubBounded(subBounds),
     -- * Predicates on 'Interval's
-    intervalSpan, intervalSpanAll, numElems, intervalSize, isWithin,
+    envelop, intervalSpanAll, numElems, intervalIntSize, intervalEnumSize, isWithin,
     intervalHasEnumInf, intervalIsInfinite,
     -- * The 'Set' non-monadic data type
     Set, Dao.Interval.empty, whole, fromList, fromPairs, fromPoints, range,
-    singleton, toList, size, elems, member, Dao.Interval.null, isWhole,
+    singleton, toList, intSize, enumSize, elems, member, Dao.Interval.null, isWhole,
     isSingleton,
     -- * Set Operators for non-monadic 'Set's
     Dao.Interval.invert, exclusive,
@@ -340,8 +340,8 @@ enumBoundedPair :: (Enum c, Bounded c) => Interval c -> [c]
 enumBoundedPair seg = let (lo, hi) = toBoundedPair seg in [lo..hi]
 
 -- | Construct the minimum 'Interval' that is big enough to hold both given segments.
-intervalSpan :: (Ord c, InfBound c) => Interval c -> Interval c -> Interval c
-intervalSpan a b = case a of
+envelop :: (Ord c, InfBound c) => Interval c -> Interval c -> Interval c
+envelop a b = case a of
   Single   loA     -> case b of
     Single   loB     -> _interval (min loA loB) (max loA loB)
     Interval loB hiB -> _interval (min loA loB) (max loA hiB)
@@ -352,7 +352,7 @@ intervalSpan a b = case a of
 -- | Computes the minimum 'Interval' that can contain the list of all given 'EnumRanges'.
 -- 'Data.Maybe.Nothing' indicates the empty set.
 intervalSpanAll :: (Ord c, InfBound c) => [Interval c] -> Maybe (Interval c)
-intervalSpanAll ex = if Prelude.null ex then Nothing else Just $ foldl1 intervalSpan ex
+intervalSpanAll ex = if Prelude.null ex then Nothing else Just $ foldl1 envelop ex
 
 -- | Evaluates to the number of elements covered by this region. Returns 'Prelude.Nothing' if there
 -- are an infiniteM number of elements. For data of a type that is not an instance of 'Prelude.Num',
@@ -368,8 +368,13 @@ numElems seg = case seg of
 
 -- | Return the number of points included the set for sets of points that are both 'Prelude.Bounded'
 -- and 'Prelude.Integral'.
-intervalSize :: (Bounded c, Integral c) => Interval c -> Integer
-intervalSize = pred . uncurry subtract . (toInteger *** toInteger) . toBoundedPair
+intervalIntSize :: (Bounded c, Integral c) => Interval c -> Integer
+intervalIntSize = pred . uncurry subtract . (toInteger *** toInteger) . toBoundedPair
+
+-- | Return the number of points included the set for sets of points that are both 'Prelude.Bounded'
+-- and 'Prelude.Integral'.
+intervalEnumSize :: (Bounded c, Enum c) => Interval c -> Int
+intervalEnumSize = pred . uncurry subtract . (fromEnum *** fromEnum) . toBoundedPair
 
 -- | Tests whether an 'Inf' is within the _interval. It is handy when used with backquote noation:
 -- @enumInf `isWithin` _interval@
@@ -573,8 +578,8 @@ instance (Eq c, Ord c, Enum c, InfBound c) => Eq (Set c) where
       Set        b -> a==b
       _            -> False
 
-instance (Ord c, Enum c, InfBound c, Bounded c, Integral c) => Ord (Set c) where
-  compare a b = compare (size a) (size b)
+instance (Ord c, Enum c, InfBound c, Bounded c) => Ord (Set c) where
+  compare a b = compare (enumSize a) (enumSize b)
 
 instance (Ord c, Enum c, InfBound c) => Monoid (Sum (Set c)) where
   mempty  = Sum EmptySet
@@ -651,8 +656,11 @@ toList s = case s of
 elems :: (Ord c, Enum c, Bounded c, InfBound c) => Set c -> [c]
 elems = concatMap enumBoundedPair . toList
 
-size :: (Ord c, Enum c, InfBound c, Bounded c, Integral c) => Set c -> Integer
-size = sum . fmap intervalSize . toList
+intSize :: (Ord c, Integral c, InfBound c, Bounded c) => Set c -> Integer
+intSize = sum . fmap intervalIntSize . toList
+
+enumSize :: (Ord c, Enum c, InfBound c, Bounded c) => Set c -> Int
+enumSize = sum . fmap intervalEnumSize . toList
 
 member :: (Ord c, InfBound c) => Set c -> c -> Bool
 member s b = case s of

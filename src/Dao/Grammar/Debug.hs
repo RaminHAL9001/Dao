@@ -24,7 +24,6 @@ module Dao.Grammar.Debug where
 import           Dao.Count
 import qualified Dao.Computer as Eval
 import           Dao.Grammar
-import qualified Dao.Interval as Iv
 import           Dao.Lens
 import           Dao.Predicate
 import           Dao.PPrint
@@ -42,25 +41,25 @@ import           Data.Typeable
 
 -- | 'Dao.Grammar.MonadParser' function calls as a data structure.
 data VisualParserFunction
-  = Parser_look                           (Maybe LazyText)
-  | Parser_look1                          (Maybe Char)
-  | Parser_get1                           (Maybe Char)
-  | Parser_string               LazyText  (Maybe LazyText)
-  | Parser_count      Count (Iv.Set Char) (Maybe LazyText)
-  | Parser_eof
-  | Parser_munch            (Iv.Set Char) (Maybe LazyText)
-  | Parser_munch1           (Iv.Set Char) (Maybe LazyText)
-  | Parser_noMoreThan Count (Iv.Set Char) (Maybe LazyText)
-  | Parser_satisfy          (Iv.Set Char) (Maybe Char)
-  | Parser_char                     Char  (Maybe Char)
-  | Parser_regex                   Regex  (Maybe LazyText)
-  | Parser_pfail              LexerError
-  | Parser_setPrecedence             Int
-  | Parser_currentPrecedence         Int
-  | Parser_resetPrecedence       Int Int
-  | Parser_setTextPoint        TextPoint
-  | Parser_gotTextPoint        TextPoint
-  | Parser_unstring             LazyText
+  = Parser_look                            (Maybe LazyText)
+  | Parser_look1                           (Maybe Char)
+  | Parser_get1                            (Maybe Char)
+  | Parser_string              StrictText  (Maybe LazyText)
+  | Parser_count      Count       CharSet  (Maybe LazyText)
+  | Parser_eof                             
+  | Parser_munch                  CharSet  (Maybe LazyText)
+  | Parser_munch1                 CharSet  (Maybe LazyText)
+  | Parser_noMoreThan Count       CharSet  (Maybe LazyText)
+  | Parser_satisfy                CharSet  (Maybe Char)
+  | Parser_char                      Char  (Maybe Char)
+  | Parser_regex                    Regex  (Maybe LazyText)
+  | Parser_pfail               LexerError
+  | Parser_setPrecedence              Int
+  | Parser_currentPrecedence          Int
+  | Parser_resetPrecedence        Int Int
+  | Parser_setTextPoint         TextPoint
+  | Parser_gotTextPoint         TextPoint
+  | Parser_unstring              LazyText
   deriving (Eq, Show, Typeable)
 
 pPrintFuncResult :: (o -> [PPrint]) -> Maybe o -> [PPrint]
@@ -82,17 +81,17 @@ instance PPrintable VisualParserFunction where
     Parser_string              str o ->
       pText "string" : pSpace : pShow str : result pShow o
     Parser_count            ct set o ->
-      [pText "count", pSpace, pShow ct, pSpace] ++ pPrintCharSet set ++ pSpace : result pShow o
+      [pText "count", pSpace, pShow ct, pSpace] ++ pPrint set ++ pSpace : result pShow o
     Parser_eof                       ->
       [pText "eof"]
     Parser_munch               set o ->
-      [pText "munch" , pSpace] ++ pPrintCharSet set ++ pSpace : result pShow o
+      [pText "munch" , pSpace] ++ pPrint set ++ pSpace : result pShow o
     Parser_munch1              set o ->
-      [pText "munch1", pSpace] ++ pPrintCharSet set ++ pSpace : result pShow o
+      [pText "munch1", pSpace] ++ pPrint set ++ pSpace : result pShow o
     Parser_noMoreThan       ct set o ->
-      [pText "noMoreThan", pSpace, pShow ct, pSpace] ++ pPrintCharSet set ++ pSpace : result pShow o
+      [pText "noMoreThan", pSpace, pShow ct, pSpace] ++ pPrint set ++ pSpace : result pShow o
     Parser_satisfy             set o ->
-      [pText "satisfy ", pSpace] ++ pPrintCharSet set ++ pSpace : result pShow o
+      [pText "satisfy ", pSpace] ++ pPrint set ++ pSpace : result pShow o
     Parser_char                ch  o ->
       [pText "char", pSpace, pShow ch, pSpace] ++ result pShow o
     Parser_regex               rx  o ->
@@ -218,7 +217,7 @@ _precCtx before after o =
         _modifyVP (\st -> st{ precedence=before }) >> d
   in  (o >>= done . return) <|> done mzero
 
-instance Monad m => MonadParser LazyText (VisualParser st m) where
+instance Monad m => MonadParser (VisualParser st m) where
   look           = _evalPar  Parser_look             look
   look1          = _evalPar  Parser_look1            look1
   get1           = _evalPar  Parser_get1             get1
@@ -233,7 +232,7 @@ instance Monad m => MonadParser LazyText (VisualParser st m) where
   regex        r = _evalPar (Parser_regex        r) (regex        r)
   pfail        e = _logPar  (Parser_pfail        e) (pfail        e)
 
-instance (Functor m, Monad m) => MonadPrecedenceParser LazyText (VisualParser st m) where
+instance (Functor m, Monad m) => MonadPrecedenceParser (VisualParser st m) where
   prec i o = VisualParser $ Eval.Eval (Parser_setPrecedence i) $ _getsVP precedence >>= \pre ->
     Eval.Eval (Parser_currentPrecedence pre) $ if pre<i then mzero else _precCtx i pre (unwrapVisualParser o)
   step   o = VisualParser $ _getsVP precedence >>= \pre -> let i = pre+1 in
@@ -241,13 +240,13 @@ instance (Functor m, Monad m) => MonadPrecedenceParser LazyText (VisualParser st
   reset  o = VisualParser $ _getsVP precedence >>= \pre ->
     Eval.Eval (Parser_setPrecedence 0) $ _precCtx 0 pre (unwrapVisualParser o)
 
-instance Monad m => MonadSourceCodeParser LazyText (VisualParser st m) where
+instance Monad m => MonadSourceCodeParser (VisualParser st m) where
   getTextPoint    = VisualParser $
     gets (textPoint . visualParserState) >>= \pt -> Eval.Eval (Parser_gotTextPoint pt) $ return pt
   setTextPoint pt = VisualParser $
     Eval.Eval (Parser_setTextPoint pt) $ _modifyVP (\st -> st{ textPoint=pt })
 
-instance Monad m => MonadBacktrackingParser LazyText (VisualParser st m) where
+instance Monad m => MonadBacktrackingParser (VisualParser st m) where
   unstring s = _logPar (Parser_unstring s) (unstring s)
 
 visualParserAppendLog :: Monad m => [PPrint] -> VisualParser st m ()

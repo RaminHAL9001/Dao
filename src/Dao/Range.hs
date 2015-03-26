@@ -25,11 +25,13 @@ module Dao.Range
   where
 
 import qualified Dao.Interval as Iv
+import           Dao.TestNull
 
 import           Control.Applicative hiding (empty)
 import           Control.Monad
 
 import qualified Data.Array.IArray as A
+import           Data.Maybe
 import           Data.Monoid
 
 ----------------------------------------------------------------------------------------------------
@@ -45,7 +47,9 @@ instance Ord i => Ord (Range i) where
 instance (Ord i, Iv.InfBound i) => Monoid (Range i) where
   mempty = emptyRange
   mappend (Range a) (Range b) = Range $
-    Iv.intervalSpan <$> a <*> b <|> a <|> b
+    Iv.envelop <$> a <*> b <|> a <|> b
+
+instance TestNull (Range i) where { nullValue = Range Nothing; testNull (Range o) = isNothing o; }
 
 class HasRange dat i where { rangeOf :: dat -> Range i }
 

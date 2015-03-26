@@ -17,7 +17,7 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 module Dao.Array
-  ( Array, array, arraySpan, size, indexOK, elems, lastElem, (!), toIArray,
+  ( Array, array, arraySpan, size, indexOK, elems, lastElem, (!), toIArray, arrayIsNull,
     levenshteinDistanceMatrix,
     levenshteinIArrayDistance,
     levenshteinArrayDistance,
@@ -112,6 +112,11 @@ infixr 8 !
 
 toIArray :: Array o -> Maybe (A.Array Int o)
 toIArray (Array o) = o
+
+arrayIsNull :: Array o -> Bool
+arrayIsNull o = case o of
+  Array Nothing -> True
+  _             -> False
 
 ----------------------------------------------------------------------------------------------------
 

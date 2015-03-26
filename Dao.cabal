@@ -46,12 +46,15 @@ Library
     -fno-warn-name-shadowing
     -fno-warn-unused-do-bind
   Exposed-Modules:
-    Dao.Array         Dao.Certainty  Dao.Check          Dao.Computer
-    Dao.Concurrent    Dao.Count      Dao.Grammar.Debug  Dao.Grammar
-    Dao               Dao.Interval   Dao.Int            Dao.Lens
-    Dao.Logic         Dao.Object     Dao.PPrint         Dao.Predicate
-    Dao.Range         Dao.Rule       Dao.SparseArray    Dao.TestNull
-    Dao.Text.Builder  Dao.Text       Dao.Text.Parser    Dao.Tree
+    Dao.Array       Dao.Certainty      Dao.Check        Dao.Class
+    Dao.Concurrent  Dao.Count          Dao.Grammar      Dao
+    Dao.Interval    Dao.Int            Dao.Lens         Dao.Logic
+    Dao.Object      Dao.PPrint         Dao.Predicate    Dao.Range
+    Dao.Rule        Dao.SparseArray    Dao.TestNull     Dao.Text.CharSet
+    Dao.Text        Dao.Text.Location  Dao.Text.Regex   Dao.Tree
+    ---
+    Dao.Examples.FuzzyStrings  Dao.Examples.Numbers  Dao.Examples.Ontology
+    Dao.Examples.ShellScript   Dao.Examples.CParser
   Build-Depends:
     -- minimal dependencies for core modules
     array               >= 0.3.0.2, base         >= 4.3.1.0, binary      >= 0.5.0.2,

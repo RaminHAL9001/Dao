@@ -30,6 +30,7 @@ import           Prelude hiding (lookup)
 
 import qualified Dao.Interval as Iv
 import           Dao.Range
+import           Dao.TestNull
 
 import           Control.Applicative hiding (empty)
 import           Control.Monad
@@ -55,6 +56,10 @@ instance (A.Ix i, Enum i, Bounded i, Iv.InfBound i, Monoid o) =>
     mappend = union
 
 instance Ord i => HasRange (SparseArray i o) i where { rangeOf = sparseArrayBounds; }
+
+instance TestNull (SparseArray i o) where
+  nullValue = SparseArray nullValue []
+  testNull (SparseArray a b) = testNull a && Prelude.null b
 
 null :: SparseArray i o -> Bool
 null = Prelude.null . sparseArrayComponents

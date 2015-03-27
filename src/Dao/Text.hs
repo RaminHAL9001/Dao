@@ -24,17 +24,17 @@
 -- that function is actually in the "Dao.Array" module because the algorithm requires arrays in
 -- order to compute efficiently.
 module Dao.Text
-  ( StrictText, LazyText,
-    FromText(maybeFromText, fromText),
-    ToText(toText), listToTextWith, listToText,
+  ( StrictText, LazyText, StringLength(stringLength),
+    FromText(maybeFromText, fromText), FromLazyText(maybeFromLazyText, fromLazyText),
+    ToText(toText), ToLazyText(toLazyText),
     binaryPutText, binaryGetText, isAlphaNum_, lazyLengthCompare,
   ) where
 
 import           Dao.Int
+import           Dao.Count
 
 import           Data.Char
 import           Data.Int
-import           Data.Monoid
 import qualified Data.Text          as Strict
 import qualified Data.Text.Lazy     as Lazy
 import qualified Data.Text.Encoding as T
@@ -61,6 +61,13 @@ lazyLengthCompare n t = if null tx then compare n 0 else loop n tx where
     []   -> compare n 0
     t:tx -> loop (n - fromIntegral (Strict.length t)) tx
 
+----------------------------------------------------------------------------------------------------
+
+class StringLength o where { stringLength :: o -> Count; }
+
+instance StringLength Lazy.Text   where { stringLength = Count . Lazy.length; }
+instance StringLength Strict.Text where { stringLength = Count . fromIntegral . Strict.length; }
+instance StringLength String      where { stringLength = Count . fromIntegral . Prelude.length; }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -75,18 +82,30 @@ instance FromText String      where { maybeFromText = Just . fromText; fromText 
 
 ----------------------------------------------------------------------------------------------------
 
-class ToText o where { toText :: o -> Strict.Text }
+class FromLazyText o where
+  fromLazyText      :: Lazy.Text -> o
+  maybeFromLazyText :: Lazy.Text -> Maybe o
+  maybeFromLazyText = Just . fromLazyText
 
-instance ToText Strict.Text where { toText = id }
-instance ToText Lazy.Text   where { toText = mconcat . Lazy.toChunks }
-instance ToText String      where { toText = Strict.pack }
+instance FromLazyText Lazy.Text   where { fromLazyText = id; }
+instance FromLazyText Strict.Text where { fromLazyText = Lazy.toStrict; }
+instance FromLazyText String      where { fromLazyText = Lazy.unpack; }
 
-listToTextWith :: (o -> Strict.Text) -> [o] -> Strict.Text
-listToTextWith toText ox = let ts = Strict.singleton in
-  ts '(' <> Strict.intercalate (ts ' ') (fmap toText ox) <> ts ')'
+----------------------------------------------------------------------------------------------------
 
-listToText :: ToText o => [o] -> Strict.Text
-listToText = listToTextWith toText
+class ToText o where { toText :: o -> Strict.Text; }
+
+instance ToText Strict.Text where { toText = id; }
+instance ToText Lazy.Text   where { toText = Lazy.toStrict; }
+instance ToText String      where { toText = Strict.pack; }
+
+----------------------------------------------------------------------------------------------------
+
+class ToLazyText o where { toLazyText :: o -> Lazy.Text; }
+
+instance ToLazyText Strict.Text where { toLazyText = Lazy.fromStrict; }
+instance ToLazyText Lazy.Text   where { toLazyText = id; }
+instance ToLazyText String      where { toLazyText = Lazy.pack; }
 
 ----------------------------------------------------------------------------------------------------
 

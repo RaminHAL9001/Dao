@@ -41,8 +41,10 @@ module Dao.Text.Regex
     -- * An Abstract Interface for Parser Monads
     MonadParser(
       look, look1, get1, string, count, eof, munch, munch1,
-      noMoreThan, satisfy, char, regex, pfail
+      noMoreThan, satisfy, char, regex, pfail,
+      incrementPushBackCounter, incrementCharCounter
     ),
+    wastedString,
     MonadPrecedenceParser(prec, step, reset),
     MonadSourceCodeParser(getTextPoint, setTextPoint),
     MonadBacktrackingParser(unstring),
@@ -121,7 +123,7 @@ class (Monad m, MonadPlus m) => MonadParser m where
   get1 :: m Char
   -- | If the given text matches the current head of the parser input text, consume that text and
   -- succeed, otherwise evaluate to 'Control.Applicative.empty'. (required)
-  string :: StrictText -> m LazyText
+  string :: LazyText -> m LazyText
   -- | Consume a given number of characters or fail if there aren't enough, and never parse more
   -- than the given number of characters. This requires a look ahead, so it is left to the
   -- instatiator of this class to provide the most efficient implementation. (required)
@@ -139,7 +141,7 @@ class (Monad m, MonadPlus m) => MonadParser m where
   -- | Consume and return all characters from the head of the input text that match the given
   -- predicate, but backtracks if no characters from the head of the input text match.
   munch1 :: CharSet -> m LazyText
-  munch1 p = satisfy p >>= \c -> munch p >>= \cx -> return (Lazy.cons c cx)
+  munch1 p = liftM2 Lazy.cons (satisfy p) (munch p)
   -- | Never fail, but consume as many characters satisfying the predicate as possible, and never
   -- consuming more than the specified amount.
   noMoreThan :: Count -> CharSet -> m LazyText
@@ -150,7 +152,7 @@ class (Monad m, MonadPlus m) => MonadParser m where
     in  loop lim mempty
   -- | Consumes the next character only if it satisfies the given predicate.
   satisfy :: CharSet -> m Char
-  satisfy p = look1 >>= \c -> if csetMember p c then get1 else mzero
+  satisfy p = look1 >>= guard . csetMember p >> get1
   -- | Like 'satisfy' but matches a single character.
   char :: Char -> m Char
   char = satisfy . anyOf . return
@@ -174,11 +176,15 @@ class (Monad m, MonadPlus m) => MonadParser m where
   incrementPushBackCounter :: Count -> m ()
   incrementPushBackCounter = const $ return ()
 
+-- | Indicate that some parsed characters were wasted.
+wastedString :: (MonadParser m, ToLazyText t) => t -> m ()
+wastedString = incrementPushBackCounter . stringLength . toLazyText
+
 instance MonadParser ReadP.ReadP where
   look    = liftM Lazy.pack ReadP.look
   look1   = ReadP.look >>= \cx -> case cx of { [] -> mzero; c:_ -> return c; }
   get1    = ReadP.get
-  string  = liftM Lazy.pack . ReadP.string . Strict.unpack
+  string  = liftM Lazy.pack . ReadP.string . Lazy.unpack
   count i = liftM Lazy.pack . ReadP.count (fromIntegral i) . ReadP.satisfy . csetMember
   eof     = ReadP.eof
   munch   = liftM Lazy.pack . ReadP.munch . csetMember
@@ -191,7 +197,7 @@ instance MonadParser ReadPrec.ReadPrec where
   look    = liftM Lazy.pack ReadPrec.look
   look1   = ReadPrec.look >>= \cx -> case cx of { [] -> mzero; c:_ -> return c; }
   get1    = ReadPrec.get
-  string  = liftM Lazy.pack . ReadPrec.lift . ReadP.string . Strict.unpack
+  string  = liftM Lazy.pack . ReadPrec.lift . ReadP.string . Lazy.unpack
   count i = liftM Lazy.pack . ReadPrec.lift . ReadP.count (fromIntegral i) . ReadP.satisfy . csetMember
   eof     = ReadPrec.lift ReadP.eof
   munch   = liftM Lazy.pack . ReadPrec.lift . ReadP.munch . csetMember
@@ -253,9 +259,9 @@ _regexToParser :: Regex -> Parser st LazyText
 _regexToParser (Regex sq) = mconcat <$> (sequence $ _regexUnitToParser <$> elems sq)
 
 _parserToParser :: (Monad m, MonadPlus m, MonadParser m) => Parser () LazyText -> m LazyText
-_parserToParser rx = do
+_parserToParser p = do
   str <- look
-  let (result, st) = runParser rx $ on (parserState ()) [inputString <~ str]
+  let (result, st) = runParser p $ new [inputString <~ str]
   let pushback = incrementPushBackCounter $ (st & pushBackCount) + (st & charCount)
   case result of
     Backtrack -> pushback >> mzero
@@ -644,8 +650,10 @@ instance ToRegexRepeater RepeatMinMax where
     MIN o -> RxRepeat o Nothing
 
 instance ToRegexRepeater (Count, Maybe Count) where
-  toRegexRepeater (lo', hi) = let lo = min 0 lo' in
-    if lo==1 && hi==Just 1 then RxSingle else RxRepeat lo (min lo <$> hi)
+  toRegexRepeater (lo'', hi) = let lo' = max 0 lo'' in case hi of
+    Nothing  -> RxRepeat lo' Nothing
+    Just hi' -> let { hi = max lo' hi'; lo = min lo' hi; } in
+      if lo==1 && hi==1 then RxSingle else RxRepeat lo (Just hi)
  
 -- | Convert the 'RegexRepeater' to a pair of values: the 'Prelude.fst' value is the minimum number
 -- of times a regular expression must match the input string in order for the match to succeed. The
@@ -697,35 +705,20 @@ data RegexUnit
   deriving (Eq, Typeable)
 
 _regexUnitToParser :: RegexUnit -> Parser st LazyText
-_regexUnitToParser o = do
-  input <- Parser $ lift $ gets (& inputString)
-  let addStrictLen o = ((fromIntegral $ Strict.length o) +)
-  case o of
-    RxString o rep -> do
-      let len = fromIntegral $ Strict.length o
-      let zo  = Lazy.fromChunks [o]
-      let (lo, hi) = lexRepeaterToPair rep
-      let minimal = Lazy.replicate (fromIntegral lo) zo
-      Parser $ lift $ modify $ by [charCount $= ((lo * fromIntegral len) +)]
-      guard $ Lazy.isPrefixOf minimal input
-      input <- pure $ Lazy.drop len input
-      Parser $ lift $ state $ \st ->
-        let loop i keep str =
-              if maybe True (i <=) hi && Lazy.isPrefixOf zo str
-              then  loop (i+1) (keep<>zo) $ Lazy.drop len $ st & inputString
-              else (keep, on st [inputString <~ str, charCount $= (((i+1) * addStrictLen o 0) +)])
-        in  loop 0 minimal input
-    RxChar cset rep -> do
-      let (lo, hi) = lexRepeaterToPair rep
-      Parser $ lift $ modify $ by [charCount $= (lo +)]
-      (minimal, input) <- pure $ Lazy.splitAt (fromIntegral lo) input
-      guard $ or $ csetMember cset <$> Lazy.unpack minimal
-      Parser $ lift $ state $ \st ->
-        let loop i keep str = let { empt = Lazy.null str; c = Lazy.head str; } in
-              if maybe True (i <=) hi && not empt && csetMember cset c
-              then loop (i+1) (Lazy.snoc keep c) (Lazy.tail str)
-              else (keep, on st [inputString <~ str, charCount $= (i +) . (if empt then id else (+ 1))])
-        in  loop 0 minimal input
+_regexUnitToParser o = case o of
+  RxString o rep -> do
+    let zo  = Lazy.fromStrict o
+    let check = string zo *> pure True <|> pure False
+    let (lo, hi) = lexRepeaterToPair rep
+    let init i keep = if i>=lo then return (i, keep) else check >>= \ok ->
+          if ok then init (i+1) (keep<>zo) else wastedString keep >> mzero
+    let loop i keep = if not $ maybe True (i <) hi then return keep else check >>= \ok ->
+          if ok then loop (i+1) (keep<>zo) else return keep
+    init 0 mempty >>= uncurry loop
+  RxChar cset rep -> do
+    let (lo, hi) = lexRepeaterToPair rep
+    init <- if lo==0 then pure mempty else count lo cset
+    (init <>) <$> maybe (munch cset) (flip noMoreThan cset) hi
 
 instance Show RegexUnit where { show = showPPrint 4 4 . pPrint; }
 
@@ -1153,45 +1146,30 @@ instance MonadState st (Parser st) where
 
 instance MonadParser (Parser st) where
   look      = Parser $ lift $ gets (& inputString)
-  look1     = look >>= \t -> guard (not $ Lazy.null t) >> return (Lazy.head t)
-  get1      = _take $ \t -> guard (not $ Lazy.null t) >> return (Lazy.head t, Lazy.tail t)
-  string  s = do
-    s <- pure s
-    _take $ \t -> do
-      guard $ Lazy.isPrefixOf (Lazy.fromChunks [s]) t
-      return $ Lazy.splitAt (fromInteger $ toInteger $ Strict.length s) t
-  munch   f = _take $ \t -> return $ Lazy.span (csetMember f) t
-  munch1  f = Lazy.cons <$> satisfy f <*> munch f
-  satisfy f = look1 >>= guard . csetMember f >> get1
-  char      = satisfy . anyOf . return
+  look1     = _take $ \t -> if Lazy.null t then (0, Nothing) else (1, return (Lazy.head t, 1, t))
+  get1      = _take $ \t -> (1, guard (not $ Lazy.null t) >> return (Lazy.head t, 1, Lazy.tail t))
+  string  s = _take $ \t -> let len = stringLength s in (len, (,,) s len <$> Lazy.stripPrefix s t)
+  munch   f = _take $ \t ->
+    let (keep, rem) = Lazy.span (csetMember f) t
+        len = stringLength rem
+    in  (min len $ if Lazy.null t then 0 else 1, return (keep, len, rem))
   eof       = look >>= guard . Lazy.null
   pfail err = do
     loc <- getTextPoint
     throwError $ on err [invalidGrammarLocation $= mappend (EndLocation () loc)]
-  count c p = _take $ \t -> do
-    c <- pure $ countToInt c
-    let loop c tx = if c<=0 then return () else case tx of -- lazy string length
-          []   -> mzero
-          t:tx -> loop (c - fromIntegral (Strict.length t)) tx
-    loop c $ Lazy.toChunks t
-    (keep, rem    ) <- pure $ Lazy.splitAt c t
-    (keep, putBack) <- pure $ Lazy.span (csetMember p) keep
-    guard (Lazy.null putBack) >> return (keep, rem)
-  noMoreThan c p = _take $ \t -> do
-    lim <- pure $ countToInt c
-    let loop got c tx = case tx of
-          []   -> return (Lazy.fromChunks got, mempty)
-          t:tx -> let c' = c + fromIntegral (Strict.length t) in case c' > lim of
-            True  -> do
-              (keep, rem    ) <- pure $ Strict.splitAt (fromIntegral $ lim - c) t
-              (keep, putBack) <- pure $ Strict.span (csetMember p) keep
-              return (Lazy.fromChunks $ got++[keep], Lazy.fromChunks $ putBack : rem : tx)
-            False -> do
-              (keep, rem    ) <- pure $ Strict.span (csetMember p) t
-              case Strict.null rem of
-                True  -> loop (got++[keep]) c' tx
-                False -> return (Lazy.fromChunks $ got++[keep], Lazy.fromChunks $ rem : tx)
-    loop [] 0 (Lazy.toChunks t)
+  count c p = _take $ \t -> (,) c $ do
+    (keep, t) <- pure $ Lazy.splitAt (countToInt c) t
+    let len = Lazy.length keep
+    keep <- pure $ Lazy.takeWhile (csetMember p) keep
+    guard $ len == Lazy.length keep
+    return (keep, c, t)
+  regex = regexToParser
+  noMoreThan lim p = _take $ \t ->
+    let loop i keep t = let c = Lazy.head t in
+          if Lazy.null t || i>=lim || not (csetMember p c)
+          then (i, Just (keep, i, t))
+          else loop (seq i $! i+1) (Lazy.snoc keep c) (Lazy.tail t)
+    in  loop 0 Lazy.empty t
   incrementPushBackCounter c = Parser $ lift $ modify $ by [pushBackCount $= (+ c)]
   incrementCharCounter     c = Parser $ lift $ modify $ by [charCount     $= (+ c)]
 
@@ -1205,7 +1183,7 @@ instance MonadSourceCodeParser (Parser st) where
   setTextPoint = const $ return ()
 
 instance MonadBacktrackingParser (Parser st) where
-  unstring t = _take $ \instr -> Just ((), t<>instr)
+  unstring t = _take $ \instr -> (stringLength t, Just ((), 0, t<>instr))
 
 -- | Get the number of characters parsed so far.
 getCharCount :: Parser st CharCount
@@ -1214,10 +1192,14 @@ getCharCount = Parser $ lift $ gets (& charCount)
 minPrec :: Int
 minPrec = 0
 
-_take :: (Lazy.Text -> Maybe (a, Lazy.Text)) -> Parser st a
+_take :: (Lazy.Text -> (Count, Maybe (a, Count, Lazy.Text))) -> Parser st a
 _take f =
   ( Parser $ lift $ state $ \st ->
-      maybe (Nothing, st) (\ (a, rem) -> (Just a, on st [inputString <~ rem])) $ f $ st & inputString
+      let (pb, o) = f $ st & inputString
+          updPBC = pushBackCount $= (+ pb)
+      in  case o of
+            Nothing           -> (Nothing, on st [updPBC])
+            Just (o, cc, rem) -> (Just  o, on st [inputString <~ rem, charCount $= (+ cc), updPBC])
   ) >>= maybe mzero return
 
 -- | Run the parser with a given 'ParserState' containing the input to be parsed and the

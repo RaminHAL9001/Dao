@@ -76,11 +76,6 @@ instance TestNull (Array o) where
   nullValue = mempty
   testNull (Array o) = isJust o
 
-instance ToText o => ToText (Array o) where
-  toText (Array o) = case o of
-    Nothing -> toText "()"
-    Just  o -> listToText (A.elems o)
-
 -- | Returns the minimum bounds that contains the bounds for both given 'Data.Array.IArray.Array's.
 -- *NOTE* that this operates on arrays from the "Data.Array.IArray" module.
 arraySpan :: A.Ix i => A.Array i x -> A.Array i y -> (i, i)

@@ -113,7 +113,7 @@ instance Applicative Lexer where
 -- it shadow each other when checked with 'Dao.Regex.shadowsSeries'. The 'Lexer' returned is an
 -- updated 'Lexer' containing the many 'Dao.Regex.Regex's unified into a single 'Dao.Regex.Regex'.
 checkLexer :: Lexer o -> Predicate InvalidGrammar (Lexer o)
-checkLexer (Lexer (f, regex)) = Lexer . (,) f . return <$> mconcat (return <$> regex)
+checkLexer (Lexer (f, rx)) = Lexer . (,) f . return <$> mconcat (return <$> rx)
 
 -- | An 'Prelude.curry'-ed version of the 'Lexer' constructor.
 lexer :: (LazyText -> o) -> [Regex] -> Lexer o
@@ -136,16 +136,16 @@ lexerRegex = lexerTuple >>> tuple1
 -- | Like 'Dao.Regex.regexSpan', but for 'Lexer's. So it is also like 'Prelude.span' but uses a the
 -- 'Regex' within the 'Lexer' to match from the start of the string.
 lexerSpan :: Lexer o -> LazyText -> Predicate InvalidGrammar (o, LazyText)
-lexerSpan o str = checkLexer o >>= \ (Lexer (f, regex)) -> guard (not $ null regex) >>
-  maybe mzero (return . first (f . Lazy.fromStrict)) (regexSpan (head regex) str)
+lexerSpan o str = checkLexer o >>= \ (Lexer (f, rx)) -> guard (not $ null rx) >>
+  maybe mzero (return . first (f . Lazy.fromStrict)) (regexSpan (head rx) str)
 
 -- | Like 'regexBreak' but for 'Lexer's. Uses 'regexSpan' and a given 'Regex' to break a string into
 -- portions that match wrapped in a 'Prelude.Right' constructor, and portions that do not match
 -- wrapped into a 'Prelude.Left' constructor. Then the 'lexerFunction' of the 'Lexer' is applied to
 -- each 'Prelude.Right' portion.
 lexerBreak :: Lexer o -> LazyText -> Predicate InvalidGrammar [Either StrictText o]
-lexerBreak o str = checkLexer o >>= \ (Lexer (f, regex)) -> guard (not $ null regex) >>
-  return (fmap (f . Lazy.fromStrict) <$> regexBreak (head regex) str)
+lexerBreak o str = checkLexer o >>= \ (Lexer (f, rx)) -> guard (not $ null rx) >>
+  return (fmap (f . Lazy.fromStrict) <$> regexBreak (head rx) str)
 
 -- | Like 'regexMatch' but for 'Lexer's. Uses 'lexerSpan' to check whether a given 'Lexer' matches
 -- the entire input string or not. Evaluates to 'Dao.Predicate.Backtrack' if the whole string is not

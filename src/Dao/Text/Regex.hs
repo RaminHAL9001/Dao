@@ -22,7 +22,7 @@ module Dao.Text.Regex
     RegexUnit, RegexRepeater, rxGetString, rxGetCharSet, rxGetRepeater,
     RepeatMinMax(MIN, MAX),
     ToRegexRepeater(toRegexRepeater), lexRepeaterToPair,
-    regexToParser, regexUnitToParser, regexSpan, regexBreak, regexMatch, concatRegexUnits,
+    regexUnitToParser, regexSpan, regexBreak, regexMatch, regex,
     -- * Creating a Regex Table:
     RegexTable, regexTableElements, regexTable, regexsToTable, regexTableToParser,
     -- * The Error Type Used By All Monadic Parsers ('MonadParser's)
@@ -41,7 +41,7 @@ module Dao.Text.Regex
     -- * An Abstract Interface for Parser Monads
     MonadParser(
       look, look1, get1, string, count, eof, munch, munch1,
-      noMoreThan, satisfy, char, regex, pfail,
+      noMoreThan, satisfy, char, regexToParser, pfail,
       incrementPushBackCounter, incrementCharCounter
     ),
     MonadPrecedenceParser(prec, step, reset),
@@ -155,10 +155,11 @@ class (Monad m, MonadPlus m) => MonadParser m where
   -- | Like 'satisfy' but matches a single character.
   char :: Char -> m Char
   char = satisfy . anyOf . return
-  -- | This optional function should attempt to match a 'Regex' to the input string by using
-  -- 'regexToParser'.
-  regex :: Regex -> m LazyText
-  regex = regexToParser
+  -- | This function transforms a 'Regex' to a parser. Instantiating this function is optional.
+  -- should attempt to match a 'Regex' to the input string. But really the default implementation
+  -- should be good enough for everyone. It is mostly a member of this class for technical reasons.
+  regexToParser :: Regex -> m LazyText
+  regexToParser = liftM fst . flip lookAheadWithParser () . _regexToParser
   -- | When the input text does not match a 'Grammar', an error of type 'InvalidGrammar' must be
   -- handed over to this monad. What happens next is up to the instance provided here. It may throw
   -- an error, or it may evaluate to 'Control.Applicative.empty'.
@@ -250,28 +251,18 @@ class (Monad m, MonadPlus m, MonadParser m) => MonadBacktrackingParser m where
 
 ----------------------------------------------------------------------------------------------------
 
--- Transform a 'Regex' into a 'Parser'. This is used to implement the 'regex' function for the
--- instantiation of the 'Parser' data type into the 'MonadParser' class.
+-- Transform a 'Regex' into a 'Parser'. This is used to implement the 'regexToParser' function for
+-- the instantiation of the 'Parser' data type into the 'MonadParser' class.
 _regexToParser :: Regex -> Parser st LazyText
 _regexToParser (Regex sq) = mconcat <$> (sequence $ _regexUnitToParser <$> elems sq)
-
--- | This function converts a 'Regex' to a 'MonadParser' using the various methods of the
--- 'MonadParser' class, for example 'munch', 'string', and 'noMoreThan'.
---
--- If you are rolling your own 'MonadParser' rather than using one of the many excellent monadic
--- parsers available to you, it is safe to use this function to instantiate the 'regex' method; this
--- function does not make use of the 'regex' function. In fact, the default instantiation for
--- 'regex' uses this function, so you do not need to instantiate 'regex' at all.
-regexToParser :: (MonadPlus m, MonadParser m) => Regex -> m LazyText
-regexToParser = liftM fst . flip lookAheadWithParser () . _regexToParser
 
 regexUnitToParser :: (Monad m, MonadPlus m, MonadParser m) => RegexUnit -> m LazyText
 regexUnitToParser = liftM fst . flip lookAheadWithParser () . _regexUnitToParser
 
 -- | Like 'Prelude.span' but uses a 'Regex' to match from the start of the string.
 regexSpan :: Regex -> LazyText -> Maybe (StrictText, LazyText)
-regexSpan regex str =
-  let (result, st) = runParser (regexToParser regex) $ on (parserState ()) [inputString <~ str] in
+regexSpan rx str =
+  let (result, st) = runParser (regexToParser rx) $ on (parserState ()) [inputString <~ str] in
   case result of
     OK o -> Just (Lazy.toStrict o, st & inputString)
     _    -> Nothing
@@ -280,15 +271,15 @@ regexSpan regex str =
 -- 'Prelude.Right' constructor, and portions that do not match wrapped into a 'Prelude.Left'
 -- constructor.
 regexBreak :: Regex -> LazyText -> [Either StrictText StrictText]
-regexBreak regex str = loop Lazy.empty str where
-  loop keep str = case regexSpan regex str of
+regexBreak rx str = loop Lazy.empty str where
+  loop keep str = case regexSpan rx str of
     Nothing       -> loop (Lazy.snoc keep $ Lazy.head str) (Lazy.tail str)
     Just (o, str) -> (guard (not $ Lazy.null keep) >> [Left $ Lazy.toStrict keep]) ++
       Right o : loop (Lazy.empty) str
 
 -- | Uses 'regexSpan' to check whether a given 'Regex' matches the entire input string or not.
 regexMatch :: Regex -> LazyText -> Bool
-regexMatch regex str = maybe False (Lazy.null . snd) $ regexSpan regex str
+regexMatch rx str = maybe False (Lazy.null . snd) $ regexSpan rx str
 
 ----------------------------------------------------------------------------------------------------
 
@@ -881,12 +872,19 @@ instance ToRegex Char where { rx = rx . Strict.singleton; }
 instance ToRegexRepeater rep => ToRegex (Char, rep) where
   rx (o, rep) = rx (Strict.singleton o, rep)
 
--- | A sequence of 'RegexUnit's for building more complex regular expressions patterns that can be
--- used to match strings. This data type instantiates 'Prelude.Ord' in the same way that 'RegexUnit'
--- instantiates 'Prelude.Ord', that is, if both 'Regex' values are applied to the same input string,
--- the first 'Regex' is greater than the second if the first consumes all or more of the input
--- string that the second will consume.
-newtype Regex = Regex { regexUnits :: Array RegexUnit } deriving (Eq, Show, Typeable)
+-- | A 'Regex' is a constructed with 'regex's. Construct it with a list of 'RegexUnit's, each
+-- constructed with a call to 'rx'. The list must be a finite. 'Regex' is most useful when applied
+-- to the 'regex' function, which transforms a 'Regex' to a 'Parser'. 'Regex's can also be used with
+-- 'regexSpan', 'regexBreak', and 'regexMatch' functions.
+--
+-- This data type instantiates 'Prelude.Ord' in the same way that 'RegexUnit' instantiates
+-- 'Prelude.Ord', that is, if both 'Regex' values are applied to the same input string, the first
+-- 'Regex' is greater than the second if the first consumes all or more of the input string that the
+-- second will consume.
+--
+-- Internally, a 'Regex' is an 'Dao.Array.Array' of 'RegexUnit's which you can retrieve with
+-- 'regexUnits'.
+newtype Regex = Regex{ regexUnits :: Array RegexUnit } deriving (Eq, Show, Typeable)
 
 instance PPrintable Regex where
   pPrint (Regex o) = case elems o of
@@ -968,8 +966,8 @@ _rxSeq a b = case a of
   _                      -> return Nothing
 
 -- | Construct a 'Regex' from a list of 'RegexUnit'.
-concatRegexUnits :: [RegexUnit] -> Predicate InvalidGrammar Regex
-concatRegexUnits = loop [] where
+regex :: [RegexUnit] -> Predicate InvalidGrammar Regex
+regex = loop [] where
   loop stk ox = case ox of
     []     -> return $ Regex $ array stk
     [o]    -> return $ Regex $ array (stk++[o])
@@ -1029,17 +1027,17 @@ regexsToTable ox = do
   bnds@(lo, hi) <- maybe mzero return $ charSetBounds cset
   guard $ minBound/=lo || hi/=maxBound
   return $ RegexTable (array ox) $ fmap array $ A.accumArray (++) [] bnds $ do
-    regex <- ox
-    c <- charSetRange $ initialCharSetOf $ fst regex
-    [(c, [regex])]
+    rx <- ox
+    c <- charSetRange $ initialCharSetOf $ fst rx
+    [(c, [rx])]
 
 regexTableToParser :: (Monad m, MonadParser m) => RegexTable o -> m (LazyText, o)
 regexTableToParser (RegexTable _ arr) = do
   c <- look1
   guard $ inRange (A.bounds arr) c
   msum $ do
-    (regex, o) <- elems $ arr A.! c
-    [liftM2 (,) (regexToParser regex) $ return o]
+    (rx, o) <- elems $ arr A.! c
+    [liftM2 (,) (regexToParser rx) $ return o]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1147,7 +1145,7 @@ instance MonadParser (Parser st) where
     keep <- pure $ Lazy.takeWhile (csetMember p) keep
     guard $ len == Lazy.length keep
     return (keep, c, t)
-  regex = _regexToParser
+  regexToParser = _regexToParser
   noMoreThan lim p = _take $ \t ->
     let loop i keep t = let c = Lazy.head t in
           if Lazy.null t || i>=lim || not (csetMember p c)
@@ -1238,11 +1236,11 @@ parser_to_S (Parser p) init prec instr = do
 -- If the branch fails, the lazily copied string is disgarded while the original string has been
 -- left untouched, and this is called backtracking.
 --
--- But some parsing algorithms, for example the instance of 'regex' for the 'Parser' type defined in
--- this module, may want to do push-back backtracking by using 'Parser's own specific instantiation
--- of 'unstring', even if the abstract parser implementation does not instantiate 'unstring'.
--- Wouldn't it be nice if 'unstring' could be used for all abstract 'MonadParser's, not just the
--- ones that bother to instantiate 'MonadBacktrackingParser'?
+-- But some parsing algorithms, for example the instance of 'regexToParser' for the 'Parser' type
+-- defined in this module, may want to do push-back backtracking by using 'Parser's own specific
+-- instantiation of 'unstring', even if the abstract parser implementation does not instantiate
+-- 'unstring'.  Wouldn't it be nice if 'unstring' could be used for all abstract 'MonadParser's, not
+-- just the ones that bother to instantiate 'MonadBacktrackingParser'?
 --
 -- That is what 'lookAheadWithParser' does. To perform push-back backtracking, the 'look' function
 -- is used to look-ahead, taking the entire input string (lazily) and placing it into a
@@ -1287,13 +1285,13 @@ lookAheadWithParser
   => Parser st LazyText -> st -> m (LazyText, st)
 lookAheadWithParser p init = do
   str <- look
-  let (result, st) = runParser p $ on (parserState init) [inputString <~ str]
+  let (o, st) = runParser p $ on (parserState init) [inputString <~ str]
   let pushback = incrementPushBackCounter $ (st & pushBackCount) + (st & charCount)
-  case result of
+  case o of
     Backtrack -> pushback >> mzero
     PFail err -> pushback >> pfail err >> fail (showPPrint 4 4 $ pPrint err)
     OK      o -> do
       incrementCharCounter (st & charCount)
-      noMoreThan (st & charCount) anyChar
+      noMoreThan (stringLength o) anyChar
       return (o, st & userState)
 

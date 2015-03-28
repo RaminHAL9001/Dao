@@ -44,14 +44,13 @@ module Dao.Text.Regex
       noMoreThan, satisfy, char, regex, pfail,
       incrementPushBackCounter, incrementCharCounter
     ),
-    wastedString,
     MonadPrecedenceParser(prec, step, reset),
     MonadSourceCodeParser(getTextPoint, setTextPoint),
     MonadBacktrackingParser(unstring),
     -- * A General Purpose Lazy 'Data.Text.Lazy.Text' Based 'Parser' Monad
-    ParseInput, Parser, runParser, getCharCount, parser_to_S,
+    ParseInput, Parser, runParser, getCharCount,
     ParserState(ParserState), parserState, inputString, userState, textPoint, charCount,
-    minPrec, precedence, efficiency
+    minPrec, precedence, efficiency, parser_to_S, lookAheadWithParser
   ) where
 
 import           Prelude hiding (id, (.))
@@ -98,12 +97,12 @@ import           Numeric (showHex)
 --
 -- When programming your parsers, you actually will not *NOT* be using the functions in this class.
 -- Instead, you construct your parsers using the 'Grammar' data type, then use the 'makeParser'
--- function to convert the 'Grammar' to a monadic parser function (one which instantiates this
+-- function to transform the 'Grammar' into a monadic parser function (one which instantiates this
 -- class). This class only exists to provide a consistent interface to the various parser monads
 -- available.
 --
--- This class merely provides the necessary functions that 'makeParser' can use to convert 'Grammar'
--- data types to some concrete monadic parser -- a monadic parser that instantiates this class. You
+-- This class merely provides the necessary functions that 'makeParser' can use to transform 'Grammar'
+-- data types into some concrete monadic parser -- a monadic parser that instantiates this class. You
 -- do not need to concern yourself with the details of how the 'Grammar's are converted, just know
 -- that the conversion process calls these functions.
 --
@@ -175,10 +174,6 @@ class (Monad m, MonadPlus m) => MonadParser m where
   -- parser's state, if there is one.
   incrementPushBackCounter :: Count -> m ()
   incrementPushBackCounter = const $ return ()
-
--- | Indicate that some parsed characters were wasted.
-wastedString :: (MonadParser m, ToLazyText t) => t -> m ()
-wastedString = incrementPushBackCounter . stringLength . toLazyText
 
 instance MonadParser ReadP.ReadP where
   look    = liftM Lazy.pack ReadP.look
@@ -255,21 +250,10 @@ class (Monad m, MonadPlus m, MonadParser m) => MonadBacktrackingParser m where
 
 ----------------------------------------------------------------------------------------------------
 
+-- Transform a 'Regex' into a 'Parser'. This is used to implement the 'regex' function for the
+-- instantiation of the 'Parser' data type into the 'MonadParser' class.
 _regexToParser :: Regex -> Parser st LazyText
 _regexToParser (Regex sq) = mconcat <$> (sequence $ _regexUnitToParser <$> elems sq)
-
-_parserToParser :: (Monad m, MonadPlus m, MonadParser m) => Parser () LazyText -> m LazyText
-_parserToParser p = do
-  str <- look
-  let (result, st) = runParser p $ new [inputString <~ str]
-  let pushback = incrementPushBackCounter $ (st & pushBackCount) + (st & charCount)
-  case result of
-    Backtrack -> pushback >> mzero
-    PFail err -> pushback >> pfail err >> fail (showPPrint 4 4 $ pPrint err)
-    OK      o -> do
-      incrementCharCounter (st & charCount)
-      noMoreThan (st & charCount) anyChar
-      return o
 
 -- | This function converts a 'Regex' to a 'MonadParser' using the various methods of the
 -- 'MonadParser' class, for example 'munch', 'string', and 'noMoreThan'.
@@ -279,10 +263,10 @@ _parserToParser p = do
 -- function does not make use of the 'regex' function. In fact, the default instantiation for
 -- 'regex' uses this function, so you do not need to instantiate 'regex' at all.
 regexToParser :: (MonadPlus m, MonadParser m) => Regex -> m LazyText
-regexToParser = _parserToParser . _regexToParser
+regexToParser = liftM fst . flip lookAheadWithParser () . _regexToParser
 
 regexUnitToParser :: (Monad m, MonadPlus m, MonadParser m) => RegexUnit -> m LazyText
-regexUnitToParser = _parserToParser . _regexUnitToParser
+regexUnitToParser = liftM fst . flip lookAheadWithParser () . _regexUnitToParser
 
 -- | Like 'Prelude.span' but uses a 'Regex' to match from the start of the string.
 regexSpan :: Regex -> LazyText -> Maybe (StrictText, LazyText)
@@ -655,13 +639,13 @@ instance ToRegexRepeater (Count, Maybe Count) where
     Just hi' -> let { hi = max lo' hi'; lo = min lo' hi; } in
       if lo==1 && hi==1 then RxSingle else RxRepeat lo (Just hi)
  
--- | Convert the 'RegexRepeater' to a pair of values: the 'Prelude.fst' value is the minimum number
--- of times a regular expression must match the input string in order for the match to succeed. The
--- 'Prelude.snd' value is the maximum number of times the regular expression may match the input
--- string, or 'Prelude.Nothing' if there is no maximum. Once the minimum number of matches has been
--- satisfied, the regular expression will never fail to match, therefore even if the input string
--- matches more than the given maximum number of repetitions, only the maximum number of repetitions
--- will be matched and the remainder of the input string will be left untouched.
+-- | Transform the 'RegexRepeater' into a pair of values: the 'Prelude.fst' value is the minimum
+-- number of times a regular expression must match the input string in order for the match to
+-- succeed. The 'Prelude.snd' value is the maximum number of times the regular expression may match
+-- the input string, or 'Prelude.Nothing' if there is no maximum. Once the minimum number of matches
+-- has been satisfied, the regular expression will never fail to match, therefore even if the input
+-- string matches more than the given maximum number of repetitions, only the maximum number of
+-- repetitions will be matched and the remainder of the input string will be left untouched.
 lexRepeaterToPair :: RegexRepeater -> (Count, Maybe Count)
 lexRepeaterToPair o = case o of
   RxSingle       -> (1, Just 1)
@@ -711,14 +695,14 @@ _regexUnitToParser o = case o of
     let check = string zo *> pure True <|> pure False
     let (lo, hi) = lexRepeaterToPair rep
     let init i keep = if i>=lo then return (i, keep) else check >>= \ok ->
-          if ok then init (i+1) (keep<>zo) else wastedString keep >> mzero
+          if ok then init (i+1) (keep<>zo) else unstring keep >> mzero
     let loop i keep = if not $ maybe True (i <) hi then return keep else check >>= \ok ->
           if ok then loop (i+1) (keep<>zo) else return keep
     init 0 mempty >>= uncurry loop
   RxChar cset rep -> do
     let (lo, hi) = lexRepeaterToPair rep
     init <- if lo==0 then pure mempty else count lo cset
-    (init <>) <$> maybe (munch cset) (flip noMoreThan cset) hi
+    mappend init <$> maybe (munch cset) (flip noMoreThan cset) hi
 
 instance Show RegexUnit where { show = showPPrint 4 4 . pPrint; }
 
@@ -924,14 +908,14 @@ instance Monoid (Predicate InvalidGrammar Regex) where
         [do unitA <- lastElem a -- If a is empty, we stop here.
             unitB <- b!0 -- If b is empty, we stop here.
             -- a and b are not empty, we can safely assume at least one element can be indexed
-            let items arr = concat . fmap (maybe [] return . (arr !))
+            let items arr rng = catMaybes $ (arr !) <$> range rng
             if shadowsSeries unitA unitB
             then Just $ PFail $ InvalidGrammar $
               (Nothing, NoLocation (), RegexShadowError SequenceRegex (Regex a) (Regex b))
             else Just $ do
               rxAB <- _rxSeq unitA unitB
               OK $ Regex $ array $ concat
-                [items a [0 .. size a - 1], maybe [unitA, unitB] return rxAB, items b [1 .. size b]]
+                [items a (0, size a - 2), maybe [unitA, unitB] return rxAB, items b (1, size b - 1)]
         , lastElem a >> Just (OK $ Regex a)
         , b!0 >> Just (OK $ Regex b)
         ]
@@ -1163,7 +1147,7 @@ instance MonadParser (Parser st) where
     keep <- pure $ Lazy.takeWhile (csetMember p) keep
     guard $ len == Lazy.length keep
     return (keep, c, t)
-  regex = regexToParser
+  regex = _regexToParser
   noMoreThan lim p = _take $ \t ->
     let loop i keep t = let c = Lazy.head t in
           if Lazy.null t || i>=lim || not (csetMember p c)
@@ -1183,7 +1167,7 @@ instance MonadSourceCodeParser (Parser st) where
   setTextPoint = const $ return ()
 
 instance MonadBacktrackingParser (Parser st) where
-  unstring t = _take $ \instr -> (stringLength t, Just ((), 0, t<>instr))
+  unstring t = _take $ \instr -> let len = stringLength t in (len, Just ((), negate len, t<>instr))
 
 -- | Get the number of characters parsed so far.
 getCharCount :: Parser st CharCount
@@ -1216,11 +1200,11 @@ _modPrecedence f p = do
   o <- catchError (optional p) (\e -> reset >> throwError e)
   reset >> maybe mzero return o
 
--- | Convert a 'Parser' monad to some other monadic function. This is useful for converting 'Parser'
--- monad to a 'Prelude.ReadS' function that takes a precedence value. This is ideal for convering a
--- 'Parser' directly to a function that can be used to instantiate 'Prelude.readsPrec' for the
--- 'Prelude.Read' class. It can also be converted to a 'Text.ParserCombinators.ReadP.ReadP' or
--- 'Text.ParserCombinators.ReadPrec.ReadPrec' parser.
+-- | Transform a 'Parser' monad into some other monadic function. This is useful for converting
+-- 'Parser' monad to a 'Prelude.ReadS' function that takes a precedence value. This is ideal for
+-- convering a 'Parser' directly to a function that can be used to instantiate 'Prelude.readsPrec'
+-- for the 'Prelude.Read' class. It can also be converted to a 'Text.ParserCombinators.ReadP.ReadP'
+-- or 'Text.ParserCombinators.ReadPrec.ReadPrec' parser.
 --
 -- For example, if you have a 'Parser' function called @myParse@ of type:
 --
@@ -1237,4 +1221,79 @@ parser_to_S (Parser p) init prec instr = do
     PFail err -> fail (show err)
     Backtrack -> mzero
     OK     a  -> return (a, Lazy.unpack $ st & inputString)
+
+-- | This function lets you use the 'Parser' data type provided in this module within any abstract
+-- 'MonadParser', even parsers like 'Text.ParserCombinators.ReadP' and
+-- 'Text.ParserCombinators.ReadPrec'. It essentially takes a concrete 'Parser' type and transforms
+-- it into any other polymorphic parser type that instantiates 'MonadParser'.
+--
+-- The 'MonadParser' class cannot perform "backtracking" as in pushing an arbitrary string back into
+-- the input stream. The 'MonadParser' class was designed this way because it was necessary to
+-- include 'Text.ParserCombinator.ReadP' and 'Text.ParserCombinator.ReadPrec' as members of the
+-- 'MonadParser' class.
+--
+-- In a lazy langauage like Haskell, backtracking is done not by pushing back, but by simply looking
+-- ahead with 'look'. Branching using 'Control.Monad.mplus' causes the current input string to be
+-- copied lazily -- the lazy copy only contains the observed characters and not the entire input.
+-- If the branch fails, the lazily copied string is disgarded while the original string has been
+-- left untouched, and this is called backtracking.
+--
+-- But some parsing algorithms, for example the instance of 'regex' for the 'Parser' type defined in
+-- this module, may want to do push-back backtracking by using 'Parser's own specific instantiation
+-- of 'unstring', even if the abstract parser implementation does not instantiate 'unstring'.
+-- Wouldn't it be nice if 'unstring' could be used for all abstract 'MonadParser's, not just the
+-- ones that bother to instantiate 'MonadBacktrackingParser'?
+--
+-- That is what 'lookAheadWithParser' does. To perform push-back backtracking, the 'look' function
+-- is used to look-ahead, taking the entire input string (lazily) and placing it into a
+-- "Data.Text.Lazy" 'Data.Text.Lazy.Text' data structure, and then using the lazy text data as the
+-- input to a "Dao.Regex" 'Parser'. The 'lookAheadWithParser' function can then be reused to perform
+-- the parsing on the string retrieved from 'look'. If the 'Parser' succeeds, the 'count' function
+-- is used to remove the length of parsed string from the polymorphic 'MonadParser'. If it fails,
+-- "backtracking" is performed by simply not doing anything -- since the parse occurred on the
+-- 'look'-ahead lazily copied string, nothing was actually removed from the 'MonadParser's input.
+--
+-- Be warned that though it is possible to transform a 'Parser' into another identical 'Parser' with
+-- this function there is absolutely no reason to ever do this, and if you do you will experience a
+-- performance loss. So do not ever do something like this:
+--
+-- @
+-- myParser :: Parser MyState MyData
+-- myParser = 'Dao.Grammar.grammarToParser' $ ...
+--
+-- myAbstractParser :: MonadParser m => m MyData
+-- myAbstractParser = lookAheadWithParser myParser $ initMyState{ ... }
+--
+-- main :: IO () -- use the abstract parser with 'runParser'
+-- main = case 'runParser' myAbstractParser $ initMyState{ ... } of
+--     'Dao.Predicate.OK' myData -> 'Prelude.print' myData
+--     _ -> 'Control.Monad.fail' "could not parse"
+-- @
+--
+-- The @myAbstractParser@ function is an abstract 'MonadParser' constructed with
+-- 'lookAheadMonadParser'. But using @myAbstractParser@ with 'runParser' tells Haskell to transform
+-- the abstrat parser into a concrete 'Parser', so you have essentially transformed a 'Parser' into
+-- an abstract 'MonadParser' and back into a 'Parser' again. This is what you should avoid. The
+-- above @main@ function should be this instead:
+--
+-- @
+-- main :: IO () -- use myParser, not myAbstractParser, with 'runParser'.
+-- main = case 'runParser' myParser $ initMyState{ ... } of
+--     'Dao.Predicate.OK' myData -> 'Prelude.print' myData
+--     _ -> 'Control.Monad.fail' "could not parse"
+-- @
+lookAheadWithParser
+  :: (Monad m, MonadPlus m, MonadParser m)
+  => Parser st LazyText -> st -> m (LazyText, st)
+lookAheadWithParser p init = do
+  str <- look
+  let (result, st) = runParser p $ on (parserState init) [inputString <~ str]
+  let pushback = incrementPushBackCounter $ (st & pushBackCount) + (st & charCount)
+  case result of
+    Backtrack -> pushback >> mzero
+    PFail err -> pushback >> pfail err >> fail (showPPrint 4 4 $ pPrint err)
+    OK      o -> do
+      incrementCharCounter (st & charCount)
+      noMoreThan (st & charCount) anyChar
+      return (o, st & userState)
 

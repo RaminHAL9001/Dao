@@ -275,7 +275,7 @@ singleton p o = new [path p <~ Just o]
 -- | This function analogous to the 'Data.Map.lookup' function, which returns a value stored in a
 -- leaf, or nothing if there is no leaf at the given path.
 lookup :: Ord p => [p] -> Tree p a -> Maybe a
-lookup px = (& path px)
+lookup px = (~> (path px))
 
 -- | This function works like 'lookup', but takes a key predicate to match keys of the tree, rather
 -- than using @('Prelude.==')@. This means the efficient O(log n) 'Data.Map.Map' 'Data.Map.lookup'
@@ -291,9 +291,9 @@ lookup px = (& path px)
 slowLookup :: Ord b => (p -> b -> Bool) -> [p] -> Tree b a -> [([b], a)]
 slowLookup f = loop [] where
   loop branchPath px t = case px of
-    []   -> maybe [] (\o -> [(branchPath, o)]) $ t & leaf
+    []   -> maybe [] (\o -> [(branchPath, o)]) $ t~>leaf
     p:px -> do
-      (b, t) <- filter (f p . fst) (M.assocs $ t & branches)
+      (b, t) <- filter (f p . fst) (M.assocs $ t~>branches)
       loop (branchPath++[b]) px t
 
 -- | This function calls 'slowLookup' and returns only the first result. This can be used to take
@@ -518,15 +518,15 @@ instance Monad m => Monad (UpdateTreeT p o m) where
 
 instance (Ord p, Monad m) => MonadState (Maybe o) (UpdateTreeT p o m) where
   state f = UpdateTreeT $ StateT $ \st -> do
-    (a, l) <- return $ f $ st & zipperSubTree & leaf
-    return (a, on st [zipperSubTree >>> leaf <~ l])
+    (a, l) <- return $ f $ st~>zipperSubTree~>leaf
+    return (a, with st [zipperSubTree >>> leaf <~ l])
 
 -- | Run the 'UpdateTreeT' function, returning the modified 'Tree' and the last result returned by
 -- the 'UpdateTreeT' function.
 runUpdateTreeT :: (Functor m, Applicative m, Monad m, Ord p) => UpdateTreeT p o m a -> Tree p o -> m (a, Tree p o)
 runUpdateTreeT f tree = do
   (a, z) <- runStateT ((\ (UpdateTreeT f) -> f) $ f <* home) $ ZipTree tree []
-  return (a, z & zipperSubTree)
+  return (a, z~>zipperSubTree)
 
 -- | Analogous to 'Control.Monad.State.execStateT', does the same thing as 'runUpdateTreeT' but
 -- disgards the final return value of the 'UpdateTreeT' function.
@@ -544,24 +544,24 @@ goto px = case px of
   []       -> return ()
   (p:px) -> do
     UpdateTreeT $ do
-      t <- gets $ fromMaybe nullValue . M.lookup p . (& (branches . zipperSubTree))
-      modify (\st -> on st [zipperSubTree <~ t, zipperHistory $= ((p, st & zipperSubTree) :)])
+      t <- gets $ fromMaybe nullValue . M.lookup p . (~> (branches . zipperSubTree))
+      modify (\st -> with st [zipperSubTree <~ t, zipperHistory $= ((p, st~>zipperSubTree) :)])
     goto px
 
 -- | Go up one level in the tree, storing the current sub-tree into the upper tree, unless the
 -- current tree is 'Void', in which case it is deleted from the upper tree. Returns 'Prelude.False'
 -- if we are already at the root of the 'Tree' and could not go back.
 back :: (Functor m, Applicative m, Monad m, Ord p) => UpdateTreeT p o m Bool
-back = UpdateTreeT $ state $ \st -> case st & zipperHistory of
+back = UpdateTreeT $ state $ \st -> case st~>zipperHistory of
   []                    -> (False, st)
-  (p, Tree (t, m)):hist -> (,) True $ let u = st & zipperSubTree in on st
+  (p, Tree (t, m)):hist -> (,) True $ let u = st~>zipperSubTree in with st
     [ zipperSubTree <~ Tree (t, (if testNull u then id else M.insert p u) m)
     , zipperHistory <~ hist
     ]
 
 -- | Returns 'Prelude.True' if we are at the top level of the tree.
 atTop :: (Functor m, Applicative m, Monad m) => UpdateTreeT p o m Bool
-atTop = Prelude.null <$> UpdateTreeT (gets (& zipperHistory))
+atTop = Prelude.null <$> UpdateTreeT (gets (~> zipperHistory))
 
 -- | Go back to the top level of the tree.
 home :: (Functor m, Applicative m, Monad m, Ord p) => UpdateTreeT p o m ()
@@ -569,7 +569,7 @@ home = atTop >>= flip unless (back >> home)
 
 -- | Return the current path.
 getPath :: (Functor m, Applicative m, Monad m, Ord p) => UpdateTreeT p o m [p]
-getPath = reverse . fmap fst <$> UpdateTreeT (gets (& zipperHistory))
+getPath = reverse . fmap fst <$> UpdateTreeT (gets (~> zipperHistory))
 
 ----------------------------------------------------------------------------------------------------
 

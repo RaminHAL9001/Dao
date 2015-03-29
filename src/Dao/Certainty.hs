@@ -126,9 +126,9 @@ sumTotal = newLens (\ (Certainty a _) -> a) (\a (Certainty _ b) -> Certainty a b
 instance Eq Certainty where { (==) a b = EQ == compare a b; }
 
 instance Ord Certainty where
-  compare a b = compare (a & certainty) (b & certainty)
+  compare a b = compare (a~>certainty) (b~>certainty)
 
-instance Show Certainty where { show c = "Certainty{ average="++show (c & average)++" }"; }
+instance Show Certainty where { show c = "Certainty{ average="++show (c~>average)++" }"; }
 
 instance TestNull Certainty where
   nullValue = Certainty 0.0 1
@@ -217,7 +217,7 @@ invSigmoidal t = if 0.0 <= t && t <= 1.0 then log (recip t - 1.0) / negate fourP
 newtype MatchDistance = MatchDistance Certainty deriving (Eq, Ord, Typeable)
 
 instance Show MatchDistance where
-  show (MatchDistance s) = "(MatchDistance "++show (s & average)++")"
+  show (MatchDistance s) = "(MatchDistance "++show (s~>average)++")"
 
 _matchDist2 :: (Certainty -> Certainty -> Certainty) -> MatchDistance -> MatchDistance -> MatchDistance
 _matchDist2 f (MatchDistance a) (MatchDistance b) = MatchDistance $ f a b
@@ -303,7 +303,7 @@ matchPermutationPattern threshold diff ax = sortBy compareFirst . loop exactSame
     a:ax -> case bx of
       []   -> mzero
       b:bx -> let d = diff a b in
-        if abs (d & average . distanceSimilarity) < abs threshold
+        if abs (d~>distanceSimilarity~>average) < abs threshold
         then loop (c <> d) (keep ++ [b]) ax bx
         else scan [b] bx >>= \ (skip, bx) -> loop c (keep++skip) (a:ax) bx
 

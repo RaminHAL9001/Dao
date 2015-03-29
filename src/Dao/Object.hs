@@ -498,9 +498,9 @@ pPrintMap pprin o =
 
 pPrintTree :: T_tree -> [PPrint]
 pPrintTree o = concat
-  [ maybe [pText "()"] (\o -> [pText "(", pIndent (pPrint o), pNewLine, pText ")"]) (o & T.leaf)
+  [ maybe [pText "()"] (\o -> [pText "(", pIndent (pPrint o), pNewLine, pText ")"]) (o~>T.leaf)
   , [pSpace, pText "->", pSpace]
-  , pPrintMap pPrintTree (o & T.branches)
+  , pPrintMap pPrintTree (o~>T.branches)
   ]
 
 decoderArray :: A.Array Word8 (Get Simple)

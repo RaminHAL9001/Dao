@@ -30,8 +30,8 @@
 -- With Dao 'Lens'es, it is possible to achieve the same thing with the following expression:
 --
 -- @
--- let previousValue = dat 'Dao.Lens.&' recordName in
---     'on' dat [ record1 'Dao.Lens.<~' newValue1, record2 'Dao.Lens.<~' newValue2 ]
+-- let previousValue = dat 'Dao.Lens.~>' recordName in
+--     'with' dat [ record1 'Dao.Lens.<~' newValue1, record2 'Dao.Lens.<~' newValue2 ]
 -- @
 --
 -- Dao 'Lens'es can be composed with the 'Control.Category.Category' operators @(.)@,
@@ -44,22 +44,22 @@
 -- can be simplified to this:
 --
 -- @
--- return $ 'on' dat [ record 'Control.Category.>>>' subRecord 'Dao.Lens.<~' newValue ]
+-- return $ 'with' dat [ record 'Control.Category.>>>' subRecord 'Dao.Lens.<~' newValue ]
 -- @
 --
 -- or equivalently with the dot operator, which is identical to @('Control.Category.>>>')@ with the
 -- arguments flipped:
 --
 -- @
--- return $ 'on' dat [ subRecord . record 'Dao.Lens.<~' newValue ]
+-- return $ 'with' dat [ subRecord . record 'Dao.Lens.<~' newValue ]
 -- @
 --
--- Fetching values is done with @('Dao.Lens.&')@, which is a left-handed infix operator of
+-- Fetching values is done with @('Dao.Lens.~>')@, which is a left-handed infix operator of
 -- precedence 1 so that you can compose 'Lens'es for fetching. The above example with @record@ and
 -- @subRecord@ could be fetched like so:
 --
 -- @
--- return (dat & record & subRecord)
+-- return (dat ~> record ~> subRecord)
 -- @
 --
 -- This is reminiscient of popular languages like C/C++ in which you could write the above with a
@@ -95,21 +95,23 @@ import qualified Data.Map    as M
 import           Data.Monoid
 
 -- | This is defined as @('Prelude.flip' 'pureFetch')@ a left-associative infix operator of
--- precedence 1. On the right of this infix operator is the data from which you want to fetch, on
--- the right is a 'Lens' used to retrieve the data from within it. For example, say you have a
+-- precedence 8. On the right of this infix operator is the data from which you want to fetch, on
+-- the right is a 'Lens' used to retrieve the data from within it.  For example, say you have a
 -- large, complicated data type @complicated@ which contains a @Foo@ accessibly by the 'Lens' @foo@,
 -- and @Foo@ contains a @Bar@ accessible by the 'Lens' @bar@, and all you want to do is get the
 -- value @Bar@ from @complicated@. To do that you simply write:
 --
+-- It looks and behaves similar to the C/C++ programming language operator @->@.
+--
 -- @
--- complicated 'Dao.Lens.&' foo 'Dao.Lens.&' bar
+-- complicated 'Dao.Lens.~>' foo 'Dao.Lens.~>' bar
 -- @
 --
 -- This function requires a 'PureLens', but of course any 'Lens' polymorphic over the monadic type
 -- @m@ can be used.
-(&) :: c -> PureLens c e -> e
-(&) = flip pureFetch
-infixl 1 &
+(~>) :: c -> PureLens c e -> e
+(~>) = flip pureFetch
+infixl 9 ~>
 
 -- | Apply a sequence of 'Data.Monoid.Endo'functors (updating functions) to a container @c@. The
 -- 'Data.Monoid.Endo'functors are applied in the order they appear in the list from left-to-right.
@@ -132,19 +134,19 @@ infixl 1 &
 -- theItem :: Item
 -- theItem = Item 0 0
 --
--- -- Now lets try this 'on' function with theItem...
+-- -- Now lets try this 'with' function with theItem...
 -- main :: IO ()
 -- main = 'System.IO.print' $
---     'on' theItem [foo 'Dao.Lens.$=' 25, bar 'Dao.Lens.$=' 200, foo 'Dao.Lens.$$' (* 4)]
+--     'with' theItem [foo 'Dao.Lens.$=' 25, bar 'Dao.Lens.$=' 200, foo 'Dao.Lens.$$' (* 4)]
 -- @
 --
 -- The output of the above program will be:
 --
 -- > Item 100 200
-on :: c -> [c -> c] -> c
-on c fx = appEndo (getDual $ mconcat $ Dual . Endo <$> fx) c
+with :: c -> [c -> c] -> c
+with c fx = appEndo (getDual $ mconcat $ Dual . Endo <$> fx) c
 
--- | This is the 'on' function with the parameters 'Prelude.flip'ped. It is convenient when used
+-- | This is the 'with' function with the parameters 'Prelude.flip'ped. It is convenient when used
 -- with 'Control.Monad.State.Class.modify' when you want to update the state of a
 -- 'Control.Monad.State.Lazy.StateT' monad using a lens:
 --
@@ -152,13 +154,13 @@ on c fx = appEndo (getDual $ mconcat $ Dual . Endo <$> fx) c
 -- 'Control.Monad.State.Class.modify' $ 'by' [lensA 'Dao.Lens.<~' newValue, lensB 'Dao.Lens.$=' (+ 1)]
 -- @
 by :: [c -> c] -> c -> c
-by = flip on
+by = flip with
 
--- | Like 'on' but passes 'Dao.TestNull.nullValue' as the first parameter, so instead of writing
+-- | Like 'with' but passes 'Dao.TestNull.nullValue' as the first parameter, so instead of writing
 -- something like:
 --
 -- @
--- on nullValue [foo 'Dao.Lens.<~' 0, bar 'Dao.Lens.<~' 1]
+-- 'with' nullValue [foo 'Dao.Lens.<~' 0, bar 'Dao.Lens.<~' 1]
 -- @
 -- 
 -- All you have to write is:
@@ -167,12 +169,12 @@ by = flip on
 -- new [foo 'Dao.Lens.<~' 0, bar 'Dao.Lens.<~' 1]
 -- @
 new :: TestNull c => [c -> c] -> c
-new = on nullValue
+new = with nullValue
 
--- | This is a function intended to be used with the 'on' function. It is used for constructing a
+-- | This is a function intended to be used with the 'with' function. It is used for constructing a
 -- simple updating 'Data.Monoid.Endo'functor (updating function) that simply stores the element @e@
 -- into a container @c@ using 'pureUpdate'. You would use this operator when building a list of
--- updates to pass to the 'on' function.
+-- updates to pass to the 'with' function.
 --
 -- This function requires a 'PureLens', but of course any 'Lens' polymorphic over the monadic type
 -- @m@ can be used.
@@ -183,16 +185,16 @@ new = on nullValue
 -- value you want to write is on the right.
 --
 -- @
--- 'on' myData [fieldInData 'Dao.Lens.<~' 0]
+-- 'with' myData [fieldInData 'Dao.Lens.<~' 0]
 -- @
 (<~) :: PureLens c e -> e -> c -> c
 (<~) = pureUpdate
 infixr 0 <~
 
--- | This is a function intended to be used with the 'on' function. It is used for constructing a
+-- | This is a function intended to be used with the 'with' function. It is used for constructing a
 -- simple updating 'Data.Monoid.Endo'functor (updating function) that updates element @e@ inside of
 -- a container @c@ using 'pureAlter'. You would use this operator when building a list of updates to
--- pass to the 'on' function.
+-- pass to the 'with' function.
 --
 -- This function requires a 'PureLens', but of course any 'Lens' polymorphic over the monadic type
 -- @m@ can be used.
@@ -207,7 +209,7 @@ infixr 0 <~
 -- right-hand side of this operator that will perform the update:
 --
 -- @
--- 'on' myData [x 'Dao.Lens.$=' (+ 5)]
+-- 'with' myData [x 'Dao.Lens.$=' (+ 5)]
 -- @
 ($=) :: PureLens c e -> (e -> e) -> c -> c
 ($=) lens f c = snd (pureAlter lens f c)

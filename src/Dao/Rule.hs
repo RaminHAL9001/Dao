@@ -234,21 +234,21 @@ instance Monad m => MonadError ErrorObject (StatefulRule st m) where
 
 instance Monad m => MonadState st (StatefulRule st m) where
   state f = RuleLogic nullValue $ state $ \st ->
-    let (o, q) = f $ st & querySubState in (Right $ return o, on st [querySubState <~ q])
+    let (o, q) = f $ st~>querySubState in (Right $ return o, with st [querySubState <~ q])
 
 instance Monad m => MonadReader st (StatefulRule st m) where
   ask = get;
   local f sub = RuleLogic (getRuleStruct sub) $ do
-    st <- state $ \st -> (st, on st [querySubState $= f])
+    st <- state $ \st -> (st, with st [querySubState $= f])
     evalRuleLogic sub >>= return . Left ||| state . const . flip (,) st . Right . return
 
 instance Monad m => MonadLogic st (StatefulRule st m) where
   superState  f = RuleLogic nullValue $ superState $ \st ->
-    f (st & querySubState) >>= \ (o, q) -> return (Right $ return o, on st [querySubState <~ q])
+    f (st~>querySubState) >>= \ (o, q) -> return (Right $ return o, with st [querySubState <~ q])
   entangle rule = RuleLogic (getRuleStruct rule) $ do
     let lrzip (o, qx) = (\err -> ([(err, qx)], [])) ||| (\o -> ([], [(o, qx)])) $ o
     (errs, ox) <- liftM ((concat *** concat) . unzip . fmap lrzip) $ entangle (evalRuleLogic rule)
-    superState $ \st -> (Right $ return $ second (& querySubState) <$> ox, st) : fmap (first Left) errs
+    superState $ \st -> (Right $ return $ second (~> querySubState) <$> ox, st) : fmap (first Left) errs
 
 instance MonadTrans (StatefulRule st) where
   lift f = RuleLift $ liftM return f
@@ -309,22 +309,22 @@ query1 r st = query r st >=> \ox -> return $ if null ox then Nothing else Just $
 
 -- | Take the next item from the query input, backtrack if there is no input remaining.
 next :: Monad m => StatefulRule st m Object
-next = RuleLogic nullValue $ superState $ \q -> if null $ q & queryInput then [] else
-  [(Right $ return $ head $ q & queryInput, on q [queryInput $= tail, queryScore $= (+ 1)])]
+next = RuleLogic nullValue $ superState $ \q -> if null $ q~>queryInput then [] else
+  [(Right $ return $ head $ q~>queryInput, with q [queryInput $= tail, queryScore $= (+ 1)])]
 
 -- | Take as many of next items from the query input as necessary to make the rest of the 'Rule'
 -- match the input query. This acts as kind of a Kleene star.
 part :: Monad m => StatefulRule st m Query
 part = RuleLogic nullValue $ superState $ loop [] where
   out  keep st = (Right $ return keep, st)
-  loop keep st = case st & queryInput of
-    []   -> [out keep $ on st [queryInput <~ []]]
-    q:qx -> out keep st : loop (keep++[q]) (on st [queryScore $= (+ 1), queryInput <~ qx])
+  loop keep st = case st~>queryInput of
+    []   -> [out keep $ with st [queryInput <~ []]]
+    q:qx -> out keep st : loop (keep++[q]) (with st [queryScore $= (+ 1), queryInput <~ qx])
 
 -- | Clear the remainder of the input 'Query' and return it.
 remainder :: Monad m => StatefulRule st m Query
 remainder = RuleLogic nullValue $ state $ \st ->
-  (Right $ return $ st & queryInput, on st [queryInput <~ []])
+  (Right $ return $ st~>queryInput, with st [queryInput <~ []])
 
 -- | Match when there are no more arguments, backtrack if there are.
 --
@@ -335,7 +335,7 @@ remainder = RuleLogic nullValue $ state $ \st ->
 -- ('Data.Functor.Functor' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
 -- @
 done :: Monad m => StatefulRule st m ()
-done = RuleLogic nullValue $ superState $ \q -> [(Right $ return (), q) | null $ q & queryInput]
+done = RuleLogic nullValue $ superState $ \q -> [(Right $ return (), q) | null $ q~>queryInput]
 
 -- | Fully evaluate a 'Rule', and collect all possible results along with their 'queryScore's. Pass
 -- these results to a filter function, and procede with 'Rule' evaluation using only the results
@@ -358,7 +358,7 @@ limitByScore filter f = do
 -- | Like 'limitByScore' but the filter function simply selects the results with the highet
 -- 'queryScore'.
 bestMatch :: Monad m => StatefulRule st m a -> StatefulRule st m a
-bestMatch = let score = (& queryScore) . snd in limitByScore $ concat .
+bestMatch = let score = (~> queryScore) . snd in limitByScore $ concat .
   take 1 . groupBy (\a b -> score a == score b) . sortBy (\a b -> score b `compare` score a)
 
 -- | Evaluate a monadic function with the 'queryScore' reset to zero, and when evaluation of the
@@ -373,7 +373,7 @@ bestMatch = let score = (& queryScore) . snd in limitByScore $ concat .
 resetScore :: Monad m => StatefulRule st m a -> StatefulRule st m a
 resetScore f = do
   score <- RuleLogic (getRuleStruct f) $ state $ \q ->
-    (Right . return $ q & queryScore, on q [queryScore <~ 0])
+    (Right . return $ q~>queryScore, with q [queryScore <~ 0])
   a <- f
   RuleLogic nullValue (liftM (Right . return) $ modify (by [queryScore <~ score]))
   return a
@@ -556,15 +556,15 @@ _predictorStack =
 predictorQuery :: Monad m => Lens m (Predictor st m a) Query
 predictorQuery = newLensM fetch update where
   fetch (Predictor q _ s) = return $
-    concat $ reverse $ ((q & queryInput) :) $ fmap ((& queryInput) . fst) s
+    concat $ reverse $ ((q~>queryInput) :) $ fmap ((~> queryInput) . fst) s
   update ox (Predictor q r s) = predictorStep $
-    let loop qs r s' s ox = let done = Predictor (on q [queryInput <~ ox]) r s' in case s of
+    let loop qs r s' s ox = let done = Predictor (with q [queryInput <~ ox]) r s' in case s of
           []          -> done
-          (qs', r'):s -> case stripPrefix (qs & queryInput) ox of
+          (qs', r'):s -> case stripPrefix (qs~>queryInput) ox of
             Nothing -> done
             Just ox -> loop qs' r' ((qs, r):s') s ox
     in  case reverse s of
-          []        -> Predictor (on q [queryInput <~ ox]) r []
+          []        -> Predictor (with q [queryInput <~ ox]) r []
           (qs, r):s -> loop qs r [] s ox
 
 ----------------------------------------------------------------------------------------------------
@@ -576,16 +576,16 @@ startGuess r st q = predictorStep $ Predictor (QueryState (st, 0, q)) r []
 
 -- | Append more of a 'Query' to the current 'Predictor's 'QueryState'.
 continueGuess :: Monad m => Query -> Predictor st m a -> m (Predictor st m a)
-continueGuess q p = predictorStep $ on p [_predictorQueryState >>> queryInput $= (++ q)]
+continueGuess q p = predictorStep $ with p [_predictorQueryState >>> queryInput $= (++ q)]
 
 -- | A predicate indicating whether it is possible for the 'Predictor' to be stepped by
 -- 'predictorStep'.
 predictorCanStep :: Predictor st m a -> Bool
-predictorCanStep p = case p & _predictorRule of
+predictorCanStep p = case p~>_predictorRule of
   RuleEmpty    -> False
   RuleReturn{} -> False
   RuleError{}  -> False
-  _            -> not $ null $ p & _predictorQueryState & queryInput
+  _            -> not $ null $ p~>_predictorQueryState~>queryInput
 
 -- | This function takes a single item from the '_predictorQueryState' and uses it to evaluate a single
 -- step of the '_predictorRule' consuming as much of the input 'Query' in 'predictorQuery'. Once this
@@ -593,23 +593,23 @@ predictorCanStep p = case p & _predictorRule of
 -- possible to append these completions to the 'predictorQuery' and evaluate 'predictorStep' again.
 predictorStep :: Monad m => Predictor st m a -> m (Predictor st m a)
 predictorStep = curry loop nullValue >=> return . snd where
-  step t p rule = (t, on p [_predictorRule <~ rule])
-  loop (t, p) = let rule = p & _predictorRule in case rule of
+  step t p rule = (t, with p [_predictorRule <~ rule])
+  loop (t, p) = let rule = p~>_predictorRule in case rule of
     RuleLift     o -> o >>= loop . step t p
     RuleLogic  _ o ->
-      evalLogicT o (p & _predictorQueryState) >>= loop . step t p . msum . rights
+      evalLogicT o (p~>_predictorQueryState) >>= loop . step t p . msum . rights
     RuleChoice a b -> loop (step t p a) >>= \ (t, p) -> loop $ step t p b
     RuleTree   a b -> done (union t $ union (mkT a) (mkT b)) p
     _              -> return (t, p)
   mkT = T.Tree . (,) Nothing
   union = T.unionWith (\a b q -> mplus (a q) (b q))
   done t p = do
-    let qs = p & _predictorQueryState
-    let qi = qs & queryInput
+    let qs = p~>_predictorQueryState
+    let qi = qs~>queryInput
     case T.slowLookup1 (\a b -> isSimilar $ objMatch b a) qi t of
       Nothing         -> return (t, p)
       Just (_, qRule) -> let rule = qRule qi in return $ (,) t $
-        on p [_predictorStack $= ((on qs [queryInput <~ qi], rule) :), _predictorRule  <~ rule]
+        with p [_predictorStack $= ((with qs [queryInput <~ qi], rule) :), _predictorRule  <~ rule]
 
 -- | This will compute a pair of two results at once:
 --
@@ -619,12 +619,12 @@ predictorStep = curry loop nullValue >=> return . snd where
 --    context of the current production 'Rule'.
 predictorGuesses :: forall st m a . Monad m => Predictor st m a -> m ([Either ErrorObject a], [Query])
 predictorGuesses = liftM (second $ fmap fst . T.assocs T.BreadthFirst) . loop [] nullValue where
-  step p rule = on p [_predictorRule <~ rule]
+  step p rule = with p [_predictorRule <~ rule]
   loop :: [Either ErrorObject a] -> T.Tree Object () -> Predictor st m a -> m ([Either ErrorObject a], T.Tree Object ())
-  loop ax t p = case p & _predictorRule of
+  loop ax t p = case p~>_predictorRule of
     RuleLift     o -> o >>= loop ax t . step p
     RuleLogic  u o -> do
-      (errs, rules) <- liftM partitionEithers $ evalLogicT o $ p & _predictorQueryState
+      (errs, rules) <- liftM partitionEithers $ evalLogicT o $ p~>_predictorQueryState
       loop (ax ++ fmap Left errs) (T.union t u) $ step p (msum rules)
     RuleTree   a b -> let mkT o = T.Tree (Nothing, fmap void o) in
       return (ax, T.union t $ T.union (mkT a) (mkT b))

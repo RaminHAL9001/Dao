@@ -262,9 +262,9 @@ regexUnitToParser = liftM fst . flip lookAheadWithParser () . _regexUnitToParser
 -- | Like 'Prelude.span' but uses a 'Regex' to match from the start of the string.
 regexSpan :: Regex -> LazyText -> Maybe (StrictText, LazyText)
 regexSpan rx str =
-  let (result, st) = runParser (regexToParser rx) $ on (parserState ()) [inputString <~ str] in
+  let (result, st) = runParser (regexToParser rx) $ with (parserState ()) [inputString <~ str] in
   case result of
-    OK o -> Just (Lazy.toStrict o, st & inputString)
+    OK o -> Just (Lazy.toStrict o, st~>inputString)
     _    -> Nothing
 
 -- | Uses 'regexSpan' and a given 'Regex' to break a string into portions that match wrapped in a
@@ -1053,8 +1053,8 @@ instance Functor ParserState where
 
 instance TestNull st => TestNull (ParserState st) where
   nullValue = parserState nullValue
-  testNull o = Lazy.null (o & inputString) && (testNull $ o & userState) &&
-    TextPoint 1 1 == (o & textPoint) && 0 == (o & charCount) && 0 == (o & precedence)
+  testNull o = Lazy.null (o~>inputString) && (testNull $ o~>userState) &&
+    TextPoint 1 1 == o~>textPoint && 0 == o~>charCount && 0 == o~>precedence
 
 parserStateLens :: Monad m => Lens m (ParserState st) (LazyText, st, TextPoint, CharCount, CharCount, Int)
 parserStateLens =
@@ -1090,7 +1090,7 @@ parserState st = ParserState nullValue st (TextPoint 1 1) 0 0 minPrec
 -- input due to backtracking.
 efficiency :: ParserState st -> Double
 efficiency st = fromRational $
-  (fromIntegral $ st & charCount) % (max 1 $ fromIntegral $ st & pushBackCount)
+  (fromIntegral $ st~>charCount) % (max 1 $ fromIntegral $ st~>pushBackCount)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1124,10 +1124,10 @@ instance PredicateClass InvalidGrammar (Parser st) where
 
 instance MonadState st (Parser st) where
   state f = Parser $ lift $ state $ \st ->
-    let (a, ust) = f (st & userState) in (a, on st [userState <~ ust])
+    let (a, ust) = f (st~>userState) in (a, with st [userState <~ ust])
 
 instance MonadParser (Parser st) where
-  look      = Parser $ lift $ gets (& inputString)
+  look      = Parser $ lift $ gets (~> inputString)
   look1     = _take $ \t -> if Lazy.null t then (0, Nothing) else (1, return (Lazy.head t, 1, t))
   get1      = _take $ \t -> (1, guard (not $ Lazy.null t) >> return (Lazy.head t, 1, Lazy.tail t))
   string  s = _take $ \t -> let len = stringLength s in (len, (,,) s len <$> Lazy.stripPrefix s t)
@@ -1138,7 +1138,7 @@ instance MonadParser (Parser st) where
   eof       = look >>= guard . Lazy.null
   pfail err = do
     loc <- getTextPoint
-    throwError $ on err [invalidGrammarLocation $= mappend (EndLocation () loc)]
+    throwError $ with err [invalidGrammarLocation $= mappend (EndLocation () loc)]
   count c p = _take $ \t -> (,) c $ do
     (keep, t) <- pure $ Lazy.splitAt (countToInt c) t
     let len = Lazy.length keep
@@ -1156,12 +1156,12 @@ instance MonadParser (Parser st) where
   incrementCharCounter     c = Parser $ lift $ modify $ by [charCount     $= (+ c)]
 
 instance MonadPrecedenceParser (Parser st) where
-  prec c p = Parser (lift $ gets (& precedence)) >>= guard . (c >=) >> _modPrecedence (const c) p
+  prec c p = Parser (lift $ gets (~> precedence)) >>= guard . (c >=) >> _modPrecedence (const c) p
   step   p = _modPrecedence succ p
   reset  p = _modPrecedence (const 0) p
 
 instance MonadSourceCodeParser (Parser st) where
-  getTextPoint = Parser $ lift $ gets (& textPoint)
+  getTextPoint = Parser $ lift $ gets (~> textPoint)
   setTextPoint = const $ return ()
 
 instance MonadBacktrackingParser (Parser st) where
@@ -1169,7 +1169,7 @@ instance MonadBacktrackingParser (Parser st) where
 
 -- | Get the number of characters parsed so far.
 getCharCount :: Parser st CharCount
-getCharCount = Parser $ lift $ gets (& charCount)
+getCharCount = Parser $ lift $ gets (~> charCount)
 
 minPrec :: Int
 minPrec = 0
@@ -1177,11 +1177,11 @@ minPrec = 0
 _take :: (Lazy.Text -> (Count, Maybe (a, Count, Lazy.Text))) -> Parser st a
 _take f =
   ( Parser $ lift $ state $ \st ->
-      let (pb, o) = f $ st & inputString
+      let (pb, o) = f $ st~>inputString
           updPBC = pushBackCount $= (+ pb)
       in  case o of
-            Nothing           -> (Nothing, on st [updPBC])
-            Just (o, cc, rem) -> (Just  o, on st [inputString <~ rem, charCount $= (+ cc), updPBC])
+            Nothing           -> (Nothing, with st [updPBC])
+            Just (o, cc, rem) -> (Just  o, with st [inputString <~ rem, charCount $= (+ cc), updPBC])
   ) >>= maybe mzero return
 
 -- | Run the parser with a given 'ParserState' containing the input to be parsed and the
@@ -1192,7 +1192,7 @@ runParser (Parser p) = runState (runPredicateT p)
 
 _modPrecedence :: (Int -> Int) -> Parser st o -> Parser st o
 _modPrecedence f p = do
-  c <- Parser $ lift $ gets (& precedence)
+  c <- Parser $ lift $ gets (~> precedence)
   Parser $ lift $ modify $ by [precedence <~ f c]
   let reset = Parser $ lift $ modify $ by [precedence <~ c]
   o <- catchError (optional p) (\e -> reset >> throwError e)
@@ -1214,11 +1214,11 @@ _modPrecedence f p = do
 parser_to_S :: MonadPlus m => Parser st a -> st -> Int -> String -> m (a, String)
 parser_to_S (Parser p) init prec instr = do
   let (result, st) = runState (runPredicateT p) $
-        on (parserState init) [precedence <~ prec, inputString <~ Lazy.pack instr]
+        with (parserState init) [precedence <~ prec, inputString <~ Lazy.pack instr]
   case result of
     PFail err -> fail (show err)
     Backtrack -> mzero
-    OK     a  -> return (a, Lazy.unpack $ st & inputString)
+    OK     a  -> return (a, Lazy.unpack $ st~>inputString)
 
 -- | This function lets you use the 'Parser' data type provided in this module within any abstract
 -- 'MonadParser', even parsers like 'Text.ParserCombinators.ReadP' and
@@ -1285,13 +1285,13 @@ lookAheadWithParser
   => Parser st LazyText -> st -> m (LazyText, st)
 lookAheadWithParser p init = do
   str <- look
-  let (o, st) = runParser p $ on (parserState init) [inputString <~ str]
-  let pushback = incrementPushBackCounter $ (st & pushBackCount) + (st & charCount)
+  let (o, st) = runParser p $ with (parserState init) [inputString <~ str]
+  let pushback = incrementPushBackCounter $ st~>pushBackCount + st~>charCount
   case o of
     Backtrack -> pushback >> mzero
     PFail err -> pushback >> pfail err >> fail (showPPrint 4 4 $ pPrint err)
     OK      o -> do
-      incrementCharCounter (st & charCount)
+      incrementCharCounter (st~>charCount)
       noMoreThan (stringLength o) anyChar
-      return (o, st & userState)
+      return (o, st~>userState)
 

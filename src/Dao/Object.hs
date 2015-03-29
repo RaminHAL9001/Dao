@@ -341,8 +341,8 @@ showUnquoted = showPPrint 4 100 . pprintUnquoted
 -- value.
 pprintUnquoted :: ErrorObject -> [PPrint]
 pprintUnquoted ox = cleanSpaces $ ox >>= \o -> case runIdentity $ runPredicateT $ fromObj o of
-  OK o -> [pSpace, pText (o::Strict.Text), pSpace]
-  _    -> pPrint o
+  PTrue o -> [pSpace, pText (o::Strict.Text), pSpace]
+  _       -> pPrint o
 
 type T_int    = Int
 type T_long   = Integer

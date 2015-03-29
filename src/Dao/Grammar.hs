@@ -148,7 +148,7 @@ lexerBreak o str = checkLexer o >>= \ (Lexer (f, rx)) -> guard (not $ null rx) >
   return (fmap (f . Lazy.fromStrict) <$> regexBreak (head rx) str)
 
 -- | Like 'regexMatch' but for 'Lexer's. Uses 'lexerSpan' to check whether a given 'Lexer' matches
--- the entire input string or not. Evaluates to 'Dao.Predicate.Backtrack' if the whole string is not
+-- the entire input string or not. Evaluates to 'Dao.Predicate.PFalse' if the whole string is not
 -- matched.
 lexerMatch :: Lexer o -> LazyText -> Predicate InvalidGrammar o
 lexerMatch o str = lexerSpan o str >>= \ (o, str) -> guard (not $ Lazy.null str) >> return o
@@ -206,9 +206,9 @@ _grTable
   :: Monad m
   => Predicate InvalidGrammar (RegexTable (LazyText -> Grammar m o)) -> Grammar m o
 _grTable o = case o of
-  OK      o -> GrTable o
-  Backtrack -> GrEmpty
-  PFail err -> GrReject err
+  PTrue  o -> GrTable o
+  PFalse   -> GrEmpty
+  PError e -> GrReject e
 
 instance Monad m => MonadPlus (Grammar m) where
   mzero = GrEmpty
@@ -228,8 +228,8 @@ instance Monad m => MonadPlus (Grammar m) where
       GrEmpty          -> GrTable tabA
       GrReturn  b      -> GrChoice (GrTable tabA) (GrReturn b)
       GrLift    next   -> GrLift $ liftM (mplus $ GrTable tabA) next
-      GrTable   tabB   -> _grTable $ OK tabA <> OK tabB
-      GrRegex   rx   b -> _grTable $ OK tabA <> regexsToTable [(rx, b)]
+      GrTable   tabB   -> _grTable $ PTrue tabA <> PTrue tabB
+      GrRegex   rx   b -> _grTable $ PTrue tabA <> regexsToTable [(rx, b)]
       GrChoice  b    c -> mplus (mplus (GrTable tabA) b) c
       GrType    typ  b -> GrType typ $ mplus (GrTable tabA) b
       GrFail    err    -> GrChoice (GrTable tabA) (GrFail err)
@@ -238,7 +238,7 @@ instance Monad m => MonadPlus (Grammar m) where
       GrEmpty          -> GrRegex rxA a
       GrReturn       b -> GrChoice (GrRegex rxA a) (GrReturn b)
       GrLift         b -> GrChoice (GrRegex rxA a) (GrLift   b)
-      GrTable        b -> _grTable $ regexsToTable [(rxA, a)] <> OK b
+      GrTable        b -> _grTable $ regexsToTable [(rxA, a)] <> PTrue b
       GrRegex   rxB  b -> _grTable $ regexsToTable [(rxA, a), (rxB, b)]
       GrChoice  b    c -> mplus (mplus (GrRegex rxA a) b) c
       GrType    typ  b -> GrType typ $ mplus (GrRegex rxA a) b
@@ -293,12 +293,12 @@ typeOfGrammar = typ undefined where
 -- 'Control.Applicative.empty' which alwasy backtracaks.
 grammar :: Monad m => [Lexer o] -> Grammar m o
 grammar ox = case concatenated ox of
-  Backtrack -> GrEmpty
-  PFail err -> GrReject err
-  OK  table -> GrTable table
+  PFalse       -> GrEmpty
+  PError err   -> GrReject err
+  PTrue  table -> GrTable table
   where
     concatenated =
-      mapM (\ (Lexer (f, ox)) -> flip (,) (return . f) <$> mconcat (OK <$> ox)) >=> regexsToTable
+      mapM (\ (Lexer (f, ox)) -> flip (,) (return . f) <$> mconcat (PTrue <$> ox)) >=> regexsToTable
 
 -- | Create a 'Grammar' that matches any one of the given strings. The list of given strings is
 -- automatically sorted to make sure shorter strings do not shaddow longer strings.

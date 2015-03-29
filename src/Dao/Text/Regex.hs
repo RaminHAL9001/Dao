@@ -264,8 +264,8 @@ regexSpan :: Regex -> LazyText -> Maybe (StrictText, LazyText)
 regexSpan rx str =
   let (result, st) = runParser (regexToParser rx) $ with (parserState ()) [inputString <~ str] in
   case result of
-    OK o -> Just (Lazy.toStrict o, st~>inputString)
-    _    -> Nothing
+    PTrue o -> Just (Lazy.toStrict o, st~>inputString)
+    _       -> Nothing
 
 -- | Uses 'regexSpan' and a given 'Regex' to break a string into portions that match wrapped in a
 -- 'Prelude.Right' constructor, and portions that do not match wrapped into a 'Prelude.Left'
@@ -895,27 +895,27 @@ instance Ord Regex where
   compare a b = compare (computeLogProb $ probRegex a) (computeLogProb $ probRegex b)
 
 instance Monoid (Predicate InvalidGrammar Regex) where
-  mempty = Backtrack
+  mempty = PFalse
   mappend a b = case a of
-    Backtrack    -> b
-    PFail     _  -> a
-    OK (Regex a) -> case b of
-      Backtrack    -> OK (Regex a)
-      PFail     _  -> b
-      OK (Regex b) -> fromMaybe Backtrack $ msum
+    PFalse          -> b
+    PError       _  -> a
+    PTrue (Regex a) -> case b of
+      PFalse          -> PTrue (Regex a)
+      PError       _  -> b
+      PTrue (Regex b) -> fromMaybe PFalse $ msum
         [do unitA <- lastElem a -- If a is empty, we stop here.
             unitB <- b!0 -- If b is empty, we stop here.
             -- a and b are not empty, we can safely assume at least one element can be indexed
             let items arr rng = catMaybes $ (arr !) <$> range rng
             if shadowsSeries unitA unitB
-            then Just $ PFail $ InvalidGrammar $
+            then Just $ PError $ InvalidGrammar $
               (Nothing, NoLocation (), RegexShadowError SequenceRegex (Regex a) (Regex b))
             else Just $ do
               rxAB <- _rxSeq unitA unitB
-              OK $ Regex $ array $ concat
+              PTrue $ Regex $ array $ concat
                 [items a (0, size a - 2), maybe [unitA, unitB] return rxAB, items b (1, size b - 1)]
-        , lastElem a >> Just (OK $ Regex a)
-        , b!0 >> Just (OK $ Regex b)
+        , lastElem a >> Just (PTrue $ Regex a)
+        , b!0 >> Just (PTrue $ Regex b)
         ]
 
 instance NFData Regex where { rnf (Regex a) = deepseq a (); }
@@ -1011,7 +1011,7 @@ checkRegexChoices = loop Nothing where
       Nothing -> loop (Just r2) ox
       Just r1 ->
         if shadowsParallel r1 r2
-        then PFail $ InvalidGrammar (Nothing, NoLocation (), RegexShadowError ParallelRegex r1 r2)
+        then PError $ InvalidGrammar (Nothing, NoLocation (), RegexShadowError ParallelRegex r1 r2)
         else loop (Just r2) ox
 
 -- | Every 'Regex' contains a 'Regex', and every 'Regex' can match some range of characters. This
@@ -1120,7 +1120,7 @@ instance MonadError InvalidGrammar (Parser st) where
 
 instance PredicateClass InvalidGrammar (Parser st) where
   predicate = Parser . predicate
-  returnPredicate (Parser try) = Parser $ try >>= return . OK
+  returnPredicate (Parser try) = Parser $ try >>= return . PTrue
 
 instance MonadState st (Parser st) where
   state f = Parser $ lift $ state $ \st ->
@@ -1216,9 +1216,9 @@ parser_to_S (Parser p) init prec instr = do
   let (result, st) = runState (runPredicateT p) $
         with (parserState init) [precedence <~ prec, inputString <~ Lazy.pack instr]
   case result of
-    PFail err -> fail (show err)
-    Backtrack -> mzero
-    OK     a  -> return (a, Lazy.unpack $ st~>inputString)
+    PError e -> fail (show e)
+    PFalse   -> mzero
+    PTrue  a -> return (a, Lazy.unpack $ st~>inputString)
 
 -- | This function lets you use the 'Parser' data type provided in this module within any abstract
 -- 'MonadParser', even parsers like 'Text.ParserCombinators.ReadP' and
@@ -1264,7 +1264,7 @@ parser_to_S (Parser p) init prec instr = do
 --
 -- main :: IO () -- use the abstract parser with 'runParser'
 -- main = case 'runParser' myAbstractParser $ initMyState{ ... } of
---     'Dao.Predicate.OK' myData -> 'Prelude.print' myData
+--     'Dao.Predicate.PTrue' myData -> 'Prelude.print' myData
 --     _ -> 'Control.Monad.fail' "could not parse"
 -- @
 --
@@ -1277,7 +1277,7 @@ parser_to_S (Parser p) init prec instr = do
 -- @
 -- main :: IO () -- use myParser, not myAbstractParser, with 'runParser'.
 -- main = case 'runParser' myParser $ initMyState{ ... } of
---     'Dao.Predicate.OK' myData -> 'Prelude.print' myData
+--     'Dao.Predicate.PTrue' myData -> 'Prelude.print' myData
 --     _ -> 'Control.Monad.fail' "could not parse"
 -- @
 lookAheadWithParser
@@ -1288,9 +1288,9 @@ lookAheadWithParser p init = do
   let (o, st) = runParser p $ with (parserState init) [inputString <~ str]
   let pushback = incrementPushBackCounter $ st~>pushBackCount + st~>charCount
   case o of
-    Backtrack -> pushback >> mzero
-    PFail err -> pushback >> pfail err >> fail (showPPrint 4 4 $ pPrint err)
-    OK      o -> do
+    PFalse   -> pushback >> mzero
+    PError e -> pushback >> pfail e >> fail (showPPrint 4 4 $ pPrint e)
+    PTrue  o -> do
       incrementCharCounter (st~>charCount)
       noMoreThan (stringLength o) anyChar
       return (o, st~>userState)

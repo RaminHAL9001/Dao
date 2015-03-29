@@ -199,44 +199,37 @@ instance Monad m => Monad (Grammar m) where
     GrReject  err      -> GrReject err
   fail = GrFail . Strict.pack
 
+_cutBranches :: Array Regex -> Grammar m o
+_cutBranches = GrReject . InvalidGrammar . (,,) Nothing (NoLocation ()) . CutSomeBranches
+
+_grTable
+  :: Monad m
+  => Predicate InvalidGrammar (RegexTable (LazyText -> Grammar m o)) -> Grammar m o
+_grTable o = case o of
+  OK      o -> GrTable o
+  Backtrack -> GrEmpty
+  PFail err -> GrReject err
+
 instance Monad m => MonadPlus (Grammar m) where
   mzero = GrEmpty
   mplus a b = case a of
     GrEmpty          -> b
     GrReturn  a      -> case b of
       GrEmpty          -> GrReturn a
-      GrReturn  _      -> GrReturn a
-      GrLift    b      -> GrLift $ liftM (mplus $ GrReturn a) b
-      GrTable   tabB   -> GrReject $ InvalidGrammar
-        (Nothing, NoLocation (), CutSomeBranches $ fst <$> regexTableElements tabB)
-      GrRegex   rx   _ -> GrReject $ InvalidGrammar $
-        (Nothing, NoLocation (), CutSomeBranches $ array [rx])
-      GrChoice  b    c -> mplus (mplus (GrReturn a) b) c
-      GrType    _    _ -> GrReturn a
-      GrFail    _      -> GrReturn a
+      GrTable   tabB   -> _cutBranches $ fst <$> regexTableElements tabB
+      GrRegex   rx   _ -> _cutBranches $ array [rx]
       GrReject  err    -> GrReject err
+      _                -> GrReturn a
     GrLift    a      -> case b of
       GrEmpty          -> GrLift a
-      GrReturn  b      -> GrLift $ liftM (flip mplus $ GrReturn b) a
-      GrLift    b      -> GrLift $ liftM2 mplus a b
-      GrTable   b      -> GrLift $ liftM (flip mplus $ GrTable b) a
-      GrRegex   rx   b -> GrLift $ liftM (flip mplus $ GrRegex rx b) a
-      GrChoice  b    c -> mplus (mplus (GrLift a) b) c
-      GrType    typ  b -> GrType typ $ mplus (GrLift a) b
-      GrFail    err    -> GrChoice (GrLift a) (GrFail err)
       GrReject  err    -> GrReject err
+      _                -> GrLift $ liftM2 mplus a (return b)
     GrTable   tabA   -> case b of
       GrEmpty          -> GrTable tabA
       GrReturn  b      -> GrChoice (GrTable tabA) (GrReturn b)
       GrLift    next   -> GrLift $ liftM (mplus $ GrTable tabA) next
-      GrTable   tabB   -> case OK tabA <> OK tabB of
-        PFail err -> GrReject err
-        Backtrack -> GrEmpty
-        OK    tab -> GrTable tab
-      GrRegex   rx   b -> case OK tabA <> regexsToTable [(rx, b)] of
-        PFail err -> GrReject err
-        Backtrack -> GrEmpty
-        OK    tab -> GrTable tab
+      GrTable   tabB   -> _grTable $ OK tabA <> OK tabB
+      GrRegex   rx   b -> _grTable $ OK tabA <> regexsToTable [(rx, b)]
       GrChoice  b    c -> mplus (mplus (GrTable tabA) b) c
       GrType    typ  b -> GrType typ $ mplus (GrTable tabA) b
       GrFail    err    -> GrChoice (GrTable tabA) (GrFail err)
@@ -245,15 +238,9 @@ instance Monad m => MonadPlus (Grammar m) where
       GrEmpty          -> GrRegex rxA a
       GrReturn       b -> GrChoice (GrRegex rxA a) (GrReturn b)
       GrLift         b -> GrChoice (GrRegex rxA a) (GrLift   b)
-      GrTable        b -> case regexsToTable [(rxA, a)] <> OK b of
-        PFail err -> GrReject err
-        Backtrack -> GrEmpty
-        OK    tab -> GrTable tab
-      GrRegex  rxB   b -> case regexsToTable [(rxA, a), (rxB, b)] of
-        PFail err -> GrReject err
-        Backtrack -> GrEmpty
-        OK    tab -> GrTable tab
-      GrChoice  b    c -> GrChoice (flip mplus b $ GrRegex rxA a) c
+      GrTable        b -> _grTable $ regexsToTable [(rxA, a)] <> OK b
+      GrRegex   rxB  b -> _grTable $ regexsToTable [(rxA, a), (rxB, b)]
+      GrChoice  b    c -> mplus (mplus (GrRegex rxA a) b) c
       GrType    typ  b -> GrType typ $ mplus (GrRegex rxA a) b
       GrFail    err    -> GrChoice (GrRegex rxA a) $ GrFail err
       GrReject  err    -> GrReject err
@@ -264,8 +251,8 @@ instance Monad m => MonadPlus (Grammar m) where
             _          -> GrType typ $ mplus a b
       in  loop [typ] b
     GrFail    err    -> case b of
-      GrTable   tabB   -> GrReject $ InvalidGrammar
-        (Nothing, NoLocation (), CutSomeBranches $ fst <$> regexTableElements tabB)
+      GrTable   tabB   -> _cutBranches $ fst <$> regexTableElements tabB
+      GrRegex   rxB  _ -> _cutBranches $ array [rxB]
       _                -> GrFail err
     GrReject  err    -> GrReject err
                              

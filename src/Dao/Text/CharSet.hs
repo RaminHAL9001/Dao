@@ -60,8 +60,8 @@ instance PPrintable CharSet where
           (a, b) | a==minBound              -> [pText "[-", ch b, ch ']']
           (a, b) | b==maxBound              -> [ch '[', ch a, pText "-]"]
           (_, _)                            -> [pText "."]
-        (inverted, pairs) = csetDecompose cs
-    in  pText (if inverted then "[^" else "[") : (pairs >>= prin) ++ [pText "]"]
+        (notInverted, pairs) = csetDecompose cs
+    in  pText (if notInverted then "[" else "[^") : (pairs >>= prin) ++ [pText "]"]
 
 instance Show CharSet where { show = showPPrint 4 4 . pPrint; }
 
@@ -118,11 +118,10 @@ csetAll = Iv.isWhole . charIntervalSet
 -- value returned will be 'Prelude.False' to indicate the negative. If the set was not inverted, the
 -- 'Prelude.Bool' value returned will be 'Prelude.True', to indicate the positive.
 csetDecompose :: CharSet -> (Bool, [(Char, Char)])
-csetDecompose csA = if maxOf csA <= maxOf csB then (True, elems csA) else (False, elems csB) where
-  csB      = csetNot csA
-  getElems = Iv.toList . charIntervalSet
-  maxOf    = maximum . fmap Iv.intervalEnumSize . getElems
-  elems    = fmap Iv.toBoundedPair . getElems
+csetDecompose csA = if size csA <= size csB then (True, elems csA) else (False, elems csB) where
+  csB   = csetNot csA
+  size  = length . Iv.toList . charIntervalSet
+  elems = fmap Iv.toBoundedPair . Iv.toList . charIntervalSet
 
 -- | Get the lowest and highest character in the set, if any characters exist in this 'CharSet'.
 charSetBounds :: CharSet -> Maybe (Char, Char)

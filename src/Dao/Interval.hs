@@ -369,12 +369,12 @@ numElems seg = case seg of
 -- | Return the number of points included the set for sets of points that are both 'Prelude.Bounded'
 -- and 'Prelude.Integral'.
 intervalIntSize :: (Bounded c, Integral c) => Interval c -> Integer
-intervalIntSize = pred . uncurry subtract . (toInteger *** toInteger) . toBoundedPair
+intervalIntSize = (+ 1) . uncurry subtract . (toInteger *** toInteger) . toBoundedPair
 
 -- | Return the number of points included the set for sets of points that are both 'Prelude.Bounded'
--- and 'Prelude.Integral'.
+-- and 'Prelude.Enum'.
 intervalEnumSize :: (Bounded c, Enum c) => Interval c -> Int
-intervalEnumSize = pred . uncurry subtract . (fromEnum *** fromEnum) . toBoundedPair
+intervalEnumSize = succ . uncurry subtract . (fromEnum *** fromEnum) . toBoundedPair
 
 -- | Tests whether an 'Inf' is within the _interval. It is handy when used with backquote noation:
 -- @enumInf `isWithin` _interval@

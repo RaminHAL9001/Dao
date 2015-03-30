@@ -17,7 +17,8 @@
 -- <http://www.gnu.org/licenses/agpl.html>.
 
 module Dao.Array
-  ( Array, array, arraySpan, size, indexOK, elems, lastElem, (!), toIArray, arrayIsNull,
+  ( Array, array, arraySpan, size, indexOK, elems, lastElem,
+    indexElems, (!), toIArray, arrayIsNull,
     levenshteinDistanceMatrix,
     levenshteinIArrayDistance,
     levenshteinArrayDistance,
@@ -74,7 +75,7 @@ instance Monoid (Array o) where
 
 instance TestNull (Array o) where
   nullValue = mempty
-  testNull (Array o) = isJust o
+  testNull (Array o) = isNothing o
 
 -- | Returns the minimum bounds that contains the bounds for both given 'Data.Array.IArray.Array's.
 -- *NOTE* that this operates on arrays from the "Data.Array.IArray" module.
@@ -100,6 +101,10 @@ size (Array a) = maybe 0 ((1+) . uncurry subtract . A.bounds) a
 
 indexOK :: Array o -> Int -> Bool
 indexOK (Array o) i = maybe False (flip A.inRange i . A.bounds) o
+
+indexElems :: Array o -> (Int, Int) -> [o]
+indexElems (Array o) (loB, hiB) = flip (maybe []) o $ \o ->
+  let (loA, hiA) = A.bounds o in (o A.!) <$> A.range (max loA loB, min hiA hiB)
 
 (!) :: Array o -> Int -> Maybe o
 (!) arr@(Array o) i = guard (indexOK arr i) >> (A.! i) <$> o

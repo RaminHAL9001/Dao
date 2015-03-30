@@ -21,7 +21,7 @@ module Dao.Text.Regex
     ToRegex(rx), Regex, regexUnits,
     RegexUnit, RegexRepeater, rxGetString, rxGetCharSet, rxGetRepeater,
     RepeatMinMax(MIN, MAX),
-    ToRegexRepeater(toRegexRepeater), lexRepeaterToPair,
+    ToRegexRepeater(toRegexRepeater), repeaterToPair,
     regexUnitToParser, regexSpan, regexBreak, regexMatch, regex,
     -- * Creating a Regex Table:
     RegexTable, regexTableElements, regexTable, regexsToTable, regexTableToParser,
@@ -298,7 +298,7 @@ instance NFData RegexShadowErrorType where
 -- 'pfail' function.
 data InvalidGrammarDetail
   = OtherFailure     StrictText
-  | RegexShadowError RegexShadowErrorType Regex  Regex
+  | RegexShadowError RegexShadowErrorType Regex Regex
   | UnexpectedInput  StrictText StrictText
   | CutSomeBranches  (Array Regex)
   deriving (Eq, Ord, Typeable)
@@ -597,7 +597,7 @@ instance NFData RegexRepeater where
 -- this works.
 --
 -- @('Dao.Count.Count', 'Prelude.Maybe' 'Dao.Count.Count) :: @ -- this is the inverse of
--- 'lexRepeaterToPair'. Please refer to the documentation 'lexRepeaterToPair' for more on how this
+-- 'repeaterToPair'. Please refer to the documentation 'repeaterToPair' for more on how this
 -- works.
 class ToRegexRepeater o where { toRegexRepeater :: o -> RegexRepeater }
 
@@ -637,17 +637,17 @@ instance ToRegexRepeater (Count, Maybe Count) where
 -- has been satisfied, the regular expression will never fail to match, therefore even if the input
 -- string matches more than the given maximum number of repetitions, only the maximum number of
 -- repetitions will be matched and the remainder of the input string will be left untouched.
-lexRepeaterToPair :: RegexRepeater -> (Count, Maybe Count)
-lexRepeaterToPair o = case o of
+repeaterToPair :: RegexRepeater -> (Count, Maybe Count)
+repeaterToPair o = case o of
   RxSingle       -> (1, Just 1)
   RxRepeat lo hi -> (lo, hi)
 
 -- | The probability of a 'RegexRepeater' is a function on a probability value, where the function is:
 --
--- > \r p -> 'P_Pow' p (('Prelude.fst' . 'lexRepeaterToPair') r)
+-- > \r p -> 'P_Pow' p (('Prelude.fst' . 'repeaterToPair') r)
 --
 probRepeater :: RegexRepeater -> Probability -> Probability
-probRepeater r p = P_Pow p $ toInteger $ (fst . lexRepeaterToPair) r
+probRepeater r p = P_Pow p $ toInteger $ (fst . repeaterToPair) r
 
 ----------------------------------------------------------------------------------------------------
 
@@ -684,14 +684,14 @@ _regexUnitToParser o = case o of
   RxString o rep -> do
     let zo  = Lazy.fromStrict o
     let check = string zo *> pure True <|> pure False
-    let (lo, hi) = lexRepeaterToPair rep
+    let (lo, hi) = repeaterToPair rep
     let init i keep = if i>=lo then return (i, keep) else check >>= \ok ->
           if ok then init (i+1) (keep<>zo) else unstring keep >> mzero
     let loop i keep = if not $ maybe True (i <) hi then return keep else check >>= \ok ->
           if ok then loop (i+1) (keep<>zo) else return keep
     init 0 mempty >>= uncurry loop
   RxChar cset rep -> do
-    let (lo, hi) = lexRepeaterToPair rep
+    let (lo, hi) = repeaterToPair rep
     init <- if lo==0 then pure mempty else count lo cset
     mappend init <$> maybe (munch cset) (flip noMoreThan cset) hi
 
@@ -717,18 +717,18 @@ instance InitialCharSetOf RegexUnit where
     RxChar   o _ -> o
 
 instance RxMinLength RegexUnit where
-  rxMinLength o = toInteger ((fst . lexRepeaterToPair) $ rxGetRepeater o) * case o of
+  rxMinLength o = toInteger ((fst . repeaterToPair) $ rxGetRepeater o) * case o of
     RxString o _ -> toInteger (Strict.length o)
     RxChar   _ _ -> 1
 
 instance RxMaxLength RegexUnit where
-  rxMaxLength o = (snd . lexRepeaterToPair) (rxGetRepeater o) >>= \m -> Just $ toInteger m * case o of
+  rxMaxLength o = (snd . repeaterToPair) (rxGetRepeater o) >>= \m -> Just $ toInteger m * case o of
     RxString o _ -> toInteger (Strict.length o)
     RxChar   _ _ -> 1
 
 instance ShadowsSeries RegexUnit where
   shadowsSeries a b =
-    let bnds = lexRepeaterToPair . rxGetRepeater
+    let bnds = repeaterToPair . rxGetRepeater
         (_, hiA) = bnds a
     in  case a of
           RxString  tA _ -> case b of
@@ -777,8 +777,8 @@ _rxUnit_shadowsParallel isFinalItem a b = case a of
       testNull (csetDelete (anyOf $ Strict.unpack tB) tA)
   where
     compLo opA opB = 
-      let (loA, _) = lexRepeaterToPair opA
-          (loB, _) = lexRepeaterToPair opB
+      let (loA, _) = repeaterToPair opA
+          (loB, _) = repeaterToPair opB
       in  loA<=loB
 
 -- | The 'Probability' value that a given 'RegexUnit' will match a completely random input string.
@@ -897,26 +897,30 @@ instance Ord Regex where
 instance Monoid (Predicate InvalidGrammar Regex) where
   mempty = PFalse
   mappend a b = case a of
-    PFalse          -> b
-    PError       _  -> a
-    PTrue (Regex a) -> case b of
-      PFalse          -> PTrue (Regex a)
-      PError       _  -> b
-      PTrue (Regex b) -> fromMaybe PFalse $ msum
-        [do unitA <- lastElem a -- If a is empty, we stop here.
-            unitB <- b!0 -- If b is empty, we stop here.
-            -- a and b are not empty, we can safely assume at least one element can be indexed
-            let items arr rng = catMaybes $ (arr !) <$> range rng
-            if shadowsSeries unitA unitB
-            then Just $ PError $ InvalidGrammar $
-              (Nothing, NoLocation (), RegexShadowError SequenceRegex (Regex a) (Regex b))
-            else Just $ do
-              rxAB <- _rxSeq unitA unitB
-              PTrue $ Regex $ array $ concat
-                [items a (0, size a - 2), maybe [unitA, unitB] return rxAB, items b (1, size b - 1)]
-        , lastElem a >> Just (PTrue $ Regex a)
-        , b!0 >> Just (PTrue $ Regex b)
-        ]
+    PError err                   -> PError err
+    PFalse                       -> b
+    PTrue (Regex a) | testNull a -> b
+    PTrue (Regex a)              -> case b of
+      PError err                   -> PError err
+      PFalse                       -> PTrue $ Regex a
+      PTrue (Regex b) | testNull b -> PTrue (Regex a)
+      PTrue (Regex b)              -> do
+        let getA = lastElem a
+            getB = b!0
+        fromMaybe PFalse $ msum
+          [do unitA <- getA -- If a is empty, we stop here.
+              unitB <- getB -- If b is empty, we stop here.
+              -- a and b are not empty, we can safely assume at least one element can be indexed
+              if shadowsSeries unitA unitB
+              then Just $ PError $ InvalidGrammar $
+                (Nothing, NoLocation (), RegexShadowError SequenceRegex (Regex a) (Regex b))
+              else Just $ do
+                rxAB <- _rxSeq unitA unitB
+                PTrue $ Regex $ array $ concat
+                  [indexElems a (0, size a - 2), rxAB, indexElems b (1, size b - 1)]
+          , getA >> Just (PTrue $ Regex a)
+          , getB >> Just (PTrue $ Regex b)
+          ]
 
 instance NFData Regex where { rnf (Regex a) = deepseq a (); }
 
@@ -954,16 +958,26 @@ probRegex (Regex o) = foldl (\p -> P_Mult p . probRegexUnit) (P_Prob 1) (elems o
 
 -- Tries to merge two 'RegexUnit's together on the assumption that each 'RegexUnit' will be appended
 -- in series. This merges non-repeating strings, identical strings that repeat, and any two
--- character sets as long as the latter character set is a subset of the former and there are no
--- maximum repeition limitations.
-_rxSeq :: RegexUnit -> RegexUnit -> Predicate InvalidGrammar (Maybe RegexUnit)
+-- character sets as long as the character sets are identical.
+_rxSeq :: RegexUnit -> RegexUnit -> Predicate InvalidGrammar [RegexUnit]
 _rxSeq a b = case a of
   RxString tA RxSingle -> case b of
-    RxString tB RxSingle -> return $ Just $ RxString (tA<>tB) RxSingle
-    _                    -> let mkrx = Regex . array . return in
-      if not $ shadowsSeries a b then return Nothing else throwError $ InvalidGrammar
+    RxString tB RxSingle -> return [RxString (tA<>tB) RxSingle]
+    _                    -> joinrx a b
+  RxString _  _        -> joinrx a b
+  RxChar   tA repA     -> case b of
+    RxChar   tB repB | tA==tB -> do
+      let toPair  o  = let (lo, hi) = repeaterToPair o in (lo, subtract lo <$> hi)
+      let (loA, hiA) = toPair repA
+      let (loB, hiB) = toPair repB
+      let lo = loA+loB
+      return [RxChar tA $ toRegexRepeater (lo, (lo +) <$> ((+) <$> hiA <*> hiB))]
+    _ -> joinrx a b
+  where
+    mkrx = Regex . array . return
+    joinrx a b =
+      if not $ shadowsSeries a b then return [a, b] else throwError $ InvalidGrammar
         (Nothing, NoLocation (), RegexShadowError ParallelRegex (mkrx a) (mkrx b))
-  _                      -> return Nothing
 
 -- | Construct a 'Regex' from a list of 'RegexUnit'.
 regex :: [RegexUnit] -> Predicate InvalidGrammar Regex
@@ -971,9 +985,10 @@ regex = loop [] where
   loop stk ox = case ox of
     []     -> return $ Regex $ array stk
     [o]    -> return $ Regex $ array (stk++[o])
-    a:b:ox -> _rxSeq a b >>= \ab -> case ab of
-      Just ab -> loop stk (ab:ox)
-      Nothing -> loop (stk++[a]) (b:ox)
+    a:b:ox -> _rxSeq a b >>= \ab -> case reverse ab of
+        []   -> loop stk ox
+        [a]  -> loop stk (a:ox)
+        b:ba -> loop (stk++reverse ba) (b:ox)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1019,6 +1034,28 @@ checkRegexChoices = loop Nothing where
 -- list of 'Regex's. The result is that with a single character look-ahead, you can do a O(1)
 -- (constant time) lookup of the 'Regex's that will be able to evaluate successfully, minimizing
 -- backtracking.
+--
+-- Be careful not to use this with 'Regex's that have been constructed with inverted
+-- 'Dao.Text.CharSet.CharSet's such as these:
+--
+-- @
+-- 'rx' $ 'Dao.Text.CharSet.noneOf' "AEIOUaeiou"
+-- 'rx' $ 'Dao.Text.CharSet.without' [('A', 'Z'), ('a', 'z')]
+-- @
+--
+-- When a 'Dao.Text.CharSet.CharSet' is inverted, it is actually composed of every
+-- 'Dao.Interval.Interval' of characters existing around the givem 'Dao.Text.CharSet.CharSet'.  For
+-- example, if the given 'Dao.Text.CharSet.CharSet' contains a single character 'C', the inverted
+-- 'Dao.Text.CharSet.CharSet' will contain the 'Dao.Interval.Interval'
+-- @('Data.Char.ord' 'Prelude.minBound', 'Prelude.pred' 'C')@ and the 'Dao.Interval.Interval'
+-- @('Prelude.succ' 'C', 'Data.Char.ord' 'Prelude.maxBound')@ and so
+-- a character 'Data.Array.IArray.Array' big enough to 'Dao.Interval.envelop' both of these ranges
+-- will be constructed, resulting in an array large enough to hold millions of elements.
+--
+-- If you are not careful, your tables will waste a lot of memory, although there may be legitimate
+-- cases where creating such enormous 'Data.Array.IArray.Array's is desirable. It is up to the
+-- programmers using this function to know when to use 'regexsToTable' to improve efficiency, and
+-- when not to.
 regexsToTable :: [(Regex, o)] -> Predicate InvalidGrammar (RegexTable o)
 regexsToTable ox = do
   checkRegexChoices $ fst <$> ox

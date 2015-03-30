@@ -60,8 +60,11 @@ module Dao.Grammar
     Lexer(Lexer), lexer, lexConst, lexerSpan, lexerBreak, lexerMatch,
     lexerTuple, lexerFunction, lexerRegex,
     -- * Combinators for Building 'Grammar's.
-    Grammar, typeOfGrammar, grammar, anyStringIn, elseFail, (<?>),
-    doReadsPrec, grammarBranches,
+    Grammar, typeOfGrammar, typedGrammar, grammar, lexerTable, anyStringIn, mergeGrammars, elseFail,
+    (<?>), doReadsPrec, grammarBranches,
+    -- * Analyzing Grammars
+    grammarIsEmpty, grammarIsReturn, grammarIsLift, grammarIsTable, grammarIsRegex,
+    grammarIsChoice, grammarIsTyped, grammarIsFail, grammarWasRejected,
     -- * Converting 'Grammar's to Monadic Parsers ('MonadParser's)
     grammarToParser,
     -- * Working with source locations.
@@ -166,7 +169,7 @@ data Grammar m o
   | GrTable (RegexTable (LazyText -> Grammar m o))
   | GrRegex Regex (LazyText -> Grammar m o)
   | GrChoice (Grammar m o) (Grammar m o)
-  | GrType TypeRep (Grammar m o)
+  | GrTyped TypeRep (Grammar m o)
   | GrFail StrictText
   | GrReject InvalidGrammar
   deriving Typeable
@@ -181,7 +184,7 @@ instance Functor m => Functor (Grammar m) where
     GrTable   next     -> GrTable $ fmap (fmap (fmap f)) next
     GrRegex   rx  next -> GrRegex rx $ fmap (fmap f) next
     GrChoice  next alt -> GrChoice (fmap f next) (fmap f alt)
-    GrType    typ next -> GrType typ $ fmap f next
+    GrTyped   typ next -> GrTyped typ $ fmap f next
     GrFail    err      -> GrFail err
     GrReject  err      -> GrReject err
 
@@ -194,7 +197,7 @@ instance Monad m => Monad (Grammar m) where
     GrTable   next     -> GrTable $ fmap (fmap (>>= f)) next
     GrRegex   rx  next -> GrRegex rx $ fmap (>>= f) next
     GrChoice  next alt -> GrChoice (next >>= f) (alt >>= f)
-    GrType    typ next -> GrType typ $ next >>= f
+    GrTyped   typ next -> GrTyped typ $ next >>= f
     GrFail    err      -> GrFail err
     GrReject  err      -> GrReject err
   fail = GrFail . Strict.pack
@@ -202,11 +205,9 @@ instance Monad m => Monad (Grammar m) where
 _cutBranches :: Array Regex -> Grammar m o
 _cutBranches = GrReject . InvalidGrammar . (,,) Nothing (NoLocation ()) . CutSomeBranches
 
-_grTable
-  :: Monad m
-  => Predicate InvalidGrammar (RegexTable (LazyText -> Grammar m o)) -> Grammar m o
-_grTable o = case o of
-  PTrue  o -> GrTable o
+_grPredicate :: Monad m => Predicate InvalidGrammar o -> Grammar m o
+_grPredicate o = case o of
+  PTrue  o -> GrReturn o
   PFalse   -> GrEmpty
   PError e -> GrReject e
 
@@ -226,29 +227,26 @@ instance Monad m => MonadPlus (Grammar m) where
       _                -> GrLift $ liftM2 mplus a (return b)
     GrTable   tabA   -> case b of
       GrEmpty          -> GrTable tabA
-      GrReturn  b      -> GrChoice (GrTable tabA) (GrReturn b)
       GrLift    next   -> GrLift $ liftM (mplus $ GrTable tabA) next
-      GrTable   tabB   -> _grTable $ PTrue tabA <> PTrue tabB
-      GrRegex   rx   b -> _grTable $ PTrue tabA <> regexsToTable [(rx, b)]
+      GrTable   tabB   -> case PTrue tabA <> PTrue tabB of
+        PTrue  o -> GrTable o
+        PFalse   -> GrEmpty
+        PError e -> GrReject e
       GrChoice  b    c -> mplus (mplus (GrTable tabA) b) c
-      GrType    typ  b -> GrType typ $ mplus (GrTable tabA) b
-      GrFail    err    -> GrChoice (GrTable tabA) (GrFail err)
+      GrTyped   typ  b -> GrTyped typ $ mplus (GrTable tabA) b
       GrReject  err    -> GrReject err
+      b                -> GrChoice (GrTable tabA) b
     GrRegex rxA a    -> case b of
       GrEmpty          -> GrRegex rxA a
-      GrReturn       b -> GrChoice (GrRegex rxA a) (GrReturn b)
-      GrLift         b -> GrChoice (GrRegex rxA a) (GrLift   b)
-      GrTable        b -> _grTable $ regexsToTable [(rxA, a)] <> PTrue b
-      GrRegex   rxB  b -> _grTable $ regexsToTable [(rxA, a), (rxB, b)]
       GrChoice  b    c -> mplus (mplus (GrRegex rxA a) b) c
-      GrType    typ  b -> GrType typ $ mplus (GrRegex rxA a) b
-      GrFail    err    -> GrChoice (GrRegex rxA a) $ GrFail err
+      GrTyped   typ  b -> GrTyped typ $ mplus (GrRegex rxA a) b
       GrReject  err    -> GrReject err
+      b                -> GrChoice (GrRegex rxA a) b
     GrChoice  a   a' -> GrChoice a $ mplus a' b
-    GrType    typ a  ->
+    GrTyped   typ a  ->
       let loop stk b = case b of
-            GrType t b -> if elem t stk then GrType typ a else loop (t:stk) b
-            _          -> GrType typ $ mplus a b
+            GrTyped t b -> if elem t stk then GrTyped typ a else loop (t:stk) b
+            _           -> GrTyped typ $ mplus a b
       in  loop [typ] b
     GrFail    err    -> case b of
       GrTable   tabB   -> _cutBranches $ fst <$> regexTableElements tabB
@@ -264,6 +262,20 @@ instance MonadTrans Grammar where { lift o = GrLift $ liftM GrReturn o; }
 
 instance MonadIO m => MonadIO (Grammar m) where { liftIO = GrLift . liftM GrReturn . liftIO; }
 
+-- Used for debugging. Try to just leave it here, it should be optimized away in the
+-- dead-code-removal phase.
+_sho :: Int -> Grammar m o -> String
+_sho i o = if i<=0 then "..." else case o of
+  GrEmpty      -> "GrEmpty"
+  GrReturn   _ -> "GrReturn"
+  GrLift     _ -> "GrLift"
+  GrTable    t -> "GrTable ("++show (fst <$> regexTableElements t)++")"
+  GrRegex rx _ -> "GrRegex ("++show rx++")"
+  GrChoice a b -> "GrChoice ("++_sho (i-1) a++") ("++_sho (i-1) b++")"
+  GrTyped   t _ -> "GrTyped "++show t
+  GrFail   msg -> "GrFail "++show msg
+  GrReject err -> "GrReject "++show err
+
 -- | Convert a 'Grammar' to a 'MonadParser' that actually parses things.
 grammarToParser :: (Monad m, MonadPlus m, MonadParser m) => Grammar m o -> m o
 grammarToParser = loop where
@@ -274,7 +286,7 @@ grammarToParser = loop where
     GrTable   next     -> regexTableToParser next >>= loop . (uncurry $ flip ($))
     GrRegex   rx   f   -> regexToParser rx >>= loop . f
     GrChoice  next alt -> mplus (loop next) (loop alt)
-    GrType    _   next -> loop next
+    GrTyped   _   next -> loop next
     GrFail    msg      -> fail (Strict.unpack msg)
     GrReject  err      -> throw err
 
@@ -284,15 +296,76 @@ typeOfGrammar = typ undefined where
   typ :: t -> Grammar m t -> TypeRep
   typ ~t _ = typeOf t
 
--- | Construct a 'Grammar' from a list of 'Dao.Text.Regex' choices. This list of choices must be
--- finite, or the process of converting to a 'MonadParser' will loop infinitely. When this 'Grammar'
--- is converted to a 'MonadParser', each 'Regex' will be tried in turn. If any 'Regex' occuring
--- earlier in the list 'Dao.Text.Regex.shadowParallel's any 'Dao.Text.Regex' occuring later in the
--- list (which is checked by 'shadowsParallel'), then this 'Grammar' evaluates to an
--- 'InvalidGramar'. Of course, passing an empty list will create a 'Grammar' equivalent to
--- 'Control.Applicative.empty' which alwasy backtracaks.
+-- | Construct a 'Grammar' from a list of 'Lexer' choices. This 'Grammar' will try to match each
+-- 'Lexer' in turn. If one 'Lexer' backtracks, the next is tried. This can be a source of
+-- inefficiency. You may want to consider using 'lexerTable' instead.
 grammar :: Monad m => [Lexer o] -> Grammar m o
-grammar ox = case concatenated ox of
+grammar = make id Nothing where
+  make g prev ox = case ox of
+    []                 -> g GrEmpty
+    (Lexer (f, rx)):ox -> do
+      rx <- _grPredicate $ mconcat $ PTrue <$> rx
+      let next = make (g . GrChoice (GrRegex rx $ return . f)) (Just rx) ox
+      case prev of
+        Nothing -> next
+        Just ry ->
+          if shadowsSeries ry rx
+          then GrReject $ InvalidGrammar (Nothing, NoLocation (), RegexShadowError ParallelRegex ry rx)
+          else next
+
+-- | Modify a 'Grammar' so that the 'Data.Typeable.TypeRep' for the return type stored in the
+-- 'Grammar's meta-data.
+typedGrammar :: Typeable o => Grammar m o -> Grammar m o
+typedGrammar o = GrTyped (typeOfGrammar o) o
+
+-- | 'Grammar's constructed with 'lexerTable' has all 'Dao.Text.Regex.Regex's merged into an
+-- internal 'Dao.Text.Regex.RegexTable', whereas 'Grammar's constructed 'grammar' or
+-- 'Control.Monad.mplus' or @('Control.Applicative.<|>')@ are not merged. This function allows
+-- 'Grammar's constructed with 'grammar', 'Control.Monad.mplus', and @('Control.Applicative.<|>') to
+-- be merged into an internal 'Dao.Text.Regex.RegexTable'.
+--
+-- This function may get stuck in an infinite loop if you accidentally construct a 'Grammar' that is
+-- biequivalent to @let f = f 'Control.Applicative.<|>' f@
+mergeGrammars :: Monad m => Grammar m a -> Grammar m a -> Grammar m a
+mergeGrammars a b = liftM2 (++) (gather a) (gather b) >>= merge [] mempty where
+  gather o = case o of
+    GrChoice a b -> liftM2 (++) (gather a) (gather b)
+    GrRegex rx o -> GrReturn [Left (rx, o)]
+    GrTable    o -> GrReturn [Right o]
+    GrReject err -> GrReject err
+    _            -> GrReturn []
+  make rxs = if null rxs then PTrue else mappend (regexsToTable rxs) . PTrue
+  merge rxs tab ox = case ox of
+    [] -> case tab >>= make rxs of
+      PFalse     -> GrEmpty
+      PTrue  tab -> GrTable tab
+      PError err -> GrReject err
+    Left  o:ox -> merge (rxs++[o]) tab ox
+    Right o:ox -> case (tab <> PTrue o >>= make rxs) <|> (tab >>= make rxs) <|> make rxs o of
+      PFalse     -> merge [] tab ox
+      PTrue  tab -> merge [] (PTrue tab) ox
+      PError err -> GrReject err
+
+-- | Construct a 'Grammar' from a list of 'Lexer' choices, and use 'Dao.Regex.regexsToTable' to
+-- construct a lexer table.
+--
+-- A lexer table sacrifices memory usage for speed. It creates an
+-- @('Data.Array.IArray.Array' 'Prelude.Char')@ (an array with 'Prelude.Char' indicies) such that a
+-- single character look-ahead ('Dao.Text.Regex.look1') can be used to select the appropriate
+-- 'Dao.Text.Regex.Regex' to use from the array.
+--
+-- However it is possible to create arrays that 'Dao.Interval.envelop' the entire range of
+-- characters from @'Prelude.minBound'::'Prelude.Char'@ to @'Prelude.maxBound'::'Prelude.Char'@.
+-- Please refer to the documentation for the 'Dao.Text.Regex.regexsToTable' function to learn more.
+--
+-- Also, the given list of choices must be finite, or the process of converting to a 'MonadParser'
+-- will loop infinitely. When this 'Grammar' is converted to a 'MonadParser', each 'Regex' will be
+-- tried in turn. If any 'Regex' occuring earlier in the list 'Dao.Text.Regex.shadowParallel's any
+-- 'Dao.Text.Regex' occuring later in the list (which is checked by 'shadowsParallel'), then this
+-- 'Grammar' evaluates to an 'InvalidGramar'. Of course, passing an empty list will create a
+-- 'Grammar' equivalent to 'Control.Applicative.empty' which alwasy backtracaks.
+lexerTable :: Monad m => [Lexer o] -> Grammar m o
+lexerTable ox = case concatenated ox of
   PFalse       -> GrEmpty
   PError err   -> GrReject err
   PTrue  table -> GrTable table
@@ -303,7 +376,7 @@ grammar ox = case concatenated ox of
 -- | Create a 'Grammar' that matches any one of the given strings. The list of given strings is
 -- automatically sorted to make sure shorter strings do not shaddow longer strings.
 anyStringIn :: (Monad m, ToText t) => (LazyText -> o) -> [t] -> Grammar m o
-anyStringIn f = grammar . fmap Lexer . zip (repeat f) . fmap (return . rx) .
+anyStringIn f = lexerTable . fmap Lexer . zip (repeat f) . fmap (return . rx) .
   sortBy (\a b -> compare (Strict.length b) $ Strict.length a) . nub . fmap toText
 
 -- | Retrieve every 'Regex' for all branches of the 'Grammar'.
@@ -348,6 +421,78 @@ doReadsPrec :: (Monad m, MonadPlus m, Read o) => Int -> LazyText -> Grammar m o
 doReadsPrec prec t = case readsPrec prec $ Lazy.unpack t of
   [(o, "")] -> return o
   _         -> mzero
+
+-- | An empty 'Grammar' is constructed by 'Control.Monad.mzero' or 'Control.Applicative.empty'. If
+-- the 'Grammar' you are analyzing is constructed in this way, this function evaluates to
+-- 'Prelude.True'.
+grammarIsEmpty :: Grammar m o -> Bool
+grammarIsEmpty o = case o of { GrEmpty -> True; _ -> False; }
+
+-- | A return 'Grammar' is constructed by 'Control.Monad.return' or 'Control.Applicative.pure'. If
+-- the 'Grammar' you are analyzing is constructed in this way, this function wraps the return value
+-- in a 'Prelude.Just' constructor.
+grammarIsReturn :: Grammar m o -> Maybe o
+grammarIsReturn o = case o of { GrReturn o -> Just o; _ -> Nothing; }
+
+-- | A lift 'Grammar' is constructed by 'Control.Monad.Trans.lift'. If the 'Grammar' you are
+-- analyzing is constructed in this way, this function evaluates to 'Prelude.True'.
+grammarIsLift :: Grammar m o -> Bool
+grammarIsLift o = case o of { GrLift _ -> True; _ -> False; }
+
+-- | A table 'Grammar' is constructed by 'lexerTable'. If the 'Grammar' you are analyzing is
+-- constructed in this way, this function evaluates to the 'Dao.Text.Regex.RegexTable' that is
+-- contained within it.
+grammarIsTable :: Grammar m o -> Maybe (RegexTable ())
+grammarIsTable o = case o of { GrTable o -> Just $ fmap (const ()) o; _ -> Nothing; }
+
+-- | A regex 'Grammar' is constructed by passing 'Lexer's to the 'grammar' constructor. If the
+-- 'Grammar' you are analyzing is constructed in this way, this function evaluates to the
+-- 'Dao.Text.Regex.Regex' that is contained within it.
+grammarIsRegex :: Grammar m o -> Maybe Regex
+grammarIsRegex o = case o of { GrRegex o _ -> Just o; _ -> Nothing; }
+
+-- | A choice 'Grammar' is constructed by 'Control.Monad.mplus' or 'Control.Applicative.<|>'. If the
+-- 'Grammar' you are analyzing is constructed in this way, this function evaluates to the pair of
+-- 'Grammar's which were the left and right parameters to 'Control.Monad.mplus' or
+-- 'Control.Applicative.<|>' constructors.
+grammarIsChoice :: Grammar m o -> Maybe (Grammar m o, Grammar m o)
+grammarIsChoice o = case o of { GrChoice a b -> Just (a, b); _ -> Nothing; }
+
+-- | A typed 'Grammar' is constructed by the 'typedGrammar' constructor. If the 'Grammar' you are
+-- analyzing is constructed in this way, this function evaluates to the 'Data.Typeable.TypeRep'
+-- paired with the 'Grammar' that was passed to the 'typedGrammar' constructor.
+grammarIsTyped :: Grammar m o -> Maybe (TypeRep, Grammar m o)
+grammarIsTyped o = case o of { GrTyped a b -> Just (a, b); _ -> Nothing; }
+
+-- | A fail 'Grammar' is constructed by the 'Control.Monad.fail' function.  If the 'Grammar' you are
+-- analyzing is constructed in this way, this function evaluates to the string message passed to the
+-- 'Control.Monad.fail' constructor.
+grammarIsFail :: Grammar m o -> Maybe StrictText
+grammarIsFail o = case o of { GrFail o -> Just o; _ -> Nothing; }
+
+-- | A rejected 'Grammar' can be constructed directly by the 'Control.Monad.Except.throwError'
+-- function, but can be constructed by any other 'Grammar' constructor if the 'Grammar' constructed
+-- is faulty or nonsensical in some way. If the 'Grammar' you are analyzng was rejected, this
+-- function evaluates to the 'InvalidGrammar' condition giving details about why it was rejected.
+-- 
+-- For example, lets say you have two regular expressions and want to construct a grammar where
+-- either of these expressions may be parsed:
+--
+-- @
+-- 'grammar' ['lexer' ['rx' "app"], 'lexer' ['rx' "application"]]
+-- @
+--
+-- This grammar will be rejected because the string 'Dao.Text.Regex.Regex' "app" will always
+-- succeed, even if the input string is the text "application", the string 'Dao.Text.Regex.Regex'
+-- "application" will never ever succeed. This kind of 'Grammar' is usually only constructed as a
+-- result of programmer error.
+--
+-- The 'Dao.Text.Regex.InvalidGrammarDetail' will be
+-- @'Dao.Text.Regex.RegexShadowError' 'Dao.Text.Regex.ParallelRegex'@
+-- and will contain the two string 'Dao.Text.Regex.Regexe's so you know exactly why the 'Grammar'
+-- was rejected.
+grammarWasRejected :: Grammar m o -> Maybe InvalidGrammar
+grammarWasRejected o = case o of { GrReject o -> Just o; _ -> Nothing; }
 
 ----------------------------------------------------------------------------------------------------
 

@@ -60,8 +60,8 @@ module Dao.Grammar
     Lexer(Lexer), lexer, lexConst, lexerSpan, lexerBreak, lexerMatch,
     lexerTuple, lexerFunction, lexerRegex,
     -- * Combinators for Building 'Grammar's.
-    Grammar, typeOfGrammar, typedGrammar, grammar, lexerTable, anyStringIn, mergeGrammars, elseFail,
-    (<?>), doReadsPrec, grammarBranches,
+    Grammar, typeOfGrammar, typedGrammar, grammar, lexerTable, anyStringIn, lexerTableMPlus,
+    lexerTableMSum, elseFail, (<?>), doReadsPrec, grammarBranches,
     -- * Analyzing Grammars
     grammarIsEmpty, grammarIsReturn, grammarIsLift, grammarIsTable, grammarIsRegex,
     grammarIsChoice, grammarIsTyped, grammarIsFail, grammarWasRejected,
@@ -269,7 +269,7 @@ _sho i o = if i<=0 then "..." else case o of
   GrEmpty      -> "GrEmpty"
   GrReturn   _ -> "GrReturn"
   GrLift     _ -> "GrLift"
-  GrTable    t -> "GrTable ("++show (fst <$> regexTableElements t)++")"
+  GrTable    t -> "GrTable ("++show (const() <$> t)++")"
   GrRegex rx _ -> "GrRegex ("++show rx++")"
   GrChoice a b -> "GrChoice ("++_sho (i-1) a++") ("++_sho (i-1) b++")"
   GrTyped   t _ -> "GrTyped "++show t
@@ -318,16 +318,17 @@ grammar = make id Nothing where
 typedGrammar :: Typeable o => Grammar m o -> Grammar m o
 typedGrammar o = GrTyped (typeOfGrammar o) o
 
--- | 'Grammar's constructed with 'lexerTable' has all 'Dao.Text.Regex.Regex's merged into an
--- internal 'Dao.Text.Regex.RegexTable', whereas 'Grammar's constructed 'grammar' or
--- 'Control.Monad.mplus' or @('Control.Applicative.<|>')@ are not merged. This function allows
--- 'Grammar's constructed with 'grammar', 'Control.Monad.mplus', and @('Control.Applicative.<|>') to
--- be merged into an internal 'Dao.Text.Regex.RegexTable'.
+-- | This function has the same semantics as using 'Control.Monad.mplus', but behind the scenes is
+-- operating a bit differently. 'Grammar's constructed with 'lexerTable' has all
+-- 'Dao.Text.Regex.Regex's merged into an internal 'Dao.Text.Regex.RegexTable', whereas 'Grammar's
+-- constructed 'grammar' or 'Control.Monad.mplus' or @('Control.Applicative.<|>')@ are not merged.
+-- This function allows 'Grammar's constructed with 'grammar', 'Control.Monad.mplus', and
+-- @('Control.Applicative.<|>') to be merged into an internal 'Dao.Text.Regex.RegexTable'.
 --
 -- This function may get stuck in an infinite loop if you accidentally construct a 'Grammar' that is
 -- biequivalent to @let f = f 'Control.Applicative.<|>' f@
-mergeGrammars :: Monad m => Grammar m a -> Grammar m a -> Grammar m a
-mergeGrammars a b = liftM2 (++) (gather a) (gather b) >>= merge [] mempty where
+lexerTableMPlus :: forall m a . Monad m => Grammar m a -> Grammar m a -> Grammar m a
+lexerTableMPlus a b = liftM2 (++) (gather a) (gather b) >>= merge [] mempty where
   gather o = case o of
     GrChoice a b -> liftM2 (++) (gather a) (gather b)
     GrRegex rx o -> GrReturn [Left (rx, o)]
@@ -336,7 +337,7 @@ mergeGrammars a b = liftM2 (++) (gather a) (gather b) >>= merge [] mempty where
     _            -> GrReturn []
   make rxs = if null rxs then PTrue else mappend (regexsToTable rxs) . PTrue
   merge rxs tab ox = case ox of
-    [] -> case tab >>= make rxs of
+    []         -> case tab >>= make rxs of
       PFalse     -> GrEmpty
       PTrue  tab -> GrTable tab
       PError err -> GrReject err
@@ -345,6 +346,13 @@ mergeGrammars a b = liftM2 (++) (gather a) (gather b) >>= merge [] mempty where
       PFalse     -> merge [] tab ox
       PTrue  tab -> merge [] (PTrue tab) ox
       PError err -> GrReject err
+
+-- | Analogous to 'Control.Monad.msum', that is 'lexerTableMSum' is to 'lexerTableMPlus' as
+-- 'Control.Monad.mplus' is to 'Control.Monad.msum'. This function uses 'lexerTableMPlus' to fold
+-- a list of 'Grammar's into a single 'Grammar' with a single large internal
+-- 'Dao.Text.Regex.RegexTable'.
+lexerTableMSum :: Monad m => [Grammar m o] -> Grammar m o
+lexerTableMSum = foldl lexerTableMPlus GrEmpty
 
 -- | Construct a 'Grammar' from a list of 'Lexer' choices, and use 'Dao.Regex.regexsToTable' to
 -- construct a lexer table.

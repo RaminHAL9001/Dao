@@ -78,6 +78,7 @@ import           Control.Monad.State
 import qualified Data.Array.IArray as A
 import           Data.Char hiding (Space)
 import           Data.Ix
+import           Data.List (intercalate)
 import           Data.Maybe
 import           Data.Monoid
 import           Data.Ratio
@@ -747,7 +748,7 @@ instance PPrintable RegexUnit where
           '"'           -> "[\\\"]"
           '.'           -> "[.]"
           '|'           -> "[|]"
-          '^'           -> "[^]"
+          '^'           -> "[\\^]"
           '$'           -> "[$]"
           '['           -> "\\["
           ']'           -> "\\]"
@@ -755,6 +756,10 @@ instance PPrintable RegexUnit where
           ')'           -> "\\)"
           '{'           -> "\\{"
           '}'           -> "\\}"
+          '\n'          -> "\\n"
+          '\t'          -> "\\t"
+          '\f'          -> "\\f"
+          '\v'          -> "\\v"
           c | isPrint c -> [c]
           c             -> "\\x" ++ showHex (ord c) ""
     in  case o of
@@ -884,12 +889,14 @@ instance ToRegexRepeater rep => ToRegex (Char, rep) where
 --
 -- Internally, a 'Regex' is an 'Dao.Array.Array' of 'RegexUnit's which you can retrieve with
 -- 'regexUnits'.
-newtype Regex = Regex{ regexUnits :: Array RegexUnit } deriving (Eq, Show, Typeable)
+newtype Regex = Regex{ regexUnits :: Array RegexUnit } deriving (Eq, Typeable)
 
 instance PPrintable Regex where
   pPrint (Regex o) = case elems o of
     [] -> [pText "\"\""]
     ox -> [pInline $ [pText "\""] ++ (ox>>=pPrint) ++ [pText "\""]]
+
+instance Show Regex where { show = showPPrint 4 4 . pPrint; }
 
 instance Ord Regex where
   compare a b = compare (computeLogProb $ probRegex a) (computeLogProb $ probRegex b)
@@ -1001,20 +1008,40 @@ data RegexTable o
 instance Functor RegexTable where
   fmap f (RegexTable a b) = RegexTable (fmap (fmap f) a) (fmap (fmap (fmap f)) b)
 
+instance PPrintable o => PPrintable (RegexTable o) where
+  pPrint (RegexTable _ tab) =
+    [ pText "RegexTable {", pNewLine
+    , pIndent $ A.assocs tab >>= \ (c, ar) ->
+        [ pIndent $
+            [ pShow c, pSpace, pText "("
+            , pIndent $ intercalate [pSpace, pText "||", pSpace] $ do
+                (rx, o) <- elems ar
+                [pPrint rx ++ [pSpace, pText "->", pSpace, pIndent $ pPrint o]]
+            , pText ")"
+            ]
+        , pNewLine
+        ]
+    , pText "}"
+    ]
+
+instance PPrintable o => Show (RegexTable o) where { show = showPPrint 4 4 . pPrint; }
+
 instance Monoid (Predicate InvalidGrammar (RegexTable o)) where
   mempty = mzero
-  mappend a b = do
-    (RegexTable rxA tabA) <- a
-    (RegexTable rxB tabB) <- b
-    if arrayIsNull rxA then b else if arrayIsNull rxB then a else do
-      let alast = lastElem rxA
-      let bfrst = rxB!0
-      checkRegexChoices $ maybe [] (fmap fst) $ msum
-        [(\a b -> [a,b]) <$> alast <*> bfrst, return <$> alast, return <$> bfrst]
-      let interv  = uncurry Iv.interval . A.bounds
-      let newbnds = Iv.toBoundedPair $ Iv.envelop (interv tabA) (interv tabB)
-      return $ RegexTable (rxA<>rxB) $
-        A.accumArray mappend mempty newbnds $ A.assocs tabA ++ A.assocs tabB
+  mappend a b = msum
+    [do (RegexTable rxA tabA) <- a
+        (RegexTable rxB tabB) <- b
+        if arrayIsNull rxA then b else if arrayIsNull rxB then a else do
+          let alast = lastElem rxA
+          let bfrst = rxB!0
+          checkRegexChoices $ maybe [] (fmap fst) $ msum
+            [(\a b -> [a,b]) <$> alast <*> bfrst, return <$> alast, return <$> bfrst]
+          let interv  = uncurry Iv.interval . A.bounds
+          let newbnds = Iv.toBoundedPair $ Iv.envelop (interv tabA) (interv tabB)
+          return $ RegexTable (rxA<>rxB) $
+            A.accumArray mappend mempty newbnds $ A.assocs tabA ++ A.assocs tabB
+    , a, b
+    ]
 
 -- | Given a list of 'Regex's that may be evaluated in parallel, make sure no one 'Regex' shadows
 -- any other 'Regex' that occurs after it.
@@ -1061,11 +1088,10 @@ regexsToTable ox = do
   checkRegexChoices $ fst <$> ox
   guard $ not $ null ox
   let cset = mconcat $ initialCharSetOf . fst <$> ox
-  bnds@(lo, hi) <- maybe mzero return $ charSetBounds cset
-  guard $ minBound/=lo || hi/=maxBound
+  bnds <- maybe mzero return $ csetBounds cset
   return $ RegexTable (array ox) $ fmap array $ A.accumArray (++) [] bnds $ do
     rx <- ox
-    c <- charSetRange $ initialCharSetOf $ fst rx
+    c <- csetRange $ initialCharSetOf $ fst rx
     [(c, [rx])]
 
 regexTableToParser :: (Monad m, MonadParser m) => RegexTable o -> m (LazyText, o)
@@ -1178,9 +1204,8 @@ instance MonadParser (Parser st) where
     throwError $ with err [invalidGrammarLocation $= mappend (EndLocation () loc)]
   count c p = _take $ \t -> (,) c $ do
     (keep, t) <- pure $ Lazy.splitAt (countToInt c) t
-    let len = Lazy.length keep
     keep <- pure $ Lazy.takeWhile (csetMember p) keep
-    guard $ len == Lazy.length keep
+    guard $ c == stringLength keep
     return (keep, c, t)
   regexToParser = _regexToParser
   noMoreThan lim p = _take $ \t ->

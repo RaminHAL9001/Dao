@@ -199,6 +199,7 @@ pSentence = intersperse PSpace . fmap pText . words
 
 class PPrintable o where { pPrint :: o -> [PPrint] }
 
+instance PPrintable ()           where { pPrint = return . pShow }
 instance PPrintable Char         where { pPrint = return . pShow }
 instance PPrintable Int          where { pPrint = return . pShow }
 instance PPrintable Count        where { pPrint = return . pShow }

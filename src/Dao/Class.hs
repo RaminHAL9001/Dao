@@ -44,3 +44,8 @@ class The o where { the :: o; }
 
 instance The () where { the = (); }
 
+-- | This function is @'Prelude.flip' 'Prelude.fmap'@,
+-- or equivalently, @'Prelude.flip' ('Control.Applicative.<$>')@.
+(<$$>) :: Functor f => f a -> (a -> b) -> f b
+(<$$>) = flip fmap
+

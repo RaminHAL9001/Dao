@@ -28,9 +28,12 @@ import           Dao.TestNull
 import           Control.Applicative
 import           Control.DeepSeq
 
+import           Data.Char
 import           Data.Ix
 import           Data.Monoid
 import           Data.Typeable
+
+import           Numeric
 
 -- | A part of a regular expression constructed from intervals of characters.
 newtype CharSet = CharSet { charIntervalSet :: Iv.Set Char } deriving (Eq, Ord, Typeable)
@@ -46,17 +49,22 @@ instance NFData CharSet where { rnf (CharSet o) = deepseq o (); }
 instance PPrintable CharSet where
   pPrint cs =
     let ch c = pText $ case c of
-            '-'  -> "\\-"
-            '~'  -> "\\~"
-            '\\' -> "\\\\"
-            '['  -> "\\["
-            ']'  -> "\\]"
-            '('  -> "\\("
-            ')'  -> "\\)"
-            c    -> [c]
+            '-'           -> "\\-"
+            '~'           -> "\\~"
+            '\\'          -> "\\\\"
+            '['           -> "\\["
+            ']'           -> "\\]"
+            '('           -> "\\("
+            ')'           -> "\\)"
+            '\n'          -> "\\n"
+            '\t'          -> "\\t"
+            '\f'          -> "\\f"
+            '\v'          -> "\\v"
+            c | isPrint c -> [c]
+            c             -> "0x" ++ showHex (ord c) ""
         prin o = case o of
           (a, b) | a==b -> [ch a]
-          (a, b) | a>minBound && b<maxBound -> [ch a, ch '-', ch b]
+          (a, b) | a>minBound && b<maxBound -> [ch a, pText "-", ch b]
           (a, b) | a==minBound              -> [pText "[-", ch b, ch ']']
           (a, b) | b==maxBound              -> [ch '[', ch a, pText "-]"]
           (_, _)                            -> [pText "."]
@@ -124,10 +132,10 @@ csetDecompose csA = if size csA <= size csB then (True, elems csA) else (False, 
   elems = fmap Iv.toBoundedPair . Iv.toList . charIntervalSet
 
 -- | Get the lowest and highest character in the set, if any characters exist in this 'CharSet'.
-charSetBounds :: CharSet -> Maybe (Char, Char)
-charSetBounds (CharSet cs) = Iv.toBoundedPair <$> Iv.intervalSpanAll (Iv.toList cs)
+csetBounds :: CharSet -> Maybe (Char, Char)
+csetBounds (CharSet cs) = Iv.toBoundedPair <$> Iv.intervalSpanAll (Iv.toList cs)
 
 -- | Get the list of all of the 'Prelude.Char's that exist in this 'CharSet'.
-charSetRange :: CharSet -> [Char]
-charSetRange (CharSet cs) = Iv.toBoundedPair <$> Iv.toList cs >>= range
+csetRange :: CharSet -> [Char]
+csetRange (CharSet cs) = Iv.toBoundedPair <$> Iv.toList cs >>= range
 

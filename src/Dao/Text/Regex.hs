@@ -692,7 +692,7 @@ _regexUnitToParser o = case o of
           if ok then loop (i+1) (keep<>zo) else return keep
     init 0 mempty >>= uncurry loop
   RxChar cset rep -> do
-    let (lo, hi) = repeaterToPair rep
+    let (lo, hi) = fmap (subtract lo) <$> repeaterToPair rep
     init <- if lo==0 then pure mempty else count lo cset
     mappend init <$> maybe (munch cset) (flip noMoreThan cset) hi
 
@@ -1095,12 +1095,8 @@ regexsToTable ox = do
     [(c, [rx])]
 
 regexTableToParser :: (Monad m, MonadParser m) => RegexTable o -> m (LazyText, o)
-regexTableToParser (RegexTable _ arr) = do
-  c <- look1
-  guard $ inRange (A.bounds arr) c
-  msum $ do
-    (rx, o) <- elems $ arr A.! c
-    [liftM2 (,) (regexToParser rx) $ return o]
+regexTableToParser (RegexTable _ arr) = look1 >>= \c -> guard (inRange (A.bounds arr) c) >>
+  msum (elems (arr A.! c) >>= \ (rx, o) -> [liftM2 (,) (regexToParser rx) $ return o])
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1191,7 +1187,7 @@ instance MonadState st (Parser st) where
 
 instance MonadParser (Parser st) where
   look      = Parser $ lift $ gets (~> inputString)
-  look1     = _take $ \t -> if Lazy.null t then (0, Nothing) else (1, return (Lazy.head t, 1, t))
+  look1     = _take $ \t -> if Lazy.null t then (0, Nothing) else (1, return (Lazy.head t, 0, t))
   get1      = _take $ \t -> (1, guard (not $ Lazy.null t) >> return (Lazy.head t, 1, Lazy.tail t))
   string  s = _take $ \t -> let len = stringLength s in (len, (,,) s len <$> Lazy.stripPrefix s t)
   munch   f = _take $ \t ->

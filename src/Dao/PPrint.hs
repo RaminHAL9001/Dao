@@ -16,55 +16,21 @@
 -- this program (see the file called "LICENSE"). If not, see the URL:
 -- <http://www.gnu.org/licenses/agpl.html>.
 
--- | "Dao.Grammar' defines a domain-specific language for defining "context-free Grammars" (CFGs).
---
--- This module provides three key data types, 'Regex', 'Lexer', and 'Grammar', and the combinators
--- necessary to define CFGs. These data types are actually not parsers, but they can be converted
--- to parsers using 'regexToParser', 'lexerToParser', and 'grammarToParser'.
--- 
--- The 'Regex' is a simple data type that matches strings. 'Lexer's take 'Regex's and use the
--- matched strings to construct data types in 'Control.Monad.Monad'-ic and
--- 'Control.Applicative.Applicative' ways. The 'Grammar' data type uses 'Lexer's to build CFGs.
---
--- Once a 'Grammar' has been defined, the 'Grammar' can be converted to parser functions. The
--- parsing functions are polymorphic over any type of input string that instantiates the
--- 'Dao.Text.Builder.TextBuilder' class.
---
--- The 'Grammar' and 'Lexer' data types can be constructed freely, but impossible 'Grammar's, which
--- are 'Grammar's which could never possibly match any string, and ambiguous 'Grammar's, which are
--- 'Grammar's where a single input could match more than one 'Grammar' in a list of concurrent
--- 'Grammar' choices, evaluate to an 'InvalidGrammar' data type. This allows you to build your
--- 'Grammar's without worrying about the implementation details of the actual parser. Parsers
--- constructed by valid 'Grammar's should always work as intended.
---
--- The 'Grammar', 'Lexer', and 'Regex' can convert to any monadic parser. A type class 'MonadParser'
--- is defined to classify the various monadic parsers that a 'Grammar', 'Lexer' or 'Regex' could be
--- converted to. The Haskell Platform parsers 'Text.ParserCombinator.ReadP' and
--- 'Text.ParserCombinator.ReadPrec' are instantiated into the 'MonadParser' class so 'Grammar's can
--- be used to instantiate 'Prelude.Read.readPrec'.
---
--- The "Test.QuickCheck.Arbitrary" module is imported, and a 'Grammar' can be used to generate
--- 'Test.QuickCheck.Arbitrary.arbitrary' input strings that your 'Grammar' can parse.
---
--- There is one major design limitation: 'Grammar's cannot be checked at compile time. An
--- 'InvalidGrammar' is thrown as an 'Control.Exception.Exception' during evaluation of the parser as
--- soon as it is discovered, so "Test.QuickCheck" testing is still necessary to try and discover
--- problem areas in your 'Grammar'. Fortunately, the 'InvalidGrammar' exceptions can be helpful at
--- tracking down invalid grammars and offering suggestions on how to correct them.
+-- | Using the editor is a little tedious. This module provides a pretty-printing data type 'PPrint'
+-- data type which you can use to define blocks of code that can be indented and wrapped, and this
+-- 'PPrint' type can be transformed into an 'Dao.Text.Editor.EditorT' monadic function.
 module Dao.PPrint where
 
 import           Prelude hiding (id, (.))
 
 import           Dao.Count
 import           Dao.Lens
-import           Dao.TestNull
 import           Dao.Text
+import           Dao.Text.Editor
 
-import           Control.Applicative
 import           Control.Category
 import           Control.Monad
 import           Control.Monad.Identity
-import           Control.Monad.IO.Class
 import           Control.Monad.State
 import           Control.Monad.Trans.Maybe
 import           Control.Monad.Writer
@@ -73,6 +39,8 @@ import           Data.List (intersperse)
 import qualified Data.Text      as Strict
 import qualified Data.Text.Lazy as Lazy
 import           Data.Typeable
+
+----------------------------------------------------------------------------------------------------
 
 sp :: StrictText
 sp = Strict.singleton ' '
@@ -175,6 +143,7 @@ pSentence = intersperse PSpace . fmap pText . words
 class PPrintable o where { pPrint :: o -> [PPrint] }
 
 instance PPrintable ()           where { pPrint = return . pShow }
+instance PPrintable Bool         where { pPrint = return . pShow }
 instance PPrintable Char         where { pPrint = return . pShow }
 instance PPrintable Int          where { pPrint = return . pShow }
 instance PPrintable Count        where { pPrint = return . pShow }
@@ -183,93 +152,6 @@ instance PPrintable Double       where { pPrint = return . pShow }
 instance PPrintable String       where { pPrint = return . pShow }
 instance PPrintable Strict.Text  where { pPrint = return . pShow }
 instance PPrintable Lazy.Text    where { pPrint = return . pShow }
-
-----------------------------------------------------------------------------------------------------
-
-newtype EditorT m o = EditorT{ runEditorT :: StateT PPrintState m o }
-
-type Editor o = EditorT Identity o
-
-runEditor :: Editor o -> State PPrintState o
-runEditor (EditorT f) = f
-
-instance Functor m => Functor (EditorT m) where { fmap f (EditorT o) = EditorT $ fmap f o; }
-
-instance Monad m => Monad (EditorT m) where
-  return = EditorT . return
-  (EditorT o) >>= f = EditorT $ o >>= runEditorT . f
-
-instance (Functor m, Monad m) => Applicative (EditorT m) where { (<*>) = ap; pure = return; }
-
-instance Monad m => MonadState PPrintState (EditorT m) where { state = EditorT . state; }
-
-instance Monad m => MonadWriter Lazy.Text (EditorT m) where
-  writer (o, t) = state $ \st -> (,) o $ with st
-    [ outputText    $= flip mappend t
-    , currentColumn $= (+ (fromIntegral $ Lazy.length t))
-    ]
-  listen (EditorT f) = do
-    (o, stA) <- lift $ runStateT f nullValue
-    modify (<> stA) >> return (o, stA~>outputText)
-  pass f = f >>= \ (o, f) -> state $ \st -> (o, with st [outputText $= f])
-
-instance MonadTrans EditorT where { lift = EditorT . lift; }
-
-instance MonadIO m => MonadIO (EditorT m) where { liftIO = EditorT . liftIO; }
-
-----------------------------------------------------------------------------------------------------
-
-newtype PPrintState = PPrintState (Int, Int, StrictText, [Int], Int, Int, Int, LazyText)
-
-instance TestNull PPrintState where
-  testNull  = Lazy.null . (~> outputText)
-  nullValue = PPrintState (80, 4, Strict.singleton '\n', [], 0, 0, 1, mempty)
-
-instance Monoid PPrintState where
-  mempty = nullValue
-  mappend a b = with b
-    [ outputText  $= mappend (a~>outputText)
-    , currentLine $= ((a~>currentLine) +)
-    , currentColumn <~ a~>currentColumn
-    ]
-
-pPrintStateLens :: Monad m => Lens m PPrintState (Int, Int, StrictText, [Int], Int, Int, Int, LazyText)
-pPrintStateLens = newLens (\ (PPrintState o) -> o) (\o _ -> PPrintState o)
-
--- | Set the current line wrap width.
-wrapWidth :: Monad m => Lens m PPrintState Int
-wrapWidth = pPrintStateLens >>> tuple0
-
--- | Sets how many space characters a tab character will be replaced with on 'indent'.
-tabWidth :: Monad m => Lens m PPrintState Int
-tabWidth = pPrintStateLens >>> tuple1
-
--- | Whenever a 'nextLine' operation is executed, this string is copied into the 'outputText' and
--- the 'currentLine' is incremented.
-newlineString :: Monad m => Lens m PPrintState StrictText
-newlineString = pPrintStateLens >>> tuple2
-
--- | You can set a list of tab stops so every 'tab' operation steps to the next stop rather than the
--- default behavior of stepping forward to a column that is some multiple 'tabWidth'.
-tabStops :: Monad m => Lens m PPrintState [Int]
-tabStops = pPrintStateLens >>> tuple3
-
--- | This is the current indentation count. This counts the number of 'tab' opreations that have
--- been performed on the current line.
-currentIndent :: Monad m => Lens m PPrintState Int
-currentIndent = pPrintStateLens >>> tuple4
-
--- | The column counter.
-currentColumn :: Monad m => Lens m PPrintState Int
-currentColumn = pPrintStateLens >>> tuple5
-
--- | The line counter.
-currentLine :: Monad m => Lens m PPrintState Int
-currentLine = pPrintStateLens >>> tuple6
-
--- | The chunk of lazy 'Data.Text.Lazy.Text' produced so far.
-outputText :: Monad m => Lens m PPrintState LazyText
-outputText = pPrintStateLens >>> tuple7
 
 ----------------------------------------------------------------------------------------------------
 
@@ -340,15 +222,6 @@ approxWidth limit tx = evalState (runMaybeT $ loop 0 tx >> get) mempty where
           loop (if rowLimit>0 then n+rowLimit else 0) ux
           next tx
 
-textPPrintBreakLine :: Monad m => Int -> EditorT m ()
-textPPrintBreakLine i =
-  modify $ \st -> with st
-    [ currentLine   $= (+ i)
-    , currentColumn <~ 0
-    , outputText    $= flip mappend $
-        Lazy.replicate (fromIntegral i) $ Lazy.fromStrict $ st~>newlineString
-    ]
-
 -- | Scans through a list of 'PPrint' items, if there are multiple 'PSpace's they are joined into
 -- one, all 'PSapace's following a 'PForceSpace' are removed. If there are multiple 'PNewLine's they
 -- are joined into one, 'PNewLine's following 'PForceNewLine's are removed. All spaces before any
@@ -412,8 +285,8 @@ textPPrintInline keepIndents keepNewLines tx = do
 -- plain text.
 textPPrinter :: Monad m => PPrint -> EditorT m ()
 textPPrinter t = case t of
-  PNewLine       -> textPPrintBreakLine 1
-  PForceLine i   -> textPPrintBreakLine i
+  PNewLine       -> lineBreak 1
+  PForceLine i   -> lineBreak i
   PSpace         -> modify $ \st -> with st
     [outputText $= if st~>currentColumn == 0 then id else flip mappend $ Lazy.fromStrict sp]
   PForceSpace i  -> modify $ \st -> with st

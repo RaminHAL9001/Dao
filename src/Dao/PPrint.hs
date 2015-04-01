@@ -53,15 +53,23 @@
 -- tracking down invalid grammars and offering suggestions on how to correct them.
 module Dao.PPrint where
 
+import           Prelude hiding (id, (.))
+
 import           Dao.Count
+import           Dao.Lens
+import           Dao.TestNull
 import           Dao.Text
 
+import           Control.Applicative
+import           Control.Category
 import           Control.Monad
+import           Control.Monad.Identity
+import           Control.Monad.IO.Class
 import           Control.Monad.State
 import           Control.Monad.Trans.Maybe
+import           Control.Monad.Writer
 
 import           Data.List (intersperse)
-import           Data.Monoid
 import qualified Data.Text      as Strict
 import qualified Data.Text.Lazy as Lazy
 import           Data.Typeable
@@ -71,33 +79,23 @@ sp = Strict.singleton ' '
 
 -- | Calls 'textPPrinter' with a new empty 'PPrintState' and 'tabWidth' and 'wrapWidth'
 -- (respectively) each set with the first two given integer parameters.
-runTextPPrinter :: Int -> Int -> [PPrint] -> LazyText
+runTextPPrinter :: Monad m => Int -> Int -> [PPrint] -> m LazyText
 runTextPPrinter tabs wraps tx =
-  evalState (mapM_ textPPrinter tx >> gets outputText) (mempty{ tabWidth=tabs, wrapWidth=wraps })
+  evalStateT (runEditorT $ mapM_ textPPrinter tx >> gets (~> outputText)) $
+    new[tabWidth <~ tabs, wrapWidth <~ wraps]
+
+runPureTextPPrinter :: Int -> Int -> [PPrint] -> LazyText
+runPureTextPPrinter tabs wraps = runIdentity . runTextPPrinter tabs wraps
 
 -- | Calls 'runTextPPrinter' and converts the result to a 'Prelude.String', convenient for
 -- instantiating 'PPRintable' objects into the 'Prelude.Show' class.
 showPPrint :: Int -> Int -> [PPrint] -> String
-showPPrint t w = Lazy.unpack . runTextPPrinter t w
+showPPrint t w = Lazy.unpack . runPureTextPPrinter t w
 
 ----------------------------------------------------------------------------------------------------
 
-type HtmlClass = StrictText
-
-type HtmlWidth = Int
-
-data HtmlRow
-  = HtmlTableHeader HtmlClass [HtmlCell]
-  | HtmlTableRow    HtmlClass [HtmlCell]
-  deriving (Eq, Ord, Show, Typeable)
-
-data HtmlCell = HtmlCell HtmlClass [PPrint]
-  deriving (Eq, Ord, Show, Typeable)
-
--- | A 'PPrint' is an instruction for outputting pretty text. There are very simple HTML
--- constructing functions as well. Convert a list of 'PPrint' tokens to text using 'runTextPPrinter' or
--- 'pprintHtml'. The 'runTextPPrinter' function will generate plain text even if HTML structures are
--- printed.
+-- | A 'PPrint' is an instruction for outputting pretty text.  constructing functions as well.
+-- Convert a list of 'PPrint' tokens to text using 'runTextPPrinter'.
 data PPrint
   = PNewLine        -- ^ recommend a place where a new line can be placed
   | PForceLine  Int -- ^ force a new line
@@ -115,23 +113,12 @@ data PPrint
   | PIndent [PPrint]
     -- ^ recommends to the printer that the following tokens be tabbed if they are to start on a new
     -- line, and wrapped tokens will also be indented.
-  | PSpan       HtmlClass [PPrint] -- ^ when outputting HTML, set the SPAN class.
-  | PQuote      HtmlClass [PPrint] -- ^ output an HTML quoted span.
   | PMaxColumns Int [PPrint] [PPrint]
     -- ^ truncate output of the first 'PPrint' to the given maximum number of columns, append the
     -- second 'PPrint' if the output is truncated 
   | PMaxRows    Int [PPrint] [PPrint]
     -- ^ truncate output of the first 'PPrint' to the given maximum number of rows, append the
     -- second 'PPrint' if the output is truncated .
-  | PParagraph  HtmlClass [PPrint]
-  | PDiv        HtmlClass [PPrint]
-  | PTable      HtmlClass (Maybe HtmlWidth) [HtmlRow]
-  | PNumbered   HtmlClass [HtmlCell]
-  | PBulleted   HtmlClass [HtmlCell]
-  | PHeader1    HtmlClass [PPrint]
-  | PHeader2    HtmlClass [PPrint]
-  | PHeader3    HtmlClass [PPrint]
-  | PHeader4    HtmlClass [PPrint]
   deriving (Eq, Ord, Show, Typeable)
 
 -- | Use the instance of 'Prelude.Show' for a given data type, convert the data type to a string,
@@ -151,18 +138,6 @@ pInline = PInline . cleanSpaces
 -- | Like 'PIndent', but automatically calls 'cleanSpaces' on the input parameter.
 pIndent :: [PPrint] -> PPrint
 pIndent = PIndent . cleanSpaces
-
--- | Like 'PSpan', but automatically calls 'cleanSpaces' on the input 'PPrint' list.
-pSpan :: HtmlClass -> [PPrint] -> PPrint
-pSpan c = PSpan c . cleanSpaces
-
--- | Like 'PSpan', but automatically calls 'cleanSpaces' on the input 'PPrint' list.
-pDiv :: HtmlClass -> [PPrint] -> PPrint
-pDiv c = PDiv c . cleanSpaces
-
--- | Like 'PSpan', but automatically calls 'cleanSpaces' on the input 'PPrint' list.
-pQuote :: HtmlClass -> [PPrint] -> PPrint
-pQuote c = PQuote c . cleanSpaces
 
 -- | Synonym for 'PNewLine', but with a lowercase leading @p@ so you don't get confused.
 pNewLine :: PPrint
@@ -211,32 +186,95 @@ instance PPrintable Lazy.Text    where { pPrint = return . pShow }
 
 ----------------------------------------------------------------------------------------------------
 
-data PPrintState
-  = PPrintState
-    { wrapWidth      :: Int
-    , newlineWithCR  :: Bool
-    , tabWidth       :: Int
-    , tabStops       :: [Int]
-    , currentIndent  :: Int
-    , currentColumn  :: Int
-    , currentLine    :: Int
-    , outputText     :: LazyText
-    }
+newtype EditorT m o = EditorT{ runEditorT :: StateT PPrintState m o }
+
+type Editor o = EditorT Identity o
+
+runEditor :: Editor o -> State PPrintState o
+runEditor (EditorT f) = f
+
+instance Functor m => Functor (EditorT m) where { fmap f (EditorT o) = EditorT $ fmap f o; }
+
+instance Monad m => Monad (EditorT m) where
+  return = EditorT . return
+  (EditorT o) >>= f = EditorT $ o >>= runEditorT . f
+
+instance (Functor m, Monad m) => Applicative (EditorT m) where { (<*>) = ap; pure = return; }
+
+instance Monad m => MonadState PPrintState (EditorT m) where { state = EditorT . state; }
+
+instance Monad m => MonadWriter Lazy.Text (EditorT m) where
+  writer (o, t) = state $ \st -> (,) o $ with st
+    [ outputText    $= flip mappend t
+    , currentColumn $= (+ (fromIntegral $ Lazy.length t))
+    ]
+  listen (EditorT f) = do
+    (o, stA) <- lift $ runStateT f nullValue
+    modify (<> stA) >> return (o, stA~>outputText)
+  pass f = f >>= \ (o, f) -> state $ \st -> (o, with st [outputText $= f])
+
+instance MonadTrans EditorT where { lift = EditorT . lift; }
+
+instance MonadIO m => MonadIO (EditorT m) where { liftIO = EditorT . liftIO; }
+
+----------------------------------------------------------------------------------------------------
+
+newtype PPrintState = PPrintState (Int, Int, StrictText, [Int], Int, Int, Int, LazyText)
+
+instance TestNull PPrintState where
+  testNull  = Lazy.null . (~> outputText)
+  nullValue = PPrintState (80, 4, Strict.singleton '\n', [], 0, 0, 1, mempty)
 
 instance Monoid PPrintState where
-  mempty =
-    PPrintState
-    { wrapWidth     = 80
-    , tabWidth      = 4
-    , newlineWithCR = False
-    , currentIndent = 0
-    , currentColumn = 0
-    , currentLine   = 1
-    , tabStops      = []
-    , outputText    = mempty
-    }
-  mappend a b = b{ outputText = mappend (outputText a) (outputText b) }
+  mempty = nullValue
+  mappend a b = with b
+    [ outputText  $= mappend (a~>outputText)
+    , currentLine $= ((a~>currentLine) +)
+    , currentColumn <~ a~>currentColumn
+    ]
 
+pPrintStateLens :: Monad m => Lens m PPrintState (Int, Int, StrictText, [Int], Int, Int, Int, LazyText)
+pPrintStateLens = newLens (\ (PPrintState o) -> o) (\o _ -> PPrintState o)
+
+-- | Set the current line wrap width.
+wrapWidth :: Monad m => Lens m PPrintState Int
+wrapWidth = pPrintStateLens >>> tuple0
+
+-- | Sets how many space characters a tab character will be replaced with on 'indent'.
+tabWidth :: Monad m => Lens m PPrintState Int
+tabWidth = pPrintStateLens >>> tuple1
+
+-- | Whenever a 'nextLine' operation is executed, this string is copied into the 'outputText' and
+-- the 'currentLine' is incremented.
+newlineString :: Monad m => Lens m PPrintState StrictText
+newlineString = pPrintStateLens >>> tuple2
+
+-- | You can set a list of tab stops so every 'tab' operation steps to the next stop rather than the
+-- default behavior of stepping forward to a column that is some multiple 'tabWidth'.
+tabStops :: Monad m => Lens m PPrintState [Int]
+tabStops = pPrintStateLens >>> tuple3
+
+-- | This is the current indentation count. This counts the number of 'tab' opreations that have
+-- been performed on the current line.
+currentIndent :: Monad m => Lens m PPrintState Int
+currentIndent = pPrintStateLens >>> tuple4
+
+-- | The column counter.
+currentColumn :: Monad m => Lens m PPrintState Int
+currentColumn = pPrintStateLens >>> tuple5
+
+-- | The line counter.
+currentLine :: Monad m => Lens m PPrintState Int
+currentLine = pPrintStateLens >>> tuple6
+
+-- | The chunk of lazy 'Data.Text.Lazy.Text' produced so far.
+outputText :: Monad m => Lens m PPrintState LazyText
+outputText = pPrintStateLens >>> tuple7
+
+----------------------------------------------------------------------------------------------------
+
+-- | This is the data produced by the 'approxWidth' function. It is used to try and determine how
+-- large (width and height) the text will be when printing a a list of 'PPrint' structures.
 data TextStatistics
   = TextStatistics
     { maximumWidth      :: Int -- ^ number of columns
@@ -296,23 +334,20 @@ approxWidth limit tx = evalState (runMaybeT $ loop 0 tx >> get) mempty where
         PClearTabStops         -> next tx
         PInline           ux   -> next ux >> next tx
         PIndent           ux   -> next ux >> next tx
-        PSpan       _     ux   -> next ux >> next tx
-        PQuote      _     ux   -> increment 2 >> next ux >> next tx
         PMaxColumns _     ux _ -> next ux >> next tx
         PMaxRows rowLimit ux _ -> do
           n <- lift $ gets maximumHeight
           loop (if rowLimit>0 then n+rowLimit else 0) ux
           next tx
-        _                      -> mzero -- TODO: computations on the remainder of the HTML elements.
 
-textPPrintBreakLine :: Int -> State PPrintState ()
+textPPrintBreakLine :: Monad m => Int -> EditorT m ()
 textPPrintBreakLine i =
-  modify $ \st ->
-    st{ currentLine   = currentLine st + i
-      , currentColumn = 0
-      , outputText    = mappend (outputText st) $ Lazy.fromChunks $ return $ Strict.replicate i $
-          if newlineWithCR st then Strict.pack "\r\n" else Strict.singleton '\n'
-      }
+  modify $ \st -> with st
+    [ currentLine   $= (+ i)
+    , currentColumn <~ 0
+    , outputText    $= flip mappend $
+        Lazy.replicate (fromIntegral i) $ Lazy.fromStrict $ st~>newlineString
+    ]
 
 -- | Scans through a list of 'PPrint' items, if there are multiple 'PSpace's they are joined into
 -- one, all 'PSapace's following a 'PForceSpace' are removed. If there are multiple 'PNewLine's they
@@ -336,25 +371,13 @@ cleanSpaces = loop where
     PIndent         ux    : tx -> PIndent  ux : loop tx
     PMaxColumns c   ux vx : tx -> PMaxColumns c ux vx : loop tx
     PMaxRows    c   ux vx : tx -> PMaxRows    c ux vx : loop tx
-    PSpan       c   ux    : tx -> PSpan  c ux : loop tx
-    PDiv        c   ux    : tx -> PDiv   c ux : loop tx
-    PQuote      c   ux    : tx -> PQuote c ux : loop tx
-    PTable      c w ux    : tx -> PTable c w ux : loop tx
-    PParagraph  c   ux    : tx -> PParagraph c ux : loop tx
-    PNumbered   c   ux    : tx -> PNumbered  c (fmap cells ux) : loop tx
-    PBulleted   c   ux    : tx -> PBulleted  c (fmap cells ux) : loop tx
-    PHeader1    c   ux    : tx -> PHeader1   c ux : loop tx
-    PHeader2    c   ux    : tx -> PHeader2   c ux : loop tx
-    PHeader3    c   ux    : tx -> PHeader3   c ux : loop tx
-    PHeader4    c   ux    : tx -> PHeader3   c ux : loop tx
-  cells (HtmlCell c tx) = HtmlCell c tx
   make forcedConstr constr len tx =
     if len==1 then constr : loop tx else if len>0 then forcedConstr len : loop tx else loop tx
   makeSpace = make PForceSpace PSpace
   makeLine  = make PForceLine  PNewLine
   joinSpaces forced len tx = case tx of
     []                 -> if forced then makeSpace len [] else []
-    PSpace        : tx -> joinSpaces forced (if len<=0 then 1 else len) $ loop tx
+    PSpace        : tx -> joinSpaces forced (max 1 len) $ loop tx
     PForceSpace i : tx -> if i>0 then joinSpaces True (len+i) tx else joinSpaces True len tx
     PNewLine      : _  -> joinLines 0 $ if forced then makeSpace len tx else joinLines 0 tx
     PForceLine  _ : _  -> joinLines 0 $ if forced then makeSpace len tx else joinLines 0 tx
@@ -374,8 +397,6 @@ cleanSpaces = loop where
 textPPrintInline :: Bool -> Bool -> [PPrint] -> [PPrint]
 textPPrintInline keepIndents keepNewLines tx = do
   let loop = textPPrintInline keepIndents keepNewLines
-  let cell (HtmlCell _ tx) = loop tx
-  let q = [PText $ Strict.singleton '"']
   t <- cleanSpaces tx
   case t of
     PNewLine           -> guard keepNewLines >> return PNewLine
@@ -383,73 +404,57 @@ textPPrintInline keepIndents keepNewLines tx = do
     PSpace             -> return PSpace
     PForceSpace i      -> return $ PForceSpace i
     PText       t      -> return $ PText t
-    PSpan       _ tx   -> loop tx
-    PQuote      _ tx   -> concat [q, tx, q]
     PMaxColumns _ tx _ -> loop tx
     PMaxRows    _ tx _ -> loop tx
-    PTable      _ _ tx -> tx >>= \t -> case t of
-      HtmlTableHeader _ tx -> tx >>= cell
-      HtmlTableRow    _ tx -> tx >>= cell
-    PParagraph  _ tx   -> loop tx
-    PNumbered   _ tx   -> tx >>= cell
-    PBulleted   _ tx   -> tx >>= cell
-    PHeader1    _ tx   -> loop tx
-    PHeader2    _ tx   -> loop tx
-    PHeader3    _ tx   -> loop tx
-    PHeader4    _ tx   -> loop tx
     _                  -> mzero
 
 -- | This is the 'Control.Monad.State.State'-ful text printer, converting a string of 'PPrint's to
 -- plain text.
-textPPrinter :: PPrint -> State PPrintState ()
+textPPrinter :: Monad m => PPrint -> EditorT m ()
 textPPrinter t = case t of
   PNewLine       -> textPPrintBreakLine 1
   PForceLine i   -> textPPrintBreakLine i
-  PSpace         -> modify $ \st ->
-    st{ outputText = mappend (outputText st) $
-          if currentColumn st == 0 then mempty else Lazy.fromChunks [sp]
-      }
-  PForceSpace i  -> modify $ \st ->
-    st{ outputText    = outputText st <> Lazy.fromChunks [Strict.replicate i sp]
-      , currentColumn = currentColumn st + i
-      }
-  PSetTabStop    -> modify $ \st ->
-    st{ tabStops =
-          let col = currentColumn st
-              loop zx tx = case tx of
-                []            -> zx++[col]
-                t:tx | t==col -> zx++tx
-                t:tx | t >col -> zx++col:t:tx
-                t:tx          -> loop (zx++[t]) tx
-          in  loop [] $ tabStops st
-      }
-  PClearTabStops -> modify $ \st -> st{ tabStops=[] }
-  PTabToStop     -> modify $ \st ->
-    let col = currentColumn st
-        tab = tabWidth st
-        tx  = dropWhile (< col) (tabStops st)
-    in  st{ currentColumn = if null tx then tab * (1 + div col tab) else head tx } 
-  PText   t      -> modify $ \st ->
-    let col = currentColumn st
-        tab = if col==0 then Strict.replicate (currentIndent st) sp else mempty
+  PSpace         -> modify $ \st -> with st
+    [outputText $= if st~>currentColumn == 0 then id else flip mappend $ Lazy.fromStrict sp]
+  PForceSpace i  -> modify $ \st -> with st
+    [ outputText    $= flip mappend $ Lazy.fromChunks [Strict.replicate i sp]
+    , currentColumn $= (+ i)
+    ]
+  PSetTabStop    -> modify $ \st -> with st
+    [ tabStops $=
+        let col = st~>currentColumn
+            loop zx tx = case tx of
+              []            -> zx++[col]
+              t:tx | t==col -> zx++tx
+              t:tx | t >col -> zx++col:t:tx
+              t:tx          -> loop (zx++[t]) tx
+        in  loop []
+    ]
+  PClearTabStops -> modify $ by [tabStops <~ []]
+  PTabToStop     -> modify $ \st -> with st $
+    let col = st~>currentColumn
+        tab = st~>tabWidth
+        tx  = dropWhile (< col) (st~>tabStops)
+    in  [currentColumn <~ if null tx then tab * (1 + div col tab) else head tx]
+  PText   t      -> modify $ \st -> with st $
+    let col = st~>currentColumn
+        tab = if col==0 then Strict.replicate (st~>currentIndent) sp else mempty
         txt = tab <> t
-    in  st{ outputText    = mappend (outputText st) $ Lazy.fromChunks [txt]
-          , currentColumn = currentColumn st + Strict.length txt
-          }
+    in  [ outputText    $= flip mappend $ Lazy.fromChunks [txt]
+        , currentColumn $= (+ (Strict.length txt))
+        ]
   PInline tx     -> do
-    width <- gets wrapWidth
-    col   <- gets currentColumn
+    width <- gets (~> wrapWidth)
+    col   <- gets (~> currentColumn)
     case approxWidth (width-col) tx of
       Nothing -> mapM_ textPPrinter tx
       Just  _ -> mapM_ textPPrinter $ textPPrintInline False False tx
   PIndent tx     -> do
-    tab <- gets currentIndent
-    modify $ \st -> st{ currentIndent = tab + tabWidth st }
+    tab <- gets (~> currentIndent)
+    modify $ \st -> with st [currentIndent <~ tab + st~>tabWidth]
     mapM_ textPPrinter tx
-    modify $ \st -> st{ currentIndent = tab }
+    modify $ by [currentIndent <~ tab]
   -- o ^ Recommends to the printer that the following tokens be tabbed if they are to start on a new
   -- line, and wrapping tokens will also be indented.
-  PSpan  _ tx    -> mapM_ textPPrinter tx
-  PQuote _ tx    -> let q = [PText $ Strict.singleton '"'] in mapM_ textPPrinter $ concat [q, tx, q]
-  _              -> return () -- TODO: a proper textual representation of the other HTML elements.
+  _              -> return ()
 

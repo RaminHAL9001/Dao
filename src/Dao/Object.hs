@@ -80,7 +80,6 @@ import           Data.List (intercalate, nub)
 import qualified Data.Map       as M
 import           Data.Monoid
 import qualified Data.Text      as Strict
-import qualified Data.Text.Lazy as Lazy
 
 -- | Void values are undefined values. Unliked Haskell's 'Prelude.undefined', 'voidValue' is a concrete
 -- value you can test for.
@@ -250,7 +249,7 @@ instance Ord Passport where { compare a b = objOrdering a $ objDynamic b; }
 
 instance PPrintable Passport where { pPrint = objPrinted; }
 
-instance Show Passport where { show = Lazy.unpack . runTextPPrinter 4 80 . pPrint; }
+instance Show Passport where { show = showPPrint 4 80 . pPrint; }
 
 instance HasTypeRep Passport where { objTypeOf = objTypeOf . objDynamic }
 
@@ -419,7 +418,7 @@ instance PPrintable Simple where
     OTree   o -> pPrintTree o
     OType   o -> [pShow o]
 
-instance Show Simple where { show = Lazy.unpack . runTextPPrinter 4 80 . pPrint; }
+instance Show Simple where { show = showPPrint 4 80 . pPrint; }
 
 instance Binary Simple where
   put o = let w = putWord8 in case o of
@@ -732,7 +731,7 @@ instance TestNull Object where
 instance PPrintable Object where
   pPrint o = case o of { OSimple o -> pPrint o; OForeign o -> pPrint o; }
 
-instance Show Object where { show = Lazy.unpack . runTextPPrinter 4 80 . pPrint; }
+instance Show Object where { show = showPPrint 4 80 . pPrint; }
 
 instance SimpleData Object   where
   fromSimple = return . OSimple

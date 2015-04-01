@@ -66,7 +66,7 @@ module Dao.Rule
 import           Dao.Lens
 import           Dao.Logic
 import           Dao.Object
-import           Dao.PPrint
+import           Dao.Text.PPrint
 import           Dao.TestNull
 import qualified Dao.Tree as T
 

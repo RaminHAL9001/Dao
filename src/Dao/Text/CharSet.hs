@@ -22,7 +22,7 @@
 module Dao.Text.CharSet where
 
 import qualified Dao.Interval as Iv
-import           Dao.PPrint
+import           Dao.Text.PPrint
 import           Dao.TestNull
 
 import           Control.Applicative

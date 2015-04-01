@@ -59,7 +59,7 @@ import           Dao.Array
 import           Dao.Int
 import           Dao.Lens
 import           Dao.Logic
-import           Dao.PPrint
+import           Dao.Text.PPrint
 import           Dao.Predicate
 import           Dao.TestNull
 import           Dao.Text

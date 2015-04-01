@@ -19,7 +19,7 @@
 module Dao.Text.Location where
 
 import           Dao.Count
-import           Dao.PPrint
+import           Dao.Text.PPrint
 import           Dao.Text
 
 import           Control.DeepSeq

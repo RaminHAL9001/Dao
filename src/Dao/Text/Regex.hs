@@ -64,7 +64,7 @@ import           Dao.Text.Location
 import           Dao.Text.CharSet
 
 import qualified Dao.Interval as Iv
-import           Dao.PPrint
+import           Dao.Text.PPrint
 import           Dao.TestNull
 
 import           Control.Applicative

@@ -63,6 +63,7 @@ module Dao.Grammar
     Grammar, typeOfGrammar, typedGrammar, grammar, lexerTable, anyStringIn, lexerTableMPlus,
     lexerTableMSum, elseFail, (<?>), doReadsPrec, grammarBranches,
     -- * Analyzing Grammars
+    GrammarChoice(GrammarRegex, GrammarLexerTable), grammarChoices,
     grammarIsEmpty, grammarIsReturn, grammarIsLift, grammarIsTable, grammarIsRegex,
     grammarIsChoice, grammarIsTyped, grammarIsFail, grammarWasRejected,
     -- * Converting 'Grammar's to Monadic Parsers ('MonadParser's)
@@ -328,24 +329,22 @@ typedGrammar o = GrTyped (typeOfGrammar o) o
 -- This function may get stuck in an infinite loop if you accidentally construct a 'Grammar' that is
 -- biequivalent to @let f = f 'Control.Applicative.<|>' f@
 lexerTableMPlus :: forall m a . Monad m => Grammar m a -> Grammar m a -> Grammar m a
-lexerTableMPlus a b = liftM2 (++) (gather a) (gather b) >>= merge [] mempty where
+lexerTableMPlus a b = gather (grammarChoices $ GrChoice a b) >>= merge [] mempty where
   gather o = case o of
-    GrChoice a b -> liftM2 (++) (gather a) (gather b)
-    GrRegex rx o -> GrReturn [Left (rx, o)]
-    GrTable    o -> GrReturn [Right o]
-    GrReject err -> GrReject err
-    _            -> GrReturn []
+    Left err -> GrReject err
+    Right ox -> GrReturn ox
   make rxs = if null rxs then PTrue else mappend (regexsToTable rxs) . PTrue
   merge rxs tab ox = case ox of
-    []         -> case tab >>= make rxs of
+    []                       -> case tab >>= make rxs of
       PFalse     -> GrEmpty
       PTrue  tab -> GrTable tab
       PError err -> GrReject err
-    Left  o:ox -> merge (rxs++[o]) tab ox
-    Right o:ox -> case (tab <> PTrue o >>= make rxs) <|> (tab >>= make rxs) <|> make rxs o of
-      PFalse     -> merge [] tab ox
-      PTrue  tab -> merge [] (PTrue tab) ox
-      PError err -> GrReject err
+    GrammarRegex   rx o : ox -> merge (rxs++[(rx, o)]) tab ox
+    GrammarLexerTable o : ox -> 
+      case (tab <> PTrue o >>= make rxs) <|> (tab >>= make rxs) <|> make rxs o of
+        PFalse     -> merge [] tab ox
+        PTrue  tab -> merge [] (PTrue tab) ox
+        PError err -> GrReject err
 
 -- | Analogous to 'Control.Monad.msum', that is 'lexerTableMSum' is to 'lexerTableMPlus' as
 -- 'Control.Monad.mplus' is to 'Control.Monad.msum'. This function uses 'lexerTableMPlus' to fold
@@ -429,6 +428,49 @@ doReadsPrec :: (Monad m, MonadPlus m, Read o) => Int -> LazyText -> Grammar m o
 doReadsPrec prec t = case readsPrec prec $ Lazy.unpack t of
   [(o, "")] -> return o
   _         -> mzero
+
+----------------------------------------------------------------------------------------------------
+
+-- | This data type is produced by analyzing a 'Grammar' with the 'grammarChoices' function. Choices
+-- are either 'Dao.Text.Regex.Regex's or 'Dao.Text.Regex.RegexTable's.
+data GrammarChoice m o
+  = GrammarRegex       Regex      (LazyText -> Grammar m o)
+  | GrammarLexerTable (RegexTable (LazyText -> Grammar m o))
+  deriving Typeable
+
+-- | This function analyzes a 'Grammar' and produces a list of 'Dao.Text.Regex.Regex's or
+-- 'Dao.Text.Regex.RegexTable's (if any).
+--
+-- The resulting list may be empty if the 'Grammar' is constructed with one of
+-- 'Control.Monad.return', 'Control.Applicative.pure', 'Control.Monad.mzero', 'Control.Monad.fail',
+-- 'Control.Applicative.empty', 'Control.Monad.Except.throwError', or 'Control.Monad.Trans.lift'.
+--
+-- This function may loop infinitely returning no results if the 'Grammar' being analyzed is
+-- constructed with an infinite loop of 'typedGrammar's, such as:
+--
+-- @
+-- myGrammar :: 'Control.Monad.Monad' m => 'Grammar' m MyDataType
+-- myGrammar = 'typedGrammar' myGrammar
+-- @
+--
+-- The resulting list may be infinitely large if a 'Grammar' is constructed by equations such as:
+-- 
+-- @
+-- iniChoices1 = 'Control.Monad.msum' $ 'Prelude.repeat' myGrammar
+-- infChoices2 = myGrammar 'Control.Applicative.<|>' infChoices2
+-- @
+--
+-- or some similarly constructed function. Such functions exist both intentionally, and as a result
+-- of programmer error. You may want to wrap this function with @'Prelude.take' lim@ for some
+-- reasonable limit @lim@ just in case the grammar is accidentally an infinite choice.
+grammarChoices :: Grammar m o -> Either InvalidGrammar [GrammarChoice m o]
+grammarChoices o = case o of
+  GrReject err -> Left err
+  GrRegex rx o -> Right [GrammarRegex     rx o]
+  GrTable  tab -> Right [GrammarLexerTable tab]
+  GrChoice a b -> (++) <$> grammarChoices a <*> grammarChoices b
+  GrTyped  _ o -> grammarChoices o
+  _            -> Right []
 
 -- | An empty 'Grammar' is constructed by 'Control.Monad.mzero' or 'Control.Applicative.empty'. If
 -- the 'Grammar' you are analyzing is constructed in this way, this function evaluates to

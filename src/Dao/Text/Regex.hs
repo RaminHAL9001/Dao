@@ -319,7 +319,7 @@ instance PPrintable InvalidGrammarDetail where
       , elems rxs >>= \rx -> pPrint rx ++ [pNewLine]
       ]
 
-instance Show InvalidGrammarDetail where { show = showPPrint 4 4 . pPrint; }
+instance Show InvalidGrammarDetail where { show = showPPrint 4 80 . pPrint; }
 
 instance TestNull InvalidGrammarDetail where
   nullValue = OtherFailure nullValue
@@ -389,7 +389,7 @@ instance TestNull InvalidGrammar where
     NoLocation () -> isNothing a && testNull c
     _             -> False
 
-instance Show InvalidGrammar where { show = showPPrint 4 4 . pPrint; }
+instance Show InvalidGrammar where { show = showPPrint 4 80 . pPrint; }
 
 instance PPrintable InvalidGrammar where
   pPrint (InvalidGrammar (t, loc, detail)) = concat
@@ -696,7 +696,7 @@ _regexUnitToParser o = case o of
     init <- if lo==0 then pure mempty else count lo cset
     mappend init <$> maybe (munch cset) (flip noMoreThan cset) hi
 
-instance Show RegexUnit where { show = showPPrint 4 4 . pPrint; }
+instance Show RegexUnit where { show = showPPrint 4 80 . pPrint; }
 
 instance TestNull RegexUnit where
   nullValue = RxString nullValue nullValue
@@ -747,9 +747,11 @@ instance PPrintable RegexUnit where
           '\\'          -> "[\\\\]"
           '"'           -> "[\\\"]"
           '.'           -> "[.]"
+          '$'           -> "[$]"
+          '+'           -> "[+]"
+          '*'           -> "[*]"
           '|'           -> "[|]"
           '^'           -> "[\\^]"
-          '$'           -> "[$]"
           '['           -> "\\["
           ']'           -> "\\]"
           '('           -> "\\("
@@ -896,7 +898,7 @@ instance PPrintable Regex where
     [] -> [pText "\"\""]
     ox -> [pInline $ [pText "\""] ++ (ox>>=pPrint) ++ [pText "\""]]
 
-instance Show Regex where { show = showPPrint 4 4 . pPrint; }
+instance Show Regex where { show = showPPrint 4 80 . pPrint; }
 
 instance Ord Regex where
   compare a b = compare (computeLogProb $ probRegex a) (computeLogProb $ probRegex b)
@@ -1024,7 +1026,7 @@ instance PPrintable o => PPrintable (RegexTable o) where
     , pText "}"
     ]
 
-instance PPrintable o => Show (RegexTable o) where { show = showPPrint 4 4 . pPrint; }
+instance PPrintable o => Show (RegexTable o) where { show = showPPrint 4 80 . pPrint; }
 
 instance Monoid (Predicate InvalidGrammar (RegexTable o)) where
   mempty = mzero
@@ -1347,7 +1349,7 @@ lookAheadWithParser p init = do
   let pushback = incrementPushBackCounter $ st~>pushBackCount + st~>charCount
   case o of
     PFalse   -> pushback >> mzero
-    PError e -> pushback >> pfail e >> fail (showPPrint 4 4 $ pPrint e)
+    PError e -> pushback >> pfail e >> fail (showPPrint 4 80 $ pPrint e)
     PTrue  o -> do
       incrementCharCounter (st~>charCount)
       noMoreThan (stringLength o) anyChar

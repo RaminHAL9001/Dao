@@ -57,11 +57,12 @@ instance PPrintable CharSet where
             '('           -> "\\("
             ')'           -> "\\)"
             '\n'          -> "\\n"
+            '\r'          -> "\\r"
             '\t'          -> "\\t"
             '\f'          -> "\\f"
             '\v'          -> "\\v"
             c | isPrint c -> [c]
-            c             -> "0x" ++ showHex (ord c) ""
+            c             -> "\\x" ++ (toUpper <$> showHex (ord c) "")
         prin o = case o of
           (a, b) | a==b -> [ch a]
           (a, b) | a>minBound && b<maxBound -> [ch a, pText "-", ch b]
@@ -71,7 +72,7 @@ instance PPrintable CharSet where
         (notInverted, pairs) = csetDecompose cs
     in  pText (if notInverted then "[" else "[^") : (pairs >>= prin) ++ [pText "]"]
 
-instance Show CharSet where { show = showPPrint 4 4 . pPrint; }
+instance Show CharSet where { show = showPPrint 4 80 . pPrint; }
 
 -- | Construct a 'CharSet' containing all character intervals given.
 within :: [(Char, Char)] -> CharSet

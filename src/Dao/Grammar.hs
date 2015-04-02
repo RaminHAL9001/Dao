@@ -60,8 +60,8 @@ module Dao.Grammar
     Lexer(Lexer), lexer, lexConst, lexerSpan, lexerBreak, lexerMatch,
     lexerTuple, lexerFunction, lexerRegex,
     -- * Combinators for Building 'Grammar's.
-    Grammar, typeOfGrammar, typedGrammar, grammar, lexerTable, anyStringIn, lexerTableMPlus,
-    lexerTableMSum, elseFail, (<?>), doReadsPrec, grammarBranches,
+    Grammar, typeOfGrammar, grammarTyped, grammar, lexerTable, anyStringIn, grammarTable,
+    elseFail, (<?>), doReadsPrec, grammarBranches,
     -- * Analyzing Grammars
     GrammarView(
       GrammarEmpty, GrammarReturn, GrammarLift, GrammarTable, GrammarRegex,
@@ -319,22 +319,23 @@ grammar ox = case make id Nothing ox of
             (Nothing, NoLocation (), RegexShadowError ParallelRegex ry rx)
           _                             -> next
 
--- | Modify a 'Grammar' so that the 'Data.Typeable.TypeRep' for the return type stored in the
--- 'Grammar's meta-data.
-typedGrammar :: Typeable o => Grammar m o -> Grammar m o
-typedGrammar o = GrTyped (typeOfGrammar o) o
+-- | Like the 'grammar' constructor, but modifies a 'Grammar' so that the 'Data.Typeable.TypeRep'
+-- for the return type stored in the 'Grammar's meta-data.
+grammarTyped :: Typeable o => Grammar m o -> Grammar m o
+grammarTyped o = GrTyped (typeOfGrammar o) o
 
--- | This function has the same semantics as using 'Control.Monad.mplus', but behind the scenes is
--- operating a bit differently. 'Grammar's constructed with 'lexerTable' has all
--- 'Dao.Text.Regex.Regex's merged into an internal 'Dao.Text.Regex.RegexTable', whereas 'Grammar's
--- constructed 'grammar' or 'Control.Monad.mplus' or @('Control.Applicative.<|>')@ are not merged.
--- This function allows 'Grammar's constructed with 'grammar', 'Control.Monad.mplus', and
--- @('Control.Applicative.<|>') to be merged into an internal 'Dao.Text.Regex.RegexTable'.
+-- | Similar to the 'grammar' constructor, but will create a 'Dao.Text.Regex.RegexTable' that is
+-- used internally to improve the efficiency of parser constructed by the given 'Grammar' node.
+-- 'Grammar's constructed with 'lexerTable' has all 'Dao.Text.Regex.Regex's merged into an internal
+-- 'Dao.Text.Regex.RegexTable', whereas 'Grammar's constructed 'grammar' or 'Control.Monad.mplus' or
+-- @('Control.Applicative.<|>')@ are not merged.  This function allows 'Grammar's constructed with
+-- 'grammar', 'Control.Monad.mplus', and @('Control.Applicative.<|>')@ to be merged into an internal
+-- 'Dao.Text.Regex.RegexTable'.
 --
 -- This function may get stuck in an infinite loop if you accidentally construct a 'Grammar' that is
 -- biequivalent to @let f = f 'Control.Applicative.<|>' f@
-lexerTableMPlus :: forall m a . Monad m => Grammar m a -> Grammar m a -> Grammar m a
-lexerTableMPlus a b = gather (grammarChoices $ GrChoice a b) >>= merge [] mempty where
+grammarTable :: Monad m => Grammar m o -> Grammar m o
+grammarTable o = gather (grammarChoices o) >>= merge [] mempty where
   gather o = case o of
     Left err -> GrReject err
     Right ox -> GrReturn ox
@@ -350,14 +351,7 @@ lexerTableMPlus a b = gather (grammarChoices $ GrChoice a b) >>= merge [] mempty
         PFalse     -> merge [] tab ox
         PTrue  tab -> merge [] (PTrue tab) ox
         PError err -> GrReject err
-    _:ox -> merge rxs tab ox
-
--- | Analogous to 'Control.Monad.msum', that is 'lexerTableMSum' is to 'lexerTableMPlus' as
--- 'Control.Monad.mplus' is to 'Control.Monad.msum'. This function uses 'lexerTableMPlus' to fold
--- a list of 'Grammar's into a single 'Grammar' with a single large internal
--- 'Dao.Text.Regex.RegexTable'.
-lexerTableMSum :: Monad m => [Grammar m o] -> Grammar m o
-lexerTableMSum = foldl lexerTableMPlus GrEmpty
+    ox -> mplus (merge rxs tab []) (merge [] mempty ox)
 
 -- | Construct a 'Grammar' from a list of 'Lexer' choices, and use 'Dao.Regex.regexsToTable' to
 -- construct a lexer table.
@@ -469,7 +463,7 @@ instance PPrintable o => PPrintable (GrammarView m o) where
           ]
       ]
     GrammarTyped    t o ->
-      [ pText "typedGrammar", pSpace, pShow t , pText "("
+      [ pText "grammarTyped", pSpace, pShow t , pText "("
       , pIndent $ pPrint $ grammarView o
       , pText ")"
       ]
@@ -499,11 +493,11 @@ grammarView o = case o of
 -- 'Control.Applicative.empty', 'Control.Monad.Except.throwError', or 'Control.Monad.Trans.lift'.
 --
 -- This function may loop infinitely returning no results if the 'Grammar' being analyzed is
--- constructed with an infinite loop of 'typedGrammar's, such as:
+-- constructed with an infinite loop of 'grammarTyped's, such as:
 --
 -- @
 -- myGrammar :: 'Control.Monad.Monad' m => 'Grammar' m MyDataType
--- myGrammar = 'typedGrammar' myGrammar
+-- myGrammar = 'grammarTyped' myGrammar
 -- @
 --
 -- The resulting list may be infinitely large if a 'Grammar' is constructed by equations such as:
@@ -523,7 +517,7 @@ grammarChoices o = case o of
   GrTable  tab -> Right [GrammarTable tab]
   GrChoice a b -> (++) <$> grammarChoices a <*> grammarChoices b
   GrTyped  _ o -> grammarChoices o
-  _            -> Right []
+  o            -> Right [grammarView o]
 
 ----------------------------------------------------------------------------------------------------
 

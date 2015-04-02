@@ -19,7 +19,7 @@
 -- | Using the editor is a little tedious. This module provides a pretty-printing data type 'PPrint'
 -- data type which you can use to define blocks of code that can be indented and wrapped, and this
 -- 'PPrint' type can be transformed into an 'Dao.Text.Editor.EditorT' monadic function.
-module Dao.PPrint where
+module Dao.Text.PPrint where
 
 import           Prelude hiding (id, (.))
 
@@ -231,35 +231,27 @@ approxWidth limit tx = evalState (runMaybeT $ loop 0 tx >> get) mempty where
 cleanSpaces :: [PPrint] -> [PPrint]
 cleanSpaces = loop where
   loop tx = case tx of
-    []                         -> []
-    PSpace                : _  -> joinSpaces False 0 tx
-    PForceSpace _         : _  -> joinSpaces True  0 tx
-    PNewLine              : _  -> joinLines        0 tx
-    PForceLine  _         : _  -> joinLines        0 tx
-    PText       t         : tx -> PText        t : loop tx
-    PSetTabStop           : tx -> PSetTabStop    : loop tx
-    PTabToStop            : tx -> PTabToStop     : loop tx
-    PClearTabStops        : tx -> PClearTabStops : loop tx
-    PInline         ux    : tx -> PInline  ux : loop tx
-    PIndent         ux    : tx -> PIndent  ux : loop tx
-    PMaxColumns c   ux vx : tx -> PMaxColumns c ux vx : loop tx
-    PMaxRows    c   ux vx : tx -> PMaxRows    c ux vx : loop tx
-  make forcedConstr constr len tx =
-    if len==1 then constr : loop tx else if len>0 then forcedConstr len : loop tx else loop tx
-  makeSpace = make PForceSpace PSpace
-  makeLine  = make PForceLine  PNewLine
-  joinSpaces forced len tx = case tx of
-    []                 -> if forced then makeSpace len [] else []
-    PSpace        : tx -> joinSpaces forced (max 1 len) $ loop tx
-    PForceSpace i : tx -> if i>0 then joinSpaces True (len+i) tx else joinSpaces True len tx
-    PNewLine      : _  -> joinLines 0 $ if forced then makeSpace len tx else joinLines 0 tx
-    PForceLine  _ : _  -> joinLines 0 $ if forced then makeSpace len tx else joinLines 0 tx
-    tx                 -> makeSpace len $ loop tx
-  joinLines len tx = case tx of
-    []                 -> makeLine len []
-    PNewLine      : tx -> joinLines (if len==0 then 1 else len) $ loop tx
-    PForceLine i  : tx -> joinLines (len+i) $ loop tx
-    tx                 -> makeLine len $ loop tx
+    [] -> []
+    ------------------------------------
+    PForceSpace i : tx | i<=0 -> loop tx
+    PForceLine  i : tx | i<=0 -> loop tx
+    ----------------------------------------------------------------------------
+    PNewLine      : PNewLine      : tx -> loop $ PNewLine                   : tx
+    PNewLine      : PForceLine  i : tx -> loop $ PForceLine    i : PNewLine : tx
+    PForceLine  i : PNewLine      : tx -> loop $ PForceLine    i            : tx
+    PForceLine  a : PForceLine  b : tx -> loop $ PForceLine  (a+b)          : tx
+    -----------------------------------------------------------------------------
+    PSpace        : PSpace        : tx -> loop $ PSpace                     : tx
+    PSpace        : PForceSpace i : tx -> loop $ PForceSpace   i : PSpace   : tx
+    PForceSpace i : PSpace        : tx -> loop $ PForceSpace   i            : tx
+    PForceSpace a : PForceSpace b : tx -> loop $ PForceSpace (a+b)          : tx
+    ----------------------------------------------------------------------------
+    PSpace        : PNewLine      : tx -> loop $ PNewLine                   : tx
+    PSpace        : PForceLine  i : tx -> loop $ PForceLine    i            : tx
+    PNewLine      : PSpace        : tx -> loop $ PNewLine                   : tx
+    PForceLine  i : PSpace        : tx -> loop $ PForceLine    i            : tx
+    ----------------------------------------------------------------------------
+    t:tx -> t : loop tx
 
 -- | Remove formatting and return a simplified list of 'PPrint's that will just print everything on
 -- a single line on the current line, ignore all formatting commands, do not wrap. 'PForceLine' will

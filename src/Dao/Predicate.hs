@@ -383,3 +383,15 @@ execPredicateStateT f = liftM (fmap snd) . runPredicateStateT f
 execPredicateState :: PredicateState st err o -> st -> (Predicate (err, st) st)
 execPredicateState f = runIdentity . execPredicateStateT f
 
+----------------------------------------------------------------------------------------------------
+
+-- | This will be defined in "Data.Monoid" starting from version 4.8 of the `base` library. Until
+-- then, it is defined here. This defines a 'Data.Monoid.Monoid' for the
+-- 'Control.Applicative.Alternative' class of functions, where 'Data.Monoid.mempty' is defined as
+-- 'Control.Applicative.empty', and 'Data.Monad.mappend' is defined as
+-- @('Control.Applicative.<|>')@.
+newtype Alt f o = Alt { getAlt :: f o }
+instance MonadPlus f => Monoid (Alt f o) where
+  mempty = Alt mzero
+  mappend (Alt a) (Alt b) = Alt $ mplus a b
+

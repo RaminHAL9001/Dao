@@ -68,6 +68,7 @@ import           Dao.Text.PPrint
 import           Dao.TestNull
 
 import           Control.Applicative
+import           Control.Arrow
 import           Control.Category
 import           Control.DeepSeq
 import           Control.Exception
@@ -78,7 +79,7 @@ import           Control.Monad.State
 import qualified Data.Array.IArray as A
 import           Data.Char hiding (Space)
 import           Data.Ix
-import           Data.List (intercalate)
+import           Data.List (tails)
 import           Data.Maybe
 import           Data.Monoid
 import           Data.Ratio
@@ -290,6 +291,9 @@ data RegexShadowErrorType = ParallelRegex | SequenceRegex
 instance NFData RegexShadowErrorType where
   rnf o = case o of { ParallelRegex -> (); SequenceRegex -> (); }
 
+_shadowsRegex :: MonadError InvalidGrammar m => RegexShadowErrorType -> Regex -> Regex -> m ig
+_shadowsRegex a b c = throwError $ InvalidGrammar (Nothing, NoLocation (), RegexShadowError a b c)
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A 'InvalidGrammar' can occur during the parser evaluation. This is different from
@@ -308,14 +312,15 @@ instance PPrintable InvalidGrammarDetail where
   pPrint o = case o of
     OtherFailure msg -> [pText msg]
     RegexShadowError typ a b -> concat
-      [ [pText "the regular expression", pSpace], pPrint a
-      , [pText "consumes all of the characters that could possibly be consumed by", pSpace], pPrint b
-      , [pText "when each regular expression is matched in", pSpace]
+      [ pSentence "the regular expression", [pSpace], pPrint a, [pSpace]
+      , pSentence "consumes all of the characters that could possibly be consumed by"
+      , [pSpace], pPrint b, [pSpace]
+      , pSentence "when each regular expression is matched in", [pSpace]
       , [case typ of { ParallelRegex -> pText "parallel,"; SequenceRegex -> pText "sequence,"; }]
       ]
-    UnexpectedInput msg str -> [pText msg, pText ":", pSpace, pText $ show str]
+    UnexpectedInput msg str -> [pText msg, pChar ':', pSpace, pText $ show str]
     CutSomeBranches rxs     -> concat
-      [ [pText "regular expressions to be tried in parallel, some have been cut off:", pNewLine]
+      [ pSentence "regular expressions to be tried in parallel, some have been cut off:", [pNewLine]
       , elems rxs >>= \rx -> pPrint rx ++ [pNewLine]
       ]
 
@@ -394,7 +399,8 @@ instance Show InvalidGrammar where { show = showPPrint 4 80 . pPrint; }
 instance PPrintable InvalidGrammar where
   pPrint (InvalidGrammar (t, loc, detail)) = concat
     [ maybe [] pPrint (endLocation loc) ++ [pSpace]
-    , maybe [] (\t -> [pText "(in grammar for data type", pSpace, pShow t, pText ")", pSpace]) t
+    , flip (maybe []) t $ \t -> [pChar '('] ++
+        pSentence "in grammar for data type" ++ [pSpace, pShow t, pChar ')', pSpace]
     , pPrint detail
     ]
 
@@ -535,6 +541,9 @@ class ShadowsParallel o where { shadowsParallel :: o -> o -> Bool; }
 instance ShadowsParallel CharSet where
   shadowsParallel (CharSet a) (CharSet b) = Iv.null $ Iv.delete b a
 
+instance ShadowsParallel o => ShadowsParallel (o, x) where
+  shadowsParallel (a, _) (b, _) = shadowsParallel a b
+
 -- | This class defines a function that returns the interval 'Dao.Interval.Set' of characters for a
 -- regular expression that an input string could start with that might match the whole regular
 -- expression. For string regular expressions like @/(abc)/@, this function will evaluate to a
@@ -570,10 +579,10 @@ data RegexRepeater = RxSingle | RxRepeat Count (Maybe Count) deriving (Eq, Ord, 
 instance PPrintable RegexRepeater where
   pPrint o = case o of
     RxSingle            -> []
-    RxRepeat 0 Nothing  -> [pInline [pText "*"]]
-    RxRepeat 1 Nothing  -> [pInline [pText "+"]]
-    RxRepeat n Nothing  -> [pInline [pText "{", pShow n, pText "}"]]
-    RxRepeat n (Just o) -> [pInline [pText "{", pShow n, pText ",", pShow o, pText "}"]]
+    RxRepeat 0 Nothing  -> [pInline [pChar '*']]
+    RxRepeat 1 Nothing  -> [pInline [pChar '+']]
+    RxRepeat n Nothing  -> [pInline [pChar '{', pShow n, pChar '}']]
+    RxRepeat n (Just o) -> [pInline [pChar '{', pShow n, pChar ',', pShow o, pChar '}']]
 
 instance TestNull RegexRepeater where
   testNull (RxRepeat 0 (Just 0)) = True
@@ -896,7 +905,7 @@ newtype Regex = Regex{ regexUnits :: Array RegexUnit } deriving (Eq, Typeable)
 instance PPrintable Regex where
   pPrint (Regex o) = case elems o of
     [] -> [pText "\"\""]
-    ox -> [pInline $ [pText "\""] ++ (ox>>=pPrint) ++ [pText "\""]]
+    ox -> [pInline $ [pChar '"'] ++ (ox>>=pPrint) ++ [pChar '"']]
 
 instance Show Regex where { show = showPPrint 4 80 . pPrint; }
 
@@ -921,8 +930,7 @@ instance Monoid (Predicate InvalidGrammar Regex) where
               unitB <- getB -- If b is empty, we stop here.
               -- a and b are not empty, we can safely assume at least one element can be indexed
               if shadowsSeries unitA unitB
-              then Just $ PError $ InvalidGrammar $
-                (Nothing, NoLocation (), RegexShadowError SequenceRegex (Regex a) (Regex b))
+              then Just $ _shadowsRegex SequenceRegex (Regex a) (Regex b)
               else Just $ do
                 rxAB <- _rxSeq unitA unitB
                 PTrue $ Regex $ array $ concat
@@ -985,8 +993,8 @@ _rxSeq a b = case a of
   where
     mkrx = Regex . array . return
     joinrx a b =
-      if not $ shadowsSeries a b then return [a, b] else throwError $ InvalidGrammar
-        (Nothing, NoLocation (), RegexShadowError ParallelRegex (mkrx a) (mkrx b))
+      if not $ shadowsSeries a b then return [a, b] else
+        _shadowsRegex ParallelRegex (mkrx a) (mkrx b)
 
 -- | Construct a 'Regex' from a list of 'RegexUnit'.
 regex :: [RegexUnit] -> Predicate InvalidGrammar Regex
@@ -1015,29 +1023,27 @@ instance PPrintable o => PPrintable (RegexTable o) where
     [ pText "RegexTable {", pNewLine
     , pIndent $ A.assocs tab >>= \ (c, ar) ->
         [ pIndent $
-            [ pShow c, pSpace, pText "("
-            , pIndent $ intercalate [pSpace, pText "||", pSpace] $ do
+            [ pShow c, pSpace, pChar '('
+            , pIndent $ pSepBy [pSpace, pText "||", pSpace] $ do
                 (rx, o) <- elems ar
                 [pPrint rx ++ [pSpace, pText "->", pSpace, pIndent $ pPrint o]]
-            , pText ")"
+            , pChar ')'
             ]
         , pNewLine
         ]
-    , pText "}"
+    , pChar '}'
     ]
 
 instance PPrintable o => Show (RegexTable o) where { show = showPPrint 4 80 . pPrint; }
 
-instance Monoid (Predicate InvalidGrammar (RegexTable o)) where
+instance Monoid o => Monoid (Predicate InvalidGrammar (RegexTable o)) where
   mempty = mzero
   mappend a b = msum
     [do (RegexTable rxA tabA) <- a
         (RegexTable rxB tabB) <- b
+        sequence_ $ elems rxA >>= \ (a, _) -> elems rxB >>= \ (b, _) ->
+          [if a/=b && shadowsParallel a b then _shadowsRegex ParallelRegex a b else PTrue ()]
         if arrayIsNull rxA then b else if arrayIsNull rxB then a else do
-          let alast = lastElem rxA
-          let bfrst = rxB!0
-          checkRegexChoices $ maybe [] (fmap fst) $ msum
-            [(\a b -> [a,b]) <$> alast <*> bfrst, return <$> alast, return <$> bfrst]
           let interv  = uncurry Iv.interval . A.bounds
           let newbnds = Iv.toBoundedPair $ Iv.envelop (interv tabA) (interv tabB)
           return $ RegexTable (rxA<>rxB) $
@@ -1045,24 +1051,32 @@ instance Monoid (Predicate InvalidGrammar (RegexTable o)) where
     , a, b
     ]
 
+_regexTableShadows :: (Regex -> Regex -> Bool) -> RegexTable o -> RegexTable o -> Bool
+_regexTableShadows f a b =
+  let el = fmap fst . elems . regexTableElements in and $ f <$> el a <*> el b
+
+instance ShadowsParallel (RegexTable o) where
+  shadowsParallel = _regexTableShadows shadowsParallel
+
+instance ShadowsSeries   (RegexTable o) where
+  shadowsSeries   = _regexTableShadows shadowsSeries
+
 -- | Given a list of 'Regex's that may be evaluated in parallel, make sure no one 'Regex' shadows
 -- any other 'Regex' that occurs after it.
-checkRegexChoices :: [Regex] -> Predicate InvalidGrammar ()
-checkRegexChoices = loop Nothing where
-  loop keep ox = case ox of
-    []    -> return ()
-    r2:ox -> case keep of
-      Nothing -> loop (Just r2) ox
-      Just r1 ->
-        if shadowsParallel r1 r2
-        then PError $ InvalidGrammar (Nothing, NoLocation (), RegexShadowError ParallelRegex r1 r2)
-        else loop (Just r2) ox
+checkRegexChoices :: Monoid o => [(Regex, o)] -> Predicate InvalidGrammar [(Regex, o)]
+checkRegexChoices ox = sequence $ do
+  ox <- tails ox
+  case ox of
+    []           -> []
+    (rxA, oA):ox -> return $ do
+      let f ok (rxB, oB) = ok >>= \keep -> if rxA==rxB then PTrue (rxA, oA<>oB) else
+            if shadowsParallel rxA rxB then _shadowsRegex ParallelRegex rxA rxB else PTrue keep
+      foldl f (PTrue (rxA, oA)) ox
 
--- | Every 'Regex' contains a 'Regex', and every 'Regex' can match some range of characters. This
--- function creates an 'Data.Array.IArray.Array' mapping every character that could possibly match a
--- list of 'Regex's. The result is that with a single character look-ahead, you can do a O(1)
--- (constant time) lookup of the 'Regex's that will be able to evaluate successfully, minimizing
--- backtracking.
+-- | Every 'Regex' can match some range of characters. This function creates an
+-- 'Data.Array.IArray.Array' mapping every character that could possibly match a list of 'Regex's.
+-- The result is that with a single character look-ahead, you can do a O(1) (constant time) lookup
+-- of the 'Regex's that will be able to evaluate successfully, minimizing backtracking.
 --
 -- Be careful not to use this with 'Regex's that have been constructed with inverted
 -- 'Dao.Text.CharSet.CharSet's such as these:
@@ -1085,16 +1099,16 @@ checkRegexChoices = loop Nothing where
 -- cases where creating such enormous 'Data.Array.IArray.Array's is desirable. It is up to the
 -- programmers using this function to know when to use 'regexsToTable' to improve efficiency, and
 -- when not to.
-regexsToTable :: [(Regex, o)] -> Predicate InvalidGrammar (RegexTable o)
+regexsToTable :: Monoid o => [(Regex, o)] -> Predicate InvalidGrammar (RegexTable o)
 regexsToTable ox = do
-  checkRegexChoices $ fst <$> ox
+  ox <- checkRegexChoices ox
   guard $ not $ null ox
   let cset = mconcat $ initialCharSetOf . fst <$> ox
+  let check (c, ox) = checkRegexChoices ox >>= return . (,) c . array
   bnds <- maybe mzero return $ csetBounds cset
-  return $ RegexTable (array ox) $ fmap array $ A.accumArray (++) [] bnds $ do
-    rx <- ox
-    c <- csetRange $ initialCharSetOf $ fst rx
-    [(c, [rx])]
+  fmap (RegexTable (array ox) . A.array bnds) $ mapM check $
+    (A.assocs :: A.Array Char o -> [(Char, o)]) . A.accumArray (++) [] bnds $
+      ox >>= \ox -> csetRange (initialCharSetOf $ fst ox) >>= \c -> [(c, [ox])]
 
 regexTableToParser :: (Monad m, MonadParser m) => RegexTable o -> m (LazyText, o)
 regexTableToParser (RegexTable _ arr) = look1 >>= \c -> guard (inRange (A.bounds arr) c) >>

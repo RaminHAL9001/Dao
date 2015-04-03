@@ -232,8 +232,8 @@ instance Monad m => MonadPlus (Grammar m) where
     GrTable   tabA   -> case b of
       GrEmpty          -> GrTable tabA
       GrLift    next   -> GrLift $ liftM (mplus $ GrTable tabA) next
-      GrTable   tabB   -> case PTrue tabA <> PTrue tabB of
-        PTrue  o -> GrTable o
+      GrTable   tabB   -> case PTrue (fmap Alt <$> tabA) <> PTrue (fmap Alt <$> tabB) of
+        PTrue  o -> GrTable $ fmap getAlt <$> o
         PFalse   -> GrEmpty
         PError e -> GrReject e
       GrChoice  b    c -> mplus (mplus (GrTable tabA) b) c
@@ -335,23 +335,22 @@ grammarTyped o = GrTyped (typeOfGrammar o) o
 -- This function may get stuck in an infinite loop if you accidentally construct a 'Grammar' that is
 -- biequivalent to @let f = f 'Control.Applicative.<|>' f@
 grammarTable :: Monad m => Grammar m o -> Grammar m o
-grammarTable o = gather (grammarChoices o) >>= merge [] mempty where
+grammarTable o = gather (grammarChoices o) >>= merge mempty [] where
   gather o = case o of
     Left err -> GrReject err
     Right ox -> GrReturn ox
-  make rxs = if null rxs then PTrue else mappend (regexsToTable rxs) . PTrue
-  merge rxs tab ox = case ox of
-    []                       -> case tab >>= make rxs of
-      PFalse     -> GrEmpty
-      PTrue  tab -> GrTable tab
+  make = regexsToTable . fmap (fmap (fmap Alt))
+  merge tab rxs ox = case ox of
+    GrammarRegex rx o : ox -> merge tab (rxs++[(rx, o)]) ox
+    GrammarTable    o : ox -> case tab <> make rxs <> PTrue (fmap Alt <$> o) of
+      PFalse     -> merge        tab  [] ox
+      PTrue  tab -> merge (PTrue tab) [] ox
       PError err -> GrReject err
-    GrammarRegex   rx o : ox -> merge (rxs++[(rx, o)]) tab ox
-    GrammarTable o : ox -> 
-      case (tab <> PTrue o >>= make rxs) <|> (tab >>= make rxs) <|> make rxs o of
-        PFalse     -> merge [] tab ox
-        PTrue  tab -> merge [] (PTrue tab) ox
-        PError err -> GrReject err
-    ox -> mplus (merge rxs tab []) (merge [] mempty ox)
+    [] -> case tab <> make rxs of
+      PFalse     -> GrEmpty
+      PTrue  tab -> GrTable $ fmap getAlt <$> tab
+      PError err -> GrReject err
+    ox -> mplus (merge tab rxs []) (merge mempty [] ox)
 
 -- | Construct a 'Grammar' from a list of 'Lexer' choices, and use 'Dao.Regex.regexsToTable' to
 -- construct a lexer table.
@@ -373,12 +372,12 @@ grammarTable o = gather (grammarChoices o) >>= merge [] mempty where
 -- 'Grammar' equivalent to 'Control.Applicative.empty' which alwasy backtracaks.
 lexerTable :: Monad m => [Lexer o] -> Grammar m o
 lexerTable ox = case concatenated ox of
-  PFalse       -> GrEmpty
-  PError err   -> GrReject err
-  PTrue  table -> GrTable table
+  PFalse     -> GrEmpty
+  PError err -> GrReject err
+  PTrue  tab -> GrTable $ fmap getAlt <$> tab
   where
-    concatenated =
-      mapM (\ (Lexer (f, ox)) -> flip (,) (return . f) <$> mconcat (PTrue <$> ox)) >=> regexsToTable
+    concatenated = regexsToTable <=<
+      mapM (\ (Lexer (f, ox)) -> flip (,) (Alt . GrReturn . f) <$> mconcat (PTrue <$> ox))
 
 -- | Create a 'Grammar' that matches any one of the given strings. The list of given strings is
 -- automatically sorted to make sure shorter strings do not shaddow longer strings.
@@ -445,27 +444,32 @@ data GrammarView m o
   | GrammarRejected InvalidGrammar
   deriving Typeable
 
+instance Monad m => Functor (GrammarView m) where
+  fmap f o = case o of
+    GrammarEmpty      -> GrammarEmpty
+    GrammarReturn   o -> GrammarReturn     $ f o
+    GrammarLift     o -> GrammarLift       $ liftM (liftM f) o
+    GrammarTable    o -> GrammarTable      $ fmap (fmap (liftM f)) o
+    GrammarRegex  r o -> GrammarRegex    r $ fmap (liftM f) o
+    GrammarChoice a b -> GrammarChoice       (liftM f a) (liftM f b)
+    GrammarTyped  t o -> GrammarTyped    t $ liftM f o
+    GrammarFail     o -> GrammarFail     o
+    GrammarRejected o -> GrammarRejected o
+
 instance PPrintable o => PPrintable (GrammarView m o) where
   pPrint o = case o of
     GrammarEmpty         -> [pText "empty"]
-    GrammarReturn    o   -> [pText "return (", pIndent (pPrint o), pText ")"]
+    GrammarReturn    o   -> [pText "return (", pIndent (pPrint o), pChar ')']
     GrammarLift      _   -> [pText "lift ..."]
-    GrammarTable     o   -> [pText "lexerTable (", pIndent (pPrint (const () <$> o)), pText ")"]
-    GrammarRegex     o _ -> [pText "grammar (", pIndent (pPrint o), pText ")"]
-    GrammarChoice    a b ->
-      [ pText "mplus"
-      , pIndent
-          [ pText "("
-          , pIndent (pNewLine : pPrint (grammarView a))
-          , pText ") (", pNewLine
-          , pIndent $ pPrint $ grammarView b
-          , pText ")"
-          ]
-      ]
+    GrammarTable     o   -> [pText "lexerTable (", pIndent (pPrint (void o)), pChar ')']
+    GrammarRegex     o _ -> [pText "grammar (", pIndent (pPrint o), pChar ')']
+    GrammarChoice    a b -> do
+      let p o = [pNewLine, pIndent $ pChar '(' : pPrint (grammarView o) ++ [pChar ')']]
+      [pText "mplus", pIndent $ p a ++ p b]
     GrammarTyped    t o ->
-      [ pText "grammarTyped", pSpace, pShow t , pText "("
+      [ pText "grammarTyped", pSpace, pShow t , pChar '('
       , pIndent $ pPrint $ grammarView o
-      , pText ")"
+      , pChar ')'
       ]
     GrammarFail     t   -> [pText "fail", pSpace, pShow t]
     GrammarRejected err -> pPrint err

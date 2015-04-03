@@ -410,9 +410,9 @@ instance PPrintable Simple where
     OChar   o -> [pShow o]
     OString o -> [pShow o]
     OList   o ->
-      [ pText "["
-      , pIndent $ intercalate [pText ",", pSpace, pNewLine] $ pPrint <$> elems o
-      , pText "]"
+      [ pChar '['
+      , pIndent $ intercalate [pChar ',', pSpace, pNewLine] $ pPrint <$> elems o
+      , pChar ']'
       ]
     OMap    o -> pPrintMap pPrint o
     OTree   o -> pPrintTree o
@@ -489,15 +489,15 @@ instance Monoid (Product Simple) where
 
 pPrintMap :: (o -> [PPrint]) -> M.Map Object o -> [PPrint]
 pPrintMap pprin o = 
-  [ pText "{"
-  , pIndent $ intercalate [pText ",", pSpace, pNewLine] $
-      fmap (\ (a, b) -> pPrint a ++ [pText ":", pSpace, pIndent (pprin b)]) (M.assocs o)
-  , pText "}"
+  [ pChar '{'
+  , pIndent $ intercalate [pChar ',', pSpace, pNewLine] $
+      fmap (\ (a, b) -> pPrint a ++ [pChar ':', pSpace, pIndent (pprin b)]) (M.assocs o)
+  , pChar '}'
   ]
 
 pPrintTree :: T_tree -> [PPrint]
 pPrintTree o = concat
-  [ maybe [pText "()"] (\o -> [pText "(", pIndent (pPrint o), pNewLine, pText ")"]) (o~>T.leaf)
+  [ maybe [pText "()"] (\o -> [pChar '(', pIndent (pPrint o), pNewLine, pChar ')']) (o~>T.leaf)
   , [pSpace, pText "->", pSpace]
   , pPrintMap pPrintTree (o~>T.branches)
   ]

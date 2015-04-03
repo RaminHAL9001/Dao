@@ -46,7 +46,7 @@ data TextPoint = TextPoint{ lineNumber :: LineNumber, columnNumber :: ColumnNumb
   deriving (Eq, Ord, Typeable)
 
 instance PPrintable TextPoint where
-  pPrint p = [pShow $ lineNumber p, pText ":", pShow $ columnNumber p]
+  pPrint p = [pShow $ lineNumber p, pChar ':', pShow $ columnNumber p]
 
 instance Show TextPoint where { show (TextPoint num col) = show num ++ ':' : show col; }
 

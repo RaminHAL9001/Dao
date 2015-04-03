@@ -25,6 +25,7 @@ import           Prelude hiding (id, (.))
 
 import           Dao.Count
 import           Dao.Lens
+import           Dao.Predicate
 import           Dao.Text
 import           Dao.Text.Editor
 
@@ -35,7 +36,7 @@ import           Control.Monad.State
 import           Control.Monad.Trans.Maybe
 import           Control.Monad.Writer
 
-import           Data.List (intersperse)
+import           Data.List (intersperse, intercalate)
 import qualified Data.Text      as Strict
 import qualified Data.Text.Lazy as Lazy
 import           Data.Typeable
@@ -69,6 +70,7 @@ data PPrint
   | PForceLine  Int -- ^ force a new line
   | PSpace          -- ^ a single space, multiple consecutive 'PSpace's are compressed into a single space.
   | PForceSpace Int -- ^ place a number of spaces, even if we are at the end or beginning of a line.
+  | PChar       Char -- ^ place a single character.
   | PText       StrictText -- ^ insert text
   | PSetTabStop -- ^ set the tab stop at the current column
   | PTabToStop  -- ^ place spaces until the next tab stop
@@ -140,6 +142,14 @@ pClearTabStops = PClearTabStops
 pSentence :: String -> [PPrint]
 pSentence = intersperse PSpace . fmap pText . words
 
+-- | Place a single character.
+pChar :: Char -> PPrint
+pChar = PChar
+
+-- | Another name for 'Data.List.intercalate'.
+pSepBy :: [PPrint] -> [[PPrint]] -> [PPrint]
+pSepBy = intercalate
+
 class PPrintable o where { pPrint :: o -> [PPrint] }
 
 instance PPrintable ()           where { pPrint = return . pShow }
@@ -152,6 +162,15 @@ instance PPrintable Double       where { pPrint = return . pShow }
 instance PPrintable String       where { pPrint = return . pShow }
 instance PPrintable Strict.Text  where { pPrint = return . pShow }
 instance PPrintable Lazy.Text    where { pPrint = return . pShow }
+
+instance (PPrintable err, PPrintable o) => PPrintable (Predicate err o) where
+  pPrint o = do
+    let f :: PPrintable p => String -> p -> [PPrint]
+        f c o = [pText c, pSpace, pChar '(', pNewLine, pInline (pPrint o), pNewLine, pChar ')']
+    case o of
+      PFalse   -> [pText "PFalse"]
+      PTrue  o -> f "PTrue"  o
+      PError o -> f "PError" o
 
 ----------------------------------------------------------------------------------------------------
 
@@ -210,6 +229,7 @@ approxWidth limit tx = evalState (runMaybeT $ loop 0 tx >> get) mempty where
         PForceLine  i          -> guard (limit<=0) >> newline i >> next tx
         PSpace                 -> increment 1 >> next tx
         PForceSpace i          -> increment i >> next tx
+        PChar       _          -> increment 1 >> next tx
         PText       t          -> increment (Strict.length t) >> next tx
         PSetTabStop            -> next tx
         PTabToStop             -> next tx
@@ -301,6 +321,7 @@ textPPrinter t = case t of
         tab = st~>tabWidth
         tx  = dropWhile (< col) (st~>tabStops)
     in  [currentColumn <~ if null tx then tab * (1 + div col tab) else head tx]
+  PChar   c      -> modify $ \st -> with st $ [outputText $= flip Lazy.snoc c, currentColumn $= (+ 1)]
   PText   t      -> modify $ \st -> with st $
     let col = st~>currentColumn
         tab = if col==0 then Strict.replicate (st~>currentIndent) sp else mempty

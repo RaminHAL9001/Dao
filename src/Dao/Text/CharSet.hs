@@ -65,12 +65,12 @@ instance PPrintable CharSet where
             c             -> "\\x" ++ (toUpper <$> showHex (ord c) "")
         prin o = case o of
           (a, b) | a==b -> [ch a]
-          (a, b) | a>minBound && b<maxBound -> [ch a, pText "-", ch b]
+          (a, b) | a>minBound && b<maxBound -> [ch a, pChar '-', ch b]
           (a, b) | a==minBound              -> [pText "[-", ch b, ch ']']
           (a, b) | b==maxBound              -> [ch '[', ch a, pText "-]"]
-          (_, _)                            -> [pText "."]
+          (_, _)                            -> [pChar '.']
         (notInverted, pairs) = csetDecompose cs
-    in  pText (if notInverted then "[" else "[^") : (pairs >>= prin) ++ [pText "]"]
+    in  pText (if notInverted then "[" else "[^") : (pairs >>= prin) ++ [pChar ']']
 
 instance Show CharSet where { show = showPPrint 4 80 . pPrint; }
 

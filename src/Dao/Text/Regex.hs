@@ -291,7 +291,7 @@ instance NFData RegexShadowErrorType where
   rnf o = case o of { ParallelRegex -> (); SequenceRegex -> (); }
 
 _shadowsRegex :: MonadError InvalidGrammar m => RegexShadowErrorType -> Regex -> Regex -> m ig
-_shadowsRegex a b c = throwError $ InvalidGrammar (Nothing, NoLocation (), RegexShadowError a b c)
+_shadowsRegex a b c = throwError $ InvalidGrammar (Nothing, nullValue, RegexShadowError a b c)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -381,23 +381,20 @@ cutSomeBranches =
 
 ----------------------------------------------------------------------------------------------------
 
-newtype InvalidGrammar
-  = InvalidGrammar (Maybe TypeRep, Location (), InvalidGrammarDetail)
+newtype InvalidGrammar = InvalidGrammar (Maybe TypeRep, Location, InvalidGrammarDetail)
   deriving (Eq, Ord, Typeable)
 
 instance Exception InvalidGrammar
 
 instance TestNull InvalidGrammar where
-  nullValue = InvalidGrammar (Nothing, NoLocation (), OtherFailure (toText ""))
-  testNull (InvalidGrammar (a, b, c)) = case b of
-    NoLocation () -> isNothing a && testNull c
-    _             -> False
+  nullValue = InvalidGrammar (Nothing, nullValue, OtherFailure (toText ""))
+  testNull (InvalidGrammar (a, b, c)) = isNothing a && testNull b && testNull c
 
 instance Show InvalidGrammar where { show = showPPrint 4 80 . pPrint; }
 
 instance PPrintable InvalidGrammar where
   pPrint (InvalidGrammar (t, loc, detail)) = concat
-    [ maybe [] pPrint (endLocation loc) ++ [pSpace]
+    [ maybe [] pPrint (loc~>locationEnd) ++ [pSpace]
     , flip (maybe []) t $ \t -> [pChar '('] ++
         pSentence "in grammar for data type" ++ [pSpace, pShow t, pChar ')', pSpace]
     , pPrint detail
@@ -408,13 +405,13 @@ instance NFData InvalidGrammar where
 
 invalidGrammarLens
   :: Monad m
-  => Lens m InvalidGrammar (Maybe TypeRep, Location (), InvalidGrammarDetail)
+  => Lens m InvalidGrammar (Maybe TypeRep, Location, InvalidGrammarDetail)
 invalidGrammarLens = newLens (\ (InvalidGrammar o) -> o) (\p _ -> InvalidGrammar p)
 
 invalidGrammarTypeRep :: Monad m => Lens m InvalidGrammar (Maybe TypeRep)
 invalidGrammarTypeRep = invalidGrammarLens >>> tuple0
 
-invalidGrammarLocation :: Monad m => Lens m InvalidGrammar (Location ())
+invalidGrammarLocation :: Monad m => Lens m InvalidGrammar Location
 invalidGrammarLocation = invalidGrammarLens >>> tuple1
 
 invalidGrammarDetail :: Monad m => Lens m InvalidGrammar InvalidGrammarDetail
@@ -1124,7 +1121,7 @@ instance Functor ParserState where
 instance TestNull st => TestNull (ParserState st) where
   nullValue = parserState nullValue
   testNull o = Lazy.null (o~>inputString) && (testNull $ o~>userState) &&
-    TextPoint 1 1 == o~>textPoint && 0 == o~>charCount && 0 == o~>precedence
+    TextPoint (1, 1) == o~>textPoint && 0 == o~>charCount && 0 == o~>precedence
 
 parserStateLens :: Monad m => Lens m (ParserState st) (LazyText, st, TextPoint, CharCount, CharCount, Int)
 parserStateLens =
@@ -1153,7 +1150,7 @@ precedence = parserStateLens >>> tuple5
 -- anything you choose. 'Parser' instantiates the 'Control.Monad.State.MonadState' class so you can
 -- keep track of a pure state for whatever parsing you intend to do.
 parserState :: st -> ParserState st
-parserState st = ParserState nullValue st (TextPoint 1 1) 0 0 minPrec
+parserState st = ParserState nullValue st (TextPoint (1, 1)) 0 0 minPrec
 
 -- | Report how efficiently this parser ran. Efficiency is measured by the number of characters
 -- taken from the input divided by the number of characters that had to be pushed back onto the
@@ -1173,8 +1170,8 @@ instance Functor (Parser st) where
 instance Monad (Parser st) where
   return = Parser . return
   (Parser a) >>= b = Parser $ a >>= _runParse . b
-  fail msg = getTextPoint >>= \loc ->
-    throwError $ InvalidGrammar (Nothing, EndLocation () loc, OtherFailure $ Strict.pack msg)
+  fail msg = getTextPoint >>= \loc -> throwError $
+    InvalidGrammar (Nothing, new[locationEnd <~ Just loc], OtherFailure $ Strict.pack msg)
 
 instance MonadPlus (Parser st) where
   mzero = Parser mzero
@@ -1208,7 +1205,7 @@ instance MonadParser (Parser st) where
   eof       = look >>= guard . Lazy.null
   pfail err = do
     loc <- getTextPoint
-    throwError $ with err [invalidGrammarLocation $= mappend (EndLocation () loc)]
+    throwError $ with err [invalidGrammarLocation $= mappend $ new[locationEnd <~ Just loc]]
   count c p = _take $ \t -> (,) c $ do
     (keep, t) <- pure $ Lazy.splitAt (countToInt c) t
     keep <- pure $ Lazy.takeWhile (csetMember p) keep

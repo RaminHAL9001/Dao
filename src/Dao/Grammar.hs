@@ -53,10 +53,7 @@
 -- problem areas in your 'Grammar'. Fortunately, the 'InvalidGrammar' exceptions can be helpful at
 -- tracking down invalid grammars and offering suggestions on how to correct them.
 module Dao.Grammar
-  ( -- * Re-Exported Modules
-    module Dao.Text.CharSet,
-    module Dao.Text.Regex,
-    -- * Applying Strings Matched by Regex
+  ( -- * Applying Strings Matched by Regex
     Lexer(Lexer), lexer, lexConst, lexerSpan, lexerBreak, lexerMatch,
     lexerTuple, lexerFunction, lexerRegex,
     -- * Combinators for Building 'Grammar's.
@@ -70,18 +67,19 @@ module Dao.Grammar
     grammarView, grammarChoices,
     -- * Converting 'Grammar's to Monadic Parsers ('MonadParser's)
     grammarToParser,
-    -- * Working with source locations.
-    Location(NoLocation, StartLocation, EndLocation, Location),
-    LocationFunctor(fmapLocation),
-    getPoint, setPoint, location, unwrapLocation, locationRegion, startLocation, endLocation,
-    newline, movePoint, asciiLineCounter, moveCursor, backtrack,
-    DeleteContents(deleteContents),
+    -- * Working with Source Locations
+    backtrack, getPoint, setPoint, location, newline, movePoint, moveCursor,
+    -- * Re-Exported Modules
+    module Dao.Text.CharSet,
+    module Dao.Text.Regex,
+    module Dao.Text.Location
   )
   where
 
 import           Dao.Array
 import           Dao.Lens
 import           Dao.Predicate
+import           Dao.TestNull
 import           Dao.Text
 import           Dao.Text.CharSet
 import           Dao.Text.Location
@@ -207,7 +205,7 @@ instance Monad m => Monad (Grammar m) where
   fail = GrFail . Strict.pack
 
 _cutBranches :: Array Regex -> Grammar m o
-_cutBranches = GrReject . InvalidGrammar . (,,) Nothing (NoLocation ()) . CutSomeBranches
+_cutBranches = GrReject . InvalidGrammar . (,,) Nothing nullValue . CutSomeBranches
 
 _grPredicate :: Monad m => Predicate InvalidGrammar o -> Grammar m o
 _grPredicate o = case o of
@@ -316,7 +314,7 @@ grammar ox = case make id Nothing ox of
         let next = make (g . GrChoice (GrRegex rx $ return . f)) (Just rx) ox
         case prev of
           Just ry | shadowsSeries ry rx -> GrReject $ InvalidGrammar $
-            (Nothing, NoLocation (), RegexShadowError ParallelRegex ry rx)
+            (Nothing, nullValue, RegexShadowError ParallelRegex ry rx)
           _                             -> next
 
 -- | Like the 'grammar' constructor, but modifies a 'Grammar' so that the 'Data.Typeable.TypeRep'
@@ -551,8 +549,9 @@ getPoint = GrLift $ liftM GrReturn getTextPoint
 setPoint :: (MonadSourceCodeParser m, Monad m, MonadPlus m) => TextPoint -> Grammar m ()
 setPoint = GrLift . liftM GrReturn . setTextPoint
 
-location :: (MonadSourceCodeParser m, Monad m, MonadPlus m) => Grammar m o -> Grammar m (Location o)
-location o = ((return Location `ap` getPoint) `ap` o) `ap` getPoint
+location :: (MonadSourceCodeParser m, Monad m, MonadPlus m) => Grammar m o -> Grammar m (Location, o)
+location o =
+  liftM3 (\start o end -> (Location (Just start, Just end), o)) getPoint o getPoint
 
 -- | When converted to a monadic parser, this will increment the line counter and reset the column
 -- counter to 1 if the inner 'Grammar' converts to a successful parser. This is designed to be used
@@ -561,8 +560,7 @@ location o = ((return Location `ap` getPoint) `ap` o) `ap` getPoint
 -- > newline lineBreak
 --
 newline :: (MonadSourceCodeParser m, Monad m, MonadPlus m) => Grammar m o -> Grammar m o
-newline g = getPoint >>= \pt -> g >>= \o ->
-  setPoint (pt{ lineNumber = 1 + lineNumber pt }) >> return o
+newline g = getPoint >>= \pt -> g >>= \o -> setPoint (with pt [lineNumber $= (1 +)]) >> return o
 
 -- | If the given 'Grammar' returns a @text@ value, the given function can be used to update the
 -- 'TextPoint' of the current 'MonadSourceCodeParser' monad. The function used to update the 'TextPoint'
@@ -601,6 +599,6 @@ moveCursor toPoint f = do
   before <- getPoint
   o      <- f
   let after = toPoint o
-  setPoint $ after{ lineNumber = lineNumber before + lineNumber after }
+  setPoint $ with after [lineNumber $= ((before~>lineNumber) +)]
   return o
 

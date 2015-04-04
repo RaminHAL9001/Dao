@@ -18,12 +18,20 @@
 
 module Dao.Text.Location where
 
+import           Prelude hiding ((.), id)
+
 import           Dao.Count
-import           Dao.Text.PPrint
+import           Dao.Lens
+import           Dao.TestNull
 import           Dao.Text
+import           Dao.Text.PPrint
 
+import           Control.Applicative
+import           Control.Category
 import           Control.DeepSeq
+import           Control.Monad
 
+import           Data.Maybe
 import           Data.Monoid
 import qualified Data.Text as Strict
 import           Data.Typeable
@@ -42,53 +50,53 @@ type LineNumber   = Count
 ----------------------------------------------------------------------------------------------------
 
 -- | A 'LineNumber' and 'ColumnNumber' useful for error reporting.
-data TextPoint = TextPoint{ lineNumber :: LineNumber, columnNumber :: ColumnNumber }
-  deriving (Eq, Ord, Typeable)
+newtype TextPoint = TextPoint (LineNumber, ColumnNumber) deriving (Eq, Ord, Typeable)
 
 instance PPrintable TextPoint where
-  pPrint p = [pShow $ lineNumber p, pChar ':', pShow $ columnNumber p]
+  pPrint p = [pShow $ p~>lineNumber, pChar ':', pShow $ p~>columnNumber]
 
-instance Show TextPoint where { show (TextPoint num col) = show num ++ ':' : show col; }
+instance Show TextPoint where { show = showPPrint 4 80 . pPrint; }
 
-instance NFData TextPoint where
-  rnf (TextPoint a b) = deepseq a $! deepseq b ()
+instance NFData TextPoint where { rnf (TextPoint o) = deepseq o (); }
 
-----------------------------------------------------------------------------------------------------
+textPointTuple :: Monad m => Lens m TextPoint (LineNumber, ColumnNumber)
+textPointTuple = newLens (\ (TextPoint o) -> o) (\o _ -> TextPoint o)
 
--- | A class defining a single function for data types which store tokens or source location
--- information where it is possible to clear the information to save space, without changing the
--- meaning of the data. This is true of the 'Space' and 'LineSpace' data types which keep the space
--- characters until you clear them, and for the 'TextRegion' data type which stores information
--- about locations of tokens. Although a text region is meaningless without the location
--- information, it is convenient in cases where the data type storing the location information is
--- still useful after the location information has been dicarded.
-class DeleteContents o where { deleteContents :: o -> o; }
+lineNumber :: Monad m => Lens m TextPoint LineNumber
+lineNumber = textPointTuple >>> tuple0
+
+columnNumber :: Monad m => Lens m TextPoint LineNumber
+columnNumber = textPointTuple >>> tuple1
 
 ----------------------------------------------------------------------------------------------------
 
 -- | Two 'TextPoints' demarcing the start and end of some substring in the parsed text.
-newtype TextRegion = TextRegion{ textRegionToPair :: Maybe (TextPoint, TextPoint) }
-  deriving (Eq, Ord, Typeable)
+newtype TextRegion = TextRegion (Maybe (TextPoint, TextPoint)) deriving (Eq, Ord, Typeable)
+
+instance TestNull TextRegion where
+  testNull (TextRegion o) = isNothing o
+  nullValue = TextRegion Nothing
 
 instance Monoid TextRegion where
   mempty                                = TextRegion Nothing
-  mappend (TextRegion a) (TextRegion b) = case a of
-    Nothing               -> TextRegion b
-    (Just (startA, endA)) -> case b of
-      Nothing               -> TextRegion a
-      (Just (startB, endB)) -> TextRegion $ Just (min startA startB, max endA endB)
+  mappend (TextRegion a) (TextRegion b) = TextRegion $ msum
+    [ a >>= \ (startA, endA) -> b >>= \ (startB, endB) ->
+        Just (min startA startB, max endA endB)
+    , a, b
+    ]
 
-instance Show TextRegion where
-  show (TextRegion o) = case o of
-    Nothing     -> ""
-    Just (a, b) -> show a ++ '-' : show b
+instance PPrintable TextRegion where
+  pPrint (TextRegion o) = case o of
+    Nothing     -> []
+    Just (a, b) -> pPrint a ++ [pChar '-'] ++ pPrint b
+
+instance Show TextRegion where { show = showPPrint 4 80 . pPrint; }
 
 instance NFData TextRegion where
   rnf (TextRegion  Nothing     ) = ()
   rnf (TextRegion (Just (a, b))) = deepseq a $! deepseq b ()
 
-instance DeleteContents TextRegion where { deleteContents _ = TextRegion Nothing; }
-
+-- | Construct a textRegion from two 'TextPoint's.
 textRegion :: TextPoint -> TextPoint -> TextRegion
 textRegion a b = TextRegion $ Just (min a b, max a b)
 
@@ -98,95 +106,41 @@ textRegion a b = TextRegion $ Just (min a b, max a b)
 -- the grammar for this type is converted to a parser, the source location before and after the
 -- parse are recorded and stored with the inner type so analyzing the 'Location' will tell you from
 -- where in the source file the inner type was parsed.
-data Location o
-  = NoLocation              o
-  | StartLocation TextPoint o
-  | EndLocation             o TextPoint
-  | Location      TextPoint o TextPoint
-  deriving (Eq, Ord, Show, Typeable)
+newtype Location = Location (Maybe TextPoint, Maybe TextPoint) deriving (Eq, Ord, Show, Typeable)
 
-instance Functor Location where
-  fmap f o = case o of
-    NoLocation       o    -> NoLocation       (f o)
-    StartLocation lo o    -> StartLocation lo (f o)
-    EndLocation      o hi -> EndLocation      (f o) hi
-    Location      lo o hi -> Location      lo (f o) hi
+instance TestNull Location where
+  testNull (Location (a, b)) = isNothing a && isNothing b
+  nullValue = Location (Nothing, Nothing)
 
-instance DeleteContents (Location o) where
-  deleteContents o = case o of
-    NoLocation      o   -> NoLocation o
-    StartLocation _ o   -> NoLocation o
-    EndLocation     o _ -> NoLocation o
-    Location      _ o _ -> NoLocation o
+instance Monoid Location where
+  mempty = nullValue
+  mappend (Location (loA, hiA)) (Location (loB, hiB)) =
+    Location (min <$> loA <*> loB, max <$> hiA <*> hiB)
 
-instance Monoid o => Monoid (Location o) where
-  mempty = NoLocation mempty
-  mappend a b = case a of
-    NoLocation        a     -> case b of
-      NoLocation        b     -> NoLocation                  (a<>b)
-      StartLocation loB b     -> StartLocation      loB      (a<>b)
-      EndLocation       b hiB -> EndLocation                 (a<>b)      hiB
-      Location      loB b hiB -> Location           loB      (a<>b)      hiB
-    StartLocation loA a     -> case b of
-      NoLocation        b     -> StartLocation      loA      (a<>b)
-      StartLocation loB b     -> StartLocation (min loA loB) (a<>b)
-      EndLocation       b hiB -> Location           loA      (a<>b)          hiB
-      Location      loB b hiB -> Location      (min loA loB) (a<>b)          hiB
-    EndLocation       a hiA -> case b of
-      NoLocation        b     -> EndLocation                 (a<>b)      hiA
-      StartLocation loB b     -> Location               loB  (a<>b)      hiA
-      EndLocation       b hiB -> Location               hiB  (a<>b) (max hiA hiB)
-      Location      loB b hiB -> Location               loB  (a<>b) (max hiA hiB)
-    Location      loA a hiA -> case b of
-      NoLocation        b     -> Location           loA      (a<>b)      hiA
-      StartLocation loB b     -> Location      (min loA loB) (a<>b)      hiA
-      EndLocation       b hiB -> Location           loA      (a<>b) (max hiA hiB)
-      Location      loB b hiB -> Location      (min loA loB) (a<>b) (max hiA hiB)
+instance NFData Location where
+  rnf (Location (a, b)) = maybe () (flip deepseq ()) a <> maybe () (flip deepseq ()) b
 
-instance NFData o => NFData (Location o) where
-  rnf a = case a of
-    NoLocation      b   -> deepseq b ()
-    StartLocation a b   -> deepseq a $! deepseq b ()
-    EndLocation     b c -> deepseq b $! deepseq c ()
-    Location      a b c -> deepseq a $! deepseq b $! deepseq c ()
+locationTuple :: Monad m => Lens m Location (Maybe TextPoint, Maybe TextPoint)
+locationTuple = newLens (\ (Location o) -> o) (\o _ -> Location o)
+
+locationStart :: Monad m => Lens m Location (Maybe TextPoint)
+locationStart = locationTuple >>> tuple0
+
+locationEnd :: Monad m => Lens m Location (Maybe TextPoint)
+locationEnd = locationTuple >>> tuple1
 
 ----------------------------------------------------------------------------------------------------
 
-class LocationFunctor dat o where { fmapLocation :: (Location o -> Location o) -> dat -> dat; }
-
-instance LocationFunctor (Location o) o where { fmapLocation = ($); }
-
-unwrapLocation :: Location o -> o
-unwrapLocation o = case o of
-  NoLocation      o   -> o
-  StartLocation _ o   -> o
-  EndLocation     o _ -> o
-  Location      _ o _ -> o
-
 -- | Convert a 'Location' to a 'TextRegion', if possible.
-locationRegion :: Location o -> TextRegion
-locationRegion o = case o of
-  Location      lo _ hi -> TextRegion $ Just (lo, hi)
-  _                     -> TextRegion Nothing
+locationRegion :: Location -> TextRegion
+locationRegion (Location (lo, hi)) = TextRegion $ (,) <$> lo <*> hi
 
-startLocation :: Location o -> Maybe TextPoint
-startLocation o = case o of
-  StartLocation o _   -> Just  o
-  Location      o _ _ -> Just  o
-  _                   -> Nothing
-
-endLocation :: Location o -> Maybe TextPoint
-endLocation o = case o of
-  EndLocation   _ o -> Just  o
-  Location    _ _ o -> Just  o
-  _                 -> Nothing
-
--- | The 'asciiLineCounter' is a nice default line counter that can be used with the 'movePoint'
--- function. 
+-- | The 'asciiLineCounter' is a nice default line counter that simply increments the 'TextPoint'
+-- for as many @'\n'@ characters as there are in the given text.
 asciiLineCounter :: Count -> StrictText -> TextPoint -> TextPoint
 asciiLineCounter tab t =
-  let column n (TextPoint ln col) = TextPoint ln $ col+n
-      line n col (TextPoint ln _) = TextPoint (ln+n) col
+  let column n (TextPoint (ln, col)) = TextPoint (ln, n+col)
+      line n col (TextPoint (ln, _)) = TextPoint (n+ln, col)
       loop cx st = case cx of
         []   -> st
         c:cx -> case c of

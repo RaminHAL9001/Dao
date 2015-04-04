@@ -88,7 +88,6 @@ import           Dao.Text.Regex
 
 import           Control.Arrow
 import           Control.Applicative
-import           Control.Exception
 import           Control.Monad
 import           Control.Monad.Fix
 import           Control.Monad.Trans
@@ -264,33 +263,19 @@ instance MonadTrans Grammar where { lift o = GrLift $ liftM GrReturn o; }
 
 instance MonadIO m => MonadIO (Grammar m) where { liftIO = GrLift . liftM GrReturn . liftIO; }
 
--- Used for debugging. Try to just leave it here, it should be optimized away in the
--- dead-code-removal phase.
-_sho :: Int -> Grammar m o -> String
-_sho i o = if i<=0 then "..." else case o of
-  GrEmpty      -> "GrEmpty"
-  GrReturn   _ -> "GrReturn"
-  GrLift     _ -> "GrLift"
-  GrTable    t -> "GrTable ("++show (const() <$> t)++")"
-  GrRegex rx _ -> "GrRegex ("++show rx++")"
-  GrChoice a b -> "GrChoice ("++_sho (i-1) a++") ("++_sho (i-1) b++")"
-  GrTyped   t _ -> "GrTyped "++show t
-  GrFail   msg -> "GrFail "++show msg
-  GrReject err -> "GrReject "++show err
-
 -- | Convert a 'Grammar' to a 'MonadParser' that actually parses things.
 grammarToParser :: (Monad m, MonadPlus m, MonadParser m) => Grammar m o -> m o
-grammarToParser = loop where
-  loop o = case o of
+grammarToParser = loop Nothing where
+  loop typ o = case o of
     GrEmpty            -> mzero
     GrReturn  o        -> return o
-    GrLift    next     -> next >>= loop
-    GrTable   next     -> regexTableToParser next >>= loop . (uncurry $ flip ($))
-    GrRegex   rx   f   -> regexToParser rx >>= loop . f
-    GrChoice  next alt -> mplus (loop next) (loop alt)
-    GrTyped   _   next -> loop next
-    GrFail    msg      -> fail (Strict.unpack msg)
-    GrReject  err      -> throw err
+    GrLift    next     -> next >>= loop typ
+    GrTable   next     -> regexTableToParser next >>= loop typ . (uncurry $ flip ($))
+    GrRegex   rx   f   -> regexToParser rx >>= loop typ . f
+    GrChoice  next alt -> mplus (loop typ next) (loop typ alt)
+    GrTyped   typ next -> loop (Just typ) next
+    GrFail    msg      -> pfail $ InvalidGrammar (typ, nullValue, OtherFailure msg)
+    GrReject  err      -> pfail err
 
 -- | Return the type to which this 'Grammar' will evaluate.
 typeOfGrammar :: forall m t . Typeable t => Grammar m t -> TypeRep

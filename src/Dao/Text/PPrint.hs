@@ -289,6 +289,7 @@ textPPrintInline keepIndents keepNewLines tx = do
     PSpace             -> return PSpace
     PForceSpace i      -> return $ PForceSpace i
     PText       t      -> return $ PText t
+    PChar       c      -> return $ PChar c
     PMaxColumns _ tx _ -> loop tx
     PMaxRows    _ tx _ -> loop tx
     _                  -> mzero
@@ -326,7 +327,7 @@ textPPrinter t = case t of
     let col = st~>currentColumn
         tab = if col==0 then Strict.replicate (st~>currentIndent) sp else mempty
         txt = tab <> t
-    in  [ outputText    $= flip mappend $ Lazy.fromChunks [txt]
+    in  [ outputText    $= flip mappend $ Lazy.fromStrict txt
         , currentColumn $= (+ (Strict.length txt))
         ]
   PInline tx     -> do

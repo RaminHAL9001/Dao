@@ -79,7 +79,6 @@ import           Control.Monad.State
 import qualified Data.Array.IArray as A
 import           Data.Char hiding (Space)
 import           Data.Ix
-import           Data.List (tails)
 import           Data.Maybe
 import           Data.Monoid
 import           Data.Ratio
@@ -1039,15 +1038,9 @@ instance PPrintable o => Show (RegexTable o) where { show = showPPrint 4 80 . pP
 instance Monoid o => Monoid (Predicate InvalidGrammar (RegexTable o)) where
   mempty = mzero
   mappend a b = msum
-    [do (RegexTable rxA tabA) <- a
-        (RegexTable rxB tabB) <- b
-        sequence_ $ elems rxA >>= \ (a, _) -> elems rxB >>= \ (b, _) ->
-          [if a/=b && shadowsParallel a b then _shadowsRegex ParallelRegex a b else PTrue ()]
-        if arrayIsNull rxA then b else if arrayIsNull rxB then a else do
-          let interv  = uncurry Iv.interval . A.bounds
-          let newbnds = Iv.toBoundedPair $ Iv.envelop (interv tabA) (interv tabB)
-          return $ RegexTable (rxA<>rxB) $
-            A.accumArray mappend mempty newbnds $ A.assocs tabA ++ A.assocs tabB
+    [do (RegexTable a _) <- a
+        (RegexTable b _) <- b
+        regexsToTable $ elems a ++ elems b
     , a, b
     ]
 
@@ -1064,14 +1057,16 @@ instance ShadowsSeries   (RegexTable o) where
 -- | Given a list of 'Regex's that may be evaluated in parallel, make sure no one 'Regex' shadows
 -- any other 'Regex' that occurs after it.
 checkRegexChoices :: Monoid o => [(Regex, o)] -> Predicate InvalidGrammar [(Regex, o)]
-checkRegexChoices ox = sequence $ do
-  ox <- tails ox
-  case ox of
-    []           -> []
-    (rxA, oA):ox -> return $ do
-      let f ok (rxB, oB) = ok >>= \keep -> if rxA==rxB then PTrue (rxA, oA<>oB) else
-            if shadowsParallel rxA rxB then _shadowsRegex ParallelRegex rxA rxB else PTrue keep
-      foldl f (PTrue (rxA, oA)) ox
+checkRegexChoices = loop [] where
+  loop keep ox = case ox of
+    []   -> return keep
+    o:ox -> scan [] o ox >>= \ (o, ox) -> loop (keep++[o]) ox
+  scan keep (rxA, a) ox = case ox of
+    []          -> return ((rxA, a), keep)
+    (rxB, b):ox -> if rxA==rxB then scan keep (rxA, a<>b) ox else
+      if shadowsParallel rxA rxB
+      then _shadowsRegex ParallelRegex rxA rxB
+      else scan (keep++[(rxB, b)]) (rxA, a) ox
 
 -- | Every 'Regex' can match some range of characters. This function creates an
 -- 'Data.Array.IArray.Array' mapping every character that could possibly match a list of 'Regex's.

@@ -68,7 +68,7 @@ module Dao.Grammar
     -- * Converting 'Grammar's to Monadic Parsers ('MonadParser's)
     grammarToParser,
     -- * Working with Source Locations
-    backtrack, getPoint, setPoint, location, newline, movePoint, moveCursor,
+    backtrack, getPoint, setPoint, currentLocation, newline, movePoint, moveCursor,
     -- * Re-Exported Modules
     module Dao.Text.CharSet,
     module Dao.Text.Regex,
@@ -105,42 +105,49 @@ import           Data.Typeable
 -- 'Grammar's using the 'grammar' combinator. 'Lexer' instantiates 'Prelude.Functor' and
 -- 'Control.Applicative.Applicative'. Be careful not to create infinitely recursive 'Lexer's, for
 -- example lexers containing an infinitely 'Prelude.repeat'ing list of 'Dao.Regex.Regex's.
-newtype Lexer o = Lexer (LazyText -> o, [Regex])
+newtype Lexer o = Lexer ([Regex], LazyText -> o)
 
-instance Functor Lexer where { fmap f (Lexer (o, ox)) = Lexer (fmap f o, ox); }
+instance Functor Lexer where { fmap f (Lexer (rx, o)) = Lexer (rx, fmap f o); }
 
 instance Applicative Lexer where
-  pure o = Lexer (const o, [])
-  (Lexer (f, rxA)) <*> (Lexer (x, rxB)) = Lexer (\str -> f str $ x str, rxA++rxB)
+  pure o = Lexer ([], const o)
+  (Lexer (rxA, f)) <*> (Lexer (rxB, x)) = Lexer (rxA++rxB, \str -> f str $ x str)
+
+lexerTuple :: Monad m => Lens m (Lexer o) ([Regex], LazyText -> o)
+lexerTuple = newLens (\ (Lexer o) -> o) (\o _ -> Lexer o)
 
 -- | Check to make sure this lexer is valid, that is, make sure 'Dao.Regex.Regex's contained within
 -- it shadow each other when checked with 'Dao.Regex.shadowsSeries'. The 'Lexer' returned is an
 -- updated 'Lexer' containing the many 'Dao.Regex.Regex's unified into a single 'Dao.Regex.Regex'.
 checkLexer :: Lexer o -> Predicate InvalidGrammar (Lexer o)
-checkLexer (Lexer (f, rx)) = Lexer . (,) f . return <$> mconcat (return <$> rx)
+checkLexer (Lexer (rx, f)) = Lexer . flip (,) f . return <$> mconcat (return <$> rx)
 
--- | An 'Prelude.curry'-ed version of the 'Lexer' constructor.
+-- | A 'Prelude.flip'-ped, 'Prelude.curry'-ed version of the 'Lexer' constructor. This is useful
+-- because often the transformation function is 'Control.Category.id' or 'Prelude.const', whereas
+-- the 'Dao.Text.Regex.Regex' is a rather more involved expression. For example:
+--
+-- @
+-- myLexer = lexer 'Data.Text.Lazy.toStrict'
+--     ['Dao.Text.Regex.rx' ('Dao.Text.CharSet.allOf' "AEIOUYaeiouy", 'Dao.Text.Regex.MIN' 1), 'Dao.Text.Regex.rx' "+++", ('Dao.Text.Regex.rx' "OK", 'Dao.Text.Regex.MAX' 1)]
+-- @
 lexer :: (LazyText -> o) -> [Regex] -> Lexer o
-lexer = curry Lexer
+lexer = flip (curry Lexer)
 
 -- | A shortcut for @'lexer' ('Prelude.const' c) [...]@, creates a 'Lexer' that ignores the text
 -- matched by the 'Dao.Regex.Regex' predicate and always returns the value given.
 lexConst :: o -> [Regex] -> Lexer o
 lexConst = lexer . const
 
-lexerTuple :: Monad m => Lens m (Lexer o) (LazyText -> o, [Regex])
-lexerTuple = newLens (\ (Lexer o) -> o) (\o _ -> Lexer o)
-
 lexerFunction :: Monad m => Lens m (Lexer o) (LazyText -> o)
-lexerFunction = lexerTuple >>> tuple0
+lexerFunction = lexerTuple >>> tuple1
 
 lexerRegex :: Monad m => Lens m (Lexer o) [Regex]
-lexerRegex = lexerTuple >>> tuple1
+lexerRegex = lexerTuple >>> tuple0
 
 -- | Like 'Dao.Regex.regexSpan', but for 'Lexer's. So it is also like 'Prelude.span' but uses a the
 -- 'Regex' within the 'Lexer' to match from the start of the string.
 lexerSpan :: Lexer o -> LazyText -> Predicate InvalidGrammar (o, LazyText)
-lexerSpan o str = checkLexer o >>= \ (Lexer (f, rx)) -> guard (not $ null rx) >>
+lexerSpan o str = checkLexer o >>= \ (Lexer (rx, f)) -> guard (not $ null rx) >>
   maybe mzero (return . first (f . Lazy.fromStrict)) (regexSpan (head rx) str)
 
 -- | Like 'regexBreak' but for 'Lexer's. Uses 'regexSpan' and a given 'Regex' to break a string into
@@ -148,7 +155,7 @@ lexerSpan o str = checkLexer o >>= \ (Lexer (f, rx)) -> guard (not $ null rx) >>
 -- wrapped into a 'Prelude.Left' constructor. Then the 'lexerFunction' of the 'Lexer' is applied to
 -- each 'Prelude.Right' portion.
 lexerBreak :: Lexer o -> LazyText -> Predicate InvalidGrammar [Either StrictText o]
-lexerBreak o str = checkLexer o >>= \ (Lexer (f, rx)) -> guard (not $ null rx) >>
+lexerBreak o str = checkLexer o >>= \ (Lexer (rx, f)) -> guard (not $ null rx) >>
   return (fmap (f . Lazy.fromStrict) <$> regexBreak (head rx) str)
 
 -- | Like 'regexMatch' but for 'Lexer's. Uses 'lexerSpan' to check whether a given 'Lexer' matches
@@ -290,7 +297,7 @@ grammar ox = case make id Nothing ox of
   where
     make g prev ox = case ox of
       []                 -> g GrEmpty
-      (Lexer (f, rx)):ox -> do
+      (Lexer (rx, f)):ox -> do
         rx <- _grPredicate $ mconcat $ PTrue <$> rx
         let next = make (g . GrChoice (GrRegex rx $ return . f)) (Just rx) ox
         case prev of
@@ -356,12 +363,12 @@ lexerTable ox = case concatenated ox of
   PTrue  tab -> GrTable $ fmap getAlt <$> tab
   where
     concatenated = regexsToTable <=<
-      mapM (\ (Lexer (f, ox)) -> flip (,) (Alt . GrReturn . f) <$> mconcat (PTrue <$> ox))
+      mapM (\ (Lexer (rx, f)) -> flip (,) (Alt . GrReturn . f) <$> mconcat (PTrue <$> rx))
 
 -- | Create a 'Grammar' that matches any one of the given strings. The list of given strings is
 -- automatically sorted to make sure shorter strings do not shaddow longer strings.
 anyStringIn :: (Monad m, ToText t) => (LazyText -> o) -> [t] -> Grammar m o
-anyStringIn f = lexerTable . fmap Lexer . zip (repeat f) . fmap (return . rx) .
+anyStringIn f = lexerTable . fmap Lexer . flip zip (repeat f) . fmap (return . rx) .
   sortBy (\a b -> compare (Strict.length b) $ Strict.length a) . nub . fmap toText
 
 -- | Retrieve every 'Regex' for all branches of the 'Grammar'.
@@ -530,8 +537,8 @@ getPoint = GrLift $ liftM GrReturn getTextPoint
 setPoint :: (MonadSourceCodeParser m, Monad m, MonadPlus m) => TextPoint -> Grammar m ()
 setPoint = GrLift . liftM GrReturn . setTextPoint
 
-location :: (MonadSourceCodeParser m, Monad m, MonadPlus m) => Grammar m o -> Grammar m (Location, o)
-location o =
+currentLocation :: (MonadSourceCodeParser m, Monad m, MonadPlus m) => Grammar m o -> Grammar m (Location, o)
+currentLocation o =
   liftM3 (\start o end -> (Location (Just start, Just end), o)) getPoint o getPoint
 
 -- | When converted to a monadic parser, this will increment the line counter and reset the column

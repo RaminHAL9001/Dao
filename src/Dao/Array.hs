@@ -27,6 +27,7 @@ module Dao.Array
   )
   where
 
+import           Dao.Lens
 import           Dao.Text
 import           Dao.TestNull
 
@@ -76,6 +77,10 @@ instance Monoid (Array o) where
 instance TestNull (Array o) where
   nullValue = mempty
   testNull (Array o) = isNothing o
+
+instance Monad m => FocusesWith Int m (Array o) (Maybe o) where
+  focus i = newLens (! i) $ \o (Array ar) ->
+    Array $ ar >>= \ar -> o >>= \o -> return $ ar A.// [(i, o)]
 
 -- | Returns the minimum bounds that contains the bounds for both given 'Data.Array.IArray.Array's.
 -- *NOTE* that this operates on arrays from the "Data.Array.IArray" module.

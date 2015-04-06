@@ -134,6 +134,8 @@ locationEnd = locationTuple >>> tuple1
 -- | Class of data types that contain text location information.
 class HasLocation o where { location :: Monad m => Lens m o Location; }
 
+instance HasLocation Location where { location = id; }
+
 ----------------------------------------------------------------------------------------------------
 
 -- | Convert a 'Location' to a 'TextRegion', if possible.

@@ -84,12 +84,6 @@ instance (Ord p, Monoid o) => Monoid (Product (Tree p o)) where
 instance (NFData a, NFData b) => NFData (Tree a b) where
   rnf (Tree (o, m)) = deepseq o $! deepseq m ()
 
-instance Ord p => Contains (Maybe o, M.Map p (Tree p o)) (Tree p o) where { lens=treePair; }
-
-instance Ord p => Contains (Maybe o) (Tree p o) where { lens=leaf; }
-
-instance Ord p => Contains (M.Map p (Tree p o)) (Tree p o) where { lens=branches; }
-
 instance (Ord p, Monad m) => FocusesWith [p] m (Tree p o) (Maybe o) where { focus=path; }
 
 instance Foldable (ReduceTree p) where

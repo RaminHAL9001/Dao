@@ -52,9 +52,6 @@ Library
     Dao.Object         Dao.Predicate     Dao.Range        Dao.Rule
     Dao.TestNull       Dao.Text.CharSet  Dao.Text.Editor  Dao.Text
     Dao.Text.Location  Dao.Text.PPrint   Dao.Text.Regex   Dao.Tree
-    ---
-    Dao.Examples.FuzzyStrings  Dao.Examples.Numbers  Dao.Examples.Ontology
-    Dao.Examples.ShellScript   Dao.Examples.CParser
   Build-Depends:
     -- minimal dependencies for core modules
     array               >= 0.3.0.2, base         >= 4.3.1.0, binary      >= 0.5.0.2,

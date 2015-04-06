@@ -129,8 +129,8 @@ class (Monad m, MonadPlus m) => MonadParser m where
   -- instatiator of this class to provide the most efficient implementation. (required)
   count :: Count -> CharSet -> m LazyText
   -- | Succeed only if the end of the input text has been reached.
-  eof :: m ()
-  eof = mplus (look1 >> return False) (return True) >>= guard
+  eof :: m Bool
+  eof = liftM Lazy.null look
   -- | Consume and return all characters from the head of the input text that satisfy the predicate.
   -- Never backtracks, returns an empty string if the head of the input text does not satisfy the
   -- predicate at all.
@@ -183,7 +183,7 @@ instance MonadParser ReadP.ReadP where
   get1    = ReadP.get
   string  = liftM Lazy.pack . ReadP.string . Lazy.unpack
   count i = liftM Lazy.pack . ReadP.count (fromIntegral i) . ReadP.satisfy . csetMember
-  eof     = ReadP.eof
+  eof     = (const True <$> ReadP.eof) <|> return False
   munch   = liftM Lazy.pack . ReadP.munch . csetMember
   munch1  = liftM Lazy.pack . ReadP.munch1 . csetMember
   satisfy = ReadP.satisfy . csetMember
@@ -196,7 +196,7 @@ instance MonadParser ReadPrec.ReadPrec where
   get1    = ReadPrec.get
   string  = liftM Lazy.pack . ReadPrec.lift . ReadP.string . Lazy.unpack
   count i = liftM Lazy.pack . ReadPrec.lift . ReadP.count (fromIntegral i) . ReadP.satisfy . csetMember
-  eof     = ReadPrec.lift ReadP.eof
+  eof     = (const True <$> ReadPrec.lift ReadP.eof) <|> return False
   munch   = liftM Lazy.pack . ReadPrec.lift . ReadP.munch . csetMember
   munch1  = liftM Lazy.pack . ReadPrec.lift . ReadP.munch1 . csetMember
   satisfy = ReadPrec.lift . ReadP.satisfy . csetMember
@@ -1202,7 +1202,6 @@ instance MonadParser (Parser st) where
     let (keep, rem) = Lazy.span (csetMember f) t
         len = stringLength rem
     in  (min len $ if Lazy.null t then 0 else 1, return (keep, len, rem))
-  eof       = look >>= guard . Lazy.null
   pfail err = do
     loc <- getTextPoint
     throwError $ with err [invalidGrammarLocation $= mappend $ new[locationEnd <~ Just loc]]

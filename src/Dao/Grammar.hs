@@ -244,11 +244,7 @@ instance Monad m => MonadPlus (Grammar m) where
       GrReject  err    -> GrReject err
       b                -> GrChoice (GrRegex rxA a) b
     GrChoice  a   a' -> GrChoice a $ mplus a' b
-    GrTyped   typ a  ->
-      let loop stk b = case b of
-            GrTyped t b -> if elem t stk then GrTyped typ a else loop (t:stk) b
-            _           -> GrTyped typ $ mplus a b
-      in  loop [typ] b
+    GrTyped   typ a  -> GrTyped typ $ mplus a b
     GrFail    err    -> case b of
       GrTable   tabB   -> _cutBranches $ fst <$> regexTableElements tabB
       GrRegex   rxB  _ -> _cutBranches $ array [rxB]

@@ -70,7 +70,13 @@ columnNumber = textPointTuple >>> tuple1
 
 ----------------------------------------------------------------------------------------------------
 
--- | Two 'TextPoints' demarcing the start and end of some substring in the parsed text.
+class HasTextPoint o where { textPoint :: Monad m => Lens m o TextPoint; }
+
+instance HasTextPoint TextPoint where { textPoint = id; }
+
+----------------------------------------------------------------------------------------------------
+
+-- | Two 'TextPoints' marking the start and end of some substring in the parsed text.
 newtype TextRegion = TextRegion (Maybe (TextPoint, TextPoint)) deriving (Eq, Ord, Typeable)
 
 instance TestNull TextRegion where
@@ -135,6 +141,8 @@ locationEnd = locationTuple >>> tuple1
 class HasLocation o where { location :: Monad m => Lens m o Location; }
 
 instance HasLocation Location where { location = id; }
+
+class Monad m => HasCurrentLocation m where { currentLocation :: m Location; }
 
 ----------------------------------------------------------------------------------------------------
 

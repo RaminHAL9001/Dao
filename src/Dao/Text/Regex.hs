@@ -1123,6 +1123,8 @@ instance TestNull st => TestNull (ParserState st) where
   testNull o = Lazy.null (o~>inputString) && (testNull $ o~>userState) &&
     TextPoint (1, 1) == o~>textPoint && 0 == o~>charCount && 0 == o~>precedence
 
+instance HasTextPoint (ParserState st) where { textPoint = parserStateLens >>> tuple2; }
+
 parserStateLens :: Monad m => Lens m (ParserState st) (LazyText, st, TextPoint, CharCount, CharCount, Int)
 parserStateLens =
   newLens (\ (ParserState a b c d e f) -> (a, b, c, d, e, f))
@@ -1133,9 +1135,6 @@ inputString = parserStateLens >>> tuple0
 
 userState :: Monad m => Lens m (ParserState st) st
 userState = parserStateLens >>> tuple1
-
-textPoint :: Monad m => Lens m (ParserState st) TextPoint
-textPoint = parserStateLens >>> tuple2
 
 charCount :: Monad m => Lens m (ParserState st) CharCount
 charCount = parserStateLens >>> tuple3

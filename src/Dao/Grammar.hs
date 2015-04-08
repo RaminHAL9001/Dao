@@ -68,7 +68,7 @@ module Dao.Grammar
     -- * Converting 'Grammar's to Monadic Parsers ('MonadParser's)
     grammarToParser,
     -- * Working with Source Locations
-    backtrack, getPoint, setPoint, currentLocation, newline, movePoint, moveCursor,
+    backtrack, getPoint, setPoint, newline, movePoint, moveCursor,
     -- * Re-Exported Modules
     module Dao.Text.CharSet,
     module Dao.Text.Regex,
@@ -462,6 +462,9 @@ instance PPrintable o => PPrintable (GrammarView m o) where
 
 instance PPrintable o => Show (GrammarView m o) where { show = showPPrint 4 80 . pPrint; }
 
+instance (MonadSourceCodeParser m, Monad m, MonadPlus m) => HasCurrentLocation (Grammar m) where
+  currentLocation = liftM Location $ liftM2 (,) (liftM Just getPoint) (liftM Just getPoint)
+
 grammarView :: Grammar m o -> GrammarView m o
 grammarView o = case o of
   GrEmpty      -> GrammarEmpty
@@ -536,10 +539,6 @@ getPoint = GrLift $ liftM GrReturn getTextPoint
 
 setPoint :: (MonadSourceCodeParser m, Monad m, MonadPlus m) => TextPoint -> Grammar m ()
 setPoint = GrLift . liftM GrReturn . setTextPoint
-
-currentLocation :: (MonadSourceCodeParser m, Monad m, MonadPlus m) => Grammar m o -> Grammar m (Location, o)
-currentLocation o =
-  liftM3 (\start o end -> (Location (Just start, Just end), o)) getPoint o getPoint
 
 -- | When converted to a monadic parser, this will increment the line counter and reset the column
 -- counter to 1 if the inner 'Grammar' converts to a successful parser. This is designed to be used

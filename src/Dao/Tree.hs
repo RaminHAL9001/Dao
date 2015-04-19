@@ -304,6 +304,20 @@ assocs control = loop [] where
       (maybe [] (return . (,) px) o)
       (M.assocs m >>= \ (p, o) -> loop (px++[p]) o)
 
+-- | Like 'assocs' but restricts the resulting list of associations to only include elements that
+-- lie along a given path. This function walks through the tree with the given path, and collects
+-- every 'leaf' along the way. Where there is a leaf, the path is partitioned into the path up to
+-- the leaf and the path after the leaf. The list of returned values are these partitioned paths
+-- paired with their associated leaves.
+partitions :: (Eq p, Ord p) => RunTree -> [p] -> Tree p a -> [(([p], [p]), a)]
+partitions control = loop [] where
+  getleaf path px = maybe [] (return . (,) (path, px)) . (~> leaf)
+  loop path px tree = case px of
+    []   -> getleaf path [] tree
+    p:px -> (case control of { DepthFirst -> flip; BreadthFirst -> id; }) (++)
+      (getleaf path (p:px) tree) 
+      (maybe [] (loop (path++[p]) px) $ M.lookup p $ tree~>branches)
+
 -- | Apply @'Prelude.map' 'Prelude.snd'@ to the result of 'assocs', behaves just like how
 -- 'Data.Map.elems' or 'Data.Array.IArray.elems' works.
 elems :: RunTree -> Tree p a -> [a]

@@ -303,12 +303,12 @@ partitionPredicates = loop [] [] where
 -- 'Control.Monad.Except.throwError', 'Control.Monad.Except.catchError', 'Control.Monad.mzero',
 -- 'Control.Monad.mplus', 'Control.Monad.msum', 'Control.Applicative.empty',
 -- @('Control.Applicative.<|>')@, 'returnPredicate', 'predicate', and so on.
-newtype PredicateStateT st err m o =
+newtype PredicateStateT err st m o =
   PredicateStateT { runPredicateStateT :: st -> m (Predicate (err, st) (o, st)) }
 
-type PredicateState st err = PredicateStateT st err Identity
+type PredicateState err st = PredicateStateT err st Identity
 
-instance Monad m => Functor (PredicateStateT st err m) where
+instance Monad m => Functor (PredicateStateT err st m) where
   fmap f (PredicateStateT o) = PredicateStateT $ fmap (liftM (fmap (first f))) o
 
 instance Monad m => Monad (PredicateStateT st err m) where
@@ -318,18 +318,18 @@ instance Monad m => Monad (PredicateStateT st err m) where
     PFalse        -> return $ PFalse
     PError err    -> return $ PError err
 
-instance Monad m => Applicative (PredicateStateT st err m) where { pure=return; (<*>) = ap; }
+instance Monad m => Applicative (PredicateStateT err st m) where { pure=return; (<*>) = ap; }
 
-instance Monad m => MonadPlus (PredicateStateT st err m) where
+instance Monad m => MonadPlus (PredicateStateT err st m) where
   mzero = PredicateStateT $ const $ return PFalse
   mplus (PredicateStateT a) (PredicateStateT b) = PredicateStateT $ \st -> a st >>= \a -> case a of
     PTrue  o -> return $ PTrue o
     PFalse   -> b st
     PError e -> return $ PError e
 
-instance Monad m => Alternative (PredicateStateT st err m) where { empty=mzero; (<|>) = mplus; }
+instance Monad m => Alternative (PredicateStateT err st m) where { empty=mzero; (<|>) = mplus; }
 
-instance Monad m => MonadError err (PredicateStateT st err m) where
+instance Monad m => MonadError err (PredicateStateT err st m) where
   throwError err = PredicateStateT $ \st -> return $ PError (err, st)
   catchError (PredicateStateT try) catch =
     PredicateStateT $ \st -> try st >>= \o -> case o of
@@ -337,10 +337,10 @@ instance Monad m => MonadError err (PredicateStateT st err m) where
       PFalse          -> return PFalse
       PTrue   o       -> return $ PTrue o
 
-instance Monad m => MonadState st (PredicateStateT st err m) where
+instance Monad m => MonadState st (PredicateStateT err st m) where
   state f = PredicateStateT $ \st -> return $ PTrue $ f st
 
-instance Monad m => PredicateClass err (PredicateStateT st err m) where
+instance Monad m => PredicateClass err (PredicateStateT err st m) where
   returnPredicate (PredicateStateT o) = PredicateStateT $ \st -> o st >>= \o -> return $ case o of
     PTrue  (o,  st) -> PTrue (PTrue      o, st)
     PFalse          -> PTrue (PFalse, st)
@@ -350,37 +350,37 @@ instance Monad m => PredicateClass err (PredicateStateT st err m) where
     PFalse   -> PFalse
     PTrue  o -> PTrue (o, st)
 
-instance MonadTrans (PredicateStateT st err) where
+instance MonadTrans (PredicateStateT err st) where
   lift f = PredicateStateT $ \st -> f >>= \o -> return (PTrue (o, st))
 
-instance (Monad m, MonadIO m) => MonadIO (PredicateStateT st err m) where
+instance (Monad m, MonadIO m) => MonadIO (PredicateStateT err st m) where
   liftIO f = PredicateStateT $ \st -> liftIO f >>= \o -> return (PTrue (o, st))
 
 -- | Like 'catchError' but lets you see what the value of the state data was at the time the error
 -- was thrown.
 catchErrorState
   :: Monad m
-  => PredicateStateT st err m o
-  -> ((err, st) -> PredicateStateT st err m o)
-  -> PredicateStateT st err m o
+  => PredicateStateT err st m o
+  -> ((err, st) -> PredicateStateT err st m o)
+  -> PredicateStateT err st m o
 catchErrorState (PredicateStateT try) catch = PredicateStateT $ \st -> try st >>= \o -> case o of
   PError e -> (\ (PredicateStateT o) -> o st) (catch e)
   PFalse   -> return PFalse
   PTrue  o -> return $ PTrue o
 
-runPredicateState :: PredicateState st err o -> st -> Predicate (err, st) (o, st)
+runPredicateState :: PredicateState err st o -> st -> Predicate (err, st) (o, st)
 runPredicateState f = runIdentity . runPredicateStateT f
 
-evalPredicateStateT :: Monad m => PredicateStateT st err m o -> st -> m (Predicate (err, st) o)
+evalPredicateStateT :: Monad m => PredicateStateT err st m o -> st -> m (Predicate (err, st) o)
 evalPredicateStateT f = liftM (fmap fst) . runPredicateStateT f
 
-evalPredicateState :: PredicateState st err o -> st -> (Predicate (err, st) o)
+evalPredicateState :: PredicateState err st o -> st -> (Predicate (err, st) o)
 evalPredicateState f = runIdentity . evalPredicateStateT f
 
-execPredicateStateT :: Monad m => PredicateStateT st err m o -> st -> m (Predicate (err, st) st)
+execPredicateStateT :: Monad m => PredicateStateT err st m o -> st -> m (Predicate (err, st) st)
 execPredicateStateT f = liftM (fmap snd) . runPredicateStateT f
 
-execPredicateState :: PredicateState st err o -> st -> (Predicate (err, st) st)
+execPredicateState :: PredicateState err st o -> st -> (Predicate (err, st) st)
 execPredicateState f = runIdentity . execPredicateStateT f
 
 ----------------------------------------------------------------------------------------------------

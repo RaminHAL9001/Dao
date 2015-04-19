@@ -22,10 +22,11 @@ module Dao.TestNull( TestNull(testNull, nullValue) ) where
 
 import qualified Dao.Interval   as Iv
 
-import qualified Data.Text      as Strict
-import qualified Data.Text.Lazy as T
+import           Data.Monoid
 import qualified Data.Map       as M
 import qualified Data.Set       as S
+import qualified Data.Text      as Strict
+import qualified Data.Text.Lazy as T
 
 ----------------------------------------------------------------------------------------------------
 
@@ -42,6 +43,17 @@ instance TestNull Integer     where { testNull = (==0);       nullValue = 0; }
 instance TestNull Double      where { testNull = (==0);       nullValue = 0; }
 instance (Ord o, Enum o, Iv.InfBound o) =>
   TestNull (Iv.Set  o) where { testNull = Iv.null;     nullValue = Iv.empty; }
+instance TestNull o => TestNull (Sum o) where 
+  testNull (Sum o) = testNull o
+  nullValue = Sum nullValue
+instance TestNull o => TestNull (Product o) where 
+  testNull (Product o) = testNull o
+  nullValue = Product nullValue
+instance TestNull o => TestNull (Dual o) where 
+  testNull (Dual o) = testNull o
+  nullValue = Dual nullValue
+instance TestNull Any where { nullValue = Any False; testNull = not . getAny; }
+instance TestNull All where { nullValue = All False; testNull = not . getAll; }
 
 ----------------------------------------------------------------------------------------------------
 

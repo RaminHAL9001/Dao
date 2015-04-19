@@ -56,8 +56,10 @@ module Dao.Rule
     -- * Convenient Rule Trees
     TypePattern(TypePattern), patternTypeRep, infer,
     -- * Predicting User Input
-    Predictor, predictorQuery, startGuess, continueGuess, predictorCanStep, predictorStep,
-    predictorGuesses,
+    PartialQueryResult(PartialQueryResult),
+    partialQuery, resumePartialQuery, partialQueryResultTuple,
+    partialQueryResults, partialQueryNextSteps, guesses,
+    RuleAltEvalPath,
     -- * Re-export the "Dao.Logic" module.
     module Dao.Logic
   )
@@ -123,6 +125,9 @@ queryScore = queryStateTuple >>> tuple1
 queryInput :: Monad m => Lens m (QueryState st) Query
 queryInput = queryStateTuple >>> tuple2
 
+_plus :: Monad m => RuleAltEvalPath st m a -> RuleAltEvalPath st m a -> RuleAltEvalPath st m a
+_plus = M.unionWith (T.unionWith (\a b q -> mplus (a q) (b q)))
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A 'Rule' is a monadic function that defines the behavior of a production rule in a
@@ -149,10 +154,9 @@ data StatefulRule st m a
   | RuleReturn a
   | RuleError ErrorObject
   | RuleLift (m (StatefulRule st m a))
-  | RuleLogic (T.Tree Object ()) (LogicT (QueryState st) m (Either ErrorObject (StatefulRule st m a)))
+  | RuleLogic (LogicT (QueryState st) m (Either ErrorObject (StatefulRule st m a)))
   | RuleChoice (StatefulRule st m a) (StatefulRule st m a)
-  | RuleTree  (M.Map Object (T.Tree Object (Query -> StatefulRule st m a)))
-              (M.Map Object (T.Tree Object (Query -> StatefulRule st m a)))
+  | RuleTree  (RuleAltEvalPath st m a) (RuleAltEvalPath st m a)
     -- DepthFirst and BreadthFirst rule trees are kept separate.
 
 -- | A 'Rule' is a 'StatefulRule' where the 'querySubState' is @()@.
@@ -164,7 +168,7 @@ instance Monad m => Functor (StatefulRule st m) where
     RuleReturn   o -> RuleReturn $ f o
     RuleError  err -> RuleError err
     RuleLift     o -> RuleLift $ liftM (liftM f) o
-    RuleLogic  t o -> RuleLogic t $ liftM (liftM (liftM f)) o
+    RuleLogic    o -> RuleLogic $ liftM (liftM (liftM f)) o
     RuleChoice x y -> RuleChoice (liftM f x) (liftM f y)
     RuleTree   x y -> let map = fmap (fmap (fmap (fmap f))) in RuleTree (map x) (map y)
 
@@ -179,7 +183,7 @@ instance Monad m => Monad (StatefulRule st m) where
     RuleReturn   o -> f o
     RuleError  err -> RuleError err
     RuleLift     o -> RuleLift $ liftM (>>= f) o
-    RuleLogic  t o -> RuleLogic t $ liftM (liftM (>>= f)) o
+    RuleLogic    o -> RuleLogic $ liftM (liftM (>>= f)) o
     RuleChoice x y -> RuleChoice (x >>= f) (y >>= f)
     RuleTree   x y -> let map = fmap $ fmap $ fmap (>>= f) in RuleTree (map x) (map y)
   a >> b = case a of
@@ -187,9 +191,9 @@ instance Monad m => Monad (StatefulRule st m) where
     RuleReturn _     -> b
     RuleError  err   -> RuleError err
     RuleLift   a     -> RuleLift $ liftM (>> b) a
-    RuleLogic  tA a  -> case b of
-      RuleLogic tB b   -> RuleLogic (T.product tA tB) (a >> b)
-      b                -> RuleLogic tA $ liftM (fmap (>> b)) a
+    RuleLogic     a  -> case b of
+      RuleLogic    b   -> RuleLogic $ a >> b
+      b                -> RuleLogic $ liftM (fmap (>> b)) a
     RuleChoice a1 a2 -> RuleChoice (a1 >> b) (a2 >> b)
     RuleTree   a1 a2 -> case b of
       RuleEmpty        -> RuleEmpty
@@ -214,14 +218,12 @@ instance Monad m => MonadPlus (StatefulRule st m) where
     RuleTree   a1 a2 -> case b of
       RuleEmpty        -> a
       RuleChoice b1 b2 -> RuleChoice (mplus a b1) b2
-      RuleTree   b1 b2 ->
-        let plus = T.unionWith (\a b q -> mplus (a q) (b q))
-        in  RuleTree (M.unionWith plus a1 b1) (M.unionWith plus a2 b2)
+      RuleTree   b1 b2 -> RuleTree (_plus a1 b1) (_plus a2 b2)
       b                -> RuleChoice a b
-    RuleLogic  tA a  -> case b of
-      RuleEmpty        -> RuleLogic tA a
-      RuleLogic  tB b  -> RuleLogic (T.union tA tB) $ mplus a b
-      b                -> RuleChoice (RuleLogic tA a) b
+    RuleLogic     a  -> case b of
+      RuleEmpty        -> RuleLogic a
+      RuleLogic     b  -> RuleLogic $ mplus a b
+      b                -> RuleChoice (RuleLogic a) b
     a                -> case b of
       RuleEmpty        -> a
       b                -> RuleChoice a b
@@ -233,19 +235,19 @@ instance Monad m => MonadError ErrorObject (StatefulRule st m) where
     _           -> rule
 
 instance Monad m => MonadState st (StatefulRule st m) where
-  state f = RuleLogic nullValue $ state $ \st ->
+  state f = RuleLogic $ state $ \st ->
     let (o, q) = f $ st~>querySubState in (Right $ return o, with st [querySubState <~ q])
 
 instance Monad m => MonadReader st (StatefulRule st m) where
   ask = get;
-  local f sub = RuleLogic (getRuleStruct sub) $ do
+  local f sub = RuleLogic $ do
     st <- state $ \st -> (st, with st [querySubState $= f])
     evalRuleLogic sub >>= return . Left ||| state . const . flip (,) st . Right . return
 
 instance Monad m => MonadLogic st (StatefulRule st m) where
-  superState  f = RuleLogic nullValue $ superState $ \st ->
+  superState  f = RuleLogic $ superState $ \st ->
     f (st~>querySubState) >>= \ (o, q) -> return (Right $ return o, with st [querySubState <~ q])
-  entangle rule = RuleLogic (getRuleStruct rule) $ do
+  entangle rule = RuleLogic $ do
     let lrzip (o, qx) = (\err -> ([(err, qx)], [])) ||| (\o -> ([], [(o, qx)])) $ o
     (errs, ox) <- liftM ((concat *** concat) . unzip . fmap lrzip) $ entangle (evalRuleLogic rule)
     superState $ \st -> (Right $ return $ second (~> querySubState) <$> ox, st) : fmap (first Left) errs
@@ -271,7 +273,7 @@ evalRuleLogic rule = case rule of
   RuleReturn   o -> return $ Right o
   RuleError  err -> return $ Left err
   RuleLift     o -> lift o >>= evalRuleLogic
-  RuleLogic  _ o -> o >>= return . Left ||| evalRuleLogic
+  RuleLogic    o -> o >>= return . Left ||| evalRuleLogic
   RuleChoice x y -> mplus (evalRuleLogic x) (evalRuleLogic y)
   RuleTree   x y -> mplus (runMap T.DepthFirst [] x) (runMap T.BreadthFirst [] y) where
     runMap control qx map = if M.null map then mzero else do
@@ -309,13 +311,13 @@ query1 r st = query r st >=> \ox -> return $ if null ox then Nothing else Just $
 
 -- | Take the next item from the query input, backtrack if there is no input remaining.
 next :: Monad m => StatefulRule st m Object
-next = RuleLogic nullValue $ superState $ \q -> if null $ q~>queryInput then [] else
+next = RuleLogic $ superState $ \q -> if null $ q~>queryInput then [] else
   [(Right $ return $ head $ q~>queryInput, with q [queryInput $= tail, queryScore $= (+ 1)])]
 
 -- | Take as many of next items from the query input as necessary to make the rest of the 'Rule'
 -- match the input query. This acts as kind of a Kleene star.
 part :: Monad m => StatefulRule st m Query
-part = RuleLogic nullValue $ superState $ loop [] where
+part = RuleLogic $ superState $ loop [] where
   out  keep st = (Right $ return keep, st)
   loop keep st = case st~>queryInput of
     []   -> [out keep $ with st [queryInput <~ []]]
@@ -323,7 +325,7 @@ part = RuleLogic nullValue $ superState $ loop [] where
 
 -- | Clear the remainder of the input 'Query' and return it.
 remainder :: Monad m => StatefulRule st m Query
-remainder = RuleLogic nullValue $ state $ \st ->
+remainder = RuleLogic $ state $ \st ->
   (Right $ return $ st~>queryInput, with st [queryInput <~ []])
 
 -- | Match when there are no more arguments, backtrack if there are.
@@ -335,7 +337,7 @@ remainder = RuleLogic nullValue $ state $ \st ->
 -- ('Data.Functor.Functor' m, 'Control.Monad.Monad' m) => 'Rule' m 'Dao.Object.Object'
 -- @
 done :: Monad m => StatefulRule st m ()
-done = RuleLogic nullValue $ superState $ \q -> [(Right $ return (), q) | null $ q~>queryInput]
+done = RuleLogic $ superState $ \q -> [(Right $ return (), q) | null $ q~>queryInput]
 
 -- | Fully evaluate a 'Rule', and collect all possible results along with their 'queryScore's. Pass
 -- these results to a filter function, and procede with 'Rule' evaluation using only the results
@@ -350,10 +352,10 @@ done = RuleLogic nullValue $ superState $ \q -> [(Right $ return (), q) | null $
 -- @
 limitByScore :: Monad m => ([(a, QueryState st)] -> [(a, QueryState st)]) -> StatefulRule st m a -> StatefulRule st m a
 limitByScore filter f = do
-  a <- RuleLogic (getRuleStruct f) $ liftM (Right . return) $ entangle $ evalRuleLogic f
+  a <- RuleLogic $ liftM (Right . return) $ entangle $ evalRuleLogic f
   let (err, ox) = (concat *** concat) $ unzip $
         (\ (o, qs) -> (\o -> ([(Left o, qs)], [])) ||| (\o -> ([], [(o, qs)])) $ o) <$> a
-  RuleLogic nullValue $ superState $ const $ (first (Right . return) <$> filter ox) ++ err
+  RuleLogic $ superState $ const $ (first (Right . return) <$> filter ox) ++ err
 
 -- | Like 'limitByScore' but the filter function simply selects the results with the highet
 -- 'queryScore'.
@@ -372,10 +374,10 @@ bestMatch = let score = (~> queryScore) . snd in limitByScore $ concat .
 -- @
 resetScore :: Monad m => StatefulRule st m a -> StatefulRule st m a
 resetScore f = do
-  score <- RuleLogic (getRuleStruct f) $ state $ \q ->
+  score <- RuleLogic $ state $ \q ->
     (Right . return $ q~>queryScore, with q [queryScore <~ 0])
   a <- f
-  RuleLogic nullValue (liftM (Right . return) $ modify (by [queryScore <~ score]))
+  RuleLogic $ liftM (Right . return) $ modify (by [queryScore <~ score])
   return a
 
 ----------------------------------------------------------------------------------------------------
@@ -512,124 +514,174 @@ infer f = tree T.BreadthFirst [[typ f err]] just1 where
 
 ----------------------------------------------------------------------------------------------------
 
--- | This data type provides free predictive input functionality to the 'Dao.Rule.Rule' monad. This
--- is a data type that wraps a 'Dao.Rule.Rule' which can be queried by the 'startGuess' function.
--- Then use the 'predictorGuesses' 'Dao.Lens.Lens' to retrieve a list of possible completitions. You
--- can insert or remove elements from a 'Query' stored in the 'Predictor' to re-evaluate without
--- having to start again from the beginning every time.
+-- | This data type contains a tree with a depth of no less than one (hence it is a 'Dao.Tree.Tree'
+-- inside of a 'Data.Map.Map', the 'Data.Map.Map' matches the first element of the 'Query') which is
+-- used to construct all alternative paths of 'Rule' evaluation.
+type RuleAltEvalPath st m a = M.Map Object (T.Tree Object (Query -> StatefulRule st m a))
+
+-- | This data type is the result of a 'partialQuery'. It holds information about what needs to be
+-- appended to a query to make 'Rule' evaluation succeed.
+newtype PartialQueryResult st m a =
+  PartialQueryResult
+    ( [(Either ErrorObject a, QueryState st)]
+    , [(RuleAltEvalPath st m a, RuleAltEvalPath st m a, QueryState st)]
+    )
+
+instance TestNull (PartialQueryResult st m a) where
+  nullValue = PartialQueryResult ([], [])
+  testNull (PartialQueryResult (a, b)) = null a && null b
+
+instance Monoid (PartialQueryResult st m a) where
+  mempty = nullValue
+  mappend (PartialQueryResult (a1, b1)) (PartialQueryResult (a2, b2)) =
+    PartialQueryResult (a1++a2, b1++b2)
+
+partialQueryResultTuple
+  :: Monad m
+  => Lens m (PartialQueryResult st m a)
+            ( [(Either ErrorObject a, QueryState st)]
+            , [(RuleAltEvalPath st m a, RuleAltEvalPath st m a, QueryState st)]
+            )
+partialQueryResultTuple = newLens (\ (PartialQueryResult o) -> o) (\o _ -> PartialQueryResult o)
+
+-- | This lens retrieves the success and failure results of the current 'partialQuery'.
 --
--- This functionality can be useful in command line interfaces where the end user presses the "tab"
--- key on the keyboard, the key event can be bound to a callback that tokenizes the input and feeds
--- it into your 'Rule' knowledge base via the 'continueQuery' function, pausing at the end of the
--- input 'Query' to retrieve predictions for what the end user may enter next.
-data Predictor st m a =
-  Predictor (QueryState st) (StatefulRule st m a) [(QueryState st, StatefulRule st m a)] deriving Typeable
-
-instance TestNull st => TestNull (Predictor st m a) where
-  nullValue = Predictor nullValue RuleEmpty []
-  testNull (Predictor qs RuleEmpty []) = testNull qs
-  testNull _                           = False
-
--- This is the input 'Query'. It is best not to modify this directly. Use 'startGuess' and
--- 'changeGuess' instead.
-_predictorQueryState :: Monad l => Lens l (Predictor st m a) (QueryState st)
-_predictorQueryState =
-  newLens (\ (Predictor q _ _) -> q) (\q (Predictor _ r s) -> Predictor q r s)
-
--- This is the current 'Rule' that will be evaluated using the '_predictorQueryState'.
-_predictorRule  :: Monad l => Lens l (Predictor st m a) (StatefulRule st m a)
-_predictorRule  =
-  newLens (\ (Predictor _ r _) -> r) (\r (Predictor q _ s) -> Predictor q r s)
-
--- This is the stack which contains all of the 'Rule' branches not taken. You can pop the stack and
--- try alternate branches of evaluation.
-_predictorStack :: Monad l => Lens l (Predictor st m a) [(QueryState st, StatefulRule st m a)]
-_predictorStack =
-  newLens (\ (Predictor _ _ s) -> s) (\s (Predictor q r _) -> Predictor q r s)
-
--- | This is the 'Query' that has been input by the user so far. This 'Dao.Lens.Lens' may be useful
--- in tab-completion, where every time the end user presses the "tab" key, the entire line of input
--- up to the tab-press is re-evaluated. This function takes steps to avoid as much re-evaluation of
--- the 'Rule' as possible by comparing the current 'predictorQuery' to the 'Query' assigned to it
--- with the @('Dao.Lens.<~')@ operator. But if the end user has completely deleted the input and
--- started with something new, it is unavoidable that the 'Predictor' simply must be fully reset.
-predictorQuery :: Monad m => Lens m (Predictor st m a) Query
-predictorQuery = newLensM fetch update where
-  fetch (Predictor q _ s) = return $
-    concat $ reverse $ ((q~>queryInput) :) $ fmap ((~> queryInput) . fst) s
-  update ox (Predictor q r s) = predictorStep $
-    let loop qs r s' s ox = let done = Predictor (with q [queryInput <~ ox]) r s' in case s of
-          []          -> done
-          (qs', r'):s -> case stripPrefix (qs~>queryInput) ox of
-            Nothing -> done
-            Just ox -> loop qs' r' ((qs, r):s') s ox
-    in  case reverse s of
-          []        -> Predictor (with q [queryInput <~ ox]) r []
-          (qs, r):s -> loop qs r [] s ox
-
-----------------------------------------------------------------------------------------------------
-
--- | This function is similar to the 'queryAll' function, except evaluation occurs in steps that can
--- be controlled by 'predictorStep', 'predictorBack', and 'changeGuess'.
-startGuess :: Monad m => StatefulRule st m a -> st -> Query -> m (Predictor st m a)
-startGuess r st q = predictorStep $ Predictor (QueryState (st, 0, q)) r []
-
--- | Append more of a 'Query' to the current 'Predictor's 'QueryState'.
-continueGuess :: Monad m => Query -> Predictor st m a -> m (Predictor st m a)
-continueGuess q p = predictorStep $ with p [_predictorQueryState >>> queryInput $= (++ q)]
-
--- | A predicate indicating whether it is possible for the 'Predictor' to be stepped by
--- 'predictorStep'.
-predictorCanStep :: Predictor st m a -> Bool
-predictorCanStep p = case p~>_predictorRule of
-  RuleEmpty    -> False
-  RuleReturn{} -> False
-  RuleError{}  -> False
-  _            -> not $ null $ p~>_predictorQueryState~>queryInput
-
--- | This function takes a single item from the '_predictorQueryState' and uses it to evaluate a single
--- step of the '_predictorRule' consuming as much of the input 'Query' in 'predictorQuery'. Once this
--- evaluation has completed, check the '_predictorGuesses' for possible completions. It is then
--- possible to append these completions to the 'predictorQuery' and evaluate 'predictorStep' again.
-predictorStep :: Monad m => Predictor st m a -> m (Predictor st m a)
-predictorStep = curry loop nullValue >=> return . snd where
-  step t p rule = (t, with p [_predictorRule <~ rule])
-  loop (t, p) = let rule = p~>_predictorRule in case rule of
-    RuleLift     o -> o >>= loop . step t p
-    RuleLogic  _ o ->
-      evalLogicT o (p~>_predictorQueryState) >>= loop . step t p . msum . rights
-    RuleChoice a b -> loop (step t p a) >>= \ (t, p) -> loop $ step t p b
-    RuleTree   a b -> done (union t $ union (mkT a) (mkT b)) p
-    _              -> return (t, p)
-  mkT = T.Tree . (,) Nothing
-  union = T.unionWith (\a b q -> mplus (a q) (b q))
-  done t p = do
-    let qs = p~>_predictorQueryState
-    let qi = qs~>queryInput
-    case T.slowLookup1 (\a b -> isSimilar $ objMatch b a) qi t of
-      Nothing         -> return (t, p)
-      Just (_, qRule) -> let rule = qRule qi in return $ (,) t $
-        with p [_predictorStack $= ((with qs [queryInput <~ qi], rule) :), _predictorRule  <~ rule]
-
--- | This will compute a pair of two results at once:
+-- If 'partialQueryResults' is empty and the 'partialQueryNextSteps' value is also empty, this
+-- indicates that the 'Query' that was just evaluated by 'partialQuery' is probably nonsense, as no
+-- further input could possibly result in any provably wrong or provably right result.
 --
--- 1. a number of possible results if the current 'predictorInput' would have been input into
---    'queryAll', what would be the result returned, or the error thrown. 
--- 2. a list of guesses that might be next input by an end user that would be valid in the current
---    context of the current production 'Rule'.
-predictorGuesses :: forall st m a . Monad m => Predictor st m a -> m ([Either ErrorObject a], [Query])
-predictorGuesses = liftM (second $ fmap fst . T.assocs T.BreadthFirst) . loop [] nullValue where
-  step p rule = with p [_predictorRule <~ rule]
-  loop :: [Either ErrorObject a] -> T.Tree Object () -> Predictor st m a -> m ([Either ErrorObject a], T.Tree Object ())
-  loop ax t p = case p~>_predictorRule of
-    RuleLift     o -> o >>= loop ax t . step p
-    RuleLogic  u o -> do
-      (errs, rules) <- liftM partitionEithers $ evalLogicT o $ p~>_predictorQueryState
-      loop (ax ++ fmap Left errs) (T.union t u) $ step p (msum rules)
-    RuleTree   a b -> let mkT o = T.Tree (Nothing, fmap void o) in
-      return (ax, T.union t $ T.union (mkT a) (mkT b))
-    RuleChoice a b -> loop ax t (step p a) >>= \ (ax, t) -> loop ax t (step p b)
-    RuleReturn a   -> return (ax++[Right  a], t)
-    RuleError  err -> return (ax++[Left err], t)
-    RuleEmpty      -> return (ax, t)
+-- However if 'partialQueryResults' is empty and 'partialQueryNextSteps' is not empty, this
+-- indicates that the current input query must be incomplete, there must be more input to the query,
+-- otherwise evaluating the 'Query' that was just evaluated by 'partialQuery' as it is will
+-- certainly backtrack.
+--
+-- If 'partialQueryResults' contains some items but 'partialQueryNextSteps' is empty, this indicates
+-- that the 'Query' that was just evaluated by 'partialQuery' is complete, and appending more to it
+-- will result in backtracking.
+--
+-- If both 'partialQueryResult' and 'partialQueryNextSteps' both contain some items, this indicates
+-- that the 'Query' that was just evaluated by 'partialQuery' is enough to produce a success or
+-- failure, however appending more input to the 'Query' may produce in some other results.
+--
+-- The 'partialQueryResults' contains both failures and successes. 'Prelude.Right' values indicate
+-- that the 'Query' evaluated by 'partialQuery' is provably correct according to at least some
+-- 'Rule's, whereas 'Prelude.Left' values indicate that the 'Query' evaluated by 'partialQuery' was
+-- provably wrong according to at least some 'Rule's.
+partialQueryResults
+  :: Monad m
+  => Lens m (PartialQueryResult st m a) [(Either ErrorObject a, QueryState st)]
+partialQueryResults = partialQueryResultTuple >>> tuple0
+
+-- | This lens retrieves the trees of alternative evaluation paths that could be tried if further
+-- input were appended to the current 'Query'.
+--
+-- If 'partialQueryNextSteps' value is empty and 'partialQueryResults' is also empty and the, this
+-- indicates that the 'Query' that was just evaluated by 'partialQuery' is probably nonsense, as no
+-- further input could possibly result in any provably wrong or provably right result.
+--
+-- However if 'partialQueryNextSteps' is not empty and 'partialQueryResults' is empty, this
+-- indicates that the current input query must be incomplete, there must be more input to the query,
+-- otherwise evaluating the 'Query' that was just evaluated by 'partialQuery' as it is will
+-- certainly backtrack. 
+--
+-- If 'partialQueryNextSteps' is empty but 'partialQueryResults' contains some items, this indicates
+-- that the 'Query' that was just evaluated by 'partialQuery'is complete, and appending more to it
+-- will result in backtracking.
+--
+-- If both 'partialQueryNextSteps' and 'partialQueryResult' both contain some items, this indicates
+-- that the 'Query' that was just evaluated by 'partialQuery' is enough to produce a success or
+-- failure, however appending more input to the 'Query' may produce in some other results.
+--
+-- The 'partialQueryResults' contains both failures and successes. 'Prelude.Right' values indicate
+-- that the 'Query' evaluated by 'partialQuery' is provably correct according to at least some
+-- 'Rule's, whereas 'Prelude.Left' values indicate that the 'Query' evaluated by 'partialQuery' was
+-- provably wrong according to at least some 'Rule's.
+partialQueryNextSteps
+  :: Monad m
+  => Lens m (PartialQueryResult st m a)
+            [(RuleAltEvalPath st m a, RuleAltEvalPath st m a, QueryState st)]
+partialQueryNextSteps = partialQueryResultTuple >>> tuple1
+
+_partialQuery
+  :: Monad m
+  => Int -> StatefulRule st m a -> QueryState st -> m (PartialQueryResult st m a)
+_partialQuery depth rule qst@(QueryState (st, score, qx)) = case rule of
+  RuleEmpty       -> return nullValue
+  RuleReturn    a -> return $ PartialQueryResult ([(Right  a, qst)], [])
+  RuleError   err -> return $ PartialQueryResult ([(Left err, qst)], [])
+  RuleLift   rule -> rule >>= \rule -> _partialQuery depth rule qst
+  RuleLogic logic -> do
+    results <- runLogicT logic (QueryState (st, score, qx))
+    liftM mconcat $ forM results $ \ (result, st) -> case result of
+      Left   err -> return $ PartialQueryResult ([(Left err, st)], [])
+      Right rule -> if depth<=0 then return mempty else _partialQuery (depth-1) rule qst
+  RuleChoice  a b -> if depth<=0 then return mempty else let depth1 = depth-1 in
+    liftM2 mappend (_partialQuery depth1 a qst) (_partialQuery depth1 b qst)
+  RuleTree    a b -> _partialChoice depth [(a, b, QueryState (st, 0, qx))]
+
+_partialChoice
+  :: Monad m
+  => Int -> [(RuleAltEvalPath st m a, RuleAltEvalPath st m a, QueryState st)]
+  -> m (PartialQueryResult st m a)
+_partialChoice depth abx = liftM (mconcat . join) $
+  forM abx $ \ (a, b, QueryState (st, score, qx)) -> case qx of
+    q:qx | depth>0 -> do
+      let part order = maybe [] (T.partitions order qx) . M.lookup q
+      forM (part T.BreadthFirst a ++ part T.DepthFirst b) $ \ ((px, qx), rule) ->
+        _partialQuery (depth-1) (rule px) $ QueryState (st, score, qx)
+    _            -> return [PartialQueryResult ([], abx)]
+
+-- | When you run a 'StatefulRule' or 'Rule' with a partial query, you are will evaluate the
+-- function up to the end of the query with the expectation that there is more to the query that
+-- will be supplied.
+--
+-- This behavior is ideal for (and designed for) predictive input, for example tab completion on
+-- command lines. The input written by an end user can be tokenized as a partial query and fed into
+-- a 'StatefulRule' using this function. The result will be a new 'Rule' that will begin evaluation
+-- from where the previous partial query ended. Along with the result, you may also receive
+-- "predictions", or a list of possible query steps that could allow the rule evaluation to succeed
+-- without an error or backtracking.
+--
+-- This function takes a @depth::Int@ as it's first parameter. This is important because it is
+-- common practice to create inifinitely large 'Rule' objects which are generated and evaluated
+-- lazily. The depth limit parameter instructs this algorithm to stop trying alternative branches of
+-- evaluation after a certain number of branch points have been followed. *NOTE* that this does have
+-- anything to do with the number of possible branch completions that may be generated. A single
+-- branch may contain millions of completions. Likewise, a million branches may contain no
+-- completions at all. This depth limit is only related to the number of branches that may be
+-- followed according to the algorithm which generated the 'Rule'. A logical branch is usually
+-- created by functions like @('Control.Applicative.<|>')@, 'Control.Monad.mplus', or
+-- 'Control.Monad.msum'.
+--
+-- *WARNING:* rule evaluation that is not pure, especially rules that lift the @IO@ monad, may end
+-- up evaluating side effects several times. One thing you can do to avoid unwanted side effects is
+-- to design your 'StatefulRule' or 'Rule' to be polymorphic over the monadic type @m@ (refer to the
+-- definition of 'StatefulRule'). For the portions of your rule that can be used without lifting
+-- @IO@, lift these 'Rule's into the 'Control.Monad.Trans.Identity.Identity' monad and use these for
+-- evalutating 'partialQuery's. Then, when you need to use these rules with @IO@, since they are
+-- polymorphic over the monadic type, you can simply use them with your @IO@ specific 'Rule's and
+-- your Haskell compiler will not complain.
+partialQuery
+  :: Monad m
+  => Int -> StatefulRule st m a -> st -> Query -> m (PartialQueryResult st m a)
+partialQuery depth rule st qx = _partialQuery depth rule $ QueryState (st, 0, qx)
+
+-- | Continue a 'partialQuery' from where the previous 'partialQuery' result left off, as if another
+-- 'Query' has been appended to the previous 'Query' of the call to the previous 'partialQuery'.
+resumePartialQuery
+  :: Monad m
+  => Int -> PartialQueryResult st m a -> Query -> m (PartialQueryResult st m a)
+resumePartialQuery depth (PartialQueryResult (_, abx)) qx = _partialChoice depth $
+  (\ (a, b, QueryState (st, score, px)) -> (a, b, QueryState (st, score, px++qx))) <$> abx
+
+-- | Take a 'PartialQueryResult' and return a list of possible 'Query' completions, along with any
+-- current success and failure values that would be returned if the 'partialQuery' were to be
+-- evaluated as is.
+guesses :: PartialQueryResult st m a -> ([Query], [a], [ErrorObject])
+guesses (PartialQueryResult (results, trees)) =
+  let score (_, QueryState (_, a, _)) (_, QueryState (_, b, _)) = compare b a
+      (lefts, rights) = partitionEithers $ fst <$> sortBy score results
+      clear o = Sum $ T.Tree (Nothing, void <$> o)
+      completions = getSum $ foldl (\tree (a, b, _) -> tree <> clear a <> clear b) nullValue trees
+  in  (fst <$> T.assocs T.BreadthFirst completions, rights, lefts)
 

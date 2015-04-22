@@ -238,30 +238,30 @@ instance Monad m => PredicateClass err (PredicateT err m) where
 
 -- | Evaluates to an empty list if the given 'Predicate' is 'PFalse' or 'PError', otherwise returns a
 -- list containing the value in the 'PTrue' value.
-okToList :: Predicate err o -> [o]
-okToList pval = case pval of
+pTrueToList :: Predicate err o -> [o]
+pTrueToList pval = case pval of
   PTrue  o -> [o]
   PFalse   -> []
   PError _ -> []
 
--- | Like 'okToList', but evaluates to 'Data.Maybe.Nothing' if the given 'Predicate' is 'PFalse' or
+-- | Like 'pTrueToList', but evaluates to 'Data.Maybe.Nothing' if the given 'Predicate' is 'PFalse' or
 -- 'PError', or 'Data.Maybe.Just' containing the value in the 'PTrue' value.
-okToJust :: Predicate err o -> Maybe o
-okToJust pval = case pval of
+pTrueToJust :: Predicate err o -> Maybe o
+pTrueToJust pval = case pval of
   PTrue  o -> Just o
   PFalse   -> Nothing
   PError _ -> Nothing
 
 -- | If given 'Data.Maybe.Nothing', evaluates to 'PError' with the given error information.
 -- Otherwise, evaluates to 'PTrue'.
-maybeToPFail :: err -> Maybe o -> Predicate err o
-maybeToPFail err o = case o of
+maybeToPError :: err -> Maybe o -> Predicate err o
+maybeToPError err o = case o of
   Nothing -> PError err
   Just ok -> PTrue   ok
 
 -- | Like 'Prelude.fmap' but operates on the error report data of the 'Predicate'.
-fmapPFail :: (errA -> errB) -> Predicate errA o -> Predicate errB o
-fmapPFail f pval = case pval of
+fmapPError :: (errA -> errB) -> Predicate errA o -> Predicate errB o
+fmapPError f pval = case pval of
   PTrue  o -> PTrue o
   PFalse   -> PFalse
   PError e -> PError $ f e

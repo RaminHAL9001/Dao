@@ -57,8 +57,8 @@ module Dao.Rule
     TypePattern(TypePattern), patternTypeRep, infer,
     -- * Predicting User Input
     PartialQueryResult(PartialQueryResult),
-    partialQuery, resumePartialQuery, partialQueryResultTuple,
-    partialQueryResults, partialQueryNextSteps, guesses, guessPartial,
+    partialQuery, resumePartialQuery, partialQueryResultTuple, guesses, guessPartial,
+    partialQueryResults, partialQueryBranches, partialQueryNextSteps,
     RuleAltEvalPath,
     -- * Re-export the "Dao.Logic" module.
     module Dao.Logic
@@ -84,8 +84,6 @@ import           Data.Either
 import           Data.List
 import           Data.Monoid
 import qualified Data.Map as M
-
-import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -507,43 +505,49 @@ type RuleAltEvalPath st m a = M.Map Object (T.Tree Object (Query -> StatefulRule
 -- appended to a query to make 'Rule' evaluation succeed.
 newtype PartialQueryResult st m a =
   PartialQueryResult
-    ( [(Either ErrorObject a, QueryState st)]
+    ( T.Tree Object ()
+    , [(Either ErrorObject a, QueryState st)]
     , [(RuleAltEvalPath st m a, RuleAltEvalPath st m a, QueryState st)]
     )
 
 instance TestNull (PartialQueryResult st m a) where
-  nullValue = PartialQueryResult ([], [])
-  testNull (PartialQueryResult (a, b)) = null a && null b
+  nullValue = PartialQueryResult nullValue
+  testNull (PartialQueryResult o) = testNull o
 
 instance Monoid (PartialQueryResult st m a) where
   mempty = nullValue
-  mappend (PartialQueryResult (a1, b1)) (PartialQueryResult (a2, b2)) =
-    PartialQueryResult (a1++a2, b1++b2)
+  mappend (PartialQueryResult (a1, b1, c1)) (PartialQueryResult (a2, b2, c2)) =
+    PartialQueryResult (T.union a1 a2, b1++b2, c1++c2)
 
 partialQueryResultTuple
   :: Monad m
   => Lens m (PartialQueryResult st m a)
-            ( [(Either ErrorObject a, QueryState st)]
+            ( T.Tree Object ()
+            , [(Either ErrorObject a, QueryState st)]
             , [(RuleAltEvalPath st m a, RuleAltEvalPath st m a, QueryState st)]
             )
 partialQueryResultTuple = newLens (\ (PartialQueryResult o) -> o) (\o _ -> PartialQueryResult o)
 
+-- | This is the lens that retrieves the potential next steps.
+partialQueryNextSteps :: Monad m => Lens m (PartialQueryResult st m a) (T.Tree Object ())
+partialQueryNextSteps = partialQueryResultTuple >>> tuple0
+
 -- | This lens retrieves the success and failure results of the current 'partialQuery'.
 --
--- If 'partialQueryResults' is empty and the 'partialQueryNextSteps' value is also empty, this
+-- If 'partialQueryResults' is empty and the 'partialQueryBranches' value is also empty, this
 -- indicates that the 'Query' that was just evaluated by 'partialQuery' is probably nonsense, as no
 -- further input could possibly result in any provably wrong or provably right result.
 --
--- However if 'partialQueryResults' is empty and 'partialQueryNextSteps' is not empty, this
+-- However if 'partialQueryResults' is empty and 'partialQueryBranches' is not empty, this
 -- indicates that the current input query must be incomplete, there must be more input to the query,
 -- otherwise evaluating the 'Query' that was just evaluated by 'partialQuery' as it is will
 -- certainly backtrack.
 --
--- If 'partialQueryResults' contains some items but 'partialQueryNextSteps' is empty, this indicates
+-- If 'partialQueryResults' contains some items but 'partialQueryBranches' is empty, this indicates
 -- that the 'Query' that was just evaluated by 'partialQuery' is complete, and appending more to it
 -- will result in backtracking.
 --
--- If both 'partialQueryResult' and 'partialQueryNextSteps' both contain some items, this indicates
+-- If both 'partialQueryResult' and 'partialQueryBranches' both contain some items, this indicates
 -- that the 'Query' that was just evaluated by 'partialQuery' is enough to produce a success or
 -- failure, however appending more input to the 'Query' may produce in some other results.
 --
@@ -554,25 +558,25 @@ partialQueryResultTuple = newLens (\ (PartialQueryResult o) -> o) (\o _ -> Parti
 partialQueryResults
   :: Monad m
   => Lens m (PartialQueryResult st m a) [(Either ErrorObject a, QueryState st)]
-partialQueryResults = partialQueryResultTuple >>> tuple0
+partialQueryResults = partialQueryResultTuple >>> tuple1
 
 -- | This lens retrieves the trees of alternative evaluation paths that could be tried if further
 -- input were appended to the current 'Query'.
 --
--- If 'partialQueryNextSteps' value is empty and 'partialQueryResults' is also empty and the, this
+-- If 'partialQueryBranches' value is empty and 'partialQueryResults' is also empty and the, this
 -- indicates that the 'Query' that was just evaluated by 'partialQuery' is probably nonsense, as no
 -- further input could possibly result in any provably wrong or provably right result.
 --
--- However if 'partialQueryNextSteps' is not empty and 'partialQueryResults' is empty, this
+-- However if 'partialQueryBranches' is not empty and 'partialQueryResults' is empty, this
 -- indicates that the current input query must be incomplete, there must be more input to the query,
 -- otherwise evaluating the 'Query' that was just evaluated by 'partialQuery' as it is will
 -- certainly backtrack. 
 --
--- If 'partialQueryNextSteps' is empty but 'partialQueryResults' contains some items, this indicates
+-- If 'partialQueryBranches' is empty but 'partialQueryResults' contains some items, this indicates
 -- that the 'Query' that was just evaluated by 'partialQuery'is complete, and appending more to it
 -- will result in backtracking.
 --
--- If both 'partialQueryNextSteps' and 'partialQueryResult' both contain some items, this indicates
+-- If both 'partialQueryBranches' and 'partialQueryResult' both contain some items, this indicates
 -- that the 'Query' that was just evaluated by 'partialQuery' is enough to produce a success or
 -- failure, however appending more input to the 'Query' may produce in some other results.
 --
@@ -580,41 +584,57 @@ partialQueryResults = partialQueryResultTuple >>> tuple0
 -- that the 'Query' evaluated by 'partialQuery' is provably correct according to at least some
 -- 'Rule's, whereas 'Prelude.Left' values indicate that the 'Query' evaluated by 'partialQuery' was
 -- provably wrong according to at least some 'Rule's.
-partialQueryNextSteps
+partialQueryBranches
   :: Monad m
   => Lens m (PartialQueryResult st m a)
             [(RuleAltEvalPath st m a, RuleAltEvalPath st m a, QueryState st)]
-partialQueryNextSteps = partialQueryResultTuple >>> tuple1
+partialQueryBranches = partialQueryResultTuple >>> tuple2
 
 _partialQuery
   :: Monad m
   => Int -> StatefulRule st m a -> QueryState st -> m (PartialQueryResult st m a)
 _partialQuery lim rule qst = if lim<=0 then return mempty else case rule of
   RuleEmpty      -> return nullValue
-  RuleReturn   a -> return $ PartialQueryResult ([(Right  a, qst)], [])
-  RuleError  err -> return $ PartialQueryResult ([(Left err, qst)], [])
+  RuleReturn   a -> return $ PartialQueryResult (nullValue, [(Right  a, qst)], [])
+  RuleError  err -> return $ PartialQueryResult (nullValue, [(Left err, qst)], [])
   RuleLift  rule -> rule >>= \rule -> _partialQuery lim rule qst
   RuleState rule -> liftM mconcat $ mapM (uncurry $ _partialQuery $ lim-1) (rule qst)
-  RuleOp op rule -> _partialQuery (lim-1) rule qst
+  RuleOp _  rule -> _partialQuery (lim-1) rule qst
   RuleChoice a b -> let depth1 = lim-1 in
     liftM2 mappend (_partialQuery depth1 a qst) (_partialQuery depth1 b qst)
   RuleTree   a b -> _partialChoice lim [(a, b, qst)]
-  where
-    tr nm other =
-      trace $ nm++" (lim="++show lim++") (queryState="++_showQS qst++")"++
-        (if null other then "" else "\n  "++other)
 
 _partialChoice
   :: Monad m
   => Int -> [(RuleAltEvalPath st m a, RuleAltEvalPath st m a, QueryState st)]
   -> m (PartialQueryResult st m a)
-_partialChoice lim abx = liftM (mconcat . join) $
-  forM abx $ \ (a, b, QueryState (st, score, qx)) -> case qx of
-    q:qx | lim>0 -> do
+_partialChoice lim abx = if lim<=0 then return mempty else liftM (mconcat . join) $
+  forM abx $ \ (a, b, qst@(QueryState (st, score, qx))) -> case qx of
+    q:qx -> do
       let part order = maybe [] (T.partitions order qx) . M.lookup q
       forM (part T.BreadthFirst a ++ part T.DepthFirst b) $ \ ((px, qx), rule) ->
         _partialQuery (lim-1) (rule px) $ QueryState (st, score+length px, qx)
-    _            -> return [PartialQueryResult ([], abx)]
+    []           -> liftM return $ _predictFuture lim qst [] $ T.Tree (Nothing, _plus a b)
+
+_predictFuture
+  :: Monad m
+  => Int -> QueryState st -> Query
+  -> (T.Tree Object (Query -> StatefulRule st m a))
+  -> m (PartialQueryResult st m a)
+_predictFuture lim qst qx tree = if lim<=0 then return mempty else
+  liftM mconcat $ forM (T.assocs T.BreadthFirst tree) $ \ (path, rule) -> do
+    qx <- return $ qx++path
+    let done qx o ab = return $ PartialQueryResult (T.singleton qx (), o, ab)
+        loop f   qst = _predictFuture (lim-1) qst qx (T.singleton [] $ const f)
+    case rule qx of
+      RuleEmpty      -> done [] []                []
+      RuleReturn   a -> done qx [(Right  a, qst)] []
+      RuleError  err -> done [] [(Left err, qst)] []
+      RuleLift     f -> f >>= flip loop qst
+      RuleState    f -> liftM mconcat $ mapM (uncurry loop) $ f qst
+      RuleOp     _ f -> loop f qst
+      RuleChoice a b -> liftM2 mappend (loop a qst) (loop b qst)
+      RuleTree   a b -> _predictFuture (lim-1) qst qx (T.Tree (Nothing, _plus a b))
 
 -- | When you run a 'StatefulRule' or 'Rule' with a partial query, you are will evaluate the
 -- function up to the end of the query with the expectation that there is more to the query that
@@ -656,19 +676,17 @@ partialQuery lim rule st qx = _partialQuery lim rule $ QueryState (st, 0, qx)
 resumePartialQuery
   :: Monad m
   => Int -> PartialQueryResult st m a -> Query -> m (PartialQueryResult st m a)
-resumePartialQuery lim (PartialQueryResult (_, abx)) qx = _partialChoice lim $
+resumePartialQuery lim (PartialQueryResult (_, _, abx)) qx = _partialChoice lim $
   (\ (a, b, QueryState (st, score, px)) -> (a, b, QueryState (st, score, px++qx))) <$> abx
 
 -- | Take a 'PartialQueryResult' and return a list of possible 'Query' completions, along with any
 -- current success and failure values that would be returned if the 'partialQuery' were to be
 -- evaluated as is.
 guesses :: PartialQueryResult st m a -> ([Query], [a], [ErrorObject])
-guesses (PartialQueryResult (results, trees)) =
+guesses (PartialQueryResult (trees, results, _)) =
   let score (_, QueryState (_, a, _)) (_, QueryState (_, b, _)) = compare b a
       (lefts, rights) = partitionEithers $ fst <$> sortBy score results
-      clear o = Sum $ T.Tree (Nothing, void <$> o)
-      completions = getSum $ foldl (\tree (a, b, _) -> tree <> clear a <> clear b) nullValue trees
-  in  (fst <$> T.assocs T.BreadthFirst completions, rights, lefts)
+  in  (fst <$> T.assocs T.BreadthFirst trees, rights, lefts)
 
 -- | This is a convenience function used for tab-completion on the last word of an input query.
 -- Let's say your user inputs a string like @this is some te@, and your 'Rule' is designed to match

@@ -32,7 +32,7 @@
 -- types an 'Object' by instantiating your object into this class. To define an instance of
 -- 'ObjectData', the 'fromForeign' function will be useful.
 module Dao.Object
-  ( ErrorObject, throwObject, showUnquoted, pprintUnquoted,
+  ( ErrorObject(ErrorObject), errorObjectArray, objError, throwObject, showUnquoted, pprintUnquoted,
     -- * Improving on 'Data.Dynamic.Dynamic'
     HasTypeRep(objTypeOf),
     -- * Simple Data Modeling
@@ -43,10 +43,7 @@ module Dao.Object
     printable, matchable,
     -- * 'Object': Union Type of 'Simple' and 'Passport'
     Object(OSimple, OForeign),
-    -- * 'Object's as Matchable Patterns
-    ObjectPattern(objMatch),
-    Similarity(Dissimilar, Similar, ExactlyEqual), boolSimilar, similarButNotEqual, isSimilar,
-    Dissimilarity(Dissimilarity), getSimilarity,
+    TypePattern(TypePattern), patternTypeRep, infer,
     -- * Custom data types as 'Object's
     ObjectData(obj, fromObj), defaultFromObj,
     objectMapUnion, objectMapIntersection,
@@ -59,6 +56,7 @@ import           Dao.Array
 import           Dao.Int
 import           Dao.Lens
 import           Dao.Logic
+import           Dao.Rule
 import           Dao.Text.PPrint
 import           Dao.Predicate
 import           Dao.TestNull
@@ -110,115 +108,46 @@ instance HasTypeRep Dynamic where { objTypeOf = dynTypeRep; }
 
 ----------------------------------------------------------------------------------------------------
 
--- | This is a fuzzy logic value which must be returned by 'objMatch' in the 'ObjectPattern' class.
--- In the 'Rule' monad, 'objMatch' is used to select a branch of execution, and multiple branch
--- choices may exist. If any branches are 'ExactlyEqual', then only those 'ExactlyEqual' branches
--- will be chosen to continue execution. If there are no 'ExactlyEqual' choices then all 'Similar'
--- branches will be chosen to continue execution. If all branches are 'Dissimilar', execution
--- backtracks.
---
--- 'Similarity' instantiates 'Data.Monoid.Monoid' such that 'Data.Monoid.mappend' will multiply
--- 'Similar' values together.
---
--- ### A note about sorting
---
--- When 'Prelude.Ordering' 'Similarity' values, items that are more 'Similar' are greater than those
--- that are less similar. This is good when you use functions like 'Prelude.maximum', but not so
--- good when you use functions like 'Data.List.sort'. When you 'Data.List.sort' a list of
--- 'Similarity' values, the list will be ordered from least similar to most similar, with the most
--- similar items towards the end of the resultant list. This is usually not what you want. You
--- usually want the most similar items at the 'Prelude.head' of the resultant list. To solve this
--- problem, you can wrap 'Similarity' in a 'Dissimilarity' wrapper and then 'Data.List.sort', or
--- just use @('Data.List.sortBy' ('Prelude.flip' 'Prelude.compare'))@
-data Similarity
-  = Dissimilar
-    -- ^ return this value if two 'Object's are below the threshold of what is considered "similar."
-  | Similar Double
-    -- ^ return this value if two 'Object's are not equal, but above the threshold of what is
-    -- considered "similar." The 'Prelude.Double' value is used to further prioritize which branches
-    -- to evaluate first, with values closer to @1.0@ having higher priority. If you are not sure
-    -- what value to set, set it to @0.0@; a similarity of @0.0@ is still more similar than
-    -- 'Dissimilar'.
-  | ExactlyEqual
-    -- ^ return this value if two 'Object's are equal such that @('Prelude.==')@ would evaluate to
-    -- 'Prelude.True'. *Consider that to be a law:* if @('Prelude.==')@ evaluates to true for two
-    -- 'Object's, then 'objMatch' must evaluate to 'ExactlyEqual' for these two 'Object's. The
-    -- 'ExactlyEqual' value may be returned for dissimilar types as well, for example:
-    --
-    -- * 'Prelude.String's and 'Data.Text.Text's
-    -- * 'Prelude.Integer's and 'Prelude.Int's
-    -- * 'Prelude.Rational's and 'Prelude.Double's
-    -- * lists and 'Dao.Array.Array's
-  deriving (Eq, Show, Typeable)
+-- | This data type is a token containing a 'Data.Typeable.TypeRep'. When constructing a 'RuleTree',
+-- this pattern will match any object that matches the type it contains.
+newtype TypePattern = TypePattern { patternTypeRep :: TypeRep } deriving (Eq, Ord, Typeable)
 
--- | This data type is defined for 'Data.List.sort'ing purposes. Usually you want to sort a list of
--- matches such that the most similar items are towards the 'Prelude.head' of the list, but
--- 'Similarity' is defined such that more similar values are greater than less similar values, and
--- as such 'Data.List.sort'ing 'Similarity' values places the most 'Similar' items towards the
--- 'Prelude.tail' end of the resultant list. Wrapping 'Similarity' values in this data type reverses
--- the 'Prelude.Ordering' so that more 'Dissimilar' items have a higher value and are placed towards
--- the 'Prelude.tail' end of the 'Data.List.sort'ed list.
-newtype Dissimilarity = Dissimilarity { getSimilarity :: Similarity }
-  deriving (Eq, Show, Typeable)
+instance HasTypeRep TypePattern where { objTypeOf (TypePattern o) = o; }
 
-instance Monoid Similarity where
-  mempty = Dissimilar
-  mappend a b = case a of
-    Dissimilar   -> Dissimilar
-    ExactlyEqual -> b
-    Similar    a -> case b of
-      Dissimilar   -> Dissimilar
-      ExactlyEqual -> Similar a
-      Similar    b -> Similar $ a*b
+instance Show TypePattern where { show (TypePattern o) = show o; }
 
-instance Ord Similarity where
-  compare a b = case a of
-    Dissimilar   -> case b of
-      Dissimilar   -> EQ
-      _            -> LT
-    Similar    a -> case b of
-      Dissimilar   -> GT
-      Similar    b -> compare a b
-      ExactlyEqual -> LT
-    ExactlyEqual -> case b of
-      ExactlyEqual -> EQ
-      _            -> LT
+instance PPrintable TypePattern where { pPrint = return . pShow; }
 
-instance Ord Dissimilarity where { compare (Dissimilarity a) (Dissimilarity b) = compare b a; }
+instance SimpleData TypePattern where
+  simple (TypePattern o) = simple o
+  fromSimple = fmap TypePattern . fromSimple
 
-instance Monoid Dissimilarity where
-  mempty = Dissimilarity mempty
-  mappend (Dissimilarity a) (Dissimilarity b) = Dissimilarity $ mappend a b
+instance PatternClass TypePattern where
+  patternCompare (TypePattern p) o = if p==objTypeOf o then Similar 0.0 else Dissimilar
 
--- | Convert a 'Prelude.Bool' value to a 'Similarity' value. 'Prelude.True' is 'ExactlyEqual', and
--- 'Prelude.False' is 'Dissimilar'.
-boolSimilar :: Bool -> Similarity
-boolSimilar b = if b then ExactlyEqual else Dissimilar
+instance ObjectData TypePattern where
+  obj p = obj $ printable p $ matchable p $ fromForeign p
+  fromObj = defaultFromObj
 
--- | Evaluates to 'Prelude.True' only if the 'Similarity' value is 'Similar', and not 'ExactlyEqual'
--- or 'Dissimilar'.
-similarButNotEqual :: Similarity -> Bool
-similarButNotEqual o = case o of { Similar _ -> True; _ -> False; }
-
--- | Evaluates to 'Prelude.True' if the 'Similarity' valus is not 'Dissimilar', both 'Similar' and
--- 'ExactlyEqual' evaluate to 'Prelude.True'.
-isSimilar :: Similarity -> Bool
-isSimilar o = case o of { Dissimilar -> False; _ -> True; }
-
--- | This class allows you to define a fuzzy logic pattern matching predicate for your data type.
--- The data type must take an 'Object' as input and use data of your custom pattern type to decide
--- whether your pattern matches the 'Object'. You usually make use of 'fromObj' to convert the
--- 'Object' to a type which you can actually evaluate.
---
--- The 'Object' data type itself instantiates this class, in which case if 'matchable' has not been
--- defined for the data type stored in the 'Dao.Object.Object', 'objMatch' evaluates to
--- @('Prelude.==')@
-class ObjectPattern o where { objMatch :: o -> Object -> Similarity; }
-
-instance ObjectPattern Object where
-  objMatch a b = case a of
-    OForeign a' -> maybe (boolSimilar $ a==b) ($ b) (objPatternMatch a')
-    a           -> boolSimilar $ a==b
+-- | Use 'next' to take the next item from the current 'Query', evaluate the 'Data.Typeable.TypeRep'
+-- of the 'next' token using 'objTypeOf', compare this to the to the
+-- 'Data.Typeable.TypeRep' of @t@ inferred by 'Data.Typeable.typeOf'. Compare these two types using
+-- @('Prelude.==')@, and if 'Prelude.True' evaluate a function on it.  This function makes a new
+-- 'RuleTree' where the pattern in the branch is a 'TypePattern'. For example, if you pass a
+-- function to 'infer' which is of the type @('Prelude.String' -> 'Rule' m a)@, 'infer' will create
+-- a 'RuleTree' that matches if the token returned by 'next' can be cast to a value of
+-- 'Prelude.String'.
+infer
+  :: forall st t m a . (Functor m, Monad m, Typeable t, ObjectData t)
+  => (t -> Rule ErrorObject Object st m a) -> Rule ErrorObject Object st m a
+infer f = tree T.BreadthFirst [[obj $ typ f err]] just1 where
+  just1 ox = case ox of
+    [o] -> predicate (fmapPError RuleError $ fromObj o) >>= f
+    _   -> mzero
+  typ :: (t -> Rule ErrorObject Object st m a) -> t -> TypePattern
+  typ _ ~t = TypePattern $ typeOf t
+  err :: t
+  err = error "in Dao.Rule.infer: typeOf evaluated undefined"
 
 ----------------------------------------------------------------------------------------------------
 
@@ -303,23 +232,46 @@ printable :: PPrintable o => o -> Passport -> Passport
 printable o dat = dat{ objPrinted=pPrint o }
 
 -- | *'Foriegn' data, optional property.* If your data type can act as a pattern that can match
--- arbitrary objects using 'objMatch', consider modifying your instance of 'obj' to make use of this
+-- arbitrary objects using 'patternCompare', consider modifying your instance of 'obj' to make use of this
 -- function. The 'matchable' function lets you define a predicate that can match an arbitrary
--- 'Object'. Specifying 'matchable' will only make use of 'objMatch' for pattern matching, it will
+-- 'Object'. Specifying 'matchable' will only make use of 'patternCompare' for pattern matching, it will
 -- not be used for equality testing ('Prelude.==').
-matchable :: ObjectPattern o => o -> Passport -> Passport
-matchable o dat = dat{ objPatternMatch=Just (objMatch o) }
+matchable :: (ObjectData o, PatternClass o) => o -> Passport -> Passport
+matchable o dat =
+  dat { objPatternMatch = Just $ \p -> case fromObj p of
+          PTrue p -> patternCompare o p
+          _       -> Dissimilar
+      }
 
 ----------------------------------------------------------------------------------------------------
 
 -- | An 'ErrorObject' is itself just an 'Object', but usually it is good to make it something that
 -- is descriptive of the problem that occurred.
-type ErrorObject = [Object]
+newtype ErrorObject = ErrorObject (Array Object) deriving (Eq, Ord, Typeable)
+
+instance PPrintable ErrorObject where { pPrint (ErrorObject o) = elems o >>= pPrint; }
+
+instance Show ErrorObject where { show = showPPrint 4 80 . pPrint; }
+
+instance SimpleData ErrorObject where
+  simple (ErrorObject o) = simple o
+  fromSimple = fmap ErrorObject . fromSimple
+
+instance ObjectData ErrorObject where
+  obj = obj . simple
+  fromObj = fromObj >=> fromSimple
+
+errorObjectArray :: Monad m => Lens m ErrorObject (Array Object)
+errorObjectArray = newLens (\ (ErrorObject o) -> o) (\o _ -> ErrorObject o)
+
+-- | Construct an 'ErrorObject' from a list of 'Object's.
+objError :: [Object] -> ErrorObject
+objError = ErrorObject . array
 
 -- | Using this might be more convenient than always writing
 -- @'Control.Monad.Error.throwError' $ 'obj' ...)@.
 throwObject :: (MonadError ErrorObject m, ObjectData o) => o -> m err
-throwObject = throwError . return . obj
+throwObject = throwError . objError . return . obj
 
 -- | 'ErrorObject's thrown are usually error messages. This is a very simple kind of pretty-printer
 -- for printing 'ErrorObject's where strings are not quoted. That is, if you catch an error thrown
@@ -339,9 +291,10 @@ showUnquoted = showPPrint 4 100 . pprintUnquoted
 -- | Like 'showUnquoted' but outputs the error message as a more structured @['Dao.PPrint.PPrint']@
 -- value.
 pprintUnquoted :: ErrorObject -> [PPrint]
-pprintUnquoted ox = cleanSpaces $ ox >>= \o -> case runIdentity $ runPredicateT $ fromObj o of
-  PTrue o -> [pSpace, pText (o::Strict.Text), pSpace]
-  _       -> pPrint o
+pprintUnquoted (ErrorObject ox) = cleanSpaces $ elems ox >>= \o ->
+  case runIdentity $ runPredicateT $ fromObj o of
+    PTrue o -> [pSpace, pText (o::Strict.Text), pSpace]
+    _       -> pPrint o
 
 type T_int    = Int
 type T_long   = Integer
@@ -768,6 +721,11 @@ instance Monoid (Product Object) where
       OSimple b -> OSimple $ getProduct $ Product a <> Product b
       _         -> OSimple OVoid
     _         -> OSimple OVoid
+
+instance PatternClass Object where
+  patternCompare a b = case a of
+    OForeign a' -> maybe (boolSimilar $ a==b) ($ b) (objPatternMatch a')
+    a           -> boolSimilar $ a==b
 
 ----------------------------------------------------------------------------------------------------
 

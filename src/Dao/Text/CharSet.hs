@@ -140,3 +140,49 @@ csetBounds (CharSet cs) = Iv.toBoundedPair <$> Iv.intervalSpanAll (Iv.toList cs)
 csetRange :: CharSet -> [Char]
 csetRange (CharSet cs) = Iv.toBoundedPair <$> Iv.toList cs >>= range
 
+-- | The 'Dao.Text.CharSet.CharSet' for base-sixteen digits.
+csetBase16 :: CharSet
+csetBase16 = within [('0', '9'), ('A', 'F'), ('a', 'f')]
+
+-- | The 'Dao.Text.CharSet.CharSet' for base-eight digits.
+csetBase8 :: CharSet
+csetBase8 = within [('0', '7')]
+
+-- | The 'Dao.Text.CharSet.CharSet' for base-ten digits.
+csetBase10 :: CharSet
+csetBase10 = within [('0', '9')]
+
+-- | A 'Dao.Text.CharSet.CharSet' for uppercase characters.
+uppercase :: CharSet
+uppercase = within [('A', 'Z')]
+
+-- | A 'Dao.Text.CharSet.CharSet' for uppercase characters including the underscore character.
+uppercase_ :: CharSet
+uppercase_ = within [('A', 'Z'), ('_', '_')]
+
+-- | A 'Dao.Text.CharSet.CharSet' for lowercase characters.
+lowercase :: CharSet
+lowercase = within [('a', 'z')]
+
+-- | A 'Dao.Text.CharSet.CharSet' for lowercase characters including the underscore character.
+lowercase_ :: CharSet
+lowercase_ = within [('a', 'z'), ('_', '_')]
+
+-- | A 'Dao.Text.CharSet.CharSet' for alphabetical (both 'uppercase' and 'lowercase') characters.
+alphabetical :: CharSet
+alphabetical = uppercase <> lowercase
+
+-- | A 'Dao.Text.CharSet.CharSet' for alphabetical (both 'uppercase' and 'lowercase') characters.
+alphabetical_ :: CharSet
+alphabetical_ = uppercase <> lowercase_
+
+-- | A 'Dao.Text.CharSet.CharSet' for 'alphabetical' and 'csetBase10' characters.
+alphanumerical :: CharSet
+alphanumerical = alphabetical <> csetBase10
+
+-- | A 'Dao.Text.CharSet.CharSet' for 'alphabetical' and 'csetBase10' characters including the
+-- underscore character.
+alphanumerical_ :: CharSet
+alphanumerical_ = alphabetical_ <> csetBase10
+
+

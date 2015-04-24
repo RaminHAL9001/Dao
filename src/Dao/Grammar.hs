@@ -69,6 +69,20 @@ module Dao.Grammar
     grammarToParser,
     -- * Working with Source Locations
     backtrack, getPoint, setPoint, newline, movePoint, moveCursor,
+    -- * Essential Tokenizers
+    -- $Essential_tokenizers
+    SpaceToken(SpaceToken), NewLineToken(NewLineToken), CInlineComment(CInlineComment),
+    CEndlineComment(CEndlineComment), CIdentifier(CIdentifier),
+    IntLitTokenLens(intLitToken),
+    PosNeg(PosNeg), prependSign, posNegNum, posNegSign,
+    ExponentLitToken(ExponentLitToken),
+    exponentTokenLens, exponentTokenCapitalE, exponentTokenPosNeg,
+    HexIntLitToken(HexIntLitToken),
+    OctIntLitToken(OctIntLitToken),
+    DecIntLitToken(DecIntLitToken),
+    NumberLitToken(DecIntNumberLit, HexIntNumberLit, IntExponentLit, DecimalPointLit),
+    decimalPointedNumberToken, exponentLiteralToken,
+    CNumberLit(CNumberLit, COctIntNumberLit), cDecimalPoint, cExponent,
     -- * Re-Exported Modules
     module Dao.Text.CharSet,
     module Dao.Text.Regex,
@@ -77,6 +91,7 @@ module Dao.Grammar
   where
 
 import           Dao.Array
+import           Dao.Class
 import           Dao.Lens
 import           Dao.Predicate
 import           Dao.TestNull
@@ -88,15 +103,20 @@ import           Dao.Text.Regex
 
 import           Control.Arrow
 import           Control.Applicative
+import           Control.DeepSeq
 import           Control.Monad
 import           Control.Monad.Fix
 import           Control.Monad.Trans
 
+import           Data.Char
 import           Data.List (nub, sortBy)
+import           Data.Maybe
 import           Data.Monoid
 import qualified Data.Text.Lazy as Lazy
 import qualified Data.Text      as Strict
 import           Data.Typeable
+
+import           Numeric
 
 ----------------------------------------------------------------------------------------------------
 
@@ -395,7 +415,7 @@ grammarBranches o = case o of
 --
 -- > 'integer' `elseFail` "integer value is required here"
 --
-elseFail :: (Monad m, MonadPlus m) => Grammar m o -> String -> Grammar m o
+elseFail :: Monad m => Grammar m o -> String -> Grammar m o
 elseFail p = mplus p . GrFail . Strict.pack
 
 -- | Inspired by the @Parsec@ package, this is the infix operator of 'elseFail'. In Haskell code, it
@@ -588,4 +608,482 @@ moveCursor toPoint f = do
   let after = toPoint o
   setPoint $ with after [lineNumber $= ((before~>lineNumber) +)]
   return o
+
+----------------------------------------------------------------------------------------------------
+
+-- $Essential_tokenizers
+-- It is common practice to use 'Grammar's to generate tokenizers that produce token streams, and
+-- then use 'Dao.Predicate.PredicateState' or 'Dao.Logic.LogicT' to define a actual grammar over the
+-- token stream.
+--
+-- Many tokenizers for many languages have a lot in common, especially the tokenizers for the C
+-- family of languages. Provided here are some 'Grammar's that could produce a stream of tokens for
+-- some of the most fundamental token types. These include newlines, whitespaces (for tab
+-- indentation), integers and floating-point number literals, string literals, and character
+-- literals.
+
+-- | This token type is produced when a whitespace that is not a newline is picked up during
+-- scanning. Carriage return characters @'\r'@ are considered ordinary whitespace.
+newtype SpaceToken = SpaceToken StrictText deriving (Eq, Ord, Typeable)
+instance ToText SpaceToken where { toText (SpaceToken o) = o; }
+instance StringLength SpaceToken where { stringLength = stringLength . toText; }
+instance Show SpaceToken where { show = show . toText; }
+instance PPrintable SpaceToken where { pPrint = return . pText . toText; }
+instance NFData SpaceToken where { rnf (SpaceToken o) = deepseq o (); }
+instance Monad m => The (Grammar m SpaceToken) where
+  the = grammarTyped $ grammar [lexer (SpaceToken . Lazy.toStrict) [rx (anyOf "\t\v\f ", MIN 1)]]
+
+-- | This token type is produced when any newline characters @'\n'@, @'\r'@, @"\n\r"@, or @"\r\n"@
+-- are picked up during scanning.
+newtype NewLineToken = NewLineToken () deriving (Eq, Ord, Typeable)
+instance ToText NewLineToken where { toText (NewLineToken ()) = Strict.singleton '\n'; }
+instance StringLength NewLineToken where { stringLength = stringLength . toText; }
+instance Show NewLineToken where { show = show . toText; }
+instance PPrintable NewLineToken where { pPrint = return . pText . toText; }
+instance NFData NewLineToken where { rnf (NewLineToken o) = seq o o; }
+instance Monad m => The (Grammar m NewLineToken) where
+  the = grammarTyped $ grammar [lexConst (NewLineToken ()) [rx "\n\r", rx "\r\n", rx $ anyOf "\n\r"]]
+
+-- | This is a C programming language styled inline comment: @/* comment text */@.
+newtype CInlineComment = CInlineComment StrictText deriving (Eq, Ord, Typeable)
+instance ToText CInlineComment where { toText (CInlineComment o) = o; }
+instance StringLength CInlineComment where { stringLength = stringLength . toText; }
+instance Show CInlineComment where { show = show . toText; }
+instance PPrintable CInlineComment where { pPrint = return . pText . toText; }
+instance NFData CInlineComment where { rnf (CInlineComment o) = deepseq o (); }
+instance Monad m => The (Grammar m CInlineComment) where
+  the = grammarTyped $ liftM (CInlineComment . Lazy.toStrict) $ do
+    let asterisks    = rx ('*', MIN 1)
+    let slash        = rx  '/'
+    let notAsterisks = rx (noneOf "*", MIN 0)
+    let loop     str = mplus (liftM (mappend str) $ grammar [lexer id [slash]]) $
+          liftM (mappend str) (grammar [lexer id [notAsterisks, asterisks]]) >>= loop
+    grammar [lexer id [slash, asterisks]] >>= loop
+
+-- | This is a C programming language styled end-of-line comment: @// comment text@.
+newtype CEndlineComment = CEndlineComment StrictText deriving (Eq, Ord, Typeable)
+instance ToText CEndlineComment where { toText (CEndlineComment o) = o; }
+instance StringLength CEndlineComment where { stringLength = stringLength . toText; }
+instance Show CEndlineComment where { show = show . toText; }
+instance PPrintable CEndlineComment where { pPrint = return . pText . toText; }
+instance NFData CEndlineComment where { rnf (CEndlineComment o) = deepseq o (); }
+instance Monad m => The (Grammar m CEndlineComment) where
+  the = grammarTyped $
+    grammar [lexer (CEndlineComment . Lazy.toStrict) [rx "//", rx (noneOf "\n", MIN 0)]]
+
+-- | This is a C programming language style identifier, these are names starting with any
+-- alphabetic or underscore characters, and containing any number of alphanumeric or underscore
+-- characters.
+newtype CIdentifier = CIdentifier StrictText deriving (Eq, Ord, Typeable)
+instance ToText CIdentifier where { toText (CIdentifier o) = o; }
+instance StringLength CIdentifier where { stringLength = stringLength . toText; }
+instance Show CIdentifier where { show = show . toText; }
+instance PPrintable CIdentifier where { pPrint = return . pText . toText; }
+instance NFData CIdentifier where { rnf (CIdentifier o) = deepseq o (); }
+instance Monad m => The (Grammar m CIdentifier) where
+  the = let underscore = mappend (anyOf "_") in grammarTyped $ grammarTable $ grammar $
+    [ lexer (CIdentifier . Lazy.toStrict) $
+        [ rx (underscore alphabetical, MIN 1)
+        , rx (underscore alphanumerical, MIN 0)
+        ]
+    ]
+
+----------------------------------------------------------------------------------------------------
+
+-- | This is a class providing the 'intLitToken' method, which is a 'Dao.Lens.Lens' method for accessing
+-- and modifying an integer value token string.
+class IntLitTokenLens o where { intLitToken :: Monad m => Lens m o Integer; }
+
+-- | This is a token for an optional positive or negative sign prefix.
+newtype PosNeg = PosNeg Ordering deriving (Eq, Ord, Typeable)
+instance TestNull PosNeg where { nullValue = PosNeg EQ; testNull (PosNeg o) = o==EQ; }
+instance ToText PosNeg where { toText = flip (prependSign Strict.cons) mempty; }
+instance StringLength PosNeg where { stringLength = stringLength . toText; }
+instance PPrintable PosNeg where { pPrint = return . pText . toText; }
+instance NFData PosNeg where { rnf (PosNeg o) = seq o (); }
+instance Show PosNeg where { show = flip (prependSign (:)) ""; }
+instance Monad m => The (Grammar m PosNeg) where
+  the =
+    let f c = PosNeg $
+          if c == Lazy.singleton '+' then GT else
+            if c == Lazy.singleton '-' then LT else EQ
+    in  grammarTyped $ grammar [lexer f [rx (anyOf "+-", MAX 1)]]
+
+-- | This function prepends a sign character (@'+'@, @'-'@, or nothing) to a string-like value based
+-- on the contents of the 'PosNeg' value given. For example, if you have a 'PosNeg' value
+-- @'PosNeg' 'Prelude.GT'@
+-- and would like to update a 'Prelude.String' to include a sign character based on this 'PosNeg'
+-- value, you could call this function like so:
+--
+-- @
+-- 'prependSign' (:) ('PosNeg' 'Prelude.GT') "12345"
+-- @
+prependSign :: (Char -> o -> o) -> PosNeg -> o -> o
+prependSign cons (PosNeg o) = case o of { EQ -> id; GT -> cons '+'; LT -> cons '-'; }
+
+-- | This function will negate a 'Prelude.Num' number @n@ if the given 'PosNeg' is
+-- @('PosNeg' 'Prelude.LT')@.
+posNegNum :: Num n => PosNeg -> n -> n
+posNegNum (PosNeg o) = if o==LT then negate else id
+
+-- | This function will create a 'PosNeg' data type based on the sign of the given
+-- 'Prelude.Num' number n.
+posNegSign :: (Num n, Ord n) => n -> PosNeg
+posNegSign = PosNeg . compare 0
+
+-- | Part of a 'NumberLitToken' after a decimal point, for example after a @1.0@ there may be an
+-- exponent like @1.0e-12@, or @1.0E9@. This contains the @'e'@ and the sign, and the exponent
+-- characters.
+newtype ExponentLitToken = ExponentLitToken (Bool, PosNeg, StrictText) deriving (Eq, Ord, Typeable)
+instance Show ExponentLitToken where { show = show . toText; }
+instance PPrintable ExponentLitToken where { pPrint = return . pText . toText; }
+instance NFData ExponentLitToken where { rnf (ExponentLitToken o) = deepseq o (); }
+instance StringLength ExponentLitToken where { stringLength = stringLength . toText; }
+
+instance ToText ExponentLitToken where
+  toText (ExponentLitToken (e, sign, txt)) =
+    Strict.cons (if e then 'E' else 'e') . prependSign Strict.cons sign $ txt
+
+instance TestNull ExponentLitToken where
+  testNull (ExponentLitToken (_, _, txt)) = Strict.null txt || txt == Strict.singleton '0'
+  nullValue = ExponentLitToken (False, nullValue, Strict.singleton '0')
+
+instance IntLitTokenLens ExponentLitToken where
+  intLitToken = newLens
+    (\  (ExponentLitToken (_, pos, txt)) -> posNegNum pos $ read (Strict.unpack txt))
+    (\i (ExponentLitToken (e, _  , _  )) -> ExponentLitToken (e, posNegSign i, Strict.pack $ show $ abs i))
+
+instance Monad m => The (Grammar m ExponentLitToken) where
+  the = let mk e s d = ExponentLitToken (e == Lazy.singleton 'E', s, d) in grammarTyped $
+    (grammar [lexer mk [rx $ anyOf "Ee"]] `ap` (the :: Grammar m PosNeg)) `ap`
+      grammar [lexer Lazy.toStrict [rx (within [('0', '9')], MIN 1)]]
+
+-- | A 'Dao.Lens.Lens' for the contents of the 'ExponentLitToken'.
+exponentTokenLens :: Monad m => Lens m ExponentLitToken (Bool, PosNeg, StrictText)
+exponentTokenLens = newLens (\ (ExponentLitToken o) -> o) (\o _ -> ExponentLitToken o)
+
+-- | A 'Dao.Lens.Lens' for the 'Prelude.Bool' value indicating whether the exponent was a positive
+-- letter @E@. For example in the number @6.02213665168E23@ has a capital letter @E@ indicating the
+-- exponent. Conversely, the number @6.02213665168e23@ has a lowercase letter @e@ indicating the
+-- exponent.
+exponentTokenCapitalE :: Monad m => Lens m ExponentLitToken Bool
+exponentTokenCapitalE = exponentTokenLens >>> tuple0
+
+-- | A 'Dao.Lens.Lens' indicating the sign of the exponent, for example the sign of the exponent
+-- @23@ in the number @6.02213665168e+23@, or the sign of the number @-15@ in the
+-- exponent @4.135667516e-15@.
+exponentTokenPosNeg :: Monad m => Lens m ExponentLitToken PosNeg
+exponentTokenPosNeg = exponentTokenLens >>> tuple1
+
+-- | A hexadecimal integer literal is a base-sixteen number with the prefix @0x@ or @0X@.
+newtype HexIntLitToken = HexIntLitToken Strict.Text deriving (Eq, Ord, Typeable)
+instance ToText HexIntLitToken where { toText (HexIntLitToken o) = o; }
+instance StringLength HexIntLitToken where { stringLength = stringLength . toText; }
+instance PPrintable HexIntLitToken where { pPrint = return . pText . toText; }
+instance NFData HexIntLitToken where { rnf (HexIntLitToken o) = deepseq o (); }
+instance Show HexIntLitToken where { show = show . toText; }
+
+instance TestNull HexIntLitToken where
+  testNull (HexIntLitToken o) = and $ ('0' ==) <$> Strict.unpack o
+  nullValue = HexIntLitToken $ Strict.pack "0"
+
+instance IntLitTokenLens HexIntLitToken where
+  intLitToken = newLens
+    (\  (HexIntLitToken o) -> case readHex $ Strict.unpack o of
+          [(o, "")] -> o
+          _ -> error $ "could not parse hexadecimal integer literal "++show o
+    )
+    (\i _ -> HexIntLitToken $ Strict.pack $ "0x" ++ fmap toUpper (showHex i ""))
+
+instance Monad m => The (Grammar m HexIntLitToken) where
+  the = let rxhex = rx (csetBase16, MIN 1) in liftM (HexIntLitToken . Lazy.toStrict . Lazy.drop 2) $
+    grammarTyped $ grammar [lexer id [rx "0x", rxhex], lexer id [rx "0X", rxhex]]
+
+----------------------------------------------------------------------------------------------------
+
+-- | An octal integer literal is a base-eight number that always begins with the digit @'0'@. Note that
+-- the Haskell does not support octal integer literals, but the C family of programming languages do.
+newtype OctIntLitToken = OctIntLitToken Strict.Text deriving (Eq, Ord, Typeable)
+instance ToText OctIntLitToken where { toText (OctIntLitToken o) = o; }
+instance StringLength OctIntLitToken where { stringLength = stringLength . toText; }
+instance Show OctIntLitToken where { show = show . toText; }
+instance PPrintable OctIntLitToken where { pPrint = return . pText . toText; }
+instance NFData OctIntLitToken where { rnf (OctIntLitToken o) = deepseq o (); }
+
+instance TestNull OctIntLitToken where
+  testNull (OctIntLitToken o) = and $ ('0' ==) <$> Strict.unpack o
+  nullValue = OctIntLitToken $ Strict.singleton '0'
+
+instance IntLitTokenLens OctIntLitToken where
+  intLitToken = newLens
+    (\  (OctIntLitToken o) -> case readOct $ Strict.unpack o of
+          [(o, "")] -> o
+          _ -> error $ "could not parse octal integer literal "++show o
+    )
+    (\i _ -> OctIntLitToken $ Strict.pack $ '0' : showOct i "")
+
+instance Monad m => The (Grammar m OctIntLitToken) where
+  the = grammarTyped $ grammar [lexConst () [rx '0']] >>
+    grammar [lexer (OctIntLitToken . Lazy.toStrict) [rx (csetBase8, MIN 1)]]
+
+----------------------------------------------------------------------------------------------------
+
+-- | A decimal integer literal is a base-ten number consisting of the digits 0-9, but not starting
+-- with a leading @'0'@ digit unless the number is zero. If it starts with a leading @'0'@ digit it
+-- could (in the C programming language family) indicate a base-8 integer literal. In the Haskell
+-- language family, any string of base-10 digits is a decimal integer literal, regardless of whether
+-- it has leading @'0'@ digits.
+newtype DecIntLitToken = DecIntLitToken Strict.Text deriving (Eq, Ord, Typeable)
+instance ToText DecIntLitToken where { toText (DecIntLitToken o) = o; }
+instance StringLength DecIntLitToken where { stringLength = stringLength . toText; }
+instance Show DecIntLitToken where { show = show . toText; }
+instance PPrintable DecIntLitToken where { pPrint = return . pText . toText; }
+instance NFData DecIntLitToken where { rnf (DecIntLitToken o) = deepseq o (); }
+instance TestNull DecIntLitToken where
+  testNull (DecIntLitToken o) = and $ ('0' ==) <$> Strict.unpack o
+  nullValue = DecIntLitToken $ Strict.pack "0"
+
+instance IntLitTokenLens DecIntLitToken where
+  intLitToken = newLens
+    (\  (DecIntLitToken o) -> case reads $ Strict.unpack o of
+          [(o, "")] -> o
+          _ -> error $ "could not parse integer literal "++show o
+    )
+    (\i _ -> DecIntLitToken $ Strict.pack $ show i)
+
+instance Monad m => The (Grammar m DecIntLitToken) where
+  the = grammarTyped $ grammar [lexer (DecIntLitToken . Lazy.toStrict) [rx (csetBase10, MIN 1)]]
+
+----------------------------------------------------------------------------------------------------
+
+-- | A non-C programming language family numerical literal, including ordinary integers, floating
+-- point numbers, hexadecimal integers, but not octal integers. The 'CNumberLit' data type includes
+-- a union of this data type along with 'OctIntLitToken's.
+data NumberLitToken
+  = DecIntNumberLit DecIntLitToken
+  | HexIntNumberLit HexIntLitToken
+  | IntExponentLit  DecIntLitToken ExponentLitToken
+  | DecimalPointLit (Maybe DecIntLitToken) DecIntLitToken (Maybe ExponentLitToken)
+  deriving (Eq, Ord, Typeable)
+
+-- | Get or set the integer portion of the 'NumberLitToken'. In the case of a decimal point, only the
+-- part before the decimal point is modified.
+instance IntLitTokenLens NumberLitToken where
+  intLitToken =
+    newLens
+      (\  o -> case o of
+          DecIntNumberLit o     -> o~>intLitToken
+          HexIntNumberLit o     -> o~>intLitToken
+          IntExponentLit  o   _ -> o~>intLitToken
+          DecimalPointLit o _ _ -> maybe 0 (~> intLitToken) o
+      )
+      (\i o -> case o of
+          DecIntNumberLit o     -> DecIntNumberLit $ with o [intLitToken <~ i]
+          HexIntNumberLit o     -> HexIntNumberLit $ with o [intLitToken <~ i]
+          IntExponentLit  o   e -> IntExponentLit (with o [intLitToken <~ i]) e
+          DecimalPointLit o d e ->
+            DecimalPointLit (Just $ by [intLitToken <~ i] $ fromMaybe nullValue o) d e
+      )
+
+instance ToText NumberLitToken where
+  toText o = Lazy.toStrict $ Lazy.fromChunks $ case o of
+    DecIntNumberLit o     -> [toText o]
+    HexIntNumberLit o     -> [Strict.pack "0x", toText o]
+    IntExponentLit  o e   -> [toText o, toText e]
+    DecimalPointLit o d e ->
+      [ maybe (Strict.singleton '0') toText o
+      , Strict.singleton '.', toText d
+      , maybe mempty toText e
+      ]
+
+instance StringLength NumberLitToken where { stringLength = stringLength . toText; }
+
+instance PPrintable NumberLitToken where { pPrint = return . pText . toText; }
+
+instance Show NumberLitToken where { show = show . toText; }
+
+instance NFData NumberLitToken where
+  rnf o = case o of
+    DecIntNumberLit o     -> deepseq o ()
+    HexIntNumberLit o     -> deepseq o ()
+    IntExponentLit  a b   -> deepseq a $! deepseq b ()
+    DecimalPointLit a b c -> deepseq a $! deepseq b $! deepseq c ()
+
+instance Monad m => The (Grammar m NumberLitToken) where
+  the = grammarTyped $ grammarTable $ msum $
+    [ the >>= \ (DecIntLitToken o) -> msum
+        [ liftM (IntExponentLit $ DecIntLitToken o) the
+        , liftM2 (DecimalPointLit $ Just $ DecIntLitToken o)
+                 (grammar [lexConst () [rx '.']] >> the)
+                 (mplus (liftM Just the) $ return Nothing)
+        ]
+    , liftM HexIntNumberLit the
+    , liftM2 (DecimalPointLit Nothing)
+             (grammar [lexConst () [rx '.']] >> the)
+             (mplus (liftM Just the) $ return Nothing)
+    ]
+
+-- | Retrieve or update a 'DecIntLitToken' within a 'NumberLitToken' if it exists.
+decimalPointedNumberToken :: Monad m => Lens m NumberLitToken (Maybe DecIntLitToken)
+decimalPointedNumberToken = newLens
+  (\  o -> case o of
+      DecimalPointLit _ o _ -> Just o
+      _                      -> Nothing
+  )
+  (\d o -> case d of
+      Nothing -> case o of
+        DecimalPointLit o' _ e ->
+          let o = fromMaybe nullValue o' in maybe (DecIntNumberLit o) (IntExponentLit o) e
+        _                       -> o
+      Just  d -> case o of
+        DecIntNumberLit o     -> DecimalPointLit (Just o) d Nothing
+        HexIntNumberLit o     -> DecimalPointLit (Just $ new [intLitToken <~ o~>intLitToken]) d Nothing
+        IntExponentLit  o   e -> DecimalPointLit (Just o) d (Just e)
+        DecimalPointLit o _ e -> DecimalPointLit o d e
+  )
+
+-- | Retrieve or update a 'ExponentLitToken' within a 'NumberLitToken' if it exists.
+exponentLiteralToken :: Monad m => Lens m NumberLitToken (Maybe ExponentLitToken)
+exponentLiteralToken = newLens
+  (\  o -> case o of
+      IntExponentLit  _   e -> Just e
+      DecimalPointLit _ _ e -> e
+      _                      -> Nothing
+  )
+  (\e o -> case e of
+      Nothing -> case o of
+        DecimalPointLit o d _ -> DecimalPointLit o d Nothing
+        IntExponentLit  o   _ -> DecIntNumberLit o
+        _                      -> o
+      Just  e -> case o of
+        DecIntNumberLit o     -> IntExponentLit  o          e
+        HexIntNumberLit o     -> IntExponentLit (new [intLitToken <~ o~>intLitToken]) e
+        DecimalPointLit o d _ -> DecimalPointLit o  d (Just e)
+        IntExponentLit  o   _ -> IntExponentLit  o          e
+  )
+
+----------------------------------------------------------------------------------------------------
+
+-- | A C programming language family numerical literal, including ordinary integers, floating point
+-- numbers, hexadecimal integers, and octal integers. The 'CNumberLit' data type is a union of this
+-- data type along with 'OctIntLitToken's.
+data CNumberLit
+  = CNumberLit       NumberLitToken
+  | COctIntNumberLit OctIntLitToken
+  deriving (Eq, Ord, Typeable)
+
+-- | Get or set the integer portion of the 'CNumberLit'. In the case of a decimal point, only the
+-- part before the decimal point is modified.
+instance IntLitTokenLens CNumberLit where
+  intLitToken =
+    newLens
+      (\  o -> case o of
+          CNumberLit       o -> o~>intLitToken
+          COctIntNumberLit o -> o~>intLitToken
+      )
+      (\i o -> case o of
+          CNumberLit       o -> CNumberLit       $ with o [intLitToken <~ i]
+          COctIntNumberLit o -> COctIntNumberLit $ with o [intLitToken <~ i]
+      )
+
+instance ToText CNumberLit where
+  toText o = Lazy.toStrict $ Lazy.fromChunks $ case o of
+    CNumberLit       o -> [toText o]
+    COctIntNumberLit o -> [Strict.singleton '0', toText o]
+
+instance StringLength CNumberLit where { stringLength = stringLength . toText; }
+
+instance PPrintable CNumberLit where { pPrint = return . pText . toText; }
+
+instance Show CNumberLit where { show = show . toText; }
+
+instance NFData CNumberLit where
+  rnf o = case o of
+    CNumberLit       o -> deepseq o ()
+    COctIntNumberLit o -> deepseq o ()
+
+instance Monad m => The (Grammar m CNumberLit) where
+  the = grammarTyped $ grammarTable $ msum $
+    [ the >>= \ (DecIntLitToken o) -> msum
+        [ liftM (CNumberLit . IntExponentLit (DecIntLitToken o)) the
+        , liftM CNumberLit $
+            liftM2 (DecimalPointLit $ Just $ DecIntLitToken o)
+              (grammar [lexConst () [rx '.']] >> the)
+              (mplus (liftM Just the) $ return Nothing)
+        , return $ case Strict.unpack o of
+            '0':c:cx | and (csetMember csetBase8 <$> c:cx) -> COctIntNumberLit $ OctIntLitToken o
+            _ -> CNumberLit $ DecIntNumberLit $ DecIntLitToken o
+        ]
+    , liftM (CNumberLit . HexIntNumberLit) the
+    , liftM CNumberLit $
+        liftM2 (DecimalPointLit Nothing)
+               (grammar [lexConst () [rx '.']] >> the)
+               (mplus (liftM Just the) $ return Nothing)
+    ]
+
+-- | Retrieve or update a 'DecIntLitToken' within a 'CNumberLit' if it exists.
+cDecimalPoint :: Monad m => Lens m CNumberLit (Maybe DecIntLitToken)
+cDecimalPoint = newLens
+  (\  o -> case o of
+      CNumberLit o -> o~>decimalPointedNumberToken
+      _            -> Nothing
+  )
+  (\d o -> case o of
+      CNumberLit o -> CNumberLit $ with o [decimalPointedNumberToken <~ d]
+      _            -> o
+  )
+
+-- | Retrieve or update a 'ExponentLitToken' within a 'CNumberLit' if it exists.
+cExponent :: Monad m => Lens m CNumberLit (Maybe ExponentLitToken)
+cExponent = newLens
+  (\  o -> case o of
+      CNumberLit o -> o~>exponentLiteralToken
+      _            -> Nothing
+  )
+  (\d o -> case o of
+      CNumberLit o -> CNumberLit $ with o [exponentLiteralToken <~ d]
+      _            -> o
+  )
+
+----------------------------------------------------------------------------------------------------
+
+-- | Used for parsing things like string literal, where you have a single character delimiting both
+-- the start and end of the token, and a single escape character to allow for accepting a delimiter
+-- character into the token. The first parameter is an error message to use to report when the token
+-- exceeds the end of the parser's input string without finding an end delimiter.
+escapedDelimited :: Monad m => String -> Char -> Char -> Grammar m Lazy.Text
+escapedDelimited errmsg delim esc = grammar [lexer id [rx delim]] >>= loop where
+  loop str = grammar [lexer id [rx (noneOf [delim, esc], MIN 0)]] >>= \nondelim ->
+    flip elseFail (errmsg++" not delimited by closing "++show delim) $ do
+      escDelim <- grammar [lexer id [rx $ anyOf [delim, esc]]]
+      str <- return $ str <> nondelim <> escDelim
+      if Lazy.unpack escDelim == [esc]
+      then grammar [lexer id [rx anyChar]] >>= loop . (str <>)
+      else return (str <> escDelim)
+
+-- | This is a double-quoted string literal, that is a string literal delimited by an opening and
+-- closing double-quote character: @(")@. Tokens of this kind typically represent string literals in
+-- both Haskell and the C family of programming languages.
+newtype Quoted2Token = Quoted2Token StrictText deriving (Eq, Ord, Typeable)
+instance ToText Quoted2Token where { toText (Quoted2Token o) = o; }
+instance StringLength Quoted2Token where { stringLength = stringLength . toText; }
+instance PPrintable Quoted2Token where { pPrint = return . pText . toText; }
+instance Show Quoted2Token where { show = show . toText; }
+instance NFData Quoted2Token where { rnf (Quoted2Token o) = deepseq o (); }
+instance Monad m => The (Grammar m Quoted2Token) where
+  the = liftM (Quoted2Token . Lazy.toStrict) (escapedDelimited "string literal" '"' '\\')
+
+-- | This is a single-quoted string literal, that is a string literal delimited by an opening and
+-- closing single-quote character: @(')@. Tokens of this kind typically represent character literals
+-- in both Haskell and the C family of programming languages, however in other languages, like Bash
+-- or Python these string literals also represent string data types.
+newtype Quoted1Token = Quoted1Token StrictText deriving (Eq, Ord, Typeable)
+instance ToText Quoted1Token where { toText (Quoted1Token o) = o; }
+instance StringLength Quoted1Token where { stringLength = stringLength . toText; }
+instance PPrintable Quoted1Token where { pPrint = return . pText . toText; }
+instance Show Quoted1Token where { show = show . toText; }
+instance NFData Quoted1Token where { rnf (Quoted1Token o) = deepseq o (); }
+instance Monad m => The (Grammar m Quoted1Token) where
+  the = grammarTyped $
+    liftM (Quoted1Token . Lazy.toStrict) $ escapedDelimited "string literal" '\'' '\\'
 

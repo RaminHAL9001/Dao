@@ -45,25 +45,27 @@
 -- this is how @make@ knows which files have changed and need to re-built. Naturally, there is no
 -- such restriction in the "Dao.Rule".
 module Dao.Rule
-  ( -- * The 'Query' type
+  ( -- * The 'Query' Type
     Query, QueryState(QueryState), queryStateTuple,
     querySubState, queryWeight, queryIndex, queryInput,
     -- * Patterns for Matching Tokens
-    PatternClass(patternCompare),
+    PatternClass(patternCompare), patternFromEq,
     Similarity(Dissimilar, Similar, ExactlyEqual), boolSimilar, similarButNotEqual, isSimilar,
     Dissimilarity(Dissimilarity), getSimilarity,
     -- * Production Rules: the 'Rule' Monad
-    Rule, evalRuleLogic, queryAll, query, query1, next, part, remainder, done,
-    -- * The Throwable and Catchable Data Type
-    RuleError(RuleFail, RuleError), pPrintRuleErrorWith,
-    bestMatch, resetScore,
-    -- * The Branch Structure of a Rule
+    Rule, evalRuleLogic, queryAll, query, query1,
+    -- * Constructing 'Rule's
+    next, part, remainder, done,
     -- $Structure_of_a_rule
     RuleStruct, tree, struct, ruleTree, getRuleStruct, trim, mask,
+    -- * Fine-Tuning the Evaluation of Your 'Rule's
+    prunePaths, bestMatch, resetScore,
+    -- * The Throwable and Catchable Data Type
+    RuleError(RuleFail, RuleError), pPrintRuleErrorWith,
     -- * Predicting User Input
     PartialQueryResult(PartialQueryResult),
-    partialQuery, resumePartialQuery, partialQueryResultTuple, guesses, guessPartial,
-    partialQueryResults, partialQueryBranches, partialQueryNextSteps,
+    partialQueryResultTuple, partialQueryResults, partialQueryBranches, partialQueryNextSteps,
+    partialQuery, resumePartialQuery, guesses, guessPartial,
     RuleAltEvalPath,
     -- * Re-export the "Dao.Logic" module.
     module Dao.Logic
@@ -89,6 +91,7 @@ import           Control.Monad.Except
 import           Data.Dynamic
 import           Data.Either
 import           Data.List
+import           Data.Maybe
 import           Data.Monoid
 import qualified Data.Map as M
 import           Data.Ratio
@@ -239,6 +242,8 @@ similarButNotEqual o = case o of { Similar _ -> True; _ -> False; }
 isSimilar :: Similarity -> Bool
 isSimilar o = case o of { Dissimilar -> False; _ -> True; }
 
+----------------------------------------------------------------------------------------------------
+
 -- | This class allows you to define a fuzzy logic pattern matching predicate for your data type.
 -- The data type must take an 'Object' as input and use data of your custom pattern type to decide
 -- whether your pattern matches the 'Object'. You usually make use of 'fromObj' to convert the
@@ -248,6 +253,37 @@ isSimilar o = case o of { Dissimilar -> False; _ -> True; }
 -- defined for the data type stored in the 'Dao.Object.Object', 'patternCompare' evaluates to
 -- @('Prelude.==')@
 class PatternClass o where { patternCompare :: o -> o -> Similarity; }
+instance PatternClass () where { patternCompare=patternFromEq; }
+instance PatternClass Int  where { patternCompare=patternFromEq; }
+instance PatternClass Char   where { patternCompare=patternFromEq; }
+instance PatternClass Float    where { patternCompare=patternFromEq; }
+instance PatternClass Double     where { patternCompare=patternFromEq; }
+instance PatternClass Integer      where { patternCompare=patternFromEq; }
+instance PatternClass TypeRep        where { patternCompare=patternFromEq; }
+instance PatternClass LazyText         where { patternCompare=patternFromEq; }
+instance PatternClass StrictText         where { patternCompare=patternFromEq; }
+instance PatternClass Similarity           where { patternCompare=patternFromEq; }
+instance Eq a => PatternClass [a]            where { patternCompare=patternFromEq; }
+instance Eq a => PatternClass (Maybe a)        where { patternCompare=patternFromEq; }
+instance Eq a => PatternClass (Ratio a)          where { patternCompare=patternFromEq; }
+instance (Eq a, Eq b) => PatternClass (M.Map a b)  where { patternCompare=patternFromEq; }
+instance (Eq a, Eq b) => PatternClass (T.Tree a b)   where { patternCompare=patternFromEq; }
+instance (Eq a, Eq b) => PatternClass (Either a b)     where { patternCompare=patternFromEq; }
+
+-- | Automatically derive a function that can be used to instantiate your type @t@ into the
+-- 'PatternClass' by making use of the type @t@'s instantiation of the 'Prelude.Eq' class.
+--
+-- Use this when you want to use 'query', 'query1', or 'queryAll' to evaluate a 'Rule' that returns
+-- your type @t@. For use with these function, @t@ needs to instantiate 'PatternClass'. If your type
+-- @t@ doesn't need to return a fuzzy similarity value, you can just use this function to quickly
+-- instantiate 'PatternClass'. For example:
+--
+-- @
+-- newtype MyBoolean = MyBoolean 'Prelude.Bool' deriving 'Prelude.Eq'
+-- instance 'PatternClass' MyBoolean where { patternCompare = patternFromEq; }
+-- @
+patternFromEq :: Eq t => t -> t -> Similarity
+patternFromEq a b = if a==b then Similar 1.0 else Dissimilar
 
 ----------------------------------------------------------------------------------------------------
 
@@ -288,13 +324,13 @@ pPrintRuleErrorWith prin err = case err of
 -- backtracks. Evaluating 'Control.Monad.return' indicates a success, and the returned
 -- token is used as the result of the production.
 --
--- The 'Rule' monad instantiates 'Control.Monad.Except.Class.MonadError' such that
--- errors can be thrown and caught. The 'Rule' monad instantiates
--- 'Dao.Logic.MonadLogic' so it is possible to pattern match with many
--- 'Control.Applicative.Alternative' branches of evaluation without having to worry about the
--- current state. 'Control.Monad.State.Class.MonadState' is instantiated giving you total control of
--- the state, along with the 'Dao.Logic.MonadLogic' functions. And
--- 'Control.Monad.Reader.Class.MonadReader' is instantiated so that the
+-- The 'Rule' monad instantiates 'Control.Monad.Except.Class.MonadError' with the 'RuleError' data
+-- type such that an arbitrary error data type can be thrown and caught as long as it is wrapped in
+-- the 'RuleError' constructor. The 'Rule' monad instantiates 'Dao.Logic.MonadLogic' so it is
+-- possible to pattern match with many 'Control.Applicative.Alternative' branches of evaluation
+-- without having to worry about the current state. 'Control.Monad.State.Class.MonadState' is
+-- instantiated giving you total control of the state, along with the 'Dao.Logic.MonadLogic'
+-- functions. And 'Control.Monad.Reader.Class.MonadReader' is instantiated so that the
 -- 'Control.Monad.Reader.Class.local' function can be used to execute rules with a different input
 -- in a different context without altering the current context.
 data Rule err tok st (m :: * -> *) a
@@ -309,14 +345,33 @@ data Rule err tok st (m :: * -> *) a
     -- DepthFirst and BreadthFirst rule trees are kept separate.
 
 -- Not exported
-data RuleOpCode = ResetScore | BestMatch Int deriving (Eq, Show)
+data RuleOpCode
+  = ResetWeight
+  | BestMatch Int
+  | RulePrune
+      (forall err tok st a . (Typeable err, Typeable st, Typeable tok, Typeable a) =>
+          [(Either (RuleError err) a, QueryState tok st)]
+       -> [(Either (RuleError err) a, QueryState tok st)]
+      )
+
+instance Eq RuleOpCode where
+  a == b = case a of
+    ResetWeight -> case b of { ResetWeight        -> True; _ -> False; }
+    BestMatch i -> case b of { BestMatch j | i==j -> True; _ -> False; }
+    RulePrune _ -> case b of { RulePrune _        -> True; _ -> False; }
+
+instance Show RuleOpCode where
+  show o = case o of
+    ResetWeight -> "ResetWeight"
+    BestMatch i -> "BestMatch "++show i; 
+    RulePrune _ -> "RulePrune (\\qs -> ...)"
 
 instance (Monad m, Eq tok, Ord tok) => Functor (Rule err tok st m) where
   fmap f rule = case rule of
     RuleEmpty      -> RuleEmpty
     RuleReturn   o -> RuleReturn $ f o
     RuleThrow  err -> RuleThrow err
-    RuleLift     o -> RuleLift $ liftM (liftM f) o
+    RuleLift     o -> RuleLift  $ liftM (liftM f) o
     RuleState    o -> RuleState $ fmap (fmap (first (liftM f))) o
     RuleOp    op o -> RuleOp op $ liftM f o
     RuleChoice x y -> RuleChoice (liftM f x) (liftM f y)
@@ -399,7 +454,8 @@ _queryState :: (Monad m, Eq tok, Ord tok) => (QueryState tok st -> (a, QueryStat
 _queryState = RuleState . fmap (return . first return)
 
 _evalRuleSift
-  :: (Monad m, Eq tok, Ord tok, PatternClass tok)
+  :: (Monad m, Eq tok, Ord tok, PatternClass tok,
+      Typeable err, Typeable tok, Typeable st, Typeable a)
   => Rule err tok st m a
   -> LogicT (QueryState tok st) m ([(RuleError err, QueryState tok st)], [(a, QueryState tok st)])
 _evalRuleSift rule = flip liftM (entangle $ evalRuleLogic rule) $ flip execState ([], []) .
@@ -411,7 +467,9 @@ _evalRuleSift rule = flip liftM (entangle $ evalRuleLogic rule) $ flip execState
 -- | Evaluate a 'Rule' by flattening it's internal 'Dao.Tree.Tree' structure to a 'Dao.Logic.LogicT'
 -- monad. This is probably not as useful of a function as 'queryAll' or 'query'.
 evalRuleLogic
-  :: forall err st tok m a . (Monad m, Eq tok, Ord tok, PatternClass tok)
+  :: forall err st tok m a .
+     (Monad m, Eq tok, Ord tok, PatternClass tok,
+      Typeable err, Typeable st, Typeable tok, Typeable a)
   => Rule err tok st m a -> LogicT (QueryState tok st) m (Either (RuleError err) a)
 evalRuleLogic rule = case rule of
   RuleEmpty      -> mzero
@@ -422,7 +480,7 @@ evalRuleLogic rule = case rule of
     ox <- liftM f get >>= mapM (\ (rule, st) -> put st >> evalRuleLogic rule)
     superState $ zip ox . repeat
   RuleOp    op f -> case op of
-    ResetScore  -> evalRuleLogic $ do
+    ResetWeight  -> evalRuleLogic $ do
       n <- _queryState $ \qs -> (qs~>queryWeight, with qs [queryWeight <~ 0])
       f >>= \o -> _queryState (\qs -> (o, with qs [queryWeight <~ n]))
     BestMatch n -> do
@@ -431,6 +489,7 @@ evalRuleLogic rule = case rule of
       (bads, goods) <- _evalRuleSift f
       superState $ const $ if null goods then first Left <$> bads else
         (if n>0 then take n else id) $ first Right <$> sortScor goods
+    RulePrune filt -> liftM filt (entangle $ evalRuleLogic f) >>= superState . const
   RuleChoice x y -> mplus (evalRuleLogic x) (evalRuleLogic y)
   RuleTree   x y -> mplus (runMap T.DepthFirst [] x) (runMap T.BreadthFirst [] y) where
     runMap control qx map = if M.null map then mzero else do
@@ -456,7 +515,8 @@ evalRuleLogic rule = case rule of
 -- | Run a 'Rule' against a token query given as a value of type @[tok]@, return all successful
 -- results and all exceptions that may have been thrown by 'Control.Monad.Except.throwError'.
 queryAll
-  :: (Monad m, Eq tok, Ord tok, PatternClass tok)
+  :: (Monad m, Eq tok, Ord tok, PatternClass tok,
+      Typeable err, Typeable st, Typeable tok, Typeable a)
   => Rule err tok st m a -> st -> [tok] -> m [Either (RuleError err) a]
 queryAll rule st q =
   runLogicT (evalRuleLogic rule) (QueryState (st, 0.0, 0, array q)) >>= return . fmap fst
@@ -464,13 +524,15 @@ queryAll rule st q =
 -- | Run a 'Rule' against a token query given as a value of type @[tok]@ query, return all
 -- successful results.
 query
-  :: (Monad m, Eq tok, Ord tok, PatternClass tok)
+  :: (Monad m, Eq tok, Ord tok, PatternClass tok,
+      Typeable err, Typeable st, Typeable tok, Typeable a)
   => Rule err tok st m a -> st -> [tok] -> m [a]
 query r st = queryAll r st >=> return . (>>= (const [] ||| return))
 
 -- | Like 'query', but only returns the first successful result, if any.
 query1
-  :: (Monad m, Eq tok, Ord tok, PatternClass tok)
+  :: (Monad m, Eq tok, Ord tok, PatternClass tok,
+      Typeable err, Typeable st, Typeable tok, Typeable a)
   => Rule err tok st m a -> st -> [tok] -> m (Maybe a)
 query1 r st = query r st >=> \ox -> return $ if null ox then Nothing else Just $ head ox
 
@@ -517,7 +579,35 @@ bestMatch i = RuleOp (BestMatch i)
 -- | Evaluate a monadic function with the 'queryWeight' reset to zero, and when evaluation of the
 -- monadic function completes, set the score back to the value it was before.
 resetScore :: Monad m => Rule err tok st m a -> Rule err tok st m a
-resetScore = RuleOp ResetScore
+resetScore = RuleOp ResetWeight
+
+-- | When a 'Rule' is being evaluated, mutliple branches of evaluation can be produced in parallel.
+-- For example, evaluating:
+--
+-- @
+-- 'Control.Monad.return' "A" 'Control.Applicative.<|>' 'Control.Monad.return' "B" 'Control.Monad.>>=' continue
+-- @
+--
+-- Will result in the @continue@ function being called twice along two parallel branches of
+-- evaluation, first with @"A"@ as input, and then with @"B"@ as input.
+--
+-- The 'prunePath's function allows an inner function to be fully evaluated, collapsing all results
+-- and state values along all branches of evaluation into a list data structure. You can then filter
+-- the list, effectively pruning future branches of evaluation to the most relevant, in order to
+-- make computation more efficient.
+--
+-- @
+-- 'prunePaths' (filterOutResults "B") ('Control.Monad.return' "A" 'Control.Applicative.<|>' 'Control.Monad.return' "B") 'Control.Monad.>>=' continue
+-- @
+--
+-- The above uses a function @filterOutResults@ that would filter the result produced by
+-- @return "B"@, so @continue@ function would only have one branch of evaluation to try. Filtering
+-- out all results will behave the same as 'Control.Monad.mzero' or 'Control.Applicative.empty'
+prunePaths
+  :: (Monad m, Eq tok, Ord tok, Typeable tok, Typeable err, Typeable st, Typeable a)
+  => ([(Either (RuleError err) a, QueryState tok st)] -> [(Either (RuleError err) a, QueryState tok st)])
+  -> Rule err st tok m a -> Rule err st tok m a
+prunePaths filt f = flip RuleOp f $ RulePrune $ \oqs -> fromMaybe oqs $ filt <$> cast oqs >>= cast
 
 ----------------------------------------------------------------------------------------------------
 

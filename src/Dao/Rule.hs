@@ -57,7 +57,7 @@ module Dao.Rule
     -- * Constructing 'Rule's
     next, part, remainder, done,
     -- $Structure_of_a_rule
-    RuleStruct, tree, struct, ruleTree, getRuleStruct, trim, mask,
+    RuleStruct, edges, ruleStruct, ruleTree, getRuleStruct, trim, mask,
     -- * Fine-Tuning the Evaluation of Your 'Rule's
     prunePaths, bestMatch, resetScore,
     -- * The Throwable and Catchable Data Type
@@ -614,7 +614,7 @@ prunePaths filt f = flip RuleOp f $ RulePrune $ \oqs -> fromMaybe oqs $ filt <$>
 -- $Structure_of_a_rule
 -- A 'Rule' is constructed from 'Dao.Tree.Tree' data types and functions. Some 'Rule's form empty
 -- trees, for example 'Control.Monad.return' or 'Control.Monad.State.state'. However 'Rule's
--- constructed with functions like 'tree' or 'struct' produce a 'Dao.Tree.Tree' structure internal
+-- constructed with functions like 'tree' or 'ruleStruct' produce a 'Dao.Tree.Tree' structure internal
 -- to the 'Rule' function which can be retrieved and manipulated. This is useful for
 -- meta-programming 'Rule's, for example predictive input applications.
 
@@ -630,17 +630,17 @@ type RuleStruct tok = T.Tree tok ()
 -- 'Rule' function must take a 'Query' as input. When a portion of a 'Query' matches the given
 -- 'Dao.Object.ObjectData', the portion of the 'Query' that matched will be passed to this 'Rule'
 -- function when it is evaluated.
-tree
+edges
   :: (Eq tok, Ord tok, Monad m)
   => T.RunTree -> [[tok]] -> ([tok] -> Rule err tok st m b) -> Rule err tok st m b
-tree control branches = struct control $ T.fromList $ zip branches $ repeat ()
+edges control branches = ruleStruct control $ T.fromList $ zip branches $ repeat ()
 
 -- | Construct a 'Rule' tree from a 'Dao.Tree.Tree' data type and a 'Rule' function. The 'Rule' will
 -- be copied to every single 'Dao.Tree.Leaf' in the given 'Dao.Tree.Tree'.
-struct
+ruleStruct
   :: (Monad m, Eq tok, Ord tok)
   => T.RunTree -> RuleStruct tok -> ([tok] -> Rule err tok st m a) -> Rule err tok st m a
-struct control tree rule =
+ruleStruct control tree rule =
   let df = control==T.DepthFirst
       (T.Tree (leaf, map)) = fmap (\ () -> rule) tree 
   in  maybe id ((if df then flip else id) mplus . ($ [])) leaf $

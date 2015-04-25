@@ -36,17 +36,16 @@ module Dao.Object
     -- * Improving on 'Data.Dynamic.Dynamic'
     HasTypeRep(objTypeOf),
     -- * Simple Data Modeling
-    Simple(OVoid, ONull), SimpleData(simple, fromSimple), simpleNumInfixOp, simpleSetInfixOp,
-    T_int, T_long, T_float, T_string, T_char, T_list, T_map,
-    -- * Wrapping 'Data.Dynamic.Dynamic' Data Types
-    Passport, fromForeign, toForeign, objDynamic, objEquality, objOrdering, objPrinted,
+    Simple(OVoid, ONull, OTrue, OInt, OLong, OChar, OList, OMap, OTree, OStruct),
+    SimpleData(simple, fromSimple), simpleNumInfixOp, simpleSetInfixOp,
+    T_int, T_long, T_float, T_string, T_char, T_list, T_map, struct, fromStruct,
+    stringToTypeMap,
+    -- * Data Types as 'Object's
+    Object, fromForeign, toForeign, objDynamic, objEquality, objOrdering, objPrinted,
     printable, matchable,
-    -- * 'Object': Union Type of 'Simple' and 'Passport'
-    Object(OSimple, OForeign),
-    TypePattern(TypePattern), patternTypeRep, infer,
-    -- * Custom data types as 'Object's
     ObjectData(obj, fromObj), defaultFromObj,
-    objectMapUnion, objectMapIntersection,
+    -- * The Class of Pattern Matching Data Types
+    TypePattern(TypePattern), patternTypeRep, infer,
     -- * Working with Void (undefined) Values
     MaybeVoid(voidValue, testVoid), firstNonVoid, allNonVoids
   )
@@ -64,6 +63,7 @@ import           Dao.Text
 import qualified Dao.Tree       as T
 
 import           Control.Applicative
+import           Control.Arrow
 import           Control.Monad
 import           Control.Monad.Except
 import           Control.Monad.Identity
@@ -74,10 +74,10 @@ import           Data.Binary.IEEE754
 import           Data.Bits
 import           Data.Char
 import           Data.Dynamic
-import           Data.List (intercalate, nub)
+import           Data.List (intercalate)
 import qualified Data.Map       as M
-import           Data.Monoid
 import qualified Data.Text      as Strict
+import qualified Data.Text.Lazy as Lazy
 
 -- | Void values are undefined values. Unliked Haskell's 'Prelude.undefined', 'voidValue' is a concrete
 -- value you can test for.
@@ -140,7 +140,7 @@ instance ObjectData TypePattern where
 infer
   :: forall st t m a . (Functor m, Monad m, Typeable t, ObjectData t)
   => (t -> Rule ErrorObject Object st m a) -> Rule ErrorObject Object st m a
-infer f = tree T.BreadthFirst [[obj $ typ f err]] just1 where
+infer f = edges T.BreadthFirst [[obj $ typ f err]] just1 where
   just1 ox = case ox of
     [o] -> predicate (fmapPError RuleError $ fromObj o) >>= f
     _   -> mzero
@@ -152,17 +152,17 @@ infer f = tree T.BreadthFirst [[obj $ typ f err]] just1 where
 ----------------------------------------------------------------------------------------------------
 
 -- | This data type wraps a value of a foreign data type in a 'Data.Dynamic.Dynamic' data type along
--- with it's 'Prelude.Eq' and 'Prelude.Ord' instance functions. This allows 'Passport' to itself be
+-- with it's 'Prelude.Eq' and 'Prelude.Ord' instance functions. This allows 'Object' to itself be
 -- instantiated into 'Prelude.==' and 'Prelude.compare'. To retrieve the foreign data type contained
 -- within, use the 'fromForeign' function.
 --
 -- If your data type instantiates 'Dao.PPrint.PPrintable', you can use 'printable' to store the
--- 'Dao.PPrint.pPrint' instance with this 'Passport' data constructor.
+-- 'Dao.PPrint.pPrint' instance with this 'Object' data constructor.
 --
 -- If your data type instantiates 'SimpleData', you can use 'simplifyable' to store the 'simple'
--- instance with this 'Passport' data constructor.
-data Passport
-  = Passport
+-- instance with this 'Object' data constructor.
+data Object
+  = Object
     { objDynamic      :: Dynamic
     , objEquality     :: Dynamic -> Bool
     , objOrdering     :: Dynamic -> Ordering
@@ -172,20 +172,20 @@ data Passport
     }
   deriving Typeable
 
-instance Eq  Passport where { a == b = objEquality a $ objDynamic b; }
+instance Eq  Object where { a == b = objEquality a $ objDynamic b; }
 
-instance Ord Passport where { compare a b = objOrdering a $ objDynamic b; }
+instance Ord Object where { compare a b = objOrdering a $ objDynamic b; }
 
-instance PPrintable Passport where { pPrint = objPrinted; }
+instance PPrintable Object where { pPrint = objPrinted; }
 
-instance Show Passport where { show = showPPrint 4 80 . pPrint; }
+instance Show Object where { show = showPPrint 4 80 . pPrint; }
 
-instance HasTypeRep Passport where { objTypeOf = objTypeOf . objDynamic }
+instance HasTypeRep Object where { objTypeOf = objTypeOf . objDynamic }
 
-instance SimpleData Passport where
+instance SimpleData Object where
   simple = objSimplified
   fromSimple s = return
-    Passport
+    Object
     { objDynamic      = toDyn s
     , objEquality     = maybe False (s ==) . fromDynamic
     , objOrdering     = \d ->
@@ -195,18 +195,18 @@ instance SimpleData Passport where
     , objPatternMatch = Nothing
     }
 
--- | Construct an arbitrary 'Data.Typeable.Typeable' data type into a 'Passport' data type along with
+-- | Construct an arbitrary 'Data.Typeable.Typeable' data type into a 'Object' data type along with
 -- the 'Prelude.==' and 'Prelude.compare' instances for this data type. Use this function with
 -- 'printable' and 'simplifyable' to extend this foreign data type with instances for
 -- 'Dao.PPrintable' and 'SimpleData'.
 --
 -- To define an instance of 'obj' for you own custom data type, use this function along with 'obj',
--- as the 'obj' function can convert a 'Passport' data type to an 'Object'. Likewise, to define an
+-- as the 'obj' function can convert a 'Object' data type to an 'Object'. Likewise, to define an
 -- instance of 'fromObj' for you own custom data type, use 'toForeign' with 'fromObj', as the
--- 'fromObj' function can convert a 'Passport' data type to an 'Object' data type.
-fromForeign :: (Eq o, Ord o, Typeable o, SimpleData o) => o -> Passport
+-- 'fromObj' function can convert a 'Object' data type to an 'Object' data type.
+fromForeign :: (Eq o, Ord o, Typeable o, SimpleData o) => o -> Object
 fromForeign o = let d = toDyn o in
-  Passport
+  Object
   { objDynamic      = d
   , objEquality     = maybe False (o ==) . fromDynamic
   , objOrdering     = \p -> maybe (compare (dynTypeRep d) (dynTypeRep p)) (compare o) (fromDynamic p)
@@ -216,19 +216,19 @@ fromForeign o = let d = toDyn o in
   }
 
 -- | To define an instance of 'obj' for you own custom data type, use this function along with
--- 'obj', as the 'obj' function can convert a 'Passport' data type to an 'Object'. Likewise, to
+-- 'obj', as the 'obj' function can convert a 'Object' data type to an 'Object'. Likewise, to
 -- define an instance of 'fromObj' for you own custom data type, use 'toForeign' with 'fromObj',
--- as the 'fromObj' function can convert a 'Passport' data type to an 'Object' data type.
+-- as the 'fromObj' function can convert a 'Object' data type to an 'Object' data type.
 toForeign
   :: (Eq o, Ord o, Typeable o, SimpleData o,
       Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadError ErrorObject m)
-  => Passport -> m o
+  => Object -> m o
 toForeign f = maybe mzero return (fromDynamic $ objDynamic f) <|> fromSimple (objSimplified f)
 
 -- | *'Foriegn' data, optional property.* If your data type instantiates 'Dao.PPrint.PPrintable',
--- you can use 'printable' to store the 'Dao.PPrint.pPrint' instance with this 'Passport' data
+-- you can use 'printable' to store the 'Dao.PPrint.pPrint' instance with this 'Object' data
 -- constructor.
-printable :: PPrintable o => o -> Passport -> Passport
+printable :: PPrintable o => o -> Object -> Object
 printable o dat = dat{ objPrinted=pPrint o }
 
 -- | *'Foriegn' data, optional property.* If your data type can act as a pattern that can match
@@ -236,7 +236,7 @@ printable o dat = dat{ objPrinted=pPrint o }
 -- function. The 'matchable' function lets you define a predicate that can match an arbitrary
 -- 'Object'. Specifying 'matchable' will only make use of 'patternCompare' for pattern matching, it will
 -- not be used for equality testing ('Prelude.==').
-matchable :: (ObjectData o, PatternClass o) => o -> Passport -> Passport
+matchable :: (ObjectData o, PatternClass o) => o -> Object -> Object
 matchable o dat =
   dat { objPatternMatch = Just $ \p -> case fromObj p of
           PTrue p -> patternCompare o p
@@ -301,20 +301,18 @@ type T_long   = Integer
 type T_float  = Double
 type T_string = Strict.Text
 type T_char   = Char
-type T_list   = Array Object
-type T_map    = M.Map Object Object
-type T_tree   = T.Tree Object Object
-type T_type   = TypeRep
+type T_list   = Array Simple
+type T_map    = M.Map Simple Simple
+type T_tree   = T.Tree Simple Simple
 
--- | A 'Simple' object is a essentially a model of JSON data types. It models any data type that
--- contains a few fundamental types, including integers, floating point numbers, characters,
--- strings, lists, and maps. All complex data types can be constructed from these fundamental types.
---
--- You use 'simple' to wrap an arbitrary 'Data.Typeable.Typeable' data type into an 'Object'
--- constructor, and 'fromSimple' to unwrap the data type from the 'Object' constructor.
+-- | A 'Simple' object is a similar to a JSON data types: it provides constructors for a few
+-- fundamental data type, including integers, floating point numbers, characters, strings, lists,
+-- maps, and trees, and these simple types can be combined to create arbitrarily complex data types
+-- can be constructed from these fundamental types. Like JSON, it provides a consistent protocol for
+-- serializing and deserializing data types.
 data Simple
   = OVoid -- ^ this is the 'Simple' analogue of 'Prelude.undefined'.
-  | ONull -- ^ this is the 'Simple' analogue of @()@
+  | ONull -- ^ this is the 'Simple' analogue of @()@, it is also equivalent to 'Prelude.False'.
   | OTrue 
   | OInt     T_int
   | OLong    T_long
@@ -324,7 +322,7 @@ data Simple
   | OList    T_list
   | OMap     T_map
   | OTree    T_tree
-  | OType    T_type
+  | OStruct  StrictText Simple
   deriving (Eq, Ord, Typeable)
 
 instance HasTypeRep Simple where
@@ -340,7 +338,7 @@ instance HasTypeRep Simple where
     OList   ~o -> typeOf o
     OMap    ~o -> typeOf o
     OTree   ~o -> typeOf o
-    OType   ~o -> typeOf o
+    o          -> typeOf o
 
 instance TestNull Simple where
   nullValue      = ONull
@@ -354,97 +352,49 @@ instance MaybeVoid Simple where
 
 instance PPrintable Simple where
   pPrint o = case o of
-    OVoid     -> []
-    ONull     -> [pText "null"]
-    OTrue     -> [pText "true"]
-    OInt    o -> [pShow o]
-    OLong   o -> [pShow o]
-    OFloat  o -> [pShow o]
-    OChar   o -> [pShow o]
-    OString o -> [pShow o]
-    OList   o ->
+    OVoid       -> []
+    ONull       -> [pText "null"]
+    OTrue       -> [pText "true"]
+    OInt      o -> [pShow o]
+    OLong     o -> [pShow o]
+    OFloat    o -> [pShow o]
+    OChar     o -> [pShow o]
+    OString   o -> [pShow o]
+    OList     o ->
       [ pChar '['
       , pIndent $ intercalate [pChar ',', pSpace, pNewLine] $ pPrint <$> elems o
       , pChar ']'
       ]
-    OMap    o -> pPrintMap pPrint o
-    OTree   o -> pPrintTree o
-    OType   o -> [pShow o]
+    OMap      o -> pPrintMap pPrint pPrint o
+    OTree     o -> pPrintTree o
+    OStruct l o -> [pText l, pSpace] ++ pPrint o
 
 instance Show Simple where { show = showPPrint 4 80 . pPrint; }
 
 instance Binary Simple where
   put o = let w = putWord8 in case o of
-    OVoid     -> return ()
-    ONull     -> w 0
-    OTrue     -> w 1
-    OInt    o -> w 2 >> put o
-    OLong   o -> w 3 >> vlPutInteger o
-    OFloat  o -> w 4 >> putFloat64be o
-    OChar   o -> w 5 >> vlPutInteger (toInteger $ ord o)
-    OString o -> w 6 >> binaryPutText o
-    OList   o -> w 7 >> vlPutInteger (toInteger $ size o) >> mapM_ put (elems o)
-    OMap    o -> w 8 >> vlPutInteger (toInteger $ M.size o) >> mapM_ put (M.assocs o)
-    OTree   o -> w 9 >> encodeTree o
-    OType   _ -> w 10
+    OVoid       -> return ()
+    ONull       -> w 0
+    OTrue       -> w 1
+    OInt      o -> w 2 >> put o
+    OLong     o -> w 3 >> vlPutInteger o
+    OFloat    o -> w 4 >> putFloat64be o
+    OChar     o -> w 5 >> vlPutInteger (toInteger $ ord o)
+    OString   o -> w 6 >> binaryPutText o
+    OList     o -> w 7 >> vlPutInteger (toInteger $ size o) >> mapM_ put (elems o)
+    OMap      o -> w 8 >> vlPutInteger (toInteger $ M.size o) >> mapM_ put (M.assocs o)
+    OTree     o -> w 9 >> encodeTree o
+    OStruct l o -> w 20 >> binaryPutText l >> put o
   get = do
     w <- getWord8
     guard $ A.inRange (A.bounds decoderArray) w
     decoderArray A.! w
 
-instance Monoid Simple where
-  mempty = ONull
-  mappend a b = case a of
-    ONull     -> case b of
-      ONull     -> ONull
-      _         -> OVoid
-    OChar   a -> case b of
-      ONull     -> OChar a
-      OChar   b -> OString $ Strict.pack [a, b]
-      OString b -> OString $ Strict.cons a b
-      _         -> OVoid
-    OString a -> case b of
-      ONull     -> OString a
-      OChar   b -> OString $ Strict.snoc a b
-      OString b -> OString $ a <> b
-      _         -> OVoid
-    OList   a -> case b of
-      OList   b -> OList $ a <> b
-      _         -> OVoid
-    _         -> OVoid
-
-instance Monoid (Sum Simple) where
-  mempty = Sum ONull
-  mappend (Sum a) (Sum b) =
-    let f a b = firstNonVoid
-          [ simpleNumInfixOp (+) a b
-          , simpleSetInfixOp (.|.) objectMapUnion a b
-          , a <> b
-          ]
-    in  Sum $ case a of
-          ONull  -> case b of { ONull -> ONull ; OTrue -> OTrue; OMap b -> OMap b; _ -> f a b; }
-          OTrue  -> case b of { ONull -> OTrue ; OTrue -> OTrue; OMap _ -> OTrue ; _ -> f a b; }
-          OMap a -> case b of { ONull -> OMap a; OTrue -> OTrue;                   _ -> f (OMap a) b; }
-          _      -> f a b
-
-instance Monoid (Product Simple) where
-  mempty = Product OTrue
-  mappend (Product a) (Product b) =
-    let f a b = firstNonVoid
-          [ simpleNumInfixOp (*) a b
-          , simpleSetInfixOp (.&.) objectMapIntersection a b
-          ]
-    in  Product $ case a of
-          ONull  -> case b of { OTrue -> ONull; ONull -> ONull ; OMap _ -> ONull ; _ -> f a b; }
-          OTrue  -> case b of { OTrue -> OTrue; ONull -> ONull ; OMap b -> OMap b; _ -> f a b; }
-          OMap a -> case b of { ONull -> ONull; OTrue -> OMap a;                   _ -> f (OMap a) b; }
-          _      -> f a b
-
-pPrintMap :: (o -> [PPrint]) -> M.Map Object o -> [PPrint]
-pPrintMap pprin o = 
+pPrintMap :: (key -> [PPrint]) -> (o -> [PPrint]) -> M.Map key o -> [PPrint]
+pPrintMap kprin pprin o = 
   [ pChar '{'
   , pIndent $ intercalate [pChar ',', pSpace, pNewLine] $
-      fmap (\ (a, b) -> pPrint a ++ [pChar ':', pSpace, pIndent (pprin b)]) (M.assocs o)
+      fmap (\ (a, b) -> kprin a ++ [pChar ':', pSpace, pIndent (pprin b)]) (M.assocs o)
   , pChar '}'
   ]
 
@@ -452,7 +402,7 @@ pPrintTree :: T_tree -> [PPrint]
 pPrintTree o = concat
   [ maybe [pText "()"] (\o -> [pChar '(', pIndent (pPrint o), pNewLine, pChar ')']) (o~>T.leaf)
   , [pSpace, pText "->", pSpace]
-  , pPrintMap pPrintTree (o~>T.branches)
+  , pPrintMap pPrint pPrintTree (o~>T.branches)
   ]
 
 decoderArray :: A.Array Word8 (Get Simple)
@@ -467,31 +417,30 @@ decoderArray = A.array (0, 9)
   ,( 7, (OList   <$> decodeArray  ) <|> fail "expecting Array")
   ,( 8, (OMap    <$> decodeMap get) <|> fail "expecting Map")
   ,( 9, (OTree   <$> decodeTree 9 ) <|> _tree_err)
-  ,(10, (OTree   <$> decodeTree 10) <|> _tree_err)
-  ,(11, return $ OType (typeOf OVoid))
+  ,(20, (OStruct <$> binaryGetText <*> get))
   ]
 
 _tree_err :: Get ig
 _tree_err = fail "expecting Tree"
 
-decodeArray :: Get (Array Object)
+decodeArray :: Get (Array Simple)
 decodeArray = vlGetInteger >>= loop [] where
   loop ox i = if i==0 then return $ array ox else get >>= \o -> loop (ox++[o]) (i-1)
 
-decodeMap :: Get o -> Get (M.Map Object o)
+decodeMap :: Get o -> Get (M.Map Simple o)
 decodeMap get1 = vlGetInteger >>= loop [] where
   loop ox i =
     if i==0
     then return $ M.fromList ox
     else (,) <$> get <*> get1 >>= \o -> loop (ox++[o]) (i-1)
 
-decodeTree :: Word8 -> Get (T.Tree Object Object)
+decodeTree :: Word8 -> Get (T.Tree Simple Simple)
 decodeTree w = let f = decodeMap (getWord8 >>= decodeTree) in case w of
   9  -> T.Tree . (,) Nothing <$> f
   10 -> T.Tree <$> ((,) <$> (Just <$> get) <*> f)
   _  -> _tree_err
 
-encodeTree :: T.Tree Object Object -> Put
+encodeTree :: T.Tree Simple Simple -> Put
 encodeTree o = case o of
   T.Tree (Nothing, map) -> putWord8  9 >> f map
   T.Tree (Just  o, map) -> putWord8 10 >> put o >> f map
@@ -529,12 +478,6 @@ simpleNumInfixOp num a b = case a of
     _         -> OVoid
   _         -> OVoid
 
-objectMapUnion :: T_map -> T_map -> T_map
-objectMapUnion = _combineMaps M.unionWith
-
-objectMapIntersection :: T_map -> T_map -> T_map
-objectMapIntersection = _combineMaps M.intersectionWith
-
 -- | Perform a set infix operation on two 'Simple' data types.
 simpleSetInfixOp
   :: (forall a . Bits a => a -> a -> a)
@@ -554,28 +497,13 @@ simpleSetInfixOp bit set a b = case a of
     _       -> OVoid
   _       -> OVoid
 
-_combineMaps
-  :: ((Object -> Object -> Object) -> T_map -> T_map -> T_map)
-  -> T_map -> T_map -> T_map
-_combineMaps f a b = M.mapMaybe removeVoids $ f setJoin a b where
-  removeVoids o = if testVoid o then Nothing else Just o
-  setJoin a b = case a of
-    OSimple OVoid     -> case b of
-      OSimple OVoid     -> OSimple OVoid
-      b                 -> b
-    OSimple (OMap  a) -> case b of
-      OSimple OVoid     -> OSimple $ OMap a
-      OSimple (OMap  b) -> OSimple $ OMap $ _combineMaps f a b
-      OSimple (OList b) -> obj $ OSimple (OMap a) : elems b
-      _                 -> obj [OSimple $ OMap  a, b]
-    OSimple (OList a) -> case b of
-      OSimple OVoid     -> OSimple (OList a)
-      OSimple (OList b) -> OSimple $ OList $ a <> b
-      _                 -> obj [OSimple $ OList a, b]
-    _                 -> obj [a, b]
-
 ----------------------------------------------------------------------------------------------------
 
+-- | This class defines methods for converting a data type to and from a 'Simple' data type. The
+-- 'Simple' data type is much like a JSON object in that it is composed of fundamental data types
+-- that can be combined to create arbitrarily complex data structures. All objects that instantiate
+-- 'SimpleData' can be converted to a 'Simple' type, then "parsed" back into it's original data
+-- type.
 class (Eq o, Ord o, Typeable o) => SimpleData o where
   simple :: o -> Simple
   fromSimple
@@ -618,9 +546,17 @@ instance SimpleData T_list   where
   simple       = OList
   fromSimple o = case o of { OList o -> return o; _ -> mzero; }
 
-instance SimpleData [Object] where
+instance SimpleData [Simple] where
   simple       = OList . array
   fromSimple o = case o of { OList o -> return $ elems o; _ -> mzero; }
+
+instance SimpleData [Object] where
+  simple       = OList . array . fmap simple
+  fromSimple o = case o of { OList o -> mapM fromSimple $ elems o; _ -> mzero; }
+
+instance SimpleData o => SimpleData (Array o) where
+  simple       = OList . fmap simple
+  fromSimple o = case o of { OList o -> fmap array $ mapM fromSimple $ elems o; _ -> mzero; }
 
 instance SimpleData T_map    where
   simple       = OMap
@@ -630,113 +566,178 @@ instance SimpleData T_tree   where
   simple       = OTree
   fromSimple o = case o of { OTree o -> return o; _ -> mzero; }
 
-instance SimpleData T_type   where
-  simple       = OType
-  fromSimple o = case o of { OType o -> return o; _ -> mzero; }
-
 instance SimpleData Simple   where
   simple       = id
   fromSimple   = return
 
-instance (Eq pat, ObjectData pat) => SimpleData (Satisfy pat) where
-  simple (Satisfy (a, b)) = simple $ array [obj a, obj b]
-  fromSimple = fmap elems . fromSimple >=> \pair -> case pair of
-    [a, b] -> Satisfy <$> ((,) <$> fromObj a <*> fromObj b)
-    _      -> mzero
+stringToTypeMap :: M.Map StrictText TypeRep
+stringToTypeMap = M.fromList $ fmap (first toText) $ concat $
+  [ [ ("bool"               , typeOf True)
+    , ("int"                , typeOf (0::T_int))
+    , ("char"               , typeOf ('\0'::T_char))
+    , ("float"              , typeOf (0::T_float))
+    , ("str"                , typeOf (nullValue :: T_string))
+    , ("string"             , typeOf (nullValue :: T_string))
+    , ("array"              , typeOf (nullValue :: Array Object))
+    , ("list"               , typeOf (nullValue :: T_list))
+    , ("map"                , typeOf (nullValue :: T_map))
+    , ("dict"               , typeOf (nullValue :: T_map))
+    , ("tree"               , typeOf (nullValue :: T_map))
+    , ("()"                 , typeOf ())
+    , ("Bool"               , typeOf True)
+    , ("Int"                , typeOf (0::Int))
+    , ("Integer"            , typeOf (0::Integer))
+    , ("Double"             , typeOf (0::Double))
+    , ("Float"              , typeOf (0::Float))
+    , ("Char"               , typeOf '\0')
+    , ("String"             , typeOf (""::String))
+    , ("StrictText"         , typeOf (nullValue :: StrictText))
+    , ("Text"               , typeOf (nullValue :: Strict.Text))
+    , ("Data.Text.Text"     , typeOf (nullValue :: Strict.Text))
+    , ("Data.Text.Lazy.Text", typeOf (nullValue :: Lazy.Text))
+    , ("Simple"             , typeOf OVoid)
+    , ("Dao.Object.Simple"  , typeOf OVoid)
+    , ("[Simple]"           , typeOf [OVoid])
+    , ("[Dao.Object.Simple]", typeOf [OVoid])
+    ]
+  , do a <- ["Array", "Dao.Array.Array"]
+       m <- ["Map"  , "Data.Map.Map"]
+       t <- ["Tree" , "Dao.Tree.Tree"]
+       let x = ["Object", "Dao.Object.Object"]
+       o <- x
+       ox <- ([] : (return <$> x))
+       ox2 <- ([] : (x >>= \a -> x >>= \b -> [[a, b]]))
+       [   (o, typeOf (obj OVoid))
+         , ('[':unwords ox++"]", typeOf [obj OVoid])
+         , (unwords $ a:ox , typeOf (nullValue :: Array Object))
+         , (unwords $ m:ox2, typeOf (nullValue :: M.Map Object Object))
+         , (unwords $ t:ox2, typeOf (nullValue :: T.Tree Object Object))
+         ]
+  ]
 
-instance (Eq pat, ObjectData pat) => SimpleData (Conjunction pat) where
-  simple (Conjunction ox) = simple $ array $ obj "AND" : (obj <$> elems ox)
-  fromSimple = fmap elems . fromSimple >=> \list -> case list of
-    header:list | header == obj "AND" -> Conjunction . array . nub <$> mapM fromObj list
-    _                                 -> mzero
+instance SimpleData TypeRep  where
+  simple       = OString . toText . show
+  fromSimple o = case o of
+    OString o -> case M.lookup o stringToTypeMap of
+      Nothing -> return $ typeOf (obj OVoid)
+      Just  o -> return o
+    _ -> mzero
 
-instance (Eq pat, ObjectData pat) => SimpleData (Statement pat) where
-  simple (Statement ox) = simple $ array $ obj "OR" : (obj <$> elems ox)
-  fromSimple = fmap elems . fromSimple >=> \list -> case list of
-    header:list | header == obj "OR" -> Statement . array . nub <$> mapM fromObj list
-    _                                -> mzero
+instance (Eq pat, SimpleData pat) => SimpleData (Satisfy pat) where
+  simple (Satisfy o) = struct "Satisfy" o
+  fromSimple = fromStruct "Satisfy" Satisfy
 
-----------------------------------------------------------------------------------------------------
+instance (Eq pat, SimpleData pat) => SimpleData (Conjunction pat) where
+  simple (Conjunction o) = struct "AND" o
+  fromSimple = fromStruct "AND" Conjunction
 
--- | An 'Object' is either a 'Simple' data type or a 'Passport' data type. Since 'Passport' lets you
--- store any arbitrary Haskell data type (so long as it instantiates 'Prelude.Eq', 'Prelude.Ord',
--- and 'Data.Typeable.Typeable'), 'Object's provide much more flexibility in the kinds of data that
--- can be used at runtime. The drawback to using 'Object' as opposed to 'Simple' is that 'Object's
--- may not serialize very well, and thus you may have difficulty transmitting 'Object's to other
--- processes.
-data Object = OSimple Simple | OForeign Passport deriving (Eq, Ord, Typeable) 
+instance (Eq pat, SimpleData pat) => SimpleData (Statement pat) where
+  simple (Statement o) = struct "OR" o
+  fromSimple = fromStruct "OR" Statement
 
-instance HasTypeRep Object where
-  objTypeOf o = case o of
-    OSimple  o -> objTypeOf o
-    OForeign o -> objTypeOf o
+instance (SimpleData a, SimpleData b) => SimpleData (a, b) where
+  simple (a, b) = OList $ array [simple a, simple b]
+  fromSimple o = elems <$> fromSimple o >>= \o -> case o of
+    [a, b] -> (,) <$> fromSimple a <*> fromSimple b
+    _ -> mzero
 
-instance MaybeVoid Object where
-  voidValue                = OSimple OVoid
-  testVoid (OSimple OVoid) = True
-  testVoid _               = False
+instance (SimpleData a, SimpleData b, SimpleData c) => SimpleData (a, b, c) where
+  simple (a, b, c) = OList $ array [simple a, simple b, simple c]
+  fromSimple o = elems <$> fromSimple o >>= \o -> case o of
+    [a, b, c] -> (,,) <$> fromSimple a <*> fromSimple b <*> fromSimple c
+    _ -> mzero
 
-instance TestNull Object where
-  nullValue                = OSimple ONull
-  testNull (OSimple ONull) = True
-  testNull _               = False
+instance (SimpleData a, SimpleData b, SimpleData c, SimpleData d) => SimpleData (a, b, c, d) where
+  simple (a, b, c, d) = OList $ array [simple a, simple b, simple c, simple d]
+  fromSimple o = elems <$> fromSimple o >>= \o -> case o of
+    [a, b, c, d] -> (,,,) <$> fromSimple a <*> fromSimple b <*> fromSimple c <*> fromSimple d
+    _ -> mzero
 
-instance PPrintable Object where
-  pPrint o = case o of { OSimple o -> pPrint o; OForeign o -> pPrint o; }
+instance (SimpleData a, SimpleData b, SimpleData c, SimpleData d, SimpleData e) => SimpleData (a, b, c, d, e) where
+  simple (a, b, c, d, e) = OList $ array [simple a, simple b, simple c, simple d, simple e]
+  fromSimple o = elems <$> fromSimple o >>= \o -> case o of
+    [a, b, c, d, e] -> (,,,,) <$> fromSimple a <*> fromSimple b <*> fromSimple c <*> fromSimple d <*> fromSimple e
+    _ -> mzero
 
-instance Show Object where { show = showPPrint 4 80 . pPrint; }
+instance (SimpleData a, SimpleData b, SimpleData c, SimpleData d, SimpleData e, SimpleData f) => SimpleData (a, b, c, d, e, f) where
+  simple (a, b, c, d, e, f) = OList $ array [simple a, simple b, simple c, simple d, simple e, simple f]
+  fromSimple o = elems <$> fromSimple o >>= \o -> case o of
+    [a, b, c, d, e, f] -> (,,,,,) <$> fromSimple a <*> fromSimple b <*> fromSimple c <*> fromSimple d <*> fromSimple e <*> fromSimple f
+    _ -> mzero
 
-instance SimpleData Object   where
-  fromSimple = return . OSimple
-  simple   o = case o of
-    OForeign o -> objSimplified o
-    OSimple  o -> o
+instance (SimpleData a, SimpleData b, SimpleData c, SimpleData d, SimpleData e, SimpleData f, SimpleData g) => SimpleData (a, b, c, d, e, f, g) where
+  simple (a, b, c, d, e, f, g) = OList $ array [simple a, simple b, simple c, simple d, simple e, simple f, simple g]
+  fromSimple o = elems <$> fromSimple o >>= \o -> case o of
+    [a, b, c, d, e, f, g] -> (,,,,,,) <$> fromSimple a <*> fromSimple b <*> fromSimple c <*> fromSimple d <*> fromSimple e <*> fromSimple f <*> fromSimple g
+    _ -> mzero
 
-instance Binary Object where
-  put o = case o of
-    OSimple  o -> put o
-    OForeign o -> put $ objSimplified o
-  get = OSimple <$> get
-
-instance Monoid Object where
-  mempty = OSimple ONull
-  mappend a b = case a of
-    OSimple a -> case b of
-      OSimple b -> OSimple $ a <> b
-      _         -> OSimple OVoid
-    _         -> OSimple OVoid
-
-instance Monoid (Sum Object) where
-  mempty = Sum $ OSimple ONull
-  mappend (Sum a) (Sum b) = Sum $ case a of
-    OSimple a -> case b of
-      OSimple b -> OSimple $ getSum $ Sum a <> Sum b
-      _         -> OSimple OVoid
-    _         -> OSimple OVoid
-
-instance Monoid (Product Object) where
-  mempty = Product $ OSimple ONull
-  mappend (Product a) (Product b) = Product $ case a of
-    OSimple a -> case b of
-      OSimple b -> OSimple $ getProduct $ Product a <> Product b
-      _         -> OSimple OVoid
-    _         -> OSimple OVoid
-
-instance PatternClass Object where
-  patternCompare a b = case a of
-    OForeign a' -> maybe (boolSimilar $ a==b) ($ b) (objPatternMatch a')
-    a           -> boolSimilar $ a==b
-
-----------------------------------------------------------------------------------------------------
-
--- | The 'ObjectData' type class is almost identical to the 'SimpleData' type class, you use 'obj'
--- to wrap an arbitrary 'Data.Typeable.Typeable' data type into an 'Object' constructor, and
--- 'fromObj' to unwrap the data type from the 'Object' constructor.
+-- | The 'struct' and 'fromStruct' functions lets you convert your Haskell data types to and from
+-- a 'Simple' data type guarded by a label for the data.
 --
--- The custom data must be expressible as a 'Simple' data type, and this is necessary for
--- serialization. When writing an 'Object' as a bit stream, the 'Simple' form of the 'Object' is
--- used, and it is expected that when reading from a bit stream, the 'Simple' form of the 'Object'
--- is just as good as having created the 'Object' in memory in the local program.
+-- Lets say you have a data type made of three 'Simple' data types:
+--
+-- @
+-- newtype MyData = MyData ('Prelude.Integer', 'Data.Text.Text', 'Prelude.Bool') deriving 'Data.Typeable.Typeable'
+-- @
+--
+-- This is a good candidate for instantiation of 'StructData'. You could just instantiate
+-- 'SimpleData' directly, like so:
+--
+-- @
+-- instance 'SimpleData' MyData where
+--     'simple' (MyData tuple) = 'simple' tuple
+--     'fromSimple' = MyData 'Control.Applicative.<$>' 'fromSimple'
+-- @
+--
+-- But there is a chance that other data types that are also constructable from an
+-- @('Prelude.Integer', 'Data.Text.Text', 'Prelude.Bool')@ tuple could accidentally be constructed
+-- from this data. You could create a kind of guard by always making the first element of the
+-- 'Simple' container 'Dao.Array.Array' a constant string like so:
+--
+-- @
+-- instance 'SimpleData' MyData where
+--     'simple' (MyData (int, txt, bool)) = 'simple' $ 'Dao.Array.array' ['simple' "MyData", simple int, simple txt, simple bool]
+--     'fromSimple' simp = do
+--         components <- 'Dao.Array.elems' $ 'fromSimple' simp
+--         case components of
+--             [label, int, txt, bool] | label == 'Dao.Text.toText' "MyData" -> 'Control.Monad.return' $ MyData (int, txt, bool)
+--             _ -> 'Control.Monad.mzero'
+-- @
+--
+-- But obviously this is much more tedious and error prone.
+--
+-- Fortunately, we can automate this structuring convention by using the 'struct' and 'fromStruct'
+-- functions:
+--
+-- @
+-- instance 'SimpleData' MyData where
+--     'simple' (MyData tuple) = 'struct' "MyData" tuple
+--     'fromSimple' = 'fromStruct' "MyData" MyData
+-- @
+struct :: (ToText label, SimpleData dat) => label -> dat -> Simple
+struct label o = OStruct (toText label) (simple o)
+
+-- | See the documentation for the 'struct' function on how to use this function.
+fromStruct
+  :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadError ErrorObject m,
+      ToText label, SimpleData simp)
+  => label -> (simp -> mydata) -> Simple -> m mydata
+fromStruct label constr o = case o of
+  OStruct name o | name==toText label -> constr <$> fromSimple o
+  _ -> mzero
+
+----------------------------------------------------------------------------------------------------
+
+-- | The 'ObjectData' type class lets you define the 'obj' and 'fromObj' functions for your own data
+-- type. You could always use the 'fromForeign' or 'toForeign' functions, but you would also have to
+-- remember to always call 'matchable' and 'printable' composed with 'fromForeign' for data types
+-- that are in the 'PatternClass' and 'Dao.Text.PPrint.PPrintable' class -- if you didn't
+-- 'matchable' 'Object's would not be able to access their 'patternCompare' or 'pPrint' instances.
+--
+-- By instantiating the 'ObjectData' type class, you can call 'fromForeign' and 'toForeign' with as
+-- many other initializing functions ('matchable', 'printable') as necessary, so anyone who wraps
+-- your data type in an 'Object' with 'obj' will know it can access all the additional functions you
+-- provided to it.
 class (Eq o, Ord o, Typeable o, SimpleData o) => ObjectData o where
   obj :: o -> Object
   fromObj
@@ -753,77 +754,71 @@ defaultFromObj = fromObj >=> toForeign
 
 instance ObjectData Object   where { obj = id; fromObj = return; }
 
-instance ObjectData Passport  where
-  obj       = OForeign
-  fromObj o = case o of { OForeign o -> return o; _ -> mzero; }
-
 instance ObjectData Simple   where
-  obj       = OSimple
-  fromObj o = return $ case o of
-    OForeign o -> objSimplified o
-    OSimple  o -> o
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData ()       where
-  obj       = OSimple . simple
-  fromObj o = case o of { OSimple ONull -> return (); _ -> mzero; }
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData Bool   where
-  obj       = OSimple . simple
-  fromObj o = case o of { OSimple o -> fromSimple o; _ -> mzero; }
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData T_int    where
-  obj       = OSimple . simple
-  fromObj o = case o of { OSimple (OInt o) -> return o; _ -> mzero; }
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData T_long   where
-  obj       = OSimple . simple
-  fromObj o = case o of { OSimple (OLong o) -> return o; _ -> mzero; }
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData T_float  where
-  obj       = OSimple . simple
-  fromObj o = case o of { OSimple (OFloat o) -> return o; _ -> mzero; }
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData T_char   where
-  obj       = OSimple . simple
-  fromObj o = case o of { OSimple (OChar o) -> return o; _ -> mzero; }
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData T_string where
-  obj       = OSimple . simple
-  fromObj o = case o of { OSimple (OString o) -> return o; _ -> mzero; }
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData String where
-  obj       = OSimple . simple
-  fromObj o = case o of { OSimple (OString o) -> return $ Strict.unpack o; _ -> mzero; }
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData T_list   where
-  obj       = OSimple . simple
-  fromObj o = case o of { OSimple (OList o) -> return o; _ -> mzero; }
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData [Object] where
-  obj       = OSimple . simple
-  fromObj o = case o of { OSimple (OList o) -> return $ elems o; _ -> mzero; }
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData T_map    where
-  obj       = OSimple . simple
-  fromObj o = case o of { OSimple (OMap o) -> return o; _ -> mzero; }
-
-instance ObjectData T_type   where
-  obj       = OSimple . simple
-  fromObj o = case o of { OSimple (OType o) -> return o; _ -> mzero; }
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData T_tree   where
-  obj       = OSimple . simple
-  fromObj o = case o of { OSimple (OTree o) -> return o; _ -> mzero; }
+  obj     = fromForeign
+  fromObj = toForeign
+
+instance ObjectData TypeRep  where
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData pat => ObjectData (Satisfy pat) where
-  obj     = OSimple . simple
-  fromObj = fromObj >=> fromSimple
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData pat => ObjectData (Conjunction pat) where
-  obj     = obj . fromForeign
-  fromObj = fromObj >=> fromSimple
+  obj     = fromForeign
+  fromObj = toForeign
 
 instance ObjectData pat => ObjectData (Statement pat) where
-  obj     = obj . fromForeign
-  fromObj = fromObj >=> fromSimple
+  obj     = fromForeign
+  fromObj = toForeign
 

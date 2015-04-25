@@ -23,6 +23,7 @@ module Dao.Text.PPrint where
 
 import           Prelude hiding (id, (.))
 
+import           Dao.Array
 import           Dao.Count
 import           Dao.Lens
 import           Dao.Predicate
@@ -171,6 +172,10 @@ instance (PPrintable err, PPrintable o) => PPrintable (Predicate err o) where
       PFalse   -> [pText "PFalse"]
       PTrue  o -> f "PTrue"  o
       PError o -> f "PError" o
+
+instance PPrintable o => PPrintable (Array o) where { pPrint = pPrint . elems; }
+instance PPrintable o => PPrintable [o] where
+  pPrint o = [pInline $ pChar '[' : intercalate [pChar ',', pSpace] (fmap pPrint o) ++ [pChar ']']]
 
 ----------------------------------------------------------------------------------------------------
 

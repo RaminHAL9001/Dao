@@ -126,7 +126,7 @@ instance PatternClass TypePattern where
   patternCompare (TypePattern p) o = if p==objTypeOf o then Similar 0.0 else Dissimilar
 
 instance ObjectData TypePattern where
-  obj p = obj $ printable p $ matchable p $ fromForeign p
+  obj o = printable o $ matchable o $ fromForeign o
   fromObj = defaultFromObj
 
 -- | Use 'next' to take the next item from the current 'Query', evaluate the 'Data.Typeable.TypeRep'
@@ -258,8 +258,8 @@ instance SimpleData ErrorObject where
   fromSimple = fmap ErrorObject . fromSimple
 
 instance ObjectData ErrorObject where
-  obj = obj . simple
-  fromObj = fromObj >=> fromSimple
+  obj o = printable o $ fromForeign o
+  fromObj = toForeign
 
 errorObjectArray :: Monad m => Lens m ErrorObject (Array Object)
 errorObjectArray = newLens (\ (ErrorObject o) -> o) (\o _ -> ErrorObject o)
@@ -542,15 +542,7 @@ instance SimpleData T_string where
   simple       = OString
   fromSimple o = case o of { OString o -> return o; _ -> mzero; }
 
-instance SimpleData T_list   where
-  simple       = OList
-  fromSimple o = case o of { OList o -> return o; _ -> mzero; }
-
-instance SimpleData [Simple] where
-  simple       = OList . array
-  fromSimple o = case o of { OList o -> return $ elems o; _ -> mzero; }
-
-instance SimpleData [Object] where
+instance SimpleData o => SimpleData [o] where
   simple       = OList . array . fmap simple
   fromSimple o = case o of { OList o -> mapM fromSimple $ elems o; _ -> mzero; }
 
@@ -558,13 +550,18 @@ instance SimpleData o => SimpleData (Array o) where
   simple       = OList . fmap simple
   fromSimple o = case o of { OList o -> fmap array $ mapM fromSimple $ elems o; _ -> mzero; }
 
-instance SimpleData T_map    where
-  simple       = OMap
-  fromSimple o = case o of { OMap o -> return o; _ -> mzero; }
+instance (SimpleData key, SimpleData val) => SimpleData (M.Map key val) where
+  simple       = OMap . M.fromList . fmap (simple *** simple) . M.assocs
+  fromSimple o = case o of
+    OMap o -> M.fromList <$> mapM (\ (a, b) -> (,) <$> fromSimple a <*> fromSimple b) (M.assocs o)
+    _ -> mzero
 
-instance SimpleData T_tree   where
-  simple       = OTree
-  fromSimple o = case o of { OTree o -> return o; _ -> mzero; }
+instance (SimpleData key, SimpleData val) => SimpleData (T.Tree key val) where
+  simple       = OTree . T.fromList . fmap (fmap simple *** simple) . T.assocs T.BreadthFirst
+  fromSimple o = case o of
+    OTree o -> fmap T.fromList $ forM (T.assocs T.BreadthFirst o) $ \ (a, b) ->
+      (,) <$> mapM fromSimple a <*> fromSimple b
+    _ -> mzero
 
 instance SimpleData Simple   where
   simple       = id
@@ -755,70 +752,70 @@ defaultFromObj = fromObj >=> toForeign
 instance ObjectData Object   where { obj = id; fromObj = return; }
 
 instance ObjectData Simple   where
-  obj     = fromForeign
+  obj   o = printable o $ fromForeign o
   fromObj = toForeign
 
 instance ObjectData ()       where
-  obj     = fromForeign
+  obj   o = printable o $ fromForeign o
   fromObj = toForeign
 
 instance ObjectData Bool   where
-  obj     = fromForeign
+  obj   o = printable o $ fromForeign o
   fromObj = toForeign
 
 instance ObjectData T_int    where
-  obj     = fromForeign
+  obj   o = printable o $ fromForeign o
   fromObj = toForeign
 
 instance ObjectData T_long   where
-  obj     = fromForeign
+  obj   o = printable o $ fromForeign o
   fromObj = toForeign
 
 instance ObjectData T_float  where
-  obj     = fromForeign
+  obj   o = printable o $ fromForeign o
   fromObj = toForeign
 
 instance ObjectData T_char   where
-  obj     = fromForeign
+  obj   o = printable o $ fromForeign o
   fromObj = toForeign
 
 instance ObjectData T_string where
-  obj     = fromForeign
+  obj   o = printable o $ fromForeign o
   fromObj = toForeign
 
 instance ObjectData String where
-  obj     = fromForeign
+  obj   o = printable o $ fromForeign o
   fromObj = toForeign
 
-instance ObjectData T_list   where
-  obj     = fromForeign
+instance ObjectData o => ObjectData (Array o) where
+  obj   o = printable (simple o) $ fromForeign o
   fromObj = toForeign
 
-instance ObjectData [Object] where
-  obj     = fromForeign
+instance ObjectData o => ObjectData [o] where
+  obj   o = printable (simple o) $ fromForeign o
   fromObj = toForeign
 
-instance ObjectData T_map    where
-  obj     = fromForeign
+instance (ObjectData key, ObjectData val) => ObjectData (M.Map key val) where
+  obj   o = printable (simple o) $ fromForeign o
   fromObj = toForeign
 
-instance ObjectData T_tree   where
-  obj     = fromForeign
+instance (ObjectData key, ObjectData val) => ObjectData (T.Tree key val) where
+  obj   o = printable (simple o) $ fromForeign o
   fromObj = toForeign
 
-instance ObjectData TypeRep  where
-  obj     = fromForeign
+instance ObjectData TypeRep where
+  obj   o = matchable o $ printable (simple o) $ fromForeign o
   fromObj = toForeign
 
 instance ObjectData pat => ObjectData (Satisfy pat) where
-  obj     = fromForeign
+  obj   o = printable (simple o) $ fromForeign o
   fromObj = toForeign
 
 instance ObjectData pat => ObjectData (Conjunction pat) where
-  obj     = fromForeign
+  obj   o = printable (simple o) $ fromForeign o
   fromObj = toForeign
 
 instance ObjectData pat => ObjectData (Statement pat) where
-  obj     = fromForeign
+  obj   o = printable (simple o) $ fromForeign o
   fromObj = toForeign
 

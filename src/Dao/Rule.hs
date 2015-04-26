@@ -73,6 +73,7 @@ module Dao.Rule
   where
 
 import           Dao.Array
+import           Dao.Certainty
 import           Dao.Lens
 import           Dao.Logic
 import           Dao.Predicate
@@ -116,20 +117,20 @@ type Query tok = Array tok
 -- create many copies of the 'QueryState' (taking advantage of Haskell's lazy copy on write to do it
 -- efficiently) as multiple branches of 'Rule' evaluation are explored. In the case of the 'Rule'
 -- the 'querySubState' is always @()@, not everyone needs to make use of the state.
-newtype QueryState tok st = QueryState (st, Double, Int, Query tok) deriving (Eq, Ord, Show, Typeable)
+newtype QueryState tok st = QueryState (st, Certainty, Int, Query tok) deriving (Eq, Ord, Show, Typeable)
 
 instance TestNull st => TestNull (QueryState tok st) where
   nullValue = QueryState nullValue
   testNull (QueryState o) = testNull o
 
-queryStateTuple :: Monad m => Lens m (QueryState tok st) (st, Double, Int, Query tok)
+queryStateTuple :: Monad m => Lens m (QueryState tok st) (st, Certainty, Int, Query tok)
 queryStateTuple = newLens (\ (QueryState o) -> o) (\o _ -> QueryState o)
 
 -- | Keeps the polymorphic stateful data.
 querySubState :: Monad m => Lens m (QueryState tok st) st
 querySubState = queryStateTuple >>> tuple0
 
-queryWeight :: Monad m => Lens m (QueryState tok st) Double
+queryWeight :: Monad m => Lens m (QueryState tok st) Certainty
 queryWeight = queryStateTuple >>> tuple1
 
 queryIndex :: Monad m => Lens m (QueryState tok st) Int
@@ -143,7 +144,7 @@ _plus = M.unionWith (T.unionWith (\a b q -> mplus (a q) (b q)))
 
 _showQS :: Show tok => QueryState tok st -> String
 _showQS (QueryState (_, w, i, qx)) = "(..., " ++
-  show ((round (w*1000) % 1000) :: Rational) ++ show i ++ ", " ++ show (elems qx) ++ ")"
+  show ((round ((w~>average)*1000) % 1000) :: Rational) ++ show i ++ ", " ++ show (elems qx) ++ ")"
 
 ----------------------------------------------------------------------------------------------------
 
@@ -197,6 +198,10 @@ data Similarity
 -- the 'Prelude.tail' end of the 'Data.List.sort'ed list.
 newtype Dissimilarity = Dissimilarity { getSimilarity :: Similarity }
   deriving (Eq, Show, Typeable)
+
+instance TestNull Similarity where
+  nullValue  = Dissimilar
+  testNull o = case o of { Dissimilar -> True; _ -> False; }
 
 instance Monoid Similarity where
   mempty = Dissimilar
@@ -283,7 +288,7 @@ instance (Eq a, Eq b) => PatternClass (Either a b)     where { patternCompare=pa
 -- instance 'PatternClass' MyBoolean where { patternCompare = patternFromEq; }
 -- @
 patternFromEq :: Eq t => t -> t -> Similarity
-patternFromEq a b = if a==b then Similar 1.0 else Dissimilar
+patternFromEq a b = if a==b then ExactlyEqual else Dissimilar
 
 ----------------------------------------------------------------------------------------------------
 
@@ -517,23 +522,23 @@ evalRuleLogic rule = case rule of
 queryAll
   :: (Monad m, Eq tok, Ord tok, PatternClass tok,
       Typeable err, Typeable st, Typeable tok, Typeable a)
-  => Rule err tok st m a -> st -> [tok] -> m [Either (RuleError err) a]
-queryAll rule st q =
-  runLogicT (evalRuleLogic rule) (QueryState (st, 0.0, 0, array q)) >>= return . fmap fst
+  => Rule err tok st m a -> st -> [tok] -> m [(Either (RuleError err) a, st)]
+queryAll rule st q = liftM (fmap (fmap (~> querySubState))) $
+  runLogicT (evalRuleLogic rule) (QueryState (st, 0.0, 0, array q))
 
 -- | Run a 'Rule' against a token query given as a value of type @[tok]@ query, return all
 -- successful results.
 query
   :: (Monad m, Eq tok, Ord tok, PatternClass tok,
       Typeable err, Typeable st, Typeable tok, Typeable a)
-  => Rule err tok st m a -> st -> [tok] -> m [a]
-query r st = queryAll r st >=> return . (>>= (const [] ||| return))
+  => Rule err tok st m a -> st -> [tok] -> m [(a, st)]
+query r st = liftM (concatMap $ \ (a, st) -> const [] ||| return . flip (,) st $ a) . queryAll r st
 
 -- | Like 'query', but only returns the first successful result, if any.
 query1
   :: (Monad m, Eq tok, Ord tok, PatternClass tok,
       Typeable err, Typeable st, Typeable tok, Typeable a)
-  => Rule err tok st m a -> st -> [tok] -> m (Maybe a)
+  => Rule err tok st m a -> st -> [tok] -> m (Maybe (a, st))
 query1 r st = query r st >=> \ox -> return $ if null ox then Nothing else Just $ head ox
 
 -- | Take the next item from the query input, backtrack if there is no input remaining.

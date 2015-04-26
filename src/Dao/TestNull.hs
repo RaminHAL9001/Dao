@@ -20,6 +20,7 @@
 -- the Dao runtime are null or not, especially in conditional statements.
 module Dao.TestNull( TestNull(testNull, nullValue) ) where
 
+import           Dao.Count
 import qualified Dao.Interval   as Iv
 
 import           Data.Monoid
@@ -39,6 +40,7 @@ instance TestNull Strict.Text where { testNull = Strict.null; nullValue = Strict
 instance TestNull (M.Map i o) where { testNull = M.null;      nullValue = M.empty; }
 instance TestNull (S.Set   o) where { testNull = S.null;      nullValue = S.empty; }
 instance TestNull Int         where { testNull = (==0);       nullValue = 0; }
+instance TestNull Count       where { testNull = (==0);       nullValue = 0; }
 instance TestNull Integer     where { testNull = (==0);       nullValue = 0; }
 instance TestNull Double      where { testNull = (==0);       nullValue = 0; }
 instance (Ord o, Enum o, Iv.InfBound o) =>

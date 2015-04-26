@@ -126,6 +126,9 @@ instance Monoid Location where
 instance NFData Location where
   rnf (Location (a, b)) = maybe () (flip deepseq ()) a <> maybe () (flip deepseq ()) b
 
+locationFromPoint :: TextPoint -> Location
+locationFromPoint o = new [locationStart <~ Just o, locationEnd <~ Just o]
+
 locationTuple :: Monad m => Lens m Location (Maybe TextPoint, Maybe TextPoint)
 locationTuple = newLens (\ (Location o) -> o) (\o _ -> Location o)
 

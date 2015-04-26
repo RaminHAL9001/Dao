@@ -68,12 +68,14 @@ module Dao.Grammar
     -- * Converting 'Grammar's to Monadic Parsers ('MonadParser's)
     grammarToParser,
     -- * Working with Source Locations
-    backtrack, getPoint, setPoint, newline, movePoint, moveCursor,
+    backtrack, getPoint, setPoint, withLocation, newline, movePoint, moveCursor,
     -- * Essential Tokenizers
     -- $Essential_tokenizers
-    SpaceToken(SpaceToken), NewLineToken(NewLineToken), CInlineComment(CInlineComment),
-    CEndlineComment(CEndlineComment), CIdentifier(CIdentifier),
-    IntLitTokenLens(intLitToken),
+    SpaceToken(SpaceToken), OptSpaceToken(OptSpaceToken), NewLineToken(NewLineToken),
+    CInlineComment(CInlineComment), CEndlineComment(CEndlineComment),
+    HaskellInlineComment(HaskellInlineComment), HaskellEndlineComment(HaskellEndlineComment),
+    inlineCommentGrammar, endlineCommentGrammar,
+    CIdentifier(CIdentifier), IntLitTokenLens(intLitToken),
     PosNeg(PosNeg), prependSign, posNegNum, posNegSign,
     ExponentLitToken(ExponentLitToken),
     exponentTokenLens, exponentTokenCapitalE, exponentTokenPosNeg,
@@ -83,6 +85,7 @@ module Dao.Grammar
     NumberLitToken(DecIntNumberLit, HexIntNumberLit, IntExponentLit, DecimalPointLit),
     decimalPointedNumberToken, exponentLiteralToken,
     CNumberLit(CNumberLit, COctIntNumberLit), cDecimalPoint, cExponent,
+    Quoted1Token(Quoted1Token), Quoted2Token(Quoted2Token),
     -- * Re-Exported Modules
     module Dao.Text.CharSet,
     module Dao.Text.Regex,
@@ -560,6 +563,14 @@ getPoint = GrLift $ liftM GrReturn getTextPoint
 setPoint :: (MonadSourceCodeParser m, Monad m, MonadPlus m) => TextPoint -> Grammar m ()
 setPoint = GrLift . liftM GrReturn . setTextPoint
 
+withLocation :: (Monad m, MonadSourceCodeParser m) => Grammar m o -> Grammar m (Location, o)
+withLocation f = do
+  let optional f = mplus (liftM Just f) (return Nothing)
+  start <- optional getPoint
+  o     <- f
+  end   <- optional getPoint
+  return (new [locationStart <~ start, locationEnd <~ end], o)
+
 -- | When converted to a monadic parser, this will increment the line counter and reset the column
 -- counter to 1 if the inner 'Grammar' converts to a successful parser. This is designed to be used
 -- with the @'lineBreak' :: 'Grammar'@ like so:
@@ -633,16 +644,42 @@ instance NFData SpaceToken where { rnf (SpaceToken o) = deepseq o (); }
 instance Monad m => The (Grammar m SpaceToken) where
   the = grammarTyped $ grammar [lexer (SpaceToken . Lazy.toStrict) [rx (anyOf "\t\v\f ", MIN 1)]]
 
+-- | This is exactly like 'SpaceToken', except the 'Grammar' never fails to parse. If there are no
+-- whitespace characters under the current point in the input strean, an empty string token is
+-- returned.
+newtype OptSpaceToken = OptSpaceToken StrictText deriving (Eq, Ord, Typeable)
+instance ToText OptSpaceToken where { toText (OptSpaceToken o) = o; }
+instance StringLength OptSpaceToken where { stringLength = stringLength . toText; }
+instance Show OptSpaceToken where { show = show . toText; }
+instance PPrintable OptSpaceToken where { pPrint = return . pText . toText; }
+instance NFData OptSpaceToken where { rnf (OptSpaceToken o) = deepseq o (); }
+instance TestNull OptSpaceToken where
+  nullValue = OptSpaceToken nullValue
+  testNull (OptSpaceToken o) = testNull o
+instance Monad m => The (Grammar m OptSpaceToken) where
+  the = grammarTyped $ grammar [lexer (OptSpaceToken . Lazy.toStrict) [rx (anyOf "\t\v\f ", MIN 0)]]
+
 -- | This token type is produced when any newline characters @'\n'@, @'\r'@, @"\n\r"@, or @"\r\n"@
 -- are picked up during scanning.
-newtype NewLineToken = NewLineToken () deriving (Eq, Ord, Typeable)
-instance ToText NewLineToken where { toText (NewLineToken ()) = Strict.singleton '\n'; }
+newtype NewLineToken = NewLineToken StrictText deriving (Eq, Ord, Typeable)
+instance ToText NewLineToken where { toText (NewLineToken o) = o; }
 instance StringLength NewLineToken where { stringLength = stringLength . toText; }
 instance Show NewLineToken where { show = show . toText; }
-instance PPrintable NewLineToken where { pPrint = return . pText . toText; }
-instance NFData NewLineToken where { rnf (NewLineToken o) = seq o o; }
+instance PPrintable NewLineToken where { pPrint _ = [pNewLine]; }
+instance NFData NewLineToken where { rnf (NewLineToken o) = deepseq o (); }
 instance Monad m => The (Grammar m NewLineToken) where
-  the = grammarTyped $ grammar [lexConst (NewLineToken ()) [rx "\n\r", rx "\r\n", rx $ anyOf "\n\r"]]
+  the = grammarTyped $ grammar
+    [lexer (NewLineToken . Lazy.toStrict) [rx "\n\r", rx "\r\n", rx $ anyOf "\n\r"]]
+
+inlineCommentGrammar :: Monad m => Char -> Char -> Char -> Grammar m StrictText
+inlineCommentGrammar start interm end = liftM Lazy.toStrict $ do
+  let mid    = rx (interm, MIN 1)
+  let open   = rx  start
+  let close  = rx  end
+  let notMid = rx (noneOf [interm], MIN 0)
+  let loop     str = mplus (liftM (mappend str) $ grammar [lexer id [close]]) $
+        liftM (mappend str) (grammar [lexer id [notMid, mid]]) >>= loop
+  grammar [lexer id [open, mid]] >>= loop
 
 -- | This is a C programming language styled inline comment: @/* comment text */@.
 newtype CInlineComment = CInlineComment StrictText deriving (Eq, Ord, Typeable)
@@ -652,15 +689,24 @@ instance Show CInlineComment where { show = show . toText; }
 instance PPrintable CInlineComment where { pPrint = return . pText . toText; }
 instance NFData CInlineComment where { rnf (CInlineComment o) = deepseq o (); }
 instance Monad m => The (Grammar m CInlineComment) where
-  the = grammarTyped $ liftM (CInlineComment . Lazy.toStrict) $ do
-    let asterisks    = rx ('*', MIN 1)
-    let slash        = rx  '/'
-    let notAsterisks = rx (noneOf "*", MIN 0)
-    let loop     str = mplus (liftM (mappend str) $ grammar [lexer id [slash]]) $
-          liftM (mappend str) (grammar [lexer id [notAsterisks, asterisks]]) >>= loop
-    grammar [lexer id [slash, asterisks]] >>= loop
+  the = grammarTyped $ liftM CInlineComment $ inlineCommentGrammar '/' '*' '/'
 
--- | This is a C programming language styled end-of-line comment: @// comment text@.
+-- | This is a C programming language styled inline comment: @/* comment text */@.
+newtype HaskellInlineComment = HaskellInlineComment StrictText deriving (Eq, Ord, Typeable)
+instance ToText HaskellInlineComment where { toText (HaskellInlineComment o) = o; }
+instance StringLength HaskellInlineComment where { stringLength = stringLength . toText; }
+instance Show HaskellInlineComment where { show = show . toText; }
+instance PPrintable HaskellInlineComment where { pPrint = return . pText . toText; }
+instance NFData HaskellInlineComment where { rnf (HaskellInlineComment o) = deepseq o (); }
+instance Monad m => The (Grammar m HaskellInlineComment) where
+  the = grammarTyped $ liftM HaskellInlineComment $ inlineCommentGrammar '{' '-' '}'
+
+-- | The 'Grammar' used to parse the 'CEndlineComment' and 'HaskellEndlineComment' tokens.
+endlineCommentGrammar :: (Monad m, ToRegex t) => t -> Grammar m StrictText
+endlineCommentGrammar t = grammar [lexer Lazy.toStrict [rx t, rx (noneOf "\n", MIN 0)]]
+
+-- | This is a C programming language styled end-of-line comment: @// comment text@. The terminating
+-- newline character is not included.
 newtype CEndlineComment = CEndlineComment StrictText deriving (Eq, Ord, Typeable)
 instance ToText CEndlineComment where { toText (CEndlineComment o) = o; }
 instance StringLength CEndlineComment where { stringLength = stringLength . toText; }
@@ -668,8 +714,18 @@ instance Show CEndlineComment where { show = show . toText; }
 instance PPrintable CEndlineComment where { pPrint = return . pText . toText; }
 instance NFData CEndlineComment where { rnf (CEndlineComment o) = deepseq o (); }
 instance Monad m => The (Grammar m CEndlineComment) where
-  the = grammarTyped $
-    grammar [lexer (CEndlineComment . Lazy.toStrict) [rx "//", rx (noneOf "\n", MIN 0)]]
+  the = grammarTyped $ liftM CEndlineComment $ endlineCommentGrammar "//"
+
+-- | This is a C programming language styled end-of-line comment: @// comment text@. The terminating
+-- newline character is not included.
+newtype HaskellEndlineComment = HaskellEndlineComment StrictText deriving (Eq, Ord, Typeable)
+instance ToText HaskellEndlineComment where { toText (HaskellEndlineComment o) = o; }
+instance StringLength HaskellEndlineComment where { stringLength = stringLength . toText; }
+instance Show HaskellEndlineComment where { show = show . toText; }
+instance PPrintable HaskellEndlineComment where { pPrint = return . pText . toText; }
+instance NFData HaskellEndlineComment where { rnf (HaskellEndlineComment o) = deepseq o (); }
+instance Monad m => The (Grammar m HaskellEndlineComment) where
+  the = grammarTyped $ liftM HaskellEndlineComment $ endlineCommentGrammar "--"
 
 -- | This is a C programming language style identifier, these are names starting with any
 -- alphabetic or underscore characters, and containing any number of alphanumeric or underscore

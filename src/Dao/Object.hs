@@ -43,7 +43,7 @@ module Dao.Object
     -- * Data Types as 'Object's
     Object, fromForeign, toForeign, objDynamic, objEquality, objOrdering, objPrinted,
     printable, matchable,
-    ObjectData(obj, fromObj), defaultFromObj,
+    ObjectData(obj, fromObj), defaultFromObj, ObjRule,
     -- * The Class of Pattern Matching Data Types
     TypePattern(TypePattern), patternTypeRep, infer,
     -- * Working with Void (undefined) Values
@@ -818,4 +818,12 @@ instance ObjectData pat => ObjectData (Conjunction pat) where
 instance ObjectData pat => ObjectData (Statement pat) where
   obj   o = printable (simple o) $ fromForeign o
   fromObj = toForeign
+
+----------------------------------------------------------------------------------------------------
+
+-- | When defining 'Dao.Rule.Rule' monads, if you are not sure what your token type or error type
+-- should be, you can just use the 'Dao.Object.Object' types. This type synonym uses 'ErrorObject'
+-- as the error type, and 'Object' as the token type. The state type and lifted monad types are
+-- still free for you to define.
+type ObjRule st m a = Rule ErrorObject Object st m a
 

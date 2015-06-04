@@ -19,6 +19,8 @@
 module Dao.Array
   ( Array, array, arraySpan, size, indexOK, elems, lastElem,
     indexElems, (!), toIArray, arrayIsNull,
+    ArrayIterator(ArrayIterator), iteratorLens, iteratorIndex, iteratorArray,
+    iteratorLook, iterateNext, iterateHere,
     levenshteinDistanceMatrix,
     levenshteinIArrayDistance,
     levenshteinArrayDistance,
@@ -27,13 +29,17 @@ module Dao.Array
   )
   where
 
+import           Prelude hiding ((.), id)
+
 import           Dao.Lens
 import           Dao.Text
 import           Dao.TestNull
 
 import           Control.Applicative
+import           Control.Category
 import           Control.DeepSeq
 import           Control.Monad hiding (mapM, msum)
+import           Control.Monad.State hiding (msum)
 
 import qualified Data.Array.IArray as A
 import qualified Data.Array.Unboxed as A
@@ -122,6 +128,43 @@ arrayIsNull :: Array o -> Bool
 arrayIsNull o = case o of
   Array Nothing -> True
   _             -> False
+
+----------------------------------------------------------------------------------------------------
+
+-- | This is a simple array iterator type, it contains an 'Array' and an 'Int' index which can
+-- move arbitrarily. You can also freely modify the 'Array' contained within.
+newtype ArrayIterator o = ArrayIterator (Int, Array o) deriving (Eq, Ord, Typeable)
+
+instance TestNull (ArrayIterator o) where
+  nullValue = ArrayIterator nullValue
+  testNull (ArrayIterator o) = testNull o
+
+iteratorLens :: Monad m => Lens m (ArrayIterator o) (Int, Array o)
+iteratorLens = newLens (\ (ArrayIterator o) -> o) (\o _ -> ArrayIterator o)
+
+iteratorIndex :: Monad m => Lens m (ArrayIterator o) Int
+iteratorIndex = iteratorLens >>> tuple0
+
+iteratorArray :: Monad m => Lens m (ArrayIterator o) (Array o)
+iteratorArray = iteratorLens >>> tuple1
+
+iteratorLook :: ArrayIterator o -> Maybe o
+iteratorLook (ArrayIterator (i, arr)) = arr!i
+ 
+-- | Retrieve the next item from the array and step the 'iteratorIndex', or return 'Prelude.Nothing'
+-- if there is no next element.
+iterateNext :: MonadState st m => Lens m st (ArrayIterator o) -> m (Maybe o)
+iterateNext lens = do
+  let indx = lens >>> iteratorIndex
+  i <- lensGet indx
+  a <- lensGet (lens >>> iteratorArray)
+  case a!i of
+    Nothing -> return Nothing
+    Just  o -> lensModify indx (return . (+ 1)) >> return (Just o)
+
+-- | Return the current item under the 'iteratorIndex' without advancing the 'iteratorIndex'.
+iterateHere :: MonadState st m => Lens m st (ArrayIterator o) -> m (Maybe o)
+iterateHere lens = liftM iteratorLook (lensGet lens)
 
 ----------------------------------------------------------------------------------------------------
 

@@ -28,12 +28,13 @@ import           Control.DeepSeq
 import qualified Data.Array.IArray as A
 import           Data.Int
 import           Data.Monoid
+import           Data.Typeable
 
 -- | A newtype wrapping the 'Data.Word.Word' data type used to keep count characters, lines,
 -- columns, or whatever. Instantiates 'Data.Monoid.Monoid' with the functions for integer addition.
 -- All classes necessary for using a 'Count' as an ordinary integer value are instantiated. This
 -- means you can write @1::'Count'@ and it will wokr.
-newtype Count = Count { countToInt :: Int64 } deriving (Eq, Ord, Bounded, A.Ix)
+newtype Count = Count { countToInt :: Int64 } deriving (Eq, Ord, Bounded, A.Ix, Typeable)
 
 instance Show Count where { show (Count o) = show o }
 

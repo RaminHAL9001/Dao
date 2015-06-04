@@ -36,26 +36,30 @@ module Dao.Object
     -- * Improving on 'Data.Dynamic.Dynamic'
     HasTypeRep(objTypeOf),
     -- * Simple Data Modeling
-    Simple(OVoid, ONull, OTrue, OInt, OLong, OChar, OList, OMap, OTree, OStruct),
+    Simple(OVoid, ONull, OTrue, OInt, OLong, OChar, OString, OList, OMap, OTree, OStruct),
     SimpleData(simple, fromSimple), simpleNumInfixOp, simpleSetInfixOp,
-    T_int, T_long, T_float, T_string, T_char, T_list, T_map, struct, fromStruct,
+    T_int, T_long, T_float, T_string, T_char, T_list, T_map,
+    struct, fromStruct, voidStruct, fromVoidStruct,
     stringToTypeMap,
     -- * Data Types as 'Object's
     Object, fromForeign, toForeign, objDynamic, objEquality, objOrdering, objPrinted,
     printable, matchable,
     ObjectData(obj, fromObj), defaultFromObj, ObjRule,
     -- * The Class of Pattern Matching Data Types
-    TypePattern(TypePattern), patternTypeRep, infer,
+    TypePattern(TypePattern), patternTypeRep,
     -- * Working with Void (undefined) Values
     MaybeVoid(voidValue, testVoid), firstNonVoid, allNonVoids
   )
   where
 
 import           Dao.Array
+import           Dao.Count
 import           Dao.Int
+import qualified Dao.Interval   as Iv
 import           Dao.Lens
 import           Dao.Logic
 import           Dao.Rule
+import           Dao.Text.CharSet
 import           Dao.Text.PPrint
 import           Dao.Predicate
 import           Dao.TestNull
@@ -76,6 +80,7 @@ import           Data.Char
 import           Data.Dynamic
 import           Data.List (intercalate)
 import qualified Data.Map       as M
+import           Data.Ratio
 import qualified Data.Text      as Strict
 import qualified Data.Text.Lazy as Lazy
 
@@ -128,26 +133,6 @@ instance PatternClass TypePattern where
 instance ObjectData TypePattern where
   obj o = printable o $ matchable o $ fromForeign o
   fromObj = defaultFromObj
-
--- | Use 'next' to take the next item from the current 'Query', evaluate the 'Data.Typeable.TypeRep'
--- of the 'next' token using 'objTypeOf', compare this to the to the
--- 'Data.Typeable.TypeRep' of @t@ inferred by 'Data.Typeable.typeOf'. Compare these two types using
--- @('Prelude.==')@, and if 'Prelude.True' evaluate a function on it.  This function makes a new
--- 'RuleTree' where the pattern in the branch is a 'TypePattern'. For example, if you pass a
--- function to 'infer' which is of the type @('Prelude.String' -> 'Rule' m a)@, 'infer' will create
--- a 'RuleTree' that matches if the token returned by 'next' can be cast to a value of
--- 'Prelude.String'.
-infer
-  :: forall st t m a . (Functor m, Monad m, Typeable t, ObjectData t)
-  => (t -> Rule ErrorObject Object st m a) -> Rule ErrorObject Object st m a
-infer f = edges T.BreadthFirst [[obj $ typ f err]] just1 where
-  just1 ox = case ox of
-    [o] -> predicate (fmapPError RuleError $ fromObj o) >>= f
-    _   -> mzero
-  typ :: (t -> Rule ErrorObject Object st m a) -> t -> TypePattern
-  typ _ ~t = TypePattern $ typeOf t
-  err :: t
-  err = error "in Dao.Rule.infer: typeOf evaluated undefined"
 
 ----------------------------------------------------------------------------------------------------
 
@@ -542,6 +527,10 @@ instance SimpleData T_string where
   simple       = OString
   fromSimple o = case o of { OString o -> return o; _ -> mzero; }
 
+instance SimpleData Lazy.Text where
+  simple       = OString . Lazy.toStrict
+  fromSimple o = case o of { OString o -> return $ Lazy.fromStrict $ o; _ -> mzero; }
+
 instance SimpleData o => SimpleData [o] where
   simple       = OList . array . fmap simple
   fromSimple o = case o of { OList o -> mapM fromSimple $ elems o; _ -> mzero; }
@@ -562,6 +551,14 @@ instance (SimpleData key, SimpleData val) => SimpleData (T.Tree key val) where
     OTree o -> fmap T.fromList $ forM (T.assocs T.BreadthFirst o) $ \ (a, b) ->
       (,) <$> mapM fromSimple a <*> fromSimple b
     _ -> mzero
+
+instance SimpleData Count    where
+  simple = OLong . fromIntegral
+  fromSimple o = case o of { OLong o -> return $ Count $ fromInteger o; _ -> mzero; }
+
+instance (Integral o, SimpleData o) => SimpleData (Ratio o) where
+  simple o = struct "Ratio" $ (numerator o, denominator o)
+  fromSimple = fromStruct "Ratio" (uncurry (%))
 
 instance SimpleData Simple   where
   simple       = id
@@ -612,6 +609,21 @@ stringToTypeMap = M.fromList $ fmap (first toText) $ concat $
          ]
   ]
 
+instance SimpleData o => SimpleData (Maybe o) where
+  simple o = case o of { Nothing -> OVoid; Just o -> simple o; }
+  fromSimple o = case o of { OVoid -> return Nothing; o -> Just <$> fromSimple o; }
+
+instance (SimpleData a, SimpleData b) => SimpleData (Either a b) where
+  simple o = case o of { Left o -> simple o; Right o -> simple o; }
+  fromSimple o = (Left <$> fromSimple o) <|> (Right <$> fromSimple o)
+
+instance SimpleData Ordering where
+  simple o = case o of
+    LT -> voidStruct "LT"
+    EQ -> voidStruct "EQ"
+    GT -> voidStruct "GT"
+  fromSimple = fromVoidStruct [("LT", LT), ("EQ", EQ), ("GT", GT)]
+
 instance SimpleData TypeRep  where
   simple       = OString . toText . show
   fromSimple o = case o of
@@ -631,6 +643,37 @@ instance (Eq pat, SimpleData pat) => SimpleData (Conjunction pat) where
 instance (Eq pat, SimpleData pat) => SimpleData (Statement pat) where
   simple (Statement o) = struct "OR" o
   fromSimple = fromStruct "OR" Statement
+
+instance SimpleData o => SimpleData (Iv.Inf o) where
+  simple o = case o of
+    Iv.NegInf   -> voidStruct "-inf"
+    Iv.PosInf   -> voidStruct "+inf"
+    Iv.Finite o -> simple o
+  fromSimple o = msum
+    [ fromVoidStruct [("-inf", Iv.NegInf), ("+inf", Iv.PosInf)] o
+    , Iv.Finite <$> fromSimple o
+    ]
+
+instance SimpleData o => SimpleData (Iv.Interval o) where
+  simple o = let (a, b) = Iv.toPair o in
+    if a==b then simple a else struct "Interval" (a, b)
+  fromSimple o = let err = (throwError $ objError [obj "invalid interval:", obj o]) in
+    mplus (fromStruct "Interval" (uncurry Iv.fromPair) o >>= maybe err return)
+          (fromSimple o >>= \o -> maybe err return $ Iv.fromPair o o)
+
+instance (Enum o, Iv.InfBound o, SimpleData o) => SimpleData (Iv.Set o) where
+  simple     = struct "IntervalSet" . Iv.toList
+  fromSimple = fromStruct "IntervalSet" Iv.fromList
+
+instance SimpleData CharSet where
+  simple     = struct "Char" . charIntervalSet
+  fromSimple = fromStruct "Char" CharSet
+
+instance SimpleData err => SimpleData (RuleError err) where
+  simple     o = case o of
+    RuleFail  o   -> struct "RuleFail" o
+    RuleError err -> simple err
+  fromSimple o = mplus (fromStruct "RuleFail" RuleFail o) (RuleError <$> fromSimple o)
 
 instance (SimpleData a, SimpleData b) => SimpleData (a, b) where
   simple (a, b) = OList $ array [simple a, simple b]
@@ -723,13 +766,24 @@ fromStruct label constr o = case o of
   OStruct name o | name==toText label -> constr <$> fromSimple o
   _ -> mzero
 
+-- | Like 'struct' but always creates an 'OStruct' with 'OVoid' as the structure data, so the
+-- structure label is the only identifying data. This is useful for structuring enumerated data
+-- types as 'Simple' data types.
+voidStruct :: ToText label => label -> Simple
+voidStruct label = OStruct (toText label) OVoid
+
+-- | Like 'fromStruct', but is the inverse of 'voidStruct'.
+fromVoidStruct :: (ToText label, Monad m, MonadPlus m) => [(label, o)] -> Simple -> m o
+fromVoidStruct list o = let map = M.fromList $ first toText <$> list in
+  maybe mzero return $ case o of { OStruct label OVoid -> M.lookup label map; _ -> Nothing; }
+
 ----------------------------------------------------------------------------------------------------
 
 -- | The 'ObjectData' type class lets you define the 'obj' and 'fromObj' functions for your own data
--- type. You could always use the 'fromForeign' or 'toForeign' functions, but you would also have to
--- remember to always call 'matchable' and 'printable' composed with 'fromForeign' for data types
--- that are in the 'PatternClass' and 'Dao.Text.PPrint.PPrintable' class -- if you didn't
--- 'matchable' 'Object's would not be able to access their 'patternCompare' or 'pPrint' instances.
+-- type. Both 'obj' and 'fromObj' use the 'fromForeign' or 'toForeign' functions as the default
+-- definitions, but you should probably instantiate 'obj' with the 'printable' and 'matchable'
+-- functions modifying the 'Object' produced if your data type instantiates 'Dao.PPrint.PPrintable'
+-- and/or 'Dao.Rule.PatternClass' so that these class methods can be referenced by the 'Object'.
 --
 -- By instantiating the 'ObjectData' type class, you can call 'fromForeign' and 'toForeign' with as
 -- many other initializing functions ('matchable', 'printable') as necessary, so anyone who wraps
@@ -737,9 +791,11 @@ fromStruct label constr o = case o of
 -- provided to it.
 class (Eq o, Ord o, Typeable o, SimpleData o) => ObjectData o where
   obj :: o -> Object
+  obj = fromForeign
   fromObj
     :: (Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadError ErrorObject m)
     => Object -> m o
+  fromObj = toForeign
 
 -- | This is the function you should use to instantiate the 'fromObj' function for most any custom
 -- data type.
@@ -749,75 +805,61 @@ defaultFromObj
   => Object -> m o
 defaultFromObj = fromObj >=> toForeign
 
-instance ObjectData Object   where { obj = id; fromObj = return; }
-
-instance ObjectData Simple   where
-  obj   o = printable o $ fromForeign o
-  fromObj = toForeign
-
-instance ObjectData ()       where
-  obj   o = printable o $ fromForeign o
-  fromObj = toForeign
-
-instance ObjectData Bool   where
-  obj   o = printable o $ fromForeign o
-  fromObj = toForeign
-
-instance ObjectData T_int    where
-  obj   o = printable o $ fromForeign o
-  fromObj = toForeign
-
-instance ObjectData T_long   where
-  obj   o = printable o $ fromForeign o
-  fromObj = toForeign
-
-instance ObjectData T_float  where
-  obj   o = printable o $ fromForeign o
-  fromObj = toForeign
-
-instance ObjectData T_char   where
-  obj   o = printable o $ fromForeign o
-  fromObj = toForeign
-
-instance ObjectData T_string where
-  obj   o = printable o $ fromForeign o
-  fromObj = toForeign
-
-instance ObjectData String where
-  obj   o = printable o $ fromForeign o
-  fromObj = toForeign
+instance ObjectData Object    where { obj = id; fromObj = return; }
+instance ObjectData Simple    where { obj   o = printable o $ fromForeign o;  }
+instance ObjectData ()        where { obj   o = printable o $ fromForeign o; }
+instance ObjectData Bool      where { obj   o = printable o $ fromForeign o; }
+instance ObjectData T_int     where { obj   o = printable o $ fromForeign o; }
+instance ObjectData T_long    where { obj   o = printable o $ fromForeign o; }
+instance ObjectData T_float   where { obj   o = printable o $ fromForeign o; }
+instance ObjectData T_char    where { obj   o = printable o $ fromForeign o; }
+instance ObjectData T_string  where { obj   o = printable o $ fromForeign o; }
+instance ObjectData Lazy.Text where { obj   o = printable o $ fromForeign o; }
+instance ObjectData String    where { obj   o = printable o $ fromForeign o; }
+instance ObjectData Count     where { obj   o = printable o $ fromForeign o; }
+instance ObjectData CharSet   where { obj   o = printable o $ fromForeign o; }
 
 instance ObjectData o => ObjectData (Array o) where
   obj   o = printable (simple o) $ fromForeign o
-  fromObj = toForeign
 
 instance ObjectData o => ObjectData [o] where
   obj   o = printable (simple o) $ fromForeign o
-  fromObj = toForeign
 
 instance (ObjectData key, ObjectData val) => ObjectData (M.Map key val) where
   obj   o = printable (simple o) $ fromForeign o
-  fromObj = toForeign
 
 instance (ObjectData key, ObjectData val) => ObjectData (T.Tree key val) where
   obj   o = printable (simple o) $ fromForeign o
-  fromObj = toForeign
 
 instance ObjectData TypeRep where
   obj   o = matchable o $ printable (simple o) $ fromForeign o
-  fromObj = toForeign
 
 instance ObjectData pat => ObjectData (Satisfy pat) where
   obj   o = printable (simple o) $ fromForeign o
-  fromObj = toForeign
 
 instance ObjectData pat => ObjectData (Conjunction pat) where
   obj   o = printable (simple o) $ fromForeign o
-  fromObj = toForeign
 
 instance ObjectData pat => ObjectData (Statement pat) where
   obj   o = printable (simple o) $ fromForeign o
-  fromObj = toForeign
+
+instance (ObjectData o) => ObjectData (Maybe o) where { obj = fromForeign; fromObj = toForeign; }
+
+instance (ObjectData a, ObjectData b) => ObjectData (Either a b) where
+  obj   o = case o of { Left o -> obj o; Right o -> obj o; }
+  fromObj o = (Left <$> fromObj o) <|> (Right <$> fromObj o)
+
+instance (PPrintable o, ObjectData o) => ObjectData (Iv.Inf o) where
+  obj   o = printable o $ fromForeign o
+
+instance (PPrintable o, ObjectData o) => ObjectData (Iv.Interval o) where
+  obj   o = printable o $ fromForeign o
+
+instance (Enum o, Iv.InfBound o, PPrintable o, ObjectData o) => ObjectData (Iv.Set o) where
+  obj   o = printable o $ fromForeign o
+
+instance (PPrintable err, ObjectData err) => ObjectData (RuleError err) where
+  obj   o = printable o $ fromForeign o
 
 ----------------------------------------------------------------------------------------------------
 

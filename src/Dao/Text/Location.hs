@@ -22,6 +22,7 @@ import           Prelude hiding ((.), id)
 
 import           Dao.Count
 import           Dao.Lens
+import           Dao.Object
 import           Dao.TestNull
 import           Dao.Text
 import           Dao.Text.PPrint
@@ -57,7 +58,20 @@ instance PPrintable TextPoint where
 
 instance Show TextPoint where { show = showPPrint 4 80 . pPrint; }
 
+instance TestNull TextPoint where
+  nullValue = TextPoint (1, 1)
+  testNull (TextPoint (1, 1)) = True
+  testNull _ = False
+
 instance NFData TextPoint where { rnf (TextPoint o) = deepseq o (); }
+
+instance SimpleData TextPoint where
+  simple (TextPoint o) = struct "TextPoint" o
+  fromSimple = fromStruct "TextPoint" TextPoint
+
+instance ObjectData TextPoint where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
 
 textPointTuple :: Monad m => Lens m TextPoint (LineNumber, ColumnNumber)
 textPointTuple = newLens (\ (TextPoint o) -> o) (\o _ -> TextPoint o)
@@ -102,6 +116,14 @@ instance NFData TextRegion where
   rnf (TextRegion  Nothing     ) = ()
   rnf (TextRegion (Just (a, b))) = deepseq a $! deepseq b ()
 
+instance SimpleData TextRegion where
+  simple (TextRegion o) = struct "TextRegion" o
+  fromSimple = fromStruct "TextRegion" TextRegion
+
+instance ObjectData TextRegion where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+
 -- | Construct a textRegion from two 'TextPoint's.
 textRegion :: TextPoint -> TextPoint -> TextRegion
 textRegion a b = TextRegion $ Just (min a b, max a b)
@@ -112,7 +134,7 @@ textRegion a b = TextRegion $ Just (min a b, max a b)
 -- the grammar for this type is converted to a parser, the source location before and after the
 -- parse are recorded and stored with the inner type so analyzing the 'Location' will tell you from
 -- where in the source file the inner type was parsed.
-newtype Location = Location (Maybe TextPoint, Maybe TextPoint) deriving (Eq, Ord, Show, Typeable)
+newtype Location = Location (Maybe TextPoint, Maybe TextPoint) deriving (Eq, Ord, Typeable)
 
 instance TestNull Location where
   testNull (Location (a, b)) = isNothing a && isNothing b
@@ -125,6 +147,22 @@ instance Monoid Location where
 
 instance NFData Location where
   rnf (Location (a, b)) = maybe () (flip deepseq ()) a <> maybe () (flip deepseq ()) b
+
+instance PPrintable Location where
+  pPrint (Location (a, b)) = fromMaybe [] $ msum
+    [ a >>= \a -> b >>= \b -> return $ pPrint a ++ [pSpace, pText "to", pSpace] ++ pPrint b
+    , pPrint <$> a, pPrint <$> b
+    ]
+
+instance Show Location where { show = showPPrint 4 80 . pPrint; }
+
+instance SimpleData Location where
+  simple (Location o) = struct "Location" o
+  fromSimple = fromStruct "Location" Location
+
+instance ObjectData Location where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
 
 locationFromPoint :: TextPoint -> Location
 locationFromPoint o = new [locationStart <~ Just o, locationEnd <~ Just o]

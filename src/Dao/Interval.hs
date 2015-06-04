@@ -23,19 +23,18 @@ module Dao.Interval
     stepDown, stepUp, toFinite, enumIsInf,
     InfBound, minBoundInf, maxBoundInf,
     -- * the 'Interval' data type
-    Interval, startPoint, endPoint, toPair, interval, point, wholeInterval,
+    Interval, startPoint, endPoint, toPair, fromPair, interval, point, wholeInterval,
     negInfTo, toPosInf, toBounded, toBoundedPair, enumBoundedPair,
     intervalMember, singular, plural, canonicalInterval, intervalNub,
     intervalInvert, intervalUnion, intervalIntersect, intervalDelete, intervalExclusion,
     areIntersecting, areConsecutive,
     SubBounded(subBounds),
     -- * Predicates on 'Interval's
-    envelop, intervalSpanAll, numElems, intervalIntSize, intervalEnumSize, isWithin,
-    intervalHasEnumInf, intervalIsInfinite,
+    envelop, intervalSpanAll, intLength, enumLength, intervalIntSize,
+    intervalEnumSize, isWithin, intervalHasEnumInf, intervalIsInfinite,
     -- * The 'Set' non-monadic data type
-    Set, Dao.Interval.empty, whole, fromList, fromPairs, fromPoints, range,
-    singleton, toList, intSize, enumSize, elems, member, Dao.Interval.null, isWhole,
-    isSingleton,
+    Set, Dao.Interval.empty, whole, fromList, fromPairs, fromPoints, range, singleton, toList,
+    intSize, enumSize, cardinality, elems, member, Dao.Interval.null, isWhole, isSingleton,
     -- * Set Operators for non-monadic 'Set's
     Dao.Interval.invert, exclusive,
     Dao.Interval.union, Dao.Interval.unions,
@@ -51,6 +50,7 @@ import           Data.Char
 import           Data.Monoid
 import           Data.List
 import           Data.Ratio
+import           Data.Typeable
 
 import           Control.Arrow
 import           Control.Monad
@@ -97,7 +97,7 @@ data Inf c
   = NegInf  -- ^ negative infinity
   | PosInf  -- ^ positive infinity
   | Finite c -- ^ a single point
-  deriving (Eq, Show, Read)
+  deriving (Eq, Show, Read, Typeable)
 
 instance Functor Inf where
   fmap f o = case o of
@@ -123,6 +123,18 @@ instance Ord c => Ord (Inf c) where
       NegInf   -> GT
       PosInf   -> LT
       Finite b -> compare a b
+
+instance Monoid c => Monoid (Inf c) where
+  mempty = Finite mempty
+  mappend a b = case a of
+    PosInf   -> PosInf
+    NegInf   -> case b of
+      PosInf   -> PosInf
+      _        -> NegInf
+    Finite a -> case b of
+      NegInf   -> NegInf
+      PosInf   -> PosInf
+      Finite b -> Finite $ mappend a b
 
 enumIsInf :: Inf c -> Bool
 enumIsInf c = case c of
@@ -155,7 +167,7 @@ toFinite c = case c of
 data Interval c
   = Single   { startPoint :: Inf c }
   | Interval { startPoint :: Inf c, endPoint :: Inf c }
-  deriving Eq
+  deriving (Eq, Typeable)
 
 instance Functor Interval where
   fmap f o = case o of
@@ -212,6 +224,19 @@ toPair :: Interval c -> (Inf c, Inf c)
 toPair seg = case seg of
   Single   a   -> (a, a)
   Interval a b -> (a, b)
+
+fromPair :: (Eq c, Ord c) => Inf c -> Inf c -> Maybe (Interval c)
+fromPair a b = case (a, b) of
+  (NegInf  , NegInf  ) -> Nothing
+  (PosInf  , PosInf  ) -> Nothing
+  (NegInf  , PosInf  ) -> Just $ Interval NegInf PosInf
+  (PosInf  , NegInf  ) -> Just $ Interval NegInf PosInf
+  (NegInf  , Finite o) -> Just $ Interval NegInf $ Finite o
+  (Finite o, NegInf  ) -> Just $ Interval NegInf $ Finite o
+  (Finite o, PosInf  ) -> Just $ Interval (Finite o) PosInf
+  (PosInf  , Finite o) -> Just $ Interval (Finite o) PosInf
+  (Finite a, Finite b) -> Just $
+    if a==b then Single $ Finite a else Interval (Finite $ min a b) (Finite $ max a b)
 
 -- | If the 'Interval' was constructed with 'single', return the pointM (possibly 'PosInf' or
 -- 'NegInf') value used to construct it, otherwise return 'Data.Maybe.Nothing'.
@@ -354,16 +379,22 @@ envelop a b = case a of
 intervalSpanAll :: (Ord c, InfBound c) => [Interval c] -> Maybe (Interval c)
 intervalSpanAll ex = if Prelude.null ex then Nothing else Just $ foldl1 envelop ex
 
--- | Evaluates to the number of elements covered by this region. Returns 'Prelude.Nothing' if there
--- are an infiniteM number of elements. For data of a type that is not an instance of 'Prelude.Num',
--- for example @'Interval' 'Data.Char.Char'@, it is recommended you first convert to the type
--- @'Interval' 'Data.Int.Int'@ using @'Control.Functor.fmap' 'Prelude.fromEnum'@ before using this
--- function, then convert the result back using @'Control.Functor.fmap' 'Prelude.toEnum'@ if
--- necessary.
-numElems :: Integral c => Interval c -> Inf Integer
-numElems seg = case seg of
+-- | Evaluates to the number of elements covered by this region. Returns 'PosInf' if there are an
+-- infinite number of elements. For data of a type that is not an instance of 'Prelude.Integral',
+-- for example @'Interval' 'Data.Char.Char'@, use 'enumLength' instead, or else 'Data.Functor.fmap'
+-- the element type to an 'Prelude.Integer'.
+intLength :: Integral c => Interval c -> Inf Integer
+intLength seg = case seg of
   Single   (Finite _)            -> Finite 1
   Interval (Finite a) (Finite b) -> Finite (fromIntegral a - fromIntegral b + 1)
+  _                              -> PosInf
+
+-- | Like 'intLength', but works on 'Interval's of 'Prelude.Enum' elements rather than
+-- 'Prelude.Integral' elements.
+enumLength :: (Ord c, Enum c, InfBound c) => Interval c -> Inf Integer
+enumLength seg = case seg of
+  Single   (Finite _)            -> Finite 1
+  Interval (Finite a) (Finite b) -> Finite (fromIntegral (fromEnum a) - fromIntegral (fromEnum b) + 1)
   _                              -> PosInf
 
 -- | Return the number of points included the set for sets of points that are both 'Prelude.Bounded'
@@ -553,6 +584,7 @@ data Set c
   | InfiniteSet
   | InverseSet (Set c)
   | Set        [Interval c]
+  deriving Typeable
 
 instance Functor Set where
   fmap f o = case o of
@@ -578,8 +610,8 @@ instance (Eq c, Ord c, Enum c, InfBound c) => Eq (Set c) where
       Set        b -> a==b
       _            -> False
 
-instance (Ord c, Enum c, InfBound c, Bounded c) => Ord (Set c) where
-  compare a b = compare (enumSize a) (enumSize b)
+instance (Ord c, Enum c, InfBound c) => Ord (Set c) where
+  compare a b = compare (cardinality a) (cardinality b)
 
 instance (Ord c, Enum c, InfBound c) => Monoid (Sum (Set c)) where
   mempty  = Sum EmptySet
@@ -656,11 +688,18 @@ toList s = case s of
 elems :: (Ord c, Enum c, Bounded c, InfBound c) => Set c -> [c]
 elems = concatMap enumBoundedPair . toList
 
+-- | Evaluate an 'Prelude.Integer' size on a set of 'Prelude.Bounded' 'Prelude.Integral' elements.
 intSize :: (Ord c, Integral c, InfBound c, Bounded c) => Set c -> Integer
 intSize = sum . fmap intervalIntSize . toList
 
-enumSize :: (Ord c, Enum c, InfBound c, Bounded c) => Set c -> Int
+-- | Evaluate an 'Prelude.Int' size on a set of 'Prelude.Bounded' 'Prelude.Enum' elements.
+enumSize :: (Ord c, Enum c, Bounded c, InfBound c) => Set c -> Int
 enumSize = sum . fmap intervalEnumSize . toList
+
+-- | Evaluate a possibly infinite 'Prelude.Integer' value counting the number of elements in the
+-- set.
+cardinality :: (Ord c, Enum c, InfBound c) => Set c -> Inf Integer
+cardinality = fmap getSum . mconcat . fmap (fmap Sum . enumLength) . toList
 
 member :: (Ord c, InfBound c) => Set c -> c -> Bool
 member s b = case s of

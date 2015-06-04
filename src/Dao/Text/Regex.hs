@@ -50,7 +50,8 @@ module Dao.Text.Regex
     -- * A General Purpose Lazy 'Data.Text.Lazy.Text' Based 'Parser' Monad
     ParseInput, Parser, runParser, getCharCount,
     ParserState(ParserState), parserState, inputString, userState, textPoint, charCount,
-    minPrec, precedence, efficiency, parser_to_S, lookAheadWithParser
+    minPrec, precedence, efficiency, parser_to_S, lookAheadWithParser,
+    fromSimpleText, fromStructText
   ) where
 
 import           Prelude hiding (id, (.))
@@ -58,6 +59,7 @@ import           Prelude hiding (id, (.))
 import           Dao.Array
 import           Dao.Count
 import           Dao.Lens
+import           Dao.Object
 import           Dao.Predicate
 import           Dao.Text
 import           Dao.Text.Location
@@ -290,6 +292,22 @@ data RegexShadowErrorType = ParallelRegex | SequenceRegex
 instance NFData RegexShadowErrorType where
   rnf o = case o of { ParallelRegex -> (); SequenceRegex -> (); }
 
+instance PPrintable RegexShadowErrorType where
+  pPrint o = [case o of { ParallelRegex -> pText "parallel"; SequenceRegex -> pText "sequence"; }]
+
+instance SimpleData RegexShadowErrorType where
+  simple o = case o of
+    ParallelRegex -> struct "ParallelRegexs" OVoid
+    SequenceRegex -> struct "SequenceRegexs" OVoid
+  fromSimple o = msum $
+    [ fromStruct "ParallelRegexs" (const ParallelRegex :: Simple -> RegexShadowErrorType) o
+    , fromStruct "SequenceRegexs" (const SequenceRegex :: Simple -> RegexShadowErrorType) o
+    ]
+
+instance ObjectData RegexShadowErrorType where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+
 _shadowsRegex :: MonadError InvalidGrammar m => RegexShadowErrorType -> Regex -> Regex -> m ig
 _shadowsRegex a b c = throwError $ InvalidGrammar (Nothing, nullValue, RegexShadowError a b c)
 
@@ -315,7 +333,7 @@ instance PPrintable InvalidGrammarDetail where
       , pSentence "consumes all of the characters that could possibly be consumed by"
       , [pSpace], pPrint b, [pSpace]
       , pSentence "when each regular expression is matched in", [pSpace]
-      , [case typ of { ParallelRegex -> pText "parallel,"; SequenceRegex -> pText "sequence,"; }]
+      , pPrint typ
       ]
     UnexpectedInput msg str -> [pText msg, pChar ':', pSpace, pText $ show str]
     CutSomeBranches rxs     -> concat
@@ -335,6 +353,23 @@ instance NFData InvalidGrammarDetail where
     RegexShadowError a b c -> deepseq a $! deepseq b $! deepseq c ()
     UnexpectedInput  a b   -> deepseq a $! deepseq b ()
     CutSomeBranches  a     -> deepseq a ()
+
+instance SimpleData InvalidGrammarDetail where
+  simple o = case o of 
+    OtherFailure     a     -> struct "OtherFailure"      a
+    RegexShadowError a b c -> struct "RegexShadowError" (a, b, c)
+    UnexpectedInput  a b   -> struct "UnexpectedInput"  (a, b)
+    CutSomeBranches  a     -> struct "CutSomeBranches"   a
+  fromSimple o = msum
+    [ fromStruct "OtherFailure" OtherFailure o
+    , fromStruct "RegexShadowError" (\ (a, b, c) -> RegexShadowError a b c) o
+    , fromStruct "UnexpectedInput" (uncurry UnexpectedInput ) o
+    , fromStruct "CutSomeBranches" CutSomeBranches o
+    ]
+
+instance ObjectData InvalidGrammarDetail where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
 
 otherFailure :: (Monad m, MonadPlus m) => Lens m InvalidGrammarDetail StrictText
 otherFailure =
@@ -402,6 +437,14 @@ instance PPrintable InvalidGrammar where
 
 instance NFData InvalidGrammar where
   rnf (InvalidGrammar (a, b, c)) = deepseq b $! deepseq c $! maybe () (const ()) a
+
+instance SimpleData InvalidGrammar where
+  simple (InvalidGrammar o) = struct "InvalidGrammar" o
+  fromSimple = fromStruct "InvalidGrammar" InvalidGrammar
+
+instance ObjectData InvalidGrammar where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
 
 invalidGrammarLens
   :: Monad m
@@ -570,7 +613,9 @@ class RxMaxLength o where { rxMaxLength :: o -> Maybe Integer; }
 -- parameter, and this parameter can be satisfied by any one of the data types that instantiate
 -- 'ToRegexRepeater', please refer to the documentation for 'ToRegexRepeater' for more about how to
 -- construct this data type.
-data RegexRepeater = RxSingle | RxRepeat Count (Maybe Count) deriving (Eq, Ord, Show, Typeable)
+data RegexRepeater = RxSingle | RxRepeat Count (Maybe Count) deriving (Eq, Ord, Typeable)
+
+instance Show RegexRepeater where { show = showPPrint 4 80 . pPrint; }
 
 instance PPrintable RegexRepeater where
   pPrint o = case o of
@@ -635,7 +680,7 @@ instance ToRegexRepeater (Count, Maybe Count) where
     Nothing  -> RxRepeat lo' Nothing
     Just hi' -> let { hi = max lo' hi'; lo = min lo' hi; } in
       if lo==1 && hi==1 then RxSingle else RxRepeat lo (Just hi)
- 
+
 -- | Transform the 'RegexRepeater' into a pair of values: the 'Prelude.fst' value is the minimum
 -- number of times a regular expression must match the input string in order for the match to
 -- succeed. The 'Prelude.snd' value is the maximum number of times the regular expression may match
@@ -772,6 +817,19 @@ instance PPrintable RegexUnit where
     in  case o of
           RxString t r -> pText (sanitize $ fromText t) : pPrint r
           RxChar   c r -> pPrint c ++ pPrint r
+
+instance SimpleData RegexUnit where
+  simple o = let (b, c) = repeaterToPair $ rxGetRepeater o in case o of
+    RxString{ rxGetString=a  } -> struct "String" (a, b, c)
+    RxChar  { rxGetCharSet=a } -> struct "CharSet" (a, b, c)
+  fromSimple o = msum
+    [ fromStruct "String"  (\ (a, b, c) -> RxString a $ toRegexRepeater (b::Count, c::Maybe Count)) o
+    , fromStruct "CharSet" (\ (a, b, c) -> RxChar   a $ toRegexRepeater (b::Count, c::Maybe Count)) o
+    ]
+
+instance ObjectData RegexUnit where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
 
 -- Used by the instantiation of 'ShadowsParallel' for both 'RegexUnit' and 'Regex'.
 _rxUnit_shadowsParallel :: Bool -> RegexUnit -> RegexUnit -> Bool
@@ -962,6 +1020,14 @@ instance RxMaxLength Regex where
 instance InitialCharSetOf Regex where
   initialCharSetOf (Regex o) = maybe mempty initialCharSetOf (o ! 0)
 
+instance SimpleData Regex where
+  simple (Regex o) = struct "Regex"  o
+  fromSimple = fromStruct "Regex" Regex
+
+instance ObjectData Regex where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+
 _emptyRegexSeq :: Regex
 _emptyRegexSeq = Regex mempty
 
@@ -1112,11 +1178,11 @@ regexTableToParser (RegexTable _ arr) = look1 >>= \c -> guard (inRange (A.bounds
 type ParseInput = LazyText
 
 -- | Construct this type with 'parserState' and pass the value to 'runParser'.
-data ParserState st
-  = ParserState LazyText st TextPoint CharCount CharCount Int
+newtype ParserState st
+  = ParserState (LazyText, st, TextPoint, CharCount, CharCount, Int)
 
 instance Functor ParserState where
-  fmap z (ParserState a b c d e f) = ParserState a (z b) c d e f
+  fmap z (ParserState (a, b, c, d, e, f)) = ParserState (a, (z b), c, d, e, f)
 
 instance TestNull st => TestNull (ParserState st) where
   nullValue = parserState nullValue
@@ -1126,9 +1192,7 @@ instance TestNull st => TestNull (ParserState st) where
 instance HasTextPoint (ParserState st) where { textPoint = parserStateLens >>> tuple2; }
 
 parserStateLens :: Monad m => Lens m (ParserState st) (LazyText, st, TextPoint, CharCount, CharCount, Int)
-parserStateLens =
-  newLens (\ (ParserState a b c d e f) -> (a, b, c, d, e, f))
-          (\ (a, b, c, d, e, f) _ -> ParserState a b c d e f)
+parserStateLens = newLens (\ (ParserState o) -> o) (\o _ -> ParserState o)
 
 inputString :: Monad m => Lens m (ParserState st) LazyText
 inputString = parserStateLens >>> tuple0
@@ -1149,7 +1213,7 @@ precedence = parserStateLens >>> tuple5
 -- anything you choose. 'Parser' instantiates the 'Control.Monad.State.MonadState' class so you can
 -- keep track of a pure state for whatever parsing you intend to do.
 parserState :: st -> ParserState st
-parserState st = ParserState nullValue st (TextPoint (1, 1)) 0 0 minPrec
+parserState st = ParserState (nullValue, st, (TextPoint (1, 1)), 0, 0, minPrec)
 
 -- | Report how efficiently this parser ran. Efficiency is measured by the number of characters
 -- taken from the input divided by the number of characters that had to be pushed back onto the
@@ -1358,4 +1422,31 @@ lookAheadWithParser p init = do
       incrementCharCounter (st~>charCount)
       noMoreThan (stringLength o) anyChar
       return (o, st~>userState)
+
+-- | Uses a 'Dao.Text.Regex.Parser' to convert a 'OString' value to an specific data type. This
+-- function is useful for instantiating various data types into the 'Dao.Object.SimpleData' class,
+-- especially when you may want to restrict the kinds of strings that can be used to construct a
+-- particular data type. Also consider using the 'fromStructText' function.
+fromSimpleText
+  :: (Monad m, MonadPlus m, MonadError ErrorObject m)
+  => (StrictText -> ErrorObject) -> Parser st o -> st -> Simple -> m o
+fromSimpleText err par st o = case o of
+  OString o -> case runParser par $ by [inputString <~ Lazy.fromStrict o] $ parserState st of
+    (PTrue  o  , st) | testNull (st~>inputString) -> return o
+    (PTrue  _  , _ ) -> throwError $ err o
+    (PFalse    , _ ) -> throwError $ err o
+    (PError err, _ ) -> throwError $ objError [obj err]
+  _ -> throwError $ objError [obj "expecting string type, instead got:", obj o]
+
+-- | Like 'fromSimpleText', but parses an 'OString' only if it is wrapped in an 'OStruct' with a
+-- given label. This function is usually better than using 'fromSimpleText'.
+fromStructText
+  :: (ToText label, Functor m, Applicative m, Alternative m, Monad m, MonadPlus m, MonadError ErrorObject m)
+  => label -> Parser st o -> st -> Simple -> m o
+fromStructText label par st = join . fromStruct label (fromSimpleText err par st) where
+  err str = objError
+    [ obj "Could not parse string used to construct data of type:"
+    , obj (toText label)
+    , obj "The string value used was:", obj str
+    ]
 

@@ -25,6 +25,7 @@ import           Prelude hiding (id, (.))
 
 import           Dao.Array
 import           Dao.Count
+import qualified Dao.Interval as Iv
 import           Dao.Lens
 import           Dao.Predicate
 import           Dao.Text
@@ -176,6 +177,19 @@ instance (PPrintable err, PPrintable o) => PPrintable (Predicate err o) where
 instance PPrintable o => PPrintable (Array o) where { pPrint = pPrint . elems; }
 instance PPrintable o => PPrintable [o] where
   pPrint o = [pInline $ pChar '[' : intercalate [pChar ',', pSpace] (fmap pPrint o) ++ [pChar ']']]
+
+instance PPrintable o => PPrintable (Iv.Inf o) where
+  pPrint o = case o of
+    Iv.NegInf   -> [pText "-inf"]
+    Iv.PosInf   -> [pText "+inf"]
+    Iv.Finite o -> pPrint o
+
+instance (Eq o, PPrintable o) => PPrintable (Iv.Interval o) where
+  pPrint o = let (a, b) = Iv.toPair o in
+    if a==b then pPrint a else pPrint a ++ [pSpace, pText "to", pSpace] ++ pPrint b
+
+instance (Eq o, Ord o, Enum o, Iv.InfBound o, PPrintable o) => PPrintable (Iv.Set o) where
+  pPrint o = pChar '(' : (Iv.toList o >>= pPrint) ++ [pChar ')']
 
 ----------------------------------------------------------------------------------------------------
 

@@ -44,9 +44,9 @@ import           Control.Arrow
 import           Control.Applicative
 import           Control.Category
 import           Control.DeepSeq
-import           Control.Monad          hiding (mapM, msum)
-import           Control.Monad.Identity hiding (mapM, msum)
-import           Control.Monad.State    hiding (mapM, msum)
+import           Control.Monad          hiding (mapM, forM, msum)
+import           Control.Monad.Identity hiding (mapM, forM, msum)
+import           Control.Monad.State    hiding (mapM, forM, msum)
 
 import           Data.Foldable
 import           Data.Maybe
@@ -310,13 +310,30 @@ assocs control = loop [] where
 -- the leaf and the path after the leaf. The list of returned values are these partitioned paths
 -- paired with their associated leaves.
 partitions :: (Eq p, Ord p) => RunTree -> [p] -> Tree p a -> [(([p], [p]), a)]
-partitions control = loop [] where
-  getleaf path px = maybe [] (return . (,) (path, px)) . (~> leaf)
-  loop path px tree = case px of
+partitions control = partitionsWith control (\a b -> guard (a == b) >> return a)
+
+-- | Like 'partitions', but allows you to use a matching function that other than ('Prelude.==').
+-- The matching function should return 'Prelude.Nothing' for non-matching path elements, and a
+-- 'Prelude.Just' containing a path element that may have been transformed by the matching function.
+partitionsWith
+  :: (Eq p, Ord p)
+  => RunTree -> (p -> q -> Maybe r) -> [q] -> Tree p a -> [(([r], [q]), a)]
+partitionsWith control match path = runIdentity .
+  partitionWithM control (\a b -> return $ match a b) path
+
+-- | Like 'partitionsWith' but uses a monadic matching function.
+partitionWithM
+  :: (Eq p, Ord p, Monad m)
+  => RunTree -> (p -> q -> m (Maybe r)) -> [q] -> Tree p a -> m [(([r], [q]), a)]
+partitionWithM control match = loop [] where
+  getleaf path qx = return . maybe [] (return . (,) (path, qx)) . (~> leaf)
+  loop path qx tree = case qx of
     []   -> getleaf path [] tree
-    p:px -> (case control of { DepthFirst -> flip; BreadthFirst -> id; }) (++)
-      (getleaf path (p:px) tree) 
-      (maybe [] (loop (path++[p]) px) $ M.lookup p $ tree~>branches)
+    q:qx -> liftM2 ((case control of { DepthFirst -> flip; BreadthFirst -> id; }) (++))
+      (getleaf path (q:qx) tree)
+      ( liftM concat $ forM (M.assocs $ tree~>branches) $ \ (p, tree) ->
+          match p q >>= maybe (return []) (\r -> loop (path++[r]) qx tree)
+      )
 
 -- | Apply @'Prelude.map' 'Prelude.snd'@ to the result of 'assocs', behaves just like how
 -- 'Data.Map.elems' or 'Data.Array.IArray.elems' works.

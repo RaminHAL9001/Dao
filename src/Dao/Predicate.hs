@@ -266,6 +266,15 @@ fmapPError f pval = case pval of
   PFalse   -> PFalse
   PError e -> PError $ f e
 
+isPFalse :: Predicate err o -> Bool
+isPFalse o = case o of { PFalse -> True; _ -> False; }
+
+isPError :: Predicate err o -> Bool
+isPError o = case o of { PError _ -> True; _ -> False; }
+
+isPTrue :: Predicate err o -> Bool
+isPTrue o = case o of { PTrue _ -> True; _ -> False; }
+
 -- | Like 'Data.Either.partitionEithers', but operates on a list of 'Predicates'.
 partitionPredicates :: [Predicate err o] -> ([err], [o])
 partitionPredicates = loop [] [] where

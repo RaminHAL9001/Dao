@@ -127,9 +127,6 @@ instance SimpleData TypePattern where
   simple (TypePattern o) = simple o
   fromSimple = fmap TypePattern . fromSimple
 
-instance PatternClass TypePattern where
-  patternCompare (TypePattern p) o = if p==objTypeOf o then Similar 0.0 else Dissimilar
-
 instance ObjectData TypePattern where
   obj o = printable o $ matchable o $ fromForeign o
   fromObj = defaultFromObj
@@ -221,10 +218,10 @@ printable o dat = dat{ objPrinted=pPrint o }
 -- function. The 'matchable' function lets you define a predicate that can match an arbitrary
 -- 'Object'. Specifying 'matchable' will only make use of 'patternCompare' for pattern matching, it will
 -- not be used for equality testing ('Prelude.==').
-matchable :: (ObjectData o, PatternClass o) => o -> Object -> Object
+matchable :: (ObjectData o, HasTypeRep o) => o -> Object -> Object
 matchable o dat =
   dat { objPatternMatch = Just $ \p -> case fromObj p of
-          PTrue p -> patternCompare o p
+          PTrue p -> if p==objTypeOf o then Similar 0.0 else Dissimilar
           _       -> Dissimilar
       }
 

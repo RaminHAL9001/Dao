@@ -50,7 +50,6 @@ module Dao.Rule
     querySubState, queryWeight, queryIndex, queryInput,
     -- * Patterns for Matching Tokens
     MatchFunction,
-    PatternClass(patternCompare), patternFromEq,
     Similarity(Dissimilar, Similar, ExactlyEqual), boolSimilar, similarButNotEqual, isSimilar,
     Dissimilarity(Dissimilarity),
     dissimilarityTuple, dissimilarity, dissimilarityItem,
@@ -266,47 +265,6 @@ dissimilarityItem = dissimilarityTuple >>> tuple1
 
 -- | Functions of this type are used match patterns to queries.
 type MatchFunction m pat tok = pat -> tok -> m Similarity
-
--- | This class allows you to define a fuzzy logic pattern matching predicate for your data type.
--- The data type must take an 'Object' as input and use data of your custom pattern type to decide
--- whether your pattern matches the 'Object'. You usually make use of 'fromObj' to convert the
--- 'Object' to a type which you can actually evaluate.
---
--- The 'Object' data type itself instantiates this class, in which case if 'matchable' has not been
--- defined for the data type stored in the 'Dao.Object.Object', 'patternCompare' evaluates to
--- @('Prelude.==')@
-class PatternClass o where { patternCompare :: o -> o -> Similarity; }
-instance PatternClass () where { patternCompare=patternFromEq; }
-instance PatternClass Int  where { patternCompare=patternFromEq; }
-instance PatternClass Char   where { patternCompare=patternFromEq; }
-instance PatternClass Float    where { patternCompare=patternFromEq; }
-instance PatternClass Double     where { patternCompare=patternFromEq; }
-instance PatternClass Integer      where { patternCompare=patternFromEq; }
-instance PatternClass TypeRep        where { patternCompare=patternFromEq; }
-instance PatternClass LazyText         where { patternCompare=patternFromEq; }
-instance PatternClass StrictText         where { patternCompare=patternFromEq; }
-instance PatternClass Similarity           where { patternCompare=patternFromEq; }
-instance Eq a => PatternClass [a]            where { patternCompare=patternFromEq; }
-instance Eq a => PatternClass (Maybe a)        where { patternCompare=patternFromEq; }
-instance Eq a => PatternClass (Ratio a)          where { patternCompare=patternFromEq; }
-instance (Eq a, Eq b) => PatternClass (M.Map a b)  where { patternCompare=patternFromEq; }
-instance (Eq a, Eq b) => PatternClass (T.Tree a b)   where { patternCompare=patternFromEq; }
-instance (Eq a, Eq b) => PatternClass (Either a b)     where { patternCompare=patternFromEq; }
-
--- | Automatically derive a function that can be used to instantiate your type @t@ into the
--- 'PatternClass' by making use of the type @t@'s instantiation of the 'Prelude.Eq' class.
---
--- Use this when you want to use 'query', 'query1', or 'queryAll' to evaluate a 'Rule' that returns
--- your type @t@. For use with these function, @t@ needs to instantiate 'PatternClass'. If your type
--- @t@ doesn't need to return a fuzzy similarity value, you can just use this function to quickly
--- instantiate 'PatternClass'. For example:
---
--- @
--- newtype MyBoolean = MyBoolean 'Prelude.Bool' deriving 'Prelude.Eq'
--- instance 'PatternClass' MyBoolean where { patternCompare = patternFromEq; }
--- @
-patternFromEq :: Eq t => t -> t -> Similarity
-patternFromEq a b = if a==b then ExactlyEqual else Dissimilar
 
 ----------------------------------------------------------------------------------------------------
 

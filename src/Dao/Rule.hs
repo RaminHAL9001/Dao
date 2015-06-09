@@ -49,9 +49,11 @@ module Dao.Rule
     Query, QueryState(QueryState), queryStateTuple,
     querySubState, queryWeight, queryIndex, queryInput,
     -- * Patterns for Matching Tokens
+    MatchFunction,
     PatternClass(patternCompare), patternFromEq,
     Similarity(Dissimilar, Similar, ExactlyEqual), boolSimilar, similarButNotEqual, isSimilar,
-    Dissimilarity(Dissimilarity), getSimilarity,
+    Dissimilarity(Dissimilarity),
+    dissimilarityTuple, dissimilarity, dissimilarityItem,
     -- * Production Rules: the 'Rule' Monad
     Rule, evalRuleLogic, queryAll, query, query1,
     -- * Constructing 'Rule's
@@ -139,7 +141,7 @@ queryIndex = queryStateTuple >>> tuple2
 queryInput :: Monad m => Lens m (QueryState tok st) (Query tok)
 queryInput = queryStateTuple >>> tuple3
 
-_plus :: (Eq tok, Ord tok, Monad m) => RuleAltEvalPath err tok st m a -> RuleAltEvalPath err tok st m a -> RuleAltEvalPath err tok st m a
+_plus :: (Eq pat, Ord pat, Monad m) => RuleAltEvalPath err pat tok st m a -> RuleAltEvalPath err pat tok st m a -> RuleAltEvalPath err pat tok st m a
 _plus = M.unionWith (T.unionWith (\a b q -> mplus (a q) (b q)))
 
 _showQS :: Show tok => QueryState tok st -> String
@@ -196,8 +198,7 @@ data Similarity
 -- 'Prelude.tail' end of the resultant list. Wrapping 'Similarity' values in this data type reverses
 -- the 'Prelude.Ordering' so that more 'Dissimilar' items have a higher value and are placed towards
 -- the 'Prelude.tail' end of the 'Data.List.sort'ed list.
-newtype Dissimilarity = Dissimilarity { getSimilarity :: Similarity }
-  deriving (Eq, Show, Typeable)
+newtype Dissimilarity o = Dissimilarity (Similarity, o) deriving (Show, Typeable)
 
 instance TestNull Similarity where
   nullValue  = Dissimilar
@@ -226,11 +227,16 @@ instance Ord Similarity where
       ExactlyEqual -> EQ
       _            -> LT
 
-instance Ord Dissimilarity where { compare (Dissimilarity a) (Dissimilarity b) = compare b a; }
+instance Eq (Dissimilarity o) where
+  (Dissimilarity (a, _)) == (Dissimilarity (b, _)) = a == b
 
-instance Monoid Dissimilarity where
+instance Ord (Dissimilarity o) where
+  compare (Dissimilarity (a, _)) (Dissimilarity (b, _)) = compare b a
+
+instance Monoid o => Monoid (Dissimilarity o) where
   mempty = Dissimilarity mempty
-  mappend (Dissimilarity a) (Dissimilarity b) = Dissimilarity $ mappend a b
+  mappend (Dissimilarity (a1, a2)) (Dissimilarity (b1, b2)) =
+    Dissimilarity (mappend a1 b1, mappend a2 b2)
 
 -- | Convert a 'Prelude.Bool' value to a 'Similarity' value. 'Prelude.True' is 'ExactlyEqual', and
 -- 'Prelude.False' is 'Dissimilar'.
@@ -247,7 +253,19 @@ similarButNotEqual o = case o of { Similar _ -> True; _ -> False; }
 isSimilar :: Similarity -> Bool
 isSimilar o = case o of { Dissimilar -> False; _ -> True; }
 
+dissimilarityTuple :: Monad m => Lens m (Dissimilarity o) (Similarity, o)
+dissimilarityTuple = newLens (\ (Dissimilarity o) -> o) (\o _ -> Dissimilarity o)
+
+dissimilarity :: Monad m => Lens m (Dissimilarity o) Similarity
+dissimilarity = dissimilarityTuple >>> tuple0
+
+dissimilarityItem :: Monad m => Lens m (Dissimilarity o) o
+dissimilarityItem = dissimilarityTuple >>> tuple1
+
 ----------------------------------------------------------------------------------------------------
+
+-- | Functions of this type are used match patterns to queries.
+type MatchFunction m pat tok = pat -> tok -> m Similarity
 
 -- | This class allows you to define a fuzzy logic pattern matching predicate for your data type.
 -- The data type must take an 'Object' as input and use data of your custom pattern type to decide
@@ -338,15 +356,15 @@ pPrintRuleErrorWith prin err = case err of
 -- functions. And 'Control.Monad.Reader.Class.MonadReader' is instantiated so that the
 -- 'Control.Monad.Reader.Class.local' function can be used to execute rules with a different input
 -- in a different context without altering the current context.
-data Rule err tok st (m :: * -> *) a
+data Rule err pat tok st (m :: * -> *) a
   = RuleEmpty
   | RuleReturn a
   | RuleThrow (RuleError err)
-  | RuleLift  (m (Rule err tok st m a))
-  | RuleState (QueryState tok st -> [(Rule err tok st m a, QueryState tok st)])
-  | RuleOp        RuleOpCode                      (Rule            err tok st m a)
-  | RuleChoice   (Rule            err tok st m a) (Rule            err tok st m a)
-  | RuleTree     (RuleAltEvalPath err tok st m a) (RuleAltEvalPath err tok st m a)
+  | RuleLift  (m (Rule err pat tok st m a))
+  | RuleState (QueryState tok st -> [(Rule err pat tok st m a, QueryState tok st)])
+  | RuleOp        RuleOpCode                      (Rule            err pat tok st m a)
+  | RuleChoice   (Rule            err pat tok st m a) (Rule            err pat tok st m a)
+  | RuleTree     (RuleAltEvalPath err pat tok st m a) (RuleAltEvalPath err pat tok st m a)
     -- DepthFirst and BreadthFirst rule trees are kept separate.
 
 -- Not exported
@@ -358,6 +376,10 @@ data RuleOpCode
           [(Either (RuleError err) a, QueryState tok st)]
        -> [(Either (RuleError err) a, QueryState tok st)]
       )
+
+instance TestNull (Rule err pat tok st m a) where
+  nullValue = RuleEmpty
+  testNull o = case o of { RuleEmpty -> True; _ -> False; }
 
 instance Eq RuleOpCode where
   a == b = case a of
@@ -371,7 +393,7 @@ instance Show RuleOpCode where
     BestMatch i -> "BestMatch "++show i; 
     RulePrune _ -> "RulePrune (\\qs -> ...)"
 
-instance (Monad m, Eq tok, Ord tok) => Functor (Rule err tok st m) where
+instance (Monad m, Eq pat, Ord pat) => Functor (Rule err pat tok st m) where
   fmap f rule = case rule of
     RuleEmpty      -> RuleEmpty
     RuleReturn   o -> RuleReturn $ f o
@@ -382,11 +404,11 @@ instance (Monad m, Eq tok, Ord tok) => Functor (Rule err tok st m) where
     RuleChoice x y -> RuleChoice (liftM f x) (liftM f y)
     RuleTree   x y -> let map = fmap (fmap (fmap (fmap f))) in RuleTree (map x) (map y)
 
-instance (Functor m, Monad m, Eq tok, Ord tok) => Applicative (Rule err tok st m) where { pure = return; (<*>) = ap; }
+instance (Functor m, Monad m, Eq pat, Ord pat) => Applicative (Rule err pat tok st m) where { pure = return; (<*>) = ap; }
 
-instance (Functor m, Monad m, Eq tok, Ord tok) => Alternative (Rule err tok st m) where { empty = mzero; (<|>) = mplus; }
+instance (Functor m, Monad m, Eq pat, Ord pat) => Alternative (Rule err pat tok st m) where { empty = mzero; (<|>) = mplus; }
 
-instance (Monad m, Eq tok, Ord tok) => Monad (Rule err tok st m) where
+instance (Monad m, Eq pat, Ord pat) => Monad (Rule err pat tok st m) where
   return = RuleReturn
   rule >>= f = case rule of
     RuleEmpty      -> RuleEmpty
@@ -410,7 +432,7 @@ instance (Monad m, Eq tok, Ord tok) => Monad (Rule err tok st m) where
     _ -> a >>= \ _ -> b
   fail = RuleThrow . RuleFail . toText
 
-instance (Monad m, Eq tok, Ord tok) => MonadPlus (Rule err tok st m) where
+instance (Monad m, Eq pat, Ord pat) => MonadPlus (Rule err pat tok st m) where
   mzero = RuleEmpty
   mplus a b = case a of
     RuleEmpty        -> b
@@ -423,47 +445,47 @@ instance (Monad m, Eq tok, Ord tok) => MonadPlus (Rule err tok st m) where
       RuleEmpty        -> a
       b                -> RuleChoice a b
 
-instance (Monad m, Eq tok, Ord tok) => MonadError (RuleError err) (Rule err tok st m) where
+instance (Monad m, Eq pat, Ord pat) => MonadError (RuleError err) (Rule err pat tok st m) where
   throwError            = RuleThrow
   catchError rule catch = case rule of
     RuleThrow o -> catch o
     _           -> rule
 
-instance (Monad m, Eq tok, Ord tok) => PredicateClass (RuleError err) (Rule err tok st m) where
+instance (Monad m, Eq pat, Ord pat) => PredicateClass (RuleError err) (Rule err pat tok st m) where
   predicate o = case o of
     PError err -> throwError err
     PTrue    o -> return o
     PFalse     -> mzero
   returnPredicate f = mplus (catchError (liftM PTrue f) (return . PError)) (return PFalse)
 
-instance (Monad m, Eq tok, Ord tok) => MonadState st (Rule err tok st m) where
+instance (Monad m, Eq pat, Ord pat) => MonadState st (Rule err pat tok st m) where
   state f = RuleState $ \qs ->
     let (o, st) = f (qs~>querySubState) in [(return o, with qs [querySubState <~ st])]
 
-instance (Monad m, Eq tok, Ord tok) => MonadReader st (Rule err tok st m) where
+instance (Monad m, Eq pat, Ord pat) => MonadReader st (Rule err pat tok st m) where
   ask = get;
   local f sub = state (\st -> (st, f st)) >>= \st -> sub >>= \o -> state $ const (o, st)
 
-instance (Eq tok, Ord tok) => MonadTrans (Rule err tok st) where
+instance (Eq pat, Ord pat) => MonadTrans (Rule err pat tok st) where
   lift f = RuleLift $ liftM return f
 
-instance (MonadIO m, Eq tok, Ord tok) => MonadIO (Rule err tok st m) where { liftIO = RuleLift . liftM return . liftIO; }
+instance (MonadIO m, Eq pat, Ord pat) => MonadIO (Rule err pat tok st m) where { liftIO = RuleLift . liftM return . liftIO; }
 
-instance (MonadFix m, Eq tok, Ord tok) => MonadFix (Rule err tok st m) where { mfix f = RuleLift $ mfix (return . (>>= f)); }
+instance (MonadFix m, Eq pat, Ord pat) => MonadFix (Rule err pat tok st m) where { mfix f = RuleLift $ mfix (return . (>>= f)); }
 
-instance (Monad m, Eq tok, Ord tok) => Monoid (Rule err tok st m o) where { mempty=mzero; mappend=mplus; }
+instance (Monad m, Eq pat, Ord pat) => Monoid (Rule err pat tok st m o) where { mempty=mzero; mappend=mplus; }
 
 ----------------------------------------------------------------------------------------------------
 
-_queryState :: (Monad m, Eq tok, Ord tok) => (QueryState tok st -> (a, QueryState tok st)) -> Rule err tok st m a
+_queryState :: (Monad m, Eq pat, Ord pat) => (QueryState tok st -> (a, QueryState tok st)) -> Rule err pat tok st m a
 _queryState = RuleState . fmap (return . first return)
 
 _evalRuleSift
-  :: (Monad m, Eq tok, Ord tok, PatternClass tok,
-      Typeable err, Typeable tok, Typeable st, Typeable a)
-  => Rule err tok st m a
+  :: (Monad m, Eq pat, Ord pat, Typeable err, Typeable tok, Typeable st, Typeable a)
+  => MatchFunction m pat tok
+  -> Rule err pat tok st m a
   -> LogicT (QueryState tok st) m ([(RuleError err, QueryState tok st)], [(a, QueryState tok st)])
-_evalRuleSift rule = flip liftM (entangle $ evalRuleLogic rule) $ flip execState ([], []) .
+_evalRuleSift match rule = flip liftM (entangle $ evalRuleLogic match rule) $ flip execState ([], []) .
   mapM_ (\ (lr, qs) -> modify $ \ (l, r) -> case lr of
             Left err -> (l++[(err, qs)], r)
             Right  o -> (l, r++[(o, qs)])
@@ -472,41 +494,41 @@ _evalRuleSift rule = flip liftM (entangle $ evalRuleLogic rule) $ flip execState
 -- | Evaluate a 'Rule' by flattening it's internal 'Dao.Tree.Tree' structure to a 'Dao.Logic.LogicT'
 -- monad. This is probably not as useful of a function as 'queryAll' or 'query'.
 evalRuleLogic
-  :: forall err st tok m a .
-     (Monad m, Eq tok, Ord tok, PatternClass tok,
-      Typeable err, Typeable st, Typeable tok, Typeable a)
-  => Rule err tok st m a -> LogicT (QueryState tok st) m (Either (RuleError err) a)
-evalRuleLogic rule = case rule of
+  :: forall err pat tok st m a .
+     (Monad m, Eq pat, Ord pat, Typeable err, Typeable st, Typeable tok, Typeable a)
+  => MatchFunction m pat tok
+  -> Rule err pat tok st m a
+  -> LogicT (QueryState tok st) m (Either (RuleError err) a)
+evalRuleLogic match rule = case rule of
   RuleEmpty      -> mzero
   RuleReturn   o -> return $ Right o
   RuleThrow  err -> return $ Left err
-  RuleLift     o -> lift o >>= evalRuleLogic
+  RuleLift     o -> lift o >>= evalRuleLogic match
   RuleState    f -> do
-    ox <- liftM f get >>= mapM (\ (rule, st) -> put st >> evalRuleLogic rule)
+    ox <- liftM f get >>= mapM (\ (rule, st) -> put st >> evalRuleLogic match rule)
     superState $ zip ox . repeat
   RuleOp    op f -> case op of
-    ResetWeight  -> evalRuleLogic $ do
+    ResetWeight  -> evalRuleLogic match $ do
       n <- _queryState $ \qs -> (qs~>queryWeight, with qs [queryWeight <~ 0])
       f >>= \o -> _queryState (\qs -> (o, with qs [queryWeight <~ n]))
     BestMatch n -> do
       let scor     = (~> queryWeight) . snd
       let sortScor = sortBy (\a b -> scor b `compare` scor a)
-      (bads, goods) <- _evalRuleSift f
+      (bads, goods) <- _evalRuleSift match f
       superState $ const $ if null goods then first Left <$> bads else
         (if n>0 then take n else id) $ first Right <$> sortScor goods
-    RulePrune filt -> liftM filt (entangle $ evalRuleLogic f) >>= superState . const
-  RuleChoice x y -> mplus (evalRuleLogic x) (evalRuleLogic y)
+    RulePrune filt -> liftM filt (entangle $ evalRuleLogic match f) >>= superState . const
+  RuleChoice x y -> mplus (evalRuleLogic match x) (evalRuleLogic match y)
   RuleTree   x y -> mplus (runMap T.DepthFirst [] x) (runMap T.BreadthFirst [] y) where
     runMap control qx map = if M.null map then mzero else do
-      q <- evalRuleLogic next
+      q <- evalRuleLogic match next
       case q of
         Left  q -> return $ Left q
         Right q -> do
-          let (equal, similar) = partition ((ExactlyEqual ==) . fst)
-                (do (o, tree) <- M.assocs map
-                    let result = patternCompare o q
-                    if result==Dissimilar then [] else [(result, tree)]
-                )
+          (equal, similar) <- liftM (partition ((ExactlyEqual ==) . fst) . concat) $
+            forM (M.assocs map) $ \ (o, tree) -> do
+              result <- lift $ match o q
+              return $ case result of { Dissimilar -> [];  _ -> [(result, tree)]; }
           tree <- superState $ \st -> flip zip (repeat st) $
             if null equal
             then snd <$> sortBy (\a b -> compare (fst b) (fst a)) similar
@@ -515,41 +537,42 @@ evalRuleLogic rule = case rule of
     loop control qx tree@(T.Tree (rule, map)) = if T.null tree then mzero else
       (if control==T.DepthFirst then id else flip) mplus
         (runMap control qx map)
-        (maybe mzero (evalRuleLogic . ($ qx)) rule)
+        (maybe mzero (evalRuleLogic match . ($ qx)) rule)
 
 -- | Run a 'Rule' against a token query given as a value of type @[tok]@, return all successful
 -- results and all exceptions that may have been thrown by 'Control.Monad.Except.throwError'.
 queryAll
-  :: (Monad m, Eq tok, Ord tok, PatternClass tok,
-      Typeable err, Typeable st, Typeable tok, Typeable a)
-  => Rule err tok st m a -> st -> [tok] -> m [(Either (RuleError err) a, st)]
-queryAll rule st q = liftM (fmap (fmap (~> querySubState))) $
-  runLogicT (evalRuleLogic rule) (QueryState (st, 0.0, 0, array q))
+  :: (Monad m, Eq pat, Ord pat, Typeable err, Typeable st, Typeable tok, Typeable a)
+  => MatchFunction m pat tok
+  -> Rule err pat tok st m a -> st -> [tok]
+  -> m [(Either (RuleError err) a, st)]
+queryAll match rule st q = liftM (fmap (fmap (~> querySubState))) $
+  runLogicT (evalRuleLogic match rule) (QueryState (st, 0.0, 0, array q))
 
 -- | Run a 'Rule' against a token query given as a value of type @[tok]@ query, return all
 -- successful results.
 query
-  :: (Monad m, Eq tok, Ord tok, PatternClass tok,
-      Typeable err, Typeable st, Typeable tok, Typeable a)
-  => Rule err tok st m a -> st -> [tok] -> m [(a, st)]
-query r st = liftM (concatMap $ \ (a, st) -> const [] ||| return . flip (,) st $ a) . queryAll r st
+  :: (Monad m, Eq pat, Ord pat, Typeable err, Typeable st, Typeable tok, Typeable a)
+  => MatchFunction m pat tok -> Rule err pat tok st m a -> st -> [tok] -> m [(a, st)]
+query match r st = liftM (concatMap $ \ (a, st) -> const [] ||| return . flip (,) st $ a) . queryAll match r st
 
 -- | Like 'query', but only returns the first successful result, if any.
 query1
-  :: (Monad m, Eq tok, Ord tok, PatternClass tok,
-      Typeable err, Typeable st, Typeable tok, Typeable a)
-  => Rule err tok st m a -> st -> [tok] -> m (Maybe (a, st))
-query1 r st = query r st >=> \ox -> return $ if null ox then Nothing else Just $ head ox
+  :: (Monad m, Eq pat, Ord pat, Typeable err, Typeable st, Typeable tok, Typeable a)
+  => MatchFunction m pat tok
+  -> Rule err pat tok st m a -> st -> [tok]
+  -> m (Maybe (a, st))
+query1 match r st = query match r st >=> \ox -> return $ if null ox then Nothing else Just $ head ox
 
 -- | Take the next item from the query input, backtrack if there is no input remaining.
-next :: (Monad m, Eq tok, Ord tok) => Rule err tok st m tok
+next :: (Monad m, Eq pat, Ord pat) => Rule err pat tok st m tok
 next = RuleState $ \qs -> case (qs~>queryInput) ! (qs~>queryIndex) of
   Nothing -> []
   Just  o -> [(return o, with qs [queryIndex $= (+ 1)])]
 
 -- | Take as many of next items from the query input as necessary to make the rest of the 'Rule'
 -- match the input query. This acts as kind of a Kleene star.
-part :: (Monad m, Eq tok, Ord tok) => Rule err tok st m [tok]
+part :: (Monad m, Eq pat, Ord pat) => Rule err pat tok st m [tok]
 part = RuleState $
   let out  keep qs = (return keep, qs)
       loop keep qs = case (qs~>queryInput) ! (qs~>queryIndex) of
@@ -558,7 +581,7 @@ part = RuleState $
   in  loop []
 
 -- | Clear the remainder of the input 'Query' and return it.
-remainder :: (Monad m, Eq tok, Ord tok) => Rule err tok st m [tok]
+remainder :: (Monad m, Eq pat, Ord pat) => Rule err pat tok st m [tok]
 remainder = RuleState $ \qs ->
   [(return $ elems $ qs~>queryInput, with qs [queryIndex <~ size $ qs~>queryInput])]
 
@@ -570,7 +593,7 @@ remainder = RuleState $ \qs ->
 -- @
 -- ('Data.Functor.Functor' m, 'Control.Monad.Monad' m) => 'Rule' m token
 -- @
-done :: (Monad m, Eq tok, Ord tok) => Rule err tok st m ()
+done :: (Monad m, Eq pat, Ord pat) => Rule err pat tok st m ()
 done = RuleState $ \qs -> [(return (), qs) | (qs~>queryIndex) >= size (qs~>queryInput)]
 
 -- | Fully evaluate a 'Rule', and gather all possible results along with their 'queryWeight's. These
@@ -578,12 +601,12 @@ done = RuleState $ \qs -> [(return (), qs) | (qs~>queryIndex) >= size (qs~>query
 -- than zero, this integer number of results will selected from the top of the sorted list. If the
 -- 'Prelude.Int' value provided is zero or less, all gathered results are sorted and selected. Then
 -- 'Rule' evaluation will continue using only the selected results.
-bestMatch :: Monad m => Int -> Rule err tok st m a -> Rule err tok st m a
+bestMatch :: Monad m => Int -> Rule err pat tok st m a -> Rule err pat tok st m a
 bestMatch i = RuleOp (BestMatch i)
 
 -- | Evaluate a monadic function with the 'queryWeight' reset to zero, and when evaluation of the
 -- monadic function completes, set the score back to the value it was before.
-resetScore :: Monad m => Rule err tok st m a -> Rule err tok st m a
+resetScore :: Monad m => Rule err pat tok st m a -> Rule err pat tok st m a
 resetScore = RuleOp ResetWeight
 
 -- | When a 'Rule' is being evaluated, mutliple branches of evaluation can be produced in parallel.
@@ -609,9 +632,9 @@ resetScore = RuleOp ResetWeight
 -- @return "B"@, so @continue@ function would only have one branch of evaluation to try. Filtering
 -- out all results will behave the same as 'Control.Monad.mzero' or 'Control.Applicative.empty'
 prunePaths
-  :: (Monad m, Eq tok, Ord tok, Typeable tok, Typeable err, Typeable st, Typeable a)
+  :: (Monad m, Eq pat, Ord pat, Typeable tok, Typeable err, Typeable st, Typeable a)
   => ([(Either (RuleError err) a, QueryState tok st)] -> [(Either (RuleError err) a, QueryState tok st)])
-  -> Rule err st tok m a -> Rule err st tok m a
+  -> Rule err pat st tok m a -> Rule err pat st tok m a
 prunePaths filt f = flip RuleOp f $ RulePrune $ \oqs -> fromMaybe oqs $ filt <$> cast oqs >>= cast
 
 ----------------------------------------------------------------------------------------------------
@@ -626,7 +649,7 @@ prunePaths filt f = flip RuleOp f $ RulePrune $ \oqs -> fromMaybe oqs $ filt <$>
 -- | This is the data type that models the branch structure of a 'Rule'. It is a 'Dao.Tree.Tree'
 -- with token paths and @()@ leaves. It is possible to perform modifications to some
 -- 'Rule's, for example 'trim'-ing of branches, using a 'RuleStruct'.
-type RuleStruct tok = T.Tree tok ()
+type RuleStruct pat = T.Tree pat ()
 
 -- | Take a list of lists of a type of 'Dao.Object.ObjectData' and construct a 'Rule' tree that will
 -- match any 'Query' similar to this list of 'Dao.Object.ObjectData' values (using
@@ -636,15 +659,15 @@ type RuleStruct tok = T.Tree tok ()
 -- 'Dao.Object.ObjectData', the portion of the 'Query' that matched will be passed to this 'Rule'
 -- function when it is evaluated.
 edges
-  :: (Eq tok, Ord tok, Monad m)
-  => T.RunTree -> [[tok]] -> ([tok] -> Rule err tok st m b) -> Rule err tok st m b
+  :: (Eq pat, Ord pat, Monad m)
+  => T.RunTree -> [[pat]] -> ([tok] -> Rule err pat tok st m b) -> Rule err pat tok st m b
 edges control branches = ruleStruct control $ T.fromList $ zip branches $ repeat ()
 
 -- | Construct a 'Rule' tree from a 'Dao.Tree.Tree' data type and a 'Rule' function. The 'Rule' will
 -- be copied to every single 'Dao.Tree.Leaf' in the given 'Dao.Tree.Tree'.
 ruleStruct
-  :: (Monad m, Eq tok, Ord tok)
-  => T.RunTree -> RuleStruct tok -> ([tok] -> Rule err tok st m a) -> Rule err tok st m a
+  :: (Monad m, Eq pat, Ord pat)
+  => T.RunTree -> RuleStruct pat -> ([tok] -> Rule err pat tok st m a) -> Rule err pat tok st m a
 ruleStruct control tree rule =
   let df = control==T.DepthFirst
       (T.Tree (leaf, map)) = fmap (\ () -> rule) tree 
@@ -653,7 +676,7 @@ ruleStruct control tree rule =
 
 -- | Take a 'Dao.Tree.Tree' and turn it into a 'Rule' where every 'Dao.Tree.leaf' becomes a 'Rule'
 -- that simply 'Control.Monad.return's the 'Dao.Tree.leaf' value.
-ruleTree :: (Eq tok, Ord tok, Monad m) => T.RunTree -> T.Tree tok a -> Rule err tok st m a
+ruleTree :: (Eq pat, Ord pat, Monad m) => T.RunTree -> T.Tree pat a -> Rule err pat tok st m a
 ruleTree control (T.Tree (leaf, map)) = maybe id (flip mplus . return) leaf $
   (if control==T.DepthFirst then flip else id) RuleTree nullValue $
     fmap (fmap (const . return)) map
@@ -665,7 +688,7 @@ ruleTree control (T.Tree (leaf, map)) = maybe id (flip mplus . return) leaf $
 -- @('Control.Monad.>>=')@, @('Control.Applicative.<*>')@, 'Control.Monad.State.state',
 -- 'Control.Monad.Trans.lift', and others all introduce opaque function data types into the leaves
 -- which cannot be 'Data.Traversal.traverse'd.
-getRuleStruct :: (Eq tok, Ord tok) => Rule err tok st m o -> RuleStruct tok
+getRuleStruct :: (Eq pat, Ord pat) => Rule err pat tok st m o -> RuleStruct pat
 getRuleStruct rule = case rule of
   RuleEmpty      -> T.empty
   RuleTree   x y -> T.Tree (Nothing, M.union (fmap void x) (fmap void y))
@@ -677,7 +700,7 @@ getRuleStruct rule = case rule of
 -- that @'trim' struct t 'Data.Monoid.<>' 'mask' struct t == t@ is always true.
 -- This function works by calling 'Dao.Tree.difference' on the 'Rule' and the 'Dao.Tree.Tree'
 -- constructed by the 'Dao.Tree.blankTree' of the given list of 'Dao.Object.ObjectData' branches.
-trim :: (Monad m, Eq tok, Ord tok) => RuleStruct tok -> Rule err tok st m a -> Rule err tok st m a
+trim :: (Monad m, Eq pat, Ord pat) => RuleStruct pat -> Rule err pat tok st m a -> Rule err pat tok st m a
 trim tree@(T.Tree (leaf, map)) rule = case rule of
   RuleEmpty      -> RuleEmpty
   RuleTree   x y -> RuleTree (del x) (del y)
@@ -693,7 +716,7 @@ trim tree@(T.Tree (leaf, map)) rule = case rule of
 -- @('Prelude.==')@ predicate, not 'Dao.Object.patternCompare'. This function works by calling
 -- 'Dao.Tree.intersection' on the 'Rule' and the 'Dao.Tree.Tree' constructed by the
 -- 'Dao.Tree.blankTree' of the given list of 'Dao.Object.ObjectData' branches.
-mask :: (Monad m, Eq tok, Ord tok) => RuleStruct tok -> Rule err tok st m a -> Rule err tok st m a
+mask :: (Monad m, Eq pat, Ord pat) => RuleStruct pat -> Rule err pat tok st m a -> Rule err pat tok st m a
 mask tree@(T.Tree (leaf, map)) rule = case rule of
   RuleEmpty      -> RuleEmpty
   RuleTree   x y -> RuleTree (del x) (del y)
@@ -707,37 +730,41 @@ mask tree@(T.Tree (leaf, map)) rule = case rule of
 -- | This data type contains a tree with a depth of no less than one (hence it is a 'Dao.Tree.Tree'
 -- inside of a 'Data.Map.Map', the 'Data.Map.Map' matches the first element of the 'Query') which is
 -- used to construct all alternative paths of 'Rule' evaluation.
-type RuleAltEvalPath err tok st m a = M.Map tok (T.Tree tok ([tok] -> Rule err tok st m a))
+type RuleAltEvalPath err pat tok st m a = M.Map pat (T.Tree pat ([tok] -> Rule err pat tok st m a))
 
 -- | This data type is the result of a 'partialQuery'. It holds information about what needs to be
 -- appended to a query to make 'Rule' evaluation succeed.
-newtype PartialQueryResult err tok st m a =
+newtype PartialQueryResult err pat tok st m a =
   PartialQueryResult
     ( T.Tree tok ()
     , [(Either (RuleError err) a, QueryState tok st)]
-    , [(RuleAltEvalPath err tok st m a, RuleAltEvalPath err tok st m a, QueryState tok st)]
+    , [(RuleAltEvalPath err pat tok st m a, RuleAltEvalPath err pat tok st m a, QueryState tok st)]
     )
 
-instance TestNull (PartialQueryResult err tok st m a) where
+instance TestNull (PartialQueryResult err pat tok st m a) where
   nullValue = PartialQueryResult nullValue
   testNull (PartialQueryResult o) = testNull o
 
-instance (Eq tok, Ord tok) => Monoid (PartialQueryResult err tok st m a) where
+instance (Eq tok, Ord tok) => Monoid (PartialQueryResult err pat tok st m a) where
   mempty = nullValue
   mappend (PartialQueryResult (a1, b1, c1)) (PartialQueryResult (a2, b2, c2)) =
     PartialQueryResult (T.union a1 a2, b1++b2, c1++c2)
 
+_qr :: PartialQueryResult err pat tok st m a -> String
+_qr (PartialQueryResult (t, r, b)) = "(prediction count = " ++ show (T.size t) ++
+  ", result count = " ++ show (length r) ++ ", branch count = " ++ show (length b) ++ ")"
+
 partialQueryResultTuple
   :: Monad m
-  => Lens m (PartialQueryResult err tok st m a)
+  => Lens m (PartialQueryResult err pat tok st m a)
             ( T.Tree tok ()
             , [(Either (RuleError err) a, QueryState tok st)]
-            , [(RuleAltEvalPath err tok st m a, RuleAltEvalPath err tok st m a, QueryState tok st)]
+            , [(RuleAltEvalPath err pat tok st m a, RuleAltEvalPath err pat tok st m a, QueryState tok st)]
             )
 partialQueryResultTuple = newLens (\ (PartialQueryResult o) -> o) (\o _ -> PartialQueryResult o)
 
 -- | This is the lens that retrieves the potential next steps.
-partialQueryNextSteps :: Monad m => Lens m (PartialQueryResult err tok st m a) (T.Tree tok ())
+partialQueryNextSteps :: Monad m => Lens m (PartialQueryResult err pat tok st m a) (T.Tree tok ())
 partialQueryNextSteps = partialQueryResultTuple >>> tuple0
 
 -- | This lens retrieves the success and failure results of the current 'partialQuery'.
@@ -765,7 +792,7 @@ partialQueryNextSteps = partialQueryResultTuple >>> tuple0
 -- provably wrong according to at least some 'Rule's.
 partialQueryResults
   :: Monad m
-  => Lens m (PartialQueryResult err tok st m a) [(Either (RuleError err) a, QueryState tok st)]
+  => Lens m (PartialQueryResult err pat tok st m a) [(Either (RuleError err) a, QueryState tok st)]
 partialQueryResults = partialQueryResultTuple >>> tuple1
 
 -- | This lens retrieves the trees of alternative evaluation paths that could be tried if further
@@ -794,55 +821,74 @@ partialQueryResults = partialQueryResultTuple >>> tuple1
 -- provably wrong according to at least some 'Rule's.
 partialQueryBranches
   :: Monad m
-  => Lens m (PartialQueryResult err tok st m a)
-            [(RuleAltEvalPath err tok st m a, RuleAltEvalPath err tok st m a, QueryState tok st)]
+  => Lens m (PartialQueryResult err pat tok st m a)
+            [(RuleAltEvalPath err pat tok st m a, RuleAltEvalPath err pat tok st m a, QueryState tok st)]
 partialQueryBranches = partialQueryResultTuple >>> tuple2
 
 _partialQuery
-  :: (Monad m, Eq tok, Ord tok)
-  => Int -> Rule err tok st m a -> QueryState tok st -> m (PartialQueryResult err tok st m a)
-_partialQuery lim rule qst = if lim<=0 then return mempty else case rule of
-  RuleEmpty      -> return nullValue
+  :: (Monad m, Eq tok, Ord tok, Eq pat, Ord pat)
+  => Int -> MatchFunction m pat tok -> PredictTokens m pat tok
+  -> Rule err pat tok st m a -> QueryState tok st -> m (PartialQueryResult err pat tok st m a)
+_partialQuery lim match predictor rule qst = if lim<=0 then return mempty else case rule of
+  RuleEmpty      -> return $ PartialQueryResult (nullValue, [], [])
   RuleReturn   a -> return $ PartialQueryResult (nullValue, [(Right  a, qst)], [])
   RuleThrow  err -> return $ PartialQueryResult (nullValue, [(Left err, qst)], [])
-  RuleLift  rule -> rule >>= \rule -> _partialQuery lim rule qst
-  RuleState rule -> liftM mconcat $ mapM (uncurry $ _partialQuery $ lim-1) (rule qst)
-  RuleOp _  rule -> _partialQuery (lim-1) rule qst
+  RuleLift  rule -> rule >>= \rule -> _partialQuery lim match predictor rule qst
+  RuleState rule -> liftM mconcat $ mapM (uncurry $ _partialQuery (lim-1) match predictor) (rule qst)
+  RuleOp _  rule -> _partialQuery (lim-1) match predictor rule qst
   RuleChoice a b -> let depth1 = lim-1 in
-    liftM2 mappend (_partialQuery depth1 a qst) (_partialQuery depth1 b qst)
-  RuleTree   a b -> _partialChoice lim [(a, b, qst)]
+    liftM2 mappend (_partialQuery depth1 match predictor a qst) (_partialQuery depth1 match predictor b qst)
+  RuleTree   a b -> _partialChoice lim match predictor [(a, b, qst)]
 
 _partialChoice
-  :: (Monad m, Eq tok, Ord tok)
-  => Int -> [(RuleAltEvalPath err tok st m a, RuleAltEvalPath err tok st m a, QueryState tok st)]
-  -> m (PartialQueryResult err tok st m a)
-_partialChoice lim abx = if lim<=0 then return mempty else liftM (mconcat . join) $
-  forM abx $ \ (a, b, qst@(QueryState (st, score, i, qx))) -> case qx!i of
-    Just  q -> do
-      let part order = maybe [] (T.partitions order $ indexElems qx (i, size qx)) . M.lookup q
-      forM (part T.BreadthFirst a ++ part T.DepthFirst b) $ \ ((px, _), rule) ->
-        _partialQuery (lim-1) (rule px) $ QueryState (st, score, i+length px, qx)
-    Nothing      -> liftM return $ _predictFuture lim qst [] $ T.Tree (Nothing, _plus a b)
+  :: (Monad m, Eq pat, Ord pat, Eq tok, Ord tok)
+  => Int -> MatchFunction m pat tok -> PredictTokens m pat tok
+  -> [(RuleAltEvalPath err pat tok st m a, RuleAltEvalPath err pat tok st m a, QueryState tok st)]
+  -> m (PartialQueryResult err pat tok st m a)
+_partialChoice lim match predictor abx = if lim<=0 then return mempty else liftM (mconcat . join) $
+  forM abx $ \ (a, b, qst@(QueryState (st, score, i, toks))) -> case toks!i of
+    Just  _ -> do -- if there is at least one token remaining...
+      let part order = T.partitionWithM order
+            (\p q -> flip liftM (match p q) $ \sim -> case sim of
+              Dissimilar -> Nothing
+              sim        -> Just $ Dissimilarity (sim, q)
+            )
+            (indexElems toks (i, size toks)) . T.Tree . ((,) Nothing)
+      liftM (sortBy (\a b -> compare (fst a) (fst b)) . fmap (first fst))
+        (liftM2 (++) (part T.BreadthFirst a) (part T.DepthFirst b)) >>= mapM
+          (\ (keep, rule) -> _partialQuery (lim-1) match predictor (rule $ (~> dissimilarityItem) <$> keep) $
+            QueryState (st, score, i+length keep, toks)
+          )
+    Nothing      -> liftM return $ _predictFuture lim match predictor qst [] $ T.Tree (Nothing, _plus a b)
+      -- otherwise we ask the predictor to try and predict with an empty input.
 
 _predictFuture
-  :: (Monad m, Eq tok, Ord tok)
-  => Int -> QueryState tok st -> [tok]
-  -> (T.Tree tok ([tok] -> Rule err tok st m a))
-  -> m (PartialQueryResult err tok st m a)
-_predictFuture lim qst qx tree = if lim<=0 then return mempty else
-  liftM mconcat $ forM (T.assocs T.BreadthFirst tree) $ \ (path, rule) -> do
-    qx <- return $ qx++path
-    let done qx o ab = return $ PartialQueryResult (T.singleton qx (), o, ab)
-        loop f   qst = _predictFuture (lim-1) qst qx (T.singleton [] $ const f)
-    case rule qx of
-      RuleEmpty      -> done [] []                []
-      RuleReturn   a -> done qx [(Right  a, qst)] []
-      RuleThrow  err -> done [] [(Left err, qst)] []
-      RuleLift     f -> f >>= flip loop qst
-      RuleState    f -> liftM mconcat $ mapM (uncurry loop) $ f qst
-      RuleOp     _ f -> loop f qst
-      RuleChoice a b -> liftM2 mappend (loop a qst) (loop b qst)
-      RuleTree   a b -> _predictFuture (lim-1) qst qx (T.Tree (Nothing, _plus a b))
+  :: (Monad m, Eq pat, Ord pat, Eq tok, Ord tok)
+  => Int -> MatchFunction m pat tok -> PredictTokens m pat tok
+  -> QueryState tok st -> [tok] -> (T.Tree pat ([tok] -> Rule err pat tok st m a))
+  -> m (PartialQueryResult err pat tok st m a)
+_predictFuture lim match predictor qst toks tree = if lim<=0 then return mempty else
+  liftM (mconcat . join) $ forM (T.assocs T.BreadthFirst tree) $ \ (path, rule) -> do
+    prediction <- liftM sequence $ predictor path
+    forM prediction $ \prediction -> do
+      prediction <- return $ toks++prediction
+      let done prediction o ab  = return $ PartialQueryResult (T.singleton prediction (), o, ab)
+      let loop f qst = _predictFuture (lim-1) match predictor qst prediction (T.singleton [] $ const f)
+      case rule prediction of
+        RuleEmpty      -> done []         []                []
+        RuleReturn   a -> done prediction [(Right  a, qst)] []
+        RuleThrow  err -> done []         [(Left err, qst)] []
+        RuleLift     f -> f >>= flip loop qst
+        RuleState    f -> liftM mconcat $ mapM (uncurry loop) $ f qst
+        RuleOp     _ f -> loop f qst
+        RuleChoice a b -> liftM2 mappend (loop a qst) (loop b qst)
+        RuleTree   a b -> _predictFuture (lim-1) match predictor qst prediction (T.Tree (Nothing, _plus a b))
+
+----------------------------------------------------------------------------------------------------
+
+-- | Functions of this type are used to predict future sequences of tokens that could match the
+-- given sequence of pattern units.
+type PredictTokens m pat tok = [pat] -> m [[tok]]
 
 -- | When you run a 'Rule' or 'Rule' with a partial query, you are will evaluate the
 -- function up to the end of the query with the expectation that there is more to the query that
@@ -866,6 +912,9 @@ _predictFuture lim qst qx tree = if lim<=0 then return mempty else
 -- created by functions like @('Control.Applicative.<|>')@, 'Control.Monad.mplus', or
 -- 'Control.Monad.msum'.
 --
+-- This function also requires a @predictor@ function, which takes a @pat@ pattern units and returns
+-- a list of possible @tok@ tokens that could match the pattern.
+--
 -- *WARNING:* rule evaluation that is not pure, especially rules that lift the @IO@ monad, may end
 -- up evaluating side effects several times. One thing you can do to avoid unwanted side effects is
 -- to design your 'Rule' or 'Rule' to be polymorphic over the monadic type @m@ (refer to the
@@ -875,27 +924,31 @@ _predictFuture lim qst qx tree = if lim<=0 then return mempty else
 -- polymorphic over the monadic type, you can simply use them with your @IO@ specific 'Rule's and
 -- your Haskell compiler will not complain.
 partialQuery
-  :: (Monad m, Eq tok, Ord tok)
-  => Int -> Rule err tok st m a -> st -> [tok] -> m (PartialQueryResult err tok st m a)
-partialQuery lim rule st qx = _partialQuery lim rule $ QueryState (st, 0.0, 0, array qx)
+  :: (Monad m, Eq pat, Ord pat, Eq tok, Ord tok)
+  => Int -> MatchFunction m pat tok -> PredictTokens m pat tok
+  -> Rule err pat tok st m a -> st -> [tok] -> m (PartialQueryResult err pat tok st m a)
+partialQuery lim match predictor rule st qx =
+  _partialQuery lim match predictor rule $ QueryState (st, 0.0, 0, array qx)
 
 -- | Continue a 'partialQuery' from where the previous 'partialQuery' result left off, as if another
 -- 'Query' has been appended to the previous 'Query' of the call to the previous 'partialQuery'.
 resumePartialQuery
-  :: (Monad m, Eq tok, Ord tok)
-  => Int -> PartialQueryResult err tok st m a -> [tok] -> m (PartialQueryResult err tok st m a)
-resumePartialQuery lim (PartialQueryResult (_, _, abx)) qx = _partialChoice lim $
-  (\ (a, b, QueryState (st, score, i, px)) ->
-     (a, b, QueryState (st, score, i, px<>array qx)
-  )) <$> abx
+  :: (Monad m, Eq pat, Ord pat, Eq tok, Ord tok)
+  => Int -> MatchFunction m pat tok -> PredictTokens m pat tok
+  -> PartialQueryResult err pat tok st m a -> [tok] -> m (PartialQueryResult err pat tok st m a)
+resumePartialQuery lim match predictor (PartialQueryResult (_, _, abx)) qx =
+  _partialChoice lim match predictor $
+    (\ (a, b, QueryState (st, score, i, px)) ->
+       (a, b, QueryState (st, score, i, px<>array qx)
+    )) <$> abx
 
 -- | Take a 'PartialQueryResult' and return a list of possible 'Query' completions, along with any
 -- current success and failure values that would be returned if the 'partialQuery' were to be
 -- evaluated as is.
-guesses :: PartialQueryResult err tok st m a -> ([[tok]], [a], [RuleError err])
+guesses :: PartialQueryResult err pat tok st m a -> ([[tok]], [a], [RuleError err])
 guesses (PartialQueryResult (trees, results, _)) =
-  let score (_, QueryState (_, a1, a2, _)) (_, QueryState (_, b1, b2, _)) =
-        compare a2 b2 <> compare b1 a1
+  let score (_, QueryState (_, a1, b1, _)) (_, QueryState (_, a2, b2, _)) =
+        compare b1 b2 <> compare a1 a2
       (lefts, rights) = partitionEithers $ fst <$> sortBy score results
   in  (fst <$> T.assocs T.BreadthFirst trees, rights, lefts)
 
@@ -926,8 +979,8 @@ guesses (PartialQueryResult (trees, results, _)) =
 -- As the first parameter pass a call to 'partialQuery' or 'resumePartialQuery', for example:
 -- 
 -- @
--- ('partialQuery' 99 myRule myInitState) -- this
--- ('resumePartialQuery' 99 previousQueryResult) -- or this could be the first parameter to 'guessPartial'
+-- ('partialQuery' 99 myComparator myPredictor myRule myInitState) -- either this...
+-- ('resumePartialQuery' 99 myComparator myPredictor previousQueryResult) -- ...or this could be the first parameter to 'guessPartial'
 -- @
 --
 -- As the second parameter, pass the 'Query'. The last token will be removed from this
@@ -942,8 +995,8 @@ guesses (PartialQueryResult (trees, results, _)) =
 --     filterPrefixes completion = if null completion then [] else case finalObj of
 --         Nothing         -> [completion]
 --         Just finalToken -> do
-  --         'Control.Monad.guard' $ 'Dao.Text.toText' finalToken `'Data.Text.isPrefixOf'` Dao.Text.toText' (head completion)
-  --         [completion]
+--             'Control.Monad.guard' $ 'Dao.Text.toText' finalToken `'Data.Text.isPrefixOf'` Dao.Text.toText' (head completion)
+--             [completion]
 -- @
 --
 -- So your call to 'guessPartial' could look like this:
@@ -965,15 +1018,15 @@ guesses (PartialQueryResult (trees, results, _)) =
 -- 'PartialQueryResult' which you can use to call 'resumePartialQuery'.
 guessPartial
   :: Monad m
-  => ([tok] -> m (PartialQueryResult err tok st m a))
+  => ([tok] -> m (PartialQueryResult err pat tok st m a))
   -> [tok]
   -> (Maybe tok -> [[tok]] -> m [[tok]])
-  -> m ([[tok]], PartialQueryResult err tok st m a)
+  -> m ([[tok]], PartialQueryResult err pat tok st m a)
 guessPartial callPartialQuery qx filter = do
   (q, qx) <- return $ case reverse qx of
     []   -> (Nothing, [])
     q:qx -> (Just  q, reverse qx)
-  result  <- callPartialQuery qx
+  result <- callPartialQuery qx
   let (completions, _, _) = guesses result
   completions <- filter q completions
   return (completions, result)

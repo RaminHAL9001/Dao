@@ -83,7 +83,7 @@ module Dao.Grammar
     OctIntLitToken(OctIntLitToken),
     DecIntLitToken(DecIntLitToken),
     NumberLitToken(DecIntNumberLit, HexIntNumberLit, IntExponentLit, DecimalPointLit),
-    decimalPointedNumberToken, exponentLiteralToken,
+    decimalPointedNumberToken, exponentLiteralToken, numberLitTokenToRational,
     CNumberLit(CNumberLit, COctIntNumberLit), cDecimalPoint, cExponent,
     Quoted1Token(Quoted1Token), Quoted2Token(Quoted2Token),
     -- * Re-Exported Modules
@@ -96,6 +96,7 @@ module Dao.Grammar
 import           Dao.Array
 import           Dao.Class
 import           Dao.Lens
+import           Dao.Object
 import           Dao.Predicate
 import           Dao.TestNull
 import           Dao.Text
@@ -643,6 +644,13 @@ instance PPrintable SpaceToken where { pPrint = return . pText . toText; }
 instance NFData SpaceToken where { rnf (SpaceToken o) = deepseq o (); }
 instance Monad m => The (Grammar m SpaceToken) where
   the = grammarTyped $ grammar [lexer (SpaceToken . Lazy.toStrict) [rx (anyOf "\t\v\f ", MIN 1)]]
+instance The (Parser st SpaceToken) where { the = grammarToParser the; }
+instance SimpleData SpaceToken where
+  simple (SpaceToken o) = struct "Whitespace" o
+  fromSimple = fromStructText "Whitespace" (the :: Parser () SpaceToken) ()
+instance ObjectData SpaceToken where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
 
 -- | This is exactly like 'SpaceToken', except the 'Grammar' never fails to parse. If there are no
 -- whitespace characters under the current point in the input strean, an empty string token is
@@ -656,6 +664,13 @@ instance NFData OptSpaceToken where { rnf (OptSpaceToken o) = deepseq o (); }
 instance TestNull OptSpaceToken where
   nullValue = OptSpaceToken nullValue
   testNull (OptSpaceToken o) = testNull o
+instance ObjectData OptSpaceToken where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance SimpleData OptSpaceToken where
+  simple (OptSpaceToken o) = struct "OptionalWhitespace" o
+  fromSimple = fromStructText "OptionalWhitespace" (the :: Parser () OptSpaceToken) ()
+instance The (Parser st OptSpaceToken) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m OptSpaceToken) where
   the = grammarTyped $ grammar [lexer (OptSpaceToken . Lazy.toStrict) [rx (anyOf "\t\v\f ", MIN 0)]]
 
@@ -667,6 +682,13 @@ instance StringLength NewLineToken where { stringLength = stringLength . toText;
 instance Show NewLineToken where { show = show . toText; }
 instance PPrintable NewLineToken where { pPrint _ = [pNewLine]; }
 instance NFData NewLineToken where { rnf (NewLineToken o) = deepseq o (); }
+instance SimpleData NewLineToken where
+  simple (NewLineToken o) = struct "NewLine" o
+  fromSimple = fromStructText "NewLine" (the :: Parser () NewLineToken) ()
+instance ObjectData NewLineToken where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st NewLineToken) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m NewLineToken) where
   the = grammarTyped $ grammar
     [lexer (NewLineToken . Lazy.toStrict) [rx "\n\r", rx "\r\n", rx $ anyOf "\n\r"]]
@@ -688,6 +710,13 @@ instance StringLength CInlineComment where { stringLength = stringLength . toTex
 instance Show CInlineComment where { show = show . toText; }
 instance PPrintable CInlineComment where { pPrint = return . pText . toText; }
 instance NFData CInlineComment where { rnf (CInlineComment o) = deepseq o (); }
+instance SimpleData CInlineComment where
+  simple (CInlineComment o) = struct "C_InlineComment" o
+  fromSimple = fromStructText "C_InlineComment" (the :: Parser () CInlineComment) ()
+instance ObjectData CInlineComment where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st CInlineComment) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m CInlineComment) where
   the = grammarTyped $ liftM CInlineComment $ inlineCommentGrammar '/' '*' '/'
 
@@ -698,6 +727,13 @@ instance StringLength HaskellInlineComment where { stringLength = stringLength .
 instance Show HaskellInlineComment where { show = show . toText; }
 instance PPrintable HaskellInlineComment where { pPrint = return . pText . toText; }
 instance NFData HaskellInlineComment where { rnf (HaskellInlineComment o) = deepseq o (); }
+instance SimpleData HaskellInlineComment where
+  simple (HaskellInlineComment o) = struct "Haskell_InlineComment" o
+  fromSimple = fromStructText "Haskell_InlineComment" (the :: Parser () HaskellInlineComment) ()
+instance ObjectData HaskellInlineComment where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st HaskellInlineComment) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m HaskellInlineComment) where
   the = grammarTyped $ liftM HaskellInlineComment $ inlineCommentGrammar '{' '-' '}'
 
@@ -713,6 +749,13 @@ instance StringLength CEndlineComment where { stringLength = stringLength . toTe
 instance Show CEndlineComment where { show = show . toText; }
 instance PPrintable CEndlineComment where { pPrint = return . pText . toText; }
 instance NFData CEndlineComment where { rnf (CEndlineComment o) = deepseq o (); }
+instance SimpleData CEndlineComment where
+  simple (CEndlineComment o) = struct "C_EndlineComment" o
+  fromSimple = fromStructText "C_EndlineComment" (the :: Parser () CEndlineComment) ()
+instance ObjectData CEndlineComment where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st CEndlineComment) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m CEndlineComment) where
   the = grammarTyped $ liftM CEndlineComment $ endlineCommentGrammar "//"
 
@@ -724,6 +767,13 @@ instance StringLength HaskellEndlineComment where { stringLength = stringLength 
 instance Show HaskellEndlineComment where { show = show . toText; }
 instance PPrintable HaskellEndlineComment where { pPrint = return . pText . toText; }
 instance NFData HaskellEndlineComment where { rnf (HaskellEndlineComment o) = deepseq o (); }
+instance SimpleData HaskellEndlineComment where
+  simple (HaskellEndlineComment o) = struct "Haskell_EndlineComment" o
+  fromSimple = fromStructText "Haskell_EndlineComment" (the :: Parser () HaskellEndlineComment) ()
+instance ObjectData HaskellEndlineComment where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st HaskellEndlineComment) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m HaskellEndlineComment) where
   the = grammarTyped $ liftM HaskellEndlineComment $ endlineCommentGrammar "--"
 
@@ -736,6 +786,13 @@ instance StringLength CIdentifier where { stringLength = stringLength . toText; 
 instance Show CIdentifier where { show = show . toText; }
 instance PPrintable CIdentifier where { pPrint = return . pText . toText; }
 instance NFData CIdentifier where { rnf (CIdentifier o) = deepseq o (); }
+instance SimpleData CIdentifier where
+  simple (CIdentifier o) = struct "C_Identifier" o
+  fromSimple = fromStructText "C_Identifier" (the :: Parser () CIdentifier) ()
+instance ObjectData CIdentifier where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st CIdentifier) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m CIdentifier) where
   the = let underscore = mappend (anyOf "_") in grammarTyped $ grammarTable $ grammar $
     [ lexer (CIdentifier . Lazy.toStrict) $
@@ -758,6 +815,13 @@ instance StringLength PosNeg where { stringLength = stringLength . toText; }
 instance PPrintable PosNeg where { pPrint = return . pText . toText; }
 instance NFData PosNeg where { rnf (PosNeg o) = seq o (); }
 instance Show PosNeg where { show = flip (prependSign (:)) ""; }
+instance SimpleData PosNeg where
+  simple (PosNeg o) = struct "PosNeg" o
+  fromSimple = fromStructText "PosNeg" (the :: Parser () PosNeg) ()
+instance ObjectData PosNeg where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st PosNeg) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m PosNeg) where
   the =
     let f c = PosNeg $
@@ -809,6 +873,13 @@ instance IntLitTokenLens ExponentLitToken where
     (\  (ExponentLitToken (_, pos, txt)) -> posNegNum pos $ read (Strict.unpack txt))
     (\i (ExponentLitToken (e, _  , _  )) -> ExponentLitToken (e, posNegSign i, Strict.pack $ show $ abs i))
 
+instance SimpleData ExponentLitToken where
+  simple (ExponentLitToken o) = struct "ExponentLitToken" o
+  fromSimple = fromStructText "ExponentLitToken" (the :: Parser () ExponentLitToken) ()
+instance ObjectData ExponentLitToken where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st ExponentLitToken) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m ExponentLitToken) where
   the = let mk e s d = ExponentLitToken (e == Lazy.singleton 'E', s, d) in grammarTyped $
     (grammar [lexer mk [rx $ anyOf "Ee"]] `ap` (the :: Grammar m PosNeg)) `ap`
@@ -851,6 +922,13 @@ instance IntLitTokenLens HexIntLitToken where
     )
     (\i _ -> HexIntLitToken $ Strict.pack $ "0x" ++ fmap toUpper (showHex i ""))
 
+instance SimpleData HexIntLitToken where
+  simple (HexIntLitToken o) = struct "HexIntLitToken" o
+  fromSimple = fromStructText "HexIntLitToken" (the :: Parser () HexIntLitToken) ()
+instance ObjectData HexIntLitToken where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st HexIntLitToken) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m HexIntLitToken) where
   the = let rxhex = rx (csetBase16, MIN 1) in liftM (HexIntLitToken . Lazy.toStrict . Lazy.drop 2) $
     grammarTyped $ grammar [lexer id [rx "0x", rxhex], lexer id [rx "0X", rxhex]]
@@ -878,6 +956,13 @@ instance IntLitTokenLens OctIntLitToken where
     )
     (\i _ -> OctIntLitToken $ Strict.pack $ '0' : showOct i "")
 
+instance SimpleData OctIntLitToken where
+  simple (OctIntLitToken o) = struct "OctIntLitToken" o
+  fromSimple = fromStructText "OctIntLitToken" (the :: Parser () OctIntLitToken) ()
+instance ObjectData OctIntLitToken where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st OctIntLitToken) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m OctIntLitToken) where
   the = grammarTyped $ grammar [lexConst () [rx '0']] >>
     grammar [lexer (OctIntLitToken . Lazy.toStrict) [rx (csetBase8, MIN 1)]]
@@ -907,6 +992,13 @@ instance IntLitTokenLens DecIntLitToken where
     )
     (\i _ -> DecIntLitToken $ Strict.pack $ show i)
 
+instance SimpleData DecIntLitToken where
+  simple (DecIntLitToken o) = struct "DecIntLitToken" o
+  fromSimple = fromStructText "DecIntLitToken" (the :: Parser () DecIntLitToken) ()
+instance ObjectData DecIntLitToken where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st DecIntLitToken) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m DecIntLitToken) where
   the = grammarTyped $ grammar [lexer (DecIntLitToken . Lazy.toStrict) [rx (csetBase10, MIN 1)]]
 
@@ -965,6 +1057,22 @@ instance NFData NumberLitToken where
     IntExponentLit  a b   -> deepseq a $! deepseq b ()
     DecimalPointLit a b c -> deepseq a $! deepseq b $! deepseq c ()
 
+instance SimpleData NumberLitToken where
+  simple o = case o of
+    DecIntNumberLit o     -> simple o
+    HexIntNumberLit o     -> simple o
+    IntExponentLit  a b   -> struct "IntExponentLit"  (a, b)
+    DecimalPointLit a b c -> struct "DecimalPointLit" (a, b, c)
+  fromSimple o = msum
+    [ DecIntNumberLit <$> fromSimple o
+    , HexIntNumberLit <$> fromSimple o
+    , fromStruct "IntExponentLit"  (uncurry IntExponentLit) o
+    , fromStruct "DecimalPointLit" (\ (a, b, c) -> DecimalPointLit a b c) o
+    ]
+instance ObjectData NumberLitToken where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st NumberLitToken) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m NumberLitToken) where
   the = grammarTyped $ grammarTable $ msum $
     [ the >>= \ (DecIntLitToken o) -> msum
@@ -1018,6 +1126,9 @@ exponentLiteralToken = newLens
         IntExponentLit  o   _ -> IntExponentLit  o          e
   )
 
+numberLitTokenToRational :: NumberLitToken -> Rational
+numberLitTokenToRational = read . Strict.unpack . toText
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A C programming language family numerical literal, including ordinary integers, floating point
@@ -1058,6 +1169,18 @@ instance NFData CNumberLit where
     CNumberLit       o -> deepseq o ()
     COctIntNumberLit o -> deepseq o ()
 
+instance SimpleData CNumberLit where
+  simple o = case o of
+    CNumberLit       o -> struct "CNumberLit"       o
+    COctIntNumberLit o -> struct "COctIntNumberLit" o
+  fromSimple o = msum
+    [ fromStruct "CNumberLit"       CNumberLit       o
+    , fromStruct "COctIntNumberLit" COctIntNumberLit o
+    ]
+instance ObjectData CNumberLit where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st CNumberLit) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m CNumberLit) where
   the = grammarTyped $ grammarTable $ msum $
     [ the >>= \ (DecIntLitToken o) -> msum
@@ -1126,6 +1249,13 @@ instance StringLength Quoted2Token where { stringLength = stringLength . toText;
 instance PPrintable Quoted2Token where { pPrint = return . pText . toText; }
 instance Show Quoted2Token where { show = show . toText; }
 instance NFData Quoted2Token where { rnf (Quoted2Token o) = deepseq o (); }
+instance SimpleData Quoted2Token where
+  simple (Quoted2Token o) = struct "Quoted2Token" o
+  fromSimple = fromStructText "Quoted2Token" (the :: Parser () Quoted2Token) ()
+instance ObjectData Quoted2Token where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st Quoted2Token) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m Quoted2Token) where
   the = liftM (Quoted2Token . Lazy.toStrict) (escapedDelimited "string literal" '"' '\\')
 
@@ -1139,6 +1269,13 @@ instance StringLength Quoted1Token where { stringLength = stringLength . toText;
 instance PPrintable Quoted1Token where { pPrint = return . pText . toText; }
 instance Show Quoted1Token where { show = show . toText; }
 instance NFData Quoted1Token where { rnf (Quoted1Token o) = deepseq o (); }
+instance SimpleData Quoted1Token where
+  simple (Quoted1Token o) = struct "Quoted1Token" o
+  fromSimple = fromStructText "Quoted1Token" (the :: Parser () Quoted1Token) ()
+instance ObjectData Quoted1Token where
+  obj   o = printable o $ fromForeign o
+  fromObj = toForeign
+instance The (Parser st Quoted1Token) where { the = grammarToParser the; }
 instance Monad m => The (Grammar m Quoted1Token) where
   the = grammarTyped $
     liftM (Quoted1Token . Lazy.toStrict) $ escapedDelimited "string literal" '\'' '\\'

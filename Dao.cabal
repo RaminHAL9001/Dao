@@ -16,129 +16,155 @@
 -- along with this program (see the file called "LICENSE"). If not, see
 -- <http://www.gnu.org/licenses/agpl.html>.
 
-Name:           Dao
-Version:        1.0.0.0
-Cabal-Version:  >= 1.18
-License:        GPL-3
-Copyright:      (C) 2015 Ramin Honary, all rights reserved.
-Author:         Ramin Honary
-Maintainer:     ramin.honary@gmail.com
-Build-Type:     Simple
-Synopsis:       A pure Haskell dynamically typed DSL for production-rule-based logic programming and AI.
-Description:    Dao is a Domain Specific Language (DSL) intended providing tools
+NAME          : Dao
+VERSION       : 2.0.0.0
+CABAL-VERSION : >= 1.18
+LICENSE       : GPL-3
+COPYRIGHT     : (C) 2017 Ramin Honary, all rights reserved.
+AUTHOR        : Ramin Honary
+MAINTAINER    : ramin.honary@gmail.com
+BUILD-TYPE    : Simple
+SYNOPSIS      : A pure Haskell DSL for production-rule-based logic programming and AI.
+
+DESCRIPTION   : .
+                Dao is a Domain Specific Language (DSL) intended providing tools
                 for logic programming and constructing knowledge bases, with a
-                focus on artificial intelligence. Reminiscient of the PROLOG
-                programming language, but made better with Haskell's static
-                type checking and clean semantics, Dao is well suited for
-                things like type checking, computing build dependencies,
-                whole-program analysis, rapid prototyping of parsers, and
-                Read-Eval-Print Loop-based (REPL-based) source code
-                development, as well as natural language comprehension.
-                
-                Dao originally defined a JavaScript-like programming
-                language for defining production rule databases suited to
-                natural language understanding, but now it is just a DSL with
-                tools for defining grammars and parsers, where all production
-                rules are defined in a Haskell program using the Dao APIs.
-Library
-  HS-source-dirs: src
-  GHC-options: -threaded -Wall
+                focus on artificial intelligence. The DSL is a dialect of Lisp,
+                but instead of functions being defined in each module,
+                production rules (pattern -> action) are defined, where the
+                patterns match some formatted natural language input. There are
+                also language constructs for assigning dependency information to
+                production rules which can define the order in which rules are
+                matched to input.
+                .
+                The natural language formatting process is not performed by Dao,
+                it must be preprocessed by a function that you define for your
+                sepecific use case. There are combinators for constructing Lisp
+                forms that can be evaluated by the Dao Lisp interpreter.
+                .
+                Patterns are similar to UNIX "glob" expressions, actions are
+                Dao Lisp forms which are evaluated by a built-in Lisp
+                interpreter. The Dao dialect does NOT strictly adhere to any
+                Lisp or Scheme standard language. Instead, combinators for
+                defining built-in functions are provided which you must define
+                for your specific use case. Dao Lisp forms and production rules
+                are part of the Dao Lisp language definition and are parsed
+                automatically.
+                .
+                In this latest version, Dao is a vastly simplified a library
+                which has outsourced much of the functionality to external
+                packages.
+                .
+                Dao has change quite a lot over the years. Originally a
+                graduate student project, the goals and target features of the
+                project have been redefined again and again since it was first
+                released on Hackage. The most consistent goal of the project
+                has always been to allow programmers to build
+                production-rule-based systems for understanding natural
+                language. The production rule syntax, the data structures
+                comprising the database, and the rule execution model have
+                never been consistent between versions, however since it has
+                not been anything more than an experimental project with a tiny
+                user base, a complete re-write of the interpreter and language
+                has not been a problem.
+                .
+
+Library {
+
+  HS-SOURCE-DIRS   : src
+  DEFAULT-LANGUAGE : Haskell2010
+
+  GHC-OPTIONS: -threaded -Wall
     -fno-warn-name-shadowing
     -fno-warn-unused-do-bind
-  Exposed-Modules:
-    Dao.Array          Dao.Certainty     Dao.Check        Dao.Class
-    Dao.Concurrent     Dao.Count         Dao.Grammar      Dao
-    Dao.Interval       Dao.Int           Dao.Lens         Dao.Logic
-    Dao.Object         Dao.Predicate     Dao.Range        Dao.Rule
-    Dao.TestNull       Dao.Text.CharSet  Dao.Text.Editor  Dao.Text
-    Dao.Text.Location  Dao.Text.PPrint   Dao.Text.Regex   Dao.Tree
-  Build-Depends:
+
+  EXPOSED-MODULES:
+    Language.Interpreter.Dao.Kernel
+    Language.Interpreter.Dao
+
+  BUILD-DEPENDS:
     -- minimal dependencies for core modules
-    array               >= 0.3.0.2, base         >= 4.3.1.0, binary      >= 0.5.0.2,
-    bytestring          >= 0.9.1.2, containers   >= 0.4.0.0, Crypto      >= 4.2.5.1,
-    data-binary-ieee754 >= 0.4.4  , deepseq      >= 1.3.0.0, directory   >= 1.1.0.0,
-    filepath            >= 1.2.0.0, mtl          >= 2.2.1  , process     >= 1.0.1.2,
-    random              >= 1.0.0.1, text         >= 1.1.0.1, time        >= 1.4.2  ,
-    template-haskell    >= 2.9.0.0, transformers >= 0.2.2.0, utf8-string >= 0.3.2
-    -- dependencies for additional modules
-    -- none
-  Default-Extensions:
-    DeriveDataTypeable    ExistentialQuantification FlexibleContexts
-    FlexibleInstances     FunctionalDependencies    GeneralizedNewtypeDeriving
-    MultiParamTypeClasses OverlappingInstances      RankNTypes
-    ScopedTypeVariables   StandaloneDeriving        TemplateHaskell
-    TypeFamilies          ImplicitParams
-  Default-Language: Haskell2010
-  GHC-Options: -threaded
+      base         >=4.8
+    , array        >=0.5
+    , attoparsec   >=0.13.2
+    , containers   >=0.5
+    , mtl          >=2.2
+    , fail         >=4.9
+    , semigroups   >=0.18
+    , text         >=1.2
+--  , random-walks >=0.1
+--  , token-parser >=0.1
+    , transformers >=0.2
 
-Test-Suite dao-tests
-  Type:           exitcode-stdio-1.0
-  Main-is:        dao-tests.hs
-  HS-source-dirs: src tests
-  Build-Depends:
-    array >= 0.3.0.2, containers >= 0.4.0.0,
-    base  >= 4.3.1.0, deepseq    >= 1.3.0.0,
-    text  >= 1.1.0.1,
-    time  >= 1.4.2
-  GHC-options: -threaded -Wall
+  DEFAULT-EXTENSIONS:
+    DeriveDataTypeable
+    DeriveFunctor
+    ExistentialQuantification
+    FlexibleContexts
+    FlexibleInstances
+    FunctionalDependencies
+    GeneralizedNewtypeDeriving
+    ImplicitParams
+    LambdaCase
+    MultiParamTypeClasses
+    OverloadedStrings
+    RankNTypes
+    ScopedTypeVariables
+    StandaloneDeriving
+    TemplateHaskell
+    TypeFamilies
+
+}
+
+Test-Suite dao-tests {
+
+  TYPE             : exitcode-stdio-1.0
+  HS-SOURCE-DIRS   : src
+  MAIN-IS          : Language/Interpreter/Dao/TestSuite.hs
+  DEFAULT-LANGUAGE : Haskell2010
+
+  GHC-OPTIONS: -threaded -Wall
     -fno-warn-name-shadowing
     -fno-warn-unused-do-bind
-    -with-rtsopts=-M4G
-  Default-Extensions:
-    DeriveDataTypeable    ExistentialQuantification FlexibleContexts
-    FlexibleInstances     FunctionalDependencies    GeneralizedNewtypeDeriving
-    MultiParamTypeClasses OverlappingInstances      RankNTypes
-    ScopedTypeVariables   StandaloneDeriving        TemplateHaskell
-    TypeFamilies
-  Default-Language: Haskell2010
+    -main-is Language.Interpreter.Dao.TestSuite.main
 
-----------------------------------------------------------------------------
---- A note on versioning:
---- The version numbers is a 4-tuple: "major . minor . update . revision",
---- proceding from greatest to least significance e.g. "major" is more
---- significant than "minor". Each element is updated according to the
---- following rules:
----
---- major: incremented when the dependencies of the whole package are
----     modified (e.g. we remove depency on Crypto or add dependency on
----     Pipes), or if any change to the binary serialization of any data
----     type has been made that would make it not backward compatible with
----     previous version.  The major number must also be incremented when an
----     API function is removed or an API function's type or name is
----     changed, with two exceptions to this rule:
----      1. when a non-class-member function has it's context (the polymorphic
----         type constraints) reduced to be less constrained than the
----         previous version.
----      2. When a data type is instantiated into a class that it was
----         previously not instnatied into at all.
----     In in these two cases the "update" number should be incremented
----     instead. 
----
---- minor: incremented when an API function is moved from one module to
----     another but has not had it's type or name changed, or when a new
----     module is added, or when binary serialization has been modified
----     such that it is still backwards compatible with previous versions.
----     The minor number must also be updated if the algorithm of an API
----     function fundamentally changes, specifically when a monadic or
----     applicative algorithm that produces side-effects (one that could
----     possibly be used in the IO or ST monads) has it's evaluation
----     changed such that the order in which these side effects occur is
----     different from previous versions.
----
---- update: incremented when a new API function is added. The update
----     number is also incremented when a bug is fixed which has not changed
----     the types of any previously existing API functions, and has not
----     removed any API functions, and has not effected binary
----     serialization, and has not modified the order in which side-effects
----     occur in a monadic function. The minor number must also be
----     incremented when an API function's context (the polymorphic type
----     constraints) has been reduced to be less constrained than previous
----     version, or if a data type has been instantiated into a class
----     that it was previously not instantiated into at all.
----
---- revision: the documentation has been changed, or some ancillary file
----     in the package not related to any API function has been updated.
----
---- Of course incrementing a number of higher significance must reset
---- every number of lower significance to zero.
+  OTHER-MODULES:
+    Language.Interpreter.Dao.TestSuite
+    Language.Interpreter.Dao.Kernel
+    Language.Interpreter.Dao
+
+  BUILD-DEPENDS:
+    -- minimal dependencies for core modules
+      base         >=4.8
+    , array        >=0.5
+    , attoparsec   >=0.13.2
+    , containers   >=0.5
+    , directory    >=1.2
+    , mtl          >=2.2
+    , fail         >=4.9
+    , semigroups   >=0.18
+    , text         >=1.2
+--  , random-walks >=0.1
+--  , token-parser >=0.1
+    , transformers >=0.2
+
+  DEFAULT-EXTENSIONS:
+    DeriveDataTypeable
+    DeriveFunctor
+    ExistentialQuantification
+    FlexibleContexts
+    FlexibleInstances
+    FunctionalDependencies
+    GeneralizedNewtypeDeriving
+    ImplicitParams
+    LambdaCase
+    MultiParamTypeClasses
+    OverloadedStrings
+    RankNTypes
+    ScopedTypeVariables
+    StandaloneDeriving
+    TemplateHaskell
+    TypeFamilies
+
+}
 

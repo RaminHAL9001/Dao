@@ -1,3 +1,0 @@
-#!/bin/bash
-PAT="$1"; shift;
-exec grep "$PAT" -nHIR src tests --include='*.hs' --color=auto "$@";

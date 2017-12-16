@@ -4,29 +4,33 @@ A pure Haskell DSL for production-rule-based logic programming and AI.
 
 Dao is a Domain Specific Language (DSL) intended providing tools for logic
 programming and constructing knowledge bases, with a focus on artificial
-intelligence. It is reminiscient of the PROLOG programming language, but made
-better with Haskell's static type checking and clean semantics.
+intelligence. The DSL is a dialect of Lisp, but instead of functions being
+defined in each module, production rules (pattern -> action) are defined, where
+the patterns match some formatted natural language input. There are also
+language constructs for assigning dependency information to production rules
+which can define the order in which rules are matched to input.
 
-In this latest version, Dao provides a library of tools for constructing a
-database of predicates, where each predicate is a UNIX-like "glob" pattern
-(e.g. where the '*' character indicates a wildcard). The database is made
-persistent as a flat file of S-expressions (the syntax of the Lisp and Scheme
-programming language). There are combinators for evaluating queries against a
-rule database, but the implementation of the actual query execution, which
-involves sanitizing and tokenizing an input query string into a list of
-pattern-matchable tokens, is a detail left to the programmer (you) who choses
-to import the Dao package into their project.
+The natural language formatting process is not performed by Dao, it must be
+preprocessed by a function that you define for your sepecific use case. There
+are combinators for constructing Lisp forms that can be evaluated by the Dao
+Lisp interpreter.
 
-The 'Dao.GHCI' module is also provided, which defines a set of commands that
-can be imported into a GHCi session. With these commands at your disposal in
-GHCi, you will be able to construct rule database from a corpus of text, load
-previously constructed databases, and experiment with query execution.
+Patterns are similar to UNIX "glob" expressions, actions are Dao Lisp forms
+which are evaluated by a built-in Lisp interpreter. The Dao dialect does NOT
+strictly adhere to any Lisp or Scheme standard language. Instead, combinators
+for defining built-in functions are provided which you must define for your
+specific use case. Dao Lisp forms and production rules are part of the Dao Lisp
+language definition and are parsed automatically.
+
+In this latest version, Dao is a vastly simplified a library which has
+outsourced much of the functionality to external packages.
 
 Dao has change quite a lot over the years. Originally a graduate student
 project, the goals and target features of the project have been redefined again
 and again since it was first released on Hackage. The most consistent goal of
 the project has always been to allow programmers to build production-rule-based
-systems for understanding natural language. The production rule syntax, the
-data structures comprising the database, and the rule execution model have
-never been consistent between versions.
-
+systems for understanding natural language. The production rule syntax, the data
+structures comprising the database, and the rule execution model have never been
+consistent between versions, however since it has not been anything more than an
+experimental project with a tiny user base, a complete re-write of the
+interpreter and language has not been a problem.

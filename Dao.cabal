@@ -80,6 +80,7 @@ Library {
 
   EXPOSED-MODULES:
     Language.Interpreter.Dao.Kernel
+    Language.Interpreter.Dao.GHCI
     Language.Interpreter.Dao
 
   BUILD-DEPENDS:

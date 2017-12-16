@@ -13,3 +13,4 @@ Makefile.bak
 *.o
 *.dyn_hi
 *.dyn_o
+*.tix

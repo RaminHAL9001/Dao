@@ -1,7 +1,7 @@
 # The Dao Programming Language
-Copyright (C) 2008-2015, Ramin Honary, all rights reserved.
+Copyright (C) 2008-2017, Ramin Honary, all rights reserved.
 
-### A pure Haskell dynamically typed EDSL for production-rule-based logic programming and AI.
+### A pure Haskell DSL for production-rule-based logic programming and AI.
 
 Dao is a Haskell package providing an Embedded Domain Specific
 Language (EDSL) designed for constructing simple knowledge bases,
@@ -11,41 +11,43 @@ natural language.
 Dao is licensed under the GNU Affero General Public License:
 	http://www.gnu.org/licenses/agpl.html
 
-Dao is in some ways reminiscent of the PROLOG programming language,
-but made better with Haskell's static type checking and clean
-semantics. Dao is well suited for things like type checking, computing
-build dependencies, whole-program analysis, rapid prototyping of
-parsers, and Read-Eval-Print Loop-based (REPL-based) source code
-development, as well as natural language comprehension.
+Dao is a Domain Specific Language (DSL) intended providing tools for logic
+programming and constructing knowledge bases, with a focus on artificial
+intelligence. It is reminiscient of the PROLOG programming language, but made
+better with Haskell's static type checking and clean semantics.
 
-Dao originally defined a JavaScript-like programming language for
-defining production rule databases suited to natural language
-understanding, but now it is just a DSL with tools for defining
-grammars and parsers, where all production rules are defined in a
-Haskell program using the Dao APIs. I may bring back "Dao-script" if I
-see a need for it in the future, or if there is any demand for it.
+In this latest version, Dao provides a library of tools for constructing a
+database of predicates, where each predicate is a UNIX-like "glob" pattern
+(e.g. where the `\*` character indicates a wildcard). The database is made
+persistent as a flat file of S-expressions (the syntax of the Lisp and Scheme
+programming language). There are combinators for evaluating queries against a
+rule database, but the implementation of the actual query execution, which
+involves sanitizing and tokenizing an input query string into a list of
+pattern-matchable tokens, is a detail left to the programmer (you) who choses
+to import the Dao package into their project.
 
-The more long-term goal of Dao is to create a laboratory with a rich
-set of tools for experimenting with artificial intelligence,
-especially for understanding natural human language. The Dao system
-aspires to become the testing ground for a new wave of effective,
-practical, natural language user interfaces.
+The `Dao.GHCI` module is also provided, which defines a set of commands that
+can be imported into a GHCi session. With these commands at your disposal in
+GHCi, you will be able to construct rule database from a corpus of text, load
+previously constructed databases, and experiment with query execution.
 
-### Tutorials and Demos
+Dao has change quite a lot over the years. Originally a graduate student
+project, the goals and target features of the project have been redefined again
+and again since it was first released on Hackage. The most consistent goal of
+the project has always been to allow programmers to build production-rule-based
+systems for understanding natural language. The production rule syntax, the
+data structures comprising the database, and the rule execution model have
+never been consistent between versions.
 
-For a tutorial on how to use Dao, please refer to the "Dao-examples"
-package on Git Hub. <https://github.com/RaminHAL9001/Dao-examples>
+### Related Haskell packages
 
-This package which contains many well-documented examples making use
-of the Dao EDSL, demonstrates how to solve problems with a knowledge
-base, and for developing rudimentary artificial intelligence.
+This project depends on some other packages I have written, including
+`random-walks` and `token-parser`, both of which are published on
+<https://hackage.haskell.org>.
 
-## History
-The Dao System is the result of my masters thesis, "Natural Language
-Understanding Systems using the Dao Programming Environment" published
-at the Tokyo Institute of Technology in 2007. The first public release
-of the Dao System was made available at <http://hackage.haskell.org> in
-March of 2008, although it was mostly incomplete. The latest code is now
-available at <https://github.com> . Releases will be made available at
-Hackage as further progress is made.
+The <https://github.com/RaminHAL9001/Dao-examples> project on GitHub contains
+some sample databases which I have constructed using Dao. This project also
+contains an `ncurses`-based Read-Eval-Print Loop (REPL) which can be built in
+any Haskell platform that can import the `readline` package, (usually
+UNIX/Linux systems only).
 

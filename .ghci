@@ -1,3 +1,2 @@
 :set prompt "\x3BB "
-:set -i./src -i./tests
-:set -XDeriveDataTypeable -XExistentialQuantification -XFlexibleContexts -XFlexibleInstances -XFunctionalDependencies -XGeneralizedNewtypeDeriving -XMultiParamTypeClasses -XOverlappingInstances -XRankNTypes -XScopedTypeVariables -XStandaloneDeriving -XTemplateHaskell -XTypeFamilies -XImplicitParams
+:set stop :list

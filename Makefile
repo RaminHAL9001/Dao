@@ -1,57 +1,74 @@
-# "Makefile": a trivial GNU-Make script that calls 'cabal configure' and 'cabal build'.
-#
-# Copyright (C) 2008-2015  Ramin Honary.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program (see the file called "LICENSE"). If not, see
-# <http://www.gnu.org/licenses/agpl.html>.
+include defns.mk
+CABAL_FILE ?= cabal
+
 ####################################################################################################
 
-.PHONEY: all ghci test install doc edit clean
+PROJECT_NAME    := $(shell grep ^name: -i $(CABAL_FILE) | sed -e 's,^name:[[:space:]]*,,i')
+PROJECT_VERSION := $(shell grep ^version: -i $(CABAL_FILE) | sed -e 's,version:[[:space:]]*,,i')
+PROJECT_DIR     := $(PROJECT_NAME)
+RELEASE_NAME    := $(PROJECT_NAME)-$(PROJECT_VERSION)
+ARCHIVE_NAME    := $(RELEASE_NAME).tar.gz
 
-GHC_FLAGS := \
-	-threaded -Wall              \
-	-fno-warn-name-shadowing     \
-	-fno-warn-unused-do-bind     \
-    -XDeriveDataTypeable    -XExistentialQuantification -XFlexibleContexts           \
-    -XFlexibleInstances     -XFunctionalDependencies    -XGeneralizedNewtypeDeriving \
-    -XMultiParamTypeClasses -XOverlappingInstances      -XRankNTypes                 \
-    -XScopedTypeVariables   -XStandaloneDeriving        -XTemplateHaskell            \
-    -XTypeFamilies          -XImplicitParams
+QSOURCES := $(shell find src -type f -name '*.hs' -printf \''%p'\''\n'; )
+SOURCES  := $(shell for src in $(QSOURCES); do printf '%s\n' "$${src}"; done; )
 
-GHC_SOURCES = -i./src -i./tests -i./
+LIBRARY := dist/build/$(PROJECT_NAME)
+export VIM_SESSION := .$(PROJECT_NAME).vim
 
-GHC := ghc --make $(GHC_FLAGS) $(GHC_SOURCES)
+.PHONEY: all install clean edit configure config archive
 
-all: dist
-	cabal build
+# This exists because it is easier to use than figure out how to make vim
+# properly parse compile time error log messages from GHC.
+ifdef MODULE_TOP
+FILTER := | \
+    sed -e 's,^$(MODULE_TOP)/[^.]\+[.]hs:[0-9:]\+.*$$,& ,' \
+        -e 's,[(]bound at \($(MODULE_TOP)/[^.]\+[.]hs:[0-9:]\+\)[)],...bound at...\n\1: \n,' \
+        -e 's,^[[:space:]]*at \($(MODULE_TOP)/[^.]\+[.]hs:[0-9:]\+\),...at...\n\1: ,' \
+		-e 's,^cabal:[[:space:]]*\($(PROJECT_NAME).cabal:[0-9]\+:.*\),\1 ,' \
+		-e 's/^[[:space:]]*error, called at /error, called at\n/'
+endif
 
-dist: Dao.cabal
-	cabal configure
-	@echo '----------------------------------------------------------------------------------------------------'
+ifdef TESTING
+CONFIG_OPTS := --enable-tests --enable-coverage
+CABAL_BUILD := cabal test
+else
+CABAL_BUILD := cabal build
+endif
 
-test:
-	cabal test
+$(LIBRARY): configure $(SOURCES)
+	$(CABAL_BUILD) 2>&1 $(FILTER)
 
-edit:
-	vim Dao.cabal $$( find . -type f -name '*.hs' ) README.md scratch.hs
-
-doc:
-	cabal haddock
+install: $(LIBRARY)
+	cabal install --force-reinstalls | $(FILTER)
 
 clean:
 	cabal clean
 
-install:
-	cabal install --user
+config: dist
+
+configure: dist
+
+dist: $(CABAL_FILE)
+	cabal configure $(CONFIG_OPTS)
+
+edit:
+	if [ -f '$(VIM_SESSION)' ]; \
+	then vim -S '$(VIM_SESSION)'; \
+	else vim '$(CABAL_FILE)' $(QSOURCES) 'Makefile'; \
+	fi;
+
+TAGS tags: $(SOURCES)
+	hasktags $(QSOURCES)
+
+../$(ARCHIVE_NAME): $(LIBRARY)
+	mkdir -p ../$(RELEASE_NAME); \
+	if tar cf - $(CABAL_FILE) Setup.hs LICENSE $(QSOURCES) | \
+			tar xvf - -C ../'$(RELEASE_NAME)' | sed -e 's,^,COPY: ,'; \
+	then \
+		if tar czvf ../'$(ARCHIVE_NAME)' --format=ustar -C ../ '$(RELEASE_NAME)' | sed -e 's,^,ARCHIVE: ,'; \
+		then rm -Rf ../'$(RELEASE_NAME)'; \
+		fi; \
+	fi;
+
+archive: ../$(ARCHIVE_NAME)
 

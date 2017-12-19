@@ -1,7 +1,10 @@
--- | When you begin a GHCI interactive REPL session, it is a good idea to import this module first.
--- This module provides functions defined to be easy-to-type into the GHCI Read-Eval-Print Loop so
--- that you can begin constructing Dao production rule databases, and testing your database with
--- simple queries to see if it works.
+-- | This module is very similar to the "Language.Interpreter.Dao" module, except most of the
+-- functions have been renamed to an abbreviation so that they are easier to type into a GHCI
+-- Read-Eval-Print Loop session. Another major difference is that this module uses
+-- 'System.IO.Unsafe.unsafePerformIO' to create a static 'Language.Interpreter.Dao.SessionState',
+-- and most of the 'Session' typed functions in the "Language.Interpreter.Dao" module are simply
+-- @IO@ typed functions in this module which act on the static
+-- 'Language.Interpreter.Dao.SessionState'.
 --
 -- There are also features for doing simple debugging of query execution, so you can see what
 -- production rules are reacting to which queries, and trace program execution so as to see what

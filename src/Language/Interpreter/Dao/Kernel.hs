@@ -18,34 +18,32 @@
 -- 'daoRule', and then use 'Prelude.print' or 'Prelude.show' to generate the Dao Lisp code to be
 -- stored to a file or database.
 module Language.Interpreter.Dao.Kernel
-  ( -- * Dao Lisp's Fundamental Data Type
-    DaoExpr(..), primitiveType, typeToAtom, basicType,
-    DaoExprType(..), concatDaoExprs, plainFnCall, daoFnCall, strInterpolate, filterVoids,
-    parseDaoUnit,
-    -- * Converting Haskell to Dao Lisp Data Types
-    DaoEncode(..), Inlining(..), Inliner(..), runInliner, inline1, inline1Dao, inlining,
-    inlineToForm,
-    inlineToFormWith,
-    -- * Decoding 'DaoExpr's to Haskell Types
-    Outliner, SubOutliner, runOutliner,
-    outlineDaoDecoder, outlineAnyForm, subOutline, subOutlineWith, outlineExprType, outlineExprTypeOf,
-    outlineExprEq, outlineExpr, outlineExprWith,
-    -- * Pattern Matching Functions
-    DaoDecode(..), Outlining(..),
-    PatternMatcher, PatternMatcherState, MatchResult(..), runPatternMatch, resumeMatching, dumpArgs,
-    returnIfEnd, setMatchType, matchStep, subMatch, maybeMatch, matchError, matchFail, matchQuit,
-    -- * The Dao Lisp Interpreter
+  ( -- * The Dao Lisp Interpreter
     DaoEval, Environment(..), DaoLispBuiltin, environment, bif, bifList, monotypeArgList,
     newEnvironment, setupBuiltins, setupTraceBIF, setupTraceAtom, setupTraceForm, DaoFunction(..),
     daoFail, daoCatch, daoVoid, evalDaoExprIO, evalDaoIO, evalDaoExprWith, evalPartial,
     evalAtomWith, evalBuiltin, filterEvalForms, evalProcedure, evalPipeline,
+    -- * Dao Lisp's Fundamental Data Type
+    DaoExpr(..), primitiveType, typeToAtom, basicType, DaoExprType(..), concatDaoExprs, plainFnCall,
+    daoFnCall, strInterpolate, filterVoids, parseDaoUnit,
+    -- * Converting Haskell to Dao Lisp Data Types
+    DaoEncode(..), Inlining(..), Inliner(..), runInliner, inline1, inline1Dao, inlining,
+    inlineToForm, inlineToFormWith,
+    -- * Decoding 'DaoExpr's to Haskell Types
+    Outliner, SubOutliner, runOutliner, outlineDaoDecoder, outlineAnyForm, subOutline,
+    subOutlineWith, outlineExprType, outlineExprTypeOf, outlineExprEq, outlineExpr, outlineExprWith,
+    -- * Pattern Matching Functions
+    DaoDecode(..), Outlining(..), PatternMatcher, PatternMatcherState, MatchResult(..),
+    runPatternMatch, resumeMatching, dumpArgs, returnIfEnd, setMatchType, matchStep, subMatch,
+    maybeMatch, matchError, matchFail, matchQuit,
     -- * Primitive Dao Lisp Data Types
     Atom, parseDaoAtom, plainAtom,
     Dict(..), daoDict, plainDict, dictNull, unionDict, unionDictWith, emptyDict, lookupDict,
-    dictAssocs, List, unwrapList, reverseUnwrapList, daoList, daoArray, plainList, maybeList,
-    daoReverseList, showMaybeList, readMaybeList, listToForm, listToArray,
-    Form(..), daoForm, daoForm1, plainForm, formSize, unwrapForm,
-    inspectFormElems, parseTopLevelForm,
+    dictAssocs,
+    List, unwrapList, reverseUnwrapList, daoList, daoArray, plainList, maybeList, daoReverseList,
+    showMaybeList, readMaybeList, listToForm, listToArray,
+    Form(..), daoForm, daoForm1, plainForm, formSize, unwrapForm, inspectFormElems,
+    parseTopLevelForm,
     Rule, Depends(..), Provides(..), daoRule,
     Error, ErrorClass, getErrorClass, getErrorInfo, plainError, daoError, errorAppendInfo,
     -- * Pattern Matching
@@ -719,6 +717,11 @@ emptyDict = Dict Map.empty
 -- | Lookup an element in a 'Dict'.
 lookupDict :: Atom -> Dict -> Maybe DaoExpr
 lookupDict atom = Map.lookup atom . dictToMap
+
+-- | Insert an ielement into a 'Dict', given a function used to combine elements if the 'Atom' key
+-- already exists.
+insertDict :: (DaoExpr -> DaoExpr -> DaoExpr) -> Atom -> DaoExpr -> Dict -> Dict
+insertDict f key val (Dict map) = Dict $ Map.insertWith f key val map
 
 -- | Return the list of 'Atom' 'DaoExpr' pairs which define this 'Dict'.
 dictAssocs :: Dict -> [(Atom, DaoExpr)]
@@ -2406,18 +2409,19 @@ matchNamedPattern
   -> RuleMatcher a
 matchNamedPattern pat dict f = case pat of
   PatConst        pat -> matchTypedPattern pat $ flip f dict
-  NamedPattern nm pat -> matchTypedPattern pat $ \ expr -> f expr $ Map.insert nm expr dict
+  NamedPattern nm pat -> matchTypedPattern pat $ \ expr ->
+    f expr $ insertDict (flip const) nm expr dict
 
 -- | Evaluates an entire 'GenPatternSequence' against an entire list of arguments.
 matchGenPatternSequence
   :: GenPatternSequence ExprPatUnit Form
-  -> (Dict -> RuleMatcher a)
+  -> Dict -> (Dict -> RuleMatcher a)
   -> RuleMatcher a
-matchGenPatternSequence (GenPatternSequence list) f = init $ unwrapList list where
-  init (a :| ax) = matchNamedPattern a $ const $ loop ax
+matchGenPatternSequence (GenPatternSequence list) dict f = init $ unwrapList list where
+  init (a :| ax) = matchNamedPattern a dict $ const $ loop ax
   loop ax dict = case ax of
     []   -> f dict
-    a:ax -> matchNamedPattern a $ const $ loop ax . flip unionDict dict
+    a:ax -> matchNamedPattern a dict $ const $ loop ax
 
 -- | This function performs a fold over all patterns in the 'GenPatternChoice' that match the given
 -- input. Each pattern in the 'GenPatternChoice' is matched, and if successful, the match result is
@@ -2428,6 +2432,6 @@ matchGenPatternChoice
   -> RuleMatcher a
 matchGenPatternChoice f fold (GenPatternChoice list) = init $ unwrapList list where
   init (a :| ax) = evalPat a fold >>= loop ax
-  evalPat a fold = matchGenPatternSequence a (f fold) <|> return fold
+  evalPat a fold = matchGenPatternSequence a emptyDict (f fold) <|> return fold
   loop = \ case { [] -> return; a:ax -> evalPat a >=> loop ax; }
 

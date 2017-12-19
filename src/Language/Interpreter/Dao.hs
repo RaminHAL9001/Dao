@@ -29,6 +29,7 @@ import           Control.Monad.State
 import           Data.Array.IO
 import           Data.Bits
 import           Data.Char
+import qualified Data.Map.Strict    as Map
 import qualified Data.Text          as Strict
 import qualified Data.Text.Lazy     as Lazy
 import qualified Data.Text.Lazy.IO  as Lazy
@@ -136,6 +137,7 @@ data Report
   | Dao_bad_magic_number  ThreadId DB_URL
   | Dao_bad_header_size   ThreadId DB_URL Int
   | Dao_db_parser_error   ThreadId DB_URL
+  | Dao_db_duplicate_name ThreadId DB_URL Atom
   | Dao_db_parsed_success ThreadId DB_URL
   | Dao_session_fail      ThreadId Strict.Text
   | Dao_db_fail           ThreadId DB_URL Strict.Text
@@ -152,6 +154,7 @@ reportLogLevel = \ case
   Dao_bad_magic_number  {} -> FAIL
   Dao_bad_header_size   {} -> FAIL
   Dao_db_parser_error   {} -> FAIL
+  Dao_db_duplicate_name {} -> FAIL
   Dao_db_parsed_success {} -> INFO
   Dao_session_fail      {} -> FAIL
   Dao_db_fail           {} -> FAIL
@@ -258,6 +261,7 @@ _newDB size bin = Session $ do
       , dbShbang      = ""
       , dbRuleCount   = 0
       , dbTotalWeight = 0.0
+      , dbNamedExprs  = Map.empty
       , dbIOArray     = table
       }
 
@@ -285,21 +289,31 @@ loadDatabase url = Session $ do
             [(size, "")] -> do
               db <- (\ db -> db{ dbURL = url, dbShbang = shbang }) <$>
                 runSession st (_newDB (ilog2 size + 1) storedText) 
-              dbHandle <- Database <$> newMVar db
+              dbmvar <- newMVar db
+              let dbHandle = Database dbmvar
               let arr = dbIOArray db
               let badsize = let err = Dao_bad_header_size thid url size in logger err >> throw err
-              let loop i str = if i > size then badsize else
+              let loop dict total i str = if total > size then badsize else
                     if null str
-                     then if i /= size then badsize else do
+                     then if total /= size then badsize else do
                       hClose handle
-                      logger (Dao_db_parsed_success thid url)
+                      logger $ Dao_db_parsed_success thid url
+                      modifyMVar_ dbmvar $ \ db -> return db{ dbNamedExprs = dict }
                       return dbHandle
                      else case readsPrec 0 str of
-                        [(rule, str)] -> writeArray arr i rule >> ((loop $! i + 1) $! str)
+                        [(expr, str)] -> case expr of
+                          NamedEntry nm form -> case Map.lookup nm dict of
+                            Nothing -> ((loop $! Map.insert nm form dict) $! total + 1) i str
+                            Just {} -> do
+                              let err = Dao_db_duplicate_name thid url nm
+                              logger err >> throw err
+                          UnnamedEntry  rule -> do
+                            writeArray arr i rule
+                            ((loop dict $! total + 1) $! i + 1) str
                         _             -> do
                           let err = Dao_db_parser_error thid url
                           logger err >> throw err
-              hGetContents handle >>= loop 0
+              hGetContents handle >>= loop Map.empty 0 0
             _           -> fail
           _           -> fail
       _ -> fail
@@ -346,6 +360,8 @@ data LoadedDB
       -- weights in the database is a process of scaling all weights such that this total value is
       -- "exactly" equal to @1.0@ -- "exactly" being limited to tolerances of the IEEE-754
       -- 'Prelude.Double' percision floating point arithmetic, of course.
+    , dbNamedExprs  :: Map.Map Atom Form
+      -- ^ This is the table of named 'DaoExpr's in the module.
     , dbIOArray     :: IOArray Int Rule
       -- ^ This is the actual array containing the production rules. The actual size of the array is
       -- some even power of 2 so that it is not necessary to re-allocate the entire array every time
@@ -374,4 +390,7 @@ instance LogMessage DB where
       liftIO $ do
         thid <- myThreadId
         logger $ Dao_db_report thid level (Just url) msg
+
+
+
 

@@ -23,6 +23,8 @@ module Language.Interpreter.Dao.Kernel
     newEnvironment, setupBuiltins, setupTraceBIF, setupTraceAtom, setupTraceForm, DaoFunction(..),
     daoFail, daoCatch, daoVoid, evalDaoExprIO, evalDaoIO, evalDaoExprWith, evalPartial,
     evalAtomWith, evalBuiltin, filterEvalForms, evalProcedure, evalPipeline,
+    -- * Production Rule Database Entry
+    DBEntry(..),
     -- * Dao Lisp's Fundamental Data Type
     DaoExpr(..), primitiveType, typeToAtom, basicType, DaoExprType(..), concatDaoExprs, plainFnCall,
     daoFnCall, strInterpolate, filterVoids, parseDaoUnit,
@@ -1942,6 +1944,37 @@ evalPipeline = loop where
     []   -> return
     [a]  -> run1 a
     a:ax -> run1 a >=> loop ax
+
+----------------------------------------------------------------------------------------------------
+
+-- | This is the top-level of the abstract syntax tree for Dao production rule databases. The actual
+-- 'Language.Interpreter.Dao.Database' data type is defined in the "Language.Interpreter.Dao"
+-- module.
+data DBEntry
+  = NamedEntry Atom Form
+  | UnnamedEntry Rule
+  deriving (Eq, Ord, Typeable)
+
+instance Read DBEntry where
+  readsPrec p str = let fail msg = throw $ _daoError "parsing" [("reason", DaoString msg)] in
+    case readsPrec p str of
+      [(rule, str)] -> case str of
+        ';' : str     -> [(UnnamedEntry rule, _sp str)]
+        _             -> fail "expecting semicolon after rule for 'UnnamedEntry' expression"
+      _             -> case readsPrec p str of
+        [(atom, str)] -> case str of
+          '=' : str     -> case readsPrec p $ _sp str of
+            [(form, str)] -> case str of
+              ';' : str     -> [(NamedEntry atom form, _sp str)]
+              _             -> fail "expecting semicolon after 'NamedEntry' expression"
+            _             -> fail "expecting parenthetical 'Form' expression after '=' character"
+          _             -> fail "expecting '=' character after non-'Rule' top-level expression"
+        _             -> fail "top-level expression neither 'NamedEntry' nor 'Rule'"
+
+instance Show DBEntry where
+  showsPrec p = \ case
+    NamedEntry nm form -> showsPrec p nm . (" = " ++) . showsPrec p form . (';' :)
+    UnnamedEntry  rule -> showsPrec p rule . (';' :)
 
 ----------------------------------------------------------------------------------------------------
 

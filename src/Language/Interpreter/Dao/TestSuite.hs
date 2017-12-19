@@ -3,6 +3,7 @@ module Language.Interpreter.Dao.TestSuite where
 import           Prelude hiding (error, undefined, print, putStr, putStrLn)
 
 import           Language.Interpreter.Dao.Kernel
+import           Language.Interpreter.Dao
 
 --import           Control.Arrow
 import           Control.Applicative
@@ -503,7 +504,7 @@ testCoders = do
         ]
   sequence_ $ fmap (uncurry test1FormCoder) testTyped
   let testNamed = testTyped >>= \ (obj, expr) ->
-        [ (PatVar "varname" obj, DaoColon : DaoAtom "varname" : case obj of
+        [ (NamedPattern "varname" obj, DaoColon : DaoAtom "varname" : case obj of
             UntypedPattern{} -> expr
             TypedPattern{}   -> [daoForm expr]
           )

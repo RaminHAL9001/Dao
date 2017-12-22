@@ -1,6 +1,6 @@
--- | This module contains the kernel of the Dao Lisp language engine:
+-- | This module contains the kernel of the Dao Lisp language engine: 
 --
--- 1. the Abstract Syntax Tree (AST),
+-- 1. the Abstract Syntax Tree (AST) but not the database file format,
 --
 -- 2. the primitive data types,
 --
@@ -22,7 +22,7 @@ module Language.Interpreter.Dao.Kernel
     DaoEval, Environment(..), DaoLispBuiltin, environment, bif, bifList, monotypeArgList,
     newEnvironment, setupBuiltins, setupTraceBIF, setupTraceAtom, setupTraceForm, DaoFunction(..),
     daoFail, daoCatch, daoVoid, evalDaoExprIO, evalDaoIO, evalDaoExprWith, evalPartial,
-    evalAtomWith, evalBuiltin, filterEvalForms, evalProcedure, evalPipeline,
+    evalAtomWith, evalFunction, filterEvalForms, evalProcedure, evalPipeline, evalDaoRule,
     -- * Production Rule Database Entry
     DBEntry(..),
     -- * Dao Lisp's Fundamental Data Type
@@ -32,13 +32,14 @@ module Language.Interpreter.Dao.Kernel
     DaoEncode(..), Inlining(..), Inliner(..), runInliner, inline1, inline1Dao, inlining,
     inlineToForm, inlineToFormWith,
     -- * Decoding 'DaoExpr's to Haskell Types
-    Outliner, SubOutliner, runOutliner, outlineDaoDecoder, outlineAnyForm, subOutline,
+    Outliner, SubOutliner, runOutliner, runOutlining, outlineDaoDecoder, outlineAnyForm, subOutline,
     subOutlineWith, outlineExprType, outlineExprTypeOf, outlineExprEq, outlineExpr, outlineExprWith,
     -- * Pattern Matching Functions
     DaoDecode(..), Outlining(..), PatternMatcher, PatternMatcherState, MatchResult(..),
     runPatternMatch, resumeMatching, dumpArgs, returnIfEnd, setMatchType, matchStep, subMatch,
     maybeMatch, matchError, matchFail, matchQuit,
     -- * Primitive Dao Lisp Data Types
+    DaoSize, daoSize,
     Atom, parseDaoAtom, plainAtom,
     Dict(..), daoDict, plainDict, dictNull, unionDict, unionDictWith, emptyDict, lookupDict,
     dictAssocs,
@@ -49,9 +50,10 @@ module Language.Interpreter.Dao.Kernel
     Rule, Depends(..), Provides(..), daoRule,
     Error, ErrorClass, getErrorClass, getErrorInfo, plainError, daoError, errorAppendInfo,
     -- * Pattern Matching
-    RulePattern, RuleMatcher(..), runRuleMatcher, ruleMatchLift, noMatch, matchExprPatUnit,
+    RulePattern, matchRulePattern,
+    RuleMatcher(..), runRuleMatcher, ruleMatchLift, noMatch, matchExprPatUnit,
     matchGenPatternUnit, matchGenPatternUnit', matchTypedPattern, matchNamedPattern,
-    matchGenPatternSequence, matchGenPatternChoice,
+    matchGenPatternSequence, matchGenPatternChoice, 
     -- * Pattern Matching Data Types
     ExprPatUnit(..), GenPatternUnit(..), TypedPattern(..), KleeneType(..), NamedPattern(..),
     GenPatternSequence(..), GenPatternChoice(..),
@@ -525,6 +527,27 @@ instance DaoDecode (Array Int DaoExpr) where
 
 ----------------------------------------------------------------------------------------------------
 
+-- | The class of data types which have a "size" value. This includes 'List's, 'Form's,
+-- 'Strict.Text', and 'Atom's.
+class DaoSize a where { daoSize :: a -> Int; }
+
+instance DaoSize (List DaoExpr) where { daoSize (List arr) = 1 + uncurry subtract (bounds arr); }
+instance DaoSize Dict where { daoSize (Dict map) = Map.size map; }
+instance DaoSize Strict.Text where { daoSize = Strict.length; }
+instance DaoSize Atom where { daoSize (Atom str) = Strict.length str; }
+instance DaoSize Form where { daoSize (Form list) = daoSize list; }
+instance DaoSize DaoExpr where
+  daoSize = \ case
+    DaoTrue     -> 1
+    DaoAtom   a -> daoSize a
+    DaoList   a -> daoSize a
+    DaoDict   a -> daoSize a
+    DaoForm   a -> daoSize a
+    DaoString a -> daoSize a
+    _           -> 0
+
+----------------------------------------------------------------------------------------------------
+
 -- | This is a Dao Atom data type, for unquoted string expressions in Dao Lisp 'Form's. This data
 -- type instantiates 'Data.String.IsString' so you can express Dao 'Atom's in Haskell code as string
 -- literals (if the @OverloadedStrings@ compiler option is enabled). But the string used to
@@ -875,10 +898,10 @@ newtype Form = Form { formToList :: List DaoExpr } deriving (Eq, Ord, Typeable)
 
 instance Show Form where { showsPrec _ = _daoShowBrackets '(' ')' . _showNonEmpty . unwrapForm; }
 instance Read Form where { readsPrec p = _parseForm p . _sp; }
-instance Inlining Form where { inline = (<>) . pure . DaoForm; }
-instance DaoEncode     Form where { dao = DaoForm; }
+instance Inlining  Form where { inline = (<>) . pure . DaoForm; }
+instance DaoEncode Form where { dao = DaoForm; }
 instance Outlining Form where { outline = outlineDaoDecoder ; }
-instance DaoDecode     Form where
+instance DaoDecode Form where
   daoDecode = \ case
     DaoForm a -> return a
     expr      -> _outlineTypeOfErrL expr (daoForm [DaoNull])
@@ -949,6 +972,12 @@ _indexForm (Form list) = _indexList list
 
 ----------------------------------------------------------------------------------------------------
 
+-- | The likelihood that a 'Rule' will match some input. This is a simple optimization heuristic
+-- based on how many times certain rules have successfully matched input queries, allowing the
+-- 'Rule's in the database to be sorted such that 'Rule's is closer to the top and therefore will be
+-- matched to a query sooner.
+type Likelihood = Double
+
 -- | The Production Rule data type. This is a primitive data type with it's own syntax. In Dao Lisp,
 -- the syntax for a 'Rule' begins with the @rule@ keyword:
 --
@@ -976,10 +1005,11 @@ _indexForm (Form list) = _indexList list
 -- because the first square bracket seen will be used as the dependencies and not the providers.
 data Rule
   = Rule
-    { ruleDepends  :: Depends
-    , ruleProvides :: Provides
-    , rulePattern  :: Form
-    , ruleAction   :: Form
+    { ruleDepends    :: Depends
+    , ruleProvides   :: Provides
+    , ruleLikelihood :: Likelihood
+    , rulePattern    :: RulePattern
+    , ruleAction     :: Form
     }
   deriving (Eq, Ord, Typeable)
 
@@ -992,56 +1022,91 @@ instance Show     Provides where { showsPrec p = maybe id (showsPrec p) . provid
 --instance IsString Provides where { fromString = Provides . _depProvs "provides"; }
 
 instance Show Rule where
-  showsPrec p (Rule{ ruleDepends=deps, ruleProvides=provs, rulePattern=pat, ruleAction=act }) =
-    (++) "rule" . showsPrec p deps . showsPrec p provs . showsPrec p pat . showsPrec p act
+  showsPrec p
+    ( Rule
+      { ruleDepends=deps
+      , ruleProvides=provs
+      , ruleLikelihood=like
+      , rulePattern=pat
+      , ruleAction=act
+      })
+    = (++) "rule" .
+      showsPrec p deps .
+      showsPrec p provs .
+      showsPrec p like .
+      showsPrec p pat .
+      showsPrec p act
 
 instance Read Rule where { readsPrec = _parseRule; }
 
 _parseRule :: Int -> ReadS Rule
 _parseRule p = \ case
   'r':'u':'l':'e':x:str | not (isAlphaNum x) -> do
-    let balanced _ expr = expr -- makes the code below look nicer
+    let balanced _ = id -- makes the code below look nicer
     let failParse add msg = throw $ _daoError "parsing" $ add
           [ ("reason", DaoString msg)
           , ("primitive-type", DaoAtom "rule")
           ]
     let failExpect tag = failParse (("required", DaoAtom $ Atom tag) :) "missing field"
-    let mkRule (deps, provs, pat, act) = Rule
-          (maybe (Depends Nothing) id deps)
-          (maybe (Provides Nothing) id provs)
-          (maybe (failExpect "pattern") id pat)
-          (maybe (failExpect "action") id act)
-    let loop str = \ case
-          (Just deps, Just provs, Just pat, Just act) -> [(Rule deps provs pat act, _sp str)]
+    let mkRule (like, deps, provs, pat, act) = Rule
+          { ruleLikelihood = maybe 0.0 id like
+          , ruleDepends    = maybe (Depends Nothing) id deps
+          , ruleProvides   = maybe (Provides Nothing) id provs
+          , rulePattern    = maybe
+              (failExpect "pattern")
+              (\ form -> case runOutlining $ toList $ unwrapForm form of
+                  (MatchOK pat, []  ) -> pat
+                  (MatchOK pat, more) -> throw $ _daoError "parsing"
+                    [ ("reason", DaoString "ambiguous pattern")
+                    , ("parsed-pattern", inlineToForm pat)
+                    , ("whole-pattern", DaoForm form)
+                    , ("remainder", daoForm1 more)
+                    ]
+                  (MatchFail err, _ ) -> throw err
+                  (MatchQuit err, _ ) -> throw err
+              )
+              pat
+          , ruleAction     = maybe (failExpect "action") id act
+          }
+    let loop str parsed = case parsed of
+          (Just{}, Just{}, Just{}, Just{}, Just{}) -> [(mkRule parsed, _sp str)]
           parsed -> case str of
             '[':_   -> balanced ']' $ case parsed of
-              (Just deps, Nothing, pat, act) -> do
+              (like, Just deps, Nothing, pat, act) -> do
                 (atoms, str) <- readMaybeList p str
-                loop (_sp str) $ (Just deps, Just (Provides atoms), pat, act)
-              (Nothing  , provs  , pat, act) -> do
+                loop (_sp str) (like, Just deps, Just (Provides atoms), pat, act)
+              (like, Nothing  , provs  , pat, act) -> do
                 (atoms, str) <- readMaybeList p str
-                loop (_sp str) $ (Just (Depends atoms), provs, pat, act)
-              (Just{}   , Just{} , _  , _  ) -> failParse id
+                loop (_sp str) (like, Just (Depends atoms), provs, pat, act)
+              (_ , Just{}   , Just{} , _  , _  ) -> failParse id
                 "rule depends and provides have already both been defined"
             '(':_ -> balanced ')' $ case parsed of
-              (deps, provs, Just pat, Nothing) -> do
+              (like, deps, provs, Just pat, Nothing) -> do
                 (form, str) <- _parseBracketsWith '(' ')' _parseForm p str
-                loop (_sp str) $ (deps, provs, Just pat, Just form)
-              (deps, provs, Nothing , act    ) -> do
+                loop (_sp str) (like, deps, provs, Just pat, Just form)
+              (like, deps, provs, Nothing , act    ) -> do
                 (form, str) <- _parseBracketsWith '(' ')' _parseForm p str
-                loop (_sp str) $ (deps, provs, Just form, act)
-              (_ , _ , Just{}, Just{}) -> failParse id
+                loop (_sp str) (like, deps, provs, Just form, act)
+              (_ , _ , _ , Just{}, Just{}) -> failParse id
                 "rule pattern and action have already both been defined"
-            _     -> (\ rule -> [(rule, _sp str)]) $! mkRule parsed 
-    loop (_sp $ x:str) (Nothing, Nothing, Nothing, Nothing)
+            str   -> case readsPrec 0 str of
+              [(like, str)] -> case parsed of
+                (Just oldlike, _ , _ , _ , _ ) -> failParse
+                  ((("first", DaoFloat oldlike) :) . (("second", DaoFloat like) :))
+                  "rule likelihood specified more than once"
+                (Nothing, deps, provs, pat, act) ->
+                  loop (_sp str) (Just like, deps, provs, pat, act)
+              _             -> (\ rule -> [(rule, _sp str)]) $! mkRule parsed 
+    loop (_sp $ x:str) (Nothing, Nothing, Nothing, Nothing, Nothing)
   _ -> []
 
-daoRule :: [DaoExpr] -> [DaoExpr] -> Form -> Form -> Rule
-daoRule deps provs pat act = Rule
-  { ruleDepends  = Depends  $ maybeList deps
-  , ruleProvides = Provides $ maybeList provs
-  , rulePattern  = pat
-  , ruleAction   = act
+daoRule :: [DaoExpr] -> [DaoExpr] -> Likelihood -> RulePattern -> Form -> Rule
+daoRule deps provs like pat act = Rule
+  { ruleDepends    = Depends  $ maybeList deps
+  , ruleProvides   = Provides $ maybeList provs
+  , ruleLikelihood = like
+  , rulePattern    = pat
+  , ruleAction     = act
   }
 
 _depProvs :: Strict.Text -> String -> Maybe (List Atom)
@@ -1124,7 +1189,8 @@ _errAppend atom newInfo (Error clas (Dict map)) =
 -- | This is the function type used for __all__ pattern matching in the Dao Lisp kernel. More
 -- specifically, this function type is an abstraction for two different functions:
 --
--- 1. The 'daoQuery' function, which takes a 'Form' input and matches it against a database of rules.
+-- 1. The 'evalDaoRule' and 'Language.Interpreter.Dao.Database.dbQuery' functions, which takes a
+--    'Form' input and matches it against a database of 'Rule's.
 --
 -- 2. Any function of type 'Outliner', which decodes the information stored in Dao 'Form's into
 --    arbitrary Haskell data types by pattern matching against the elements of a 'Form'.
@@ -1397,8 +1463,13 @@ type Outliner t = SubOutliner t t
 --
 type SubOutliner t a = PatternMatcher DaoExpr t Identity a
 
+-- | Run an 'Outliner' function against a list of 'DaoExpr' values.
 runOutliner :: Outliner t -> [DaoExpr] -> (MatchResult t, [DaoExpr])
 runOutliner f = fmap patMatcherSource . runIdentity . runPatternMatch f
+
+-- | Uses the instance of 'Outlining' to evaluate the 'runOutliner' function.
+runOutlining :: Outlining t => [DaoExpr] -> (MatchResult t, [DaoExpr])
+runOutlining = runOutliner outline
 
 -- | Use this to decode a 'DaoForm' using an intance of 'Outlining'. This function is useful for
 -- instantiating 'daoDecode' from a 'Outliner'.
@@ -1691,6 +1762,7 @@ type DaoLispBuiltin = [DaoExpr] -> DaoEval DaoExpr
 data Environment
   = Environment
     { builtins  :: Map.Map Atom DaoLispBuiltin
+    , locals    :: Map.Map Atom DaoExpr
     , envStack  :: EnvStack
     , traceForm :: Maybe (Form -> DaoEval ())
     , traceAtom :: Maybe (Atom -> [DaoExpr] -> DaoEval ())
@@ -1715,7 +1787,8 @@ bifList = Map.fromListWithKey $ \ nm _ _ -> throw $ _daoError "initializing-inte
 -- 'evalDaoIO' function to evaluate a Dao Lisp program.
 environment :: Environment
 environment = Environment
-  { builtins  = Map.empty
+  { builtins  = Map.empty -- ^ Built-In Functions (BIFs)
+  , locals    = Map.empty -- ^ Functions defined locally, within a single database.
   , envStack  = EnvStack $ Dict Map.empty :| []
   , traceForm = Nothing
   , traceAtom = Nothing
@@ -1901,20 +1974,34 @@ evalPartial form more = do
 -- function.
 evalAtomWith :: Atom -> [DaoExpr] -> DaoEval DaoExpr
 evalAtomWith cmd = filterEvalForms >=> \ args -> gets (_lookupEnv cmd . envStack) >>= \ case
-  Nothing   -> _evalBuiltin cmd args
+  Nothing   -> _evalFunction cmd args
   Just expr -> do
     get >>= maybe (return ()) (\ tr -> tr cmd args) . traceAtom
     evalDaoExprWith expr args
 
-_evalBuiltin :: Atom -> [DaoExpr] -> DaoEval DaoExpr
-_evalBuiltin cmd args = get >>= \ env -> case Map.lookup cmd $ builtins env of
-  Nothing  -> daoFail $ _daoError "undefined-function" [("builtin-name", DaoAtom cmd)]
-  Just bif -> maybe (return ()) (\ tr -> tr cmd args) (traceBIF env) >> bif args
+_evalFunction :: Atom -> [DaoExpr] -> DaoEval DaoExpr
+_evalFunction cmd args = get >>= \ env -> case Map.lookup cmd $ locals env of
+  Just expr -> case expr of
+    DaoRule rule -> evalDaoRule rule args >>= \ case
+      MatchOK  expr -> return expr
+      MatchQuit err -> daoFail err
+      MatchFail err -> daoFail err
+    DaoForm form -> evalPartial form args
+    expr         -> case args of
+      []           -> return expr
+      _            -> daoFail $ _daoError "applied-non-function"
+        [ ("reason", DaoString "is not a function or rule type")
+        , ("name", DaoAtom cmd)
+        , ("primitive-type", DaoAtom $ typeToAtom $ primitiveType expr)
+        ]
+  Nothing   -> case Map.lookup cmd $ builtins env of
+    Nothing   -> daoFail $ _daoError "undefined-function" [("builtin-name", DaoAtom cmd)]
+    Just bif  -> maybe (return ()) (\ tr -> tr cmd args) (traceBIF env) >> bif args
 
 -- | Evaluate an 'Atom' by using the 'Atom' to select only a built-in function. Functions defined
 -- locally (on the stack) are not considered.
-evalBuiltin :: Atom -> [DaoExpr] -> DaoEval DaoExpr
-evalBuiltin cmd = filterEvalForms >=> _evalBuiltin cmd
+evalFunction :: Atom -> [DaoExpr] -> DaoEval DaoExpr
+evalFunction cmd = filterEvalForms >=> _evalFunction cmd
 
 -- | This function will collapse a list of 'DaoExpr's by evaluating all 'DaoForm's within it. It
 -- works by filtering a list of 'DaoExpr's such that only 'DaoForm' are extracted and evaluating
@@ -1944,6 +2031,15 @@ evalPipeline = loop where
     []   -> return
     [a]  -> run1 a
     a:ax -> run1 a >=> loop ax
+
+-- | Evaluate a 'Rule' by matching a list of arguments against it.
+evalDaoRule :: Rule -> [DaoExpr] -> DaoEval (MatchResult DaoExpr)
+evalDaoRule rule query = flip runRuleMatcher query $ matchRulePattern exec DaoVoid rule where
+  exec _ dict = ruleMatchLift $ do
+    modify $ \ st -> st{ envStack = _pushEnv dict $ envStack st }
+    result <- evalPartial (ruleAction rule) query
+    modify $ \ st -> st{ envStack = snd $ _popEnv $ envStack st }
+    return result
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2310,7 +2406,14 @@ instance (Outlining typ, Outlining pat) => Outlining (GenPatternChoice typ pat) 
 ----------------------------------------------------------------------------------------------------
 
 -- | This is the data type expressed in a 'Rule' in a Dao Lisp rule database.
-type RulePattern = GenPatternSequence ExprPatUnit Form
+type RulePattern = GenPatternChoice ExprPatUnit Form
+
+-- | Evaluates the pattern match functionon the 'rulePattern' defined for the given 'Rule'.
+matchRulePattern
+  :: (a -> Dict -> RuleMatcher a) -> a
+  -> Rule
+  -> RuleMatcher a
+matchRulePattern f a = matchGenPatternChoice f a . rulePattern
 
 -- | This is a function type used to express functions that can match an 'RulePattern' against a
 -- list of 'DaoExpr' values. This is the function type used to evaluate pattern matches against

@@ -2,7 +2,6 @@ module Language.Interpreter.Dao.TestSuite where
 
 import           Prelude hiding (error, undefined, print, putStr, putStrLn)
 
-import           Language.Interpreter.Dao.Kernel
 import           Language.Interpreter.Dao
 
 --import           Control.Arrow

@@ -108,24 +108,27 @@ Library {
     -fno-warn-unused-do-bind
 
   EXPOSED-MODULES:
+    Language.Interpreter.Dao.Database
     Language.Interpreter.Dao.Kernel
     Language.Interpreter.Dao.GHCI
     Language.Interpreter.Dao
 
   BUILD-DEPENDS:
     -- minimal dependencies for core modules
-      base         >=4.8
-    , array        >=0.5
-    , attoparsec   >=0.13.2
-    , containers   >=0.5
-    , mtl          >=2.2
-    , fail         >=4.9
-    , semigroups   >=0.18
-    , text         >=1.2
---  , random-walks >=0.1
---  , token-parser >=0.1
-    , transformers >=0.2
-
+      base          >=4.8
+    , array         >=0.5
+    , attoparsec    >=0.13.2
+    , containers    >=0.5
+    , microlens     >=0.4
+    , microlens-mtl >=0.1
+    , mtl           >=2.2
+    , fail          >=4.9
+    , semigroups    >=0.18
+    , text          >=1.2
+--  , random-walks  >=0.1
+--  , token-parser  >=0.1
+    , transformers  >=0.2
+                    
   DEFAULT-EXTENSIONS:
     DeriveDataTypeable
     DeriveFunctor
@@ -160,23 +163,26 @@ Test-Suite dao-tests {
 
   OTHER-MODULES:
     Language.Interpreter.Dao.TestSuite
+    Language.Interpreter.Dao.Database
     Language.Interpreter.Dao.Kernel
     Language.Interpreter.Dao
 
   BUILD-DEPENDS:
     -- minimal dependencies for core modules
-      base         >=4.8
-    , array        >=0.5
-    , attoparsec   >=0.13.2
-    , containers   >=0.5
-    , directory    >=1.2
-    , mtl          >=2.2
-    , fail         >=4.9
-    , semigroups   >=0.18
-    , text         >=1.2
---  , random-walks >=0.1
---  , token-parser >=0.1
-    , transformers >=0.2
+      base          >=4.8
+    , array         >=0.5
+    , attoparsec    >=0.13.2
+    , containers    >=0.5
+    , directory     >=1.2
+    , microlens     >=0.4
+    , microlens-mtl >=0.1
+    , mtl           >=2.2
+    , fail          >=4.9
+    , semigroups    >=0.18
+    , text          >=1.2
+--  , random-walks  >=0.1
+--  , token-parser  >=0.1
+    , transformers  >=0.2
 
   DEFAULT-EXTENSIONS:
     DeriveDataTypeable

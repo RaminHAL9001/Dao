@@ -2047,7 +2047,7 @@ evalDaoRule rule query = flip runRuleMatcher query $ matchRulePattern exec DaoVo
 -- 'Language.Interpreter.Dao.Database' data type is defined in the "Language.Interpreter.Dao"
 -- module.
 data DBEntry
-  = NamedEntry Atom Form
+  = NamedEntry Atom DaoExpr
   | UnnamedEntry Rule
   deriving (Eq, Ord, Typeable)
 

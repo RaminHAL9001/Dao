@@ -109,6 +109,7 @@ Library {
 
   EXPOSED-MODULES:
     Language.Interpreter.Dao.Database
+    Language.Interpreter.Dao.DefaultBIFs
     Language.Interpreter.Dao.Kernel
     Language.Interpreter.Dao.GHCI
     Language.Interpreter.Dao
@@ -164,6 +165,7 @@ Test-Suite dao-tests {
   OTHER-MODULES:
     Language.Interpreter.Dao.TestSuite
     Language.Interpreter.Dao.Database
+    Language.Interpreter.Dao.DefaultBIFs
     Language.Interpreter.Dao.Kernel
     Language.Interpreter.Dao
 

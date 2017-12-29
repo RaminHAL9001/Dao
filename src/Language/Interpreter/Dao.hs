@@ -7,9 +7,11 @@
 module Language.Interpreter.Dao
   ( module Language.Interpreter.Dao.Kernel,
     module Language.Interpreter.Dao.Database,
+    module Language.Interpreter.Dao.DefaultBIFs,
   )
   where
 
 import           Language.Interpreter.Dao.Kernel
 import           Language.Interpreter.Dao.Database
+import           Language.Interpreter.Dao.DefaultBIFs
 

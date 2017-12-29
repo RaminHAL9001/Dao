@@ -16,6 +16,7 @@ import           Data.Char
 import           Data.Function
 import           Data.List          (stripPrefix, intercalate)
 import           Data.List.NonEmpty (NonEmpty(..))
+import qualified Data.Map     as Map
 import           Data.Semigroup
 import qualified Data.Text    as Strict
 import qualified Data.Text.IO as Strict
@@ -543,30 +544,9 @@ daoCreasing f =
 
 testEnv :: Environment
 testEnv = environment
-  { builtins = bifList
-      [ bif "sum"
-          $   (monotypeArgList $ pure . DaoInt . sum)
-          <|> (monotypeArgList $ pure . DaoFloat . sum)
-          <|> (monotypeArgList $ pure . DaoString . mconcat)
-      , bif "<=" $ daoCreasing (<=)
-      , bif ">=" $ daoCreasing (>=)
-      , bif "interpolate" $ dumpArgs $ pure . liftM (DaoString . strInterpolate) . filterEvalForms
-      , bif "print" $ dumpArgs $ pure . daoVoid .
-          (filterEvalForms >=> liftIO . Strict.putStrLn . ("(print) " <>) . strInterpolate)
-      , bif "fail" $
-          ( daoFail <$> (plainError <$> outlineDaoDecoder <*> (dictAssocs <$> outlineDaoDecoder))
-          ) <|>
-          (dumpArgs $ return . daoFail . plainError "user-error" . pure . (,) "args" . daoList)
-      , bif "?" $ do
-          fn <- outlineDaoDecoder
-          dumpArgs $ \ args -> return $ do
-            result <- evalAtomWith fn args
-            case result of
-              DaoTrue -> return $ daoList args
-              _       -> daoFail $ plainError "predicate" $
-                [("reason", DaoString "match did not evaluate to true")]
-
-      ]
+  { builtins = flip (uncurry Map.insert) defaultBIFs $
+      bif "print" $ dumpArgs $ pure . daoVoid .
+        (filterEvalForms >=> liftIO . Strict.putStrLn . ("(print) " <>) . strInterpolate)
   }
 
 runEval :: DaoEval DaoExpr -> IO DaoExpr
@@ -582,23 +562,23 @@ eval1 fncall expecting = isosy ("testing evaluator:\n  " ++ show fncall) $ do
 testEvaluator :: IO ()
 testEvaluator = do
   eval1 (daoFnCall "print"       [DaoString "Hello, world!"]) DaoVoid
-  eval1 (daoFnCall "sum"         $ DaoInt <$> [1,2,3,4,5]) (DaoInt 15)
+  eval1 (daoFnCall "+"           $ DaoInt <$> [1,2,3,4,5]) (DaoInt 15)
   eval1 (daoFnCall "<="          $ DaoInt <$> [1,2,3,4,5]) DaoTrue
   eval1 (daoFnCall ">="          $ DaoInt <$> [5,4,3,2,1]) DaoTrue
-  eval1 (daoFnCall "sum"         $ DaoInt <$> [1,2,3,4,0]) (DaoInt 10)
+  eval1 (daoFnCall "+"           $ DaoInt <$> [1,2,3,4,0]) (DaoInt 10)
   eval1 (daoFnCall "<="          $ DaoInt <$> [1,2,3,4,0]) DaoNull
   eval1 (daoFnCall ">="          $ DaoInt <$> [4,3,2,1,5]) DaoNull
   eval1 (daoFnCall "interpolate" $ DaoAtom <$> ["Hello", ",", "world!"])
         (DaoString "Hello , world!")
   flip eval1 DaoVoid $ daoFnCall "print" $
     [ DaoString "\n  [1,2,3,4,5] -> sum = "
-    , daoFnCall "sum"         $ DaoInt <$> [1,2,3,4,5]
+    , daoFnCall "+"  $ DaoInt <$> [1,2,3,4,5]
     , DaoString ", increasing? = "        
-    , daoFnCall "<="  $ DaoInt <$> [1,2,3,4,5]
+    , daoFnCall "<=" $ DaoInt <$> [1,2,3,4,5]
     , DaoString "\n  [1,2,3,4,0] -> sum = "
-    , daoFnCall "sum"         $ DaoInt <$> [1,2,3,4,0]
+    , daoFnCall "+"  $ DaoInt <$> [1,2,3,4,0]
     , DaoString ", increasing? = "        
-    , daoFnCall "<="  $ DaoInt <$> [1,2,3,4,0]
+    , daoFnCall "<=" $ DaoInt <$> [1,2,3,4,0]
     , DaoString "\n  (interpolate Hello, world!) = "
     , daoFnCall "interpolate" $ DaoAtom <$> ["Hello", ",", "world!"]
     ]

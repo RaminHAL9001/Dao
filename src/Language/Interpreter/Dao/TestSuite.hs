@@ -346,9 +346,10 @@ testParsers = do
   test (dict [("one", DaoInt 1), ("two", DaoInt 2), ("three", DaoInt 3)])
     "{ :three 3 :two 2 : one 1 }"
   test (dict [ ("-->", DaoString "arrow")
-             , (":", DaoString "colon")
-             , (",", DaoString "comma")
-             , (";", DaoString "semicolon")])
+             , (":"  , DaoString "colon")
+             , (","  , DaoString "comma")
+             , (";"  , DaoString "semicolon")
+             ])
     "{ :--> \"arrow\" :: \"colon\" :, \"comma\" :; \"semicolon\" }"
   test (daoForm $ atoms "testing testing" ++ ints [1,2,3]) "(testing testing 1 2 3)"
   test (daoForm
@@ -356,22 +357,17 @@ testParsers = do
         ) "(,,,;;;:::)" 
   test (daoError "TestError" [("blame", DaoInt 0), ("suggest", DaoString "nothing")])
     "error TestError {:blame 0  :suggest \"nothing\"}"
-  test (daoRule (atoms "d1 d2") (atoms "p1 p2")
-        (form $ atoms "some pattern") (form $ atoms "some action")
-       )
-    "rule [d1 d2] [p1 p2] (some pattern) (some action)"
-  test (daoRule [] [] (form $ atoms "some pattern") (form $ atoms "some action"))
-    "rule (some pattern) (some action)"
-  test (daoRule (atoms "d1") [] (form $ atoms "some pattern") (form $ atoms "some action"))
-    "rule [d1] (some pattern) (some action)"
-  test (daoRule (atoms "d1") (atoms "p1 p2 p3")
-        (form $ atoms "some pattern") (form $ atoms "some action")
-       )
-    "rule [d1] (some pattern) (some action) [p1 p2 p3]"
-  test (daoRule (atoms "d1 d2") (atoms "p1")
-        (form $ atoms "some pattern") (form $ atoms "some action")
-       )
-    "rule (some pattern) [d1 d2] (some action) [p1]"
+  let any = pattern1 $ patConst $ Single AnyExpr
+  test (daoRule (atoms "d1 d2") (atoms "p1 p2") 0.1 any (form $ atoms "some action"))
+    "rule [d1 d2] [p1 p2] 0.1 (any) (some action)"
+  test (daoRule [] [] 2.0 any (form $ atoms "some action"))
+    "rule 2.0 (any) (some action)"
+  test (daoRule (atoms "d1") [] 30.0 any (form $ atoms "some action"))
+    "rule [d1] (any) (some action) 30.0"
+  test (daoRule (atoms "d1") (atoms "p1 p2 p3") 444.4 any (form $ atoms "some action"))
+    "rule [d1] (any) (some action) 444.4 [p1 p2 p3]"
+  test (daoRule (atoms "d1 d2") (atoms "p1") 5.0e-5 any (form $ atoms "some action"))
+    "rule (any) 5.0e-5 [d1 d2] (some action) [p1]"
   isosy "form parser" $ test1Parse
     (daoForm $ atoms "one two -> three" ++ DaoTrue : DaoNull :
       ints [1,2,3] ++
@@ -587,9 +583,11 @@ testEvaluator :: IO ()
 testEvaluator = do
   eval1 (daoFnCall "print"       [DaoString "Hello, world!"]) DaoVoid
   eval1 (daoFnCall "sum"         $ DaoInt <$> [1,2,3,4,5]) (DaoInt 15)
-  eval1 (daoFnCall ">="          $ DaoInt <$> [1,2,3,4,5]) DaoTrue
+  eval1 (daoFnCall "<="          $ DaoInt <$> [1,2,3,4,5]) DaoTrue
+  eval1 (daoFnCall ">="          $ DaoInt <$> [5,4,3,2,1]) DaoTrue
   eval1 (daoFnCall "sum"         $ DaoInt <$> [1,2,3,4,0]) (DaoInt 10)
   eval1 (daoFnCall "<="          $ DaoInt <$> [1,2,3,4,0]) DaoNull
+  eval1 (daoFnCall ">="          $ DaoInt <$> [4,3,2,1,5]) DaoNull
   eval1 (daoFnCall "interpolate" $ DaoAtom <$> ["Hello", ",", "world!"])
         (DaoString "Hello , world!")
   flip eval1 DaoVoid $ daoFnCall "print" $
@@ -786,7 +784,10 @@ immediate = do
   ---------------------------------------------------------------------------------------------- o
 
   -- TEST FAILED on function test1FormCoder (type== Void : (call some function) *!)
-  testPatterns
+  -- testPatterns
+  test1FormCoder
+    (ZeroOrOne CheckOnce $ IsPrimType DaoVoidType)
+    [DaoAtom "type==", DaoAtom "Void", DaoAtom "?"]
 
   ---------------------------------------------------------------------------------------------- o
   return ()

@@ -604,9 +604,9 @@ dbUpdatRules query f = DB $ loop [] 0 False 0 0 where
             (\ _ -> pure . maybe DaoVoid (daoList . fmap DaoRule) . f rule)
             DaoVoid rule
           return $ case result of
-            MatchOK        DaoNull      -> DaoNull
-            MatchOK (list@(DaoList {})) -> list
-            _                           -> DaoVoid
+            MatchOK        DaoNull     -> DaoNull
+            MatchOK (list@(DaoList{})) -> list
+            _                          -> DaoVoid
       case result of
         DaoNull      -> fill stack stksz True wr rd
         DaoList list -> do

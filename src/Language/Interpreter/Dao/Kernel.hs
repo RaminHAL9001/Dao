@@ -39,7 +39,7 @@ module Language.Interpreter.Dao.Kernel
     runPatternMatch, resumeMatching, dumpArgs, returnIfEnd, setMatchType, matchStep, subMatch,
     maybeMatch, matchError, matchFail, matchQuit,
     -- * Primitive Dao Lisp Data Types
-    DaoSize, daoSize,
+    DaoSize(..),
     Atom, parseDaoAtom, plainAtom,
     Dict(..), daoDict, plainDict, dictNull, unionDict, unionDictWith, emptyDict, lookupDict,
     dictAssocs,
@@ -47,10 +47,11 @@ module Language.Interpreter.Dao.Kernel
     showMaybeList, readMaybeList, listToForm, listToArray,
     Form(..), daoForm, daoForm1, plainForm, formSize, unwrapForm, inspectFormElems,
     parseTopLevelForm,
-    Rule, Depends(..), Provides(..), daoRule,
+    Rule, Likelihood, Depends(..), Provides(..), daoRule,
     Error, ErrorClass, getErrorClass, getErrorInfo, plainError, daoError, errorAppendInfo,
     -- * Pattern Matching
-    RulePattern, matchRulePattern,
+    RulePatternChoice, matchRulePattern, RulePatternType, RulePattern, RulePatternNT,
+    RulePatternUnit, patConst, patNamed, patTyped, patNamedTyped, pattern, choice, pattern1,
     RuleMatcher(..), runRuleMatcher, ruleMatchLift, noMatch, matchExprPatUnit,
     matchGenPatternUnit, matchGenPatternUnit', matchTypedPattern, matchNamedPattern,
     matchGenPatternSequence, matchGenPatternChoice, 
@@ -453,7 +454,9 @@ daoFnCall nm = DaoForm . plainFnCall nm
 --
 -- Note that this function can also be used with 'filterEvalForms', with this equation:
 --
--- > 'Data.Functor.fmap' 'strInterpolate' . 'filterEvalForms'
+-- @
+-- 'Data.Functor.fmap' 'strInterpolate' . 'filterEvalForms'
+-- @
 --
 -- which will perform an evaluation of all 'Form's in the 'DaoExpr' list before evaluating
 -- 'strInterpolate' on all returned strings.
@@ -475,15 +478,12 @@ filterVoids = (>>= (\ case { DaoVoid -> []; a -> [a]; }))
 
 ----------------------------------------------------------------------------------------------------
 
--- | A 'Outliner' function used to produce a Haskell value of type @a@. An 'Outliner' takes a
--- list of arguments, where each argument is a 'DaoExpr' value, and inspects as many or as few of
--- these arguments as necessary to construct a 'Haskell' data type. When the 'daoDecode' function is
--- evaluated, it will inspect the values at the head of the list to construct the Haskell data type.
+-- | A 'DaoDecode' classifies functions used to produce a Haskell values of type @a@ from a single
+-- primitive 'DaoExpr' value.
 class DaoDecode a where
   daoDecode :: DaoExpr -> Either Error a
 
--- | This class is similar to 'DaoDecode', except rather than matching a single 'DaoExpr' element,
--- it may decode several 'DaoExpr's as arguments passed from a 'Form'.
+-- | This is a class of Haskell types @a@ which can be constructed from a list of 'DaoExpr's.
 class Outlining a where
   outline :: Outliner a
 
@@ -652,7 +652,9 @@ _resWord atom@(Atom word) str = do
 -- Keep in mind that the colon @':'@ character is a special 'Atom' which always stands alone.
 -- So the 'Dict' @{::::}@ will actually parse to a value equivalent to the value constructed by
 --
--- > 'plainDict' [(":", daoAtom ":"), (":", daoAtom ":")]
+-- @
+-- 'plainDict' [(":", 'DaoAtom' ":"), (":", 'DaoAtom' ":")]
+-- @
 --
 -- Some other examples of valid dictionary expressions:
 --
@@ -679,7 +681,9 @@ _resWord atom@(Atom word) str = do
 --
 -- Which parses to:
 --
--- > 'plainDict' [ ("," , 'daoForm' ['daoAtom' "," , 'daoAtom' ","]) ]
+-- @
+-- 'plainDict' [ ("," , 'daoForm' ['daoAtom' "," , 'daoAtom' ","]) ]
+-- @
 --
 newtype Dict = Dict { dictToMap :: Map.Map Atom DaoExpr }
   deriving (Eq, Ord, Typeable)
@@ -1008,7 +1012,7 @@ data Rule
     { ruleDepends    :: Depends
     , ruleProvides   :: Provides
     , ruleLikelihood :: Likelihood
-    , rulePattern    :: RulePattern
+    , rulePattern    :: RulePatternChoice
     , ruleAction     :: Form
     }
   deriving (Eq, Ord, Typeable)
@@ -1032,9 +1036,9 @@ instance Show Rule where
       })
     = (++) "rule" .
       showsPrec p deps .
-      showsPrec p provs .
-      showsPrec p like .
-      showsPrec p pat .
+      showsPrec p provs . (' ' :) .
+      showsPrec p like . (' ' :) .
+      ('(' :) . showsPrec p pat . (')' :) . 
       showsPrec p act
 
 instance Read Rule where { readsPrec = _parseRule; }
@@ -1054,18 +1058,20 @@ _parseRule p = \ case
           , ruleProvides   = maybe (Provides Nothing) id provs
           , rulePattern    = maybe
               (failExpect "pattern")
-              (\ form -> case runOutlining $ toList $ unwrapForm form of
-                  (MatchOK pat, []  ) -> pat
-                  (MatchOK pat, more) -> throw $ _daoError "parsing"
-                    [ ("reason", DaoString "ambiguous pattern")
-                    , ("parsed-pattern", inlineToForm pat)
-                    , ("whole-pattern", DaoForm form)
-                    , ("remainder", daoForm1 more)
-                    ]
-                  (MatchFail err, _ ) -> throw err
-                  (MatchQuit err, _ ) -> throw err
-              )
-              pat
+              (\ form -> 
+                  let info = _errorAppendInfo "input" (DaoForm form) .
+                             _errorAppendInfo "expecting" (DaoAtom $ Atom "rule-pattern")
+                  in  case runOutlining $ toList $ unwrapForm form of
+                        (MatchOK pat, []  ) -> pat
+                        (MatchOK pat, more) -> throw $ _daoError "parsing"
+                          [ ("reason", DaoString "ambiguous pattern")
+                          , ("parsed-pattern", inlineToForm pat)
+                          , ("whole-pattern", DaoForm form)
+                          , ("remainder", daoForm1 more)
+                          ]
+                        (MatchFail err, _ ) -> throw $ info err
+                        (MatchQuit err, _ ) -> throw $ info err
+              ) pat
           , ruleAction     = maybe (failExpect "action") id act
           }
     let loop str parsed = case parsed of
@@ -1100,7 +1106,7 @@ _parseRule p = \ case
     loop (_sp $ x:str) (Nothing, Nothing, Nothing, Nothing, Nothing)
   _ -> []
 
-daoRule :: [DaoExpr] -> [DaoExpr] -> Likelihood -> RulePattern -> Form -> Rule
+daoRule :: [DaoExpr] -> [DaoExpr] -> Likelihood -> RulePatternChoice -> Form -> Rule
 daoRule deps provs like pat act = Rule
   { ruleDepends    = Depends  $ maybeList deps
   , ruleProvides   = Provides $ maybeList provs
@@ -1222,7 +1228,7 @@ instance Monad m => MonadFail (PatternMatcher unit t m) where
     _daoError "matching" [("reason", DaoString $ Strict.pack msg)]
 
 instance Monad m => MonadPlus (PatternMatcher unit t m) where
-  mzero = PatternMatcher $ ContT $ const $ return $ MatchQuit $ _daoError "matching"
+  mzero = PatternMatcher $ ContT $ flip ($) $ MatchQuit $ _daoError "matching"
     [("reason", DaoString "Dao Lisp expression didn't match any of the given decoder patterns")]
   mplus (PatternMatcher a) (PatternMatcher b) = PatternMatcher $ do
     st <- lift get
@@ -1659,11 +1665,15 @@ class DaoEncode a where
 -- list of 'DaoExpr's is simply to evaluate the 'inline' function on a list of @['DaoExpr']@. For
 -- example:
 --
--- > 'inline1' ('DaoInt' 5) 'Control.Category..' 'inline' ['DaoInt' 6, 'DaoInt' 7, 'DaoInt' 8]
+-- @
+-- 'inline1' ('DaoInt' 5) 'Control.Category..' 'inline' ['DaoInt' 6, 'DaoInt' 7, 'DaoInt' 8]
+-- @
 --
 -- is the same as the equation:
 --
--- > \\ next -> 'Inliner' ('Data.Functor.fmap' 'DaoInt' [5,6,7,8]) 'Data.Semigroup.<>' next
+-- @
+-- \\ next -> 'Inliner' ('Data.Functor.fmap' 'DaoInt' [5,6,7,8]) 'Data.Semigroup.<>' next
+-- @
 class Inlining a where
   -- | The 'inline' function is defined in continuation passing style (CPS). To evaluate an 'inline'
   -- continuation function, pass 'Control.Applicative.empty' as the second argument.
@@ -1675,13 +1685,17 @@ class Inlining a where
   -- Since 'Int' instantiates 'inline', an easy way to define an 'inline' function for your
   -- 'MyNewInt' type would be to use this equation:
   -- 
-  -- > instance Inliner MyNewInt where
-  -- >     'inline' = ('Data.Semigroup.<>') 'Control.Category..' 'inline' 'Control.Category..' unwrapMyNewInt
+  -- @
+  -- instance Inliner MyNewInt where
+  --     'inline' = ('Data.Semigroup.<>') 'Control.Category..' 'inline' 'Control.Category..' unwrapMyNewInt
+  -- @
   --
   -- Which is the point-free style way of expressing an equation like this:
   --
-  -- > instance Inliner MyNewInt where
-  -- >     'inline' (MyNewInt i) next = 'inline' i 'Data.Semigroup.<>' next
+  -- @
+  -- instance Inliner MyNewInt where
+  --     'inline' (MyNewInt i) next = 'inline' i 'Data.Semigroup.<>' next
+  -- @
   inline :: a -> Inliner DaoExpr -> Inliner DaoExpr
 
 instance Inlining [DaoExpr] where { inline = (<>) . Inliner; }
@@ -1732,37 +1746,39 @@ type DaoLispBuiltin = [DaoExpr] -> DaoEval DaoExpr
 --
 -- To construct a new 'Environment', you can just use ordinary Haskell record syntax:
 --
--- > import qualified "Data.Map" as Map
--- > import           "Data.Monoid" ('mappend')
--- >
--- > myEnv :: 'Environment'
--- > myEnv = 'environment'
--- >     { 'builtins' = 'bifList'
--- >         [ 'bif' "sum" $ 'monotypeArgList' $
--- >               'Control.Monad.return' . 'DaoInt' . 'Prelude.sum'
--- >         , 'bif' "print" $ 'Control.Applicative.pure' $
--- >               'daoVoid' . ('Data.Functor.fmap' 'strInterpolate' . 'filterEvalForms' 'Control.Monad.>=>' 'Control.Monad.IO.Class.liftIO' . 'Prelude.putStrLn')
--- >         ]
--- >     }
--- >     
+-- @
+-- import qualified "Data.Map" as Map
+-- import           "Data.Monoid" ('mappend')
+-- 
+-- myEnv :: 'Environment'
+-- myEnv = 'environment'
+--     { 'builtins' = 'bifList'
+--         [ 'bif' "sum" $ 'monotypeArgList' $
+--               'Control.Monad.return' . 'DaoInt' . 'Prelude.sum'
+--         , 'bif' "print" $ 'Control.Applicative.pure' $
+--               'daoVoid' . ('Data.Functor.fmap' 'strInterpolate' . 'filterEvalForms' 'Control.Monad.>=>' 'Control.Monad.IO.Class.liftIO' . 'Prelude.putStrLn')
+--         ]
+--     }
+-- @
 -- 
 -- However, there are functions in this module for defining an 'Environment' using continuation
 -- passing style:
 --
--- > import qualified "Data.Map" as Map
--- > import           "Data.Monoid" ('mappend')
--- >
--- > myEnv :: 'Environment'
--- > myEnv = 'newEnvironment' 'Prelude.$' 'setupBultins'
--- >     [ 'bif' "sum" 'monotypeArgList' $ 'Control.Monad.return' . 'DaoInt' . 'Prelude.sum'
--- >     , 'bif' "print" 'Control.Applicative.pure' $
--- >            'Control.Monad.liftM' ('Prelude.const' 'DaoVoid') . 'Control.Monad.IO.Class.liftIO' . 'Prelude.putStrLn' . 'strInterpolate')
--- >     ]
--- >     
+-- @
+-- import qualified "Data.Map" as Map
+-- import           "Data.Monoid" ('mappend')
+-- 
+-- myEnv :: 'Environment'
+-- myEnv = 'newEnvironment' 'Prelude.$' 'setupBultins'
+--     [ 'bif' "sum" 'monotypeArgList' $ 'Control.Monad.return' . 'DaoInt' . 'Prelude.sum'
+--     , 'bif' "print" 'Control.Applicative.pure' $
+--            'Control.Monad.liftM' ('Prelude.const' 'DaoVoid') . 'Control.Monad.IO.Class.liftIO' . 'Prelude.putStrLn' . 'strInterpolate')
+--     ]
+-- @     
 data Environment
   = Environment
-    { builtins  :: Map.Map Atom DaoLispBuiltin
-    , locals    :: Map.Map Atom DaoExpr
+    { builtins  :: Map.Map Atom DaoLispBuiltin  -- ^ Built-In Functions (BIFs)
+    , locals    :: Map.Map Atom DaoExpr  -- ^ Functions defined locally, within a single database.
     , envStack  :: EnvStack
     , traceForm :: Maybe (Form -> DaoEval ())
     , traceAtom :: Maybe (Atom -> [DaoExpr] -> DaoEval ())
@@ -1787,8 +1803,8 @@ bifList = Map.fromListWithKey $ \ nm _ _ -> throw $ _daoError "initializing-inte
 -- 'evalDaoIO' function to evaluate a Dao Lisp program.
 environment :: Environment
 environment = Environment
-  { builtins  = Map.empty -- ^ Built-In Functions (BIFs)
-  , locals    = Map.empty -- ^ Functions defined locally, within a single database.
+  { builtins  = Map.empty
+  , locals    = Map.empty
   , envStack  = EnvStack $ Dict Map.empty :| []
   , traceForm = Nothing
   , traceAtom = Nothing
@@ -1804,31 +1820,32 @@ environment = Environment
 -- setting and use a string literal).
 --
 -- Then pass an 'Outliner' function which should convert the @['DaoExpr']@ list of input arguments
--- to a type your function can use. The 'Outliner' function is a pattern matching monad with
+-- to a Haskell type your function can use. The 'Outliner' function is a pattern matching monad with
 -- combinators that allow you to analyze a list of arguments passed to your BIF. Your 'Outliner'
 -- will construct a data type, a tuple, or a list of arguments that your BIF takes as input, and
 -- after evaluating the BIF it must return a value of type 'DaoEval'.
 --
 -- For example:
 --
--- > 'bifList'
--- >     [ 'bif' "sum" $
--- >           'monotypeArgList' $ return . 'DaoInt' . 'Prelude.sum'
--- >     , 'bif' "square" $
--- >           ('Data.Functor.fmap' (\\ a -> a * a :: 'Prelude.Int') 'subOutline') 'Control.Applicative.<|>'
--- >           ('Data.Functor.fmap' (\\ a -> a * a :: 'Prelude.Double') 'subOutline')
--- >     , 'bif' "lookup" $ do
--- >           dict <- 'subOutline'
--- >           key  <- 'subOutline'
--- >           'Prelude.maybe' ('daoFail' $ 'daoError' "dict-lookup" ["key", 'DaoAtom' key])
--- >               'Control.Applicative.pure' ('lookupDict' key dict)
--- >     , 'bif' "print" $
--- >           'dumpArgs' $ \ args -> do
--- >               evaldArgs <- 'filterEvalForms' args
--- >               'Control.Monad.IO.liftIO' $ 'Prelude.putStrLn' $ 'strInterpolate' evaldArgs
--- >               return 'DaoVoid'
--- >     ]
---
+-- @
+-- 'bifList'
+--     [ 'bif' "sum" $
+--           'monotypeArgList' $ return . 'DaoInt' . 'Prelude.sum'
+--     , 'bif' "square" $
+--           ('Data.Functor.fmap' (\\ a -> a * a :: 'Prelude.Int') 'subOutline') 'Control.Applicative.<|>'
+--           ('Data.Functor.fmap' (\\ a -> a * a :: 'Prelude.Double') 'subOutline')
+--     , 'bif' "lookup" $ do -- Looks up a dictionary, throws an exception if key doesn't exist.
+--           dict <- 'subOutline'
+--           key  <- 'subOutline'
+--           'Prelude.maybe' ('daoFail' $ 'daoError' "dict-lookup" ["key", 'DaoAtom' key])
+--               'Control.Applicative.pure' ('lookupDict' key dict)
+--     , 'bif' "print" $
+--           'dumpArgs' $ \\ args -> do
+--               evaldArgs <- 'filterEvalForms' args
+--               'Control.Monad.IO.liftIO' $ 'Prelude.putStrLn' $ 'strInterpolate' evaldArgs
+--               return 'DaoVoid'
+--     ]
+-- @
 bif :: Atom -> Outliner (DaoEval DaoExpr) -> (Atom, DaoLispBuiltin)
 bif name getargs = (,) name $ runOutliner getargs >>> \ case
   (MatchOK  eval, []  ) -> eval
@@ -2179,8 +2196,8 @@ data GenPatternUnit pat
 
 data KleeneType
   = CheckOnce   -- ^ symbolized by an absence of a tag
-  | CheckLazy   -- ^ symbolized by the @'?'@ tag
-  | CheckGreedy -- ^ symbolized by the @'!'@ tag
+  | CheckLazy   -- ^ symbolized by the @*?@ tag
+  | CheckGreedy -- ^ symbolized by the @*!@ tag
   deriving (Eq, Ord, Show, Typeable, Enum)
 
 instance Inlining KleeneType where
@@ -2215,7 +2232,7 @@ instance Outlining pat => Outlining (GenPatternUnit pat) where
   outline = _deGenPatUnit outline
 
 _deGenPatUnit :: Outliner pat -> Outliner (GenPatternUnit pat)
-_deGenPatUnit decodepat = subMatch decodepat >>= \ pat -> 
+_deGenPatUnit decodepat = subMatch decodepat >>= \ pat ->
   ( subMatch outline >>= \ k ->
       ( matchStep [] $ \ case
           DaoInt i -> mplus
@@ -2248,7 +2265,7 @@ _deGenPatUnit decodepat = subMatch decodepat >>= \ pat ->
 -- | This data type optionally attaches some sort of type information (given by the type variable
 -- @typ@) to a pattern of type @pat@.
 --
--- In an 'RulePattern', a type is just an atom referring to a type function. Once the pattern is
+-- In an 'RulePatternChoice', a type is just an atom referring to a type function. Once the pattern is
 -- matched, the elements of the pattern are passed as arguments to this function, and if the
 -- function returns any non-'Error' value, the pattern succeeds. If the function returns an 'Error',
 -- the pattern match fails.
@@ -2405,8 +2422,96 @@ instance (Outlining typ, Outlining pat) => Outlining (GenPatternChoice typ pat) 
 
 ----------------------------------------------------------------------------------------------------
 
--- | This is the data type expressed in a 'Rule' in a Dao Lisp rule database.
-type RulePattern = GenPatternChoice ExprPatUnit Form
+-- | This is the data type expressed in a 'Rule' in a Dao Lisp rule database. It is a sequence of
+-- 'RulePattern's which will all be matched against a query, often matching in parallel. If any one
+-- of the combined patterns in this choice structure results in a successful pattern match, the
+-- whole pattern matches and triggers the action.
+--
+-- A 'RulePatternChoice' is the data type used to define 'Rule's. To define the 'RulePatternChoice'
+-- for a 'Rule', specify a sequence of @'Data.List.NonEmpty.NonEmpty' 'RulePatternNT'@s joined
+-- together by the @('Data.Semigroup.<>')@ operator and then evaluate the entire expression using
+-- the 'pattern1' constructor to construct a 'RulePatternChoice'. For example:
+--
+-- @
+-- 'pattern1'
+--    ( ('patConst'              $ 'Single'    $ 'EqExpr' $ 'DaoString' "My name is") 'Data.Semigroup.<>'
+--      ('patNamed' "firstName"  $ 'Single'    $ 'IsPrimType' 'DaoStringType') 'Data.Semigroup.<>'
+--      ('patNamed' "secondName" $ 'ZeroOrOne' $ 'IsPrimType' 'DaoStringType')
+--    )
+-- @
+-- 
+-- You could also construct multiple @'Data.List.NonEmpty.NonEmpty' 'RulePattern'@s and again join
+-- them together, again using the @('Data.Semigroup.<>')@ operator, then evaluate the
+-- 'Data.List.NonEmpty.NonEmpty' list to a 'RulePatternChoice' using the 'choice' constructor. For
+-- example:
+--
+-- @
+-- 'choice'
+--    ( 'pattern' ('patConst'  $ 'Single'    $ 'EqExpr' $ 'DaoAtom' "hello") 'Data.Semigroup.<>'
+--      'pattern' ('patTyped'  $ 'plainForm' $ 'DaoAtom' "sum" 'Data.List.NonEmpty.:|' [])
+--                ('AtLeast' 2 $ 'IsPrimType' 'DaoIntType')
+--    )
+-- @
+type RulePatternChoice = GenPatternChoice ExprPatUnit RulePatternType
+
+-- | This is a sequence of 'RulePatternNT's will be matched one after another until all units are
+-- matched, at which point the whole pattern match succeeds.
+type RulePattern = GenPatternSequence ExprPatUnit RulePatternType
+
+-- | This is a __N__ Named and __T__ Typed element of a 'RulePattern'. A unit is a 'RulePatternUnit'
+-- that may be a 'NamedPattern' or an unnamed 'PatConst', and it may be a 'TypedPattern' or an
+-- 'UntypedPattern'. The 'patConst', 'patNamed', 'patTyped', and 'patNamedTyped' constructors below
+-- are given to create a 'RulePatternNT'.
+type RulePatternNT   = NamedPattern ExprPatUnit RulePatternType
+
+-- | A 'RulePatternUnit' is an untyped and unnamed unit pattern. See the documentation for
+-- 'GenPatternUnit' to learn more about constructing pattern units.
+type RulePatternUnit  = GenPatternUnit ExprPatUnit
+
+-- | When typing the elements matched by patterns, the type check is simply a function call
+-- expressed as a 'Form' evaluated by 'evalPartial'.
+type RulePatternType   = Form
+
+-- | Create an unnamed untyped 'RulePattern' wrapped in a 'Data.List.NonEmpty.NonEmpty' singleton so
+-- that it can be combined with other singltons into a structure evaluated by the 'pattern' or
+-- 'pattern1' data constructors.
+patConst :: RulePatternUnit -> NonEmpty RulePatternNT
+patConst expr = flip (:|) [] $ PatConst $ UntypedPattern{ typeablePattern = expr }
+
+-- | Create an named untyped 'RulePattern' wrapped in a 'Data.List.NonEmpty.NonEmpty' singleton so
+-- that it can be combined with other singltons into a structure evaluated by the 'pattern' or
+-- 'pattern1' data constructors.
+patNamed :: Atom -> RulePatternUnit -> NonEmpty RulePatternNT
+patNamed nm expr = flip (:|) [] $ NamedPattern nm $ UntypedPattern{ typeablePattern = expr }
+
+-- | Create an unnamed typed 'RulePattern' wrapped in a 'Data.List.NonEmpty.NonEmpty' singleton so
+-- that it can be combined with other singltons into a structure evaluated by the 'pattern' or
+-- 'pattern1' data constructors.
+patTyped :: RulePatternType -> RulePatternUnit -> NonEmpty RulePatternNT
+patTyped typ expr = flip (:|) [] $ PatConst $
+  TypedPattern{ typeablePattern = expr, typeablePatternType = typ }
+
+-- | Create an named and typed 'RulePattern' wrapped in a 'Data.List.NonEmpty.NonEmpty' singleton so
+-- that it can be combined with other singltons into a structure evaluated by the 'pattern' or
+-- 'pattern1' data constructors.
+patNamedTyped :: Atom -> RulePatternType -> RulePatternUnit -> NonEmpty RulePatternNT
+patNamedTyped nm typ expr = flip (:|) [] $ NamedPattern nm $
+  TypedPattern{ typeablePattern = expr, typeablePatternType = typ }
+
+-- | Construct a pattern consisting of a sequence of 'RulePatternNT's.
+pattern :: NonEmpty RulePatternNT -> NonEmpty RulePattern
+pattern = flip (:|) [] . GenPatternSequence . plainList
+
+-- | Construct a 'RulePatternChoice' by evaluting a 'Data.List.NonEmpty.NonEmpty' list of
+-- 'RulePattern's that have been joined together using the @('Data.Semigroup.<>')@ operator.
+choice :: NonEmpty RulePattern -> RulePatternChoice
+choice = GenPatternChoice . plainList
+
+-- | Construct a 'RulePatternChoice' with only one choice.
+pattern1 :: NonEmpty RulePatternNT -> RulePatternChoice
+pattern1 = choice . pattern
+
+----------------------------------------------------------------------------------------------------
 
 -- | Evaluates the pattern match functionon the 'rulePattern' defined for the given 'Rule'.
 matchRulePattern
@@ -2415,7 +2520,7 @@ matchRulePattern
   -> RuleMatcher a
 matchRulePattern f a = matchGenPatternChoice f a . rulePattern
 
--- | This is a function type used to express functions that can match an 'RulePattern' against a
+-- | This is a function type used to express functions that can match an 'RulePatternChoice' against a
 -- list of 'DaoExpr' values. This is the function type used to evaluate pattern matches against
 -- rules.
 newtype RuleMatcher a

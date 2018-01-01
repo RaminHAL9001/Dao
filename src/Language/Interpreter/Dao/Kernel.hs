@@ -43,8 +43,9 @@ module Language.Interpreter.Dao.Kernel
     Atom, parseDaoAtom, plainAtom,
     Dict(..), daoDict, plainDict, dictNull, unionDict, unionDictWith, emptyDict, lookupDict,
     dictAssocs,
-    List, unwrapList, reverseUnwrapList, daoList, daoArray, plainList, maybeList, daoReverseList,
-    showMaybeList, readMaybeList, listToForm, listToArray,
+    List, unwrapList, indexList, reverseUnwrapList, daoList, daoArray, plainList, sizedPlainList,
+    sizedMaybeList, maybeList, daoReverseList, showMaybeList, readMaybeList, listToForm,
+    listToArray,
     Form(..), daoForm, daoForm1, plainForm, formSize, unwrapForm, inspectFormElems,
     parseTopLevelForm,
     Rule, Likelihood, Depends(..), Provides(..), daoRule,
@@ -448,8 +449,8 @@ plainFnCall nm = plainForm . (:|) (DaoAtom nm)
 daoFnCall :: Atom -> [DaoExpr] -> DaoExpr
 daoFnCall nm = DaoForm . plainFnCall nm
 
--- | This is a simple, and pure, string interpolation function in which 'DaoString's are unpacked
--- and without being "sanitized" and surrounded in quotation marks, and non-strings are converted to
+-- | This is a simple, and pure, string interpolation function in which 'DaoString's and 'DaoChar's
+-- are unpacked without being surrounded by quotation marks, and non-strings are converted to
 -- strings using the ordinary Haskell 'Prelude.show' function.
 --
 -- Note that this function can also be used with 'filterEvalForms', with this equation:
@@ -465,11 +466,13 @@ strInterpolate = Lazy.toStrict . Build.toLazyText . loop where
   loop = \ case
     []                 -> mempty
     DaoString txt : ax -> Build.fromText txt <> loop ax
+    DaoChar   c   : ax -> Build.singleton c <> loop ax
     ax                 -> shloop id ax
   join elems = Build.fromString $ showList (elems []) ""
   shloop elems = \ case
     []                   -> join elems
     ax@(DaoString{} : _) -> join elems <> loop ax
+    ax@(DaoChar{}   : _) -> join elems <> loop ax
     a               : ax -> shloop (elems . (a :)) ax
 
 -- | This function filters out all 'DaoVoid' expressions from the given list.
@@ -853,6 +856,24 @@ plainList (b :| bx) = List $ uncurry array $ loop [] 0 b bx where
     []   -> ((0, i), (i, a) : stack)
     b:bx -> loop ((i, a) : stack) (i + 1) b bx
 
+-- | Construct a 'List' of a given size, filling the list @[a]@ of the given arguments, and if there
+-- are not enough arguments in the list @[a]@, then fill the remainder with the default parameter
+-- @a@. If the length of @[a]@ is longer than the given 'Prelue.Int' size value, the excess @[a]@
+-- elements are ignored.
+sizedPlainList :: Int -> [a] -> a -> List a
+sizedPlainList i elems = sizedMaybeList i elems >>> \ case
+  Just a -> a
+  Nothing -> throw $ _daoError "list"
+    [ ("reason", DaoString "size parameter less than one")
+    , ("size", DaoInt i)
+    ]
+
+-- | Like 'sizedPlainList' but never throws an exception on a bad size parameter, instead evaluates
+-- to 'Prelude.Nothing'.
+sizedMaybeList :: Int -> [a] -> a -> Maybe (List a)
+sizedMaybeList i elems deflt = if i <= 0 then Nothing else
+  Just $ List $ array (0, i - 1) $ zip [0 ..] $ elems ++ repeat deflt
+
 -- | Construct a 'List' from a Haskell list, returning 'Prelude.Nothing' if the list is empty.
 maybeList :: [a] -> Maybe (List a)
 maybeList = \ case { [] -> Nothing; a:ax -> Just $ plainList $ a :| ax; }
@@ -876,6 +897,10 @@ unwrapList (List arr) = let (lo, hi) = bounds arr in
 
 _indexList :: List a -> Int -> a
 _indexList (List a) = (a !)
+
+-- | Lookup an element in a 'List'
+indexList :: List a -> Int -> Maybe a
+indexList (List a) i = if inRange (bounds a) i then Just (a ! i) else Nothing
 
 -- | Construct a 'DaoExpr' of primitive type 'DaoList'. If the given Haskell list is empty,
 -- this function evaluates to 'DaoNull'. A 'DaoList' always created, even if there is only one
@@ -1376,19 +1401,25 @@ dumpArgs = (>>=) $ PatternMatcher $ lift $ state $
   MatchOK . patMatcherSource &&& \ st -> st{ patMatcherSource = [] }
 
 -- | Return a value of type @a@ if and only if all arguments given to the 'PatternMatcher' have been
--- analyzed and there are no more remaining, otherwise backtrack with a call to 'matchQuit'.
-returnIfEnd :: Monad m => a -> PatternMatcher unit t m a
-returnIfEnd a = PatternMatcher $ ContT $ \ next -> gets patMatcherSource >>= \ case
+-- analyzed and there are no more remaining, otherwise backtrack with a call to 'matchQuit',
+-- appending error information given in the first argument.
+returnIfEnd :: Monad m => a -> [(Atom, DaoExpr)] -> PatternMatcher unit t m a
+returnIfEnd a err = PatternMatcher $ ContT $ \ next -> gets patMatcherSource >>= \ case
   [] -> next $ MatchOK a
-  _  -> return $ MatchQuit $ _daoError "matching"
+  _  -> return $ MatchQuit $ foldl (.) id (uncurry errorAppendInfo <$> err) $ _daoError "matching" $
     [("reason", DaoString "pattern requires there be no further arguments in order to match")]
 
-_setType :: (Monad m, Typeable a) => Proxy a -> PatternMatcher unit t m a -> PatternMatcher unit t m a
-_setType prox (PatternMatcher f) = PatternMatcher $ ContT $ \ next -> case typeRepArgs $ typeOf prox of
-  [typ] -> flip runContT next $ do
-    oldtyp <- lift $ state $ \ st -> (patMatcherTypeRep st, st{ patMatcherTypeRep = Just typ })
-    f <* lift (modify $ \ st -> st{ patMatcherTypeRep = oldtyp })
-  typs  -> error $ "in setMatchType, typeRepArgs Proxy returned " ++ show typs
+_setType
+  :: (Monad m, Typeable a)
+  => Proxy a
+  -> PatternMatcher unit t m a
+  -> PatternMatcher unit t m a
+_setType prox (PatternMatcher f) = PatternMatcher $ ContT $ \ next ->
+  case typeRepArgs $ typeOf prox of
+    [typ] -> flip runContT next $ do
+      oldtyp <- lift $ state $ \ st -> (patMatcherTypeRep st, st{ patMatcherTypeRep = Just typ })
+      f <* lift (modify $ \ st -> st{ patMatcherTypeRep = oldtyp })
+    typs  -> error $ "in setMatchType, typeRepArgs Proxy returned " ++ show typs
 
 -- | This funcion can help make your programs easier to debug. Evaluating a decoder within this
 -- function marks it with a Haskell 'Data.Typeable.TypeRep' (type representation) information that
@@ -1862,7 +1893,7 @@ bif name getargs = (,) name $ runOutliner getargs >>> \ case
 -- 'DaoString's or all 'DaoInt's.
 monotypeArgList :: DaoDecode arg => ([arg] -> a) -> SubOutliner t a
 monotypeArgList f = loop id where
-  loop args = (outlineDaoDecoder >>= loop . (args .) . (:)) <|> returnIfEnd (f $ args [])
+  loop args = (outlineDaoDecoder >>= loop . (args .) . (:)) <|> returnIfEnd (f $ args []) []
 
 -- | Create a new 'Environment' to be used to evaluate some Dao Lisp expressions. Pass an update
 -- function composed (that is composed with the 'Prelude..' operator) of several setup functions,

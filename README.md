@@ -1,6 +1,6 @@
 # Dao: a production rule database protocol and DSL for for natural language modeling and AI.
 
-#### Copyright (C) 2008-2017, Ramin Honary, all rights reserved.
+#### Copyright (C) 2008-2018, Ramin Honary, all rights reserved.
 
 Dao is a domain-specific language (DSL) for constructing production rule
 database, with a focus on natural language modeling and AI. Production rule

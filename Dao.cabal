@@ -20,7 +20,7 @@ NAME          : Dao
 VERSION       : 2.0.0.0
 CABAL-VERSION : >= 1.18
 LICENSE       : AGPL
-COPYRIGHT     : (C) 2017 Ramin Honary, all rights reserved.
+COPYRIGHT     : (C) 2018 Ramin Honary, all rights reserved.
 AUTHOR        : Ramin Honary
 MAINTAINER    : ramin.honary@gmail.com
 BUILD-TYPE    : Simple

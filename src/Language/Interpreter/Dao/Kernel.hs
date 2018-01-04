@@ -22,7 +22,7 @@ module Language.Interpreter.Dao.Kernel
     DaoEval, Environment(..), DaoLispBuiltin, environment, bif, bifList, monotypeArgList,
     newEnvironment, setupBuiltins, setupTraceBIF, setupTraceAtom, setupTraceForm, DaoFunction(..),
     daoFail, daoCatch, daoVoid, evalDaoExprIO, evalDaoIO, evalDaoExprWith, evalPartial,
-    evalAtomWith, evalFunction, filterEvalForms, evalProcedure, evalPipeline, evalDaoRule,
+    evalAtomWith, daoLocal, evalFunction, filterEvalForms, evalProcedure, evalPipeline, evalDaoRule,
     -- * Production Rule Database Entry
     DBEntry(..),
     -- * Dao Lisp's Fundamental Data Type
@@ -41,8 +41,8 @@ module Language.Interpreter.Dao.Kernel
     -- * Primitive Dao Lisp Data Types
     DaoSize(..),
     Atom, parseDaoAtom, plainAtom,
-    Dict(..), daoDict, plainDict, dictNull, unionDict, unionDictWith, emptyDict, lookupDict,
-    dictAssocs,
+    Dict(..), daoDict, plainDict, dictNull, emptyDict, lookupDict, insertDict, unionDict,
+    unionDicts, intersectDict, intersectDicts, dictAssocs,
     List, unwrapList, indexList, reverseUnwrapList, daoList, daoArray, plainList, sizedPlainList,
     sizedMaybeList, maybeList, daoReverseList, showMaybeList, readMaybeList, listToForm,
     listToArray,
@@ -734,14 +734,6 @@ plainDict = Dict . Map.fromList
 daoDict :: [(Atom, DaoExpr)] -> DaoExpr
 daoDict = DaoDict . plainDict
 
--- | Perform a 'Data.Map.unionWith' operation on two 'Dict'ionary values.
-unionDictWith :: (DaoExpr -> DaoExpr -> DaoExpr) -> Dict -> Dict -> Dict
-unionDictWith f (Dict a) (Dict b) = Dict $ Map.unionWith f a b
-
--- | Calls 'unionDictWith' with the 'concatDaoExprs' function
-unionDict :: Dict -> Dict -> Dict
-unionDict = unionDictWith (\ a b -> concatDaoExprs [a, b])
-
 -- | A 'Dict' that contains no elements.
 emptyDict :: Dict
 emptyDict = Dict Map.empty
@@ -752,8 +744,27 @@ lookupDict atom = Map.lookup atom . dictToMap
 
 -- | Insert an ielement into a 'Dict', given a function used to combine elements if the 'Atom' key
 -- already exists.
-insertDict :: (DaoExpr -> DaoExpr -> DaoExpr) -> Atom -> DaoExpr -> Dict -> Dict
-insertDict f key val (Dict map) = Dict $ Map.insertWith f key val map
+insertDict :: Dict -> [(Atom, DaoExpr)] -> Dict
+insertDict (Dict map) upds = Dict $ Map.union (Map.fromList upds) map
+
+-- | Performs a set union over keys, merging associated elements with the given function.
+unionDict :: (Atom -> DaoExpr -> DaoExpr -> DaoExpr) -> Dict -> Dict -> Dict
+unionDict f (Dict a) (Dict b) = Dict $ Map.unionWithKey f a b
+
+-- | Union a list of 'Dict's.
+unionDicts :: (Atom -> DaoExpr -> DaoExpr -> DaoExpr) -> [Dict] -> Dict
+unionDicts = (`foldl` emptyDict) . unionDict
+
+-- | Performs a set intersection over keys, merging associated elements with the given function.
+intersectDict :: (Atom -> DaoExpr -> DaoExpr -> DaoExpr) -> Dict -> Dict -> Dict
+intersectDict f (Dict a) (Dict b) = Dict $ Map.intersectionWithKey f a b
+
+-- | Intersect a list of 'Dict's.
+intersectDicts :: (Atom -> DaoExpr -> DaoExpr -> DaoExpr) -> [Dict] -> Dict
+intersectDicts f = \ case
+  []   -> emptyDict
+  [a]  -> a
+  a:ax -> foldl (intersectDict f) a ax
 
 -- | Return the list of 'Atom' 'DaoExpr' pairs which define this 'Dict'.
 dictAssocs :: Dict -> [(Atom, DaoExpr)]
@@ -901,6 +912,10 @@ _indexList (List a) = (a !)
 -- | Lookup an element in a 'List'
 indexList :: List a -> Int -> Maybe a
 indexList (List a) i = if inRange (bounds a) i then Just (a ! i) else Nothing
+
+-- | Update elements in a 'List'
+insertList :: List a -> [(Int, a)] -> List a
+insertList (List a) = List . (a //)
 
 -- | Construct a 'DaoExpr' of primitive type 'DaoList'. If the given Haskell list is empty,
 -- this function evaluates to 'DaoNull'. A 'DaoList' always created, even if there is only one
@@ -1943,6 +1958,12 @@ class DaoFunction expr where { evalDao :: expr -> DaoEval DaoExpr; }
 instance DaoFunction DaoExpr where
   evalDao expr = case expr of
     DaoForm form -> evalDao form
+    DaoAtom atom -> daoLocal atom $ \ case
+      Nothing   -> daoFail $ _daoError "dereferencing"
+        [ ("reason", DaoString "failed to dereference atom")
+        , ("atom", DaoAtom atom)
+        ]
+      Just expr -> return expr
     expr         -> return expr
 
 instance DaoFunction Form where
@@ -2017,11 +2038,16 @@ evalPartial form more = do
   let (head :| args) = unwrapForm form
   evalDaoExprWith head $ args ++ more
 
+-- | Performs a lookup for any 'DaoExpr' that might be associated with the given 'Atom' in the local
+-- context.
+daoLocal :: Atom -> (Maybe DaoExpr -> DaoEval a) -> DaoEval a
+daoLocal atom f = gets (_lookupEnv atom . envStack) >>= f
+
 -- | Evaluate an 'Atom' with a list of arguments. This function will not call into the 'tracer'.
 -- This function also recursively calls 'evalDao' on each argument using the 'filterEvalForms'
 -- function.
 evalAtomWith :: Atom -> [DaoExpr] -> DaoEval DaoExpr
-evalAtomWith cmd = filterEvalForms >=> \ args -> gets (_lookupEnv cmd . envStack) >>= \ case
+evalAtomWith cmd = filterEvalForms >=> \ args -> daoLocal cmd $ \ case
   Nothing   -> _evalFunction cmd args
   Just expr -> do
     get >>= maybe (return ()) (\ tr -> tr cmd args) . traceAtom
@@ -2682,7 +2708,7 @@ matchNamedPattern
 matchNamedPattern pat dict f = case pat of
   PatConst        pat -> matchTypedPattern pat $ flip f dict
   NamedPattern nm pat -> matchTypedPattern pat $ \ expr ->
-    f expr $ insertDict (flip const) nm expr dict
+    f expr $ insertDict dict [(nm, expr)]
 
 -- | Evaluates an entire 'GenPatternSequence' against an entire list of arguments.
 matchGenPatternSequence

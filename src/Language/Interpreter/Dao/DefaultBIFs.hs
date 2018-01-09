@@ -241,8 +241,8 @@ _daoget lookup = do
   let getatom = DaoAtom "get"
   let badkey = DaoString "incorrect key type for lookup target"
   let info = [("reason", badkey), ("function", getatom)]
-  (listLen, keys)  <- (((,) Nothing) . pure <$> evalNoLookupNext info) <|>
-    (do keysList <- evalNoLookupNext info
+  (listLen, keys)  <- (((,) Nothing) . pure <$> literalNext info) <|>
+    (do keysList <- literalNext info
         liftM ((,) $ Just $ length keysList) $
           forM (toList $ unwrapList keysList) $ \ key -> case daoDecode key of
             Right key -> return key

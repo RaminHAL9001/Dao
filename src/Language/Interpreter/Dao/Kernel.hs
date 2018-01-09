@@ -57,7 +57,7 @@ module Language.Interpreter.Dao.Kernel
     filterEvalForms, evalProcedure, evalPipeline, evalDaoRule,
     -- * Constructing Built-In Functions
     DaoMacro, DaoBuiltinFunction(..), bif, bifList, monotypeArgList, literalNext,
-    evalNoLookupNext, evalNextArg, outlineNextArg, outlineNextArgWith,
+    evalNextArg, outlineNextArg, outlineNextArgWith,
     -- * Dao Lisp's Fundamental Data Type
     DaoExpr(..), primitiveType, typeToAtom, basicType, DaoExprType(..), concatDaoExprs, plainFnCall,
     daoFnCall, strInterpolate, filterVoids, parseDaoUnit,
@@ -1998,15 +1998,15 @@ evalBIF name bif args = do
 literalNext :: DaoDecode arg => [(Atom, DaoExpr)] -> DaoMacro arg
 literalNext info = matchStep info $ daoDecode >>> matchQuit ||| pure
 
--- | This function is similar to 'literalNext', however if the next argument in the list is a
--- 'Form', it evaluates the 'Form' (rather than returning a literal 'Form') and then decodes the
--- returned value. The name of this function includes the descriptor "no lookup" because it is
--- useful for pulling literal 'Atom's, or other literal values from the argument list without
--- evaluating them, but otherwise evaluates 'Form's.
-evalNoLookupNext :: DaoDecode arg => [(Atom, DaoExpr)] -> DaoMacro arg
-evalNoLookupNext info = mplus
-  (literalNext info >>= lift . flip evalPartial [] >>= (matchQuit ||| pure) . daoDecode)
-  (literalNext info >>= (matchQuit ||| pure) . daoDecode)
+---- | This function is similar to 'literalNext', however if the next argument in the list is a
+---- 'Form', it evaluates the 'Form' (rather than returning a literal 'Form') and then decodes the
+---- returned value. The name of this function includes the descriptor "no lookup" because it is
+---- useful for pulling literal 'Atom's, or other literal values from the argument list without
+---- evaluating them, but otherwise evaluates 'Form's.
+--evalNoLookupNext :: DaoDecode arg => [(Atom, DaoExpr)] -> DaoMacro arg
+--evalNoLookupNext info = mplus
+--  (literalNext info >>= lift . flip evalPartial [] >>= (matchQuit ||| pure) . daoDecode)
+--  (literalNext info >>= (matchQuit ||| pure) . daoDecode)
 
 -- | When matching arguments passed to a macro, this function simply evaluates the next argument,
 -- including looking-up 'Atom's. This is useful when defining a 'DaoMacro' where some of the

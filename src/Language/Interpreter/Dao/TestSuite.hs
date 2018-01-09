@@ -5,18 +5,17 @@ import           Prelude hiding (error, undefined, print, putStr, putStrLn)
 import           Language.Interpreter.Dao
 
 --import           Control.Arrow
-import           Control.Applicative
 import           Control.Concurrent
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.IO.Class
+import           Control.Monad.Trans
 
 --import           Data.Array.IArray
 import           Data.Char
 import           Data.Function
 import           Data.List          (stripPrefix, intercalate)
 import           Data.List.NonEmpty (NonEmpty(..))
-import qualified Data.Map     as Map
 import           Data.Semigroup
 import qualified Data.Text    as Strict
 import qualified Data.Text.IO as Strict
@@ -530,24 +529,11 @@ testCoders = do
 
 ----------------------------------------------------------------------------------------------------
 
-creasing :: (a -> a -> Bool) -> [a] -> Bool
-creasing ordered = \ case { [] -> False; a:ax -> loop a ax; } where
-  loop a ax = case ax of
-    []   -> True
-    b:ax -> if a `ordered` b then loop b ax else False
-
-daoCreasing :: (forall a . (Ord a, DaoDecode a) => a -> a -> Bool) -> Outliner (DaoEval DaoExpr)
-daoCreasing f =
-  (monotypeArgList $ pure . dao . (creasing f :: [Int] -> Bool)) <|>
-  (monotypeArgList $ pure . dao . (creasing f :: [Double] -> Bool)) <|>
-  (monotypeArgList $ pure . dao . (creasing f :: [Strict.Text] -> Bool))
-
 testEnv :: Environment
-testEnv = environment
-  { builtins = flip (uncurry Map.insert) defaultBIFs $
-      bif "print" $ dumpArgs $ pure . daoVoid .
-        (filterEvalForms >=> liftIO . Strict.putStrLn . ("(print) " <>) . strInterpolate)
-  }
+testEnv = newEnvironment $ extendBuiltins
+  [ bif "print" $ DaoFunction $ dumpArgs $ lift . daoVoid .
+      (filterEvalForms >=> liftIO . Strict.putStrLn . ("(print) " <>) . strInterpolate)
+  ]
 
 runEval :: DaoEval DaoExpr -> IO DaoExpr
 runEval = evalDaoExprIO testEnv 
@@ -568,8 +554,8 @@ testEvaluator = do
   eval1 (daoFnCall "+"           $ DaoInt <$> [1,2,3,4,0]) (DaoInt 10)
   eval1 (daoFnCall "<="          $ DaoInt <$> [1,2,3,4,0]) DaoNull
   eval1 (daoFnCall ">="          $ DaoInt <$> [4,3,2,1,5]) DaoNull
-  eval1 (daoFnCall "interpolate" $ DaoAtom <$> ["Hello", ",", "world!"])
-        (DaoString "Hello , world!")
+  eval1 (daoFnCall "interpolate" $ DaoString <$> ["Hello", ",", "world!"])
+        (DaoString "Hello,world!")
   flip eval1 DaoVoid $ daoFnCall "print" $
     [ DaoString "\n  [1,2,3,4,5] -> sum = "
     , daoFnCall "+"  $ DaoInt <$> [1,2,3,4,5]
@@ -580,7 +566,7 @@ testEvaluator = do
     , DaoString ", increasing? = "        
     , daoFnCall "<=" $ DaoInt <$> [1,2,3,4,0]
     , DaoString "\n  (interpolate Hello, world!) = "
-    , daoFnCall "interpolate" $ DaoAtom <$> ["Hello", ",", "world!"]
+    , daoFnCall "interpolate" $ DaoString <$> ["Hello", ",", "world!"]
     ]
 
 match1

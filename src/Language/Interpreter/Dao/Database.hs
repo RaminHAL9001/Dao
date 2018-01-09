@@ -26,6 +26,7 @@ module Language.Interpreter.Dao.Database
   where
 
 import           Language.Interpreter.Dao.Kernel
+import           Language.Interpreter.Dao.DefaultBIFs
 
 import           Control.Arrow
 import           Control.Concurrent
@@ -228,15 +229,16 @@ data SessionState
       -- good default value for this parameter.
     }
 
--- | This is the default 'SessionState'. Pass this to the 'runSession' function, unless you want to
--- customize the 'SessionState', in which case override the parameters of this 'SessionState' data
--- constructor using Haskell's record syntax.
+-- | This is the default 'SessionState' containing a default execution
+-- 'Language.Interpreter.Dao.Kernel.Environment'. Pass this to the 'runSession' function, unless you
+-- want to customize the 'SessionState', in which case override the parameters of this
+-- 'SessionState' data constructor using Haskell's record syntax.
 sessionState :: SessionState
 sessionState = SessionState
   { urlConnector = localFileConnector
   , loggingFunction = \ msg -> if reportLogLevel msg < WARN then return () else
       hPrint stderr msg >> hFlush stderr >>= evaluate
-  , sessionEnvironment = environment
+  , sessionEnvironment = newEnvironment id
   }
 
 -- | This function will usually be evaluated in the @main@ function of your program. It initializes

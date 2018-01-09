@@ -12,19 +12,52 @@
 -- 5. functions for defining your own Built-In Functions (BIFs) in Haskell to be called from within
 --    a Dao Lisp interpreter thread.
 --
+-- The AST for Dao Lisp is defined entirely as instances of the 'Prelude.Read' function type class.
+-- Make use of 'Prelude.read', 'Prelude.reads', 'Prelude.show', and 'Prelude.shows' to convert
+-- between the data types in this module and their string representations. Dao Lisp does adhere to
+-- Haskell's laws about making sure 'Prelude.String's produced by 'Prelude.show' can be parsed with
+-- 'Prelude.read' to reconstruct the exact data structure that was encoded to the 'Prelude.String'.
+--
 -- Dao Lisp might be simple enough to understand that you could write it by hand into a text file,
 -- but it was not designed to be hand-written by programmers. Dao Lisp is more of a protocol used to
--- store production rules into databases. Express these production rules using functions like
--- 'daoRule', and then use 'Prelude.print' or 'Prelude.show' to generate the Dao Lisp code to be
--- stored to a file or database.
+-- store production rules into databases. You theoretically could express these production rules
+-- using functions like 'daoRule', and then use 'Prelude.print' or 'Prelude.show' to generate the
+-- Dao Lisp code to be stored to a file or database. However the "Language.Interpreter.Dao.Database"
+-- module contains a number of functions for working with files that contain a collection of Dao
+-- S-Expressions that have been encoded as a text a file, so it is best not to rely on functions
+-- like 'Prelude.show' or 'System.IO.hPrint' to construct databases.
+--
+-- When using Dao Lisp as an intermediate data encoding (similar to JSON except using Lisp
+-- S-expressions and not JavaScript-like primitive data types) it is important to keep in mind that
+-- there are two different types of function in this module for encoding and decoding
+-- functions.
+--
+-- 1. 'DaoDecode' and 'DaoEncode' take only primitive lisp types like integers or strings. Any
+--    Haskell type you define which can be converted to and from one of the Dao 'primitiveType's can
+--    be instantiated into the 'DaoEncode' and 'DaoDecode' type clases.
+--
+-- 2. 'Inlining' and 'Outlining' function types operate on lists (S-Expressions) of primitive types.
+--    'Outlining' is a function which can take zero or more primitive types and use them all to
+--    build up a more complicated Haskell data structure. 'Inlining' takes a complicated Haskell
+--    data structure and breaks it down into a list (or S-Expression) consisting of Dao primitive
+--    types. This is somewhat similar to encoding/decoding data structures as JSON data, except you
+--    are encoding/decoding to or from S-Expressions.
+-- 
+-- Finally, although you can construct very complicated data structures and databases using Dao Lisp
+-- and the functions provided in this module, these data structures are completely static, like
+-- JSON. Dao Lisp is not something that actually performs computation __until__ you evaluate the
+-- data structures as executable code using the various functions of the 'DaoEval' function type.
+-- However the discussion for how to do this is continued in the "Language.Interpreter.Dao.Database"
+-- module.
 module Language.Interpreter.Dao.Kernel
   ( -- * The Dao Lisp Interpreter
-    DaoEval, Environment(..), DaoLispBuiltin, environment, bif, bifList, monotypeArgList,
-    newEnvironment, setupBuiltins, setupTraceBIF, setupTraceAtom, setupTraceForm, DaoFunction(..),
-    daoFail, daoCatch, daoVoid, evalDaoExprIO, evalDaoIO, evalDaoExprWith, evalPartial,
-    evalAtomWith, daoLocal, evalFunction, filterEvalForms, evalProcedure, evalPipeline, evalDaoRule,
-    -- * Production Rule Database Entry
-    DBEntry(..),
+    DaoEval, EvalDeep(..), EvalShallow(..), BindVariables(..), Environment(..), emptyEnvironment,
+    daoGetLocal, daoSetLocal, pushLocalsEval, daoFail, daoCatch, daoVoid, evalDaoExprIO, evalDaoIO,
+    evalDaoExprWith, evalPartial, evalNamedMacro, evalBuiltinMacro, evalNamedFunction, evalBIF,
+    filterEvalForms, evalProcedure, evalPipeline, evalDaoRule,
+    -- * Constructing Built-In Functions
+    DaoMacro, DaoBuiltinFunction(..), bif, bifList, monotypeArgList, literalNext,
+    evalNoLookupNext, evalNextArg, outlineNextArg, outlineNextArgWith,
     -- * Dao Lisp's Fundamental Data Type
     DaoExpr(..), primitiveType, typeToAtom, basicType, DaoExprType(..), concatDaoExprs, plainFnCall,
     daoFnCall, strInterpolate, filterVoids, parseDaoUnit,
@@ -38,14 +71,16 @@ module Language.Interpreter.Dao.Kernel
     DaoDecode(..), Outlining(..), PatternMatcher, PatternMatcherState, MatchResult(..),
     runPatternMatch, resumeMatching, dumpArgs, returnIfEnd, setMatchType, matchStep, subMatch,
     maybeMatch, matchError, matchFail, matchQuit,
+    -- * The Production Rule Database Entry
+    DBEntry(..),
     -- * Primitive Dao Lisp Data Types
     DaoSize(..),
     Atom, parseDaoAtom, plainAtom,
     Dict(..), daoDict, plainDict, dictNull, emptyDict, lookupDict, insertDict, unionDict,
     unionDicts, intersectDict, intersectDicts, dictAssocs,
-    List, unwrapList, indexList, reverseUnwrapList, daoList, daoArray, plainList, sizedPlainList,
-    sizedMaybeList, maybeList, daoReverseList, showMaybeList, readMaybeList, listToForm,
-    listToArray,
+    List, unwrapList, insertList, indexList, reverseUnwrapList, daoList, daoArray, plainList,
+    sizedPlainList, sizedMaybeList, maybeList, daoReverseList, showMaybeList, readMaybeList,
+    listToForm, listToArray,
     Form(..), daoForm, daoForm1, plainForm, formSize, unwrapForm, inspectFormElems,
     parseTopLevelForm,
     Rule, Likelihood, Depends(..), Provides(..), daoRule,
@@ -58,7 +93,7 @@ module Language.Interpreter.Dao.Kernel
     matchGenPatternSequence, matchGenPatternChoice, 
     -- * Pattern Matching Data Types
     ExprPatUnit(..), GenPatternUnit(..), TypedPattern(..), KleeneType(..), NamedPattern(..),
-    GenPatternSequence(..), GenPatternChoice(..),
+    GenPatternSequence(..), GenPatternChoice(..), patternLocals,
   )
   where
 
@@ -495,6 +530,11 @@ instance DaoDecode ()            where
   daoDecode = \ case
     DaoVoid -> return ()
     expr    -> _outlineTypeOfErrL expr DaoVoid
+instance DaoDecode Bool          where
+  daoDecode = \ case
+    DaoNull -> return False
+    DaoTrue -> return True
+    expr    -> _outlineTypeOfErrL expr DaoNull
 instance DaoDecode Int           where
   daoDecode = \ case
     DaoInt a -> return a
@@ -557,6 +597,10 @@ instance DaoSize DaoExpr where
 -- construct 'Atom' must follow the same parsing rules, so the atom may not contain spaces, integer
 -- literals, bracketed expressions, quotation marks, or the reserved words @rule@, @error@,
 -- @true@, @false@, or @null.
+--
+-- When used in a 'DaoEval'uation function, you can evaluate an 'Atom' using the 'evalDeep' function
+-- to lookup a 'DaoExpr' value that may have been assigned to an 'Atom' using the @let@ construct,
+-- or which may have been assigned during pattern matching.
 newtype Atom = Atom Strict.Text deriving (Eq, Ord, Typeable)
 
 instance IsString Atom where { fromString str = _plainAtom (Strict.pack str) str; }
@@ -1060,8 +1104,8 @@ data Rule
 newtype Depends  = Depends  { dependsList  :: Maybe (List DaoExpr) } deriving (Eq, Ord, Typeable)
 newtype Provides = Provides { providesList :: Maybe (List DaoExpr) } deriving (Eq, Ord, Typeable)
 
-instance Show     Depends  where { showsPrec p = maybe id (showsPrec p) . dependsList; }
-instance Show     Provides where { showsPrec p = maybe id (showsPrec p) . providesList; }
+instance Show Depends  where { showsPrec p = maybe id (showsPrec p) . dependsList; }
+instance Show Provides where { showsPrec p = maybe id (showsPrec p) . providesList; }
 --instance IsString Depends  where { fromString = Depends  . _depProvs "depends" ; }
 --instance IsString Provides where { fromString = Provides . _depProvs "provides"; }
 
@@ -1397,11 +1441,19 @@ matchQuit = PatternMatcher . return . MatchQuit
 matchFail :: Monad m => Error -> PatternMatcher unit t m void
 matchFail = PatternMatcher . return . MatchFail
 
+-- | After evaluating a 'PatternMatcher' function with the 'runPatternMatch' function, and
+-- inspecting the resultant 'MatchResult' and obtaining the 'PatternMatcherState', your code may
+-- choose to resume matching with the same state but on another 'PatternMatcher' function. Use this
+-- function to do so by passing the other 'PatternMatcher' function and the 'PatternMatcherState'
+-- you obtained from your previous 'runPatternMatch' evaluation.
 resumeMatching
   :: Monad m
   => PatternMatcher unit t m t -> PatternMatcherState unit -> m (MatchResult t, PatternMatcherState unit)
 resumeMatching (PatternMatcher f) = runStateT $ runContT f return
 
+-- | Evaluate a 'PatternMatcher' function, converting it to the lifted monadic function type @m@ and
+-- returning a 'MatchResult' along with the state of the pattern match operation at the time the
+-- 'PatternMatcher' function evaluation 'Control.Monad.return'ed or 'daoFail'ed.
 runPatternMatch :: Monad m => PatternMatcher unit t m t -> [unit] -> m (MatchResult t, PatternMatcherState unit)
 runPatternMatch f src = resumeMatching f $ PatternMatcherState
   { patMatcherTypeRep = Nothing
@@ -1421,7 +1473,7 @@ dumpArgs = (>>=) $ PatternMatcher $ lift $ state $
 returnIfEnd :: Monad m => a -> [(Atom, DaoExpr)] -> PatternMatcher unit t m a
 returnIfEnd a err = PatternMatcher $ ContT $ \ next -> gets patMatcherSource >>= \ case
   [] -> next $ MatchOK a
-  _  -> return $ MatchQuit $ foldl (.) id (uncurry errorAppendInfo <$> err) $ _daoError "matching" $
+  _  -> next $ MatchQuit $ foldl (.) id (uncurry errorAppendInfo <$> err) $ _daoError "matching" $
     [("reason", DaoString "pattern requires there be no further arguments in order to match")]
 
 _setType
@@ -1777,16 +1829,40 @@ _lookupEnv :: Atom -> EnvStack -> Maybe DaoExpr
 _lookupEnv atom (EnvStack stack) =
   foldl (\ a (Dict d) -> mplus a $ Map.lookup atom d) Nothing (toList stack)
 
+_setEnv :: Atom -> DaoExpr -> EnvStack -> EnvStack
+_setEnv nm expr (EnvStack ((Dict top) :| stack)) =
+  EnvStack $ (Dict $ Map.insert nm expr top) :| stack
+
 ----------------------------------------------------------------------------------------------------
 
--- | This function type is pretty straight-forward: when you define a Haskell function to be called
--- from within the Dao Lisp interpreter, this is the type of function to define. This function takes
--- a lazy list of arguments which you can deconstruct however you like (using case statements or
--- whatever), but it is recommended you define an 'Outliner' function and deconstruct arguments
--- using 'runOutliner'. Once arguments are deconstructed, perform your computation as a 'DaoEval'
--- function type to produce a result. Then convert the result to a 'DaoExpr' using the 'dao'
--- function, then 'Control.Monad.return' the converted result.
-type DaoLispBuiltin = [DaoExpr] -> DaoEval DaoExpr
+-- | A 'DaoMacro' is a feature-rich monadic function type that can be converted to a
+-- 'DaoBuiltinFunction' function using the 'bif' function.
+--
+-- In the Lisp tradition, "macro" functions are a feature which allow you define functions where the
+-- arguments passed to your function are not evaluated, rather the un-evaluated abstract syntax tree
+-- of the Lisp code in the source file is passed to the macro function as an argument.
+-- Macro-functions therefore forego the ordinary function evaluation behavior and allow you to
+-- define functions that behave more as language constructs, for example if-then statements, for
+-- loops, and let bindings.
+--
+-- A 'DaoMacro' is exactly like a Lisp macro, and can be converted to a 'DaoBuiltinFunction' with the
+-- 'bif' function.
+--
+-- The 'DaoMacro' type is simply a 'PatternMatcher' which lifts the 'DaoEval' monad, so by using
+-- 'Control.Monad.Trans.lift' function you can evaluate a 'DaoEval' function within the 'DaoMacro'
+-- as you use functions like 'matchStep' to evaluate the arguments passed to your macro-BIF.
+--
+-- Since 'DaoMacro' is a type synonym for 'PatternMatcher', pattern match functions such as
+-- 'maybeMatch', 'matchStep', 'subMatch', and 'setMatchType' can all be used to define functions of
+-- type 'DaoMacro'.
+type DaoMacro a = PatternMatcher DaoExpr DaoExpr DaoEval a
+
+-- | The union of the 'DaoFunction' and 'DaoMacro' types. The only difference between a
+-- 'DaoFunction' and a 'DaoMacro' is that before evaluating a 'DaoFunction', the arguments passed to
+-- it are first recursively evaluated using 'filterEvalForms'.
+data DaoBuiltinFunction
+  = DaoFunction !(DaoMacro DaoExpr)
+  | DaoMacro    !(DaoMacro DaoExpr)
 
 -- | This is the environment you must initialize before evaluating a 'DaoExpr' using 'DaoEval'.
 --
@@ -1815,7 +1891,7 @@ type DaoLispBuiltin = [DaoExpr] -> DaoEval DaoExpr
 -- import           "Data.Monoid" ('mappend')
 -- 
 -- myEnv :: 'Environment'
--- myEnv = 'newEnvironment' 'Prelude.$' 'setupBultins'
+-- myEnv = 'newEnvironment' 'Prelude.$' 'extendBultins'
 --     [ 'bif' "sum" 'monotypeArgList' $ 'Control.Monad.return' . 'DaoInt' . 'Prelude.sum'
 --     , 'bif' "print" 'Control.Applicative.pure' $
 --            'Control.Monad.liftM' ('Prelude.const' 'DaoVoid') . 'Control.Monad.IO.Class.liftIO' . 'Prelude.putStrLn' . 'strInterpolate')
@@ -1823,7 +1899,7 @@ type DaoLispBuiltin = [DaoExpr] -> DaoEval DaoExpr
 -- @     
 data Environment
   = Environment
-    { builtins  :: Map.Map Atom DaoLispBuiltin  -- ^ Built-In Functions (BIFs)
+    { builtins  :: Map.Map Atom DaoBuiltinFunction  -- ^ Built-In Functions (BIFs)
     , locals    :: Map.Map Atom DaoExpr  -- ^ Functions defined locally, within a single database.
     , envStack  :: EnvStack
     , traceForm :: Maybe (Form -> DaoEval ())
@@ -1831,13 +1907,13 @@ data Environment
     , traceBIF  :: Maybe (Atom -> [DaoExpr] -> DaoEval ())
     }
 
--- | Construct a 'Data.Map.Map' of 'DaoLispBuiltin's from a list of pairs. You can define each pair
+-- | Construct a 'Data.Map.Map' of 'DaoBuiltinFunction's from a list of pairs. You can define each pair
 -- of the list as a literal tuple, or you can use the 'bif' function to define each pair. To prevent
 -- you from accidentally defining the same function more than once, this whole function evaluates to
 -- an 'Prelude.error' if you names should happen to collide, but of course this problem will not be
 -- caught until the 'bifList' is evaluated at runtime, so it is not an ideal "if it compiles it
 -- runs" solution.
-bifList :: [(Atom, DaoLispBuiltin)] -> Map.Map Atom DaoLispBuiltin
+bifList :: [(Atom, DaoBuiltinFunction)] -> Map.Map Atom DaoBuiltinFunction
 bifList = Map.fromListWithKey $ \ nm _ _ -> throw $ _daoError "initializing-interpreter"
   [ ("kernel-function", DaoAtom $ Atom "bifList")
   , ("reason", DaoString "duplicate BIF name")
@@ -1847,8 +1923,8 @@ bifList = Map.fromListWithKey $ \ nm _ _ -> throw $ _daoError "initializing-inte
 -- | An empty 'Environment' type used to construct a new one from scratch. Use this with Haskell
 -- record syntax, or else use 'newEnvironment' to construct an 'Environment' to pass to the
 -- 'evalDaoIO' function to evaluate a Dao Lisp program.
-environment :: Environment
-environment = Environment
+emptyEnvironment :: Environment
+emptyEnvironment = Environment
   { builtins  = Map.empty
   , locals    = Map.empty
   , envStack  = EnvStack $ Dict Map.empty :| []
@@ -1875,103 +1951,275 @@ environment = Environment
 --
 -- @
 -- 'bifList'
---     [ 'bif' "sum" $
+--     [ 'bif' "sum" $ 'DaoFunction' $
 --           'monotypeArgList' $ return . 'DaoInt' . 'Prelude.sum'
---     , 'bif' "square" $
+--     , 'bif' "square" $ 'DaoFunction' $
 --           ('Data.Functor.fmap' (\\ a -> a * a :: 'Prelude.Int') 'subOutline') 'Control.Applicative.<|>'
 --           ('Data.Functor.fmap' (\\ a -> a * a :: 'Prelude.Double') 'subOutline')
---     , 'bif' "lookup" $ do -- Looks up a dictionary, throws an exception if key doesn't exist.
+--     , 'bif' "lookup" $ 'DaoMacro' $ do -- Looks up a dictionary, throws an exception if key doesn't exist.
 --           dict <- 'subOutline'
 --           key  <- 'subOutline'
 --           'Prelude.maybe' ('daoFail' $ 'daoError' "dict-lookup" ["key", 'DaoAtom' key])
 --               'Control.Applicative.pure' ('lookupDict' key dict)
---     , 'bif' "print" $
+--     , 'bif' "print" $ 'DaoMacro' $ do
 --           'dumpArgs' $ \\ args -> do
 --               evaldArgs <- 'filterEvalForms' args
 --               'Control.Monad.IO.liftIO' $ 'Prelude.putStrLn' $ 'strInterpolate' evaldArgs
 --               return 'DaoVoid'
 --     ]
 -- @
-bif :: Atom -> Outliner (DaoEval DaoExpr) -> (Atom, DaoLispBuiltin)
-bif name getargs = (,) name $ runOutliner getargs >>> \ case
-  (MatchOK  eval, []  ) -> eval
-  (MatchOK   {} , args) -> daoFail $ _daoError "calling-builtin"
-    [ ("reason", DaoString "extraneous arguments")
-    , ("function-name", DaoAtom name)
-    , ("arguments", daoList args)
-    ]
-  (MatchQuit err, _   ) -> daoFail err
-  (MatchFail err, _   ) -> daoFail err
+bif :: Atom -> DaoBuiltinFunction -> (Atom, DaoBuiltinFunction)
+bif = (,)
 
--- | This function can be used to define a Built-In Function (@'bif'@) where all arguments must be
--- of the same type, given that this type instantiates the 'daoDecode' function, for example all
--- 'DaoString's or all 'DaoInt's.
-monotypeArgList :: DaoDecode arg => ([arg] -> a) -> SubOutliner t a
+-- | Evaluate a 'DaoBuiltinFunction'. The 'Atom' parameter is the built-in name of this function,
+-- which is only used for error reporting.
+evalBIF :: Atom -> DaoBuiltinFunction -> [DaoExpr] -> DaoEval DaoExpr
+evalBIF name bif args = do
+  let eval bif = fmap (fmap patMatcherSource) . runPatternMatch bif >=> \ case
+        (MatchOK  expr, []  ) -> return expr
+        (MatchOK   {} , args) -> daoFail $ _daoError "calling-builtin"
+          [ ("reason", DaoString "extraneous arguments")
+          , ("function", DaoAtom name)
+          , ("arguments", daoList args)
+          ]
+        (MatchQuit err, _   ) -> daoFail err
+        (MatchFail err, _   ) -> daoFail err
+  case bif of
+    DaoFunction bif -> filterEvalForms args >>= eval bif
+    DaoMacro    bif -> mapM evalShallow args >>= eval bif
+
+-- | This function evaluates a 'DaoMacro' operation which takes a single argument from the input
+-- list of arguments passed to the macro, and decodes it using 'daoDecode'. If 'daoDecode' fails, or
+-- if there are no more arguments, the macro pattern matcher backtracks with an error message
+-- (remember that backtracking can be caught with 'Control.Monad.mplus' or
+-- @('Control.Applicative.<|>')@). This function calls 'matchStep', so pass additional information
+-- to be included in the 'Error' that will be thrown in the case that there are no more arguments
+-- remaining.
+literalNext :: DaoDecode arg => [(Atom, DaoExpr)] -> DaoMacro arg
+literalNext info = matchStep info $ daoDecode >>> matchQuit ||| pure
+
+-- | This function is similar to 'literalNext', however if the next argument in the list is a
+-- 'Form', it evaluates the 'Form' (rather than returning a literal 'Form') and then decodes the
+-- returned value. The name of this function includes the descriptor "no lookup" because it is
+-- useful for pulling literal 'Atom's, or other literal values from the argument list without
+-- evaluating them, but otherwise evaluates 'Form's.
+evalNoLookupNext :: DaoDecode arg => [(Atom, DaoExpr)] -> DaoMacro arg
+evalNoLookupNext info = mplus
+  (literalNext info >>= lift . flip evalPartial [] >>= (matchQuit ||| pure) . daoDecode)
+  (literalNext info >>= (matchQuit ||| pure) . daoDecode)
+
+-- | When matching arguments passed to a macro, this function simply evaluates the next argument,
+-- including looking-up 'Atom's. This is useful when defining a 'DaoMacro' where some of the
+-- parameters are fully evaluated like 'DaoFunction's.
+evalNextArg :: DaoDecode arg => [(Atom, DaoExpr)] -> DaoMacro arg
+evalNextArg info = matchStep info $ lift . (liftM daoDecode . evalDeep >=> daoFail ||| return)
+
+-- | (Remember that 'outline' means to "de-inline"). This uses the 'Outlining' instance for a
+-- particular data type @arg@ to decode zero or more of the next arguments passed to the 'DaoMacro'
+-- in order to produce a single Haskell data type of type @arg@, and returns that decoded value of
+-- type @arg@. This function is similar to 'literalNext' except instead of evaluating a single
+-- primitive value, it may take any number of arguments that may be taken from the arguments passed
+-- to the macro to construct the @arg@ data type.
+outlineNextArg :: Outlining arg => DaoMacro arg
+outlineNextArg = outlineNextArgWith outline
+
+-- | (Remember that 'outline' means to "de-inline"). This function takes an 'Outliner' function and
+-- uses it to decode zero or more of the next arguments passed to the 'DaoMacro' to produce a single
+-- Haskell data type of type @arg@.
+outlineNextArgWith :: Outliner arg -> DaoMacro arg
+outlineNextArgWith f = do
+  before <- PatternMatcher $ lift $ gets $ MatchOK . length . patMatcherSource
+  dumpArgs (pure . runOutliner f) >>= \ case
+    (MatchFail err, _   ) -> matchFail err
+    (MatchQuit err, _   ) -> matchQuit err
+    (MatchOK   a  , args) -> PatternMatcher $ lift $ state $ \ st ->
+      ( MatchOK a
+      , st{ patMatcherSource = args, patMatcherIndex  = before - length args }
+      )
+
+-- | This function can be used to define a Built-In Function (@'bif'@) from a Haskell function of
+-- type 'DaoEval', where all arguments must be of the same type @arg@, for example all 'DaoString's
+-- or all 'DaoInt's, on the condition that this @arg@ type instantiates the 'daoDecode' function.
+-- Every argument in the list is evaluated using 'evalDeep' before being passed to the built-in
+-- Haskell function that you provide here, which means this function may recursively evaluate a
+-- cascade of other function calls before returning a result that may or may not be decodable to the
+-- type @arg@.
+monotypeArgList :: DaoDecode arg => ([arg] -> DaoEval a) -> DaoMacro a
 monotypeArgList f = loop id where
-  loop args = (outlineDaoDecoder >>= loop . (args .) . (:)) <|> returnIfEnd (f $ args []) []
-
--- | Create a new 'Environment' to be used to evaluate some Dao Lisp expressions. Pass an update
--- function composed (that is composed with the 'Prelude..' operator) of several setup functions,
--- like 'setupBuiltins', 'setupTraceBIF', 'setupTraceAtom', and 'setupTraceForm'.
-newEnvironment :: (Environment -> Environment) -> Environment
-newEnvironment = ($ environment)
-
--- | Append builtin functions to a 'newEnvironment'. A runtime error is reported if more than one
--- function with the same name are given. Pass a list of 'bif' functions as the argument to this
--- function, which should then be passed to 'newEnvironment'.
-setupBuiltins :: [(Atom, DaoLispBuiltin)] -> (Environment -> Environment)
-setupBuiltins elems env =
-  let noDups name _ _ = error $
-        "Cannot init Dao Lisp interpreter, " ++
-        "setupBuiltins called with multiple built-in functions named \"" ++
-        show name ++ "\""
-  in  env{ builtins = Map.unionWithKey noDups (builtins env) (Map.fromListWithKey noDups elems) }
-
--- | Define a trace function in the 'newEnvironment' to be called when a Built-In Function (BIF) is
--- evaluated, for debugging purposes.
---
--- If this function is called multiple times, the last function given is used -- be careful, "last
--- function" depends on whether you use the dot @('Prelude..')@ function or the forward arrow
--- @('Control.Category.>>>')@ function. When using the forward arrow, the last line of Haskell code
--- you write is the "last function," when using the dot operator, the first line of Haskell code you
--- write is the "last function."
-setupTraceBIF :: (Atom -> [DaoExpr] -> DaoEval ()) -> (Environment -> Environment)
-setupTraceBIF f env = env{ traceBIF = Just f }
-
--- | Similar to 'setupTraceBIF', except this trace function is called whenever a non-Built-In
--- Function is called, with the 'Atom' that labels the function, and the list of 'DaoExpr' arguments
--- passed to it, usually a function defined in a Dao Lisp database.
-setupTraceAtom :: (Atom -> [DaoExpr] -> DaoEval ()) -> (Environment -> Environment)
-setupTraceAtom f env = env{ traceAtom = Just f }
-
--- | Very similar to 'setupTraceAtom': this trace function is called whenever a non-Built-In
--- Function is called, usually a function defined in a Dao Lisp database, the difference between
--- this and the function you define with 'setupTraceAtom' is that the entire 'Form' is given to this
--- function, not just the 'Atom' and it's arguments.
-setupTraceForm :: (Form -> DaoEval ()) -> (Environment -> Environment)
-setupTraceForm f env = env{ traceForm = Just f }
+  loop args = (returnIfEnd (f $ args []) [] >>= lift) <|>
+    (literalNext [] >>= loop . (args .) . (:))
 
 ----------------------------------------------------------------------------------------------------
 
-class DaoFunction expr where { evalDao :: expr -> DaoEval DaoExpr; }
+-- | This type class provides the 'evalDeep' function, a polymorphic type which can take an
+-- arbitrary data type and evaluate by substituting all 'Atom's within the expression's structure
+-- with locally-bound variables, and executing all sub-forms recursively.
+--
+-- This function can also be very useful when constructing your own Built-In Functions (BIFs)
+-- because it allows you to lookup the 'DaoExpr' value associated with an 'Atom' in the local
+-- variable stack (similar to the 'daoGetLocal' function), which might have been assigned using a
+-- @let@ statement or by pattern matching a named variable. Also, evaluating an 'Error' with
+-- 'evalDeep' allows you to throw the error as an exception, exactly like the 'daoFail' function.
+--
+-- A 'Rule' is also executable data, however it is better to evaluate a 'Rule' data type with
+-- 'evalDaoRule' providing a list of @['DaoExpr']@ S-Expressions as arguments to the 'Rule'.
+-- Executable a 'Rule' with 'evalDeep' simply calls 'evalDaoRule' with an empty list of arguments.
+class EvalDeep expr where { evalDeep :: expr -> DaoEval DaoExpr; }
 
-instance DaoFunction DaoExpr where
-  evalDao expr = case expr of
-    DaoForm form -> evalDao form
-    DaoAtom atom -> daoLocal atom $ \ case
-      Nothing   -> daoFail $ _daoError "dereferencing"
-        [ ("reason", DaoString "failed to dereference atom")
-        , ("atom", DaoAtom atom)
-        ]
-      Just expr -> return expr
+instance EvalDeep DaoExpr where
+  evalDeep expr = case expr of
+    DaoAtom atom -> evalDeep atom
+    DaoDict dict -> evalDeep dict
+    DaoList list -> evalDeep list
+    DaoForm form -> evalDeep form
+    DaoRule rule -> evalDeep rule
+    DaoError err -> evalDeep err
     expr         -> return expr
 
-instance DaoFunction Form where
-  evalDao form = do
+instance EvalDeep Error where { evalDeep = daoFail; }
+instance EvalDeep (Form, [DaoExpr]) where { evalDeep = uncurry evalPartial; }
+
+instance EvalDeep Rule  where
+  evalDeep
+    ( Rule
+      { ruleDepends    = (Depends deps)
+      , ruleProvides   = (Provides provs)
+      , ruleLikelihood = like
+      , rulePattern    = pat
+      , ruleAction     = act
+      }
+    ) = do
+      let list = maybe (return Nothing) $ liftM maybeList . filterEvalForms . toList . unwrapList
+      deps  <- Depends  <$> list deps
+      provs <- Provides <$> list provs
+      act   <- pushLocalsEval (patternLocals pat) $ bindVariables $ Just act
+      return $ case act of
+        Nothing  -> DaoVoid
+        Just act -> DaoRule Rule
+          { ruleDepends = deps
+          , ruleProvides = provs
+          , ruleLikelihood = like
+          , rulePattern    = pat
+          , ruleAction     = act
+          }
+
+instance EvalDeep Atom where
+  evalDeep atom = daoGetLocal atom $ \ case
+    Nothing      -> daoFail $ _daoError "dereferencing"
+      [ ("reason", DaoString "failed to dereference atom")
+      , ("atom", DaoAtom atom)
+      ]
+    Just expr    -> return expr
+
+instance EvalDeep Form where
+  evalDeep form = do
     env <- get
     maybe (return ()) ($ form) (traceForm env)
     let (head :| args) = unwrapForm form
     evalDaoExprWith head args
+
+instance EvalDeep (Rule, [DaoExpr]) where
+  evalDeep = uncurry evalDaoRule >=> \ case
+    MatchOK   a   -> return a
+    MatchQuit err -> daoFail err
+    MatchFail err -> daoFail err
+
+instance EvalDeep (List DaoExpr) where
+  evalDeep = liftM daoList . filterEvalForms . toList . unwrapList
+
+instance EvalDeep Dict where
+  evalDeep (Dict map) = liftM (daoDict . concat) $
+    forM (Map.assocs map) $ \ (key, expr) -> evalDeep expr >>= \ case
+      DaoVoid -> return []
+      expr    -> return [(key, expr)]
+
+----------------------------------------------------------------------------------------------------
+
+-- | This is a class of data types that can be partially evaluated by a 'evalShallow' function.
+-- Shallow evaluation of data is very similar to what the 'evalDeep' function of the
+-- 'EvalDeep' type class does, except 'Atom's are not looked-up, 'Rule's and 'Error's are not
+-- evaluated, and 'DaoVoid' values are not filtered out of execution results, however 'Form's are
+-- fully evaluated using 'evalDeep'. The purpose of this type class is to provide a means to
+-- partially reduce a data structure while preserving 'Atom's and 'DaoVoid' values which can be used
+-- to define more expressive structures that can be deconstructed using the 'outline' function.
+class EvalShallow a where
+  evalShallow :: a -> DaoEval DaoExpr
+
+instance EvalShallow DaoExpr where
+  evalShallow = \ case
+    DaoForm form -> evalShallow form
+    DaoList list -> evalShallow list
+    DaoDict dict -> evalShallow dict
+    expr         -> return expr
+
+instance EvalShallow Form  where { evalShallow = evalDeep; }
+instance EvalShallow (Form, [DaoExpr]) where { evalShallow = uncurry evalPartial; }
+instance EvalShallow Atom  where { evalShallow = pure . DaoAtom; }
+instance EvalShallow Error where { evalShallow = pure . DaoError; }
+instance EvalShallow Rule  where { evalShallow = evalDeep; }
+
+instance EvalShallow (List DaoExpr) where
+  evalShallow = toList . unwrapList >>> liftM daoList . mapM evalShallow
+
+instance EvalShallow Dict where
+  evalShallow = liftM daoDict .
+    mapM (\ (key, expr) -> liftM ((,) key) $ evalShallow expr) . dictAssocs
+
+----------------------------------------------------------------------------------------------------
+
+-- | Scans through a data structure which may contain multiple 'DaoExpr' values, and substitutes
+-- every 'DaoAtom' that has been bound to a value 'daoSetLocal'.
+class BindVariables a where
+  bindVariables :: a -> DaoEval a
+
+instance BindVariables Rule where { bindVariables = localizeRule; }
+instance BindVariables (Maybe (List DaoExpr)) where { bindVariables = localizeList; }
+instance BindVariables (Maybe Form) where
+  bindVariables = maybe (return Nothing) (liftM (fmap Form) . localizeList . Just . formToList)
+
+instance BindVariables DaoExpr where
+  bindVariables = \ case
+    DaoAtom atom -> daoGetLocal atom $ maybe (return $ DaoAtom atom) return
+    DaoList list -> maybe DaoNull DaoList <$> localizeList (Just list)
+    DaoForm form -> maybe DaoVoid DaoForm <$> bindVariables (Just form)
+    DaoDict dict -> liftM daoDict $ forM (dictAssocs dict) $ \ (atom, expr) ->
+      ((,) atom) <$> bindVariables expr
+    DaoRule rule -> DaoRule <$> localizeRule rule
+    expr         -> return expr
+
+localizeList :: Maybe (List DaoExpr) -> DaoEval (Maybe (List DaoExpr))
+localizeList = maybe (return Nothing) (unwrapList >>> \ (a :| ax) -> loop 0 id a ax) where
+  nonvoid i list = \ case
+    DaoVoid -> (i, list)
+    expr    -> (i + 1, list . (expr :))
+  loop i list a ax = do
+    (i, list) <- nonvoid i list <$> bindVariables a
+    seq i $! seq list $! case ax of
+      []   -> pure $ sizedMaybeList i (list []) DaoVoid
+      a:ax -> loop i list a ax
+
+localizeRule :: Rule -> DaoEval Rule
+localizeRule
+  ( Rule
+    { ruleDepends    = (Depends deps)
+    , ruleProvides   = (Provides provs)
+    , ruleLikelihood = like
+    , rulePattern    = pat
+    , ruleAction     = act
+    }
+  ) = do
+    deps  <- Depends  <$> bindVariables deps
+    provs <- Provides <$> bindVariables provs
+    act   <- liftM (maybe act id) $ pushLocalsEval (patternLocals pat) $ bindVariables $ Just act
+    return Rule
+      { ruleDepends    = deps
+      , ruleProvides   = provs
+      , ruleLikelihood = like
+      , rulePattern    = pat
+      , ruleAction     = act
+      }
+
+----------------------------------------------------------------------------------------------------
 
 -- | A monadic function type for evaluating 'DaoExpr' values.
 newtype DaoEval a
@@ -1998,8 +2246,8 @@ evalDaoExprIO :: Environment -> DaoEval DaoExpr -> IO DaoExpr
 evalDaoExprIO env (DaoEval f) =
   callCC (runReaderT f . fmap (DaoEval . lift)) `runContT` return `evalStateT` env
 
-evalDaoIO :: DaoFunction f => Environment -> f -> IO DaoExpr
-evalDaoIO env = evalDaoExprIO env . evalDao
+evalDaoIO :: EvalDeep f => Environment -> f -> IO DaoExpr
+evalDaoIO env = evalDaoExprIO env . evalDeep
 
 -- | Throw an exception within the Dao Lisp interpreter.
 daoFail :: Error -> DaoEval void
@@ -2023,8 +2271,8 @@ daoVoid = fmap $ const DaoVoid
 -- | Evaluate a 'DaoExpr' to a form, then apply the arguments.
 evalDaoExprWith :: DaoExpr -> [DaoExpr] -> DaoEval DaoExpr
 evalDaoExprWith expr args = case expr of
-  DaoForm form -> evalDao form >>= flip evalDaoExprWith args
-  DaoAtom atom -> evalAtomWith atom args
+  DaoForm form -> evalDeep form >>= flip evalDaoExprWith args
+  DaoAtom atom -> evalNamedMacro atom args
   DaoError err -> daoFail err
   expr         -> daoFail $ _daoError "form-eval"
     [ ("form-head-wrong-type", DaoAtom $ typeToAtom $ primitiveType expr)
@@ -2040,21 +2288,37 @@ evalPartial form more = do
 
 -- | Performs a lookup for any 'DaoExpr' that might be associated with the given 'Atom' in the local
 -- context.
-daoLocal :: Atom -> (Maybe DaoExpr -> DaoEval a) -> DaoEval a
-daoLocal atom f = gets (_lookupEnv atom . envStack) >>= f
+daoGetLocal :: Atom -> (Maybe DaoExpr -> DaoEval a) -> DaoEval a
+daoGetLocal atom f = gets (_lookupEnv atom . envStack) >>= f
 
--- | Evaluate an 'Atom' with a list of arguments. This function will not call into the 'tracer'.
--- This function also recursively calls 'evalDao' on each argument using the 'filterEvalForms'
--- function.
-evalAtomWith :: Atom -> [DaoExpr] -> DaoEval DaoExpr
-evalAtomWith cmd = filterEvalForms >=> \ args -> daoLocal cmd $ \ case
-  Nothing   -> _evalFunction cmd args
-  Just expr -> do
-    get >>= maybe (return ()) (\ tr -> tr cmd args) . traceAtom
-    evalDaoExprWith expr args
+-- | Associates a 'DaoExpr' with an 'Atom' at the top of the local variable stack.
+daoSetLocal :: Atom -> DaoExpr -> DaoEval ()
+daoSetLocal nm expr = modify $ \ env -> env{ envStack = _setEnv nm expr $ envStack env }
 
-_evalFunction :: Atom -> [DaoExpr] -> DaoEval DaoExpr
-_evalFunction cmd args = get >>= \ env -> case Map.lookup cmd $ locals env of
+-- | Push the given 'Dict' with local variables assigned, then valuate a 'DaoEval' function, then
+-- pop the 'Dict' before returning.
+pushLocalsEval :: Dict -> DaoEval a -> DaoEval a
+pushLocalsEval dict f = do
+  modify $ \ st -> st{ envStack = _pushEnv dict $ envStack st }
+  result <- f
+  modify $ \ st -> st{ envStack = snd $ _popEnv $ envStack st }
+  return result
+
+-- | Evaluate an 'Atom' with a list of arguments. This function will call into the 'tracer'. As a
+-- macro evaluator, this function does not evaluate 'filterEvalForms' on the given list of
+-- 'DaoExpr's.
+evalBuiltinMacro :: Atom -> [DaoExpr] -> DaoEval DaoExpr
+evalBuiltinMacro cmd args = do
+  env <- DaoEval $ lift get
+  case Map.lookup cmd $ builtins env of
+    Nothing  -> daoFail $ _daoError "undefined-function" [("builtin-name", DaoAtom cmd)]
+    Just bif -> maybe (return ()) (\ tr -> tr cmd args) (traceBIF env) >> evalBIF cmd bif args
+
+-- | Evaluate a macro by name (named by the 'Atom'). The macro may or may not be a BIF. As a macro
+-- evaluator, this function does not filter the list of arguments through 'filterEvalForms' before
+-- passing these arguments to the named macro function.
+evalNamedMacro :: Atom -> [DaoExpr] -> DaoEval DaoExpr
+evalNamedMacro cmd args = daoGetLocal cmd $ \ case
   Just expr -> case expr of
     DaoRule rule -> evalDaoRule rule args >>= \ case
       MatchOK  expr -> return expr
@@ -2068,33 +2332,33 @@ _evalFunction cmd args = get >>= \ env -> case Map.lookup cmd $ locals env of
         , ("name", DaoAtom cmd)
         , ("primitive-type", DaoAtom $ typeToAtom $ primitiveType expr)
         ]
-  Nothing   -> case Map.lookup cmd $ builtins env of
-    Nothing   -> daoFail $ _daoError "undefined-function" [("builtin-name", DaoAtom cmd)]
-    Just bif  -> maybe (return ()) (\ tr -> tr cmd args) (traceBIF env) >> bif args
+  Nothing   -> evalBuiltinMacro cmd args
 
--- | Evaluate an 'Atom' by using the 'Atom' to select only a built-in function. Functions defined
--- locally (on the stack) are not considered.
-evalFunction :: Atom -> [DaoExpr] -> DaoEval DaoExpr
-evalFunction cmd = filterEvalForms >=> _evalFunction cmd
+-- | Similar to 'evalNamedMacro', except since this is a function call operation, and not a macro
+-- call operation, the arguments passed to this function are first evaluated by 'filterEvalForms'.
+-- In fact, this function is just a shortcut for the equation
+-- @('filterEvalForms' 'Control.Monad.>=>' 'evalNamedMacro)@.
+evalNamedFunction :: Atom -> [DaoExpr] -> DaoEval DaoExpr
+evalNamedFunction cmd = filterEvalForms >=> evalNamedMacro cmd
 
 -- | This function will collapse a list of 'DaoExpr's by evaluating all 'DaoForm's within it. It
 -- works by filtering a list of 'DaoExpr's such that only 'DaoForm' are extracted and evaluating
--- them with the 'evalDao' function and replaced with the 'DaoExpr' value returned by 'evalDao',
+-- them with the 'evalDeep' function and replaced with the 'DaoExpr' value returned by 'evalDeep',
 -- while all non 'DaoForm' values are ignored and left in place. Also, all 'DaoVoid' values are
 -- removed.
 filterEvalForms :: [DaoExpr] -> DaoEval [DaoExpr]
-filterEvalForms = liftM filterVoids . mapM evalDao
+filterEvalForms = liftM filterVoids . mapM evalDeep
 
 -- | Evaluate a procedure, taking care to perform a proper tail recursion on the last form of the
 -- procedure.
 evalProcedure :: [DaoExpr] -> DaoEval DaoExpr
 evalProcedure = \ case
   []   -> return DaoVoid
-  [a]  -> evalDao a
-  a:ax -> evalDao a >> evalProcedure ax
+  [a]  -> evalDeep a
+  a:ax -> evalDeep a >> evalProcedure ax
 
 -- | Similar to 'evalProcedure' except each element in the pipeline must be a 'Form' the return
--- value of each 'Form', and the value returned by evaluating 'evalDao' on the form is used as an
+-- value of each 'Form', and the value returned by evaluating 'evalDeep' on the form is used as an
 -- argument to the 'Form' immediately following it in the list.  Pass the argument to feed into the
 -- first arguemnt as the first 'DaoExpr' parameter to this function. Clojure programmers may
 -- recognizes this function as being somewhat similar to the @->>@ command.
@@ -2109,17 +2373,13 @@ evalPipeline = loop where
 -- | Evaluate a 'Rule' by matching a list of arguments against it.
 evalDaoRule :: Rule -> [DaoExpr] -> DaoEval (MatchResult DaoExpr)
 evalDaoRule rule query = flip runRuleMatcher query $ matchRulePattern exec DaoVoid rule where
-  exec _ dict = ruleMatchLift $ do
-    modify $ \ st -> st{ envStack = _pushEnv dict $ envStack st }
-    result <- evalPartial (ruleAction rule) query
-    modify $ \ st -> st{ envStack = snd $ _popEnv $ envStack st }
-    return result
+  exec _ dict = ruleMatchLift $ pushLocalsEval dict $ evalPartial (ruleAction rule) query
 
 ----------------------------------------------------------------------------------------------------
 
 -- | This is the top-level of the abstract syntax tree for Dao production rule databases. The actual
--- 'Language.Interpreter.Dao.Database' data type is defined in the "Language.Interpreter.Dao"
--- module.
+-- 'Language.Interpreter.Dao.Database.Database' data type is defined in the
+-- "Language.Interpreter.Dao.Database" module.
 data DBEntry
   = NamedEntry Atom DaoExpr
   | UnnamedEntry Rule
@@ -2432,6 +2692,11 @@ instance (Outlining pat, Outlining typ) => Outlining (NamedPattern pat typ) wher
       _          -> matchFail $
         _matchErr "expecting name after ':' for named pattern expression" []
 
+_namedNames :: NamedPattern pat typ -> [Atom]
+_namedNames = \ case
+  NamedPattern nm _ -> [nm]
+  PatConst{}        -> []
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A pattern to match a list of pattern units against a list of arguments.
@@ -2460,6 +2725,9 @@ _outlineList constr sep = do
         (return $ constr $ _list i stack)
   patvar >>= loop 0 . pure
 
+_seqNames :: GenPatternSequence typ pat -> [Atom]
+_seqNames (GenPatternSequence list) = toList (unwrapList list) >>= _namedNames
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A second dimension of pattern matching, each pattern in the choice is matched, all successful
@@ -2476,6 +2744,13 @@ instance (Inlining typ, Inlining pat) => Inlining (GenPatternChoice typ pat) whe
 
 instance (Outlining typ, Outlining pat) => Outlining (GenPatternChoice typ pat) where
   outline = _outlineList GenPatternChoice DaoSemi
+
+-- | Returns a 'Dict' of all of the 'NamedPattern' names found within this pattern. The 'Dict'
+-- contains keys paired with themselves.
+patternLocals :: GenPatternChoice typ pat -> Dict
+patternLocals (GenPatternChoice list) = plainDict $ do
+  nm <- toList (unwrapList list) >>= _seqNames
+  [(nm, DaoAtom nm)]
 
 ----------------------------------------------------------------------------------------------------
 
@@ -2581,7 +2856,7 @@ matchRulePattern f a = matchGenPatternChoice f a . rulePattern
 -- list of 'DaoExpr' values. This is the function type used to evaluate pattern matches against
 -- rules.
 newtype RuleMatcher a
-  = RuleMatcher { unwrapRuleMatcher :: PatternMatcher DaoExpr DaoExpr DaoEval a }
+  = RuleMatcher { unwrapRuleMatcher :: DaoMacro a }
   deriving (Functor, Applicative, Alternative, Monad, MonadPlus)
 
 instance MonadCont RuleMatcher where

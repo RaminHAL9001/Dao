@@ -67,6 +67,7 @@ module Language.Interpreter.Dao.Kernel
     -- * Decoding 'DaoExpr's to Haskell Types
     Outliner, SubOutliner, runOutliner, runOutlining, outlineDaoDecoder, outlineAnyForm, subOutline,
     subOutlineWith, outlineExprType, outlineExprTypeOf, outlineExprEq, outlineExpr, outlineExprWith,
+    outlineAtom, outlineList, outlineListWith, outlinePairs, outlinePairsWith,
     -- * Pattern Matching Functions
     DaoDecode(..), Outlining(..), PatternMatcher, PatternMatcherState, MatchResult(..),
     runPatternMatch, resumeMatching, dumpArgs, returnIfEnd, setMatchType, matchStep, subMatch,
@@ -91,7 +92,7 @@ module Language.Interpreter.Dao.Kernel
     RuleMatcher(..), runRuleMatcher, ruleMatchLift, noMatch, matchExprPatUnit,
     matchGenPatternUnit, matchGenPatternUnit', matchTypedPattern, matchNamedPattern,
     matchGenPatternSequence, matchGenPatternChoice, 
-    -- * Pattern Matching Data Types
+    -- * Pattern Data Types for 'Rule's
     ExprPatUnit(..), GenPatternUnit(..), TypedPattern(..), KleeneType(..), NamedPattern(..),
     GenPatternSequence(..), GenPatternChoice(..), patternLocals,
   )
@@ -954,8 +955,8 @@ _indexList :: List a -> Int -> a
 _indexList (List a) = (a !)
 
 -- | Lookup an element in a 'List'
-indexList :: List a -> Int -> Maybe a
-indexList (List a) i = if inRange (bounds a) i then Just (a ! i) else Nothing
+indexList :: Int -> List a -> Maybe a
+indexList i (List a) = if inRange (bounds a) i then Just (a ! i) else Nothing
 
 -- | Update elements in a 'List'
 insertList :: List a -> [(Int, a)] -> List a
@@ -1653,6 +1654,47 @@ outlineAtom required f = matchStep [("required-type", DaoAtom $ typeToAtom DaoFo
   DaoAtom next | next == required -> f
   _ -> matchQuit $ _matchErr "expecting Atom" [("required-atom", DaoAtom required)]
 
+-- | If the next argument is a 'List', dump all the list arguments into the evaluation of a given
+-- 'SubOutliner' function to construct a new complex data type from the sequential elements of that
+-- list argument.
+outlineListWith :: Outliner a -> SubOutliner t a
+outlineListWith f = matchStep [("required-type", DaoAtom $ typeToAtom DaoListType)] $ \ case
+  DaoList list -> case runOutliner f $ toList $ unwrapList list of
+    (MatchOK     a, [] ) -> return a
+    (MatchOK{}    , rem) -> matchQuit $ _matchErr
+      "extraneous arguments while outlining list argument"
+      [("arguments", daoList rem)]
+    (MatchQuit err, _  ) -> matchQuit err
+    (MatchFail err, _  ) -> matchFail err
+  expr                   -> matchQuit $
+    _matchErr "expecting square-bracketed list" [("argument", expr)]
+
+-- | Calls 'outlineListWith' using an instance of the 'Outlining' type class.
+outlineList :: Outlining a => SubOutliner t a
+outlineList = outlineListWith outline
+
+-- | This is a 'SubOutliner' function that produces a list of Haskell tuples (pairs) from a Dao Lisp
+-- expression where the pairs are separated by colon tokens. For example, the Dao Lisp expression:
+--
+-- > :1 one :2 two :3 three
+--
+-- Would be outlineable to the Haskell list of pairs of the type @[('Prelude.Int', 'Atom')]@:
+--
+-- @
+-- [(1, "one"), (2, "two"), (3, "three")] :: [('Prelude.Int', 'Atom')]
+-- @
+outlinePairs :: (Outlining a, Outlining b) => SubOutliner t [(a, b)]
+outlinePairs = outlinePairsWith outline outline
+
+-- | Like 'outlinePairs', but you can provide an arbitrary 'SubOutliner' for outlining each of the
+-- elements of the pair.
+outlinePairsWith :: Outliner a -> Outliner b -> SubOutliner t [(a, b)]
+outlinePairsWith a b = loop id where
+  loop stk = mplus (flip returnIfEnd [] $ stk []) $ matchStep [] $ \ case
+    DaoColon -> (,) <$> subOutlineWith a <*> subOutlineWith b >>= loop . (stk .) . (:)
+    expr     -> matchQuit $ _daoError "outlining-pairs"
+      [("reason", DaoString "expecting colon delimiter"), ("on-input", expr)]
+
 _outlineTypeOfErrL :: DaoExpr -> DaoExpr -> Either Error void
 _outlineTypeOfErrL expr = Left . _outlineTypeOfErr expr
 
@@ -1857,12 +1899,24 @@ _setEnv nm expr (EnvStack ((Dict top) :| stack)) =
 -- type 'DaoMacro'.
 type DaoMacro a = PatternMatcher DaoExpr DaoExpr DaoEval a
 
--- | The union of the 'DaoFunction' and 'DaoMacro' types. The only difference between a
--- 'DaoFunction' and a 'DaoMacro' is that before evaluating a 'DaoFunction', the arguments passed to
+-- | The union of the 'DaoStrict' and 'DaoMacro' types. The only difference between a
+-- 'DaoStrict' and a 'DaoMacro' is that before evaluating a 'DaoStrict', the arguments passed to
 -- it are first recursively evaluated using 'filterEvalForms'.
 data DaoBuiltinFunction
-  = DaoFunction !(DaoMacro DaoExpr)
-  | DaoMacro    !(DaoMacro DaoExpr)
+  = DaoStrict    !(DaoMacro DaoExpr)
+    -- ^ This data constructor indicates that the 'DaoMacro' to be evaluated shoule have all
+    -- arguments passed to it fully evaluated with 'evalDeep' before the argument pattern matching
+    -- begins.
+  | DaoNonStrict !(DaoMacro DaoExpr)
+    -- ^ This data constructor indicates that the 'DaoMacro' to be evaluated shoule have only 'Form'
+    -- arguments passed to it evaluated with 'evalShallow' before the argument pattern matching
+    -- begins. This ensures that recursively evaluted arguments are only evaluated once before
+    -- attempting to evaluate a function.
+  | DaoControl   !(DaoMacro DaoExpr)
+    -- ^ This data constructor indicates that the 'DaoMacro' to be evaluated is a control structure,
+    -- like an @if@, @for@, @case@, or @do@ statement, and that the arguments passed to the
+    -- 'DaoMacro' should not be evaluated or reduced in any way, all arguments are passed exactly as
+    -- they have been defined in the source code structure.
 
 -- | This is the environment you must initialize before evaluating a 'DaoExpr' using 'DaoEval'.
 --
@@ -1951,17 +2005,17 @@ emptyEnvironment = Environment
 --
 -- @
 -- 'bifList'
---     [ 'bif' "sum" $ 'DaoFunction' $
+--     [ 'bif' "sum" $ 'DaoStrict' $
 --           'monotypeArgList' $ return . 'DaoInt' . 'Prelude.sum'
---     , 'bif' "square" $ 'DaoFunction' $
+--     , 'bif' "square" $ 'DaoStrict' $
 --           ('Data.Functor.fmap' (\\ a -> a * a :: 'Prelude.Int') 'subOutline') 'Control.Applicative.<|>'
 --           ('Data.Functor.fmap' (\\ a -> a * a :: 'Prelude.Double') 'subOutline')
---     , 'bif' "lookup" $ 'DaoMacro' $ do -- Looks up a dictionary, throws an exception if key doesn't exist.
+--     , 'bif' "lookup" $ 'DaoNonStrict' $ do -- Looks up a dictionary, throws an exception if key doesn't exist.
 --           dict <- 'subOutline'
 --           key  <- 'subOutline'
 --           'Prelude.maybe' ('daoFail' $ 'daoError' "dict-lookup" ["key", 'DaoAtom' key])
 --               'Control.Applicative.pure' ('lookupDict' key dict)
---     , 'bif' "print" $ 'DaoMacro' $ do
+--     , 'bif' "print" $ 'DaoNonStrict' $ do
 --           'dumpArgs' $ \\ args -> do
 --               evaldArgs <- 'filterEvalForms' args
 --               'Control.Monad.IO.liftIO' $ 'Prelude.putStrLn' $ 'strInterpolate' evaldArgs
@@ -1985,8 +2039,9 @@ evalBIF name bif args = do
         (MatchQuit err, _   ) -> daoFail err
         (MatchFail err, _   ) -> daoFail err
   case bif of
-    DaoFunction bif -> filterEvalForms args >>= eval bif
-    DaoMacro    bif -> mapM evalShallow args >>= eval bif
+    DaoStrict    bif -> filterEvalForms args >>= eval bif
+    DaoNonStrict bif -> mapM evalShallow args >>= eval bif
+    DaoControl   bif -> eval bif args
 
 -- | This function evaluates a 'DaoMacro' operation which takes a single argument from the input
 -- list of arguments passed to the macro, and decodes it using 'daoDecode'. If 'daoDecode' fails, or
@@ -2010,7 +2065,7 @@ literalNext info = matchStep info $ daoDecode >>> matchQuit ||| pure
 
 -- | When matching arguments passed to a macro, this function simply evaluates the next argument,
 -- including looking-up 'Atom's. This is useful when defining a 'DaoMacro' where some of the
--- parameters are fully evaluated like 'DaoFunction's.
+-- parameters are fully evaluated like 'DaoStrict's.
 evalNextArg :: DaoDecode arg => [(Atom, DaoExpr)] -> DaoMacro arg
 evalNextArg info = matchStep info $ lift . (liftM daoDecode . evalDeep >=> daoFail ||| return)
 
@@ -2142,6 +2197,10 @@ instance EvalDeep Dict where
 -- fully evaluated using 'evalDeep'. The purpose of this type class is to provide a means to
 -- partially reduce a data structure while preserving 'Atom's and 'DaoVoid' values which can be used
 -- to define more expressive structures that can be deconstructed using the 'outline' function.
+--
+-- The important thing about 'EvalShallow' is that when 'DaoMacro' type functions are evaulated,
+-- especially 'DaoBuiltinFunction's, 'Form's passed as arguments are evaluated only once. 'List's or
+-- 'Dict's containing 'Form's will also have these 'Form's evaluated.
 class EvalShallow a where
   evalShallow :: a -> DaoEval DaoExpr
 

@@ -531,7 +531,7 @@ testCoders = do
 
 testEnv :: Environment
 testEnv = newEnvironment $ extendBuiltins
-  [ bif "print" $ DaoFunction $ dumpArgs $ lift . daoVoid .
+  [ bif "print" $ DaoStrict $ dumpArgs $ lift . daoVoid .
       (filterEvalForms >=> liftIO . Strict.putStrLn . ("(print) " <>) . strInterpolate)
   ]
 
@@ -568,6 +568,30 @@ testEvaluator = do
     , DaoString "\n  (interpolate Hello, world!) = "
     , daoFnCall "interpolate" $ DaoString <$> ["Hello", ",", "world!"]
     ]
+  let wdict = plainDict [("one", DaoInt 1), ("two", DaoInt 2), ("three", DaoInt 3)]
+  let wlist = plainList $ DaoString "zero" :| (DaoString <$> ["one", "two", "three"])
+  eval1 (daoFnCall "get" [DaoAtom "two", DaoDict wdict]) (DaoInt 2)
+  eval1 (daoFnCall "get" [DaoInt 1, DaoList wlist]) (DaoString "one")
+  eval1 (daoFnCall "put" [DaoAtom "four", DaoInt 4, DaoDict wdict])
+        (DaoDict $ insertDict wdict [("four", DaoInt 4)])
+  eval1 (daoFnCall "put" [DaoInt 2, DaoString "TWO", DaoList wlist])
+        (DaoList $ insertList wlist [(2, DaoString "TWO")])
+  eval1 (daoFnCall "get" [daoList [DaoAtom "two", DaoAtom "one"], DaoDict wdict])
+        (daoList [DaoInt 2, DaoInt 1])
+  eval1 (daoFnCall "get" [daoList [DaoInt 1, DaoInt 2], DaoList wlist])
+        (daoList [DaoString "one", DaoString "two"])
+  eval1 ( daoFnCall "put"
+            [ daoList [DaoColon, DaoString "four", DaoInt 4, DaoColon, DaoString "five", DaoInt 5]
+            , DaoDict wdict
+            ]
+        )
+        (DaoDict $ insertDict wdict [("four", DaoInt 4), ("five", DaoInt 5)])
+  eval1 ( daoFnCall "put"
+            [ daoList [DaoColon, DaoInt 2, DaoString "TWO", DaoColon, DaoInt 3, DaoString "THREE"]
+            , DaoList wlist
+            ]
+        )
+        (DaoList $ insertList wlist [(2, DaoString "TWO"), (3, DaoString "THREE")])
 
 match1
   :: Show pat

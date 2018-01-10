@@ -15,9 +15,20 @@ module Language.Interpreter.Dao.DefaultBIFs
     newEnvironment, extendBuiltins, setupTraceBIF, setupTraceAtom, setupTraceForm,
     -- * Defining BIFs
     DefaultBIF, defaultBIFs, rename, evalDefaultBIF,
-    -- * Stand-Alone BIFs
-    daoSum, daoSubtract, daoProduct, daoDivide, daoModulus, daoLessEq, daoGreaterEq,
-    daoInterpolate, daoPrint, daoThrow, daoPredicate, daoGet
+    -- * Arithmetic
+    daoSum, daoSubtract, daoProduct, daoDivide, daoModulus,
+    -- * Comparison
+    daoEqual, daoNotEqual, daoLessEq, daoLess, daoGreaterEq, daoGreater,
+    -- * Strings
+    daoInterpolate,
+    -- * Dictionaries
+    daoGet, daoPut,
+    -- * IO
+    daoPrint,
+    -- * Checks on Matched Pattern
+    daoPredicate,
+    -- * Exceptions
+    daoThrow,
   )
   where
 
@@ -99,22 +110,13 @@ type DefaultBIF = (Atom, DaoBuiltinFunction)
 -- function.
 defaultBIFs :: Map.Map Atom DaoBuiltinFunction
 defaultBIFs = bifList $ fmap (uncurry bif)
-  [ daoSum
-  , daoSubtract
-  , daoProduct
-  , daoDivide
-  , daoModulus
-  , daoEqual
-  , daoNotEqual
-  , daoLess
-  , daoLessEq
-  , daoGreater
-  , daoGreaterEq
+  [ daoSum, daoSubtract, daoProduct, daoDivide , daoModulus
+  , daoEqual, daoNotEqual, daoLess, daoLessEq, daoGreater, daoGreaterEq
   , daoInterpolate
   , daoPrint
   , daoThrow
   , daoPredicate
-  , daoGet
+  , daoGet, daoPut
   ]
 
 -- | A convenient function for renaming a 'DefaulBIF' before adding it to your own dictionary of
@@ -130,7 +132,7 @@ evalDefaultBIF = uncurry evalBIF
 ----------------------------------------------------------------------------------------------------
 
 daoSum :: DefaultBIF
-daoSum = bif "+" $ DaoFunction $
+daoSum = bif "+" $ DaoStrict $
   monotypeArgList (pure . DaoInt . sum) <|>
   monotypeArgList (pure . DaoFloat . sum) <|>
   monotypeArgList (pure . DaoString . mconcat) <|>
@@ -138,7 +140,7 @@ daoSum = bif "+" $ DaoFunction $
   monotypeArgList (pure . DaoDict . unionDicts (\ _ _ a -> a))
 
 daoProduct :: DefaultBIF
-daoProduct = bif "*" $ DaoFunction $
+daoProduct = bif "*" $ DaoStrict $
   monotypeArgList (pure . DaoInt . product) <|>
   monotypeArgList (pure . DaoFloat . product) <|>
   monotypeArgList (pure . dao . and) <|>
@@ -148,17 +150,17 @@ _nonassoc :: Num a => a -> (a -> a) -> (a -> a -> a) -> ([a] -> a) -> [a] -> a
 _nonassoc id neg bin join = \ case { [] -> id; [a] -> neg a; a:ax -> a `bin` join ax; }
 
 daoSubtract :: DefaultBIF
-daoSubtract = bif "-" $ DaoFunction $
+daoSubtract = bif "-" $ DaoStrict $
   monotypeArgList (pure . DaoInt . _nonassoc 0 negate (-) sum) <|>
   monotypeArgList (pure . DaoFloat . _nonassoc 0 negate (-) sum)
 
 daoDivide :: DefaultBIF
-daoDivide = bif "/" $ DaoFunction $
+daoDivide = bif "/" $ DaoStrict $
   monotypeArgList (pure . DaoInt . _nonassoc 1 (\ x -> if x == 1 then 1 else 0) div product) <|>
   monotypeArgList (pure . DaoFloat . _nonassoc 1 recip (/) product)
 
 daoModulus :: DefaultBIF
-daoModulus = bif "mod" $ DaoFunction $ dumpArgs $ \ case
+daoModulus = bif "mod" $ DaoStrict $ dumpArgs $ \ case
   []   -> return $ DaoInt 1
   a:ax -> do
     let err param = plainError "matching"
@@ -184,12 +186,12 @@ daoModulus = bif "mod" $ DaoFunction $ dumpArgs $ \ case
 -- 
 -- The above will create a string @"Hello, world! OneTwoThree."@
 daoInterpolate :: DefaultBIF
-daoInterpolate = bif "interpolate" $ DaoFunction $ dumpArgs $
+daoInterpolate = bif "interpolate" $ DaoStrict $ dumpArgs $
   pure . DaoString . strInterpolate
 
 -- | Call 'daoInterpolate' and push the result to the system console's standard output stream.
 daoPrint :: DefaultBIF
-daoPrint = bif "print" $ DaoFunction $ dumpArgs $
+daoPrint = bif "print" $ DaoStrict $ dumpArgs $
   lift . daoVoid . liftIO . Strict.putStrLn . strInterpolate
 
 -- | This function throws an uncatchable exception which immediately halts evaluation of a
@@ -198,7 +200,7 @@ daoPrint = bif "print" $ DaoFunction $ dumpArgs $
 -- @throw@ function. If an exception is @throw@n during pattern matching, the pattern simply fails
 -- and another pattern is tried.
 daoThrow :: DefaultBIF
-daoThrow = bif "throw" $ DaoMacro $
+daoThrow = bif "throw" $ DaoNonStrict $
   (plainError <$> literalNext info <*> (dictAssocs <$> literalNext info) >>= lift . daoFail) <|>
   (dumpArgs $ lift . daoFail . plainError "user-error" . pure . (,) "args" . daoList)
   where
@@ -222,7 +224,7 @@ daoThrow = bif "throw" $ DaoMacro $
 -- @(? bigEnough)@ predicate, which is a function call to this very @?@ function that calls
 -- @bigEnough@ with all values that match the pattern in that position.
 daoPredicate :: DefaultBIF
-daoPredicate = bif "?" $ DaoMacro $ do
+daoPredicate = bif "?" $ DaoNonStrict $ do
   fn <- literalNext [("function", DaoAtom "?")]
   dumpArgs $ \ args -> do
     result <- lift $ evalNamedMacro fn args
@@ -235,13 +237,14 @@ daoPredicate = bif "?" $ DaoMacro $ do
 
 _daoget
   :: (DaoDecode dict, DaoDecode key)
-  => (dict -> key -> Maybe DaoExpr)
+  => (key -> dict -> Maybe DaoExpr)
   -> DaoMacro DaoExpr
 _daoget lookup = do
   let getatom = DaoAtom "get"
   let badkey = DaoString "incorrect key type for lookup target"
   let info = [("reason", badkey), ("function", getatom)]
-  (listLen, keys)  <- (((,) Nothing) . pure <$> literalNext info) <|>
+  (listLen, keys)  <- mplus
+    (((,) Nothing) . pure <$> literalNext info)
     (do keysList <- literalNext info
         liftM ((,) $ Just $ length keysList) $
           forM (toList $ unwrapList keysList) $ \ key -> case daoDecode key of
@@ -255,10 +258,10 @@ _daoget lookup = do
   deflt <- evalNextArg [] <|> return DaoVoid
   flip returnIfEnd [("function", getatom)] $ case listLen of
     Just len -> maybe DaoNull DaoList $
-      sizedMaybeList len (maybe deflt id . lookup dict <$> keys) deflt
+      sizedMaybeList len (maybe deflt id . flip lookup dict <$> keys) deflt
     Nothing  -> case keys of
       []       -> deflt
-      key : _  -> maybe deflt id $ lookup dict key
+      key : _  -> maybe deflt id $ lookup key dict
 
 -- | Perform a lookup on a dictionary or list. This is a macro function which does not evaluate the
 -- key if it is an 'Language.Interpreter.Dao.Kernel.Atom'.
@@ -290,23 +293,40 @@ _daoget lookup = do
 --
 -- 4. Get an undefined index, returns the 'Language.Interpreter.Dao.Kernel.Atom' @nothing@.
 -- 
--- > (get 4 [a b c d] nothing)
+-- > (get (+ 3 1) [a b c d] nothing)
+-- 
+-- 5. Get an integer index, where the integer is assigned to a variable name, returns
+--    @'Language.Intgerpreter.Dao.Kernel.DaoString' "one"@:
+--
+-- > (do let key = 1; get (@ key) ["zero" "one" "two" "three"];)
 -- 
 daoGet :: DefaultBIF
-daoGet = bif "get" $ DaoMacro $
+daoGet = bif "get" $ DaoNonStrict $
   _daoget lookupDict <|> _daoget indexList
 
---_daoput
---  :: (DaoDecode dict, DaoDecode key)
---  => (dict -> [(key, DaoExpr)] -> dict)
---  -> Outliner (DaoEval DaoExpr)
---_daoput update = do
---  dict <- outlineDaoDecoder
+_daoput
+  :: (DaoDecode dict, DaoDecode key, DaoEncode dict)
+  => (dict -> [(key, DaoExpr)] -> dict)
+  -> DaoMacro DaoExpr
+_daoput update = do
+  let info = [("function", DaoAtom "put")]
+  pairs <- mplus
+    (outlineNextArgWith $ outlinePairsWith outlineDaoDecoder $ matchStep [] return)
+    (liftM pure $ (,) <$> literalNext info <*> evalNextArg info)
+  pairs <- forM pairs $ \ (atom, expr) -> ((,) atom) <$> lift (evalDeep expr)
+  dict  <- evalNextArg info
+  returnIfEnd (dao $ update dict pairs) info
 
----- | Perform an insertion on a dictionary or list.
---daoPut :: DefaultBIF
---daoPut = (,) "put" $ _daoput insertDict <|> _daoput insertList
---  -- TODO: define _daoput, insertDict, and insertList
+-- | Perform an insertion on a dictionary or list. If the target is a list, the keys must be integer
+-- values.
+--
+-- > (put key value dict)
+-- > (put [:key1 value1 :key2 value2 :key3 value3 ...] dict)
+--
+-- Notice that when inserting multiple elements, you must specify a __square-bracketed__ list of
+-- pairs, not a curly-bracketed dictionary.
+daoPut :: DefaultBIF
+daoPut = bif "put" $ DaoNonStrict $ _daoput insertDict <|> _daoput insertList
 
 ----------------------------------------------------------------------------------------------------
 
@@ -326,7 +346,7 @@ daoCompare
   :: Atom
   -> (forall a . (Ord a, DaoDecode a) => a -> a -> Bool)
   -> DefaultBIF
-daoCompare atom f = (,) atom $ DaoFunction $
+daoCompare atom f = (,) atom $ DaoStrict $
   monotypeArgList (comparing atom f :: CreasingFunction Int) <|>
   monotypeArgList (comparing atom f :: CreasingFunction Double) <|>
   monotypeArgList (comparing atom f :: CreasingFunction Strict.Text)

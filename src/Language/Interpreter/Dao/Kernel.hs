@@ -907,10 +907,7 @@ listToArray (List arr) = arr
 
 -- | Construct a 'List' from a 'Data.List.NonEmpty.NonEmpty' Haskell list.
 plainList :: NonEmpty a -> List a
-plainList (b :| bx) = List $ uncurry array $ loop [] 0 b bx where
-  loop stack i a bx = seq i $! case bx of
-    []   -> ((0, i), (i, a) : stack)
-    b:bx -> loop ((i, a) : stack) (i + 1) b bx
+plainList (b :| bx) = List $ listArray (0, length bx) (b : bx)
 
 -- | Construct a 'List' of a given size, filling the list @[a]@ of the given arguments, and if there
 -- are not enough arguments in the list @[a]@, then fill the remainder with the default parameter
@@ -918,9 +915,9 @@ plainList (b :| bx) = List $ uncurry array $ loop [] 0 b bx where
 -- elements are ignored.
 sizedPlainList :: Int -> [a] -> a -> List a
 sizedPlainList i elems = sizedMaybeList i elems >>> \ case
-  Just a -> a
+  Just  a -> a
   Nothing -> throw $ _daoError "list"
-    [ ("reason", DaoString "size parameter less than one")
+    [ ("reason", DaoString "size parameter is less than one")
     , ("size", DaoInt i)
     ]
 
@@ -928,18 +925,17 @@ sizedPlainList i elems = sizedMaybeList i elems >>> \ case
 -- to 'Prelude.Nothing'.
 sizedMaybeList :: Int -> [a] -> a -> Maybe (List a)
 sizedMaybeList i elems deflt = if i <= 0 then Nothing else
-  Just $ List $ array (0, i - 1) $ zip [0 ..] $ elems ++ repeat deflt
+  Just $ List $ listArray (0, i - 1) $ elems ++ repeat deflt
 
 -- | Construct a 'List' from a Haskell list, returning 'Prelude.Nothing' if the list is empty.
 maybeList :: [a] -> Maybe (List a)
-maybeList = \ case { [] -> Nothing; a:ax -> Just $ plainList $ a :| ax; }
+maybeList = fmap List . daoArray
 
 -- | Construct a Haskell 'Data.Array.IArray.Array' of 'DaoExpr's.
-daoArray :: [DaoExpr] -> Maybe (Array Int DaoExpr)
-daoArray = filter (\ case { DaoVoid -> False; _ -> True; }) >>> \ case
-  []    -> Nothing
-  exprs -> Just $ uncurry array $
-    ((,) 0 . foldl (\ _ i -> i) 0 . fmap fst &&& id) $ zip [0::Int ..] exprs
+daoArray :: [a] -> Maybe (Array Int a)
+daoArray = \ case
+  []   -> Nothing
+  a:ax -> Just $ listArray (0, length ax) (a : ax)
 
 -- | Retrieve the contents of a 'List' in reverse as a 'Data.List.NonEmpty.NonEmpty' list.
 reverseUnwrapList :: List a -> NonEmpty a
@@ -2067,7 +2063,7 @@ literalNext info = matchStep info $ daoDecode >>> matchQuit ||| pure
 -- including looking-up 'Atom's. This is useful when defining a 'DaoMacro' where some of the
 -- parameters are fully evaluated like 'DaoStrict's.
 evalNextArg :: DaoDecode arg => [(Atom, DaoExpr)] -> DaoMacro arg
-evalNextArg info = matchStep info $ lift . (liftM daoDecode . evalDeep >=> daoFail ||| return)
+evalNextArg info = matchStep info $ liftM daoDecode . lift . evalDeep >=> matchQuit ||| return
 
 -- | (Remember that 'outline' means to "de-inline"). This uses the 'Outlining' instance for a
 -- particular data type @arg@ to decode zero or more of the next arguments passed to the 'DaoMacro'
@@ -2089,7 +2085,9 @@ outlineNextArgWith f = do
     (MatchQuit err, _   ) -> matchQuit err
     (MatchOK   a  , args) -> PatternMatcher $ lift $ state $ \ st ->
       ( MatchOK a
-      , st{ patMatcherSource = args, patMatcherIndex  = before - length args }
+      , st{ patMatcherSource = args
+          , patMatcherIndex  = before - length args
+          }
       )
 
 -- | This function can be used to define a Built-In Function (@'bif'@) from a Haskell function of

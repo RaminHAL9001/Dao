@@ -581,7 +581,7 @@ testEvaluator = do
   eval1 (daoFnCall "get" [daoList [DaoInt 1, DaoInt 2], DaoList wlist])
         (daoList [DaoString "one", DaoString "two"])
   eval1 ( daoFnCall "put"
-            [ daoList [DaoColon, DaoString "four", DaoInt 4, DaoColon, DaoString "five", DaoInt 5]
+            [ daoList [DaoColon, DaoAtom "four", DaoInt 4, DaoColon, DaoAtom "five", DaoInt 5]
             , DaoDict wdict
             ]
         )

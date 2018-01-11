@@ -39,10 +39,13 @@ import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans
 
-import           Data.List.NonEmpty (toList)
+import           Data.Foldable
+--import           Data.List.NonEmpty (toList)
 import qualified Data.Map     as Map
 import qualified Data.Text    as Strict
 import qualified Data.Text.IO as Strict
+
+import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -236,7 +239,7 @@ daoPredicate = bif "?" $ DaoNonStrict $ do
         ]
 
 _daoget
-  :: (DaoDecode dict, DaoDecode key)
+  :: (DaoDecode dict, DaoDecode key, Show key) -- TODO remove Show
   => (key -> dict -> Maybe DaoExpr)
   -> DaoMacro DaoExpr
 _daoget lookup = do
@@ -263,8 +266,9 @@ _daoget lookup = do
       []       -> deflt
       key : _  -> maybe deflt id $ lookup key dict
 
--- | Perform a lookup on a dictionary or list. This is a macro function which does not evaluate the
--- key if it is an 'Language.Interpreter.Dao.Kernel.Atom'.
+-- | Perform a lookup on a dictionary or list, returning 'DaoVoid' or an optional @default-value@ if
+-- the key does not exist. This is a 'DaoNonStrict' function which does not evaluate the key if it
+-- is an 'Language.Interpreter.Dao.Kernel.Atom'.
 --
 -- > (get key dictionary default-value)
 -- > (get index list default-value)
@@ -279,21 +283,21 @@ _daoget lookup = do
 --
 -- Examples:
 --
--- 1. Get's the value @1@ associated with the key @a@. This will return @1@:
+-- 1. Get's the value associated with the key @aaa@.
 --
--- > (get aaa {:aaa 1})
+-- > (get aaa {:aaa 1})    ---> returns 1
 --
--- 2. The key @b@ does not exist, so it returns the given defaul value zero @0@:
+-- 2. The key @bbb@ does not exist, so it returns the given default value zero @0@:
 --
--- > (get bbb {:aaa 1} 0)
+-- > (get bbb {:aaa 1} 0)  ---> returns 0
 --
 -- 3. Get the first element in the list, returns the 'Language.Interpreter.Dao.Kernel.Atom' @a@:
 --
 -- > (get 0 [a b c d])
 --
--- 4. Get an undefined index, returns the 'Language.Interpreter.Dao.Kernel.Atom' @nothing@.
+-- 4. Get an undefined index:
 -- 
--- > (get (+ 3 1) [a b c d] nothing)
+-- > (get (+ 3 1) [a b c d] (atom nothing))    ---> returns ('Language.Interpreter.Dao.Kernel.DaoAtom' "nothing")
 -- 
 -- 5. Get an integer index, where the integer is assigned to a variable name, returns
 --    @'Language.Intgerpreter.Dao.Kernel.DaoString' "one"@:
@@ -311,8 +315,8 @@ _daoput
 _daoput update = do
   let info = [("function", DaoAtom "put")]
   pairs <- mplus
-    (outlineNextArgWith $ outlinePairsWith outlineDaoDecoder $ matchStep [] return)
-    (liftM pure $ (,) <$> literalNext info <*> evalNextArg info)
+    (trace "try outlining pair list" $ outlineNextArgWith $ outlinePairsWith outlineDaoDecoder $ matchStep [] return)
+    (trace "try outlining single pair" $ liftM pure $ (,) <$> literalNext info <*> evalNextArg info)
   pairs <- forM pairs $ \ (atom, expr) -> ((,) atom) <$> lift (evalDeep expr)
   dict  <- evalNextArg info
   returnIfEnd (dao $ update dict pairs) info
@@ -326,7 +330,7 @@ _daoput update = do
 -- Notice that when inserting multiple elements, you must specify a __square-bracketed__ list of
 -- pairs, not a curly-bracketed dictionary.
 daoPut :: DefaultBIF
-daoPut = bif "put" $ DaoNonStrict $ _daoput insertDict <|> _daoput insertList
+daoPut = bif "put" $ DaoNonStrict $ (trace "try \"put\" on Dict" $ _daoput insertDict) <|> (trace "try \"put\" on List" $ _daoput insertList)
 
 ----------------------------------------------------------------------------------------------------
 

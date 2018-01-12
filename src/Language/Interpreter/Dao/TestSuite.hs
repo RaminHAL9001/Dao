@@ -531,7 +531,7 @@ testCoders = do
 
 testEnv :: Environment
 testEnv = newEnvironment $ extendBuiltins
-  [ bif "print" $ DaoStrict $ dumpArgs $ lift . daoVoid .
+  [ bif "print" $ DaoStrict $ matchAll $ lift . daoVoid .
       (filterEvalForms >=> liftIO . Strict.putStrLn . ("(print) " <>) . strInterpolate)
   ]
 
@@ -540,10 +540,10 @@ runEval = evalDaoExprIO testEnv
 
 eval1 :: DaoExpr -> DaoExpr -> IO ()
 eval1 fncall expecting = isosy ("testing evaluator:\n  " ++ show fncall) $ do
-  putStrLn $ "(eval) " ++ show fncall
+  putStrLn $ "(eval " ++ show fncall ++ ")"
   result <- evalDaoIO testEnv fncall
-  putStrLn $ "(result) " ++ show result 
-  unless (result == expecting) $ error $ "(expecting) " ++ show expecting
+  putStrLn $ "[result " ++ show result ++ "]"
+  unless (result == expecting) $ error $ "[expecting " ++ show expecting ++ "]"
 
 testEvaluator :: IO ()
 testEvaluator = do
@@ -773,11 +773,13 @@ immediate :: IO ()
 immediate = do
   ---------------------------------------------------------------------------------------------- o
 
-  -- TEST FAILED on function test1FormCoder (type== Void : (call some function) *!)
-  -- testPatterns
-  test1FormCoder
-    (ZeroOrOne CheckOnce $ IsPrimType DaoVoidType)
-    [DaoAtom "type==", DaoAtom "Void", DaoAtom "?"]
+  let wdict = plainDict [("one", DaoInt 1), ("two", DaoInt 2), ("three", DaoInt 3)]
+  eval1 ( daoFnCall "put"
+            [ daoList [DaoColon, DaoAtom "four", DaoInt 4, DaoColon, DaoAtom "five", DaoInt 5]
+            , DaoDict wdict
+            ]
+        )
+        (DaoDict $ insertDict wdict [("four", DaoInt 4), ("five", DaoInt 5)])
 
   ---------------------------------------------------------------------------------------------- o
   return ()

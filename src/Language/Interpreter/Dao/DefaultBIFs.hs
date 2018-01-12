@@ -45,7 +45,7 @@ import qualified Data.Map     as Map
 import qualified Data.Text    as Strict
 import qualified Data.Text.IO as Strict
 
-import Debug.Trace
+--import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -136,34 +136,34 @@ evalDefaultBIF = uncurry evalBIF
 
 daoSum :: DefaultBIF
 daoSum = bif "+" $ DaoStrict $
-  monotypeArgList (pure . DaoInt . sum) <|>
-  monotypeArgList (pure . DaoFloat . sum) <|>
-  monotypeArgList (pure . DaoString . mconcat) <|>
-  monotypeArgList (pure . dao . or) <|>
-  monotypeArgList (pure . DaoDict . unionDicts (\ _ _ a -> a))
+  argsDecodeAll (pure . DaoInt . sum) <|>
+  argsDecodeAll (pure . DaoFloat . sum) <|>
+  argsDecodeAll (pure . DaoString . mconcat) <|>
+  argsDecodeAll (pure . dao . or) <|>
+  argsDecodeAll (pure . DaoDict . unionDicts (\ _ _ a -> a))
 
 daoProduct :: DefaultBIF
 daoProduct = bif "*" $ DaoStrict $
-  monotypeArgList (pure . DaoInt . product) <|>
-  monotypeArgList (pure . DaoFloat . product) <|>
-  monotypeArgList (pure . dao . and) <|>
-  monotypeArgList (pure . DaoDict . intersectDicts (\ _ _ a -> a))
+  argsDecodeAll (pure . DaoInt . product) <|>
+  argsDecodeAll (pure . DaoFloat . product) <|>
+  argsDecodeAll (pure . dao . and) <|>
+  argsDecodeAll (pure . DaoDict . intersectDicts (\ _ _ a -> a))
 
 _nonassoc :: Num a => a -> (a -> a) -> (a -> a -> a) -> ([a] -> a) -> [a] -> a
 _nonassoc id neg bin join = \ case { [] -> id; [a] -> neg a; a:ax -> a `bin` join ax; }
 
 daoSubtract :: DefaultBIF
 daoSubtract = bif "-" $ DaoStrict $
-  monotypeArgList (pure . DaoInt . _nonassoc 0 negate (-) sum) <|>
-  monotypeArgList (pure . DaoFloat . _nonassoc 0 negate (-) sum)
+  argsDecodeAll (pure . DaoInt . _nonassoc 0 negate (-) sum) <|>
+  argsDecodeAll (pure . DaoFloat . _nonassoc 0 negate (-) sum)
 
 daoDivide :: DefaultBIF
 daoDivide = bif "/" $ DaoStrict $
-  monotypeArgList (pure . DaoInt . _nonassoc 1 (\ x -> if x == 1 then 1 else 0) div product) <|>
-  monotypeArgList (pure . DaoFloat . _nonassoc 1 recip (/) product)
+  argsDecodeAll (pure . DaoInt . _nonassoc 1 (\ x -> if x == 1 then 1 else 0) div product) <|>
+  argsDecodeAll (pure . DaoFloat . _nonassoc 1 recip (/) product)
 
 daoModulus :: DefaultBIF
-daoModulus = bif "mod" $ DaoStrict $ dumpArgs $ \ case
+daoModulus = bif "mod" $ DaoStrict $ matchAll $ \ case
   []   -> return $ DaoInt 1
   a:ax -> do
     let err param = plainError "matching"
@@ -189,12 +189,12 @@ daoModulus = bif "mod" $ DaoStrict $ dumpArgs $ \ case
 -- 
 -- The above will create a string @"Hello, world! OneTwoThree."@
 daoInterpolate :: DefaultBIF
-daoInterpolate = bif "interpolate" $ DaoStrict $ dumpArgs $
+daoInterpolate = bif "interpolate" $ DaoStrict $ matchAll $
   pure . DaoString . strInterpolate
 
 -- | Call 'daoInterpolate' and push the result to the system console's standard output stream.
 daoPrint :: DefaultBIF
-daoPrint = bif "print" $ DaoStrict $ dumpArgs $
+daoPrint = bif "print" $ DaoStrict $ matchAll $
   lift . daoVoid . liftIO . Strict.putStrLn . strInterpolate
 
 -- | This function throws an uncatchable exception which immediately halts evaluation of a
@@ -204,8 +204,8 @@ daoPrint = bif "print" $ DaoStrict $ dumpArgs $
 -- and another pattern is tried.
 daoThrow :: DefaultBIF
 daoThrow = bif "throw" $ DaoNonStrict $
-  (plainError <$> literalNext info <*> (dictAssocs <$> literalNext info) >>= lift . daoFail) <|>
-  (dumpArgs $ lift . daoFail . plainError "user-error" . pure . (,) "args" . daoList)
+  (plainError <$> argDecode info <*> (dictAssocs <$> argDecode info) >>= lift . daoFail) <|>
+  (matchAll $ lift . daoFail . plainError "user-error" . pure . (,) "args" . daoList)
   where
     info = [("function", DaoAtom "throw")]
 
@@ -228,8 +228,8 @@ daoThrow = bif "throw" $ DaoNonStrict $
 -- @bigEnough@ with all values that match the pattern in that position.
 daoPredicate :: DefaultBIF
 daoPredicate = bif "?" $ DaoNonStrict $ do
-  fn <- literalNext [("function", DaoAtom "?")]
-  dumpArgs $ \ args -> do
+  fn <- argDecode [("function", DaoAtom "?")]
+  matchAll $ \ args -> do
     result <- lift $ evalNamedMacro fn args
     case result of
       DaoTrue -> return $ daoList args
@@ -247,18 +247,18 @@ _daoget lookup = do
   let badkey = DaoString "incorrect key type for lookup target"
   let info = [("reason", badkey), ("function", getatom)]
   (listLen, keys)  <- mplus
-    (((,) Nothing) . pure <$> literalNext info)
-    (do keysList <- literalNext info
+    (((,) Nothing) . pure <$> argDecode info)
+    (do keysList <- argDecode info
         liftM ((,) $ Just $ length keysList) $
           forM (toList $ unwrapList keysList) $ \ key -> case daoDecode key of
             Right key -> return key
             Left  err -> matchQuit $ let info = errorAppendInfo in
               info "reason" badkey .
               info "function" getatom .
-              info "offender" key $ err
+              info "bad-key" key $ err
     )
-  dict  <- evalNextArg info
-  deflt <- evalNextArg [] <|> return DaoVoid
+  dict  <- argEvalDeepDecode info
+  deflt <- argEvalDeepDecode [] <|> return DaoVoid
   flip returnIfEnd [("function", getatom)] $ case listLen of
     Just len -> maybe DaoNull DaoList $
       sizedMaybeList len (maybe deflt id . flip lookup dict <$> keys) deflt
@@ -309,16 +309,19 @@ daoGet = bif "get" $ DaoNonStrict $
   _daoget lookupDict <|> _daoget indexList
 
 _daoput
-  :: (DaoDecode dict, DaoDecode key, DaoEncode dict)
+  :: (DaoDecode dict, DaoDecode key, DaoEncode dict, Show dict, Show key)
   => (dict -> [(key, DaoExpr)] -> dict)
   -> DaoMacro DaoExpr
 _daoput update = do
   let info = [("function", DaoAtom "put")]
-  pairs <- mplus
-    (trace "try outlining pair list" $ outlineNextArgWith $ outlinePairsWith outlineDaoDecoder $ matchStep [] return)
-    (trace "try outlining single pair" $ liftM pure $ (,) <$> literalNext info <*> evalNextArg info)
+  pairs <-
+    (argOutlineListWith info $ outlinePairsWith outlineDaoDecoder $ matchStep [] return) <|>
+    (liftM pure $ (,) <$> argDecode info <*> argEvalDeepDecode info) <|>
+    ( matchQuit $ plainError "arg-matching" $ info ++
+        [("reason", DaoString "argument index+value pair must be single pair, or list of pairs")]
+    )
   pairs <- forM pairs $ \ (atom, expr) -> ((,) atom) <$> lift (evalDeep expr)
-  dict  <- evalNextArg info
+  dict  <- argEvalDeepDecode info
   returnIfEnd (dao $ update dict pairs) info
 
 -- | Perform an insertion on a dictionary or list. If the target is a list, the keys must be integer
@@ -330,7 +333,7 @@ _daoput update = do
 -- Notice that when inserting multiple elements, you must specify a __square-bracketed__ list of
 -- pairs, not a curly-bracketed dictionary.
 daoPut :: DefaultBIF
-daoPut = bif "put" $ DaoNonStrict $ (trace "try \"put\" on Dict" $ _daoput insertDict) <|> (trace "try \"put\" on List" $ _daoput insertList)
+daoPut = bif "put" $ DaoNonStrict $ _daoput insertDict <|> _daoput insertList
 
 ----------------------------------------------------------------------------------------------------
 
@@ -351,9 +354,9 @@ daoCompare
   -> (forall a . (Ord a, DaoDecode a) => a -> a -> Bool)
   -> DefaultBIF
 daoCompare atom f = (,) atom $ DaoStrict $
-  monotypeArgList (comparing atom f :: CreasingFunction Int) <|>
-  monotypeArgList (comparing atom f :: CreasingFunction Double) <|>
-  monotypeArgList (comparing atom f :: CreasingFunction Strict.Text)
+  argsDecodeAll (comparing atom f :: CreasingFunction Int) <|>
+  argsDecodeAll (comparing atom f :: CreasingFunction Double) <|>
+  argsDecodeAll (comparing atom f :: CreasingFunction Strict.Text)
 
 daoEqual :: DefaultBIF
 daoEqual = daoCompare "==" (==)

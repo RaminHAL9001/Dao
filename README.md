@@ -40,7 +40,7 @@ similar to UNIX glob patterns, and these patterns will match against queries
 which are simply sequences of atoms and strings. For each pattern that matches
 the query, the associated actions (Lisp expressions) are executed in response,
 although these Lisp expressions are simply Lisp function calls that call back
-into your Haskell program via the BIFs you define.
+into your Haskell program via the BIFs you define to the system.
 
 Pattern-Action pairs are called production rules (or just "Rules"), and can be
 stored into a flat file database which we could call a "production rule
